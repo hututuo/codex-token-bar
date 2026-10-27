@@ -1,0 +1,1113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/zoefix/agent-speed/blob/main/spec/report-schema.json",
+  "title": "Agent Speed Live Report API, protocol version 1",
+  "description": "Documents of spec/REPORTING.md. The root validates a report body (REPORTING 6); the other documents are under $defs. Objects are open: receivers MUST ignore properties they do not know (REPORTING 10). spec/tools/report_reference.py validates with this file and additionally checks the rules a schema cannot express.",
+  "$ref": "#/$defs/report",
+  "$defs": {
+    "timestamp": {
+      "description": "UTC instant with exactly three fractional digits.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    },
+    "uuid": {
+      "description": "Random (version 4) UUID, lowercase.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "httpsUrl": {
+      "description": "An https link (terms, privacy, homepage, leaderboard, apiKey.url, profileUrl). Links are always https, also in a document of a loopback test server (REPORTING 2.2, 2.3). A client drops an optional link that is not one and rejects the document only for terms and privacy (REPORTING 3.2).",
+      "type": "string",
+      "maxLength": 2048,
+      "pattern": "^https://[^\\s/?#@]+(/[^\\s]*)?$"
+    },
+    "apiUrl": {
+      "description": "The api base URL: https without query, fragment or user information, or http to a loopback host (127.0.0.1, localhost, [::1]). The http form is valid only in a discovery document that was itself fetched over http from a loopback host (REPORTING 2.2); a schema cannot see how the document was fetched, so clients check that condition.",
+      "type": "string",
+      "maxLength": 2048,
+      "pattern": "^(https://[^\\s/?#@]+|http://(127\\.0\\.0\\.1|localhost|\\[::1\\])(:[0-9]{1,5})?)(/[^\\s?#]*)?$"
+    },
+    "tokS": {
+      "description": "Tokens per second, rounded to 0.1.",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1000000000
+    },
+    "share": {
+      "description": "Fraction 0–1, rounded to 0.001.",
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 100000
+    },
+    "integer": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "bytesPerSecond": {
+      "description": "Bytes per second, rounded to an integer; null while unknown (fewer than two samples).",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 1000000000000
+    },
+    "source": {
+      "description": "An Agent Speed source id. Known ids: codex, claudeCode, claudeDesktop, deepseek, opencode, gemini, omp, antigravity, workbuddy, workbuddyAi, zcode, kimi, grokBuild. New ids are added over time; receivers accept ids they do not know.",
+      "type": "string",
+      "pattern": "^[a-z][A-Za-z0-9]{0,31}$"
+    },
+    "modelId": {
+      "description": "A model id of the Agent Speed price table, or one of the reserved ids local, unknown, other.",
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._:-]{0,63}$"
+    },
+    "username": {
+      "description": "NFKC-normalized, 1–32 code points; the full rules are REPORTING 4.3.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32
+    },
+    "client": {
+      "type": "object",
+      "required": [
+        "app",
+        "version",
+        "platform",
+        "osMajor"
+      ],
+      "properties": {
+        "app": {
+          "const": "AgentSpeed"
+        },
+        "version": {
+          "type": "string",
+          "maxLength": 32,
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$"
+        },
+        "platform": {
+          "enum": [
+            "macOS",
+            "Windows"
+          ]
+        },
+        "osMajor": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 99
+        }
+      }
+    },
+    "jwk": {
+      "description": "P-256 public key as a JSON Web Key (RFC 7517/7518): x and y are the 32-byte big-endian coordinates, base64url without padding.",
+      "type": "object",
+      "required": [
+        "kty",
+        "crv",
+        "x",
+        "y"
+      ],
+      "properties": {
+        "kty": {
+          "const": "EC"
+        },
+        "crv": {
+          "const": "P-256"
+        },
+        "x": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{43}$"
+        },
+        "y": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{43}$"
+        }
+      }
+    },
+    "agents": {
+      "type": "object",
+      "required": [
+        "generating",
+        "tools",
+        "active"
+      ],
+      "properties": {
+        "generating": {
+          "$ref": "#/$defs/count"
+        },
+        "tools": {
+          "$ref": "#/$defs/count"
+        },
+        "active": {
+          "$ref": "#/$defs/count"
+        }
+      }
+    },
+    "liveTokens": {
+      "type": "object",
+      "required": [
+        "outputTokS",
+        "totalTokS",
+        "estimatedShare"
+      ],
+      "properties": {
+        "outputTokS": {
+          "$ref": "#/$defs/tokS"
+        },
+        "totalTokS": {
+          "$ref": "#/$defs/tokS"
+        },
+        "estimatedShare": {
+          "$ref": "#/$defs/share"
+        }
+      }
+    },
+    "tokenDelta": {
+      "type": "object",
+      "required": [
+        "requests",
+        "output",
+        "input",
+        "cachedInput",
+        "cacheWriteInput",
+        "reasoning",
+        "measuredOutput",
+        "measuredMs"
+      ],
+      "properties": {
+        "requests": {
+          "$ref": "#/$defs/integer"
+        },
+        "output": {
+          "$ref": "#/$defs/integer"
+        },
+        "input": {
+          "$ref": "#/$defs/integer"
+        },
+        "cachedInput": {
+          "$ref": "#/$defs/integer"
+        },
+        "cacheWriteInput": {
+          "$ref": "#/$defs/integer"
+        },
+        "reasoning": {
+          "$ref": "#/$defs/integer"
+        },
+        "measuredOutput": {
+          "$ref": "#/$defs/integer"
+        },
+        "measuredMs": {
+          "$ref": "#/$defs/integer"
+        }
+      }
+    },
+    "traffic": {
+      "description": "Agent-attributed traffic (REPORTING 6.6). With status ok every value field is present; otherwise only status.",
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "ok",
+            "off",
+            "unavailable"
+          ]
+        },
+        "includesTools": {
+          "type": "boolean"
+        },
+        "rxBytesPerSecond": {
+          "$ref": "#/$defs/bytesPerSecond"
+        },
+        "txBytesPerSecond": {
+          "$ref": "#/$defs/bytesPerSecond"
+        },
+        "peakRxBytesPerSecond": {
+          "$ref": "#/$defs/bytesPerSecond"
+        },
+        "peakTxBytesPerSecond": {
+          "$ref": "#/$defs/bytesPerSecond"
+        },
+        "rxBytes": {
+          "$ref": "#/$defs/integer"
+        },
+        "txBytes": {
+          "$ref": "#/$defs/integer"
+        }
+      }
+    },
+    "cost": {
+      "type": "object",
+      "required": [
+        "liveMicroUsdPerSecond",
+        "peakMicroUsdPerSecond",
+        "knownShare",
+        "deltaMicroUsd",
+        "unpricedRequests",
+        "priceVersion"
+      ],
+      "properties": {
+        "liveMicroUsdPerSecond": {
+          "$ref": "#/$defs/integer"
+        },
+        "peakMicroUsdPerSecond": {
+          "$ref": "#/$defs/integer"
+        },
+        "knownShare": {
+          "$ref": "#/$defs/share"
+        },
+        "deltaMicroUsd": {
+          "$ref": "#/$defs/integer"
+        },
+        "unpricedRequests": {
+          "$ref": "#/$defs/integer"
+        },
+        "priceVersion": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "sourceEntry": {
+      "type": "object",
+      "required": [
+        "source",
+        "live",
+        "agents",
+        "delta"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/source"
+        },
+        "live": {
+          "$ref": "#/$defs/liveTokens"
+        },
+        "agents": {
+          "$ref": "#/$defs/agents"
+        },
+        "delta": {
+          "$ref": "#/$defs/tokenDelta"
+        },
+        "cost": {
+          "type": "object",
+          "required": [
+            "liveMicroUsdPerSecond",
+            "knownShare",
+            "deltaMicroUsd",
+            "unpricedRequests"
+          ],
+          "properties": {
+            "liveMicroUsdPerSecond": {
+              "$ref": "#/$defs/integer"
+            },
+            "knownShare": {
+              "$ref": "#/$defs/share"
+            },
+            "deltaMicroUsd": {
+              "$ref": "#/$defs/integer"
+            },
+            "unpricedRequests": {
+              "$ref": "#/$defs/integer"
+            }
+          }
+        },
+        "traffic": {
+          "type": "object",
+          "required": [
+            "rxBytesPerSecond",
+            "txBytesPerSecond",
+            "rxBytes",
+            "txBytes"
+          ],
+          "properties": {
+            "rxBytesPerSecond": {
+              "$ref": "#/$defs/bytesPerSecond"
+            },
+            "txBytesPerSecond": {
+              "$ref": "#/$defs/bytesPerSecond"
+            },
+            "rxBytes": {
+              "$ref": "#/$defs/integer"
+            },
+            "txBytes": {
+              "$ref": "#/$defs/integer"
+            }
+          }
+        }
+      }
+    },
+    "modelEntry": {
+      "type": "object",
+      "required": [
+        "id",
+        "sources",
+        "requests",
+        "output",
+        "measuredOutput",
+        "measuredMs",
+        "generating"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/modelId"
+        },
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/source"
+          }
+        },
+        "requests": {
+          "$ref": "#/$defs/integer"
+        },
+        "output": {
+          "$ref": "#/$defs/integer"
+        },
+        "measuredOutput": {
+          "$ref": "#/$defs/integer"
+        },
+        "measuredMs": {
+          "$ref": "#/$defs/integer"
+        },
+        "generating": {
+          "$ref": "#/$defs/count"
+        },
+        "deltaMicroUsd": {
+          "$ref": "#/$defs/integer"
+        },
+        "harnessRequests": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "$ref": "#/$defs/harnessRequest"
+          }
+        },
+        "modeUsage": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/modeUsage"
+          }
+        }
+      }
+    },
+    "report": {
+      "description": "Body of POST {api}/v1/reports (REPORTING 6).",
+      "type": "object",
+      "required": [
+        "schema",
+        "client",
+        "deviceId",
+        "username",
+        "run",
+        "sentAt",
+        "windowMs",
+        "activity",
+        "live",
+        "peak",
+        "delta",
+        "title"
+      ],
+      "properties": {
+        "schema": {
+          "const": 1
+        },
+        "client": {
+          "$ref": "#/$defs/client"
+        },
+        "deviceId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "username": {
+          "$ref": "#/$defs/username"
+        },
+        "run": {
+          "type": "object",
+          "required": [
+            "id",
+            "seq"
+          ],
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/uuid"
+            },
+            "seq": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          }
+        },
+        "sentAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "windowMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 900000
+        },
+        "activity": {
+          "enum": [
+            "active",
+            "idle",
+            "leaving"
+          ]
+        },
+        "live": {
+          "type": "object",
+          "required": [
+            "outputTokS",
+            "totalTokS",
+            "estimatedShare",
+            "agents"
+          ],
+          "properties": {
+            "outputTokS": {
+              "$ref": "#/$defs/tokS"
+            },
+            "totalTokS": {
+              "$ref": "#/$defs/tokS"
+            },
+            "estimatedShare": {
+              "$ref": "#/$defs/share"
+            },
+            "agents": {
+              "$ref": "#/$defs/agents"
+            }
+          }
+        },
+        "peak": {
+          "type": "object",
+          "required": [
+            "outputTokS",
+            "totalTokS"
+          ],
+          "properties": {
+            "outputTokS": {
+              "$ref": "#/$defs/tokS"
+            },
+            "totalTokS": {
+              "$ref": "#/$defs/tokS"
+            }
+          }
+        },
+        "delta": {
+          "$ref": "#/$defs/tokenDelta"
+        },
+        "title": {
+          "type": "object",
+          "required": [
+            "level",
+            "metric",
+            "redline",
+            "heat"
+          ],
+          "properties": {
+            "level": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 13
+            },
+            "metric": {
+              "enum": [
+                "output",
+                "total"
+              ]
+            },
+            "redline": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 1000000000
+            },
+            "heat": {
+              "$ref": "#/$defs/share"
+            }
+          }
+        },
+        "cost": {
+          "$ref": "#/$defs/cost"
+        },
+        "traffic": {
+          "$ref": "#/$defs/traffic"
+        },
+        "sources": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/$defs/sourceEntry"
+          }
+        },
+        "models": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/modelEntry"
+          }
+        }
+      }
+    },
+    "discovery": {
+      "description": "GET {service}/.well-known/agent-speed-report (REPORTING 3): what a service MUST publish. Clients accept more (REPORTING 3.2): numbers outside their ranges are clamped and optional links that are not https are dropped.",
+      "type": "object",
+      "required": [
+        "protocol",
+        "versions",
+        "service",
+        "api"
+      ],
+      "properties": {
+        "protocol": {
+          "const": "agent-speed-report"
+        },
+        "versions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "service": {
+          "type": "object",
+          "required": [
+            "name",
+            "terms",
+            "privacy"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 40
+            },
+            "description": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "homepage": {
+              "$ref": "#/$defs/httpsUrl"
+            },
+            "terms": {
+              "$ref": "#/$defs/httpsUrl"
+            },
+            "privacy": {
+              "$ref": "#/$defs/httpsUrl"
+            },
+            "leaderboard": {
+              "$ref": "#/$defs/httpsUrl"
+            },
+            "contact": {
+              "type": "string",
+              "maxLength": 254
+            },
+            "retentionDays": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 3650
+            }
+          }
+        },
+        "api": {
+          "$ref": "#/$defs/apiUrl"
+        },
+        "apiKey": {
+          "description": "mode is optional and defaults to none (REPORTING 3.2, 5.6).",
+          "type": "object",
+          "properties": {
+            "mode": {
+              "enum": [
+                "none",
+                "optional",
+                "required"
+              ]
+            },
+            "url": {
+              "$ref": "#/$defs/httpsUrl"
+            }
+          }
+        },
+        "username": {
+          "type": "object",
+          "properties": {
+            "minLength": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 12
+            },
+            "maxLength": {
+              "type": "integer",
+              "minimum": 12,
+              "maximum": 32
+            },
+            "charset": {
+              "enum": [
+                "ascii",
+                "unicode"
+              ]
+            },
+            "spaces": {
+              "type": "boolean"
+            }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "properties": {
+            "intervalSeconds": {
+              "type": "integer",
+              "minimum": 5,
+              "maximum": 300
+            },
+            "heartbeatSeconds": {
+              "type": "integer",
+              "minimum": 30,
+              "maximum": 900
+            },
+            "maxAgeSeconds": {
+              "type": "integer",
+              "minimum": 10,
+              "maximum": 120
+            },
+            "maxBodyBytes": {
+              "type": "integer",
+              "minimum": 4096,
+              "maximum": 65536
+            },
+            "maxModels": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 16
+            }
+          }
+        },
+        "sections": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "maxLength": 32
+          }
+        },
+        "extensions": {
+          "$ref": "#/$defs/reportExtensions"
+        }
+      }
+    },
+    "registration": {
+      "description": "Body of POST {api}/v1/devices (REPORTING 4.1).",
+      "type": "object",
+      "required": [
+        "schema",
+        "deviceId",
+        "username",
+        "publicKey",
+        "client"
+      ],
+      "properties": {
+        "schema": {
+          "const": 1
+        },
+        "deviceId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "username": {
+          "$ref": "#/$defs/username"
+        },
+        "publicKey": {
+          "$ref": "#/$defs/jwk"
+        },
+        "client": {
+          "$ref": "#/$defs/client"
+        },
+        "transfer": {
+          "description": "true only when the user asked to move a name held by another device of the same account (REPORTING 4.7).",
+          "type": "boolean"
+        }
+      }
+    },
+    "rename": {
+      "description": "Body of PATCH {api}/v1/devices/{deviceId} (REPORTING 4.4).",
+      "type": "object",
+      "required": [
+        "username"
+      ],
+      "properties": {
+        "username": {
+          "$ref": "#/$defs/username"
+        }
+      }
+    },
+    "keyRotation": {
+      "description": "Body of PUT {api}/v1/devices/{deviceId}/key (REPORTING 4.5).",
+      "type": "object",
+      "required": [
+        "publicKey"
+      ],
+      "properties": {
+        "publicKey": {
+          "$ref": "#/$defs/jwk"
+        }
+      }
+    },
+    "success": {
+      "description": "2xx response body of every endpoint (REPORTING 8.1).",
+      "type": "object",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "created",
+            "exists",
+            "updated",
+            "unchanged",
+            "rotated",
+            "deleted",
+            "accepted",
+            "duplicate"
+          ]
+        },
+        "deviceId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "username": {
+          "$ref": "#/$defs/username"
+        },
+        "profileUrl": {
+          "$ref": "#/$defs/httpsUrl"
+        },
+        "transferred": {
+          "type": "boolean"
+        },
+        "intervalSeconds": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 300
+        },
+        "rank": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000000
+        }
+      }
+    },
+    "error": {
+      "description": "Non-2xx response body (REPORTING 8.2).",
+      "type": "object",
+      "required": [
+        "error"
+      ],
+      "properties": {
+        "error": {
+          "type": "object",
+          "required": [
+            "code"
+          ],
+          "properties": {
+            "code": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]{0,47}$"
+            },
+            "message": {
+              "type": "string",
+              "maxLength": 500
+            },
+            "retryAfterSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 86400
+            },
+            "serverTime": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "username": {
+              "$ref": "#/$defs/username"
+            },
+            "reason": {
+              "type": "string",
+              "maxLength": 32
+            },
+            "supported": {
+              "type": "array",
+              "maxItems": 16,
+              "items": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "field": {
+              "type": "string",
+              "maxLength": 200
+            }
+          }
+        }
+      }
+    },
+    "reportExtensions": {
+      "type": "object",
+      "properties": {
+        "modelHarnessRequests": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "executionModes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "profileAvatar": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sharedIdentity": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "harnessRequest": {
+      "type": "object",
+      "required": [
+        "source",
+        "requests"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/source"
+        },
+        "requests": {
+          "$ref": "#/$defs/integer"
+        }
+      }
+    },
+    "modeUsage": {
+      "type": "object",
+      "required": [
+        "source",
+        "kind",
+        "mode",
+        "evidence",
+        "requests",
+        "output",
+        "measuredOutput",
+        "measuredMs"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/source"
+        },
+        "provider": {
+          "type": "string",
+          "maxLength": 32,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "kind": {
+          "enum": [
+            "serviceTier",
+            "accelerator",
+            "modelVariant",
+            "routing",
+            "workflow"
+          ]
+        },
+        "mode": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        },
+        "evidence": {
+          "enum": [
+            "selected",
+            "recorded",
+            "served",
+            "unknown"
+          ]
+        },
+        "requests": {
+          "$ref": "#/$defs/integer"
+        },
+        "output": {
+          "$ref": "#/$defs/integer"
+        },
+        "measuredOutput": {
+          "$ref": "#/$defs/integer"
+        },
+        "measuredMs": {
+          "$ref": "#/$defs/integer"
+        }
+      }
+    },
+    "profileAvatar": {
+      "type": "object",
+      "required": [
+        "url",
+        "sha256",
+        "contentType",
+        "width",
+        "height"
+      ],
+      "properties": {
+        "url": {
+          "$ref": "#/$defs/httpsUrl"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "contentType": {
+          "const": "image/png"
+        },
+        "width": {
+          "const": 256
+        },
+        "height": {
+          "const": 256
+        }
+      }
+    },
+    "profileDevice": {
+      "type": "object",
+      "required": [
+        "deviceId",
+        "platform",
+        "isCurrent",
+        "online"
+      ],
+      "properties": {
+        "deviceId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "platform": {
+          "enum": [
+            "macOS",
+            "Windows"
+          ]
+        },
+        "isCurrent": {
+          "type": "boolean"
+        },
+        "online": {
+          "type": "boolean"
+        }
+      }
+    },
+    "profileSnapshot": {
+      "type": "object",
+      "required": [
+        "sharedUserId",
+        "displayName",
+        "avatar",
+        "devices"
+      ],
+      "properties": {
+        "sharedUserId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/uuid"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "displayName": {
+          "$ref": "#/$defs/username"
+        },
+        "avatar": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/profileAvatar"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "devices": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "$ref": "#/$defs/profileDevice"
+          }
+        }
+      }
+    },
+    "profileRename": {
+      "type": "object",
+      "required": [
+        "displayName"
+      ],
+      "properties": {
+        "displayName": {
+          "$ref": "#/$defs/username"
+        }
+      }
+    },
+    "pairingClaimant": {
+      "type": "object",
+      "required": [
+        "deviceId",
+        "platform"
+      ],
+      "properties": {
+        "deviceId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "platform": {
+          "enum": [
+            "macOS",
+            "Windows"
+          ]
+        }
+      }
+    },
+    "pairingSnapshot": {
+      "type": "object",
+      "required": [
+        "id",
+        "state",
+        "expiresAt"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "state": {
+          "enum": [
+            "waiting",
+            "pending",
+            "approved",
+            "cancelled",
+            "expired"
+          ]
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "code": {
+          "type": "string",
+          "pattern": "^[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$"
+        },
+        "claimant": {
+          "$ref": "#/$defs/pairingClaimant"
+        }
+      }
+    }
+  }
+}

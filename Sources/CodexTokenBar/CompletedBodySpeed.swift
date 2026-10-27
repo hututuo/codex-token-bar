@@ -37,6 +37,8 @@ struct CompletedBodyAssembler: Sendable {
         var end: Double?
         var at: Double
         var phase: String? = nil
+        var ownedByOrdinal = false
+        var bornOwn = false
     }
     var currentTurn = ""
     var models: [String: String] = [:]
@@ -97,8 +99,8 @@ struct CompletedBodyAssembler: Sendable {
         if type == "event_msg", p["type"] as? String == "item_completed",
            let item = p["item"] as? [String: Any], (item["type"] as? String)?.lowercased() == "agentmessage",
            let id = item["id"] as? String, !id.isEmpty,
-           let start = Self.milliseconds(p["started_at_ms"]),
-           let end = Self.milliseconds(p["completed_at_ms"]),
+           let start = Self.milliseconds(p["started_at_ms"]) ?? Self.milliseconds(item["started_at_ms"]),
+           let end = Self.milliseconds(p["completed_at_ms"]) ?? Self.milliseconds(item["completed_at_ms"]),
            start.isFinite, end.isFinite, start > 0, end > start {
             part = Part(turn: turn, item: id, start: start / 1000, end: end / 1000, at: at, phase: item["phase"] as? String)
         } else if type == "response_item", p["type"] as? String == "message", p["role"] as? String == "assistant",
@@ -108,25 +110,36 @@ struct CompletedBodyAssembler: Sendable {
             guard !text.isEmpty, text.utf8.count <= 1_048_576 else { return nil }
             part = Part(turn: turn, item: id, text: text, at: at, phase: p["phase"] as? String)
         } else { return nil }
-        if let boundary = inheritedBoundary {
+        let ordinalOwn = inheritedBoundary.map { boundary in
             let own = ownership.paginatedOwnStartOrdinal ?? boundary
-            let ordinalOwn = PaginatedHistoryBoundary.unsigned(root["ordinal"]).map { $0 >= own } == true
-            let bornOwn = childCreatedMS.flatMap { created in PaginatedHistoryBoundary.uuidMilliseconds(turn).map { $0 >= created } } == true
+            return PaginatedHistoryBoundary.unsigned(root["ordinal"]).map { $0 >= own } == true
+        } ?? false
+        let bornOwn = childCreatedMS.flatMap { created in
+            PaginatedHistoryBoundary.uuidMilliseconds(turn).map { $0 >= created }
+        } == true
+        if inheritedBoundary != nil {
             guard ordinalOwn || bornOwn else { return nil }
+        } else if hasFork {
+            let timestampOwn = createdAt.map { at >= $0 } == true
+            guard timestampOwn || bornOwn else { return nil }
         }
-        if hasFork, let createdAt, at < createdAt { return nil }
+        part.ownedByOrdinal = ordinalOwn
+        part.bornOwn = bornOwn
         let key = "\(turn)/\(part.item)"
         if let old = pending[key] {
             part.text = part.text ?? old.text
             part.start = part.start ?? old.start
             part.end = part.end ?? old.end
             part.phase = part.phase ?? old.phase
+            part.ownedByOrdinal = part.ownedByOrdinal || old.ownedByOrdinal
+            part.bornOwn = part.bornOwn || old.bornOwn
         }
         // Bound by timestamps as well as entry/byte counts; no reply content is persisted.
         pending = pending.filter { $0.value.at >= max(now - 3600, at - 600) }
         if let text = part.text, let start = part.start, let end = part.end {
             pending.removeValue(forKey: key)
-            guard end >= now - 1800, end <= now + 2, end > start, !hasFork || createdAt.map({ start >= $0 }) != false else { return nil }
+            guard end >= now - 30 * 86400, end <= now + 2, end > start,
+                  !hasFork || createdAt.map({ start >= $0 }) != false || part.ownedByOrdinal || part.bornOwn else { return nil }
             let tokens = try tokenizer(text), duration = end - start
             guard tokens > 0 else { return nil }
             var sample = ObservedSpeedSample(id: "body/\(thread)/\(key)", threadID: thread, turnID: turn, itemID: part.item,
@@ -159,22 +172,51 @@ actor CompletedBodySpeedReader {
         var discardPartial = false
         var boundary: Data?
     }
-    struct Result: Sendable { var samples: [String: [ObservedSpeedSample]] = [:]; var error: String? }
+    struct Result: Sendable {
+        /// Complete retained snapshot for existing reader callers.
+        var samples: [String: [ObservedSpeedSample]] = [:]
+        /// New or not-yet-accepted samples, keyed by rollout path.
+        var pendingSamplesByPath: [String: [ObservedSpeedSample]] = [:]
+        /// Highest revision represented by each pending sample batch.
+        var revisionsByPath: [String: UInt64] = [:]
+        var error: String?
+    }
+    private struct PendingSample: Sendable {
+        let revision: UInt64
+        let sample: ObservedSpeedSample
+    }
     private var states: [String: State] = [:]
     private var encoder: CoreBpe?
     private var recent: [String: [ObservedSpeedSample]] = [:]
+    private var sampleRevisionsByPath: [String: UInt64] = [:]
+    private var pendingSamplesByPath: [String: [PendingSample]] = [:]
+    private var lastPrunedAt: Double?
     private func boundary(_ handle: FileHandle, at offset: UInt64) throws -> Data {
         let count = min(offset, 128)
         try handle.seek(toOffset: offset - count)
-        return try handle.read(upToCount: Int(count)) ?? Data()
+        return try handle.readShared(upToCount: Int(count), probe: true)
     }
-    func read(options: [LiveThreadOption], now: Double) -> Result {
+    func read(
+        options: [LiveThreadOption],
+        now: Double,
+        acceptedRevisions: [String: UInt64] = [:]
+    ) -> Result {
         var result = Result()
+        // Acknowledge only revisions the main actor committed after source validation.
+        // If rollout parsing or poll application failed, the caller keeps its older
+        // revision and these samples are returned again on the next read.
+        for (path, acceptedRevision) in acceptedRevisions {
+            guard let pending = pendingSamplesByPath[path] else { continue }
+            let remaining = pending.filter { $0.revision > acceptedRevision }
+            if remaining.isEmpty { pendingSamplesByPath.removeValue(forKey: path) }
+            else { pendingSamplesByPath[path] = remaining }
+        }
         do {
             if encoder == nil { encoder = try BodySpeedTokenizer.load() }
             guard let encoder else { return result }
             var budget = 64 * 1_048_576
             var seen: Set<String> = []
+            var recentIDsByPath: [String: Set<String>] = [:]
             for option in options.sorted(by: { $0.updatedAtMS > $1.updatedAtMS }).prefix(64) where budget > 0 {
                 guard let path = option.normalizedRolloutPath, seen.insert(path).inserted,
                       let attrs = try? FileManager.default.attributesOfItem(atPath: path),
@@ -182,7 +224,7 @@ actor CompletedBodySpeedReader {
                       let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) else { continue }
                 defer { try? handle.close() }
                 if states[path] == nil, let modified = attrs[.modificationDate] as? Date,
-                   modified.timeIntervalSince1970 < now - 1800 { continue }
+                   modified.timeIntervalSince1970 < now - 30 * 86400 { continue }
                 let identity = "\(attrs[.systemNumber] ?? "")/\(attrs[.systemFileNumber] ?? "")"
                 var state = states[path] ?? State()
                 let changedBoundary = size >= state.offset && state.boundary != nil
@@ -190,7 +232,7 @@ actor CompletedBodySpeedReader {
                 if state.identity != identity || size < state.offset || changedBoundary {
                     state = State(); state.identity = identity
                     // Read only the header for ownership; do not scan inherited history.
-                    let head = try handle.read(upToCount: 64 * 1024) ?? Data()
+                    let head = try handle.readShared(upToCount: 64 * 1024, probe: true)
                     if let newline = head.firstIndex(of: 10),
                        let root = try? JSONSerialization.jsonObject(with: head[..<newline]) as? [String: Any],
                        let payload = root["payload"] as? [String: Any] { state.assembler.configure(metadata: payload) }
@@ -200,7 +242,7 @@ actor CompletedBodySpeedReader {
                 guard size > state.offset else { states[path] = state; continue }
                 try handle.seek(toOffset: state.offset)
                 let amount = min(budget, 8 * 1_048_576, Int(size - state.offset))
-                let data = try handle.read(upToCount: amount) ?? Data()
+                let data = try handle.readShared(upToCount: amount)
                 budget -= data.count
                 guard let last = data.lastIndex(of: 10) else {
                     // A corrupt giant line is skipped within the fixed budget, not retained forever.
@@ -212,7 +254,17 @@ actor CompletedBodySpeedReader {
                 if start <= last {
                     for line in data[start...last].split(separator: 10) {
                         if let sample = state.assembler.consume(Data(line), thread: option.id, now: now, tokenizer: { encoder.encodeOrdinary(text: $0).count }) {
-                            if recent[path]?.contains(where: { $0.id == sample.id }) != true { recent[path, default: []].append(sample) }
+                            if recentIDsByPath[path] == nil {
+                                recentIDsByPath[path] = Set(recent[path, default: []].map(\.id))
+                            }
+                            if recentIDsByPath[path, default: []].insert(sample.id).inserted {
+                                recent[path, default: []].append(sample)
+                                let revision = sampleRevisionsByPath[path, default: 0] &+ 1
+                                sampleRevisionsByPath[path] = revision
+                                pendingSamplesByPath[path, default: []].append(
+                                    PendingSample(revision: revision, sample: sample)
+                                )
+                            }
                         }
                     }
                 }
@@ -220,11 +272,26 @@ actor CompletedBodySpeedReader {
                 state.boundary = try boundary(handle, at: state.offset)
                 states[path] = state
             }
-            for path in Array(recent.keys) {
-                recent[path] = Array((recent[path] ?? []).filter { $0.endedAt >= now - 1800 }.suffix(2_000))
-                if recent[path]?.isEmpty == true { recent.removeValue(forKey: path) }
+            // Expiring and capping every retained sample list on every poll made an
+            // idle reader repeatedly scan the full 30-day cache. Prune at most once
+            // per minute; a backwards wall-clock adjustment must never trigger an
+            // early expiration pass.
+            if now.isFinite, lastPrunedAt.map({ now >= $0 && now - $0 >= 60 }) ?? true {
+                let cutoff = now - 30 * 86400
+                for path in Array(recent.keys) {
+                    let retained = Array((recent[path] ?? []).filter { $0.endedAt >= cutoff }.suffix(2_000))
+                    if retained.isEmpty { recent.removeValue(forKey: path) }
+                    else { recent[path] = retained }
+                    let retainedIDs = Set(retained.map(\.id))
+                    let pending = (pendingSamplesByPath[path] ?? []).filter { retainedIDs.contains($0.sample.id) }
+                    if pending.isEmpty { pendingSamplesByPath.removeValue(forKey: path) }
+                    else { pendingSamplesByPath[path] = pending }
+                }
+                lastPrunedAt = now
             }
             result.samples = recent
+            result.pendingSamplesByPath = pendingSamplesByPath.mapValues { $0.map(\.sample) }
+            result.revisionsByPath = pendingSamplesByPath.compactMapValues { $0.last?.revision }
             if states.count > 128 { states = states.filter { seen.contains($0.key) } }
         } catch { result.error = "正文测速暂不可用：\(error.localizedDescription)" }
         return result

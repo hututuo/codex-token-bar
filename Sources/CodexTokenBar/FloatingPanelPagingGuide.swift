@@ -96,6 +96,10 @@ struct FloatingPanelPagingGuide: View {
     let modelTargetY: CGFloat
     let modelTargetWidth: CGFloat
     let onAdvance: () -> Void
+    @State private var animationVisible = false
+    @State private var lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private var pausesAnimation: Bool { !AnimationActivity.runs(visible: animationVisible, reducedMotion: reduceMotion, lowPower: lowPower) }
     @State private var arrowCueEmphasized = false
     @State private var arrowCueFadeTask: Task<Void, Never>?
     @State private var completionTriggered = false
@@ -125,6 +129,10 @@ struct FloatingPanelPagingGuide: View {
                 }
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
+        }
+        .background(AnimationVisibilityProbe { if animationVisible != $0 { animationVisible = $0 } })
+        .onReceive(NotificationCenter.default.publisher(for: .NSProcessInfoPowerStateDidChange)) { _ in
+            lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
         }
         .onAppear {
             refreshArrowCueEmphasis(isVisible: showsArrowGlyphs)
@@ -268,7 +276,7 @@ struct FloatingPanelPagingGuide: View {
             .position(x: modelTargetX, y: modelTargetY)
             .allowsHitTesting(false)
 
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: pausesAnimation)) { context in
             let phase = context.date.timeIntervalSinceReferenceDate
                 .truncatingRemainder(dividingBy: 1.6) / 1.6
             let pressing = phase > 0.52 && phase < 0.72
@@ -404,7 +412,7 @@ struct FloatingPanelPagingGuide: View {
     }
 
     private func animatedPointer(in size: CGSize, targetY: CGFloat) -> some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: pausesAnimation)) { context in
             let motion = pointerMotion(at: context.date)
             let targetX = max(0, surfaceWidth / 2 - 24.scaled(by: scale))
             Image(systemName: "cursorarrow.click.2")

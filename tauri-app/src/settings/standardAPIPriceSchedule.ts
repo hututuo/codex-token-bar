@@ -1,3 +1,6 @@
+import bundled from "../../../Vendor/AgentSpeed/spec/assets/prices.json" with { type: "json" };
+import history from "../../../Sources/CodexTokenBar/Resources/standard-api-price-history.json" with { type: "json" };
+
 /** Input, cached-input, and output rates for one million standard API tokens.
  * Local Codex usage does not expose cache writes separately. This module keeps
  * historical prices independent from quotaPriceModel.ts. */
@@ -16,11 +19,10 @@ export interface StandardAPIPriceQuote {
 
 export type StandardAPIEventTime = Date | number | string;
 
+const newestHistory = [...history.rows].reverse();
+const currentModels = new Map(bundled.models.map(model => [model.id, model]));
+
 export const STANDARD_API_PRICE_SCHEDULE_REVISION = "standard-api-dated-v3";
-const GPT61_SOL_CUTOVER_UNIX = Date.UTC(2026, 8, 29) / 1000;
-const GPT6_SOL_AND_LUNA_CUTOVER_UNIX = Date.UTC(2026, 8, 22) / 1000;
-const SOL_CUTOVER_UNIX = Date.UTC(2026, 7, 21) / 1000;
-const TERRA_AND_LUNA_CUTOVER_UNIX = Date.UTC(2026, 6, 30) / 1000;
 
 /**
  * Normalize aliases while keeping the canonical model spelling independent of
@@ -103,67 +105,23 @@ export function standardAPIPriceQuote(
   const eventUnix = standardAPIEventTimeUnix(eventTime);
   if (!modelKey || eventUnix === null) return null;
 
-  switch (modelKey) {
-    case "gpt-6-astra":
-      return fixedQuote(modelKey, { inputUSDPerMillion: 10, cachedInputUSDPerMillion: 1, outputUSDPerMillion: 50 }, "standard-api-gpt-6-astra");
-    case "gpt-6.1-sol":
-      return eventUnix < GPT61_SOL_CUTOVER_UNIX
-        ? null
-        : fixedQuote(modelKey, { inputUSDPerMillion: 2, cachedInputUSDPerMillion: 0.1, outputUSDPerMillion: 10 }, "standard-api-gpt-6.1-sol-from-2026-09-29");
-    case "gpt-6-sol":
-      return eventUnix < GPT6_SOL_AND_LUNA_CUTOVER_UNIX
-        ? null
-        : fixedQuote(modelKey, { inputUSDPerMillion: 2, cachedInputUSDPerMillion: 0.2, outputUSDPerMillion: 10 }, "standard-api-gpt-6-sol-from-2026-09-22");
-    case "gpt-6-luna":
-      return eventUnix < GPT6_SOL_AND_LUNA_CUTOVER_UNIX
-        ? null
-        : fixedQuote(modelKey, { inputUSDPerMillion: 0.1, cachedInputUSDPerMillion: 0.01, outputUSDPerMillion: 0.5 }, "standard-api-gpt-6-luna-from-2026-09-22");
-    case "gpt-5.5":
-      return fixedQuote(modelKey, { inputUSDPerMillion: 5, cachedInputUSDPerMillion: 0.5, outputUSDPerMillion: 30 }, "standard-api-gpt-5.5");
-    case "gpt-5.6-sol":
-      return eventUnix < SOL_CUTOVER_UNIX
-        ? fixedQuote(modelKey, { inputUSDPerMillion: 5, cachedInputUSDPerMillion: 0.5, outputUSDPerMillion: 30 }, "standard-api-gpt-5.6-sol-before-2026-08-21")
-        : fixedQuote(modelKey, { inputUSDPerMillion: 4, cachedInputUSDPerMillion: 0.4, outputUSDPerMillion: 20 }, "standard-api-gpt-5.6-sol-from-2026-08-21");
-    case "gpt-5.6-terra":
-      return eventUnix < TERRA_AND_LUNA_CUTOVER_UNIX
-        ? fixedQuote(modelKey, { inputUSDPerMillion: 2.5, cachedInputUSDPerMillion: 0.25, outputUSDPerMillion: 15 }, "standard-api-gpt-5.6-terra-before-2026-07-30")
-        : fixedQuote(modelKey, { inputUSDPerMillion: 2, cachedInputUSDPerMillion: 0.2, outputUSDPerMillion: 12 }, "standard-api-gpt-5.6-terra-from-2026-07-30");
-    case "gpt-5.6-luna":
-      return eventUnix < TERRA_AND_LUNA_CUTOVER_UNIX
-        ? fixedQuote(modelKey, { inputUSDPerMillion: 1, cachedInputUSDPerMillion: 0.1, outputUSDPerMillion: 6 }, "standard-api-gpt-5.6-luna-before-2026-07-30")
-        : fixedQuote(modelKey, { inputUSDPerMillion: 0.2, cachedInputUSDPerMillion: 0.02, outputUSDPerMillion: 1.2 }, "standard-api-gpt-5.6-luna-from-2026-07-30");
-    case "gpt-5.3-codex":
-    case "gpt-5.2-codex":
-      return fixedQuote(modelKey, { inputUSDPerMillion: 1.75, cachedInputUSDPerMillion: 0.175, outputUSDPerMillion: 14 }, `standard-api-${modelKey}`);
-    case "gpt-5.4":
-      return fixedQuote(modelKey, { inputUSDPerMillion: 2.5, cachedInputUSDPerMillion: 0.25, outputUSDPerMillion: 15 }, "standard-api-gpt-5.4");
-    case "gpt-5.4-mini":
-      return fixedQuote(modelKey, { inputUSDPerMillion: 0.75, cachedInputUSDPerMillion: 0.075, outputUSDPerMillion: 4.5 }, "standard-api-gpt-5.4-mini");
-    default:
-      return null;
-  }
+  const row = newestHistory.find(row => row.modelKey === modelKey && (row.fromUnix ?? -Infinity) <= eventUnix);
+  return row ? fixedQuote(modelKey, { ...row.rates }, row.revision) : null;
 }
 
-/** Explicit current-price query, independent from historical event lookup. */
+/** Current rates use the same pinned asset as the multi-client price book. */
 export function currentStandardAPIPriceQuote(rawModel: string | null | undefined): StandardAPIPriceQuote | null {
   const modelKey = canonicalStandardAPIModelKey(rawModel);
   if (!modelKey) return null;
-  switch (modelKey) {
-    case "gpt-6.1-sol":
-      return standardAPIPriceQuote(modelKey, GPT61_SOL_CUTOVER_UNIX);
-    case "gpt-6-sol":
-    case "gpt-6-luna":
-      return standardAPIPriceQuote(modelKey, GPT6_SOL_AND_LUNA_CUTOVER_UNIX);
-    case "gpt-5.6-sol":
-      return fixedQuote(modelKey, { inputUSDPerMillion: 4, cachedInputUSDPerMillion: 0.4, outputUSDPerMillion: 20 }, "standard-api-gpt-5.6-sol-from-2026-08-21");
-    case "gpt-5.6-terra":
-      return fixedQuote(modelKey, { inputUSDPerMillion: 2, cachedInputUSDPerMillion: 0.2, outputUSDPerMillion: 12 }, "standard-api-gpt-5.6-terra-from-2026-07-30");
-    case "gpt-5.6-luna":
-      return fixedQuote(modelKey, { inputUSDPerMillion: 0.2, cachedInputUSDPerMillion: 0.02, outputUSDPerMillion: 1.2 }, "standard-api-gpt-5.6-luna-from-2026-07-30");
-    default:
-      // Fixed-price cards still require an explicit date in the historical API.
-      return standardAPIPriceQuote(modelKey, SOL_CUTOVER_UNIX);
-  }
+  const model = currentModels.get(modelKey);
+  const revision = newestHistory.find(row => row.modelKey === modelKey)?.revision;
+  if (!model || !('prices' in model) || !model.prices || !revision) return null;
+  const prices = model.prices;
+  return fixedQuote(modelKey, {
+    inputUSDPerMillion: prices.input,
+    cachedInputUSDPerMillion: 'cachedInput' in prices ? prices.cachedInput! : prices.input,
+    outputUSDPerMillion: prices.output,
+  }, revision);
 }
 
 function fixedQuote(modelKey: string, rates: StandardAPIPriceRates, revision: string): StandardAPIPriceQuote {

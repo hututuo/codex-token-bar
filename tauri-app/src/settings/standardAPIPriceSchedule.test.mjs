@@ -87,3 +87,19 @@ test("GPT-6.1 Sol has an independent September 29 card and narrow aliases", () =
   assert.equal(canonicalStandardAPIModelKey("gpt-6.1"), null);
   assert.equal(currentStandardAPIPriceQuote("gpt-6-sol").rates.cachedInputUSDPerMillion, 0.2);
 });
+
+
+test("all admitted current cards share vendor data while history is a frozen shared snapshot", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const pinned = JSON.parse(await readFile(new URL("../../../Vendor/AgentSpeed/spec/assets/prices.json", import.meta.url), "utf8"));
+  const history = JSON.parse(await readFile(new URL("../../../Sources/CodexTokenBar/Resources/standard-api-price-history.json", import.meta.url), "utf8"));
+  for (const id of new Set(history.rows.map(row => row.modelKey))) {
+    const base = pinned.models.find(row => row.id === id).prices;
+    const expected = { inputUSDPerMillion:base.input, cachedInputUSDPerMillion:base.cachedInput, outputUSDPerMillion:base.output };
+    assert.deepEqual(currentStandardAPIPriceQuote(id).rates, expected);
+    assert.deepEqual(standardAPIPriceQuote(id, "2026-10-26T00:00:00Z").rates, expected);
+  }
+  const quote = currentStandardAPIPriceQuote("gpt-6.1-sol");
+  quote.rates.inputUSDPerMillion = 999;
+  assert.equal(currentStandardAPIPriceQuote("gpt-6.1-sol").rates.inputUSDPerMillion, 2);
+});

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { CodexHomeSourceToken, QuotaAttributionIdentity, QuotaCycle, QuotaCycleUsage } from "../../types/dashboard";
 import { readQuotaCycles, readQuotaCycleUsage } from "../../api/dashboardClient";
 import { desktopPlatform } from "../../platform/desktop";
@@ -29,6 +29,7 @@ export function useQuotaCycleHistory(sourceToken: CodexHomeSourceToken | null, i
   const [detail, setDetail] = useState<{key: string; signature: string; boundaryKey: string;
     end: number; refreshKey: string; usage: QuotaCycleUsage}>();
   const [error, setError] = useState<{key: string; message: string}>();
+  const lastRepair = useRef<string | null>(null);
   const cycles = list?.key === key ? list.cycles : [];
   const selectedId = selection?.key === key ? selection.id : "current";
   const selected = (selectedId === "current" ? cycles[0] : cycles.find(c => c.id === selectedId)) ?? cycles[0];
@@ -64,7 +65,18 @@ export function useQuotaCycleHistory(sourceToken: CodexHomeSourceToken | null, i
         }
       }).catch(error => { if (!cancelled) {
         setDetail(undefined);
-        setError({key, message: String(error)});
+        const message = String(error);
+        setError({key, message});
+        // A retrospective correction can invalidate the displayed period
+        // between list and detail reads. Replay locally once per refresh;
+        // never request quota again or retry a mismatched period forever.
+        const repairKey = JSON.stringify([key, refreshKey]);
+        if (/额度周期.*已更新/.test(message) && lastRepair.current !== repairKey) {
+          lastRepair.current = repairKey;
+          readQuotaCycles(sourceToken, scope).then(cycles => {
+            if (!cancelled) setList({key, cycles});
+          }).catch(() => {});
+        }
       } });
     };
     read();

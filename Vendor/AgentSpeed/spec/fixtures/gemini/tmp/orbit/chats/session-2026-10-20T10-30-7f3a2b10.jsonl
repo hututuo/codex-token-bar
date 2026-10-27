@@ -1,0 +1,30 @@
+{"sessionId":"7f3a2b10-5c1d-4e2f-9a3b-0c4d5e6f7a8b","projectHash":"9c580b3e8282683f6e2d2dd375b662f2c94724cd108e55bf34ef4dc90231cb79","startTime":"2026-10-20T10:30:00.000Z","lastUpdated":"2026-10-20T10:30:00.000Z","kind":"main"}
+{"id":"a0a0a0a0-0000-4000-8000-000000000001","timestamp":"2026-10-20T10:30:05.000Z","type":"user","content":[{"text":"Refactor the config parser"}]}
+{"$set":{"lastUpdated":"2026-10-20T10:30:05.001Z"}}
+{"id":"a0a0a0a0-0000-4000-8000-000000000002","timestamp":"2026-10-20T10:30:11.000Z","type":"gemini","content":"","thoughts":[{"subject":"Locating the parser","description":"Working through locating the parser.","timestamp":"2026-10-20T10:30:10.990Z"}],"tokens":{"input":15000,"output":90,"cached":12288,"thoughts":410,"tool":0,"total":15500},"model":"gemini-3-pro-preview"}
+{"$set":{"lastUpdated":"2026-10-20T10:30:11.001Z"}}
+{"id":"a0a0a0a0-0000-4000-8000-000000000002","timestamp":"2026-10-20T10:30:11.000Z","type":"gemini","content":"","thoughts":[{"subject":"Locating the parser","description":"Working through locating the parser.","timestamp":"2026-10-20T10:30:10.990Z"}],"tokens":{"input":15000,"output":90,"cached":12288,"thoughts":410,"tool":0,"total":15500},"model":"gemini-3-pro-preview","toolCalls":[{"id":"read_file__k3f9","name":"read_file","args":{"file_path":"src/config.ts"},"result":[{"functionResponse":{"id":"read_file__k3f9","name":"read_file","response":{"output":"ok"}}}],"status":"success","timestamp":"2026-10-20T10:30:12.400Z","displayName":"read_file","description":"","renderOutputAsMarkdown":false}]}
+{"id":"a0a0a0a0-0000-4000-8000-000000000003","timestamp":"2026-10-20T10:30:12.420Z","type":"user","content":[{"functionResponse":{"id":"read_file__k3f9","name":"read_file","response":{"output":"export function parseConfig() {}"}}}]}
+{"$set":{"lastUpdated":"2026-10-20T10:30:12.421Z"}}
+{"id":"a0a0a0a0-0000-4000-8000-000000000004","timestamp":"2026-10-20T10:30:20.000Z","type":"gemini","content":"Here is the plan: split parseConfig into lexer and validator.","thoughts":[],"tokens":{"input":16200,"output":640,"cached":15000,"thoughts":160,"tool":96,"total":17096},"model":"gemini-3-pro-preview"}
+{"$set":{"lastUpdated":"2026-10-20T10:30:20.001Z"}}
+{"id":"a0a0a0a0-0000-4000-8000-000000000004","timestamp":"2026-10-20T10:30:20.000Z","type":"gemini","content":"Here is the plan: split parseConfig into lexer and validator.","thoughts":[],"tokens":{"input":16200,"output":640,"cached":15000,"thoughts":160,"tool":96,"total":17096},"model":"gemini-3-pro-preview"}
+{"id":"a0a0a0a0-0000-4000-8000-000000000002","timestamp":"2026-10-20T10:30:11.000Z","type":"gemini","content":"","thoughts":[{"subject":"Locating the parser","description":"Working through locating the parser.","timestamp":"2026-10-20T10:30:10.990Z"}],"tokens":{"input":15000,"output":90,"cached":12288,"thoughts":410,"tool":0,"total":15500},"model":"gemini-3-pro-preview","toolCalls":[{"id":"read_file__k3f9","name":"read_file","args":{"file_path":"src/config.ts"},"result":[{"functionResponse":{"id":"read_file__k3f9","name":"read_file","response":{"output":"[masked]"}}}],"status":"success","timestamp":"2026-10-20T10:30:12.400Z","displayName":"read_file","description":"","renderOutputAsMarkdown":false}]}
+{"$set":{"directories":["C:\\Users\\dev\\projects\\orbit"]}}
+{"id":"a0a0a0a0-0000-4000-8000-000000000005","timestamp":"2026-10-20T10:31:00.000Z","type":"user","content":[{"text":"Go ahead"}]}
+{"$set":{"lastUpdated":"2026-10-20T10:31:00.001Z"}}
+{"$patch":{"updates":[{"id":"a0a0a0a0-0000-4000-8000-000000000003","content":[{"functionResponse":{"id":"read_file__k3f9","name":"read_file","response":{"output":"[masked]"}}}]}]}}
+{"id":"a0a0a0a0-0000-4000-8000-000000000006","timestamp":"2026-10-20T10:31:02.500Z","type":"info","content":"Request cancelled."}
+{"$set":{"lastUpdated":"2026-10-20T10:31:02.501Z"}}
+{"$rewindTo":"a0a0a0a0-0000-4000-8000-000000000005"}
+{"id":"a0a0a0a0-0000-4000-8000-000000000009","timestamp":"2026-10-20T10:31:30.000Z","type":"user","content":[{"text":"Go ahead, keep the public API"}]}
+{"$set":{"lastUpdated":"2026-10-20T10:31:30.001Z"}}
+{"$rewindTo":"a0a0a0a0-0000-4000-8000-000000000009"}
+{"id":"a0a0a0a0-0000-4000-8000-000000000010","timestamp":"2026-10-20T10:31:41.000Z","type":"error","content":"[API Error: 500 Internal error encountered.]"}
+{"$set":{"lastUpdated":"2026-10-20T10:31:41.001Z"}}
+{"id":"a0a0a0a0-0000-4000-8000-000000000011","timestamp":"2026-10-20T10:31:50.000Z","type":"user","content":[{"text":"Retry"}]}
+{"$patch":{"updates":[{"id":"a0a0a0a0-0000-4000-8000-000000000003","content":[{"functionResponse":{"id":"read_file__k3f9","name":"read_file","response":{"output":"[masked]"}}}]}],"removeIds":["a0a0a0a0-0000-4000-8000-000000000011"]}}
+{"id":"a0a0a0a0-0000-4000-8000-000000000007","timestamp":"2026-10-20T10:32:00.000Z","type":"user","content":[{"text":"Apply only the first change; use sub-agents for the call sites"}]}
+{"$set":{"lastUpdated":"2026-10-20T10:32:00.001Z"}}
+{"id":"a0a0a0a0-0000-4000-8000-000000000008","timestamp":"2026-10-20T10:32:07.000Z","type":"gemini","content":"","thoughts":[],"tokens":{"input":17000,"output":120,"cached":16384,"thoughts":300,"tool":0,"total":17420},"model":"gemini-3-pro-preview"}
+{"$set":{"lastUpdated":"2026-10-20T10:32:07.002Z"}}

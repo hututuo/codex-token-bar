@@ -345,10 +345,12 @@ function modelRow(model, totalTokens) {
 
 test("sidebar receives every latest per-model reading through compact snapshot without truncation", () => {
   const latest = Array.from({ length: 12 }, (_, i) => ({ model: `model-${i}`, tokensPerSecond: 40 + i, sampleCount: 1, lastMeasuredAt: 5000 - i }));
+  const average5 = latest.map(s => ({ ...s, tokensPerSecond: 45, sampleCount: 1 }));
   const average15 = latest.map(s => ({ ...s, tokensPerSecond: 30, sampleCount: 2 }));
   const average30 = latest.map(s => ({ ...s, tokensPerSecond: 35, sampleCount: 4 }));
-  const result = floatingSnapshotForLiveRate(liveRateSnapshot({ latestModelSpeeds30m: latest, modelSpeeds15m: average15, modelSpeeds30m: average30 }), null);
+  const result = floatingSnapshotForLiveRate(liveRateSnapshot({ latestModelSpeeds30m: latest, modelSpeeds5m: average5, modelSpeeds15m: average15, modelSpeeds30m: average30 }), null);
   assert.deepEqual(result.latestModelSpeeds30m, latest);
+  assert.deepEqual(result.modelSpeeds5m, average5);
   assert.deepEqual(result.modelSpeeds15m, average15);
   assert.deepEqual(result.modelSpeeds30m, average30);
 });

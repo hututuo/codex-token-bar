@@ -12,9 +12,11 @@ struct CacheUsageSample: Sendable {
     var model: String?
     var context = false
     var reset = false
+    var establishedContext = false
     var input: UInt64?
     var cached: UInt64?
     var total: UInt64?
+    var requestTotal: UInt64?
     var requestID: String?
 
     static func parse(object: [String: Any], payload: [String: Any], timestamp: TimeInterval) -> Self? {
@@ -35,6 +37,7 @@ struct CacheUsageSample: Sendable {
             .compactMap { $0 as? String }.first { !$0.isEmpty }
         return Self(timestamp: timestamp, input: integer(last?["input_tokens"]),
                     cached: integer(last?["cached_input_tokens"]), total: integer(total?["total_tokens"]),
+                    requestTotal: integer(last?["total_tokens"]),
                     requestID: requestID)
     }
 
@@ -77,6 +80,7 @@ struct CacheUsageAdviceTracker {
         var advice: CacheUsageAdvice?
         var touched: TimeInterval = 0
         var hasObservedRequest = false
+        var awaitingFirstAfterContextReset = false
     }
     private var states: [String: State] = [:]
 
@@ -85,18 +89,32 @@ struct CacheUsageAdviceTracker {
     mutating func consume(_ sample: CacheUsageSample, threadID: String, now: TimeInterval,
                           monotonic _: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         guard CacheMissReminderFeature.isEnabled else { states.removeAll(); return }
-        if sample.reset { reset(threadID: threadID); return }
+        if sample.establishedContext {
+            var state = states[threadID] ?? State()
+            state.hasObservedRequest = true
+            state.awaitingFirstAfterContextReset = false
+            state.advice = nil
+            state.touched = now
+            states[threadID] = state
+            pruneStates()
+            return
+        }
+        if sample.reset {
+            let model = states[threadID]?.model
+            states[threadID] = State(model: model, touched: now, awaitingFirstAfterContextReset: true)
+            pruneStates()
+            return
+        }
         var state = states[threadID] ?? State()
         defer {
             state.touched = now
             states[threadID] = state
-            if states.count > 64, let oldest = states.min(by: { $0.value.touched < $1.value.touched })?.key {
-                states.removeValue(forKey: oldest)
-            }
+            pruneStates()
         }
         if sample.context {
             if state.model != sample.model {
-                state = State(model: sample.model, hasObservedRequest: state.hasObservedRequest)
+                state = State(model: sample.model, hasObservedRequest: state.hasObservedRequest,
+                              awaitingFirstAfterContextReset: state.awaitingFirstAfterContextReset)
             }
             return
         }
@@ -121,11 +139,24 @@ struct CacheUsageAdviceTracker {
         }
         state.total = sample.total ?? state.total
         let ratio = Double(cached) / Double(input)
-        // The first request in a new or compacted context cannot have a warm cache.
-        let low = state.hasObservedRequest && input >= 20_000 && ratio < 0.3
+        // A fresh server settlement can prove prior requests even when this
+        // monitor has just started. A compaction explicitly starts a cold context.
+        let hasPriorUsage = sample.requestTotal.map { request in
+            request >= input && sample.total.map { $0 > request } == true
+        } ?? false
+        let isEstablishedContext = (state.hasObservedRequest || hasPriorUsage)
+            && !state.awaitingFirstAfterContextReset
+        let low = isEstablishedContext && input >= 20_000 && ratio < 0.3
         state.hasObservedRequest = true
+        state.awaitingFirstAfterContextReset = false
         state.advice = CacheUsageAdvice(threadID: threadID, hitRate: ratio, low: low, timestamp: sample.timestamp,
             model: state.model)
+    }
+
+    private mutating func pruneStates() {
+        if states.count > 64, let oldest = states.min(by: { $0.value.touched < $1.value.touched })?.key {
+            states.removeValue(forKey: oldest)
+        }
     }
 
     func latest(now: TimeInterval, threadID: String? = nil) -> CacheUsageAdvice? {

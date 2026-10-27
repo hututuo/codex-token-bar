@@ -211,3 +211,10 @@ export function readQuotaCycles(sourceToken: CodexHomeSourceToken, expectedScope
 export function readQuotaCycleUsage(sourceToken: CodexHomeSourceToken, expectedScope: string, cycleId: string) {
   return callCommandStrict<import("../types/quota").QuotaCycleUsage>("read_quota_cycle_usage", { sourceToken, expectedScope, cycleId }, null);
 }
+
+/** Bounded read of retained request rows. Does not scan or synchronize rollouts. */
+export function readCacheTurnRequests(
+  sourceToken: CodexHomeSourceToken, turnId: string, offset = 0, limit = 101,
+): Promise<import("../types/usage").CacheRequestUsage[]> {
+  return callCommandStrict("read_cache_turn_requests", { sourceToken, turnId, offset, limit }, null);
+}

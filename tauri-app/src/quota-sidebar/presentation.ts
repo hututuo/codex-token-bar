@@ -1,12 +1,12 @@
 /** Hidden details retain the newest reference without serializing/broadcasting it. */
-export function createSidebarPublisher<T>(send: (value: T) => void) {
+export function createSidebarPublisher<T>(send: (value: T | null) => void) {
   let latest: T | null = null;
   let visible = false;
   let sent: T | null = null;
   return {
     update(value: T, nextVisible: boolean) {
       latest = value;
-      if (!nextVisible) { visible = false; sent = null; return; }
+      if (!nextVisible) { if (visible) send(null); visible = false; sent = null; return; }
       const changed = !visible || sent !== value;
       visible = true;
       if (changed) { sent = value; send(value); }

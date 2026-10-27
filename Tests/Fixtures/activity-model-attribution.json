@@ -1,0 +1,166 @@
+[
+  {
+    "name": "switch-keeps-old-tail",
+    "now": 10000,
+    "responses": [
+      {
+        "id": "old",
+        "agent": "a1",
+        "source": "codex",
+        "model": "old-model",
+        "start": 7000,
+        "end": 9000,
+        "input": 60,
+        "output": 120
+      }
+    ],
+    "agents": [
+      {
+        "id": "a1",
+        "source": "codex",
+        "model": "new-model",
+        "start": 9000,
+        "last": 10000
+      }
+    ],
+    "expected": [
+      {
+        "source": "codex",
+        "model": "old-model",
+        "output": 40,
+        "total": 60
+      },
+      {
+        "source": "codex",
+        "model": "new-model",
+        "output": 20,
+        "total": 30
+      }
+    ]
+  },
+  {
+    "name": "same-model-across-sources-and-unknown",
+    "now": 3000,
+    "responses": [
+      {
+        "id": "c",
+        "agent": "c",
+        "source": "codex",
+        "model": "same",
+        "start": 0,
+        "end": 3000,
+        "input": 0,
+        "output": 90
+      },
+      {
+        "id": "k",
+        "agent": "k",
+        "source": "claudeCode",
+        "model": "same",
+        "start": 0,
+        "end": 3000,
+        "input": 0,
+        "output": 60
+      },
+      {
+        "id": "u",
+        "agent": "u",
+        "source": "claudeCode",
+        "model": null,
+        "start": 0,
+        "end": 3000,
+        "input": 0,
+        "output": 30
+      }
+    ],
+    "agents": [],
+    "expected": [
+      {
+        "source": "codex",
+        "model": "same",
+        "output": 30,
+        "total": 30
+      },
+      {
+        "source": "claudeCode",
+        "model": "same",
+        "output": 20,
+        "total": 20
+      },
+      {
+        "source": "claudeCode",
+        "model": null,
+        "output": 10,
+        "total": 10
+      }
+    ]
+  },
+  {
+    "name": "unfinalized-retains-response-model",
+    "now": 10000,
+    "responses": [
+      {
+        "id": "ref",
+        "agent": "a1",
+        "source": "claudeCode",
+        "model": "old-model",
+        "start": 0,
+        "end": 4000,
+        "input": 0,
+        "output": 200
+      },
+      {
+        "id": "pending",
+        "agent": "a1",
+        "source": "claudeCode",
+        "model": "pending-model",
+        "start": 7000,
+        "end": 9000,
+        "input": 0,
+        "output": 8,
+        "final": false
+      }
+    ],
+    "agents": [
+      {
+        "id": "a1",
+        "source": "claudeCode",
+        "model": "current-model",
+        "start": 9000,
+        "last": 10000
+      }
+    ],
+    "expected": [
+      {
+        "source": "claudeCode",
+        "model": "pending-model",
+        "output": 33.333333333333336,
+        "total": 33.333333333333336
+      },
+      {
+        "source": "claudeCode",
+        "model": "current-model",
+        "output": 16.666666666666668,
+        "total": 16.666666666666668
+      }
+    ]
+  },
+  {
+    "name": "zero-token-response-has-no-speed-segment",
+    "now": 3000,
+    "responses": [
+      {
+        "id": "z",
+        "agent": "z",
+        "source": "codex",
+        "model": "zero",
+        "start": 0,
+        "end": 3000,
+        "input": 0,
+        "output": 0
+      }
+    ],
+    "agents": [],
+    "expected": []
+  }
+]

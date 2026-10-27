@@ -60,7 +60,7 @@ struct SQLiteStatement {
               let value = sqlite3_column_text(raw, column) else {
             return nil
         }
-        return String(cString: value)
+        return String(decoding: UnsafeBufferPointer(start: value, count: Int(sqlite3_column_bytes(raw, column))), as: UTF8.self)
     }
 
     func data(_ column: Int32) -> Data? {
@@ -652,6 +652,8 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
     private let enableWAL: Bool
     private let fileManager: FileManager
     private let consistency: SQLiteConnectionConsistency
+    private let businessStore: BusinessSQLiteStore?
+    var backingURL: URL { businessStore?.containerURL ?? url }
 
     init(
         url: URL,
@@ -660,9 +662,11 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
         busyTimeoutMilliseconds: Int32 = 3_000,
         enableWAL: Bool = false,
         fileManager: FileManager = .default,
-        consistency: SQLiteConnectionConsistency = .ordinary
+        consistency: SQLiteConnectionConsistency = .ordinary,
+        bypassBusinessRoutes: Bool = false
     ) {
         self.url = url
+        self.businessStore = bypassBusinessRoutes ? nil : BusinessSQLiteRoutes.store(for: url)
         self.readOnly = readOnly
         self.createsFileIfMissing = createsFileIfMissing
         self.busyTimeoutMilliseconds = busyTimeoutMilliseconds
@@ -738,15 +742,40 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
     private func withUncoordinatedConnection<T>(
         _ body: (SQLiteDatabaseConnection) throws -> T
     ) throws -> T {
+        let openURL = backingURL
+        if let businessStore {
+            guard BusinessSQLiteRoutes.store(for: url) == businessStore else {
+                throw SQLiteDatabaseError(operation: "Open module", code: SQLITE_ABORT,
+                    message: "Module route changed; refusing a stale writer", path: url.path)
+            }
+            let activeContainer = try BusinessSQLiteRoutes.validateActiveContainer(openURL)
+            // Only the startup gate may create/replace A. If it disappears,
+            // recreating an empty file here would lose every other module.
+            guard fileManager.fileExists(atPath: openURL.path) else {
+                throw SQLiteDatabaseError(operation: "Open unified ledger", code: SQLITE_CANTOPEN,
+                    message: "Unified ledger is missing; refusing to recreate it", path: openURL.path)
+            }
+            if !readOnly, createsFileIfMissing, !BusinessSQLiteRoutes.isRegistered(businessStore) {
+                if fileManager.fileExists(atPath: url.path), !(try BusinessStoreFiles.isRetiredLegacyStage(businessStore)) {
+                    throw BusinessDatabaseMigration.Failure.unmigratedInput(url.path)
+                }
+                if activeContainer { try BusinessStoreFiles.registerInActiveContainer(businessStore) }
+                else {
+                    try CodexBusinessDatabase(url: openURL).register(businessStore,
+                        state: businessStore.module == "exact.swift.stage" ? "staging" : "ready")
+                }
+                BusinessSQLiteRoutes.didRegister(businessStore)
+            }
+        }
         if !readOnly, createsFileIfMissing {
             try fileManager.createDirectory(
-                at: url.deletingLastPathComponent(),
+                at: openURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
         }
         if !createsFileIfMissing {
             var isDirectory: ObjCBool = false
-            let exists = fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory)
+            let exists = businessStore != nil ? BusinessSQLiteRoutes.exists(url, fileManager: fileManager) : fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory)
             guard exists, !isDirectory.boolValue else {
                 throw SQLiteDatabaseError(
                     operation: "Open SQLite database",
@@ -760,14 +789,14 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
         let flags: Int32
         if readOnly {
             flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
-        } else if createsFileIfMissing {
+        } else if createsFileIfMissing, businessStore == nil {
             flags = SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
         } else {
             flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
         }
 
         var database: OpaquePointer?
-        let status = sqlite3_open_v2(url.path, &database, flags, nil)
+        let status = sqlite3_open_v2(openURL.path, &database, flags | SQLITE_OPEN_URI, nil)
         guard status == SQLITE_OK, let database else {
             let message = database.map { Self.message(from: $0) } ?? "Unable to open database"
             let errorCode = database.map { Self.extendedErrorCode(from: $0, fallback: status) } ?? status
@@ -788,7 +817,13 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
         sqlite3_extended_result_codes(database, 1)
         sqlite3_busy_timeout(database, busyTimeoutMilliseconds)
 
-        let connection = SQLiteDatabaseConnection(database: database, path: url.path)
+        let connection = SQLiteDatabaseConnection(database: database, path: openURL.path)
+        if let businessStore {
+            // Changing temp_store deletes all TEMP schema objects. Configure
+            // it before installing the logical catalog, never afterwards.
+            try connection.execute("PRAGMA temp_store=FILE")
+            try connection.installBusinessStore(businessStore)
+        }
         if enableWAL, !readOnly {
             try connection.execute("PRAGMA journal_mode=WAL;")
             try connection.execute("PRAGMA synchronous=NORMAL;")
@@ -999,6 +1034,8 @@ final class CodexStateDatabaseReadPool: @unchecked Sendable {
 final class SQLiteDatabaseConnection: DatabaseAccessing {
     private let database: OpaquePointer?
     private let path: String?
+    var rawDatabase: OpaquePointer? { database }
+    var businessBinding: SQLiteStoreBinding?
 
     fileprivate init(database: OpaquePointer?, path: String?) {
         self.database = database
@@ -1010,6 +1047,7 @@ final class SQLiteDatabaseConnection: DatabaseAccessing {
         bindings: [SQLiteBinding] = [],
         map: (SQLiteStatement) throws -> T
     ) throws -> [T] {
+        let sql = try businessBinding?.sql(sql) ?? sql
         var statement: OpaquePointer?
         let prepareStatus = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
         guard prepareStatus == SQLITE_OK else {
@@ -1037,6 +1075,7 @@ final class SQLiteDatabaseConnection: DatabaseAccessing {
         bindings: [SQLiteBinding] = [],
         _ body: (SQLiteStatement) throws -> Void
     ) throws {
+        let sql = try businessBinding?.sql(sql) ?? sql
         var statement: OpaquePointer?
         let prepareStatus = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
         guard prepareStatus == SQLITE_OK else {
@@ -1068,6 +1107,15 @@ final class SQLiteDatabaseConnection: DatabaseAccessing {
     }
 
     func execute(_ sql: String, bindings: [SQLiteBinding] = []) throws {
+        if let binding = businessBinding, try Self.isScopedVacuumBackup(sql) {
+            let target: String?
+            if case .text(let value)? = bindings.first { target = value }
+            else { target = try SQLiteStoreNamespace.tokens(sql).first { $0.kind == .string }?.value }
+            guard let target else { throw BusinessStoreError.invalidStore }
+            try CodexBusinessDatabase.export(binding.store, to: URL(fileURLWithPath: target))
+            return
+        }
+        let sql = try businessBinding?.sql(sql) ?? sql
         if bindings.isEmpty {
             var rawError: UnsafeMutablePointer<Int8>?
             let status = sqlite3_exec(database, sql, nil, nil, &rawError)
@@ -1095,8 +1143,12 @@ final class SQLiteDatabaseConnection: DatabaseAccessing {
     }
 
     func executeChangedRows(_ sql: String, bindings: [SQLiteBinding] = []) throws -> Int {
+        let sql = try businessBinding?.sql(sql) ?? sql
         if bindings.isEmpty {
             let before = sqlite3_total_changes(database)
+            let binding = businessBinding
+            businessBinding = nil
+            defer { businessBinding = binding }
             try execute(sql)
             return Int(sqlite3_total_changes(database) - before)
         }
@@ -1157,6 +1209,7 @@ final class SQLiteDatabaseConnection: DatabaseAccessing {
     }
 
     func prepare(_ sql: String) throws -> SQLitePreparedStatement {
+        let sql = try businessBinding?.sql(sql) ?? sql
         var statement: OpaquePointer?
         let status = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
         guard status == SQLITE_OK else {
@@ -1165,7 +1218,33 @@ final class SQLiteDatabaseConnection: DatabaseAccessing {
         return SQLitePreparedStatement(database: database, path: path, statement: statement)
     }
 
+    private static func isScopedVacuumBackup(_ sql: String) throws -> Bool {
+        let words = try SQLiteStoreNamespace.tokens(sql).filter { $0.kind != .trivia }.map { $0.value.uppercased() }
+        return words.first == "VACUUM" && words.contains("INTO")
+    }
+
     func restoreDatabase(from sourceURL: URL) throws {
+        if let binding = businessBinding {
+            guard sqlite3_get_autocommit(database) != 0 else {
+                throw SQLiteDatabaseError(operation: "Restore module", code: SQLITE_MISUSE,
+                    message: "Module restore must run outside an active transaction", path: path)
+            }
+            if BusinessSQLiteRoutes.store(for: sourceURL) == binding.store { return }
+            let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("tokenbar-store-copy-\(UUID().uuidString).sqlite")
+            let snapshot: URL
+            if let sourceStore = BusinessSQLiteRoutes.store(for: sourceURL) {
+                try CodexBusinessDatabase.export(sourceStore, to: temporary); snapshot = temporary
+            } else { snapshot = sourceURL }
+            defer { try? FileManager.default.removeItem(at: temporary) }
+            _ = try CodexBusinessDatabase(url: binding.store.containerURL).importSnapshot(snapshot, into: binding.store, backupURL: sourceURL, replaceExisting: true)
+            businessBinding = nil
+            try installBusinessStore(binding.store)
+            return
+        }
+        if let sourceStore = BusinessSQLiteRoutes.store(for: sourceURL) {
+            try CodexBusinessDatabase.export(sourceStore, to: self)
+            return
+        }
         var source: OpaquePointer?
         let openStatus = sqlite3_open_v2(
             sourceURL.path,
@@ -1224,7 +1303,11 @@ final class SQLiteDatabaseConnection: DatabaseAccessing {
                     }
                 }
             case .text(let value):
-                status = sqlite3_bind_text(statement, index, value, -1, sqliteTransient)
+                let byteCount = value.utf8.count
+                guard byteCount <= Int(Int32.max) else {
+                    throw error(operation: "Bind SQLite text", code: SQLITE_TOOBIG)
+                }
+                status = value.withCString { sqlite3_bind_text(statement, index, $0, Int32(byteCount), sqliteTransient) }
             case .int(let value):
                 status = sqlite3_bind_int64(statement, index, sqlite3_int64(value))
             case .int64(let value):

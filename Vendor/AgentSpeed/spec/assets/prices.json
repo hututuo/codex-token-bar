@@ -1,0 +1,4664 @@
+{
+  "_comment": "API list prices for API-equivalent costs (METRICS 9). USD per million tokens. Edit by hand: raise version by one, set updated and each changed entry's checked date, add tests for new id forms, run python3 spec/tools/prices.py. Apps sync this file from main daily (spec/NETWORK.md).",
+  "schema": 1,
+  "version": 2,
+  "updated": "2026-10-24",
+  "currency": "USD",
+  "unit": "perMillionTokens",
+  "providers": {
+    "anthropic": {
+      "name": "Anthropic",
+      "url": "https://platform.claude.com/docs/en/about-claude/pricing"
+    },
+    "openai": {
+      "name": "OpenAI",
+      "url": "https://developers.openai.com/api/docs/pricing"
+    },
+    "google": {
+      "name": "Google",
+      "url": "https://ai.google.dev/gemini-api/docs/pricing"
+    },
+    "xai": {
+      "name": "xAI",
+      "url": "https://docs.x.ai/developers/pricing"
+    },
+    "mistral": {
+      "name": "Mistral AI",
+      "url": "https://mistral.ai/pricing"
+    },
+    "deepseek": {
+      "name": "DeepSeek",
+      "url": "https://api-docs.deepseek.com/quick_start/pricing"
+    },
+    "moonshot": {
+      "name": "Moonshot AI (Kimi)",
+      "url": "https://platform.kimi.ai/docs/pricing/chat"
+    },
+    "alibaba": {
+      "name": "Alibaba Cloud (Qwen)",
+      "url": "https://www.alibabacloud.com/help/en/model-studio/model-pricing"
+    },
+    "zhipu": {
+      "name": "Z.ai (GLM)",
+      "url": "https://docs.z.ai/guides/overview/pricing"
+    },
+    "minimax": {
+      "name": "MiniMax",
+      "url": "https://platform.minimax.io/docs/pricing/overview"
+    },
+    "tencent": {
+      "name": "Tencent Cloud (Hunyuan)",
+      "url": "https://www.tencentcloud.com/document/product/1300/78937"
+    },
+    "opencode": {
+      "name": "OpenCode Zen",
+      "url": "https://opencode.ai/docs/zen"
+    }
+  },
+  "normalize": {
+    "freeProviders": [
+      "ollama",
+      "lmstudio",
+      "lm-studio",
+      "llama.cpp",
+      "llamacpp",
+      "vllm",
+      "local"
+    ],
+    "cloudSuffixes": [
+      "-cloud",
+      ":cloud"
+    ],
+    "bedrockRegions": [
+      "global",
+      "us",
+      "eu",
+      "apac",
+      "jp",
+      "au",
+      "ca",
+      "in",
+      "us-gov"
+    ],
+    "bedrockVendors": [
+      "anthropic",
+      "openai",
+      "google",
+      "meta",
+      "mistral",
+      "deepseek",
+      "qwen",
+      "moonshotai",
+      "minimax",
+      "zai",
+      "xai",
+      "amazon"
+    ],
+    "freeSuffixes": [
+      ":free",
+      "-free"
+    ],
+    "variantSuffixes": [
+      ":thinking",
+      ":extended",
+      ":nitro",
+      ":floor",
+      ":exacto",
+      ":online"
+    ],
+    "fastSuffixes": [
+      "-fast"
+    ],
+    "rewrites": [
+      {
+        "prefix": "duo-chat-opus-",
+        "to": "claude-opus-"
+      },
+      {
+        "prefix": "duo-chat-sonnet-",
+        "to": "claude-sonnet-"
+      },
+      {
+        "prefix": "duo-chat-haiku-",
+        "to": "claude-haiku-"
+      }
+    ],
+    "dateSuffixPrefixes": [
+      "claude-"
+    ],
+    "modifierSuffixes": [
+      {
+        "prefix": "claude-",
+        "suffixes": [
+          "-thinking",
+          "-minimal",
+          "-low",
+          "-medium",
+          "-high",
+          "-xhigh",
+          "-max",
+          "-none",
+          "-off"
+        ]
+      },
+      {
+        "prefix": "gemini-",
+        "suffixes": [
+          "-low",
+          "-medium",
+          "-high",
+          "-tiered"
+        ]
+      },
+      {
+        "prefix": "deepseek-",
+        "suffixes": [
+          "-sg",
+          "-volc",
+          "-lkeap",
+          "-taiji"
+        ]
+      }
+    ],
+    "dotHyphenPrefixes": [
+      "claude-"
+    ]
+  },
+  "models": [
+    {
+      "id": "claude-opus-5-5",
+      "provider": "anthropic",
+      "name": "Claude Opus 5.5",
+      "status": "current",
+      "prices": {
+        "input": 4,
+        "cachedInput": 0.2,
+        "cacheWrite": 5,
+        "cacheWrite1h": 8,
+        "output": 20
+      },
+      "fast": {
+        "prices": {
+          "input": 8,
+          "cachedInput": 0.4,
+          "cacheWrite": 10,
+          "cacheWrite1h": 16,
+          "output": 40
+        }
+      },
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "checked": "2026-10-22",
+      "note": "Cache read is 0.05x input. Fast-mode cache prices derived from the fast input price with the standard cache multipliers (fast-mode page)."
+    },
+    {
+      "id": "claude-opus-5",
+      "provider": "anthropic",
+      "name": "Claude Opus 5",
+      "status": "legacy",
+      "prices": {
+        "input": 5,
+        "cachedInput": 0.5,
+        "cacheWrite": 6.25,
+        "cacheWrite1h": 10,
+        "output": 25
+      },
+      "fast": {
+        "prices": {
+          "input": 10,
+          "cachedInput": 1,
+          "cacheWrite": 12.5,
+          "cacheWrite1h": 20,
+          "output": 50
+        }
+      },
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "claude-opus-4-8",
+      "provider": "anthropic",
+      "name": "Claude Opus 4.8",
+      "status": "legacy",
+      "prices": {
+        "input": 5,
+        "cachedInput": 0.5,
+        "cacheWrite": 6.25,
+        "cacheWrite1h": 10,
+        "output": 25
+      },
+      "fast": {
+        "prices": {
+          "input": 10,
+          "cachedInput": 1,
+          "cacheWrite": 12.5,
+          "cacheWrite1h": 20,
+          "output": 50
+        }
+      },
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "claude-opus-4-7",
+      "provider": "anthropic",
+      "name": "Claude Opus 4.7",
+      "status": "legacy",
+      "prices": {
+        "input": 5,
+        "cachedInput": 0.5,
+        "cacheWrite": 6.25,
+        "cacheWrite1h": 10,
+        "output": 25
+      },
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "claude-opus-4-6",
+      "provider": "anthropic",
+      "name": "Claude Opus 4.6",
+      "status": "legacy",
+      "prices": {
+        "input": 5,
+        "cachedInput": 0.5,
+        "cacheWrite": 6.25,
+        "cacheWrite1h": 10,
+        "output": 25
+      },
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "claude-opus-4-5",
+      "provider": "anthropic",
+      "name": "Claude Opus 4.5",
+      "status": "legacy",
+      "prices": {
+        "input": 5,
+        "cachedInput": 0.5,
+        "cacheWrite": 6.25,
+        "cacheWrite1h": 10,
+        "output": 25
+      },
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "claude-opus-4-1",
+      "provider": "anthropic",
+      "name": "Claude Opus 4.1",
+      "status": "retired",
+      "prices": {
+        "input": 15,
+        "cachedInput": 1.5,
+        "cacheWrite": 18.75,
+        "cacheWrite1h": 30,
+        "output": 75
+      },
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "claude-opus-4",
+      "provider": "anthropic",
+      "name": "Claude Opus 4",
+      "status": "retired",
+      "prices": {
+        "input": 15,
+        "cachedInput": 1.5,
+        "cacheWrite": 18.75,
+        "cacheWrite1h": 30,
+        "output": 75
+      },
+      "aliases": [
+        "claude-opus-4-0"
+      ],
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "claude-fable-5-1",
+      "provider": "anthropic",
+      "name": "Claude Fable 5.1",
+      "status": "current",
+      "prices": {
+        "input": 10,
+        "cachedInput": 0.25,
+        "cacheWrite": 12.5,
+        "cacheWrite1h": 20,
+        "output": 50
+      },
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "claude-fable-5",
+      "provider": "anthropic",
+      "name": "Claude Fable 5",
+      "status": "legacy",
+      "prices": {
+        "input": 10,
+        "cachedInput": 1,
+        "cacheWrite": 12.5,
+        "cacheWrite1h": 20,
+        "output": 50
+      },
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "claude-mythos-5-1",
+      "provider": "anthropic",
+      "name": "Claude Mythos 5.1",
+      "status": "current",
+      "prices": {
+        "input": 10,
+        "cachedInput": 0.25,
+        "cacheWrite": 12.5,
+        "cacheWrite1h": 20,
+        "output": 50
+      },
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "checked": "2026-10-22",
+      "note": "Limited availability."
+    },
+    {
+      "id": "claude-mythos-5",
+      "provider": "anthropic",
+      "name": "Claude Mythos 5",
+      "status": "current",
+      "prices": {
+        "input": 10,
+        "cachedInput": 1,
+        "cacheWrite": 12.5,
+        "cacheWrite1h": 20,
+        "output": 50
+      },
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "checked": "2026-10-22",
+      "note": "Limited availability."
+    },
+    {
+      "id": "claude-sonnet-5-5",
+      "provider": "anthropic",
+      "name": "Claude Sonnet 5.5",
+      "status": "current",
+      "prices": {
+        "input": 2,
+        "cachedInput": 0.1,
+        "cacheWrite": 2.5,
+        "cacheWrite1h": 4,
+        "output": 10
+      },
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "checked": "2026-10-22",
+      "note": "Cache read is 0.05x input."
+    },
+    {
+      "id": "claude-sonnet-5",
+      "provider": "anthropic",
+      "name": "Claude Sonnet 5",
+      "status": "legacy",
+      "prices": {
+        "input": 2,
+        "cachedInput": 0.2,
+        "cacheWrite": 2.5,
+        "cacheWrite1h": 4,
+        "output": 10
+      },
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "checked": "2026-10-22",
+      "note": "The $2/$10 launch price was made permanent."
+    },
+    {
+      "id": "claude-sonnet-4-6",
+      "provider": "anthropic",
+      "name": "Claude Sonnet 4.6",
+      "status": "legacy",
+      "prices": {
+        "input": 3,
+        "cachedInput": 0.3,
+        "cacheWrite": 3.75,
+        "cacheWrite1h": 6,
+        "output": 15
+      },
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "claude-sonnet-4-5",
+      "provider": "anthropic",
+      "name": "Claude Sonnet 4.5",
+      "status": "deprecated",
+      "prices": {
+        "input": 3,
+        "cachedInput": 0.3,
+        "cacheWrite": 3.75,
+        "cacheWrite1h": 6,
+        "output": 15
+      },
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "checked": "2026-10-22",
+      "note": "The former >200K long-context price of the 1M-context beta is no longer published and is not modeled."
+    },
+    {
+      "id": "claude-sonnet-4",
+      "provider": "anthropic",
+      "name": "Claude Sonnet 4",
+      "status": "retired",
+      "prices": {
+        "input": 3,
+        "cachedInput": 0.3,
+        "cacheWrite": 3.75,
+        "cacheWrite1h": 6,
+        "output": 15
+      },
+      "aliases": [
+        "claude-sonnet-4-0"
+      ],
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "claude-haiku-5-5",
+      "provider": "anthropic",
+      "name": "Claude Haiku 5.5",
+      "status": "current",
+      "prices": {
+        "input": 0.1,
+        "cachedInput": 0.01,
+        "cacheWrite": 0.125,
+        "cacheWrite1h": 0.2,
+        "output": 0.5
+      },
+      "tiers": [
+        {
+          "above": 100000,
+          "input": 0.5,
+          "cachedInput": 0.05,
+          "cacheWrite": 0.625,
+          "cacheWrite1h": 1,
+          "output": 2.5
+        }
+      ],
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "checked": "2026-10-22",
+      "note": "Prompts over 100,000 input tokens (cache reads and writes included) are billed entirely at the long-context price."
+    },
+    {
+      "id": "claude-haiku-4-5",
+      "provider": "anthropic",
+      "name": "Claude Haiku 4.5",
+      "status": "legacy",
+      "prices": {
+        "input": 1,
+        "cachedInput": 0.1,
+        "cacheWrite": 1.25,
+        "cacheWrite1h": 2,
+        "output": 5
+      },
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "claude-3-7-sonnet",
+      "provider": "anthropic",
+      "name": "Claude Sonnet 3.7",
+      "status": "retired",
+      "prices": {
+        "input": 3,
+        "cachedInput": 0.3,
+        "cacheWrite": 3.75,
+        "cacheWrite1h": 6,
+        "output": 15
+      },
+      "aliases": [
+        "claude-3-7-sonnet-latest"
+      ],
+      "source": "https://www.anthropic.com/news/claude-3-7-sonnet",
+      "checked": "2026-10-22",
+      "note": "Cache prices derived from the standard multipliers."
+    },
+    {
+      "id": "claude-3-5-sonnet",
+      "provider": "anthropic",
+      "name": "Claude Sonnet 3.5",
+      "status": "retired",
+      "prices": {
+        "input": 3,
+        "cachedInput": 0.3,
+        "cacheWrite": 3.75,
+        "cacheWrite1h": 6,
+        "output": 15
+      },
+      "aliases": [
+        "claude-3-5-sonnet-latest"
+      ],
+      "source": "https://www.anthropic.com/news/claude-3-5-sonnet",
+      "checked": "2026-10-22",
+      "note": "Both snapshots (20240620, 20241022) have this price."
+    },
+    {
+      "id": "claude-3-5-haiku",
+      "provider": "anthropic",
+      "name": "Claude Haiku 3.5",
+      "status": "retired",
+      "prices": {
+        "input": 0.8,
+        "cachedInput": 0.08,
+        "cacheWrite": 1,
+        "cacheWrite1h": 1.6,
+        "output": 4
+      },
+      "aliases": [
+        "claude-3-5-haiku-latest"
+      ],
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "claude-3-opus",
+      "provider": "anthropic",
+      "name": "Claude Opus 3",
+      "status": "retired",
+      "prices": {
+        "input": 15,
+        "cachedInput": 1.5,
+        "cacheWrite": 18.75,
+        "cacheWrite1h": 30,
+        "output": 75
+      },
+      "aliases": [
+        "claude-3-opus-latest"
+      ],
+      "source": "https://www.anthropic.com/news/claude-3-family",
+      "checked": "2026-10-22",
+      "note": "Cache prices derived from the standard multipliers."
+    },
+    {
+      "id": "claude-3-haiku",
+      "provider": "anthropic",
+      "name": "Claude Haiku 3",
+      "status": "retired",
+      "prices": {
+        "input": 0.25,
+        "cachedInput": 0.025,
+        "cacheWrite": 0.3125,
+        "cacheWrite1h": 0.5,
+        "output": 1.25
+      },
+      "source": "https://www.anthropic.com/news/claude-3-family",
+      "checked": "2026-10-22",
+      "note": "Cache prices derived from the standard multipliers."
+    },
+    {
+      "id": "claude-3-sonnet",
+      "provider": "anthropic",
+      "name": "Claude Sonnet 3",
+      "status": "retired",
+      "prices": {
+        "input": 3,
+        "cachedInput": 0.3,
+        "cacheWrite": 3.75,
+        "cacheWrite1h": 6,
+        "output": 15
+      },
+      "source": "https://www.anthropic.com/news/claude-3-family",
+      "checked": "2026-10-22",
+      "note": "Cache prices derived from the standard multipliers."
+    },
+    {
+      "id": "gpt-6-astra",
+      "provider": "openai",
+      "name": "GPT-6 Astra",
+      "status": "current",
+      "prices": {
+        "input": 10,
+        "cachedInput": 1,
+        "cacheWrite": 12.5,
+        "output": 50
+      },
+      "tiers": [
+        {
+          "above": 272000,
+          "input": 20,
+          "cachedInput": 2,
+          "cacheWrite": 25,
+          "output": 75
+        }
+      ],
+      "fast": {
+        "prices": {
+          "input": 20,
+          "cachedInput": 2,
+          "cacheWrite": 25,
+          "output": 100
+        },
+        "tiers": [
+          {
+            "above": 272000,
+            "input": 40,
+            "cachedInput": 4,
+            "cacheWrite": 50,
+            "output": 150
+          }
+        ]
+      },
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22",
+      "note": "Cache writes (30-minute lifetime) cost 1.25x input; 12-hour writes (2.5x) are not separated in logs and are priced as 30-minute writes."
+    },
+    {
+      "id": "gpt-6.1-sol",
+      "provider": "openai",
+      "name": "GPT-6.1 Sol",
+      "status": "current",
+      "prices": {
+        "input": 2,
+        "cachedInput": 0.1,
+        "cacheWrite": 2.5,
+        "output": 10
+      },
+      "tiers": [
+        {
+          "above": 272000,
+          "input": 4,
+          "cachedInput": 0.2,
+          "cacheWrite": 5,
+          "output": 15
+        }
+      ],
+      "fast": {
+        "prices": {
+          "input": 4,
+          "cachedInput": 0.2,
+          "cacheWrite": 5,
+          "output": 20
+        },
+        "tiers": [
+          {
+            "above": 272000,
+            "input": 8,
+            "cachedInput": 0.4,
+            "cacheWrite": 10,
+            "output": 30
+          }
+        ]
+      },
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gpt-6-sol",
+      "provider": "openai",
+      "name": "GPT-6 Sol",
+      "status": "current",
+      "prices": {
+        "input": 2,
+        "cachedInput": 0.2,
+        "cacheWrite": 2.5,
+        "output": 10
+      },
+      "tiers": [
+        {
+          "above": 272000,
+          "input": 4,
+          "cachedInput": 0.4,
+          "cacheWrite": 5,
+          "output": 15
+        }
+      ],
+      "fast": {
+        "prices": {
+          "input": 4,
+          "cachedInput": 0.4,
+          "cacheWrite": 5,
+          "output": 20
+        },
+        "tiers": [
+          {
+            "above": 272000,
+            "input": 8,
+            "cachedInput": 0.8,
+            "cacheWrite": 10,
+            "output": 30
+          }
+        ]
+      },
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gpt-6-luna",
+      "provider": "openai",
+      "name": "GPT-6 Luna",
+      "status": "current",
+      "prices": {
+        "input": 0.1,
+        "cachedInput": 0.01,
+        "cacheWrite": 0.125,
+        "output": 0.5
+      },
+      "tiers": [
+        {
+          "above": 272000,
+          "input": 0.2,
+          "cachedInput": 0.02,
+          "cacheWrite": 0.25,
+          "output": 0.75
+        }
+      ],
+      "fast": {
+        "prices": {
+          "input": 0.2,
+          "cachedInput": 0.02,
+          "cacheWrite": 0.25,
+          "output": 1
+        },
+        "tiers": [
+          {
+            "above": 272000,
+            "input": 0.4,
+            "cachedInput": 0.04,
+            "cacheWrite": 0.5,
+            "output": 1.5
+          }
+        ]
+      },
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gpt-5.6-sol",
+      "provider": "openai",
+      "name": "GPT-5.6 Sol",
+      "status": "current",
+      "prices": {
+        "input": 4,
+        "cachedInput": 0.4,
+        "cacheWrite": 5,
+        "output": 20
+      },
+      "tiers": [
+        {
+          "above": 272000,
+          "input": 8,
+          "cachedInput": 0.8,
+          "cacheWrite": 10,
+          "output": 30
+        }
+      ],
+      "fast": {
+        "prices": {
+          "input": 8,
+          "cachedInput": 0.8,
+          "cacheWrite": 10,
+          "output": 40
+        },
+        "tiers": [
+          {
+            "above": 272000,
+            "input": 16,
+            "cachedInput": 1.6,
+            "cacheWrite": 20,
+            "output": 60
+          }
+        ]
+      },
+      "periods": [
+        {
+          "to": "2026-08-21",
+          "prices": {
+            "input": 5,
+            "cachedInput": 0.5,
+            "cacheWrite": 6.25,
+            "output": 30
+          },
+          "tiers": [
+            {
+              "above": 272000,
+              "input": 10,
+              "cachedInput": 1,
+              "cacheWrite": 12.5,
+              "output": 45
+            }
+          ],
+          "note": "Before the 2026-08-21 price cut; derived from the changelog's percentages."
+        }
+      ],
+      "aliases": [
+        "gpt-5.6"
+      ],
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22",
+      "note": "Current price is promotional, announced to last at least until 2026-11-21."
+    },
+    {
+      "id": "gpt-5.6-terra",
+      "provider": "openai",
+      "name": "GPT-5.6 Terra",
+      "status": "current",
+      "prices": {
+        "input": 2,
+        "cachedInput": 0.2,
+        "cacheWrite": 2.5,
+        "output": 12
+      },
+      "tiers": [
+        {
+          "above": 272000,
+          "input": 4,
+          "cachedInput": 0.4,
+          "cacheWrite": 5,
+          "output": 18
+        }
+      ],
+      "fast": {
+        "prices": {
+          "input": 4,
+          "cachedInput": 0.4,
+          "cacheWrite": 5,
+          "output": 24
+        },
+        "tiers": [
+          {
+            "above": 272000,
+            "input": 8,
+            "cachedInput": 0.8,
+            "cacheWrite": 10,
+            "output": 36
+          }
+        ]
+      },
+      "periods": [
+        {
+          "to": "2026-07-30",
+          "prices": {
+            "input": 2.5,
+            "cachedInput": 0.25,
+            "cacheWrite": 3.125,
+            "output": 15
+          },
+          "tiers": [
+            {
+              "above": 272000,
+              "input": 5,
+              "cachedInput": 0.5,
+              "cacheWrite": 6.25,
+              "output": 22.5
+            }
+          ],
+          "note": "Before the 2026-07-30 price cut; derived from the changelog's percentages."
+        }
+      ],
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gpt-5.6-luna",
+      "provider": "openai",
+      "name": "GPT-5.6 Luna",
+      "status": "current",
+      "prices": {
+        "input": 0.2,
+        "cachedInput": 0.02,
+        "cacheWrite": 0.25,
+        "output": 1.2
+      },
+      "tiers": [
+        {
+          "above": 272000,
+          "input": 0.4,
+          "cachedInput": 0.04,
+          "cacheWrite": 0.5,
+          "output": 1.8
+        }
+      ],
+      "fast": {
+        "prices": {
+          "input": 0.4,
+          "cachedInput": 0.04,
+          "cacheWrite": 0.5,
+          "output": 2.4
+        },
+        "tiers": [
+          {
+            "above": 272000,
+            "input": 0.8,
+            "cachedInput": 0.08,
+            "cacheWrite": 1,
+            "output": 3.6
+          }
+        ]
+      },
+      "periods": [
+        {
+          "to": "2026-07-30",
+          "prices": {
+            "input": 1,
+            "cachedInput": 0.1,
+            "cacheWrite": 1.25,
+            "output": 6
+          },
+          "tiers": [
+            {
+              "above": 272000,
+              "input": 2,
+              "cachedInput": 0.2,
+              "cacheWrite": 2.5,
+              "output": 9
+            }
+          ],
+          "note": "Before the 2026-07-30 price cut; derived from the changelog's percentages."
+        }
+      ],
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gpt-5.6-cyber",
+      "provider": "openai",
+      "name": "GPT-5.6 Cyber",
+      "status": "current",
+      "prices": {
+        "input": 12.5,
+        "cachedInput": 1.25,
+        "cacheWrite": 15.625,
+        "output": 75
+      },
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22",
+      "note": "Limited access."
+    },
+    {
+      "id": "gpt-5.5",
+      "provider": "openai",
+      "name": "GPT-5.5",
+      "status": "current",
+      "prices": {
+        "input": 5,
+        "cachedInput": 0.5,
+        "output": 30
+      },
+      "tiers": [
+        {
+          "above": 272000,
+          "input": 10,
+          "cachedInput": 1,
+          "output": 45
+        }
+      ],
+      "fast": {
+        "prices": {
+          "input": 12.5,
+          "cachedInput": 1.25,
+          "output": 75
+        }
+      },
+      "aliases": [
+        "gpt-5.5-2026-04-23",
+        "gpt5.5"
+      ],
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22",
+      "note": "gpt5.5 is how a user's local proxy spelled it (assumed the same model)."
+    },
+    {
+      "id": "gpt-5.5-pro",
+      "provider": "openai",
+      "name": "GPT-5.5 Pro",
+      "status": "current",
+      "prices": {
+        "input": 30,
+        "output": 180
+      },
+      "tiers": [
+        {
+          "above": 272000,
+          "input": 60,
+          "output": 270
+        }
+      ],
+      "aliases": [
+        "gpt-5.5-pro-2026-04-23"
+      ],
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gpt-5.4",
+      "provider": "openai",
+      "name": "GPT-5.4",
+      "status": "current",
+      "prices": {
+        "input": 2.5,
+        "cachedInput": 0.25,
+        "output": 15
+      },
+      "tiers": [
+        {
+          "above": 272000,
+          "input": 5,
+          "cachedInput": 0.5,
+          "output": 22.5
+        }
+      ],
+      "fast": {
+        "prices": {
+          "input": 5,
+          "cachedInput": 0.5,
+          "output": 30
+        }
+      },
+      "aliases": [
+        "gpt-5.4-2026-03-05"
+      ],
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gpt-5.4-pro",
+      "provider": "openai",
+      "name": "GPT-5.4 Pro",
+      "status": "current",
+      "prices": {
+        "input": 30,
+        "output": 180
+      },
+      "tiers": [
+        {
+          "above": 272000,
+          "input": 60,
+          "output": 270
+        }
+      ],
+      "aliases": [
+        "gpt-5.4-pro-2026-03-05"
+      ],
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gpt-5.4-mini",
+      "provider": "openai",
+      "name": "GPT-5.4 mini",
+      "status": "current",
+      "prices": {
+        "input": 0.75,
+        "cachedInput": 0.075,
+        "output": 4.5
+      },
+      "fast": {
+        "prices": {
+          "input": 1.5,
+          "cachedInput": 0.15,
+          "output": 9
+        }
+      },
+      "aliases": [
+        "gpt-5.4-mini-2026-03-17"
+      ],
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gpt-5.4-nano",
+      "provider": "openai",
+      "name": "GPT-5.4 nano",
+      "status": "deprecated",
+      "prices": {
+        "input": 0.2,
+        "cachedInput": 0.02,
+        "output": 1.25
+      },
+      "aliases": [
+        "gpt-5.4-nano-2026-03-17"
+      ],
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gpt-5.3-codex",
+      "provider": "openai",
+      "name": "GPT-5.3-Codex",
+      "status": "deprecated",
+      "prices": {
+        "input": 1.75,
+        "cachedInput": 0.175,
+        "output": 14
+      },
+      "fast": {
+        "prices": {
+          "input": 3.5,
+          "cachedInput": 0.35,
+          "output": 28
+        }
+      },
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gpt-5.3-chat-latest",
+      "provider": "openai",
+      "name": "GPT-5.3 Chat",
+      "status": "retired",
+      "prices": {
+        "input": 1.75,
+        "cachedInput": 0.175,
+        "output": 14
+      },
+      "source": "https://developers.openai.com/api/docs/models/gpt-5.3-chat-latest",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gpt-5.2",
+      "provider": "openai",
+      "name": "GPT-5.2",
+      "status": "legacy",
+      "prices": {
+        "input": 1.75,
+        "cachedInput": 0.175,
+        "output": 14
+      },
+      "fast": {
+        "prices": {
+          "input": 3.5,
+          "cachedInput": 0.35,
+          "output": 28
+        }
+      },
+      "aliases": [
+        "gpt-5.2-2025-12-11"
+      ],
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gpt-5.2-pro",
+      "provider": "openai",
+      "name": "GPT-5.2 Pro",
+      "status": "legacy",
+      "prices": {
+        "input": 21,
+        "output": 168
+      },
+      "aliases": [
+        "gpt-5.2-pro-2025-12-11"
+      ],
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gpt-5.2-codex",
+      "provider": "openai",
+      "name": "GPT-5.2-Codex",
+      "status": "retired",
+      "prices": {
+        "input": 1.75,
+        "cachedInput": 0.175,
+        "output": 14
+      },
+      "source": "https://developers.openai.com/api/docs/models/gpt-5.2-codex",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gpt-5.2-chat-latest",
+      "provider": "openai",
+      "name": "GPT-5.2 Chat",
+      "status": "retired",
+      "prices": {
+        "input": 1.75,
+        "cachedInput": 0.175,
+        "output": 14
+      },
+      "source": "https://developers.openai.com/api/docs/models/gpt-5.2-chat-latest",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gpt-5.1",
+      "provider": "openai",
+      "name": "GPT-5.1",
+      "status": "deprecated",
+      "prices": {
+        "input": 1.25,
+        "cachedInput": 0.125,
+        "output": 10
+      },
+      "fast": {
+        "prices": {
+          "input": 2.5,
+          "cachedInput": 0.25,
+          "output": 20
+        }
+      },
+      "aliases": [
+        "gpt-5.1-2025-11-13"
+      ],
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gpt-5.1-codex",
+      "provider": "openai",
+      "name": "GPT-5.1-Codex",
+      "status": "retired",
+      "prices": {
+        "input": 1.25,
+        "cachedInput": 0.125,
+        "output": 10
+      },
+      "source": "https://developers.openai.com/api/docs/models/gpt-5.1-codex",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gpt-5.1-codex-max",
+      "provider": "openai",
+      "name": "GPT-5.1-Codex-Max",
+      "status": "retired",
+      "prices": {
+        "input": 1.25,
+        "cachedInput": 0.125,
+        "output": 10
+      },
+      "source": "https://developers.openai.com/api/docs/models/gpt-5.1-codex-max",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gpt-5.1-codex-mini",
+      "provider": "openai",
+      "name": "GPT-5.1-Codex mini",
+      "status": "retired",
+      "prices": {
+        "input": 0.25,
+        "cachedInput": 0.025,
+        "output": 2
+      },
+      "source": "https://developers.openai.com/api/docs/models/gpt-5.1-codex-mini",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gpt-5.1-chat-latest",
+      "provider": "openai",
+      "name": "GPT-5.1 Chat",
+      "status": "retired",
+      "prices": {
+        "input": 1.25,
+        "cachedInput": 0.125,
+        "output": 10
+      },
+      "source": "https://developers.openai.com/api/docs/models/gpt-5.1-chat-latest",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gpt-5",
+      "provider": "openai",
+      "name": "GPT-5",
+      "status": "deprecated",
+      "prices": {
+        "input": 1.25,
+        "cachedInput": 0.125,
+        "output": 10
+      },
+      "fast": {
+        "prices": {
+          "input": 2.5,
+          "cachedInput": 0.25,
+          "output": 20
+        }
+      },
+      "aliases": [
+        "gpt-5-2025-08-07"
+      ],
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gpt-5-codex",
+      "provider": "openai",
+      "name": "GPT-5-Codex",
+      "status": "retired",
+      "prices": {
+        "input": 1.25,
+        "cachedInput": 0.125,
+        "output": 10
+      },
+      "source": "https://developers.openai.com/api/docs/models/gpt-5-codex",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gpt-5-mini",
+      "provider": "openai",
+      "name": "GPT-5 mini",
+      "status": "deprecated",
+      "prices": {
+        "input": 0.25,
+        "cachedInput": 0.025,
+        "output": 2
+      },
+      "fast": {
+        "prices": {
+          "input": 0.45,
+          "cachedInput": 0.045,
+          "output": 3.6
+        }
+      },
+      "aliases": [
+        "gpt-5-mini-2025-08-07"
+      ],
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gpt-5-nano",
+      "provider": "openai",
+      "name": "GPT-5 nano",
+      "status": "deprecated",
+      "prices": {
+        "input": 0.05,
+        "cachedInput": 0.005,
+        "output": 0.4
+      },
+      "aliases": [
+        "gpt-5-nano-2025-08-07"
+      ],
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gpt-5-pro",
+      "provider": "openai",
+      "name": "GPT-5 Pro",
+      "status": "deprecated",
+      "prices": {
+        "input": 15,
+        "output": 120
+      },
+      "aliases": [
+        "gpt-5-pro-2025-10-06"
+      ],
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gpt-5-chat-latest",
+      "provider": "openai",
+      "name": "GPT-5 Chat",
+      "status": "retired",
+      "prices": {
+        "input": 1.25,
+        "cachedInput": 0.125,
+        "output": 10
+      },
+      "source": "https://developers.openai.com/api/docs/models/gpt-5-chat-latest",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "chat-latest",
+      "provider": "openai",
+      "name": "Chat Latest",
+      "status": "current",
+      "prices": {
+        "input": 5,
+        "cachedInput": 0.5,
+        "output": 30
+      },
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22",
+      "note": "Moving snapshot; priced like its current target."
+    },
+    {
+      "id": "codex-mini-latest",
+      "provider": "openai",
+      "name": "codex-mini-latest",
+      "status": "retired",
+      "prices": {
+        "input": 1.5,
+        "cachedInput": 0.375,
+        "output": 6
+      },
+      "source": "https://developers.openai.com/api/docs/models/codex-mini-latest",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "o3",
+      "provider": "openai",
+      "name": "o3",
+      "status": "deprecated",
+      "prices": {
+        "input": 2,
+        "cachedInput": 0.5,
+        "output": 8
+      },
+      "fast": {
+        "prices": {
+          "input": 3.5,
+          "cachedInput": 0.875,
+          "output": 14
+        }
+      },
+      "aliases": [
+        "o3-2025-04-16"
+      ],
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "o3-pro",
+      "provider": "openai",
+      "name": "o3-pro",
+      "status": "deprecated",
+      "prices": {
+        "input": 20,
+        "output": 80
+      },
+      "aliases": [
+        "o3-pro-2025-06-10"
+      ],
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "o4-mini",
+      "provider": "openai",
+      "name": "o4-mini",
+      "status": "deprecated",
+      "prices": {
+        "input": 1.1,
+        "cachedInput": 0.275,
+        "output": 4.4
+      },
+      "fast": {
+        "prices": {
+          "input": 2,
+          "cachedInput": 0.5,
+          "output": 8
+        }
+      },
+      "aliases": [
+        "o4-mini-2025-04-16"
+      ],
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "o3-mini",
+      "provider": "openai",
+      "name": "o3-mini",
+      "status": "deprecated",
+      "prices": {
+        "input": 1.1,
+        "cachedInput": 0.55,
+        "output": 4.4
+      },
+      "aliases": [
+        "o3-mini-2025-01-31"
+      ],
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "o1",
+      "provider": "openai",
+      "name": "o1",
+      "status": "deprecated",
+      "prices": {
+        "input": 15,
+        "cachedInput": 7.5,
+        "output": 60
+      },
+      "aliases": [
+        "o1-2024-12-17"
+      ],
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gpt-4.1",
+      "provider": "openai",
+      "name": "GPT-4.1",
+      "status": "deprecated",
+      "prices": {
+        "input": 2,
+        "cachedInput": 0.5,
+        "output": 8
+      },
+      "fast": {
+        "prices": {
+          "input": 3.5,
+          "cachedInput": 0.875,
+          "output": 14
+        }
+      },
+      "aliases": [
+        "gpt-4.1-2025-04-14"
+      ],
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gpt-4.1-mini",
+      "provider": "openai",
+      "name": "GPT-4.1 mini",
+      "status": "deprecated",
+      "prices": {
+        "input": 0.4,
+        "cachedInput": 0.1,
+        "output": 1.6
+      },
+      "fast": {
+        "prices": {
+          "input": 0.7,
+          "cachedInput": 0.175,
+          "output": 2.8
+        }
+      },
+      "aliases": [
+        "gpt-4.1-mini-2025-04-14"
+      ],
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gpt-4.1-nano",
+      "provider": "openai",
+      "name": "GPT-4.1 nano",
+      "status": "deprecated",
+      "prices": {
+        "input": 0.1,
+        "cachedInput": 0.025,
+        "output": 0.4
+      },
+      "fast": {
+        "prices": {
+          "input": 0.2,
+          "cachedInput": 0.05,
+          "output": 0.8
+        }
+      },
+      "aliases": [
+        "gpt-4.1-nano-2025-04-14"
+      ],
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gpt-4o",
+      "provider": "openai",
+      "name": "GPT-4o",
+      "status": "deprecated",
+      "prices": {
+        "input": 2.5,
+        "cachedInput": 1.25,
+        "output": 10
+      },
+      "fast": {
+        "prices": {
+          "input": 4.25,
+          "cachedInput": 2.125,
+          "output": 17
+        }
+      },
+      "aliases": [
+        "gpt-4o-2024-08-06",
+        "gpt-4o-2024-11-20"
+      ],
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gpt-4o-2024-05-13",
+      "provider": "openai",
+      "name": "GPT-4o (2024-05-13)",
+      "status": "deprecated",
+      "prices": {
+        "input": 5,
+        "output": 15
+      },
+      "fast": {
+        "prices": {
+          "input": 8.75,
+          "output": 26.25
+        }
+      },
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22",
+      "note": "A distinct snapshot with its own price."
+    },
+    {
+      "id": "gpt-4o-mini",
+      "provider": "openai",
+      "name": "GPT-4o mini",
+      "status": "deprecated",
+      "prices": {
+        "input": 0.15,
+        "cachedInput": 0.075,
+        "output": 0.6
+      },
+      "fast": {
+        "prices": {
+          "input": 0.25,
+          "cachedInput": 0.125,
+          "output": 1
+        }
+      },
+      "aliases": [
+        "gpt-4o-mini-2024-07-18"
+      ],
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gemini-4-argon",
+      "provider": "google",
+      "name": "Gemini 4 Argon",
+      "status": "current",
+      "prices": {
+        "input": 2,
+        "cachedInput": 0.1,
+        "output": 10
+      },
+      "periods": [
+        {
+          "from": "2026-12-01",
+          "prices": {
+            "input": 4,
+            "cachedInput": 0.2,
+            "output": 20
+          }
+        }
+      ],
+      "aliases": [
+        "gemini 4 argon (low)",
+        "gemini 4 argon (medium)",
+        "gemini 4 argon (high)",
+        "gemini 4 argon"
+      ],
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "checked": "2026-10-24",
+      "note": "Announced price change on 2026-12-01."
+    },
+    {
+      "id": "gemini-3.8-flash",
+      "provider": "google",
+      "name": "Gemini 3.8 Flash",
+      "status": "current",
+      "prices": {
+        "input": 0.75,
+        "cachedInput": 0.075,
+        "output": 3.75
+      },
+      "periods": [
+        {
+          "from": "2027-01-01",
+          "prices": {
+            "input": 1.5,
+            "cachedInput": 0.15,
+            "output": 7.5
+          }
+        }
+      ],
+      "aliases": [
+        "gemini 3.8 flash (low)",
+        "gemini 3.8 flash (medium)",
+        "gemini 3.8 flash (high)",
+        "gemini 3.8 flash"
+      ],
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "checked": "2026-10-24",
+      "note": "Announced price change on 2027-01-01."
+    },
+    {
+      "id": "gemini-3.7-flash",
+      "provider": "google",
+      "name": "Gemini 3.7 Flash",
+      "status": "deprecated",
+      "prices": {
+        "input": 0.75,
+        "cachedInput": 0.075,
+        "output": 3.75
+      },
+      "periods": [
+        {
+          "from": "2027-01-01",
+          "prices": {
+            "input": 1.5,
+            "cachedInput": 0.15,
+            "output": 7.5
+          }
+        }
+      ],
+      "aliases": [
+        "gemini 3.7 flash"
+      ],
+      "source": "https://web.archive.org/web/20261001035256/https://ai.google.dev/gemini-api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gemini-3.6-flash",
+      "provider": "google",
+      "name": "Gemini 3.6 Flash",
+      "status": "current",
+      "prices": {
+        "input": 0.75,
+        "cachedInput": 0.075,
+        "output": 3.75
+      },
+      "periods": [
+        {
+          "to": "2026-08-28",
+          "prices": {
+            "input": 1.5,
+            "cachedInput": 0.15,
+            "output": 7.5
+          },
+          "note": "Price before the introductory price; the switch happened between the 2026-08-01 and 2026-08-28 page snapshots (the later date is used)."
+        },
+        {
+          "from": "2027-01-01",
+          "prices": {
+            "input": 1.5,
+            "cachedInput": 0.15,
+            "output": 7.5
+          }
+        }
+      ],
+      "aliases": [
+        "gemini 3.6 flash"
+      ],
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gemini-3.5-flash",
+      "provider": "google",
+      "name": "Gemini 3.5 Flash",
+      "status": "deprecated",
+      "prices": {
+        "input": 1.5,
+        "cachedInput": 0.15,
+        "output": 9
+      },
+      "aliases": [
+        "gemini 3.5 flash"
+      ],
+      "source": "https://web.archive.org/web/20261001035256/https://ai.google.dev/gemini-api/docs/pricing",
+      "checked": "2026-10-22",
+      "note": "Deprecated 2026-10-08; calls now route to gemini-3.6-flash and Google does not say which rate applies."
+    },
+    {
+      "id": "gemini-3.5-flash-lite",
+      "provider": "google",
+      "name": "Gemini 3.5 Flash-Lite",
+      "status": "current",
+      "prices": {
+        "input": 0.3,
+        "cachedInput": 0.03,
+        "output": 2.5
+      },
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gemini-3.1-pro-preview",
+      "provider": "google",
+      "name": "Gemini 3.1 Pro Preview",
+      "status": "preview",
+      "prices": {
+        "input": 2,
+        "cachedInput": 0.2,
+        "output": 12
+      },
+      "tiers": [
+        {
+          "above": 200000,
+          "input": 4,
+          "cachedInput": 0.4,
+          "output": 18
+        }
+      ],
+      "aliases": [
+        "gemini-3.1-pro-preview-customtools",
+        "gemini-3-pro-preview",
+        "gemini-3.1-pro",
+        "gemini-3.1-pro-high-exp-b",
+        "gemini 3.1 pro (high)",
+        "gemini 3.1 pro (low)",
+        "gemini 3 pro (high)",
+        "gemini 3 pro (low)"
+      ],
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "checked": "2026-10-22",
+      "note": "Antigravity's Gemini 3.1 Pro is gemini-3.1-pro-preview (Enterprise docs); -high/-low are thinking levels at the same price. -exp-b is assumed to be a serving variant at the same price. gemini-3-pro-preview now points here at the same price."
+    },
+    {
+      "id": "gemini-3.1-flash-lite",
+      "provider": "google",
+      "name": "Gemini 3.1 Flash-Lite",
+      "status": "current",
+      "prices": {
+        "input": 0.25,
+        "cachedInput": 0.025,
+        "output": 1.5
+      },
+      "aliases": [
+        "gemini-3.1-flash-lite-preview"
+      ],
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gemini-3-flash-preview",
+      "provider": "google",
+      "name": "Gemini 3 Flash Preview",
+      "status": "preview",
+      "prices": {
+        "input": 0.5,
+        "cachedInput": 0.05,
+        "output": 3
+      },
+      "aliases": [
+        "gemini 3 flash"
+      ],
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gemini-2.5-pro",
+      "provider": "google",
+      "name": "Gemini 2.5 Pro",
+      "status": "legacy",
+      "prices": {
+        "input": 1.25,
+        "cachedInput": 0.125,
+        "output": 10
+      },
+      "tiers": [
+        {
+          "above": 200000,
+          "input": 2.5,
+          "cachedInput": 0.25,
+          "output": 15
+        }
+      ],
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gemini-2.5-flash",
+      "provider": "google",
+      "name": "Gemini 2.5 Flash",
+      "status": "legacy",
+      "prices": {
+        "input": 0.3,
+        "cachedInput": 0.03,
+        "output": 2.5
+      },
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gemini-2.5-flash-lite",
+      "provider": "google",
+      "name": "Gemini 2.5 Flash-Lite",
+      "status": "legacy",
+      "prices": {
+        "input": 0.1,
+        "cachedInput": 0.01,
+        "output": 0.4
+      },
+      "source": "https://ai.google.dev/gemini-api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gemini-2.0-flash",
+      "provider": "google",
+      "name": "Gemini 2.0 Flash",
+      "status": "retired",
+      "prices": {
+        "input": 0.1,
+        "cachedInput": 0.025,
+        "output": 0.4
+      },
+      "aliases": [
+        "gemini-2.0-flash-001"
+      ],
+      "source": "https://web.archive.org/web/20260801152348/https://ai.google.dev/gemini-api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gemini-2.0-flash-lite",
+      "provider": "google",
+      "name": "Gemini 2.0 Flash-Lite",
+      "status": "retired",
+      "prices": {
+        "input": 0.075,
+        "output": 0.3
+      },
+      "aliases": [
+        "gemini-2.0-flash-lite-001"
+      ],
+      "source": "https://web.archive.org/web/20260801152348/https://ai.google.dev/gemini-api/docs/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "gpt-oss-120b",
+      "provider": "google",
+      "name": "GPT-OSS 120B (Vertex MaaS)",
+      "status": "current",
+      "prices": {
+        "input": 0.09,
+        "output": 0.36
+      },
+      "aliases": [
+        "gpt-oss 120b (medium)"
+      ],
+      "source": "https://cloud.google.com/vertex-ai/generative-ai/pricing",
+      "checked": "2026-10-22",
+      "note": "Open-weight model; Vertex AI model-as-a-service price (Antigravity offers it)."
+    },
+    {
+      "id": "grok-4.7",
+      "provider": "xai",
+      "name": "Grok 4.7",
+      "status": "current",
+      "prices": {
+        "input": 2,
+        "cachedInput": 0.5,
+        "output": 6
+      },
+      "tiers": [
+        {
+          "above": 199999,
+          "input": 4,
+          "cachedInput": 1,
+          "output": 12
+        }
+      ],
+      "source": "https://docs.x.ai/developers/models/grok-4.7",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "grok-4.6",
+      "provider": "xai",
+      "name": "Grok 4.6",
+      "status": "current",
+      "prices": {
+        "input": 2,
+        "cachedInput": 0.5,
+        "output": 6
+      },
+      "tiers": [
+        {
+          "above": 199999,
+          "input": 4,
+          "cachedInput": 1,
+          "output": 12
+        }
+      ],
+      "source": "https://docs.x.ai/developers/models/grok-4.6",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "grok-4.5",
+      "provider": "xai",
+      "name": "Grok 4.5",
+      "status": "current",
+      "prices": {
+        "input": 2,
+        "cachedInput": 0.3,
+        "output": 6
+      },
+      "tiers": [
+        {
+          "above": 199999,
+          "input": 4,
+          "cachedInput": 0.6,
+          "output": 12
+        }
+      ],
+      "aliases": [
+        "grok-4.5-latest",
+        "grok-build-latest"
+      ],
+      "source": "https://docs.x.ai/developers/models/grok-4.5",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "grok-4.3",
+      "provider": "xai",
+      "name": "Grok 4.3",
+      "status": "current",
+      "prices": {
+        "input": 1.25,
+        "cachedInput": 0.2,
+        "output": 2.5
+      },
+      "tiers": [
+        {
+          "above": 199999,
+          "input": 2.5,
+          "cachedInput": 0.4,
+          "output": 5
+        }
+      ],
+      "aliases": [
+        "grok-4.3-latest"
+      ],
+      "source": "https://docs.x.ai/developers/models/grok-4.3",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "grok-4.20-0309-reasoning",
+      "provider": "xai",
+      "name": "Grok 4.20 (reasoning)",
+      "status": "current",
+      "prices": {
+        "input": 1.25,
+        "cachedInput": 0.2,
+        "output": 2.5
+      },
+      "tiers": [
+        {
+          "above": 199999,
+          "input": 2.5,
+          "cachedInput": 0.4,
+          "output": 5
+        }
+      ],
+      "periods": [
+        {
+          "to": "2026-05-06",
+          "prices": {
+            "input": 2,
+            "cachedInput": 0.2,
+            "output": 6
+          },
+          "tiers": [
+            {
+              "above": 199999,
+              "input": 4,
+              "cachedInput": 0.4,
+              "output": 12
+            }
+          ],
+          "note": "Price before the cut that happened between the 2026-04-13 and 2026-05-06 page snapshots (the later date is used)."
+        }
+      ],
+      "aliases": [
+        "grok-4.20-reasoning-latest",
+        "grok-4.20",
+        "grok-4.20-reasoning",
+        "grok-4.20-0309",
+        "grok-4.20-beta-0309-reasoning",
+        "grok-4.20-beta",
+        "grok-4.20-beta-0309",
+        "grok-4.20-beta-latest",
+        "grok-4.20-beta-latest-reasoning",
+        "grok-4.20-beta-reasoning",
+        "grok-4.20-experimental-beta-0304-reasoning",
+        "grok-4.20-experimental-beta-0304",
+        "grok-4.20-experimental-beta-reasoning-latest",
+        "grok-4.20-experimental-beta-latest",
+        "grok-4.20-reasoning-gv2"
+      ],
+      "source": "https://docs.x.ai/developers/models/grok-4.20-0309-reasoning",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "grok-4.20-0309-non-reasoning",
+      "provider": "xai",
+      "name": "Grok 4.20 (non-reasoning)",
+      "status": "current",
+      "prices": {
+        "input": 1.25,
+        "cachedInput": 0.2,
+        "output": 2.5
+      },
+      "tiers": [
+        {
+          "above": 199999,
+          "input": 2.5,
+          "cachedInput": 0.4,
+          "output": 5
+        }
+      ],
+      "periods": [
+        {
+          "to": "2026-05-06",
+          "prices": {
+            "input": 2,
+            "cachedInput": 0.2,
+            "output": 6
+          },
+          "tiers": [
+            {
+              "above": 199999,
+              "input": 4,
+              "cachedInput": 0.4,
+              "output": 12
+            }
+          ],
+          "note": "Price before the cut that happened between the 2026-04-13 and 2026-05-06 page snapshots (the later date is used)."
+        }
+      ],
+      "aliases": [
+        "grok-4.20-non-reasoning",
+        "grok-4.20-non-reasoning-latest",
+        "grok-4.20-beta-non-reasoning",
+        "grok-4.20-beta-latest-non-reasoning",
+        "grok-4.20-experimental-beta-0304-non-reasoning",
+        "grok-4.20-experimental-beta-non-reasoning-latest",
+        "grok-4.20-beta-0309-non-reasoning",
+        "grok-4.20-non-reasoning-gv2"
+      ],
+      "source": "https://docs.x.ai/developers/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "grok-4.20-multi-agent-0309",
+      "provider": "xai",
+      "name": "Grok 4.20 Multi-Agent",
+      "status": "current",
+      "prices": {
+        "input": 1.25,
+        "cachedInput": 0.2,
+        "output": 2.5
+      },
+      "tiers": [
+        {
+          "above": 199999,
+          "input": 2.5,
+          "cachedInput": 0.4,
+          "output": 5
+        }
+      ],
+      "periods": [
+        {
+          "to": "2026-05-06",
+          "prices": {
+            "input": 2,
+            "cachedInput": 0.2,
+            "output": 6
+          },
+          "tiers": [
+            {
+              "above": 199999,
+              "input": 4,
+              "cachedInput": 0.4,
+              "output": 12
+            }
+          ],
+          "note": "Price before the cut that happened between the 2026-04-13 and 2026-05-06 page snapshots (the later date is used)."
+        }
+      ],
+      "aliases": [
+        "grok-4.20-multi-agent",
+        "grok-4.20-multi-agent-latest",
+        "grok-4.20-multi-agent-beta-latest",
+        "grok-4.20-multi-agent-experimental-beta-0304",
+        "grok-4.20-multi-agent-experimental-beta-latest",
+        "grok-4.20-multi-agent-beta-0309"
+      ],
+      "source": "https://docs.x.ai/developers/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "grok-build-0.1",
+      "provider": "xai",
+      "name": "Grok Build 0.1",
+      "status": "current",
+      "prices": {
+        "input": 1,
+        "cachedInput": 0.2,
+        "output": 2
+      },
+      "tiers": [
+        {
+          "above": 199999,
+          "input": 2,
+          "cachedInput": 0.4,
+          "output": 4
+        }
+      ],
+      "source": "https://docs.x.ai/developers/models/grok-build-0.1",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "grok-code-fast-1",
+      "provider": "xai",
+      "name": "Grok Code Fast 1 (pre-retirement)",
+      "status": "retired",
+      "prices": {
+        "input": 0.2,
+        "cachedInput": 0.02,
+        "output": 1.5
+      },
+      "periods": [
+        {
+          "from": "2026-05-15T19:00Z",
+          "prices": {
+            "input": 1,
+            "cachedInput": 0.2,
+            "output": 2
+          },
+          "tiers": [
+            {
+              "above": 199999,
+              "input": 2,
+              "cachedInput": 0.4,
+              "output": 4
+            }
+          ],
+          "note": "After its retirement the id is an alias of grok-build-0.1 and billed at its price."
+        }
+      ],
+      "aliases": [
+        "grok-code-fast",
+        "grok-code-fast-1-0825"
+      ],
+      "source": "https://web.archive.org/web/20260413111527/https://docs.x.ai/developers/models/grok-4-0709",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "grok-4-0709",
+      "provider": "xai",
+      "name": "Grok 4 (pre-retirement)",
+      "status": "retired",
+      "prices": {
+        "input": 3,
+        "cachedInput": 0.75,
+        "output": 15
+      },
+      "tiers": [
+        {
+          "above": 128000,
+          "input": 6,
+          "cachedInput": 0.75,
+          "output": 30
+        }
+      ],
+      "periods": [
+        {
+          "from": "2026-05-15T19:00Z",
+          "prices": {
+            "input": 1.25,
+            "cachedInput": 0.2,
+            "output": 2.5
+          },
+          "tiers": [
+            {
+              "above": 199999,
+              "input": 2.5,
+              "cachedInput": 0.4,
+              "output": 5
+            }
+          ],
+          "note": "Retired; the id is billed at grok-4.3's price since then."
+        }
+      ],
+      "aliases": [
+        "grok-4",
+        "grok-4-latest"
+      ],
+      "source": "https://web.archive.org/web/20260413111527/https://docs.x.ai/developers/models/grok-4-0709",
+      "checked": "2026-10-22",
+      "note": "The cached price of the 128K tier is not published; the base cached price is used."
+    },
+    {
+      "id": "grok-4-fast-reasoning",
+      "provider": "xai",
+      "name": "Grok 4 Fast (reasoning) (pre-retirement)",
+      "status": "retired",
+      "prices": {
+        "input": 0.2,
+        "cachedInput": 0.05,
+        "output": 0.5
+      },
+      "tiers": [
+        {
+          "above": 128000,
+          "input": 0.4,
+          "cachedInput": 0.05,
+          "output": 1
+        }
+      ],
+      "periods": [
+        {
+          "from": "2026-05-15T19:00Z",
+          "prices": {
+            "input": 1.25,
+            "cachedInput": 0.2,
+            "output": 2.5
+          },
+          "tiers": [
+            {
+              "above": 199999,
+              "input": 2.5,
+              "cachedInput": 0.4,
+              "output": 5
+            }
+          ],
+          "note": "Retired; the id is billed at grok-4.3's price since then."
+        }
+      ],
+      "aliases": [
+        "grok-4-fast",
+        "grok-4-fast-reasoning-latest"
+      ],
+      "source": "https://web.archive.org/web/20260413111527/https://docs.x.ai/developers/models/grok-4-0709",
+      "checked": "2026-10-22",
+      "note": "The cached price of the 128K tier is not published; the base cached price is used."
+    },
+    {
+      "id": "grok-4-fast-non-reasoning",
+      "provider": "xai",
+      "name": "Grok 4 Fast (non-reasoning) (pre-retirement)",
+      "status": "retired",
+      "prices": {
+        "input": 0.2,
+        "cachedInput": 0.05,
+        "output": 0.5
+      },
+      "tiers": [
+        {
+          "above": 128000,
+          "input": 0.4,
+          "cachedInput": 0.05,
+          "output": 1
+        }
+      ],
+      "periods": [
+        {
+          "from": "2026-05-15T19:00Z",
+          "prices": {
+            "input": 1.25,
+            "cachedInput": 0.2,
+            "output": 2.5
+          },
+          "tiers": [
+            {
+              "above": 199999,
+              "input": 2.5,
+              "cachedInput": 0.4,
+              "output": 5
+            }
+          ],
+          "note": "Retired; the id is billed at grok-4.3's price since then."
+        }
+      ],
+      "aliases": [
+        "grok-4-fast-non-reasoning-latest"
+      ],
+      "source": "https://web.archive.org/web/20260413111527/https://docs.x.ai/developers/models/grok-4-0709",
+      "checked": "2026-10-22",
+      "note": "The cached price of the 128K tier is not published; the base cached price is used."
+    },
+    {
+      "id": "grok-4-1-fast-reasoning",
+      "provider": "xai",
+      "name": "Grok 4.1 Fast (reasoning) (pre-retirement)",
+      "status": "retired",
+      "prices": {
+        "input": 0.2,
+        "cachedInput": 0.05,
+        "output": 0.5
+      },
+      "tiers": [
+        {
+          "above": 128000,
+          "input": 0.4,
+          "cachedInput": 0.05,
+          "output": 1
+        }
+      ],
+      "periods": [
+        {
+          "from": "2026-05-15T19:00Z",
+          "prices": {
+            "input": 1.25,
+            "cachedInput": 0.2,
+            "output": 2.5
+          },
+          "tiers": [
+            {
+              "above": 199999,
+              "input": 2.5,
+              "cachedInput": 0.4,
+              "output": 5
+            }
+          ],
+          "note": "Retired; the id is billed at grok-4.3's price since then."
+        }
+      ],
+      "aliases": [
+        "grok-4-1-fast",
+        "grok-4-1-fast-reasoning-latest"
+      ],
+      "source": "https://web.archive.org/web/20260413111527/https://docs.x.ai/developers/models/grok-4-0709",
+      "checked": "2026-10-22",
+      "note": "The cached price of the 128K tier is not published; the base cached price is used."
+    },
+    {
+      "id": "grok-4-1-fast-non-reasoning",
+      "provider": "xai",
+      "name": "Grok 4.1 Fast (non-reasoning) (pre-retirement)",
+      "status": "retired",
+      "prices": {
+        "input": 0.2,
+        "cachedInput": 0.05,
+        "output": 0.5
+      },
+      "tiers": [
+        {
+          "above": 128000,
+          "input": 0.4,
+          "cachedInput": 0.05,
+          "output": 1
+        }
+      ],
+      "periods": [
+        {
+          "from": "2026-05-15T19:00Z",
+          "prices": {
+            "input": 1.25,
+            "cachedInput": 0.2,
+            "output": 2.5
+          },
+          "tiers": [
+            {
+              "above": 199999,
+              "input": 2.5,
+              "cachedInput": 0.4,
+              "output": 5
+            }
+          ],
+          "note": "Retired; the id is billed at grok-4.3's price since then."
+        }
+      ],
+      "aliases": [
+        "grok-4-1-fast-non-reasoning-latest"
+      ],
+      "source": "https://web.archive.org/web/20260413111527/https://docs.x.ai/developers/models/grok-4-0709",
+      "checked": "2026-10-22",
+      "note": "The cached price of the 128K tier is not published; the base cached price is used."
+    },
+    {
+      "id": "grok-3",
+      "provider": "xai",
+      "name": "Grok 3 (pre-retirement)",
+      "status": "retired",
+      "prices": {
+        "input": 3,
+        "cachedInput": 0.75,
+        "output": 15
+      },
+      "periods": [
+        {
+          "from": "2026-05-15T19:00Z",
+          "prices": {
+            "input": 1.25,
+            "cachedInput": 0.2,
+            "output": 2.5
+          },
+          "tiers": [
+            {
+              "above": 199999,
+              "input": 2.5,
+              "cachedInput": 0.4,
+              "output": 5
+            }
+          ],
+          "note": "Retired; the id is billed at grok-4.3's price since then."
+        }
+      ],
+      "aliases": [
+        "grok-3-latest",
+        "grok-3-beta",
+        "grok-3-fast",
+        "grok-3-fast-latest",
+        "grok-3-fast-beta"
+      ],
+      "source": "https://web.archive.org/web/20260413111527/https://docs.x.ai/developers/models/grok-4-0709",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "grok-3-mini",
+      "provider": "xai",
+      "name": "Grok 3 Mini (pre-retirement)",
+      "status": "retired",
+      "prices": {
+        "input": 0.3,
+        "cachedInput": 0.075,
+        "output": 0.5
+      },
+      "periods": [
+        {
+          "from": "2026-05-15T19:00Z",
+          "prices": {
+            "input": 1.25,
+            "cachedInput": 0.2,
+            "output": 2.5
+          },
+          "tiers": [
+            {
+              "above": 199999,
+              "input": 2.5,
+              "cachedInput": 0.4,
+              "output": 5
+            }
+          ],
+          "note": "Retired; the id is billed at grok-4.3's price since then."
+        }
+      ],
+      "aliases": [
+        "grok-3-mini-latest",
+        "grok-3-mini-beta",
+        "grok-3-mini-fast",
+        "grok-3-mini-fast-latest",
+        "grok-3-mini-fast-beta"
+      ],
+      "source": "https://web.archive.org/web/20260413111527/https://docs.x.ai/developers/models/grok-4-0709",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "mistral-large-4",
+      "provider": "mistral",
+      "name": "Mistral Large 4",
+      "status": "preview",
+      "prices": {
+        "input": 1.36,
+        "cachedInput": 0.14,
+        "output": 4.18
+      },
+      "periods": [
+        {
+          "from": "2026-10-06",
+          "to": "2026-10-20",
+          "prices": {
+            "input": 0.68,
+            "cachedInput": 0.07,
+            "output": 2.09
+          },
+          "note": "Launch sale; its end date is inferred from page snapshots."
+        }
+      ],
+      "aliases": [
+        "mistral-large-4-0"
+      ],
+      "source": "https://docs.mistral.ai/models/mistral-large-4-0",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "mistral-large-2512",
+      "provider": "mistral",
+      "name": "Mistral Large 3",
+      "status": "current",
+      "prices": {
+        "input": 0.5,
+        "cachedInput": 0.05,
+        "output": 1.5
+      },
+      "aliases": [
+        "mistral-large-latest"
+      ],
+      "source": "https://docs.mistral.ai/models/mistral-large-3-25-12",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "mistral-medium-3-5",
+      "provider": "mistral",
+      "name": "Mistral Medium 3.5",
+      "status": "current",
+      "prices": {
+        "input": 1.5,
+        "cachedInput": 0.15,
+        "output": 7.5
+      },
+      "aliases": [
+        "mistral-medium-3",
+        "mistral-medium-latest"
+      ],
+      "source": "https://docs.mistral.ai/models/mistral-medium-3-5-26-04",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "mistral-small-2603",
+      "provider": "mistral",
+      "name": "Mistral Small 4",
+      "status": "current",
+      "prices": {
+        "input": 0.15,
+        "cachedInput": 0.015,
+        "output": 0.6
+      },
+      "aliases": [
+        "mistral-small-latest"
+      ],
+      "source": "https://docs.mistral.ai/models/mistral-small-4-0-26-03",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "ministral-14b-2512",
+      "provider": "mistral",
+      "name": "Ministral 3 14B",
+      "status": "current",
+      "prices": {
+        "input": 0.2,
+        "cachedInput": 0.02,
+        "output": 0.2
+      },
+      "aliases": [
+        "ministral-14b-latest"
+      ],
+      "source": "https://docs.mistral.ai/models/ministral-3-14b-25-12",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "ministral-8b-2512",
+      "provider": "mistral",
+      "name": "Ministral 3 8B",
+      "status": "current",
+      "prices": {
+        "input": 0.15,
+        "cachedInput": 0.015,
+        "output": 0.15
+      },
+      "aliases": [
+        "ministral-8b-latest"
+      ],
+      "source": "https://docs.mistral.ai/models/ministral-3-8b-25-12",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "ministral-3b-2512",
+      "provider": "mistral",
+      "name": "Ministral 3 3B",
+      "status": "current",
+      "prices": {
+        "input": 0.1,
+        "cachedInput": 0.01,
+        "output": 0.1
+      },
+      "aliases": [
+        "ministral-3b-latest"
+      ],
+      "source": "https://docs.mistral.ai/models/ministral-3-3b-25-12",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "codestral-2508",
+      "provider": "mistral",
+      "name": "Codestral 25.08",
+      "status": "current",
+      "prices": {
+        "input": 0.3,
+        "cachedInput": 0.03,
+        "output": 0.9
+      },
+      "aliases": [
+        "codestral-latest"
+      ],
+      "source": "https://docs.mistral.ai/models/codestral-25-08",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "zai-glm-5-3",
+      "provider": "mistral",
+      "name": "Z.ai GLM 5.3 (hosted by Mistral)",
+      "status": "current",
+      "prices": {
+        "input": 1.4,
+        "cachedInput": 0.14,
+        "output": 4.4
+      },
+      "aliases": [
+        "zai-glm-5",
+        "zai-glm-latest",
+        "zai-glm-5-2"
+      ],
+      "source": "https://docs.mistral.ai/models/zai-glm-5-3",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "devstral-2512",
+      "provider": "mistral",
+      "name": "Devstral 2",
+      "status": "retired",
+      "prices": {
+        "input": 0.4,
+        "output": 2
+      },
+      "periods": [
+        {
+          "to": "2026-01-27",
+          "prices": {
+            "input": 0,
+            "output": 0
+          },
+          "note": "Free until this date."
+        }
+      ],
+      "aliases": [
+        "devstral-latest",
+        "devstral-medium-latest"
+      ],
+      "source": "https://docs.mistral.ai/models/devstral-2-25-12",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "labs-devstral-small-2512",
+      "provider": "mistral",
+      "name": "Devstral Small 2",
+      "status": "retired",
+      "prices": {
+        "input": 0.1,
+        "output": 0.3
+      },
+      "aliases": [
+        "devstral-small-latest"
+      ],
+      "source": "https://docs.mistral.ai/models/devstral-small-2-25-12",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "devstral-medium-2507",
+      "provider": "mistral",
+      "name": "Devstral Medium 1.0",
+      "status": "retired",
+      "prices": {
+        "input": 0.4,
+        "output": 2
+      },
+      "source": "https://docs.mistral.ai/models/devstral-medium-1-0-25-07",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "devstral-small-2507",
+      "provider": "mistral",
+      "name": "Devstral Small 1.1",
+      "status": "retired",
+      "prices": {
+        "input": 0.1,
+        "output": 0.3
+      },
+      "source": "https://docs.mistral.ai/models/devstral-small-1-1-25-07",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "devstral-small-2505",
+      "provider": "mistral",
+      "name": "Devstral Small 1.0",
+      "status": "retired",
+      "prices": {
+        "input": 0.1,
+        "output": 0.3
+      },
+      "source": "https://docs.mistral.ai/models/devstral-small-1-0-25-05",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "magistral-medium-2509",
+      "provider": "mistral",
+      "name": "Magistral Medium 1.2",
+      "status": "retired",
+      "prices": {
+        "input": 2,
+        "output": 5
+      },
+      "aliases": [
+        "magistral-medium-latest"
+      ],
+      "source": "https://docs.mistral.ai/models/magistral-medium-1-2-25-09",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "magistral-small-2509",
+      "provider": "mistral",
+      "name": "Magistral Small 1.2",
+      "status": "retired",
+      "prices": {
+        "input": 0.5,
+        "output": 1.5
+      },
+      "aliases": [
+        "magistral-small-latest"
+      ],
+      "source": "https://docs.mistral.ai/models/magistral-small-1-2-25-09",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "magistral-medium-2507",
+      "provider": "mistral",
+      "name": "Magistral Medium 1.1",
+      "status": "retired",
+      "prices": {
+        "input": 2,
+        "output": 5
+      },
+      "aliases": [
+        "magistral-medium-2506"
+      ],
+      "source": "https://docs.mistral.ai/models/magistral-medium-1-1-25-07",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "magistral-small-2507",
+      "provider": "mistral",
+      "name": "Magistral Small 1.1",
+      "status": "retired",
+      "prices": {
+        "input": 0.5,
+        "output": 1.5
+      },
+      "aliases": [
+        "magistral-small-2506"
+      ],
+      "source": "https://docs.mistral.ai/models/magistral-small-1-1-25-07",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "mistral-medium-2508",
+      "provider": "mistral",
+      "name": "Mistral Medium 3.1",
+      "status": "retired",
+      "prices": {
+        "input": 0.4,
+        "output": 2
+      },
+      "aliases": [
+        "mistral-medium-2505"
+      ],
+      "source": "https://docs.mistral.ai/models/mistral-medium-3-1-25-08",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "mistral-small-2506",
+      "provider": "mistral",
+      "name": "Mistral Small 3.2",
+      "status": "retired",
+      "prices": {
+        "input": 0.1,
+        "output": 0.3
+      },
+      "aliases": [
+        "mistral-small-2503"
+      ],
+      "source": "https://docs.mistral.ai/models/mistral-small-3-2-25-06",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "mistral-large-2411",
+      "provider": "mistral",
+      "name": "Mistral Large 2.1",
+      "status": "retired",
+      "prices": {
+        "input": 2,
+        "output": 6
+      },
+      "source": "https://docs.mistral.ai/models/mistral-large-2-1-24-11",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "open-mistral-nemo-2407",
+      "provider": "mistral",
+      "name": "Mistral Nemo 12B",
+      "status": "retired",
+      "prices": {
+        "input": 0.15,
+        "output": 0.15
+      },
+      "aliases": [
+        "open-mistral-nemo"
+      ],
+      "source": "https://docs.mistral.ai/models/mistral-nemo-12b-24-07",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "ministral-8b-2410",
+      "provider": "mistral",
+      "name": "Ministral 8B (24.10)",
+      "status": "retired",
+      "prices": {
+        "input": 0.1,
+        "output": 0.1
+      },
+      "source": "https://docs.mistral.ai/models/ministral-8b-24-1",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "ministral-3b-2410",
+      "provider": "mistral",
+      "name": "Ministral 3B (24.10)",
+      "status": "retired",
+      "prices": {
+        "input": 0.04,
+        "output": 0.04
+      },
+      "source": "https://docs.mistral.ai/models/ministral-3b-24-1",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "codestral-2501",
+      "provider": "mistral",
+      "name": "Codestral 25.01",
+      "status": "retired",
+      "prices": {
+        "input": 0.3,
+        "output": 0.9
+      },
+      "source": "https://docs.mistral.ai/models/codestral-25-01",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "deepseek-flash",
+      "provider": "deepseek",
+      "name": "DeepSeek-V4.1-Flash-1017",
+      "status": "current",
+      "prices": {
+        "input": 0.3,
+        "cachedInput": 0.006,
+        "output": 1.2
+      },
+      "offPeak": {
+        "peakUtc": [
+          "01:00-04:00",
+          "06:00-10:00"
+        ],
+        "peakWeekdays": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "offPeakDates": [
+          "2026-09-25",
+          "2026-10-01",
+          "2026-10-02",
+          "2026-10-05",
+          "2026-10-06",
+          "2026-10-07"
+        ],
+        "prices": {
+          "input": 0.15,
+          "cachedInput": 0.003,
+          "output": 0.6
+        }
+      },
+      "periods": [
+        {
+          "to": "2026-04-26T12:15Z",
+          "prices": {
+            "input": 0.14,
+            "cachedInput": 0.028,
+            "output": 0.28
+          }
+        },
+        {
+          "from": "2026-04-26T12:15Z",
+          "to": "2026-08-16T16:00Z",
+          "prices": {
+            "input": 0.14,
+            "cachedInput": 0.0028,
+            "output": 0.28
+          }
+        },
+        {
+          "from": "2026-08-16T16:00Z",
+          "to": "2026-09-10T04:00Z",
+          "prices": {
+            "input": 0.44,
+            "cachedInput": 0.014,
+            "output": 1.32
+          },
+          "offPeak": {
+            "peakUtc": [
+              "01:00-04:00",
+              "06:00-10:00"
+            ],
+            "peakWeekdays": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ],
+            "offPeakDates": [
+              "2026-09-25",
+              "2026-10-01",
+              "2026-10-02",
+              "2026-10-05",
+              "2026-10-06",
+              "2026-10-07"
+            ],
+            "prices": {
+              "input": 0.22,
+              "cachedInput": 0.007,
+              "output": 0.66
+            }
+          }
+        }
+      ],
+      "aliases": [
+        "deepseek-v4-flash",
+        "deepseek-v4-flash-vision-exp",
+        "deepseek-v4.1-flash",
+        "deepseek-v4.1-flash-1017"
+      ],
+      "source": "https://api-docs.deepseek.com/quick_start/pricing",
+      "checked": "2026-10-24",
+      "note": "Peak = 01:00-04:00 and 06:00-10:00 UTC, Monday-Friday except Chinese public holidays; off-peak is half price. offPeakDates: the weekday holidays of the 2026 State Council schedule (Mid-Autumn, National Day; https://www.news.cn/politics/20251104/88bcffd88ae249e58c699b8772548e3d/c.html); weekend make-up workdays are treated as off-peak. Earlier periods: V4 Flash prices before the 2026-09-10 switch; the 2026-08 period assumes the later Monday-Friday rule."
+    },
+    {
+      "id": "deepseek-v4-pro",
+      "provider": "deepseek",
+      "name": "DeepSeek-V4-Pro-0813",
+      "status": "current",
+      "prices": {
+        "input": 1.32,
+        "cachedInput": 0.044,
+        "output": 3.96
+      },
+      "offPeak": {
+        "peakUtc": [
+          "01:00-04:00",
+          "06:00-10:00"
+        ],
+        "peakWeekdays": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "offPeakDates": [
+          "2026-09-25",
+          "2026-10-01",
+          "2026-10-02",
+          "2026-10-05",
+          "2026-10-06",
+          "2026-10-07"
+        ],
+        "prices": {
+          "input": 0.66,
+          "cachedInput": 0.022,
+          "output": 1.98
+        }
+      },
+      "periods": [
+        {
+          "to": "2026-04-25",
+          "prices": {
+            "input": 1.74,
+            "cachedInput": 0.145,
+            "output": 3.48
+          }
+        },
+        {
+          "from": "2026-04-25",
+          "to": "2026-04-26T12:15Z",
+          "prices": {
+            "input": 0.435,
+            "cachedInput": 0.03625,
+            "output": 0.87
+          }
+        },
+        {
+          "from": "2026-04-26T12:15Z",
+          "to": "2026-08-16T16:00Z",
+          "prices": {
+            "input": 0.435,
+            "cachedInput": 0.003625,
+            "output": 0.87
+          },
+          "note": "The 75 % promotion became the standard price on 2026-05-31."
+        }
+      ],
+      "source": "https://api-docs.deepseek.com/quick_start/pricing",
+      "checked": "2026-10-22",
+      "note": "Peak and off-peak as deepseek-flash since 2026-08-16 16:00 UTC; the promotion's exact start (2026-04-24/25) is approximate."
+    },
+    {
+      "id": "deepseek-chat",
+      "provider": "deepseek",
+      "name": "DeepSeek legacy chat/reasoner names",
+      "status": "retired",
+      "prices": {
+        "input": 0.28,
+        "cachedInput": 0.028,
+        "output": 0.42
+      },
+      "periods": [
+        {
+          "from": "2026-04-24",
+          "to": "2026-04-26T12:15Z",
+          "prices": {
+            "input": 0.14,
+            "cachedInput": 0.028,
+            "output": 0.28
+          },
+          "note": "From 2026-04-24 until its retirement the name was served and billed as deepseek-v4-flash."
+        },
+        {
+          "from": "2026-04-26T12:15Z",
+          "prices": {
+            "input": 0.14,
+            "cachedInput": 0.0028,
+            "output": 0.28
+          }
+        }
+      ],
+      "aliases": [
+        "deepseek-reasoner"
+      ],
+      "source": "https://web.archive.org/web/20260423213625/https://api-docs.deepseek.com/quick_start/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "kimi-k3",
+      "provider": "moonshot",
+      "name": "Kimi K3",
+      "status": "current",
+      "prices": {
+        "input": 3,
+        "cachedInput": 0.3,
+        "cacheWrite": 3,
+        "cacheWrite1h": 6,
+        "output": 15
+      },
+      "source": "https://platform.kimi.ai/docs/pricing/chat",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "kimi-k2.7-code",
+      "provider": "moonshot",
+      "name": "Kimi K2.7 Code",
+      "status": "current",
+      "prices": {
+        "input": 0.95,
+        "cachedInput": 0.19,
+        "output": 4
+      },
+      "source": "https://platform.kimi.ai/docs/pricing/chat",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "kimi-k2.7-code-highspeed",
+      "provider": "moonshot",
+      "name": "Kimi K2.7 Code HighSpeed",
+      "status": "current",
+      "prices": {
+        "input": 1.9,
+        "cachedInput": 0.38,
+        "output": 8
+      },
+      "source": "https://platform.kimi.ai/docs/pricing/chat",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "kimi-k2.6",
+      "provider": "moonshot",
+      "name": "Kimi K2.6",
+      "status": "current",
+      "prices": {
+        "input": 0.95,
+        "cachedInput": 0.16,
+        "output": 4
+      },
+      "source": "https://platform.kimi.ai/docs/pricing/chat",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "kimi-k2.5",
+      "provider": "moonshot",
+      "name": "Kimi K2.5",
+      "status": "retired",
+      "prices": {
+        "input": 0.6,
+        "cachedInput": 0.1,
+        "output": 3
+      },
+      "source": "https://web.archive.org/web/20260330194820/https://platform.moonshot.ai/docs/pricing/chat",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "kimi-k2-0905-preview",
+      "provider": "moonshot",
+      "name": "kimi-k2-0905-preview",
+      "status": "retired",
+      "prices": {
+        "input": 0.6,
+        "cachedInput": 0.15,
+        "output": 2.5
+      },
+      "source": "https://web.archive.org/web/20260330194820/https://platform.moonshot.ai/docs/pricing/chat",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "kimi-k2-0711-preview",
+      "provider": "moonshot",
+      "name": "kimi-k2-0711-preview",
+      "status": "retired",
+      "prices": {
+        "input": 0.6,
+        "cachedInput": 0.15,
+        "output": 2.5
+      },
+      "source": "https://web.archive.org/web/20260330194820/https://platform.moonshot.ai/docs/pricing/chat",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "kimi-k2-thinking",
+      "provider": "moonshot",
+      "name": "kimi-k2-thinking",
+      "status": "retired",
+      "prices": {
+        "input": 0.6,
+        "cachedInput": 0.15,
+        "output": 2.5
+      },
+      "source": "https://web.archive.org/web/20260330194820/https://platform.moonshot.ai/docs/pricing/chat",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "kimi-k2-turbo-preview",
+      "provider": "moonshot",
+      "name": "kimi-k2-turbo-preview",
+      "status": "retired",
+      "prices": {
+        "input": 1.15,
+        "cachedInput": 0.15,
+        "output": 8
+      },
+      "source": "https://web.archive.org/web/20260330194820/https://platform.moonshot.ai/docs/pricing/chat",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "kimi-k2-thinking-turbo",
+      "provider": "moonshot",
+      "name": "kimi-k2-thinking-turbo",
+      "status": "retired",
+      "prices": {
+        "input": 1.15,
+        "cachedInput": 0.15,
+        "output": 8
+      },
+      "source": "https://web.archive.org/web/20260330194820/https://platform.moonshot.ai/docs/pricing/chat",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "qwen3.8-max",
+      "provider": "alibaba",
+      "name": "Qwen3.8-Max",
+      "status": "current",
+      "prices": {
+        "input": 2,
+        "cacheWrite": 2.5,
+        "output": 6
+      },
+      "aliases": [
+        "qwen3.8-max-0902"
+      ],
+      "source": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+      "checked": "2026-10-22",
+      "note": "Derived from the provider's stated percentages: cacheWrite. International (Singapore) prices; tiers count all input tokens of the request; implicit cache hits cost 20 % of input."
+    },
+    {
+      "id": "qwen3.7-max",
+      "provider": "alibaba",
+      "name": "Qwen3.7-Max",
+      "status": "current",
+      "prices": {
+        "input": 2.5,
+        "cachedInput": 0.5,
+        "cacheWrite": 3.125,
+        "output": 7.5
+      },
+      "aliases": [
+        "qwen3.7-max-2026-05-20",
+        "qwen3.7-max-2026-06-08",
+        "qwen3.7-max-preview",
+        "qwen3.7-max-2026-05-17"
+      ],
+      "source": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+      "checked": "2026-10-22",
+      "note": "Derived from the provider's stated percentages: cachedInput, cacheWrite. International (Singapore) prices; tiers count all input tokens of the request; implicit cache hits cost 20 % of input."
+    },
+    {
+      "id": "qwen-max",
+      "provider": "alibaba",
+      "name": "Qwen-Max (legacy)",
+      "status": "current",
+      "prices": {
+        "input": 1.6,
+        "cachedInput": 0.32,
+        "output": 6.4
+      },
+      "source": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+      "checked": "2026-10-22",
+      "note": "Derived from the provider's stated percentages: cachedInput. International (Singapore) prices; tiers count all input tokens of the request; implicit cache hits cost 20 % of input."
+    },
+    {
+      "id": "qwen3-max",
+      "provider": "alibaba",
+      "name": "Qwen3-Max",
+      "status": "retired",
+      "prices": {
+        "input": 1.2,
+        "cachedInput": 0.24,
+        "output": 6
+      },
+      "tiers": [
+        {
+          "above": 32000,
+          "input": 2.4,
+          "cachedInput": 0.48,
+          "output": 12
+        },
+        {
+          "above": 128000,
+          "input": 3,
+          "cachedInput": 0.6,
+          "output": 15
+        }
+      ],
+      "aliases": [
+        "qwen3-max-2026-01-23",
+        "qwen3-max-2025-09-23",
+        "qwen3-max-preview"
+      ],
+      "source": "https://web.archive.org/web/20261007164426/https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+      "checked": "2026-10-22",
+      "note": "Derived from the provider's stated percentages: cachedInput. International (Singapore) prices; tiers count all input tokens of the request; implicit cache hits cost 20 % of input."
+    },
+    {
+      "id": "qwen3.7-plus",
+      "provider": "alibaba",
+      "name": "Qwen3.7-Plus",
+      "status": "current",
+      "prices": {
+        "input": 0.4,
+        "cachedInput": 0.08,
+        "cacheWrite": 0.5,
+        "output": 1.6
+      },
+      "tiers": [
+        {
+          "above": 256000,
+          "input": 1.2,
+          "cachedInput": 0.24,
+          "cacheWrite": 1.5,
+          "output": 4.8
+        }
+      ],
+      "aliases": [
+        "qwen3.7-plus-2026-05-26"
+      ],
+      "source": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+      "checked": "2026-10-22",
+      "note": "Derived from the provider's stated percentages: cachedInput, cacheWrite. International (Singapore) prices; tiers count all input tokens of the request; implicit cache hits cost 20 % of input."
+    },
+    {
+      "id": "qwen3.6-plus",
+      "provider": "alibaba",
+      "name": "Qwen3.6-Plus",
+      "status": "current",
+      "prices": {
+        "input": 0.5,
+        "cachedInput": 0.05,
+        "cacheWrite": 0.625,
+        "output": 3
+      },
+      "tiers": [
+        {
+          "above": 256000,
+          "input": 2,
+          "cachedInput": 0.2,
+          "cacheWrite": 2.5,
+          "output": 6
+        }
+      ],
+      "aliases": [
+        "qwen3.6-plus-2026-04-02"
+      ],
+      "source": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+      "checked": "2026-10-22",
+      "note": "Derived from the provider's stated percentages: cachedInput, cacheWrite. International (Singapore) prices; tiers count all input tokens of the request; implicit cache hits cost 20 % of input."
+    },
+    {
+      "id": "qwen3.5-plus",
+      "provider": "alibaba",
+      "name": "Qwen3.5-Plus",
+      "status": "current",
+      "prices": {
+        "input": 0.4,
+        "cachedInput": 0.04,
+        "cacheWrite": 0.5,
+        "output": 2.4
+      },
+      "tiers": [
+        {
+          "above": 256000,
+          "input": 0.5,
+          "cachedInput": 0.05,
+          "cacheWrite": 0.625,
+          "output": 3
+        }
+      ],
+      "aliases": [
+        "qwen3.5-plus-2026-02-15",
+        "qwen3.5-plus-2026-04-20"
+      ],
+      "source": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+      "checked": "2026-10-22",
+      "note": "Derived from the provider's stated percentages: cachedInput, cacheWrite. International (Singapore) prices; tiers count all input tokens of the request; implicit cache hits cost 20 % of input."
+    },
+    {
+      "id": "qwen-plus",
+      "provider": "alibaba",
+      "name": "Qwen-Plus",
+      "status": "current",
+      "prices": {
+        "input": 0.4,
+        "cachedInput": 0.08,
+        "cacheWrite": 0.5,
+        "output": 1.2
+      },
+      "tiers": [
+        {
+          "above": 256000,
+          "input": 1.2,
+          "cachedInput": 0.24,
+          "cacheWrite": 1.5,
+          "output": 3.6
+        }
+      ],
+      "aliases": [
+        "qwen-plus-2025-12-01",
+        "qwen-plus-latest",
+        "qwen-plus-2025-07-14",
+        "qwen-plus-2025-04-28"
+      ],
+      "source": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+      "checked": "2026-10-22",
+      "note": "Derived from the provider's stated percentages: cachedInput, cacheWrite. International (Singapore) prices; tiers count all input tokens of the request; implicit cache hits cost 20 % of input."
+    },
+    {
+      "id": "qwen3.8-flash",
+      "provider": "alibaba",
+      "name": "Qwen3.8-Flash",
+      "status": "current",
+      "prices": {
+        "input": 0.15,
+        "output": 0.47
+      },
+      "source": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+      "checked": "2026-10-22",
+      "note": "International (Singapore) prices; tiers count all input tokens of the request; implicit cache hits cost 20 % of input."
+    },
+    {
+      "id": "qwen3.7-flash",
+      "provider": "alibaba",
+      "name": "Qwen3.7-Flash",
+      "status": "current",
+      "prices": {
+        "input": 0.03,
+        "cachedInput": 0.006,
+        "cacheWrite": 0.0375,
+        "output": 0.13
+      },
+      "tiers": [
+        {
+          "above": 32000,
+          "input": 0.1,
+          "cachedInput": 0.02,
+          "cacheWrite": 0.125,
+          "output": 0.4
+        },
+        {
+          "above": 256000,
+          "input": 0.2,
+          "cachedInput": 0.04,
+          "cacheWrite": 0.25,
+          "output": 0.8
+        }
+      ],
+      "aliases": [
+        "qwen3.7-flash-2026-07-15"
+      ],
+      "source": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+      "checked": "2026-10-22",
+      "note": "Derived from the provider's stated percentages: cachedInput, cacheWrite. International (Singapore) prices; tiers count all input tokens of the request; implicit cache hits cost 20 % of input."
+    },
+    {
+      "id": "qwen3.6-flash",
+      "provider": "alibaba",
+      "name": "Qwen3.6-Flash",
+      "status": "current",
+      "prices": {
+        "input": 0.25,
+        "cachedInput": 0.025,
+        "cacheWrite": 0.3125,
+        "output": 1.5
+      },
+      "tiers": [
+        {
+          "above": 256000,
+          "input": 1,
+          "cachedInput": 0.1,
+          "cacheWrite": 1.25,
+          "output": 4
+        }
+      ],
+      "aliases": [
+        "qwen3.6-flash-2026-04-16"
+      ],
+      "source": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+      "checked": "2026-10-22",
+      "note": "Derived from the provider's stated percentages: cachedInput, cacheWrite. International (Singapore) prices; tiers count all input tokens of the request; implicit cache hits cost 20 % of input."
+    },
+    {
+      "id": "qwen3.5-flash",
+      "provider": "alibaba",
+      "name": "Qwen3.5-Flash",
+      "status": "current",
+      "prices": {
+        "input": 0.1,
+        "cachedInput": 0.01,
+        "cacheWrite": 0.125,
+        "output": 0.4
+      },
+      "aliases": [
+        "qwen3.5-flash-2026-02-23"
+      ],
+      "source": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+      "checked": "2026-10-22",
+      "note": "Derived from the provider's stated percentages: cachedInput, cacheWrite. International (Singapore) prices; tiers count all input tokens of the request; implicit cache hits cost 20 % of input."
+    },
+    {
+      "id": "qwen-flash",
+      "provider": "alibaba",
+      "name": "Qwen-Flash",
+      "status": "current",
+      "prices": {
+        "input": 0.05,
+        "cachedInput": 0.01,
+        "cacheWrite": 0.0625,
+        "output": 0.4
+      },
+      "tiers": [
+        {
+          "above": 256000,
+          "input": 0.25,
+          "cachedInput": 0.05,
+          "cacheWrite": 0.3125,
+          "output": 2
+        }
+      ],
+      "aliases": [
+        "qwen-flash-2025-07-28"
+      ],
+      "source": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+      "checked": "2026-10-22",
+      "note": "Derived from the provider's stated percentages: cachedInput, cacheWrite. International (Singapore) prices; tiers count all input tokens of the request; implicit cache hits cost 20 % of input."
+    },
+    {
+      "id": "qwen-turbo",
+      "provider": "alibaba",
+      "name": "Qwen-Turbo",
+      "status": "retired",
+      "prices": {
+        "input": 0.05,
+        "output": 0.2
+      },
+      "source": "https://web.archive.org/web/20261007164426/https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+      "checked": "2026-10-22",
+      "note": "International (Singapore) prices; tiers count all input tokens of the request; implicit cache hits cost 20 % of input."
+    },
+    {
+      "id": "qwen3-coder-flash",
+      "provider": "alibaba",
+      "name": "Qwen3-Coder-Flash",
+      "status": "current",
+      "prices": {
+        "input": 0.3,
+        "cachedInput": 0.06,
+        "cacheWrite": 0.375,
+        "output": 1.5
+      },
+      "tiers": [
+        {
+          "above": 32000,
+          "input": 0.5,
+          "cachedInput": 0.1,
+          "cacheWrite": 0.625,
+          "output": 2.5
+        },
+        {
+          "above": 128000,
+          "input": 0.8,
+          "cachedInput": 0.16,
+          "cacheWrite": 1,
+          "output": 4
+        },
+        {
+          "above": 256000,
+          "input": 1.6,
+          "cachedInput": 0.32,
+          "cacheWrite": 2,
+          "output": 9.6
+        }
+      ],
+      "aliases": [
+        "qwen3-coder-flash-2025-07-28"
+      ],
+      "source": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+      "checked": "2026-10-22",
+      "note": "Derived from the provider's stated percentages: cachedInput, cacheWrite. International (Singapore) prices; tiers count all input tokens of the request; implicit cache hits cost 20 % of input."
+    },
+    {
+      "id": "qwen3-coder-plus",
+      "provider": "alibaba",
+      "name": "Qwen3-Coder-Plus",
+      "status": "retired",
+      "prices": {
+        "input": 1,
+        "cachedInput": 0.2,
+        "output": 5
+      },
+      "tiers": [
+        {
+          "above": 32000,
+          "input": 1.8,
+          "cachedInput": 0.36,
+          "output": 9
+        },
+        {
+          "above": 128000,
+          "input": 3,
+          "cachedInput": 0.6,
+          "output": 15
+        },
+        {
+          "above": 256000,
+          "input": 6,
+          "cachedInput": 1.2,
+          "output": 60
+        }
+      ],
+      "aliases": [
+        "qwen3-coder-plus-2025-09-23",
+        "qwen3-coder-plus-2025-07-22"
+      ],
+      "source": "https://web.archive.org/web/20261007164426/https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+      "checked": "2026-10-22",
+      "note": "Derived from the provider's stated percentages: cachedInput. International (Singapore) prices; tiers count all input tokens of the request; implicit cache hits cost 20 % of input."
+    },
+    {
+      "id": "qwen3-coder-480b-a35b-instruct",
+      "provider": "alibaba",
+      "name": "Qwen3-Coder-480B-A35B-Instruct (open weight)",
+      "status": "retired",
+      "prices": {
+        "input": 1.5,
+        "output": 7.5
+      },
+      "tiers": [
+        {
+          "above": 32000,
+          "input": 2.7,
+          "output": 13.5
+        },
+        {
+          "above": 128000,
+          "input": 4.5,
+          "output": 22.5
+        }
+      ],
+      "source": "https://web.archive.org/web/20261007164426/https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+      "checked": "2026-10-22",
+      "note": "International (Singapore) prices; tiers count all input tokens of the request; implicit cache hits cost 20 % of input."
+    },
+    {
+      "id": "qwen3-coder-next",
+      "provider": "alibaba",
+      "name": "Qwen3-Coder-Next (open weight)",
+      "status": "retired",
+      "prices": {
+        "input": 0.3,
+        "output": 1.5
+      },
+      "tiers": [
+        {
+          "above": 32000,
+          "input": 0.5,
+          "output": 2.5
+        },
+        {
+          "above": 128000,
+          "input": 0.8,
+          "output": 4
+        }
+      ],
+      "source": "https://web.archive.org/web/20261007164426/https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+      "checked": "2026-10-22",
+      "note": "International (Singapore) prices; tiers count all input tokens of the request; implicit cache hits cost 20 % of input."
+    },
+    {
+      "id": "qwen3-coder-30b-a3b-instruct",
+      "provider": "alibaba",
+      "name": "Qwen3-Coder-30B-A3B-Instruct (open weight)",
+      "status": "retired",
+      "prices": {
+        "input": 0.45,
+        "output": 2.25
+      },
+      "tiers": [
+        {
+          "above": 32000,
+          "input": 0.75,
+          "output": 3.75
+        },
+        {
+          "above": 128000,
+          "input": 1.2,
+          "output": 6
+        }
+      ],
+      "source": "https://web.archive.org/web/20261007164426/https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+      "checked": "2026-10-22",
+      "note": "International (Singapore) prices; tiers count all input tokens of the request; implicit cache hits cost 20 % of input."
+    },
+    {
+      "id": "qwen3.8-2.4t-a95b",
+      "provider": "alibaba",
+      "name": "Qwen3.8 2.4T-A95B (open weight)",
+      "status": "current",
+      "prices": {
+        "input": 2,
+        "cacheWrite": 2.5,
+        "output": 6
+      },
+      "source": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+      "checked": "2026-10-22",
+      "note": "Derived from the provider's stated percentages: cacheWrite. International (Singapore) prices; tiers count all input tokens of the request; implicit cache hits cost 20 % of input."
+    },
+    {
+      "id": "qwen3.8-27b",
+      "provider": "alibaba",
+      "name": "Qwen3.8 27B (open weight)",
+      "status": "current",
+      "prices": {
+        "input": 0.5,
+        "cachedInput": 0.1,
+        "cacheWrite": 0.625,
+        "output": 3
+      },
+      "source": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+      "checked": "2026-10-22",
+      "note": "Derived from the provider's stated percentages: cachedInput, cacheWrite. International (Singapore) prices; tiers count all input tokens of the request; implicit cache hits cost 20 % of input."
+    },
+    {
+      "id": "qwen3.6-35b-a3b",
+      "provider": "alibaba",
+      "name": "qwen3.6-35b-a3b (open weight)",
+      "status": "current",
+      "prices": {
+        "input": 0.375,
+        "output": 2.25
+      },
+      "source": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+      "checked": "2026-10-22",
+      "note": "International (Singapore) prices; tiers count all input tokens of the request; implicit cache hits cost 20 % of input."
+    },
+    {
+      "id": "qwen3.6-27b",
+      "provider": "alibaba",
+      "name": "qwen3.6-27b (open weight)",
+      "status": "current",
+      "prices": {
+        "input": 0.6,
+        "output": 3.6
+      },
+      "source": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+      "checked": "2026-10-22",
+      "note": "International (Singapore) prices; tiers count all input tokens of the request; implicit cache hits cost 20 % of input."
+    },
+    {
+      "id": "qwen3.5-397b-a17b",
+      "provider": "alibaba",
+      "name": "qwen3.5-397b-a17b (open weight)",
+      "status": "current",
+      "prices": {
+        "input": 0.6,
+        "output": 3.6
+      },
+      "source": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+      "checked": "2026-10-22",
+      "note": "International (Singapore) prices; tiers count all input tokens of the request; implicit cache hits cost 20 % of input."
+    },
+    {
+      "id": "qwen3.5-122b-a10b",
+      "provider": "alibaba",
+      "name": "qwen3.5-122b-a10b (open weight)",
+      "status": "current",
+      "prices": {
+        "input": 0.4,
+        "output": 3.2
+      },
+      "source": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+      "checked": "2026-10-22",
+      "note": "International (Singapore) prices; tiers count all input tokens of the request; implicit cache hits cost 20 % of input."
+    },
+    {
+      "id": "qwen3.5-27b",
+      "provider": "alibaba",
+      "name": "qwen3.5-27b (open weight)",
+      "status": "current",
+      "prices": {
+        "input": 0.3,
+        "output": 2.4
+      },
+      "source": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+      "checked": "2026-10-22",
+      "note": "International (Singapore) prices; tiers count all input tokens of the request; implicit cache hits cost 20 % of input."
+    },
+    {
+      "id": "qwen3.5-35b-a3b",
+      "provider": "alibaba",
+      "name": "qwen3.5-35b-a3b (open weight)",
+      "status": "current",
+      "prices": {
+        "input": 0.25,
+        "output": 2
+      },
+      "source": "https://www.alibabacloud.com/help/en/model-studio/model-pricing",
+      "checked": "2026-10-22",
+      "note": "International (Singapore) prices; tiers count all input tokens of the request; implicit cache hits cost 20 % of input."
+    },
+    {
+      "id": "glm-5.3",
+      "provider": "zhipu",
+      "name": "GLM-5.3",
+      "status": "current",
+      "prices": {
+        "input": 1.4,
+        "cachedInput": 0.26,
+        "output": 4.4
+      },
+      "source": "https://docs.z.ai/guides/overview/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "glm-5.3-flash",
+      "provider": "zhipu",
+      "name": "GLM-5.3-Flash",
+      "status": "current",
+      "prices": {
+        "input": 0.15,
+        "cachedInput": 0.03,
+        "output": 0.5
+      },
+      "source": "https://docs.z.ai/guides/overview/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "glm-5.3-flashx",
+      "provider": "zhipu",
+      "name": "GLM-5.3-FlashX",
+      "status": "current",
+      "prices": {
+        "input": 0.37,
+        "cachedInput": 0.075,
+        "output": 1.25
+      },
+      "aliases": [
+        "glm-5.3-flashx-legal"
+      ],
+      "source": "https://docs.z.ai/guides/overview/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "glm-5.2",
+      "provider": "zhipu",
+      "name": "GLM-5.2",
+      "status": "current",
+      "prices": {
+        "input": 1.4,
+        "cachedInput": 0.26,
+        "output": 4.4
+      },
+      "source": "https://docs.z.ai/guides/overview/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "glm-5.1",
+      "provider": "zhipu",
+      "name": "GLM-5.1",
+      "status": "current",
+      "prices": {
+        "input": 1.4,
+        "cachedInput": 0.26,
+        "output": 4.4
+      },
+      "source": "https://docs.z.ai/guides/overview/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "glm-5",
+      "provider": "zhipu",
+      "name": "GLM-5",
+      "status": "current",
+      "prices": {
+        "input": 1,
+        "cachedInput": 0.2,
+        "output": 3.2
+      },
+      "aliases": [
+        "glm-5.0"
+      ],
+      "source": "https://docs.z.ai/guides/overview/pricing",
+      "checked": "2026-10-23"
+    },
+    {
+      "id": "glm-4.7",
+      "provider": "zhipu",
+      "name": "GLM-4.7",
+      "status": "current",
+      "prices": {
+        "input": 0.6,
+        "cachedInput": 0.11,
+        "output": 2.2
+      },
+      "source": "https://docs.z.ai/guides/overview/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "glm-4.6",
+      "provider": "zhipu",
+      "name": "GLM-4.6",
+      "status": "current",
+      "prices": {
+        "input": 0.6,
+        "cachedInput": 0.11,
+        "output": 2.2
+      },
+      "source": "https://docs.z.ai/guides/overview/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "glm-4.6v",
+      "provider": "zhipu",
+      "name": "GLM-4.6V",
+      "status": "current",
+      "prices": {
+        "input": 0.3,
+        "cachedInput": 0.05,
+        "output": 0.9
+      },
+      "source": "https://docs.z.ai/guides/overview/pricing",
+      "checked": "2026-10-23"
+    },
+    {
+      "id": "glm-4.7-flashx",
+      "provider": "zhipu",
+      "name": "GLM-4.7-FlashX",
+      "status": "current",
+      "prices": {
+        "input": 0.07,
+        "cachedInput": 0.01,
+        "output": 0.4
+      },
+      "source": "https://docs.z.ai/guides/overview/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "glm-4.5",
+      "provider": "zhipu",
+      "name": "GLM-4.5",
+      "status": "current",
+      "prices": {
+        "input": 0.6,
+        "cachedInput": 0.11,
+        "output": 2.2
+      },
+      "source": "https://docs.z.ai/guides/overview/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "glm-4.5-x",
+      "provider": "zhipu",
+      "name": "GLM-4.5-X",
+      "status": "current",
+      "prices": {
+        "input": 2.2,
+        "cachedInput": 0.45,
+        "output": 8.9
+      },
+      "source": "https://docs.z.ai/guides/overview/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "glm-4.5-air",
+      "provider": "zhipu",
+      "name": "GLM-4.5-Air",
+      "status": "current",
+      "prices": {
+        "input": 0.2,
+        "cachedInput": 0.03,
+        "output": 1.1
+      },
+      "source": "https://docs.z.ai/guides/overview/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "glm-4.5-airx",
+      "provider": "zhipu",
+      "name": "GLM-4.5-AirX",
+      "status": "current",
+      "prices": {
+        "input": 1.1,
+        "cachedInput": 0.22,
+        "output": 4.5
+      },
+      "source": "https://docs.z.ai/guides/overview/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "glm-4.7-flash",
+      "provider": "zhipu",
+      "name": "GLM-4.7-Flash",
+      "status": "current",
+      "free": true,
+      "source": "https://docs.z.ai/guides/overview/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "glm-4.5-flash",
+      "provider": "zhipu",
+      "name": "GLM-4.5-Flash",
+      "status": "current",
+      "free": true,
+      "source": "https://docs.z.ai/guides/overview/pricing",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "minimax-m3.1-flash",
+      "provider": "minimax",
+      "name": "MiniMax-M3.1-Flash",
+      "status": "current",
+      "prices": {
+        "input": 0.15,
+        "cachedInput": 0.015,
+        "output": 0.6
+      },
+      "source": "https://platform.minimax.io/docs/pricing/overview",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "minimax-m3",
+      "provider": "minimax",
+      "name": "MiniMax-M3",
+      "status": "current",
+      "prices": {
+        "input": 0.3,
+        "cachedInput": 0.06,
+        "output": 1.2
+      },
+      "tiers": [
+        {
+          "above": 512000,
+          "input": 0.6,
+          "cachedInput": 0.12,
+          "output": 2.4
+        }
+      ],
+      "source": "https://platform.minimax.io/docs/pricing/overview",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "minimax-m2.7",
+      "provider": "minimax",
+      "name": "MiniMax-M2.7",
+      "status": "deprecated",
+      "prices": {
+        "input": 0.3,
+        "cachedInput": 0.06,
+        "cacheWrite": 0.375,
+        "output": 1.2
+      },
+      "source": "https://web.archive.org/web/20261016000311/https://platform.minimax.io/docs/pricing/overview",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "minimax-m2.7-highspeed",
+      "provider": "minimax",
+      "name": "MiniMax-M2.7-highspeed",
+      "status": "deprecated",
+      "prices": {
+        "input": 0.6,
+        "cachedInput": 0.06,
+        "cacheWrite": 0.375,
+        "output": 2.4
+      },
+      "source": "https://web.archive.org/web/20261016000311/https://platform.minimax.io/docs/pricing/overview",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "minimax-m2.5",
+      "provider": "minimax",
+      "name": "MiniMax-M2.5",
+      "status": "deprecated",
+      "prices": {
+        "input": 0.3,
+        "cachedInput": 0.03,
+        "cacheWrite": 0.375,
+        "output": 1.2
+      },
+      "source": "https://web.archive.org/web/20261016000311/https://platform.minimax.io/docs/pricing/overview",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "minimax-m2.5-highspeed",
+      "provider": "minimax",
+      "name": "MiniMax-M2.5-highspeed",
+      "status": "deprecated",
+      "prices": {
+        "input": 0.6,
+        "cachedInput": 0.03,
+        "cacheWrite": 0.375,
+        "output": 2.4
+      },
+      "source": "https://web.archive.org/web/20261016000311/https://platform.minimax.io/docs/pricing/overview",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "minimax-m2.1",
+      "provider": "minimax",
+      "name": "MiniMax-M2.1",
+      "status": "retired",
+      "prices": {
+        "input": 0.3,
+        "cachedInput": 0.03,
+        "cacheWrite": 0.375,
+        "output": 1.2
+      },
+      "source": "https://web.archive.org/web/20261016000311/https://platform.minimax.io/docs/pricing/overview",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "minimax-m2.1-highspeed",
+      "provider": "minimax",
+      "name": "MiniMax-M2.1-highspeed",
+      "status": "retired",
+      "prices": {
+        "input": 0.6,
+        "cachedInput": 0.03,
+        "cacheWrite": 0.375,
+        "output": 2.4
+      },
+      "source": "https://web.archive.org/web/20261016000311/https://platform.minimax.io/docs/pricing/overview",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "minimax-m2",
+      "provider": "minimax",
+      "name": "MiniMax-M2",
+      "status": "retired",
+      "prices": {
+        "input": 0.3,
+        "cachedInput": 0.03,
+        "cacheWrite": 0.375,
+        "output": 1.2
+      },
+      "source": "https://web.archive.org/web/20261016000311/https://platform.minimax.io/docs/pricing/overview",
+      "checked": "2026-10-22"
+    },
+    {
+      "id": "hy4-preview",
+      "provider": "tencent",
+      "name": "Hy4 preview",
+      "status": "preview",
+      "prices": {
+        "input": 0.834,
+        "cachedInput": 0.042,
+        "output": 2.501
+      },
+      "source": "https://www.tencentcloud.com/document/product/1300/78937",
+      "checked": "2026-10-23",
+      "note": "Tencent Cloud TokenHub list price; API id hy4-preview."
+    },
+    {
+      "id": "hy3",
+      "provider": "tencent",
+      "name": "Hy3",
+      "status": "current",
+      "prices": {
+        "input": 0.132,
+        "cachedInput": 0.033,
+        "output": 0.528
+      },
+      "source": "https://www.tencentcloud.com/document/product/1300/78937",
+      "checked": "2026-10-23",
+      "note": "Tencent Cloud TokenHub list price; API id hy3."
+    },
+    {
+      "id": "big-pickle",
+      "provider": "opencode",
+      "name": "Big Pickle (OpenCode Zen)",
+      "status": "current",
+      "free": true,
+      "source": "https://opencode.ai/docs/zen",
+      "checked": "2026-10-22"
+    }
+  ],
+  "unknown": [
+    {
+      "match": "prefix",
+      "value": "neko-model-",
+      "reason": "Random aliases of a local router (Neko Route); no model or price can be derived."
+    },
+    {
+      "match": "exact",
+      "value": "codex-auto-review",
+      "reason": "Codex's hidden automatic-approval reviewer for ChatGPT sign-in; not an API model, no public price."
+    },
+    {
+      "match": "exact",
+      "value": "gemini-3.1-flash",
+      "reason": "Antigravity label with no official model or price."
+    },
+    {
+      "match": "exact",
+      "value": "gemini-3.1-flash-b",
+      "reason": "Antigravity label with no official model or price."
+    },
+    {
+      "match": "exact",
+      "value": "gemini-pro-default",
+      "reason": "Antigravity routing label; the model behind it is not documented."
+    },
+    {
+      "match": "exact",
+      "value": "deepseek-pro",
+      "reason": "Not an official DeepSeek id."
+    },
+    {
+      "match": "exact",
+      "value": "openrouter/auto",
+      "reason": "Router id; the model used is not recorded."
+    },
+    {
+      "match": "exact",
+      "value": "auto",
+      "reason": "Router id; the model used is not recorded."
+    },
+    {
+      "match": "prefix",
+      "value": "default-model",
+      "reason": "WorkBuddy routing slot; Tencent's gateway picks the model and the log does not name it."
+    },
+    {
+      "match": "exact",
+      "value": "fast-model",
+      "reason": "WorkBuddy routing slot; Tencent's gateway picks the model and the log does not name it."
+    },
+    {
+      "match": "exact",
+      "value": "balanced-model",
+      "reason": "WorkBuddy routing slot; Tencent's gateway picks the model and the log does not name it."
+    },
+    {
+      "match": "exact",
+      "value": "primary-model",
+      "reason": "WorkBuddy routing slot; Tencent's gateway picks the model and the log does not name it."
+    },
+    {
+      "match": "exact",
+      "value": "deep-model",
+      "reason": "WorkBuddy routing slot; Tencent's gateway picks the model and the log does not name it."
+    },
+    {
+      "match": "exact",
+      "value": "auto-chat",
+      "reason": "WorkBuddy routing slot; Tencent's gateway picks the model and the log does not name it."
+    },
+    {
+      "match": "exact",
+      "value": "default",
+      "reason": "WorkBuddy routing slot; Tencent's gateway picks the model and the log does not name it."
+    },
+    {
+      "match": "exact",
+      "value": "default-1.1",
+      "reason": "WorkBuddy legacy slot labelled Claude-3.7-Sonnet; the served model is chosen by Tencent's gateway and not recorded."
+    },
+    {
+      "match": "exact",
+      "value": "default-1.2",
+      "reason": "WorkBuddy legacy slot labelled Claude-4.0-Sonnet; the served model is chosen by Tencent's gateway and not recorded."
+    }
+  ],
+  "tests": [
+    {
+      "model": "claude-opus-5-5",
+      "expect": "claude-opus-5-5"
+    },
+    {
+      "model": "gpt-5.5",
+      "expect": "gpt-5.5"
+    },
+    {
+      "model": "claude-opus-5",
+      "expect": "claude-opus-5"
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "expect": "gpt-5.6-sol"
+    },
+    {
+      "model": "gpt-6.1-sol",
+      "expect": "gpt-6.1-sol"
+    },
+    {
+      "model": "claude-fable-5",
+      "expect": "claude-fable-5"
+    },
+    {
+      "model": "claude-opus-4-8",
+      "expect": "claude-opus-4-8"
+    },
+    {
+      "model": "gpt-6-astra",
+      "expect": "gpt-6-astra"
+    },
+    {
+      "model": "gpt-5.4",
+      "expect": "gpt-5.4"
+    },
+    {
+      "model": "claude-fable-5-1",
+      "expect": "claude-fable-5-1"
+    },
+    {
+      "model": "claude-sonnet-5",
+      "expect": "claude-sonnet-5"
+    },
+    {
+      "model": "gpt-6-sol",
+      "expect": "gpt-6-sol"
+    },
+    {
+      "model": "deepseek-flash",
+      "expect": "deepseek-flash"
+    },
+    {
+      "model": "claude-sonnet-5-5",
+      "expect": "claude-sonnet-5-5"
+    },
+    {
+      "model": "gpt-5-codex",
+      "expect": "gpt-5-codex"
+    },
+    {
+      "model": "deepseek-v4-pro",
+      "expect": "deepseek-v4-pro"
+    },
+    {
+      "model": "codex-auto-review",
+      "expect": "unknown"
+    },
+    {
+      "model": "Claude-opus-4-8-off",
+      "expect": "claude-opus-4-8"
+    },
+    {
+      "model": "gpt5.5",
+      "expect": "gpt-5.5"
+    },
+    {
+      "model": "gpt-5.5-pro",
+      "expect": "gpt-5.5-pro"
+    },
+    {
+      "model": "deepseek-v4.1-flash-free",
+      "expect": "free"
+    },
+    {
+      "model": "claude-haiku-5-5",
+      "expect": "claude-haiku-5-5"
+    },
+    {
+      "model": "neko-model-f1097c63",
+      "expect": "unknown"
+    },
+    {
+      "model": "",
+      "expect": "unknown"
+    },
+    {
+      "model": "claude-opus-5-5[1m]",
+      "expect": "claude-opus-5-5"
+    },
+    {
+      "model": "claude-opus-5-5-fast",
+      "expect": "claude-opus-5-5 fast"
+    },
+    {
+      "model": "anthropic/claude-opus-4.8-fast",
+      "expect": "claude-opus-4-8 fast"
+    },
+    {
+      "model": "claude-sonnet-5-5-fast",
+      "expect": "unknown"
+    },
+    {
+      "model": "anthropic/claude-sonnet-4.5",
+      "expect": "claude-sonnet-4-5"
+    },
+    {
+      "model": "claude-sonnet-4-5-20250929",
+      "expect": "claude-sonnet-4-5"
+    },
+    {
+      "model": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+      "expect": "claude-sonnet-4-5"
+    },
+    {
+      "model": "global.anthropic.claude-opus-4-6-v1",
+      "expect": "claude-opus-4-6"
+    },
+    {
+      "model": "claude-opus-5-5@default",
+      "expect": "claude-opus-5-5"
+    },
+    {
+      "model": "claude-3-5-sonnet-20240620",
+      "expect": "claude-3-5-sonnet"
+    },
+    {
+      "model": "anthropic/claude-3.7-sonnet:thinking",
+      "expect": "claude-3-7-sonnet"
+    },
+    {
+      "model": "claude-opus-5-thinking-max",
+      "expect": "claude-opus-5"
+    },
+    {
+      "model": "duo-chat-sonnet-4-6",
+      "expect": "claude-sonnet-4-6"
+    },
+    {
+      "model": "gpt-4o-2024-05-13",
+      "expect": "gpt-4o-2024-05-13"
+    },
+    {
+      "model": "gpt-4o-2024-08-06",
+      "expect": "gpt-4o"
+    },
+    {
+      "model": "gpt-4o-2024-11-20",
+      "expect": "gpt-4o"
+    },
+    {
+      "model": "openai/gpt-5.2:nitro:exacto",
+      "expect": "gpt-5.2"
+    },
+    {
+      "model": "gpt-5.5-2026-04-23",
+      "expect": "gpt-5.5"
+    },
+    {
+      "model": "Gemini 3.1 Pro (High)",
+      "expect": "gemini-3.1-pro-preview"
+    },
+    {
+      "model": "gemini-3.1-pro-high",
+      "expect": "gemini-3.1-pro-preview"
+    },
+    {
+      "model": "gemini-3.8-flash-low",
+      "expect": "gemini-3.8-flash"
+    },
+    {
+      "model": "models/gemini-2.5-pro",
+      "expect": "gemini-2.5-pro"
+    },
+    {
+      "model": "gemini-3.1-flash",
+      "expect": "unknown"
+    },
+    {
+      "model": "grok-code-fast-1",
+      "expect": "grok-code-fast-1"
+    },
+    {
+      "model": "grok-4",
+      "expect": "grok-4-0709"
+    },
+    {
+      "model": "mistral-large-latest",
+      "expect": "mistral-large-2512"
+    },
+    {
+      "model": "mistral-large-2411",
+      "expect": "mistral-large-2411"
+    },
+    {
+      "model": "qwen3-max",
+      "expect": "qwen3-max"
+    },
+    {
+      "model": "kimi-k3",
+      "expect": "kimi-k3"
+    },
+    {
+      "model": "glm-4.7-flash",
+      "expect": "free"
+    },
+    {
+      "model": "MiniMax-M3",
+      "expect": "minimax-m3"
+    },
+    {
+      "model": "big-pickle",
+      "expect": "free"
+    },
+    {
+      "model": "deepseek/deepseek-v4-flash:free",
+      "expect": "free"
+    },
+    {
+      "model": "deepseek-pro",
+      "expect": "unknown"
+    },
+    {
+      "model": "qwen3-coder:30b",
+      "provider": "ollama",
+      "expect": "free"
+    },
+    {
+      "model": "gpt-oss:120b-cloud",
+      "provider": "ollama",
+      "expect": "unknown"
+    },
+    {
+      "model": "openai/gpt-oss-20b",
+      "provider": "lmstudio",
+      "expect": "free"
+    },
+    {
+      "model": "claude-opus-5-5",
+      "provider": "custom",
+      "expect": "claude-opus-5-5"
+    },
+    {
+      "model": "deepseek-v4.1-flash-sg",
+      "expect": "deepseek-flash"
+    },
+    {
+      "model": "deepseek-v4-pro-volc",
+      "expect": "deepseek-v4-pro"
+    },
+    {
+      "model": "deepseek-v3-2-volc",
+      "expect": "unknown"
+    },
+    {
+      "model": "deepseek-v3-1-lkeap",
+      "expect": "unknown"
+    },
+    {
+      "model": "minimax-m3-pay",
+      "expect": "unknown"
+    },
+    {
+      "model": "kimi-k3-2",
+      "expect": "unknown"
+    },
+    {
+      "model": "hy3",
+      "expect": "hy3"
+    },
+    {
+      "model": "hy3-x",
+      "expect": "unknown"
+    },
+    {
+      "model": "hy4-preview",
+      "expect": "hy4-preview"
+    },
+    {
+      "model": "glm-5.0",
+      "expect": "glm-5"
+    },
+    {
+      "model": "glm-4.6v",
+      "expect": "glm-4.6v"
+    },
+    {
+      "model": "default-model",
+      "expect": "unknown"
+    },
+    {
+      "model": "balanced-model",
+      "expect": "unknown"
+    },
+    {
+      "model": "default-1.2",
+      "expect": "unknown"
+    },
+    {
+      "model": "deepseek-v4.1-flash-1017",
+      "expect": "deepseek-flash"
+    },
+    {
+      "model": "gemini 3.8 flash",
+      "expect": "gemini-3.8-flash"
+    },
+    {
+      "model": "gemini 4 argon",
+      "expect": "gemini-4-argon"
+    }
+  ]
+}

@@ -1,11 +1,12 @@
 use super::LiveRateSourceScope;
-use crate::models::CurvePoint;
-use std::collections::{HashMap, HashSet, VecDeque};
+use crate::models::{CurvePoint, ModelRate};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{Mutex, OnceLock};
 
 const FALLBACK_BASELINE_TPS: f64 = 40.0;
 const MAX_POINTS: usize = 80;
 const NO_FRESH_QUANTITY_SECONDS: f64 = 20.0;
+const MAX_UNRESOLVED_MODEL_THREADS: usize = 8;
 const FILTER_WEIGHTS: [f64; 5] = [1.0, 2.0, 3.0, 2.0, 1.0];
 
 static CURVES: OnceLock<Mutex<HashMap<LiveRateSourceScope, HashMap<String, ThreadCurve>>>> =
@@ -382,9 +383,11 @@ pub(super) fn apply_signals(scope: &LiveRateSourceScope, signals: &[RolloutSigna
                 if !is_start && at < last_quantity {
                     continue;
                 }
+                // A new turn must not inherit the previous turn's model when
+                // its Context signal is missing or arrives later.
                 let model = match signal {
                     RolloutSignal::Context { model, .. } => model.clone(),
-                    _ => thread.model.clone(),
+                    _ => None,
                 };
                 reset_turn(thread, turn_id.to_owned(), model);
             }
@@ -466,6 +469,102 @@ fn turn_matches(thread: &ThreadCurve, turn_id: Option<&str>) -> bool {
         .is_some_and(|current| Some(current) == turn_id)
 }
 
+fn unresolved_model(model: Option<&str>) -> bool {
+    model.is_none_or(|model| model.is_empty() || model == "unknown")
+}
+
+fn active_curve_at(thread: &ThreadCurve, now: f64) -> bool {
+    let curve = &thread.curve;
+    let within_completion_tail = curve
+        .completed_at
+        .is_none_or(|completed_at| now - completed_at < 5.0);
+    !curve.stopped
+        && !curve.paused
+        && within_completion_tail
+        && (curve.display > 0.0
+            || curve.budget > 0.0
+            || curve
+                .queue
+                .iter()
+                .any(|rate| rate.is_finite() && *rate > 0.0))
+        && curve.last_quantity_at.is_some_and(|last_quantity| {
+            last_quantity.is_finite()
+                && now.is_finite()
+                && last_quantity <= now + 2.0
+                && now - last_quantity < NO_FRESH_QUANTITY_SECONDS
+        })
+}
+
+/// Returns bounded exact `(thread, turn)` requests for active curves whose
+/// model is unresolved. Curves are sorted by thread ID so lookup priority is
+/// stable across polls.
+pub(super) fn unresolved_model_requests(
+    scope: &LiveRateSourceScope,
+    now: f64,
+) -> Vec<(String, Vec<String>)> {
+    let all = CURVES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(threads) = all.get(scope) else {
+        return Vec::new();
+    };
+    let mut requests = threads
+        .iter()
+        .filter_map(|(thread_id, state)| {
+            let turn_id = state.turn_id.as_deref()?;
+            (!thread_id.is_empty()
+                && !turn_id.is_empty()
+                && turn_id.len() <= 512
+                && unresolved_model(state.model.as_deref())
+                && active_curve_at(state, now))
+            .then(|| (thread_id.clone(), vec![turn_id.to_owned()]))
+        })
+        .collect::<Vec<_>>();
+    requests.sort_by(|left, right| left.0.cmp(&right.0));
+    requests.truncate(MAX_UNRESOLVED_MODEL_THREADS);
+    requests
+}
+
+/// Applies resolved model metadata to the exact current turn only.
+/// No curve quantity, timing, lifecycle, or smoothing state is changed.
+pub(super) fn resolve_models(
+    scope: &LiveRateSourceScope,
+    resolved: &HashMap<String, HashMap<String, String>>,
+    now: f64,
+) -> bool {
+    if resolved.is_empty() || !now.is_finite() {
+        return false;
+    }
+    let mut all = CURVES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(threads) = all.get_mut(scope) else {
+        return false;
+    };
+    let mut changed = false;
+    for (thread_id, turns) in resolved {
+        let Some(state) = threads.get_mut(thread_id) else {
+            continue;
+        };
+        let Some(turn_id) = state.turn_id.as_deref() else {
+            continue;
+        };
+        if !unresolved_model(state.model.as_deref()) || !active_curve_at(state, now) {
+            continue;
+        }
+        let Some(model) = turns.get(turn_id).filter(|model| {
+            !model.trim().is_empty() && !model.trim().eq_ignore_ascii_case("unknown")
+        }) else {
+            continue;
+        };
+        state.model = Some(model.clone());
+        changed = true;
+    }
+    changed
+}
+
 fn reset_turn(thread: &mut ThreadCurve, turn_id: String, model: Option<String>) {
     let baseline_samples = model
         .as_ref()
@@ -484,20 +583,27 @@ pub(super) fn snapshot(
     scope: &LiveRateSourceScope,
     now: f64,
     selected_thread_id: Option<&str>,
-) -> (f64, f64, Vec<CurvePoint>) {
+) -> (f64, f64, Vec<ModelRate>, Vec<CurvePoint>) {
     let mut all = CURVES
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let Some(threads) = all.get_mut(scope) else {
-        return (0.0, 0.0, Vec::new());
+        return (0.0, 0.0, Vec::new(), Vec::new());
     };
-    let mut total = 0.0;
+    let mut rates_by_model = BTreeMap::<String, f64>::new();
     let mut selected = 0.0;
     let mut points = Vec::new();
     for (thread_id, state) in threads.iter_mut() {
         let rate = state.curve.advance(now);
-        total += rate;
+        if rate.is_finite() && rate > 0.0 {
+            let model = state
+                .model
+                .as_deref()
+                .filter(|model| !model.is_empty())
+                .unwrap_or("unknown");
+            *rates_by_model.entry(model.to_owned()).or_default() += rate;
+        }
         if selected_thread_id == Some(thread_id.as_str()) {
             selected = rate;
         }
@@ -518,7 +624,15 @@ pub(super) fn snapshot(
         }
     }
     points.sort_by(|left, right| left.timestamp.total_cmp(&right.timestamp));
-    (total, selected, points)
+    let model_rates = rates_by_model
+        .into_iter()
+        .map(|(model, tokens_per_second)| ModelRate {
+            model,
+            tokens_per_second,
+        })
+        .collect::<Vec<_>>();
+    let total = model_rates.iter().map(|rate| rate.tokens_per_second).sum();
+    (total, selected, model_rates, points)
 }
 
 pub(super) fn current_context(
@@ -612,6 +726,38 @@ fn signal_timestamp(signal: &RolloutSignal) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn add_active_test_turn(
+        signals: &mut Vec<RolloutSignal>,
+        thread_id: &str,
+        model: Option<&str>,
+        at: f64,
+    ) {
+        let turn_id = format!("{thread_id}-turn");
+        signals.push(RolloutSignal::Context {
+            thread_id: thread_id.into(),
+            turn_id: Some(turn_id.clone()),
+            model: model.map(ToOwned::to_owned),
+            at,
+        });
+        signals.push(RolloutSignal::ReasoningCompleted {
+            thread_id: thread_id.into(),
+            turn_id: Some(turn_id),
+            item_id: format!("{thread_id}-reasoning"),
+            duration_seconds: 2.0,
+            at: at + 0.5,
+        });
+    }
+
+    fn usage_without_context(thread_id: &str, turn_id: &str, at: f64) -> RolloutSignal {
+        RolloutSignal::UsageSettled {
+            thread_id: thread_id.into(),
+            turn_id: Some(turn_id.into()),
+            output_tokens: 100,
+            reasoning_tokens: 0,
+            at,
+        }
+    }
 
     #[test]
     fn smoothed_curve_spends_budget_and_clears_after_completion() {
@@ -759,6 +905,18 @@ mod tests {
         apply_signals(&scope, &signals, 3.0);
         let all = CURVES.get().unwrap().lock().unwrap();
         let thread = all.get(&scope).unwrap().get("t").unwrap();
+        assert_eq!(thread.model, None);
+        assert_eq!(thread.curve.baseline(), FALLBACK_BASELINE_TPS);
+        drop(all);
+        let resolved_model = [RolloutSignal::Context {
+            thread_id: "t".into(),
+            turn_id: Some("turn-b".into()),
+            model: Some("model-a".into()),
+            at: 3.5,
+        }];
+        apply_signals(&scope, &resolved_model, 3.5);
+        let all = CURVES.get().unwrap().lock().unwrap();
+        let thread = all.get(&scope).unwrap().get("t").unwrap();
         assert_eq!(thread.curve.baseline(), 100.0);
         drop(all);
         let new_model = [RolloutSignal::Context {
@@ -771,5 +929,316 @@ mod tests {
         let all = CURVES.get().unwrap().lock().unwrap();
         let thread = all.get(&scope).unwrap().get("t").unwrap();
         assert_eq!(thread.curve.baseline(), FALLBACK_BASELINE_TPS);
+    }
+
+    #[test]
+    fn snapshot_aggregates_current_display_by_sorted_model_and_keeps_unknown_quantity() {
+        let scope = LiveRateSourceScope::new(
+            "c-curve-model-rates-aggregate-test",
+            "c-curve-model-rates-aggregate-test",
+        );
+        let mut signals = Vec::new();
+        add_active_test_turn(&mut signals, "thread-z-a", Some("model-z"), 10.0);
+        add_active_test_turn(&mut signals, "thread-z-b", Some("model-z"), 10.0);
+        add_active_test_turn(&mut signals, "thread-a", Some("model-a"), 10.0);
+        add_active_test_turn(&mut signals, "thread-unknown", None, 10.0);
+        apply_signals(&scope, &signals, 16.0);
+
+        let (total, _, model_rates, _) = snapshot(&scope, 16.0, None);
+        assert_eq!(
+            model_rates
+                .iter()
+                .map(|rate| rate.model.as_str())
+                .collect::<Vec<_>>(),
+            vec!["model-a", "model-z", "unknown"]
+        );
+        let model_a = model_rates
+            .iter()
+            .find(|rate| rate.model == "model-a")
+            .unwrap()
+            .tokens_per_second;
+        let model_z = model_rates
+            .iter()
+            .find(|rate| rate.model == "model-z")
+            .unwrap()
+            .tokens_per_second;
+        let unknown = model_rates
+            .iter()
+            .find(|rate| rate.model == "unknown")
+            .unwrap()
+            .tokens_per_second;
+        assert!(model_a > 0.0);
+        assert!(model_z > model_a);
+        assert!(unknown > 0.0);
+        assert_eq!(
+            total,
+            model_rates
+                .iter()
+                .map(|rate| rate.tokens_per_second)
+                .sum::<f64>()
+        );
+    }
+
+    #[test]
+    fn stopped_turn_clears_current_model_rate_immediately() {
+        let scope = LiveRateSourceScope::new(
+            "c-curve-model-rates-stop-test",
+            "c-curve-model-rates-stop-test",
+        );
+        let mut signals = Vec::new();
+        add_active_test_turn(&mut signals, "thread", Some("model-a"), 10.0);
+        apply_signals(&scope, &signals, 16.0);
+        let (running_total, _, running_model_rates, _) = snapshot(&scope, 16.0, None);
+        assert!(running_total > 0.0);
+        assert!(!running_model_rates.is_empty());
+
+        apply_signals(
+            &scope,
+            &[RolloutSignal::TurnCompleted {
+                thread_id: "thread".into(),
+                turn_id: Some("thread-turn".into()),
+                failed: true,
+                at: 16.5,
+            }],
+            16.5,
+        );
+        let (stopped_total, _, stopped_model_rates, _) = snapshot(&scope, 16.5, None);
+        assert_eq!(stopped_total, 0.0);
+        assert!(stopped_model_rates.is_empty());
+    }
+
+    #[test]
+    fn startup_usage_without_context_resolves_exact_turn_without_changing_curve_quantity() {
+        let scope = LiveRateSourceScope::new(
+            "c-curve-startup-model-resolution-test",
+            "c-curve-startup-model-resolution-test",
+        );
+        apply_signals(
+            &scope,
+            &[usage_without_context("thread", "active-turn", 10.5)],
+            16.0,
+        );
+
+        let (total_before, _, rates_before, _) = snapshot(&scope, 16.0, None);
+        assert!(total_before > 0.0);
+        assert_eq!(rates_before.len(), 1);
+        assert_eq!(rates_before[0].model, "unknown");
+        assert_eq!(
+            unresolved_model_requests(&scope, 16.0),
+            vec![("thread".into(), vec!["active-turn".into()])]
+        );
+
+        let mut wrong_turn = HashMap::new();
+        wrong_turn.insert(
+            "thread".into(),
+            HashMap::from([("neighbor-turn".into(), "model-wrong".into())]),
+        );
+        assert!(!resolve_models(&scope, &wrong_turn, 16.0));
+        let (total_after_wrong_turn, _, rates_after_wrong_turn, _) = snapshot(&scope, 16.0, None);
+        assert_eq!(total_after_wrong_turn, total_before);
+        assert_eq!(rates_after_wrong_turn[0].model, "unknown");
+
+        let before_metadata_update = {
+            let all = CURVES.get().unwrap().lock().unwrap();
+            let thread = all.get(&scope).unwrap().get("thread").unwrap();
+            (
+                thread.turn_id.clone(),
+                thread.started_at,
+                thread.curve.budget,
+                thread.curve.moment,
+                thread.curve.debt,
+                thread.curve.rate,
+                thread.curve.pending_provisional,
+                thread.curve.pending_reasoning_duration,
+                thread.curve.last_quantity_at,
+                thread.curve.last_settlement_at,
+                thread.curve.last_tick,
+            )
+        };
+        let mut exact_turn = HashMap::new();
+        exact_turn.insert(
+            "thread".into(),
+            HashMap::from([("active-turn".into(), "model-a".into())]),
+        );
+        assert!(resolve_models(&scope, &exact_turn, 16.0));
+        let after_metadata_update = {
+            let all = CURVES.get().unwrap().lock().unwrap();
+            let thread = all.get(&scope).unwrap().get("thread").unwrap();
+            assert_eq!(thread.model.as_deref(), Some("model-a"));
+            (
+                thread.turn_id.clone(),
+                thread.started_at,
+                thread.curve.budget,
+                thread.curve.moment,
+                thread.curve.debt,
+                thread.curve.rate,
+                thread.curve.pending_provisional,
+                thread.curve.pending_reasoning_duration,
+                thread.curve.last_quantity_at,
+                thread.curve.last_settlement_at,
+                thread.curve.last_tick,
+            )
+        };
+        assert_eq!(after_metadata_update, before_metadata_update);
+
+        let (total_after_resolution, _, rates_after_resolution, _) = snapshot(&scope, 16.0, None);
+        assert_eq!(total_after_resolution, total_before);
+        assert_eq!(rates_after_resolution.len(), 1);
+        assert_eq!(rates_after_resolution[0].model, "model-a");
+        assert_eq!(rates_after_resolution[0].tokens_per_second, total_before);
+    }
+
+    #[test]
+    fn stopped_or_known_curve_turn_rejects_model_metadata_updates() {
+        let stopped_scope = LiveRateSourceScope::new(
+            "c-curve-stopped-model-resolution-test",
+            "c-curve-stopped-model-resolution-test",
+        );
+        apply_signals(
+            &stopped_scope,
+            &[usage_without_context("thread", "stopped-turn", 10.5)],
+            16.0,
+        );
+        apply_signals(
+            &stopped_scope,
+            &[RolloutSignal::TurnCompleted {
+                thread_id: "thread".into(),
+                turn_id: Some("stopped-turn".into()),
+                failed: true,
+                at: 16.25,
+            }],
+            16.25,
+        );
+        let stopped_resolution = HashMap::from([(
+            "thread".into(),
+            HashMap::from([("stopped-turn".into(), "model-a".into())]),
+        )]);
+        assert!(!resolve_models(&stopped_scope, &stopped_resolution, 16.25));
+        assert!(unresolved_model_requests(&stopped_scope, 16.25).is_empty());
+        let (stopped_total, _, stopped_rates, _) = snapshot(&stopped_scope, 16.25, None);
+        assert_eq!(stopped_total, 0.0);
+        assert!(stopped_rates.is_empty());
+
+        let known_scope = LiveRateSourceScope::new(
+            "c-curve-known-model-resolution-test",
+            "c-curve-known-model-resolution-test",
+        );
+        let mut signals = Vec::new();
+        add_active_test_turn(&mut signals, "thread", Some("model-known"), 10.0);
+        apply_signals(&known_scope, &signals, 16.0);
+        let known_resolution = HashMap::from([(
+            "thread".into(),
+            HashMap::from([("thread-turn".into(), "model-overwrite".into())]),
+        )]);
+        assert!(!resolve_models(&known_scope, &known_resolution, 16.0));
+        let all = CURVES.get().unwrap().lock().unwrap();
+        let thread = all.get(&known_scope).unwrap().get("thread").unwrap();
+        assert_eq!(thread.model.as_deref(), Some("model-known"));
+    }
+
+    #[test]
+    fn completed_curve_tail_can_resolve_model_until_its_quantity_expires() {
+        let scope = LiveRateSourceScope::new(
+            "c-curve-completed-model-resolution-test",
+            "c-curve-completed-model-resolution-test",
+        );
+        apply_signals(
+            &scope,
+            &[usage_without_context("thread", "completed-turn", 10.5)],
+            11.0,
+        );
+        apply_signals(
+            &scope,
+            &[RolloutSignal::TurnCompleted {
+                thread_id: "thread".into(),
+                turn_id: Some("completed-turn".into()),
+                failed: false,
+                at: 11.25,
+            }],
+            11.25,
+        );
+
+        let requests = unresolved_model_requests(&scope, 12.0);
+        assert_eq!(
+            requests,
+            vec![("thread".into(), vec!["completed-turn".into()])]
+        );
+        let resolution = HashMap::from([(
+            "thread".into(),
+            HashMap::from([("completed-turn".into(), "model-tail".into())]),
+        )]);
+        assert!(resolve_models(&scope, &resolution, 12.0));
+        let (total, _, rates, _) = snapshot(&scope, 12.0, None);
+        assert!(total > 0.0);
+        assert_eq!(rates.len(), 1);
+        assert_eq!(rates[0].model, "model-tail");
+
+        let (expired_total, _, expired_rates, _) = snapshot(&scope, 17.0, None);
+        assert_eq!(expired_total, 0.0);
+        assert!(expired_rates.is_empty());
+        assert!(unresolved_model_requests(&scope, 17.0).is_empty());
+    }
+
+    #[test]
+    fn new_non_context_turn_does_not_inherit_prior_model_and_can_resolve_exactly() {
+        let scope = LiveRateSourceScope::new(
+            "c-curve-new-turn-model-resolution-test",
+            "c-curve-new-turn-model-resolution-test",
+        );
+        let signals = [
+            RolloutSignal::Context {
+                thread_id: "thread".into(),
+                turn_id: Some("previous-turn".into()),
+                model: Some("model-previous".into()),
+                at: 10.0,
+            },
+            RolloutSignal::ReasoningCompleted {
+                thread_id: "thread".into(),
+                turn_id: Some("previous-turn".into()),
+                item_id: "previous-reasoning".into(),
+                duration_seconds: 1.0,
+                at: 10.1,
+            },
+            RolloutSignal::UsageSettled {
+                thread_id: "thread".into(),
+                turn_id: Some("previous-turn".into()),
+                output_tokens: 10,
+                reasoning_tokens: 10,
+                at: 10.5,
+            },
+            RolloutSignal::TurnStarted {
+                thread_id: "thread".into(),
+                turn_id: Some("current-turn".into()),
+                at: 11.0,
+            },
+            usage_without_context("thread", "current-turn", 11.5),
+        ];
+        apply_signals(&scope, &signals, 16.0);
+
+        let (total_before, _, rates_before, _) = snapshot(&scope, 16.0, None);
+        assert!(total_before > 0.0);
+        assert_eq!(rates_before.len(), 1);
+        assert_eq!(rates_before[0].model, "unknown");
+        assert_eq!(
+            unresolved_model_requests(&scope, 16.0),
+            vec![("thread".into(), vec!["current-turn".into()])]
+        );
+        {
+            let all = CURVES.get().unwrap().lock().unwrap();
+            let thread = all.get(&scope).unwrap().get("thread").unwrap();
+            assert_eq!(thread.model, None);
+            assert_eq!(thread.baseline_by_model["model-previous"].len(), 1);
+        }
+
+        let resolution = HashMap::from([(
+            "thread".into(),
+            HashMap::from([("current-turn".into(), "model-current".into())]),
+        )]);
+        assert!(resolve_models(&scope, &resolution, 16.0));
+        let (total_after, _, rates_after, _) = snapshot(&scope, 16.0, None);
+        assert_eq!(total_after, total_before);
+        assert_eq!(rates_after.len(), 1);
+        assert_eq!(rates_after[0].model, "model-current");
+        assert_eq!(rates_after[0].tokens_per_second, total_before);
     }
 }

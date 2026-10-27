@@ -149,6 +149,16 @@ export interface TurnCacheUsage {
   userPrompt: string;
   assistantResponse: string;
   breakdown: TokenCacheBreakdown;
+  requestCount?: number;
+  lowHitCount?: number;
+  zeroHitCount?: number;
+}
+
+export interface CacheRequestUsage {
+  id: string;
+  timestamp: string;
+  model: string | null;
+  breakdown: TokenCacheBreakdown;
 }
 
 export interface TokenCacheUsage {

@@ -26,12 +26,20 @@ if ($ProjectRoot) {
 }
 $TauriDir = Join-Path $RootDir "tauri-app"
 $TauriConfigPath = Join-Path $TauriDir "src-tauri\tauri.conf.json"
+$ReporterProject = Join-Path $RootDir "tools\AgentSpeedReporter\AgentSpeedReporter.csproj"
+$ClaudeLocalReaderProject = Join-Path $RootDir "tools\ClaudeLocalReader\ClaudeLocalReader.csproj"
+$ReporterRuntimeSource = Join-Path $RootDir "tools\AgentSpeedReporter\ReporterRuntime.cs"
+$ReporterLicense = Join-Path $RootDir "Vendor\AgentSpeed\LICENSE"
+$ReporterVendorNotice = Join-Path $RootDir "Vendor\AgentSpeed\VENDOR.md"
+$ReporterNotice = Join-Path $RootDir "tools\AgentSpeedReporter\NOTICE.txt"
 $ReleaseHelper = Join-Path $PSScriptRoot "tauri_windows_release_helper.mjs"
 $VersionDir = Join-Path $RootDir ("dist\release\v{0}" -f $Version)
 $BuildDir = Join-Path $VersionDir "windows-build"
 $RunId = [Guid]::NewGuid().ToString("N")
 $StagingDir = Join-Path $VersionDir (".windows-build.staging.{0}" -f $RunId)
 $ConfigPath = Join-Path $VersionDir (".windows-build.config.{0}.json" -f $RunId)
+$ReporterArtifactsRoot = Join-Path $VersionDir (".windows-build.agent-speed.{0}" -f $RunId)
+$ClaudeLocalArtifactsRoot = Join-Path $VersionDir (".windows-build.claude-local.{0}" -f $RunId)
 # Hosted builds may reuse Cargo's fingerprinted test output. Tests still run;
 # only the cache directory is reused. The default local lane stays disposable.
 $CargoTestDir = if ($ReuseCargoTestCache) {
@@ -199,6 +207,64 @@ function Build-Target {
     )
 
     Write-Host "==> Building Windows $Label ($RustTarget)"
+    $DotnetRuntime = if ($Label -eq "arm64") { "win-arm64" } else { "win-x64" }
+    $ReporterOutput = Join-Path $ReporterArtifactsRoot $DotnetRuntime
+    Invoke-Checked "Agent Speed reporter publish $DotnetRuntime" {
+        dotnet publish $ReporterProject --configuration Release --runtime $DotnetRuntime --self-contained true `
+            --output $ReporterOutput -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:PublishTrimmed=false -p:LangVersion=latest -p:Nullable=enable -p:ImplicitUsings=enable
+    }
+    $ReporterExecutable = Join-Path $ReporterOutput "AgentSpeedReporter.exe"
+    if (-not (Test-Path -LiteralPath $ReporterExecutable)) {
+        throw "Self-contained Agent Speed reporter was not published for $DotnetRuntime."
+    }
+
+    $ClaudeLocalOutput = Join-Path $ClaudeLocalArtifactsRoot $DotnetRuntime
+    Invoke-Checked "Claude local reader publish $DotnetRuntime" {
+        dotnet publish $ClaudeLocalReaderProject --configuration Release --runtime $DotnetRuntime --self-contained true `
+            --output $ClaudeLocalOutput -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:PublishTrimmed=false -p:LangVersion=latest -p:Nullable=enable -p:ImplicitUsings=enable
+    }
+    $ClaudeLocalExecutable = Join-Path $ClaudeLocalOutput "ClaudeLocalReader.exe"
+    if (-not (Test-Path -LiteralPath $ClaudeLocalExecutable)) {
+        throw "Self-contained Claude local reader was not published for $DotnetRuntime."
+    }
+
+    $BuildConfig = Get-Content -LiteralPath $TauriConfigPath -Raw | ConvertFrom-Json
+    $BuildConfig.bundle.createUpdaterArtifacts = $false
+    $Resources = [ordered]@{}
+    foreach ($Resource in $BuildConfig.bundle.resources.PSObject.Properties) {
+        $Resources[$Resource.Name] = $Resource.Value
+    }
+    $Resources[$ReporterExecutable] = "AgentSpeedReporter/AgentSpeedReporter.exe"
+    $Resources[$ReporterLicense] = "AgentSpeedReporter/AGENT-SPEED-LICENSE.txt"
+    $Resources[$ReporterNotice] = "AgentSpeedReporter/NOTICE.txt"
+    $Resources[$ReporterVendorNotice] = "AgentSpeedReporter/VENDOR.md"
+    $Resources[$ClaudeLocalExecutable] = "ClaudeLocalReader/ClaudeLocalReader.exe"
+    # Microsoft runtime notices are present in self-contained publish output
+    # on supported SDKs. Include them when emitted and keep them separate from
+    # the upstream Agent Speed MIT license.
+    foreach ($RuntimeNotice in @(
+        @{ Name = "LICENSE.txt"; Destination = "AgentSpeedReporter/DOTNET-LICENSE.txt" },
+        @{ Name = "THIRD-PARTY-NOTICES.txt"; Destination = "AgentSpeedReporter/DOTNET-THIRD-PARTY-NOTICES.txt" }
+    )) {
+        $RuntimeNoticePath = Join-Path $ReporterOutput $RuntimeNotice.Name
+        if (Test-Path -LiteralPath $RuntimeNoticePath -PathType Leaf) {
+            $Resources[$RuntimeNoticePath] = $RuntimeNotice.Destination
+        }
+    }
+    foreach ($RuntimeNotice in @(
+        @{ Name = "LICENSE.txt"; Destination = "ClaudeLocalReader/DOTNET-LICENSE.txt" },
+        @{ Name = "THIRD-PARTY-NOTICES.txt"; Destination = "ClaudeLocalReader/DOTNET-THIRD-PARTY-NOTICES.txt" }
+    )) {
+        $RuntimeNoticePath = Join-Path $ClaudeLocalOutput $RuntimeNotice.Name
+        if (Test-Path -LiteralPath $RuntimeNoticePath -PathType Leaf) {
+            $Resources[$RuntimeNoticePath] = $RuntimeNotice.Destination
+        }
+    }
+    $BuildConfig.bundle.resources = $Resources
+    Write-Utf8NoBom -Path $ConfigPath -Content (($BuildConfig | ConvertTo-Json -Depth 100) + [Environment]::NewLine)
+
     $Sysroot = (& rustc --print sysroot).Trim()
     $TargetRustlib = Join-Path $Sysroot ("lib\rustlib\{0}" -f $RustTarget)
     if (Test-Path $TargetRustlib) {
@@ -268,12 +334,27 @@ $CargoVersion = [regex]::Match($CargoPackage, '(?m)^version\s*=\s*"([^"]+)"').Gr
 if ($TrackedVersion -ne $Version -or $PackageVersion -ne $Version -or $CargoVersion -ne $Version) {
     throw "Version preflight failed: requested=$Version, tauri=$TrackedVersion, npm=$PackageVersion, cargo=$CargoVersion. Update the tracked versions before building."
 }
+$ReporterProjectText = Get-Content -LiteralPath $ReporterProject -Raw
+$ReporterProjectVersion = [regex]::Match($ReporterProjectText, '(?m)<Version>([^<]+)</Version>').Groups[1].Value
+$ReporterClientVersion = [regex]::Match((Get-Content -LiteralPath $ReporterRuntimeSource -Raw), '(?m)ClientVersion\s*=\s*"([^"]+)"').Groups[1].Value
+if ($ReporterProjectVersion -ne $Version -or $ReporterClientVersion -ne $Version) {
+    throw "Version preflight failed: requested=$Version, Agent Speed helper project=$ReporterProjectVersion, reporter client=$ReporterClientVersion. Update the tracked versions before building."
+}
+foreach ($ReporterInput in @($ReporterProject, $ReporterRuntimeSource, $ReporterLicense, $ReporterVendorNotice, $ReporterNotice)) {
+    if (-not (Test-Path -LiteralPath $ReporterInput -PathType Leaf)) {
+        throw "Agent Speed reporter input is missing: $ReporterInput"
+    }
+}
+if (-not (Test-Path -LiteralPath $ClaudeLocalReaderProject -PathType Leaf)) {
+    throw "Claude local reader project is missing: $ClaudeLocalReaderProject"
+}
 
 Assert-Command "node"
 Assert-Command "npm"
 Assert-Command "rustc"
 Assert-Command "rustup"
 Assert-Command "cargo"
+Assert-Command "dotnet"
 Assert-WindowsNativeToolchain
 Assert-RustTargetsPreflight
 Assert-NsisPreflight
@@ -306,6 +387,14 @@ try {
         node --test `
             (Join-Path $PSScriptRoot "tauri_windows_release.test.mjs") `
             (Join-Path $PSScriptRoot "build_tauri_windows_release.test.mjs")
+    }
+    Invoke-Checked "Agent Speed reporter local privacy tests" {
+        dotnet run --project $ReporterProject --configuration Release -p:LangVersion=latest `
+            -p:Nullable=enable -p:ImplicitUsings=enable -- --self-test
+    }
+    Invoke-Checked "Claude local reader local privacy tests" {
+        dotnet run --project $ClaudeLocalReaderProject --configuration Release -p:LangVersion=latest `
+            -p:Nullable=enable -p:ImplicitUsings=enable -- --self-test
     }
 
     $HadCargoTargetDir = Test-Path Env:CARGO_TARGET_DIR
@@ -363,6 +452,8 @@ try {
     $Published = $true
 } finally {
     Remove-Item -Force -ErrorAction SilentlyContinue $ConfigPath
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $ReporterArtifactsRoot
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $ClaudeLocalArtifactsRoot
     if (-not $ReuseCargoTestCache) {
         Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $CargoTestDir
     }

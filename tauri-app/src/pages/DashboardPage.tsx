@@ -1,5 +1,8 @@
+import { projectOriginalDashboard, clientCostPeriods } from "../multiClient/originalDashboardProjection";
+import { ClientScopeSelector, useClientScope, useClientQuotaItems } from "../multiClient/IntegratedClients";
 import { DiagnosticNotice } from "../components/DiagnosticNotice";
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { AgentSpeedReportingInvitation } from "../components/settings/AgentSpeedReporting";
+import { lazy, Suspense, useCallback, useEffect, useState, useMemo } from "react";
 import { DashboardHeader } from "../components/DashboardHeader";
 import { AppSettingsDialog, type AppSettingsCategory } from "../components/settings/AppSettingsDialog";
 import type { FloatingWindowSettings } from "../floating/floatingSettings";
@@ -220,6 +223,11 @@ export function DashboardPage({
   selectedLiveThreadId,
   threadDeleteBridgeStatus,
 }: DashboardPageProps) {
+  const clientScope = useClientScope();
+  // Dashboard quota must not inherit the sidebar's hidden-window choices.
+  const { catalog: clientQuotaItems } = useClientQuotaItems(dashboard.quota);
+  const displayDashboard = useMemo(() => projectOriginalDashboard(dashboard, clientScope.snapshot, clientScope.allowed), [dashboard, clientScope.snapshot, clientScope.allowed.join(",")]);
+  const displayCosts = useMemo(() => clientScope.codexOnly ? undefined : clientCostPeriods(dashboard, clientScope.snapshot, clientScope.allowed), [dashboard, clientScope.snapshot, clientScope.allowed.join(",")]);
   const [sharedAccountAttribution, setSharedAccountAttribution] = useState<SharedAccountAttributionResult | null>(null);
   const { analyticsReady, summaryReady } = useDashboardPageLifecycle();
   const [initialSettingsRequest] = useState(consumePendingSettingsRequest);
@@ -250,14 +258,57 @@ export function DashboardPage({
       if (disposed) handler();
       else unlisten = handler;
     });
-    return () => {
+
+  return () => {
       disposed = true;
       unlisten?.();
     };
   }, [openSettings]);
 
+    const renderSummary = (speedOnly = false) => (
+      <DashboardSummarySection
+        speedOnly={speedOnly}
+        clientCosts={displayCosts}
+        clientQuotaItems={clientScope.codexOnly ? undefined : clientQuotaItems}
+        includesCodex={clientScope.allowed.includes("codex")}
+        quotaDashboard={dashboard}
+              sourceToken={sourceToken}
+              dashboard={displayDashboard}
+              displaySurfaces={displaySurfaces}
+              floatingSettings={floatingSettings}
+              quotaRefreshIntervalMs={quotaRefreshIntervalMs}
+              liveRate={liveRate}
+              liveThreadOptions={liveThreadOptions}
+              onTokenRateFullScaleChange={onTokenRateFullScaleChange}
+              onOpenSettings={() => openSettings("general")}
+              onLiveRateReset={onLiveRateReset}
+              onLiveRateRetry={onLiveRateRetry}
+              onAcknowledgeUnread={onAcknowledgeUnread}
+              onLiveThreadSelect={onLiveThreadSelect}
+              onQuotaRefresh={onQuotaRefresh}
+              onQuotaRefreshIntervalChange={onQuotaRefreshIntervalChange}
+              onAttributionPreciseRefreshNeeded={onAttributionPreciseRefreshNeeded}
+              onAttributionSafetyAcknowledge={onAttributionSafetyAcknowledge}
+              onAttributionSafetyRefreshNeeded={onAttributionSafetyRefreshNeeded}
+              onAttributionChange={setSharedAccountAttribution}
+              onToggleLiveRate={onToggleLiveRate}
+              onQuotaSidebarChange={onQuotaSidebarChange}
+              onToggleFloating={onToggleFloating}
+              onToggleStatusTray={onToggleStatusTray}
+              platform={platform}
+              radarRefreshGeneration={radarRefreshGeneration}
+              refreshing={refreshing}
+              liveRateEnabled={liveRateEnabled}
+              selectedLiveThreadId={selectedLiveThreadId}
+              sourceHomeIdentity={sourceToken === null
+                ? providerSourceKey
+                : dashboardStatisticsSourceKey(sourceToken) ?? providerSourceKey}
+              usageCacheInitializing={usageCacheInitializing}
+            />
+  );
   return (
     <main className="app-shell">
+      <AgentSpeedReportingInvitation onOpenSettings={() => openSettings("speedReporting")} />
       <section className="dashboard">
         <DashboardHeader
           account={dashboard.account}
@@ -297,6 +348,8 @@ export function DashboardPage({
           threadDeleteBridgeStatus={threadDeleteBridgeStatus}
           runningThreads={runningThreads}
         />
+
+        <ClientScopeSelector />
 
         {preciseIndexUpgradeRequired ? (
           <section aria-live="assertive" className="index-upgrade-warning" role="alert">
@@ -346,43 +399,12 @@ export function DashboardPage({
 
         {summaryReady ? (
           <>
-            <DashboardSummarySection
-              sourceToken={sourceToken}
-              dashboard={dashboard}
-              displaySurfaces={displaySurfaces}
-              floatingSettings={floatingSettings}
-              quotaRefreshIntervalMs={quotaRefreshIntervalMs}
-              liveRate={liveRate}
-              liveThreadOptions={liveThreadOptions}
-              onTokenRateFullScaleChange={onTokenRateFullScaleChange}
-              onOpenSettings={() => openSettings("general")}
-              onLiveRateReset={onLiveRateReset}
-              onLiveRateRetry={onLiveRateRetry}
-              onAcknowledgeUnread={onAcknowledgeUnread}
-              onLiveThreadSelect={onLiveThreadSelect}
-              onQuotaRefresh={onQuotaRefresh}
-              onQuotaRefreshIntervalChange={onQuotaRefreshIntervalChange}
-              onAttributionPreciseRefreshNeeded={onAttributionPreciseRefreshNeeded}
-              onAttributionSafetyAcknowledge={onAttributionSafetyAcknowledge}
-              onAttributionSafetyRefreshNeeded={onAttributionSafetyRefreshNeeded}
-              onAttributionChange={setSharedAccountAttribution}
-              onToggleLiveRate={onToggleLiveRate}
-              onQuotaSidebarChange={onQuotaSidebarChange}
-              onToggleFloating={onToggleFloating}
-              onToggleStatusTray={onToggleStatusTray}
-              platform={platform}
-              radarRefreshGeneration={radarRefreshGeneration}
-              refreshing={refreshing}
-              liveRateEnabled={liveRateEnabled}
-              selectedLiveThreadId={selectedLiveThreadId}
-              sourceHomeIdentity={sourceToken === null
-                ? providerSourceKey
-                : dashboardStatisticsSourceKey(sourceToken) ?? providerSourceKey}
-              usageCacheInitializing={usageCacheInitializing}
-            />
+            {renderSummary()}
             {analyticsReady ? (
               <DashboardAnalyticsSection
-                dashboard={dashboard}
+                clientScoped={!clientScope.codexOnly}
+                sourceToken={sourceToken}
+                dashboard={displayDashboard}
                 sharedAccountAttribution={sharedAccountAttribution}
               />
             ) : (
@@ -405,6 +427,7 @@ export function DashboardPage({
         snapshot={providerRepairSnapshot}
       />
       <AppSettingsDialog
+        quotaSnapshot={dashboard.quota}
         appUpdateState={appUpdateState}
         autostartStatus={autostartStatus}
         autoResumeCancelling={autoResumeCancelling}
@@ -496,7 +519,7 @@ function consumePendingSettingsRequest(): AppSettingsCategory | null {
     return null;
   }
   window.localStorage.removeItem("open-app-settings-requested");
-  return pending === "status" ? "status" : "general";
+  return pending === "multiClientUsage" ? "multiClientUsage" : pending === "status" ? "status" : "general";
 }
 
 function UsageCacheInitializationNotice() {

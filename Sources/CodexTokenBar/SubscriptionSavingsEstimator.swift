@@ -178,7 +178,7 @@ struct SubscriptionSavingsPresentation: Equatable {
     }
 
     private static func standaloneExcludedDescription(_ estimate: SubscriptionSavingsEstimate) -> String {
-        "\(estimate.excludedModels.joined(separator: "/")) \(estimate.excludedCalls) 次调用属于独立额度，不参与 API 等值"
+        "\(estimate.excludedModels.joined(separator: "/")) \(estimate.excludedCalls) 次调用不计入总费用或额度价值"
     }
 
     private static func unpricedDescription(_ estimate: SubscriptionSavingsEstimate) -> String {
@@ -305,7 +305,7 @@ struct SevenDayAPIValuePresentation: Equatable {
             text += "；另有 \(estimate.fallbackModelCalls) 次未知记录按回退模型估算"
         }
         if !estimate.excludedModels.isEmpty {
-            text += "；\(estimate.excludedModels.joined(separator: "/")) \(estimate.excludedCalls) 次调用属于独立额度，不参与 API 等值"
+            text += "；\(estimate.excludedModels.joined(separator: "/")) \(estimate.excludedCalls) 次调用不计入总费用或额度价值"
         }
         if estimate.hasUnpricedUsage {
             text += "；未知价格模型 \(estimate.unpricedModels.joined(separator: "/")) \(estimate.unpricedCalls) 次调用未计入 API 等值，以上为已知价格小计"

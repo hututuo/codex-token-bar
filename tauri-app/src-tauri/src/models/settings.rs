@@ -1,5 +1,96 @@
 use serde::{Deserialize, Serialize};
 
+pub const DEFAULT_SIDEBAR_MODULE_ORDER: [&str; 6] = [
+    "modeltrace",
+    "speeds",
+    "overview",
+    "tasks",
+    "radar",
+    "credits",
+];
+
+pub const DEFAULT_SIDEBAR_LAYOUT_ORDER: [&str; 10] = [
+    "modeltrace",
+    "speed",
+    "tps",
+    "quota:codex",
+    "quota:claudeCode",
+    "models",
+    "tasks",
+    "radar",
+    "credits",
+    "clientUsage",
+];
+
+pub const DEFAULT_SIDEBAR_LAYOUT_HIDDEN: [&str; 1] = ["clientUsage"];
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SidebarLayoutSnapshot {
+    #[serde(default)]
+    pub version: u32,
+    #[serde(default)]
+    pub order: Vec<String>,
+    #[serde(default = "default_sidebar_layout_hidden")]
+    pub hidden: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hidden_compact: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hidden_expanded: Vec<String>,
+}
+
+impl Default for SidebarLayoutSnapshot {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            order: DEFAULT_SIDEBAR_LAYOUT_ORDER
+                .iter()
+                .map(|item| (*item).to_owned())
+                .collect(),
+            hidden: default_sidebar_layout_hidden(),
+            hidden_compact: Vec::new(),
+            hidden_expanded: Vec::new(),
+        }
+    }
+}
+
+fn default_sidebar_layout_hidden() -> Vec<String> {
+    DEFAULT_SIDEBAR_LAYOUT_HIDDEN
+        .iter()
+        .map(|item| (*item).to_owned())
+        .collect()
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SidebarModuleVisibilitySnapshot {
+    #[serde(default = "default_enabled")]
+    pub overview: bool,
+    #[serde(default = "default_enabled")]
+    pub speeds: bool,
+    #[serde(default = "default_enabled")]
+    pub tasks: bool,
+    #[serde(default = "default_enabled")]
+    pub radar: bool,
+    #[serde(default = "default_enabled")]
+    pub credits: bool,
+    #[serde(default = "default_enabled")]
+    pub modeltrace: bool,
+}
+
+impl Default for SidebarModuleVisibilitySnapshot {
+    fn default() -> Self {
+        Self {
+            overview: true,
+            speeds: true,
+            tasks: true,
+            radar: true,
+            credits: true,
+            modeltrace: true,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettingsSnapshot {
@@ -35,11 +126,19 @@ pub struct AppSettingsSnapshot {
     #[serde(default)]
     pub display_surfaces: DisplaySurfaceSettingsSnapshot,
     #[serde(default)]
+    pub sidebar_module_visibility: SidebarModuleVisibilitySnapshot,
+    #[serde(default = "default_sidebar_module_order")]
+    pub sidebar_module_order: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sidebar_layout: Option<SidebarLayoutSnapshot>,
+    #[serde(default)]
     pub setup_guide_completed: bool,
     #[serde(default)]
     pub session_enhancements: SessionEnhancementSettingsSnapshot,
     #[serde(default)]
     pub auto_resume: AutoResumeSettingsSnapshot,
+    #[serde(default)]
+    pub agent_speed_reporting: AgentSpeedReportingSettingsSnapshot,
 }
 
 impl Default for AppSettingsSnapshot {
@@ -58,11 +157,61 @@ impl Default for AppSettingsSnapshot {
             token_rate_scale_initialized_v092: true,
             floating_position: None,
             display_surfaces: DisplaySurfaceSettingsSnapshot::default(),
+            sidebar_module_visibility: SidebarModuleVisibilitySnapshot::default(),
+            sidebar_module_order: default_sidebar_module_order(),
+            sidebar_layout: None,
             setup_guide_completed: false,
             session_enhancements: SessionEnhancementSettingsSnapshot::default(),
             auto_resume: AutoResumeSettingsSnapshot::default(),
+            agent_speed_reporting: AgentSpeedReportingSettingsSnapshot::default(),
         }
     }
+}
+
+/// The independent, opt-in Agent Speed reporter. The username starts empty in a newly
+/// decoded settings document so the settings migration can generate and persist one stable
+/// random pseudonym instead of changing it on every read.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSpeedReportingSettingsSnapshot {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub invitation_handled: bool,
+    #[serde(default)]
+    pub username: String,
+}
+
+impl Default for AgentSpeedReportingSettingsSnapshot {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            invitation_handled: false,
+            username: String::new(),
+        }
+    }
+}
+
+impl AgentSpeedReportingSettingsSnapshot {
+    /// Initialize the pseudonym once. It is deliberately unrelated to the Windows account,
+    /// hostname, Codex identity, or any local path.
+    pub fn ensure_random_username(&mut self) -> bool {
+        if !self.username.trim().is_empty() {
+            self.username = self.username.trim().to_owned();
+            return false;
+        }
+
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        self.username = format!("TokenBar-{}", &suffix[..8]);
+        true
+    }
+}
+
+fn default_sidebar_module_order() -> Vec<String> {
+    DEFAULT_SIDEBAR_MODULE_ORDER
+        .iter()
+        .map(|module| (*module).to_owned())
+        .collect()
 }
 
 /// The three local usage cadence controls are intentionally kept together for
@@ -674,6 +823,8 @@ pub struct DisplaySurfaceSettingsSnapshot {
     pub quota_sidebar_side: String,
     #[serde(default = "default_enabled")]
     pub live_rate_enabled: bool,
+    #[serde(default = "default_activity_speed_display_mode")]
+    pub speed_display_mode: String,
     #[serde(default = "default_disabled")]
     pub status_tray_live_text_enabled: bool,
     #[serde(default = "default_status_metric_order")]
@@ -691,6 +842,7 @@ impl Default for DisplaySurfaceSettingsSnapshot {
             quota_sidebar_enabled: true,
             quota_sidebar_side: default_quota_sidebar_side(),
             live_rate_enabled: default_enabled(),
+            speed_display_mode: default_activity_speed_display_mode(),
             status_tray_live_text_enabled: default_disabled(),
             status_metric_order: default_status_metric_order(),
             status_metric_label_style: default_status_metric_label_style(),
@@ -698,6 +850,8 @@ impl Default for DisplaySurfaceSettingsSnapshot {
         }
     }
 }
+
+pub fn default_activity_speed_display_mode() -> String { "bar".into() }
 
 pub fn default_quota_sidebar_side() -> String { "right".into() }
 

@@ -134,6 +134,9 @@ rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$FRAMEWORKS_DIR"
 
 cp "$BUILD_DIR/$PRODUCT_NAME" "$MACOS_DIR/$PRODUCT_NAME"
+# The local-only statusline executable is intentionally independent of the UI.
+cp "$BUILD_DIR/TokenBarClaudeLocal" "$MACOS_DIR/TokenBarClaudeLocal"
+chmod +x "$MACOS_DIR/TokenBarClaudeLocal"
 cp -R "$BUILD_DIR/CodexTokenBar_CodexTokenBar.bundle" "$RESOURCES_DIR/"
 chmod +x "$MACOS_DIR/$PRODUCT_NAME"
 
@@ -154,6 +157,7 @@ cp "$ROOT_DIR/Resources/CodexSessionEnhancementsInjection.js" "$RESOURCES_DIR/Co
 mkdir -p "$RESOURCES_DIR/OpenSourceLicenses"
 cp "$ROOT_DIR/LICENSE" "$RESOURCES_DIR/OpenSourceLicenses/AGPL-3.0.txt"
 cp "$ROOT_DIR/LICENSES/Tiktoken-MIT.txt" "$RESOURCES_DIR/OpenSourceLicenses/Tiktoken-MIT.txt"
+cp "$ROOT_DIR/LICENSES/ModelTrace-MIT.txt" "$RESOURCES_DIR/OpenSourceLicenses/ModelTrace-MIT.txt"
 cp "$ROOT_DIR/LICENSES/CodexTokenBar-MIT.txt" "$RESOURCES_DIR/OpenSourceLicenses/CodexTokenBar-MIT.txt"
 cp "$ROOT_DIR/LICENSES/Zstandard-BSD-3-Clause.txt" "$RESOURCES_DIR/OpenSourceLicenses/Zstandard-BSD-3-Clause.txt"
 cp "$ROOT_DIR/OPEN_SOURCE_NOTICES.md" "$RESOURCES_DIR/OPEN_SOURCE_NOTICES.md"
@@ -173,6 +177,7 @@ if [[ -d "$FRAMEWORKS_DIR/Sparkle.framework" ]]; then
   sign_target "$FRAMEWORKS_DIR/Sparkle.framework"
 fi
 
+sign_target "$MACOS_DIR/TokenBarClaudeLocal"
 sign_target "$APP_DIR" app
 codesign --verify --deep --strict --verbose=2 "$APP_DIR" >/dev/null
 

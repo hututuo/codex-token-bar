@@ -212,5 +212,20 @@ pub struct TurnCacheUsage {
     pub turn_index_in_session: u32,
     pub user_prompt: String,
     pub assistant_response: String,
+    #[serde(default)]
+    pub request_count: u32,
+    #[serde(default)]
+    pub low_hit_count: u32,
+    #[serde(default)]
+    pub zero_hit_count: u32,
+    pub breakdown: TokenCacheBreakdown,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheRequestUsage {
+    pub id: String,
+    pub timestamp: String,
+    pub model: Option<String>,
     pub breakdown: TokenCacheBreakdown,
 }

@@ -1,3 +1,5 @@
+import { clientBrand, quotaWindowTitle, type QuotaItem } from "../multiClient/integratedClientModel";
+import { clientTitle } from "../multiClient/useClientScope";
 import { DiagnosticNotice } from "./DiagnosticNotice";
 import { memo, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import type {
@@ -83,6 +85,8 @@ import { quotaPaceAccent, semanticMetricColor } from "../styles/semanticColors";
 import { hasStaleAccountQuotaData } from "../state/dashboardWarnings";
 
 interface QuotaStripProps {
+  clientItems?: QuotaItem[];
+  includesCodex?: boolean;
   attributionIdentity?: QuotaAttributionIdentity | null;
   onQuotaRefreshIntervalChange?: (intervalMs: number) => void | Promise<void>;
   onAttributionPreciseRefreshNeeded?: (comparisonUpdatedAt: string) => void;
@@ -125,7 +129,7 @@ function persistenceFenceKey(fence: AttributionPersistenceOwnerLease): string {
   ].join(":");
 }
 
-function QuotaBar({ quota, stale = false }: { quota: QuotaLimit; stale?: boolean }) {
+function QuotaBar({ quota, stale = false, pendingLabel = "待读取" }: { quota: QuotaLimit; stale?: boolean; pendingLabel?: string }) {
   const label = quotaWindowDisplayLabel(quota.label);
   const remainingPercent = typeof quota.remainingPercent === "number" ? quota.remainingPercent : null;
   const measured = quota.availability === "measured" && remainingPercent !== null;
@@ -143,17 +147,17 @@ function QuotaBar({ quota, stale = false }: { quota: QuotaLimit; stale?: boolean
     <div
       aria-label={measured
         ? `${label} 剩 ${measuredLabel}${stale ? "，旧数据" : ""}，已用 ${usedLabel}，重置 ${quota.resetsAt}`
-        : `${label} 额度待读取，重置 ${quota.resetsAt}`}
+         : `${label} 额度${pendingLabel}，重置 ${quota.resetsAt}`}
       className={measured ? "quota-bar" : "quota-bar quota-bar--unavailable"}
     >
       <span className="quota-label">{label}</span>
       <div className="quota-track" aria-hidden="true">
         {measured && fillStyle ? <i className="quota-track-fill" style={fillStyle} /> : (
-          <span className="quota-track-pending">待读取</span>
+          <span className="quota-track-pending">{pendingLabel}</span>
         )}
       </div>
       <div className="quota-bar-meta">
-        {measured ? <span><b>剩 {measuredLabel}{stale ? " 旧" : ""}</b><em>已用 {usedLabel}</em></span> : <span>额度待读取</span>}
+        {measured ? <span><b>剩 {measuredLabel}{stale ? " 旧" : ""}</b><em>已用 {usedLabel}</em></span> : <span>额度{pendingLabel}</span>}
         <em>{quota.resetsAt}</em>
       </div>
     </div>
@@ -315,7 +319,7 @@ function SharedAccountAttributionDetail({
               </div>
               {attribution.excludedModels.length > 0 ? (
                 <div>
-                  <dt>独立额度</dt>
+                  <dt>不计入费用</dt>
                   <dd>{attribution.excludedModels.join("、")} {attribution.excludedCalls} 次调用，不参与 API 等值</dd>
                 </div>
               ) : null}
@@ -464,10 +468,11 @@ function QuotaStripView({
   quotaRefreshIntervalMs,
   recentUsage24h = [],
   snapshot,
+  toolsOnly = false,
   sourceHomeIdentity = "",
   diagnostics = [],
   warnings = [],
-}: QuotaStripProps) {
+}: QuotaStripProps & { toolsOnly?: boolean }) {
   const [showResetDetails, setShowResetDetails] = useState(false);
   const [expandedCredits, setExpandedCredits] = useState<Set<string>>(() => new Set());
   const [attributionPersistence, setAttributionPersistence] = useState({
@@ -1638,7 +1643,7 @@ function QuotaStripView({
     .filter((quota) => quota.availability !== "absent");
   const quotaStripClassName = [
     "quota-strip",
-    visibleQuotaLimits.length === 1 ? "quota-strip--single-window" : "",
+    toolsOnly ? "quota-strip--tools" : visibleQuotaLimits.length === 1 ? "quota-strip--single-window" : "",
     showResetDetails ? "quota-strip--details-open" : "",
   ].filter(Boolean).join(" ");
 
@@ -1658,11 +1663,11 @@ function QuotaStripView({
   return (
     <section
       className={quotaStripClassName}
-      aria-label="账户额度"
+      aria-label={toolsOnly ? "Codex 账户工具" : "账户额度"}
       data-attribution-status={attributionSettings.enabled ? attribution.status : undefined}
     >
-      <div className="quota-plan"><span>当前登录额度</span><strong>官方直连</strong></div>
-      {visibleQuotaLimits.map((quota) => <QuotaBar key={quota.label} quota={quota} stale={quotaDataStale} />)}
+      <div className="quota-plan"><span>{toolsOnly ? "Codex" : "当前登录额度"}</span><strong>{toolsOnly ? "账户工具" : "官方直连"}</strong></div>
+      {!toolsOnly && visibleQuotaLimits.map((quota) => <QuotaBar key={quota.label} quota={quota} stale={quotaDataStale} />)}
       <button
         type="button"
         className="quota-side-card quota-reset-card"
@@ -1704,7 +1709,7 @@ function QuotaStripView({
           </label>
         ) : null}
       </div>
-      {(snapshot.reserveWindows?.length ?? 0) > 0 && (
+      {!toolsOnly && (snapshot.reserveWindows?.length ?? 0) > 0 && (
         <div className="quota-reserve-row" aria-label="Luna 储备额度">
           {(snapshot.reserveWindows ?? []).filter(window => window.availability !== "absent").map(window => (
             <QuotaBar key={window.label} quota={window} stale={quotaDataStale} />
@@ -1955,4 +1960,35 @@ function emptyBucketMergeResult(): AttributionBucketMergeResult {
   };
 }
 
-export const QuotaStrip = memo(QuotaStripView);
+// Scope only changes presentation. Codex tools retain their original component,
+// attribution owner and raw Codex inputs; Claude-only never mounts that owner.
+function ClientQuotaRows({ items, stale }: { items: QuotaItem[]; stale: boolean }) {
+  const clients = [...new Set(items.map(item => item.client))];
+  if (clients.length === 0) return <p className="quota-client-empty">所选客户端暂无本地额度读数</p>;
+  return <div className="quota-client-rows">{clients.map(client =>
+    <div className="quota-client-row" role="group" aria-label={`${clientTitle(client)} 额度`} key={client}>
+      <div className="quota-client-label"><strong><i style={{ background: clientBrand[client] ?? "#888888" }} aria-hidden="true"/>{client === "claudeCode" || client === "claudeDesktop" ? "Claude" : clientTitle(client)}</strong><span>{client === "codex" ? "当前账户" : "本地缓存"}</span></div>
+      <div className="quota-client-windows">{items.filter(item => item.client === client).map(item =>
+        <div className="quota-client-window" data-quota-id={item.id} key={item.id} title={[item.source, item.status].filter(Boolean).join(" · ")}>
+          <QuotaBar stale={item.status.includes("旧") || (client === "codex" && stale)} pendingLabel={item.status || "不可用"} quota={{
+            label: quotaWindowTitle(item.window), availability: item.remaining === null ? "unavailable" : "measured",
+            remainingPercent: item.remaining === null ? null : item.remaining / 100,
+            usedPercent: item.remaining === null ? null : 1 - item.remaining / 100,
+            resetsAt: item.resetsAt && Number.isFinite(Date.parse(item.resetsAt))
+              ? new Date(item.resetsAt).toLocaleString(undefined, { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "重置时间未知",
+          }}/>
+        </div>)}</div>
+    </div>)}</div>;
+}
+
+function QuotaStripEntry(props: QuotaStripProps) {
+  if (props.clientItems) {
+    const includesCodex = props.includesCodex ?? props.clientItems.some(item => item.client === "codex");
+    return <section className="quota-strip quota-strip--clients" aria-label="账户额度">
+      <ClientQuotaRows items={props.clientItems} stale={hasStaleAccountQuotaData(props.diagnostics ?? [])}/>
+      {includesCodex && <QuotaStripView {...props} toolsOnly/>}
+    </section>;
+  }
+  return <QuotaStripView {...props}/>;
+}
+export const QuotaStrip = memo(QuotaStripEntry);

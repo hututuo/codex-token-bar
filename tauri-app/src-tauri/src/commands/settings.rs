@@ -3,11 +3,12 @@ use crate::models::{
     AppSettingsSnapshot, AutoResumeSettingsSnapshot, AutostartStatus,
     DisplaySurfaceSettingsSnapshot, FloatingWindowPositionSnapshot,
     FloatingWindowSettingsSnapshot, SessionEnhancementSettingsSnapshot,
-    UsageRefreshSettingsSnapshot,
+    SidebarLayoutSnapshot, SidebarModuleVisibilitySnapshot, UsageRefreshSettingsSnapshot,
 };
 use super::run_blocking_command;
 use super::window_auth::require_window_label;
 use crate::platform;
+use tauri::Emitter;
 
 #[tauri::command]
 pub async fn read_app_settings(
@@ -21,6 +22,88 @@ pub async fn read_app_settings(
         result
     })
     .await
+}
+
+#[tauri::command]
+pub async fn read_sidebar_module_visibility(
+    window: tauri::WebviewWindow,
+) -> Result<SidebarModuleVisibilitySnapshot, String> {
+    require_window_label(&window, "read_sidebar_module_visibility")?;
+    run_blocking_command(platform::read_sidebar_module_visibility).await
+}
+
+#[tauri::command]
+pub async fn save_sidebar_module_visibility(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    module: String,
+    visible: bool,
+) -> Result<SidebarModuleVisibilitySnapshot, String> {
+    require_window_label(&window, "save_sidebar_module_visibility")?;
+    let saved = run_blocking_command(move || {
+        platform::save_sidebar_module_visibility(&module, visible)
+    })
+    .await?;
+    if let Err(error) = app.emit("sidebar-module-visibility-changed", &saved) {
+        eprintln!(
+            "Codex Token Bar: saved sidebar module visibility but event delivery failed: {error}"
+        );
+    }
+    Ok(saved)
+}
+
+#[tauri::command]
+pub async fn read_sidebar_module_order(
+    window: tauri::WebviewWindow,
+) -> Result<Vec<String>, String> {
+    require_window_label(&window, "read_sidebar_module_order")?;
+    run_blocking_command(platform::read_sidebar_module_order).await
+}
+
+#[tauri::command]
+pub async fn save_sidebar_module_order(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    order: Vec<String>,
+) -> Result<Vec<String>, String> {
+    require_window_label(&window, "save_sidebar_module_order")?;
+    let saved = run_blocking_command(move || platform::save_sidebar_module_order(order)).await?;
+    if let Err(error) = app.emit("sidebar-module-order-changed", &saved) {
+        eprintln!(
+            "Codex Token Bar: saved sidebar module order but event delivery failed: {error}"
+        );
+    }
+    Ok(saved)
+}
+
+#[tauri::command]
+pub async fn read_sidebar_layout(
+    window: tauri::WebviewWindow,
+) -> Result<Option<SidebarLayoutSnapshot>, String> {
+    require_window_label(&window, "read_sidebar_layout")?;
+    run_blocking_command(platform::read_sidebar_layout).await
+}
+
+#[tauri::command]
+pub async fn save_sidebar_layout(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    layout: SidebarLayoutSnapshot,
+    initialize_only: Option<bool>,
+) -> Result<SidebarLayoutSnapshot, String> {
+    require_window_label(&window, "save_sidebar_layout")?;
+    let saved = run_blocking_command(move || {
+        if initialize_only.unwrap_or(false) {
+            platform::initialize_sidebar_layout(layout)
+        } else {
+            platform::save_sidebar_layout(layout)
+        }
+    })
+    .await?;
+    if let Err(error) = app.emit("sidebar-layout-changed", &saved) {
+        eprintln!("Codex Token Bar: saved sidebar layout but event delivery failed: {error}");
+    }
+    Ok(saved)
 }
 
 #[tauri::command]
@@ -87,12 +170,19 @@ pub async fn save_display_surfaces(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     live_rate: tauri::State<'_, crate::commands::live::LiveRateMonitorRegistry>,
+    claude_runtime: tauri::State<'_, crate::core::claude_local_runtime::ClaudeLocalRuntimeRegistry>,
     display: DisplaySurfaceSettingsSnapshot,
 ) -> Result<AppSettingsSnapshot, String> {
     require_window_label(&window, "save_display_surfaces")?;
     // 保存（磁盘写+fsync）在阻塞池；托盘同步沿用既有原生调用路径（live 流
     // 循环本就从异步任务调用同一原生入口），失败只记录不回滚已保存设置。
-    let saved = run_blocking_command(move || platform::save_display_surfaces(display)).await?;
+    let claude_runtime = claude_runtime.inner().clone();
+    let saved = run_blocking_command(move || {
+        let saved = platform::save_display_surfaces(display)?;
+        claude_runtime.set_live_rate_enabled(saved.display_surfaces.live_rate_enabled);
+        Ok(saved)
+    })
+    .await?;
     let saved = sync_saved_display_surfaces(
         saved,
         |saved| live_rate.sync_status_tray_interest(&app, &saved.display_surfaces),
@@ -123,6 +213,12 @@ mod tests {
         let settings_source = include_str!("settings.rs");
         for command in [
             "read_app_settings",
+            "read_sidebar_module_visibility",
+            "save_sidebar_module_visibility",
+            "read_sidebar_module_order",
+            "save_sidebar_module_order",
+            "read_sidebar_layout",
+            "save_sidebar_layout",
             "read_autostart_status",
             "set_autostart_enabled",
             "complete_floating_paging_guide",

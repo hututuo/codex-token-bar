@@ -1,20 +1,42 @@
+import { BodySpeedTrend } from "./BodySpeedTrend";
+import { modelUsageColor } from "../modelUsagePresentation";
 import { createPortal } from "react-dom";
 import { useBodySpeedDetailsRequests } from "./bodySpeedDetailsBridge";
 import { invoke } from "@tauri-apps/api/core";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useObservedSpeedWindow } from "./observedSpeedWindow";
 import { bodyTypeLabel } from "./bodySpeedQuality";
-import { bodySpeedStatus, modelSpeedReadings, recentBodySpeedSamples, speedTimestamp } from "./bodySpeedPresentation";
+import { bodySpeedStatus, recentBodySpeedSamples, speedTimestamp } from "./bodySpeedPresentation";
 import type { LiveThreadOption, ModelSpeedSummary, SpeedSample } from "../../types/live";
 import type { CodexHomeSourceToken } from "../../types/platform";
 export interface ObservedSpeedData {
     modelSpeeds?: ModelSpeedSummary[];
+    modelSpeeds5m?: ModelSpeedSummary[];
     modelSpeeds15m?: ModelSpeedSummary[];
     modelSpeeds30m?: ModelSpeedSummary[];
     speedSamples?: SpeedSample[];
     measurementStatus?: string;
     latestModelSpeeds30m?: ModelSpeedSummary[];
 }
+export function ModelSpeedWindows({ data }: { data: ObservedSpeedData }) {
+    const rows = new Map<string, ModelSpeedSummary>();
+    for (const row of [...(data.latestModelSpeeds30m ?? []), ...(data.modelSpeeds5m ?? []), ...(data.modelSpeeds15m ?? []), ...(data.modelSpeeds30m ?? [])]) {
+        if (row.model.trim() && row.model.toLowerCase() !== "unknown" && !rows.has(row.model)) rows.set(row.model, row);
+    }
+    const average = (model: string, values?: ModelSpeedSummary[]) => {
+        const row = values?.find(r => r.model === model);
+        return <span title={row ? `${row.sampleCount} 段 · ${row.outputTokens} token / ${row.durationSeconds.toFixed(2)} 秒` : "该时段没有合格样本"}>{row?.tokensPerSecond.toFixed(1) ?? "—"}</span>;
+    };
+    return <div className="body-speed-window-models" aria-label="各模型5、15、30分钟平均速度">
+        <div className="body-speed-window-model-head"><span>模型</span><span>最新</span><span>5分钟</span><span>15分钟</span><span>30分钟</span></div>
+        {[...rows.values()].map(row => <div className="body-speed-window-model-row" key={row.model}>
+            <strong title={row.model} style={{ color: modelUsageColor(row.model) }}>{row.model.replace(/^gpt-/, "")}</strong>
+            <b title={`最新合格正文 · ${speedTimestamp(data.latestModelSpeeds30m?.find(m => m.model === row.model)?.lastMeasuredAt)}`}>{data.latestModelSpeeds30m?.find(m => m.model === row.model)?.tokensPerSecond.toFixed(1) ?? "—"}</b>
+            {average(row.model, data.modelSpeeds5m)}{average(row.model, data.modelSpeeds15m)}{average(row.model, data.modelSpeeds30m)}
+        </div>)}
+        {!rows.size && <p className="observed-speed-empty">近30分钟暂无合格读数</p>}
+    </div>;
+}
+
 interface HistoryPage {
     samples: SpeedSample[];
     totalCount: number;
@@ -34,7 +56,7 @@ function BodyTable({ samples, threads, threadTitles, compact = false }: {
     const titles = useMemo(() => new Map([...Object.entries(threadTitles ?? {}), ...threads.map(t => [t.id, t.title] as const)]), [threads, threadTitles]);
     return <div className="body-speed-table-scroll"><table className={`body-speed-table${compact ? " body-speed-table-compact" : ""}`}><thead><tr>{["采样时间", "会话 / 轮次", "正文 ID", "类型", "token", "秒", "TPS", "采样状态"].map(t => <th key={t}>{t}</th>)}</tr></thead><tbody>{samples.map(s => {
             const q = bodySpeedStatus(s), title = titles.get(s.threadId) || s.threadId.slice(0, 12);
-            return <Fragment key={s.id}><tr><td><time title={new Date(s.endedAt * 1000).toLocaleString()}>{speedTimestamp(s.endedAt)}</time></td><td title={`${title}\n会话 ${s.threadId}\n轮次 ${s.turnId}`}><span className="body-speed-session">{title}</span><small>轮 {s.turnId.slice(-6)} · {s.model?.replace("gpt-", "") || "未知模型"}</small></td><td><button className="body-speed-id" title={s.itemId} aria-expanded={expanded === s.id} onClick={() => setExpanded(expanded === s.id ? null : s.id)}>{s.itemId.slice(-9)}</button></td><td>{bodyTypeLabel(s)}</td><td>{s.outputTokens.toLocaleString()}</td><td>{s.durationSeconds.toFixed(2)}</td><td className="body-speed-tps">{s.tokensPerSecond.toFixed(1)}</td><td><span data-confidence={q.confidence} title={q.reason || "计入模型均速"}>{q.label}</span></td></tr>{expanded === s.id && <tr className="body-speed-expanded"><td colSpan={8}><dl><dt>会话 ID</dt><dd>{s.threadId}</dd><dt>轮次 ID</dt><dd>{s.turnId}</dd><dt>正文 ID</dt><dd>{s.itemId}</dd></dl><span>{new Date(s.endedAt * 1000).toLocaleString()} · {q.reason ? `${q.reason}，不计均速` : "计入模型均速"}</span></td></tr>}</Fragment>;
+            return <Fragment key={s.id}><tr><td><time title={new Date(s.endedAt * 1000).toLocaleString()}>{speedTimestamp(s.endedAt)}</time></td><td title={`${title}\n会话 ${s.threadId}\n轮次 ${s.turnId}`}><span className="body-speed-session">{title}</span><small>轮 {s.turnId.slice(-6)} · <span style={{ color: modelUsageColor(s.model) }}>{s.model?.replace("gpt-", "") || "未知模型"}</span></small></td><td><button className="body-speed-id" title={s.itemId} aria-expanded={expanded === s.id} onClick={() => setExpanded(expanded === s.id ? null : s.id)}>{s.itemId.slice(-9)}</button></td><td>{bodyTypeLabel(s)}</td><td>{s.outputTokens.toLocaleString()}</td><td>{s.durationSeconds.toFixed(2)}</td><td className="body-speed-tps">{s.tokensPerSecond.toFixed(1)}</td><td><span data-confidence={q.confidence} title={q.reason || "计入模型均速"}>{q.label}</span></td></tr>{expanded === s.id && <tr className="body-speed-expanded"><td colSpan={8}><dl><dt>会话 ID</dt><dd>{s.threadId}</dd><dt>轮次 ID</dt><dd>{s.turnId}</dd><dt>正文 ID</dt><dd>{s.itemId}</dd></dl><span>{new Date(s.endedAt * 1000).toLocaleString()} · {q.reason ? `${q.reason}，不计均速` : "计入模型均速"}</span></td></tr>}</Fragment>;
         })}</tbody></table>{!samples.length && <p className="observed-speed-empty">等待正文完成</p>}</div>;
 }
 function BodyHistory({ sourceToken, threads, onClose }: {
@@ -91,7 +113,7 @@ export function ObservedSpeedDetails({ data, threads = [], sourceToken = null, s
     sourceToken?: CodexHomeSourceToken | null;
     surface?: "home" | "sidebar";
 }) {
-    const [history, setHistory] = useState(false), [minutes, setMinutes] = useObservedSpeedWindow();
+    const [history, setHistory] = useState(false);
     const [detailsFailure, setDetailsFailure] = useState<string | null>(null);
     const sourceKey = sourceToken ? JSON.stringify(sourceToken) : "";
     const openHistory = useCallback(() => { setHistory(true); setDetailsFailure(null); }, []);
@@ -104,31 +126,15 @@ export function ObservedSpeedDetails({ data, threads = [], sourceToken = null, s
         catch (error) { reportFailure(String(error)); }
     };
     const limit = surface === "sidebar" ? 10 : 6;
-    const recentModels = (minutes === 15 ? data.modelSpeeds15m : data.modelSpeeds30m) ?? [];
-    const models = useMemo(() => modelSpeedReadings(recentModels, data.modelSpeeds ?? []), [recentModels, data.modelSpeeds]);
     const samples = useMemo(() => recentBodySpeedSamples(data.speedSamples ?? [], limit), [data.speedSamples, limit]);
     const titles = useMemo(() => new Map(threads.map(t => [t.id, t.title])), [threads]);
     return <section className={`observed-speed body-speed-surface-${surface}`} aria-label="正文测速" id="qs-section-speeds">
         <div className="observed-speed-heading body-speed-overview-heading">
             <h3>{surface === "sidebar" ? <>各模型最新速度 <small>正文 TPS</small></> : <>正文测速 <small>TPS · token/秒</small></>}</h3>
-            {surface === "home" && <div className="observed-speed-window">{([15, 30] as const).map(v => <button key={v} type="button" aria-pressed={minutes === v} onClick={() => setMinutes(v)}>最近 {v} 分钟</button>)}</div>}
+            <button className="body-speed-more-details" onClick={() => { void invoke("open_modeltrace").catch(error => setDetailsFailure(String(error))); }}>模型指纹 · 手动检测</button>
         </div>
-        {surface === "home" ? <div className="body-speed-overview-models" aria-label="各模型平均速度">
-            {models.map(m => <article className="body-speed-model" key={m.model} data-historical={m.historical}>
-                <strong>{m.model}</strong><b>{m.tokensPerSecond.toFixed(1)} <small>TPS</small></b>
-                <span>{m.historical ? "近7天均速" : `近${minutes}分钟均速`} · {m.sampleCount}条</span>
-                <time title={m.lastMeasuredAt ? new Date(m.lastMeasuredAt * 1000).toLocaleString() : undefined}>末次 {speedTimestamp(m.lastMeasuredAt)}</time>
-            </article>)}
-            {!models.length && <p className="observed-speed-empty">暂无合格模型读数</p>}
-        </div> : <div className="body-speed-sidebar-models" aria-label="各模型最新速度">
-            <div className="body-speed-sidebar-model-head"><span>模型</span><span>最新</span><span>15min均速</span><span>30min均速</span></div>
-            {(data.latestModelSpeeds30m ?? []).map(m => <div className="body-speed-sidebar-model-row" key={m.model}>
-                <strong title={m.model}>{m.model.replace(/^gpt-/, "")}</strong><b title={`最新合格正文 · ${speedTimestamp(m.lastMeasuredAt)}`}>{m.tokensPerSecond.toFixed(1)}</b>
-                <span>{data.modelSpeeds15m?.find(s => s.model === m.model)?.tokensPerSecond.toFixed(1) ?? "—"}</span>
-                <span>{data.modelSpeeds30m?.find(s => s.model === m.model)?.tokensPerSecond.toFixed(1) ?? "—"}</span>
-            </div>)}
-            {!data.latestModelSpeeds30m?.length && <p className="observed-speed-empty">近30分钟暂无合格读数</p>}
-        </div>}
+        <ModelSpeedWindows data={data}/>
+        <BodySpeedTrend preferredModel={[...(data.modelSpeeds15m ?? [])].sort((a,b)=>b.sampleCount-a.sampleCount)[0]?.model} sourceToken={sourceToken} compact={surface === "sidebar" ? "detail" : undefined} revision={(data.speedSamples ?? []).map(s => `${s.id}/${s.model}/${s.confidence}`).join("|")}/>
         <div className="body-speed-recent-heading"><span>最近{limit}条{surface === "home" ? " · 已识别模型" : ""}</span>{surface === "home" && <button disabled={!sourceToken} onClick={() => void openDetails()}>查看详情</button>}</div>
         <ol className="body-speed-recent-list" aria-label="最近测速">{samples.map(s => {
             const status = bodySpeedStatus(s), title = titles.get(s.threadId) || s.threadId.slice(0, 12);

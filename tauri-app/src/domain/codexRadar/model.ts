@@ -158,6 +158,7 @@ export interface CodexRadarModelIQComparisonRow {
 }
 
 export interface CodexRadarChartSeries {
+  model?: string | null;
   id: string;
   label: string;
   points: CodexRadarChartPoint[];
@@ -626,6 +627,7 @@ export function secondaryModelRows(modelIq: CodexRadarModelIQ): CodexRadarModelI
 export function modelIqChartSeries(modelIq: CodexRadarModelIQ): CodexRadarChartSeries[] {
   const latestSeries: CodexRadarChartSeries[] = modelPointHasMeasurement(modelIq.latest) ? [{
     id: modelSeriesID(modelIq.latest),
+    model: modelIq.latest.model ?? "unknown",
     label: modelDisplayName(modelIq.latest),
     points: (modelIq.recentDays.length > 0 ? modelIq.recentDays : [modelIq.latest])
       .filter(modelPointHasMeasurement)
@@ -637,6 +639,7 @@ export function modelIqChartSeries(modelIq: CodexRadarModelIQ): CodexRadarChartS
     .filter((comparison) => modelPointHasMeasurement(comparison.latest))
     .map((comparison) => ({
       id: `${comparison.model}-${comparison.reasoningEffort}`,
+      model: comparison.model,
       label: comparison.label,
       points: (comparison.recentDays.length > 0 ? comparison.recentDays : [comparison.latest]).map(modelPointToChartPoint),
     }))

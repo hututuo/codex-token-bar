@@ -1,3 +1,5 @@
+import { selectedActivityRates, useActivitySpeedMode } from "../multiClient/activitySpeedMode";
+import { ClientActivitySpeedPanel, useClaudeLocalRuntime } from "../multiClient/ClaudeLocalRuntime";
 import { CacheUsageNotice } from "./cacheReminder/CacheUsageNotice";
 import { ObservedSpeedDetails } from "./liveRate/ObservedSpeedDetails";
 import { canUseQuotaSidebar } from "../settings/displaySettings";
@@ -7,6 +9,8 @@ import { LiveRateMeter } from "./liveRate/LiveRateMeter";
 import { liveRateNotice } from "./liveRate/liveRateNotice";
 
 interface LiveRateCardProps {
+  includesCodex?: boolean;
+  localClients?: readonly string[];
   sourceToken?: CodexHomeSourceToken | null;
   liveThreadOptions?: LiveThreadOption[];
   floatingSettings: FloatingWindowSettings;
@@ -30,6 +34,7 @@ interface LiveRateCardProps {
 }
 
 export function LiveRateCard({
+  includesCodex = true, localClients = [],
   sourceToken = null,
   liveThreadOptions = [],
   floatingSettings,
@@ -51,6 +56,11 @@ export function LiveRateCard({
   statusTrayLiveTextEnabled,
   usageCacheInitializing = false,
 }: LiveRateCardProps) {
+  const allowed=[...new Set([...(includesCodex?["codex"]:[]),...localClients])];
+  const mode=useActivitySpeedMode();
+  const local=useClaudeLocalRuntime(allowed,liveRateEnabled);
+  const activityRates=selectedActivityRates(snapshot.modelRates??[],local.modelRates,allowed,mode,snapshot.tokensPerSecond);
+  const activitySnapshot={...snapshot,modelRates:activityRates,tokensPerSecond:activityRates.reduce((n,r)=>n+r.tokensPerSecond,0)};
   const notice = liveRateNotice(snapshot, {
     liveRateEnabled,
     refreshing,
@@ -71,6 +81,7 @@ export function LiveRateCard({
 
   return (
     <section className={liveRateEnabled ? "live-card" : "live-card is-live-disabled"} aria-label="实时速率">
+      {includesCodex && <>
       <div className="section-title-row">
         <div>
           <div className="live-heading-line">
@@ -125,7 +136,7 @@ export function LiveRateCard({
           <LiveRateMeter
             fullScale={floatingSettings.tokenRateFullScale}
             liveRateEnabled={liveRateEnabled}
-            snapshot={snapshot}
+            snapshot={activitySnapshot}
             onFullScaleChange={onTokenRateFullScaleChange}
           />
           <p className="live-rate-note">
@@ -146,6 +157,7 @@ export function LiveRateCard({
           <div className="quick-surface-actions" role="group" aria-label="显示面开关">
             <button
               aria-pressed={floatingEnabled}
+              aria-label="悬浮窗"
               disabled={!platform.floatingWindow.available}
               onClick={onToggleFloating}
               title={platform.floatingWindow.note}
@@ -161,6 +173,7 @@ export function LiveRateCard({
             </button>
             <button
               aria-pressed={quotaSidebarEnabled}
+              aria-label="额度侧栏"
               disabled={!canUseQuotaSidebar(platform)}
               onClick={onToggleQuotaSidebar}
               title="独立额度侧栏：悬停查看额度，点击展开详情"
@@ -194,6 +207,8 @@ export function LiveRateCard({
         </div>
       </div>
       <ObservedSpeedDetails data={snapshot} threads={liveThreadOptions} sourceToken={sourceToken} />
+      </>}
+      <ClientActivitySpeedPanel allowed={allowed} monitoringEnabled={liveRateEnabled} codexRates={snapshot.modelRates??[]} codexOutputRate={snapshot.tokensPerSecond} codexAvailable={liveRateEnabled && failureNotice === null}/>
     </section>
   );
 }

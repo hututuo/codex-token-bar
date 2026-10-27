@@ -1,3 +1,8 @@
+@import "../multiClient/multiClientUsage.css";
+@import "../components/settings/agentSpeedReporting.css";
+@import "../components/liveRate/activityRate.css";
+@import "../components/cacheHitRanking/cacheRequests.css";
+
 :root {
   color-scheme: light dark;
   font-family:
@@ -1568,6 +1573,42 @@ button {
 .quota-strip--single-window {
   grid-template-columns: 74px minmax(384px, 2.7fr) minmax(116px, 0.72fr) minmax(320px, 1.45fr);
 }
+
+/* Keep the original quota tracks and account tools in one surface. Windows
+   wrap within their client row instead of squeezing every client into a rail. */
+.quota-strip.quota-strip--clients {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  padding: 10px 12px;
+}
+.quota-client-rows { display: grid; gap: 12px; min-width: 0; }
+.quota-client-row { display: grid; grid-template-columns: 84px minmax(0, 1fr); align-items: start; gap: 12px; min-width: 0; }
+.quota-client-label { display: grid; gap: 4px; min-width: 0; padding-top: 3px; }
+.quota-client-label strong { display: flex; align-items: center; gap: 5px; font-size: 11px; font-weight: var(--weight-semibold); }
+.quota-client-label i { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; }
+.quota-client-label span { color: var(--muted); font-size: 9px; }
+.quota-client-windows { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); gap: 10px 12px; min-width: 0; }
+.quota-client-window { min-width: 0; }
+.quota-client-empty { margin: 3px 0; color: var(--muted); font-size: 11px; }
+.quota-strip.quota-strip--tools {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 10px 0 0;
+  min-height: 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  gap: 8px;
+}
+.quota-strip--tools > .quota-plan { grid-column: auto; flex: 1 0 84px; }
+.quota-strip--tools > .quota-reset-card { flex: 0 0 154px; }
+.quota-strip--tools > .quota-pace { grid-column: auto; flex: 0 1 348px; min-width: 0; margin-left: auto; }
+.quota-strip--tools > .quota-read-warning { flex: 0 0 100%; }
+.quota-strip--clients:has(.quota-strip--details-open) { z-index: 24; }
 
 .quota-plan {
   display: flex;
@@ -3690,7 +3731,7 @@ button.quota-side-card:hover {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, var(--accent), #18c3d5);
+  background: var(--rate-model-gradient, #7a879e);
 }
 
 .rate-fill {
@@ -8020,60 +8061,6 @@ input[type="range"]::-moz-range-thumb {
   color: var(--text);
 }
 
-.recent-chart-quota-guide {
-  position: relative;
-  z-index: 5;
-  display: flex;
-  align-items: flex-start;
-  gap: 9px;
-  width: min(460px, calc(100% - 28px));
-  margin-top: 12px;
-  padding: 8px 11px;
-  border: 1.2px solid color-mix(in srgb, var(--accent) 42%, transparent);
-  border-radius: 9px;
-  background: color-mix(in srgb, var(--accent) 8%, var(--panel-solid));
-}
-
-.recent-chart-quota-guide__arrow {
-  flex: 0 0 24px;
-  color: var(--accent);
-  font-size: 19px;
-  font-weight: var(--weight-bold);
-  line-height: 1.1;
-  text-align: center;
-}
-
-.recent-chart-quota-guide > div {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
-}
-
-.recent-chart-quota-guide strong {
-  font-size: 11px;
-  font-weight: var(--weight-semibold);
-}
-
-.recent-chart-quota-guide span:not(.recent-chart-quota-guide__arrow) {
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: var(--weight-medium);
-  line-height: 1.25;
-}
-
-.recent-chart-quota-guide button {
-  flex: 0 0 auto;
-  min-height: 24px;
-  padding: 0 8px;
-  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
-  border-radius: 7px;
-  background: transparent;
-  color: var(--accent-strong);
-  cursor: pointer;
-  font-size: 10px;
-  font-weight: var(--weight-semibold);
-}
-
 .quota-estimate-main {
   display: grid;
   gap: 7px;
@@ -8863,7 +8850,9 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   isolation: isolate;
   overflow: hidden;
   user-select: none;
-  -webkit-app-region: drag;
+  /* WebView2's native drag region consumes mousedown before React can detach
+     and settle the edge dock. The shared controller owns this gesture. */
+  -webkit-app-region: no-drag;
 }
 
 .floating-panel-surface[data-guide-mode="true"],
@@ -9797,7 +9786,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   position: absolute;
   inset: 0 auto 0 0;
   border-radius: inherit;
-  background: linear-gradient(90deg, rgba(10, 172, 230, 0.98), rgba(34, 111, 232, 0.92));
+  background: var(--rate-model-gradient, #7a879e);
 }
 
 .floating-close-button {
@@ -10454,7 +10443,7 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, #1688f2, #18c3d5);
+  background: var(--rate-model-gradient, #7a879e);
 }
 
 .status-panel-status strong {
@@ -12949,3 +12938,28 @@ details.session-management-banner {
 @media(max-width:760px){.body-speed-surface-home .body-speed-recent-list>li{grid-template-columns:104px minmax(0,1fr) 72px;gap:6px}.body-speed-surface-home .body-speed-recent-status{display:none}.body-speed-surface-home .body-speed-recent-source{grid-row:1;grid-column:2}.body-speed-surface-home .body-speed-recent-time{grid-row:1;grid-column:1}.body-speed-surface-home .body-speed-recent-list>li>b{grid-row:1;grid-column:3}.body-speed-surface-home .body-speed-recent-source strong{flex-basis:72px}.body-speed-surface-home .body-speed-recent-type{display:none}.body-speed-surface-home .body-speed-recent-quantity{display:none}}
 
 .body-speed-surface-sidebar .body-speed-recent-list>li[data-included=false]>b{color:#c89a5b}
+
+/* Shared model window columns on home and the edge detail. */
+.body-speed-window-models{display:grid;gap:8px;margin:8px 0 12px}
+.body-speed-window-model-head,.body-speed-window-model-row{display:grid;grid-template-columns:minmax(90px,1fr) repeat(4,minmax(42px,70px));gap:6px;align-items:baseline;font-variant-numeric:tabular-nums}
+.body-speed-window-model-head{font-size:10px;opacity:.75}.body-speed-window-model-row{font-size:12px}.body-speed-window-model-row strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.body-speed-window-model-head>:not(:first-child),.body-speed-window-model-row>:not(:first-child){text-align:right}
+.body-speed-surface-sidebar .body-speed-window-models{color:#f4f7fb}.body-speed-surface-sidebar .body-speed-window-model-row{font-size:11px}
+
+.recent-interaction-guide{margin:12px 0;padding:12px;border:1px solid #538eeb40;border-radius:10px;background:#538eeb0c;color:var(--text)}
+.recent-interaction-guide summary{display:flex;justify-content:space-between;align-items:center;cursor:pointer;color:#629bf4;font-size:14px;list-style:none;gap:12px}.recent-interaction-guide summary::-webkit-details-marker{display:none}.recent-interaction-guide summary>span{font-size:11px}
+.rig-content{display:flex;align-items:center;gap:20px;margin-top:10px}.rig-demo{width:220px;flex-shrink:0;border-radius:8px;background:var(--panel-soft, #1420330b)}.rig-demo svg{display:block;width:100%;overflow:visible}.rig-grid{stroke:#8292a32a;stroke-width:1}.rig-line{fill:none;stroke:#629bf4;stroke-width:2;stroke-linejoin:round}.rig-crosshair{stroke:#629bf4;stroke-dasharray:3 3}.rig-selection{fill:#538eeb22;transform-origin:65px 0;animation:rig-select 10s infinite}.rig-cursor{animation:rig-move 10s infinite;transform:translate(35px,67px)}.rig-pointer{animation:rig-press 10s infinite;transform-origin:0 0;fill:#edf3fa;stroke:#263c57;stroke-width:1}.rig-click{fill:#629bf41f;stroke:#629bf4;stroke-width:2;transform-origin:0 0;animation:rig-click 10s infinite}.rig-endpoint{fill:var(--panel-solid);stroke:#629bf4;stroke-width:1.5;opacity:0;animation:rig-start-point 10s infinite}.rig-end-point{animation-name:rig-end-point}.rig-bubble{animation:rig-bubble 10s infinite;transform:translate(0,4px)}.rig-bubble rect{fill:var(--panel, #172435);stroke:#629bf440}.rig-bubble text{fill:var(--text);font:10px system-ui;text-anchor:middle}.rig-reading{animation:rig-reading 10s infinite}.rig-reading-b{animation-name:rig-reading-b}.rig-reading-c{animation-name:rig-reading-c}.rig-demo-caption{font:9px system-ui;fill:#8191a5;text-anchor:middle}.rig-instructions strong{font-size:inherit;color:inherit}.rig-instructions p{font-size:13px;font-weight:var(--weight-medium);line-height:1.6;margin:5px 0;color:var(--text)}.rig-instructions small{font-size:10px;color:#8191a5}.recent-interaction-guide[data-active=false] *{animation-play-state:paused!important}
+@keyframes rig-move{0%,100%{transform:translate(35px,67px)}18%,27%,97%{transform:translate(65px,74px)}35%,95%{transform:translate(95px,49px)}50%,93%{transform:translate(125px,61px)}62.5%,90%{transform:translate(155px,44px)}75%,85%{transform:translate(187px,53px)}}
+@keyframes rig-bubble{0%,100%{transform:translate(0,4px)}20%{transform:translate(8px,4px)}50%{transform:translate(45px,4px)}75%,85%{transform:translate(70px,4px)}}
+@keyframes rig-select{0%,27%,100%{transform:scaleX(0)}50%{transform:scaleX(.49)}75%,85%{transform:scaleX(1)}}
+@keyframes rig-click{0%,19%,76%,100%{opacity:0;transform:scale(.5)}21%,78%{opacity:1;transform:scale(.8)}26%,84%{opacity:0;transform:scale(1.4)}}
+@keyframes rig-start-point{0%,20%,90%,100%{opacity:0}21%,89%{opacity:1}}
+@keyframes rig-end-point{0%,77%,90%,100%{opacity:0}78%,89%{opacity:1}}
+@keyframes rig-reading{0%,29%,90%,100%{opacity:1}30%,89%{opacity:0}}@keyframes rig-reading-b{0%,29%,70%,100%{opacity:0}30%,69%{opacity:1}}@keyframes rig-reading-c{0%,69%,90%,100%{opacity:0}70%,89%{opacity:1}}
+@media(prefers-reduced-motion:reduce){.recent-interaction-guide *{animation:none!important}.rig-cursor{transform:translate(187px,53px)}.rig-bubble{transform:translate(70px,4px)}.rig-reading-a,.rig-reading-b{opacity:0}.rig-reading-c{opacity:1}.rig-click{opacity:0}.rig-endpoint{opacity:1}}
+@media(max-width:650px){.rig-content{gap:10px}.rig-demo{width:180px}.rig-instructions p{font-size:11px}}
+
+.stats-model-cost-group-label{flex-basis:62px;min-width:62px;white-space:nowrap}
+
+@keyframes rig-press{0%,19%,24%,76%,81%,100%{transform:scale(1)}21%,78%{transform:scale(.78)}}
+.recent-interaction-guide summary{transition:transform .12s,opacity .12s}.recent-interaction-guide summary:active{transform:translateY(1px) scale(.99);opacity:.7}

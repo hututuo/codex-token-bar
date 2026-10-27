@@ -1498,7 +1498,7 @@ final class QuotaHistoryStoreTests: XCTestCase {
         XCTAssertNil(loaded.recentBins[sevenBoundary + 1].sevenDayRemainingPercent)
     }
 
-    func testRecentHistoryFiltersIsolatedExhaustionAndToggleRestoresRawRecords() throws {
+    func testUnknownTokenCoverageDoesNotDeleteAnUnprovenExcursionWhenFilterToggles() throws {
         let url = try makeDatabaseURL()
         let database = QuotaHistoryDatabase(databaseURL: url)
         let now = Date()
@@ -1512,15 +1512,15 @@ final class QuotaHistoryStoreTests: XCTestCase {
         let loaded = try database.loadSnapshot(for: historyContext(at: now), now: now)
         let recentValues = loaded.recentBins.compactMap(\.sevenDayRemainingPercent)
 
-        XCTAssertFalse(recentValues.contains(0), "0 -> 100 -> 2 with unchanged reset is an anomalous excursion")
-        XCTAssertEqual(recentValues.min(), 98)
+        XCTAssertTrue(recentValues.contains(0), "unchanged reset time cannot prove an anomaly; token coverage is unknown")
+        XCTAssertEqual(recentValues.min(), 0)
 
         let unfiltered = QuotaHistoryDatabase(databaseURL: url, filterAnomalies: { false })
         let raw = try unfiltered.loadSnapshot(for: historyContext(at: now), now: now)
         XCTAssertTrue(raw.recentBins.contains { $0.sevenDayRemainingPercent == 0 })
-        XCTAssertLessThan(raw.daily.compactMap(\.sevenDayRemainingPercent).min()!, loaded.daily.compactMap(\.sevenDayRemainingPercent).min()!)
-        // Toggling affects projection only. Reopening with protection restores
-        // the filtered series without losing the raw exhaustion observation.
+        XCTAssertEqual(raw.daily.compactMap(\.sevenDayRemainingPercent).min()!, loaded.daily.compactMap(\.sevenDayRemainingPercent).min()!)
+        // Neither filter preference may turn unknown token coverage into proof
+        // that the raw exhaustion observation was false.
         let filteredAgain = try database.loadSnapshot(for: historyContext(at: now), now: now)
         XCTAssertEqual(filteredAgain.recentBins.compactMap(\.sevenDayRemainingPercent), recentValues)
         let rawAgain = try unfiltered.loadSnapshot(for: historyContext(at: now), now: now)

@@ -43,10 +43,9 @@ struct ThroughputCurve {
         if !signal.turnID.isEmpty, signal.turnID != s.turn {
             guard signal.kind == "start" || signal.timestamp >= s.lastQuantity else { return }
             let history = s.history
-            let model = s.model
-            s = Session(); s.turn = signal.turnID; s.history = history; s.model = model
+            s = Session(); s.turn = signal.turnID; s.history = history
         }
-        if !signal.model.isEmpty { s.model = signal.model }
+        if !Self.isUnknownModel(signal.model) { s.model = signal.model }
         Self.advance(&s, to: signal.timestamp)
         let identity = "\(signal.kind):\(signal.itemID):\(signal.timestamp)"
         guard s.seen.insert(identity).inserted else { return }
@@ -140,7 +139,44 @@ struct ThroughputCurve {
             for key in expired { sessions.removeValue(forKey: key) }
         }
     }
-    var total: Double { sessions.values.reduce(0) { $0 + $1.display } }
+    private static func isUnknownModel(_ model: String) -> Bool {
+        let key = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        return key.isEmpty || key.lowercased() == "unknown"
+    }
+
+    /// Metadata lookup is keyed by the exact active turn; never replay old quantities.
+    func unresolvedModelTurns(now: Double) -> [String: Set<String>] {
+        var wanted: [String: Set<String>] = [:]
+        for (thread, session) in sessions where !session.turn.isEmpty && Self.isUnknownModel(session.model)
+            && !session.stopped && !session.paused && now.isFinite && session.lastQuantity.isFinite
+            && session.lastQuantity <= now + 2 && now - session.lastQuantity < 20
+            && (session.finish.map { now < $0 + 5 } ?? true)
+            && (session.display > 0 || session.budget > 0 || session.queue.contains { $0 > 0 }) {
+            wanted[thread, default: []].insert(session.turn)
+        }
+        return wanted
+    }
+
+    @discardableResult
+    mutating func resolveModels(_ models: [String: [String: String]]) -> Bool {
+        var changed = false
+        for thread in Array(sessions.keys) {
+            guard var session = sessions[thread], Self.isUnknownModel(session.model), !session.turn.isEmpty,
+                  let model = models[thread]?[session.turn], !Self.isUnknownModel(model) else { continue }
+            session.model = model; sessions[thread] = session; changed = true
+        }
+        return changed
+    }
+
+    var modelRates: [ModelRateContribution] {
+        var grouped: [String: Double] = [:]
+        for session in sessions.values where session.display.isFinite && session.display > 0 {
+            let model = session.model.trimmingCharacters(in: .whitespacesAndNewlines)
+            grouped[model.isEmpty ? "unknown" : model, default: 0] += session.display
+        }
+        return grouped.keys.sorted().map { ModelRateContribution(model: $0, tokensPerSecond: grouped[$0]!) }
+    }
+    var total: Double { modelRates.reduce(0) { $0 + $1.tokensPerSecond } }
     func rate(thread: String) -> Double { sessions[thread]?.display ?? 0 }
     var active: Bool { sessions.values.contains { !$0.stopped && ($0.budget > 0 || $0.queue.contains { $0 > 0 }) } }
 }
@@ -182,7 +218,7 @@ struct BodySpeedQuality: Equatable, Sendable {
     var statusLabel: String {
         if included { return "计入均速" }
         switch reason {
-        case "采样时长不超过 0.55 秒": return "时长≤0.55秒"
+        case "采样时长不超过 0.4 秒": return "时长≤0.4秒"
         case "速率异常偏高", "速率异常偏低": return "速率待核查"
         case "采样存在异常标记": return "采样告警"
         default: return "计时待核查"
@@ -198,9 +234,9 @@ struct BodySpeedQuality: Equatable, Sendable {
             return .init(confidence: "low", reason: "数量与计时不一致")
         }
         // Rollout timestamps have millisecond precision. Compare their original
-        // resolution so a rounded Unix Double cannot admit an exact 550ms body.
+        // resolution so a rounded Unix Double cannot admit an exact 400ms body.
         let elapsedMS = (sample.endedAt * 1000).rounded() - (sample.startedAt * 1000).rounded()
-        if elapsedMS <= 550 { return .init(confidence: "low", reason: "采样时长不超过 0.55 秒") }
+        if elapsedMS <= 400 { return .init(confidence: "low", reason: "采样时长不超过 0.4 秒") }
         if rate > 500 { return .init(confidence: "low", reason: "速率异常偏高") }
         if rate < 2 { return .init(confidence: "low", reason: "速率异常偏低") }
         if sample.networkWarning != nil { return .init(confidence: "low", reason: "采样存在异常标记") }
@@ -420,20 +456,100 @@ struct ObservedSpeedCollector {
     }
 }
 
-/// Encode and atomically write away from the main actor. Tickets prevent an older
-/// queued snapshot overwriting a newer snapshot after a source switch.
+/// Persist body measurements in SQLite off the main actor. Tickets prevent an older
+/// queued revision from overwriting a newer one after a source switch.
+struct BodySpeedPersistenceResult: Sendable {
+    let error: String?
+    /// Future samples remain pending until their timestamp becomes eligible.
+    let retryAt: Double?
+}
+
 actor BodySpeedSampleWriter {
+    private struct StoreCache {
+        let store: BodySpeedTrendStore
+        var persistedByID: [String: ObservedSpeedSample]
+        var retentionDays: Int
+    }
+
+    private var caches: [URL: StoreCache] = [:]
+    /// Tracks the last committed revision only. A failed write leaves the ticket retryable.
     private var tickets: [URL: Int] = [:]
-    func persist(_ samples: [ObservedSpeedSample], to url: URL, ticket: Int) -> String? {
-        guard ticket > (tickets[url] ?? -1) else { return nil }
-        tickets[url] = ticket
+    private var latestTickets: [URL: Int] = [:]
+
+    func load(from url: URL, now: Double, retentionDays: Int = 30) throws -> [ObservedSpeedSample] {
+        let key = url.standardizedFileURL
+        var cache = try storeCache(for: key, now: now, retentionDays: retentionDays)
+        let samples = try cache.store.loadSamples(now: now, retentionDays: retentionDays)
+        cache.persistedByID = Dictionary(samples.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+        caches[key] = cache
+        return samples
+    }
+
+    func persist(_ samples: [ObservedSpeedSample], to url: URL, ticket: Int,
+                 now: Double = Date().timeIntervalSince1970, retentionDays: Int = 30) -> String? {
+        persistBatch(samples, to: url, ticket: ticket, now: now, retentionDays: retentionDays).error
+    }
+
+    func persistBatch(
+        _ samples: [ObservedSpeedSample],
+        to url: URL,
+        ticket: Int,
+        now: Double = Date().timeIntervalSince1970,
+        retentionDays: Int = 30
+    ) -> BodySpeedPersistenceResult {
+        let key = url.standardizedFileURL
+        guard ticket >= (latestTickets[key] ?? -1), ticket > (tickets[key] ?? -1) else {
+            return BodySpeedPersistenceResult(error: nil, retryAt: nil)
+        }
+        latestTickets[key] = ticket
         do {
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let bytes = try JSONEncoder().encode(samples)
-            guard bytes.count <= 64 * 1_048_576 else { return "测速记录超过保存上限，原文件已保留" }
-            try bytes.write(to: url, options: .atomic)
-            return nil
-        } catch { return "测速记录保存失败：\(error.localizedDescription)" }
+            var cache = try storeCache(for: key, now: now, retentionDays: retentionDays)
+            var incomingByID: [String: ObservedSpeedSample] = [:]
+            for sample in samples where sample.isBody {
+                incomingByID[sample.id] = sample
+            }
+            let changed = incomingByID.values
+                .filter { cache.persistedByID[$0.id] != $0 }
+                .sorted { $0.endedAt == $1.endedAt ? $0.id < $1.id : $0.endedAt < $1.endedAt }
+
+            let cutoff = now - Double([15, 30].contains(retentionDays) ? retentionDays : 30) * 86_400
+            let hasExpiredRaw = cache.persistedByID.values.contains { $0.endedAt < cutoff }
+            let normalizedRetention = [15, 30].contains(retentionDays) ? retentionDays : 30
+            if !changed.isEmpty || hasExpiredRaw || cache.retentionDays != normalizedRetention {
+                try cache.store.ingest(samples: changed, now: now, retentionDays: retentionDays)
+                cache.retentionDays = normalizedRetention
+            }
+            cache.persistedByID = cache.persistedByID.filter { $0.value.endedAt >= cutoff && $0.value.endedAt <= now }
+            for sample in changed where sample.endedAt >= cutoff && sample.endedAt <= now {
+                cache.persistedByID[sample.id] = sample
+            }
+            caches[key] = cache
+            let pendingAt = incomingByID.values.filter { $0.endedAt > now }.map(\.endedAt).min()
+            if pendingAt == nil { tickets[key] = ticket }
+            return BodySpeedPersistenceResult(error: nil, retryAt: pendingAt)
+        } catch {
+            return BodySpeedPersistenceResult(error: "测速记录保存失败：\(error.localizedDescription)", retryAt: now + 5)
+        }
+    }
+
+    func trend(from url: URL, now: Double, days: Int) throws -> [BodySpeedTrendPoint] {
+        let key = url.standardizedFileURL
+        var cache = try storeCache(for: key, now: now, retentionDays: 30)
+        let points = try cache.store.read(now: now, days: days)
+        caches[key] = cache
+        return points
+    }
+
+    private func storeCache(for url: URL, now: Double, retentionDays: Int) throws -> StoreCache {
+        if let cache = caches[url] { return cache }
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let store = try BodySpeedTrendStore(url: url)
+        let samples = try store.loadSamples(now: now, retentionDays: retentionDays)
+        return StoreCache(
+            store: store,
+            persistedByID: Dictionary(samples.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last }),
+            retentionDays: try store.retentionDays()
+        )
     }
 }
 

@@ -12,9 +12,13 @@ export interface CacheUsageAdvice {
   model?: string | null;
 }
 
+export interface ModelRateContribution { model: string; tokensPerSecond: number }
+
 export interface LiveRateSnapshot {
+  modelRates?: ModelRateContribution[];
   speedSamples?: SpeedSample[];
   modelSpeeds?: ModelSpeedSummary[];
+  modelSpeeds5m?: ModelSpeedSummary[];
   modelSpeeds15m?: ModelSpeedSummary[];
   modelSpeeds30m?: ModelSpeedSummary[];
   latestModelSpeeds30m?: ModelSpeedSummary[];
@@ -49,8 +53,10 @@ export interface LiveRateStreamLease {
 }
 
 export interface FloatingPanelSnapshot {
+  modelRates?: ModelRateContribution[];
   speedSamples?: SpeedSample[];
   modelSpeeds?: ModelSpeedSummary[];
+  modelSpeeds5m?: ModelSpeedSummary[];
   modelSpeeds15m?: ModelSpeedSummary[];
   modelSpeeds30m?: ModelSpeedSummary[];
   latestModelSpeeds30m?: ModelSpeedSummary[];
@@ -65,6 +71,8 @@ export interface FloatingPanelSnapshot {
   resetCreditLabel: string;
   resetCreditRateBarLabel?: string;
   resetCreditStandaloneLabel?: string;
+  /** Exact local total for multi-client aggregation; never parse the compact label. */
+  totalTokensValue?: number;
   totalTokensLabel: string;
   todayTokensLabel: string;
   requestsLabel: string;

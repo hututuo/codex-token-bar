@@ -9,6 +9,7 @@ import {
   readCachedAppUpdate,
   type UpdateAvailability,
 } from "../api/updateClient";
+import { ModelTraceHost } from "../modelTrace/ModelTracePanel";
 import { SetupGuide } from "../components/SetupGuide";
 import { DashboardPage } from "../pages/DashboardPage";
 import { useDashboardData } from "../state/useDashboardData";
@@ -164,6 +165,7 @@ export function DashboardApp() {
         liveRateEnabled={shellSettings.displaySurfaces.liveRateEnabled}
         selectedLiveThreadId={selectedLiveThreadId}
       />
+      <ModelTraceHost sourceToken={sourceToken}/>
       {shellSettings.showSetupGuide ? (
         <SetupGuide
           codexHome={readyState.codexHome}

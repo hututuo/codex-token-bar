@@ -87,7 +87,7 @@ export async function startFloatingWindowDrag(): Promise<boolean> {
   }
 
   try {
-    await getCurrentWindow().startDragging();
+    await invoke("start_floating_window_drag");
     clearPlatformFailure("start-floating-window-drag");
     return true;
   } catch (error) {

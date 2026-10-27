@@ -1,3 +1,6 @@
+import { useClientScope } from "../../multiClient/useClientScope";
+import type { ClientCostPeriods } from "../../multiClient/originalDashboardProjection";
+import type { QuotaItem } from "../../multiClient/integratedClientModel";
 import { LiveRateCard } from "../../components/LiveRateCard";
 import { CodexRadarStrip } from "../../components/CodexRadarStrip";
 import { QuotaStrip } from "../../components/QuotaStrip";
@@ -14,8 +17,13 @@ import type {
 import type { SharedAccountAttributionResult } from "../../components/sharedAccountAttribution/model";
 
 interface DashboardSummarySectionProps {
+  speedOnly?: boolean;
+  clientCosts?: ClientCostPeriods;
+  clientQuotaItems?: QuotaItem[];
+  includesCodex?: boolean;
   sourceToken?: CodexHomeSourceToken | null;
   dashboard: DashboardSnapshot;
+  quotaDashboard?: DashboardSnapshot;
   displaySurfaces: DisplaySurfaceSettings;
   floatingSettings: FloatingWindowSettings;
   quotaRefreshIntervalMs: number;
@@ -51,6 +59,11 @@ interface DashboardSummarySectionProps {
 }
 
 export function DashboardSummarySection({
+  speedOnly = false,
+  clientCosts,
+  clientQuotaItems,
+  includesCodex = true,
+  quotaDashboard,
   sourceToken = null,
   dashboard,
   displaySurfaces,
@@ -87,37 +100,43 @@ export function DashboardSummarySection({
   // doing so would make a chart aggregate look like a current model reading.
   const latestTodayTokens = dashboard.usageSummary?.todayTokens ?? 0;
   const latestTodayModels = dashboard.usageSummary?.todayModelBreakdowns ?? [];
+  const scope = useClientScope();
+  const quotaData = quotaDashboard ?? dashboard;
   return (
     <>
+      {!speedOnly && <>
       <QuotaStrip
-        attributionIdentity={dashboard.attributionIdentity ?? null}
-        diagnostics={dashboard.diagnostics}
+        clientItems={clientQuotaItems}
+        includesCodex={includesCodex}
+        attributionIdentity={quotaData.attributionIdentity ?? null}
+        diagnostics={quotaData.diagnostics}
         onAttributionPreciseRefreshNeeded={onAttributionPreciseRefreshNeeded}
         onAttributionSafetyAcknowledge={onAttributionSafetyAcknowledge}
         onAttributionSafetyRefreshNeeded={onAttributionSafetyRefreshNeeded}
         onAttributionChange={onAttributionChange}
         onQuotaRefreshIntervalChange={onQuotaRefreshIntervalChange}
         onRetryQuotaRefresh={onQuotaRefresh}
-        preciseDataAvailable={dashboard.preciseRecentUsageCoveredAt !== null
-          && dashboard.preciseRecentUsageCoveredAt !== undefined}
-        preciseDataCoveredAt={dashboard.preciseRecentUsageCoveredAt ?? null}
-        preciseDataFresh={dashboard.preciseRecentUsageFresh === true}
-        preciseObserverEpoch={dashboard.preciseObserverEpoch ?? null}
-        preciseObserverStartedAtUnixMicros={dashboard.preciseObserverStartedAtUnixMicros ?? null}
-        preciseObserverSequence={dashboard.preciseObserverSequence ?? null}
-        preciseAttributionProvenanceEpoch={dashboard.preciseAttributionProvenanceEpoch ?? null}
-        preciseAttributionGeneration={dashboard.preciseAttributionGeneration ?? null}
-        preciseAttributionUnsafeSinceGeneration={dashboard.preciseAttributionUnsafeSinceGeneration ?? null}
-        preciseAttributionUnsafeID={dashboard.preciseAttributionUnsafeId ?? null}
-        preciseAttributionCurrentScanUnsafe={dashboard.preciseAttributionCurrentScanUnsafe === true}
-        quotaUpdatedAt={dashboard.quotaUpdatedAt ?? null}
+        preciseDataAvailable={quotaData.preciseRecentUsageCoveredAt !== null
+          && quotaData.preciseRecentUsageCoveredAt !== undefined}
+        preciseDataCoveredAt={quotaData.preciseRecentUsageCoveredAt ?? null}
+        preciseDataFresh={quotaData.preciseRecentUsageFresh === true}
+        preciseObserverEpoch={quotaData.preciseObserverEpoch ?? null}
+        preciseObserverStartedAtUnixMicros={quotaData.preciseObserverStartedAtUnixMicros ?? null}
+        preciseObserverSequence={quotaData.preciseObserverSequence ?? null}
+        preciseAttributionProvenanceEpoch={quotaData.preciseAttributionProvenanceEpoch ?? null}
+        preciseAttributionGeneration={quotaData.preciseAttributionGeneration ?? null}
+        preciseAttributionUnsafeSinceGeneration={quotaData.preciseAttributionUnsafeSinceGeneration ?? null}
+        preciseAttributionUnsafeID={quotaData.preciseAttributionUnsafeId ?? null}
+        preciseAttributionCurrentScanUnsafe={quotaData.preciseAttributionCurrentScanUnsafe === true}
+        quotaUpdatedAt={quotaData.quotaUpdatedAt ?? null}
         quotaRefreshIntervalMs={quotaRefreshIntervalMs}
-        recentUsage24h={dashboard.recentUsage24h}
-        snapshot={dashboard.quota}
+        recentUsage24h={quotaData.recentUsage24h}
+        snapshot={quotaData.quota}
         sourceHomeIdentity={sourceHomeIdentity}
-        warnings={dashboard.warnings}
+        warnings={quotaData.warnings}
       />
       <StatsStrip
+        clientCosts={clientCosts}
         sourceToken={sourceToken}
         attributionIdentity={dashboard.attributionIdentity ?? null}
         quotaUpdatedAt={dashboard.quotaUpdatedAt}
@@ -131,8 +150,10 @@ export function DashboardSummarySection({
         sevenDayResetAtUnix={dashboard.quota.sevenDay.resetsAtUnix}
         warnings={dashboard.warnings}
       />
-      <CodexRadarStrip refreshGeneration={radarRefreshGeneration} />
-      <LiveRateCard
+      </>}
+      {includesCodex && <CodexRadarStrip refreshGeneration={radarRefreshGeneration} />}
+      {(includesCodex || scope.allowed.some(c => ["claudeCode", "claudeDesktop"].includes(c))) && <LiveRateCard
+        includesCodex={includesCodex} localClients={scope.allowed}
         sourceToken={sourceToken}
         liveThreadOptions={liveThreadOptions}
         floatingEnabled={displaySurfaces.floatingWindowEnabled}
@@ -153,7 +174,7 @@ export function DashboardSummarySection({
         refreshing={refreshing}
         snapshot={liveRate}
         usageCacheInitializing={usageCacheInitializing}
-      />
+      />}
     </>
   );
 }

@@ -108,3 +108,13 @@ test("countdown clock refresh reuses ranking arrays and matches a full rebuild t
   assert.equal(base.official.windowOpen, true, "clock refresh must not mutate cached source presentation");
   assert.deepEqual(sidebarRadarAtTime(sidebarRadarSnapshot(null, null, now), null, now + 1), sidebarRadarSnapshot(null, null, now + 1));
 });
+
+test("window summary and edge settle together, while an open window without a deadline stays open",()=>{
+ const now=Date.now(),official=officialSnapshot();official.lastSuccessfulRefreshAt=new Date(now).toISOString();
+ official.window.countdownDeadline=new Date(now+1000).toISOString();
+ const base=sidebarRadarSnapshot(official,null,now),expired=sidebarRadarAtTime(base,official,now+1000);
+ assert.equal(sidebarRadarCompact(expired),'等待');assert.equal(sidebarRadarIsActive(expired),false);assert.equal(expired.official.windowSummary,'等待');
+ official.window.countdownDeadline=null;official.window.closedAt=null;
+ const unknownEnd=sidebarRadarSnapshot(official,null,now+1000);
+ assert.equal(sidebarRadarCompact(unknownEnd),'速登窗口');assert.equal(unknownEnd.official.deadlineMs,null);
+});

@@ -150,6 +150,16 @@ pub fn read_floating_pointer_state(
     })
 }
 
+/// Track Windows dragging without entering the native caption paint loop.
+#[tauri::command]
+pub async fn start_floating_window_drag(window: tauri::WebviewWindow) -> Result<(), String> {
+    require_window_label(&window, "start_floating_window_drag")?;
+    #[cfg(windows)]
+    { platform::drag_floating_window(window).await }
+    #[cfg(not(windows))]
+    window.start_dragging().map_err(|error| error.to_string())
+}
+
 #[cfg(target_os = "macos")]
 fn floating_left_button_down() -> Result<bool, String> {
     #[link(name = "CoreGraphics", kind = "framework")]

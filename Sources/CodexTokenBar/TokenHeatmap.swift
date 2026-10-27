@@ -38,6 +38,8 @@ struct TokenHeatmap: View {
     @State private var rangeStartIndex: Int?
     @State private var rangeEndIndex: Int?
     @State private var preparedData: HeatmapPreparedData
+    @State private var cellFills: [AnyShapeStyle] = []
+    @State private var cellRevision = UUID()
 
     private let rows = 7
     private let gap: CGFloat = 4
@@ -75,24 +77,8 @@ struct TokenHeatmap: View {
 
             VStack(spacing: 8) {
                 ZStack(alignment: .topLeading) {
-                    HStack(alignment: .top, spacing: gap) {
-                        ForEach(columns.indices, id: \.self) { columnIndex in
-                            VStack(spacing: gap) {
-                                ForEach(0..<rows, id: \.self) { rowIndex in
-                                    if let dayIndex = columns[columnIndex][safe: rowIndex],
-                                       let summary = summaries[safe: dayIndex] {
-                                        RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                            .fill(fillStyle(for: summary, preparedData: preparedData))
-                                            .frame(width: cellSize, height: cellSize)
-                                    } else {
-                                        RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                            .fill(Color.clear)
-                                            .frame(width: cellSize, height: cellSize)
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    HeatmapCells(revision: cellRevision, columns: columns, fills: cellFills,
+                                 cellSize: cellSize, gap: gap, rows: rows).equatable()
 
                     if let rangeSelection {
                         ForEach(rangeSelection.lowerBound...rangeSelection.upperBound, id: \.self) { index in
@@ -267,9 +253,7 @@ struct TokenHeatmap: View {
 
     private func adaptiveCellSize(containerWidth: CGFloat, columnCount: Int) -> CGFloat {
         guard columnCount > 0 else { return 12 }
-        let targetWidth = max(0, containerWidth - trailingInset)
-        let availableForCells = targetWidth - CGFloat(columnCount - 1) * gap
-        return max(10, availableForCells / CGFloat(columnCount))
+        return HeatmapGridMetrics.cellSize(containerWidth: containerWidth, columnCount: columnCount, gap: gap, trailingInset: trailingInset)
     }
 
     private func gridHeight(cellSize: CGFloat) -> CGFloat {
@@ -372,7 +356,7 @@ struct TokenHeatmap: View {
     }
 
     private func refreshPreparedData() {
-        preparedData = Self.prepare(
+        let prepared = Self.prepare(
             dailyUsage: dailyUsage,
             cacheDaily: cacheDaily,
             dailyModelBreakdowns: dailyModelBreakdowns,
@@ -381,6 +365,11 @@ struct TokenHeatmap: View {
             fallbackModel: fallbackModel,
             mode: mode
         )
+        // Prices and model gradients change with usage inputs, never with the
+        // pointer. Keep both preparation and the cell tree out of hover updates.
+        cellFills = prepared.summaries.map { fillStyle(for: $0, preparedData: prepared) }
+        preparedData = prepared
+        cellRevision = UUID()
     }
 
     private func updateRangeSelection(_ index: Int) {
@@ -484,7 +473,7 @@ struct TokenHeatmap: View {
                 modelBreakdowns: rows,
                 modelCostUSD: cost,
                 isModelCost: mode == .modelCost,
-                hasUnknownPrices: costItems.contains { !$0.usesIndependentQuota && $0.costUSD == nil }
+                hasUnknownPrices: costItems.contains { !$0.isReferenceOnly && $0.costUSD == nil }
             )
         }
 
@@ -518,4 +507,38 @@ struct TokenHeatmap: View {
         return "\(DateFormatter.fullDay.string(from: first)) - \(DateFormatter.fullDay.string(from: last))"
     }
 
+}
+
+private struct HeatmapCells: View, Equatable {
+    let revision: UUID
+    let columns: [[Int]]
+    let fills: [AnyShapeStyle]
+    let cellSize: CGFloat
+    let gap: CGFloat
+    let rows: Int
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.revision == rhs.revision && lhs.cellSize == rhs.cellSize && lhs.gap == rhs.gap && lhs.rows == rhs.rows
+    }
+    var body: some View {
+        HStack(alignment: .top, spacing: gap) {
+            ForEach(columns.indices, id: \.self) { column in
+                VStack(spacing: gap) {
+                    ForEach(0..<rows, id: \.self) { row in
+                        let index = columns[column][safe: row]
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .fill(index.flatMap { fills[safe: $0] } ?? AnyShapeStyle(Color.clear))
+                            .frame(width: cellSize, height: cellSize)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A short history must not expand a cell beyond the original yearly-grid size.
+enum HeatmapGridMetrics {
+    static func cellSize(containerWidth: CGFloat, columnCount: Int, gap: CGFloat = 4, trailingInset: CGFloat = 9) -> CGFloat {
+        let columns = max(53, columnCount)
+        return max(10, (max(0, containerWidth - trailingInset) - CGFloat(columns - 1) * gap) / CGFloat(columns))
+    }
 }

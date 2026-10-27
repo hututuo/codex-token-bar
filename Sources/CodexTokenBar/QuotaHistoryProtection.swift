@@ -25,14 +25,6 @@ struct QuotaHistoryProtection {
         var sevenBridges: [Int: Int] = [:]
         var events: [Rejection] = []
     }
-    private struct Candidate {
-        let baseline: Int
-        let start: Int
-        var last: Int
-        var leftBand: Bool
-        var resetLeft: Bool
-        var resetUnchanged: Bool
-    }
     private static let epsilon = 0.000_001
     static func valid(_ used: Int?) -> Int? { used.flatMap { (0...100).contains($0) ? $0 : nil } }
     private static func sameReset(_ a: Double?, _ b: Double?) -> Bool {
@@ -40,133 +32,30 @@ struct QuotaHistoryProtection {
         return abs(a - b) <= 5 + epsilon
     }
 
-    static func project(_ samples: [Sample], plan: String?, now: Double) -> Projection {
+    static func project(_ samples: [Sample], plan: String?, now: Double,
+                        consumption: QuotaActualCycleProjector.Consumption = { _, _ in .unknown }) -> Projection {
         var result = Projection()
-        // Strong reset evidence must survive the anomaly projection. Use the
-        // same cycle rule, including its rollback evidence, rather than a
-        // second, weaker rate-based definition of a real reset.
-        let rawObservations = samples.compactMap { sample -> QuotaCycleObservation? in
-            guard let used = valid(sample.sevenUsed), let reset = sample.sevenReset else { return nil }
-            return .init(at: Date(timeIntervalSince1970: sample.at), usedPercent: used,
-                         resetsAt: Date(timeIntervalSince1970: reset))
-        }
-        let rawCycles = QuotaActualCycleProjector.project(rawObservations, now: Date(timeIntervalSince1970: now))
-        let confirmedStarts = Set(rawCycles.indices.compactMap { index -> Double? in
-            guard index + 1 < rawCycles.count, rawCycles[index + 1].endedEarly else { return nil }
-            return rawCycles[index].firstObservedAt.timeIntervalSince1970
-        })
-        var candidate: Candidate?
-        var previous: Int?
-        var seen: Double?
-        var suppressed = false
         var fresh = Set<Int>()
-        let rate: Double? = switch plan?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "plus": 10
-        case "pro": 2
-        default: nil
-        }
-        func reject(_ c: Candidate, _ reason: Reason) {
-            guard c.last > c.start else { return }
-            for i in c.start..<c.last { result.sevenRejected.insert(i) }
-            // Do not extend explicit repair across an unrelated long gap
-            // preceding the candidate (existing carry horizon is 90 minutes).
-            if samples[c.start].at - samples[c.baseline].at <= 90 * 60 + epsilon {
-                result.sevenBridges[c.baseline] = c.last
-            }
-            result.events.append(Rejection(baseline: c.baseline, start: c.start, end: c.last, reason: reason))
-        }
-        func settle(_ c: Candidate) {
-            let deadline = samples[c.start].at + 300
-            if c.resetUnchanged && deadline - samples[c.last].at <= 120 + epsilon {
-                reject(c, .resetUnchanged)
-            }
-        }
+        var indices: [Int] = []
+        var observations: [QuotaCycleObservation] = []
+        var seen = -Double.infinity
         for (i, sample) in samples.enumerated() {
-            guard sample.at.isFinite, sample.at <= now + epsilon,
-                  seen.map({ sample.at > $0 + epsilon }) ?? true else { continue }
+            guard sample.at.isFinite, sample.at <= now, sample.at > seen else { continue }
             seen = sample.at
             fresh.insert(i)
-            if let c = candidate, sample.at > samples[c.start].at + 300 + epsilon {
-                settle(c)
-                candidate = nil
-                suppressed = (valid(samples[c.last].sevenUsed) ?? 0) <= 2
-            }
-            guard let used = valid(sample.sevenUsed) else {
-                candidate?.resetUnchanged = false
-                continue
-            }
-            if var c = candidate {
-                let base = samples[c.baseline]
-                let last = samples[c.last]
-                let inBand = abs(used - base.sevenUsed!) <= 3
-                let resetSame = sameReset(sample.sevenReset, base.sevenReset)
-                let resetReturn = c.resetLeft && resetSame
-                let returned = c.leftBand && inBand && used > last.sevenUsed!
-                let jumped = rate.map { Double(used - last.sevenUsed!) * 60 / (sample.at - last.at) > $0 + epsilon } ?? false
-                c.resetUnchanged = c.resetUnchanged && resetSame && sample.at - last.at <= 120 + epsilon
-                if let reset = sample.sevenReset, reset.isFinite,
-                   let old = base.sevenReset, old.isFinite, !resetSame { c.resetLeft = true }
-                c.leftBand = c.leftBand || !inBand
-                c.last = i
-                // A later possible reset can shorten this cycle's certain
-                // interior without withdrawing its already confirmed start.
-                // Keep that evidence for the candidate's bounded lifetime;
-                // a return to the old reset still rejects it below.
-                let confirmedReset = confirmedStarts.contains(samples[c.start].at)
-                if resetReturn || ((returned || jumped) && !confirmedReset) {
-                    reject(c, returned ? .returnToBaseline : (jumped ? .jump : .resetReturned))
-                    candidate = nil
-                    suppressed = used <= 2
-                } else if sample.at >= samples[c.start].at + 300 - epsilon {
-                    settle(c)
-                    candidate = nil
-                    suppressed = used <= 2
-                } else {
-                    candidate = c
-                }
-            } else {
-                if used > 2 { suppressed = false }
-                if !suppressed, let previous, let prior = valid(samples[previous].sevenUsed), used < prior, used <= 2 {
-                    let same = sameReset(sample.sevenReset, samples[previous].sevenReset)
-                    let hasResets = sample.sevenReset?.isFinite == true && samples[previous].sevenReset?.isFinite == true
-                    candidate = Candidate(baseline: previous, start: i, last: i,
-                        leftBand: abs(used - prior) > 3, resetLeft: hasResets && !same, resetUnchanged: same)
-                }
-            }
-            previous = i
+            guard let used = valid(sample.sevenUsed) else { continue }
+            indices.append(i)
+            observations.append(.init(at: Date(timeIntervalSince1970: sample.at), usedPercent: used,
+                resetsAt: Date(timeIntervalSince1970: sample.sevenReset ?? 0)))
         }
-        if let c = candidate, now >= samples[c.start].at + 300 - epsilon { settle(c) }
-
-        // A provider excursion can go either way and last longer than the
-        // near-empty reset check. Require an abrupt return, not ordinary usage
-        // gradually reaching the old value. Keep raw observations intact.
-        let seven = samples.indices.filter { fresh.contains($0) && valid(samples[$0].sevenUsed) != nil }
-        var cursor = 1
-        while cursor < seven.count {
-            let base = seven[cursor - 1], first = seven[cursor]
-            let baseUsed = samples[base].sevenUsed!, firstUsed = samples[first].sevenUsed!
-            if !result.sevenRejected.contains(base), !result.sevenRejected.contains(first), abs(firstUsed - baseUsed) >= 5 {
-                var endpoint: Int?
-                for n in (cursor + 1)..<seven.count {
-                    let end = seven[n], prior = seven[n - 1]
-                    if samples[end].at - samples[first].at > 90 * 60 { break }
-                    let used = samples[end].sevenUsed!, previousUsed = samples[prior].sevenUsed!
-                    if abs(used - baseUsed) <= 3 && abs(used - previousUsed) >= 5
-                        && (firstUsed - baseUsed) * (used - previousUsed) < 0
-                        && sameReset(samples[end].sevenReset, samples[base].sevenReset) {
-                        endpoint = n
-                        break
-                    }
-                }
-                if let endpoint {
-                    let end = seven[endpoint]
-                    reject(Candidate(baseline: base, start: first, last: end,
-                        leftBand: true, resetLeft: false, resetUnchanged: false), .returnToBaseline)
-                    cursor = endpoint + 1
-                    continue
-                }
-            }
-            cursor += 1
+        for reversal in QuotaActualCycleProjector.reversals(observations, consumption: consumption) {
+            let baseline = indices[reversal.beforeIndex], start = indices[reversal.dropIndex]
+            let end = indices[reversal.returnIndex]
+            // Only the presentation projection is repaired. The raw quota
+            // observations and numeric usage ledger are never rewritten.
+            for i in start..<end { result.sevenRejected.insert(i) }
+            result.sevenBridges[baseline] = end
+            result.events.append(.init(baseline: baseline, start: start, end: end, reason: .returnToBaseline))
         }
 
         // A 5h event needs its own single-point A-B-A evidence and an exact

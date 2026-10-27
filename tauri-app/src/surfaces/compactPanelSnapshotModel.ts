@@ -55,8 +55,10 @@ export function floatingSnapshotForLiveRate(
   const liveRateStatus = compactLiveRateStatus(liveRate);
   const snapshot: FloatingPanelSnapshot = {
     ...baseFloatingPanelSnapshot,
+    modelRates: liveRate.modelRates,
     speedSamples: liveRate.speedSamples,
     modelSpeeds: liveRate.modelSpeeds,
+    modelSpeeds5m: liveRate.modelSpeeds5m,
     modelSpeeds15m: liveRate.modelSpeeds15m,
     modelSpeeds30m: liveRate.modelSpeeds30m,
     latestModelSpeeds30m: liveRate.latestModelSpeeds30m,
@@ -116,6 +118,7 @@ export function disabledFloatingLiveSnapshot(
   return {
     ...snapshot,
     tokensPerSecond: 0,
+    modelRates: [],
     maxTokensPerSecond: baseFloatingPanelSnapshot.maxTokensPerSecond,
     liveRateAvailable: false,
     liveRateStatusKind: undefined,
@@ -148,6 +151,7 @@ export function liveRateStreamStartFailureSnapshot(message: string): LiveRateSna
     selectedThreadTitle: "未选择",
     selectedTokensPerSecond: 0,
     tokensPerSecond: 0,
+    modelRates: [],
     totalTokens: 0,
     totalTokensToday: 0,
     requestsToday: 0,
@@ -191,7 +195,8 @@ export function mergeFloatingUsageSummary(
   const nextTotalTokensLabel = `总 ${compactTokens(summary.totalTokens)}`;
   const nextTodayTokensLabel = `今 ${compactTokens(summary.todayTokens)}`;
   const nextRequestsLabel = `次 ${summary.todayRequests}`;
-  if (snapshot.totalTokensLabel === nextTotalTokensLabel
+  if (snapshot.totalTokensValue === summary.totalTokens
+    && snapshot.totalTokensLabel === nextTotalTokensLabel
     && snapshot.todayTokensLabel === nextTodayTokensLabel
     && snapshot.requestsLabel === nextRequestsLabel
     && modelBreakdownsSignature(snapshot.todayModelBreakdowns)
@@ -202,6 +207,7 @@ export function mergeFloatingUsageSummary(
 
   const next = {
     ...snapshot,
+    totalTokensValue: summary.totalTokens,
     totalTokensLabel: nextTotalTokensLabel,
     todayTokensLabel: nextTodayTokensLabel,
     requestsLabel: nextRequestsLabel,

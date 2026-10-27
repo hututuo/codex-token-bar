@@ -29,6 +29,7 @@ function sidebarRadarClockFields(official: CodexRadarSnapshot | null, nowMs: num
   const action = radarActionDisplayTextForSnapshot(official, nowMs);
   return {
     fresh,
+    windowSummary: official ? sidebarRadarWording(radarWindowSummaryDisplayText(official, nowMs)) : "雷达待读取",
     windowOpen: official ? radarIsSpeedWindow(official, nowMs) : null,
     countdown: action.replace(/^速登 /, ""),
     action: official ? sidebarRadarWording(action) : "建议动作暂不可用",
@@ -55,7 +56,6 @@ export function sidebarRadarSnapshot(official: CodexRadarSnapshot | null, crowd:
   return {
     official: { available: official !== null, ...sidebarRadarClockFields(official, nowMs), stale: official?.staleDataDisplayed ?? false,
       deadlineMs: radarSpeedWindowDeadlineMs(official),
-      windowSummary: official ? sidebarRadarWording(radarWindowSummaryDisplayText(official)) : "雷达待读取",
       updatedAt: official?.monitoredAt || "", source: official?.links.html || "https://codexradar.com/",
       rows: official ? rankedModelRows(official.modelIq).filter(row => modelPointHasMeasurement(row.point)).map((row,index) => ({rank:index+1,model:row.model || row.point.model || row.label,effort:row.reasoningEffort || row.point.reasoningEffort || "未知",iq:row.point.score,passed:row.point.passed,samples:row.point.tasks})) : [],
       primary: primary ? { model: primary.model || primary.point.model || primary.label,

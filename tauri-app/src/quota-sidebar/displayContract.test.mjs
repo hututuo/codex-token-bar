@@ -75,18 +75,20 @@ test("real account quota IPC -> useCompactPanelData -> rail and detail preserve 
         assert.equal(latest.snapshot.sevenDayRemainingPercent, 0.19);
         assert.equal(latest.snapshot.sevenDayExpectedRemainingPercent, 70);
         assert.equal(window.document.querySelector('.qs-pace-mark').style.bottom, '70%');
-        const tick = window.document.querySelector('.qs-pace-tick');
+        const tick = window.document.querySelector('.integrated-full-pace');
         assert.ok(Math.abs(parseFloat(tick.getAttribute('transform').slice(7)) - 252) < 1e-8);
         assert.ok(renderToStaticMarkup(React.createElement(QuotaDetails, { data: latest })).includes('余量应为 70%'));
         const detailMarkup = renderToStaticMarkup(React.createElement(QuotaDetails, { data: latest }));
-        assert.match(detailMarkup, /class="qs-detail-pace-mark" style="left:70%"/);
+        const inspection = window.document.createElement("div"); inspection.innerHTML = detailMarkup;
+        assert.ok(Math.abs(parseFloat(inspection.querySelector('.integrated-full-pace').getAttribute('transform').slice(7)) - 252) < 1e-8);
         const staleDetail = renderToStaticMarkup(React.createElement(QuotaDetails, { data: { ...latest, snapshot: { ...latest.snapshot, quotaDataStale: true } } }));
-        assert.ok(!staleDetail.includes('class="qs-detail-pace-mark"'));
+        assert.ok(!staleDetail.includes('class="integrated-full-pace"'));
         const bothWindows = { ...latest, snapshot: { ...latest.snapshot, fiveHourExpectedRemainingPercent: 50 }, quota: { ...latest.quota, quota: { ...latest.quota.quota, fiveHour: { ...latest.quota.quota.fiveHour, availability: "measured", remainingPercent: .4 } } } };
         const bothMarkup = renderToStaticMarkup(React.createElement(QuotaDetails, { data: bothWindows }));
-        assert.match(bothMarkup, /class="qs-detail-pace-mark" style="left:50%"/);
-        assert.equal((bothMarkup.match(/class="qs-detail-pace-mark"/g) || []).length, 2);
-        assert.equal(window.document.querySelector('[aria-label="查看七天额度详情"] strong').textContent, "19%");
+        inspection.innerHTML = bothMarkup;
+        assert.ok(Math.abs(parseFloat(inspection.querySelector('[data-quota-id="codex:5h"]').getAttribute('transform').slice(7)) - 180) < 1e-8);
+        assert.equal((bothMarkup.match(/class="integrated-full-pace"/g) || []).length, 2);
+        assert.equal(window.document.querySelector('.integrated-paired-ring strong').textContent, "19%");
         assert.ok(renderToStaticMarkup(React.createElement(QuotaDetails, { data: latest })).includes("19%"));
       } finally { await React.act(async () => root.unmount()); }
     });

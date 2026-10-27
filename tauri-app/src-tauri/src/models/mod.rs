@@ -22,13 +22,13 @@ pub use auto_resume::{
     AutoResumeRuntimeStatus, AutoResumeTaskRuntimeStatus, AutoResumeThreadOption,
 };
 pub use dashboard::{
-    ActivityDay, CacheHitRankingItem, DashboardSnapshot, DashboardStats, ModelTokenBreakdown,
+    ActivityDay, CacheHitRankingItem, CacheRequestUsage, DashboardSnapshot, DashboardStats, ModelTokenBreakdown,
     PreciseDashboardProgress, RecentUsagePoint, RecentUsageSourceContribution, SessionCacheUsage,
     TokenCacheBreakdown, TokenCacheUsage, TurnCacheUsage,
 };
 pub use live::{
     BodySpeedHistoryPage, CacheAdvice, CurvePoint, FloatingPanelSnapshot, LiveRateSnapshot,
-    LiveThreadOption, ModelSpeedSummary, SpeedSample, UnreadSummary,
+    LiveThreadOption, ModelRate, ModelSpeedSummary, SpeedSample, UnreadSummary,
 };
 pub use platform::{
     AutostartStatus, CodexHomeStatus, PlatformCapabilities, PlatformFeatureCapability,
@@ -49,13 +49,16 @@ pub use session_management::{
     SessionManagementThread,
 };
 pub use settings::{
-    DEFAULT_TOKEN_RATE_FULL_SCALE,
-    default_status_metric_label_style, AppSettingsSnapshot, AutoResumeSettingsSnapshot,
+    DEFAULT_TOKEN_RATE_FULL_SCALE, default_status_metric_label_style,
+    AgentSpeedReportingSettingsSnapshot, AppSettingsSnapshot, AutoResumeSettingsSnapshot,
     AutoResumeTaskSettingsSnapshot, DisplaySurfaceSettingsSnapshot,
     FloatingContentVisibilitySnapshot, FloatingWindowPositionSnapshot,
     FloatingWindowSettingsSnapshot, SessionEnhancementSettingsSnapshot,
+    SidebarLayoutSnapshot, SidebarModuleVisibilitySnapshot,
     UsageRefreshSettingsSnapshot,
-    AUTO_RESUME_TASK_COLLECTION_VERSION, STATUS_METRIC_IDS, STATUS_SUMMARY_SECTION_IDS,
+    AUTO_RESUME_TASK_COLLECTION_VERSION, DEFAULT_SIDEBAR_LAYOUT_ORDER,
+    DEFAULT_SIDEBAR_MODULE_ORDER, STATUS_METRIC_IDS,
+    STATUS_SUMMARY_SECTION_IDS,
 };
 pub use thread_activity::{
     RunningThreadGroup, RunningThreadMember, RunningThreadModelBreakdown,

@@ -1203,6 +1203,7 @@ struct FloatingStructureDragSource: NSViewRepresentable {
 }
 
 final class FloatingStructureDragSourceView: NSView, NSDraggingSource {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     var payload = ""
     var previewSize = NSSize(width: 1, height: 1)
     var cursorAnchor = NSPoint.zero

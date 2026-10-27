@@ -4,8 +4,8 @@ use crate::core::app_paths;
 use crate::core::startup_trace;
 use crate::models::PreciseDashboardProgress;
 use crate::models::{
-    AccountInfo, DashboardSnapshot, LocalDataWarning, ModelTokenBreakdown, QuotaLimit,
-    QuotaSnapshot, ResetCreditSummary,
+    AccountInfo, CacheRequestUsage, DashboardSnapshot, LocalDataWarning, ModelTokenBreakdown,
+    QuotaLimit, QuotaSnapshot, ResetCreditSummary,
 };
 use notify::event::ModifyKind;
 use notify::{
@@ -36,6 +36,10 @@ mod exact_usage_index;
 mod fingerprint_codec;
 mod scan_failure;
 mod rollout_source;
+
+pub(crate) fn bootstrap_legacy_exact_indexes() -> Result<(), String> {
+    exact_usage_index::bootstrap_legacy_indexes()
+}
 #[cfg(test)]
 mod rollout_source_tests;
 mod session_files;
@@ -2766,6 +2770,17 @@ pub fn usage_summary_snapshot(
     cached_dashboard_usage_summary_snapshot_cache_only(codex_home)
 }
 
+/// Reads a bounded page of request-level cache ranking details from the
+/// already-published exact index without scheduling or running a source scan.
+pub fn read_cache_turn_requests(
+    codex_home: &Path,
+    turn_id: &str,
+    offset: u32,
+    limit: u32,
+) -> Result<Vec<CacheRequestUsage>, String> {
+    exact_usage_index::read_cache_turn_requests(codex_home, turn_id, offset, limit)
+}
+
 /// Refreshes (or joins) the lightweight owner and returns the cache only after
 /// that owner has published. Callers therefore never need a second polling
 /// interval merely to observe a successful refresh.
@@ -4556,8 +4571,12 @@ pub(crate) fn dashboard_scan_signature_count_for_testing() -> usize {
 }
 
 /// Read existing published aggregates only; period navigation never scans logs.
-pub(crate) fn quota_cycle_model_ranges(codex_home: &Path, ranges: &[(i64, i64)]) -> Result<Vec<Vec<ModelTokenBreakdown>>, String> {
+pub(crate) fn quota_cycle_model_ranges(codex_home: &Path, ranges: &[(f64, f64)]) -> Result<Vec<Vec<ModelTokenBreakdown>>, String> {
     exact_usage_index::cycle_range::read(codex_home, ranges)
+}
+
+pub(crate) fn quota_cycle_consumption_evidence(codex_home: &Path, ranges: &[(f64, f64)]) -> Vec<crate::core::quota_history::cycles::ConsumptionEvidence> {
+    exact_usage_index::cycle_range::read_consumption_evidence(codex_home, ranges)
 }
 
 fn history_compression_enabled(codex_home: &Path) -> bool {

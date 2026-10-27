@@ -2,6 +2,7 @@ pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
     "set_codex_home",
     "reset_codex_home",
     "read_dashboard_snapshot",
+    "read_cache_turn_requests",
     "read_cached_dashboard_snapshot",
     "read_precise_dashboard_snapshot",
     "rebuild_precise_index_for_current_version",
@@ -23,6 +24,8 @@ pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
     "save_usage_refresh_settings",
     "save_auto_resume_settings",
     "save_session_enhancement_settings",
+    "set_agent_speed_reporting_enabled",
+    "dismiss_agent_speed_invitation",
     "save_setup_guide_completed",
     "scan_provider_repair",
     "list_provider_backups",
@@ -67,9 +70,18 @@ pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
     "check_app_update",
     "install_app_update",
     "take_body_speed_details_request",
+    "read_modeltrace_snapshot",
+    "start_modeltrace",
+    "cancel_modeltrace",
+    "save_modeltrace_auto_settings",
+    "take_modeltrace_open_request",
 ];
 
 pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[
+    "read_agent_speed_reporting_status",
+    "read_claude_local_runtime_snapshot",
+    "read_activity_speed_history",
+    "read_activity_speed_mode",
     "read_sidebar_trend",
     "get_codex_home",
     "read_app_settings",
@@ -83,7 +95,9 @@ pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[
     "read_usage_summary_snapshot",
     "schedule_precise_dashboard_aggregate",
     "read_live_rate_snapshot",
+    "read_activity_rate_history",
     "read_body_speed_history",
+    "read_body_speed_trend",
     "claim_live_rate_owner_session",
     "start_live_rate_stream",
     "stop_live_rate_stream",
@@ -100,6 +114,23 @@ pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[
 ];
 
 pub(crate) const QUOTA_SIDEBAR_ONLY_COMMANDS: &[&str] = &["set_quota_sidebar_mode", "quota_sidebar_pointer_inside", "quota_sidebar_pointer_state", "drag_quota_sidebar"];
+const ACTIVITY_SPEED_SETTINGS_COMMANDS: &[&str] = &["save_activity_speed_mode"];
+
+const SIDEBAR_MODULE_SETTINGS_COMMANDS: &[&str] = &[
+    "read_sidebar_module_visibility",
+    "save_sidebar_module_visibility",
+    "read_sidebar_module_order",
+    "save_sidebar_module_order",
+    "read_sidebar_layout",
+    "save_sidebar_layout",
+];
+
+const MODELTRACE_DETAIL_COMMANDS: &[&str] = &[
+    "read_modeltrace_snapshot",
+    "start_modeltrace",
+    "cancel_modeltrace",
+    "save_modeltrace_auto_settings",
+];
 
 pub(crate) const STATUS_WINDOW_ONLY_COMMANDS: &[&str] = &["publish_status_indicator_readout"];
 
@@ -120,7 +151,24 @@ pub(crate) fn require_window_label(
 }
 
 pub(crate) fn allows_window_label(command: &str, label: &str) -> bool {
+    if ACTIVITY_SPEED_SETTINGS_COMMANDS.contains(&command) {
+        return matches!(label, MAIN_WINDOW_LABEL | "quota-sidebar" | "quota-sidebar-detail");
+    }
+    if matches!(command, "read_activity_speed_history" | "read_activity_speed_mode" | "read_claude_local_runtime_snapshot")
+        && label == "quota-sidebar-detail" { return true; }
+    // The speed detail reads source-validated numeric buckets only. Other
+    // history, account and mutation commands keep their existing boundaries.
+    if command == "read_body_speed_trend" && label == "quota-sidebar-detail" { return true; }
+    if SIDEBAR_MODULE_SETTINGS_COMMANDS.contains(&command) {
+        return matches!(label, "quota-sidebar" | "quota-sidebar-detail");
+    }
+    if MODELTRACE_DETAIL_COMMANDS.contains(&command) {
+        return matches!(label, MAIN_WINDOW_LABEL | "quota-sidebar-detail");
+    }
     if command == "open_body_speed_details" {
+        return matches!(label, MAIN_WINDOW_LABEL | "quota-sidebar-detail");
+    }
+    if command == "open_modeltrace" {
         return matches!(label, MAIN_WINDOW_LABEL | "quota-sidebar-detail");
     }
 
@@ -138,7 +186,7 @@ pub(crate) fn allows_window_label(command: &str, label: &str) -> bool {
         return matches!(label, MAIN_WINDOW_LABEL | FLOATING_WINDOW_LABEL);
     }
 
-    if matches!(command, "complete_floating_paging_guide" | "read_floating_pointer_state" | "set_floating_dock_frame" | "prepare_floating_guide_overlay" | "floating_guide_overlay_ready" | "update_floating_guide_overlay") {
+    if matches!(command, "complete_floating_paging_guide" | "start_floating_window_drag" | "read_floating_pointer_state" | "set_floating_dock_frame" | "prepare_floating_guide_overlay" | "floating_guide_overlay_ready" | "update_floating_guide_overlay") {
         return label == FLOATING_WINDOW_LABEL;
     }
 
@@ -162,6 +210,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn activity_controls_are_narrow_and_details_do_not_gain_account_settings() {
+        for label in ["main", "quota-sidebar", "quota-sidebar-detail"] {
+            for command in ["read_activity_speed_mode", "save_activity_speed_mode", "read_activity_speed_history", "read_claude_local_runtime_snapshot"] {
+                assert!(allows_window_label(command, label), "{command} {label}");
+            }
+        }
+        for label in ["floating", "status", "unknown"] {
+            assert!(!allows_window_label("save_activity_speed_mode", label));
+        }
+        assert!(!allows_window_label("save_display_surfaces", "quota-sidebar-detail"));
+        assert!(!allows_window_label("read_app_settings", "quota-sidebar-detail"));
+    }
+
+    #[test]
+    fn speed_detail_can_read_numeric_trend_without_account_or_history_authority() {
+        assert!(allows_window_label("read_body_speed_trend", "quota-sidebar-detail"));
+        assert!(!allows_window_label("read_body_speed_trend", "unknown"));
+        for command in ["read_body_speed_history", "read_account_quota"] {
+            assert!(!allows_window_label(command, "quota-sidebar-detail"), "{command}");
+        }
+    }
+
+    #[test]
     fn detail_can_open_dashboard_without_receiving_data_or_geometry_authority() {
         assert!(allows_window_label("show_dashboard_window", "quota-sidebar-detail"));
         assert!(allows_window_label("open_body_speed_details", "quota-sidebar-detail"));
@@ -170,6 +241,14 @@ mod tests {
             assert!(!allows_window_label(command, "quota-sidebar-detail"), "{command}");
         }
         assert!(!allows_window_label("take_body_speed_details_request", "quota-sidebar-detail"));
+    }
+
+    #[test]
+    fn cache_turn_request_read_is_main_window_only() {
+        assert!(allows_window_label("read_cache_turn_requests", "main"));
+        for label in ["floating", "status", "quota-sidebar", "quota-sidebar-detail", "unknown"] {
+            assert!(!allows_window_label("read_cache_turn_requests", label), "{label}");
+        }
     }
 
     #[test]
@@ -183,11 +262,56 @@ mod tests {
         }
         assert!(!allows_window_label("save_display_surfaces", "quota-sidebar"));
     }
+
+    #[test]
+    fn sidebar_module_settings_commands_are_limited_to_sidebar_surfaces() {
+        for command in SIDEBAR_MODULE_SETTINGS_COMMANDS {
+            assert!(allows_window_label(command, "quota-sidebar"), "{command}");
+            assert!(allows_window_label(command, "quota-sidebar-detail"), "{command}");
+            for label in ["main", "floating", "status", "unknown"] {
+                assert!(!allows_window_label(command, label), "{command} from {label}");
+            }
+        }
+    }
+
+    #[test]
+    fn quota_sidebar_cannot_open_modeltrace_from_the_rail() {
+        assert!(!allows_window_label("open_modeltrace", "quota-sidebar"));
+        assert!(allows_window_label("open_modeltrace", "quota-sidebar-detail"));
+        assert!(allows_window_label("open_modeltrace", "main"));
+        for label in ["floating", "status", "unknown"] {
+            assert!(!allows_window_label("open_modeltrace", label));
+        }
+        assert!(!allows_window_label("open_body_speed_details", "quota-sidebar"));
+        for command in [
+            "read_modeltrace_snapshot",
+            "start_modeltrace",
+            "cancel_modeltrace",
+            "save_modeltrace_auto_settings",
+            "take_modeltrace_open_request",
+        ] {
+            assert!(!allows_window_label(command, "quota-sidebar"), "{command}");
+        }
+    }
+
+    #[test]
+    fn modeltrace_data_and_control_commands_are_limited_to_detail_and_main() {
+        for command in MODELTRACE_DETAIL_COMMANDS {
+            assert!(allows_window_label(command, "main"), "{command}");
+            assert!(allows_window_label(command, "quota-sidebar-detail"), "{command}");
+            for label in ["quota-sidebar", "floating", "status", "unknown"] {
+                assert!(!allows_window_label(command, label), "{command} from {label}");
+            }
+        }
+    }
+
     #[test]
     fn floating_pointer_state_is_restricted_to_the_floating_surface() {
+        assert!(allows_window_label("start_floating_window_drag", "floating"));
         assert!(allows_window_label("read_floating_pointer_state", "floating"));
         assert!(allows_window_label("set_floating_dock_frame", "floating"));
-        for label in ["main", "status", "unknown"] {
+        for label in ["main", "status", "quota-sidebar", "quota-sidebar-detail", "unknown"] {
+            assert!(!allows_window_label("start_floating_window_drag", label));
             assert!(!allows_window_label("read_floating_pointer_state", label));
             assert!(!allows_window_label("set_floating_dock_frame", label));
         }
@@ -398,6 +522,8 @@ mod tests {
             .iter()
             .chain(SURFACE_SAFE_COMMANDS.iter())
             .chain(QUOTA_SIDEBAR_ONLY_COMMANDS.iter())
+            .chain(SIDEBAR_MODULE_SETTINGS_COMMANDS.iter())
+            .chain(ACTIVITY_SPEED_SETTINGS_COMMANDS.iter())
             .chain(std::iter::once(&"save_floating_position"))
         {
             assert!(
@@ -420,6 +546,8 @@ mod tests {
             .iter()
             .chain(SURFACE_SAFE_COMMANDS.iter())
             .chain(QUOTA_SIDEBAR_ONLY_COMMANDS.iter())
+            .chain(SIDEBAR_MODULE_SETTINGS_COMMANDS.iter())
+            .chain(ACTIVITY_SPEED_SETTINGS_COMMANDS.iter())
             .chain(std::iter::once(&"save_floating_position"))
         {
             assert!(

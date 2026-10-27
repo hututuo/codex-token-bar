@@ -11,7 +11,7 @@ mod outside_click;
 mod motion;
 #[cfg(target_os = "macos")]
 mod canvas_macos;
-#[cfg(any(windows, test))]
+// Shared logical widths are used by placement/motion on every platform.
 mod canvas_geometry;
 #[cfg(windows)]
 mod canvas_windows;
@@ -21,7 +21,7 @@ pub(super) const SIDEBAR_WEEKLY_HEIGHT: f64 = 590.0;
 
 const LABEL: &str = "quota-sidebar";
 const DETAIL: &str = "quota-sidebar-detail";
-static STATE: Mutex<Option<(DisplaySurfaceSettingsSnapshot, SidebarMode, bool)>> = Mutex::new(None);
+static STATE: Mutex<Option<(DisplaySurfaceSettingsSnapshot, SidebarMode, bool, f64, Option<f64>, bool)>> = Mutex::new(None);
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -36,13 +36,42 @@ pub struct SidebarFrame { pub x: f64, pub y: f64, pub width: f64, pub height: f6
 fn frames_for(work: SidebarFrame, side: &str, mode: SidebarMode, shows_five_hour: bool) -> (SidebarFrame, SidebarFrame) {
     frames_for_at(work, side, mode, shows_five_hour, 0.5)
 }
+#[cfg(test)]
 fn frames_for_at(work: SidebarFrame, side: &str, mode: SidebarMode, shows_five_hour: bool, center_y: f64) -> (SidebarFrame, SidebarFrame) {
+    frames_for_at_height(work, side, mode, shows_five_hour, default_expanded_height(shows_five_hour), center_y)
+}
+fn default_expanded_height(shows_five_hour: bool) -> f64 {
+    if shows_five_hour { SIDEBAR_CANVAS_HEIGHT } else { SIDEBAR_WEEKLY_HEIGHT }
+}
+fn default_compact_height(shows_five_hour: bool) -> f64 {
+    if shows_five_hour { 250.0 } else { 192.0 }
+}
+fn resolve_expanded_height(height: Option<f64>, shows_five_hour: bool) -> Result<f64, String> {
+    match height {
+        None => Ok(default_expanded_height(shows_five_hour)),
+        Some(value) if value.is_finite() && (192.0..=4096.0).contains(&value) => Ok(value),
+        Some(_) => Err("Expanded quota sidebar height must be finite and between 192 and 4096 points".into()),
+    }
+}
+fn resolve_compact_height(height: Option<f64>) -> Result<Option<f64>, String> {
+    match height {
+        None => Ok(None),
+        Some(value) if value.is_finite() && (0.0..=4096.0).contains(&value) && value > 0.0 => Ok(Some(value)),
+        Some(_) => Err("Compact quota sidebar height must be finite, greater than 0 and at most 4096 points".into()),
+    }
+}
+fn frames_for_at_height(work: SidebarFrame, side: &str, mode: SidebarMode, shows_five_hour: bool, expanded_height: f64, center_y: f64) -> (SidebarFrame, SidebarFrame) {
+    frames_for_at_height_with_compact(work, side, mode, shows_five_hour, expanded_height, None, center_y)
+}
+fn frames_for_at_height_with_compact(work: SidebarFrame, side: &str, mode: SidebarMode, shows_five_hour: bool, expanded_height: f64, compact_height: Option<f64>, center_y: f64) -> (SidebarFrame, SidebarFrame) {
+    frames_for_at_height_with_preview(work, side, mode, shows_five_hour, expanded_height, compact_height, false, center_y)
+}
+fn frames_for_at_height_with_preview(work: SidebarFrame, side: &str, mode: SidebarMode, shows_five_hour: bool, expanded_height: f64, compact_height: Option<f64>, settings_preview: bool, center_y: f64) -> (SidebarFrame, SidebarFrame) {
     let center = work.y + work.height * center_y.clamp(0.0, 1.0);
-    let (rail_width, rail_height): (f64, f64) = match (mode, shows_five_hour) {
-        (SidebarMode::Rest, true) => (16.0, 250.0),
-        (SidebarMode::Rest, false) => (16.0, 192.0),
-        (_, true) => (88.0, SIDEBAR_CANVAS_HEIGHT),
-        (_, false) => (88.0, SIDEBAR_WEEKLY_HEIGHT),
+    let (rail_width, rail_height): (f64, f64) = match (mode, shows_five_hour, settings_preview) {
+        (SidebarMode::Rest, _, _) => (16.0, compact_height.unwrap_or_else(|| default_compact_height(shows_five_hour))),
+        (SidebarMode::Detail, _, true) => (112.0, expanded_height),
+        _ => (88.0, expanded_height),
     };
     let width = rail_width.min(work.width.max(1.0));
     let height = rail_height.min(work.height.max(1.0));
@@ -89,12 +118,16 @@ fn create_window(app: &tauri::AppHandle, label: &str) -> Result<WebviewWindow, S
 }
 
 fn sync_on_main(app: &tauri::AppHandle, display: &DisplaySurfaceSettingsSnapshot) -> Result<(), String> {
-    let (mode, shows_five_hour) = {
+    let (mode, shows_five_hour, expanded_height, compact_height, settings_preview) = {
         let mut state = STATE.lock().map_err(|e| e.to_string())?;
-        if !display.quota_sidebar_enabled || state.as_ref().is_some_and(|(old, _, _)| old.quota_sidebar_side != display.quota_sidebar_side) { placement::cancel(); }
-        let mode = if display.quota_sidebar_enabled { state.as_ref().map(|(_, mode, _)| *mode).unwrap_or(SidebarMode::Rest) } else { SidebarMode::Rest };
-        let shows_five_hour = state.as_ref().map(|(_, _, present)| *present).unwrap_or(false);
-        *state = Some((display.clone(), mode, shows_five_hour)); (mode, shows_five_hour)
+        if !display.quota_sidebar_enabled || state.as_ref().is_some_and(|(old, _, _, _, _, _)| old.quota_sidebar_side != display.quota_sidebar_side) { placement::cancel(); }
+        let mode = if display.quota_sidebar_enabled { state.as_ref().map(|(_, mode, _, _, _, _)| *mode).unwrap_or(SidebarMode::Rest) } else { SidebarMode::Rest };
+        let shows_five_hour = state.as_ref().map(|(_, _, present, _, _, _)| *present).unwrap_or(false);
+        let expanded_height = state.as_ref().map(|(_, _, _, height, _, _)| *height).unwrap_or_else(|| default_expanded_height(shows_five_hour));
+        let compact_height = state.as_ref().and_then(|(_, _, _, _, height, _)| *height);
+        let settings_preview = display.quota_sidebar_enabled && state.as_ref().is_some_and(|(_, _, _, _, _, preview)| *preview);
+        *state = Some((display.clone(), mode, shows_five_hour, expanded_height, compact_height, settings_preview));
+        (mode, shows_five_hour, expanded_height, compact_height, settings_preview)
     };
     if !display.quota_sidebar_enabled {
         if let Some(window) = app.get_webview_window(LABEL) {
@@ -106,7 +139,7 @@ fn sync_on_main(app: &tauri::AppHandle, display: &DisplaySurfaceSettingsSnapshot
     }
     let rail = create_window(app, LABEL)?;
     let detail = create_window(app, DETAIL)?;
-    apply_frames(&rail, &detail, &display.quota_sidebar_side, mode, shows_five_hour)?;
+    apply_frames(&rail, &detail, &display.quota_sidebar_side, mode, shows_five_hour, expanded_height, compact_height, settings_preview)?;
     rail.emit("quota-sidebar-settings-changed", display).map_err(|e| e.to_string())?;
     if placement::is_dragging() { return Ok(()); }
     show_passive(&rail)?;
@@ -115,8 +148,10 @@ fn sync_on_main(app: &tauri::AppHandle, display: &DisplaySurfaceSettingsSnapshot
 }
 
 #[tauri::command]
-pub async fn set_quota_sidebar_mode(window: WebviewWindow, mode: SidebarMode, shows_five_hour: bool, reduced_motion: bool, refresh_geometry: bool, request_id: u64) -> Result<SidebarFrame, String> {
+pub async fn set_quota_sidebar_mode(window: WebviewWindow, mode: SidebarMode, shows_five_hour: bool, expanded_height: Option<f64>, compact_height: Option<f64>, settings_preview: Option<bool>, reduced_motion: bool, refresh_geometry: bool, request_id: u64) -> Result<SidebarFrame, String> {
     crate::commands::window_auth::require_window_label(&window, "set_quota_sidebar_mode")?;
+    let expanded_height = resolve_expanded_height(expanded_height, shows_five_hour)?;
+    let compact_height = resolve_compact_height(compact_height)?;
     let native = window.clone();
     let (send, receive) = tokio::sync::oneshot::channel();
     window.run_on_main_thread(move || {
@@ -124,16 +159,22 @@ pub async fn set_quota_sidebar_mode(window: WebviewWindow, mode: SidebarMode, sh
             // Consult the latest native configuration on the same main-thread
             // queue as disable; an old IPC completion cannot resurrect windows.
             let mut state = STATE.lock().map_err(|e| e.to_string())?;
-            let (display, current_mode, current_shows_five_hour) = state.as_mut().ok_or("Quota sidebar not configured")?;
+            let (display, current_mode, current_shows_five_hour, current_expanded_height, current_compact_height, current_settings_preview) = state.as_mut().ok_or("Quota sidebar not configured")?;
             if !display.quota_sidebar_enabled { return Err("Quota sidebar is disabled".into()); }
             let detail = native.app_handle().get_webview_window(DETAIL).ok_or("Quota detail window unavailable")?;
-            if placement::is_dragging() { return apply_frames(&native, &detail, &display.quota_sidebar_side, mode, shows_five_hour); }
-            let frame = motion::start(&native, &detail, &display.quota_sidebar_side, mode, shows_five_hour, reduced_motion, refresh_geometry, request_id)?;
+            let side = display.quota_sidebar_side.clone();
+            *current_mode = mode;
+            *current_shows_five_hour = shows_five_hour;
+            *current_expanded_height = expanded_height;
+            *current_compact_height = compact_height;
+            *current_settings_preview = settings_preview.unwrap_or(false);
+            if placement::is_dragging() {
+                return apply_frames(&native, &detail, &side, mode, shows_five_hour, expanded_height, compact_height, *current_settings_preview);
+            }
+            let frame = motion::start(&native, &detail, &side, mode, shows_five_hour, expanded_height, compact_height, *current_settings_preview, reduced_motion, refresh_geometry, request_id)?;
             show_passive(&native)?;
             if mode == SidebarMode::Detail { show_passive(&detail)?; }
             else { detail.hide().map_err(|e| e.to_string())?; }
-            *current_mode = mode;
-            *current_shows_five_hour = shows_five_hour;
             Ok(frame)
         })();
         let _ = send.send(result);
@@ -231,6 +272,49 @@ mod tests {
         }
     }
     #[test]
+    fn settings_preview_places_16_and_88_point_rails_in_a_112_point_native_frame() {
+        let work = SidebarFrame { x: -1440.0, y: 23.0, width: 1440.0, height: 877.0 };
+        for side in ["left", "right"] {
+            let (normal_rail, normal_detail) = frames_for_at(work, side, SidebarMode::Detail, true, 0.5);
+            let (preview_rail, preview_detail) = frames_for_at_height_with_preview(work, side, SidebarMode::Detail, true, 800.0, None, true, 0.5);
+            assert_eq!(normal_rail.width, 88.0);
+            assert_eq!(preview_rail.width, 112.0);
+            assert_eq!(preview_rail.height, 800.0);
+            assert_eq!(normal_detail.width, preview_detail.width);
+            if side == "left" {
+                assert_eq!(preview_rail.x, work.x);
+                assert_eq!(preview_detail.x - normal_detail.x, 24.0);
+                assert_eq!(preview_detail.x - (preview_rail.x + preview_rail.width), 16.0);
+            } else {
+                assert_eq!(preview_rail.x + preview_rail.width, work.x + work.width);
+                assert_eq!(normal_detail.x - preview_detail.x, 24.0);
+                assert_eq!(preview_rail.x - (preview_detail.x + preview_detail.width), 16.0);
+            }
+
+            let (hover, _) = frames_for_at_height_with_preview(work, side, SidebarMode::Hover, true, 800.0, None, true, 0.5);
+            let (rest, _) = frames_for_at_height_with_preview(work, side, SidebarMode::Rest, true, 800.0, None, true, 0.5);
+            let (closed_rail, closed_detail) = frames_for_at(work, side, SidebarMode::Detail, true, 0.5);
+            assert_eq!(hover.width, 88.0);
+            assert_eq!(rest.width, 16.0);
+            assert_eq!(closed_rail, normal_rail);
+            assert_eq!(closed_detail, normal_detail);
+        }
+    }
+    #[test]
+    fn settings_preview_width_clamps_to_narrow_workareas_on_both_sides() {
+        let work = SidebarFrame { x: 10.5, y: -200.0, width: 80.0, height: 220.5 };
+        for side in ["left", "right"] {
+            let (rail, detail) = frames_for_at_height_with_preview(work, side, SidebarMode::Detail, true, 760.0, None, true, 0.5);
+            assert_eq!(rail.width, work.width);
+            for frame in [rail, detail] {
+                assert!(frame.x >= work.x);
+                assert!(frame.x + frame.width <= work.x + work.width);
+                assert!(frame.y >= work.y);
+                assert!(frame.y + frame.height <= work.y + work.height);
+            }
+        }
+    }
+    #[test]
     fn clicking_detail_preserves_the_entire_hover_rail_frame() {
         for side in ["left", "right"] {
             for five in [false, true] {
@@ -259,6 +343,56 @@ mod tests {
                 assert_eq!(detail_three, detail_two);
             }
         }
+    }
+    #[test]
+    fn explicit_expanded_height_is_used_for_hover_and_detail_but_not_rest() {
+        let work = SidebarFrame { x: 0.0, y: 0.0, width: 1440.0, height: 1200.0 };
+        for side in ["left", "right"] {
+            let (rest, _) = frames_for_at_height(work, side, SidebarMode::Rest, true, 760.0, 0.5);
+            let (hover, hover_card) = frames_for_at_height(work, side, SidebarMode::Hover, true, 760.0, 0.5);
+            let (detail, detail_card) = frames_for_at_height(work, side, SidebarMode::Detail, true, 760.0, 0.5);
+            assert_eq!(rest.height, 250.0);
+            assert_eq!(hover.height, 760.0);
+            assert_eq!(detail.height, hover.height);
+            assert_eq!(detail_card, hover_card);
+            assert_eq!(hover.y + hover.height / 2.0, work.y + work.height / 2.0);
+        }
+    }
+    #[test]
+    fn compact_height_validation_keeps_absent_defaults_and_rejects_invalid_values() {
+        assert_eq!(resolve_compact_height(None).unwrap(), None);
+        assert_eq!(default_compact_height(true), 250.0);
+        assert_eq!(default_compact_height(false), 192.0);
+        for value in [0.0, -0.1, 4096.01, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(resolve_compact_height(Some(value)).is_err());
+        }
+        assert_eq!(resolve_compact_height(Some(0.1)).unwrap(), Some(0.1));
+        assert_eq!(resolve_compact_height(Some(4096.0)).unwrap(), Some(4096.0));
+    }
+    #[test]
+    fn compact_height_is_independent_from_expanded_height_and_clamped_to_workarea() {
+        let work = SidebarFrame { x: 0.0, y: 0.0, width: 1440.0, height: 1200.0 };
+        for side in ["left", "right"] {
+            let (rest, _) = frames_for_at_height_with_compact(work, side, SidebarMode::Rest, true, 760.0, Some(420.0), 0.5);
+            let (hover, _) = frames_for_at_height_with_compact(work, side, SidebarMode::Hover, true, 760.0, Some(420.0), 0.5);
+            assert_eq!(rest.height, 420.0);
+            assert_eq!(hover.height, 760.0);
+
+            let short = SidebarFrame { height: 180.0, ..work };
+            let (clamped, _) = frames_for_at_height_with_compact(short, side, SidebarMode::Rest, true, 760.0, Some(420.0), 0.5);
+            assert_eq!(clamped.height, 180.0);
+            assert!(clamped.y >= short.y && clamped.y + clamped.height <= short.y + short.height);
+        }
+    }
+    #[test]
+    fn expanded_height_validation_preserves_legacy_defaults_and_rejects_invalid_values() {
+        assert_eq!(resolve_expanded_height(None, true).unwrap(), SIDEBAR_CANVAS_HEIGHT);
+        assert_eq!(resolve_expanded_height(None, false).unwrap(), SIDEBAR_WEEKLY_HEIGHT);
+        for value in [191.99, 4096.01, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(resolve_expanded_height(Some(value), true).is_err());
+        }
+        assert_eq!(resolve_expanded_height(Some(192.0), true).unwrap(), 192.0);
+        assert_eq!(resolve_expanded_height(Some(4096.0), false).unwrap(), 4096.0);
     }
     #[test]
     fn tiny_and_fractional_workareas_clamp_both_windows() {

@@ -40,6 +40,15 @@ struct CodexUsageIndexUpgradeRequiredError: LocalizedError, Equatable, Sendable 
     }
 }
 
+struct CodexUsageDashboardAggregateRefreshRequiredError: LocalizedError, Equatable, Sendable {
+    let stored: String
+    let supported: String
+
+    var errorDescription: String? {
+        "本地统计索引版本为 \(stored)，请求明细需要版本 \(supported)。请先刷新精确历史索引后重试；已有事件与归因账本仍保留。"
+    }
+}
+
 struct CodexUsageIndexRepairRequiredError: LocalizedError, Equatable, Sendable {
     let reason: String
 
@@ -390,6 +399,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let auditChunkIndex: UInt64
     }
 
+    private struct BusinessStageDemand: Error {
+        let jobs: [FullRebuildJob]
+        let enrichmentTotal: Int
+    }
+
     private struct FullRebuildJob {
         enum Reason {
             case sourceChange
@@ -510,11 +524,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     ]
     private static let eventEnrichmentRevisionKey = "event_enrichment_revision"
     private static let eventEnrichmentRevision = "model-v1"
-    // Turn candidates are grouped by the originating user message, and their
-    // cache denominator uses the latest current-context snapshot. Bump the
-    // disposable aggregate version whenever that ranking contract changes so
-    // older event-level rows cannot remain in the projection.
-    private static let dashboardAggregateSchemaVersion = "5"
+    // Turn candidates are grouped by the originating user message and sum
+    // request-level usage. Bump the disposable aggregate version whenever
+    // that ranking contract changes so older snapshot-level rows cannot
+    // remain in the projection.
+    private static let dashboardAggregateSchemaVersion = "6"
     private static let dashboardAggregatePricingRevision = "raw-token-v1"
     private static let knownDashboardAggregatePricingRevisions: Set<String> = [
         "raw-token-v0",
@@ -582,6 +596,17 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     private let fileManager: FileManager
     private let operationGate: CodexUsageHistoryIndexOperationGate
 
+    /// The migration gate normalizes an isolated backup, never the original
+    /// user's database. The established ledger/fork/retention migrations run
+    /// unchanged, then only that verified schema is imported into A.
+    static func businessIndexDirectory(legacyCache: Bool = false) -> URL {
+        databaseURL(for: URL(fileURLWithPath: "/"), legacyCache: legacyCache).deletingLastPathComponent()
+    }
+
+    static func prepareBusinessSnapshot(at url: URL) throws {
+        _ = try CodexUsageHistoryIndex(databaseURL: url, fileManager: .default)
+    }
+
     convenience init(
         codexHome: URL,
         fileManager: FileManager = .default,
@@ -605,6 +630,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         onProgress: ((PreciseIndexProgress) -> Void)? = nil
     ) throws -> CodexUsageHistoryIndex? {
         let current = databaseURL(for: codexHome)
+        if BusinessSQLiteRoutes.store(for: current) != nil, BusinessStoreFiles.exists(current) {
+            return try CodexUsageHistoryIndex(codexHome: codexHome, fileManager: fileManager,
+                createsFileIfMissing: false, onProgress: onProgress)
+        }
         let legacy = databaseURL(for: codexHome, legacyCache: true)
         for url in [current, candidateMigrationManifestURL(for: current),
                     legacy, candidateMigrationManifestURL(for: legacy)] {
@@ -654,6 +683,76 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             maximumMinuteBucketCount: 4)
     }
 
+    /// Covered-empty is evidence; missing/stale/unsafe publication is unknown.
+    /// This opens only an existing index, never migrates it or rescans sessions.
+    static func quotaCycleConsumption(codexHome: URL, after start: Date,
+                                      through end: Date) -> QuotaCycleConsumption {
+        guard end > start else { return .unknown }
+        do {
+            let reader = try Self(readOnlyCycleHome: codexHome)
+            return try reader.cycleConsumption(after: start, through: end)
+        } catch { return .unknown }
+    }
+
+    func cycleConsumption(after start: Date, through end: Date) throws -> QuotaCycleConsumption {
+        return try driver.withConnection { db in
+                try db.readTransaction { tx in
+                    let state = try currentAttributionState(connection: tx)
+                    let pending = try tx.readRows("SELECT 1 FROM schema_meta WHERE key='canonical_projection_pending'") { $0.int(0) }.first != nil
+                    guard !pending, !state.currentScanUnsafeCauseDetected else { return .unknown }
+                    let found = try tx.readRows("""
+                        SELECT 1 FROM canonical_usage_events
+                        WHERE timestamp > ? AND timestamp <= ? AND tokens > 0 LIMIT 1
+                        """, bindings: [.double(start.timeIntervalSince1970), .double(end.timeIntervalSince1970)]) { $0.int(0) }.first != nil
+                    if found { return .present }
+                    guard state.unsafeSinceGeneration == nil,
+                          let receipt = try UsageIndexCoverageCertificate.read(on: tx), receipt.revision == 1,
+                          receipt.generation == state.generation, receipt.provenanceEpoch == state.provenanceEpoch,
+                          receipt.observedAt >= end else { return .unknown }
+                    let unresolved = try tx.readRows("SELECT 1 FROM usage_ledger_unresolved WHERE timestamp > ? AND timestamp <= ? LIMIT 1",
+                        bindings: [.double(start.timeIntervalSince1970), .double(end.timeIntervalSince1970)]) { $0.int(0) }.first != nil
+                    return unresolved ? .unknown : .absent
+                }
+            }
+    }
+
+    /// Exact half-open cycle bounds over the canonical ledger. Five-minute
+    /// grouping retains dated model pricing, but never clips mixed edge tokens.
+    static func quotaCycleExactUsage(codexHome: URL, provenanceEpoch: String,
+        generation: Int64, from start: Date, before end: Date) throws -> [TokenCacheAttributionEvent] {
+        let reader = try Self(readOnlyCycleHome: codexHome)
+        return try reader.cycleExactUsage(provenanceEpoch: provenanceEpoch, generation: generation, from: start, before: end)
+    }
+
+    func cycleExactUsage(provenanceEpoch: String, generation: Int64,
+                         from start: Date, before end: Date) throws -> [TokenCacheAttributionEvent] {
+        return try driver.withConnection { db in
+            try db.readTransaction { tx in
+                let state = try currentAttributionState(connection: tx)
+                let pending = try tx.readRows("SELECT 1 FROM schema_meta WHERE key='canonical_projection_pending'") { $0.int(0) }.first != nil
+                guard !pending, !state.currentScanUnsafeCauseDetected,
+                      state.generation == generation, state.provenanceEpoch == provenanceEpoch else {
+                    throw SQLiteDatabaseError(operation: "Read observed cycle", code: SQLITE_ABORT,
+                        message: "周期明细等待精确统计更新", path: driver.url.path)
+                }
+                return try tx.readRows("""
+                    SELECT CAST(timestamp/300 AS INTEGER)*300, model,
+                           SUM(input_tokens), SUM(cached_input_tokens), SUM(output_tokens),
+                           SUM(reasoning_output_tokens), SUM(tokens), COUNT(*)
+                    FROM canonical_usage_events WHERE timestamp >= ? AND timestamp < ? AND tokens > 0
+                    GROUP BY 1, model ORDER BY 1, model
+                    """, bindings: [.double(start.timeIntervalSince1970), .double(end.timeIntervalSince1970)]) { row in
+                    let timestamp = max(row.double(0) ?? 0, start.timeIntervalSince1970)
+                    return TokenCacheAttributionEvent(id: "cycle-v3:\(timestamp):\(row.text(1) ?? "")",
+                        start: Date(timeIntervalSince1970: timestamp), model: row.text(1),
+                        breakdown: TokenCacheBreakdown(inputTokens: row.int(2) ?? 0,
+                            cachedInputTokens: row.int(3) ?? 0, outputTokens: row.int(4) ?? 0,
+                            reasoningOutputTokens: row.int(5) ?? 0, totalTokens: row.int(6) ?? 0, calls: row.int(7) ?? 0))
+                }
+            }
+        }
+    }
+
     private init(
         databaseURL: URL,
         fileManager: FileManager,
@@ -661,7 +760,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         openMode: OpenMode = .active,
         createsFileIfMissing: Bool = true
     ) throws {
-        let existedBeforeOpen = fileManager.fileExists(atPath: databaseURL.path)
+        let existedBeforeOpen = BusinessStoreFiles.exists(databaseURL, fileManager: fileManager)
         let gate = Self.operationGate(for: databaseURL)
         let migratedViaCandidate: Bool
         if openMode == .active {
@@ -751,6 +850,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         fileManager: FileManager,
         onProgress: ((PreciseIndexProgress) -> Void)?
     ) throws -> Bool {
+        if BusinessSQLiteRoutes.store(for: databaseURL) != nil {
+            switch try assessMigration(databaseURL: databaseURL, fileManager: fileManager) {
+            case .compatible: return false
+            default: throw CodexUsageIndexRepairRequiredError(reason: "归并后的索引需要模块迁移，已保留账本并停止旧文件交换")
+            }
+        }
         // Reject future contracts before resuming or switching any candidate.
         if case let .upgradeRequired(component, stored, supported) = try assessMigration(databaseURL: databaseURL, fileManager: fileManager) {
             throw CodexUsageIndexUpgradeRequiredError(component: component, stored: stored, supported: supported)
@@ -761,7 +866,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             if manifest.phase == .retained {
                 guard manifest.manifestVersion == CandidateMigrationManifest.currentVersion,
                       URL(fileURLWithPath: manifest.sourcePath).resolvingSymlinksInPath() == databaseURL.resolvingSymlinksInPath(),
-                      fileManager.fileExists(atPath: databaseURL.path) else {
+                      BusinessStoreFiles.exists(databaseURL, fileManager: fileManager) else {
                     throw CodexUsageIndexRepairRequiredError(reason: "已迁移账本缺失；保留旧库并停止自动重建")
                 }
                 return false
@@ -777,7 +882,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             return !wasAlreadySwitched
         }
 
-        guard fileManager.fileExists(atPath: databaseURL.path) else { return false }
+        guard BusinessStoreFiles.exists(databaseURL, fileManager: fileManager) else { return false }
         let assessment = try assessMigration(
             databaseURL: databaseURL,
             fileManager: fileManager
@@ -1049,7 +1154,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             return
         }
 
-        if fileManager.fileExists(atPath: databaseURL.path),
+        if BusinessStoreFiles.exists(databaseURL, fileManager: fileManager),
            !fileManager.fileExists(atPath: rollbackURL.path) {
             try fileManager.moveItem(at: databaseURL, to: rollbackURL)
         }
@@ -1069,11 +1174,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             fileManager: fileManager
         )
 
-        if !fileManager.fileExists(atPath: databaseURL.path),
+        if !BusinessStoreFiles.exists(databaseURL, fileManager: fileManager),
            fileManager.fileExists(atPath: candidateURL.path) {
             try fileManager.moveItem(at: candidateURL, to: databaseURL)
         }
-        guard fileManager.fileExists(atPath: databaseURL.path),
+        guard BusinessStoreFiles.exists(databaseURL, fileManager: fileManager),
               !fileManager.fileExists(atPath: candidateURL.path) else {
             throw CodexUsageIndexRepairRequiredError(
                 reason: "schema 11 候选切换未完成；下次启动将按清单继续"
@@ -1484,7 +1589,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         rollbackURL: URL,
         fileManager: FileManager
     ) throws {
-        guard fileManager.fileExists(atPath: databaseURL.path) else {
+        guard BusinessStoreFiles.exists(databaseURL, fileManager: fileManager) else {
             throw CodexUsageIndexRepairRequiredError(
                 reason: "schema 11 清理缺少已发布活动库；已保留回滚库"
             )
@@ -1560,7 +1665,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         databaseURL: URL,
         fileManager: FileManager
     ) throws -> MigrationAssessment {
-        guard fileManager.fileExists(atPath: databaseURL.path) else {
+        guard BusinessStoreFiles.exists(databaseURL, fileManager: fileManager) else {
             return .compatible
         }
         let readOnly = SQLiteDatabaseDriver(
@@ -1805,7 +1910,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         policy: CodexUsageIndexStorageMaintenancePolicy,
         availableCapacityOverride: UInt64?
     ) throws -> CodexUsageIndexStorageMaintenanceOutcome {
-        try driver.withConnection { connection in
+        if let store = BusinessSQLiteRoutes.store(for: driver.url) {
+            return try BusinessDatabaseMaintenance.run(container: store.containerURL, now: now,
+                policy: policy, availableCapacity: availableCapacityOverride)
+        }
+        return try driver.withConnection { connection in
             try configure(connection)
             let nowUnix = Int64(now.timeIntervalSince1970.rounded(.down))
             let lastChecked = try connection.readRows(
@@ -2505,20 +2614,37 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         parser: @escaping SessionParser,
         onProgress: ((Int, Int, PreciseIndexProgressPhase) -> Void)? = nil
     ) throws -> SynchronizationResult {
-        var stagedArtifacts: [URL] = []
-        let result = try driver.withConnection { connection in
-            try configure(connection)
-            return try connection.transaction { transaction in
-                try synchronizeInTransaction(files: files, sessionID: sessionID,
-                    messageScanner: messageScanner, observedAt: observedAt, parser: parser, onProgress: onProgress,
-                    connection: transaction, stagedArtifacts: &stagedArtifacts)
+        var attempt = 0
+        while true {
+            var stagedArtifacts: [URL] = []
+            do {
+                let result = try driver.withConnection { connection in
+                    try configure(connection)
+                    return try connection.transaction { transaction in
+                        try synchronizeInTransaction(files: files, sessionID: sessionID,
+                            messageScanner: messageScanner, observedAt: observedAt, parser: parser, onProgress: onProgress,
+                            connection: transaction, stagedArtifacts: &stagedArtifacts)
+                    }
+                }
+                // Only the complete generation's commit permits job cleanup.
+                for artifact in stagedArtifacts { removeStagingDatabase(at: artifact) }
+                removeStagingDirectoryIfEmpty()
+                return result
+            } catch let demand as BusinessStageDemand {
+                // SQLite has one writer per physical A file. Build durable
+                // private jobs after rolling back the tentative publication,
+                // then retry its original accounting transaction unchanged.
+                attempt += 1
+                guard attempt <= 8 else { throw CodexUsageIndexRepairRequiredError(reason: "源会话持续变化，已保留旧账和扫描断点，等待下次刷新") }
+                for batch in stagingBatches(for: demand.jobs) {
+                    try ensureStagingCapacity(for: batch)
+                    _ = try stageFullRebuilds(batch, parser: parser,
+                        eventEnrichmentTotal: demand.enrichmentTotal) { completed,total in
+                        onProgress?(completed, total, .backfillingModel)
+                    }
+                }
             }
         }
-        // A batch savepoint is not a publication. Keep retry artifacts until
-        // the entire generation and its coverage receipt have committed.
-        for artifact in stagedArtifacts { removeStagingDatabase(at: artifact) }
-        removeStagingDirectoryIfEmpty()
-        return result
     }
 
     private func synchronizeInTransaction(
@@ -2743,6 +2869,15 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         var lineagesRequiringMaximumMerge = Set<String>()
         var provenanceRotated = false
         let stagingBatches = stagingBatches(for: fullRebuildJobs)
+        if BusinessSQLiteRoutes.store(for: driver.url) != nil {
+            for job in fullRebuildJobs {
+                var ready = false
+                for url in stagingDatabaseURLs(for: job.file) {
+                    if try reusableStage(at: url, for: job) != nil { ready = true; break }
+                }
+                if !ready { throw BusinessStageDemand(jobs: fullRebuildJobs, enrichmentTotal: eventEnrichmentTotal) }
+            }
+        }
         let finalSynchronization = try connection.transaction { connection in
             let preRotationAttributionState = try currentAttributionState(
                 connection: connection
@@ -3465,7 +3600,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                             cached_input_tokens,
                             output_tokens,
                             reasoning_output_tokens,
-                            turn_index
+                            turn_index,
+                            request_count,
+                            low_hit_count,
+                            zero_hit_count
                         FROM dashboard_turn_candidates
                         WHERE \(selection.predicate)
                           AND (?1 IS NULL OR session_id IN (
@@ -3486,7 +3624,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                               let cachedInputTokens = row.int(6),
                               let outputTokens = row.int(7),
                               let reasoningOutputTokens = row.int(8),
-                              let turnIndex = row.int(9) else {
+                              let turnIndex = row.int(9),
+                              let requestCount = row.int(10),
+                              let lowHitCount = row.int(11),
+                              let zeroHitCount = row.int(12) else {
                             return nil
                         }
                         return TurnCacheUsage(
@@ -3507,7 +3648,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                                 reasoningOutputTokens: reasoningOutputTokens,
                                 totalTokens: totalTokens,
                                 calls: 1
-                            )
+                            ),
+                            requestCount: requestCount,
+                            lowHitCount: lowHitCount,
+                            zeroHitCount: zeroHitCount
                         )
                     }
                     for candidate in rows.compactMap({ $0 }) {
@@ -3516,6 +3660,156 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 }
                 return Array(candidates.values)
         }
+    }
+
+    /// Reads one page of request observations for a logical turn. The turn
+    /// locator is a stable ID for one canonical event; its prompt offset binds
+    /// the page to the remaining request events in that same user turn.
+    func cacheRequests(
+        turnID: String,
+        offset: Int = 0,
+        limit: Int = 100
+    ) throws -> [CacheRequestUsage] {
+        try driver.withConnection { connection in
+            try Self.cacheRequests(
+                turnID: turnID,
+                offset: offset,
+                limit: limit,
+                connection: connection
+            )
+        }
+    }
+
+    /// Detail reads intentionally bypass index construction and migration.
+    /// This keeps opening a turn from scanning logs or writing synchronization
+    /// state, and leaves older aggregate generations visibly stale until the
+    /// normal dashboard load upgrades them.
+    static func readCacheRequests(
+        codexHome: URL,
+        turnID: String,
+        offset: Int = 0,
+        limit: Int = 100,
+        fileManager: FileManager = .default
+    ) throws -> [CacheRequestUsage] {
+        guard parseStableID(turnID) != nil else { return [] }
+
+        let databaseURLs = [
+            databaseURL(for: codexHome),
+            databaseURL(for: codexHome, legacyCache: true),
+        ]
+        for databaseURL in databaseURLs {
+            guard BusinessStoreFiles.exists(databaseURL, fileManager: fileManager) else { continue }
+            let reader = SQLiteDatabaseDriver(
+                url: databaseURL,
+                readOnly: true,
+                createsFileIfMissing: false,
+                busyTimeoutMilliseconds: 1_000,
+                enableWAL: false,
+                fileManager: fileManager
+            )
+            return try reader.withConnection { connection in
+                try connection.execute("PRAGMA query_only=ON;")
+                let aggregateVersion = try connection.readRows(
+                    "SELECT value FROM schema_meta WHERE key='dashboard_aggregate_schema_version' LIMIT 1;"
+                ) { $0.text(0) }.first ?? nil
+                guard aggregateVersion == dashboardAggregateSchemaVersion else {
+                    if aggregateVersion == nil
+                        || aggregateVersion.flatMap(Int.init).map({
+                            $0 < Int(dashboardAggregateSchemaVersion)!
+                        }) == true {
+                        throw CodexUsageDashboardAggregateRefreshRequiredError(
+                            stored: aggregateVersion ?? "missing",
+                            supported: dashboardAggregateSchemaVersion
+                        )
+                    }
+                    throw CodexUsageIndexUpgradeRequiredError(
+                        component: "dashboard aggregate schema",
+                        stored: aggregateVersion ?? "missing",
+                        supported: dashboardAggregateSchemaVersion
+                    )
+                }
+                return try cacheRequests(
+                    turnID: turnID,
+                    offset: offset,
+                    limit: limit,
+                    connection: connection
+                )
+            }
+        }
+        return []
+    }
+
+    private static func cacheRequests(
+        turnID: String,
+        offset: Int,
+        limit: Int,
+        connection: SQLiteDatabaseConnection
+    ) throws -> [CacheRequestUsage] {
+        guard let locator = parseStableID(turnID),
+              locator.sourceOffset <= UInt64(Int64.max) else { return [] }
+        let pageLimit = min(max(limit, 0), 101)
+        guard pageLimit > 0 else { return [] }
+
+        return try connection.readRows(
+            """
+            WITH selected_turn AS (
+                SELECT source_id, user_prompt_offset
+                FROM canonical_usage_events
+                WHERE source_id = ?1
+                  AND source_offset = ?2
+                  AND tokens > 0
+                  AND user_prompt_offset IS NOT NULL
+                LIMIT 1
+            )
+            SELECT
+                request.source_id,
+                request.source_offset,
+                request.timestamp,
+                request.model,
+                request.tokens,
+                request.input_tokens,
+                MIN(request.cached_input_tokens, request.input_tokens),
+                request.output_tokens,
+                request.reasoning_output_tokens
+            FROM canonical_usage_events AS request
+            JOIN selected_turn AS turn
+              ON turn.source_id = request.source_id
+             AND turn.user_prompt_offset = request.user_prompt_offset
+            WHERE request.tokens > 0
+            ORDER BY request.timestamp, request.source_offset
+            LIMIT ?3 OFFSET ?4;
+            """,
+            bindings: [
+                .int64(locator.sourceID),
+                .int64(Int64(locator.sourceOffset)),
+                .int(pageLimit),
+                .int(max(offset, 0)),
+            ]
+        ) { row -> CacheRequestUsage? in
+            guard let sourceID = row.int64(0),
+                  let sourceOffset = row.int64(1), sourceOffset >= 0,
+                  let timestamp = row.double(2),
+                  let inputTokens = row.int(5),
+                  let cachedInputTokens = row.int(6),
+                  let outputTokens = row.int(7),
+                  let reasoningOutputTokens = row.int(8),
+                  let totalTokens = row.int(4) else {
+                return nil
+            }
+            return CacheRequestUsage(
+                id: stableID(sourceID: sourceID, sourceOffset: UInt64(sourceOffset)),
+                timestamp: Date(timeIntervalSince1970: timestamp),
+                model: row.text(3),
+                breakdown: TokenCacheBreakdown(
+                    inputTokens: inputTokens,
+                    cachedInputTokens: cachedInputTokens,
+                    outputTokens: outputTokens,
+                    reasoningOutputTokens: reasoningOutputTokens,
+                    totalTokens: totalTokens,
+                    calls: 1
+                )
+            )
+        }.compactMap { $0 }
     }
 
     func accountingCoverage() throws -> String {
@@ -4274,6 +4568,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     uncached_tokens INTEGER NOT NULL,
                     turn_index INTEGER NOT NULL,
                     session_calls INTEGER NOT NULL,
+                    request_count INTEGER NOT NULL DEFAULT 1,
+                    low_hit_count INTEGER NOT NULL DEFAULT 0,
+                    zero_hit_count INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY(source_id, source_offset)
                 ) WITHOUT ROWID;
 
@@ -4292,6 +4589,21 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     ON dashboard_turn_candidates(session_id);
                 """
             )
+            // These are derived dashboard fields. Older candidate tables keep
+            // their rows until the versioned aggregate rebuild commits, while
+            // the additive defaults keep an interrupted open queryable.
+            let turnCandidateColumns = Set(try connection.readRows(
+                "PRAGMA table_info(dashboard_turn_candidates);"
+            ) { $0.text(1) ?? "" })
+            for (column, definition) in [
+                ("request_count", "INTEGER NOT NULL DEFAULT 1"),
+                ("low_hit_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("zero_hit_count", "INTEGER NOT NULL DEFAULT 0"),
+            ] where !turnCandidateColumns.contains(column) {
+                try connection.execute(
+                    "ALTER TABLE dashboard_turn_candidates ADD COLUMN \(column) \(definition);"
+                )
+            }
             // `CREATE TABLE IF NOT EXISTS` does not upgrade an attribution
             // ledger created by the v3/v4 index.  Repair its shape before the
             // replay probe can defer the expensive backfill; otherwise a
@@ -4730,14 +5042,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             FROM dashboard_source_5m
             GROUP BY bucket_start, model;
 
-            WITH snapshots AS (
+            WITH requests AS (
                 SELECT
                     e.*,
-                    s.session_id AS session_id,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY e.source_id, s.session_id, e.user_prompt_offset
-                        ORDER BY e.timestamp DESC, e.source_offset DESC
-                    ) AS snapshot_rank
+                    s.session_id AS session_id
                 FROM canonical_usage_events e
                 JOIN sources s ON s.source_id = e.source_id
                 WHERE e.tokens > 0 AND e.user_prompt_offset IS NOT NULL
@@ -4753,13 +5061,18 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     ) AS source_offset,
                     MAX(timestamp) AS timestamp,
                     SUM(tokens) AS total_tokens,
-                    MAX(CASE WHEN snapshot_rank = 1 THEN input_tokens ELSE 0 END) AS input_tokens,
-                    MAX(CASE WHEN snapshot_rank = 1
-                        THEN MIN(cached_input_tokens, input_tokens)
-                        ELSE 0 END) AS cached_input_tokens,
+                    SUM(input_tokens) AS input_tokens,
+                    SUM(MIN(cached_input_tokens, input_tokens)) AS cached_input_tokens,
                     SUM(output_tokens) AS output_tokens,
-                    SUM(reasoning_output_tokens) AS reasoning_output_tokens
-                FROM snapshots
+                    SUM(reasoning_output_tokens) AS reasoning_output_tokens,
+                    COUNT(*) AS request_count,
+                    SUM(CASE WHEN input_tokens >= 20000
+                        AND MIN(cached_input_tokens, input_tokens) * 1.0 / input_tokens < 0.3
+                        THEN 1 ELSE 0 END) AS low_hit_count,
+                    SUM(CASE WHEN input_tokens > 0
+                        AND MIN(cached_input_tokens, input_tokens) = 0
+                        THEN 1 ELSE 0 END) AS zero_hit_count
+                FROM requests
                 GROUP BY source_id, session_id, user_prompt_offset
             ),
             ranked AS (
@@ -4773,6 +5086,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     cached_input_tokens,
                     output_tokens,
                     reasoning_output_tokens,
+                    request_count,
+                    low_hit_count,
+                    zero_hit_count,
                     CASE WHEN input_tokens > 0
                         THEN cached_input_tokens * 1.0 / input_tokens
                         ELSE 0
@@ -4789,12 +5105,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 source_id, source_offset, session_id, timestamp,
                 total_tokens, input_tokens, cached_input_tokens,
                 output_tokens, reasoning_output_tokens,
+                request_count, low_hit_count, zero_hit_count,
                 hit_rate, uncached_tokens, turn_index, session_calls
             )
             SELECT
                 source_id, source_offset, session_id, timestamp,
                 total_tokens, input_tokens, cached_input_tokens,
                 output_tokens, reasoning_output_tokens,
+                request_count, low_hit_count, zero_hit_count,
                 hit_rate, uncached_tokens, turn_index, session_calls
             FROM ranked;
             """
@@ -4897,14 +5215,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             DELETE FROM dashboard_turn_candidates
             WHERE session_id IN (SELECT session_id FROM dashboard_dirty_sessions);
 
-            WITH snapshots AS (
+            WITH requests AS (
                 SELECT
                     e.*,
-                    s.session_id AS session_id,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY e.source_id, s.session_id, e.user_prompt_offset
-                        ORDER BY e.timestamp DESC, e.source_offset DESC
-                    ) AS snapshot_rank
+                    s.session_id AS session_id
                 FROM canonical_usage_events e
                 JOIN sources s ON s.source_id = e.source_id
                 WHERE e.tokens > 0 AND e.user_prompt_offset IS NOT NULL
@@ -4923,13 +5237,18 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     ) AS source_offset,
                     MAX(timestamp) AS timestamp,
                     SUM(tokens) AS total_tokens,
-                    MAX(CASE WHEN snapshot_rank = 1 THEN input_tokens ELSE 0 END) AS input_tokens,
-                    MAX(CASE WHEN snapshot_rank = 1
-                        THEN MIN(cached_input_tokens, input_tokens)
-                        ELSE 0 END) AS cached_input_tokens,
+                    SUM(input_tokens) AS input_tokens,
+                    SUM(MIN(cached_input_tokens, input_tokens)) AS cached_input_tokens,
                     SUM(output_tokens) AS output_tokens,
-                    SUM(reasoning_output_tokens) AS reasoning_output_tokens
-                FROM snapshots
+                    SUM(reasoning_output_tokens) AS reasoning_output_tokens,
+                    COUNT(*) AS request_count,
+                    SUM(CASE WHEN input_tokens >= 20000
+                        AND MIN(cached_input_tokens, input_tokens) * 1.0 / input_tokens < 0.3
+                        THEN 1 ELSE 0 END) AS low_hit_count,
+                    SUM(CASE WHEN input_tokens > 0
+                        AND MIN(cached_input_tokens, input_tokens) = 0
+                        THEN 1 ELSE 0 END) AS zero_hit_count
+                FROM requests
                 GROUP BY source_id, session_id, user_prompt_offset
             ),
             ranked AS (
@@ -4943,6 +5262,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     cached_input_tokens,
                     output_tokens,
                     reasoning_output_tokens,
+                    request_count,
+                    low_hit_count,
+                    zero_hit_count,
                     CASE WHEN input_tokens > 0
                         THEN cached_input_tokens * 1.0 / input_tokens
                         ELSE 0
@@ -4959,12 +5281,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 source_id, source_offset, session_id, timestamp,
                 total_tokens, input_tokens, cached_input_tokens,
                 output_tokens, reasoning_output_tokens,
+                request_count, low_hit_count, zero_hit_count,
                 hit_rate, uncached_tokens, turn_index, session_calls
             )
             SELECT
                 source_id, source_offset, session_id, timestamp,
                 total_tokens, input_tokens, cached_input_tokens,
                 output_tokens, reasoning_output_tokens,
+                request_count, low_hit_count, zero_hit_count,
                 hit_rate, uncached_tokens, turn_index, session_calls
             FROM ranked;
 
@@ -7215,13 +7539,15 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             fileManager: fileManager
         )
         return try stage.withConnection { connection in
+            let temporary = connection.businessBinding != nil
+            let tableKind = temporary ? "TEMP TABLE" : "TABLE"
             try connection.execute(
                 """
                 PRAGMA synchronous=FULL;
                 PRAGMA temp_store=FILE;
                 PRAGMA cache_size=-4096;
 
-                CREATE TABLE manifest (
+                CREATE \(tableKind) manifest (
                     complete INTEGER PRIMARY KEY CHECK(complete IN (0, 1)),
                     manifest_schema_version INTEGER NOT NULL,
                     canonical_path TEXT NOT NULL,
@@ -7251,11 +7577,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     physical_stamp TEXT
                 );
 
-                CREATE TABLE fingerprints (
+                CREATE \(tableKind) fingerprints (
                     value BLOB PRIMARY KEY
                 ) WITHOUT ROWID;
 
-                CREATE TABLE events (
+                CREATE \(tableKind) events (
                     source_offset INTEGER PRIMARY KEY,
                     timestamp REAL NOT NULL,
                     tokens INTEGER NOT NULL,
@@ -7271,14 +7597,17 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     usage_fingerprint BLOB
                 ) WITHOUT ROWID;
 
-                CREATE TABLE chunks (
+                CREATE \(tableKind) chunks (
                     chunk_index INTEGER PRIMARY KEY,
                     byte_count INTEGER NOT NULL,
                     sha256 TEXT NOT NULL
                 ) WITHOUT ROWID;
                 """
             )
-            var staged = try connection.transaction { transaction in
+            func parseStage(_ body: (SQLiteDatabaseConnection) throws -> StagedFullRebuild) throws -> StagedFullRebuild {
+                temporary ? try connection.readTransaction(body) : try connection.transaction(body)
+            }
+            var staged = try parseStage { transaction in
                 let fingerprintStatement = try transaction.prepare(
                     "INSERT OR IGNORE INTO fingerprints(value) VALUES (?);"
                 )
@@ -7457,6 +7786,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     prefixSHA256: result.contentHash
                 )
             }
+            if temporary { try BusinessStoreFiles.materializeTemporaryStage(connection) }
             let quickCheck = try connection.readRows("PRAGMA quick_check;") {
                 $0.text(0) ?? ""
             }
@@ -7468,8 +7798,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     path: databaseURL.path
                 )
             }
-            let attributes = try fileManager.attributesOfItem(atPath: databaseURL.path)
-            var actualBytes = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
+            var actualBytes = try BusinessStoreFiles.byteCount(at: databaseURL, connection: connection, fileManager: fileManager)
             try connection.execute(
                 """
                 UPDATE manifest
@@ -7482,8 +7811,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     .text(artifactID)
                 ]
             )
-            let publishedAttributes = try fileManager.attributesOfItem(atPath: databaseURL.path)
-            let publishedBytes = (publishedAttributes[.size] as? NSNumber)?.uint64Value ?? 0
+            let publishedBytes = try BusinessStoreFiles.byteCount(at: databaseURL, connection: connection, fileManager: fileManager)
             if publishedBytes != actualBytes {
                 actualBytes = publishedBytes
                 try connection.execute(
@@ -7494,9 +7822,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     ]
                 )
             }
-            let syncHandle = try FileHandle(forReadingFrom: databaseURL)
-            try syncHandle.synchronize()
-            try syncHandle.close()
+            try BusinessStoreFiles.seal(at: databaseURL, connection: connection)
             staged = StagedFullRebuild(
                 job: staged.job,
                 databaseURL: staged.databaseURL,
@@ -7525,9 +7851,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         at databaseURL: URL,
         for job: FullRebuildJob
     ) throws -> Bool {
-        guard fileManager.fileExists(atPath: databaseURL.path) else {
+        guard BusinessStoreFiles.exists(databaseURL, fileManager: fileManager) else {
             return false
         }
+        if try BusinessStoreFiles.isUnmaterializedStage(databaseURL) { return true }
         do {
             let stage = SQLiteDatabaseDriver(
                 url: databaseURL,
@@ -7661,6 +7988,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let destination = stagingDirectoryURL.appendingPathComponent("preserved", isDirectory: true)
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
+        if try BusinessStoreFiles.quarantine(databaseURL, into: destination) { return }
         for suffix in ["", "-wal", "-shm", "-journal"] {
             let source = URL(fileURLWithPath: databaseURL.path + suffix)
             if fileManager.fileExists(atPath: source.path) {
@@ -7675,7 +8003,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         for job: FullRebuildJob,
         prior: StagedFullRebuild? = nil
     ) throws -> StagedFullRebuild? {
-        guard fileManager.fileExists(atPath: databaseURL.path) else {
+        guard BusinessStoreFiles.exists(databaseURL, fileManager: fileManager) else {
             return nil
         }
         do {
@@ -7830,10 +8158,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     physicalStamp: row.text(25)
                 )
                 let actualBytes = UInt64(rawActualBytes)
-                let databaseAttributes = try? self.fileManager.attributesOfItem(
-                    atPath: databaseURL.path
-                )
-                let databaseSize = (databaseAttributes?[.size] as? NSNumber)?.uint64Value
+                let databaseSize = try? BusinessStoreFiles.byteCount(at: databaseURL, fileManager: self.fileManager)
                 let storedEventCount = try? stage.readRows(
                     "SELECT COUNT(*) FROM events;"
                 ) { $0.int(0) ?? -1 }.first
@@ -8192,7 +8517,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 defer { try? handle.close() }
                 let offset = oldChunks.prefix(position).reduce(Int64(0)) { $0 + $1.1 }
                 try handle.seek(toOffset:UInt64(offset))
-                let data = try handle.read(upToCount:Int(old.1)) ?? Data()
+                let data = try handle.readProbe(upToCount:Int(old.1)) ?? Data()
                 unchangedContent = data.count == Int(old.1) && SHA256.hash(data:data).map { String(format:"%02x",$0) }.joined() == old.2
             }
             let rawGeneration = UUID().uuidString
@@ -8432,6 +8757,13 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
 
     private func stagingDatabaseURLs(for file: URL) -> [URL] {
         let primary = stagingDatabaseURL(for: file)
+        if BusinessSQLiteRoutes.store(for: primary) != nil {
+            let digest = stagingDatabaseDigest(for: file)
+            return BusinessStoreFiles.stageURLs(in: stagingDirectoryURL).filter {
+                let name = $0.lastPathComponent
+                return name == primary.lastPathComponent || (name.hasPrefix(digest + ".candidate-") && name.hasSuffix(".sqlite"))
+            }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+        }
         guard let entries = try? fileManager.contentsOfDirectory(
             at: stagingDirectoryURL,
             includingPropertiesForKeys: nil,
@@ -8459,6 +8791,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     }
 
     private func removeStagingDatabase(at url: URL) {
+        if BusinessSQLiteRoutes.store(for: url) != nil {
+            // Publication already committed. A failed cleanup is retryable;
+            // it must never fall through to deleting a physical A family.
+            _ = try? BusinessStoreFiles.removeCompletedStage(url)
+            return
+        }
         try? fileManager.removeItem(at: url)
         try? fileManager.removeItem(atPath: url.path + "-wal")
         try? fileManager.removeItem(atPath: url.path + "-shm")
@@ -8648,10 +8986,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
 
         let probeLength = 4_096
         var data = Data("\(size):".utf8)
-        data.append(try handle.read(upToCount: probeLength) ?? Data())
+        data.append(try handle.readProbe(upToCount: probeLength) ?? Data())
         if size > UInt64(probeLength) {
             try handle.seek(toOffset: size - UInt64(probeLength))
-            data.append(try handle.read(upToCount: probeLength) ?? Data())
+            data.append(try handle.readProbe(upToCount: probeLength) ?? Data())
         }
         return SHA256.hash(data: data)
             .map { String(format: "%02x", $0) }
@@ -8664,6 +9002,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     static func relocateLegacyIndex(from legacy: URL, to destination: URL,
         fileManager: FileManager = .default,
         onProgress: ((PreciseIndexProgress) -> Void)? = nil) throws {
+        if BusinessSQLiteRoutes.store(for: destination) != nil { return }
         guard legacy.standardizedFileURL != destination.standardizedFileURL,
               !fileManager.fileExists(atPath: destination.path),
               fileManager.fileExists(atPath: legacy.path)

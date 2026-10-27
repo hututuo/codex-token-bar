@@ -82,6 +82,7 @@ struct ActivitySection: View {
     let attributionEvents: [TokenCacheAttributionEvent]
     let quotaDaily: [QuotaHistoryDailyBucket]
     @Binding var selectedMode: ActivityMode
+    var tokensOnly = false
     @AppStorage(SharedAccountUsageAttributionSettings.priceModelKey) private var quotaEstimateModelRaw = OfficialAPIPriceModel.gpt56Sol.rawValue
 
     init(
@@ -90,7 +91,8 @@ struct ActivitySection: View {
         dailyModelBreakdowns: [ModelTokenBucket] = [],
         attributionEvents: [TokenCacheAttributionEvent] = [],
         quotaDaily: [QuotaHistoryDailyBucket],
-        selectedMode: Binding<ActivityMode>
+        selectedMode: Binding<ActivityMode>,
+        tokensOnly: Bool = false
     ) {
         self.dailyUsage = dailyUsage
         self.cacheDaily = cacheDaily
@@ -98,6 +100,7 @@ struct ActivitySection: View {
         self.attributionEvents = attributionEvents
         self.quotaDaily = quotaDaily
         _selectedMode = selectedMode
+        self.tokensOnly = tokensOnly
     }
 
     var body: some View {
@@ -106,7 +109,7 @@ struct ActivitySection: View {
                 Text("Token 活动")
                     .font(.system(size: 19, weight: .semibold))
                 Spacer()
-                ActivityModeSelector(selectedMode: $selectedMode)
+                ActivityModeSelector(selectedMode: $selectedMode, allowsSpecial: !tokensOnly)
             }
 
             TokenHeatmap(
@@ -125,6 +128,7 @@ struct ActivitySection: View {
 
 struct ActivityModeSelector: View {
     @Binding var selectedMode: ActivityMode
+    var allowsSpecial = true
 
     private let regularModes: [ActivityMode] = [.daily, .weekly, .cumulative]
     private let specialModes: [ActivityMode] = [.modelShare, .modelCost, .cacheHitRate, .quotaRemaining]
@@ -140,6 +144,7 @@ struct ActivityModeSelector: View {
                     modeButton(mode, width: 42)
                 }
 
+                if allowsSpecial {
                 HStack(spacing: 2) {
                     ForEach(specialModes) { mode in
                         modeButton(mode, width: 42, groupedSpecial: true)
@@ -150,6 +155,7 @@ struct ActivityModeSelector: View {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
                         .stroke(AppTheme.accentBlue.opacity(0.26), lineWidth: 1)
                 )
+                }
             }
             .padding(3)
             .background(

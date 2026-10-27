@@ -25,6 +25,9 @@ struct FloatingTodayModelUsageItem: Identifiable, Equatable {
     /// Known dated contributions when the complete row cannot be priced.
     /// `costUSD` stays nil so this subtotal never implies a complete price.
     var knownPartialCostUSD: Double? = nil
+    var isReferenceOnly: Bool {
+        usesIndependentQuota || CodexAutoReviewPricingPolicy.isAutoReviewUsage(id.split(separator: "|").last.map(String.init))
+    }
 
     func valueText(for page: FloatingTodayModelUsagePage) -> String {
         switch page {
@@ -34,7 +37,7 @@ struct FloatingTodayModelUsageItem: Identifiable, Equatable {
             if percent > 0, percent < 10 { return String(format: "%.1f%%", percent) }
             return "\(Int(percent.rounded()))%"
         case .cost:
-            if usesIndependentQuota {
+            if isReferenceOnly {
                 let referenceCost = referenceCostUSD?.quotaEstimatorMoneyText ?? "—"
                 return "\(referenceCost)（不计入总计）"
             }
@@ -45,15 +48,9 @@ struct FloatingTodayModelUsageItem: Identifiable, Equatable {
 }
 
 enum FloatingTodayModelUsagePresentation {
+    private static let itemCache = FloatingModelUsageCache()
     static let visibleItemLimit = 4
     static let minimumVisibleModelCount = 4
-    static let dashboardPrimaryModelKeys = [
-        "gpt-6-astra",
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-5.6-luna",
-    ]
-
     /// Keep the compact model strip useful even when the current day only
     /// contains one model. Astra/Sol/Terra/Luna are the stable placeholder
     /// priority list, but only enough zero rows are added to reach four total
@@ -130,6 +127,19 @@ enum FloatingTodayModelUsagePresentation {
         showPlaceholders: Bool = false,
         mergeAutoReview: Bool = false
     ) -> [FloatingTodayModelUsageItem] {
+        itemCache.value(for: .init(rows: rows, fallbackModel: fallbackModel,
+            showPlaceholders: showPlaceholders, mergeAutoReview: mergeAutoReview)) {
+            makeItems(from: rows, fallbackModel: fallbackModel,
+                      showPlaceholders: showPlaceholders, mergeAutoReview: mergeAutoReview)
+        }
+    }
+
+    static func makeItems(
+        from rows: [ModelTokenBreakdown],
+        fallbackModel: OfficialAPIPriceModel,
+        showPlaceholders: Bool = false,
+        mergeAutoReview: Bool = false
+    ) -> [FloatingTodayModelUsageItem] {
         // The dashboard keeps dated Auto Review rows visible. The compact
         // floating window opts into merging them into their underlying model
         // so a dated 5.4/Luna route consumes the same model slot as its normal
@@ -162,7 +172,7 @@ enum FloatingTodayModelUsagePresentation {
             let independent = OfficialAPIPriceModel.independentQuotaModelName(from: row.model) != nil
             let costUSD: Double?
             let knownPartialCostUSD: Double?
-            if independent || (row.model?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) {
+            if independent || CodexAutoReviewPricingPolicy.isAutoReviewUsage(row.model) || (row.model?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) {
                 costUSD = nil
                 knownPartialCostUSD = nil
             } else {
@@ -183,7 +193,7 @@ enum FloatingTodayModelUsagePresentation {
                     && estimate.fallbackCalls == 0
                     ? estimate.costUSD : nil
             }
-            let referenceCostUSD = IndependentQuotaReferencePricing.costUSD(
+            let referenceCostUSD = AutoReviewReferencePricing.costUSD(for: row) ?? IndependentQuotaReferencePricing.costUSD(
                 for: row.model,
                 breakdown: row.breakdown
             )
@@ -293,7 +303,7 @@ enum FloatingTodayModelUsagePresentation {
     /// Include priced epochs even when another epoch makes a row incomplete.
     /// No priced usage is different from a measured zero-dollar subtotal.
     static func knownCostUSD(in items: [FloatingTodayModelUsageItem]) -> Double? {
-        let billable = items.filter { $0.tokens > 0 && !$0.usesIndependentQuota }
+        let billable = items.filter { $0.tokens > 0 && !$0.isReferenceOnly }
         let knownCosts = billable.compactMap { $0.knownPartialCostUSD ?? $0.costUSD }
         if knownCosts.isEmpty && billable.contains(where: { $0.costUSD == nil }) {
             return nil
@@ -301,35 +311,24 @@ enum FloatingTodayModelUsagePresentation {
         return knownCosts.reduce(0, +)
     }
 
-    static func dashboardPrimaryItems(
-        from items: [FloatingTodayModelUsageItem]
-    ) -> [FloatingTodayModelUsageItem] {
-        let byID = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
-        return dashboardPrimaryModelKeys.map { key in
-            byID[key] ?? dashboardPlaceholder(for: key)
+    struct DashboardFamilyGroup: Identifiable {
+        let id: String
+        let title: String
+        let items: [FloatingTodayModelUsageItem]
+    }
+
+    static func dashboardFamilyID(for model: String) -> String {
+        let key = ModelUsagePresentation.key(for: model).lowercased().replacingOccurrences(of: "_", with: "-").replacingOccurrences(of: " ", with: "-")
+        if key.range(of: #"^gpt-?6(?:\.[0-9]+)*(?:-|$)"#, options: .regularExpression) != nil { return "6" }
+        if key.range(of: #"^gpt-?5\.6(?:-|$)"#, options: .regularExpression) != nil { return "5.6" }
+        return "other"
+    }
+
+    static func dashboardFamilyGroups(from items: [FloatingTodayModelUsageItem]) -> [DashboardFamilyGroup] {
+        [("6", "6 系列"), ("5.6", "5.6 系列"), ("other", "其他")].compactMap { id, title in
+            let rows = items.filter { $0.tokens > 0 && dashboardFamilyID(for: $0.id) == id }
+            return rows.isEmpty ? nil : DashboardFamilyGroup(id: id, title: title, items: rows)
         }
-    }
-
-    static func dashboardSecondaryItems(
-        from items: [FloatingTodayModelUsageItem]
-    ) -> [FloatingTodayModelUsageItem] {
-        let primaryIDs = Set(dashboardPrimaryModelKeys)
-        return items.filter { !primaryIDs.contains($0.id) && $0.tokens > 0 }
-    }
-
-    private static func dashboardPlaceholder(
-        for key: String
-    ) -> FloatingTodayModelUsageItem {
-        FloatingTodayModelUsageItem(
-            id: key,
-            label: ModelUsagePresentation.label(for: key),
-            tokens: 0,
-            share: 0,
-            costUSD: 0,
-            usesIndependentQuota: false,
-            referenceCostUSD: nil,
-            color: ModelUsagePresentation.color(for: key)
-        )
     }
 
     static func overflowDetailText(
@@ -378,7 +377,7 @@ struct FloatingTodayModelUsageRow: View {
             from: displayRows,
             fallbackModel: fallbackModel,
             showPlaceholders: showPlaceholders,
-            mergeAutoReview: true
+            mergeAutoReview: page == .share
         )
         let items = FloatingTodayModelUsagePresentation.pageItems(
             for: page,
@@ -438,7 +437,7 @@ struct FloatingTodayModelUsageRow: View {
                 rows: displayRows,
                 fallbackModel: fallbackModel,
                 showPlaceholders: showPlaceholders,
-                mergeAutoReview: true
+                mergeAutoReview: page == .share
             ) + (usesGuideDemo ? "（示例，仅用于引导展示）" : "")
         )
     }

@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  dashboardPrimaryModelUsageItems,
-  dashboardSecondaryModelUsageItems,
+  dashboardModelFamilyGroups,
+  dashboardModelFamilyID,
   floatingModelUsageAccessibilityText,
   floatingModelUsageKnownCostUSD,
   floatingModelUsageOverflowText,
@@ -165,28 +165,23 @@ test("cost model pages stay balanced while never exceeding four items", () => {
   );
 });
 
-test("dashboard groups keep Astra Sol Terra Luna expanded and wrap used secondary models", () => {
-  const items = floatingTodayModelUsageItems([
-    row("gpt-5.6-sol", 1_000, 0, 0, 1_000, 1),
-    row("gpt-5.4", 500, 0, 0, 500, 1),
-    row("gpt-5.3-codex", 250, 0, 0, 250, 1),
-  ], "gpt56Sol");
-
-  assert.deepEqual(
-    dashboardPrimaryModelUsageItems(items).map((item) => item.label),
-    ["Astra", "Sol", "Terra", "Luna"],
-  );
-  assert.deepEqual(
-    dashboardSecondaryModelUsageItems(items).map((item) => item.label),
-    ["5.4", "5.3"],
-  );
+test("dashboard families group all six generations without changing Tokens, costs or unknown prices", () => {
+  const keys=["gpt-6-astra","gpt-6.1-sol","gpt-6.0-sol","GPT-6.2-NewLane","gpt-5.6-sol","GPT-5.6-NewLane","gpt-60-test","codex-auto-review"];
+  const items=floatingTodayModelUsageItems(keys.map(key=>row(key,1000,0,0,1000,1)),"gpt56Sol",{mergeAutoReview:false});
+  const groups=dashboardModelFamilyGroups(items);
+  assert.deepEqual(groups.map(g=>g.id),["6","5.6","other"]);
+  assert.deepEqual(groups.map(g=>g.items.length),[4,2,2]);
+  assert.equal(groups.flatMap(g=>g.items).reduce((sum,item)=>sum+item.tokens,0),8000);
+  assert.equal(floatingModelUsageKnownCostUSD(groups.flatMap(g=>g.items)),floatingModelUsageKnownCostUSD(items));
+  assert.equal(groups[0].items.find(i=>i.key==="gpt-6.0-sol").costUSD,null);
+  assert.equal(dashboardModelFamilyID("gpt6.0"),"6"); assert.equal(dashboardModelFamilyID("gpt5.6"),"5.6");
 });
 
 function row(model, inputTokens, cachedInputTokens, outputTokens, totalTokens, calls, eventStartUnix) {
   return { model, eventStartUnix, breakdown: { inputTokens, cachedInputTokens, outputTokens, totalTokens, calls } };
 }
 
-test("floating merges Review but dashboard separates it without changing totals or dated prices", () => {
+test("share merging retains tokens while fees exclude review and detail retains dated references", () => {
   const before = Date.parse("2026-07-29T12:00:00Z") / 1000;
   const after = Date.parse("2026-07-31T12:00:00Z") / 1000;
   const rows = [
@@ -198,13 +193,13 @@ test("floating merges Review but dashboard separates it without changing totals 
   const floating = floatingTodayModelUsageItems(rows, "gpt56Sol");
   const dashboard = floatingTodayModelUsageItems(rows, "gpt56Sol", { mergeAutoReview: false });
   assert.deepEqual(floating.map((item) => [item.label, item.tokens, item.costUSD]), [
-    ["5.4", 2_000_000, 5], ["Luna", 2_000_000, 0.4],
+    ["5.4", 2_000_000, 2.5], ["Luna", 2_000_000, 0.2],
   ]);
   assert.equal(dashboard.length, 4);
   assert.ok(dashboard.some((item) => item.label === "Auto Review（Luna）" && item.tokens === 1_000_000));
-  assert.ok(dashboard.some((item) => item.label === "Auto Review（5.4）" && item.costUSD === 2.5));
+  assert.ok(dashboard.some((item) => item.label === "Auto Review（5.4）" && item.costUSD === null && item.referenceCostUSD === 2.5));
   assert.equal(dashboard.reduce((sum, item) => sum + item.tokens, 0), 4_000_000);
-  assert.ok(Math.abs(dashboard.reduce((sum, item) => sum + item.costUSD, 0) - 5.4) < 1e-10);
+  assert.ok(Math.abs(dashboard.reduce((sum, item) => sum + (item.costUSD??0), 0) - 2.7) < 1e-10);
 });
 
 test("unpriced future models retain names and token shares without showing a zero or fallback price", () => {

@@ -1,0 +1,120 @@
+import SharedSourceIO
+import Darwin
+import Foundation
+
+/// Reads complete lines appended to one file (METRICS 5). Read-only, never follows symlinks.
+struct FileTailer: Sendable {
+    static let defaultMaxLineBytes = 32 << 20
+    static let chunkBytes = 4 << 20
+    /// Files larger than this are seeded from their last `tailWindowBytes` only.
+    static let largeFileBytes: Int64 = 256 << 20
+    static let tailWindowBytes: Int64 = 64 << 20
+
+    enum Start: Equatable, Sendable {
+        case beginning
+        /// Start at the given size; an unterminated last line there is skipped.
+        case end(Int64)
+        /// Start `bytes` before the end, aligned to the next newline.
+        case tail(Int64)
+    }
+
+    struct ReadResult: Equatable, Sendable {
+        var bytesRead = 0
+        /// The file shrank or was replaced; offset and parser state must restart.
+        var didReset = false
+        var failed = false
+        var stat: FileStat?
+        /// A whole-document file over its size limit was not read (`partialHistory`).
+        var oversized = false
+    }
+
+    let path: String
+    private(set) var offset: Int64 = 0
+    private(set) var identity: FileIdentity?
+    private var start: Start?
+    private var lines: LineSplitter
+
+    var maxLineBytes: Int { lines.maxLineBytes }
+    var oversizedLines: Int { lines.oversizedLines }
+
+    init(path: String, start: Start = .beginning, maxLineBytes: Int = FileTailer.defaultMaxLineBytes) {
+        self.path = path
+        self.start = start
+        lines = LineSplitter(maxLineBytes: maxLineBytes)
+    }
+
+    /// Reads every complete line appended since the last call.
+    mutating func read(onReset: () -> Void = {}, onLine: (UnsafeRawBufferPointer) -> Void) -> ReadResult {
+        var result = ReadResult()
+        let descriptor = Darwin.open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        guard descriptor >= 0 else {
+            result.failed = true
+            return result
+        }
+        defer { Darwin.close(descriptor) }
+        guard let stat = FileStat.fstat(descriptor), stat.isRegularFile else {
+            result.failed = true
+            return result
+        }
+        result.stat = stat
+
+        if let identity, identity != stat.identity || stat.size < offset {
+            restart()
+            result.didReset = true
+            onReset()
+        }
+        identity = stat.identity
+        if let pending = start {
+            position(at: pending, size: stat.size, descriptor: descriptor)
+            start = nil
+        }
+        guard offset < stat.size else { return result }
+
+        let capacity = Int(min(Int64(Self.chunkBytes), stat.size - offset))
+        let buffer = UnsafeMutableRawBufferPointer.allocate(byteCount: capacity, alignment: 16)
+        defer { buffer.deallocate() }
+        while offset < stat.size {
+            let wanted = Int(min(Int64(capacity), stat.size - offset))
+            let count = SharedSourceIO.shared.pread(descriptor, into: UnsafeMutableRawBufferPointer(start: buffer.baseAddress, count: wanted), offset: offset)
+            if count < 0 {
+                if errno == EINTR { continue }
+                result.failed = true
+                break
+            }
+            if count == 0 { break }
+            lines.consume(UnsafeRawBufferPointer(rebasing: buffer[0..<count]), onLine: onLine)
+            offset += Int64(count)
+            result.bytesRead += count
+        }
+        return result
+    }
+
+    /// Forgets everything; the next read starts at offset 0.
+    mutating func restart() {
+        offset = 0
+        lines.reset()
+        start = nil
+    }
+
+    private mutating func position(at start: Start, size: Int64, descriptor: Int32) {
+        switch start {
+        case .beginning:
+            offset = 0
+        case .end(let recordedSize):
+            offset = min(recordedSize, size)
+            if offset > 0 {
+                var last: UInt8 = 0
+                if (withUnsafeMutableBytes(of: &last) { SharedSourceIO.shared.pread(descriptor, into: $0, offset: offset - 1, probe: true) }) == 1, last != 0x0A {
+                    lines.skipToNextNewline()
+                }
+            }
+        case .tail(let window):
+            if size > window {
+                offset = size - window
+                lines.skipToNextNewline()
+            } else {
+                offset = 0
+            }
+        }
+    }
+}

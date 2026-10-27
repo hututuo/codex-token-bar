@@ -1,0 +1,566 @@
+[
+  {
+    "name": "immediate_drop_no_wait",
+    "now": 61,
+    "samples": [
+      [
+        0,
+        99,
+        1000
+      ],
+      [
+        60,
+        0,
+        1000
+      ]
+    ],
+    "absentRanges": [],
+    "presentRanges": [],
+    "expectedStarts": [
+      60,
+      null
+    ],
+    "expectedWithdrawn": 0
+  },
+  {
+    "name": "short_false_reset_rebound",
+    "now": 121,
+    "samples": [
+      [
+        0,
+        70,
+        1000
+      ],
+      [
+        60,
+        0,
+        1000
+      ],
+      [
+        120,
+        70,
+        1000
+      ]
+    ],
+    "absentRanges": [
+      [
+        60,
+        120
+      ]
+    ],
+    "presentRanges": [],
+    "expectedStarts": [
+      null
+    ],
+    "expectedWithdrawn": 1
+  },
+  {
+    "name": "long_false_reset_rebound",
+    "now": 400061,
+    "samples": [
+      [
+        0,
+        70,
+        1000
+      ],
+      [
+        60,
+        0,
+        1000
+      ],
+      [
+        400000,
+        0,
+        1000
+      ],
+      [
+        400060,
+        70,
+        1000
+      ]
+    ],
+    "absentRanges": [
+      [
+        400000,
+        400060
+      ]
+    ],
+    "presentRanges": [],
+    "expectedStarts": [
+      null
+    ],
+    "expectedWithdrawn": 1
+  },
+  {
+    "name": "schedule_only_forward_and_backward",
+    "now": 121,
+    "samples": [
+      [
+        0,
+        10,
+        1000
+      ],
+      [
+        60,
+        11,
+        605800
+      ],
+      [
+        120,
+        12,
+        900
+      ]
+    ],
+    "absentRanges": [],
+    "presentRanges": [],
+    "expectedStarts": [
+      null
+    ],
+    "expectedWithdrawn": 0
+  },
+  {
+    "name": "reset_idle_for_days",
+    "now": 400001,
+    "samples": [
+      [
+        0,
+        98,
+        1000
+      ],
+      [
+        60,
+        0,
+        1000
+      ],
+      [
+        400000,
+        0,
+        900
+      ]
+    ],
+    "absentRanges": [],
+    "presentRanges": [],
+    "expectedStarts": [
+      60,
+      null
+    ],
+    "expectedWithdrawn": 0
+  },
+  {
+    "name": "offline_missed_reset",
+    "now": 16501,
+    "samples": [
+      [
+        0,
+        93,
+        400000
+      ],
+      [
+        16500,
+        9,
+        400000
+      ]
+    ],
+    "absentRanges": [],
+    "presentRanges": [],
+    "expectedStarts": [
+      16500,
+      null
+    ],
+    "expectedWithdrawn": 0
+  },
+  {
+    "name": "reset_card_same_deadline",
+    "now": 121,
+    "samples": [
+      [
+        0,
+        80,
+        1000
+      ],
+      [
+        60,
+        2,
+        1000
+      ],
+      [
+        120,
+        3,
+        1000
+      ]
+    ],
+    "absentRanges": [],
+    "presentRanges": [],
+    "expectedStarts": [
+      60,
+      null
+    ],
+    "expectedWithdrawn": 0
+  },
+  {
+    "name": "real_rebound_with_tokens",
+    "now": 121,
+    "samples": [
+      [
+        0,
+        60,
+        1000
+      ],
+      [
+        60,
+        0,
+        1000
+      ],
+      [
+        120,
+        59,
+        1000
+      ]
+    ],
+    "absentRanges": [],
+    "presentRanges": [
+      [
+        60,
+        120
+      ]
+    ],
+    "expectedStarts": [
+      60,
+      null
+    ],
+    "expectedWithdrawn": 0
+  },
+  {
+    "name": "missing_token_coverage_never_means_zero",
+    "now": 121,
+    "samples": [
+      [
+        0,
+        60,
+        1000
+      ],
+      [
+        60,
+        0,
+        1000
+      ],
+      [
+        120,
+        59,
+        1000
+      ]
+    ],
+    "absentRanges": [],
+    "presentRanges": [],
+    "expectedStarts": [
+      60,
+      null
+    ],
+    "expectedWithdrawn": 0
+  },
+  {
+    "name": "gradual_consumption_to_previous_level",
+    "now": 781,
+    "samples": [
+      [
+        0,
+        10,
+        1000
+      ],
+      [
+        60,
+        0,
+        1000
+      ],
+      [
+        180,
+        1,
+        1000
+      ],
+      [
+        240,
+        2,
+        1000
+      ],
+      [
+        300,
+        3,
+        1000
+      ],
+      [
+        360,
+        4,
+        1000
+      ],
+      [
+        420,
+        5,
+        1000
+      ],
+      [
+        480,
+        6,
+        1000
+      ],
+      [
+        540,
+        7,
+        1000
+      ],
+      [
+        600,
+        8,
+        1000
+      ],
+      [
+        660,
+        9,
+        1000
+      ],
+      [
+        720,
+        10,
+        1000
+      ],
+      [
+        780,
+        11,
+        1000
+      ]
+    ],
+    "absentRanges": [
+      [
+        0,
+        2000
+      ]
+    ],
+    "presentRanges": [],
+    "expectedStarts": [
+      60,
+      null
+    ],
+    "expectedWithdrawn": 0
+  },
+  {
+    "name": "tiny_drop_is_not_reset",
+    "now": 121,
+    "samples": [
+      [
+        0,
+        60,
+        1000
+      ],
+      [
+        60,
+        59,
+        1000
+      ],
+      [
+        120,
+        58,
+        1000
+      ]
+    ],
+    "absentRanges": [],
+    "presentRanges": [],
+    "expectedStarts": [
+      null
+    ],
+    "expectedWithdrawn": 0
+  },
+  {
+    "name": "expired_schedule_is_display_only",
+    "now": 600,
+    "samples": [
+      [
+        0,
+        60,
+        10
+      ],
+      [
+        60,
+        61,
+        10
+      ]
+    ],
+    "absentRanges": [],
+    "presentRanges": [],
+    "expectedStarts": [
+      null
+    ],
+    "expectedWithdrawn": 0
+  },
+  {
+    "name": "multiple_real_resets",
+    "now": 181,
+    "samples": [
+      [
+        0,
+        80,
+        1000
+      ],
+      [
+        60,
+        0,
+        1000
+      ],
+      [
+        120,
+        20,
+        1000
+      ],
+      [
+        180,
+        1,
+        1000
+      ]
+    ],
+    "absentRanges": [],
+    "presentRanges": [],
+    "expectedStarts": [
+      180,
+      60,
+      null
+    ],
+    "expectedWithdrawn": 0
+  },
+  {
+    "name": "long_idle_not_an_abrupt_return",
+    "now": 181,
+    "samples": [
+      [
+        0,
+        60,
+        1000
+      ],
+      [
+        60,
+        0,
+        1000
+      ],
+      [
+        120,
+        55,
+        1000
+      ],
+      [
+        180,
+        59,
+        1000
+      ]
+    ],
+    "absentRanges": [],
+    "presentRanges": [
+      [
+        60,
+        120
+      ]
+    ],
+    "expectedStarts": [
+      60,
+      null
+    ],
+    "expectedWithdrawn": 0
+  },
+  {
+    "name": "reversal_does_not_remove_another_boundary",
+    "now": 241,
+    "samples": [
+      [
+        0,
+        80,
+        1000
+      ],
+      [
+        60,
+        0,
+        1000
+      ],
+      [
+        120,
+        20,
+        1000
+      ],
+      [
+        180,
+        0,
+        1000
+      ],
+      [
+        240,
+        20,
+        1000
+      ]
+    ],
+    "absentRanges": [
+      [
+        180,
+        240
+      ]
+    ],
+    "presentRanges": [
+      [
+        60,
+        120
+      ]
+    ],
+    "expectedStarts": [
+      60,
+      null
+    ],
+    "expectedWithdrawn": 1
+  },
+  {
+    "name": "real_2026_10_24_reset_and_two_hour_deadline_correction",
+    "now": 1792846209.9813662,
+    "samples": [
+      [
+        1792776683.265246,
+        99,
+        1793295855.0
+      ],
+      [
+        1792780423.459165,
+        0,
+        1793385223.0
+      ],
+      [
+        1792787318.137857,
+        0,
+        1793392090.0
+      ],
+      [
+        1792788038.141444,
+        1,
+        1793392090.0
+      ],
+      [
+        1792789133.0165,
+        2,
+        1793392090.0
+      ],
+      [
+        1792821904.3877769,
+        3,
+        1793392090.0
+      ],
+      [
+        1792824069.574767,
+        4,
+        1793392090.0
+      ],
+      [
+        1792846208.9813662,
+        5,
+        1793392090.0
+      ]
+    ],
+    "absentRanges": [],
+    "presentRanges": [],
+    "expectedStarts": [
+      1792780423.459165,
+      null
+    ],
+    "expectedWithdrawn": 0
+  }
+]

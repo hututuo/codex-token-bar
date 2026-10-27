@@ -1106,10 +1106,12 @@ fn separate_sqlite_home_rollback_and_startup_recovery_never_touch_decoy_database
 
     let pinned_home = PinnedHome::open(&home).unwrap();
     let pinned_sqlite_home = PinnedHome::open(&sqlite_home).unwrap();
-    backups::restore_provider_backup_files_with_pinned_roots_verification(
+    let mut stopped_probe = || Ok(false);
+    backups::restore_provider_backup_files_with_pinned_roots_probe_and_verification(
         &pinned_home,
         &pinned_sqlite_home,
         &outcome.backup,
+        &mut stopped_probe,
         |_| Ok(()),
     )
     .unwrap();
@@ -1216,7 +1218,7 @@ fn sync_transaction_creates_and_returns_a_fresh_backup() {
 }
 
 #[test]
-fn verification_error_automatically_restores_the_fresh_backup() {
+fn verification_error_defers_automatic_restore_and_preserves_recovery_evidence() {
     let fixture = temp_root("provider-sync-verification-error");
     let home = fixture.join("home");
     let backup_root = fixture.join("backups");
@@ -1233,20 +1235,17 @@ fn verification_error_automatically_restores_the_fresh_backup() {
     .unwrap_err();
 
     assert!(error.contains("fixture verification threw"), "{error}");
-    assert!(error.contains("自动恢复"), "{error}");
-    assert!(fs::read_to_string(&session)
-        .unwrap()
-        .contains("codex_local_access"));
-    assert_eq!(
-        sqlite_provider_for_thread(&home, "thread"),
-        "codex_local_access"
-    );
+    assert!(error.contains("自动恢复已延后"), "{error}");
+    assert!(error.contains("Provider mutation journal 保留于"), "{error}");
+    assert!(fs::read_to_string(&session).unwrap().contains("openai"));
+    assert_eq!(sqlite_provider_for_thread(&home, "thread"), "openai");
+    assert!(provider_mutation_journal_count(&backup_root) > 0);
     assert_eq!(completed_backup_count(&backup_root), 1);
     fs::remove_dir_all(fixture).unwrap();
 }
 
 #[test]
-fn prepared_provider_mutation_journal_recovers_partial_session_and_sqlite_writes() {
+fn prepared_provider_mutation_journal_defers_when_write_ownership_is_unproven() {
     let fixture = temp_root("provider-mutation-journal-prepared");
     let home = fixture.join("home");
     let backup_root = fixture.join("backups");
@@ -1281,20 +1280,212 @@ fn prepared_provider_mutation_journal_recovers_partial_session_and_sqlite_writes
     let status =
         reconcile_provider_recovery_on_startup_at(&home, &backup_root, || Ok(false));
 
-    assert!(!status.blocked, "{status:?}");
-    assert!(fs::read_to_string(&session)
-        .unwrap()
-        .contains("legacy-provider"));
-    assert_eq!(
-        sqlite_provider_for_thread(&home, "thread"),
-        "legacy-provider"
-    );
-    assert_no_provider_mutation_journal(&backup_root);
+    assert!(status.blocked, "{status:?}");
+    assert_eq!(status.code.as_deref(), Some("mutationOwnershipUnproven"));
+    assert!(status.message.as_deref().unwrap().contains("自动恢复"));
+    assert!(fs::read_to_string(&session).unwrap().contains("openai"));
+    assert_eq!(sqlite_provider_for_thread(&home, "thread"), "openai");
+    assert!(provider_mutation_journal_count(&backup_root) > 0);
+    assert!(PathBuf::from(&backup.path).join("manifest.json").exists());
     fs::remove_dir_all(fixture).unwrap();
 }
 
 #[test]
-fn prepared_provider_mutation_journal_recovers_rows_lost_with_live_wal_sidecars() {
+fn failed_mutation_with_unrelated_sqlite_writer_does_not_restore_full_snapshot() {
+    let fixture = temp_root("provider-mutation-unrelated-writer");
+    let home = fixture.join("home");
+    let backup_root = fixture.join("backups");
+    fs::create_dir_all(home.join("sessions")).unwrap();
+    write_test_auth_subject(&home, "mutation-unrelated-writer-account");
+    fs::write(home.join("config.toml"), "model_provider = \"openai\"\n").unwrap();
+    write_session(
+        &home.join("sessions/thread.jsonl"),
+        "thread",
+        "legacy-provider",
+    );
+    create_state_database(&home, &[("thread", "legacy-provider", 0)]);
+    let probe_calls = Cell::new(0_u32);
+
+    let error = sync_provider_history_transaction_at_with_backup_hook_and_probe(
+        &home,
+        &backup_root,
+        |pinned_home| {
+            Connection::open(pinned_home.canonical_path().join("state_5.sqlite"))
+                .unwrap()
+                .execute(
+                    "INSERT INTO threads (id, model_provider, archived, updated_at, updated_at_ms) VALUES ('unrelated-writer', 'writer-provider', 0, 1781760001, 1781760001000)",
+                    [],
+                )
+                .unwrap();
+            Err("fixture verification failed after unrelated writer".into())
+        },
+        |_, _| Ok(()),
+        || {
+            probe_calls.set(probe_calls.get().saturating_add(1));
+            Ok(false)
+        },
+    )
+    .unwrap_err();
+
+    // The Prepared mutation reconciliation probes once, then fails closed because it
+    // cannot prove write ownership. It must not enter destructive compensation or probe
+    // again after the unrelated SQLite writer changed the snapshot.
+    assert_eq!(probe_calls.get(), 3, "probe calls: {}", probe_calls.get());
+    assert!(error.contains("自动恢复已延后"), "{error}");
+    assert!(error.contains("mutation journal 保留于"), "{error}");
+    assert!(error.contains("ownership hash"), "{error}");
+    assert_eq!(sqlite_provider_for_thread(&home, "unrelated-writer"), "writer-provider");
+    assert!(fs::read_to_string(home.join("sessions/thread.jsonl"))
+        .unwrap()
+        .contains("openai"));
+    assert!(provider_mutation_journal_count(&backup_root) > 0);
+    assert_eq!(completed_backup_count(&backup_root), 1);
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[test]
+fn explicit_same_backup_restore_resolves_prepared_mutation_only_after_verification() {
+    let fixture = temp_root("provider-mutation-explicit-restore");
+    let home = fixture.join("home");
+    let backup_root = fixture.join("backups");
+    fs::create_dir_all(home.join("sessions")).unwrap();
+    write_test_auth_subject(&home, "mutation-explicit-restore-account");
+    fs::write(home.join("config.toml"), "model_provider = \"openai\"\n").unwrap();
+    let session = home.join("sessions/thread.jsonl");
+    write_session(&session, "thread", "legacy-provider");
+    create_state_database(&home, &[("thread", "legacy-provider", 0)]);
+    let backup =
+        backups::create_provider_backup_files_at(&backup_root, &home, "openai").unwrap();
+    let roots = ProviderStorageRoots::open(&home).unwrap();
+    let _journal = backups::begin_provider_mutation_journal(
+        &backup_root,
+        &roots.codex_home,
+        &roots.sqlite_home,
+        &backup,
+        "migrate",
+        "openai",
+    )
+    .unwrap();
+    rewrite_session_provider(&home, &session, "openai").unwrap();
+    Connection::open(home.join("state_5.sqlite"))
+        .unwrap()
+        .execute(
+            "UPDATE threads SET model_provider = 'openai' WHERE id = 'thread'",
+            [],
+        )
+        .unwrap();
+
+    let blocked = reconcile_provider_recovery_on_startup_at(&home, &backup_root, || Ok(false));
+    assert_eq!(blocked.code.as_deref(), Some("mutationOwnershipUnproven"));
+    assert!(provider_mutation_journal_count(&backup_root) > 0);
+
+    let wrong_backup = backups::require_explicit_restore_for_prepared_mutations(
+        &backup_root,
+        &roots.codex_home,
+        &roots.sqlite_home,
+        "a-different-backup",
+    )
+    .unwrap_err();
+    assert!(wrong_backup.contains(&backup.id));
+    assert!(provider_mutation_journal_count(&backup_root) > 0);
+
+    let probe_calls = Cell::new(0_u32);
+    let mut probe_with_final_unknown = || {
+        let call = probe_calls.get().saturating_add(1);
+        probe_calls.set(call);
+        if call >= 5 {
+            Err("fixture runtime status unavailable".into())
+        } else {
+            Ok(false)
+        }
+    };
+    let error = backups::restore_selected_backup_and_resolve_prepared_mutations(
+        &backup_root,
+        &roots.codex_home,
+        &roots.sqlite_home,
+        &backup,
+        &mut probe_with_final_unknown,
+        |restored_home| {
+            verify_restored_provider_backup_for_home(restored_home, &backup).map(|_| ())
+        },
+    )
+    .unwrap_err();
+    assert!(error.contains("已恢复并通过强验证"), "{error}");
+    assert!(error.contains("无法确认 Codex 运行状态"), "{error}");
+    assert!(error.contains("当前状态恢复点"), "{error}");
+    assert_eq!(probe_calls.get(), 5);
+    assert!(fs::read_to_string(&session)
+        .unwrap()
+        .contains("legacy-provider"));
+    assert_eq!(sqlite_provider_for_thread(&home, "thread"), "legacy-provider");
+    assert!(provider_mutation_journal_count(&backup_root) > 0);
+    assert_eq!(completed_backup_count(&backup_root), 2);
+    let retained_after_unknown_probe = backups::list_provider_backups_at(&backup_root)
+        .unwrap()
+        .into_iter()
+        .find(|candidate| candidate.id != backup.id)
+        .expect("the first explicit attempt must retain the pre-rollback state");
+    assert!(fs::read_to_string(
+        PathBuf::from(&retained_after_unknown_probe.path)
+            .join("session-prefix/sessions/thread.jsonl")
+    )
+    .unwrap()
+    .contains("openai"));
+
+    let mut stopped_probe = || Ok(false);
+    let retained_snapshot = backups::restore_selected_backup_and_resolve_prepared_mutations(
+        &backup_root,
+        &roots.codex_home,
+        &roots.sqlite_home,
+        &backup,
+        &mut stopped_probe,
+        |restored_home| {
+            verify_restored_provider_backup_for_home(restored_home, &backup).map(|_| ())
+        },
+    )
+    .unwrap()
+    .expect("Prepared recovery must preserve the pre-rollback state as a backup");
+    assert_no_provider_mutation_journal(&backup_root);
+    assert!(PathBuf::from(&backup.path).join("manifest.json").exists());
+    assert!(PathBuf::from(&retained_snapshot.path)
+        .join("manifest.json")
+        .exists());
+    // The successful retry's recovery point captures state immediately before that
+    // retry. The earlier attempt had already restored the source backup before its
+    // final runtime probe became unknown, so this point correctly contains legacy.
+    assert!(fs::read_to_string(
+        PathBuf::from(&retained_snapshot.path)
+            .join("session-prefix/sessions/thread.jsonl")
+    )
+    .unwrap()
+    .contains("legacy-provider"));
+    assert_eq!(completed_backup_count(&backup_root), 3);
+    let mut stopped_probe = || Ok(false);
+    assert!(
+        backups::restore_selected_backup_and_resolve_prepared_mutations(
+            &backup_root,
+            &roots.codex_home,
+            &roots.sqlite_home,
+            &retained_snapshot,
+            &mut stopped_probe,
+            |restored_home| {
+                verify_restored_provider_backup_for_home(restored_home, &retained_snapshot)
+                    .map(|_| ())
+            },
+        )
+        .unwrap()
+        .is_none()
+    );
+    assert!(fs::read_to_string(&session)
+        .unwrap()
+        .contains("legacy-provider"));
+    assert_eq!(sqlite_provider_for_thread(&home, "thread"), "legacy-provider");
+    assert_no_recovery_staging(&backup_root);
+    fs::remove_dir_all(fixture).unwrap();
+}
+
+#[test]
+fn prepared_provider_mutation_journal_preserves_state_when_sqlite_ownership_is_unproven() {
     let fixture = temp_root("provider-mutation-journal-wal-loss");
     let home = fixture.join("home");
     let backup_root = fixture.join("backups");
@@ -1355,18 +1546,27 @@ fn prepared_provider_mutation_journal_recovers_rows_lost_with_live_wal_sidecars(
     let status =
         reconcile_provider_recovery_on_startup_at(&home, &backup_root, || Ok(false));
 
-    assert!(!status.blocked, "{status:?}");
+    assert!(status.blocked, "{status:?}");
+    assert_eq!(status.code.as_deref(), Some("mutationOwnershipUnproven"));
     assert_eq!(
-        sqlite_provider_for_thread(&home, "wal-sentinel"),
-        "wal-committed-provider"
+        Connection::open(home.join("state_5.sqlite"))
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM threads WHERE id = 'wal-sentinel'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        0
     );
     assert_eq!(sqlite_integrity(&home.join("state_5.sqlite")), "ok");
-    assert_no_provider_mutation_journal(&backup_root);
+    assert!(provider_mutation_journal_count(&backup_root) > 0);
+    assert!(PathBuf::from(&backup.path).join("manifest.json").exists());
     fs::remove_dir_all(fixture).unwrap();
 }
 
 #[test]
-fn prepared_provider_mutation_journal_recovers_the_recorded_separate_sqlite_home() {
+fn prepared_provider_mutation_journal_preserves_separate_sqlite_home_when_unproven() {
     let fixture = temp_root("provider-mutation-journal-separate-sqlite");
     let home = fixture.join("home");
     let sqlite_home = fixture.join("sqlite-home");
@@ -1422,19 +1622,15 @@ fn prepared_provider_mutation_journal_recovers_the_recorded_separate_sqlite_home
     let status =
         reconcile_provider_recovery_on_startup_at(&home, &backup_root, || Ok(false));
 
-    assert!(!status.blocked, "{status:?}");
-    assert!(fs::read_to_string(&session)
-        .unwrap()
-        .contains("legacy-provider"));
-    assert_eq!(
-        sqlite_provider_for_thread(&sqlite_home, "thread"),
-        "legacy-provider"
-    );
+    assert!(status.blocked, "{status:?}");
+    assert_eq!(status.code.as_deref(), Some("mutationOwnershipUnproven"));
+    assert!(fs::read_to_string(&session).unwrap().contains("openai"));
+    assert_eq!(sqlite_provider_for_thread(&sqlite_home, "thread"), "openai");
     assert_eq!(
         sqlite_provider_for_thread(&home, "thread"),
         "decoy-provider"
     );
-    assert_no_provider_mutation_journal(&backup_root);
+    assert!(provider_mutation_journal_count(&backup_root) > 0);
     fs::remove_dir_all(fixture).unwrap();
 }
 
@@ -1523,11 +1719,13 @@ fn provider_mutation_recovery_waits_while_codex_is_running() {
 
     let recovered =
         reconcile_provider_recovery_on_startup_at(&home, &backup_root, || Ok(false));
-    assert!(!recovered.blocked, "{recovered:?}");
-    assert!(fs::read_to_string(&session)
-        .unwrap()
-        .contains("legacy-provider"));
-    assert_no_provider_mutation_journal(&backup_root);
+    assert!(recovered.blocked, "{recovered:?}");
+    assert_eq!(
+        recovered.code.as_deref(),
+        Some("mutationOwnershipUnproven")
+    );
+    assert!(fs::read_to_string(&session).unwrap().contains("openai"));
+    assert!(provider_mutation_journal_count(&backup_root) > 0);
     fs::remove_dir_all(fixture).unwrap();
 }
 
@@ -1573,7 +1771,7 @@ fn provider_mutation_recovery_fails_closed_when_source_manifest_changes() {
 }
 
 #[test]
-fn verification_mismatch_after_all_writes_automatically_restores() {
+fn verification_mismatch_after_all_writes_defers_automatic_restore() {
     let fixture = temp_root("provider-sync-verification-mismatch");
     let home = fixture.join("home");
     let backup_root = fixture.join("backups");
@@ -1595,20 +1793,18 @@ fn verification_mismatch_after_all_writes_automatically_restores() {
     .unwrap_err();
 
     assert!(error.contains("验证"), "{error}");
-    assert!(error.contains("自动恢复"), "{error}");
+    assert!(error.contains("自动恢复已延后"), "{error}");
     assert!(fs::read_to_string(&session)
         .unwrap()
-        .contains("codex_local_access"));
-    assert_eq!(
-        sqlite_provider_for_thread(&home, "thread"),
-        "codex_local_access"
-    );
+        .contains("verification-mismatch"));
+    assert_eq!(sqlite_provider_for_thread(&home, "thread"), "openai");
+    assert!(provider_mutation_journal_count(&backup_root) > 0);
     assert_eq!(completed_backup_count(&backup_root), 1);
     fs::remove_dir_all(fixture).unwrap();
 }
 
 #[test]
-fn commit_failure_before_journal_rename_rolls_back_and_reports_recovery() {
+fn commit_failure_before_journal_rename_defers_unowned_snapshot_restore() {
     let fixture = temp_root("provider-commit-not-committed");
     let home = fixture.join("home");
     let backup_root = fixture.join("backups");
@@ -1634,16 +1830,12 @@ fn commit_failure_before_journal_rename_rolls_back_and_reports_recovery() {
 
     assert!(error.contains("提交标记写入未生效"), "{error}");
     assert!(error.contains("fixture commit rename failure"), "{error}");
-    assert!(error.contains("已自动恢复恢复点"), "{error}");
+    assert!(error.contains("自动恢复已延后"), "{error}");
+    assert!(error.contains("mutation journal 保留于"), "{error}");
     assert!(!error.contains("持久化未完成"), "{error}");
-    assert!(fs::read_to_string(&session)
-        .unwrap()
-        .contains("codex_local_access"));
-    assert_eq!(
-        sqlite_provider_for_thread(&home, "thread"),
-        "codex_local_access"
-    );
-    assert_no_provider_mutation_journal(&backup_root);
+    assert!(fs::read_to_string(&session).unwrap().contains("openai"));
+    assert_eq!(sqlite_provider_for_thread(&home, "thread"), "openai");
+    assert!(provider_mutation_journal_count(&backup_root) > 0);
     fs::remove_dir_all(fixture).unwrap();
 }
 
@@ -1745,7 +1937,7 @@ fn restore_commit_marker_failure_keeps_restored_state_without_compensation() {
 }
 
 #[test]
-fn sync_running_flip_before_final_commit_restores_the_fresh_backup() {
+fn sync_running_flip_before_final_commit_defers_restore_and_keeps_journal() {
     let fixture = temp_root("provider-sync-running-flip");
     let home = fixture.join("home");
     let backup_root = fixture.join("backups");
@@ -1768,13 +1960,12 @@ fn sync_running_flip_before_final_commit_restores_the_fresh_backup() {
         },
     )
     .unwrap_err();
-    assert_eq!(probes.get(), 3);
+    assert!(probes.get() >= 4, "probe count: {}", probes.get());
     assert!(error.contains("Codex"), "{error}");
-    assert!(error.contains("自动恢复"), "{error}");
-    assert!(fs::read_to_string(&session)
-        .unwrap()
-        .contains("codex_local_access"));
-    assert_eq!(sqlite_provider_for_thread(&home, "thread"), "codex_local_access");
+    assert!(error.contains("自动恢复已延后"), "{error}");
+    assert!(fs::read_to_string(&session).unwrap().contains("openai"));
+    assert_eq!(sqlite_provider_for_thread(&home, "thread"), "openai");
+    assert!(provider_mutation_journal_count(&backup_root) > 0);
     assert_eq!(completed_backup_count(&backup_root), 1);
     fs::remove_dir_all(fixture).unwrap();
 }
@@ -2699,14 +2890,21 @@ fn final_restore_verification_rehashes_every_installed_member_before_cleanup() {
         error.contains("SHA-256") || error.contains("大小"),
         "{error}"
     );
-    assert!(error.contains("已补偿"), "{error}");
-    assert_eq!(fs::read_to_string(&session).unwrap(), live_before_restore);
-    assert_no_recovery_staging(&backup_root);
+    assert!(error.contains("恢复补偿未完成"), "{error}");
+    assert!(error.contains("恢复材料保留于"), "{error}");
+    assert!(!error.contains("已补偿回恢复前状态"), "{error}");
+    assert!(fs::read_to_string(&session).unwrap().contains("tampered"));
+    assert!(fs::read_dir(&backup_root).unwrap().flatten().any(|entry| {
+        entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".restore-recovery-")
+    }));
     fs::remove_dir_all(fixture).unwrap();
 }
 
 #[test]
-fn restore_running_flip_after_prepare_compensates_before_commit() {
+fn restore_running_flip_before_commit_defers_compensation_and_preserves_evidence() {
     let fixture = temp_root("provider-restore-running-flip");
     let home = fixture.join("home");
     let backup_root = fixture.join("backups");
@@ -2734,12 +2932,18 @@ fn restore_running_flip_after_prepare_compensates_before_commit() {
         |_| Ok(()),
     )
     .unwrap_err();
-    assert_eq!(probes.get(), 2);
+    assert!(probes.get() >= 3, "probe count: {}", probes.get());
     assert!(!committed.get());
     assert!(error.contains("Codex"), "{error}");
-    assert!(error.contains("已补偿"), "{error}");
-    assert_eq!(fs::read_to_string(home.join("config.toml")).unwrap(), "live-config");
-    assert_no_recovery_staging(&backup_root);
+    assert!(error.contains("恢复补偿未完成"), "{error}");
+    assert!(error.contains("恢复已延后"), "{error}");
+    assert_eq!(fs::read_to_string(home.join("config.toml")).unwrap(), "backup-config");
+    assert!(fs::read_dir(&backup_root).unwrap().flatten().any(|entry| {
+        entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".restore-recovery-")
+    }));
     fs::remove_dir_all(fixture).unwrap();
 }
 
@@ -2779,10 +2983,27 @@ fn restore_commit_revalidation_rejects_replacement_and_physical_alias() {
             error.contains("身份") || error.contains("别名") || error.contains("hard link"),
             "{case}: {error}"
         );
-        assert!(error.contains("已补偿"), "{case}: {error}");
-        assert_eq!(fs::read_to_string(home.join("config.toml")).unwrap(), "live-config");
-        assert!(fs::read_to_string(&session).unwrap().contains("live-provider"));
-        assert_no_recovery_staging(&backup_root);
+        assert!(error.contains("恢复补偿未完成"), "{case}: {error}");
+        assert!(error.contains("恢复材料保留于"), "{case}: {error}");
+        assert!(error.contains("未归属写入"), "{case}: {error}");
+        let config = fs::read_to_string(home.join("config.toml")).unwrap();
+        if case == "replacement" {
+            assert_eq!(config, "replaced-before-commit");
+        } else {
+            assert_eq!(config, fs::read_to_string(&session).unwrap());
+        }
+        // The restore target was fully applied before the config replacement/alias.
+        // The global ownership preflight sees that unowned config member and blocks all
+        // compensation, so the session stays at the restore target with evidence kept.
+        assert!(fs::read_to_string(&session)
+            .unwrap()
+            .contains("backup-provider"));
+        assert!(fs::read_dir(&backup_root).unwrap().flatten().any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".restore-recovery-")
+        }));
         fs::remove_dir_all(fixture).unwrap();
     }
 }
@@ -2825,44 +3046,29 @@ fn restore_commit_revalidation_rejects_account_and_home_generation_switches() {
                 || error.contains("规范路径"),
             "{case}: {error}"
         );
-        if cfg!(windows) && case == "generation" {
-            assert!(
-                error.contains("恢复补偿未完成") && error.contains("恢复材料保留"),
-                "{case}: {error}"
-            );
-        } else {
-            assert!(error.contains("已补偿"), "{case}: {error}");
-        }
+        assert!(error.contains("恢复补偿未完成"), "{case}: {error}");
+        assert!(error.contains("恢复材料保留"), "{case}: {error}");
         if case == "generation" {
             assert_eq!(
                 fs::read_to_string(home.join("config.toml")).unwrap(),
                 "new-home-sentinel"
             );
-            let expected_held_config = if cfg!(windows) {
-                "backup-config"
-            } else {
-                "live-config"
-            };
             assert_eq!(
                 fs::read_to_string(held_home.join("config.toml")).unwrap(),
-                expected_held_config
+                "backup-config"
             );
         } else {
             assert_eq!(
                 fs::read_to_string(home.join("config.toml")).unwrap(),
-                "live-config"
+                "backup-config"
             );
         }
-        if cfg!(windows) && case == "generation" {
-            assert!(fs::read_dir(&backup_root).unwrap().flatten().any(|entry| {
-                entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with(".restore-recovery-")
-            }));
-        } else {
-            assert_no_recovery_staging(&backup_root);
-        }
+        assert!(fs::read_dir(&backup_root).unwrap().flatten().any(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".restore-recovery-")
+        }));
         fs::remove_dir_all(fixture).unwrap();
     }
 }
@@ -4260,14 +4466,22 @@ fn restore_component_swap_cannot_replace_a_file_outside_the_pinned_home() {
     .unwrap_err();
 
     assert!(swapped);
-    assert!(error.contains("已补偿"), "{error}");
+    assert!(error.contains("规范路径已变化"), "{error}");
+    assert!(error.contains("恢复补偿未完成"), "{error}");
+    assert!(error.contains("恢复材料保留于"), "{error}");
+    let retained = fs::read_dir(&backup_root).unwrap().flatten().find(|entry| {
+        entry.file_name().to_string_lossy().starts_with(".restore-recovery-")
+    }).expect("changed Home identity must retain recovery evidence").path();
+    assert_eq!(fs::read_to_string(retained.join("live/config.toml")).unwrap(), "live-config");
     assert_eq!(
         fs::read_to_string(outside.join("config.toml")).unwrap(),
         "outside-sentinel"
     );
     assert_eq!(
         fs::read_to_string(held_home.join("config.toml")).unwrap(),
-        "live-config"
+        // The in-flight atomic install uses the original pinned directory. Once
+        // the path swap is detected, compensation cannot write there again.
+        "backup-config"
     );
     fs::remove_file(&home).unwrap();
     fs::remove_dir_all(fixture).unwrap();

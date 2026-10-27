@@ -34,7 +34,16 @@ final class LiveRateMonitor: ObservableObject {
     @Published private(set) var monitoringEnabled: Bool
 
     @Published private(set) var speedSamples: [ObservedSpeedSample] = []
+    @Published private(set) var speedTrendPoints: [BodySpeedTrendPoint] = []
+    @Published private(set) var speedTrendDays = 1
+    @Published private(set) var speedTrendWindowSeconds = 86400
+    @Published private(set) var speedTrendError: String?
+    private var speedDatabaseURL: URL?
+    private var speedDatabaseReady = false
+    private var speedTrendConsumers = Set<UUID>()
+    private var speedTrendRequest = 0
     @Published private(set) var modelSpeeds: [ModelSpeedSummary] = []
+    @Published private(set) var modelSpeeds5m: [ModelSpeedSummary] = []
     @Published private(set) var modelSpeeds15m: [ModelSpeedSummary] = []
     @Published private(set) var modelSpeeds30m: [ModelSpeedSummary] = []
     @Published private(set) var latestModelSpeeds30m: [ModelSpeedSummary] = []
@@ -50,20 +59,27 @@ final class LiveRateMonitor: ObservableObject {
     private var bodyHistoryLoaded = false
     @Published private(set) var speedRetentionDays = UserDefaults.standard.integer(forKey: "bodySpeedRetentionDays") == 15 ? 15 : 30
     private var lastSpeedPruneAt = 0.0
+    let activityRateHistory = LiveActivityRateHistory()
     var throughputCurve = ThroughputCurve()
     var speedContexts = ObservedStreamContexts()
     var speedCollector = ObservedSpeedCollector()
     private var completedBodyReader = CompletedBodySpeedReader()
     private var completedBodyError: String?
-    private var savedSpeedRevision = -1
+    private var acceptedCompletedBodySampleRevisions: [String: UInt64] = [:]
+    private var savedSpeedRevision = -1 // Last revision projected into the UI.
+    private var persistedSpeedRevision = -1
+    private var speedWriteRunning = false
+    private var nextSpeedWriteAt: Double = 0
     private let bodySpeedWriter = BodySpeedSampleWriter()
     private var bodySpeedWriteTicket = 0
     private var lastModelSpeedSummaryAt = 0.0
+    private var nextModelSpeedSummaryChangeAt = 0.0
     private let speedModelResolver = ObservedSpeedModelResolver()
     private var speedModelLookupRunning = false
     private var speedModelLookupAttempts: [String: Double] = [:]
     private var resolvedSpeedModels: [String: [String: String]] = [:]
     private var speedSourceIdentity: String?
+    private var activitySpeedSourceIdentity: String?
 
     private let resolver = CodexDataSourceResolver()
     let logReaderFactory: LiveRateLogReaderMaking
@@ -229,6 +245,7 @@ final class LiveRateMonitor: ObservableObject {
     }
 
     func reset() {
+        activityRateHistory.clear()
         let activityGeneration = pollingActivityGeneration
         Task {
             await resetToLatestThread(activityGeneration: activityGeneration)
@@ -243,6 +260,39 @@ final class LiveRateMonitor: ObservableObject {
         lastModelSpeedSummaryAt = 0
     }
 
+    func showSpeedTrend(_ visible: Bool, consumer: UUID) {
+        if visible {
+            let wasEmpty = speedTrendConsumers.isEmpty
+            speedTrendConsumers.insert(consumer)
+            if wasEmpty { refreshSpeedTrend() }
+        } else { speedTrendConsumers.remove(consumer) }
+    }
+    func setSpeedTrendWindow(_ seconds: Int) {
+        guard [86400, 604800, 2592000].contains(seconds) else { return }
+        speedTrendWindowSeconds = seconds
+        let days = seconds <= 86400 ? 1 : seconds == 604800 ? 7 : 30
+        if days != speedTrendDays { setSpeedTrendDays(days) }
+    }
+    func setSpeedTrendDays(_ days: Int) {
+        guard [1, 7, 30].contains(days) else { return }
+        speedTrendDays = days; refreshSpeedTrend()
+    }
+    private func refreshSpeedTrend() {
+        guard !speedTrendConsumers.isEmpty, speedDatabaseReady, let url = speedDatabaseURL else { return }
+        speedTrendRequest += 1
+        let request = speedTrendRequest, days = speedTrendDays, identity = speedSourceIdentity, writer = bodySpeedWriter
+        Task { [weak self] in
+            do {
+                let points = try await writer.trend(from: url, now: Date().timeIntervalSince1970, days: days)
+                guard let self, self.speedSourceIdentity == identity, self.speedTrendRequest == request else { return }
+                self.speedTrendPoints = points; self.speedTrendError = nil
+            } catch {
+                guard let self, self.speedSourceIdentity == identity, self.speedTrendRequest == request else { return }
+                self.speedTrendError = "速度趋势读取失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
     func speedThreadTitle(_ id: String) -> String {
         let title = bodyHistoryTitles[id] ?? threadOptions.first(where: { $0.id == id })?.displayTitle ?? ""
         return title.isEmpty ? String(id.prefix(12)) : title
@@ -252,7 +302,7 @@ final class LiveRateMonitor: ObservableObject {
         guard [15, 30].contains(days), speedRetentionDays != days else { return }
         speedRetentionDays = days
         UserDefaults.standard.set(days, forKey: "bodySpeedRetentionDays")
-        lastSpeedPruneAt = 0
+        lastSpeedPruneAt = 0; savedSpeedRevision = -1; persistedSpeedRevision = -1; nextSpeedWriteAt = 0
         updateSnapshots(now: Date().timeIntervalSince1970)
     }
 
@@ -350,6 +400,13 @@ final class LiveRateMonitor: ObservableObject {
     }
 
     func resetSourceLocalState(for source: CodexDataSource?) {
+        activitySpeedSourceIdentity = source.map { ActivitySpeedSourceIdentity.root($0.codexHome) }
+        ActivitySpeedHistoryController.shared.selectSource(client: "codex", identity: activitySpeedSourceIdentity)
+        ActivitySpeedHistoryController.shared.reset(client: "codex")
+        AgentSpeedReportingController.shared.configureCodexHome(source?.codexHome)
+        AgentSpeedDisplayRuntime.shared.configure(monitoringEnabled: monitoringEnabled, codexEnabled: monitoringEnabled && ActivitySpeedDisplayMode.normalized(UserDefaults.standard.string(forKey: ActivitySpeedDisplayMode.key)) == .agentSpeed && source != nil,
+            codexHome: source?.codexHome)
+        activityRateHistory.clear()
         logsDirectorySource?.cancel()
         logsDirectorySource = nil
         watchedLogsDirectory = ""
@@ -369,6 +426,7 @@ final class LiveRateMonitor: ObservableObject {
         lastSnapshotPublishAt = 0
         lastFallbackPollAt = 0
         lastRolloutReadAt = 0
+        acceptedCompletedBodySampleRevisions.removeAll()
         cacheAdviceTracker = CacheUsageAdviceTracker()
         rolloutReadStates.removeAll()
         selectedRate.clear()
@@ -946,6 +1004,7 @@ final class LiveRateMonitor: ObservableObject {
             snapshot.threadTitle = "等待会话"
             snapshot.status = "未找到活动会话"
             snapshot.rollingTokensPerSecond = 0
+            snapshot.modelRates = []
             snapshot.averageTokensPerSecond = 0
             snapshot.outputTokens = 0
             snapshot.outputCharacters = 0
@@ -968,12 +1027,20 @@ final class LiveRateMonitor: ObservableObject {
         let options = threadOptions
         let states = rolloutReadStates
         let bodyReader = completedBodyReader
+        let acceptedBodyRevisions = acceptedCompletedBodySampleRevisions
         return try await Task.detached(priority: .utility) {
-            async let bodyRead = bodyReader.read(options: options, now: now)
+            async let bodyRead = bodyReader.read(
+                options: options,
+                now: now,
+                acceptedRevisions: acceptedBodyRevisions
+            )
             var reads = try Self.rolloutReads(options: options, states: states)
             let bodies = await bodyRead
             for i in reads.indices {
-                reads[i].completedBodySamples = bodies.samples[reads[i].path] ?? []
+                let pendingSamples = bodies.pendingSamplesByPath[reads[i].path] ?? []
+                reads[i].completedBodySamples = pendingSamples
+                reads[i].completedBodyRevision = pendingSamples.isEmpty
+                    ? nil : bodies.revisionsByPath[reads[i].path]
                 reads[i].completedBodyError = bodies.error
             }
             return reads
@@ -1034,12 +1101,32 @@ final class LiveRateMonitor: ObservableObject {
             bodyHistoryLoading = false; bodyHistoryLoaded = false
             bodyHistoryTitles = [:]; bodyHistoryStatus = ""; lastSpeedPruneAt = 0
             speedSourceIdentity = identity
+            bodySpeedWriteTicket += 1 // Invalidates completions from the previous source, including A -> B -> A.
+            persistedSpeedRevision = -1; speedWriteRunning = false; nextSpeedWriteAt = 0
+            acceptedCompletedBodySampleRevisions.removeAll()
             completedBodyReader = CompletedBodySpeedReader(); completedBodyError = nil
+            throughputCurve = ThroughputCurve(); speedContexts = ObservedStreamContexts()
             resolvedSpeedModels.removeAll(); speedModelLookupAttempts.removeAll()
             // Store metadata only in TokenBar support, partitioned by a non-reversible source hash.
             let digest = identity.map { ObservedSpeedCollector.sourceKey($0) } ?? "default"
             let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            speedCollector = ObservedSpeedCollector(storeURL: base.appendingPathComponent("CodexTokenBar/observed-speed-\(digest).json"))
+            speedCollector = ObservedSpeedCollector()
+            let url = base.appendingPathComponent("CodexTokenBar/body-speed-\(digest).sqlite")
+            speedDatabaseURL = url; speedDatabaseReady = false; speedTrendPoints = []; speedTrendError = nil
+            let writer = bodySpeedWriter, days = speedRetentionDays
+            Task { [weak self] in
+                do {
+                    let retained = try await writer.load(from: url, now: Date().timeIntervalSince1970, retentionDays: days)
+                    guard let self, self.speedSourceIdentity == identity else { return }
+                    self.speedCollector.addCompletedBodies(retained)
+                    self.speedDatabaseReady = true; self.savedSpeedRevision = -1
+                    self.updateSnapshots(now: Date().timeIntervalSince1970); self.refreshSpeedTrend()
+                } catch {
+                    guard let self, self.speedSourceIdentity == identity else { return }
+                    self.speedCollector.persistenceError = "测速数据库读取失败：\(error.localizedDescription)"
+                    self.speedTrendError = self.speedCollector.persistenceError
+                }
+            }
             savedSpeedRevision = -1
         }
     }
@@ -1059,7 +1146,23 @@ final class LiveRateMonitor: ObservableObject {
     private func processRolloutReads(_ reads: [RolloutRead], now: TimeInterval) -> Bool {
         ensureSpeedSource()
         var processedEvents = false
-        speedCollector.addCompletedBodies(reads.flatMap(\.completedBodySamples))
+        var completedBodySamples: [ObservedSpeedSample] = []
+        for read in reads {
+            if let revision = read.completedBodyRevision {
+                let acceptedRevision = acceptedCompletedBodySampleRevisions[read.path, default: 0]
+                guard revision > acceptedRevision, !read.completedBodySamples.isEmpty else { continue }
+                completedBodySamples.append(contentsOf: read.completedBodySamples)
+                // This runs only after applyPollCompletion validates the source and
+                // polling generation, so a rejected completion leaves the reader's
+                // pending batch available for replay.
+                acceptedCompletedBodySampleRevisions[read.path] = revision
+            } else {
+                // Compatibility for manually constructed RolloutRead values and
+                // older tests that do not carry reader revisions.
+                completedBodySamples.append(contentsOf: read.completedBodySamples)
+            }
+        }
+        speedCollector.addCompletedBodies(completedBodySamples)
         completedBodyError = reads.first?.completedBodyError
 
         for read in reads {
@@ -1069,7 +1172,8 @@ final class LiveRateMonitor: ObservableObject {
             if isReviewThread { cacheAdviceTracker.reset(threadID: read.threadID) }
             for sample in read.cacheSamples {
                 if isReviewThread { continue }
-                guard sample.context || sample.reset || sample.timestamp >= cacheAdviceNotBefore || !sample.timestamp.isFinite else { continue }
+                guard sample.context || sample.reset || sample.establishedContext
+                    || sample.timestamp >= cacheAdviceNotBefore || !sample.timestamp.isFinite else { continue }
                 cacheAdviceTracker.consume(sample, threadID: read.threadID, now: now)
             }
             for signal in read.telemetry {
@@ -1208,7 +1312,8 @@ final class LiveRateMonitor: ObservableObject {
             if event.isDelta, let resolvedThreadID, event.category?.contributesToLiveRate == true {
                 if let context = speedContexts.resolve(thread: resolvedThreadID, at: event.timestamp,
                     explicitTurn: event.turnID ?? itemTurnIDs[event.itemID]) {
-                    throughputCurve.consume(.init(kind: "observed", timestamp: event.timestamp, turnID: context.turn,
+                    let model = resolvedSpeedModels[resolvedThreadID]?[context.turn] ?? context.model
+                    throughputCurve.consume(.init(kind: "observed", timestamp: event.timestamp, turnID: context.turn, model: model,
                         itemID: "delta:\(row.id):\(event.itemID)", output: Double(estimateTokenCount(event.text, category: event.category ?? .visibleText))), thread: resolvedThreadID, now: now)
 
                 }
@@ -1387,7 +1492,18 @@ final class LiveRateMonitor: ObservableObject {
 
     private func resolveSpeedModelsIfNeeded(now: Double) {
         guard !speedModelLookupRunning, let home = dataSource?.codexHome else { return }
-        var wanted: [String: Set<String>] = [:]
+        throughputCurve.resolveModels(resolvedSpeedModels)
+        var knownContexts: [String: [String: String]] = [:]
+        for (thread, turns) in throughputCurve.unresolvedModelTurns(now: now) {
+            for turn in turns {
+                if let context = speedContexts.resolve(thread: thread, at: now, explicitTurn: turn) {
+                    knownContexts[thread, default: [:]][turn] = context.model
+                }
+            }
+        }
+        throughputCurve.resolveModels(knownContexts)
+        let activeCurves = throughputCurve.unresolvedModelTurns(now: now)
+        var wanted = activeCurves
         for part in speedCollector.pending.values where part.model.isEmpty || part.model == "unknown" {
             wanted[part.thread, default: []].insert(part.turn)
         }
@@ -1399,7 +1515,15 @@ final class LiveRateMonitor: ObservableObject {
             if wanted[thread]!.isEmpty { wanted.removeValue(forKey: thread) }
         }
         guard !wanted.isEmpty else { return }
-        wanted = Dictionary(uniqueKeysWithValues: wanted.sorted { $0.key < $1.key }.prefix(8).map { ($0.key, $0.value) })
+        let prioritized = wanted.sorted { left, right in
+            let leftActive = activeCurves[left.key] != nil, rightActive = activeCurves[right.key] != nil
+            return leftActive != rightActive ? leftActive : left.key < right.key
+        }
+        wanted = Dictionary(uniqueKeysWithValues: prioritized.prefix(8).map { thread, turns in
+            let active = (activeCurves[thread] ?? []).intersection(turns)
+            let remaining = turns.subtracting(active).sorted().prefix(max(0, 64 - active.count))
+            return (thread, active.union(remaining))
+        })
         for (thread, turns) in wanted { for turn in turns { speedModelLookupAttempts["\(thread)/\(turn)"] = now } }
         if speedModelLookupAttempts.count > 512 {
             speedModelLookupAttempts = Dictionary(uniqueKeysWithValues: speedModelLookupAttempts.sorted { $0.value > $1.value }.prefix(512).map { ($0.key, $0.value) })
@@ -1418,6 +1542,7 @@ final class LiveRateMonitor: ObservableObject {
             guard self.isCurrentSource(generation: generation, bindingGeneration: binding), self.speedSourceIdentity == identity else { return }
             for (thread, turns) in lookup { self.resolvedSpeedModels[thread, default: [:]].merge(turns, uniquingKeysWith: { _, latest in latest }) }
             self.speedCollector.resolveModels(lookup)
+            if self.throughputCurve.resolveModels(lookup) { self.lastSnapshotPublishAt = 0 }
             self.lastModelSpeedSummaryAt = 0
             self.updateSnapshots(now: Date().timeIntervalSince1970)
         }
@@ -1434,24 +1559,33 @@ final class LiveRateMonitor: ObservableObject {
         let samplesChanged = speedCollector.revision != savedSpeedRevision
         if samplesChanged {
             savedSpeedRevision = speedCollector.revision
-            if speedCollector.persistenceAllowed, let url = speedCollector.storeURL {
-                bodySpeedWriteTicket += 1
-                let ticket = bodySpeedWriteTicket, identity = speedSourceIdentity
-                let samples = speedCollector.samples, writer = bodySpeedWriter
-                Task { [weak self] in
-                    let error = await writer.persist(samples, to: url, ticket: ticket)
-                    guard let self, self.speedSourceIdentity == identity, self.bodySpeedWriteTicket == ticket else { return }
-                    if self.speedCollector.persistenceError != error {
-                        self.speedCollector.persistenceError = error
-                        self.updateSnapshots(now: Date().timeIntervalSince1970)
-                    }
-                }
-            }
             speedSamples = speedCollector.samples.filter(\.isBody).sorted { $0.endedAt == $1.endedAt ? $0.id < $1.id : $0.endedAt > $1.endedAt }
         }
-        if samplesChanged || now - lastModelSpeedSummaryAt >= 1 {
+        if persistedSpeedRevision != speedCollector.revision, !speedWriteRunning,
+           now >= nextSpeedWriteAt, speedDatabaseReady, speedCollector.persistenceAllowed,
+           let url = speedDatabaseURL {
+            speedWriteRunning = true
+            bodySpeedWriteTicket += 1
+            let ticket = bodySpeedWriteTicket, identity = speedSourceIdentity
+            let revision = speedCollector.revision
+            let samples = speedCollector.samples, writer = bodySpeedWriter, days = speedRetentionDays
+            Task { [weak self] in
+                let result = await writer.persistBatch(samples, to: url, ticket: ticket, now: now, retentionDays: days)
+                guard let self, self.speedSourceIdentity == identity, self.bodySpeedWriteTicket == ticket else { return }
+                self.speedWriteRunning = false
+                self.speedCollector.persistenceError = result.error
+                if result.error == nil && result.retryAt == nil && self.speedRetentionDays == days { self.persistedSpeedRevision = revision }
+                self.nextSpeedWriteAt = result.retryAt ?? 0
+                if result.error == nil { self.refreshSpeedTrend() }
+                self.updateSnapshots(now: Date().timeIntervalSince1970)
+            }
+        }
+        if BodySpeedSummarySchedule.isDue(now: now, lastUpdatedAt: lastModelSpeedSummaryAt,
+            nextChangeAt: nextModelSpeedSummaryChangeAt, samplesChanged: samplesChanged) {
+            let models5 = speedCollector.completedBodySummaries(now: now, windowSeconds: 300)
             let models15 = speedCollector.completedBodySummaries(now: now, windowSeconds: 900)
             let models30 = speedCollector.completedBodySummaries(now: now, windowSeconds: 1800)
+            if models5 != modelSpeeds5m { modelSpeeds5m = models5 }
             if models15 != modelSpeeds15m { modelSpeeds15m = models15 }
             if models30 != modelSpeeds30m { modelSpeeds30m = models30 }
             let models = speedWindowMinutes == 15 ? models15 : models30
@@ -1467,6 +1601,7 @@ final class LiveRateMonitor: ObservableObject {
             let empty = unknown > 0 ? "\(unknown)段待识别" : "等待带起止时间的正文"
             if empty != speedSummaryEmptyLabel { speedSummaryEmptyLabel = empty }
             lastModelSpeedSummaryAt = now
+            nextModelSpeedSummaryChangeAt = BodySpeedSummarySchedule.nextChange(samples: speedCollector.samples, now: now)
         }
         let status = speedCollector.persistenceError ?? completedBodyError ?? (modelSpeeds.isEmpty ? "等待正文" : "每秒更新")
         if status != measurementStatus { measurementStatus = status }
@@ -1490,6 +1625,12 @@ final class LiveRateMonitor: ObservableObject {
         }
         lastSnapshotPublishAt = now
 
+        activityRateHistory.record(now: now, rates: throughputCurve.modelRates)
+        if ActivitySpeedDisplayMode.normalized(UserDefaults.standard.string(forKey: ActivitySpeedDisplayMode.key)) == .bar {
+            ActivitySpeedHistoryController.shared.record(client: "codex", sourceIdentity: activitySpeedSourceIdentity ?? "legacy/unscoped",
+                rates: throughputCurve.modelRates, at: now,
+                available: monitoringEnabled && dataSource != nil, mode: .bar)
+        }
         let selectedHasRecentActivity = throughputCurve.rate(thread: threadID) > 0
         selectedSmoothedTokensPerSecond = throughputCurve.rate(thread: threadID)
         if let updated = updatedSnapshot(
@@ -1535,6 +1676,9 @@ final class LiveRateMonitor: ObservableObject {
 
         var updated = snapshot
         updated.rollingTokensPerSecond = rollingTokensPerSecond
+        updated.modelRates = snapshot.scopeLabel == "全会话" ? throughputCurve.modelRates : throughputCurve.sessions[snapshot.threadID].map {
+            $0.display.isFinite && $0.display > 0 ? [ModelRateContribution(model: $0.model, tokensPerSecond: $0.display)] : []
+        } ?? []
         updated.averageTokensPerSecond = averageTokensPerSecond
         updated.outputTokens = outputTokens
         updated.outputCharacters = outputCharacters
@@ -1550,6 +1694,7 @@ final class LiveRateMonitor: ObservableObject {
             || snapshot.outputTokens != updated.outputTokens
             || snapshot.outputCharacters != updated.outputCharacters
             || snapshot.breakdown != updated.breakdown
+            || snapshot.modelRates != updated.modelRates
             || snapshot.status != updated.status
             || snapshot.cacheAdvice != updated.cacheAdvice else {
             return nil
@@ -1613,6 +1758,7 @@ final class LiveRateMonitor: ObservableObject {
     private func disableMonitoringSnapshots() {
         let disabledAt = Date()
         snapshot.rollingTokensPerSecond = 0
+        snapshot.modelRates = []
         snapshot.averageTokensPerSecond = 0
         snapshot.outputTokens = 0
         snapshot.outputCharacters = 0
@@ -1621,6 +1767,7 @@ final class LiveRateMonitor: ObservableObject {
         snapshot.updatedAt = disabledAt
 
         totalSnapshot.rollingTokensPerSecond = 0
+        totalSnapshot.modelRates = []
         totalSnapshot.averageTokensPerSecond = 0
         totalSnapshot.outputTokens = 0
         totalSnapshot.outputCharacters = 0
@@ -1635,6 +1782,16 @@ final class LiveRateMonitor: ObservableObject {
 
 #if DEBUG
 extension LiveRateMonitor {
+    func testSeedBodySpeedDisplay(samples: [ObservedSpeedSample], points: [BodySpeedTrendPoint], now: Double) {
+        speedCollector.samples = samples
+        speedSamples = samples.sorted { $0.endedAt > $1.endedAt }
+        latestModelSpeeds30m = speedCollector.latestCompletedBodySpeeds(now: now)
+        modelSpeeds5m = speedCollector.completedBodySummaries(now: now, windowSeconds: 300)
+        modelSpeeds15m = speedCollector.completedBodySummaries(now: now, windowSeconds: 900)
+        modelSpeeds30m = speedCollector.completedBodySummaries(now: now, windowSeconds: 1800)
+        speedTrendPoints = points
+    }
+
     func testPrepareForLiveRateProcessing(
         selectedThreadID id: String,
         threadOptions options: [LiveThreadOption] = []
@@ -1653,6 +1810,7 @@ extension LiveRateMonitor {
         selectedSmoothedTokensPerSecond = 0
         totalSmoothedTokensPerSecond = 0
         rolloutReadStates.removeAll()
+        acceptedCompletedBodySampleRevisions.removeAll()
         clearStreamState()
     }
 
@@ -1707,6 +1865,18 @@ extension LiveRateMonitor {
 
     var testLastGlobalLogID: Int {
         lastGlobalLogID
+    }
+
+    var testCompletedBodySampleCount: Int {
+        speedCollector.samples.filter(\.isBody).count
+    }
+
+    var testCompletedBodyCollectorRevision: Int {
+        speedCollector.revision
+    }
+
+    func testAcceptedCompletedBodyRevision(path: String) -> UInt64? {
+        acceptedCompletedBodySampleRevisions[path]
     }
 
     func testActivatePollingWithoutScheduling() {

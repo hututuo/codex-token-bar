@@ -1,3 +1,4 @@
+import Darwin
 import Sparkle
 import SwiftUI
 
@@ -16,11 +17,21 @@ struct CodexTokenBarApp: App {
 
     init() {
         TokenRateScaleSettings.initializeForV092()
+        do { try BusinessDatabaseMigration.startProduction() }
+        catch {
+            let alert = NSAlert()
+            alert.messageText = "账本升级尚未完成"
+            alert.informativeText = error.localizedDescription + "\n原始账本和备份已保留；本次没有启动新的业务写入器。"
+            alert.addButton(withTitle: "退出")
+            alert.runModal()
+            Darwin.exit(EXIT_FAILURE)
+        }
         let updaterController = SPUStandardUpdaterController(
             startingUpdater: true,
             updaterDelegate: nil,
             userDriverDelegate: nil
         )
+        ActivitySpeedHistoryController.shared.start()
         let floatingPanel = FloatingTokenPanelController()
         let statusBarPanel = StatusBarTokenController()
         let threadDeleteBridge = CodexThreadDeleteBridgeController()
@@ -55,6 +66,9 @@ struct CodexTokenBarApp: App {
         Task { @MainActor in
             threadDeleteBridge.start()
             autoResumeController.start()
+            MultiClientUsageStore.shared.start()
+            ModelTraceController.shared.start(sourceStore: dashboardRuntime.usageStore)
+            AgentSpeedReportingController.shared.start()
         }
     }
 
@@ -68,6 +82,7 @@ struct CodexTokenBarApp: App {
                 runtime: dashboardRuntime
             )
                 .frame(minWidth: 1080, minHeight: 760)
+                .overlay(alignment: .topTrailing) { AgentSpeedReportingInvitation() }
                 .task {
                     loginItemStore.start()
                     updateSettingsStore.refresh()
@@ -86,6 +101,12 @@ struct CodexTokenBarApp: App {
             DashboardWindowCommands()
             CommandGroup(after: .appInfo) {
                 CheckForUpdatesMenuItem(updater: updaterController.updater)
+#if DEBUG
+                if ClientPreviewMode.simulated {
+                    Button("诊断侧栏动效（5次）") { dashboardRuntime.replaySidebarForDiagnostics() }
+                    Button("诊断侧栏快速反向（5次）") { dashboardRuntime.replaySidebarForDiagnostics(rapid: true) }
+                }
+#endif
 
                 Divider()
 

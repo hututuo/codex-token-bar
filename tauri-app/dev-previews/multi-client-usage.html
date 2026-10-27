@@ -1,0 +1,19 @@
+<!doctype html><html><head><meta charset="utf-8"><title>多客户端用量 · 独立分支预览</title><style>body{margin:0} main{max-width:1000px;margin:32px auto;padding:20px}.preview-caption{color:#9b5f1a;padding:12px;background:#fff2d9;border-radius:10px}aside{padding:16px;border:1px solid #ccc;border-radius:12px;margin:20px 0}.preview-settings{margin-top:24px}h1{font-size:25px}</style></head><body><div id="root"></div><script type="module">
+import React from 'react';
+import {createRoot} from 'react-dom/client';
+import {MultiClientUsageSettings,MultiClientUsageDashboardCard,MultiClientUsageSidebarRows,defaultClientPreferences} from '/src/multiClient/MultiClientUsage.tsx';
+import {unavailableQuota} from '/src/multiClient/multiClientProduct.ts';
+import '/src/styles/global.css';
+const now=Date.now()/1000, hour=Math.floor(now/3600)*3600;
+const prefKey='preview.multiClient.preferences.v2';
+let preferences=JSON.parse(localStorage.getItem(prefKey)??'null') ?? defaultClientPreferences.map(p=>({...p,enabled:p.client==='claudeCode',showSidebar:p.client==='claudeCode',showQuota:p.client==='claudeCode'}));
+const summaries=[{client:'claudeCode',model:'claude-opus-4-1',inputTokens:1045800,outputTokens:48500,cacheReadTokens:830000,cacheWriteTokens:125800,reasoningTokens:null,requests:128,lastSeen:new Date().toISOString()}];
+const trends=Array.from({length:720},(_,i)=>({client:'claudeCode',startUnix:hour-i*3600,inputTokens:i%7===0?0:12000+(i%11)*4000,outputTokens:1200+(i%5)*600,cacheReadTokens:8000,cacheWriteTokens:1000,reasoningTokens:null,requests:5}));
+window.__TAURI_INTERNALS__={invoke:async(command,args)=>{
+ if(command==='refresh_multi_client_usage')return {preferences,summaries,trendBuckets:trends,detections:[{client:'claudeCode',evidence:'测试本地目录'},{client:'gemini',evidence:'测试可执行文件'}],quotas:defaultClientPreferences.map(p=>unavailableQuota(p.client)),diagnostics:[],updatedAt:new Date().toISOString()};
+ if(command==='save_multi_client_usage_preferences'){preferences=args.preferences;localStorage.setItem(prefKey,JSON.stringify(preferences));return preferences;}
+ throw Error('Preview rejects command: '+command);
+}};
+const codex={generatedAt:new Date().toISOString(),recentUsage30d:Array.from({length:720},(_,i)=>({startUnix:hour-i*3600,tokens:i%9===0?0:22000+(i%13)*9000})),quota:{fiveHour:{availability:'measured',label:'5 小时',usedPercent:32,resetsAt:null},sevenDay:{availability:'measured',label:'7 天',usedPercent:67,resetsAt:null}}};
+createRoot(document.getElementById('root')).render(React.createElement('main',{},React.createElement('h1',{},'Codex Token Bar · 多客户端用量'),React.createElement('p',{className:'preview-caption'},'交互预览 · 合成测试数据；不读取正式账本、不启动客户端、不联网。'),React.createElement(MultiClientUsageDashboardCard,{codex}),React.createElement('aside',{},React.createElement('h3',{},'侧栏卡片预览'),React.createElement(MultiClientUsageSidebarRows,{codexTokens:4200000})),React.createElement('details',{className:'preview-settings'},React.createElement('summary',{},'客户端设置'),React.createElement(MultiClientUsageSettings))));
+</script></body></html>

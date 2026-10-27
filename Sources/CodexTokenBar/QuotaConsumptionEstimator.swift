@@ -57,7 +57,7 @@ struct ModelAwareAPIPriceEstimate: Equatable, Sendable {
     let costUSD: Double
     let detectedModels: [OfficialAPIPriceModel]
     let fallbackCalls: Int
-    /// Models on an independent quota; retained in token/model stats but never priced.
+    /// Free checks and independent quotas remain in token stats, outside the billable value.
     let excludedModels: [String]
     let excludedCalls: Int
     /// Explicit model names with no recognized API card; their dollar
@@ -136,6 +136,26 @@ enum CodexAutoReviewPricingPolicy {
         return rules.contains { canonicalAlias($0.alias) == normalized }
     }
 
+    static func isAutoReviewUsage(_ rawValue: String?) -> Bool {
+        let normalized = rawValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "-") ?? ""
+        return normalized.hasPrefix("codex-auto-review@") || isAutoReviewAlias(normalized)
+    }
+
+    /// The dated underlying card is retained for reference display, even though
+    /// review usage is excluded from the billable/subscription-value subtotal.
+    static func referenceModel(for rawValue: String?, at date: Date?) -> OfficialAPIPriceModel? {
+        let normalized = rawValue?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "-") ?? ""
+        if normalized == "codex-auto-review@luna" { return .gpt56Luna }
+        if normalized == "codex-auto-review@5.4" { return .gpt54Legacy }
+        return effectiveModel(for: rawValue, at: date)
+    }
+
     static func canonicalAlias(_ rawValue: String) -> String {
         rawValue
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -153,6 +173,16 @@ enum CodexAutoReviewPricingPolicy {
 }
 
 enum ModelAwareAPIPriceEstimator {
+    private static func valueRows(_ rows: [ModelTokenBreakdown]) -> [ModelTokenPricePeriod] {
+        rows.flatMap { row in
+            guard let excluded = QuotaValueExclusion.modelName(for: row.model) else { return row.pricingRows }
+            // Some old display snapshots stored the underlying price model in
+            // a period. The known parent identity still marks the usage free;
+            // preserve those periods for reference display, not billable value.
+            return row.pricingRows.map { .init(model: excluded, start: $0.start, breakdown: $0.breakdown) }
+        }
+    }
+
     private struct PricingRow {
         let model: String?
         let breakdown: TokenCacheBreakdown
@@ -163,7 +193,7 @@ enum ModelAwareAPIPriceEstimator {
         let historicalQuote: StandardAPIPriceQuote?
         let requiresHistoricalQuote: Bool
         var isUnpriced: Bool {
-            OfficialAPIPriceModel.independentQuotaModelName(from: model) == nil
+            QuotaValueExclusion.modelName(for: model) == nil
                 && ((requiresHistoricalQuote && historicalQuote == nil)
                     || (detectedModel == nil && !(model?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)))
         }
@@ -210,7 +240,7 @@ enum ModelAwareAPIPriceEstimator {
         rates: (OfficialAPIPriceModel) -> APIPriceRates
     ) -> ModelAwareAPIPriceEstimate {
         estimate(
-            rows: modelBreakdowns.flatMap(\.pricingRows).map { row in
+            rows: valueRows(modelBreakdowns).map { row in
                 PricingRow(
                     model: row.model,
                     breakdown: row.breakdown,
@@ -236,7 +266,7 @@ enum ModelAwareAPIPriceEstimator {
         fallbackModel: OfficialAPIPriceModel
     ) -> ModelAwareAPIPriceEstimate {
         estimate(
-            rows: modelBreakdowns.flatMap(\.pricingRows).map { row in
+            rows: valueRows(modelBreakdowns).map { row in
                 PricingRow(
                     model: row.model,
                     breakdown: row.breakdown,
@@ -313,17 +343,17 @@ enum ModelAwareAPIPriceEstimator {
                 rates: rates
             )
         }
-        let independentRows = rows.compactMap { row -> (String, TokenCacheBreakdown)? in
-            guard let name = OfficialAPIPriceModel.independentQuotaModelName(from: row.model) else {
+        let excludedRows = rows.compactMap { row -> (String, TokenCacheBreakdown)? in
+            guard let name = QuotaValueExclusion.modelName(for: row.model) else {
                 return nil
             }
             return (name, row.breakdown)
         }
-        let excludedBreakdown = independentRows.map(\.1).combined
-        let excludedModels = independentRows.reduce(into: [String]()) { names, row in
+        let excludedBreakdown = excludedRows.map(\.1).combined
+        let excludedModels = excludedRows.reduce(into: [String]()) { names, row in
             if !names.contains(row.0) { names.append(row.0) }
         }
-        let excludedCalls = independentRows.reduce(0) { total, row in
+        let excludedCalls = excludedRows.reduce(0) { total, row in
             total + max(row.1.calls, 0)
         }
         let explicitlyUnpricedRows = rows.compactMap { row -> (String, TokenCacheBreakdown)? in
@@ -358,9 +388,9 @@ enum ModelAwareAPIPriceEstimator {
         var fallbackRows: [PricingRow] = []
         for row in rows {
             if row.isUnpriced { continue }
-            if OfficialAPIPriceModel.independentQuotaModelName(from: row.model) != nil {
+            if QuotaValueExclusion.modelName(for: row.model) != nil {
                 // Collected above so incomplete model rows can also fail closed
-                // without charging this independent quota to the fallback.
+                // without charging free or separately metered usage to the fallback.
             } else if let detected = row.detectedModel {
                 grouped[detected, default: []].append(row.breakdown)
             } else if !(row.model?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) {
@@ -374,7 +404,7 @@ enum ModelAwareAPIPriceEstimator {
         let knownCost = rows.reduce(0.0) { partial, row in
             guard let detected = row.detectedModel,
                   !row.isUnpriced,
-                  OfficialAPIPriceModel.independentQuotaModelName(from: row.model) == nil else {
+                  QuotaValueExclusion.modelName(for: row.model) == nil else {
                 return partial
             }
             let rowRates = row.historicalQuote?.rates ?? rates(detected)
@@ -475,34 +505,27 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
     }
 
     var currentPriceRates: APIPriceRates {
-        // Standard short-context prices published by OpenAI. Long-context,
-        // cache-write, priority/service-tier and regional multipliers remain
-        // outside this estimate. Local Codex usage does not expose cache
-        // writes separately, so only input, cached input, and output are priced.
+        // Current values share Agent Speed's pinned asset; historical event
+        // quotes and the Radar vintage remain separate, immutable projections.
+        let key: String
         switch self {
-        case .gpt6Astra:
-            APIPriceRates(inputUSDPerMillion: 10.00, cachedInputUSDPerMillion: 1.00, outputUSDPerMillion: 50.00)
-        case .gpt61Sol:
-            APIPriceRates(inputUSDPerMillion: 2.00, cachedInputUSDPerMillion: 0.10, outputUSDPerMillion: 10.00)
-        case .gpt6Sol:
-            APIPriceRates(inputUSDPerMillion: 2.00, cachedInputUSDPerMillion: 0.20, outputUSDPerMillion: 10.00)
-        case .gpt6Luna:
-            APIPriceRates(inputUSDPerMillion: 0.10, cachedInputUSDPerMillion: 0.01, outputUSDPerMillion: 0.50)
-        case .gpt56Sol:
-            APIPriceRates(inputUSDPerMillion: 4.00, cachedInputUSDPerMillion: 0.40, outputUSDPerMillion: 20.00)
-        case .gpt55:
-            APIPriceRates(inputUSDPerMillion: 5.00, cachedInputUSDPerMillion: 0.50, outputUSDPerMillion: 30.00)
-        case .gpt56Terra:
-            APIPriceRates(inputUSDPerMillion: 2.00, cachedInputUSDPerMillion: 0.20, outputUSDPerMillion: 12.00)
-        case .gpt56Luna:
-            APIPriceRates(inputUSDPerMillion: 0.20, cachedInputUSDPerMillion: 0.02, outputUSDPerMillion: 1.20)
-        case .gpt53Codex, .gpt52Codex:
-            APIPriceRates(inputUSDPerMillion: 1.75, cachedInputUSDPerMillion: 0.175, outputUSDPerMillion: 14.00)
-        case .gpt54Legacy:
-            APIPriceRates(inputUSDPerMillion: 2.50, cachedInputUSDPerMillion: 0.25, outputUSDPerMillion: 15.00)
-        case .gpt54MiniLegacy:
-            APIPriceRates(inputUSDPerMillion: 0.75, cachedInputUSDPerMillion: 0.075, outputUSDPerMillion: 4.50)
+        case .gpt6Astra: key = "gpt-6-astra"
+        case .gpt61Sol: key = "gpt-6.1-sol"
+        case .gpt6Sol: key = "gpt-6-sol"
+        case .gpt6Luna: key = "gpt-6-luna"
+        case .gpt56Sol: key = "gpt-5.6-sol"
+        case .gpt55: key = "gpt-5.5"
+        case .gpt56Terra: key = "gpt-5.6-terra"
+        case .gpt56Luna: key = "gpt-5.6-luna"
+        case .gpt53Codex: key = "gpt-5.3-codex"
+        case .gpt52Codex: key = "gpt-5.2-codex"
+        case .gpt54Legacy: key = "gpt-5.4"
+        case .gpt54MiniLegacy: key = "gpt-5.4-mini"
         }
+        guard let quote = StandardAPIPriceSchedule.currentQuote(for: key) else {
+            preconditionFailure("Missing admitted current price: \(key)")
+        }
+        return quote.rates
     }
 
     var inputUSDPerMillion: Double {

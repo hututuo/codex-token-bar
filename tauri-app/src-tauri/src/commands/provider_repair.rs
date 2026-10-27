@@ -14,14 +14,111 @@ use provider_repair_core::{
 use std::path::Path;
 
 fn execute_provider_mutation_command<T>(
-    _entrypoint: &'static str,
+    entrypoint: &'static str,
     codex_home: &Path,
     recovery_state: &ProviderRecoveryState,
     operation_id: &str,
     mutation: impl FnOnce(&Path, &str) -> Result<T, ProviderOperationError>,
 ) -> Result<T, ProviderOperationError> {
-    provider_repair_core::reconcile_provider_recovery_for_action(recovery_state, codex_home)?;
-    mutation(codex_home, operation_id)
+    execute_provider_mutation_command_with_reconciler(
+        entrypoint,
+        codex_home,
+        recovery_state,
+        operation_id,
+        ProviderCommandRecoveryAdmission::Strict,
+        |state, home| provider_repair_core::reconcile_provider_recovery_for_action(state, home),
+        mutation,
+    )
+}
+
+fn execute_provider_backup_rollback_command<T>(
+    codex_home: &Path,
+    recovery_state: &ProviderRecoveryState,
+    operation_id: &str,
+    mutation: impl FnOnce(&Path, &str) -> Result<T, ProviderOperationError>,
+) -> Result<T, ProviderOperationError> {
+    execute_provider_mutation_command_with_reconciler(
+        "rollback_provider_backup",
+        codex_home,
+        recovery_state,
+        operation_id,
+        ProviderCommandRecoveryAdmission::ExplicitBackupRollback,
+        |state, home| provider_repair_core::reconcile_provider_recovery_for_action(state, home),
+        mutation,
+    )
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProviderCommandRecoveryAdmission {
+    Strict,
+    ExplicitBackupRollback,
+}
+
+fn execute_provider_mutation_command_with_reconciler<T>(
+    entrypoint: &'static str,
+    codex_home: &Path,
+    recovery_state: &ProviderRecoveryState,
+    operation_id: &str,
+    admission: ProviderCommandRecoveryAdmission,
+    mut reconcile: impl FnMut(
+        &ProviderRecoveryState,
+        &Path,
+    ) -> Result<provider_repair_core::ProviderRecoveryStatus, ProviderOperationError>,
+    mutation: impl FnOnce(&Path, &str) -> Result<T, ProviderOperationError>,
+) -> Result<T, ProviderOperationError> {
+    match reconcile(recovery_state, codex_home) {
+        Ok(_) => {}
+        Err(error)
+            if entrypoint == "rollback_provider_backup"
+                && admission == ProviderCommandRecoveryAdmission::ExplicitBackupRollback
+                && is_matching_prepared_mutation_recovery(
+                    recovery_state,
+                    codex_home,
+                    &error,
+                ) =>
+        {
+            // The selected core rollback path validates the journal's exact source backup,
+            // account/Home generation, and stopped-runtime gates before it writes anything.
+        }
+        Err(error) => return Err(error),
+    }
+
+    let result = mutation(codex_home, operation_id)?;
+    if admission == ProviderCommandRecoveryAdmission::ExplicitBackupRollback {
+        // The core rollback may have resolved the Prepared journal. Refresh the cached state
+        // so the UI immediately sees whether recovery is ready or still requires intervention.
+        reconcile(recovery_state, codex_home)?;
+    }
+    Ok(result)
+}
+
+fn is_matching_prepared_mutation_recovery(
+    recovery_state: &ProviderRecoveryState,
+    codex_home: &Path,
+    error: &ProviderOperationError,
+) -> bool {
+    let ProviderOperationError::RecoveryBlocked {
+        code,
+        recovery_path,
+        ..
+    } = error
+    else {
+        return false;
+    };
+    if code != "mutationOwnershipUnproven" {
+        return false;
+    }
+
+    let status = recovery_state.status_for_home(codex_home);
+    status.blocked
+        && status.code.as_deref() == Some("mutationOwnershipUnproven")
+        && status.home_scope.is_some()
+        && status.recovery_path.is_some()
+        && status.recovery_path == *recovery_path
+        && status
+            .recovery_path
+            .as_ref()
+            .is_some_and(|path| path.is_file())
 }
 
 #[tauri::command]
@@ -144,8 +241,7 @@ pub async fn rollback_provider_backup(
     let codex_home = local_source().codex_home().to_path_buf();
     let recovery_state = recovery_state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        execute_provider_mutation_command(
-            "rollback_provider_backup",
+        execute_provider_backup_rollback_command(
             &codex_home,
             &recovery_state,
             &operation_id,
@@ -295,6 +391,171 @@ mod tests {
         .unwrap();
 
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    fn set_blocked_recovery_for_test(
+        state: &ProviderRecoveryState,
+        code: &str,
+        recovery_path: &Path,
+    ) -> ProviderOperationError {
+        let mut status = state.snapshot();
+        status.blocked = true;
+        status.code = Some(code.to_string());
+        status.message = Some("injected recovery block".into());
+        status.recovery_path = Some(recovery_path.to_path_buf());
+        state.replace(status);
+        ProviderOperationError::RecoveryBlocked {
+            code: code.to_string(),
+            message: "injected recovery block".into(),
+            recovery_path: Some(recovery_path.to_path_buf()),
+        }
+    }
+
+    #[test]
+    fn only_matching_explicit_rollback_can_pass_prepared_recovery_admission() {
+        static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
+        let fixture = std::env::temp_dir().join(format!(
+            "provider-command-prepared-admission-{}-{}",
+            std::process::id(),
+            NEXT_FIXTURE.fetch_add(1, Ordering::SeqCst)
+        ));
+        let home = fixture.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let journal_path = fixture.join("prepared-mutation.json");
+        std::fs::write(&journal_path, "{}").unwrap();
+        let state = ProviderRecoveryState::default();
+        provider_repair_core::initialize_provider_recovery_state_for_test(&state, &home);
+
+        let reconcile_calls = AtomicUsize::new(0);
+        let mutation_calls = AtomicUsize::new(0);
+        let restored = execute_provider_mutation_command_with_reconciler(
+            "rollback_provider_backup",
+            &home,
+            &state,
+            "explicit-prepared-rollback",
+            ProviderCommandRecoveryAdmission::ExplicitBackupRollback,
+            |state, _home| {
+                if reconcile_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Err(set_blocked_recovery_for_test(
+                        state,
+                        "mutationOwnershipUnproven",
+                        &journal_path,
+                    ))
+                } else {
+                    provider_repair_core::initialize_provider_recovery_state_for_test(
+                        state, &home,
+                    );
+                    Ok(state.snapshot())
+                }
+            },
+            |received_home, operation_id| {
+                assert_eq!(received_home, home.as_path());
+                assert_eq!(operation_id, "explicit-prepared-rollback");
+                mutation_calls.fetch_add(1, Ordering::SeqCst);
+                Ok("restored")
+            },
+        )
+        .unwrap();
+        assert_eq!(restored, "restored");
+        assert_eq!(mutation_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(reconcile_calls.load(Ordering::SeqCst), 2);
+        assert!(state
+            .guard_destructive_action_for_home(&home)
+            .is_ok());
+
+        let strict_state = ProviderRecoveryState::default();
+        provider_repair_core::initialize_provider_recovery_state_for_test(&strict_state, &home);
+        let strict_mutations = AtomicUsize::new(0);
+        let strict_result = execute_provider_mutation_command_with_reconciler(
+            "sync_provider_history",
+            &home,
+            &strict_state,
+            "ordinary-mutation",
+            ProviderCommandRecoveryAdmission::Strict,
+            |state, _home| {
+                Err(set_blocked_recovery_for_test(
+                    state,
+                    "mutationOwnershipUnproven",
+                    &journal_path,
+                ))
+            },
+            |_, _| {
+                strict_mutations.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        );
+        assert!(matches!(
+            strict_result,
+            Err(ProviderOperationError::RecoveryBlocked { ref code, .. })
+                if code == "mutationOwnershipUnproven"
+        ));
+        assert_eq!(strict_mutations.load(Ordering::SeqCst), 0);
+
+        let other_status_state = ProviderRecoveryState::default();
+        provider_repair_core::initialize_provider_recovery_state_for_test(
+            &other_status_state,
+            &home,
+        );
+        let other_status_mutations = AtomicUsize::new(0);
+        let other_status_result = execute_provider_mutation_command_with_reconciler(
+            "rollback_provider_backup",
+            &home,
+            &other_status_state,
+            "rollback-with-other-recovery-block",
+            ProviderCommandRecoveryAdmission::ExplicitBackupRollback,
+            |state, _home| {
+                Err(set_blocked_recovery_for_test(
+                    state,
+                    "restoreTransactionIncomplete",
+                    &journal_path,
+                ))
+            },
+            |_, _| {
+                other_status_mutations.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        );
+        assert!(matches!(
+            other_status_result,
+            Err(ProviderOperationError::RecoveryBlocked { ref code, .. })
+                if code == "restoreTransactionIncomplete"
+        ));
+        assert_eq!(other_status_mutations.load(Ordering::SeqCst), 0);
+
+        let other_home = fixture.join("other-home");
+        std::fs::create_dir_all(&other_home).unwrap();
+        let stale_home_state = ProviderRecoveryState::default();
+        provider_repair_core::initialize_provider_recovery_state_for_test(
+            &stale_home_state,
+            &home,
+        );
+        let stale_home_mutations = AtomicUsize::new(0);
+        let stale_home_result = execute_provider_mutation_command_with_reconciler(
+            "rollback_provider_backup",
+            &other_home,
+            &stale_home_state,
+            "rollback-with-stale-home-state",
+            ProviderCommandRecoveryAdmission::ExplicitBackupRollback,
+            |state, _home| {
+                Err(set_blocked_recovery_for_test(
+                    state,
+                    "mutationOwnershipUnproven",
+                    &journal_path,
+                ))
+            },
+            |_, _| {
+                stale_home_mutations.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        );
+        assert!(matches!(
+            stale_home_result,
+            Err(ProviderOperationError::RecoveryBlocked { ref code, .. })
+                if code == "mutationOwnershipUnproven"
+        ));
+        assert_eq!(stale_home_mutations.load(Ordering::SeqCst), 0);
+
+        std::fs::remove_dir_all(fixture).unwrap();
     }
 }
 

@@ -44,6 +44,15 @@ enum DashboardPreciseCatchUpPolicy {
 }
 
 struct DashboardView: View {
+    @ObservedObject private var clients = MultiClientUsageStore.shared
+    @AppStorage(ClientDisplayScope.key) private var clientScope = "codex"
+    private var allowedClients: Set<String> {
+        ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs)
+    }
+    @State private var clientProjectionCache = ClientDashboardProjectionCache()
+    @State private var clientCostCache = ClientModelCostPeriodsCache()
+    private var codexOnly: Bool { allowedClients == ["codex"] }
+
     @Environment(\.openWindow) private var openWindow
     @ObservedObject var loginItemStore: LoginItemStore
     @ObservedObject var updateSettingsStore: AppUpdateSettingsStore
@@ -57,7 +66,9 @@ struct DashboardView: View {
     @ObservedObject private var radarStore: CodexRadarStore
     @ObservedObject private var providerSyncStore: ProviderSyncStore
     @ObservedObject private var taskCompletionMonitor: TaskCompletionMonitor
-    @ObservedObject private var liveMonitor: LiveRateMonitor
+    // Fast rate/body-sample ticks belong to LiveRateView and the open settings
+    // preview, not the entire scrollable historical dashboard.
+    private let liveMonitor: LiveRateMonitor
     private var sourceTransitionCoordinator: DashboardSourceTransitionCoordinator {
         runtime.sourceTransitionCoordinator
     }
@@ -151,7 +162,7 @@ struct DashboardView: View {
         _radarStore = ObservedObject(wrappedValue: composition.radarStore)
         _providerSyncStore = ObservedObject(wrappedValue: composition.providerSyncStore)
         _taskCompletionMonitor = ObservedObject(wrappedValue: composition.taskCompletionMonitor)
-        _liveMonitor = ObservedObject(wrappedValue: composition.liveMonitor)
+        liveMonitor = composition.liveMonitor
         DisplayModeMigration.repairStartup()
     }
 
@@ -237,8 +248,10 @@ struct DashboardView: View {
 
                         CacheHitRankingDetailView(
                             cacheUsage: store.snapshot.cacheUsage,
-                            onClose: { showingCacheHitRankingDetails = false }
+                            onClose: { showingCacheHitRankingDetails = false },
+                            codexHome: store.currentDataSource?.codexHome
                         )
+                        .id(store.dataSourceBindingKey)
                         .frame(width: min(900, max(680, proxy.size.width - 108)))
                         .frame(maxHeight: max(520, proxy.size.height - 90))
                         .padding(.top, 58)
@@ -514,77 +527,79 @@ struct DashboardView: View {
             }
         }
         .sheet(isPresented: $showingAppSettings) {
-            AppSettingsView(
-                loginItemStore: loginItemStore,
-                updateSettingsStore: updateSettingsStore,
-                autoResumeController: autoResumeController,
-                threadDeleteBridge: threadDeleteBridge,
-                selectedCategory: $appSettingsInitialCategory,
-                floatingPanelEnabled: $floatingPanelEnabled,
-                statusBarPanelEnabled: $statusBarPanelEnabled,
-                statusBarMetricShowsIcon: $statusBarMetricShowsIcon,
-                statusBarMetricOrderRaw: $statusBarMetricOrderRaw,
-                statusBarMetricSelectionRaw: $statusBarMetricSelectionRaw,
-                statusBarMetricLabelStyleRaw: $statusBarMetricLabelStyleRaw,
-                statusSummaryOrderRaw: $statusSummaryOrderRaw,
-                statusSummarySelectionRaw: $statusSummarySelectionRaw,
-                statusBarPreviewValues: statusBarMetricValues,
-                liveRateMonitoringEnabled: $liveRateMonitoringEnabled,
-                preciseTokenCountingEnabled: $preciseTokenCountingEnabled,
-                tokenRateFullScale: $tokenRateFullScale,
-                floatingPanelLocked: $floatingPanelLocked,
-                interfaceScaleAutoEnabled: $interfaceScaleAutoEnabled,
-                interfaceScaleManualMultiplier: $interfaceScaleManualMultiplier,
-                floatingPanelOpacity: $floatingPanelOpacity,
-                floatingPanelScale: $floatingPanelScale,
-                floatingPanelTextTone: $floatingPanelTextTone,
-                gradientStartHex: $floatingPanelGradientStartHex,
-                gradientEndHex: $floatingPanelGradientEndHex,
-                gradientDirection: $floatingPanelGradientDirection,
-                gradientStyle: $floatingPanelGradientStyle,
-                quotaColorMode: $floatingQuotaColorMode,
-                quotaFixedHex: $floatingQuotaFixedHex,
-                unreadEffect: $floatingPanelUnreadEffect,
-                showRateAndBar: $floatingPanelShowRateAndBar,
-                showUsageStatus: $floatingPanelShowUsageStatus,
-                showMetrics: $floatingPanelShowMetrics,
-                showRunningThreads: $floatingPanelShowRunningThreads,
-                showTodayModelShare: $floatingPanelShowTodayModelShare,
-                showTodayModelCost: $floatingPanelShowTodayModelCost,
-                showQuota: $floatingPanelShowQuota,
-                showRadar: $floatingPanelShowRadar,
-                showCrowdRadar: $floatingPanelShowCrowdRadar,
-                crowdRadarPageCount: $floatingPanelCrowdRadarPageCount,
-                contentOrderRaw: $floatingPanelContentOrderRaw,
-                pagePairsRaw: $floatingPanelPagePairsRaw,
-                showPageNavigationArrows: $floatingPanelShowPageNavigationArrows,
-                floatingPreviewSnapshot: floatingPanelPreviewSnapshot,
-                floatingPreviewRadarPresentation: floatingPanelPreviewRadarPresentation,
-                defaultCodexHome: store.currentDataSource?.codexHome,
-                dataSourceLabel: store.dataSourceLabel,
-                dataSourceOrigin: store.dataSourceOrigin,
-                onChooseDirectory: {
-                    store.chooseDataSourceDirectory()
-                    synchronizeSourceTransition()
-                },
-                onOpenProviderSync: {
-                    providerSyncStore.scan(dataSource: providerSyncStore.currentDataSource)
-                    showingAppSettings = false
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                        showingProviderSync = true
-                    }
-                },
-                onOpenSessionManager: {
-                    showingAppSettings = false
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                        showingSessionManager = true
-                    }
-                },
-                onThreadDeleteConnectionAction: {
-                    threadDeleteBridge.performConnectionAction()
-                },
-                onClose: { showingAppSettings = false }
-            )
+            DashboardLivePreviewScope(monitor: liveMonitor) { _ in
+                AppSettingsView(
+                    loginItemStore: loginItemStore,
+                    updateSettingsStore: updateSettingsStore,
+                    autoResumeController: autoResumeController,
+                    threadDeleteBridge: threadDeleteBridge,
+                    selectedCategory: $appSettingsInitialCategory,
+                    floatingPanelEnabled: $floatingPanelEnabled,
+                    statusBarPanelEnabled: $statusBarPanelEnabled,
+                    statusBarMetricShowsIcon: $statusBarMetricShowsIcon,
+                    statusBarMetricOrderRaw: $statusBarMetricOrderRaw,
+                    statusBarMetricSelectionRaw: $statusBarMetricSelectionRaw,
+                    statusBarMetricLabelStyleRaw: $statusBarMetricLabelStyleRaw,
+                    statusSummaryOrderRaw: $statusSummaryOrderRaw,
+                    statusSummarySelectionRaw: $statusSummarySelectionRaw,
+                    statusBarPreviewValues: statusBarMetricValues,
+                    liveRateMonitoringEnabled: $liveRateMonitoringEnabled,
+                    preciseTokenCountingEnabled: $preciseTokenCountingEnabled,
+                    tokenRateFullScale: $tokenRateFullScale,
+                    floatingPanelLocked: $floatingPanelLocked,
+                    interfaceScaleAutoEnabled: $interfaceScaleAutoEnabled,
+                    interfaceScaleManualMultiplier: $interfaceScaleManualMultiplier,
+                    floatingPanelOpacity: $floatingPanelOpacity,
+                    floatingPanelScale: $floatingPanelScale,
+                    floatingPanelTextTone: $floatingPanelTextTone,
+                    gradientStartHex: $floatingPanelGradientStartHex,
+                    gradientEndHex: $floatingPanelGradientEndHex,
+                    gradientDirection: $floatingPanelGradientDirection,
+                    gradientStyle: $floatingPanelGradientStyle,
+                    quotaColorMode: $floatingQuotaColorMode,
+                    quotaFixedHex: $floatingQuotaFixedHex,
+                    unreadEffect: $floatingPanelUnreadEffect,
+                    showRateAndBar: $floatingPanelShowRateAndBar,
+                    showUsageStatus: $floatingPanelShowUsageStatus,
+                    showMetrics: $floatingPanelShowMetrics,
+                    showRunningThreads: $floatingPanelShowRunningThreads,
+                    showTodayModelShare: $floatingPanelShowTodayModelShare,
+                    showTodayModelCost: $floatingPanelShowTodayModelCost,
+                    showQuota: $floatingPanelShowQuota,
+                    showRadar: $floatingPanelShowRadar,
+                    showCrowdRadar: $floatingPanelShowCrowdRadar,
+                    crowdRadarPageCount: $floatingPanelCrowdRadarPageCount,
+                    contentOrderRaw: $floatingPanelContentOrderRaw,
+                    pagePairsRaw: $floatingPanelPagePairsRaw,
+                    showPageNavigationArrows: $floatingPanelShowPageNavigationArrows,
+                    floatingPreviewSnapshot: floatingPanelPreviewSnapshot,
+                    floatingPreviewRadarPresentation: floatingPanelPreviewRadarPresentation,
+                    defaultCodexHome: store.currentDataSource?.codexHome,
+                    dataSourceLabel: store.dataSourceLabel,
+                    dataSourceOrigin: store.dataSourceOrigin,
+                    onChooseDirectory: {
+                        store.chooseDataSourceDirectory()
+                        synchronizeSourceTransition()
+                    },
+                    onOpenProviderSync: {
+                        providerSyncStore.scan(dataSource: providerSyncStore.currentDataSource)
+                        showingAppSettings = false
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                            showingProviderSync = true
+                        }
+                    },
+                    onOpenSessionManager: {
+                        showingAppSettings = false
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                            showingSessionManager = true
+                        }
+                    },
+                    onThreadDeleteConnectionAction: {
+                        threadDeleteBridge.performConnectionAction()
+                    },
+                    onClose: { showingAppSettings = false }
+                )
+            }
         }
         .alert(item: $exportAlert) { presentation in
             Alert(
@@ -1037,19 +1052,28 @@ struct DashboardView: View {
 
     @ViewBuilder
     private func dashboardContent(logicalWidth: CGFloat) -> some View {
-        VStack(spacing: 18) {
+        // Keep offscreen historical charts out of live-rate layout passes. The
+        // sections retain their own state; ScrollViewReader still targets the
+        // chart's stable ID when jumping from the radar card.
+        let display = clientProjectionCache.value(codex: store.snapshot, clients: clients, allowed: allowedClients)
+        let costs = codexOnly ? nil : clientCostCache.value(codex: store.snapshot,
+            todayCodex: store.todayModelBreakdowns, rows: clients.summaries, today: clients.todaySummaries,
+            sevenDay: clients.sevenDaySummaries, clientsUpdatedAt: clients.updatedAt, allowed: allowedClients)
+        LazyVStack(spacing: 18) {
+            ClientScopePicker()
             HeaderView(
                 snapshot: store.snapshot,
                 quotaSnapshot: quotaStore.snapshot,
+                clientQuotaItems: codexOnly && !ClientPreviewMode.simulated ? nil : ClientQuotaProjection.items(codex: quotaStore.snapshot, claude: clients.quotaReading(.claudeCode), includeClaude: allowedClients.contains("claudeCode") || allowedClients.contains("claudeDesktop"), preview: ClientPreviewMode.simulated).filter { allowedClients.contains($0.client) || ($0.client == "claudeCode" && allowedClients.contains("claudeDesktop")) },
                 status: store.status,
-                dataSourceLabel: store.dataSourceLabel,
-                dataSourceOrigin: store.dataSourceOrigin,
+                dataSourceLabel: codexOnly ? store.dataSourceLabel : (clientScope == "all" ? "所选客户端本地记录" : ClientDisplayScope.title(clientScope)),
+                dataSourceOrigin: codexOnly ? store.dataSourceOrigin : (ClientPreviewMode.simulated ? "Claude 模拟" : "本地日志"),
                 isRefreshing: store.isRefreshing,
                 lastCheckedAt: store.lastCheckedAt,
                 dataUpdatedAt: store.dataUpdatedAt,
                 preciseIndexProgress: store.preciseIndexProgress,
                 unreadThreadCount: taskCompletionMonitor.unreadThreadCount,
-                runningThreadSummary: taskCompletionMonitor.runningThreadSummary,
+                runningThreadSummary: allowedClients.contains("codex") ? taskCompletionMonitor.runningThreadSummary : .unavailable,
                 presentationMode: .dashboard,
                 onRefresh: {
                     refreshAllData()
@@ -1085,6 +1109,7 @@ struct DashboardView: View {
                 interfaceScaleManualMultiplier: $interfaceScaleManualMultiplier,
                 showingResetCreditDetails: $showingResetCreditDetails
             )
+
 
             if let upgrade = store.indexUpgradeRequired {
                 HStack(spacing: 14) {
@@ -1123,7 +1148,7 @@ struct DashboardView: View {
             }
 
             StatStrip(
-                snapshot: store.snapshot,
+                snapshot: display,
                 quotaSnapshot: quotaStore.snapshot,
                 quotaCycleHistory: quotaHistoryStore.snapshot,
                 cycleCodexHome: store.currentDataSource?.codexHome,
@@ -1134,13 +1159,15 @@ struct DashboardView: View {
                 isPreparingUsageCache: store.isPreparingUsageCache,
                 isRefreshing: store.isRefreshing,
                 preciseTimeSeriesFresh: store.preciseTimeSeriesFresh,
-                cacheStatus: store.status
+                cacheStatus: store.status,
+                clientCosts: costs
             )
             // LiveRateMonitor publishes independently of historical usage. The
             // equatable boundary keeps those one-second rate ticks from
             // rebuilding the expensive model-attribution strip.
             .equatable()
 
+            if allowedClients.contains("codex") {
             CodexRadarStrip(
                 snapshot: radarStore.snapshot,
                 crowdSnapshot: radarStore.crowdSnapshot,
@@ -1162,6 +1189,7 @@ struct DashboardView: View {
                 }
             )
 
+            }
             LiveRateView(
                 monitor: liveMonitor,
                 floatingPanelEnabled: $floatingPanelEnabled,
@@ -1170,48 +1198,56 @@ struct DashboardView: View {
                 liveRateMonitoringEnabled: $liveRateMonitoringEnabled,
                 floatingPanelShowRateAndBar: $floatingPanelShowRateAndBar,
                 tokenRateFullScale: $tokenRateFullScale,
-                onOpenSettings: { showingAppSettings = true }
+                onOpenSettings: { showingAppSettings = true },
+                sourceLabel: codexOnly ? nil : (allowedClients.contains("codex") ? "Codex 正文 TPS" : ClientDisplayScope.title(clientScope) + " · 本地测速"),
+                sourceAvailable: allowedClients.contains("codex"), localClients: allowedClients
             )
 
             ActivitySection(
-                dailyUsage: store.snapshot.dailyUsage,
-                cacheDaily: store.snapshot.cacheUsage.daily,
-                dailyModelBreakdowns: store.snapshot.cacheUsage.dailyModelBreakdowns,
-                attributionEvents: store.snapshot.cacheUsage.attributionEvents,
-                quotaDaily: quotaHistoryStore.snapshot.daily,
-                selectedMode: $store.selectedMode
+                dailyUsage: display.dailyUsage,
+                cacheDaily: display.cacheUsage.daily,
+                dailyModelBreakdowns: display.cacheUsage.dailyModelBreakdowns,
+                attributionEvents: display.cacheUsage.attributionEvents,
+                quotaDaily: codexOnly ? quotaHistoryStore.snapshot.daily : [],
+                selectedMode: $store.selectedMode,
+                tokensOnly: !codexOnly
             )
 
             RecentUsageChart(
-                bins: store.snapshot.recentBins,
-                hourlyBins: store.snapshot.hourlyUsage,
-                cacheRecentBins: store.snapshot.cacheUsage.recentBins,
-                cacheHourlyBins: store.snapshot.cacheUsage.hourly,
-                attributionEvents: store.snapshot.cacheUsage.attributionEvents,
-                attributionEventsComplete: store.snapshot.cacheUsage.attributionEventsComplete,
-                quotaRecentBins: quotaHistoryStore.snapshot.recentBins,
-                quotaHourlyBins: quotaHistoryStore.snapshot.hourlyBins,
-                currentFiveHourQuotaPresent: quotaStore.snapshot.fiveHour != nil,
-                currentSevenDayQuotaPresent: quotaStore.snapshot.sevenDay != nil,
-                sharedAccountAttributionContext: sharedAccountAttributionEnabled
+                bins: display.recentBins,
+                hourlyBins: display.hourlyUsage,
+                cacheRecentBins: display.cacheUsage.recentBins,
+                cacheHourlyBins: display.cacheUsage.hourly,
+                attributionEvents: display.cacheUsage.attributionEvents,
+                attributionEventsComplete: display.cacheUsage.attributionEventsComplete,
+                quotaRecentBins: codexOnly ? quotaHistoryStore.snapshot.recentBins : [],
+                quotaHourlyBins: codexOnly ? quotaHistoryStore.snapshot.hourlyBins : [],
+                currentFiveHourQuotaPresent: codexOnly && quotaStore.snapshot.fiveHour != nil,
+                currentSevenDayQuotaPresent: codexOnly && quotaStore.snapshot.sevenDay != nil,
+                sharedAccountAttributionContext: codexOnly && sharedAccountAttributionEnabled
                     ? sharedAccountAttributionResult.map(
                         QuotaSelectionAttributionContext.init(result:)
                     )
-                    : nil
+                    : nil,
+                pricingAvailable: codexOnly
             )
+            .id(clientScope)
             .id("recent-usage-chart")
             // RecentUsageChart owns interactive line-visibility state. Keep the
             // chart outside an EquatableView so a toggle can repaint immediately.
 
             CacheHitRankingSection(
-                cacheUsage: store.snapshot.cacheUsage,
+                cacheUsage: display.cacheUsage,
                 cacheUsageRevision: store.snapshot.generatedAt,
+                codexHome: store.currentDataSource?.codexHome,
                 onOpenDetails: {
                     showingCodexRadarDetails = false
                     showingSharedAccountAttributionDetails = false
                     showingCacheHitRankingDetails = true
                 }
             )
+            .id(clientScope + "|" + store.dataSourceBindingKey)
+
         }
         .padding(.horizontal, 54)
         .padding(.vertical, 20)
@@ -1231,6 +1267,7 @@ struct DashboardView: View {
     }
 
     private func refreshAllData(trigger: DashboardRefreshTrigger = .manual) {
+        if case .manual = trigger { clients.refresh() }
         let context = DashboardRefreshContext.fromSurfaces(
             providerSyncVisible: showingProviderSync,
             appActive: NSApp.isActive,
@@ -1463,4 +1500,12 @@ struct DashboardView: View {
                 && window.contentViewController != nil
         }
     }
+}
+
+/// Observe fast publications only while the settings sheet actually exists.
+/// The runtime separately refreshes the real floating/sidebar/status surfaces.
+struct DashboardLivePreviewScope<Content: View>: View {
+    @ObservedObject var monitor: LiveRateMonitor
+    @ViewBuilder let content: (LiveRateMonitor) -> Content
+    var body: some View { content(monitor) }
 }

@@ -24,8 +24,13 @@ test("primary rows retain large targets while the centered summary scrolls withi
       assert.equal(edgeStyle.position, "absolute"); assert.match(css, /\.qs-radar-edge\{[^}]*inset:0[;}]/);
       assert.equal(edgeStyle.pointerEvents, "none"); assert.equal(edgeStyle.display, "none");
       assert.ok(css.includes("@media(prefers-reduced-motion:reduce){.qs-radar-edge[data-active=true]{animation:none;opacity:1}}"));
-      const buttons = [...window.document.querySelectorAll(".qs-summary>button")];
-      assert.equal(buttons.length, 6);
+      const buttons = [...window.document.querySelectorAll(".qs-module-stack>.qs-linked-item>button,.qs-summary>.qs-settings-trigger")];
+      assert.equal(buttons.length, 8);
+      assert.ok(window.document.querySelector(".qs-summary").firstElementChild.matches(".qs-rail-actions"));
+      const first = window.document.querySelector(".qs-module-stack").firstElementChild.firstElementChild;
+      assert.ok(first.matches(".qs-modeltrace-trigger"));
+      assert.equal(window.getComputedStyle(first).marginTop, "0px");
+      assert.equal(window.document.querySelector(".qs-menu-trigger"), null);
       for (const button of buttons.filter(button => button.matches(".qs-quota-trigger,.qs-running-trigger"))) {
         const style = window.getComputedStyle(button);
         assert.equal(style.width, "80px"); assert.ok(parseFloat(style.minHeight) >= 44);
@@ -35,7 +40,8 @@ test("primary rows retain large targets while the centered summary scrolls withi
       assert.equal(summaryStyle.top, "50%");
       assert.equal(summaryStyle.transform, "translateY(-50%)");
       assert.equal(summaryStyle.height, summaryStyle.maxHeight);
-      assert.equal(summaryStyle.overflowY, "auto");
+      assert.equal(summaryStyle.overflowY, "hidden");
+      assert.equal(window.getComputedStyle(window.document.querySelector(".qs-module-scroll")).overflowY,"auto");
       assert.equal(window.document.querySelector(".qs-summary").getAttribute("data-scrollable"), "true");
       assert.equal(window.getComputedStyle(window.document.querySelector(".qs-recommendations")).fontSize, "9px");
       const digit = window.document.querySelector(".qs-task-ring .qs-value-change>span");
@@ -48,7 +54,7 @@ test("primary rows retain large targets while the centered summary scrolls withi
         window.happyDOM.setWindowSize({ width: 16, height });
         const rootStyle = window.getComputedStyle(window.document.documentElement);
         assert.equal(rootStyle.width, "88px"); assert.equal(rootStyle.height, "680px");
-        assert.equal(window.getComputedStyle(window.document.querySelector(".qs-summary")).top, "340px");
+        assert.equal(window.getComputedStyle(window.document.querySelector(".qs-summary")).top, "calc(680px/2)");
       }
     } finally { window.close(); }
   });

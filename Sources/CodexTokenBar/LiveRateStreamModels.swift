@@ -118,6 +118,8 @@ extension LiveRateMonitor {
     }
 
     struct RolloutReadState: Equatable, Sendable {
+        var initialCacheContextReset = false
+        var initialCacheContextEstablished = false
         let offset: UInt64
         let currentTurnID: String?
         let fileIdentity: RolloutFileIdentity?
@@ -141,6 +143,9 @@ extension LiveRateMonitor {
 
     struct RolloutRead {
         var completedBodySamples: [ObservedSpeedSample] = []
+        /// Reader revision for this path's pending samples. Nil keeps compatibility
+        /// with tests and callers that construct rollout reads directly.
+        var completedBodyRevision: UInt64? = nil
         var completedBodyError: String?
         let threadID: String
         let path: String
@@ -149,6 +154,8 @@ extension LiveRateMonitor {
         let telemetry: [ThroughputSignal]
         let cacheSamples: [CacheUsageSample]
         let cacheReset: Bool
+        let initialCacheContextReset: Bool
+        let initialCacheContextEstablished: Bool
         let currentTurnID: String?
         let fileIdentity: RolloutFileIdentity?
         let boundarySignature: RolloutBoundarySignature?
@@ -161,6 +168,8 @@ extension LiveRateMonitor {
             events: [RolloutMetricEvent],
             cacheSamples: [CacheUsageSample] = [],
             cacheReset: Bool = false,
+            initialCacheContextReset: Bool = false,
+            initialCacheContextEstablished: Bool = false,
             telemetry: [ThroughputSignal] = [],
             currentTurnID: String? = nil,
             fileIdentity: RolloutFileIdentity? = nil,
@@ -174,6 +183,8 @@ extension LiveRateMonitor {
             self.telemetry = telemetry
             self.cacheSamples = cacheSamples
             self.cacheReset = cacheReset
+            self.initialCacheContextReset = initialCacheContextReset
+            self.initialCacheContextEstablished = initialCacheContextEstablished
             self.currentTurnID = currentTurnID
             self.fileIdentity = fileIdentity
             self.boundarySignature = boundarySignature
@@ -181,13 +192,16 @@ extension LiveRateMonitor {
         }
 
         var state: RolloutReadState {
-            RolloutReadState(
+            var state = RolloutReadState(
                 offset: newOffset,
                 currentTurnID: currentTurnID,
                 fileIdentity: fileIdentity,
                 boundarySignature: boundarySignature,
                 discardLeadingPartialLine: discardLeadingPartialLine
             )
+            state.initialCacheContextReset = initialCacheContextReset
+            state.initialCacheContextEstablished = initialCacheContextEstablished
+            return state
         }
     }
 }

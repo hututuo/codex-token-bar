@@ -150,6 +150,7 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
     }
   }
   async function settle() {
+    ports.probe?.("settle", state);
     if (blocked() || heldOpen || state.anchor) return;
     const token = cancel();
     const geometry = await ports.geometry();
@@ -260,6 +261,7 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
       const pointer = await readPointer();
       if (!current(token) || !dragging) return;
       if (!pointer.leftButtonDown) {
+        ports.probe?.("drag-released", state);
         dragging = false;
         await settle();
       } else if (Date.now() < dragDeadline) {
@@ -273,6 +275,7 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
     }
   }
   async function startDrag() {
+    ports.probe?.("drag-start", state);
     if (disposed || suspended || dragging) return;
     const attempt = ++dragRevision;
     dragging = true;
@@ -283,9 +286,16 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
       // The native drag command may resolve before mouse-up. Poll only for this
       // active gesture (single-flight, 60ms); no idle mouse-position polling.
       later(60, pollDrag);
-      if (!await ports.startDrag() && attempt === dragRevision && !disposed && !suspended) {
-        dragging = false;
-        later(100, settle);
+      const accepted = await ports.startDrag();
+      if (attempt === dragRevision && !disposed && !suspended && dragging) {
+        if (!accepted) {
+          dragging = false;
+          later(100, settle);
+        } else {
+          // Native tracking may resolve at mouse-up. Re-arm the release check
+          // even if an intervening layout/hold transition replaced its timer.
+          later(0, pollDrag);
+        }
       }
     } catch (error) {
       // Detaching is part of drag preparation too. A failed frame write must
@@ -324,6 +334,7 @@ export function createFloatingEdgeDockController(ports: DockPorts) {
   }
   return {
     state: () => state,
+    diagnosticState: () => ({ suspended, resizing, dragging, pointerInside, heldOpen, guiding, disposed, generation, anchored: Boolean(state.anchor) }),
     isGuiding: () => guiding,
     async beginGuide(point: { x: number; y: number }) {
       guiding = true; guidePointer = { ...point, leftButtonDown: false };

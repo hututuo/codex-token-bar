@@ -24,15 +24,16 @@ pub(super) struct CacheUsageSample {
     input_tokens: Option<u64>,
     cached_input_tokens: Option<u64>,
     total_tokens: Option<u64>,
+    request_total_tokens: Option<u64>,
     request_id: Option<String>,
 }
 
 #[derive(Clone, Debug)]
 pub(super) enum CacheObservation {
     Sample(CacheUsageSample),
-    Context {
-        model: Option<String>,
-    },
+    Context { model: Option<String> },
+    ContextReset,
+    EstablishedContext,
     Reset,
 }
 
@@ -64,6 +65,7 @@ struct CacheAdviceThreadState {
     advice: Option<CacheAdvice>,
     touched_at: Instant,
     has_observed_request: bool,
+    awaiting_first_after_context_reset: bool,
 }
 
 impl Default for CacheAdviceThreadState {
@@ -75,6 +77,7 @@ impl Default for CacheAdviceThreadState {
             advice: None,
             touched_at: Instant::now(),
             has_observed_request: false,
+            awaiting_first_after_context_reset: false,
         }
     }
 }
@@ -92,7 +95,9 @@ impl CacheReminderTracker {
             .last_poll
             .is_some_and(|last| monotonic.duration_since(last) > Duration::from_secs(5))
         {
-            self.threads.clear();
+            for state in self.threads.values_mut() {
+                state.advice = None;
+            }
             self.not_before = now;
         }
         self.last_poll = Some(monotonic);
@@ -120,13 +125,30 @@ impl CacheReminderTracker {
             CacheObservation::Context { model } => {
                 if state.model != model {
                     let has_observed_request = state.has_observed_request;
+                    let awaiting_first_after_context_reset =
+                        state.awaiting_first_after_context_reset;
                     *state = CacheAdviceThreadState {
                         model,
                         touched_at: monotonic_now,
                         has_observed_request,
+                        awaiting_first_after_context_reset,
                         ..CacheAdviceThreadState::default()
                     };
                 }
+            }
+            CacheObservation::ContextReset => {
+                let model = state.model.clone();
+                *state = CacheAdviceThreadState {
+                    model,
+                    touched_at: monotonic_now,
+                    awaiting_first_after_context_reset: true,
+                    ..CacheAdviceThreadState::default()
+                };
+            }
+            CacheObservation::EstablishedContext => {
+                state.has_observed_request = true;
+                state.awaiting_first_after_context_reset = false;
+                state.advice = None;
             }
             CacheObservation::Sample(sample) => {
                 state.consume_sample(sample, thread_id, now);
@@ -244,12 +266,21 @@ impl CacheAdviceThreadState {
             self.request_ids.insert_if_new(request_id);
         }
 
-        // The first valid observation establishes a cumulative-token baseline;
-        // one subsequent low request is enough to show the reminder.
-        let low = self.has_observed_request
+        // A cumulative counter above this request proves that this session had
+        // earlier usage, unless an explicit reset made this its first request.
+        let has_prior_request = sample
+            .total_tokens
+            .zip(sample.request_total_tokens)
+            .is_some_and(|(cumulative, request_total)| {
+                request_total >= input_tokens && cumulative > request_total
+            });
+        let context_reset_is_cold = self.awaiting_first_after_context_reset;
+        let low = (self.has_observed_request || has_prior_request)
+            && !context_reset_is_cold
             && input_tokens >= LOW_INPUT_TOKENS
             && hit_rate < LOW_HIT_RATE;
         self.has_observed_request = true;
+        self.awaiting_first_after_context_reset = false;
         self.advice = Some(CacheAdvice {
             thread_id: thread_id.to_owned(),
             thread_title: None,
@@ -281,7 +312,7 @@ pub(super) fn parse_observation(
     if record_type == "compacted"
         || matches!(payload_type, "context_compacted" | "thread_rolled_back")
     {
-        return Some(CacheObservation::Reset);
+        return Some(CacheObservation::ContextReset);
     }
     if record_type != "event_msg" || payload_type != "token_count" {
         return None;
@@ -316,8 +347,27 @@ pub(super) fn parse_observation(
         total_tokens: total
             .and_then(|usage| usage.get("total_tokens"))
             .and_then(Value::as_u64),
+        request_total_tokens: last
+            .and_then(|usage| usage.get("total_tokens"))
+            .and_then(Value::as_u64),
         request_id,
     }))
+}
+
+pub(super) fn is_valid_history_sample(sample: &CacheUsageSample) -> bool {
+    if !sample
+        .timestamp
+        .is_some_and(|timestamp| timestamp.is_finite() && timestamp >= 0.0)
+    {
+        return false;
+    }
+    let Some(input_tokens) = sample.input_tokens else {
+        return false;
+    };
+    let Some(cached_input_tokens) = sample.cached_input_tokens else {
+        return false;
+    };
+    input_tokens > 0 && cached_input_tokens <= input_tokens
 }
 
 fn is_fresh(advice: &CacheAdvice, now: f64) -> bool {
@@ -364,8 +414,47 @@ mod tests {
             input_tokens: input,
             cached_input_tokens: cached,
             total_tokens: total,
+            request_total_tokens: None,
             request_id: None,
         })
+    }
+
+    fn sample_with_request_total(
+        at: f64,
+        total: Option<u64>,
+        request_total: Option<u64>,
+        input: Option<u64>,
+        cached: Option<u64>,
+    ) -> CacheObservation {
+        CacheObservation::Sample(CacheUsageSample {
+            timestamp: Some(at),
+            input_tokens: input,
+            cached_input_tokens: cached,
+            total_tokens: total,
+            request_total_tokens: request_total,
+            request_id: None,
+        })
+    }
+
+    #[test]
+    fn established_history_seed_does_not_replay_and_supports_legacy_usage() {
+        let mut tracker = CacheReminderTracker::default();
+        let now = Instant::now();
+        tracker.observe("old", CacheObservation::EstablishedContext, 100.0, now);
+        assert!(
+            tracker.latest(100.0).is_none(),
+            "history never publishes advice"
+        );
+        tracker.observe(
+            "old",
+            sample(101.0, None, Some(20_000), Some(0)),
+            101.0,
+            now,
+        );
+        assert!(
+            tracker.latest(101.0).unwrap().low,
+            "known history must not depend on the latest server carrying cumulative totals"
+        );
     }
 
     #[test]
@@ -386,6 +475,7 @@ mod tests {
                         input_tokens: row["input"].as_u64(),
                         cached_input_tokens: row["cached"].as_u64(),
                         total_tokens: row["total"].as_u64(),
+                        request_total_tokens: row["requestTotal"].as_u64(),
                         request_id: None,
                     }),
                     at,
@@ -400,6 +490,58 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn restored_session_uses_cumulative_usage_without_replaying_history() {
+        let mut tracker = CacheReminderTracker::default();
+        let monotonic = Instant::now();
+        tracker.observe(
+            "restored",
+            sample_with_request_total(
+                100.0,
+                Some(29_374_965),
+                Some(154_786),
+                Some(153_566),
+                Some(0),
+            ),
+            100.0,
+            monotonic,
+        );
+        assert!(tracker.latest(100.0).unwrap().low);
+
+        let mut fresh = CacheReminderTracker::default();
+        fresh.observe(
+            "new",
+            sample_with_request_total(100.0, Some(154_786), Some(154_786), Some(153_566), Some(0)),
+            100.0,
+            monotonic,
+        );
+        assert!(!fresh.latest(100.0).unwrap().low);
+
+        let mut unknown = CacheReminderTracker::default();
+        unknown.observe(
+            "unknown",
+            sample_with_request_total(100.0, Some(29_374_965), None, Some(153_566), Some(0)),
+            100.0,
+            monotonic,
+        );
+        assert!(!unknown.latest(100.0).unwrap().low);
+
+        let mut inconsistent = CacheReminderTracker::default();
+        inconsistent.observe(
+            "inconsistent",
+            sample_with_request_total(
+                100.0,
+                Some(29_374_965),
+                Some(153_000),
+                Some(153_566),
+                Some(0),
+            ),
+            100.0,
+            monotonic,
+        );
+        assert!(!inconsistent.latest(100.0).unwrap().low);
     }
 
     #[test]
@@ -490,6 +632,7 @@ mod tests {
                 input_tokens: Some(20_000),
                 cached_input_tokens: Some(0),
                 total_tokens: Some(total),
+                request_total_tokens: None,
                 request_id: Some(id.into()),
             })
         };
@@ -503,7 +646,7 @@ mod tests {
     }
 
     #[test]
-    fn context_change_preserves_baseline_and_reset_starts_a_new_baseline() {
+    fn context_change_preserves_baseline_and_explicit_context_reset_is_cold() {
         let mut tracker = CacheReminderTracker::default();
         let monotonic = Instant::now();
         tracker.observe(
@@ -534,14 +677,42 @@ mod tests {
             monotonic,
         );
         assert!(tracker.latest(103.0).unwrap().low);
-        tracker.observe("a", CacheObservation::Reset, 104.0, monotonic);
+        tracker.observe("a", CacheObservation::ContextReset, 104.0, monotonic);
         tracker.observe(
             "a",
-            sample(105.0, Some(20_000), Some(20_000), Some(0)),
+            CacheObservation::Context {
+                model: Some("model-b".into()),
+            },
+            104.5,
+            monotonic,
+        );
+        tracker.observe(
+            "a",
+            sample_with_request_total(105.0, Some(60_000), Some(20_000), Some(20_000), Some(0)),
             105.0,
             monotonic,
         );
         assert!(!tracker.latest(105.0).unwrap().low);
+
+        tracker.observe(
+            "a",
+            sample_with_request_total(106.0, Some(80_000), Some(20_000), Some(20_000), Some(0)),
+            106.0,
+            monotonic,
+        );
+        assert!(tracker.latest(106.0).unwrap().low);
+
+        tracker.observe("a", CacheObservation::Reset, 107.0, monotonic);
+        tracker.observe(
+            "a",
+            sample_with_request_total(108.0, Some(100_000), Some(20_000), Some(20_000), Some(0)),
+            108.0,
+            monotonic,
+        );
+        assert!(
+            tracker.latest(108.0).unwrap().low,
+            "a structural reset must not claim a new context"
+        );
     }
 
     #[test]
@@ -555,8 +726,7 @@ mod tests {
         });
         let payload = initial_context["payload"].as_object().unwrap();
         let observation =
-            parse_observation(&initial_context, payload, "turn_context", "", Some(99.0))
-                .unwrap();
+            parse_observation(&initial_context, payload, "turn_context", "", Some(99.0)).unwrap();
         tracker.observe("a", observation, 99.0, monotonic);
         tracker.observe(
             "a",
@@ -575,9 +745,14 @@ mod tests {
             }
         });
         let payload = changed_effort_context["payload"].as_object().unwrap();
-        let observation =
-            parse_observation(&changed_effort_context, payload, "turn_context", "", Some(101.0))
-                .unwrap();
+        let observation = parse_observation(
+            &changed_effort_context,
+            payload,
+            "turn_context",
+            "",
+            Some(101.0),
+        )
+        .unwrap();
         assert!(matches!(
             &observation,
             CacheObservation::Context { model: Some(model) } if model == "model-a"
@@ -597,9 +772,14 @@ mod tests {
             }
         });
         let payload = token_count["payload"].as_object().unwrap();
-        let observation =
-            parse_observation(&token_count, payload, "event_msg", "token_count", Some(102.0))
-                .unwrap();
+        let observation = parse_observation(
+            &token_count,
+            payload,
+            "event_msg",
+            "token_count",
+            Some(102.0),
+        )
+        .unwrap();
         tracker.observe("a", observation, 102.0, monotonic);
 
         let advice = tracker.latest(102.0).unwrap();
@@ -640,7 +820,7 @@ mod tests {
     }
 
     #[test]
-    fn long_poll_pause_drops_backlog_and_reset_clears_one_thread() {
+    fn long_poll_pause_drops_stale_advice_and_preserves_context_evidence() {
         let mut tracker = CacheReminderTracker::default();
         let start = Instant::now();
         tracker.begin_poll(100.0, start);
@@ -658,13 +838,14 @@ mod tests {
         );
         assert!(tracker.latest(101.0).unwrap().low);
         tracker.begin_poll(110.0, start + Duration::from_secs(10));
+        assert!(tracker.latest(110.0).is_none());
         tracker.observe(
             "a",
-            sample(102.0, Some(60_000), Some(20_000), Some(1)),
+            sample(110.0, Some(60_000), Some(20_000), Some(1)),
             110.0,
             start + Duration::from_secs(10),
         );
-        assert!(tracker.latest(110.0).is_none());
+        assert!(tracker.latest(110.0).unwrap().low);
         tracker.observe(
             "b",
             sample(110.0, Some(20_000), Some(20_000), Some(20_000)),
@@ -676,14 +857,46 @@ mod tests {
     }
 
     #[test]
+    fn long_poll_pause_preserves_pending_context_reset_until_first_valid_sample() {
+        let mut tracker = CacheReminderTracker::default();
+        let start = Instant::now();
+        tracker.observe("a", CacheObservation::ContextReset, 100.0, start);
+        tracker.begin_poll(110.0, start + Duration::from_secs(10));
+        tracker.observe(
+            "a",
+            sample_with_request_total(110.0, Some(60_000), Some(20_000), Some(20_000), Some(0)),
+            110.0,
+            start + Duration::from_secs(10),
+        );
+        assert!(!tracker.latest(110.0).unwrap().low);
+    }
+
+    #[test]
     fn parser_reads_token_usage_and_ignores_task_lifecycle_records() {
-        let line: Value = serde_json::from_str(r#"{"timestamp":"1970-01-01T00:01:40Z","type":"event_msg","payload":{"type":"token_count","response_id":"r1","info":{"last_token_usage":{"input_tokens":20000,"cached_input_tokens":0},"total_token_usage":{"total_tokens":20000}}}}"#).unwrap();
+        let line: Value = serde_json::from_str(r#"{"timestamp":"1970-01-01T00:01:40Z","type":"event_msg","payload":{"type":"token_count","response_id":"r1","info":{"last_token_usage":{"input_tokens":20000,"cached_input_tokens":0,"total_tokens":20000},"total_token_usage":{"total_tokens":40000}}}}"#).unwrap();
         let payload = line["payload"].as_object().unwrap();
         let observation =
             parse_observation(&line, payload, "event_msg", "token_count", Some(100.0)).unwrap();
         assert!(
-            matches!(observation, CacheObservation::Sample(sample) if sample.input_tokens == Some(20_000) && sample.cached_input_tokens == Some(0) && sample.request_id.as_deref() == Some("r1"))
+            matches!(observation, CacheObservation::Sample(sample) if sample.input_tokens == Some(20_000) && sample.cached_input_tokens == Some(0) && sample.total_tokens == Some(40_000) && sample.request_total_tokens == Some(20_000) && sample.request_id.as_deref() == Some("r1"))
         );
+
+        for (record_type, payload_type) in [
+            ("compacted", "compacted"),
+            ("event_msg", "context_compacted"),
+            ("event_msg", "thread_rolled_back"),
+        ] {
+            let reset = serde_json::json!({
+                "timestamp": "1970-01-01T00:01:40Z",
+                "type": record_type,
+                "payload": { "type": payload_type }
+            });
+            let payload = reset["payload"].as_object().unwrap();
+            assert!(matches!(
+                parse_observation(&reset, payload, record_type, payload_type, Some(100.0)),
+                Some(CacheObservation::ContextReset)
+            ));
+        }
 
         for payload_type in ["task_started", "task_complete"] {
             let lifecycle = serde_json::json!({

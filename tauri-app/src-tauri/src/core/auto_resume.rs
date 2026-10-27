@@ -12,7 +12,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{mpsc, Arc, RwLock};
+use std::sync::{mpsc, Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -111,7 +111,11 @@ impl AutoResumeStartGenerationGuard {
         }
     }
 
-    fn run_if_current(&self, action: impl FnOnce() -> Result<(), String>) -> Result<bool, String> {
+    fn run_if_current(
+        &self,
+        cancellation_gate: &AutoResumeCancellationGate,
+        action: impl FnOnce() -> Result<(), String>,
+    ) -> Result<bool, String> {
         let generation = self
             .generation
             .read()
@@ -119,9 +123,63 @@ impl AutoResumeStartGenerationGuard {
         if *generation != self.expected_generation {
             return Ok(false);
         }
+        cancellation_gate.run_if_active(action)
+    }
+}
+
+/// Serializes cancellation with app-server side effects that can start model
+/// work or grant a tool request. Once `cancel` returns, every later guarded send
+/// observes the revoked authorization; an already-running write linearizes first.
+#[derive(Default)]
+pub struct AutoResumeCancellationGate {
+    send_gate: Mutex<()>,
+    cancelled: AtomicBool,
+}
+
+impl AutoResumeCancellationGate {
+    pub fn cancel(&self) {
+        let _send_gate = self
+            .send_gate
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    fn run_if_active(&self, action: impl FnOnce() -> Result<(), String>) -> Result<bool, String> {
+        let _send_gate = self
+            .send_gate
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if self.cancelled.load(Ordering::Acquire) {
+            return Ok(false);
+        }
         action()?;
         Ok(true)
     }
+}
+
+fn run_if_authorized(
+    cancellation_gate: &AutoResumeCancellationGate,
+    start_generation_guard: Option<&AutoResumeStartGenerationGuard>,
+    action: impl FnOnce() -> Result<(), String>,
+) -> Result<bool, String> {
+    match start_generation_guard {
+        Some(guard) => guard.run_if_current(cancellation_gate, action),
+        None => cancellation_gate.run_if_active(action),
+    }
+}
+
+fn send_approval_if_authorized(
+    cancellation_gate: &AutoResumeCancellationGate,
+    start_generation_guard: Option<&AutoResumeStartGenerationGuard>,
+    response: Value,
+    send: impl FnOnce(Value) -> Result<(), String>,
+) -> Result<bool, String> {
+    run_if_authorized(cancellation_gate, start_generation_guard, || send(response))
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -591,9 +649,14 @@ pub fn run_turn(
     client_message_id: &str,
     freshness_not_before: Option<i64>,
     start_generation_guard: Option<AutoResumeStartGenerationGuard>,
-    cancelled: Arc<AtomicBool>,
+    cancellation_gate: Arc<AutoResumeCancellationGate>,
 ) -> Result<AutoResumeRunOutcome, String> {
     authorization.validate()?;
+    if cancellation_gate.is_cancelled() {
+        return Ok(AutoResumeRunOutcome::skipped(
+            "本次自动续跑已取消，未启动 Codex 续跑",
+        ));
+    }
     let thread_id = authorization.thread_id();
     let configured_prompt = prompt.trim();
     let visible_prompt = if invisible_resume_enabled {
@@ -607,13 +670,32 @@ pub fn run_turn(
     let mut session = AppServerSession::launch_authorized(authorization)?;
     session.initialize(APP_SERVER_STARTUP_TIMEOUT)?;
     authorization.validate()?;
-    session.send(json!({
-        "jsonrpc": "2.0",
-        "id": 2,
-        "method": "thread/resume",
-        "params": { "threadId": thread_id }
-    }))?;
-    let resumed = session.wait_for_response(2, APP_SERVER_STARTUP_TIMEOUT, Some(&cancelled))?;
+    let resumed_request_sent = run_if_authorized(&cancellation_gate, None, || {
+        session.send(json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "thread/resume",
+            "params": { "threadId": thread_id }
+        }))
+    })?;
+    if !resumed_request_sent {
+        return Ok(AutoResumeRunOutcome::skipped(
+            "本次自动续跑已取消，未读取续跑目标",
+        ));
+    }
+    let resumed = match session.wait_for_response(
+        2,
+        APP_SERVER_STARTUP_TIMEOUT,
+        Some(&cancellation_gate),
+    ) {
+        Ok(resumed) => resumed,
+        Err(_) if cancellation_gate.is_cancelled() => {
+            return Ok(AutoResumeRunOutcome::skipped(
+                "本次自动续跑已取消，未读取续跑目标",
+            ));
+        }
+        Err(error) => return Err(error),
+    };
     let result = response_result(&resumed)?;
     let thread = result
         .get("thread")
@@ -640,15 +722,18 @@ pub fn run_turn(
         client_message_id,
         turn_start_input(visible_prompt, prefers_invisible_continuation),
     );
-    let started = if let Some(guard) = start_generation_guard.as_ref() {
-        guard.run_if_current(|| session.send(start_request))?
-    } else {
-        session.send(start_request)?;
-        true
-    };
+    let started = run_if_authorized(
+        &cancellation_gate,
+        start_generation_guard.as_ref(),
+        || session.send(start_request),
+    )?;
     if !started {
         return Ok(AutoResumeRunOutcome::skipped(
-            "自动续跑设置已更改，旧触发已在发送前作废",
+            if cancellation_gate.is_cancelled() {
+                "本次自动续跑已取消，未发送新一轮"
+            } else {
+                "自动续跑设置已更改，旧触发已在发送前作废"
+            },
         ));
     }
 
@@ -682,7 +767,7 @@ pub fn run_turn(
             timed_out = true;
             stop_requested_at = Some(now);
         }
-        let cancellation_requested = cancelled.load(Ordering::Acquire);
+        let cancellation_requested = cancellation_gate.is_cancelled();
         let human_stop_requested = needs_attention.is_some();
         if cancellation_requested || timed_out || human_stop_requested {
             let requested_at = stop_requested_at.get_or_insert(now);
@@ -736,15 +821,18 @@ pub fn run_turn(
                         client_message_id,
                         turn_start_input(visible_prompt, false),
                     );
-                    let fallback_started = if let Some(guard) = start_generation_guard.as_ref() {
-                        guard.run_if_current(|| session.send(fallback_request))?
-                    } else {
-                        session.send(fallback_request)?;
-                        true
-                    };
+                    let fallback_started = run_if_authorized(
+                        &cancellation_gate,
+                        start_generation_guard.as_ref(),
+                        || session.send(fallback_request),
+                    )?;
                     if !fallback_started {
                         return Ok(AutoResumeRunOutcome::skipped(
-                            "自动续跑设置已更改，旧触发已在兼容重试前作废",
+                            if cancellation_gate.is_cancelled() {
+                                "本次自动续跑已取消，未发送兼容重试"
+                            } else {
+                                "自动续跑设置已更改，旧触发已在兼容重试前作废"
+                            },
                         ));
                     }
                     visible_fallback_started = true;
@@ -796,12 +884,12 @@ pub fn run_turn(
                         response,
                         requested_turn_id,
                     } => {
-                        let approved = if let Some(guard) = start_generation_guard.as_ref() {
-                            guard.run_if_current(|| session.send(response))?
-                        } else {
-                            session.send(response)?;
-                            true
-                        };
+                        let approved = send_approval_if_authorized(
+                            &cancellation_gate,
+                            start_generation_guard.as_ref(),
+                            response,
+                            |response| session.send(response),
+                        )?;
                         if approved {
                             auto_approval_count = auto_approval_count.saturating_add(1);
                             if turn_id.is_none() {
@@ -821,7 +909,11 @@ pub fn run_turn(
                             continue;
                         }
                         session.reject_server_request(&message)?;
-                        "自动续跑设置已变化，批准请求已拒绝".to_string()
+                        if cancellation_gate.is_cancelled() {
+                            "本次自动续跑已取消，批准请求已拒绝".to_string()
+                        } else {
+                            "自动续跑设置已变化，批准请求已拒绝".to_string()
+                        }
                     }
                     AutoApprovalEvaluation::Reject { response, reason } => {
                         session.send(response)?;
@@ -1608,11 +1700,11 @@ impl AppServerSession {
         &mut self,
         id: i64,
         timeout: Duration,
-        cancelled: Option<&AtomicBool>,
+        cancellation_gate: Option<&AutoResumeCancellationGate>,
     ) -> Result<Value, String> {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
-            if cancelled.is_some_and(|value| value.load(Ordering::Acquire)) {
+            if cancellation_gate.is_some_and(|value| value.is_cancelled()) {
                 return Err("操作已取消".into());
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -2693,11 +2785,12 @@ mod tests {
     fn automatic_start_guard_serializes_generation_change_with_start_write() {
         let generation = Arc::new(RwLock::new(7));
         let guard = AutoResumeStartGenerationGuard::new(generation.clone(), 7);
+        let cancellation_gate = AutoResumeCancellationGate::default();
         let (entered_sender, entered_receiver) = mpsc::channel();
         let (release_sender, release_receiver) = mpsc::channel();
         let starter = thread::spawn(move || {
             guard
-                .run_if_current(|| {
+                .run_if_current(&cancellation_gate, || {
                     entered_sender.send(()).unwrap();
                     release_receiver.recv().unwrap();
                     Ok(())
@@ -2731,12 +2824,148 @@ mod tests {
         let stale_guard = AutoResumeStartGenerationGuard::new(generation, 7);
         let mut sent = false;
         assert!(!stale_guard
-            .run_if_current(|| {
+            .run_if_current(&AutoResumeCancellationGate::default(), || {
                 sent = true;
                 Ok(())
             })
             .unwrap());
         assert!(!sent);
+    }
+
+    #[test]
+    fn cancellation_linearizes_with_start_and_approval_sends() {
+        let cancellation_gate = Arc::new(AutoResumeCancellationGate::default());
+        let action_gate = cancellation_gate.clone();
+        let (entered_sender, entered_receiver) = mpsc::channel();
+        let (release_sender, release_receiver) = mpsc::channel();
+        let starter = thread::spawn(move || {
+            run_if_authorized(&action_gate, None, || {
+                entered_sender.send(()).unwrap();
+                release_receiver.recv().unwrap();
+                Ok(())
+            })
+            .unwrap()
+        });
+        entered_receiver.recv().unwrap();
+
+        let cancel_gate = cancellation_gate.clone();
+        let (cancel_attempt_sender, cancel_attempt_receiver) = mpsc::channel();
+        let (cancel_done_sender, cancel_done_receiver) = mpsc::channel();
+        let canceller = thread::spawn(move || {
+            cancel_attempt_sender.send(()).unwrap();
+            cancel_gate.cancel();
+            cancel_done_sender.send(()).unwrap();
+        });
+        cancel_attempt_receiver.recv().unwrap();
+        assert!(cancel_done_receiver
+            .recv_timeout(Duration::from_millis(50))
+            .is_err());
+
+        release_sender.send(()).unwrap();
+        assert!(starter.join().unwrap());
+        cancel_done_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        canceller.join().unwrap();
+
+        let mut start_sent = false;
+        assert!(!run_if_authorized(&cancellation_gate, None, || {
+            start_sent = true;
+            Ok(())
+        })
+        .unwrap());
+        assert!(!start_sent);
+
+        let mut approval_sent = false;
+        assert!(!send_approval_if_authorized(
+            &cancellation_gate,
+            None,
+            json!({"id": 1, "result": {"decision": "accept"}}),
+            |_| {
+                approval_sent = true;
+                Ok(())
+            },
+        )
+        .unwrap());
+        assert!(!approval_sent);
+    }
+
+    #[test]
+    fn approval_arriving_after_cancel_while_fake_server_recv_is_waiting_is_declined() {
+        #[derive(Default)]
+        struct FakeAppServer {
+            writes: Vec<Value>,
+        }
+
+        impl FakeAppServer {
+            fn send(&mut self, value: Value) -> Result<(), String> {
+                self.writes.push(value);
+                Ok(())
+            }
+        }
+
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": 41,
+            "method": "item/commandExecution/requestApproval",
+            "params": {
+                "threadId": "thread-a",
+                "turnId": "turn-a",
+                "itemId": "item-safe",
+                "command": "cargo test --lib",
+                "availableDecisions": ["accept", "decline"]
+            }
+        });
+        let cancellation_gate = Arc::new(AutoResumeCancellationGate::default());
+        let worker_gate = cancellation_gate.clone();
+        let (request_sender, request_receiver) = mpsc::channel();
+        let (recv_waiting_sender, recv_waiting_receiver) = mpsc::channel();
+        let fake_server = thread::spawn(move || {
+            let mut server = FakeAppServer::default();
+            recv_waiting_sender.send(()).unwrap();
+            let request = request_receiver
+                .recv()
+                .expect("fake app-server should deliver the pending request");
+            let AutoApprovalEvaluation::Approve { response, .. } =
+                auto_approval_evaluation(&request, true, "thread-a", Some("turn-a"), true)
+            else {
+                panic!("the fake request should otherwise be eligible for approval");
+            };
+            let approved = send_approval_if_authorized(
+                &worker_gate,
+                None,
+                response,
+                |response| server.send(response),
+            )
+            .expect("approval authorization should be checked");
+            if !approved {
+                server
+                    .send(server_request_rejection(
+                        request.get("id").cloned().unwrap_or(Value::Null),
+                        request
+                            .get("method")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default(),
+                    ))
+                    .expect("cancelled approval should be declined");
+            }
+            server.writes
+        });
+
+        recv_waiting_receiver
+            .recv()
+            .expect("fake app-server should enter its receive wait");
+        cancellation_gate.cancel();
+        request_sender
+            .send(request)
+            .expect("fake app-server should accept the pending request");
+        let writes = fake_server.join().unwrap();
+
+        assert_eq!(writes.len(), 1);
+        assert_eq!(
+            writes[0].pointer("/result/decision").and_then(Value::as_str),
+            Some("decline")
+        );
     }
 
     #[test]
@@ -4047,7 +4276,7 @@ mod tests {
             &trigger_key,
             Some(unix_now().saturating_sub(24 * 60 * 60)),
             None,
-            Arc::new(AtomicBool::new(false)),
+            Arc::new(AutoResumeCancellationGate::default()),
         )
         .expect("live app-server freshness check should complete");
         claim.complete(&outcome).unwrap();
@@ -4082,7 +4311,7 @@ mod tests {
             &trigger_key,
             None,
             None,
-            Arc::new(AtomicBool::new(false)),
+            Arc::new(AutoResumeCancellationGate::default()),
         )
         .expect("live app-server resume should complete");
         claim.complete(&outcome).unwrap();

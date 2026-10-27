@@ -23,6 +23,8 @@ pub struct LiveRateSnapshot {
     pub selected_thread_title: String,
     pub selected_tokens_per_second: f64,
     pub tokens_per_second: f64,
+    #[serde(default)]
+    pub model_rates: Vec<ModelRate>,
     pub total_tokens: u64,
     pub total_tokens_today: u64,
     pub requests_today: u32,
@@ -35,6 +37,8 @@ pub struct LiveRateSnapshot {
     #[serde(default)]
     pub model_speeds: Vec<ModelSpeedSummary>,
     #[serde(default)]
+    pub model_speeds_5m: Vec<ModelSpeedSummary>,
+    #[serde(default)]
     pub model_speeds_15m: Vec<ModelSpeedSummary>,
     #[serde(default)]
     pub model_speeds_30m: Vec<ModelSpeedSummary>,
@@ -45,6 +49,13 @@ pub struct LiveRateSnapshot {
     pub cache_advice: Option<CacheAdvice>,
     pub unread_summary: UnreadSummary,
     pub warnings: Vec<LocalDataWarning>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelRate {
+    pub model: String,
+    pub tokens_per_second: f64,
 }
 
 /// A completed sample based only on timestamped response stream deltas.
@@ -177,6 +188,8 @@ pub struct LiveThreadOption {
 #[serde(rename_all = "camelCase")]
 pub struct FloatingPanelSnapshot {
     pub tokens_per_second: f64,
+    #[serde(default)]
+    pub model_rates: Vec<ModelRate>,
     pub max_tokens_per_second: f64,
     pub cache_advice: Option<CacheAdvice>,
     pub trend_label: String,

@@ -1242,7 +1242,11 @@ fn exact_index_open_preserves_orphaned_rows_and_requires_explicit_repair() {
         Err(error) => error,
     };
     assert!(error.contains("repair required"), "{error}");
-    assert_eq!(fs::read(&index_path).unwrap(), database_bytes_before);
+    assert_eq!(
+        fs::read(&index_path).unwrap(),
+        database_bytes_before,
+        "orphan preflight must reject before any persistent write or DDL"
+    );
     let connection = Connection::open(&index_path).unwrap();
     assert_eq!(
         connection
@@ -8924,13 +8928,13 @@ fn exposes_cache_usage_sessions_and_turns_with_message_excerpts() {
     assert_eq!(snapshot.cache_usage.sessions[0].breakdown.calls, 2);
     assert_eq!(
         snapshot.cache_usage.sessions[0].breakdown.input_tokens,
-        1_600
+        2_800
     );
     assert_eq!(
         snapshot.cache_usage.sessions[0]
             .breakdown
             .cached_input_tokens,
-        650
+        750
     );
     assert_eq!(snapshot.cache_usage.turns.len(), 2);
     let second_turn = snapshot
@@ -8951,9 +8955,180 @@ fn exposes_cache_usage_sessions_and_turns_with_message_excerpts() {
         .unwrap();
     assert_eq!(first_turn.user_prompt, "第一轮问题");
     assert_eq!(first_turn.assistant_response, "第一轮回答");
-    assert_eq!(first_turn.breakdown.input_tokens, 300);
-    assert_eq!(first_turn.breakdown.cached_input_tokens, 50);
+    assert_eq!(first_turn.breakdown.input_tokens, 1_500);
+    assert_eq!(first_turn.breakdown.cached_input_tokens, 150);
+    assert_eq!(first_turn.request_count, 2);
+    assert_eq!(first_turn.low_hit_count, 0);
+    assert_eq!(first_turn.zero_hit_count, 0);
     assert_eq!(first_turn.breakdown.calls, 1);
+
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let requests = read_cache_turn_requests(&root, &first_turn.id, 0, 101).unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].breakdown.input_tokens, 1_200);
+    assert_eq!(requests[0].breakdown.cached_input_tokens, 100);
+    assert_eq!(requests[1].breakdown.input_tokens, 300);
+    assert_eq!(requests[1].breakdown.cached_input_tokens, 50);
+    assert!(requests[0].timestamp <= requests[1].timestamp);
+    assert!(ExactUsageIndex::scan_bytes_for_testing() == (0, 0));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cache_turns_sum_request_inputs_and_count_zero_and_low_hit_requests() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let session_id = "019ecache-counts-0000-0000-000000000004";
+    write_lines(
+        &session_dir.join(format!("rollout-{session_id}.jsonl")),
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"user_message","message":"统计请求明细"}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:05Z","type":"event_msg","payload":{"type":"agent_message","message":"已完成"}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:10Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20000,"cached_input_tokens":0,"output_tokens":10,"reasoning_output_tokens":5,"total_tokens":20010}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:20Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":30000,"cached_input_tokens":15000,"output_tokens":20,"total_tokens":30020}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:00:30Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20000,"cached_input_tokens":6000,"output_tokens":30,"total_tokens":20030}}}}"#,
+        ],
+    );
+
+    let snapshot = dashboard_snapshot(&root).unwrap();
+    let turn = snapshot
+        .cache_usage
+        .turns
+        .iter()
+        .find(|turn| turn.session_id == session_id)
+        .unwrap();
+    assert_eq!(turn.request_count, 3);
+    assert_eq!(turn.low_hit_count, 1, "zero-hit requests are included below 30% and the exact 30% boundary is excluded");
+    assert_eq!(turn.zero_hit_count, 1);
+    assert_eq!(turn.breakdown.calls, 1, "calls remains the logical-turn count");
+    assert_eq!(turn.breakdown.input_tokens, 70_000);
+    assert_eq!(turn.breakdown.cached_input_tokens, 21_000);
+    assert_eq!(turn.breakdown.output_tokens, 60);
+    assert_eq!(turn.breakdown.total_tokens, 70_060);
+
+    let requests = read_cache_turn_requests(&root, &turn.id, 0, 101).unwrap();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[0].model, None);
+    assert_eq!(requests[0].breakdown.total_tokens, 20_010);
+    assert_eq!(requests[0].breakdown.output_tokens, 10);
+    assert_eq!(requests[0].breakdown.calls, 1);
+    assert_eq!(requests[2].breakdown.cached_input_tokens, 6_000);
+    assert!(requests.windows(2).all(|pair| pair[0].timestamp <= pair[1].timestamp));
+    let first_page = read_cache_turn_requests(&root, &turn.id, 0, 2).unwrap();
+    let second_page = read_cache_turn_requests(&root, &turn.id, 2, 101).unwrap();
+    assert_eq!(first_page.len(), 2);
+    assert_eq!(second_page.len(), 1);
+    let database = super::exact_usage_index::database_path(&root).unwrap();
+    let connection = Connection::open(database).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT request_count, low_hit_count, zero_hit_count FROM dashboard_turn_candidates WHERE session_id = ?1",
+                [session_id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?)),
+            )
+            .unwrap(),
+        (3, 1, 1),
+        "request counts must be stored in the derived turn row"
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'dashboard_aggregate_schema_version'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "7"
+    );
+    drop(connection);
+
+    let archived_dir = root.join("archived_sessions");
+    fs::create_dir_all(&archived_dir).unwrap();
+    fs::rename(
+        session_dir.join(format!("rollout-{session_id}.jsonl")),
+        archived_dir.join(format!("rollout-{session_id}.jsonl")),
+    )
+    .unwrap();
+    let archived = dashboard_snapshot(&root).unwrap();
+    let archived_turn = archived
+        .cache_usage
+        .turns
+        .iter()
+        .find(|turn| turn.session_id == session_id)
+        .expect("archived source should retain its turn candidate");
+    assert_eq!(archived_turn.request_count, 3);
+    assert_eq!(archived_turn.low_hit_count, 1);
+    assert_eq!(archived_turn.zero_hit_count, 1);
+    assert_eq!(
+        read_cache_turn_requests(&root, &archived_turn.id, 0, 101)
+            .unwrap()
+            .len(),
+        3,
+        "request detail remains queryable after active-to-archive relocation"
+    );
+
+    fs::remove_file(archived_dir.join(format!("rollout-{session_id}.jsonl"))).unwrap();
+    let missing = dashboard_snapshot(&root).unwrap();
+    assert_eq!(missing.stats.total_tokens, 70_060, "missing source must not drop usage history");
+    let missing_turn = missing
+        .cache_usage
+        .turns
+        .iter()
+        .find(|turn| turn.session_id == session_id)
+        .expect("the retained indexed turn should remain visible without its source file");
+    assert_eq!(missing_turn.request_count, 3);
+    assert_eq!(missing_turn.low_hit_count, 1);
+    assert_eq!(missing_turn.zero_hit_count, 1);
+    assert_eq!(
+        read_cache_turn_requests(&root, &missing_turn.id, 0, 101)
+            .unwrap()
+            .len(),
+        3,
+        "indexed request details must remain available after the source disappears"
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cache_turn_candidates_do_not_merge_requests_with_null_prompt_boundaries() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let session_id = "019enullprompt-0000-0000-0000-000000000005";
+    write_lines(
+        &session_dir.join(format!("rollout-{session_id}.jsonl")),
+        &[
+            r#"{"timestamp":"2026-06-18T01:00:10Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20000,"cached_input_tokens":0,"output_tokens":10,"total_tokens":20010}}}}"#,
+            r#"{"timestamp":"2026-06-18T01:05:10Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":30000,"cached_input_tokens":15000,"output_tokens":20,"total_tokens":30020}}}}"#,
+        ],
+    );
+
+    let snapshot = dashboard_snapshot(&root).unwrap();
+    assert!(snapshot
+        .cache_usage
+        .turns
+        .iter()
+        .all(|turn| turn.session_id != session_id));
+    assert_eq!(snapshot.stats.total_tokens, 50_030);
+
+    let index_path = super::exact_usage_index::database_path(&root).unwrap();
+    let db = Connection::open(index_path).unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM dashboard_turn_candidates WHERE session_id = ?1",
+            [session_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap(),
+        0,
+        "requests without a prompt start must not be grouped as one session-wide turn"
+    );
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -9123,7 +9298,7 @@ fn cache_usage_latest_accepts_sub_1000_and_aggregate_upgrade_rebuilds_only_deriv
         .unwrap();
     connection
         .execute(
-            "UPDATE metadata SET value = '5' WHERE key = 'dashboard_aggregate_schema_version'",
+            "UPDATE metadata SET value = '6' WHERE key = 'dashboard_aggregate_schema_version'",
             [],
         )
         .unwrap();
@@ -9152,6 +9327,17 @@ fn cache_usage_latest_accepts_sub_1000_and_aggregate_upgrade_rebuilds_only_deriv
     let connection = Connection::open(database).unwrap();
     assert_eq!(
         connection
+            .query_row(
+                "SELECT SUM(request_count) FROM dashboard_turn_candidates WHERE session_id = ?1",
+                [session_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        2,
+        "schema 7 upgrade must rebuild the persisted request counts"
+    );
+    assert_eq!(
+        connection
             .query_row("SELECT COUNT(*) FROM events", [], |row| row
                 .get::<_, i64>(0))
             .unwrap(),
@@ -9175,7 +9361,7 @@ fn cache_usage_latest_accepts_sub_1000_and_aggregate_upgrade_rebuilds_only_deriv
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "6"
+        "7"
     );
 
     drop(connection);
@@ -10215,6 +10401,9 @@ fn v18_sensitive_snapshot_is_sanitized_again_before_startup_use() {
             turn_index_in_session: 1,
             user_prompt: "secret-prompt".into(),
             assistant_response: "secret-answer".into(),
+            request_count: 0,
+            low_hit_count: 0,
+            zero_hit_count: 0,
             breakdown: Default::default(),
         });
     snapshot.warnings.push(LocalDataWarning {
@@ -10417,6 +10606,9 @@ fn legacy_dashboard_envelope_reads_v18_and_rejects_v16_v17() {
             turn_index_in_session: 1,
             user_prompt: "legacy-secret-prompt".into(),
             assistant_response: "legacy-secret-answer".into(),
+            request_count: 0,
+            low_hit_count: 0,
+            zero_hit_count: 0,
             breakdown: Default::default(),
         });
     snapshot.warnings.push(LocalDataWarning {

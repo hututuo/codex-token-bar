@@ -320,7 +320,7 @@ export function StatusPanelApp() {
             <div className="status-panel-meter" aria-hidden="true">
               <i
                 className="rate-fill"
-                style={rateFillStyle(measuredRate, settings.tokenRateFullScale)}
+                style={rateFillStyle(measuredRate, settings.tokenRateFullScale, displaySnapshot.modelRates)}
               />
             </div>
           </article>

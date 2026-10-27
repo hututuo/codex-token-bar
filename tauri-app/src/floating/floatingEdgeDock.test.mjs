@@ -129,6 +129,49 @@ test("native drag waits for mouse release even after startDragging resolves", as
   assert.equal(f.dock.state().anchor.edge, "left");
 });
 
+test("dragging a collapsed left dock into the screen detaches and persists the release position", async () => {
+  const f = fixture(); f.dock.initialize(); await f.advance(1200);
+  assert.equal(f.dock.state().compact, true);
+  f.pointer({ x: 5, y: 200, leftButtonDown: true });
+  await f.dock.startDrag();
+  const released = { x: 400, y: 300, width: 300, height: 120 };
+  f.geometry(geometry(released));
+  f.dock.moved(); f.dock.hover(false); await f.advance(600);
+  assert.equal(f.dock.state().anchor, null);
+  assert.equal(f.frames.at(-1).width, 300);
+  f.pointer({ x: 450, y: 350, leftButtonDown: false }); await f.advance(60);
+  assert.equal(f.dock.state().anchor, null);
+  assert.deepEqual(f.saved.at(-1), released);
+  const writes = f.frames.length; await f.advance(2000);
+  assert.equal(f.frames.length, writes);
+  assert.equal(f.timers.size, 0);
+});
+
+test("cross-screen drag uses the destination work area and DPI without snapping during the gesture", async () => {
+  for (const destination of [
+    geometry({ x: -1790, y: 200, width: 600, height: 240 }, 2,
+      { x: -1800, y: 0, width: 1800, height: 1400 }),
+    geometry({ x: 2540, y: 180, width: 450, height: 180 }, 1.5,
+      { x: 1200, y: 0, width: 1800, height: 1200 }),
+  ]) {
+    const f = fixture(); f.dock.initialize(); await f.advance(1200);
+    f.pointer({ x: 5, y: 200, leftButtonDown: true }); await f.dock.startDrag();
+    const writes = f.frames.length;
+    f.geometry(destination); f.dock.moved(); await f.advance(300);
+    assert.equal(f.frames.length, writes);
+    assert.equal(f.dock.state().anchor, null);
+    f.pointer({ x: destination.frame.x + 20, y: 220, leftButtonDown: false }); await f.advance(60);
+    const anchor = f.dock.state().anchor;
+    assert.equal(anchor.edge, destination.frame.x < 0 ? "left" : "right");
+    assert.equal(anchor.scaleFactor, destination.scaleFactor);
+    assert.equal(anchor.lip.width, 12 * destination.scaleFactor);
+    assert.equal(anchor.frame.x, anchor.edge === "left" ? destination.workArea.x
+      : destination.workArea.x + destination.workArea.width - destination.frame.width);
+    assert.deepEqual(f.errors, []);
+    f.dock.dispose();
+  }
+});
+
 test("failed drag preparation restores docking without waiting for a nonexistent mouse-up", async () => {
   let nativeDrags = 0;
   const f = fixture({ startDrag: async () => { nativeDrags++; return true; } });
@@ -427,4 +470,22 @@ test("real-window rehearsal reuses docking, isolates the real pointer, and never
   f.dock.endGuide();
   assert.equal(f.dock.isGuiding(), false);
   assert.deepEqual(f.errors, []);
+});
+
+
+test("native drag completion restores a release check replaced by a temporary hold", async () => {
+  let finish;
+  const native = new Promise(resolve => { finish = resolve; });
+  const f = fixture({ startDrag: () => native });
+  f.pointer({ x: 100, y: 200, leftButtonDown: true });
+  const gesture = f.dock.startDrag(); await drain();
+  await f.dock.holdOpen(true); await f.dock.holdOpen(false);
+  f.geometry(geometry({ x: 890, y: 150, width: 300, height: 120 }));
+  f.pointer({ x: 500, y: 500, leftButtonDown: false });
+  finish(true); await gesture; await f.advance(0);
+  assert.equal(f.dock.state().anchor.edge, "right");
+  await f.advance(700);
+  assert.equal(f.dock.state().compact, true);
+  const reads = f.reads(); await f.advance(60_000);
+  assert.equal(f.reads(), reads); assert.equal(f.timers.size, 0);
 });

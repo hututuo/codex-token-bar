@@ -50,12 +50,40 @@ final class QuotaCycleHistoryFreshnessTests: XCTestCase {
         try await waitUntil { store.snapshot.latest == self.d(0) }
         XCTAssertTrue(store.snapshot.isStale)
     }
+    func testMismatchedProjectionTriggersExactlyOneLocalReplay() async throws {
+        var old = history(60)
+        old.projectionVersion = 2
+        let client = CycleHistoryProbe(old)
+        let store = QuotaHistoryStore(historyClient: client)
+        defer { store.clearIdentity() }
+        store.record(quota(60))
+        try await waitUntil { client.readCount == 2 }
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertEqual(client.readCount, 2)
+        XCTAssertTrue(store.snapshot.isStale)
+    }
+
+    func testConsistencyChecksAccountAndObservedDropButIgnoresScheduleMovement() {
+        let current = quota(60)
+        XCTAssertFalse(QuotaCycleProjectionConsistency.needsRebuild(history(60), quota: current))
+        XCTAssertTrue(QuotaCycleProjectionConsistency.needsRebuild(history(60), quota: current, expectedStart: d(60)))
+        var corrected = history(60)
+        corrected.cycleDiagnostics = [.init(kind: .withdrawn, at: d(70),
+            before: .init(at: d(0), usedPercent: 50, resetsAt: d(10000)),
+            after: .init(at: d(60), usedPercent: 0, resetsAt: d(20000)))]
+        XCTAssertFalse(QuotaCycleProjectionConsistency.needsRebuild(corrected, quota: current, expectedStart: d(60)))
+        corrected.cycleIdentity = QuotaHistoryIdentity(homeIdentity: "/fixture", stableAccountKey: "b", planType: "Plus", limitID: "codex")
+        XCTAssertTrue(QuotaCycleProjectionConsistency.needsRebuild(corrected, quota: current))
+    }
+
 }
 
 private final class CycleHistoryProbe: QuotaHistoryLoading, @unchecked Sendable {
     private let lock = NSLock()
     private var history: QuotaHistorySnapshot
     private var fails = false
+    private var reads = 0
+    var readCount: Int { lock.withLock { reads } }
     init(_ history: QuotaHistorySnapshot) { self.history = history }
     func configure(history: QuotaHistorySnapshot, fails: Bool) {
         lock.withLock { self.history = history; self.fails = fails }
@@ -63,6 +91,7 @@ private final class CycleHistoryProbe: QuotaHistoryLoading, @unchecked Sendable 
     private enum Failure: Error { case syntheticHistoryRead }
     func loadSnapshot(for quota: AccountQuotaSnapshot) async throws -> QuotaHistorySnapshot {
         try lock.withLock {
+            reads += 1
             if fails { throw Failure.syntheticHistoryRead }
             return history
         }

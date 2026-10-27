@@ -22,14 +22,15 @@ export interface ModelUsageSlice {
 }
 
 const FIXED_COLORS: Record<string, string> = {
-  "gpt-6-astra": "#d4512c",
-  "gpt-6.1-sol": "#268ceb",
+  "gpt-6-astra": "#36ad77",
+  "gpt-6.1-sol": "#d4512c",
   "gpt-6-sol": "#2e6bfa",
-  "gpt-6-luna": "#00a3ad",
-  "gpt-5.6-sol": "#2e6bfa",
+  "gpt-6-luna": "#4299f5",
+  "gpt-5.6-sol": "#6774e8",
   "gpt-5.6-terra": "#9252e6",
-  "gpt-5.6-luna": "#00a3ad",
+  "gpt-5.6-luna": "#399b75",
   "gpt-5.6-generic": "#7a879e",
+  "gpt-5.5": "#a87629",
   "gpt-5.4": "#f28f14",
   "gpt-5.4-mini": "#2eb35c",
   "gpt-5.3-codex": "#db4575",
@@ -38,7 +39,6 @@ const FIXED_COLORS: Record<string, string> = {
   unknown: "#7a879e",
 };
 
-const FALLBACK_COLORS = ["#e85573", "#2694df", "#c76ed6", "#21ad8c", "#e67a29"];
 
 export function modelUsageSlices(rows: ModelUsageRowLike[] | null | undefined): ModelUsageSlice[] {
   const grouped = new Map<string, { model: string | null; tokens: number; calls: number }>();
@@ -150,11 +150,11 @@ export function modelUsageColor(keyOrModel: string | null | undefined): string {
   const fixed = FIXED_COLORS[key];
   if (fixed) return fixed;
   let hash = 0x811c9dc5;
-  for (const char of key) {
-    hash ^= char.codePointAt(0) ?? 0;
+  for (const byte of new TextEncoder().encode(key)) {
+    hash ^= byte;
     hash = Math.imul(hash, 0x01000193) >>> 0;
   }
-  return FALLBACK_COLORS[hash % FALLBACK_COLORS.length];
+  return "#" + [16, 8, 0].map(shift => (80 + ((hash >>> shift) & 127)).toString(16).padStart(2, "0")).join("");
 }
 
 function finiteNonnegative(value: unknown): number {

@@ -18,7 +18,33 @@ struct QuotaSidebarSettings: Equatable {
     }
 }
 
-enum QuotaSidebarDetail: Equatable { case overview, tasks, radar, credits, speeds }
+enum QuotaSidebarDetail: String, CaseIterable {
+    case overview, tasks, radar, credits, speeds, modeltrace, clientUsage, settings
+
+    static let defaultModuleOrder: [Self] = [.modeltrace, .speeds, .overview, .tasks, .radar, .credits, .clientUsage]
+    static let defaultHiddenModules: Set<Self> = [.clientUsage]
+    static func normalizedModuleOrder(_ values: [String]) -> [Self] {
+        var result: [Self] = []
+        for value in values {
+            if let module = Self(rawValue: value), defaultModuleOrder.contains(module), !result.contains(module) {
+                result.append(module)
+            }
+        }
+        return result + defaultModuleOrder.filter { !result.contains($0) }
+    }
+    var moduleTitle: String {
+        switch self {
+        case .modeltrace: "模型检测"
+        case .speeds: "速率与正文 TPS"
+        case .overview: "额度与模型占比"
+        case .tasks: "运行任务"
+        case .radar: "雷达"
+        case .credits: "重置卡"
+        case .clientUsage: "客户端用量"
+        case .settings: "侧栏设置"
+        }
+    }
+}
 
 struct QuotaSidebarInteraction: Equatable {
     private(set) var expanded = false
@@ -56,11 +82,13 @@ enum QuotaSidebarLayout {
 struct QuotaSidebarFrames: Equatable {
     let rail: CGRect
     let detail: CGRect
+    var compactPreview: CGRect? = nil
 
     // Cocoa points already account for display scaling; round to physical pixels.
     static func make(usableFrame: CGRect, edge: QuotaSidebarEdge,
                      expanded: Bool, scale: CGFloat = 1, hasFiveHour: Bool = true,
-                     normalizedY: Double = 0.5) -> Self {
+                     normalizedY: Double = 0.5, expandedHeight: CGFloat? = nil, compactHeight: CGFloat? = nil,
+                     settingsPreview: Bool = false) -> Self {
         let safeScale = scale.isFinite && scale > 0 ? scale : 1
         let source = usableFrame.standardized
         // Stay inside the usable display even when its origin is fractional.
@@ -71,9 +99,12 @@ struct QuotaSidebarFrames: Equatable {
                           height: max(0, floor(source.maxY * safeScale) / safeScale - bottom))
         let railWidth = min(expanded ? 88.0 : 16.0, area.width)
         let contentHeight = expanded ? (hasFiveHour ? QuotaSidebarLayout.expandedCanvasHeight : QuotaSidebarLayout.weeklyExpandedHeight) : (hasFiveHour ? 250.0 : 192.0)
-        let railHeight = min(contentHeight, area.height)
+        let measuredHeight = expandedHeight.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+        let compact = compactHeight.flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? contentHeight
+        let railHeight = min(expanded ? (measuredHeight ?? contentHeight) : compact, area.height)
         let gap = min(12.0, max(0, area.width - railWidth))
-        let detailWidth = min(420.0, max(0, area.width - railWidth - gap))
+        let previewInset = expanded && settingsPreview ? min(24.0, max(0, area.width - railWidth - gap)) : 0
+        let detailWidth = min(420.0, max(0, area.width - railWidth - gap - previewInset))
         let detailHeight = min(600.0, area.height)
         func snap(_ n: CGFloat) -> CGFloat { (n * safeScale).rounded() / safeScale }
         let fraction = normalizedY.isFinite ? min(1, max(0, normalizedY)) : 0.5
@@ -84,14 +115,19 @@ struct QuotaSidebarFrames: Equatable {
                    width: max(0, floor(width * safeScale) / safeScale),
                    height: max(0, floor(height * safeScale) / safeScale))
         }
-        let railX = edge == .left ? area.minX : area.maxX - railWidth
+        let railX = edge == .left ? area.minX + previewInset : area.maxX - railWidth - previewInset
         let detailX = edge == .left ? railX + railWidth + gap : railX - gap - detailWidth
         return Self(rail: rect(x: railX, width: railWidth, height: railHeight),
-                    detail: rect(x: detailX, width: detailWidth, height: detailHeight))
+                    detail: rect(x: detailX, width: detailWidth, height: detailHeight),
+                    compactPreview: previewInset >= 16 ? rect(x: edge == .left ? area.minX : area.maxX - 16, width: 16, height: min(compactHeight ?? 192, area.height)) : nil)
     }
 
     func contains(_ point: CGPoint, detailVisible: Bool) -> Bool {
         if rail.contains(point) { return true }
+        if detailVisible, let compactPreview {
+            if compactPreview.contains(point) { return true }
+            if compactPreview.union(rail).contains(point), point.y >= max(compactPreview.minY, rail.minY), point.y <= min(compactPreview.maxY, rail.maxY) { return true }
+        }
         guard detailVisible else { return false }
         if detail.contains(point) { return true }
         // Only bridge the physical gap alongside both surfaces; no giant
@@ -212,18 +248,28 @@ enum QuotaSidebarMotion {
     }
 
     static func progress(_ time: Double, expanding: Bool) -> Double {
-        guard time > 0 else { return 0 }
-        guard time < 1 else { return 1 }
-        return expanding
-            ? (1 - (1 + 8 * time) * exp(-8 * time)) / (1 - 9 * exp(-8))
-            : 1 - pow(1 - time, 3)
+        MatchedStrokeMorphTiming.progress(time, expanding: expanding)
+    }
+
+    /// Width, height and matched strokes share the same closing duration.
+    static func collapseFrame(from: CGRect, to: CGRect, time: Double,
+                              edge: QuotaSidebarEdge, area: CGRect, scale: CGFloat) -> CGRect {
+        frame(from: from, to: to, time: time, expanding: false, edge: edge, area: area, scale: scale)
     }
 
     static func frame(from: CGRect, to: CGRect, time: Double, expanding: Bool,
                       edge: QuotaSidebarEdge, area: CGRect, scale: CGFloat) -> CGRect {
         if time >= 1 { return to }
         if time <= 0 { return from }
-        let p = CGFloat(progress(time, expanding: expanding))
+        return interpolatedFrame(from: from, to: to, progress: progress(time, expanding: expanding),
+                                 edge: edge, area: area, scale: scale)
+    }
+
+    private static func interpolatedFrame(from: CGRect, to: CGRect, progress: Double,
+                                          edge: QuotaSidebarEdge, area: CGRect, scale: CGFloat) -> CGRect {
+        if progress >= 1 { return to }
+        if progress <= 0 { return from }
+        let p = CGFloat(progress)
         let safeScale = scale.isFinite && scale > 0 ? scale : 1
         let left = ceil(area.minX * safeScale) / safeScale
         let right = floor(area.maxX * safeScale) / safeScale
@@ -236,7 +282,8 @@ enum QuotaSidebarMotion {
         let height = size(from.height, to.height, limit: top - bottom)
         let center = from.midY + (to.midY - from.midY) * p
         let y = min(max(bottom, ((center - height / 2) * safeScale).rounded() / safeScale), top - height)
-        return CGRect(x: edge == .left ? left : right - width,
+        let movingEdge = edge == .left ? from.minX + (to.minX - from.minX) * p : from.maxX + (to.maxX - from.maxX) * p - width
+        return CGRect(x: min(max(left, movingEdge), right - width),
                       y: (y * safeScale).rounded() / safeScale, width: width, height: height)
     }
 }
@@ -276,8 +323,17 @@ struct QuotaSidebarDragSession {
 /// The compact rail is draggable everywhere. Expanded rows belong to their
 /// buttons; the top handle and narrow side gutters remain draggable.
 enum QuotaSidebarPressRouting {
+    // Matches the existing 12pt top padding; the toolbar starts immediately below.
+    static let topDragInset: CGFloat = 12
+
+    static func dragHandleFrame(in bounds: CGRect) -> CGRect {
+        let width = min(24, max(0, bounds.width - 6))
+        return CGRect(x: bounds.midX - width / 2, y: bounds.maxY - 7.5,
+                      width: width, height: min(3, max(0, bounds.height)))
+    }
+
     static func shouldTrackDrag(expanded: Bool, point: CGPoint, size: CGSize) -> Bool {
         guard expanded else { return true }
-        return point.y >= size.height - 28 || point.x < 4 || point.x > size.width - 4
+        return point.y >= size.height - topDragInset || point.x < 4 || point.x > size.width - 4
     }
 }

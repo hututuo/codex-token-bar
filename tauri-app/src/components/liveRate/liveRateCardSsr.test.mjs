@@ -119,7 +119,7 @@ test("LiveRateCard does not show stream failure warning when live rate is disabl
     assert.doesNotMatch(html, /实时速率降级/);
     assert.doesNotMatch(html, />重试</);
     assert.doesNotMatch(html, /class="session-picker"/);
-    assert.doesNotMatch(html, /<select/);
+    assert.match(html, /aria-label="速率单位"/);
   });
 });
 

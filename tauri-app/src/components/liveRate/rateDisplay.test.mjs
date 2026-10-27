@@ -116,7 +116,7 @@ test("rate bars use shared transform fill styles instead of width animation", as
 
   for (const source of [meter, floating, status]) {
     assert.equal(source.includes("rateFillStyle("), true);
-    assert.equal(source.includes("formatLiveRateValue("), true);
+    assert.equal(source.includes("formatLiveRateValue(") || source.includes("activityRateText("), true);
     assert.equal(source.includes('style={{ width:'), false);
   }
   assert.match(css, /\.rate-fill\s*{[\s\S]*?transform-origin: left center;[\s\S]*?transition: transform 200ms ease-out;/);
@@ -155,6 +155,13 @@ test("C curve keeps its finite filter and immediate stop without another fronten
 test("a finished speed sample publishes even while the activity curve is zero", () => {
   const before = liveRateDisplayBucket(snapshot({ measurementStatus: "no_observed_deltas", speedSamples: [] }));
   const after = liveRateDisplayBucket(snapshot({ measurementStatus: "observed_history", speedSamples: [{ id: "stream-1" }] }));
+  assert.notEqual(before, after);
+});
+
+test("five-minute expiry publishes without a new sample or activity-rate change", () => {
+  const reading = { model: "sol", tokensPerSecond: 50, sampleCount: 1, lastMeasuredAt: 5000 };
+  const before = liveRateDisplayBucket(snapshot({ modelSpeeds5m: [reading], latestModelSpeeds30m: [reading] }));
+  const after = liveRateDisplayBucket(snapshot({ modelSpeeds5m: [], latestModelSpeeds30m: [reading] }));
   assert.notEqual(before, after);
 });
 

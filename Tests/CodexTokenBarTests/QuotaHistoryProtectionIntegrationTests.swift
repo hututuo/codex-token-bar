@@ -97,7 +97,7 @@ final class QuotaHistoryProtectionIntegrationTests: XCTestCase {
             "SELECT five_hour_cycle_generation, seven_day_cycle_generation FROM quota_snapshots ORDER BY created_at;"
         ) { ($0.int(0), $0.int(1)) }
         XCTAssertEqual(generations.map(\.0), [0, 1, 1])
-        XCTAssertEqual(generations.map(\.1), [0, 0, 1])
+        XCTAssertEqual(generations.map(\.1), [0, 0, 0], "schedule-only movement does not split 7d")
         let loaded = try database.loadSnapshot(for: second, now: second.updatedAt!)
         XCTAssertEqual(loaded.recentBins.last?.fiveHourRemainingPercent, 20)
         XCTAssertEqual(loaded.recentBins.last?.sevenDayRemainingPercent, 0)
@@ -148,7 +148,7 @@ extension QuotaHistoryProtectionIntegrationTests {
         let pending = try database.loadSnapshot(for: glitch, now: now.addingTimeInterval(-30))
         XCTAssertEqual(pending.recentBins.last?.sevenDayRemainingPercent, 99)
         try database.record(recovery)
-        let reopened = QuotaHistoryDatabase(databaseURL: url)
+        let reopened = QuotaHistoryDatabase(databaseURL: url, consumption: { _, _, _ in .absent })
         let after = try reopened.loadSnapshot(for: recovery, now: now)
         let beforeRecovery = try reopened.loadSnapshot(for: recovery, now: now.addingTimeInterval(-30))
         XCTAssertEqual(beforeRecovery.recentBins.last?.sevenDayRemainingPercent, 99, "future recovery cannot change an earlier as-of query")

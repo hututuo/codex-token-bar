@@ -797,3 +797,46 @@ function platformFixture() {
     notifications: ready,
   };
 }
+
+
+test("Aggregate quota retains Codex reset credits, cadence and pace beside complete client windows", async () => {
+  await withSsrModules(async load => {
+    const { QuotaStrip } = await load("/src/components/QuotaStrip.tsx");
+    const items = [
+      {id:"codex:7d",client:"codex",window:"7d",remaining:81,resetsAt:"2026-11-01T01:00:00Z",source:"Codex",status:""},
+      {id:"claudeCode:5h",client:"claudeCode",window:"5h",remaining:62,resetsAt:"2026-10-28T12:00:00Z",source:"本地缓存",status:""},
+      {id:"claudeCode:7d",client:"claudeCode",window:"7d",remaining:null,resetsAt:null,source:"本地缓存",status:"未接入"},
+    ];
+    const html = renderComponent(QuotaStrip, {snapshot:quotaSnapshot, clientItems:items, onQuotaRefreshIntervalChange:()=>{}});
+    assert.match(html, /aria-label="Codex 账户工具"/);
+    assert.match(html, /class="quota-side-card quota-reset-card"/);
+    assert.match(html, /aria-label="刷新频率"/);
+    assert.match(html, /7d 均速比较/);
+    assert.match(html, /剩 62%/);
+    assert.match(html, /额度未接入/);
+    for (const item of items) assert.ok(html.includes(`data-quota-id="${item.id}"`));
+    assert.doesNotMatch(html, /独立窗口|分别计算|不合计百分比/);
+  });
+});
+
+test("Claude-only quota never mounts the Codex attribution owner or account controls", async () => {
+  await withSsrModules(async load => {
+    const { QuotaStrip } = await load("/src/components/QuotaStrip.tsx");
+    const html = renderComponent(QuotaStrip, {snapshot:quotaSnapshot, clientItems:[{id:"claudeCode:5h",client:"claudeCode",window:"5h",remaining:0,resetsAt:null,source:"本地缓存",status:""}], onQuotaRefreshIntervalChange:()=>{}});
+    assert.match(html, /剩 0%/);
+    assert.match(html, /已用 100%/);
+    assert.doesNotMatch(html, /Codex 账户工具|quota-reset-card|刷新频率|data-attribution-status/);
+  });
+});
+
+test("Many quota windows all remain present; Codex stale-data warning and retry survive aggregation", async () => {
+  await withSsrModules(async load => {
+    const { QuotaStrip } = await load("/src/components/QuotaStrip.tsx");
+    const items = Array.from({length:10},(_,i)=>({id:`codex:window-${i}`,client:"codex",window:`窗口 ${i}`,remaining:i*10,resetsAt:null,source:"Codex",status:"旧数据"}));
+    const html = renderComponent(QuotaStrip, {snapshot:quotaSnapshot,clientItems:items, onRetryQuotaRefresh:()=>{}, warnings:[{source:"account_quota",message:"离线，显示上次成功读数"}]});
+    assert.equal((html.match(/data-quota-id=/g)??[]).length,10);
+    assert.match(html, /只刷新额度/);
+    assert.match(html, /额度读取失败/);
+    assert.equal((html.match(/class="quota-side-card quota-reset-card"/g)??[]).length,1);
+  });
+});

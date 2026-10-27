@@ -1,3 +1,6 @@
+#[cfg(feature = "business-store-fixture")]
+pub mod business_store_fixture;
+
 mod commands;
 mod core;
 mod models;
@@ -23,7 +26,10 @@ pub fn run() {
 
     let app_result = tauri::Builder::default()
         .manage(commands::live::LiveRateMonitorRegistry::default())
+        .manage(core::claude_local_runtime::ClaudeLocalRuntimeRegistry::default())
+        .manage(core::agent_speed_reporting::AgentSpeedReportingRegistry::default())
         .manage(commands::surface::BodySpeedDetailsRequestState::default())
+        .manage(commands::modeltrace::ModelTraceRegistry::default())
         .manage(commands::thread_activity::ThreadActivityRegistry::default())
         .manage(commands::update::UpdateMonitorRegistry::default())
         .manage(commands::auto_resume::AutoResumeRegistry::default())
@@ -55,6 +61,10 @@ pub fn run() {
                 ));
             }
 
+            core::business_store_route::bootstrap().map_err(std::io::Error::other)?;
+
+            commands::multi_client_usage::initialize_background_refresh(app.handle().clone());
+
             let recovery_state = app
                 .state::<core::provider_repair::ProviderRecoveryState>()
                 .inner()
@@ -77,6 +87,10 @@ pub fn run() {
                 .state::<commands::live::LiveRateMonitorRegistry>()
                 .inner()
                 .clone();
+            let deferred_speed_reporting = app
+                .state::<core::agent_speed_reporting::AgentSpeedReportingRegistry>()
+                .inner()
+                .clone();
             tauri::async_runtime::spawn(async move {
                 core::startup_trace::mark("deferred settings read scheduled");
                 let settings = tauri::async_runtime::spawn_blocking(platform::read_app_settings)
@@ -90,6 +104,14 @@ pub fn run() {
                         models::AppSettingsSnapshot::default()
                     });
                 core::startup_trace::mark("deferred settings read finished");
+                if settings.agent_speed_reporting.enabled {
+                    if let Err(error) = deferred_speed_reporting
+                        .start(&deferred_app, &settings.agent_speed_reporting)
+                        .await
+                    {
+                        eprintln!("Codex Token Bar: Agent Speed reporter startup failed: {error}");
+                    }
+                }
                 if launch_mode == platform::StartupLaunchMode::Autostart
                     && settings.display_surfaces.floating_window_enabled
                 {
@@ -110,6 +132,7 @@ pub fn run() {
                     eprintln!("Codex Token Bar: status tray live text setup failed: {error}");
                 }
             });
+            app.state::<commands::modeltrace::ModelTraceRegistry>().initialize(app.handle().clone());
             core::thread_delete::start_supervisor();
             core::startup_trace::mark("tauri setup returning");
             Ok(())
@@ -119,6 +142,12 @@ pub fn run() {
             commands::dashboard::set_codex_home,
             commands::dashboard::reset_codex_home,
             commands::settings::read_app_settings,
+            commands::settings::read_sidebar_module_visibility,
+            commands::settings::save_sidebar_module_visibility,
+            commands::settings::read_sidebar_module_order,
+            commands::settings::save_sidebar_module_order,
+            commands::settings::read_sidebar_layout,
+            commands::settings::save_sidebar_layout,
             commands::startup::record_startup_event,
             commands::settings::read_autostart_status,
             commands::settings::set_autostart_enabled,
@@ -132,6 +161,9 @@ pub fn run() {
             commands::settings::save_usage_refresh_settings,
             commands::settings::save_auto_resume_settings,
             commands::settings::save_session_enhancement_settings,
+            commands::agent_speed_reporting::read_agent_speed_reporting_status,
+            commands::agent_speed_reporting::set_agent_speed_reporting_enabled,
+            commands::agent_speed_reporting::dismiss_agent_speed_invitation,
             commands::settings::save_setup_guide_completed,
             commands::startup::record_performance_event,
             commands::dashboard::read_platform_capabilities,
@@ -147,7 +179,16 @@ pub fn run() {
             commands::dashboard::read_precise_dashboard_source_probe,
             commands::dashboard::acknowledge_attribution_safety,
             commands::dashboard::read_usage_summary_snapshot,
+            commands::dashboard::read_cache_turn_requests,
             commands::dashboard::read_usage_cache_status,
+            commands::multi_client_usage::read_multi_client_usage_snapshot,
+            commands::multi_client_usage::save_multi_client_usage_preferences,
+            commands::multi_client_usage::refresh_multi_client_usage,
+            commands::multi_client_usage::read_claude_local_quota,
+            commands::claude_local_runtime::read_claude_local_runtime_snapshot,
+            commands::claude_local_runtime::read_activity_speed_history,
+            commands::claude_local_runtime::read_activity_speed_mode,
+            commands::claude_local_runtime::save_activity_speed_mode,
             commands::dashboard::read_quota_cycles,
             commands::dashboard::read_quota_cycle_usage,
             commands::codex_instances::list_codex_instances,
@@ -165,7 +206,15 @@ pub fn run() {
             commands::codex_instances::list_codex_instance_sync_transactions,
             commands::codex_instances::rollback_codex_instance_sync,
             commands::live::read_live_rate_snapshot,
+            commands::live::read_activity_rate_history,
             commands::live::read_body_speed_history,
+            commands::live::read_body_speed_trend,
+            commands::modeltrace::read_modeltrace_snapshot,
+            commands::modeltrace::start_modeltrace,
+            commands::modeltrace::cancel_modeltrace,
+            commands::modeltrace::save_modeltrace_auto_settings,
+            commands::modeltrace::open_modeltrace,
+            commands::modeltrace::take_modeltrace_open_request,
             commands::live::read_live_thread_options,
             commands::live::reset_live_rate_monitor,
             commands::live::publish_status_indicator_readout,
@@ -195,6 +244,7 @@ pub fn run() {
             platform::quota_sidebar::drag_quota_sidebar,
             commands::surface::show_floating_window,
             commands::surface::hide_floating_window,
+            commands::surface::start_floating_window_drag,
             commands::surface::read_floating_pointer_state,
             commands::surface::set_floating_dock_frame,
             commands::floating_guide::prepare_floating_guide_overlay,
@@ -230,6 +280,8 @@ pub fn run() {
         app.run(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
                 core::quota::shutdown_quota_service();
+                app.state::<core::agent_speed_reporting::AgentSpeedReportingRegistry>()
+                    .shutdown_now();
             }
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen {

@@ -23,7 +23,6 @@ pub(crate) use storage_roots::resolve_sqlite_home_path;
 use backups::{
     backup_by_id, ensure_backup_matches_codex_home, provider_backup_root,
     create_provider_backup_files_at_with_pinned_roots_selection_stopped_hook,
-    restore_provider_backup_files_with_verification,
 };
 #[cfg(test)]
 use backups::{codex_home_fingerprint, codex_home_identity};
@@ -494,7 +493,7 @@ fn reconcile_pending_restore_before_backup(
     backup_root: &Path,
     pinned_home: &PinnedHome,
     sqlite_home: &PinnedHome,
-    probe: impl FnOnce() -> Result<bool, String>,
+    mut probe: impl FnMut() -> Result<bool, String>,
 ) -> Result<(), String> {
     if !backups::has_unfinished_restore_transactions_for_roots(
         backup_root,
@@ -513,10 +512,11 @@ fn reconcile_pending_restore_before_backup(
                 .into(),
         );
     }
-    backups::reconcile_unfinished_restore_transactions_with_roots(
+    backups::reconcile_unfinished_restore_transactions_with_roots_and_probe(
         backup_root,
         pinned_home,
         sqlite_home,
+        &mut probe,
     )
     .map(|_| ())
 }
@@ -696,10 +696,11 @@ fn sync_provider_history_transaction_at_with_backup_hook_probe_mode_and_commit_h
     let roots = ProviderStorageRoots::open(codex_home)?;
     let pinned_home = &roots.codex_home;
     let sqlite_home = &roots.sqlite_home;
-    backups::reconcile_unfinished_restore_transactions_with_roots(
+    backups::reconcile_unfinished_restore_transactions_with_roots_and_probe(
         backup_root,
         pinned_home,
         sqlite_home,
+        &mut probe,
     )?;
     let report = scan_provider_repair_result_for_roots(pinned_home, sqlite_home)?;
     let target_provider =
@@ -830,7 +831,7 @@ fn sync_provider_history_transaction_at_with_backup_hook_probe_mode_and_commit_h
             Ok((verified_report, rewritten_sessions, sqlite_rows))
         });
 
-    // 提交前的任何失败：journal 仍为 Prepared，回滚是安全且期望的动作。
+    // 提交前失败时 journal 保持 Prepared；当前 journal 没有写后成员摘要，无法证明整库快照仍归属本事务，自动恢复会保留 journal 与恢复点并要求显式回滚。
     let (verified_report, rewritten_sessions, sqlite_rows) = match transaction {
         Ok(values) => values,
         Err(original_error) => {
@@ -839,7 +840,9 @@ fn sync_provider_history_transaction_at_with_backup_hook_probe_mode_and_commit_h
                 pinned_home,
                 sqlite_home,
                 &backup,
+                mutation_journal.path(),
                 &original_error,
+                &mut probe,
             ));
         }
     };
@@ -873,7 +876,9 @@ fn sync_provider_history_transaction_at_with_backup_hook_probe_mode_and_commit_h
                 pinned_home,
                 sqlite_home,
                 &backup,
+                mutation_journal.path(),
                 &format!("提交标记写入未生效：{detail}"),
+                &mut probe,
             ))
         }
         Err(backups::MutationCommitError::Uncertain { detail }) => {
@@ -905,7 +910,9 @@ fn sync_provider_history_transaction_at_with_backup_hook_probe_mode_and_commit_h
                         pinned_home,
                         sqlite_home,
                         &backup,
+                        mutation_journal.path(),
                         &format!("提交标记写入未生效：{detail}"),
+                        &mut probe,
                     ))
                 }
                 backups::MutationCommitConvergence::Unknown { detail: read_detail } => {
@@ -928,12 +935,15 @@ fn provider_sync_failure_with_reconcile(
     pinned_home: &PinnedHome,
     sqlite_home: &PinnedHome,
     backup: &crate::models::ProviderRepairBackupInfo,
+    mutation_journal_path: &Path,
     original_error: &str,
+    probe: &mut impl FnMut() -> Result<bool, String>,
 ) -> String {
-    match backups::reconcile_unfinished_restore_transactions_with_roots(
+    match backups::reconcile_unfinished_restore_transactions_with_roots_and_probe(
         backup_root,
         pinned_home,
         sqlite_home,
+        probe,
     ) {
         Ok(actions) => {
             if actions.contains(&backups::MutationReconcileAction::KeptCommittedState) {
@@ -941,21 +951,16 @@ fn provider_sync_failure_with_reconcile(
                     "Provider 同步或验证失败：{original_error}；检测到事务已提交，已保留新状态并清理 journal；恢复点 {} 仍可用。",
                     backup.id
                 )
-            } else if actions.contains(&backups::MutationReconcileAction::RolledBackToBackup) {
-                format!(
-                    "Provider 同步或验证失败：{original_error}；已自动恢复恢复点 {}。",
-                    backup.id
-                )
             } else {
                 format!(
-                    "Provider 同步或验证失败：{original_error}；未发现需要回滚的事务，磁盘保持原状；恢复点 {} 保留于 {}。",
-                    backup.id, backup.path
+                    "Provider 同步或验证失败：{original_error}；未找到可确认的自动恢复事务，不声明已回滚；恢复点 {} 保留于 {}，mutation journal 路径为 {}。",
+                    backup.id, backup.path, mutation_journal_path.display()
                 )
             }
         }
         Err(restore_error) => format!(
-            "Provider 同步或验证失败：{original_error}；自动恢复恢复点 {} 失败：{restore_error}；恢复点保留于 {}。",
-            backup.id, backup.path
+            "Provider 同步或验证失败：{original_error}；自动恢复已延后：{restore_error}；Provider mutation journal 保留于 {}，恢复点 {} 保留于 {}。",
+            mutation_journal_path.display(), backup.id, backup.path
         ),
     }
 }
@@ -1082,10 +1087,19 @@ pub fn rollback_provider_backup(
         |canonical_home| {
             let backup = backup_by_id(backup_id)?;
             ensure_backup_matches_codex_home(&backup, canonical_home)?;
+            let roots = ProviderStorageRoots::open(canonical_home)?;
+            let backup_root = PathBuf::from(&backup.path)
+                .parent()
+                .ok_or_else(|| "备份目录缺少父目录".to_string())?
+                .to_path_buf();
             let mut verified_report = None;
-            restore_provider_backup_files_with_verification(
-                canonical_home,
+            let mut restore_probe = crate::platform::codex_desktop_is_running;
+            let retained_current_state = backups::restore_selected_backup_and_resolve_prepared_mutations(
+                &backup_root,
+                &roots.codex_home,
+                &roots.sqlite_home,
                 &backup,
+                &mut restore_probe,
                 |restored_home| {
                     verified_report =
                         Some(verify_restored_provider_backup_for_home(restored_home, &backup)?);
@@ -1094,10 +1108,17 @@ pub fn rollback_provider_backup(
             )?;
             let report = verified_report
                 .ok_or_else(|| "回滚后的 Provider 强验证未返回结果。".to_string())?;
+            let message = match retained_current_state {
+                Some(snapshot) => format!(
+                    "已回滚备份：{}；回滚前状态恢复点 {} 保留于 {}。",
+                    backup.id, snapshot.id, snapshot.path
+                ),
+                None => format!("已回滚备份：{}", backup.id),
+            };
 
             Ok(action_result(
                 snapshot_from_report(report),
-                format!("已回滚备份：{}", backup.id),
+                message,
                 Some(backup),
             ))
         },
@@ -1181,7 +1202,7 @@ pub(crate) fn provider_recovery_backup_root() -> Result<PathBuf, String> {
 pub(crate) fn reconcile_provider_recovery_on_startup_at(
     codex_home: &Path,
     backup_root: &Path,
-    probe: impl FnOnce() -> Result<bool, String>,
+    mut probe: impl FnMut() -> Result<bool, String>,
 ) -> ProviderRecoveryStatus {
     let preliminary_scope = provider_recovery_home_scope(codex_home).ok();
     let operation_id = format!(
@@ -1280,10 +1301,11 @@ pub(crate) fn reconcile_provider_recovery_on_startup_at(
             "启动恢复已阻止：Codex Desktop 正在运行，journal 保持不变。",
         );
     }
-    match backups::reconcile_unfinished_restore_transactions_with_roots_diagnostics(
+    match backups::reconcile_unfinished_restore_transactions_with_roots_diagnostics_and_probe(
         backup_root,
         &pinned_home,
         &sqlite_home,
+        &mut probe,
     ) {
         Ok(_) => ProviderRecoveryStatus::ready(home_scope),
         Err(blocked) => ProviderRecoveryStatus::blocked_for_scope(
@@ -1325,7 +1347,7 @@ pub(crate) fn reconcile_provider_recovery_for_action_at(
     recovery_state: &ProviderRecoveryState,
     codex_home: &Path,
     backup_root: &Path,
-    probe: impl FnOnce() -> Result<bool, String>,
+    probe: impl FnMut() -> Result<bool, String>,
 ) -> Result<ProviderRecoveryStatus, ProviderOperationError> {
     let status = reconcile_provider_recovery_on_startup_at(codex_home, backup_root, probe);
     recovery_state.replace(status.clone());

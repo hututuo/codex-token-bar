@@ -27,6 +27,12 @@ mod provider_app;
 mod macos;
 #[cfg(target_os = "macos")]
 mod floating_hover_macos;
+#[cfg(any(windows, test))]
+mod floating_drag_windows;
+#[cfg(windows)]
+pub(crate) use floating_drag_windows::drag as drag_floating_window;
+#[cfg(target_os = "windows")]
+mod floating_chrome_windows;
 #[cfg(target_os = "windows")]
 mod windows;
 #[cfg(target_os = "windows")]
@@ -51,13 +57,19 @@ pub(crate) use provider_app::{
     ManagedCodexLaunch, ProcessCodexHomeEnvironment,
 };
 pub use settings::{
-    complete_floating_paging_guide, read_app_settings, save_display_surfaces,
-    save_floating_position, save_floating_settings,
+    complete_floating_paging_guide, initialize_sidebar_layout, read_app_settings, read_sidebar_layout,
+    read_sidebar_module_visibility,
+    read_sidebar_module_order,
+    save_display_surfaces, save_activity_speed_mode, save_floating_position, save_floating_settings,
     save_auto_resume_settings, save_custom_account_display_name, save_quota_refresh_interval_ms,
     save_quota_history_filter,
-    save_session_enhancement_settings, save_setup_guide_completed, save_usage_refresh_settings,
+    save_session_enhancement_settings, save_setup_guide_completed,
+    save_agent_speed_reporting_settings,
+    save_sidebar_layout, save_sidebar_module_visibility, save_sidebar_module_order,
+    save_usage_refresh_settings,
 };
 pub(crate) use surfaces::StatusTrayColumn;
+pub(crate) use surfaces::set_multi_client_usage_tray_lines;
 pub use surfaces::{
     dismiss_status_panel_on_blur, hide_floating_window, hide_status_panel_window,
     handle_application_reopen,

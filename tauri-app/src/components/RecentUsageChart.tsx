@@ -1,3 +1,4 @@
+import { RecentChartInteractionGuide } from "./recentUsageChart/InteractionGuide";
 import {
   useEffect,
   useLayoutEffect,
@@ -59,6 +60,7 @@ import type { SharedAccountAttributionResult } from "./sharedAccountAttribution/
 import { modelUsageSlices } from "./modelUsagePresentation.ts";
 
 interface RecentUsageChartProps {
+  pricingAvailable?: boolean;
   recentUsage24h: RecentUsagePoint[];
   recentUsage7d: RecentUsagePoint[];
   recentUsage30d: RecentUsagePoint[];
@@ -75,7 +77,6 @@ const CHART_HOVER_BUBBLE_FALLBACK_WIDTH = 260;
 const RANGE_OPTIONS: RecentChartRange[] = ["24h", "7d", "30d"];
 const VISIBILITY_STORAGE_KEY = "recentChartVisibility";
 const RANGE_STORAGE_KEY = "recentChartRange";
-const QUOTA_GUIDE_STORAGE_KEY = "recentChartQuotaGuideCompletedV01";
 
 function useChartBubbleWidth(fallbackWidth: number) {
   const bubbleRef = useRef<HTMLDivElement | null>(null);
@@ -102,6 +103,7 @@ function useChartBubbleWidth(fallbackWidth: number) {
 }
 
 export function RecentUsageChart({
+  pricingAvailable = true,
   recentUsage24h,
   recentUsage7d,
   recentUsage30d,
@@ -112,12 +114,12 @@ export function RecentUsageChart({
   sharedAccountAttribution = null,
 }: RecentUsageChartProps) {
   const [range, setRange] = useState<RecentChartRange>(() => readStoredRange());
-  const [visibility, setVisibility] = useState<SeriesVisibility>(() => readStoredVisibility());
+  const [storedVisibility, setVisibility] = useState<SeriesVisibility>(() => readStoredVisibility());
+  const visibility = pricingAvailable ? storedVisibility : {...storedVisibility,cost:false};
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const [previewDismissed, setPreviewDismissed] = useState(false);
   const [quotaModel, setQuotaModel] = useState<OfficialAPIPriceModel>(() => readStoredQuotaModel());
   const [quotaSelectionState, setQuotaSelectionState] = useState<QuotaSelectionState>({ startIndex: null, fixedEndIndex: null });
-  const [quotaGuideCompleted, setQuotaGuideCompleted] = useState(() => window.localStorage.getItem(QUOTA_GUIDE_STORAGE_KEY) === "1");
   const interactionRootRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -261,19 +263,6 @@ export function RecentUsageChart({
     ? quotaSelectionAttribution(consumptionSelection, sharedAccountAttribution)
     : null, [fixedSelectionEndIndex, consumptionSelection, sharedAccountAttribution]);
   const quotaEstimateVisibility = quotaEstimateWindowVisibility(data);
-  const quotaGuideStep = !quotaGuideCompleted && data.points.length > 1
-    ? fixedSelectionEndIndex !== null
-      ? "calculationCard"
-      : quotaSelectionState.startIndex !== null
-        ? "secondPoint"
-        : "firstPoint"
-    : null;
-
-  function dismissQuotaGuide() {
-    setQuotaGuideCompleted(true);
-    window.localStorage.setItem(QUOTA_GUIDE_STORAGE_KEY, "1");
-  }
-
   useLayoutEffect(() => {
     const scrollElement = scrollRef.current;
     if (!scrollElement) {
@@ -581,7 +570,7 @@ export function RecentUsageChart({
             <LegendDot className="legend-dot--token" label="Token" value={formatTokens(visibleWindowSummary.tokenTotal)} />
             <LegendDot className="legend-dot--calls" label="调用" value={`${visibleWindowSummary.callTotal}`} />
             <LegendDot className="legend-dot--hit" label="命中率" value={percentText(visibleWindowSummary.cacheHitRate)} />
-            <LegendDot className="legend-dot--cost" label="金额" value={moneyText(visibleWindowCostUSD)} />
+            <LegendDot className="legend-dot--cost" label="金额" value={pricingAvailable ? moneyText(visibleWindowCostUSD) : "—"} />
             {fiveHourQuotaPresent ? <LegendDot className="legend-dot--five" label="5h" value={percentText(visibleWindowSummary.latestFiveHourRemaining)} /> : null}
             {sevenDayQuotaPresent ? <LegendDot className="legend-dot--seven" label="7d" value={percentText(visibleWindowSummary.latestSevenDayRemaining)} /> : null}
           </div>
@@ -594,13 +583,14 @@ export function RecentUsageChart({
               label="命中率"
               onClick={() => updateVisibility("cacheHitRate")}
             />
-            <LineToggle active={visibility.cost} className="toggle-cost" label="金额" onClick={() => updateVisibility("cost")} />
+            <LineToggle active={visibility.cost} className="toggle-cost" label="金额" onClick={() => { if (pricingAvailable) updateVisibility("cost"); }} />
             {fiveHourQuotaPresent ? <LineToggle active={visibility.fiveHourQuota} className="toggle-five" label="5h" onClick={() => updateVisibility("fiveHourQuota")} /> : null}
             {sevenDayQuotaPresent ? <LineToggle active={visibility.sevenDayQuota} className="toggle-seven" label="7d" onClick={() => updateVisibility("sevenDayQuota")} /> : null}
           </div>
           </div>
         </div>
 
+      <RecentChartInteractionGuide />
       <div className="recent-chart-plot">
         <div
           key={data.range}
@@ -749,6 +739,7 @@ export function RecentUsageChart({
           ) : null}
           {!previewDismissed && fixedSelectionEndIndex !== null && consumptionSelection ? (
             <SelectionSummaryBubble
+              pricingAvailable={pricingAvailable}
               onClose={() => setPreviewDismissed(true)}
               selection={consumptionSelection}
               viewportWidth={chartViewportWidth}
@@ -760,6 +751,7 @@ export function RecentUsageChart({
             />
           ) : !previewDismissed && activePoint && activeTokenPoint ? (
             <HoverBubble
+              pricingAvailable={pricingAvailable}
               bucketSeconds={data.bucketSeconds}
               cacheVisible={visibility.cacheHitRate}
               costUSD={activeIndex === null ? 0 : plotData.bucketCostsUSD[activeIndex] ?? 0}
@@ -796,30 +788,6 @@ export function RecentUsageChart({
         </div>
       </div>
       </section>
-      {quotaGuideStep ? (
-        <div className={`recent-chart-quota-guide recent-chart-quota-guide--${quotaGuideStep}`} role="note">
-          <span className="recent-chart-quota-guide__arrow" aria-hidden="true">
-            {quotaGuideStep === "calculationCard" ? "↙" : "↓"}
-          </span>
-          <div>
-            <strong>
-              {quotaGuideStep === "firstPoint"
-                ? "① 点击折线中的第一个点，设定起点"
-                : quotaGuideStep === "secondPoint"
-                  ? "② 点击第二个点，固定终点"
-                  : "额度计算卡已出现在左下方"}
-            </strong>
-            <span>
-              {quotaGuideStep === "firstPoint"
-                ? "移动鼠标可预览；选区会从起点延伸到当前点。"
-                : quotaGuideStep === "secondPoint"
-                  ? "第二次点击后，左下方计算卡会把本段 API 等值消耗与额度下降比例对照，反推 5h/7d 本级额度。"
-                  : "查看本段消耗、5h/7d 反推额度；再次点击可重新选择。"}
-            </span>
-          </div>
-          <button aria-label="关闭额度计算引导" onClick={dismissQuotaGuide} type="button">知道了</button>
-        </div>
-      ) : null}
       {consumptionSelection ? (
         <RecentChartQuotaEstimateOverlay
           currentFiveHourQuotaPresent={fiveHourQuotaPresent}
@@ -920,6 +888,7 @@ function HoverRing({ className, point, radius }: { className: string; point: { x
 }
 
 function HoverBubble({
+  pricingAvailable = true,
   bucketSeconds,
   cacheVisible,
   costUSD,
@@ -930,6 +899,7 @@ function HoverBubble({
   viewportWidth,
   x,
 }: {
+  pricingAvailable?: boolean;
   bucketSeconds: number;
   cacheVisible: boolean;
   costUSD: number;
@@ -957,7 +927,7 @@ function HoverBubble({
       </div>
       <b>{formatTokens(point.tokens)}</b>
       <span className="chart-hover-row">请求 {point.calls} 次 · avg {formatTokens(average)}</span>
-      <span className="chart-hover-row chart-hover-row--cost">金额 {moneyText(costUSD)}</span>
+      <span className="chart-hover-row chart-hover-row--cost">金额 {pricingAvailable ? moneyText(costUSD) : "未接入"}</span>
       {cacheVisible && point.calls > 0 && point.cacheHitRate !== null ? (
         <em className="chart-hover-row chart-hover-row--cache">
           缓存命中 {percentText(point.cacheHitRate)} · 命中 {formatTokens(point.cachedInputTokens)}
@@ -971,11 +941,13 @@ function HoverBubble({
 }
 
 function SelectionSummaryBubble({
+  pricingAvailable = true,
   onClose,
   selection,
   viewportWidth,
   x,
 }: {
+  pricingAvailable?: boolean;
   onClose: () => void;
   selection: QuotaConsumptionSelection;
   viewportWidth: number;
@@ -993,7 +965,7 @@ function SelectionSummaryBubble({
       </div>
       <b>{formatTokens(selection.totalTokens)}</b>
       <span className="chart-hover-row">请求 {selection.calls} 次 · avg {formatTokens(average)}</span>
-      <span className="chart-hover-row chart-hover-row--cost">金额 {moneyText(selection.selectedCostUSD)}</span>
+      <span className="chart-hover-row chart-hover-row--cost">金额 {pricingAvailable ? moneyText(selection.selectedCostUSD) : "未接入"}</span>
       {selection.calls > 0 ? (
         <em className="chart-hover-row chart-hover-row--cache">
           缓存命中 {percentText(selection.cacheHitRate)} · 命中 {formatTokens(selection.cachedInputTokens)}
@@ -1086,9 +1058,9 @@ function RecentChartQuotaEstimateOverlay({
           <b>命中 {percentText(selection.cacheHitRate)}</b>
         </div>
         {selection.excludedModels.length > 0 ? (
-          <div className="quota-estimate-row quota-estimate-attribution-detail" aria-label="独立额度说明">
+          <div className="quota-estimate-row quota-estimate-attribution-detail" aria-label="不计入费用说明">
             <span>{selection.excludedModels.join("、")} {selection.excludedCalls} 次调用</span>
-            <em>独立额度，不参与 API 等值</em>
+            <em>免费检查或独立额度，不计入费用</em>
           </div>
         ) : null}
         <div className="quota-estimate-row">
@@ -1164,9 +1136,9 @@ function QuotaSelectionAttributionRow({ attribution }: { attribution: QuotaSelec
         <em>当前 API {moneyText(attribution.localCurrentAPIEquivalentUSD)}</em>
       </div>
       {attribution.excludedModels.length > 0 ? (
-        <div className="quota-estimate-row quota-estimate-attribution-detail" aria-label="独立额度说明">
+        <div className="quota-estimate-row quota-estimate-attribution-detail" aria-label="不计入费用说明">
           <span>{attribution.excludedModels.join("、")} {attribution.excludedCalls} 次调用</span>
-          <em>独立额度，不参与 API 等值</em>
+          <em>免费检查或独立额度，不计入费用</em>
         </div>
       ) : null}
     </>
@@ -1336,7 +1308,7 @@ function estimateText(estimate: QuotaConsumptionEstimate, title: string, isQuota
     return `无 ${title} 额度`;
   }
 
-  const excludedNote = estimate.excludedModels.length > 0 ? " · 独立额度不计入" : "";
+  const excludedNote = estimate.excludedModels.length > 0 ? " · 免费检查或独立额度不计入" : "";
   const boundaryNote = estimate.boundaryBreakdown.leading.totalTokens > 0
     || estimate.boundaryBreakdown.trailing.totalTokens > 0
     ? ` · 边缘另计 ${formatTokens(estimate.boundaryBreakdown.leading.totalTokens + estimate.boundaryBreakdown.trailing.totalTokens)}`

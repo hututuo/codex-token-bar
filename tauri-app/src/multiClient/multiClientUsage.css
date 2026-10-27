@@ -1,0 +1,34 @@
+.multi-client-settings { display: grid; gap: 16px; color: var(--text); }
+.multi-client-settings header, .multi-client-card header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.multi-client-settings h3, .multi-client-card h3, .multi-client-quota h4, .multi-client-settings p { margin: 0; }
+.multi-client-settings p, .multi-client-note { color: var(--text-muted); font-size: 13px; line-height: 1.6; }
+.multi-client-settings fieldset { border: 1px solid var(--line); border-radius: 10px; padding: 14px; display: grid; gap: 12px; }
+.multi-client-settings legend { font-weight: 650; padding: 0 6px; }
+.multi-client-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; font-size: 13px; }
+.multi-client-controls label { display: flex; align-items: center; gap: 5px; }
+.multi-client-controls input[type=color] { width: 28px; height: 26px; border: 0; padding: 0; background: transparent; }
+.multi-client-settings button, .multi-client-card button, .multi-client-settings select, .multi-client-path { padding: 6px 10px; border: 1px solid var(--line); border-radius: 7px; color: inherit; background: var(--panel); }
+.multi-client-path { width: 100%; box-sizing: border-box; }
+.multi-client-card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 18px; margin: 16px 0; }
+.multi-client-table-wrap { overflow: auto; margin-top: 14px; }
+.multi-client-table { border-collapse: collapse; width: 100%; font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.multi-client-table th { text-align: left; color: var(--text-muted); font-weight: 500; }
+.multi-client-table td, .multi-client-table th { padding: 8px 12px 8px 0; border-bottom: 1px solid var(--line); }
+.multi-client-table small { display: block; color: var(--text-muted); margin-top: 3px; }
+.multi-client-sidebar-row { display: grid; justify-items: center; padding: 5px 0; gap: 3px; font-size: 9px; width: 74px; }
+.multi-client-sidebar-row strong { font-size: 13px; }
+.multi-client-quota { border-top: 1px solid var(--line); padding-top: 16px; display: grid; gap: 8px; }
+.multi-client-discovery { display:flex; align-items:center; gap:12px; padding:12px 16px; margin:10px 0; border:1px solid color-mix(in srgb,var(--accent,#72b743) 35%,transparent); border-radius:12px; background:color-mix(in srgb,var(--accent,#72b743) 7%,var(--panel)); }
+.multi-client-discovery div { flex:1; } .multi-client-discovery small { display:block; color:var(--text-muted); margin-top:4px; }
+.multi-client-discovery button, .multi-client-toolbar select { border:1px solid var(--line); background:var(--panel); color:var(--text); border-radius:8px; padding:7px 12px; }
+.multi-client-toolbar { display:flex; align-items:center; justify-content:space-between; margin:16px 0; gap:12px; }
+.multi-client-ranges { display:flex; gap:4px; } .multi-client-ranges button[aria-pressed=true] { background:var(--text); color:var(--panel); }
+.multi-client-total { display:flex; align-items:baseline; gap:10px; font-size:13px; color:var(--text-muted); }
+.multi-client-total strong { font-size:27px; color:var(--text); font-variant-numeric:tabular-nums; } .multi-client-total label { margin-left:auto; }
+.multi-client-chart svg { width:100%; display:block; overflow:visible; color:var(--text-muted); margin-top:14px; } .multi-client-chart text { fill:currentColor; font-size:10px; }
+.multi-client-chart g[role=button] { cursor:crosshair; outline:none; } .multi-client-chart g[role=button]:focus rect { stroke:var(--text); stroke-width:1; }
+.multi-client-chart-readout { min-height:30px; font-size:12px; font-variant-numeric:tabular-nums; color:var(--text-muted); }
+.multi-client-legend { display:flex; flex-wrap:wrap; gap:16px; font-size:12px; } .multi-client-legend span { display:inline-flex; align-items:center; gap:5px; } .multi-client-legend i { width:8px; height:8px; border-radius:50%; }
+.multi-client-quota-inline { display:grid; justify-items:center; gap:3px; font-size:9px; } .multi-client-quota-inline h4 { margin:0; font-size:9px; }
+.multi-client-card details { margin-top:14px; } .multi-client-card summary { cursor:pointer; font-size:13px; }
+@media (max-width:600px) { .multi-client-discovery, .multi-client-toolbar { flex-wrap:wrap; } .multi-client-total strong { font-size:22px; } }

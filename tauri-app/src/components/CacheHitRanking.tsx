@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CacheHitRankingItem, TokenCacheUsage } from "../types/dashboard";
+import type { CacheHitRankingItem, TokenCacheUsage, CodexHomeSourceToken } from "../types/dashboard";
+import { CacheTurnRequestsDialog } from "./cacheHitRanking/CacheTurnRequestsDialog";
 import { formatPercent, formatTokens } from "../utils/format";
 import {
   buildCacheRankingItems,
@@ -19,11 +20,13 @@ export const CACHE_RANKING_PAGE_SIZE = 10;
 
 interface CacheHitRankingProps {
   cacheUsage: TokenCacheUsage;
+  sourceToken?: CodexHomeSourceToken | null;
   legacyItems?: CacheHitRankingItem[];
 }
 
 interface CacheHitRankingDetailProps {
   cacheUsage: TokenCacheUsage;
+  sourceToken?: CodexHomeSourceToken | null;
   legacyItems: CacheHitRankingItem[];
   rankingItems: CacheRankingDisplayItem[];
   onClose: () => void;
@@ -44,7 +47,7 @@ const DEFAULT_RANKING_OPTIONS = {
   excludesFirstTurns: true,
 };
 
-export function CacheHitRanking({ cacheUsage, legacyItems = [] }: CacheHitRankingProps) {
+export function CacheHitRanking({ cacheUsage, legacyItems = [], sourceToken = null }: CacheHitRankingProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [scope, setScope] = useState<CacheRankingScope>(DEFAULT_RANKING_OPTIONS.scope);
   const [sortOrder, setSortOrder] = useState<CacheRankingSortOrder>(DEFAULT_RANKING_OPTIONS.sortOrder);
@@ -92,7 +95,7 @@ export function CacheHitRanking({ cacheUsage, legacyItems = [] }: CacheHitRankin
           <div>
             <h2>缓存命中排行</h2>
             {cacheUsage.rankingActiveSince && <p className="cache-ranking-scope-notice">已开启历史压缩，仅显示最近 7 天活跃会话。较早的历史会话可能已压缩。</p>}
-            <span>{rankingSubtitle(scope, sortOrder, excludesSingleTurnSessions, excludesFirstTurns)}</span>
+            <span>整轮加权 · {rankingSubtitle(scope, sortOrder, excludesSingleTurnSessions, excludesFirstTurns)}</span>
           </div>
           <div className="ranking-controls" aria-label="缓存命中排行控制">
             <CacheRankingControls
@@ -124,7 +127,7 @@ export function CacheHitRanking({ cacheUsage, legacyItems = [] }: CacheHitRankin
           ) : (
             outerFallbackItems.length > 0
               ? outerFallbackItems.map((item) => <LegacyRankingRow key={`${item.rank}-${item.title}`} item={item} />)
-              : outerItems.map((item, index) => <CurrentRankingRow key={item.id} item={item} index={index} />)
+              : outerItems.map((item, index) => <CurrentRankingRow key={item.id} item={item} index={index} sourceToken={sourceToken} />)
           )}
         </div>
       </section>
@@ -132,6 +135,7 @@ export function CacheHitRanking({ cacheUsage, legacyItems = [] }: CacheHitRankin
       {isOpen ? (
         <CacheHitRankingDetail
           cacheUsage={cacheUsage}
+          sourceToken={sourceToken}
           legacyItems={fallbackItems}
           rankingItems={rankingItems}
           onClose={close}
@@ -151,6 +155,7 @@ export function CacheHitRanking({ cacheUsage, legacyItems = [] }: CacheHitRankin
 
 export function CacheHitRankingDetail({
   cacheUsage,
+  sourceToken = null,
   legacyItems,
   rankingItems,
   onClose,
@@ -219,7 +224,7 @@ export function CacheHitRankingDetail({
           <div>
             <strong id="cache-hit-ranking-detail-title">缓存命中排行</strong>
             {cacheUsage.rankingActiveSince && <p className="cache-ranking-scope-notice">已开启历史压缩，仅显示最近 7 天活跃会话。较早的历史会话可能已压缩。</p>}
-            <span>{rankingSubtitle(scope, sortOrder, excludesSingleTurnSessions, excludesFirstTurns)}</span>
+            <span>整轮加权 · {rankingSubtitle(scope, sortOrder, excludesSingleTurnSessions, excludesFirstTurns)}</span>
           </div>
           <button
             aria-label="关闭缓存命中排行详情"
@@ -283,7 +288,7 @@ export function CacheHitRankingDetail({
               ) : (
                 filteredFallbackItems.length > 0
                   ? visibleFallbackItems.map((item) => <LegacyRankingRow key={`${item.rank}-${item.title}`} item={item} />)
-                  : visibleItems.map((item, index) => <CurrentRankingRow key={item.id} item={item} index={index} />)
+                  : visibleItems.map((item, index) => <CurrentRankingRow key={item.id} item={item} index={index} sourceToken={sourceToken} />)
               )}
             </div>
 
@@ -377,20 +382,37 @@ function CacheRankingControls({
   );
 }
 
-function CurrentRankingRow({ item, index }: { item: CacheRankingDisplayItem; index: number }) {
+function CurrentRankingRow({ item, index, sourceToken }: {
+  item: CacheRankingDisplayItem; index: number; sourceToken?: CodexHomeSourceToken | null;
+}) {
+  const [showRequests, setShowRequests] = useState(false);
+  const trigger = useRef<HTMLButtonElement>(null);
   const hitRate = cacheHitRate(item.breakdown);
   const tone = cacheHitTone(hitRate);
+  const closeRequests = useCallback(() => {
+    setShowRequests(false);
+    trigger.current?.focus();
+  }, []);
   return (
-    <article className="ranking-row">
-      <strong>{index + 1}</strong>
-      <RankingRowCopy title={item.title} subtitle={item.subtitle} context={item.context} />
-      <div className={`hit-meter ${tone}`}>
-        <span style={{ width: `${cacheHitMeterWidthPercent(hitRate)}%` }} />
-      </div>
-      <em className={tone}>{formatPercent(hitRate)}</em>
-      <span>未命中 {formatTokens(uncachedInputTokens(item.breakdown))}</span>
-      <span>{formatTokens(item.breakdown.cachedInputTokens)} / {formatTokens(item.breakdown.inputTokens)}</span>
-    </article>
+    <>
+      <article className="ranking-row">
+        <strong>{index + 1}</strong>
+        <RankingRowCopy title={item.title} subtitle={item.subtitle} context={item.context}
+          requestSummary={item.turn && (item.turn.requestCount ?? 0) > 0
+            ? `${item.turn.requestCount} 次请求 · 低命中 ${item.turn.lowHitCount ?? 0} 次 · 零命中 ${item.turn.zeroHitCount ?? 0} 次`
+            : undefined} />
+        <div className={`hit-meter ${tone}`}>
+          <span style={{ width: `${cacheHitMeterWidthPercent(hitRate)}%` }} />
+        </div>
+        <em className={tone}>{(hitRate * 100).toFixed(2)}%</em>
+        <span>未命中 {formatTokens(uncachedInputTokens(item.breakdown))}</span>
+        <span>{formatTokens(item.breakdown.cachedInputTokens)} / {formatTokens(item.breakdown.inputTokens)}</span>
+        {item.turn && <button type="button" className="cache-request-open" ref={trigger}
+          disabled={!sourceToken} onClick={() => setShowRequests(true)} aria-label="查看本轮每次请求的时间和用量">请求明细 ›</button>}
+      </article>
+      {showRequests && item.turn && sourceToken && <CacheTurnRequestsDialog
+        turn={item.turn} sourceToken={sourceToken} onClose={closeRequests} />}
+    </>
   );
 }
 
@@ -410,10 +432,12 @@ function LegacyRankingRow({ item }: { item: CacheHitRankingItem }) {
 }
 
 function RankingRowCopy({
+  requestSummary,
   context,
   subtitle,
   title,
 }: {
+  requestSummary?: string;
   context?: string | null;
   subtitle: string;
   title: string;
@@ -428,6 +452,7 @@ function RankingRowCopy({
     >
       <h3>{title}</h3>
       <span className="ranking-row-answer">{subtitle}</span>
+      {requestSummary && <small className="cache-request-counts">{requestSummary}</small>}
       {context ? <small>{context}</small> : null}
       <div aria-hidden="true" className="ranking-row-hover-card" role="tooltip">
         <strong>{title}</strong>

@@ -25,7 +25,7 @@ test('quota reference marks and model strip use snapshot references and floating
    dom.document.body.innerHTML=renderToStaticMarkup(React.createElement(SidebarRailContent,{data,state:{mode:'hover'},onOpen(){}}));
    assert.equal(dom.document.querySelectorAll('.qs-pace-mark').length,1);
    assert.equal(dom.document.querySelector('.qs-pace-mark').style.bottom,'70%');
-   assert.ok(Math.abs(parseFloat(dom.document.querySelector('.qs-pace-tick').getAttribute('transform').slice(7))-252)<1e-8);
+   assert.ok(Math.abs(parseFloat(dom.document.querySelector('.integrated-full-pace').getAttribute('transform').slice(7))-252)<1e-8);
    const expected=floatingTodayModelUsageItems(rows,'gpt56Sol',{showPlaceholders:false});
    const segments=[...dom.document.querySelectorAll('.qs-model-strip-vertical i')];
    assert.deepEqual(segments.map(el=>Number(el.style.flexGrow)),expected.map(item=>item.share));

@@ -156,7 +156,7 @@ final class SubscriptionSavingsEstimatorTests: XCTestCase {
         XCTAssertEqual(estimate.excludedModels, ["gpt-5.3-codex-spark"])
         XCTAssertEqual(estimate.excludedCalls, 2)
         let helpText = SubscriptionSavingsPresentation(estimate: estimate).helpText
-        XCTAssertTrue(helpText.contains("独立额度"))
+        XCTAssertTrue(helpText.contains("不计入总费用或额度价值"))
         XCTAssertFalse(helpText.contains("缺少逐模型历史"))
         XCTAssertFalse(helpText.contains("未知模型回退"))
     }

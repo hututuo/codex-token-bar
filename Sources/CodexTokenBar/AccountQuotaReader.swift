@@ -480,6 +480,26 @@ struct FoundationAccountQuotaProcessTransport: AccountQuotaProcessTransport, Sen
         "--disable", "plugins",
         "--listen", "stdio://",
     ]
+    static let removedEnvironmentKeys: Set<String> = [
+        "NODE_OPTIONS",
+        "ELECTRON_RUN_AS_NODE",
+        "TAURI_SIGNING_PRIVATE_KEY",
+        "TAURI_SIGNING_PRIVATE_KEY_PATH",
+    ]
+
+    static func sanitizedEnvironment(
+        _ baseEnvironment: [String: String],
+        codexHome: URL? = nil
+    ) -> [String: String] {
+        var environment = baseEnvironment
+        for key in removedEnvironmentKeys {
+            environment.removeValue(forKey: key)
+        }
+        if let codexHome {
+            environment["CODEX_HOME"] = codexHome.path
+        }
+        return environment
+    }
 
     private let stderrTailLimit: Int
     private let gracefulShutdownTimeout: TimeInterval
@@ -487,6 +507,7 @@ struct FoundationAccountQuotaProcessTransport: AccountQuotaProcessTransport, Sen
     private let launchLeasePool: AccountQuotaProcessLaunchLeasePool
     private let stdinWriteTimeout: TimeInterval
     private let stdinPollIntervalMilliseconds: Int32
+    private let retainedNotificationMethods: Set<String>
 
     init(
         stderrTailLimit: Int = 16_384,
@@ -494,7 +515,8 @@ struct FoundationAccountQuotaProcessTransport: AccountQuotaProcessTransport, Sen
         forcedShutdownTimeout: TimeInterval = 1,
         launchLeasePool: AccountQuotaProcessLaunchLeasePool = .shared,
         stdinWriteTimeout: TimeInterval = 1,
-        stdinPollIntervalMilliseconds: Int32 = 10
+        stdinPollIntervalMilliseconds: Int32 = 10,
+        retainedNotificationMethods: Set<String> = []
     ) {
         self.stderrTailLimit = max(0, stderrTailLimit)
         self.gracefulShutdownTimeout = max(0, gracefulShutdownTimeout)
@@ -502,6 +524,7 @@ struct FoundationAccountQuotaProcessTransport: AccountQuotaProcessTransport, Sen
         self.launchLeasePool = launchLeasePool
         self.stdinWriteTimeout = max(0, stdinWriteTimeout)
         self.stdinPollIntervalMilliseconds = max(1, stdinPollIntervalMilliseconds)
+        self.retainedNotificationMethods = retainedNotificationMethods
     }
 
     func start(codexPath: String, dataSource: CodexDataSource?) throws -> any AccountQuotaProcessSession {
@@ -512,11 +535,13 @@ struct FoundationAccountQuotaProcessTransport: AccountQuotaProcessTransport, Sen
         // startup fetch out of this short-lived process removes unrelated network
         // noise without changing the account/rateLimits/read contract.
         process.arguments = Self.appServerArguments
-        if let dataSource {
-            var environment = ProcessInfo.processInfo.environment
-            environment["CODEX_HOME"] = dataSource.codexHome.path
-            process.environment = environment
-        }
+        // Quota reads and ModelTrace share this transport; give the app-server a
+        // clean Node/Tauri launch environment while retaining proxies, HOME, PATH,
+        // and any explicitly selected CODEX_HOME.
+        process.environment = Self.sanitizedEnvironment(
+            ProcessInfo.processInfo.environment,
+            codexHome: dataSource?.codexHome
+        )
 
         let input = Pipe()
         let output = Pipe()
@@ -541,7 +566,7 @@ struct FoundationAccountQuotaProcessTransport: AccountQuotaProcessTransport, Sen
         process.terminationHandler = { process in
             exitObserver.record(process: process)
         }
-        let stdoutReader = AccountQuotaLineReader(handle: output.fileHandleForReading)
+        let stdoutReader = AccountQuotaLineReader(handle: output.fileHandleForReading, retainedNotificationMethods: retainedNotificationMethods)
         let stderrTail = AccountQuotaStderrTail(maxBytes: stderrTailLimit)
         errorPipe.fileHandleForReading.readabilityHandler = { handle in
             stderrTail.append(handle.availableData)
@@ -1592,8 +1617,10 @@ private final class AccountQuotaLineReader: @unchecked Sendable {
     private var buffer = Data()
     private var lines: [Data] = []
     private var reachedEOF = false
+    private let retainedNotificationMethods: Set<String>
 
-    init(handle: FileHandle) {
+    init(handle: FileHandle, retainedNotificationMethods: Set<String> = []) {
+        self.retainedNotificationMethods = retainedNotificationMethods
         handle.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             if data.isEmpty {
@@ -1636,8 +1663,9 @@ private final class AccountQuotaLineReader: @unchecked Sendable {
         buffer.append(data)
         while let newline = buffer.firstIndex(of: 0x0A) {
             let line = buffer[..<newline]
-            if let message = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any], message["id"] != nil {
-                guard lines.count < 64 else {
+            if let message = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
+               message["id"] != nil || (message["method"] as? String).map(retainedNotificationMethods.contains) == true {
+                guard lines.count < (retainedNotificationMethods.isEmpty ? 64 : 512) else {
                     buffer.removeAll(); lines.removeAll(); reachedEOF = true; return
                 }
                 lines.append(Data(line))

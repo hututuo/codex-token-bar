@@ -300,7 +300,7 @@ final class DashboardHeaderPresentationTests: XCTestCase {
         XCTAssertTrue(headerSource.contains(".accessibilityLabel(\"运行线程\")"))
         XCTAssertTrue(
             dashboardSource.contains(
-                "runningThreadSummary: taskCompletionMonitor.runningThreadSummary"
+                "runningThreadSummary: allowedClients.contains(\"codex\") ? taskCompletionMonitor.runningThreadSummary : .unavailable"
             )
         )
     }
@@ -324,7 +324,7 @@ final class DashboardHeaderPresentationTests: XCTestCase {
         let chipSource = String(source[start.lowerBound..<end.lowerBound])
 
         XCTAssertTrue(rowSource.contains("LazyVGrid("))
-        XCTAssertTrue(rowSource.contains(".layoutPriority(1)"))
+        XCTAssertTrue(rowSource.contains("GridItem(.flexible(minimum: 108)"))
         XCTAssertTrue(rowSource.contains("DashboardModelCostScopePicker(scope: $scope"))
         XCTAssertFalse(rowSource.contains("pickerStyle(.segmented)"))
         XCTAssertTrue(chipSource.contains("ViewThatFits(in: .horizontal)"))

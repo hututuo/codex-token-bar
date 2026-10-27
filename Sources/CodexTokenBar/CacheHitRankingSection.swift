@@ -103,6 +103,7 @@ private struct CacheRankingItem: Identifiable {
     let context: String?
     let sortDate: Date?
     let breakdown: TokenCacheBreakdown
+    var turn: TurnCacheUsage? = nil
 
     var sortValue: CacheRankingSortValue {
         CacheRankingSortValue(id: id, sortDate: sortDate, breakdown: breakdown)
@@ -158,7 +159,8 @@ private enum CacheRankingItemsBuilder {
                         subtitle: "答：\(turn.assistantResponse.isEmpty ? "暂无可见回答" : turn.assistantResponse)",
                         context: "\(turn.sessionTitle) · 第 \(turn.turnIndexInSession) 轮 · \(time)",
                         sortDate: turn.timestamp,
-                        breakdown: turn.breakdown
+                        breakdown: turn.breakdown,
+                        turn: turn
                     )
                 }
         }
@@ -188,6 +190,7 @@ private enum CacheRankingItemsBuilder {
 struct CacheHitRankingSection: View {
     let cacheUsage: TokenCacheUsage
     let cacheUsageRevision: Date
+    var codexHome: URL? = nil
     let onOpenDetails: () -> Void
     @State private var scope: CacheRankingScope = .turns
     @State private var sortOrder: CacheRankingSortOrder = .latest
@@ -206,7 +209,7 @@ struct CacheHitRankingSection: View {
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    Text(rankingSubtitle)
+                    Text("整轮加权 · " + rankingSubtitle)
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
@@ -232,6 +235,7 @@ struct CacheHitRankingSection: View {
             CacheRankingTopTenList(
                 cacheUsage: cacheUsage,
                 cacheUsageRevision: cacheUsageRevision,
+                codexHome: codexHome,
                 scope: scope,
                 sortOrder: sortOrder,
                 excludesSingleTurnSessions: excludesSingleTurnSessions,
@@ -255,6 +259,7 @@ struct CacheHitRankingSection: View {
 private struct CacheRankingTopTenList: View, Equatable {
     let cacheUsage: TokenCacheUsage
     let cacheUsageRevision: Date
+    var codexHome: URL? = nil
     let scope: CacheRankingScope
     let sortOrder: CacheRankingSortOrder
     let excludesSingleTurnSessions: Bool
@@ -262,6 +267,7 @@ private struct CacheRankingTopTenList: View, Equatable {
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.cacheUsageRevision == rhs.cacheUsageRevision
+            && lhs.codexHome == rhs.codexHome
             && lhs.cacheUsage.sessions.count == rhs.cacheUsage.sessions.count
             && lhs.cacheUsage.turns.count == rhs.cacheUsage.turns.count
             && lhs.scope == rhs.scope
@@ -284,7 +290,7 @@ private struct CacheRankingTopTenList: View, Equatable {
         } else {
             VStack(spacing: 5) {
                 ForEach(Array(rankingItems.prefix(10).enumerated()), id: \.element.id) { index, item in
-                    CacheRankingRow(rank: index + 1, item: item)
+                    CacheRankingRow(rank: index + 1, item: item, codexHome: codexHome)
                 }
             }
         }
@@ -294,6 +300,7 @@ private struct CacheRankingTopTenList: View, Equatable {
 struct CacheHitRankingDetailView: View {
     let cacheUsage: TokenCacheUsage
     let onClose: () -> Void
+    var codexHome: URL? = nil
     @State private var scope: CacheRankingScope = .turns
     @State private var sortOrder: CacheRankingSortOrder = .latest
     @State private var excludesSingleTurnSessions = true
@@ -327,7 +334,7 @@ struct CacheHitRankingDetailView: View {
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    Text(rankingSubtitle)
+                    Text("整轮加权 · " + rankingSubtitle)
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
@@ -394,7 +401,7 @@ struct CacheHitRankingDetailView: View {
                 ScrollView(.vertical, showsIndicators: true) {
                     LazyVStack(spacing: 5) {
                         ForEach(Array(visibleRankingItems.enumerated()), id: \.element.id) { index, item in
-                            CacheRankingRow(rank: index + 1, item: item)
+                            CacheRankingRow(rank: index + 1, item: item, codexHome: codexHome)
                         }
                     }
                     .padding(.trailing, 4)
@@ -589,6 +596,8 @@ private struct CacheRankingCheckmark: View {
 private struct CacheRankingRow: View {
     let rank: Int
     let item: CacheRankingItem
+    var codexHome: URL? = nil
+    @State private var showingRequests = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -607,6 +616,12 @@ private struct CacheRankingRow: View {
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                if let turn = item.turn, turn.requestCount > 0 {
+                    Text("\(turn.requestCount) 次请求 · 低命中 \(turn.lowHitCount) 次 · 零命中 \(turn.zeroHitCount) 次")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(turn.lowHitCount > 0 || turn.zeroHitCount > 0 ? Color.orange : Color.secondary)
+                        .help("整轮加权：命中输入总量 ÷ 输入总量。低命中：输入至少 2 万且命中率低于 30%；零命中单独统计所有有输入的请求，两项可能重叠。")
+                }
                 if let context = item.context {
                     Text(context)
                         .font(.system(size: 9, weight: .medium))
@@ -621,7 +636,7 @@ private struct CacheRankingRow: View {
                 .frame(width: 154)
 
             VStack(alignment: .trailing, spacing: 2) {
-                Text(item.breakdown.cacheHitRate.percentString)
+                Text(String(format: "%.2f%%", item.breakdown.cacheHitRate * 100))
                     .font(.system(size: 15, weight: .semibold, design: .rounded))
                     .foregroundStyle(AppTheme.cacheHitColor(rate: item.breakdown.cacheHitRate))
                 Text("未命中 \(item.breakdown.uncachedInputTokens.abbreviatedTokens)")
@@ -629,6 +644,17 @@ private struct CacheRankingRow: View {
                     .foregroundStyle(.secondary)
             }
             .frame(width: 88, alignment: .trailing)
+
+            if item.turn != nil {
+                Button { showingRequests = true } label: {
+                    Label("明细", systemImage: "chevron.right")
+                        .font(.system(size: 11, weight: .medium))
+                        .frame(minHeight: 30)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("查看本轮每次请求的时间和用量")
+                .disabled(codexHome == nil)
+            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
@@ -637,7 +663,12 @@ private struct CacheRankingRow: View {
             RoundedRectangle(cornerRadius: 9, style: .continuous)
                 .stroke(AppTheme.border, lineWidth: 1)
         )
-        .accessibilityElement(children: .ignore)
+        .sheet(isPresented: $showingRequests) {
+            if let turn = item.turn, let codexHome {
+                CacheTurnRequestDetailView(turn: turn, codexHome: codexHome)
+            }
+        }
+        .accessibilityElement(children: .contain)
         .accessibilityLabel("缓存命中排行第 \(rank) 名，\(item.title)")
         .accessibilityValue(accessibilitySummary)
     }

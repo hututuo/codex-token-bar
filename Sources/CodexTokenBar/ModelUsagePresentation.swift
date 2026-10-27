@@ -95,7 +95,7 @@ enum ModelUsagePresentation {
                     tokens: row.breakdown.totalTokens,
                     calls: row.breakdown.calls,
                     share: Double(row.breakdown.totalTokens) / Double(total),
-                    color: color(forKey: key)
+                    color: color(for: key)
                 )
             }
             .sorted { lhs, rhs in
@@ -251,10 +251,12 @@ enum ModelUsagePresentation {
     /// floating underlying model.
     static func rowsWithDatedAutoReviewTargets(from rows: [ModelTokenBreakdown]) -> [ModelTokenBreakdown] {
         rows.flatMap { row in
-            if row.pricePeriods == nil, key(for: row.model).hasPrefix(autoReviewDisplayPrefix),
-               let target = autoReviewUnderlyingModelKey(for: row.model) {
+            if row.pricePeriods == nil, key(for: row.model).hasPrefix(autoReviewDisplayPrefix) {
+                // Keep the free-service identity even when only an old display
+                // key remains. Its underlying card is for reference pricing,
+                // never a replacement for the usage's billable identity.
                 return [ModelTokenBreakdown(model: row.model, breakdown: row.breakdown,
-                    pricePeriods: [.init(model: target, start: nil, breakdown: row.breakdown)])]
+                    pricePeriods: [.init(model: row.model, start: nil, breakdown: row.breakdown)])]
             }
             guard key(for: row.model) == "codex-auto-review", row.pricePeriods != nil else {
                 return [row]
@@ -303,36 +305,27 @@ enum ModelUsagePresentation {
         }
     }
 
-    private static func color(forKey key: String) -> Color {
-        switch key {
-        case "gpt-6-astra": return Color(red: 0.83, green: 0.32, blue: 0.17)
-        case "gpt-6.1-sol": return Color(red: 0.15, green: 0.55, blue: 0.92)
-        case "gpt-6-sol": return Color(red: 0.18, green: 0.42, blue: 0.98)
-        case "gpt-6-luna": return Color(red: 0.00, green: 0.64, blue: 0.68)
-        case "gpt-5.6-sol": return Color(red: 0.18, green: 0.42, blue: 0.98)
-        case "gpt-5.6-terra": return Color(red: 0.57, green: 0.32, blue: 0.90)
-        case "gpt-5.6-luna": return Color(red: 0.00, green: 0.64, blue: 0.68)
-        case "gpt-5.5": return Color(red: 0.66, green: 0.46, blue: 0.16)
-        case "gpt-5.6-generic": return Color(red: 0.48, green: 0.53, blue: 0.62)
-        case "gpt-5.4": return Color(red: 0.95, green: 0.56, blue: 0.08)
-        case "gpt-5.4-mini": return Color(red: 0.18, green: 0.70, blue: 0.36)
-        case "gpt-5.3-codex": return Color(red: 0.86, green: 0.27, blue: 0.46)
-        case "gpt-5.3-codex-spark": return Color(red: 0.96, green: 0.69, blue: 0.13)
-        case "gpt-5.2-codex": return Color(red: 0.24, green: 0.50, blue: 0.88)
-        case "unknown": return Color(red: 0.48, green: 0.53, blue: 0.62)
-        default:
-            let palette: [Color] = [
-                Color(red: 0.91, green: 0.33, blue: 0.45),
-                Color(red: 0.15, green: 0.58, blue: 0.88),
-                Color(red: 0.78, green: 0.43, blue: 0.84),
-                Color(red: 0.13, green: 0.68, blue: 0.55),
-                Color(red: 0.90, green: 0.48, blue: 0.16),
-            ]
-            let index = key.utf8.reduce(UInt64(1469598103934665603)) {
-                ($0 ^ UInt64($1)) &* 1099511628211
-            } % UInt64(palette.count)
-            return palette[Int(index)]
+    static func colorHex(for model: String?) -> String {
+        let key = self.key(for: model)
+        if key == "codex-auto-review" { return colorHex(for: "gpt-5.6-luna") }
+        if key.hasPrefix(autoReviewDisplayPrefix) {
+            return colorHex(for: displayTargetKey(for: String(key.dropFirst(autoReviewDisplayPrefix.count))))
         }
+        let fixed = [
+            "gpt-6-astra": "#36ad77", "gpt-6.1-sol": "#d4512c", "gpt-6-sol": "#2e6bfa", "gpt-6-luna": "#4299f5",
+            "gpt-5.6-sol": "#6774e8", "gpt-5.6-terra": "#9252e6", "gpt-5.6-luna": "#399b75", "gpt-5.5": "#a87629",
+            "gpt-5.6-generic": "#7a879e", "gpt-5.4": "#f28f14", "gpt-5.4-mini": "#2eb35c",
+            "gpt-5.3-codex": "#db4575", "gpt-5.3-codex-spark": "#f5b022", "gpt-5.2-codex": "#3d7fe0", "unknown": "#7a879e",
+        ]
+        if let hex = fixed[key] { return hex }
+        let hash = key.utf8.reduce(UInt32(0x811c9dc5)) { ($0 ^ UInt32($1)) &* 0x01000193 }
+        let channels = [16, 8, 0].map { 80 + Int((hash >> $0) & 127) }
+        return String(format: "#%02x%02x%02x", channels[0], channels[1], channels[2])
+    }
+
+    private static func color(forKey key: String) -> Color {
+        let rgb = UInt32(colorHex(for: key).dropFirst(), radix: 16) ?? 0x7a879e
+        return Color(red: Double((rgb >> 16) & 255) / 255, green: Double((rgb >> 8) & 255) / 255, blue: Double(rgb & 255) / 255)
     }
 
     private static func displayModelKey(for model: String?, at date: Date) -> String? {

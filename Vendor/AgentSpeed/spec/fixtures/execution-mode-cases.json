@@ -1,0 +1,755 @@
+{
+  "schemaVersion": 1,
+  "normalization": [
+    {
+      "id": "openai-default",
+      "adapter": "serviceTier",
+      "rawValue": "default",
+      "provider": "openai",
+      "evidence": "served",
+      "scope": "response",
+      "expected": {
+        "kind": "serviceTier",
+        "value": "standard",
+        "rawValue": "default",
+        "evidence": "served",
+        "scope": "response",
+        "provider": "openai"
+      }
+    },
+    {
+      "id": "openai-standard",
+      "adapter": "serviceTier",
+      "rawValue": "standard",
+      "provider": "openai",
+      "evidence": "served",
+      "scope": "response",
+      "expected": {
+        "kind": "serviceTier",
+        "value": "standard",
+        "rawValue": "standard",
+        "evidence": "served",
+        "scope": "response",
+        "provider": "openai"
+      }
+    },
+    {
+      "id": "openai-priority",
+      "adapter": "serviceTier",
+      "rawValue": "priority",
+      "provider": "openai",
+      "evidence": "served",
+      "scope": "response",
+      "expected": {
+        "kind": "serviceTier",
+        "value": "fast",
+        "rawValue": "priority",
+        "evidence": "served",
+        "scope": "response",
+        "provider": "openai"
+      }
+    },
+    {
+      "id": "openai-fast",
+      "adapter": "serviceTier",
+      "rawValue": "fast",
+      "provider": "openai",
+      "evidence": "served",
+      "scope": "response",
+      "expected": {
+        "kind": "serviceTier",
+        "value": "fast",
+        "rawValue": "fast",
+        "evidence": "served",
+        "scope": "response",
+        "provider": "openai"
+      }
+    },
+    {
+      "id": "openai-ultrafast",
+      "adapter": "serviceTier",
+      "rawValue": "ultrafast",
+      "provider": "openai",
+      "evidence": "served",
+      "scope": "response",
+      "expected": {
+        "kind": "serviceTier",
+        "value": "ultrafast",
+        "rawValue": "ultrafast",
+        "evidence": "served",
+        "scope": "response",
+        "provider": "openai"
+      }
+    },
+    {
+      "id": "openai-flex",
+      "adapter": "serviceTier",
+      "rawValue": "flex",
+      "provider": "openai",
+      "evidence": "served",
+      "scope": "response",
+      "expected": {
+        "kind": "serviceTier",
+        "value": "flex",
+        "rawValue": "flex",
+        "evidence": "served",
+        "scope": "response",
+        "provider": "openai"
+      }
+    },
+    {
+      "id": "openai-scale",
+      "adapter": "serviceTier",
+      "rawValue": "scale",
+      "provider": "openai",
+      "evidence": "served",
+      "scope": "response",
+      "expected": {
+        "kind": "serviceTier",
+        "value": "scale",
+        "rawValue": "scale",
+        "evidence": "served",
+        "scope": "response",
+        "provider": "openai"
+      }
+    },
+    {
+      "id": "openai-auto",
+      "adapter": "serviceTier",
+      "rawValue": "auto",
+      "provider": "openai",
+      "evidence": "served",
+      "scope": "response",
+      "expected": {
+        "kind": "serviceTier",
+        "value": "auto",
+        "rawValue": "auto",
+        "evidence": "served",
+        "scope": "response",
+        "provider": "openai"
+      }
+    },
+    {
+      "id": "openai-warp-2",
+      "adapter": "serviceTier",
+      "rawValue": "warp-2",
+      "provider": "openai",
+      "evidence": "served",
+      "scope": "response",
+      "expected": {
+        "kind": "serviceTier",
+        "value": "warp-2",
+        "rawValue": "warp-2",
+        "evidence": "served",
+        "scope": "response",
+        "provider": "openai"
+      }
+    },
+    {
+      "id": "invalid-9",
+      "adapter": "serviceTier",
+      "rawValue": null,
+      "provider": "openai",
+      "evidence": "served",
+      "scope": "response",
+      "expected": null
+    },
+    {
+      "id": "invalid-10",
+      "adapter": "serviceTier",
+      "rawValue": "",
+      "provider": "openai",
+      "evidence": "served",
+      "scope": "response",
+      "expected": null
+    },
+    {
+      "id": "invalid-11",
+      "adapter": "serviceTier",
+      "rawValue": true,
+      "provider": "openai",
+      "evidence": "served",
+      "scope": "response",
+      "expected": null
+    },
+    {
+      "id": "invalid-12",
+      "adapter": "serviceTier",
+      "rawValue": 1,
+      "provider": "openai",
+      "evidence": "served",
+      "scope": "response",
+      "expected": null
+    },
+    {
+      "id": "invalid-13",
+      "adapter": "serviceTier",
+      "rawValue": " fast",
+      "provider": "openai",
+      "evidence": "served",
+      "scope": "response",
+      "expected": null
+    },
+    {
+      "id": "invalid-14",
+      "adapter": "serviceTier",
+      "rawValue": "fast ",
+      "provider": "openai",
+      "evidence": "served",
+      "scope": "response",
+      "expected": null
+    },
+    {
+      "id": "invalid-15",
+      "adapter": "serviceTier",
+      "rawValue": "https://example.invalid",
+      "provider": "openai",
+      "evidence": "served",
+      "scope": "response",
+      "expected": null
+    },
+    {
+      "id": "invalid-16",
+      "adapter": "serviceTier",
+      "rawValue": "../fast",
+      "provider": "openai",
+      "evidence": "served",
+      "scope": "response",
+      "expected": null
+    },
+    {
+      "id": "invalid-17",
+      "adapter": "serviceTier",
+      "rawValue": "快",
+      "provider": "openai",
+      "evidence": "served",
+      "scope": "response",
+      "expected": null
+    },
+    {
+      "id": "invalid-18",
+      "adapter": "serviceTier",
+      "rawValue": "fast\n",
+      "provider": "openai",
+      "evidence": "served",
+      "scope": "response",
+      "expected": null
+    },
+    {
+      "id": "invalid-provider",
+      "adapter": "serviceTier",
+      "rawValue": "fast",
+      "provider": "https://api.invalid",
+      "evidence": "served",
+      "scope": "response",
+      "expected": null
+    },
+    {
+      "id": "anthropic-priority-is-not-fast",
+      "adapter": "serviceTier",
+      "rawValue": "priority",
+      "provider": "anthropic",
+      "evidence": "served",
+      "scope": "response",
+      "expected": null
+    },
+    {
+      "id": "claude-fast",
+      "adapter": "claudeSpeed",
+      "rawValue": "fast",
+      "provider": "anthropic",
+      "evidence": "served",
+      "scope": "response",
+      "expected": {
+        "kind": "serviceTier",
+        "value": "fast",
+        "rawValue": "fast",
+        "evidence": "served",
+        "scope": "response",
+        "provider": "anthropic"
+      }
+    },
+    {
+      "id": "claude-standard",
+      "adapter": "claudeSpeed",
+      "rawValue": "standard",
+      "provider": "anthropic",
+      "evidence": "served",
+      "scope": "response",
+      "expected": {
+        "kind": "serviceTier",
+        "value": "standard",
+        "rawValue": "standard",
+        "evidence": "served",
+        "scope": "response",
+        "provider": "anthropic"
+      }
+    },
+    {
+      "id": "claude-missing",
+      "adapter": "claudeSpeed",
+      "rawValue": null,
+      "provider": "anthropic",
+      "evidence": "served",
+      "scope": "response",
+      "expected": null
+    },
+    {
+      "id": "omp-recorded",
+      "adapter": "serviceTier",
+      "rawValue": "priority",
+      "provider": "openai",
+      "evidence": "recorded",
+      "scope": "request",
+      "expected": {
+        "kind": "serviceTier",
+        "value": "fast",
+        "rawValue": "priority",
+        "evidence": "recorded",
+        "scope": "request",
+        "provider": "openai"
+      }
+    },
+    {
+      "id": "codex-configured-default",
+      "adapter": "serviceTier",
+      "rawValue": "default",
+      "provider": "openai",
+      "evidence": "configured",
+      "scope": "configuration",
+      "expected": {
+        "kind": "serviceTier",
+        "value": "standard",
+        "rawValue": "default",
+        "evidence": "configured",
+        "scope": "configuration",
+        "provider": "openai"
+      }
+    },
+    {
+      "id": "kimi-k3.1-pro-highspeed",
+      "adapter": "kimiModel",
+      "rawValue": "k3.1-pro-highspeed",
+      "provider": "kimi",
+      "evidence": "selected",
+      "scope": "request",
+      "expected": {
+        "kind": "modelVariant",
+        "value": "highspeed",
+        "rawValue": "k3.1-pro-highspeed",
+        "evidence": "selected",
+        "scope": "request",
+        "provider": "kimi"
+      }
+    },
+    {
+      "id": "kimi-kimi-for-coding-highspeed",
+      "adapter": "kimiModel",
+      "rawValue": "kimi-for-coding-highspeed",
+      "provider": "kimi",
+      "evidence": "selected",
+      "scope": "request",
+      "expected": {
+        "kind": "modelVariant",
+        "value": "highspeed",
+        "rawValue": "kimi-for-coding-highspeed",
+        "evidence": "selected",
+        "scope": "request",
+        "provider": "kimi"
+      }
+    },
+    {
+      "id": "model-name-not-evidence-28",
+      "adapter": "kimiModel",
+      "rawValue": "my-fast-backend",
+      "provider": "kimi",
+      "evidence": "selected",
+      "scope": "request",
+      "expected": null
+    },
+    {
+      "id": "model-name-not-evidence-29",
+      "adapter": "kimiModel",
+      "rawValue": "grok-code-fast-1",
+      "provider": "kimi",
+      "evidence": "selected",
+      "scope": "request",
+      "expected": null
+    },
+    {
+      "id": "model-name-not-evidence-30",
+      "adapter": "kimiModel",
+      "rawValue": "k3.1-pro-highspeed-copy",
+      "provider": "kimi",
+      "evidence": "selected",
+      "scope": "request",
+      "expected": null
+    },
+    {
+      "id": "routing-fast-model",
+      "adapter": "routing",
+      "rawValue": "fast-model",
+      "provider": null,
+      "evidence": "selected",
+      "scope": "request",
+      "expected": {
+        "kind": "routing",
+        "value": "fast",
+        "rawValue": "fast-model",
+        "evidence": "selected",
+        "scope": "request"
+      }
+    },
+    {
+      "id": "routing-balanced-model",
+      "adapter": "routing",
+      "rawValue": "balanced-model",
+      "provider": null,
+      "evidence": "selected",
+      "scope": "request",
+      "expected": {
+        "kind": "routing",
+        "value": "balanced",
+        "rawValue": "balanced-model",
+        "evidence": "selected",
+        "scope": "request"
+      }
+    },
+    {
+      "id": "routing-deep-model",
+      "adapter": "routing",
+      "rawValue": "deep-model",
+      "provider": null,
+      "evidence": "selected",
+      "scope": "request",
+      "expected": {
+        "kind": "routing",
+        "value": "deep",
+        "rawValue": "deep-model",
+        "evidence": "selected",
+        "scope": "request"
+      }
+    },
+    {
+      "id": "routing-auto",
+      "adapter": "routing",
+      "rawValue": "auto",
+      "provider": null,
+      "evidence": "selected",
+      "scope": "request",
+      "expected": {
+        "kind": "routing",
+        "value": "auto",
+        "rawValue": "auto",
+        "evidence": "selected",
+        "scope": "request"
+      }
+    },
+    {
+      "id": "workflow-fast",
+      "adapter": "workflow",
+      "rawValue": "fast",
+      "provider": null,
+      "evidence": "selected",
+      "scope": "turn",
+      "expected": {
+        "kind": "workflow",
+        "value": "fast",
+        "rawValue": "fast",
+        "evidence": "selected",
+        "scope": "turn"
+      }
+    },
+    {
+      "id": "workflow-planning",
+      "adapter": "workflow",
+      "rawValue": "planning",
+      "provider": null,
+      "evidence": "selected",
+      "scope": "turn",
+      "expected": {
+        "kind": "workflow",
+        "value": "planning",
+        "rawValue": "planning",
+        "evidence": "selected",
+        "scope": "turn"
+      }
+    },
+    {
+      "id": "turbo-is-not-workflow-fast",
+      "adapter": "workflow",
+      "rawValue": "turbo",
+      "provider": null,
+      "evidence": "selected",
+      "scope": "turn",
+      "expected": null
+    }
+  ],
+  "attribution": [
+    {
+      "id": "missing",
+      "kind": "serviceTier",
+      "facts": [],
+      "expected": {
+        "mode": "unknown",
+        "evidence": "unknown"
+      }
+    },
+    {
+      "id": "configured-is-not-selected",
+      "kind": "serviceTier",
+      "facts": [
+        {
+          "kind": "serviceTier",
+          "value": "fast",
+          "rawValue": "fast",
+          "evidence": "configured",
+          "scope": "configuration",
+          "provider": "openai"
+        }
+      ],
+      "expected": {
+        "mode": "unknown",
+        "evidence": "unknown"
+      }
+    },
+    {
+      "id": "fast-request-standard-response",
+      "kind": "serviceTier",
+      "facts": [
+        {
+          "kind": "serviceTier",
+          "value": "fast",
+          "rawValue": "priority",
+          "evidence": "selected",
+          "scope": "request",
+          "provider": "openai"
+        },
+        {
+          "kind": "serviceTier",
+          "value": "standard",
+          "rawValue": "default",
+          "evidence": "served",
+          "scope": "response",
+          "provider": "openai"
+        }
+      ],
+      "expected": {
+        "mode": "standard",
+        "evidence": "served",
+        "provider": "openai"
+      }
+    },
+    {
+      "id": "selected-only",
+      "kind": "serviceTier",
+      "facts": [
+        {
+          "kind": "serviceTier",
+          "value": "ultrafast",
+          "rawValue": "ultrafast",
+          "evidence": "selected",
+          "scope": "turn",
+          "provider": "openai"
+        }
+      ],
+      "expected": {
+        "mode": "ultrafast",
+        "evidence": "selected",
+        "provider": "openai"
+      }
+    },
+    {
+      "id": "recorded-is-not-served",
+      "kind": "serviceTier",
+      "facts": [
+        {
+          "kind": "serviceTier",
+          "value": "fast",
+          "rawValue": "priority",
+          "evidence": "recorded",
+          "scope": "request",
+          "provider": "openai"
+        }
+      ],
+      "expected": {
+        "mode": "fast",
+        "evidence": "recorded",
+        "provider": "openai"
+      }
+    },
+    {
+      "id": "auto-is-unresolved",
+      "kind": "serviceTier",
+      "facts": [
+        {
+          "kind": "serviceTier",
+          "value": "auto",
+          "rawValue": "auto",
+          "evidence": "selected",
+          "scope": "turn",
+          "provider": "openai"
+        }
+      ],
+      "expected": {
+        "mode": "unknown",
+        "evidence": "unknown"
+      }
+    },
+    {
+      "id": "inherit-is-unresolved",
+      "kind": "serviceTier",
+      "facts": [
+        {
+          "kind": "serviceTier",
+          "value": "inherit",
+          "rawValue": "inherit",
+          "evidence": "selected",
+          "scope": "turn",
+          "provider": "openai"
+        }
+      ],
+      "expected": {
+        "mode": "unknown",
+        "evidence": "unknown"
+      }
+    },
+    {
+      "id": "turn-override",
+      "kind": "serviceTier",
+      "facts": [
+        {
+          "kind": "serviceTier",
+          "value": "fast",
+          "rawValue": "fast",
+          "evidence": "selected",
+          "scope": "session",
+          "provider": "openai"
+        },
+        {
+          "kind": "serviceTier",
+          "value": "ultrafast",
+          "rawValue": "ultrafast",
+          "evidence": "selected",
+          "scope": "turn",
+          "provider": "openai"
+        }
+      ],
+      "expected": {
+        "mode": "ultrafast",
+        "evidence": "selected",
+        "provider": "openai"
+      }
+    },
+    {
+      "id": "different-dimension",
+      "kind": "serviceTier",
+      "facts": [
+        {
+          "kind": "workflow",
+          "value": "fast",
+          "rawValue": "fast",
+          "evidence": "selected",
+          "scope": "turn"
+        }
+      ],
+      "expected": {
+        "mode": "unknown",
+        "evidence": "unknown"
+      }
+    },
+    {
+      "id": "routing-kept-separate",
+      "kind": "routing",
+      "facts": [
+        {
+          "kind": "routing",
+          "value": "fast",
+          "rawValue": "fast-model",
+          "evidence": "selected",
+          "scope": "request"
+        }
+      ],
+      "expected": {
+        "mode": "fast",
+        "evidence": "selected"
+      }
+    },
+    {
+      "id": "literal-unknown-unresolved",
+      "kind": "serviceTier",
+      "facts": [
+        {
+          "kind": "serviceTier",
+          "value": "unknown",
+          "rawValue": "unknown",
+          "evidence": "served",
+          "scope": "response",
+          "provider": "openai"
+        }
+      ],
+      "expected": {
+        "mode": "unknown",
+        "evidence": "unknown"
+      }
+    },
+    {
+      "id": "literal-none-unresolved",
+      "kind": "serviceTier",
+      "facts": [
+        {
+          "kind": "serviceTier",
+          "value": "none",
+          "rawValue": "none",
+          "evidence": "served",
+          "scope": "response",
+          "provider": "openai"
+        }
+      ],
+      "expected": {
+        "mode": "unknown",
+        "evidence": "unknown"
+      }
+    }
+  ],
+  "capabilities": [
+    {
+      "id": "supported",
+      "extensions": {
+        "executionModes": 1
+      },
+      "modelsEnabled": true,
+      "expected": true
+    },
+    {
+      "id": "absent",
+      "extensions": {},
+      "modelsEnabled": true,
+      "expected": false
+    },
+    {
+      "id": "boolean",
+      "extensions": {
+        "executionModes": true
+      },
+      "modelsEnabled": true,
+      "expected": false
+    },
+    {
+      "id": "future",
+      "extensions": {
+        "executionModes": 2
+      },
+      "modelsEnabled": true,
+      "expected": false
+    },
+    {
+      "id": "disabled",
+      "extensions": {
+        "executionModes": 1
+      },
+      "modelsEnabled": false,
+      "expected": false
+    }
+  ]
+}

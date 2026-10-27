@@ -5,12 +5,12 @@
 
 use super::state::{read_recent_rollout_threads, RolloutThread};
 use super::LiveRateSourceScope;
+use crate::core::shared_source_io::{probe_uncached, read_range};
 use crate::models::{BodySpeedHistoryPage, SpeedSample};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::Condvar;
@@ -21,7 +21,7 @@ use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
 const RECENT_THREAD_LIMIT: usize = 64;
-const MAX_BACKFILL_SECONDS: f64 = 30.0 * 60.0;
+const MAX_BACKFILL_SECONDS: f64 = 30.0 * 86_400.0;
 const MAX_TOTAL_BYTES_PER_POLL: usize = 64 * 1024 * 1024;
 const MAX_FILE_BYTES_PER_POLL: usize = 8 * 1024 * 1024;
 const MAX_LINE_BYTES: usize = 1_100_000;
@@ -140,6 +140,7 @@ struct Assembler {
 struct Ownership {
     is_fork: bool,
     is_paginated: bool,
+    created_at: Option<f64>,
     child_created_ms: Option<u64>,
     history_boundary: Option<u64>,
     own_start_ordinal: Option<u64>,
@@ -155,6 +156,8 @@ struct PendingPart {
     ended_at: Option<f64>,
     touched_at: f64,
     body_phase: Option<String>,
+    owned_by_ordinal: bool,
+    born_own: bool,
 }
 
 impl Assembler {
@@ -176,7 +179,15 @@ impl Assembler {
             || payload
                 .get("source")
                 .and_then(|source| source.get("subagent"))
-                .is_some();
+                .is_some()
+            || payload
+                .get("agent_role")
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.is_empty())
+            || payload
+                .get("agent_path")
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.is_empty());
         self.ownership.is_fork = parent || subagent;
         self.ownership.is_paginated =
             payload.get("history_mode").and_then(Value::as_str) == Some("paginated");
@@ -184,6 +195,17 @@ impl Assembler {
             .get("id")
             .and_then(Value::as_str)
             .and_then(uuid_v7_milliseconds);
+        self.ownership.created_at = self
+            .ownership
+            .child_created_ms
+            .map(|milliseconds| milliseconds as f64 / 1_000.0)
+            .or_else(|| {
+                payload
+                    .get("timestamp")
+                    .and_then(Value::as_str)
+                    .and_then(parse_rfc3339)
+                    .filter(|value| value.is_finite())
+            });
         self.ownership.history_boundary = payload
             .get("subagent_history_start_ordinal")
             .and_then(Value::as_u64);
@@ -192,6 +214,24 @@ impl Assembler {
     fn owns(&self, root: &Value, turn: Option<&str>) -> bool {
         if !self.ownership.is_fork {
             return true;
+        }
+        if !self.ownership.is_paginated {
+            let event_timestamp = root
+                .get("timestamp")
+                .and_then(Value::as_str)
+                .and_then(parse_rfc3339)
+                .filter(|value| value.is_finite());
+            let timestamp_own = self
+                .ownership
+                .created_at
+                .zip(event_timestamp)
+                .is_some_and(|(created_at, event)| event >= created_at);
+            let born_own = self
+                .ownership
+                .child_created_ms
+                .zip(turn.and_then(uuid_v7_milliseconds))
+                .is_some_and(|(child, turn)| turn >= child);
+            return timestamp_own || born_own;
         }
         if self
             .ownership
@@ -234,12 +274,12 @@ impl Assembler {
             self.configure(line);
             return Vec::new();
         }
-        let timestamp = root
+        let event_timestamp = root
             .get("timestamp")
             .and_then(Value::as_str)
             .and_then(parse_rfc3339)
-            .filter(|value| value.is_finite())
-            .unwrap_or(now);
+            .filter(|value| value.is_finite());
+        let timestamp = event_timestamp.unwrap_or(now);
 
         if record_type == "turn_context"
             || (record_type == "event_msg" && payload_type == "task_started")
@@ -350,9 +390,28 @@ impl Assembler {
         };
 
         let ((turn, item), timing, text, phase) = part_key;
+        let ordinal = root.get("ordinal").and_then(Value::as_u64);
+        let owned_by_ordinal = self.ownership.is_paginated
+            && (self
+                .ownership
+                .history_boundary
+                .zip(ordinal)
+                .is_some_and(|(boundary, ordinal)| ordinal >= boundary)
+                || self
+                    .ownership
+                    .own_start_ordinal
+                    .zip(ordinal)
+                    .is_some_and(|(start, ordinal)| ordinal >= start));
+        let born_own = self
+            .ownership
+            .child_created_ms
+            .zip(uuid_v7_milliseconds(&turn))
+            .is_some_and(|(child, turn)| turn >= child);
         let key = (turn, item);
         let pending = self.pending.entry(key).or_default();
         pending.touched_at = timestamp;
+        pending.owned_by_ordinal |= owned_by_ordinal;
+        pending.born_own |= born_own;
         if phase.is_some() {
             pending.body_phase = phase;
         }
@@ -522,11 +581,24 @@ impl Assembler {
                     started,
                     ended,
                     part.body_phase.clone(),
+                    part.owned_by_ordinal,
+                    part.born_own,
                 ))
             })
             .collect::<Vec<_>>();
         let mut output = Vec::new();
-        for (turn, item, model, text, started_at, ended_at, body_phase) in ready {
+        for (
+            turn,
+            item,
+            model,
+            text,
+            started_at,
+            ended_at,
+            body_phase,
+            owned_by_ordinal,
+            born_own,
+        ) in ready
+        {
             let key = (turn.clone(), item.clone());
             self.pending.remove(&key);
             let duration = ended_at - started_at;
@@ -537,6 +609,13 @@ impl Assembler {
                 || ended_at <= started_at
                 || ended_at < now - MAX_BACKFILL_SECONDS
                 || ended_at > now + 2.0
+                || (self.ownership.is_fork
+                    && self
+                        .ownership
+                        .created_at
+                        .is_some_and(|created_at| started_at < created_at)
+                    && !owned_by_ordinal
+                    && !born_own)
                 || model.is_empty()
                 || model.len() > 256
                 || text.is_empty()
@@ -612,10 +691,7 @@ impl Reader {
         let mut samples = Vec::new();
 
         for thread in threads {
-            if budget == 0
-                || file_count >= RECENT_THREAD_LIMIT
-                || thread.thread_source == "subagent"
-            {
+            if budget == 0 || file_count >= RECENT_THREAD_LIMIT {
                 continue;
             }
             if thread.id.is_empty()
@@ -624,7 +700,7 @@ impl Reader {
             {
                 continue;
             }
-            let Ok(mut file) = File::open(&thread.rollout_path) else {
+            let Ok(file) = File::open(&thread.rollout_path) else {
                 continue;
             };
             let Ok(metadata) = file.metadata() else {
@@ -666,7 +742,7 @@ impl Reader {
                 if boundary_size > budget || boundary_size > per_file_budget {
                     continue;
                 }
-                let boundary = match read_boundary(&mut file, state.cursor) {
+                let boundary = match read_boundary(&file, state.cursor) {
                     Ok(boundary) => boundary,
                     Err(_) => continue,
                 };
@@ -675,12 +751,9 @@ impl Reader {
                 needs_reset = boundary != state.boundary;
             }
             if needs_reset {
-                let header = match read_header(&mut file, &mut budget, &mut per_file_budget) {
+                let header = match read_header(&file, &mut budget, &mut per_file_budget) {
                     Ok(header) => header,
-                    Err(_) => {
-                        self.files.remove(&thread.rollout_path);
-                        continue;
-                    }
+                    Err(_) => continue,
                 };
                 if header.is_empty() {
                     self.files.remove(&thread.rollout_path);
@@ -689,15 +762,11 @@ impl Reader {
                 let mut state = FileState::new(identity, size, modified_at, &header);
                 let boundary_size = state.cursor.min(BOUNDARY_BYTES as u64) as usize;
                 if boundary_size > budget || boundary_size > per_file_budget {
-                    self.files.remove(&thread.rollout_path);
                     continue;
                 }
-                state.boundary = match read_boundary(&mut file, state.cursor) {
+                state.boundary = match read_boundary(&file, state.cursor) {
                     Ok(boundary) => boundary,
-                    Err(_) => {
-                        self.files.remove(&thread.rollout_path);
-                        continue;
-                    }
+                    Err(_) => continue,
                 };
                 budget = budget.saturating_sub(state.boundary.len());
                 per_file_budget = per_file_budget.saturating_sub(state.boundary.len());
@@ -706,7 +775,6 @@ impl Reader {
             let Some(state) = self.files.get_mut(&thread.rollout_path) else {
                 continue;
             };
-            state.modified_at = modified_at;
             if size <= state.cursor || budget == 0 || per_file_budget == 0 {
                 continue;
             }
@@ -716,16 +784,13 @@ impl Reader {
             if amount == 0 {
                 continue;
             }
-            if file.seek(SeekFrom::Start(state.cursor)).is_err() {
-                continue;
-            }
-            let mut bytes = vec![0u8; amount];
-            let Ok(read) = file.read(&mut bytes) else {
+            let Ok(bytes) = read_range(&file, state.cursor, amount) else {
                 continue;
             };
-            bytes.truncate(read);
+            let read = bytes.len();
             state.cursor = state.cursor.saturating_add(read as u64);
             state.boundary = advance_boundary(&state.boundary, &bytes);
+            state.modified_at = modified_at;
             budget = budget.saturating_sub(read);
             per_file_budget = per_file_budget.saturating_sub(read);
             let _remaining_file_budget = per_file_budget;
@@ -739,18 +804,16 @@ impl Reader {
 }
 
 fn read_header(
-    file: &mut File,
+    file: &File,
     budget: &mut usize,
     per_file_budget: &mut usize,
 ) -> std::io::Result<Vec<u8>> {
     if *budget == 0 || *per_file_budget == 0 {
         return Ok(Vec::new());
     }
-    file.seek(SeekFrom::Start(0))?;
     let limit = MAX_LINE_BYTES.min(*budget).min(*per_file_budget);
-    let mut bytes = vec![0u8; limit];
-    let read = file.read(&mut bytes)?;
-    bytes.truncate(read);
+    let mut bytes = probe_uncached(file, 0, limit)?;
+    let read = bytes.len();
     *budget = budget.saturating_sub(read);
     *per_file_budget = per_file_budget.saturating_sub(read);
     if let Some(newline) = bytes.iter().position(|byte| *byte == b'\n') {
@@ -761,12 +824,16 @@ fn read_header(
     Ok(bytes)
 }
 
-fn read_boundary(file: &mut File, cursor: u64) -> std::io::Result<Vec<u8>> {
+fn read_boundary(file: &File, cursor: u64) -> std::io::Result<Vec<u8>> {
     let length = cursor.min(BOUNDARY_BYTES as u64) as usize;
     let start = cursor.saturating_sub(length as u64);
-    file.seek(SeekFrom::Start(start))?;
-    let mut bytes = vec![0u8; length];
-    file.read_exact(&mut bytes)?;
+    let bytes = probe_uncached(file, start, length)?;
+    if bytes.len() != length {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "short completed-body boundary probe",
+        ));
+    }
     Ok(bytes)
 }
 
@@ -841,8 +908,8 @@ pub(super) fn apply_body_quality(sample: &mut SpeedSample) {
             || !end_millis.is_finite()
         {
             Some("计时数据不一致")
-        } else if end_millis - start_millis <= 550.0 {
-            Some("采样时长不超过 0.55 秒")
+        } else if end_millis - start_millis <= 400.0 {
+            Some("采样时长不超过 0.4 秒")
         } else {
             let computed_rate = f64::from(sample.output_tokens) / sample.duration_seconds;
             let tolerance = 0.01_f64.max(sample.tokens_per_second.abs() * 0.001);
@@ -1045,7 +1112,9 @@ pub(super) fn read_history_page(
     as_of: Option<f64>,
     retention_days: u16,
 ) -> BodySpeedHistoryPage {
-    let as_of = as_of.filter(|value| value.is_finite()).unwrap_or_else(current_time_seconds);
+    let as_of = as_of
+        .filter(|value| value.is_finite())
+        .unwrap_or_else(current_time_seconds);
     let retention_days = match retention_days {
         15 | 30 => retention_days,
         _ => 30,
@@ -1206,8 +1275,8 @@ mod tests {
         let started_at = 1_760_000_000_000_i64;
         let mut sample = retained_sample("boundary", 1_760_000_000.0);
         sample.started_at = started_at as f64 / 1_000.0;
-        sample.ended_at = (started_at + 550) as f64 / 1_000.0;
-        sample.duration_seconds = 0.55;
+        sample.ended_at = (started_at + 400) as f64 / 1_000.0;
+        sample.duration_seconds = 0.4;
         sample.output_tokens = 2;
         sample.tokens_per_second = f64::from(sample.output_tokens) / sample.duration_seconds;
         sample.network_warning = Some("also anomalous".into());
@@ -1215,12 +1284,12 @@ mod tests {
         assert_eq!(sample.confidence, "low");
         assert_eq!(
             sample.quality_reason.as_deref(),
-            Some("采样时长不超过 0.55 秒")
+            Some("采样时长不超过 0.4 秒")
         );
 
         sample.id = "short-accepted".into();
-        sample.ended_at = (started_at + 551) as f64 / 1_000.0;
-        sample.duration_seconds = 0.551;
+        sample.ended_at = (started_at + 401) as f64 / 1_000.0;
+        sample.duration_seconds = 0.401;
         sample.network_warning = None;
         sample.confidence = "low".into();
         sample.quality_reason = Some("legacy low confidence".into());
@@ -1364,6 +1433,37 @@ mod tests {
     }
 
     #[test]
+    fn timing_falls_back_to_nested_agent_message_fields() {
+        let now = 1_800_000_100.0;
+        let turn = "turn-nested";
+        let mut assembler = Assembler::default();
+        assembler.consume_line(&context(turn, "gpt-5.5", now), "thread-a", now);
+        let nested_timing = line(
+            "event_msg",
+            serde_json::json!({
+                "type":"item_completed", "turn_id":turn,
+                "item":{
+                    "type":"AgentMessage", "id":"nested-item",
+                    "started_at_ms":(now - 10.0) * 1_000.0,
+                    "completed_at_ms":now * 1_000.0,
+                }
+            }),
+            &timestamp(now),
+        );
+        assert!(assembler
+            .consume_line(&nested_timing, "thread-a", now)
+            .is_empty());
+        let samples = assembler.consume_line(
+            &body(turn, "nested-item", "nested timing body", now),
+            "thread-a",
+            now,
+        );
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].duration_seconds, 10.0);
+        assert_eq!(samples[0].body_phase.as_deref(), Some("final_answer"));
+    }
+
+    #[test]
     fn duplicate_pair_emits_once_and_negative_times_are_rejected() {
         let now = 1_800_000_100.0;
         let turn = "turn-1";
@@ -1424,6 +1524,284 @@ mod tests {
             now,
         );
         assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].model.as_deref(), Some("child-model"));
+    }
+
+    #[test]
+    fn non_paginated_subagent_uses_metadata_time_to_keep_only_child_bodies() {
+        let now = 1_800_000_100.0;
+        let mut assembler = Assembler::default();
+        let header = serde_json::to_vec(&serde_json::json!({
+            "type":"session_meta",
+            "payload":{
+                "id":"child-thread",
+                "thread_source":"subagent",
+                "timestamp":timestamp(now - 5.0),
+            }
+        }))
+        .unwrap();
+        assembler.configure(&header);
+
+        let inherited_turn = "parent-turn";
+        let inherited_context = line(
+            "turn_context",
+            serde_json::json!({"turn_id":inherited_turn, "model":"parent-model"}),
+            &timestamp(now - 6.0),
+        );
+        assembler.consume_line(&inherited_context, "child-thread", now);
+        let inherited_timing = line(
+            "event_msg",
+            serde_json::json!({
+                "type":"item_completed", "turn_id":inherited_turn,
+                "started_at_ms":(now - 8.0) * 1_000.0,
+                "completed_at_ms":(now - 6.0) * 1_000.0,
+                "item":{"type":"AgentMessage", "id":"inherited-item"},
+            }),
+            &timestamp(now - 6.0),
+        );
+        assert!(assembler
+            .consume_line(&inherited_timing, "child-thread", now)
+            .is_empty());
+        let inherited_body = line(
+            "response_item",
+            serde_json::json!({
+                "type":"message", "role":"assistant", "id":"inherited-item",
+                "turn_id":inherited_turn,
+                "content":[{"type":"output_text", "text":"inherited answer"}],
+            }),
+            &timestamp(now - 6.0),
+        );
+        assert!(assembler
+            .consume_line(&inherited_body, "child-thread", now)
+            .is_empty());
+
+        let child_turn = "child-owned-turn";
+        let child_context = line(
+            "turn_context",
+            serde_json::json!({"turn_id":child_turn, "model":"child-model"}),
+            &timestamp(now),
+        );
+        assembler.consume_line(&child_context, "child-thread", now);
+        let child_timing = line(
+            "event_msg",
+            serde_json::json!({
+                "type":"item_completed", "turn_id":child_turn,
+                "started_at_ms":(now - 2.0) * 1_000.0,
+                "completed_at_ms":now * 1_000.0,
+                "item":{"type":"AgentMessage", "id":"child-item"},
+            }),
+            &timestamp(now),
+        );
+        assembler.consume_line(&child_timing, "child-thread", now);
+        let child_body = line(
+            "response_item",
+            serde_json::json!({
+                "type":"message", "role":"assistant", "id":"child-item",
+                "turn_id":child_turn,
+                "content":[{"type":"output_text", "text":"child answer"}],
+            }),
+            &timestamp(now),
+        );
+        let samples = assembler.consume_line(&child_body, "child-thread", now);
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].turn_id, child_turn);
+        assert_eq!(samples[0].model.as_deref(), Some("child-model"));
+    }
+
+    #[test]
+    fn non_paginated_fork_without_birth_proof_rejects_body() {
+        let now = 1_800_000_100.0;
+        let mut assembler = Assembler::default();
+        let header = serde_json::to_vec(&serde_json::json!({
+            "type":"session_meta",
+            "payload":{"id":"child", "thread_source":"subagent"}
+        }))
+        .unwrap();
+        assembler.configure(&header);
+        let turn = "inherited-turn";
+        assembler.consume_line(&context(turn, "parent-model", now), "child-thread", now);
+        assert!(assembler
+            .consume_line(
+                &completed(
+                    turn,
+                    "inherited-item",
+                    (now - 2.0) * 1_000.0,
+                    now * 1_000.0,
+                    now
+                ),
+                "child-thread",
+                now,
+            )
+            .is_empty());
+        assert!(assembler
+            .consume_line(
+                &body(turn, "inherited-item", "inherited answer", now),
+                "child-thread",
+                now,
+            )
+            .is_empty());
+    }
+
+    #[test]
+    fn paginated_ordinal_proof_keeps_child_body_without_uuid_birth() {
+        let now = 1_800_000_100.0;
+        let mut assembler = Assembler::default();
+        let header = serde_json::to_vec(&serde_json::json!({
+            "type":"session_meta",
+            "payload":{
+                "id":"child",
+                "forked_from_id":"parent",
+                "history_mode":"paginated",
+                "subagent_history_start_ordinal":900,
+            }
+        }))
+        .unwrap();
+        assembler.configure(&header);
+        assembler.consume_line(
+            &ordinal_line(
+                "turn_context",
+                serde_json::json!({"turn_id":"own-turn", "model":"child-model"}),
+                &timestamp(now),
+                900,
+            ),
+            "child-thread",
+            now,
+        );
+        assembler.consume_line(
+            &ordinal_line(
+                "event_msg",
+                serde_json::json!({
+                    "type":"item_completed", "turn_id":"own-turn",
+                    "started_at_ms":(now - 10.0) * 1_000.0,
+                    "completed_at_ms":now * 1_000.0,
+                    "item":{"type":"AgentMessage", "id":"own-item"},
+                }),
+                &timestamp(now),
+                900,
+            ),
+            "child-thread",
+            now,
+        );
+        let samples = assembler.consume_line(
+            &ordinal_line(
+                "response_item",
+                serde_json::json!({
+                    "type":"message", "role":"assistant", "id":"own-item",
+                    "turn_id":"own-turn",
+                    "content":[{"type":"output_text", "text":"owned output"}],
+                }),
+                &timestamp(now),
+                900,
+            ),
+            "child-thread",
+            now,
+        );
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].turn_id, "own-turn");
+        assert_eq!(samples[0].model.as_deref(), Some("child-model"));
+    }
+
+    #[test]
+    fn reader_includes_subagent_rollout_and_filters_inherited_fork_events() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        let child = "018f0000-0001-7000-8000-000000000000";
+        let inherited = "018e0000-0000-7000-8000-000000000000";
+        let path = std::env::temp_dir().join(format!(
+            "completed-body-subagent-{}.jsonl",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut content = Vec::new();
+        for line in [
+            serde_json::to_vec(&serde_json::json!({
+                "type":"session_meta",
+                "payload":{
+                    "id":child,
+                    "forked_from_id":"parent",
+                    "thread_source":"subagent",
+                    "history_mode":"paginated",
+                    "subagent_history_start_ordinal":4,
+                }
+            }))
+            .unwrap(),
+            ordinal_line(
+                "turn_context",
+                serde_json::json!({"turn_id":inherited, "model":"parent-model"}),
+                &timestamp(now),
+                1,
+            ),
+            ordinal_line(
+                "event_msg",
+                serde_json::json!({
+                    "type":"item_completed", "turn_id":inherited,
+                    "started_at_ms":(now - 2.0) * 1_000.0,
+                    "completed_at_ms":now * 1_000.0,
+                    "item":{"type":"AgentMessage", "id":"inherited-item"},
+                }),
+                &timestamp(now),
+                2,
+            ),
+            ordinal_line(
+                "response_item",
+                serde_json::json!({
+                    "type":"message", "role":"assistant", "id":"inherited-item",
+                    "turn_id":inherited,
+                    "content":[{"type":"output_text", "text":"inherited answer"}],
+                }),
+                &timestamp(now),
+                3,
+            ),
+            ordinal_line(
+                "turn_context",
+                serde_json::json!({"turn_id":child, "model":"child-model"}),
+                &timestamp(now),
+                4,
+            ),
+            ordinal_line(
+                "event_msg",
+                serde_json::json!({
+                    "type":"item_completed", "turn_id":child,
+                    "started_at_ms":(now - 2.0) * 1_000.0,
+                    "completed_at_ms":now * 1_000.0,
+                    "item":{"type":"AgentMessage", "id":"child-item"},
+                }),
+                &timestamp(now),
+                5,
+            ),
+            ordinal_line(
+                "response_item",
+                serde_json::json!({
+                    "type":"message", "role":"assistant", "id":"child-item",
+                    "turn_id":child,
+                    "content":[{"type":"output_text", "text":"child answer"}],
+                }),
+                &timestamp(now),
+                6,
+            ),
+        ] {
+            content.extend_from_slice(&line);
+            content.push(b'\n');
+        }
+        fs::write(&path, content).unwrap();
+
+        let thread = RolloutThread {
+            id: child.into(),
+            rollout_path: path.clone(),
+            thread_source: "subagent".into(),
+        };
+        let samples = Reader::default()
+            .read_thread_files(vec![thread], now)
+            .unwrap();
+        let _ = fs::remove_file(path);
+
+        assert_eq!(samples.len(), 1);
+        assert_eq!(samples[0].turn_id, child);
+        assert_eq!(samples[0].item_id, "child-item");
         assert_eq!(samples[0].model.as_deref(), Some("child-model"));
     }
 
@@ -1645,13 +2023,13 @@ mod tests {
     }
 
     #[test]
-    fn cached_job_results_are_pruned_after_the_thirty_minute_window() {
+    fn cached_job_results_are_pruned_after_the_thirty_day_window() {
         let mut samples = VecDeque::from([
             retained_sample("old", 1_199.0),
             retained_sample("boundary", 1_200.0),
             retained_sample("recent", 1_201.0),
         ]);
-        prune_job_samples(&mut samples, 3_000.0);
+        prune_job_samples(&mut samples, 1_200.0 + MAX_BACKFILL_SECONDS);
         assert_eq!(
             samples
                 .iter()

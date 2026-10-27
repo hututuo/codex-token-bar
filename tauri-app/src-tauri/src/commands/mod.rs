@@ -1,8 +1,11 @@
 pub(crate) mod auto_resume;
+pub(crate) mod agent_speed_reporting;
 pub(crate) mod codex_radar;
 pub(crate) mod codex_instances;
+pub(crate) mod claude_local_runtime;
 pub(crate) mod dashboard;
 pub(crate) mod live;
+pub(crate) mod multi_client_usage;
 pub(crate) mod provider_repair;
 pub(crate) mod session_management;
 pub(crate) mod settings;
@@ -63,3 +66,5 @@ where
 }
 
 pub mod floating_guide;
+
+pub(crate) mod modeltrace;

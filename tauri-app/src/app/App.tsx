@@ -1,12 +1,18 @@
-import { QuotaSidebarApp } from "../quota-sidebar/QuotaSidebarApp";
-import { FloatingGuideOverlayApp } from "../floating/FloatingGuideOverlayApp";
-import { useMemo } from "react";
-import { FloatingWindowApp } from "../floating/FloatingWindowApp";
+import { lazy, Suspense, useMemo } from "react";
 import { desktopPlatform } from "../platform/desktop";
-import { StatusPanelApp } from "../status/StatusPanelApp";
-import { DashboardApp } from "./DashboardApp";
+
+// Each native window loads its own surface. Shared modules remain Vite-managed chunks.
+const QuotaSidebarApp = lazy(() => import("../quota-sidebar/QuotaSidebarApp").then(m => ({ default: m.QuotaSidebarApp })));
+const FloatingGuideOverlayApp = lazy(() => import("../floating/FloatingGuideOverlayApp").then(m => ({ default: m.FloatingGuideOverlayApp })));
+const FloatingWindowApp = lazy(() => import("../floating/FloatingWindowApp").then(m => ({ default: m.FloatingWindowApp })));
+const StatusPanelApp = lazy(() => import("../status/StatusPanelApp").then(m => ({ default: m.StatusPanelApp })));
+const DashboardApp = lazy(() => import("./DashboardApp").then(m => ({ default: m.DashboardApp })));
 
 export function App() {
+  return <Suspense fallback={null}><Surface /></Suspense>;
+}
+
+function Surface() {
   const surface = useMemo(getSurfaceMode, []);
   const guide = new URLSearchParams(window.location.search).get("surface");
   if (guide === "quota-sidebar" || guide === "quota-sidebar-detail") return <QuotaSidebarApp />;

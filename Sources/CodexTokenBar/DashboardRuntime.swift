@@ -222,6 +222,26 @@ final class DashboardRuntime: ObservableObject {
     let sourceTransitionCoordinator: DashboardSourceTransitionCoordinator
 
     private let startupAction: (() -> Void)?
+#if DEBUG
+    private var sidebarDiagnosticTask: Task<Void, Never>?
+    func replaySidebarForDiagnostics(rapid: Bool = false) {
+        guard ClientPreviewMode.simulated else { return }
+        sidebarDiagnosticTask?.cancel()
+        sidebarDiagnosticTask = Task { [weak self] in
+            guard let self else { return }
+            // Let menu dismissal / accessibility inspection finish before measuring.
+            do { try await Task.sleep(for: .seconds(3)) } catch { return }
+            for _ in 0..<5 {
+                guard !Task.isCancelled else { return }
+                self.quotaSidebar.enter()
+                do { try await Task.sleep(for: .milliseconds(rapid ? 100 : 800)) } catch { return }
+                self.quotaSidebar.dismiss()
+                do { try await Task.sleep(for: .milliseconds(rapid ? 60 : 650)) } catch { return }
+            }
+            self.sidebarDiagnosticTask = nil
+        }
+    }
+#endif
     private let quotaSidebar = QuotaSidebarController()
     private let floatingPanel: FloatingTokenPanelController
     private let statusBarPanel: StatusBarTokenController

@@ -3,6 +3,19 @@ import SwiftUI
 // Reuses the dashboard's snapshots and ranking policy; this surface owns no
 // reader, refresh timer, API client or independent cache.
 enum QuotaSidebarRadarPresentation {
+    struct WindowState: Equatable { let active: Bool; let text: String }
+
+    static func windowState(_ snapshot: CodexRadarSnapshot?, stale: Bool, updatedAt: Date?, now: Date) -> WindowState {
+        let active = isActiveWindow(snapshot, stale: stale, updatedAt: updatedAt, now: now)
+        let fresh = !stale && updatedAt.map { now >= $0 && now.timeIntervalSince($0) <= 900 } == true
+        return WindowState(active: active, text: snapshot == nil || !fresh ? "雷达待读取" : active ? "速登窗口" : "等待")
+    }
+
+    /// Shared boundary wakeup for the edge, compact label and detail card.
+    /// This remains deadline-aware even with Reduce Motion enabled.
+    static func schedule(_ snapshot: CodexRadarSnapshot?, updatedAt: Date?) -> QuotaSidebarRadarTimelineSchedule {
+        QuotaSidebarRadarTimelineSchedule(boundaries: [CodexRadarPresentationText.countdownDeadline(snapshot: snapshot), updatedAt, updatedAt?.addingTimeInterval(900)].compactMap { $0 })
+    }
     static func windowText(_ snapshot: CodexRadarSnapshot?) -> String {
         guard let open = snapshot?.window.open ?? snapshot?.windowOpen else { return "雷达待读取" }
         return open && CodexRadarPresentationText.isSpeedWindow(snapshot: snapshot) ? "速登窗口" : "等待"
@@ -26,6 +39,18 @@ enum QuotaSidebarRadarPresentation {
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let date = formatter.date(from: raw) ?? ISO8601DateFormatter().date(from: raw)
         return date?.formatted(date: .omitted, time: .shortened) ?? (raw.isEmpty ? "时间未知" : raw)
+    }
+}
+
+struct QuotaSidebarRadarTimelineSchedule: TimelineSchedule {
+    let boundaries: [Date]
+    func entries(from startDate: Date, mode: TimelineScheduleMode) -> [Date] {
+        // A finite, small display-only schedule; no timer or network work after
+        // both the announcement and freshness boundaries have settled.
+        let dates = boundaries.filter { $0 > startDate }.flatMap {
+            Array(CodexRadarCountdownTimelineSchedule(deadline: $0).entries(from: startDate, mode: mode))
+        }
+        return Array(Set([startDate] + dates)).sorted()
     }
 }
 
@@ -133,8 +158,10 @@ struct QuotaSidebarRadarContent: View {
             HStack(alignment: .top, spacing: 10) {
                 VStack(alignment: .leading, spacing: 7) {
                     Text("速登状态").font(.system(size: 9)).foregroundStyle(.gray)
-                    Text(QuotaSidebarRadarPresentation.windowText(snapshot))
-                        .font(.system(size: 19, weight: .medium)).foregroundStyle(.cyan)
+                    TimelineView(QuotaSidebarRadarPresentation.schedule(snapshot, updatedAt: updatedAt)) { tick in
+                        let state = QuotaSidebarRadarPresentation.windowState(snapshot, stale: officialStale, updatedAt: updatedAt, now: tick.date)
+                        Text(state.text).font(.system(size: 19, weight: .medium)).foregroundStyle(state.active ? .red : .gray)
+                    }
                 }.frame(maxWidth: .infinity, alignment: .leading)
                 VStack(alignment: .leading, spacing: 7) {
                     Text("雷达测评 IQ · 旧基准").font(.system(size: 9)).foregroundStyle(.gray)
@@ -148,9 +175,10 @@ struct QuotaSidebarRadarContent: View {
             VStack(alignment: .leading, spacing: 7) {
                 Text(officialStale ? "建议暂未刷新" : "建议动作")
                     .font(.system(size: 9)).foregroundStyle(officialStale ? .orange : .gray)
-                let action = CodexRadarPresentationText.effectiveAction(snapshot: snapshot)
-                Text(action == "--" ? "暂未提供建议" : action)
-                    .font(.system(size: 15, weight: .medium)).foregroundStyle(.cyan)
+                TimelineView(QuotaSidebarRadarPresentation.schedule(snapshot, updatedAt: updatedAt)) { tick in
+                    let state = QuotaSidebarRadarPresentation.windowState(snapshot, stale: officialStale, updatedAt: updatedAt, now: tick.date)
+                    Text(state.text).font(.system(size: 15, weight: .medium)).foregroundStyle(.cyan)
+                }
             }.frame(maxWidth: .infinity, alignment: .leading)
                 .padding(12).background(Color.cyan.opacity(0.045), in: RoundedRectangle(cornerRadius: 12))
             Text("来源：Codex 雷达 · \(updatedAt?.formatted(date: .omitted, time: .shortened) ?? QuotaSidebarRadarPresentation.timeText(snapshot?.monitoredAt ?? ""))")
@@ -237,44 +265,12 @@ struct QuotaSidebarRadarOutline: View {
     let snapshot: CodexRadarSnapshot?
     let stale: Bool
     let updatedAt: Date?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    private var outline: UnevenRoundedRectangle {
-        let radius: CGFloat = expanded ? 22 : 8
-        return UnevenRoundedRectangle(topLeadingRadius: edge == .right ? radius : 0,
-            bottomLeadingRadius: edge == .right ? radius : 0,
-            bottomTrailingRadius: edge == .left ? radius : 0,
-            topTrailingRadius: edge == .left ? radius : 0)
-    }
-
     var body: some View {
-        // Recheck local freshness even when no store publishes. The idle
-        // sidebar wakes only every 30 seconds, with no additional network work.
-        TimelineView(.periodic(from: .now, by: 30)) { tick in
-            if QuotaSidebarRadarPresentation.isActiveWindow(snapshot, stale: stale,
-                                                            updatedAt: updatedAt, now: tick.date) {
-                if reduceMotion {
-                    glow(opacity: 0.9)
-                } else {
-                    TimelineView(.animation(minimumInterval: 0.06)) { context in
-                        let wave = (sin(context.date.timeIntervalSinceReferenceDate * 2 * .pi / 1.6) + 1) / 2
-                        // The active animation also checks on every tick, so
-                        // the light turns off at expiry without a frozen glow.
-                        if QuotaSidebarRadarPresentation.isActiveWindow(snapshot, stale: stale,
-                                                                        updatedAt: updatedAt, now: context.date) {
-                            glow(opacity: 0.7 + wave * 0.3, phase: context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 3) / 3 * 360)
-                        }
-                    }
-                }
+        TimelineView(QuotaSidebarRadarPresentation.schedule(snapshot, updatedAt: updatedAt)) { tick in
+            if QuotaSidebarRadarPresentation.windowState(snapshot, stale: stale,
+                                                         updatedAt: updatedAt, now: tick.date).active {
+                QuotaSidebarRadarGlow(edge: edge, expanded: expanded)
             }
         }
-    }
-
-    private func glow(opacity: Double, phase: Double = 0) -> some View {
-        outline.strokeBorder(AngularGradient(colors: [.red.opacity(0.15), .red.opacity(opacity), .red.opacity(0.15)], center: .center, angle: .degrees(phase)), lineWidth: 1.5)
-            .shadow(color: Color.red.opacity(opacity * 0.7), radius: 3)
-            // Clip the glow inside the exact rail bounds. This needs no larger
-            // native window and never changes the pointer interception area.
-            .clipShape(outline)
     }
 }

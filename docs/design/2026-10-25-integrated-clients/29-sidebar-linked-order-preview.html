@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TokenBar · 侧栏联动排序示例</title>
+<style>
+:root{color-scheme:dark;--bg:#070b08;--line:#ffffff16;--text:#f3f4f1;--muted:#a1a69e;--green:#b6ef75;--purple:#b4acff;--blue:#78b7ff;--orange:#efc077;--codex:#6267ff;--claude:#e19479}
+*{box-sizing:border-box}body{margin:0;background:#1b1e1b;color:var(--text);font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}button,input{font:inherit}button{color:inherit;background:none;border:0;cursor:pointer}button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid var(--green);outline-offset:3px}input{accent-color:var(--green)}
+.workspace{display:grid;grid-template-columns:88px minmax(0,1fr);gap:8px;max-width:740px;margin:22px auto;padding:0 12px;align-items:start}.surface-label{font-size:10px;color:#b9c0b3;line-height:1.5;min-height:26px;padding:0 3px}.preview{position:sticky;top:14px}.level2{width:88px;background:var(--bg);border-radius:23px;padding:10px 0 8px;overflow:hidden;border:1px solid #ffffff0c}.tools{height:25px;display:flex;justify-content:center;align-items:center;gap:11px;color:#a6aaa4}.tools svg{width:13px;height:13px}.secondary-list{max-height:calc(100vh - 139px);overflow:auto;scrollbar-width:none;padding:4px 0}.secondary-list::-webkit-scrollbar{display:none}.mini-module{padding:6px 5px;border-radius:9px;display:flex;flex-direction:column;align-items:center;gap:5px;margin:1px 4px;transition:background .14s,outline-color .14s;outline:1px solid transparent}.mini-module.is-linked{outline-color:#b6ef7580;background:#b6ef7510}.ring{width:46px;height:46px;display:block;overflow:visible}.mini-module .label{font-size:10px;line-height:14px;color:#b9bdb4}.mini-module .client-label{font-size:10px;color:#c5c8c0;display:flex;align-items:center;gap:3px}.brand-dot{width:5px;height:5px;border-radius:50%;display:inline-block;flex:none}.window-labels{width:68px;display:flex;font-size:9px;line-height:12px;text-align:center}.window-labels span{flex:1}.detect{display:flex;align-items:center;gap:5px;color:var(--green);font-size:10px;font-weight:600}.detect svg{width:13px;height:13px}.tps-title{font-size:10px;font-weight:600;margin-bottom:1px}.tps-line{font-size:9px;width:68px;display:flex;justify-content:space-between;gap:2px}.mini-model-horizontal{height:4px;width:52px;border-radius:2px;background:linear-gradient(to right,#40c379 0 20%,#ef663e 20% 70%,#32a1fb 70%)}.footer-settings{border-top:1px solid var(--line);font-size:10px;color:var(--green);margin:7px 7px 0;padding:8px 2px 2px;text-align:center;background:#b6ef7508;border-radius:0 0 9px 9px}.small-entry{display:flex;gap:4px;align-items:center;font-size:10px;color:var(--orange)}.empty{font-size:10px;color:var(--muted);text-align:center;padding:15px 0}
+.level3{border-radius:23px;background:var(--bg);border:1px solid #ffffff0c;overflow:hidden}.detail-header{padding:18px 18px 0}.identity{display:flex;align-items:center;gap:10px}.logo{width:38px;height:38px;border-radius:11px;background:#b6ef7510;color:var(--green);display:grid;place-items:center;font:21px ui-monospace,monospace}.identity-title{display:flex;align-items:center;gap:8px}.identity-title h1{font-size:22px;letter-spacing:-.4px;margin:0}.plan{font-size:10px;font-weight:700;color:var(--green);padding:3px 7px;background:#b6ef7513;border-radius:10px}.identity-subtitle{font-size:11px;color:var(--muted);margin-top:4px}.header-tools{margin-left:auto;display:flex;gap:9px;color:#a4aa9d;font-size:19px}.detail-tabs{display:flex;gap:16px;align-items:center;overflow:hidden;white-space:nowrap;border-bottom:1px solid var(--line);margin-top:19px;padding-bottom:11px;font-size:11px;color:#adb3a5}.detail-tabs .active{color:var(--green);margin-left:auto;font-size:15px}.detail-scroll{max-height:calc(100vh - 193px);overflow:auto;padding:18px;scrollbar-width:thin;scrollbar-color:#ffffff25 transparent}.section-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:9px}.section-head h2{font-size:15px;margin:0;font-weight:600}.reset{font-size:10px;padding:5px 8px;border:1px solid #ffffff20;border-radius:5px;color:#c6ccc0}.reset:hover{border-color:#b6ef7570;color:var(--green)}.settings-subtitle{margin:0 0 10px;color:#b6bcb0;font-size:11px;line-height:1.6}.mapping-caption{font-size:10px;color:#b6ef75;min-height:31px;line-height:1.6;margin:0 0 13px}.mapping-caption strong{font-weight:600;margin-right:5px}.mapping-caption span{color:#acb5a1}
+.list{display:flex;flex-direction:column;gap:7px}.setting-row{border:1px solid #ffffff0c;border-radius:9px;background:#ffffff04;position:relative;transition:border-color .12s,background .12s}.row-main{display:flex;align-items:center;min-height:46px;padding:7px 10px 7px 5px;gap:9px}.setting-row:hover{background:#ffffff08}.setting-row.off .name{color:#92988d}.setting-row.dragging{opacity:.35}.setting-row.is-selected{border-color:#b6ef7580;background:#b6ef750a}.setting-row.before:before,.setting-row.after:after{content:"";position:absolute;left:0;right:0;height:2px;border-radius:1px;background:var(--green);z-index:3}.setting-row.before:before{top:-5px}.setting-row.after:after{bottom:-5px}.grip{width:24px;height:28px;display:grid;place-items:center;cursor:grab;touch-action:none;padding:0;flex:none;border-radius:4px;color:#8c9286}.grip:active{cursor:grabbing}.grip svg{width:10px;height:18px;pointer-events:none}.grip[aria-pressed=true]{color:var(--green);background:#b6ef751c;outline:1px solid #b6ef7560}.visibility{width:14px;height:14px;margin:0;cursor:pointer;flex:none}.name{font-size:12px;font-weight:500;display:flex;align-items:center;gap:6px}.name .brand-dot{width:6px;height:6px}.row-meta{margin-left:auto;color:#929a8c;font-size:10px;white-space:nowrap}.selected-hint{display:block;text-align:right;color:var(--green);font-size:9px;margin-top:2px}.windows{display:flex;gap:13px;align-items:center;margin:0 10px 10px 47px;font-size:11px;color:#c1c7b9}.windows label{display:flex;align-items:center;gap:5px;cursor:pointer}.windows input{margin:0;width:12px;height:12px}.window-note{font-size:10px;color:#969e8d}.actions{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:15px;font-size:10px;color:#a9b09f}.saved{color:var(--green)}.action-help{margin-top:14px;padding-top:12px;border-top:1px solid var(--line);color:#a7afa0;font-size:10px;line-height:1.7}.live-announcement{position:absolute;clip-path:inset(50%);height:1px;width:1px;overflow:hidden;white-space:nowrap}
+.compact-details{border:1px solid #ffffff14;border-radius:8px;margin:0 0 11px}.compact-details summary{cursor:pointer;list-style:none;padding:10px 11px;display:flex;align-items:center;font-size:11px;color:#d7ddcf;gap:7px}.compact-details summary::-webkit-details-marker{display:none}.compact-details summary:before{content:'▸';color:#acb69f}.compact-details[open] summary:before{content:'▾'}.compact-details summary small{margin-left:auto;font-size:9px;color:#929d87}.compact-demo{border-top:1px solid var(--line);display:flex;align-items:center;justify-content:center;gap:27px;padding:18px 15px}.compact-explanation{max-width:190px;font-size:11px;line-height:1.7;color:#a9b29d}.compact-explanation strong{display:block;color:#d2dbc7;font-weight:500;margin-bottom:7px}.rail{background:#050805;border-radius:10px;width:16px;padding:15px 0;display:flex;flex-direction:column;align-items:center;gap:12px;flex:none}.rail-group{display:flex;flex-direction:column;align-items:center;gap:12px;padding:0 3px;border-radius:5px;outline:1px solid transparent}.rail-group.is-linked{outline-color:#b6ef7570;background:#b6ef7510}.track{width:4px;height:46px;border-radius:3px;background:#ffffff22;position:relative}.track-fill{position:absolute;bottom:0;left:0;width:4px;border-radius:3px}.marker{position:absolute;top:0;left:-.5px;width:5px;height:5px;border-radius:50%;z-index:1}.marker.half{height:2.5px;border-radius:5px 5px 0 0}.mini-model{background:linear-gradient(to top,#32a1fb 0 30%,#ef663e 30% 80%,#40c379 80%)}.prototype-note{font-size:10px;color:#9aa590;line-height:1.6;margin:14px 0 0}
+@media(max-width:650px){.workspace{margin:13px auto;padding:0 7px;gap:7px}.detail-header{padding:15px 13px 0}.detail-scroll{padding:15px 13px;max-height:calc(100vh - 180px)}.detail-tabs{gap:12px;font-size:10px;margin-top:15px}.identity-title h1{font-size:20px}.row-main{gap:7px;padding-right:8px}.name{font-size:11px}.row-meta{font-size:9px}.grip{width:20px}.windows{margin-left:40px;gap:10px;flex-wrap:wrap}.window-note{font-size:9px}.mapping-caption{font-size:10px;min-height:31px}.identity-subtitle{font-size:10px}.compact-demo{gap:20px}.compact-explanation{font-size:10px}}
+@media(max-width:430px){.workspace{grid-template-columns:88px minmax(0,1fr);gap:5px;padding:0 5px}.detail-header,.detail-scroll{padding-left:10px;padding-right:10px}.detail-tabs{gap:9px;font-size:9px}.identity-title h1{font-size:18px}.logo{width:30px;height:30px;font-size:18px}.header-tools{gap:5px;font-size:16px}.row-meta{display:none}.windows{margin-left:16px}.actions{flex-wrap:wrap}.compact-explanation{max-width:120px}.compact-demo{gap:15px}}
+.compact-details:not([open]) .compact-demo{display:none}
+@media(prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}
+</style>
+<main class="workspace" aria-label="打开三级设置时的实际侧栏布局">
+  <aside class="preview" aria-label="左侧二级菜单">
+    <div class="surface-label">二级菜单</div>
+    <div class="level2"><div class="tools" aria-hidden="true">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M5 2h6l-1 4 2 3v1H4V9l2-3ZM8 10v5"/></svg>
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M12.5 5a5.5 5.5 0 1 0 1 5M9 4h4V0"/></svg>
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M4 5h1m2 0h1m2 0h1"/></svg>
+    </div><div class="secondary-list" id="secondary" aria-label="二级菜单"></div><div class="footer-settings">☷ &nbsp;侧栏设置</div></div>
+  </aside>
+  <section class="detail-surface" aria-label="右侧三级设置">
+    <div class="surface-label">三级菜单 · 侧栏设置</div>
+    <div class="level3">
+      <header class="detail-header">
+        <div class="identity"><div class="logo" aria-hidden="true">&gt;_</div><div><div class="identity-title"><h1>Codex</h1><span class="plan">PRO</span></div><div class="identity-subtitle">网页交互稿 · 模拟数据</div></div><div class="header-tools" aria-hidden="true"><span>⌖</span><span>×</span></div></div>
+        <nav class="detail-tabs" aria-label="原有三级菜单页签"><span>额度概览</span><span>测速</span><span>任务</span><span>雷达</span><span>重置卡</span><span>模型检测</span><span class="active" aria-label="当前为侧栏设置">☷</span></nav>
+      </header>
+      <div class="detail-scroll">
+        <div class="section-head"><h2>侧栏设置</h2><button class="reset" id="reset">恢复默认</button></div>
+        <p class="settings-subtitle">拖动把手排序，勾选控制显示。<br>指向一行，左侧对应模块高亮。</p>
+        <details class="compact-details" id="compact-details"><summary>查看收起后的一级外观 <small>仅预览</small></summary><div class="compact-demo"><div class="rail" id="rail" aria-label="三级设置内的一级外观预览"></div><div class="compact-explanation"><strong>一级只在这里按需预览。</strong>实际打开设置时，左侧保持二级菜单。关闭设置并移出侧栏后，才会收起成这根竖条。<p>窗口仍按原规则：5小时半圆、7天圆点；条长不变。</p></div></div></details>
+        <div class="mapping-caption" id="mapping-caption" role="status"></div>
+        <div class="list" id="settings-list" aria-label="可拖动的侧栏项目"></div>
+        <div class="actions"><span>设置会同时作用于收起状态</span><span class="saved" id="saved" role="status">已保存到此网页</span></div>
+
+        <div class="action-help">键盘排序：聚焦把手 → 空格提起 → ↑↓ 移动 → 空格放下；Esc 取消。</div>
+        <p class="prototype-note">只演示三级设置与侧栏的联动；数据模拟、配置仅存于此网页，不修改应用或账本。</p>
+      </div>
+    </div>
+  </section>
+</main><div id="announce" class="live-announcement" aria-live="polite"></div>
+<script>
+'use strict';
+const key='tokenbar.sidebar-linked-web-demo.v1';
+const definitions={
+  detection:{name:'模型检测',kind:'secondary'},
+  speed:{name:'实时速度',kind:'both'},
+  tps:{name:'正文 TPS',kind:'secondary'},
+  codex:{name:'Codex 额度',kind:'quota',brand:'var(--codex)',windows:['7d']},
+  claude:{name:'Claude 额度',kind:'quota',brand:'var(--claude)',windows:['5h','7d']},
+  models:{name:'模型占比',kind:'both'},
+  tasks:{name:'运行任务',kind:'secondary'},
+  radar:{name:'雷达',kind:'secondary'},
+  credits:{name:'重置卡',kind:'secondary'},
+  usage:{name:'客户端用量',kind:'secondary'}
+};
+const initial={order:Object.keys(definitions),hidden:['usage'],windows:{codex:['7d'],claude:['5h','7d']}};
+const copy=v=>JSON.parse(JSON.stringify(v));
+let state=copy(initial),dragID=null,dropTarget=null,keyboardDrag=null,pointerDrag=null,pointerFrame=null,selectedID='claude',hoverLockUntil=0;
+try{const cached=JSON.parse(localStorage.getItem(key));if(cached&&Array.isArray(cached.order)){state.order=[...new Set([...cached.order.filter(id=>definitions[id]),...initial.order])];state.hidden=Array.isArray(cached.hidden)?cached.hidden.filter(id=>definitions[id]):[];for(const id of ['codex','claude'])if(Array.isArray(cached.windows?.[id]))state.windows[id]=definitions[id].windows.filter(w=>cached.windows[id].includes(w));}}catch{}
+const $=id=>document.getElementById(id);
+function save(message='已保存到此网页'){try{localStorage.setItem(key,JSON.stringify(state));$('saved').textContent=message;}catch{$('saved').textContent='本次预览已更新（无法持久保存）';}}
+function announce(message){$('announce').textContent=message;}
+const grip='<svg viewBox="0 0 10 18" fill="currentColor" aria-hidden="true">'+[4,9,14].map(y=>`<circle cx="3" cy="${y}" r="1.1"/><circle cx="7" cy="${y}" r="1.1"/>`).join('')+'</svg>';
+const shield='<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M10 2 17 5v5c0 4-7 8-7 8S3 14 3 10V5Z"/><path d="m6.5 9 2.4 2.4 4.6-5"/></svg>';
+function renderSettings(){
+  $('settings-list').innerHTML=state.order.map(id=>{const d=definitions[id],off=state.hidden.includes(id);return `<div class="setting-row ${off?'off':''}" data-id="${id}"><div class="row-main"><button class="grip" data-handle="${id}" aria-label="拖动排序：${d.name}" aria-pressed="${keyboardDrag?.id===id}">${grip}</button><input class="visibility" type="checkbox" data-visible="${id}" aria-label="显示${d.name}" ${off?'':'checked'}><span class="name">${d.brand?`<i class="brand-dot" style="background:${d.brand}"></i>`:''}${d.name}</span><span class="row-meta">${d.kind==='secondary'?'展开时显示':'收起也显示'}</span></div>${d.kind==='quota'?`<div class="windows">${d.windows.map(w=>`<label><input type="checkbox" data-client="${id}" data-window="${w}" ${state.windows[id].includes(w)?'checked':''} ${off?'disabled':''}>${w==='5h'?'5小时':'7天'}</label>`).join('')}${id==='codex'?'<span class="window-note">PRO · 仅7天</span>':''}</div>`:''}</div>`}).join('');
+}
+function ring(values,color){
+  const track='#ffffff24';
+  if(values.length===1)return `<svg class="ring" viewBox="0 0 46 46"><circle cx="23" cy="23" r="21.5" fill="none" stroke="${track}" stroke-width="3"/><circle cx="23" cy="23" r="21.5" fill="none" stroke="${values[0].fill}" stroke-width="3" stroke-linecap="round" pathLength="100" stroke-dasharray="${values[0].value} 100" transform="rotate(-90 23 23)"/><text x="23" y="28" text-anchor="middle" fill="${color||'#fff'}" font-size="14" font-weight="500">${values[0].text||values[0].value+'%'}</text></svg>`;
+  const paths=['M23 44.5 A21.5 21.5 0 0 1 23 1.5','M23 1.5 A21.5 21.5 0 0 1 23 44.5'];
+  return `<svg class="ring" viewBox="0 0 46 46">${values.map((v,i)=>`<path d="${paths[i]}" fill="none" stroke="${track}" stroke-width="3"/><path d="${paths[i]}" fill="none" stroke="${v.fill}" stroke-width="3" stroke-linecap="round" pathLength="100" stroke-dasharray="${v.value} 100"/>`).join('')}<text x="14" y="27" text-anchor="middle" fill="#fff" font-size="11" font-weight="500">${values[0].value}</text><path d="M23 19v8" stroke="#ffffff60"/><text x="32" y="27" text-anchor="middle" fill="#fff" font-size="11" font-weight="500">${values[1].value}</text></svg>`;
+}
+function quotaValues(id){return state.windows[id].map(w=>({window:w,value:id==='codex'?72:w==='5h'?62:84,fill:w==='5h'?'var(--green)':'var(--purple)'}));}
+function track(value,fill,brand,window){return `<div class="track" data-window="${window||''}"><div class="track-fill" style="height:${value}%;background:${fill}"></div>${brand?`<i class="marker ${window==='5h'?'half':''}" style="background:${brand}"></i>`:''}</div>`;}
+function renderPreviews(){
+  let first='',second='';
+  for(const id of state.order){if(state.hidden.includes(id))continue;const d=definitions[id];let small='',large='';
+    if(d.kind==='quota'){const values=quotaValues(id);if(!values.length)continue;small=values.map(v=>track(v.value,v.fill,d.brand,v.window)).join('');large=ring(values)+`<div class="window-labels">${values.map(v=>`<span style="color:${v.fill}">${v.window==='5h'?'5小时':'7天'}</span>`).join('')}</div><div class="client-label"><i class="brand-dot" style="background:${d.brand}"></i>${id==='codex'?'Codex':'Claude'}</div>`;}
+    else if(id==='speed'){small=track(64,'var(--blue)');large=ring([{value:64,fill:'var(--blue)',text:'速率'}])+`<div class="label">96 tok/s</div>`;}
+    else if(id==='models'){small='<div class="track mini-model"></div>';large='<div class="mini-model-horizontal"></div><div class="label">模型占比</div>';}
+    else if(id==='detection')large=`<div class="detect">${shield}模型检测</div>`;
+    else if(id==='tps')large='<div class="tps-title">正文 TPS</div><div class="tps-line"><span style="color:#ef663e">6.1 Sol</span><b>54.2</b></div><div class="tps-line"><span style="color:#32a1fb">6 Luna</span><b>132.8</b></div>';
+    else if(id==='tasks')large=ring([{value:100,fill:'#efc07777',text:'3'}],'var(--orange)')+'<div class="label">2 主 · 1 子</div>';
+    else if(id==='radar')large='<div class="label">众测推荐</div><div class="label" style="color:#efc077">速登窗口</div>';
+    else if(id==='credits')large='<div class="small-entry">◇ 重置卡 2</div>';
+    else if(id==='usage')large='<div class="tps-title">累计 Token</div><div class="tps-line"><span>Codex</span><b>1.2B</b></div><div class="tps-line"><span>Claude</span><b>45.2M</b></div>';
+    if(small)first+=`<div class="rail-group" data-module="${id}" aria-label="${d.name}">${small}</div>`;
+    if(large)second+=`<div class="mini-module" data-module="${id}" aria-label="${d.name}">${large}</div>`;
+  }
+  $('rail').innerHTML=first||'<span class="empty">—</span>';$('secondary').innerHTML=second||'<div class="empty">未显示模块</div>';
+}
+function selectModule(id,{reveal=false}={}){
+  if(!definitions[id])return;selectedID=id;
+  document.querySelectorAll('.is-linked,.is-selected').forEach(n=>n.classList.remove('is-linked','is-selected'));
+  document.querySelector(`#settings-list [data-id="${id}"]`)?.classList.add('is-selected');
+  document.querySelectorAll(`[data-module="${id}"]`).forEach(n=>n.classList.add('is-linked'));
+  document.querySelectorAll('#settings-list .selected-hint').forEach(n=>n.remove());
+  const meta=document.querySelector(`#settings-list [data-id="${id}"] .row-meta`);
+  if(meta){const badge=document.createElement('span');badge.className='selected-hint';badge.textContent='左栏高亮';meta.appendChild(badge);}
+  let description;
+  if(state.hidden.includes(id))description='已隐藏，两种状态都不显示。';
+  else if(definitions[id].kind==='quota'){
+    const values=quotaValues(id);
+    description=values.length===2?'左侧显示5小时／7天半环，收起后是两根条。':values.length===1?`左侧显示${values[0].window==='5h'?'5小时':'7天'}整环，收起后是一根条。`:'没有选中额度窗口，侧栏不显示。';
+  }else if(definitions[id].kind==='secondary')description='仅在展开时显示。';
+  else description=id==='speed'?'左侧速度环；收起后为速度条。':'左侧模型占比；收起后为模型色带。';
+  $('mapping-caption').innerHTML=`<strong>${definitions[id].name}</strong><span>${description}</span>`;
+  if(reveal){const element=document.querySelector(`#secondary [data-module="${id}"]`);if(element){const rect=element.getBoundingClientRect(),area=$('secondary').getBoundingClientRect();if(rect.top<area.top)$('secondary').scrollTop-=area.top-rect.top+4;else if(rect.bottom>area.bottom)$('secondary').scrollTop+=rect.bottom-area.bottom+4;}}
+}
+function render(){renderSettings();renderPreviews();selectModule(selectedID);}
+function clearDrop(){document.querySelectorAll('.before,.after').forEach(e=>e.classList.remove('before','after'));}
+function move(id,target,after){const next=state.order.filter(v=>v!==id);let index=next.indexOf(target);if(index<0)return;next.splice(index+(after?1:0),0,id);state.order=next;}
+const list=$('settings-list');
+list.addEventListener('change',e=>{const input=e.target;if(input.dataset.visible){const id=input.dataset.visible;selectedID=id;state.hidden=state.hidden.filter(v=>v!==id);if(!input.checked)state.hidden.push(id);}else if(input.dataset.window){const {client,window:w}=input.dataset;selectedID=client;state.windows[client]=definitions[client].windows.filter(v=>v===w?input.checked:state.windows[client].includes(v));}else return;save();render();});
+function updatePointer(x,y){
+  if(!pointerDrag)return;
+  if(!dragID&&Math.hypot(x-pointerDrag.x,y-pointerDrag.y)<4)return;
+  if(!dragID){
+    dragID=pointerDrag.id;keyboardDrag=null;
+    const row=pointerDrag.handle.closest('.setting-row'),rect=row.getBoundingClientRect();
+    row.classList.add('dragging');
+    const ghost=row.cloneNode(true);ghost.className='setting-row drag-ghost';ghost.setAttribute('aria-hidden','true');ghost.inert=true;
+    Object.assign(ghost.style,{position:'fixed',left:rect.x+'px',top:rect.y+'px',width:rect.width+'px',margin:'0',zIndex:'10',pointerEvents:'none',opacity:'.95',background:'#171d13',borderColor:'#b6ef7580',boxShadow:'0 12px 28px #0009',willChange:'transform'});
+    document.body.appendChild(ghost);pointerDrag.ghost=ghost;
+    $('saved').textContent='松手后应用到两级菜单';
+  }
+  pointerDrag.ghost.style.transform=`translate(${x-pointerDrag.x}px,${y-pointerDrag.y}px)`;
+  clearDrop();
+  const row=document.elementFromPoint(x,y)?.closest('#settings-list .setting-row');
+  if(!row||row.dataset.id===dragID){dropTarget=null;return;}
+  const after=y>row.getBoundingClientRect().top+row.offsetHeight/2;
+  row.classList.add(after?'after':'before');dropTarget={id:row.dataset.id,after};
+}
+function finishPointer(apply){
+  if(!pointerDrag)return;
+  if(pointerFrame!==null){cancelAnimationFrame(pointerFrame);pointerFrame=null;}
+  const moved=dragID,handle=pointerDrag.handle,pointerID=pointerDrag.pointerID;
+  if(apply&&moved&&dropTarget)move(moved,dropTarget.id,dropTarget.after);
+  pointerDrag.ghost?.remove();
+  if(handle.hasPointerCapture(pointerID))handle.releasePointerCapture(pointerID);
+  pointerDrag=null;dragID=null;dropTarget=null;clearDrop();
+  if(moved){selectedID=moved;hoverLockUntil=performance.now()+500;if(apply)save();render();list.querySelector(`[data-handle="${moved}"]`)?.focus();announce(apply?definitions[moved].name+'顺序已更新，两级菜单已同步':'已取消移动');}
+}
+list.addEventListener('pointerdown',e=>{
+  const handle=e.target.closest('[data-handle]');if(!handle||e.button!==0)return;
+  e.preventDefault();handle.focus();selectModule(handle.dataset.handle,{reveal:true});pointerDrag={id:handle.dataset.handle,handle,pointerID:e.pointerId,x:e.clientX,y:e.clientY};handle.setPointerCapture(e.pointerId);
+});
+list.addEventListener('pointermove',e=>{
+  if(!pointerDrag||e.pointerId!==pointerDrag.pointerID)return;
+  const x=e.clientX,y=e.clientY;if(pointerFrame!==null)cancelAnimationFrame(pointerFrame);
+  pointerFrame=requestAnimationFrame(()=>{pointerFrame=null;updatePointer(x,y);});
+});
+list.addEventListener('pointerup',e=>{if(pointerDrag&&e.pointerId===pointerDrag.pointerID){updatePointer(e.clientX,e.clientY);finishPointer(true);}});
+list.addEventListener('pointercancel',()=>finishPointer(false));
+list.addEventListener('keydown',e=>{const handle=e.target.closest('[data-handle]');if(!handle)return;const id=handle.dataset.handle;
+  if(e.key===' '||e.key==='Enter'){e.preventDefault();if(keyboardDrag){keyboardDrag=null;save();render();announce('已放下，两级菜单已同步');}else{keyboardDrag={id,original:[...state.order]};handle.setAttribute('aria-pressed','true');$('saved').textContent='使用 ↑↓ 调整，空格放下';announce('已提起'+definitions[id].name);}list.querySelector(`[data-handle="${id}"]`)?.focus();}
+  else if(keyboardDrag&&['ArrowUp','ArrowDown'].includes(e.key)){e.preventDefault();const index=state.order.indexOf(id),target=state.order[index+(e.key==='ArrowUp'?-1:1)];if(target){move(id,target,e.key==='ArrowDown');renderSettings();list.querySelector(`[data-handle="${id}"]`)?.focus();announce('移动到第'+(state.order.indexOf(id)+1)+'项');}}
+  else if(keyboardDrag&&e.key==='Escape'){e.preventDefault();state.order=keyboardDrag.original;keyboardDrag=null;render();list.querySelector(`[data-handle="${id}"]`)?.focus();$('saved').textContent='已取消移动';}
+});
+list.addEventListener('pointermove',e=>{const row=e.target.closest('.setting-row');if(row&&!pointerDrag&&performance.now()>=hoverLockUntil&&row.dataset.id!==selectedID)selectModule(row.dataset.id,{reveal:true});});
+list.addEventListener('focusin',e=>{const row=e.target.closest('.setting-row');if(row&&!pointerDrag&&row.dataset.id!==selectedID)selectModule(row.dataset.id,{reveal:true});});
+list.addEventListener('click',e=>{const row=e.target.closest('.setting-row');if(row)selectModule(row.dataset.id,{reveal:true});});
+document.querySelector('.workspace').addEventListener('click',e=>{const item=e.target.closest('[data-module]');if(item)selectModule(item.dataset.module,{reveal:true});});
+$('reset').addEventListener('click',()=>{keyboardDrag=null;selectedID='claude';state=copy(initial);save('已恢复默认');render();});
+render();
+</script>
+</html>

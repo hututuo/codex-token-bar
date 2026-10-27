@@ -1,7 +1,19 @@
 import XCTest
+import SwiftUI
 @testable import CodexTokenBar
 
 final class QuotaSidebarTests: XCTestCase {
+    func testMeasuredSummaryHeightReplacesLegacyPaddingWithinTheUsableDisplay() {
+        let area = CGRect(x: -1920, y: 0, width: 1920, height: 900)
+        let base = QuotaSidebarFrames.make(usableFrame: area, edge: .left, expanded: true, hasFiveHour: false)
+        let populated = QuotaSidebarFrames.make(usableFrame: area, edge: .left, expanded: true, hasFiveHour: false, expandedHeight: 520)
+        let many = QuotaSidebarFrames.make(usableFrame: area, edge: .left, expanded: true, hasFiveHour: false, expandedHeight: 5200)
+        XCTAssertLessThan(populated.rail.height, base.rail.height)
+        XCTAssertEqual(populated.rail.height, 520)
+        XCTAssertEqual(many.rail.height, area.height)
+        XCTAssertTrue(area.contains(populated.rail))
+        XCTAssertTrue(area.contains(many.rail))
+    }
     func testCacheReminderRevealsSummaryUntilClearedAndPreservesPinnedDetails() {
         var state = QuotaSidebarInteraction()
         state.presentCacheAdvice("a:100")
@@ -358,7 +370,7 @@ final class QuotaSidebarTests: XCTestCase {
         for edge in QuotaSidebarEdge.allCases {
             let host = NSView(frame: .zero)
             let canvas = QuotaSidebarCanvasView(host: host, edge: edge)
-            for (width, height) in [(16.0, 134.0), (28.0, 220.0), (55.0, 350.0), (88.0, 470.0)] {
+            for (width, height) in [(16.0, 134.0), (28.0, 220.0), (55.0, 350.0), (88.0, 470.0), (16.0, 134.0)] {
                 let x = edge == .right ? 1440 - width : 0
                 canvas.frame = CGRect(x: x, y: 600 - height / 2, width: width, height: height)
                 canvas.layout()
@@ -366,6 +378,12 @@ final class QuotaSidebarTests: XCTestCase {
                 XCTAssertEqual(canvas.frame.minX + host.frame.minX, edge == .right ? 1352 : 0)
                 XCTAssertEqual(canvas.frame.minY + host.frame.minY, 260)
                 XCTAssertTrue(canvas.layer?.masksToBounds == true)
+                XCTAssertTrue(canvas.bounds.contains(canvas.dragHandle.frame))
+                XCTAssertEqual(canvas.dragHandle.frame.midX, canvas.bounds.midX)
+                XCTAssertEqual(canvas.dragHandle.frame.maxY, canvas.bounds.maxY - 4.5)
+                XCTAssertEqual(canvas.dragHandle.frame.width, min(24, width - 6))
+                XCTAssertNil(canvas.dragHandle.hitTest(.zero))
+                XCTAssertEqual(canvas.dragHandle.isHidden, width <= 16)
             }
         }
     }
@@ -373,6 +391,11 @@ final class QuotaSidebarTests: XCTestCase {
     func testExpandedButtonRowsReceiveOriginalMouseSequence() {
         let size = CGSize(width: 88, height: 470)
         for y in stride(from: 15.0, through: 435.0, by: 20) {
+            XCTAssertFalse(QuotaSidebarPressRouting.shouldTrackDrag(expanded: true, point: CGPoint(x: 44, y: y), size: size))
+        }
+        // The toolbar occupies the padding immediately below the handle. Its
+        // original down/up sequence must not be intercepted by native dragging.
+        for y in [440.0, 450.0, 457.0] {
             XCTAssertFalse(QuotaSidebarPressRouting.shouldTrackDrag(expanded: true, point: CGPoint(x: 44, y: y), size: size))
         }
         XCTAssertTrue(QuotaSidebarPressRouting.shouldTrackDrag(expanded: true, point: CGPoint(x: 44, y: 460), size: size))
@@ -421,6 +444,27 @@ final class QuotaSidebarTests: XCTestCase {
         XCTAssertEqual(state.detail, .radar)
         XCTAssertTrue(state.pinned)
         XCTAssertEqual(QuotaSidebarRadarPresentation.windowText(nil), "雷达待读取")
+    }
+
+    func testRadarPresentationAndBoundaryClockAgreeWithAndWithoutDeadline() throws {
+        let now = Date(timeIntervalSince1970: 10_000)
+        var open = try JSONDecoder.codexRadar.decode(CodexRadarSnapshot.self,
+            from: Data(#"{"recommended_action":"use_remaining_tokens","window_open":true,"window":{"open":true,"opened_at":"2026-10-22T14:55:22+08:00","closed_at":null}}"#.utf8))
+        XCTAssertNil(CodexRadarPresentationText.countdownDeadline(snapshot: open))
+        XCTAssertEqual(QuotaSidebarRadarPresentation.windowState(open, stale: false, updatedAt: now, now: now).text, "速登窗口")
+        open.window.countdownDeadline = "1970-01-01T02:46:41Z"
+        for offset in [0.0, 1.0, 899.0, 901.0] {
+            let tick = now.addingTimeInterval(offset)
+            let state = QuotaSidebarRadarPresentation.windowState(open, stale: false, updatedAt: now, now: tick)
+            XCTAssertEqual(state.active, QuotaSidebarRadarPresentation.isActiveWindow(open, stale: false, updatedAt: now, now: tick))
+            XCTAssertEqual(state.text, offset == 0 ? "速登窗口" : offset > 900 ? "雷达待读取" : "等待")
+        }
+        for mode in [TimelineScheduleMode.normal, .lowFrequency] {
+            let entries = QuotaSidebarRadarPresentation.schedule(open, updatedAt: now).entries(from: now, mode: mode)
+            XCTAssertTrue(entries.contains(now.addingTimeInterval(1.25)), "Window expiry must wake static and animated outlines")
+            XCTAssertTrue(entries.contains(now.addingTimeInterval(900.25)), "Freshness expiry must still wake after the window ends")
+            XCTAssertLessThan(entries.count, 100)
+        }
     }
 
     func testNativeDragThresholdAndReanchoringAfterHoverResize() {

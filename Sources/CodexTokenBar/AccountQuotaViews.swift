@@ -153,79 +153,70 @@ struct AccountQuotaRefreshCadenceMenu: View {
 struct AccountQuotaStrip: View {
     let snapshot: AccountQuotaSnapshot
     @Binding var showingResetCreditDetails: Bool
+    var clientItems: [ClientQuotaItem]? = nil
 
     private var presentation: AccountQuotaStripPresentation {
         AccountQuotaStripPresentation(snapshot: snapshot)
     }
 
+    private var includesCodex: Bool {
+        clientItems == nil || clientItems?.contains { $0.client == "codex" } == true
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: AccountQuotaStripLayout.itemSpacing) {
-                AccountQuotaAccountLabel(
-                    presentation: presentation.accountLabel,
-                    isAvailable: snapshot.isAvailable
-                )
-
-                HStack(spacing: AccountQuotaSegmentLayout.interSegmentSpacing) {
-                    if let fiveHour = snapshot.fiveHour {
-                        AccountQuotaSegment(
-                            window: fiveHour,
-                            accent: AppTheme.quotaRemainingColor(percent: Double(fiveHour.remainingPercent)),
-                            isStale: snapshot.staleDataDisplayed
-                        )
-                    }
-                    if let sevenDay = snapshot.sevenDay {
-                        AccountQuotaSegment(
-                            window: sevenDay,
-                            accent: AppTheme.quotaRemainingColor(percent: Double(sevenDay.remainingPercent)),
-                            isStale: snapshot.staleDataDisplayed
-                        )
-                    }
+        VStack(alignment: .leading, spacing: clientItems == nil ? 5 : 10) {
+            if let clientItems {
+                clientRows(clientItems)
+                if includesCodex {
+                    Divider().overlay(AppTheme.border)
+                    accountTools
                 }
-                .frame(width: AccountQuotaStripLayout.combinedQuotaSegmentsWidth, alignment: .leading)
-
-                if shouldShowResetCredits {
-                    AccountQuotaResetCreditButton(
-                        snapshot: snapshot,
-                        isPresented: $showingResetCreditDetails
+            } else {
+                HStack(spacing: AccountQuotaStripLayout.itemSpacing) {
+                    AccountQuotaAccountLabel(presentation: presentation.accountLabel, isAvailable: snapshot.isAvailable)
+                    HStack(spacing: AccountQuotaSegmentLayout.interSegmentSpacing) {
+                        if let fiveHour = snapshot.fiveHour {
+                            AccountQuotaSegment(window: fiveHour,
+                                accent: AppTheme.quotaRemainingColor(percent: Double(fiveHour.remainingPercent)),
+                                isStale: snapshot.staleDataDisplayed)
+                        }
+                        if let sevenDay = snapshot.sevenDay {
+                            AccountQuotaSegment(window: sevenDay,
+                                accent: AppTheme.quotaRemainingColor(percent: Double(sevenDay.remainingPercent)),
+                                isStale: snapshot.staleDataDisplayed)
+                        }
+                    }
+                    .frame(width: AccountQuotaStripLayout.combinedQuotaSegmentsWidth, alignment: .leading)
+                    resetCredits
+                    AccountQuotaPaceInsight(snapshot: snapshot)
+                }
+                if !snapshot.reserveWindows.isEmpty {
+                    HStack(spacing: AccountQuotaSegmentLayout.interSegmentSpacing) {
+                        ForEach(snapshot.reserveWindows, id: \.label) { window in
+                            AccountQuotaSegment(window: window, accent: .cyan, isStale: snapshot.staleDataDisplayed)
+                        }
+                    }
+                    .accessibilityLabel("Luna 储备额度")
+                }
+            }
+            if includesCodex {
+                if snapshot.reserveHasUnavailableWindow {
+                    Text("Luna 储备：部分窗口未返回有效读数").font(.caption).foregroundStyle(.secondary)
+                }
+                if shouldShowRetryHint || snapshot.diagnostics.contains(where: { $0.severity != .info }) {
+                    DiagnosticNotice(
+                        summary: snapshot.status.contains("自动重试") ? "额度读取失败，正在重试" : (snapshot.staleDataDisplayed ? "额度更新失败，暂显示上次数据" : "额度或重置卡读取失败"),
+                        logs: ([snapshot.status] + snapshot.diagnostics.map { diagnostic in
+                            "时间：\(diagnostic.occurredAt?.description ?? "未知")\n来源：\(diagnostic.source.rawValue)\n类别：\(diagnostic.category.rawValue)\n\(diagnostic.message)\n\(diagnostic.rawCause ?? "")"
+                        }).joined(separator: "\n\n")
                     )
-                } else {
-                    Spacer(minLength: AccountQuotaStripLayout.noResetSpacerMinimumWidth)
                 }
-
-                AccountQuotaPaceInsight(
-                    snapshot: snapshot
-                )
-            }
-
-            if !snapshot.reserveWindows.isEmpty {
-                HStack(spacing: AccountQuotaSegmentLayout.interSegmentSpacing) {
-                    ForEach(snapshot.reserveWindows, id: \.label) { window in
-                        AccountQuotaSegment(window: window, accent: .cyan, isStale: snapshot.staleDataDisplayed)
-                    }
-                }
-                .accessibilityLabel("Luna 储备额度")
-            }
-            if snapshot.reserveHasUnavailableWindow {
-                Text("Luna 储备：部分窗口未返回有效读数").font(.caption).foregroundStyle(.secondary)
-            }
-
-            if shouldShowRetryHint || snapshot.diagnostics.contains(where: { $0.severity != .info }) {
-                DiagnosticNotice(
-                    summary: snapshot.status.contains("自动重试") ? "额度读取失败，正在重试" : (snapshot.staleDataDisplayed ? "额度更新失败，暂显示上次数据" : "额度或重置卡读取失败"),
-                    logs: ([snapshot.status] + snapshot.diagnostics.map { diagnostic in
-                        "时间：\(diagnostic.occurredAt?.description ?? "未知")\n来源：\(diagnostic.source.rawValue)\n类别：\(diagnostic.category.rawValue)\n\(diagnostic.message)\n\(diagnostic.rawCause ?? "")"
-                    }).joined(separator: "\n\n")
-                )
             }
         }
         .padding(.horizontal, AccountQuotaStripLayout.horizontalPadding)
-        .padding(.vertical, shouldShowRetryHint ? 6 : 7)
+        .padding(.vertical, clientItems == nil ? (shouldShowRetryHint ? 6 : 7) : 10)
         .frame(maxWidth: AccountQuotaStripLayout.controlWidth, minHeight: shouldShowRetryHint ? 66 : 54)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(AppTheme.insetBackground)
-        )
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(AppTheme.insetBackground))
         .help(helpText)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("账户额度")
@@ -233,8 +224,68 @@ struct AccountQuotaStrip: View {
         .zIndex(showingResetCreditDetails ? 10_000 : 0)
     }
 
+    @ViewBuilder private var resetCredits: some View {
+        if shouldShowResetCredits {
+            AccountQuotaResetCreditButton(snapshot: snapshot, isPresented: $showingResetCreditDetails)
+        } else {
+            Spacer(minLength: AccountQuotaStripLayout.noResetSpacerMinimumWidth)
+        }
+    }
+
+    private var accountTools: some View {
+        HStack(spacing: AccountQuotaStripLayout.itemSpacing) {
+            clientLabel("codex", subtitle: "账户工具")
+            Spacer(minLength: 0)
+            resetCredits
+            AccountQuotaPaceInsight(snapshot: snapshot)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Codex 账户工具")
+    }
+
+    private func clientLabel(_ client: String, subtitle: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 5) {
+                Circle().fill(Color(nsColor: NSColor(clientHex: ClientBrand.hex(client)))).frame(width: 6, height: 6)
+                Text(client == "claudeCode" || client == "claudeDesktop" ? "Claude" : ClientDisplayScope.title(client))
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            Text(subtitle).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
+        }
+        .frame(width: AccountQuotaStripLayout.accountLabelWidth, alignment: .leading)
+    }
+
+    @ViewBuilder private func clientRows(_ items: [ClientQuotaItem]) -> some View {
+        let ids = items.map(\.client).reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
+        if items.isEmpty {
+            Text("所选客户端暂无本地额度读数").font(.system(size: 11)).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        ForEach(ids, id: \.self) { client in
+            let windows = items.filter { $0.client == client }
+            HStack(alignment: .top, spacing: 12) {
+                clientLabel(client, subtitle: client == "codex" ? (snapshot.planType?.uppercased() ?? "当前账户") : "本地缓存")
+                    .padding(.top, 3)
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 220), spacing: 12), count: min(3, max(1, windows.count))), alignment: .leading, spacing: 10) {
+                    ForEach(windows) { item in
+                        AccountQuotaSegment(
+                            window: AccountQuotaWindow(label: item.window,
+                                usedPercent: Int((100 - (item.remaining ?? 100)).rounded()), resetsAt: item.resetsAt),
+                            accent: AppTheme.quotaRemainingColor(percent: item.remaining ?? 0),
+                            isStale: item.status.contains("旧") || (client == "codex" && snapshot.staleDataDisplayed),
+                            unavailable: item.remaining == nil,
+                            unavailableText: item.status.isEmpty ? "不可用" : item.status)
+                            .help([item.source, item.status].filter { !$0.isEmpty }.joined(separator: " · "))
+                    }
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel(ClientDisplayScope.title(client) + " 额度")
+        }
+    }
+
     private var shouldShowRetryHint: Bool {
-        !snapshot.isAvailable && snapshot.status.contains("失败")
+        includesCodex && !snapshot.isAvailable && snapshot.status.contains("失败")
     }
 
     private var shouldShowResetCredits: Bool {
@@ -242,6 +293,7 @@ struct AccountQuotaStrip: View {
     }
 
     private var helpText: String {
+        if let clientItems { return clientItems.map { $0.title + " " + ($0.remaining == nil ? $0.status : $0.value) }.joined(separator: "；") }
         guard snapshot.isAvailable else { return snapshot.status }
         return [snapshot.fiveHour, snapshot.sevenDay].compactMap { window -> String? in
             guard let window else { return nil }
@@ -661,13 +713,15 @@ struct AccountQuotaSegment: View {
     let window: AccountQuotaWindow
     let accent: Color
     var isStale = false
+    var unavailable = false
+    var unavailableText = "未接入"
 
     private var presentation: AccountQuotaSegmentPresentation {
         AccountQuotaSegmentPresentation(window: window)
     }
 
     private var remainingFraction: CGFloat {
-        CGFloat(Double(window.remainingPercent) / 100.0)
+        unavailable ? 0 : CGFloat(Double(window.remainingPercent) / 100.0)
     }
 
     var body: some View {
@@ -707,11 +761,11 @@ struct AccountQuotaSegment: View {
                     .clipShape(Capsule())
 
                     HStack(spacing: AccountQuotaSegmentLayout.progressTextSpacing) {
-                        Text("\(presentation.remainingText)\(isStale ? " 旧" : "")")
+                        Text(unavailable ? "—" : "\(presentation.remainingText)\(isStale ? " 旧" : "")")
                             .fontWeight(.semibold)
                             .fixedSize(horizontal: true, vertical: false)
                         Spacer(minLength: 0)
-                        Text(presentation.usedText)
+                        Text(unavailable ? unavailableText : presentation.usedText)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: true, vertical: false)
                     }
@@ -725,7 +779,7 @@ struct AccountQuotaSegment: View {
         .frame(maxWidth: .infinity, minHeight: AccountQuotaSegmentLayout.controlHeight, maxHeight: AccountQuotaSegmentLayout.controlHeight)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(window.displayLabel)额度")
-        .accessibilityValue("剩余 \(window.remainingPercent)%\(isStale ? "，旧数据" : "")，已用 \(window.usedPercent)%，\(window.accessibleResetText) 重置")
+         .accessibilityValue(unavailable ? unavailableText : "剩余 \(window.remainingPercent)%\(isStale ? "，旧数据" : "")，已用 \(window.usedPercent)%，\(window.accessibleResetText) 重置")
     }
 }
 

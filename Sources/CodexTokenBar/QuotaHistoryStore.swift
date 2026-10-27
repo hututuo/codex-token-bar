@@ -54,6 +54,23 @@ struct LiveQuotaHistoryClient: QuotaHistoryLoading {
     }
 }
 
+enum QuotaCycleProjectionConsistency {
+    static func needsRebuild(_ history: QuotaHistorySnapshot, quota: AccountQuotaSnapshot,
+                             expectedStart: Date? = nil) -> Bool {
+        guard let identity = quota.historyIdentity, let observedAt = quota.updatedAt,
+              quota.sevenDay != nil, history.latest != nil else { return false }
+        guard history.cycleIdentity == identity,
+              history.projectionVersion == QuotaActualCycleProjector.projectionVersion,
+              let current = history.actualCycles.first, current.isCurrent,
+              current.lastObservedAt >= observedAt.addingTimeInterval(-0.000_001) else { return true }
+        if let expectedStart, current.certainStart < expectedStart,
+           !history.cycleDiagnostics.contains(where: { $0.kind == .withdrawn && $0.after.at == expectedStart }) {
+            return true
+        }
+        return false
+    }
+}
+
 @MainActor
 final class QuotaHistoryStore: ObservableObject {
     @Published private(set) var snapshot: QuotaHistorySnapshot = .empty
@@ -64,6 +81,8 @@ final class QuotaHistoryStore: ObservableObject {
     private var currentQuota: AccountQuotaSnapshot?
     private var diagnosticIdentity: QuotaHistoryIdentity?
     private var diagnosticObservedThrough: Date?
+    private var expectedCycleStart: Date?
+    private var healingKey: String?
 
     init(historyClient: any QuotaHistoryLoading = LiveQuotaHistoryClient()) {
         self.historyClient = historyClient
@@ -131,6 +150,12 @@ final class QuotaHistoryStore: ObservableObject {
         if currentQuota?.historyIdentity != identity {
             clearIdentity()
         }
+        if let previous = currentQuota, previous.historyIdentity == identity,
+           let before = previous.sevenDay?.usedPercent, let after = quota.sevenDay?.usedPercent,
+           let at = quota.updatedAt, previous.updatedAt.map({ at > $0 }) == true,
+           before - after >= QuotaActualCycleProjector.minimumDrop {
+            expectedCycleStart = at
+        }
         currentQuota = quota
         operationTask?.cancel()
         operationGeneration += 1
@@ -192,6 +217,8 @@ final class QuotaHistoryStore: ObservableObject {
         snapshot = .empty
         diagnosticIdentity = nil
         diagnosticObservedThrough = nil
+        expectedCycleStart = nil
+        healingKey = nil
     }
 
     private func applyProjection(_ loaded: QuotaHistorySnapshot) {
@@ -213,8 +240,21 @@ final class QuotaHistoryStore: ObservableObject {
            loaded.latest.map({ $0 < expected.addingTimeInterval(-0.000_001) }) ?? true {
             published.isStale = true
         }
+        let mismatch = currentQuota.map {
+            QuotaCycleProjectionConsistency.needsRebuild(loaded, quota: $0, expectedStart: expectedCycleStart)
+        } ?? false
+        if mismatch { published.isStale = true }
         snapshot = published
+        if mismatch, let quota = currentQuota {
+            let key = "\(String(describing: quota.historyIdentity))|\(expectedCycleStart?.timeIntervalSince1970 ?? 0)|\(QuotaActualCycleProjector.projectionVersion)"
+            if healingKey != key {
+                healingKey = key
+                DiagnosticLogHistory.shared.record(summary: "本期周期自动重算", logs: "local projection only; raw records retained", source: "quota-cycle-projection")
+                reload()
+            }
+        }
         if !published.isStale {
+            healingKey = nil
             DiagnosticLogHistory.shared.record(summary: "额度历史更新", logs: "", source: "quota-cycle-history")
         }
     }
@@ -543,13 +583,24 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
     private let maxCarryGap: TimeInterval = 90 * 60
     private let legacyClaimRefreshInterval: TimeInterval = 60 * 60
     private let filterAnomalies: @Sendable () -> Bool
+    private let consumption: @Sendable (URL, Date, Date) -> QuotaCycleConsumption
     init(
         databaseURL: URL? = nil,
         peerDatabaseURL: URL? = nil,
         fileManager: FileManager = .default,
-        filterAnomalies: (@Sendable () -> Bool)? = nil
+        filterAnomalies: (@Sendable () -> Bool)? = nil,
+        consumption: (@Sendable (URL, Date, Date) -> QuotaCycleConsumption)? = nil
     ) {
         self.databaseURL = databaseURL
+        if let consumption {
+            self.consumption = consumption
+        } else if databaseURL == nil {
+            self.consumption = { home, start, end in
+                CodexUsageHistoryIndex.quotaCycleConsumption(codexHome: home, after: start, through: end)
+            }
+        } else {
+            self.consumption = { _, _, _ in .unknown }
+        }
         if let filterAnomalies {
             self.filterAnomalies = filterAnomalies
         } else if databaseURL == nil {
@@ -647,7 +698,8 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             recentInterval: recentInterval,
             maxCarryGap: maxCarryGap,
             now: now,
-            filterAnomalies: filterAnomalies()
+            filterAnomalies: filterAnomalies(),
+            consumption: consumption
         )
     }
 
@@ -709,7 +761,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         var fiveGeneration = 0
         var sevenGeneration = 0
         var fiveAcceptedReset: Date?
-        var sevenAcceptedReset: Date?
+        var sevenPreviousUsed: Int?
         var hasFive = false
         var hasSeven = false
 
@@ -745,21 +797,13 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
                 if !hasSeven {
                     hasSeven = true
                     sevenAnchor = true
-                } else if QuotaHistoryCyclePolicy.startsNewCycle(
-                    currentUsedPercent: row.sevenDayUsedPercent,
-                    currentResetsAt: row.sevenDayResetsAt,
-                    acceptedResetsAt: sevenAcceptedReset,
-                    window: .sevenDay
-                ) {
+                } else if let before = sevenPreviousUsed, let used = row.sevenDayUsedPercent,
+                          before - used >= QuotaActualCycleProjector.minimumDrop {
                     sevenGeneration += 1
                     sevenAnchor = true
                 }
                 sevenValueGeneration = sevenGeneration
-                if sevenAnchor, let reset = row.sevenDayResetsAt {
-                    sevenAcceptedReset = reset
-                } else if sevenAcceptedReset == nil {
-                    sevenAcceptedReset = row.sevenDayResetsAt
-                }
+                sevenPreviousUsed = row.sevenDayUsedPercent
             }
 
             ordered[index] = row.replacingCycleMetadata(
@@ -798,14 +842,23 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         return ordered
     }
 
-    private static func makeSnapshot(rows: [QuotaHistoryRow], recentInterval: TimeInterval, maxCarryGap: TimeInterval, now: Date = Date(), filterAnomalies: Bool = true) -> QuotaHistorySnapshot {
+    private static func makeSnapshot(rows: [QuotaHistoryRow], recentInterval: TimeInterval, maxCarryGap: TimeInterval, now: Date = Date(), filterAnomalies: Bool = true, consumption: (URL, Date, Date) -> QuotaCycleConsumption = { _, _, _ in .unknown }) -> QuotaHistorySnapshot {
         let calendar = Calendar.current
         guard let recentStart = calendar.date(byAdding: .day, value: -30, to: now) else {
             return .empty
         }
 
         let intervalCount = 30 * 24 * 12
-        let sorted = sanitizedRows(rows.filter { $0.createdAt <= now.addingTimeInterval(0.000_001) }, now: now, filterAnomalies: filterAnomalies)
+        let raw = rows.filter { $0.createdAt <= now.addingTimeInterval(0.000_001) }.sorted { $0.createdAt < $1.createdAt }
+        var evidence: [String: QuotaCycleConsumption] = [:]
+        func lookup(_ home: URL, _ start: Date, _ end: Date) -> QuotaCycleConsumption {
+            let key = "\(home.path)|\(start.timeIntervalSince1970)|\(end.timeIntervalSince1970)"
+            if let cached = evidence[key] { return cached }
+            let value = consumption(home, start, end)
+            evidence[key] = value
+            return value
+        }
+        let sorted = sanitizedRows(raw, now: now, filterAnomalies: filterAnomalies, consumption: lookup)
         let recentBins = makeCarriedBins(
             rows: sorted,
             start: recentStart,
@@ -850,17 +903,20 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
                 stableAccountKey: row.stableAccountKey, planType: row.identityPlanType,
                 limitID: row.identityLimitID)
         }
-        let observations = sorted.compactMap { row -> QuotaCycleObservation? in
-            guard let used = row.sevenDayUsedPercent, let reset = row.sevenDayResetsAt else { return nil }
-            return QuotaCycleObservation(at: row.createdAt, usedPercent: used, resetsAt: reset)
+        let observations = raw.compactMap { row -> QuotaCycleObservation? in
+            guard let used = row.sevenDayUsedPercent else { return nil }
+            return QuotaCycleObservation(at: row.createdAt, usedPercent: used, resetsAt: row.sevenDayResetsAt ?? .distantPast)
         }
-        let projection = QuotaActualCycleProjector.projectWithDiagnostics(observations, now: now)
+        let projection = QuotaActualCycleProjector.projectWithDiagnostics(observations, now: now) { start, end in
+            guard let home = identity?.homeIdentity else { return .unknown }
+            return lookup(URL(fileURLWithPath: home), start, end)
+        }
         return QuotaHistorySnapshot(daily: daily, recentBins: recentBins, hourlyBins: hourlyBins,
             latest: sorted.last?.createdAt,
             actualCycles: projection.cycles, cycleIdentity: identity, cycleDiagnostics: projection.diagnostics)
     }
 
-    private static func sanitizedRows(_ rows: [QuotaHistoryRow], now: Date, filterAnomalies: Bool = true) -> [QuotaHistoryRow] {
+    private static func sanitizedRows(_ rows: [QuotaHistoryRow], now: Date, filterAnomalies: Bool = true, consumption: (URL, Date, Date) -> QuotaCycleConsumption = { _, _, _ in .unknown }) -> [QuotaHistoryRow] {
         var groups: [[String]: [QuotaHistoryRow]] = [:]
         var seenAt: [[String]: Date] = [:]
         var legacyScopes: [String: Set<[String]>] = [:]
@@ -889,7 +945,10 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             }
             let plan = timeline.first(where: { $0.identityPlanType != nil })?.identityPlanType ?? timeline.first?.planType
             let projection = filterAnomalies
-                ? QuotaHistoryProtection.project(samples, plan: plan, now: now.timeIntervalSince1970)
+                ? QuotaHistoryProtection.project(samples, plan: plan, now: now.timeIntervalSince1970) { start, end in
+                    guard let home = timeline.first?.homeIdentity else { return .unknown }
+                    return consumption(URL(fileURLWithPath: home), start, end)
+                }
                 : QuotaHistoryProtection.Projection()
             let filtered = timeline.enumerated().map { i, row in
                 row.projecting(
@@ -1820,6 +1879,10 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
     private func reclaimDatabaseIfNeeded(deletedRows: Int) {
         guard deletedRows > 0,
               let url = databaseURL ?? Self.defaultDatabaseURL else { return }
+        if let store = BusinessSQLiteRoutes.store(for: url) {
+            _ = try? BusinessDatabaseMaintenance.run(container: store.containerURL)
+            return
+        }
         let driver = SQLiteDatabaseDriver(
             url: url,
             readOnly: false,

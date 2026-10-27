@@ -1,5 +1,17 @@
 # Open Source Notices
 
+## ModelTrace model fingerprints
+
+Model fingerprint scoring and the bundled reference bank are adapted from
+[ModelTrace](https://github.com/xqy2006/ModelTrace), revision
+`d4131b30243dfa05e70180b5eedde742103f1d73`, by xqy2006 (MIT).
+The initial Tauri scorer/probe implementation was contributed in
+[PR #3](https://github.com/hututuo/codex-token-bar/pull/3), then adapted for
+three parallel probes and opt-in scheduling. The native app runs the pinned
+upstream JavaScript scorer locally; Tauri's Rust port is checked against the
+same fixtures. Full MIT text: `LICENSES/ModelTrace-MIT.txt`, bundled as
+`OpenSourceLicenses/ModelTrace-MIT.txt`.
+
 ## Codex Token Bar original code
 
 The original Codex Token Bar code was made available under the MIT License:

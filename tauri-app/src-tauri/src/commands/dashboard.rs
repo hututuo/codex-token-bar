@@ -6,8 +6,8 @@ use crate::core::unread::{UnreadObservation, UnreadObservationBuilder};
 use crate::core::usage::cache_lifecycle::{self, UsageCacheStatus};
 use crate::core::usage::token_count_jsonl::{self, TokenUsageSummarySnapshot};
 use crate::models::{
-    AccountQuotaBundle, CodexHomeStatus, DashboardSnapshot, PlatformCapabilities,
-    PreciseDashboardProgress,
+    AccountQuotaBundle, CacheRequestUsage, CodexHomeStatus, DashboardSnapshot,
+    PlatformCapabilities, PreciseDashboardProgress,
 };
 use crate::platform;
 use serde::{Deserialize, Serialize};
@@ -328,6 +328,21 @@ async fn persist_codex_home_transition(
             "codex home source event publish failed generation={} error={error}",
             envelope.transition_generation
         ));
+    }
+    #[cfg(windows)]
+    {
+        // Optional reporting follows the same selected source. A failure here
+        // must not turn an already committed source change into a UI error.
+        if let Ok(reporting) = run_blocking_command(|| platform::read_app_settings().map(|settings| settings.agent_speed_reporting)).await {
+            if reporting.enabled {
+                use tauri::Manager as _;
+                if let Some(registry) = app.try_state::<crate::core::agent_speed_reporting::AgentSpeedReportingRegistry>() {
+                    if let Err(error) = registry.start(&app, &reporting).await {
+                        startup_trace::mark_performance(format!("reporter source reconciliation failed: {error}"));
+                    }
+                }
+            }
+        }
     }
     Ok(envelope)
 }
@@ -1917,6 +1932,22 @@ pub async fn read_usage_summary_snapshot(
 }
 
 #[tauri::command]
+pub async fn read_cache_turn_requests(
+    window: tauri::WebviewWindow,
+    app: AppHandle,
+    source_token: CodexHomeSourceToken,
+    turn_id: String,
+    offset: u32,
+    limit: u32,
+) -> Result<Vec<CacheRequestUsage>, String> {
+    require_window_label(&window, "read_cache_turn_requests")?;
+    run_source_bound_dashboard_read(&app, source_token, move |codex_home| {
+        token_count_jsonl::read_cache_turn_requests(&codex_home, &turn_id, offset, limit)
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn read_precise_dashboard_source_probe(
     window: tauri::WebviewWindow,
     app: AppHandle,
@@ -3360,8 +3391,8 @@ pub struct QuotaCycleUsage {
     pending_reason: Option<String>,
     model_breakdowns: Vec<crate::models::ModelTokenBreakdown>,
     boundary_model_breakdowns: Vec<crate::models::ModelTokenBreakdown>,
-    observed_start_unix: i64,
-    observed_end_unix: i64,
+    observed_start_unix: f64,
+    observed_end_unix: f64,
 }
 
 #[tauri::command]
@@ -3373,7 +3404,7 @@ pub async fn read_quota_cycle_usage(
     run_source_bound_dashboard_read(&app, source_token, move |home| {
         let cycles = crate::core::quota::observed_cycles(&home, &expected_scope)?;
         let cycle = cycles.iter().find(|c| c.id == cycle_id).ok_or("额度周期已更新，请重新选择")?;
-        let now = time::OffsetDateTime::now_utc().unix_timestamp();
+        let now = time::OffsetDateTime::now_utc().unix_timestamp() as f64;
         let start = cycle.start_upper_unix.unwrap_or(cycle.first_observed_unix);
         let end = cycle.end_lower_unix.min(now).max(start);
         let ranges = [(start,end),

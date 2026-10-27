@@ -148,101 +148,6 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
     }
 
     @MainActor
-    func testRecentUsageChartEquatableBoundaryTracksEveryExternalInput() {
-        let baseline = RecentUsageChart(
-            bins: [],
-            hourlyBins: [],
-            cacheRecentBins: [],
-            cacheHourlyBins: [],
-            quotaRecentBins: [],
-            quotaHourlyBins: [],
-            currentFiveHourQuotaPresent: true,
-            currentSevenDayQuotaPresent: true
-        )
-        let identical = RecentUsageChart(
-            bins: [],
-            hourlyBins: [],
-            cacheRecentBins: [],
-            cacheHourlyBins: [],
-            quotaRecentBins: [],
-            quotaHourlyBins: [],
-            currentFiveHourQuotaPresent: true,
-            currentSevenDayQuotaPresent: true
-        )
-        let changedUsage = RecentUsageChart(
-            bins: [BinUsage(start: Date(timeIntervalSince1970: 1_800), tokens: 1, calls: 1)],
-            hourlyBins: [],
-            cacheRecentBins: [],
-            cacheHourlyBins: [],
-            quotaRecentBins: [],
-            quotaHourlyBins: [],
-            currentFiveHourQuotaPresent: true,
-            currentSevenDayQuotaPresent: true
-        )
-        let changedQuotaAvailability = RecentUsageChart(
-            bins: [],
-            hourlyBins: [],
-            cacheRecentBins: [],
-            cacheHourlyBins: [],
-            quotaRecentBins: [],
-            quotaHourlyBins: [],
-            currentFiveHourQuotaPresent: false,
-            currentSevenDayQuotaPresent: true
-        )
-        let changedAttributionEvents = RecentUsageChart(
-            bins: [],
-            hourlyBins: [],
-            cacheRecentBins: [],
-            cacheHourlyBins: [],
-            attributionEvents: [
-                TokenCacheAttributionEvent(
-                    id: "model-row",
-                    start: Date(timeIntervalSince1970: 1_800),
-                    model: "gpt-5.6-sol",
-                    breakdown: .empty
-                )
-            ],
-            quotaRecentBins: [],
-            quotaHourlyBins: []
-        )
-        let incompleteAttributionEvents = RecentUsageChart(
-            bins: [],
-            hourlyBins: [],
-            cacheRecentBins: [],
-            cacheHourlyBins: [],
-            attributionEvents: [],
-            attributionEventsComplete: false,
-            quotaRecentBins: [],
-            quotaHourlyBins: []
-        )
-        let selectionForContext = attributionSelection(
-            sevenDayDrop: 13,
-            quotaDropObserved: true
-        )
-        let changedAttributionContext = RecentUsageChart(
-            bins: [],
-            hourlyBins: [],
-            cacheRecentBins: [],
-            cacheHourlyBins: [],
-            quotaRecentBins: [],
-            quotaHourlyBins: [],
-            currentFiveHourQuotaPresent: true,
-            currentSevenDayQuotaPresent: true,
-            sharedAccountAttributionContext: attributionContext(
-                for: selectionForContext,
-                radarTotalUSD: 1_000
-            )
-        )
-
-        XCTAssertEqual(baseline, identical)
-        XCTAssertNotEqual(baseline, changedUsage)
-        XCTAssertNotEqual(baseline, changedQuotaAvailability)
-        XCTAssertNotEqual(baseline, changedAttributionEvents)
-        XCTAssertNotEqual(baseline, incompleteAttributionEvents)
-        XCTAssertNotEqual(baseline, changedAttributionContext)
-    }
-
-    @MainActor
     func testPreparedDataKeepsLowActivityCacheGapsUnknownInsteadOfCarryingStaleRates() throws {
         let start = Date(timeIntervalSince1970: 1_800)
         let bins = [
@@ -525,8 +430,10 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             rates: { $0.currentPriceRates }
         )
 
-        XCTAssertEqual(estimate.costUSD, 2.7, accuracy: 0.0001)
-        XCTAssertEqual(estimate.detectedModels, [.gpt56Luna, .gpt54Legacy])
+        XCTAssertEqual(estimate.costUSD, 0, accuracy: 0.0001)
+        XCTAssertTrue(estimate.detectedModels.isEmpty)
+        XCTAssertEqual(estimate.excludedModels, ["codex-auto-review"])
+        XCTAssertEqual(estimate.excludedCalls, 2)
         XCTAssertEqual(estimate.fallbackCalls, 0)
     }
 
@@ -656,11 +563,11 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             rates: { $0.currentPriceRates }
         )
 
-        XCTAssertEqual(estimate.costUSD, 9.9, accuracy: 0.0001)
+        XCTAssertEqual(estimate.costUSD, 9.7, accuracy: 0.0001)
         XCTAssertEqual(estimate.detectedModels, [.gpt56Sol, .gpt56Terra, .gpt56Luna, .gpt53Codex, .gpt52Codex])
         XCTAssertEqual(estimate.fallbackCalls, 0)
-        XCTAssertEqual(estimate.excludedModels, ["gpt-5.3-codex-spark"])
-        XCTAssertEqual(estimate.excludedCalls, 1)
+        XCTAssertEqual(estimate.excludedModels, ["gpt-5.3-codex-spark", "codex-auto-review"])
+        XCTAssertEqual(estimate.excludedCalls, 2)
         XCTAssertEqual(estimate.unpricedModels, ["future-model"])
         XCTAssertEqual(estimate.unpricedCalls, 1)
     }
@@ -2249,20 +2156,6 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             dashboardSource[chartStart..<nextSection].contains(".equatable()"),
             "The chart owns interactive visibility state and must not sit behind an external EquatableView"
         )
-    }
-
-    func testRecentUsageChartIncludesTwoStepQuotaGuidePointingToCalculationCard() throws {
-        let source = try String(contentsOfFile: "Sources/CodexTokenBar/RecentUsageChart.swift", encoding: .utf8)
-        let componentSource = try String(contentsOfFile: "Sources/CodexTokenBar/RecentUsageChartComponents.swift", encoding: .utf8)
-
-        XCTAssertTrue(source.contains("recentChartQuotaGuideCompletedV01"))
-        XCTAssertTrue(source.contains("return .secondPoint"))
-        XCTAssertTrue(source.contains("return .calculationCard"))
-        XCTAssertTrue(source.contains("RecentChartQuotaGuide("))
-        XCTAssertTrue(componentSource.contains("① 点击折线中的第一个点，设定起点"))
-        XCTAssertTrue(componentSource.contains("② 点击第二个点，固定终点"))
-        XCTAssertTrue(componentSource.contains("额度计算卡已出现在左下方"))
-        XCTAssertTrue(componentSource.contains("return \"↙\""))
     }
 
     func testEstimateSummaryLivesBelowPlotInsteadOfInsideTheHitLayer() throws {

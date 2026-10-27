@@ -121,7 +121,7 @@ final class SharedAccountUsageSafetyDatabase: @unchecked Sendable {
                 // as a healthy empty baseline.
                 throw SharedAccountUsageSafetyDatabaseError.incompleteRecovery
             }
-            let databaseExisted = fileManager.fileExists(atPath: databaseURL.path)
+            let databaseExisted = BusinessStoreFiles.exists(databaseURL, fileManager: fileManager)
             if !databaseExisted,
                fileManager.fileExists(atPath: sentinelURL.path) {
                 // A separately fsynced sentinel with no database means durable
@@ -139,7 +139,7 @@ final class SharedAccountUsageSafetyDatabase: @unchecked Sendable {
             try Self.prepareSchema(using: setupDriver)
             try fileManager.setAttributes(
                 [.posixPermissions: 0o600],
-                ofItemAtPath: databaseURL.path
+                ofItemAtPath: setupDriver.backingURL.path
             )
             if !fileManager.fileExists(atPath: sentinelURL.path) {
                 try Data("codex-token-bar-shared-account-safety-v1\n".utf8)
@@ -406,6 +406,10 @@ final class SharedAccountUsageSafetyDatabase: @unchecked Sendable {
                 withIntermediateDirectories: false,
                 attributes: [.posixPermissions: 0o700]
             )
+            if BusinessSQLiteRoutes.store(for: databaseURL) != nil {
+                return try rebuildScopedSafetyBaseline(preciseContinuityPayload: preciseContinuityPayload,
+                    defaults: defaults, retiredUserDefaultsKeys: retiredUserDefaultsKeys, quarantine: quarantine)
+            }
             // Build and fsync the complete replacement before touching the
             // damaged generation. The later rename publishes one complete
             // file rather than exposing a half-initialized database.
@@ -587,8 +591,54 @@ final class SharedAccountUsageSafetyDatabase: @unchecked Sendable {
         stateLock.unlock()
     }
 
+    /// A recovery resets only safety's two tables. It cannot quarantine,
+    /// rename, or restore the shared A file, even when another module is bad.
+    private func rebuildScopedSafetyBaseline(preciseContinuityPayload: Data, defaults: UserDefaults,
+        retiredUserDefaultsKeys: [String], quarantine: URL) throws -> RecoveryResult {
+        guard let store = BusinessSQLiteRoutes.store(for: databaseURL) else { throw BusinessStoreError.invalidStore }
+        let raw = SQLiteDatabaseDriver(url: store.containerURL, readOnly: true, createsFileIfMissing: false, bypassBusinessRoutes: true)
+        guard try raw.readRows("PRAGMA quick_check", map: { $0.text(0) }) == ["ok"] else {
+            // Structural A damage requires full-container recovery. Never
+            // replace other modules with a fresh empty safety generation.
+            throw BusinessStoreError.proofMismatch
+        }
+        try CodexBusinessDatabase.export(store, to: quarantine.appendingPathComponent("safety-before-recovery.sqlite"))
+        try BusinessDatabaseMigration.synchronize(quarantine.appendingPathComponent("safety-before-recovery.sqlite"))
+        try writeRecoveryMarker()
+        try Self.synchronizeDirectory(at: databaseURL.deletingLastPathComponent())
+        let replacement = SQLiteDatabaseDriver(url: databaseURL, createsFileIfMissing: false,
+            busyTimeoutMilliseconds: 5_000, fileManager: fileManager)
+        try Self.prepareSchema(using: replacement)
+        try replacement.withConnection { connection in
+            try connection.execute("PRAGMA synchronous=FULL")
+            try connection.transaction { tx in
+                try tx.execute("DELETE FROM safety_records; DELETE FROM safety_record_state")
+                let now = Date().timeIntervalSince1970
+                for kind in RecordKind.allCases {
+                    let payload = kind == .preciseContinuity ? preciseContinuityPayload : Data("{}".utf8)
+                    try tx.execute("INSERT INTO safety_records(kind,payload,committed_at) VALUES(?,?,?)",
+                        bindings: [.text(kind.rawValue), .blob(payload), .double(now)])
+                    try tx.execute("INSERT INTO safety_record_state(kind,initialized_at) VALUES(?,?)",
+                        bindings: [.text(kind.rawValue), .double(now)])
+                }
+            }
+        }
+        try Self.verifyInitializedGeneration(using: replacement, preciseContinuityPayload: preciseContinuityPayload)
+        try writeSentinel()
+        guard retireUserDefaults(defaults, keys: retiredUserDefaultsKeys) else {
+            throw SharedAccountUsageSafetyDatabaseError.userDefaultsRetirementFailed
+        }
+        try fileManager.removeItem(at: recoveryMarkerURL)
+        try Self.synchronizeDirectory(at: databaseURL.deletingLastPathComponent())
+        stateLock.lock(); driver = replacement; healthy = true; stateLock.unlock()
+        for kind in RecordKind.allCases {
+            DistributedNotificationCenter.default().post(name: Self.didChangeNotification, object: kind.rawValue, userInfo: nil)
+        }
+        return RecoveryResult(quarantineDirectory: quarantine)
+    }
+
     private func backingStoreExists() -> Bool {
-        fileManager.fileExists(atPath: databaseURL.path)
+        BusinessStoreFiles.exists(databaseURL, fileManager: fileManager)
             && fileManager.fileExists(atPath: sentinelURL.path)
             && !fileManager.fileExists(atPath: recoveryMarkerURL.path)
     }

@@ -18,7 +18,7 @@ fn input(used: f64, reset: i64) -> AccountQuotaBundle {
 }
 
 #[test]
-fn anomaly_filter_toggle_restores_raw_exhaustion_without_mutating_history() {
+fn unknown_consumption_coverage_keeps_raw_exhaustion_without_mutating_history() {
     let (_directory, database, identity) = fixture("sub:filter-toggle");
     let now = (now_unix() / 300.0).floor() * 300.0;
     let reset = (now + 10_800.0) as i64;
@@ -29,19 +29,19 @@ fn anomaly_filter_toggle_restores_raw_exhaustion_without_mutating_history() {
     let rows = raw(&database, &identity, &make(0.02));
     let original: Vec<_> = rows.iter().map(|r| (r.created_at, r.seven_day_used_percent)).collect();
     let filtered = series::sanitized_rows_with_filter(rows.clone(), true);
-    assert_eq!(filtered[1].seven_day_used_percent, None);
+    assert_eq!(filtered[1].seven_day_used_percent, Some(100));
     let unfiltered = series::sanitized_rows_with_filter(rows.clone(), false);
     assert_eq!(unfiltered[1].seven_day_used_percent, Some(100));
     for enabled in [true, false, true, false] {
         let points = series::make_interval_history_with_filter(rows.clone(), 8, 300, now, enabled);
-        assert_eq!(points.iter().any(|p| p.seven_day_remaining_percent == Some(0.0)), !enabled);
+        assert!(points.iter().any(|p| p.seven_day_remaining_percent == Some(0.0)));
     }
     let filtered_daily = series::make_daily_history_with_filter(rows.clone(), now, true);
     let raw_daily = series::make_daily_history_with_filter(rows, now, false);
     let minimum = |daily: &std::collections::HashMap<String, series::DailyQuotaHistory>| {
         daily.values().filter_map(|day| day.seven_day_remaining_percent).reduce(f64::min).unwrap()
     };
-    assert!(minimum(&raw_daily) < minimum(&filtered_daily));
+    assert_eq!(minimum(&raw_daily), minimum(&filtered_daily));
     let reopened = QuotaHistoryDatabase { path: database.path.clone() };
     assert_eq!(raw(&reopened, &identity, &make(0.02)).iter().map(|r| (r.created_at, r.seven_day_used_percent)).collect::<Vec<_>>(), original);
 }
@@ -151,7 +151,7 @@ fn duplicate_stored_observations_cannot_make_a_false_gap_or_confirm_a_drop() {
 }
 
 #[test]
-fn retrospective_projection_removes_weekly_points_before_bins_and_restores_cycle() {
+fn unknown_consumption_coverage_preserves_weekly_drop_and_display_generation() {
     let (_directory, database, identity) = fixture("sub:retrospective");
     let now = ((now_unix() / 300.0).floor() * 300.0) + 100.0;
     let reset = (now + 5000.0) as i64;
@@ -171,21 +171,22 @@ fn retrospective_projection_removes_weekly_points_before_bins_and_restores_cycle
     let rows = raw(&reopened,&identity,&recovery);
     assert_eq!(rows.iter().map(|r|r.seven_day_used_percent).collect::<Vec<_>>(), vec![Some(42),Some(1),Some(42)]);
     let projected = series::sanitized_rows(rows.clone());
-    assert_eq!(projected[1].seven_day_used_percent,None);
-    assert_eq!(projected[2].seven_day_cycle_generation,Some(0));
+    assert_eq!(projected[1].seven_day_used_percent, Some(1));
+    assert_eq!(projected[2].seven_day_cycle_generation, Some(1));
     let before = series::make_interval_history_at(rows.clone(),4,300,now-30.0);
     assert_eq!(before.last().unwrap().seven_day_remaining_percent,Some(0.99));
     let after = series::make_interval_history_at(rows,4,300,now);
     let middle = after.iter().find(|p| { let end=p.start_unix as f64+300.0; end>b && end<c }).unwrap();
-    assert_eq!(middle.seven_day_remaining_percent,Some(0.58));
-    assert_eq!(projected[1].five_hour_used_percent, Some(0));
     let sample_at = middle.start_unix as f64 + 300.0;
+    let expected_weekly = 0.99 + (0.58 - 0.99) * (sample_at - b) / (c - b);
+    assert!((middle.seven_day_remaining_percent.unwrap() - expected_weekly).abs() < 0.000001);
+    assert_eq!(projected[1].five_hour_used_percent, Some(0));
     let expected_five = 1.0 - 0.2 * (sample_at-b)/(c-b);
     assert!((middle.five_hour_remaining_percent.unwrap()-expected_five).abs()<0.000001);
 }
 
 #[test]
-fn jump_alone_bridges_upward_remaining_even_across_a_new_cycle() {
+fn unknown_consumption_does_not_bridge_a_large_weekly_rebound() {
     let (_directory, database, identity) = fixture("sub:bridge");
     let now = ((now_unix() / 300.0).floor() * 300.0) + 100.0;
     let reset = (now+5000.0) as i64;
@@ -198,6 +199,6 @@ fn jump_alone_bridges_upward_remaining_even_across_a_new_cycle() {
     let history=series::make_interval_history_at(raw(&database,&identity,&latest),4,300,now);
     let middle=history.iter().find(|p|{let end=p.start_unix as f64+300.0; end>now-310.0 && end<now-20.0}).unwrap();
     let sample_at=middle.start_unix as f64+300.0;
-    let expected=0.2+0.2*(sample_at-(now-600.0))/580.0;
-    assert!((middle.seven_day_remaining_percent.unwrap()-expected).abs()<0.000001);
+    let expected = 0.99 + (0.40 - 0.99) * (sample_at - (now - 310.0)) / 290.0;
+    assert!((middle.seven_day_remaining_percent.unwrap() - expected).abs() < 0.000001);
 }

@@ -14,34 +14,24 @@ final class QuotaHistoryProtectionTests: XCTestCase {
         XCTAssertTrue(QuotaHistoryFilterSettings.isEnabled(defaults: defaults))
     }
 
-    private struct Case: Decodable {
-        let name: String
-        let plan: String?
-        let now: Double
-        let samples: [QuotaHistoryProtection.Sample]
-        let fiveRejected: [Int]
-        let sevenRejected: [Int]
-        let fiveBridges: [[Int]]
-        let sevenBridges: [[Int]]
-    }
-    func testSharedRetrospectiveScenarios() throws {
-        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("SharedFixtures/quota-retrospective-v1.json")
-        let cases = try JSONDecoder().decode([Case].self, from: Data(contentsOf: url))
-        XCTAssertGreaterThan(cases.count, 40)
-        for item in cases {
-            let projection = QuotaHistoryProtection.project(item.samples, plan: item.plan, now: item.now)
-            // These v1 fixtures rejected a stable, strongly confirmed reset
-            // solely because consumption exceeded a plan rate. Swift v2
-            // retains that evidence; the separate 20-second/unconfirmed and
-            // old-reset-return fixtures must continue rejecting anomalies.
-            let confirmedStableReset = ["plus_above_10_rejected", "pro_above_2_rejected", "jump_uses_adjacent_observations"].contains(item.name)
-            XCTAssertEqual(projection.fiveRejected.sorted(), item.fiveRejected, item.name)
-            XCTAssertEqual(projection.sevenRejected.sorted(), confirmedStableReset ? [] : item.sevenRejected, item.name)
-            XCTAssertEqual(projection.fiveBridges, Dictionary(uniqueKeysWithValues: item.fiveBridges.map { ($0[0], $0[1]) }), item.name)
-            XCTAssertEqual(projection.sevenBridges, confirmedStableReset ? [:] : Dictionary(uniqueKeysWithValues: item.sevenBridges.map { ($0[0], $0[1]) }), item.name)
+    func testNoScheduleOrPlanRateCanRejectAUsageDropWithoutTokenEvidence() {
+        for plan in ["Plus", "Pro", "ProLite"] {
+            for reset in [1000.0, 2000, 8200] {
+                let samples: [QuotaHistoryProtection.Sample] = [
+                    .init(at: 0, fiveUsed: nil, fiveReset: nil, sevenUsed: 60, sevenReset: 1000),
+                    .init(at: 60, fiveUsed: nil, fiveReset: nil, sevenUsed: 0, sevenReset: reset),
+                    .init(at: 120, fiveUsed: nil, fiveReset: nil, sevenUsed: 60, sevenReset: reset)
+                ]
+                XCTAssertTrue(QuotaHistoryProtection.project(samples, plan: plan, now: 200).sevenRejected.isEmpty)
+                let absent = QuotaHistoryProtection.project(samples, plan: plan, now: 200, consumption: { _, _ in .absent })
+                XCTAssertEqual(absent.sevenRejected, [1])
+                XCTAssertEqual(absent.sevenBridges, [0: 2])
+                XCTAssertTrue(QuotaHistoryProtection.project(samples, plan: plan, now: 200,
+                    consumption: { _, _ in .present }).sevenRejected.isEmpty)
+            }
         }
     }
+
     func testWindowCyclePoliciesRemainIndependent() {
         XCTAssertEqual(QuotaHistoryProtectionPolicy.fiveHour.newCycleResetDelta, 1800)
         XCTAssertEqual(QuotaHistoryProtectionPolicy.sevenDay.newCycleResetDelta, 900)

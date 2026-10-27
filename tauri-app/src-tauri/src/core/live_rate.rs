@@ -52,6 +52,13 @@ struct StoreFileSignature {
     modified_at: Option<SystemTime>,
 }
 
+mod rate_history;
+pub use rate_history::ActivityRateHistoryPoint;
+pub fn read_activity_rate_history(scope: &LiveRateSourceScope) -> Vec<ActivityRateHistoryPoint> {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
+    rate_history::read(scope, now)
+}
+
 mod c_curve;
 mod cache_reminder;
 mod completed_body;
@@ -60,6 +67,14 @@ mod monitor;
 mod observed;
 mod rollout;
 mod speed_models;
+mod speed_trend;
+#[cfg(feature = "business-store-fixture")]
+pub use speed_trend::BodySpeedTrendStore;
+pub use speed_trend::BodySpeedTrendPoint;
+
+pub fn read_body_speed_trend(scope: &LiveRateSourceScope, now: f64, days: u16) -> Result<Vec<BodySpeedTrendPoint>, String> {
+    observed::trend_points(scope, now, days)
+}
 mod state;
 mod stream;
 
@@ -159,6 +174,7 @@ fn idle_snapshot_with_warnings(
         selected_thread_title,
         selected_tokens_per_second: 0.0,
         tokens_per_second: 0.0,
+        model_rates: Vec::new(),
         total_tokens: summary.total_tokens,
         total_tokens_today: summary.today_tokens,
         requests_today: summary.today_requests,
@@ -167,6 +183,7 @@ fn idle_snapshot_with_warnings(
         c_curve: Vec::new(),
         speed_samples: Vec::new(),
         model_speeds: Vec::new(),
+        model_speeds_5m: Vec::new(),
         model_speeds_15m: Vec::new(),
         model_speeds_30m: Vec::new(),
         latest_model_speeds_30m: Vec::new(),
@@ -192,6 +209,7 @@ pub(super) fn pending_snapshot_with_unread(
         },
         selected_tokens_per_second: 0.0,
         tokens_per_second: 0.0,
+        model_rates: Vec::new(),
         total_tokens: 0,
         total_tokens_today: 0,
         requests_today: 0,
@@ -200,6 +218,7 @@ pub(super) fn pending_snapshot_with_unread(
         c_curve: Vec::new(),
         speed_samples: Vec::new(),
         model_speeds: Vec::new(),
+        model_speeds_5m: Vec::new(),
         model_speeds_15m: Vec::new(),
         model_speeds_30m: Vec::new(),
         latest_model_speeds_30m: Vec::new(),
@@ -308,8 +327,17 @@ fn read_snapshot_result_at(
     }
     c_curve::apply_signals(source_scope, &post_delta_signals, now);
     let speed_snapshot = observed::process_rows(source_scope, &[], now);
-    let (c_curve_tokens_per_second, selected_c_curve_tokens_per_second, c_curve_points) =
-        c_curve::snapshot(source_scope, now, selected_thread_id);
+    let (
+        c_curve_tokens_per_second,
+        selected_c_curve_tokens_per_second,
+        model_rates,
+        c_curve_points,
+    ) = c_curve::snapshot(source_scope, now, selected_thread_id);
+    rate_history::record(source_scope, now, &model_rates);
+    if super::activity_speed_capture::mode() == "bar" {
+        super::activity_speed_capture::record("codex", &super::activity_speed_capture::root_identity(&codex_home.to_string_lossy()), "bar",
+            model_rates.iter().map(|r|(r.model.clone(),r.tokens_per_second)).collect(),now,true);
+    }
     if let Some(message) = speed_snapshot.storage_warning.clone() {
         warnings.push(live_rate_warning(format!(
             "observed speed history: {message}"
@@ -350,6 +378,7 @@ fn read_snapshot_result_at(
         selected_thread_title,
         selected_tokens_per_second: selected_c_curve_tokens_per_second,
         tokens_per_second: c_curve_tokens_per_second,
+        model_rates,
         total_tokens: summary.total_tokens,
         total_tokens_today: summary.today_tokens,
         requests_today: summary.today_requests,
@@ -358,6 +387,7 @@ fn read_snapshot_result_at(
         c_curve: c_curve_points,
         speed_samples: speed_snapshot.speed_samples,
         model_speeds: speed_snapshot.model_speeds,
+        model_speeds_5m: speed_snapshot.model_speeds_5m,
         model_speeds_15m: speed_snapshot.model_speeds_15m,
         model_speeds_30m: speed_snapshot.model_speeds_30m,
         latest_model_speeds_30m: speed_snapshot.latest_model_speeds_30m,
@@ -415,6 +445,7 @@ pub fn read_floating_snapshot_from_live(
     let summary = token_count_jsonl::cached_dashboard_usage_summary(codex_home);
     FloatingPanelSnapshot {
         tokens_per_second: live.tokens_per_second,
+        model_rates: live.model_rates.clone(),
         max_tokens_per_second: live.max_tokens_per_second,
         cache_advice: live.cache_advice.clone(),
         trend_label: String::new(),

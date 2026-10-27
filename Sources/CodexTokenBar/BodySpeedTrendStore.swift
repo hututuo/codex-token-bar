@@ -1,0 +1,428 @@
+import Foundation
+
+/// A sparse, model-specific trend point backed by one or more completed body samples.
+/// `bucketStart` is a UTC Unix timestamp aligned to the read window's bucket width.
+struct BodySpeedTrendPoint: Codable, Equatable, Identifiable, Sendable {
+    var bucketStart: Int64
+    var model: String
+    var outputTokens: Int64
+    var durationSeconds: Double
+    var sampleCount: Int64
+    var tokensPerSecond: Double
+
+    var id: String { "\(model):\(bucketStart)" }
+}
+
+/// Durable numeric storage for completed response-body samples and their five-minute trend.
+/// The caller owns the cache path; this store never scans rollout files or stores response text.
+final class BodySpeedTrendStore {
+    private static let schemaVersion = "1"
+    private static let bucketSeconds: Int64 = 300
+    private static let dedupRetentionSeconds = 30.0 * 86_400.0
+    private static let aggregateRetentionSeconds = 90.0 * 86_400.0
+    private static let maxBackfillSeconds = 30.0 * 86_400.0
+
+    private let driver: SQLiteDatabaseDriver
+    private let lock = NSLock()
+
+    init(url: URL) throws {
+        driver = SQLiteDatabaseDriver(
+            url: url,
+            busyTimeoutMilliseconds: 3_000,
+            enableWAL: false
+        )
+        try driver.transaction { connection in
+            try Self.createSchema(connection)
+        }
+    }
+
+    /// Persist eligible history rows and update the weighted five-minute trend.
+    /// Repeated IDs are idempotent; changed numeric/model/quality fields replace their old
+    /// aggregate contribution in the same transaction.
+    @discardableResult
+    func ingest(
+        samples: [ObservedSpeedSample],
+        now: Double,
+        retentionDays: Int = 30
+    ) throws -> Int {
+        guard Self.safeNow(now) else { return 0 }
+        let retention = Self.normalizedRetentionDays(retentionDays)
+        lock.lock()
+        defer { lock.unlock() }
+        return try driver.transaction { connection in
+            try Self.ingest(samples, now: now, retentionDays: retention, connection: connection)
+        }
+    }
+
+    /// Read retained completed-body history in chronological order for UI bootstrap.
+    func loadSamples(now: Double, retentionDays: Int = 30) throws -> [ObservedSpeedSample] {
+        guard Self.safeNow(now) else { return [] }
+        let retention = Self.normalizedRetentionDays(retentionDays)
+        let cutoff = now - Double(retention) * 86_400
+        lock.lock()
+        defer { lock.unlock() }
+        return try driver.readRows(
+            """
+            SELECT payload_json
+            FROM speed_samples
+            WHERE ended_at >= ? AND ended_at <= ?
+            ORDER BY ended_at ASC, id ASC
+            """,
+            bindings: [.double(cutoff), .double(now)]
+        ) { row in
+            guard let json = row.text(0), let data = json.data(using: .utf8) else {
+                throw Self.storageError("Invalid completed body payload")
+            }
+            return try JSONDecoder().decode(ObservedSpeedSample.self, from: data)
+        }
+    }
+
+    func retentionDays() throws -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        let values = try driver.readRows(
+            "SELECT value FROM speed_trend_meta WHERE key = 'body_retention_days'"
+        ) { $0.text(0) }
+        guard let value = values.compactMap({ $0 }).first,
+              let days = Int(value), [15, 30].contains(days) else {
+            throw Self.storageError("Invalid completed body retention preference")
+        }
+        return days
+    }
+
+    /// Read sparse points for 1, 7, or 30 days. Five-minute stored totals are grouped by
+    /// their sums, so each returned rate remains tokens divided by measured duration.
+    func read(now: Double, days: Int) throws -> [BodySpeedTrendPoint] {
+        guard Self.safeNow(now), [1, 7, 30].contains(days) else { return [] }
+        let resolution: Int64 = days == 1 ? 300 : (days == 7 ? 1_800 : 7_200)
+        let cutoff = now - Double(days) * 86_400
+        let firstStoredBucket = Int64(floor(cutoff / 300)) * 300
+        let lastStoredBucket = Int64(floor(now / 300)) * 300
+        let maxPoints = Int64(days * 86_400) / resolution
+        lock.lock()
+        defer { lock.unlock() }
+        return try driver.readRows(
+            """
+            WITH grouped AS (
+                SELECT (bucket_start / ?) * ? AS bucket_start,
+                       model,
+                       SUM(output_tokens) AS output_tokens,
+                       SUM(duration_seconds) AS duration_seconds,
+                       SUM(sample_count) AS sample_count
+                FROM speed_5m
+                WHERE bucket_start >= ? AND bucket_start <= ?
+                GROUP BY (bucket_start / ?) * ?, model
+            ), ranked AS (
+                SELECT bucket_start, model, output_tokens, duration_seconds, sample_count,
+                       ROW_NUMBER() OVER (PARTITION BY model ORDER BY bucket_start DESC) AS point_rank
+                FROM grouped
+            )
+            SELECT bucket_start, model, output_tokens, duration_seconds, sample_count
+            FROM ranked
+            WHERE point_rank <= ?
+            ORDER BY bucket_start ASC, model ASC
+            """,
+            bindings: [
+                .int64(resolution), .int64(resolution),
+                .int64(firstStoredBucket), .int64(lastStoredBucket),
+                .int64(resolution), .int64(resolution), .int64(maxPoints)
+            ]
+        ) { row in
+            guard let bucketStart = row.int64(0), let model = row.text(1),
+                  let outputTokens = row.int64(2), let duration = row.double(3),
+                  let count = row.int64(4), duration.isFinite, duration > 0,
+                  outputTokens > 0, count > 0 else {
+                throw Self.storageError("Invalid completed body aggregate")
+            }
+            let rate = Double(outputTokens) / duration
+            guard rate.isFinite, rate > 0 else {
+                throw Self.storageError("Invalid completed body aggregate rate")
+            }
+            return BodySpeedTrendPoint(
+                bucketStart: bucketStart,
+                model: model,
+                outputTokens: outputTokens,
+                durationSeconds: duration,
+                sampleCount: count,
+                tokensPerSecond: rate
+            )
+        }
+    }
+
+    private static func createSchema(_ connection: SQLiteDatabaseConnection) throws {
+        try connection.execute(
+            "CREATE TABLE IF NOT EXISTS speed_trend_meta (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL) WITHOUT ROWID"
+        )
+        let versions = try connection.readRows(
+            "SELECT value FROM speed_trend_meta WHERE key = 'schema_version'"
+        ) { $0.text(0) }
+        if let version = versions.first, version != schemaVersion {
+            throw storageError("Unsupported body speed trend schema version")
+        }
+        try connection.execute(
+            "INSERT OR IGNORE INTO speed_trend_meta(key, value) VALUES('schema_version', '\(schemaVersion)')"
+        )
+        try connection.execute(
+            "INSERT OR IGNORE INTO speed_trend_meta(key, value) VALUES('body_retention_days', '30')"
+        )
+        try connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS speed_samples (
+                id TEXT PRIMARY KEY NOT NULL,
+                ended_at REAL NOT NULL,
+                model TEXT NOT NULL,
+                included INTEGER NOT NULL,
+                payload_json TEXT NOT NULL
+            ) WITHOUT ROWID
+            """
+        )
+        try connection.execute("CREATE INDEX IF NOT EXISTS speed_samples_ended_model ON speed_samples(ended_at, model)")
+        try connection.execute("CREATE INDEX IF NOT EXISTS speed_samples_model_ended ON speed_samples(model, ended_at)")
+        try connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS speed_sample_ids (
+                id TEXT PRIMARY KEY NOT NULL,
+                ended_at REAL NOT NULL,
+                bucket_start INTEGER NOT NULL,
+                model TEXT NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                duration_seconds REAL NOT NULL,
+                trend_eligible INTEGER NOT NULL
+            ) WITHOUT ROWID
+            """
+        )
+        try connection.execute("CREATE INDEX IF NOT EXISTS speed_sample_ids_ended ON speed_sample_ids(ended_at)")
+        try connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS speed_5m (
+                bucket_start INTEGER NOT NULL,
+                model TEXT NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                duration_seconds REAL NOT NULL,
+                sample_count INTEGER NOT NULL,
+                PRIMARY KEY(bucket_start, model)
+            ) WITHOUT ROWID
+            """
+        )
+    }
+
+    private static func ingest(
+        _ samples: [ObservedSpeedSample],
+        now: Double,
+        retentionDays: Int,
+        connection: SQLiteDatabaseConnection
+    ) throws -> Int {
+        let rawCutoff = now - Double(retentionDays) * 86_400
+        let idCutoff = now - dedupRetentionSeconds
+        let trendCutoff = now - maxBackfillSeconds
+        var changedIDs = Set<String>()
+
+        try connection.execute(
+            "INSERT INTO speed_trend_meta(key, value) VALUES('body_retention_days', ?) " +
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            bindings: [.text(String(retentionDays))]
+        )
+
+        let rawUpsert = try connection.prepare(
+            """
+            INSERT INTO speed_samples(id, ended_at, model, included, payload_json)
+            VALUES(?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                ended_at = excluded.ended_at,
+                model = excluded.model,
+                included = excluded.included,
+                payload_json = excluded.payload_json
+            WHERE speed_samples.ended_at != excluded.ended_at
+               OR speed_samples.model != excluded.model
+               OR speed_samples.included != excluded.included
+               OR speed_samples.payload_json != excluded.payload_json
+            """
+        )
+        let insertID = try connection.prepare(
+            """
+            INSERT INTO speed_sample_ids(id, ended_at, bucket_start, model, output_tokens, duration_seconds, trend_eligible)
+            VALUES(?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO NOTHING
+            """
+        )
+        let insertAggregate = try connection.prepare(
+            """
+            INSERT INTO speed_5m(bucket_start, model, output_tokens, duration_seconds, sample_count)
+            VALUES(?, ?, ?, ?, 1)
+            ON CONFLICT(bucket_start, model) DO UPDATE SET
+                output_tokens = output_tokens + excluded.output_tokens,
+                duration_seconds = duration_seconds + excluded.duration_seconds,
+                sample_count = sample_count + 1
+            WHERE output_tokens <= 9223372036854775807 - excluded.output_tokens
+              AND sample_count < 9223372036854775807
+              AND duration_seconds <= 1.7976931348623157e308 - excluded.duration_seconds
+            """
+        )
+        let updateID = try connection.prepare(
+            """
+            UPDATE speed_sample_ids
+            SET ended_at = ?, bucket_start = ?, model = ?, output_tokens = ?, duration_seconds = ?, trend_eligible = ?
+            WHERE id = ?
+            """
+        )
+        let subtractAggregate = try connection.prepare(
+            """
+            UPDATE speed_5m
+            SET output_tokens = output_tokens - ?, duration_seconds = duration_seconds - ?, sample_count = sample_count - 1
+            WHERE bucket_start = ? AND model = ? AND output_tokens >= ? AND sample_count > 0
+            """
+        )
+        let removeEmptyAggregate = try connection.prepare(
+            "DELETE FROM speed_5m WHERE bucket_start = ? AND model = ? AND sample_count <= 0"
+        )
+
+        for sample in samples where isValidRawBodySample(sample) {
+            guard sample.endedAt <= now else { continue }
+            let model = sample.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "unknown" : sample.model
+            let rawAge = now - sample.endedAt
+            if rawAge <= Double(retentionDays) * 86_400 {
+                let payload = try encode(sample)
+                if try rawUpsert.execute([
+                    .text(sample.id), .double(sample.endedAt), .text(model),
+                    .int(sample.bodyQuality.included ? 1 : 0), .text(payload)
+                ]) > 0 {
+                    changedIDs.insert(sample.id)
+                }
+            }
+
+            guard sample.endedAt >= trendCutoff else { continue }
+            let bucketValue = floor(sample.endedAt / Double(bucketSeconds)) * Double(bucketSeconds)
+            guard bucketValue.isFinite,
+                  bucketValue >= Double(Int64.min), bucketValue < Double(Int64.max) else { continue }
+            let bucket = Int64(bucketValue)
+            let trendEligible = sample.hasKnownModel && sample.bodyQuality.included
+            let trendModel = trendEligible ? sample.model : model
+            let tokens = Int64(sample.outputTokens)
+            let duration = sample.durationSeconds
+
+            let inserted = try insertID.execute([
+                .text(sample.id), .double(sample.endedAt), .int64(bucket), .text(trendModel),
+                .int64(tokens), .double(duration), .int(trendEligible ? 1 : 0)
+            ]) > 0
+            if inserted {
+                if trendEligible {
+                    try addAggregate(
+                        statement: insertAggregate, bucket: bucket, model: trendModel,
+                        tokens: tokens, duration: duration
+                    )
+                }
+                changedIDs.insert(sample.id)
+                continue
+            }
+
+            let oldRows = try connection.readRows(
+                """
+                SELECT ended_at, bucket_start, model, output_tokens, duration_seconds, trend_eligible
+                FROM speed_sample_ids WHERE id = ?
+                """,
+                bindings: [.text(sample.id)]
+            ) { row in
+                (
+                    row.double(0) ?? 0,
+                    row.int64(1) ?? 0,
+                    row.text(2) ?? "",
+                    row.int64(3) ?? 0,
+                    row.double(4) ?? 0,
+                    row.int(5) == 1
+                )
+            }
+            guard let old = oldRows.first else { continue }
+            let same = old.0 == sample.endedAt && old.1 == bucket && old.2 == trendModel
+                && old.3 == tokens && old.4 == duration && old.5 == trendEligible
+            guard !same else { continue }
+
+            if old.5 {
+                guard try subtractAggregate.execute([
+                    .int64(old.3), .double(old.4), .int64(old.1), .text(old.2), .int64(old.3)
+                ]) > 0 else {
+                    throw Self.storageError("Missing completed body aggregate during correction")
+                }
+                try removeEmptyAggregate.execute([.int64(old.1), .text(old.2)])
+            }
+            try updateID.execute([
+                .double(sample.endedAt), .int64(bucket), .text(trendModel), .int64(tokens),
+                .double(duration), .int(trendEligible ? 1 : 0), .text(sample.id)
+            ])
+            if trendEligible {
+                try addAggregate(
+                    statement: insertAggregate, bucket: bucket, model: trendModel,
+                    tokens: tokens, duration: duration
+                )
+            }
+            changedIDs.insert(sample.id)
+        }
+
+        try connection.execute("DELETE FROM speed_samples WHERE ended_at < ?", bindings: [.double(rawCutoff)])
+        try connection.execute("DELETE FROM speed_sample_ids WHERE ended_at < ?", bindings: [.double(idCutoff)])
+        try connection.execute(
+            "DELETE FROM speed_5m WHERE bucket_start < ?",
+            bindings: [.int64(Int64(floor((now - aggregateRetentionSeconds) / 300)) * 300)]
+        )
+        return changedIDs.count
+    }
+
+    private static func addAggregate(
+        statement: SQLitePreparedStatement,
+        bucket: Int64,
+        model: String,
+        tokens: Int64,
+        duration: Double
+    ) throws {
+        guard try statement.execute([.int64(bucket), .text(model), .int64(tokens), .double(duration)]) > 0 else {
+            throw storageError("Completed body aggregate exceeded numeric storage limits")
+        }
+    }
+
+    private static func encode(_ sample: ObservedSpeedSample) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let data = try encoder.encode(sample)
+        guard let json = String(data: data, encoding: .utf8) else {
+            throw storageError("Unable to encode completed body payload")
+        }
+        return json
+    }
+
+    private static func isValidRawBodySample(_ sample: ObservedSpeedSample) -> Bool {
+        guard sample.isBody,
+              !sample.id.isEmpty, sample.id.utf8.count <= 2_048,
+              !sample.threadID.isEmpty, sample.threadID.utf8.count <= 512,
+              !sample.turnID.isEmpty, sample.turnID.utf8.count <= 512,
+              !sample.itemID.isEmpty, sample.itemID.utf8.count <= 512,
+              sample.model.utf8.count <= 256,
+              (sample.networkWarning?.utf8.count ?? 0) <= 512,
+              sample.source.utf8.count <= 128,
+              ["low", "medium", "high"].contains(sample.confidence),
+              (sample.bodyPhase?.utf8.count ?? 0) <= 64,
+              (sample.qualityReason?.utf8.count ?? 0) <= 256,
+              sample.startedAt.isFinite, sample.endedAt.isFinite,
+              sample.durationSeconds.isFinite, sample.tokensPerSecond.isFinite,
+              sample.startedAt >= 0, sample.endedAt >= sample.startedAt,
+              sample.durationSeconds >= 0, sample.outputTokens >= 0,
+              sample.tokensPerSecond >= 0 else { return false }
+        return true
+    }
+
+    private static func normalizedRetentionDays(_ days: Int) -> Int {
+        [15, 30].contains(days) ? days : 30
+    }
+
+    private static func safeNow(_ now: Double) -> Bool {
+        now.isFinite && now >= 0 && now < Double(Int64.max) - aggregateRetentionSeconds
+    }
+
+    private static func storageError(_ message: String) -> SQLiteDatabaseError {
+        SQLiteDatabaseError(
+            operation: "Read body speed trend",
+            code: 20,
+            message: message,
+            path: nil
+        )
+    }
+}

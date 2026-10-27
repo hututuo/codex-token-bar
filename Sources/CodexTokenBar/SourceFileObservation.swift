@@ -20,6 +20,7 @@ struct SourceFileObservation {
     }
 
     static func read(at file: URL) throws -> Self {
+        if let job = try BusinessStoreFiles.observation(at: file) { return job }
         let logical = CodexRolloutReader.logicalURL(file)
         var status = Darwin.stat()
         if lstat(logical.path, &status) == 0 { return try Self(status: status) }

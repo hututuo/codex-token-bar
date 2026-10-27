@@ -1,0 +1,2839 @@
+{
+ "_comment": "METRICS 10 cases, checked by spec/tools/traffic.py. Times are Unix ms; counters are cumulative bytes. A process row: pid, ppid, start (ms), exe, optional args, bundle (macOS: CFBundleIdentifier of the .app whose Contents/MacOS holds exe), cwd, openFiles. A counter sample: stream id (a new id starts a new stream unless continues is true) and rows of pid, start, rx, tx. Agents: id, source, optional parent, cwdPath, transcript, active intervals [from, to] (phase generating/tools or new lines). Expected values are written by hand from the spec; only the keys present are compared.",
+ "schema": 1,
+ "format": [
+  {
+   "kind": "rate",
+   "value": 0,
+   "text": "0 B/s"
+  },
+  {
+   "kind": "rate",
+   "value": 0.4,
+   "text": "0 B/s"
+  },
+  {
+   "kind": "rate",
+   "value": 512,
+   "text": "512 B/s"
+  },
+  {
+   "kind": "rate",
+   "value": 999,
+   "text": "999 B/s"
+  },
+  {
+   "kind": "rate",
+   "value": 999.5,
+   "text": "1.00 KB/s"
+  },
+  {
+   "kind": "rate",
+   "value": 1280,
+   "text": "1.28 KB/s"
+  },
+  {
+   "kind": "rate",
+   "value": 9994,
+   "text": "9.99 KB/s"
+  },
+  {
+   "kind": "rate",
+   "value": 9995,
+   "text": "10.0 KB/s"
+  },
+  {
+   "kind": "rate",
+   "value": 12800,
+   "text": "12.8 KB/s"
+  },
+  {
+   "kind": "rate",
+   "value": 99950,
+   "text": "100 KB/s"
+  },
+  {
+   "kind": "rate",
+   "value": 128000,
+   "text": "128 KB/s"
+  },
+  {
+   "kind": "rate",
+   "value": 999600,
+   "text": "1.00 MB/s"
+  },
+  {
+   "kind": "rate",
+   "value": 12400000,
+   "text": "12.4 MB/s"
+  },
+  {
+   "kind": "rate",
+   "value": 1500000000,
+   "text": "1.50 GB/s"
+  },
+  {
+   "kind": "bits",
+   "value": 125,
+   "text": "1.00 Kb/s"
+  },
+  {
+   "kind": "bits",
+   "value": 1250000,
+   "text": "10.0 Mb/s"
+  },
+  {
+   "kind": "bits",
+   "value": 100,
+   "text": "800 b/s"
+  },
+  {
+   "kind": "total",
+   "value": 0,
+   "text": "0 B"
+  },
+  {
+   "kind": "total",
+   "value": 999499,
+   "text": "999 KB"
+  },
+  {
+   "kind": "total",
+   "value": 999500,
+   "text": "1.00 MB"
+  },
+  {
+   "kind": "total",
+   "value": 48200000,
+   "text": "48.2 MB"
+  },
+  {
+   "kind": "total",
+   "value": 3100000000000,
+   "text": "3.10 TB"
+  },
+  {
+   "kind": "total",
+   "value": 5000000000000000,
+   "text": "5000 TB"
+  }
+ ],
+ "cases": [
+  {
+   "platform": "macos",
+   "home": "/Users/dev",
+   "name": "classify-macos",
+   "samples": [
+    {
+     "t": 1792490400000,
+     "processes": [
+      {
+       "pid": 1,
+       "ppid": 0,
+       "start": 0,
+       "exe": "/sbin/launchd"
+      },
+      {
+       "pid": 100,
+       "ppid": 1,
+       "start": 1000,
+       "exe": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"
+      },
+      {
+       "pid": 101,
+       "ppid": 100,
+       "start": 2000,
+       "exe": "/bin/zsh"
+      },
+      {
+       "pid": 102,
+       "ppid": 101,
+       "start": 3000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude",
+        "--dangerously-skip-permissions"
+       ]
+      },
+      {
+       "pid": 103,
+       "ppid": 102,
+       "start": 4000,
+       "exe": "/bin/zsh"
+      },
+      {
+       "pid": 104,
+       "ppid": 103,
+       "start": 4100,
+       "exe": "/usr/bin/git"
+      },
+      {
+       "pid": 110,
+       "ppid": 1,
+       "start": 1000,
+       "exe": "/Applications/Claude.app/Contents/MacOS/Claude"
+      },
+      {
+       "pid": 111,
+       "ppid": 110,
+       "start": 1100,
+       "exe": "/Applications/Claude.app/Contents/Frameworks/Claude Helper (Renderer).app/Contents/MacOS/Claude Helper (Renderer)"
+      },
+      {
+       "pid": 112,
+       "ppid": 110,
+       "start": 1200,
+       "exe": "/Applications/Claude.app/Contents/Helpers/disclaimer"
+      },
+      {
+       "pid": 113,
+       "ppid": 112,
+       "start": 1300,
+       "exe": "/Users/dev/Library/Application Support/Claude/claude-code/2.1.308/a93ded4b1b47/claude.app/Contents/MacOS/claude"
+      },
+      {
+       "pid": 114,
+       "ppid": 113,
+       "start": 1400,
+       "exe": "/opt/homebrew/bin/node",
+       "args": [
+        "node",
+        "/Users/dev/.npm/_npx/15c6/node_modules/chrome-devtools-mcp/build/src/index.js"
+       ]
+      },
+      {
+       "pid": 120,
+       "ppid": 1,
+       "start": 1000,
+       "exe": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+      },
+      {
+       "pid": 121,
+       "ppid": 120,
+       "start": 1100,
+       "exe": "/Users/dev/.local/bin/claude",
+       "args": [
+        "/Users/dev/.local/bin/claude",
+        "--chrome-native-host"
+       ]
+      },
+      {
+       "pid": 130,
+       "ppid": 1,
+       "start": 1000,
+       "exe": "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"
+      },
+      {
+       "pid": 131,
+       "ppid": 130,
+       "start": 1100,
+       "exe": "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+       "args": [
+        "codex",
+        "app-server"
+       ]
+      },
+      {
+       "pid": 132,
+       "ppid": 131,
+       "start": 1200,
+       "exe": "/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl"
+      },
+      {
+       "pid": 133,
+       "ppid": 131,
+       "start": 1300,
+       "exe": "/bin/bash"
+      },
+      {
+       "pid": 134,
+       "ppid": 133,
+       "start": 1400,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude",
+        "-p",
+        "review"
+       ]
+      },
+      {
+       "pid": 135,
+       "ppid": 134,
+       "start": 1500,
+       "exe": "/usr/bin/curl"
+      },
+      {
+       "pid": 140,
+       "ppid": 1,
+       "start": 1000,
+       "exe": "/Users/dev/.codex/packages/app-server-daemon/releases/0.163.0-aarch64-apple-darwin/bin/codex",
+       "args": [
+        "codex",
+        "app-server",
+        "daemon"
+       ]
+      },
+      {
+       "pid": 150,
+       "ppid": 1,
+       "start": 1000,
+       "exe": "/Users/dev/Library/Application Support/ai.opencode.desktop/cli/2.1.0-arm64/opencode-cli",
+       "args": [
+        "opencode-cli",
+        "serve"
+       ]
+      },
+      {
+       "pid": 160,
+       "ppid": 101,
+       "start": 5000,
+       "exe": "/opt/homebrew/Cellar/node/24.1.0/bin/node",
+       "args": [
+        "node",
+        "/opt/homebrew/lib/node_modules/@google/gemini-cli/dist/index.js"
+       ]
+      },
+      {
+       "pid": 161,
+       "ppid": 160,
+       "start": 5100,
+       "exe": "/opt/homebrew/Cellar/node/24.1.0/bin/node",
+       "args": [
+        "node",
+        "--max-old-space-size=8192",
+        "/opt/homebrew/lib/node_modules/@google/gemini-cli/dist/index.js"
+       ]
+      },
+      {
+       "pid": 162,
+       "ppid": 161,
+       "start": 5200,
+       "exe": "/usr/bin/curl"
+      },
+      {
+       "pid": 170,
+       "ppid": 101,
+       "start": 6000,
+       "exe": "/Users/dev/.bun/bin/bun",
+       "args": [
+        "bun",
+        "/Users/dev/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/dist/cli.js"
+       ]
+      },
+      {
+       "pid": 180,
+       "ppid": 1,
+       "start": 1000,
+       "exe": "/Applications/Antigravity.app/Contents/MacOS/Antigravity"
+      },
+      {
+       "pid": 181,
+       "ppid": 180,
+       "start": 1100,
+       "exe": "/Applications/Antigravity.app/Contents/Resources/app/extensions/antigravity/bin/language_server_macos_arm",
+       "args": [
+        "language_server_macos_arm",
+        "--app_data_dir",
+        "antigravity"
+       ]
+      },
+      {
+       "pid": 190,
+       "ppid": 101,
+       "start": 7000,
+       "exe": "/usr/local/bin/dsh"
+      },
+      {
+       "pid": 191,
+       "ppid": 999,
+       "start": 500,
+       "exe": "/usr/bin/curl"
+      },
+      {
+       "pid": 999,
+       "ppid": 1,
+       "start": 9000,
+       "exe": "/bin/sleep"
+      },
+      {
+       "pid": 200,
+       "ppid": 1,
+       "start": 1000,
+       "exe": "/Applications/WorkBuddy AI.app/Contents/MacOS/Electron",
+       "bundle": "com.workbuddy.workbuddy-ai"
+      },
+      {
+       "pid": 201,
+       "ppid": 200,
+       "start": 1100,
+       "exe": "/Applications/WorkBuddy AI.app/Contents/Frameworks/WorkBuddy AI Helper (Renderer).app/Contents/MacOS/WorkBuddy AI Helper (Renderer)",
+       "bundle": "com.workbuddy.workbuddy-ai.helper.renderer"
+      },
+      {
+       "pid": 202,
+       "ppid": 200,
+       "start": 1200,
+       "exe": "/Applications/WorkBuddy AI.app/Contents/MacOS/Electron",
+       "bundle": "com.workbuddy.workbuddy-ai",
+       "args": [
+        "/Applications/WorkBuddy AI.app/Contents/MacOS/Electron",
+        "/Applications/WorkBuddy AI.app/Contents/Resources/app.asar/main/daemon-app-server-entry.js",
+        "--stdio"
+       ]
+      },
+      {
+       "pid": 203,
+       "ppid": 202,
+       "start": 1300,
+       "exe": "/Applications/WorkBuddy AI.app/Contents/MacOS/Electron",
+       "bundle": "com.workbuddy.workbuddy-ai",
+       "args": [
+        "/Applications/WorkBuddy AI.app/Contents/MacOS/Electron",
+        "--optimize-for-size",
+        "--max-semi-space-size=2",
+        "/Applications/WorkBuddy AI.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy",
+        "--prewarm",
+        "--prewarm-id",
+        "wb-pool-1792490400000-ab12"
+       ]
+      },
+      {
+       "pid": 204,
+       "ppid": 203,
+       "start": 1400,
+       "exe": "/bin/zsh"
+      },
+      {
+       "pid": 205,
+       "ppid": 204,
+       "start": 1500,
+       "exe": "/usr/bin/curl"
+      },
+      {
+       "pid": 210,
+       "ppid": 1,
+       "start": 1000,
+       "exe": "/Applications/WorkBuddy.app/Contents/MacOS/Electron",
+       "bundle": "com.tencent.workbuddy.mac"
+      },
+      {
+       "pid": 211,
+       "ppid": 210,
+       "start": 1100,
+       "exe": "/Applications/WorkBuddy.app/Contents/MacOS/Electron",
+       "bundle": "com.tencent.workbuddy.mac",
+       "args": [
+        "/Applications/WorkBuddy.app/Contents/MacOS/Electron",
+        "/Applications/WorkBuddy.app/Contents/Resources/app.asar/main/daemon-app-server-entry.js",
+        "--stdio"
+       ]
+      },
+      {
+       "pid": 212,
+       "ppid": 211,
+       "start": 1200,
+       "exe": "/Applications/WorkBuddy.app/Contents/MacOS/Electron",
+       "bundle": "com.tencent.workbuddy.mac",
+       "args": [
+        "/Applications/WorkBuddy.app/Contents/MacOS/Electron",
+        "/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy",
+        "--serve",
+        "--session-id",
+        "3c9f2a1e-7b4d-4e6a-9c1f-5d2e8a7b6c40"
+       ]
+      },
+      {
+       "pid": 213,
+       "ppid": 212,
+       "start": 1300,
+       "exe": "/opt/homebrew/bin/node",
+       "args": [
+        "node",
+        "/Users/dev/.npm/_npx/9a1c/node_modules/some-mcp/dist/index.js"
+       ]
+      },
+      {
+       "pid": 214,
+       "ppid": 211,
+       "start": 1400,
+       "exe": "/Applications/WorkBuddy.app/Contents/MacOS/Electron",
+       "bundle": "com.tencent.workbuddy.mac",
+       "args": [
+        "wb-acp:3c9f2a1e-7b4d-4e6a-9c1f-5d2e8a7b6c41",
+        "/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy",
+        "--acp"
+       ]
+      },
+      {
+       "pid": 215,
+       "ppid": 1,
+       "start": 1500,
+       "exe": "/Users/dev/Applications/WB Copy.app/Contents/MacOS/Electron",
+       "bundle": "com.workbuddy.workbuddy-ai",
+       "args": [
+        "/Users/dev/Applications/WB Copy.app/Contents/MacOS/Electron",
+        "/Users/dev/Applications/WB Copy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy",
+        "--serve"
+       ]
+      }
+     ]
+    }
+   ],
+   "expected": {
+    "classes": {
+     "1": null,
+     "100": null,
+     "101": null,
+     "102": "claudeCode/agent",
+     "103": "claudeCode/tool",
+     "104": "claudeCode/tool",
+     "110": null,
+     "111": null,
+     "112": null,
+     "113": "claudeDesktop/agent",
+     "114": "claudeDesktop/tool",
+     "120": null,
+     "121": null,
+     "130": null,
+     "131": "codex/agent",
+     "132": "codex/tool",
+     "133": "codex/tool",
+     "134": "claudeCode/agent",
+     "135": "claudeCode/tool",
+     "140": "codex/agent",
+     "150": "opencode/agent",
+     "160": "gemini/agent",
+     "161": "gemini/self",
+     "162": "gemini/tool",
+     "170": "omp/agent",
+     "180": null,
+     "181": "antigravity/agent",
+     "190": "deepseek/agent",
+     "191": null,
+     "999": null,
+     "200": null,
+     "201": null,
+     "202": null,
+     "203": "workbuddyAi/agent",
+     "204": "workbuddyAi/tool",
+     "205": "workbuddyAi/tool",
+     "210": null,
+     "211": null,
+     "212": "workbuddy/agent",
+     "213": "workbuddy/tool",
+     "214": "workbuddy/agent",
+     "215": "workbuddyAi/agent"
+    }
+   }
+  },
+  {
+   "platform": "windows",
+   "home": "C:\\Users\\dev",
+   "env": {
+    "LOCALAPPDATA": "C:\\Users\\dev\\AppData\\Local",
+    "APPDATA": "C:\\Users\\dev\\AppData\\Roaming"
+   },
+   "name": "classify-windows",
+   "samples": [
+    {
+     "t": 1792490400000,
+     "processes": [
+      {
+       "pid": 4,
+       "ppid": 0,
+       "start": 0,
+       "exe": "System"
+      },
+      {
+       "pid": 9348,
+       "ppid": 1,
+       "start": 1000,
+       "exe": "C:\\Program Files\\WindowsApps\\Claude_3.1623.0.0_x64__pzs8sxrjxfjjc\\app\\Claude.exe"
+      },
+      {
+       "pid": 9349,
+       "ppid": 9348,
+       "start": 1100,
+       "exe": "C:\\Program Files\\WindowsApps\\Claude_3.1623.0.0_x64__pzs8sxrjxfjjc\\app\\Claude.exe",
+       "args": [
+        "Claude.exe",
+        "--type=renderer"
+       ]
+      },
+      {
+       "pid": 5640,
+       "ppid": 9348,
+       "start": 1200,
+       "exe": "C:\\Users\\dev\\AppData\\Local\\Claude-3p\\claude-code\\2.1.299\\f0584be0fbaf\\claude.exe",
+       "args": [
+        "claude.exe",
+        "--output-format",
+        "stream-json"
+       ]
+      },
+      {
+       "pid": 5641,
+       "ppid": 5640,
+       "start": 1300,
+       "exe": "C:\\Program Files\\nodejs\\node.exe",
+       "args": [
+        "node.exe",
+        "C:\\Users\\dev\\AppData\\Roaming\\npm\\node_modules\\npm\\bin\\npx-cli.js",
+        "-y",
+        "some-mcp"
+       ]
+      },
+      {
+       "pid": 23940,
+       "ppid": 1,
+       "start": 1000,
+       "exe": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.1016.6573.0_x64__2p2nqsd0c76g0\\app\\Codex.exe"
+      },
+      {
+       "pid": 19776,
+       "ppid": 23940,
+       "start": 1100,
+       "exe": "C:\\Users\\dev\\AppData\\Local\\OpenAI\\Codex\\bin\\6257d9e8f63c0f2b\\codex.exe",
+       "args": [
+        "codex.exe",
+        "app-server"
+       ]
+      },
+      {
+       "pid": 23060,
+       "ppid": 19776,
+       "start": 1200,
+       "exe": "C:\\Users\\dev\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\node\\bin\\node.exe"
+      },
+      {
+       "pid": 700,
+       "ppid": 600,
+       "start": 2000,
+       "exe": "C:\\Users\\dev\\.local\\bin\\claude.exe"
+      },
+      {
+       "pid": 600,
+       "ppid": 1,
+       "start": 1500,
+       "exe": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+      },
+      {
+       "pid": 701,
+       "ppid": 700,
+       "start": 2100,
+       "exe": "C:\\Program Files\\Git\\cmd\\git.exe"
+      },
+      {
+       "pid": 800,
+       "ppid": 600,
+       "start": 3000,
+       "exe": "C:\\Program Files\\nodejs\\node.exe",
+       "args": [
+        "node.exe",
+        "C:\\Users\\dev\\AppData\\Roaming\\npm\\node_modules\\@google\\gemini-cli\\dist\\index.js"
+       ]
+      },
+      {
+       "pid": 810,
+       "ppid": 600,
+       "start": 3100,
+       "exe": "C:\\Users\\dev\\AppData\\Roaming\\npm\\node_modules\\opencode-ai\\node_modules\\opencode-windows-x64\\bin\\opencode.exe"
+      },
+      {
+       "pid": 820,
+       "ppid": 1,
+       "start": 3200,
+       "exe": "C:\\Users\\dev\\AppData\\Local\\Programs\\Antigravity\\resources\\app\\extensions\\antigravity\\bin\\language_server_windows_x64.exe"
+      },
+      {
+       "pid": 900,
+       "ppid": 1,
+       "start": 4000,
+       "exe": "C:\\Users\\dev\\AppData\\Local\\Programs\\WorkBuddy AI\\WorkBuddyAI.exe"
+      },
+      {
+       "pid": 901,
+       "ppid": 900,
+       "start": 4100,
+       "exe": "C:\\Users\\dev\\AppData\\Local\\Programs\\WorkBuddy AI\\WorkBuddyAI.exe",
+       "args": [
+        "WorkBuddyAI.exe",
+        "--type=renderer"
+       ]
+      },
+      {
+       "pid": 902,
+       "ppid": 900,
+       "start": 4200,
+       "exe": "C:\\Users\\dev\\AppData\\Local\\Programs\\WorkBuddy AI\\WorkBuddyAI.exe",
+       "args": [
+        "C:\\Users\\dev\\AppData\\Local\\Programs\\WorkBuddy AI\\WorkBuddyAI.exe",
+        "C:\\Users\\dev\\AppData\\Local\\Programs\\WorkBuddy AI\\resources\\app.asar\\main\\daemon-app-server-entry.js",
+        "--stdio"
+       ]
+      },
+      {
+       "pid": 903,
+       "ppid": 902,
+       "start": 4300,
+       "exe": "C:\\Users\\dev\\AppData\\Local\\Programs\\WorkBuddy AI\\WorkBuddyAI.exe",
+       "args": [
+        "C:\\Users\\dev\\AppData\\Local\\Programs\\WorkBuddy AI\\WorkBuddyAI.exe",
+        "--optimize-for-size",
+        "--max-semi-space-size=2",
+        "C:\\Users\\dev\\AppData\\Local\\Programs\\WorkBuddy AI\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy",
+        "--serve",
+        "--session-id",
+        "5e1d7c3a-2b9f-4a6e-8d0c-1f2e3d4c5b6a"
+       ]
+      },
+      {
+       "pid": 904,
+       "ppid": 903,
+       "start": 4400,
+       "exe": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+      },
+      {
+       "pid": 910,
+       "ppid": 1,
+       "start": 4000,
+       "exe": "C:\\Users\\dev\\AppData\\Local\\Programs\\WorkBuddy\\WorkBuddy.exe"
+      },
+      {
+       "pid": 911,
+       "ppid": 910,
+       "start": 4100,
+       "exe": "C:\\Users\\dev\\AppData\\Local\\Programs\\WorkBuddy\\WorkBuddy.exe",
+       "args": [
+        "C:\\Users\\dev\\AppData\\Local\\Programs\\WorkBuddy\\WorkBuddy.exe",
+        "C:\\Users\\dev\\AppData\\Local\\Programs\\WorkBuddy\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy",
+        "--serve",
+        "--session-id",
+        "5e1d7c3a-2b9f-4a6e-8d0c-1f2e3d4c5b6b"
+       ]
+      }
+     ]
+    }
+   ],
+   "expected": {
+    "classes": {
+     "4": null,
+     "9348": null,
+     "9349": null,
+     "5640": "claudeDesktop/agent",
+     "5641": "claudeDesktop/tool",
+     "23940": null,
+     "19776": "codex/agent",
+     "23060": "codex/tool",
+     "600": null,
+     "700": "claudeCode/agent",
+     "701": "claudeCode/tool",
+     "800": "gemini/agent",
+     "810": "opencode/agent",
+     "820": "antigravity/agent",
+     "900": null,
+     "901": null,
+     "902": null,
+     "903": "workbuddyAi/agent",
+     "904": "workbuddyAi/tool",
+     "910": null,
+     "911": "workbuddy/agent"
+    }
+   }
+  },
+  {
+   "platform": "macos",
+   "home": "/Users/dev",
+   "name": "deltas-rates-tools",
+   "rateTimes": [
+    1792490403000,
+    1792490406000
+   ],
+   "samples": [
+    {
+     "t": 1792490400000,
+     "processes": [
+      {
+       "pid": 1,
+       "ppid": 0,
+       "start": 0,
+       "exe": "/sbin/launchd"
+      },
+      {
+       "pid": 100,
+       "ppid": 1,
+       "start": 1792490391000,
+       "exe": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"
+      },
+      {
+       "pid": 101,
+       "ppid": 100,
+       "start": 1792490392000,
+       "exe": "/bin/zsh"
+      },
+      {
+       "pid": 102,
+       "ppid": 101,
+       "start": 1792490393000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/nova"
+      },
+      {
+       "pid": 200,
+       "ppid": 1,
+       "start": 1792490391500,
+       "exe": "/Applications/Safari.app/Contents/MacOS/Safari"
+      }
+     ],
+     "interfaces": {
+      "en0": [
+       1000000,
+       500000
+      ]
+     },
+     "counters": {
+      "stream": "a",
+      "rows": [
+       {
+        "pid": 102,
+        "start": 1792490393000,
+        "rx": 10000,
+        "tx": 2000
+       },
+       {
+        "pid": 200,
+        "start": 1792490391500,
+        "rx": 5000000,
+        "tx": 100000
+       }
+      ]
+     }
+    },
+    {
+     "t": 1792490401000,
+     "processes": [
+      {
+       "pid": 1,
+       "ppid": 0,
+       "start": 0,
+       "exe": "/sbin/launchd"
+      },
+      {
+       "pid": 100,
+       "ppid": 1,
+       "start": 1792490391000,
+       "exe": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"
+      },
+      {
+       "pid": 101,
+       "ppid": 100,
+       "start": 1792490392000,
+       "exe": "/bin/zsh"
+      },
+      {
+       "pid": 102,
+       "ppid": 101,
+       "start": 1792490393000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/nova"
+      },
+      {
+       "pid": 200,
+       "ppid": 1,
+       "start": 1792490391500,
+       "exe": "/Applications/Safari.app/Contents/MacOS/Safari"
+      }
+     ],
+     "interfaces": {
+      "en0": [
+       1100000,
+       520000
+      ]
+     },
+     "counters": {
+      "stream": "a",
+      "rows": [
+       {
+        "pid": 102,
+        "start": 1792490393000,
+        "rx": 12000,
+        "tx": 7000
+       },
+       {
+        "pid": 200,
+        "start": 1792490391500,
+        "rx": 5050000,
+        "tx": 100000
+       }
+      ]
+     }
+    },
+    {
+     "t": 1792490402000,
+     "processes": [
+      {
+       "pid": 1,
+       "ppid": 0,
+       "start": 0,
+       "exe": "/sbin/launchd"
+      },
+      {
+       "pid": 100,
+       "ppid": 1,
+       "start": 1792490391000,
+       "exe": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"
+      },
+      {
+       "pid": 101,
+       "ppid": 100,
+       "start": 1792490392000,
+       "exe": "/bin/zsh"
+      },
+      {
+       "pid": 102,
+       "ppid": 101,
+       "start": 1792490393000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/nova"
+      },
+      {
+       "pid": 200,
+       "ppid": 1,
+       "start": 1792490391500,
+       "exe": "/Applications/Safari.app/Contents/MacOS/Safari"
+      },
+      {
+       "pid": 103,
+       "ppid": 102,
+       "start": 1792490401500,
+       "exe": "/bin/zsh"
+      },
+      {
+       "pid": 104,
+       "ppid": 103,
+       "start": 1792490401600,
+       "exe": "/usr/bin/curl"
+      }
+     ],
+     "interfaces": {
+      "en0": [
+       1400000,
+       530000
+      ]
+     },
+     "counters": {
+      "stream": "a",
+      "rows": [
+       {
+        "pid": 102,
+        "start": 1792490393000,
+        "rx": 12500,
+        "tx": 7200
+       },
+       {
+        "pid": 104,
+        "start": 1792490401600,
+        "rx": 250000,
+        "tx": 1000
+       },
+       {
+        "pid": 200,
+        "start": 1792490391500,
+        "rx": 5050000,
+        "tx": 100000
+       }
+      ]
+     }
+    },
+    {
+     "t": 1792490403000,
+     "processes": [
+      {
+       "pid": 1,
+       "ppid": 0,
+       "start": 0,
+       "exe": "/sbin/launchd"
+      },
+      {
+       "pid": 100,
+       "ppid": 1,
+       "start": 1792490391000,
+       "exe": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"
+      },
+      {
+       "pid": 101,
+       "ppid": 100,
+       "start": 1792490392000,
+       "exe": "/bin/zsh"
+      },
+      {
+       "pid": 102,
+       "ppid": 101,
+       "start": 1792490393000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/nova"
+      },
+      {
+       "pid": 200,
+       "ppid": 1,
+       "start": 1792490391500,
+       "exe": "/Applications/Safari.app/Contents/MacOS/Safari"
+      },
+      {
+       "pid": 103,
+       "ppid": 102,
+       "start": 1792490401500,
+       "exe": "/bin/zsh"
+      },
+      {
+       "pid": 104,
+       "ppid": 103,
+       "start": 1792490401600,
+       "exe": "/usr/bin/curl"
+      }
+     ],
+     "interfaces": {
+      "en0": [
+       1700000,
+       540000
+      ]
+     },
+     "counters": {
+      "stream": "a",
+      "rows": [
+       {
+        "pid": 102,
+        "start": 1792490393000,
+        "rx": 13000,
+        "tx": 7400
+       },
+       {
+        "pid": 104,
+        "start": 1792490401600,
+        "rx": 520000,
+        "tx": 1500
+       }
+      ]
+     }
+    },
+    {
+     "t": 1792490404000,
+     "processes": [
+      {
+       "pid": 1,
+       "ppid": 0,
+       "start": 0,
+       "exe": "/sbin/launchd"
+      },
+      {
+       "pid": 100,
+       "ppid": 1,
+       "start": 1792490391000,
+       "exe": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"
+      },
+      {
+       "pid": 101,
+       "ppid": 100,
+       "start": 1792490392000,
+       "exe": "/bin/zsh"
+      },
+      {
+       "pid": 102,
+       "ppid": 101,
+       "start": 1792490393000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/nova"
+      },
+      {
+       "pid": 200,
+       "ppid": 1,
+       "start": 1792490391500,
+       "exe": "/Applications/Safari.app/Contents/MacOS/Safari"
+      }
+     ],
+     "interfaces": {
+      "en0": [
+       1790000,
+       545000
+      ]
+     },
+     "counters": {
+      "stream": "a",
+      "rows": [
+       {
+        "pid": 102,
+        "start": 1792490393000,
+        "rx": 13000,
+        "tx": 7400
+       },
+       {
+        "pid": 104,
+        "start": 1792490401600,
+        "rx": 600000,
+        "tx": 1600
+       }
+      ]
+     }
+    },
+    {
+     "t": 1792490405000,
+     "processes": [
+      {
+       "pid": 1,
+       "ppid": 0,
+       "start": 0,
+       "exe": "/sbin/launchd"
+      },
+      {
+       "pid": 100,
+       "ppid": 1,
+       "start": 1792490391000,
+       "exe": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"
+      },
+      {
+       "pid": 101,
+       "ppid": 100,
+       "start": 1792490392000,
+       "exe": "/bin/zsh"
+      },
+      {
+       "pid": 102,
+       "ppid": 101,
+       "start": 1792490393000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/nova"
+      },
+      {
+       "pid": 200,
+       "ppid": 1,
+       "start": 1792490391500,
+       "exe": "/Applications/Safari.app/Contents/MacOS/Safari"
+      }
+     ],
+     "interfaces": {
+      "en0": [
+       1000,
+       200
+      ]
+     },
+     "counters": {
+      "stream": "a",
+      "rows": [
+       {
+        "pid": 102,
+        "start": 1792490393000,
+        "rx": 14000,
+        "tx": 7400
+       }
+      ]
+     }
+    },
+    {
+     "t": 1792490406000,
+     "processes": [
+      {
+       "pid": 1,
+       "ppid": 0,
+       "start": 0,
+       "exe": "/sbin/launchd"
+      },
+      {
+       "pid": 100,
+       "ppid": 1,
+       "start": 1792490391000,
+       "exe": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"
+      },
+      {
+       "pid": 101,
+       "ppid": 100,
+       "start": 1792490392000,
+       "exe": "/bin/zsh"
+      },
+      {
+       "pid": 102,
+       "ppid": 101,
+       "start": 1792490393000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/nova"
+      },
+      {
+       "pid": 200,
+       "ppid": 1,
+       "start": 1792490391500,
+       "exe": "/Applications/Safari.app/Contents/MacOS/Safari"
+      }
+     ],
+     "interfaces": {
+      "en0": [
+       101000,
+       10200
+      ]
+     },
+     "counters": {
+      "stream": "a",
+      "rows": [
+       {
+        "pid": 102,
+        "start": 1792490393000,
+        "rx": 14000,
+        "tx": 7400
+       },
+       {
+        "pid": 999,
+        "start": 1792490400000,
+        "rx": 5,
+        "tx": 5
+       }
+      ]
+     }
+    }
+   ],
+   "expected": {
+    "today": {
+     "machine": {
+      "rx": 890000,
+      "tx": 55000,
+      "sampledMs": 6000
+     },
+     "sources": {
+      "claudeCode": {
+       "rxSelf": 4000,
+       "txSelf": 5400,
+       "rxTools": 600000,
+       "txTools": 1600,
+       "unassignedRx": 604000,
+       "unassignedTx": 7000
+      }
+     }
+    },
+    "rates": {
+     "1792490403000": {
+      "machine": [
+       233333.333,
+       13333.333
+      ],
+      "sources": {
+       "claudeCode": {
+        "withTools": [
+         174333.333,
+         2300.0
+        ],
+        "selfOnly": [
+         1000.0,
+         1800.0
+        ]
+       }
+      }
+     },
+     "1792490406000": {
+      "machine": [
+       63333.333,
+       5000.0
+      ],
+      "sources": {
+       "claudeCode": {
+        "withTools": [
+         27000.0,
+         33.333
+        ],
+        "selfOnly": [
+         333.333,
+         0.0
+        ]
+       }
+      }
+     }
+    },
+    "history": [
+     {
+      "day": "2026-10-20",
+      "key": "machine",
+      "rx": 890000,
+      "tx": 55000,
+      "rxTools": 0,
+      "txTools": 0,
+      "sampledMs": 6000
+     },
+     {
+      "day": "2026-10-20",
+      "key": "claudeCode",
+      "rx": 4000,
+      "tx": 5400,
+      "rxTools": 600000,
+      "txTools": 1600,
+      "sampledMs": 6000
+     }
+    ]
+   }
+  },
+  {
+   "platform": "macos",
+   "home": "/Users/dev",
+   "name": "per-agent",
+   "rateTimes": [
+    1792490406000
+   ],
+   "agents": [
+    {
+     "id": "nova-1",
+     "source": "claudeCode",
+     "cwdPath": "/Users/dev/projects/nova",
+     "transcript": "/Users/dev/.claude/projects/-Users-dev-projects-nova/s1.jsonl",
+     "active": [
+      [
+       1792490400000,
+       1792490410000
+      ]
+     ]
+    },
+    {
+     "id": "nova-1-sub",
+     "source": "claudeCode",
+     "parent": "nova-1",
+     "transcript": "/Users/dev/.claude/projects/-Users-dev-projects-nova/s1/subagents/a.jsonl",
+     "active": [
+      [
+       1792490403500,
+       1792490404000
+      ]
+     ]
+    },
+    {
+     "id": "orbit-1",
+     "source": "claudeCode",
+     "cwdPath": "/Users/dev/projects/orbit",
+     "transcript": "/Users/dev/.claude/projects/-Users-dev-projects-orbit/s2.jsonl",
+     "active": [
+      [
+       1792490400000,
+       1792490410000
+      ]
+     ]
+    },
+    {
+     "id": "nova-2",
+     "source": "claudeCode",
+     "cwdPath": "/Users/dev/projects/nova",
+     "transcript": "/Users/dev/.claude/projects/-Users-dev-projects-nova/s3.jsonl",
+     "active": [
+      [
+       1792490404500,
+       1792490410000
+      ]
+     ]
+    },
+    {
+     "id": "codex-1",
+     "source": "codex",
+     "cwdPath": "/Users/dev/projects/nova",
+     "transcript": "/Users/dev/.codex/sessions/2026/10/20/rollout-1.jsonl",
+     "active": [
+      [
+       1792490400000,
+       1792490410000
+      ]
+     ]
+    },
+    {
+     "id": "codex-2",
+     "source": "codex",
+     "cwdPath": "/Users/dev/projects/orbit",
+     "transcript": "/Users/dev/.codex/sessions/2026/10/20/rollout-2.jsonl",
+     "active": [
+      [
+       1792490408000,
+       1792490410000
+      ]
+     ]
+    }
+   ],
+   "samples": [
+    {
+     "t": 1792490400000,
+     "processes": [
+      {
+       "pid": 1,
+       "ppid": 0,
+       "start": 0,
+       "exe": "/sbin/launchd"
+      },
+      {
+       "pid": 10,
+       "ppid": 1,
+       "start": 1792490390000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/nova"
+      },
+      {
+       "pid": 11,
+       "ppid": 1,
+       "start": 1792490390000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/orbit"
+      },
+      {
+       "pid": 12,
+       "ppid": 1,
+       "start": 1792490390000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/nova"
+      },
+      {
+       "pid": 20,
+       "ppid": 1,
+       "start": 1792490390000,
+       "exe": "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+       "args": [
+        "codex",
+        "app-server"
+       ],
+       "cwd": "/",
+       "openFiles": [
+        "/Users/dev/.codex/sessions/2026/10/20/rollout-1.jsonl",
+        "/Users/dev/.codex/sessions/2026/10/20/rollout-2.jsonl"
+       ]
+      }
+     ],
+     "counters": {
+      "stream": "s",
+      "rows": [
+       {
+        "pid": 10,
+        "start": 1792490390000,
+        "rx": 0,
+        "tx": 0
+       },
+       {
+        "pid": 11,
+        "start": 1792490390000,
+        "rx": 0,
+        "tx": 0
+       },
+       {
+        "pid": 12,
+        "start": 1792490390000,
+        "rx": 0,
+        "tx": 0
+       },
+       {
+        "pid": 20,
+        "start": 1792490390000,
+        "rx": 0,
+        "tx": 0
+       }
+      ]
+     }
+    },
+    {
+     "t": 1792490401000,
+     "processes": [
+      {
+       "pid": 1,
+       "ppid": 0,
+       "start": 0,
+       "exe": "/sbin/launchd"
+      },
+      {
+       "pid": 10,
+       "ppid": 1,
+       "start": 1792490390000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/nova"
+      },
+      {
+       "pid": 11,
+       "ppid": 1,
+       "start": 1792490390000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/orbit"
+      },
+      {
+       "pid": 12,
+       "ppid": 1,
+       "start": 1792490390000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/nova"
+      },
+      {
+       "pid": 20,
+       "ppid": 1,
+       "start": 1792490390000,
+       "exe": "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+       "args": [
+        "codex",
+        "app-server"
+       ],
+       "cwd": "/",
+       "openFiles": [
+        "/Users/dev/.codex/sessions/2026/10/20/rollout-1.jsonl",
+        "/Users/dev/.codex/sessions/2026/10/20/rollout-2.jsonl"
+       ]
+      }
+     ],
+     "counters": {
+      "stream": "s",
+      "rows": [
+       {
+        "pid": 10,
+        "start": 1792490390000,
+        "rx": 1000,
+        "tx": 100
+       },
+       {
+        "pid": 11,
+        "start": 1792490390000,
+        "rx": 2000,
+        "tx": 200
+       },
+       {
+        "pid": 12,
+        "start": 1792490390000,
+        "rx": 3000,
+        "tx": 300
+       },
+       {
+        "pid": 20,
+        "start": 1792490390000,
+        "rx": 4000,
+        "tx": 400
+       }
+      ]
+     }
+    },
+    {
+     "t": 1792490402000,
+     "processes": [
+      {
+       "pid": 1,
+       "ppid": 0,
+       "start": 0,
+       "exe": "/sbin/launchd"
+      },
+      {
+       "pid": 10,
+       "ppid": 1,
+       "start": 1792490390000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/nova"
+      },
+      {
+       "pid": 11,
+       "ppid": 1,
+       "start": 1792490390000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/orbit"
+      },
+      {
+       "pid": 12,
+       "ppid": 1,
+       "start": 1792490390000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/nova"
+      },
+      {
+       "pid": 20,
+       "ppid": 1,
+       "start": 1792490390000,
+       "exe": "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+       "args": [
+        "codex",
+        "app-server"
+       ],
+       "cwd": "/",
+       "openFiles": [
+        "/Users/dev/.codex/sessions/2026/10/20/rollout-1.jsonl",
+        "/Users/dev/.codex/sessions/2026/10/20/rollout-2.jsonl"
+       ]
+      }
+     ],
+     "counters": {
+      "stream": "s",
+      "rows": [
+       {
+        "pid": 10,
+        "start": 1792490390000,
+        "rx": 2000,
+        "tx": 200
+       },
+       {
+        "pid": 11,
+        "start": 1792490390000,
+        "rx": 4000,
+        "tx": 400
+       },
+       {
+        "pid": 12,
+        "start": 1792490390000,
+        "rx": 6000,
+        "tx": 600
+       },
+       {
+        "pid": 20,
+        "start": 1792490390000,
+        "rx": 8000,
+        "tx": 800
+       }
+      ]
+     }
+    },
+    {
+     "t": 1792490403000,
+     "processes": [
+      {
+       "pid": 1,
+       "ppid": 0,
+       "start": 0,
+       "exe": "/sbin/launchd"
+      },
+      {
+       "pid": 10,
+       "ppid": 1,
+       "start": 1792490390000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/nova"
+      },
+      {
+       "pid": 11,
+       "ppid": 1,
+       "start": 1792490390000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/orbit"
+      },
+      {
+       "pid": 12,
+       "ppid": 1,
+       "start": 1792490390000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/nova"
+      },
+      {
+       "pid": 20,
+       "ppid": 1,
+       "start": 1792490390000,
+       "exe": "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+       "args": [
+        "codex",
+        "app-server"
+       ],
+       "cwd": "/",
+       "openFiles": [
+        "/Users/dev/.codex/sessions/2026/10/20/rollout-1.jsonl",
+        "/Users/dev/.codex/sessions/2026/10/20/rollout-2.jsonl"
+       ]
+      }
+     ],
+     "counters": {
+      "stream": "s",
+      "rows": [
+       {
+        "pid": 10,
+        "start": 1792490390000,
+        "rx": 3000,
+        "tx": 300
+       },
+       {
+        "pid": 11,
+        "start": 1792490390000,
+        "rx": 6000,
+        "tx": 600
+       },
+       {
+        "pid": 12,
+        "start": 1792490390000,
+        "rx": 9000,
+        "tx": 900
+       },
+       {
+        "pid": 20,
+        "start": 1792490390000,
+        "rx": 12000,
+        "tx": 1200
+       }
+      ]
+     }
+    },
+    {
+     "t": 1792490404000,
+     "processes": [
+      {
+       "pid": 1,
+       "ppid": 0,
+       "start": 0,
+       "exe": "/sbin/launchd"
+      },
+      {
+       "pid": 10,
+       "ppid": 1,
+       "start": 1792490390000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/nova"
+      },
+      {
+       "pid": 11,
+       "ppid": 1,
+       "start": 1792490390000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/orbit"
+      },
+      {
+       "pid": 12,
+       "ppid": 1,
+       "start": 1792490390000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/nova"
+      },
+      {
+       "pid": 20,
+       "ppid": 1,
+       "start": 1792490390000,
+       "exe": "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+       "args": [
+        "codex",
+        "app-server"
+       ],
+       "cwd": "/",
+       "openFiles": [
+        "/Users/dev/.codex/sessions/2026/10/20/rollout-1.jsonl",
+        "/Users/dev/.codex/sessions/2026/10/20/rollout-2.jsonl"
+       ]
+      }
+     ],
+     "counters": {
+      "stream": "s",
+      "rows": [
+       {
+        "pid": 10,
+        "start": 1792490390000,
+        "rx": 4000,
+        "tx": 400
+       },
+       {
+        "pid": 11,
+        "start": 1792490390000,
+        "rx": 8000,
+        "tx": 800
+       },
+       {
+        "pid": 12,
+        "start": 1792490390000,
+        "rx": 12000,
+        "tx": 1200
+       },
+       {
+        "pid": 20,
+        "start": 1792490390000,
+        "rx": 16000,
+        "tx": 1600
+       }
+      ]
+     }
+    },
+    {
+     "t": 1792490405000,
+     "processes": [
+      {
+       "pid": 1,
+       "ppid": 0,
+       "start": 0,
+       "exe": "/sbin/launchd"
+      },
+      {
+       "pid": 10,
+       "ppid": 1,
+       "start": 1792490390000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/nova"
+      },
+      {
+       "pid": 11,
+       "ppid": 1,
+       "start": 1792490390000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/orbit"
+      },
+      {
+       "pid": 12,
+       "ppid": 1,
+       "start": 1792490390000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/nova"
+      },
+      {
+       "pid": 20,
+       "ppid": 1,
+       "start": 1792490390000,
+       "exe": "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+       "args": [
+        "codex",
+        "app-server"
+       ],
+       "cwd": "/",
+       "openFiles": [
+        "/Users/dev/.codex/sessions/2026/10/20/rollout-1.jsonl",
+        "/Users/dev/.codex/sessions/2026/10/20/rollout-2.jsonl"
+       ]
+      }
+     ],
+     "counters": {
+      "stream": "s",
+      "rows": [
+       {
+        "pid": 10,
+        "start": 1792490390000,
+        "rx": 5000,
+        "tx": 500
+       },
+       {
+        "pid": 11,
+        "start": 1792490390000,
+        "rx": 10000,
+        "tx": 1000
+       },
+       {
+        "pid": 12,
+        "start": 1792490390000,
+        "rx": 15000,
+        "tx": 1500
+       },
+       {
+        "pid": 20,
+        "start": 1792490390000,
+        "rx": 20000,
+        "tx": 2000
+       }
+      ]
+     }
+    },
+    {
+     "t": 1792490406000,
+     "processes": [
+      {
+       "pid": 1,
+       "ppid": 0,
+       "start": 0,
+       "exe": "/sbin/launchd"
+      },
+      {
+       "pid": 10,
+       "ppid": 1,
+       "start": 1792490390000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/nova"
+      },
+      {
+       "pid": 11,
+       "ppid": 1,
+       "start": 1792490390000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/orbit"
+      },
+      {
+       "pid": 12,
+       "ppid": 1,
+       "start": 1792490390000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/nova"
+      },
+      {
+       "pid": 20,
+       "ppid": 1,
+       "start": 1792490390000,
+       "exe": "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
+       "args": [
+        "codex",
+        "app-server"
+       ],
+       "cwd": "/",
+       "openFiles": [
+        "/Users/dev/.codex/sessions/2026/10/20/rollout-1.jsonl",
+        "/Users/dev/.codex/sessions/2026/10/20/rollout-2.jsonl"
+       ]
+      }
+     ],
+     "counters": {
+      "stream": "s",
+      "rows": [
+       {
+        "pid": 10,
+        "start": 1792490390000,
+        "rx": 6000,
+        "tx": 600
+       },
+       {
+        "pid": 11,
+        "start": 1792490390000,
+        "rx": 12000,
+        "tx": 1200
+       },
+       {
+        "pid": 12,
+        "start": 1792490390000,
+        "rx": 18000,
+        "tx": 1800
+       },
+       {
+        "pid": 20,
+        "start": 1792490390000,
+        "rx": 24000,
+        "tx": 2400
+       }
+      ]
+     }
+    }
+   ],
+   "expected": {
+    "today": {
+     "sources": {
+      "claudeCode": {
+       "rxSelf": 36000,
+       "txSelf": 3600,
+       "rxTools": 0,
+       "txTools": 0,
+       "unassignedRx": 8000,
+       "unassignedTx": 800
+      },
+      "codex": {
+       "rxSelf": 24000,
+       "txSelf": 2400,
+       "rxTools": 0,
+       "txTools": 0,
+       "unassignedRx": 0,
+       "unassignedTx": 0
+      }
+     },
+     "agents": {
+      "nova-1": {
+       "rxSelf": 16000,
+       "txSelf": 1600,
+       "rxTools": 0,
+       "txTools": 0
+      },
+      "orbit-1": {
+       "rxSelf": 12000,
+       "txSelf": 1200,
+       "rxTools": 0,
+       "txTools": 0
+      },
+      "codex-1": {
+       "rxSelf": 24000,
+       "txSelf": 2400,
+       "rxTools": 0,
+       "txTools": 0
+      }
+     }
+    },
+    "rates": {
+     "1792490406000": {
+      "agents": {
+       "nova-1": {
+        "withTools": [
+         1333.333,
+         133.333
+        ]
+       },
+       "nova-2": {
+        "withTools": [
+         0.0,
+         0.0
+        ]
+       },
+       "orbit-1": {
+        "withTools": [
+         2000.0,
+         200.0
+        ]
+       },
+       "codex-1": {
+        "withTools": [
+         4000.0,
+         400.0
+        ]
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "platform": "windows",
+   "home": "C:\\Users\\dev",
+   "env": {
+    "LOCALAPPDATA": "C:\\Users\\dev\\AppData\\Local",
+    "APPDATA": "C:\\Users\\dev\\AppData\\Roaming"
+   },
+   "name": "streams-gap-day-change",
+   "tzOffsetMs": 28800000,
+   "rateTimes": [
+    1792512000000,
+    1792512062000
+   ],
+   "samples": [
+    {
+     "t": 1792511997000,
+     "processes": [
+      {
+       "pid": 23940,
+       "ppid": 1,
+       "start": 1792511937000,
+       "exe": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.1016.6573.0_x64__2p2nqsd0c76g0\\app\\Codex.exe"
+      },
+      {
+       "pid": 30,
+       "ppid": 23940,
+       "start": 1792511947000,
+       "exe": "C:\\Users\\dev\\AppData\\Local\\OpenAI\\Codex\\bin\\6257d9e8f63c0f2b\\codex.exe",
+       "args": [
+        "codex.exe",
+        "app-server"
+       ]
+      },
+      {
+       "pid": 31,
+       "ppid": 30,
+       "start": 1792511998500,
+       "exe": "C:\\Program Files\\nodejs\\node.exe",
+       "args": [
+        "node.exe",
+        "C:\\Users\\dev\\work\\fetch.mjs"
+       ]
+      }
+     ],
+     "interfaces": {
+      "luid-ethernet": [
+       1000000,
+       100000
+      ]
+     },
+     "counters": {
+      "stream": "h1",
+      "rows": [
+       {
+        "pid": 30,
+        "start": 1792511947000,
+        "rx": 1000,
+        "tx": 100
+       }
+      ]
+     }
+    },
+    {
+     "t": 1792511998000,
+     "processes": [
+      {
+       "pid": 23940,
+       "ppid": 1,
+       "start": 1792511937000,
+       "exe": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.1016.6573.0_x64__2p2nqsd0c76g0\\app\\Codex.exe"
+      },
+      {
+       "pid": 30,
+       "ppid": 23940,
+       "start": 1792511947000,
+       "exe": "C:\\Users\\dev\\AppData\\Local\\OpenAI\\Codex\\bin\\6257d9e8f63c0f2b\\codex.exe",
+       "args": [
+        "codex.exe",
+        "app-server"
+       ]
+      },
+      {
+       "pid": 31,
+       "ppid": 30,
+       "start": 1792511998500,
+       "exe": "C:\\Program Files\\nodejs\\node.exe",
+       "args": [
+        "node.exe",
+        "C:\\Users\\dev\\work\\fetch.mjs"
+       ]
+      }
+     ],
+     "interfaces": {
+      "luid-ethernet": [
+       1010000,
+       101000
+      ]
+     },
+     "counters": {
+      "stream": "h1",
+      "rows": [
+       {
+        "pid": 30,
+        "start": 1792511947000,
+        "rx": 2000,
+        "tx": 200
+       }
+      ]
+     }
+    },
+    {
+     "t": 1792511999000,
+     "processes": [
+      {
+       "pid": 23940,
+       "ppid": 1,
+       "start": 1792511937000,
+       "exe": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.1016.6573.0_x64__2p2nqsd0c76g0\\app\\Codex.exe"
+      },
+      {
+       "pid": 30,
+       "ppid": 23940,
+       "start": 1792511947000,
+       "exe": "C:\\Users\\dev\\AppData\\Local\\OpenAI\\Codex\\bin\\6257d9e8f63c0f2b\\codex.exe",
+       "args": [
+        "codex.exe",
+        "app-server"
+       ]
+      },
+      {
+       "pid": 31,
+       "ppid": 30,
+       "start": 1792511998500,
+       "exe": "C:\\Program Files\\nodejs\\node.exe",
+       "args": [
+        "node.exe",
+        "C:\\Users\\dev\\work\\fetch.mjs"
+       ]
+      }
+     ],
+     "interfaces": {
+      "luid-ethernet": [
+       1020000,
+       102000
+      ]
+     },
+     "counters": {
+      "stream": "h1",
+      "rows": [
+       {
+        "pid": 30,
+        "start": 1792511947000,
+        "rx": 3000,
+        "tx": 300
+       },
+       {
+        "pid": 31,
+        "start": 1792511998500,
+        "rx": 5000,
+        "tx": 50
+       }
+      ]
+     }
+    },
+    {
+     "t": 1792512000000,
+     "processes": [
+      {
+       "pid": 23940,
+       "ppid": 1,
+       "start": 1792511937000,
+       "exe": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.1016.6573.0_x64__2p2nqsd0c76g0\\app\\Codex.exe"
+      },
+      {
+       "pid": 30,
+       "ppid": 23940,
+       "start": 1792511947000,
+       "exe": "C:\\Users\\dev\\AppData\\Local\\OpenAI\\Codex\\bin\\6257d9e8f63c0f2b\\codex.exe",
+       "args": [
+        "codex.exe",
+        "app-server"
+       ]
+      },
+      {
+       "pid": 31,
+       "ppid": 30,
+       "start": 1792511998500,
+       "exe": "C:\\Program Files\\nodejs\\node.exe",
+       "args": [
+        "node.exe",
+        "C:\\Users\\dev\\work\\fetch.mjs"
+       ]
+      }
+     ],
+     "interfaces": {
+      "luid-ethernet": [
+       1030000,
+       103000
+      ]
+     },
+     "counters": {
+      "stream": "h2",
+      "rows": [
+       {
+        "pid": 30,
+        "start": 1792511947000,
+        "rx": 10,
+        "tx": 1
+       },
+       {
+        "pid": 31,
+        "start": 1792511998500,
+        "rx": 20,
+        "tx": 2
+       }
+      ]
+     }
+    },
+    {
+     "t": 1792512060000,
+     "processes": [
+      {
+       "pid": 23940,
+       "ppid": 1,
+       "start": 1792511937000,
+       "exe": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.1016.6573.0_x64__2p2nqsd0c76g0\\app\\Codex.exe"
+      },
+      {
+       "pid": 30,
+       "ppid": 23940,
+       "start": 1792511947000,
+       "exe": "C:\\Users\\dev\\AppData\\Local\\OpenAI\\Codex\\bin\\6257d9e8f63c0f2b\\codex.exe",
+       "args": [
+        "codex.exe",
+        "app-server"
+       ]
+      },
+      {
+       "pid": 31,
+       "ppid": 30,
+       "start": 1792511998500,
+       "exe": "C:\\Program Files\\nodejs\\node.exe",
+       "args": [
+        "node.exe",
+        "C:\\Users\\dev\\work\\fetch.mjs"
+       ]
+      }
+     ],
+     "interfaces": {
+      "luid-ethernet": [
+       1630000,
+       163000
+      ]
+     },
+     "counters": {
+      "stream": "h2",
+      "rows": [
+       {
+        "pid": 30,
+        "start": 1792511947000,
+        "rx": 60010,
+        "tx": 6001
+       }
+      ]
+     }
+    },
+    {
+     "t": 1792512061000,
+     "processes": [
+      {
+       "pid": 23940,
+       "ppid": 1,
+       "start": 1792511937000,
+       "exe": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.1016.6573.0_x64__2p2nqsd0c76g0\\app\\Codex.exe"
+      },
+      {
+       "pid": 30,
+       "ppid": 23940,
+       "start": 1792511947000,
+       "exe": "C:\\Users\\dev\\AppData\\Local\\OpenAI\\Codex\\bin\\6257d9e8f63c0f2b\\codex.exe",
+       "args": [
+        "codex.exe",
+        "app-server"
+       ]
+      },
+      {
+       "pid": 31,
+       "ppid": 30,
+       "start": 1792511998500,
+       "exe": "C:\\Program Files\\nodejs\\node.exe",
+       "args": [
+        "node.exe",
+        "C:\\Users\\dev\\work\\fetch.mjs"
+       ]
+      }
+     ],
+     "interfaces": {
+      "luid-ethernet": [
+       1640000,
+       164000
+      ]
+     },
+     "counters": {
+      "stream": "h2",
+      "rows": [
+       {
+        "pid": 30,
+        "start": 1792511947000,
+        "rx": 61010,
+        "tx": 6101
+       }
+      ]
+     }
+    },
+    {
+     "t": 1792512062000,
+     "processes": [
+      {
+       "pid": 23940,
+       "ppid": 1,
+       "start": 1792511937000,
+       "exe": "C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.1016.6573.0_x64__2p2nqsd0c76g0\\app\\Codex.exe"
+      },
+      {
+       "pid": 30,
+       "ppid": 23940,
+       "start": 1792511947000,
+       "exe": "C:\\Users\\dev\\AppData\\Local\\OpenAI\\Codex\\bin\\6257d9e8f63c0f2b\\codex.exe",
+       "args": [
+        "codex.exe",
+        "app-server"
+       ]
+      },
+      {
+       "pid": 31,
+       "ppid": 30,
+       "start": 1792511998500,
+       "exe": "C:\\Program Files\\nodejs\\node.exe",
+       "args": [
+        "node.exe",
+        "C:\\Users\\dev\\work\\fetch.mjs"
+       ]
+      }
+     ],
+     "interfaces": {
+      "luid-ethernet": [
+       1650000,
+       165000
+      ]
+     },
+     "counters": {
+      "stream": "h2",
+      "rows": [
+       {
+        "pid": 30,
+        "start": 1792511947000,
+        "rx": 62010,
+        "tx": 6201
+       }
+      ]
+     }
+    }
+   ],
+   "expected": {
+    "today": {
+     "machine": {
+      "rx": 630000,
+      "tx": 63000,
+      "sampledMs": 3000
+     },
+     "sources": {
+      "codex": {
+       "rxSelf": 62000,
+       "txSelf": 6200,
+       "rxTools": 0,
+       "txTools": 0,
+       "unassignedRx": 62000,
+       "unassignedTx": 6200
+      }
+     }
+    },
+    "rates": {
+     "1792512000000": {
+      "machine": [
+       10000.0,
+       1000.0
+      ],
+      "sources": {
+       "codex": {
+        "withTools": [
+         2333.333,
+         83.333
+        ],
+        "selfOnly": [
+         666.667,
+         66.667
+        ]
+       }
+      }
+     },
+     "1792512062000": {
+      "machine": [
+       10000.0,
+       1000.0
+      ],
+      "sources": {
+       "codex": {
+        "withTools": [
+         1000.0,
+         100.0
+        ]
+       }
+      }
+     }
+    },
+    "history": [
+     {
+      "day": "2026-10-20",
+      "key": "machine",
+      "rx": 20000,
+      "tx": 2000,
+      "rxTools": 0,
+      "txTools": 0,
+      "sampledMs": 2000
+     },
+     {
+      "day": "2026-10-20",
+      "key": "codex",
+      "rx": 2000,
+      "tx": 200,
+      "rxTools": 5000,
+      "txTools": 50,
+      "sampledMs": 2000
+     },
+     {
+      "day": "2026-10-21",
+      "key": "machine",
+      "rx": 630000,
+      "tx": 63000,
+      "rxTools": 0,
+      "txTools": 0,
+      "sampledMs": 3000
+     },
+     {
+      "day": "2026-10-21",
+      "key": "codex",
+      "rx": 62000,
+      "tx": 6200,
+      "rxTools": 0,
+      "txTools": 0,
+      "sampledMs": 2000
+     }
+    ]
+   }
+  },
+  {
+   "platform": "macos",
+   "home": "/Users/dev",
+   "name": "continuing-stream",
+   "samples": [
+    {
+     "t": 1792490400000,
+     "processes": [
+      {
+       "pid": 1,
+       "ppid": 0,
+       "start": 0,
+       "exe": "/sbin/launchd"
+      },
+      {
+       "pid": 100,
+       "ppid": 1,
+       "start": 1792490391000,
+       "exe": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"
+      },
+      {
+       "pid": 101,
+       "ppid": 100,
+       "start": 1792490392000,
+       "exe": "/bin/zsh"
+      },
+      {
+       "pid": 102,
+       "ppid": 101,
+       "start": 1792490393000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/nova"
+      },
+      {
+       "pid": 200,
+       "ppid": 1,
+       "start": 1792490391500,
+       "exe": "/Applications/Safari.app/Contents/MacOS/Safari"
+      }
+     ],
+     "counters": {
+      "stream": "n1",
+      "rows": [
+       {
+        "pid": 102,
+        "start": 1792490393000,
+        "rx": 1000,
+        "tx": 100
+       }
+      ]
+     }
+    },
+    {
+     "t": 1792490401000,
+     "processes": [
+      {
+       "pid": 1,
+       "ppid": 0,
+       "start": 0,
+       "exe": "/sbin/launchd"
+      },
+      {
+       "pid": 100,
+       "ppid": 1,
+       "start": 1792490391000,
+       "exe": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"
+      },
+      {
+       "pid": 101,
+       "ppid": 100,
+       "start": 1792490392000,
+       "exe": "/bin/zsh"
+      },
+      {
+       "pid": 102,
+       "ppid": 101,
+       "start": 1792490393000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/nova"
+      },
+      {
+       "pid": 200,
+       "ppid": 1,
+       "start": 1792490391500,
+       "exe": "/Applications/Safari.app/Contents/MacOS/Safari"
+      }
+     ],
+     "counters": {
+      "stream": "n1",
+      "rows": [
+       {
+        "pid": 102,
+        "start": 1792490393000,
+        "rx": 2000,
+        "tx": 200
+       }
+      ]
+     }
+    },
+    {
+     "t": 1792490406000,
+     "processes": [
+      {
+       "pid": 1,
+       "ppid": 0,
+       "start": 0,
+       "exe": "/sbin/launchd"
+      },
+      {
+       "pid": 100,
+       "ppid": 1,
+       "start": 1792490391000,
+       "exe": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"
+      },
+      {
+       "pid": 101,
+       "ppid": 100,
+       "start": 1792490392000,
+       "exe": "/bin/zsh"
+      },
+      {
+       "pid": 102,
+       "ppid": 101,
+       "start": 1792490393000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/nova"
+      },
+      {
+       "pid": 200,
+       "ppid": 1,
+       "start": 1792490391500,
+       "exe": "/Applications/Safari.app/Contents/MacOS/Safari"
+      }
+     ],
+     "counters": {
+      "stream": "n2",
+      "continues": true,
+      "rows": [
+       {
+        "pid": 102,
+        "start": 1792490393000,
+        "rx": 7000,
+        "tx": 700
+       }
+      ]
+     }
+    },
+    {
+     "t": 1792490411000,
+     "processes": [
+      {
+       "pid": 1,
+       "ppid": 0,
+       "start": 0,
+       "exe": "/sbin/launchd"
+      },
+      {
+       "pid": 100,
+       "ppid": 1,
+       "start": 1792490391000,
+       "exe": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"
+      },
+      {
+       "pid": 101,
+       "ppid": 100,
+       "start": 1792490392000,
+       "exe": "/bin/zsh"
+      },
+      {
+       "pid": 102,
+       "ppid": 101,
+       "start": 1792490393000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/nova"
+      },
+      {
+       "pid": 200,
+       "ppid": 1,
+       "start": 1792490391500,
+       "exe": "/Applications/Safari.app/Contents/MacOS/Safari"
+      }
+     ],
+     "counters": {
+      "stream": "n2",
+      "rows": [
+       {
+        "pid": 102,
+        "start": 1792490393000,
+        "rx": 7000,
+        "tx": 700
+       }
+      ]
+     }
+    },
+    {
+     "t": 1792490416000,
+     "processes": [
+      {
+       "pid": 1,
+       "ppid": 0,
+       "start": 0,
+       "exe": "/sbin/launchd"
+      },
+      {
+       "pid": 100,
+       "ppid": 1,
+       "start": 1792490391000,
+       "exe": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"
+      },
+      {
+       "pid": 101,
+       "ppid": 100,
+       "start": 1792490392000,
+       "exe": "/bin/zsh"
+      },
+      {
+       "pid": 102,
+       "ppid": 101,
+       "start": 1792490393000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/nova"
+      },
+      {
+       "pid": 200,
+       "ppid": 1,
+       "start": 1792490391500,
+       "exe": "/Applications/Safari.app/Contents/MacOS/Safari"
+      }
+     ],
+     "counters": {
+      "stream": "n3",
+      "rows": [
+       {
+        "pid": 102,
+        "start": 1792490393000,
+        "rx": 9000,
+        "tx": 900
+       }
+      ]
+     }
+    },
+    {
+     "t": 1792490417000,
+     "processes": [
+      {
+       "pid": 1,
+       "ppid": 0,
+       "start": 0,
+       "exe": "/sbin/launchd"
+      },
+      {
+       "pid": 100,
+       "ppid": 1,
+       "start": 1792490391000,
+       "exe": "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"
+      },
+      {
+       "pid": 101,
+       "ppid": 100,
+       "start": 1792490392000,
+       "exe": "/bin/zsh"
+      },
+      {
+       "pid": 102,
+       "ppid": 101,
+       "start": 1792490393000,
+       "exe": "/Users/dev/.local/share/claude/versions/2.1.303",
+       "args": [
+        "claude"
+       ],
+       "cwd": "/Users/dev/projects/nova"
+      },
+      {
+       "pid": 200,
+       "ppid": 1,
+       "start": 1792490391500,
+       "exe": "/Applications/Safari.app/Contents/MacOS/Safari"
+      }
+     ],
+     "counters": {
+      "stream": "n3",
+      "rows": [
+       {
+        "pid": 102,
+        "start": 1792490393000,
+        "rx": 9500,
+        "tx": 950
+       }
+      ]
+     }
+    }
+   ],
+   "expected": {
+    "today": {
+     "sources": {
+      "claudeCode": {
+       "rxSelf": 6500,
+       "txSelf": 650,
+       "rxTools": 0,
+       "txTools": 0,
+       "unassignedRx": 6500,
+       "unassignedTx": 650
+      }
+     }
+    },
+    "history": [
+     {
+      "day": "2026-10-20",
+      "key": "machine",
+      "rx": 0,
+      "tx": 0,
+      "rxTools": 0,
+      "txTools": 0,
+      "sampledMs": 0
+     },
+     {
+      "day": "2026-10-20",
+      "key": "claudeCode",
+      "rx": 6500,
+      "tx": 650,
+      "rxTools": 0,
+      "txTools": 0,
+      "sampledMs": 12000
+     }
+    ]
+   }
+  }
+ ]
+}

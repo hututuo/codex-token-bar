@@ -38,8 +38,20 @@ pub fn usage_history_dir() -> Option<PathBuf> {
     tauri_app_support_dir().map(|path| path.join("exact-token-index"))
 }
 
+pub fn modeltrace_database_path() -> Option<PathBuf> {
+    tauri_app_support_dir().map(|p|p.join("modeltrace/modeltrace.sqlite"))
+}
+
 pub fn quota_history_database_path() -> Option<PathBuf> {
     tauri_app_support_dir().map(|path| path.join("quota-history.sqlite"))
+}
+
+pub fn multi_client_usage_database_path() -> Option<PathBuf> {
+    tauri_app_support_dir().map(|path| path.join("multi-client-usage.sqlite"))
+}
+
+pub fn multi_client_usage_settings_path() -> Option<PathBuf> {
+    tauri_app_support_dir().map(|path| path.join("multi-client-usage-settings.json"))
 }
 
 pub fn startup_trace_log_path() -> Option<PathBuf> {
@@ -93,7 +105,7 @@ pub(crate) fn legacy_shared_quota_history_database_path() -> Option<PathBuf> {
 }
 
 pub fn tauri_usage_cache_dir() -> Option<PathBuf> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "business-store-fixture"))]
     {
         if let Some(path) = std::env::var_os("CODEX_TOKEN_BAR_TAURI_USAGE_CACHE_DIR") {
             return Some(PathBuf::from(path));
@@ -178,7 +190,7 @@ fn app_cache_dir() -> Option<PathBuf> {
 }
 
 fn tauri_app_support_dir() -> Option<PathBuf> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "business-store-fixture"))]
     {
         if let Some(path) = std::env::var_os("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR") {
             return Some(PathBuf::from(path));
@@ -189,7 +201,7 @@ fn tauri_app_support_dir() -> Option<PathBuf> {
 }
 
 fn tauri_app_cache_dir() -> Option<PathBuf> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "business-store-fixture"))]
     {
         if let Some(path) = std::env::var_os("CODEX_TOKEN_BAR_TAURI_CACHE_DIR") {
             return Some(PathBuf::from(path));
@@ -200,7 +212,7 @@ fn tauri_app_cache_dir() -> Option<PathBuf> {
 }
 
 fn app_support_base_dir() -> Option<PathBuf> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "business-store-fixture"))]
     {
         if let Some(path) = std::env::var_os("CODEX_TOKEN_BAR_SUPPORT_BASE_DIR") {
             return Some(PathBuf::from(path));
@@ -219,7 +231,7 @@ fn app_support_base_dir() -> Option<PathBuf> {
 }
 
 fn app_cache_base_dir() -> Option<PathBuf> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "business-store-fixture"))]
     {
         if let Some(path) = std::env::var_os("CODEX_TOKEN_BAR_CACHE_BASE_DIR") {
             return Some(PathBuf::from(path));

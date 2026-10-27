@@ -1,0 +1,3081 @@
+{
+ "_comment": "REPORTING 5 and METRICS 11 vectors, written by spec/tools/report_reference.py --write and checked by running it without arguments. Signatures are deterministic (RFC 6979) so the file is reproducible; real clients may sign with random k, so apps compare by verifying, not by bytes. Header names are case-insensitive; bodies are the exact UTF-8 bytes sent.",
+ "schema": 1,
+ "algorithm": {
+  "name": "ES256",
+  "curve": "P-256",
+  "hash": "SHA-256",
+  "signature": "IEEE P1363 r || s, 64 bytes",
+  "encoding": "base64url without padding",
+  "label": "AGENTSPEED-V1"
+ },
+ "rfc6979": {
+  "comment": "RFC 6979 A.2.5 (P-256, SHA-256): checks deterministic signing; apps check only verification.",
+  "d": "C9AFA9D845BA75166B5C215767B1D6934E50C3DB36E89B127B8A622B120F6721",
+  "x": "60FED4BA255A9D31C961EB74C6356D68C049B8923B61FA6CE669622E60F29FB6",
+  "y": "7903FE1008B8BC99A41AE9E95628BC64F2F1B20C2D7E9F5177A3C294D4462299",
+  "messages": [
+   {
+    "message": "sample",
+    "r": "EFD48B2AACB6A8FD1140DD9CD45E81D69D2C877B56AAF991C34D0EA84EAF3716",
+    "s": "F7CB1C942D657C41D436C7A1B6E29F65F3E900DBB9AFF4064DC4AB2F843ACDA8"
+   },
+   {
+    "message": "test",
+    "r": "F1ABB023518351CD71D881567B1EA663ED3EFCF6C5132B354F28D3B0B7D38367",
+    "s": "019F4113742A2B14BD25926B49C649155F267E60D3814B4C0CC84250E46F0083"
+   }
+  ]
+ },
+ "keys": {
+  "device": {
+   "d": "6c1f6f5e785fb41f4793e177eb833901150412a9f4f917237e0704eace26e870",
+   "jwk": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "U9uFTRUM0eY694W-TjRWmW8h-gmBb93fAR2wRHH_jjs",
+    "y": "RcPBHtIdL3_F1LjwB0KVVaahaHqwT7bCkjDKfFx9YBA"
+   },
+   "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEU9uFTRUM0eY694W-TjRWmW8h-gmBb93fAR2wRHH_jjtFw8Ee0h0vf8XUuPAHQpVVpqFoerBPtsKSMMp8XH1gEA",
+   "thumbprint": "Heu_CUwMiDxR9UguTS5_WbCVUMuj6v5c5wBeC2tTZkQ"
+  },
+  "other": {
+   "d": "41cd3c0b96a57b1f55249f0131b80006543540644f71a02d712633ab27e54e48",
+   "jwk": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "o9KW1XWzkAdbsLxejQRD_x4qHvG4M1FPIANHqIR5G74",
+    "y": "JJSKH8EjyqcTo77WUhxuFRMfUDPgRJs4enJXkoj6Ssg"
+   },
+   "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEo9KW1XWzkAdbsLxejQRD_x4qHvG4M1FPIANHqIR5G74klIofwSPKpxOjvtZSHG4VEx9QM-BEmzh6cleSiPpKyA",
+   "thumbprint": "Zj3Ypye-8-ir66pzjk3XPF3piJlVyAKiCHc6d7WRMAM"
+  },
+  "rotated": {
+   "d": "3d8905808631ad9579a4637ff16259653831a0e532c8bea9c354adcf591f73e9",
+   "jwk": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "PD-NVSB6cJNPeYd_3fvmYfXS-1JUcBzMxSqaz2Cb0QE",
+    "y": "3YfIKAvLlFB7YRvaz6EfXZIjYO9USBR-FZ8HuykpRLY"
+   },
+   "spki": "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEPD-NVSB6cJNPeYd_3fvmYfXS-1JUcBzMxSqaz2Cb0QHdh8goC8uUUHthG9rPoR9dkiNg71RIFH4Vnwe7KSlEtg",
+   "thumbprint": "RjR232A01FxyPDy_-tnE4Q4KMAnW5MTdLrfLsAwx27g"
+  }
+ },
+ "requests": {
+  "register": {
+   "method": "POST",
+   "url": "https://api.example.com/agent-speed/v1/devices",
+   "authority": "api.example.com",
+   "path": "/agent-speed/v1/devices",
+   "headers": {
+    "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+    "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+    "X-AgentSpeed-Timestamp": "1792656931",
+    "X-AgentSpeed-Nonce": "h3gPpd5oTofLkrJ58LwHsQ",
+    "X-AgentSpeed-Signature": "nbpvQDj4x5AVryWN2SgymbquXPo4EXH9-zxoZj7jQnQdLpLt1vzIdZR0kOd-ql3OPlP9Fz_rbePc7kf-hjmt_w"
+   },
+   "body": "{\"schema\":1,\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"zoe-mbp\",\"publicKey\":{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"U9uFTRUM0eY694W-TjRWmW8h-gmBb93fAR2wRHH_jjs\",\"y\":\"RcPBHtIdL3_F1LjwB0KVVaahaHqwT7bCkjDKfFx9YBA\"},\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27}}",
+   "bodySha256": "69e60440a77bfeeef3088f2a0703fdd721003d7d30d6ffcd93a8637919c7c70f",
+   "canonical": "AGENTSPEED-V1\nPOST\napi.example.com\n/agent-speed/v1/devices\n1792656931\nh3gPpd5oTofLkrJ58LwHsQ\n6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\n69e60440a77bfeeef3088f2a0703fdd721003d7d30d6ffcd93a8637919c7c70f",
+   "signatureDer": "MEUCIQCdum9AOPjHkBWvJY3ZKDKZuq5c-jgRcf37PGhmPuNCdAIgHS6S7db8yHWUdJDnfqpdzj5T_Rc_623j3O5H_oY5rf8",
+   "highS": false
+  },
+  "report": {
+   "method": "POST",
+   "url": "https://api.example.com/agent-speed/v1/reports",
+   "authority": "api.example.com",
+   "path": "/agent-speed/v1/reports",
+   "headers": {
+    "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+    "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+    "X-AgentSpeed-Timestamp": "1792656931",
+    "X-AgentSpeed-Nonce": "hF6RgxMZ6JxNZWvbgMJ4rA",
+    "X-AgentSpeed-Signature": "tlWy9ooVLZGXuYDHN1TDcFXOdHFBoaqt0eoaFmYUV8cykhXPniGjJa5AH-5O6yWFrfYXq-Hfe-0B5l-5gg9-Xg"
+   },
+   "body": "{\"schema\":1,\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27},\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"zoe-mbp\",\"run\":{\"id\":\"c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f\",\"seq\":42},\"sentAt\":\"2026-10-22T08:15:30.500Z\",\"windowMs\":5000,\"activity\":\"active\",\"live\":{\"outputTokS\":412.6,\"totalTokS\":182340.2,\"estimatedShare\":0.215,\"agents\":{\"generating\":3,\"tools\":1,\"active\":5}},\"peak\":{\"outputTokS\":655.0,\"totalTokS\":240118.7},\"delta\":{\"requests\":4,\"output\":1840,\"input\":912400,\"cachedInput\":880120,\"cacheWriteInput\":12050,\"reasoning\":310,\"measuredOutput\":1702,\"measuredMs\":4120},\"title\":{\"level\":8,\"metric\":\"output\",\"redline\":2000,\"heat\":0.388},\"cost\":{\"liveMicroUsdPerSecond\":4213,\"peakMicroUsdPerSecond\":6120,\"knownShare\":1.0,\"deltaMicroUsd\":21003,\"unpricedRequests\":0,\"priceVersion\":1},\"traffic\":{\"status\":\"ok\",\"includesTools\":true,\"rxBytesPerSecond\":24310,\"txBytesPerSecond\":1288,\"peakRxBytesPerSecond\":61200,\"peakTxBytesPerSecond\":3410,\"rxBytes\":121550,\"txBytes\":6440},\"sources\":[{\"source\":\"codex\",\"live\":{\"outputTokS\":112.2,\"totalTokS\":32120.1,\"estimatedShare\":0.47},\"agents\":{\"generating\":1,\"tools\":0,\"active\":2},\"delta\":{\"requests\":1,\"output\":340,\"input\":112400,\"cachedInput\":100120,\"cacheWriteInput\":0,\"reasoning\":310,\"measuredOutput\":302,\"measuredMs\":820},\"cost\":{\"liveMicroUsdPerSecond\":613,\"knownShare\":1.0,\"deltaMicroUsd\":3000,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":4200,\"txBytesPerSecond\":288,\"rxBytes\":21000,\"txBytes\":1440}},{\"source\":\"claudeCode\",\"live\":{\"outputTokS\":300.4,\"totalTokS\":150220.1,\"estimatedShare\":0.12},\"agents\":{\"generating\":2,\"tools\":1,\"active\":3},\"delta\":{\"requests\":3,\"output\":1500,\"input\":800000,\"cachedInput\":780000,\"cacheWriteInput\":12050,\"reasoning\":0,\"measuredOutput\":1400,\"measuredMs\":3300},\"cost\":{\"liveMicroUsdPerSecond\":3600,\"knownShare\":1.0,\"deltaMicroUsd\":18003,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":20110,\"txBytesPerSecond\":1000,\"rxBytes\":100550,\"txBytes\":5000}}],\"models\":[{\"id\":\"claude-opus-5-5\",\"sources\":[\"claudeCode\"],\"requests\":3,\"output\":1500,\"measuredOutput\":1400,\"measuredMs\":3300,\"generating\":2,\"deltaMicroUsd\":18003},{\"id\":\"gpt-5.5\",\"sources\":[\"codex\"],\"requests\":1,\"output\":340,\"measuredOutput\":302,\"measuredMs\":820,\"generating\":1,\"deltaMicroUsd\":3000}]}",
+   "bodySha256": "91f5519200fdfba67205c3510475977d2db9e91fb1d5e2da067539b85b325693",
+   "canonical": "AGENTSPEED-V1\nPOST\napi.example.com\n/agent-speed/v1/reports\n1792656931\nhF6RgxMZ6JxNZWvbgMJ4rA\n6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\n91f5519200fdfba67205c3510475977d2db9e91fb1d5e2da067539b85b325693",
+   "signatureDer": "MEUCIQC2VbL2ihUtkZe5gMc3VMNwVc50cUGhqq3R6hoWZhRXxwIgMpIVz54hoyWuQB_uTuslha32F6vh33vtAeZfuYIPfl4",
+   "highS": false
+  },
+  "rename": {
+   "method": "PATCH",
+   "url": "https://api.example.com/agent-speed/v1/devices/6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+   "authority": "api.example.com",
+   "path": "/agent-speed/v1/devices/6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+   "headers": {
+    "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+    "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+    "X-AgentSpeed-Timestamp": "1792656931",
+    "X-AgentSpeed-Nonce": "noSGnTabKlM29qpZm26REQ",
+    "X-AgentSpeed-Signature": "ZqzcVHpW2Ii6yu4YHS1MGneIDFbR65-GhpurBU6eOhjLNri2ZzzE8U62iJqP1KRQTHMzYTDrNBUDtXoms3I1cw"
+   },
+   "body": "{\"username\":\"小明的 Mac\"}",
+   "bodySha256": "33d2dca938c1ae44234ead69b059f15d640856bf390577b57ea99393a09754b8",
+   "canonical": "AGENTSPEED-V1\nPATCH\napi.example.com\n/agent-speed/v1/devices/6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\n1792656931\nnoSGnTabKlM29qpZm26REQ\n6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\n33d2dca938c1ae44234ead69b059f15d640856bf390577b57ea99393a09754b8",
+   "signatureDer": "MEUCIGas3FR6VtiIusruGB0tTBp3iAxW0eufhoabqwVOnjoYAiEAyza4tmc8xPFOtoiaj9SkUExzM2Ew6zQVA7V6JrNyNXM",
+   "highS": true
+  },
+  "rotate": {
+   "method": "PUT",
+   "url": "https://api.example.com/agent-speed/v1/devices/6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b/key",
+   "authority": "api.example.com",
+   "path": "/agent-speed/v1/devices/6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b/key",
+   "headers": {
+    "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+    "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+    "X-AgentSpeed-Timestamp": "1792656931",
+    "X-AgentSpeed-Nonce": "KZvPVMBEsbXUmhjaNU4W8g",
+    "X-AgentSpeed-Signature": "nzcVtELkukQTwJWCYgNuoHntoBp4mjEtL8OsRwW4RGOaj8a_9gXRp2JZNuEuKT5J_F39bvCktDTocy4q5Dka1g",
+    "X-AgentSpeed-New-Key-Signature": "eowzAKzf1-TRjxrzfevFEhn7YD7NpgzOjqMvEIRXzxdk_hECUoI0L_naqB60q9Dp0A2U0gAt3hjRDhrvfsCs7g"
+   },
+   "body": "{\"publicKey\":{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"PD-NVSB6cJNPeYd_3fvmYfXS-1JUcBzMxSqaz2Cb0QE\",\"y\":\"3YfIKAvLlFB7YRvaz6EfXZIjYO9USBR-FZ8HuykpRLY\"}}",
+   "bodySha256": "d474964abcabcbe72f20d6e983a180098b85c32dd046882831e4e56dde4c527a",
+   "canonical": "AGENTSPEED-V1\nPUT\napi.example.com\n/agent-speed/v1/devices/6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b/key\n1792656931\nKZvPVMBEsbXUmhjaNU4W8g\n6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\nd474964abcabcbe72f20d6e983a180098b85c32dd046882831e4e56dde4c527a",
+   "signatureDer": "MEYCIQCfNxW0QuS6RBPAlYJiA26gee2gGniaMS0vw6xHBbhEYwIhAJqPxr_2BdGnYlk24S4pPkn8Xf1u8KS0NOhzLirkORrW",
+   "highS": true
+  },
+  "delete": {
+   "method": "DELETE",
+   "url": "https://api.example.com/agent-speed/v1/devices/6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+   "authority": "api.example.com",
+   "path": "/agent-speed/v1/devices/6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+   "headers": {
+    "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+    "Accept": "application/json",
+    "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+    "X-AgentSpeed-Timestamp": "1792656931",
+    "X-AgentSpeed-Nonce": "YZdZVQPwHuKjTkA_4I0uHQ",
+    "X-AgentSpeed-Signature": "YlnJjhJ1eKAarvd5p0eU2bQYICXOSwnODkwg55bmMZ0FsUupdnczLXPfUqOt-WJy_wVDRXNGUSkLHHN-TK483Q"
+   },
+   "body": "",
+   "bodySha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "canonical": "AGENTSPEED-V1\nDELETE\napi.example.com\n/agent-speed/v1/devices/6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\n1792656931\nYZdZVQPwHuKjTkA_4I0uHQ\n6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "signatureDer": "MEQCIGJZyY4SdXigGq73eadHlNm0GCAlzksJzg5MIOeW5jGdAiAFsUupdnczLXPfUqOt-WJy_wVDRXNGUSkLHHN-TK483Q",
+   "highS": false
+  },
+  "loopback": {
+   "method": "POST",
+   "url": "http://127.0.0.1:8787/v1/reports",
+   "authority": "127.0.0.1:8787",
+   "path": "/v1/reports",
+   "headers": {
+    "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+    "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+    "X-AgentSpeed-Timestamp": "1792656931",
+    "X-AgentSpeed-Nonce": "ZO2qP7kxDpjNsYPN2_FW2Q",
+    "X-AgentSpeed-Signature": "R6z3XVRmq5D_cPnARn_ZDCqxa9d5F8RVLxFVIcrq3Yd3YdZrIL17WKBJSNngSbUV5rG3EQ8_v9Kg-DUCl1728A"
+   },
+   "body": "{\"schema\":1,\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"Windows\",\"osMajor\":11},\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"zoe-mbp\",\"run\":{\"id\":\"9d8c7b6a-5f4e-4d3c-a2b1-0f9e8d7c6b5a\",\"seq\":1},\"sentAt\":\"2026-10-22T08:15:30.000Z\",\"windowMs\":5000,\"activity\":\"active\",\"live\":{\"outputTokS\":86.4,\"totalTokS\":21004.9,\"estimatedShare\":1,\"agents\":{\"generating\":1,\"tools\":0,\"active\":1}},\"peak\":{\"outputTokS\":91.2,\"totalTokS\":21230.0},\"delta\":{\"requests\":0,\"output\":0,\"input\":0,\"cachedInput\":0,\"cacheWriteInput\":0,\"reasoning\":0,\"measuredOutput\":0,\"measuredMs\":0},\"title\":{\"level\":4,\"metric\":\"output\",\"redline\":2000,\"heat\":0.152}}",
+   "bodySha256": "0dd391ffbe85f6068a69c3a404d2eed070a4c0a9d72b95aa8171477021c1eab8",
+   "canonical": "AGENTSPEED-V1\nPOST\n127.0.0.1:8787\n/v1/reports\n1792656931\nZO2qP7kxDpjNsYPN2_FW2Q\n6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\n0dd391ffbe85f6068a69c3a404d2eed070a4c0a9d72b95aa8171477021c1eab8",
+   "signatureDer": "MEQCIEes911UZquQ_3D5wEZ_2QwqsWvXeRfEVS8RVSHK6t2HAiB3YdZrIL17WKBJSNngSbUV5rG3EQ8_v9Kg-DUCl1728A",
+   "highS": false
+  }
+ },
+ "verify": [
+  {
+   "name": "register is valid",
+   "request": "register",
+   "key": "device",
+   "expect": "valid"
+  },
+  {
+   "name": "report is valid",
+   "request": "report",
+   "key": "device",
+   "expect": "valid"
+  },
+  {
+   "name": "rename is valid",
+   "request": "rename",
+   "key": "device",
+   "expect": "valid"
+  },
+  {
+   "name": "rotate is valid",
+   "request": "rotate",
+   "key": "device",
+   "expect": "valid"
+  },
+  {
+   "name": "delete is valid",
+   "request": "delete",
+   "key": "device",
+   "expect": "valid"
+  },
+  {
+   "name": "loopback is valid",
+   "request": "loopback",
+   "key": "device",
+   "expect": "valid"
+  },
+  {
+   "name": "rotate: new-key signature is valid",
+   "request": "rotate",
+   "key": "rotated",
+   "header": "X-AgentSpeed-New-Key-Signature",
+   "expect": "valid"
+  },
+  {
+   "name": "tampered body",
+   "request": "report",
+   "key": "device",
+   "change": {
+    "body": "{\"schema\":1,\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27},\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"zoe-mbp\",\"run\":{\"id\":\"c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f\",\"seq\":42},\"sentAt\":\"2026-10-22T08:15:30.500Z\",\"windowMs\":5000,\"activity\":\"active\",\"live\":{\"outputTokS\":412.6,\"totalTokS\":182340.2,\"estimatedShare\":0.215,\"agents\":{\"generating\":3,\"tools\":1,\"active\":5}},\"peak\":{\"outputTokS\":655.0,\"totalTokS\":240118.7},\"delta\":{\"requests\":4,\"output\":1841,\"input\":912400,\"cachedInput\":880120,\"cacheWriteInput\":12050,\"reasoning\":310,\"measuredOutput\":1702,\"measuredMs\":4120},\"title\":{\"level\":8,\"metric\":\"output\",\"redline\":2000,\"heat\":0.388},\"cost\":{\"liveMicroUsdPerSecond\":4213,\"peakMicroUsdPerSecond\":6120,\"knownShare\":1.0,\"deltaMicroUsd\":21003,\"unpricedRequests\":0,\"priceVersion\":1},\"traffic\":{\"status\":\"ok\",\"includesTools\":true,\"rxBytesPerSecond\":24310,\"txBytesPerSecond\":1288,\"peakRxBytesPerSecond\":61200,\"peakTxBytesPerSecond\":3410,\"rxBytes\":121550,\"txBytes\":6440},\"sources\":[{\"source\":\"codex\",\"live\":{\"outputTokS\":112.2,\"totalTokS\":32120.1,\"estimatedShare\":0.47},\"agents\":{\"generating\":1,\"tools\":0,\"active\":2},\"delta\":{\"requests\":1,\"output\":340,\"input\":112400,\"cachedInput\":100120,\"cacheWriteInput\":0,\"reasoning\":310,\"measuredOutput\":302,\"measuredMs\":820},\"cost\":{\"liveMicroUsdPerSecond\":613,\"knownShare\":1.0,\"deltaMicroUsd\":3000,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":4200,\"txBytesPerSecond\":288,\"rxBytes\":21000,\"txBytes\":1440}},{\"source\":\"claudeCode\",\"live\":{\"outputTokS\":300.4,\"totalTokS\":150220.1,\"estimatedShare\":0.12},\"agents\":{\"generating\":2,\"tools\":1,\"active\":3},\"delta\":{\"requests\":3,\"output\":1500,\"input\":800000,\"cachedInput\":780000,\"cacheWriteInput\":12050,\"reasoning\":0,\"measuredOutput\":1400,\"measuredMs\":3300},\"cost\":{\"liveMicroUsdPerSecond\":3600,\"knownShare\":1.0,\"deltaMicroUsd\":18003,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":20110,\"txBytesPerSecond\":1000,\"rxBytes\":100550,\"txBytes\":5000}}],\"models\":[{\"id\":\"claude-opus-5-5\",\"sources\":[\"claudeCode\"],\"requests\":3,\"output\":1500,\"measuredOutput\":1400,\"measuredMs\":3300,\"generating\":2,\"deltaMicroUsd\":18003},{\"id\":\"gpt-5.5\",\"sources\":[\"codex\"],\"requests\":1,\"output\":340,\"measuredOutput\":302,\"measuredMs\":820,\"generating\":1,\"deltaMicroUsd\":3000}]}"
+   },
+   "expect": "invalid"
+  },
+  {
+   "name": "timestamp changed",
+   "request": "report",
+   "key": "device",
+   "change": {
+    "headers": {
+     "X-AgentSpeed-Timestamp": "1792656932"
+    }
+   },
+   "expect": "invalid"
+  },
+  {
+   "name": "nonce changed",
+   "request": "report",
+   "key": "device",
+   "change": {
+    "headers": {
+     "X-AgentSpeed-Nonce": "2SmKENGwc1g33EvYXaxkGw"
+    }
+   },
+   "expect": "invalid"
+  },
+  {
+   "name": "device header changed",
+   "request": "report",
+   "key": "device",
+   "change": {
+    "headers": {
+     "X-AgentSpeed-Device": "0b7e4d2c-9a1f-4c3e-b5d6-7e8f9a0b1c2d"
+    }
+   },
+   "expect": "invalid"
+  },
+  {
+   "name": "path changed",
+   "request": "report",
+   "key": "device",
+   "change": {
+    "path": "/agent-speed/v1/reports/"
+   },
+   "expect": "invalid"
+  },
+  {
+   "name": "authority changed",
+   "request": "report",
+   "key": "device",
+   "change": {
+    "authority": "api.example.org"
+   },
+   "expect": "invalid"
+  },
+  {
+   "name": "method changed",
+   "request": "rename",
+   "key": "device",
+   "change": {
+    "method": "PUT"
+   },
+   "expect": "invalid"
+  },
+  {
+   "name": "wrong public key",
+   "request": "report",
+   "key": "other",
+   "expect": "invalid"
+  },
+  {
+   "name": "s replaced by n - s is valid too (the original is low-S; servers must accept both)",
+   "request": "report",
+   "key": "device",
+   "change": {
+    "headers": {
+     "X-AgentSpeed-Signature": "tlWy9ooVLZGXuYDHN1TDcFXOdHFBoaqt0eoaFmYUV8fNbeovYd5c21G_4BGxFNp6DvDjAcU4Ipfx02sJelOm8w"
+    }
+   },
+   "expect": "valid"
+  },
+  {
+   "name": "non-zero trailing bits in the last base64url character are malformed",
+   "request": "report",
+   "key": "device",
+   "change": {
+    "headers": {
+     "X-AgentSpeed-Signature": "tlWy9ooVLZGXuYDHN1TDcFXOdHFBoaqt0eoaFmYUV8cykhXPniGjJa5AH-5O6yWFrfYXq-Hfe-0B5l-5gg9-Xh"
+    }
+   },
+   "expect": "malformed"
+  },
+  {
+   "name": "DER signature is malformed",
+   "request": "report",
+   "key": "device",
+   "change": {
+    "headers": {
+     "X-AgentSpeed-Signature": "MEUCIQC2VbL2ihUtkZe5gMc3VMNwVc50cUGhqq3R6hoWZhRXxwIgMpIVz54hoyWuQB_uTuslha32F6vh33vtAeZfuYIPfl4"
+    }
+   },
+   "expect": "malformed"
+  },
+  {
+   "name": "padded base64url is malformed",
+   "request": "report",
+   "key": "device",
+   "change": {
+    "headers": {
+     "X-AgentSpeed-Signature": "tlWy9ooVLZGXuYDHN1TDcFXOdHFBoaqt0eoaFmYUV8cykhXPniGjJa5AH-5O6yWFrfYXq-Hfe-0B5l-5gg9-Xg=="
+    }
+   },
+   "expect": "malformed"
+  },
+  {
+   "name": "r = 0",
+   "request": "report",
+   "key": "device",
+   "change": {
+    "headers": {
+     "X-AgentSpeed-Signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAykhXPniGjJa5AH-5O6yWFrfYXq-Hfe-0B5l-5gg9-Xg"
+    }
+   },
+   "expect": "invalid"
+  },
+  {
+   "name": "s = n",
+   "request": "report",
+   "key": "device",
+   "change": {
+    "headers": {
+     "X-AgentSpeed-Signature": "tlWy9ooVLZGXuYDHN1TDcFXOdHFBoaqt0eoaFmYUV8f_____AAAAAP__________vOb6racXnoTzucrC_GMlUQ"
+    }
+   },
+   "expect": "invalid"
+  },
+  {
+   "name": "signed with a trailing newline",
+   "request": "report",
+   "key": "device",
+   "change": {
+    "headers": {
+     "X-AgentSpeed-Signature": "GsIpe1XQ3Y9f6MbxsqZca5L3-wO0eRTQwCtJ3295ZPPRlmOqWmiwmVuWVM4db94-hI5Icg-i0ow1fCvZE2uO_A"
+    }
+   },
+   "expect": "invalid"
+  },
+  {
+   "name": "signed the SHA-256 digest instead of the message (hashed twice)",
+   "request": "report",
+   "key": "device",
+   "change": {
+    "headers": {
+     "X-AgentSpeed-Signature": "Uzo_DPHtWPKuEX9BEzCJak__B15w6Ehcu0zdq0SU6yRHshCxS5Ou74YM7g2czhTV2JbdtqG1drIXjwqcHrwoVg"
+    }
+   },
+   "expect": "invalid"
+  },
+  {
+   "name": "body hash in upper-case hex",
+   "request": "report",
+   "key": "device",
+   "change": {
+    "headers": {
+     "X-AgentSpeed-Signature": "4U_1ozVKSRyaLe1Vv28HazCEblp2cEZL5YfNFugSgQAIeG6Qd7Vgn3A7_NBl9bAwV8dv60tC9a-rx42dgCWJVQ"
+    }
+   },
+   "expect": "invalid"
+  }
+ ],
+ "publicKeys": [
+  {
+   "name": "valid key",
+   "jwk": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "U9uFTRUM0eY694W-TjRWmW8h-gmBb93fAR2wRHH_jjs",
+    "y": "RcPBHtIdL3_F1LjwB0KVVaahaHqwT7bCkjDKfFx9YBA"
+   },
+   "expect": "valid"
+  },
+  {
+   "name": "point not on the curve",
+   "jwk": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "U9uFTRUM0eY694W-TjRWmW8h-gmBb93fAR2wRHH_jjs",
+    "y": "RcPBHtIdL3_F1LjwB0KVVaahaHqwT7bCkjDKfFx9YBE"
+   },
+   "expect": "invalid"
+  },
+  {
+   "name": "padded coordinate",
+   "jwk": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "U9uFTRUM0eY694W-TjRWmW8h-gmBb93fAR2wRHH_jjs=",
+    "y": "RcPBHtIdL3_F1LjwB0KVVaahaHqwT7bCkjDKfFx9YBA"
+   },
+   "expect": "invalid"
+  },
+  {
+   "name": "wrong curve",
+   "jwk": {
+    "kty": "EC",
+    "crv": "P-384",
+    "x": "U9uFTRUM0eY694W-TjRWmW8h-gmBb93fAR2wRHH_jjs",
+    "y": "RcPBHtIdL3_F1LjwB0KVVaahaHqwT7bCkjDKfFx9YBA"
+   },
+   "expect": "invalid"
+  },
+  {
+   "name": "x not below p (32 bytes, unreduced)",
+   "jwk": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "_____wAAAAEAAAAAAAAAAAAAAAD_______________8",
+    "y": "RcPBHtIdL3_F1LjwB0KVVaahaHqwT7bCkjDKfFx9YBA"
+   },
+   "expect": "invalid"
+  },
+  {
+   "name": "42-character coordinate",
+   "jwk": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "U9uFTRUM0eY694W-TjRWmW8h-gmBb93fAR2wRHH_jj",
+    "y": "RcPBHtIdL3_F1LjwB0KVVaahaHqwT7bCkjDKfFx9YBA"
+   },
+   "expect": "invalid"
+  },
+  {
+   "name": "44-character coordinate",
+   "jwk": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "U9uFTRUM0eY694W-TjRWmW8h-gmBb93fAR2wRHH_jjsA",
+    "y": "RcPBHtIdL3_F1LjwB0KVVaahaHqwT7bCkjDKfFx9YBA"
+   },
+   "expect": "invalid"
+  },
+  {
+   "name": "public key that contains the private d",
+   "jwk": {
+    "kty": "EC",
+    "crv": "P-256",
+    "x": "U9uFTRUM0eY694W-TjRWmW8h-gmBb93fAR2wRHH_jjs",
+    "y": "RcPBHtIdL3_F1LjwB0KVVaahaHqwT7bCkjDKfFx9YBA",
+    "d": "bB9vXnhftB9Hk-F364M5ARUEEqn0-RcjfgcE6s4m6HA"
+   },
+   "expect": "invalid"
+  }
+ ],
+ "server": [
+  {
+   "name": "lifecycle, replay and errors",
+   "config": {
+    "authority": "api.example.com",
+    "apiPath": "/agent-speed",
+    "policies": {
+     "reportBurst": 3,
+     "reportRefillSeconds": 4,
+     "transfer": true
+    }
+   },
+   "steps": [
+    {
+     "at": 1792656931,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/devices",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656931",
+       "X-AgentSpeed-Nonce": "6LwWPILu4YczKIx9SsY22w",
+       "X-AgentSpeed-Signature": "lhz0qk1G59vbAEojRPFchEnENm39ZrXNc9usbhpWn4sh7Y74oH45DJHOMS1ukVnNYhtojPTEu5FlSAqAkD1f0Q"
+      },
+      "body": "{\"schema\":1,\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"zoe-mbp\",\"publicKey\":{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"U9uFTRUM0eY694W-TjRWmW8h-gmBb93fAR2wRHH_jjs\",\"y\":\"RcPBHtIdL3_F1LjwB0KVVaahaHqwT7bCkjDKfFx9YBA\"},\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27}}"
+     },
+     "expect": {
+      "status": 201,
+      "result": "created"
+     }
+    },
+    {
+     "at": 1792656931,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/devices",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656931",
+       "X-AgentSpeed-Nonce": "rTKIRqoYsyozWBY3RRHKwQ",
+       "X-AgentSpeed-Signature": "4DzSDaI8iPRVEcV2sGN3cDN_fUtGCa2AFHank0n9lrc6mCquYBvlV1ivKkbxgli8WiHXzNld8PILytM2BA9y6g"
+      },
+      "body": "{\"schema\":1,\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"zoe-mbp\",\"publicKey\":{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"U9uFTRUM0eY694W-TjRWmW8h-gmBb93fAR2wRHH_jjs\",\"y\":\"RcPBHtIdL3_F1LjwB0KVVaahaHqwT7bCkjDKfFx9YBA\"},\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27}}"
+     },
+     "expect": {
+      "status": 200,
+      "result": "exists"
+     }
+    },
+    {
+     "at": 1792656931,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/devices",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656931",
+       "X-AgentSpeed-Nonce": "f0r5XnDAMBwb0cWDtHVPBw",
+       "X-AgentSpeed-Signature": "TdESS2CydHOxmkLVnJYI7R7Tre8OT3VppCGpsJagm5ymLhlCJMqnY9No83Ys2wvUuh8BjEraZVS2TTatemzbIw"
+      },
+      "body": "{\"schema\":1,\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"x\",\"publicKey\":{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"U9uFTRUM0eY694W-TjRWmW8h-gmBb93fAR2wRHH_jjs\",\"y\":\"RcPBHtIdL3_F1LjwB0KVVaahaHqwT7bCkjDKfFx9YBA\"},\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27}}"
+     },
+     "expect": {
+      "status": 200,
+      "result": "exists"
+     }
+    },
+    {
+     "at": 1792656931,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/devices",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "0b7e4d2c-9a1f-4c3e-b5d6-7e8f9a0b1c2d",
+       "X-AgentSpeed-Timestamp": "1792656931",
+       "X-AgentSpeed-Nonce": "QSQrn65W-tTm533-M8sY0Q",
+       "X-AgentSpeed-Signature": "lPhXK90kq25vbluzmXo8br_Q2Juj0S3lnh66SAyhRImWNUkZBGhuWRsu2yoJ5ATIP48YFDismXhRCpctFmKYeg"
+      },
+      "body": "{\"schema\":1,\"deviceId\":\"0b7e4d2c-9a1f-4c3e-b5d6-7e8f9a0b1c2d\",\"username\":\"Zoe-MBP\",\"publicKey\":{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"o9KW1XWzkAdbsLxejQRD_x4qHvG4M1FPIANHqIR5G74\",\"y\":\"JJSKH8EjyqcTo77WUhxuFRMfUDPgRJs4enJXkoj6Ssg\"},\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27}}"
+     },
+     "expect": {
+      "status": 409,
+      "code": "username_taken"
+     }
+    },
+    {
+     "at": 1792656931,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/devices",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "0b7e4d2c-9a1f-4c3e-b5d6-7e8f9a0b1c2d",
+       "X-AgentSpeed-Timestamp": "1792656931",
+       "X-AgentSpeed-Nonce": "W4QBV-foau87P9D8JPOt0w",
+       "X-AgentSpeed-Signature": "frkAlsfPKpXw3LN3Uw9FjBwPsom-DHTbMDXGRUIoP-i3w-ykFj50_H9OhJfT03CTS51-5lw213D6vzE5uOcHYw"
+      },
+      "body": "{\"schema\":1,\"deviceId\":\"0b7e4d2c-9a1f-4c3e-b5d6-7e8f9a0b1c2d\",\"username\":\"ｚｏｅ-mbp\",\"publicKey\":{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"o9KW1XWzkAdbsLxejQRD_x4qHvG4M1FPIANHqIR5G74\",\"y\":\"JJSKH8EjyqcTo77WUhxuFRMfUDPgRJs4enJXkoj6Ssg\"},\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27}}"
+     },
+     "expect": {
+      "status": 422,
+      "code": "username_invalid",
+      "reason": "characters"
+     }
+    },
+    {
+     "at": 1792656931,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/devices",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "0b7e4d2c-9a1f-4c3e-b5d6-7e8f9a0b1c2d",
+       "X-AgentSpeed-Timestamp": "1792656931",
+       "X-AgentSpeed-Nonce": "O5b8Bk-odKgKEyvaYL6_VA",
+       "X-AgentSpeed-Signature": "DQy3L5c6njWMnkmlR5Pi1UizzeA2-s03D7aKbfjuf33iFn5L06WpqFCunXcHySM0x0GZcF2z-Jr-4O1qLEpixg"
+      },
+      "body": "{\"schema\":1,\"deviceId\":\"0b7e4d2c-9a1f-4c3e-b5d6-7e8f9a0b1c2d\",\"username\":\"x\",\"publicKey\":{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"o9KW1XWzkAdbsLxejQRD_x4qHvG4M1FPIANHqIR5G74\",\"y\":\"JJSKH8EjyqcTo77WUhxuFRMfUDPgRJs4enJXkoj6Ssg\"},\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27}}"
+     },
+     "expect": {
+      "status": 422,
+      "code": "username_invalid",
+      "reason": "length"
+     }
+    },
+    {
+     "at": 1792656931,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/devices",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656931",
+       "X-AgentSpeed-Nonce": "cedpCVkjnKBlhB66PrsoEA",
+       "X-AgentSpeed-Signature": "oM1cbcaCDK7iRtqNK7hP8tPvrE3KPINDPxN_nRB-ixvYpMSIzLsrfaL34v3pqgSKKFxCWdG5MB4QCFFQ8Z377g"
+      },
+      "body": "{\"schema\":1,\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"zoe-mbp\",\"publicKey\":{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"o9KW1XWzkAdbsLxejQRD_x4qHvG4M1FPIANHqIR5G74\",\"y\":\"JJSKH8EjyqcTo77WUhxuFRMfUDPgRJs4enJXkoj6Ssg\"},\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27}}"
+     },
+     "expect": {
+      "status": 409,
+      "code": "device_conflict"
+     }
+    },
+    {
+     "at": 1792656931,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/devices",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "0b7e4d2c-9a1f-4c3e-b5d6-7e8f9a0b1c2d",
+       "X-AgentSpeed-Timestamp": "1792656931",
+       "X-AgentSpeed-Nonce": "E9KP7ZvsvmY372sBf77-9w",
+       "X-AgentSpeed-Signature": "nirqwbJtGWALe-I_n1X5F0wn6En1C6Hj8THBYVL3HHgpgD8IowO43MznPIXlHL9E3BQl4NzNzvvUeXlulA534g"
+      },
+      "body": "{\"schema\":1,\"deviceId\":\"0b7e4d2c-9a1f-4c3e-b5d6-7e8f9a0b1c2d\",\"username\":\"racer-7k3m9q\",\"publicKey\":{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"o9KW1XWzkAdbsLxejQRD_x4qHvG4M1FPIANHqIR5G74\",\"y\":\"JJSKH8EjyqcTo77WUhxuFRMfUDPgRJs4enJXkoj6Ssg\"},\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"Windows\",\"osMajor\":11}}"
+     },
+     "expect": {
+      "status": 201,
+      "result": "created"
+     }
+    },
+    {
+     "at": 1792656931,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/reports",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656931",
+       "X-AgentSpeed-Nonce": "HLdje2lXrF1vbN7HRVVK_Q",
+       "X-AgentSpeed-Signature": "OubK7wqS4ol-xeaayjXMD2wBxtH5nmjfS_eodtURTdYoy6tzFBKtu8IDbf1M8CGsbNbmlzmRo9yx0bj-jOL7vg"
+      },
+      "body": "{\"schema\":1,\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27},\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"zoe-mbp\",\"run\":{\"id\":\"c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f\",\"seq\":42},\"sentAt\":\"2026-10-22T08:15:30.500Z\",\"windowMs\":5000,\"activity\":\"active\",\"live\":{\"outputTokS\":412.6,\"totalTokS\":182340.2,\"estimatedShare\":0.215,\"agents\":{\"generating\":3,\"tools\":1,\"active\":5}},\"peak\":{\"outputTokS\":655.0,\"totalTokS\":240118.7},\"delta\":{\"requests\":4,\"output\":1840,\"input\":912400,\"cachedInput\":880120,\"cacheWriteInput\":12050,\"reasoning\":310,\"measuredOutput\":1702,\"measuredMs\":4120},\"title\":{\"level\":8,\"metric\":\"output\",\"redline\":2000,\"heat\":0.388},\"cost\":{\"liveMicroUsdPerSecond\":4213,\"peakMicroUsdPerSecond\":6120,\"knownShare\":1.0,\"deltaMicroUsd\":21003,\"unpricedRequests\":0,\"priceVersion\":1},\"traffic\":{\"status\":\"ok\",\"includesTools\":true,\"rxBytesPerSecond\":24310,\"txBytesPerSecond\":1288,\"peakRxBytesPerSecond\":61200,\"peakTxBytesPerSecond\":3410,\"rxBytes\":121550,\"txBytes\":6440},\"sources\":[{\"source\":\"codex\",\"live\":{\"outputTokS\":112.2,\"totalTokS\":32120.1,\"estimatedShare\":0.47},\"agents\":{\"generating\":1,\"tools\":0,\"active\":2},\"delta\":{\"requests\":1,\"output\":340,\"input\":112400,\"cachedInput\":100120,\"cacheWriteInput\":0,\"reasoning\":310,\"measuredOutput\":302,\"measuredMs\":820},\"cost\":{\"liveMicroUsdPerSecond\":613,\"knownShare\":1.0,\"deltaMicroUsd\":3000,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":4200,\"txBytesPerSecond\":288,\"rxBytes\":21000,\"txBytes\":1440}},{\"source\":\"claudeCode\",\"live\":{\"outputTokS\":300.4,\"totalTokS\":150220.1,\"estimatedShare\":0.12},\"agents\":{\"generating\":2,\"tools\":1,\"active\":3},\"delta\":{\"requests\":3,\"output\":1500,\"input\":800000,\"cachedInput\":780000,\"cacheWriteInput\":12050,\"reasoning\":0,\"measuredOutput\":1400,\"measuredMs\":3300},\"cost\":{\"liveMicroUsdPerSecond\":3600,\"knownShare\":1.0,\"deltaMicroUsd\":18003,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":20110,\"txBytesPerSecond\":1000,\"rxBytes\":100550,\"txBytes\":5000}}],\"models\":[{\"id\":\"claude-opus-5-5\",\"sources\":[\"claudeCode\"],\"requests\":3,\"output\":1500,\"measuredOutput\":1400,\"measuredMs\":3300,\"generating\":2,\"deltaMicroUsd\":18003},{\"id\":\"gpt-5.5\",\"sources\":[\"codex\"],\"requests\":1,\"output\":340,\"measuredOutput\":302,\"measuredMs\":820,\"generating\":1,\"deltaMicroUsd\":3000}]}"
+     },
+     "expect": {
+      "status": 200,
+      "result": "accepted"
+     }
+    },
+    {
+     "at": 1792656932,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/reports",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656931",
+       "X-AgentSpeed-Nonce": "HLdje2lXrF1vbN7HRVVK_Q",
+       "X-AgentSpeed-Signature": "OubK7wqS4ol-xeaayjXMD2wBxtH5nmjfS_eodtURTdYoy6tzFBKtu8IDbf1M8CGsbNbmlzmRo9yx0bj-jOL7vg"
+      },
+      "body": "{\"schema\":1,\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27},\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"zoe-mbp\",\"run\":{\"id\":\"c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f\",\"seq\":42},\"sentAt\":\"2026-10-22T08:15:30.500Z\",\"windowMs\":5000,\"activity\":\"active\",\"live\":{\"outputTokS\":412.6,\"totalTokS\":182340.2,\"estimatedShare\":0.215,\"agents\":{\"generating\":3,\"tools\":1,\"active\":5}},\"peak\":{\"outputTokS\":655.0,\"totalTokS\":240118.7},\"delta\":{\"requests\":4,\"output\":1840,\"input\":912400,\"cachedInput\":880120,\"cacheWriteInput\":12050,\"reasoning\":310,\"measuredOutput\":1702,\"measuredMs\":4120},\"title\":{\"level\":8,\"metric\":\"output\",\"redline\":2000,\"heat\":0.388},\"cost\":{\"liveMicroUsdPerSecond\":4213,\"peakMicroUsdPerSecond\":6120,\"knownShare\":1.0,\"deltaMicroUsd\":21003,\"unpricedRequests\":0,\"priceVersion\":1},\"traffic\":{\"status\":\"ok\",\"includesTools\":true,\"rxBytesPerSecond\":24310,\"txBytesPerSecond\":1288,\"peakRxBytesPerSecond\":61200,\"peakTxBytesPerSecond\":3410,\"rxBytes\":121550,\"txBytes\":6440},\"sources\":[{\"source\":\"codex\",\"live\":{\"outputTokS\":112.2,\"totalTokS\":32120.1,\"estimatedShare\":0.47},\"agents\":{\"generating\":1,\"tools\":0,\"active\":2},\"delta\":{\"requests\":1,\"output\":340,\"input\":112400,\"cachedInput\":100120,\"cacheWriteInput\":0,\"reasoning\":310,\"measuredOutput\":302,\"measuredMs\":820},\"cost\":{\"liveMicroUsdPerSecond\":613,\"knownShare\":1.0,\"deltaMicroUsd\":3000,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":4200,\"txBytesPerSecond\":288,\"rxBytes\":21000,\"txBytes\":1440}},{\"source\":\"claudeCode\",\"live\":{\"outputTokS\":300.4,\"totalTokS\":150220.1,\"estimatedShare\":0.12},\"agents\":{\"generating\":2,\"tools\":1,\"active\":3},\"delta\":{\"requests\":3,\"output\":1500,\"input\":800000,\"cachedInput\":780000,\"cacheWriteInput\":12050,\"reasoning\":0,\"measuredOutput\":1400,\"measuredMs\":3300},\"cost\":{\"liveMicroUsdPerSecond\":3600,\"knownShare\":1.0,\"deltaMicroUsd\":18003,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":20110,\"txBytesPerSecond\":1000,\"rxBytes\":100550,\"txBytes\":5000}}],\"models\":[{\"id\":\"claude-opus-5-5\",\"sources\":[\"claudeCode\"],\"requests\":3,\"output\":1500,\"measuredOutput\":1400,\"measuredMs\":3300,\"generating\":2,\"deltaMicroUsd\":18003},{\"id\":\"gpt-5.5\",\"sources\":[\"codex\"],\"requests\":1,\"output\":340,\"measuredOutput\":302,\"measuredMs\":820,\"generating\":1,\"deltaMicroUsd\":3000}]}"
+     },
+     "expect": {
+      "status": 401,
+      "code": "nonce_replayed"
+     }
+    },
+    {
+     "at": 1792656933,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/reports",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656933",
+       "X-AgentSpeed-Nonce": "00vutwzdzB-XOrRopPdGdQ",
+       "X-AgentSpeed-Signature": "oCPUTRTD0vSNu0OT3lHO9KK5Gp1ponQybUALg_K1ABZmCV0GfcbRjlhILYjvJ6_0PDNPx1qtrS7GU2X9PTNu9g"
+      },
+      "body": "{\"schema\":1,\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27},\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"zoe-mbp\",\"run\":{\"id\":\"c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f\",\"seq\":42},\"sentAt\":\"2026-10-22T08:15:30.500Z\",\"windowMs\":5000,\"activity\":\"active\",\"live\":{\"outputTokS\":412.6,\"totalTokS\":182340.2,\"estimatedShare\":0.215,\"agents\":{\"generating\":3,\"tools\":1,\"active\":5}},\"peak\":{\"outputTokS\":655.0,\"totalTokS\":240118.7},\"delta\":{\"requests\":4,\"output\":1840,\"input\":912400,\"cachedInput\":880120,\"cacheWriteInput\":12050,\"reasoning\":310,\"measuredOutput\":1702,\"measuredMs\":4120},\"title\":{\"level\":8,\"metric\":\"output\",\"redline\":2000,\"heat\":0.388},\"cost\":{\"liveMicroUsdPerSecond\":4213,\"peakMicroUsdPerSecond\":6120,\"knownShare\":1.0,\"deltaMicroUsd\":21003,\"unpricedRequests\":0,\"priceVersion\":1},\"traffic\":{\"status\":\"ok\",\"includesTools\":true,\"rxBytesPerSecond\":24310,\"txBytesPerSecond\":1288,\"peakRxBytesPerSecond\":61200,\"peakTxBytesPerSecond\":3410,\"rxBytes\":121550,\"txBytes\":6440},\"sources\":[{\"source\":\"codex\",\"live\":{\"outputTokS\":112.2,\"totalTokS\":32120.1,\"estimatedShare\":0.47},\"agents\":{\"generating\":1,\"tools\":0,\"active\":2},\"delta\":{\"requests\":1,\"output\":340,\"input\":112400,\"cachedInput\":100120,\"cacheWriteInput\":0,\"reasoning\":310,\"measuredOutput\":302,\"measuredMs\":820},\"cost\":{\"liveMicroUsdPerSecond\":613,\"knownShare\":1.0,\"deltaMicroUsd\":3000,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":4200,\"txBytesPerSecond\":288,\"rxBytes\":21000,\"txBytes\":1440}},{\"source\":\"claudeCode\",\"live\":{\"outputTokS\":300.4,\"totalTokS\":150220.1,\"estimatedShare\":0.12},\"agents\":{\"generating\":2,\"tools\":1,\"active\":3},\"delta\":{\"requests\":3,\"output\":1500,\"input\":800000,\"cachedInput\":780000,\"cacheWriteInput\":12050,\"reasoning\":0,\"measuredOutput\":1400,\"measuredMs\":3300},\"cost\":{\"liveMicroUsdPerSecond\":3600,\"knownShare\":1.0,\"deltaMicroUsd\":18003,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":20110,\"txBytesPerSecond\":1000,\"rxBytes\":100550,\"txBytes\":5000}}],\"models\":[{\"id\":\"claude-opus-5-5\",\"sources\":[\"claudeCode\"],\"requests\":3,\"output\":1500,\"measuredOutput\":1400,\"measuredMs\":3300,\"generating\":2,\"deltaMicroUsd\":18003},{\"id\":\"gpt-5.5\",\"sources\":[\"codex\"],\"requests\":1,\"output\":340,\"measuredOutput\":302,\"measuredMs\":820,\"generating\":1,\"deltaMicroUsd\":3000}]}"
+     },
+     "expect": {
+      "status": 200,
+      "result": "duplicate"
+     }
+    },
+    {
+     "at": 1792656933,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/reports",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656933",
+       "X-AgentSpeed-Nonce": "Vo20IWk2KbJenrVZc2Xk6A",
+       "X-AgentSpeed-Signature": "k2892lBdUBIgEW23Q3UC_NyXLK4Ma2Vy9SAg-snJZD1gK0fydQsByJc0pmxhufM7BsOwc1RoqGMJGA1OBvnLJQ"
+      },
+      "body": "{\"schema\":1,\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27},\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"zoe-mbp\",\"run\":{\"id\":\"c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f\",\"seq\":42},\"sentAt\":\"2026-10-22T08:15:30.500Z\",\"windowMs\":5001,\"activity\":\"active\",\"live\":{\"outputTokS\":412.6,\"totalTokS\":182340.2,\"estimatedShare\":0.215,\"agents\":{\"generating\":3,\"tools\":1,\"active\":5}},\"peak\":{\"outputTokS\":655.0,\"totalTokS\":240118.7},\"delta\":{\"requests\":4,\"output\":1840,\"input\":912400,\"cachedInput\":880120,\"cacheWriteInput\":12050,\"reasoning\":310,\"measuredOutput\":1702,\"measuredMs\":4120},\"title\":{\"level\":8,\"metric\":\"output\",\"redline\":2000,\"heat\":0.388},\"cost\":{\"liveMicroUsdPerSecond\":4213,\"peakMicroUsdPerSecond\":6120,\"knownShare\":1.0,\"deltaMicroUsd\":21003,\"unpricedRequests\":0,\"priceVersion\":1},\"traffic\":{\"status\":\"ok\",\"includesTools\":true,\"rxBytesPerSecond\":24310,\"txBytesPerSecond\":1288,\"peakRxBytesPerSecond\":61200,\"peakTxBytesPerSecond\":3410,\"rxBytes\":121550,\"txBytes\":6440},\"sources\":[{\"source\":\"codex\",\"live\":{\"outputTokS\":112.2,\"totalTokS\":32120.1,\"estimatedShare\":0.47},\"agents\":{\"generating\":1,\"tools\":0,\"active\":2},\"delta\":{\"requests\":1,\"output\":340,\"input\":112400,\"cachedInput\":100120,\"cacheWriteInput\":0,\"reasoning\":310,\"measuredOutput\":302,\"measuredMs\":820},\"cost\":{\"liveMicroUsdPerSecond\":613,\"knownShare\":1.0,\"deltaMicroUsd\":3000,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":4200,\"txBytesPerSecond\":288,\"rxBytes\":21000,\"txBytes\":1440}},{\"source\":\"claudeCode\",\"live\":{\"outputTokS\":300.4,\"totalTokS\":150220.1,\"estimatedShare\":0.12},\"agents\":{\"generating\":2,\"tools\":1,\"active\":3},\"delta\":{\"requests\":3,\"output\":1500,\"input\":800000,\"cachedInput\":780000,\"cacheWriteInput\":12050,\"reasoning\":0,\"measuredOutput\":1400,\"measuredMs\":3300},\"cost\":{\"liveMicroUsdPerSecond\":3600,\"knownShare\":1.0,\"deltaMicroUsd\":18003,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":20110,\"txBytesPerSecond\":1000,\"rxBytes\":100550,\"txBytes\":5000}}],\"models\":[{\"id\":\"claude-opus-5-5\",\"sources\":[\"claudeCode\"],\"requests\":3,\"output\":1500,\"measuredOutput\":1400,\"measuredMs\":3300,\"generating\":2,\"deltaMicroUsd\":18003},{\"id\":\"gpt-5.5\",\"sources\":[\"codex\"],\"requests\":1,\"output\":340,\"measuredOutput\":302,\"measuredMs\":820,\"generating\":1,\"deltaMicroUsd\":3000}]}"
+     },
+     "expect": {
+      "status": 409,
+      "code": "seq_conflict"
+     }
+    },
+    {
+     "at": 1792656934,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/reports",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656633",
+       "X-AgentSpeed-Nonce": "_1Ichkj9f4d3APgjb528Rg",
+       "X-AgentSpeed-Signature": "Yixm0DZJ-F_vXvleIPACb8HOA75RK8gGiwDpPGa801GLRtNU67aekqTfDldeKXfGJkvpgf3zGq2meCvttlo0LQ"
+      },
+      "body": "{\"schema\":1,\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27},\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"zoe-mbp\",\"run\":{\"id\":\"c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f\",\"seq\":43},\"sentAt\":\"2026-10-22T08:15:30.500Z\",\"windowMs\":5000,\"activity\":\"active\",\"live\":{\"outputTokS\":412.6,\"totalTokS\":182340.2,\"estimatedShare\":0.215,\"agents\":{\"generating\":3,\"tools\":1,\"active\":5}},\"peak\":{\"outputTokS\":655.0,\"totalTokS\":240118.7},\"delta\":{\"requests\":4,\"output\":1840,\"input\":912400,\"cachedInput\":880120,\"cacheWriteInput\":12050,\"reasoning\":310,\"measuredOutput\":1702,\"measuredMs\":4120},\"title\":{\"level\":8,\"metric\":\"output\",\"redline\":2000,\"heat\":0.388},\"cost\":{\"liveMicroUsdPerSecond\":4213,\"peakMicroUsdPerSecond\":6120,\"knownShare\":1.0,\"deltaMicroUsd\":21003,\"unpricedRequests\":0,\"priceVersion\":1},\"traffic\":{\"status\":\"ok\",\"includesTools\":true,\"rxBytesPerSecond\":24310,\"txBytesPerSecond\":1288,\"peakRxBytesPerSecond\":61200,\"peakTxBytesPerSecond\":3410,\"rxBytes\":121550,\"txBytes\":6440},\"sources\":[{\"source\":\"codex\",\"live\":{\"outputTokS\":112.2,\"totalTokS\":32120.1,\"estimatedShare\":0.47},\"agents\":{\"generating\":1,\"tools\":0,\"active\":2},\"delta\":{\"requests\":1,\"output\":340,\"input\":112400,\"cachedInput\":100120,\"cacheWriteInput\":0,\"reasoning\":310,\"measuredOutput\":302,\"measuredMs\":820},\"cost\":{\"liveMicroUsdPerSecond\":613,\"knownShare\":1.0,\"deltaMicroUsd\":3000,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":4200,\"txBytesPerSecond\":288,\"rxBytes\":21000,\"txBytes\":1440}},{\"source\":\"claudeCode\",\"live\":{\"outputTokS\":300.4,\"totalTokS\":150220.1,\"estimatedShare\":0.12},\"agents\":{\"generating\":2,\"tools\":1,\"active\":3},\"delta\":{\"requests\":3,\"output\":1500,\"input\":800000,\"cachedInput\":780000,\"cacheWriteInput\":12050,\"reasoning\":0,\"measuredOutput\":1400,\"measuredMs\":3300},\"cost\":{\"liveMicroUsdPerSecond\":3600,\"knownShare\":1.0,\"deltaMicroUsd\":18003,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":20110,\"txBytesPerSecond\":1000,\"rxBytes\":100550,\"txBytes\":5000}}],\"models\":[{\"id\":\"claude-opus-5-5\",\"sources\":[\"claudeCode\"],\"requests\":3,\"output\":1500,\"measuredOutput\":1400,\"measuredMs\":3300,\"generating\":2,\"deltaMicroUsd\":18003},{\"id\":\"gpt-5.5\",\"sources\":[\"codex\"],\"requests\":1,\"output\":340,\"measuredOutput\":302,\"measuredMs\":820,\"generating\":1,\"deltaMicroUsd\":3000}]}"
+     },
+     "expect": {
+      "status": 401,
+      "code": "timestamp_out_of_window"
+     }
+    },
+    {
+     "at": 1792656934,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/reports",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792657235",
+       "X-AgentSpeed-Nonce": "HXqszdIDFHLCXYxNdXhkBQ",
+       "X-AgentSpeed-Signature": "Z1D1BUTI_-o-PeQWedTvcXWgGnla4KVSfcu_hRMjSCp37CJxXa4xghJBJfykGWKpYcMXIZR7j65ozlMjpAB-Ow"
+      },
+      "body": "{\"schema\":1,\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27},\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"zoe-mbp\",\"run\":{\"id\":\"c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f\",\"seq\":43},\"sentAt\":\"2026-10-22T08:15:30.500Z\",\"windowMs\":5000,\"activity\":\"active\",\"live\":{\"outputTokS\":412.6,\"totalTokS\":182340.2,\"estimatedShare\":0.215,\"agents\":{\"generating\":3,\"tools\":1,\"active\":5}},\"peak\":{\"outputTokS\":655.0,\"totalTokS\":240118.7},\"delta\":{\"requests\":4,\"output\":1840,\"input\":912400,\"cachedInput\":880120,\"cacheWriteInput\":12050,\"reasoning\":310,\"measuredOutput\":1702,\"measuredMs\":4120},\"title\":{\"level\":8,\"metric\":\"output\",\"redline\":2000,\"heat\":0.388},\"cost\":{\"liveMicroUsdPerSecond\":4213,\"peakMicroUsdPerSecond\":6120,\"knownShare\":1.0,\"deltaMicroUsd\":21003,\"unpricedRequests\":0,\"priceVersion\":1},\"traffic\":{\"status\":\"ok\",\"includesTools\":true,\"rxBytesPerSecond\":24310,\"txBytesPerSecond\":1288,\"peakRxBytesPerSecond\":61200,\"peakTxBytesPerSecond\":3410,\"rxBytes\":121550,\"txBytes\":6440},\"sources\":[{\"source\":\"codex\",\"live\":{\"outputTokS\":112.2,\"totalTokS\":32120.1,\"estimatedShare\":0.47},\"agents\":{\"generating\":1,\"tools\":0,\"active\":2},\"delta\":{\"requests\":1,\"output\":340,\"input\":112400,\"cachedInput\":100120,\"cacheWriteInput\":0,\"reasoning\":310,\"measuredOutput\":302,\"measuredMs\":820},\"cost\":{\"liveMicroUsdPerSecond\":613,\"knownShare\":1.0,\"deltaMicroUsd\":3000,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":4200,\"txBytesPerSecond\":288,\"rxBytes\":21000,\"txBytes\":1440}},{\"source\":\"claudeCode\",\"live\":{\"outputTokS\":300.4,\"totalTokS\":150220.1,\"estimatedShare\":0.12},\"agents\":{\"generating\":2,\"tools\":1,\"active\":3},\"delta\":{\"requests\":3,\"output\":1500,\"input\":800000,\"cachedInput\":780000,\"cacheWriteInput\":12050,\"reasoning\":0,\"measuredOutput\":1400,\"measuredMs\":3300},\"cost\":{\"liveMicroUsdPerSecond\":3600,\"knownShare\":1.0,\"deltaMicroUsd\":18003,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":20110,\"txBytesPerSecond\":1000,\"rxBytes\":100550,\"txBytes\":5000}}],\"models\":[{\"id\":\"claude-opus-5-5\",\"sources\":[\"claudeCode\"],\"requests\":3,\"output\":1500,\"measuredOutput\":1400,\"measuredMs\":3300,\"generating\":2,\"deltaMicroUsd\":18003},{\"id\":\"gpt-5.5\",\"sources\":[\"codex\"],\"requests\":1,\"output\":340,\"measuredOutput\":302,\"measuredMs\":820,\"generating\":1,\"deltaMicroUsd\":3000}]}"
+     },
+     "expect": {
+      "status": 401,
+      "code": "timestamp_out_of_window"
+     }
+    },
+    {
+     "at": 1792656934,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/reports",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656934",
+       "X-AgentSpeed-Nonce": "jDRWp1BsefIOEelPKc04Hw",
+       "X-AgentSpeed-Signature": "euzIAt0-ZPWa_YmVsqWFB9mL8zVh3V4PILiL5ZJ0X4faUh_qoCd4wYHPqwSyyZQUx5N2tAmX6_mrzpZzMWPCCQ"
+      },
+      "body": "{\"schema\":1,\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27},\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"zoe-mbp\",\"run\":{\"id\":\"c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f\",\"seq\":43},\"sentAt\":\"2026-10-22T08:15:30.500Z\",\"windowMs\":5000,\"activity\":\"active\",\"live\":{\"outputTokS\":412.6,\"totalTokS\":182340.2,\"estimatedShare\":0.215,\"agents\":{\"generating\":3,\"tools\":1,\"active\":5}},\"peak\":{\"outputTokS\":655.0,\"totalTokS\":240118.7},\"delta\":{\"requests\":4,\"output\":1840,\"input\":912400,\"cachedInput\":880120,\"cacheWriteInput\":12050,\"reasoning\":310,\"measuredOutput\":1702,\"measuredMs\":4120},\"title\":{\"level\":8,\"metric\":\"output\",\"redline\":2000,\"heat\":0.388},\"cost\":{\"liveMicroUsdPerSecond\":4213,\"peakMicroUsdPerSecond\":6120,\"knownShare\":1.0,\"deltaMicroUsd\":21003,\"unpricedRequests\":0,\"priceVersion\":1},\"traffic\":{\"status\":\"ok\",\"includesTools\":true,\"rxBytesPerSecond\":24310,\"txBytesPerSecond\":1288,\"peakRxBytesPerSecond\":61200,\"peakTxBytesPerSecond\":3410,\"rxBytes\":121550,\"txBytes\":6440},\"sources\":[{\"source\":\"codex\",\"live\":{\"outputTokS\":112.2,\"totalTokS\":32120.1,\"estimatedShare\":0.47},\"agents\":{\"generating\":1,\"tools\":0,\"active\":2},\"delta\":{\"requests\":1,\"output\":340,\"input\":112400,\"cachedInput\":100120,\"cacheWriteInput\":0,\"reasoning\":310,\"measuredOutput\":302,\"measuredMs\":820},\"cost\":{\"liveMicroUsdPerSecond\":613,\"knownShare\":1.0,\"deltaMicroUsd\":3000,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":4200,\"txBytesPerSecond\":288,\"rxBytes\":21000,\"txBytes\":1440}},{\"source\":\"claudeCode\",\"live\":{\"outputTokS\":300.4,\"totalTokS\":150220.1,\"estimatedShare\":0.12},\"agents\":{\"generating\":2,\"tools\":1,\"active\":3},\"delta\":{\"requests\":3,\"output\":1500,\"input\":800000,\"cachedInput\":780000,\"cacheWriteInput\":12050,\"reasoning\":0,\"measuredOutput\":1400,\"measuredMs\":3300},\"cost\":{\"liveMicroUsdPerSecond\":3600,\"knownShare\":1.0,\"deltaMicroUsd\":18003,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":20110,\"txBytesPerSecond\":1000,\"rxBytes\":100550,\"txBytes\":5000}}],\"models\":[{\"id\":\"claude-opus-5-5\",\"sources\":[\"claudeCode\"],\"requests\":3,\"output\":1500,\"measuredOutput\":1400,\"measuredMs\":3300,\"generating\":2,\"deltaMicroUsd\":18003},{\"id\":\"gpt-5.5\",\"sources\":[\"codex\"],\"requests\":1,\"output\":340,\"measuredOutput\":302,\"measuredMs\":820,\"generating\":1,\"deltaMicroUsd\":3000}]}"
+     },
+     "expect": {
+      "status": 401,
+      "code": "signature_invalid"
+     }
+    },
+    {
+     "at": 1792656934,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/reports",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "5a6b7c8d-9e0f-4a1b-8c2d-3e4f5a6b7c8d",
+       "X-AgentSpeed-Timestamp": "1792656934",
+       "X-AgentSpeed-Nonce": "QLol3f5NrWvfCJig2kSQow",
+       "X-AgentSpeed-Signature": "Z9Xzre5hNChCgp0EG5f1T3l6pTIfV43I8YQxAlmWlMLgJCCU4yk_k6HQz_a_BXItg5IylQk_oyC07dOjo6LNtg"
+      },
+      "body": "{\"schema\":1,\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27},\"deviceId\":\"5a6b7c8d-9e0f-4a1b-8c2d-3e4f5a6b7c8d\",\"username\":\"zoe-mbp\",\"run\":{\"id\":\"c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f\",\"seq\":42},\"sentAt\":\"2026-10-22T08:15:30.500Z\",\"windowMs\":5000,\"activity\":\"active\",\"live\":{\"outputTokS\":412.6,\"totalTokS\":182340.2,\"estimatedShare\":0.215,\"agents\":{\"generating\":3,\"tools\":1,\"active\":5}},\"peak\":{\"outputTokS\":655.0,\"totalTokS\":240118.7},\"delta\":{\"requests\":4,\"output\":1840,\"input\":912400,\"cachedInput\":880120,\"cacheWriteInput\":12050,\"reasoning\":310,\"measuredOutput\":1702,\"measuredMs\":4120},\"title\":{\"level\":8,\"metric\":\"output\",\"redline\":2000,\"heat\":0.388},\"cost\":{\"liveMicroUsdPerSecond\":4213,\"peakMicroUsdPerSecond\":6120,\"knownShare\":1.0,\"deltaMicroUsd\":21003,\"unpricedRequests\":0,\"priceVersion\":1},\"traffic\":{\"status\":\"ok\",\"includesTools\":true,\"rxBytesPerSecond\":24310,\"txBytesPerSecond\":1288,\"peakRxBytesPerSecond\":61200,\"peakTxBytesPerSecond\":3410,\"rxBytes\":121550,\"txBytes\":6440},\"sources\":[{\"source\":\"codex\",\"live\":{\"outputTokS\":112.2,\"totalTokS\":32120.1,\"estimatedShare\":0.47},\"agents\":{\"generating\":1,\"tools\":0,\"active\":2},\"delta\":{\"requests\":1,\"output\":340,\"input\":112400,\"cachedInput\":100120,\"cacheWriteInput\":0,\"reasoning\":310,\"measuredOutput\":302,\"measuredMs\":820},\"cost\":{\"liveMicroUsdPerSecond\":613,\"knownShare\":1.0,\"deltaMicroUsd\":3000,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":4200,\"txBytesPerSecond\":288,\"rxBytes\":21000,\"txBytes\":1440}},{\"source\":\"claudeCode\",\"live\":{\"outputTokS\":300.4,\"totalTokS\":150220.1,\"estimatedShare\":0.12},\"agents\":{\"generating\":2,\"tools\":1,\"active\":3},\"delta\":{\"requests\":3,\"output\":1500,\"input\":800000,\"cachedInput\":780000,\"cacheWriteInput\":12050,\"reasoning\":0,\"measuredOutput\":1400,\"measuredMs\":3300},\"cost\":{\"liveMicroUsdPerSecond\":3600,\"knownShare\":1.0,\"deltaMicroUsd\":18003,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":20110,\"txBytesPerSecond\":1000,\"rxBytes\":100550,\"txBytes\":5000}}],\"models\":[{\"id\":\"claude-opus-5-5\",\"sources\":[\"claudeCode\"],\"requests\":3,\"output\":1500,\"measuredOutput\":1400,\"measuredMs\":3300,\"generating\":2,\"deltaMicroUsd\":18003},{\"id\":\"gpt-5.5\",\"sources\":[\"codex\"],\"requests\":1,\"output\":340,\"measuredOutput\":302,\"measuredMs\":820,\"generating\":1,\"deltaMicroUsd\":3000}]}"
+     },
+     "expect": {
+      "status": 404,
+      "code": "unknown_device"
+     }
+    },
+    {
+     "at": 1792656935,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/reports",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656935",
+       "X-AgentSpeed-Nonce": "hafvrpR1TgqpIYtA74heKg",
+       "X-AgentSpeed-Signature": "ZIxsQCfbypHFJBDEgYQPr-WJMoZCqvCICTYb2T_Xjs3CodEPmb8zG96NU0Q2H4QIZUSYgJLNeIJ15a45js7GTg"
+      },
+      "body": "{\"schema\":1,\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27},\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"zoe\",\"run\":{\"id\":\"c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f\",\"seq\":44},\"sentAt\":\"2026-10-22T08:15:30.500Z\",\"windowMs\":5000,\"activity\":\"active\",\"live\":{\"outputTokS\":412.6,\"totalTokS\":182340.2,\"estimatedShare\":0.215,\"agents\":{\"generating\":3,\"tools\":1,\"active\":5}},\"peak\":{\"outputTokS\":655.0,\"totalTokS\":240118.7},\"delta\":{\"requests\":4,\"output\":1840,\"input\":912400,\"cachedInput\":880120,\"cacheWriteInput\":12050,\"reasoning\":310,\"measuredOutput\":1702,\"measuredMs\":4120},\"title\":{\"level\":8,\"metric\":\"output\",\"redline\":2000,\"heat\":0.388},\"cost\":{\"liveMicroUsdPerSecond\":4213,\"peakMicroUsdPerSecond\":6120,\"knownShare\":1.0,\"deltaMicroUsd\":21003,\"unpricedRequests\":0,\"priceVersion\":1},\"traffic\":{\"status\":\"ok\",\"includesTools\":true,\"rxBytesPerSecond\":24310,\"txBytesPerSecond\":1288,\"peakRxBytesPerSecond\":61200,\"peakTxBytesPerSecond\":3410,\"rxBytes\":121550,\"txBytes\":6440},\"sources\":[{\"source\":\"codex\",\"live\":{\"outputTokS\":112.2,\"totalTokS\":32120.1,\"estimatedShare\":0.47},\"agents\":{\"generating\":1,\"tools\":0,\"active\":2},\"delta\":{\"requests\":1,\"output\":340,\"input\":112400,\"cachedInput\":100120,\"cacheWriteInput\":0,\"reasoning\":310,\"measuredOutput\":302,\"measuredMs\":820},\"cost\":{\"liveMicroUsdPerSecond\":613,\"knownShare\":1.0,\"deltaMicroUsd\":3000,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":4200,\"txBytesPerSecond\":288,\"rxBytes\":21000,\"txBytes\":1440}},{\"source\":\"claudeCode\",\"live\":{\"outputTokS\":300.4,\"totalTokS\":150220.1,\"estimatedShare\":0.12},\"agents\":{\"generating\":2,\"tools\":1,\"active\":3},\"delta\":{\"requests\":3,\"output\":1500,\"input\":800000,\"cachedInput\":780000,\"cacheWriteInput\":12050,\"reasoning\":0,\"measuredOutput\":1400,\"measuredMs\":3300},\"cost\":{\"liveMicroUsdPerSecond\":3600,\"knownShare\":1.0,\"deltaMicroUsd\":18003,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":20110,\"txBytesPerSecond\":1000,\"rxBytes\":100550,\"txBytes\":5000}}],\"models\":[{\"id\":\"claude-opus-5-5\",\"sources\":[\"claudeCode\"],\"requests\":3,\"output\":1500,\"measuredOutput\":1400,\"measuredMs\":3300,\"generating\":2,\"deltaMicroUsd\":18003},{\"id\":\"gpt-5.5\",\"sources\":[\"codex\"],\"requests\":1,\"output\":340,\"measuredOutput\":302,\"measuredMs\":820,\"generating\":1,\"deltaMicroUsd\":3000}]}"
+     },
+     "expect": {
+      "status": 409,
+      "code": "username_mismatch",
+      "username": "zoe-mbp"
+     }
+    },
+    {
+     "at": 1792656935,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/reports",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656935",
+       "X-AgentSpeed-Nonce": "uA-auRVJYtwnLiizknqodA",
+       "X-AgentSpeed-Signature": "uAa6CCVesE5UzkFjDuW6g1KJlZjJGkfV3DNo3bEZTFRkhF1Kb28Ik4vKwS-l9VwRQAnvn-aA4O97b3f1AKH0QQ"
+      },
+      "body": "{\"schema\":2,\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27},\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"zoe-mbp\",\"run\":{\"id\":\"c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f\",\"seq\":45},\"sentAt\":\"2026-10-22T08:15:30.500Z\",\"windowMs\":5000,\"activity\":\"active\",\"live\":{\"outputTokS\":412.6,\"totalTokS\":182340.2,\"estimatedShare\":0.215,\"agents\":{\"generating\":3,\"tools\":1,\"active\":5}},\"peak\":{\"outputTokS\":655.0,\"totalTokS\":240118.7},\"delta\":{\"requests\":4,\"output\":1840,\"input\":912400,\"cachedInput\":880120,\"cacheWriteInput\":12050,\"reasoning\":310,\"measuredOutput\":1702,\"measuredMs\":4120},\"title\":{\"level\":8,\"metric\":\"output\",\"redline\":2000,\"heat\":0.388},\"cost\":{\"liveMicroUsdPerSecond\":4213,\"peakMicroUsdPerSecond\":6120,\"knownShare\":1.0,\"deltaMicroUsd\":21003,\"unpricedRequests\":0,\"priceVersion\":1},\"traffic\":{\"status\":\"ok\",\"includesTools\":true,\"rxBytesPerSecond\":24310,\"txBytesPerSecond\":1288,\"peakRxBytesPerSecond\":61200,\"peakTxBytesPerSecond\":3410,\"rxBytes\":121550,\"txBytes\":6440},\"sources\":[{\"source\":\"codex\",\"live\":{\"outputTokS\":112.2,\"totalTokS\":32120.1,\"estimatedShare\":0.47},\"agents\":{\"generating\":1,\"tools\":0,\"active\":2},\"delta\":{\"requests\":1,\"output\":340,\"input\":112400,\"cachedInput\":100120,\"cacheWriteInput\":0,\"reasoning\":310,\"measuredOutput\":302,\"measuredMs\":820},\"cost\":{\"liveMicroUsdPerSecond\":613,\"knownShare\":1.0,\"deltaMicroUsd\":3000,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":4200,\"txBytesPerSecond\":288,\"rxBytes\":21000,\"txBytes\":1440}},{\"source\":\"claudeCode\",\"live\":{\"outputTokS\":300.4,\"totalTokS\":150220.1,\"estimatedShare\":0.12},\"agents\":{\"generating\":2,\"tools\":1,\"active\":3},\"delta\":{\"requests\":3,\"output\":1500,\"input\":800000,\"cachedInput\":780000,\"cacheWriteInput\":12050,\"reasoning\":0,\"measuredOutput\":1400,\"measuredMs\":3300},\"cost\":{\"liveMicroUsdPerSecond\":3600,\"knownShare\":1.0,\"deltaMicroUsd\":18003,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":20110,\"txBytesPerSecond\":1000,\"rxBytes\":100550,\"txBytes\":5000}}],\"models\":[{\"id\":\"claude-opus-5-5\",\"sources\":[\"claudeCode\"],\"requests\":3,\"output\":1500,\"measuredOutput\":1400,\"measuredMs\":3300,\"generating\":2,\"deltaMicroUsd\":18003},{\"id\":\"gpt-5.5\",\"sources\":[\"codex\"],\"requests\":1,\"output\":340,\"measuredOutput\":302,\"measuredMs\":820,\"generating\":1,\"deltaMicroUsd\":3000}]}"
+     },
+     "expect": {
+      "status": 400,
+      "code": "version_unsupported"
+     }
+    },
+    {
+     "at": 1792656935,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/reports",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656935",
+       "X-AgentSpeed-Nonce": "gC-D-o5df3QETNn56YsT1w",
+       "X-AgentSpeed-Signature": "_0VdClWamLYLTc0WVUQxCGQgTe89r0w54KK3WQKVCZB56z0goJDNDwz5ivmTLnBOjhrS_qgrpYjILcznQN_BxQ"
+      },
+      "body": "{\"schema\":1,\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27},\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"zoe-mbp\",\"run\":{\"id\":\"c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f\",\"seq\":46},\"sentAt\":\"2026-10-22T08:14:31.000Z\",\"windowMs\":5000,\"activity\":\"active\",\"live\":{\"outputTokS\":412.6,\"totalTokS\":182340.2,\"estimatedShare\":0.215,\"agents\":{\"generating\":3,\"tools\":1,\"active\":5}},\"peak\":{\"outputTokS\":655.0,\"totalTokS\":240118.7},\"delta\":{\"requests\":4,\"output\":1840,\"input\":912400,\"cachedInput\":880120,\"cacheWriteInput\":12050,\"reasoning\":310,\"measuredOutput\":1702,\"measuredMs\":4120},\"title\":{\"level\":8,\"metric\":\"output\",\"redline\":2000,\"heat\":0.388},\"cost\":{\"liveMicroUsdPerSecond\":4213,\"peakMicroUsdPerSecond\":6120,\"knownShare\":1.0,\"deltaMicroUsd\":21003,\"unpricedRequests\":0,\"priceVersion\":1},\"traffic\":{\"status\":\"ok\",\"includesTools\":true,\"rxBytesPerSecond\":24310,\"txBytesPerSecond\":1288,\"peakRxBytesPerSecond\":61200,\"peakTxBytesPerSecond\":3410,\"rxBytes\":121550,\"txBytes\":6440},\"sources\":[{\"source\":\"codex\",\"live\":{\"outputTokS\":112.2,\"totalTokS\":32120.1,\"estimatedShare\":0.47},\"agents\":{\"generating\":1,\"tools\":0,\"active\":2},\"delta\":{\"requests\":1,\"output\":340,\"input\":112400,\"cachedInput\":100120,\"cacheWriteInput\":0,\"reasoning\":310,\"measuredOutput\":302,\"measuredMs\":820},\"cost\":{\"liveMicroUsdPerSecond\":613,\"knownShare\":1.0,\"deltaMicroUsd\":3000,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":4200,\"txBytesPerSecond\":288,\"rxBytes\":21000,\"txBytes\":1440}},{\"source\":\"claudeCode\",\"live\":{\"outputTokS\":300.4,\"totalTokS\":150220.1,\"estimatedShare\":0.12},\"agents\":{\"generating\":2,\"tools\":1,\"active\":3},\"delta\":{\"requests\":3,\"output\":1500,\"input\":800000,\"cachedInput\":780000,\"cacheWriteInput\":12050,\"reasoning\":0,\"measuredOutput\":1400,\"measuredMs\":3300},\"cost\":{\"liveMicroUsdPerSecond\":3600,\"knownShare\":1.0,\"deltaMicroUsd\":18003,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":20110,\"txBytesPerSecond\":1000,\"rxBytes\":100550,\"txBytes\":5000}}],\"models\":[{\"id\":\"claude-opus-5-5\",\"sources\":[\"claudeCode\"],\"requests\":3,\"output\":1500,\"measuredOutput\":1400,\"measuredMs\":3300,\"generating\":2,\"deltaMicroUsd\":18003},{\"id\":\"gpt-5.5\",\"sources\":[\"codex\"],\"requests\":1,\"output\":340,\"measuredOutput\":302,\"measuredMs\":820,\"generating\":1,\"deltaMicroUsd\":3000}]}"
+     },
+     "expect": {
+      "status": 422,
+      "code": "report_stale"
+     }
+    },
+    {
+     "at": 1792656935,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/reports",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656935",
+       "X-AgentSpeed-Nonce": "0bVpA1GdWe5R1si3dNvoDg",
+       "X-AgentSpeed-Signature": "vLclI8c2KHYrxbKTentEzIoe9T2Fb1QCP55HrJOo3bAGdgQ5O485AVMUhsB15RW9yiaY2EXJM1cd8PJXfu1Gpw"
+      },
+      "body": "{\"schema\":1,\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27},\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"zoe-mbp\",\"run\":{\"id\":\"c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f\",\"seq\":47},\"sentAt\":\"2026-10-22T08:15:30.500Z\",\"windowMs\":5000,\"activity\":\"busy\",\"live\":{\"outputTokS\":412.6,\"totalTokS\":182340.2,\"estimatedShare\":0.215,\"agents\":{\"generating\":3,\"tools\":1,\"active\":5}},\"peak\":{\"outputTokS\":655.0,\"totalTokS\":240118.7},\"delta\":{\"requests\":4,\"output\":1840,\"input\":912400,\"cachedInput\":880120,\"cacheWriteInput\":12050,\"reasoning\":310,\"measuredOutput\":1702,\"measuredMs\":4120},\"title\":{\"level\":8,\"metric\":\"output\",\"redline\":2000,\"heat\":0.388},\"cost\":{\"liveMicroUsdPerSecond\":4213,\"peakMicroUsdPerSecond\":6120,\"knownShare\":1.0,\"deltaMicroUsd\":21003,\"unpricedRequests\":0,\"priceVersion\":1},\"traffic\":{\"status\":\"ok\",\"includesTools\":true,\"rxBytesPerSecond\":24310,\"txBytesPerSecond\":1288,\"peakRxBytesPerSecond\":61200,\"peakTxBytesPerSecond\":3410,\"rxBytes\":121550,\"txBytes\":6440},\"sources\":[{\"source\":\"codex\",\"live\":{\"outputTokS\":112.2,\"totalTokS\":32120.1,\"estimatedShare\":0.47},\"agents\":{\"generating\":1,\"tools\":0,\"active\":2},\"delta\":{\"requests\":1,\"output\":340,\"input\":112400,\"cachedInput\":100120,\"cacheWriteInput\":0,\"reasoning\":310,\"measuredOutput\":302,\"measuredMs\":820},\"cost\":{\"liveMicroUsdPerSecond\":613,\"knownShare\":1.0,\"deltaMicroUsd\":3000,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":4200,\"txBytesPerSecond\":288,\"rxBytes\":21000,\"txBytes\":1440}},{\"source\":\"claudeCode\",\"live\":{\"outputTokS\":300.4,\"totalTokS\":150220.1,\"estimatedShare\":0.12},\"agents\":{\"generating\":2,\"tools\":1,\"active\":3},\"delta\":{\"requests\":3,\"output\":1500,\"input\":800000,\"cachedInput\":780000,\"cacheWriteInput\":12050,\"reasoning\":0,\"measuredOutput\":1400,\"measuredMs\":3300},\"cost\":{\"liveMicroUsdPerSecond\":3600,\"knownShare\":1.0,\"deltaMicroUsd\":18003,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":20110,\"txBytesPerSecond\":1000,\"rxBytes\":100550,\"txBytes\":5000}}],\"models\":[{\"id\":\"claude-opus-5-5\",\"sources\":[\"claudeCode\"],\"requests\":3,\"output\":1500,\"measuredOutput\":1400,\"measuredMs\":3300,\"generating\":2,\"deltaMicroUsd\":18003},{\"id\":\"gpt-5.5\",\"sources\":[\"codex\"],\"requests\":1,\"output\":340,\"measuredOutput\":302,\"measuredMs\":820,\"generating\":1,\"deltaMicroUsd\":3000}]}"
+     },
+     "expect": {
+      "status": 422,
+      "code": "payload_invalid",
+      "field": "/activity"
+     }
+    },
+    {
+     "at": 1792656935,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/reports",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656935",
+       "X-AgentSpeed-Nonce": "SDtoK28GO6TZAscoPqZWAg",
+       "X-AgentSpeed-Signature": "2sLrqrAJmQVMi1BZs4y-tM0r4NSGpYIaqbYaPG4zbnIzuGo-bOPpFu157vzj-M_0XIXm2A5XvD0Q-KGd2mVK5A"
+      },
+      "body": "{\"schema\":1,\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27},\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"zoe-mbp\",\"run\":{\"id\":\"c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f\",\"seq\":51},\"sentAt\":\"2026-10-22T08:15:30.500Z\",\"windowMs\":5000,\"windowMs\":5000,\"activity\":\"active\",\"live\":{\"outputTokS\":412.6,\"totalTokS\":182340.2,\"estimatedShare\":0.215,\"agents\":{\"generating\":3,\"tools\":1,\"active\":5}},\"peak\":{\"outputTokS\":655.0,\"totalTokS\":240118.7},\"delta\":{\"requests\":4,\"output\":1840,\"input\":912400,\"cachedInput\":880120,\"cacheWriteInput\":12050,\"reasoning\":310,\"measuredOutput\":1702,\"measuredMs\":4120},\"title\":{\"level\":8,\"metric\":\"output\",\"redline\":2000,\"heat\":0.388},\"cost\":{\"liveMicroUsdPerSecond\":4213,\"peakMicroUsdPerSecond\":6120,\"knownShare\":1.0,\"deltaMicroUsd\":21003,\"unpricedRequests\":0,\"priceVersion\":1},\"traffic\":{\"status\":\"ok\",\"includesTools\":true,\"rxBytesPerSecond\":24310,\"txBytesPerSecond\":1288,\"peakRxBytesPerSecond\":61200,\"peakTxBytesPerSecond\":3410,\"rxBytes\":121550,\"txBytes\":6440},\"sources\":[{\"source\":\"codex\",\"live\":{\"outputTokS\":112.2,\"totalTokS\":32120.1,\"estimatedShare\":0.47},\"agents\":{\"generating\":1,\"tools\":0,\"active\":2},\"delta\":{\"requests\":1,\"output\":340,\"input\":112400,\"cachedInput\":100120,\"cacheWriteInput\":0,\"reasoning\":310,\"measuredOutput\":302,\"measuredMs\":820},\"cost\":{\"liveMicroUsdPerSecond\":613,\"knownShare\":1.0,\"deltaMicroUsd\":3000,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":4200,\"txBytesPerSecond\":288,\"rxBytes\":21000,\"txBytes\":1440}},{\"source\":\"claudeCode\",\"live\":{\"outputTokS\":300.4,\"totalTokS\":150220.1,\"estimatedShare\":0.12},\"agents\":{\"generating\":2,\"tools\":1,\"active\":3},\"delta\":{\"requests\":3,\"output\":1500,\"input\":800000,\"cachedInput\":780000,\"cacheWriteInput\":12050,\"reasoning\":0,\"measuredOutput\":1400,\"measuredMs\":3300},\"cost\":{\"liveMicroUsdPerSecond\":3600,\"knownShare\":1.0,\"deltaMicroUsd\":18003,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":20110,\"txBytesPerSecond\":1000,\"rxBytes\":100550,\"txBytes\":5000}}],\"models\":[{\"id\":\"claude-opus-5-5\",\"sources\":[\"claudeCode\"],\"requests\":3,\"output\":1500,\"measuredOutput\":1400,\"measuredMs\":3300,\"generating\":2,\"deltaMicroUsd\":18003},{\"id\":\"gpt-5.5\",\"sources\":[\"codex\"],\"requests\":1,\"output\":340,\"measuredOutput\":302,\"measuredMs\":820,\"generating\":1,\"deltaMicroUsd\":3000}]}"
+     },
+     "expect": {
+      "status": 400,
+      "code": "bad_request"
+     }
+    },
+    {
+     "at": 1792656935,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/reports",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656935",
+       "X-AgentSpeed-Nonce": "GnGmTS4CQFq_tNEN6iIvpA",
+       "X-AgentSpeed-Signature": "9rTXvS3HdX8UiDYI2q0UgcenyXG5Jcnpx7ZWAE6c4ijGGwgf_hcKYvycB1iqNHsT3U8hZM10yHdwq6hMdlrIBw"
+      },
+      "body": "{\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27},\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"zoe-mbp\",\"run\":{\"id\":\"c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f\",\"seq\":52},\"sentAt\":\"2026-10-22T08:15:30.500Z\",\"windowMs\":5000,\"activity\":\"active\",\"live\":{\"outputTokS\":412.6,\"totalTokS\":182340.2,\"estimatedShare\":0.215,\"agents\":{\"generating\":3,\"tools\":1,\"active\":5}},\"peak\":{\"outputTokS\":655.0,\"totalTokS\":240118.7},\"delta\":{\"requests\":4,\"output\":1840,\"input\":912400,\"cachedInput\":880120,\"cacheWriteInput\":12050,\"reasoning\":310,\"measuredOutput\":1702,\"measuredMs\":4120},\"title\":{\"level\":8,\"metric\":\"output\",\"redline\":2000,\"heat\":0.388},\"cost\":{\"liveMicroUsdPerSecond\":4213,\"peakMicroUsdPerSecond\":6120,\"knownShare\":1.0,\"deltaMicroUsd\":21003,\"unpricedRequests\":0,\"priceVersion\":1},\"traffic\":{\"status\":\"ok\",\"includesTools\":true,\"rxBytesPerSecond\":24310,\"txBytesPerSecond\":1288,\"peakRxBytesPerSecond\":61200,\"peakTxBytesPerSecond\":3410,\"rxBytes\":121550,\"txBytes\":6440},\"sources\":[{\"source\":\"codex\",\"live\":{\"outputTokS\":112.2,\"totalTokS\":32120.1,\"estimatedShare\":0.47},\"agents\":{\"generating\":1,\"tools\":0,\"active\":2},\"delta\":{\"requests\":1,\"output\":340,\"input\":112400,\"cachedInput\":100120,\"cacheWriteInput\":0,\"reasoning\":310,\"measuredOutput\":302,\"measuredMs\":820},\"cost\":{\"liveMicroUsdPerSecond\":613,\"knownShare\":1.0,\"deltaMicroUsd\":3000,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":4200,\"txBytesPerSecond\":288,\"rxBytes\":21000,\"txBytes\":1440}},{\"source\":\"claudeCode\",\"live\":{\"outputTokS\":300.4,\"totalTokS\":150220.1,\"estimatedShare\":0.12},\"agents\":{\"generating\":2,\"tools\":1,\"active\":3},\"delta\":{\"requests\":3,\"output\":1500,\"input\":800000,\"cachedInput\":780000,\"cacheWriteInput\":12050,\"reasoning\":0,\"measuredOutput\":1400,\"measuredMs\":3300},\"cost\":{\"liveMicroUsdPerSecond\":3600,\"knownShare\":1.0,\"deltaMicroUsd\":18003,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":20110,\"txBytesPerSecond\":1000,\"rxBytes\":100550,\"txBytes\":5000}}],\"models\":[{\"id\":\"claude-opus-5-5\",\"sources\":[\"claudeCode\"],\"requests\":3,\"output\":1500,\"measuredOutput\":1400,\"measuredMs\":3300,\"generating\":2,\"deltaMicroUsd\":18003},{\"id\":\"gpt-5.5\",\"sources\":[\"codex\"],\"requests\":1,\"output\":340,\"measuredOutput\":302,\"measuredMs\":820,\"generating\":1,\"deltaMicroUsd\":3000}]}"
+     },
+     "expect": {
+      "status": 422,
+      "code": "payload_invalid",
+      "field": "/schema"
+     }
+    },
+    {
+     "at": 1792656936,
+     "request": {
+      "method": "PATCH",
+      "path": "/agent-speed/v1/devices/6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656936",
+       "X-AgentSpeed-Nonce": "yfm0Neoo4IUIqM3ldZK8HA",
+       "X-AgentSpeed-Signature": "68pdaCvMA_kmna72XV5CGF7QMgelozodqJ2N6MQvyD6riCp4lZsH_tgMYlnCBn_XVj3Hfv0tiLTw8pz2ciIbWw"
+      },
+      "body": "{\"username\":\"Racer-7K3M9Q\"}"
+     },
+     "expect": {
+      "status": 409,
+      "code": "username_taken"
+     }
+    },
+    {
+     "at": 1792656936,
+     "request": {
+      "method": "PATCH",
+      "path": "/agent-speed/v1/devices/0b7e4d2c-9a1f-4c3e-b5d6-7e8f9a0b1c2d",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "0b7e4d2c-9a1f-4c3e-b5d6-7e8f9a0b1c2d",
+       "X-AgentSpeed-Timestamp": "1792656936",
+       "X-AgentSpeed-Nonce": "kYFcsxdOKBk6H9DJSIe_Ag",
+       "X-AgentSpeed-Signature": "4B_35Zw1GFy-8Pu5jnrOVPy6eZzNjehT4UoCi8BVblmb8yJsogf2Mc7Ofv8BMTqkLhZxi_bwgHeiXC6soczoiQ"
+      },
+      "body": "{\"username\":\"Racer-7K3M9Q\"}"
+     },
+     "expect": {
+      "status": 200,
+      "result": "updated"
+     }
+    },
+    {
+     "at": 1792656936,
+     "request": {
+      "method": "PATCH",
+      "path": "/agent-speed/v1/devices/6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656936",
+       "X-AgentSpeed-Nonce": "7FnfwvGnzA1QhnAdQ483vA",
+       "X-AgentSpeed-Signature": "W9bc329wFvFK3wdHn63VcAt7UXVVZsBXnbN5i33q4JuxSM7mMFcv6sKi19DN5mo5AZ_lmqrg-ZU6APqgGyh4VA"
+      },
+      "body": "{\"username\":\"小明的 Mac\"}"
+     },
+     "expect": {
+      "status": 200,
+      "result": "updated"
+     }
+    },
+    {
+     "at": 1792656937,
+     "request": {
+      "method": "PUT",
+      "path": "/agent-speed/v1/devices/6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b/key",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656937",
+       "X-AgentSpeed-Nonce": "9Pez1-Hc3LYdeJTc6H0iFw",
+       "X-AgentSpeed-Signature": "64xJJlESdxEis2kmnbcXMswV3XzacFxsXyWTLj2Is58EajYxXJGXCR6AH3LQML3Z04w6sbZkqw-NfB_SYh-dAA",
+       "X-AgentSpeed-New-Key-Signature": "VwFcBehrMn30CF4tR88ut5kz1SSGPy4H0nC8bhqO-IHNNsb-lWm4SyEBZ4N3SrlV59s2jNuLEidRGtS66rYUjw"
+      },
+      "body": "{\"publicKey\":{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"PD-NVSB6cJNPeYd_3fvmYfXS-1JUcBzMxSqaz2Cb0QE\",\"y\":\"3YfIKAvLlFB7YRvaz6EfXZIjYO9USBR-FZ8HuykpRLY\"}}"
+     },
+     "expect": {
+      "status": 200,
+      "result": "rotated"
+     }
+    },
+    {
+     "at": 1792656937,
+     "request": {
+      "method": "PUT",
+      "path": "/agent-speed/v1/devices/6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b/key",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656937",
+       "X-AgentSpeed-Nonce": "MRxymbl8gbet7TQu1Xfg_Q",
+       "X-AgentSpeed-Signature": "OkJMAeFQqLxewAUn7tL8BFMsQLYg2RjIticUIIA9jnV2TqZudbGo2LqRVHCT3dnAN6mnrDQSDqj3TY5GBGD_ww",
+       "X-AgentSpeed-New-Key-Signature": "OkJMAeFQqLxewAUn7tL8BFMsQLYg2RjIticUIIA9jnV2TqZudbGo2LqRVHCT3dnAN6mnrDQSDqj3TY5GBGD_ww"
+      },
+      "body": "{\"publicKey\":{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"PD-NVSB6cJNPeYd_3fvmYfXS-1JUcBzMxSqaz2Cb0QE\",\"y\":\"3YfIKAvLlFB7YRvaz6EfXZIjYO9USBR-FZ8HuykpRLY\"}}"
+     },
+     "expect": {
+      "status": 200,
+      "result": "unchanged"
+     }
+    },
+    {
+     "at": 1792656938,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/reports",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656938",
+       "X-AgentSpeed-Nonce": "EBZsBLqcS2Q3Cr-qD2B03w",
+       "X-AgentSpeed-Signature": "zPTTXzV6JizFS_lmesKmc3KErZ-d-AG-2oSXxpHuOSLw10ia7KhuEqc9rkwmOC4wM2yj9sfTmv6L4LkQPPJm2g"
+      },
+      "body": "{\"schema\":1,\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27},\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"小明的 Mac\",\"run\":{\"id\":\"c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f\",\"seq\":48},\"sentAt\":\"2026-10-22T08:15:30.500Z\",\"windowMs\":5000,\"activity\":\"active\",\"live\":{\"outputTokS\":412.6,\"totalTokS\":182340.2,\"estimatedShare\":0.215,\"agents\":{\"generating\":3,\"tools\":1,\"active\":5}},\"peak\":{\"outputTokS\":655.0,\"totalTokS\":240118.7},\"delta\":{\"requests\":4,\"output\":1840,\"input\":912400,\"cachedInput\":880120,\"cacheWriteInput\":12050,\"reasoning\":310,\"measuredOutput\":1702,\"measuredMs\":4120},\"title\":{\"level\":8,\"metric\":\"output\",\"redline\":2000,\"heat\":0.388},\"cost\":{\"liveMicroUsdPerSecond\":4213,\"peakMicroUsdPerSecond\":6120,\"knownShare\":1.0,\"deltaMicroUsd\":21003,\"unpricedRequests\":0,\"priceVersion\":1},\"traffic\":{\"status\":\"ok\",\"includesTools\":true,\"rxBytesPerSecond\":24310,\"txBytesPerSecond\":1288,\"peakRxBytesPerSecond\":61200,\"peakTxBytesPerSecond\":3410,\"rxBytes\":121550,\"txBytes\":6440},\"sources\":[{\"source\":\"codex\",\"live\":{\"outputTokS\":112.2,\"totalTokS\":32120.1,\"estimatedShare\":0.47},\"agents\":{\"generating\":1,\"tools\":0,\"active\":2},\"delta\":{\"requests\":1,\"output\":340,\"input\":112400,\"cachedInput\":100120,\"cacheWriteInput\":0,\"reasoning\":310,\"measuredOutput\":302,\"measuredMs\":820},\"cost\":{\"liveMicroUsdPerSecond\":613,\"knownShare\":1.0,\"deltaMicroUsd\":3000,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":4200,\"txBytesPerSecond\":288,\"rxBytes\":21000,\"txBytes\":1440}},{\"source\":\"claudeCode\",\"live\":{\"outputTokS\":300.4,\"totalTokS\":150220.1,\"estimatedShare\":0.12},\"agents\":{\"generating\":2,\"tools\":1,\"active\":3},\"delta\":{\"requests\":3,\"output\":1500,\"input\":800000,\"cachedInput\":780000,\"cacheWriteInput\":12050,\"reasoning\":0,\"measuredOutput\":1400,\"measuredMs\":3300},\"cost\":{\"liveMicroUsdPerSecond\":3600,\"knownShare\":1.0,\"deltaMicroUsd\":18003,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":20110,\"txBytesPerSecond\":1000,\"rxBytes\":100550,\"txBytes\":5000}}],\"models\":[{\"id\":\"claude-opus-5-5\",\"sources\":[\"claudeCode\"],\"requests\":3,\"output\":1500,\"measuredOutput\":1400,\"measuredMs\":3300,\"generating\":2,\"deltaMicroUsd\":18003},{\"id\":\"gpt-5.5\",\"sources\":[\"codex\"],\"requests\":1,\"output\":340,\"measuredOutput\":302,\"measuredMs\":820,\"generating\":1,\"deltaMicroUsd\":3000}]}"
+     },
+     "expect": {
+      "status": 401,
+      "code": "signature_invalid"
+     }
+    },
+    {
+     "at": 1792656938,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/reports",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656938",
+       "X-AgentSpeed-Nonce": "7v79K0LuRotG2kWX5o_W9g",
+       "X-AgentSpeed-Signature": "yqOzI9F52cid9p4q9Okw1a_FCQHhmyH5olZl-HM77W3TnMUz08XjlsweWrTtjrvn9tB_nI0XX6ajWOWIotuuJw"
+      },
+      "body": "{\"schema\":1,\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27},\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"小明的 Mac\",\"run\":{\"id\":\"c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f\",\"seq\":49},\"sentAt\":\"2026-10-22T08:15:30.500Z\",\"windowMs\":5000,\"activity\":\"active\",\"live\":{\"outputTokS\":412.6,\"totalTokS\":182340.2,\"estimatedShare\":0.215,\"agents\":{\"generating\":3,\"tools\":1,\"active\":5}},\"peak\":{\"outputTokS\":655.0,\"totalTokS\":240118.7},\"delta\":{\"requests\":4,\"output\":1840,\"input\":912400,\"cachedInput\":880120,\"cacheWriteInput\":12050,\"reasoning\":310,\"measuredOutput\":1702,\"measuredMs\":4120},\"title\":{\"level\":8,\"metric\":\"output\",\"redline\":2000,\"heat\":0.388},\"cost\":{\"liveMicroUsdPerSecond\":4213,\"peakMicroUsdPerSecond\":6120,\"knownShare\":1.0,\"deltaMicroUsd\":21003,\"unpricedRequests\":0,\"priceVersion\":1},\"traffic\":{\"status\":\"ok\",\"includesTools\":true,\"rxBytesPerSecond\":24310,\"txBytesPerSecond\":1288,\"peakRxBytesPerSecond\":61200,\"peakTxBytesPerSecond\":3410,\"rxBytes\":121550,\"txBytes\":6440},\"sources\":[{\"source\":\"codex\",\"live\":{\"outputTokS\":112.2,\"totalTokS\":32120.1,\"estimatedShare\":0.47},\"agents\":{\"generating\":1,\"tools\":0,\"active\":2},\"delta\":{\"requests\":1,\"output\":340,\"input\":112400,\"cachedInput\":100120,\"cacheWriteInput\":0,\"reasoning\":310,\"measuredOutput\":302,\"measuredMs\":820},\"cost\":{\"liveMicroUsdPerSecond\":613,\"knownShare\":1.0,\"deltaMicroUsd\":3000,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":4200,\"txBytesPerSecond\":288,\"rxBytes\":21000,\"txBytes\":1440}},{\"source\":\"claudeCode\",\"live\":{\"outputTokS\":300.4,\"totalTokS\":150220.1,\"estimatedShare\":0.12},\"agents\":{\"generating\":2,\"tools\":1,\"active\":3},\"delta\":{\"requests\":3,\"output\":1500,\"input\":800000,\"cachedInput\":780000,\"cacheWriteInput\":12050,\"reasoning\":0,\"measuredOutput\":1400,\"measuredMs\":3300},\"cost\":{\"liveMicroUsdPerSecond\":3600,\"knownShare\":1.0,\"deltaMicroUsd\":18003,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":20110,\"txBytesPerSecond\":1000,\"rxBytes\":100550,\"txBytes\":5000}}],\"models\":[{\"id\":\"claude-opus-5-5\",\"sources\":[\"claudeCode\"],\"requests\":3,\"output\":1500,\"measuredOutput\":1400,\"measuredMs\":3300,\"generating\":2,\"deltaMicroUsd\":18003},{\"id\":\"gpt-5.5\",\"sources\":[\"codex\"],\"requests\":1,\"output\":340,\"measuredOutput\":302,\"measuredMs\":820,\"generating\":1,\"deltaMicroUsd\":3000}]}"
+     },
+     "expect": {
+      "status": 200,
+      "result": "accepted"
+     }
+    },
+    {
+     "at": 1792656939,
+     "request": {
+      "method": "DELETE",
+      "path": "/agent-speed/v1/devices/6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656939",
+       "X-AgentSpeed-Nonce": "EILh-YgF_Rdhx46Zbx-yRg",
+       "X-AgentSpeed-Signature": "7barSH-TtzHzjK1K8DqVYjDtU6BJblTZ5Ozjky1eedE-JnH_QLdbO6wlCdUnP6LgOFGuNKzC37EwaO23JKuX-w"
+      },
+      "body": ""
+     },
+     "expect": {
+      "status": 200,
+      "result": "deleted"
+     }
+    },
+    {
+     "at": 1792656939,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/reports",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656939",
+       "X-AgentSpeed-Nonce": "pQ6J2bSjBnW-CHMQ4Yro1w",
+       "X-AgentSpeed-Signature": "9ZHAToZvJmnwz-2TouIUQozeM-xSu0BXj_woY_v9d8gnMwNt-7JQrshbo6HXi2X5cmZUeAPRLUs_29nXNyRQBA"
+      },
+      "body": "{\"schema\":1,\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27},\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"小明的 Mac\",\"run\":{\"id\":\"c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f\",\"seq\":50},\"sentAt\":\"2026-10-22T08:15:30.500Z\",\"windowMs\":5000,\"activity\":\"active\",\"live\":{\"outputTokS\":412.6,\"totalTokS\":182340.2,\"estimatedShare\":0.215,\"agents\":{\"generating\":3,\"tools\":1,\"active\":5}},\"peak\":{\"outputTokS\":655.0,\"totalTokS\":240118.7},\"delta\":{\"requests\":4,\"output\":1840,\"input\":912400,\"cachedInput\":880120,\"cacheWriteInput\":12050,\"reasoning\":310,\"measuredOutput\":1702,\"measuredMs\":4120},\"title\":{\"level\":8,\"metric\":\"output\",\"redline\":2000,\"heat\":0.388},\"cost\":{\"liveMicroUsdPerSecond\":4213,\"peakMicroUsdPerSecond\":6120,\"knownShare\":1.0,\"deltaMicroUsd\":21003,\"unpricedRequests\":0,\"priceVersion\":1},\"traffic\":{\"status\":\"ok\",\"includesTools\":true,\"rxBytesPerSecond\":24310,\"txBytesPerSecond\":1288,\"peakRxBytesPerSecond\":61200,\"peakTxBytesPerSecond\":3410,\"rxBytes\":121550,\"txBytes\":6440},\"sources\":[{\"source\":\"codex\",\"live\":{\"outputTokS\":112.2,\"totalTokS\":32120.1,\"estimatedShare\":0.47},\"agents\":{\"generating\":1,\"tools\":0,\"active\":2},\"delta\":{\"requests\":1,\"output\":340,\"input\":112400,\"cachedInput\":100120,\"cacheWriteInput\":0,\"reasoning\":310,\"measuredOutput\":302,\"measuredMs\":820},\"cost\":{\"liveMicroUsdPerSecond\":613,\"knownShare\":1.0,\"deltaMicroUsd\":3000,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":4200,\"txBytesPerSecond\":288,\"rxBytes\":21000,\"txBytes\":1440}},{\"source\":\"claudeCode\",\"live\":{\"outputTokS\":300.4,\"totalTokS\":150220.1,\"estimatedShare\":0.12},\"agents\":{\"generating\":2,\"tools\":1,\"active\":3},\"delta\":{\"requests\":3,\"output\":1500,\"input\":800000,\"cachedInput\":780000,\"cacheWriteInput\":12050,\"reasoning\":0,\"measuredOutput\":1400,\"measuredMs\":3300},\"cost\":{\"liveMicroUsdPerSecond\":3600,\"knownShare\":1.0,\"deltaMicroUsd\":18003,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":20110,\"txBytesPerSecond\":1000,\"rxBytes\":100550,\"txBytes\":5000}}],\"models\":[{\"id\":\"claude-opus-5-5\",\"sources\":[\"claudeCode\"],\"requests\":3,\"output\":1500,\"measuredOutput\":1400,\"measuredMs\":3300,\"generating\":2,\"deltaMicroUsd\":18003},{\"id\":\"gpt-5.5\",\"sources\":[\"codex\"],\"requests\":1,\"output\":340,\"measuredOutput\":302,\"measuredMs\":820,\"generating\":1,\"deltaMicroUsd\":3000}]}"
+     },
+     "expect": {
+      "status": 404,
+      "code": "unknown_device"
+     }
+    },
+    {
+     "at": 1792656940,
+     "request": {
+      "method": "PATCH",
+      "path": "/agent-speed/v1/devices/0b7e4d2c-9a1f-4c3e-b5d6-7e8f9a0b1c2d",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "0b7e4d2c-9a1f-4c3e-b5d6-7e8f9a0b1c2d",
+       "X-AgentSpeed-Timestamp": "1792656940",
+       "X-AgentSpeed-Nonce": "NMqgjRD2JC67hiSOdmNhZA",
+       "X-AgentSpeed-Signature": "8rA4ATU-zgncfxC6HgaAJ2JRbWctzdV-B1Bp0tbdvYLfU1Claoh9PkN2IXXOnYiD9npTcf9oX_lcreB8bqKzgw"
+      },
+      "body": "{\"username\":\"小明的 mac\"}"
+     },
+     "expect": {
+      "status": 200,
+      "result": "updated"
+     }
+    }
+   ]
+  },
+  {
+   "name": "per-device rate limit (policy: burst 3, then one accepted report per 4 s)",
+   "config": {
+    "authority": "api.example.com",
+    "apiPath": "/agent-speed",
+    "policies": {
+     "reportBurst": 3,
+     "reportRefillSeconds": 4,
+     "transfer": true
+    }
+   },
+   "steps": [
+    {
+     "at": 1792656931,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/devices",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656931",
+       "X-AgentSpeed-Nonce": "wCwLll4COr7oCPK1SNjVGQ",
+       "X-AgentSpeed-Signature": "aQyNCvF5dQJ2AKE6wBOOUd4ISVgaUJGcgjqTlZq3zYtFmpLf0JfHGufHC-t1D1gYF6Liz69b8gXB1udfgp9QUg"
+      },
+      "body": "{\"schema\":1,\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"zoe-mbp\",\"publicKey\":{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"U9uFTRUM0eY694W-TjRWmW8h-gmBb93fAR2wRHH_jjs\",\"y\":\"RcPBHtIdL3_F1LjwB0KVVaahaHqwT7bCkjDKfFx9YBA\"},\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27}}"
+     },
+     "expect": {
+      "status": 201,
+      "result": "created"
+     }
+    },
+    {
+     "at": 1792656931,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/reports",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656931",
+       "X-AgentSpeed-Nonce": "fclvd2yEI-V6J4VImj-cQw",
+       "X-AgentSpeed-Signature": "3ReiKFeosnlDbGnXc8Af2dHCSim6TWwbjA088H_-5nnXSUbgz0KMf3BfXFqyDW5FMTn2GzxPBDf8F8dGyUDS2A"
+      },
+      "body": "{\"schema\":1,\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27},\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"zoe-mbp\",\"run\":{\"id\":\"c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f\",\"seq\":42},\"sentAt\":\"2026-10-22T08:15:30.500Z\",\"windowMs\":5000,\"activity\":\"active\",\"live\":{\"outputTokS\":412.6,\"totalTokS\":182340.2,\"estimatedShare\":0.215,\"agents\":{\"generating\":3,\"tools\":1,\"active\":5}},\"peak\":{\"outputTokS\":655.0,\"totalTokS\":240118.7},\"delta\":{\"requests\":4,\"output\":1840,\"input\":912400,\"cachedInput\":880120,\"cacheWriteInput\":12050,\"reasoning\":310,\"measuredOutput\":1702,\"measuredMs\":4120},\"title\":{\"level\":8,\"metric\":\"output\",\"redline\":2000,\"heat\":0.388},\"cost\":{\"liveMicroUsdPerSecond\":4213,\"peakMicroUsdPerSecond\":6120,\"knownShare\":1.0,\"deltaMicroUsd\":21003,\"unpricedRequests\":0,\"priceVersion\":1},\"traffic\":{\"status\":\"ok\",\"includesTools\":true,\"rxBytesPerSecond\":24310,\"txBytesPerSecond\":1288,\"peakRxBytesPerSecond\":61200,\"peakTxBytesPerSecond\":3410,\"rxBytes\":121550,\"txBytes\":6440},\"sources\":[{\"source\":\"codex\",\"live\":{\"outputTokS\":112.2,\"totalTokS\":32120.1,\"estimatedShare\":0.47},\"agents\":{\"generating\":1,\"tools\":0,\"active\":2},\"delta\":{\"requests\":1,\"output\":340,\"input\":112400,\"cachedInput\":100120,\"cacheWriteInput\":0,\"reasoning\":310,\"measuredOutput\":302,\"measuredMs\":820},\"cost\":{\"liveMicroUsdPerSecond\":613,\"knownShare\":1.0,\"deltaMicroUsd\":3000,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":4200,\"txBytesPerSecond\":288,\"rxBytes\":21000,\"txBytes\":1440}},{\"source\":\"claudeCode\",\"live\":{\"outputTokS\":300.4,\"totalTokS\":150220.1,\"estimatedShare\":0.12},\"agents\":{\"generating\":2,\"tools\":1,\"active\":3},\"delta\":{\"requests\":3,\"output\":1500,\"input\":800000,\"cachedInput\":780000,\"cacheWriteInput\":12050,\"reasoning\":0,\"measuredOutput\":1400,\"measuredMs\":3300},\"cost\":{\"liveMicroUsdPerSecond\":3600,\"knownShare\":1.0,\"deltaMicroUsd\":18003,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":20110,\"txBytesPerSecond\":1000,\"rxBytes\":100550,\"txBytes\":5000}}],\"models\":[{\"id\":\"claude-opus-5-5\",\"sources\":[\"claudeCode\"],\"requests\":3,\"output\":1500,\"measuredOutput\":1400,\"measuredMs\":3300,\"generating\":2,\"deltaMicroUsd\":18003},{\"id\":\"gpt-5.5\",\"sources\":[\"codex\"],\"requests\":1,\"output\":340,\"measuredOutput\":302,\"measuredMs\":820,\"generating\":1,\"deltaMicroUsd\":3000}]}"
+     },
+     "expect": {
+      "status": 200,
+      "result": "accepted"
+     }
+    },
+    {
+     "at": 1792656931,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/reports",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656931",
+       "X-AgentSpeed-Nonce": "SBTZIJOsig9KIWOrh97lCQ",
+       "X-AgentSpeed-Signature": "wI7cLsaMIx_SWn9ZMUMJZYsklA_A9KfzJObjffp971d6oxHqK6PlGFtUYRV9DNK2Ff6FQmNwII9Svavy0l9RKg"
+      },
+      "body": "{\"schema\":1,\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27},\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"zoe-mbp\",\"run\":{\"id\":\"c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f\",\"seq\":43},\"sentAt\":\"2026-10-22T08:15:30.500Z\",\"windowMs\":5000,\"activity\":\"active\",\"live\":{\"outputTokS\":412.6,\"totalTokS\":182340.2,\"estimatedShare\":0.215,\"agents\":{\"generating\":3,\"tools\":1,\"active\":5}},\"peak\":{\"outputTokS\":655.0,\"totalTokS\":240118.7},\"delta\":{\"requests\":4,\"output\":1840,\"input\":912400,\"cachedInput\":880120,\"cacheWriteInput\":12050,\"reasoning\":310,\"measuredOutput\":1702,\"measuredMs\":4120},\"title\":{\"level\":8,\"metric\":\"output\",\"redline\":2000,\"heat\":0.388},\"cost\":{\"liveMicroUsdPerSecond\":4213,\"peakMicroUsdPerSecond\":6120,\"knownShare\":1.0,\"deltaMicroUsd\":21003,\"unpricedRequests\":0,\"priceVersion\":1},\"traffic\":{\"status\":\"ok\",\"includesTools\":true,\"rxBytesPerSecond\":24310,\"txBytesPerSecond\":1288,\"peakRxBytesPerSecond\":61200,\"peakTxBytesPerSecond\":3410,\"rxBytes\":121550,\"txBytes\":6440},\"sources\":[{\"source\":\"codex\",\"live\":{\"outputTokS\":112.2,\"totalTokS\":32120.1,\"estimatedShare\":0.47},\"agents\":{\"generating\":1,\"tools\":0,\"active\":2},\"delta\":{\"requests\":1,\"output\":340,\"input\":112400,\"cachedInput\":100120,\"cacheWriteInput\":0,\"reasoning\":310,\"measuredOutput\":302,\"measuredMs\":820},\"cost\":{\"liveMicroUsdPerSecond\":613,\"knownShare\":1.0,\"deltaMicroUsd\":3000,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":4200,\"txBytesPerSecond\":288,\"rxBytes\":21000,\"txBytes\":1440}},{\"source\":\"claudeCode\",\"live\":{\"outputTokS\":300.4,\"totalTokS\":150220.1,\"estimatedShare\":0.12},\"agents\":{\"generating\":2,\"tools\":1,\"active\":3},\"delta\":{\"requests\":3,\"output\":1500,\"input\":800000,\"cachedInput\":780000,\"cacheWriteInput\":12050,\"reasoning\":0,\"measuredOutput\":1400,\"measuredMs\":3300},\"cost\":{\"liveMicroUsdPerSecond\":3600,\"knownShare\":1.0,\"deltaMicroUsd\":18003,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":20110,\"txBytesPerSecond\":1000,\"rxBytes\":100550,\"txBytes\":5000}}],\"models\":[{\"id\":\"claude-opus-5-5\",\"sources\":[\"claudeCode\"],\"requests\":3,\"output\":1500,\"measuredOutput\":1400,\"measuredMs\":3300,\"generating\":2,\"deltaMicroUsd\":18003},{\"id\":\"gpt-5.5\",\"sources\":[\"codex\"],\"requests\":1,\"output\":340,\"measuredOutput\":302,\"measuredMs\":820,\"generating\":1,\"deltaMicroUsd\":3000}]}"
+     },
+     "expect": {
+      "status": 200,
+      "result": "accepted"
+     }
+    },
+    {
+     "at": 1792656931,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/reports",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656931",
+       "X-AgentSpeed-Nonce": "dqgnc0f1JTDhz5eRdaF4mA",
+       "X-AgentSpeed-Signature": "bBHkX_esTRMclTjg9Kzkprcah96wAL6lRoBz1mjNgcVBTOf8vDtI_LlrXZd3HKFNY8Onu03oh5PM4a1BcjiHZA"
+      },
+      "body": "{\"schema\":1,\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27},\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"zoe-mbp\",\"run\":{\"id\":\"c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f\",\"seq\":44},\"sentAt\":\"2026-10-22T08:15:30.500Z\",\"windowMs\":5000,\"activity\":\"active\",\"live\":{\"outputTokS\":412.6,\"totalTokS\":182340.2,\"estimatedShare\":0.215,\"agents\":{\"generating\":3,\"tools\":1,\"active\":5}},\"peak\":{\"outputTokS\":655.0,\"totalTokS\":240118.7},\"delta\":{\"requests\":4,\"output\":1840,\"input\":912400,\"cachedInput\":880120,\"cacheWriteInput\":12050,\"reasoning\":310,\"measuredOutput\":1702,\"measuredMs\":4120},\"title\":{\"level\":8,\"metric\":\"output\",\"redline\":2000,\"heat\":0.388},\"cost\":{\"liveMicroUsdPerSecond\":4213,\"peakMicroUsdPerSecond\":6120,\"knownShare\":1.0,\"deltaMicroUsd\":21003,\"unpricedRequests\":0,\"priceVersion\":1},\"traffic\":{\"status\":\"ok\",\"includesTools\":true,\"rxBytesPerSecond\":24310,\"txBytesPerSecond\":1288,\"peakRxBytesPerSecond\":61200,\"peakTxBytesPerSecond\":3410,\"rxBytes\":121550,\"txBytes\":6440},\"sources\":[{\"source\":\"codex\",\"live\":{\"outputTokS\":112.2,\"totalTokS\":32120.1,\"estimatedShare\":0.47},\"agents\":{\"generating\":1,\"tools\":0,\"active\":2},\"delta\":{\"requests\":1,\"output\":340,\"input\":112400,\"cachedInput\":100120,\"cacheWriteInput\":0,\"reasoning\":310,\"measuredOutput\":302,\"measuredMs\":820},\"cost\":{\"liveMicroUsdPerSecond\":613,\"knownShare\":1.0,\"deltaMicroUsd\":3000,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":4200,\"txBytesPerSecond\":288,\"rxBytes\":21000,\"txBytes\":1440}},{\"source\":\"claudeCode\",\"live\":{\"outputTokS\":300.4,\"totalTokS\":150220.1,\"estimatedShare\":0.12},\"agents\":{\"generating\":2,\"tools\":1,\"active\":3},\"delta\":{\"requests\":3,\"output\":1500,\"input\":800000,\"cachedInput\":780000,\"cacheWriteInput\":12050,\"reasoning\":0,\"measuredOutput\":1400,\"measuredMs\":3300},\"cost\":{\"liveMicroUsdPerSecond\":3600,\"knownShare\":1.0,\"deltaMicroUsd\":18003,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":20110,\"txBytesPerSecond\":1000,\"rxBytes\":100550,\"txBytes\":5000}}],\"models\":[{\"id\":\"claude-opus-5-5\",\"sources\":[\"claudeCode\"],\"requests\":3,\"output\":1500,\"measuredOutput\":1400,\"measuredMs\":3300,\"generating\":2,\"deltaMicroUsd\":18003},{\"id\":\"gpt-5.5\",\"sources\":[\"codex\"],\"requests\":1,\"output\":340,\"measuredOutput\":302,\"measuredMs\":820,\"generating\":1,\"deltaMicroUsd\":3000}]}"
+     },
+     "expect": {
+      "status": 200,
+      "result": "accepted"
+     }
+    },
+    {
+     "at": 1792656931,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/reports",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656931",
+       "X-AgentSpeed-Nonce": "SGusxcLYpxpz1Rv45SLeqg",
+       "X-AgentSpeed-Signature": "EbaV9X0ZxMPGNU4Z23uqgzDiTF8nTXH2_1KIJNC2WXIoIaVgg2Sk_ZsMLV_RhQAzLiTHBP8J8W1mz_smNecnBQ"
+      },
+      "body": "{\"schema\":1,\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27},\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"zoe-mbp\",\"run\":{\"id\":\"c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f\",\"seq\":45},\"sentAt\":\"2026-10-22T08:15:30.500Z\",\"windowMs\":5000,\"activity\":\"active\",\"live\":{\"outputTokS\":412.6,\"totalTokS\":182340.2,\"estimatedShare\":0.215,\"agents\":{\"generating\":3,\"tools\":1,\"active\":5}},\"peak\":{\"outputTokS\":655.0,\"totalTokS\":240118.7},\"delta\":{\"requests\":4,\"output\":1840,\"input\":912400,\"cachedInput\":880120,\"cacheWriteInput\":12050,\"reasoning\":310,\"measuredOutput\":1702,\"measuredMs\":4120},\"title\":{\"level\":8,\"metric\":\"output\",\"redline\":2000,\"heat\":0.388},\"cost\":{\"liveMicroUsdPerSecond\":4213,\"peakMicroUsdPerSecond\":6120,\"knownShare\":1.0,\"deltaMicroUsd\":21003,\"unpricedRequests\":0,\"priceVersion\":1},\"traffic\":{\"status\":\"ok\",\"includesTools\":true,\"rxBytesPerSecond\":24310,\"txBytesPerSecond\":1288,\"peakRxBytesPerSecond\":61200,\"peakTxBytesPerSecond\":3410,\"rxBytes\":121550,\"txBytes\":6440},\"sources\":[{\"source\":\"codex\",\"live\":{\"outputTokS\":112.2,\"totalTokS\":32120.1,\"estimatedShare\":0.47},\"agents\":{\"generating\":1,\"tools\":0,\"active\":2},\"delta\":{\"requests\":1,\"output\":340,\"input\":112400,\"cachedInput\":100120,\"cacheWriteInput\":0,\"reasoning\":310,\"measuredOutput\":302,\"measuredMs\":820},\"cost\":{\"liveMicroUsdPerSecond\":613,\"knownShare\":1.0,\"deltaMicroUsd\":3000,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":4200,\"txBytesPerSecond\":288,\"rxBytes\":21000,\"txBytes\":1440}},{\"source\":\"claudeCode\",\"live\":{\"outputTokS\":300.4,\"totalTokS\":150220.1,\"estimatedShare\":0.12},\"agents\":{\"generating\":2,\"tools\":1,\"active\":3},\"delta\":{\"requests\":3,\"output\":1500,\"input\":800000,\"cachedInput\":780000,\"cacheWriteInput\":12050,\"reasoning\":0,\"measuredOutput\":1400,\"measuredMs\":3300},\"cost\":{\"liveMicroUsdPerSecond\":3600,\"knownShare\":1.0,\"deltaMicroUsd\":18003,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":20110,\"txBytesPerSecond\":1000,\"rxBytes\":100550,\"txBytes\":5000}}],\"models\":[{\"id\":\"claude-opus-5-5\",\"sources\":[\"claudeCode\"],\"requests\":3,\"output\":1500,\"measuredOutput\":1400,\"measuredMs\":3300,\"generating\":2,\"deltaMicroUsd\":18003},{\"id\":\"gpt-5.5\",\"sources\":[\"codex\"],\"requests\":1,\"output\":340,\"measuredOutput\":302,\"measuredMs\":820,\"generating\":1,\"deltaMicroUsd\":3000}]}"
+     },
+     "expect": {
+      "status": 429,
+      "code": "rate_limited"
+     }
+    },
+    {
+     "at": 1792656935,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/reports",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656935",
+       "X-AgentSpeed-Nonce": "PFZhl0lCN5YUuUPQWT5KXg",
+       "X-AgentSpeed-Signature": "ovbZxjdnEZT0Gq9cm0FusKag5s9wezQ91lqer0vKJfcy5PeXpeukXLlf79HzoYftUeSq2R1PxHnMAt-sSeLq7w"
+      },
+      "body": "{\"schema\":1,\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27},\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"zoe-mbp\",\"run\":{\"id\":\"c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f\",\"seq\":46},\"sentAt\":\"2026-10-22T08:15:30.500Z\",\"windowMs\":5000,\"activity\":\"active\",\"live\":{\"outputTokS\":412.6,\"totalTokS\":182340.2,\"estimatedShare\":0.215,\"agents\":{\"generating\":3,\"tools\":1,\"active\":5}},\"peak\":{\"outputTokS\":655.0,\"totalTokS\":240118.7},\"delta\":{\"requests\":4,\"output\":1840,\"input\":912400,\"cachedInput\":880120,\"cacheWriteInput\":12050,\"reasoning\":310,\"measuredOutput\":1702,\"measuredMs\":4120},\"title\":{\"level\":8,\"metric\":\"output\",\"redline\":2000,\"heat\":0.388},\"cost\":{\"liveMicroUsdPerSecond\":4213,\"peakMicroUsdPerSecond\":6120,\"knownShare\":1.0,\"deltaMicroUsd\":21003,\"unpricedRequests\":0,\"priceVersion\":1},\"traffic\":{\"status\":\"ok\",\"includesTools\":true,\"rxBytesPerSecond\":24310,\"txBytesPerSecond\":1288,\"peakRxBytesPerSecond\":61200,\"peakTxBytesPerSecond\":3410,\"rxBytes\":121550,\"txBytes\":6440},\"sources\":[{\"source\":\"codex\",\"live\":{\"outputTokS\":112.2,\"totalTokS\":32120.1,\"estimatedShare\":0.47},\"agents\":{\"generating\":1,\"tools\":0,\"active\":2},\"delta\":{\"requests\":1,\"output\":340,\"input\":112400,\"cachedInput\":100120,\"cacheWriteInput\":0,\"reasoning\":310,\"measuredOutput\":302,\"measuredMs\":820},\"cost\":{\"liveMicroUsdPerSecond\":613,\"knownShare\":1.0,\"deltaMicroUsd\":3000,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":4200,\"txBytesPerSecond\":288,\"rxBytes\":21000,\"txBytes\":1440}},{\"source\":\"claudeCode\",\"live\":{\"outputTokS\":300.4,\"totalTokS\":150220.1,\"estimatedShare\":0.12},\"agents\":{\"generating\":2,\"tools\":1,\"active\":3},\"delta\":{\"requests\":3,\"output\":1500,\"input\":800000,\"cachedInput\":780000,\"cacheWriteInput\":12050,\"reasoning\":0,\"measuredOutput\":1400,\"measuredMs\":3300},\"cost\":{\"liveMicroUsdPerSecond\":3600,\"knownShare\":1.0,\"deltaMicroUsd\":18003,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":20110,\"txBytesPerSecond\":1000,\"rxBytes\":100550,\"txBytes\":5000}}],\"models\":[{\"id\":\"claude-opus-5-5\",\"sources\":[\"claudeCode\"],\"requests\":3,\"output\":1500,\"measuredOutput\":1400,\"measuredMs\":3300,\"generating\":2,\"deltaMicroUsd\":18003},{\"id\":\"gpt-5.5\",\"sources\":[\"codex\"],\"requests\":1,\"output\":340,\"measuredOutput\":302,\"measuredMs\":820,\"generating\":1,\"deltaMicroUsd\":3000}]}"
+     },
+     "expect": {
+      "status": 200,
+      "result": "accepted"
+     }
+    }
+   ]
+  },
+  {
+   "name": "API key required; a device is bound to its account; an explicit transfer moves the username (policy: transfer allowed)",
+   "config": {
+    "authority": "api.example.com",
+    "apiPath": "/agent-speed",
+    "policies": {
+     "reportBurst": 3,
+     "reportRefillSeconds": 4,
+     "transfer": true
+    },
+    "apiKey": "required",
+    "apiKeys": [
+     "test-key-123456",
+     "test-key-654321"
+    ]
+   },
+   "steps": [
+    {
+     "at": 1792656931,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/devices",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656931",
+       "X-AgentSpeed-Nonce": "arnx6499M4j0-dWG9m6Z_Q",
+       "X-AgentSpeed-Signature": "b1WDQ3s_O6gkmSUT32TKX07_nWm6VEalTqVV10r1S6U59tLWAjO3eJduuLjPtNBrF6S7_kX-dHK1Wn0LMrq5sw"
+      },
+      "body": "{\"schema\":1,\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"zoe-mbp\",\"publicKey\":{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"U9uFTRUM0eY694W-TjRWmW8h-gmBb93fAR2wRHH_jjs\",\"y\":\"RcPBHtIdL3_F1LjwB0KVVaahaHqwT7bCkjDKfFx9YBA\"},\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27}}"
+     },
+     "expect": {
+      "status": 401,
+      "code": "api_key_required"
+     }
+    },
+    {
+     "at": 1792656931,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/devices",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656931",
+       "X-AgentSpeed-Nonce": "AV9-a8Wur0g3JAieklLMEw",
+       "X-AgentSpeed-Signature": "4VBJvAcwPHbywQWUitlvl2gXREh57Q74raGce1yiBXyJa_a5a-pCOjCamMnoXTrmqL-qIk0QIq8XApzZmShMFw",
+       "Authorization": "Bearer wrong-key-000"
+      },
+      "body": "{\"schema\":1,\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"zoe-mbp\",\"publicKey\":{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"U9uFTRUM0eY694W-TjRWmW8h-gmBb93fAR2wRHH_jjs\",\"y\":\"RcPBHtIdL3_F1LjwB0KVVaahaHqwT7bCkjDKfFx9YBA\"},\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27}}"
+     },
+     "expect": {
+      "status": 401,
+      "code": "api_key_invalid"
+     }
+    },
+    {
+     "at": 1792656931,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/devices",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656931",
+       "X-AgentSpeed-Nonce": "L1BSyf0VsZoYxYTQE2NWgQ",
+       "X-AgentSpeed-Signature": "_0miILNLNCJxwOEC5c5YkBMs9jHzNohsODhtkggrHeiS8J3RaJ-hn1kYzQePrVCT3TQUeNHIWrkDUBykpBfepQ",
+       "Authorization": "Bearer test-key-123456"
+      },
+      "body": "{\"schema\":1,\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"zoe-mbp\",\"publicKey\":{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"U9uFTRUM0eY694W-TjRWmW8h-gmBb93fAR2wRHH_jjs\",\"y\":\"RcPBHtIdL3_F1LjwB0KVVaahaHqwT7bCkjDKfFx9YBA\"},\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27}}"
+     },
+     "expect": {
+      "status": 201,
+      "result": "created"
+     }
+    },
+    {
+     "at": 1792656931,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/devices",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "0b7e4d2c-9a1f-4c3e-b5d6-7e8f9a0b1c2d",
+       "X-AgentSpeed-Timestamp": "1792656931",
+       "X-AgentSpeed-Nonce": "lAkd1koh_-lCFLxtF97rQw",
+       "X-AgentSpeed-Signature": "dMrClNVbtTBf0s8wDIxy4mhwKHr0UVbCmYA_Aqnjj55KVFmodN68YtJRWq1MKUHwmiGsKnV1mwetcKgqR0-3xA",
+       "Authorization": "Bearer test-key-123456"
+      },
+      "body": "{\"schema\":1,\"deviceId\":\"0b7e4d2c-9a1f-4c3e-b5d6-7e8f9a0b1c2d\",\"username\":\"zoe-mbp\",\"publicKey\":{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"o9KW1XWzkAdbsLxejQRD_x4qHvG4M1FPIANHqIR5G74\",\"y\":\"JJSKH8EjyqcTo77WUhxuFRMfUDPgRJs4enJXkoj6Ssg\"},\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27}}"
+     },
+     "expect": {
+      "status": 409,
+      "code": "username_taken"
+     }
+    },
+    {
+     "at": 1792656931,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/devices",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "0b7e4d2c-9a1f-4c3e-b5d6-7e8f9a0b1c2d",
+       "X-AgentSpeed-Timestamp": "1792656931",
+       "X-AgentSpeed-Nonce": "iNv2EpcsWUosL23eST7xxA",
+       "X-AgentSpeed-Signature": "NXXSXsW-g9YYf6TnpbOMw5eIXJOl5717twkDJ9lcbzmEOlTk4UpZtTRXjX1lUvbe5Wl3K-6c7FKxf4akAkD2Wg",
+       "Authorization": "Bearer test-key-123456"
+      },
+      "body": "{\"schema\":1,\"deviceId\":\"0b7e4d2c-9a1f-4c3e-b5d6-7e8f9a0b1c2d\",\"username\":\"zoe-mbp\",\"publicKey\":{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"o9KW1XWzkAdbsLxejQRD_x4qHvG4M1FPIANHqIR5G74\",\"y\":\"JJSKH8EjyqcTo77WUhxuFRMfUDPgRJs4enJXkoj6Ssg\"},\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27},\"transfer\":true}"
+     },
+     "expect": {
+      "status": 201,
+      "result": "created",
+      "transferred": true
+     }
+    },
+    {
+     "at": 1792656931,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/reports",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656931",
+       "X-AgentSpeed-Nonce": "HZKtS2mH-gNHzF0vts-eRw",
+       "X-AgentSpeed-Signature": "MXuOFMHxK98K0TMD8vQmHH189K1IyQjCN9JBNMqz-xpAZH2KDp6KSc8JevSiWLXsxhjfWNyrI88JSTlPb78WRg",
+       "Authorization": "Bearer test-key-123456"
+      },
+      "body": "{\"schema\":1,\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27},\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"zoe-mbp\",\"run\":{\"id\":\"c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f\",\"seq\":42},\"sentAt\":\"2026-10-22T08:15:30.500Z\",\"windowMs\":5000,\"activity\":\"active\",\"live\":{\"outputTokS\":412.6,\"totalTokS\":182340.2,\"estimatedShare\":0.215,\"agents\":{\"generating\":3,\"tools\":1,\"active\":5}},\"peak\":{\"outputTokS\":655.0,\"totalTokS\":240118.7},\"delta\":{\"requests\":4,\"output\":1840,\"input\":912400,\"cachedInput\":880120,\"cacheWriteInput\":12050,\"reasoning\":310,\"measuredOutput\":1702,\"measuredMs\":4120},\"title\":{\"level\":8,\"metric\":\"output\",\"redline\":2000,\"heat\":0.388},\"cost\":{\"liveMicroUsdPerSecond\":4213,\"peakMicroUsdPerSecond\":6120,\"knownShare\":1.0,\"deltaMicroUsd\":21003,\"unpricedRequests\":0,\"priceVersion\":1},\"traffic\":{\"status\":\"ok\",\"includesTools\":true,\"rxBytesPerSecond\":24310,\"txBytesPerSecond\":1288,\"peakRxBytesPerSecond\":61200,\"peakTxBytesPerSecond\":3410,\"rxBytes\":121550,\"txBytes\":6440},\"sources\":[{\"source\":\"codex\",\"live\":{\"outputTokS\":112.2,\"totalTokS\":32120.1,\"estimatedShare\":0.47},\"agents\":{\"generating\":1,\"tools\":0,\"active\":2},\"delta\":{\"requests\":1,\"output\":340,\"input\":112400,\"cachedInput\":100120,\"cacheWriteInput\":0,\"reasoning\":310,\"measuredOutput\":302,\"measuredMs\":820},\"cost\":{\"liveMicroUsdPerSecond\":613,\"knownShare\":1.0,\"deltaMicroUsd\":3000,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":4200,\"txBytesPerSecond\":288,\"rxBytes\":21000,\"txBytes\":1440}},{\"source\":\"claudeCode\",\"live\":{\"outputTokS\":300.4,\"totalTokS\":150220.1,\"estimatedShare\":0.12},\"agents\":{\"generating\":2,\"tools\":1,\"active\":3},\"delta\":{\"requests\":3,\"output\":1500,\"input\":800000,\"cachedInput\":780000,\"cacheWriteInput\":12050,\"reasoning\":0,\"measuredOutput\":1400,\"measuredMs\":3300},\"cost\":{\"liveMicroUsdPerSecond\":3600,\"knownShare\":1.0,\"deltaMicroUsd\":18003,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":20110,\"txBytesPerSecond\":1000,\"rxBytes\":100550,\"txBytes\":5000}}],\"models\":[{\"id\":\"claude-opus-5-5\",\"sources\":[\"claudeCode\"],\"requests\":3,\"output\":1500,\"measuredOutput\":1400,\"measuredMs\":3300,\"generating\":2,\"deltaMicroUsd\":18003},{\"id\":\"gpt-5.5\",\"sources\":[\"codex\"],\"requests\":1,\"output\":340,\"measuredOutput\":302,\"measuredMs\":820,\"generating\":1,\"deltaMicroUsd\":3000}]}"
+     },
+     "expect": {
+      "status": 404,
+      "code": "unknown_device"
+     }
+    },
+    {
+     "at": 1792656931,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/reports",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "0b7e4d2c-9a1f-4c3e-b5d6-7e8f9a0b1c2d",
+       "X-AgentSpeed-Timestamp": "1792656931",
+       "X-AgentSpeed-Nonce": "-4SMmbmkPseGaiPqAAwZOQ",
+       "X-AgentSpeed-Signature": "4T5YzHCnKGFw5VOQiPing5q2YD-twP9VlO4MuVIE6pGWFN4RMZ2USSYjox6Pa8KFD8_LhXMDGG70PLiPHVmYWA",
+       "Authorization": "Bearer test-key-654321"
+      },
+      "body": "{\"schema\":1,\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27},\"deviceId\":\"0b7e4d2c-9a1f-4c3e-b5d6-7e8f9a0b1c2d\",\"username\":\"zoe-mbp\",\"run\":{\"id\":\"c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f\",\"seq\":42},\"sentAt\":\"2026-10-22T08:15:30.500Z\",\"windowMs\":5000,\"activity\":\"active\",\"live\":{\"outputTokS\":412.6,\"totalTokS\":182340.2,\"estimatedShare\":0.215,\"agents\":{\"generating\":3,\"tools\":1,\"active\":5}},\"peak\":{\"outputTokS\":655.0,\"totalTokS\":240118.7},\"delta\":{\"requests\":4,\"output\":1840,\"input\":912400,\"cachedInput\":880120,\"cacheWriteInput\":12050,\"reasoning\":310,\"measuredOutput\":1702,\"measuredMs\":4120},\"title\":{\"level\":8,\"metric\":\"output\",\"redline\":2000,\"heat\":0.388},\"cost\":{\"liveMicroUsdPerSecond\":4213,\"peakMicroUsdPerSecond\":6120,\"knownShare\":1.0,\"deltaMicroUsd\":21003,\"unpricedRequests\":0,\"priceVersion\":1},\"traffic\":{\"status\":\"ok\",\"includesTools\":true,\"rxBytesPerSecond\":24310,\"txBytesPerSecond\":1288,\"peakRxBytesPerSecond\":61200,\"peakTxBytesPerSecond\":3410,\"rxBytes\":121550,\"txBytes\":6440},\"sources\":[{\"source\":\"codex\",\"live\":{\"outputTokS\":112.2,\"totalTokS\":32120.1,\"estimatedShare\":0.47},\"agents\":{\"generating\":1,\"tools\":0,\"active\":2},\"delta\":{\"requests\":1,\"output\":340,\"input\":112400,\"cachedInput\":100120,\"cacheWriteInput\":0,\"reasoning\":310,\"measuredOutput\":302,\"measuredMs\":820},\"cost\":{\"liveMicroUsdPerSecond\":613,\"knownShare\":1.0,\"deltaMicroUsd\":3000,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":4200,\"txBytesPerSecond\":288,\"rxBytes\":21000,\"txBytes\":1440}},{\"source\":\"claudeCode\",\"live\":{\"outputTokS\":300.4,\"totalTokS\":150220.1,\"estimatedShare\":0.12},\"agents\":{\"generating\":2,\"tools\":1,\"active\":3},\"delta\":{\"requests\":3,\"output\":1500,\"input\":800000,\"cachedInput\":780000,\"cacheWriteInput\":12050,\"reasoning\":0,\"measuredOutput\":1400,\"measuredMs\":3300},\"cost\":{\"liveMicroUsdPerSecond\":3600,\"knownShare\":1.0,\"deltaMicroUsd\":18003,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":20110,\"txBytesPerSecond\":1000,\"rxBytes\":100550,\"txBytes\":5000}}],\"models\":[{\"id\":\"claude-opus-5-5\",\"sources\":[\"claudeCode\"],\"requests\":3,\"output\":1500,\"measuredOutput\":1400,\"measuredMs\":3300,\"generating\":2,\"deltaMicroUsd\":18003},{\"id\":\"gpt-5.5\",\"sources\":[\"codex\"],\"requests\":1,\"output\":340,\"measuredOutput\":302,\"measuredMs\":820,\"generating\":1,\"deltaMicroUsd\":3000}]}"
+     },
+     "expect": {
+      "status": 401,
+      "code": "api_key_invalid"
+     }
+    },
+    {
+     "at": 1792656931,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/reports",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "0b7e4d2c-9a1f-4c3e-b5d6-7e8f9a0b1c2d",
+       "X-AgentSpeed-Timestamp": "1792656931",
+       "X-AgentSpeed-Nonce": "Wj34nae_I9cexj8RHZFxww",
+       "X-AgentSpeed-Signature": "y6KwiEWLNPSIAvBuGX2nl5i33qkAG8C2pygr8mGv-uuoF4VlNCt2I6fJgzG58xXcAulLQDJ5D1ZsEo25xuHnjA",
+       "Authorization": "Bearer test-key-123456"
+      },
+      "body": "{\"schema\":1,\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27},\"deviceId\":\"0b7e4d2c-9a1f-4c3e-b5d6-7e8f9a0b1c2d\",\"username\":\"zoe-mbp\",\"run\":{\"id\":\"c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f\",\"seq\":42},\"sentAt\":\"2026-10-22T08:15:30.500Z\",\"windowMs\":5000,\"activity\":\"active\",\"live\":{\"outputTokS\":412.6,\"totalTokS\":182340.2,\"estimatedShare\":0.215,\"agents\":{\"generating\":3,\"tools\":1,\"active\":5}},\"peak\":{\"outputTokS\":655.0,\"totalTokS\":240118.7},\"delta\":{\"requests\":4,\"output\":1840,\"input\":912400,\"cachedInput\":880120,\"cacheWriteInput\":12050,\"reasoning\":310,\"measuredOutput\":1702,\"measuredMs\":4120},\"title\":{\"level\":8,\"metric\":\"output\",\"redline\":2000,\"heat\":0.388},\"cost\":{\"liveMicroUsdPerSecond\":4213,\"peakMicroUsdPerSecond\":6120,\"knownShare\":1.0,\"deltaMicroUsd\":21003,\"unpricedRequests\":0,\"priceVersion\":1},\"traffic\":{\"status\":\"ok\",\"includesTools\":true,\"rxBytesPerSecond\":24310,\"txBytesPerSecond\":1288,\"peakRxBytesPerSecond\":61200,\"peakTxBytesPerSecond\":3410,\"rxBytes\":121550,\"txBytes\":6440},\"sources\":[{\"source\":\"codex\",\"live\":{\"outputTokS\":112.2,\"totalTokS\":32120.1,\"estimatedShare\":0.47},\"agents\":{\"generating\":1,\"tools\":0,\"active\":2},\"delta\":{\"requests\":1,\"output\":340,\"input\":112400,\"cachedInput\":100120,\"cacheWriteInput\":0,\"reasoning\":310,\"measuredOutput\":302,\"measuredMs\":820},\"cost\":{\"liveMicroUsdPerSecond\":613,\"knownShare\":1.0,\"deltaMicroUsd\":3000,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":4200,\"txBytesPerSecond\":288,\"rxBytes\":21000,\"txBytes\":1440}},{\"source\":\"claudeCode\",\"live\":{\"outputTokS\":300.4,\"totalTokS\":150220.1,\"estimatedShare\":0.12},\"agents\":{\"generating\":2,\"tools\":1,\"active\":3},\"delta\":{\"requests\":3,\"output\":1500,\"input\":800000,\"cachedInput\":780000,\"cacheWriteInput\":12050,\"reasoning\":0,\"measuredOutput\":1400,\"measuredMs\":3300},\"cost\":{\"liveMicroUsdPerSecond\":3600,\"knownShare\":1.0,\"deltaMicroUsd\":18003,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":20110,\"txBytesPerSecond\":1000,\"rxBytes\":100550,\"txBytes\":5000}}],\"models\":[{\"id\":\"claude-opus-5-5\",\"sources\":[\"claudeCode\"],\"requests\":3,\"output\":1500,\"measuredOutput\":1400,\"measuredMs\":3300,\"generating\":2,\"deltaMicroUsd\":18003},{\"id\":\"gpt-5.5\",\"sources\":[\"codex\"],\"requests\":1,\"output\":340,\"measuredOutput\":302,\"measuredMs\":820,\"generating\":1,\"deltaMicroUsd\":3000}]}"
+     },
+     "expect": {
+      "status": 200,
+      "result": "accepted"
+     }
+    }
+   ]
+  },
+  {
+   "name": "body size limit; unknown fields are ignored",
+   "config": {
+    "authority": "api.example.com",
+    "apiPath": "/agent-speed",
+    "policies": {
+     "reportBurst": 3,
+     "reportRefillSeconds": 4,
+     "transfer": true
+    }
+   },
+   "steps": [
+    {
+     "at": 1792656931,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/devices",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656931",
+       "X-AgentSpeed-Nonce": "RLpVTheXezFBPVMeCqTgLg",
+       "X-AgentSpeed-Signature": "7RAbbyG4Vt-t4nzOVYx-nYOIKtmmuT2uaHIUrspI0_s_4nbgKlervZkekd8ZBmIcf-0EzjneFeLbaSbCmCNQhQ"
+      },
+      "body": "{\"schema\":1,\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"zoe-mbp\",\"publicKey\":{\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"U9uFTRUM0eY694W-TjRWmW8h-gmBb93fAR2wRHH_jjs\",\"y\":\"RcPBHtIdL3_F1LjwB0KVVaahaHqwT7bCkjDKfFx9YBA\"},\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27}}"
+     },
+     "expect": {
+      "status": 201,
+      "result": "created"
+     }
+    },
+    {
+     "at": 1792656931,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/reports",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656931",
+       "X-AgentSpeed-Nonce": "PEF7fqVnwxFd7r7XMZ3lbA",
+       "X-AgentSpeed-Signature": "pKzdCMIRbRoFbBIK1Iqsi2F8ZI00h5LRKHu0HjBZQmx1aHMkkxTONQng6-3I7f1nyY2-ec9eCy1I0N73N5jtOg"
+      },
+      "body": "{\"schema\":1,\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27},\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"zoe-mbp\",\"run\":{\"id\":\"c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f\",\"seq\":42},\"sentAt\":\"2026-10-22T08:15:30.500Z\",\"windowMs\":5000,\"activity\":\"active\",\"live\":{\"outputTokS\":412.6,\"totalTokS\":182340.2,\"estimatedShare\":0.215,\"agents\":{\"generating\":3,\"tools\":1,\"active\":5}},\"peak\":{\"outputTokS\":655.0,\"totalTokS\":240118.7},\"delta\":{\"requests\":4,\"output\":1840,\"input\":912400,\"cachedInput\":880120,\"cacheWriteInput\":12050,\"reasoning\":310,\"measuredOutput\":1702,\"measuredMs\":4120},\"title\":{\"level\":8,\"metric\":\"output\",\"redline\":2000,\"heat\":0.388},\"cost\":{\"liveMicroUsdPerSecond\":4213,\"peakMicroUsdPerSecond\":6120,\"knownShare\":1.0,\"deltaMicroUsd\":21003,\"unpricedRequests\":0,\"priceVersion\":1},\"traffic\":{\"status\":\"ok\",\"includesTools\":true,\"rxBytesPerSecond\":24310,\"txBytesPerSecond\":1288,\"peakRxBytesPerSecond\":61200,\"peakTxBytesPerSecond\":3410,\"rxBytes\":121550,\"txBytes\":6440},\"sources\":[{\"source\":\"codex\",\"live\":{\"outputTokS\":112.2,\"totalTokS\":32120.1,\"estimatedShare\":0.47},\"agents\":{\"generating\":1,\"tools\":0,\"active\":2},\"delta\":{\"requests\":1,\"output\":340,\"input\":112400,\"cachedInput\":100120,\"cacheWriteInput\":0,\"reasoning\":310,\"measuredOutput\":302,\"measuredMs\":820},\"cost\":{\"liveMicroUsdPerSecond\":613,\"knownShare\":1.0,\"deltaMicroUsd\":3000,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":4200,\"txBytesPerSecond\":288,\"rxBytes\":21000,\"txBytes\":1440}},{\"source\":\"claudeCode\",\"live\":{\"outputTokS\":300.4,\"totalTokS\":150220.1,\"estimatedShare\":0.12},\"agents\":{\"generating\":2,\"tools\":1,\"active\":3},\"delta\":{\"requests\":3,\"output\":1500,\"input\":800000,\"cachedInput\":780000,\"cacheWriteInput\":12050,\"reasoning\":0,\"measuredOutput\":1400,\"measuredMs\":3300},\"cost\":{\"liveMicroUsdPerSecond\":3600,\"knownShare\":1.0,\"deltaMicroUsd\":18003,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":20110,\"txBytesPerSecond\":1000,\"rxBytes\":100550,\"txBytes\":5000}}],\"models\":[{\"id\":\"claude-opus-5-5\",\"sources\":[\"claudeCode\"],\"requests\":3,\"output\":1500,\"measuredOutput\":1400,\"measuredMs\":3300,\"generating\":2,\"deltaMicroUsd\":18003},{\"id\":\"gpt-5.5\",\"sources\":[\"codex\"],\"requests\":1,\"output\":340,\"measuredOutput\":302,\"measuredMs\":820,\"generating\":1,\"deltaMicroUsd\":3000}],\"padding\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}"
+     },
+     "expect": {
+      "status": 413,
+      "code": "payload_too_large"
+     }
+    },
+    {
+     "at": 1792656931,
+     "request": {
+      "method": "POST",
+      "path": "/agent-speed/v1/reports",
+      "headers": {
+       "User-Agent": "AgentSpeed/1.3.0 (macOS)",
+       "Accept": "application/json",
+       "Content-Type": "application/json",
+       "X-AgentSpeed-Device": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+       "X-AgentSpeed-Timestamp": "1792656931",
+       "X-AgentSpeed-Nonce": "R9FgfvyS5OO3Zb5lx-wqwA",
+       "X-AgentSpeed-Signature": "GMCoAp-lYijOZps7gEE5SGkAXfVDI4J72rLiLGTXQESxJgfL5xOcwQBaDmHMIf0Q2SGjm11qt4XDypDau6Y1FA"
+      },
+      "body": "{\"schema\":1,\"client\":{\"app\":\"AgentSpeed\",\"version\":\"1.3.0\",\"platform\":\"macOS\",\"osMajor\":27},\"deviceId\":\"6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b\",\"username\":\"zoe-mbp\",\"run\":{\"id\":\"c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e6f\",\"seq\":42},\"sentAt\":\"2026-10-22T08:15:30.500Z\",\"windowMs\":5000,\"activity\":\"active\",\"live\":{\"outputTokS\":412.6,\"totalTokS\":182340.2,\"estimatedShare\":0.215,\"agents\":{\"generating\":3,\"tools\":1,\"active\":5}},\"peak\":{\"outputTokS\":655.0,\"totalTokS\":240118.7},\"delta\":{\"requests\":4,\"output\":1840,\"input\":912400,\"cachedInput\":880120,\"cacheWriteInput\":12050,\"reasoning\":310,\"measuredOutput\":1702,\"measuredMs\":4120},\"title\":{\"level\":8,\"metric\":\"output\",\"redline\":2000,\"heat\":0.388},\"cost\":{\"liveMicroUsdPerSecond\":4213,\"peakMicroUsdPerSecond\":6120,\"knownShare\":1.0,\"deltaMicroUsd\":21003,\"unpricedRequests\":0,\"priceVersion\":1},\"traffic\":{\"status\":\"ok\",\"includesTools\":true,\"rxBytesPerSecond\":24310,\"txBytesPerSecond\":1288,\"peakRxBytesPerSecond\":61200,\"peakTxBytesPerSecond\":3410,\"rxBytes\":121550,\"txBytes\":6440},\"sources\":[{\"source\":\"codex\",\"live\":{\"outputTokS\":112.2,\"totalTokS\":32120.1,\"estimatedShare\":0.47},\"agents\":{\"generating\":1,\"tools\":0,\"active\":2},\"delta\":{\"requests\":1,\"output\":340,\"input\":112400,\"cachedInput\":100120,\"cacheWriteInput\":0,\"reasoning\":310,\"measuredOutput\":302,\"measuredMs\":820},\"cost\":{\"liveMicroUsdPerSecond\":613,\"knownShare\":1.0,\"deltaMicroUsd\":3000,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":4200,\"txBytesPerSecond\":288,\"rxBytes\":21000,\"txBytes\":1440}},{\"source\":\"claudeCode\",\"live\":{\"outputTokS\":300.4,\"totalTokS\":150220.1,\"estimatedShare\":0.12},\"agents\":{\"generating\":2,\"tools\":1,\"active\":3},\"delta\":{\"requests\":3,\"output\":1500,\"input\":800000,\"cachedInput\":780000,\"cacheWriteInput\":12050,\"reasoning\":0,\"measuredOutput\":1400,\"measuredMs\":3300},\"cost\":{\"liveMicroUsdPerSecond\":3600,\"knownShare\":1.0,\"deltaMicroUsd\":18003,\"unpricedRequests\":0},\"traffic\":{\"rxBytesPerSecond\":20110,\"txBytesPerSecond\":1000,\"rxBytes\":100550,\"txBytes\":5000}}],\"models\":[{\"id\":\"claude-opus-5-5\",\"sources\":[\"claudeCode\"],\"requests\":3,\"output\":1500,\"measuredOutput\":1400,\"measuredMs\":3300,\"generating\":2,\"deltaMicroUsd\":18003},{\"id\":\"gpt-5.5\",\"sources\":[\"codex\"],\"requests\":1,\"output\":340,\"measuredOutput\":302,\"measuredMs\":820,\"generating\":1,\"deltaMicroUsd\":3000}],\"futureField\":{\"a\":1}}"
+     },
+     "expect": {
+      "status": 200,
+      "result": "accepted"
+     }
+    }
+   ]
+  }
+ ],
+ "usernames": {
+  "rules": {
+   "default": {
+    "minLength": 2,
+    "maxLength": 32,
+    "charset": "unicode",
+    "spaces": true
+   },
+   "strict": {
+    "minLength": 3,
+    "maxLength": 16,
+    "charset": "ascii",
+    "spaces": false
+   }
+  },
+  "validate": [
+   {
+    "name": "zoe-mbp",
+    "rules": "default",
+    "expect": null
+   },
+   {
+    "name": "小明的 Mac",
+    "rules": "default",
+    "expect": null
+   },
+   {
+    "name": "Zoë Studio",
+    "rules": "default",
+    "expect": null
+   },
+   {
+    "name": "x",
+    "rules": "default",
+    "expect": "length"
+   },
+   {
+    "name": "abcdefghijklmnopqrstuvwxyz0123456",
+    "rules": "default",
+    "expect": "length"
+   },
+   {
+    "name": "-zoe",
+    "rules": "default",
+    "expect": "start"
+   },
+   {
+    "name": "zoe ",
+    "rules": "default",
+    "expect": "spaces"
+   },
+   {
+    "name": "zoe  mbp",
+    "rules": "default",
+    "expect": "spaces"
+   },
+   {
+    "name": "zoe\tmbp",
+    "rules": "default",
+    "expect": "spaces"
+   },
+   {
+    "name": "zoe🚀",
+    "rules": "default",
+    "expect": "characters"
+   },
+   {
+    "name": "zoe@home",
+    "rules": "default",
+    "expect": "characters"
+   },
+   {
+    "name": "ｚｏｅ",
+    "rules": "default",
+    "expect": "characters"
+   },
+   {
+    "name": "zoe​mbp",
+    "rules": "default",
+    "expect": "characters"
+   },
+   {
+    "name": "zq́̂̃̄e",
+    "rules": "default",
+    "expect": null
+   },
+   {
+    "name": "zq́̂̃̄̅e",
+    "rules": "default",
+    "expect": "characters"
+   },
+   {
+    "name": "مرحبا",
+    "rules": "default",
+    "expect": null
+   },
+   {
+    "name": "Zoe MBP",
+    "rules": "strict",
+    "expect": "spaces"
+   },
+   {
+    "name": "小明的家",
+    "rules": "strict",
+    "expect": "characters"
+   },
+   {
+    "name": "ab",
+    "rules": "strict",
+    "expect": "length"
+   },
+   {
+    "name": "racer-7k3m9q",
+    "rules": "strict",
+    "expect": null
+   }
+  ],
+  "fit": [
+   {
+    "computerName": "Zoe’s MacBook Pro",
+    "rules": "default",
+    "expect": "Zoes MacBook Pro"
+   },
+   {
+    "computerName": "Zoe’s MacBook Pro",
+    "rules": "strict",
+    "expect": "Zoes-MacBook-Pro"
+   },
+   {
+    "computerName": "小明的 MacBook Air",
+    "rules": "default",
+    "expect": "小明的 MacBook Air"
+   },
+   {
+    "computerName": "小明的 MacBook Air",
+    "rules": "strict",
+    "expect": "MacBook-Air"
+   },
+   {
+    "computerName": "DESKTOP-7Q2K1LM",
+    "rules": "strict",
+    "expect": "DESKTOP-7Q2K1LM"
+   },
+   {
+    "computerName": "José’s PC",
+    "rules": "strict",
+    "expect": "Joses-PC"
+   },
+   {
+    "computerName": "MacBook Pro (2)",
+    "rules": "default",
+    "expect": "MacBook Pro 2"
+   },
+   {
+    "computerName": "MacBook Pro (2)",
+    "rules": "strict",
+    "expect": "MacBook-Pro-2"
+   },
+   {
+    "computerName": "Zoë – Studio",
+    "rules": "default",
+    "expect": "Zoë Studio"
+   },
+   {
+    "computerName": "ＭａｃＢｏｏｋ",
+    "rules": "strict",
+    "expect": "MacBook"
+   },
+   {
+    "computerName": "Workstation of the Platform Team",
+    "rules": "strict",
+    "expect": "Workstation-of-t"
+   },
+   {
+    "computerName": "🚀🚀",
+    "rules": "default",
+    "expect": null
+   },
+   {
+    "computerName": "  ",
+    "rules": "strict",
+    "expect": null
+   }
+  ],
+  "keys": [
+   {
+    "a": "Zoe-MBP",
+    "b": "zoe-mbp",
+    "same": true
+   },
+   {
+    "a": "Straße",
+    "b": "STRASSE",
+    "same": true
+   },
+   {
+    "a": "小明的 Mac",
+    "b": "小明的 mac",
+    "same": true
+   },
+   {
+    "a": "zoe-mbp",
+    "b": "zoe_mbp",
+    "same": false
+   }
+  ]
+ },
+ "scheduler": [
+  {
+   "name": "steady activity, then idle heartbeats, then quiet",
+   "ticks": [
+    [
+     0,
+     700000
+    ]
+   ],
+   "activity": [
+    [
+     0,
+     29500
+    ]
+   ],
+   "increments": [
+    {
+     "from": 1000,
+     "to": 29000,
+     "step": 1000,
+     "output": 100
+    }
+   ],
+   "expect": {
+    "delivered": [
+     [
+      1,
+      5000,
+      5000,
+      "active",
+      500
+     ],
+     [
+      2,
+      10000,
+      5000,
+      "active",
+      500
+     ],
+     [
+      3,
+      15000,
+      5000,
+      "active",
+      500
+     ],
+     [
+      4,
+      20000,
+      5000,
+      "active",
+      500
+     ],
+     [
+      5,
+      25000,
+      5000,
+      "active",
+      500
+     ],
+     [
+      6,
+      30000,
+      5000,
+      "active",
+      400
+     ],
+     [
+      7,
+      35000,
+      5000,
+      "active",
+      0
+     ],
+     [
+      8,
+      40000,
+      5000,
+      "active",
+      0
+     ],
+     [
+      9,
+      100000,
+      60000,
+      "idle",
+      0
+     ],
+     [
+      10,
+      160000,
+      60000,
+      "idle",
+      0
+     ],
+     [
+      11,
+      220000,
+      60000,
+      "idle",
+      0
+     ],
+     [
+      12,
+      280000,
+      60000,
+      "idle",
+      0
+     ],
+     [
+      13,
+      340000,
+      60000,
+      "idle",
+      0
+     ],
+     [
+      14,
+      400000,
+      60000,
+      "idle",
+      0
+     ],
+     [
+      15,
+      460000,
+      60000,
+      "idle",
+      0
+     ],
+     [
+      16,
+      520000,
+      60000,
+      "idle",
+      0
+     ],
+     [
+      17,
+      580000,
+      60000,
+      "idle",
+      0
+     ],
+     [
+      18,
+      629500,
+      49500,
+      "leaving",
+      0
+     ]
+    ],
+    "lost": []
+   }
+  },
+  {
+   "name": "a report that fails twice is lost; the next window starts where it ended",
+   "ticks": [
+    [
+     0,
+     40000
+    ]
+   ],
+   "activity": [
+    [
+     0,
+     40000
+    ]
+   ],
+   "increments": [
+    {
+     "from": 1000,
+     "to": 40000,
+     "step": 1000,
+     "output": 100
+    }
+   ],
+   "outcomes": {
+    "2": [
+     "fail",
+     "fail"
+    ]
+   },
+   "expect": {
+    "delivered": [
+     [
+      1,
+      5000,
+      5000,
+      "active",
+      500
+     ],
+     [
+      3,
+      15000,
+      5000,
+      "active",
+      500
+     ],
+     [
+      4,
+      20000,
+      5000,
+      "active",
+      500
+     ],
+     [
+      5,
+      25000,
+      5000,
+      "active",
+      500
+     ],
+     [
+      6,
+      30000,
+      5000,
+      "active",
+      500
+     ],
+     [
+      7,
+      35000,
+      5000,
+      "active",
+      500
+     ],
+     [
+      8,
+      40000,
+      5000,
+      "active",
+      500
+     ]
+    ],
+    "lost": [
+     2
+    ]
+   }
+  },
+  {
+   "name": "one retry after 2 s sends the same report",
+   "ticks": [
+    [
+     0,
+     20000
+    ]
+   ],
+   "activity": [
+    [
+     0,
+     20000
+    ]
+   ],
+   "increments": [
+    {
+     "from": 1000,
+     "to": 20000,
+     "step": 1000,
+     "output": 100
+    }
+   ],
+   "outcomes": {
+    "2": [
+     "fail",
+     "ok"
+    ]
+   },
+   "expect": {
+    "delivered": [
+     [
+      1,
+      5000,
+      5000,
+      "active",
+      500
+     ],
+     [
+      2,
+      10000,
+      5000,
+      "active",
+      500
+     ],
+     [
+      3,
+      15000,
+      5000,
+      "active",
+      500
+     ],
+     [
+      4,
+      20000,
+      5000,
+      "active",
+      500
+     ]
+    ],
+    "lost": []
+   }
+  },
+  {
+   "name": "429 with Retry-After 20: usage during the wait is never reported",
+   "ticks": [
+    [
+     0,
+     60000
+    ]
+   ],
+   "activity": [
+    [
+     0,
+     60000
+    ]
+   ],
+   "increments": [
+    {
+     "from": 1000,
+     "to": 60000,
+     "step": 1000,
+     "output": 100
+    }
+   ],
+   "outcomes": {
+    "2": [
+     "rateLimited:20"
+    ]
+   },
+   "expect": {
+    "delivered": [
+     [
+      1,
+      5000,
+      5000,
+      "active",
+      500
+     ],
+     [
+      3,
+      34500,
+      5000,
+      "active",
+      500
+     ],
+     [
+      4,
+      39500,
+      5000,
+      "active",
+      500
+     ],
+     [
+      5,
+      44500,
+      5000,
+      "active",
+      500
+     ],
+     [
+      6,
+      49500,
+      5000,
+      "active",
+      500
+     ],
+     [
+      7,
+      54500,
+      5000,
+      "active",
+      500
+     ],
+     [
+      8,
+      59500,
+      5000,
+      "active",
+      500
+     ]
+    ],
+    "lost": [
+     2
+    ]
+   }
+  },
+  {
+   "name": "a tick gap over 15 s (sleep) discards the open window",
+   "ticks": [
+    [
+     0,
+     22000
+    ],
+    [
+     80000,
+     100000
+    ]
+   ],
+   "activity": [
+    [
+     0,
+     22000
+    ],
+    [
+     80000,
+     100000
+    ]
+   ],
+   "increments": [
+    {
+     "from": 1000,
+     "to": 22000,
+     "step": 1000,
+     "output": 100
+    },
+    {
+     "from": 81000,
+     "to": 100000,
+     "step": 1000,
+     "output": 100
+    }
+   ],
+   "expect": {
+    "delivered": [
+     [
+      1,
+      5000,
+      5000,
+      "active",
+      500
+     ],
+     [
+      2,
+      10000,
+      5000,
+      "active",
+      500
+     ],
+     [
+      3,
+      15000,
+      5000,
+      "active",
+      500
+     ],
+     [
+      4,
+      20000,
+      5000,
+      "active",
+      500
+     ],
+     [
+      5,
+      85000,
+      5000,
+      "active",
+      500
+     ],
+     [
+      6,
+      90000,
+      5000,
+      "active",
+      500
+     ],
+     [
+      7,
+      95000,
+      5000,
+      "active",
+      500
+     ],
+     [
+      8,
+      100000,
+      5000,
+      "active",
+      500
+     ]
+    ],
+    "lost": []
+   }
+  },
+  {
+   "name": "pause sends a leaving report; resume starts a new window",
+   "ticks": [
+    [
+     0,
+     40000
+    ]
+   ],
+   "activity": [
+    [
+     0,
+     40000
+    ]
+   ],
+   "increments": [
+    {
+     "from": 1000,
+     "to": 40000,
+     "step": 1000,
+     "output": 100
+    }
+   ],
+   "events": [
+    [
+     12000,
+     "pause"
+    ],
+    [
+     30000,
+     "resume"
+    ]
+   ],
+   "expect": {
+    "delivered": [
+     [
+      1,
+      5000,
+      5000,
+      "active",
+      500
+     ],
+     [
+      2,
+      10000,
+      5000,
+      "active",
+      500
+     ],
+     [
+      3,
+      12000,
+      2000,
+      "leaving",
+      200
+     ],
+     [
+      4,
+      34500,
+      5000,
+      "active",
+      500
+     ],
+     [
+      5,
+      39500,
+      5000,
+      "active",
+      500
+     ]
+    ],
+    "lost": []
+   }
+  },
+  {
+   "name": "network switched off: no leaving report, nothing sent until it is back",
+   "ticks": [
+    [
+     0,
+     30000
+    ]
+   ],
+   "activity": [
+    [
+     0,
+     30000
+    ]
+   ],
+   "increments": [
+    {
+     "from": 1000,
+     "to": 30000,
+     "step": 1000,
+     "output": 100
+    }
+   ],
+   "events": [
+    [
+     12000,
+     "networkOff"
+    ],
+    [
+     20000,
+     "networkOn"
+    ]
+   ],
+   "expect": {
+    "delivered": [
+     [
+      1,
+      5000,
+      5000,
+      "active",
+      500
+     ],
+     [
+      2,
+      10000,
+      5000,
+      "active",
+      500
+     ],
+     [
+      3,
+      24500,
+      5000,
+      "active",
+      500
+     ],
+     [
+      4,
+      29500,
+      5000,
+      "active",
+      500
+     ]
+    ],
+    "lost": []
+   }
+  },
+  {
+   "name": "activity after idle sends at once, then every 5 s",
+   "ticks": [
+    [
+     0,
+     200000
+    ]
+   ],
+   "activity": [
+    [
+     0,
+     2000
+    ],
+    [
+     150000,
+     160000
+    ]
+   ],
+   "increments": [
+    {
+     "from": 2000,
+     "to": 2000,
+     "step": 1000,
+     "output": 100
+    },
+    {
+     "from": 155000,
+     "to": 155000,
+     "step": 1000,
+     "output": 300
+    }
+   ],
+   "expect": {
+    "delivered": [
+     [
+      1,
+      5000,
+      5000,
+      "active",
+      100
+     ],
+     [
+      2,
+      10000,
+      5000,
+      "active",
+      0
+     ],
+     [
+      3,
+      15000,
+      5000,
+      "active",
+      0
+     ],
+     [
+      4,
+      75000,
+      60000,
+      "idle",
+      0
+     ],
+     [
+      5,
+      135000,
+      60000,
+      "idle",
+      0
+     ],
+     [
+      6,
+      150000,
+      15000,
+      "active",
+      0
+     ],
+     [
+      7,
+      155000,
+      5000,
+      "active",
+      300
+     ],
+     [
+      8,
+      160000,
+      5000,
+      "active",
+      0
+     ],
+     [
+      9,
+      165000,
+      5000,
+      "active",
+      0
+     ],
+     [
+      10,
+      170000,
+      5000,
+      "active",
+      0
+     ]
+    ],
+    "lost": []
+   }
+  },
+  {
+   "name": "consecutive failures back off (5 s after the second lost report)",
+   "ticks": [
+    [
+     0,
+     40000
+    ]
+   ],
+   "activity": [
+    [
+     0,
+     40000
+    ]
+   ],
+   "increments": [
+    {
+     "from": 1000,
+     "to": 40000,
+     "step": 1000,
+     "output": 100
+    }
+   ],
+   "outcomes": {
+    "1": [
+     "fail",
+     "fail"
+    ],
+    "2": [
+     "fail",
+     "fail"
+    ]
+   },
+   "expect": {
+    "delivered": [
+     [
+      3,
+      21500,
+      5000,
+      "active",
+      500
+     ],
+     [
+      4,
+      26500,
+      5000,
+      "active",
+      500
+     ],
+     [
+      5,
+      31500,
+      5000,
+      "active",
+      500
+     ],
+     [
+      6,
+      36500,
+      5000,
+      "active",
+      500
+     ]
+    ],
+    "lost": [
+     1,
+     2
+    ]
+   }
+  },
+  {
+   "name": "pause during a Retry-After wait sends no leaving report",
+   "ticks": [
+    [
+     0,
+     40000
+    ]
+   ],
+   "activity": [
+    [
+     0,
+     40000
+    ]
+   ],
+   "increments": [
+    {
+     "from": 1000,
+     "to": 40000,
+     "step": 1000,
+     "output": 100
+    }
+   ],
+   "outcomes": {
+    "2": [
+     "rateLimited:20"
+    ]
+   },
+   "events": [
+    [
+     15000,
+     "pause"
+    ],
+    [
+     35000,
+     "resume"
+    ]
+   ],
+   "expect": {
+    "delivered": [
+     [
+      1,
+      5000,
+      5000,
+      "active",
+      500
+     ],
+     [
+      3,
+      39500,
+      5000,
+      "active",
+      500
+     ]
+    ],
+    "lost": [
+     2
+    ]
+   }
+  },
+  {
+   "name": "pause during a backoff still sends its leaving report (one attempt)",
+   "ticks": [
+    [
+     0,
+     20000
+    ]
+   ],
+   "activity": [
+    [
+     0,
+     20000
+    ]
+   ],
+   "increments": [
+    {
+     "from": 1000,
+     "to": 20000,
+     "step": 1000,
+     "output": 100
+    }
+   ],
+   "outcomes": {
+    "1": [
+     "fail",
+     "fail"
+    ],
+    "2": [
+     "fail",
+     "fail"
+    ]
+   },
+   "events": [
+    [
+     14000,
+     "pause"
+    ]
+   ],
+   "expect": {
+    "delivered": [
+     [
+      3,
+      14000,
+      500,
+      "leaving",
+      100
+     ]
+    ],
+    "lost": [
+     1,
+     2
+    ]
+   }
+  }
+ ],
+ "discovery": [
+  {
+   "name": "a minimal document gets the defaults; apiKey.mode is none",
+   "fetchedFrom": "https://example.com/.well-known/agent-speed-report",
+   "document": {
+    "protocol": "agent-speed-report",
+    "versions": [
+     1
+    ],
+    "service": {
+     "name": "Example",
+     "terms": "https://example.com/terms",
+     "privacy": "https://example.com/privacy"
+    },
+    "api": "https://api.example.com/agent-speed"
+   },
+   "expect": {
+    "api": "https://api.example.com/agent-speed",
+    "apiKeyMode": "none",
+    "apiKeyUrl": null,
+    "homepage": null,
+    "leaderboard": null,
+    "limits": {
+     "intervalSeconds": 5,
+     "heartbeatSeconds": 60,
+     "maxAgeSeconds": 30,
+     "maxBodyBytes": 16384,
+     "maxModels": 16
+    },
+    "username": {
+     "minLength": 2,
+     "maxLength": 32,
+     "charset": "unicode",
+     "spaces": true
+    },
+    "sections": [
+     "sources",
+     "models",
+     "cost",
+     "traffic"
+    ]
+   }
+  },
+  {
+   "name": "apiKey without mode means none",
+   "fetchedFrom": "https://example.com/.well-known/agent-speed-report",
+   "document": {
+    "protocol": "agent-speed-report",
+    "versions": [
+     1
+    ],
+    "service": {
+     "name": "Example",
+     "terms": "https://example.com/terms",
+     "privacy": "https://example.com/privacy"
+    },
+    "api": "https://api.example.com/agent-speed",
+    "apiKey": {
+     "url": "https://example.com/keys"
+    }
+   },
+   "expect": {
+    "apiKeyMode": "none",
+    "apiKeyUrl": "https://example.com/keys"
+   }
+  },
+  {
+   "name": "optional links that are not https are dropped; the document stays valid",
+   "fetchedFrom": "https://example.com/.well-known/agent-speed-report",
+   "document": {
+    "protocol": "agent-speed-report",
+    "versions": [
+     1
+    ],
+    "service": {
+     "name": "Example",
+     "terms": "https://example.com/terms",
+     "privacy": "https://example.com/privacy",
+     "homepage": "http://example.com/",
+     "leaderboard": "javascript:alert(1)"
+    },
+    "api": "https://api.example.com/agent-speed",
+    "apiKey": {
+     "mode": "optional",
+     "url": "https://user@example.com/keys"
+    }
+   },
+   "expect": {
+    "apiKeyMode": "optional",
+    "homepage": null,
+    "leaderboard": null,
+    "apiKeyUrl": null
+   }
+  },
+  {
+   "name": "optional links of a loopback test server are dropped too (links are always https)",
+   "fetchedFrom": "http://127.0.0.1:8787/.well-known/agent-speed-report",
+   "document": {
+    "protocol": "agent-speed-report",
+    "versions": [
+     1
+    ],
+    "service": {
+     "name": "Example",
+     "terms": "https://example.com/terms",
+     "privacy": "https://example.com/privacy",
+     "leaderboard": "http://127.0.0.1:8787/live"
+    },
+    "api": "http://127.0.0.1:8787"
+   },
+   "expect": {
+    "api": "http://127.0.0.1:8787",
+    "leaderboard": null
+   }
+  },
+  {
+   "name": "an optional link of the wrong type makes the document invalid",
+   "fetchedFrom": "https://example.com/.well-known/agent-speed-report",
+   "document": {
+    "protocol": "agent-speed-report",
+    "versions": [
+     1
+    ],
+    "service": {
+     "name": "Example",
+     "terms": "https://example.com/terms",
+     "privacy": "https://example.com/privacy",
+     "leaderboard": 42
+    },
+    "api": "https://api.example.com/agent-speed"
+   },
+   "expect": {
+    "invalid": "service.leaderboard"
+   }
+  },
+  {
+   "name": "terms that are not https make the document invalid",
+   "fetchedFrom": "https://example.com/.well-known/agent-speed-report",
+   "document": {
+    "protocol": "agent-speed-report",
+    "versions": [
+     1
+    ],
+    "service": {
+     "name": "Example",
+     "terms": "http://example.com/terms",
+     "privacy": "https://example.com/privacy"
+    },
+    "api": "https://api.example.com/agent-speed"
+   },
+   "expect": {
+    "invalid": "service.terms"
+   }
+  },
+  {
+   "name": "loopback http terms are invalid even from a loopback test server",
+   "fetchedFrom": "http://127.0.0.1:8787/.well-known/agent-speed-report",
+   "document": {
+    "protocol": "agent-speed-report",
+    "versions": [
+     1
+    ],
+    "service": {
+     "name": "Example",
+     "terms": "http://127.0.0.1:8787/terms",
+     "privacy": "https://example.com/privacy"
+    },
+    "api": "http://127.0.0.1:8787"
+   },
+   "expect": {
+    "invalid": "service.terms"
+   }
+  },
+  {
+   "name": "a missing privacy link makes the document invalid",
+   "fetchedFrom": "https://example.com/.well-known/agent-speed-report",
+   "document": {
+    "protocol": "agent-speed-report",
+    "versions": [
+     1
+    ],
+    "service": {
+     "name": "Example",
+     "terms": "https://example.com/terms"
+    },
+    "api": "https://api.example.com/agent-speed"
+   },
+   "expect": {
+    "invalid": "service.privacy"
+   }
+  },
+  {
+   "name": "a loopback http api is accepted from a document fetched over loopback http",
+   "fetchedFrom": "http://127.0.0.1:8787/.well-known/agent-speed-report",
+   "document": {
+    "protocol": "agent-speed-report",
+    "versions": [
+     1
+    ],
+    "service": {
+     "name": "Example",
+     "terms": "https://example.com/terms",
+     "privacy": "https://example.com/privacy"
+    },
+    "api": "http://localhost:8787/agent-speed/"
+   },
+   "expect": {
+    "api": "http://localhost:8787/agent-speed"
+   }
+  },
+  {
+   "name": "a loopback http api in a document fetched over https is invalid",
+   "fetchedFrom": "https://example.com/.well-known/agent-speed-report",
+   "document": {
+    "protocol": "agent-speed-report",
+    "versions": [
+     1
+    ],
+    "service": {
+     "name": "Example",
+     "terms": "https://example.com/terms",
+     "privacy": "https://example.com/privacy"
+    },
+    "api": "http://127.0.0.1:8787"
+   },
+   "expect": {
+    "invalid": "api"
+   }
+  },
+  {
+   "name": "an http api with any other host is invalid",
+   "fetchedFrom": "http://127.0.0.1:8787/.well-known/agent-speed-report",
+   "document": {
+    "protocol": "agent-speed-report",
+    "versions": [
+     1
+    ],
+    "service": {
+     "name": "Example",
+     "terms": "https://example.com/terms",
+     "privacy": "https://example.com/privacy"
+    },
+    "api": "http://192.168.1.5:8787"
+   },
+   "expect": {
+    "invalid": "api"
+   }
+  },
+  {
+   "name": "an api with a query is invalid",
+   "fetchedFrom": "https://example.com/.well-known/agent-speed-report",
+   "document": {
+    "protocol": "agent-speed-report",
+    "versions": [
+     1
+    ],
+    "service": {
+     "name": "Example",
+     "terms": "https://example.com/terms",
+     "privacy": "https://example.com/privacy"
+    },
+    "api": "https://api.example.com/v?x=1"
+   },
+   "expect": {
+    "invalid": "api"
+   }
+  },
+  {
+   "name": "an unknown apiKey.mode is invalid",
+   "fetchedFrom": "https://example.com/.well-known/agent-speed-report",
+   "document": {
+    "protocol": "agent-speed-report",
+    "versions": [
+     1
+    ],
+    "service": {
+     "name": "Example",
+     "terms": "https://example.com/terms",
+     "privacy": "https://example.com/privacy"
+    },
+    "api": "https://api.example.com/agent-speed",
+    "apiKey": {
+     "mode": "sometimes"
+    }
+   },
+   "expect": {
+    "invalid": "apiKey.mode"
+   }
+  },
+  {
+   "name": "numbers outside their ranges are clamped; the heartbeat never below the interval",
+   "fetchedFrom": "https://example.com/.well-known/agent-speed-report",
+   "document": {
+    "protocol": "agent-speed-report",
+    "versions": [
+     1
+    ],
+    "service": {
+     "name": "Example",
+     "terms": "https://example.com/terms",
+     "privacy": "https://example.com/privacy",
+     "retentionDays": 9000
+    },
+    "api": "https://api.example.com/agent-speed",
+    "limits": {
+     "intervalSeconds": 600,
+     "heartbeatSeconds": 10,
+     "maxAgeSeconds": 1,
+     "maxBodyBytes": 1000000,
+     "maxModels": 40
+    },
+    "username": {
+     "minLength": 0,
+     "maxLength": 64
+    }
+   },
+   "expect": {
+    "retentionDays": 3650,
+    "limits": {
+     "intervalSeconds": 300,
+     "heartbeatSeconds": 300,
+     "maxAgeSeconds": 10,
+     "maxBodyBytes": 65536,
+     "maxModels": 16
+    },
+    "username": {
+     "minLength": 1,
+     "maxLength": 32,
+     "charset": "unicode",
+     "spaces": true
+    }
+   }
+  },
+  {
+   "name": "unknown fields and section names are ignored (machineTraffic is no longer a section)",
+   "fetchedFrom": "https://example.com/.well-known/agent-speed-report",
+   "document": {
+    "protocol": "agent-speed-report",
+    "versions": [
+     1
+    ],
+    "service": {
+     "name": "Example",
+     "terms": "https://example.com/terms",
+     "privacy": "https://example.com/privacy"
+    },
+    "api": "https://api.example.com/agent-speed",
+    "sections": [
+     "cost",
+     "future",
+     "machineTraffic",
+     "sources"
+    ],
+    "extra": {
+     "x": 1
+    }
+   },
+   "expect": {
+    "sections": [
+     "sources",
+     "cost"
+    ]
+   }
+  }
+ ]
+}

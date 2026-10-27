@@ -9,6 +9,8 @@ import {
   independentQuotaReferenceCostUSD,
   independentQuotaModelName,
   modelAwareAPICostUSD,
+  isAutoReviewUsage,
+  autoReviewReferenceCostUSD,
   type OfficialAPIPriceModel,
 } from "../settings/quotaPriceModel.ts";
 import { formatTokens } from "../utils/format.ts";
@@ -29,14 +31,9 @@ export interface FloatingModelUsageItem {
 
 export const FLOATING_MODEL_USAGE_VISIBLE_LIMIT = 4;
 export const FLOATING_MODEL_USAGE_MINIMUM_COUNT = 4;
-export const DASHBOARD_PRIMARY_MODEL_KEYS = [
-  "gpt-6-astra",
-  "gpt-5.6-sol",
-  "gpt-5.6-terra",
-  "gpt-5.6-luna",
-] as const;
-
 interface CombinedModelUsage {
+  reviewReferenceCostUSD: number;
+  reviewReferenceUnknown: boolean;
   costUSD: number;
   priceUnknown: boolean;
   model: string | null;
@@ -108,6 +105,8 @@ export function floatingTodayModelUsageItems(
       ? modelUsageKey(row.model, row.eventStartUnix)
       : floatingModelUsageKey(row.model, row.eventStartUnix);
     const current = grouped.get(key) ?? {
+      reviewReferenceCostUSD: 0,
+      reviewReferenceUnknown: false,
       costUSD: 0,
       priceUnknown: false,
       model: row.model,
@@ -124,6 +123,12 @@ export function floatingTodayModelUsageItems(
       outputTokens: finiteNonnegative(row.breakdown.outputTokens), calls: finiteNonnegative(row.breakdown.calls),
     } };
     const price = modelAwareAPICostUSD([priceRow], priceRow.breakdown, fallbackModel);
+    if(isAutoReviewUsage(row.model)) {
+      const reference=autoReviewReferenceCostUSD(row.model,priceRow.breakdown.inputTokens,
+        priceRow.breakdown.cachedInputTokens,priceRow.breakdown.outputTokens,row.eventStartUnix);
+      current.reviewReferenceUnknown ||= reference===null;
+      current.reviewReferenceCostUSD += reference??0;
+    }
     current.costUSD += price.costUSD;
     // An anonymous row still carries real tokens, but has no model price.
     // Keep the accounting fallback out of per-model presentation.
@@ -144,6 +149,8 @@ export function floatingTodayModelUsageItems(
       if (grouped.size >= FLOATING_MODEL_USAGE_MINIMUM_COUNT) break;
       if (!grouped.has(key)) {
         grouped.set(key, {
+          reviewReferenceCostUSD: 0,
+          reviewReferenceUnknown: false,
           costUSD: 0,
           priceUnknown: false,
           model: key,
@@ -158,8 +165,9 @@ export function floatingTodayModelUsageItems(
   }
   return [...grouped.entries()].map(([key, row]) => {
     const usesIndependentQuota = independentQuotaModelName(row.model) !== null;
-    const costUSD = usesIndependentQuota || row.priceUnknown ? null : row.costUSD;
-    const referenceCostUSD = independentQuotaReferenceCostUSD(
+    const reviewOnly=isAutoReviewUsage(key);
+    const costUSD = usesIndependentQuota || reviewOnly || row.priceUnknown ? null : row.costUSD;
+    const referenceCostUSD = reviewOnly ? (row.reviewReferenceUnknown ? null : row.reviewReferenceCostUSD) : independentQuotaReferenceCostUSD(
       row.model,
       row.inputTokens,
       row.cachedInputTokens,
@@ -229,6 +237,10 @@ export function floatingModelUsagePageItems(
   return items.slice(start, start + sizes[safePageIndex]);
 }
 
+export function isReferenceOnlyModelUsage(item: FloatingModelUsageItem): boolean {
+  return item.usesIndependentQuota || isAutoReviewUsage(item.key.split("|").at(-1));
+}
+
 export function floatingModelUsageValue(
   item: FloatingModelUsageItem,
   page: FloatingModelUsagePage,
@@ -239,7 +251,7 @@ export function floatingModelUsageValue(
     if (percent > 0 && percent < 10) return `${percent.toFixed(1)}%`;
     return `${Math.round(percent)}%`;
   }
-  if (item.usesIndependentQuota) {
+  if (isReferenceOnlyModelUsage(item)) {
     const referenceCost = item.referenceCostUSD === null
       ? "—"
       : floatingModelUsageMoneyText(item.referenceCostUSD);
@@ -249,7 +261,7 @@ export function floatingModelUsageValue(
 }
 
 export function hasUnknownModelPrices(items: FloatingModelUsageItem[]): boolean {
-  return items.some((item) => item.tokens > 0 && !item.usesIndependentQuota && item.costUSD === null);
+  return items.some((item) => item.tokens > 0 && !isReferenceOnlyModelUsage(item) && item.costUSD === null);
 }
 
 /**
@@ -262,7 +274,7 @@ export function hasUnknownModelPrices(items: FloatingModelUsageItem[]): boolean 
 export function floatingModelUsageKnownCostUSD(
   items: FloatingModelUsageItem[],
 ): number | null {
-  const billable = items.filter((item) => item.tokens > 0 && !item.usesIndependentQuota);
+  const billable = items.filter((item) => item.tokens > 0 && !isReferenceOnlyModelUsage(item));
   const known = billable.filter((item) => item.costUSD !== null);
   if (billable.some((item) => item.costUSD === null) && known.length === 0) {
     return null;
@@ -274,7 +286,7 @@ export function floatingModelUsageAccessibilityText(
   page: FloatingModelUsagePage,
   rows: ModelUsageRowLike[] | null | undefined,
   fallbackModel: OfficialAPIPriceModel,
-  options: { showPlaceholders?: boolean } = {},
+  options: { showPlaceholders?: boolean; mergeAutoReview?: boolean } = {},
 ): string {
   const items = floatingTodayModelUsageItems(rows, fallbackModel, options);
   if (items.length === 0) return "今日模型待读取";
@@ -282,20 +294,16 @@ export function floatingModelUsageAccessibilityText(
   return `今日模型${title}：${items.map((item) => `${item.label} ${floatingModelUsageValue(item, page)}`).join("，")}`;
 }
 
-export function dashboardPrimaryModelUsageItems(
-  items: FloatingModelUsageItem[],
-): FloatingModelUsageItem[] {
-  const byKey = new Map(items.map((item) => [item.key, item]));
-  return DASHBOARD_PRIMARY_MODEL_KEYS.map((key) => (
-    byKey.get(key) ?? dashboardModelUsagePlaceholder(key)
-  ));
+export function dashboardModelFamilyID(model: string): "6" | "5.6" | "other" {
+  const key = modelUsageKey(model).toLowerCase().replace(/[ _]/g,"-");
+  if (/^gpt-?6(?:\.[0-9]+)*(?:-|$)/.test(key)) return "6";
+  if (/^gpt-?5\.6(?:-|$)/.test(key)) return "5.6";
+  return "other";
 }
-
-export function dashboardSecondaryModelUsageItems(
-  items: FloatingModelUsageItem[],
-): FloatingModelUsageItem[] {
-  const primaryKeys = new Set<string>(DASHBOARD_PRIMARY_MODEL_KEYS);
-  return items.filter((item) => !primaryKeys.has(item.key) && item.tokens > 0);
+export function dashboardModelFamilyGroups(items: FloatingModelUsageItem[]) {
+  return ([{id:"6",label:"6 系列"},{id:"5.6",label:"5.6 系列"},{id:"other",label:"其他"}] as const)
+    .map(group => ({...group, items:items.filter(item=>item.tokens>0 && dashboardModelFamilyID(item.key)===group.id)}))
+    .filter(group=>group.items.length>0);
 }
 
 export function floatingModelUsageOverflowText(
@@ -326,17 +334,4 @@ function detailedShareText(share: number): string {
 
 function finiteNonnegative(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
-}
-
-function dashboardModelUsagePlaceholder(key: string): FloatingModelUsageItem {
-  return {
-    key,
-    label: modelUsageLabel(key),
-    tokens: 0,
-    share: 0,
-    costUSD: 0,
-    usesIndependentQuota: false,
-    referenceCostUSD: null,
-    color: modelUsageColor(key),
-  };
 }

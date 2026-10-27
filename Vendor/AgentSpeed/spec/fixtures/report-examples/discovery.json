@@ -1,0 +1,40 @@
+{
+  "protocol": "agent-speed-report",
+  "versions": [
+    1
+  ],
+  "service": {
+    "name": "Example Leaderboard",
+    "description": "Live token speed of AI coding agents, updated every few seconds.",
+    "homepage": "https://example.com/",
+    "terms": "https://example.com/terms",
+    "privacy": "https://example.com/privacy",
+    "leaderboard": "https://example.com/live",
+    "contact": "privacy@example.com",
+    "retentionDays": 30
+  },
+  "api": "https://api.example.com/agent-speed",
+  "apiKey": {
+    "mode": "optional",
+    "url": "https://example.com/account/keys"
+  },
+  "username": {
+    "minLength": 2,
+    "maxLength": 24,
+    "charset": "unicode",
+    "spaces": true
+  },
+  "limits": {
+    "intervalSeconds": 5,
+    "heartbeatSeconds": 60,
+    "maxAgeSeconds": 30,
+    "maxBodyBytes": 16384,
+    "maxModels": 16
+  },
+  "sections": [
+    "sources",
+    "models",
+    "cost",
+    "traffic"
+  ]
+}

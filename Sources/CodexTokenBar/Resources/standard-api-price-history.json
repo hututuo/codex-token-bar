@@ -1,0 +1,156 @@
+{
+  "schema": 1,
+  "note": "Frozen Token Bar standard short-context history. Current prices come from pinned Agent Speed. Never rewrite old rows when current prices change; append dated revisions. Radar vintage remains separate.",
+  "rows": [
+    {
+      "modelKey": "gpt-6-astra",
+      "fromUnix": null,
+      "revision": "standard-api-gpt-6-astra",
+      "rates": {
+        "inputUSDPerMillion": 10,
+        "cachedInputUSDPerMillion": 1,
+        "outputUSDPerMillion": 50
+      }
+    },
+    {
+      "modelKey": "gpt-6.1-sol",
+      "fromUnix": 1790640000,
+      "revision": "standard-api-gpt-6.1-sol-from-2026-09-29",
+      "rates": {
+        "inputUSDPerMillion": 2,
+        "cachedInputUSDPerMillion": 0.1,
+        "outputUSDPerMillion": 10
+      }
+    },
+    {
+      "modelKey": "gpt-6-sol",
+      "fromUnix": 1790035200,
+      "revision": "standard-api-gpt-6-sol-from-2026-09-22",
+      "rates": {
+        "inputUSDPerMillion": 2,
+        "cachedInputUSDPerMillion": 0.2,
+        "outputUSDPerMillion": 10
+      }
+    },
+    {
+      "modelKey": "gpt-6-luna",
+      "fromUnix": 1790035200,
+      "revision": "standard-api-gpt-6-luna-from-2026-09-22",
+      "rates": {
+        "inputUSDPerMillion": 0.1,
+        "cachedInputUSDPerMillion": 0.01,
+        "outputUSDPerMillion": 0.5
+      }
+    },
+    {
+      "modelKey": "gpt-5.5",
+      "fromUnix": null,
+      "revision": "standard-api-gpt-5.5",
+      "rates": {
+        "inputUSDPerMillion": 5,
+        "cachedInputUSDPerMillion": 0.5,
+        "outputUSDPerMillion": 30
+      }
+    },
+    {
+      "modelKey": "gpt-5.6-sol",
+      "fromUnix": null,
+      "revision": "standard-api-gpt-5.6-sol-before-2026-08-21",
+      "rates": {
+        "inputUSDPerMillion": 5,
+        "cachedInputUSDPerMillion": 0.5,
+        "outputUSDPerMillion": 30
+      }
+    },
+    {
+      "modelKey": "gpt-5.6-sol",
+      "fromUnix": 1787270400,
+      "revision": "standard-api-gpt-5.6-sol-from-2026-08-21",
+      "rates": {
+        "inputUSDPerMillion": 4,
+        "cachedInputUSDPerMillion": 0.4,
+        "outputUSDPerMillion": 20
+      }
+    },
+    {
+      "modelKey": "gpt-5.6-terra",
+      "fromUnix": null,
+      "revision": "standard-api-gpt-5.6-terra-before-2026-07-30",
+      "rates": {
+        "inputUSDPerMillion": 2.5,
+        "cachedInputUSDPerMillion": 0.25,
+        "outputUSDPerMillion": 15
+      }
+    },
+    {
+      "modelKey": "gpt-5.6-terra",
+      "fromUnix": 1785369600,
+      "revision": "standard-api-gpt-5.6-terra-from-2026-07-30",
+      "rates": {
+        "inputUSDPerMillion": 2,
+        "cachedInputUSDPerMillion": 0.2,
+        "outputUSDPerMillion": 12
+      }
+    },
+    {
+      "modelKey": "gpt-5.6-luna",
+      "fromUnix": null,
+      "revision": "standard-api-gpt-5.6-luna-before-2026-07-30",
+      "rates": {
+        "inputUSDPerMillion": 1,
+        "cachedInputUSDPerMillion": 0.1,
+        "outputUSDPerMillion": 6
+      }
+    },
+    {
+      "modelKey": "gpt-5.6-luna",
+      "fromUnix": 1785369600,
+      "revision": "standard-api-gpt-5.6-luna-from-2026-07-30",
+      "rates": {
+        "inputUSDPerMillion": 0.2,
+        "cachedInputUSDPerMillion": 0.02,
+        "outputUSDPerMillion": 1.2
+      }
+    },
+    {
+      "modelKey": "gpt-5.3-codex",
+      "fromUnix": null,
+      "revision": "standard-api-gpt-5.3-codex",
+      "rates": {
+        "inputUSDPerMillion": 1.75,
+        "cachedInputUSDPerMillion": 0.175,
+        "outputUSDPerMillion": 14
+      }
+    },
+    {
+      "modelKey": "gpt-5.2-codex",
+      "fromUnix": null,
+      "revision": "standard-api-gpt-5.2-codex",
+      "rates": {
+        "inputUSDPerMillion": 1.75,
+        "cachedInputUSDPerMillion": 0.175,
+        "outputUSDPerMillion": 14
+      }
+    },
+    {
+      "modelKey": "gpt-5.4",
+      "fromUnix": null,
+      "revision": "standard-api-gpt-5.4",
+      "rates": {
+        "inputUSDPerMillion": 2.5,
+        "cachedInputUSDPerMillion": 0.25,
+        "outputUSDPerMillion": 15
+      }
+    },
+    {
+      "modelKey": "gpt-5.4-mini",
+      "fromUnix": null,
+      "revision": "standard-api-gpt-5.4-mini",
+      "rates": {
+        "inputUSDPerMillion": 0.75,
+        "cachedInputUSDPerMillion": 0.075,
+        "outputUSDPerMillion": 4.5
+      }
+    }
+  ]
+}

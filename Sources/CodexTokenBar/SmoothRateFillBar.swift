@@ -8,6 +8,7 @@ struct SmoothRateFillBar: NSViewRepresentable {
     var startPoint: UnitPoint = .leading
     var endPoint: UnitPoint = .trailing
     var animationDuration: TimeInterval = 0.2
+    var modelRates: [ModelRateContribution]? = nil
 
     func makeNSView(context: Context) -> SmoothRateFillLayerView {
         let view = SmoothRateFillLayerView()
@@ -18,7 +19,8 @@ struct SmoothRateFillBar: NSViewRepresentable {
             startPoint: startPoint,
             endPoint: endPoint,
             animationDuration: animationDuration,
-            animated: false
+            animated: false,
+            modelRates: modelRates
         )
         return view
     }
@@ -31,7 +33,8 @@ struct SmoothRateFillBar: NSViewRepresentable {
             startPoint: startPoint,
             endPoint: endPoint,
             animationDuration: animationDuration,
-            animated: true
+            animated: !context.transaction.disablesAnimations,
+            modelRates: modelRates
         )
     }
 }
@@ -41,9 +44,20 @@ final class SmoothRateFillLayerView: NSView {
     private var fraction: Double = 0
     private var minimumFraction: Double = 0
     private var fillColors: [Color] = []
+    private var modelRates: [ModelRateContribution]?
     private var gradientStartPoint = UnitPoint.leading
     private var gradientEndPoint = UnitPoint.trailing
     private var animationDuration: TimeInterval = 0.2
+    private var appliedStyle: FillStyle?
+    private struct FillStyle: Equatable {
+        let scale: CGFloat
+        let colors: [Color]
+        let rates: [ModelRateContribution]?
+        let start: UnitPoint
+        let end: UnitPoint
+        let appearance: NSAppearance.Name
+    }
+    private(set) var styleApplicationCount = 0
     private var lastAppliedWidth: CGFloat?
     private var lastAppliedHeight: CGFloat?
 
@@ -66,6 +80,12 @@ final class SmoothRateFillLayerView: NSView {
         applyFill(animated: false)
     }
 
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        appliedStyle = nil
+        applyFill(animated: false)
+    }
+
     func update(
         fraction: Double,
         minimumFraction: Double,
@@ -73,8 +93,10 @@ final class SmoothRateFillLayerView: NSView {
         startPoint: UnitPoint,
         endPoint: UnitPoint,
         animationDuration: TimeInterval,
-        animated: Bool
+        animated: Bool,
+        modelRates: [ModelRateContribution]? = nil
     ) {
+        self.modelRates = modelRates
         self.fraction = fraction
         self.minimumFraction = minimumFraction
         self.fillColors = colors
@@ -116,7 +138,9 @@ final class SmoothRateFillLayerView: NSView {
         gradientLayer.cornerRadius = newCornerRadius
         CATransaction.commit()
 
-        guard animated,
+        guard animated, window?.isVisible == true, !isHiddenOrHasHiddenAncestor,
+              !ProcessInfo.processInfo.isLowPowerModeEnabled,
+              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
               let previousWidth,
               previousWidth > 0,
               clampedWidth > 0,
@@ -133,12 +157,30 @@ final class SmoothRateFillLayerView: NSView {
     }
 
     private func updateGradientConfiguration(scale: CGFloat) {
+        let style = FillStyle(scale: scale, colors: fillColors, rates: modelRates,
+            start: gradientStartPoint, end: gradientEndPoint, appearance: effectiveAppearance.name)
+        guard appliedStyle != style else { return }
+        appliedStyle = style
+        styleApplicationCount += 1
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
         gradientLayer.contentsScale = scale
-        gradientLayer.colors = fillColors.map { color in
-            nsColor(from: color).cgColor
+        if let modelRates {
+            let stops = ModelRatePresentation.stops(modelRates)
+            gradientLayer.colors = stops.map { nsColor(from: $0.color).cgColor }
+            gradientLayer.locations = stops.map { NSNumber(value: Double($0.location)) }
+            gradientLayer.startPoint = CGPoint(x: 0, y: 0.5)
+            gradientLayer.endPoint = CGPoint(x: 1, y: 0.5)
+        } else {
+            // CAGradientLayer paints no fill with a single color. Quota bars
+            // intentionally use one solid tint; repeat it at both endpoints.
+            let colors = fillColors.map { nsColor(from: $0).cgColor }
+            gradientLayer.colors = colors.count == 1 ? [colors[0], colors[0]] : colors
+            gradientLayer.locations = nil
+            gradientLayer.startPoint = CGPoint(x: gradientStartPoint.x, y: gradientStartPoint.y)
+            gradientLayer.endPoint = CGPoint(x: gradientEndPoint.x, y: gradientEndPoint.y)
         }
-        gradientLayer.startPoint = CGPoint(x: gradientStartPoint.x, y: gradientStartPoint.y)
-        gradientLayer.endPoint = CGPoint(x: gradientEndPoint.x, y: gradientEndPoint.y)
     }
 
     private func nsColor(from color: Color) -> NSColor {

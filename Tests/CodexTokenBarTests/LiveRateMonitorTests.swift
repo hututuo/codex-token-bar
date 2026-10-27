@@ -658,6 +658,75 @@ final class LiveRateMonitorTests: XCTestCase {
         XCTAssertEqual(monitor.testLastGlobalLogID, 9_000)
     }
 
+    @MainActor
+    func testCompletedBodyRevisionIsAcceptedOnlyOnceAfterSourceValidation() {
+        let monitor = LiveRateMonitor(monitoringEnabled: false)
+        monitor.testPrepareForLiveRateProcessing(selectedThreadID: "thread-1")
+        let generation = monitor.testSourceGeneration
+        let bindingGeneration = monitor.testSourceBindingGeneration
+        let path = "/tmp/rollout-revision-test.jsonl"
+
+        func sample(_ id: String, endedAt: Double) -> ObservedSpeedSample {
+            ObservedSpeedSample(
+                id: id,
+                threadID: "thread-1",
+                turnID: "turn-1",
+                itemID: id,
+                model: "model",
+                startedAt: endedAt - 1,
+                endedAt: endedAt,
+                outputTokens: 40,
+                outputCharacters: 80,
+                outputBytes: 80,
+                chunkCount: 0,
+                durationSeconds: 1,
+                tokensPerSecond: 40,
+                confidence: "high",
+                networkWarning: nil,
+                source: "test",
+                measurementKind: "completed_body",
+                tokenizer: "o200k_base"
+            )
+        }
+
+        var first = LiveRateMonitor.RolloutRead(
+            threadID: "thread-1", path: path, newOffset: 0, events: []
+        )
+        first.completedBodySamples = [sample("body/first", endedAt: 1_000)]
+        first.completedBodyRevision = 1
+        XCTAssertTrue(monitor.testApplyPollCompletion(
+            streamRows: [], rolloutReads: [first], sourceGeneration: generation,
+            sourceBindingGeneration: bindingGeneration, now: 1_000
+        ))
+        let firstCollectorRevision = monitor.testCompletedBodyCollectorRevision
+        XCTAssertEqual(monitor.testCompletedBodySampleCount, 1)
+        XCTAssertEqual(monitor.testAcceptedCompletedBodyRevision(path: path), 1)
+
+        XCTAssertTrue(monitor.testApplyPollCompletion(
+            streamRows: [], rolloutReads: [first], sourceGeneration: generation,
+            sourceBindingGeneration: bindingGeneration, now: 1_001
+        ))
+        XCTAssertEqual(monitor.testCompletedBodyCollectorRevision, firstCollectorRevision)
+        XCTAssertEqual(monitor.testCompletedBodySampleCount, 1)
+
+        var retry = first
+        retry.completedBodySamples = [sample("body/retry", endedAt: 1_002)]
+        retry.completedBodyRevision = 2
+        XCTAssertFalse(monitor.testApplyPollCompletion(
+            streamRows: [], rolloutReads: [retry], sourceGeneration: generation + 1,
+            sourceBindingGeneration: bindingGeneration, now: 1_002
+        ))
+        XCTAssertEqual(monitor.testAcceptedCompletedBodyRevision(path: path), 1)
+        XCTAssertEqual(monitor.testCompletedBodySampleCount, 1)
+
+        XCTAssertTrue(monitor.testApplyPollCompletion(
+            streamRows: [], rolloutReads: [retry], sourceGeneration: generation,
+            sourceBindingGeneration: bindingGeneration, now: 1_003
+        ))
+        XCTAssertEqual(monitor.testAcceptedCompletedBodyRevision(path: path), 2)
+        XCTAssertEqual(monitor.testCompletedBodySampleCount, 2)
+    }
+
     func testStreamParserKeepsToolArgumentDeltasOutOfVisibleTextButInLiveRate() throws {
         let row = LiveRateMonitor.LogRow(
             id: 1,
@@ -838,21 +907,30 @@ final class LiveRateMonitorTests: XCTestCase {
         XCTAssertFalse(rateBarSource.contains("Timer.publish"))
     }
 
-    func testLiveRateNumberUsesAnimatableTextWithoutHighFrequencyTimer() throws {
+    func testLiveRateNumberUsesSnapshotRateWithoutHighFrequencyTimer() throws {
         let projectRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let sourceURL = projectRoot.appendingPathComponent("Sources/CodexTokenBar/LiveRateView.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        let rateInstrumentRange = try XCTUnwrap(source.range(of: "struct LiveRateInstrument: View"))
+        let nextStructRange = try XCTUnwrap(
+            source.range(
+                of: "private struct LiveRatePowerToggle: View",
+                range: rateInstrumentRange.upperBound..<source.endIndex
+            )
+        )
+        let rateInstrumentSource = String(source[rateInstrumentRange.lowerBound..<nextStructRange.lowerBound])
 
         XCTAssertFalse(source.contains("struct SmoothRateValueText: View, Animatable"))
-        XCTAssertFalse(source.contains("SmoothRateValueText(value: snapshot.rollingTokensPerSecond)"))
-        XCTAssertFalse(source.contains(".animation(.linear(duration: 0.2), value: snapshot.rollingTokensPerSecond)"))
-        XCTAssertTrue(source.contains("Text(snapshot.rollingTokensPerSecondText)"))
-        XCTAssertFalse(source.contains(#"Text(String(format: "%.1f", snapshot.rollingTokensPerSecond))"#))
-        XCTAssertFalse(source.contains("TimelineView"))
-        XCTAssertFalse(source.contains("Timer.publish"))
+        XCTAssertTrue(rateInstrumentSource.contains("Text(displayUnit.text(displayUnit.value(total: snapshot.rollingTokensPerSecond"))
+        XCTAssertTrue(rateInstrumentSource.contains("rates: snapshot.modelRates"))
+        XCTAssertTrue(rateInstrumentSource.contains(".monospacedDigit()"))
+        XCTAssertFalse(rateInstrumentSource.contains("Text(snapshot.rollingTokensPerSecondText)"))
+        XCTAssertFalse(rateInstrumentSource.contains("SmoothRateValueText"))
+        XCTAssertFalse(rateInstrumentSource.contains("TimelineView"))
+        XCTAssertFalse(rateInstrumentSource.contains("Timer.publish"))
     }
 
     func testLiveRateSnapshotFormatsAllFinitePositiveRatesWithOneDecimal() {

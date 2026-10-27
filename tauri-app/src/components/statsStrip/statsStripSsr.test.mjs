@@ -56,15 +56,15 @@ test("observed cycle models preserve unknown prices, independent review, Tokens 
     assert.match(container.querySelector('.quota-calendar-selection').title,/开始记录/);
     assert.equal(container.querySelector('.stats-model-cost-header .quota-calendar-disclosure').textContent,"历史周期");
     assert.equal(container.querySelector('.quota-cycle-calendar'),null);
-    assert.match(container.textContent,/Auto Review（Luna）/);assert.match(container.textContent,/GPT-5.6-NewLane/);
-    assert.match(container.textContent,/价格未知/);assert.match(container.textContent,/已知价格小计[^$]*\$0\.40/);
-    assert.match(container.textContent,/未确定所属周期 · 500 Token/);
+    assert.match(container.textContent,/Auto Review（Luna）/);assert.match(container.textContent,/Luna/);assert.match(container.textContent,/GPT-5.6-NewLane/);
+    assert.match(container.textContent,/价格未知/);assert.match(container.textContent,/已知价格小计[^$]*\$0\.20/);
+    assert.equal(container.querySelector(".stats-quota-boundary-detail"),null);
     assert.ok(calls.every(([,args])=>args.expectedScope==="account-a|pro|codex" && args.sourceToken.canonicalHomeKey==="home-a"));
     await React.act(async()=>{container.querySelector('.quota-calendar-disclosure').click();await settle();});
     const previous=container.querySelector('.quota-calendar-bands button[aria-label^="第 1 期"]');
     await React.act(async()=>{previous.click();await settle();});
     assert.equal(calls.at(-1)[1].cycleId,"previous");
-    assert.match(container.querySelector('.quota-calendar-selection').title,/提前重置（推测）/);
+    assert.match(container.querySelector('.quota-calendar-selection').title,/额度已重置/);
     assert.ok(container.querySelector('.quota-cycle-calendar'));
     assert.equal(container.querySelector('.quota-calendar-disclosure').getAttribute("aria-expanded"), "true");
     assert.equal(container.querySelector('[aria-label="模型费用范围"] button').textContent,"历史");
@@ -150,7 +150,7 @@ test("StatsStrip confines an anonymous model warning to its row without inventin
     assert.match(container.textContent, /价格未知/);
     assert.equal(container.querySelector(".stats-model-cost-empty"), null);
     assert.equal(container.querySelector(".stats-model-cost-total").textContent, "已知价格小计 —");
-    assert.equal(container.querySelectorAll(".stats-model-cost-primary-card").length, 4);
+    assert.equal(container.querySelectorAll(".stats-model-cost-primary-card").length, 0);
   });
 });
 
@@ -183,10 +183,8 @@ test("unknown boundary model retains its Tokens without a default-model price", 
       }));
       await settle();
     });
-    const detail = container.querySelector(".stats-quota-boundary-detail");
-    assert.match(detail.textContent, /未确定所属周期 · 500 Token/);
-    assert.match(detail.querySelector("span").textContent, /未知模型 · 500 Token · 模型身份待补全/);
-    assert.doesNotMatch(detail.textContent, /\$/);
+    assert.equal(container.querySelector(".stats-quota-boundary-detail"), null);
+    assert.doesNotMatch(container.textContent, /未确定所属周期|周期切换附近/);
     assert.ok(container.querySelector(".stats-model-cost-total"));
   });
 });

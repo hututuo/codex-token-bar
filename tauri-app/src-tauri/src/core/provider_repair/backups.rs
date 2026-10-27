@@ -160,7 +160,6 @@ pub(super) enum MutationCommitConvergence {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum MutationReconcileAction {
-    RolledBackToBackup,
     KeptCommittedState,
 }
 
@@ -834,6 +833,235 @@ pub(super) fn begin_provider_mutation_journal(
     Ok(ProviderMutationJournalHandle { path, journal })
 }
 
+pub(super) fn require_explicit_restore_for_prepared_mutations(
+    backup_root: &Path,
+    pinned_home: &PinnedHome,
+    sqlite_home: &PinnedHome,
+    selected_backup_id: &str,
+) -> Result<bool, String> {
+    let mutations = unfinished_provider_mutations_for_roots(
+        backup_root,
+        pinned_home,
+        sqlite_home,
+    )
+    .map_err(|blocked| blocked.message)?;
+    let mut has_prepared_mutation = false;
+    for (mutation_path, journal, backup) in mutations {
+        if journal.phase == ProviderMutationJournalPhase::Prepared {
+            has_prepared_mutation = true;
+            if journal.source_backup_id != selected_backup_id || backup.id != selected_backup_id {
+                return Err(format!(
+                    "Provider recovery 已延后自动恢复。请在 Codex 停止时显式回滚事务要求的恢复点 {}（当前选择 {}）；mutation journal 保留于 {}，恢复点保留于 {}。",
+                    journal.source_backup_id,
+                    selected_backup_id,
+                    mutation_path.display(),
+                    backup.path
+                ));
+            }
+        }
+    }
+    Ok(has_prepared_mutation)
+}
+
+fn clear_prepared_mutation_after_explicit_restore(
+    backup_root: &Path,
+    pinned_home: &PinnedHome,
+    sqlite_home: &PinnedHome,
+    restored_backup_id: &str,
+    probe: &mut impl FnMut() -> Result<bool, String>,
+) -> Result<(), String> {
+    let mutations = unfinished_provider_mutations_for_roots(
+        backup_root,
+        pinned_home,
+        sqlite_home,
+    )
+    .map_err(|blocked| blocked.message)?;
+    for (mutation_path, journal, backup) in mutations {
+        if journal.phase != ProviderMutationJournalPhase::Prepared {
+            continue;
+        }
+        if journal.source_backup_id != restored_backup_id || backup.id != restored_backup_id {
+            return Err(format!(
+                "显式回滚已完成，但没有清理未提交 mutation journal：要求恢复点 {}，实际恢复点 {}；journal 保留于 {}，要求恢复点保留于 {}。",
+                journal.source_backup_id,
+                restored_backup_id,
+                mutation_path.display(),
+                backup.path
+            ));
+        }
+        ensure_recovery_compensation_allowed(probe, "显式回滚清理 mutation journal 前")?;
+        cleanup_provider_mutation_journal(backup_root, &mutation_path)?;
+    }
+    Ok(())
+}
+
+pub(super) fn restore_selected_backup_and_resolve_prepared_mutations(
+    backup_root: &Path,
+    pinned_home: &PinnedHome,
+    sqlite_home: &PinnedHome,
+    backup: &ProviderRepairBackupInfo,
+    probe: &mut impl FnMut() -> Result<bool, String>,
+    verify: impl FnOnce(&PinnedHome) -> Result<(), String>,
+) -> Result<Option<ProviderRepairBackupInfo>, String> {
+    ensure_backup_matches_pinned_roots(backup, pinned_home, sqlite_home)?;
+    let has_prepared_mutation = require_explicit_restore_for_prepared_mutations(
+        backup_root,
+        pinned_home,
+        sqlite_home,
+        &backup.id,
+    )?;
+    let retained_current_state = if has_prepared_mutation {
+        ensure_recovery_compensation_allowed(probe, "显式回滚前创建当前状态恢复点")?;
+        let source_manifest = validate_backup_manifest(Path::new(&backup.path))?;
+        let current_target_provider =
+            super::scan_provider_repair_result_for_roots(pinned_home, sqlite_home)?.target.provider;
+        let snapshot = preserve_live_restore_state_as_backup(
+            backup_root,
+            pinned_home,
+            sqlite_home,
+            &source_manifest,
+            &current_target_provider,
+        )?;
+        ensure_recovery_compensation_allowed(probe, "当前状态恢复点创建后")
+            .map_err(|error| {
+                format!(
+                    "{error}；当前状态恢复点 {} 保留于 {}。",
+                    snapshot.id, snapshot.path
+                )
+            })?;
+        Some(snapshot)
+    } else {
+        None
+    };
+    restore_provider_backup_files_with_home(
+        pinned_home,
+        sqlite_home,
+        backup,
+        &mut noop_restore_hook,
+        probe,
+        verify,
+        None,
+    )
+    .map(|_| ())
+    .map_err(|error| match retained_current_state.as_ref() {
+        Some(snapshot) => format!(
+            "{error}；当前状态恢复点 {} 保留于 {}。",
+            snapshot.id, snapshot.path
+        ),
+        None => error,
+    })?;
+    clear_prepared_mutation_after_explicit_restore(
+        backup_root,
+        pinned_home,
+        sqlite_home,
+        &backup.id,
+        probe,
+    )
+    .map_err(|error| {
+        match retained_current_state.as_ref() {
+            Some(snapshot) => format!(
+                "备份 {} 已恢复并通过强验证，但未提交 mutation journal 清理：{error}；当前状态恢复点 {} 保留于 {}。",
+                backup.id, snapshot.id, snapshot.path
+            ),
+            None => format!(
+                "备份 {} 已恢复并通过强验证，但未提交 mutation journal 清理：{error}",
+                backup.id
+            ),
+        }
+    })?;
+    Ok(retained_current_state)
+}
+
+fn preserve_live_restore_state_as_backup(
+    backup_root: &Path,
+    pinned_home: &PinnedHome,
+    sqlite_home: &PinnedHome,
+    source_manifest: &BackupManifest,
+    target_provider: &str,
+) -> Result<ProviderRepairBackupInfo, String> {
+    let account_identity = pinned_home
+        .account_identity_fingerprint()?
+        .ok_or_else(|| "创建当前状态恢复点前无法确认账号身份。".to_string())?;
+    let (id, backup_path) = create_unique_directory(backup_root, "")?;
+    let result = (|| {
+        let mut members = Vec::with_capacity(source_manifest.members.len());
+        for source_member in &source_manifest.members {
+            let relative = manifest_path(&source_member.relative_path)?;
+            let current_home = if is_sqlite_member(source_member) {
+                sqlite_home
+            } else {
+                pinned_home
+            };
+            if source_member.kind == "sqlite" {
+                members.push(backup_sqlite_member(sqlite_home, &backup_path, true)?);
+            } else if source_member.kind == "sqliteSidecar" {
+                members.push(absent_member(
+                    &source_member.relative_path,
+                    &source_member.kind,
+                ));
+            } else if source_member.kind == "sessionPrefix" {
+                let Some(source) = current_home.open_file(&relative)? else {
+                    members.push(absent_member(
+                        &source_member.relative_path,
+                        &source_member.kind,
+                    ));
+                    continue;
+                };
+                let backup_relative = PathBuf::from("session-prefix").join(&relative);
+                let target = backup_path.join(&backup_relative);
+                let (size, checksum_sha256) = copy_open_first_line(source, &target)?;
+                members.push(BackupMember {
+                    kind: source_member.kind.clone(),
+                    relative_path: source_member.relative_path.clone(),
+                    backup_path: Some(path_to_manifest_string(&backup_relative)?),
+                    present: true,
+                    size,
+                    checksum_sha256: Some(checksum_sha256),
+                });
+            } else {
+                let suffix = format!("{}.before", source_member.relative_path);
+                members.push(backup_regular_member(
+                    current_home,
+                    &backup_path,
+                    &source_member.relative_path,
+                    &suffix,
+                    &source_member.kind,
+                )?);
+            }
+        }
+        if pinned_home.account_identity_fingerprint()?.as_deref()
+            != Some(account_identity.as_str())
+        {
+            return Err("创建当前状态恢复点期间账号身份发生变化。".into());
+        }
+        pinned_home.ensure_canonical_path_identity()?;
+        sqlite_home.ensure_canonical_path_identity()?;
+        sync_directory_tree(&backup_path)?;
+        let manifest = BackupManifest {
+            schema_version: BACKUP_MANIFEST_SCHEMA_VERSION,
+            complete: true,
+            id: id.clone(),
+            created_at: format_now_rfc3339(),
+            codex_home: pinned_home.canonical_path().display().to_string(),
+            codex_home_fingerprint: pinned_home_fingerprint(pinned_home),
+            sqlite_home: Some(sqlite_home.canonical_path().display().to_string()),
+            sqlite_home_fingerprint: Some(pinned_home_fingerprint(sqlite_home)),
+            target_provider: target_provider.to_string(),
+            members,
+        };
+        let bytes = serde_json::to_vec_pretty(&manifest).map_err(|error| error.to_string())?;
+        write_file_atomically(&backup_path.join("manifest.json"), &bytes)?;
+        sync_directory(&backup_path)?;
+        sync_directory(backup_root)?;
+        validate_backup_manifest(&backup_path).map(|_| ())
+    })();
+    if let Err(error) = result {
+        let cleanup = cleanup_incomplete_backup(backup_root, &backup_path, &id);
+        return Err(format!("{error}{cleanup}"));
+    }
+    read_backup_info(&backup_path)
+}
+
 pub(super) fn commit_provider_mutation_journal_with_hook(
     backup_root: &Path,
     handle: &mut ProviderMutationJournalHandle,
@@ -1213,22 +1441,39 @@ pub(super) fn restore_provider_backup_files_with_pinned_roots_verification(
     backup: &ProviderRepairBackupInfo,
     verify: impl FnOnce(&PinnedHome) -> Result<(), String>,
 ) -> Result<(), String> {
+    let mut probe = crate::platform::codex_desktop_is_running;
+    restore_provider_backup_files_with_pinned_roots_probe_and_verification(
+        pinned_home,
+        sqlite_home,
+        backup,
+        &mut probe,
+        verify,
+    )
+}
+
+pub(super) fn restore_provider_backup_files_with_pinned_roots_probe_and_verification(
+    pinned_home: &PinnedHome,
+    sqlite_home: &PinnedHome,
+    backup: &ProviderRepairBackupInfo,
+    probe: &mut impl FnMut() -> Result<bool, String>,
+    verify: impl FnOnce(&PinnedHome) -> Result<(), String>,
+) -> Result<(), String> {
     let backup_path = PathBuf::from(&backup.path);
     let backup_root = backup_path
         .parent()
         .ok_or_else(|| "备份目录缺少父目录".to_string())?;
-    reconcile_unfinished_restore_transactions_with_roots(
+    reconcile_unfinished_restore_transactions_with_roots_and_probe(
         backup_root,
         pinned_home,
         sqlite_home,
+        probe,
     )?;
-    let mut probe = || Ok(false);
     restore_provider_backup_files_with_home(
         pinned_home,
         sqlite_home,
         backup,
         &mut noop_restore_hook,
-        &mut probe,
+        probe,
         verify,
         None,
     )
@@ -1244,8 +1489,13 @@ pub(super) fn restore_provider_backup_files_with_pinned_verification(
     let backup_root = backup_path
         .parent()
         .ok_or_else(|| "备份目录缺少父目录".to_string())?;
-    reconcile_unfinished_restore_transactions_with_home(backup_root, pinned_home)?;
-    let mut probe = || Ok(false);
+    let mut probe = crate::platform::codex_desktop_is_running;
+    reconcile_unfinished_restore_transactions_with_roots_and_probe(
+        backup_root,
+        pinned_home,
+        pinned_home,
+        &mut probe,
+    )?;
     restore_provider_backup_files_with_home(
         pinned_home,
         pinned_home,
@@ -1296,8 +1546,13 @@ pub(super) fn restore_provider_backup_files_at_with_verification_and_hook(
     let backup_root = backup_path
         .parent()
         .ok_or_else(|| "备份目录缺少父目录".to_string())?;
-    reconcile_unfinished_restore_transactions_with_home(backup_root, &pinned_home)?;
     let mut probe = || Ok(false);
+    reconcile_unfinished_restore_transactions_with_roots_and_probe(
+        backup_root,
+        &pinned_home,
+        &pinned_home,
+        &mut probe,
+    )?;
     restore_provider_backup_files_with_home(
         &pinned_home,
         &pinned_home,
@@ -1323,7 +1578,12 @@ pub(super) fn restore_provider_backup_files_at_with_probe_and_hook(
     let backup_root = backup_path
         .parent()
         .ok_or_else(|| "备份目录缺少父目录".to_string())?;
-    reconcile_unfinished_restore_transactions_with_home(backup_root, &pinned_home)?;
+    reconcile_unfinished_restore_transactions_with_roots_and_probe(
+        backup_root,
+        &pinned_home,
+        &pinned_home,
+        &mut probe,
+    )?;
     restore_provider_backup_files_with_home(
         &pinned_home,
         &pinned_home,
@@ -1517,7 +1777,9 @@ fn restore_provider_backup_files_with_home(
                 pinned_home,
                 sqlite_home,
                 &recovery_path,
-                &journal.members,
+                &journal,
+                &manifest.members,
+                probe,
                 hook,
             );
         if compensation_errors.is_empty() {
@@ -1527,6 +1789,14 @@ fn restore_provider_backup_files_with_home(
                 return Err(format!(
                     "恢复失败：{error}；恢复补偿强验证失败：{verification_error}；恢复材料保留于 {}，原恢复点仍保留。",
                     recovery_path.display()
+                ));
+            }
+            if let Err(deferred_error) =
+                ensure_recovery_compensation_allowed(probe, "恢复补偿材料清理前")
+            {
+                return Err(format!(
+                    "恢复失败：{error}；{deferred_error}；恢复材料保留于 {}，原恢复点保留于 {}。",
+                    recovery_path.display(), backup_path.display()
                 ));
             }
             let message = format!("恢复失败：{error}；已补偿回恢复前状态，原恢复点仍保留。");
@@ -1681,34 +1951,184 @@ fn compensate_restore(
     pinned_home: &PinnedHome,
     sqlite_home: &PinnedHome,
     recovery_path: &Path,
-    recovery_members: &[BackupMember],
+    journal: &RestoreJournal,
+    source_members: &[BackupMember],
+    probe: &mut impl FnMut() -> Result<bool, String>,
     hook: &mut impl FnMut(RestorePhase, usize, &Path) -> Result<(), String>,
 ) -> Vec<String> {
     let mut errors = Vec::new();
-    for (index, member) in ordered_restore_members(recovery_members)
+    if let Err(error) = verify_restore_compensation_scope(pinned_home, sqlite_home, journal) {
+        return vec![error];
+    }
+    if let Err(error) = validate_restore_compensation_ownership(
+        pinned_home,
+        sqlite_home,
+        &journal.members,
+        source_members,
+    ) {
+        return vec![error];
+    }
+    for (index, member) in ordered_restore_members(&journal.members)
         .into_iter()
         .enumerate()
     {
         let relative = Path::new(&member.relative_path);
-        let result = match hook(RestorePhase::Compensate, index, relative) {
-            Ok(()) => {
-                let mut install_hook = noop_restore_hook;
-                install_logical_member(
-                    pinned_home,
-                    sqlite_home,
-                    recovery_path,
-                    member,
-                    index,
-                    &mut install_hook,
-                )
+        let result = (|| {
+            ensure_recovery_compensation_allowed(probe, "恢复事务补偿前")?;
+            verify_restore_compensation_scope(pinned_home, sqlite_home, journal)?;
+            let target_member = source_members
+                .iter()
+                .find(|candidate| candidate.relative_path == member.relative_path)
+                .ok_or_else(|| format!("恢复目标缺少成员：{}", member.relative_path))?;
+            if live_member_matches(pinned_home, sqlite_home, member)? {
+                return Ok(());
             }
-            Err(error) => Err(error),
-        };
+            if !live_member_matches(pinned_home, sqlite_home, target_member)? {
+                return Err(format!(
+                    "成员 {} 当前内容既不匹配恢复目标，也不匹配操作前快照；检测到未归属写入，已停止补偿并保留恢复证据。",
+                    member.relative_path
+                ));
+            }
+            hook(RestorePhase::Compensate, index, relative)?;
+            ensure_recovery_compensation_allowed(probe, "恢复事务成员补偿前")?;
+            verify_restore_compensation_scope(pinned_home, sqlite_home, journal)?;
+            if !live_member_matches(pinned_home, sqlite_home, target_member)? {
+                return Err(format!(
+                    "成员 {} 在补偿开始前发生变化，已停止并保留恢复证据。",
+                    member.relative_path
+                ));
+            }
+            let mut install_hook = |phase, hook_index, hook_path: &Path| {
+                if phase == RestorePhase::BeforeReplace {
+                    ensure_recovery_compensation_allowed(probe, "恢复事务成员替换前")?;
+                    verify_restore_compensation_scope(pinned_home, sqlite_home, journal)?;
+                    if !live_member_matches(pinned_home, sqlite_home, target_member)? {
+                        return Err(format!(
+                            "成员 {} 在补偿替换前发生变化，已停止并保留恢复证据。",
+                            member.relative_path
+                        ));
+                    }
+                }
+                noop_restore_hook(phase, hook_index, hook_path)
+            };
+            install_logical_member(
+                pinned_home,
+                sqlite_home,
+                recovery_path,
+                member,
+                index,
+                &mut install_hook,
+            )
+        })();
         if let Err(error) = result {
             errors.push(format!("{}：{error}", member.relative_path));
+            break;
         }
     }
     errors
+}
+
+fn validate_restore_compensation_ownership(
+    pinned_home: &PinnedHome,
+    sqlite_home: &PinnedHome,
+    recovery_members: &[BackupMember],
+    source_members: &[BackupMember],
+) -> Result<(), String> {
+    for recovery_member in recovery_members {
+        let source_member = source_members
+            .iter()
+            .find(|candidate| candidate.relative_path == recovery_member.relative_path)
+            .ok_or_else(|| format!("恢复目标缺少成员：{}", recovery_member.relative_path))?;
+        if live_member_matches(pinned_home, sqlite_home, recovery_member)?
+            || live_member_matches(pinned_home, sqlite_home, source_member)?
+        {
+            continue;
+        }
+        return Err(format!(
+            "成员 {} 当前内容既不匹配恢复目标，也不匹配操作前快照；检测到未归属写入，已停止补偿并保留恢复证据。",
+            recovery_member.relative_path
+        ));
+    }
+    Ok(())
+}
+
+fn live_member_matches(
+    pinned_home: &PinnedHome,
+    sqlite_home: &PinnedHome,
+    member: &BackupMember,
+) -> Result<bool, String> {
+    let relative = manifest_path(&member.relative_path)?;
+    let member_home = if is_sqlite_member(member) {
+        sqlite_home
+    } else {
+        pinned_home
+    };
+    let Some(file) = member_home.open_file(&relative)? else {
+        return Ok(!member.present);
+    };
+    if !member.present {
+        return Ok(false);
+    }
+    let expected_checksum = member
+        .checksum_sha256
+        .as_deref()
+        .ok_or_else(|| format!("恢复成员缺少 SHA-256：{}", member.relative_path))?;
+    let (size, checksum) = if member.kind == "sessionPrefix" {
+        first_line_size_and_sha256(file)?
+    } else {
+        member_home
+            .member_len_and_sha256(&relative)?
+            .ok_or_else(|| format!("恢复成员在校验期间消失：{}", member.relative_path))?
+    };
+    Ok(size == member.size && checksum == expected_checksum)
+}
+
+fn verify_restore_compensation_scope(
+    pinned_home: &PinnedHome,
+    sqlite_home: &PinnedHome,
+    journal: &RestoreJournal,
+) -> Result<(), String> {
+    // A still-open directory descriptor can continue addressing the old tree after
+    // its canonical path has been replaced. Compensation must not write through that
+    // descriptor once the user-visible Home path points at a different generation.
+    pinned_home.ensure_canonical_path_identity()?;
+    sqlite_home.ensure_canonical_path_identity()?;
+    let home_generation = pinned_home.generation_identity()?;
+    if &home_generation != &journal.home_generation {
+        return Err("恢复补偿检测到 Codex Home generation 已变化，已停止并保留恢复证据。".into());
+    }
+    let account_identity = pinned_home
+        .account_identity_fingerprint()?
+        .ok_or_else(|| "恢复补偿无法确认账号身份，已停止并保留恢复证据。".to_string())?;
+    if account_identity != journal.account_identity {
+        return Err("恢复补偿检测到账号身份已变化，已停止并保留恢复证据。".into());
+    }
+    let expected_sqlite_generation = journal
+        .sqlite_home_generation
+        .as_ref()
+        .unwrap_or(&journal.home_generation);
+    let sqlite_generation = sqlite_home.generation_identity()?;
+    if &sqlite_generation != expected_sqlite_generation {
+        return Err(
+            "恢复补偿检测到 SQLite Home generation 已变化，已停止并保留恢复证据。".into(),
+        );
+    }
+    Ok(())
+}
+
+fn ensure_recovery_compensation_allowed(
+    probe: &mut impl FnMut() -> Result<bool, String>,
+    boundary: &str,
+) -> Result<(), String> {
+    match probe() {
+        Ok(false) => Ok(()),
+        Ok(true) => Err(format!(
+            "{boundary}检测到 Codex 正在运行，恢复已延后；journal 与恢复点保留。"
+        )),
+        Err(error) => Err(format!(
+            "{boundary}无法确认 Codex 运行状态：{error}；恢复已延后，journal 与恢复点保留。"
+        )),
+    }
 }
 
 fn ordered_restore_members(members: &[BackupMember]) -> Vec<&BackupMember> {
@@ -2639,10 +3059,26 @@ pub(super) fn reconcile_unfinished_restore_transactions_with_roots(
     pinned_home: &PinnedHome,
     sqlite_home: &PinnedHome,
 ) -> Result<Vec<MutationReconcileAction>, String> {
-    reconcile_unfinished_restore_transactions_with_roots_diagnostics(
+    let mut probe = crate::platform::codex_desktop_is_running;
+    reconcile_unfinished_restore_transactions_with_roots_and_probe(
         backup_root,
         pinned_home,
         sqlite_home,
+        &mut probe,
+    )
+}
+
+pub(super) fn reconcile_unfinished_restore_transactions_with_roots_and_probe(
+    backup_root: &Path,
+    pinned_home: &PinnedHome,
+    sqlite_home: &PinnedHome,
+    probe: &mut impl FnMut() -> Result<bool, String>,
+) -> Result<Vec<MutationReconcileAction>, String> {
+    reconcile_unfinished_restore_transactions_with_roots_diagnostics_and_probe(
+        backup_root,
+        pinned_home,
+        sqlite_home,
+        probe,
     )
     .map_err(|blocked| blocked.message)
 }
@@ -2663,17 +3099,37 @@ pub(super) fn reconcile_unfinished_restore_transactions_with_roots_diagnostics(
     pinned_home: &PinnedHome,
     sqlite_home: &PinnedHome,
 ) -> Result<Vec<MutationReconcileAction>, RestoreRecoveryBlocked> {
+    let mut probe = crate::platform::codex_desktop_is_running;
+    reconcile_unfinished_restore_transactions_with_roots_diagnostics_and_probe(
+        backup_root,
+        pinned_home,
+        sqlite_home,
+        &mut probe,
+    )
+}
+
+pub(super) fn reconcile_unfinished_restore_transactions_with_roots_diagnostics_and_probe(
+    backup_root: &Path,
+    pinned_home: &PinnedHome,
+    sqlite_home: &PinnedHome,
+    probe: &mut impl FnMut() -> Result<bool, String>,
+) -> Result<Vec<MutationReconcileAction>, RestoreRecoveryBlocked> {
     let transactions =
         unfinished_restore_transactions_for_home(backup_root, pinned_home, sqlite_home)?;
 
     for (recovery_path, journal) in transactions {
         let mut hook = noop_restore_hook;
         if journal.phase != RestoreJournalPhase::Committed {
+            let source_manifest = validate_journal_source_backup(backup_root, &journal).map_err(
+                |error| recovery_blocked("sourceBackupMismatch", Some(&recovery_path), error),
+            )?;
             let errors = compensate_restore(
                 pinned_home,
                 sqlite_home,
                 &recovery_path,
-                &journal.members,
+                &journal,
+                &source_manifest.members,
+                probe,
                 &mut hook,
             );
             if !errors.is_empty() {
@@ -2693,6 +3149,9 @@ pub(super) fn reconcile_unfinished_restore_transactions_with_roots_diagnostics(
                 },
             )?;
         }
+        ensure_recovery_compensation_allowed(probe, "恢复事务清理前").map_err(|error| {
+            recovery_blocked("recoveryDeferred", Some(&recovery_path), error)
+        })?;
         cleanup_recovery_path(backup_root, &recovery_path, &mut hook).map_err(|error| {
             recovery_blocked("recoveryCleanupFailed", Some(&recovery_path), error)
         })?;
@@ -2716,31 +3175,25 @@ pub(super) fn reconcile_unfinished_restore_transactions_with_roots_diagnostics(
     let mut actions = Vec::new();
     for (mutation_path, journal, backup) in mutations {
         if journal.phase == ProviderMutationJournalPhase::Prepared {
-            let mut hook = noop_restore_hook;
-            let mut probe = || Ok(false);
-            restore_provider_backup_files_with_home(
-                pinned_home,
-                sqlite_home,
-                &backup,
-                &mut hook,
-                &mut probe,
-                |_| Ok(()),
-                None,
-            )
-            .map_err(|error| {
-                recovery_blocked(
-                    "mutationRollbackFailed",
-                    Some(&mutation_path),
-                    format!(
-                        "未提交 Provider {} 事务自动回滚失败：{error}",
-                        journal.mode
-                    ),
-                )
-            })?;
-            actions.push(MutationReconcileAction::RolledBackToBackup);
+            ensure_recovery_compensation_allowed(probe, "Provider mutation 自动回滚前")
+                .map_err(|error| {
+                    recovery_blocked("recoveryDeferred", Some(&mutation_path), error)
+                })?;
+            return Err(recovery_blocked(
+                "mutationOwnershipUnproven",
+                Some(&mutation_path),
+                format!(
+                    "未提交 Provider {} 事务的 journal 未保存写后成员 ownership hash，无法证明完整 SQLite 快照仍只包含本次事务写入；已延后自动恢复，journal 保留于 {}，恢复点保留于 {}。",
+                    journal.mode,
+                    mutation_path.display(),
+                    backup.path
+                ),
+            ));
         } else {
             actions.push(MutationReconcileAction::KeptCommittedState);
         }
+        ensure_recovery_compensation_allowed(probe, "Provider mutation journal 清理前")
+            .map_err(|error| recovery_blocked("recoveryDeferred", Some(&mutation_path), error))?;
         cleanup_provider_mutation_journal(backup_root, &mutation_path).map_err(
             |error| {
                 recovery_blocked(
@@ -2885,7 +3338,7 @@ fn unfinished_restore_transactions_for_home(
 fn validate_journal_source_backup(
     backup_root: &Path,
     journal: &RestoreJournal,
-) -> Result<(), String> {
+) -> Result<BackupManifest, String> {
     let canonical_root = backup_root
         .canonicalize()
         .map_err(|error| format!("无法确认备份根目录 {}：{error}", backup_root.display()))?;
@@ -2916,7 +3369,7 @@ fn validate_journal_source_backup(
     {
         return Err("journal 源备份 ID、路径或 Home/SQLite Home 身份不一致".into());
     }
-    Ok(())
+    Ok(manifest)
 }
 
 fn recovery_blocked(

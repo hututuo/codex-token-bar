@@ -110,8 +110,11 @@ final class HistoricalAPIPriceAggregationTests: XCTestCase {
             rates: { $0.currentPriceRates }
         )
 
-        XCTAssertEqual(estimate.costUSD, 2.7, accuracy: 0.0001)
-        XCTAssertEqual(estimate.detectedModels, [.gpt56Luna, .gpt54Legacy])
+        XCTAssertEqual(estimate.costUSD, 0, accuracy: 0.0001)
+        XCTAssertTrue(estimate.detectedModels.isEmpty)
+        XCTAssertEqual(estimate.excludedModels, ["codex-auto-review"])
+        XCTAssertEqual(estimate.excludedCalls, 2)
+        XCTAssertEqual(try XCTUnwrap(AutoReviewReferencePricing.costUSD(for: row)), 2.7, accuracy: 0.0001)
     }
 
     func testExplicitRadarRatesRemainAuthoritativeWhenPeriodsArePresent() throws {

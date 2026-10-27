@@ -1,20 +1,27 @@
 pub mod app_paths;
+pub(crate) mod activity_speed_store;
+pub(crate) mod activity_speed_capture;
+pub mod agent_speed_reporting;
 pub(crate) mod app_operation_lock;
 pub mod auto_resume;
 pub(crate) mod atomic_file;
 pub mod codex_instances;
+pub mod claude_local_runtime;
 pub(crate) mod coordination_fs;
 pub(crate) mod cross_process_lock;
 pub mod dashboard;
 pub mod desktop_stream;
 pub mod live_rate;
 pub mod localtime;
+pub mod multi_client_product;
+pub mod multi_client_usage;
 pub mod provider_repair;
 pub(crate) mod process_tail;
 pub mod quota;
 pub mod quota_history;
 pub mod session_management;
 pub mod session_enhancements;
+pub(crate) mod shared_source_io;
 pub mod sqlite;
 pub mod startup_trace;
 pub mod thread_delete;
@@ -24,3 +31,10 @@ pub mod unread;
 pub mod usage;
 pub(crate) mod webview_startup;
 pub(crate) mod windows_path;
+
+pub(crate) mod modeltrace;
+
+pub(crate) mod business_store_container;
+pub(crate) mod business_store_sql;
+pub(crate) mod business_store_connection;
+pub(crate) mod business_store_route;

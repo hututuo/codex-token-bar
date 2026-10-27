@@ -157,6 +157,7 @@ struct TokenDisplaySnapshot {
     let title: String
     let status: String
     let rate: Double
+    let modelRates: [ModelRateContribution]
     let consumedTokens: Int
     let todayTokens: Int
     let todayRequests: Int
@@ -171,6 +172,7 @@ struct TokenDisplaySnapshot {
         title: String,
         status: String,
         rate: Double,
+        modelRates: [ModelRateContribution] = [],
         consumedTokens: Int,
         todayTokens: Int,
         todayRequests: Int,
@@ -184,6 +186,7 @@ struct TokenDisplaySnapshot {
         self.title = title
         self.status = status
         self.rate = rate
+        self.modelRates = modelRates
         self.consumedTokens = consumedTokens
         self.todayTokens = todayTokens
         self.todayRequests = todayRequests
@@ -212,6 +215,7 @@ struct TokenDisplaySnapshot {
             title: "全会话实时",
             status: monitor.totalSnapshot.status,
             rate: monitor.totalSnapshot.rollingTokensPerSecond,
+            modelRates: monitor.totalSnapshot.modelRates,
             consumedTokens: store.snapshot.stats.totalTokens,
             todayTokens: todayUsage?.tokens ?? 0,
             todayRequests: todayUsage?.calls ?? 0,
@@ -491,7 +495,8 @@ struct TokenDisplayCard: View {
                     pageButton(
                         systemImage: "chevron.left",
                         row: row,
-                        pageCount: pages.count,
+                        pages: pages,
+                        selectedPage: selectedPage,
                         delta: -1,
                         showsGlyph: visibility.showPageNavigationArrows
                     )
@@ -499,7 +504,8 @@ struct TokenDisplayCard: View {
                     pageButton(
                         systemImage: "chevron.right",
                         row: row,
-                        pageCount: pages.count,
+                        pages: pages,
+                        selectedPage: selectedPage,
                         delta: 1,
                         showsGlyph: visibility.showPageNavigationArrows
                     )
@@ -588,7 +594,7 @@ struct TokenDisplayCard: View {
                 from: displayModelBreakdowns,
                 fallbackModel: fallbackPriceModel,
                 showPlaceholders: snapshot.hasPreciseTokenUsage,
-                mergeAutoReview: true
+                mergeAutoReview: false
             )
             let pageCount = FloatingTodayModelUsagePresentation.pageCount(
                 for: .cost,
@@ -617,13 +623,12 @@ struct TokenDisplayCard: View {
     private func pageButton(
         systemImage: String,
         row: FloatingPanelPresentationRow,
-        pageCount: Int,
+        pages: [PagedContentDescriptor],
+        selectedPage: PagedContentDescriptor,
         delta: Int,
         showsGlyph: Bool
     ) -> some View {
         let edgeAlignment: Alignment = delta < 0 ? .leading : .trailing
-        let pages = pagedContentDescriptors(for: row)
-        let selectedPage = selectedPage(in: pages, for: row)
         let restingColor = palette(for: selectedPage.group).secondaryColor.opacity(0.62)
         let cueColor = pageNavigationCueEmphasized
             ? Color(red: 0.078, green: 0.361, blue: 0.694)
@@ -634,7 +639,7 @@ struct TokenDisplayCard: View {
                 row.id,
                 default: FloatingPanelContentVisibility.initialPageIndex(for: pages.map(\.group))
             ]
-            selectedPageIndexByRowID[row.id] = (current + delta + pageCount) % pageCount
+            selectedPageIndexByRowID[row.id] = (current + delta + pages.count) % pages.count
             onPageNavigation?()
         } label: {
             // Make the full edge gutter the label's concrete layout instead of
@@ -709,7 +714,8 @@ struct TokenDisplayCard: View {
 
             TokenDisplayRateBar(
                 rate: snapshot.rate,
-                usageStatus: usageStatus
+                usageStatus: usageStatus,
+                modelRates: snapshot.modelRates
             )
             .environment(\.tokenDisplayEmbeddedUsageStatusTextPalette, embeddedUsageStatusTextPalette)
             .frame(maxWidth: .infinity, alignment: .trailing)

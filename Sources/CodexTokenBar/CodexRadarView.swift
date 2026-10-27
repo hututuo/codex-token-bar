@@ -769,7 +769,7 @@ private struct CodexRadarIQDetail: View {
                     ForEach(Array(modelSeries.enumerated()), id: \.element.id) { index, series in
                         ChartLineToggle(
                             title: compactModelLabel(series.label),
-                            color: codexRadarSeriesColor(index),
+                            color: series.model.map(ModelUsagePresentation.color(for:)) ?? codexRadarSeriesColor(index),
                             isOn: modelSelectionBinding(for: series.id, in: modelSeries)
                         )
                     }
@@ -890,7 +890,7 @@ private struct CodexRadarQuotaDetail: View {
                                 ForEach(Array(quotaSeries.enumerated()), id: \.element.id) { index, series in
                                     ChartLineToggle(
                                         title: series.label,
-                                        color: codexRadarSeriesColor(index),
+                                        color: series.model.map(ModelUsagePresentation.color(for:)) ?? codexRadarSeriesColor(index),
                                         isOn: quotaTierSelectionBinding(for: series.id, in: quotaSeries)
                                     )
                                 }
@@ -1317,7 +1317,7 @@ private struct CodexRadarSeriesLineChart: View {
 
                 ForEach(visibleSeries, id: \.series.id) { item in
                     let points = chartPoints(for: item.series, xIndex: xIndex, axis: axis, plot: plot, step: step)
-                    let color = codexRadarSeriesColor(item.index)
+                    let color = item.series.model.map(ModelUsagePresentation.color(for:)) ?? codexRadarSeriesColor(item.index)
 
                     Path { path in
                         for (index, point) in points.enumerated() {
@@ -1467,7 +1467,7 @@ private struct CodexRadarSeriesLineChart: View {
                 id: item.series.id,
                 label: item.series.label,
                 value: "\(valuePrefix)\(CodexRadarModelIQPoint.display(point.value, fractionDigits: 2))",
-                colorIndex: item.index
+                color: item.series.model.map(ModelUsagePresentation.color(for:)) ?? codexRadarSeriesColor(item.index)
             )
         }
     }
@@ -1477,7 +1477,7 @@ private struct CodexRadarChartHoverRow: Identifiable {
     let id: String
     let label: String
     let value: String
-    let colorIndex: Int
+    let color: Color
 }
 
 private struct CodexRadarChartHoverBubble: View {
@@ -1493,7 +1493,7 @@ private struct CodexRadarChartHoverBubble: View {
             ForEach(rows) { row in
                 HStack(spacing: 7) {
                     Circle()
-                        .fill(codexRadarSeriesColor(row.colorIndex))
+                        .fill(row.color)
                         .frame(width: 7, height: 7)
                     Text(compactModelLabel(row.label))
                         .font(.system(size: 10, weight: .medium))

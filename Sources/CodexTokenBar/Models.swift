@@ -188,6 +188,9 @@ struct TurnCacheUsage: Codable, Identifiable {
     let userPrompt: String
     let assistantResponse: String
     let breakdown: TokenCacheBreakdown
+    let requestCount: Int
+    let lowHitCount: Int
+    let zeroHitCount: Int
 
     private enum CodingKeys: String, CodingKey {
         case id
@@ -198,6 +201,7 @@ struct TurnCacheUsage: Codable, Identifiable {
         case userPrompt
         case assistantResponse
         case breakdown
+        case requestCount, lowHitCount, zeroHitCount
     }
 
     init(
@@ -208,7 +212,10 @@ struct TurnCacheUsage: Codable, Identifiable {
         turnIndexInSession: Int,
         userPrompt: String,
         assistantResponse: String,
-        breakdown: TokenCacheBreakdown
+        breakdown: TokenCacheBreakdown,
+        requestCount: Int = 1,
+        lowHitCount: Int = 0,
+        zeroHitCount: Int = 0
     ) {
         self.id = id
         self.sessionID = sessionID
@@ -218,6 +225,9 @@ struct TurnCacheUsage: Codable, Identifiable {
         self.userPrompt = userPrompt
         self.assistantResponse = assistantResponse
         self.breakdown = breakdown
+        self.requestCount = requestCount
+        self.lowHitCount = lowHitCount
+        self.zeroHitCount = zeroHitCount
     }
 
     init(from decoder: Decoder) throws {
@@ -230,6 +240,9 @@ struct TurnCacheUsage: Codable, Identifiable {
         userPrompt = try container.decodeIfPresent(String.self, forKey: .userPrompt) ?? ""
         assistantResponse = try container.decodeIfPresent(String.self, forKey: .assistantResponse) ?? ""
         breakdown = try container.decode(TokenCacheBreakdown.self, forKey: .breakdown)
+        requestCount = try container.decodeIfPresent(Int.self, forKey: .requestCount) ?? 0
+        lowHitCount = try container.decodeIfPresent(Int.self, forKey: .lowHitCount) ?? 0
+        zeroHitCount = try container.decodeIfPresent(Int.self, forKey: .zeroHitCount) ?? 0
     }
 
     func encode(to encoder: Encoder) throws {
@@ -246,7 +259,20 @@ struct TurnCacheUsage: Codable, Identifiable {
             try container.encode(assistantResponse, forKey: .assistantResponse)
         }
         try container.encode(breakdown, forKey: .breakdown)
+        try container.encode(requestCount, forKey: .requestCount)
+        try container.encode(lowHitCount, forKey: .lowHitCount)
+        try container.encode(zeroHitCount, forKey: .zeroHitCount)
     }
+}
+
+struct CacheRequestUsage: Codable, Identifiable, Sendable {
+    let id: String
+    let timestamp: Date
+    let model: String?
+    let breakdown: TokenCacheBreakdown
+
+    var isZeroHit: Bool { breakdown.inputTokens > 0 && breakdown.cachedInputTokens == 0 }
+    var isLowHit: Bool { breakdown.inputTokens >= 20_000 && breakdown.cacheHitRate < 0.3 }
 }
 
 struct ModelTokenPricePeriod: Codable, Equatable, Sendable {

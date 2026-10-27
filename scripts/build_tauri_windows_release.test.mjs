@@ -255,6 +255,22 @@ test("PowerShell self-test captures config argv, stale output cleanup, and rerun
   assert.match(source, /publish.*conflict|FinalConflict/i);
 });
 
+test("Windows bundle publishes a version-matched self-contained Agent Speed reporter and legal notices", async () => {
+  const source = await readFile(windowsScript, "utf8");
+  const fixture = await readFile(windowsSelfTest, "utf8");
+  assert.match(source, /Assert-Command "dotnet"/);
+  assert.match(source, /dotnet publish \$ReporterProject[\s\S]*?--self-contained true/);
+  assert.match(source, /-p:PublishSingleFile=true/);
+  assert.match(source, /ReporterProjectVersion[\s\S]*ReporterClientVersion/);
+  assert.match(source, /Vendor\\AgentSpeed\\LICENSE/);
+  assert.match(source, /AgentSpeedReporter\/VENDOR\.md/);
+  assert.match(source, /THIRD-PARTY-NOTICES\.txt[\s\S]*?AgentSpeedReporter\/DOTNET-THIRD-PARTY-NOTICES\.txt/);
+  assert.match(fixture, /fixture \.NET runtime notices/);
+  assert.match(fixture, /function global:dotnet/);
+  assert.match(fixture, /win-x64,win-arm64/);
+  assert.match(fixture, /Agent Speed bundle resource missing/);
+});
+
 const pwsh = ["pwsh", "powershell"].find(command => {
   try {
     execFileSync(command, ["-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()"], { stdio: "ignore" });

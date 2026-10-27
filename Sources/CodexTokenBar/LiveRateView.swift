@@ -15,9 +15,14 @@ struct LiveRateView: View {
     @Binding var floatingPanelShowRateAndBar: Bool
     @Binding var tokenRateFullScale: Double
     let onOpenSettings: () -> Void
+    var sourceLabel: String? = nil
+    var sourceAvailable = true
+    var localClients: Set<String> = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if let sourceLabel { Text(sourceLabel).font(.caption.weight(.semibold)).foregroundStyle(.secondary) }
+            if sourceAvailable {
             LiveRateHeader(monitor: monitor, onReset: monitor.reset)
             if liveRateMonitoringEnabled && CacheMissReminderFeature.isEnabled { CacheUsageAdviceView(monitor: monitor) }
 
@@ -29,7 +34,8 @@ struct LiveRateView: View {
                         monitor: monitor,
                         fullScale: $tokenRateFullScale,
                         isMonitoringEnabled: $liveRateMonitoringEnabled,
-                        floatingPanelShowRateAndBar: $floatingPanelShowRateAndBar
+                        floatingPanelShowRateAndBar: $floatingPanelShowRateAndBar,
+                        allowedClients: localClients.union(sourceAvailable ? ["codex"] : [])
                     )
                         .frame(width: columnWidth, height: LiveRatePanelLayout.contentHeight)
 
@@ -44,6 +50,10 @@ struct LiveRateView: View {
             }
             .frame(height: LiveRatePanelLayout.contentHeight)
             ObservedSpeedView(monitor: monitor)
+            } else {
+                if localClients.isDisjoint(with: ["claudeCode", "claudeDesktop"]) { Text("暂无正文测速样本").font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading) }
+            }
+            ActivitySpeedSummaryView(allowed: localClients.union(sourceAvailable ? ["codex"] : []), codexRates: monitor.totalSnapshot.modelRates, codexAvailable: monitor.monitoringEnabled && monitor.dataSource != nil)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -65,6 +75,8 @@ struct LiveRateView: View {
     }
 
     private func syncMonitoringEnabled(_ enabled: Bool) {
+        MultiClientUsageStore.shared.syncLocalRuntime(monitoringEnabled: enabled)
+        guard sourceAvailable else { return }
         monitor.setMonitoringEnabled(enabled)
         floatingPanelShowRateAndBar = enabled
     }
@@ -98,10 +110,21 @@ private struct LiveRateInstrumentReader: View {
     @Binding var fullScale: Double
     @Binding var isMonitoringEnabled: Bool
     @Binding var floatingPanelShowRateAndBar: Bool
-
+    var allowedClients: Set<String> = ["codex"]
+    @ObservedObject private var local = ClaudeLocalRuntime.shared
+    @ObservedObject private var upstream = AgentSpeedDisplayRuntime.shared
+    @AppStorage(ActivitySpeedDisplayMode.key) private var modeRaw = ActivitySpeedDisplayMode.bar.rawValue
+    private var activity: LiveRateSnapshot {
+        var value = monitor.totalSnapshot
+        value.modelRates = ClientLocalRuntimePresentation.rates(codex: value.modelRates,
+            claude: local.projection(allowed: allowedClients).modelRates, allowed: allowedClients,
+            mode: .normalized(modeRaw), upstreamCodex: AgentSpeedDisplayRuntime.modelRates(snapshot: upstream.snapshot, source: .codex), others: upstream.externalModelRates(allowed: allowedClients))
+        value.rollingTokensPerSecond = value.modelRates.reduce(0) { $0 + $1.tokensPerSecond }
+        return value
+    }
     var body: some View {
         LiveRateInstrument(
-            snapshot: monitor.totalSnapshot,
+            snapshot: activity,
             fullScale: $fullScale,
             isMonitoringEnabled: $isMonitoringEnabled,
             floatingPanelShowRateAndBar: $floatingPanelShowRateAndBar
@@ -110,6 +133,9 @@ private struct LiveRateInstrumentReader: View {
 }
 
 struct LiveRateInstrument: View {
+    @AppStorage(ActivityRateUnit.preferenceKey) private var unitRaw = ActivityRateUnit.tokens.rawValue
+    @AppStorage(ActivityRateUnit.exchangeRateKey) private var exchangeRate = ActivityRateUnit.defaultExchangeRate
+    private var displayUnit: ActivityRateUnit { ActivityRateUnit(rawValue: unitRaw) ?? .tokens }
     let snapshot: LiveRateSnapshot
     @Binding var fullScale: Double
     @Binding var isMonitoringEnabled: Bool
@@ -141,6 +167,7 @@ struct LiveRateInstrument: View {
                     .font(.system(size: 8.5, weight: .semibold))
                     .foregroundStyle(isMonitoringEnabled ? AppTheme.accentBlue : .secondary)
                 Spacer(minLength: 0)
+                ActivityRateUnitControl()
                 LiveRatePowerToggle(isOn: syncedMonitoringBinding)
             }
 
@@ -149,13 +176,13 @@ struct LiveRateInstrument: View {
                     HStack(alignment: .center, spacing: 12) {
                         VStack(alignment: .leading, spacing: 1) {
                             HStack(alignment: .lastTextBaseline, spacing: 7) {
-                                Text(snapshot.rollingTokensPerSecondText)
+                                Text(displayUnit.text(displayUnit.value(total: snapshot.rollingTokensPerSecond, rates: snapshot.modelRates, exchangeRate: exchangeRate)))
                                     .font(.system(size: 23, weight: .semibold, design: .rounded))
                                     .foregroundStyle(.primary)
                                     .monospacedDigit()
                                     .lineLimit(1)
                                     .minimumScaleFactor(0.72)
-                                Text("tok/s")
+                                Text(displayUnit == .yuan ? "估算 CN 元/s" : "tok/s")
                                     .font(.system(size: 11, weight: .semibold))
                                     .foregroundStyle(.secondary)
                             }
@@ -165,7 +192,7 @@ struct LiveRateInstrument: View {
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                         }
-                        .frame(width: 116, alignment: .leading)
+                        .frame(width: displayUnit == .yuan ? 165 : 116, alignment: .leading)
 
                         VStack(alignment: .leading, spacing: 7) {
                             HStack(spacing: 8) {
@@ -188,7 +215,8 @@ struct LiveRateInstrument: View {
                                         .fill(AppTheme.insetBackground.opacity(0.82))
                                     SmoothRateFillBar(
                                         fraction: Double(fillFraction),
-                                        minimumFraction: Double(minimumFillFraction)
+                                        minimumFraction: Double(minimumFillFraction),
+                                        modelRates: snapshot.modelRates
                                     )
                                 }
                             }

@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "client": {
+    "app": "AgentSpeed",
+    "version": "1.3.0",
+    "platform": "Windows",
+    "osMajor": 11
+  },
+  "deviceId": "0b7e4d2c-9a1f-4c3e-b5d6-7e8f9a0b1c2d",
+  "username": "racer-7k3m9q",
+  "run": {
+    "id": "9d8c7b6a-5f4e-4d3c-a2b1-0f9e8d7c6b5a",
+    "seq": 1
+  },
+  "sentAt": "2026-10-22T08:15:30.000Z",
+  "windowMs": 5000,
+  "activity": "active",
+  "live": {
+    "outputTokS": 86.4,
+    "totalTokS": 21004.9,
+    "estimatedShare": 1,
+    "agents": {
+      "generating": 1,
+      "tools": 0,
+      "active": 1
+    }
+  },
+  "peak": {
+    "outputTokS": 91.2,
+    "totalTokS": 21230.0
+  },
+  "delta": {
+    "requests": 0,
+    "output": 0,
+    "input": 0,
+    "cachedInput": 0,
+    "cacheWriteInput": 0,
+    "reasoning": 0,
+    "measuredOutput": 0,
+    "measuredMs": 0
+  },
+  "title": {
+    "level": 4,
+    "metric": "output",
+    "redline": 2000,
+    "heat": 0.152
+  }
+}

@@ -70,6 +70,7 @@ extension ProviderSyncEngine {
             }
 
             let values = columns.modelProvider ? [targetProvider] : []
+            try rejectMutationIfCodexIsRunning(operation: "写入 Provider 元数据")
             try execute(database: database, sql: "BEGIN IMMEDIATE TRANSACTION;")
             let changed: Int
             do {
@@ -80,6 +81,7 @@ extension ProviderSyncEngine {
                     values: values
                 )
                 try homeDirectory.verifyBoundFile(bound)
+                try rejectMutationIfCodexIsRunning(operation: "提交 Provider 元数据")
                 try execute(database: database, sql: "COMMIT;")
             } catch {
                 try? execute(database: database, sql: "ROLLBACK;")
@@ -159,6 +161,7 @@ extension ProviderSyncEngine {
                   columns.modelProvider else {
                 return 0
             }
+            try rejectMutationIfCodexIsRunning(operation: "写入 Provider 元数据")
             try execute(database: database, sql: "BEGIN IMMEDIATE TRANSACTION;")
             var changed = 0
             do {
@@ -176,6 +179,7 @@ extension ProviderSyncEngine {
                     )
                 }
                 try homeDirectory.verifyBoundFile(bound)
+                try rejectMutationIfCodexIsRunning(operation: "提交 Provider 元数据")
                 try execute(database: database, sql: "COMMIT;")
             } catch {
                 try? execute(database: database, sql: "ROLLBACK;")

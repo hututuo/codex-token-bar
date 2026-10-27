@@ -341,7 +341,7 @@ extension ModelAwareAPIPriceEstimate {
         let detected = detectedModels.map(\.quotaEstimateShortTitle)
         let excluded = excludedModels.isEmpty
             ? nil
-            : "\(excludedModels.joined(separator: "/")) \(excludedCalls) 次独立额度，不参与 API 等值"
+            : "\(excludedModels.joined(separator: "/")) \(excludedCalls) 次调用不计入总费用或额度价值"
         let unpriced = unpricedModels.isEmpty
             ? nil
             : "未知价格模型 \(unpricedModels.joined(separator: "/")) \(unpricedCalls) 次调用未计入 API 等值"
