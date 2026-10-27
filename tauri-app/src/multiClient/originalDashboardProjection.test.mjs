@@ -32,3 +32,16 @@ test('client quota reuses original quota bars without the Codex attribution owne
  const {QuotaStrip}=await load('/src/components/QuotaStrip.tsx');const html=renderToStaticMarkup(React.createElement(QuotaStrip,{clientItems:[{id:'claudeCode:5h',client:'claudeCode',window:'5h',remaining:62,resetsAt:null,status:'',source:'模拟'}]}));
  assert.match(html,/class="quota-strip"/);assert.match(html,/class="quota-bar"/);assert.match(html,/62%/);assert.doesNotMatch(html,/重置卡|官方直连/);
 }));
+
+test('dashboard merges Auto Review into the existing Luna estimate and preserves raw rows',async()=>withSsrModules(async load=>{
+ const {clientCostPeriods}=await load('/src/multiClient/originalDashboardProjection.ts');
+ const source=dashboard();
+ const rows=['gpt-5.6-luna','codex-auto-review','gpt-6-luna'].map(model=>({model,eventStartUnix:stamp,breakdown:{inputTokens:100,cachedInputTokens:0,outputTokens:20,totalTokens:120,calls:1}}));
+ source.stats.modelBreakdowns=rows;
+ const costs=clientCostPeriods(source,snapshot(),['codex'],stamp).lifetime;
+ assert.equal(costs.length,2);
+ assert.equal(costs.find(x=>x.key==='codex|gpt-5.6-luna')?.tokens,240);
+ assert.equal(costs.find(x=>x.key==='codex|gpt-6-luna')?.tokens,120);
+ assert.equal(costs.some(x=>x.label.includes('Auto Review')),false);
+ assert.equal(rows[1].model,'codex-auto-review');
+}));

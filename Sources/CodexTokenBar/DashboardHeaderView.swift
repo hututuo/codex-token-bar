@@ -1242,7 +1242,8 @@ struct DashboardModelCostRow: View {
         guard selectedDataAvailable, hasModelDetail else { return [] }
         return FloatingTodayModelUsagePresentation.items(
             from: sourceRows,
-            fallbackModel: fallbackModel
+            fallbackModel: fallbackModel,
+            mergeAutoReview: true
         )
     }
 

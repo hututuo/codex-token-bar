@@ -107,7 +107,7 @@ struct ClientModelCostPeriods: Equatable {
         func items(_ external: [ClientUsageSummary], _ original: [ModelTokenBreakdown]) -> [FloatingTodayModelUsageItem] {
             var result: [FloatingTodayModelUsageItem] = []
             if allowed.contains("codex") {
-                result = FloatingTodayModelUsagePresentation.items(from: original, fallbackModel: .gpt56Sol).map {
+                result = FloatingTodayModelUsagePresentation.items(from: original, fallbackModel: .gpt56Sol, mergeAutoReview: true).map {
                     .init(id: "codex|" + $0.id, label: $0.label, tokens: $0.tokens, share: $0.share, costUSD: $0.costUSD,
                           usesIndependentQuota: $0.usesIndependentQuota, referenceCostUSD: $0.referenceCostUSD, color: $0.color, knownPartialCostUSD: $0.knownPartialCostUSD)
                 }

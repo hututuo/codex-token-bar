@@ -2,6 +2,24 @@ import XCTest
 @testable import CodexTokenBar
 
 final class ClientDashboardProjectionTests: XCTestCase {
+    func testDashboardAutoReviewMergesIntoDatedLunaWithoutChangingFacts() {
+        let original = ["gpt-5.6-luna", "codex-auto-review@luna", "gpt-6-luna"].map {
+            ModelTokenBreakdown(model: $0, breakdown: .init(
+                inputTokens: 100, cachedInputTokens: 0, outputTokens: 20,
+                reasoningOutputTokens: 0, totalTokens: 120, calls: 1
+            ))
+        }
+        let costs = ClientModelCostPeriods.make(
+            codex: .empty, todayCodex: original, rows: [], today: [], sevenDay: [],
+            allowed: ["codex"], now: Date()
+        )
+        XCTAssertEqual(costs.today.count, 2)
+        XCTAssertEqual(costs.today.first { $0.id == "codex|gpt-5.6-luna" }?.tokens, 240)
+        XCTAssertEqual(costs.today.first { $0.id == "codex|gpt-6-luna" }?.tokens, 120)
+        XCTAssertFalse(costs.today.contains { $0.label.contains("Auto Review") })
+        XCTAssertEqual(original[1].model, "codex-auto-review@luna")
+    }
+
     func testCodexScopeReturnsOriginalSnapshotAndLineage() {
         let original = DashboardSnapshot.empty
         let result = ClientDashboardProjection.snapshot(codex: original, rows: [], trend: [], daily: [], allowed: ["codex"])

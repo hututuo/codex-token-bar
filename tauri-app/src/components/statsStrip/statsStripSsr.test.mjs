@@ -56,7 +56,7 @@ test("observed cycle models preserve unknown prices, independent review, Tokens 
     assert.match(container.querySelector('.quota-calendar-selection').title,/开始记录/);
     assert.equal(container.querySelector('.stats-model-cost-header .quota-calendar-disclosure').textContent,"历史周期");
     assert.equal(container.querySelector('.quota-cycle-calendar'),null);
-    assert.match(container.textContent,/Auto Review（Luna）/);assert.match(container.textContent,/GPT-5.6-NewLane/);
+    assert.doesNotMatch(container.textContent,/Auto Review/);assert.match(container.textContent,/Luna/);assert.match(container.textContent,/GPT-5.6-NewLane/);
     assert.match(container.textContent,/价格未知/);assert.match(container.textContent,/已知价格小计[^$]*\$0\.40/);
     assert.equal(container.querySelector(".stats-quota-boundary-detail"),null);
     assert.ok(calls.every(([,args])=>args.expectedScope==="account-a|pro|codex" && args.sourceToken.canonicalHomeKey==="home-a"));

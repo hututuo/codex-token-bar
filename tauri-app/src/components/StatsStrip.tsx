@@ -122,7 +122,7 @@ function StatsStripView({
     : expectedModelTokens <= 0 || modelCostRows.length > 0;
   const modelCostItems = useMemo(() => (
     clientCosts ? clientCosts[modelCostScope] : modelCostDataAvailable && modelDetailAvailable
-      ? floatingTodayModelUsageItems(modelCostRows, priceModel, { mergeAutoReview: false })
+      ? floatingTodayModelUsageItems(modelCostRows, priceModel, { mergeAutoReview: true })
       : []
   ), [clientCosts, modelCostScope, modelCostDataAvailable, modelCostRows, modelDetailAvailable, priceModel]);
   const modelCostTotal = floatingModelUsageKnownCostUSD(modelCostItems);
