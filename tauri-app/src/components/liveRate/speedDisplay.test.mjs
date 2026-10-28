@@ -51,6 +51,6 @@ test("model and client color overrides are persistent and resettable", () => {
     writeSpeedColor("client:deepseek", "#123456");
     assert.equal(modelUsageColor("client:deepseek"), "#123456");
     invalidateSpeedColors(); assert.equal(modelUsageColor("gpt-6.1-sol"), "#abcdef");
-    writeSpeedColor("gpt-6.1-sol", null); assert.equal(modelUsageColor("gpt-6.1-sol"), "#d4512c");
+    writeSpeedColor("gpt-6.1-sol", null); assert.equal(modelUsageColor("gpt-6.1-sol"), "#df7055");
   } finally { globalThis.window = old; invalidateSpeedColors(); }
 });

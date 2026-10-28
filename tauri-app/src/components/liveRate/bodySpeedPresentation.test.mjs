@@ -52,26 +52,25 @@ test('actual home markup has model overview, explicit timestamps and six dense r
   }finally{win.close();}
  });
 });
-test('actual sidebar is compact, contains all recent models, and has no window selector',async()=>{
+test('actual sidebar uses the compact median card instead of legacy live body readings',async()=>{
  await withSsrModules(async load=>{
   const {SidebarRailContent}=await load('/src/quota-sidebar/QuotaSidebarApp.tsx');
   const now=Date.now()/1000;
   const win=new Window();
   try{
-   win.document.body.innerHTML=renderToStaticMarkup(React.createElement(SidebarRailContent,{data:{snapshot:{latestModelSpeeds30m:[summary('gpt-6.1-sol',now-10,47.9),summary('gpt-6-luna',now-20,123.4),summary('old',now-1801)],sevenDayAvailability:'unavailable'},runningThreads:{total:2,status:'ready'}},state:{mode:'hover'},onOpen(){}}));
-   const panel=win.document.querySelector('.qs-model-speeds');
-   assert.equal(panel.querySelectorAll('.qs-model-speed-row').length,2);
-   assert.equal(panel.querySelectorAll('svg,.body-speed-trend').length,0);
-   assert.equal(panel.querySelectorAll('.qs-model-speed-windows').length,2);
+   win.document.body.innerHTML=renderToStaticMarkup(React.createElement(SidebarRailContent,{data:{snapshot:{latestModelSpeeds30m:[summary('legacy-live-only',now-10,999)],sevenDayAvailability:'unavailable'},runningThreads:{total:2,status:'ready'}},state:{mode:'hover'},onOpen(){}}));
+   const panel=win.document.querySelector('.qs-median-speeds');
+   assert.ok(panel);
    assert.match(panel.textContent,/正文 TPS/);
-   assert.match(panel.textContent,/6.1-sol47.9/);
-   assert.match(panel.textContent,/6-luna123.4/);
-   assert.doesNotMatch(panel.textContent,/old|15m|30m|均速/);
+   assert.match(panel.textContent,/中位数.*近3小时/);
+   assert.match(panel.textContent,/等待采样/);
+   assert.equal(panel.querySelectorAll('select,.qs-model-speed-windows').length,0);
+   assert.doesNotMatch(panel.textContent,/legacy-live-only|999/);
   }finally{win.close();}
  });
 });
 
-test('sidebar expires a stale snapshot on its deadline without receiving new data',async()=>{
+test('actual sidebar renders models from source-scoped numeric buckets, not stale live readings',async()=>{
  await withSsrModules(async load=>{
   const {SidebarRailContent}=await load('/src/quota-sidebar/QuotaSidebarApp.tsx');
   const win=new Window({url:'http://localhost/'});
@@ -82,20 +81,35 @@ test('sidebar expires a stale snapshot on its deadline without receiving new dat
   }
   const oldAct=globalThis.IS_REACT_ACT_ENVIRONMENT;
   globalThis.IS_REACT_ACT_ENVIRONMENT=true;
+  const sourceToken={canonicalHomeKey:'test',physicalHomeKey:'test',transitionGeneration:1};
+  let reads=0;
+  win.__TAURI_EVENT_PLUGIN_INTERNALS__={unregisterListener(){}};
+  win.__TAURI_INTERNALS__={transformCallback:()=>1,unregisterCallback(){},invoke:async(command,args)=>{
+   if(command.startsWith('plugin:event|'))return 1;
+   if(command==='read_speed_display_preferences')return {mode:'activity',grouping:'model'};
+   if(command==='refresh_multi_client_usage')return {preferences:[],summaries:[],diagnostics:[],updatedAt:null};
+   if(command==='read_claude_local_runtime_snapshot')return {enabled:false,capturedAt:null,sourceAvailable:{},liveOutputTps:0,liveTotalTps:0,estimatedShare:0,modelRates:[],mainAgents:[],subagents:[],latestResponse:null,configurationIssue:null};
+   assert.equal(command,'read_sidebar_body_speed_buckets');
+   assert.deepEqual(args.sourceToken,sourceToken);reads++;
+   return {asOf:18000,points:['gpt-6.1-sol','gpt-6-luna'].flatMap((model,i)=>[16200,16500,16800].map(bucketStart=>({bucketStart,model,outputTokens:i?100:30,durationSeconds:1,sampleCount:2,tokensPerSecond:i?100:30})))};
+  }};
   let root;
   try{
    const {createRoot}=await import('react-dom/client');
    const container=win.document.createElement('div');win.document.body.append(container);
    root=createRoot(container);
-   const now=Date.now()/1000;
    await React.act(async()=>root.render(React.createElement(SidebarRailContent,{
-    data:{snapshot:{latestModelSpeeds30m:[summary('sol',now-1799.5),summary('luna',now-10)],sevenDayAvailability:'unavailable'},runningThreads:{total:0,status:'ready'}},
+    data:{sourceToken,snapshot:{latestModelSpeeds30m:[summary('legacy-live-only',Date.now()/1000,999)],sevenDayAvailability:'unavailable'},runningThreads:{total:0,status:'ready'}},
     state:{mode:'hover'},onOpen(){}
    })));
-   assert.equal(container.querySelectorAll('.qs-model-speed-row').length,2);
-   await React.act(async()=>{await new Promise(resolve=>setTimeout(resolve,650));});
-   assert.equal(container.querySelectorAll('.qs-model-speed-row').length,1);
-   assert.match(container.querySelector('.qs-model-speeds').textContent,/luna/);
+   await React.act(async()=>{await new Promise(resolve=>setTimeout(resolve,250));});
+   const panel=container.querySelector('.qs-median-speeds');
+   assert.equal(reads,1);
+   assert.equal(panel.querySelectorAll('.qs-median-model').length,2);
+   assert.match(panel.textContent,/6.1-sol/);assert.match(panel.textContent,/6-luna/);
+   assert.match(panel.textContent,/30.0/);assert.match(panel.textContent,/100.0/);
+   assert.equal(panel.querySelectorAll('svg').length,2);
+   assert.doesNotMatch(panel.textContent,/legacy-live-only|999/);
   }finally{
    if(root)await React.act(async()=>root.unmount());
    for(const [key,descriptor]of originals){if(descriptor)Object.defineProperty(globalThis,key,descriptor);else delete globalThis[key];}
@@ -103,7 +117,6 @@ test('sidebar expires a stale snapshot on its deadline without receiving new dat
   }
  });
 });
-
 
 test('sidebar detail shows ten records directly without dashboard cards, selectors or local history dialog',async()=>{
  await withSsrModules(async load=>{
