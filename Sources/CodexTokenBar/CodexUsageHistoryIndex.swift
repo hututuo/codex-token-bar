@@ -8009,230 +8009,239 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 busyTimeoutMilliseconds: 1_000,
                 fileManager: fileManager
             )
-            // A staging database is a recovery artifact, not disposable cache
-            // until its format has been classified.  Read the small manifest
-            // header before quick_check or any cleanup so a future app's
-            // artifact is never mistaken for an incomplete current artifact.
-            let manifestExists = try stage.readRows(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'manifest');"
-            ) { ($0.int(0) ?? 0) != 0 }.first ?? false
-            guard manifestExists else {
-                return nil
-            }
-            let manifestColumns = Set(try stage.readRows(
-                "PRAGMA table_info(manifest);"
-            ) { $0.text(1) ?? "" })
-            guard manifestColumns.contains("manifest_schema_version") else {
-                // Preserve unclassified recovery state. A fresh candidate can
-                // be built beside it; cleanup happens only after a successful
-                // atomic publish.
-                return nil
-            }
-            let header = try stage.readRows(
-                "SELECT manifest_schema_version, migration_revision, parser_revision FROM manifest LIMIT 1;"
-            ) { row in
-                (
-                    schema: row.int(0),
-                    migration: row.text(1),
-                    parser: row.text(2)
-                )
-            }.first
-            guard let header, let manifestSchema = header.schema else {
-                return nil
-            }
-            if manifestSchema > Self.stagingManifestSchemaVersion {
-                throw CodexUsageIndexUpgradeRequiredError(
-                    component: "staging manifest",
-                    stored: String(manifestSchema),
-                    supported: String(Self.stagingManifestSchemaVersion)
-                )
-            }
-            // v0.9.1 wrote v1 and fba33820 wrote v2. Their filesystem-object
-            // columns were observations only, and their text fingerprints are
-            // converted during import without reopening JSONL.
-            guard Self.legacyStagingManifestSchemaVersions.contains(manifestSchema)
-                    || manifestSchema == Self.stagingManifestSchemaVersion else {
-                return nil
-            }
-            let expectedMigrationRevision = job.reason == .eventEnrichment
-                ? Self.eventEnrichmentRevision
-                : "exact-source-rebuild-v1"
-            if let migration = header.migration,
-               !migration.isEmpty,
-               migration != expectedMigrationRevision {
-                throw CodexUsageIndexUpgradeRequiredError(
-                    component: "staging migration",
-                    stored: migration,
-                    supported: expectedMigrationRevision
-                )
-            }
-            if let parser = header.parser,
-               !parser.isEmpty,
-               parser != Self.stagingParserRevision,
-               parser != Self.legacyStagingParserRevision, parser != Self.oldStagingParserRevision, parser != Self.paginatedV4StagingRevision, parser != Self.paginatedV5StagingRevision {
-                throw CodexUsageIndexUpgradeRequiredError(
-                    component: "staging parser",
-                    stored: parser,
-                    supported: Self.stagingParserRevision
-                )
-            }
-            if header.parser != Self.stagingParserRevision,
-               try PaginatedHistoryBoundary.read(file: job.file) != nil {
-                return nil
-            }
-            guard try Self.stagingIntegrityIsValid(using: stage) else {
-                return nil
-            }
-            let rows: [StagedFullRebuild?] = try stage.readRows(
-                """
-                SELECT
-                    manifest_schema_version,
-                    canonical_path,
-                    session_id,
-                    migration_revision,
-                    parser_revision,
-                    artifact_id,
-                    actual_bytes,
-                    integrity,
-                    prefix_sha256,
-                    size_bytes,
-                    modified_at,
-                    content_probe,
-                    event_count,
-                    resume_offset,
-                    previous_total_tokens,
-                    fork_replay_started_at,
-                    is_skipping_fork_replay,
-                    is_explicit_subagent_fork,
-                    last_skipped_fork_replay_token_at,
-                    current_user_prompt_offset,
-                    assistant_start_offset,
-                    current_model,
-                    fingerprint_count,
-                    chunk_count,
-                    \(manifestColumns.contains("accounting_state") ? "accounting_state" : "NULL"),
-                    \(manifestColumns.contains("physical_stamp") ? "physical_stamp" : "NULL")
-                FROM manifest
-                WHERE complete = 1
-                LIMIT 1;
-                """
-            ) { row in
-                guard let storedManifestSchema = row.int(0),
-                      (Self.legacyStagingManifestSchemaVersions.contains(storedManifestSchema)
-                          || storedManifestSchema == Self.stagingManifestSchemaVersion),
-                      row.text(1) == job.file.path,
-                      row.text(2) == job.sessionID,
-                      row.text(3) == expectedMigrationRevision,
-                      ([Self.stagingParserRevision, Self.legacyStagingParserRevision, Self.oldStagingParserRevision, Self.paginatedV4StagingRevision, Self.paginatedV5StagingRevision].contains(row.text(4) ?? "")),
-                      let artifactID = row.text(5),
-                      !artifactID.isEmpty,
-                      let rawActualBytes = row.int64(6),
-                      rawActualBytes >= 0,
-                      row.text(7) == Self.stagingManifestIntegrity,
-                      let prefixSHA256 = row.text(8),
-                      let rawSize = row.int64(9),
-                      rawSize >= 0,
-                      let modifiedAt = row.double(10),
-                      let contentProbe = row.text(11),
-                      let eventCount = row.int(12),
-                      eventCount >= 0,
-                      let rawResumeOffset = row.int64(13),
-                      rawResumeOffset >= 0,
-                      let fingerprintCount = row.int(22),
-                      fingerprintCount >= 0,
-                      let chunkCount = row.int(23),
-                      chunkCount >= 0 else {
+            // Retain one schema-loaded connection for the entire validation.
+            // Opening the shared A file for each small SELECT reparses every
+            // partition's schema and made large recovered histories unusable.
+            return try stage.withConnection { stage in
+                try stage.readTransaction { stage -> StagedFullRebuild? in
+                    // A staging database is a recovery artifact, not disposable cache
+                    // until its format has been classified.  Read the small manifest
+                    // header before quick_check or any cleanup so a future app's
+                    // artifact is never mistaken for an incomplete current artifact.
+                    let manifestExists = try stage.readRows(
+                        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'manifest');"
+                    ) { ($0.int(0) ?? 0) != 0 }.first ?? false
+                    guard manifestExists else {
+                        return nil
+                    }
+                    let manifestColumns = Set(try stage.readRows(
+                        "PRAGMA table_info(manifest);"
+                    ) { $0.text(1) ?? "" })
+                    guard manifestColumns.contains("manifest_schema_version") else {
+                        // Preserve unclassified recovery state. A fresh candidate can
+                        // be built beside it; cleanup happens only after a successful
+                        // atomic publish.
+                        return nil
+                    }
+                    let header = try stage.readRows(
+                        "SELECT manifest_schema_version, migration_revision, parser_revision FROM manifest LIMIT 1;"
+                    ) { row in
+                        (
+                            schema: row.int(0),
+                            migration: row.text(1),
+                            parser: row.text(2)
+                        )
+                    }.first
+                    guard let header, let manifestSchema = header.schema else {
+                        return nil
+                    }
+                    if manifestSchema > Self.stagingManifestSchemaVersion {
+                        throw CodexUsageIndexUpgradeRequiredError(
+                            component: "staging manifest",
+                            stored: String(manifestSchema),
+                            supported: String(Self.stagingManifestSchemaVersion)
+                        )
+                    }
+                    // v0.9.1 wrote v1 and fba33820 wrote v2. Their filesystem-object
+                    // columns were observations only, and their text fingerprints are
+                    // converted during import without reopening JSONL.
+                    guard Self.legacyStagingManifestSchemaVersions.contains(manifestSchema)
+                            || manifestSchema == Self.stagingManifestSchemaVersion else {
+                        return nil
+                    }
+                    let expectedMigrationRevision = job.reason == .eventEnrichment
+                        ? Self.eventEnrichmentRevision
+                        : "exact-source-rebuild-v1"
+                    if let migration = header.migration,
+                       !migration.isEmpty,
+                       migration != expectedMigrationRevision {
+                        throw CodexUsageIndexUpgradeRequiredError(
+                            component: "staging migration",
+                            stored: migration,
+                            supported: expectedMigrationRevision
+                        )
+                    }
+                    if let parser = header.parser,
+                       !parser.isEmpty,
+                       parser != Self.stagingParserRevision,
+                       parser != Self.legacyStagingParserRevision, parser != Self.oldStagingParserRevision, parser != Self.paginatedV4StagingRevision, parser != Self.paginatedV5StagingRevision {
+                        throw CodexUsageIndexUpgradeRequiredError(
+                            component: "staging parser",
+                            stored: parser,
+                            supported: Self.stagingParserRevision
+                        )
+                    }
+                    if header.parser != Self.stagingParserRevision,
+                       try PaginatedHistoryBoundary.read(file: job.file) != nil {
+                        return nil
+                    }
+                    guard try Self.stagingIntegrityIsValid(connection: stage,
+                        namespaced: BusinessSQLiteRoutes.store(for: databaseURL) != nil) else {
+                        return nil
+                    }
+                    let rows: [StagedFullRebuild?] = try stage.readRows(
+                        """
+                        SELECT
+                            manifest_schema_version,
+                            canonical_path,
+                            session_id,
+                            migration_revision,
+                            parser_revision,
+                            artifact_id,
+                            actual_bytes,
+                            integrity,
+                            prefix_sha256,
+                            size_bytes,
+                            modified_at,
+                            content_probe,
+                            event_count,
+                            resume_offset,
+                            previous_total_tokens,
+                            fork_replay_started_at,
+                            is_skipping_fork_replay,
+                            is_explicit_subagent_fork,
+                            last_skipped_fork_replay_token_at,
+                            current_user_prompt_offset,
+                            assistant_start_offset,
+                            current_model,
+                            fingerprint_count,
+                            chunk_count,
+                            \(manifestColumns.contains("accounting_state") ? "accounting_state" : "NULL"),
+                            \(manifestColumns.contains("physical_stamp") ? "physical_stamp" : "NULL")
+                        FROM manifest
+                        WHERE complete = 1
+                        LIMIT 1;
+                        """
+                    ) { row in
+                        guard let storedManifestSchema = row.int(0),
+                              (Self.legacyStagingManifestSchemaVersions.contains(storedManifestSchema)
+                                  || storedManifestSchema == Self.stagingManifestSchemaVersion),
+                              row.text(1) == job.file.path,
+                              row.text(2) == job.sessionID,
+                              row.text(3) == expectedMigrationRevision,
+                              ([Self.stagingParserRevision, Self.legacyStagingParserRevision, Self.oldStagingParserRevision, Self.paginatedV4StagingRevision, Self.paginatedV5StagingRevision].contains(row.text(4) ?? "")),
+                              let artifactID = row.text(5),
+                              !artifactID.isEmpty,
+                              let rawActualBytes = row.int64(6),
+                              rawActualBytes >= 0,
+                              row.text(7) == Self.stagingManifestIntegrity,
+                              let prefixSHA256 = row.text(8),
+                              let rawSize = row.int64(9),
+                              rawSize >= 0,
+                              let modifiedAt = row.double(10),
+                              let contentProbe = row.text(11),
+                              let eventCount = row.int(12),
+                              eventCount >= 0,
+                              let rawResumeOffset = row.int64(13),
+                              rawResumeOffset >= 0,
+                              let fingerprintCount = row.int(22),
+                              fingerprintCount >= 0,
+                              let chunkCount = row.int(23),
+                              chunkCount >= 0 else {
+                            return nil
+                        }
+                        let signature = SourceSignature(
+                            size: UInt64(rawSize),
+                            modifiedAt: modifiedAt,
+                            contentProbe: contentProbe,
+                            physicalStamp: row.text(25)
+                        )
+                        let actualBytes = UInt64(rawActualBytes)
+                        let databaseSize = try? BusinessStoreFiles.byteCount(at: databaseURL, fileManager: self.fileManager)
+                        let storedEventCount = try? stage.readRows(
+                            "SELECT COUNT(*) FROM events;"
+                        ) { $0.int(0) ?? -1 }.first
+                        let storedFingerprintCount = try? stage.readRows(
+                            "SELECT COUNT(*) FROM fingerprints;"
+                        ) { $0.int(0) ?? -1 }.first
+                        let storedChunkCount = try? stage.readRows(
+                            "SELECT COUNT(*) FROM chunks;"
+                        ) { $0.int(0) ?? -1 }.first
+                        let physical = try? SourceFileObservation.readPreferredPhysical(at: job.file)
+                        let stageObservation = try? SourceFileObservation.read(at: databaseURL)
+                        let reusableProof = prior.map { prior in
+                            guard let proof = prior.sourceValidation, let physical, let stageObservation,
+                                  proof.source.physicalStamp != nil else { return false }
+                            return proof.source == signature && proof.artifactID == artifactID
+                                && prior.prefixSHA256 == prefixSHA256
+                                && proof.stage.matches(stageObservation)
+                                && physical.observation.physicalStamp == signature.physicalStamp
+                                && physical.observation.modifiedAt == signature.modifiedAt
+                                && (!physical.file.lastPathComponent.hasSuffix(".jsonl.zst")
+                                    ? physical.observation.size == signature.size : true)
+                        } ?? false
+                        let currentSignature = reusableProof ? signature : (try? self.sourceSignature(for: job.file))
+                        let cold = physical?.file.lastPathComponent.hasSuffix(".jsonl.zst") == true
+                        guard databaseSize == actualBytes,
+                              storedEventCount == eventCount,
+                              storedFingerprintCount == fingerprintCount,
+                              storedChunkCount == chunkCount,
+                              self.sourceCanContainPrefix(
+                                  signature,
+                                  current: job.observedSignature
+                              ),
+                              let currentSignature,
+                              self.sourceCanContainPrefix(
+                                  signature,
+                                  current: currentSignature
+                              ),
+                              rawResumeOffset <= rawSize,
+                              reusableProof || (!cold && currentSignature == signature)
+                                || (try? self.contentHash(
+                                    for: job.file,
+                                    length: signature.size
+                                )) == prefixSHA256 else {
+                            return nil
+                        }
+                        return StagedFullRebuild(
+                            job: job,
+                            databaseURL: databaseURL,
+                            committedSignature: signature,
+                            artifactID: artifactID,
+                            actualBytes: actualBytes,
+                            eventCount: eventCount,
+                            fingerprintCount: fingerprintCount,
+                            chunkCount: chunkCount,
+                            resumeOffset: UInt64(rawResumeOffset),
+                            parserState: CodexUsageAnalyzer.IndexedSessionParserState(
+                                previousTotalTokens: row.int(14),
+                                forkReplayStartedAt: row.double(15).map {
+                                    Date(timeIntervalSince1970: $0)
+                                },
+                                isSkippingForkReplay: row.int(16) == 1,
+                                isExplicitSubagentFork: row.int(17) == 1,
+                                lastSkippedForkReplayTokenAt: row.double(18).map {
+                                    Date(timeIntervalSince1970: $0)
+                                },
+                                currentUserPromptOffset: row.int64(19).flatMap {
+                                    $0 >= 0 ? UInt64($0) : nil
+                                },
+                                assistantStartOffset: row.int64(20).flatMap {
+                                    $0 >= 0 ? UInt64($0) : nil
+                                },
+                                currentModel: row.text(21),
+                                accountingState: [Self.stagingParserRevision, Self.oldStagingParserRevision, Self.paginatedV4StagingRevision, Self.paginatedV5StagingRevision].contains(row.text(4) ?? "") ? try UsageAccountingState.decode(row.text(24)) : nil
+                            ),
+                            prefixSHA256: prefixSHA256,
+                            sourceValidation: currentSignature == signature && stageObservation != nil
+                                ? StageSourceValidation(source: signature, stage: stageObservation!, artifactID: artifactID) : nil
+                        )
+                    }
+                    if let reusable = rows.compactMap({ $0 }).first {
+                        return reusable
+                    }
                     return nil
                 }
-                let signature = SourceSignature(
-                    size: UInt64(rawSize),
-                    modifiedAt: modifiedAt,
-                    contentProbe: contentProbe,
-                    physicalStamp: row.text(25)
-                )
-                let actualBytes = UInt64(rawActualBytes)
-                let databaseSize = try? BusinessStoreFiles.byteCount(at: databaseURL, fileManager: self.fileManager)
-                let storedEventCount = try? stage.readRows(
-                    "SELECT COUNT(*) FROM events;"
-                ) { $0.int(0) ?? -1 }.first
-                let storedFingerprintCount = try? stage.readRows(
-                    "SELECT COUNT(*) FROM fingerprints;"
-                ) { $0.int(0) ?? -1 }.first
-                let storedChunkCount = try? stage.readRows(
-                    "SELECT COUNT(*) FROM chunks;"
-                ) { $0.int(0) ?? -1 }.first
-                let physical = try? SourceFileObservation.readPreferredPhysical(at: job.file)
-                let stageObservation = try? SourceFileObservation.read(at: databaseURL)
-                let reusableProof = prior.map { prior in
-                    guard let proof = prior.sourceValidation, let physical, let stageObservation,
-                          proof.source.physicalStamp != nil else { return false }
-                    return proof.source == signature && proof.artifactID == artifactID
-                        && prior.prefixSHA256 == prefixSHA256
-                        && proof.stage.matches(stageObservation)
-                        && physical.observation.physicalStamp == signature.physicalStamp
-                        && physical.observation.modifiedAt == signature.modifiedAt
-                        && (!physical.file.lastPathComponent.hasSuffix(".jsonl.zst")
-                            ? physical.observation.size == signature.size : true)
-                } ?? false
-                let currentSignature = reusableProof ? signature : (try? self.sourceSignature(for: job.file))
-                let cold = physical?.file.lastPathComponent.hasSuffix(".jsonl.zst") == true
-                guard databaseSize == actualBytes,
-                      storedEventCount == eventCount,
-                      storedFingerprintCount == fingerprintCount,
-                      storedChunkCount == chunkCount,
-                      self.sourceCanContainPrefix(
-                          signature,
-                          current: job.observedSignature
-                      ),
-                      let currentSignature,
-                      self.sourceCanContainPrefix(
-                          signature,
-                          current: currentSignature
-                      ),
-                      rawResumeOffset <= rawSize,
-                      reusableProof || (!cold && currentSignature == signature)
-                        || (try? self.contentHash(
-                            for: job.file,
-                            length: signature.size
-                        )) == prefixSHA256 else {
-                    return nil
-                }
-                return StagedFullRebuild(
-                    job: job,
-                    databaseURL: databaseURL,
-                    committedSignature: signature,
-                    artifactID: artifactID,
-                    actualBytes: actualBytes,
-                    eventCount: eventCount,
-                    fingerprintCount: fingerprintCount,
-                    chunkCount: chunkCount,
-                    resumeOffset: UInt64(rawResumeOffset),
-                    parserState: CodexUsageAnalyzer.IndexedSessionParserState(
-                        previousTotalTokens: row.int(14),
-                        forkReplayStartedAt: row.double(15).map {
-                            Date(timeIntervalSince1970: $0)
-                        },
-                        isSkippingForkReplay: row.int(16) == 1,
-                        isExplicitSubagentFork: row.int(17) == 1,
-                        lastSkippedForkReplayTokenAt: row.double(18).map {
-                            Date(timeIntervalSince1970: $0)
-                        },
-                        currentUserPromptOffset: row.int64(19).flatMap {
-                            $0 >= 0 ? UInt64($0) : nil
-                        },
-                        assistantStartOffset: row.int64(20).flatMap {
-                            $0 >= 0 ? UInt64($0) : nil
-                        },
-                        currentModel: row.text(21),
-                        accountingState: [Self.stagingParserRevision, Self.oldStagingParserRevision, Self.paginatedV4StagingRevision, Self.paginatedV5StagingRevision].contains(row.text(4) ?? "") ? try UsageAccountingState.decode(row.text(24)) : nil
-                    ),
-                    prefixSHA256: prefixSHA256,
-                    sourceValidation: currentSignature == signature && stageObservation != nil
-                        ? StageSourceValidation(source: signature, stage: stageObservation!, artifactID: artifactID) : nil
-                )
-            }
-            if let reusable = rows.compactMap({ $0 }).first {
-                return reusable
             }
         } catch let error as CodexUsageIndexUpgradeRequiredError {
             throw error
