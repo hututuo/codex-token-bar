@@ -29,7 +29,7 @@ final class SpeedDisplayPreviewTests: XCTestCase {
             Text("本地：结束／错误即归零；日志 20 秒未更新归零。上报：保持 Agent Speed 标准口径。")
                 .font(.system(size: 12)).foregroundStyle(.secondary)
             Divider()
-            HStack { Text("在累计界面双击模型，即可修改该模型颜色"); Spacer(); ClientColorSettings() }.font(.caption)
+            HStack { Text("累计"); Text("双击可修改模型配色").font(.system(size: 12, weight: .semibold)); Spacer(); ClientColorSettings() }
         }.padding(28).frame(width: 880).background(Color(red: 0.045, green: 0.055, blue: 0.07)).foregroundStyle(.white).environment(\.colorScheme, .dark)
         let renderer = ImageRenderer(content: content); renderer.scale = 2
         let image = try XCTUnwrap(renderer.nsImage)

@@ -12934,7 +12934,9 @@ details.session-management-banner {
 
 .qs-detail .speed-display-controls select { background:#1b222c; color:#f4f7fb; border-color:#526074; }
 
-.model-color-hint { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:8px; font-size:11px; color:var(--text-muted); }
+.stats-model-cost-scope-and-hint { display:inline-flex; align-items:center; gap:9px; flex:none; }
+.model-color-inline-hint { font-size:13px; font-weight:600; color:var(--text); white-space:nowrap; }
+.model-color-footer { display:flex; justify-content:flex-end; margin-top:8px; font-size:11px; color:var(--text-muted); }
 .stats-model-cost-groups [role=button] { cursor:pointer; }
 .stats-model-cost-groups [role=button]:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .model-color-popover { position:fixed; z-index:10000; width:240px; padding:14px; border:1px solid var(--line-strong); border-radius:12px; background:var(--panel-solid); color:var(--text); box-shadow:0 10px 32px #0004; display:flex; flex-direction:column; gap:12px; }

@@ -175,31 +175,34 @@ function StatsStripView({
         <div className="stats-model-cost-row" aria-label={`${modelCostScope === "sevenDay" ? periodLabel : modelCostScope === "today" ? "今日" : "累计"}模型费用`}>
           <div className="stats-model-cost-header">
             <strong className="stats-model-cost-title">模型费用</strong>
-            <div className="stats-model-cost-scope" role="group" aria-label="模型费用范围">
-              <button
-                aria-pressed={modelCostScope === "sevenDay"}
-                className={modelCostScope === "sevenDay" ? "is-active" : undefined}
-                onClick={() => { selectCycle("current"); setModelCostScope("sevenDay"); }}
-                type="button"
-              >
-                {modelCostScope === "sevenDay" && periodLabel === "历史周期" ? "历史" : "本期"}
-              </button>
-              <button
-                aria-pressed={modelCostScope === "today"}
-                className={modelCostScope === "today" ? "is-active" : undefined}
-                onClick={() => setModelCostScope("today")}
-                type="button"
-              >
-                今日
-              </button>
-              <button
-                aria-pressed={modelCostScope === "lifetime"}
-                className={modelCostScope === "lifetime" ? "is-active" : undefined}
-                onClick={() => setModelCostScope("lifetime")}
-                type="button"
-              >
-                累计
-              </button>
+            <div className="stats-model-cost-scope-and-hint">
+              <div className="stats-model-cost-scope" role="group" aria-label="模型费用范围">
+                <button
+                  aria-pressed={modelCostScope === "sevenDay"}
+                  className={modelCostScope === "sevenDay" ? "is-active" : undefined}
+                  onClick={() => { selectCycle("current"); setModelCostScope("sevenDay"); }}
+                  type="button"
+                >
+                  {modelCostScope === "sevenDay" && periodLabel === "历史周期" ? "历史" : "本期"}
+                </button>
+                <button
+                  aria-pressed={modelCostScope === "today"}
+                  className={modelCostScope === "today" ? "is-active" : undefined}
+                  onClick={() => setModelCostScope("today")}
+                  type="button"
+                >
+                  今日
+                </button>
+                <button
+                  aria-pressed={modelCostScope === "lifetime"}
+                  className={modelCostScope === "lifetime" ? "is-active" : undefined}
+                  onClick={() => setModelCostScope("lifetime")}
+                  type="button"
+                >
+                  累计
+                </button>
+              </div>
+              {modelCostScope === "lifetime" && <span className="model-color-inline-hint">双击可修改模型配色</span>}
             </div>
             {modelCostScope === "sevenDay" ? <QuotaCycleControls cycles={cycleHistory.cycles}
               selected={cycleHistory.selected} onSelect={selectCycle}
@@ -256,7 +259,7 @@ function StatsStripView({
               </div>)}
             </div>
           )}
-          {modelCostScope === "lifetime" && <div className="model-color-hint"><span>在累计界面双击模型，即可修改该模型颜色</span><ClientColorSettings/></div>}
+          {modelCostScope === "lifetime" && <div className="model-color-footer"><ClientColorSettings/></div>}
           <ModelColorEditor target={editingColor} onClose={() => setEditingColor(null)}/>
         </div>
       </section>

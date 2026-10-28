@@ -1312,6 +1312,13 @@ struct DashboardModelCostRow: View {
                         calendarExpanded = false
                     })
 
+                if scope == .lifetime {
+                    Text("双击可修改模型配色")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .fixedSize()
+                }
+
                 if scope == .sevenDay, onSelectCycle != nil {
                     DashboardQuotaCycleControls(cycles: cycles, selected: selectedCycle,
                         expanded: $calendarExpanded, summary: cycleSummary) { id in
@@ -1424,7 +1431,6 @@ struct DashboardModelCostRow: View {
             }
             if scope == .lifetime {
                 HStack {
-                    Text("在累计界面双击模型，即可修改该模型颜色")
                     Spacer()
                     ClientColorSettings()
                 }.font(.system(size: 10)).foregroundStyle(.secondary)
