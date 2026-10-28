@@ -25,6 +25,7 @@ export interface ModelUsageSlice {
 const FIXED_COLORS: Record<string, string> = {
   "gpt-6-astra": "#36ad77",
   "gpt-6.1-sol": "#d4512c",
+  "gpt-6.1-terra": "#a773e8",
   "gpt-6-sol": "#2e6bfa",
   "gpt-6-luna": "#4299f5",
   "gpt-5.6-sol": "#6774e8",
@@ -102,6 +103,7 @@ export function modelUsageKey(model: string | null | undefined, eventStartUnix?:
   // source spelling; sharing a family prefix is not proof of a model identity.
   switch (detectedOfficialAPIPriceModel(model)) {
     case "gpt61Sol": return "gpt-6.1-sol";
+    case "gpt61Terra": return "gpt-6.1-terra";
     case "gpt6Sol": return "gpt-6-sol";
     case "gpt6Luna": return "gpt-6-luna";
     case "gpt56Sol":
@@ -128,6 +130,7 @@ export function modelUsageLabel(model: string | null | undefined): string {
   switch (modelUsageKey(model)) {
     case "gpt-6-astra": return "Astra";
     case "gpt-6.1-sol": return "GPT-6.1 Sol";
+    case "gpt-6.1-terra": return "GPT-6.1 Terra";
     case "gpt-6-sol": return "GPT-6 Sol";
     case "gpt-6-luna": return "GPT-6 Luna";
     case "gpt-5.6-sol": return "Sol";

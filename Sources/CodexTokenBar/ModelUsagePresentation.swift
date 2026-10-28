@@ -25,6 +25,11 @@ enum ModelUsagePresentation {
         "gpt61-sol": "gpt-6.1-sol",
         "gpt61sol": "gpt-6.1-sol",
         "gpt 6.1 sol": "gpt-6.1-sol",
+        "gpt-6.1-terra": "gpt-6.1-terra",
+        "gpt6.1-terra": "gpt-6.1-terra",
+        "gpt61-terra": "gpt-6.1-terra",
+        "gpt61terra": "gpt-6.1-terra",
+        "gpt 6.1 terra": "gpt-6.1-terra",
         "gpt-6-sol": "gpt-6-sol",
         "gpt6-sol": "gpt-6-sol",
         "gpt6sol": "gpt-6-sol",
@@ -177,6 +182,7 @@ enum ModelUsagePresentation {
         switch key(for: model) {
         case "gpt-6-astra": return "Astra"
         case "gpt-6.1-sol": return "GPT-6.1 Sol"
+        case "gpt-6.1-terra": return "GPT-6.1 Terra"
         case "gpt-6-sol": return "GPT-6 Sol"
         case "gpt-6-luna": return "GPT-6 Luna"
         case "gpt-5.6-sol": return "Sol"
@@ -314,7 +320,7 @@ enum ModelUsagePresentation {
             return colorHex(for: displayTargetKey(for: String(key.dropFirst(autoReviewDisplayPrefix.count))))
         }
         let fixed = [
-            "gpt-6-astra": "#36ad77", "gpt-6.1-sol": "#d4512c", "gpt-6-sol": "#2e6bfa", "gpt-6-luna": "#4299f5",
+            "gpt-6-astra": "#36ad77", "gpt-6.1-sol": "#d4512c", "gpt-6.1-terra": "#a773e8", "gpt-6-sol": "#2e6bfa", "gpt-6-luna": "#4299f5",
             "gpt-5.6-sol": "#6774e8", "gpt-5.6-terra": "#9252e6", "gpt-5.6-luna": "#399b75", "gpt-5.5": "#a87629",
             "gpt-5.6-generic": "#7a879e", "gpt-5.4": "#f28f14", "gpt-5.4-mini": "#2eb35c",
             "gpt-5.3-codex": "#db4575", "gpt-5.3-codex-spark": "#f5b022", "gpt-5.2-codex": "#3d7fe0", "unknown": "#7a879e",
@@ -394,6 +400,7 @@ enum ModelUsagePresentation {
         switch model {
         case .gpt6Astra: return "gpt-6-astra"
         case .gpt61Sol: return "gpt-6.1-sol"
+        case .gpt61Terra: return "gpt-6.1-terra"
         case .gpt6Sol: return "gpt-6-sol"
         case .gpt6Luna: return "gpt-6-luna"
         case .gpt56Sol: return "gpt-5.6-sol"

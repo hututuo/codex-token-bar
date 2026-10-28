@@ -7,8 +7,8 @@ enum BundledPriceAssets {
 {
   "_comment": "API list prices for API-equivalent costs (METRICS 9). USD per million tokens. Edit by hand: raise version by one, set updated and each changed entry's checked date, add tests for new id forms, run python3 spec/tools/prices.py. Apps sync this file from main daily (spec/NETWORK.md).",
   "schema": 1,
-  "version": 2,
-  "updated": "2026-10-24",
+  "version": 3,
+  "updated": "2026-10-28",
   "currency": "USD",
   "unit": "perMillionTokens",
   "providers": {
@@ -653,6 +653,46 @@ enum BundledPriceAssets {
       "source": "https://developers.openai.com/api/docs/pricing",
       "checked": "2026-10-22",
       "note": "Cache writes (30-minute lifetime) cost 1.25x input; 12-hour writes (2.5x) are not separated in logs and are priced as 30-minute writes."
+    },
+    {
+      "id": "gpt-6.1-terra",
+      "provider": "openai",
+      "name": "GPT-6.1 Terra",
+      "status": "current",
+      "prices": {
+        "input": 1.0,
+        "cachedInput": 0.05,
+        "cacheWrite": 1.25,
+        "output": 5.0
+      },
+      "tiers": [
+        {
+          "above": 272000,
+          "input": 2.0,
+          "cachedInput": 0.1,
+          "cacheWrite": 2.5,
+          "output": 7.5
+        }
+      ],
+      "fast": {
+        "prices": {
+          "input": 2.0,
+          "cachedInput": 0.1,
+          "cacheWrite": 2.5,
+          "output": 10.0
+        },
+        "tiers": [
+          {
+            "above": 272000,
+            "input": 4.0,
+            "cachedInput": 0.2,
+            "cacheWrite": 5.0,
+            "output": 15.0
+          }
+        ]
+      },
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-28"
     },
     {
       "id": "gpt-6.1-sol",
@@ -4361,6 +4401,10 @@ enum BundledPriceAssets {
     {
       "model": "gpt-5.6-sol",
       "expect": "gpt-5.6-sol"
+    },
+    {
+      "model": "gpt-6.1-terra",
+      "expect": "gpt-6.1-terra"
     },
     {
       "model": "gpt-6.1-sol",

@@ -2,6 +2,35 @@ import XCTest
 @testable import CodexTokenBar
 
 final class StandardAPIPriceScheduleTests: XCTestCase {
+    func testGPT61TerraPricesAndAggregateStayIndependentFromOldTerra() throws {
+        let boundary = date("2026-10-26T00:00:00Z")
+        let expected = APIPriceRates(inputUSDPerMillion: 1, cachedInputUSDPerMillion: 0.05, outputUSDPerMillion: 5)
+        for alias in ["gpt-6.1-terra", "GPT_6.1_TERRA", "GPT 6.1 Terra", "gpt61-terra", "gpt61terra"] {
+            XCTAssertEqual(OfficialAPIPriceModel.detected(from: alias), .gpt61Terra)
+            XCTAssertEqual(StandardAPIPriceSchedule.canonicalModelKey(for: alias), "gpt-6.1-terra")
+            XCTAssertNil(StandardAPIPriceSchedule.quote(for: alias, at: boundary.addingTimeInterval(-1)))
+            XCTAssertEqual(StandardAPIPriceSchedule.quote(for: alias, at: boundary)?.rates, expected)
+            XCTAssertEqual(StandardAPIPriceSchedule.currentQuote(for: alias)?.rates, expected)
+        }
+        XCTAssertEqual(OfficialAPIPriceModel.gpt61Terra.currentPriceRates, expected)
+        XCTAssertEqual(StandardAPIPriceSchedule.partitionStart(at: boundary), boundary)
+        XCTAssertTrue(StandardAPIPriceSchedule.sqlPartitionExpression(timestamp: "bucket_start")
+            .contains(">= \(Int(boundary.timeIntervalSince1970)) THEN 5"))
+        XCTAssertNil(StandardAPIPriceSchedule.currentQuote(for: "gpt-6.1-terra-preview"))
+        XCTAssertEqual(StandardAPIPriceSchedule.currentQuote(for: "gpt-5.6-terra")?.outputUSDPerMillion, 12)
+        let breakdown = TokenCacheBreakdown(inputTokens: 1_000_000, cachedInputTokens: 500_000,
+            outputTokens: 100_000, reasoningOutputTokens: 50_000, totalTokens: 1_100_000, calls: 1)
+        let rows = [ModelTokenBreakdown(model: "gpt-6.1-terra", breakdown: breakdown)]
+        for timestamp in [nil, boundary.timeIntervalSince1970] as [TimeInterval?] {
+            let estimate = ModelAwareAPIPriceEstimator.estimate(modelBreakdowns: rows, timestamp: timestamp,
+                fallbackBreakdown: breakdown, fallbackModel: .gpt56Sol)
+            XCTAssertEqual(estimate.costUSD, 1.025, accuracy: 0.000001)
+            XCTAssertEqual(estimate.detectedModels, [.gpt61Terra])
+            XCTAssertEqual(estimate.fallbackCalls, 0)
+            XCTAssertTrue(estimate.unpricedModels.isEmpty)
+        }
+    }
+
     func testAggregatePreservesUnpricedRowsBeforeFirstQuoteWithoutChangingNoDateEstimates() {
         let breakdown = TokenCacheBreakdown(inputTokens: 1_000_000, cachedInputTokens: 0,
             outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 1_000_000, calls: 1)

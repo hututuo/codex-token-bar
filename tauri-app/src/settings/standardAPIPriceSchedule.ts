@@ -16,7 +16,8 @@ export interface StandardAPIPriceQuote {
 
 export type StandardAPIEventTime = Date | number | string;
 
-export const STANDARD_API_PRICE_SCHEDULE_REVISION = "standard-api-dated-v3";
+export const STANDARD_API_PRICE_SCHEDULE_REVISION = "standard-api-dated-v4";
+const GPT61_TERRA_CUTOVER_UNIX = Date.UTC(2026, 9, 26) / 1000;
 const GPT61_SOL_CUTOVER_UNIX = Date.UTC(2026, 8, 29) / 1000;
 const GPT6_SOL_AND_LUNA_CUTOVER_UNIX = Date.UTC(2026, 8, 22) / 1000;
 const SOL_CUTOVER_UNIX = Date.UTC(2026, 7, 21) / 1000;
@@ -40,6 +41,11 @@ export function canonicalStandardAPIModelKey(value: string | null | undefined): 
     case "gpt61-sol":
     case "gpt61sol":
       return "gpt-6.1-sol";
+    case "gpt-6.1-terra":
+    case "gpt6.1-terra":
+    case "gpt61-terra":
+    case "gpt61terra":
+      return "gpt-6.1-terra";
     case "gpt-6-sol":
     case "gpt6-sol":
     case "gpt6sol":
@@ -110,6 +116,10 @@ export function standardAPIPriceQuote(
       return eventUnix < GPT61_SOL_CUTOVER_UNIX
         ? null
         : fixedQuote(modelKey, { inputUSDPerMillion: 2, cachedInputUSDPerMillion: 0.1, outputUSDPerMillion: 10 }, "standard-api-gpt-6.1-sol-from-2026-09-29");
+    case "gpt-6.1-terra":
+      return eventUnix < GPT61_TERRA_CUTOVER_UNIX
+        ? null
+        : fixedQuote(modelKey, { inputUSDPerMillion: 1, cachedInputUSDPerMillion: 0.05, outputUSDPerMillion: 5 }, "standard-api-gpt-6.1-terra-from-2026-10-26");
     case "gpt-6-sol":
       return eventUnix < GPT6_SOL_AND_LUNA_CUTOVER_UNIX
         ? null
@@ -149,6 +159,8 @@ export function currentStandardAPIPriceQuote(rawModel: string | null | undefined
   const modelKey = canonicalStandardAPIModelKey(rawModel);
   if (!modelKey) return null;
   switch (modelKey) {
+    case "gpt-6.1-terra":
+      return standardAPIPriceQuote(modelKey, GPT61_TERRA_CUTOVER_UNIX);
     case "gpt-6.1-sol":
       return standardAPIPriceQuote(modelKey, GPT61_SOL_CUTOVER_UNIX);
     case "gpt-6-sol":
