@@ -85,7 +85,7 @@ test("left and right are distinct half arcs, never two upper semicircles", async
     assert.match(html, /rotate\(91 30 30\)/);
     assert.match(html, /rotate\(-89 30 30\)/);
     assert.match(html, /左侧 Codex 7d 92%/);
-    assert.match(html, /右侧 Claude Code 5h —/);
+    assert.match(html, /右侧 Claude CLI 5h —/);
     assert.doesNotMatch(html, /NaN|Infinity/);
   }));
 test("auto shortens by height and never drops explicitly selected items", async () =>
@@ -144,8 +144,8 @@ test("PRO without 5h renders a whole ring; Claude keeps both independent halves"
       React.createElement(PairedQuotaRing, groups[1]),
     );
     assert.match(paired, /data-mode="paired"/);
-    assert.match(paired, /左侧 Claude Code 5h —/);
-    assert.match(paired, /右侧 Claude Code 7d —/);
+    assert.match(paired, /左侧 Claude CLI 5h —/);
+    assert.match(paired, /右侧 Claude CLI 7d —/);
     assert.equal(
       decodeQuotaSelection('{"order":["codex:7d"]}').pairAcrossClients,
       false,
@@ -249,8 +249,8 @@ test("paired quota captions map windows left/right then name the client once", a
     const windows = html.slice(html.indexOf('class="integrated-ring-windows"'), html.indexOf('class="integrated-ring-clients"'));
     assert.ok(windows.indexOf("5小时") < windows.indexOf("7天"));
     assert.equal((html.match(/class="integrated-ring-legend"/g) || []).length, 1);
-    assert.match(html, /左侧 Claude Code 5h 62%/);
-    assert.match(html, /右侧 Claude Code 7d 84%/);
+    assert.match(html, /左侧 Claude CLI 5h 62%/);
+    assert.match(html, /右侧 Claude CLI 7d 84%/);
     const settings = renderToStaticMarkup(React.createElement(ClientQuotaSettings, {}));
     for (const title of ["额度填充颜色", "恢复默认颜色"]) assert.ok(settings.includes(title));
     assert.doesNotMatch(settings, /竖条长度|长条|短条|将不同客户端/);

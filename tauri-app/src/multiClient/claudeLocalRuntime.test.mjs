@@ -32,13 +32,31 @@ test("Claude-only scope keeps the original live-card and hides Codex readings", 
   });
 });
 
-test("compact dots use the same item identities and budget six points each", async () => {
+test("compact sidebar omits generic placeholders and keeps the real bars and quota markers", async () => {
   await withSsrModules(async load => {
     const { compactSidebarIDs, fixedSidebarRailLayout, sidebarUsesCompactDot } = await load("/src/quota-sidebar/sidebarLayoutPresentation.ts");
-    assert.deepEqual(compactSidebarIDs(["modeltrace","speed","tps"], []), ["modeltrace","speed","tps"]);
-    assert.equal(sidebarUsesCompactDot("tps"), true);
-    assert.equal(sidebarUsesCompactDot("quota:claudeCode"), false);
-    assert.equal(fixedSidebarRailLayout(3, 900, 2).height, 112);
+    const { clientBrand, defaultQuotaSelection } = await load("/src/multiClient/integratedClientModel.ts");
+    const { SidebarCompactBars } = await load("/src/quota-sidebar/SidebarCompactBars.tsx");
+    const items = ["modeltrace", "speed", "tps", "quota:claudeCode", "models", "tasks", "radar", "credits", "clientUsage"];
+    const quotas = [
+      { id: "claudeCode:7d", client: "claudeCode", window: "7d", remaining: 80 },
+      { id: "claudeCode:5h", client: "claudeCode", window: "5h", remaining: 62 },
+    ];
+    assert.deepEqual(compactSidebarIDs(items, quotas), ["speed", "claudeCode:5h", "claudeCode:7d", "models", "tasks"]);
+    for (const id of ["modeltrace", "tps", "radar", "credits", "clientUsage", "speed", "models", "tasks", "quota:claudeCode"])
+      assert.equal(sidebarUsesCompactDot(id), false, id);
+    assert.equal(fixedSidebarRailLayout(5, 900).height, 308);
+    const html = renderToStaticMarkup(React.createElement(SidebarCompactBars, {
+      items, quotas, selection: defaultQuotaSelection, ratePercent: 50,
+      models: [{ key: "claude-sonnet", share: 1, color: "#c08b28" }],
+      taskStatus: "ready", taskLabel: "运行任务：2 个，数据最新",
+    }));
+    for (const id of ["speed", "models", "tasks"]) assert.match(html, new RegExp(`data-sidebar-item="${id}"`));
+    assert.deepEqual([...html.matchAll(/data-quota-marker-start="([^"]+)"/g)].map(match => match[1]), ["claudeCode:5h", "claudeCode:7d"]);
+    assert.equal((html.match(/class="integrated-client-cap"/g) ?? []).length, 2);
+    assert.ok(html.includes(`style="background:${clientBrand.claudeCode}"`));
+    for (const id of ["modeltrace", "tps", "radar", "credits", "clientUsage"])
+      assert.doesNotMatch(html, new RegExp(`data-sidebar-item="${id}"`), id);
   });
 });
 

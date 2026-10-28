@@ -1,3 +1,4 @@
+import { MultiClientDiscoveryNotice } from "../multiClient/MultiClientUsage";
 import { projectOriginalDashboard, clientCostPeriods } from "../multiClient/originalDashboardProjection";
 import { ClientScopeSelector, useClientScope, useClientQuotaItems } from "../multiClient/IntegratedClients";
 import { DiagnosticNotice } from "../components/DiagnosticNotice";
@@ -310,8 +311,10 @@ export function DashboardPage({
     <main className="app-shell">
       <AgentSpeedReportingInvitation onOpenSettings={() => openSettings("speedReporting")} />
       <section className="dashboard">
-        <AgentSpeedReportingDashboardStatus onOpenSettings={() => openSettings("speedReporting")} />
+        <AgentSpeedReportingDashboardStatus errorsOnly onOpenSettings={() => openSettings("speedReporting")} />
         <DashboardHeader
+          scopeControl={<ClientScopeSelector showsDiscovery={false}/>}
+          reportingStatus={<AgentSpeedReportingDashboardStatus compact onOpenSettings={() => openSettings("speedReporting")}/>}
           account={dashboard.account}
           autoResumeEnabled={autoResumeSettings.enabled}
           autostartStatus={autostartStatus}
@@ -350,7 +353,7 @@ export function DashboardPage({
           runningThreads={runningThreads}
         />
 
-        <ClientScopeSelector />
+        <MultiClientDiscoveryNotice />
 
         {preciseIndexUpgradeRequired ? (
           <section aria-live="assertive" className="index-upgrade-warning" role="alert">

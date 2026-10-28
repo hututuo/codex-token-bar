@@ -16,12 +16,14 @@ import {
   PRECISE_PROGRESS_REASSURANCE,
   presentDashboardHeaderProgress,
 } from "./dashboardHeader/progress";
-import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode, type KeyboardEvent } from "react";
 import type { ThreadDeleteBridgeStatus } from "../api/threadDeleteClient";
 import type { AppSettingsCategory } from "./settings/AppSettingsDialog";
 import type { DashboardLineageScalar } from "../types/usage";
 
 interface DashboardHeaderProps {
+  scopeControl?: ReactNode;
+  reportingStatus?: ReactNode;
   account: AccountInfo;
   autostartStatus: AutostartStatus;
   codexHome: CodexHomeStatus;
@@ -107,6 +109,7 @@ function generationIsAhead(
 }
 
 export function DashboardHeader({
+  scopeControl, reportingStatus,
   account,
   autostartStatus,
   codexHome,
@@ -278,7 +281,10 @@ export function DashboardHeader({
 
   return (
     <header className="dashboard-header">
-      <div className="floating-title-spacer" />
+      <div className="dashboard-header-top">
+      <div className="dashboard-scope-slot">{scopeControl ?? <strong className="dashboard-product-title">Codex Token Bar</strong>}</div>
+      {reportingStatus}
+      <div className="dashboard-profile">
       <div aria-hidden="true" className="brand-mark">CX</div>
       <div className="account-row">
         {editingDisplayName ? (
@@ -293,13 +299,14 @@ export function DashboardHeader({
           />
         ) : (
           <button className="account-name-button" onClick={beginEditDisplayName} title="修改显示昵称" type="button">
-            <span aria-hidden="true" className="account-name-pencil account-name-pencil--spacer">✎</span>
             <span className="account-name">{resolvedDisplayName}</span>
             <span aria-hidden="true" className="account-name-pencil">✎</span>
           </button>
         )}
       </div>
 
+      </div>
+      </div>
       <div className="dash-head">
         <div aria-label="运行信息" className="dash-head__strip">
           <span className="dash-head__platform">

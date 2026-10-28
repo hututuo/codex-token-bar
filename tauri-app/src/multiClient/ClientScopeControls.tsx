@@ -1,26 +1,13 @@
 import { useClientScope, clientTitle, amount } from "./useClientScope";
 import { MultiClientDiscoveryNotice } from "./MultiClientUsage";
 import { clientBrand } from "./integratedClientModel";
-export function ClientScopeSelector() {
-  const { raw, setScope, available } = useClientScope();
-  return (
-    <div className="integrated-scope">
-      <nav aria-label="统计客户端范围">
-        {["codex", ...available, "all"].map((id) => (
-          <button
-            type="button"
-            key={id}
-            aria-pressed={raw === id}
-            onClick={() => setScope(id)}
-          >
-            {id !== "all" && <i style={{ background: clientBrand[id] }} />}
-            {clientTitle(id)}
-          </button>
-        ))}
-      </nav>
-      <MultiClientDiscoveryNotice />
-    </div>
-  );
+export function ClientScopeButtons({value,clients,onChange}:{value:string;clients:readonly string[];onChange:(value:string)=>void}) {
+  return <nav aria-label="统计客户端范围">{["codex",...clients,"all"].map(id=><button type="button" key={id}
+    aria-pressed={value===id} onClick={()=>onChange(id)}>{id!=="all"&&<i style={{background:clientBrand[id]}}/>}{clientTitle(id)}</button>)}</nav>;
+}
+export function ClientScopeSelector({showsDiscovery=true}:{showsDiscovery?:boolean}={}) {
+  const {raw,setScope,available}=useClientScope();
+  return <div className="integrated-scope"><ClientScopeButtons value={raw} clients={available} onChange={setScope}/>{showsDiscovery&&<MultiClientDiscoveryNotice/>}</div>;
 }
 
 export function ScopedSidebarUsage() {

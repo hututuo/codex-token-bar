@@ -23,7 +23,7 @@ export interface AgentSpeedReportingStatus {
 const website = "https://deng.codexradar.com/";
 const privacy = `${website}agent-speed/privacy/`;
 const terms = `${website}agent-speed/terms/`;
-const disclosure = "仅上报速度、Token、估算费用、模型、Harness 和运行统计，以及昵称、设备标识和客户端版本信息；不上传对话、文件路径或账号凭据。Claude Code／Desktop 始终只在本地读取，不参与上报。关闭后停止榜单上报；本地速度显示由速度算法设置独立控制。";
+const disclosure = "仅上报速度、Token、估算费用、模型、Harness 和运行统计，以及昵称、设备标识和客户端版本信息；不上传对话、文件路径或账号凭据。Claude CLI／Claude Desktop 始终只在本地读取，不参与上报。关闭后停止榜单上报；本地速度显示由速度算法设置独立控制。";
 const duplicateNotice = "同一台电脑的同一数据源，请只在 Agent Speed 或 Token Bar 中开启一处上报，避免重复累计。";
 export const supportedHarnesses = "Codex、Claude Code、Claude Desktop（本地 Code／Agent 会话）、DSH、OpenCode、Gemini CLI、omp、Antigravity、WorkBuddy、WorkBuddy AI、ZCode、Kimi Code、Grok Build";
 function read() { return callCommandStrict<AgentSpeedReportingStatus>("read_agent_speed_reporting_status"); }
@@ -119,11 +119,16 @@ export function AgentSpeedReportingSettings() {
   </section>;
 }
 
-export function AgentSpeedReportingNotice({status,busy=false,onRetry,onOpenSettings}:{
-  status:AgentSpeedReportingStatus;busy?:boolean;onRetry:()=>void;onOpenSettings:()=>void;
+export function AgentSpeedReportingNotice({status,busy=false,compact=false,errorsOnly=false,onRetry,onOpenSettings}:{
+  status:AgentSpeedReportingStatus;busy?:boolean;compact?:boolean;errorsOnly?:boolean;onRetry:()=>void;onOpenSettings:()=>void;
 }) {
-  if(!status.enabled) return null;
+  if(!status.enabled || (errorsOnly && status.phase !== "error")) return null;
   const failed=status.phase === "error";
+  const confirmed=["running","reporting","connected"].includes(status.phase)&&!!status.lastReportAt&&Number.isFinite(Date.parse(status.lastReportAt));
+  if(compact)return <button type="button" className="speed-report-header-status" data-state={failed?"error":confirmed?"reporting":"connecting"}
+    title={status.message+(status.lastReportAt?"\n最近上报 "+new Date(status.lastReportAt).toLocaleTimeString():"")} onClick={onOpenSettings}>
+    <i aria-hidden="true"/><span>速蹬 · {failed?"上报异常":confirmed?"正在上报":"正在连接"}</span>
+  </button>;
   return <div className={`speed-report-dashboard-status${failed?" is-error":""}`} role={failed?"alert":"status"}>
     <span className={failed?"speed-report-dot is-error":"speed-report-dot is-on"}/>
     <strong>速蹬上报</strong><span>{status.message}</span>
@@ -133,7 +138,7 @@ export function AgentSpeedReportingNotice({status,busy=false,onRetry,onOpenSetti
   </div>;
 }
 
-export function AgentSpeedReportingDashboardStatus({onOpenSettings}:{onOpenSettings:()=>void}) {
+export function AgentSpeedReportingDashboardStatus({onOpenSettings,compact=false,errorsOnly=false}:{onOpenSettings:()=>void;compact?:boolean;errorsOnly?:boolean}) {
   const status=useAgentSpeedStatus();
   const [busy,setBusy]=useState(false);
   async function retry() {
@@ -142,7 +147,7 @@ export function AgentSpeedReportingDashboardStatus({onOpenSettings}:{onOpenSetti
     catch { publishAgentSpeedStatus({...status,phase:"error",message:"无法重试连接，请在设置中查看"}); }
     finally {setBusy(false);}
   }
-  return <AgentSpeedReportingNotice status={status} busy={busy} onRetry={()=>void retry()} onOpenSettings={onOpenSettings}/>;
+  return <AgentSpeedReportingNotice status={status} busy={busy} compact={compact} errorsOnly={errorsOnly} onRetry={()=>void retry()} onOpenSettings={onOpenSettings}/>;
 }
 
 export function AgentSpeedInvitationCard({ username, busy = false, error = "", onJoin, onDismiss, onOpenSettings }: {

@@ -28,6 +28,27 @@ test('client fee scopes retain the original six metrics and model chips',async()
  const html=renderToStaticMarkup(React.createElement(StatsStrip,{stats:{...stats,totalTokens:1200},planLabel:'',clientCosts:periods}));
  assert.equal((html.match(/class="stats-cell/g)??[]).length,6);assert.match(html,/stats-model-cost-primary-card/);assert.match(html,/近7天/);assert.match(html,/Sonnet 4.6/);assert.doesNotMatch(html,/<table|integrated-stats|选择周期|累计净薅到/);
 }));
+test('client model cost groups lead with GPT-6, combine the latest Claude families, then show legacy groups',async()=>withSsrModules(async load=>{
+ const {clientCostGroups}=await load('/src/multiClient/originalDashboardProjection.ts');
+ const item=(key,label)=>({key,label,tokens:100,share:1/8,costUSD:0.01,usesIndependentQuota:false,referenceCostUSD:null,color:'#123456'});
+ const groups=clientCostGroups([
+  item('codex|gpt-5.6-sol','Sol'),
+  item('claudeCode|opus-4-6','Opus 4.6'),
+  item('claudeCode|fable-5-1','Fable 5.1'),
+  item('codex|gpt-6-astra','Astra'),
+  item('claudeDesktop|opus-5-5','Opus 5.5'),
+  item('claudeCode|sonnet-5-5','Sonnet 5.5'),
+ ]);
+ assert.deepEqual(groups.map(({id,label})=>({id,label})),[
+  {id:'6',label:'6 系列'},
+  {id:'claude:latest',label:'Claude 最新'},
+  {id:'5.6',label:'5.6 系列'},
+  {id:'claude:opus',label:'Opus'},
+ ]);
+ assert.deepEqual(groups[1].items.map(item=>item.key),[
+  'claudeCode|fable-5-1','claudeDesktop|opus-5-5','claudeCode|sonnet-5-5',
+ ]);
+}));
 test('client quota reuses original quota bars without the Codex attribution owner',async()=>withSsrModules(async load=>{
  const {QuotaStrip}=await load('/src/components/QuotaStrip.tsx');const html=renderToStaticMarkup(React.createElement(QuotaStrip,{clientItems:[{id:'claudeCode:5h',client:'claudeCode',window:'5h',remaining:62,resetsAt:null,status:'',source:'模拟'}]}));
  assert.match(html,/class="quota-strip quota-strip--clients"/);assert.match(html,/class="quota-bar"/);assert.match(html,/62%/);assert.doesNotMatch(html,/重置卡|官方直连/);

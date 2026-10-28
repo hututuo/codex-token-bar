@@ -7,6 +7,8 @@ struct ClientScopePicker: View {
     private var choices: [MultiClientUsagePreference] {
         clients.availablePreferences.filter { clients.displayClientIDs.contains($0.client.rawValue) }
     }
+    var showsDiscovery = true
+    init(showsDiscovery: Bool = true) { self.showsDiscovery = showsDiscovery }
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 10) {
@@ -22,7 +24,7 @@ struct ClientScopePicker: View {
                 Spacer()
                 if ClientPreviewMode.simulated { Text("Codex / Claude 模拟数据").font(.caption.weight(.medium)).foregroundStyle(AppTheme.accentAmber) }
             }
-            MultiClientDiscoveryNotice()
+            if showsDiscovery { MultiClientDiscoveryNotice() }
         }.frame(maxWidth: 980, alignment: .leading).task { clients.start() }
     }
     private func scopeButton(_ title: String, id: String) -> some View {

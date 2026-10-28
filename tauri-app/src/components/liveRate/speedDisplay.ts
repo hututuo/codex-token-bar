@@ -44,7 +44,7 @@ export function projectSpeedDisplay<T extends { tokensPerSecond: number; modelRa
 export const SPEED_COLORS_KEY = "speedDisplay.customColors.v1";
 export const SPEED_PREFERENCES_EVENT = "speed-display-preferences-changed";
 export const CLIENT_TITLES: Record<string, string> = {
-  "client:codex": "Codex", "client:claudeCode": "Claude Code", "client:claudeDesktop": "Claude Desktop", "client:deepseek": "DSH",
+  "client:codex": "Codex", "client:claudeCode": "Claude CLI", "client:claudeDesktop": "Claude Desktop", "client:deepseek": "DSH",
 };
 export const CLIENT_COLORS: Record<string, string> = {
   "client:codex": "#72d6a2", "client:claudeCode": "#e99663", "client:claudeDesktop": "#e99663", "client:deepseek": "#568dff",

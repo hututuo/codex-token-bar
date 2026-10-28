@@ -94,12 +94,17 @@ struct ClientModelCostPeriods: Equatable {
                 tokens: item.tokens, share: item.share, costUSD: item.costUSD, usesIndependentQuota: item.usesIndependentQuota,
                 referenceCostUSD: item.referenceCostUSD, color: item.color, knownPartialCostUSD: item.knownPartialCostUSD)
         }
-        var groups = FloatingTodayModelUsagePresentation.dashboardFamilyGroups(from: original)
-        let others = Dictionary(grouping: values.filter { !$0.id.hasPrefix("codex|") }, by: { String($0.id.split(separator: "|", maxSplits: 1).first ?? "") })
-        groups += others.sorted { $0.key < $1.key }.flatMap { entry -> [FloatingTodayModelUsagePresentation.DashboardFamilyGroup] in
-            if ["claudeCode", "claudeDesktop"].contains(entry.key) { return ClaudeModelPresentation.groups(entry.value, client: entry.key) }
-            return [.init(id: entry.key, title: ClientDisplayScope.title(entry.key), items: entry.value)]
-        }
+        let codexGroups = FloatingTodayModelUsagePresentation.dashboardFamilyGroups(from: original)
+        let claudeRows = values.filter { $0.id.hasPrefix("claudeCode|") || $0.id.hasPrefix("claudeDesktop|") }
+        let claudeGroups = ClaudeModelPresentation.groups(claudeRows, client: "claude")
+        let others = Dictionary(grouping: values.filter {
+            !$0.id.hasPrefix("codex|") && !$0.id.hasPrefix("claudeCode|") && !$0.id.hasPrefix("claudeDesktop|")
+        }, by: { String($0.id.split(separator: "|", maxSplits: 1).first ?? "") })
+        let groups = codexGroups.filter { $0.id == "6" }
+            + claudeGroups.filter { $0.id.hasSuffix(":latest") }
+            + codexGroups.filter { $0.id != "6" }
+            + claudeGroups.filter { !$0.id.hasSuffix(":latest") }
+            + others.sorted { $0.key < $1.key }.map { .init(id: $0.key, title: ClientDisplayScope.title($0.key), items: $0.value) }
         return groups
     }
     static func make(codex: DashboardSnapshot, todayCodex: [ModelTokenBreakdown],

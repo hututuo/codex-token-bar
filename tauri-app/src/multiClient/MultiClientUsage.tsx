@@ -6,7 +6,7 @@ import { isTauriRuntimeAvailable } from "../platform/runtime";
 
 export type UsageClient = "claudeCode" | "claudeDesktop" | "deepseek" | "gemini" | "opencode";
 export const clientNames: Record<UsageClient, string> = {
-  claudeCode: "Claude Code", claudeDesktop: "Claude Desktop", deepseek: "DeepSeek / DSH", gemini: "Gemini CLI", opencode: "OpenCode",
+  claudeCode: "Claude CLI", claudeDesktop: "Claude Desktop", deepseek: "DeepSeek / DSH", gemini: "Gemini CLI", opencode: "OpenCode",
 };
 export interface ClientPreference {
   client: UsageClient; enabled: boolean; showSidebar: boolean; showQuota?: boolean; showMenuBar: boolean; color: string; order: number; style: string; path: string;
@@ -221,5 +221,5 @@ export function MultiClientUsageSidebarRows({codexTokens}: {codexTokens?:number}
 }
 export function ClaudeLocalQuotaPanel({compact=false}:{compact?:boolean}) {
   const {snapshot}=useMultiClientUsage();
-  return <section className={compact ? "multi-client-quota-inline" : "multi-client-quota"}><h4>Claude Code 额度</h4><ClientQuotaPanel compact={compact} reading={snapshot.quotas?.find(q=>q.client==="claudeCode") ?? unavailableQuota("claudeCode")}/>{!compact && <small>额度仅从本地读取</small>}</section>;
+  return <section className={compact ? "multi-client-quota-inline" : "multi-client-quota"}><h4>Claude CLI 额度</h4><ClientQuotaPanel compact={compact} reading={snapshot.quotas?.find(q=>q.client==="claudeCode") ?? unavailableQuota("claudeCode")}/>{!compact && <small>额度仅从本地读取</small>}</section>;
 }

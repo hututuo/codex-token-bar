@@ -323,6 +323,7 @@ struct HeaderView: View {
     let snapshot: DashboardSnapshot
     let quotaSnapshot: AccountQuotaSnapshot
     var clientQuotaItems: [ClientQuotaItem]? = nil
+    var showsClientScopePicker = false
     let status: String
     let dataSourceLabel: String
     let dataSourceOrigin: String
@@ -441,24 +442,24 @@ struct HeaderView: View {
     }
 
     var body: some View {
-        VStack(spacing: 8) {
-            ZStack {
-                Circle()
-                    .fill(Color.orange)
-                    .frame(width: 72, height: 72)
-                Text("CX")
-                    .font(.system(size: 27, weight: .medium, design: .rounded))
-                    .foregroundStyle(.white)
-            }
-
-            VStack(spacing: 9) {
+        VStack(spacing: 12) {
+            HStack(spacing: 14) {
+                if showsClientScopePicker { ClientScopePicker(showsDiscovery: false) }
+                else { Text("Codex Token Bar").font(.system(size: 20, weight: .semibold)) }
+                Spacer(minLength: 12)
+                if presentationMode.showsActions { AgentSpeedReportingDashboardStatus(compact: true) }
+                HStack(spacing: 8) {
+                    ZStack {
+                        Circle().fill(AppTheme.accentBlue).frame(width: 30, height: 30)
+                        Text("CX").font(.system(size: 11, weight: .semibold, design: .rounded)).foregroundStyle(.white)
+                    }.accessibilityHidden(true)
                 if isEditingDisplayName {
                     TextField("昵称", text: $displayNameDraft)
                         .textFieldStyle(.plain)
-                        .font(.system(size: 24, weight: .regular))
+                        .font(.system(size: 14, weight: .medium))
                         .multilineTextAlignment(.center)
                         .lineLimit(1)
-                        .frame(width: 300)
+                        .frame(width: 170)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 5)
                         .background(AppTheme.raisedBackground, in: Capsule())
@@ -480,11 +481,8 @@ struct HeaderView: View {
                         isEditingDisplayName = true
                     } label: {
                         HStack(spacing: 6) {
-                            Image(systemName: "pencil")
-                                .font(.system(size: 11, weight: .semibold))
-                                .opacity(0)
                             Text(accountDisplayName)
-                                .font(.system(size: 24, weight: .regular))
+                                .font(.system(size: 14, weight: .medium))
                                 .foregroundStyle(.primary)
                                 .lineLimit(1)
                                 .minimumScaleFactor(0.78)
@@ -492,19 +490,21 @@ struct HeaderView: View {
                                 .font(.system(size: 11, weight: .semibold))
                                 .foregroundStyle(.secondary.opacity(0.75))
                         }
-                        .frame(maxWidth: 360)
+                        .frame(maxWidth: 170)
                     }
                     .buttonStyle(.plain)
                     .help("点击修改顶部昵称；留空会恢复本地账户名")
                 } else {
                     Text(accountDisplayName)
-                        .font(.system(size: 24, weight: .regular))
+                        .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(.primary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.78)
-                        .frame(maxWidth: 360)
+                        .frame(maxWidth: 170)
                 }
 
+                }.fixedSize(horizontal: true, vertical: false)
+            }.frame(maxWidth: 980)
                 VStack(spacing: 8) {
                     HStack(spacing: 0) {
                         if presentationMode.showsActions {
@@ -767,7 +767,6 @@ struct HeaderView: View {
                     showingResetCreditDetails: $showingResetCreditDetails,
                     clientItems: clientQuotaItems
                 )
-            }
         }
         .zIndex(showingResetCreditDetails ? 10_000 : 0)
         .onReceive(NotificationCenter.default.publisher(for: .dashboardBlankAreaClicked)) { _ in
@@ -1423,10 +1422,10 @@ struct DashboardModelCostRow: View {
             } else {
                 ForEach(modelFamilies) { group in
                     HStack(alignment: .top, spacing: 10) {
-                        Text(group.title)
+                        Text(group.id == "6" ? "GPT" : group.title)
                             .font(.system(size: 10, weight: .bold)).foregroundStyle(.secondary)
-                            .frame(width: 58, alignment: .leading)
-                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 108), spacing: 7), count: 4), alignment: .leading, spacing: 7) {
+                            .frame(width: 78, alignment: .leading)
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 108), spacing: 7), count: group.id == "6" || group.id.hasSuffix(":latest") ? min(5, max(1, group.items.count)) : 4), alignment: .leading, spacing: 7) {
                             ForEach(group.items) { item in
                                 Group {
                                     if group.id == "6" || group.id.hasSuffix(":latest") { DashboardPrimaryModelCostCard(item: item) }
@@ -1505,30 +1504,20 @@ private struct DashboardPrimaryModelCostCard: View {
     let item: FloatingTodayModelUsageItem
 
     var body: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(item.color)
-                .frame(width: 7, height: 7)
-
-            Text(item.label)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
-
-            Spacer(minLength: 2)
-
-            Text(item.valueText(for: .cost))
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.primary)
-                .monospacedDigit()
-
-            Text(item.valueText(for: .share))
-                .font(.system(size: 9.5, weight: .medium))
-                .foregroundStyle(.tertiary)
-                .monospacedDigit()
-        }
-        .lineLimit(1)
-        .padding(.horizontal, 8)
-        .frame(maxWidth: .infinity, minHeight: 30)
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Circle().fill(item.color).frame(width: 7, height: 7)
+                Text(item.label.replacingOccurrences(of: #"(?i)^GPT[- ]*"#, with: "", options: .regularExpression))
+                    .font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                Spacer(minLength: 2)
+                Text(item.valueText(for: .cost))
+                    .font(.system(size: 12, weight: .semibold)).foregroundStyle(.primary).monospacedDigit()
+            }
+            Text(item.tokens.abbreviatedTokens + " · " + item.valueText(for: .share))
+                .font(.system(size: 9.5, weight: .medium)).foregroundStyle(.secondary).monospacedDigit().padding(.leading, 13)
+        }.lineLimit(1)
+        .padding(.horizontal, 8).padding(.vertical, 5)
+        .frame(maxWidth: .infinity, minHeight: 40)
         .background(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .fill(item.color.opacity(0.075))

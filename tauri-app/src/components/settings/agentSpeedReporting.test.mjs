@@ -120,3 +120,16 @@ test('movie autoplays, resumes after hiding, and preserves manual pause and redu
   });
  }finally{if(root)await React.act(async()=>root.unmount());for(const[k,v]of saved)v?Object.defineProperty(globalThis,k,v):delete globalThis[k];w.close();}
 });
+
+test('compact header status is green only after a confirmed report and retains visible errors',async()=>withSsrModules(async load=>{
+ const {AgentSpeedReportingNotice}=await load('/src/components/settings/AgentSpeedReporting.tsx');
+ const base={enabled:true,phase:'running',message:'已上报',lastReportAt:'2026-10-28T09:17:23Z'};
+ const render=(status,extra={})=>renderToStaticMarkup(React.createElement(AgentSpeedReportingNotice,{status,compact:true,onRetry(){},onOpenSettings(){},...extra}));
+ assert.match(render(base),/data-state="reporting"/);assert.match(render(base),/正在上报/);
+ for(const lastReportAt of [null,undefined,'not-a-time']){const html=render({...base,lastReportAt});assert.match(html,/data-state="connecting"/);assert.doesNotMatch(html,/正在上报/);}
+ assert.match(render({...base,phase:'error'}),/上报异常/);
+ assert.equal(render({...base,enabled:false}),'');
+ assert.equal(render(base,{errorsOnly:true}),'');
+ const failure=render({...base,phase:'error',message:'连接超时，请检查网络'},{compact:false,errorsOnly:true});
+ assert.match(failure,/role="alert"/);assert.match(failure,/连接超时/);assert.match(failure,/重试连接/);
+}));

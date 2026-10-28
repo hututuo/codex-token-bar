@@ -64,9 +64,11 @@ enum QuotaSidebarItem: Hashable, Identifiable, Sendable {
         }
     }
 
-    var hasCompactRepresentation: Bool { true }
+    var hasCompactRepresentation: Bool {
+        switch self { case .speed, .quota, .models, .tasks: true; default: false }
+    }
     var usesCompactDot: Bool {
-        switch self { case .speed, .quota, .models, .tasks: false; default: true }
+        false
     }
     var requiresCodexLiveData: Bool {
         switch self { case .speed, .tasks: true; default: false }
@@ -186,7 +188,7 @@ struct QuotaSidebarItemLayout: Codable, Equatable, Sendable {
 
 enum QuotaSidebarContentOrder {
     static func compactIDs(items: [QuotaSidebarItem], quotas: [ClientQuotaItem]) -> [String] {
-        items.flatMap { item -> [String] in
+        items.filter(\.hasCompactRepresentation).flatMap { item -> [String] in
             switch item {
             case let .quota(client): quotaWindows(quotas, client: client).map(\.id)
             default: [item.id]

@@ -13,11 +13,14 @@ export interface ClientCostPeriods {
 }
 export function clientCostGroups(items: FloatingModelUsageItem[]) {
   const codex = items.filter(x => x.key.startsWith('codex|')).map(x => ({...x,key:x.key.slice(6)}));
-  const groups: {id:string;label:string;items:FloatingModelUsageItem[]}[] = dashboardModelFamilyGroups(codex);
-  for (const client of [...new Set(items.filter(x=>!x.key.startsWith('codex|')).map(x=>x.key.split('|')[0]))].sort()) {
-    const rows=items.filter(x=>x.key.startsWith(client+'|'));
-    if(["claudeCode","claudeDesktop"].includes(client))groups.push(...claudeModelGroups(rows,client));
-    else groups.push({id:client,label:clientNames[client as keyof typeof clientNames] ?? client,items:rows});
+  const codexGroups = dashboardModelFamilyGroups(codex);
+  const claudeGroups = claudeModelGroups(items.filter(x=>/^claude(?:Code|Desktop)\|/.test(x.key)),"claude");
+  const groups: {id:string;label:string;items:FloatingModelUsageItem[]}[] = [
+    ...codexGroups.filter(g=>g.id==="6"), ...claudeGroups.filter(g=>g.id.endsWith(":latest")),
+    ...codexGroups.filter(g=>g.id!=="6"), ...claudeGroups.filter(g=>!g.id.endsWith(":latest")),
+  ];
+  for (const client of [...new Set(items.filter(x=>!/^codex\||^claude(?:Code|Desktop)\|/.test(x.key)).map(x=>x.key.split('|')[0]))].sort()) {
+    groups.push({id:client,label:clientNames[client as keyof typeof clientNames] ?? client,items:items.filter(x=>x.key.startsWith(client+'|'))});
   }
   return groups;
 }

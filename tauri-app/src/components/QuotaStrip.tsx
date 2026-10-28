@@ -1969,7 +1969,7 @@ function ClientQuotaRows({ items, stale, codexTools }: { items: QuotaItem[]; sta
   if (clients.length === 0) return <p className="quota-client-empty">所选客户端暂无本地额度读数</p>;
   return <div className="quota-client-rows">{clients.map(client =>
     <div className="quota-client-row" role="group" aria-label={`${clientTitle(client)} 额度`} key={client}>
-      <div className="quota-client-label"><strong><i style={{ background: clientBrand[client] ?? "#888888" }} aria-hidden="true"/>{client === "claudeCode" || client === "claudeDesktop" ? "Claude" : clientTitle(client)}</strong><span>{client === "codex" ? "当前账户" : "本地缓存"}</span></div>
+      <div className="quota-client-label"><strong><i style={{ background: clientBrand[client] ?? "#888888" }} aria-hidden="true"/>{clientTitle(client)}</strong><span>{client === "codex" ? "当前账户" : "本地缓存"}</span></div>
       <div className="quota-client-windows">{items.filter(item => item.client === client).map(item =>
         <div className="quota-client-window" data-quota-id={item.id} key={item.id} title={[item.source, item.status].filter(Boolean).join(" · ")}>
           <QuotaBar stale={item.status.includes("旧") || (client === "codex" && stale)} pendingLabel={item.status || "不可用"} quota={{

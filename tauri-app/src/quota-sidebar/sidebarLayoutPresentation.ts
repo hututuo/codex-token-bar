@@ -20,7 +20,7 @@ export function visibleSidebarItems(
   return sidebarLayoutItems(layout, quotas, hasCodex).filter(id => isSidebarItemVisible(layout, id, level));
 }
 export function compactSidebarIDs(items: readonly string[], quotas: readonly QuotaItem[]): string[] {
-  return items.flatMap(id => id.startsWith("quota:")
+  return items.filter(sidebarHasCompactRepresentation).flatMap(id => id.startsWith("quota:")
     ? quotaWindowsForClient(quotas, id.slice(6)).map(q => q.id)
     : [id]);
 }
@@ -33,7 +33,8 @@ export function sidebarTaskStateLabel(total: number | null | undefined, status: 
   if (status === "scanning") return `运行任务：正在更新，${count}`;
   return `运行任务：${count}，状态未知`;
 }
-export function sidebarUsesCompactDot(id: string): boolean { return !id.startsWith("quota:") && !["speed", "models", "tasks"].includes(id); }
+export function sidebarHasCompactRepresentation(id: string): boolean { return id.startsWith("quota:") || ["speed", "models", "tasks"].includes(id); }
+export function sidebarUsesCompactDot(_id: string): boolean { return false; }
 export function fixedSidebarRailLayout(trackCount: number, availableHeight = 900, dotCount = 0) {
   const count = Math.max(0, Math.floor(trackCount));
   const dots = Math.min(count, Math.max(0, Math.floor(dotCount)));

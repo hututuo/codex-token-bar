@@ -87,7 +87,7 @@ struct ActivitySpeedSummaryView: View {
         aggregate.map { LiveRateSnapshot.rateDisplayText($0.outputRate) } ?? "—"
     }
     private func clientTitle(_ value: String) -> String {
-        switch value { case "claudeCode": "Claude"; case "claudeDesktop": "Claude Desktop"; default: value.capitalized }
+        switch value { case "claudeCode": "Claude CLI"; case "claudeDesktop": "Claude Desktop"; default: value.capitalized }
     }
     private func recentPoints(_ row: ActivitySpeedSeries) -> [ActivitySpeedTrendPoint] {
         row.fiveMinuteTrend.filter { Double($0.bucketStart) >= Date().timeIntervalSince1970 - 2100 }

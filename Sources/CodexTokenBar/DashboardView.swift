@@ -1060,12 +1060,11 @@ struct DashboardView: View {
             todayCodex: store.todayModelBreakdowns, rows: clients.summaries, today: clients.todaySummaries,
             sevenDay: clients.sevenDaySummaries, clientsUpdatedAt: clients.updatedAt, allowed: allowedClients)
         LazyVStack(spacing: 18) {
-            ClientScopePicker()
-            AgentSpeedReportingDashboardStatus()
             HeaderView(
                 snapshot: store.snapshot,
                 quotaSnapshot: quotaStore.snapshot,
                 clientQuotaItems: codexOnly && !ClientPreviewMode.simulated ? nil : ClientQuotaProjection.items(codex: quotaStore.snapshot, claude: clients.quotaReading(.claudeCode), includeClaude: allowedClients.contains("claudeCode") || allowedClients.contains("claudeDesktop"), preview: ClientPreviewMode.simulated).filter { allowedClients.contains($0.client) || ($0.client == "claudeCode" && allowedClients.contains("claudeDesktop")) },
+                showsClientScopePicker: true,
                 status: store.status,
                 dataSourceLabel: codexOnly ? store.dataSourceLabel : (clientScope == "all" ? "所选客户端本地记录" : ClientDisplayScope.title(clientScope)),
                 dataSourceOrigin: codexOnly ? store.dataSourceOrigin : (ClientPreviewMode.simulated ? "Claude 模拟" : "本地日志"),
@@ -1111,6 +1110,9 @@ struct DashboardView: View {
                 showingResetCreditDetails: $showingResetCreditDetails
             )
 
+
+            AgentSpeedReportingDashboardStatus(errorsOnly: true)
+            MultiClientDiscoveryNotice()
 
             if let upgrade = store.indexUpgradeRequired {
                 HStack(spacing: 14) {

@@ -23,7 +23,8 @@ test("unknown token fields remain unknown and reasoning is labeled as an output 
       summaries: [{ client: "claudeCode", model: "claude-test", inputTokens: 130, outputTokens: 20,
         cacheReadTokens: 100, cacheWriteTokens: 10, reasoningTokens: null, requests: 1, lastSeen: "2026-10-25T00:00:00Z" }],
     } }));
-    assert.match(html, /Claude Code/); assert.match(html, /claude-test/); assert.match(html, /思考¹/);
+    assert.match(html, /Claude CLI/); assert.doesNotMatch(html, /Claude Code/);
+    assert.match(html, /claude-test/); assert.match(html, /思考¹/);
     assert.match(html, /<td>130<\/td>/); assert.match(html, /<td>—<\/td>/);
   });
 });

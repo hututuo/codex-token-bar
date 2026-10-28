@@ -11,7 +11,7 @@
   flex-wrap: wrap;
   padding: 4px;
   border-radius: 8px;
-  background: var(--control-bg, #20232b);
+  background: var(--control);
 }
 .integrated-scope nav button {
   display: flex;
@@ -21,14 +21,14 @@
   border: 0;
   border-radius: 8px;
   background: transparent;
-  color: inherit;
+  color: var(--text);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
 }
 .integrated-scope nav button[aria-pressed="true"] {
-  background: var(--selected-control-bg, #343945);
-  color: var(--accent-blue, #58a6ff);
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 .integrated-scope i,
 .integrated-quota-option > i,

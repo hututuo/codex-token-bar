@@ -122,6 +122,10 @@ test("Claude families share presentation colors without merging model identity",
     assert.equal(modelUsageColor(model), modelUsageColor(family));
     assert.equal(modelUsageKey(model), model);
   }
+  assert.deepEqual(
+    ["claude-fable", "claude-opus", "claude-sonnet", "claude-haiku"].map(modelUsageColor),
+    ["#99623f", "#c35b96", "#c08b28", "#269c92"],
+  );
   const models = ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna", "claude-opus", "claude-sonnet", "claude-haiku"];
   assert.equal(new Set(models.map(modelUsageColor)).size, models.length);
 });

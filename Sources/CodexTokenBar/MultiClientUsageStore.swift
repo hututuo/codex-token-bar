@@ -40,7 +40,7 @@ struct MultiClientUsagePreference: Codable, Equatable, Identifiable, Sendable {
 extension UsageClient {
     var displayName: String {
         switch self {
-        case .claudeCode: "Claude Code"
+        case .claudeCode: "Claude CLI"
         case .claudeDesktop: "Claude Desktop"
         case .deepseek: "DeepSeek / DSH"
         case .gemini: "Gemini CLI"

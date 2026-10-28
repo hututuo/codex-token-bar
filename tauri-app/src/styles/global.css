@@ -2491,7 +2491,7 @@ button.quota-side-card:hover {
 
 .stats-model-cost-group {
   display: grid;
-  grid-template-columns: 30px minmax(0, 1fr);
+  grid-template-columns: 78px minmax(0, 1fr);
   gap: 7px;
   align-items: start;
   min-width: 0;
@@ -12959,7 +12959,7 @@ details.session-management-banner {
 @media(prefers-reduced-motion:reduce){.recent-interaction-guide *{animation:none!important}.rig-cursor{transform:translate(187px,53px)}.rig-bubble{transform:translate(70px,4px)}.rig-reading-a,.rig-reading-b{opacity:0}.rig-reading-c{opacity:1}.rig-click{opacity:0}.rig-endpoint{opacity:1}}
 @media(max-width:650px){.rig-content{gap:10px}.rig-demo{width:180px}.rig-instructions p{font-size:11px}}
 
-.stats-model-cost-group-label{flex-basis:62px;min-width:62px;white-space:nowrap}
+.stats-model-cost-group-label{min-width:0;white-space:nowrap}
 
 @keyframes rig-press{0%,19%,24%,76%,81%,100%{transform:scale(1)}21%,78%{transform:scale(.78)}}
 .recent-interaction-guide summary{transition:transform .12s,opacity .12s}.recent-interaction-guide summary:active{transform:translateY(1px) scale(.99);opacity:.7}
@@ -12996,3 +12996,27 @@ details.session-management-banner {
 .quota-strip--embedded>.quota-pace{flex:0 1 250px;margin-left:0}
 .quota-strip--embedded>.quota-reset-card{flex:0 0 130px}
 @media(max-width:850px){.quota-client-row:has(.quota-strip--embedded){grid-template-columns:70px minmax(0,1fr)}.quota-strip--embedded{grid-column:2;justify-content:flex-end}}
+
+/* Compact shared header: scope on the left, reporting and identity on the right. */
+.dashboard-header{align-items:stretch;gap:12px}
+.dashboard-header-top{display:flex;align-items:center;gap:14px;min-width:0;width:100%;padding:2px 0}
+.dashboard-scope-slot{flex:1;min-width:0}.dashboard-scope-slot .integrated-scope{margin:0;gap:0}.dashboard-scope-slot .integrated-scope nav{width:fit-content}
+.dashboard-product-title{font-size:19px;font-weight:var(--weight-semibold);letter-spacing:-.4px}
+.dashboard-profile{display:flex;align-items:center;gap:8px;min-width:0;flex:none}
+.dashboard-profile .brand-mark{width:30px;height:30px;flex:none;font-size:11px;background:var(--accent)}
+.dashboard-profile .account-row{margin:0;flex-wrap:nowrap;min-width:0}
+.dashboard-profile .account-name{font-size:14px;line-height:24px;max-width:170px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dashboard-profile .account-name-button{gap:5px;padding:0;min-width:0}.dashboard-profile .account-name-pencil{font-size:10px}
+.dashboard-profile .account-name-edit{width:170px;font-size:14px;padding:4px 8px}
+.speed-report-header-status{display:inline-flex;align-items:center;gap:6px;flex:none;white-space:nowrap;height:28px;padding:0 10px;background:var(--surface-2,var(--panel));color:var(--text);border:1px solid var(--line);border-radius:999px;font-size:11px;cursor:pointer}
+.speed-report-header-status i{width:6px;height:6px;border-radius:50%;background:#d59b2e}.speed-report-header-status[data-state=reporting] i{background:#35a66c}.speed-report-header-status[data-state=error] i{background:#d97732}
+.speed-report-header-status:hover{background:var(--panel-soft,var(--panel))}.speed-report-header-status:active{transform:translateY(1px)}
+@media(max-width:760px){.dashboard-header-top{flex-wrap:wrap;gap:10px}.dashboard-scope-slot{flex-basis:100%}.dashboard-profile{margin-left:auto}.dashboard-profile .account-name{max-width:140px}}
+
+.stats-model-cost-primary-card{grid-template-columns:auto minmax(0,1fr) auto;row-gap:3px;min-height:40px;padding:5px 9px;line-height:1.2}
+.stats-model-cost-primary-card small{grid-column:2 / -1;grid-row:2}
+.stats-model-cost-primary-grid{grid-template-columns:repeat(var(--model-columns,4),minmax(0,1fr))}
+@media(max-width:760px){.stats-model-cost-group{grid-template-columns:65px minmax(0,1fr)}.stats-model-cost-primary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.stats-model-cost-secondary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+.stats-model-cost-secondary-chip{grid-template-columns:auto minmax(0,1fr) auto;row-gap:3px;padding:5px 8px;line-height:1.2;min-height:40px}
+.stats-model-cost-secondary-chip em{grid-column:2 / -1;grid-row:1}.stats-model-cost-secondary-chip b{grid-column:1 / 3;grid-row:2;justify-self:start}.stats-model-cost-secondary-chip small{grid-column:3;grid-row:2;justify-self:end}

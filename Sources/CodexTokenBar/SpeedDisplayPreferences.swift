@@ -73,7 +73,7 @@ final class SpeedColorOverrides: @unchecked Sendable {
     static func clientTitle(_ key: String) -> String {
         switch key {
         case "client:codex": "Codex"
-        case "client:claudeCode": "Claude Code"
+        case "client:claudeCode": "Claude CLI"
         case "client:claudeDesktop": "Claude Desktop"
         case "client:deepseek": "DSH"
         default: String(key.dropFirst("client:".count))

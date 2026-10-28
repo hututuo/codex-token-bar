@@ -111,7 +111,7 @@ struct QuotaSidebarCompactBars: View {
 
     var body: some View {
         VStack(spacing: layout.gap) {
-            ForEach(items) { item in
+            ForEach(items.filter(\.hasCompactRepresentation)) { item in
                 Group {
                     switch item {
                     case .speed:
@@ -132,9 +132,7 @@ struct QuotaSidebarCompactBars: View {
                     case .models:
                         SidebarModelShareStrip(items: shares, vertical: true).frame(width: 4, height: layout.barHeight)
                     default:
-                        Circle().fill(SidebarPalette.green.opacity(0.8)).frame(width: 6, height: 6)
-                            .help(item.title).accessibilityLabel(item.title)
-                            .accessibilityIdentifier("sidebar-dot-" + item.id)
+                        EmptyView()
                     }
                 }.overlay {
                     Capsule().stroke(SidebarPalette.green.opacity(highlightedItem == item ? 0.85 : 0), lineWidth: 1).padding(.horizontal, -3)

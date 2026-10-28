@@ -160,7 +160,7 @@ struct ClaudeLocalQuotaReadings: View {
     @ObservedObject private var store = MultiClientUsageStore.shared
     var body: some View {
         VStack(alignment: compact ? .center : .leading, spacing: 4) {
-            Text("Claude Code 额度").font(compact ? .system(size: 9) : .headline)
+            Text("Claude CLI 额度").font(compact ? .system(size: 9) : .headline)
             ClientQuotaReadingView(reading: ClaudeCapturedQuotaProvider(snapshot: store.claudeQuota).reading(), compact: compact)
             if !compact { Text("额度仅从本地读取").font(.caption).foregroundStyle(.secondary) }
         }

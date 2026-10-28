@@ -29,7 +29,7 @@ struct AgentSpeedReportingSettingsView: View {
                 TextField("排行榜昵称", text: $nickname).textFieldStyle(.roundedBorder)
                     .disabled(controller.enabled)
             }
-            Text("仅上报速度、Token、估算费用、模型、Harness 和运行统计，以及昵称、设备标识和客户端版本信息；不上传对话、文件路径或账号凭据。Claude Code／Desktop 始终只在本地读取，不参与上报。关闭后停止榜单上报；本地速度显示由速度算法设置独立控制。")
+            Text("仅上报速度、Token、估算费用、模型、Harness 和运行统计，以及昵称、设备标识和客户端版本信息；不上传对话、文件路径或账号凭据。Claude CLI／Claude Desktop 始终只在本地读取，不参与上报。关闭后停止榜单上报；本地速度显示由速度算法设置独立控制。")
                 .font(.callout).foregroundStyle(.secondary)
             Text("同一台电脑的同一数据源，请只在 Agent Speed 或 Token Bar 中开启一处上报，避免重复累计。")
                 .font(.callout).foregroundStyle(.secondary)
@@ -64,7 +64,7 @@ struct AgentSpeedReportingSettingsView: View {
                 }
             }
             DisclosureGroup("支持的软件") {
-                Text("Claude Code／Desktop 只在本机统计，不上报。可上报：Codex、DSH、OpenCode、Gemini CLI、omp、Antigravity、WorkBuddy、WorkBuddy AI、ZCode、Kimi Code、Grok Build。自动发现本地默认目录及环境变量指定的目录；云端未落地的会话无法统计。")
+                Text("Claude CLI／Claude Desktop 只在本机统计，不上报。可上报：Codex、DSH、OpenCode、Gemini CLI、omp、Antigravity、WorkBuddy、WorkBuddy AI、ZCode、Kimi Code、Grok Build。自动发现本地默认目录及环境变量指定的目录；云端未落地的会话无法统计。")
                     .font(.callout).padding(.top, 6)
             }
             HStack(spacing: 16) {
@@ -95,8 +95,23 @@ struct AgentSpeedReportingSettingsView: View {
 /// reporting contributes no placeholder or invitation to the dashboard.
 struct AgentSpeedReportingDashboardStatus: View {
     @ObservedObject private var controller = AgentSpeedReportingController.shared
+    var compact = false
+    var errorsOnly = false
+    private var confirmed: Bool { ["running", "reporting", "connected"].contains(controller.phase) && controller.lastReportAt != nil }
     var body: some View {
-        if controller.enabled {
+        if controller.enabled && (!errorsOnly || controller.phase == "error") {
+            if compact {
+                Button { AppSettingsRouteRequest.request(.speedReporting) } label: {
+                    HStack(spacing: 6) {
+                        Circle().fill(controller.phase == "error" ? Color.orange : confirmed ? Color.green : Color.orange).frame(width: 6, height: 6)
+                        Text("速蹬 · " + (controller.phase == "error" ? "上报异常" : confirmed ? "正在上报" : "正在连接"))
+                            .font(.system(size: 11, weight: .medium)).lineLimit(1)
+                    }.padding(.horizontal, 10).frame(height: 28)
+                        .background(AppTheme.solidControlBackground, in: Capsule())
+                }.buttonStyle(.plain).fixedSize()
+                    .help(controller.message + (controller.lastReportAt.map { "\n最近上报 " + $0.formatted(date: .omitted, time: .standard) } ?? ""))
+                    .accessibilityLabel("速蹬上报状态")
+            } else {
             HStack(spacing: 10) {
                 Image(systemName: controller.phase == "error" ? "exclamationmark.triangle" : "arrow.up.circle")
                     .foregroundStyle(controller.phase == "error" ? Color.orange : AppTheme.accentBlue)
@@ -115,6 +130,7 @@ struct AgentSpeedReportingDashboardStatus: View {
             .background(controller.phase == "error" ? Color.orange.opacity(0.09) : AppTheme.solidControlBackground,
                 in: RoundedRectangle(cornerRadius: 9))
             .accessibilityElement(children: .contain).accessibilityLabel("速蹬上报状态")
+            }
         }
     }
 }

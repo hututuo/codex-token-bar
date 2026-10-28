@@ -87,7 +87,7 @@ export function PairedQuotaRing({
   const clientLegend = (i: QuotaItem, ids = [i.id]) => (
     <span className="integrated-ring-legend" title={clientTitle(i.client)}>
       <i data-quota-marker-end={ids.join(" ")} style={{ background: clientBrand[i.client] }} />
-      {i.client === "claudeCode" || i.client === "claudeDesktop" ? "Claude" : clientTitle(i.client)}
+      {clientTitle(i.client)}
     </span>
   );
   const windowLegend = (i: QuotaItem) => (

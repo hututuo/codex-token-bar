@@ -232,7 +232,7 @@ struct AccountQuotaStrip: View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 5) {
                 Circle().fill(Color(nsColor: NSColor(clientHex: ClientBrand.hex(client)))).frame(width: 6, height: 6)
-                Text(client == "claudeCode" || client == "claudeDesktop" ? "Claude" : ClientDisplayScope.title(client))
+                Text(ClientDisplayScope.title(client))
                     .font(.system(size: 11, weight: .semibold))
             }
             Text(subtitle).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)

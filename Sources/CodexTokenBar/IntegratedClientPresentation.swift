@@ -40,7 +40,7 @@ struct ClientQuotaItem: Identifiable, Equatable {
     var expected: Double? = nil
     var brand: String { ClientBrand.hex(client) }
     var fill: String { window == "5h" ? "#B6EF75" : window == "7d" ? "#B4ACFF" : "#78B7FF" }
-    var shortClientTitle: String { client == "claudeCode" || client == "claudeDesktop" ? "Claude" : ClientDisplayScope.title(client) }
+    var shortClientTitle: String { ClientDisplayScope.title(client) }
     var windowTitle: String { window == "5h" ? "5小时" : window == "7d" ? "7天" : window }
     var compactValue: String { remaining.map { String(format: "%.0f", $0) } ?? "—" }
     var value: String { remaining.map { String(format: "%.0f%%", $0) } ?? "—" }

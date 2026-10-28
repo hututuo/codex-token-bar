@@ -53,3 +53,6 @@ __pycache__/
 
 /tools/ClaudeLocalReader/bin/
 /tools/ClaudeLocalReader/obj/
+
+# Private, read-only local data for development previews.
+/tauri-app/dev-previews/*.local.json

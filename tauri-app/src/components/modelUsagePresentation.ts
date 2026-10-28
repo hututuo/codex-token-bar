@@ -24,10 +24,10 @@ export interface ModelUsageSlice {
 }
 
 const FIXED_COLORS: Record<string, string> = {
-  "claude-fable": "#d68cb5",
-  "claude-opus": "#b89add",
-  "claude-sonnet": "#dca16c",
-  "claude-haiku": "#5cbcaf",
+  "claude-fable": "#99623f",
+  "claude-opus": "#c35b96",
+  "claude-sonnet": "#c08b28",
+  "claude-haiku": "#269c92",
   "gpt-6-astra": "#a3d977",
   "gpt-6.1-sol": "#df7055",
   "gpt-6.1-terra": "#a773e8",

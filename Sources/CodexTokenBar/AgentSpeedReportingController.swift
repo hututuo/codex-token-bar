@@ -673,7 +673,7 @@ final class AgentSpeedReportingController: ObservableObject {
     static func sourceName(_ source: SourceKind) -> String {
         switch source {
         case .codex: "Codex"
-        case .claudeCode: "Claude Code"
+        case .claudeCode: "Claude CLI"
         case .claudeDesktop: "Claude Desktop"
         case .deepseek: "DSH"
         case .opencode: "OpenCode"
