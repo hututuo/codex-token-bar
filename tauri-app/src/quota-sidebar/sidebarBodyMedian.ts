@@ -25,12 +25,7 @@ export function sidebarBodyMedian(rows: SpeedTrendPoint[], now: number): MedianS
 export function medianBounds(series:MedianSeries) {
   const rows=series.slots.filter((p):p is MedianPoint=>p!==null);
   const low=rows.length?Math.min(...rows.map(p=>p.lower)):0,high=rows.length?Math.max(...rows.map(p=>p.upper)):10,pad=Math.max(5,(high-low)*.2);
-  return {low:Math.max(0,low-pad),high:Math.max(10,high+pad)};
-}
-export function medianSegments(series:MedianSeries) {
-  const segments:{index:number;point:MedianPoint}[][]=[];let current:{index:number;point:MedianPoint}[]=[];
-  series.slots.forEach((p,index)=>{if(p){current.push({index,point:p});}else if(current.length){segments.push(current);current=[];}});
-  if(current.length)segments.push(current);return segments;
+  return {low:Math.max(0,Math.floor((low-pad)/5)*5),high:Math.max(10,Math.ceil((high+pad)/5)*5)};
 }
 export function medianInterval(end:number) {
   const fmt=(n:number)=>new Date(n*1000).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit",hour12:false});

@@ -7,4 +7,4 @@
 .qs-median-name{display:flex;align-items:center;gap:3px;font-size:9px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .qs-median-name>i{display:inline-block;flex-shrink:0;width:4px;height:4px;border-radius:50%}
 .qs-median-value{display:flex;align-items:baseline;gap:3px}.qs-median-value>b{font-size:18px;font-weight:600;line-height:1.2;font-variant-numeric:tabular-nums;letter-spacing:-.3px}.qs-median-value>small{font-size:7px;color:#ffffffbf}
-.qs-median-line{display:block;width:66px;height:32px}.qs-median-time{font-size:7px;color:#ffffffbf;text-align:center;font-variant-numeric:tabular-nums;white-space:nowrap}
+.qs-median-bars{display:block;width:66px;height:48px}.qs-median-time{font-size:7px;color:#ffffffbf;text-align:center;font-variant-numeric:tabular-nums;white-space:nowrap}

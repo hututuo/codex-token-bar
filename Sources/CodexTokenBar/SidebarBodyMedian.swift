@@ -21,7 +21,7 @@ struct SidebarBodyMedian: Equatable, Sendable {
             let low = values.map(\.lower).min() ?? 0
             let high = values.map(\.upper).max() ?? 10
             let padding = max(5, (high - low) * 0.2)
-            return max(0, low - padding)...max(10, high + padding)
+            return max(0, floor((low - padding) / 5) * 5)...max(10, ceil((high + padding) / 5) * 5)
         }
     }
     let end: Int64
