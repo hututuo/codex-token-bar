@@ -3,6 +3,13 @@ import XCTest
 @testable import CodexTokenBar
 
 final class BodySpeedTrendStoreTests: XCTestCase {
+    func testLoadRetriesOnlyLockContentionAndNeverTreatsProofFailureAsEmpty() {
+        XCTAssertTrue(BodySpeedLoadRetryPolicy.isRetryable(SQLiteDatabaseError(operation: "write", code: 5, message: "busy", path: nil)))
+        XCTAssertTrue(BodySpeedLoadRetryPolicy.isRetryable(SQLiteDatabaseError(operation: "write", code: 262, message: "locked", path: nil)))
+        XCTAssertFalse(BodySpeedLoadRetryPolicy.isRetryable(SQLiteDatabaseError(operation: "read", code: 11, message: "corrupt", path: nil)))
+        XCTAssertFalse(BodySpeedLoadRetryPolicy.isRetryable(BodySpeedMigrationError.proofMismatch))
+    }
+
     func testWeightedSparseBucketsRemainModelSpecificAndReingestIsIdempotent() throws {
         let (store, directory) = try makeStore()
         defer { try? FileManager.default.removeItem(at: directory) }

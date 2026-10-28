@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import SQLite3
 
 /// Animation allocation only. Never writes to the usage ledger or serves as a measured sample.
 struct ThroughputSignal {
@@ -453,6 +454,13 @@ struct ObservedSpeedCollector {
             try JSONEncoder().encode(samples).write(to: storeURL, options: .atomic)
             persistenceError = nil
         } catch { persistenceError = "测速记录保存失败：\(error.localizedDescription)" }
+    }
+}
+
+enum BodySpeedLoadRetryPolicy {
+    static func isRetryable(_ error: Error) -> Bool {
+        guard let sqlite = error as? SQLiteDatabaseError else { return false }
+        return sqlite.primaryCode == SQLITE_BUSY || sqlite.primaryCode == SQLITE_LOCKED
     }
 }
 

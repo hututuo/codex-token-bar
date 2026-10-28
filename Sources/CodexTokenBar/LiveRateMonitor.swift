@@ -1155,16 +1155,27 @@ final class LiveRateMonitor: ObservableObject {
             speedDatabaseURL = url; speedDatabaseReady = false; speedTrendPoints = []; speedTrendError = nil
             let writer = bodySpeedWriter, days = speedRetentionDays
             Task { [weak self] in
-                do {
-                    let retained = try await writer.load(from: url, now: Date().timeIntervalSince1970, retentionDays: days)
-                    guard let self, self.speedSourceIdentity == identity else { return }
-                    self.speedCollector.addCompletedBodies(retained)
-                    self.speedDatabaseReady = true; self.savedSpeedRevision = -1
-                    self.updateSnapshots(now: Date().timeIntervalSince1970); self.refreshSpeedTrend()
-                } catch {
-                    guard let self, self.speedSourceIdentity == identity else { return }
-                    self.speedCollector.persistenceError = "测速数据库读取失败：\(error.localizedDescription)"
-                    self.speedTrendError = self.speedCollector.persistenceError
+                while !Task.isCancelled {
+                    guard self?.speedSourceIdentity == identity else { return }
+                    do {
+                        let retained = try await writer.load(from: url, now: Date().timeIntervalSince1970, retentionDays: days)
+                        guard let self, self.speedSourceIdentity == identity else { return }
+                        self.speedCollector.addCompletedBodies(retained)
+                        self.speedCollector.persistenceError = nil
+                        self.speedTrendError = nil
+                        self.speedDatabaseReady = true; self.savedSpeedRevision = -1
+                        self.updateSnapshots(now: Date().timeIntervalSince1970); self.refreshSpeedTrend()
+                        return
+                    } catch {
+                        guard let self, self.speedSourceIdentity == identity else { return }
+                        self.speedCollector.persistenceError = "测速数据库读取失败：\(error.localizedDescription)"
+                        self.speedTrendError = self.speedCollector.persistenceError
+                        // A busy first migration must not permanently disable
+                        // persistence for this Home. Proof/schema failures stay
+                        // visible and require repair, rather than starting empty.
+                        guard BodySpeedLoadRetryPolicy.isRetryable(error) else { return }
+                    }
+                    do { try await Task.sleep(for: .seconds(5)) } catch { return }
                 }
             }
             savedSpeedRevision = -1

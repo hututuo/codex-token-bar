@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 const MAX_RETURNED_SAMPLES: usize = 10;
 const MAX_ACTIVE_TEXT_BYTES: usize = 1024 * 1024;
@@ -24,6 +25,7 @@ const BODY_RETENTION_CLEANUP_INTERVAL: std::time::Duration =
     std::time::Duration::from_secs(15 * 60);
 const SEEN_ROW_LIMIT: usize = 10_000;
 const MAX_ACTIVE_ITEMS: usize = 32;
+const INITIAL_LOAD_RETRY_INTERVAL: Duration = Duration::from_secs(5);
 
 static SPEED_STORES: OnceLock<Mutex<HashMap<LiveRateSourceScope, SpeedStore>>> = OnceLock::new();
 
@@ -40,6 +42,8 @@ struct SpeedStore {
     seen_row_order: VecDeque<i64>,
     storage_error: Option<String>,
     persistence_blocked: bool,
+    load_failure_permanent: bool,
+    load_retry_at: Option<Instant>,
     persistence_retry_at: Option<f64>,
     last_persistence_attempt_at: f64,
     pending_prune: bool,
@@ -1341,23 +1345,40 @@ fn summarize(
 }
 
 fn ensure_loaded(store: &mut SpeedStore, scope: &LiveRateSourceScope, now: f64) {
-    if store.loaded {
+    if store.loaded || store.load_failure_permanent {
         return;
     }
-    store.loaded = true;
+    let attempt_at = Instant::now();
+    if !initial_load_retry_due(store, attempt_at) {
+        return;
+    }
+    store.load_retry_at = None;
+    store.persistence_blocked = true;
     let Some(path) = storage_path(scope) else {
-        store.storage_error = Some("observed_speed_storage_unavailable".into());
-        store.persistence_blocked = true;
+        record_initial_load_failure(
+            store,
+            "observed_speed_storage_unavailable",
+            false,
+            attempt_at,
+        );
         return;
     };
     let Some(parent) = path.parent() else {
-        store.storage_error = Some("observed_speed_storage_invalid_path".into());
-        store.persistence_blocked = true;
+        record_initial_load_failure(
+            store,
+            "observed_speed_storage_invalid_path",
+            false,
+            attempt_at,
+        );
         return;
     };
     if fs::create_dir_all(parent).is_err() {
-        store.storage_error = Some("observed_speed_storage_create_failed".into());
-        store.persistence_blocked = true;
+        record_initial_load_failure(
+            store,
+            "observed_speed_storage_create_failed",
+            false,
+            attempt_at,
+        );
         return;
     }
 
@@ -1369,40 +1390,50 @@ fn ensure_loaded(store: &mut SpeedStore, scope: &LiveRateSourceScope, now: f64) 
         .and_then(|shared_path| BodySpeedTrendStore::open_shared(&path, shared_path));
     let database = match database_result {
         Ok(database) => database,
-        Err(_) => {
-            store.storage_error = Some("observed_speed_storage_invalid".into());
-            store.persistence_blocked = true;
+        Err(error) => {
+            let retryable = is_retryable_initial_load_error(&error);
+            record_initial_load_failure(
+                store,
+                "observed_speed_storage_invalid",
+                retryable,
+                Instant::now(),
+            );
             return;
         }
     };
     let retention_days = match database.retention_days() {
         Ok(days) => days,
-        Err(_) => {
-            store.storage_error = Some("observed_speed_storage_invalid".into());
-            store.persistence_blocked = true;
+        Err(error) => {
+            let retryable = is_retryable_initial_load_error(&error);
+            record_initial_load_failure(
+                store,
+                "observed_speed_storage_invalid",
+                retryable,
+                Instant::now(),
+            );
             return;
         }
     };
     let samples = match database.read_samples(now, retention_days) {
         Ok(samples) => samples,
-        Err(_) => {
-            store.storage_error = Some("observed_speed_storage_invalid".into());
-            store.persistence_blocked = true;
+        Err(error) => {
+            let retryable = is_retryable_initial_load_error(&error);
+            record_initial_load_failure(
+                store,
+                "observed_speed_storage_invalid",
+                retryable,
+                Instant::now(),
+            );
             return;
         }
     };
-    let mut persisted = HashMap::new();
-    for sample in samples {
-        if is_completed_body_sample(&sample) && valid_sample(&sample) {
-            persisted.insert(sample.id.clone(), sample.clone());
-            store.samples.push_back(sample);
-        }
-    }
+    let persisted = merge_loaded_body_samples(store, samples);
     store.body_retention_days = Some(retention_days);
     store.persisted_body_samples = persisted;
     store.trend_store = Some(database);
-    store.last_body_retention_cleanup = Some(std::time::Instant::now());
+    store.last_body_retention_cleanup = Some(Instant::now());
     store.summary_cache = None;
+    mark_initial_load_success(store);
 
     // Apply raw/dedup/aggregate retention once at startup, including when the raw
     // history preference changed while the app was closed. Existing aggregates
@@ -1411,6 +1442,71 @@ fn ensure_loaded(store: &mut SpeedStore, scope: &LiveRateSourceScope, now: f64) 
         Ok(()) => store.storage_error = None,
         Err(error) => store.storage_error = Some(error),
     }
+}
+
+fn initial_load_retry_due(store: &SpeedStore, now: Instant) -> bool {
+    !store.load_failure_permanent && store.load_retry_at.is_none_or(|retry_at| now >= retry_at)
+}
+
+fn record_initial_load_failure(
+    store: &mut SpeedStore,
+    message: &str,
+    retryable: bool,
+    now: Instant,
+) {
+    store.loaded = false;
+    store.persistence_blocked = true;
+    store.storage_error = Some(message.to_owned());
+    store.load_failure_permanent = !retryable;
+    store.load_retry_at = retryable.then_some(now + INITIAL_LOAD_RETRY_INTERVAL);
+}
+
+fn mark_initial_load_success(store: &mut SpeedStore) {
+    store.loaded = true;
+    store.persistence_blocked = false;
+    store.load_failure_permanent = false;
+    store.load_retry_at = None;
+    store.storage_error = None;
+}
+
+fn is_retryable_initial_load_error(error: &rusqlite::Error) -> bool {
+    match error {
+        rusqlite::Error::SqliteFailure(error, _) => matches!(
+            error.code,
+            rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+        ),
+        rusqlite::Error::ToSqlConversionFailure(inner) => {
+            let message = inner.to_string().to_ascii_lowercase();
+            message.contains("database is locked")
+                || message.contains("database table is locked")
+                || message.contains("database is busy")
+        }
+        _ => false,
+    }
+}
+
+fn merge_loaded_body_samples(
+    store: &mut SpeedStore,
+    persisted_samples: Vec<SpeedSample>,
+) -> HashMap<String, SpeedSample> {
+    let mut known_ids = HashSet::new();
+    store.samples.retain(|sample| {
+        !is_completed_body_sample(sample) || known_ids.insert(sample.id.clone())
+    });
+
+    let mut persisted = HashMap::new();
+    for sample in persisted_samples {
+        if !is_completed_body_sample(&sample) || !valid_sample(&sample) {
+            continue;
+        }
+        persisted.insert(sample.id.clone(), sample.clone());
+        // Pending in-memory revisions win over the older disk row. The next
+        // persist call sees the difference and writes the revision after load.
+        if known_ids.insert(sample.id.clone()) {
+            store.samples.push_back(sample);
+        }
+    }
+    persisted
 }
 
 fn effective_body_retention_days(store: &SpeedStore) -> u16 {
@@ -1733,6 +1829,83 @@ mod tests {
         assert_eq!(store.trend_store.as_ref().unwrap().read_samples(1007.0, 30).unwrap().len(), 2);
         drop(store);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn busy_initial_load_retries_after_backoff_and_merges_disk_ids_once() {
+        let mut store = SpeedStore::default();
+        let mut pending = audit_body(1001.0);
+        pending.output_tokens = 200;
+        pending.tokens_per_second = 100.0;
+        store.samples.push_back(pending.clone());
+
+        let started = Instant::now();
+        let busy = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+            None,
+        );
+        assert!(is_retryable_initial_load_error(&busy));
+        record_initial_load_failure(
+            &mut store,
+            "observed_speed_storage_invalid",
+            true,
+            started,
+        );
+        assert!(!store.loaded);
+        assert!(store.persistence_blocked);
+        assert!(store.storage_error.is_some());
+        assert!(!initial_load_retry_due(
+            &store,
+            started + Duration::from_secs(4)
+        ));
+        assert!(initial_load_retry_due(
+            &store,
+            started + INITIAL_LOAD_RETRY_INTERVAL
+        ));
+
+        let mut persisted_revision = audit_body(1001.0);
+        persisted_revision.output_tokens = 100;
+        persisted_revision.tokens_per_second = 50.0;
+        let mut additional = audit_body(1003.0);
+        additional.id = "persisted-only".into();
+        let persisted = merge_loaded_body_samples(
+            &mut store,
+            vec![persisted_revision.clone(), additional.clone()],
+        );
+        assert_eq!(store.samples.len(), 2);
+        assert_eq!(
+            store
+                .samples
+                .iter()
+                .find(|sample| sample.id == pending.id)
+                .unwrap()
+                .output_tokens,
+            200,
+            "pending in-memory revision must win over the older disk row"
+        );
+        assert_eq!(store.samples.back().unwrap().id, additional.id);
+        assert_eq!(persisted[&pending.id].output_tokens, 100);
+
+        mark_initial_load_success(&mut store);
+        assert!(store.loaded);
+        assert!(!store.persistence_blocked);
+        assert!(store.load_retry_at.is_none());
+        assert!(store.storage_error.is_none());
+
+        let unsupported = rusqlite::Error::InvalidQuery;
+        assert!(!is_retryable_initial_load_error(&unsupported));
+        record_initial_load_failure(
+            &mut store,
+            "observed_speed_storage_invalid",
+            false,
+            Instant::now(),
+        );
+        assert!(!initial_load_retry_due(
+            &store,
+            Instant::now() + Duration::from_secs(60)
+        ));
+        assert!(store.persistence_blocked);
+        assert!(store.storage_error.is_some());
     }
 
     #[test]
