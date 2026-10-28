@@ -206,7 +206,8 @@ final class CodexBusinessDatabase {
             // Read both physical version and catalog before the first DDL. A
             // foreign or future-version file must remain byte-for-byte intact.
             let physicalVersion = try Self.physicalUserVersion(db)
-            let existing = try Self.containerSchema(db)
+            let rootNames = Set(expected.map(\.name))
+            let existing = try Self.containerSchema(db, canonicalNames: rootNames)
             let isNewContainer = physicalVersion == 0
             if isNewContainer {
                 let hasAnyCatalogObject = try db.readRows("SELECT 1 FROM main.sqlite_master LIMIT 1") { $0.int(0) }.first != nil
@@ -222,7 +223,7 @@ final class CodexBusinessDatabase {
                     try tx.execute(schema)
                     try tx.execute("PRAGMA user_version=1")
                 }
-                let created = try Self.containerSchema(db)
+                let created = try Self.containerSchema(db, canonicalNames: rootNames)
                 try Self.validateContainerCatalog(created, db: db, expected: expected)
             } else {
                 guard physicalVersion == 1 else {
@@ -263,17 +264,23 @@ final class CodexBusinessDatabase {
         return value
     }
 
-    private static func containerSchema(_ db: SQLiteDatabaseConnection) throws -> [SchemaEntry] {
+    private static func containerSchema(_ db: SQLiteDatabaseConnection, canonicalNames: Set<String>? = nil) throws -> [SchemaEntry] {
         try db.readRows("""
         SELECT type,name,tbl_name,sql FROM main.sqlite_master
         WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name
         """) { row in
             let rawSQL = row.text(3) ?? ""
+            let name = row.text(1) ?? ""
             return SchemaEntry(
                 type: row.text(0) ?? "",
-                name: row.text(1) ?? "",
+                name: name,
                 table: row.text(2) ?? "",
-                sql: try SQLiteStoreNamespace.canonicalSQL(rawSQL)
+                // Only container-owned DDL is compared here. Module DDL is
+                // verified by each import proof/reader, not by this catalog
+                // ownership fence. Avoid retokenizing thousands of unrelated
+                // module definitions on every container open.
+                sql: canonicalNames.map { !$0.contains(name) } == true
+                    ? "" : try SQLiteStoreNamespace.canonicalSQL(rawSQL)
             )
         }
     }
@@ -306,12 +313,13 @@ final class CodexBusinessDatabase {
         guard registered.count == registeredCount, Set(registered).count == registered.count else {
             throw BusinessStoreError.invalidContainerVersion
         }
-        let prefixes = registered
+        let prefixes = Set(registered)
         let extra = actual.filter { !requiredNames.contains($0.name) }
         guard extra.allSatisfy({ object in
-            prefixes.contains { prefix in
-                object.name.hasPrefix(prefix) && object.table.hasPrefix(prefix)
-            }
+            // Registered prefixes are exactly s + 64 hex digits + underscore.
+            // Checking the fixed prefix avoids objects × stores comparisons.
+            let prefix = String(object.name.prefix(66))
+            return prefixes.contains(prefix) && object.table.hasPrefix(prefix)
         }) else { throw BusinessStoreError.invalidContainerVersion }
     }
 

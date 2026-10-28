@@ -47,6 +47,24 @@ final class BusinessDatabaseMigrationTests: XCTestCase {
         try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32)
         XCTAssertEqual(try SQLiteDatabaseDriver(url: legacy).readRows("SELECT COUNT(*) FROM quota_snapshots") { $0.int(0) }.first!, 2)
     }
+    func testReadyStartupSkipsActivationButNewLegacyInputStillUsesTheGate() throws {
+        let (_, c) = try fixture()
+        let quota = c.support.appendingPathComponent("quota-history.sqlite")
+        try SQLiteDatabaseDriver(url: quota).execute("CREATE TABLE samples(id INTEGER PRIMARY KEY); INSERT INTO samples VALUES(42)")
+        try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32)
+        BusinessSQLiteRoutes.deactivate()
+        var activations = 0
+        try BusinessDatabaseMigration.migrate(c, availableBytes: 0, beforeActivation: { activations += 1 })
+        XCTAssertEqual(activations, 0, "A ready container must not repeat migration activation or its whole-file check")
+        XCTAssertEqual(try SQLiteDatabaseDriver(url: quota).readRows("SELECT id FROM samples") { $0.int(0) }.first!, 42)
+        BusinessSQLiteRoutes.deactivate()
+        let added = c.support.appendingPathComponent("body-speed-additional.sqlite")
+        try SQLiteDatabaseDriver(url: added).execute("CREATE TABLE samples(id INTEGER PRIMARY KEY); INSERT INTO samples VALUES(77)")
+        try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32, beforeActivation: { activations += 1 })
+        XCTAssertEqual(activations, 1, "New inputs still require backups, proof and activation")
+        XCTAssertEqual(try SQLiteDatabaseDriver(url: added).readRows("SELECT id FROM samples") { $0.int(0) }.first!, 77)
+        XCTAssertEqual(try SQLiteDatabaseDriver(url: quota).readRows("SELECT id FROM samples") { $0.int(0) }.first!, 42)
+    }
     func testNewModulesWriteOnlyAAndStageSealSurvivesUnrelatedWrites() throws {
         let (_, c) = try fixture()
         try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32)

@@ -103,9 +103,19 @@ final class BusinessDatabaseMigration {
         // A fixed private candidate is resumable. Atomic import transactions
         // and receipts make replay idempotent; activation is a separate gate.
         let database = try CodexBusinessDatabase(url: working)
-        try database.driver.execute("INSERT OR REPLACE INTO tb_container_meta VALUES ('activation_state','importing')")
         let known = Set(try database.driver.readRows("SELECT source_path FROM tb_legacy_inputs") { $0.text(0) ?? "" })
         let pending = exists ? inputs.filter { !known.contains($0.source.path) } : inputs
+        let activation = try database.driver.readRows("SELECT value FROM tb_container_meta WHERE key='activation_state'") { $0.text(0) }.first ?? nil
+        if exists, fileManager.fileExists(atPath: initialized.path), pending.isEmpty, activation == "ready" {
+            // A completed upgrade is not another migration. Keep the catalog,
+            // physical-version and source-discovery fences above, but do not
+            // scan every data page, rewrite readiness or fsync the whole file
+            // before showing the next normal launch. Readers validate pages
+            // they touch; storage maintenance retains its independent cadence.
+            try activateRoutes(configuration, database: database)
+            return
+        }
+        try database.driver.execute("INSERT OR REPLACE INTO tb_container_meta VALUES ('activation_state','importing')")
         var needed: UInt64 = 256 * 1024 * 1024
         for input in pending {
             for suffix in ["", "-wal"] {
@@ -224,9 +234,16 @@ final class BusinessDatabaseMigration {
             try synchronize(initialized.deletingLastPathComponent())
         }
         let ready = try CodexBusinessDatabase(url: configuration.container)
+        try activateRoutes(configuration, database: ready)
+    }
+
+    private static func activateRoutes(_ configuration: Configuration, database ready: CodexBusinessDatabase) throws {
         // Candidate activation uses a single-file image. The live shared
         // container must return to WAL before any module starts writing.
-        try ready.driver.execute("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL")
+        let mode = try ready.driver.readRows("PRAGMA journal_mode") { $0.text(0) }.first ?? nil
+        if mode?.lowercased() != "wal" {
+            try ready.driver.execute("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL")
+        }
         let stores = try ready.driver.readRows("SELECT logical_path,module,source_identity FROM tb_stores") { row in
             BusinessSQLiteStore(containerURL: configuration.container, logicalURL: URL(fileURLWithPath: row.text(0) ?? ""), module: row.text(1) ?? "", sourceIdentity: row.text(2) ?? "")
         }
