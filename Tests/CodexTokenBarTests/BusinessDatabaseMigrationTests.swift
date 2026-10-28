@@ -11,6 +11,60 @@ final class BusinessDatabaseMigrationTests: XCTestCase {
         return (root, .init(container: support.appendingPathComponent("codex-ledger.sqlite"), support: support,
             exact: root.appendingPathComponent("exact"), legacyExact: root.appendingPathComponent("cache")))
     }
+    func testRetryOfAddedLegacyInputDoesNotSkipChangedSource() throws {
+        let (_, c) = try fixture()
+        let active = c.support.appendingPathComponent("quota-history.sqlite")
+        try SQLiteDatabaseDriver(url: active).execute("CREATE TABLE samples(id INTEGER PRIMARY KEY); INSERT INTO samples VALUES(100)")
+        try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32)
+        try SQLiteDatabaseDriver(url: active).execute("INSERT INTO samples VALUES(101)")
+        BusinessSQLiteRoutes.deactivate()
+        let added = c.support.appendingPathComponent("body-speed-late.sqlite")
+        let raw = SQLiteDatabaseDriver(url: added, bypassBusinessRoutes: true)
+        try raw.execute("CREATE TABLE samples(id INTEGER PRIMARY KEY); INSERT INTO samples VALUES(1)")
+        enum Stop: Error { case now }
+        XCTAssertThrowsError(try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32, beforeActivation: { throw Stop.now }))
+        try raw.execute("INSERT INTO samples VALUES(2)")
+        try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32)
+        XCTAssertEqual(try SQLiteDatabaseDriver(url: added).readRows("SELECT COUNT(*) FROM samples") { $0.int(0) }.first!, 2,
+                       "Retry must re-verify the incomplete import rather than silently omit the newly committed legacy row")
+        XCTAssertEqual(try SQLiteDatabaseDriver(url: active).readRows("SELECT COUNT(*) FROM samples") { $0.int(0) }.first!, 2, "Previously activated new rows must survive the retry")
+        BusinessSQLiteRoutes.deactivate()
+        try raw.execute("INSERT INTO samples VALUES(3)")
+        try BusinessDatabaseMigration.migrate(c, availableBytes: 0)
+        XCTAssertEqual(try SQLiteDatabaseDriver(url: added).readRows("SELECT COUNT(*) FROM samples") { $0.int(0) }.first!, 2, "After activation the old file is frozen evidence")
+    }
+    func testInterruptedBatchMissingSourceFailsAndCanResumeWhenRestored() throws {
+        let (_, c) = try fixture()
+        try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32)
+        BusinessSQLiteRoutes.deactivate()
+        let added = c.support.appendingPathComponent("body-speed-pending.sqlite")
+        try SQLiteDatabaseDriver(url: added).execute("CREATE TABLE samples(id INTEGER PRIMARY KEY); INSERT INTO samples VALUES(8)")
+        enum Stop: Error { case now }
+        XCTAssertThrowsError(try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32, beforeActivation: { throw Stop.now }))
+        let saved = added.appendingPathExtension("saved")
+        try FileManager.default.moveItem(at: added, to: saved)
+        XCTAssertThrowsError(try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32))
+        XCTAssertNil(BusinessSQLiteRoutes.store(for: added))
+        try FileManager.default.moveItem(at: saved, to: added)
+        try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32)
+        XCTAssertEqual(try SQLiteDatabaseDriver(url: added).readRows("SELECT id FROM samples") { $0.int(0) }.first!, 8)
+    }
+    func testUntrackedOldInterruptedBatchDoesNotActivateOrOverwriteLiveRows() throws {
+        let (_, c) = try fixture()
+        let active = c.support.appendingPathComponent("quota-history.sqlite")
+        try SQLiteDatabaseDriver(url: active).execute("CREATE TABLE samples(id INTEGER PRIMARY KEY); INSERT INTO samples VALUES(1)")
+        try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32)
+        try SQLiteDatabaseDriver(url: active).execute("INSERT INTO samples VALUES(2)")
+        BusinessSQLiteRoutes.deactivate()
+        let database = try CodexBusinessDatabase(url: c.container)
+        try database.driver.execute("INSERT OR REPLACE INTO tb_container_meta VALUES ('activation_state','importing')")
+        XCTAssertThrowsError(try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32))
+        XCTAssertNil(BusinessSQLiteRoutes.store(for: active))
+        XCTAssertEqual(try SQLiteDatabaseDriver(url: active, bypassBusinessRoutes: true).readRows("SELECT COUNT(*) FROM samples") { $0.int(0) }.first!, 1)
+        // The active A partition still contains its independently written row.
+        let store = try XCTUnwrap(c.specification(for: active))
+        XCTAssertEqual(try database.driver.readRows("SELECT COUNT(*) FROM \(store.prefix)samples") { $0.int(0) }.first!, 2)
+    }
     func testBootstrapPreservesRawWALAndKeysAndReopensWithoutReimporting() throws {
         let (_, c) = try fixture()
         let legacy = c.support.appendingPathComponent("quota-history.sqlite")

@@ -73,6 +73,9 @@ pub(crate) fn bootstrap() -> Result<(), String> {
     Container::open(&path).map_err(|error| error.to_string())?;
     bootstrap_legacy_stores()?;
     crate::core::usage::token_count_jsonl::bootstrap_legacy_exact_indexes()?;
+    verify_bootstrap_pending_inputs(
+        &Container::open_existing(&path).map_err(|error| error.to_string())?,
+    )?;
     std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -337,6 +340,74 @@ fn open_store_at(
     legacy_sources: &[PathBuf],
     require_initialized: bool,
 ) -> Result<StoreConnection, String> {
+    open_store_at_with_hook(
+        container_path,
+        module,
+        source_identity,
+        logical_path,
+        legacy_sources,
+        require_initialized,
+        &|| Ok(()),
+    )
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PendingLegacyImport {
+    sources: Vec<PathBuf>,
+    bootstrap: bool,
+    #[serde(default)]
+    replace_uncommitted: bool,
+}
+
+// Discovery can omit a source that disappeared after an earlier attempt.
+// Check the complete journal, including stores not visited on this retry.
+fn verify_bootstrap_pending_inputs(container: &Container) -> Result<(), String> {
+    let mut statement = container
+        .connection()
+        .prepare(
+            "SELECT key,value FROM tb_container_meta WHERE key LIKE 'migration_pending_store_v1:%'",
+        )
+        .map_err(|error| error.to_string())?;
+    let batches = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| error.to_string())?;
+    for batch in batches {
+        let (key, json) = batch.map_err(|error| error.to_string())?;
+        let pending: PendingLegacyImport =
+            serde_json::from_str(&json).map_err(|error| error.to_string())?;
+        for source in &pending.sources {
+            let receipt = container
+                .legacy_input_receipt(source)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| format!("未完成导入缺少来源收据：{}", source.display()))?;
+            if receipt.retired
+                || key != format!("migration_pending_store_v1:{}", receipt.store_id)
+                || Container::snapshot_digest_path(source).map_err(|error| error.to_string())?
+                    != receipt.source_digest
+            {
+                return Err(format!(
+                    "未完成导入的来源发生变化，已保留旧账：{}",
+                    source.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+// The hook permits deterministic interruption/source-change tests without
+// global flags or touching real user databases.
+fn open_store_at_with_hook(
+    container_path: &Path,
+    module: &str,
+    source_identity: &str,
+    logical_path: &str,
+    legacy_sources: &[PathBuf],
+    require_initialized: bool,
+    after_import: &dyn Fn() -> Result<(), String>,
+) -> Result<StoreConnection, String> {
     if require_initialized {
         ensure_runtime_business_store_ready()?;
         verify_ready_container(container_path)?;
@@ -359,6 +430,44 @@ fn open_store_at(
     let has_objects = container
         .has_imported_objects(&store)
         .map_err(|error| error.to_string())?;
+    let journal_key = format!("migration_pending_store_v1:{}", store.id);
+    let journal_raw: Option<String> = container
+        .connection()
+        .query_row(
+            "SELECT value FROM tb_container_meta WHERE key=?1",
+            [&journal_key],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let mut pending: Option<PendingLegacyImport> = journal_raw
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|error| format!("未完成导入记录无效：{error}"))?;
+    let globally_initialized = initialized_marker_path(container_path).is_file();
+    if pending
+        .as_ref()
+        .is_some_and(|value| value.bootstrap && globally_initialized)
+    {
+        // Marker publication commits the bootstrap batch. Never replay its
+        // frozen original files over rows subsequently written by the app.
+        container
+            .connection()
+            .execute("DELETE FROM tb_container_meta WHERE key=?1", [&journal_key])
+            .map_err(|error| error.to_string())?;
+        pending = None;
+    }
+    if let Some(batch) = &pending {
+        for source in &batch.sources {
+            if !legacy_sources.contains(source) || !source.is_file() {
+                return Err(format!(
+                    "未完成导入的来源已移走或不可用，保留候选账本：{}",
+                    source.display()
+                ));
+            }
+        }
+    }
     let mut snapshots = Vec::new();
     let mut saw_retired_input = false;
     for legacy_path in legacy_sources {
@@ -370,6 +479,9 @@ fn open_store_at(
             .map_err(|error| error.to_string())?
         {
             if receipt.retired {
+                if pending.is_some() {
+                    return Err("未完成导入引用了已退役分区，拒绝重新激活".into());
+                }
                 // A retired physical stage/archive is evidence only. Reusing
                 // its path must use a fresh store identity; never hash or
                 // replay it on the ordinary open path.
@@ -380,30 +492,33 @@ fn open_store_at(
                 && receipt.module == store.module
                 && receipt.logical_path == store.logical_path
             {
-                // The source was already snapshotted and imported. Its bytes
-                // are no longer part of normal connection establishment.
-                continue;
+                if pending.is_none() {
+                    // Old builds did not journal an unfinished batch. Before
+                    // global activation, validate their receipts but never
+                    // guess which namespace is safe to replace.
+                    if !globally_initialized
+                        && Container::snapshot_digest_path(legacy_path)
+                            .map_err(|error| error.to_string())?
+                            != receipt.source_digest
+                    {
+                        return Err(
+                            "旧版本未完成导入的来源已变化；保留旧账，需核对或恢复该批次".into()
+                        );
+                    }
+                    continue;
+                }
+            } else {
+                return Err(format!(
+                    "旧业务数据库来源已属于另一隔离分区：{}",
+                    legacy_path.display()
+                ));
             }
-            return Err(format!(
-                "旧业务数据库来源已属于另一隔离分区：{}",
-                legacy_path.display()
-            ));
         }
         let source_digest =
             Container::snapshot_digest_path(legacy_path).map_err(|error| error.to_string())?;
         let backup_path = backup_path(&container_path, &store, legacy_path, &source_digest);
-        if !backup_path.is_file() {
-            Container::backup_snapshot(legacy_path, &backup_path)
-                .map_err(|error| error.to_string())?;
-        }
-        let backup_digest =
-            Container::snapshot_digest_path(&backup_path).map_err(|error| error.to_string())?;
-        if backup_digest != source_digest {
-            return Err(format!(
-                "旧业务数据库在生成快照期间变化，拒绝导入：{}",
-                legacy_path.display()
-            ));
-        }
+        Container::ensure_verified_backup(legacy_path, &backup_path, &source_digest)
+            .map_err(|error| error.to_string())?;
         if Container::snapshot_digest_path(legacy_path).map_err(|error| error.to_string())?
             != source_digest
         {
@@ -429,7 +544,58 @@ fn open_store_at(
             ));
         }
     }
-    if has_objects {
+    // A journal is written BEFORE the first namespace replacement. Only a
+    // journaled, never-activated import may be replaced during recovery.
+    if !snapshots.is_empty() {
+        let batch = PendingLegacyImport {
+            sources: snapshots
+                .iter()
+                .map(|(source, _, _)| source.clone())
+                .collect(),
+            bootstrap: !globally_initialized,
+            replace_uncommitted: pending
+                .as_ref()
+                .map_or(!has_objects, |batch| batch.replace_uncommitted),
+        };
+        let json = serde_json::to_string(&batch).map_err(|error| error.to_string())?;
+        container
+            .connection()
+            .execute(
+                "INSERT OR REPLACE INTO tb_container_meta(key,value) VALUES (?1,?2)",
+                rusqlite::params![journal_key, json],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    if pending
+        .as_ref()
+        .is_some_and(|batch| batch.replace_uncommitted)
+        && !snapshots.is_empty()
+    {
+        let (_, backup, _) = &snapshots[0];
+        container
+            .import_snapshot(backup, &store, backup, now_unix(), true)
+            .map_err(|error| error.to_string())?;
+        // The journal remains durable across every step, including a crash
+        // between replacing rows and updating source receipts.
+        container
+            .connection()
+            .execute(
+                "DELETE FROM tb_legacy_inputs WHERE store_id=?1 AND retired=0",
+                [&store.id],
+            )
+            .map_err(|error| error.to_string())?;
+        for (source_path, backup_path, _) in &snapshots {
+            container
+                .record_identical_legacy_input(
+                    backup_path,
+                    &store,
+                    source_path,
+                    backup_path,
+                    now_unix(),
+                )
+                .map_err(|error| error.to_string())?;
+        }
+    } else if has_objects {
         for (source_path, backup_path, _) in &snapshots {
             container
                 .record_identical_legacy_input(
@@ -479,6 +645,7 @@ fn open_store_at(
         }
     }
 
+    after_import()?;
     for (source_path, _, digest) in &snapshots {
         if Container::snapshot_digest_path(source_path).map_err(|error| error.to_string())?
             != *digest
@@ -490,6 +657,14 @@ fn open_store_at(
         }
     }
 
+    if globally_initialized {
+        container
+            .connection()
+            .execute("DELETE FROM tb_container_meta WHERE key=?1", [&journal_key])
+            .map_err(|error| error.to_string())?;
+    }
+    // First-bootstrap journals remain pending until the global initialized
+    // marker exists, so failure in a later module cannot freeze this source.
     container
         .into_store_connection(&store)
         .map_err(|error| error.to_string())
@@ -986,6 +1161,189 @@ mod tests {
         fs::remove_file(&path).unwrap();
         let after_removal = source_identity("modeltrace_legacy", &path).unwrap();
         assert_eq!(while_present, after_removal);
+    }
+
+    fn seed_legacy(path: &Path) {
+        Connection::open(path).unwrap().execute_batch(
+            "CREATE TABLE events(id INTEGER PRIMARY KEY, value TEXT); INSERT INTO events VALUES(1,'old');"
+        ).unwrap();
+    }
+
+    #[test]
+    fn interrupted_bootstrap_reimports_changed_source_and_freezes_only_after_activation() {
+        let fixture = Fixture::new();
+        let db = fixture.path("codex-ledger.sqlite");
+        let raw = fixture.path("legacy.sqlite");
+        seed_legacy(&raw);
+        let sources = std::slice::from_ref(&raw);
+        let failed = open_store_at_with_hook(
+            &db,
+            "quota_history",
+            "home",
+            "quota",
+            sources,
+            false,
+            &|| {
+                Connection::open(&raw)
+                    .unwrap()
+                    .execute("INSERT INTO events VALUES(2,'new')", [])
+                    .unwrap();
+                Ok(())
+            },
+        );
+        assert!(failed.is_err());
+        let recovered =
+            open_store_at(&db, "quota_history", "home", "quota", sources, false).unwrap();
+        assert_eq!(
+            recovered
+                .query_row("SELECT COUNT(*) FROM events", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        drop(recovered);
+        verify_bootstrap_pending_inputs(&Container::open_existing(&db).unwrap()).unwrap();
+        fs::write(initialized_marker_path(&db), b"tokenbar-codex-ledger-v1\n").unwrap();
+        let active = open_store_at(&db, "quota_history", "home", "quota", sources, true).unwrap();
+        active
+            .execute("INSERT INTO events VALUES(99,'active-new-row')", [])
+            .unwrap();
+        drop(active);
+        Connection::open(&raw)
+            .unwrap()
+            .execute("INSERT INTO events VALUES(3,'frozen')", [])
+            .unwrap();
+        let active = open_store_at(&db, "quota_history", "home", "quota", sources, true).unwrap();
+        assert_eq!(
+            active
+                .query_row("SELECT COUNT(*) FROM events WHERE id=99", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            active
+                .query_row("SELECT COUNT(*) FROM events WHERE id=3", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn interrupted_late_import_preserves_other_activated_partition() {
+        let fixture = Fixture::new();
+        let db = fixture.path("codex-ledger.sqlite");
+        Container::open(&db).unwrap();
+        fs::write(initialized_marker_path(&db), b"tokenbar-codex-ledger-v1\n").unwrap();
+        let active = open_store_at(&db, "quota_history", "active", "active", &[], true).unwrap();
+        active
+            .execute_batch("CREATE TABLE live(id INTEGER); INSERT INTO live VALUES(88)")
+            .unwrap();
+        drop(active);
+        let raw = fixture.path("late.sqlite");
+        seed_legacy(&raw);
+        let sources = std::slice::from_ref(&raw);
+        assert!(
+            open_store_at_with_hook(&db, "body", "late", "late", sources, true, &|| Err(
+                "interrupted".into()
+            ))
+            .is_err()
+        );
+        Connection::open(&raw)
+            .unwrap()
+            .execute("INSERT INTO events VALUES(2,'new')", [])
+            .unwrap();
+        let recovered = open_store_at(&db, "body", "late", "late", sources, true).unwrap();
+        assert_eq!(
+            recovered
+                .query_row("SELECT COUNT(*) FROM events", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        let active = open_store_at(&db, "quota_history", "active", "active", &[], true).unwrap();
+        assert_eq!(
+            active
+                .query_row("SELECT id FROM live", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            88
+        );
+    }
+
+    #[test]
+    fn pending_disappeared_source_cannot_be_omitted_by_next_discovery() {
+        let fixture = Fixture::new();
+        let db = fixture.path("codex-ledger.sqlite");
+        let raw = fixture.path("legacy.sqlite");
+        seed_legacy(&raw);
+        drop(
+            open_store_at(
+                &db,
+                "quota_history",
+                "home",
+                "quota",
+                std::slice::from_ref(&raw),
+                false,
+            )
+            .unwrap(),
+        );
+        let saved = fixture.path("saved.sqlite");
+        fs::rename(&raw, &saved).unwrap();
+        assert!(verify_bootstrap_pending_inputs(&Container::open_existing(&db).unwrap()).is_err());
+        assert!(open_store_at(&db, "quota_history", "home", "quota", &[], false).is_err());
+        fs::rename(&saved, &raw).unwrap();
+        drop(
+            open_store_at(
+                &db,
+                "quota_history",
+                "home",
+                "quota",
+                std::slice::from_ref(&raw),
+                false,
+            )
+            .unwrap(),
+        );
+        verify_bootstrap_pending_inputs(&Container::open_existing(&db).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn legacy_unjournaled_failed_import_rejects_changed_source_instead_of_publishing_stale_rows() {
+        let fixture = Fixture::new();
+        let db = fixture.path("codex-ledger.sqlite");
+        let raw = fixture.path("legacy.sqlite");
+        seed_legacy(&raw);
+        drop(
+            open_store_at(
+                &db,
+                "quota_history",
+                "home",
+                "quota",
+                std::slice::from_ref(&raw),
+                false,
+            )
+            .unwrap(),
+        );
+        Container::open_existing(&db)
+            .unwrap()
+            .connection()
+            .execute(
+                "DELETE FROM tb_container_meta WHERE key LIKE 'migration_pending_store_v1:%'",
+                [],
+            )
+            .unwrap();
+        Connection::open(&raw)
+            .unwrap()
+            .execute("INSERT INTO events VALUES(2,'new')", [])
+            .unwrap();
+        assert!(open_store_at(
+            &db,
+            "quota_history",
+            "home",
+            "quota",
+            std::slice::from_ref(&raw),
+            false
+        )
+        .is_err());
+        assert!(!initialized_marker_path(&db).exists());
     }
 
     #[test]
