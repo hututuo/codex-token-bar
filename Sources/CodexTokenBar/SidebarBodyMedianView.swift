@@ -69,11 +69,11 @@ struct SidebarBodyMedianContent: View, Equatable {
                             }
                             HStack(alignment: .firstTextBaseline, spacing: 3) {
                                 Text(reading.tokensPerSecond, format: .number.precision(.fractionLength(1)))
-                                    .font(.system(size: 18, weight: .semibold)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+                                    .font(.system(size: 14, weight: .semibold)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
                                 Text("最新").font(.system(size: 7)).foregroundStyle(.white.opacity(0.75))
                             }
-                            if let series { SidebarBodyMedianLine(series: series).frame(height: 32) }
-                            else { Text("趋势待采样").font(.system(size: 7)).foregroundStyle(.secondary).frame(height: 32) }
+                            if let series { SidebarBodyMedianBars(series: series).frame(height: 48) }
+                            else { Text("趋势待采样").font(.system(size: 7)).foregroundStyle(.secondary).frame(height: 48) }
                             Text(series?.current.map { "中位 \(String(format: "%.1f", $0.median))" } ?? "中位 —").font(.system(size: 7)).monospacedDigit()
                                 .foregroundStyle(.white.opacity(0.75)).frame(maxWidth: .infinity)
                         }.frame(width: 66).padding(.vertical, 2)
@@ -100,34 +100,40 @@ struct SidebarBodyMedianContent: View, Equatable {
         let readings = series.slots.enumerated().map { i, point in
             let time = interval(end - Int64(5 - i) * 1800)
             guard let point else { return "\(time) 采样不足" }
-            return "\(time) 中位数 \(String(format: "%.1f", point.median)) TPS，\(point.bucketCount)桶、\(point.sampleCount)段正文"
+            return "\(time) 中位数 \(String(format: "%.1f", point.median)) TPS，中间50% \(String(format: "%.1f", point.lower))–\(String(format: "%.1f", point.upper)) TPS，\(point.bucketCount)桶、\(point.sampleCount)段正文"
         }.joined(separator: "；")
-        return series.model + " · " + readings + "。各模型纵轴独立；缺样本不连线。"
+        return series.model + " · " + readings + "。色柱表示中间50%的分布，横线表示中位数；各模型纵轴独立，缺样本留空。"
     }
 }
 
-private struct SidebarBodyMedianLine: View {
+private struct SidebarBodyMedianBars: View {
     let series: SidebarBodyMedian.Series
     var body: some View {
         Canvas { context, size in
             let bounds = series.bounds
             let color = ModelUsagePresentation.color(for: series.model)
-            var path = Path(), previous = false
+            let step = size.width / 6
+            let bottom = size.height - 7
+            func y(_ value: Double) -> CGFloat {
+                bottom - (value - bounds.lowerBound) / (bounds.upperBound - bounds.lowerBound) * (bottom - 6)
+            }
+            context.fill(Path(CGRect(x: 0, y: bottom, width: size.width, height: 1)), with: .color(.white.opacity(0.055)))
             for (index, point) in series.slots.enumerated() {
-                let x = 2 + (CGFloat(index) + 0.5) / 6 * (size.width - 4)
+                let left = CGFloat(index) * step + 1
+                let width = step - 2
                 guard let point else {
-                    previous = false
-                    let gap = Path(CGRect(x: x - 1.5, y: size.height - 2, width: 3, height: 1))
-                    context.fill(gap, with: .color(.white.opacity(0.3)))
+                    context.fill(Path(CGRect(x: left + width / 2 - 1.5, y: bottom, width: 3, height: 1)), with: .color(.white.opacity(0.3)))
                     continue
                 }
-                let y = size.height - 3 - (point.median - bounds.lowerBound) / (bounds.upperBound - bounds.lowerBound) * (size.height - 6)
-                let position = CGPoint(x: x, y: y)
-                if previous { path.addLine(to: position) } else { path.move(to: position) }
-                previous = true
-                context.fill(Path(ellipseIn: CGRect(x: x - 1.5, y: y - 1.5, width: 3, height: 3)), with: .color(color))
+                // Match option 1: floating P25–P75 column with a median tick.
+                // Not a zero-baseline bar, confidence interval, or connected line.
+                context.fill(Path(CGRect(x: left, y: y(point.upper), width: width,
+                    height: max(1, y(point.lower) - y(point.upper)))), with: .color(color.opacity(0.25)))
+                var tick = Path()
+                tick.move(to: CGPoint(x: left, y: y(point.median)))
+                tick.addLine(to: CGPoint(x: left + width, y: y(point.median)))
+                context.stroke(tick, with: .color(color), lineWidth: 2)
             }
-            context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: 1.4, lineJoin: .round))
         }.accessibilityHidden(true)
     }
 }
