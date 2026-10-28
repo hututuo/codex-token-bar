@@ -4,6 +4,23 @@ import XCTest
 final class ActivitySpeedStoreTests: XCTestCase {
     private let now = 1_800.0
 
+    func testMinuteTrendSplitsIntervalsWithoutMixingClientsOrInventingIdle() async throws {
+        let (store, url) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        _ = try await store.addBatch(samples: [
+            makeSample(id: "cross-minute", startedAt: 1750, endedAt: 1810, rate: 40, covered: 60),
+            makeSample(id: "weighted", startedAt: 1810, endedAt: 1820, rate: 80, covered: 10),
+            makeSample(id: "claude", startedAt: 1810, endedAt: 1820, rate: 200, covered: 10, client: "claudeCode")
+        ], now: 2000)
+        let result = try await store.query(now: 2000, filter: .init(client: "codex"), trendPointLimit: 1)
+        let points = try XCTUnwrap(result.series.first).oneMinuteTrend
+        XCTAssertEqual(points.map(\.bucketStart), [1740, 1800])
+        XCTAssertEqual(points[0].value.outputRate, 40, accuracy: 0.001)
+        XCTAssertEqual(points[1].value.outputRate, 60, accuracy: 0.001)
+        XCTAssertEqual(points.reduce(0) { $0 + $1.value.weightedOutput }, 3200, accuracy: 0.001)
+        XCTAssertEqual(result.series.count, 1)
+    }
+
     func testDuplicateReplayAddsOneRawAndBucketContribution() async throws {
         let (store, url) = try makeStore()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }

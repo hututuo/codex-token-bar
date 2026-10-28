@@ -59,6 +59,7 @@ struct ActivitySpeedSeries: Equatable, Identifiable, Sendable {
     }
     var rolling5m, rolling15m, rolling30m: ActivitySpeedAggregate?
     var fiveMinuteTrend: [ActivitySpeedTrendPoint] = [], thirtyMinuteTrend: [ActivitySpeedTrendPoint] = []
+    var oneMinuteTrend: [ActivitySpeedTrendPoint] = []
 }
 
 struct ActivitySpeedQueryResult: Equatable, Sendable {
@@ -279,6 +280,11 @@ actor ActivitySpeedStore {
             series.thirtyMinuteTrend = points
             values[dimensions] = series
         }
+        for (dimensions, points) in try readMinuteTrend(now: now, filter: filter) {
+            var series = values[dimensions] ?? ActivitySpeedSeries(dimensions: dimensions)
+            series.oneMinuteTrend = points
+            values[dimensions] = series
+        }
         guard values.count <= Self.maxSeries else { throw ActivitySpeedStoreError.tooManySeries }
         return ActivitySpeedQueryResult(series: values.values.sorted { $0.id < $1.id })
     }
@@ -314,6 +320,39 @@ actor ActivitySpeedStore {
         }
         guard rows.count <= Self.maxSeries else { throw ActivitySpeedStoreError.tooManySeries }
         return Dictionary(rows, uniquingKeysWith: { _, later in later })
+    }
+
+    /// Fine display only: split retained measured intervals at minute boundaries.
+    /// Historical 5m rollups remain unchanged. No fabricated idle points.
+    private func readMinuteTrend(now: Double, filter: ActivitySpeedFilter) throws -> [ActivitySpeedDimensions: [ActivitySpeedTrendPoint]] {
+        let first = floor(max(0, now - 1800) / 60) * 60
+        let (predicate, filterBindings) = Self.filterSQL(filter)
+        let rows = try database.readRows("""
+            WITH RECURSIVE minutes(t) AS (
+                SELECT ? UNION ALL SELECT t+60 FROM minutes WHERE t+60 < ?
+            )
+            SELECT source_identity, display_mode, estimator_id, estimator_version, metric_kind, client, model,
+                   t, SUM(weighted_output * ((MIN(ended_at,t+60,?) - MAX(started_at,t)) / (ended_at-started_at))),
+                   SUM(covered_seconds * ((MIN(ended_at,t+60,?) - MAX(started_at,t)) / (ended_at-started_at)))
+            FROM minutes JOIN activity_speed_samples ON ended_at > t AND started_at < MIN(t+60,?)
+            WHERE ended_at > ? AND started_at < ? \(predicate)
+            GROUP BY source_identity, display_mode, estimator_id, estimator_version, metric_kind, client, model,t
+            ORDER BY source_identity, display_mode, estimator_id, estimator_version, metric_kind, client, model,t LIMIT ?
+            """, bindings: [.double(first), .double(now), .double(now), .double(now), .double(now),
+                .double(first), .double(now)] + filterBindings + [.int(Self.maxSeries * 31 + 1)]) { row in
+            let dimensions = try Self.dimensions(row)
+            guard let bucket = row.int64(7), let weighted = row.double(8), let covered = row.double(9),
+                  weighted.isFinite, weighted >= 0, covered.isFinite, covered > 0 else {
+                throw ActivitySpeedStoreError.invalidStoredAggregate
+            }
+            return (dimensions, ActivitySpeedTrendPoint(bucketStart: bucket,
+                value: ActivitySpeedAggregate(weightedOutput: weighted, coveredSeconds: covered)))
+        }
+        guard rows.count <= Self.maxSeries * 31 else { throw ActivitySpeedStoreError.tooManySeries }
+        var result: [ActivitySpeedDimensions: [ActivitySpeedTrendPoint]] = [:]
+        for (dimensions, point) in rows { result[dimensions, default: []].append(point) }
+        guard result.count <= Self.maxSeries else { throw ActivitySpeedStoreError.tooManySeries }
+        return result
     }
 
     private func readTrend(

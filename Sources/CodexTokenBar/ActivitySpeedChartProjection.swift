@@ -21,7 +21,7 @@ enum ActivitySpeedChartProjection {
             guard stamp >= end - 1800, stamp <= end,
                   value.value.coveredSeconds.isFinite, value.value.coveredSeconds > 0,
                   value.value.outputRate.isFinite, value.value.outputRate >= 0 else { continue }
-            if let previous, value.bucketStart - previous > 300 { segment += 1 }
+            if let previous, value.bucketStart - previous > 60 { segment += 1 }
             result.append(Point(bucketStart: value.bucketStart, rate: value.value.outputRate, segment: segment))
             previous = value.bucketStart
         }

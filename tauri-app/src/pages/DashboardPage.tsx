@@ -407,6 +407,9 @@ export function DashboardPage({
             {analyticsReady ? (
               <DashboardAnalyticsSection
                 clientScoped={!clientScope.codexOnly}
+                originalCodex={dashboard}
+                clients={clientScope.snapshot}
+                allowed={clientScope.allowed}
                 sourceToken={sourceToken}
                 dashboard={displayDashboard}
                 sharedAccountAttribution={sharedAccountAttribution}

@@ -195,6 +195,7 @@ pub fn run() {
             commands::dashboard::read_cache_turn_requests,
             commands::dashboard::read_usage_cache_status,
             commands::multi_client_usage::read_multi_client_usage_snapshot,
+            commands::multi_client_usage::read_multi_client_cache_rankings,
             commands::multi_client_usage::save_multi_client_usage_preferences,
             commands::multi_client_usage::refresh_multi_client_usage,
             commands::multi_client_usage::read_claude_local_quota,

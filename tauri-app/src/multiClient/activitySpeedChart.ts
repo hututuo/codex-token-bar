@@ -11,7 +11,7 @@ export function activityChartPoints(values: readonly ActivityTrendPoint[], now: 
     if (!Number.isFinite(point.bucketStart) || point.bucketStart < now - 1800 || point.bucketStart > now
       || !Number.isFinite(point.value.coveredSeconds) || point.value.coveredSeconds <= 0
       || !Number.isFinite(rate) || rate < 0) return [];
-    if (prior !== undefined && point.bucketStart - prior > 300) segment++;
+    if (prior !== undefined && point.bucketStart - prior > 60) segment++;
     prior = point.bucketStart;
     return [{ bucketStart: point.bucketStart, rate, segment }];
   });

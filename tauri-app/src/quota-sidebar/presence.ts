@@ -7,6 +7,7 @@ export function monitorSidebarPresence(
     const timer = setTimeout(callback, 250);
     return () => clearTimeout(timer);
   },
+  eligible: () => boolean = () => true,
 ) {
   let disposed = false;
   let outsideSamples = 0;
@@ -15,7 +16,7 @@ export function monitorSidebarPresence(
     try {
       const present = await inside();
       if (disposed) return;
-      outsideSamples = present ? 0 : outsideSamples + 1;
+      outsideSamples = present || !eligible() ? 0 : outsideSamples + 1;
       if (outsideSamples >= 2) { disposed = true; leave(); return; }
     } catch { outsideSamples = 0; }
     if (!disposed) cancel = schedule(() => { void sample(); });
@@ -32,6 +33,7 @@ export function monitorSidebarReminder(
     const timer = setTimeout(callback, 150); return () => clearTimeout(timer);
   },
   pointerEntered: () => boolean = () => false,
+  eligible: () => boolean = () => true,
 ) {
   let disposed = false, entered = false, outsideSamples = 0;
   let previousClick: number | undefined;
@@ -43,8 +45,9 @@ export function monitorSidebarReminder(
       const clicked = previousClick !== undefined && state.clickRevision !== previousClick;
       previousClick = state.clickRevision;
       entered ||= state.inside || pointerEntered();
-      outsideSamples = state.inside ? 0 : outsideSamples + 1;
-      if (!state.inside && (clicked || (entered && outsideSamples >= 2))) {
+      if (!eligible()) { outsideSamples = 0; }
+      else outsideSamples = state.inside ? 0 : outsideSamples + 1;
+      if (eligible() && !state.inside && (clicked || (entered && outsideSamples >= 2))) {
         disposed = true; dismiss(); return;
       }
     } catch { outsideSamples = 0; }

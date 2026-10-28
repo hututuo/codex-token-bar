@@ -34,7 +34,7 @@ struct ActivitySpeedSummaryView: View {
         return codex || local.projection(allowed: allowed).sourceAvailable || upstream.hasCoverage(allowed: allowed)
     }
     private var rows: [ActivitySpeedSeries] {
-        history.series.filter { allowed.contains($0.dimensions.client) && $0.dimensions.displayMode == mode.rawValue && $0.rolling30m != nil }
+        history.series.filter { allowed.contains($0.dimensions.client) && $0.dimensions.displayMode == mode.rawValue && !$0.oneMinuteTrend.isEmpty }
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -48,36 +48,10 @@ struct ActivitySpeedSummaryView: View {
             if rates.isEmpty && rows.isEmpty {
                 Text("等待本地活动记录").font(.system(size: 11)).foregroundStyle(.secondary)
             }
-            if !rows.isEmpty {
-                Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 5) {
-                    GridRow { Text("模型 / 客户端"); Text("5分钟"); Text("15分钟"); Text("30分钟") }.foregroundStyle(.secondary)
-                    ForEach(rows) { row in
-                        GridRow {
-                            Text(ModelUsagePresentation.label(for: row.dimensions.model) + " · " + clientTitle(row.dimensions.client))
-                                .foregroundStyle(ModelUsagePresentation.color(for: row.dimensions.model)).lineLimit(1)
-                            Text(display(row.rolling5m)); Text(display(row.rolling15m)); Text(display(row.rolling30m))
-                        }
-                    }
-                }.font(.system(size: 10)).monospacedDigit()
-                let chartNow = Date()
-                Chart {
-                    ForEach(rows) { row in
-                        ForEach(ActivitySpeedChartProjection.points(row.fiveMinuteTrend, now: chartNow)) { point in
-                            LineMark(x: .value("时间", Date(timeIntervalSince1970: Double(point.bucketStart))),
-                                y: .value("活动速度", point.rate),
-                                series: .value("连续段", row.id + ":" + String(point.segment)))
-                                .foregroundStyle(ModelUsagePresentation.color(for: row.dimensions.model))
-                            PointMark(x: .value("时间", Date(timeIntervalSince1970: Double(point.bucketStart))),
-                                y: .value("活动速度", point.rate))
-                                .foregroundStyle(ModelUsagePresentation.color(for: row.dimensions.model))
-                        }
-                    }
-                }
-                .chartXScale(domain: chartNow.addingTimeInterval(-1800)...chartNow)
-                .chartPlotStyle { plot in plot.clipped() }
-                .frame(height: 105)
+            ForEach(Array(Set(rows.map { $0.dimensions.client })).sorted(), id: \.self) { client in
+                ClientActivityTrendView(client: clientTitle(client), rows: rows.filter { $0.dimensions.client == client })
             }
-            Text(history.issue ?? "活动估算 · 每5分钟汇总 · Codex 正文测速另计")
+            Text(history.issue ?? "近半小时 · 每分钟加权速度 · 空缺表示无活动采样")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
         }.task {
             history.refresh()
@@ -87,10 +61,48 @@ struct ActivitySpeedSummaryView: View {
             }
         }
     }
-    private func display(_ aggregate: ActivitySpeedAggregate?) -> String {
-        aggregate.map { LiveRateSnapshot.rateDisplayText($0.outputRate) } ?? "—"
-    }
     private func clientTitle(_ value: String) -> String {
         switch value { case "claudeCode": "Claude CLI"; case "claudeDesktop": "Claude Desktop"; default: value.capitalized }
+    }
+}
+
+/// Client boundaries are explicit; a model with the same name in two clients
+/// never becomes a single line or shares the other client's activity interval.
+private struct ClientActivityTrendView: View {
+    let client: String
+    let rows: [ActivitySpeedSeries]
+    var body: some View {
+        let now = Date()
+        VStack(alignment: .leading, spacing: 6) {
+            Text(client).font(.system(size: 12, weight: .semibold))
+            Chart {
+                ForEach(rows) { row in
+                    ForEach(ActivitySpeedChartProjection.points(row.oneMinuteTrend, now: now)) { point in
+                        LineMark(x: .value("时间", Date(timeIntervalSince1970: Double(point.bucketStart))),
+                            y: .value("活动速度", point.rate),
+                            series: .value("连续段", row.id + ":" + String(point.segment)))
+                            .foregroundStyle(ModelUsagePresentation.color(for: row.dimensions.model))
+                        PointMark(x: .value("时间", Date(timeIntervalSince1970: Double(point.bucketStart))),
+                            y: .value("活动速度", point.rate))
+                            .symbolSize(12)
+                            .foregroundStyle(ModelUsagePresentation.color(for: row.dimensions.model))
+                    }
+                }
+            }
+            .chartXScale(domain: now.addingTimeInterval(-1800)...now)
+            .chartXAxis { AxisMarks(values: .stride(by: .minute, count: 5)) { _ in
+                AxisGridLine(); AxisValueLabel(format: .dateTime.hour().minute())
+            } }
+            .chartPlotStyle { plot in plot.clipped() }
+            .frame(height: 140)
+            HStack(spacing: 12) {
+                ForEach(rows) { row in
+                    Label(ModelUsagePresentation.label(for: row.dimensions.model), systemImage: "circle.fill")
+                        .foregroundStyle(ModelUsagePresentation.color(for: row.dimensions.model))
+                        .font(.system(size: 10)).lineLimit(1)
+                }
+            }
+        }.accessibilityElement(children: .contain)
+            .accessibilityLabel(client + "近半小时活动速度，每分钟一个点")
     }
 }

@@ -64,3 +64,19 @@ test('a native entry between polls still permits automatic collapse on exit', as
   assert.equal(next, undefined);
   stop();
 });
+test('settings reorder suppresses missed-exit fallback and rearms after release',async()=>{
+ let next, eligible=false, leaves=0;
+ const stop=monitorSidebarPresence(async()=>false,()=>leaves++,cb=>{next=cb;return()=>{next=undefined;};},()=>eligible);
+ const tick=async()=>{const cb=next;next=undefined;cb?.();await flush();};
+ for(let i=0;i<4;i++)await tick();
+ assert.equal(leaves,0);
+ eligible=true;await tick();assert.equal(leaves,0);await tick();assert.equal(leaves,1);stop();
+});
+test('reminder watcher preserves settings drag through outside clicks and exits',async()=>{
+ let next, eligible=false, clicks=1, dismissals=0;
+ const stop=monitorSidebarReminder(async()=>({inside:false,clickRevision:clicks}),()=>dismissals++,cb=>{next=cb;return()=>{next=undefined;};},()=>true,()=>eligible);
+ await flush();
+ const tick=async()=>{const cb=next;next=undefined;cb?.();await flush();};
+ clicks++;for(let i=0;i<3;i++)await tick();assert.equal(dismissals,0);
+ eligible=true;await tick();assert.equal(dismissals,0);await tick();assert.equal(dismissals,1);stop();
+});

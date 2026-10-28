@@ -1207,50 +1207,58 @@ struct DashboardView: View {
                 sourceAvailable: allowedClients.contains("codex"), localClients: allowedClients
             )
 
-            ActivitySection(
-                dailyUsage: display.dailyUsage,
-                cacheDaily: display.cacheUsage.daily,
-                dailyModelBreakdowns: display.cacheUsage.dailyModelBreakdowns,
-                attributionEvents: display.cacheUsage.attributionEvents,
-                quotaDaily: codexOnly ? quotaHistoryStore.snapshot.daily : [],
-                selectedMode: $store.selectedMode,
-                tokensOnly: !codexOnly
-            )
-
-            RecentUsageChart(
-                bins: display.recentBins,
-                hourlyBins: display.hourlyUsage,
-                cacheRecentBins: display.cacheUsage.recentBins,
-                cacheHourlyBins: display.cacheUsage.hourly,
-                attributionEvents: display.cacheUsage.attributionEvents,
-                attributionEventsComplete: display.cacheUsage.attributionEventsComplete,
-                quotaRecentBins: codexOnly ? quotaHistoryStore.snapshot.recentBins : [],
-                quotaHourlyBins: codexOnly ? quotaHistoryStore.snapshot.hourlyBins : [],
-                currentFiveHourQuotaPresent: codexOnly && quotaStore.snapshot.fiveHour != nil,
-                currentSevenDayQuotaPresent: codexOnly && quotaStore.snapshot.sevenDay != nil,
-                sharedAccountAttributionContext: codexOnly && sharedAccountAttributionEnabled
-                    ? sharedAccountAttributionResult.map(
-                        QuotaSelectionAttributionContext.init(result:)
-                    )
-                    : nil,
-                pricingAvailable: codexOnly
-            )
-            .id(clientScope)
-            .id("recent-usage-chart")
-            // RecentUsageChart owns interactive line-visibility state. Keep the
-            // chart outside an EquatableView so a toggle can repaint immediately.
-
-            CacheHitRankingSection(
-                cacheUsage: display.cacheUsage,
-                cacheUsageRevision: store.snapshot.generatedAt,
-                codexHome: store.currentDataSource?.codexHome,
-                onOpenDetails: {
-                    showingCodexRadarDetails = false
-                    showingSharedAccountAttributionDetails = false
-                    showingCacheHitRankingDetails = true
+            // Aggregation is a summary operation, not permission to erase the
+            // original client's quota, money, or request provenance.
+            ForEach(allowedClients.sorted { lhs, rhs in lhs == "codex" || (rhs != "codex" && lhs < rhs) }, id: \.self) { client in
+                let isCodex = client == "codex"
+                let source = clientProjectionCache.value(codex: store.snapshot, clients: clients, allowed: [client])
+                if allowedClients.count > 1 {
+                    HStack {
+                        Text(ClientDisplayScope.title(client) + " · 用量与缓存")
+                            .font(.system(size: 17, weight: .semibold))
+                        Spacer()
+                    }
                 }
-            )
-            .id(clientScope + "|" + store.dataSourceBindingKey)
+                ActivitySection(
+                    dailyUsage: source.dailyUsage,
+                    cacheDaily: source.cacheUsage.daily,
+                    dailyModelBreakdowns: source.cacheUsage.dailyModelBreakdowns,
+                    attributionEvents: source.cacheUsage.attributionEvents,
+                    quotaDaily: isCodex ? quotaHistoryStore.snapshot.daily : [],
+                    selectedMode: $store.selectedMode,
+                    tokensOnly: !isCodex
+                )
+                RecentUsageChart(
+                    bins: source.recentBins,
+                    hourlyBins: source.hourlyUsage,
+                    cacheRecentBins: source.cacheUsage.recentBins,
+                    cacheHourlyBins: source.cacheUsage.hourly,
+                    attributionEvents: source.cacheUsage.attributionEvents,
+                    attributionEventsComplete: source.cacheUsage.attributionEventsComplete,
+                    quotaRecentBins: isCodex ? quotaHistoryStore.snapshot.recentBins : [],
+                    quotaHourlyBins: isCodex ? quotaHistoryStore.snapshot.hourlyBins : [],
+                    currentFiveHourQuotaPresent: isCodex && quotaStore.snapshot.fiveHour != nil,
+                    currentSevenDayQuotaPresent: isCodex && quotaStore.snapshot.sevenDay != nil,
+                    sharedAccountAttributionContext: isCodex && sharedAccountAttributionEnabled
+                        ? sharedAccountAttributionResult.map(QuotaSelectionAttributionContext.init(result:)) : nil,
+                    pricingAvailable: isCodex
+                )
+                .id(client == "codex" ? "recent-usage-chart" : "recent-usage-chart-" + client)
+                if isCodex {
+                    CacheHitRankingSection(
+                        cacheUsage: store.snapshot.cacheUsage,
+                        cacheUsageRevision: store.snapshot.generatedAt,
+                        codexHome: store.currentDataSource?.codexHome,
+                        onOpenDetails: {
+                            showingCodexRadarDetails = false
+                            showingSharedAccountAttributionDetails = false
+                            showingCacheHitRankingDetails = true
+                        }
+                    ).id("codex|" + store.dataSourceBindingKey)
+                } else if let usageClient = UsageClient(rawValue: client) {
+                    ClientCacheRankingSection(client: usageClient)
+                }
+            }
 
         }
         .padding(.horizontal, 54)

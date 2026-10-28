@@ -145,6 +145,27 @@ actor MultiClientUsageScanner {
 
     func backup() throws -> URL { try open().backup() }
 
+    /// Reads cached cache-ranking projections on demand without scanning source logs. If the
+    /// ledger has not been opened by a normal scan, it is queried with SQLite read-only flags.
+    func cacheRankingProjection(
+        clients: Set<UsageClient>? = nil,
+        since: Date? = nil,
+        order: ClientCacheRankingOrder = .lowestHit,
+        requestLimit: Int = 500
+    ) throws -> ClientCacheRankingProjection {
+        if let ledger {
+            return try ledger.cacheRankingProjection(clients: clients, since: since, order: order, requestLimit: requestLimit)
+        }
+        guard FileManager.default.fileExists(atPath: databaseURL.path) else { return .empty }
+        return try MultiClientUsageLedger.readOnlyCacheRankingProjection(
+            url: databaseURL,
+            clients: clients,
+            since: since,
+            order: order,
+            requestLimit: requestLimit
+        )
+    }
+
     static func files(at url: URL) -> (files: [URL], truncated: Bool) {
         let manager = FileManager.default
         var isDirectory: ObjCBool = false
@@ -432,6 +453,14 @@ final class MultiClientUsageStore: ObservableObject {
         client == .claudeCode ? ClaudeCapturedQuotaProvider(snapshot: claudeQuota).reading() : UnavailableClientQuotaProvider(client: client).reading()
     }
     func backup() async throws -> URL { try await scanner.backup() }
+    func cacheRankingProjection(
+        clients: Set<UsageClient>? = nil,
+        since: Date? = nil,
+        order: ClientCacheRankingOrder = .lowestHit,
+        requestLimit: Int = 500
+    ) async throws -> ClientCacheRankingProjection {
+        try await scanner.cacheRankingProjection(clients: clients, since: since, order: order, requestLimit: requestLimit)
+    }
     func total(_ client: UsageClient) -> Int64 {
         summaries.filter { $0.client == client }.reduce(0) { $0 + $1.inputTokens + $1.outputTokens }
     }

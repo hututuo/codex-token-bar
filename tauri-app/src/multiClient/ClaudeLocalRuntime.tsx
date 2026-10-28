@@ -81,8 +81,7 @@ export function useClaudeLocalRuntime(allowed: readonly string[], monitoringEnab
 }
 
 interface Aggregate { weightedOutput:number; coveredSeconds:number }
-interface ActivitySeries { dimensions:{displayMode:string;client:string;model:string;estimatorId?:string}; rolling5m:Aggregate|null;rolling15m:Aggregate|null;rolling30m:Aggregate|null;fiveMinuteTrend:{bucketStart:number;value:Aggregate}[] }
-const meanText=(value:Aggregate|null)=>value&&value.coveredSeconds>0?(value.weightedOutput/value.coveredSeconds).toFixed(1):"—";
+interface ActivitySeries { dimensions:{displayMode:string;client:string;model:string;estimatorId?:string}; rolling5m:Aggregate|null;rolling15m:Aggregate|null;rolling30m:Aggregate|null;fiveMinuteTrend:{bucketStart:number;value:Aggregate}[];oneMinuteTrend?:{bucketStart:number;value:Aggregate}[] }
 export function ClientActivitySpeedPanel({ allowed, compact = false, monitoringEnabled = true, codexRates = [], codexAvailable = false, codexOutputRate }: { allowed: readonly string[]; compact?: boolean; monitoringEnabled?: boolean; codexRates?: readonly ActivityModelRate[]; codexAvailable?: boolean; codexOutputRate?: number }) {
   const runtime = useClaudeLocalRuntime(allowed, monitoringEnabled), mode=useActivitySpeedMode();
   const [history,setHistory]=useState<ActivitySeries[]>([]),[issue,setIssue]=useState("");
@@ -94,23 +93,29 @@ export function ClientActivitySpeedPanel({ allowed, compact = false, monitoringE
     void refresh();return()=>{alive=false;clearTimeout(timer);};
   },[compact,monitoringEnabled,mode]);
   const hasCoverage=monitoringEnabled&&allowed.some(client=>client==="codex"&&mode==="bar"?codexAvailable:runtime.sourceAvailable[client]);
-  const rows=history.filter(s=>s.dimensions.displayMode===mode&&allowed.includes(s.dimensions.client)&&s.rolling30m!==null);
+  const rows=history.filter(s=>s.dimensions.displayMode===mode&&allowed.includes(s.dimensions.client)&&(s.oneMinuteTrend?.length??0)>0);
   return <div className="client-activity-speed" style={{fontSize:compact?10:12,paddingBlock:compact?3:8}}>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}><strong>聚合活动速度</strong><strong>{hasCoverage?rates.reduce((n,r)=>n+r.tokensPerSecond,0).toFixed(1)+" t/s":"—"}</strong></div>
     {!compact&&<ActivitySpeedModePicker/>}
     {!rates.length&&!rows.length&&<p className="qs-muted">{monitoringEnabled?"等待本地活动记录":"本地读取已关闭"}</p>}
-    {!compact&&rows.length>0&&<><table style={{width:"100%",fontVariantNumeric:"tabular-nums"}}><thead><tr><th>模型 / 客户端</th><th>5分钟</th><th>15分钟</th><th>30分钟</th></tr></thead><tbody>{rows.map(row=><tr key={row.dimensions.client+row.dimensions.model+(row.dimensions.estimatorId??"")}><td style={{color:modelUsageColor(row.dimensions.model),textAlign:"left"}}>{row.dimensions.model} · {row.dimensions.client==="claudeCode"?"Claude CLI":row.dimensions.client==="claudeDesktop"?"Claude Desktop":row.dimensions.client}</td><td>{meanText(row.rolling5m)}</td><td>{meanText(row.rolling15m)}</td><td>{meanText(row.rolling30m)}</td></tr>)}</tbody></table><ActivityTrend rows={rows}/></>}
-    {!compact&&<small>{issue||"活动估算 · 每5分钟汇总 · Codex 正文测速另计"}</small>}
+    {!compact&&[...new Set(rows.map(row=>row.dimensions.client))].sort().map(client=><div key={client} style={{paddingTop:10}}>
+      <strong>{client==="codex"?"Codex":client==="claudeCode"?"Claude CLI":client==="claudeDesktop"?"Claude Desktop":client}</strong>
+      <ActivityTrend rows={rows.filter(row=>row.dimensions.client===client)}/>
+      <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>{rows.filter(row=>row.dimensions.client===client).map(row=><small key={row.dimensions.model} style={{color:modelUsageColor(row.dimensions.model)}}>{row.dimensions.model.replace(/^gpt-/i,"")}</small>)}</div>
+    </div>)}
+    {!compact&&<small>{issue||"近半小时 · 每分钟加权速度 · 空缺表示无活动采样"}</small>}
   </div>;
 }
 function ActivityTrend({rows}:{rows:ActivitySeries[]}){
   const now=Date.now()/1000, start=now-1800, clipId=useId();
-  const plotted=rows.map(row=>({row,points:activityChartPoints(row.fiveMinuteTrend,now)}));
+  const plotted=rows.map(row=>({row,points:activityChartPoints(row.oneMinuteTrend??[],now)}));
   const maximum=Math.max(1,...plotted.flatMap(series=>series.points.map(p=>p.rate)));
-  const x=(stamp:number)=>12+(stamp-start)/1800*338, y=(rate:number)=>94-rate/maximum*80;
-  return <svg viewBox="0 0 360 110" aria-label="近半小时活动速度，每5分钟加权" role="img" style={{width:"100%",height:110,display:"block"}}>
-    <defs><clipPath id={clipId}><rect x="12" y="5" width="338" height="89"/></clipPath></defs>
-    <path d="M12 5V94H350" fill="none" stroke="currentColor" opacity=".25"/>
+  const x=(stamp:number)=>32+(stamp-start)/1800*650, y=(rate:number)=>122-rate/maximum*104;
+  return <svg viewBox="0 0 720 150" aria-label="近半小时活动速度，每分钟一个点" role="img" style={{width:"100%",height:150,display:"block"}}>
+    <defs><clipPath id={clipId}><rect x="32" y="12" width="650" height="110"/></clipPath></defs>
+    <path d="M32 12V122H682" fill="none" stroke="currentColor" opacity=".25"/>
+    {[0,1,2,3,4,5,6].map(tick=>{const stamp=start+tick*300;return <g key={tick}><path d={`M${x(stamp)} 12V122`} stroke="currentColor" opacity=".1"/><text x={x(stamp)} y="143" textAnchor="middle" fontSize="11" fill="currentColor">{new Date(stamp*1000).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</text></g>;})}
+    {[0,.5,1].map(fraction=><text key={fraction} x="28" y={y(maximum*fraction)+4} textAnchor="end" fontSize="10" fill="currentColor">{(maximum*fraction).toFixed(0)}</text>)}
     <g clipPath={`url(#${clipId})`}>{plotted.map(({row,points})=>{
       let previous:number|undefined;
       const d=points.map(p=>{const command=previous===p.segment?"L":"M";previous=p.segment;return `${command}${x(p.bucketStart)},${y(p.rate)}`;}).join(" ");

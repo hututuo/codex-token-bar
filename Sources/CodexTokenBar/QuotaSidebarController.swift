@@ -158,6 +158,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     private var screenObserver: NSObjectProtocol?
     private var activationObserver: NSObjectProtocol?
     private var collapseTask: Task<Void, Never>?
+    private var presenceTask: Task<Void, Never>?
     private var frameAnimationTask: QuotaSidebarFrameClock?
     private var frameAnimationGeneration = 0
     // Screen-space visual bounds while a fixed native window contains the reveal.
@@ -251,6 +252,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
         quotaObservation = nil
         collapseTask?.cancel()
         collapseTask = nil
+        presenceTask?.cancel(); presenceTask = nil
         if let localMonitor { NSEvent.removeMonitor(localMonitor) }
         if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
         if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
@@ -315,7 +317,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
 
     func openDashboard() { dashboardOpenAction?() }
 
-    func togglePin() { interaction.togglePin(); pointerMoved() }
+    func togglePin() { interaction.togglePin(); reconcilePresenceMonitoring(); pointerMoved() }
 
     func dismiss() {
         collapseTask?.cancel(); collapseTask = nil
@@ -461,7 +463,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     }
 
     private func installObservers() {
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged, .leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown]) { [weak self] event in
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown]) { [weak self] event in
             MainActor.assumeIsolated {
                 if event.type == .keyDown {
                     if event.keyCode == 53, self?.interaction.expanded == true { self?.dismiss() }
@@ -471,7 +473,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
             }
             return event
         }
-        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged, .leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
             MainActor.assumeIsolated {
                 if [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type) { self?.outsideClick() }
                 else { self?.pointerMoved() }
@@ -512,8 +514,26 @@ final class QuotaSidebarController: NSObject, ObservableObject {
                 self.collapseTask = nil
                 guard let frames = self.frames,
                       !frames.contains(NSEvent.mouseLocation, detailVisible: self.interaction.detail != nil) else { return }
-                guard !self.settingsReordering, self.interaction.allowsAutomaticCollapse else { return }
+                guard !self.settingsReordering, !self.isDragging, !self.isTrackingPress,
+                      self.interaction.allowsAutomaticCollapse else { return }
                 self.dismiss()
+            }
+        }
+    }
+
+    /// AppKit can miss an exit when the hosting window is resized/rebuilt.
+    /// Poll only the open, unpinned surface; a closed sidebar has no timer.
+    private func reconcilePresenceMonitoring() {
+        guard interaction.expanded, !interaction.pinned, railPanel != nil else {
+            presenceTask?.cancel(); presenceTask = nil
+            return
+        }
+        guard presenceTask == nil else { return }
+        presenceTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+                guard let self else { return }
+                self.pointerMoved()
             }
         }
     }
@@ -556,6 +576,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     }
 
     private func updateFrames(animateDocking: Bool = false) {
+        defer { reconcilePresenceMonitoring() }
         guard !isTrackingPress, !isDragging else { return }
         guard let railPanel else { return }
         // Defer while dragging; a new request opens only level two and never

@@ -124,6 +124,104 @@ struct ClientUsageEvent: Codable, Equatable, Sendable {
     }
 }
 
+/// Ordering used by the numeric multi-client cache-rankings query.
+enum ClientCacheRankingOrder: Sendable {
+    case lowestHit
+    case latest
+}
+
+/// Matches the request admission and low/zero hit rules used by Codex cache rankings.
+enum ClientCacheRankingPolicy {
+    static let minimumInputTokens: Int64 = 1_000
+    static let lowHitMinimumInputTokens: Int64 = 20_000
+    static let lowHitRate = 0.3
+}
+
+/// Numeric cache-read projection for one locally recorded request event.
+/// Cache writes remain available as their own field and are not counted as hits.
+struct ClientCacheRankingRequest: Identifiable, Equatable, Sendable {
+    var id: String { client.rawValue + ":" + eventID }
+    let client: UsageClient
+    let eventID: String
+    let sessionID: String
+    let model: String
+    let timestamp: Date
+    let inputTokens: Int64
+    let outputTokens: Int64
+    let cacheReadTokens: Int64?
+    let cacheWriteTokens: Int64?
+
+    /// The ranker uses cache reads as cached input; cache creation/write is not a hit.
+    var cachedInputTokens: Int64? { cacheReadTokens }
+
+    /// Unknown cache-read fields and zero-input requests do not produce a rate.
+    var cacheHitRate: Double? {
+        guard inputTokens > 0, let cacheReadTokens else { return nil }
+        return Double(cacheReadTokens) / Double(inputTokens)
+    }
+
+    var uncachedInputTokens: Int64? {
+        guard let cacheReadTokens else { return nil }
+        return max(inputTokens - cacheReadTokens, 0)
+    }
+
+    /// Requests without cache-read data remain visible but cannot be ranked by hit rate.
+    var isRankable: Bool {
+        inputTokens >= ClientCacheRankingPolicy.minimumInputTokens && cacheHitRate != nil
+    }
+
+    var isZeroHit: Bool {
+        inputTokens > 0 && cacheReadTokens == 0
+    }
+
+    var isLowHit: Bool {
+        guard inputTokens >= ClientCacheRankingPolicy.lowHitMinimumInputTokens,
+              let cacheHitRate else { return false }
+        return cacheHitRate < ClientCacheRankingPolicy.lowHitRate
+    }
+}
+
+/// Weighted numeric totals for one client session. Cache totals and the rate stay
+/// nil if any request lacks that field, so missing source data is never counted as zero.
+struct ClientCacheRankingSession: Identifiable, Equatable, Sendable {
+    var id: String { client.rawValue + ":" + sessionID }
+    let client: UsageClient
+    let sessionID: String
+    let inputTokens: Int64
+    let outputTokens: Int64
+    let cacheReadTokens: Int64?
+    let cacheWriteTokens: Int64?
+    let requests: Int
+    let firstSeen: Date
+    let lastSeen: Date
+    let unknownCacheReadRequests: Int
+    let unknownCacheWriteRequests: Int
+    let lowHitRequests: Int
+    let zeroHitRequests: Int
+    let modelIDs: [String]
+
+    var cachedInputTokens: Int64? { cacheReadTokens }
+    var cacheHitRate: Double? {
+        guard inputTokens > 0, let cacheReadTokens else { return nil }
+        return Double(cacheReadTokens) / Double(inputTokens)
+    }
+    var isRankable: Bool {
+        inputTokens >= ClientCacheRankingPolicy.minimumInputTokens && cacheHitRate != nil
+    }
+}
+
+/// Bounded request rows plus complete per-session aggregates from the existing ledger.
+struct ClientCacheRankingProjection: Equatable, Sendable {
+    let requests: [ClientCacheRankingRequest]
+    let sessions: [ClientCacheRankingSession]
+    let matchingRequestCount: Int
+    let requestLimit: Int
+
+    var hasMoreRequests: Bool { requests.count < matchingRequestCount }
+
+    static let empty = ClientCacheRankingProjection(requests: [], sessions: [], matchingRequestCount: 0, requestLimit: 0)
+}
+
 /// Stable keyset cursor for walking an OpenCode database without silently truncating older messages.
 struct OpenCodeDatabaseCursor: Codable, Equatable, Sendable {
     var updatedAtMilliseconds: Int64

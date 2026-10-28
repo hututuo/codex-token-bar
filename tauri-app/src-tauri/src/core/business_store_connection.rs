@@ -88,6 +88,24 @@ impl StoreConnection {
         })
     }
 
+    /// Open a standalone SQLite database with an explicitly scoped logical
+    /// namespace. This is for small module-owned tables stored inside another
+    /// app database: unlike `open_store`, it does not consult container A or
+    /// require rows in `tb_stores`. The caller supplies a safe `s<id>_` prefix
+    /// and the complete set of logical object names accepted by the binder.
+    pub(crate) fn open_scoped(
+        path: impl AsRef<Path>,
+        store_id: impl Into<String>,
+        prefix: impl Into<String>,
+        object_names: impl IntoIterator<Item = String>,
+    ) -> Result<Self> {
+        let raw = Connection::open(path)?;
+        let binding = StoreSqlBinding::new(store_id, prefix, object_names).map_err(|error| {
+            rusqlite::Error::InvalidParameterName(format!("store SQL binding: {error:?}"))
+        })?;
+        Self::bound(raw, binding)
+    }
+
     pub(crate) fn open_store(
         container_path: impl AsRef<Path>,
         store: &StoreSpec,
@@ -366,6 +384,52 @@ mod tests {
             .unwrap(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn scoped_connection_namespaces_tables_without_container_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("shared.sqlite");
+        let store_id = "b".repeat(64);
+        let prefix = format!("s{store_id}_");
+        let raw = Connection::open(&path).unwrap();
+        raw.pragma_update(None, "user_version", 19_i64).unwrap();
+        drop(raw);
+
+        let store = StoreConnection::open_scoped(
+            &path,
+            store_id.clone(),
+            prefix.clone(),
+            ["events".to_owned()],
+        )
+        .unwrap();
+        store
+            .execute_batch("CREATE TABLE events(id TEXT PRIMARY KEY, value INTEGER) WITHOUT ROWID")
+            .unwrap();
+        store
+            .execute("INSERT INTO events(id, value) VALUES('one', 7)", [])
+            .unwrap();
+        let value: i64 = store
+            .query_row("SELECT value FROM events WHERE id='one'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(value, 7);
+        drop(store);
+
+        let raw = Connection::open(&path).unwrap();
+        let version: i64 = raw
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 19);
+        let physical: i64 = raw
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                [format!("{prefix}events")],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(physical, 1);
     }
 
     #[test]

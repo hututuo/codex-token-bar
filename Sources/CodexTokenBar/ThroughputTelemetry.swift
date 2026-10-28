@@ -465,6 +465,8 @@ struct BodySpeedPersistenceResult: Sendable {
 }
 
 actor BodySpeedSampleWriter {
+    private let sharedURL: URL?
+    init(sharedURL: URL? = nil) { self.sharedURL = sharedURL }
     private struct StoreCache {
         let store: BodySpeedTrendStore
         var persistedByID: [String: ObservedSpeedSample]
@@ -551,7 +553,7 @@ actor BodySpeedSampleWriter {
     private func storeCache(for url: URL, now: Double, retentionDays: Int) throws -> StoreCache {
         if let cache = caches[url] { return cache }
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let store = try BodySpeedTrendStore(url: url)
+        let store = try BodySpeedTrendStore(url: url, sharedURL: sharedURL)
         let samples = try store.loadSamples(now: now, retentionDays: retentionDays)
         return StoreCache(
             store: store,

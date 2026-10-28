@@ -6,18 +6,18 @@ final class ActivitySpeedChartProjectionTests: XCTestCase {
         .init(bucketStart: time, value: .init(weightedOutput: rate * seconds, coveredSeconds: seconds))
     }
     func testOlderLookbackAndFutureBucketsNeverLeaveTheVisibleHalfHour() {
-        let points = ActivitySpeedChartProjection.points([point(7_900), point(8_200), point(8_500), point(10_000), point(10_300)], now: Date(timeIntervalSince1970: 10_000))
-        XCTAssertEqual(points.map(\.bucketStart), [8_200, 8_500, 10_000])
+        let points = ActivitySpeedChartProjection.points([point(7_900), point(8_200), point(8_260), point(10_000), point(10_300)], now: Date(timeIntervalSince1970: 10_000))
+        XCTAssertEqual(points.map(\.bucketStart), [8_200, 8_260, 10_000])
         XCTAssertEqual(points.map(\.segment), [0, 0, 1])
     }
     func testCrossingExpiryBoundaryUsesIndependentStableArraysWithoutAnyOldIndexes() {
-        let source = [point(8_200), point(8_500), point(8_800)]
+        let source = [point(8_200), point(8_260), point(8_320)]
         let before = ActivitySpeedChartProjection.points(source, now: Date(timeIntervalSince1970: 10_000))
         let after = ActivitySpeedChartProjection.points(source, now: Date(timeIntervalSince1970: 10_000.001))
         XCTAssertEqual(before.count, 3)
         XCTAssertEqual(after.count, 2)
-        XCTAssertEqual(before.map(\.bucketStart), [8_200, 8_500, 8_800])
-        XCTAssertEqual(after.map(\.bucketStart), [8_500, 8_800])
+        XCTAssertEqual(before.map(\.bucketStart), [8_200, 8_260, 8_320])
+        XCTAssertEqual(after.map(\.bucketStart), [8_260, 8_320])
         XCTAssertEqual(after.map(\.segment), [0, 0])
     }
     func testInvalidAggregatesDoNotDistortScaleAndValidZeroStillPlots() {

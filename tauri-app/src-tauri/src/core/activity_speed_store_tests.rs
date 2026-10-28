@@ -91,6 +91,166 @@ fn trend_since_filters_rollup_scan_and_rejects_invalid_bounds() {
 }
 
 #[test]
+fn one_minute_trend_splits_cross_minute_samples_and_uses_weighted_mean() {
+    let connection = database();
+    let crossing = sample("crossing", 59.0, 61.0, 10.0, 2.0);
+    let following = sample("following", 61.0, 63.0, 20.0, 2.0);
+    add_sample(&connection, &crossing, 120.0).unwrap();
+    add_sample(&connection, &following, 120.0).unwrap();
+
+    let result = query(&connection, 120.0, &ActivitySpeedFilter::default(), 8).unwrap();
+    let points = &result.series[0].one_minute_trend;
+    assert_eq!(points.len(), 2);
+    assert_eq!(points[0].bucket_start, 0);
+    assert!((points[0].value.covered_seconds - 1.0).abs() < 0.0001);
+    assert!((points[0].value.weighted_output - 10.0).abs() < 0.0001);
+    assert!((points[0].value.output_rate() - 10.0).abs() < 0.0001);
+    assert_eq!(points[1].bucket_start, 60);
+    assert!((points[1].value.covered_seconds - 3.0).abs() < 0.0001);
+    assert!((points[1].value.weighted_output - 50.0).abs() < 0.0001);
+    assert!((points[1].value.output_rate() - (50.0 / 3.0)).abs() < 0.0001);
+}
+
+#[test]
+fn one_minute_trend_keeps_source_mode_client_and_model_scopes_separate() {
+    let connection = database();
+    let mut source = sample("source-b", 110.0, 112.0, 20.0, 2.0);
+    source.source_identity = "source-b".into();
+    let mut mode = sample("mode-agent", 110.0, 112.0, 30.0, 2.0);
+    mode.display_mode = "agentSpeed".into();
+    let mut client = sample("client-claude", 110.0, 112.0, 40.0, 2.0);
+    client.client = "claude".into();
+    let mut model = sample("model-b", 110.0, 112.0, 50.0, 2.0);
+    model.model = "model-b".into();
+    let base = sample("base", 110.0, 112.0, 10.0, 2.0);
+    for item in [&base, &source, &mode, &client, &model] {
+        add_sample(&connection, item, 120.0).unwrap();
+    }
+
+    let all = query(&connection, 120.0, &ActivitySpeedFilter::default(), 8).unwrap();
+    assert_eq!(all.series.len(), 5);
+    for series in &all.series {
+        assert_eq!(series.one_minute_trend.len(), 1);
+        let rate = series.one_minute_trend[0].value.output_rate();
+        match (
+            series.dimensions.source_identity.as_str(),
+            series.dimensions.display_mode.as_str(),
+            series.dimensions.client.as_str(),
+            series.dimensions.model.as_str(),
+        ) {
+            (LEGACY_SOURCE_IDENTITY, "tokens", "codex", "model-a") => {
+                assert!((rate - 10.0).abs() < 0.0001)
+            }
+            ("source-b", "tokens", "codex", "model-a") => {
+                assert!((rate - 20.0).abs() < 0.0001)
+            }
+            (LEGACY_SOURCE_IDENTITY, "agentSpeed", "codex", "model-a") => {
+                assert!((rate - 30.0).abs() < 0.0001)
+            }
+            (LEGACY_SOURCE_IDENTITY, "tokens", "claude", "model-a") => {
+                assert!((rate - 40.0).abs() < 0.0001)
+            }
+            (LEGACY_SOURCE_IDENTITY, "tokens", "codex", "model-b") => {
+                assert!((rate - 50.0).abs() < 0.0001)
+            }
+            unexpected => panic!("unexpected activity speed dimensions: {unexpected:?}"),
+        }
+    }
+
+    let filtered = query(
+        &connection,
+        120.0,
+        &ActivitySpeedFilter {
+            source_identity: Some(LEGACY_SOURCE_IDENTITY.into()),
+            display_mode: Some("tokens".into()),
+            client: Some("codex".into()),
+            model: Some("model-a".into()),
+            ..Default::default()
+        },
+        8,
+    )
+    .unwrap();
+    assert_eq!(filtered.series.len(), 1);
+    assert!((filtered.series[0].one_minute_trend[0].value.output_rate() - 10.0).abs() < 0.0001);
+}
+
+#[test]
+fn one_minute_trend_clips_future_samples_at_now() {
+    let connection = database();
+    let future_ending = sample("future-end", 110.0, 130.0, 10.0, 20.0);
+    connection
+        .execute(
+            "INSERT INTO activity_speed_samples(source_identity,id,display_mode,estimator_id,estimator_version,metric_kind,client,model,started_at,ended_at,output_rate,covered_seconds,weighted_output) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+            rusqlite::params![
+                future_ending.source_identity,
+                future_ending.id,
+                future_ending.display_mode,
+                future_ending.estimator_id,
+                future_ending.estimator_version,
+                future_ending.metric_kind,
+                future_ending.client,
+                future_ending.model,
+                future_ending.started_at,
+                future_ending.ended_at,
+                future_ending.output_rate,
+                future_ending.covered_seconds,
+                future_ending.output_rate * future_ending.covered_seconds,
+            ],
+        )
+        .unwrap();
+
+    let result = query(&connection, 120.0, &ActivitySpeedFilter::default(), 8).unwrap();
+    let points = &result.series[0].one_minute_trend;
+    assert_eq!(points.len(), 1);
+    assert_eq!(points[0].bucket_start, 60);
+    assert!((points[0].value.covered_seconds - 10.0).abs() < 0.0001);
+    assert!((points[0].value.weighted_output - 100.0).abs() < 0.0001);
+    assert!((points[0].value.output_rate() - 10.0).abs() < 0.0001);
+}
+
+#[test]
+fn one_minute_trend_keeps_gaps_and_only_reads_the_last_30_minutes() {
+    let connection = database();
+    let old_but_retained = sample("outside-window", 1_700.0, 1_710.0, 8.0, 10.0);
+    let recent = sample("recent", 3_541.0, 3_542.0, 12.0, 1.0);
+    add_sample(&connection, &old_but_retained, 3_600.0).unwrap();
+    add_sample(&connection, &recent, 3_600.0).unwrap();
+
+    let result = query(&connection, 3_600.0, &ActivitySpeedFilter::default(), 8).unwrap();
+    let points = &result.series[0].one_minute_trend;
+    assert_eq!(points.len(), 1);
+    assert_eq!(points[0].bucket_start, 3_540);
+    assert!((points[0].value.output_rate() - 12.0).abs() < 0.0001);
+    let json = serde_json::to_value(&result).unwrap();
+    assert!(json["series"][0]["oneMinuteTrend"].is_array());
+}
+
+#[test]
+fn one_minute_trend_is_bounded_to_31_nonempty_buckets() {
+    let connection = database();
+    let now = 1_830.5;
+    let from = now - MINUTE_TREND_WINDOW_SECONDS;
+    let first_bucket = minute_bucket_start(from);
+    for minute in 0..MAX_MINUTE_TREND_POINTS {
+        let bucket = first_bucket + minute as i64 * MINUTE_SECONDS;
+        let offset = if minute == 0 {
+            from - first_bucket as f64 + 0.1
+        } else if minute + 1 == MAX_MINUTE_TREND_POINTS {
+            0.1
+        } else {
+            1.0
+        };
+        let start = bucket as f64 + offset;
+        let item = sample(&format!("minute-{minute}"), start, start + 0.2, 6.0, 0.1);
+        add_sample(&connection, &item, now).unwrap();
+    }
+
+    let result = query(&connection, now, &ActivitySpeedFilter::default(), 8).unwrap();
+    assert_eq!(result.series[0].one_minute_trend.len(), 31);
+    assert!(result.series[0].one_minute_trend.len() <= MAX_MINUTE_TREND_POINTS);
+}
+
+#[test]
 fn batch_is_atomic_bounded_and_replay_safe() {
     let connection = database();
     let valid = sample("batch-valid", 1_700.0, 1_701.0, 4.0, 1.0);

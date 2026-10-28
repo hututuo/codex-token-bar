@@ -6,12 +6,15 @@ const SCHEMA: &str =
     include_str!("../../../../Sources/CodexTokenBar/Resources/activity-speed-schema.sql");
 const SCHEMA_VERSION: &str = "2";
 const BUCKET_SECONDS: i64 = 300;
+const MINUTE_SECONDS: i64 = 60;
 const RAW_RETENTION: f64 = 7.0 * 86_400.0;
 const ROLLUP_RETENTION: f64 = 30.0 * 86_400.0;
+const MINUTE_TREND_WINDOW_SECONDS: f64 = 30.0 * 60.0;
 const MAX_SAMPLE_SPAN: f64 = 3_600.0;
 const MAX_TEXT_LENGTH: usize = 256;
 const MAX_SERIES: usize = 64;
 const MAX_TREND_POINTS: usize = 512;
+const MAX_MINUTE_TREND_POINTS: usize = 31;
 const MAX_BATCH_SIZE: usize = 4_096;
 
 pub(super) type ActivitySpeedResult<T> = Result<T, ActivitySpeedStoreError>;
@@ -175,6 +178,12 @@ pub(super) fn query(
             .or_insert_with(|| ActivitySpeedSeries::new(dimensions))
             .thirty_minute_trend = points;
     }
+    for (dimensions, points) in read_one_minute_trend(connection, now, filter)? {
+        values
+            .entry(dimensions.clone())
+            .or_insert_with(|| ActivitySpeedSeries::new(dimensions))
+            .one_minute_trend = points;
+    }
     if values.len() > MAX_SERIES {
         return Err(ActivitySpeedStoreError::TooManySeries);
     }
@@ -286,6 +295,101 @@ fn read_trend(
     Ok(output)
 }
 
+/// Build a last-30-minute trend directly from retained raw samples. Each
+/// sample's measured output and covered time are apportioned across the minute
+/// buckets in proportion to the interval overlap, matching the rolling-window
+/// query's weighting and clipping at `now`.
+fn read_one_minute_trend(
+    connection: &Connection,
+    now: f64,
+    filter: &ActivitySpeedFilter,
+) -> ActivitySpeedResult<BTreeMap<ActivitySpeedDimensions, Vec<ActivitySpeedTrendPoint>>> {
+    let from = now - MINUTE_TREND_WINDOW_SECONDS;
+    let last_bucket = minute_bucket_start(now);
+    let first_bucket = last_bucket - (MAX_MINUTE_TREND_POINTS as i64 - 1) * MINUTE_SECONDS;
+    let (predicate, mut values) = filter_sql(filter);
+    let sql = format!(
+        "WITH RECURSIVE minute_buckets(bucket_start) AS (
+             SELECT ? UNION ALL
+             SELECT bucket_start + {MINUTE_SECONDS} FROM minute_buckets
+             WHERE bucket_start + {MINUTE_SECONDS} <= ?
+         ), clipped_samples AS (
+             SELECT source_identity, display_mode, estimator_id, estimator_version,
+                    metric_kind, client, model, started_at, ended_at, weighted_output,
+                    covered_seconds, MAX(started_at, ?) AS clipped_start,
+                    MIN(ended_at, ?) AS clipped_end
+             FROM activity_speed_samples
+             WHERE ended_at > ? AND started_at < ? {predicate}
+         ), grouped AS (
+             SELECT source_identity, display_mode, estimator_id, estimator_version,
+                    metric_kind, client, model, minute_buckets.bucket_start AS bucket_start,
+                    SUM(clipped_samples.weighted_output * ((MIN(clipped_end, minute_buckets.bucket_start + {MINUTE_SECONDS})
+                        - MAX(clipped_start, minute_buckets.bucket_start)) / (ended_at - started_at))) AS weighted_output,
+                    SUM(clipped_samples.covered_seconds * ((MIN(clipped_end, minute_buckets.bucket_start + {MINUTE_SECONDS})
+                        - MAX(clipped_start, minute_buckets.bucket_start)) / (ended_at - started_at))) AS covered_seconds
+             FROM clipped_samples CROSS JOIN minute_buckets
+             WHERE clipped_end > minute_buckets.bucket_start
+               AND clipped_start < minute_buckets.bucket_start + {MINUTE_SECONDS}
+             GROUP BY source_identity, display_mode, estimator_id, estimator_version,
+                      metric_kind, client, model, minute_buckets.bucket_start
+             HAVING SUM(clipped_samples.covered_seconds * ((MIN(clipped_end, minute_buckets.bucket_start + {MINUTE_SECONDS})
+                        - MAX(clipped_start, minute_buckets.bucket_start)) / (ended_at - started_at))) > 0
+         )
+         SELECT source_identity, display_mode, estimator_id, estimator_version, metric_kind,
+                client, model, bucket_start, weighted_output, covered_seconds
+         FROM grouped
+         ORDER BY source_identity, display_mode, estimator_id, estimator_version,
+                  metric_kind, client, model, bucket_start
+         LIMIT ?"
+    );
+    let mut params = vec![
+        Value::Integer(first_bucket),
+        Value::Integer(last_bucket),
+        Value::Real(from),
+        Value::Real(now),
+        Value::Real(from),
+        Value::Real(now),
+    ];
+    params.append(&mut values);
+    params.push(Value::Integer(
+        (MAX_SERIES * MAX_MINUTE_TREND_POINTS + 1) as i64,
+    ));
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement
+        .query_map(params_from_iter(params.iter()), |row| {
+            let dimensions = dimensions(row)?;
+            let bucket: i64 = row.get(7)?;
+            let weighted: f64 = row.get(8)?;
+            let covered: f64 = row.get(9)?;
+            if !weighted.is_finite() || weighted < 0.0 || !covered.is_finite() || covered <= 0.0 {
+                return Err(rusqlite::Error::InvalidQuery);
+            }
+            Ok((
+                dimensions,
+                ActivitySpeedTrendPoint {
+                    bucket_start: bucket,
+                    value: ActivitySpeedAggregate::new(weighted, covered),
+                },
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if rows.len() > MAX_SERIES * MAX_MINUTE_TREND_POINTS {
+        return Err(ActivitySpeedStoreError::TooManySeries);
+    }
+    let mut output = BTreeMap::<ActivitySpeedDimensions, Vec<ActivitySpeedTrendPoint>>::new();
+    for (dimensions, point) in rows {
+        output.entry(dimensions).or_default().push(point);
+    }
+    if output.len() > MAX_SERIES
+        || output
+            .values()
+            .any(|points| points.len() > MAX_MINUTE_TREND_POINTS)
+    {
+        return Err(ActivitySpeedStoreError::TooManySeries);
+    }
+    Ok(output)
+}
+
 fn dimensions(row: &Row<'_>) -> rusqlite::Result<ActivitySpeedDimensions> {
     Ok(ActivitySpeedDimensions {
         source_identity: row.get(0)?,
@@ -388,6 +492,10 @@ fn prune(transaction: &Transaction<'_>, now: f64) -> ActivitySpeedResult<()> {
 
 fn bucket_start(timestamp: f64) -> i64 {
     (timestamp / BUCKET_SECONDS as f64).floor() as i64 * BUCKET_SECONDS
+}
+
+fn minute_bucket_start(timestamp: f64) -> i64 {
+    (timestamp / MINUTE_SECONDS as f64).floor() as i64 * MINUTE_SECONDS
 }
 
 #[cfg(test)]

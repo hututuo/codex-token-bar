@@ -173,16 +173,19 @@ enum ClientPreviewMode {
 @MainActor
 final class ClientDashboardProjectionCache {
     private var key = ""
-    private var cached: DashboardSnapshot?
+    private var cached: [String: DashboardSnapshot] = [:]
     func value(codex: DashboardSnapshot, clients: MultiClientUsageStore, allowed: Set<String>) -> DashboardSnapshot {
         guard allowed != ["codex"] else { return codex }
-        let nextKey = allowed.sorted().joined(separator: ",") + "|" + String(codex.generatedAt.timeIntervalSince1970)
+        let scope = allowed.sorted().joined(separator: ",")
+        let nextKey = String(codex.generatedAt.timeIntervalSince1970)
             + "|" + String(codex.exactGeneration ?? 0) + "|" + String(clients.updatedAt?.timeIntervalSince1970 ?? 0)
-        if nextKey == key, let cached { return cached }
+        if nextKey != key { cached.removeAll(); key = nextKey }
+        if let value = cached[scope] { return value }
         let result = ClientDashboardProjection.snapshot(codex: codex, rows: clients.summaries,
             trend: clients.trendBuckets, daily: clients.dailyBuckets, allowed: allowed,
             now: max(codex.generatedAt, clients.updatedAt ?? .distantPast))
-        cached = result; key = nextKey
+        if cached.count >= 8 { cached.removeAll() }
+        cached[scope] = result
         return result
     }
 }

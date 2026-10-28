@@ -93,7 +93,7 @@ final class LiveRateMonitor: ObservableObject {
     private var persistedSpeedRevision = -1
     private var speedWriteRunning = false
     private var nextSpeedWriteAt: Double = 0
-    private let bodySpeedWriter = BodySpeedSampleWriter()
+    private let bodySpeedWriter = BodySpeedSampleWriter(sharedURL: MultiClientUsageStore.defaultDatabaseURL)
     private var bodySpeedWriteTicket = 0
     private var lastModelSpeedSummaryAt = 0.0
     private var nextModelSpeedSummaryChangeAt = 0.0

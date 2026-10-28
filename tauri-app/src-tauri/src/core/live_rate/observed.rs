@@ -1361,7 +1361,13 @@ fn ensure_loaded(store: &mut SpeedStore, scope: &LiveRateSourceScope, now: f64) 
         return;
     }
 
-    let database = match BodySpeedTrendStore::open(&path) {
+    #[cfg(test)]
+    let database_result = BodySpeedTrendStore::open(&path);
+    #[cfg(not(test))]
+    let database_result = crate::core::app_paths::multi_client_usage_database_path()
+        .ok_or_else(|| rusqlite::Error::InvalidPath(path.clone()))
+        .and_then(|shared_path| BodySpeedTrendStore::open_shared(&path, shared_path));
+    let database = match database_result {
         Ok(database) => database,
         Err(_) => {
             store.storage_error = Some("observed_speed_storage_invalid".into());

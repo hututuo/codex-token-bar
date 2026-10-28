@@ -34,6 +34,11 @@ private struct ClientSummaryReadResult {
     let pendingSummaryCache: (key: ClientSummaryCacheKey, summaries: [ClientUsageSummary])?
 }
 
+private struct ClientCacheSessionKey: Hashable {
+    let client: UsageClient
+    let sessionID: String
+}
+
 private struct ClientPriceTally: Sendable {
     var knownCostMicroUSD: Int64?
     var unpricedRequests: Int = 0
@@ -217,6 +222,184 @@ final class MultiClientUsageLedger: @unchecked Sendable {
                               bindings: [.text(client.rawValue), .text(sourceKey)]) {
             MultiClientFileCheckpoint(offset: $0.int64(0) ?? 0, size: $0.int64(1) ?? 0, modified: $0.double(2) ?? 0, identity: $0.text(3) ?? "")
         }.first
+    }
+
+    /// Reads bounded per-request rankings and complete per-session numeric aggregates from the
+    /// existing event table. This projection does not create indexes, mutate checkpoints, or
+    /// rewrite events/revisions. Requests with unknown cache-read fields remain visible with a
+    /// nil rate and are never counted as zero-hit or low-hit.
+    func cacheRankingProjection(
+        clients: Set<UsageClient>? = nil,
+        since: Date? = nil,
+        order: ClientCacheRankingOrder = .lowestHit,
+        requestLimit requestedLimit: Int = 500
+    ) throws -> ClientCacheRankingProjection {
+        try Self.cacheRankingProjection(
+            in: database,
+            clients: clients,
+            since: since,
+            order: order,
+            requestLimit: requestedLimit
+        )
+    }
+
+    /// Opens only an existing database with read-only flags. A query cannot create or upgrade the ledger.
+    static func readOnlyCacheRankingProjection(
+        url: URL,
+        clients: Set<UsageClient>? = nil,
+        since: Date? = nil,
+        order: ClientCacheRankingOrder = .lowestHit,
+        requestLimit: Int = 500
+    ) throws -> ClientCacheRankingProjection {
+        guard FileManager.default.fileExists(atPath: url.path) else { return .empty }
+        let database = SQLiteDatabaseDriver(url: url, readOnly: true, createsFileIfMissing: false, busyTimeoutMilliseconds: 500)
+        return try cacheRankingProjection(
+            in: database,
+            clients: clients,
+            since: since,
+            order: order,
+            requestLimit: requestLimit
+        )
+    }
+
+    private static func cacheRankingProjection(
+        in database: SQLiteDatabaseDriver,
+        clients: Set<UsageClient>?,
+        since: Date?,
+        order: ClientCacheRankingOrder,
+        requestLimit requestedLimit: Int
+    ) throws -> ClientCacheRankingProjection {
+        if let clients, clients.isEmpty { return .empty }
+        let requestLimit = min(max(requestedLimit, 0), 5_000)
+        var predicates: [String] = []
+        var bindings: [SQLiteBinding] = []
+        if let since {
+            predicates.append("timestamp >= ?")
+            bindings.append(.date(since))
+        }
+        if let clients {
+            let identifiers = clients.map(\.rawValue).sorted()
+            predicates.append("client IN (\(Array(repeating: "?", count: identifiers.count).joined(separator: ",")))")
+            bindings.append(contentsOf: identifiers.map(SQLiteBinding.text))
+        }
+        let whereClause = predicates.isEmpty ? "" : "WHERE " + predicates.joined(separator: " AND ")
+        let requestSort: String
+        switch order {
+        case .lowestHit:
+            requestSort = """
+                CASE WHEN cache_read_tokens IS NULL OR input_tokens <= 0 THEN 1 ELSE 0 END ASC,
+                CASE WHEN cache_read_tokens IS NOT NULL AND input_tokens > 0
+                     THEN CAST(MIN(MAX(cache_read_tokens,0),input_tokens) AS REAL) / input_tokens ELSE 2 END ASC,
+                CASE WHEN cache_read_tokens IS NOT NULL
+                     THEN MAX(input_tokens-MIN(MAX(cache_read_tokens,0),input_tokens),0) ELSE 0 END DESC,
+                timestamp DESC, client COLLATE BINARY, event_id COLLATE BINARY
+                """
+        case .latest:
+            requestSort = "timestamp DESC, client COLLATE BINARY, event_id COLLATE BINARY"
+        }
+
+        return try database.withConnection { connection in
+            try connection.readTransaction { snapshot in
+                let matchingRequestCount = try snapshot.readRows(
+                    "SELECT COUNT(*) FROM client_usage_events \(whereClause)\(whereClause.isEmpty ? "WHERE " : " AND ")input_tokens >= ?",
+                    bindings: bindings + [.int64(ClientCacheRankingPolicy.minimumInputTokens)]
+                ) { $0.int(0) ?? 0 }.first ?? 0
+
+                let requests = try snapshot.readRows("""
+                    SELECT client,event_id,session_id,model,timestamp,input_tokens,output_tokens,
+                           cache_read_tokens,cache_write_tokens
+                    FROM client_usage_events \(whereClause)\(whereClause.isEmpty ? "WHERE " : " AND ")input_tokens >= ?
+                    ORDER BY \(requestSort) LIMIT ?
+                    """, bindings: bindings + [
+                        .int64(ClientCacheRankingPolicy.minimumInputTokens), .int64(Int64(requestLimit))
+                    ]) { row -> ClientCacheRankingRequest? in
+                    guard let client = UsageClient(rawValue: row.text(0) ?? "") else { return nil }
+                    let inputTokens = row.int64(5) ?? 0
+                    let cacheReadTokens = row.int64(7).map { min(max($0, 0), inputTokens) }
+                    return ClientCacheRankingRequest(
+                        client: client,
+                        eventID: row.text(1) ?? "",
+                        sessionID: row.text(2) ?? "",
+                        model: row.text(3) ?? "unknown",
+                        timestamp: row.date(4) ?? .distantPast,
+                        inputTokens: inputTokens,
+                        outputTokens: row.int64(6) ?? 0,
+                        cacheReadTokens: cacheReadTokens,
+                        cacheWriteTokens: row.int64(8)
+                    )
+                }.compactMap { $0 }
+
+                let rawSessions = try snapshot.readRows("""
+                    SELECT client,session_id,SUM(input_tokens),SUM(output_tokens),
+                           SUM(CASE WHEN cache_read_tokens IS NOT NULL THEN MIN(MAX(cache_read_tokens,0),input_tokens) END),
+                           SUM(cache_write_tokens),COUNT(*),MIN(timestamp),MAX(timestamp),
+                           SUM(cache_read_tokens IS NULL),SUM(cache_write_tokens IS NULL),
+                           SUM(CASE WHEN input_tokens >= ? AND cache_read_tokens IS NOT NULL
+                                    AND CAST(MIN(MAX(cache_read_tokens,0),input_tokens) AS REAL) / NULLIF(input_tokens,0) < ? THEN 1 ELSE 0 END),
+                           SUM(CASE WHEN input_tokens > 0 AND cache_read_tokens = 0 THEN 1 ELSE 0 END)
+                    FROM client_usage_events \(whereClause)
+                    GROUP BY client,session_id HAVING SUM(input_tokens) >= ?
+                    ORDER BY MAX(timestamp) DESC,client COLLATE BINARY,session_id COLLATE BINARY
+                    """, bindings: [
+                        .int64(ClientCacheRankingPolicy.lowHitMinimumInputTokens),
+                        .double(ClientCacheRankingPolicy.lowHitRate)
+                    ] + bindings + [.int64(ClientCacheRankingPolicy.minimumInputTokens)]) { row -> ClientCacheRankingSession? in
+                    guard let client = UsageClient(rawValue: row.text(0) ?? "") else { return nil }
+                    let unknownRead = row.int(9) ?? 0
+                    let unknownWrite = row.int(10) ?? 0
+                    return ClientCacheRankingSession(
+                        client: client,
+                        sessionID: row.text(1) ?? "",
+                        inputTokens: row.int64(2) ?? 0,
+                        outputTokens: row.int64(3) ?? 0,
+                        cacheReadTokens: unknownRead == 0 ? row.int64(4) : nil,
+                        cacheWriteTokens: unknownWrite == 0 ? row.int64(5) : nil,
+                        requests: row.int(6) ?? 0,
+                        firstSeen: row.date(7) ?? .distantPast,
+                        lastSeen: row.date(8) ?? .distantPast,
+                        unknownCacheReadRequests: unknownRead,
+                        unknownCacheWriteRequests: unknownWrite,
+                        lowHitRequests: row.int(11) ?? 0,
+                        zeroHitRequests: row.int(12) ?? 0,
+                        modelIDs: []
+                    )
+                }.compactMap { $0 }
+
+                let modelRows = try snapshot.readRows("""
+                    SELECT client,session_id,model FROM client_usage_events \(whereClause)
+                    GROUP BY client,session_id,model ORDER BY client COLLATE BINARY,session_id COLLATE BINARY,model COLLATE BINARY
+                    """, bindings: bindings) { row -> (ClientCacheSessionKey, String)? in
+                    guard let client = UsageClient(rawValue: row.text(0) ?? "") else { return nil }
+                    return (ClientCacheSessionKey(client: client, sessionID: row.text(1) ?? ""), row.text(2) ?? "unknown")
+                }.compactMap { $0 }
+                var modelsBySession: [ClientCacheSessionKey: [String]] = [:]
+                for (key, model) in modelRows { modelsBySession[key, default: []].append(model) }
+                let sessions = rawSessions.map { session in
+                    ClientCacheRankingSession(
+                        client: session.client,
+                        sessionID: session.sessionID,
+                        inputTokens: session.inputTokens,
+                        outputTokens: session.outputTokens,
+                        cacheReadTokens: session.cacheReadTokens,
+                        cacheWriteTokens: session.cacheWriteTokens,
+                        requests: session.requests,
+                        firstSeen: session.firstSeen,
+                        lastSeen: session.lastSeen,
+                        unknownCacheReadRequests: session.unknownCacheReadRequests,
+                        unknownCacheWriteRequests: session.unknownCacheWriteRequests,
+                        lowHitRequests: session.lowHitRequests,
+                        zeroHitRequests: session.zeroHitRequests,
+                        modelIDs: modelsBySession[ClientCacheSessionKey(client: session.client, sessionID: session.sessionID)] ?? []
+                    )
+                }
+                return ClientCacheRankingProjection(
+                    requests: requests,
+                    sessions: sessions,
+                    matchingRequestCount: matchingRequestCount,
+                    requestLimit: requestLimit
+                )
+            }
+        }
     }
 
     func trendBuckets(now: Date = Date()) throws -> [ClientTrendBucket] {

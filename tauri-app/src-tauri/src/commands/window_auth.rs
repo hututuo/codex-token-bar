@@ -4,6 +4,7 @@ pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
     "reset_codex_home",
     "read_dashboard_snapshot",
     "read_cache_turn_requests",
+    "read_multi_client_cache_rankings",
     "read_cached_dashboard_snapshot",
     "read_precise_dashboard_snapshot",
     "rebuild_precise_index_for_current_version",

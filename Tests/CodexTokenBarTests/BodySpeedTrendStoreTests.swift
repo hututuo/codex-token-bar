@@ -194,4 +194,129 @@ extension BodySpeedTrendStoreTests {
         XCTAssertTrue(try BodySpeedTrendStore.distributions([p(0, 1), p(1, 1), p(2, 1)], width: 1800, completedThrough: base + 1800).isEmpty)
         XCTAssertEqual(try BodySpeedTrendStore.distributions([p(0, 2), p(1, 2), p(2, 2)], width: 1800, completedThrough: base + 1800).count, 1)
     }
+
+    func testSharedMigrationPreservesRawDedupAndAggregateRowsAndIsIdempotent() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let legacyURL = directory.appendingPathComponent("A/codex-ledger.sqlite")
+        let sharedURL = directory.appendingPathComponent("B/multi-client-usage.sqlite")
+        try FileManager.default.createDirectory(at: legacyURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let legacy = try BodySpeedTrendStore(url: legacyURL)
+        let base = 1_700_000_000.0
+        let now = base + 20 * 86_400 + 600
+        let expiredRaw = body(id: "expired-raw", model: "model-a", endedAt: base + 120, tokens: 100, duration: 2)
+        let retainedRaw = body(id: "retained-raw", model: "model-b", endedAt: base + 20 * 86_400 + 120, tokens: 200, duration: 4)
+        try legacy.ingest(samples: [expiredRaw, retainedRaw], now: now, retentionDays: 30)
+        try legacy.ingest(samples: [], now: now, retentionDays: 15)
+
+        let legacyDriver = SQLiteDatabaseDriver(url: legacyURL, readOnly: true, createsFileIfMissing: false)
+        XCTAssertEqual(try countRows("speed_samples", in: legacyDriver), 1)
+        XCTAssertEqual(try countRows("speed_sample_ids", in: legacyDriver), 2)
+        XCTAssertEqual(try countRows("speed_5m", in: legacyDriver), 2)
+
+        let ledger = try MultiClientUsageLedger(url: sharedURL)
+        let sharedDriver = SQLiteDatabaseDriver(url: sharedURL, bypassBusinessRoutes: true)
+        try sharedDriver.execute("CREATE TABLE unrelated_probe(value TEXT NOT NULL); INSERT INTO unrelated_probe VALUES('keep')")
+        let versionBefore = try sharedDriver.readRows("PRAGMA user_version") { $0.int(0) }.first ?? 0
+
+        let migrated = try BodySpeedTrendStore(url: legacyURL, sharedURL: sharedURL)
+        XCTAssertEqual(try migrated.retentionDays(), 15)
+        XCTAssertEqual(try migrated.loadSamples(now: now, retentionDays: 30).map(\.id), ["retained-raw"])
+        let buckets = try migrated.read(now: now, days: 30)
+        XCTAssertEqual(buckets.count, 2)
+        XCTAssertEqual(buckets.reduce(Int64(0)) { $0 + $1.sampleCount }, 2)
+
+        let namespaced = try BodySpeedDatabase(logicalURL: legacyURL, sharedURL: sharedURL)
+        XCTAssertEqual(try countRows("speed_samples", in: namespaced), 1)
+        XCTAssertEqual(try countRows("speed_sample_ids", in: namespaced), 2)
+        XCTAssertEqual(try countRows("speed_5m", in: namespaced), 2)
+        XCTAssertEqual(try namespaced.readRows("SELECT count(*) FROM speed_migration_receipts") { $0.int64(0) }.first, 1)
+        let backupPath = try namespaced.readRows("SELECT backup_path FROM speed_migration_receipts") { $0.text(0) }.first ?? nil
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(backupPath)))
+
+        // The old ID remains in the dedup table even though its raw row has
+        // expired. Reingesting it must not recreate its contribution.
+        XCTAssertEqual(try migrated.ingest(samples: [expiredRaw], now: now, retentionDays: 15), 0)
+        XCTAssertEqual(try countRows("speed_5m", in: namespaced), 2)
+
+        _ = try BodySpeedTrendStore(url: legacyURL, sharedURL: sharedURL)
+        XCTAssertEqual(try countRows("speed_samples", in: namespaced), 1)
+        XCTAssertEqual(try countRows("speed_sample_ids", in: namespaced), 2)
+        XCTAssertEqual(try countRows("speed_5m", in: namespaced), 2)
+        XCTAssertEqual(try sharedDriver.readRows("PRAGMA user_version") { $0.int(0) }.first ?? 0, versionBefore)
+        XCTAssertEqual(try sharedDriver.readRows("SELECT value FROM unrelated_probe") { $0.text(0) }.first ?? nil, "keep")
+        XCTAssertTrue(try sharedDriver.readRows("SELECT name FROM main.sqlite_master WHERE name='speed_samples'") { $0.text(0) }.isEmpty)
+        XCTAssertEqual(try countRows("speed_samples", in: legacyDriver), 1)
+        XCTAssertEqual(try countRows("speed_sample_ids", in: legacyDriver), 2)
+        XCTAssertEqual(try countRows("speed_5m", in: legacyDriver), 2)
+        _ = ledger
+    }
+
+    func testSharedMigrationPartitionsSourcesByLegacyLogicalPath() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let sharedURL = directory.appendingPathComponent("B/multi-client-usage.sqlite")
+        let firstURL = directory.appendingPathComponent("A/first.sqlite")
+        let secondURL = directory.appendingPathComponent("A/second.sqlite")
+        try FileManager.default.createDirectory(at: firstURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let firstSample = body(id: "shared-id", model: "model-a", endedAt: 1_800_000_000, tokens: 100, duration: 2)
+        let secondSample = body(id: "shared-id", model: "model-b", endedAt: 1_800_000_000, tokens: 300, duration: 3)
+        try BodySpeedTrendStore(url: firstURL).ingest(samples: [firstSample], now: 1_800_000_060)
+        try BodySpeedTrendStore(url: secondURL).ingest(samples: [secondSample], now: 1_800_000_060)
+
+        let first = try BodySpeedTrendStore(url: firstURL, sharedURL: sharedURL)
+        let second = try BodySpeedTrendStore(url: secondURL, sharedURL: sharedURL)
+        XCTAssertEqual(try first.loadSamples(now: 1_800_000_060).map(\.model), ["model-a"])
+        XCTAssertEqual(try second.loadSamples(now: 1_800_000_060).map(\.model), ["model-b"])
+        let firstDatabase = try BodySpeedDatabase(logicalURL: firstURL, sharedURL: sharedURL)
+        let secondDatabase = try BodySpeedDatabase(logicalURL: secondURL, sharedURL: sharedURL)
+        XCTAssertNotEqual(firstDatabase.prefix, secondDatabase.prefix)
+        XCTAssertEqual(try countRows("speed_sample_ids", in: firstDatabase), 1)
+        XCTAssertEqual(try countRows("speed_sample_ids", in: secondDatabase), 1)
+    }
+
+    func testUnreceiptedNonemptyDestinationFailsWithoutOverwritingRows() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let legacyURL = directory.appendingPathComponent("A/codex-ledger.sqlite")
+        let sharedURL = directory.appendingPathComponent("B/multi-client-usage.sqlite")
+        try FileManager.default.createDirectory(at: legacyURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let now = 1_900_000_060.0
+        try BodySpeedTrendStore(url: legacyURL).ingest(
+            samples: [body(id: "source", model: "legacy", endedAt: now - 30, tokens: 100, duration: 2)], now: now
+        )
+        _ = try BodySpeedTrendStore(url: legacyURL, sharedURL: sharedURL)
+        let namespaced = try BodySpeedDatabase(logicalURL: legacyURL, sharedURL: sharedURL)
+        try namespaced.transaction { connection in
+            try connection.execute("DELETE FROM speed_migration_receipts")
+            try connection.execute("UPDATE speed_5m SET output_tokens=output_tokens+17")
+        }
+        let before = try namespaced.readRows("SELECT bucket_start,model,output_tokens,duration_seconds,sample_count FROM speed_5m") {
+            ($0.int64(0), $0.text(1), $0.int64(2), $0.double(3), $0.int64(4))
+        }
+        XCTAssertThrowsError(try BodySpeedTrendStore(url: legacyURL, sharedURL: sharedURL))
+        let after = try namespaced.readRows("SELECT bucket_start,model,output_tokens,duration_seconds,sample_count FROM speed_5m") {
+            ($0.int64(0), $0.text(1), $0.int64(2), $0.double(3), $0.int64(4))
+        }
+        XCTAssertEqual(before.count, after.count)
+        XCTAssertEqual(before.first?.0, after.first?.0)
+        XCTAssertEqual(before.first?.1, after.first?.1)
+        XCTAssertEqual(before.first?.2, after.first?.2)
+        XCTAssertEqual(before.first?.3, after.first?.3)
+        XCTAssertEqual(before.first?.4, after.first?.4)
+    }
+
+    private func countRows(_ table: String, in database: SQLiteDatabaseDriver) throws -> Int64 {
+        try database.readRows("SELECT count(*) FROM \(table)") { $0.int64(0) }.first ?? 0
+    }
+
+    private func countRows(_ table: String, in database: BodySpeedDatabase) throws -> Int64 {
+        try database.readRows("SELECT count(*) FROM \(table)") { $0.int64(0) }.first ?? 0
+    }
 }

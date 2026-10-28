@@ -217,7 +217,8 @@ function RailSurface() {
     if (!display.quotaSidebarEnabled || state.mode === "rest" || state.pinned || state.cacheNoticeID || dragging) return;
     return monitorSidebarPresence(
       () => invoke<boolean>("quota_sidebar_pointer_inside"),
-      () => { cancelLeave(); dispatch({ type: "leave" }); },
+      () => { if (settingsDragActive.current || dragSession.current?.active) return; cancelLeave(); dispatch({ type: "leave" }); },
+      undefined, () => !settingsDragActive.current && !dragSession.current?.active,
     );
   }, [display.quotaSidebarEnabled, state.mode, state.pinned, state.cacheNoticeID, dragging, cancelLeave]);
   const dismissReminder = useCallback(() => {
@@ -229,7 +230,8 @@ function RailSurface() {
       reminderPointer.current = { id: state.cacheNoticeID, entered: false };
     return monitorSidebarReminder(
       () => invoke<SidebarPointerState>("quota_sidebar_pointer_state"),
-      dismissReminder, undefined, () => reminderPointer.current.entered);
+      dismissReminder, undefined, () => reminderPointer.current.entered,
+      () => !settingsDragActive.current && !dragSession.current?.active);
   }, [display.quotaSidebarEnabled, state.cacheNoticeID, state.mode, state.pinned, dragging, dismissReminder]);
   const startDrag = (event: PointerEvent<HTMLElement>) => {
     if (event.button !== 0 || dragSession.current?.active || !isSidebarDragTarget(event.target as Element)) return;

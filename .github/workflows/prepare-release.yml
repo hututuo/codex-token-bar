@@ -14,9 +14,16 @@ on:
         description: 'Optional exact 40-character source commit; empty means this workflow commit'
         type: string
         default: ''
+      app_build:
+        description: 'Optional numeric macOS candidate build number; does not publish updates'
+        type: string
+        default: ''
   workflow_call:
     inputs:
       source_sha:
+        type: string
+        default: ''
+      app_build:
         type: string
         default: ''
 
@@ -70,6 +77,7 @@ jobs:
       RELEASE_HEADLESS: '1'
       NOTARIZE_RELEASE: '0'
       ARCH_LABEL: arm64
+      APP_BUILD: ${{ inputs.app_build || '929' }}
       DEVELOPER_DIR: /Applications/Xcode_26.1.1.app/Contents/Developer
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -92,6 +100,7 @@ jobs:
           set -euo pipefail
           command -v git-lfs >/dev/null || brew install git-lfs
           test "$(uname -m)" = arm64
+          [[ "$APP_BUILD" =~ ^[0-9]+$ ]] || { echo 'Invalid candidate build number'; exit 1; }
           VERSION=$(node -p "JSON.parse(require('fs').readFileSync('tauri-app/package.json')).version")
           bash scripts/build_release.sh "$VERSION" 2>&1 | tee macos-package.log
           mkdir candidate-macos

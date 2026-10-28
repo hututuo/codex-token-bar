@@ -1,19 +1,24 @@
 //! Durable numeric history and sparse five-minute completed-body speed trends.
 //!
-//! Callers retain the historical logical path; production routes its source
-//! partition into business container A. Isolated tests use plain SQLite files.
+//! Callers retain the historical logical path; production migrates the old A
+//! partition into a source-scoped namespace in shared usage database B. Isolated
+//! tests use plain SQLite files.
 //! Payloads contain measurements and metadata only, never response text.
 
+#[cfg(not(test))]
+use crate::core::business_store_connection::{
+    StoreConnection as Connection, StoreTransaction as Transaction,
+};
 use crate::models::SpeedSample;
 use rusqlite::{params, OptionalExtension, TransactionBehavior};
 #[cfg(test)]
 use rusqlite::{Connection, Transaction};
-#[cfg(not(test))]
-use crate::core::business_store_connection::{StoreConnection as Connection, StoreTransaction as Transaction};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+mod migration;
 
 const BUCKET_SECONDS: i64 = 300;
 const DEDUP_RETENTION_SECONDS: f64 = 30.0 * 86_400.0;
@@ -61,13 +66,32 @@ struct DistributionBucket {
 /// The host decides when sample revisions change and calls `ingest` only then.
 pub struct BodySpeedTrendStore {
     path: PathBuf,
+    shared_path: Option<PathBuf>,
 }
 
 impl BodySpeedTrendStore {
     pub fn open(path: impl AsRef<Path>) -> rusqlite::Result<Self> {
         let store = Self {
             path: path.as_ref().to_path_buf(),
+            shared_path: None,
         };
+        let connection = store.connect()?;
+        Self::create_schema(&connection)?;
+        Ok(store)
+    }
+
+    /// Open the shared multi-client database, migrating the old A partition
+    /// once. Isolated tests continue to use `open` and a plain SQLite file.
+    pub fn open_shared(
+        legacy_path: impl AsRef<Path>,
+        shared_path: impl AsRef<Path>,
+    ) -> rusqlite::Result<Self> {
+        let store = Self {
+            path: legacy_path.as_ref().to_path_buf(),
+            shared_path: Some(shared_path.as_ref().to_path_buf()),
+        };
+        #[cfg(not(test))]
+        migration::migrate_body_speed_to_shared(&store.path, store.shared_path.as_ref().unwrap())?;
         let connection = store.connect()?;
         Self::create_schema(&connection)?;
         Ok(store)
@@ -333,24 +357,47 @@ impl BodySpeedTrendStore {
 
     fn connect(&self) -> rusqlite::Result<Connection> {
         #[cfg(test)]
-        let connection = Connection::open(&self.path)?;
+        let connection = Connection::open(self.shared_path.as_ref().unwrap_or(&self.path))?;
         #[cfg(not(test))]
         let connection = {
-            let identity = self.path.file_name().and_then(|name| name.to_str())
-                .ok_or_else(|| rusqlite::Error::InvalidPath(self.path.clone()))?;
-            let logical = format!("body-speed/{identity}");
-            crate::core::business_store_route::open_store("body-speed", identity, &logical, &[self.path.clone()])
-                .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(error))))?
+            if let Some(shared_path) = &self.shared_path {
+                let (_source_identity, spec) = migration::body_speed_namespace_spec(&self.path)
+                    .map_err(|error| {
+                        rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(
+                            error,
+                        )))
+                    })?;
+                let connection = Connection::open_scoped(
+                    shared_path,
+                    spec.id,
+                    spec.prefix,
+                    body_speed_object_names(),
+                )?;
+                connection
+            } else {
+                let identity = self
+                    .path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .ok_or_else(|| rusqlite::Error::InvalidPath(self.path.clone()))?;
+                let logical = format!("body-speed/{identity}");
+                crate::core::business_store_route::open_store(
+                    "body-speed",
+                    identity,
+                    &logical,
+                    &[self.path.clone()],
+                )
+                .map_err(|error| {
+                    rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(error)))
+                })?
+            }
         };
         connection.busy_timeout(Duration::from_secs(3))?;
         Ok(connection)
     }
 
     fn create_schema(connection: &Connection) -> rusqlite::Result<()> {
-        connection.execute(
-            "CREATE TABLE IF NOT EXISTS speed_trend_meta (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL) WITHOUT ROWID",
-            [],
-        )?;
+        Self::create_schema_tables(connection)?;
         let existing: Option<String> = connection
             .query_row(
                 "SELECT value FROM speed_trend_meta WHERE key = 'schema_version'",
@@ -372,6 +419,18 @@ impl BodySpeedTrendStore {
             "INSERT OR IGNORE INTO speed_trend_meta(key, value) VALUES('body_retention_days', '30')",
             [],
         )?;
+        Ok(())
+    }
+
+    fn create_schema_tables(connection: &Connection) -> rusqlite::Result<()> {
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS speed_trend_meta (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL) WITHOUT ROWID",
+            [],
+        )?;
+        Self::create_body_tables(connection)
+    }
+
+    fn create_body_tables(connection: &Connection) -> rusqlite::Result<()> {
         connection.execute_batch(
             "CREATE TABLE IF NOT EXISTS speed_samples (\
                  id TEXT PRIMARY KEY NOT NULL, ended_at REAL NOT NULL, model TEXT NOT NULL, \

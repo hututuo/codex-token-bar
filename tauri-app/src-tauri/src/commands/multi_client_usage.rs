@@ -1,6 +1,7 @@
 use super::run_blocking_command;
 use crate::core::multi_client_usage::{
-    self, ClaudeLocalQuotaSnapshot, MultiClientUsagePreference, MultiClientUsageSnapshot,
+    self, ClaudeLocalQuotaSnapshot, MultiClientCacheRankingProjection,
+    MultiClientUsagePreference, MultiClientUsageSnapshot,
 };
 use std::{
     sync::{Mutex, OnceLock},
@@ -12,6 +13,16 @@ static LAST_MULTI_CLIENT_SCAN: OnceLock<Mutex<Option<Instant>>> = OnceLock::new(
 #[tauri::command]
 pub(crate) async fn read_multi_client_usage_snapshot() -> Result<MultiClientUsageSnapshot, String> {
     run_blocking_command(multi_client_usage::read_multi_client_usage_snapshot).await
+}
+
+#[tauri::command]
+pub(crate) async fn read_multi_client_cache_rankings(
+    window: tauri::WebviewWindow,
+    client: String,
+    limit: u32,
+) -> Result<MultiClientCacheRankingProjection, String> {
+    super::window_auth::require_window_label(&window, "read_multi_client_cache_rankings")?;
+    run_blocking_command(move || multi_client_usage::read_multi_client_cache_rankings(&client, limit)).await
 }
 
 #[tauri::command]

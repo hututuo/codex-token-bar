@@ -178,6 +178,9 @@ jobs:
           cd tauri-app
           npm ci --registry=https://registry.npmjs.org
           npm run build
+      - name: Check production native configuration
+        shell: bash
+        run: cargo check --locked --manifest-path tauri-app/src-tauri/Cargo.toml
       - name: Full native regression including original pressure case
         shell: bash
         run: |

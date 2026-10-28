@@ -8481,274 +8481,278 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             busyTimeoutMilliseconds: 1_000,
             fileManager: fileManager
         )
-        let stageColumns = try stage.readRows("PRAGMA table_info(events);") { $0.text(1) }
-        let legacyAccounting = staged.parserState.accountingState == nil
-        let transaction = connection
-        if legacyAccounting {
-            try transaction.execute("UPDATE schema_meta SET value='legacy-source-audit-required' WHERE key='accounting_coverage';")
-        }
-        var existing = try indexedSource(path: staged.job.file.path, connection: transaction)
-        if let previous = existing, previous.sessionID.lowercased() != staged.job.sessionID.lowercased() {
-            // A reused path is not a reused owner. Reserve the old source and
-            // its ledger before allocating a new source for the new task.
-            try transaction.execute("UPDATE usage_ledger_sources SET missing=1 WHERE source_id=?",bindings:[.int64(previous.id)])
-            try transaction.execute("UPDATE usage_ledger_bindings SET available=0 WHERE source_id=?",bindings:[.int64(previous.id)])
-            try transaction.execute("UPDATE sources SET path=? WHERE source_id=?",bindings:[.text("retained-source://\(previous.id)/\(UUID().uuidString)"),.int64(previous.id)])
-            existing = nil
-        }
-        let chosenSourceID = existing?.id ?? replacementSourceID
-        if let sourceID = chosenSourceID {
-            let owner = try transaction.readRows("SELECT session_id FROM sources WHERE source_id=?",bindings:[.int64(sourceID)]) { $0.text(0) }.first ?? nil
-            guard owner?.lowercased() == staged.job.sessionID.lowercased() else {
-                throw CodexUsageIndexRepairRequiredError(reason: "移动来源身份不匹配，已保留旧账并停止发布")
-            }
-            try transaction.execute("UPDATE sources SET path=?,last_seen_generation=? WHERE source_id=?",bindings:[.text(staged.job.file.path),.text(generation),.int64(sourceID)])
-        } else {
-            let sourceID = try allocateSourceID(connection: transaction)
-            try transaction.execute("""
-                INSERT INTO sources(source_id,path,session_id,size_bytes,modified_at,content_probe,last_seen_generation)
-                VALUES (?,?,?,?,?,?,?)
-                """,bindings:[.int64(sourceID),.text(staged.job.file.path),.text(staged.job.sessionID),
-                    .int64(try sqliteInt64(staged.committedSignature.size)),.double(staged.committedSignature.modifiedAt),
-                    .text(staged.committedSignature.contentProbe),.text(generation)])
-        }
-            guard let source = try indexedSource(
-                path: staged.job.file.path,
-                connection: transaction
-            ) else {
-                throw SQLiteDatabaseError(
-                    operation: "Resolve staged exact usage source",
-                    code: -1,
-                    message: "Source row was not created",
-                    path: driver.url.path
-                )
-            }
-            let previousRawGeneration = try transaction.readRows("SELECT generation FROM usage_ledger_sources WHERE source_id=?",bindings:[.int64(source.id)]) { $0.text(0) }.first ?? nil
-            let hadConsumption = try transaction.readRows("SELECT EXISTS(SELECT 1 FROM events WHERE source_id=? AND tokens>0)",bindings:[.int64(source.id)]) { $0.int(0) }.first == 1
-            let oldFingerprints = Set(try transaction.readRows("SELECT value FROM source_fingerprints WHERE source_id=?",bindings:[.int64(source.id)]) { $0.data(0) }.compactMap { $0 })
-            let oldChunks = try transaction.readRows("SELECT chunk_index,byte_count,sha256 FROM source_chunks WHERE source_id=? ORDER BY chunk_index",bindings:[.int64(source.id)]) {
-                ($0.int64(0) ?? -1,$0.int64(1) ?? -1,$0.text(2) ?? "")
-            }
-            let newChunks = try stage.readRows("SELECT chunk_index,byte_count,sha256 FROM chunks ORDER BY chunk_index") {
-                ($0.int64(0) ?? -1,$0.int64(1) ?? -1,$0.text(2) ?? "")
-            }
-            // Reuse the full parser's chunk hashes; at most the old partial
-            // tail needs an extra bounded read when a migration also appended.
-            var unchangedContent = !oldChunks.isEmpty && newChunks.count >= oldChunks.count
-            for (position, old) in oldChunks.enumerated() where unchangedContent {
-                guard old.0 == Int64(position), old.1 > 0 else { unchangedContent=false; break }
-                let new = newChunks[position]
-                if old.0 == new.0 && old.1 == new.1 && old.2 == new.2 { continue }
-                guard position == oldChunks.count-1, new.0 == old.0, new.1 > old.1 else { unchangedContent=false; break }
-                let handle = try CodexRolloutReader(forReadingFrom:staged.job.file)
-                defer { try? handle.close() }
-                let offset = oldChunks.prefix(position).reduce(Int64(0)) { $0 + $1.1 }
-                try handle.seek(toOffset:UInt64(offset))
-                let data = try handle.readProbe(upToCount:Int(old.1)) ?? Data()
-                unchangedContent = data.count == Int(old.1) && SHA256.hash(data:data).map { String(format:"%02x",$0) }.joined() == old.2
-            }
-            let rawGeneration = UUID().uuidString
-            try UsageEventLedger.beginGeneration(source:source.id,session:staged.job.sessionID,generation:rawGeneration,on:transaction)
-            let isPaginated = try UsageEventLedger.isPaginatedFile(staged.job.file)
-            try transaction.execute("UPDATE usage_ledger_sources SET format=? WHERE source_id=?",bindings:[.text(isPaginated ? "paginated" : "legacy"),.int64(source.id)])
-            try transaction.execute(
-                "DELETE FROM source_chunks WHERE source_id = ?;",
-                bindings: [.int64(source.id)]
-            )
+        try stage.withConnection { stage in
+            try stage.readTransaction { stage in
+                let stageColumns = try stage.readRows("PRAGMA table_info(events);") { $0.text(1) }
+                let legacyAccounting = staged.parserState.accountingState == nil
+                let transaction = connection
+                if legacyAccounting {
+                    try transaction.execute("UPDATE schema_meta SET value='legacy-source-audit-required' WHERE key='accounting_coverage';")
+                }
+                var existing = try indexedSource(path: staged.job.file.path, connection: transaction)
+                if let previous = existing, previous.sessionID.lowercased() != staged.job.sessionID.lowercased() {
+                    // A reused path is not a reused owner. Reserve the old source and
+                    // its ledger before allocating a new source for the new task.
+                    try transaction.execute("UPDATE usage_ledger_sources SET missing=1 WHERE source_id=?",bindings:[.int64(previous.id)])
+                    try transaction.execute("UPDATE usage_ledger_bindings SET available=0 WHERE source_id=?",bindings:[.int64(previous.id)])
+                    try transaction.execute("UPDATE sources SET path=? WHERE source_id=?",bindings:[.text("retained-source://\(previous.id)/\(UUID().uuidString)"),.int64(previous.id)])
+                    existing = nil
+                }
+                let chosenSourceID = existing?.id ?? replacementSourceID
+                if let sourceID = chosenSourceID {
+                    let owner = try transaction.readRows("SELECT session_id FROM sources WHERE source_id=?",bindings:[.int64(sourceID)]) { $0.text(0) }.first ?? nil
+                    guard owner?.lowercased() == staged.job.sessionID.lowercased() else {
+                        throw CodexUsageIndexRepairRequiredError(reason: "移动来源身份不匹配，已保留旧账并停止发布")
+                    }
+                    try transaction.execute("UPDATE sources SET path=?,last_seen_generation=? WHERE source_id=?",bindings:[.text(staged.job.file.path),.text(generation),.int64(sourceID)])
+                } else {
+                    let sourceID = try allocateSourceID(connection: transaction)
+                    try transaction.execute("""
+                        INSERT INTO sources(source_id,path,session_id,size_bytes,modified_at,content_probe,last_seen_generation)
+                        VALUES (?,?,?,?,?,?,?)
+                        """,bindings:[.int64(sourceID),.text(staged.job.file.path),.text(staged.job.sessionID),
+                            .int64(try sqliteInt64(staged.committedSignature.size)),.double(staged.committedSignature.modifiedAt),
+                            .text(staged.committedSignature.contentProbe),.text(generation)])
+                }
+                    guard let source = try indexedSource(
+                        path: staged.job.file.path,
+                        connection: transaction
+                    ) else {
+                        throw SQLiteDatabaseError(
+                            operation: "Resolve staged exact usage source",
+                            code: -1,
+                            message: "Source row was not created",
+                            path: driver.url.path
+                        )
+                    }
+                    let previousRawGeneration = try transaction.readRows("SELECT generation FROM usage_ledger_sources WHERE source_id=?",bindings:[.int64(source.id)]) { $0.text(0) }.first ?? nil
+                    let hadConsumption = try transaction.readRows("SELECT EXISTS(SELECT 1 FROM events WHERE source_id=? AND tokens>0)",bindings:[.int64(source.id)]) { $0.int(0) }.first == 1
+                    let oldFingerprints = Set(try transaction.readRows("SELECT value FROM source_fingerprints WHERE source_id=?",bindings:[.int64(source.id)]) { $0.data(0) }.compactMap { $0 })
+                    let oldChunks = try transaction.readRows("SELECT chunk_index,byte_count,sha256 FROM source_chunks WHERE source_id=? ORDER BY chunk_index",bindings:[.int64(source.id)]) {
+                        ($0.int64(0) ?? -1,$0.int64(1) ?? -1,$0.text(2) ?? "")
+                    }
+                    let newChunks = try stage.readRows("SELECT chunk_index,byte_count,sha256 FROM chunks ORDER BY chunk_index") {
+                        ($0.int64(0) ?? -1,$0.int64(1) ?? -1,$0.text(2) ?? "")
+                    }
+                    // Reuse the full parser's chunk hashes; at most the old partial
+                    // tail needs an extra bounded read when a migration also appended.
+                    var unchangedContent = !oldChunks.isEmpty && newChunks.count >= oldChunks.count
+                    for (position, old) in oldChunks.enumerated() where unchangedContent {
+                        guard old.0 == Int64(position), old.1 > 0 else { unchangedContent=false; break }
+                        let new = newChunks[position]
+                        if old.0 == new.0 && old.1 == new.1 && old.2 == new.2 { continue }
+                        guard position == oldChunks.count-1, new.0 == old.0, new.1 > old.1 else { unchangedContent=false; break }
+                        let handle = try CodexRolloutReader(forReadingFrom:staged.job.file)
+                        defer { try? handle.close() }
+                        let offset = oldChunks.prefix(position).reduce(Int64(0)) { $0 + $1.1 }
+                        try handle.seek(toOffset:UInt64(offset))
+                        let data = try handle.readProbe(upToCount:Int(old.1)) ?? Data()
+                        unchangedContent = data.count == Int(old.1) && SHA256.hash(data:data).map { String(format:"%02x",$0) }.joined() == old.2
+                    }
+                    let rawGeneration = UUID().uuidString
+                    try UsageEventLedger.beginGeneration(source:source.id,session:staged.job.sessionID,generation:rawGeneration,on:transaction)
+                    let isPaginated = try UsageEventLedger.isPaginatedFile(staged.job.file)
+                    try transaction.execute("UPDATE usage_ledger_sources SET format=? WHERE source_id=?",bindings:[.text(isPaginated ? "paginated" : "legacy"),.int64(source.id)])
+                    try transaction.execute(
+                        "DELETE FROM source_chunks WHERE source_id = ?;",
+                        bindings: [.int64(source.id)]
+                    )
 
-            let fingerprintStatement = try transaction.prepare(
-                "INSERT OR IGNORE INTO source_fingerprints(source_id, value) VALUES (?, ?);"
-            )
-            var importedFingerprintCount = 0
-            try stage.forEachRow(
-                "SELECT typeof(value), value FROM fingerprints ORDER BY value;"
-            ) { row in
-                let value: Data?
-                switch row.text(0) {
-                case "blob":
-                    if let encoded = row.data(1) {
-                        let decoded = try UsageFingerprintCodec.decode(encoded)
-                        value = try UsageFingerprintCodec.encode(decoded)
-                    } else {
-                        value = nil
+                    let fingerprintStatement = try transaction.prepare(
+                        "INSERT OR IGNORE INTO source_fingerprints(source_id, value) VALUES (?, ?);"
+                    )
+                    var importedFingerprintCount = 0
+                    try stage.forEachRow(
+                        "SELECT typeof(value), value FROM fingerprints ORDER BY value;"
+                    ) { row in
+                        let value: Data?
+                        switch row.text(0) {
+                        case "blob":
+                            if let encoded = row.data(1) {
+                                let decoded = try UsageFingerprintCodec.decode(encoded)
+                                value = try UsageFingerprintCodec.encode(decoded)
+                            } else {
+                                value = nil
+                            }
+                        case "text":
+                            if let legacy = row.text(1) {
+                                let decoded = try UsageFingerprintCodec.decodeLegacyText(legacy)
+                                value = try UsageFingerprintCodec.encode(decoded)
+                            } else {
+                                value = nil
+                            }
+                        default:
+                            value = nil
+                        }
+                        guard let value else {
+                            throw SQLiteDatabaseError(
+                                operation: "Import exact usage staging fingerprint",
+                                code: SQLITE_CORRUPT,
+                                message: "Malformed fingerprint row",
+                                path: staged.databaseURL.path
+                            )
+                        }
+                        _ = try fingerprintStatement.execute([
+                            .int64(source.id),
+                            .blob(value)
+                        ])
+                        importedFingerprintCount += 1
                     }
-                case "text":
-                    if let legacy = row.text(1) {
-                        let decoded = try UsageFingerprintCodec.decodeLegacyText(legacy)
-                        value = try UsageFingerprintCodec.encode(decoded)
-                    } else {
-                        value = nil
+                    guard importedFingerprintCount == staged.fingerprintCount else {
+                        throw SQLiteDatabaseError(
+                            operation: "Import exact usage staging fingerprints",
+                            code: SQLITE_CORRUPT,
+                            message: "Fingerprint count changed before import",
+                            path: staged.databaseURL.path
+                        )
                     }
-                default:
-                    value = nil
-                }
-                guard let value else {
-                    throw SQLiteDatabaseError(
-                        operation: "Import exact usage staging fingerprint",
-                        code: SQLITE_CORRUPT,
-                        message: "Malformed fingerprint row",
-                        path: staged.databaseURL.path
+                    var importedEventCount = 0
+                    try stage.forEachRow(
+                        """
+                        SELECT
+                            source_offset,
+                            timestamp,
+                            tokens,
+                            input_tokens,
+                            cached_input_tokens,
+                            output_tokens,
+                            reasoning_output_tokens,
+                            model,
+                            user_prompt_offset,
+                            assistant_start_offset,
+                            \(stageColumns.contains("accounting_kind") ? "accounting_kind" : "0"),
+                            \(stageColumns.contains("reported_total_tokens") ? "reported_total_tokens" : "NULL"),
+                            \(stageColumns.contains("usage_fingerprint") ? "usage_fingerprint" : "NULL")
+                        FROM events
+                        ORDER BY source_offset;
+                        """
+                    ) { row in
+                        guard let sourceOffset = row.int64(0),
+                              let timestamp = row.double(1),
+                              let tokens = row.int(2),
+                              let inputTokens = row.int(3),
+                              let cachedInputTokens = row.int(4),
+                              let outputTokens = row.int(5),
+                              let reasoningOutputTokens = row.int(6) else {
+                            throw SQLiteDatabaseError(
+                                operation: "Import exact usage staging event",
+                                code: SQLITE_CORRUPT,
+                                message: "Malformed event row",
+                                path: staged.databaseURL.path
+                            )
+                        }
+                        let components = UsageAccountingComponents(input: inputTokens, cached: cachedInputTokens, output: outputTokens, reasoning: reasoningOutputTokens)
+                        let legacyCounted = components.isValid && components.total > 0
+                        let fingerprint = row.data(12)
+                        let unseenFullSnapshot = try fingerprint.map { try UsageEventLedger.isCompleteSnapshot($0) && !oldFingerprints.contains($0) } ?? false
+                        // An unchanged source supplies an exact raw-location proof.
+                        // Recognized paginated rewrites preserve snapshot payloads, so
+                        // unseen complete snapshots are new observations. Partial or
+                        // otherwise unproved changes remain separate pending evidence.
+                        let admission: UsageEventLedger.Admission = !hadConsumption || unchangedContent || (isPaginated && unseenFullSnapshot)
+                            ? .newConsumption : .reconcile
+                        _ = try UsageEventLedger.admit(
+                            .init(rawOffset:sourceOffset,timestamp:timestamp,
+                                  tokens:Int64(legacyAccounting ? (legacyCounted ? components.total : 0) : tokens),
+                                  input:Int64(inputTokens),cached:Int64(cachedInputTokens),output:Int64(outputTokens),reasoning:Int64(reasoningOutputTokens),
+                                  model:row.text(7),promptOffset:row.int64(8),assistantOffset:row.int64(9),
+                                  accountingKind:Int64(legacyAccounting ? (legacyCounted ? 0 : 3) : (row.int(10) ?? 0)),
+                                  reported:row.int64(11),legacy:legacyAccounting ? Int64(tokens) : nil,fingerprint:fingerprint),
+                            source:source.id,generation:rawGeneration,admission:admission,
+                            unchangedFromGeneration:unchangedContent ? previousRawGeneration : nil,correctionRevision:Self.stagingParserRevision,on:transaction)
+                        importedEventCount += 1
+                    }
+                    guard importedEventCount == staged.eventCount else {
+                        throw SQLiteDatabaseError(
+                            operation: "Import exact usage staging events",
+                            code: SQLITE_CORRUPT,
+                            message: "Event count changed before import",
+                            path: staged.databaseURL.path
+                        )
+                    }
+                    let chunkStatement = try transaction.prepare(
+                        """
+                        INSERT INTO source_chunks(source_id, chunk_index, byte_count, sha256)
+                        VALUES (?, ?, ?, ?);
+                        """
                     )
-                }
-                _ = try fingerprintStatement.execute([
-                    .int64(source.id),
-                    .blob(value)
-                ])
-                importedFingerprintCount += 1
-            }
-            guard importedFingerprintCount == staged.fingerprintCount else {
-                throw SQLiteDatabaseError(
-                    operation: "Import exact usage staging fingerprints",
-                    code: SQLITE_CORRUPT,
-                    message: "Fingerprint count changed before import",
-                    path: staged.databaseURL.path
-                )
-            }
-            var importedEventCount = 0
-            try stage.forEachRow(
-                """
-                SELECT
-                    source_offset,
-                    timestamp,
-                    tokens,
-                    input_tokens,
-                    cached_input_tokens,
-                    output_tokens,
-                    reasoning_output_tokens,
-                    model,
-                    user_prompt_offset,
-                    assistant_start_offset,
-                    \(stageColumns.contains("accounting_kind") ? "accounting_kind" : "0"),
-                    \(stageColumns.contains("reported_total_tokens") ? "reported_total_tokens" : "NULL"),
-                    \(stageColumns.contains("usage_fingerprint") ? "usage_fingerprint" : "NULL")
-                FROM events
-                ORDER BY source_offset;
-                """
-            ) { row in
-                guard let sourceOffset = row.int64(0),
-                      let timestamp = row.double(1),
-                      let tokens = row.int(2),
-                      let inputTokens = row.int(3),
-                      let cachedInputTokens = row.int(4),
-                      let outputTokens = row.int(5),
-                      let reasoningOutputTokens = row.int(6) else {
-                    throw SQLiteDatabaseError(
-                        operation: "Import exact usage staging event",
-                        code: SQLITE_CORRUPT,
-                        message: "Malformed event row",
-                        path: staged.databaseURL.path
+                    var importedChunkCount = 0
+                    try stage.forEachRow(
+                        "SELECT chunk_index, byte_count, sha256 FROM chunks ORDER BY chunk_index;"
+                    ) { row in
+                        guard let chunkIndex = row.int64(0),
+                              let byteCount = row.int64(1),
+                              let sha256 = row.text(2) else {
+                            throw SQLiteDatabaseError(
+                                operation: "Import exact usage staging chunk",
+                                code: SQLITE_CORRUPT,
+                                message: "Malformed chunk row",
+                                path: staged.databaseURL.path
+                            )
+                        }
+                        _ = try chunkStatement.execute([
+                            .int64(source.id),
+                            .int64(chunkIndex),
+                            .int64(byteCount),
+                            .text(sha256)
+                        ])
+                        importedChunkCount += 1
+                    }
+                    guard importedChunkCount == staged.chunkCount else {
+                        throw SQLiteDatabaseError(
+                            operation: "Import exact usage staging chunks",
+                            code: SQLITE_CORRUPT,
+                            message: "Chunk count changed before import",
+                            path: staged.databaseURL.path
+                        )
+                    }
+                    let parseResult = CodexUsageAnalyzer.IndexedSessionParseResult(
+                        eventCount: staged.eventCount,
+                        lastOffset: staged.committedSignature.size,
+                        resumeOffset: staged.resumeOffset,
+                        endedWithNewline: staged.resumeOffset == staged.committedSignature.size,
+                        contentHash: "",
+                        state: staged.parserState,
+                        chunkHashes: [],
+                        validationChunkHash: nil
                     )
-                }
-                let components = UsageAccountingComponents(input: inputTokens, cached: cachedInputTokens, output: outputTokens, reasoning: reasoningOutputTokens)
-                let legacyCounted = components.isValid && components.total > 0
-                let fingerprint = row.data(12)
-                let unseenFullSnapshot = try fingerprint.map { try UsageEventLedger.isCompleteSnapshot($0) && !oldFingerprints.contains($0) } ?? false
-                // An unchanged source supplies an exact raw-location proof.
-                // Recognized paginated rewrites preserve snapshot payloads, so
-                // unseen complete snapshots are new observations. Partial or
-                // otherwise unproved changes remain separate pending evidence.
-                let admission: UsageEventLedger.Admission = !hadConsumption || unchangedContent || (isPaginated && unseenFullSnapshot)
-                    ? .newConsumption : .reconcile
-                _ = try UsageEventLedger.admit(
-                    .init(rawOffset:sourceOffset,timestamp:timestamp,
-                          tokens:Int64(legacyAccounting ? (legacyCounted ? components.total : 0) : tokens),
-                          input:Int64(inputTokens),cached:Int64(cachedInputTokens),output:Int64(outputTokens),reasoning:Int64(reasoningOutputTokens),
-                          model:row.text(7),promptOffset:row.int64(8),assistantOffset:row.int64(9),
-                          accountingKind:Int64(legacyAccounting ? (legacyCounted ? 0 : 3) : (row.int(10) ?? 0)),
-                          reported:row.int64(11),legacy:legacyAccounting ? Int64(tokens) : nil,fingerprint:fingerprint),
-                    source:source.id,generation:rawGeneration,admission:admission,
-                    unchangedFromGeneration:unchangedContent ? previousRawGeneration : nil,correctionRevision:Self.stagingParserRevision,on:transaction)
-                importedEventCount += 1
-            }
-            guard importedEventCount == staged.eventCount else {
-                throw SQLiteDatabaseError(
-                    operation: "Import exact usage staging events",
-                    code: SQLITE_CORRUPT,
-                    message: "Event count changed before import",
-                    path: staged.databaseURL.path
-                )
-            }
-            let chunkStatement = try transaction.prepare(
-                """
-                INSERT INTO source_chunks(source_id, chunk_index, byte_count, sha256)
-                VALUES (?, ?, ?, ?);
-                """
-            )
-            var importedChunkCount = 0
-            try stage.forEachRow(
-                "SELECT chunk_index, byte_count, sha256 FROM chunks ORDER BY chunk_index;"
-            ) { row in
-                guard let chunkIndex = row.int64(0),
-                      let byteCount = row.int64(1),
-                      let sha256 = row.text(2) else {
-                    throw SQLiteDatabaseError(
-                        operation: "Import exact usage staging chunk",
-                        code: SQLITE_CORRUPT,
-                        message: "Malformed chunk row",
-                        path: staged.databaseURL.path
+                    try saveSourceCheckpoint(
+                        sourceID: source.id,
+                        sessionID: staged.job.sessionID,
+                        signature: staged.committedSignature,
+                        generation: generation,
+                        parseResult: parseResult,
+                        auditChunkIndex: 0,
+                        connection: transaction
                     )
-                }
-                _ = try chunkStatement.execute([
-                    .int64(source.id),
-                    .int64(chunkIndex),
-                    .int64(byteCount),
-                    .text(sha256)
-                ])
-                importedChunkCount += 1
+                    let attributionState = try currentAttributionState(connection: transaction)
+                    try publishAttributionLedger(
+                        lineage: attributionLineage(
+                            sessionID: staged.job.sessionID,
+                            sourceID: source.id
+                        ),
+                        sourceID: source.id,
+                        provenanceEpoch: attributionState.provenanceEpoch,
+                        affectedBuckets: nil,
+                        replacing: !preserveExistingAttributionLedger,
+                        preservingExistingMaximum: preserveExistingAttributionLedger,
+                        connection: transaction
+                    )
+                    try refreshDashboardSourceAggregates(
+                        sourceID: source.id,
+                        sessionID: staged.job.sessionID,
+                        affectedBuckets: nil,
+                        connection: transaction
+                    )
+                    try markEventEnrichmentComplete(
+                        sourceID: source.id,
+                        canonicalPath: staged.job.file.path,
+                        generation: generation,
+                        signature: staged.committedSignature,
+                        connection: transaction
+                    )
             }
-            guard importedChunkCount == staged.chunkCount else {
-                throw SQLiteDatabaseError(
-                    operation: "Import exact usage staging chunks",
-                    code: SQLITE_CORRUPT,
-                    message: "Chunk count changed before import",
-                    path: staged.databaseURL.path
-                )
-            }
-            let parseResult = CodexUsageAnalyzer.IndexedSessionParseResult(
-                eventCount: staged.eventCount,
-                lastOffset: staged.committedSignature.size,
-                resumeOffset: staged.resumeOffset,
-                endedWithNewline: staged.resumeOffset == staged.committedSignature.size,
-                contentHash: "",
-                state: staged.parserState,
-                chunkHashes: [],
-                validationChunkHash: nil
-            )
-            try saveSourceCheckpoint(
-                sourceID: source.id,
-                sessionID: staged.job.sessionID,
-                signature: staged.committedSignature,
-                generation: generation,
-                parseResult: parseResult,
-                auditChunkIndex: 0,
-                connection: transaction
-            )
-            let attributionState = try currentAttributionState(connection: transaction)
-            try publishAttributionLedger(
-                lineage: attributionLineage(
-                    sessionID: staged.job.sessionID,
-                    sourceID: source.id
-                ),
-                sourceID: source.id,
-                provenanceEpoch: attributionState.provenanceEpoch,
-                affectedBuckets: nil,
-                replacing: !preserveExistingAttributionLedger,
-                preservingExistingMaximum: preserveExistingAttributionLedger,
-                connection: transaction
-            )
-            try refreshDashboardSourceAggregates(
-                sourceID: source.id,
-                sessionID: staged.job.sessionID,
-                affectedBuckets: nil,
-                connection: transaction
-            )
-            try markEventEnrichmentComplete(
-                sourceID: source.id,
-                canonicalPath: staged.job.file.path,
-                generation: generation,
-                signature: staged.committedSignature,
-                connection: transaction
-            )
+        }
     }
 
     /// SQLite may reuse the highest deleted INTEGER PRIMARY KEY. Attribution

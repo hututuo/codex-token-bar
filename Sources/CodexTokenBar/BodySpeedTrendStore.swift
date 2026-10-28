@@ -37,17 +37,18 @@ final class BodySpeedTrendStore {
     private static let aggregateRetentionSeconds = 90.0 * 86_400.0
     private static let maxBackfillSeconds = 30.0 * 86_400.0
 
-    private let driver: SQLiteDatabaseDriver
+    private let database: BodySpeedDatabase
     private let lock = NSLock()
 
-    init(url: URL) throws {
-        driver = SQLiteDatabaseDriver(
-            url: url,
-            busyTimeoutMilliseconds: 3_000,
-            enableWAL: false
-        )
-        try driver.transaction { connection in
+    init(url: URL, sharedURL: URL? = nil) throws {
+        let database = try BodySpeedDatabase(logicalURL: url, sharedURL: sharedURL)
+        self.database = database
+        try database.transaction { connection in
             try Self.createSchema(connection)
+        }
+        if sharedURL != nil {
+            try database.validateNamespace(requireAll: true)
+            try BodySpeedMigration.migrate(logicalURL: url, database: database)
         }
     }
 
@@ -64,7 +65,7 @@ final class BodySpeedTrendStore {
         let retention = Self.normalizedRetentionDays(retentionDays)
         lock.lock()
         defer { lock.unlock() }
-        return try driver.transaction { connection in
+        return try database.transaction { connection in
             try Self.ingest(samples, now: now, retentionDays: retention, connection: connection)
         }
     }
@@ -76,7 +77,7 @@ final class BodySpeedTrendStore {
         let cutoff = now - Double(retention) * 86_400
         lock.lock()
         defer { lock.unlock() }
-        return try driver.readRows(
+        return try database.readRows(
             """
             SELECT payload_json
             FROM speed_samples
@@ -95,7 +96,7 @@ final class BodySpeedTrendStore {
     func retentionDays() throws -> Int {
         lock.lock()
         defer { lock.unlock() }
-        let values = try driver.readRows(
+        let values = try database.readRows(
             "SELECT value FROM speed_trend_meta WHERE key = 'body_retention_days'"
         ) { $0.text(0) }
         guard let value = values.compactMap({ $0 }).first,
@@ -116,7 +117,7 @@ final class BodySpeedTrendStore {
         let maxPoints = Int64(days * 86_400) / resolution
         lock.lock()
         defer { lock.unlock() }
-        return try driver.readRows(
+        return try database.readRows(
             """
             WITH grouped AS (
                 SELECT (bucket_start / ?) * ? AS bucket_start,
@@ -173,7 +174,7 @@ final class BodySpeedTrendStore {
         let completedThrough = Int64(floor(now / 300)) * 300
         lock.lock()
         defer { lock.unlock() }
-        let raw: [BodySpeedTrendPoint] = try driver.readRows(
+        let raw: [BodySpeedTrendPoint] = try database.readRows(
             "SELECT bucket_start, model, output_tokens, duration_seconds, sample_count FROM speed_5m " +
             "WHERE bucket_start >= ? AND bucket_start < ? ORDER BY bucket_start, model",
             bindings: [.int64(first), .int64(completedThrough)]
@@ -225,7 +226,7 @@ final class BodySpeedTrendStore {
         }.sorted { $0.bucketStart == $1.bucketStart ? $0.model < $1.model : $0.bucketStart < $1.bucketStart }
     }
 
-    private static func createSchema(_ connection: SQLiteDatabaseConnection) throws {
+    private static func createSchema(_ connection: BodySpeedDatabaseConnection) throws {
         try connection.execute(
             "CREATE TABLE IF NOT EXISTS speed_trend_meta (key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL) WITHOUT ROWID"
         )
@@ -280,13 +281,30 @@ final class BodySpeedTrendStore {
             ) WITHOUT ROWID
             """
         )
+        if connection.isShared {
+            try connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS speed_migration_receipts (
+                    source_identity TEXT PRIMARY KEY NOT NULL,
+                    source_digest TEXT NOT NULL,
+                    rows_digest TEXT NOT NULL,
+                    meta_count INTEGER NOT NULL,
+                    sample_count INTEGER NOT NULL,
+                    id_count INTEGER NOT NULL,
+                    aggregate_count INTEGER NOT NULL,
+                    backup_path TEXT NOT NULL,
+                    completed_at REAL NOT NULL
+                ) WITHOUT ROWID
+                """
+            )
+        }
     }
 
     private static func ingest(
         _ samples: [ObservedSpeedSample],
         now: Double,
         retentionDays: Int,
-        connection: SQLiteDatabaseConnection
+        connection: BodySpeedDatabaseConnection
     ) throws -> Int {
         let rawCutoff = now - Double(retentionDays) * 86_400
         let idCutoff = now - dedupRetentionSeconds

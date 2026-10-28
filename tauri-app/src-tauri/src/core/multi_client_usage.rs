@@ -27,6 +27,9 @@ const MAX_SOURCE_FILE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_OPENCODE_ROWS: usize = 500;
 const MAX_OPENCODE_ROW_BYTES: usize = 1024 * 1024;
 const MAX_COUNTER: u64 = 1_000_000_000_000;
+const CACHE_RANKING_MIN_INPUT_TOKENS: i64 = 1_000;
+const CACHE_RANKING_LOW_HIT_MIN_INPUT_TOKENS: i64 = 20_000;
+const CACHE_RANKING_LOW_HIT_RATE: f64 = 0.3;
 const DATABASE_BUSY_TIMEOUT: Duration = Duration::from_secs(3);
 const CLAUDE_LOCAL_QUOTA_PROBE_INTERVAL: Duration = Duration::from_secs(60);
 type EventKey = (String, String, String);
@@ -307,6 +310,65 @@ pub struct MultiClientUsageTrendBucket {
     pub requests: u64,
 }
 
+/// One bounded numeric request row from the existing multi-client usage ledger.
+/// Timestamps are Unix seconds so the same values work in native and web views.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MultiClientCacheRankingRequest {
+    pub client: String,
+    #[serde(rename = "eventID")]
+    pub event_id: String,
+    #[serde(rename = "sessionID")]
+    pub session_id: String,
+    pub model: String,
+    pub timestamp: f64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: Option<u64>,
+    pub cache_write_tokens: Option<u64>,
+    pub cached_input_tokens: Option<u64>,
+    pub cache_hit_rate: Option<f64>,
+    pub uncached_input_tokens: Option<u64>,
+    pub is_rankable: bool,
+    pub is_low_hit: bool,
+    pub is_zero_hit: bool,
+}
+
+/// Weighted session totals. Cache totals and rate are null if any request is missing that field.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MultiClientCacheRankingSession {
+    pub client: String,
+    #[serde(rename = "sessionID")]
+    pub session_id: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: Option<u64>,
+    pub cache_write_tokens: Option<u64>,
+    pub cached_input_tokens: Option<u64>,
+    pub cache_hit_rate: Option<f64>,
+    pub requests: u64,
+    pub first_seen: f64,
+    pub last_seen: f64,
+    pub unknown_cache_read_requests: u64,
+    pub unknown_cache_write_requests: u64,
+    pub low_hit_requests: u64,
+    pub zero_hit_requests: u64,
+    #[serde(rename = "modelIDs")]
+    pub model_ids: Vec<String>,
+    pub is_rankable: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MultiClientCacheRankingProjection {
+    pub requests: Vec<MultiClientCacheRankingRequest>,
+    pub sessions: Vec<MultiClientCacheRankingSession>,
+    pub matching_request_count: u64,
+    pub request_limit: u32,
+    pub has_more_requests: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClaudeLocalQuotaWindow {
@@ -477,6 +539,215 @@ pub fn read_multi_client_usage_snapshot() -> Result<MultiClientUsageSnapshot, St
     read_multi_client_usage_snapshot_at(&settings_path, &database_path)
 }
 
+/// Reads one client's bounded cache-ranking rows and complete session aggregates from the
+/// existing B ledger. This path is strictly read-only: it never scans logs or upgrades schema.
+pub fn read_multi_client_cache_rankings(
+    client: &str,
+    limit: u32,
+) -> Result<MultiClientCacheRankingProjection, String> {
+    if !CLIENTS.contains(&client) {
+        return Err("不支持的多客户端缓存排行来源".to_string());
+    }
+    let database_path = app_paths::multi_client_usage_database_path()
+        .ok_or_else(|| "无法定位多客户端用量数据库目录".to_string())?;
+    read_multi_client_cache_rankings_at(&database_path, client, limit)
+}
+
+fn read_multi_client_cache_rankings_at(
+    database_path: &Path,
+    client: &str,
+    requested_limit: u32,
+) -> Result<MultiClientCacheRankingProjection, String> {
+    let request_limit = requested_limit.clamp(1, 5_000);
+    let empty = || MultiClientCacheRankingProjection {
+        requests: Vec::new(),
+        sessions: Vec::new(),
+        matching_request_count: 0,
+        request_limit,
+        has_more_requests: false,
+    };
+    if !database_path.exists() {
+        return Ok(empty());
+    }
+    let mut connection = open_read_only(database_path).map_err(|error| error.to_string())?;
+    let version = read_schema_version(&connection).map_err(|error| error.to_string())?;
+    if version > SCHEMA_VERSION {
+        return Err(format!(
+            "多客户端用量数据库版本 {version} 高于此程序支持的版本 {SCHEMA_VERSION}"
+        ));
+    }
+    if version == 0 {
+        return Ok(empty());
+    }
+    let transaction = connection
+        .transaction()
+        .map_err(|error| error.to_string())?;
+    let matching_request_count: i64 = transaction
+        .query_row(
+            "SELECT COUNT(*) FROM client_usage_events WHERE client=?1 AND input_tokens>=?2",
+            params![client, CACHE_RANKING_MIN_INPUT_TOKENS],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+
+    let request_sql = r#"
+        SELECT event_id,session_id,model,timestamp,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens
+        FROM client_usage_events
+        WHERE client=?1 AND input_tokens>=?2
+        ORDER BY CASE WHEN cache_read_tokens IS NULL OR input_tokens<=0 THEN 1 ELSE 0 END ASC,
+                 CASE WHEN cache_read_tokens IS NOT NULL AND input_tokens>0
+                      THEN CAST(MIN(MAX(cache_read_tokens,0),input_tokens) AS REAL)/input_tokens ELSE 2 END ASC,
+                 CASE WHEN cache_read_tokens IS NOT NULL
+                      THEN MAX(input_tokens-MIN(MAX(cache_read_tokens,0),input_tokens),0) ELSE 0 END DESC,
+                 timestamp DESC,event_id COLLATE BINARY
+        LIMIT ?3
+    "#;
+    let requests = transaction
+        .prepare(request_sql)
+        .map_err(|error| error.to_string())?
+        .query_map(
+            params![
+                client,
+                CACHE_RANKING_MIN_INPUT_TOKENS,
+                i64::from(request_limit)
+            ],
+            |row| {
+                let input_tokens: i64 = row.get(4)?;
+                let raw_cache_read: Option<i64> = row.get(6)?;
+                let cache_read_tokens = raw_cache_read.map(|value| {
+                    value.max(0).min(input_tokens.max(0)) as u64
+                });
+                let cache_hit_rate = cache_read_tokens.and_then(|cached| {
+                    (input_tokens > 0).then(|| cached as f64 / input_tokens as f64)
+                });
+                let input = input_tokens.max(0) as u64;
+                let is_zero_hit = input > 0 && cache_read_tokens == Some(0);
+                let is_low_hit = input_tokens >= CACHE_RANKING_LOW_HIT_MIN_INPUT_TOKENS
+                    && cache_hit_rate.is_some_and(|rate| rate < CACHE_RANKING_LOW_HIT_RATE);
+                Ok(MultiClientCacheRankingRequest {
+                    client: client.to_string(),
+                    event_id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    model: row.get(2)?,
+                    timestamp: row.get(3)?,
+                    input_tokens: input,
+                    output_tokens: row.get::<_, i64>(5)?.max(0) as u64,
+                    cache_read_tokens,
+                    cache_write_tokens: row
+                        .get::<_, Option<i64>>(7)?
+                        .map(|value| value.max(0) as u64),
+                    cached_input_tokens: cache_read_tokens,
+                    cache_hit_rate,
+                    uncached_input_tokens: cache_read_tokens.map(|cached| input.saturating_sub(cached)),
+                    is_rankable: input_tokens >= CACHE_RANKING_MIN_INPUT_TOKENS
+                        && cache_hit_rate.is_some(),
+                    is_low_hit,
+                    is_zero_hit,
+                })
+            },
+        )
+        .map_err(|error| error.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| error.to_string())?;
+
+    let session_sql = r#"
+        SELECT session_id,SUM(input_tokens),SUM(output_tokens),
+               SUM(CASE WHEN cache_read_tokens IS NOT NULL THEN MIN(MAX(cache_read_tokens,0),input_tokens) END),
+               SUM(cache_write_tokens),COUNT(*),MIN(timestamp),MAX(timestamp),
+               SUM(cache_read_tokens IS NULL),SUM(cache_write_tokens IS NULL),
+               SUM(CASE WHEN input_tokens>=?2 AND cache_read_tokens IS NOT NULL
+                        AND CAST(MIN(MAX(cache_read_tokens,0),input_tokens) AS REAL)/NULLIF(input_tokens,0)<?3 THEN 1 ELSE 0 END),
+               SUM(CASE WHEN input_tokens>0 AND cache_read_tokens=0 THEN 1 ELSE 0 END)
+        FROM client_usage_events WHERE client=?1
+        GROUP BY session_id HAVING SUM(input_tokens)>=?4
+        ORDER BY MAX(timestamp) DESC,session_id COLLATE BINARY
+    "#;
+    let mut sessions = transaction
+        .prepare(session_sql)
+        .map_err(|error| error.to_string())?
+        .query_map(
+            params![
+                client,
+                CACHE_RANKING_LOW_HIT_MIN_INPUT_TOKENS,
+                CACHE_RANKING_LOW_HIT_RATE,
+                CACHE_RANKING_MIN_INPUT_TOKENS
+            ],
+            |row| {
+                let input_tokens: i64 = row.get(1)?;
+                let unknown_read: i64 = row.get(8)?;
+                let unknown_write: i64 = row.get(9)?;
+                let total_input = input_tokens.max(0) as u64;
+                let cache_read_tokens = if unknown_read == 0 {
+                    row.get::<_, Option<i64>>(3)?
+                        .map(|value| value.max(0) as u64)
+                } else {
+                    None
+                };
+                let cache_write_tokens = if unknown_write == 0 {
+                    row.get::<_, Option<i64>>(4)?
+                        .map(|value| value.max(0) as u64)
+                } else {
+                    None
+                };
+                let cache_hit_rate = cache_read_tokens.and_then(|cached| {
+                    (total_input > 0).then(|| cached as f64 / total_input as f64)
+                });
+                Ok(MultiClientCacheRankingSession {
+                    client: client.to_string(),
+                    session_id: row.get(0)?,
+                    input_tokens: total_input,
+                    output_tokens: row.get::<_, i64>(2)?.max(0) as u64,
+                    cache_read_tokens,
+                    cache_write_tokens,
+                    cached_input_tokens: cache_read_tokens,
+                    cache_hit_rate,
+                    requests: row.get::<_, i64>(5)?.max(0) as u64,
+                    first_seen: row.get(6)?,
+                    last_seen: row.get(7)?,
+                    unknown_cache_read_requests: unknown_read.max(0) as u64,
+                    unknown_cache_write_requests: unknown_write.max(0) as u64,
+                    low_hit_requests: row.get::<_, i64>(10)?.max(0) as u64,
+                    zero_hit_requests: row.get::<_, i64>(11)?.max(0) as u64,
+                    model_ids: Vec::new(),
+                    is_rankable: total_input >= CACHE_RANKING_MIN_INPUT_TOKENS as u64
+                        && cache_hit_rate.is_some(),
+                })
+            },
+        )
+        .map_err(|error| error.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| error.to_string())?;
+    let mut models_by_session = BTreeMap::<String, Vec<String>>::new();
+    let mut model_statement = transaction
+        .prepare(
+            "SELECT session_id,model FROM client_usage_events WHERE client=?1 GROUP BY session_id,model ORDER BY session_id COLLATE BINARY,model COLLATE BINARY",
+        )
+        .map_err(|error| error.to_string())?;
+    let model_rows = model_statement
+        .query_map(params![client], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| error.to_string())?;
+    for (session_id, model) in model_rows {
+        models_by_session.entry(session_id).or_default().push(model);
+    }
+    for session in &mut sessions {
+        session.model_ids = models_by_session.remove(&session.session_id).unwrap_or_default();
+    }
+    transaction.commit().map_err(|error| error.to_string())?;
+    let matching_request_count = matching_request_count.max(0) as u64;
+    let has_more_requests = (requests.len() as u64) < matching_request_count;
+    Ok(MultiClientCacheRankingProjection {
+        requests,
+        sessions,
+        matching_request_count,
+        request_limit,
+        has_more_requests,
+    })
+}
+
 pub fn save_multi_client_usage_preferences(
     preferences: Vec<MultiClientUsagePreference>,
 ) -> Result<Vec<MultiClientUsagePreference>, String> {
@@ -503,6 +774,50 @@ pub(crate) fn open_activity_module_connection() -> Result<Connection,String> {
     ensure_schema(&db,&path).map_err(|e|e.to_string())?;
     super::activity_speed_store::create_schema(&db).map_err(|e|e.to_string())?;
     Ok(db)
+}
+
+/// Initialize or validate the shared usage schema at an explicit path. The
+/// caller must not substitute the default app path when working with an
+/// alternate support root (for example, a preview database).
+pub(crate) fn initialize_usage_database_at(path: &Path) -> Result<(), String> {
+    let _guard = usage_gate();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let connection = Connection::open(path).map_err(|error| error.to_string())?;
+    connection
+        .busy_timeout(DATABASE_BUSY_TIMEOUT)
+        .map_err(|error| error.to_string())?;
+    let version = read_schema_version(&connection).map_err(|error| error.to_string())?;
+    if version > SCHEMA_VERSION {
+        return Err(format!(
+            "多客户端用量数据库版本 {version} 高于此程序支持的版本 {SCHEMA_VERSION}"
+        ));
+    }
+    if version == SCHEMA_VERSION {
+        if !has_expected_usage_tables(&connection).map_err(|error| error.to_string())? {
+            return Err("多客户端用量数据库结构与版本不匹配".to_owned());
+        }
+    } else {
+        ensure_schema(&connection, path).map_err(|error| error.to_string())?;
+        if !has_expected_usage_tables(&connection).map_err(|error| error.to_string())? {
+            return Err("多客户端用量数据库初始化后结构无效".to_owned());
+        }
+    }
+    let journal_mode: String = connection
+        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+        .map_err(|error| error.to_string())?;
+    if !journal_mode.eq_ignore_ascii_case("wal") {
+        let configured: String = connection
+            .query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))
+            .map_err(|error| error.to_string())?;
+        if !configured.eq_ignore_ascii_case("wal") {
+            return Err(format!(
+                "无法启用多客户端用量数据库 WAL 模式：{configured}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub fn refresh_multi_client_usage() -> Result<MultiClientUsageSnapshot, String> {
@@ -4583,6 +4898,131 @@ mod tests {
                 params![client, event_id, timestamp, input, output, cache_read, cache_write, reasoning],
             )
             .unwrap();
+    }
+
+    #[test]
+    fn cache_rankings_are_read_only_weighted_and_keep_unknown_cache_fields_null() {
+        let temporary = TempDir::new("cache-rankings");
+        let database = temporary.path().join("multi-client-usage.sqlite");
+        let connection = open_database(&database).unwrap();
+        ensure_schema(&connection, &database).unwrap();
+        let rows = [
+            ("zero", "weighted", "claude-opus-5", 10.0, 30_000, Some(0), Some(2_000)),
+            ("low", "weighted", "claude-sonnet-5", 20.0, 100_000, Some(20_000), Some(10_000)),
+            ("high", "weighted", "claude-opus-5", 30.0, 100_000, Some(80_000), Some(0)),
+            ("unknown", "unknown-cache", "claude-haiku-5", 70.0, 150_000, None, None),
+            ("known-zero", "unknown-cache", "claude-sonnet-5", 50.0, 30_000, Some(0), Some(0)),
+            ("low-boundary", "boundary", "claude-opus-5", 40.0, 20_000, Some(5_999), Some(0)),
+            ("not-low-boundary", "boundary", "claude-opus-5", 60.0, 20_000, Some(6_000), Some(0)),
+            ("under-minimum", "small", "claude-opus-5", 80.0, 999, Some(0), Some(0)),
+        ];
+        for (event_id, session_id, model, timestamp, input, cache_read, cache_write) in rows {
+            connection
+                .execute(
+                    "INSERT INTO client_usage_events(client,event_id,session_id,model,timestamp,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens,payload) VALUES('claudeCode',?1,?2,?3,?4,?5,10,?6,?7,0,'{}')",
+                    params![event_id, session_id, model, timestamp, input, cache_read, cache_write],
+                )
+                .unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO client_usage_events(client,event_id,session_id,model,timestamp,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens,payload) VALUES('gemini','other-client','other','gemini-3',90,300000,10,0,0,0,'{}')",
+                [],
+            )
+            .unwrap();
+        let before_revision_count: i64 = connection
+            .query_row("SELECT count(*) FROM client_usage_revisions", [], |row| row.get(0))
+            .unwrap();
+        let before_version = read_schema_version(&connection).unwrap();
+        drop(connection);
+
+        let projection = read_multi_client_cache_rankings_at(&database, "claudeCode", 10).unwrap();
+        assert_eq!(
+            projection
+                .requests
+                .iter()
+                .map(|row| row.event_id.as_str())
+                .collect::<Vec<_>>(),
+            ["known-zero", "zero", "low", "low-boundary", "not-low-boundary", "high", "unknown"]
+        );
+        assert_eq!(projection.matching_request_count, 7);
+        assert_eq!(projection.request_limit, 10);
+        assert!(!projection.has_more_requests);
+        assert!(projection.sessions.iter().all(|session| session.session_id != "small"));
+        let wire = serde_json::to_value(&projection).unwrap();
+        assert_eq!(wire["requests"][0]["eventID"], "known-zero");
+        assert_eq!(wire["requests"][0]["sessionID"], "unknown-cache");
+        assert_eq!(wire["sessions"][0]["sessionID"], "unknown-cache");
+        assert!(wire["sessions"][0]["modelIDs"].is_array());
+        assert!(projection.requests[0].is_zero_hit);
+        assert!(projection.requests[0].is_low_hit);
+        assert!(projection.requests[1].is_zero_hit);
+        assert!(projection.requests[1].is_low_hit);
+        assert!(projection.requests[2].is_low_hit);
+        assert!(projection.requests[3].is_low_hit);
+        assert!(!projection.requests[4].is_low_hit, "exactly 30 percent is not below the threshold");
+
+        let unknown = projection
+            .requests
+            .iter()
+            .find(|row| row.event_id == "unknown")
+            .unwrap();
+        assert_eq!(unknown.cache_read_tokens, None);
+        assert_eq!(unknown.cache_hit_rate, None);
+        assert!(!unknown.is_zero_hit && !unknown.is_low_hit && !unknown.is_rankable);
+
+        let weighted = projection
+            .sessions
+            .iter()
+            .find(|row| row.session_id == "weighted")
+            .unwrap();
+        assert_eq!(weighted.input_tokens, 230_000);
+        assert_eq!(weighted.cache_read_tokens, Some(100_000));
+        assert!((weighted.cache_hit_rate.unwrap() - 100_000.0 / 230_000.0).abs() < 0.000_001);
+        assert_eq!(weighted.cache_write_tokens, Some(12_000));
+        assert_eq!(weighted.requests, 3);
+        assert_eq!(weighted.first_seen, 10.0);
+        assert_eq!(weighted.last_seen, 30.0);
+        assert_eq!(weighted.model_ids, ["claude-opus-5", "claude-sonnet-5"]);
+        assert_eq!(weighted.low_hit_requests, 2);
+        assert_eq!(weighted.zero_hit_requests, 1);
+
+        let unknown_session = projection
+            .sessions
+            .iter()
+            .find(|row| row.session_id == "unknown-cache")
+            .unwrap();
+        assert_eq!(unknown_session.cache_read_tokens, None);
+        assert_eq!(unknown_session.cache_hit_rate, None);
+        assert_eq!(unknown_session.unknown_cache_read_requests, 1);
+        assert_eq!(unknown_session.zero_hit_requests, 1);
+
+        let bounded = read_multi_client_cache_rankings_at(&database, "claudeCode", 2).unwrap();
+        assert_eq!(bounded.requests.len(), 2);
+        assert_eq!(bounded.matching_request_count, 7);
+        assert!(bounded.has_more_requests);
+        let reopened = open_read_only(&database).unwrap();
+        assert_eq!(read_schema_version(&reopened).unwrap(), before_version);
+        assert_eq!(
+            reopened
+                .query_row("SELECT count(*) FROM client_usage_revisions", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            before_revision_count
+        );
+    }
+
+    #[test]
+    fn cache_rankings_return_empty_without_creating_a_missing_ledger() {
+        let temporary = TempDir::new("cache-rankings-missing");
+        let database = temporary.path().join("missing.sqlite");
+
+        let projection = read_multi_client_cache_rankings_at(&database, "claudeCode", 100).unwrap();
+
+        assert!(projection.requests.is_empty());
+        assert!(projection.sessions.is_empty());
+        assert_eq!(projection.request_limit, 100);
+        assert!(!projection.has_more_requests);
+        assert!(!database.exists());
     }
 
     fn insert_revision(connection: &Connection, client: &str, event_id: &str, captured_at: f64) {
