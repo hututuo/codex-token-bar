@@ -68,7 +68,7 @@ jobs:
 
   macos:
     needs: [source, agent-speed-sync]
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 50
     env:
       GIT_LFS_SKIP_SMUDGE: '1'
@@ -78,7 +78,7 @@ jobs:
       NOTARIZE_RELEASE: '0'
       ARCH_LABEL: arm64
       APP_BUILD: ${{ inputs.app_build || '929' }}
-      DEVELOPER_DIR: /Applications/Xcode_26.1.1.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

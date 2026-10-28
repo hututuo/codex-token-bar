@@ -101,7 +101,7 @@ struct SpeedDisplayControls: View {
             })) {
                 ForEach(SpeedDisplayMode.allCases, id: \.self) { Text($0.title).tag($0) }
             }
-            Picker("彩条分组", selection: Binding(get: { preferences.grouping }, set: preferences.setGrouping)) {
+            Picker("彩条分组", selection: Binding(get: { preferences.grouping }, set: { value in preferences.setGrouping(value) })) {
                 ForEach(SpeedColorGrouping.allCases, id: \.self) { Text($0.title).tag($0) }
             }
         }.pickerStyle(.menu).font(.system(size: 11)).fixedSize()
