@@ -36,6 +36,10 @@ final class CodexTokenBarApplicationDelegate: NSObject, NSApplicationDelegate {
     private var isTerminating = false
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // No service singleton may be constructed while the ledger gate is
+        // pending. SQLite transactions/backups make an interrupted upgrade
+        // retryable; process exit releases the migration file locks.
+        if ApplicationStartupCoordinator.blocksBusinessServices { return .terminateNow }
         guard !isTerminating else { return .terminateLater }
         isTerminating = true
         Task { @MainActor in

@@ -7,6 +7,12 @@ import Foundation
 /// discovered input has a verified backup and a committed store partition.
 /// Old files remain rollback evidence; they are never a second write target.
 final class BusinessDatabaseMigration {
+    struct Progress: Equatable, Sendable {
+        enum Stage: String, Sendable { case preparing, importing, verifying, activating, ready }
+        let stage: Stage
+        var completed = 0
+        var total = 0
+    }
     struct Configuration: Sendable {
         let container: URL
         let support: URL
@@ -67,7 +73,7 @@ final class BusinessDatabaseMigration {
     }
     @MainActor private static var lifetimeLock: CodexCrossProcessFileLock?
 
-    @MainActor static func startProduction() throws {
+    @MainActor static func startProduction(onProgress: @escaping @Sendable (Progress) -> Void = { _ in }) async throws {
         let configuration = try Configuration.production()
         // Previous releases do not know the new migration lock. Reject their
         // live writers as well; never kill/restart a running application.
@@ -78,7 +84,11 @@ final class BusinessDatabaseMigration {
         }
         guard !other else { throw Failure.runningWriter }
         let lock = try CodexCrossProcessFileLock(url: configuration.container.appendingPathExtension("writer.lock"), label: "统一账本")
-        try migrate(configuration)
+        // The application window/event loop exists before this operation is
+        // requested. No business owner starts until this background gate ends.
+        try await Task.detached(priority: .utility) {
+            try migrate(configuration, onProgress: onProgress)
+        }.value
         lifetimeLock = lock
     }
 
@@ -86,7 +96,9 @@ final class BusinessDatabaseMigration {
     /// or application process manipulation occurs here.
     static func migrate(_ configuration: Configuration, fileManager: FileManager = .default,
                         availableBytes: UInt64? = nil,
-                        beforeActivation: (() throws -> Void)? = nil) throws {
+                        beforeActivation: (() throws -> Void)? = nil,
+                        onProgress: (@Sendable (Progress) -> Void)? = nil) throws {
+        onProgress?(.init(stage: .preparing))
         let inputs = try discover(configuration, fileManager: fileManager)
         var legacyLocks: [CodexCrossProcessFileLock] = []
         for input in inputs where input.store.module == "exact.swift" || input.store.module == "exact.swift.retired" {
@@ -113,6 +125,7 @@ final class BusinessDatabaseMigration {
             // before showing the next normal launch. Readers validate pages
             // they touch; storage maintenance retains its independent cadence.
             try activateRoutes(configuration, database: database)
+            onProgress?(.init(stage: .ready))
             return
         }
         try database.driver.execute("INSERT OR REPLACE INTO tb_container_meta VALUES ('activation_state','importing')")
@@ -128,7 +141,8 @@ final class BusinessDatabaseMigration {
         }
         let free = try availableBytes ?? configuration.container.deletingLastPathComponent().resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage.map(UInt64.init) ?? 0
         guard pending.isEmpty || free >= needed else { throw Failure.insufficientSpace }
-        for input in pending {
+        for (index, input) in pending.enumerated() {
+            onProgress?(.init(stage: .importing, completed: index, total: pending.count))
             let store = BusinessSQLiteStore(containerURL: working, logicalURL: input.store.logicalURL, module: input.store.module, sourceIdentity: input.store.sourceIdentity)
             let folder = configuration.backups.appendingPathComponent(store.id, isDirectory: true)
             try fileManager.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -204,10 +218,12 @@ final class BusinessDatabaseMigration {
             let json = try JSONEncoder().encode(receipt)
             try json.write(to: folder.appendingPathComponent("receipt.json"), options: .atomic)
             try synchronize(folder.appendingPathComponent("receipt.json"))
+            onProgress?(.init(stage: .importing, completed: index + 1, total: pending.count))
         }
         // A stale copy must never win over a legacy writer that changed its
         // source while the candidate was being prepared.
-        for input in pending {
+        for (index, input) in pending.enumerated() {
+            onProgress?(.init(stage: .verifying, completed: index, total: pending.count))
             let source = SQLiteDatabaseDriver(url: input.source, readOnly: true, createsFileIfMissing: false, bypassBusinessRoutes: true)
             let current = try source.withConnection { try CodexBusinessDatabase.proof($0) }
             let storeID = input.store.id
@@ -216,6 +232,7 @@ final class BusinessDatabaseMigration {
             guard current == receipt.original else { throw BusinessStoreError.sourceChanged }
         }
         try beforeActivation?()
+        onProgress?(.init(stage: .activating, completed: pending.count, total: pending.count))
         try database.driver.execute("INSERT OR REPLACE INTO tb_container_meta VALUES ('activation_state','ready')")
         try database.driver.withConnection { db in
             guard try db.readRows("PRAGMA quick_check", map: { $0.text(0) }) == ["ok"] else { throw BusinessStoreError.proofMismatch }
@@ -235,6 +252,7 @@ final class BusinessDatabaseMigration {
         }
         let ready = try CodexBusinessDatabase(url: configuration.container)
         try activateRoutes(configuration, database: ready)
+        onProgress?(.init(stage: .ready, completed: pending.count, total: pending.count))
     }
 
     private static func activateRoutes(_ configuration: Configuration, database ready: CodexBusinessDatabase) throws {

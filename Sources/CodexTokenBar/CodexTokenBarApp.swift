@@ -1,4 +1,3 @@
-import Darwin
 import Sparkle
 import SwiftUI
 
@@ -6,26 +5,47 @@ import SwiftUI
 struct CodexTokenBarApp: App {
     @NSApplicationDelegateAdaptor(CodexTokenBarApplicationDelegate.self)
     private var applicationDelegate
-    @StateObject private var loginItemStore = LoginItemStore()
-    @StateObject private var updateSettingsStore: AppUpdateSettingsStore
-    @StateObject private var floatingPanel: FloatingTokenPanelController
-    @StateObject private var statusBarPanel: StatusBarTokenController
-    @StateObject private var dashboardRuntime: DashboardRuntime
-    @StateObject private var threadDeleteBridge: CodexThreadDeleteBridgeController
-    @StateObject private var autoResumeController: AutoResumeTaskManager
-    private let updaterController: SPUStandardUpdaterController
+    @StateObject private var startup = ApplicationStartupCoordinator()
 
     init() {
         TokenRateScaleSettings.initializeForV092()
-        do { try BusinessDatabaseMigration.startProduction() }
-        catch {
-            let alert = NSAlert()
-            alert.messageText = "账本升级尚未完成"
-            alert.informativeText = error.localizedDescription + "\n原始账本和备份已保留；本次没有启动新的业务写入器。"
-            alert.addButton(withTitle: "退出")
-            alert.runModal()
-            Darwin.exit(EXIT_FAILURE)
+        StartupPresentation.configureInitialActivationPolicy()
+    }
+
+    var body: some Scene {
+        Window("Codex Token Bar", id: "dashboard") {
+            Group {
+                if let runtime = startup.runtime {
+                    ReadyDashboardView(runtime: runtime)
+                } else {
+                    ApplicationStartupView(startup: startup)
+                }
+            }.frame(minWidth: 1080, minHeight: 760)
         }
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 1240, height: 1000)
+        .commands {
+            DashboardWindowCommands()
+            CommandGroup(after: .appInfo) {
+                if let runtime = startup.runtime { ReadyApplicationMenu(runtime: runtime) }
+            }
+        }
+    }
+}
+
+/// All business owners are built once, only after the background gate succeeds.
+@MainActor
+final class CodexReadyApplicationRuntime {
+    let loginItemStore = LoginItemStore()
+    let updateSettingsStore: AppUpdateSettingsStore
+    let floatingPanel: FloatingTokenPanelController
+    let statusBarPanel: StatusBarTokenController
+    let dashboardRuntime: DashboardRuntime
+    let threadDeleteBridge: CodexThreadDeleteBridgeController
+    let autoResumeController: AutoResumeTaskManager
+    let updaterController: SPUStandardUpdaterController
+
+    init() {
         let updaterController = SPUStandardUpdaterController(
             startingUpdater: true,
             updaterDelegate: nil,
@@ -56,13 +76,12 @@ struct CodexTokenBarApp: App {
             }
         )
         self.updaterController = updaterController
-        _updateSettingsStore = StateObject(wrappedValue: AppUpdateSettingsStore(updater: updaterController.updater))
-        _floatingPanel = StateObject(wrappedValue: floatingPanel)
-        _statusBarPanel = StateObject(wrappedValue: statusBarPanel)
-        _threadDeleteBridge = StateObject(wrappedValue: threadDeleteBridge)
-        _dashboardRuntime = StateObject(wrappedValue: dashboardRuntime)
-        _autoResumeController = StateObject(wrappedValue: autoResumeController)
-        StartupPresentation.configureInitialActivationPolicy()
+        self.updateSettingsStore = AppUpdateSettingsStore(updater: updaterController.updater)
+        self.floatingPanel = floatingPanel
+        self.statusBarPanel = statusBarPanel
+        self.threadDeleteBridge = threadDeleteBridge
+        self.dashboardRuntime = dashboardRuntime
+        self.autoResumeController = autoResumeController
         Task { @MainActor in
             threadDeleteBridge.start()
             autoResumeController.start()
@@ -72,86 +91,61 @@ struct CodexTokenBarApp: App {
         }
     }
 
-    var body: some Scene {
-        Window("Codex Token Bar", id: "dashboard") {
-            DashboardView(
-                loginItemStore: loginItemStore,
-                updateSettingsStore: updateSettingsStore,
-                threadDeleteBridge: threadDeleteBridge,
-                autoResumeController: autoResumeController,
-                runtime: dashboardRuntime
-            )
-                .frame(minWidth: 1080, minHeight: 760)
-                .overlay(alignment: .topTrailing) { AgentSpeedReportingInvitation() }
-                .task {
-                    loginItemStore.start()
-                    updateSettingsStore.refresh()
+}
+
+private struct ReadyDashboardView: View {
+    let runtime: CodexReadyApplicationRuntime
+    var body: some View {
+        DashboardView(loginItemStore: runtime.loginItemStore,
+            updateSettingsStore: runtime.updateSettingsStore,
+            threadDeleteBridge: runtime.threadDeleteBridge,
+            autoResumeController: runtime.autoResumeController,
+            runtime: runtime.dashboardRuntime)
+        .overlay(alignment: .topTrailing) { AgentSpeedReportingInvitation() }
+        .task {
+            runtime.loginItemStore.start()
+            runtime.updateSettingsStore.refresh()
 #if DEBUG
-                    if UserDefaults.standard.bool(forKey: "debugCheckForUpdatesOnLaunch") {
-                        UserDefaults.standard.set(false, forKey: "debugCheckForUpdatesOnLaunch")
-                        try? await Task.sleep(nanoseconds: 900_000_000)
-                        updaterController.updater.checkForUpdates()
-                    }
-#endif
-                }
-        }
-        .windowStyle(.hiddenTitleBar)
-        .defaultSize(width: 1240, height: 1000)
-        .commands {
-            DashboardWindowCommands()
-            CommandGroup(after: .appInfo) {
-                CheckForUpdatesMenuItem(updater: updaterController.updater)
-#if DEBUG
-                if ClientPreviewMode.simulated {
-                    Button("诊断侧栏动效（5次）") { dashboardRuntime.replaySidebarForDiagnostics() }
-                    Button("诊断侧栏快速反向（5次）") { dashboardRuntime.replaySidebarForDiagnostics(rapid: true) }
-                }
-#endif
-
-                Divider()
-
-                Toggle(
-                    updateSettingsStore.menuTitle,
-                    isOn: Binding(
-                        get: { updateSettingsStore.automaticChecksEnabled },
-                        set: { updateSettingsStore.setAutomaticChecksEnabled($0) }
-                    )
-                )
-
-                Toggle(
-                    loginItemStore.menuTitle,
-                    isOn: Binding(
-                        get: { loginItemStore.isOn },
-                        set: { loginItemStore.setEnabled($0) }
-                    )
-                )
-
-                Menu("界面大小") {
-                    InterfaceScaleMenuContent()
-                }
-
-                if loginItemStore.needsSystemApproval {
-                    Button("打开登录项设置") {
-                        loginItemStore.openLoginItemsSettings()
-                    }
-                }
-
-                if let message = loginItemStore.errorMessage {
-                    Text("自启设置失败：\(message)")
-                }
-
-                Divider()
-
-                Button(threadDeleteBridge.status.connectionActionTitle) {
-                    threadDeleteBridge.performConnectionAction()
-                }
-                .disabled(threadDeleteBridge.status.isBusy)
-
-                Text(threadDeleteBridge.status.message)
-
-                Divider()
+            if UserDefaults.standard.bool(forKey: "debugCheckForUpdatesOnLaunch") {
+                UserDefaults.standard.set(false, forKey: "debugCheckForUpdatesOnLaunch")
+                try? await Task.sleep(nanoseconds: 900_000_000)
+                runtime.updaterController.updater.checkForUpdates()
             }
+#endif
         }
+    }
+}
 
+private struct ReadyApplicationMenu: View {
+    let runtime: CodexReadyApplicationRuntime
+    @ObservedObject private var login: LoginItemStore
+    @ObservedObject private var updates: AppUpdateSettingsStore
+    @ObservedObject private var bridge: CodexThreadDeleteBridgeController
+    init(runtime: CodexReadyApplicationRuntime) {
+        self.runtime = runtime
+        _login = ObservedObject(wrappedValue: runtime.loginItemStore)
+        _updates = ObservedObject(wrappedValue: runtime.updateSettingsStore)
+        _bridge = ObservedObject(wrappedValue: runtime.threadDeleteBridge)
+    }
+    var body: some View {
+        CheckForUpdatesMenuItem(updater: runtime.updaterController.updater)
+#if DEBUG
+        if ClientPreviewMode.simulated {
+            Button("诊断侧栏动效（5次）") { runtime.dashboardRuntime.replaySidebarForDiagnostics() }
+            Button("诊断侧栏快速反向（5次）") { runtime.dashboardRuntime.replaySidebarForDiagnostics(rapid: true) }
+        }
+#endif
+        Divider()
+        Toggle(updates.menuTitle, isOn: Binding(get: { updates.automaticChecksEnabled },
+            set: { updates.setAutomaticChecksEnabled($0) }))
+        Toggle(login.menuTitle, isOn: Binding(get: { login.isOn }, set: { login.setEnabled($0) }))
+        Menu("界面大小") { InterfaceScaleMenuContent() }
+        if login.needsSystemApproval { Button("打开登录项设置") { login.openLoginItemsSettings() } }
+        if let message = login.errorMessage { Text("自启设置失败：\(message)") }
+        Divider()
+        Button(bridge.status.connectionActionTitle) { bridge.performConnectionAction() }
+            .disabled(bridge.status.isBusy)
+        Text(bridge.status.message)
+        Divider()
     }
 }

@@ -89,7 +89,7 @@ pub(crate) fn bootstrap() -> Result<(), String> {
 }
 
 fn run_container_maintenance_if_due() {
-    let result = maintain_container_storage_if_due(
+    let result = maintain_container_storage_during_bootstrap(
         now_unix() as i64,
         ContainerMaintenancePolicy {
             minimum_check_interval_seconds: 24 * 60 * 60,
@@ -177,8 +177,20 @@ pub(crate) fn maintain_container_storage_if_due(
     policy: ContainerMaintenancePolicy,
     available_bytes_override: Option<u64>,
 ) -> Result<ContainerMaintenanceOutcome, String> {
+    ensure_runtime_business_store_ready()?;
+    maintain_container_storage_during_bootstrap(now_unix, policy, available_bytes_override)
+}
+
+fn maintain_container_storage_during_bootstrap(
+    now_unix: i64,
+    policy: ContainerMaintenancePolicy,
+    available_bytes_override: Option<u64>,
+) -> Result<ContainerMaintenanceOutcome, String> {
     let path = container_path()?;
-    let container = open_ready_container(&path)?;
+    // Startup maintenance is part of bootstrap readiness. It must use the
+    // internal open path because normal business-store access stays gated
+    // until this function and the rest of bootstrap have completed.
+    let container = open_ready_container_during_bootstrap(&path)?;
     let connection = container.connection();
     let last_checked = connection
         .query_row(
@@ -326,6 +338,7 @@ fn open_store_at(
     require_initialized: bool,
 ) -> Result<StoreConnection, String> {
     if require_initialized {
+        ensure_runtime_business_store_ready()?;
         verify_ready_container(container_path)?;
     }
     let store =
@@ -736,11 +749,30 @@ fn verify_initialized(container_path: &Path) -> Result<(), String> {
 }
 
 fn open_ready_container(container_path: &Path) -> Result<Container, String> {
+    ensure_runtime_business_store_ready()?;
+    open_ready_container_during_bootstrap(container_path)
+}
+
+fn open_ready_container_during_bootstrap(container_path: &Path) -> Result<Container, String> {
     verify_ready_container(container_path)?;
     let container = Container::open_existing(container_path).map_err(|error| error.to_string())?;
     #[cfg(not(test))]
     verify_active_container_identity(container_path)?;
     Ok(container)
+}
+
+fn ensure_runtime_business_store_ready() -> Result<(), String> {
+    #[cfg(test)]
+    {
+        // Unit tests exercise the route against isolated temporary containers;
+        // coordinator transitions are tested independently without process
+        // global state or races between test cases.
+        Ok(())
+    }
+    #[cfg(not(test))]
+    {
+        crate::core::business_startup::process_coordinator().ensure_ready()
+    }
 }
 
 fn verify_ready_container(container_path: &Path) -> Result<(), String> {

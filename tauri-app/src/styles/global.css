@@ -12963,3 +12963,5 @@ details.session-management-banner {
 
 @keyframes rig-press{0%,19%,24%,76%,81%,100%{transform:scale(1)}21%,78%{transform:scale(.78)}}
 .recent-interaction-guide summary{transition:transform .12s,opacity .12s}.recent-interaction-guide summary:active{transform:translateY(1px) scale(.99);opacity:.7}
+.business-startup { max-width:560px;margin:15vh auto;padding:30px;line-height:1.6; }
+.business-startup progress { display:block;width:100%;margin:18px 0; }

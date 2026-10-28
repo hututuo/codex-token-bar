@@ -1,4 +1,5 @@
 pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
+    "retry_business_startup",
     "set_codex_home",
     "reset_codex_home",
     "read_dashboard_snapshot",
@@ -78,6 +79,7 @@ pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
 ];
 
 pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[
+    "read_business_startup_state",
     "read_agent_speed_reporting_status",
     "read_claude_local_runtime_snapshot",
     "read_activity_speed_history",

@@ -194,7 +194,14 @@ mod tests {
         mark_usage_cache_initialized().unwrap();
         let path = app_paths::tauri_cache_state_path().unwrap();
         assert!(usage_cache_status().initialized);
-        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+        // Background startup tracing may legitimately share this directory.
+        // Check this marker's atomic-write residue, not unrelated log files.
+        let temporary_prefix = format!(".{}.", path.file_name().unwrap().to_string_lossy());
+        assert!(!fs::read_dir(path.parent().unwrap()).unwrap().flatten().any(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.starts_with(&temporary_prefix) && name.ends_with(".tmp")
+        }));
         let _ = fs::remove_dir_all(root);
     }
 

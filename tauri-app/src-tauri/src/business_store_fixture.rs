@@ -106,7 +106,11 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
         .map(|f| Ok((f.to_path_buf(), digest(f)?)))
         .collect::<Result<Vec<_>, String>>()?;
 
-    route::bootstrap()?;
+    let startup = crate::core::business_startup::process_coordinator();
+    need!(startup.begin_initial(), "fixture startup already claimed");
+    let prepared = route::bootstrap();
+    startup.finish(prepared.clone());
+    prepared?;
     need!(
         p.a.is_file() && p.marker.is_file() && p.a != p.b,
         "bootstrap did not initialize distinct A and B"

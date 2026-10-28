@@ -33,6 +33,7 @@ pub fn run() {
         .manage(commands::thread_activity::ThreadActivityRegistry::default())
         .manage(commands::update::UpdateMonitorRegistry::default())
         .manage(commands::auto_resume::AutoResumeRegistry::default())
+        .manage(core::business_startup::process_coordinator())
         .manage(core::provider_repair::ProviderRecoveryState::default())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
@@ -61,10 +62,6 @@ pub fn run() {
                 ));
             }
 
-            core::business_store_route::bootstrap().map_err(std::io::Error::other)?;
-
-            commands::multi_client_usage::initialize_background_refresh(app.handle().clone());
-
             let recovery_state = app
                 .state::<core::provider_repair::ProviderRecoveryState>()
                 .inner()
@@ -78,9 +75,15 @@ pub fn run() {
             // scanning, or task-state hydration. Manual launch needs only the dashboard; the
             // persisted floating/tray preferences are applied after the event loop can run.
             platform::setup_desktop_surfaces(app, launch_mode, false)?;
+            let business_startup = app
+                .state::<core::business_startup::BusinessStartupCoordinator>()
+                .inner()
+                .clone();
+            commands::startup::start_initial_business_startup(
+                app.handle().clone(),
+                business_startup.clone(),
+            );
             app.state::<commands::update::UpdateMonitorRegistry>()
-                .initialize_and_start(app.handle().clone());
-            app.state::<commands::auto_resume::AutoResumeRegistry>()
                 .initialize_and_start(app.handle().clone());
             let deferred_app = app.handle().clone();
             let deferred_live = app
@@ -104,6 +107,7 @@ pub fn run() {
                         models::AppSettingsSnapshot::default()
                     });
                 core::startup_trace::mark("deferred settings read finished");
+                business_startup.wait_until_ready().await;
                 if settings.agent_speed_reporting.enabled {
                     if let Err(error) = deferred_speed_reporting
                         .start(&deferred_app, &settings.agent_speed_reporting)
@@ -112,6 +116,9 @@ pub fn run() {
                         eprintln!("Codex Token Bar: Agent Speed reporter startup failed: {error}");
                     }
                 }
+                // The quota sidebar, floating surface, and live/status interest can
+                // touch business container A. Keep their existing preference behavior,
+                // but do not activate those owners until bootstrap and maintenance finish.
                 if launch_mode == platform::StartupLaunchMode::Autostart
                     && settings.display_surfaces.floating_window_enabled
                 {
@@ -132,7 +139,6 @@ pub fn run() {
                     eprintln!("Codex Token Bar: status tray live text setup failed: {error}");
                 }
             });
-            app.state::<commands::modeltrace::ModelTraceRegistry>().initialize(app.handle().clone());
             core::thread_delete::start_supervisor();
             core::startup_trace::mark("tauri setup returning");
             Ok(())
@@ -149,6 +155,8 @@ pub fn run() {
             commands::settings::read_sidebar_layout,
             commands::settings::save_sidebar_layout,
             commands::startup::record_startup_event,
+            commands::startup::read_business_startup_state,
+            commands::startup::retry_business_startup,
             commands::settings::read_autostart_status,
             commands::settings::set_autostart_enabled,
             commands::settings::save_floating_settings,

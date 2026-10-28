@@ -1,5 +1,6 @@
 import { lazy, Suspense, useMemo } from "react";
 import { desktopPlatform } from "../platform/desktop";
+import { BusinessStartupGate } from "./BusinessStartupGate";
 
 // Each native window loads its own surface. Shared modules remain Vite-managed chunks.
 const QuotaSidebarApp = lazy(() => import("../quota-sidebar/QuotaSidebarApp").then(m => ({ default: m.QuotaSidebarApp })));
@@ -9,7 +10,7 @@ const StatusPanelApp = lazy(() => import("../status/StatusPanelApp").then(m => (
 const DashboardApp = lazy(() => import("./DashboardApp").then(m => ({ default: m.DashboardApp })));
 
 export function App() {
-  return <Suspense fallback={null}><Surface /></Suspense>;
+  return <BusinessStartupGate><Suspense fallback={null}><Surface /></Suspense></BusinessStartupGate>;
 }
 
 function Surface() {
