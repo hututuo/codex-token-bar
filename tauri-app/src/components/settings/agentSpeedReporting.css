@@ -41,3 +41,8 @@
 .speed-report-movie-caption { position: absolute; bottom: 0; left: 0; right: 0; padding: 4px 10px; background: #000d; color: #fff; display: flex; align-items: center; justify-content: space-between; font-size: 11px; }
 .speed-report-movie-caption button { color: white; border: 0; padding: 4px 6px; min-width: 28px; }
 @media (prefers-reduced-motion: reduce) { .speed-report-invitation-switch input, .speed-report-invitation-switch input::before { transition: none; } }
+.speed-report-dashboard-status { display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 14px;border-radius:9px;background:var(--surface-2,rgba(100,120,150,.07));font-size:12px; }
+.speed-report-dashboard-status.is-error { background:rgba(230,145,40,.1);color:var(--text-primary,inherit); }
+.speed-report-dashboard-actions { margin-left:auto;display:flex;gap:8px; }
+.speed-report-last { margin-left:auto;font-variant-numeric:tabular-nums; }
+.speed-report-dot.is-error { background:#dc941b; }

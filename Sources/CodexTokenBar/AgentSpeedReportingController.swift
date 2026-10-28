@@ -171,7 +171,7 @@ final class AgentSpeedReportingController: ObservableObject {
         let outcome = await api.discover(service)
         guard valid(token) else { return }
         guard case .document(let discovered, _) = outcome else {
-            fail("发现服务暂不可用，可稍后重试"); return
+            fail(Self.discoveryFailureMessage(outcome)); return
         }
         guard Self.accepts(discovered) else {
             fail("服务协议或接收地址已变化，请更新客户端后重试"); return
@@ -217,6 +217,17 @@ final class AgentSpeedReportingController: ObservableObject {
 
     static func accepts(_ document: ReportDiscovery) -> Bool {
         document.supportsThisClient && document.api.string == apiURL && document.apiKeyMode != .required
+    }
+
+    static func discoveryFailureMessage(_ outcome: ReportAPI.DiscoveryOutcome) -> String {
+        switch outcome {
+        case .failed(.unreachable): "连接失败或超时，请检查网络或代理规则"
+        case .failed(.insecure): "安全连接失败，请检查证书或代理设置"
+        case .failed(.response), .invalid: "服务配置无法读取，请稍后重试或更新客户端"
+        case .gone: "上报服务已停止"
+        case .notSupported: "此地址未提供兼容的上报服务"
+        default: "上报服务暂时未正常响应，请稍后重试"
+        }
     }
 
     /// Source-filter both identity-bearing rows and aggregates before they reach the report window.

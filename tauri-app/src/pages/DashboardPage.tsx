@@ -1,7 +1,7 @@
 import { projectOriginalDashboard, clientCostPeriods } from "../multiClient/originalDashboardProjection";
 import { ClientScopeSelector, useClientScope, useClientQuotaItems } from "../multiClient/IntegratedClients";
 import { DiagnosticNotice } from "../components/DiagnosticNotice";
-import { AgentSpeedReportingInvitation } from "../components/settings/AgentSpeedReporting";
+import { AgentSpeedReportingInvitation, AgentSpeedReportingDashboardStatus } from "../components/settings/AgentSpeedReporting";
 import { lazy, Suspense, useCallback, useEffect, useState, useMemo } from "react";
 import { DashboardHeader } from "../components/DashboardHeader";
 import { AppSettingsDialog, type AppSettingsCategory } from "../components/settings/AppSettingsDialog";
@@ -310,6 +310,7 @@ export function DashboardPage({
     <main className="app-shell">
       <AgentSpeedReportingInvitation onOpenSettings={() => openSettings("speedReporting")} />
       <section className="dashboard">
+        <AgentSpeedReportingDashboardStatus onOpenSettings={() => openSettings("speedReporting")} />
         <DashboardHeader
           account={dashboard.account}
           autoResumeEnabled={autoResumeSettings.enabled}

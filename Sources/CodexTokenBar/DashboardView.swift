@@ -1061,6 +1061,7 @@ struct DashboardView: View {
             sevenDay: clients.sevenDaySummaries, clientsUpdatedAt: clients.updatedAt, allowed: allowedClients)
         LazyVStack(spacing: 18) {
             ClientScopePicker()
+            AgentSpeedReportingDashboardStatus()
             HeaderView(
                 snapshot: store.snapshot,
                 quotaSnapshot: quotaStore.snapshot,

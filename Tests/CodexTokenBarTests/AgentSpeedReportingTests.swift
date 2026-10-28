@@ -46,6 +46,15 @@ private final class SpeedReportTestMonitor: AgentSpeedReportingMonitor {
 
 @MainActor
 final class AgentSpeedReportingTests: XCTestCase {
+    func testDiscoveryErrorsDistinguishConnectionFailureFromUnsupportedService() {
+        let connection = AgentSpeedReportingController.discoveryFailureMessage(.failed(.unreachable))
+        XCTAssertTrue(connection.contains("超时"))
+        XCTAssertTrue(connection.contains("代理"))
+        XCTAssertFalse(connection.contains("已停止"))
+        XCTAssertTrue(AgentSpeedReportingController.discoveryFailureMessage(.gone).contains("已停止"))
+        XCTAssertTrue(AgentSpeedReportingController.discoveryFailureMessage(.invalid).contains("配置"))
+        XCTAssertTrue(AgentSpeedReportingController.discoveryFailureMessage(.failed(.insecure)).contains("证书"))
+    }
     private func defaults() -> UserDefaults { UserDefaults(suiteName: "test.speed-report." + UUID().uuidString)! }
     private func waitFor(_ predicate: () -> Bool) async throws {
         for _ in 0..<200 {

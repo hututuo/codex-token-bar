@@ -28,7 +28,7 @@ struct AgentSpeedReportingSettingsView: View {
                 .font(.callout).foregroundStyle(.secondary)
             Divider()
             HStack {
-                Circle().fill(controller.enabled ? Color.green : Color.secondary).frame(width: 8, height: 8)
+                Circle().fill(controller.phase == "error" ? Color.orange : controller.enabled ? Color.green : Color.secondary).frame(width: 8, height: 8)
                 Text(controller.message).font(.callout)
                 Spacer()
                 if controller.enabled && controller.phase == "error" {
@@ -74,6 +74,34 @@ struct AgentSpeedReportingSettingsView: View {
             Button("同意并开启") { controller.setEnabled(true, username: nickname) }
         } message: {
             Text("开启后将以“\(nickname)”公开参与排行榜，发送各软件的速度、Token、模型和 Harness 等统计。请确认这台电脑没有另一客户端重复上报。你可以随时在这里关闭。")
+        }
+    }
+}
+
+/// A lightweight status row, independent of local TPS and radar data. Disabled
+/// reporting contributes no placeholder or invitation to the dashboard.
+struct AgentSpeedReportingDashboardStatus: View {
+    @ObservedObject private var controller = AgentSpeedReportingController.shared
+    var body: some View {
+        if controller.enabled {
+            HStack(spacing: 10) {
+                Image(systemName: controller.phase == "error" ? "exclamationmark.triangle" : "arrow.up.circle")
+                    .foregroundStyle(controller.phase == "error" ? Color.orange : AppTheme.accentBlue)
+                Text("速蹬上报").fontWeight(.semibold)
+                Text(controller.message).lineLimit(2)
+                Spacer(minLength: 8)
+                if controller.phase == "running", let date = controller.lastReportAt {
+                    Text("最近上报 " + date.formatted(date: .omitted, time: .standard)).monospacedDigit()
+                }
+                if controller.phase == "error" { Button("重试连接") { controller.retry() } }
+                Button("设置") { AppSettingsRouteRequest.request(.speedReporting) }.buttonStyle(.link)
+            }
+            .font(.system(size: 12))
+            .padding(.horizontal, 12).padding(.vertical, 10)
+            .frame(maxWidth: 980, alignment: .leading)
+            .background(controller.phase == "error" ? Color.orange.opacity(0.09) : AppTheme.solidControlBackground,
+                in: RoundedRectangle(cornerRadius: 9))
+            .accessibilityElement(children: .contain).accessibilityLabel("速蹬上报状态")
         }
     }
 }

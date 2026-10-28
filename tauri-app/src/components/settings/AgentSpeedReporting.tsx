@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { callCommandStrict } from "../../api/command";
 import { isTauriRuntimeAvailable } from "../../platform/runtime";
+import { publishAgentSpeedStatus, useAgentSpeedStatus } from "./agentSpeedStatusStore";
 
 export interface AgentSpeedReportingStatus {
   enabled: boolean;
@@ -20,11 +21,6 @@ const terms = `${website}agent-speed/terms/`;
 const disclosure = "仅上报速度、Token、模型、Harness 和运行统计，以及昵称、设备标识和客户端版本信息；不上传对话、文件路径或账号凭据。Claude Code／Desktop 始终只在本地读取，不参与上报。关闭后停止这条链路的采集和上报。";
 const duplicateNotice = "同一台电脑的同一数据源，请只在 Agent Speed 或 Token Bar 中开启一处上报，避免重复累计。";
 export const supportedHarnesses = "Codex、Claude Code、Claude Desktop（本地 Code／Agent 会话）、DSH、OpenCode、Gemini CLI、omp、Antigravity、WorkBuddy、WorkBuddy AI、ZCode、Kimi Code、Grok Build";
-const initial: AgentSpeedReportingStatus = {
-  enabled: false, invitationHandled: true, username: "", phase: "off",
-  message: "未参加 · 采集与上报已关闭", liveOutputTps: 0, estimatedShare: 0,
-  lastReportAt: null, profileUrl: null, sources: [],
-};
 function read() { return callCommandStrict<AgentSpeedReportingStatus>("read_agent_speed_reporting_status"); }
 export function safeSpeedProfile(url: string | null): string | null {
   try {
@@ -35,39 +31,23 @@ export function safeSpeedProfile(url: string | null): string | null {
 }
 
 export function AgentSpeedReportingSettings() {
-  const [status, setStatus] = useState(initial);
+  const status = useAgentSpeedStatus();
   const [nickname, setNickname] = useState("");
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState("");
   const runtime = isTauriRuntimeAvailable();
+  const nicknameSeeded = useRef(false);
   useEffect(() => {
-    if (!runtime) return;
-    let disposed = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let seeded = false;
-    const poll = async () => {
-      try {
-        const next = await read();
-        if (disposed) return;
-        setStatus(next);
-        if (!seeded) { setNickname(next.username); seeded = true; }
-      } catch (e) { if (!disposed) setError(String(e)); }
-      if (!disposed) timer = setTimeout(() => {
-        if (document.hidden) timer = setTimeout(poll, 5000);
-        else void poll();
-      }, 2000);
-    };
-    void poll();
-    return () => { disposed = true; clearTimeout(timer); };
-  }, [runtime]);
+    if (!nicknameSeeded.current && status.username) { setNickname(status.username); nicknameSeeded.current=true; }
+  }, [status.username]);
   async function change(enabled: boolean) {
     setBusy(true); setError("");
     try {
       const next = await callCommandStrict<AgentSpeedReportingStatus>("set_agent_speed_reporting_enabled", {
         enabled, ...(enabled ? { username: nickname.trim() } : {}),
       });
-      setStatus(next); setNickname(next.username); setConfirming(false);
+      publishAgentSpeedStatus(next); setNickname(next.username); setConfirming(false);
     } catch (e) { setError(String(e)); }
     finally { setBusy(false); }
   }
@@ -98,7 +78,7 @@ export function AgentSpeedReportingSettings() {
       </div>
     </div>}
     <div className="speed-report-status" role="status">
-      <span className={status.enabled ? "speed-report-dot is-on" : "speed-report-dot"} />
+      <span className={status.phase === "error" ? "speed-report-dot is-error" : status.enabled ? "speed-report-dot is-on" : "speed-report-dot"} />
       <span>{status.message}</span>
       {status.enabled && status.phase === "error" && <button type="button" disabled={busy}
         onClick={() => void change(true)}>重试连接</button>}
@@ -121,6 +101,32 @@ export function AgentSpeedReportingSettings() {
       {profile && <a href={profile} target="_blank" rel="noreferrer">我的资料与设备 ↗</a>}
     </div>
   </section>;
+}
+
+export function AgentSpeedReportingNotice({status,busy=false,onRetry,onOpenSettings}:{
+  status:AgentSpeedReportingStatus;busy?:boolean;onRetry:()=>void;onOpenSettings:()=>void;
+}) {
+  if(!status.enabled) return null;
+  const failed=status.phase === "error";
+  return <div className={`speed-report-dashboard-status${failed?" is-error":""}`} role={failed?"alert":"status"}>
+    <span className={failed?"speed-report-dot is-error":"speed-report-dot is-on"}/>
+    <strong>速蹬上报</strong><span>{status.message}</span>
+    {status.phase === "running" && status.lastReportAt && <span className="speed-report-last">最近上报 {new Date(status.lastReportAt).toLocaleTimeString()}</span>}
+    <span className="speed-report-dashboard-actions">{failed && <button type="button" disabled={busy} onClick={onRetry}>重试连接</button>}
+      <button type="button" onClick={onOpenSettings}>设置</button></span>
+  </div>;
+}
+
+export function AgentSpeedReportingDashboardStatus({onOpenSettings}:{onOpenSettings:()=>void}) {
+  const status=useAgentSpeedStatus();
+  const [busy,setBusy]=useState(false);
+  async function retry() {
+    setBusy(true);
+    try { publishAgentSpeedStatus(await callCommandStrict<AgentSpeedReportingStatus>("set_agent_speed_reporting_enabled",{enabled:true,username:status.username})); }
+    catch { publishAgentSpeedStatus({...status,phase:"error",message:"无法重试连接，请在设置中查看"}); }
+    finally {setBusy(false);}
+  }
+  return <AgentSpeedReportingNotice status={status} busy={busy} onRetry={()=>void retry()} onOpenSettings={onOpenSettings}/>;
 }
 
 /** A local recording: displaying the invitation does not contact the leaderboard. */
@@ -204,7 +210,8 @@ export function AgentSpeedReportingInvitation({ onOpenSettings }: { onOpenSettin
   async function join() {
     setBusy(true); setError("");
     try {
-      await callCommandStrict("set_agent_speed_reporting_enabled", { enabled: true, username });
+      const next=await callCommandStrict<AgentSpeedReportingStatus>("set_agent_speed_reporting_enabled", { enabled: true, username });
+      publishAgentSpeedStatus(next);
       setVisible(false);
     } catch (e) { setError(String(e)); }
     finally { setBusy(false); }
