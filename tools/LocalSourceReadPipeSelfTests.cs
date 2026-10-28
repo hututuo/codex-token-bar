@@ -126,7 +126,13 @@ internal static class LocalSourceReadPipeSelfTests
         using (var transport = new LocalSourceReadPipe(pipes.Reader, static _ => { }, TimeSpan.FromSeconds(2)))
         {
             var oversizedHeader = Encoding.UTF8.GetBytes(new string('x', LocalSourceReadPipe.MaximumHeaderBytes + 1));
-            await pipes.WriteAsync(oversizedHeader, flush: true).ConfigureAwait(false);
+            // Windows anonymous pipes can buffer only 4096 bytes by default. Start
+            // the reader before writing this 4097-byte header so the fixture cannot
+            // block before it reaches the assertion.
+            var readPump = transport.Start();
+            await pipes.WriteAsync(oversizedHeader, flush: true)
+                .WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+            await readPump.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
             await ThrowsCodeAsync(
                 () => transport.Read("C:\\session", Identity, 0, 1, false),
                 "header_too_large").ConfigureAwait(false);
