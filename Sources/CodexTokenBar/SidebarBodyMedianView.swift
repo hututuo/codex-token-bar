@@ -63,34 +63,41 @@ struct SidebarBodyMedianContent: View, Equatable {
                 if let error { Text(error).font(.system(size: 9)).foregroundStyle(.orange) }
                 if !latest.isEmpty {
                     ForEach(latest) { reading in
-                        let series = snapshot?.series.first { $0.model == reading.model }
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(spacing: 3) {
-                                Circle().fill(ModelUsagePresentation.color(for: reading.model)).frame(width: 4, height: 4)
-                                Text(reading.model.replacingOccurrences(of: "gpt-", with: ""))
-                                    .font(.system(size: 9, weight: .medium)).lineLimit(1).minimumScaleFactor(0.75)
-                                Spacer(minLength: 1)
-                                Text(reading.tokensPerSecond, format: .number.precision(.fractionLength(1)))
-                                    .font(.system(size: 11, weight: .semibold)).monospacedDigit().fixedSize()
-                            }
-                            if let series { SidebarBodyMedianBars(series: series).frame(height: 32) }
-                            else { Text("趋势待采样").font(.system(size: 7)).foregroundStyle(.secondary).frame(height: 32) }
-                            Text(series?.current.map { "中位 \(String(format: "%.1f", $0.median))" } ?? "中位 —").font(.system(size: 7)).monospacedDigit()
-                                .foregroundStyle(.white.opacity(0.75)).frame(maxWidth: .infinity)
-                        }.frame(width: 74).padding(.vertical, 2)
-                            .background(GeometryReader { proxy in
-                                Color.clear.preference(key: QuotaSidebarContentMeasurementKey.self,
-                                    value: QuotaSidebarContentMeasurement(speedRowHeight: proxy.size.height + 6))
-                            })
-                            .help("\(reading.model) · 最新 \(String(format: "%.1f", reading.tokensPerSecond)) TPS。" + (series.map { Self.description($0, end: snapshot?.end ?? 0) } ?? "趋势待采样"))
-                            .accessibilityElement(children: .ignore)
-                            .accessibilityLabel("\(reading.model) · 最新 \(String(format: "%.1f", reading.tokensPerSecond)) TPS。" + (series.map { Self.description($0, end: snapshot?.end ?? 0) } ?? "趋势待采样"))
+                        modelRow(reading)
                     }
                 } else { Text("等待采样").font(.system(size: 9)).foregroundStyle(.white.opacity(0.7)) }
             }.foregroundStyle(.white).frame(maxWidth: .infinity)
                 .padding(.horizontal, 5).padding(.vertical, 4).contentShape(Rectangle())
         }.buttonStyle(SidebarPulseButtonStyle())
             .help("最近3小时，每半小时一个中位数；当前未满区间不计。点击查看测速记录")
+    }
+
+    private func modelRow(_ reading: ModelSpeedSummary) -> some View {
+        let series: SidebarBodyMedian.Series? = snapshot?.series.first { $0.model == reading.model }
+        let medianLabel: String = series?.current.map { "中位 \(String(format: "%.1f", $0.median))" } ?? "中位 —"
+        let trendDescription: String = series.map { Self.description($0, end: snapshot?.end ?? 0) } ?? "趋势待采样"
+        let hint: String = "\(reading.model) · 最新 \(String(format: "%.1f", reading.tokensPerSecond)) TPS。" + trendDescription
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 3) {
+                Circle().fill(ModelUsagePresentation.color(for: reading.model)).frame(width: 4, height: 4)
+                Text(reading.model.replacingOccurrences(of: "gpt-", with: ""))
+                    .font(.system(size: 9, weight: .medium)).lineLimit(1).minimumScaleFactor(0.75)
+                Spacer(minLength: 1)
+                Text(reading.tokensPerSecond, format: .number.precision(.fractionLength(1)))
+                    .font(.system(size: 11, weight: .semibold)).monospacedDigit().fixedSize()
+            }
+            if let series { SidebarBodyMedianBars(series: series).frame(height: 32) }
+            else { Text("趋势待采样").font(.system(size: 7)).foregroundStyle(.secondary).frame(height: 32) }
+            Text(medianLabel).font(.system(size: 7)).monospacedDigit()
+                .foregroundStyle(.white.opacity(0.75)).frame(maxWidth: .infinity)
+        }.frame(width: 74).padding(.vertical, 2)
+            .background(GeometryReader { proxy in
+                Color.clear.preference(key: QuotaSidebarContentMeasurementKey.self,
+                    value: QuotaSidebarContentMeasurement(speedRowHeight: proxy.size.height + 6))
+            })
+            .help(hint)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(hint)
     }
 
     static func interval(_ end: Int64) -> String {
@@ -116,7 +123,8 @@ private struct SidebarBodyMedianBars: View {
             let step = size.width / 6
             let bottom = size.height - 3
             func y(_ value: Double) -> CGFloat {
-                bottom - (value - bounds.lowerBound) / (bounds.upperBound - bounds.lowerBound) * (bottom - 3)
+                let fraction = CGFloat((value - bounds.lowerBound) / (bounds.upperBound - bounds.lowerBound))
+                return bottom - fraction * (bottom - 3)
             }
             context.fill(Path(CGRect(x: 0, y: bottom, width: size.width, height: 1)), with: .color(.white.opacity(0.055)))
             for (index, point) in series.slots.enumerated() {

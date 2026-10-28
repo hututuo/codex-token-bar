@@ -837,7 +837,7 @@ private struct StatusBarRateTrack: View {
             ZStack(alignment: .leading) {
                 Capsule()
                     .fill(Color.primary.opacity(0.07))
-                SmoothRateFillBar(fraction: rate == nil ? 0 : Double(fillFraction), minimumFraction: rate == nil ? 0 : 5 / max(1, proxy.size.width), modelRates: modelRates)
+                SmoothRateFillBar(fraction: rate == nil ? 0 : Double(fillFraction), minimumFraction: rate == nil ? 0 : 5.0 / max(1.0, Double(proxy.size.width)), modelRates: modelRates)
             }
         }
         .frame(height: 6)

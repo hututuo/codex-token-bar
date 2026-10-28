@@ -780,42 +780,38 @@ pub(crate) fn open_activity_module_connection() -> Result<Connection,String> {
 /// Initialize or validate the shared usage schema at an explicit path. The
 /// caller must not substitute the default app path when working with an
 /// alternate support root (for example, a preview database).
-pub(crate) fn initialize_usage_database_at(path: &Path) -> Result<(), String> {
+pub(crate) fn initialize_usage_database_at(path: &Path) -> rusqlite::Result<()> {
     let _guard = usage_gate();
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        fs::create_dir_all(parent).map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
     }
-    let connection = Connection::open(path).map_err(|error| error.to_string())?;
-    connection
-        .busy_timeout(DATABASE_BUSY_TIMEOUT)
-        .map_err(|error| error.to_string())?;
-    let version = read_schema_version(&connection).map_err(|error| error.to_string())?;
+    let connection = Connection::open(path)?;
+    connection.busy_timeout(DATABASE_BUSY_TIMEOUT)?;
+    let version = read_schema_version(&connection)?;
     if version > SCHEMA_VERSION {
-        return Err(format!(
+        return Err(rusqlite::Error::InvalidParameterName(format!(
             "多客户端用量数据库版本 {version} 高于此程序支持的版本 {SCHEMA_VERSION}"
-        ));
+        )));
     }
     if version == SCHEMA_VERSION {
-        if !has_expected_usage_tables(&connection).map_err(|error| error.to_string())? {
-            return Err("多客户端用量数据库结构与版本不匹配".to_owned());
+        if !has_expected_usage_tables(&connection)? {
+            return Err(rusqlite::Error::InvalidParameterName("多客户端用量数据库结构与版本不匹配".to_owned()));
         }
     } else {
-        ensure_schema(&connection, path).map_err(|error| error.to_string())?;
-        if !has_expected_usage_tables(&connection).map_err(|error| error.to_string())? {
-            return Err("多客户端用量数据库初始化后结构无效".to_owned());
+        ensure_schema(&connection, path)?;
+        if !has_expected_usage_tables(&connection)? {
+            return Err(rusqlite::Error::InvalidParameterName("多客户端用量数据库初始化后结构无效".to_owned()));
         }
     }
     let journal_mode: String = connection
-        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
-        .map_err(|error| error.to_string())?;
+        .query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
     if !journal_mode.eq_ignore_ascii_case("wal") {
         let configured: String = connection
-            .query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))
-            .map_err(|error| error.to_string())?;
+            .query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))?;
         if !configured.eq_ignore_ascii_case("wal") {
-            return Err(format!(
+            return Err(rusqlite::Error::InvalidParameterName(format!(
                 "无法启用多客户端用量数据库 WAL 模式：{configured}"
-            ));
+            )));
         }
     }
     Ok(())
@@ -3997,6 +3993,20 @@ fn format_timestamp_seconds(timestamp_seconds: f64) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shared_usage_initialization_preserves_busy_code_for_retry() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("shared.sqlite");
+        let blocker = rusqlite::Connection::open(&path).unwrap();
+        blocker.execute_batch("PRAGMA journal_mode=WAL; BEGIN IMMEDIATE;").unwrap();
+        let error = super::initialize_usage_database_at(&path).unwrap_err();
+        assert!(matches!(error, rusqlite::Error::SqliteFailure(code, _)
+            if matches!(code.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)));
+        blocker.execute_batch("ROLLBACK").unwrap();
+        super::initialize_usage_database_at(&path).unwrap();
+        assert_eq!(blocker.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0)).unwrap(), 2);
+    }
+
     use super::*;
     use std::time::SystemTime;
 

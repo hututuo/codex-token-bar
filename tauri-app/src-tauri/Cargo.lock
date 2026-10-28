@@ -553,6 +553,7 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-updater",
  "tiktoken-rs",
+ "tempfile",
  "time",
  "tokio",
  "toml 1.1.2+spec-1.1.0",

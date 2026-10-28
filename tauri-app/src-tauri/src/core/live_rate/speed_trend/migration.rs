@@ -63,8 +63,8 @@ pub(super) fn migrate_body_speed_to_shared(
     shared_path: &Path,
 ) -> rusqlite::Result<()> {
     let (source_identity, spec) = body_speed_namespace_spec(legacy_path).map_err(to_sql_error)?;
-    crate::core::multi_client_usage::initialize_usage_database_at(shared_path)
-        .map_err(to_sql_error)?;
+    // Preserve SQLite BUSY/LOCKED codes for the host's bounded retry policy.
+    crate::core::multi_client_usage::initialize_usage_database_at(shared_path)?;
     if verify_shared_receipt(shared_path, &spec.prefix, &source_identity)? {
         return Ok(());
     }
@@ -77,19 +77,30 @@ pub(super) fn migrate_body_speed_to_shared(
         .and_then(|name| name.to_str())
         .ok_or_else(|| rusqlite::Error::InvalidPath(legacy_path.to_path_buf()))?;
     let a_logical_path = format!("body-speed/{a_identity}");
-    let a_store = crate::core::business_store_route::open_store(
-        "body-speed",
-        a_identity,
-        &a_logical_path,
-        &[legacy_path.to_path_buf()],
-    )
-    .map_err(to_sql_error)?;
-    let source_has_tables = BODY_TABLES.iter().try_fold(false, |found, table| {
-        a_store
-            .has_logical_object(table)
-            .map(|present| found || present)
-    })?;
-    drop(a_store);
+    // Read only the namespace already admitted by the startup migration.
+    // A fresh source must not register an empty module and contend for A's
+    // writer lock merely to start telemetry in B.
+    let source_has_tables = if let Some(a_store) =
+        crate::core::business_store_route::open_registered_store(
+            "body-speed",
+            a_identity,
+            &a_logical_path,
+        )
+        .map_err(to_sql_error)?
+    {
+        BODY_TABLES.iter().try_fold(false, |found, table| {
+            a_store
+                .has_logical_object(table)
+                .map(|present| found || present)
+        })?
+    } else {
+        // An unadmitted physical legacy source is evidence requiring repair,
+        // not permission to replace its history with an empty destination.
+        if legacy_path.exists() {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        false
+    };
 
     let backup_path = retained_backup_path(shared_path, &source_identity)?;
     if backup_path.exists() {
@@ -463,6 +474,12 @@ impl PrepareBodySql for Connection {
 impl PrepareBodyCachedSql for Connection {
     fn prepare_cached_body(&self, sql: &str) -> rusqlite::Result<rusqlite::CachedStatement<'_>> {
         self.prepare_cached(sql)
+    }
+}
+
+impl PrepareBodySql for rusqlite::Transaction<'_> {
+    fn prepare_body(&self, sql: &str) -> rusqlite::Result<rusqlite::Statement<'_>> {
+        self.prepare(sql)
     }
 }
 

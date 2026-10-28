@@ -74,3 +74,6 @@ business-store-fixture = []
 name = "business-store-fixture"
 path = "src/bin/business-store-fixture.rs"
 required-features = ["business-store-fixture"]
+
+[dev-dependencies]
+tempfile = "=3.27.0"
