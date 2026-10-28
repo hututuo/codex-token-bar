@@ -170,6 +170,14 @@ struct BodySpeedTrendContent: View, Equatable {
                         y: .value("中位数 TPS", point.median!))
                         .foregroundStyle(ModelUsagePresentation.color(for: point.model))
                         .lineStyle(StrokeStyle(lineWidth: 2, dash: point.isPartial == true ? [3, 2] : []))
+                        .annotation(position: .top, spacing: 3) {
+                            Text("\(point.median!, specifier: "%.1f")")
+                                .font(.system(size: 9, weight: .semibold))
+                                .monospacedDigit()
+                                .foregroundStyle(ink)
+                                .padding(.horizontal, 2)
+                                .background(compact ? Color.black.opacity(0.8) : AppTheme.insetBackground)
+                        }
                         .accessibilityLabel(point.model + " 正文速度分布")
                         .accessibilityValue("中位数 \(point.median!, specifier: "%.1f") TPS，P25 \(point.lowerQuartile!, specifier: "%.1f")，P75 \(point.upperQuartile!, specifier: "%.1f")，\(point.sampleCount)段正文")
                 }

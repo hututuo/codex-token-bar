@@ -121,7 +121,16 @@ export function SpeedDistributionPlot({points,minimum,maximum,asOf,windowSeconds
             {[0,1,2,3,4].map(tick=>{const t=start+windowSeconds*tick/4;return <text key={tick} x={x(t)} y="180" textAnchor={tick===0 ? "start" : tick===4 ? "end" : "middle"}>{new Date(t*1000).toLocaleString("zh-CN",days===1 ? {hour:"2-digit",minute:"2-digit",hour12:false} : {month:"2-digit",day:"2-digit"})}</text>;})}
             <g clipPath={`url(#${clipId})`}>
                 {resets.map(r=><g key={r.observedAt} className="bst-reset"><rect x={x(Math.max(start,r.previousAt))} y={top} width={Math.max(0,x(r.observedAt)-x(Math.max(start,r.previousAt)))} height={bottom-top} fill="#48bfff" fillOpacity=".07"/><line x1={x(r.observedAt)} x2={x(r.observedAt)} y1={top} y2={bottom} stroke="#48bfff" strokeDasharray="3 3" strokeWidth="1"/><title>{`额度回升首次观测 ${new Date(r.observedAt*1000).toLocaleString()}；可定位区间 ${new Date(r.previousAt*1000).toLocaleString()} 至该时刻`}</title></g>)}
-                {points.map(p=>{const color=modelUsageColor(p.model),a=x(p.bucketStart),b=x(p.bucketEnd!);return <g key={`${p.model}/${p.bucketStart}`} className="bst-distribution"><title>{distributionLabel(p)}</title><rect className="bst-band" x={a} y={y(p.upperQuartile!)} width={Math.max(.5,b-a)} height={Math.max(.5,y(p.lowerQuartile!)-y(p.upperQuartile!))} fill={color} fillOpacity=".25"/><line className="bst-median" x1={a} x2={b} y1={y(p.median!)} y2={y(p.median!)} stroke={color} strokeWidth="2.1" strokeDasharray={p.isPartial ? "3 2" : undefined}/></g>;})}
+                {points.map(p=>{
+                    const color=modelUsageColor(p.model),a=x(p.bucketStart),b=x(p.bucketEnd!);
+                    const labelX=Math.max(left+14,Math.min(right-14,(Math.max(left,a)+Math.min(right,b))/2));
+                    return <g key={`${p.model}/${p.bucketStart}`} className="bst-distribution">
+                        <title>{distributionLabel(p)}</title>
+                        <rect className="bst-band" x={a} y={y(p.upperQuartile!)} width={Math.max(.5,b-a)} height={Math.max(.5,y(p.lowerQuartile!)-y(p.upperQuartile!))} fill={color} fillOpacity=".25"/>
+                        <line className="bst-median" x1={a} x2={b} y1={y(p.median!)} y2={y(p.median!)} stroke={color} strokeWidth="2.1" strokeDasharray={p.isPartial ? "3 2" : undefined}/>
+                        <text className="bst-median-label" x={labelX} y={Math.max(top+10,y(p.median!)-5)} textAnchor="middle">{p.median!.toFixed(1)}</text>
+                    </g>;
+                })}
             </g>
             {resets.length>0 && <text className="bst-reset-label" x={Math.min(right-120,Math.max(left,x(resets.at(-1)!.observedAt)+5))} y="12">额度回升 {new Date(resets.at(-1)!.observedAt*1000).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit",hour12:false})}</text>}
             {!points.length && <text x="410" y="90" textAnchor="middle">等待分布采样 · 至少3个五分钟桶、6段正文</text>}
