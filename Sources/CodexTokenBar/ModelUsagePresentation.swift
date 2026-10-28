@@ -312,12 +312,18 @@ enum ModelUsagePresentation {
             return colorHex(for: displayTargetKey(for: String(key.dropFirst(autoReviewDisplayPrefix.count))))
         }
         let fixed = [
-            "gpt-6-astra": "#36ad77", "gpt-6.1-sol": "#d4512c", "gpt-6-sol": "#2e6bfa", "gpt-6-luna": "#4299f5",
-            "gpt-5.6-sol": "#6774e8", "gpt-5.6-terra": "#9252e6", "gpt-5.6-luna": "#399b75", "gpt-5.5": "#a87629",
+            "claude-opus": "#b89add", "claude-sonnet": "#dca16c", "claude-haiku": "#5cbcaf",
+            "gpt-6-astra": "#a3d977", "gpt-6.1-sol": "#df7055", "gpt-6-sol": "#d6ac5b", "gpt-6-luna": "#63a6eb",
+            "gpt-5.6-sol": "#8b83c5", "gpt-5.6-terra": "#9b75bd", "gpt-5.6-luna": "#7595bd", "gpt-5.5": "#a87629",
             "gpt-5.6-generic": "#7a879e", "gpt-5.4": "#f28f14", "gpt-5.4-mini": "#2eb35c",
             "gpt-5.3-codex": "#db4575", "gpt-5.3-codex-spark": "#f5b022", "gpt-5.2-codex": "#3d7fe0", "unknown": "#7a879e",
         ]
         if let hex = fixed[key] { return hex }
+        // Resolve presentation color only; never merge model versions or
+        // provider IDs in the ledger/pricing dimensions.
+        let words = key.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted)
+        if words.contains("claude"), let family = ["opus", "sonnet", "haiku"].first(where: words.contains),
+           let hex = fixed["claude-" + family] { return hex }
         let hash = key.utf8.reduce(UInt32(0x811c9dc5)) { ($0 ^ UInt32($1)) &* 0x01000193 }
         let channels = [16, 8, 0].map { 80 + Int((hash >> $0) & 127) }
         return String(format: "#%02x%02x%02x", channels[0], channels[1], channels[2])

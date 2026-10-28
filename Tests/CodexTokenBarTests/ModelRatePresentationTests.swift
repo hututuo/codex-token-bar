@@ -23,7 +23,7 @@ final class ModelRatePresentationTests: XCTestCase {
         XCTAssertEqual(slices.map(\.model), ["gpt-6-astra", "gpt-6.1-sol"])
         XCTAssertEqual(slices.map(\.share), [0.4, 0.6])
         XCTAssertEqual(ModelRatePresentation.stops(rates).map(\.location), [0, 0.4, 0.4, 1])
-        XCTAssertEqual(ModelUsagePresentation.colorHex(for: "gpt6astra"), "#36ad77")
+        XCTAssertEqual(ModelUsagePresentation.colorHex(for: "gpt6astra"), "#a3d977")
         XCTAssertEqual(ModelUsagePresentation.colorHex(for: "未来-model-Ω"), "#9b9b81")
         XCTAssertEqual(ModelUsagePresentation.colorHex(for: "codex-auto-review@luna"), ModelUsagePresentation.colorHex(for: "gpt-5.6-luna"))
     }

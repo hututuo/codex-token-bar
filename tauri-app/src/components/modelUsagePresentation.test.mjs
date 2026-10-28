@@ -6,6 +6,7 @@ import {
   modelUsageLabel,
   modelUsageSlices,
   modelUsageKey,
+  modelUsageColor,
 } from "./modelUsagePresentation.ts";
 
 test("model usage presentation combines aliases and reports token shares", () => {
@@ -22,7 +23,7 @@ test("model usage presentation combines aliases and reports token shares", () =>
     { label: "Luna", tokens: 300 },
   ]);
   assert.equal(modelUsageCompactText(rows), "Sol 70% · Luna 30%");
-  assert.equal(dominantModelColor(rows), "#6774e8");
+  assert.equal(dominantModelColor(rows), "#8b83c5");
 });
 
 test("unknown and custom models remain visible with stable colors", () => {
@@ -109,4 +110,18 @@ test("GPT-6.1 Sol aliases display separately from previous Sol and future varian
   ]);
   assert.equal(modelUsageKey("gpt61sol"), "gpt-6.1-sol");
   assert.equal(modelUsageKey("gpt-6.1-sol-preview"), "gpt-6.1-sol-preview");
+});
+
+test("Claude families share presentation colors without merging model identity", () => {
+  for (const [model, family] of [
+    ["claude-opus-4-1-20250805", "claude-opus"],
+    ["anthropic/claude-sonnet-4-5", "claude-sonnet"],
+    ["us.anthropic.claude-3-5-haiku-20241022-v1:0", "claude-haiku"],
+    ["CLAUDE_SONNET_4_5", "claude-sonnet"],
+  ]) {
+    assert.equal(modelUsageColor(model), modelUsageColor(family));
+    assert.equal(modelUsageKey(model), model);
+  }
+  const models = ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna", "claude-opus", "claude-sonnet", "claude-haiku"];
+  assert.equal(new Set(models.map(modelUsageColor)).size, models.length);
 });
