@@ -273,6 +273,7 @@ html.quota-sidebar-fixed-canvas,html.quota-sidebar-fixed-canvas body,html.quota-
 .quota-sidebar-document .integrated-client-cap{width:5px;height:5px;border-radius:50%;top:0;left:-.5px;opacity:1}
 .quota-sidebar-document .integrated-quota-value-track{padding-top:2.5px;box-sizing:content-box}
 .qs-quota-marker-morph{position:absolute;inset:0;z-index:12;pointer-events:none}
+.qs-stroke-morph{position:absolute;inset:0;width:100%;height:100%;overflow:visible;z-index:11;pointer-events:none}
 .qs-bars .qs-cache-indicator{left:1px;top:8px}
 .qs-layout-name{display:flex;align-items:center;gap:5px;flex:1;min-width:0;font-size:11px}
 .qs-level-toggles{display:flex;align-items:center;gap:10px;font-size:10px;flex:none}
@@ -286,3 +287,6 @@ html.quota-sidebar-fixed-canvas,html.quota-sidebar-fixed-canvas body,html.quota-
 .qs-settings-compare.qs-left .qs-bars{left:0}.qs-settings-compare.qs-right .qs-bars{right:0}
 .qs-settings-compare.qs-left .qs-drag-handle{left:24px;width:88px}.qs-settings-compare.qs-right .qs-drag-handle{right:24px;width:88px}
 @media(prefers-reduced-motion:reduce){.qs-linked-item,.qs-linked-settings *{transition:none!important}}
+
+/* Keep task digits independent of the matched outline during transitions. */
+.qs-task-ring{position:relative;border:0}.qs-task-stroke{position:absolute;inset:0;border:2px solid #efc07780;border-radius:50%;pointer-events:none}

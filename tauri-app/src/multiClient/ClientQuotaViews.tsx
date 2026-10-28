@@ -48,7 +48,8 @@ export function PairedQuotaRing({
   colors?: Record<string, string>;
 }) {
   const half = (i: QuotaItem, rotate: number) => (
-    <g transform={`rotate(${rotate} 30 30)`}>
+    <g transform={`rotate(${rotate} 30 30)`} data-sidebar-stroke-source="" data-stroke-inset={4 / 60}
+      data-stroke-spec={JSON.stringify([{id:i.id,half:rotate > 0 ? -1 : 1,fraction:i.remaining === null ? null : i.remaining / 100,color:colors[i.id] ?? quotaFill(i),trackColor:"#343a35",trackOpacity:1,width:4.6 * clientSidebarMetrics.ringSize / 60}])}>
       <circle
         cx="30"
         cy="30"
@@ -112,7 +113,8 @@ export function PairedQuotaRing({
               {half(right, -89)}
             </>
           ) : (
-            <>
+            <g data-sidebar-stroke-source="" data-stroke-inset={4 / 60}
+              data-stroke-spec={JSON.stringify([{id:left.id,fraction:left.remaining === null ? null : left.remaining / 100,color:colors[left.id] ?? quotaFill(left),trackColor:"#343a35",trackOpacity:1,width:4.6 * clientSidebarMetrics.ringSize / 60}])}>
               <circle
                 cx="30"
                 cy="30"
@@ -147,7 +149,7 @@ export function PairedQuotaRing({
                   transform={`rotate(${expected[left.id]! * 360} 30 30)`}
                 />
               )}
-            </>
+            </g>
           )}
         </svg>
         <strong>

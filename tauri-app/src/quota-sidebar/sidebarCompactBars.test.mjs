@@ -30,7 +30,7 @@ test("task label reports count and freshness without representing progress", asy
       taskStatus: "ready", taskLabel: sidebarTaskStateLabel(3, "ready"),
     }));
     assert.match(html, /class="qs-bar qs-task-state-bar"/);
-    assert.match(html, /data-sidebar-item="tasks" data-task-state="ready"/);
+    assert.match(html, /data-sidebar-item="tasks"[^>]*data-task-state="ready"/);
     assert.match(html, /role="img"[^>]*aria-label="运行任务：3 个，数据最新"/);
     assert.match(html, /height:46px/);
     assert.match(html, /background:rgba\(239,192,119,.5\)/);

@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef, type RefObject } from "react";
+import { animateSidebarStrokes } from "./sidebarStrokeMorph";
 
 type Center = { x: number; y: number };
 const center = (node: HTMLElement): Center => { const r=node.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}; };
@@ -37,10 +38,14 @@ export function animateQuotaMarkers(root: HTMLElement, expanded: boolean, previo
 
 export function useQuotaMarkerMorph(root:RefObject<HTMLElement|null>,expanded:boolean,enabled:boolean) {
   const prior=useRef(expanded),positions=useRef(new Map<string,Center>());
+  const strokes=useRef<ReturnType<ReturnType<typeof animateSidebarStrokes>>>(new Map());
   useLayoutEffect(()=>{
     const changed=prior.current!==expanded;prior.current=expanded;
-    if(!enabled||!changed||!root.current||window.matchMedia("(prefers-reduced-motion: reduce)").matches||typeof root.current.animate!=="function")return;
+    if(!enabled||!changed||!root.current||window.matchMedia("(prefers-reduced-motion: reduce)").matches||typeof root.current.animate!=="function"){
+      positions.current.clear();strokes.current.clear();return;
+    }
     const cancel=animateQuotaMarkers(root.current,expanded,positions.current);positions.current.clear();
-    return()=>{positions.current=cancel();};
+    const cancelStrokes=animateSidebarStrokes(root.current,expanded,strokes.current);strokes.current.clear();
+    return()=>{positions.current=cancel();strokes.current=cancelStrokes();};
   },[expanded,enabled,root]);
 }

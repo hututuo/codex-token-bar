@@ -20,8 +20,8 @@ final class ClientQuotaMorphTests: XCTestCase {
                 for pair in zip(start, start.dropFirst()) { XCTAssertGreaterThanOrEqual(pair.0.y + 0.001, pair.1.y, "Convex halves must flatten without curling back") }
             }
             XCTAssertTrue(end.allSatisfy { abs($0.x - track.midX) < 0.001 })
-            XCTAssertEqual(try XCTUnwrap(end.first).y, abs(half) == 2 ? track.midY : track.maxY - 2, accuracy: 0.001)
-            XCTAssertEqual(try XCTUnwrap(end.last).y, half == 2 ? track.maxY - 2 : track.minY + 2, accuracy: 0.001)
+            XCTAssertEqual(try XCTUnwrap(end.first).y, track.maxY - 2, accuracy: 0.001)
+            XCTAssertEqual(try XCTUnwrap(end.last).y, track.minY + 2, accuracy: 0.001)
             for step in 0...20 {
                 let points = ClientQuotaMorphGeometry.points(ring: ring, track: track, half: half, progress: Double(step) / 20)
                 XCTAssertTrue(points.allSatisfy { $0.x.isFinite && $0.y.isFinite })
@@ -39,7 +39,7 @@ final class ClientQuotaMorphTests: XCTestCase {
             return try XCTUnwrap(ys.min())...XCTUnwrap(ys.max())
         }.sorted { $0.lowerBound < $1.lowerBound }
         XCTAssertEqual(ranges[0].lowerBound, track.minY + 2, accuracy: 0.001)
-        XCTAssertEqual(ranges[0].upperBound, ranges[1].lowerBound, accuracy: 0.001)
+        XCTAssertEqual(ranges[0], ranges[1], "Both sides must squeeze onto the same complete bar, without flipping either side")
         XCTAssertEqual(ranges[1].upperBound, track.maxY - 2, accuracy: 0.001)
         for quota in [0.1, 0.49, 0.5, 0.51, 0.72, 1.0] {
             let fills = ClientQuotaMorphGeometry.strokes([ClientQuotaMorphRoute(id: "whole", ring: ring, track: track, half: 0, fraction: quota, color: .green)]).filter { $0.id.hasSuffix(":fill") }
@@ -49,9 +49,11 @@ final class ClientQuotaMorphTests: XCTestCase {
             for stroke in fills {
                 XCTAssertEqual(stroke.collapsed.opacity, 1, "Neither half may fade away")
                 let points = stroke.collapsed.points
-                lengths += abs(try XCTUnwrap(points.last).y - XCTUnwrap(points.first).y) * (stroke.collapsed.end - stroke.collapsed.start)
+                let length = abs(try XCTUnwrap(points.last).y - XCTUnwrap(points.first).y) * (stroke.collapsed.end - stroke.collapsed.start)
+                XCTAssertEqual(length, (track.height - 4) * barFraction, accuracy: 0.001)
+                lengths = max(lengths, length)
             }
-            XCTAssertEqual(lengths, (track.height - 4) * barFraction, accuracy: 0.001, "Both halves together must retain the real quota fraction")
+            XCTAssertEqual(lengths, (track.height - 4) * barFraction, accuracy: 0.001, "The merged bar must retain the real quota fraction")
         }
     }
 
@@ -78,10 +80,45 @@ final class ClientQuotaMorphTests: XCTestCase {
             for stroke in colored {
                 XCTAssertEqual(stroke.color, color)
                 XCTAssertEqual(stroke.collapsed.opacity, 1)
-                length += abs(try XCTUnwrap(stroke.collapsed.points.last).y - XCTUnwrap(stroke.collapsed.points.first).y) * (stroke.collapsed.end - stroke.collapsed.start)
+                length = max(length, abs(try XCTUnwrap(stroke.collapsed.points.last).y - XCTUnwrap(stroke.collapsed.points.first).y) * (stroke.collapsed.end - stroke.collapsed.start))
             }
             XCTAssertEqual(length, totalLength * share, accuracy: 0.001)
         }
+    }
+
+    func testWholeCircleSqueezesWithoutChangingPointDirectionOrCrossing() throws {
+        for step in 0...100 {
+            let p = Double(step) / 100
+            let a = ClientQuotaMorphGeometry.points(ring: ring, track: track, half: -2, progress: p)
+            let b = ClientQuotaMorphGeometry.points(ring: ring, track: track, half: 2, progress: p)
+            let center = ring.midX + (track.midX - ring.midX) * p
+            for (left, right) in zip(a, b) {
+                XCTAssertLessThanOrEqual(left.x, center + 0.001)
+                XCTAssertGreaterThanOrEqual(right.x, center - 0.001)
+                XCTAssertEqual(left.y, right.y, accuracy: 0.001, "Both sides compress together; neither may turn over")
+            }
+            for points in [a, b] {
+                for (first, next) in zip(points, points.dropFirst()) { XCTAssertGreaterThanOrEqual(first.y + 0.001, next.y) }
+            }
+        }
+    }
+
+    func testModelUsageStripMatchesEveryColorToTheVerticalBar() throws {
+        let source = CGRect(x: 18, y: 100, width: 52, height: 4)
+        let route = ClientQuotaMorphRoute(id: "models", ring: source, track: track, half: 0, fraction: 1, color: .gray,
+            segments: [.init(id: "astra", start: 0, end: 0.25, color: .green), .init(id: "sol", start: 0.25, end: 1, color: .orange)], shape: .strip)
+        let strokes = ClientQuotaMorphGeometry.strokes([route])
+        XCTAssertEqual(strokes.count, 3)
+        for stroke in strokes {
+            XCTAssertEqual(stroke.participantID, "models")
+            XCTAssertTrue(stroke.expanded.points.allSatisfy { $0.y == source.midY })
+            XCTAssertTrue(stroke.collapsed.points.allSatisfy { $0.x == track.midX })
+            XCTAssertEqual(stroke.expanded.start, stroke.collapsed.start)
+            XCTAssertEqual(stroke.expanded.end, stroke.collapsed.end)
+        }
+        let astra = try XCTUnwrap(strokes.first { $0.id == "models:astra" })
+        XCTAssertEqual(astra.collapsed.end - astra.collapsed.start, 0.25)
+        XCTAssertEqual(astra.color, .green)
     }
 
     func testCollapseShrinksWidthAndHeightTogetherAndKeepsEitherDockedEdge() {
@@ -214,11 +251,11 @@ final class ClientQuotaMorphTests: XCTestCase {
         }
         settle(0.1)
         let overlay = try XCTUnwrap(morph(host))
-        XCTAssertEqual(overlay.availableRouteCount, 5, "Quota, speed and task rings share the same morph surface")
+        XCTAssertEqual(overlay.availableRouteCount, 6, "Quota, speed, tasks and model usage share the same morph surface")
         controller.enter(); settle(0.08)
         XCTAssertEqual(overlay.animationsStarted, 1)
-        XCTAssertEqual(overlay.morphLayerCount, 15)
-        XCTAssertEqual(overlay.coveredParticipantViewCount, 14, "Quota dots join quota, speed and task source/target views until handoff")
+        XCTAssertEqual(overlay.morphLayerCount, 16)
+        XCTAssertEqual(overlay.coveredParticipantViewCount, 16, "Quota dots join quota, speed and task source/target views until handoff")
         controller.dismiss(); settle(0.08)
         XCTAssertEqual(overlay.animationsStarted, 2)
         settle(0.5)
@@ -238,29 +275,45 @@ final class ClientQuotaMorphTests: XCTestCase {
 
     @MainActor func testRenderActualPathStoryboards() throws {
         guard let output = ProcessInfo.processInfo.environment["TOKENBAR_MORPH_RENDER_OUTPUT"] else { return }
-        let routes = fixtures()
+        let routes = fixtures() + [ClientQuotaMorphRoute(id: "models", ring: CGRect(x: 18, y: 296, width: 52, height: 4),
+            track: CGRect(x: 6, y: 366, width: 4, height: 24), half: 0, fraction: 1, color: .gray,
+            segments: [.init(id: "astra", start: 0, end: 0.4, color: NSColor(clientHex: "#a3d977")),
+                       .init(id: "sol", start: 0.4, end: 1, color: NSColor(clientHex: "#df7055"))], shape: .strip)]
         let root = VStack(alignment: .leading, spacing: 12) {
-            Text("同一原生路径的收起分镜 · 模拟额度").font(.system(size: 13)).foregroundStyle(.white)
+            Text("向内压合 · 原生路径分镜 · 模拟额度与模型占比").font(.system(size: 13)).foregroundStyle(.white)
             HStack(spacing: 12) {
                 ForEach([0.0, 0.15, 0.35, 0.65, 1.0], id: \.self) { t in
                     VStack(spacing: 6) {
                         Text("\(Int(t * ClientQuotaMorphGeometry.closingDuration * 1000)) ms").font(.system(size: 11)).foregroundStyle(.gray)
                         Canvas { context, _ in
                             let progress = QuotaSidebarMotion.progress(t, expanding: false)
-                            for stroke in ClientQuotaMorphGeometry.strokes(routes) {
-                                let path = Path(MatchedStrokeMorphGeometry.interpolate(stroke.expanded.points, stroke.collapsed.points, progress: progress))
-                                let start = stroke.expanded.start + (stroke.collapsed.start - stroke.expanded.start) * progress
-                                let end = stroke.expanded.end + (stroke.collapsed.end - stroke.expanded.end) * progress
-                                let opacity = Double(stroke.expanded.opacity + (stroke.collapsed.opacity - stroke.expanded.opacity) * Float(progress))
-                                context.stroke(path.trimmedPath(from: start, to: end), with: .color(Color(nsColor: stroke.color).opacity(opacity)), style: StrokeStyle(lineWidth: 3 + progress, lineCap: .round, lineJoin: .round))
+                            let strokes = ClientQuotaMorphGeometry.strokes(routes)
+                            let keys = strokes.reduce(into: [String]()) { list, stroke in
+                                let key = stroke.opacityGroup ?? stroke.id
+                                if !list.contains(key) { list.append(key) }
                             }
-                        }.frame(width: 88, height: 380).background(.black, in: RoundedRectangle(cornerRadius: 16))
+                            for key in keys {
+                                let members = strokes.filter { ($0.opacityGroup ?? $0.id) == key }
+                                context.drawLayer { layer in
+                                    if let first = members.first {
+                                        layer.opacity = Double(first.expanded.opacity + (first.collapsed.opacity - first.expanded.opacity) * Float(progress))
+                                    }
+                                    for stroke in members {
+                                        let path = Path(MatchedStrokeMorphGeometry.interpolate(stroke.expanded.points, stroke.collapsed.points, progress: progress))
+                                        let start = stroke.expanded.start + (stroke.collapsed.start - stroke.expanded.start) * progress
+                                        let end = stroke.expanded.end + (stroke.collapsed.end - stroke.expanded.end) * progress
+                                        let width = stroke.expanded.width + (stroke.collapsed.width - stroke.expanded.width) * progress
+                                        layer.stroke(path.trimmedPath(from: start, to: end), with: .color(Color(nsColor: stroke.color)), style: StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round))
+                                    }
+                                }
+                            }
+                        }.frame(width: 88, height: 400).background(.black, in: RoundedRectangle(cornerRadius: 16))
                     }
                 }
             }
         }.padding(20).background(Color(white: 0.06)).environment(\.colorScheme, .dark)
         let host = NSHostingView(rootView: root)
-        host.frame = CGRect(x: 0, y: 0, width: 560, height: 450)
+        host.frame = CGRect(x: 0, y: 0, width: 560, height: 470)
         host.layoutSubtreeIfNeeded()
         let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
         host.cacheDisplay(in: host.bounds, to: bitmap)

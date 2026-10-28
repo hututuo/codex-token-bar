@@ -25,13 +25,11 @@ enum ClientQuotaMorphGeometry {
         return (0...segments).map { index in
             let t = Double(index) / Double(segments), angle = start + sweep * t
             let x = ring.midX + radius * cos(angle), y = ring.midY + radius * sin(angle)
-            let bottom = track.maxY - 2, top = track.minY + 2, middle = (bottom + top) / 2
-            // A whole ring keeps both convex halves: its right half folds into
-            // the lower half of the bar, its left half into the upper half.
-            // They meet at one endpoint instead of overlapping and fading away.
-            let endY = half == 2 ? middle + (bottom - middle) * t
-                : half == -2 ? middle + (top - middle) * t
-                : bottom - max(0, track.height - 4) * t
+            let bottom = track.maxY - 2, top = track.minY + 2
+            // Both sides keep bottom-to-top point order. Squeeze the circle
+            // sideways into one line; never turn either side over into a
+            // different half of the destination (which looks like wringing).
+            let endY = bottom + (top - bottom) * t
             return CGPoint(x: x + (track.midX - x) * p, y: y + (endY - y) * p)
         }
     }
@@ -44,8 +42,8 @@ enum ClientQuotaMorphGeometry {
     static func parts(half: Int, fraction: Double?) -> [Part] {
         let q = min(1, max(0, fraction ?? 0))
         if half == 0 {
-            // Flatten a whole ring as two convex halves; a single closed path
-            // unwinding into a line produces an unwanted loop/curl mid-flight.
+            // Both convex sides converge onto the same complete bar. Shared
+            // compositing below prevents doubled opacity when they meet.
             return [Part(half: -2, start: 0, end: max(0, q * 2 - 1)),
                     Part(half: 2, start: 1 - min(1, q * 2), end: 1)]
         }
@@ -55,6 +53,7 @@ enum ClientQuotaMorphGeometry {
     // Map an interval along a complete ring onto either convex half. The same
     // mapping carries model-colored speed slices without merging their colors.
     static func interval(half: Int, lower: Double, upper: Double, collapsed: Bool) -> (Double, Double) {
+        if collapsed && abs(half) == 2 { return (lower, upper) }
         if half == 2 { return (1 - min(1, upper * 2), 1 - min(1, lower * 2)) }
         if half == -2 { return (max(0, lower * 2 - 1), max(0, upper * 2 - 1)) }
         return half > 0 && !collapsed ? (1 - upper, 1 - lower) : (lower, upper)
@@ -67,8 +66,9 @@ enum ClientQuotaMorphGeometry {
     }
 
     static func strokes(_ routes: [ClientQuotaMorphRoute]) -> [MatchedStrokeMorphRoute] {
-        let strokes = routes.flatMap { route in
-            parts(half: route.half, fraction: route.fraction).flatMap { part -> [MatchedStrokeMorphRoute] in
+        let strokes = routes.flatMap { route -> [MatchedStrokeMorphRoute] in
+            if route.shape == .strip { return stripStrokes(route) }
+            return parts(half: route.half, fraction: route.fraction).flatMap { part -> [MatchedStrokeMorphRoute] in
                 let expandedPoints = points(ring: route.ring, track: route.track, half: part.half, progress: 0)
                 let collapsedPoints = points(ring: route.ring, track: route.track, half: part.half, progress: 1)
                 let prefix = route.id + ":" + String(part.half)
@@ -91,7 +91,7 @@ enum ClientQuotaMorphGeometry {
                     strokes.append(MatchedStrokeMorphRoute(id: prefix + ":" + segment.id, participantID: route.id,
                         expanded: .init(points: expandedPoints, start: expanded.0, end: expanded.1, width: 3, opacity: route.fillOpacity),
                         collapsed: .init(points: collapsedPoints, start: collapsed.0, end: collapsed.1, width: 4, opacity: route.fillOpacity), color: segment.color,
-                        opacityGroup: route.half == 0 && route.fillOpacity < 1 ? route.id + ":" + segment.id : nil))
+                        opacityGroup: route.half == 0 ? route.id + ":" + segment.id : nil))
                 }
                 return strokes
             }
@@ -107,7 +107,27 @@ enum ClientQuotaMorphGeometry {
         return strokes + markers
     }
 
+    /// Model usage already has a straight horizontal source. Match each color
+    /// interval to the vertical destination through the same transient engine.
+    private static func stripStrokes(_ route: ClientQuotaMorphRoute) -> [MatchedStrokeMorphRoute] {
+        let a = [CGPoint(x: route.ring.minX + 2, y: route.ring.midY), CGPoint(x: route.ring.maxX - 2, y: route.ring.midY)]
+        let b = [CGPoint(x: route.track.midX, y: route.track.minY + 2), CGPoint(x: route.track.midX, y: route.track.maxY - 2)]
+        var strokes = [MatchedStrokeMorphRoute(id: route.id + ":track", participantID: route.id,
+            expanded: .init(points: a, width: 4, opacity: route.expandedTrackOpacity),
+            collapsed: .init(points: b, width: 4, opacity: route.collapsedTrackOpacity), color: .white)]
+        for segment in route.segments {
+            let start = min(1, max(0, segment.start)), end = min(1, max(start, segment.end))
+            guard end > start else { continue }
+            strokes.append(.init(id: route.id + ":" + segment.id, participantID: route.id,
+                expanded: .init(points: a, start: start, end: end, width: 4, opacity: 1),
+                collapsed: .init(points: b, start: start, end: end, width: 4, opacity: 1), color: segment.color))
+        }
+        return strokes
+    }
+
 }
+
+enum ClientQuotaMorphShape { case ring, strip }
 
 struct ClientQuotaMorphRoute {
     let id: String
@@ -122,6 +142,7 @@ struct ClientQuotaMorphRoute {
     var fillOpacity: Float = 1
     var marker: CGRect? = nil
     var markerColor: NSColor? = nil
+    var shape: ClientQuotaMorphShape = .ring
 }
 
 struct ClientQuotaMorphColorSegment {

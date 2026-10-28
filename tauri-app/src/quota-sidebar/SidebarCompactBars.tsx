@@ -22,23 +22,23 @@ export function SidebarCompactBars({ items, quotas, selection, ratePercent, mode
     {indicator}
     {items.filter(sidebarHasCompactRepresentation).map(id => <Fragment key={id}>
 
-      {id === "speed" && <span className="qs-bar qs-rate-bar" data-sidebar-item={id} style={{ height: layout.barHeight }} data-known={ratePercent !== null} aria-label={rateLabel} title={rateLabel}>
+      {id === "speed" && <span className="qs-bar qs-rate-bar" data-sidebar-item={id} data-sidebar-stroke-target={id} style={{ height: layout.barHeight }} data-known={ratePercent !== null} aria-label={rateLabel} title={rateLabel}>
         <i style={{ height: `${ratePercent ?? 0}%`, background: modelRateGradient(modelRates, "0deg") }} />
       </span>}
-      {id === "tasks" && <span role="img" className="qs-bar qs-task-state-bar" data-sidebar-item={id}
+      {id === "tasks" && <span role="img" className="qs-bar qs-task-state-bar" data-sidebar-item={id} data-sidebar-stroke-target={id}
         data-task-state={taskStatus} style={{ height: layout.barHeight, background: "rgba(239,192,119,.5)" }}
         aria-label={taskLabel} title={taskLabel} />}
       {id.startsWith("quota:") && quotaWindowsForClient(quotas, id.slice(6)).map(item =>
         <span key={item.id} data-sidebar-item={id} data-quota-id={item.id} className="integrated-quota-track" style={{ height: layout.barHeight }} title={`${item.client} · ${item.window} ${item.remaining === null ? item.status : Math.round(item.remaining) + "%"}`}>
           <i className="integrated-client-cap" data-quota-marker-start={item.id} aria-hidden="true" style={{ background: clientBrand[item.client] ?? "#888" }} />
           <span className="integrated-quota-value-track" style={{ height: layout.barHeight - 2.5 }}>
-            <span className={`qs-bar ${item.remaining === null ? "qs-unknown" : ""}`}>
+            <span className={`qs-bar ${item.remaining === null ? "qs-unknown" : ""}`} data-sidebar-stroke-target={item.id}>
               <i style={{ height: `${item.remaining ?? 0}%`, background: selection.colors[item.id] ?? quotaFill(item) }} />
               {expected[item.id] != null && <b className="qs-pace-mark" style={{ bottom: `${expected[item.id]! * 100}%` }} />}
             </span>
           </span>
         </span>)}
-      {id === "models" && <div data-sidebar-item={id} className="qs-model-strip qs-model-strip-vertical" style={{ height: layout.barHeight }} aria-label="今日模型 Token 占比">
+      {id === "models" && <div data-sidebar-item={id} data-sidebar-stroke-target={id} className="qs-model-strip qs-model-strip-vertical" style={{ height: layout.barHeight }} aria-label="今日模型 Token 占比">
         {models.map(item => <i key={item.key} style={{ flexGrow: item.share, background: item.color }} />)}
       </div>}
     </Fragment>)}

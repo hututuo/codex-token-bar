@@ -130,7 +130,9 @@ struct QuotaSidebarCompactBars: View {
                             } else { quotaTrack(quota) }
                         }
                     case .models:
-                        SidebarModelShareStrip(items: shares, vertical: true).frame(width: 4, height: layout.barHeight)
+                        compactStroke(id: "models") {
+                            SidebarModelShareStrip(items: shares, vertical: true).frame(width: 4, height: layout.barHeight)
+                        }
                     default:
                         EmptyView()
                     }
@@ -250,11 +252,19 @@ struct QuotaSidebarRail: View {
                     marker: anchors["marker:" + item.id].map { proxy[$0] }, markerColor: NSColor(clientHex: item.brand))
             }
         }
-        for item in [QuotaSidebarItem.speed, .tasks] where sidebarItems.contains(item) {
-            guard let source = anchors["ring:" + item.id], let target = anchors["track:" + item.id] else { continue }
+        for item in [QuotaSidebarItem.speed, .tasks, .models] where sidebarItems.contains(item) {
+            guard let source = anchors[(item == .models ? "strip:" : "ring:") + item.id], let target = anchors["track:" + item.id] else { continue }
             let ring = proxy[source], track = proxy[target]
             guard viewport?.contains(ring) != false else { continue }
-            if item == .speed {
+            if item == .models {
+                var edge = 0.0
+                let segments = shares.map { item in
+                    let start = edge; edge += item.share
+                    return ClientQuotaMorphColorSegment(id: item.id, start: start, end: edge, color: NSColor(item.color))
+                }
+                routes.append(ClientQuotaMorphRoute(id: item.id, ring: ring, track: track, half: 0, fraction: 1,
+                    color: .gray, segments: segments, shape: .strip))
+            } else if item == .speed {
                 var edge = 0.0
                 let segments = ModelRatePresentation.slices(liveRates).map { slice in
                     let start = edge; edge += slice.share
@@ -446,7 +456,9 @@ struct QuotaSidebarRail: View {
         case .models:
             Button { controller.select(.overview, section: "models") } label: {
                 VStack(spacing: 6) {
-                    SidebarModelShareStrip(items: shares).frame(width: 52, height: 4)
+                    MatchedStrokeMorphParticipant(ids: ["models"], size: CGSize(width: 52, height: 4)) {
+                        SidebarModelShareStrip(items: shares).frame(width: 52, height: 4)
+                    }.anchorPreference(key: ClientQuotaMorphAnchors.self, value: .bounds) { ["strip:models": $0] }
                     Text("模型占比").font(.system(size: 9)).foregroundStyle(.gray)
                 }.frame(maxWidth: .infinity, minHeight: 30).contentShape(Rectangle())
             }.buttonStyle(SidebarPulseButtonStyle())

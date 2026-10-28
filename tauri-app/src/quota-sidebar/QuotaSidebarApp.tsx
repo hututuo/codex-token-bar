@@ -1,3 +1,4 @@
+import { SidebarActivityRing as Ring, SidebarTaskRing, SidebarModelShareStrip } from "./SidebarActivityStrokes";
 import { useQuotaMarkerMorph } from "./useQuotaMarkerMorph";
 import { useRecentBodySpeeds } from "./useRecentBodySpeeds";
 import { ClientScopeBoundary } from "../multiClient/useClientScope";
@@ -40,10 +41,10 @@ import type { CodexHomeSourceToken, DisplaySurfaceSettings, RunningThreadMember,
 import { initialSidebarState, sidebarRailClassName, hasFiveHourQuota, isSidebarAction, quotaPercent, quotaText, sidebarReducer, type SidebarAction, type SidebarState } from "./model";
 import { useFloatingRadar, useFloatingCrowdRadar } from "../floating/useFloatingRadar";
 import { sidebarRadarSnapshot, sidebarRadarAtTime, sidebarRadarCompact, sidebarRadarIsActive, type SidebarRadar } from "./radarModel";
-import { sidebarLocalTime, sidebarMetricValue, sidebarRingResetTime } from "./detailsModel";
+import { sidebarLocalTime, sidebarMetricValue } from "./detailsModel";
 import { formatTokens } from "../utils/format";
 import { isSidebarDragTarget, createSidebarDragSession } from "./drag";
-import { modelRateGradient, modelRateSlices } from "../components/liveRate/modelRatePresentation";
+import { modelRateGradient } from "../components/liveRate/modelRatePresentation";
 import { DEFAULT_TOKEN_RATE_FULL_SCALE, sanitizeRateFullScale, formatLiveRateValue } from "../components/liveRate/rateDisplay";
 import { sidebarRatePercent } from "./rateModel";
 import { createSidebarPublisher, sidebarVisualPercent } from "./presentation";
@@ -389,7 +390,7 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
     ...(localUsage.snapshot.todaySummaries ?? []).filter(r => allowedClients.includes(r.client)).map(r => ({model:r.model, breakdown:{inputTokens:r.inputTokens,cachedInputTokens:r.cacheReadTokens ?? 0,outputTokens:r.outputTokens,reasoningOutputTokens:r.reasoningTokens ?? 0,totalTokens:r.inputTokens+r.outputTokens,calls:r.requests}}))
   ], "gpt56Sol", { showPlaceholders: false, mergeAutoReview: false }).filter(item => item.share > 0), [data.snapshot.todayModelBreakdowns, localUsage.snapshot.todaySummaries, scopeHasCodex, allowedClients.join("|")]);
   const modelTitle = models.length ? `今日模型 Token 占比：${models.map(item => `${item.label} ${(item.share * 100).toFixed(1)}%`).join("，")}` : "今日模型占比待读取";
-  const modelStrip = (vertical: boolean) => <div className={`qs-model-strip ${vertical ? "qs-model-strip-vertical" : ""}`} title={modelTitle} aria-label={modelTitle}>{models.map(item => <i key={item.key} style={{ flexGrow: item.share, background: item.color }} />)}</div>;
+
   return <>
     <span className="qs-radar-edge" data-active={sidebarRadarIsActive(radar)} aria-hidden="true" />
     {state.mode !== "rest" && <div className="qs-drag-handle" role="img" aria-label="拖动侧栏，可移到其他屏幕" title="按住拖动侧栏，可移到其他屏幕"><span /></div>}
@@ -423,11 +424,11 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
       </section>;
       const nearestCredit = prepareResetCreditsForDisplay(data.quota?.quota?.resetCredit?.credits ?? []).find(item => item.isCountdownEligible)?.credit;
       const moduleContent: Record<string, ReactNode> = {
-        speed: <button className="qs-quota-trigger qs-rate-trigger" onClick={() => onOpen("quota", "usage")} aria-label="查看实时速率详情" title={rateLabel}><Ring label="t/s" percent={ratePercent} color="#78b7ff" modelRates={barRates}/><Value value={ratePercent === null ? "—" : formatLiveRateValue(totalRate)}/></button>,
+        speed: <button className="qs-quota-trigger qs-rate-trigger" onClick={() => onOpen("quota", "usage")} aria-label="查看实时速率详情" title={rateLabel}><Ring morphID="speed" label="t/s" percent={ratePercent} color="#78b7ff" modelRates={barRates}/><Value value={ratePercent === null ? "—" : formatLiveRateValue(totalRate)}/></button>,
         tps: <>{scopeHasCodex && <SidebarBodyMedian latest={recentBodySpeeds} sourceToken={data.sourceToken} active={state.mode !== "rest"} onOpen={() => onOpen("quota", "speeds")}/>}</>,
         modeltrace: <button className="qs-modeltrace-trigger" onClick={() => onOpen("modeltrace", "top")} title="打开 ModelTrace，手动检测模型"><svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 3 4 6v6c0 5 8 9 8 9s8-4 8-9V6l-8-3Z"/><path d="m8 12 3 3 5-6"/></svg>模型检测</button>,
-        models: <button className="qs-model-trigger" onClick={() => onOpen("quota", "models")} aria-label="查看今日模型 Token 占比" title={modelTitle}>{modelStrip(false)}<span>模型占比</span></button>,
-        tasks: <button className="qs-running-trigger" onClick={() => onOpen("running", "top")}><span className="qs-task-ring"><Value value={taskStatus === "ready" ? String(taskTotal) : "—"}/></span><span>{taskStatus === "ready" ? mainCount + " 主 · " + subCount + " 子" : "运行·未知"}</span></button>,
+        models: <button className="qs-model-trigger" onClick={() => onOpen("quota", "models")} aria-label="查看今日模型 Token 占比" title={modelTitle}><SidebarModelShareStrip models={models} title={modelTitle}/><span>模型占比</span></button>,
+        tasks: <button className="qs-running-trigger" onClick={() => onOpen("running", "top")}><SidebarTaskRing><Value value={taskStatus === "ready" ? String(taskTotal) : "—"}/></SidebarTaskRing><span>{taskStatus === "ready" ? mainCount + " 主 · " + subCount + " 子" : "运行·未知"}</span></button>,
         radar: <><SidebarRecommendations rows={radar?.crowd.rows ?? []} visible={state.mode !== "rest"} onOpen={() => onOpen("radar", "ranking")}/><div className="qs-divider"/><button className="qs-window-status" data-active={sidebarRadarIsActive(radar)} onClick={() => onOpen("radar", "top")}><span>{sidebarRadarCompact(radar)}</span>{sidebarRadarIsActive(radar) && radar?.official.deadlineMs && <small>{radar.official.countdown}</small>}</button></>,
         credits: data.quota?.quota?.resetCredit?.updatedAt ? <button className="qs-reset-count" onClick={() => onOpen("credits", "top")}>重置卡 {data.quota.quota.resetCredit.availableCount} 张{nearestCredit && <small>{sidebarLocalTime(nearestCredit.expiresAt, nearestCredit.expiresAtUnix)}</small>}</button> : null,
         clientUsage: <><strong className="qs-client-usage-title">累计 Token</strong>{scopeHasCodex && <button className="integrated-client-usage" onClick={() => onOpen("quota", "usage")}><span>Codex</span><strong>{data.snapshot.totalTokensLabel ?? "—"}</strong></button>}<ClientSidebarUsageRows onOpen={() => onOpen("quota", "usage")}/></>,
@@ -459,26 +460,7 @@ function Value({ value }: { value: string }) {
       onAnimationEnd={() => setFrame(current => current.revision === frame.revision ? { ...current, previous: null } : current)}>{value}</span>
   </strong>;
 }
-function ModelRateRingSegments({ rates, fraction }: { rates: import("../types/live").ModelRateContribution[]; fraction: number }) {
-  const slices = modelRateSlices(rates.length ? rates : [{ model: "unknown", tokensPerSecond: 1 }]);
-  const amount = Math.min(1, Math.max(0, fraction));
-  if (!slices.length || amount <= 0) return null;
-  let edge = 0;
-  const endAngle = amount * Math.PI * 2 - Math.PI / 2;
-  return <>
-    {slices.map(slice => {
-      const offset = edge; edge += slice.share;
-      return <circle key={slice.model} cx="26" cy="26" r="22" fill="none" stroke={slice.color} strokeWidth="4" strokeLinecap="butt"
-        strokeDasharray={`${138.23 * slice.share * amount} 138.23`} strokeDashoffset={-138.23 * offset * amount} transform="rotate(-90 26 26)"/>;
-    })}
-    {amount < 1 && <><circle cx="26" cy="4" r="2" fill={slices[0].color}/><circle cx={26 + Math.cos(endAngle) * 22} cy={26 + Math.sin(endAngle) * 22} r="2" fill={slices.at(-1)!.color}/></>}
-  </>;
-}
 
-function Ring({ label, percent, color, expected, reset, modelRates }: { label: string; percent: number | null; color: string; modelRates?: import("../types/live").ModelRateContribution[]; expected?: number | null; reset?: ReturnType<typeof sidebarRingResetTime> }) {
-  const title = [reset === null ? "重置时间未知" : reset?.title, expected != null ? `白线为均匀使用参考：预期剩余 ${Math.round(expected * 100)}%` : null].filter(Boolean).join("；");
-  return <div className="qs-ring" data-known={percent !== null} title={title || undefined}><svg viewBox="0 0 52 52" aria-hidden="true"><circle cx="26" cy="26" r="22" className="qs-track" />{modelRates ? <ModelRateRingSegments rates={modelRates} fraction={(percent ?? 0) / 100}/> : <circle cx="26" cy="26" r="22" fill="none" stroke={color} strokeWidth="4" strokeLinecap="round" className="qs-ring-value" strokeDasharray="138.23" strokeDashoffset={138.23 * (1 - (percent ?? 0) / 100)} transform="rotate(-90 26 26)" />}{expected != null && <line className="qs-pace-tick" x1="26" y1="0" x2="26" y2="8" transform={`rotate(${expected * 360} 26 26)`} />}</svg><span className={reset !== undefined ? "qs-ring-center" : undefined}><span>{label}</span>{reset !== undefined && (reset ? <time className="qs-ring-reset" dateTime={reset.dateTime} aria-label={reset.title}><span>{reset.date}</span><span>{reset.time}</span></time> : <small className="qs-ring-reset-unknown">重置未知</small>)}</span></div>;
-}
 function DetailSurface() {
   const clientScope = useClientScope();
   const sidebar = useSidebarLayout();
