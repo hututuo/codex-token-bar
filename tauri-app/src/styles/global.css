@@ -13030,4 +13030,4 @@ details.session-management-banner {
 .client-analytics { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
 .client-analytics > h2 { font-size: 18px; margin: 8px 0 0; }
 .client-cache-dialog-backdrop { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; background: #0008; }
-.client-cache-dialog { display: flex; flex-direction: column; gap: 12px; width: min(960px,90vw); max-height: 80vh; padding: 24px; border-radius: 16px; background: var(--panel-bg,#14181e); font-size: 12px; }
+.client-cache-dialog { display: flex; flex-direction: column; gap: 12px; width: min(960px,90vw); max-height: 80vh; padding: 24px; border-radius: 16px; background: var(--panel-solid); color: var(--text); border: 1px solid var(--line); font-size: 12px; }
