@@ -195,13 +195,24 @@ final class CodexRadarViewPlacementTests: XCTestCase {
         let dashboardView = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardView.swift")
         let radarSource = try String(contentsOf: radarView, encoding: .utf8)
         let dashboardSource = try String(contentsOf: dashboardView, encoding: .utf8)
+        let quotaBlockStart = try XCTUnwrap(radarSource.range(of: "CodexRadarQuotaBlock(snapshot: snapshot)"))
+        let quotaBlockEnd = try XCTUnwrap(
+            radarSource.range(
+                of: ".frame(width: columnWidths.quota",
+                range: quotaBlockStart.upperBound..<radarSource.endIndex
+            )
+        )
+        let quotaBlockSource = String(radarSource[quotaBlockStart.lowerBound..<quotaBlockEnd.lowerBound])
 
         XCTAssertTrue(radarSource.contains("Radar 预估额度"))
         XCTAssertTrue(radarSource.contains("本额度非本地测算结果。如需本地测算，请在下方折线图中框选区间。"))
-        XCTAssertTrue(radarSource.contains("onShowRecentUsage"))
+        XCTAssertTrue(radarSource.contains("Button(action: onShowRecentUsage)"))
+        XCTAssertTrue(quotaBlockSource.contains("onShowRecentUsage()"))
         XCTAssertTrue(radarSource.contains("打开折线图，选择起点和终点计算本级额度"))
         XCTAssertTrue(dashboardSource.contains("scrollProxy.scrollTo(\"recent-usage-chart\", anchor: .center)"))
-        XCTAssertTrue(dashboardSource.contains(".id(\"recent-usage-chart\")"))
+        XCTAssertTrue(dashboardSource.contains("onShowRecentUsage: {"))
+        XCTAssertTrue(dashboardSource.contains("recentUsageScrollRequest &+= 1"))
+        XCTAssertTrue(dashboardSource.contains(".id(client == \"codex\" ? \"recent-usage-chart\" : \"recent-usage-chart-\" + client)"))
     }
 
     func testRadarDetailKeepsEnvironmentPressureAfterSummaryReplacement() throws {

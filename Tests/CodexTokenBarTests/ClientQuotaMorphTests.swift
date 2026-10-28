@@ -239,8 +239,17 @@ final class ClientQuotaMorphTests: XCTestCase {
             monitor: LiveRateMonitor(preciseTokenCountingEnabled: false, monitoringEnabled: false),
             quotaItemsOverride: ClientQuotaProjection.previewItems(includeClaude: true))
             .defaultAppStorage(defaults).environment(\.colorScheme, .dark)
+            .environment(\.accessibilityReduceMotion, false)
         let host = NSHostingView(rootView: root)
         host.frame = CGRect(x: 0, y: 0, width: 88, height: 640)
+        // Exercise a live hosting tree: newer SwiftUI versions defer observed
+        // state updates for a view that has never been attached to a window.
+        let window = NSWindow(contentRect: CGRect(x: 180, y: 100, width: 88, height: 640),
+            styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        window.orderFrontRegardless()
+        defer { window.close() }
         func settle(_ seconds: Double) {
             let deadline = Date().addingTimeInterval(seconds)
             while Date() < deadline { host.layoutSubtreeIfNeeded(); RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
@@ -252,12 +261,17 @@ final class ClientQuotaMorphTests: XCTestCase {
         settle(0.1)
         let overlay = try XCTUnwrap(morph(host))
         XCTAssertEqual(overlay.availableRouteCount, 6, "Quota, speed, tasks and model usage share the same morph surface")
+        // Hosting can deliver its initial hover while first laying out on a
+        // fresh runner. Start this reversal scenario from a settled compact rail.
+        controller.dismiss(); settle(0.4)
+        XCTAssertFalse(controller.interaction.expanded)
+        let started = overlay.animationsStarted
         controller.enter(); settle(0.08)
-        XCTAssertEqual(overlay.animationsStarted, 1)
+        XCTAssertEqual(overlay.animationsStarted, started + 1)
         XCTAssertEqual(overlay.morphLayerCount, 16)
         XCTAssertEqual(overlay.coveredParticipantViewCount, 16, "Quota dots join quota, speed and task source/target views until handoff")
         controller.dismiss(); settle(0.08)
-        XCTAssertEqual(overlay.animationsStarted, 2)
+        XCTAssertEqual(overlay.animationsStarted, started + 2)
         settle(0.5)
         XCTAssertEqual(overlay.morphLayerCount, 0)
         XCTAssertFalse(overlay.isAnimating)

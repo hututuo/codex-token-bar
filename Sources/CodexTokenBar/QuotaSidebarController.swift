@@ -147,6 +147,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
         if let encoded = try? JSONEncoder().encode(next) { settings.set(encoded, forKey: QuotaSidebarItemLayout.key) }
     }
     private let settings: UserDefaults
+    private let pointerLocation: () -> CGPoint
     private(set) var placement: QuotaSidebarPlacement?
     private(set) var isDragging = false
     private var isTrackingPress = false
@@ -176,8 +177,9 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     private var cacheAdviceID: String?
     private var lastPresentedCacheAdviceID: String?
 
-    init(settings: UserDefaults = .standard) {
+    init(settings: UserDefaults = .standard, pointerLocation: @escaping () -> CGPoint = { NSEvent.mouseLocation }) {
         self.settings = settings
+        self.pointerLocation = pointerLocation
         var hidden = Set((settings.stringArray(forKey: Self.hiddenModulesKey) ?? []).compactMap(QuotaSidebarDetail.init(rawValue:)).filter { $0 != .settings })
         // Newly introduced optional modules start hidden without changing any
         // existing module choice. Remember discovery, so later user choices win.
@@ -497,7 +499,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
 
     private func outsideClick() {
         guard interaction.expanded, !interaction.pinned, !isDragging, !isTrackingPress,
-              let frames, !frames.contains(NSEvent.mouseLocation, detailVisible: interaction.detail != nil) else { return }
+              let frames, !frames.contains(pointerLocation(), detailVisible: interaction.detail != nil) else { return }
         dismiss()
     }
 
@@ -505,7 +507,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
         updateRevealInputRegion()
         guard !isTrackingPress, !isDragging, !settingsReordering else { return }
         guard let frames else { return }
-        if frames.contains(NSEvent.mouseLocation, detailVisible: interaction.detail != nil) {
+        if frames.contains(pointerLocation(), detailVisible: interaction.detail != nil) {
             enter()
         } else if interaction.expanded && interaction.allowsAutomaticCollapse && collapseTask == nil {
             collapseTask = Task { [weak self] in
@@ -513,7 +515,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
                 guard let self else { return }
                 self.collapseTask = nil
                 guard let frames = self.frames,
-                      !frames.contains(NSEvent.mouseLocation, detailVisible: self.interaction.detail != nil) else { return }
+                      !frames.contains(self.pointerLocation(), detailVisible: self.interaction.detail != nil) else { return }
                 guard !self.settingsReordering, !self.isDragging, !self.isTrackingPress,
                       self.interaction.allowsAutomaticCollapse else { return }
                 self.dismiss()

@@ -572,3 +572,50 @@ final class QuotaSidebarTests: XCTestCase {
         XCTAssertEqual(active.last, false)
     }
 }
+
+extension QuotaSidebarTests {
+    @MainActor
+    func testExpandedPresenceReconcilesMissingExitAndRespectsPinAndReorder() throws {
+        let suite = "SidebarPresence-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var outside = false
+        weak var target: QuotaSidebarController?
+        let controller = QuotaSidebarController(settings: defaults, pointerLocation: {
+            guard !outside, let frame = target?.railPanel?.frame else {
+                return CGPoint(x: -100_000, y: -100_000)
+            }
+            return CGPoint(x: frame.midX, y: frame.midY)
+        })
+        target = controller
+        controller.show(store: CodexUsageStore(autoStart: false, continuityDefaults: defaults),
+            monitor: LiveRateMonitor(preciseTokenCountingEnabled: false, monitoringEnabled: false),
+            quota: AccountQuotaStore(userDefaults: defaults, observesUserDefaults: false),
+            tasks: TaskCompletionMonitor(defaults: defaults), radar: CodexRadarStore(detailRefreshDefaults: defaults),
+            history: QuotaHistoryStore(), edge: .right)
+        defer { controller.close() }
+        func settle(_ seconds: Double) {
+            let end = Date().addingTimeInterval(seconds)
+            while Date() < end { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
+        }
+        controller.enter(); settle(0.15)
+        XCTAssertTrue(controller.interaction.expanded)
+        outside = true // Deliberately do not deliver a mouse-exit callback.
+        settle(0.85)
+        XCTAssertFalse(controller.interaction.expanded)
+
+        outside = false
+        controller.enter(); controller.togglePin()
+        outside = true; settle(0.85)
+        XCTAssertTrue(controller.interaction.expanded)
+        controller.togglePin(); settle(0.5)
+        XCTAssertFalse(controller.interaction.expanded)
+
+        outside = false
+        controller.enter(); controller.setSettingsReordering(true)
+        outside = true; settle(0.85)
+        XCTAssertTrue(controller.interaction.expanded)
+        controller.setSettingsReordering(false); settle(0.5)
+        XCTAssertFalse(controller.interaction.expanded)
+    }
+}

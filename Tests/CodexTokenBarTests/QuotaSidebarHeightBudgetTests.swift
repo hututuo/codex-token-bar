@@ -92,7 +92,12 @@ final class QuotaSidebarHeightBudgetTests: XCTestCase {
             monitor.testSeedSidebarMedian(points: buckets, now: now)
         }
         seed(1)
-        let controller = QuotaSidebarController(settings: defaults)
+        weak var pointerTarget: QuotaSidebarController?
+        let controller = QuotaSidebarController(settings: defaults, pointerLocation: {
+            guard let frame = pointerTarget?.railPanel?.frame else { return .zero }
+            return CGPoint(x: frame.midX, y: frame.midY)
+        })
+        pointerTarget = controller
         let store = CodexUsageStore(autoStart: false, continuityDefaults: defaults)
         let quota = AccountQuotaStore(userDefaults: defaults, observesUserDefaults: false)
         let tasks = TaskCompletionMonitor(defaults: defaults)

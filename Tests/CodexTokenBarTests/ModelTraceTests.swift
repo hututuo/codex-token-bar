@@ -74,8 +74,15 @@ final class ModelTraceTests: XCTestCase {
     }
     func testParallelProbeKeepsEarlyCompletionsAndUsesExactlyThreeTurns() throws {
         let fake = FakeSession()
+        let executable = try FakeCodexExecutable()
+        let fakePath = executable.path
         let source = CodexDataSource(codexHome: URL(fileURLWithPath: NSTemporaryDirectory()), origin: .userSelected)
-        let result = try ModelTraceProbe(transport: FakeTransport(session: fake)).run(source: source, model: ModelTrace.defaultModel, cancel: ModelTraceCancellation(), validate: {}, progress: { _, _ in })
+        let probe = ModelTraceProbe(
+            transport: FakeTransport(session: fake),
+            codexPathResolver: { fakePath }
+        )
+        let result = try probe.run(source: source, model: ModelTrace.defaultModel, cancel: ModelTraceCancellation(), validate: {}, progress: { _, _ in })
+        XCTAssertEqual(fake.receivedCodexPath, fakePath)
         XCTAssertEqual(result.usedOutputs, 3)
         XCTAssertEqual(fake.turnCount, 3)
         XCTAssertTrue(fake.shutdownCalled)
@@ -85,21 +92,62 @@ final class ModelTraceTests: XCTestCase {
     }
     func testPreCancelledProbeStartsNoTurnsAndReapsTransport() throws {
         let fake = FakeSession(), cancel = ModelTraceCancellation(); cancel.cancel()
+        let executable = try FakeCodexExecutable()
+        let fakePath = executable.path
         let source = CodexDataSource(codexHome: URL(fileURLWithPath: NSTemporaryDirectory()), origin: .userSelected)
-        XCTAssertThrowsError(try ModelTraceProbe(transport: FakeTransport(session: fake)).run(source: source, model: ModelTrace.defaultModel, cancel: cancel, validate: {}, progress: { _, _ in }))
+        let probe = ModelTraceProbe(
+            transport: FakeTransport(session: fake),
+            codexPathResolver: { fakePath }
+        )
+        XCTAssertThrowsError(try probe.run(source: source, model: ModelTrace.defaultModel, cancel: cancel, validate: {}, progress: { _, _ in }))
+        XCTAssertEqual(fake.receivedCodexPath, fakePath)
         XCTAssertEqual(fake.turnCount, 0); XCTAssertTrue(fake.shutdownCalled)
+        XCTAssertTrue(fake.terminationRequested)
+    }
+}
+
+private final class FakeCodexExecutable {
+    let directory: URL
+    let path: String
+
+    init() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("modeltrace-fake-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let executable = directory.appendingPathComponent("codex")
+        do {
+            try "#!/bin/sh\nexit 0\n".write(to: executable, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: executable.path
+            )
+        } catch {
+            try? FileManager.default.removeItem(at: directory)
+            throw error
+        }
+        self.directory = directory
+        self.path = executable.path
+    }
+
+    deinit {
+        try? FileManager.default.removeItem(at: directory)
     }
 }
 
 private struct FakeTransport: AccountQuotaProcessTransport {
     let session: FakeSession
-    func start(codexPath: String, dataSource: CodexDataSource?) throws -> any AccountQuotaProcessSession { session }
+    func start(codexPath: String, dataSource: CodexDataSource?) throws -> any AccountQuotaProcessSession {
+        session.receivedCodexPath = codexPath
+        return session
+    }
 }
 private final class FakeSession: AccountQuotaProcessSession, @unchecked Sendable {
     var frames: [[String: Any]] = []
     var queue: [Data] = []
+    var receivedCodexPath: String?
     var turnCount = 0
     var shutdownCalled = false
+    var terminationRequested = false
     private var threadCount = 0
     func writeStdin(_ data: Data) throws {
         let frame = try JSONSerialization.jsonObject(with: data) as! [String: Any]; frames.append(frame)
@@ -125,6 +173,6 @@ private final class FakeSession: AccountQuotaProcessSession, @unchecked Sendable
     private func enqueue(_ value: [String: Any]) throws { queue.append(try JSONSerialization.data(withJSONObject: value)) }
     func nextStdoutEvent(timeout: TimeInterval) throws -> AccountQuotaStdoutEvent { queue.isEmpty ? .idle : .line(queue.removeFirst()) }
     func stderrTailText() -> String? { nil }
-    func requestTermination() {}
+    func requestTermination() { terminationRequested = true }
     func shutdown() throws -> AccountQuotaProcessExit { shutdownCalled = true; return AccountQuotaProcessExit(status: 0, reason: .exit) }
 }

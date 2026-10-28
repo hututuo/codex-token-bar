@@ -42,11 +42,28 @@ struct ModelTraceOutput {
 /// One owned transport per manual run; keeps notifications as well as RPC replies.
 struct ModelTraceProbe {
     let transport: any AccountQuotaProcessTransport
-    init(transport: any AccountQuotaProcessTransport = FoundationAccountQuotaProcessTransport(launchLeasePool: AccountQuotaProcessLaunchLeasePool(), retainedNotificationMethods: ["item/started", "item/updated", "item/completed", "turn/started", "turn/completed", "thread/tokenUsage/updated", "error"])) { self.transport = transport }
+    let codexPathResolver: @Sendable () throws -> String
+
+    init(
+        transport: any AccountQuotaProcessTransport = FoundationAccountQuotaProcessTransport(
+            launchLeasePool: AccountQuotaProcessLaunchLeasePool(),
+            retainedNotificationMethods: [
+                "item/started", "item/updated", "item/completed", "turn/started",
+                "turn/completed", "thread/tokenUsage/updated", "error"
+            ]
+        ),
+        codexPathResolver: @escaping @Sendable () throws -> String = {
+            try CodexBinaryLocator.findExecutable()
+        }
+    ) {
+        self.transport = transport
+        self.codexPathResolver = codexPathResolver
+    }
+
     func run(source: CodexDataSource, model: String, cancel: ModelTraceCancellation,
              validate: @escaping @Sendable () throws -> Void,
              progress: @Sendable (Int, ModelTrace.Sample?) throws -> Void) throws -> ModelTrace.Attribution {
-        let session = try transport.start(codexPath: CodexBinaryLocator.findExecutable(), dataSource: source)
+        let session = try transport.start(codexPath: codexPathResolver(), dataSource: source)
         do {
             var channel = Channel(session: session, cancel: cancel, validate: validate)
             _ = try channel.request("initialize", ["clientInfo": ["name": "codex_token_bar_modeltrace", "version": "0.9.7"], "capabilities": ["experimentalApi": true]])
