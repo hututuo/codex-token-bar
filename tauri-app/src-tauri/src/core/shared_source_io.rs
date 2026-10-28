@@ -377,7 +377,25 @@ fn positioned_read(file: &File, buffer: &mut [u8], offset: u64) -> io::Result<us
 #[cfg(windows)]
 fn positioned_read(file: &File, buffer: &mut [u8], offset: u64) -> io::Result<usize> {
     use std::os::windows::fs::FileExt;
-    file.seek_read(buffer, offset)
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{SetFilePointerEx, FILE_BEGIN, FILE_CURRENT};
+
+    // Windows seek_read moves the shared handle cursor; broker reads are
+    // serialized, so save and restore it to keep consumer positions isolated.
+    let handle = file.as_raw_handle() as _;
+    let mut original_position = 0_i64;
+    if unsafe { SetFilePointerEx(handle, 0, &mut original_position, FILE_CURRENT) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let read_result = file.seek_read(buffer, offset);
+    let restore_succeeded =
+        unsafe { SetFilePointerEx(handle, original_position, std::ptr::null_mut(), FILE_BEGIN) }
+            != 0;
+    if !restore_succeeded {
+        return Err(io::Error::last_os_error());
+    }
+    read_result
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -537,6 +555,20 @@ mod tests {
         assert_eq!(b, [40, 41, 42, 43]);
         assert_eq!(first.stream_position()?, 8);
         assert_eq!(second.stream_position()?, 44);
+        Ok(())
+    }
+
+    #[test]
+    fn positioned_reads_preserve_a_nonzero_file_cursor() -> io::Result<()> {
+        let fixture = Fixture::new()?;
+        let bytes: Vec<u8> = (0..=255).collect();
+        let path = fixture.write("source", &bytes)?;
+        let mut file = File::open(path)?;
+        let broker = SourceReadBroker::new();
+        file.seek(SeekFrom::Start(17))?;
+
+        assert_eq!(broker.read_range(&file, 23, 13)?, bytes[23..36].to_vec());
+        assert_eq!(file.stream_position()?, 17);
         Ok(())
     }
 

@@ -395,6 +395,9 @@ mod tests {
         let bin = temporary.0.join("bin");
         let applications = temporary.0.join("Applications");
         let gemini_data = home.join(".gemini/tmp");
+        #[cfg(windows)]
+        let claude_cli = bin.join("claude.exe");
+        #[cfg(not(windows))]
         let claude_cli = bin.join("claude");
         fs::create_dir_all(&gemini_data).unwrap();
         fs::create_dir_all(&claude_cli.parent().unwrap()).unwrap();

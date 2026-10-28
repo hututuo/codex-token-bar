@@ -1065,11 +1065,21 @@ fn backup_path(
         .map(|value| hex_digest(&Sha256::digest(value.as_bytes())))
         .unwrap_or_else(|| "nonutf8-source".into());
     let digest_hash = hex_digest(&Sha256::digest(source_digest.as_bytes()));
+    let mut backup_key = Sha256::new();
+    backup_key.update(b"tokenbar-business-snapshot-path-v1\0");
+    backup_key.update(store.id.as_bytes());
+    backup_key.update(b"\0");
+    backup_key.update(source_hash.as_bytes());
+    backup_key.update(b"\0");
+    backup_key.update(digest_hash.as_bytes());
+    let backup_name = hex_digest(&backup_key.finalize());
     container_path
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join("codex-ledger-snapshots")
-        .join(format!("{}-{source_hash}-{digest_hash}.sqlite", store.id))
+        // Keep the filename bounded: the previous concatenated hashes could
+        // exceed Windows MAX_PATH below runner temp directories and user paths.
+        .join(format!("{backup_name}.sqlite"))
 }
 
 fn now_unix() -> f64 {
@@ -1161,6 +1171,21 @@ mod tests {
         fs::remove_file(&path).unwrap();
         let after_removal = source_identity("modeltrace_legacy", &path).unwrap();
         assert_eq!(while_present, after_removal);
+    }
+
+    #[test]
+    fn snapshot_backup_filename_stays_bounded_and_tracks_source_version() {
+        let fixture = Fixture::new();
+        let container = fixture.path("codex-ledger.sqlite");
+        let store = StoreSpec::new("quota_history", "home", "quota").unwrap();
+        let source = fixture.path("legacy.sqlite");
+        let first = backup_path(&container, &store, &source, &"a".repeat(64));
+        let same = backup_path(&container, &store, &source, &"a".repeat(64));
+        let changed = backup_path(&container, &store, &source, &"b".repeat(64));
+
+        assert_eq!(first, same);
+        assert_ne!(first, changed);
+        assert!(first.file_name().unwrap().to_str().unwrap().len() <= 72);
     }
 
     fn seed_legacy(path: &Path) {

@@ -24,3 +24,7 @@ Cloud: full Swift, Rust unit tests, production Rust check, frontend regressions 
 Precise staged import also reuses one read connection/snapshot across manifest columns, fingerprints, events and chunks per staged source. It preserves all previous validation/admission/commit semantics while reducing repeated physical A schema initialization inside the publication transaction. This complements B isolation; it is not a claim that every historical rebuild is instantaneous.
 
 Hosted compiler: Swift 6.2.1 / Xcode 26.1.1 crashed in IR generation of the actor-isolated `SpeedColorGrouping` binding (SmallVector overflow), while the local compiler is Swift 6.4. Swift checks and macOS packaging now use the runner image's verified stable Xcode 26.6 on macOS 26. Deployment remains macOS 14. The picker setter is an explicit closure rather than an isolated bound method. Unit tests/builds still run in cloud; real user data stays local.
+
+Hosted test compilation additionally unwraps the nullable SQLite scalar in the test count helper and uses explicit typed loops for the performance fixture. These preserve assertions and generated samples.
+
+Windows hosted regressions: source snapshot filenames now hash the complete store/source/version identity into one bounded filename; existing data and recorded backup paths are untouched. Windows broker positioned reads restore the native handle cursor while the broker lock serializes reads, matching Unix read_at semantics. Platform fixtures use native path components and executable suffixes rather than POSIX-only assumptions.

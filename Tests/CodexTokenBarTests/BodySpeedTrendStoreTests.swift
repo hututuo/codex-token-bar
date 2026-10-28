@@ -320,10 +320,10 @@ extension BodySpeedTrendStoreTests {
     }
 
     private func countRows(_ table: String, in database: SQLiteDatabaseDriver) throws -> Int64 {
-        try database.readRows("SELECT count(*) FROM \(table)") { $0.int64(0) }.first ?? 0
+        try database.readRows("SELECT count(*) FROM \(table)") { $0.int64(0) ?? 0 }.first ?? 0
     }
 
     private func countRows(_ table: String, in database: BodySpeedDatabase) throws -> Int64 {
-        try database.readRows("SELECT count(*) FROM \(table)") { $0.int64(0) }.first ?? 0
+        try database.readRows("SELECT count(*) FROM \(table)") { $0.int64(0) ?? 0 }.first ?? 0
     }
 }

@@ -70,11 +70,16 @@ final class SidebarTransitionPerformanceTests: XCTestCase {
         let now = Date().timeIntervalSince1970
         let bucket = Int64(now / 300) * 300
         let models = ["gpt-6.1-sol", "gpt-6-luna", "gpt-6-astra"]
-        let points = models.flatMap { model in (0..<288).map { index in
-            BodySpeedTrendPoint(bucketStart: bucket - Int64(index * 300), model: model,
-                outputTokens: 500, durationSeconds: 10, sampleCount: 3,
-                tokensPerSecond: Double(30 + index % 90))
-        } }
+        var points: [BodySpeedTrendPoint] = []
+        for model in models {
+            for index in 0..<288 {
+                let start = bucket - Int64(index * 300)
+                let speed = Double(30 + index % 90)
+                points.append(BodySpeedTrendPoint(bucketStart: start, model: model,
+                    outputTokens: 500, durationSeconds: 10, sampleCount: 3,
+                    tokensPerSecond: speed))
+            }
+        }
         monitor.testSeedBodySpeedDisplay(samples: [], points: points, now: now)
         let controller = QuotaSidebarController(settings: defaults)
         controller.show(store: CodexUsageStore(autoStart: false, continuityDefaults: defaults), monitor: monitor,

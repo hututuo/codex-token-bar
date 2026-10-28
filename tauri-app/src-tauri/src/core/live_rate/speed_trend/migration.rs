@@ -828,6 +828,7 @@ mod tests {
     fn source_identity_standardizes_relative_components() {
         let path = Path::new("./support/../support/body-speed.sqlite");
         let identity = standardized_source_identity(path).unwrap();
-        assert!(identity.ends_with("/support/body-speed.sqlite"));
+        let expected_suffix = Path::new("support").join("body-speed.sqlite");
+        assert!(Path::new(&identity).ends_with(expected_suffix));
     }
 }
