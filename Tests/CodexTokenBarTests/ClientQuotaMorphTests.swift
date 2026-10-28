@@ -239,7 +239,6 @@ final class ClientQuotaMorphTests: XCTestCase {
             monitor: LiveRateMonitor(preciseTokenCountingEnabled: false, monitoringEnabled: false),
             quotaItemsOverride: ClientQuotaProjection.previewItems(includeClaude: true))
             .defaultAppStorage(defaults).environment(\.colorScheme, .dark)
-            .environment(\.accessibilityReduceMotion, false)
         let host = NSHostingView(rootView: root)
         host.frame = CGRect(x: 0, y: 0, width: 88, height: 640)
         // Exercise a live hosting tree: newer SwiftUI versions defer observed
@@ -266,12 +265,13 @@ final class ClientQuotaMorphTests: XCTestCase {
         controller.dismiss(); settle(0.4)
         XCTAssertFalse(controller.interaction.expanded)
         let started = overlay.animationsStarted
+        let reducedMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         controller.enter(); settle(0.08)
-        XCTAssertEqual(overlay.animationsStarted, started + 1)
-        XCTAssertEqual(overlay.morphLayerCount, 16)
-        XCTAssertEqual(overlay.coveredParticipantViewCount, 16, "Quota dots join quota, speed and task source/target views until handoff")
+        XCTAssertEqual(overlay.animationsStarted, started + (reducedMotion ? 0 : 1))
+        XCTAssertEqual(overlay.morphLayerCount, reducedMotion ? 0 : 16)
+        XCTAssertEqual(overlay.coveredParticipantViewCount, reducedMotion ? 0 : 16, "Quota dots join quota, speed and task source/target views until handoff; reduced motion uses the native endpoints directly")
         controller.dismiss(); settle(0.08)
-        XCTAssertEqual(overlay.animationsStarted, started + 2)
+        XCTAssertEqual(overlay.animationsStarted, started + (reducedMotion ? 0 : 2))
         settle(0.5)
         XCTAssertEqual(overlay.morphLayerCount, 0)
         XCTAssertFalse(overlay.isAnimating)
