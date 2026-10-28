@@ -217,6 +217,7 @@ pub fn run() {
             commands::live::read_activity_rate_history,
             commands::live::read_body_speed_history,
             commands::live::read_body_speed_trend,
+            commands::live::read_sidebar_body_speed_buckets,
             commands::modeltrace::read_modeltrace_snapshot,
             commands::modeltrace::start_modeltrace,
             commands::modeltrace::cancel_modeltrace,

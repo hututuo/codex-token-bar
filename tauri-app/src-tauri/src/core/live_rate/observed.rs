@@ -1619,31 +1619,38 @@ pub(super) fn cache_path(scope: &LiveRateSourceScope) -> Option<PathBuf> {
 }
 
 pub(super) fn trend_points(
-    scope: &LiveRateSourceScope,
-    now: f64,
-    days: u16,
+    scope: &LiveRateSourceScope, now: f64, days: u16,
+) -> Result<Vec<BodySpeedTrendPoint>, String> {
+    with_numeric_trend_store(scope, now, |store| store.read(now, days))
+}
+
+/// The sidebar requires raw five-minute buckets even if the home chart later
+/// selects a different grouping/distribution. Reuse the existing source owner.
+pub(super) fn sidebar_trend_buckets(
+    scope: &LiveRateSourceScope, now: f64,
+) -> Result<Vec<BodySpeedTrendPoint>, String> {
+    let end = (now / 1800.0).floor() as i64 * 1800;
+    with_numeric_trend_store(scope, now, |store| store.read(now, 1))
+        .map(|rows| rows.into_iter().filter(|p|
+            p.bucket_start >= end - 10800 && p.bucket_start < end).collect())
+}
+
+fn with_numeric_trend_store(
+    scope: &LiveRateSourceScope, now: f64,
+    read: impl FnOnce(&BodySpeedTrendStore) -> rusqlite::Result<Vec<BodySpeedTrendPoint>>,
 ) -> Result<Vec<BodySpeedTrendPoint>, String> {
     let stores = SPEED_STORES.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut all = stores
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut all = stores.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let store = all.entry(scope.clone()).or_default();
     ensure_loaded(store, scope, now);
     if store.persistence_blocked {
-        return Err(store
-            .storage_error
-            .clone()
+        return Err(store.storage_error.clone()
             .unwrap_or_else(|| "observed_speed_storage_read_failed".into()));
     }
-    let result = store
-        .trend_store
-        .as_ref()
-        .ok_or_else(|| "observed_speed_storage_unavailable".to_owned())?
-        .read(now, days)
+    let result = read(store.trend_store.as_ref()
+        .ok_or_else(|| "observed_speed_storage_unavailable".to_owned())?)
         .map_err(|_| "observed_speed_trend_read_failed".to_owned());
-    if let Err(error) = &result {
-        store.storage_error = Some(error.clone());
-    }
+    if let Err(error) = &result { store.storage_error = Some(error.clone()); }
     result
 }
 

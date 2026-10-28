@@ -1584,6 +1584,27 @@ pub async fn read_body_speed_history(
     Ok(page)
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SidebarBodySpeedBuckets {
+    points: Vec<live_rate::BodySpeedTrendPoint>,
+    as_of: f64,
+}
+
+#[tauri::command]
+pub async fn read_sidebar_body_speed_buckets(window: tauri::WebviewWindow, source_token: Option<CodexHomeSourceToken>) -> Result<SidebarBodySpeedBuckets, String> {
+    require_window_label(&window, "read_sidebar_body_speed_buckets")?;
+    let captured = capture_codex_home_source(source_token.as_ref())?;
+    let source_scope = live_rate_source_scope(&captured.source_token);
+    let result = run_blocking_command(move || {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
+        let points = live_rate::read_sidebar_body_speed_buckets(&source_scope, now)?;
+        Ok(SidebarBodySpeedBuckets { points, as_of: now })
+    }).await?;
+    validate_captured_codex_home_source(&captured)?;
+    Ok(result)
+}
+
 #[tauri::command]
 pub async fn read_body_speed_trend(window: tauri::WebviewWindow, source_token: Option<CodexHomeSourceToken>, days: u16) -> Result<Vec<live_rate::BodySpeedTrendPoint>, String> {
     require_window_label(&window, "read_body_speed_trend")?;

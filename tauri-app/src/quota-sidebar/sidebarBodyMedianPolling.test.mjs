@@ -1,0 +1,32 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import React from 'react';
+import {Window} from 'happy-dom';
+import {withSsrModules} from '../test/ssrHarness.mjs';
+test('mini median only polls when visible, fences late source replies, and reports errors',async()=>{
+ const dom=new Window();const globals=['window','document','navigator','HTMLElement','IS_REACT_ACT_ENVIRONMENT'];
+ const previous=globals.map(k=>[k,Object.getOwnPropertyDescriptor(globalThis,k)]);
+ for(const k of globals)Object.defineProperty(globalThis,k,{configurable:true,writable:true,value:k==='IS_REACT_ACT_ENVIRONMENT'?true:dom[k]});
+ const timers=new Map();let seq=0,reads=0,pending=[];dom.setTimeout=(fn,ms)=>{const id=++seq;timers.set(id,{fn,ms});return id;};dom.clearTimeout=id=>timers.delete(id);
+ dom.__TAURI_INTERNALS__={invoke:async(command,args)=>{assert.equal(command,'read_sidebar_body_speed_buckets');reads++;return new Promise((resolve,reject)=>pending.push({resolve,reject,args}));}};
+ const fire=async ms=>{for(const [id,t]of [...timers])if(t.ms===ms){timers.delete(id);t.fn();}await Promise.resolve();};
+ let root;
+ try{const {createRoot}=await import('react-dom/client');root=createRoot(dom.document.body);
+ await withSsrModules(async load=>{const {SidebarBodyMedian}=await load('/src/quota-sidebar/SidebarBodyMedianCard.tsx');
+ let source={canonicalHomeKey:'A',physicalHomeKey:'A',transitionGeneration:1};
+ const render=active=>React.act(async()=>root.render(React.createElement(SidebarBodyMedian,{active,sourceToken:{...source},onOpen(){}})));
+ await render(false);await React.act(async()=>fire(150));assert.equal(reads,0);
+ await render(true);await React.act(async()=>fire(150));assert.equal(reads,1);
+ for(let i=0;i<10;i++)await render(true);assert.equal(timers.size,0);assert.equal(reads,1);
+ source={canonicalHomeKey:'B',physicalHomeKey:'B',transitionGeneration:2};await render(true);
+ const payload=model=>({asOf:18000,points:[16200,16500,16800].map(bucketStart=>({bucketStart,model,outputTokens:30,durationSeconds:1,sampleCount:2,tokensPerSecond:30}))});
+ await React.act(async()=>pending.shift().resolve(payload('OLD')));assert.doesNotMatch(dom.document.body.textContent,/OLD/);
+ await React.act(async()=>fire(150));assert.equal(reads,2);
+ await React.act(async()=>pending.shift().resolve(payload('NEW')));assert.match(dom.document.body.textContent,/NEW/);assert.equal([...timers.values()].filter(t=>t.ms===60000).length,1);
+ await React.act(async()=>{Object.defineProperty(dom.document,'hidden',{value:true,configurable:true});dom.document.dispatchEvent(new dom.Event('visibilitychange'));});assert.equal(timers.size,0);
+ await React.act(async()=>{Object.defineProperty(dom.document,'hidden',{value:false,configurable:true});dom.document.dispatchEvent(new dom.Event('visibilitychange'));});await React.act(async()=>fire(150));
+ await React.act(async()=>pending.shift().reject(new Error('test read failure')));assert.match(dom.document.body.textContent,/读取失败/);assert.doesNotMatch(dom.document.body.textContent,/NEW/);
+ await render(false);assert.equal(timers.size,0);
+ });
+ }finally{if(root)await React.act(async()=>root.unmount());for(const[k,desc]of previous)desc?Object.defineProperty(globalThis,k,desc):delete globalThis[k];dom.close();}
+});
