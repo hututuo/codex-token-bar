@@ -30,7 +30,7 @@ test("quota adapters convert Codex fractions once, preserve Claude percent and u
     );
     assert.deepEqual(
       items.map((i) => i.remaining),
-      [0, 92, null, null],
+      [0, 92],
     );
     const selected = {
       ...defaultQuotaSelection,
@@ -40,12 +40,22 @@ test("quota adapters convert Codex fractions once, preserve Claude percent and u
     };
     assert.deepEqual(
       orderedQuotaItems(items, selected, ["claudeCode"]).map((i) => i.id),
-      ["claudeCode:5h"],
+      [],
     );
     assert.deepEqual(
       orderedQuotaItems(items, selected, ["codex"]).map((i) => i.remaining),
       [92, 0],
     );
+  }));
+test("Claude quota only shows measured usable windows, including zero remaining", async () =>
+  withSsrModules(async (load) => {
+    const { quotaItems } = await load("/src/multiClient/integratedClientModel.ts");
+    for (const state of ["missing", "notConnected", "stale", "invalid", "unavailable"])
+      assert.equal(quotaItems(undefined, {state, windows:[{label:"5h", usedPercent:20}]}, true).filter(i => i.client === "claudeCode").length, 0);
+    const items=quotaItems(undefined, {state:"available", windows:[{label:"5h",usedPercent:100}]}, true);
+    assert.deepEqual(items.filter(i=>i.client === "claudeCode").map(i=>[i.id,i.remaining]), [["claudeCode:5h",0]]);
+    const invalid=quotaItems(undefined, {state:"available",windows:[{label:"5h",usedPercent:NaN},{label:"7d",usedPercent:0}]}, true);
+    assert.deepEqual(invalid.filter(i=>i.client === "claudeCode").map(i=>i.remaining), [100]);
   }));
 test("left and right are distinct half arcs, never two upper semicircles", async () =>
   withSsrModules(async (load) => {

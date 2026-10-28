@@ -20,6 +20,18 @@ export const claudeQuotaSetup = "在 Claude Code 的 statusLine 设置中配置�
 export function unavailableQuota(client: string): ClientQuotaReading {
   return {client, state:"notConnected", source:client === "claudeCode" ? "local-statusline" : "unsupported", windows:[], notice:client === "claudeCode" ? claudeQuotaSetup : "尚无本地额度提供者；Token 用量仍可读取。联网额度保持关闭。"};
 }
+
+export function claudeQuotaFromLocalCache(value: {
+  state:string;fiveHour?:{usedPercent:number;resetsAt:string|null}|null;
+  sevenDay?:{usedPercent:number;resetsAt:string|null}|null;
+}):ClientQuotaReading {
+  const windows:ClientQuotaReading["windows"]=[];
+  if(value.state === "available") for(const [label,window] of [["5h",value.fiveHour],["7d",value.sevenDay]] as const) {
+    if(window && Number.isFinite(window.usedPercent) && window.usedPercent>=0 && window.usedPercent<=100)
+      windows.push({label,usedPercent:window.usedPercent,resetsAt:window.resetsAt});
+  }
+  return {client:"claudeCode",state:windows.length?"available":value.state,source:"local-statusline",windows,notice:"只读取本地额度缓存，不联网。"};
+}
 export interface ClientChartPoint { client: string; startUnix: number; tokens: number; }
 export function projectClientChart(codex: {startUnix:number;tokens:number}[], others: ClientTrendBucket[], days: number, now: number, allowed: string[]): ClientChartPoint[] {
   const step = days === 1 ? 300 : days === 7 ? 3600 : 21600, count = days * 86400 / step + 1;

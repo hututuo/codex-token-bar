@@ -290,15 +290,20 @@ final class MultiClientUsageStore: ObservableObject {
     @Published private(set) var claudeQuota = ClaudeLocalQuota.missing
     private let defaults: UserDefaults
     private let scanner: MultiClientUsageScanner
+    private let quotaReader: @Sendable () -> ClaudeLocalQuota
     private var loop: Task<Void, Never>?
+    private var quotaLoop: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
     private var generation = 0
+    private var quotaProbeInFlight = false
+    private var lastQuotaProbeUptime: TimeInterval?
     private var menuItem: NSStatusItem?
-    private var quotaUpdates: AnyCancellable?
     private var monitoringUpdates: AnyCancellable?
 
-    init(defaults: UserDefaults = .standard, databaseURL: URL = MultiClientUsageStore.defaultDatabaseURL) {
+    init(defaults: UserDefaults = .standard, databaseURL: URL = MultiClientUsageStore.defaultDatabaseURL,
+         quotaReader: @escaping @Sendable () -> ClaudeLocalQuota = { ClaudeLocalQuota.read() }) {
         self.defaults = defaults
+        self.quotaReader = quotaReader
         let decoded = defaults.data(forKey: Self.preferencesKey).flatMap { try? JSONDecoder().decode([MultiClientUsagePreference].self, from: $0) } ?? []
         preferences = MultiClientUsagePreference.normalized(decoded)
         scanner = MultiClientUsageScanner(databaseURL: databaseURL)
@@ -308,10 +313,15 @@ final class MultiClientUsageStore: ObservableObject {
         guard loop == nil else { return }
         monitoringUpdates = NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification, object: defaults)
             .receive(on: DispatchQueue.main).sink { [weak self] _ in self?.syncLocalRuntime() }
-        quotaUpdates = ClaudeStatuslineStore.shared.$quota.removeDuplicates().sink { [weak self] reading in
-            guard let self, self.preferences.contains(where: { $0.enabled && $0.client == .claudeCode }) else { return }
-            self.claudeQuota = reading
-            self.syncMenuItems()
+        // Quota is an independent local-cache feature. Probe at startup and every minute even
+        // when transcript collection and Claude speed monitoring are both disabled.
+        refreshClaudeQuotaCache()
+        quotaLoop = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(60))
+                guard !Task.isCancelled else { return }
+                self?.refreshClaudeQuotaCache()
+            }
         }
         syncLocalRuntime()
         refresh()
@@ -358,8 +368,6 @@ final class MultiClientUsageStore: ObservableObject {
                 let detected = await Task.detached(priority: .utility) { UsageClientDetection.detect() }.value
                 self?.detections = detected
                 let result = try await scanner.scan(preferences)
-                let quota = preferences.contains { $0.enabled && $0.client == .claudeCode }
-                    ? await Task.detached(priority: .utility) { ClaudeLocalQuota.read() }.value : .missing
                 guard let self else { return }
                 if self.generation == generation {
                     self.summaries = result.summaries
@@ -367,7 +375,6 @@ final class MultiClientUsageStore: ObservableObject {
                     self.sevenDaySummaries = result.sevenDaySummaries
                     self.diagnostics = result.diagnostics
                     self.detections = detected; self.trendBuckets = result.trendBuckets; self.dailyBuckets = result.dailyBuckets
-                    self.claudeQuota = quota
                     self.updatedAt = Date(); self.syncMenuItems()
                 }
             } catch { self?.diagnostics = [error.localizedDescription] }
@@ -375,11 +382,38 @@ final class MultiClientUsageStore: ObservableObject {
             if self?.generation != generation { self?.refresh() }
         }
     }
+    func refreshClaudeQuotaCache() {
+        let uptime = ProcessInfo.processInfo.systemUptime
+        guard lastQuotaProbeUptime.map({ uptime - $0 >= 60 }) ?? true else { return }
+        guard !quotaProbeInFlight else { return }
+        quotaProbeInFlight = true
+        lastQuotaProbeUptime = uptime
+        let reader = quotaReader
+        Task { [weak self] in
+            let reading = await Task.detached(priority: .utility) { reader() }.value
+            guard let self else { return }
+            if self.claudeQuota != reading {
+                self.claudeQuota = reading
+                self.syncMenuItems()
+            }
+            self.quotaProbeInFlight = false
+        }
+    }
+    private var hasUsableClaudeQuota: Bool {
+        claudeQuota.state == "available" && (claudeQuota.fiveHour != nil || claudeQuota.sevenDay != nil)
+    }
     var displayClientIDs: [String] {
-        preferences.filter { value in value.enabled || summaries.contains { $0.client == value.client } }.map { $0.client.rawValue }
+        preferences.filter { value in
+            value.enabled || summaries.contains { $0.client == value.client }
+                || (value.client == .claudeCode && hasUsableClaudeQuota)
+        }.map { $0.client.rawValue }
     }
     var availablePreferences: [MultiClientUsagePreference] {
-        preferences.filter { value in value.enabled || !value.path.isEmpty || detections.contains { $0.client == value.client } || summaries.contains { $0.client == value.client } }
+        preferences.filter { value in
+            value.enabled || !value.path.isEmpty || detections.contains { $0.client == value.client }
+                || summaries.contains { $0.client == value.client }
+                || (value.client == .claudeCode && hasUsableClaudeQuota)
+        }
     }
     var newDetections: [DetectedUsageClient] {
         detections.filter { detected in !acknowledgedClients.contains(detected.client.rawValue) && !preferences.contains { $0.client == detected.client && $0.enabled } }

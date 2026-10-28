@@ -88,13 +88,14 @@ enum ClientQuotaProjection {
         }
         add("7d", "7d", codex.sevenDay)
         for window in codex.reserveWindows { add(window.label, window.compactDisplayLabel, window) }
-        if includeClaude {
+        if includeClaude, claude.state == "available" {
             for label in ["5h", "7d"] {
-                let window = claude.windows.first { $0.label == label }
-                let used = window?.usedPercent
+                guard let window = claude.windows.first(where: { $0.label == label }) else { continue }
+                let used = window.usedPercent
+                guard used.isFinite, (0...100).contains(used) else { continue }
                 items.append(ClientQuotaItem(id: "claudeCode:" + label, client: "claudeCode", window: label,
-                    remaining: used.flatMap { $0.isFinite ? min(100, max(0, 100 - $0)) : nil }, resetsAt: window?.resetsAt,
-                    source: "本地缓存 · 未绑定账号", status: window == nil ? (claude.state == "notConnected" ? "未接入" : "不可用") : ""))
+                    remaining: 100 - used, resetsAt: window.resetsAt,
+                    source: "本地缓存 · 未绑定账号", status: ""))
             }
         }
         return items

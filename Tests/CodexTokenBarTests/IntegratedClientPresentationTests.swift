@@ -39,12 +39,26 @@ final class IntegratedClientPresentationTests: XCTestCase {
             sevenDay: AccountQuotaWindow(label: "7d", usedPercent: 8, resetsAt: nil))
         let items = ClientQuotaProjection.items(codex: snapshot,
             claude: ClaudeCapturedQuotaProvider(snapshot: .missing).reading(), includeClaude: true)
-        XCTAssertEqual(items.map(\.id), ["codex:5h", "codex:7d", "claudeCode:5h", "claudeCode:7d"])
+        XCTAssertEqual(items.map(\.id), ["codex:5h", "codex:7d"])
         XCTAssertEqual(items[0].value, "0%")
         XCTAssertEqual(items[1].value, "92%")
-        XCTAssertNil(items[2].remaining)
-        XCTAssertEqual(items[2].value, "—")
-        XCTAssertEqual(items[2].status, "未接入")
+        let measured = ClientQuotaReading(client: "claudeCode", state: "available", source: "local-statusline",
+            windows: [.init(label: "5h", usedPercent: 100, resetsAt: nil)], notice: "local")
+        let withClaude = ClientQuotaProjection.items(codex: snapshot, claude: measured, includeClaude: true)
+        XCTAssertEqual(withClaude.map(\.id), ["codex:5h", "codex:7d", "claudeCode:5h"])
+        XCTAssertEqual(withClaude.last?.remaining, 0, "A measured exhausted window is visible, not missing")
+    }
+    func testClaudeQuotaOnlyDisplaysUsableWindowsAndExpiresWithoutPlaceholders() {
+        for state in ["missing", "notConnected", "stale", "invalid", "unavailable"] {
+            let reading = ClientQuotaReading(client: "claudeCode", state: state, source: "local-statusline",
+                windows: [.init(label: "5h", usedPercent: 20, resetsAt: nil)], notice: "local")
+            XCTAssertFalse(ClientQuotaProjection.items(codex: .empty, claude: reading, includeClaude: true).contains { $0.client == "claudeCode" })
+        }
+        let reading = ClientQuotaReading(client: "claudeCode", state: "available", source: "local-statusline",
+            windows: [.init(label: "5h", usedPercent: .nan, resetsAt: nil), .init(label: "7d", usedPercent: 0, resetsAt: nil)], notice: "local")
+        let items = ClientQuotaProjection.items(codex: .empty, claude: reading, includeClaude: true)
+        XCTAssertEqual(items.filter { $0.client == "claudeCode" }.map(\.id), ["claudeCode:7d"])
+        XCTAssertEqual(items.last?.remaining, 100)
     }
     func testQuotaPreferencesRoundTripRetainEverySelectedItemAndHiddenHistory() {
         var s = ClientQuotaSelection()

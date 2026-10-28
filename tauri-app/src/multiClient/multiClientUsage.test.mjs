@@ -3,6 +3,9 @@ import test from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { withSsrModules } from "../test/ssrHarness.mjs";
+import {act} from "react";
+import {createRoot} from "react-dom/client";
+import {Window} from "happy-dom";
 
 test("new clients default to no collection and no visible surfaces", async () => {
   await withSsrModules(async load => {
@@ -31,4 +34,26 @@ test("Claude quota panel remains unavailable without a captured local provider w
     const settings = renderToStaticMarkup(React.createElement(MultiClientUsageSettings));
     assert.match(settings, /不读取凭据、不联网/); assert.doesNotMatch(settings, /api\.anthropic\.com/);
   });
+});
+
+test("local Claude quota is still visible when transcript storage fails",async()=>{
+  const w=new Window();const prior={window:globalThis.window,document:globalThis.document,IS_REACT_ACT_ENVIRONMENT:globalThis.IS_REACT_ACT_ENVIRONMENT};
+  globalThis.window=w;globalThis.document=w.document;globalThis.IS_REACT_ACT_ENVIRONMENT=true;
+  const calls=[];let root;
+  w.__TAURI_INTERNALS__={invoke:async command=>{
+    calls.push(command);
+    if(command==='refresh_multi_client_usage')throw new Error('fixture usage storage unavailable');
+    assert.equal(command,'read_claude_local_quota');
+    return {state:'available',fiveHour:{usedPercent:25,resetsAt:'2026-10-28T20:00:00Z'},sevenDay:null};
+  }};
+  try {
+    await withSsrModules(async load=>{
+      const {useMultiClientUsage}=await load('/src/multiClient/MultiClientUsage.tsx');
+      function Readout(){const {snapshot}=useMultiClientUsage();return React.createElement('div',null,JSON.stringify(snapshot.quotas??[]));}
+      const host=w.document.createElement('div');w.document.body.append(host);root=createRoot(host);
+      await act(async()=>root.render(React.createElement(Readout)));
+      assert.deepEqual(calls,['refresh_multi_client_usage','read_claude_local_quota']);
+      assert.match(host.textContent,/claudeCode/);assert.match(host.textContent,/"usedPercent":25/);
+    });
+  } finally {if(root)await act(async()=>root.unmount());Object.assign(globalThis,prior);await w.happyDOM.abort();}
 });

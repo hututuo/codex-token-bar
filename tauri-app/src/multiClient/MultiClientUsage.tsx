@@ -1,5 +1,5 @@
 import type { DashboardSnapshot } from "../types/dashboard";
-import { clientIsAvailable, codexQuotaProvider, projectClientChart, unavailableQuota, type ClientDetection, type ClientQuotaReading, type ClientTrendBucket, type ClientChartPoint } from "./multiClientProduct";
+import { claudeQuotaFromLocalCache, clientIsAvailable, codexQuotaProvider, projectClientChart, unavailableQuota, type ClientDetection, type ClientQuotaReading, type ClientTrendBucket, type ClientChartPoint } from "./multiClientProduct";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { callCommandStrict } from "../api/command";
 import { isTauriRuntimeAvailable } from "../platform/runtime";
@@ -39,8 +39,18 @@ async function refreshShared() {
     try {
       const next = await callCommandStrict<unknown>("refresh_multi_client_usage");
       if (validSnapshot(next)) { cached = next; cacheError = ""; }
-      else { cacheError = "本地用量接口暂不可用，保留已读取的数据"; }
-    } catch (error) { cacheError = String(error); }
+      else { throw new Error("本地用量接口暂不可用，保留已读取的数据"); }
+    } catch (error) {
+      cacheError = String(error);
+      // A transcript/index error must not hide an independently readable local
+      // quota cache. Keep all last-good usage rows; update only this reading.
+      let reading=unavailableQuota("claudeCode");
+      try {
+        const local=await callCommandStrict<Parameters<typeof claudeQuotaFromLocalCache>[0]>("read_claude_local_quota");
+        reading=claudeQuotaFromLocalCache(local);
+      } catch { /* A missing/unreadable cache contributes no visible window. */ }
+      cached={...cached,quotas:[...(cached.quotas??[]).filter(q=>q.client!=="claudeCode"),reading]};
+    }
     finally { pending = null; emit(); }
   })();
   emit();

@@ -15,7 +15,7 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use time::format_description::well_known::Rfc3339;
 use time::{Date, Duration as CalendarDuration, OffsetDateTime};
 
@@ -28,6 +28,7 @@ const MAX_OPENCODE_ROWS: usize = 500;
 const MAX_OPENCODE_ROW_BYTES: usize = 1024 * 1024;
 const MAX_COUNTER: u64 = 1_000_000_000_000;
 const DATABASE_BUSY_TIMEOUT: Duration = Duration::from_secs(3);
+const CLAUDE_LOCAL_QUOTA_PROBE_INTERVAL: Duration = Duration::from_secs(60);
 type EventKey = (String, String, String);
 
 static MULTI_CLIENT_USAGE_GATE: OnceLock<Mutex<()>> = OnceLock::new();
@@ -38,10 +39,36 @@ static MULTI_CLIENT_SCOPED_SUMMARY_CACHE: OnceLock<Mutex<MultiClientScopedSummar
     OnceLock::new();
 static DEEPSEEK_SESSION_HINT_CACHE: OnceLock<Mutex<VecDeque<(String, String, String)>>> =
     OnceLock::new();
+static CLAUDE_LOCAL_QUOTA_PROBE_CACHE: OnceLock<Mutex<ClaudeLocalQuotaProbeCache>> =
+    OnceLock::new();
 const MAX_DEEPSEEK_SESSION_HINT_CACHE: usize = 1_024;
 const BUNDLED_PRICE_TABLE: &str =
     include_str!("../../../../Vendor/AgentSpeed/spec/assets/prices.json");
 const MAX_SCOPED_SUMMARY_CACHE_ENTRIES: usize = 8;
+
+#[derive(Default)]
+struct ClaudeLocalQuotaProbeCache {
+    checked_at: Option<Instant>,
+    snapshot: Option<ClaudeLocalQuotaSnapshot>,
+}
+
+fn cached_claude_local_quota_read(
+    cache: &mut ClaudeLocalQuotaProbeCache,
+    now: Instant,
+    reader: impl FnOnce() -> ClaudeLocalQuotaSnapshot,
+) -> ClaudeLocalQuotaSnapshot {
+    if cache.checked_at.is_some_and(|checked_at| {
+        now.saturating_duration_since(checked_at) < CLAUDE_LOCAL_QUOTA_PROBE_INTERVAL
+    }) {
+        if let Some(snapshot) = &cache.snapshot {
+            return snapshot.clone();
+        }
+    }
+    let snapshot = reader();
+    cache.checked_at = Some(now);
+    cache.snapshot = Some(snapshot.clone());
+    snapshot
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct MultiClientAggregateCacheKey {
@@ -491,6 +518,9 @@ fn read_multi_client_usage_snapshot_at(
     settings_path: &Path,
     database_path: &Path,
 ) -> Result<MultiClientUsageSnapshot, String> {
+    // Probe the app-owned cache before touching transcript aggregates. This path is bounded to
+    // one small JSON file and never depends on transcript opt-in or monitoring settings.
+    let local_claude_quota = read_claude_local_quota();
     let (preferences, mut diagnostics) = load_preferences(settings_path);
     let (summaries, today_summaries, seven_day_summaries, updated_at, trend_buckets, daily_buckets) =
         if database_path.exists() {
@@ -547,6 +577,7 @@ fn read_multi_client_usage_snapshot_at(
         updated_at,
         trend_buckets,
         daily_buckets,
+        local_claude_quota,
     ))
 }
 
@@ -559,10 +590,8 @@ fn make_snapshot(
     updated_at: Option<String>,
     trend_buckets: Vec<MultiClientUsageTrendBucket>,
     daily_buckets: Vec<MultiClientUsageTrendBucket>,
+    local_claude_quota: ClaudeLocalQuotaSnapshot,
 ) -> MultiClientUsageSnapshot {
-    let local_claude_quota = if preferences.iter().any(|p| p.client == "claudeCode" && p.enabled) {
-        read_claude_local_quota()
-    } else { claude_quota_state("missing") };
     MultiClientUsageSnapshot {
         preferences,
         summaries,
@@ -581,6 +610,9 @@ fn refresh_multi_client_usage_at(
     settings_path: &Path,
     database_path: &Path,
 ) -> Result<MultiClientUsageSnapshot, String> {
+    // Always read Claude's local quota cache independently of transcript readers. The reader
+    // has fixed path and byte limits, and does not launch Claude or use credentials/network.
+    let local_claude_quota = read_claude_local_quota();
     let (preferences, mut diagnostics) = load_preferences(settings_path);
     let enabled = preferences
         .iter()
@@ -597,6 +629,7 @@ fn refresh_multi_client_usage_at(
             None,
             Vec::new(),
             Vec::new(),
+            local_claude_quota,
         ));
     }
     // Disabling all readers stops scanning but leaves the independent ledger intact.
@@ -622,6 +655,7 @@ fn refresh_multi_client_usage_at(
             aggregates.updated_at,
             aggregates.arrays.trend_buckets,
             aggregates.arrays.daily_buckets,
+            local_claude_quota,
         ));
     }
     if let Some(parent) = database_path.parent() {
@@ -771,22 +805,30 @@ fn refresh_multi_client_usage_at(
         aggregates.updated_at,
         aggregates.arrays.trend_buckets,
         aggregates.arrays.daily_buckets,
+        local_claude_quota,
     ))
 }
 
 pub fn read_claude_local_quota() -> ClaudeLocalQuotaSnapshot {
-    let home = app_paths::home_dir();
-    let app_capture = if cfg!(target_os = "windows") {
-        std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
-            .unwrap_or_else(|| home.join("AppData").join("Local"))
-            .join("CodexTokenBar").join("claude-local-statusline").join("latest.json")
-    } else {
-        home.join("Library").join("Application Support").join("CodexTokenBar")
-            .join("claude-local-statusline").join("latest.json")
-    };
-    let path = if fs::symlink_metadata(&app_capture).is_ok() { app_capture }
-        else { home.join(".claude-monitor").join("statusline").join("latest.json") };
-    read_claude_local_quota_at(&path, OffsetDateTime::now_utc().unix_timestamp() as f64)
+    let now = Instant::now();
+    let cache = CLAUDE_LOCAL_QUOTA_PROBE_CACHE.get_or_init(Default::default);
+    let mut cache = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cached_claude_local_quota_read(&mut cache, now, || {
+        let home = app_paths::home_dir();
+        let app_capture = if cfg!(target_os = "windows") {
+            std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
+                .unwrap_or_else(|| home.join("AppData").join("Local"))
+                .join("CodexTokenBar").join("claude-local-statusline").join("latest.json")
+        } else {
+            home.join("Library").join("Application Support").join("CodexTokenBar")
+                .join("claude-local-statusline").join("latest.json")
+        };
+        let path = if fs::symlink_metadata(&app_capture).is_ok() { app_capture }
+            else { home.join(".claude-monitor").join("statusline").join("latest.json") };
+        read_claude_local_quota_at(&path, OffsetDateTime::now_utc().unix_timestamp() as f64)
+    })
 }
 
 fn read_claude_local_quota_at(path: &Path, now_epoch: f64) -> ClaudeLocalQuotaSnapshot {
@@ -3771,6 +3813,73 @@ mod tests {
             .all(|preference| !preference.enabled));
         assert!(database.exists() == false);
         assert_eq!(snapshot.quotas.len(), 5);
+    }
+
+    #[test]
+    fn local_claude_quota_is_projected_without_transcript_opt_in() {
+        let available = ClaudeLocalQuotaSnapshot {
+            state: "available".into(),
+            captured_at: Some("2026-10-25T00:00:00Z".into()),
+            five_hour: Some(ClaudeLocalQuotaWindow {
+                used_percent: 25.0,
+                resets_at: Some("2026-10-25T05:00:00Z".into()),
+            }),
+            seven_day: None,
+        };
+        let snapshot = make_snapshot(
+            default_preferences(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            Vec::new(),
+            Vec::new(),
+            available,
+        );
+
+        assert!(snapshot.preferences.iter().all(|preference| !preference.enabled));
+        let claude = snapshot.quotas.iter().find(|quota| quota.client == "claudeCode").unwrap();
+        assert_eq!(claude.state, "available");
+        assert_eq!(claude.windows[0].used_percent, Some(25.0));
+    }
+
+    #[test]
+    fn local_claude_quota_probe_is_rate_limited_and_rechecks_expiration() {
+        let start = Instant::now();
+        let mut cache = ClaudeLocalQuotaProbeCache::default();
+        let mut probes = 0;
+        let fresh = ClaudeLocalQuotaSnapshot {
+            state: "available".into(),
+            captured_at: Some("2026-10-25T00:00:00Z".into()),
+            five_hour: None,
+            seven_day: None,
+        };
+        let first = cached_claude_local_quota_read(&mut cache, start, || {
+            probes += 1;
+            fresh.clone()
+        });
+        let within_interval = cached_claude_local_quota_read(
+            &mut cache,
+            start + Duration::from_secs(59),
+            || {
+                probes += 1;
+                claude_quota_state("missing")
+            },
+        );
+        let after_interval = cached_claude_local_quota_read(
+            &mut cache,
+            start + CLAUDE_LOCAL_QUOTA_PROBE_INTERVAL,
+            || {
+                probes += 1;
+                claude_quota_state("stale")
+            },
+        );
+
+        assert_eq!(first.state, "available");
+        assert_eq!(within_interval, first, "rapid callers share the bounded cache read");
+        assert_eq!(after_interval.state, "stale", "a later probe observes freshness expiry");
+        assert_eq!(probes, 2);
     }
 
     #[test]

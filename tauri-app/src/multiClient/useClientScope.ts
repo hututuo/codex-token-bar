@@ -80,7 +80,8 @@ export function useClientScope() {
   const available = snapshot.preferences
       .filter(
         (p) =>
-          p.enabled || snapshot.summaries.some((s) => s.client === p.client),
+          p.enabled || snapshot.summaries.some((s) => s.client === p.client) ||
+          (p.client === "claudeCode" && snapshot.quotas?.some(q => q.client === "claudeCode" && q.state === "available" && q.windows.length > 0)),
       )
       .map((p) => p.client),
     allowed = scopeClients(raw, available);
@@ -113,7 +114,7 @@ export function useClientQuotaItems(codex?: QuotaSnapshot) {
       (p) =>
         (p.client === "claudeCode" || p.client === "claudeDesktop") &&
         (p.enabled || snapshot.detections?.some((d) => d.client === p.client)),
-    ) || selection.enabled.some((id) => id.startsWith("claudeCode:"));
+    ) || selection.enabled.some((id) => id.startsWith("claudeCode:")) || claude.state === "available";
   return {
     items: orderedQuotaItems(
       quotaItems(

@@ -21,4 +21,13 @@ final class ClaudeLocalQuotaTests: XCTestCase {
         XCTAssertEqual(ClaudeLocalQuota.decode(Data("{\"captured_at_epoch\":1800000000,\"rate_limits\":null,\"tokens\":100000}".utf8), now: now).state, "missing")
         XCTAssertEqual(ClaudeLocalQuota.decode(Data("{}".utf8), now: now).state, "invalid")
     }
+    func testLocalFileReaderRejectsOversizedQuotaCache() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let cache = home.appendingPathComponent("Library/Application Support/CodexTokenBar/claude-local-statusline/latest.json")
+        try FileManager.default.createDirectory(at: cache.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(repeating: 0x20, count: 65_537).write(to: cache)
+
+        XCTAssertEqual(ClaudeLocalQuota.read(home: home, now: now).state, "invalid")
+    }
 }

@@ -5,7 +5,7 @@ struct ClientScopePicker: View {
     @ObservedObject private var clients = MultiClientUsageStore.shared
     @AppStorage(ClientDisplayScope.key) private var scope = "codex"
     private var choices: [MultiClientUsagePreference] {
-        clients.availablePreferences.filter { preference in preference.enabled || clients.summaries.contains { $0.client == preference.client } }
+        clients.availablePreferences.filter { clients.displayClientIDs.contains($0.client.rawValue) }
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {

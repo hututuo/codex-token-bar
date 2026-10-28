@@ -134,7 +134,6 @@ actor ClaudeLocalSpeedLedger {
 @MainActor final class ClaudeStatuslineStore: ObservableObject {
     static let shared = ClaudeStatuslineStore()
     static var cacheURL: URL { MultiClientUsageStore.defaultDatabaseURL.deletingLastPathComponent().appendingPathComponent("claude-local-statusline/latest.json") }
-    @Published private(set) var quota: ClaudeLocalQuota = .missing
     @Published private(set) var metrics: ClaudeStatuslineMetrics?
     @Published private(set) var samples: [ClaudeAPISpeedSample] = []
     @Published private(set) var windows: [ClaudeAPISpeedWindow] = []
@@ -145,7 +144,7 @@ actor ClaudeLocalSpeedLedger {
     private let ledger = ClaudeLocalSpeedLedger(url: MultiClientUsageStore.defaultDatabaseURL.deletingLastPathComponent().appendingPathComponent("claude-local-speed.sqlite"))
 
     func setEnabled(_ enabled: Bool) {
-        if !enabled { task?.cancel(); task = nil; baselines.removeAll(); metrics = nil; quota = .missing; samples = []; windows = []; buckets = []; return }
+        if !enabled { task?.cancel(); task = nil; baselines.removeAll(); metrics = nil; samples = []; windows = []; buckets = []; return }
         guard task == nil else { return }
         task = Task { [weak self] in
             while !Task.isCancelled {
@@ -167,14 +166,11 @@ actor ClaudeLocalSpeedLedger {
         let now = Date()
         let recent = samples.filter { $0.endedAt >= now.addingTimeInterval(-1800) }
         if samples != recent { samples = recent }
-        let capturedQuota = await Task.detached(priority: .utility) { ClaudeLocalQuota.read(now: now) }.value
-        guard !Task.isCancelled else { return }
-        if quota != capturedQuota { quota = capturedQuota }
         let readings = await files.read(directory: Self.cacheURL.deletingLastPathComponent(), now: now)
         let reading = readings.max { $0.capturedAt < $1.capturedAt }
         guard !Task.isCancelled else { return }
         if metrics != reading { metrics = reading }
-        // Quota/context polling only. Legacy API-speed records remain on
+        // Statusline context polling only. Legacy API-speed records remain on
         // disk for migration; this path never opens or writes the old speed DB.
 
     }

@@ -18,8 +18,17 @@ struct ClaudeLocalQuota: Equatable, Sendable {
         for url in candidates {
             guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path) else { continue }
             guard attributes[.type] as? FileAttributeType == .typeRegular,
-                  let size = attributes[.size] as? NSNumber, size.intValue <= 65_536,
-                  let data = try? Data(contentsOf: url) else { return Self(state: "invalid", capturedAt: nil, fiveHour: nil, sevenDay: nil) }
+                  let size = attributes[.size] as? NSNumber, size.intValue >= 0,
+                  size.intValue <= 65_536 else { return Self(state: "invalid", capturedAt: nil, fiveHour: nil, sevenDay: nil) }
+            let data: Data
+            do {
+                let handle = try FileHandle(forReadingFrom: url)
+                defer { try? handle.close() }
+                data = try handle.read(upToCount: 65_537) ?? Data()
+            } catch {
+                return Self(state: "invalid", capturedAt: nil, fiveHour: nil, sevenDay: nil)
+            }
+            guard data.count <= 65_536 else { return Self(state: "invalid", capturedAt: nil, fiveHour: nil, sevenDay: nil) }
             // A stale/invalid app capture must not silently display an older
             // account's legacy cache as if it were current.
             return decode(data, now: now)

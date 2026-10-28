@@ -83,21 +83,19 @@ export function quotaItems(
   codex?.reserveWindows?.forEach((w) =>
     add(w.label, quotaWindowShortLabel(w.label), w),
   );
-  if (includeClaude)
+  if (includeClaude && claude.state === "available")
     ["5h", "7d"].forEach((label) => {
       const w = claude.windows.find((w) => w.label === label),
         u = w?.usedPercent;
+      if (typeof u !== "number" || !Number.isFinite(u) || u < 0 || u > 100) return;
       items.push({
         id: `claudeCode:${label}`,
         client: "claudeCode",
         window: label,
-        remaining:
-          typeof u === "number" && Number.isFinite(u)
-            ? Math.max(0, Math.min(100, 100 - u))
-            : null,
+        remaining: 100 - u,
         resetsAt: w?.resetsAt ?? null,
         source: "本地缓存 · 未绑定账号",
-        status: w ? "" : claude.state === "notConnected" ? "未接入" : "不可用",
+        status: "",
       });
     });
   return items;
