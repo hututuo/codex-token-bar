@@ -853,6 +853,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         if BusinessSQLiteRoutes.store(for: databaseURL) != nil {
             switch try assessMigration(databaseURL: databaseURL, fileManager: fileManager) {
             case .compatible: return false
+            case let .upgradeRequired(component, stored, supported):
+                throw CodexUsageIndexUpgradeRequiredError(component: component, stored: stored, supported: supported)
             default: throw CodexUsageIndexRepairRequiredError(reason: "归并后的索引需要模块迁移，已保留账本并停止旧文件交换")
             }
         }

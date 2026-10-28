@@ -90,6 +90,49 @@ final class BusinessDatabaseMigrationTests: XCTestCase {
         XCTAssertEqual(try routed.readRows("SELECT tokens FROM events") { $0.int(0) }.first!, 80)
         XCTAssertEqual(try routed.readRows("SELECT session_id FROM sources") { $0.text(0) }.first!, "same-uuid")
     }
+    func testUnsupportedDormantHomesArePreservedWithoutBlockingSupportedHome() throws {
+        let (_, c) = try fixture()
+        let supported = c.exact.appendingPathComponent(String(repeating: "a", count: 64) + ".sqlite")
+        _ = try CodexUsageHistoryIndex(sessionCatalogTestingDatabaseURL: supported)
+        var originals: [(URL, BusinessStoreProof)] = []
+        // Include a cache-only source, an empty v3 index (the real startup
+        // blocker), and a populated future version whose IDs must survive.
+        for (version, character, root) in [("3", "b", c.legacyExact), ("999", "c", c.exact)] {
+            let url = root.appendingPathComponent(String(repeating: character, count: 64) + ".sqlite")
+            let source = SQLiteDatabaseDriver(url: url, enableWAL: true)
+            try source.execute("CREATE TABLE schema_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE retained(id INTEGER PRIMARY KEY,payload BLOB)")
+            try source.execute("INSERT INTO schema_meta VALUES('schema_version',?)", bindings: [.text(version)])
+            if version == "999" {
+                try source.execute("INSERT INTO retained VALUES(42,?)", bindings: [.blob(Data([0,255,1]))])
+            }
+            originals.append((url, try source.withConnection { try CodexBusinessDatabase.proof($0) }))
+        }
+        try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 33)
+        _ = try CodexUsageHistoryIndex(sessionCatalogTestingDatabaseURL: supported)
+        for (url, proof) in originals {
+            let destination = c.exact.appendingPathComponent(url.lastPathComponent)
+            let routed = SQLiteDatabaseDriver(url: destination)
+            XCTAssertEqual(routed.backingURL, c.container)
+            XCTAssertEqual(try routed.readRows("SELECT value FROM schema_meta WHERE key='schema_version'") { $0.text(0) }.first!,
+                url.lastPathComponent.hasPrefix("b") ? "3" : "999")
+            let payloads = try routed.readRows("SELECT id,payload FROM retained") { ($0.int(0), $0.data(1)) }
+            XCTAssertEqual(payloads.count, url.lastPathComponent.hasPrefix("b") ? 0 : 1)
+            if let payload = payloads.first { XCTAssertEqual(payload.0, 42); XCTAssertEqual(payload.1, Data([0,255,1])) }
+            let store = try XCTUnwrap(BusinessSQLiteRoutes.store(for: destination))
+            let receipt = try JSONDecoder().decode(BusinessDatabaseMigration.Receipt.self,
+                from: Data(contentsOf: c.backups.appendingPathComponent(store.id).appendingPathComponent("receipt.json")))
+            XCTAssertNotNil(receipt.normalizationDeferredReason)
+            XCTAssertEqual(receipt.original, receipt.imported)
+            XCTAssertThrowsError(try CodexUsageHistoryIndex(sessionCatalogTestingDatabaseURL: destination)) { error in
+                XCTAssertTrue(error.localizedDescription.contains("newer or unknown"), "\(error)")
+            }
+            XCTAssertEqual(try SQLiteDatabaseDriver(url: url, readOnly: true, bypassBusinessRoutes: true)
+                .withConnection { try CodexBusinessDatabase.proof($0) }, proof)
+        }
+        BusinessSQLiteRoutes.deactivate()
+        try BusinessDatabaseMigration.migrate(c, availableBytes: 0)
+        _ = try CodexUsageHistoryIndex(sessionCatalogTestingDatabaseURL: supported)
+    }
     func testNewExactScansInAReuseStagePathsAndDeletedHistorySurvivesAcrossHomes() throws {
         let (root, c) = try fixture()
         try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 33)

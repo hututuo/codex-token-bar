@@ -49,6 +49,9 @@ final class BusinessDatabaseMigration {
     struct Receipt: Codable {
         let sourcePath: String, backupPath: String, normalizedPath: String, storeID: String
         let original: BusinessStoreProof, imported: BusinessStoreProof
+        /// An unsupported source is retained verbatim, never rebuilt. Opening
+        /// that particular Home still enforces its existing version gate.
+        let normalizationDeferredReason: String?
     }
     enum Failure: LocalizedError {
         case runningWriter, unsafeInput(String), insufficientSpace, incompleteActivation, unmigratedInput(String)
@@ -137,8 +140,20 @@ final class BusinessDatabaseMigration {
             if !fileManager.fileExists(atPath: normalized.path) {
                 try SQLiteDatabaseDriver(url: normalized, bypassBusinessRoutes: true).withConnection { try $0.restoreDatabase(from: backup) }
             }
+            var normalizationDeferredReason: String?
             if store.module == "exact.swift" || store.module == "exact.swift.retired" {
-                try CodexUsageHistoryIndex.prepareBusinessSnapshot(at: normalized)
+                do {
+                    try CodexUsageHistoryIndex.prepareBusinessSnapshot(at: normalized)
+                } catch let error as CodexUsageIndexUpgradeRequiredError {
+                    // Every old Home is collected, including dormant Homes
+                    // from an older/newer app. Their version must not prevent
+                    // an unrelated, supported Home from starting. Restore the
+                    // untouched snapshot before importing it; do not weaken
+                    // the per-Home reader's fail-closed compatibility checks.
+                    try SQLiteDatabaseDriver(url: normalized, bypassBusinessRoutes: true)
+                        .withConnection { try $0.restoreDatabase(from: backup) }
+                    normalizationDeferredReason = error.localizedDescription
+                }
             }
             if store.module == "exact.swift.stage" {
                 let normalizedDB = SQLiteDatabaseDriver(url: normalized, bypassBusinessRoutes: true)
@@ -174,7 +189,8 @@ final class BusinessDatabaseMigration {
                 bindings: [.text(input.source.path), .text(store.logicalURL.path), .text(store.id), .text(store.module),
                     .text(original.schemaDigest + ":" + original.rowsDigest), .text(backup.path)])
             let receipt = Receipt(sourcePath: input.source.path, backupPath: backup.path, normalizedPath: normalized.path,
-                storeID: store.id, original: original, imported: imported)
+                storeID: store.id, original: original, imported: imported,
+                normalizationDeferredReason: normalizationDeferredReason)
             let json = try JSONEncoder().encode(receipt)
             try json.write(to: folder.appendingPathComponent("receipt.json"), options: .atomic)
             try synchronize(folder.appendingPathComponent("receipt.json"))
