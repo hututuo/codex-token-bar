@@ -35,7 +35,7 @@ struct QuotaSidebarModuleSettingsView: View {
             .filter { (supportsCodex || $0 != .tps) && (supportsCodex || !allowedClients.isDisjoint(with: ["claudeCode", "claudeDesktop"]) || !$0.requiresCodexLiveData) }
     }
     private var allowedClients: Set<String> { ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs) }
-    private var selectedRates: [ModelRateContribution] { ClientLocalRuntimePresentation.rates(codex: monitor.totalSnapshot.modelRates, claude: runtime.projection(allowed: allowedClients).modelRates, allowed: allowedClients, mode: .normalized(speedModeRaw), upstreamCodex: AgentSpeedDisplayRuntime.modelRates(snapshot: upstreamActivity.snapshot, source: .codex), others: upstreamActivity.externalModelRates(allowed: allowedClients)) }
+    private var selectedRates: [ModelRateContribution] { ClientLocalRuntimePresentation.rates(codex: monitor.totalSnapshot.modelRates, claude: runtime.projection(allowed: allowedClients).modelRates, allowed: allowedClients, mode: .normalized(speedModeRaw), upstreamCodex: AgentSpeedDisplayRuntime.modelRates(snapshot: upstreamActivity.snapshot, source: .codex, now: Date()), others: upstreamActivity.externalModelRates(allowed: allowedClients)) }
     private var previewItems: [QuotaSidebarItem] {
         items.filter { item in
             guard controller.sidebarLayout.isVisible(item, in: .compact) else { return false }
@@ -179,7 +179,7 @@ struct QuotaSidebarSettingsRailPreview: View {
         }
     }
     private var allowedClients: Set<String> { ClientDisplayScope.clients(scope, available: clients.displayClientIDs) }
-    private var selectedRates: [ModelRateContribution] { ClientLocalRuntimePresentation.rates(codex: monitor.totalSnapshot.modelRates, claude: runtime.projection(allowed: allowedClients).modelRates, allowed: allowedClients, mode: .normalized(speedModeRaw), upstreamCodex: AgentSpeedDisplayRuntime.modelRates(snapshot: upstreamActivity.snapshot, source: .codex), others: upstreamActivity.externalModelRates(allowed: allowedClients)) }
+    private var selectedRates: [ModelRateContribution] { ClientLocalRuntimePresentation.rates(codex: monitor.totalSnapshot.modelRates, claude: runtime.projection(allowed: allowedClients).modelRates, allowed: allowedClients, mode: .normalized(speedModeRaw), upstreamCodex: AgentSpeedDisplayRuntime.modelRates(snapshot: upstreamActivity.snapshot, source: .codex, now: Date()), others: upstreamActivity.externalModelRates(allowed: allowedClients)) }
     private var selectedModels: [ModelTokenBreakdown] { ClientLocalRuntimePresentation.models(codex: store.todayModelBreakdowns, clients: clients.todaySummaries, allowed: allowedClients) }
     private var selectedRunning: RunningThreadSummary { ClientLocalRuntimePresentation.running(codex: tasks.runningThreadSummary, claude: runtime.projection(allowed: allowedClients).running, allowed: allowedClients) }
     var body: some View {

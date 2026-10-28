@@ -26,6 +26,7 @@ internal enum CodexPayloadKind : byte
     TokenCount,
     TaskComplete,
     TurnAborted,
+    Error,
 }
 
 internal enum CodexRole : byte
@@ -415,6 +416,14 @@ internal static class CodexLineReader
         if (reader.ValueTextEquals("turn_aborted"u8))
         {
             return CodexPayloadKind.TurnAborted;
+        }
+
+        if (reader.ValueTextEquals("error"u8)
+            || reader.ValueTextEquals("stream_error"u8)
+            || reader.ValueTextEquals("request_failed"u8)
+            || reader.ValueTextEquals("task_aborted"u8))
+        {
+            return CodexPayloadKind.Error;
         }
 
         ReadOnlySpan<byte> text = reader.ValueIsEscaped

@@ -1,0 +1,480 @@
+{
+  "metadata": {
+    "snapshot_local": "2026-10-25T15:43:33.355666+08:00",
+    "source": "local SQLite speed_5m, mode=ro; completed buckets only",
+    "model": "gpt-6.1-sol",
+    "privacy": "time/model/token/duration/count only"
+  },
+  "selected_window": {
+    "id": "strongest_50_to_40_candidate",
+    "model": "gpt-6.1-sol",
+    "start_utc": "2026-10-21T16:15:00Z",
+    "end_bucket_start_utc": "2026-10-21T17:20:00Z",
+    "strict_50_to_40_match": true,
+    "note": "Strongest endpoint-stage match in continuous five-minute buckets; rates fluctuate within the segment.",
+    "last_bucket_start_utc": "2026-10-21T17:20:00Z",
+    "bucket_count": 14,
+    "covered_duration_seconds_including_last_bucket": 4200,
+    "contiguous_5m_buckets": true,
+    "first_stage_first_3_buckets": {
+      "bucket_count": 3,
+      "sample_count": 8,
+      "output_tokens": 1257,
+      "duration_seconds": 26.21,
+      "weighted_tokens_per_second": 47.958794,
+      "median_bucket_tps": 50.023418
+    },
+    "last_stage_last_3_buckets": {
+      "bucket_count": 3,
+      "sample_count": 8,
+      "output_tokens": 494,
+      "duration_seconds": 11.908,
+      "weighted_tokens_per_second": 41.484716,
+      "median_bucket_tps": 40.587696
+    },
+    "stage_median_drop_tps": 9.435722,
+    "aggregate": {
+      "bucket_count": 14,
+      "sample_count": 40,
+      "output_tokens": 3745,
+      "duration_seconds": 84.268,
+      "weighted_tokens_per_second": 44.441544
+    },
+    "records": [
+      {
+        "bucket_start_epoch_utc": 1792599300,
+        "bucket_start_utc": "2026-10-21T16:15:00Z",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 505,
+        "duration_seconds": 11.432,
+        "sample_count": 2,
+        "tokens_per_second": 44.174248
+      },
+      {
+        "bucket_start_epoch_utc": 1792599600,
+        "bucket_start_utc": "2026-10-21T16:20:00Z",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 534,
+        "duration_seconds": 10.675,
+        "sample_count": 3,
+        "tokens_per_second": 50.023418
+      },
+      {
+        "bucket_start_epoch_utc": 1792599900,
+        "bucket_start_utc": "2026-10-21T16:25:00Z",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 218,
+        "duration_seconds": 4.103,
+        "sample_count": 3,
+        "tokens_per_second": 53.131853
+      },
+      {
+        "bucket_start_epoch_utc": 1792600200,
+        "bucket_start_utc": "2026-10-21T16:30:00Z",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 154,
+        "duration_seconds": 3.582,
+        "sample_count": 2,
+        "tokens_per_second": 42.992744
+      },
+      {
+        "bucket_start_epoch_utc": 1792600500,
+        "bucket_start_utc": "2026-10-21T16:35:00Z",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 345,
+        "duration_seconds": 8.371,
+        "sample_count": 2,
+        "tokens_per_second": 41.213714
+      },
+      {
+        "bucket_start_epoch_utc": 1792600800,
+        "bucket_start_utc": "2026-10-21T16:40:00Z",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 425,
+        "duration_seconds": 9.999,
+        "sample_count": 5,
+        "tokens_per_second": 42.50425
+      },
+      {
+        "bucket_start_epoch_utc": 1792601100,
+        "bucket_start_utc": "2026-10-21T16:45:00Z",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 246,
+        "duration_seconds": 6.362,
+        "sample_count": 4,
+        "tokens_per_second": 38.667086
+      },
+      {
+        "bucket_start_epoch_utc": 1792601400,
+        "bucket_start_utc": "2026-10-21T16:50:00Z",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 162,
+        "duration_seconds": 4.604,
+        "sample_count": 2,
+        "tokens_per_second": 35.186793
+      },
+      {
+        "bucket_start_epoch_utc": 1792601700,
+        "bucket_start_utc": "2026-10-21T16:55:00Z",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 153,
+        "duration_seconds": 2.469,
+        "sample_count": 1,
+        "tokens_per_second": 61.968412
+      },
+      {
+        "bucket_start_epoch_utc": 1792602000,
+        "bucket_start_utc": "2026-10-21T17:00:00Z",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 42,
+        "duration_seconds": 0.896,
+        "sample_count": 1,
+        "tokens_per_second": 46.874992
+      },
+      {
+        "bucket_start_epoch_utc": 1792602300,
+        "bucket_start_utc": "2026-10-21T17:05:00Z",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 467,
+        "duration_seconds": 9.867,
+        "sample_count": 7,
+        "tokens_per_second": 47.329482
+      },
+      {
+        "bucket_start_epoch_utc": 1792602600,
+        "bucket_start_utc": "2026-10-21T17:10:00Z",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 150,
+        "duration_seconds": 3.874,
+        "sample_count": 3,
+        "tokens_per_second": 38.719669
+      },
+      {
+        "bucket_start_epoch_utc": 1792602900,
+        "bucket_start_utc": "2026-10-21T17:15:00Z",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 221,
+        "duration_seconds": 5.445,
+        "sample_count": 3,
+        "tokens_per_second": 40.587696
+      },
+      {
+        "bucket_start_epoch_utc": 1792603200,
+        "bucket_start_utc": "2026-10-21T17:20:00Z",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 123,
+        "duration_seconds": 2.589,
+        "sample_count": 2,
+        "tokens_per_second": 47.508691
+      }
+    ]
+  },
+  "latest_24h": {
+    "start": 1792827600,
+    "end": 1792914000,
+    "records": [
+      {
+        "bucket_start_epoch_utc": 1792836900,
+        "bucket_start_utc": "2026-10-24T10:15:00+00:00",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 13,
+        "duration_seconds": 0.4509999752044678,
+        "sample_count": 1,
+        "tokens_per_second": 28.82483528764331
+      },
+      {
+        "bucket_start_epoch_utc": 1792837500,
+        "bucket_start_utc": "2026-10-24T10:25:00+00:00",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 29,
+        "duration_seconds": 1.0,
+        "sample_count": 1,
+        "tokens_per_second": 29.0
+      },
+      {
+        "bucket_start_epoch_utc": 1792837800,
+        "bucket_start_utc": "2026-10-24T10:30:00+00:00",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 1136,
+        "duration_seconds": 20.355000019073486,
+        "sample_count": 3,
+        "tokens_per_second": 55.80938339157556
+      },
+      {
+        "bucket_start_epoch_utc": 1792845900,
+        "bucket_start_utc": "2026-10-24T12:45:00+00:00",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 287,
+        "duration_seconds": 12.0169997215271,
+        "sample_count": 3,
+        "tokens_per_second": 23.88283320718331
+      },
+      {
+        "bucket_start_epoch_utc": 1792846200,
+        "bucket_start_utc": "2026-10-24T12:50:00+00:00",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 216,
+        "duration_seconds": 7.985000133514404,
+        "sample_count": 2,
+        "tokens_per_second": 27.05071964788219
+      },
+      {
+        "bucket_start_epoch_utc": 1792846500,
+        "bucket_start_utc": "2026-10-24T12:55:00+00:00",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 2416,
+        "duration_seconds": 63.729000091552734,
+        "sample_count": 1,
+        "tokens_per_second": 37.9105273349525
+      },
+      {
+        "bucket_start_epoch_utc": 1792856700,
+        "bucket_start_utc": "2026-10-24T15:45:00+00:00",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 301,
+        "duration_seconds": 8.967999696731567,
+        "sample_count": 4,
+        "tokens_per_second": 33.56378347221632
+      },
+      {
+        "bucket_start_epoch_utc": 1792857000,
+        "bucket_start_utc": "2026-10-24T15:50:00+00:00",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 395,
+        "duration_seconds": 10.233999967575073,
+        "sample_count": 4,
+        "tokens_per_second": 38.5968342047586
+      },
+      {
+        "bucket_start_epoch_utc": 1792857300,
+        "bucket_start_utc": "2026-10-24T15:55:00+00:00",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 1041,
+        "duration_seconds": 24.835000038146973,
+        "sample_count": 3,
+        "tokens_per_second": 41.91664982488451
+      },
+      {
+        "bucket_start_epoch_utc": 1792862700,
+        "bucket_start_utc": "2026-10-24T17:25:00+00:00",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 267,
+        "duration_seconds": 7.902000188827515,
+        "sample_count": 3,
+        "tokens_per_second": 33.78891339151145
+      },
+      {
+        "bucket_start_epoch_utc": 1792863000,
+        "bucket_start_utc": "2026-10-24T17:30:00+00:00",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 734,
+        "duration_seconds": 17.277000188827515,
+        "sample_count": 5,
+        "tokens_per_second": 42.48422712147995
+      },
+      {
+        "bucket_start_epoch_utc": 1792863300,
+        "bucket_start_utc": "2026-10-24T17:35:00+00:00",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 398,
+        "duration_seconds": 11.730000019073486,
+        "sample_count": 5,
+        "tokens_per_second": 33.93009372146929
+      },
+      {
+        "bucket_start_epoch_utc": 1792863600,
+        "bucket_start_utc": "2026-10-24T17:40:00+00:00",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 553,
+        "duration_seconds": 9.786999702453613,
+        "sample_count": 3,
+        "tokens_per_second": 56.50352680212733
+      },
+      {
+        "bucket_start_epoch_utc": 1792863900,
+        "bucket_start_utc": "2026-10-24T17:45:00+00:00",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 188,
+        "duration_seconds": 5.42300009727478,
+        "sample_count": 2,
+        "tokens_per_second": 34.667157777569585
+      },
+      {
+        "bucket_start_epoch_utc": 1792864200,
+        "bucket_start_utc": "2026-10-24T17:50:00+00:00",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 64,
+        "duration_seconds": 22.526999950408936,
+        "sample_count": 1,
+        "tokens_per_second": 2.841035208456073
+      },
+      {
+        "bucket_start_epoch_utc": 1792864500,
+        "bucket_start_utc": "2026-10-24T17:55:00+00:00",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 185,
+        "duration_seconds": 25.259999990463257,
+        "sample_count": 2,
+        "tokens_per_second": 7.323832148449941
+      },
+      {
+        "bucket_start_epoch_utc": 1792864800,
+        "bucket_start_utc": "2026-10-24T18:00:00+00:00",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 361,
+        "duration_seconds": 4.4040000438690186,
+        "sample_count": 1,
+        "tokens_per_second": 81.97093469664294
+      },
+      {
+        "bucket_start_epoch_utc": 1792899600,
+        "bucket_start_utc": "2026-10-25T03:40:00+00:00",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 230,
+        "duration_seconds": 4.7250001430511475,
+        "sample_count": 2,
+        "tokens_per_second": 48.67724720352676
+      },
+      {
+        "bucket_start_epoch_utc": 1792899900,
+        "bucket_start_utc": "2026-10-25T03:45:00+00:00",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 217,
+        "duration_seconds": 5.392999887466431,
+        "sample_count": 2,
+        "tokens_per_second": 40.23734554571706
+      },
+      {
+        "bucket_start_epoch_utc": 1792900200,
+        "bucket_start_utc": "2026-10-25T03:50:00+00:00",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 166,
+        "duration_seconds": 23.522000074386597,
+        "sample_count": 2,
+        "tokens_per_second": 7.057223002935006
+      },
+      {
+        "bucket_start_epoch_utc": 1792900500,
+        "bucket_start_utc": "2026-10-25T03:55:00+00:00",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 428,
+        "duration_seconds": 9.15999984741211,
+        "sample_count": 3,
+        "tokens_per_second": 46.724891608040686
+      },
+      {
+        "bucket_start_epoch_utc": 1792900800,
+        "bucket_start_utc": "2026-10-25T04:00:00+00:00",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 246,
+        "duration_seconds": 8.115000009536743,
+        "sample_count": 3,
+        "tokens_per_second": 30.314232866408002
+      },
+      {
+        "bucket_start_epoch_utc": 1792901100,
+        "bucket_start_utc": "2026-10-25T04:05:00+00:00",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 162,
+        "duration_seconds": 19.487000226974487,
+        "sample_count": 2,
+        "tokens_per_second": 8.313234367173392
+      },
+      {
+        "bucket_start_epoch_utc": 1792901700,
+        "bucket_start_utc": "2026-10-25T04:15:00+00:00",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 190,
+        "duration_seconds": 8.315999984741211,
+        "sample_count": 2,
+        "tokens_per_second": 22.84752288944511
+      },
+      {
+        "bucket_start_epoch_utc": 1792902000,
+        "bucket_start_utc": "2026-10-25T04:20:00+00:00",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 262,
+        "duration_seconds": 4.740000009536743,
+        "sample_count": 1,
+        "tokens_per_second": 55.27426149216531
+      },
+      {
+        "bucket_start_epoch_utc": 1792902300,
+        "bucket_start_utc": "2026-10-25T04:25:00+00:00",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 69,
+        "duration_seconds": 2.4489998817443848,
+        "sample_count": 1,
+        "tokens_per_second": 28.17476657077352
+      },
+      {
+        "bucket_start_epoch_utc": 1792902600,
+        "bucket_start_utc": "2026-10-25T04:30:00+00:00",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 254,
+        "duration_seconds": 6.828999757766724,
+        "sample_count": 3,
+        "tokens_per_second": 37.19431966755043
+      },
+      {
+        "bucket_start_epoch_utc": 1792903200,
+        "bucket_start_utc": "2026-10-25T04:40:00+00:00",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 173,
+        "duration_seconds": 4.587000131607056,
+        "sample_count": 3,
+        "tokens_per_second": 37.715281237497905
+      },
+      {
+        "bucket_start_epoch_utc": 1792903500,
+        "bucket_start_utc": "2026-10-25T04:45:00+00:00",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 445,
+        "duration_seconds": 6.726999998092651,
+        "sample_count": 1,
+        "tokens_per_second": 66.15133047809925
+      },
+      {
+        "bucket_start_epoch_utc": 1792904100,
+        "bucket_start_utc": "2026-10-25T04:55:00+00:00",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 144,
+        "duration_seconds": 6.830999851226807,
+        "sample_count": 2,
+        "tokens_per_second": 21.080369365567833
+      },
+      {
+        "bucket_start_epoch_utc": 1792904400,
+        "bucket_start_utc": "2026-10-25T05:00:00+00:00",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 397,
+        "duration_seconds": 7.327000141143799,
+        "sample_count": 1,
+        "tokens_per_second": 54.18315713830809
+      },
+      {
+        "bucket_start_epoch_utc": 1792906500,
+        "bucket_start_utc": "2026-10-25T05:35:00+00:00",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 66,
+        "duration_seconds": 1.1929998397827148,
+        "sample_count": 1,
+        "tokens_per_second": 55.32272327213456
+      },
+      {
+        "bucket_start_epoch_utc": 1792906800,
+        "bucket_start_utc": "2026-10-25T05:40:00+00:00",
+        "model": "gpt-6.1-sol",
+        "output_tokens": 214,
+        "duration_seconds": 1.3420000076293945,
+        "sample_count": 1,
+        "tokens_per_second": 159.46348642577507
+      }
+    ]
+  },
+  "latest_24h_all_models_bucket_counts": {
+    "gpt-6-astra": 33,
+    "gpt-6-luna": 26,
+    "gpt-6.1-sol": 33
+  }
+}

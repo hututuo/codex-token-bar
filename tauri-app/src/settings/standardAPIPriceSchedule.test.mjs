@@ -6,6 +6,19 @@ import {
   standardAPIPriceQuote,
 } from "./standardAPIPriceSchedule.ts";
 
+test("GPT-6.1 Terra uses its own October 26 card without repricing old Terra", () => {
+  const rates = { inputUSDPerMillion: 1, cachedInputUSDPerMillion: 0.05, outputUSDPerMillion: 5 };
+  for (const alias of ["gpt-6.1-terra", "GPT_6.1_TERRA", "GPT 6.1 Terra", "gpt61-terra", "gpt61terra"]) {
+    assert.equal(canonicalStandardAPIModelKey(alias), "gpt-6.1-terra");
+    assert.equal(standardAPIPriceQuote(alias, "2026-10-25T23:59:59Z"), null);
+    assert.deepEqual(standardAPIPriceQuote(alias, "2026-10-26T00:00:00Z").rates, rates);
+    assert.deepEqual(currentStandardAPIPriceQuote(alias).rates, rates);
+  }
+  assert.equal(currentStandardAPIPriceQuote("gpt-6.1-terra-preview"), null);
+  assert.equal(standardAPIPriceQuote("gpt-6.1-terra", null), null);
+  assert.equal(currentStandardAPIPriceQuote("gpt-5.6-terra").rates.outputUSDPerMillion, 12);
+});
+
 test("Sol switches at the UTC midnight boundary", () => {
   assert.deepEqual(
     standardAPIPriceQuote("gpt-5.6-sol", "2026-08-20T23:59:59Z"),

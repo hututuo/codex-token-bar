@@ -8,6 +8,7 @@ private enum LiveRatePanelLayout {
 
 struct LiveRateView: View {
     let monitor: LiveRateMonitor
+    var quotaHistory: QuotaHistorySnapshot = .empty
     @Binding var floatingPanelEnabled: Bool
     @Binding var quotaSidebarEnabled: Bool
     @Binding var statusBarPanelEnabled: Bool
@@ -49,7 +50,8 @@ struct LiveRateView: View {
                 }
             }
             .frame(height: LiveRatePanelLayout.contentHeight)
-            ObservedSpeedView(monitor: monitor)
+            HStack { SpeedDisplayControls(); Spacer() }
+            ObservedSpeedView(monitor: monitor, quotaHistory: quotaHistory)
             } else {
                 if localClients.isDisjoint(with: ["claudeCode", "claudeDesktop"]) { Text("暂无正文测速样本").font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading) }
             }
@@ -92,7 +94,7 @@ private struct LiveRateHeader: View {
                 .font(.system(size: 15, weight: .semibold))
                 .lineLimit(1)
 
-            Text(monitor.totalSnapshot.status)
+            Text(monitor.displaySnapshot.status)
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -112,14 +114,23 @@ private struct LiveRateInstrumentReader: View {
     @Binding var floatingPanelShowRateAndBar: Bool
     var allowedClients: Set<String> = ["codex"]
     @ObservedObject private var local = ClaudeLocalRuntime.shared
+    @ObservedObject private var speedPalette = SpeedDisplayPreferences.shared
     @ObservedObject private var upstream = AgentSpeedDisplayRuntime.shared
     @AppStorage(ActivitySpeedDisplayMode.key) private var modeRaw = ActivitySpeedDisplayMode.bar.rawValue
     private var activity: LiveRateSnapshot {
         var value = monitor.totalSnapshot
         value.modelRates = ClientLocalRuntimePresentation.rates(codex: value.modelRates,
             claude: local.projection(allowed: allowedClients).modelRates, allowed: allowedClients,
-            mode: .normalized(modeRaw), upstreamCodex: AgentSpeedDisplayRuntime.modelRates(snapshot: upstream.snapshot, source: .codex), others: upstream.externalModelRates(allowed: allowedClients))
+            mode: .normalized(modeRaw), upstreamCodex: AgentSpeedDisplayRuntime.modelRates(snapshot: upstream.snapshot, source: .codex, now: Date()), others: upstream.externalModelRates(allowed: allowedClients))
         value.rollingTokensPerSecond = value.modelRates.reduce(0) { $0 + $1.tokensPerSecond }
+        if speedPalette.grouping == .client {
+            value.colorRates = allowedClients.sorted().compactMap { client in
+                let rates = client == "codex" ? (modeRaw == "agentSpeed" ? AgentSpeedDisplayRuntime.modelRates(snapshot: upstream.snapshot, source: .codex, now: Date()) : monitor.totalSnapshot.modelRates)
+                    : (client == "claudeCode" || client == "claudeDesktop" ? local.projection(allowed: [client]).modelRates : upstream.externalModelRates(allowed: [client]))
+                let total = rates.reduce(0) { $0 + $1.tokensPerSecond }
+                return total > 0 ? .init(model: "client:" + client, tokensPerSecond: total) : nil
+            }
+        }
         return value
     }
     var body: some View {
@@ -196,7 +207,7 @@ struct LiveRateInstrument: View {
 
                         VStack(alignment: .leading, spacing: 7) {
                             HStack(spacing: 8) {
-                                Text("全会话活动估算")
+                                Text(snapshot.sourceLabel.hasPrefix("Agent Speed") ? "Agent Speed · 本地截止" : "全会话活动估算")
                                     .font(.system(size: 8, weight: .semibold))
                                     .foregroundStyle(.secondary.opacity(0.72))
                                     .lineLimit(1)
@@ -216,7 +227,7 @@ struct LiveRateInstrument: View {
                                     SmoothRateFillBar(
                                         fraction: Double(fillFraction),
                                         minimumFraction: Double(minimumFillFraction),
-                                        modelRates: snapshot.modelRates
+                                        modelRates: snapshot.barRates
                                     )
                                 }
                             }
@@ -224,7 +235,7 @@ struct LiveRateInstrument: View {
                         }
                     }
 
-                    Text("活动曲线 · 中断即停，结束最多收尾 5 秒。")
+                    Text(snapshot.sourceLabel.hasPrefix("Agent Speed") ? "仅本地显示：停止或错误即归零；日志 20 秒未更新则归零。上报保持标准口径。" : "活动曲线 · 中断即停，结束最多收尾 5 秒。")
                         .font(.system(size: 8.4, weight: .medium))
                         .foregroundStyle(.secondary.opacity(0.78))
                         .lineLimit(2)

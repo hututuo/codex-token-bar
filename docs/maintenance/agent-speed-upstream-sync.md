@@ -59,6 +59,7 @@ python3 scripts/agent_speed_vendor.py record \
   --upstream /绝对路径/agent-speed \
   --commit 待审核的40位SHA \
   --patch-reasons /绝对路径/patch-reasons.json \
+  --addition-reasons /绝对路径/addition-reasons.json \
   --reviewed
 python3 scripts/agent_speed_vendor.py check --upstream /绝对路径/agent-speed
 python3 scripts/agent_speed_vendor.py check --remote
@@ -95,3 +96,7 @@ dotnet run --project tools/ActivityEngineProbe/ActivityEngineProbe.csproj \
 ## 2026-10-28 物理读取适配
 
 来源锁现有 34 个本地适配，pin 不变。Swift IO 的五个入口经 vendor 外 `Sources/SharedSourceIO`；Windows Core 的定位读取经 vendor 外 `tools/AgentSpeedLocalIO/PositionedReadBackend.cs`，Reader/Reporter 共用 `tools/LocalSourceReadPipe.cs`，Rust 统一 `shared_source_io`。同步必须保留项目链接和有界二进制管道/根许可/128位文件身份/远程盘拒绝测试；纯本地校验探测仍绕过缓存，外部 SQLite 继续原生只读查询。不能将上游 tailer 原始读取恢复后仍声称物理读取已统一。完整边界见 [实现回执](2026-10-28-business-ledger-and-shared-io.md)。
+
+## 2026-10-28 provenance schema v2 integration
+
+`UPSTREAM.json` schema version 2 keeps `files` as the exact pinned upstream inventory, `patches` for local changes to upstream-owned paths, and `additions` for reviewed local-only files inside the vendored scopes. Each patch/addition records the current SHA-256 and a specific reason. An addition must not also appear in `files` or `patches`; it is never represented as upstream code. `record` requires `--addition-reasons` to map every and only added scoped path, and refuses removed scoped files. `check` validates the complete combined inventory offline. When vendored implementations change after recording, rerun the reviewed record/check workflow to refresh hashes and reasons together; do not copy hashes from another worktree.

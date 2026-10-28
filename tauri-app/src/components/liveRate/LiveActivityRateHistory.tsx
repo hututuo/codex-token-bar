@@ -1,3 +1,5 @@
+import { localAgentSpeedHistory } from "./speedDisplayHistory";
+import { SpeedDisplayControls } from "./SpeedDisplayControls";
 import { memo, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { CodexHomeSourceToken } from "../../types/platform";
@@ -6,7 +8,7 @@ import { ActivityRateUnitControl, useActivityRatePreferences } from "./ActivityR
 import { activityRateText, activityRateValue, type ActivityRateHistoryPoint, type ActivityRateUnit } from "./activityRatePresentation";
 
 export function LiveActivityRateHistory({ snapshot, sourceToken }: {
-  snapshot: { tokensPerSecond: number; modelRates?: ModelRateContribution[] };
+  snapshot: { tokensPerSecond: number; modelRates?: ModelRateContribution[]; speedDisplayMode?: "activity" | "agentSpeed" };
   sourceToken?: CodexHomeSourceToken | null;
 }) {
   const { unit, fx } = useActivityRatePreferences();
@@ -15,7 +17,7 @@ export function LiveActivityRateHistory({ snapshot, sourceToken }: {
   const key = JSON.stringify(sourceToken ?? null);
   useEffect(() => {
     setPoints([]); setError(false);
-    if (!sourceToken) return;
+    if (!sourceToken || snapshot.speedDisplayMode === "agentSpeed") return;
     let disposed = false, busy = false;
     const refresh = async () => {
       if (busy || document.hidden) return;
@@ -28,11 +30,22 @@ export function LiveActivityRateHistory({ snapshot, sourceToken }: {
     };
     void refresh(); const timer = setInterval(() => void refresh(), 5000);
     return () => { disposed = true; clearInterval(timer); };
-  }, [key]);
+  }, [key, snapshot.speedDisplayMode]);
+  useEffect(() => {
+    if (snapshot.speedDisplayMode === "agentSpeed") localAgentSpeedHistory.record(Date.now() / 1000, snapshot.modelRates ?? []);
+  }, [snapshot.speedDisplayMode, snapshot.modelRates]);
+  useEffect(() => {
+    if (snapshot.speedDisplayMode !== "agentSpeed") return;
+    const refresh = () => setPoints(localAgentSpeedHistory.points());
+    refresh(); const timer = setInterval(refresh, 5000);
+    return () => clearInterval(timer);
+  }, [snapshot.speedDisplayMode]);
   const value = activityRateValue(snapshot.tokensPerSecond, snapshot.modelRates, unit, fx);
   return <section className="activity-rate-panel" aria-label="全会话活动速率">
-    <header><strong>全会话活动速率</strong><ActivityRateUnitControl/></header>
+    <header><strong>{snapshot.speedDisplayMode === "agentSpeed" ? "榜单口径 · 本地活动截止" : "全会话活动速率"}</strong><ActivityRateUnitControl/></header>
     <div className="activity-rate-reading"><b>{activityRateText(value, unit)}</b><span>{unit === "CN 元/s" ? "估算 CN 元/s" : unit}</span></div>
+    <SpeedDisplayControls/>
+    {snapshot.speedDisplayMode === "agentSpeed" && <small>停止或错误即归零 · 日志 20 秒未更新归零 · 上报保持标准口径</small>}
     <ActivityRatePlot points={points} unit={unit} fx={fx}/>
     {error && <small>速率历史暂不可用</small>}
     {unit === "CN 元/s" && <small>输出单价折算 · 1 USD = {fx.toFixed(2)} 元{value === null ? " · 部分模型缺少单价" : ""}</small>}

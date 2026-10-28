@@ -46,6 +46,10 @@ function global:dotnet {
     if ($Arguments.Count -gt 0 -and $Arguments[0] -eq "publish") {
         Assert-True ($Arguments -contains "--self-contained" -and $Arguments -contains "true") "Agent Speed helper is not self-contained"
         Assert-True ($Arguments -contains "-p:PublishSingleFile=true") "Agent Speed helper is not published as a single file"
+        foreach ($Property in @("IncludeNativeLibrariesForSelfExtract=true", "PublishTrimmed=false", "LangVersion=latest", "Nullable=enable", "ImplicitUsings=enable")) {
+            Assert-True ($Arguments -contains ("-p:" + $Property)) "MSBuild property was split or omitted: $Property"
+        }
+        Assert-True (-not ($Arguments -contains "-p:")) "MSBuild property prefix was split into a separate argument"
         $OutputIndex = [Array]::IndexOf($Arguments, "--output")
         Assert-True ($OutputIndex -ge 0 -and $Arguments.Count -gt ($OutputIndex + 1)) "dotnet publish is missing output"
         $OutputDir = $Arguments[$OutputIndex + 1]
@@ -122,7 +126,7 @@ function Initialize-FixtureProject {
     $TauriConfigDir = Join-Path $Root "tauri-app\src-tauri"
     New-Item -ItemType Directory -Force -Path $TauriConfigDir | Out-Null
     $TauriConfig = Join-Path $TauriConfigDir "tauri.conf.json"
-    [IO.File]::WriteAllText($TauriConfig, '{"version":"0.7.2","bundle":{"createUpdaterArtifacts":true}}', (New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText($TauriConfig, '{"version":"0.7.2","bundle":{"createUpdaterArtifacts":true,"resources":{}}}', (New-Object Text.UTF8Encoding($false)))
     [IO.File]::WriteAllText((Join-Path $Root "tauri-app\package.json"), '{"version":"0.7.2"}')
     [IO.File]::WriteAllText((Join-Path $TauriConfigDir "Cargo.toml"), "[package]`nname = `"fixture`"`nversion = `"0.7.2`"`n")
     $ReporterDir = Join-Path $Root "tools\AgentSpeedReporter"

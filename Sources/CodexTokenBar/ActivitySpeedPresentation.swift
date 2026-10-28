@@ -32,7 +32,7 @@ final class AgentSpeedDisplayRuntime: ObservableObject {
             for source in configuration.sources {
                 guard let client = ActivitySourceConfiguration.client(for: source), let identity = self.sourceIdentities[source] else { continue }
                 ActivitySpeedHistoryController.shared.record(client: client, sourceIdentity: identity,
-                    rates: Self.modelRates(snapshot: snapshot, source: source), at: snapshot.timestamp.timeIntervalSince1970,
+                    rates: Self.modelRates(snapshot: snapshot, source: source, now: Date()), at: snapshot.timestamp.timeIntervalSince1970,
                     available: snapshot.sources.contains { $0.kind == source && $0.available }, mode: source == .codex ? .agentSpeed : mode)
             }
         }
@@ -63,7 +63,7 @@ final class AgentSpeedDisplayRuntime: ObservableObject {
     func externalModelRates(allowed: Set<String>) -> [ModelRateContribution] {
         allowed.sorted().flatMap { client in
             guard client != "codex", let source = ActivitySourceConfiguration.source(for: client), configuration?.sources.contains(source) == true else { return [ModelRateContribution]() }
-            return Self.modelRates(snapshot: snapshot, source: source)
+            return Self.modelRates(snapshot: snapshot, source: source, now: Date())
         }
     }
     func hasCoverage(allowed: Set<String>) -> Bool {
@@ -71,7 +71,12 @@ final class AgentSpeedDisplayRuntime: ObservableObject {
             item.enabled && item.available && configuration?.sources.contains(item.kind) == true && ActivitySourceConfiguration.client(for: item.kind).map(allowed.contains) == true
         }
     }
-    static func modelRates(snapshot: SpeedSnapshot, source: SourceKind) -> [ModelRateContribution] {
+    nonisolated static func modelRates(snapshot: SpeedSnapshot, source: SourceKind, now: Date? = nil) -> [ModelRateContribution] {
+        if let now {
+        guard snapshot.state == .running, abs(now.timeIntervalSince(snapshot.timestamp)) <= 3,
+              snapshot.agents.contains(where: { $0.source == source && $0.phase != .idle && !$0.localDisplayStopped
+                  && now.timeIntervalSince($0.lastActivity) >= -2 && now.timeIntervalSince($0.lastActivity) < 20 }) else { return [] }
+        }
         let total = snapshot.sources.first { $0.kind == source && $0.enabled && $0.available }?.live.output ?? 0
         guard total.isFinite, total > 0 else { return [] }
         var sums: [String: Double] = [:]

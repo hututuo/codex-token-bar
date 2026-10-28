@@ -1,0 +1,21 @@
+{
+  "cpu_seconds" : 2.1200139999999994,
+  "frames" : 360,
+  "full_chart" : true,
+  "intervals_over_25ms" : 6,
+  "layout_display" : {
+    "max_ms" : 8.9799583074636757,
+    "p50_ms" : 5.1398333162069321,
+    "p95_ms" : 7.3258333140984178,
+    "sum_ms" : 1803.0905830091797
+  },
+  "loop_interval" : {
+    "max_ms" : 32.542083354201168,
+    "p50_ms" : 17.750416649505496,
+    "p95_ms" : 17.847999988589436,
+    "sum_ms" : 6380.6559166987427
+  },
+  "note" : "Visible isolated production components with synthetic data; scroll-loop timing is not screen-presented FPS",
+  "wall_seconds" : 6.3984302916796878,
+  "window_visible" : true
+}

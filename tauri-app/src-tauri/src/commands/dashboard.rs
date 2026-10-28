@@ -337,7 +337,7 @@ async fn persist_codex_home_transition(
             if reporting.enabled {
                 use tauri::Manager as _;
                 if let Some(registry) = app.try_state::<crate::core::agent_speed_reporting::AgentSpeedReportingRegistry>() {
-                    if let Err(error) = registry.start(&app, &reporting).await {
+                    if let Err(error) = registry.start(&app, &reporting, false).await {
                         startup_trace::mark_performance(format!("reporter source reconciliation failed: {error}"));
                     }
                 }

@@ -36,6 +36,11 @@ internal sealed class ClaudeParser : TranscriptParser<ClaudeLine>
             return;
         }
 
+        if (line.IsInterrupt || line.IsApiError || line.Kind == ClaudeLineKind.Error)
+        {
+            MarkConfirmedStopped();
+        }
+
         if (line.Status != LineStatus.Valid || !line.HasTimestamp)
         {
             return;

@@ -180,7 +180,19 @@ struct QuotaSidebarRail: View {
     private var supportsCodex: Bool { clientScope == "codex" || clientScope == "all" }
     private var allowedClients: Set<String> { ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs) }
     private var localLive: ClaudeLocalRuntimeSnapshot { claudeRuntime.projection(allowed: allowedClients) }
-    private var liveRates: [ModelRateContribution] { ClientLocalRuntimePresentation.rates(codex: monitor.totalSnapshot.modelRates, claude: localLive.modelRates, allowed: allowedClients, mode: .normalized(speedModeRaw), upstreamCodex: AgentSpeedDisplayRuntime.modelRates(snapshot: upstreamActivity.snapshot, source: .codex), others: upstreamActivity.externalModelRates(allowed: allowedClients)) }
+    private var liveRates: [ModelRateContribution] { ClientLocalRuntimePresentation.rates(codex: monitor.totalSnapshot.modelRates, claude: localLive.modelRates, allowed: allowedClients, mode: .normalized(speedModeRaw), upstreamCodex: AgentSpeedDisplayRuntime.modelRates(snapshot: upstreamActivity.snapshot, source: .codex, now: Date()), others: upstreamActivity.externalModelRates(allowed: allowedClients)) }
+    @ObservedObject private var speedPalette = SpeedDisplayPreferences.shared
+    private var barRates: [ModelRateContribution] {
+        guard speedPalette.grouping == .client else { return liveRates }
+        return allowedClients.sorted().compactMap { client in
+            let rates: [ModelRateContribution]
+            if client == "codex" { rates = speedModeRaw == "agentSpeed" ? AgentSpeedDisplayRuntime.modelRates(snapshot: upstreamActivity.snapshot, source: .codex, now: Date()) : monitor.totalSnapshot.modelRates }
+            else if client == "claudeCode" || client == "claudeDesktop" { rates = claudeRuntime.projection(allowed: [client]).modelRates }
+            else { rates = upstreamActivity.externalModelRates(allowed: [client]) }
+            let total = rates.reduce(0) { $0 + $1.tokensPerSecond }
+            return total > 0 ? .init(model: "client:" + client, tokensPerSecond: total) : nil
+        }
+    }
     private var liveRate: Double { liveRates.reduce(0) { $0 + $1.tokensPerSecond } }
     private var runningSummary: RunningThreadSummary { ClientLocalRuntimePresentation.running(codex: tasks.runningThreadSummary, claude: localLive.running, allowed: allowedClients) }
     private var selectedModelRows: [ModelTokenBreakdown] { ClientLocalRuntimePresentation.models(codex: store.todayModelBreakdowns, clients: clients.todaySummaries, allowed: allowedClients) }
@@ -262,7 +274,7 @@ struct QuotaSidebarRail: View {
     }
 
     private var cacheWarning: CacheUsageAdvice? {
-        guard CacheMissReminderFeature.isEnabled, monitor.monitoringEnabled, monitor.dataSource != nil,
+        guard CacheMissReminderFeature.isEnabled, monitor.monitoringEnabled, monitor.displayRateAvailable,
               let advice = monitor.totalSnapshot.cacheAdvice,
               advice.shouldRemind(enabled: cacheRemindersEnabled, dismissedID: dismissedCacheAdviceID) else { return nil }
         return advice
@@ -346,7 +358,7 @@ struct QuotaSidebarRail: View {
                     ScrollView(.vertical) {
                         QuotaSidebarCompactBars(items: compactItems, quotas: quotaItems, layout: layout,
                             rateFraction: Double(rateFraction),
-                            modelRates: liveRates, shares: shares, taskStateLabel: "任务状态：" + runningText + "，非进度百分比", colors: quotaSelection.colors,
+                            modelRates: barRates, shares: shares, taskStateLabel: "任务状态：" + runningText + "，非进度百分比", colors: quotaSelection.colors,
                             usesMorphAnchors: true)
                             .frame(minHeight: geometry.size.height)
                     }.scrollIndicators(.hidden)
@@ -555,7 +567,7 @@ struct QuotaSidebarRail: View {
             VStack(spacing: 5) {
                 ZStack {
                     MatchedStrokeMorphParticipant(ids: ["speed"], size: CGSize(width: ClientSidebarMetrics.ringSize, height: ClientSidebarMetrics.ringSize)) {
-                        SidebarValueRing(fraction: rateFraction, color: SidebarPalette.blue, modelRates: liveRates)
+                        SidebarValueRing(fraction: rateFraction, color: SidebarPalette.blue, modelRates: barRates)
                     }.anchorPreference(key: ClientQuotaMorphAnchors.self, value: .bounds) { ["ring:speed": $0] }
                     Text("速率").font(.system(size: 11))
                 }.frame(width: ClientSidebarMetrics.ringSize, height: ClientSidebarMetrics.ringSize)
@@ -725,11 +737,12 @@ struct QuotaSidebarDetailView: View {
                     if clientScope == "all" { Text("Codex · 正文 TPS").font(.caption).foregroundStyle(.secondary) }
                     Text("Codex · 正文 TPS").font(.caption.weight(.semibold)).id("top")
                     Divider().overlay(.white.opacity(0.12))
-                    ObservedSpeedSidebarView(monitor: monitor, onOpenDetails: {
+                    ObservedSpeedSidebarView(monitor: monitor, quotaHistory: history.snapshot, onOpenDetails: {
                         BodySpeedHistoryWindowController.shared.present(monitor: monitor,
                             screen: controller.detailPanel?.screen ?? controller.railPanel?.screen)
                     })
                     }
+                    SpeedDisplayControls()
                     ActivitySpeedSummaryView(allowed: allowedClients, codexRates: monitor.totalSnapshot.modelRates, codexAvailable: monitor.monitoringEnabled && monitor.dataSource != nil)
                 }
                 else if controller.interaction.detail == .modeltrace {

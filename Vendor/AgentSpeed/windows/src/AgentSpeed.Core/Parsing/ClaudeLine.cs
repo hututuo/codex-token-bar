@@ -8,6 +8,7 @@ internal enum ClaudeLineKind : byte
     User,
     Assistant,
     ApiRequest,
+    Error,
 }
 
 internal enum EntrypointKind : byte
@@ -35,6 +36,7 @@ internal struct ClaudeLine
     public EntrypointKind Entrypoint;
     public bool IsSidechain;
     public bool IsInterrupt;
+    public bool IsApiError;
     public bool HasToolUse;
     public StopReasonKind StopReason;
     public string? Cwd;
@@ -68,7 +70,8 @@ internal static class ClaudeLineReader
         var hints = new Hints(
             line.IndexOf("\"assistant\""u8) >= 0,
             line.IndexOf(InterruptPrefix) >= 0,
-            line.IndexOf("\"tool_use\""u8) >= 0);
+            line.IndexOf("\"tool_use\""u8) >= 0,
+            line.IndexOf("\"isApiErrorMessage\""u8) >= 0);
         try
         {
             var reader = new Utf8JsonReader(line, JsonScan.Options);
@@ -116,6 +119,7 @@ internal static class ClaudeLineReader
                 : reader.ValueTextEquals("assistant"u8) ? ClaudeLineKind.Assistant
                 : reader.ValueTextEquals("user"u8) ? ClaudeLineKind.User
                 : reader.ValueTextEquals("api-request"u8) ? ClaudeLineKind.ApiRequest
+                : reader.ValueTextEquals("api_error"u8) || reader.ValueTextEquals("stream_error"u8) ? ClaudeLineKind.Error
                 : ClaudeLineKind.Other;
             JsonScan.SkipValue(ref reader);
         }
@@ -127,7 +131,7 @@ internal static class ClaudeLineReader
         else if (reader.ValueTextEquals("message"u8))
         {
             reader.Read();
-            if (reader.TokenType == JsonTokenType.StartObject && (hints.Assistant || hints.Interrupt || hints.ToolUse))
+            if (reader.TokenType == JsonTokenType.StartObject && (hints.Assistant || hints.Interrupt || hints.ToolUse || hints.ApiError))
             {
                 ReadMessage(ref reader, ref result, hints);
             }
@@ -218,6 +222,12 @@ internal static class ClaudeLineReader
             {
                 reader.Read();
                 (result.IsInterrupt, result.HasToolUse) = ReadContent(ref reader);
+            }
+            else if (hints.ApiError && reader.ValueTextEquals("isApiErrorMessage"u8))
+            {
+                reader.Read();
+                result.IsApiError = reader.TokenType == JsonTokenType.True;
+                JsonScan.SkipValue(ref reader);
             }
             else
             {
@@ -364,5 +374,5 @@ internal static class ClaudeLineReader
         return (interrupt, toolUse);
     }
 
-    private readonly record struct Hints(bool Assistant, bool Interrupt, bool ToolUse);
+    private readonly record struct Hints(bool Assistant, bool Interrupt, bool ToolUse, bool ApiError);
 }

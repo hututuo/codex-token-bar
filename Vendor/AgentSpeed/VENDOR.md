@@ -18,3 +18,16 @@
 - `UPSTREAM.json` pins every copied upstream file and the individually reviewed local adaptations. `python3 scripts/agent_speed_vendor.py check` verifies this offline; `check --remote` checks GitHub HEAD explicitly during release preparation.
 - Before a release, review upstream changes and synchronize both Swift and C# sources/specs/tests as one revision. Preserve the local Claude no-network/no-report policy, original ledgers, client identity adaptations, event-model metadata and isolated test roots.
 - Follow [the maintained sync checklist](../../docs/maintenance/agent-speed-upstream-sync.md). No upstream auto-updater, account provider or network service is enabled by importing this library.
+## Local optional WebSocket extension (2026-10-25)
+
+- Adds strict Draft-1 WebSocket capability parsing in the Swift/C# discovery models; invalid optional WS fields do not disable HTTP. HTTP remains the default. Token Bar owns each platform's connection/window controller outside the vendored reporting math.
+- Adds nullable source-read observations (matched wall/monotonic tuple) through readers/monitor snapshots, consumed once. Event notifications for log files are labelled `log`, never provider token events; unknown cadence remains null. WS event debounce is 50ms while existing HTTP monitor defaults and the 3-second TPS/usage/fee rules remain unchanged.
+- Swift JSON parsing adds an opt-in duplicate-key rejection for WS control messages; legacy log parsing retains its existing default. Upstream signed fixtures and report schema remain reference data, not an assertion of current receiver client-ID compatibility.
+- Protocol reference: https://speed-test.codexradar.com/integration.html and its `/protocol/REPORTING-WEBSOCKET.md`; production discovery at https://deng.codexradar.com/.well-known/agent-speed-report.
+
+- Token Bar now negotiates the upstream cost section for both HTTP and WebSocket, injects the bundled PriceBook on Windows, and reports the actual bundled price version. Unknown pricing retains known-share/unpriced-request indicators; no historical upload backfill or Token Bar accounting changes.
+
+## Local display-only metadata (2026-10-26)
+
+- Swift/C# parser and agent snapshots carry a `localDisplayStopped` flag for explicit failure markers. A genuine generation/tool phase clears it. This metadata does not change upstream phases, response timing, counters, report sections or signed body construction.
+- Token Bar projects local colored speed bars from fresh per-agent rates (20-second source silence cutoff; stopped/idle agents excluded). Raw snapshots continue into Agent Speed reporting. The local display and reporting share one collector per process; local-only collection performs no discovery, registration or signing-key creation.

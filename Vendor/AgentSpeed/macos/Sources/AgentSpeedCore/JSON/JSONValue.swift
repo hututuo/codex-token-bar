@@ -91,9 +91,9 @@ public enum JSONParseError: Error, Equatable, Sendable {
 public enum JSONParser {
     public static let defaultMaxDepth = 64
 
-    public static func parse(_ data: Data, maxDepth: Int = defaultMaxDepth) throws(JSONParseError) -> JSONValue {
+    public static func parse(_ data: Data, maxDepth: Int = defaultMaxDepth, rejectDuplicateKeys: Bool = false) throws(JSONParseError) -> JSONValue {
         let bytes = [UInt8](data)
-        var parser = Cursor(bytes: bytes, maxDepth: maxDepth)
+        var parser = Cursor(bytes: bytes, maxDepth: maxDepth, rejectDuplicateKeys: rejectDuplicateKeys)
         parser.skipWhitespace()
         let value = try parser.value(depth: 0)
         parser.skipWhitespace()
@@ -101,18 +101,20 @@ public enum JSONParser {
         return value
     }
 
-    public static func parse(_ text: String, maxDepth: Int = defaultMaxDepth) throws(JSONParseError) -> JSONValue {
-        try parse(Data(text.utf8), maxDepth: maxDepth)
+    public static func parse(_ text: String, maxDepth: Int = defaultMaxDepth, rejectDuplicateKeys: Bool = false) throws(JSONParseError) -> JSONValue {
+        try parse(Data(text.utf8), maxDepth: maxDepth, rejectDuplicateKeys: rejectDuplicateKeys)
     }
 
     private struct Cursor {
         let bytes: [UInt8]
         let maxDepth: Int
+        let rejectDuplicateKeys: Bool
         var index = 0
 
-        init(bytes: [UInt8], maxDepth: Int) {
+        init(bytes: [UInt8], maxDepth: Int, rejectDuplicateKeys: Bool) {
             self.bytes = bytes
             self.maxDepth = maxDepth
+            self.rejectDuplicateKeys = rejectDuplicateKeys
         }
 
         private var failure: JSONParseError { .invalid(offset: index) }
@@ -158,6 +160,7 @@ public enum JSONParser {
                 guard index < bytes.count, bytes[index] == UInt8(ascii: ":") else { throw failure }
                 index += 1
                 skipWhitespace()
+                if rejectDuplicateKeys && members[key] != nil { throw failure }
                 members[key] = try value(depth: depth)
                 skipWhitespace()
                 guard index < bytes.count else { throw failure }

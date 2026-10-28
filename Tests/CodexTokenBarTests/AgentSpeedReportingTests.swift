@@ -8,6 +8,8 @@ private actor SpeedReportTestTransport: ReportTransport {
     var sent: [ReportRequest] = []
     var held = false
     var alteredAPI = false
+    var websocket = false
+    func offerWebSocket() { websocket = true }
     func holdDiscovery() { held = true }
     func alterAPI() { alteredAPI = true }
     func requests() -> [ReportRequest] { sent }
@@ -20,8 +22,9 @@ private actor SpeedReportTestTransport: ReportTransport {
             catch { throw .other(-999) }
         }
         let api = alteredAPI ? "https://other.example/api" : "https://speed-api.codexradar.com/api/agent-speed"
+        let socketFields = websocket ? #","websocket":{"path":"/v1/reports/ws","subprotocol":"agent-speed-report.v1"}"# : ""
         return .init(status: 200, body: Data("""
-        {"protocol":"agent-speed-report","versions":[1],"service":{"name":"test","terms":"https://deng.codexradar.com/agent-speed/terms/","privacy":"https://deng.codexradar.com/agent-speed/privacy/"},"api":"\(api)","apiKey":{"mode":"none"},"sections":["sources","models","cost","traffic"],"extensions":{"modelHarnessRequests":1,"executionModes":1,"profileAvatar":1,"sharedIdentity":1}}
+        {"protocol":"agent-speed-report","versions":[1],"service":{"name":"test","terms":"https://deng.codexradar.com/agent-speed/terms/","privacy":"https://deng.codexradar.com/agent-speed/privacy/"},"api":"\(api)","apiKey":{"mode":"none"},"sections":["sources","models","cost","traffic"],"extensions":{"modelHarnessRequests":1,"executionModes":1,"profileAvatar":1,"sharedIdentity":1,"reportWebSocket":\(websocket ? 1 : 0)}\(socketFields)}
         """.utf8))
     }
     func send(_ request: ReportRequest, maxBytes: Int, timeout: TimeInterval)
@@ -171,7 +174,7 @@ final class AgentSpeedReportingTests: XCTestCase {
                   live: .init(output: 50, total: 150), today: .zero, activeAgents: 0),
         ]
         snapshot.live = .init(output: 50, total: 150)
-        snapshot.report.counters.add(.init(requests: 10, output: 1000, measuredOutput: 1000, measuredMs: 20_000),
+        snapshot.report.counters.add(.init(requests: 10, output: 1000, measuredOutput: 1000, measuredMs: 20_000, costMicroUsd: 99_000),
                                     to: .init(modelId: "gpt-6.1-sol", source: .codex))
         controller.receive(snapshot)
         snapshot.state = .running
@@ -180,7 +183,7 @@ final class AgentSpeedReportingTests: XCTestCase {
             clock = Int64(step * 500)
             if step == 10 {
                 snapshot.report.counters.add(.init(requests: 1, output: 250, input: 500, reasoning: 100,
-                                                  measuredOutput: 250, measuredMs: 5000),
+                                                  measuredOutput: 250, measuredMs: 5000, costMicroUsd: 1234, unpricedRequests: 1),
                                             to: .init(modelId: "gpt-6.1-sol", source: .codex))
             }
             snapshot.live = .init(output: 50, total: 150)
@@ -193,12 +196,19 @@ final class AgentSpeedReportingTests: XCTestCase {
         XCTAssertEqual(reports.count, 1)
         let request = try XCTUnwrap(reports.first)
         let body = try XCTUnwrap(JSONSerialization.jsonObject(with: request.body) as? [String: Any])
-        XCTAssertEqual(Set(body.keys), Set(["schema","client","deviceId","username","run","sentAt","windowMs","activity","live","peak","delta","title","sources","models"]))
+        XCTAssertEqual(Set(body.keys), Set(["schema","client","deviceId","username","run","sentAt","windowMs","activity","live","peak","delta","title","sources","models","cost"]))
         let delta = try XCTUnwrap(body["delta"] as? [String: Any])
         XCTAssertEqual(delta["requests"] as? Int, 1)
         XCTAssertEqual(delta["output"] as? Int, 250)
         XCTAssertEqual(delta["measuredMs"] as? Int, 5000)
-        XCTAssertNil(body["cost"]); XCTAssertNil(body["traffic"])
+        let cost = try XCTUnwrap(body["cost"] as? [String: Any])
+        XCTAssertEqual(cost["deltaMicroUsd"] as? Int, 1234)
+        XCTAssertEqual(cost["unpricedRequests"] as? Int, 1)
+        XCTAssertEqual(cost["priceVersion"] as? Int, PriceBook.bundled.version)
+        XCTAssertEqual(cost["knownShare"] as? Double, 0)
+        let models = try XCTUnwrap(body["models"] as? [[String: Any]])
+        XCTAssertEqual(models.first?["deltaMicroUsd"] as? Int, 1234)
+        XCTAssertNil(body["traffic"])
         XCTAssertEqual((body["client"] as? [String: Any])?["app"] as? String, "CodexTokenBar")
         XCTAssertNotNil(request.header("X-AgentSpeed-Signature"))
         XCTAssertNil(request.header("Authorization"))
@@ -297,11 +307,117 @@ final class AgentSpeedReportingTests: XCTestCase {
         XCTAssertFalse(prefs.bool(forKey: AgentSpeedReportingController.enabledKey))
     }
 
+    func testSocketFailureFallsBackWithoutReplayingAndRetainsDeviceAndPreference() async throws {
+        let prefs = defaults(), transport = SpeedReportTestTransport(), monitor = SpeedReportTestMonitor()
+        await transport.offerWebSocket()
+        prefs.set("websocket", forKey: AgentSpeedReportingController.transportKey)
+        var clock: Int64 = 0
+        var socket: AgentSpeedWebSocket?
+        let controller = AgentSpeedReportingController(defaults: prefs, transport: transport,
+            makeSigner: { _ in SoftwareReportSigner() }, monotonic: { clock },
+            startWebSocket: { socket = $0 }, makeRealtimeMonitor: { _ in monitor }, makeMonitor: { _ in monitor })
+        controller.setEnabled(true, username: "fallback-test")
+        try await waitFor { monitor.starts == 1 }
+        let initialSocket = try XCTUnwrap(socket)
+        var snapshot = SpeedSnapshot.empty
+        snapshot.state = .running
+        let model = ReportModelKey(modelId: "gpt-6.1-sol", source: .codex)
+        snapshot.report.counters.add(.init(requests: 10, output: 1000, costMicroUsd: 90_000), to: model)
+        controller.receive(snapshot)
+        // Switching channels must not carry the existing WS-side counters into HTTP.
+        XCTAssertTrue(initialSocket.ledger.pending.isEmpty)
+        initialSocket.onTransportUnavailable?()
+        XCTAssertTrue(controller.usingHTTPFallback)
+        XCTAssertTrue(controller.message.contains("HTTP"))
+        controller.receive(snapshot) // fresh HTTP baseline
+        snapshot.live = .init(output: 50, total: 100)
+        controller.receive(snapshot)
+        snapshot.report.counters.add(.init(requests: 1, output: 250, measuredOutput: 250,
+                                          measuredMs: 5000, costMicroUsd: 1234, unpricedRequests: 1), to: model)
+        clock = 5000
+        controller.receive(snapshot)
+        try await waitFor { controller.lastReportAt != nil }
+        let requests = await transport.requests()
+        let registration = try XCTUnwrap(requests.first { $0.url.path.hasSuffix("/devices") })
+        let registered = try XCTUnwrap(JSONSerialization.jsonObject(with: registration.body) as? [String: Any])
+        let reports = requests.filter { $0.url.path.hasSuffix("/reports") }
+        XCTAssertEqual(reports.count, 1)
+        let report = try XCTUnwrap(reports.first)
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: report.body) as? [String: Any])
+        XCTAssertEqual(body["deviceId"] as? String, registered["deviceId"] as? String)
+        XCTAssertNotEqual((body["run"] as? [String: Any])?["id"] as? String, initialSocket.runID)
+        XCTAssertEqual((body["delta"] as? [String: Any])?["output"] as? Int, 250)
+        XCTAssertEqual((body["cost"] as? [String: Any])?["deltaMicroUsd"] as? Int, 1234)
+        XCTAssertEqual((body["cost"] as? [String: Any])?["unpricedRequests"] as? Int, 1)
+        XCTAssertNotNil(report.header("X-AgentSpeed-Signature"))
+        XCTAssertEqual(controller.transport, .websocket)
+        XCTAssertEqual(prefs.string(forKey: AgentSpeedReportingController.transportKey), "websocket")
+        XCTAssertTrue(controller.message.contains("已回退 HTTP"))
+        controller.retry()
+        XCTAssertFalse(controller.usingHTTPFallback)
+        try await waitFor { monitor.starts == 2 }
+        XCTAssertEqual(controller.transport, .websocket)
+        controller.setEnabled(false)
+        let count = await transport.requests().count
+        initialSocket.onTransportUnavailable?()
+        controller.receive(snapshot)
+        let finalCount = await transport.requests().count
+        XCTAssertEqual(finalCount, count)
+    }
+
     func testProfileLinksArePinnedAndAllUpstreamHarnessesIncluded() {
         XCTAssertNil(AgentSpeedReportingController.safeProfile(URL(string: "https://evil.example/account")))
         XCTAssertNil(AgentSpeedReportingController.safeProfile(URL(string: "https://password@deng.codexradar.com/")))
         XCTAssertNotNil(AgentSpeedReportingController.safeProfile(URL(string: "https://deng.codexradar.com/u/test")))
         XCTAssertEqual(MonitorConfiguration().enabledSources.count, 13)
         XCTAssertEqual(Set(SourceKind.allCases.map(AgentSpeedReportingController.sourceName)).count, 13)
+    }
+}
+
+/// Explicit opt-in live acceptance probe. Reuses this device's existing identity;
+/// never seeds a new device, reads transcripts, or changes production preferences.
+private actor SpeedReportAcceptanceTransport: ReportTransport {
+    private let underlying = URLSessionReportTransport()
+    private var outcomes: [[String: String]] = []
+    func snapshot() -> [[String: String]] { outcomes }
+    func get(_ url: URL, etag: String?, userAgent: String, maxBytes: Int, timeout: TimeInterval)
+        async throws(ReportTransportError) -> ReportHTTPResponse {
+        try await underlying.get(url, etag: etag, userAgent: userAgent, maxBytes: maxBytes, timeout: timeout)
+    }
+    func send(_ request: ReportRequest, maxBytes: Int, timeout: TimeInterval)
+        async throws(ReportTransportError) -> ReportHTTPResponse {
+        let response = try await underlying.send(request, maxBytes: maxBytes, timeout: timeout)
+        let parsed = ReportReply.parse(status: response.status, headers: response.headers, body: response.body)
+        outcomes.append(["status": String(response.status), "code": parsed.code ?? "", "field": parsed.field ?? "", "reason": parsed.reason ?? ""])
+        return response
+    }
+}
+
+extension AgentSpeedReportingTests {
+    func testExplicitLiveRegistrationDiagnostics() async throws {
+        guard let output = ProcessInfo.processInfo.environment["CODEX_SPEED_LIVE_ACCEPTANCE_OUTPUT"] else {
+            throw XCTSkip("Live service requests require explicit local acceptance opt-in")
+        }
+        let production = try XCTUnwrap(UserDefaults(suiteName: "local.codex.token-bar"))
+        let device = try XCTUnwrap(production.string(forKey: AgentSpeedReportingController.deviceKey))
+        let username = try XCTUnwrap(production.string(forKey: AgentSpeedReportingController.usernameKey))
+        XCTAssertTrue(ReportCanonical.isDeviceId(device))
+        let name = "test.speed-acceptance." + UUID().uuidString
+        let prefs = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { prefs.removePersistentDomain(forName: name) }
+        prefs.set(device, forKey: AgentSpeedReportingController.deviceKey)
+        let transport = SpeedReportAcceptanceTransport(), monitor = SpeedReportTestMonitor()
+        let controller = AgentSpeedReportingController(defaults: prefs, transport: transport, makeMonitor: { _ in monitor })
+        controller.setEnabled(true, username: username)
+        for _ in 0..<300 where controller.phase != "error" && monitor.starts == 0 {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        let result = await transport.snapshot()
+        let record: [String: Any] = ["responses": result, "phase": controller.phase, "message": controller.message,
+                                    "readerStarts": monitor.starts, "sameDeviceRetry": true,
+                                    "productionPreferencesChanged": false, "clientApp": "CodexTokenBar"]
+        try JSONSerialization.data(withJSONObject: record, options: [.prettyPrinted, .sortedKeys]).write(to: URL(fileURLWithPath: output))
+        controller.shutdown()
+        XCTAssertFalse(result.isEmpty, "The explicit probe must reach the registered API")
     }
 }

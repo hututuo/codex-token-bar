@@ -15,17 +15,21 @@ struct AnimationActivity {
     }
 }
 
-/// Reads clipping/window exposure on existing AppKit notifications. No timer,
-/// display link, window enumeration or Accessibility permission is required.
+/// Reads clipping/window exposure on existing AppKit notifications. No idle
+/// polling, display link, window enumeration or Accessibility permission.
+/// Scroll pausing uses one coalesced wakeup until the clip position settles.
 struct AnimationVisibilityProbe: NSViewRepresentable {
+    var pausesDuringScroll = false
     let changed: (Bool) -> Void
     func makeNSView(context: Context) -> AnimationVisibilityView {
         let view = AnimationVisibilityView()
         view.changed = changed
+        view.pausesDuringScroll = pausesDuringScroll
         return view
     }
     func updateNSView(_ view: AnimationVisibilityView, context: Context) {
         view.changed = changed
+        view.pausesDuringScroll = pausesDuringScroll
         view.scheduleCheck()
     }
     static func dismantleNSView(_ view: AnimationVisibilityView, coordinator: ()) { view.changed = nil; view.stop() }
@@ -35,6 +39,12 @@ struct AnimationVisibilityProbe: NSViewRepresentable {
 final class AnimationVisibilityView: NSView {
     var changed: ((Bool) -> Void)?
     var includesMotionPolicy = false
+    var pausesDuringScroll = false
+    private var clipOrigins: [ObjectIdentifier: CGPoint] = [:]
+    private var scrollActive = false
+    private var lastScrollTime: TimeInterval = 0
+    private var scrollResume: DispatchWorkItem?
+    private static let scrollIdleDelay: TimeInterval = 0.18
     private let notifications = AnimationNotificationBag()
     private var scheduled = false
     private var lastVisible: Bool?
@@ -62,13 +72,52 @@ final class AnimationVisibilityView: NSView {
         while let view = ancestor {
             if let clip = view as? NSClipView {
                 clip.postsBoundsChangedNotifications = true
-                observe(NSView.boundsDidChangeNotification, clip)
+                clipOrigins[ObjectIdentifier(clip)] = clip.bounds.origin
+                let token = NotificationCenter.default.addObserver(
+                    forName: NSView.boundsDidChangeNotification, object: clip, queue: .main
+                ) { [weak self, weak clip] _ in
+                    MainActor.assumeIsolated {
+                        guard let self, let clip else { return }
+                        self.clipMoved(clip)
+                        self.scheduleCheck()
+                    }
+                }
+                notifications.add(token, center: .default)
             }
             ancestor = view.superview
         }
     }
     func stop() {
         notifications.reset()
+        scrollResume?.cancel()
+        scrollResume = nil
+        clipOrigins.removeAll()
+        scrollActive = false
+    }
+    private func clipMoved(_ clip: NSClipView) {
+        let id = ObjectIdentifier(clip)
+        let previous = clipOrigins.updateValue(clip.bounds.origin, forKey: id)
+        guard pausesDuringScroll, let previous, previous != clip.bounds.origin else { return }
+        scrollActive = true
+        lastScrollTime = ProcessInfo.processInfo.systemUptime
+        if scrollResume == nil { scheduleScrollResume(after: Self.scrollIdleDelay) }
+    }
+    private func scheduleScrollResume(after delay: TimeInterval) {
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.scrollResume = nil
+                let remaining = Self.scrollIdleDelay - (ProcessInfo.processInfo.systemUptime - self.lastScrollTime)
+                if remaining > 0 {
+                    self.scheduleScrollResume(after: remaining)
+                } else {
+                    self.scrollActive = false
+                    self.scheduleCheck()
+                }
+            }
+        }
+        scrollResume = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
     func scheduleCheck() {
         guard !scheduled else { return }
@@ -79,11 +128,12 @@ final class AnimationVisibilityView: NSView {
             let exposed = AnimationActivity.visible(bounds: self.bounds, visibleRect: self.visibleRect,
                 windowVisible: self.window?.isVisible == true, miniaturized: self.window?.isMiniaturized == true,
                 occluded: self.window?.occlusionState.contains(.visible) != true, hidden: self.isHiddenOrHasHiddenAncestor)
+            let allowed = exposed && !self.scrollActive
             let visible = self.includesMotionPolicy
-                ? AnimationActivity.runs(visible: exposed,
+                ? AnimationActivity.runs(visible: allowed,
                     reducedMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
                     lowPower: ProcessInfo.processInfo.isLowPowerModeEnabled)
-                : exposed
+                : allowed
             guard visible != self.lastVisible else { return }
             self.lastVisible = visible
             self.changed?(visible)

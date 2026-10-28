@@ -1,0 +1,337 @@
+{
+  "acceptedReports" : 31,
+  "attemptedReports" : 31,
+  "cleanupHTTPStatus" : 200,
+  "clientApp" : "CodexTokenBar",
+  "connectionReady" : true,
+  "error" : "",
+  "lastStatus" : "WebSocket 已连接 · 等待有效上报",
+  "limits" : {
+    "browserNotMeasured" : true,
+    "crossMachineClocksNotCalibrated" : true,
+    "formalTenMinuteBenchmark" : false,
+    "smallSample" : true,
+    "sourceObservationNotMeasured" : true
+  },
+  "measuredAt" : "2026-10-26T05:24:22Z",
+  "pingRoundTrip" : {
+    "count" : 11,
+    "maxMs" : 1255,
+    "minMs" : 404,
+    "p50Ms" : 410,
+    "p95Ms" : 1255
+  },
+  "pingSamplesMs" : [
+    407,
+    407,
+    574,
+    1255,
+    404,
+    409,
+    410,
+    410,
+    659,
+    408,
+    704
+  ],
+  "platform" : "macOS",
+  "productionDeviceReused" : false,
+  "productionPreferencesChanged" : false,
+  "registration" : true,
+  "samples" : [
+    {
+      "buildToAckMs" : 457,
+      "packingMs" : 0,
+      "sendToAckMs" : 443,
+      "sequence" : 1,
+      "serverProcessingMs" : 6,
+      "signingAndSchedulingMs" : 14
+    },
+    {
+      "buildToAckMs" : 436,
+      "packingMs" : 0,
+      "sendToAckMs" : 417,
+      "sequence" : 2,
+      "serverProcessingMs" : 6,
+      "signingAndSchedulingMs" : 19
+    },
+    {
+      "buildToAckMs" : 457,
+      "packingMs" : 0,
+      "sendToAckMs" : 451,
+      "sequence" : 3,
+      "serverProcessingMs" : 7,
+      "signingAndSchedulingMs" : 6
+    },
+    {
+      "buildToAckMs" : 452,
+      "packingMs" : 1,
+      "sendToAckMs" : 441,
+      "sequence" : 4,
+      "serverProcessingMs" : 7,
+      "signingAndSchedulingMs" : 10
+    },
+    {
+      "buildToAckMs" : 423,
+      "packingMs" : 0,
+      "sendToAckMs" : 412,
+      "sequence" : 5,
+      "serverProcessingMs" : 6,
+      "signingAndSchedulingMs" : 11
+    },
+    {
+      "buildToAckMs" : 468,
+      "packingMs" : 0,
+      "sendToAckMs" : 458,
+      "sequence" : 6,
+      "serverProcessingMs" : 5,
+      "signingAndSchedulingMs" : 10
+    },
+    {
+      "buildToAckMs" : 896,
+      "packingMs" : 1,
+      "sendToAckMs" : 883,
+      "sequence" : 7,
+      "serverProcessingMs" : 2,
+      "signingAndSchedulingMs" : 12
+    },
+    {
+      "buildToAckMs" : 646,
+      "packingMs" : 0,
+      "sendToAckMs" : 634,
+      "sequence" : 8,
+      "serverProcessingMs" : 7,
+      "signingAndSchedulingMs" : 12
+    },
+    {
+      "buildToAckMs" : 802,
+      "packingMs" : 0,
+      "sendToAckMs" : 789,
+      "sequence" : 9,
+      "serverProcessingMs" : 6,
+      "signingAndSchedulingMs" : 13
+    },
+    {
+      "buildToAckMs" : 956,
+      "packingMs" : 0,
+      "sendToAckMs" : 951,
+      "sequence" : 10,
+      "serverProcessingMs" : 4,
+      "signingAndSchedulingMs" : 5
+    },
+    {
+      "buildToAckMs" : 544,
+      "packingMs" : 0,
+      "sendToAckMs" : 533,
+      "sequence" : 11,
+      "serverProcessingMs" : 4,
+      "signingAndSchedulingMs" : 11
+    },
+    {
+      "buildToAckMs" : 430,
+      "packingMs" : 0,
+      "sendToAckMs" : 419,
+      "sequence" : 12,
+      "serverProcessingMs" : 6,
+      "signingAndSchedulingMs" : 11
+    },
+    {
+      "buildToAckMs" : 435,
+      "packingMs" : 0,
+      "sendToAckMs" : 424,
+      "sequence" : 13,
+      "serverProcessingMs" : 13,
+      "signingAndSchedulingMs" : 11
+    },
+    {
+      "buildToAckMs" : 465,
+      "packingMs" : 0,
+      "sendToAckMs" : 454,
+      "sequence" : 14,
+      "serverProcessingMs" : 6,
+      "signingAndSchedulingMs" : 11
+    },
+    {
+      "buildToAckMs" : 424,
+      "packingMs" : 1,
+      "sendToAckMs" : 416,
+      "sequence" : 15,
+      "serverProcessingMs" : 6,
+      "signingAndSchedulingMs" : 7
+    },
+    {
+      "buildToAckMs" : 425,
+      "packingMs" : 0,
+      "sendToAckMs" : 414,
+      "sequence" : 16,
+      "serverProcessingMs" : 6,
+      "signingAndSchedulingMs" : 11
+    },
+    {
+      "buildToAckMs" : 426,
+      "packingMs" : 0,
+      "sendToAckMs" : 415,
+      "sequence" : 17,
+      "serverProcessingMs" : 3,
+      "signingAndSchedulingMs" : 11
+    },
+    {
+      "buildToAckMs" : 414,
+      "packingMs" : 0,
+      "sendToAckMs" : 408,
+      "sequence" : 18,
+      "serverProcessingMs" : 3,
+      "signingAndSchedulingMs" : 6
+    },
+    {
+      "buildToAckMs" : 458,
+      "packingMs" : 0,
+      "sendToAckMs" : 447,
+      "sequence" : 19,
+      "serverProcessingMs" : 3,
+      "signingAndSchedulingMs" : 11
+    },
+    {
+      "buildToAckMs" : 417,
+      "packingMs" : 0,
+      "sendToAckMs" : 406,
+      "sequence" : 20,
+      "serverProcessingMs" : 3,
+      "signingAndSchedulingMs" : 11
+    },
+    {
+      "buildToAckMs" : 423,
+      "packingMs" : 0,
+      "sendToAckMs" : 413,
+      "sequence" : 21,
+      "serverProcessingMs" : 3,
+      "signingAndSchedulingMs" : 10
+    },
+    {
+      "buildToAckMs" : 428,
+      "packingMs" : 0,
+      "sendToAckMs" : 416,
+      "sequence" : 22,
+      "serverProcessingMs" : 8,
+      "signingAndSchedulingMs" : 12
+    },
+    {
+      "buildToAckMs" : 422,
+      "packingMs" : 0,
+      "sendToAckMs" : 411,
+      "sequence" : 23,
+      "serverProcessingMs" : 6,
+      "signingAndSchedulingMs" : 11
+    },
+    {
+      "buildToAckMs" : 422,
+      "packingMs" : 0,
+      "sendToAckMs" : 411,
+      "sequence" : 24,
+      "serverProcessingMs" : 6,
+      "signingAndSchedulingMs" : 11
+    },
+    {
+      "buildToAckMs" : 425,
+      "packingMs" : 0,
+      "sendToAckMs" : 414,
+      "sequence" : 25,
+      "serverProcessingMs" : 7,
+      "signingAndSchedulingMs" : 11
+    },
+    {
+      "buildToAckMs" : 552,
+      "packingMs" : 1,
+      "sendToAckMs" : 540,
+      "sequence" : 26,
+      "serverProcessingMs" : 7,
+      "signingAndSchedulingMs" : 11
+    },
+    {
+      "buildToAckMs" : 442,
+      "packingMs" : 0,
+      "sendToAckMs" : 431,
+      "sequence" : 27,
+      "serverProcessingMs" : 6,
+      "signingAndSchedulingMs" : 11
+    },
+    {
+      "buildToAckMs" : 441,
+      "packingMs" : 0,
+      "sendToAckMs" : 430,
+      "sequence" : 28,
+      "serverProcessingMs" : 2,
+      "signingAndSchedulingMs" : 11
+    },
+    {
+      "buildToAckMs" : 473,
+      "packingMs" : 0,
+      "sendToAckMs" : 460,
+      "sequence" : 29,
+      "serverProcessingMs" : 9,
+      "signingAndSchedulingMs" : 13
+    },
+    {
+      "buildToAckMs" : 494,
+      "packingMs" : 0,
+      "sendToAckMs" : 481,
+      "sequence" : 30,
+      "serverProcessingMs" : 7,
+      "signingAndSchedulingMs" : 13
+    },
+    {
+      "buildToAckMs" : 535,
+      "packingMs" : 1,
+      "sendToAckMs" : 520,
+      "sequence" : 31,
+      "serverProcessingMs" : 7,
+      "signingAndSchedulingMs" : 14
+    }
+  ],
+  "socketCounters" : {
+    "accepted" : 31,
+    "built" : 31,
+    "dropped" : 0,
+    "duplicate" : 0,
+    "rejected" : 0,
+    "timedOut" : 0,
+    "unknown" : 0
+  },
+  "terminal" : "",
+  "warmBuildToAck" : {
+    "count" : 30,
+    "maxMs" : 956,
+    "minMs" : 414,
+    "p50Ms" : 441,
+    "p95Ms" : 896
+  },
+  "warmPacking" : {
+    "count" : 30,
+    "maxMs" : 1,
+    "minMs" : 0,
+    "p50Ms" : 0,
+    "p95Ms" : 1
+  },
+  "warmSendToAck" : {
+    "count" : 30,
+    "maxMs" : 951,
+    "minMs" : 406,
+    "p50Ms" : 430,
+    "p95Ms" : 883
+  },
+  "warmServerProcessing" : {
+    "count" : 30,
+    "maxMs" : 13,
+    "minMs" : 2,
+    "p50Ms" : 6,
+    "p95Ms" : 9
+  },
+  "warmSigningAndScheduling" : {
+    "count" : 30,
+    "maxMs" : 19,
+    "minMs" : 5,
+    "p50Ms" : 11,
+    "p95Ms" : 14
+  },
+  "zeroUsage" : true
+}

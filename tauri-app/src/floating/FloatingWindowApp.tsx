@@ -64,7 +64,7 @@ export function FloatingWindowApp() {
   const [quotaRefreshIntervalMs, setQuotaRefreshIntervalMs] = useState(DEFAULT_QUOTA_REFRESH_INTERVAL_MS);
   const { sourceReady, sourceToken } = useCompactPanelSource(surfaceLifecycle.active);
   const { runningThreads, snapshot } = useCompactPanelData({
-    active: surfaceLifecycle.active && sourceReady,
+    active: surfaceLifecycle.active,
     liveRateEnabled,
     liveRateOwnerToken: "floating-live-rate",
     backgroundAggregateEnabled: true,

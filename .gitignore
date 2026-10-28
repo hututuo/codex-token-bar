@@ -50,3 +50,6 @@ __pycache__/
 /tools/AgentSpeedReporter/bin/
 /tools/AgentSpeedReporter/obj/
 /tauri-app/.speed-invitation-review.html
+
+/tools/ClaudeLocalReader/bin/
+/tools/ClaudeLocalReader/obj/

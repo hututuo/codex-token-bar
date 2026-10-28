@@ -1,14 +1,28 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using CodexTokenBar.LocalSource;
 using AgentSpeed.Core;
 
 namespace CodexTokenBar.AgentSpeedReporter;
 
-internal sealed record StartCommand(
-    bool Enabled,
-    string Username,
-    IReadOnlySet<string> DeniedSourceIds,
-    IReadOnlyDictionary<string, string> LocalSourceRoots);
+internal sealed record StartCommand(bool Enabled, bool LocalDisplay, string Username, string Transport,
+    IReadOnlySet<string> DeniedSourceIds, IReadOnlyDictionary<string, string> LocalSourceRoots);
+
+internal sealed record AgentSpeedDisplayRate(
+    [property: JsonPropertyName("model")] string Model,
+    [property: JsonPropertyName("tokensPerSecond")] double TokensPerSecond);
+
+internal sealed record AgentSpeedDisplaySnapshot(
+    [property: JsonPropertyName("available")] bool Available,
+    [property: JsonPropertyName("tokensPerSecond")] double TokensPerSecond,
+    [property: JsonPropertyName("modelRates")] IReadOnlyList<AgentSpeedDisplayRate> ModelRates,
+    [property: JsonPropertyName("clientRates")] IReadOnlyList<AgentSpeedDisplayRate> ClientRates,
+    [property: JsonPropertyName("status")] string Status,
+    [property: JsonPropertyName("updatedAtMs")] long UpdatedAtMs)
+{
+    public static AgentSpeedDisplaySnapshot Empty(string status, bool available = false) =>
+        new(available, 0, [], [], status, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+}
 
 internal sealed record StatusSource(
     [property: JsonPropertyName("id")] string Id,
@@ -23,12 +37,13 @@ internal sealed record HelperStatus(
     [property: JsonPropertyName("estimatedShare")] double EstimatedShare,
     [property: JsonPropertyName("lastReportAt")] string? LastReportAt,
     [property: JsonPropertyName("sources")] IReadOnlyList<StatusSource> Sources,
-    [property: JsonPropertyName("profileUrl")] string? ProfileUrl);
+    [property: JsonPropertyName("profileUrl")] string? ProfileUrl,
+    [property: JsonPropertyName("localDisplay")] AgentSpeedDisplaySnapshot? LocalDisplay = null);
 
 internal static class StatusProtocol
 {
     public const int MaxInputBytes = 4096;
-    public const int MaxStatusBytes = 4096;
+    public const int MaxStatusBytes = 65_536;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -71,24 +86,17 @@ internal static class StatusProtocol
             using var document = JsonDocument.Parse(bytes.AsMemory(0, count), new JsonDocumentOptions { MaxDepth = 4 });
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object
-                || !root.TryGetProperty("enabled", out var enabled) || enabled.ValueKind != JsonValueKind.True
-                || !root.TryGetProperty("username", out var username) || username.ValueKind != JsonValueKind.String
-                || !root.TryGetProperty("deniedSourceIds", out var deniedSourceIds)
-                || deniedSourceIds.ValueKind != JsonValueKind.Array || deniedSourceIds.GetArrayLength() > 16)
+                || root.EnumerateObject().Select(property => property.Name).Distinct(StringComparer.Ordinal).Count()
+                    != root.EnumerateObject().Count()
+                || root.EnumerateObject().Any(property => property.Name is not ("enabled" or "localDisplay" or "username" or "transport" or "deniedSourceIds" or "localSourceRoots"))
+                || !root.TryGetProperty("enabled", out var enabled)
+                || enabled.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
             {
                 return null;
             }
 
-            var topLevelNames = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var property in root.EnumerateObject())
-            {
-                if (property.Name is not ("enabled" or "username" or "deniedSourceIds" or "localSourceRoots")
-                    || !topLevelNames.Add(property.Name))
-                {
-                    return null;
-                }
-            }
-
+            if (!root.TryGetProperty("deniedSourceIds", out var deniedSourceIds)
+                || deniedSourceIds.ValueKind != JsonValueKind.Array || deniedSourceIds.GetArrayLength() > 16) return null;
             var denied = new List<string>();
             foreach (var source in deniedSourceIds.EnumerateArray())
             {
@@ -105,9 +113,29 @@ internal static class StatusProtocol
                 return null;
             }
 
-            var value = username.GetString();
-            if (string.IsNullOrWhiteSpace(value) || value.Length > 128 || value.Trim().EnumerateRunes().Count() is < 2 or > 32
-                || value.Any(char.IsControl))
+            var reportingEnabled = enabled.GetBoolean();
+            var localDisplay = false;
+            if (root.TryGetProperty("localDisplay", out var localDisplayValue))
+            {
+                if (localDisplayValue.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                {
+                    return null;
+                }
+                localDisplay = localDisplayValue.GetBoolean();
+            }
+            if (!reportingEnabled && !localDisplay) return null;
+
+            var value = root.TryGetProperty("username", out var username) && username.ValueKind == JsonValueKind.String
+                ? username.GetString()
+                : null;
+            if (reportingEnabled && (string.IsNullOrWhiteSpace(value) || value.Length > 128
+                || value.Trim().EnumerateRunes().Count() is < 2 or > 32 || value.Any(char.IsControl))) return null;
+            if (!reportingEnabled && value is not null) return null;
+
+            var transport = root.TryGetProperty("transport", out var requestedTransport)
+                ? requestedTransport.ValueKind == JsonValueKind.String ? requestedTransport.GetString() : null
+                : "http";
+            if (transport is not ("http" or "websocket"))
             {
                 return null;
             }
@@ -133,7 +161,8 @@ internal static class StatusProtocol
                 }
             }
 
-            return new StartCommand(true, value.Trim(), denied.ToHashSet(StringComparer.Ordinal), localSourceRoots);
+            return new StartCommand(reportingEnabled, localDisplay, value?.Trim() ?? string.Empty, transport,
+                denied.ToHashSet(StringComparer.Ordinal), localSourceRoots);
         }
         catch (JsonException)
         {
@@ -200,7 +229,16 @@ internal static class StatusProtocol
         "waiting_for_snapshot" => "Waiting for a live snapshot",
         "discovering" => "Checking the reporting service",
         "registering" => "Registering this device",
+        "websocket_waiting_for_activity" => "Device registered; waiting for activity",
+        "websocket_connected" => "WebSocket connected; waiting for a valid report acknowledgement",
         "reporting" => "Reporting live speed",
+        "http_fallback" => "WebSocket disconnected; using HTTP for this run",
+        "websocket_reconnecting" => "WebSocket reconnecting",
+        "websocket_not_supported" => "This service does not support WebSocket reports",
+        "websocket_configuration_mismatch" => "The WebSocket service settings do not match discovery",
+        "websocket_protocol_error" => "The WebSocket service is incompatible",
+        "websocket_replaced" => "This device is connected elsewhere",
+        "unknown_device" => "The reporting service no longer recognizes this device",
         "service_unavailable" => "Reporting service unavailable",
         "service_unsupported" => "Reporting service is not supported",
         "username_invalid" => "Username is not accepted",
@@ -243,9 +281,27 @@ internal static class StatusProtocol
 
         return bytes;
     }
+
+    public static string DisplaySourceId(SourceKind kind) => kind switch
+    {
+        SourceKind.Codex => "codex",
+        SourceKind.ClaudeCode => "claudeCode",
+        SourceKind.ClaudeDesktop => "claudeDesktop",
+        SourceKind.DeepSeek => "deepseek",
+        SourceKind.OpenCode => "opencode",
+        SourceKind.Gemini => "gemini",
+        SourceKind.Omp => "omp",
+        SourceKind.Antigravity => "antigravity",
+        SourceKind.WorkBuddy => "workbuddy",
+        SourceKind.WorkBuddyAi => "workbuddyAi",
+        SourceKind.ZCode => "zcode",
+        SourceKind.Kimi => "kimi",
+        SourceKind.GrokBuild => "grokBuild",
+        _ => "agent",
+    };
 }
 
-internal sealed class StatusEmitter(CodexTokenBar.LocalSource.LocalSourceProtocolOutput output)
+internal sealed class StatusEmitter(LocalSourceProtocolOutput output)
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
     private HelperStatus _latest = new(
@@ -253,18 +309,40 @@ internal sealed class StatusEmitter(CodexTokenBar.LocalSource.LocalSourceProtoco
 
     public async Task PublishAsync(HelperStatus status, CancellationToken cancellationToken)
     {
-        var bytes = StatusProtocol.Serialize(status);
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            output.WriteLine(bytes);
-            _latest = status;
+            var next = status with { LocalDisplay = _latest.LocalDisplay };
+            await WriteAsync(next, cancellationToken).ConfigureAwait(false);
+            _latest = next;
         }
         finally
         {
             _gate.Release();
         }
+    }
+
+    public async Task PublishDisplayAsync(AgentSpeedDisplaySnapshot snapshot, CancellationToken cancellationToken)
+    {
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            var next = _latest with { LocalDisplay = snapshot };
+            await WriteAsync(next, cancellationToken).ConfigureAwait(false);
+            _latest = next;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    private Task WriteAsync(HelperStatus status, CancellationToken cancellationToken)
+    {
+        var bytes = StatusProtocol.Serialize(status);
+        cancellationToken.ThrowIfCancellationRequested();
+        output.WriteLine(bytes);
+        return Task.CompletedTask;
     }
 
     public Task PublishErrorAsync(string messageCode, CancellationToken cancellationToken) =>

@@ -213,9 +213,9 @@ struct TokenDisplaySnapshot {
 
         return TokenDisplaySnapshot(
             title: "全会话实时",
-            status: monitor.totalSnapshot.status,
-            rate: monitor.totalSnapshot.rollingTokensPerSecond,
-            modelRates: monitor.totalSnapshot.modelRates,
+            status: monitor.displaySnapshot.status,
+            rate: monitor.displaySnapshot.rollingTokensPerSecond,
+            modelRates: monitor.displaySnapshot.barRates,
             consumedTokens: store.snapshot.stats.totalTokens,
             todayTokens: todayUsage?.tokens ?? 0,
             todayRequests: todayUsage?.calls ?? 0,
@@ -227,7 +227,7 @@ struct TokenDisplaySnapshot {
             updatedAt: max(
                 store.snapshot.generatedAt,
                 max(
-                    monitor.totalSnapshot.updatedAt,
+                    monitor.displaySnapshot.updatedAt,
                     max(
                         quota.snapshot.updatedAt ?? .distantPast,
                         runningThreads.updatedAt ?? .distantPast

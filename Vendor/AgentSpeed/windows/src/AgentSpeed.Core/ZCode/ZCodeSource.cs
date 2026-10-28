@@ -16,6 +16,7 @@ internal sealed record ZCodeAgent(string Id, string SessionId, string? ParentSes
 internal sealed class ZCodeUpdate
 {
     public List<(ParsedResponse Response, bool Completion)> Responses { get; } = [];
+    public SourceReadObservation? SourceReadObservation { get; set; }
     public List<ZCodeAgent> Agents { get; } = [];
     public List<string> Removed { get; } = [];
     public bool Changed => Responses.Count > 0 || Agents.Count > 0 || Removed.Count > 0;
@@ -86,6 +87,7 @@ internal sealed class ZCodeSource(string root, IDeduper deduper)
         try
         {
             using var database = ZCodeDatabase.Open(DatabasePath);
+            update.SourceReadObservation = SourceReadObservation.Capture(SourceReadMode.Poll, sourceResolutionMs: 1_000);
             var rows = database.Read(_sinceMs);
             foreach (var group in rows.GroupBy(r => r.SessionId))
             {

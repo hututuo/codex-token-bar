@@ -9,6 +9,7 @@ final class FloatingModelUsageCache: @unchecked Sendable {
         let fallbackModel: OfficialAPIPriceModel
         let showPlaceholders: Bool
         let mergeAutoReview: Bool
+        var paletteVersion: Int = SpeedColorOverrides.shared.version
     }
     private struct Entry {
         let key: Key

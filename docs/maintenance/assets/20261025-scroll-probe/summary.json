@@ -1,0 +1,16 @@
+{
+  "before": {
+    "cpu_seconds": 3.884092,
+    "loop_p95_ms": 35.51054163835943,
+    "slow_intervals_over_25ms": 184,
+    "wall_seconds": 9.385004999989178,
+    "layout_p95_ms": 3.5824166843667626
+  },
+  "fixed": {
+    "cpu_seconds": 2.0371739999999994,
+    "loop_p95_ms": 17.847999988589436,
+    "slow_intervals_over_25ms": 6,
+    "wall_seconds": 6.398430291679688,
+    "layout_p95_ms": 7.019041629973799
+  }
+}

@@ -70,10 +70,15 @@ internal static class RuntimeSnapshotMapper
         SpeedSnapshot snapshot,
         byte[] processSalt,
         IReadOnlySet<SourceKind>? enabledSources = null,
-        IReadOnlyList<ResponseEventInput>? responseEvents = null)
+        IReadOnlyList<ResponseEventInput>? responseEvents = null,
+        bool applyDisplayGuards = false, DateTimeOffset? observedNow = null)
     {
         enabledSources ??= ClaudeSources.ToHashSet();
-        var now = DateTimeOffset.UtcNow;
+        var now = observedNow ?? DateTimeOffset.UtcNow;
+        var activeSources = snapshot.Agents.Where(agent => !agent.ConfirmedStopped && agent.Phase != AgentPhase.Idle
+            && now - agent.LastActivity < TimeSpan.FromSeconds(20) && now - agent.LastActivity >= TimeSpan.FromSeconds(-2))
+            .Select(agent => agent.Source).ToHashSet();
+        var fresh = Math.Abs((now - snapshot.Timestamp).TotalSeconds) <= 3;
         var selected = snapshot.Agents
             .Where(agent => RuntimeSources.Contains(agent.Source) && enabledSources.Contains(agent.Source))
             // Old idle transcript records are not current task state. Keep recent idle records
@@ -89,14 +94,16 @@ internal static class RuntimeSnapshotMapper
                 && snapshot.Sources.FirstOrDefault(row => row.Kind == source) is { Enabled: true, Available: true },
             StringComparer.Ordinal);
         var selectedStatuses = snapshot.Sources
-            .Where(row => RuntimeSources.Contains(row.Kind) && enabledSources.Contains(row.Kind))
+            .Where(row => RuntimeSources.Contains(row.Kind) && enabledSources.Contains(row.Kind)
+                && (!applyDisplayGuards || (fresh && activeSources.Contains(row.Kind))))
             .ToArray();
         var liveOutput = FiniteNonnegative(selectedStatuses.Sum(row => row.Live.Output));
         var liveTotal = FiniteNonnegative(selectedStatuses.Sum(row => row.Live.Total));
         var estimatedOutput = FiniteNonnegative(selectedStatuses.Sum(row => row.LiveEstimated.Output));
         var estimatedShare = liveOutput > 0 ? Math.Clamp(estimatedOutput / liveOutput, 0, 1) : 0;
         var modelRates = snapshot.LiveModels
-            .Where(item => RuntimeSources.Contains(item.Source) && enabledSources.Contains(item.Source))
+            .Where(item => RuntimeSources.Contains(item.Source) && enabledSources.Contains(item.Source)
+                && (!applyDisplayGuards || (fresh && activeSources.Contains(item.Source))))
             .GroupBy(item => (item.Source, Model: CleanModel(item.Model)))
             .OrderBy(group => ClientId(group.Key.Source), StringComparer.Ordinal)
             .ThenBy(group => group.Key.Model, StringComparer.Ordinal)

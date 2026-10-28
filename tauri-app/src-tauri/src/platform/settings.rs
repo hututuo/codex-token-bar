@@ -382,7 +382,7 @@ pub fn save_floating_position(
 
 pub fn save_activity_speed_mode(mode: String) -> Result<String, String> {
     if !matches!(mode.as_str(), "bar" | "agentSpeed") { return Err("invalid_activity_speed_mode".into()); }
-    let saved = mutate_app_settings(|settings| settings.display_surfaces.speed_display_mode = mode)?;
+    let saved = mutate_app_settings(|settings| { settings.speed_display_mode = if mode == "agentSpeed" { crate::models::SpeedDisplayMode::AgentSpeed } else { crate::models::SpeedDisplayMode::Activity }; settings.display_surfaces.speed_display_mode = mode; })?;
     crate::core::activity_speed_capture::set_mode(&saved.display_surfaces.speed_display_mode);
     Ok(saved.display_surfaces.speed_display_mode)
 }
@@ -458,6 +458,17 @@ pub fn save_agent_speed_reporting_settings(
     reporting: crate::models::AgentSpeedReportingSettingsSnapshot,
 ) -> Result<AppSettingsSnapshot, String> {
     mutate_app_settings(|settings| settings.agent_speed_reporting = reporting)
+}
+
+pub fn save_speed_display_preferences(
+    mode: crate::models::SpeedDisplayMode,
+    grouping: crate::models::SpeedColorGrouping,
+) -> Result<AppSettingsSnapshot, String> {
+    mutate_app_settings(|settings| {
+        settings.display_surfaces.speed_display_mode = if mode == crate::models::SpeedDisplayMode::AgentSpeed { "agentSpeed" } else { "bar" }.into();
+        settings.speed_display_mode = mode;
+        settings.speed_color_grouping = grouping;
+    })
 }
 
 pub(super) fn normalize_user_path(path: &str) -> PathBuf {
@@ -1790,9 +1801,30 @@ where
     }
 }
 
+#[cfg(test)]
+#[test]
+fn merged_speed_preferences_preserve_legacy_choice_and_explicit_scoped_choice() {
+    let path = Path::new("memory-only.json");
+    let legacy = parse_settings(path, br#"{"speedDisplayMode":"agentSpeed"}"#).unwrap();
+    assert_eq!(legacy.display_surfaces.speed_display_mode, "agentSpeed");
+    let scoped = parse_settings(path, br#"{"speedDisplayMode":"agentSpeed","displaySurfaces":{"speedDisplayMode":"bar"}}"#).unwrap();
+    assert_eq!(scoped.speed_display_mode, crate::models::SpeedDisplayMode::Activity);
+    assert_eq!(scoped.display_surfaces.speed_display_mode, "bar");
+    assert!(!scoped.agent_speed_reporting.enabled);
+}
+
 fn parse_settings(path: &Path, bytes: &[u8]) -> Result<AppSettingsSnapshot, String> {
     serde_json::from_slice::<AppSettingsSnapshot>(bytes)
-        .map(sanitize_app_settings)
+        .map(|mut settings| {
+            // The old speed branch stored the algorithm at the root. Preserve
+            // that choice only when the newer scoped preference was absent.
+            let raw: serde_json::Value = serde_json::from_slice(bytes).unwrap_or_default();
+            if raw.get("displaySurfaces").and_then(|v| v.get("speedDisplayMode")).is_none()
+                && settings.speed_display_mode == crate::models::SpeedDisplayMode::AgentSpeed {
+                settings.display_surfaces.speed_display_mode = "agentSpeed".into();
+            }
+            sanitize_app_settings(settings)
+        })
         .map_err(|error| format!("设置文件不是有效 JSON：{}（{}）", path.display(), error))
 }
 
@@ -2668,6 +2700,9 @@ fn sanitize_app_settings(mut settings: AppSettingsSnapshot) -> AppSettingsSnapsh
     settings.floating_window = sanitize_floating_settings(settings.floating_window);
     settings.floating_position = sanitize_floating_position(settings.floating_position);
     settings.display_surfaces = sanitize_display_surfaces(settings.display_surfaces);
+    settings.speed_display_mode = if settings.display_surfaces.speed_display_mode == "agentSpeed" {
+        crate::models::SpeedDisplayMode::AgentSpeed
+    } else { crate::models::SpeedDisplayMode::Activity };
     settings.session_enhancements =
         sanitize_session_enhancement_settings(settings.session_enhancements);
     settings.auto_resume = sanitize_auto_resume_settings(settings.auto_resume);

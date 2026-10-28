@@ -251,7 +251,7 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
             values: StatusBarMetricValues(
                 snapshot: snapshot,
                 radar: radarPresentation,
-                rateAvailable: monitor.monitoringEnabled && monitor.currentDataSourceIdentity != nil,
+                rateAvailable: monitor.displayRateAvailable,
                 unreadThreadCount: taskCompletionMonitor.statusBarUnreadThreadCount
             ),
             configuration: presentationConfiguration
@@ -529,7 +529,7 @@ struct StatusBarTokenPopoverView: View {
             quota: quota,
             runningThreads: taskCompletionMonitor.runningThreadSummary
         )
-        let live = monitor.totalSnapshot
+        let live = monitor.displaySnapshot
         let interfaceScale = CGFloat(
             InterfaceScaleSettings.effectiveScale(
                 manualMultiplier: interfaceScaleManualMultiplier,
@@ -549,7 +549,7 @@ struct StatusBarTokenPopoverView: View {
         let metricValues = StatusBarMetricValues(
             snapshot: snapshot,
             radar: radarPresentation,
-            rateAvailable: monitor.monitoringEnabled && monitor.currentDataSourceIdentity != nil,
+            rateAvailable: monitor.displayRateAvailable,
             unreadThreadCount: taskCompletionMonitor.statusBarUnreadThreadCount
         )
         let radarPalette = FloatingPanelReadableTextPalette(
@@ -668,7 +668,7 @@ struct StatusBarTokenPopoverView: View {
                             .monospacedDigit()
                     }
                 }
-                StatusBarRateTrack(rate: metricValues.rate, modelRates: live.modelRates)
+                StatusBarRateTrack(rate: metricValues.rate, modelRates: live.barRates)
             }
         case .usage:
             let usage = StatusBarUsageMetricsPresentation(snapshot: snapshot)

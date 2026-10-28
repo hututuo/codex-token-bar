@@ -1198,6 +1198,7 @@ struct DashboardSevenDayModelData: Equatable {
 }
 
 struct DashboardModelCostRow: View {
+    @ObservedObject private var colorPreferences = SpeedDisplayPreferences.shared
     @Binding var scope: DashboardModelCostScope
     let todayRows: [ModelTokenBreakdown]
     let lifetimeRows: [ModelTokenBreakdown]
@@ -1319,6 +1320,13 @@ struct DashboardModelCostRow: View {
                         calendarExpanded = false
                     })
 
+                if scope == .lifetime {
+                    Text("双击可修改模型配色")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .fixedSize()
+                }
+
                 if scope == .sevenDay, onSelectCycle != nil {
                     DashboardQuotaCycleControls(cycles: cycles, selected: selectedCycle,
                         expanded: $calendarExpanded, summary: cycleSummary) { id in
@@ -1420,12 +1428,20 @@ struct DashboardModelCostRow: View {
                             .frame(width: 58, alignment: .leading)
                         LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 108), spacing: 7), count: 4), alignment: .leading, spacing: 7) {
                             ForEach(group.items) { item in
-                                if group.id == "6" { DashboardPrimaryModelCostCard(item: item) }
-                                else { DashboardSecondaryModelCostChip(item: item) }
+                                Group {
+                                    if group.id == "6" { DashboardPrimaryModelCostCard(item: item) }
+                                    else { DashboardSecondaryModelCostChip(item: item) }
+                                }.modifier(ModelColorEditModifier(model: ModelUsagePresentation.autoReviewUnderlyingModelKey(for: item.id) ?? item.id, enabled: scope == .lifetime))
                             }
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
+            }
+            if scope == .lifetime {
+                HStack {
+                    Spacer()
+                    ClientColorSettings()
+                }.font(.system(size: 10)).foregroundStyle(.secondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

@@ -1,3 +1,4 @@
+import type { QuotaAttributionIdentity } from "../../types/quota";
 import { BodySpeedTrend } from "./BodySpeedTrend";
 import { modelUsageColor } from "../modelUsagePresentation";
 import { createPortal } from "react-dom";
@@ -107,11 +108,13 @@ function BodyHistory({ sourceToken, threads, onClose }: {
     </dialog>;
 }
 
-export function ObservedSpeedDetails({ data, threads = [], sourceToken = null, surface = "home" }: {
+export function ObservedSpeedDetails({ data, threads = [], sourceToken = null, surface = "home", quotaIdentity, quotaUpdatedAt }: {
     data: ObservedSpeedData;
     threads?: LiveThreadOption[];
     sourceToken?: CodexHomeSourceToken | null;
     surface?: "home" | "sidebar";
+  quotaIdentity?: QuotaAttributionIdentity | null;
+  quotaUpdatedAt?: string | null;
 }) {
     const [history, setHistory] = useState(false);
     const [detailsFailure, setDetailsFailure] = useState<string | null>(null);
@@ -134,7 +137,7 @@ export function ObservedSpeedDetails({ data, threads = [], sourceToken = null, s
             <button className="body-speed-more-details" onClick={() => { void invoke("open_modeltrace").catch(error => setDetailsFailure(String(error))); }}>模型指纹 · 手动检测</button>
         </div>
         <ModelSpeedWindows data={data}/>
-        <BodySpeedTrend preferredModel={[...(data.modelSpeeds15m ?? [])].sort((a,b)=>b.sampleCount-a.sampleCount)[0]?.model} sourceToken={sourceToken} compact={surface === "sidebar" ? "detail" : undefined} revision={(data.speedSamples ?? []).map(s => `${s.id}/${s.model}/${s.confidence}`).join("|")}/>
+        <BodySpeedTrend quotaIdentity={quotaIdentity} quotaUpdatedAt={quotaUpdatedAt} preferredModel={[...(data.modelSpeeds15m ?? [])].sort((a,b)=>b.sampleCount-a.sampleCount)[0]?.model} sourceToken={sourceToken} compact={surface === "sidebar" ? "detail" : undefined} revision={(data.speedSamples ?? []).map(s => `${s.id}/${s.model}/${s.confidence}`).join("|")}/>
         <div className="body-speed-recent-heading"><span>最近{limit}条{surface === "home" ? " · 已识别模型" : ""}</span>{surface === "home" && <button disabled={!sourceToken} onClick={() => void openDetails()}>查看详情</button>}</div>
         <ol className="body-speed-recent-list" aria-label="最近测速">{samples.map(s => {
             const status = bodySpeedStatus(s), title = titles.get(s.threadId) || s.threadId.slice(0, 12);

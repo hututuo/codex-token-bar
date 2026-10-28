@@ -22,7 +22,7 @@ export type StandardAPIEventTime = Date | number | string;
 const newestHistory = [...history.rows].reverse();
 const currentModels = new Map(bundled.models.map(model => [model.id, model]));
 
-export const STANDARD_API_PRICE_SCHEDULE_REVISION = "standard-api-dated-v3";
+export const STANDARD_API_PRICE_SCHEDULE_REVISION = "standard-api-dated-v4";
 
 /**
  * Normalize aliases while keeping the canonical model spelling independent of
@@ -42,6 +42,11 @@ export function canonicalStandardAPIModelKey(value: string | null | undefined): 
     case "gpt61-sol":
     case "gpt61sol":
       return "gpt-6.1-sol";
+    case "gpt-6.1-terra":
+    case "gpt6.1-terra":
+    case "gpt61-terra":
+    case "gpt61terra":
+      return "gpt-6.1-terra";
     case "gpt-6-sol":
     case "gpt6-sol":
     case "gpt6sol":

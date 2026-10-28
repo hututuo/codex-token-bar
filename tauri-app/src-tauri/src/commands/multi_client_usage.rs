@@ -37,7 +37,7 @@ pub(crate) async fn save_multi_client_usage_preferences(
             if reporting.enabled {
                 use tauri::Manager as _;
                 if let Some(registry) = app.try_state::<crate::core::agent_speed_reporting::AgentSpeedReportingRegistry>() {
-                    let _ = registry.start(&app, &reporting).await;
+                    let _ = registry.start(&app, &reporting, false).await;
                 }
             }
         }

@@ -230,7 +230,7 @@ function FloatingRateMeter({
       aria-valuemin={0}
       aria-valuemax={Math.round(scaleLimit)}
       aria-valuenow={Number(formatLiveRateValue(snapshot.tokensPerSecond))}
-      style={rateFillStyle(snapshot.tokensPerSecond, scaleLimit, snapshot.modelRates)}
+      style={rateFillStyle(snapshot.tokensPerSecond, scaleLimit, snapshot.colorRates ?? snapshot.modelRates)}
     >
       {hasStatusText ? <FloatingStatusText text={statusText} /> : null}
       <span className="floating-rate-track" aria-hidden="true">

@@ -1,0 +1,1083 @@
+{
+  "now": 1792702800,
+  "points": [
+    {
+      "bucketStart": 1792644300,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 72,
+      "durationSeconds": 1.9519999027252197,
+      "sampleCount": 1,
+      "tokensPerSecond": 36.88524773975634
+    },
+    {
+      "bucketStart": 1792644600,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 127,
+      "durationSeconds": 4.315999984741211,
+      "sampleCount": 2,
+      "tokensPerSecond": 29.425393987255763
+    },
+    {
+      "bucketStart": 1792644900,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 199,
+      "durationSeconds": 4.506999969482422,
+      "sampleCount": 3,
+      "tokensPerSecond": 44.15353923839785
+    },
+    {
+      "bucketStart": 1792645200,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 291,
+      "durationSeconds": 5.794000148773193,
+      "sampleCount": 2,
+      "tokensPerSecond": 50.22436874835352
+    },
+    {
+      "bucketStart": 1792645500,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 268,
+      "durationSeconds": 5.317000150680542,
+      "sampleCount": 3,
+      "tokensPerSecond": 50.404361934369646
+    },
+    {
+      "bucketStart": 1792645800,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 155,
+      "durationSeconds": 2.9100000858306885,
+      "sampleCount": 2,
+      "tokensPerSecond": 53.26460323995273
+    },
+    {
+      "bucketStart": 1792646100,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 24,
+      "durationSeconds": 0.8309998512268066,
+      "sampleCount": 1,
+      "tokensPerSecond": 28.88087159650962
+    },
+    {
+      "bucketStart": 1792646400,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 121,
+      "durationSeconds": 2.8910000324249268,
+      "sampleCount": 2,
+      "tokensPerSecond": 41.854029278065084
+    },
+    {
+      "bucketStart": 1792647600,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 70,
+      "durationSeconds": 1.2319998741149902,
+      "sampleCount": 2,
+      "tokensPerSecond": 56.81818762382963
+    },
+    {
+      "bucketStart": 1792651500,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 77,
+      "durationSeconds": 2.1600000858306885,
+      "sampleCount": 1,
+      "tokensPerSecond": 35.64814673161807
+    },
+    {
+      "bucketStart": 1792651800,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 60,
+      "durationSeconds": 2.1489999294281006,
+      "sampleCount": 1,
+      "tokensPerSecond": 27.9199636902582
+    },
+    {
+      "bucketStart": 1792652100,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 162,
+      "durationSeconds": 4.931000232696533,
+      "sampleCount": 2,
+      "tokensPerSecond": 32.85337504667076
+    },
+    {
+      "bucketStart": 1792652400,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 55,
+      "durationSeconds": 1.2430000305175781,
+      "sampleCount": 1,
+      "tokensPerSecond": 44.247786524267674
+    },
+    {
+      "bucketStart": 1792652700,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 1485,
+      "durationSeconds": 31.51199960708618,
+      "sampleCount": 4,
+      "tokensPerSecond": 47.124905385758645
+    },
+    {
+      "bucketStart": 1792653300,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 492,
+      "durationSeconds": 13.384999990463257,
+      "sampleCount": 5,
+      "tokensPerSecond": 36.757564463993084
+    },
+    {
+      "bucketStart": 1792653600,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 567,
+      "durationSeconds": 14.372999906539917,
+      "sampleCount": 3,
+      "tokensPerSecond": 39.4489670692899
+    },
+    {
+      "bucketStart": 1792653900,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 831,
+      "durationSeconds": 27.42900013923645,
+      "sampleCount": 2,
+      "tokensPerSecond": 30.29640146493261
+    },
+    {
+      "bucketStart": 1792654200,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 969,
+      "durationSeconds": 26.395999908447266,
+      "sampleCount": 6,
+      "tokensPerSecond": 36.71010771938592
+    },
+    {
+      "bucketStart": 1792654500,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 193,
+      "durationSeconds": 6.164000034332275,
+      "sampleCount": 3,
+      "tokensPerSecond": 31.31083694435881
+    },
+    {
+      "bucketStart": 1792654800,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 154,
+      "durationSeconds": 3.3380000591278076,
+      "sampleCount": 1,
+      "tokensPerSecond": 46.135409608182854
+    },
+    {
+      "bucketStart": 1792656300,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 396,
+      "durationSeconds": 10.636999607086182,
+      "sampleCount": 5,
+      "tokensPerSecond": 37.22854325727264
+    },
+    {
+      "bucketStart": 1792656600,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 657,
+      "durationSeconds": 17.41099977493286,
+      "sampleCount": 7,
+      "tokensPerSecond": 37.73476586599597
+    },
+    {
+      "bucketStart": 1792656900,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 1220,
+      "durationSeconds": 36.561999797821045,
+      "sampleCount": 5,
+      "tokensPerSecond": 33.36797786626287
+    },
+    {
+      "bucketStart": 1792657200,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 258,
+      "durationSeconds": 8.434000015258789,
+      "sampleCount": 3,
+      "tokensPerSecond": 30.590467101402243
+    },
+    {
+      "bucketStart": 1792657500,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 227,
+      "durationSeconds": 5.613000154495239,
+      "sampleCount": 3,
+      "tokensPerSecond": 40.441830349533184
+    },
+    {
+      "bucketStart": 1792657800,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 412,
+      "durationSeconds": 9.871000051498413,
+      "sampleCount": 3,
+      "tokensPerSecond": 41.738425473663995
+    },
+    {
+      "bucketStart": 1792658400,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 773,
+      "durationSeconds": 18.992000102996826,
+      "sampleCount": 5,
+      "tokensPerSecond": 40.701347715242754
+    },
+    {
+      "bucketStart": 1792658700,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 968,
+      "durationSeconds": 21.865999937057495,
+      "sampleCount": 3,
+      "tokensPerSecond": 44.26964249457799
+    },
+    {
+      "bucketStart": 1792659000,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 105,
+      "durationSeconds": 3.6460001468658447,
+      "sampleCount": 1,
+      "tokensPerSecond": 28.79868232870466
+    },
+    {
+      "bucketStart": 1792659300,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 801,
+      "durationSeconds": 18.007999897003174,
+      "sampleCount": 3,
+      "tokensPerSecond": 44.48023126284555
+    },
+    {
+      "bucketStart": 1792659600,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 152,
+      "durationSeconds": 4.406000137329102,
+      "sampleCount": 2,
+      "tokensPerSecond": 34.4984101821072
+    },
+    {
+      "bucketStart": 1792660200,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 236,
+      "durationSeconds": 5.080999851226807,
+      "sampleCount": 1,
+      "tokensPerSecond": 46.44755105494007
+    },
+    {
+      "bucketStart": 1792660500,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 607,
+      "durationSeconds": 14.23799991607666,
+      "sampleCount": 4,
+      "tokensPerSecond": 42.632392441203315
+    },
+    {
+      "bucketStart": 1792660800,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 796,
+      "durationSeconds": 21.23099946975708,
+      "sampleCount": 6,
+      "tokensPerSecond": 37.49234703405641
+    },
+    {
+      "bucketStart": 1792661100,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 220,
+      "durationSeconds": 7.1519999504089355,
+      "sampleCount": 3,
+      "tokensPerSecond": 30.76062661150059
+    },
+    {
+      "bucketStart": 1792661400,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 229,
+      "durationSeconds": 7.032000303268433,
+      "sampleCount": 4,
+      "tokensPerSecond": 32.565413840150455
+    },
+    {
+      "bucketStart": 1792661700,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 396,
+      "durationSeconds": 11.152999639511108,
+      "sampleCount": 3,
+      "tokensPerSecond": 35.50614299287816
+    },
+    {
+      "bucketStart": 1792662000,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 145,
+      "durationSeconds": 4.647000074386597,
+      "sampleCount": 2,
+      "tokensPerSecond": 31.202926119845174
+    },
+    {
+      "bucketStart": 1792662300,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 77,
+      "durationSeconds": 3.0199999809265137,
+      "sampleCount": 1,
+      "tokensPerSecond": 25.496688902751902
+    },
+    {
+      "bucketStart": 1792662600,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 168,
+      "durationSeconds": 4.828000068664551,
+      "sampleCount": 3,
+      "tokensPerSecond": 34.79701690362023
+    },
+    {
+      "bucketStart": 1792662900,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 191,
+      "durationSeconds": 9.467000007629395,
+      "sampleCount": 3,
+      "tokensPerSecond": 20.17534592226411
+    },
+    {
+      "bucketStart": 1792663200,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 320,
+      "durationSeconds": 9.766000270843506,
+      "sampleCount": 5,
+      "tokensPerSecond": 32.76674084838634
+    },
+    {
+      "bucketStart": 1792663500,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 554,
+      "durationSeconds": 15.493000030517578,
+      "sampleCount": 5,
+      "tokensPerSecond": 35.758084225698695
+    },
+    {
+      "bucketStart": 1792663800,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 651,
+      "durationSeconds": 15.26799988746643,
+      "sampleCount": 5,
+      "tokensPerSecond": 42.63819785159998
+    },
+    {
+      "bucketStart": 1792664100,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 304,
+      "durationSeconds": 8.194999933242798,
+      "sampleCount": 3,
+      "tokensPerSecond": 37.095790418109964
+    },
+    {
+      "bucketStart": 1792664400,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 939,
+      "durationSeconds": 18.284000158309937,
+      "sampleCount": 5,
+      "tokensPerSecond": 51.35637671569543
+    },
+    {
+      "bucketStart": 1792664700,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 462,
+      "durationSeconds": 12.45199990272522,
+      "sampleCount": 5,
+      "tokensPerSecond": 37.10247378807701
+    },
+    {
+      "bucketStart": 1792665000,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 342,
+      "durationSeconds": 12.061000108718872,
+      "sampleCount": 4,
+      "tokensPerSecond": 28.355857467638103
+    },
+    {
+      "bucketStart": 1792665300,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 216,
+      "durationSeconds": 5.7850000858306885,
+      "sampleCount": 2,
+      "tokensPerSecond": 37.33794240194619
+    },
+    {
+      "bucketStart": 1792665600,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 148,
+      "durationSeconds": 3.569999933242798,
+      "sampleCount": 2,
+      "tokensPerSecond": 41.456583408270454
+    },
+    {
+      "bucketStart": 1792665900,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 456,
+      "durationSeconds": 10.799000024795532,
+      "sampleCount": 4,
+      "tokensPerSecond": 42.2261319523086
+    },
+    {
+      "bucketStart": 1792666500,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 87,
+      "durationSeconds": 3.3259999752044678,
+      "sampleCount": 1,
+      "tokensPerSecond": 26.15754679753166
+    },
+    {
+      "bucketStart": 1792666800,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 95,
+      "durationSeconds": 2.359999895095825,
+      "sampleCount": 1,
+      "tokensPerSecond": 40.25423907747361
+    },
+    {
+      "bucketStart": 1792667100,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 705,
+      "durationSeconds": 13.786999940872192,
+      "sampleCount": 6,
+      "tokensPerSecond": 51.135127513128886
+    },
+    {
+      "bucketStart": 1792667400,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 500,
+      "durationSeconds": 16.437000036239624,
+      "sampleCount": 5,
+      "tokensPerSecond": 30.419176181640232
+    },
+    {
+      "bucketStart": 1792667700,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 375,
+      "durationSeconds": 8.88699984550476,
+      "sampleCount": 3,
+      "tokensPerSecond": 42.196467482744836
+    },
+    {
+      "bucketStart": 1792668000,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 147,
+      "durationSeconds": 4.549999713897705,
+      "sampleCount": 2,
+      "tokensPerSecond": 32.30769433918802
+    },
+    {
+      "bucketStart": 1792668300,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 99,
+      "durationSeconds": 2.492000102996826,
+      "sampleCount": 1,
+      "tokensPerSecond": 39.72712516381709
+    },
+    {
+      "bucketStart": 1792668600,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 239,
+      "durationSeconds": 6.465000152587891,
+      "sampleCount": 3,
+      "tokensPerSecond": 36.96828992406599
+    },
+    {
+      "bucketStart": 1792668900,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 281,
+      "durationSeconds": 7.664000034332275,
+      "sampleCount": 4,
+      "tokensPerSecond": 36.664926766859296
+    },
+    {
+      "bucketStart": 1792669200,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 145,
+      "durationSeconds": 3.9579999446868896,
+      "sampleCount": 2,
+      "tokensPerSecond": 36.63466448367288
+    },
+    {
+      "bucketStart": 1792669500,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 438,
+      "durationSeconds": 19.03000020980835,
+      "sampleCount": 5,
+      "tokensPerSecond": 23.01628981455545
+    },
+    {
+      "bucketStart": 1792669800,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 324,
+      "durationSeconds": 10.26200008392334,
+      "sampleCount": 4,
+      "tokensPerSecond": 31.572792569704326
+    },
+    {
+      "bucketStart": 1792670100,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 111,
+      "durationSeconds": 3.111999988555908,
+      "sampleCount": 1,
+      "tokensPerSecond": 35.6683805938921
+    },
+    {
+      "bucketStart": 1792670400,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 103,
+      "durationSeconds": 2.809999942779541,
+      "sampleCount": 1,
+      "tokensPerSecond": 36.65480501687002
+    },
+    {
+      "bucketStart": 1792670700,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 113,
+      "durationSeconds": 10.962000131607056,
+      "sampleCount": 2,
+      "tokensPerSecond": 10.308337770785442
+    },
+    {
+      "bucketStart": 1792671000,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 208,
+      "durationSeconds": 5.562000036239624,
+      "sampleCount": 3,
+      "tokensPerSecond": 37.396619677231314
+    },
+    {
+      "bucketStart": 1792671300,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 206,
+      "durationSeconds": 8.16599988937378,
+      "sampleCount": 4,
+      "tokensPerSecond": 25.22654944779792
+    },
+    {
+      "bucketStart": 1792671600,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 50,
+      "durationSeconds": 1.3250000476837158,
+      "sampleCount": 1,
+      "tokensPerSecond": 37.735847698577025
+    },
+    {
+      "bucketStart": 1792671900,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 167,
+      "durationSeconds": 5.19599986076355,
+      "sampleCount": 3,
+      "tokensPerSecond": 32.14010863646548
+    },
+    {
+      "bucketStart": 1792672200,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 405,
+      "durationSeconds": 9.578999996185303,
+      "sampleCount": 3,
+      "tokensPerSecond": 42.279987489433694
+    },
+    {
+      "bucketStart": 1792672500,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 53,
+      "durationSeconds": 2.440999984741211,
+      "sampleCount": 1,
+      "tokensPerSecond": 21.7124130812393
+    },
+    {
+      "bucketStart": 1792672800,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 58,
+      "durationSeconds": 2.134000062942505,
+      "sampleCount": 1,
+      "tokensPerSecond": 27.17900575880286
+    },
+    {
+      "bucketStart": 1792673100,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 184,
+      "durationSeconds": 4.258000135421753,
+      "sampleCount": 1,
+      "tokensPerSecond": 43.212774576808435
+    },
+    {
+      "bucketStart": 1792674300,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 53,
+      "durationSeconds": 1.9739999771118164,
+      "sampleCount": 1,
+      "tokensPerSecond": 26.84903779864524
+    },
+    {
+      "bucketStart": 1792674600,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 226,
+      "durationSeconds": 11.41700029373169,
+      "sampleCount": 2,
+      "tokensPerSecond": 19.79504197123315
+    },
+    {
+      "bucketStart": 1792674900,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 43,
+      "durationSeconds": 1.4830000400543213,
+      "sampleCount": 1,
+      "tokensPerSecond": 28.995279055032892
+    },
+    {
+      "bucketStart": 1792675200,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 1206,
+      "durationSeconds": 38.81800031661987,
+      "sampleCount": 8,
+      "tokensPerSecond": 31.06806095531028
+    },
+    {
+      "bucketStart": 1792675500,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 274,
+      "durationSeconds": 8.026000022888184,
+      "sampleCount": 3,
+      "tokensPerSecond": 34.1390479963393
+    },
+    {
+      "bucketStart": 1792675800,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 149,
+      "durationSeconds": 6.0290000438690186,
+      "sampleCount": 2,
+      "tokensPerSecond": 24.713882719493483
+    },
+    {
+      "bucketStart": 1792676100,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 47,
+      "durationSeconds": 2.0850000381469727,
+      "sampleCount": 1,
+      "tokensPerSecond": 22.541966014432727
+    },
+    {
+      "bucketStart": 1792676400,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 607,
+      "durationSeconds": 16.733999967575073,
+      "sampleCount": 6,
+      "tokensPerSecond": 36.273455311112954
+    },
+    {
+      "bucketStart": 1792676700,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 146,
+      "durationSeconds": 4.254999876022339,
+      "sampleCount": 2,
+      "tokensPerSecond": 34.3125744427715
+    },
+    {
+      "bucketStart": 1792677000,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 80,
+      "durationSeconds": 2.2810001373291016,
+      "sampleCount": 1,
+      "tokensPerSecond": 35.07233458287935
+    },
+    {
+      "bucketStart": 1792677300,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 263,
+      "durationSeconds": 9.84000015258789,
+      "sampleCount": 4,
+      "tokensPerSecond": 26.72764186195991
+    },
+    {
+      "bucketStart": 1792677600,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 484,
+      "durationSeconds": 6.6620001792907715,
+      "sampleCount": 2,
+      "tokensPerSecond": 72.65085364370645
+    },
+    {
+      "bucketStart": 1792678500,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 107,
+      "durationSeconds": 2.1010000705718994,
+      "sampleCount": 2,
+      "tokensPerSecond": 50.928127751501805
+    },
+    {
+      "bucketStart": 1792678800,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 414,
+      "durationSeconds": 13.322999715805054,
+      "sampleCount": 5,
+      "tokensPerSecond": 31.074083076716757
+    },
+    {
+      "bucketStart": 1792679100,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 175,
+      "durationSeconds": 6.857000112533569,
+      "sampleCount": 3,
+      "tokensPerSecond": 25.52136460959454
+    },
+    {
+      "bucketStart": 1792679700,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 74,
+      "durationSeconds": 2.875,
+      "sampleCount": 1,
+      "tokensPerSecond": 25.73913043478261
+    },
+    {
+      "bucketStart": 1792680000,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 81,
+      "durationSeconds": 2.486999988555908,
+      "sampleCount": 1,
+      "tokensPerSecond": 32.569360825382695
+    },
+    {
+      "bucketStart": 1792680300,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 68,
+      "durationSeconds": 1.9559998512268066,
+      "sampleCount": 1,
+      "tokensPerSecond": 34.76482882007904
+    },
+    {
+      "bucketStart": 1792680600,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 76,
+      "durationSeconds": 2.306999921798706,
+      "sampleCount": 1,
+      "tokensPerSecond": 32.943217414912105
+    },
+    {
+      "bucketStart": 1792680900,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 87,
+      "durationSeconds": 5.197999954223633,
+      "sampleCount": 1,
+      "tokensPerSecond": 16.737206765326764
+    },
+    {
+      "bucketStart": 1792681500,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 74,
+      "durationSeconds": 3.115999937057495,
+      "sampleCount": 1,
+      "tokensPerSecond": 23.748395858402926
+    },
+    {
+      "bucketStart": 1792681800,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 61,
+      "durationSeconds": 2.317999839782715,
+      "sampleCount": 1,
+      "tokensPerSecond": 26.315791292599066
+    },
+    {
+      "bucketStart": 1792682100,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 82,
+      "durationSeconds": 2.3389999866485596,
+      "sampleCount": 1,
+      "tokensPerSecond": 35.05771717318128
+    },
+    {
+      "bucketStart": 1792682400,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 78,
+      "durationSeconds": 1.4499998092651367,
+      "sampleCount": 1,
+      "tokensPerSecond": 53.793110524290746
+    },
+    {
+      "bucketStart": 1792683000,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 162,
+      "durationSeconds": 6.319999933242798,
+      "sampleCount": 2,
+      "tokensPerSecond": 25.632911663161625
+    },
+    {
+      "bucketStart": 1792683300,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 817,
+      "durationSeconds": 24.775999784469604,
+      "sampleCount": 4,
+      "tokensPerSecond": 32.9754604095582
+    },
+    {
+      "bucketStart": 1792683600,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 509,
+      "durationSeconds": 14.96399998664856,
+      "sampleCount": 5,
+      "tokensPerSecond": 34.01496928990569
+    },
+    {
+      "bucketStart": 1792683900,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 412,
+      "durationSeconds": 10.240000009536743,
+      "sampleCount": 7,
+      "tokensPerSecond": 40.23437496252882
+    },
+    {
+      "bucketStart": 1792684200,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 532,
+      "durationSeconds": 11.021999835968018,
+      "sampleCount": 5,
+      "tokensPerSecond": 48.26710287764004
+    },
+    {
+      "bucketStart": 1792684500,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 243,
+      "durationSeconds": 6.164999961853027,
+      "sampleCount": 4,
+      "tokensPerSecond": 39.41605863805407
+    },
+    {
+      "bucketStart": 1792684800,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 951,
+      "durationSeconds": 30.41200065612793,
+      "sampleCount": 9,
+      "tokensPerSecond": 31.270550423599847
+    },
+    {
+      "bucketStart": 1792685100,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 712,
+      "durationSeconds": 18.89400005340576,
+      "sampleCount": 9,
+      "tokensPerSecond": 37.68392071490746
+    },
+    {
+      "bucketStart": 1792685400,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 979,
+      "durationSeconds": 22.83799958229065,
+      "sampleCount": 8,
+      "tokensPerSecond": 42.86715202320738
+    },
+    {
+      "bucketStart": 1792685700,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 618,
+      "durationSeconds": 8.223000288009644,
+      "sampleCount": 4,
+      "tokensPerSecond": 75.15505026810419
+    },
+    {
+      "bucketStart": 1792686000,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 434,
+      "durationSeconds": 12.807000160217285,
+      "sampleCount": 5,
+      "tokensPerSecond": 33.887717230467864
+    },
+    {
+      "bucketStart": 1792686300,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 103,
+      "durationSeconds": 2.9810001850128174,
+      "sampleCount": 1,
+      "tokensPerSecond": 34.55216155900948
+    },
+    {
+      "bucketStart": 1792689000,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 2030,
+      "durationSeconds": 44.97500014305115,
+      "sampleCount": 10,
+      "tokensPerSecond": 45.13618662686419
+    },
+    {
+      "bucketStart": 1792689300,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 535,
+      "durationSeconds": 15.219000101089478,
+      "sampleCount": 7,
+      "tokensPerSecond": 35.15342640425511
+    },
+    {
+      "bucketStart": 1792689600,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 555,
+      "durationSeconds": 15.168999910354614,
+      "sampleCount": 7,
+      "tokensPerSecond": 36.58777792075453
+    },
+    {
+      "bucketStart": 1792689900,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 475,
+      "durationSeconds": 10.464000225067139,
+      "sampleCount": 5,
+      "tokensPerSecond": 45.39372991048959
+    },
+    {
+      "bucketStart": 1792690200,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 649,
+      "durationSeconds": 15.368000030517578,
+      "sampleCount": 5,
+      "tokensPerSecond": 42.2306089739214
+    },
+    {
+      "bucketStart": 1792690800,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 125,
+      "durationSeconds": 3.864000082015991,
+      "sampleCount": 2,
+      "tokensPerSecond": 32.34989579368303
+    },
+    {
+      "bucketStart": 1792691400,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 86,
+      "durationSeconds": 2.171999931335449,
+      "sampleCount": 1,
+      "tokensPerSecond": 39.59484471397892
+    },
+    {
+      "bucketStart": 1792691700,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 75,
+      "durationSeconds": 2.05400013923645,
+      "sampleCount": 1,
+      "tokensPerSecond": 36.5141163173827
+    },
+    {
+      "bucketStart": 1792692000,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 54,
+      "durationSeconds": 1.4249999523162842,
+      "sampleCount": 1,
+      "tokensPerSecond": 37.894738110148715
+    },
+    {
+      "bucketStart": 1792692300,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 129,
+      "durationSeconds": 4.054000377655029,
+      "sampleCount": 2,
+      "tokensPerSecond": 31.820421308055714
+    },
+    {
+      "bucketStart": 1792692600,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 289,
+      "durationSeconds": 5.713000059127808,
+      "sampleCount": 1,
+      "tokensPerSecond": 50.58638141238197
+    },
+    {
+      "bucketStart": 1792693500,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 157,
+      "durationSeconds": 4.412999868392944,
+      "sampleCount": 2,
+      "tokensPerSecond": 35.57670625020294
+    },
+    {
+      "bucketStart": 1792693800,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 70,
+      "durationSeconds": 3.0460000038146973,
+      "sampleCount": 1,
+      "tokensPerSecond": 22.98095860549396
+    },
+    {
+      "bucketStart": 1792694100,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 81,
+      "durationSeconds": 2.9230000972747803,
+      "sampleCount": 1,
+      "tokensPerSecond": 27.711254637151487
+    },
+    {
+      "bucketStart": 1792694400,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 168,
+      "durationSeconds": 5.122000217437744,
+      "sampleCount": 2,
+      "tokensPerSecond": 32.79968622961933
+    },
+    {
+      "bucketStart": 1792694700,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 141,
+      "durationSeconds": 4.809999942779541,
+      "sampleCount": 2,
+      "tokensPerSecond": 29.313929662652082
+    },
+    {
+      "bucketStart": 1792695000,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 136,
+      "durationSeconds": 3.6710002422332764,
+      "sampleCount": 2,
+      "tokensPerSecond": 37.047123679093936
+    },
+    {
+      "bucketStart": 1792695300,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 90,
+      "durationSeconds": 1.8640000820159912,
+      "sampleCount": 1,
+      "tokensPerSecond": 48.28325967811191
+    },
+    {
+      "bucketStart": 1792695600,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 72,
+      "durationSeconds": 1.446000099182129,
+      "sampleCount": 1,
+      "tokensPerSecond": 49.79252770502842
+    },
+    {
+      "bucketStart": 1792695900,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 81,
+      "durationSeconds": 3.992000102996826,
+      "sampleCount": 1,
+      "tokensPerSecond": 20.29058063881127
+    },
+    {
+      "bucketStart": 1792696200,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 80,
+      "durationSeconds": 2.5240001678466797,
+      "sampleCount": 1,
+      "tokensPerSecond": 31.69571896988067
+    },
+    {
+      "bucketStart": 1792696500,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 135,
+      "durationSeconds": 3.955000162124634,
+      "sampleCount": 2,
+      "tokensPerSecond": 34.134006186102845
+    },
+    {
+      "bucketStart": 1792696800,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 84,
+      "durationSeconds": 2.447000026702881,
+      "sampleCount": 1,
+      "tokensPerSecond": 34.327747888577946
+    },
+    {
+      "bucketStart": 1792697100,
+      "model": "gpt-6.1-sol",
+      "outputTokens": 293,
+      "durationSeconds": 6.059000015258789,
+      "sampleCount": 1,
+      "tokensPerSecond": 48.3578146991448
+    }
+  ],
+  "resetMarkers": [
+    {
+      "observedAt": 1792690981.1874871,
+      "previousAt": 1792682836.751735
+    }
+  ]
+}

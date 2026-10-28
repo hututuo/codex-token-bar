@@ -44,7 +44,10 @@ struct ClaudeParser: Sendable {
     }
 
     private mutating func consume(_ line: ClaudeLine, deduper: inout Deduper, emit: (ResponseUpsert) -> Void) {
-        guard let timestamp = line.timestampMs else { return }
+        guard let timestamp = line.timestampMs else {
+            if line.localDisplayStop { state.localDisplayStopped = true }
+            return
+        }
         state.noteLine(at: timestamp)
         if !sourceDecided, let source = line.entrypointSource {
             state.source = source
@@ -53,6 +56,7 @@ struct ClaudeParser: Sendable {
         if let cwd = line.cwd { state.setProject(fromWorkingDirectory: cwd) }
         if line.isSidechain { state.isSubagent = true }
 
+        if line.localDisplayStop { state.localDisplayStopped = true }
         switch line.type {
         case .apiRequest:
             pendingStartMs = timestamp
@@ -71,6 +75,7 @@ struct ClaudeParser: Sendable {
 
         case .assistant:
             consumeAssistant(line, at: timestamp, deduper: &deduper, emit: emit)
+            if line.localDisplayStop { state.localDisplayStopped = true }
 
         case .other:
             break

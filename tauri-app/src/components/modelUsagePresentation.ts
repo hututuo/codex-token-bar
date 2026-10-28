@@ -1,3 +1,4 @@
+import { readSpeedColors, CLIENT_COLORS, CLIENT_TITLES } from "./liveRate/speedDisplay.ts";
 import { detectedOfficialAPIPriceModel } from "../settings/quotaPriceModel.ts";
 
 export interface ModelUsageRowLike {
@@ -24,6 +25,7 @@ export interface ModelUsageSlice {
 const FIXED_COLORS: Record<string, string> = {
   "gpt-6-astra": "#36ad77",
   "gpt-6.1-sol": "#d4512c",
+  "gpt-6.1-terra": "#a773e8",
   "gpt-6-sol": "#2e6bfa",
   "gpt-6-luna": "#4299f5",
   "gpt-5.6-sol": "#6774e8",
@@ -101,6 +103,7 @@ export function modelUsageKey(model: string | null | undefined, eventStartUnix?:
   // source spelling; sharing a family prefix is not proof of a model identity.
   switch (detectedOfficialAPIPriceModel(model)) {
     case "gpt61Sol": return "gpt-6.1-sol";
+    case "gpt61Terra": return "gpt-6.1-terra";
     case "gpt6Sol": return "gpt-6-sol";
     case "gpt6Luna": return "gpt-6-luna";
     case "gpt56Sol":
@@ -123,9 +126,11 @@ export function floatingModelUsageKey(model: string | null | undefined, eventSta
 }
 
 export function modelUsageLabel(model: string | null | undefined): string {
+  if (model?.startsWith("client:")) return CLIENT_TITLES[model] ?? model.slice(7);
   switch (modelUsageKey(model)) {
     case "gpt-6-astra": return "Astra";
     case "gpt-6.1-sol": return "GPT-6.1 Sol";
+    case "gpt-6.1-terra": return "GPT-6.1 Terra";
     case "gpt-6-sol": return "GPT-6 Sol";
     case "gpt-6-luna": return "GPT-6 Luna";
     case "gpt-5.6-sol": return "Sol";
@@ -147,6 +152,9 @@ export function modelUsageLabel(model: string | null | undefined): string {
 
 export function modelUsageColor(keyOrModel: string | null | undefined): string {
   const key = floatingModelUsageKey(keyOrModel);
+  const custom = readSpeedColors()[key];
+  if (custom) return custom;
+  if (key.startsWith("client:")) return CLIENT_COLORS[key] ?? "#a694e8";
   const fixed = FIXED_COLORS[key];
   if (fixed) return fixed;
   let hash = 0x811c9dc5;

@@ -119,7 +119,7 @@ internal static class Program
         {
             monitor.Start();
             var ready = await WaitForReadySnapshotAsync(firstReady.Task, lifetime.Token).ConfigureAwait(false);
-            WriteSnapshot(protocolOutput, RuntimeSnapshotMapper.Map(ready, processSalt, enabled, responseEvents.Read()));
+            WriteSnapshot(protocolOutput, RuntimeSnapshotMapper.Map(ready, processSalt, enabled, responseEvents.Read(), applyDisplayGuards: true));
             if (!options.Watch)
             {
                 return;
@@ -128,7 +128,7 @@ internal static class Program
             using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
             while (await timer.WaitForNextTickAsync(lifetime.Token).ConfigureAwait(false))
             {
-                WriteSnapshot(protocolOutput, RuntimeSnapshotMapper.Map(latest.Read(), processSalt, enabled, responseEvents.Read()));
+                WriteSnapshot(protocolOutput, RuntimeSnapshotMapper.Map(latest.Read(), processSalt, enabled, responseEvents.Read(), applyDisplayGuards: true));
             }
         }
         finally
@@ -347,8 +347,24 @@ internal static class Program
         && path[start + 1] == ':'
         && path[start + 2] is '\\' or '/';
 
+    private static void DisplayStopsAreLocalOnly(SpeedSnapshot sample) {
+        var now = sample.Timestamp;
+        var active = sample with { Agents = sample.Agents.Select(a => a with {
+            Phase = AgentPhase.Generating, LastActivity = now, ConfirmedStopped = false }).ToArray() };
+        var sources = active.Sources.Select(s => s.Kind).ToHashSet();
+        var running = RuntimeSnapshotMapper.Map(active, new byte[32], sources, applyDisplayGuards: true, observedNow: now);
+        Require(running.LiveOutputTps > 0 && running.ModelRates.Count > 0, "active display has output");
+        var stopped = active with { Agents = active.Agents.Select(a => a with { ConfirmedStopped = true }).ToArray() };
+        var zero = RuntimeSnapshotMapper.Map(stopped, new byte[32], sources, applyDisplayGuards: true, observedNow: now);
+        Require(zero.LiveOutputTps == 0 && zero.ModelRates.Count == 0, "explicit stop clears only display");
+        var expired = RuntimeSnapshotMapper.Map(active, new byte[32], sources, applyDisplayGuards: true, observedNow: now.AddSeconds(21));
+        Require(expired.LiveOutputTps == 0 && expired.ModelRates.Count == 0, "silence deadline clears display");
+        Require(active.Live == sample.Live && active.LiveModels == sample.LiveModels, "raw report metrics remain unchanged");
+    }
+
     private static async Task RunSelfTestsAsync()
     {
+        DisplayStopsAreLocalOnly(CreateSampleSnapshot());
         const string input = """
             {
               "schema_version": 1,

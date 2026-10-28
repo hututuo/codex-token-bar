@@ -1,3 +1,4 @@
+import AppKit
 import AgentSpeedCore
 import Combine
 import Foundation
@@ -14,6 +15,7 @@ final class AgentSpeedReportingController: ObservableObject {
     static let enabledKey = "agentSpeedReporting.enabled.v1"
     static let invitationKey = "agentSpeedReporting.invitationShown.v1"
     static let usernameKey = "agentSpeedReporting.username.v1"
+    static let transportKey = "agentSpeedReporting.transport.v1"
     static let deviceKey = "agentSpeedReporting.device.v1"
     static let serviceURL = "https://deng.codexradar.com"
     static let apiURL = "https://speed-api.codexradar.com/api/agent-speed"
@@ -27,9 +29,10 @@ final class AgentSpeedReportingController: ObservableObject {
         let name: String
         let tps: Double
     }
+    @Published private(set) var transport: AgentSpeedReportingMode
     @Published private(set) var enabled: Bool
     @Published private(set) var username: String
-    @Published private(set) var message = "未参加 · 采集与上报已关闭"
+    @Published private(set) var message = "未参加 · 榜单上报已关闭"
     @Published private(set) var phase = "off"
     @Published private(set) var liveOutputTps = 0.0
     @Published private(set) var estimatedShare = 0.0
@@ -38,6 +41,25 @@ final class AgentSpeedReportingController: ObservableObject {
     @Published private(set) var profileURL: URL?
     @Published var showingInvitation = false
 
+    private let serviceAddress: String
+    private let permittedAPI: String
+    private let makeRealtimeMonitor: ((SpeedStore) -> any AgentSpeedReportingMonitor)?
+    private let startWebSocket: (AgentSpeedWebSocket) -> Void
+    private(set) var usingHTTPFallback = false
+    private var socket: AgentSpeedWebSocket?
+    private var socketWindow: ReportWindow?
+    private var socketSeq = 0
+    private var socketTitle = ReportTitleTracker()
+    private var socketActivity: ReportScheduler.Activity = .idle
+    private var socketFlush: Task<Void, Never>?
+    private var socketLastBuild: Int64 = 0
+    private var socketWindowStart: Int64 = 0
+    private var socketActiveAt: Int64 = 0
+    private var socketLastSample: ReportSample?
+    private var socketObservation: SourceReadObservation?
+    private var socketDiscoveryRefreshes = 0
+    private var socketQuiet = false
+    private var lifecycle: [NSObjectProtocol] = []
     private let defaults: UserDefaults
     private let api: ReportAPI
     private let makeSigner: @Sendable (String) throws -> any ReportSigner
@@ -76,13 +98,22 @@ final class AgentSpeedReportingController: ObservableObject {
     }
     static var userAgent: String { "CodexTokenBar/" + client.version }
     static var nowMS: Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
-    static var monotonicMS: Int64 { Int64(ProcessInfo.processInfo.systemUptime * 1000) }
+    static var monotonicMS: Int64 { Int64(DispatchTime.now().uptimeNanoseconds / 1_000_000) }
 
     init(defaults: UserDefaults = .standard,
          transport: any ReportTransport = URLSessionReportTransport(),
          makeSigner: @escaping @Sendable (String) throws -> any ReportSigner = AgentSpeedReportingIdentity.signer,
-         monotonic: @escaping () -> Int64 = { Int64(ProcessInfo.processInfo.systemUptime * 1000) },
+         monotonic: @escaping () -> Int64 = { Int64(DispatchTime.now().uptimeNanoseconds / 1_000_000) },
+         serviceURLOverride: String? = nil,
+         apiURLOverride: String? = nil,
+         startWebSocket: @escaping (AgentSpeedWebSocket) -> Void = { $0.start() },
+         makeRealtimeMonitor: ((SpeedStore) -> any AgentSpeedReportingMonitor)? = nil,
          makeMonitor: ((SpeedStore) -> any AgentSpeedReportingMonitor)? = nil) {
+        self.serviceAddress = serviceURLOverride ?? Self.serviceURL
+        self.permittedAPI = apiURLOverride ?? Self.apiURL
+        self.makeRealtimeMonitor = makeRealtimeMonitor
+        self.startWebSocket = startWebSocket
+        self.transport = AgentSpeedReportingMode(rawValue: defaults.string(forKey: Self.transportKey) ?? "") ?? .http
         self.defaults = defaults
         self.api = ReportAPI(transport: transport, userAgent: Self.userAgent)
         self.makeSigner = makeSigner
@@ -142,10 +173,19 @@ final class AgentSpeedReportingController: ObservableObject {
         if started && enabled { stopRuntime(); begin() }
     }
 
-    func retry() { guard enabled else { return }; stopRuntime(); begin() }
+    func setTransport(_ mode: AgentSpeedReportingMode) {
+        guard transport != mode else { return }
+        transport = mode; defaults.set(mode.rawValue, forKey: Self.transportKey)
+        socketDiscoveryRefreshes = 0
+        stopRuntime(); if enabled { begin() }
+    }
+    func retry() { guard enabled else { return }; socketDiscoveryRefreshes = 0; stopRuntime(); begin() }
     func shutdown() { stopRuntime() }
 
     private func stopRuntime() {
+        socket?.stop(); socket = nil; socketFlush?.cancel(); socketFlush = nil
+        socketWindow = nil; socketObservation = nil; socketLastSample = nil; socketSeq = 0; socketQuiet = false; socketTitle = ReportTitleTracker()
+        for observer in lifecycle { NSWorkspace.shared.notificationCenter.removeObserver(observer) }; lifecycle = []
         generation = UUID()
         work?.cancel(); work = nil
         delivery?.cancel(); delivery = nil
@@ -153,31 +193,44 @@ final class AgentSpeedReportingController: ObservableObject {
         if let listener { store.removeLiveListener(listener) }
         listener = nil
         run = nil; document = nil; signer = nil
+        usingHTTPFallback = false
         lastSample = ReportSample()
         liveOutputTps = 0; estimatedShare = 0; sources = []
-        phase = "off"; message = "未参加 · 采集与上报已关闭"
+        phase = "off"; message = "未参加 · 榜单上报已关闭"
         // An opt-out cancels in-flight work immediately; no final telemetry packet after consent withdrawal.
     }
 
     private func begin() {
         guard enabled else { return }
+        if lifecycle.isEmpty {
+            let center = NSWorkspace.shared.notificationCenter
+            lifecycle.append(center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.suspendReporting() }
+            })
+            lifecycle.append(center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.resumeReporting() }
+            })
+        }
         phase = "connecting"; message = "正在连接速蹬排行榜…"
         let token = generation
         work = Task { [weak self] in await self?.setup(token: token) }
     }
 
     private func setup(token: UUID) async {
-        guard let service = try? ReportServiceURL.parse(Self.serviceURL).get() else { return }
+        guard let service = try? ReportServiceURL.parse(serviceAddress).get() else { return }
         let outcome = await api.discover(service)
         guard valid(token) else { return }
         guard case .document(let discovered, _) = outcome else {
             fail(Self.discoveryFailureMessage(outcome)); return
         }
-        guard Self.accepts(discovered) else {
+        guard discovered.supportsThisClient, discovered.api.string == permittedAPI, discovered.apiKeyMode != .required else {
             fail("服务协议或接收地址已变化，请更新客户端后重试"); return
         }
         guard ReportUsername.validate(username, rules: discovered.usernameRules) == nil else {
             fail("服务不接受这个昵称，请修改后重试"); return
+        }
+        if transport == .websocket, discovered.websocket == nil {
+            fail("此服务尚未支持 WebSocket；可手动改选 HTTP"); return
         }
         document = discovered
         discoveryAt = Date()
@@ -206,8 +259,10 @@ final class AgentSpeedReportingController: ObservableObject {
             defaults.set(username, forKey: Self.usernameKey)
             profileURL = Self.safeProfile(value.profileURL)
             lastRegistration = Date()
+            if transport == .websocket { startSocket(document: discovered, signer: key, token: token) }
             listener = store.addLiveListener { [weak self] snapshot in self?.receive(snapshot) }
-            let monitor = makeMonitor?(store) ?? SharedAgentSpeedMonitorPool.shared.lease(store: store,
+            let monitorFactory = transport == .websocket ? (makeRealtimeMonitor ?? makeMonitor) : makeMonitor
+            let monitor = monitorFactory?(store) ?? SharedAgentSpeedMonitorPool.shared.lease(store: store,
                 configuration: reportingConfiguration, sources: reportingConfiguration.enabledSources)
             self.monitor = monitor
             phase = "preparing"; message = "正在识别本地软件 · 历史记录不会补报"
@@ -328,17 +383,17 @@ final class AgentSpeedReportingController: ObservableObject {
         return url
     }
     static func options(_ document: ReportDiscovery) -> ReportOptions {
-        .init(sections: Set([ReportSection.sources, .models]).intersection(document.sections),
+        .init(sections: Set([ReportSection.sources, .models, .cost]).intersection(document.sections),
               maxModels: document.limits.maxModels, bodyLimit: document.limits.sendLimitBytes,
-              extensions: .init(modelHarnessRequests: document.extensions?.modelHarnessRequests == true,
+              priceVersion: PriceBook.bundled.version, extensions: .init(modelHarnessRequests: document.extensions?.modelHarnessRequests == true,
                                 executionModes: document.extensions?.executionModes == true))
     }
 
     func receive(_ snapshot: SpeedSnapshot) {
         guard enabled, document != nil, signer != nil else { return }
-        if snapshot.state == .noSources { phase = "waiting"; message = "已参加 · 等待本地软件产生日志"; return }
+        if snapshot.state == .noSources { phase = "waiting"; message = usingHTTPFallback ? "已回退 HTTP · 等待本地软件产生日志" : "已参加 · 等待本地软件产生日志"; return }
         guard snapshot.state == .running else { return }
-        if phase == "waiting" { phase = "running"; message = "已参加 · 等待新的请求统计" }
+        if phase == "waiting" { phase = "running"; message = usingHTTPFallback ? "已回退 HTTP · 等待新的请求统计" : "已参加 · 等待新的请求统计" }
         // Refresh discovery daily; a fresh monitor/run baselines all prior counters.
         if Date().timeIntervalSince(discoveryAt) >= 86400 { retry(); return }
         let sample = Self.reportableSample(ReportSample(snapshot: snapshot, traffic: .off))
@@ -353,9 +408,13 @@ final class AgentSpeedReportingController: ObservableObject {
                 Source(id: $0.key.rawValue, name: Self.sourceName($0.key), tps: $0.value.live.output)
             }
         }
+        if transport == .websocket && !usingHTTPFallback {
+            receiveSocket(sample, observation: snapshot.readObservation)
+            return
+        }
         if run == nil, let document {
             run = Run(scheduler: ReportScheduler(limits: document.limits), window: ReportWindow(sample))
-            phase = "running"; message = "已参加 · 等待新的请求统计"
+            phase = "running"; message = usingHTTPFallback ? "已回退 HTTP · 等待新的请求统计" : "已参加 · 等待新的请求统计"
         }
         guard var run else { return }
         let now = monotonic()
@@ -365,6 +424,157 @@ final class AgentSpeedReportingController: ObservableObject {
         let actions = run.scheduler.tick(at: now, active: active, blocked: false)
         self.run = run
         apply(actions, sample: sample)
+    }
+
+    private func suspendReporting() {
+        guard enabled else { return }
+        socketFlush?.cancel(); socketFlush = nil
+        socketWindow = nil; socketObservation = nil; socketLastSample = nil
+        if transport == .websocket && !usingHTTPFallback { socket?.suspend(); monitor?.stop(); phase = "paused"; message = "已暂停 · 等待唤醒" }
+        else { delivery?.cancel(); delivery = nil; monitor?.stop(); run = nil }
+    }
+    private func resumeReporting() {
+        guard enabled else { return }
+        socketWindow = nil; socketObservation = nil; socketLastSample = nil
+        socket?.resume(); monitor?.start()
+        phase = "connecting"; message = "已唤醒 · 重新连接并从新数据开始"
+    }
+    private func startSocket(document: ReportDiscovery, signer: any ReportSigner, token: UUID) {
+        guard let config = document.websocket else { return }
+        let builder = ReportRequestBuilder(userAgent: Self.userAgent, deviceId: deviceID, apiKey: nil)
+        let socket = AgentSpeedWebSocket(api: document.api, config: config) { [weak self] method, url, body in
+            let timestamp = await MainActor.run { Self.nowMS / 1000 + (self?.clockCorrection ?? 0) }
+            return try await Task.detached(priority: .utility) {
+                try builder.make(method: method, url: url, body: body, signer: signer, timestamp: timestamp)
+            }.value
+        }
+        self.socket = socket
+        socket.onReady = { [weak self] in
+            guard let self, valid(token) else { return }
+            socketWindow = nil; socketObservation = nil; socketLastSample = nil
+            socketWindowStart = monotonic(); socketLastBuild = 0; socketActiveAt = monotonic() - 15000; socketActivity = .idle
+            phase = "connected"
+        }
+        socket.onDisconnected = { [weak self] in
+            guard let self else { return }
+            socketFlush?.cancel(); socketFlush = nil; socketWindow = nil; socketObservation = nil; socketLastSample = nil
+            if enabled && transport == .websocket { phase = "reconnecting" }
+        }
+        socket.onStatus = { [weak self] text in
+            guard let self, valid(token) else { return }; message = text
+        }
+        socket.onAccepted = { [weak self] in
+            guard let self, valid(token) else { return }
+            if lastReportAt == nil || Date().timeIntervalSince(lastReportAt!) >= 1 { lastReportAt = Date() }
+            if phase != "running" { phase = "running" }
+            if message != "已参加 · WebSocket 统计已确认" { message = "已参加 · WebSocket 统计已确认" }
+        }
+        socket.onRecovery = { [weak self] code, server in
+            guard let self, valid(token) else { return }
+            if code == "gone" { setEnabled(false); message = "服务已停止接收，已关闭上报"; return }
+            if code == "timestamp_out_of_window" {
+                guard let server, abs(server - Self.nowMS / 1000) <= 86400 else { fail("设备时间与服务不一致，请核对后手动重试"); return }
+                clockCorrection = server - Self.nowMS / 1000
+                return
+            }
+            if code == "unknown_device", Date().timeIntervalSince(lastRegistration) < 3600 {
+                fail("设备注册需要确认，请手动重试"); return
+            }
+            if code == "seq_conflict" { stopRuntime(); begin(); return }
+            if socketDiscoveryRefreshes >= 1 { fail("服务连接设置不一致，请手动重试"); return }
+            socketDiscoveryRefreshes += 1; stopRuntime(); begin()
+        }
+        socket.onTerminal = { [weak self] text in self?.fail(text) }
+        socket.onConfigurationChanged = { [weak self] in
+            guard let self, valid(token) else { return }
+            if socketDiscoveryRefreshes >= 1 { fail("服务连接设置不一致，请手动重试"); return }
+            socketDiscoveryRefreshes += 1; stopRuntime(); begin()
+        }
+        socket.onTransportUnavailable = { [weak self, weak socket] in
+            guard let self, valid(token), !usingHTTPFallback else { return }
+            socket?.stop(); self.socket = nil
+            socketFlush?.cancel(); socketFlush = nil
+            socketWindow = nil; socketObservation = nil; socketLastSample = nil
+            // Start a fresh HTTP window on the next complete snapshot. Never replay
+            // WS windows whose acceptance is unknown, or seed historical counters.
+            run = nil
+            usingHTTPFallback = true
+            phase = "waiting"; message = "WebSocket 连接中断 · 已回退 HTTP，等待新数据"
+        }
+        startWebSocket(socket)
+    }
+    private func receiveSocket(_ sample: ReportSample, observation: SourceReadObservation?) {
+        guard let socket else { return }
+        let now = monotonic()
+        socketTitle.update(value: sample.live.output, redline: 2000, now: Double(now) / 1000)
+        let active = observation != nil || sample.facts.agents.values.contains { $0.generating + $0.tools > 0 } || sample.live.output > 0
+            || socketWindow?.hasTokenIncrement(sample) == true
+        if active { socketActiveAt = now; if socketQuiet { socketQuiet = false; socket.resume() } }
+        guard socket.ready else { return }
+        if socketWindow == nil {
+            socketWindow = ReportWindow(sample); socketWindowStart = now; socketLastSample = sample; return
+        }
+        if let observation {
+            if let old = socketObservation {
+                socketObservation = old.merged(with: observation)
+            } else { socketObservation = observation }
+        }
+        socketWindow?.observe(sample)
+        let changed = socketLastSample != sample
+        socketLastSample = sample
+        let idleHeartbeat = now - socketLastBuild >= Int64(document?.limits.heartbeatSeconds ?? 60) * 1000
+        let idleFor = now - socketActiveAt
+        let activity: ReportScheduler.Activity = idleFor >= 600000 ? .leaving : (idleFor >= 15000 ? .idle : .active)
+        guard changed || observation != nil || idleHeartbeat || activity != socketActivity else { return }
+        if socketFlush == nil {
+            let delay = max(0, Int64(socket.config.minIntervalMs) - (now - socketLastBuild))
+            if delay == 0 { flushSocket() }
+            else {
+                socketFlush = Task { [weak self] in
+                    try? await Task.sleep(for: .milliseconds(delay))
+                    guard !Task.isCancelled else { return }; self?.socketFlush = nil; self?.flushSocket()
+                }
+            }
+        }
+    }
+    private func flushSocket() {
+        guard let socket, socket.ready, var window = socketWindow, let sample = socketLastSample, let document else { return }
+        let now = monotonic(), idle = now - socketActiveAt
+        let activity: ReportScheduler.Activity = idle >= 600000 ? .leaving : (idle >= 15000 ? .idle : .active)
+        let content = window.take(sample); socketWindow = window; socketSeq += 1
+        let envelope = ReportEnvelope(client: Self.client, deviceId: deviceID, username: username, runId: socket.runID,
+            seq: socketSeq, sentAtMs: Self.nowMS + clockCorrection * 1000, windowMs: min(900000, max(0, now - socketWindowStart)),
+            activity: activity, titleLevel: socketTitle.level)
+        var options = Self.options(document)
+        options.bodyLimit = min(options.bodyLimit, (socket.config.maxMessageBytes - 1024) / 2) - 300
+        let fitted = ReportBody.fitted(envelope, content, sample, options)
+        guard case .object(var members) = fitted.json else { return }
+        let observation = socketObservation
+        let age = observation.map { max(0, now - $0.observedTickMs) }
+        if let age, age > 1000 {
+            socketLastBuild = now; socketWindowStart = now; socketObservation = nil; socketActivity = activity
+            socket.dropBuiltWindow()
+            if activity == .leaving { socketQuiet = true; socket.pauseUntilActivity() }
+            if message != "来源数据已过期 · 本窗口已丢弃" { message = "来源数据已过期 · 本窗口已丢弃" }
+            return
+        }
+        let fresh = (age ?? 0) <= 900000
+        members.append(.init("realtime", .object([
+            "sourceMode": .string(observation?.sourceMode ?? "unknown"),
+            "observedAt": fresh ? (observation.map { .string(ReportInstant.format(unixMs: $0.observedAtMs + clockCorrection * 1000)) } ?? .null) : .null,
+            "observationAgeMs": fresh ? .optionalInt(age) : .null,
+            "sourceResolutionMs": .optionalInt(observation?.sourceResolutionMs.map(Int64.init))
+        ])))
+        let body = ReportJSON.object(members).compactData
+        socketLastBuild = now; socketWindowStart = now; socketObservation = nil; socketActivity = activity
+        socket.submit(body: body, seq: socketSeq, observedAt: observation?.observedTickMs)
+        if activity == .leaving {
+            socketQuiet = true
+            Task { [weak self, weak socket] in
+                try? await Task.sleep(for: .seconds(1))
+                if self?.socketQuiet == true { socket?.pauseUntilActivity() }
+            }
+        }
     }
 
     private func apply(_ actions: [ReportScheduler.Action], sample: ReportSample) {
@@ -404,8 +614,8 @@ final class AgentSpeedReportingController: ObservableObject {
             let result = await request(endpoint: ReportEndpoint.reports, body: body, signer: signer)
             guard valid(token), self.run?.id == runID else { return }
             let (outcome, reaction) = ReportOutcome.classify(result, hasPendingKey: false)
-            if case .delivered = outcome { lastReportAt = Date(); message = "已参加 · 统计已上报" }
-            else if case .transient = outcome { message = "连接暂不可用 · 将自动重试" }
+            if case .delivered = outcome { lastReportAt = Date(); message = usingHTTPFallback ? "已回退 HTTP · 统计已上报" : "已参加 · 统计已上报" }
+            else if case .transient = outcome { message = usingHTTPFallback ? "已回退 HTTP · 网络暂不可用，将自动重试" : "连接暂不可用 · 将自动重试" }
             else if case .rateLimited = outcome { message = "服务限流 · 已暂停并等待重试" }
             let actions = self.run?.scheduler.finish(ticket, outcome, at: monotonic()) ?? []
             apply(actions, sample: lastSample)
@@ -444,6 +654,7 @@ final class AgentSpeedReportingController: ObservableObject {
 
     private func valid(_ token: UUID) -> Bool { enabled && token == generation && !Task.isCancelled }
     private func fail(_ text: String) {
+        socket?.stop(); socket = nil; socketFlush?.cancel(); socketFlush = nil
         monitor?.stop(); monitor = nil
         if let listener { store.removeLiveListener(listener) }; listener = nil
         run = nil; liveOutputTps = 0; estimatedShare = 0; sources = []

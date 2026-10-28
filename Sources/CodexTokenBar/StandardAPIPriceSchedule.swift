@@ -30,16 +30,18 @@ struct StandardAPIPriceQuote: Equatable, Sendable {
 /// is explicitly intended. Auto-review aliases and the independent Spark
 /// quota are intentionally outside this table.
 enum StandardAPIPriceSchedule {
+    private static let gpt61TerraCutover = utcDate(year: 2026, month: 10, day: 26)
     private static let gpt61SolCutover = utcDate(year: 2026, month: 9, day: 29)
     private static let gpt6SolAndLunaCutover = utcDate(year: 2026, month: 9, day: 22)
     private static let solCutover = utcDate(year: 2026, month: 8, day: 21)
     private static let terraAndLunaCutover = utcDate(year: 2026, month: 7, day: 30)
 
-    static let revision = "standard-api-dated-v3"
+    static let revision = "standard-api-dated-v4"
     static func sqlPartitionExpression(timestamp: String) -> String {
-        "CASE WHEN \(timestamp) >= \(Int(gpt61SolCutover.timeIntervalSince1970)) THEN 4 WHEN \(timestamp) >= \(Int(gpt6SolAndLunaCutover.timeIntervalSince1970)) THEN 3 WHEN \(timestamp) >= \(Int(solCutover.timeIntervalSince1970)) THEN 2 WHEN \(timestamp) >= \(Int(terraAndLunaCutover.timeIntervalSince1970)) THEN 1 ELSE 0 END"
+        "CASE WHEN \(timestamp) >= \(Int(gpt61TerraCutover.timeIntervalSince1970)) THEN 5 WHEN \(timestamp) >= \(Int(gpt61SolCutover.timeIntervalSince1970)) THEN 4 WHEN \(timestamp) >= \(Int(gpt6SolAndLunaCutover.timeIntervalSince1970)) THEN 3 WHEN \(timestamp) >= \(Int(solCutover.timeIntervalSince1970)) THEN 2 WHEN \(timestamp) >= \(Int(terraAndLunaCutover.timeIntervalSince1970)) THEN 1 ELSE 0 END"
     }
     static func partitionStart(at date: Date) -> Date {
+        if date >= gpt61TerraCutover { return gpt61TerraCutover }
         if date >= gpt61SolCutover { return gpt61SolCutover }
         if date >= gpt6SolAndLunaCutover { return gpt6SolAndLunaCutover }
         if date >= solCutover { return solCutover }
@@ -63,6 +65,8 @@ enum StandardAPIPriceSchedule {
             return "gpt-6-astra"
         case "gpt-6.1-sol", "gpt6.1-sol", "gpt61-sol", "gpt61sol":
             return "gpt-6.1-sol"
+        case "gpt-6.1-terra", "gpt6.1-terra", "gpt61-terra", "gpt61terra":
+            return "gpt-6.1-terra"
         case "gpt-6-sol", "gpt6-sol", "gpt6sol":
             return "gpt-6-sol"
         case "gpt-6-luna", "gpt6-luna", "gpt6luna":

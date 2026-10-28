@@ -151,8 +151,13 @@ public sealed class ReportDiscovery
 
     public ReportExtensions Extensions { get; private init; } = new();
 
+    /// <summary>Null unless the discovery explicitly advertises version 1 and has valid WebSocket limits.</summary>
+    public ReportWebSocketSettings? WebSocket { get; private init; }
+
     /// <summary>False when the service shares no protocol version with this client ("needs a newer Agent Speed").</summary>
     public bool SupportsThisClient => Versions.Contains(SupportedVersion);
+
+    public bool SupportsWebSocket => Extensions.ReportWebSocket && WebSocket is not null;
 
     /// <summary>
     /// <paramref name="data"/> is the body fetched from <paramref name="service"/>'s discovery URL; <c>http</c> URLs are accepted
@@ -250,7 +255,8 @@ public sealed class ReportDiscovery
             apiKey.Add(("url", ReportJson.Of(ApiKeyUrl)));
         }
 
-        return ReportJson.Object(
+        var members = new List<(string, ReportJson)>
+        {
             ("protocol", ReportJson.Of(ProtocolName)),
             ("versions", ReportJson.Array(Versions.Select(v => ReportJson.Of(v)))),
             ("service", ReportJson.Object(service)),
@@ -268,7 +274,14 @@ public sealed class ReportDiscovery
                 ("maxBodyBytes", ReportJson.Of(Limits.MaxBodyBytes)),
                 ("maxModels", ReportJson.Of(Limits.MaxModels)))),
             ("sections", ReportJson.Array(ReportSections.All.Where(Sections.Contains).Select(s => ReportJson.Of(ReportSections.Name(s))))),
-            ("extensions", Extensions.Json));
+            ("extensions", Extensions.Json),
+        };
+        if (WebSocket is { } websocket)
+        {
+            members.Add(("websocket", websocket.ToJson()));
+        }
+
+        return ReportJson.Object(members);
     }
 
     private static ReportDiscovery Read(Fields root, bool loopback)
@@ -361,6 +374,26 @@ public sealed class ReportDiscovery
             sections = [.. ReportSections.All];
         }
 
+        var extensions = new ReportExtensions(
+            root.Extension("modelHarnessRequests"),
+            root.Extension("executionModes"),
+            root.Extension("profileAvatar"),
+            root.Extension("sharedIdentity"),
+            root.Extension("reportWebSocket"));
+        ReportWebSocketSettings? websocket = null;
+        if (extensions.ReportWebSocket)
+        {
+            try
+            {
+                websocket = root.WebSocket();
+            }
+            catch (DiscoveryInvalid)
+            {
+                // A bad optional transport extension must leave the existing HTTP discovery usable.
+                websocket = null;
+            }
+        }
+
         return new ReportDiscovery
         {
             Versions = versions,
@@ -378,7 +411,8 @@ public sealed class ReportDiscovery
             UsernameRules = rules,
             Limits = limits,
             Sections = sections,
-            Extensions = new(root.Extension("modelHarnessRequests"), root.Extension("executionModes"), root.Extension("profileAvatar"), root.Extension("sharedIdentity")),
+            Extensions = extensions,
+            WebSocket = websocket,
         };
     }
 
@@ -394,7 +428,31 @@ public sealed class ReportDiscovery
     {
         public bool Extension(string name) => element.TryGetProperty("extensions", out var extensions)
             && extensions.ValueKind == JsonValueKind.Object && extensions.TryGetProperty(name, out var value)
-            && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var version) && version == 1;
+            && IntegerOf(value) == 1;
+
+        public ReportWebSocketSettings WebSocket()
+        {
+            var websocket = Object("websocket") ?? throw new DiscoveryInvalid(Field("websocket"));
+            if (websocket.String("path") != ReportWebSocketSettings.Path
+                || websocket.String("subprotocol") != ReportWebSocketSettings.Subprotocol)
+            {
+                throw new DiscoveryInvalid(Field("websocket"));
+            }
+
+            var limits = ReportWebSocketSettings.Defaults;
+            var minInterval = websocket.StrictInteger("minIntervalMs", 10, 1_000, limits.MinIntervalMs);
+            var maxInFlight = websocket.StrictInteger("maxInFlight", 1, 64, limits.MaxInFlight);
+            var ackTimeout = websocket.StrictInteger("ackTimeoutMs", 500, 10_000, limits.AckTimeoutMs);
+            var maxMessage = websocket.StrictInteger("maxMessageBytes", 32_768, 65_536, limits.MaxMessageBytes);
+            var pingInterval = websocket.StrictInteger("pingIntervalSeconds", 10, 60, limits.PingIntervalSeconds);
+            var pongTimeout = websocket.StrictInteger("pongTimeoutSeconds", 5, 30, limits.PongTimeoutSeconds);
+            if (pongTimeout >= pingInterval)
+            {
+                throw new DiscoveryInvalid(Field("websocket.pongTimeoutSeconds"));
+            }
+
+            return new ReportWebSocketSettings(minInterval, maxInFlight, ackTimeout, maxMessage, pingInterval, pongTimeout);
+        }
 
         private string Field(string key) => path.Length == 0 ? key : $"{path}.{key}";
 
@@ -441,6 +499,19 @@ public sealed class ReportDiscovery
             }
 
             return IntegerOf(value) is { } number ? (int)Math.Clamp(number, low, high) : throw new DiscoveryInvalid(Field(key));
+        }
+
+        /// <summary>WebSocket negotiated values reject, rather than clamp, malformed or out-of-range integers.</summary>
+        public int StrictInteger(string key, int low, int high, int defaultValue)
+        {
+            if (Member(key) is not { } value)
+            {
+                return defaultValue;
+            }
+
+            return IntegerOf(value) is { } number && number >= low && number <= high
+                ? (int)number
+                : throw new DiscoveryInvalid(Field(key));
         }
 
         /// <summary>A required link: always <c>https</c>, also from a loopback test server (REPORTING 2.2).</summary>

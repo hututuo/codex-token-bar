@@ -9130,6 +9130,7 @@ fn cache_turn_candidates_do_not_merge_requests_with_null_prompt_boundaries() {
         "requests without a prompt start must not be grouped as one session-wide turn"
     );
 
+    drop(db);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -11021,6 +11022,8 @@ fn v22_startup_rejects_data_binding_mismatches_but_ignores_physical_identity() {
     let _cache_env = AggregateCacheEnvGuard::new(cache_path.clone());
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
+    // Keep the five-minute signature stable while exercising binding changes.
+    let _clock = DashboardTestClock::at(&root, "2026-06-18T02:00:30Z");
     write_lines(
         &session_dir.join("rollout-019ev19-mismatch.jsonl"),
         &[
@@ -11050,7 +11053,9 @@ fn v22_startup_rejects_data_binding_mismatches_but_ignores_physical_identity() {
         local_date["signature"]["local_date"] = serde_json::json!("2099-01-01");
         assert_miss(local_date);
         let mut utc_offset = baseline.clone();
-        utc_offset["signature"]["utc_offset_seconds"] = serde_json::json!(9 * 60 * 60);
+        let original_offset = baseline["signature"]["utc_offset_seconds"].as_i64().unwrap();
+        let different_offset = if original_offset == 9 * 60 * 60 { 8 * 60 * 60 } else { 9 * 60 * 60 };
+        utc_offset["signature"]["utc_offset_seconds"] = serde_json::json!(different_offset);
         assert_miss(utc_offset);
         let mut canonical_home = baseline.clone();
         canonical_home["canonicalHome"] = serde_json::json!(root.join("other-home"));

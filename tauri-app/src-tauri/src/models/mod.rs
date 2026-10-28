@@ -50,11 +50,13 @@ pub use session_management::{
 };
 pub use settings::{
     DEFAULT_TOKEN_RATE_FULL_SCALE, default_status_metric_label_style,
-    AgentSpeedReportingSettingsSnapshot, AppSettingsSnapshot, AutoResumeSettingsSnapshot,
+    AgentSpeedReportingSettingsSnapshot, AgentSpeedReportingTransport, AppSettingsSnapshot,
+    AutoResumeSettingsSnapshot,
     AutoResumeTaskSettingsSnapshot, DisplaySurfaceSettingsSnapshot,
     FloatingContentVisibilitySnapshot, FloatingWindowPositionSnapshot,
     FloatingWindowSettingsSnapshot, SessionEnhancementSettingsSnapshot,
     SidebarLayoutSnapshot, SidebarModuleVisibilitySnapshot,
+    SpeedColorGrouping, SpeedDisplayMode, SpeedDisplayPreferencesSnapshot,
     UsageRefreshSettingsSnapshot,
     AUTO_RESUME_TASK_COLLECTION_VERSION, DEFAULT_SIDEBAR_LAYOUT_ORDER,
     DEFAULT_SIDEBAR_MODULE_ORDER, STATUS_METRIC_IDS,

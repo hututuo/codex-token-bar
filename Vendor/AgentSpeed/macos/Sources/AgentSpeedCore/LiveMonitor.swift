@@ -9,13 +9,20 @@ public final class LiveMonitor {
     /// Prices every response (METRICS 9); nil leaves costs unknown.
     public let pricing: PriceBook?
     private let store: SpeedStore
+    private let realtimeEventMode: Bool
     private var core: MonitorCore?
     private var mailbox: SnapshotMailbox?
 
-    public init(store: SpeedStore, configuration: MonitorConfiguration = MonitorConfiguration(), pricing: PriceBook? = nil) {
+    public init(
+        store: SpeedStore,
+        configuration: MonitorConfiguration = MonitorConfiguration(),
+        pricing: PriceBook? = nil,
+        realtimeEventMode: Bool = false
+    ) {
         self.store = store
         self.configuration = configuration
         self.pricing = pricing
+        self.realtimeEventMode = realtimeEventMode
     }
 
     /// True between `start()` and `stop()`.
@@ -26,7 +33,13 @@ public final class LiveMonitor {
         let mailbox = SnapshotMailbox { [weak store] snapshot, events in
             store?.publishLive(snapshot, events: events)
         }
-        let core = MonitorCore(configuration: configuration, mailbox: mailbox, subsets: subsets, pricing: pricing)
+        let core = MonitorCore(
+            configuration: configuration,
+            mailbox: mailbox,
+            subsets: subsets,
+            pricing: pricing,
+            realtimeEventMode: realtimeEventMode
+        )
         self.mailbox = mailbox
         self.core = core
         core.start()

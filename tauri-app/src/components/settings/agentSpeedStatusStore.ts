@@ -4,7 +4,7 @@ import { isTauriRuntimeAvailable } from "../../platform/runtime";
 import type { AgentSpeedReportingStatus } from "./AgentSpeedReporting";
 
 const initial: AgentSpeedReportingStatus = {
-  enabled:false, invitationHandled:true, username:"", phase:"off", message:"未参加 · 采集与上报已关闭",
+  enabled:false, transport:"http", invitationHandled:true, username:"", phase:"off", message:"未参加 · 采集与上报已关闭",
   liveOutputTps:0, estimatedShare:0, lastReportAt:null, profileUrl:null, sources:[],
 };
 let current=initial, timer:ReturnType<typeof setTimeout>|undefined, pending=false, revision=0;

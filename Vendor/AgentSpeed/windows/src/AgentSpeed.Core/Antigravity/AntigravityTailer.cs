@@ -139,18 +139,18 @@ internal sealed class AntigravityTailer : TranscriptTailer, IDisposable
             long bytes;
             try
             {
+                var observation = SourceReadObservation.Capture(SourceReadMode.Poll, sourceResolutionMs: 1_000);
                 bytes = _database.Read(_cursors, batch);
+                var read = complete ? Math.Max(1, stamp.DatabaseLength) : bytes + batch.Count;
+                NeedsCompleteRead = false;
+                Offset = stamp.Length;
+                TotalBytesRead += read;
+                return new TailReadResult(wasReset, stamp.Length, stamp.LastWriteUtc, read, observation);
             }
             finally
             {
                 CloseConnection();
             }
-
-            NeedsCompleteRead = false;
-            Offset = stamp.Length;
-            var read = complete ? Math.Max(1, stamp.DatabaseLength) : bytes + batch.Count;
-            TotalBytesRead += read;
-            return new TailReadResult(wasReset, stamp.Length, stamp.LastWriteUtc, read);
         }
     }
 

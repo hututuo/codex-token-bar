@@ -67,6 +67,12 @@ internal sealed class DshParser : TranscriptParser<DshLine>
 
     private void ApplyEvent(in DshEvent item, IResponseSink sink)
     {
+        if (item.Kind == DshEventKind.Error)
+        {
+            MarkConfirmedStopped();
+            return;
+        }
+
         if (item.Kind == DshEventKind.Header)
         {
             ApplyHeader(in item);

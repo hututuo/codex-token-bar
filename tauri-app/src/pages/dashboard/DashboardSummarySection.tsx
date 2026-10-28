@@ -154,6 +154,7 @@ export function DashboardSummarySection({
       {includesCodex && <CodexRadarStrip refreshGeneration={radarRefreshGeneration} />}
       {(includesCodex || scope.allowed.some(c => ["claudeCode", "claudeDesktop"].includes(c))) && <LiveRateCard
         includesCodex={includesCodex} localClients={scope.allowed}
+        quotaIdentity={dashboard.attributionIdentity} quotaUpdatedAt={dashboard.quotaUpdatedAt}
         sourceToken={sourceToken}
         liveThreadOptions={liveThreadOptions}
         floatingEnabled={displaySurfaces.floatingWindowEnabled}

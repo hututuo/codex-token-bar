@@ -165,11 +165,13 @@ final class BodySpeedHistoryTests: XCTestCase {
         let kept = try await writer.load(from: url, now: now)
         XCTAssertEqual(kept.count, 1)
         let trend = try await writer.trend(from: url, now: now, days: 1)
-        XCTAssertEqual(trend.count, 1)
-        XCTAssertEqual(trend[0].model, "m")
-        XCTAssertEqual(trend[0].outputTokens, Int64(body.outputTokens))
-        XCTAssertEqual(trend[0].sampleCount, 1)
-        XCTAssertEqual(trend[0].tokensPerSecond, 50, accuracy: 0.0001)
+        XCTAssertTrue(trend.isEmpty, "A single body stays in history but cannot define a distribution")
+        let numeric = try BodySpeedTrendStore(url: url).read(now: now, days: 1)
+        let point = try XCTUnwrap(numeric.first)
+        XCTAssertEqual(point.model, "m")
+        XCTAssertEqual(point.outputTokens, Int64(body.outputTokens))
+        XCTAssertEqual(point.sampleCount, 1)
+        XCTAssertEqual(point.tokensPerSecond, 50, accuracy: 0.0001)
     }
     func testFutureBodyRemainsRetryableUntilItCanBePersisted() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -191,7 +193,7 @@ final class BodySpeedHistoryTests: XCTestCase {
         let after = try await writer.load(from: url, now: body.endedAt)
         XCTAssertEqual(after.map(\.id), [body.id])
         let trend = try await writer.trend(from: url, now: body.endedAt, days: 1)
-        XCTAssertEqual(trend.first?.sampleCount, 1)
+        XCTAssertTrue(trend.isEmpty, "The stored future body needs more buckets before becoming a distribution")
     }
 
     func testLocalHistoryPerformanceAudit() throws {

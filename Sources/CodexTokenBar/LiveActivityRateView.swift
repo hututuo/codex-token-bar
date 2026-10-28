@@ -40,17 +40,18 @@ struct LiveActivityRateDetail: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("全会话活动速率").font(.system(size: 13, weight: .semibold))
+                Text(monitor.localSpeedDisplay.preferences.mode.title + " · 全会话速率").font(.system(size: 13, weight: .semibold))
                 Spacer()
                 ActivityRateUnitControl()
             }
             HStack(alignment: .firstTextBaseline, spacing: 7) {
-                Text(unit.text(unit.value(total: monitor.totalSnapshot.rollingTokensPerSecond,
-                    rates: monitor.totalSnapshot.modelRates, exchangeRate: exchangeRate)))
+                Text(unit.text(unit.value(total: monitor.displaySnapshot.rollingTokensPerSecond,
+                    rates: monitor.displaySnapshot.modelRates, exchangeRate: exchangeRate)))
                     .font(.system(size: 24, weight: .semibold, design: .rounded)).monospacedDigit()
                 Text(unit == .yuan ? "估算 CN 元/s" : "tok/s").font(.caption).foregroundStyle(.secondary)
             }
-            ActivityRateHistoryChart(history: monitor.activityRateHistory, unit: unit, exchangeRate: exchangeRate)
+            SpeedDisplayControls()
+            ActivityRateHistoryChart(history: monitor.localSpeedDisplay.preferences.mode == .agentSpeed ? monitor.localSpeedDisplay.history : monitor.activityRateHistory, unit: unit, exchangeRate: exchangeRate)
             if unit == .yuan {
                 Text("输出单价折算 · 1 USD = \(ActivityRateUnit.safeExchangeRate(exchangeRate), specifier: "%.2f") 元")
                     .font(.system(size: 10)).foregroundStyle(.secondary)

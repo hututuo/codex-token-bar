@@ -1,0 +1,210 @@
+Building for debugging...
+[Using on-disk description]
+[1 / 8] CodexTokenBarTests-product
+[3 / 15] CodexTokenBar
+[8 / 21] CodexTokenBar
+[8 / 26] CodexTokenBar-product
+[10 / 36] CodexTokenBar-product
+[11 / 46] CodexTokenBar-product
+[12 / 46] CodexTokenBar-product
+[14 / 46] CodexTokenBar-product
+[15 / 46] CodexTokenBar-product
+[17 / 46] CodexTokenBar-product
+[18 / 48] CodexTokenBar-product
+[21 / 48] CodexTokenBar
+[24 / 50] CodexTokenBar
+[26 / 50] CodexTokenBar-product
+[27 / 50] CodexTokenBar-product
+[29 / 50] CodexTokenBar
+[31 / 50] CodexTokenBar
+[32 / 50] CodexTokenBar
+[33 / 51] CodexTokenBarTests-product
+[33 / 52] CodexTokenBar
+[35 / 52] CodexTokenBar
+[37 / 54] CodexTokenBar
+[38 / 54] CodexTokenBar
+[38 / 54] CodexTokenBar-product
+[40 / 54] CodexTokenBar
+[41 / 57] CodexTokenBar
+[42 / 57] CodexTokenBar
+[43 / 57] CodexTokenBar
+[44 / 57] CodexTokenBar
+[44 / 57]
+[45 / 57] CodexTokenBar-product
+[46 / 57] CodexTokenBar
+[47 / 57] CodexTokenBar
+[48 / 57] CodexTokenBar
+[49 / 54] CodexTokenBarTests-product
+[53 / 65] CodexTokenBarTests-product
+[54 / 65] CodexTokenBarTests-product
+[57 / 65] CodexTokenBarTests-product
+[58 / 67] CodexTokenBarTests-product
+[61 / 67] CodexTokenBarTests-product
+[64 / 67] CodexTokenBarTests-product
+/Users/huyiyang/AI agent/Codex/_keep/projects/codex-token-dashboard/runs/20261022-cache-advice-isolation/release-source/Tests/CodexTokenBarTests/AccountQuotaReaderTests.swift:918:18: warning: weak variable 'releasedWriter' was never mutated; consider changing to 'let' constant [#VariableNeverMutated::WeakMutability]
+ 916 |     func testCancellationAloneStopsForeverWouldBlockWriterAndReleasesResources() async {
+ 917 |         var writer: CancellationIntrinsicStdinWriter? = .init(mode: .wouldBlockOnSecondWrite)
+ 918 |         weak var releasedWriter = writer
+     |                  `- warning: weak variable 'releasedWriter' was never mutated; consider changing to 'let' constant [#VariableNeverMutated::WeakMutability]
+ 919 |
+ 920 |         let evidence = await runCancellationIntrinsicRead(writer: writer!)
+
+[#VariableNeverMutated]: <https://docs.swift.org/compiler/documentation/diagnostics/variable-never-mutated>
+[#WeakMutability]: <https://docs.swift.org/compiler/documentation/diagnostics/weak-mutability>
+[66 / 70] CodexTokenBarTests-product
+[67 / 70] CodexTokenBarTests-product
+[68 / 70] CodexTokenBarTests-product
+Build complete! (47.61秒)
+Test Suite 'Selected tests' started at 2026-10-25 14:36:10.096.
+Test Suite 'CodexTokenBarTests.xctest' started at 2026-10-25 14:36:10.099.
+Test Suite 'AnimationActivityTests' started at 2026-10-25 14:36:10.099.
+Test Case '-[CodexTokenBarTests.AnimationActivityTests testClippedAndHiddenOrMinimizedWindowsStopAnimation]' started.
+Test Case '-[CodexTokenBarTests.AnimationActivityTests testClippedAndHiddenOrMinimizedWindowsStopAnimation]' passed (0.002 seconds).
+Test Case '-[CodexTokenBarTests.AnimationActivityTests testDecorativeMotionOnlyRunsWhenExposedAndPermitted]' started.
+Test Case '-[CodexTokenBarTests.AnimationActivityTests testDecorativeMotionOnlyRunsWhenExposedAndPermitted]' passed (0.000 seconds).
+Test Case '-[CodexTokenBarTests.AnimationActivityTests testGuidePausesThroughScrollAndResumesAfterIdleWithoutDuplicateUpdates]' started.
+Test Case '-[CodexTokenBarTests.AnimationActivityTests testGuidePausesThroughScrollAndResumesAfterIdleWithoutDuplicateUpdates]' passed (1.642 seconds).
+Test Case '-[CodexTokenBarTests.AnimationActivityTests testNativeProbeTracksScrollClippingAndStopsAfterTeardown]' started.
+Test Case '-[CodexTokenBarTests.AnimationActivityTests testNativeProbeTracksScrollClippingAndStopsAfterTeardown]' passed (1.092 seconds).
+Test Case '-[CodexTokenBarTests.AnimationActivityTests testProbeInsideProductionSwiftUIScrollViewClipsOffscreenContent]' started.
+Test Case '-[CodexTokenBarTests.AnimationActivityTests testProbeInsideProductionSwiftUIScrollViewClipsOffscreenContent]' passed (0.528 seconds).
+Test Case '-[CodexTokenBarTests.AnimationActivityTests testUnscaledDashboardContainerKeepsOffscreenSectionsLazy]' started.
+Test Case '-[CodexTokenBarTests.AnimationActivityTests testUnscaledDashboardContainerKeepsOffscreenSectionsLazy]' passed (0.487 seconds).
+Test Suite 'AnimationActivityTests' passed at 2026-10-25 14:36:13.850.
+	 Executed 6 tests, with 0 failures (0 unexpected) in 3.750 (3.751) seconds
+Test Suite 'DashboardScrollLayoutTests' started at 2026-10-25 14:36:13.850.
+Test Case '-[CodexTokenBarTests.DashboardScrollLayoutTests testContentGrowthAndShrinkUpdateScrollExtentAtDefaultAndCustomScales]' started.
+Test Case '-[CodexTokenBarTests.DashboardScrollLayoutTests testContentGrowthAndShrinkUpdateScrollExtentAtDefaultAndCustomScales]' passed (2.004 seconds).
+Test Case '-[CodexTokenBarTests.DashboardScrollLayoutTests testDefaultScaleDoesNotLayOutTheEntireLazyDashboardBeforeScrolling]' started.
+Test Case '-[CodexTokenBarTests.DashboardScrollLayoutTests testDefaultScaleDoesNotLayOutTheEntireLazyDashboardBeforeScrolling]' passed (0.468 seconds).
+Test Suite 'DashboardScrollLayoutTests' passed at 2026-10-25 14:36:16.322.
+	 Executed 2 tests, with 0 failures (0 unexpected) in 2.472 (2.472) seconds
+Test Suite 'InterfaceScaleSettingsTests' started at 2026-10-25 14:36:16.322.
+Test Case '-[CodexTokenBarTests.InterfaceScaleSettingsTests testAutoScaleKeepsNormalLaptopScreensAtDefaultSize]' started.
+Test Case '-[CodexTokenBarTests.InterfaceScaleSettingsTests testAutoScaleKeepsNormalLaptopScreensAtDefaultSize]' passed (0.000 seconds).
+Test Case '-[CodexTokenBarTests.InterfaceScaleSettingsTests testAutoScaleRaisesLargeLogicalWorkspaces]' started.
+Test Case '-[CodexTokenBarTests.InterfaceScaleSettingsTests testAutoScaleRaisesLargeLogicalWorkspaces]' passed (0.000 seconds).
+Test Case '-[CodexTokenBarTests.InterfaceScaleSettingsTests testDashboardScaleProtectsNarrowWindowsFromHorizontalOverflow]' started.
+Test Case '-[CodexTokenBarTests.InterfaceScaleSettingsTests testDashboardScaleProtectsNarrowWindowsFromHorizontalOverflow]' passed (0.000 seconds).
+Test Case '-[CodexTokenBarTests.InterfaceScaleSettingsTests testEffectiveScaleIgnoresManualWhenAutoIsEnabled]' started.
+Test Case '-[CodexTokenBarTests.InterfaceScaleSettingsTests testEffectiveScaleIgnoresManualWhenAutoIsEnabled]' passed (0.006 seconds).
+Test Case '-[CodexTokenBarTests.InterfaceScaleSettingsTests testEffectiveScaleUsesManualWhenAutoIsDisabled]' started.
+Test Case '-[CodexTokenBarTests.InterfaceScaleSettingsTests testEffectiveScaleUsesManualWhenAutoIsDisabled]' passed (0.000 seconds).
+Test Case '-[CodexTokenBarTests.InterfaceScaleSettingsTests testFloatingPanelInterfaceScaleOnePreservesBaseScale]' started.
+Test Case '-[CodexTokenBarTests.InterfaceScaleSettingsTests testFloatingPanelInterfaceScaleOnePreservesBaseScale]' passed (0.001 seconds).
+Test Case '-[CodexTokenBarTests.InterfaceScaleSettingsTests testFloatingPanelLayoutUpdateUsesEffectiveScaleWithoutMultiplyingAgain]' started.
+Test Case '-[CodexTokenBarTests.InterfaceScaleSettingsTests testFloatingPanelLayoutUpdateUsesEffectiveScaleWithoutMultiplyingAgain]' passed (0.000 seconds).
+Test Case '-[CodexTokenBarTests.InterfaceScaleSettingsTests testFloatingPanelScaleClampsComposedValueAtBothBoundaries]' started.
+Test Case '-[CodexTokenBarTests.InterfaceScaleSettingsTests testFloatingPanelScaleClampsComposedValueAtBothBoundaries]' passed (0.000 seconds).
+Test Case '-[CodexTokenBarTests.InterfaceScaleSettingsTests testFloatingPanelScaleComposesBaseAndInterfaceScaleOnce]' started.
+Test Case '-[CodexTokenBarTests.InterfaceScaleSettingsTests testFloatingPanelScaleComposesBaseAndInterfaceScaleOnce]' passed (0.000 seconds).
+Test Case '-[CodexTokenBarTests.InterfaceScaleSettingsTests testManualScaleAllowsUpToOneHundredThirtyEightPercent]' started.
+Test Case '-[CodexTokenBarTests.InterfaceScaleSettingsTests testManualScaleAllowsUpToOneHundredThirtyEightPercent]' passed (0.000 seconds).
+Test Case '-[CodexTokenBarTests.InterfaceScaleSettingsTests testStatStripKeepsCompactHeightAtLargeManualScale]' started.
+Test Case '-[CodexTokenBarTests.InterfaceScaleSettingsTests testStatStripKeepsCompactHeightAtLargeManualScale]' passed (0.106 seconds).
+Test Suite 'InterfaceScaleSettingsTests' passed at 2026-10-25 14:36:16.437.
+	 Executed 11 tests, with 0 failures (0 unexpected) in 0.114 (0.115) seconds
+Test Suite 'ModelUsagePresentationTests' started at 2026-10-25 14:36:16.437.
+Test Case '-[CodexTokenBarTests.ModelUsagePresentationTests testRecentChartPreparationCarriesFiveMinuteModelBreakdownToPointPreview]' started.
+Test Case '-[CodexTokenBarTests.ModelUsagePresentationTests testRecentChartPreparationCarriesFiveMinuteModelBreakdownToPointPreview]' passed (0.001 seconds).
+Test Suite 'ModelUsagePresentationTests' passed at 2026-10-25 14:36:16.438.
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.001 (0.001) seconds
+Test Suite 'QuotaConsumptionEstimatorTests' started at 2026-10-25 14:36:16.438.
+Test Case '-[CodexTokenBarTests.QuotaConsumptionEstimatorTests testAllRecentChartRangesUseThe278PointCanvas]' started.
+Test Case '-[CodexTokenBarTests.QuotaConsumptionEstimatorTests testAllRecentChartRangesUseThe278PointCanvas]' passed (0.000 seconds).
+Test Case '-[CodexTokenBarTests.QuotaConsumptionEstimatorTests testRecentChartCostScaleMapsVisibleMaximumToOneHundredPercent]' started.
+Test Case '-[CodexTokenBarTests.QuotaConsumptionEstimatorTests testRecentChartCostScaleMapsVisibleMaximumToOneHundredPercent]' passed (0.000 seconds).
+Test Case '-[CodexTokenBarTests.QuotaConsumptionEstimatorTests testRecentChartTokenPeakLeavesHeadroomBelowTheTopEdge]' started.
+Test Case '-[CodexTokenBarTests.QuotaConsumptionEstimatorTests testRecentChartTokenPeakLeavesHeadroomBelowTheTopEdge]' passed (0.000 seconds).
+Test Case '-[CodexTokenBarTests.QuotaConsumptionEstimatorTests testRecentChartVisibilityUpdatesLocallyBeforeDeferredPersistence]' started.
+Test Case '-[CodexTokenBarTests.QuotaConsumptionEstimatorTests testRecentChartVisibilityUpdatesLocallyBeforeDeferredPersistence]' passed (0.003 seconds).
+Test Suite 'QuotaConsumptionEstimatorTests' passed at 2026-10-25 14:36:16.442.
+	 Executed 4 tests, with 0 failures (0 unexpected) in 0.003 (0.003) seconds
+Test Suite 'RecentChartPreparationStoreTests' started at 2026-10-25 14:36:16.442.
+Test Case '-[CodexTokenBarTests.RecentChartPreparationStoreTests testPreparationRunsOffMainAndTabChangesReuseAllThreeSnapshots]' started.
+Test Case '-[CodexTokenBarTests.RecentChartPreparationStoreTests testPreparationRunsOffMainAndTabChangesReuseAllThreeSnapshots]' passed (0.017 seconds).
+Test Case '-[CodexTokenBarTests.RecentChartPreparationStoreTests testRealClickFixturePrewarmsAllRangesWithoutLosingUsageOrQuotaObservations]' started.
+Test Case '-[CodexTokenBarTests.RecentChartPreparationStoreTests testRealClickFixturePrewarmsAllRangesWithoutLosingUsageOrQuotaObservations]' passed (0.017 seconds).
+Test Case '-[CodexTokenBarTests.RecentChartPreparationStoreTests testSupersededWorkerCannotPublishOldHistoryAfterRefresh]' started.
+Test Case '-[CodexTokenBarTests.RecentChartPreparationStoreTests testSupersededWorkerCannotPublishOldHistoryAfterRefresh]' passed (0.008 seconds).
+Test Suite 'RecentChartPreparationStoreTests' passed at 2026-10-25 14:36:16.484.
+	 Executed 3 tests, with 0 failures (0 unexpected) in 0.043 (0.043) seconds
+Test Suite 'RecentChartSelectionInteractionTests' started at 2026-10-25 14:36:16.485.
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testAccessibilityCursorMovesSelectsClampsAndResets]' started.
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testAccessibilityCursorMovesSelectsClampsAndResets]' passed (0.000 seconds).
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testFixedSelectionHoverDoesNotReopenDismissedTopPreview]' started.
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testFixedSelectionHoverDoesNotReopenDismissedTopPreview]' passed (0.000 seconds).
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testFixedTimeAnchorFailsClosedWhenAnInteriorBucketDisappears]' started.
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testFixedTimeAnchorFailsClosedWhenAnInteriorBucketDisappears]' passed (0.000 seconds).
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testFixedTimeAnchorRelocatesAfterBinsArePrepended]' started.
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testFixedTimeAnchorRelocatesAfterBinsArePrepended]' passed (0.000 seconds).
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testGuideClickFeedbackPreview]' started.
+/Users/huyiyang/AI agent/Codex/_keep/projects/codex-token-dashboard/runs/20261022-cache-advice-isolation/release-source/Tests/CodexTokenBarTests/RecentChartSelectionInteractionTests.swift:18: -[CodexTokenBarTests.RecentChartSelectionInteractionTests testGuideClickFeedbackPreview] : Test skipped - Opt-in production guide screenshots
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testGuideClickFeedbackPreview]' skipped (0.001 seconds).
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testGuideCursorFollowsEveryActualPolylineVertexAndIntermediateSegment]' started.
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testGuideCursorFollowsEveryActualPolylineVertexAndIntermediateSegment]' passed (0.000 seconds).
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testHeadlineTotalsUseTheSelectedWindowInsteadOfRetainedHistory]' started.
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testHeadlineTotalsUseTheSelectedWindowInsteadOfRetainedHistory]' passed (0.020 seconds).
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testHoverBubbleClearsThePlotByAnExtraVerticalGutter]' started.
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testHoverBubbleClearsThePlotByAnExtraVerticalGutter]' passed (0.000 seconds).
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testOutsideClickMonitorIgnoresChartBoundsAndReportsBlankSpace]' started.
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testOutsideClickMonitorIgnoresChartBoundsAndReportsBlankSpace]' passed (0.000 seconds).
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testPlotDataBuildsOnlyTheRequestedRenderWindowWithGlobalCoordinates]' started.
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testPlotDataBuildsOnlyTheRequestedRenderWindowWithGlobalCoordinates]' passed (0.001 seconds).
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testPreviewCardsExposeCloseActionsForPointAndFixedSelection]' started.
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testPreviewCardsExposeCloseActionsForPointAndFixedSelection]' passed (0.007 seconds).
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testPreviewCloseIsGenerationScopedAndDoesNotClearSelectionState]' started.
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testPreviewCloseIsGenerationScopedAndDoesNotClearSelectionState]' passed (0.000 seconds).
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testPreviewTimeAnchorRelocatesItsStartWithoutInventingAnEnd]' started.
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testPreviewTimeAnchorRelocatesItsStartWithoutInventingAnEnd]' passed (0.000 seconds).
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testProductionCacheToggleRepaintsPlotWithoutNewUsageData]' started.
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testProductionCacheToggleRepaintsPlotWithoutNewUsageData]' passed (5.748 seconds).
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testProductionChartComputesSelectionOncePerBodyEvaluation]' started.
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testProductionChartComputesSelectionOncePerBodyEvaluation]' passed (0.013 seconds).
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testProductionChartKeepsSecondClickAndSummaryButtonsReachable]' started.
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testProductionChartKeepsSecondClickAndSummaryButtonsReachable]' passed (0.235 seconds).
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testProductionSummaryCardReceivesRealDetailAndCloseClicks]' started.
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testProductionSummaryCardReceivesRealDetailAndCloseClicks]' passed (0.367 seconds).
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testSevenDayFineSeriesHitTestingUsesTheDrawnSubpixelSpacing]' started.
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testSevenDayFineSeriesHitTestingUsesTheDrawnSubpixelSpacing]' passed (0.000 seconds).
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testThirtyDayBucketsUseStableEpochAlignedSixHourBoundaries]' started.
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testThirtyDayBucketsUseStableEpochAlignedSixHourBoundaries]' passed (0.001 seconds).
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testTimeMarkersUseThreeHourCadenceForTheTwentyFourHourRange]' started.
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testTimeMarkersUseThreeHourCadenceForTheTwentyFourHourRange]' passed (0.000 seconds).
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testTokenAndCostScaleDomainsFollowTheVisibleWindow]' started.
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testTokenAndCostScaleDomainsFollowTheVisibleWindow]' passed (0.000 seconds).
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testUnifiedScaleMapUsesExplicitPerSeriesVisualRanges]' started.
+Test Case '-[CodexTokenBarTests.RecentChartSelectionInteractionTests testUnifiedScaleMapUsesExplicitPerSeriesVisualRanges]' passed (0.000 seconds).
+Test Suite 'RecentChartSelectionInteractionTests' passed at 2026-10-25 14:36:22.882.
+	 Executed 22 tests, with 1 test skipped and 0 failures (0 unexpected) in 6.396 (6.398) seconds
+Test Suite 'TokenActivitySectionTests' started at 2026-10-25 14:36:22.882.
+Test Case '-[CodexTokenBarTests.TokenActivitySectionTests testHostedModeSelectorExposesSevenActionableAccessibilityButtons]' started.
+Test Case '-[CodexTokenBarTests.TokenActivitySectionTests testHostedModeSelectorExposesSevenActionableAccessibilityButtons]' passed (0.208 seconds).
+Test Case '-[CodexTokenBarTests.TokenActivitySectionTests testModeAccessibilityPresentationsAreDistinctAndStateful]' started.
+Test Case '-[CodexTokenBarTests.TokenActivitySectionTests testModeAccessibilityPresentationsAreDistinctAndStateful]' passed (0.000 seconds).
+Test Case '-[CodexTokenBarTests.TokenActivitySectionTests testModelCostHeatmapMarksActiveLegacyDayWithoutProjectionUnavailable]' started.
+Test Case '-[CodexTokenBarTests.TokenActivitySectionTests testModelCostHeatmapMarksActiveLegacyDayWithoutProjectionUnavailable]' passed (0.002 seconds).
+Test Case '-[CodexTokenBarTests.TokenActivitySectionTests testModelCostHeatmapUsesDailyModelProjectionAndExcludesSpark]' started.
+Test Case '-[CodexTokenBarTests.TokenActivitySectionTests testModelCostHeatmapUsesDailyModelProjectionAndExcludesSpark]' passed (0.001 seconds).
+Test Case '-[CodexTokenBarTests.TokenActivitySectionTests testModelHeatmapModeGroupsExactEventsByDay]' started.
+Test Case '-[CodexTokenBarTests.TokenActivitySectionTests testModelHeatmapModeGroupsExactEventsByDay]' passed (0.000 seconds).
+Test Case '-[CodexTokenBarTests.TokenActivitySectionTests testNativeModeAccessibilityRepresentationsExposeSemanticAX]' started.
+Test Case '-[CodexTokenBarTests.TokenActivitySectionTests testNativeModeAccessibilityRepresentationsExposeSemanticAX]' passed (0.003 seconds).
+Test Suite 'TokenActivitySectionTests' passed at 2026-10-25 14:36:23.097.
+	 Executed 6 tests, with 0 failures (0 unexpected) in 0.214 (0.215) seconds
+Test Suite 'UnknownModelPricePresentationTests' started at 2026-10-25 14:36:23.097.
+Test Case '-[CodexTokenBarTests.UnknownModelPricePresentationTests testHeatmapKeepsUnknownModelDetailsSeparateFromMissingProjection]' started.
+Test Case '-[CodexTokenBarTests.UnknownModelPricePresentationTests testHeatmapKeepsUnknownModelDetailsSeparateFromMissingProjection]' passed (0.001 seconds).
+Test Suite 'UnknownModelPricePresentationTests' passed at 2026-10-25 14:36:23.098.
+	 Executed 1 test, with 0 failures (0 unexpected) in 0.001 (0.001) seconds
+Test Suite 'CodexTokenBarTests.xctest' passed at 2026-10-25 14:36:23.098.
+	 Executed 56 tests, with 1 test skipped and 0 failures (0 unexpected) in 12.994 (12.999) seconds
+Test Suite 'Selected tests' passed at 2026-10-25 14:36:23.098.
+	 Executed 56 tests, with 1 test skipped and 0 failures (0 unexpected) in 12.994 (13.002) seconds
+DASHBOARD_SCROLL_LAZY initial=6 after=13
+Test Suite 'Selected tests' started at 2026-10-25 14:36:23.255.
+Test Suite 'AgentSpeedCoreTests.xctest' started at 2026-10-25 14:36:23.257.
+Test Suite 'AgentSpeedCoreTests.xctest' passed at 2026-10-25 14:36:23.257.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.000) seconds
+Test Suite 'Selected tests' passed at 2026-10-25 14:36:23.257.
+	 Executed 0 tests, with 0 failures (0 unexpected) in 0.000 (0.002) seconds

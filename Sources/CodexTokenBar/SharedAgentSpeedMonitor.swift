@@ -17,7 +17,7 @@ final class SharedAgentSpeedMonitorPool {
         var subscribers: [UUID: Subscriber] = [:]
         init(configuration: MonitorConfiguration) {
             var configuration = configuration; configuration.enabledSources = []
-            monitor = LiveMonitor(store: store, configuration: configuration, pricing: PriceBook())
+            monitor = LiveMonitor(store: store, configuration: configuration, pricing: PriceBook(), realtimeEventMode: true)
         }
     }
     private var entries: [String: Entry] = [:]

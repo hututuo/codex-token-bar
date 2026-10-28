@@ -176,7 +176,8 @@ final class ClaudeLocalRuntime: ObservableObject {
             allowedSources: allowedSources,
             rows: responseRows,
             enabled: true,
-            configurationIssue: configurationIssue
+            configurationIssue: configurationIssue,
+            displayNow: Date()
         )
     }
 
@@ -186,7 +187,8 @@ final class ClaudeLocalRuntime: ObservableObject {
         allowedSources: Set<SourceKind>,
         rows: [ClaudeLocalResponseSpeedSample] = [],
         enabled: Bool = true,
-        configurationIssue: String? = nil
+        configurationIssue: String? = nil,
+        displayNow: Date? = nil
     ) -> ClaudeLocalRuntimeSnapshot {
         let selectedSources = allowedSources.intersection([.claudeCode, .claudeDesktop])
         guard enabled, !selectedSources.isEmpty else {
@@ -236,7 +238,7 @@ final class ClaudeLocalRuntime: ObservableObject {
         // The upstream live window can still include a completed response.
         // Keep those contributions and retain unknown-model rate explicitly.
         let modelRates = selectedSources.sorted { $0.rawValue < $1.rawValue }.flatMap { source in
-            AgentSpeedDisplayRuntime.modelRates(snapshot: core, source: source)
+            AgentSpeedDisplayRuntime.modelRates(snapshot: core, source: source, now: displayNow)
         }
 
         let running = runningSummary(
@@ -345,7 +347,8 @@ final class ClaudeLocalRuntime: ObservableObject {
             allowedSources: configuredSources,
             rows: responseRows,
             enabled: monitoringEnabled && !configuredSources.isEmpty && configurationIssue == nil,
-            configurationIssue: configurationIssue
+            configurationIssue: configurationIssue,
+            displayNow: Date()
         )
         guard !Self.sameMeaningfulContent(snapshot, next) else { return }
         snapshot = next

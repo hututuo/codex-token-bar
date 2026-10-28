@@ -1,5 +1,6 @@
 import { selectedActivityRates, useActivitySpeedMode } from "../multiClient/activitySpeedMode";
 import { ClientActivitySpeedPanel, useClaudeLocalRuntime } from "../multiClient/ClaudeLocalRuntime";
+import type { QuotaAttributionIdentity } from "../types/quota";
 import { CacheUsageNotice } from "./cacheReminder/CacheUsageNotice";
 import { ObservedSpeedDetails } from "./liveRate/ObservedSpeedDetails";
 import { canUseQuotaSidebar } from "../settings/displaySettings";
@@ -12,6 +13,8 @@ interface LiveRateCardProps {
   includesCodex?: boolean;
   localClients?: readonly string[];
   sourceToken?: CodexHomeSourceToken | null;
+  quotaIdentity?: QuotaAttributionIdentity | null;
+  quotaUpdatedAt?: string | null;
   liveThreadOptions?: LiveThreadOption[];
   floatingSettings: FloatingWindowSettings;
   floatingEnabled: boolean;
@@ -33,9 +36,12 @@ interface LiveRateCardProps {
   usageCacheInitializing?: boolean;
 }
 
+import { SpeedDisplayControls, useSpeedDisplayPreferences } from "./liveRate/SpeedDisplayControls";
+
 export function LiveRateCard({
   includesCodex = true, localClients = [],
   sourceToken = null,
+  quotaIdentity, quotaUpdatedAt,
   liveThreadOptions = [],
   floatingSettings,
   floatingEnabled,
@@ -52,15 +58,17 @@ export function LiveRateCard({
   liveRateEnabled,
   platform,
   refreshing = false,
-  snapshot,
+  snapshot: rawSpeedSnapshot,
   statusTrayLiveTextEnabled,
   usageCacheInitializing = false,
 }: LiveRateCardProps) {
+  const snapshot = rawSpeedSnapshot;
+  const palette = useSpeedDisplayPreferences();
   const allowed=[...new Set([...(includesCodex?["codex"]:[]),...localClients])];
   const mode=useActivitySpeedMode();
   const local=useClaudeLocalRuntime(allowed,liveRateEnabled);
   const activityRates=selectedActivityRates(snapshot.modelRates??[],local.modelRates,allowed,mode,snapshot.tokensPerSecond);
-  const activitySnapshot={...snapshot,modelRates:activityRates,tokensPerSecond:activityRates.reduce((n,r)=>n+r.tokensPerSecond,0)};
+  const activitySnapshot={...snapshot,colorRates:palette.grouping === "client" ? allowed.map(client=>({model:"client:"+client,tokensPerSecond:client==="codex"&&mode==="bar"?snapshot.tokensPerSecond:local.modelRates.filter(r=>r.client===client).reduce((n,r)=>n+r.outputTps,0)})) : activityRates,modelRates:activityRates,tokensPerSecond:activityRates.reduce((n,r)=>n+r.tokensPerSecond,0)};
   const notice = liveRateNotice(snapshot, {
     liveRateEnabled,
     refreshing,
@@ -76,7 +84,7 @@ export function LiveRateCard({
   const subtitle = pendingNotice
     ? `${pendingNotice.title} · ${pendingNotice.message}`
     : liveRateEnabled
-      ? "全会话活动估算"
+      ? snapshot.speedDisplayMode === "agentSpeed" ? snapshot.speedDisplayStatus : "全会话活动估算"
       : "实时速率已关闭";
 
   return (
@@ -130,6 +138,7 @@ export function LiveRateCard({
         </div>
       ) : null}
 
+      <SpeedDisplayControls/>
       {liveRateEnabled && <CacheUsageNotice advice={snapshot.cacheAdvice} />}
       <div className="live-grid">
         <div className={liveRateEnabled ? "live-left" : "live-left is-live-disabled"}>
@@ -140,7 +149,7 @@ export function LiveRateCard({
             onFullScaleChange={onTokenRateFullScaleChange}
           />
           <p className="live-rate-note">
-            活动曲线 · 中断即停，结束最多收尾 5 秒。
+            {snapshot.speedDisplayMode === "agentSpeed" ? "仅本地显示：结束或错误即归零；日志20秒未更新归零。上报保持标准口径。" : "活动曲线 · 中断即停，结束最多收尾 5 秒。"}
           </p>
         </div>
 
@@ -206,7 +215,7 @@ export function LiveRateCard({
           </div>
         </div>
       </div>
-      <ObservedSpeedDetails data={snapshot} threads={liveThreadOptions} sourceToken={sourceToken} />
+      <ObservedSpeedDetails quotaIdentity={quotaIdentity} quotaUpdatedAt={quotaUpdatedAt} data={snapshot} threads={liveThreadOptions} sourceToken={sourceToken} />
       </>}
       <ClientActivitySpeedPanel allowed={allowed} monitoringEnabled={liveRateEnabled} codexRates={snapshot.modelRates??[]} codexOutputRate={snapshot.tokensPerSecond} codexAvailable={liveRateEnabled && failureNotice === null}/>
     </section>

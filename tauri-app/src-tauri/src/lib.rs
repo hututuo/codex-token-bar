@@ -108,9 +108,10 @@ pub fn run() {
                     });
                 core::startup_trace::mark("deferred settings read finished");
                 business_startup.wait_until_ready().await;
-                if settings.agent_speed_reporting.enabled {
+                let local_speed_display = false;
+                if settings.agent_speed_reporting.enabled || local_speed_display {
                     if let Err(error) = deferred_speed_reporting
-                        .start(&deferred_app, &settings.agent_speed_reporting)
+                        .start(&deferred_app, &settings.agent_speed_reporting, local_speed_display)
                         .await
                     {
                         eprintln!("Codex Token Bar: Agent Speed reporter startup failed: {error}");
@@ -170,7 +171,11 @@ pub fn run() {
             commands::settings::save_auto_resume_settings,
             commands::settings::save_session_enhancement_settings,
             commands::agent_speed_reporting::read_agent_speed_reporting_status,
+            commands::agent_speed_reporting::read_agent_speed_display_snapshot,
+            commands::agent_speed_reporting::read_speed_display_preferences,
+            commands::agent_speed_reporting::set_speed_display_preferences,
             commands::agent_speed_reporting::set_agent_speed_reporting_enabled,
+            commands::agent_speed_reporting::set_agent_speed_reporting_transport,
             commands::agent_speed_reporting::dismiss_agent_speed_invitation,
             commands::settings::save_setup_guide_completed,
             commands::startup::record_performance_event,

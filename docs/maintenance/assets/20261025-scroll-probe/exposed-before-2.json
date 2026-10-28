@@ -1,0 +1,21 @@
+{
+  "cpu_seconds" : 3.8840919999999999,
+  "frames" : 360,
+  "full_chart" : true,
+  "intervals_over_25ms" : 184,
+  "layout_display" : {
+    "max_ms" : 6.796916713938117,
+    "p50_ms" : 2.232541679404676,
+    "p95_ms" : 3.222916682716459,
+    "sum_ms" : 821.50125037878752
+  },
+  "loop_interval" : {
+    "max_ms" : 59.644166671205312,
+    "p50_ms" : 25.036708335392177,
+    "p95_ms" : 35.510541638359427,
+    "sum_ms" : 9365.6744583277032
+  },
+  "note" : "Isolated production guide plus synthetic rows; loop timing is not screen-presented FPS",
+  "wall_seconds" : 9.385004999989178,
+  "window_visible" : true
+}

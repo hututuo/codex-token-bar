@@ -6,6 +6,7 @@ import {
 export type OfficialAPIPriceModel =
   | "gpt6Astra"
   | "gpt61Sol"
+  | "gpt61Terra"
   | "gpt6Sol"
   | "gpt6Luna"
   | "gpt56Sol"
@@ -106,6 +107,7 @@ export const QUOTA_PRICE_MODEL_OPTIONS: ReadonlyArray<{
 }> = [
   { value: "gpt6Astra", label: "GPT-6 Astra" },
   { value: "gpt61Sol", label: "GPT-6.1 Sol" },
+  { value: "gpt61Terra", label: "GPT-6.1 Terra" },
   { value: "gpt6Sol", label: "GPT-6 Sol" },
   { value: "gpt6Luna", label: "GPT-6 Luna" },
   { value: "gpt56Sol", label: "GPT-5.6 Sol" },
@@ -118,7 +120,7 @@ export const QUOTA_PRICE_MODEL_OPTIONS: ReadonlyArray<{
 // Local Codex usage does not expose cache writes separately.
 // https://developers.openai.com/api/docs/pricing
 const MODEL_STANDARD_KEYS: Record<DetectedOfficialAPIPriceModel, string> = {
-  gpt6Astra: "gpt-6-astra", gpt61Sol: "gpt-6.1-sol", gpt6Sol: "gpt-6-sol", gpt6Luna: "gpt-6-luna",
+  gpt6Astra: "gpt-6-astra", gpt61Terra: "gpt-6.1-terra", gpt61Sol: "gpt-6.1-sol", gpt6Sol: "gpt-6-sol", gpt6Luna: "gpt-6-luna",
   gpt56Sol: "gpt-5.6-sol", gpt56Terra: "gpt-5.6-terra", gpt56Luna: "gpt-5.6-luna", gpt55: "gpt-5.5",
   gpt53Codex: "gpt-5.3-codex", gpt52Codex: "gpt-5.2-codex", gpt54Legacy: "gpt-5.4", gpt54MiniLegacy: "gpt-5.4-mini",
 };
@@ -153,6 +155,7 @@ const LEGACY_PRICE_MODEL_MIGRATIONS: Record<string, OfficialAPIPriceModel> = {
 export function normalizeOfficialAPIPriceModel(value: unknown): OfficialAPIPriceModel | null {
   if (value === "gpt6Astra"
     || value === "gpt61Sol"
+    || value === "gpt61Terra"
     || value === "gpt6Sol"
     || value === "gpt6Luna"
     || value === "gpt56Sol"
@@ -170,6 +173,7 @@ export function normalizeOfficialAPIPriceModel(value: unknown): OfficialAPIPrice
 export function isOfficialAPIPriceModel(value: unknown): value is OfficialAPIPriceModel {
   return value === "gpt6Astra"
     || value === "gpt61Sol"
+    || value === "gpt61Terra"
     || value === "gpt6Sol"
     || value === "gpt6Luna"
     || value === "gpt56Sol"
@@ -259,6 +263,11 @@ export function detectedOfficialAPIPriceModel(
     case "gpt61-sol":
     case "gpt61sol":
       return "gpt61Sol";
+    case "gpt-6.1-terra":
+    case "gpt6.1-terra":
+    case "gpt61-terra":
+    case "gpt61terra":
+      return "gpt61Terra";
     case "gpt-6-sol":
     case "gpt6-sol":
     case "gpt6sol":
@@ -446,6 +455,7 @@ export function modelAwareAPICostUSD(
   const detectedModelKeys = ([
     "gpt6Astra",
     "gpt61Sol",
+    "gpt61Terra",
     "gpt6Sol",
     "gpt6Luna",
     "gpt56Sol",
@@ -501,6 +511,7 @@ export function priceModelTitle(model: DetectedOfficialAPIPriceModel): string {
   switch (normalizeOfficialAPIPriceModel(model) ?? "gpt56Sol") {
     case "gpt6Astra": return "GPT-6 Astra";
     case "gpt61Sol": return "GPT-6.1 Sol";
+    case "gpt61Terra": return "GPT-6.1 Terra";
     case "gpt6Sol": return "GPT-6 Sol";
     case "gpt6Luna": return "GPT-6 Luna";
     case "gpt56Sol": return "GPT-5.6 Sol";

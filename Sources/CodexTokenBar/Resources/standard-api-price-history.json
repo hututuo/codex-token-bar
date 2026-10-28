@@ -151,6 +151,16 @@
         "cachedInputUSDPerMillion": 0.075,
         "outputUSDPerMillion": 4.5
       }
+    },
+    {
+      "modelKey": "gpt-6.1-terra",
+      "fromUnix": 1792972800,
+      "revision": "standard-api-gpt-6.1-terra-from-2026-10-26",
+      "rates": {
+        "inputUSDPerMillion": 1,
+        "cachedInputUSDPerMillion": 0.05,
+        "outputUSDPerMillion": 5
+      }
     }
   ]
 }

@@ -26,6 +26,7 @@ pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
     "save_auto_resume_settings",
     "save_session_enhancement_settings",
     "set_agent_speed_reporting_enabled",
+    "set_agent_speed_reporting_transport",
     "dismiss_agent_speed_invitation",
     "save_setup_guide_completed",
     "scan_provider_repair",
@@ -84,6 +85,8 @@ pub(crate) const SURFACE_SAFE_COMMANDS: &[&str] = &[
     "read_claude_local_runtime_snapshot",
     "read_activity_speed_history",
     "read_activity_speed_mode",
+    "read_agent_speed_display_snapshot",
+    "read_speed_display_preferences",
     "read_sidebar_trend",
     "get_codex_home",
     "read_app_settings",
@@ -127,6 +130,10 @@ const SIDEBAR_MODULE_SETTINGS_COMMANDS: &[&str] = &[
     "save_sidebar_layout",
 ];
 
+const SPEED_DISPLAY_SETTINGS_COMMANDS: &[&str] = &[
+    "set_speed_display_preferences",
+];
+
 const MODELTRACE_DETAIL_COMMANDS: &[&str] = &[
     "read_modeltrace_snapshot",
     "start_modeltrace",
@@ -161,8 +168,15 @@ pub(crate) fn allows_window_label(command: &str, label: &str) -> bool {
     // The speed detail reads source-validated numeric buckets only. Other
     // history, account and mutation commands keep their existing boundaries.
     if command == "read_body_speed_trend" && label == "quota-sidebar-detail" { return true; }
+    if command == "read_quota_cycles" && label == "quota-sidebar-detail" { return true; }
     if SIDEBAR_MODULE_SETTINGS_COMMANDS.contains(&command) {
         return matches!(label, "quota-sidebar" | "quota-sidebar-detail");
+    }
+    if SPEED_DISPLAY_SETTINGS_COMMANDS.contains(&command) {
+        return matches!(label, MAIN_WINDOW_LABEL | "quota-sidebar" | "quota-sidebar-detail");
+    }
+    if matches!(command, "read_speed_display_preferences" | "read_agent_speed_display_snapshot") {
+        return matches!(label, MAIN_WINDOW_LABEL | FLOATING_WINDOW_LABEL | STATUS_WINDOW_LABEL | "quota-sidebar" | "quota-sidebar-detail");
     }
     if MODELTRACE_DETAIL_COMMANDS.contains(&command) {
         return matches!(label, MAIN_WINDOW_LABEL | "quota-sidebar-detail");
@@ -223,6 +237,16 @@ mod tests {
         }
         assert!(!allows_window_label("save_display_surfaces", "quota-sidebar-detail"));
         assert!(!allows_window_label("read_app_settings", "quota-sidebar-detail"));
+    }
+
+    #[test]
+    fn quota_cycle_context_is_available_only_to_main_and_speed_detail() {
+        assert!(allows_window_label("read_quota_cycles", "main"));
+        assert!(allows_window_label("read_quota_cycles", "quota-sidebar-detail"));
+        for label in ["floating", "status", "quota-sidebar", "unknown"] {
+            assert!(!allows_window_label("read_quota_cycles", label));
+        }
+        assert!(!allows_window_label("read_quota_cycle_usage", "quota-sidebar-detail"));
     }
 
     #[test]
@@ -526,6 +550,7 @@ mod tests {
             .chain(QUOTA_SIDEBAR_ONLY_COMMANDS.iter())
             .chain(SIDEBAR_MODULE_SETTINGS_COMMANDS.iter())
             .chain(ACTIVITY_SPEED_SETTINGS_COMMANDS.iter())
+            .chain(SPEED_DISPLAY_SETTINGS_COMMANDS.iter())
             .chain(std::iter::once(&"save_floating_position"))
         {
             assert!(
@@ -550,6 +575,7 @@ mod tests {
             .chain(QUOTA_SIDEBAR_ONLY_COMMANDS.iter())
             .chain(SIDEBAR_MODULE_SETTINGS_COMMANDS.iter())
             .chain(ACTIVITY_SPEED_SETTINGS_COMMANDS.iter())
+            .chain(SPEED_DISPLAY_SETTINGS_COMMANDS.iter())
             .chain(std::iter::once(&"save_floating_position"))
         {
             assert!(
@@ -582,6 +608,20 @@ mod tests {
             assert!(allows_window_label(command, "main"), "{command}");
             assert!(!allows_window_label(command, "floating"), "{command}");
             assert!(!allows_window_label(command, "status"), "{command}");
+        }
+    }
+
+    #[test]
+    fn speed_display_reads_are_surface_safe_but_preferences_mutation_is_scoped() {
+        for window in ["main", "floating", "status", "quota-sidebar", "quota-sidebar-detail"] {
+            assert!(allows_window_label("read_speed_display_preferences", window));
+            assert!(allows_window_label("read_agent_speed_display_snapshot", window));
+        }
+        for window in ["main", "quota-sidebar", "quota-sidebar-detail"] {
+            assert!(allows_window_label("set_speed_display_preferences", window));
+        }
+        for window in ["floating", "status"] {
+            assert!(!allows_window_label("set_speed_display_preferences", window));
         }
     }
 

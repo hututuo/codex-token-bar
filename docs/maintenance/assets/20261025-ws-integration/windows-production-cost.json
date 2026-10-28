@@ -1,0 +1,94 @@
+{
+  "schema": 1,
+  "probe": "AgentSpeedReporter.LiveProbe",
+  "executionContext": "ssh-token",
+  "sshUserMatchesInteractiveUser": true,
+  "client": {
+    "app": "CodexTokenBar",
+    "version": "0.9.7",
+    "platform": "Windows"
+  },
+  "checks": {
+    "windows": true,
+    "discoveryPinnedApi": true,
+    "websocketCapability": true,
+    "dpapiRepeatLoadSameDevice": true,
+    "dpapiRepeatLoadSamePublicKey": true,
+    "registrationCreatedTestDevice": true,
+    "httpZeroUsageAccepted": true,
+    "httpRealtimeAbsent": true,
+    "costSummaryNegotiatedAndVersion2": true,
+    "emptySyntheticZeroUsageFixtureValid": true,
+    "websocketReadyMatchesDiscovery": true,
+    "websocketZeroUsageRealtimeUnknownNull": true,
+    "websocketSeq1ExactAcceptedAck": true,
+    "connectionAliveAfter22SecondPingWindow": true,
+    "websocketSeq2PostPingExactAcceptedAck": true,
+    "reconnectReady": true,
+    "reconnectSameRunSeq3FreshBody": true,
+    "websocketSeq3ExactAcceptedAck": true,
+    "createdTestDeviceDeleted": true
+  },
+  "osMajor": 11,
+  "systemProxyBypassedOfficialApi": false,
+  "discovery": {
+    "apiPinned": true,
+    "websocketAdvertised": true,
+    "costSectionNegotiated": true,
+    "apiKeyRequired": false,
+    "limitsMatchWillBeCheckedAgainstReady": true
+  },
+  "registration": {
+    "statusCode": 201,
+    "created": true,
+    "testNickPrefix": "TokenBar-Win-check"
+  },
+  "httpReport": {
+    "statusCode": 200,
+    "accepted": true,
+    "replyCode": null,
+    "fieldPath": null,
+    "zeroUsageAndCostDeltaZero": true,
+    "deltaCountersAllZero": true,
+    "costAmountsZeroAndKnownShareOne": true,
+    "costSummaryFieldsComplete": true,
+    "priceVersion": 2,
+    "realtimeAbsent": true
+  },
+  "websocketFirstReport": {
+    "sent": true,
+    "ackStatus": "accepted",
+    "runAndSequenceMatched": true,
+    "bodySha256Matched": true,
+    "zeroUsage": true,
+    "costSummaryFieldsComplete": true,
+    "priceVersion": 2,
+    "sourceMode": "unknown",
+    "sourceTimingFieldsNull": true
+  },
+  "websocketPingWindow": {
+    "negotiatedPingIntervalSeconds": 20,
+    "heldSeconds": 22,
+    "businessReportAckAfterWindow": true,
+    "ackStatus": "accepted",
+    "runAndSequenceMatched": true,
+    "bodySha256Matched": true
+  },
+  "websocketReconnect": {
+    "ready": true,
+    "sameRun": true,
+    "sequence": 3,
+    "previousConnectionSeq2Acked": true,
+    "bodyNotReplayed": true,
+    "ackStatus": "accepted",
+    "runAndSequenceMatched": true,
+    "bodySha256Matched": true
+  },
+  "cleanup": {
+    "createdTestDeviceDeleted": true,
+    "code": "deleted",
+    "fieldPath": null
+  },
+  "status": "pass",
+  "lastPhase": "delete_test_device"
+}

@@ -13,6 +13,24 @@ import {
   readStoredQuotaPriceModel,
 } from "./quotaPriceModel.ts";
 
+test("GPT-6.1 Terra aggregation uses its own price and never the fallback model", () => {
+  assert.equal(detectedOfficialAPIPriceModel("GPT_6.1_TERRA"), "gpt61Terra");
+  assert.equal(normalizeOfficialAPIPriceModel("gpt61Terra"), "gpt61Terra");
+  const breakdown = { inputTokens: 1_000_000, cachedInputTokens: 500_000, outputTokens: 100_000, calls: 1 };
+  const boundary = Date.parse("2026-10-26T00:00:00Z") / 1000;
+  for (const eventStartUnix of [undefined, boundary, boundary + 86400]) {
+    const quote = modelAwareAPICostUSD([{ model: "gpt-6.1-terra", eventStartUnix, breakdown }], breakdown, "gpt56Sol");
+    assert.equal(quote.costUSD, 1.025);
+    assert.deepEqual(quote.detectedModels, ["gpt61Terra"]);
+    assert.deepEqual(quote.unpricedModels, []);
+    assert.equal(quote.fallbackCalls, 0);
+  }
+  const before = modelAwareAPICostUSD([{ model: "gpt-6.1-terra", eventStartUnix: boundary - 1, breakdown }], breakdown, "gpt56Sol");
+  assert.deepEqual(before.unpricedModels, ["gpt-6.1-terra"]);
+  assert.equal(before.costUSD, 0);
+  assert.equal(officialAPICostUSD(1_000_000, 500_000, 100_000, "gpt56Terra"), 2.3);
+});
+
 test("before a known model's first dated quote, tokens stay unpriced instead of taking today's price", () => {
   const breakdown = { inputTokens: 1_000_000, cachedInputTokens: 0, outputTokens: 0, calls: 1 };
   const boundary = Date.parse("2026-09-22T00:00:00Z") / 1000;

@@ -1,4 +1,7 @@
 import { clientCostGroups, type ClientCostPeriods } from "../multiClient/originalDashboardProjection";
+import { ClientColorSettings, ModelColorEditor, type ColorEditTarget } from "./liveRate/ModelColorEditor";
+import { useSpeedPalette } from "./liveRate/useSpeedPalette";
+import { floatingModelUsageKey } from "./modelUsagePresentation";
 import { DiagnosticNotice } from "./DiagnosticNotice";
 import { memo, useEffect, useMemo, useState, type CSSProperties } from "react";
 import type { DashboardStats, LocalDataWarning, ModelTokenBreakdown, RecentUsagePoint } from "../types/dashboard";
@@ -73,6 +76,8 @@ function StatsStripView({
   planLabel,
   warnings = [],
 }: StatsStripProps) {
+  const palette = useSpeedPalette();
+  const [editingColor, setEditingColor] = useState<ColorEditTarget | null>(null);
   const usageWarnings = usagePrecisionWarnings(warnings);
   const [priceModel, setPriceModel] = useState<OfficialAPIPriceModel>("gpt56Sol");
   const [modelCostScope, setModelCostScope] = useState<ModelCostScope>("sevenDay");
@@ -88,7 +93,7 @@ function StatsStripView({
     `${quotaUpdatedAt ?? ""}|${preciseDataFresh}|${stats.totalTokens}`, modelCostScope === "sevenDay" && !clientCosts);
   const periodLabel = clientCosts ? "近7天" : cycleHistory.selected?.current === false ? "历史周期" : "本期";
   const selectCycle = (id: string) => { cycleHistory.select(id); };
-  useEffect(() => { setCalendarExpanded(false); }, [modelCostScope, sourceToken?.canonicalHomeKey, attributionIdentity?.scopeKey]);
+  useEffect(() => { setEditingColor(null); setCalendarExpanded(false); }, [modelCostScope, sourceToken?.canonicalHomeKey, attributionIdentity?.scopeKey]);
   const sevenDayModelDisplayState: ModelAttributionDisplayState = cycleHistory.usage
     ? (preciseDataFresh && !cycleHistory.refreshing ? "current" : "stale") : "pending";
   const todayModelDisplayState: ModelAttributionDisplayState = !usageSummaryFresh
@@ -124,7 +129,7 @@ function StatsStripView({
     clientCosts ? clientCosts[modelCostScope] : modelCostDataAvailable && modelDetailAvailable
       ? floatingTodayModelUsageItems(modelCostRows, priceModel, { mergeAutoReview: false })
       : []
-  ), [clientCosts, modelCostScope, modelCostDataAvailable, modelCostRows, modelDetailAvailable, priceModel]);
+  ), [clientCosts, modelCostScope, modelCostDataAvailable, modelCostRows, modelDetailAvailable, priceModel, palette]);
   const modelCostTotal = floatingModelUsageKnownCostUSD(modelCostItems);
   const modelPricesIncomplete = hasUnknownModelPrices(modelCostItems);
   const selectedModelDisplayState = clientCosts ? "current" : modelCostScope === "sevenDay"
@@ -173,31 +178,34 @@ function StatsStripView({
         <div className="stats-model-cost-row" aria-label={`${modelCostScope === "sevenDay" ? periodLabel : modelCostScope === "today" ? "今日" : "累计"}模型费用`}>
           <div className="stats-model-cost-header">
             <strong className="stats-model-cost-title">模型费用</strong>
-            <div className="stats-model-cost-scope" role="group" aria-label="模型费用范围">
-              <button
-                aria-pressed={modelCostScope === "sevenDay"}
-                className={modelCostScope === "sevenDay" ? "is-active" : undefined}
-                onClick={() => { selectCycle("current"); setModelCostScope("sevenDay"); }}
-                type="button"
-              >
-                {modelCostScope === "sevenDay" && periodLabel === "历史周期" ? "历史" : "本期"}
-              </button>
-              <button
-                aria-pressed={modelCostScope === "today"}
-                className={modelCostScope === "today" ? "is-active" : undefined}
-                onClick={() => setModelCostScope("today")}
-                type="button"
-              >
-                今日
-              </button>
-              <button
-                aria-pressed={modelCostScope === "lifetime"}
-                className={modelCostScope === "lifetime" ? "is-active" : undefined}
-                onClick={() => setModelCostScope("lifetime")}
-                type="button"
-              >
-                累计
-              </button>
+            <div className="stats-model-cost-scope-and-hint">
+              <div className="stats-model-cost-scope" role="group" aria-label="模型费用范围">
+                <button
+                  aria-pressed={modelCostScope === "sevenDay"}
+                  className={modelCostScope === "sevenDay" ? "is-active" : undefined}
+                  onClick={() => { selectCycle("current"); setModelCostScope("sevenDay"); }}
+                  type="button"
+                >
+                  {modelCostScope === "sevenDay" && periodLabel === "历史周期" ? "历史" : "本期"}
+                </button>
+                <button
+                  aria-pressed={modelCostScope === "today"}
+                  className={modelCostScope === "today" ? "is-active" : undefined}
+                  onClick={() => setModelCostScope("today")}
+                  type="button"
+                >
+                  今日
+                </button>
+                <button
+                  aria-pressed={modelCostScope === "lifetime"}
+                  className={modelCostScope === "lifetime" ? "is-active" : undefined}
+                  onClick={() => setModelCostScope("lifetime")}
+                  type="button"
+                >
+                  累计
+                </button>
+              </div>
+              {modelCostScope === "lifetime" && <span className="model-color-inline-hint">双击可修改模型配色</span>}
             </div>
             {!clientCosts && modelCostScope === "sevenDay" ? <QuotaCycleControls cycles={cycleHistory.cycles}
               selected={cycleHistory.selected} onSelect={selectCycle}
@@ -243,13 +251,19 @@ function StatsStripView({
               {modelFamilies.map(group => <div className="stats-model-cost-group" key={group.id}>
                 <span className="stats-model-cost-group-label">{group.label}</span>
                 <div className={group.id === "6" ? "stats-model-cost-primary-grid" : "stats-model-cost-secondary-grid"}>
-                  {group.items.map(item => <span className={group.id === "6" ? "stats-model-cost-primary-card" : "stats-model-cost-secondary-chip"} key={item.key} style={{"--model-color":item.color} as CSSProperties}>
+                  {group.items.map(item => <span className={group.id === "6" ? "stats-model-cost-primary-card" : "stats-model-cost-secondary-chip"} key={item.key} style={{"--model-color":item.color} as CSSProperties}
+                    title={modelCostScope === "lifetime" ? "双击修改该模型颜色" : undefined}
+                    role={modelCostScope === "lifetime" ? "button" : undefined} tabIndex={modelCostScope === "lifetime" ? 0 : undefined}
+                    onDoubleClick={modelCostScope === "lifetime" ? event => setEditingColor({ model: floatingModelUsageKey(item.key), x: event.clientX, y: event.clientY }) : undefined}
+                    onKeyDown={modelCostScope === "lifetime" ? event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); setEditingColor({ model: floatingModelUsageKey(item.key), x: rect.left, y: rect.bottom }); } } : undefined}>
                     <i style={{backgroundColor:item.color}}/><em>{item.label}</em><b>{floatingModelUsageValue(item,"cost")}</b><small>{formatTokens(item.tokens)} · {floatingModelUsageValue(item,"share")}</small>
                   </span>)}
                 </div>
               </div>)}
             </div>
           )}
+          {modelCostScope === "lifetime" && <div className="model-color-footer"><ClientColorSettings/></div>}
+          <ModelColorEditor target={editingColor} onClose={() => setEditingColor(null)}/>
         </div>
       </section>
       {usageWarnings.length > 0 ? (

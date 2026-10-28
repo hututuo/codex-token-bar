@@ -139,6 +139,10 @@ pub struct AppSettingsSnapshot {
     pub auto_resume: AutoResumeSettingsSnapshot,
     #[serde(default)]
     pub agent_speed_reporting: AgentSpeedReportingSettingsSnapshot,
+    #[serde(default, deserialize_with = "deserialize_speed_display_mode")]
+    pub speed_display_mode: SpeedDisplayMode,
+    #[serde(default, deserialize_with = "deserialize_speed_color_grouping")]
+    pub speed_color_grouping: SpeedColorGrouping,
 }
 
 impl Default for AppSettingsSnapshot {
@@ -164,7 +168,94 @@ impl Default for AppSettingsSnapshot {
             session_enhancements: SessionEnhancementSettingsSnapshot::default(),
             auto_resume: AutoResumeSettingsSnapshot::default(),
             agent_speed_reporting: AgentSpeedReportingSettingsSnapshot::default(),
+            speed_display_mode: SpeedDisplayMode::default(),
+            speed_color_grouping: SpeedColorGrouping::default(),
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SpeedDisplayMode {
+    #[default]
+    Activity,
+    AgentSpeed,
+}
+
+impl SpeedDisplayMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "activity" => Some(Self::Activity),
+            "agentSpeed" => Some(Self::AgentSpeed),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SpeedColorGrouping {
+    #[default]
+    Model,
+    Client,
+}
+
+impl SpeedColorGrouping {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "model" => Some(Self::Model),
+            "client" => Some(Self::Client),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeedDisplayPreferencesSnapshot {
+    pub mode: SpeedDisplayMode,
+    pub grouping: SpeedColorGrouping,
+}
+
+fn deserialize_speed_display_mode<'de, D>(deserializer: D) -> Result<SpeedDisplayMode, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(SpeedDisplayMode::parse(value.as_str().unwrap_or_default()).unwrap_or_default())
+}
+
+fn deserialize_speed_color_grouping<'de, D>(deserializer: D) -> Result<SpeedColorGrouping, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(SpeedColorGrouping::parse(value.as_str().unwrap_or_default()).unwrap_or_default())
+}
+
+#[cfg(test)]
+mod speed_display_settings_tests {
+    use super::*;
+
+    #[test]
+    fn speed_display_preferences_default_and_recover_unknown_values() {
+        let defaults: AppSettingsSnapshot = serde_json::from_str("{}").unwrap();
+        assert_eq!(defaults.speed_display_mode, SpeedDisplayMode::Activity);
+        assert_eq!(defaults.speed_color_grouping, SpeedColorGrouping::Model);
+
+        let saved: AppSettingsSnapshot = serde_json::from_str(
+            r#"{"speedDisplayMode":"agentSpeed","speedColorGrouping":"client"}"#,
+        )
+        .unwrap();
+        assert_eq!(saved.speed_display_mode, SpeedDisplayMode::AgentSpeed);
+        assert_eq!(saved.speed_color_grouping, SpeedColorGrouping::Client);
+
+        let unknown: AppSettingsSnapshot = serde_json::from_str(
+            r#"{"speedDisplayMode":"future-mode","speedColorGrouping":"future-group"}"#,
+        )
+        .unwrap();
+        assert_eq!(unknown.speed_display_mode, SpeedDisplayMode::Activity);
+        assert_eq!(unknown.speed_color_grouping, SpeedColorGrouping::Model);
     }
 }
 
@@ -180,6 +271,36 @@ pub struct AgentSpeedReportingSettingsSnapshot {
     pub invitation_handled: bool,
     #[serde(default)]
     pub username: String,
+    #[serde(default, deserialize_with = "deserialize_agent_speed_transport")]
+    pub transport: AgentSpeedReportingTransport,
+}
+
+/// The user's explicit Agent Speed reporting transport choice. Missing or unrecognized values
+/// from older or hand-edited settings are kept on the established HTTP path.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentSpeedReportingTransport {
+    #[default]
+    Http,
+    Websocket,
+}
+
+impl AgentSpeedReportingTransport {
+    #[cfg(windows)]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Http => "http",
+            Self::Websocket => "websocket",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "http" => Some(Self::Http),
+            "websocket" => Some(Self::Websocket),
+            _ => None,
+        }
+    }
 }
 
 impl Default for AgentSpeedReportingSettingsSnapshot {
@@ -188,8 +309,23 @@ impl Default for AgentSpeedReportingSettingsSnapshot {
             enabled: false,
             invitation_handled: false,
             username: String::new(),
+            transport: AgentSpeedReportingTransport::Http,
         }
     }
+}
+
+fn deserialize_agent_speed_transport<'de, D>(
+    deserializer: D,
+) -> Result<AgentSpeedReportingTransport, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(match value.as_str() {
+        Some("websocket") => AgentSpeedReportingTransport::Websocket,
+        Some("http") => AgentSpeedReportingTransport::Http,
+        _ => AgentSpeedReportingTransport::Http,
+    })
 }
 
 impl AgentSpeedReportingSettingsSnapshot {
@@ -915,5 +1051,34 @@ mod rate_scale_tests {
             ).unwrap();
             assert_eq!(settings.token_rate_full_scale, value);
         }
+    }
+
+    #[test]
+    fn agent_speed_transport_defaults_legacy_and_unknown_settings_to_http() {
+        let legacy: AgentSpeedReportingSettingsSnapshot =
+            serde_json::from_value(serde_json::json!({
+                "enabled": true,
+                "username": "TokenBar-a1b2"
+            }))
+            .unwrap();
+        assert_eq!(legacy.transport, AgentSpeedReportingTransport::Http);
+
+        let unknown: AgentSpeedReportingSettingsSnapshot =
+            serde_json::from_value(serde_json::json!({
+                "transport": "future-transport"
+            }))
+            .unwrap();
+        assert_eq!(unknown.transport, AgentSpeedReportingTransport::Http);
+
+        let websocket: AgentSpeedReportingSettingsSnapshot =
+            serde_json::from_value(serde_json::json!({
+                "transport": "websocket"
+            }))
+            .unwrap();
+        assert_eq!(websocket.transport, AgentSpeedReportingTransport::Websocket);
+        assert_eq!(
+            serde_json::to_value(websocket).unwrap()["transport"],
+            "websocket"
+        );
     }
 }

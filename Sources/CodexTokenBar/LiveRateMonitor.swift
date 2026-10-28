@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import Darwin
 import SwiftUI
@@ -17,6 +18,28 @@ enum LiveRateSnapshotPublicationPolicy {
 
 @MainActor
 final class LiveRateMonitor: ObservableObject {
+    let localSpeedDisplay = LocalAgentSpeedDisplay()
+    private var speedDisplaySubscriptions = Set<AnyCancellable>()
+
+    var displayRateAvailable: Bool {
+        monitoringEnabled && (localSpeedDisplay.preferences.mode == .agentSpeed ? localSpeedDisplay.reading.available : dataSource != nil)
+    }
+    var displaySnapshot: LiveRateSnapshot {
+        var value = totalSnapshot
+        let preferences = localSpeedDisplay.preferences
+        var clients: [ModelRateContribution] = [.init(model: "client:codex", tokensPerSecond: value.rollingTokensPerSecond)]
+        if preferences.mode == .agentSpeed {
+            let reading = localSpeedDisplay.reading
+            value.rollingTokensPerSecond = monitoringEnabled ? reading.total : 0
+            value.modelRates = monitoringEnabled ? reading.modelRates : []
+            clients = monitoringEnabled ? reading.clientRates : []
+            value.status = monitoringEnabled ? reading.status : "实时速率已关闭"
+            value.sourceLabel = "Agent Speed · 本地日志"
+        }
+        value.colorRates = preferences.grouping == .client ? clients : value.modelRates
+        return value
+    }
+
     enum DisplayRateScope {
         case selectedSession
         case allSessions
@@ -184,6 +207,9 @@ final class LiveRateMonitor: ObservableObject {
         self.monitoringEnabled = monitoringEnabled
         self.logReaderFactory = logReaderFactory
         self.recentThreadsLoader = recentThreadsLoader
+        localSpeedDisplay.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &speedDisplaySubscriptions)
+        localSpeedDisplay.preferences.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &speedDisplaySubscriptions)
+        localSpeedDisplay.setEnabled(monitoringEnabled)
         Task {
             updateTokenCountingLabel()
             if monitoringEnabled {
@@ -347,6 +373,7 @@ final class LiveRateMonitor: ObservableObject {
     func setMonitoringEnabled(_ enabled: Bool) {
         guard enabled != monitoringEnabled else { return }
         monitoringEnabled = enabled
+        localSpeedDisplay.setEnabled(enabled)
         cacheAdviceNotBefore = Date().timeIntervalSince1970
         cacheAdviceTracker = CacheUsageAdviceTracker()
         snapshot.cacheAdvice = nil
@@ -1296,11 +1323,14 @@ final class LiveRateMonitor: ObservableObject {
     private func add(row: LogRow, now: Double = Date().timeIntervalSince1970) -> Bool {
         updateTraceAttribution(from: row)
         let receipt = Double(row.ts) + Double(row.tsNanos) / 1_000_000_000
-        if let faultThread = row.threadID,
+        if let faultThread = row.threadID, !faultThread.isEmpty,
            (row.target == "codex_core::responses_retry" || row.target == "codex_api::endpoint::responses_websocket"),
            ["stream disconnected", "error sending request", "WebSocket error", "websocket error"].contains(where: { row.feedbackLogBody.contains($0) }),
-           let current = throughputCurve.sessions[faultThread], receipt >= current.lastQuantity {
-            throughputCurve.consume(.init(kind: "pause", timestamp: receipt, turnID: current.turn), thread: faultThread, now: now)
+           receipt >= (throughputCurve.sessions[faultThread]?.lastQuantity ?? 0) {
+            localSpeedDisplay.stop(threadID: faultThread, at: receipt)
+            if let current = throughputCurve.sessions[faultThread] {
+                throughputCurve.consume(.init(kind: "pause", timestamp: receipt, turnID: current.turn), thread: faultThread, now: now)
+            }
             return true
         }
         guard let streamEvent = Self.streamEvent(from: row) else { return false }

@@ -1,0 +1,28 @@
+{
+  "accepted" : true,
+  "ACKCount" : 3,
+  "buildToACKMs" : 419,
+  "buildToACKMsSamples" : [
+    439,
+    416,
+    419
+  ],
+  "clientApp" : "CodexTokenBar",
+  "heartbeatConnectionAliveAfter22s" : true,
+  "physicalNetworkSwitchTested" : false,
+  "physicalSleepTested" : false,
+  "platform" : "macOS",
+  "productionKeyReused" : false,
+  "published" : false,
+  "ready" : true,
+  "readyConnections" : 2,
+  "reconnectSameRun" : true,
+  "registration" : true,
+  "service" : "production",
+  "status" : "WebSocket 已连接 · 等待有效上报",
+  "syntheticMetrics" : false,
+  "systemDeviceKey" : true,
+  "terminal" : "",
+  "username" : "TokenBar-Mac-WS-7295A2",
+  "zeroUsageProtocolProbe" : true
+}

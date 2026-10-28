@@ -1,6 +1,40 @@
 import Foundation
 import os
 
+/// Provenance of a read initiated by the monitor. A local filesystem notification is a log read, not a provider token
+/// event; polling is reported separately so callers can disclose its known interval.
+struct SourceReadContext: Equatable, Sendable {
+    var sourceMode: String
+    var sourceResolutionMs: Int?
+
+    // FSEvents gives a prompt local log read, but does not establish the upstream log flush cadence.
+    static let logEvent = SourceReadContext(sourceMode: "log", sourceResolutionMs: nil)
+    static let oneSecondPoll = SourceReadContext(sourceMode: "poll", sourceResolutionMs: 1_000)
+    static let tenSecondRediscovery = SourceReadContext(sourceMode: "poll", sourceResolutionMs: 10_000)
+
+    func observation(at boundary: SourceReadBoundary) -> SourceReadObservation {
+        SourceReadObservation(
+            observedAtMs: boundary.observedAtMs,
+            observedTickMs: boundary.observedTickMs,
+            sourceMode: sourceMode,
+            sourceResolutionMs: sourceResolutionMs
+        )
+    }
+
+    func merged(with other: SourceReadContext) -> SourceReadContext {
+        SourceReadContext(
+            sourceMode: sourceMode == other.sourceMode ? sourceMode : "mixed",
+            sourceResolutionMs: sourceResolutionMs.flatMap { lhs in other.sourceResolutionMs.map { max(lhs, $0) } }
+        )
+    }
+
+    func accountingForDatabaseThrottle() -> SourceReadContext {
+        var context = self
+        context.sourceResolutionMs = sourceResolutionMs.map { max($0, Int(TranscriptSession.databaseReadIntervalNs / 1_000_000)) }
+        return context
+    }
+}
+
 /// Statistics of the startup backlog read.
 public struct SeedSummary: Equatable, Sendable {
     public var filesDiscovered = 0
@@ -19,11 +53,19 @@ struct WholeFileRead: Sendable {
     let family: TranscriptFamily
     let fileID: FileID
     let reader: TranscriptReader
+    let readContext: SourceReadContext
 
     func perform() -> WholeFileResult {
         var reader = self.reader
         let (lines, read) = TranscriptDecoder.decode(family, reader: &reader)
-        return WholeFileResult(path: path, fileID: fileID, reader: reader, lines: lines, read: read)
+        return WholeFileResult(
+            path: path,
+            fileID: fileID,
+            reader: reader,
+            lines: lines,
+            read: read,
+            readContext: readContext
+        )
     }
 }
 
@@ -33,6 +75,7 @@ struct WholeFileResult: Sendable {
     let reader: TranscriptReader
     let lines: DecodedLines
     let read: FileTailer.ReadResult
+    let readContext: SourceReadContext
 }
 
 /// Every transcript file of the enabled roots, the OpenCode database, their parsers, the shared dedupe set and the
@@ -97,6 +140,7 @@ final class TranscriptSession {
     private let zcodeRoot: String
     private var zcodeNeedsSeed = false
     private var zcodeLinks: [String: String] = [:]
+    private var pendingReadObservation: SourceReadObservation?
     private let opencodeRoot: String
     private var opencodeNeedsSeed = false
     private var opencodeLinks: [String: String] = [:]
@@ -332,22 +376,27 @@ final class TranscriptSession {
 
     /// Reads files reported by the watcher. Unknown transcript paths under a root become new agents.
     @discardableResult
-    func handleChanges(atCanonicalPaths paths: Set<String>) -> Bool {
+    func handleChanges(
+        atCanonicalPaths paths: Set<String>,
+        readContext: SourceReadContext = .logEvent
+    ) -> Bool {
         var changed = false
         if let opencode, paths.contains(where: opencode.matches(canonicalPath:)) {
-            changed = apply(opencode.refresh(deduper: &deduper), live: true)
+            let observation = readContext.observation(at: .now())
+            changed = apply(opencode.refresh(deduper: &deduper), live: true, observation: observation)
         }
         if let zcode, paths.contains(where: zcode.matches(canonicalPath:)) {
-            changed = apply(zcode.refresh(deduper: &deduper), live: true) || changed
+            let observation = readContext.observation(at: .now())
+            changed = apply(zcode.refresh(deduper: &deduper), live: true, observation: observation) || changed
         }
         var handled: Set<String> = []
         for path in paths.sorted() {
             guard let (localPath, root) = localPath(forCanonical: path), handled.insert(localPath).inserted else { continue }
             if let file = files[localPath] {
-                changed = read(file, live: true) || changed
+                changed = read(file, live: true, readContext: readContext) || changed
             } else if let stat = root.family.stat(localPath) {
                 let file = track(DiscoveredFile(path: localPath, stat: stat), family: root.family, root: root.path, start: .beginning)
-                changed = read(file, live: true) || changed
+                changed = read(file, live: true, readContext: readContext) || changed
             }
         }
         return changed
@@ -360,7 +409,7 @@ final class TranscriptSession {
         var changed = false
         for file in files.values.filter(\.isDirty).sorted(by: { $0.path < $1.path })
         where now &- file.lastReadNs >= Self.databaseReadIntervalNs {
-            changed = read(file, live: true) || changed
+            changed = read(file, live: true, readContext: file.pendingReadContext ?? .oneSecondPoll) || changed
         }
         return changed
     }
@@ -378,12 +427,18 @@ final class TranscriptSession {
 
     /// The 1-second fallback: stat files modified in the last two minutes.
     @discardableResult
-    func pollRecentFiles(nowMs: Int64) -> Bool {
+    func pollRecentFiles(nowMs: Int64, readContext: SourceReadContext = .oneSecondPoll) -> Bool {
         var changed = false
+        let opencodeReadBoundary = SourceReadBoundary.now()
         if let update = opencode?.refreshIfChanged(deduper: &deduper) {
-            changed = apply(update, live: true)
+            let observation = readContext.observation(at: opencodeReadBoundary)
+            changed = apply(update, live: true, observation: observation)
         }
-        if let update = zcode?.refreshIfChanged(deduper: &deduper) { changed = apply(update, live: true) || changed }
+        let zcodeReadBoundary = SourceReadBoundary.now()
+        if let update = zcode?.refreshIfChanged(deduper: &deduper) {
+            let observation = readContext.observation(at: zcodeReadBoundary)
+            changed = apply(update, live: true, observation: observation) || changed
+        }
         let hot = files.values.filter { nowMs - $0.lastStat.modifiedMs <= Self.hotWindowMs }
         for file in hot.sorted(by: { $0.path < $1.path }) {
             guard let stat = file.family.stat(file.path) else {
@@ -391,7 +446,7 @@ final class TranscriptSession {
                 changed = true
                 continue
             }
-            if file.hasChanged(comparedTo: stat) { changed = read(file, live: true) || changed }
+            if file.hasChanged(comparedTo: stat) { changed = read(file, live: true, readContext: readContext) || changed }
         }
         changed = readDirtyDatabases() || changed
         closeIdleDatabases(nowNs: DispatchTime.now().uptimeNanoseconds)
@@ -401,7 +456,10 @@ final class TranscriptSession {
     /// Full rediscovery: new files are read from offset 0, vanished files are dropped, and files active today are
     /// re-checked in case the watcher missed a change.
     @discardableResult
-    func rediscover(todayStartMs: Int64) -> Bool {
+    func rediscover(
+        todayStartMs: Int64,
+        readContext: SourceReadContext = .tenSecondRediscovery
+    ) -> Bool {
         var changed = refreshAvailability()
         var seen: Set<String> = []
         var fresh: [(DiscoveredFile, Root)] = []
@@ -410,7 +468,7 @@ final class TranscriptSession {
             for path in boundedCandidates(root) where seen.insert(path).inserted {
                 if let file = files[path] {
                     guard file.lastStat.modifiedMs >= activeSince, let stat = root.family.stat(path) else { continue }
-                    if file.hasChanged(comparedTo: stat) { changed = read(file, live: true) || changed }
+                    if file.hasChanged(comparedTo: stat) { changed = read(file, live: true, readContext: readContext) || changed }
                 } else if let stat = root.family.stat(path) {
                     fresh.append((DiscoveredFile(path: path, stat: stat), root))
                 }
@@ -423,13 +481,16 @@ final class TranscriptSession {
         fresh.sort { TranscriptDiscovery.startupOrder($0.0, $1.0) }
         for (discovered, root) in fresh {
             let file = track(discovered, family: root.family, root: root.path, start: .beginning)
-            changed = read(file, live: true) || changed
+            changed = read(file, live: true, readContext: readContext) || changed
         }
         for file in files.values where file.family == .grokBuild {
             var upserts: [ResponseUpsert] = []
+            let readBoundary = SourceReadBoundary.now()
             if file.parser.refreshMetadata(deduper: &deduper, emit: { upserts.append($0) }) {
-                for upsert in upserts { deliver(upsert, project: projectName(of: file), live: true) }
+                let observation = readContext.observation(at: readBoundary)
+                for upsert in upserts { deliver(upsert, project: projectName(of: file), live: true, observation: observation) }
                 syncAgent(file)
+                recordReadObservation(observation)
                 changed = true
             }
         }
@@ -438,15 +499,20 @@ final class TranscriptSession {
                 seedOpencode(todayStartMs: todayStartMs)
                 changed = true
             } else {
-                changed = apply(opencode.rediscover(nowMs: clock(), deduper: &deduper), live: true) || changed
+                let observation = readContext.observation(at: .now())
+                changed = apply(opencode.rediscover(nowMs: clock(), deduper: &deduper), live: true, observation: observation) || changed
             }
         }
         if let zcode {
             if zcodeNeedsSeed {
                 zcodeNeedsSeed = false
                 changed = apply(zcode.seed(todayStartMs: todayStartMs, deduper: &deduper), live: false) || changed
-            } else if let update = zcode.refreshIfChanged(deduper: &deduper) {
-                changed = apply(update, live: true) || changed
+            } else {
+                let zcodeReadBoundary = SourceReadBoundary.now()
+                if let update = zcode.refreshIfChanged(deduper: &deduper) {
+                    let observation = readContext.observation(at: zcodeReadBoundary)
+                    changed = apply(update, live: true, observation: observation) || changed
+                }
             }
         }
         return changed
@@ -472,28 +538,57 @@ final class TranscriptSession {
     }
 
     @discardableResult
-    private func read(_ file: TrackedFile, live: Bool) -> Bool {
+    private func read(
+        _ file: TrackedFile,
+        live: Bool,
+        readContext: SourceReadContext = .logEvent
+    ) -> Bool {
         if live, let schedule = wholeFileReads, file.reader.readsWholeFile {
             guard !file.wholeReadInFlight else {
                 file.wholeReadAgain = true
+                file.pendingWholeReadContext = file.pendingWholeReadContext.map { $0.merged(with: readContext) } ?? readContext
                 return false
             }
             file.wholeReadInFlight = true
             file.isDirty = false
             if let stat = file.family.stat(file.path) { file.lastStat = stat }
-            schedule(WholeFileRead(path: file.path, family: file.family, fileID: file.fileID, reader: file.reader))
+            schedule(WholeFileRead(
+                path: file.path,
+                family: file.family,
+                fileID: file.fileID,
+                reader: file.reader,
+                readContext: readContext
+            ))
             return false
         }
-        if file.family.isDatabase { return readDatabase(file, live: live) }
+        if file.family.isDatabase { return readDatabase(file, live: live, readContext: readContext) }
+        let previousState = file.parser.state
+        var readObservation: SourceReadObservation?
         var upserts: [ResponseUpsert] = []
+        let metadataBoundary = SourceReadBoundary.now()
         let metadataChanged = file.parser.refreshMetadata(deduper: &deduper) { upserts.append($0) }
-        for upsert in upserts { deliver(upsert, project: projectName(of: file), live: live) }
+        if live, metadataChanged || !upserts.isEmpty {
+            readObservation = readContext.observation(at: metadataBoundary)
+        }
+        for upsert in upserts {
+            deliver(upsert, project: projectName(of: file), live: live, observation: readObservation)
+        }
         upserts.removeAll(keepingCapacity: true)
-        let result = file.reader.read(onReset: { file.resetParser() }, onMalformed: { file.parser.noteMalformedLine() }) { bytes in
+        let result = file.reader.read(
+            onReset: { file.resetParser() },
+            onMalformed: { file.parser.noteMalformedLine() },
+            onReadBoundary: { boundary in
+                if live, readObservation == nil {
+                    readObservation = readContext.observation(at: boundary)
+                }
+            }
+        ) { bytes in
             file.parser.consume(rawLine: bytes, deduper: &deduper) { upserts.append($0) }
             guard !upserts.isEmpty else { return }
             let project = projectName(of: file)
-            for upsert in upserts { deliver(upsert, project: project, live: live) }
+            for upsert in upserts {
+                deliver(upsert, project: project, live: live, observation: readObservation)
+            }
             upserts.removeAll(keepingCapacity: true)
         }
         if result.failed, FileStat.lstat(file.path) == nil {
@@ -501,19 +596,31 @@ final class TranscriptSession {
             return true
         }
         finishRead(of: file, result: result)
+        if live, file.parser.state != previousState { recordReadObservation(readObservation) }
+        if live, metadataChanged { recordReadObservation(readObservation) }
         return metadataChanged || result.bytesRead > 0 || result.didReset
     }
 
     /// One read of an Antigravity database, throttled while live (METRICS 5.4).
-    private func readDatabase(_ file: TrackedFile, live: Bool) -> Bool {
+    private func readDatabase(
+        _ file: TrackedFile,
+        live: Bool,
+        readContext: SourceReadContext
+    ) -> Bool {
         let now = DispatchTime.now().uptimeNanoseconds
         if live, file.lastReadNs != 0, now &- file.lastReadNs < Self.databaseReadIntervalNs {
             file.isDirty = true
+            let deferred = readContext.accountingForDatabaseThrottle()
+            file.pendingReadContext = file.pendingReadContext.map { $0.merged(with: deferred) } ?? deferred
             return false
         }
+        let actualReadContext = file.pendingReadContext.map { $0.merged(with: readContext) } ?? readContext
+        file.pendingReadContext = nil
         file.isDirty = false
         file.lastReadNs = now
+        let previousState = file.parser.state
         let (batch, result) = file.reader.readDatabase()
+        let readObservation = live ? result.readBoundary.map { actualReadContext.observation(at: $0) } : nil
         if result.failed, file.family.stat(file.path) == nil {
             untrack(file.path)
             return true
@@ -522,8 +629,9 @@ final class TranscriptSession {
         var upserts: [ResponseUpsert] = []
         file.parser.consume(.antigravity(batch), deduper: &deduper) { upserts.append($0) }
         let project = projectName(of: file)
-        for upsert in upserts { deliver(upsert, project: project, live: live) }
+        for upsert in upserts { deliver(upsert, project: project, live: live, observation: readObservation) }
         finishRead(of: file, result: result)
+        if live, file.parser.state != previousState { recordReadObservation(readObservation) }
         return result.bytesRead > 0 || result.didReset
     }
 
@@ -539,15 +647,22 @@ final class TranscriptSession {
             untrack(file.path)
             return true
         }
+        let readObservation = result.read.readBoundary.map { result.readContext.observation(at: $0) }
+        let previousState = file.parser.state
         if result.read.didReset { file.resetParser() }
         var upserts: [ResponseUpsert] = []
         file.parser.consume(result.lines, deduper: &deduper) { upserts.append($0) }
         let project = projectName(of: file)
-        for upsert in upserts { deliver(upsert, project: project, live: true) }
+        for upsert in upserts { deliver(upsert, project: project, live: true, observation: readObservation) }
         finishRead(of: file, result: result.read)
+        if file.parser.state != previousState { recordReadObservation(readObservation) }
         if file.wholeReadAgain {
             file.wholeReadAgain = false
-            read(file, live: true)
+            let readContext = file.pendingWholeReadContext ?? result.readContext
+            file.pendingWholeReadContext = nil
+            read(file, live: true, readContext: readContext)
+        } else {
+            file.pendingWholeReadContext = nil
         }
         return result.read.bytesRead > 0 || result.read.didReset
     }
@@ -584,6 +699,17 @@ final class TranscriptSession {
         let events = pendingEvents + output.events
         pendingEvents.removeAll()
         return (output, events)
+    }
+
+    /// Consumes source-read metadata exactly once; timer-only snapshots do not inherit an old observation.
+    func consumeReadObservation() -> SourceReadObservation? {
+        defer { pendingReadObservation = nil }
+        return pendingReadObservation
+    }
+
+    private func recordReadObservation(_ observation: SourceReadObservation?) {
+        guard let observation else { return }
+        pendingReadObservation = pendingReadObservation.map { $0.merged(with: observation) } ?? observation
     }
 
     /// Responses currently held by the engine.
@@ -627,8 +753,14 @@ final class TranscriptSession {
         return counts
     }
 
-    private func deliver(_ upsert: ResponseUpsert, project: String, live: Bool) {
+    private func deliver(
+        _ upsert: ResponseUpsert,
+        project: String,
+        live: Bool,
+        observation: SourceReadObservation? = nil
+    ) {
         guard enabledSources.contains(upsert.record.source) else { return }
+        if live { recordReadObservation(observation) }
         let nowMs = live ? clock() : nil
         if let event = engine.upsert(upsert.record, project: project, isCompletion: upsert.isCompletion, emitsEvents: live, nowMs: nowMs) {
             pendingEvents.append(event)
@@ -664,8 +796,13 @@ final class TranscriptSession {
     }
 
     @discardableResult
-    private func apply(_ update: OpencodeSource.Update, live: Bool) -> Bool {
+    private func apply(
+        _ update: OpencodeSource.Update,
+        live: Bool,
+        observation: SourceReadObservation? = nil
+    ) -> Bool {
         guard !update.isEmpty else { return false }
+        if live { recordReadObservation(observation) }
         for (upsert, project) in update.upserts { deliver(upsert, project: project, live: live) }
         for id in update.removedAgents { engine.removeAgent(id: id) }
         for (id, state) in update.agents {
@@ -684,7 +821,13 @@ final class TranscriptSession {
     }
 
     @discardableResult
-    private func apply(_ update: ZcodeSource.Update, live: Bool) -> Bool {
+    private func apply(
+        _ update: ZcodeSource.Update,
+        live: Bool,
+        observation: SourceReadObservation? = nil
+    ) -> Bool {
+        guard !update.isEmpty else { return false }
+        if live { recordReadObservation(observation) }
         for (upsert, project) in update.upserts { deliver(upsert, project: project, live: live) }
         for id in update.removedAgents { engine.removeAgent(id: id) }
         for (id, state) in update.agents {

@@ -30,6 +30,7 @@ enum DshEventKind: Equatable, Sendable {
     case stepStart
     case assistantMessage(DshAssistantMessage)
     case turnEnd
+    case localDisplayStop
     case other
 }
 
@@ -48,7 +49,7 @@ struct DshLine: Equatable, Sendable {
 /// Decodes the fields of a DeepSeek Harness session line that METRICS 4.3 needs. Conversation text is never captured.
 enum DshLineExtractor {
     private static let types: [StaticString] = [
-        "event", "snapshot", "session", "request/header", "step/start", "assistant/message", "turn/end",
+        "event", "snapshot", "session", "request/header", "step/start", "assistant/message", "turn/end", "request/error", "turn/error", "turn/aborted",
     ]
 
     /// Every member any object kind may need; which ones apply is decided once `type` is known.
@@ -138,6 +139,7 @@ enum DshLineExtractor {
             message.seq = members.seq
             kind = .assistantMessage(message)
         case 6: kind = .turnEnd
+        case 7, 8, 9: kind = .localDisplayStop
         default: kind = .other
         }
         records.append(.event(timeMs: time, kind: kind))

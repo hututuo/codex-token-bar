@@ -27,7 +27,7 @@ struct ActivitySpeedSummaryView: View {
     private var mode: ActivitySpeedDisplayMode { .normalized(raw) }
     private var rates: [ModelRateContribution] {
         ClientLocalRuntimePresentation.rates(codex: codexRates, claude: local.projection(allowed: allowed).modelRates,
-            allowed: allowed, mode: mode, upstreamCodex: AgentSpeedDisplayRuntime.modelRates(snapshot: upstream.snapshot, source: .codex), others: upstream.externalModelRates(allowed: allowed))
+            allowed: allowed, mode: mode, upstreamCodex: AgentSpeedDisplayRuntime.modelRates(snapshot: upstream.snapshot, source: .codex, now: Date()), others: upstream.externalModelRates(allowed: allowed))
     }
     private var hasCoverage: Bool {
         let codex = allowed.contains("codex") && (mode == .bar ? codexAvailable : upstream.snapshot.sources.contains { $0.kind == .codex && $0.available })

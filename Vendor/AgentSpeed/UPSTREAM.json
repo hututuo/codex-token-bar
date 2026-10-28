@@ -1,4 +1,22 @@
 {
+  "additions": {
+    "macos/Sources/AgentSpeedCore/Reporting/ReportWebSocketConfiguration.swift": {
+      "reason": "Token Bar local strict Draft-1 WebSocket capability/limit parsing; upstream has no equivalent file, and HTTP remains the default.",
+      "sha256": "e70e1feab52fcfe92a7baccbf46c30d2ba643acbb6af1dd222544ec4af7d8f1a"
+    },
+    "macos/Tests/AgentSpeedCoreTests/LocalDisplayStopTests.swift": {
+      "reason": "Token Bar local regression coverage for explicit stopped-state display metadata; not an upstream Agent Speed test.",
+      "sha256": "32c79be91c782ef7661d246e661e653f5026c8822421fa220ad64fb942f7de78"
+    },
+    "windows/src/AgentSpeed.Core/Reporting/ReportWebSocketSettings.cs": {
+      "reason": "Token Bar local strict Draft-1 WebSocket capability/limit parser; upstream has no equivalent file, and HTTP remains the default.",
+      "sha256": "23ecb1e23c9c47ae85d515233905c677a3fc6dbd49685fa664d7b036d200543f"
+    },
+    "windows/src/AgentSpeed.Core/SourceReadObservation.cs": {
+      "reason": "Token Bar local source-read timestamp, mode, and resolution metadata for product projections; not upstream telemetry or provider event timing.",
+      "sha256": "f2ec2503707428a2d317d876208d0fcc7c51ffd99cb7209a0d20d85b3c622a7f"
+    }
+  },
   "commit": "a94a67fcc78e5d8eea5f82d8d5e737bccf994e2c",
   "excludes": [
     "spec/research/",
@@ -571,8 +589,8 @@
   },
   "patches": {
     "macos/Sources/AgentSpeedCore/Engine/EngineTypes.swift": {
-      "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged",
-      "sha256": "26d7eb0c2f377898ebf180aaeb4ba2f3055893b6fe86454625f0ebf238c5d9a6"
+      "reason": "Add per-source/per-model attribution metadata while preserving upstream numeric speed calculations and signed reporting semantics.",
+      "sha256": "71ed33af2762e0eb351a0ed7e0b0081ef54a816cd7547fa8cc172b4b8dd0c6be"
     },
     "macos/Sources/AgentSpeedCore/Engine/LiveRate.swift": {
       "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged",
@@ -584,11 +602,11 @@
     },
     "macos/Sources/AgentSpeedCore/IO/CompressedStreamReader.swift": {
       "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
-      "sha256": "e1d4537771d77819c32eb43f851c122ae3e8d5b61357c9633004a8ceae67ecac"
+      "sha256": "8a5144c7124d8f085ca5b69d601358ac5011f5213da3b87f72bcbf746a939dc9"
     },
     "macos/Sources/AgentSpeedCore/IO/FileTailer.swift": {
       "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
-      "sha256": "2bbb72ffb13ccf5df6745a57f998abf8f3ce917623e1505c318bd76fb9c022ef"
+      "sha256": "c90f84fe9715e884eca07f6dc1b7d06caebe8d9467aabb10fd8ac19367faaa3a"
     },
     "macos/Sources/AgentSpeedCore/IO/HarnessMetadata.swift": {
       "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
@@ -596,23 +614,83 @@
     },
     "macos/Sources/AgentSpeedCore/IO/TranscriptReader.swift": {
       "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
-      "sha256": "c259e1c81ba9a65f90ccc9138208f2b498f3badd002b57a6391b8df33ff5dbc8"
+      "sha256": "f76165654213faa30723455bbbd5836091e0cb34087f39c51eae9c869b175af2"
     },
     "macos/Sources/AgentSpeedCore/IO/ZstdFrameTailer.swift": {
       "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
-      "sha256": "feb112cf964c550c06ff35c34c80c9bb07fd97a8cd23da6b551687b4b8266fa5"
+      "sha256": "4c468efe39c82dc70b9103a5282569aa25f91d2bc6aa5d3f761ce4ec9a66b982"
+    },
+    "macos/Sources/AgentSpeedCore/JSON/JSONValue.swift": {
+      "reason": "Add opt-in duplicate-key rejection for strict WebSocket control documents; preserve the upstream parser default for existing log data.",
+      "sha256": "df86b609eb9dcd1ba894c88cab70c810e76efc29a45eec2699f7f3c3878d9e6b"
+    },
+    "macos/Sources/AgentSpeedCore/LiveMonitor.swift": {
+      "reason": "Expose an opt-in realtime event mode for low-latency WebSocket reporting while preserving existing monitor defaults.",
+      "sha256": "f91da40287cc2f682618439e3447187549cc8723974af8c818f16829cd8cb9c6"
     },
     "macos/Sources/AgentSpeedCore/Models.swift": {
-      "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged",
-      "sha256": "2cfde8a430096e6cc3a80161093f92947c4e5001a2547f9caf45d4cafa292a6b"
+      "reason": "Carry source/model attribution and local stopped-state metadata in snapshots; existing rate accounting and signed report fields remain unchanged.",
+      "sha256": "92c6d2b112cfd04d7de5e65c481f2bb1f71c2b58e4e2dbca05dba074dc722fe4"
+    },
+    "macos/Sources/AgentSpeedCore/Monitor/MonitorCore.swift": {
+      "reason": "Propagate source-read observations and use the negotiated low-latency event cadence only for opt-in realtime reporting.",
+      "sha256": "0cc23ff3e2c62627d05e1804ca48fdb19c56ef10310ad08328817f1725e6e28c"
     },
     "macos/Sources/AgentSpeedCore/Monitor/SnapshotBuilder.swift": {
-      "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged",
-      "sha256": "1b56ac395c245d8d1293c73612a91fad36379bafe93f2f4dfba73742ba0590b6"
+      "reason": "Project source/model attribution and one-shot local read observations into Token Bar snapshots without changing upstream rate calculations.",
+      "sha256": "566c0e6d36dcf497f2c693a75b76fa062160eca7f0497c933671f55c8c1025a7"
+    },
+    "macos/Sources/AgentSpeedCore/Monitor/SnapshotMailbox.swift": {
+      "reason": "Carry and merge pending source-read observations into the next published snapshot so metadata is not lost during coalescing.",
+      "sha256": "f38ef496a53582ef197cbf3f13b57aa89dd2458d72328f20fbcd303fc015f66e"
+    },
+    "macos/Sources/AgentSpeedCore/Monitor/TrackedFile.swift": {
+      "reason": "Retain read-trigger provenance across throttled database reads and deferred whole-file reads.",
+      "sha256": "596d890e770874b3433d8ac8de60a017d523400bfbe184c9f9860a9b71d977f8"
+    },
+    "macos/Sources/AgentSpeedCore/Monitor/TranscriptSession.swift": {
+      "reason": "Capture and merge local log/poll read observations through transcript, database, and whole-file reads; keep provider event timing distinct.",
+      "sha256": "53146b761f074b9f4fe6a562d91683a8b5cf3031bb5b87fe3a120be3f3f5fb27"
+    },
+    "macos/Sources/AgentSpeedCore/Parsing/ClaudeLine.swift": {
+      "reason": "Recognize explicit Claude API/stream errors as local display-stop metadata without changing token accounting.",
+      "sha256": "dea72dd71a7ddef7bfe75c896d8c6db3f4692fc58d23f96898ee2021773f9b04"
+    },
+    "macos/Sources/AgentSpeedCore/Parsing/ClaudeParser.swift": {
+      "reason": "Propagate explicit Claude error/interrupt markers into local stopped-state metadata; reset when generation resumes.",
+      "sha256": "322f2da8fca455dbbc1c4231c161262ffa5b5cf0764ca4c619e8b362f72a22cc"
+    },
+    "macos/Sources/AgentSpeedCore/Parsing/CodexLine.swift": {
+      "reason": "Recognize explicit Codex request/stream failure and aborted-turn markers for local stopped-state display.",
+      "sha256": "045ce5d24547443d8d7df0bcaa43ad2186831d02a958c61f8882fc02e32ed3e2"
+    },
+    "macos/Sources/AgentSpeedCore/Parsing/CodexParser.swift": {
+      "reason": "Propagate explicit Codex error/aborted-turn markers into local stopped-state metadata; reset when generation resumes.",
+      "sha256": "b7d0ba0a18feac187bb5e5bb0318afcba029931008d14ab9b241701b5e1d0414"
+    },
+    "macos/Sources/AgentSpeedCore/Parsing/DshLine.swift": {
+      "reason": "Classify explicit DSH error/abort events as local display-stop metadata.",
+      "sha256": "3e369ba8f2ee2acc182abec50c5256c64807877bb866e7bf730112ba93b2e437"
+    },
+    "macos/Sources/AgentSpeedCore/Parsing/DshParser.swift": {
+      "reason": "Propagate explicit DSH error/abort events into local stopped-state metadata.",
+      "sha256": "213525501b6d780bf2fa5f9f1141465737222c24283a8c5fbedb8f86e1ebad04"
+    },
+    "macos/Sources/AgentSpeedCore/Parsing/ParserTypes.swift": {
+      "reason": "Add local display-stop metadata to parser state and clear it when an active generation phase resumes.",
+      "sha256": "3fc8f135aab389d7aa6826a160acb78d52dbb8b70216a639110c9a42d04cb866"
+    },
+    "macos/Sources/AgentSpeedCore/Pricing/BundledPriceAssets.swift": {
+      "reason": "Add the locally verified GPT-6.1 Terra price schedule, threshold tiers, fast pricing, and matching model alias to the bundled Agent Speed price asset.",
+      "sha256": "1505363f17f6189bcabf07417b534eeba3d591bc339151a260edd1ad6e343ddd"
     },
     "macos/Sources/AgentSpeedCore/Reporting/ReportBody.swift": {
       "reason": "Token Bar report client.app identity; signing protocol unchanged",
       "sha256": "818cab55b1dadf16c2cbe26c104e1d87ab371f6f5d3b71ac941b544fdd6fd7e0"
+    },
+    "macos/Sources/AgentSpeedCore/Reporting/ReportDiscovery.swift": {
+      "reason": "Parse and validate the optional strict Draft-1 WebSocket discovery capability while retaining HTTP as the default transport.",
+      "sha256": "8ee6f284e5dd0a85445a782ec4b66b32c21964738c8c454ee93a416cfc422c03"
     },
     "macos/Tests/AgentSpeedCoreTests/EngineBehaviorTests.swift": {
       "reason": "Guard old-model response tails, current-model estimates, unknown models and per-source conservation",
@@ -620,7 +698,7 @@
     },
     "macos/Tests/AgentSpeedCoreTests/LiveMonitorTests.swift": {
       "reason": "Use explicit isolated source roots; never read developer home during tests",
-      "sha256": "32d5246c1b12ef9247c02902928555d6a07371ed541a26a2e0bbf4ab97e1bb96"
+      "sha256": "2dccb1b1319ccdf24fe8392bdd998c21f8a71197f0c54abab2d9c2852d72bcc0"
     },
     "macos/Tests/AgentSpeedCoreTests/ReportBodyTests.swift": {
       "reason": "Accept Token Bar client identity without rewriting upstream signed vectors",
@@ -632,18 +710,30 @@
     },
     "macos/Tests/AgentSpeedCoreTests/SessionTests.swift": {
       "reason": "Use explicit isolated source roots; never read developer home during tests",
-      "sha256": "07f3a4ef28741681962f08b63742a9dc4d020493ea45006b3c32805cbaf2c203"
+      "sha256": "3d63333395f6a813f56838d995eabdea5013e4695199a5d24883b23d901a17d1"
+    },
+    "spec/assets/prices.json": {
+      "reason": "Add the locally verified GPT-6.1 Terra base/tier/fast prices and model alias to the shared price reference fixture.",
+      "sha256": "1060875e14917526c9c2adb6d90ece4f2dbfe060de77fe669f92c27c618d5f6d"
     },
     "windows/src/AgentSpeed.Core/AgentSpeed.Core.csproj": {
       "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
-      "sha256": "9eb102f292fbe8f1eafacf0a159aaf84e25579bc24dd41043f2ab4509b3d95d9"
+      "sha256": "ceed1a4952edf064115655daa5ec780079f7cdefcb2d114023826afc94c69120"
+    },
+    "windows/src/AgentSpeed.Core/Antigravity/AntigravityTailer.cs": {
+      "reason": "Attach Token Bar local source-read timing/resolution observations to Antigravity database tail updates.",
+      "sha256": "2e80041acd74be3988ea03ed648217a588faf5ddb951ebaafbeaf5e86f9009a5"
+    },
+    "windows/src/AgentSpeed.Core/Engine/AgentInfo.cs": {
+      "reason": "Carry explicit stopped-state and parent attribution metadata to Token Bar local agent display projections.",
+      "sha256": "0b06f0db70b8942dbdbe992703ac0b00569d78728d91d5de9fed50ef3c7cbde5"
     },
     "windows/src/AgentSpeed.Core/Engine/EngineFrame.cs": {
-      "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged",
+      "reason": "Add per-source/per-model attribution metadata while preserving upstream numeric speed calculations and signed reporting semantics.",
       "sha256": "bf39328cf0c52d4a37bbd07c340638fac35ba7b8181c31bd2e1a0a8b8c6ba02b"
     },
     "windows/src/AgentSpeed.Core/Engine/SpeedEngine.cs": {
-      "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged",
+      "reason": "Add per-source/per-model attribution metadata while preserving upstream numeric speed calculations and signed reporting semantics.",
       "sha256": "410533512487fe95651b83bef2d04fe41612163b41efdc0e2a23486f0650d0ac"
     },
     "windows/src/AgentSpeed.Core/Gemini/GeminiProjects.cs": {
@@ -660,7 +750,7 @@
     },
     "windows/src/AgentSpeed.Core/IO/FileTailer.cs": {
       "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
-      "sha256": "31557b256b0b417ac687ffda6c2515acabbc2906a62534b7cc83c2fcba2e49d2"
+      "sha256": "a882f218a846969724fdf72cfdad6a394aea428cc54beacf0193161f6383c531"
     },
     "windows/src/AgentSpeed.Core/IO/Sqlite/SqliteReadOnly.cs": {
       "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
@@ -668,27 +758,31 @@
     },
     "windows/src/AgentSpeed.Core/IO/TranscriptTailer.cs": {
       "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
-      "sha256": "81197e0a1ec08a1a97ca78cba4108021f079a5df2dc2d90a088f7f2ea46bf923"
+      "sha256": "1e125a4b90e4569f731b842cab0a3c1a4c0cb507442452ae5d65b06db7cec354"
     },
     "windows/src/AgentSpeed.Core/IO/WholeFileTailers.cs": {
       "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
-      "sha256": "e843ff2c30714049574b9ee0754617e8304dd45df09d80ae6c4cc1f472ba2175"
+      "sha256": "a11f13f1107884ef6b039bc2d1a6aa3e36911eb78ebb6e8ac9c6234417a6dd68"
     },
     "windows/src/AgentSpeed.Core/IO/ZstdFrameTailer.cs": {
       "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
-      "sha256": "c610e1a9707e63a757ad58834de0f2fb48a7930bd46ec28a1a057b0269336dcf"
+      "sha256": "8c0edcc795c308b1c8927e6a6a6471288166333f40207ef1ddcd19c053f14238"
     },
     "windows/src/AgentSpeed.Core/LiveMonitor.cs": {
       "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
-      "sha256": "8d6349f2e5f869b9503dc4177ccb9658fb465fc6349e268ff7d8b673c26da02c"
+      "sha256": "6d9699fd48bdb37a043a3f58d584b019a57f37013f6970d17a26f005aa15d934"
     },
     "windows/src/AgentSpeed.Core/Models.cs": {
-      "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged",
-      "sha256": "a6d0e31cca406da553e662096d1f8203bf2df8e615730f77fb5ae85500fceec0"
+      "reason": "Carry source/model attribution and local stopped-state metadata in snapshots; existing rate accounting and signed report fields remain unchanged.",
+      "sha256": "9abc5d9289fd9e1a764a7b4f53b42155533ba93f30789c34286cc37bc14f71ea"
+    },
+    "windows/src/AgentSpeed.Core/Monitoring/MonitorCore+ZCode.cs": {
+      "reason": "Propagate ZCode source-read observations to Token Bar local snapshots without changing upstream response accounting.",
+      "sha256": "ed38b03c255ba4b40340c2ecddb27c1e61d8d38edba6a8910fad9e21f2d0d34b"
     },
     "windows/src/AgentSpeed.Core/Monitoring/MonitorCore.cs": {
-      "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
-      "sha256": "f303f27adf873aa48b2699ecf45b1a2995b0c751eeabaff7a225a4c7173baa09"
+      "reason": "Propagate source-read observations and local display-stop metadata, with realtime event cadence opt-in; preserve default monitor and rate behavior.",
+      "sha256": "3a1296ee82c70c4c2f3bb681a11091cd8e0b077cf710878c02d75197c04a4122"
     },
     "windows/src/AgentSpeed.Core/Monitoring/TrackedFile.cs": {
       "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
@@ -702,13 +796,61 @@
       "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
       "sha256": "57960bab3a6e74710c948dd6bedd79b7682ef7f0dbac7f968bd0c0324b619ccd"
     },
+    "windows/src/AgentSpeed.Core/OpenCode/OpenCodeSource.cs": {
+      "reason": "Attach Token Bar local source-read timing/resolution observations to OpenCode database updates.",
+      "sha256": "2920a0fe7f5120bfbc27e1cd8482305c232f15232b21a1b94becba5aeeda5497"
+    },
+    "windows/src/AgentSpeed.Core/Parsing/ClaudeLine.cs": {
+      "reason": "Recognize explicit Claude error and interrupt markers for local stopped-state display without changing token accounting.",
+      "sha256": "59f59eab501475f5839a1f1057ce59c5fb76693a48f7b43025a0de7d16315c04"
+    },
+    "windows/src/AgentSpeed.Core/Parsing/ClaudeParser.cs": {
+      "reason": "Propagate explicit Claude error/interrupt markers into local stopped-state metadata; clear it on resumed generation.",
+      "sha256": "8f9c498b7260bd1aefe9435469de503d427962c193ce6ab60267d581fc7d4b18"
+    },
+    "windows/src/AgentSpeed.Core/Parsing/CodexLine.cs": {
+      "reason": "Recognize explicit Codex request/stream failure and aborted-turn markers for local stopped-state display.",
+      "sha256": "502708d5b94df8ed64f2357769990bd6de04a07af5242f7e08097590267f3b2d"
+    },
+    "windows/src/AgentSpeed.Core/Parsing/CodexParser.cs": {
+      "reason": "Propagate explicit Codex error/aborted-turn markers into local stopped-state metadata; clear it on resumed generation.",
+      "sha256": "bb140846c5bcf6bf1cf058e26d1fc9efe1f035616079ef045fe626d2bfb8d9ce"
+    },
+    "windows/src/AgentSpeed.Core/Parsing/DshLine.cs": {
+      "reason": "Classify explicit DSH error/abort events as local display-stop metadata.",
+      "sha256": "3e87d3cfc076a220aa6a19540017a943a82888f01aaa932460ff454d70a2dccd"
+    },
+    "windows/src/AgentSpeed.Core/Parsing/DshParser.cs": {
+      "reason": "Propagate explicit DSH error/abort events into local stopped-state metadata.",
+      "sha256": "fac1a011b2367624f6478e2161e549643c02e9b0390511dd04a0fed706dbc008"
+    },
+    "windows/src/AgentSpeed.Core/Parsing/TranscriptParser.cs": {
+      "reason": "Add local confirmed-stopped state for explicit source errors/user interrupts and reset it on resumed turns.",
+      "sha256": "7054058957aa512eba5ee46f4f10ac278c47cddafd214634f23d64b3d6d97e71"
+    },
     "windows/src/AgentSpeed.Core/Reporting/ReportBody.cs": {
       "reason": "Token Bar report client.app identity; signing protocol unchanged",
       "sha256": "d580567a20c76f94776820d65a93585a6aecde7dd28102ee240a70446626ba81"
+    },
+    "windows/src/AgentSpeed.Core/Reporting/ReportDiscovery.cs": {
+      "reason": "Parse and validate the optional strict Draft-1 WebSocket discovery capability while retaining HTTP as the default transport.",
+      "sha256": "5a8503f07a8471029b1be142c9646dbf2a9c59b1cac79988f7615697a7f6388b"
+    },
+    "windows/src/AgentSpeed.Core/Reporting/ReportExtensions.cs": {
+      "reason": "Negotiate the optional Draft-1 WebSocket reporting extension without altering existing extension defaults.",
+      "sha256": "dd0808b56ec073dbade8629dbd739b69b4954951e645fd7b0189ac71e364841e"
+    },
+    "windows/src/AgentSpeed.Core/Reporting/ReportServiceUrl.cs": {
+      "reason": "Derive the WebSocket endpoint from the validated report API authority and base path; preserve existing HTTPS API policy.",
+      "sha256": "ed758818f734e1b541105ba5ce477970ecf61363da7ef6c4d44787809031965a"
+    },
+    "windows/src/AgentSpeed.Core/ZCode/ZCodeSource.cs": {
+      "reason": "Attach Token Bar local source-read timing/resolution observations to ZCode source updates.",
+      "sha256": "41e42ac6b1d173068b61b4cea1f3a7ed423b78d5eb6c26c5a3a31e0d4dc824bb"
     }
   },
   "repository": "https://github.com/zoefix/agent-speed",
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "scopes": [
     "macos/Sources/AgentSpeedCore",
     "macos/Tests/AgentSpeedCoreTests",

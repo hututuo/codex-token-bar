@@ -16,6 +16,7 @@ public sealed class LiveMonitor : IDisposable
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(1);
     private static readonly TimeSpan DiscoveryInterval = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan Debounce = TimeSpan.FromMilliseconds(80);
+    private static readonly TimeSpan RealtimeEventInterval = TimeSpan.FromMilliseconds(50);
     private static readonly TimeSpan SeedPublishInterval = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan TimeZoneRefreshInterval = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan ErrorBackoff = TimeSpan.FromSeconds(2);
@@ -24,6 +25,8 @@ public sealed class LiveMonitor : IDisposable
 
     private readonly SpeedHub _hub;
     private readonly IPositionedReadBackend? _readBackend;
+    private readonly TimeSpan _changePublishMinInterval;
+    private readonly TimeSpan _debounce;
     private readonly object _gate = new();
     private readonly object _pendingGate = new();
     private readonly AutoResetEvent _wake = new(false);
@@ -43,16 +46,29 @@ public sealed class LiveMonitor : IDisposable
         SpeedHub hub,
         MonitorConfiguration? configuration = null,
         PriceBook? pricing = null,
-        IPositionedReadBackend? readBackend = null)
+        IPositionedReadBackend? readBackend = null,
+        bool realtimeEventMode = false)
     {
         ArgumentNullException.ThrowIfNull(hub);
         _hub = hub;
         _configuration = configuration ?? MonitorConfiguration.Default;
+        _changePublishMinInterval = realtimeEventMode ? RealtimeEventInterval : ChangePublishMinInterval;
+        _debounce = realtimeEventMode ? RealtimeEventInterval : Debounce;
         Pricing = pricing;
         _readBackend = readBackend;
     }
 
     public PriceBook? Pricing { get; }
+
+    internal TimeSpan EventDebounce => _debounce;
+
+    internal TimeSpan ChangePublishMinimumInterval => _changePublishMinInterval;
+
+    internal TimeSpan SnapshotPublishInterval => PublishInterval;
+
+    internal TimeSpan SourcePollInterval => PollInterval;
+
+    internal TimeSpan SourceDiscoveryInterval => DiscoveryInterval;
 
     /// <summary>Runs on the pool thread before each background whole-file read (tests make reads slow with it).</summary>
     internal Action<string>? BeforeBackgroundRead { get; set; }
@@ -422,7 +438,7 @@ public sealed class LiveMonitor : IDisposable
         {
             token.ThrowIfCancellationRequested();
             var elapsed = Stopwatch.GetElapsedTime(start);
-            var due = Min(dirty ? lastPublish + ChangePublishMinInterval : nextPublish, nextPoll, nextDiscovery);
+            var due = Min(dirty ? lastPublish + _changePublishMinInterval : nextPublish, nextPoll, nextDiscovery);
             var pendingDue = PendingDeadline(start);
             if (pendingDue is { } pending && pending < due)
             {
@@ -479,7 +495,7 @@ public sealed class LiveMonitor : IDisposable
 
             elapsed = Stopwatch.GetElapsedTime(start);
             dirty |= changed | (Interlocked.Exchange(ref _subsetsChanged, 0) != 0);
-            if (elapsed >= nextPublish || (dirty && elapsed - lastPublish >= ChangePublishMinInterval))
+            if (elapsed >= nextPublish || (dirty && elapsed - lastPublish >= _changePublishMinInterval))
             {
                 Publish(core, StateOf(core), zone, observeLive: true);
                 lastPublish = elapsed;
@@ -593,7 +609,7 @@ public sealed class LiveMonitor : IDisposable
                 return _rescanRequested ? TimeSpan.Zero : null;
             }
 
-            return Stopwatch.GetElapsedTime(start, _pendingSince) + Debounce;
+            return Stopwatch.GetElapsedTime(start, _pendingSince) + _debounce;
         }
     }
 
@@ -601,7 +617,7 @@ public sealed class LiveMonitor : IDisposable
     {
         lock (_pendingGate)
         {
-            if (_pendingSince == 0 || Stopwatch.GetElapsedTime(start, _pendingSince) + Debounce > elapsed)
+            if (_pendingSince == 0 || Stopwatch.GetElapsedTime(start, _pendingSince) + _debounce > elapsed)
             {
                 return null;
             }

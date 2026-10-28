@@ -1,0 +1,6 @@
+{
+  "explicit_system_proxy": "disabled at test time",
+  "destinationDNSKind": "fake-ip",
+  "routeInterfaceKind": "utun",
+  "networkChangedByTest": false
+}

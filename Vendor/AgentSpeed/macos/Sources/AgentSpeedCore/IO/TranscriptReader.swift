@@ -67,7 +67,13 @@ struct TranscriptReader: Sendable {
     /// Reads an Antigravity conversation database (METRICS 5.4); nil batch when nothing could be read.
     mutating func readDatabase() -> (AntigravityBatch?, FileTailer.ReadResult) {
         guard database != nil else { return (nil, FileTailer.ReadResult(failed: true)) }
-        return database!.read()
+        let readBoundary = SourceReadBoundary.now()
+        let (batch, result) = database!.read()
+        var read = result
+        if read.bytesRead > 0, read.readBoundary == nil {
+            read.readBoundary = readBoundary
+        }
+        return (batch, read)
     }
 
     /// Reads every complete line appended since the last call (a document is delivered whole, as one unit).
@@ -75,6 +81,7 @@ struct TranscriptReader: Sendable {
     mutating func read(
         onReset: () -> Void = {},
         onMalformed: () -> Void = {},
+        onReadBoundary: (SourceReadBoundary) -> Void = { _ in },
         onLine: (UnsafeRawBufferPointer) -> Void
     ) -> FileTailer.ReadResult {
         if database != nil {
@@ -82,22 +89,23 @@ struct TranscriptReader: Sendable {
             return FileTailer.ReadResult(failed: true)
         }
         if frames != nil {
-            return frames!.read(onReset: onReset, onMalformed: onMalformed, onLine: onLine)
+            return frames!.read(onReset: onReset, onMalformed: onMalformed, onReadBoundary: onReadBoundary, onLine: onLine)
         }
         if compressed != nil {
-            return compressed!.read(onReset: onReset, onMalformed: onMalformed, onLine: onLine)
+            return compressed!.read(onReset: onReset, onMalformed: onMalformed, onReadBoundary: onReadBoundary, onLine: onLine)
         }
         if document != nil {
-            return document!.read(onReset: onReset, onDocument: onLine)
+            return document!.read(onReset: onReset, onReadBoundary: onReadBoundary, onDocument: onLine)
         }
         if headerPending {
             headerPending = false
             let path = plain!.path
             if let header = OmpHeader.headerLine(atPath: path, maxLineBytes: plain!.maxLineBytes) {
+                onReadBoundary(.now())
                 header.withUnsafeBytes { onLine($0) }
             }
         }
-        return plain!.read(onReset: onReset, onLine: onLine)
+        return plain!.read(onReset: onReset, onReadBoundary: onReadBoundary, onLine: onLine)
     }
 }
 
@@ -117,7 +125,11 @@ struct DocumentReader: Sendable {
         self.maxBytes = maxBytes
     }
 
-    mutating func read(onReset: () -> Void, onDocument: (UnsafeRawBufferPointer) -> Void) -> FileTailer.ReadResult {
+    mutating func read(
+        onReset: () -> Void,
+        onReadBoundary: (SourceReadBoundary) -> Void = { _ in },
+        onDocument: (UnsafeRawBufferPointer) -> Void
+    ) -> FileTailer.ReadResult {
         var result = FileTailer.ReadResult()
         let descriptor = Darwin.open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
         guard descriptor >= 0 else {
@@ -154,10 +166,15 @@ struct DocumentReader: Sendable {
         let buffer = UnsafeMutableRawBufferPointer.allocate(byteCount: max(1, size), alignment: 16)
         defer { buffer.deallocate() }
         var filled = 0
+        var reportedBoundary = false
         while filled < size {
             let count = SharedSourceIO.shared.pread(descriptor, into: UnsafeMutableRawBufferPointer(start: buffer.baseAddress! + filled, count: size - filled), offset: Int64(filled))
             if count < 0, errno == EINTR { continue }
             guard count > 0 else { break }
+            if !reportedBoundary {
+                result.recordReadBoundary(onReadBoundary: onReadBoundary)
+                reportedBoundary = true
+            }
             filled += count
         }
         result.bytesRead = filled

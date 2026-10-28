@@ -26,7 +26,13 @@ final class SnapshotMailbox: Sendable {
     func post(_ snapshot: SpeedSnapshot, events: [SpeedEvent] = []) {
         let shouldSchedule = state.withLock { state -> Bool in
             guard !state.closed else { return false }
-            state.snapshot = snapshot
+            var latestSnapshot = snapshot
+            if let pendingObservation = state.snapshot?.readObservation {
+                latestSnapshot.readObservation = latestSnapshot.readObservation.map {
+                    pendingObservation.merged(with: $0)
+                } ?? pendingObservation
+            }
+            state.snapshot = latestSnapshot
             state.events.append(contentsOf: events)
             if state.events.count > Self.maxQueuedEvents {
                 state.events.removeFirst(state.events.count - Self.maxQueuedEvents)

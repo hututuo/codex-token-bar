@@ -1,4 +1,5 @@
 using System.Buffers;
+using AgentSpeed.Core;
 using AgentSpeed.Core.Parsing;
 using Microsoft.Win32.SafeHandles;
 using ZstdSharp;
@@ -48,10 +49,11 @@ internal abstract class WholeFileTailer : TranscriptTailer
         _read = (length, writeUtc);
         Offset = 0;
         Lines.Clear();
+        var observation = SourceReadObservation.Capture(SourceReadMode.Log, sourceResolutionMs: null);
         var bytes = ReadWhole(handle, length, sink, cancellationToken);
         Offset = length;
         TotalBytesRead += bytes;
-        return new TailReadResult(wasRead && ResetsParser, length, writeUtc, bytes);
+        return new TailReadResult(wasRead && ResetsParser, length, writeUtc, bytes, bytes > 0 ? observation : null);
     }
 
     /// <summary>Whether a re-read must reset the parser first (it replays everything from the start).</summary>

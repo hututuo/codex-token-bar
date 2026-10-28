@@ -1,0 +1,8 @@
+{
+  "url": "https://speed-test.codexradar.com/protocol/REPORTING-WEBSOCKET.md",
+  "sha256": "9561dc5b2a1616a41197cb3c19a178deb18ded18a427fefa9eea2bf4ca3cebc6",
+  "fetched": "2026-10-25",
+  "service": "https://deng.codexradar.com",
+  "api": "https://speed-api.codexradar.com/api/agent-speed",
+  "subprotocol": "agent-speed-report.v1"
+}

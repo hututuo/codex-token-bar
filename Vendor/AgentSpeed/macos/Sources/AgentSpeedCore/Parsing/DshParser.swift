@@ -61,6 +61,8 @@ struct DshParser: Sendable {
             case .turnEnd:
                 state.setPhase(.idle, at: timestamp)
                 pendingStartMs = nil
+            case .localDisplayStop:
+                state.localDisplayStopped = true
             case .other:
                 break
             }

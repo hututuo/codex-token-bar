@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Text.Json.Serialization;
 
 namespace AgentSpeed.Core;
 
@@ -79,6 +80,9 @@ public sealed record AgentStatus(
     string? ParentId = null)
 {
     public ExecutionModes Modes { get; init; } = ExecutionModes.Empty;
+
+    /// <summary>Parser metadata that this response was explicitly interrupted or failed.</summary>
+    public bool ConfirmedStopped { get; init; }
 
     /// <summary>The agent's live cost rate (METRICS 9.5).</summary>
     public LiveCost LiveCost { get; init; }
@@ -195,6 +199,10 @@ public sealed record SpeedSnapshot(
     public Reporting.ReportLiveFacts Report { get; init; } = Reporting.ReportLiveFacts.Empty;
     public IReadOnlyList<ExecutionModeUsage> TodayModes { get; init; } = [];
     public IReadOnlyList<SourceModelRate> LiveModels { get; init; } = [];
+
+    /// <summary>One-use source read timing for newly committed responses, kept out of UI serialization.</summary>
+    [JsonIgnore]
+    public SourceReadObservation? SourceReadObservation { get; init; }
 
     public static SpeedSnapshot Empty { get; } = new(
         DateTimeOffset.MinValue,

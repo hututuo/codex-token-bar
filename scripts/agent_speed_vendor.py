@@ -17,6 +17,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def allowed(path):
     p = PurePosixPath(path)
+    if (p.parts[:3] == ("windows", "src", "AgentSpeed.Core")
+            and len(p.parts) > 3 and p.parts[3] in {"bin", "obj"}):
+        return False
     return (not p.is_absolute() and ".." not in p.parts and "\\" not in path
             and not path.startswith(EXCLUDES)
             and (path == "LICENSE" or any(path.startswith(scope + "/") for scope in SCOPES)))
@@ -51,19 +54,30 @@ def upstream_hashes(upstream):
 
 def load_lock(vendor):
     lock = json.loads((vendor / "UPSTREAM.json").read_text(encoding="utf-8"))
-    if lock.get("schemaVersion") != 1 or lock.get("repository") != REPOSITORY:
+    if lock.get("schemaVersion") != 2 or lock.get("repository") != REPOSITORY:
         raise ValueError("Unsupported Agent Speed provenance schema/repository")
     if not re.fullmatch(r"[0-9a-f]{40}", lock.get("commit", "")):
         raise ValueError("Upstream commit must be an exact SHA")
-    files, patches = lock.get("files", {}), lock.get("patches", {})
-    if not files or "LICENSE" not in files or set(patches) - set(files):
+    files = lock.get("files", {})
+    patches = lock.get("patches", {})
+    additions = lock.get("additions", {})
+    if (not files or "LICENSE" not in files or set(patches) - set(files)
+            or set(additions) & set(files) or set(additions) & set(patches)):
         raise ValueError("Incomplete upstream file/patch inventory")
     for path, sha in files.items():
         if not allowed(path) or not re.fullmatch(r"[0-9a-f]{64}", sha):
             raise ValueError("Invalid upstream file entry")
     for path, patch in patches.items():
-        if not isinstance(patch.get("reason"), str) or not patch["reason"].strip() or not re.fullmatch(r"[0-9a-f]{64}", patch.get("sha256", "")):
+        if (not allowed(path) or not isinstance(patch, dict)
+                or not isinstance(patch.get("reason"), str) or not patch["reason"].strip()
+                or not re.fullmatch(r"[0-9a-f]{64}", patch.get("sha256", ""))):
             raise ValueError("Every local patch needs a reason and SHA-256")
+    for path, addition in additions.items():
+        if not allowed(path) or not isinstance(addition, dict):
+            raise ValueError("Invalid local addition entry")
+        if (not isinstance(addition.get("reason"), str) or not addition["reason"].strip()
+                or not re.fullmatch(r"[0-9a-f]{64}", addition.get("sha256", ""))):
+            raise ValueError("Every local addition needs a reason and SHA-256")
     for scope in SCOPES:
         if not any(path.startswith(scope + "/") for path in files):
             raise ValueError("Missing upstream scope: " + scope)
@@ -80,6 +94,8 @@ def offline_check(vendor, lock):
     expected = dict(lock["files"])
     for path, patch in lock["patches"].items():
         expected[path] = patch["sha256"]
+    for path, addition in lock["additions"].items():
+        expected[path] = addition["sha256"]
     result = changes(expected, local_hashes(vendor))
     if any(result.values()):
         raise ValueError("Unrecorded vendor drift: " + json.dumps(result))
@@ -108,26 +124,34 @@ def main(argv=None):
     parser.add_argument("--remote", action="store_true", help="explicitly check public GitHub HEAD (release preflight)")
     parser.add_argument("--commit", help="exact reviewed SHA, required to record")
     parser.add_argument("--patch-reasons", type=Path, help="JSON map of every permitted divergent path to its reason")
+    parser.add_argument("--addition-reasons", type=Path, help="JSON map of every reviewed local-only added path to its reason")
     parser.add_argument("--reviewed", action="store_true", help="explicit acknowledgement after local patches and tests are reviewed")
     args = parser.parse_args(argv)
     vendor = args.vendor.resolve()
     try:
         if args.action == "record":
-            if not args.upstream or not args.patch_reasons or not args.reviewed or not re.fullmatch(r"[0-9a-f]{40}", args.commit or ""):
-                raise ValueError("record requires --upstream --commit --patch-reasons --reviewed")
+            if not args.upstream or not args.patch_reasons or not args.addition_reasons or not args.reviewed or not re.fullmatch(r"[0-9a-f]{40}", args.commit or ""):
+                raise ValueError("record requires --upstream --commit --patch-reasons --addition-reasons --reviewed")
             upstream = args.upstream.resolve()
             if git(upstream, "rev-parse", "HEAD") != args.commit:
                 raise ValueError("Reviewed SHA does not match upstream checkout")
             files, actual = upstream_hashes(upstream), local_hashes(vendor)
             delta = changes(files, actual)
-            if delta["added"] or delta["removed"]:
-                raise ValueError("Synchronize scoped files before recording: " + json.dumps(delta))
+            if delta["removed"]:
+                raise ValueError("Synchronize removed scoped files before recording: " + json.dumps(delta))
             reasons = json.loads(args.patch_reasons.read_text(encoding="utf-8"))
-            if set(reasons) != set(delta["modified"]) or any(not isinstance(r, str) or not r.strip() for r in reasons.values()):
+            if (not isinstance(reasons, dict) or set(reasons) != set(delta["modified"])
+                    or any(not isinstance(r, str) or not r.strip() for r in reasons.values())):
                 raise ValueError("Patch reasons must match every and only divergent file")
-            lock = {"schemaVersion": 1, "repository": REPOSITORY, "commit": args.commit,
+            addition_reasons = json.loads(args.addition_reasons.read_text(encoding="utf-8"))
+            if (not isinstance(addition_reasons, dict) or set(addition_reasons) != set(delta["added"])
+                    or any(not isinstance(r, str) or not r.strip() for r in addition_reasons.values())):
+                raise ValueError("Addition reasons must match every and only local added file")
+            lock = {"schemaVersion": 2, "repository": REPOSITORY, "commit": args.commit,
                     "scopes": list(SCOPES), "excludes": list(EXCLUDES), "files": files,
-                    "patches": {p: {"sha256": actual[p], "reason": reasons[p]} for p in sorted(reasons)}}
+                    "patches": {p: {"sha256": actual[p], "reason": reasons[p]} for p in sorted(reasons)},
+                    "additions": {p: {"sha256": actual[p], "reason": addition_reasons[p]}
+                                  for p in sorted(addition_reasons)}}
             # Validate all invariants before overwriting the small provenance file.
             if args.commit not in (vendor / "VENDOR.md").read_text(encoding="utf-8") or "Permission is hereby granted" not in (vendor / "LICENSE").read_text(encoding="utf-8"):
                 raise ValueError("Update VENDOR.md and preserve the license first")

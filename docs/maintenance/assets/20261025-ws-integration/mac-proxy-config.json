@@ -1,0 +1,6 @@
+{
+  "HTTPEnable": "0",
+  "HTTPSEnable": "0",
+  "ProxyAutoConfigEnable": "0",
+  "SOCKSEnable": "0"
+}

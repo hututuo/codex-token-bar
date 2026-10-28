@@ -56,6 +56,7 @@ internal sealed partial class MonitorCore : IDisposable
     private long _removedOversizedLines;
     private int _responsesSeen;
     private bool _partialHistory;
+    private SourceReadObservation? _pendingSourceReadObservation;
 
     public MonitorCore(
         MonitorConfiguration configuration,
@@ -561,7 +562,7 @@ internal sealed partial class MonitorCore : IDisposable
                 a.Live,
                 a.RecentSpeed,
                 UnixTime.FromMs(a.Info.LastLineMs ?? nowMs),
-                a.ParentId) { LiveCost = a.LiveCost, Modes = a.Info.Modes })
+                a.ParentId) { LiveCost = a.LiveCost, Modes = a.Info.Modes, ConfirmedStopped = a.Info.ConfirmedStopped })
             .ToList();
 
         var sources = Enum.GetValues<SourceKind>()
@@ -596,7 +597,13 @@ internal sealed partial class MonitorCore : IDisposable
             Report = frame.Report,
             LiveModels = frame.LiveModels,
             TodayModes = frame.TodayModes,
+            SourceReadObservation = observeLive ? _pendingSourceReadObservation : null,
         };
+        if (observeLive)
+        {
+            _pendingSourceReadObservation = null;
+        }
+
         return (snapshot, frame.Events);
     }
 
@@ -852,6 +859,12 @@ internal sealed partial class MonitorCore : IDisposable
             if (_enabled.Contains(response.Source))
             {
                 _engine.Upsert(response, isCompletion, seeded, liveNowMs);
+                if (!seeded)
+                {
+                    _pendingSourceReadObservation = SourceReadObservation.MergeEarliest(
+                        _pendingSourceReadObservation,
+                        prepared.Result.SourceReadObservation);
+                }
             }
 
             _observer?.OnResponse(response, isCompletion, seeded);
@@ -996,7 +1009,8 @@ internal sealed partial class MonitorCore : IDisposable
             parser.Phase,
             parser.InFlightStartMs,
             parser.LastLineMs,
-            _parents.GetValueOrDefault(parser.AgentId)) { Modes = parser.Modes });
+            _parents.GetValueOrDefault(parser.AgentId),
+            parser.ConfirmedStopped) { Modes = parser.Modes });
     }
 
     /// <summary>Applies one read of the OpenCode database; true when anything changed.</summary>
@@ -1014,6 +1028,13 @@ internal sealed partial class MonitorCore : IDisposable
         }
 
         long? liveNowMs = seeded ? null : Clock();
+        if (!seeded && update.Responses.Count > 0)
+        {
+            _pendingSourceReadObservation = SourceReadObservation.MergeEarliest(
+                _pendingSourceReadObservation,
+                update.SourceReadObservation);
+        }
+
         foreach (var (response, isCompletion) in update.Responses)
         {
             _responsesSeen++;
