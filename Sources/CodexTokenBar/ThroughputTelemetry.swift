@@ -532,6 +532,14 @@ actor BodySpeedSampleWriter {
         }
     }
 
+    func sidebarMedian(from url: URL, now: Double) throws -> SidebarBodyMedian {
+        let key = url.standardizedFileURL
+        let cache = try storeCache(for: key, now: now, retentionDays: 30)
+        caches[key] = cache
+        // At most one day of compact numeric buckets; no raw-body history scan.
+        return SidebarBodyMedian.project(try cache.store.read(now: now, days: 1), now: now)
+    }
+
     func trend(from url: URL, now: Double, days: Int) throws -> [BodySpeedTrendPoint] {
         let key = url.standardizedFileURL
         let cache = try storeCache(for: key, now: now, retentionDays: 30)

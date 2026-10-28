@@ -286,6 +286,19 @@ final class LiveRateMonitor: ObservableObject {
         lastModelSpeedSummaryAt = 0
     }
 
+    // Sidebar requests raw five-minute buckets independently of the dashboard's
+    // selectable range. Changing the home chart must not change this statistic.
+    #if DEBUG
+    @Published private(set) var sidebarMedianFixture: SidebarBodyMedian?
+    #endif
+    var sidebarBodyMedianSource: String? { speedDatabaseReady ? speedSourceIdentity : nil }
+    func readSidebarBodyMedian() async throws -> SidebarBodyMedian? {
+        guard let identity = sidebarBodyMedianSource, let url = speedDatabaseURL else { return nil }
+        let value = try await bodySpeedWriter.sidebarMedian(from: url, now: Date().timeIntervalSince1970)
+        guard sidebarBodyMedianSource == identity, speedDatabaseURL == url else { return nil }
+        return value
+    }
+
     func showSpeedTrend(_ visible: Bool, consumer: UUID) {
         if visible {
             let wasEmpty = speedTrendConsumers.isEmpty
@@ -1820,6 +1833,10 @@ extension LiveRateMonitor {
         modelSpeeds15m = speedCollector.completedBodySummaries(now: now, windowSeconds: 900)
         modelSpeeds30m = speedCollector.completedBodySummaries(now: now, windowSeconds: 1800)
         speedTrendPoints = points
+    }
+
+    func testSeedSidebarMedian(points: [BodySpeedTrendPoint], now: Double) {
+        sidebarMedianFixture = SidebarBodyMedian.project(points, now: now)
     }
 
     func testPrepareForLiveRateProcessing(

@@ -15,7 +15,7 @@ import { ModelTraceContent } from "../modelTrace/ModelTracePanel";
 import { DEFAULT_MODULE_VISIBILITY, DEFAULT_MODULE_ORDER, type SidebarModuleVisibility, type SidebarModule } from "./moduleVisibility";
 
 import { createSidebarHeightBudget, type SidebarContentMeasurement } from "./contentSizing";
-import { latestSidebarModelSpeeds, speedTimestamp } from "../components/liveRate/bodySpeedPresentation";
+import { SidebarBodyMedian } from "./SidebarBodyMedianCard";
 import { ObservedSpeedDetails } from "../components/liveRate/ObservedSpeedDetails";
 import { CacheUsageNotice } from "../components/cacheReminder/CacheUsageNotice";
 import { cacheAdviceTitle } from "../components/cacheReminder/cacheAdvicePresentation";
@@ -347,15 +347,6 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
   const { items: quotaItems, selection: quotaSelection } = useClientQuotaItems(scopeQuota(data));
   const { allowed: allowedClients } = useClientScope();
   const layout = savedLayout ?? migrateSidebarLayout(order, visibility, quotaSelection.order);
-  const [, expireSpeedReadings] = useReducer((tick: number) => tick + 1, 0);
-  const modelSpeeds = latestSidebarModelSpeeds(data.snapshot.latestModelSpeeds30m ?? []);
-  useEffect(() => {
-    if (!modelSpeeds.length) return;
-    // One deadline timer, not a polling loop; stale snapshots must still expire.
-    const expiresAt = Math.min(...modelSpeeds.map(s => s.lastMeasuredAt! * 1000 + 1800_000));
-    const timer = setTimeout(expireSpeedReadings, Math.max(1, expiresAt - Date.now() + 1));
-    return () => clearTimeout(timer);
-  }, [modelSpeeds]);
   const scopeHasCodex = allowedClients.includes("codex");
   const local = useClaudeLocalRuntime(allowedClients, liveRateEnabled);
   const localUsage = useMultiClientUsage();
@@ -426,7 +417,7 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
       const nearestCredit = prepareResetCreditsForDisplay(data.quota?.quota?.resetCredit?.credits ?? []).find(item => item.isCountdownEligible)?.credit;
       const moduleContent: Record<string, ReactNode> = {
         speed: <button className="qs-quota-trigger qs-rate-trigger" onClick={() => onOpen("quota", "usage")} aria-label="查看实时速率详情" title={rateLabel}><Ring label="t/s" percent={ratePercent} color="#78b7ff" modelRates={barRates}/><Value value={ratePercent === null ? "—" : formatLiveRateValue(totalRate)}/></button>,
-        tps: <>{scopeHasCodex && <SidebarBodySpeeds models={modelSpeeds} data={data.snapshot} onOpen={() => onOpen("quota", "speeds")}/>}</>,
+        tps: <>{scopeHasCodex && <SidebarBodyMedian sourceToken={data.sourceToken} active={state.mode !== "rest"} onOpen={() => onOpen("quota", "speeds")}/>}</>,
         modeltrace: <button className="qs-modeltrace-trigger" onClick={() => onOpen("modeltrace", "top")} title="打开 ModelTrace，手动检测模型"><svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 3 4 6v6c0 5 8 9 8 9s8-4 8-9V6l-8-3Z"/><path d="m8 12 3 3 5-6"/></svg>模型检测</button>,
         models: <button className="qs-model-trigger" onClick={() => onOpen("quota", "models")} aria-label="查看今日模型 Token 占比" title={modelTitle}>{modelStrip(false)}<span>模型占比</span></button>,
         tasks: <button className="qs-running-trigger" onClick={() => onOpen("running", "top")}><span className="qs-task-ring"><Value value={taskStatus === "ready" ? String(taskTotal) : "—"}/></span><span>{taskStatus === "ready" ? mainCount + " 主 · " + subCount + " 子" : "运行·未知"}</span></button>,
@@ -447,20 +438,6 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
       </>;
     }}</SidebarSummaryLayer>
   </>;
-}
-
-export function SidebarBodySpeeds({ models, data, onOpen }: { models: NonNullable<SidebarData["snapshot"]["latestModelSpeeds30m"]>; data?: SidebarData["snapshot"]; onOpen: () => void }) {
-  const windows = [{ label: "5分", values: data?.modelSpeeds5m }, { label: "15分", values: data?.modelSpeeds15m }, { label: "30分", values: data?.modelSpeeds30m }];
-  return <div className="qs-model-speeds">
-    <button type="button" onClick={onOpen} title="各模型最新正文 TPS 与5/15/30分钟均速 · 点击查看图表与记录">
-      <span>正文 TPS</span>
-      {models.map(model => <span className="qs-model-speed-block" key={model.model}>
-        <span className="qs-model-speed-row" title={`${model.model} · ${speedTimestamp(model.lastMeasuredAt)} · 最新一条正文`}><small style={{ color: modelUsageColor(model.model) }}>{model.model.replace(/^gpt-/, "")}</small><strong>{model.tokensPerSecond.toFixed(1)}</strong></span>
-        <span className="qs-model-speed-windows">{windows.map(w => { const value = w.values?.find(s => s.model === model.model); return <span key={w.label} title={value ? `${w.label}均速 ${value.tokensPerSecond.toFixed(1)} TPS · ${value.sampleCount}段正文` : "该时段暂无合格样本"}><small>{w.label}</small><b>{value?.tokensPerSecond.toFixed(0) ?? "—"}</b></span>; })}</span>
-      </span>)}
-      {!models.length && <small>—</small>}
-    </button>
-  </div>;
 }
 
 function Value({ value }: { value: string }) {

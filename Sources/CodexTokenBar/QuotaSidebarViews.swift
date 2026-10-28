@@ -416,7 +416,7 @@ struct QuotaSidebarRail: View {
             rateRing
         case .tps:
             if supportsCodex {
-                QuotaSidebarBodySpeedReadings(monitor: monitor, onOpen: { controller.select(.speeds) })
+                QuotaSidebarBodySpeedReadings(monitor: monitor, active: controller.interaction.expanded, onOpen: { controller.select(.speeds) })
             }
 
         case .clientUsage:
@@ -616,45 +616,6 @@ struct SidebarPulseButtonStyle: ButtonStyle {
             RoundedRectangle(cornerRadius: 11).fill(.white.opacity(configuration.isPressed ? 0.22 : 0))
                 .animation(configuration.isPressed ? nil : .easeOut(duration: reduceMotion ? 0.12 : 0.38), value: configuration.isPressed)
         }
-    }
-}
-
-struct QuotaSidebarBodySpeedReadings: View {
-    @ObservedObject var monitor: LiveRateMonitor
-    let onOpen: () -> Void
-    private func railAverage(_ model: String, values: [ModelSpeedSummary], label: String) -> some View {
-        VStack(spacing: 1) {
-            Text(label).foregroundStyle(.white.opacity(0.7))
-            Text(values.first { $0.model == model }.map { String(format: "%.0f", $0.tokensPerSecond) } ?? "—").foregroundStyle(.white).monospacedDigit()
-        }.font(.system(size: 8)).frame(maxWidth: .infinity)
-    }
-
-    var body: some View {
-        Button(action: onOpen) {
-                        VStack(spacing: 4) {
-                            Text("正文 TPS").font(.system(size: 9, weight: .semibold)).foregroundStyle(.white)
-                            if monitor.latestModelSpeeds30m.isEmpty {
-                                Text("—").font(.system(size: 10)).foregroundStyle(.gray)
-                            }
-                            ForEach(monitor.latestModelSpeeds30m) { model in
-                                VStack(spacing: 3) {
-                                    HStack(spacing: 3) {
-                                        Text(model.model.replacingOccurrences(of: "gpt-", with: "")).foregroundStyle(ModelUsagePresentation.color(for: model.model)).lineLimit(1).minimumScaleFactor(0.65).frame(width: 33, alignment: .leading)
-                                        Text("\(model.tokensPerSecond, specifier: "%.1f")").bold().monospacedDigit().lineLimit(1).minimumScaleFactor(0.8).frame(width: 30, alignment: .trailing)
-                                    }.font(.system(size: 9)).foregroundStyle(SidebarPalette.blue)
-                                    HStack(spacing: 0) {
-                                        railAverage(model.model, values: monitor.modelSpeeds5m, label: "5分")
-                                        railAverage(model.model, values: monitor.modelSpeeds15m, label: "15分")
-                                        railAverage(model.model, values: monitor.modelSpeeds30m, label: "30分")
-                                    }
-                                }.frame(width: 66).padding(.vertical, 2)
-                                    .background(GeometryReader { proxy in
-                                        Color.clear.preference(key: QuotaSidebarContentMeasurementKey.self,
-                                            value: QuotaSidebarContentMeasurement(speedRowHeight: proxy.size.height + 4))
-                                    }).help(model.model + " · 最新正文与各时段均速")
-                            }
-                        }.frame(maxWidth: .infinity).padding(.horizontal, 5).padding(.vertical, 4).contentShape(Rectangle())
-        }.buttonStyle(SidebarPulseButtonStyle()).help("各模型最新正文 TPS 与5/15/30分钟均速 · 点击查看记录")
     }
 }
 

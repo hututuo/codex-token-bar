@@ -160,6 +160,9 @@ pub(crate) fn require_window_label(
 }
 
 pub(crate) fn allows_window_label(command: &str, label: &str) -> bool {
+    if command == "read_sidebar_body_speed_buckets" {
+        return matches!(label, MAIN_WINDOW_LABEL | "quota-sidebar" | "quota-sidebar-detail");
+    }
     if ACTIVITY_SPEED_SETTINGS_COMMANDS.contains(&command) {
         return matches!(label, MAIN_WINDOW_LABEL | "quota-sidebar" | "quota-sidebar-detail");
     }
@@ -349,6 +352,16 @@ mod tests {
             assert!(allows_window_label(command, "main"));
             assert!(!allows_window_label(command, "floating"), "{command}");
             assert!(!allows_window_label(command, "status"), "{command}");
+        }
+    }
+
+    #[test]
+    fn sidebar_numeric_speed_buckets_have_narrow_authority() {
+        for label in ["main", "quota-sidebar", "quota-sidebar-detail"] {
+            assert!(allows_window_label("read_sidebar_body_speed_buckets", label));
+        }
+        for label in ["unknown", "floating-panel", "modeltrace"] {
+            assert!(!allows_window_label("read_sidebar_body_speed_buckets", label));
         }
     }
 

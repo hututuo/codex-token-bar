@@ -78,6 +78,15 @@ final class QuotaSidebarHeightBudgetTests: XCTestCase {
                     measurementKind: "completed_body", tokenizer: "o200k_base", bodyPhase: "final_answer")
             }
             monitor.testSeedBodySpeedDisplay(samples: samples, points: [], now: now)
+            let end = Int64(floor(now / 1800)) * 1800
+            let buckets = (0..<count).flatMap { index in
+                (0..<3).map { bucket in
+                    BodySpeedTrendPoint(bucketStart: end - 1800 + Int64(bucket) * 300,
+                        model: models[index], outputTokens: 100, durationSeconds: 2,
+                        sampleCount: 2, tokensPerSecond: 50)
+                }
+            }
+            monitor.testSeedSidebarMedian(points: buckets, now: now)
         }
         seed(1)
         let controller = QuotaSidebarController(settings: defaults)
@@ -113,7 +122,9 @@ final class QuotaSidebarHeightBudgetTests: XCTestCase {
         let third = try XCTUnwrap(controller.railPanel).frame.height
         try snapshot("native-3-models.png")
         XCTAssertGreaterThan(third, second + 10, "A second additional model must resize the native frame")
-        XCTAssertLessThan(first, 650, "Measured rail should remain compact with model detection entry")
+        // A mini trend is ~92pt versus the old ~40pt numeric row. The
+        // budget deliberately reserves one additional row of the same size.
+        XCTAssertLessThan(first, 750, "Mini trend plus one reserved model row must fit a compact rail")
         controller.select(.settings); settle()
         try snapshot("native-settings-page.png", detail: true)
         controller.select(.speeds)
