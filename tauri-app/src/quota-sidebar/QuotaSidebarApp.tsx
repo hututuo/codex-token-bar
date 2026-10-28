@@ -1,3 +1,6 @@
+import { useQuotaMarkerMorph } from "./useQuotaMarkerMorph";
+import { useRecentBodySpeeds } from "./useRecentBodySpeeds";
+import { ClientScopeBoundary } from "../multiClient/useClientScope";
 import { SpeedDisplayControls, useSpeedDisplayPreferences } from "../components/liveRate/SpeedDisplayControls";
 import { useActivitySpeedMode, selectedActivityRates } from "../multiClient/activitySpeedMode";
 import { ClientActivitySpeedPanel, ClaudeLocalTasks, useClaudeLocalRuntime } from "../multiClient/ClaudeLocalRuntime";
@@ -74,11 +77,13 @@ interface Presentation { data: SidebarData; radar: SidebarRadar; state: SidebarS
 const railLabel = "quota-sidebar";
 const detailLabel = "quota-sidebar-detail";
 
-export function QuotaSidebarApp() {
+export function QuotaSidebarApp() { return <ClientScopeBoundary surface="sidebar"><QuotaSidebarSurface/></ClientScopeBoundary>; }
+function QuotaSidebarSurface() {
   return new URLSearchParams(location.search).get("surface") === detailLabel ? <DetailSurface /> : <RailSurface />;
 }
 
 function RailSurface() {
+  const railElement = useRef<HTMLElement>(null);
   const sidebar = useSidebarLayout();
   const [display, setDisplay] = useState(INACTIVE_DISPLAY_SURFACES);
   const [rateFullScale, setRateFullScale] = useState(() => sanitizeRateFullScale(DEFAULT_TOKEN_RATE_FULL_SCALE));
@@ -320,8 +325,9 @@ function RailSurface() {
     return () => { clearInterval(timer); reduced.removeEventListener("change", refresh); };
   }, [display.quotaSidebarEnabled, display.quotaSidebarSide]);
   useEffect(() => { publisher.current?.update(presentation, display.quotaSidebarEnabled && state.mode === "detail"); }, [presentation, display.quotaSidebarEnabled, state.mode]);
+  useQuotaMarkerMorph(railElement, state.mode !== "rest", display.quotaSidebarEnabled && !(state.mode === "detail" && state.tab === "settings"));
   if (!display.quotaSidebarEnabled) return null;
-  return <main className={sidebarRailClassName(display.quotaSidebarSide, state.mode) + (state.mode === "detail" && state.tab === "settings" ? " qs-settings-compare" : "")} style={{"--qs-compare-height": `${compactHeight}px`} as CSSProperties} onPointerDown={startDrag} onPointerEnter={enter} onPointerLeave={leave} data-dragging={dragging} aria-label="额度侧栏">
+  return <main ref={railElement} className={sidebarRailClassName(display.quotaSidebarSide, state.mode) + (state.mode === "detail" && state.tab === "settings" ? " qs-settings-compare" : "")} style={{"--qs-compare-height": `${compactHeight}px`} as CSSProperties} onPointerDown={startDrag} onPointerEnter={enter} onPointerLeave={leave} data-dragging={dragging} aria-label="额度侧栏">
     <SidebarRailContent layout={sidebar.layout} highlightedItem={state.tab === "settings" ? highlightedItem : null} data={compactData} radar={radar} rateFullScale={rateFullScale} liveRateEnabled={display.liveRateEnabled} state={state} error={error ?? sidebar.error} onDismissReminder={dismissReminder} onPin={() => dispatch({ type: "pin" })} onRefresh={requestQuotaRefresh} onOpen={(tab, section) => dispatch({ type: "open", tab, section })}  onContentMeasurement={measureContent} />
   </main>;
 }
@@ -360,7 +366,8 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
   const taskTotal = mainCount + subCount;
   const localReady = !!local.capturedAt && allowedClients.some(c => local.sourceAvailable[c]);
   const taskStatus = hasClaude ? localReady ? (scopeHasCodex ? data.runningThreads.status : "ready" as const) : scopeHasCodex ? "stale" as const : "unavailable" as const : data.runningThreads.status;
-  const layoutItems = visibleSidebarItems(layout, quotaItems, scopeHasCodex || hasClaude).filter(id=>scopeHasCodex||id!=="tps");
+  const recentBodySpeeds=useRecentBodySpeeds(data.snapshot.latestModelSpeeds30m??[]);
+  const layoutItems = visibleSidebarItems(layout, quotaItems, scopeHasCodex || hasClaude).filter(id=>(scopeHasCodex&&recentBodySpeeds.length>0)||id!=="tps");
   const compactItems = visibleSidebarItems(layout, quotaItems, scopeHasCodex || hasClaude, "compact").filter(id=>scopeHasCodex||id!=="tps");
   const clientRates = [...new Set(allowedClients)].map(client=>({model:"client:"+client,tokensPerSecond:
     client==="codex" && speedMode==="bar" ? data.snapshot.tokensPerSecond : local.modelRates.filter(r=>r.client===client).reduce((n,r)=>n+r.outputTps,0)})).filter(r=>r.tokensPerSecond>0);
@@ -417,7 +424,7 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
       const nearestCredit = prepareResetCreditsForDisplay(data.quota?.quota?.resetCredit?.credits ?? []).find(item => item.isCountdownEligible)?.credit;
       const moduleContent: Record<string, ReactNode> = {
         speed: <button className="qs-quota-trigger qs-rate-trigger" onClick={() => onOpen("quota", "usage")} aria-label="查看实时速率详情" title={rateLabel}><Ring label="t/s" percent={ratePercent} color="#78b7ff" modelRates={barRates}/><Value value={ratePercent === null ? "—" : formatLiveRateValue(totalRate)}/></button>,
-        tps: <>{scopeHasCodex && <SidebarBodyMedian sourceToken={data.sourceToken} active={state.mode !== "rest"} onOpen={() => onOpen("quota", "speeds")}/>}</>,
+        tps: <>{scopeHasCodex && <SidebarBodyMedian latest={recentBodySpeeds} sourceToken={data.sourceToken} active={state.mode !== "rest"} onOpen={() => onOpen("quota", "speeds")}/>}</>,
         modeltrace: <button className="qs-modeltrace-trigger" onClick={() => onOpen("modeltrace", "top")} title="打开 ModelTrace，手动检测模型"><svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 3 4 6v6c0 5 8 9 8 9s8-4 8-9V6l-8-3Z"/><path d="m8 12 3 3 5-6"/></svg>模型检测</button>,
         models: <button className="qs-model-trigger" onClick={() => onOpen("quota", "models")} aria-label="查看今日模型 Token 占比" title={modelTitle}>{modelStrip(false)}<span>模型占比</span></button>,
         tasks: <button className="qs-running-trigger" onClick={() => onOpen("running", "top")}><span className="qs-task-ring"><Value value={taskStatus === "ready" ? String(taskTotal) : "—"}/></span><span>{taskStatus === "ready" ? mainCount + " 主 · " + subCount + " 子" : "运行·未知"}</span></button>,

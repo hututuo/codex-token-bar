@@ -48,6 +48,7 @@ import {
   floatingModelUsageValue,
   FLOATING_GUIDE_DEMO_MODEL_BREAKDOWNS,
   floatingTodayModelUsageItems,
+  compactFloatingModelItems,
   type FloatingModelUsagePage,
 } from "./floatingModelUsage";
 import type { FloatingRunningModelDetailsPlacement } from "./floatingWindowPlacement";
@@ -488,11 +489,12 @@ function floatingPagedContentDescriptors(
     const modelRows = guideMode && snapshot.todayModelBreakdowns.length === 0
       ? FLOATING_GUIDE_DEMO_MODEL_BREAKDOWNS
       : snapshot.todayModelBreakdowns;
-    const items = floatingTodayModelUsageItems(
+    const sourceItems = floatingTodayModelUsageItems(
       modelRows,
       priceModel,
       { showPlaceholders: todayModelUsageReady(snapshot), mergeAutoReview: false },
     );
+    const items = compactFloatingModelItems(sourceItems);
     const pageCount = floatingModelUsagePageCount("cost", items);
     return Array.from({ length: pageCount }, (_, modelPageIndex) => ({
       group,
@@ -697,12 +699,12 @@ function FloatingTodayModelUsageRow({
   showPlaceholders: boolean;
   style: CSSProperties;
 }) {
-  const allItems = floatingTodayModelUsageItems(rows, priceModel, { showPlaceholders, mergeAutoReview: page === "share" });
+  const allItems = compactFloatingModelItems(floatingTodayModelUsageItems(rows, priceModel, { showPlaceholders, mergeAutoReview: page === "share" }));
   const items = floatingModelUsagePageItems(page, allItems, pageIndex);
   const overflowText = page === "share" ? floatingModelUsageOverflowText(allItems) : null;
   return (
     <div
-      aria-label={`${floatingModelUsageAccessibilityText(page, rows, priceModel, { showPlaceholders, mergeAutoReview: page === "share" })}${demo ? "（示例，仅用于引导展示）" : ""}`}
+      aria-label={`${"今日模型" + (page === "cost" ? "费用" : "占比") + "：" + allItems.map(item=>item.label + " " + floatingModelUsageValue(item,page)).join("，")}${demo ? "（示例，仅用于引导展示）" : ""}`}
       className={`floating-row floating-model-usage${page === "share" ? " floating-model-usage--share" : " floating-model-usage--cost"}`}
       style={style}
     >

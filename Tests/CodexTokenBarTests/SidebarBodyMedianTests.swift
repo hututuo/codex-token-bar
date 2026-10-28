@@ -54,7 +54,7 @@ final class SidebarBodyMedianTests: XCTestCase {
     }
     @MainActor func testNativeMiniViewFitsSidebarAndRenders() throws {
         let result=SidebarBodyMedian.project(values,now:end)
-        let view=SidebarBodyMedianContent(snapshot:result,error:nil,onOpen:{})
+        let view=SidebarBodyMedianContent(snapshot:result,latest:[.init(model:"gpt-6.1-sol",tokensPerSecond:72,sampleCount:1,outputTokens:720,durationSeconds:10,lastMeasuredAt:end)],error:nil,onOpen:{})
             .frame(width:88).padding(.vertical,8).background(Color.black)
         let host=NSHostingView(rootView:view)
         host.frame=CGRect(x:0,y:0,width:88,height:160)

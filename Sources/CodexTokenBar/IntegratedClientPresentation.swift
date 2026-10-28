@@ -1,9 +1,10 @@
 import Foundation
 import AgentSpeedCore
 
-/// One persisted source selection shared by the dashboard and all sidebar levels.
+/// Dashboard range and sidebar range are independent, persisted choices.
 enum ClientDisplayScope {
     static let key = "multiClient.displayScope.v1"
+    static let sidebarKey = "multiClient.sidebarDisplayScope.v1"
     static func clients(_ raw: String, available: [String]) -> Set<String> {
         if raw == "all" { return Set(["codex"] + available) }
         if raw == "codex" || UsageClient(rawValue: raw) != nil { return [raw] }

@@ -270,8 +270,9 @@ html.quota-sidebar-fixed-canvas,html.quota-sidebar-fixed-canvas body,html.quota-
 .qs-compact-details[open] .qs-compact-preview{border-top:1px solid #ffffff12;padding:12px 15px}
 .qs-compact-preview>span{font-size:11px;color:#aebba3;line-height:1.7}
 .quota-sidebar-document .qs-compact-preview .qs-bars-preview{position:relative;margin:0!important;min-height:0;max-height:none;flex:none;border-radius:10px;background:#050805;overflow:visible!important}
-.quota-sidebar-document .integrated-client-cap{width:5px;height:5px;border-radius:50%;top:0}
-.quota-sidebar-document .integrated-client-cap[data-window="5h"]{height:2.5px;border-radius:5px 5px 0 0}
+.quota-sidebar-document .integrated-client-cap{width:5px;height:5px;border-radius:50%;top:0;left:-.5px;opacity:1}
+.quota-sidebar-document .integrated-quota-value-track{padding-top:2.5px;box-sizing:content-box}
+.qs-quota-marker-morph{position:absolute;inset:0;z-index:12;pointer-events:none}
 .qs-bars .qs-cache-indicator{left:1px;top:8px}
 .qs-layout-name{display:flex;align-items:center;gap:5px;flex:1;min-width:0;font-size:11px}
 .qs-level-toggles{display:flex;align-items:center;gap:10px;font-size:10px;flex:none}

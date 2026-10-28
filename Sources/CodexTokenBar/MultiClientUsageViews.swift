@@ -82,12 +82,12 @@ struct MultiClientUsageSettingsView: View {
 struct MultiClientDiscoveryNotice: View {
     @ObservedObject private var store = MultiClientUsageStore.shared
     var body: some View {
-        ForEach(Array(store.newDetections.prefix(1))) { detection in
+        ForEach(Array(store.newDetections.filter { $0.client != .claudeCode }.prefix(1))) { detection in
             HStack(spacing: 12) {
                 Image(systemName: "plus.circle.fill").foregroundStyle(.tint)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("发现 \(detection.client.displayName)").font(.callout.bold())
-                    Text("启用后在本机统计 Token，随时可关闭。").font(.caption).foregroundStyle(.secondary)
+                    Text("仅读取本地数据，不产生任何网络请求。可随时关闭。").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button("启用") { store.enable(detection.client) }
@@ -115,7 +115,7 @@ struct ClientQuotaReadingView: View {
 }
 
 struct MultiClientUsageSidebarRows: View {
-    @AppStorage(ClientDisplayScope.key) private var clientScope = "codex"
+    @AppStorage(ClientDisplayScope.sidebarKey) private var clientScope = "all"
     var codexTokens: Int64? = nil
     var onOpen: (() -> Void)? = nil
     @AppStorage("multiClient.overviewSidebar") private var showOverview = false

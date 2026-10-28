@@ -172,7 +172,7 @@ export function MultiClientUsageTable({ snapshot }: { snapshot: Snapshot }) {
   </tr>))}</tbody></table></div>;
 }
 const discoveryKey = "multiClient.discoveryAcknowledged.v1";
-function useDiscoveryAcknowledgements() {
+export function useDiscoveryAcknowledgements() {
   const read = () => { try { const values=JSON.parse(localStorage.getItem(discoveryKey) ?? "[]"); return new Set<string>(Array.isArray(values) ? values : []); } catch { return new Set<string>(); } };
   const [seen, setSeen] = useState(read);
   useEffect(()=>{ const update=()=>setSeen(read()); window.addEventListener(discoveryKey, update); window.addEventListener("storage",update); return ()=>{window.removeEventListener(discoveryKey,update);window.removeEventListener("storage",update);};},[]);
@@ -181,8 +181,8 @@ function useDiscoveryAcknowledgements() {
 export function MultiClientDiscoveryNotice() {
   const {snapshot, save, busy} = useMultiClientUsage();
   const {seen, acknowledge} = useDiscoveryAcknowledgements();
-  return <>{(snapshot.detections ?? []).filter(d=>!seen.has(d.client) && !snapshot.preferences.some(p=>p.client===d.client && p.enabled)).slice(0,1).map(d=><div className="multi-client-discovery" key={d.client}>
-    <div><strong>发现 {clientNames[d.client as UsageClient] ?? d.client}</strong><small>启用后在本机统计 Token，随时可关闭。</small></div>
+  return <>{(snapshot.detections ?? []).filter(d=>d.client!=="claudeCode" && !seen.has(d.client) && !snapshot.preferences.some(p=>p.client===d.client && p.enabled)).slice(0,1).map(d=><div className="multi-client-discovery" key={d.client}>
+    <div><strong>发现 {clientNames[d.client as UsageClient] ?? d.client}</strong><small>仅读取本地数据，不产生任何网络请求。可随时关闭。</small></div>
     <button disabled={busy} onClick={async()=>{if (await save(snapshot.preferences.map(p=>p.client===d.client ? {...p,enabled:true,showSidebar:true,showQuota:p.client==="claudeCode"}:p))) acknowledge(d.client);}}>启用</button>
     <button onClick={()=>acknowledge(d.client)}>暂不启用</button>
   </div>)}</>;

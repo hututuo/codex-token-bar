@@ -13,7 +13,7 @@ struct QuotaSidebarModuleSettingsView: View {
     @ObservedObject private var upstreamActivity = AgentSpeedDisplayRuntime.shared
     @AppStorage(ActivitySpeedDisplayMode.key) private var speedModeRaw = ActivitySpeedDisplayMode.bar.rawValue
     @AppStorage(ClientQuotaSelection.key) private var selectionRaw = ""
-    @AppStorage(ClientDisplayScope.key) private var clientScope = "codex"
+    @AppStorage(ClientDisplayScope.sidebarKey) private var clientScope = "all"
     @AppStorage(TokenRateScaleSettings.key) private var fullScale = TokenRateScaleSettings.defaultValue
     @State private var compactPreviewOpen = false
     @State private var draggedItem: QuotaSidebarItem?
@@ -95,7 +95,7 @@ struct QuotaSidebarModuleSettingsView: View {
                         }))
                 }
             }.onPreferenceChange(SidebarSettingsRowHeightsKey.self) { if rowHeights != $0 { rowHeights = $0 } }
-            Text("显示范围跟随主页面；隐藏的项目保留顺序，设置入口固定在底部。")
+            Text("侧栏独立显示已启用的客户端；隐藏项目保留顺序，设置入口固定在底部。")
                 .font(.system(size: 10)).foregroundStyle(.white.opacity(0.65))
             ActivitySpeedDisplayPicker()
             DisclosureGroup("额度填充颜色") {
@@ -160,7 +160,7 @@ struct QuotaSidebarSettingsRailPreview: View {
     @ObservedObject private var runtime = ClaudeLocalRuntime.shared
     @ObservedObject private var upstreamActivity = AgentSpeedDisplayRuntime.shared
     @AppStorage(ActivitySpeedDisplayMode.key) private var speedModeRaw = ActivitySpeedDisplayMode.bar.rawValue
-    @AppStorage(ClientDisplayScope.key) private var scope = "codex"
+    @AppStorage(ClientDisplayScope.sidebarKey) private var scope = "all"
     @AppStorage(ClientQuotaSelection.key) private var selectionRaw = ""
     @AppStorage(TokenRateScaleSettings.key) private var fullScale = TokenRateScaleSettings.defaultValue
     @State private var shares: [FloatingTodayModelUsageItem] = []

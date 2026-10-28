@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { createContext, createElement, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { emit, listen } from "@tauri-apps/api/event";
 import {
   clientNames,
@@ -74,9 +74,16 @@ function useSharedChoice(key: string, fallback: string) {
   ] as const;
 }
 
+const ClientScopeSurface = createContext<"dashboard" | "sidebar">("dashboard");
+export function ClientScopeBoundary({surface,children}:{surface:"dashboard"|"sidebar";children:ReactNode}) {
+  return createElement(ClientScopeSurface.Provider,{value:surface},children);
+}
+export const sidebarScopeKey = "multiClient.sidebarDisplayScope.v1";
+
 export function useClientScope() {
+  const surface = useContext(ClientScopeSurface);
   const { snapshot } = useMultiClientUsage(),
-    [raw, setScope] = useSharedChoice(scopeKey, "codex");
+    [raw, setScope] = useSharedChoice(surface === "sidebar" ? sidebarScopeKey : scopeKey, surface === "sidebar" ? "all" : "codex");
   const available = snapshot.preferences
       .filter(
         (p) =>

@@ -331,6 +331,14 @@ enum FloatingTodayModelUsagePresentation {
         }
     }
 
+    static func compactItems(_ items: [FloatingTodayModelUsageItem]) -> [FloatingTodayModelUsageItem] {
+        items.filter { !ModelUsagePresentation.isAutoReviewModelKey(String($0.id.split(separator: "|").last ?? Substring($0.id))) }.map { item in
+            .init(id: item.id, label: item.label.replacingOccurrences(of: #"(?i)^GPT[- ]*"#, with: "", options: .regularExpression),
+                  tokens: item.tokens, share: item.share, costUSD: item.costUSD, usesIndependentQuota: item.usesIndependentQuota,
+                  referenceCostUSD: item.referenceCostUSD, color: item.color, knownPartialCostUSD: item.knownPartialCostUSD)
+        }
+    }
+
     static func overflowDetailText(
         items: [FloatingTodayModelUsageItem],
         visibleLimit: Int = visibleItemLimit
@@ -373,12 +381,13 @@ struct FloatingTodayModelUsageRow: View {
         let displayRows = usesGuideDemo
             ? FloatingTodayModelUsagePresentation.guideDemoRows
             : rows
-        let allItems = FloatingTodayModelUsagePresentation.items(
+        let sourceItems = FloatingTodayModelUsagePresentation.items(
             from: displayRows,
             fallbackModel: fallbackModel,
             showPlaceholders: showPlaceholders,
             mergeAutoReview: page == .share
         )
+        let allItems = FloatingTodayModelUsagePresentation.compactItems(sourceItems)
         let items = FloatingTodayModelUsagePresentation.pageItems(
             for: page,
             items: allItems,

@@ -96,7 +96,10 @@ struct ClientModelCostPeriods: Equatable {
         }
         var groups = FloatingTodayModelUsagePresentation.dashboardFamilyGroups(from: original)
         let others = Dictionary(grouping: values.filter { !$0.id.hasPrefix("codex|") }, by: { String($0.id.split(separator: "|", maxSplits: 1).first ?? "") })
-        groups += others.sorted { $0.key < $1.key }.map { .init(id: $0.key, title: $0.key == "claudeCode" ? "Claude" : ClientDisplayScope.title($0.key), items: $0.value) }
+        groups += others.sorted { $0.key < $1.key }.flatMap { entry -> [FloatingTodayModelUsagePresentation.DashboardFamilyGroup] in
+            if ["claudeCode", "claudeDesktop"].contains(entry.key) { return ClaudeModelPresentation.groups(entry.value, client: entry.key) }
+            return [.init(id: entry.key, title: ClientDisplayScope.title(entry.key), items: entry.value)]
+        }
         return groups
     }
     static func make(codex: DashboardSnapshot, todayCodex: [ModelTokenBreakdown],
@@ -113,7 +116,7 @@ struct ClientModelCostPeriods: Equatable {
                 }
             }
             result += external.filter { allowed.contains($0.client.rawValue) }.map { row in
-                .init(id: row.client.rawValue + "|" + row.model, label: row.model.replacingOccurrences(of: "claude-", with: "").replacingOccurrences(of: "-", with: " "),
+                .init(id: row.client.rawValue + "|" + row.model, label: ClaudeModelPresentation.identity(row.model)?.label ?? row.model.replacingOccurrences(of: "-", with: " "),
                     tokens: Int(row.inputTokens + row.outputTokens), share: 0,
                     costUSD: row.unpricedRequests == 0 ? row.apiCostUSD : nil,
                     usesIndependentQuota: false, referenceCostUSD: nil, color: ModelUsagePresentation.color(for: row.model),

@@ -84,9 +84,9 @@ export function PairedQuotaRing({
       )}
     </g>
   );
-  const clientLegend = (i: QuotaItem) => (
+  const clientLegend = (i: QuotaItem, ids = [i.id]) => (
     <span className="integrated-ring-legend" title={clientTitle(i.client)}>
-      <i style={{ background: clientBrand[i.client] }} />
+      <i data-quota-marker-end={ids.join(" ")} style={{ background: clientBrand[i.client] }} />
       {i.client === "claudeCode" || i.client === "claudeDesktop" ? "Claude" : clientTitle(i.client)}
     </span>
   );
@@ -156,7 +156,7 @@ export function PairedQuotaRing({
       </div>
       <div className="integrated-ring-captions">
         <div className="integrated-ring-windows">{windowLegend(left)}{right && windowLegend(right)}</div>
-        <div className="integrated-ring-clients">{clientLegend(left)}{right && right.client !== left.client && clientLegend(right)}</div>
+        <div className="integrated-ring-clients">{clientLegend(left, right && right.client === left.client ? [left.id, right.id] : [left.id])}{right && right.client !== left.client && clientLegend(right)}</div>
       </div>
     </div>
   );

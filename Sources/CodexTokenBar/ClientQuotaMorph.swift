@@ -67,7 +67,7 @@ enum ClientQuotaMorphGeometry {
     }
 
     static func strokes(_ routes: [ClientQuotaMorphRoute]) -> [MatchedStrokeMorphRoute] {
-        routes.flatMap { route in
+        let strokes = routes.flatMap { route in
             parts(half: route.half, fraction: route.fraction).flatMap { part -> [MatchedStrokeMorphRoute] in
                 let expandedPoints = points(ring: route.ring, track: route.track, half: part.half, progress: 0)
                 let collapsedPoints = points(ring: route.ring, track: route.track, half: part.half, progress: 1)
@@ -96,6 +96,15 @@ enum ClientQuotaMorphGeometry {
                 return strokes
             }
         }
+        let markers: [MatchedStrokeMorphRoute] = routes.compactMap { route in
+            guard let marker = route.marker, let color = route.markerColor else { return nil }
+            let end = CGPoint(x: route.track.midX, y: route.track.minY + 2.5)
+            func dot(_ point: CGPoint) -> [CGPoint] { [point, CGPoint(x: point.x + 0.001, y: point.y)] }
+            return .init(id: "marker:" + route.id, participantID: "marker:" + route.id,
+                expanded: .init(points: dot(CGPoint(x: marker.midX, y: marker.midY)), width: 5, opacity: 1),
+                collapsed: .init(points: dot(end), width: 5, opacity: 1), color: color)
+        }
+        return strokes + markers
     }
 
 }
@@ -111,6 +120,8 @@ struct ClientQuotaMorphRoute {
     var expandedTrackOpacity: Float = 0.15
     var collapsedTrackOpacity: Float = 0.12
     var fillOpacity: Float = 1
+    var marker: CGRect? = nil
+    var markerColor: NSColor? = nil
 }
 
 struct ClientQuotaMorphColorSegment {

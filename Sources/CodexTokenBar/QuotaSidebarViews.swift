@@ -54,20 +54,15 @@ struct ClientQuotaRailTrack: View {
     let height: Double
     let fillHex: String
     var body: some View {
-        MatchedStrokeMorphParticipant(ids: [item.id], size: CGSize(width: ClientSidebarMetrics.markerDiameter, height: height)) {
-        SidebarValueBar(fraction: item.remaining.map { $0 / 100 },
-            color: Color(nsColor: NSColor(clientHex: fillHex)), vertical: true, expected: item.expected)
-            .frame(width: ClientSidebarMetrics.trackWidth, height: height)
-            .overlay(alignment: .top) {
-                Circle().fill(Color(nsColor: NSColor(clientHex: item.brand).blended(withFraction: 0.2, of: .white) ?? NSColor(clientHex: item.brand)))
-                    .frame(width: ClientSidebarMetrics.markerDiameter, height: ClientSidebarMetrics.markerDiameter)
-                    .mask(alignment: .top) {
-                        Rectangle().frame(height: item.window == "5h" ? ClientSidebarMetrics.markerDiameter / 2 : ClientSidebarMetrics.markerDiameter)
-                    }
-                    .allowsHitTesting(false)
-            }
-            .frame(width: ClientSidebarMetrics.markerDiameter, height: height)
-        }
+        ZStack(alignment: .top) {
+            MatchedStrokeMorphParticipant(ids: [item.id], size: CGSize(width: ClientSidebarMetrics.trackWidth, height: height - 2.5)) {
+                SidebarValueBar(fraction: item.remaining.map { $0 / 100 },
+                    color: Color(nsColor: NSColor(clientHex: fillHex)), vertical: true, expected: item.expected)
+            }.padding(.top, 2.5)
+            MatchedStrokeMorphParticipant(ids: ["marker:" + item.id], size: CGSize(width: 5, height: 5)) {
+                Circle().fill(Color(nsColor: NSColor(clientHex: item.brand))).frame(width: 5, height: 5)
+            }.allowsHitTesting(false)
+        }.frame(width: ClientSidebarMetrics.markerDiameter, height: height)
     }
 }
 
@@ -174,7 +169,7 @@ struct QuotaSidebarRail: View {
     @ObservedObject private var claudeRuntime = ClaudeLocalRuntime.shared
     @ObservedObject private var upstreamActivity = AgentSpeedDisplayRuntime.shared
     @AppStorage(ActivitySpeedDisplayMode.key) private var speedModeRaw = ActivitySpeedDisplayMode.bar.rawValue
-    @AppStorage(ClientDisplayScope.key) private var clientScope = "codex"
+    @AppStorage(ClientDisplayScope.sidebarKey) private var clientScope = "all"
     @AppStorage(ClientQuotaSelection.key) private var quotaSelectionRaw = ""
     private var quotaSelection: ClientQuotaSelection { .decode(quotaSelectionRaw) }
     private var supportsCodex: Bool { clientScope == "codex" || clientScope == "all" }
@@ -204,9 +199,12 @@ struct QuotaSidebarRail: View {
             includeFiveHour: quotaSelection.enabled.contains("codex:5h"), preview: ClientPreviewMode.simulated)
             .filter { allowed.contains($0.client) || ($0.client == "claudeCode" && allowed.contains("claudeDesktop")) }
     }
+    @State private var bodySpeedNow = Date().timeIntervalSince1970
+    private var recentBodySpeeds: [ModelSpeedSummary] { RecentBodySpeed.readings(monitor.latestModelSpeeds30m, now: bodySpeedNow) }
+    private var bodySpeedDeadlineKey: String { (monitor.sidebarBodyMedianSource ?? "") + monitor.latestModelSpeeds30m.map { "\($0.model):\($0.lastMeasuredAt ?? 0):\($0.tokensPerSecond)" }.joined(separator: "|") }
     private var sidebarItems: [QuotaSidebarItem] {
         controller.sidebarLayout.arranged(availableQuotaClients: availableQuotaItems.map(\.client))
-            .filter { (supportsCodex || $0 != .tps) && (supportsCodex || localLive.enabled || !$0.requiresCodexLiveData) }
+            .filter { ((supportsCodex && !recentBodySpeeds.isEmpty) || $0 != .tps) && (supportsCodex || localLive.enabled || !$0.requiresCodexLiveData) }
     }
     private var compactItems: [QuotaSidebarItem] { sidebarItems.filter { controller.sidebarLayout.isVisible($0, in: .compact) } }
     private var expandedItems: [QuotaSidebarItem] { sidebarItems.filter { controller.sidebarLayout.isVisible($0, in: .expanded) } }
@@ -250,7 +248,8 @@ struct QuotaSidebarRail: View {
                 let ring = proxy[source], track = proxy[target]
                 guard viewport?.contains(ring) != false else { return nil }
                 return ClientQuotaMorphRoute(id: item.id, ring: ring, track: track, half: half,
-                    fraction: item.remaining.map { $0 / 100 }, color: NSColor(clientHex: quotaSelection.colors[item.id] ?? item.fill))
+                    fraction: item.remaining.map { $0 / 100 }, color: NSColor(clientHex: quotaSelection.colors[item.id] ?? item.fill),
+                    marker: anchors["marker:" + item.id].map { proxy[$0] }, markerColor: NSColor(clientHex: item.brand))
             }
         }
         for item in [QuotaSidebarItem.speed, .tasks] where sidebarItems.contains(item) {
@@ -389,6 +388,14 @@ struct QuotaSidebarRail: View {
                     routes: morphRoutes(anchors, in: proxy))
             }.allowsHitTesting(false).accessibilityHidden(true)
         }
+        .task(id: bodySpeedDeadlineKey) {
+            bodySpeedNow = Date().timeIntervalSince1970
+            while !Task.isCancelled, let expiry = RecentBodySpeed.nextExpiry(monitor.latestModelSpeeds30m, now: bodySpeedNow) {
+                do { try await Task.sleep(for: .seconds(max(0.002, expiry - Date().timeIntervalSince1970))) } catch { return }
+                bodySpeedNow = Date().timeIntervalSince1970
+            }
+        }
+        .onChange(of: recentBodySpeeds.map(\.model)) { _, _ in updateCompactLayout() }
         .onChange(of: selectedModelRows, initial: true) { _, rows in
             shares = FloatingTodayModelUsagePresentation.items(from: rows,
                 fallbackModel: .gpt56Sol, mergeAutoReview: false).filter { $0.share > 0 }
@@ -416,7 +423,7 @@ struct QuotaSidebarRail: View {
             rateRing
         case .tps:
             if supportsCodex {
-                QuotaSidebarBodySpeedReadings(monitor: monitor, active: controller.interaction.expanded, onOpen: { controller.select(.speeds) })
+                QuotaSidebarBodySpeedReadings(monitor: monitor, latest: recentBodySpeeds, active: controller.interaction.expanded, onOpen: { controller.select(.speeds) })
             }
 
         case .clientUsage:
@@ -648,7 +655,7 @@ struct QuotaSidebarDetailView: View {
     @ObservedObject private var upstreamActivity = AgentSpeedDisplayRuntime.shared
     @AppStorage(ActivitySpeedDisplayMode.key) private var speedModeRaw = ActivitySpeedDisplayMode.bar.rawValue
     @State private var clientProjectionCache = ClientDashboardProjectionCache()
-    @AppStorage(ClientDisplayScope.key) private var clientScope = "codex"
+    @AppStorage(ClientDisplayScope.sidebarKey) private var clientScope = "all"
 
     @ObservedObject var controller: QuotaSidebarController
     @ObservedObject var store: CodexUsageStore

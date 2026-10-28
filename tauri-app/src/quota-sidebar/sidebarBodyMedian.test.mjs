@@ -28,9 +28,9 @@ test('models stay separate and invalid rows cannot distort scale',async()=>withS
  assert.deepEqual(result.series.map(s=>s.slots[5].median),[300,30]);assert.ok(medianBounds(result.series[1]).high<100);
  assert.equal(sidebarBodyMedian(values,NaN).series.length,0);
 }));
-test('rail labels median, preserves missing latest, and renders independent gap segments',async()=>withSsrModules(async load=>{
+test('rail shows latest single reading with independent median trend and explicit gaps',async()=>withSsrModules(async load=>{
  const {sidebarBodyMedian}=await load('/src/quota-sidebar/sidebarBodyMedian.ts');const {SidebarBodyMedianContent}=await load('/src/quota-sidebar/SidebarBodyMedianCard.tsx');
- const html=renderToStaticMarkup(React.createElement(SidebarBodyMedianContent,{snapshot:sidebarBodyMedian(values,19800),error:null,onOpen(){}}));
- assert.match(html,/中位数 · 近3小时/);assert.match(html,/<b>—<\/b>/);assert.match(html,/采样不足/);assert.match(html,/polyline/);assert.doesNotMatch(html,/15分|30分.*均速|最新一条/);
- const failed=renderToStaticMarkup(React.createElement(SidebarBodyMedianContent,{snapshot:null,error:'读取失败',onOpen(){}}));assert.match(failed,/role="status"/);assert.match(failed,/读取失败/);
+ const html=renderToStaticMarkup(React.createElement(SidebarBodyMedianContent,{snapshot:sidebarBodyMedian(values,19800),latest:[{model:"gpt-6.1-sol",tokensPerSecond:72}],error:null,onOpen(){}}));
+ assert.match(html,/中位数 · 近3小时/);assert.match(html,/<b>72.0<\/b>/);assert.match(html,/中位 —/);assert.match(html,/采样不足/);assert.match(html,/polyline/);assert.doesNotMatch(html,/15分|30分.*均速|最新一条/);
+ const failed=renderToStaticMarkup(React.createElement(SidebarBodyMedianContent,{snapshot:null,latest:[{model:'gpt-6.1-sol',tokensPerSecond:72}],error:'读取失败',onOpen(){}}));assert.match(failed,/role="status"/);assert.match(failed,/读取失败/);assert.match(failed,/<b>72.0<\/b>/,'history read failure cannot hide a trusted latest reading');
 }));

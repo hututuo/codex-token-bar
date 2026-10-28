@@ -12988,3 +12988,11 @@ details.session-management-banner {
 .client-color-menu { position:absolute; right:0; top:100%; z-index:10; display:flex; flex-direction:column; min-width:155px; padding:6px; border:1px solid var(--line-strong); border-radius:8px; background:var(--panel-solid); box-shadow:0 6px 18px #0003; }
 .client-color-menu button { display:flex; align-items:center; gap:8px; border:0; background:transparent; color:var(--text); padding:6px; text-align:left; cursor:pointer; }
 .client-color-menu i { width:16px; height:16px; border-radius:4px; }
+
+/* One harness row owns its quota windows and its existing tools. */
+.quota-client-row:has(.quota-strip--embedded){grid-template-columns:84px minmax(120px,1fr) auto;align-items:center}
+.quota-client-row .quota-client-windows{grid-template-columns:repeat(auto-fit,minmax(min(130px,100%),1fr))}
+.quota-strip.quota-strip--embedded{padding:0;border:0;gap:10px;flex-wrap:nowrap}
+.quota-strip--embedded>.quota-pace{flex:0 1 250px;margin-left:0}
+.quota-strip--embedded>.quota-reset-card{flex:0 0 130px}
+@media(max-width:850px){.quota-client-row:has(.quota-strip--embedded){grid-template-columns:70px minmax(0,1fr)}.quota-strip--embedded{grid-column:2;justify-content:flex-end}}

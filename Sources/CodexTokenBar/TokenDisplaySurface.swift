@@ -590,12 +590,13 @@ struct TokenDisplayCard: View {
                 return [PagedContentDescriptor(group: group, modelPageIndex: 0)]
             }
 
-            let items = FloatingTodayModelUsagePresentation.items(
+            let sourceItems = FloatingTodayModelUsagePresentation.items(
                 from: displayModelBreakdowns,
                 fallbackModel: fallbackPriceModel,
                 showPlaceholders: snapshot.hasPreciseTokenUsage,
                 mergeAutoReview: false
             )
+            let items = FloatingTodayModelUsagePresentation.compactItems(sourceItems)
             let pageCount = FloatingTodayModelUsagePresentation.pageCount(
                 for: .cost,
                 items: items

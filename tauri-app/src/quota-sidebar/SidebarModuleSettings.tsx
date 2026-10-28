@@ -127,7 +127,7 @@ export function SidebarModuleSettings({ layout, catalog, selection, disabled = f
           }}/>{quotaWindowTitle(window.window)}</label>)}</div>}
       </li>;
     })}</ol>
-    <p>显示范围跟随主页面；隐藏项目保留顺序，设置入口固定在底部。</p>
+    <p>侧栏独立显示已启用的客户端；隐藏项目保留顺序，设置入口固定在底部。</p>
     {speedSettings && <div>{speedSettings}</div>}
     {colorSettings && <details><summary>额度填充颜色</summary>{colorSettings}</details>}
     {ghost && createPortal(<div className="qs-layout-drag-ghost" aria-hidden="true" style={{ left: ghost.x, top: ghost.y }}>{ghost.title}</div>, document.body)}

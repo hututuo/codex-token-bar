@@ -1,3 +1,7 @@
+import { SpeedLeaderboardMovie } from "./SpeedLeaderboardMovie";
+export { SpeedLeaderboardMovie } from "./SpeedLeaderboardMovie";
+import { HarnessNewFeatures, newFeaturesKey } from "./HarnessNewFeatures";
+import { useMultiClientUsage, useDiscoveryAcknowledgements, clientNames, type UsageClient } from "../../multiClient/MultiClientUsage";
 import { useEffect, useRef, useState } from "react";
 import { callCommandStrict } from "../../api/command";
 import { isTauriRuntimeAvailable } from "../../platform/runtime";
@@ -141,45 +145,6 @@ export function AgentSpeedReportingDashboardStatus({onOpenSettings}:{onOpenSetti
   return <AgentSpeedReportingNotice status={status} busy={busy} onRetry={()=>void retry()} onOpenSettings={onOpenSettings}/>;
 }
 
-/** A local recording: displaying the invitation does not contact the leaderboard. */
-export function SpeedLeaderboardMovie() {
-  const video = useRef<HTMLVideoElement>(null);
-  const intent = useRef<"automatic" | "play" | "pause">("automatic");
-  const [playing, setPlaying] = useState(false);
-  useEffect(() => {
-    const element = video.current;
-    if (!element) return;
-    const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)");
-    const reconcile = () => {
-      if (!document.hidden && intent.current !== "pause" && (intent.current === "play" || !reduced?.matches)) {
-        void element.play().catch(() => {});
-      } else element.pause();
-    };
-    reconcile();
-    document.addEventListener("visibilitychange", reconcile);
-    reduced?.addEventListener("change", reconcile);
-    return () => {
-      element.pause();
-      document.removeEventListener("visibilitychange", reconcile);
-      reduced?.removeEventListener("change", reconcile);
-    };
-  }, []);
-  return <div className="speed-report-movie">
-    <video ref={video} src="/speed-leaderboard/leaderboard.mp4" poster="/speed-leaderboard/poster.jpg"
-      muted loop playsInline preload="metadata" aria-label="速蹬排行榜真实录屏"
-      onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} />
-    <div className="speed-report-movie-caption"><span>排行榜实录 · 非当前实时数据</span>
-      <button type="button" aria-label={playing ? "暂停排行榜演示" : "播放排行榜演示"} onClick={() => {
-        const element = video.current;
-        if (!element) return;
-        intent.current = playing ? "pause" : "play";
-        if (playing) element.pause();
-        else if (!document.hidden) { if (element.ended) element.currentTime = 0; void element.play().catch(() => {}); }
-      }}>{playing ? "Ⅱ" : "▷"}</button>
-    </div>
-  </div>;
-}
-
 export function AgentSpeedInvitationCard({ username, busy = false, error = "", onJoin, onDismiss, onOpenSettings }: {
   username: string; busy?: boolean; error?: string; onJoin: (nickname: string) => void; onDismiss: () => void; onOpenSettings: () => void;
 }) {
@@ -224,37 +189,62 @@ export function AgentSpeedInvitationCard({ username, busy = false, error = "", o
 }
 
 export function AgentSpeedReportingInvitation({ onOpenSettings }: { onOpenSettings: () => void }) {
+  const {snapshot,save} = useMultiClientUsage();
+  const {seen,acknowledge} = useDiscoveryAcknowledgements();
+  const candidate=snapshot.detections?.find(d=>d.client==="claudeCode"&&!seen.has(d.client)&&!snapshot.preferences.some(p=>p.client===d.client&&p.enabled));
+  const [featuresHandled,setFeaturesHandled]=useState(()=>{try{return localStorage.getItem(newFeaturesKey)==="true";}catch{return false;}});
+  const [offeredClient,setOfferedClient]=useState<UsageClient|null>(null);
+  const [localEnabled,setLocalEnabled]=useState(false);
+  const [offerLeaderboard,setOfferLeaderboard]=useState(false);
+  const [details,setDetails]=useState(false);
   const [visible, setVisible] = useState(false);
   const [username, setUsername] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => {
-    if (!isTauriRuntimeAvailable()) return;
+    if (!isTauriRuntimeAvailable() || visible || (featuresHandled && !candidate)) return;
     let disposed = false;
     let pending = false;
     const offerWhenVisible = () => {
       if (document.hidden || pending || disposed) return;
       pending = true;
-      void read().then(async status => {
-        if (disposed || document.hidden || status.enabled || status.invitationHandled) return;
-        await callCommandStrict("dismiss_agent_speed_invitation");
-        if (!disposed) { setUsername(status.username); setVisible(true); }
+      // A reporting status failure must never block a local-only client choice.
+      void read().catch(() => null).then(status => {
+        const leaderboard = status !== null && !status.enabled && !featuresHandled;
+        if (disposed || document.hidden || (!leaderboard && !candidate)) return;
+        if (!disposed) {
+          setOfferLeaderboard(leaderboard);setOfferedClient((candidate?.client as UsageClient | undefined) ?? null);
+          setLocalEnabled(false);setDetails(false);setUsername(status?.username ?? "");setVisible(true);
+        }
       }).catch(() => {}).finally(() => { pending = false; });
     };
     offerWhenVisible();
     document.addEventListener("visibilitychange", offerWhenVisible);
     return () => { disposed = true; document.removeEventListener("visibilitychange", offerWhenVisible); };
-  }, []);
+  }, [candidate?.client,featuresHandled,visible]);
+  function finishFeatures(){
+    try{localStorage.setItem(newFeaturesKey,"true");}catch{}
+    setFeaturesHandled(true);if(offeredClient)acknowledge(offeredClient);setVisible(false);setDetails(false);
+    void callCommandStrict("dismiss_agent_speed_invitation").catch(() => {});
+  }
+  async function enableLocal(){
+    if(!offeredClient)return;setBusy(true);setError("");
+    try{const ok=await save(snapshot.preferences.map(p=>p.client===offeredClient?{...p,enabled:true,showSidebar:true,showQuota:true}:p));
+      if(ok){acknowledge(offeredClient);setLocalEnabled(true);}else setError("本地设置未保存，请重试");
+    }finally{setBusy(false);}
+  }
   async function join(nickname: string) {
     setBusy(true); setError("");
     try {
       const next=await callCommandStrict<AgentSpeedReportingStatus>("set_agent_speed_reporting_enabled", { enabled: true, username: nickname });
       publishAgentSpeedStatus(next);
-      setVisible(false);
+      finishFeatures();
     } catch (e) { setError(String(e)); }
     finally { setBusy(false); }
   }
   if (!visible) return null;
+  if(!details)return <HarnessNewFeatures offerLeaderboard={offerLeaderboard} localClient={offeredClient?clientNames[offeredClient]:null}
+    localEnabled={localEnabled} busy={busy} error={error} onEnableLocal={()=>void enableLocal()} onJoin={()=>setDetails(true)} onDismiss={finishFeatures}/>;
   return <AgentSpeedInvitationCard username={username} busy={busy} error={error} onJoin={nickname => void join(nickname)}
-    onDismiss={() => setVisible(false)} onOpenSettings={() => { setVisible(false); onOpenSettings(); }} />;
+    onDismiss={finishFeatures} onOpenSettings={() => { finishFeatures(); onOpenSettings(); }} />;
 }

@@ -30,8 +30,8 @@ export function SidebarCompactBars({ items, quotas, selection, ratePercent, mode
         aria-label={taskLabel} title={taskLabel} />}
       {id.startsWith("quota:") && quotaWindowsForClient(quotas, id.slice(6)).map(item =>
         <span key={item.id} data-sidebar-item={id} data-quota-id={item.id} className="integrated-quota-track" style={{ height: layout.barHeight }} title={`${item.client} · ${item.window} ${item.remaining === null ? item.status : Math.round(item.remaining) + "%"}`}>
-          <i className="integrated-client-cap" data-window={item.window} aria-hidden="true" style={{ background: `color-mix(in srgb, ${clientBrand[item.client] ?? "#888"} 80%, white)` }} />
-          <span className="integrated-quota-value-track" style={{ height: layout.barHeight }}>
+          <i className="integrated-client-cap" data-quota-marker-start={item.id} aria-hidden="true" style={{ background: clientBrand[item.client] ?? "#888" }} />
+          <span className="integrated-quota-value-track" style={{ height: layout.barHeight - 2.5 }}>
             <span className={`qs-bar ${item.remaining === null ? "qs-unknown" : ""}`}>
               <i style={{ height: `${item.remaining ?? 0}%`, background: selection.colors[item.id] ?? quotaFill(item) }} />
               {expected[item.id] != null && <b className="qs-pace-mark" style={{ bottom: `${expected[item.id]! * 100}%` }} />}

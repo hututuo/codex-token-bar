@@ -250,12 +250,12 @@ function StatsStripView({
             <div className="stats-model-cost-groups">
               {modelFamilies.map(group => <div className="stats-model-cost-group" key={group.id}>
                 <span className="stats-model-cost-group-label">{group.label}</span>
-                <div className={group.id === "6" ? "stats-model-cost-primary-grid" : "stats-model-cost-secondary-grid"}>
-                  {group.items.map(item => <span className={group.id === "6" ? "stats-model-cost-primary-card" : "stats-model-cost-secondary-chip"} key={item.key} style={{"--model-color":item.color} as CSSProperties}
+                <div className={(group.id === "6" || group.id.endsWith(":latest")) ? "stats-model-cost-primary-grid" : "stats-model-cost-secondary-grid"}>
+                  {group.items.map(item => <span className={(group.id === "6" || group.id.endsWith(":latest")) ? "stats-model-cost-primary-card" : "stats-model-cost-secondary-chip"} key={item.key} style={{"--model-color":item.color} as CSSProperties}
                     title={modelCostScope === "lifetime" ? "双击修改该模型颜色" : undefined}
                     role={modelCostScope === "lifetime" ? "button" : undefined} tabIndex={modelCostScope === "lifetime" ? 0 : undefined}
-                    onDoubleClick={modelCostScope === "lifetime" ? event => setEditingColor({ model: floatingModelUsageKey(item.key), x: event.clientX, y: event.clientY }) : undefined}
-                    onKeyDown={modelCostScope === "lifetime" ? event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); setEditingColor({ model: floatingModelUsageKey(item.key), x: rect.left, y: rect.bottom }); } } : undefined}>
+                    onDoubleClick={modelCostScope === "lifetime" ? event => setEditingColor({ model: floatingModelUsageKey(item.key.split("|").at(-1)), x: event.clientX, y: event.clientY }) : undefined}
+                    onKeyDown={modelCostScope === "lifetime" ? event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); setEditingColor({ model: floatingModelUsageKey(item.key.split("|").at(-1)), x: rect.left, y: rect.bottom }); } } : undefined}>
                     <i style={{backgroundColor:item.color}}/><em>{item.label}</em><b>{floatingModelUsageValue(item,"cost")}</b><small>{formatTokens(item.tokens)} · {floatingModelUsageValue(item,"share")}</small>
                   </span>)}
                 </div>

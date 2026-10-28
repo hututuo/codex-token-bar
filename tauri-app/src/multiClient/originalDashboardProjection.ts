@@ -1,3 +1,4 @@
+import { claudeModelIdentity, claudeModelGroups } from "../components/claudeModelPresentation";
 import type { DashboardSnapshot, RecentUsagePoint, ModelTokenBreakdown } from '../types/dashboard';
 import type { Snapshot, Summary } from './MultiClientUsage';
 import { projectClientDays } from './integratedClientModel';
@@ -14,7 +15,9 @@ export function clientCostGroups(items: FloatingModelUsageItem[]) {
   const codex = items.filter(x => x.key.startsWith('codex|')).map(x => ({...x,key:x.key.slice(6)}));
   const groups: {id:string;label:string;items:FloatingModelUsageItem[]}[] = dashboardModelFamilyGroups(codex);
   for (const client of [...new Set(items.filter(x=>!x.key.startsWith('codex|')).map(x=>x.key.split('|')[0]))].sort()) {
-    groups.push({id:client,label:client==='claudeCode'?'Claude':clientNames[client as keyof typeof clientNames] ?? client,items:items.filter(x=>x.key.startsWith(client+'|'))});
+    const rows=items.filter(x=>x.key.startsWith(client+'|'));
+    if(["claudeCode","claudeDesktop"].includes(client))groups.push(...claudeModelGroups(rows,client));
+    else groups.push({id:client,label:clientNames[client as keyof typeof clientNames] ?? client,items:rows});
   }
   return groups;
 }
@@ -22,7 +25,7 @@ export function clientCostPeriods(codex: DashboardSnapshot, snapshot: Snapshot, 
   const make = (rows:Summary[], original:ModelTokenBreakdown[]) => {
     const items:FloatingModelUsageItem[] = allowed.includes('codex') ? floatingTodayModelUsageItems(original,'gpt56Sol',{showPlaceholders:false,mergeAutoReview:false}).map(x=>({...x,key:'codex|'+x.key})) : [];
     for(const row of rows.filter(x=>allowed.includes(x.client))) items.push({key:row.client+'|'+row.model,
-      label:row.model.replace(/^claude-/,'').replaceAll('-',' '),tokens:row.inputTokens+row.outputTokens,share:0,
+      label:claudeModelIdentity(row.model)?.label ?? row.model.replaceAll('-',' '),tokens:row.inputTokens+row.outputTokens,share:0,
       costUSD:(row.unpricedRequests??0)>0?null:row.apiCostUSD??null,usesIndependentQuota:false,referenceCostUSD:null,color:modelUsageColor(row.model)});
     const total=Math.max(1,items.reduce((n,x)=>n+x.tokens,0));return items.filter(x=>x.tokens>0).map(x=>({...x,share:x.tokens/total}));
   };

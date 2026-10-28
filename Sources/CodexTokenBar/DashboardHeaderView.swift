@@ -1429,9 +1429,9 @@ struct DashboardModelCostRow: View {
                         LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 108), spacing: 7), count: 4), alignment: .leading, spacing: 7) {
                             ForEach(group.items) { item in
                                 Group {
-                                    if group.id == "6" { DashboardPrimaryModelCostCard(item: item) }
+                                    if group.id == "6" || group.id.hasSuffix(":latest") { DashboardPrimaryModelCostCard(item: item) }
                                     else { DashboardSecondaryModelCostChip(item: item) }
-                                }.modifier(ModelColorEditModifier(model: ModelUsagePresentation.autoReviewUnderlyingModelKey(for: item.id) ?? item.id, enabled: scope == .lifetime))
+                                }.modifier(ModelColorEditModifier(model: ModelUsagePresentation.autoReviewUnderlyingModelKey(for: item.id) ?? String(item.id.split(separator: "|", maxSplits: 1).last ?? Substring(item.id)), enabled: scope == .lifetime))
                             }
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }

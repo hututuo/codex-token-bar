@@ -14,18 +14,18 @@ test('mini median only polls when visible, fences late source replies, and repor
  try{const {createRoot}=await import('react-dom/client');root=createRoot(dom.document.body);
  await withSsrModules(async load=>{const {SidebarBodyMedian}=await load('/src/quota-sidebar/SidebarBodyMedianCard.tsx');
  let source={canonicalHomeKey:'A',physicalHomeKey:'A',transitionGeneration:1};
- const render=active=>React.act(async()=>root.render(React.createElement(SidebarBodyMedian,{active,sourceToken:{...source},onOpen(){}})));
+ const render=active=>React.act(async()=>root.render(React.createElement(SidebarBodyMedian,{active,sourceToken:{...source},latest:[{model:"NEW",tokensPerSecond:72}],onOpen(){}})));
  await render(false);await React.act(async()=>fire(150));assert.equal(reads,0);
  await render(true);await React.act(async()=>fire(150));assert.equal(reads,1);
  for(let i=0;i<10;i++)await render(true);assert.equal(timers.size,0);assert.equal(reads,1);
  source={canonicalHomeKey:'B',physicalHomeKey:'B',transitionGeneration:2};await render(true);
- const payload=model=>({asOf:18000,points:[16200,16500,16800].map(bucketStart=>({bucketStart,model,outputTokens:30,durationSeconds:1,sampleCount:2,tokensPerSecond:30}))});
- await React.act(async()=>pending.shift().resolve(payload('OLD')));assert.doesNotMatch(dom.document.body.textContent,/OLD/);
+ const payload=(model,rate=30)=>({asOf:18000,points:[16200,16500,16800].map(bucketStart=>({bucketStart,model,outputTokens:rate,durationSeconds:1,sampleCount:2,tokensPerSecond:rate}))});
+ await React.act(async()=>pending.shift().resolve(payload('NEW',500)));assert.doesNotMatch(dom.document.body.textContent,/中位 500/);
  await React.act(async()=>fire(150));assert.equal(reads,2);
  await React.act(async()=>pending.shift().resolve(payload('NEW')));assert.match(dom.document.body.textContent,/NEW/);assert.equal([...timers.values()].filter(t=>t.ms===60000).length,1);
  await React.act(async()=>{Object.defineProperty(dom.document,'hidden',{value:true,configurable:true});dom.document.dispatchEvent(new dom.Event('visibilitychange'));});assert.equal(timers.size,0);
  await React.act(async()=>{Object.defineProperty(dom.document,'hidden',{value:false,configurable:true});dom.document.dispatchEvent(new dom.Event('visibilitychange'));});await React.act(async()=>fire(150));
- await React.act(async()=>pending.shift().reject(new Error('test read failure')));assert.match(dom.document.body.textContent,/读取失败/);assert.doesNotMatch(dom.document.body.textContent,/NEW/);
+ await React.act(async()=>pending.shift().reject(new Error('test read failure')));assert.match(dom.document.body.textContent,/读取失败/);assert.match(dom.document.body.textContent,/72.0最新/);assert.doesNotMatch(dom.document.body.textContent,/中位 30/);
  await render(false);assert.equal(timers.size,0);
  });
  }finally{if(root)await React.act(async()=>root.unmount());for(const[k,desc]of previous)desc?Object.defineProperty(globalThis,k,desc):delete globalThis[k];dom.close();}

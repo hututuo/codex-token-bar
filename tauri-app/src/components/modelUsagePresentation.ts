@@ -1,3 +1,4 @@
+import { claudeModelIdentity } from "./claudeModelPresentation";
 import { readSpeedColors, CLIENT_COLORS, CLIENT_TITLES } from "./liveRate/speedDisplay.ts";
 import { detectedOfficialAPIPriceModel } from "../settings/quotaPriceModel.ts";
 
@@ -23,6 +24,7 @@ export interface ModelUsageSlice {
 }
 
 const FIXED_COLORS: Record<string, string> = {
+  "claude-fable": "#d68cb5",
   "claude-opus": "#b89add",
   "claude-sonnet": "#dca16c",
   "claude-haiku": "#5cbcaf",
@@ -161,9 +163,8 @@ export function modelUsageColor(keyOrModel: string | null | undefined): string {
   const fixed = FIXED_COLORS[key];
   if (fixed) return fixed;
   // Color families do not change model IDs, grouping, or historical pricing.
-  const words = key.toLowerCase().split(/[^a-z0-9]+/);
-  const family = words.includes("claude") ? ["opus", "sonnet", "haiku"].find(value => words.includes(value)) : undefined;
-  if (family) return FIXED_COLORS[`claude-${family}`];
+  const claude = claudeModelIdentity(key);
+  if (claude) return FIXED_COLORS[`claude-${claude.family}`];
   let hash = 0x811c9dc5;
   for (const byte of new TextEncoder().encode(key)) {
     hash ^= byte;

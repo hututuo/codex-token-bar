@@ -4,6 +4,7 @@ import SwiftUI
 /// log scanner, network client, schema, timer publisher, or animation timeline.
 struct QuotaSidebarBodySpeedReadings: View {
     @ObservedObject var monitor: LiveRateMonitor
+    var latest: [ModelSpeedSummary] = []
     var active = true
     let onOpen: () -> Void
     @State private var exposed = false
@@ -22,7 +23,7 @@ struct QuotaSidebarBodySpeedReadings: View {
         return loadedSource == source ? snapshot : nil
     }
     var body: some View {
-        SidebarBodyMedianContent(snapshot: displayedSnapshot,
+        SidebarBodyMedianContent(snapshot: displayedSnapshot, latest: latest,
             error: loadedSource == source ? error : nil, onOpen: onOpen).equatable()
             .background(AnimationVisibilityProbe { exposed = $0 })
             .task(id: request) {
@@ -46,9 +47,10 @@ struct QuotaSidebarBodySpeedReadings: View {
 
 struct SidebarBodyMedianContent: View, Equatable {
     let snapshot: SidebarBodyMedian?
+    var latest: [ModelSpeedSummary] = []
     let error: String?
     let onOpen: () -> Void
-    nonisolated static func == (a: Self, b: Self) -> Bool { a.snapshot == b.snapshot && a.error == b.error }
+    nonisolated static func == (a: Self, b: Self) -> Bool { a.snapshot == b.snapshot && a.latest == b.latest && a.error == b.error }
 
     var body: some View {
         Button(action: onOpen) {
@@ -56,30 +58,32 @@ struct SidebarBodyMedianContent: View, Equatable {
                 Text("正文 TPS").font(.system(size: 9, weight: .semibold))
                 Text("中位数 · 近3小时").font(.system(size: 8)).foregroundStyle(.white.opacity(0.75))
                 if let error { Text(error).font(.system(size: 9)).foregroundStyle(.orange) }
-                else if let snapshot, !snapshot.series.isEmpty {
-                    ForEach(snapshot.series) { series in
+                if !latest.isEmpty {
+                    ForEach(latest) { reading in
+                        let series = snapshot?.series.first { $0.model == reading.model }
                         VStack(alignment: .leading, spacing: 3) {
                             HStack(spacing: 3) {
-                                Circle().fill(ModelUsagePresentation.color(for: series.model)).frame(width: 4, height: 4)
-                                Text(series.model.replacingOccurrences(of: "gpt-", with: ""))
+                                Circle().fill(ModelUsagePresentation.color(for: reading.model)).frame(width: 4, height: 4)
+                                Text(reading.model.replacingOccurrences(of: "gpt-", with: ""))
                                     .font(.system(size: 9, weight: .medium)).lineLimit(1).minimumScaleFactor(0.7)
                             }
                             HStack(alignment: .firstTextBaseline, spacing: 3) {
-                                Text(series.current.map { String(format: "%.1f", $0.median) } ?? "—")
+                                Text(reading.tokensPerSecond, format: .number.precision(.fractionLength(1)))
                                     .font(.system(size: 18, weight: .semibold)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
-                                Text("中位").font(.system(size: 7)).foregroundStyle(.white.opacity(0.75))
+                                Text("最新").font(.system(size: 7)).foregroundStyle(.white.opacity(0.75))
                             }
-                            SidebarBodyMedianLine(series: series).frame(height: 32)
-                            Text(Self.interval(snapshot.end)).font(.system(size: 7)).monospacedDigit()
+                            if let series { SidebarBodyMedianLine(series: series).frame(height: 32) }
+                            else { Text("趋势待采样").font(.system(size: 7)).foregroundStyle(.secondary).frame(height: 32) }
+                            Text(series?.current.map { "中位 \(String(format: "%.1f", $0.median))" } ?? "中位 —").font(.system(size: 7)).monospacedDigit()
                                 .foregroundStyle(.white.opacity(0.75)).frame(maxWidth: .infinity)
                         }.frame(width: 66).padding(.vertical, 2)
                             .background(GeometryReader { proxy in
                                 Color.clear.preference(key: QuotaSidebarContentMeasurementKey.self,
                                     value: QuotaSidebarContentMeasurement(speedRowHeight: proxy.size.height + 6))
                             })
-                            .help(Self.description(series, end: snapshot.end))
+                            .help(series.map { Self.description($0, end: snapshot?.end ?? 0) } ?? "\(reading.model) · 最新 \(reading.tokensPerSecond) TPS")
                             .accessibilityElement(children: .ignore)
-                            .accessibilityLabel(Self.description(series, end: snapshot.end))
+                            .accessibilityLabel(series.map { Self.description($0, end: snapshot?.end ?? 0) } ?? "\(reading.model) · 最新 \(reading.tokensPerSecond) TPS")
                     }
                 } else { Text("等待采样").font(.system(size: 9)).foregroundStyle(.white.opacity(0.7)) }
             }.foregroundStyle(.white).frame(maxWidth: .infinity)

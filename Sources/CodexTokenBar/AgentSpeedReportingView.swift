@@ -126,14 +126,28 @@ struct AgentSpeedReportingInvitation: View {
     @State private var naming = false
     @State private var nickname = ""
     @State private var invitationReady = false
+    @ObservedObject private var clients = MultiClientUsageStore.shared
+    @AppStorage("product.newFeatures.localClientsSpeed.v1") private var featuresHandled = false
+    @State private var showingFeatures = false
+    @State private var showDetails = false
+    @State private var offeredClient: UsageClient?
+    @State private var offeredLeaderboard = false
+    @State private var localEnabled = false
+    private var localCandidate: UsageClient? { clients.newDetections.first { $0.client == .claudeCode }?.client }
     var body: some View {
         Group {
-            if controller.showingInvitation {
+            if showingFeatures {
+                if !showDetails {
+                    HarnessNewFeaturesView(offerLeaderboard: offeredLeaderboard,
+                        localClient: offeredClient?.displayName, localEnabled: localEnabled,
+                        enableLocal: { if let client = offeredClient { clients.enable(client); localEnabled = true } },
+                        joinLeaderboard: { showDetails = true }, dismiss: finishFeatures)
+                } else {
                 VStack(alignment: .leading, spacing: 14) {
                     HStack {
                         Text("Codex 雷达站 · 邀请你一起上榜").font(.headline)
                         Spacer()
-                        Button { controller.dismissInvitation() } label: { Image(systemName: "xmark") }
+                        Button { finishFeatures() } label: { Image(systemName: "xmark") }
                             .buttonStyle(.plain).accessibilityLabel("暂不参加速蹬排行榜")
                     }
                     if !naming {
@@ -155,11 +169,11 @@ struct AgentSpeedReportingInvitation: View {
                         .font(.caption).lineLimit(2).frame(height: 32, alignment: .topLeading)
                     HStack(spacing: 12) {
                         Button("设置与说明") {
-                            controller.dismissInvitation()
+                            finishFeatures()
                             AppSettingsRouteRequest.request(.speedReporting)
                         }.buttonStyle(.link)
                         Spacer()
-                        Button("暂不参加") { controller.dismissInvitation() }
+                        Button("暂不参加") { finishFeatures() }
                         Button("同意参加，下一步") {
                             nickname = controller.username.hasPrefix("TokenBar-") ? "" : controller.username
                             naming = true
@@ -170,6 +184,7 @@ struct AgentSpeedReportingInvitation: View {
                     } else {
                         SpeedReportingNicknameStep(nickname: $nickname, onBack: { naming = false }) {
                             controller.setEnabled(true, username: nickname)
+                            if controller.enabled { finishFeatures() }
                         }.frame(minHeight: 310)
                     }
                 }
@@ -179,8 +194,10 @@ struct AgentSpeedReportingInvitation: View {
                 .shadow(color: .black.opacity(0.18), radius: 20, y: 6)
                 .padding(20)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                }
             }
         }
+        .onChange(of: clients.newDetections.map { $0.client.rawValue }) { _, _ in offerWhenVisible() }
         .task {
             // Startup may intentionally hide the dashboard after 250 ms. Do not consume
             // the one-time invitation while that window is invisible.
@@ -193,9 +210,21 @@ struct AgentSpeedReportingInvitation: View {
             offerWhenVisible()
         }
     }
+    private func finishFeatures() {
+        featuresHandled = true
+        if let client = offeredClient { clients.acknowledge(client) }
+        controller.dismissInvitation()
+        showingFeatures = false
+        showDetails = false
+    }
     private func offerWhenVisible() {
         if invitationReady, NSApp.windows.contains(where: { !($0 is NSPanel) && $0.isVisible && $0.contentViewController != nil }) {
-            controller.offerInvitation()
+            guard !showingFeatures, (!featuresHandled && !controller.enabled) || localCandidate != nil else { return }
+            offeredClient = localCandidate
+            offeredLeaderboard = !controller.enabled && !featuresHandled
+            localEnabled = false
+            showDetails = false
+            showingFeatures = true
         }
     }
 }
@@ -223,7 +252,7 @@ private struct SpeedReportingNicknameStep: View {
     }
 }
 
-private struct SpeedLeaderboardMovie: View {
+struct SpeedLeaderboardMovie: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var player = AVPlayer(url: Bundle.module.url(forResource: "leaderboard", withExtension: "mp4", subdirectory: "SpeedLeaderboard")!)
     @State private var playing = false

@@ -204,6 +204,10 @@ export function floatingTodayModelUsageItems(
   });
 }
 
+export function compactFloatingModelItems(items:FloatingModelUsageItem[]):FloatingModelUsageItem[] {
+  return items.filter(item=>!isAutoReviewUsage(item.key.split("|").at(-1))).map(item=>({...item,label:item.label.replace(/^GPT[- ]*/i,"")}));
+}
+
 export function floatingModelUsagePageSizes(itemCount: number): number[] {
   const count = Math.max(0, Math.floor(itemCount));
   if (count === 0) return [];

@@ -174,7 +174,7 @@ struct ClientPairedQuotaRing: View {
                 }
                 if let right, right.client != left.client {
                     HStack(spacing: 2) { legend(left); legend(right) }
-                } else { legend(left) }
+                } else { legend(left, linkedIDs: [left.id] + (right.map { [$0.id] } ?? [])) }
             }
         }.frame(width: 74).padding(.vertical, 3).contentShape(Rectangle())
             .accessibilityElement(children: .ignore)
@@ -190,9 +190,14 @@ struct ClientPairedQuotaRing: View {
             .foregroundStyle(Color(nsColor: NSColor(clientHex: ClientQuotaSelection.decode(selectionRaw).colors[item.id] ?? item.fill)))
             .lineLimit(1).minimumScaleFactor(0.75).frame(width: right == nil ? 68 : 34)
     }
-    private func legend(_ item: ClientQuotaItem) -> some View {
-        HStack(spacing: 3) {
-            Circle().fill(Color(nsColor: NSColor(clientHex: item.brand))).frame(width: 4, height: 4)
+    private func legend(_ item: ClientQuotaItem, linkedIDs: [String]? = nil) -> some View {
+        let ids = linkedIDs ?? [item.id]
+        return HStack(spacing: 3) {
+            MatchedStrokeMorphParticipant(ids: Set(ids.map { "marker:" + $0 }), size: CGSize(width: 5, height: 5)) {
+                Circle().fill(Color(nsColor: NSColor(clientHex: item.brand))).frame(width: 5, height: 5)
+            }.anchorPreference(key: ClientQuotaMorphAnchors.self, value: .bounds) { anchor in
+                Dictionary(uniqueKeysWithValues: ids.map { ("marker:" + $0, anchor) })
+            }
             Text(item.shortClientTitle).lineLimit(1).minimumScaleFactor(0.8)
         }.font(.system(size: 10)).foregroundStyle(.white.opacity(0.8))
     }

@@ -50,3 +50,9 @@
 .speed-report-invitation .speed-report-invitation-switch{box-sizing:border-box;min-height:48px;padding:10px 12px;background:#4e80ef15;border:1px solid #4e80ef65;border-radius:9px;white-space:nowrap}.speed-report-invitation-switch input{flex:0 0 36px;margin:0}.speed-report-invitation-switch[data-joining=true]{border-color:#73c58380;background:#73c58315}.speed-report-invitation .speed-report-join-hint{height:20px;line-height:20px;white-space:nowrap;font-size:12px;font-weight:600;color:var(--accent,#376ccb)}.speed-report-invitation .speed-report-public-name{height:40px;line-height:20px;overflow:hidden;overflow-wrap:anywhere}.speed-report-public-name span{display:inline-block;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom}
 
 .speed-report-nickname-step{min-height:310px;display:flex;flex-direction:column;justify-content:center;gap:16px}.speed-report-step{font-size:13px;font-weight:600;color:var(--accent,#376ccb)}.speed-report-name select{font:inherit;color:inherit;background:var(--panel-solid,#fff);border:1px solid #80808060;border-radius:8px;padding:8px}
+.harness-new-features{max-height:calc(100vh - 40px);overflow:auto;gap:14px}
+.harness-new-features h2{margin:0;font-size:22px}.harness-new-features header p{margin:4px 0 0;color:var(--muted);font-size:13px}
+.harness-feature{padding:14px;border:1px solid var(--line);border-radius:12px;background:var(--panel-soft,var(--panel))}
+.harness-feature h3{margin:0 0 7px;font-size:15px}.harness-feature p{font-size:13px;line-height:1.6;margin:0 0 12px}
+.harness-new-features footer{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:11px;color:var(--muted)}
+.harness-new-features .speed-report-movie{max-height:180px}

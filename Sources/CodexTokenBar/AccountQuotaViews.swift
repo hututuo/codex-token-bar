@@ -167,10 +167,6 @@ struct AccountQuotaStrip: View {
         VStack(alignment: .leading, spacing: clientItems == nil ? 5 : 10) {
             if let clientItems {
                 clientRows(clientItems)
-                if includesCodex {
-                    Divider().overlay(AppTheme.border)
-                    accountTools
-                }
             } else {
                 HStack(spacing: AccountQuotaStripLayout.itemSpacing) {
                     AccountQuotaAccountLabel(presentation: presentation.accountLabel, isAvailable: snapshot.isAvailable)
@@ -232,17 +228,6 @@ struct AccountQuotaStrip: View {
         }
     }
 
-    private var accountTools: some View {
-        HStack(spacing: AccountQuotaStripLayout.itemSpacing) {
-            clientLabel("codex", subtitle: "账户工具")
-            Spacer(minLength: 0)
-            resetCredits
-            AccountQuotaPaceInsight(snapshot: snapshot)
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Codex 账户工具")
-    }
-
     private func clientLabel(_ client: String, subtitle: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 5) {
@@ -263,10 +248,10 @@ struct AccountQuotaStrip: View {
         }
         ForEach(ids, id: \.self) { client in
             let windows = items.filter { $0.client == client }
-            HStack(alignment: .top, spacing: 12) {
+            HStack(alignment: .center, spacing: 12) {
                 clientLabel(client, subtitle: client == "codex" ? (snapshot.planType?.uppercased() ?? "当前账户") : "本地缓存")
                     .padding(.top, 3)
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 220), spacing: 12), count: min(3, max(1, windows.count))), alignment: .leading, spacing: 10) {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 120), spacing: 12), count: min(3, max(1, windows.count))), alignment: .leading, spacing: 10) {
                     ForEach(windows) { item in
                         AccountQuotaSegment(
                             window: AccountQuotaWindow(label: item.window,
@@ -277,6 +262,13 @@ struct AccountQuotaStrip: View {
                             unavailableText: item.status.isEmpty ? "不可用" : item.status)
                             .help([item.source, item.status].filter { !$0.isEmpty }.joined(separator: " · "))
                     }
+                }.frame(maxWidth: .infinity)
+                if client == "codex" {
+                    HStack(spacing: AccountQuotaStripLayout.itemSpacing) {
+                        resetCredits
+                        AccountQuotaPaceInsight(snapshot: snapshot)
+                    }.fixedSize(horizontal: true, vertical: false)
+                        .accessibilityElement(children: .contain).accessibilityLabel("Codex 账户工具")
                 }
             }
             .accessibilityElement(children: .contain)
