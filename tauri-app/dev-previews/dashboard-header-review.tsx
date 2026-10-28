@@ -30,7 +30,7 @@ function Review(){
  const allowed=scope==='all'?['codex',...knownClients]:[scope];
  const costs=useMemo(()=>clientCostPeriods(codex,snapshot as never,allowed,captured),[scope]);
  const tokens=(allowed.includes('codex')?sum(local.codexRows):0)+local.clients.filter(r=>allowed.includes(r.client)).reduce((n,r)=>n+r.inputTokens+r.outputTokens,0);
- return <main className="app-shell"><section className="dashboard" style={{paddingTop:18}}>
+ return <main className="app-shell"><section className="dashboard">
   <p style={{fontSize:10,color:'var(--muted)',margin:'0 0 14px'}}>候选版真实组件渲染 · 本地数据快照 {new Date(local.capturedAt).toLocaleString()} · 本页不采集、不上报、不修改正式版设置</p>
   <DashboardHeader account={local.account} customAccountDisplayName={nickname} onCustomAccountDisplayNameChange={async value=>setNickname(value)}
    scopeControl={<div className="integrated-scope"><ClientScopeButtons value={scope} clients={knownClients} onChange={setScope}/></div>}
@@ -40,8 +40,8 @@ function Review(){
    onCodexHomeChange={done} onCodexHomeReset={done} onCheckForUpdate={done} onExportCsv={nop} onExportPng={nop}
    onOpenProviderRepair={nop} onOpenSessionManagement={nop} onOpenSettings={nop} onRefresh={done} onToggleAutostart={nop} refreshing={false}
    appUpdateState={{kind:'idle',message:''}} threadDeleteBridgeStatus={{connected:false,debugPort:null,message:'未连接'}} autoResumeEnabled={false}/>
-  {allowed.includes('codex')&&<div style={{marginTop:14}}><QuotaStrip snapshot={quota} clientItems={quotaItems} includesCodex quotaRefreshIntervalMs={cadence} onQuotaRefreshIntervalChange={async value=>setCadence(value)}/></div>}
-  <div style={{marginTop:18}}><StatsStrip stats={{...codex.stats,totalTokens:tokens}} planLabel={local.account.planLabel} clientCosts={costs}/></div>
+  {allowed.includes('codex')&&<QuotaStrip snapshot={quota} clientItems={quotaItems} includesCodex quotaRefreshIntervalMs={cadence} onQuotaRefreshIntervalChange={async value=>setCadence(value)}/>}
+  <StatsStrip stats={{...codex.stats,totalTokens:tokens}} planLabel={local.account.planLabel} clientCosts={costs}/>
  </section></main>;
 }
 createRoot(document.getElementById('root')!).render(<Review/>);

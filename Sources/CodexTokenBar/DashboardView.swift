@@ -1059,7 +1059,7 @@ struct DashboardView: View {
         let costs = codexOnly ? nil : clientCostCache.value(codex: store.snapshot,
             todayCodex: store.todayModelBreakdowns, rows: clients.summaries, today: clients.todaySummaries,
             sevenDay: clients.sevenDaySummaries, clientsUpdatedAt: clients.updatedAt, allowed: allowedClients)
-        LazyVStack(spacing: 18) {
+        LazyVStack(spacing: 24) {
             HeaderView(
                 snapshot: store.snapshot,
                 quotaSnapshot: quotaStore.snapshot,
@@ -1254,7 +1254,8 @@ struct DashboardView: View {
 
         }
         .padding(.horizontal, 54)
-        .padding(.vertical, 20)
+        .padding(.top, logicalWidth < 820 ? 28 : 40)
+        .padding(.bottom, 28)
         .frame(minWidth: logicalWidth, maxWidth: .infinity, alignment: .top)
         .background(
             Color.clear

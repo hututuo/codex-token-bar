@@ -442,7 +442,7 @@ struct HeaderView: View {
     }
 
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 20) {
             HStack(spacing: 14) {
                 if showsClientScopePicker { ClientScopePicker(showsDiscovery: false) }
                 else { Text("Codex Token Bar").font(.system(size: 20, weight: .semibold)) }

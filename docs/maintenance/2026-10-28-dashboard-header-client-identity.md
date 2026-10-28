@@ -17,3 +17,11 @@
 - 未构建 Windows EXE，未安装、替换或重启正式版。Swift 测试证明源码编译与相关回归，不等同于正式应用实机验收。
 
 预览入口：`tauri-app/dev-previews/dashboard-header-review.html`。其数据来自忽略的 `dashboard-header.local.json`；该文件与截图不提交。预览不启动采集、上报或桌面 RPC，不修改正式版设置。
+
+## 后续：本机替换与主页留白
+
+源码 f0ddeca5 已作为 Mac 0.9.7 build 967 安装并启动。576 个历史索引分区核对后缺失旧事件为 0，主页、额度与账户工具显示正常，速蹬状态已确认继续上报。安装及回退记录保存在忽略的 `scratch/local-install-build967/`。
+
+随后按主页顶部拥挤的反馈调整间距，保留模块排列与信息：原生顶部留白从 20pt 改为 40pt（较窄窗口 28pt），头部分组间距 20pt、主要模块间距 24pt；跨平台页面同步相应留白，并保留窄窗口收紧规则。没有增加动画、采集或数据计算。
+
+本轮相关 Swift 25 项、界面测试 17 项通过，1512px 桌面预览无横向溢出，额度前间距 20px、统计前 24px。预览使用本地快照及生产组件，截图为 `scratch/dashboard-spacing-review/desktop.jpg`。这次留白调整尚未打包替换，正式版仍为 f0ddeca5 / build 967；侧栏布局未在本轮更改。

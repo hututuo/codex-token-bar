@@ -112,7 +112,7 @@ button {
 .app-shell {
   position: relative;
   min-height: 100vh;
-  padding: 8px 24px 44px;
+  padding: 36px 24px 44px;
   background: linear-gradient(180deg, #fbfcfd 0, var(--page) 260px), var(--page);
 }
 
@@ -12998,7 +12998,7 @@ details.session-management-banner {
 @media(max-width:850px){.quota-client-row:has(.quota-strip--embedded){grid-template-columns:70px minmax(0,1fr)}.quota-strip--embedded{grid-column:2;justify-content:flex-end}}
 
 /* Compact shared header: scope on the left, reporting and identity on the right. */
-.dashboard-header{align-items:stretch;gap:12px}
+.dashboard-header{align-items:stretch;gap:20px}
 .dashboard-header-top{display:flex;align-items:center;gap:14px;min-width:0;width:100%;padding:2px 0}
 .dashboard-scope-slot{flex:1;min-width:0}.dashboard-scope-slot .integrated-scope{margin:0;gap:0}.dashboard-scope-slot .integrated-scope nav{width:fit-content}
 .dashboard-product-title{font-size:19px;font-weight:var(--weight-semibold);letter-spacing:-.4px}
@@ -13020,3 +13020,8 @@ details.session-management-banner {
 
 .stats-model-cost-secondary-chip{grid-template-columns:auto minmax(0,1fr) auto;row-gap:3px;padding:5px 8px;line-height:1.2;min-height:40px}
 .stats-model-cost-secondary-chip em{grid-column:2 / -1;grid-row:1}.stats-model-cost-secondary-chip b{grid-column:1 / 3;grid-row:2;justify-self:start}.stats-model-cost-secondary-chip small{grid-column:3;grid-row:2;justify-self:end}
+
+/* Dashboard groups have room to breathe without changing their order. */
+.dashboard>.quota-strip{margin-top:20px}
+.dashboard>:is(.stats-overview-card,.codex-radar-strip,.live-card,.activity-section,.chart-section,.ranking-section){margin-top:24px}
+@media(max-width:760px){.app-shell{padding-top:24px}.dashboard-header{gap:16px}.dashboard>.quota-strip{margin-top:16px}}
