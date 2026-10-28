@@ -251,7 +251,7 @@ struct AccountQuotaStrip: View {
             HStack(alignment: .center, spacing: 12) {
                 clientLabel(client, subtitle: client == "codex" ? (snapshot.planType?.uppercased() ?? "当前账户") : "本地缓存")
                     .padding(.top, 3)
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 120), spacing: 12), count: min(3, max(1, windows.count))), alignment: .leading, spacing: 10) {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 120), spacing: 12), count: min(client == "codex" ? 2 : 3, max(1, windows.count))), alignment: .leading, spacing: 10) {
                     ForEach(windows) { item in
                         AccountQuotaSegment(
                             window: AccountQuotaWindow(label: item.window,

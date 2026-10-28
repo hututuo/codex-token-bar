@@ -39,7 +39,7 @@ export function useQuotaMarkerMorph(root:RefObject<HTMLElement|null>,expanded:bo
   const prior=useRef(expanded),positions=useRef(new Map<string,Center>());
   useLayoutEffect(()=>{
     const changed=prior.current!==expanded;prior.current=expanded;
-    if(!enabled||!changed||!root.current||window.matchMedia("(prefers-reduced-motion: reduce)").matches||typeof Element.prototype.animate!=="function")return;
+    if(!enabled||!changed||!root.current||window.matchMedia("(prefers-reduced-motion: reduce)").matches||typeof root.current.animate!=="function")return;
     const cancel=animateQuotaMarkers(root.current,expanded,positions.current);positions.current.clear();
     return()=>{positions.current=cancel();};
   },[expanded,enabled,root]);

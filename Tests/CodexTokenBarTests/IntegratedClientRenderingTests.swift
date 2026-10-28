@@ -35,7 +35,7 @@ final class IntegratedClientRenderingTests: XCTestCase {
             }
             let original = try whitePixels()
             XCTAssertGreaterThan(original, 10, "The fixture must contain rendered percentage text")
-            XCTAssertEqual(registry.registeredViewCount, 1)
+            XCTAssertEqual(registry.registeredViewCount, 2)
             registry.cover(Set([left.id] + (right.map { [$0.id] } ?? [])), owner: owner)
             XCTAssertEqual(registry.coveredViewCount, 1)
             XCTAssertGreaterThanOrEqual(try whitePixels(), original * 9 / 10,

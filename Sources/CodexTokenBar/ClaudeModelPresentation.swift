@@ -28,15 +28,22 @@ enum ClaudeModelPresentation {
         }
         return nil
     }
+    static func compare(_ a: [Int], _ b: [Int]) -> Int {
+        for i in 0..<max(a.count, b.count) {
+            let delta = (i < a.count ? a[i] : 0) - (i < b.count ? b[i] : 0)
+            if delta != 0 { return delta }
+        }
+        return 0
+    }
     static func groups(_ items: [FloatingTodayModelUsageItem], client: String) -> [FloatingTodayModelUsagePresentation.DashboardFamilyGroup] {
         let identities = Dictionary(uniqueKeysWithValues: items.compactMap { item in identity(item.id).map { (item.id, $0) } })
         var newest: [String: [Int]] = [:]
         for value in identities.values where !value.version.isEmpty {
-            if newest[value.family] == nil || newest[value.family]!.lexicographicallyPrecedes(value.version) { newest[value.family] = value.version }
+            if newest[value.family] == nil || compare(newest[value.family]!, value.version) < 0 { newest[value.family] = value.version }
         }
         let latest = items.filter { item in
             guard let value = identities[item.id], !value.version.isEmpty else { return false }
-            return value.version == newest[value.family]
+            return compare(value.version, newest[value.family] ?? []) == 0
         }
         let latestIDs = Set(latest.map(\.id))
         var result: [FloatingTodayModelUsagePresentation.DashboardFamilyGroup] = []

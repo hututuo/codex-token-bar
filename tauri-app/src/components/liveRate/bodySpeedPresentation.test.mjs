@@ -52,25 +52,25 @@ test('actual home markup has model overview, explicit timestamps and six dense r
   }finally{win.close();}
  });
 });
-test('actual sidebar uses the compact median card instead of legacy live body readings',async()=>{
+test('actual sidebar shows latest qualified body reading alongside median distribution',async()=>{
  await withSsrModules(async load=>{
   const {SidebarRailContent}=await load('/src/quota-sidebar/QuotaSidebarApp.tsx');
   const now=Date.now()/1000;
   const win=new Window();
   try{
-   win.document.body.innerHTML=renderToStaticMarkup(React.createElement(SidebarRailContent,{data:{snapshot:{latestModelSpeeds30m:[summary('legacy-live-only',now-10,999)],sevenDayAvailability:'unavailable'},runningThreads:{total:2,status:'ready'}},state:{mode:'hover'},onOpen(){}}));
+   win.document.body.innerHTML=renderToStaticMarkup(React.createElement(SidebarRailContent,{data:{snapshot:{latestModelSpeeds30m:[summary('gpt-6.1-sol',now-10,72)],sevenDayAvailability:'unavailable'},runningThreads:{total:2,status:'ready'}},state:{mode:'hover'},onOpen(){}}));
    const panel=win.document.querySelector('.qs-median-speeds');
    assert.ok(panel);
    assert.match(panel.textContent,/正文 TPS/);
    assert.match(panel.textContent,/中位数.*近3小时/);
-   assert.match(panel.textContent,/等待采样/);
+   assert.match(panel.textContent,/72.0最新/);assert.match(panel.textContent,/中位 —/);
    assert.equal(panel.querySelectorAll('select,.qs-model-speed-windows').length,0);
    assert.doesNotMatch(panel.textContent,/legacy-live-only|999/);
   }finally{win.close();}
  });
 });
 
-test('actual sidebar renders models from source-scoped numeric buckets, not stale live readings',async()=>{
+test('actual sidebar latest numbers stay distinct from source-scoped median buckets',async()=>{
  await withSsrModules(async load=>{
   const {SidebarRailContent}=await load('/src/quota-sidebar/QuotaSidebarApp.tsx');
   const win=new Window({url:'http://localhost/'});
@@ -86,6 +86,7 @@ test('actual sidebar renders models from source-scoped numeric buckets, not stal
   win.__TAURI_EVENT_PLUGIN_INTERNALS__={unregisterListener(){}};
   win.__TAURI_INTERNALS__={transformCallback:()=>1,unregisterCallback(){},invoke:async(command,args)=>{
    if(command.startsWith('plugin:event|'))return 1;
+   if(command==='read_activity_speed_mode')return 'bar';
    if(command==='read_speed_display_preferences')return {mode:'activity',grouping:'model'};
    if(command==='refresh_multi_client_usage')return {preferences:[],summaries:[],diagnostics:[],updatedAt:null};
    if(command==='read_claude_local_runtime_snapshot')return {enabled:false,capturedAt:null,sourceAvailable:{},liveOutputTps:0,liveTotalTps:0,estimatedShare:0,modelRates:[],mainAgents:[],subagents:[],latestResponse:null,configurationIssue:null};
@@ -99,7 +100,7 @@ test('actual sidebar renders models from source-scoped numeric buckets, not stal
    const container=win.document.createElement('div');win.document.body.append(container);
    root=createRoot(container);
    await React.act(async()=>root.render(React.createElement(SidebarRailContent,{
-    data:{sourceToken,snapshot:{latestModelSpeeds30m:[summary('legacy-live-only',Date.now()/1000,999)],sevenDayAvailability:'unavailable'},runningThreads:{total:0,status:'ready'}},
+    data:{sourceToken,snapshot:{latestModelSpeeds30m:[summary('gpt-6.1-sol',Date.now()/1000,56),summary('gpt-6-luna',Date.now()/1000,160),summary('legacy-live-only',Date.now()/1000-1801,999)],sevenDayAvailability:'unavailable'},runningThreads:{total:0,status:'ready'}},
     state:{mode:'hover'},onOpen(){}
    })));
    await React.act(async()=>{await new Promise(resolve=>setTimeout(resolve,250));});
@@ -107,7 +108,7 @@ test('actual sidebar renders models from source-scoped numeric buckets, not stal
    assert.equal(reads,1);
    assert.equal(panel.querySelectorAll('.qs-median-model').length,2);
    assert.match(panel.textContent,/6.1-sol/);assert.match(panel.textContent,/6-luna/);
-   assert.match(panel.textContent,/30.0/);assert.match(panel.textContent,/100.0/);
+   assert.match(panel.textContent,/中位 30.0/);assert.match(panel.textContent,/中位 100.0/);assert.match(panel.textContent,/56.0最新/);assert.match(panel.textContent,/160.0最新/);
    assert.equal(panel.querySelectorAll('svg').length,2);
    assert.doesNotMatch(panel.textContent,/legacy-live-only|999/);
   }finally{

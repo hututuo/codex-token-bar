@@ -196,6 +196,7 @@ export function AgentSpeedReportingInvitation({ onOpenSettings }: { onOpenSettin
   const [offeredClient,setOfferedClient]=useState<UsageClient|null>(null);
   const [localEnabled,setLocalEnabled]=useState(false);
   const [offerLeaderboard,setOfferLeaderboard]=useState(false);
+  const acknowledgeLeaderboard = useRef(false);
   const [details,setDetails]=useState(false);
   const [visible, setVisible] = useState(false);
   const [username, setUsername] = useState("");
@@ -213,6 +214,7 @@ export function AgentSpeedReportingInvitation({ onOpenSettings }: { onOpenSettin
         const leaderboard = status !== null && !status.enabled && !featuresHandled;
         if (disposed || document.hidden || (!leaderboard && !candidate)) return;
         if (!disposed) {
+          acknowledgeLeaderboard.current = status !== null;
           setOfferLeaderboard(leaderboard);setOfferedClient((candidate?.client as UsageClient | undefined) ?? null);
           setLocalEnabled(false);setDetails(false);setUsername(status?.username ?? "");setVisible(true);
         }
@@ -223,8 +225,11 @@ export function AgentSpeedReportingInvitation({ onOpenSettings }: { onOpenSettin
     return () => { disposed = true; document.removeEventListener("visibilitychange", offerWhenVisible); };
   }, [candidate?.client,featuresHandled,visible]);
   function finishFeatures(){
-    try{localStorage.setItem(newFeaturesKey,"true");}catch{}
-    setFeaturesHandled(true);if(offeredClient)acknowledge(offeredClient);setVisible(false);setDetails(false);
+    if (acknowledgeLeaderboard.current) {
+      try{localStorage.setItem(newFeaturesKey,"true");}catch{}
+      setFeaturesHandled(true);
+    }
+    if(offeredClient)acknowledge(offeredClient);setVisible(false);setDetails(false);
     void callCommandStrict("dismiss_agent_speed_invitation").catch(() => {});
   }
   async function enableLocal(){

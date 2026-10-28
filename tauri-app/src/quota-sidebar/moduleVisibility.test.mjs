@@ -17,7 +17,7 @@ test('all modules can be hidden while the permanent settings entry remains reach
   const { SidebarRailContent } = await load('/src/quota-sidebar/QuotaSidebarApp.tsx');
   const { initialSidebarState } = await load('/src/quota-sidebar/model.ts');
   const { emptyAccountQuotaBundle } = await load('/src/api/fallback/quotaFallback.ts');
-  const data={quota:emptyAccountQuotaBundle(),snapshot:{todayModelBreakdowns:[],latestModelSpeeds30m:[],quotaDataStale:false},runningThreads:{status:'ready',total:0,mainThreads:0,subagents:0}};
+  const data={quota:emptyAccountQuotaBundle(),snapshot:{todayModelBreakdowns:[],latestModelSpeeds30m:[{model:"gpt-6.1-sol",tokensPerSecond:72,sampleCount:1,lastMeasuredAt:Date.now()/1000}],quotaDataStale:false},runningThreads:{status:'ready',total:0,mainThreads:0,subagents:0}};
   const dom=new Window();
   const render=(visibility,order)=>{dom.document.body.innerHTML=renderToStaticMarkup(React.createElement(SidebarRailContent,{data,state:{...initialSidebarState,mode:'hover'},visibility,order,onOpen:()=>{}}));};
   try {
