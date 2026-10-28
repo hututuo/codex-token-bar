@@ -260,7 +260,23 @@ test("Windows bundle publishes a version-matched self-contained Agent Speed repo
   const fixture = await readFile(windowsSelfTest, "utf8");
   assert.match(source, /Assert-Command "dotnet"/);
   assert.match(source, /dotnet publish \$ReporterProject[\s\S]*?--self-contained true/);
-  assert.match(source, /-p:PublishSingleFile=true/);
+  const reporterPublish = source.match(/dotnet publish \$ReporterProject([\s\S]*?)\n\s*}/)?.[1];
+  const claudePublish = source.match(/dotnet publish \$ClaudeLocalReaderProject([\s\S]*?)\n\s*}/)?.[1];
+  assert.ok(reporterPublish, "Agent Speed publish command was not found");
+  assert.ok(claudePublish, "Claude local reader publish command was not found");
+  const publishProperties = [
+    "PublishSingleFile=true",
+    "IncludeNativeLibrariesForSelfExtract=true",
+    "PublishTrimmed=false",
+    "LangVersion=latest",
+    "Nullable=enable",
+    "ImplicitUsings=enable",
+  ];
+  for (const [helper, publish] of [["Agent Speed", reporterPublish], ["Claude local reader", claudePublish]]) {
+    for (const property of publishProperties) {
+      assert.ok(publish.includes(`"-p:${property}"`), `${helper} publish must pass -p:${property} as one quoted argument`);
+    }
+  }
   assert.match(source, /ReporterProjectVersion[\s\S]*ReporterClientVersion/);
   assert.match(source, /Vendor\\AgentSpeed\\LICENSE/);
   assert.match(source, /AgentSpeedReporter\/VENDOR\.md/);

@@ -85,7 +85,15 @@ struct TrafficSamplerTests {
         var bytes: [UInt8] = []
         withUnsafeBytes(of: Int32(3)) { bytes += $0 }
         bytes += Array("/opt/homebrew/bin/node".utf8) + [0, 0, 0, 0]
-        bytes += Array("node".utf8) + [0] + Array("/x/@google/gemini-cli/dist/index.js".utf8) + [0] + Array("--yolo".utf8) + [0]
+        let nodeArgument: [UInt8] = Array("node".utf8)
+        bytes.append(contentsOf: nodeArgument)
+        bytes.append(0)
+        let scriptPath: [UInt8] = Array("/x/@google/gemini-cli/dist/index.js".utf8)
+        bytes.append(contentsOf: scriptPath)
+        bytes.append(0)
+        let yoloArgument: [UInt8] = Array("--yolo".utf8)
+        bytes.append(contentsOf: yoloArgument)
+        bytes.append(0)
         bytes += Array("PATH=/usr/bin".utf8) + [0]
         let arguments = bytes.withUnsafeBytes { ProcessReader.parseArguments($0) }
         #expect(arguments == ["node", "/x/@google/gemini-cli/dist/index.js", "--yolo"])

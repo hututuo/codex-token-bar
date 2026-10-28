@@ -736,6 +736,7 @@ fn read_multi_client_cache_rankings_at(
     for session in &mut sessions {
         session.model_ids = models_by_session.remove(&session.session_id).unwrap_or_default();
     }
+    drop(model_statement);
     transaction.commit().map_err(|error| error.to_string())?;
     let matching_request_count = matching_request_count.max(0) as u64;
     let has_more_requests = (requests.len() as u64) < matching_request_count;

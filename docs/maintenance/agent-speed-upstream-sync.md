@@ -100,3 +100,7 @@ dotnet run --project tools/ActivityEngineProbe/ActivityEngineProbe.csproj \
 ## 2026-10-28 provenance schema v2 integration
 
 `UPSTREAM.json` schema version 2 keeps `files` as the exact pinned upstream inventory, `patches` for local changes to upstream-owned paths, and `additions` for reviewed local-only files inside the vendored scopes. Each patch/addition records the current SHA-256 and a specific reason. An addition must not also appear in `files` or `patches`; it is never represented as upstream code. `record` requires `--addition-reasons` to map every and only added scoped path, and refuses removed scoped files. `check` validates the complete combined inventory offline. When vendored implementations change after recording, rerun the reviewed record/check workflow to refresh hashes and reasons together; do not copy hashes from another worktree.
+
+## 2026-10-29 Swift 6 compiler-compatibility patch
+
+The pinned Agent Speed Swift tests now build their repeated-scalar protobuf message and process-argument fixture with typed byte arrays and incremental appends. This is a test-only compiler-compatibility change: the emitted fixture bytes and assertions are unchanged. The upstream commit remains `a94a67fcc78e5d8eea5f82d8d5e737bccf994e2c`; `UPSTREAM.json` records both test-file patches and retains every prior patch/addition reason. No Agent Speed runtime algorithm or fixture count changes.

@@ -371,7 +371,7 @@ impl BodySpeedTrendStore {
                     shared_path,
                     spec.id,
                     spec.prefix,
-                    body_speed_object_names(),
+                    migration::body_speed_object_names(),
                 )?;
                 connection
             } else {

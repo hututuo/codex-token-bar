@@ -117,7 +117,7 @@ pub(super) fn migrate_body_speed_to_shared(
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
     )?;
     validate_body_schema(&snapshot, "")?;
-    let source_proof = body_table_proof(&snapshot, Some(""))?;
+    let source_proof = table_proof(&snapshot, Some(""))?;
     let source_digest = source_digest(&source_identity, &source_proof.rows_digest);
 
     if let Some(parent) = shared_path.parent() {
@@ -152,7 +152,7 @@ pub(super) fn migrate_body_speed_to_shared(
     copy_snapshot_tables(&snapshot, &transaction)?;
     BodySpeedTrendStore::create_schema(&transaction)?;
 
-    let target_proof = body_table_proof(&transaction, None)?;
+    let target_proof = table_proof(&transaction, None)?;
     if target_proof != source_proof {
         return Err(rusqlite::Error::InvalidQuery);
     }
@@ -242,7 +242,7 @@ fn verify_shared_receipt(
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
     )?;
     validate_body_schema(&backup, "")?;
-    let backup_proof = body_table_proof(&backup, Some(""))?;
+    let backup_proof = table_proof(&backup, Some(""))?;
     if receipt.rows_digest != backup_proof.rows_digest
         || receipt.source_digest != source_digest(source_identity, &backup_proof.rows_digest)
         || receipt.meta_count != count_for(&backup_proof, "speed_trend_meta")?
@@ -378,7 +378,7 @@ fn read_scoped_receipt(
         .optional()
 }
 
-fn body_speed_object_names() -> Vec<String> {
+pub(super) fn body_speed_object_names() -> Vec<String> {
     [
         "speed_trend_meta",
         "speed_samples",

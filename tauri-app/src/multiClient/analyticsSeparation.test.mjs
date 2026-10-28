@@ -109,7 +109,7 @@ test("aggregate dashboard renders distinct Codex and Claude analytics while keep
       assert.equal(claudeSection.querySelector(".chart-line-toggle.toggle-seven"), null);
       assert.equal(claudeSection.querySelector(".chart-line-toggle.toggle-cost")?.getAttribute("aria-pressed"), "false");
       assert.equal(claudeSection.querySelector('[aria-label="缓存命中排行控制"]'), null);
-      assert.ok(claudeSection.querySelector(".cache-ranking-section"));
+      assert.ok(claudeSection.querySelector(".ranking-section"));
     } finally {
       dom.close();
     }
@@ -142,7 +142,7 @@ test("Claude-only analytics does not expose Codex quota, pricing, or cache-rank 
       assert.equal(section.querySelector(".chart-line-toggle.toggle-seven"), null);
       assert.equal(section.querySelector(".chart-line-toggle.toggle-cost")?.getAttribute("aria-pressed"), "false");
       assert.equal(section.querySelector('[aria-label="缓存命中排行控制"]'), null);
-      assert.ok(section.querySelector(".cache-ranking-section"));
+      assert.ok(section.querySelector(".ranking-section"));
     } finally {
       dom.close();
     }

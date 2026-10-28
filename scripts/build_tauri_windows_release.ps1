@@ -223,8 +223,8 @@ function Build-Target {
     $ClaudeLocalOutput = Join-Path $ClaudeLocalArtifactsRoot $DotnetRuntime
     Invoke-Checked "Claude local reader publish $DotnetRuntime" {
         dotnet publish $ClaudeLocalReaderProject --configuration Release --runtime $DotnetRuntime --self-contained true `
-            --output $ClaudeLocalOutput -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
-            -p:PublishTrimmed=false -p:LangVersion=latest -p:Nullable=enable -p:ImplicitUsings=enable
+            --output $ClaudeLocalOutput "-p:PublishSingleFile=true" "-p:IncludeNativeLibrariesForSelfExtract=true" `
+            "-p:PublishTrimmed=false" "-p:LangVersion=latest" "-p:Nullable=enable" "-p:ImplicitUsings=enable"
     }
     $ClaudeLocalExecutable = Join-Path $ClaudeLocalOutput "ClaudeLocalReader.exe"
     if (-not (Test-Path -LiteralPath $ClaudeLocalExecutable)) {

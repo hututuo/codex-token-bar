@@ -602,16 +602,20 @@ enum MultiClientUsageParsers {
             identityPart = "seq:\(value)"
             quality = "recorded"
         case nil:
-            let normalized = [
-                client.rawValue,
-                String(timeMs),
-                model,
-                String(inputTokens),
-                String(outputTokens),
-                cacheReadTokens.map(String.init) ?? "-",
-                cacheWriteTokens.map(String.init) ?? "-",
-                reasoningTokens.map(String.init) ?? "-",
-            ].joined(separator: "\u{1f}")
+            let normalizedCacheRead: String = cacheReadTokens.map { String($0) } ?? "-"
+            let normalizedCacheWrite: String = cacheWriteTokens.map { String($0) } ?? "-"
+            let normalizedReasoning: String = reasoningTokens.map { String($0) } ?? "-"
+            var normalizedParts: [String] = []
+            normalizedParts.reserveCapacity(8)
+            normalizedParts.append(client.rawValue)
+            normalizedParts.append(String(timeMs))
+            normalizedParts.append(model)
+            normalizedParts.append(String(inputTokens))
+            normalizedParts.append(String(outputTokens))
+            normalizedParts.append(normalizedCacheRead)
+            normalizedParts.append(normalizedCacheWrite)
+            normalizedParts.append(normalizedReasoning)
+            let normalized = normalizedParts.joined(separator: "\u{1f}")
             identityPart = "fallback:" + sha256Hex(Data(normalized.utf8))
             quality = "fallback_identity"
         }

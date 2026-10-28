@@ -700,6 +700,10 @@
       "reason": "Use explicit isolated source roots; never read developer home during tests",
       "sha256": "2dccb1b1319ccdf24fe8392bdd998c21f8a71197f0c54abab2d9c2852d72bcc0"
     },
+    "macos/Tests/AgentSpeedCoreTests/ProtobufTests.swift": {
+      "reason": "Break the repeated-scalar protobuf fixture into typed byte-array appends for Swift 6 compiler compatibility; emitted fixture bytes and assertions are unchanged.",
+      "sha256": "a40138a819b7518510ce26bde19d14021378afed271f363f06cc9d7bf9120de4"
+    },
     "macos/Tests/AgentSpeedCoreTests/ReportBodyTests.swift": {
       "reason": "Accept Token Bar client identity without rewriting upstream signed vectors",
       "sha256": "d14fbc031529d24ba9ed0390a1644e3ed40726e0f252d840c890968a528c9e48"
@@ -711,6 +715,10 @@
     "macos/Tests/AgentSpeedCoreTests/SessionTests.swift": {
       "reason": "Use explicit isolated source roots; never read developer home during tests",
       "sha256": "3d63333395f6a813f56838d995eabdea5013e4695199a5d24883b23d901a17d1"
+    },
+    "macos/Tests/AgentSpeedCoreTests/TrafficSamplerTests.swift": {
+      "reason": "Break the process-argument fixture into typed byte-array appends for Swift 6 compiler compatibility; emitted fixture bytes and assertions are unchanged.",
+      "sha256": "eb0d7c5974d03aa3960f217f7284912c84b2e076e03738eca92276b4ce0d17e8"
     },
     "spec/assets/prices.json": {
       "reason": "Add the locally verified GPT-6.1 Terra base/tier/fast prices and model alias to the shared price reference fixture.",

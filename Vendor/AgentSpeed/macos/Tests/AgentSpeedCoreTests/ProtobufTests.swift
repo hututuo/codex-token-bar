@@ -217,8 +217,15 @@ struct ProtobufTests {
     }
 
     @Test func repeatedScalarsArePackedOrUnpacked() {
-        let message = PB.uint(2, 3) + PB.packed(2, [1, 300, .max]) + PB.key(2, 0) + [0x00] + PB.fixed32(2, 9)
-            + PB.packed(2, []) + PB.uint(3, 8) + PB.uint(2, 4)
+        var message: [UInt8] = []
+        message.append(contentsOf: PB.uint(2, 3))
+        message.append(contentsOf: PB.packed(2, [1, 300, .max]))
+        message.append(contentsOf: PB.key(2, 0))
+        message.append(0x00)
+        message.append(contentsOf: PB.fixed32(2, 9))
+        message.append(contentsOf: PB.packed(2, []))
+        message.append(contentsOf: PB.uint(3, 8))
+        message.append(contentsOf: PB.uint(2, 4))
         #expect(Self.read(message) { try $0.repeatedUInt(2) } == .success([3, 1, 300, .max, 0, 4]))
         #expect(Self.read(message) { try $0.repeatedUInt(9) } == .success([]))
     }
