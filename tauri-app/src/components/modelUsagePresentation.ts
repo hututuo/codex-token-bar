@@ -23,14 +23,17 @@ export interface ModelUsageSlice {
 }
 
 const FIXED_COLORS: Record<string, string> = {
-  "gpt-6-astra": "#36ad77",
-  "gpt-6.1-sol": "#d4512c",
+  "claude-opus": "#b89add",
+  "claude-sonnet": "#dca16c",
+  "claude-haiku": "#5cbcaf",
+  "gpt-6-astra": "#a3d977",
+  "gpt-6.1-sol": "#df7055",
   "gpt-6.1-terra": "#a773e8",
-  "gpt-6-sol": "#2e6bfa",
-  "gpt-6-luna": "#4299f5",
-  "gpt-5.6-sol": "#6774e8",
-  "gpt-5.6-terra": "#9252e6",
-  "gpt-5.6-luna": "#399b75",
+  "gpt-6-sol": "#d6ac5b",
+  "gpt-6-luna": "#63a6eb",
+  "gpt-5.6-sol": "#8b83c5",
+  "gpt-5.6-terra": "#9b75bd",
+  "gpt-5.6-luna": "#7595bd",
   "gpt-5.6-generic": "#7a879e",
   "gpt-5.5": "#a87629",
   "gpt-5.4": "#f28f14",
@@ -157,6 +160,10 @@ export function modelUsageColor(keyOrModel: string | null | undefined): string {
   if (key.startsWith("client:")) return CLIENT_COLORS[key] ?? "#a694e8";
   const fixed = FIXED_COLORS[key];
   if (fixed) return fixed;
+  // Color families do not change model IDs, grouping, or historical pricing.
+  const words = key.toLowerCase().split(/[^a-z0-9]+/);
+  const family = words.includes("claude") ? ["opus", "sonnet", "haiku"].find(value => words.includes(value)) : undefined;
+  if (family) return FIXED_COLORS[`claude-${family}`];
   let hash = 0x811c9dc5;
   for (const byte of new TextEncoder().encode(key)) {
     hash ^= byte;

@@ -2,6 +2,21 @@ import XCTest
 @testable import CodexTokenBar
 
 final class ModelUsagePresentationTests: XCTestCase {
+    func testClaudeColorFamiliesPreserveVersionedAccountingKeys() {
+        for (model, family) in [
+            ("claude-opus-4-1-20250805", "claude-opus"),
+            ("anthropic/claude-sonnet-4-5", "claude-sonnet"),
+            ("us.anthropic.claude-3-5-haiku-20241022-v1:0", "claude-haiku"),
+            ("CLAUDE_SONNET_4_5", "claude-sonnet")
+        ] {
+            XCTAssertEqual(ModelUsagePresentation.colorHex(for: model), ModelUsagePresentation.colorHex(for: family))
+            XCTAssertEqual(ModelUsagePresentation.key(for: model), model)
+        }
+        let models = ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna", "claude-opus", "claude-sonnet", "claude-haiku"]
+        XCTAssertEqual(Set(models.map { ModelUsagePresentation.colorHex(for: $0) }).count, models.count)
+        XCTAssertEqual(ModelUsagePresentation.colorHex(for: "gpt6astra"), "#a3d977")
+    }
+
 
     func testGPT61SolAliasesStaySeparateFromPreviousSolAndFutureVariants() {
         let slices = ModelUsagePresentation.slices(from: [

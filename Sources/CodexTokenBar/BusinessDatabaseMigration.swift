@@ -60,9 +60,10 @@ final class BusinessDatabaseMigration {
         let normalizationDeferredReason: String?
     }
     enum Failure: LocalizedError {
-        case runningWriter, unsafeInput(String), insufficientSpace, incompleteActivation, unmigratedInput(String)
+        case runningWriter, unsafeInput(String), insufficientSpace, incompleteActivation, unmigratedInput(String), untrackedInterruptedImport
         var errorDescription: String? {
             switch self {
+            case .untrackedInterruptedImport: return "检测到旧版本留下的未完成导入，缺少可恢复批次记录；已保留全部旧账和候选库，请先恢复或核对该批次。"
             case .runningWriter: return "另一个 Token Bar 仍在运行，已保留旧账；请退出另一实例后重试。"
             case .unsafeInput(let path): return "账本迁移发现不安全或未知的输入，已保留原文件：\(path)"
             case .insufficientSpace: return "账本迁移空间不足，未切换旧账。"
@@ -116,8 +117,26 @@ final class BusinessDatabaseMigration {
         // and receipts make replay idempotent; activation is a separate gate.
         let database = try CodexBusinessDatabase(url: working)
         let known = Set(try database.driver.readRows("SELECT source_path FROM tb_legacy_inputs") { $0.text(0) ?? "" })
-        let pending = exists ? inputs.filter { !known.contains($0.source.path) } : inputs
+        let journalKey = "migration_pending_sources_v1"
+        let journalRaw = try database.driver.readRows("SELECT value FROM tb_container_meta WHERE key=?", bindings: [.text(journalKey)]) { $0.text(0) }.first ?? nil
+        let journal = try journalRaw.map { try JSONDecoder().decode([String: String].self, from: Data($0.utf8)) } ?? [:]
+        let discovered = Dictionary(uniqueKeysWithValues: inputs.map { ($0.source.path, $0.store.id) })
+        // A vanished/relocated uncommitted input must not silently disappear
+        // from the retry. Committed sources remain independent of old files.
+        for (path, storeID) in journal {
+            guard discovered[path] == storeID else { throw Failure.unmigratedInput(path) }
+        }
+        let pending = exists ? inputs.filter { !known.contains($0.source.path) || journal[$0.source.path] != nil } : inputs
         let activation = try database.driver.readRows("SELECT value FROM tb_container_meta WHERE key='activation_state'") { $0.text(0) }.first ?? nil
+        if exists, activation == "importing", journalRaw == nil {
+            // An older interrupted writer did not persist which partitions
+            // were new. Never guess and overwrite previously activated data.
+            throw Failure.untrackedInterruptedImport
+        }
+        for input in pending where exists && journal[input.source.path] == nil {
+            let registered = try database.driver.readRows("SELECT 1 FROM tb_stores WHERE store_id=?", bindings: [.text(input.store.id)]) { $0.int(0) }.first != nil
+            guard !registered else { throw Failure.unmigratedInput(input.source.path) }
+        }
         if exists, fileManager.fileExists(atPath: initialized.path), pending.isEmpty, activation == "ready" {
             // A completed upgrade is not another migration. Keep the catalog,
             // physical-version and source-discovery fences above, but do not
@@ -128,7 +147,12 @@ final class BusinessDatabaseMigration {
             onProgress?(.init(stage: .ready))
             return
         }
-        try database.driver.execute("INSERT OR REPLACE INTO tb_container_meta VALUES ('activation_state','importing')")
+        let batch = Dictionary(uniqueKeysWithValues: pending.map { ($0.source.path, $0.store.id) })
+        let batchJSON = String(decoding: try JSONEncoder().encode(batch), as: UTF8.self)
+        try database.driver.transaction { tx in
+            try tx.execute("INSERT OR REPLACE INTO tb_container_meta VALUES (?,?)", bindings: [.text(journalKey), .text(batchJSON)])
+            try tx.execute("INSERT OR REPLACE INTO tb_container_meta VALUES ('activation_state','importing')")
+        }
         var needed: UInt64 = 256 * 1024 * 1024
         for input in pending {
             for suffix in ["", "-wal"] {
@@ -198,7 +222,7 @@ final class BusinessDatabaseMigration {
                 _ = try connection.readRows("PRAGMA journal_mode=DELETE") { $0.text(0) }
             }
             try synchronize(normalized)
-            let imported = try database.importSnapshot(normalized, into: store, backupURL: backup, replaceExisting: !exists)
+            let imported = try database.importSnapshot(normalized, into: store, backupURL: backup, replaceExisting: !exists || journal[input.source.path] != nil)
             try fileManager.setAttributes([.posixPermissions: 0o400], ofItemAtPath: normalized.path)
             if store.module == "exact.swift.stage" {
                 try database.driver.withConnection { connection in
@@ -233,11 +257,16 @@ final class BusinessDatabaseMigration {
         }
         try beforeActivation?()
         onProgress?(.init(stage: .activating, completed: pending.count, total: pending.count))
-        try database.driver.execute("INSERT OR REPLACE INTO tb_container_meta VALUES ('activation_state','ready')")
         try database.driver.withConnection { db in
             guard try db.readRows("PRAGMA quick_check", map: { $0.text(0) }) == ["ok"] else { throw BusinessStoreError.proofMismatch }
             _ = try db.readRows("PRAGMA wal_checkpoint(TRUNCATE)") { $0.int(0) }
             _ = try db.readRows("PRAGMA journal_mode=DELETE") { $0.text(0) }
+        }
+        // Completion and removal of the pending batch commit together, only
+        // after all sources and the container have passed verification.
+        try database.driver.transaction { tx in
+            try tx.execute("INSERT OR REPLACE INTO tb_container_meta VALUES ('activation_state','ready')")
+            try tx.execute("DELETE FROM tb_container_meta WHERE key=?", bindings: [.text(journalKey)])
         }
         try synchronize(working)
         if !exists {
