@@ -68,11 +68,7 @@ enum ClaudeModelPresentation {
         if !latest.isEmpty { result.append(.init(id: client + ":latest", title: "Claude 最新", items: latest.sorted { a,b in
             families.firstIndex(of: identities[a.id]!.family)! < families.firstIndex(of: identities[b.id]!.family)!
         })) }
-        for family in families {
-            let rows = items.filter { !latestIDs.contains($0.id) && identities[$0.id]?.family == family }
-            if !rows.isEmpty { result.append(.init(id: client + ":" + family, title: family.capitalized, items: rows)) }
-        }
-        let other = items.filter { identities[$0.id] == nil }
+        let other = items.filter { !latestIDs.contains($0.id) }
         if !other.isEmpty { result.append(.init(id: client + ":other", title: "Claude 其他", items: other)) }
         return result
     }

@@ -44,7 +44,7 @@ test('client model cost groups lead with GPT-6, combine the latest Claude famili
   {id:'6',label:'6 系列'},
   {id:'claude:latest',label:'Claude 最新'},
   {id:'5.6',label:'5.6 系列'},
-  {id:'claude:opus',label:'Opus'},
+  {id:'claude:other',label:'Claude 其他'},
  ]);
  assert.deepEqual(groups[1].items.map(item=>item.key),[
   'claudeCode|fable-5-1','claudeDesktop|opus-5-5','claudeCode|sonnet-5-5','claudeCode|claude-haiku-5-5',
@@ -73,4 +73,22 @@ test('dashboard keeps free review separate with its own reference price and unch
  assert.equal(costs.find(x=>x.key==='codex|gpt-6-luna')?.tokens,120);
  assert.equal(costs.some(x=>x.label.includes('Auto Review')&&x.costUSD===null&&x.referenceCostUSD>0),true);
  assert.equal(rows[1].model,'codex-auto-review');
+}));
+
+test('summary period rows use exact indexed models without borrowing lifetime or unused Claude models',async()=>withSsrModules(async load=>{
+ const {clientCostPeriods,clientCostGroups}=await load('/src/multiClient/originalDashboardProjection.ts');
+ const source=dashboard();
+ const row={model:'gpt-6-luna',breakdown:{inputTokens:100,cachedInputTokens:40,outputTokens:20,totalTokens:120,calls:1}};
+ source.stats.modelBreakdowns=[{...row,model:'lifetime-only'}];
+ source.usageSummary={todayTokens:120,todayModelBreakdowns:[]};
+ source.recentUsage24h=[{startUnix:stamp-1,tokens:120,modelBreakdowns:[row]},{startUnix:stamp-8*86400,tokens:120,modelBreakdowns:[{...row,model:'old'}]}];
+ const empty={...snapshot(),summaries:[],todaySummaries:[],sevenDaySummaries:[]};
+ const ready=clientCostPeriods(source,empty,['codex','claudeCode'],stamp);
+ assert.deepEqual(ready.today.map(x=>x.key),['codex|gpt-6-luna']);
+ assert.deepEqual(ready.sevenDay.map(x=>x.key),['codex|gpt-6-luna']);
+ assert.equal(clientCostGroups(ready.sevenDay).some(x=>x.id.startsWith('claude:')),false);
+ source.recentUsage24h=[{startUnix:stamp-1,tokens:120}];
+ const pending=clientCostPeriods(source,empty,['codex','claudeCode'],stamp);
+ assert.deepEqual(pending.today,[]);assert.deepEqual(pending.sevenDay,[]);
+ assert.deepEqual(pending.codexPendingScopes,['today','sevenDay']);
 }));

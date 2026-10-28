@@ -23,6 +23,8 @@ use super::{
 #[cfg(not(test))]
 use crate::core::app_paths;
 use crate::core::localtime;
+#[cfg(not(test))]
+use crate::core::business_store_connection::StoreConnection as BoundStoreConnection;
 use crate::core::time_series_timeline::{
     aligned_bin_starts, LONG_RECENT_INTERVAL_SECONDS, LONG_RECENT_POINT_COUNT,
 };
@@ -6548,7 +6550,7 @@ fn build_staged_full_rebuild(
         .map_err(|error| format!("无法耐久提交精确 token 单文件暂存：{error}"))?;
     #[cfg(not(test))]
     materialize_staging_temp_tables(&mut stage)?;
-    quick_check_index(&stage, None)?;
+    quick_check_staged(&stage)?;
 
     #[cfg(test)]
     let actual_bytes = {
@@ -6928,7 +6930,7 @@ fn validated_staged_full_rebuild(
     target_generation: i64,
     proof: Option<&StageSourceValidation>,
 ) -> Result<Option<StagedFullRebuild>, String> {
-    quick_check_index(connection, None)?;
+    quick_check_staged(connection)?;
     let manifest_schema_version =
         if column_exists_checked(connection, "manifest", "manifest_schema_version")? {
             connection
@@ -14541,6 +14543,70 @@ fn open_index_connection_with_recovery(
     }
 }
 
+#[cfg(not(test))]
+fn quick_check_bound_staging_store(connection: &BoundStoreConnection) -> Result<(), String> {
+    const STAGING_TABLES: [&str; 4] = ["chunks", "events", "fingerprints", "manifest"];
+
+    let existing_tables = {
+        let mut statement = connection
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+            )
+            .map_err(|error| format!("无法读取精确 token 暂存表清单：{error}"))?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| format!("无法读取精确 token 暂存表清单：{error}"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| format!("无法解码精确 token 暂存表清单：{error}"))?;
+        rows
+    };
+    let expected_tables = STAGING_TABLES
+        .iter()
+        .map(|table| (*table).to_owned())
+        .collect::<Vec<_>>();
+    if existing_tables != expected_tables {
+        return Err(format!(
+            "精确 token 暂存表清单不匹配：预期 {:?}，实际 {:?}",
+            expected_tables, existing_tables
+        ));
+    }
+
+    for table in STAGING_TABLES {
+        let sql = format!("PRAGMA quick_check('{table}')");
+        let mut statement = connection
+            .prepare(&sql)
+            .map_err(|error| format!("无法准备精确 token 暂存表 {table} quick_check：{error}"))?;
+        let reports = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| format!("无法读取精确 token 暂存表 {table} quick_check：{error}"))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|error| format!("无法解码精确 token 暂存表 {table} quick_check：{error}"))?;
+        if reports.len() != 1 || reports[0] != "ok" {
+            return Err(format!(
+                "SQLite quick_check({table}) 报告损坏：{}",
+                reports.join("; ")
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn quick_check_staged(connection: &Connection) -> Result<(), String> {
+    if connection.is_bound() {
+        quick_check_bound_staging_store(connection)
+    } else {
+        quick_check_index(connection, None)
+    }
+}
+
+#[cfg(test)]
+fn quick_check_staged(connection: &Connection) -> Result<(), String> {
+    // Test builds intentionally use raw rusqlite connections for legacy stage
+    // fixtures. Preserve their whole-file check path and its failure hooks.
+    quick_check_index(connection, None)
+}
+
 fn quick_check_index(connection: &Connection, path: Option<&Path>) -> Result<(), String> {
     match quick_check_index_result(connection, path)? {
         None => Ok(()),
@@ -19058,7 +19124,7 @@ fn excerpt_warning(message: String) -> LocalDataWarning {
 
 fn restartable_private_stage(path: &Path, job: &FullRebuildJob) -> Result<bool, String> {
     let c = open_read_only_index(path, StdDuration::from_secs(1)).map_err(|e| e.to_string())?;
-    if quick_check_index(&c, None).is_err() { return Ok(false); }
+    if quick_check_staged(&c).is_err() { return Ok(false); }
     for column in ["manifest_schema_version", "parser_revision", "complete"] {
         if !column_exists_checked(&c, "manifest", column)? { return Ok(false); }
     }

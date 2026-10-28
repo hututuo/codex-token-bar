@@ -7789,14 +7789,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 )
             }
             if temporary { try BusinessStoreFiles.materializeTemporaryStage(connection) }
-            let quickCheck = try connection.readRows("PRAGMA quick_check;") {
-                $0.text(0) ?? ""
-            }
-            guard quickCheck == ["ok"] else {
+            guard try Self.stagingIntegrityIsValid(connection: connection,
+                namespaced: BusinessSQLiteRoutes.store(for: databaseURL) != nil) else {
                 throw SQLiteDatabaseError(
                     operation: "Validate exact usage staging",
                     code: SQLITE_CORRUPT,
-                    message: quickCheck.joined(separator: "; "),
+                    message: "Staging integrity check failed",
                     path: databaseURL.path
                 )
             }
@@ -7926,8 +7924,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 )
             }
             if rows.isEmpty {
-                let check = try stage.readRows("PRAGMA quick_check;") { $0.text(0) ?? "" }
-                guard check == ["ok"] else { return false }
+                guard try Self.stagingIntegrityIsValid(using: stage) else { return false }
                 for table in ["events", "fingerprints", "chunks"] {
                     let count = try stage.readRows("SELECT COUNT(*) FROM \(table);") { $0.int(0) ?? -1 }.first ?? -1
                     if count != 0 { return false }
@@ -7939,7 +7936,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                (row.schema == Self.stagingManifestSchemaVersion || Self.legacyStagingManifestSchemaVersions.contains(row.schema ?? -1)),
                [Self.oldStagingParserRevision, Self.legacyStagingParserRevision, Self.paginatedV4StagingRevision, Self.paginatedV5StagingRevision].contains(row.parser ?? ""),
                try PaginatedHistoryBoundary.read(file: job.file) != nil {
-                return try stage.readRows("PRAGMA quick_check;") { $0.text(0) ?? "" } == ["ok"]
+                return try Self.stagingIntegrityIsValid(using: stage)
             }
             guard rows.count == 1,
                   let row = rows.first,
@@ -7961,10 +7958,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                   chunkCount >= 0 else {
                 return false
             }
-            let quickCheck = try stage.readRows("PRAGMA quick_check;") {
-                $0.text(0) ?? ""
-            }
-            guard quickCheck == ["ok"] else { return false }
+            guard try Self.stagingIntegrityIsValid(using: stage) else { return false }
             let storedEventCount = try stage.readRows(
                 "SELECT COUNT(*) FROM events;"
             ) { $0.int(0) ?? -1 }.first ?? -1
@@ -8086,10 +8080,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                try PaginatedHistoryBoundary.read(file: job.file) != nil {
                 return nil
             }
-            let quickCheck = try stage.readRows("PRAGMA quick_check;") {
-                $0.text(0) ?? ""
-            }
-            guard quickCheck == ["ok"] else {
+            guard try Self.stagingIntegrityIsValid(using: stage) else {
                 return nil
             }
             let rows: [StagedFullRebuild?] = try stage.readRows(
@@ -8249,6 +8240,31 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             return nil
         }
         return nil
+    }
+
+    /// Validates a stage without scanning unrelated partitions in the shared
+    /// business database. Standalone legacy stages retain SQLite's full-file
+    /// check; a namespaced stage checks every table that belongs to the stage.
+    static func stagingIntegrityIsValid(using stage: SQLiteDatabaseDriver) throws -> Bool {
+        try stage.withConnection { connection in
+            try stagingIntegrityIsValid(connection: connection, namespaced: BusinessSQLiteRoutes.store(for: stage.url) != nil)
+        }
+    }
+
+    private static func stagingIntegrityIsValid(connection: SQLiteDatabaseConnection, namespaced: Bool) throws -> Bool {
+        guard namespaced else {
+            return try connection.readRows("PRAGMA quick_check;") { $0.text(0) ?? "" } == ["ok"]
+        }
+        let tableNames = ["manifest", "fingerprints", "events", "chunks"]
+        let existingTables = try connection.readRows(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name;"
+        ) { $0.text(0) ?? "" }
+        guard existingTables == tableNames.sorted() else { return false }
+        for tableName in tableNames {
+            let quickCheck = try connection.readRows("PRAGMA quick_check(\(tableName));") { $0.text(0) ?? "" }
+            guard quickCheck == ["ok"] else { return false }
+        }
+        return true
     }
 
     private func lineageReplacement(

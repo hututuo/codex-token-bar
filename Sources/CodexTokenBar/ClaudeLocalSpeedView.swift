@@ -59,19 +59,23 @@ struct ActivitySpeedSummaryView: View {
                         }
                     }
                 }.font(.system(size: 10)).monospacedDigit()
+                let chartNow = Date()
                 Chart {
                     ForEach(rows) { row in
-                        ForEach(Array(recentPoints(row).enumerated()), id: \.element.id) { index, point in
+                        ForEach(ActivitySpeedChartProjection.points(row.fiveMinuteTrend, now: chartNow)) { point in
                             LineMark(x: .value("时间", Date(timeIntervalSince1970: Double(point.bucketStart))),
-                                y: .value("活动速度", point.value.outputRate),
-                                series: .value("连续段", segmentID(row: row, index: index)))
+                                y: .value("活动速度", point.rate),
+                                series: .value("连续段", row.id + ":" + String(point.segment)))
                                 .foregroundStyle(ModelUsagePresentation.color(for: row.dimensions.model))
                             PointMark(x: .value("时间", Date(timeIntervalSince1970: Double(point.bucketStart))),
-                                y: .value("活动速度", point.value.outputRate))
+                                y: .value("活动速度", point.rate))
                                 .foregroundStyle(ModelUsagePresentation.color(for: row.dimensions.model))
                         }
                     }
-                }.chartXScale(domain: Date().addingTimeInterval(-1800)...Date()).frame(height: 105)
+                }
+                .chartXScale(domain: chartNow.addingTimeInterval(-1800)...chartNow)
+                .chartPlotStyle { plot in plot.clipped() }
+                .frame(height: 105)
             }
             Text(history.issue ?? "活动估算 · 每5分钟汇总 · Codex 正文测速另计")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
@@ -88,13 +92,5 @@ struct ActivitySpeedSummaryView: View {
     }
     private func clientTitle(_ value: String) -> String {
         switch value { case "claudeCode": "Claude CLI"; case "claudeDesktop": "Claude Desktop"; default: value.capitalized }
-    }
-    private func recentPoints(_ row: ActivitySpeedSeries) -> [ActivitySpeedTrendPoint] {
-        row.fiveMinuteTrend.filter { Double($0.bucketStart) >= Date().timeIntervalSince1970 - 2100 }
-    }
-    private func segmentID(row: ActivitySpeedSeries, index: Int) -> String {
-        var run = 0
-        for i in 1..<(index+1) where recentPoints(row)[i].bucketStart - recentPoints(row)[i-1].bucketStart > 300 { run += 1 }
-        return row.id + String(run)
     }
 }

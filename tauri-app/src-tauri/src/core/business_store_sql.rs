@@ -693,6 +693,8 @@ fn bind_pragma_table_argument(
             | "index_list"
             | "index_info"
             | "index_xinfo"
+            | "quick_check"
+            | "integrity_check"
     ) {
         return;
     }
@@ -1056,6 +1058,38 @@ mod tests {
                 "SELECT * FROM pragma_foreign_key_check WHERE substr(\"table\",1,{})='{prefix}'",
                 prefix.len()
             )
+        );
+    }
+
+    #[test]
+    fn quick_and_integrity_check_string_arguments_are_store_scoped_without_rewriting_limits() {
+        let store_id = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let prefix = format!("s{store_id}_");
+        let mut binding = StoreSqlBinding::new(
+            store_id,
+            prefix.clone(),
+            ["manifest".into(), "fingerprints".into(), "events".into(), "chunks".into()],
+        )
+        .unwrap();
+
+        assert_eq!(
+            binding.sql("PRAGMA quick_check('events')").unwrap(),
+            format!("PRAGMA quick_check('{prefix}events')")
+        );
+        assert_eq!(
+            binding.sql("PRAGMA integrity_check('manifest')").unwrap(),
+            format!("PRAGMA integrity_check('{prefix}manifest')")
+        );
+        assert_eq!(
+            binding
+                .sql("SELECT quick_check FROM pragma_quick_check('chunks')")
+                .unwrap(),
+            format!("SELECT quick_check FROM pragma_quick_check('{prefix}chunks')")
+        );
+        assert_eq!(binding.sql("PRAGMA quick_check(1)").unwrap(), "PRAGMA quick_check(1)");
+        assert_eq!(
+            binding.sql("PRAGMA integrity_check(1)").unwrap(),
+            "PRAGMA integrity_check(1)"
         );
     }
 

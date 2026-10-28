@@ -273,8 +273,9 @@ final class MultiClientUsageStore: ObservableObject {
     static let shared = MultiClientUsageStore()
     static let preferencesKey = "multiClientUsage.preferences.v1"
     static var defaultDatabaseURL: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("CodexTokenBar/multi-client-usage.sqlite")
+        ClientUsageDataLocation.databaseURL(
+            applicationSupport: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0],
+            bundleIdentifier: Bundle.main.bundleIdentifier)
     }
     @Published private(set) var preferences: [MultiClientUsagePreference]
     @Published private(set) var detections: [DetectedUsageClient] = []

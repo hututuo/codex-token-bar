@@ -36,7 +36,7 @@ final class ClaudeModelPresentationTests: XCTestCase {
         }
     }
 
-    func testOlderObservedModelsStayInFamilyGroupsUntilCatalogVersionIsObserved() {
+    func testOlderObservedModelsShareOneOtherGroupUntilCatalogVersionIsObserved() {
         let items = [
             item("claudeCode|opus-4-8"), item("claudeDesktop|sonnet-5"),
             item("claudeCode|haiku-4-5"), item("claudeDesktop|fable-5"),
@@ -46,8 +46,8 @@ final class ClaudeModelPresentationTests: XCTestCase {
         let groups = ClaudeModelPresentation.groups(items, client: "claude")
 
         XCTAssertFalse(groups.contains { $0.id == "claude:latest" })
-        XCTAssertTrue(groups.contains { $0.id == "claude:opus" && $0.items.contains { $0.id == items[0].id } })
-        XCTAssertTrue(groups.contains { $0.id == "claude:sonnet" && $0.items.contains { $0.id == items[1].id } })
+        XCTAssertEqual(groups.map(\.id), ["claude:other"])
+        XCTAssertEqual(groups.first?.items.count, items.count)
         XCTAssertEqual(groups.flatMap(\.items).sorted { $0.id < $1.id }, items.sorted { $0.id < $1.id })
     }
 

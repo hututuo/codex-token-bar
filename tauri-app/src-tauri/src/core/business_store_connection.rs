@@ -281,6 +281,10 @@ impl StoreConnection {
         self.raw.is_autocommit()
     }
 
+    pub(crate) fn is_bound(&self) -> bool {
+        self.binding.is_some()
+    }
+
     pub(crate) fn has_logical_object(&self, name: &str) -> Result<bool> {
         if let Some(binding) = &self.binding {
             return Ok(binding.borrow().has_object(name));
@@ -396,6 +400,66 @@ mod tests {
             .unwrap();
         assert_eq!(value, 7);
         assert_eq!(physical, 0);
+    }
+
+    #[test]
+    fn namespaced_quick_checks_cover_all_stage_tables_and_isolate_siblings() {
+        let db = bound();
+        let prefix = format!("s{}_", "a".repeat(64));
+        let stage_tables = ["manifest", "fingerprints", "events", "chunks"];
+        for table in stage_tables {
+            db.execute_batch(&format!(
+                "CREATE TABLE {table}(value INTEGER NOT NULL CHECK(value >= 0)); INSERT INTO {table} VALUES(0);"
+            ))
+            .unwrap();
+        }
+
+        let sibling_table = format!("\"s{}_unrelated_guard\"", "b".repeat(64));
+        db.raw()
+            .execute_batch(&format!(
+                "CREATE TABLE {sibling_table}(value INTEGER NOT NULL CHECK(value >= 0)); \
+                 PRAGMA ignore_check_constraints=ON; INSERT INTO {sibling_table} VALUES(-1); \
+                 PRAGMA ignore_check_constraints=OFF;"
+            ))
+            .unwrap();
+        let whole_container_check: String = db
+            .raw()
+            .query_row("PRAGMA quick_check(1)", [], |row| row.get(0))
+            .unwrap();
+        assert_ne!(whole_container_check, "ok", "fixture must corrupt a sibling partition");
+
+        for table in stage_tables {
+            let rows = db
+                .prepare(&format!("PRAGMA quick_check('{table}')"))
+                .unwrap()
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(rows, vec!["ok".to_owned()], "the check for {table} must ignore the sibling");
+
+            let physical_table = format!("\"{prefix}{table}\"");
+            db.raw()
+                .execute_batch(&format!(
+                    "PRAGMA ignore_check_constraints=ON; INSERT INTO {physical_table} VALUES(-1); \
+                     PRAGMA ignore_check_constraints=OFF;"
+                ))
+                .unwrap();
+            let corrupt_rows = db
+                .prepare(&format!("PRAGMA quick_check('{table}')"))
+                .unwrap()
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap();
+            assert_ne!(corrupt_rows, vec!["ok".to_owned()], "the check must detect corruption in {table}");
+            db.raw()
+                .execute(
+                    &format!("DELETE FROM {physical_table} WHERE value < 0"),
+                    [],
+                )
+                .unwrap();
+        }
     }
 
     #[test]

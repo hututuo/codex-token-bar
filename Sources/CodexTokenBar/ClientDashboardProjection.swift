@@ -84,6 +84,7 @@ struct ClientModelCostPeriods: Equatable {
     let lifetime: [FloatingTodayModelUsageItem]
     let today: [FloatingTodayModelUsageItem]
     let sevenDay: [FloatingTodayModelUsageItem]
+    var codexPendingScopes: Set<DashboardModelCostScope> = []
     func items(_ scope: DashboardModelCostScope) -> [FloatingTodayModelUsageItem] {
         switch scope { case .lifetime: lifetime; case .today: today; case .sevenDay: sevenDay }
     }
@@ -125,7 +126,16 @@ struct ClientModelCostPeriods: Equatable {
                      rows: [ClientUsageSummary], today: [ClientUsageSummary], sevenDay: [ClientUsageSummary],
                      allowed: Set<String>, now: Date = Date()) -> Self {
         let cutoff = now.addingTimeInterval(-7 * 86400)
-        let recentCodex = ModelUsagePresentation.rows(from: codex.cacheUsage.attributionEvents.filter { $0.start >= cutoff && $0.start <= now })
+        let recentEvents = codex.cacheUsage.attributionEvents.filter { $0.start >= cutoff && $0.start <= now }
+        let recentCodex = ModelUsagePresentation.rows(from: recentEvents)
+        let todayStart = Calendar.current.startOfDay(for: now)
+        let indexedToday = ModelUsagePresentation.rows(from: recentEvents.filter { $0.start >= todayStart })
+        let resolvedToday = todayCodex.isEmpty ? indexedToday : todayCodex
+        var pending: Set<DashboardModelCostScope> = []
+        if allowed.contains("codex") {
+            if resolvedToday.isEmpty && codex.dailyUsage.contains(where: { $0.date >= todayStart && $0.date <= now && $0.tokens > 0 }) { pending.insert(.today) }
+            if recentCodex.isEmpty && codex.recentBins.contains(where: { $0.start >= cutoff && $0.start <= now && $0.tokens > 0 }) { pending.insert(.sevenDay) }
+        }
         func items(_ external: [ClientUsageSummary], _ original: [ModelTokenBreakdown]) -> [FloatingTodayModelUsageItem] {
             var result: [FloatingTodayModelUsageItem] = []
             if allowed.contains("codex") {
@@ -144,7 +154,7 @@ struct ClientModelCostPeriods: Equatable {
             let total = max(1, result.reduce(0) { $0 + $1.tokens })
             return result.filter { $0.tokens > 0 }.map { .init(id: $0.id, label: $0.label, tokens: $0.tokens, share: Double($0.tokens) / Double(total), costUSD: $0.costUSD, usesIndependentQuota: $0.usesIndependentQuota, referenceCostUSD: $0.referenceCostUSD, color: $0.color, knownPartialCostUSD: $0.knownPartialCostUSD) }
         }
-        return Self(lifetime: items(rows, codex.cacheUsage.modelBreakdowns), today: items(today, todayCodex), sevenDay: items(sevenDay, recentCodex))
+        return Self(lifetime: items(rows, codex.cacheUsage.modelBreakdowns), today: items(today, resolvedToday), sevenDay: items(sevenDay, recentCodex), codexPendingScopes: pending)
     }
 }
 
@@ -189,6 +199,9 @@ final class ClientModelCostPeriodsCache {
         let minute: Int64
         let allowed: Set<String>
         let todayCodex: [ModelTokenBreakdown]
+        let attributionCount: Int
+        let attributionGeneration: Int64?
+        let modelBucketsComplete: Bool
     }
     private var key: Key?
     private var cached: ClientModelCostPeriods?
@@ -198,7 +211,10 @@ final class ClientModelCostPeriodsCache {
                clientsUpdatedAt: Date?, allowed: Set<String>, now: Date = Date()) -> ClientModelCostPeriods {
         let next = Key(source: codex.homeIdentity, generation: codex.exactGeneration,
             generatedAt: codex.generatedAt, clientsUpdatedAt: clientsUpdatedAt,
-            minute: Int64(floor(now.timeIntervalSince1970 / 60)), allowed: allowed, todayCodex: todayCodex)
+            minute: Int64(floor(now.timeIntervalSince1970 / 60)), allowed: allowed, todayCodex: todayCodex,
+            attributionCount: codex.cacheUsage.attributionEvents.count,
+            attributionGeneration: codex.cacheUsage.attributionGeneration,
+            modelBucketsComplete: codex.cacheUsage.attributionModelBucketsComplete)
         if next == key, let cached { return cached }
         let result = ClientModelCostPeriods.make(codex: codex, todayCodex: todayCodex,
             rows: rows, today: today, sevenDay: sevenDay, allowed: allowed, now: now)

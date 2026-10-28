@@ -44,7 +44,7 @@ export function claudeModelGroups<T extends {key:string}>(items:T[],client:strin
   const selected=new Set(top.map(x=>x.key));
   const groups:{id:string;label:string;items:T[]}[]=[];
   if(top.length)groups.push({id:client+":latest",label:"Claude 最新",items:top.sort((a,b)=>claudeFamilies.indexOf(ids.get(a.key)!.family)-claudeFamilies.indexOf(ids.get(b.key)!.family))});
-  for(const family of claudeFamilies){const rows=items.filter(item=>!selected.has(item.key)&&ids.get(item.key)?.family===family);if(rows.length)groups.push({id:client+":"+family,label:family[0].toUpperCase()+family.slice(1),items:rows});}
-  const other=items.filter(item=>!ids.get(item.key));if(other.length)groups.push({id:client+":other",label:"Claude 其他",items:other});
+  const other=items.filter(item=>!selected.has(item.key));
+  if(other.length)groups.push({id:client+":other",label:"Claude 其他",items:other});
   return groups;
 }

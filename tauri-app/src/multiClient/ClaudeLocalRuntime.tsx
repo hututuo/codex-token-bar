@@ -1,8 +1,9 @@
-import { useCallback, useSyncExternalStore, useEffect, useState } from "react";
+import { useCallback, useSyncExternalStore, useEffect, useState, useId } from "react";
 import { useActivitySpeedMode, ActivitySpeedModePicker, selectedActivityRates, type ActivityModelRate } from "./activitySpeedMode";
 import { callCommandStrict } from "../api/command";
 import { isTauriRuntimeAvailable } from "../platform/runtime";
 import { useMultiClientUsage } from "./MultiClientUsage";
+import { activityChartPoints } from "./activitySpeedChart";
 import { modelUsageColor } from "../components/modelUsagePresentation";
 
 export interface ClaudeRuntimeAgent {
@@ -103,12 +104,19 @@ export function ClientActivitySpeedPanel({ allowed, compact = false, monitoringE
   </div>;
 }
 function ActivityTrend({rows}:{rows:ActivitySeries[]}){
-  const start=Date.now()/1000-1800;
-  const maximum=Math.max(1,...rows.flatMap(r=>r.fiveMinuteTrend.filter(p=>p.bucketStart>=start-300).map(p=>p.value.weightedOutput/p.value.coveredSeconds)));
-  return <svg viewBox="0 0 360 110" aria-label="近半小时活动速度，每5分钟加权" role="img" style={{width:"100%",height:110,display:"block"}}><path d="M12 5V94H350" fill="none" stroke="currentColor" opacity=".25"/>{rows.map(row=>{
-    let prior=0;const d=row.fiveMinuteTrend.filter(p=>p.bucketStart>=start-300).map(p=>{const command=p.bucketStart-prior===300?"L":"M";prior=p.bucketStart;return `${command}${12+Math.min(1,Math.max(0,(p.bucketStart-start)/1800))*338},${94-p.value.weightedOutput/p.value.coveredSeconds/maximum*80}`;}).join(" ");
-    return <g key={row.dimensions.client+row.dimensions.model}><path d={d} fill="none" stroke={modelUsageColor(row.dimensions.model)} strokeWidth="1.7"/>{row.fiveMinuteTrend.filter(p=>p.bucketStart>=start-300).map(p=><circle key={p.bucketStart} cx={12+Math.min(1,Math.max(0,(p.bucketStart-start)/1800))*338} cy={94-p.value.weightedOutput/p.value.coveredSeconds/maximum*80} r="2.5" fill={modelUsageColor(row.dimensions.model)}><title>{row.dimensions.model} · {new Date(p.bucketStart*1000).toLocaleTimeString()} · {meanText(p.value)} t/s</title></circle>)}</g>;
-  })}</svg>;
+  const now=Date.now()/1000, start=now-1800, clipId=useId();
+  const plotted=rows.map(row=>({row,points:activityChartPoints(row.fiveMinuteTrend,now)}));
+  const maximum=Math.max(1,...plotted.flatMap(series=>series.points.map(p=>p.rate)));
+  const x=(stamp:number)=>12+(stamp-start)/1800*338, y=(rate:number)=>94-rate/maximum*80;
+  return <svg viewBox="0 0 360 110" aria-label="近半小时活动速度，每5分钟加权" role="img" style={{width:"100%",height:110,display:"block"}}>
+    <defs><clipPath id={clipId}><rect x="12" y="5" width="338" height="89"/></clipPath></defs>
+    <path d="M12 5V94H350" fill="none" stroke="currentColor" opacity=".25"/>
+    <g clipPath={`url(#${clipId})`}>{plotted.map(({row,points})=>{
+      let previous:number|undefined;
+      const d=points.map(p=>{const command=previous===p.segment?"L":"M";previous=p.segment;return `${command}${x(p.bucketStart)},${y(p.rate)}`;}).join(" ");
+      return <g key={row.dimensions.client+row.dimensions.model}><path d={d} fill="none" stroke={modelUsageColor(row.dimensions.model)} strokeWidth="1.7"/>{points.map(p=><circle key={p.bucketStart} cx={x(p.bucketStart)} cy={y(p.rate)} r="2.5" fill={modelUsageColor(row.dimensions.model)}><title>{row.dimensions.model} · {new Date(p.bucketStart*1000).toLocaleTimeString()} · {p.rate.toFixed(1)} t/s</title></circle>)}</g>;
+    })}</g>
+  </svg>;
 }
 
 export function ClaudeLocalTasks({ allowed }: { allowed: readonly string[] }) {

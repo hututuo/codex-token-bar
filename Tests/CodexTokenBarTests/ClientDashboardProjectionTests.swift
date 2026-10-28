@@ -2,6 +2,28 @@ import XCTest
 @testable import CodexTokenBar
 
 final class ClientDashboardProjectionTests: XCTestCase {
+    func testSummaryUsesRecordedPeriodModelsAndNeverLifetimeTotalsAsFallback() {
+        let now = Date()
+        let counts = TokenCacheBreakdown(inputTokens: 100, cachedInputTokens: 40, outputTokens: 20, reasoningOutputTokens: 0, totalTokens: 120, calls: 1)
+        let indexed = TokenCacheAttributionEvent(id: "today", start: now.addingTimeInterval(-1), model: "gpt-6-luna", breakdown: counts)
+        let old = TokenCacheAttributionEvent(id: "old", start: now.addingTimeInterval(-8 * 86400), model: "gpt-5.6-sol", breakdown: counts)
+        func snapshot(_ events: [TokenCacheAttributionEvent]) -> DashboardSnapshot {
+            DashboardSnapshot(stats: DashboardSnapshot.empty.stats,
+                dailyUsage: [DayUsage(date: Calendar.current.startOfDay(for: now), tokens: 120, calls: 1)],
+                recentBins: [BinUsage(start: now.addingTimeInterval(-1), tokens: 120, calls: 1)], hourlyUsage: [], pluginUsage: [],
+                cacheUsage: TokenCacheUsage(total: counts, modelBreakdowns: [.init(model: "lifetime-only", breakdown: counts)],
+                    daily: [], hourly: [], recentBins: [], sessions: [], turns: [], attributionEvents: events), generatedAt: now)
+        }
+        let ready = ClientModelCostPeriods.make(codex: snapshot([old, indexed]), todayCodex: [], rows: [], today: [], sevenDay: [], allowed: ["codex", "claudeCode"], now: now)
+        XCTAssertEqual(ready.today.map(\.id), ["codex|gpt-6-luna"])
+        XCTAssertEqual(ready.sevenDay.map(\.id), ["codex|gpt-6-luna"])
+        XCTAssertFalse(ready.groups(.sevenDay).contains { $0.id.hasPrefix("claude:") })
+        let pending = ClientModelCostPeriods.make(codex: snapshot([]), todayCodex: [], rows: [], today: [], sevenDay: [], allowed: ["codex", "claudeCode"], now: now)
+        XCTAssertTrue(pending.today.isEmpty)
+        XCTAssertTrue(pending.sevenDay.isEmpty)
+        XCTAssertEqual(pending.codexPendingScopes, [.today, .sevenDay])
+        XCTAssertEqual(pending.lifetime.first?.id, "codex|lifetime-only")
+    }
     func testDashboardAutoReviewStaysSeparateWithoutChangingFacts() {
         let original = ["gpt-5.6-luna", "codex-auto-review@luna", "gpt-6-luna"].map {
             ModelTokenBreakdown(model: $0, breakdown: .init(

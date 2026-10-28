@@ -132,7 +132,7 @@ function StatsStripView({
   ), [clientCosts, modelCostScope, modelCostDataAvailable, modelCostRows, modelDetailAvailable, priceModel, palette]);
   const modelCostTotal = floatingModelUsageKnownCostUSD(modelCostItems);
   const modelPricesIncomplete = hasUnknownModelPrices(modelCostItems);
-  const selectedModelDisplayState = clientCosts ? "current" : modelCostScope === "sevenDay"
+  const selectedModelDisplayState = clientCosts ? (clientCosts.codexPendingScopes?.includes(modelCostScope as "today"|"sevenDay") ? "pending" : "current") : modelCostScope === "sevenDay"
     ? sevenDayModelDisplayState
     : modelCostScope === "today"
     ? todayModelDisplayState
@@ -235,7 +235,7 @@ function StatsStripView({
           {!clientCosts && modelCostScope === "sevenDay" && selectedModelDisplayState === "pending" ? (
             <span className="stats-model-cost-empty">{cycleHistory.error ? quotaCycleErrorStatus(cycleHistory.error) : `${periodLabel}模型明细待读取`}</span>
           ) : modelCostScope === "today" && selectedModelDisplayState === "pending" ? (
-            <span className="stats-model-cost-empty">今日模型明细待读取</span>
+            <span className="stats-model-cost-empty">{clientCosts ? "Codex 今日模型明细同步中" : "今日模型明细待读取"}</span>
           ) : !modelCostDataAvailable ? (
             <span className="stats-model-cost-empty">模型费用待读取</span>
           ) : !modelDetailAvailable ? (
@@ -244,7 +244,7 @@ function StatsStripView({
             </span>
           ) : modelCostItems.length === 0 ? (
             <span className="stats-model-cost-empty">
-              {modelCostScope === "sevenDay" ? `${periodLabel}暂无模型用量` : modelCostScope === "today" ? "今日暂无模型用量" : "暂无逐模型历史"}
+              {clientCosts?.codexPendingScopes?.includes(modelCostScope as "today"|"sevenDay") ? "Codex 模型明细同步中" : modelCostScope === "sevenDay" ? `${periodLabel}暂无模型用量` : modelCostScope === "today" ? "今日暂无模型用量" : "暂无逐模型历史"}
             </span>
           ) : (
             <div className="stats-model-cost-groups">

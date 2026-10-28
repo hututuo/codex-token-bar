@@ -440,7 +440,7 @@ struct HeaderView: View {
                     HStack(alignment: .firstTextBaseline, spacing: 12) {
                         Text("用量概览")
                             .font(.system(size: 27, weight: .semibold))
-                        if isRefreshing || progressPresentation.stage.isVisible {
+                        if isRefreshing || progressPresentation.showsProgress {
                             Text("读取中").font(.system(size: 11)).foregroundStyle(.secondary)
                         }
                     }
@@ -1007,9 +1007,9 @@ struct StatStrip: View, @preconcurrency Equatable {
                     sevenDayBoundaryTokens: sevenDayModelData.boundaryTokens,
                     fallbackModel: OfficialAPIPriceModel.storedValue(for: quotaEstimateModelRaw),
                     dataAvailable: snapshot.hasPreciseTokenUsage,
-                    todayModelDisplayState: clientCosts == nil ? todayModelDisplayState : .current,
+                    todayModelDisplayState: clientCosts == nil ? todayModelDisplayState : (clientCosts?.codexPendingScopes.contains(.today) == true ? .pending : .current),
                     sevenDayDataAvailable: clientCosts != nil || sevenDayModelData.dataAvailable,
-                    sevenDayModelDisplayState: clientCosts == nil ? sevenDayModelDisplayState : .current,
+                    sevenDayModelDisplayState: clientCosts == nil ? sevenDayModelDisplayState : (clientCosts?.codexPendingScopes.contains(.sevenDay) == true ? .pending : .current),
                     sevenDayEstimateSource: sevenDayModelData.estimateSource,
                     clientCosts: clientCosts
                 )
@@ -1220,8 +1220,8 @@ struct DashboardModelCostRow: View {
 
     private var emptyDetailText: String {
         switch scope {
-        case .sevenDay: return "\(periodLabel)暂无模型用量"
-        case .today: return "今日暂无模型用量"
+        case .sevenDay: return clientCosts?.codexPendingScopes.contains(.sevenDay) == true ? "Codex 近7天模型明细同步中" : "\(periodLabel)暂无模型用量"
+        case .today: return clientCosts?.codexPendingScopes.contains(.today) == true ? "Codex 今日模型明细同步中" : "今日暂无模型用量"
         case .lifetime: return "暂无逐模型历史"
         }
     }

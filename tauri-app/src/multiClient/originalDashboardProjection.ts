@@ -10,6 +10,7 @@ export interface ClientCostPeriods {
   lifetime: FloatingModelUsageItem[];
   today: FloatingModelUsageItem[];
   sevenDay: FloatingModelUsageItem[];
+  codexPendingScopes?: ("today"|"sevenDay")[];
 }
 export function clientCostGroups(items: FloatingModelUsageItem[]) {
   const codex = items.filter(x => x.key.startsWith('codex|')).map(x => ({...x,key:x.key.slice(6)}));
@@ -40,8 +41,17 @@ export function clientCostPeriods(codex: DashboardSnapshot, snapshot: Snapshot, 
       costUSD:(row.unpricedRequests??0)>0?null:row.apiCostUSD??null,usesIndependentQuota:false,referenceCostUSD:null,color:modelUsageColor(row.model)});
     const total=Math.max(1,items.reduce((n,x)=>n+x.tokens,0));return items.filter(x=>x.tokens>0).map(x=>({...x,share:x.tokens/total}));
   };
-  const recent=codex.recentUsage24h.filter(x=>x.startUnix>=now-7*86400).flatMap(x=>x.modelBreakdowns??[]);
-  return {lifetime:make(snapshot.summaries,codex.stats.modelBreakdowns??[]),today:make(snapshot.todaySummaries??[],codex.usageSummary?.todayModelBreakdowns??[]),sevenDay:make(snapshot.sevenDaySummaries??[],recent)};
+  const recentPoints=codex.recentUsage24h.filter(x=>x.startUnix>=now-7*86400&&x.startUnix<=now);
+  const recent=recentPoints.flatMap(x=>x.modelBreakdowns??[]);
+  const day=new Date(now*1000);day.setHours(0,0,0,0);const dayStart=day.getTime()/1000;
+  const directToday=codex.usageSummary?.todayModelBreakdowns??[];
+  const todayModels=directToday.length?directToday:recentPoints.filter(x=>x.startUnix>=dayStart).flatMap(x=>x.modelBreakdowns??[]);
+  const codexPendingScopes:("today"|"sevenDay")[]=[];
+  if(allowed.includes('codex')){
+    if(!todayModels.length&&(codex.usageSummary?.todayTokens??0)>0)codexPendingScopes.push('today');
+    if(!recent.length&&recentPoints.some(x=>x.tokens>0))codexPendingScopes.push('sevenDay');
+  }
+  return {lifetime:make(snapshot.summaries,codex.stats.modelBreakdowns??[]),today:make(snapshot.todaySummaries??[],todayModels),sevenDay:make(snapshot.sevenDaySummaries??[],recent),codexPendingScopes};
 }
 
 /** Source adapter for the existing cards and charts. Never writes source data. */

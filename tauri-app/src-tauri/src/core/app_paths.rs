@@ -46,12 +46,27 @@ pub fn quota_history_database_path() -> Option<PathBuf> {
     tauri_app_support_dir().map(|path| path.join("quota-history.sqlite"))
 }
 
+fn client_usage_directory(root: PathBuf, simulated: bool) -> PathBuf {
+    if simulated { root.join("Previews").join("multi-client-demo") } else { root }
+}
+fn multi_client_usage_directory() -> Option<PathBuf> {
+    let simulated = cfg!(debug_assertions) && std::env::var("TOKENBAR_DEMO_CLIENT_DATA").is_ok_and(|value| value == "1");
+    tauri_app_support_dir().map(|root| client_usage_directory(root, simulated))
+}
 pub fn multi_client_usage_database_path() -> Option<PathBuf> {
-    tauri_app_support_dir().map(|path| path.join("multi-client-usage.sqlite"))
+    multi_client_usage_directory().map(|path| path.join("multi-client-usage.sqlite"))
 }
 
 pub fn multi_client_usage_settings_path() -> Option<PathBuf> {
-    tauri_app_support_dir().map(|path| path.join("multi-client-usage-settings.json"))
+    multi_client_usage_directory().map(|path| path.join("multi-client-usage-settings.json"))
+}
+
+#[cfg(test)]
+#[test]
+fn simulated_client_usage_does_not_share_production_data_or_settings() {
+    let root = PathBuf::from("fixture-support");
+    assert_eq!(client_usage_directory(root.clone(), false), root);
+    assert_eq!(client_usage_directory(root.clone(), true), root.join("Previews").join("multi-client-demo"));
 }
 
 pub fn startup_trace_log_path() -> Option<PathBuf> {

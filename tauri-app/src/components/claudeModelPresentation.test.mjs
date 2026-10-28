@@ -26,8 +26,8 @@ test('older local Claude rows are not marked latest below the bundled catalog fl
  const items=['claudeCode|opus-4-8','claudeDesktop|sonnet-5','claudeCode|haiku-4-5','claudeDesktop|fable-5','claudeCode|claude-opus-20261001','claudeDesktop|custom-model'].map(key=>({key}));
  const groups=claudeModelGroups(items,'claude');
  assert.equal(groups.some(group=>group.id==='claude:latest'),false);
- assert.ok(groups.some(group=>group.id==='claude:opus'&&group.items.some(item=>item.key===items[0].key)));
- assert.ok(groups.some(group=>group.id==='claude:sonnet'&&group.items.some(item=>item.key===items[1].key)));
+ assert.deepEqual(groups.map(group=>group.id),['claude:other']);
+ assert.equal(groups[0].items.length,items.length);
  assert.deepEqual(groups.flatMap(group=>group.items).map(item=>item.key).sort(),items.map(item=>item.key).sort());
 }));
 
