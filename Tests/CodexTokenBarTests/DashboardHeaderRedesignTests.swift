@@ -15,9 +15,9 @@ final class DashboardHeaderRedesignTests: XCTestCase {
         let context=ClientModelCostPeriods(lifetime:rows,today:[],sevenDay:[])
         let groups=context.groups(.lifetime)
         XCTAssertEqual(Array(groups.prefix(2)).map(\.id),["6","claude:latest"])
-        XCTAssertEqual(Set(groups[1].items.map(\.id)),Set([ids[3],ids[4]]))
+        XCTAssertEqual(Set(groups[1].items.filter { $0.tokens > 0 }.map(\.id)),Set([ids[3],ids[4]]))
         XCTAssertFalse(groups[1].items.contains{$0.id==ids[2]},"A legacy CLI model cannot outrank a newer Desktop version of the same family")
-        XCTAssertEqual(groups.flatMap(\.items).map(\.id).sorted(),ids.map { $0.hasPrefix("codex|") ? String($0.dropFirst(6)) : $0 }.sorted())
+        XCTAssertEqual(groups.flatMap(\.items).filter { $0.tokens > 0 }.map(\.id).sorted(),ids.map { $0.hasPrefix("codex|") ? String($0.dropFirst(6)) : $0 }.sorted())
     }
     func testUnlabelledCompactPlaceholdersHaveNoRepresentationOrHeight() {
         let omitted:[QuotaSidebarItem]=[.modeltrace,.tps,.radar,.credits,.clientUsage]

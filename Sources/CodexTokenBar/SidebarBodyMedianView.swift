@@ -54,36 +54,37 @@ struct SidebarBodyMedianContent: View, Equatable {
 
     var body: some View {
         Button(action: onOpen) {
-            VStack(spacing: 6) {
-                Text("正文 TPS").font(.system(size: 9, weight: .semibold))
-                Text("中位数 · 近3小时").font(.system(size: 8)).foregroundStyle(.white.opacity(0.75))
+            VStack(spacing: 4) {
+                HStack {
+                    Text("正文 TPS").font(.system(size: 9, weight: .semibold))
+                    Spacer(minLength: 2)
+                    Text("近3小时").font(.system(size: 7)).foregroundStyle(.white.opacity(0.75))
+                }.frame(width: 74)
                 if let error { Text(error).font(.system(size: 9)).foregroundStyle(.orange) }
                 if !latest.isEmpty {
                     ForEach(latest) { reading in
                         let series = snapshot?.series.first { $0.model == reading.model }
-                        VStack(alignment: .leading, spacing: 3) {
+                        VStack(alignment: .leading, spacing: 2) {
                             HStack(spacing: 3) {
                                 Circle().fill(ModelUsagePresentation.color(for: reading.model)).frame(width: 4, height: 4)
                                 Text(reading.model.replacingOccurrences(of: "gpt-", with: ""))
-                                    .font(.system(size: 9, weight: .medium)).lineLimit(1).minimumScaleFactor(0.7)
-                            }
-                            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                                    .font(.system(size: 9, weight: .medium)).lineLimit(1).minimumScaleFactor(0.75)
+                                Spacer(minLength: 1)
                                 Text(reading.tokensPerSecond, format: .number.precision(.fractionLength(1)))
-                                    .font(.system(size: 14, weight: .semibold)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
-                                Text("最新").font(.system(size: 7)).foregroundStyle(.white.opacity(0.75))
+                                    .font(.system(size: 11, weight: .semibold)).monospacedDigit().fixedSize()
                             }
-                            if let series { SidebarBodyMedianBars(series: series).frame(height: 48) }
-                            else { Text("趋势待采样").font(.system(size: 7)).foregroundStyle(.secondary).frame(height: 48) }
+                            if let series { SidebarBodyMedianBars(series: series).frame(height: 32) }
+                            else { Text("趋势待采样").font(.system(size: 7)).foregroundStyle(.secondary).frame(height: 32) }
                             Text(series?.current.map { "中位 \(String(format: "%.1f", $0.median))" } ?? "中位 —").font(.system(size: 7)).monospacedDigit()
                                 .foregroundStyle(.white.opacity(0.75)).frame(maxWidth: .infinity)
-                        }.frame(width: 66).padding(.vertical, 2)
+                        }.frame(width: 74).padding(.vertical, 2)
                             .background(GeometryReader { proxy in
                                 Color.clear.preference(key: QuotaSidebarContentMeasurementKey.self,
                                     value: QuotaSidebarContentMeasurement(speedRowHeight: proxy.size.height + 6))
                             })
-                            .help(series.map { Self.description($0, end: snapshot?.end ?? 0) } ?? "\(reading.model) · 最新 \(reading.tokensPerSecond) TPS")
+                            .help("\(reading.model) · 最新 \(String(format: "%.1f", reading.tokensPerSecond)) TPS。" + (series.map { Self.description($0, end: snapshot?.end ?? 0) } ?? "趋势待采样"))
                             .accessibilityElement(children: .ignore)
-                            .accessibilityLabel(series.map { Self.description($0, end: snapshot?.end ?? 0) } ?? "\(reading.model) · 最新 \(reading.tokensPerSecond) TPS")
+                            .accessibilityLabel("\(reading.model) · 最新 \(String(format: "%.1f", reading.tokensPerSecond)) TPS。" + (series.map { Self.description($0, end: snapshot?.end ?? 0) } ?? "趋势待采样"))
                     }
                 } else { Text("等待采样").font(.system(size: 9)).foregroundStyle(.white.opacity(0.7)) }
             }.foregroundStyle(.white).frame(maxWidth: .infinity)
@@ -113,9 +114,9 @@ private struct SidebarBodyMedianBars: View {
             let bounds = series.bounds
             let color = ModelUsagePresentation.color(for: series.model)
             let step = size.width / 6
-            let bottom = size.height - 7
+            let bottom = size.height - 3
             func y(_ value: Double) -> CGFloat {
-                bottom - (value - bounds.lowerBound) / (bounds.upperBound - bounds.lowerBound) * (bottom - 6)
+                bottom - (value - bounds.lowerBound) / (bounds.upperBound - bounds.lowerBound) * (bottom - 3)
             }
             context.fill(Path(CGRect(x: 0, y: bottom, width: size.width, height: 1)), with: .color(.white.opacity(0.055)))
             for (index, point) in series.slots.enumerated() {

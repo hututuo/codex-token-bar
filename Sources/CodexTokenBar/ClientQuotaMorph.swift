@@ -104,7 +104,19 @@ enum ClientQuotaMorphGeometry {
                 expanded: .init(points: dot(CGPoint(x: marker.midX, y: marker.midY)), width: 5, opacity: 1),
                 collapsed: .init(points: dot(end), width: 5, opacity: 1), color: color)
         }
-        return strokes + markers
+        let guides: [MatchedStrokeMorphRoute] = routes.compactMap { route in
+            guard let value = route.expected, value.isFinite else { return nil }
+            let expected = min(1, max(0, value)), radius = route.ring.width / 2
+            let angle = route.half == 0 ? -Double.pi / 2 + expected * 2 * Double.pi
+                : (route.half < 0 ? Double.pi / 2 : -Double.pi / 2) + expected * Double.pi
+            func radial(_ radius: Double) -> CGPoint { CGPoint(x: route.ring.midX + cos(angle) * radius, y: route.ring.midY + sin(angle) * radius) }
+            let y = route.track.minY + 2.5 + (route.track.height - 2.5) * (1 - expected)
+            return .init(id: "pace:" + route.id, participantID: "pace:" + route.id,
+                expanded: .init(points: [radial(radius - 3.5), radial(radius + 3.5)], width: 1.5),
+                collapsed: .init(points: [CGPoint(x: route.track.midX - 2.5, y: y), CGPoint(x: route.track.midX + 2.5, y: y)], width: 1.5), color: .white)
+        }
+        // Forecast guides must paint above both the value stroke and brand dot.
+        return strokes + markers + guides
     }
 
     /// Model usage already has a straight horizontal source. Match each color
@@ -142,6 +154,7 @@ struct ClientQuotaMorphRoute {
     var fillOpacity: Float = 1
     var marker: CGRect? = nil
     var markerColor: NSColor? = nil
+    var expected: Double? = nil
     var shape: ClientQuotaMorphShape = .ring
 }
 

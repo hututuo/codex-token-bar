@@ -107,6 +107,7 @@ export function DashboardSummarySection({
       {!speedOnly && <>
       <QuotaStrip
         clientItems={clientQuotaItems}
+        clientPlanLabels={{codex: quotaData.account.planLabel}}
         includesCodex={includesCodex}
         attributionIdentity={quotaData.attributionIdentity ?? null}
         diagnostics={quotaData.diagnostics}

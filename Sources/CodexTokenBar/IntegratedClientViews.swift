@@ -8,11 +8,15 @@ struct ClientScopePicker: View {
         clients.availablePreferences.filter { clients.displayClientIDs.contains($0.client.rawValue) }
     }
     var showsDiscovery = true
-    init(showsDiscovery: Bool = true) { self.showsDiscovery = showsDiscovery }
+    var plainTabs = false
+    init(showsDiscovery: Bool = true, plainTabs: Bool = false) {
+        self.showsDiscovery = showsDiscovery
+        self.plainTabs = plainTabs
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 10) {
-                HStack(spacing: 2) {
+                HStack(spacing: plainTabs ? 20 : 2) {
                 scopeButton("Codex", id: "codex")
                 ForEach(choices.prefix(2)) { scopeButton($0.client.displayName, id: $0.client.rawValue) }
                 if choices.count > 2 {
@@ -20,7 +24,7 @@ struct ClientScopePicker: View {
                         .menuStyle(.borderlessButton).frame(width: 68)
                 }
                 scopeButton("汇总", id: "all")
-                }.padding(3).background(AppTheme.solidControlBackground, in: RoundedRectangle(cornerRadius: 8))
+                }.padding(plainTabs ? 0 : 3).background(plainTabs ? Color.clear : AppTheme.solidControlBackground, in: RoundedRectangle(cornerRadius: 8))
                 Spacer()
                 if ClientPreviewMode.simulated { Text("Codex / Claude 模拟数据").font(.caption.weight(.medium)).foregroundStyle(AppTheme.accentAmber) }
             }
@@ -32,10 +36,15 @@ struct ClientScopePicker: View {
             HStack(spacing: 6) {
                 if id != "all" { Circle().fill(Color(nsColor: NSColor(clientHex: ClientBrand.hex(id)))).frame(width: 7, height: 7) }
                 Text(title).font(.system(size: 12, weight: .medium))
-            }.padding(.horizontal, 12).frame(height: 29)
+            }.padding(.horizontal, plainTabs ? 0 : 12).frame(height: 29)
                 .foregroundStyle(scope == id ? AppTheme.accentBlue : .primary)
-                .background(scope == id ? AppTheme.selectedControlBackground : .clear,
+                .background(!plainTabs && scope == id ? AppTheme.selectedControlBackground : .clear,
                     in: RoundedRectangle(cornerRadius: 6))
+                .overlay(alignment: .bottom) {
+                    if plainTabs && scope == id {
+                        Capsule().fill(AppTheme.accentBlue).frame(height: 2)
+                    }
+                }
         }.buttonStyle(.plain).accessibilityAddTraits(scope == id ? .isSelected : [])
     }
 }

@@ -170,14 +170,6 @@ struct BodySpeedTrendContent: View, Equatable {
                         y: .value("中位数 TPS", point.median!))
                         .foregroundStyle(ModelUsagePresentation.color(for: point.model))
                         .lineStyle(StrokeStyle(lineWidth: 2, dash: point.isPartial == true ? [3, 2] : []))
-                        .annotation(position: .top, spacing: 3) {
-                            Text("\(point.median!, specifier: "%.1f")")
-                                .font(.system(size: 9, weight: .semibold))
-                                .monospacedDigit()
-                                .foregroundStyle(ink)
-                                .padding(.horizontal, 2)
-                                .background(compact ? Color.black.opacity(0.8) : AppTheme.insetBackground)
-                        }
                         .accessibilityLabel(point.model + " 正文速度分布")
                         .accessibilityValue("中位数 \(point.median!, specifier: "%.1f") TPS，P25 \(point.lowerQuartile!, specifier: "%.1f")，P75 \(point.upperQuartile!, specifier: "%.1f")，\(point.sampleCount)段正文")
                 }
@@ -211,7 +203,7 @@ struct BodySpeedTrendContent: View, Equatable {
                 } else {
                     ForEach(selected) { point in
                         Text("\(Date(timeIntervalSince1970: Double(point.bucketStart)).formatted(.dateTime.month().day().hour().minute())) · \(point.model) · 中位数 \(point.median!, specifier: "%.1f") TPS · P25–P75 \(point.lowerQuartile!, specifier: "%.1f")–\(point.upperQuartile!, specifier: "%.1f") · \(point.bucketCount!)桶 / \(point.sampleCount)段 · 加权均速 \(point.tokensPerSecond, specifier: "%.1f") TPS")
-                            .font(.system(size: 10)).monospacedDigit().foregroundStyle(ink.opacity(0.9)).lineLimit(3)
+                            .font(.system(size: 10)).monospacedDigit().foregroundStyle(ink.opacity(0.9)).fixedSize(horizontal: false, vertical: true)
                     }
                 }
             } else {

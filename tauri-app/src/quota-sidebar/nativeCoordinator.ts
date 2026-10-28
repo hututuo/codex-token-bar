@@ -45,7 +45,7 @@ export function createSidebarNativeCoordinator(
       else completedRequest = requestId;
     },
     isSettled(mode?: SidebarMode) { return enabled && !pending && activeKey === key() && activeRequest !== 0 && completedRequest === activeRequest && failedRequest !== activeRequest && (mode === undefined || (activeMode === mode && latest.mode === mode)); },
-    update(mode: SidebarMode, showsFiveHour = false, expandedHeight?: number, compactHeight?: number, settingsPreview = false) { latest = { mode, showsFiveHour, settingsPreview: mode === "detail" && settingsPreview, expandedHeight: expandedHeight !== undefined && Number.isFinite(expandedHeight) ? Math.max(192, Math.min(4096, Math.ceil(expandedHeight))) : undefined, compactHeight: compactHeight !== undefined && Number.isFinite(compactHeight) && compactHeight > 0 ? Math.min(4096, compactHeight) : undefined }; if (enabled) { pending = true; void drain(); } },
+    update(mode: SidebarMode, showsFiveHour = false, expandedHeight?: number, compactHeight?: number, settingsPreview = false) { latest = { mode, showsFiveHour, settingsPreview: mode === "detail" && settingsPreview, expandedHeight: expandedHeight !== undefined && Number.isFinite(expandedHeight) ? Math.max(90, Math.min(4096, Math.ceil(expandedHeight))) : undefined, compactHeight: compactHeight !== undefined && Number.isFinite(compactHeight) && compactHeight > 0 ? Math.min(4096, compactHeight) : undefined }; if (enabled) { pending = true; void drain(); } },
     refresh() { refresh = true; if (enabled) { pending = true; void drain(); } },
     setEnabled(value: boolean) {
       if (enabled === value) return;

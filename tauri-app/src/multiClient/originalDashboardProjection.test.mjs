@@ -31,14 +31,15 @@ test('client fee scopes retain the original six metrics and model chips',async()
 test('client model cost groups lead with GPT-6, combine the latest Claude families, then show legacy groups',async()=>withSsrModules(async load=>{
  const {clientCostGroups}=await load('/src/multiClient/originalDashboardProjection.ts');
  const item=(key,label)=>({key,label,tokens:100,share:1/8,costUSD:0.01,usesIndependentQuota:false,referenceCostUSD:null,color:'#123456'});
- const groups=clientCostGroups([
+ const recordedRows=[
   item('codex|gpt-5.6-sol','Sol'),
   item('claudeCode|opus-4-6','Opus 4.6'),
   item('claudeCode|fable-5-1','Fable 5.1'),
   item('codex|gpt-6-astra','Astra'),
   item('claudeDesktop|opus-5-5','Opus 5.5'),
   item('claudeCode|sonnet-5-5','Sonnet 5.5'),
- ]);
+ ];
+ const groups=clientCostGroups(recordedRows);
  assert.deepEqual(groups.map(({id,label})=>({id,label})),[
   {id:'6',label:'6 系列'},
   {id:'claude:latest',label:'Claude 最新'},
@@ -46,8 +47,15 @@ test('client model cost groups lead with GPT-6, combine the latest Claude famili
   {id:'claude:opus',label:'Opus'},
  ]);
  assert.deepEqual(groups[1].items.map(item=>item.key),[
-  'claudeCode|fable-5-1','claudeDesktop|opus-5-5','claudeCode|sonnet-5-5',
+  'claudeCode|fable-5-1','claudeDesktop|opus-5-5','claudeCode|sonnet-5-5','claudeCode|claude-haiku-5-5',
  ]);
+ const displayRows=groups.flatMap(group=>group.items);
+ const recordedDisplayRows=recordedRows.map(row=>({...row,key:row.key.startsWith('codex|')?row.key.slice(6):row.key})).sort((a,b)=>a.key.localeCompare(b.key));
+ assert.deepEqual(displayRows.filter(row=>row.tokens>0).sort((a,b)=>a.key.localeCompare(b.key)),recordedDisplayRows,
+  'display grouping preserves every recorded row');
+ assert.deepEqual(displayRows.filter(row=>row.tokens===0).map(({key,label})=>({key,label})),[
+  {key:'claudeCode|claude-haiku-5-5',label:'Haiku 5.5'},
+ ],'current catalog placeholders are clearly named and remain zero-token display rows');
 }));
 test('client quota reuses original quota bars without the Codex attribution owner',async()=>withSsrModules(async load=>{
  const {QuotaStrip}=await load('/src/components/QuotaStrip.tsx');const html=renderToStaticMarkup(React.createElement(QuotaStrip,{clientItems:[{id:'claudeCode:5h',client:'claudeCode',window:'5h',remaining:62,resetsAt:null,status:'',source:'模拟'}]}));

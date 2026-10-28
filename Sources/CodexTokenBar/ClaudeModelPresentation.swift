@@ -1,4 +1,5 @@
 import Foundation
+import AgentSpeedCore
 
 /// Presentation metadata only. Versioned model IDs and accounting stay intact.
 enum ClaudeModelPresentation {
@@ -35,9 +36,26 @@ enum ClaudeModelPresentation {
         }
         return 0
     }
+    struct CatalogModel: Equatable {
+        let id: String
+        let version: [Int]
+    }
+    /// Latest current Anthropic model ID known to this bundled build, by Claude family.
+    /// This is presentation metadata only; it never initializes price sync or changes accounting.
+    static let newestCatalogModelsByFamily: [String: CatalogModel] = {
+        var newest: [String: CatalogModel] = [:]
+        for model in PriceBook.bundled.models where model.provider == "anthropic" && model.status == "current" {
+            guard let parsed = identity(model.id), !parsed.version.isEmpty else { continue }
+            let candidate = CatalogModel(id: model.id, version: parsed.version)
+            if newest[parsed.family].map({ compare($0.version, candidate.version) >= 0 }) != true {
+                newest[parsed.family] = candidate
+            }
+        }
+        return newest
+    }()
     static func groups(_ items: [FloatingTodayModelUsageItem], client: String) -> [FloatingTodayModelUsagePresentation.DashboardFamilyGroup] {
         let identities = Dictionary(uniqueKeysWithValues: items.compactMap { item in identity(item.id).map { (item.id, $0) } })
-        var newest: [String: [Int]] = [:]
+        var newest = newestCatalogModelsByFamily.mapValues(\.version)
         for value in identities.values where !value.version.isEmpty {
             if newest[value.family] == nil || compare(newest[value.family]!, value.version) < 0 { newest[value.family] = value.version }
         }

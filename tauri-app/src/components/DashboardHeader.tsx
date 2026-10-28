@@ -8,15 +8,10 @@ import type {
 } from "../types/dashboard";
 import { CodexHomeEditor } from "./dashboardHeader/CodexHomeEditor";
 import {
-  committedCustomAccountDisplayName,
-  resolveAccountDisplayName,
-  shouldCommitDisplayNameOnKey,
-} from "./dashboardHeader/model";
-import {
   PRECISE_PROGRESS_REASSURANCE,
   presentDashboardHeaderProgress,
 } from "./dashboardHeader/progress";
-import { useEffect, useId, useRef, useState, type ReactNode, type KeyboardEvent } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import type { ThreadDeleteBridgeStatus } from "../api/threadDeleteClient";
 import type { AppSettingsCategory } from "./settings/AppSettingsDialog";
 import type { DashboardLineageScalar } from "../types/usage";
@@ -113,7 +108,6 @@ export function DashboardHeader({
   account,
   autostartStatus,
   codexHome,
-  customAccountDisplayName,
   generatedAt,
   usageSummaryUpdatedAt = null,
   usageSummaryCheckedAt = null,
@@ -127,7 +121,6 @@ export function DashboardHeader({
   aggregateCoveredAt = null,
   onCodexHomeChange,
   onCodexHomeReset,
-  onCustomAccountDisplayNameChange,
   onCheckForUpdate,
   onExportCsv,
   onExportPng,
@@ -144,22 +137,9 @@ export function DashboardHeader({
   runningThreads = PENDING_HEADER_RUNNING_THREADS,
 }: DashboardHeaderProps) {
   const [editingPath, setEditingPath] = useState(false);
-  const [editingDisplayName, setEditingDisplayName] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const moreMenuRef = useRef<HTMLDivElement>(null);
   const autostartHelpId = useId();
-  const resolvedDisplayName = resolveAccountDisplayName(
-    account.displayName,
-    customAccountDisplayName,
-  );
-  const [displayNameDraft, setDisplayNameDraft] = useState(resolvedDisplayName);
-
-  useEffect(() => {
-    if (!editingDisplayName) {
-      setDisplayNameDraft(resolvedDisplayName);
-    }
-  }, [editingDisplayName, resolvedDisplayName]);
-
   useEffect(() => {
     if (!moreMenuOpen) return undefined;
     const closeForPointer = (event: PointerEvent) => {
@@ -252,28 +232,6 @@ export function DashboardHeader({
           : appUpdateState.message && appUpdateState.message.length <= 20 ? appUpdateState.message : "检查更新";
   const updateNeedsAttention = appUpdateState.kind === "available" || appUpdateState.kind === "error";
 
-  function beginEditDisplayName() {
-    setDisplayNameDraft(resolvedDisplayName);
-    setEditingDisplayName(true);
-  }
-
-  function commitDisplayName() {
-    const nextName = committedCustomAccountDisplayName(
-      displayNameDraft,
-      customAccountDisplayName,
-    );
-    setEditingDisplayName(false);
-    if (nextName !== null) {
-      void onCustomAccountDisplayNameChange(nextName);
-    }
-  }
-
-  function handleDisplayNameKeyDown(event: KeyboardEvent<HTMLInputElement>) {
-    if (shouldCommitDisplayNameOnKey(event.key)) {
-      event.currentTarget.blur();
-    }
-  }
-
   function runMenuAction(action: () => void) {
     setMoreMenuOpen(false);
     action();
@@ -282,30 +240,11 @@ export function DashboardHeader({
   return (
     <header className="dashboard-header">
       <div className="dashboard-header-top">
-      <div className="dashboard-scope-slot">{scopeControl ?? <strong className="dashboard-product-title">Codex Token Bar</strong>}</div>
+      <div className="dashboard-scope-slot">
+        <h1 className="dashboard-overview-title">用量概览{refreshing && <span>读取中</span>}</h1>
+        {scopeControl}
+      </div>
       {reportingStatus}
-      <div className="dashboard-profile">
-      <div aria-hidden="true" className="brand-mark">CX</div>
-      <div className="account-row">
-        {editingDisplayName ? (
-          <input
-            autoFocus
-            aria-label="昵称"
-            className="account-name-edit"
-            onBlur={commitDisplayName}
-            onChange={(event) => setDisplayNameDraft(event.currentTarget.value)}
-            onKeyDown={handleDisplayNameKeyDown}
-            value={displayNameDraft}
-          />
-        ) : (
-          <button className="account-name-button" onClick={beginEditDisplayName} title="修改显示昵称" type="button">
-            <span className="account-name">{resolvedDisplayName}</span>
-            <span aria-hidden="true" className="account-name-pencil">✎</span>
-          </button>
-        )}
-      </div>
-
-      </div>
       </div>
       <div className="dash-head">
         <div aria-label="运行信息" className="dash-head__strip">

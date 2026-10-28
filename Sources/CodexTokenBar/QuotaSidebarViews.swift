@@ -57,11 +57,18 @@ struct ClientQuotaRailTrack: View {
         ZStack(alignment: .top) {
             MatchedStrokeMorphParticipant(ids: [item.id], size: CGSize(width: ClientSidebarMetrics.trackWidth, height: height - 2.5)) {
                 SidebarValueBar(fraction: item.remaining.map { $0 / 100 },
-                    color: Color(nsColor: NSColor(clientHex: fillHex)), vertical: true, expected: item.expected)
+                    color: Color(nsColor: NSColor(clientHex: fillHex)), vertical: true)
             }.padding(.top, 2.5)
             MatchedStrokeMorphParticipant(ids: ["marker:" + item.id], size: CGSize(width: 5, height: 5)) {
                 Circle().fill(Color(nsColor: NSColor(clientHex: item.brand))).frame(width: 5, height: 5)
             }.allowsHitTesting(false)
+            if let expected = item.expected {
+                MatchedStrokeMorphParticipant(ids: ["pace:" + item.id], size: CGSize(width: ClientSidebarMetrics.markerDiameter, height: 1.5)) {
+                    Rectangle().fill(.white)
+                }.position(x: ClientSidebarMetrics.markerDiameter / 2,
+                           y: 2.5 + (height - 2.5) * (1 - min(1, max(0, expected))))
+                    .allowsHitTesting(false).zIndex(3)
+            }
         }.frame(width: ClientSidebarMetrics.markerDiameter, height: height)
     }
 }
@@ -249,7 +256,7 @@ struct QuotaSidebarRail: View {
                 guard viewport?.contains(ring) != false else { return nil }
                 return ClientQuotaMorphRoute(id: item.id, ring: ring, track: track, half: half,
                     fraction: item.remaining.map { $0 / 100 }, color: NSColor(clientHex: quotaSelection.colors[item.id] ?? item.fill),
-                    marker: anchors["marker:" + item.id].map { proxy[$0] }, markerColor: NSColor(clientHex: item.brand))
+                    marker: anchors["marker:" + item.id].map { proxy[$0] }, markerColor: NSColor(clientHex: item.brand), expected: item.expected)
             }
         }
         for item in [QuotaSidebarItem.speed, .tasks, .models] where sidebarItems.contains(item) {

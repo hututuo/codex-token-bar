@@ -323,6 +323,7 @@ struct HeaderView: View {
     let snapshot: DashboardSnapshot
     let quotaSnapshot: AccountQuotaSnapshot
     var clientQuotaItems: [ClientQuotaItem]? = nil
+    var clientPlanLabels: [String: String] = [:]
     var showsClientScopePicker = false
     let status: String
     let dataSourceLabel: String
@@ -349,16 +350,7 @@ struct HeaderView: View {
     @Binding var interfaceScaleManualMultiplier: Double
     @Binding var showingResetCreditDetails: Bool
 
-    @AppStorage("customAccountDisplayName") private var customAccountDisplayName = ""
-    @State private var isEditingDisplayName = false
-    @State private var displayNameDraft = ""
     @State private var markAllReadController = DashboardMarkAllReadController()
-    @FocusState private var displayNameFieldFocused: Bool
-
-    private var accountDisplayName: String {
-        let trimmed = customAccountDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? quotaSnapshot.accountDisplayName : trimmed
-    }
 
     private var markAllReadPresentation: DashboardMarkAllReadPresentation {
         DashboardMarkAllReadPresentation(unreadCount: unreadThreadCount, isBusy: markAllReadController.isBusy)
@@ -442,69 +434,27 @@ struct HeaderView: View {
     }
 
     var body: some View {
-        VStack(spacing: 20) {
-            HStack(spacing: 14) {
-                if showsClientScopePicker { ClientScopePicker(showsDiscovery: false) }
-                else { Text("Codex Token Bar").font(.system(size: 20, weight: .semibold)) }
-                Spacer(minLength: 12)
-                if presentationMode.showsActions { AgentSpeedReportingDashboardStatus(compact: true) }
-                HStack(spacing: 8) {
-                    ZStack {
-                        Circle().fill(AppTheme.accentBlue).frame(width: 30, height: 30)
-                        Text("CX").font(.system(size: 11, weight: .semibold, design: .rounded)).foregroundStyle(.white)
-                    }.accessibilityHidden(true)
-                if isEditingDisplayName {
-                    TextField("昵称", text: $displayNameDraft)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 14, weight: .medium))
-                        .multilineTextAlignment(.center)
-                        .lineLimit(1)
-                        .frame(width: 170)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 5)
-                        .background(AppTheme.raisedBackground, in: Capsule())
-                        .overlay(Capsule().stroke(AppTheme.border, lineWidth: 1))
-                        .focused($displayNameFieldFocused)
-                        .onSubmit(saveDisplayNameDraft)
-                        .onChange(of: displayNameFieldFocused) { _, isFocused in
-                            if !isFocused {
-                                saveDisplayNameDraft()
-                            }
+        VStack(spacing: 12) {
+            HStack(alignment: .top, spacing: 24) {
+                VStack(alignment: .leading, spacing: 9) {
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        Text("用量概览")
+                            .font(.system(size: 27, weight: .semibold))
+                        if isRefreshing || progressPresentation.stage.isVisible {
+                            Text("读取中").font(.system(size: 11)).foregroundStyle(.secondary)
                         }
-                        .onAppear {
-                            displayNameDraft = accountDisplayName
-                            displayNameFieldFocused = true
-                        }
-                } else if presentationMode.showsActions {
-                    Button {
-                        displayNameDraft = accountDisplayName
-                        isEditingDisplayName = true
-                    } label: {
-                        HStack(spacing: 6) {
-                            Text(accountDisplayName)
-                                .font(.system(size: 14, weight: .medium))
-                                .foregroundStyle(.primary)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.78)
-                            Image(systemName: "pencil")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(.secondary.opacity(0.75))
-                        }
-                        .frame(maxWidth: 170)
                     }
-                    .buttonStyle(.plain)
-                    .help("点击修改顶部昵称；留空会恢复本地账户名")
-                } else {
-                    Text(accountDisplayName)
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.78)
-                        .frame(maxWidth: 170)
+                    if showsClientScopePicker { ClientScopePicker(showsDiscovery: false, plainTabs: true) }
                 }
-
-                }.fixedSize(horizontal: true, vertical: false)
-            }.frame(maxWidth: 980)
+                Spacer(minLength: 12)
+                if presentationMode.showsActions {
+                    AgentSpeedReportingDashboardStatus(compact: true, unframed: true)
+                        .padding(.top, 8)
+                }
+            }
+            .padding(.bottom, 13)
+            .overlay(alignment: .bottom) { Rectangle().fill(AppTheme.border).frame(height: 1) }
+            .frame(maxWidth: 980)
                 VStack(spacing: 8) {
                     HStack(spacing: 0) {
                         if presentationMode.showsActions {
@@ -765,22 +715,15 @@ struct HeaderView: View {
                 AccountQuotaStrip(
                     snapshot: quotaSnapshot,
                     showingResetCreditDetails: $showingResetCreditDetails,
-                    clientItems: clientQuotaItems
+                    clientItems: clientQuotaItems,
+                    clientPlanLabels: clientPlanLabels
                 )
         }
         .zIndex(showingResetCreditDetails ? 10_000 : 0)
         .onReceive(NotificationCenter.default.publisher(for: .dashboardBlankAreaClicked)) { _ in
-            if isEditingDisplayName {
-                saveDisplayNameDraft()
-            }
             showingResetCreditDetails = false
             showingInterfaceScaleMenu = false
         }
-    }
-
-    private func saveDisplayNameDraft() {
-        customAccountDisplayName = displayNameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        isEditingDisplayName = false
     }
 
     private func markAllRead() {
@@ -1510,10 +1453,10 @@ private struct DashboardPrimaryModelCostCard: View {
                 Text(item.label.replacingOccurrences(of: #"(?i)^GPT[- ]*"#, with: "", options: .regularExpression))
                     .font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
                 Spacer(minLength: 2)
-                Text(item.valueText(for: .cost))
+                Text(item.tokens == 0 ? "—" : item.valueText(for: .cost))
                     .font(.system(size: 12, weight: .semibold)).foregroundStyle(.primary).monospacedDigit()
             }
-            Text(item.tokens.abbreviatedTokens + " · " + item.valueText(for: .share))
+            Text(item.tokens == 0 ? "暂无本地记录" : item.tokens.abbreviatedTokens + " · " + item.valueText(for: .share))
                 .font(.system(size: 9.5, weight: .medium)).foregroundStyle(.secondary).monospacedDigit().padding(.leading, 13)
         }.lineLimit(1)
         .padding(.horizontal, 8).padding(.vertical, 5)

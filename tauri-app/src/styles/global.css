@@ -112,7 +112,7 @@ button {
 .app-shell {
   position: relative;
   min-height: 100vh;
-  padding: 36px 24px 44px;
+  padding: 8px 24px 44px;
   background: linear-gradient(180deg, #fbfcfd 0, var(--page) 260px), var(--page);
 }
 
@@ -12997,21 +12997,27 @@ details.session-management-banner {
 .quota-strip--embedded>.quota-reset-card{flex:0 0 130px}
 @media(max-width:850px){.quota-client-row:has(.quota-strip--embedded){grid-template-columns:70px minmax(0,1fr)}.quota-strip--embedded{grid-column:2;justify-content:flex-end}}
 
-/* Compact shared header: scope on the left, reporting and identity on the right. */
-.dashboard-header{align-items:stretch;gap:20px}
-.dashboard-header-top{display:flex;align-items:center;gap:14px;min-width:0;width:100%;padding:2px 0}
-.dashboard-scope-slot{flex:1;min-width:0}.dashboard-scope-slot .integrated-scope{margin:0;gap:0}.dashboard-scope-slot .integrated-scope nav{width:fit-content}
-.dashboard-product-title{font-size:19px;font-weight:var(--weight-semibold);letter-spacing:-.4px}
-.dashboard-profile{display:flex;align-items:center;gap:8px;min-width:0;flex:none}
-.dashboard-profile .brand-mark{width:30px;height:30px;flex:none;font-size:11px;background:var(--accent)}
-.dashboard-profile .account-row{margin:0;flex-wrap:nowrap;min-width:0}
-.dashboard-profile .account-name{font-size:14px;line-height:24px;max-width:170px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.dashboard-profile .account-name-button{gap:5px;padding:0;min-width:0}.dashboard-profile .account-name-pencil{font-size:10px}
-.dashboard-profile .account-name-edit{width:170px;font-size:14px;padding:4px 8px}
-.speed-report-header-status{display:inline-flex;align-items:center;gap:6px;flex:none;white-space:nowrap;height:28px;padding:0 10px;background:var(--surface-2,var(--panel));color:var(--text);border:1px solid var(--line);border-radius:999px;font-size:11px;cursor:pointer}
-.speed-report-header-status i{width:6px;height:6px;border-radius:50%;background:#d59b2e}.speed-report-header-status[data-state=reporting] i{background:#35a66c}.speed-report-header-status[data-state=error] i{background:#d97732}
-.speed-report-header-status:hover{background:var(--panel-soft,var(--panel))}.speed-report-header-status:active{transform:translateY(1px)}
-@media(max-width:760px){.dashboard-header-top{flex-wrap:wrap;gap:10px}.dashboard-scope-slot{flex-basis:100%}.dashboard-profile{margin-left:auto}.dashboard-profile .account-name{max-width:140px}}
+/* Open dashboard heading; client scope is independent from sidebar selection. */
+.dashboard-header{align-items:stretch;gap:12px}
+.dashboard-header-top{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:24px;align-items:start;min-width:0;width:100%;padding:0 0 13px;border-bottom:1px solid var(--line)}
+.dashboard-scope-slot{min-width:0}.dashboard-scope-slot .integrated-scope{margin:0;gap:0}
+.dashboard-overview-title{display:flex;align-items:baseline;gap:12px;margin:0 0 9px;font-size:27px;line-height:33px;font-weight:var(--weight-semibold);letter-spacing:-.55px;color:var(--text)}
+.dashboard-overview-title>span{font-size:11px;line-height:1.4;font-weight:var(--weight-regular);letter-spacing:0;color:var(--muted)}
+.dashboard-scope-slot .integrated-scope nav{width:fit-content;background:transparent;border:0;border-radius:0;box-shadow:none;padding:0;gap:20px;flex-wrap:wrap}
+.dashboard-scope-slot .integrated-scope nav>button{position:relative;background:transparent;border:0;border-radius:0;padding:3px 0 9px;color:var(--text);font-size:12px;line-height:18px;opacity:.8}
+.dashboard-scope-slot .integrated-scope nav>button[aria-pressed=true]{background:transparent;color:var(--accent);opacity:1}
+.dashboard-scope-slot .integrated-scope nav>button[aria-pressed=true]::after{content:"";position:absolute;left:0;right:0;bottom:0;height:2px;border-radius:2px;background:var(--accent)}
+.dashboard-scope-slot .integrated-scope nav>button:hover{opacity:1}
+.speed-report-header-status{display:inline-flex;align-items:center;gap:6px;flex:none;white-space:nowrap;height:28px;padding:0;background:transparent;color:var(--muted);border:0;font-size:11px;cursor:pointer}
+.dashboard-header-top>.speed-report-header-status{margin-top:4px}
+.speed-report-header-status i{width:5px;height:5px;border-radius:50%;background:#d59b2e}.speed-report-header-status[data-state=reporting] i{background:#35a66c}.speed-report-header-status[data-state=error] i{background:#d97732}
+.speed-report-header-status:hover{color:var(--text)}.speed-report-header-status:active{transform:translateY(1px)}
+.quota-client-plan{font-size:9px;font-weight:var(--weight-medium);line-height:16px;letter-spacing:.15px;color:var(--text);padding:0 5px;border:1px solid var(--line);border-radius:4px;background:var(--surface-2,var(--panel));white-space:nowrap}
+.quota-client-label strong{white-space:nowrap;flex-wrap:nowrap}
+.quota-client-row{grid-template-columns:max-content minmax(0,1fr)}
+.quota-client-row:has(.quota-strip--embedded){grid-template-columns:max-content minmax(120px,1fr) auto}
+@media(max-width:850px){.quota-client-row:has(.quota-strip--embedded){grid-template-columns:max-content minmax(0,1fr)}}
+@media(max-width:620px){.dashboard-header-top{column-gap:12px}.dashboard-overview-title{font-size:24px}.dashboard-scope-slot .integrated-scope nav{gap:13px}.dashboard-scope-slot .integrated-scope nav>button{font-size:11px}.speed-report-header-status{font-size:10px}}
 
 .stats-model-cost-primary-card{grid-template-columns:auto minmax(0,1fr) auto;row-gap:3px;min-height:40px;padding:5px 9px;line-height:1.2}
 .stats-model-cost-primary-card small{grid-column:2 / -1;grid-row:2}
@@ -13020,8 +13026,3 @@ details.session-management-banner {
 
 .stats-model-cost-secondary-chip{grid-template-columns:auto minmax(0,1fr) auto;row-gap:3px;padding:5px 8px;line-height:1.2;min-height:40px}
 .stats-model-cost-secondary-chip em{grid-column:2 / -1;grid-row:1}.stats-model-cost-secondary-chip b{grid-column:1 / 3;grid-row:2;justify-self:start}.stats-model-cost-secondary-chip small{grid-column:3;grid-row:2;justify-self:end}
-
-/* Dashboard groups have room to breathe without changing their order. */
-.dashboard>.quota-strip{margin-top:20px}
-.dashboard>:is(.stats-overview-card,.codex-radar-strip,.live-card,.activity-section,.chart-section,.ranking-section){margin-top:24px}
-@media(max-width:760px){.app-shell{padding-top:24px}.dashboard-header{gap:16px}.dashboard>.quota-strip{margin-top:16px}}

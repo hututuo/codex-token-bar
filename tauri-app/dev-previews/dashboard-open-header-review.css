@@ -1,0 +1,2 @@
+/* The approved header now uses production styles; this is a review-host control only. */
+html[data-header-preview=open] .review-loading-toggle{margin-left:12px;border:0;background:transparent;color:var(--accent);padding:0;font-size:10px;cursor:pointer;text-decoration:underline;text-underline-offset:3px}

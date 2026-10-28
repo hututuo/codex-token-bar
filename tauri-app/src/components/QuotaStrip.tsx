@@ -87,6 +87,7 @@ import { hasStaleAccountQuotaData } from "../state/dashboardWarnings";
 
 interface QuotaStripProps {
   clientItems?: QuotaItem[];
+  clientPlanLabels?: Record<string, string>;
   includesCodex?: boolean;
   attributionIdentity?: QuotaAttributionIdentity | null;
   onQuotaRefreshIntervalChange?: (intervalMs: number) => void | Promise<void>;
@@ -447,6 +448,7 @@ function SharedAccountAttributionDetail({
 }
 
 function QuotaStripView({
+  clientPlanLabels,
   attributionIdentity = null,
   onAttributionPreciseRefreshNeeded,
   onAttributionSafetyAcknowledge,
@@ -1668,7 +1670,7 @@ function QuotaStripView({
       aria-label={toolsOnly ? "Codex 账户工具" : "账户额度"}
       data-attribution-status={attributionSettings.enabled ? attribution.status : undefined}
     >
-      {!embeddedTools && <div className="quota-plan"><span>{toolsOnly ? "Codex" : "当前登录额度"}</span><strong>{toolsOnly ? "账户工具" : "官方直连"}</strong></div>}
+      {!embeddedTools && <div className="quota-plan"><span>Codex</span><strong>{toolsOnly ? "账户工具" : (clientPlanLabels?.codex?.trim().toUpperCase() || "套餐未知")}</strong></div>}
       {!toolsOnly && visibleQuotaLimits.map((quota) => <QuotaBar key={quota.label} quota={quota} stale={quotaDataStale} />)}
       <button
         type="button"
@@ -1964,12 +1966,12 @@ function emptyBucketMergeResult(): AttributionBucketMergeResult {
 
 // Scope only changes presentation. Codex tools retain their original component,
 // attribution owner and raw Codex inputs; Claude-only never mounts that owner.
-function ClientQuotaRows({ items, stale, codexTools }: { items: QuotaItem[]; stale: boolean; codexTools?: ReactNode }) {
+function ClientQuotaRows({ items, stale, codexTools, planLabels = {} }: { items: QuotaItem[]; stale: boolean; codexTools?: ReactNode; planLabels?: Record<string, string> }) {
   const clients = [...new Set(items.map(item => item.client))];
   if (clients.length === 0) return <p className="quota-client-empty">所选客户端暂无本地额度读数</p>;
   return <div className="quota-client-rows">{clients.map(client =>
     <div className="quota-client-row" role="group" aria-label={`${clientTitle(client)} 额度`} key={client}>
-      <div className="quota-client-label"><strong><i style={{ background: clientBrand[client] ?? "#888888" }} aria-hidden="true"/>{clientTitle(client)}</strong><span>{client === "codex" ? "当前账户" : "本地缓存"}</span></div>
+      <div className="quota-client-label"><strong><i style={{ background: clientBrand[client] ?? "#888888" }} aria-hidden="true"/>{clientTitle(client)}<b className="quota-client-plan">{planLabels[client]?.trim().toUpperCase() || "套餐未知"}</b></strong><span>{client === "codex" ? "当前账户" : "本地缓存"}</span></div>
       <div className="quota-client-windows">{items.filter(item => item.client === client).map(item =>
         <div className="quota-client-window" data-quota-id={item.id} key={item.id} title={[item.source, item.status].filter(Boolean).join(" · ")}>
           <QuotaBar stale={item.status.includes("旧") || (client === "codex" && stale)} pendingLabel={item.status || "不可用"} quota={{
@@ -1988,7 +1990,7 @@ function QuotaStripEntry(props: QuotaStripProps) {
   if (props.clientItems) {
     const includesCodex = props.includesCodex ?? props.clientItems.some(item => item.client === "codex");
     return <section className="quota-strip quota-strip--clients" aria-label="账户额度">
-      <ClientQuotaRows items={props.clientItems} stale={hasStaleAccountQuotaData(props.diagnostics ?? [])}
+      <ClientQuotaRows planLabels={props.clientPlanLabels} items={props.clientItems} stale={hasStaleAccountQuotaData(props.diagnostics ?? [])}
         codexTools={includesCodex ? <QuotaStripView {...props} toolsOnly embeddedTools/> : undefined}/>
     </section>;
   }

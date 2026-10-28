@@ -256,7 +256,7 @@ function StatsStripView({
                     role={modelCostScope === "lifetime" ? "button" : undefined} tabIndex={modelCostScope === "lifetime" ? 0 : undefined}
                     onDoubleClick={modelCostScope === "lifetime" ? event => setEditingColor({ model: floatingModelUsageKey(item.key.split("|").at(-1)), x: event.clientX, y: event.clientY }) : undefined}
                     onKeyDown={modelCostScope === "lifetime" ? event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); setEditingColor({ model: floatingModelUsageKey(item.key.split("|").at(-1)), x: rect.left, y: rect.bottom }); } } : undefined}>
-                    <i style={{backgroundColor:item.color}}/><em>{item.label.replace(/^GPT[- ]*/i,"")}</em><b>{floatingModelUsageValue(item,"cost")}</b><small>{formatTokens(item.tokens)} · {floatingModelUsageValue(item,"share")}</small>
+                    <i style={{backgroundColor:item.color}}/><em>{item.label.replace(/^GPT[- ]*/i,"")}</em><b>{item.tokens === 0 ? "—" : floatingModelUsageValue(item,"cost")}</b><small>{item.tokens === 0 ? "暂无本地记录" : `${formatTokens(item.tokens)} · ${floatingModelUsageValue(item,"share")}`}</small>
                   </span>)}
                 </div>
               </div>)}

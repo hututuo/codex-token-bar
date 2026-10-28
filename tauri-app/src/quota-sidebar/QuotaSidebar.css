@@ -290,3 +290,9 @@ html.quota-sidebar-fixed-canvas,html.quota-sidebar-fixed-canvas body,html.quota-
 
 /* Keep task digits independent of the matched outline during transitions. */
 .qs-task-ring{position:relative;border:0}.qs-task-stroke{position:absolute;inset:0;border:2px solid #efc07780;border-radius:50%;pointer-events:none}
+
+/* Forecast is an outer overlay, above the opaque client cap and unclipped. */
+.integrated-quota-track>.qs-pace-mark{left:-.5px;width:5px;z-index:3;transform:translateY(-50%);transition:top .34s cubic-bezier(.2,.8,.2,1)}
+@media(prefers-reduced-motion:reduce){.integrated-quota-track>.qs-pace-mark{transition:none}}
+
+.qs-pace-morph{position:absolute;inset:0;width:100%;height:100%;overflow:visible;z-index:13;pointer-events:none}

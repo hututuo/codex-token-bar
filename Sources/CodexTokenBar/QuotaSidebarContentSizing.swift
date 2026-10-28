@@ -1,24 +1,17 @@
 import SwiftUI
 
-/// One row of headroom per opening. While open, spend that space before growing;
-/// don't chase disappearing rows until the rail closes and rearms its budget.
+/// Fit the current intrinsic content in both directions. Native frame motion
+/// supplies the transition; no extra model row or previous high-water is kept.
 struct QuotaSidebarHeightBudget {
     static let verticalPadding: CGFloat = 12
+    static let minimumHeight: CGFloat = 90 // actions + settings + normal padding
     private(set) var contentHeight: CGFloat = 0
-    private(set) var rowHeight: CGFloat = 40
     private(set) var targetHeight: CGFloat?
 
-    mutating func update(contentHeight: CGFloat? = nil, rowHeight: CGFloat? = nil, expanded: Bool, rebase: Bool = false) {
-        if rebase { targetHeight = nil }
+    mutating func update(contentHeight: CGFloat? = nil, rowHeight _: CGFloat? = nil, expanded _: Bool, rebase _: Bool = false) {
         if let contentHeight, contentHeight.isFinite, contentHeight > 0 { self.contentHeight = ceil(contentHeight) }
-        if let rowHeight, rowHeight.isFinite, rowHeight >= 0 { self.rowHeight = ceil(rowHeight) }
         guard self.contentHeight > 0 else { return }
-        let required = self.contentHeight + Self.verticalPadding * 2
-        if !expanded || targetHeight == nil {
-            targetHeight = max(192, required + self.rowHeight)
-        } else if required > targetHeight! {
-            targetHeight = required
-        }
+        targetHeight = max(Self.minimumHeight, self.contentHeight + Self.verticalPadding * 2)
     }
 }
 

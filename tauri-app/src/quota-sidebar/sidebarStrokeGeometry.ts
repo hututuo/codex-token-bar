@@ -5,11 +5,11 @@ export type StrokeRect = { x: number; y: number; width: number; height: number }
 export type StrokeSegment = { id: string; start: number; end: number; color: string };
 export type SidebarStrokeSpec = {
   id: string; half?: number; shape?: "ring" | "strip"; fraction: number | null; color: string;
-  segments?: StrokeSegment[]; trackColor?: string; trackOpacity?: number; fillOpacity?: number; width?: number;
+  expected?: number | null; segments?: StrokeSegment[]; trackColor?: string; trackOpacity?: number; fillOpacity?: number; width?: number;
 };
 export type SidebarStroke = {
   id: string; group: string; source: StrokePoint[]; target: StrokePoint[]; color: string;
-  sourceWidth: number; targetWidth: number; opacity: number;
+  sourceWidth: number; targetWidth: number; opacity: number; foreground?: boolean;
 };
 const clamp = (value: number) => Math.min(1, Math.max(0, value));
 export function squeezePoints(ring: StrokeRect, bar: StrokeRect, half: number, progress: number): StrokePoint[] {
@@ -42,7 +42,7 @@ export function sidebarStrokes(spec: SidebarStrokeSpec, source: StrokeRect, targ
   const q = clamp(spec.fraction ?? 0), strip = spec.shape === "strip", half = spec.half ?? 0;
   const barFraction = strip ? q : clamp((q * target.height - 4) / Math.max(1, target.height - 4));
   const parts = strip ? [0] : half === 0 ? [-2, 2] : [half];
-  return parts.flatMap(part => {
+  const strokes = parts.flatMap(part => {
     const a = strip ? [{ x: source.x + 2, y: source.y + source.height / 2 }, { x: source.x + source.width - 2, y: source.y + source.height / 2 }] : squeezePoints(source, target, part, 0);
     const b = strip ? [{ x: target.x + target.width / 2, y: target.y + 2 }, { x: target.x + target.width / 2, y: target.y + target.height - 2 }] : squeezePoints(source, target, part, 1);
     const make = (id: string, color: string, range: [number, number], end: [number, number], opacity: number): SidebarStroke => ({
@@ -60,6 +60,15 @@ export function sidebarStrokes(spec: SidebarStrokeSpec, source: StrokeRect, targ
     }
     return strokes;
   });
+  if (!strip && typeof spec.expected === "number" && Number.isFinite(spec.expected)) {
+    const expected=clamp(spec.expected),radius=source.width/2;
+    const angle=half===0?-Math.PI/2+expected*2*Math.PI:(half<0?Math.PI/2:-Math.PI/2)+expected*Math.PI;
+    const radial=(r:number)=>({x:source.x+source.width/2+Math.cos(angle)*r,y:source.y+source.height/2+Math.sin(angle)*r});
+    const y=target.y+target.height*(1-expected),x=target.x+target.width/2;
+    strokes.push({id:spec.id+":pace",group:spec.id+":pace",source:trim([radial(radius-3.5),radial(radius+3.5)],0,1),
+      target:trim([{x:x-2.5,y},{x:x+2.5,y}],0,1),color:"#ffffff",sourceWidth:1.5,targetWidth:1.5,opacity:1,foreground:true});
+  }
+  return strokes;
 }
 export function strokePath(points: StrokePoint[]): string {
   return points.map((p, index) => `${index ? "L" : "M"}${p.x.toFixed(4)} ${p.y.toFixed(4)}`).join(" ");

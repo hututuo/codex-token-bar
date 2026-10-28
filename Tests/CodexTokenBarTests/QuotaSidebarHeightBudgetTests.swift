@@ -4,44 +4,47 @@ import XCTest
 @testable import CodexTokenBar
 
 final class QuotaSidebarHeightBudgetTests: XCTestCase {
-    func testOneNewTPSRowUsesHeadroomThenAdditionalRowsGrowTheFrame() {
+    func testHeightTracksIntrinsicContentGrowthAndShrinkageWhileExpanded() {
         var budget = QuotaSidebarHeightBudget()
-        budget.update(contentHeight: 400, rowHeight: 40, expanded: false)
-        XCTAssertEqual(budget.targetHeight, 464)
+        budget.update(contentHeight: 400, expanded: false)
+        XCTAssertEqual(budget.targetHeight, 424)
         budget.update(expanded: true)
         budget.update(contentHeight: 440, expanded: true)
         XCTAssertEqual(budget.targetHeight, 464)
         budget.update(contentHeight: 480, expanded: true)
         XCTAssertEqual(budget.targetHeight, 504)
+        budget.update(contentHeight: 400, expanded: true)
+        XCTAssertEqual(budget.targetHeight, 424)
         budget.update(contentHeight: 520, expanded: true)
         XCTAssertEqual(budget.targetHeight, 544)
     }
-    func testClosingRearmsExactlyOneRowAndDropsUnusedOldHeight() {
+    func testHeightUsesMinimumAndDoesNotPreservePreviousHighWater() {
         var budget = QuotaSidebarHeightBudget()
-        budget.update(contentHeight: 600, rowHeight: 38, expanded: false)
+        budget.update(contentHeight: 600, expanded: true)
+        XCTAssertEqual(budget.targetHeight, 624)
         budget.update(contentHeight: 400, expanded: true)
-        XCTAssertEqual(budget.targetHeight, 662)
-        budget.update(expanded: false)
-        XCTAssertEqual(budget.targetHeight, 462)
-        budget.update(contentHeight: 438, expanded: true)
-        XCTAssertEqual(budget.targetHeight, 462)
+        XCTAssertEqual(budget.targetHeight, 424)
+        budget.update(contentHeight: 60, expanded: true)
+        XCTAssertEqual(budget.targetHeight, 90)
     }
-    func testInitialExpandedMeasurementAlsoReservesOneRowAndRejectsInvalidValues() {
+    func testInvalidMeasurementsAreRejectedAndRetainTheLastValidHeight() {
         var budget = QuotaSidebarHeightBudget()
         budget.update(contentHeight: .nan, rowHeight: .infinity, expanded: true)
         XCTAssertNil(budget.targetHeight)
-        budget.update(contentHeight: 400.2, rowHeight: 38.2, expanded: true)
-        XCTAssertEqual(budget.targetHeight, 464)
+        budget.update(contentHeight: 400.2, expanded: true)
+        XCTAssertEqual(budget.targetHeight, 425)
+        budget.update(contentHeight: .infinity, expanded: true)
+        XCTAssertEqual(budget.targetHeight, 425)
         budget.update(contentHeight: -100, rowHeight: -40, expanded: true)
-        XCTAssertEqual(budget.targetHeight, 464)
+        XCTAssertEqual(budget.targetHeight, 425)
     }
-    func testExplicitVisibilityChangeRebasesOpenHeightAndRemovesTPSHeadroom() {
+    func testConditionalContentDisappearanceShrinksWithoutARebase() {
         var budget = QuotaSidebarHeightBudget()
-        budget.update(contentHeight: 600, rowHeight: 40, expanded: true)
-        budget.update(contentHeight: 200, rowHeight: 0, expanded: true, rebase: true)
+        budget.update(contentHeight: 600, expanded: true)
+        budget.update(contentHeight: 200, expanded: true)
         XCTAssertEqual(budget.targetHeight, 224)
-        budget.update(contentHeight: 200, expanded: false)
-        XCTAssertEqual(budget.targetHeight, 224)
+        budget.update(contentHeight: 60, expanded: true)
+        XCTAssertEqual(budget.targetHeight, 90)
     }
     func testLargeContentClampsToShortSecondaryDisplayWithNegativeOrigin() {
         let area = CGRect(x: -1920, y: -900, width: 1920, height: 560)
@@ -62,7 +65,7 @@ final class QuotaSidebarHeightBudgetTests: XCTestCase {
         XCTAssertEqual(host.frame.width, 88)
     }
     @MainActor
-    func testProductionRailSpendsOneMeasuredRowBeforeResizing() throws {
+    func testProductionRailTracksTPSModelGrowthAndDisappearance() throws {
         let suite = "SidebarHeight-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -117,14 +120,21 @@ final class QuotaSidebarHeightBudgetTests: XCTestCase {
         seed(2); settle()
         let second = try XCTUnwrap(controller.railPanel).frame.height
         try snapshot("native-2-models.png")
-        XCTAssertEqual(second, first, accuracy: 1, "The first additional TPS model must spend existing padding")
+        XCTAssertGreaterThan(second, first + 10, "The second TPS model must grow the frame to its intrinsic content")
         seed(3); settle()
         let third = try XCTUnwrap(controller.railPanel).frame.height
         try snapshot("native-3-models.png")
-        XCTAssertGreaterThan(third, second + 10, "A second additional model must resize the native frame")
-        // A mini trend is ~92pt versus the old ~40pt numeric row. The
-        // budget deliberately reserves one additional row of the same size.
-        XCTAssertLessThan(first, 750, "Mini trend plus one reserved model row must fit a compact rail")
+        XCTAssertGreaterThan(third, second + 10, "A third TPS model must grow the frame to its intrinsic content")
+        XCTAssertLessThan(first, 750, "The compact median trend must fit a compact rail")
+        seed(0); settle()
+        let noTPS = try XCTUnwrap(controller.railPanel).frame.height
+        try snapshot("native-no-tps.png")
+        XCTAssertLessThan(noTPS, third - 80, "Removing conditional TPS content must shrink the expanded frame")
+        seed(3); settle()
+        let restoredTPS = try XCTUnwrap(controller.railPanel).frame.height
+        try snapshot("native-3-models-restored.png")
+        XCTAssertGreaterThan(restoredTPS, noTPS + 80, "Returning TPS content must grow the expanded frame")
+        XCTAssertEqual(restoredTPS, third, accuracy: 1, "Restored content returns to its intrinsic target")
         controller.select(.settings); settle()
         try snapshot("native-settings-page.png", detail: true)
         controller.select(.speeds)
@@ -137,7 +147,7 @@ final class QuotaSidebarHeightBudgetTests: XCTestCase {
         for module in QuotaSidebarDetail.defaultModuleOrder { controller.setModuleVisible(module, visible: false) }
         settle()
         let minimal = try XCTUnwrap(controller.railPanel).frame.height
-        XCTAssertEqual(minimal, 192, accuracy: 1)
+        XCTAssertEqual(minimal, 90, accuracy: 1)
         try snapshot("native-all-hidden.png")
         let restored = QuotaSidebarController(settings: defaults)
         XCTAssertTrue(QuotaSidebarDetail.defaultModuleOrder.allSatisfy { !restored.isModuleVisible($0) })

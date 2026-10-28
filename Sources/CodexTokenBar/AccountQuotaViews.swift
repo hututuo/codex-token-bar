@@ -5,6 +5,7 @@ enum AccountQuotaStripLayout {
     static let controlWidth: CGFloat = 980
     static let horizontalPadding: CGFloat = 12
     static let accountLabelWidth: CGFloat = 84
+    static let clientLabelWidth: CGFloat = 124
     static let resetCreditWidth: CGFloat = 154
     static let itemSpacing: CGFloat = 8
     static let accountIconAndSpacingWidth: CGFloat = 16
@@ -154,6 +155,7 @@ struct AccountQuotaStrip: View {
     let snapshot: AccountQuotaSnapshot
     @Binding var showingResetCreditDetails: Bool
     var clientItems: [ClientQuotaItem]? = nil
+    var clientPlanLabels: [String: String] = [:]
 
     private var presentation: AccountQuotaStripPresentation {
         AccountQuotaStripPresentation(snapshot: snapshot)
@@ -169,7 +171,7 @@ struct AccountQuotaStrip: View {
                 clientRows(clientItems)
             } else {
                 HStack(spacing: AccountQuotaStripLayout.itemSpacing) {
-                    AccountQuotaAccountLabel(presentation: presentation.accountLabel, isAvailable: snapshot.isAvailable)
+                    clientLabel("codex", subtitle: snapshot.isAvailable ? "当前账户" : presentation.accountLabel.subtitle)
                     HStack(spacing: AccountQuotaSegmentLayout.interSegmentSpacing) {
                         if let fiveHour = snapshot.fiveHour {
                             AccountQuotaSegment(window: fiveHour,
@@ -182,7 +184,7 @@ struct AccountQuotaStrip: View {
                                 isStale: snapshot.staleDataDisplayed)
                         }
                     }
-                    .frame(width: AccountQuotaStripLayout.combinedQuotaSegmentsWidth, alignment: .leading)
+                    .frame(width: AccountQuotaStripLayout.combinedQuotaSegmentsWidth - (AccountQuotaStripLayout.clientLabelWidth - AccountQuotaStripLayout.accountLabelWidth), alignment: .leading)
                     resetCredits
                     AccountQuotaPaceInsight(snapshot: snapshot)
                 }
@@ -234,10 +236,22 @@ struct AccountQuotaStrip: View {
                 Circle().fill(Color(nsColor: NSColor(clientHex: ClientBrand.hex(client)))).frame(width: 6, height: 6)
                 Text(ClientDisplayScope.title(client))
                     .font(.system(size: 11, weight: .semibold))
+                Text(planLabel(for: client))
+                    .font(.system(size: 9, weight: .medium))
+                    .lineLimit(1).minimumScaleFactor(0.8)
+                    .padding(.horizontal, 5).padding(.vertical, 2)
+                    .background(AppTheme.solidControlBackground, in: RoundedRectangle(cornerRadius: 4))
+                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(AppTheme.border, lineWidth: 1))
             }
             Text(subtitle).font(.system(size: 9)).foregroundStyle(.secondary).lineLimit(1)
         }
-        .frame(width: AccountQuotaStripLayout.accountLabelWidth, alignment: .leading)
+        .frame(width: AccountQuotaStripLayout.clientLabelWidth, alignment: .leading)
+    }
+
+    private func planLabel(for client: String) -> String {
+        let raw = client == "codex" ? snapshot.planType : clientPlanLabels[client]
+        let value = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return value.isEmpty ? "套餐未知" : value.uppercased()
     }
 
     @ViewBuilder private func clientRows(_ items: [ClientQuotaItem]) -> some View {
@@ -249,7 +263,7 @@ struct AccountQuotaStrip: View {
         ForEach(ids, id: \.self) { client in
             let windows = items.filter { $0.client == client }
             HStack(alignment: .center, spacing: 12) {
-                clientLabel(client, subtitle: client == "codex" ? (snapshot.planType?.uppercased() ?? "当前账户") : "本地缓存")
+                clientLabel(client, subtitle: client == "codex" ? "当前账户" : "本地缓存")
                     .padding(.top, 3)
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 120), spacing: 12), count: min(client == "codex" ? 2 : 3, max(1, windows.count))), alignment: .leading, spacing: 10) {
                     ForEach(windows) { item in

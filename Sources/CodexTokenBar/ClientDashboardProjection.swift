@@ -95,7 +95,21 @@ struct ClientModelCostPeriods: Equatable {
                 referenceCostUSD: item.referenceCostUSD, color: item.color, knownPartialCostUSD: item.knownPartialCostUSD)
         }
         let codexGroups = FloatingTodayModelUsagePresentation.dashboardFamilyGroups(from: original)
-        let claudeRows = values.filter { $0.id.hasPrefix("claudeCode|") || $0.id.hasPrefix("claudeDesktop|") }
+        var claudeRows = values.filter { $0.id.hasPrefix("claudeCode|") || $0.id.hasPrefix("claudeDesktop|") }
+        if let first = claudeRows.first {
+            let client = String(first.id.split(separator: "|")[0])
+            for family in ClaudeModelPresentation.families {
+                guard let model = ClaudeModelPresentation.newestCatalogModelsByFamily[family],
+                      !claudeRows.contains(where: { row in
+                          guard let identity = ClaudeModelPresentation.identity(row.id), identity.family == family else { return false }
+                          return ClaudeModelPresentation.compare(identity.version, model.version) >= 0
+                      }) else { continue }
+                // Display-only availability; never appended to stored usage or cost totals.
+                claudeRows.append(.init(id: client + "|" + model.id, label: ClaudeModelPresentation.identity(model.id)!.label,
+                    tokens: 0, share: 0, costUSD: 0, usesIndependentQuota: false, referenceCostUSD: nil,
+                    color: ModelUsagePresentation.color(for: model.id)))
+            }
+        }
         let claudeGroups = ClaudeModelPresentation.groups(claudeRows, client: "claude")
         let others = Dictionary(grouping: values.filter {
             !$0.id.hasPrefix("codex|") && !$0.id.hasPrefix("claudeCode|") && !$0.id.hasPrefix("claudeDesktop|")

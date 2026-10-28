@@ -1,10 +1,12 @@
 .qs-median-speeds{width:100%;padding:4px 5px;color:#fff;flex-shrink:0}
-.qs-median-speeds>button{width:100%;display:flex;flex-direction:column;align-items:center;gap:6px;color:inherit;background:transparent;border:0;padding:0;cursor:pointer;border-radius:8px}
+.qs-median-speeds>button{width:100%;display:flex;flex-direction:column;align-items:center;gap:4px;color:inherit;background:transparent;border:0;padding:0;cursor:pointer;border-radius:8px}
 .qs-median-speeds>button:hover{background:#ffffff08}
 .qs-median-speeds>button:focus-visible{outline:1px solid #b6ef75;outline-offset:3px}
 .qs-median-title{font-size:9px;font-weight:600}.qs-median-caption{font-size:8px;color:#ffffffbf}.qs-median-error{font-size:9px;color:#f2b564}
-.qs-median-model{display:flex;flex-direction:column;width:66px;gap:3px;padding:2px 0}
+.qs-median-model{display:flex;flex-direction:column;width:74px;gap:2px;padding:2px 0}
 .qs-median-name{display:flex;align-items:center;gap:3px;font-size:9px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .qs-median-name>i{display:inline-block;flex-shrink:0;width:4px;height:4px;border-radius:50%}
-.qs-median-value{display:flex;align-items:baseline;gap:3px}.qs-median-value>b{font-size:14px;font-weight:600;line-height:1.2;font-variant-numeric:tabular-nums;letter-spacing:-.3px}.qs-median-value>small{font-size:7px;color:#ffffffbf}
-.qs-median-bars{display:block;width:66px;height:48px}.qs-median-time{font-size:7px;color:#ffffffbf;text-align:center;font-variant-numeric:tabular-nums;white-space:nowrap}
+.qs-median-value{display:flex;align-items:baseline;gap:3px}.qs-median-value>b{font-size:11px;font-weight:600;line-height:1.2;font-variant-numeric:tabular-nums;letter-spacing:-.3px}.qs-median-value>small{font-size:7px;color:#ffffffbf}
+.qs-median-bars{display:block;width:74px;height:32px}.qs-median-time{font-size:7px;color:#ffffffbf;text-align:center;font-variant-numeric:tabular-nums;white-space:nowrap}
+
+.qs-median-heading,.qs-median-reading{display:flex;align-items:center;justify-content:space-between;gap:3px;width:74px;min-width:0}.qs-median-name{min-width:0;flex:1}.qs-median-value{flex:none}

@@ -14,13 +14,16 @@ export function animateSidebarStrokes(root: HTMLElement, expanded: boolean, prev
   layer.setAttribute("class", "qs-stroke-morph"); layer.setAttribute("aria-hidden", "true");
   if (typeof layer.animate !== "function") return empty;
   const targets = new Map([...root.querySelectorAll<HTMLElement>("[data-sidebar-stroke-target]")].map(node => [node.dataset.sidebarStrokeTarget, node]));
+  const guideLayer=doc.createElementNS(namespace,"svg");
+  guideLayer.setAttribute("class","qs-pace-morph");guideLayer.setAttribute("aria-hidden","true");
+  const guides=new Map([...root.querySelectorAll<HTMLElement>("[data-sidebar-pace-target]")].map(node=>[node.dataset.sidebarPaceTarget,node]));
   const originals = new Map<Element, string>(), animations: Animation[] = [];
   let removed = false;
   const restore = () => {
     if (removed) return;
     removed = true;
     originals.forEach((visibility, node) => { (node as HTMLElement | SVGElement).style.visibility = visibility; });
-    layer.remove(); animations.forEach(animation => animation.cancel());
+    layer.remove(); guideLayer.remove(); animations.forEach(animation => animation.cancel());
   };
   const paths: { id: string; node: SVGPathElement }[] = [], groups = new Map<string, SVGGElement>();
   const hide = (node: Element) => {
@@ -44,6 +47,7 @@ export function animateSidebarStrokes(root: HTMLElement, expanded: boolean, prev
         const strokes = sidebarStrokes(spec, source, { x: end.x - origin.x, y: end.y - origin.y, width: end.width, height: end.height });
         if (!strokes.length) continue;
         hide(node); hide(target);
+        const guide=guides.get(spec.id);if(guide && strokes.some(stroke=>stroke.foreground))hide(guide);
         for (const stroke of strokes) {
           const path = doc.createElementNS(namespace, "path");
           const from = previous.get(stroke.id) ?? { d: `path("${strokePath(expanded ? stroke.target : stroke.source)}")`, width: String(expanded ? stroke.targetWidth : stroke.sourceWidth) };
@@ -55,7 +59,7 @@ export function animateSidebarStrokes(root: HTMLElement, expanded: boolean, prev
           let group = groups.get(stroke.group);
           if (!group) {
             group = doc.createElementNS(namespace, "g"); group.setAttribute("opacity", String(stroke.opacity));
-            layer.append(group); groups.set(stroke.group, group);
+            (stroke.foreground ? guideLayer : layer).append(group); groups.set(stroke.group, group);
           }
           group.append(path); paths.push({ id: stroke.id, node: path });
           animations.push(path.animate([
@@ -71,6 +75,7 @@ export function animateSidebarStrokes(root: HTMLElement, expanded: boolean, prev
   }
   if (!paths.length) return empty;
   root.append(layer);
+  if(guideLayer.children.length)root.append(guideLayer);
   void Promise.all(animations.map(animation => animation.finished.catch(() => {}))).then(restore);
   return () => {
     if (removed) return empty();

@@ -34,9 +34,10 @@ export function SidebarCompactBars({ items, quotas, selection, ratePercent, mode
           <span className="integrated-quota-value-track" style={{ height: layout.barHeight - 2.5 }}>
             <span className={`qs-bar ${item.remaining === null ? "qs-unknown" : ""}`} data-sidebar-stroke-target={item.id}>
               <i style={{ height: `${item.remaining ?? 0}%`, background: selection.colors[item.id] ?? quotaFill(item) }} />
-              {expected[item.id] != null && <b className="qs-pace-mark" style={{ bottom: `${expected[item.id]! * 100}%` }} />}
             </span>
           </span>
+          {expected[item.id] != null && <b className="qs-pace-mark" data-sidebar-pace-target={item.id}
+            style={{ top: 2.5 + (layout.barHeight - 2.5) * (1 - Math.min(1, Math.max(0, expected[item.id]!))) }} />}
         </span>)}
       {id === "models" && <div data-sidebar-item={id} data-sidebar-stroke-target={id} className="qs-model-strip qs-model-strip-vertical" style={{ height: layout.barHeight }} aria-label="今日模型 Token 占比">
         {models.map(item => <i key={item.key} style={{ flexGrow: item.share, background: item.color }} />)}

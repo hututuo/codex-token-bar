@@ -52,6 +52,18 @@ final class SidebarBodyMedianTests: XCTestCase {
         XCTAssertEqual(result.series.first?.current?.median,40)
         XCTAssertNil(result.series.first?.slots[4])
     }
+    @MainActor func testTwoModelsFitCompactRowsWithoutTheOldSeparateNumericLine() throws {
+        let result=SidebarBodyMedian.project(values,now:end)
+        let latest=["gpt-6.1-sol","gpt-6-luna"].map { ModelSpeedSummary(model:$0,tokensPerSecond:164.4,sampleCount:1,outputTokens:1644,durationSeconds:10,lastMeasuredAt:end) }
+        let host=NSHostingView(rootView:SidebarBodyMedianContent(snapshot:result,latest:latest,error:nil,onOpen:{}).frame(width:88).background(Color.black))
+        host.frame=CGRect(x:0,y:0,width:88,height:170);host.layoutSubtreeIfNeeded()
+        XCTAssertLessThanOrEqual(host.fittingSize.width,88)
+        XCTAssertLessThan(host.fittingSize.height,160,"Two model rows should no longer spend about 200pt on stacked labels and numbers")
+        if let folder=ProcessInfo.processInfo.environment["SIDEBAR_MEDIAN_PREVIEW_DIR"] {
+            let bitmap=try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in:host.bounds));host.cacheDisplay(in:host.bounds,to:bitmap)
+            try XCTUnwrap(bitmap.representation(using:.png,properties:[:])).write(to:URL(fileURLWithPath:folder).appendingPathComponent("native-sidebar-two-medians.png"))
+        }
+    }
     @MainActor func testNativeMiniViewFitsSidebarAndRenders() throws {
         let result=SidebarBodyMedian.project(values,now:end)
         let view=SidebarBodyMedianContent(snapshot:result,latest:[.init(model:"gpt-6.1-sol",tokensPerSecond:72,sampleCount:1,outputTokens:720,durationSeconds:10,lastMeasuredAt:end)],error:nil,onOpen:{})

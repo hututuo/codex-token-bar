@@ -62,8 +62,12 @@ test('actual sidebar shows latest qualified body reading alongside median distri
    const panel=win.document.querySelector('.qs-median-speeds');
    assert.ok(panel);
    assert.match(panel.textContent,/正文 TPS/);
-   assert.match(panel.textContent,/中位数.*近3小时/);
-   assert.match(panel.textContent,/72.0最新/);assert.match(panel.textContent,/中位 —/);
+   assert.equal(panel.querySelector('.qs-median-heading').textContent,'正文 TPS近3小时');
+   const card=panel.querySelector('.qs-median-model');
+   assert.equal(card.querySelector('.qs-median-name').textContent,'6.1-sol');
+   assert.equal(card.querySelector('.qs-median-value b').textContent,'72.0');
+   assert.match(card.title,/最新 72\.0 TPS/);
+   assert.equal(card.querySelector('.qs-median-time').textContent,'中位 —');
    assert.equal(panel.querySelectorAll('select,.qs-model-speed-windows').length,0);
    assert.doesNotMatch(panel.textContent,/legacy-live-only|999/);
   }finally{win.close();}
@@ -108,7 +112,13 @@ test('actual sidebar latest numbers stay distinct from source-scoped median buck
    assert.equal(reads,1);
    assert.equal(panel.querySelectorAll('.qs-median-model').length,2);
    assert.match(panel.textContent,/6.1-sol/);assert.match(panel.textContent,/6-luna/);
-   assert.match(panel.textContent,/中位 30.0/);assert.match(panel.textContent,/中位 100.0/);assert.match(panel.textContent,/56.0最新/);assert.match(panel.textContent,/160.0最新/);
+   const cards=[...panel.querySelectorAll('.qs-median-model')];
+   assert.deepEqual(cards.map(card=>[
+    card.querySelector('.qs-median-name').textContent,
+    card.querySelector('.qs-median-value b').textContent,
+    card.querySelector('.qs-median-time').textContent,
+   ]),[['6-luna','160.0','中位 100.0'],['6.1-sol','56.0','中位 30.0']]);
+   assert.ok(cards.every(card=>/最新 [0-9.]+ TPS/.test(card.title)));
    assert.equal(panel.querySelectorAll('svg').length,2);
    assert.doesNotMatch(panel.textContent,/legacy-live-only|999/);
   }finally{

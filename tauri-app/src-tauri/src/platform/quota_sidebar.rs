@@ -49,8 +49,8 @@ fn default_compact_height(shows_five_hour: bool) -> f64 {
 fn resolve_expanded_height(height: Option<f64>, shows_five_hour: bool) -> Result<f64, String> {
     match height {
         None => Ok(default_expanded_height(shows_five_hour)),
-        Some(value) if value.is_finite() && (192.0..=4096.0).contains(&value) => Ok(value),
-        Some(_) => Err("Expanded quota sidebar height must be finite and between 192 and 4096 points".into()),
+        Some(value) if value.is_finite() && (90.0..=4096.0).contains(&value) => Ok(value),
+        Some(_) => Err("Expanded quota sidebar height must be finite and between 90 and 4096 points".into()),
     }
 }
 fn resolve_compact_height(height: Option<f64>) -> Result<Option<f64>, String> {
@@ -388,9 +388,10 @@ mod tests {
     fn expanded_height_validation_preserves_legacy_defaults_and_rejects_invalid_values() {
         assert_eq!(resolve_expanded_height(None, true).unwrap(), SIDEBAR_CANVAS_HEIGHT);
         assert_eq!(resolve_expanded_height(None, false).unwrap(), SIDEBAR_WEEKLY_HEIGHT);
-        for value in [191.99, 4096.01, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        for value in [89.99, 4096.01, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             assert!(resolve_expanded_height(Some(value), true).is_err());
         }
+        assert_eq!(resolve_expanded_height(Some(90.0), true).unwrap(), 90.0);
         assert_eq!(resolve_expanded_height(Some(192.0), true).unwrap(), 192.0);
         assert_eq!(resolve_expanded_height(Some(4096.0), false).unwrap(), 4096.0);
     }

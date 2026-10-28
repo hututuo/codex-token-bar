@@ -24,7 +24,12 @@ test('quota reference marks and model strip use snapshot references and floating
   const dom=new Window();try {
    dom.document.body.innerHTML=renderToStaticMarkup(React.createElement(SidebarRailContent,{data,state:{mode:'hover'},onOpen(){}}));
    assert.equal(dom.document.querySelectorAll('.qs-pace-mark').length,1);
-   assert.equal(dom.document.querySelector('.qs-pace-mark').style.bottom,'70%');
+   const paceMark=dom.document.querySelector('.qs-pace-mark'),paceTrack=paceMark.parentElement;
+   const barHeight=parseFloat(paceTrack.style.height),expectedFraction=sidebarExpectedFraction(.4,data.snapshot.sevenDayExpectedRemainingPercent);
+   const expectedTop=2.5+(barHeight-2.5)*(1-Math.min(1,Math.max(0,expectedFraction)));
+   assert.ok(Math.abs(parseFloat(paceMark.style.top)-expectedTop)<1e-8);
+   assert.ok(paceTrack.classList.contains('integrated-quota-track'));
+   assert.equal(paceMark.closest('.qs-bar'),null,'pace guide stays outside the clipped quota fill');
    assert.ok(Math.abs(parseFloat(dom.document.querySelector('.integrated-full-pace').getAttribute('transform').slice(7))-252)<1e-8);
    const expected=floatingTodayModelUsageItems(rows,'gpt56Sol',{showPlaceholders:false});
    const segments=[...dom.document.querySelectorAll('.qs-model-strip-vertical i')];

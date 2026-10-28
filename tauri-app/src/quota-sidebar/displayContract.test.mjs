@@ -74,7 +74,13 @@ test("real account quota IPC -> useCompactPanelData -> rail and detail preserve 
         assert.equal(latest.quota.quota.sevenDay.remainingPercent, 0.19);
         assert.equal(latest.snapshot.sevenDayRemainingPercent, 0.19);
         assert.equal(latest.snapshot.sevenDayExpectedRemainingPercent, 70);
-        assert.equal(window.document.querySelector('.qs-pace-mark').style.bottom, '70%');
+        const paceMark = window.document.querySelector('.qs-pace-mark');
+        const paceTrack = paceMark.parentElement;
+        const barHeight = parseFloat(paceTrack.style.height);
+        const expectedTop = 2.5 + (barHeight - 2.5) * (1 - Math.min(1, Math.max(0, latest.snapshot.sevenDayExpectedRemainingPercent / 100)));
+        assert.ok(Math.abs(parseFloat(paceMark.style.top) - expectedTop) < 1e-8);
+        assert.ok(paceTrack.classList.contains('integrated-quota-track'));
+        assert.equal(paceMark.closest('.qs-bar'), null, 'pace guide stays outside the clipped quota fill');
         const tick = window.document.querySelector('.integrated-full-pace');
         assert.ok(Math.abs(parseFloat(tick.getAttribute('transform').slice(7)) - 252) < 1e-8);
         assert.ok(renderToStaticMarkup(React.createElement(QuotaDetails, { data: latest })).includes('余量应为 70%'));

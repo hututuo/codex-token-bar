@@ -1,4 +1,4 @@
-import { claudeModelIdentity, claudeModelGroups } from "../components/claudeModelPresentation";
+import { claudeModelIdentity, claudeModelGroups, claudeNewestCatalogModelsByFamily } from "../components/claudeModelPresentation";
 import type { DashboardSnapshot, RecentUsagePoint, ModelTokenBreakdown } from '../types/dashboard';
 import type { Snapshot, Summary } from './MultiClientUsage';
 import { projectClientDays } from './integratedClientModel';
@@ -14,7 +14,15 @@ export interface ClientCostPeriods {
 export function clientCostGroups(items: FloatingModelUsageItem[]) {
   const codex = items.filter(x => x.key.startsWith('codex|')).map(x => ({...x,key:x.key.slice(6)}));
   const codexGroups = dashboardModelFamilyGroups(codex);
-  const claudeGroups = claudeModelGroups(items.filter(x=>/^claude(?:Code|Desktop)\|/.test(x.key)),"claude");
+  const claudeRows=items.filter(x=>/^claude(?:Code|Desktop)\|/.test(x.key));
+  if(claudeRows.length){
+    const client=claudeRows[0].key.split("|")[0];
+    for(const [family,model] of Object.entries(claudeNewestCatalogModelsByFamily)){
+      if(!model || claudeRows.some(row=>{const id=claudeModelIdentity(row.key);return id?.family===family && (id.version[0]>model.version[0] || (id.version[0]===model.version[0]&&(id.version[1]??0)>=(model.version[1]??0)));}))continue;
+      claudeRows.push({key:client+"|"+model.id,label:claudeModelIdentity(model.id)!.label,tokens:0,share:0,costUSD:0,usesIndependentQuota:false,referenceCostUSD:null,color:modelUsageColor(model.id)});
+    }
+  }
+  const claudeGroups = claudeModelGroups(claudeRows,"claude");
   const groups: {id:string;label:string;items:FloatingModelUsageItem[]}[] = [
     ...codexGroups.filter(g=>g.id==="6"), ...claudeGroups.filter(g=>g.id.endsWith(":latest")),
     ...codexGroups.filter(g=>g.id!=="6"), ...claudeGroups.filter(g=>!g.id.endsWith(":latest")),

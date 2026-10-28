@@ -25,7 +25,13 @@ test('mini median only polls when visible, fences late source replies, and repor
  await React.act(async()=>pending.shift().resolve(payload('NEW')));assert.match(dom.document.body.textContent,/NEW/);assert.equal([...timers.values()].filter(t=>t.ms===60000).length,1);
  await React.act(async()=>{Object.defineProperty(dom.document,'hidden',{value:true,configurable:true});dom.document.dispatchEvent(new dom.Event('visibilitychange'));});assert.equal(timers.size,0);
  await React.act(async()=>{Object.defineProperty(dom.document,'hidden',{value:false,configurable:true});dom.document.dispatchEvent(new dom.Event('visibilitychange'));});await React.act(async()=>fire(150));
- await React.act(async()=>pending.shift().reject(new Error('test read failure')));assert.match(dom.document.body.textContent,/读取失败/);assert.match(dom.document.body.textContent,/72.0最新/);assert.doesNotMatch(dom.document.body.textContent,/中位 30/);
+ await React.act(async()=>pending.shift().reject(new Error('test read failure')));
+ const latestCard=dom.document.querySelector('.qs-median-model');
+ assert.match(dom.document.body.textContent,/读取失败/);
+ assert.equal(latestCard.querySelector('.qs-median-value b').textContent,'72.0');
+ assert.match(latestCard.title,/最新 72\.0 TPS/);
+ assert.equal(latestCard.querySelector('.qs-median-time').textContent,'中位 —');
+ assert.doesNotMatch(dom.document.body.textContent,/中位 30/);
  await render(false);assert.equal(timers.size,0);
  });
  }finally{if(root)await React.act(async()=>root.unmount());for(const[k,desc]of previous)desc?Object.defineProperty(globalThis,k,desc):delete globalThis[k];dom.close();}

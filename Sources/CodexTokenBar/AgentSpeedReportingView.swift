@@ -96,6 +96,7 @@ struct AgentSpeedReportingSettingsView: View {
 struct AgentSpeedReportingDashboardStatus: View {
     @ObservedObject private var controller = AgentSpeedReportingController.shared
     var compact = false
+    var unframed = false
     var errorsOnly = false
     private var confirmed: Bool { ["running", "reporting", "connected"].contains(controller.phase) && controller.lastReportAt != nil }
     var body: some View {
@@ -106,8 +107,9 @@ struct AgentSpeedReportingDashboardStatus: View {
                         Circle().fill(controller.phase == "error" ? Color.orange : confirmed ? Color.green : Color.orange).frame(width: 6, height: 6)
                         Text("速蹬 · " + (controller.phase == "error" ? "上报异常" : confirmed ? "正在上报" : "正在连接"))
                             .font(.system(size: 11, weight: .medium)).lineLimit(1)
-                    }.padding(.horizontal, 10).frame(height: 28)
-                        .background(AppTheme.solidControlBackground, in: Capsule())
+                    }.padding(.horizontal, unframed ? 0 : 10).frame(height: 28)
+                        .foregroundStyle(unframed ? .secondary : .primary)
+                        .background(unframed ? Color.clear : AppTheme.solidControlBackground, in: Capsule())
                 }.buttonStyle(.plain).fixedSize()
                     .help(controller.message + (controller.lastReportAt.map { "\n最近上报 " + $0.formatted(date: .omitted, time: .standard) } ?? ""))
                     .accessibilityLabel("速蹬上报状态")
