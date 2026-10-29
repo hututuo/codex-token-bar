@@ -1210,10 +1210,7 @@ struct DashboardView: View {
 
             // Aggregation is a summary operation, not permission to erase the
             // original client's quota, money, or request provenance.
-            ForEach(DashboardClientOrder.sorted(allowedClients), id: \.self) { client in
-                // One concrete row per client. Flattened conditional child
-                // lists trap in SwiftUI accessibility whole-page scrolling.
-                VStack(spacing: 18) {
+            ForEach(allowedClients.sorted { lhs, rhs in lhs == "codex" || (rhs != "codex" && lhs < rhs) }, id: \.self) { client in
                 let isCodex = client == "codex"
                 let source = clientProjectionCache.value(codex: store.snapshot, clients: clients, allowed: [client])
                 if allowedClients.count > 1 {
@@ -1262,7 +1259,6 @@ struct DashboardView: View {
                 } else if let usageClient = UsageClient(rawValue: client) {
                     ClientCacheRankingSection(client: usageClient)
                 }
-                }.id("client-analytics-" + client)
             }
 
         }
