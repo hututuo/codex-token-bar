@@ -4,11 +4,11 @@
 
 栈：AGAttribute.syncMainIfReferences → ForEachState.item/forEachItem → LazyScrollable.applyCollectionViewIDs → AccessibilityNode.scrollToBeginning → AccessibilityLazyLayoutNode.accessibilityPerformAction。触发时没有数据库写入栈。不能仅凭此宣称普通滚轮操作已复现同一问题，也不能把避免这个测试动作当作修复。
 
-## 处理
+## 曾尝试的处理（已撤回，未修复）
 
 DashboardView 中每个客户端此前在外层 LazyVStack/ForEach 直接展开可变数量的标题、活动图、用量图、排行榜。改为每个客户端一个具体 VStack 容器，保留 18pt 间距和内部图表 ID，客户端块仍由外层懒加载。客户端排序改为严格比较，Codex 固定优先，其他保持独立身份。未删除图表、未修改 TPS/速率算法、未改账本或 Windows 解析器。
 
-这属于对已定位结构风险的修正，需新候选版实机复测相同辅助功能路径后才能宣布解决。云端普通单元测试通过不替代该验收。
+该实验以收敛懒列表子视图结构为方向，实机相同辅助功能路径最终仍失败，不能作为有效修复。云端普通单元测试通过不替代该验收。
 
 ## 数据与已完成门槛
 
@@ -25,3 +25,13 @@ build 977（64b84d4c9b84dcdfff17d6298272abf21a84f33e）全量 CI 通过，仍在
 该证据把范围缩小到 macOS 27.0.1 的 SwiftUI 懒列表与辅助功能整页跳转调用链；不足以在操作系统实现和自动化工具映射之间最终归责。不能把停止调用当成产品修复，也不能泛称所有普通滚动会崩溃。原先 build 968 的 Charts/GeometryReader 崩溃栈不同，不能混为同一次问题。
 
 决定：撤回未经验证有效的客户端容器/排序实验，恢复 75f27810 对应生产代码与 build 976；保留已批准的页头、配色、近3分钟原始速度图、内存存储和停止旧速率落库的功能。暂不以牺牲性能、隐藏辅助内容或私有 API hook 规避此系统路径。正式应用普通滚动和数据读取已验证；该辅助功能动作保持未修复、未关闭。最小程序和 ips 留在本机供后续复核，没有向 Apple 或外部发送报告。
+
+## 01:46–01:49 实际恢复与普通交互复核
+
+已于 01:46 恢复正式路径 build976，仅替换应用包。替换前完整克隆：~/Library/Application Support/CodexTokenBar-InstallBackups/20261030-014647-build977-before-restore976。保留当前两个业务数据库、所有设置及原始日志；没有使用备份覆盖活动数据。
+
+停机审计：576 个命名空间无缺失，当前基线 526607 条事件、85327869371 Token 前后完全一致；其他客户端 201 条事件/1558 条修订/1357 条隔离项全部保留，正文测速 4093 条原始记录及 1367 个聚合桶保留，84145 条旧活动样本保留。详见 scratch/local-restore-build976-after-ax/ 下三个数据校验 JSON。
+
+实际启动 PID38143，运行路径为 /Applications/Codex Token Bar.app/Contents/MacOS/CodexTokenBar，SHA256=5c73ed221ebd33d542a5efbcfccfb91feb74d432c1f46c1b211288f084a87293，与已验证976候选一致。普通滚动到下方图表/排行榜再返回顶部通过，前后同一 PID，未产生新崩溃报告；界面显示最新精确统计、额度及正常上报。证据 runtime-verification.json、ordinary-scroll-*.txt、restored-dashboard.png。
+
+这些结果只覆盖普通启动、数据读取与这次滚动，不关闭辅助功能整页跳转缺陷，不宣称该路径已修复。没有再次对正式应用发送已知触发动作。
