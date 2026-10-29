@@ -4,30 +4,38 @@ import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {Window} from 'happy-dom';
 import {withSsrModules} from '../../test/ssrHarness.mjs';
-const point=(model,bucketStart,speed=40)=>({model,bucketStart,sampleCount:1,tokensPerSecond:speed,outputTokens:speed*2,durationSeconds:2});
-test('day curve retains sparse five-minute weighted measurements and separates models',async()=>withSsrModules(async load=>{
- const {trendPlot,trendSegments}=await load('/src/components/liveRate/BodySpeedTrend.tsx');
- const rows=[point('sol',6400,35),point('sol',6700,40),point('sol',8200,45),point('luna',8200,160),point('sol',4000,300),point('sol',10300,80),point('sol',9400,NaN)];
- const plot=trendPlot(rows,10000,3600,'sol');
- assert.deepEqual(plot.rows.map(p=>p.tokensPerSecond),[35,40,45]);
- assert.equal(plot.minimum,30);assert.equal(plot.maximum,50);assert.equal(plot.last.tokensPerSecond,45);
- assert.deepEqual(trendSegments(plot.rows,300).map(s=>s.length),[2,1]);
- assert.equal(trendPlot(rows,10000,3600,'missing').last,undefined);
- assert.equal(trendSegments(trendPlot(rows,10000,3600,null).rows,300).length,3);
-}));
-test('reset markers still use accepted observations rather than schedules',async()=>withSsrModules(async load=>{
- const {speedTrendResets}=await load('/src/components/liveRate/BodySpeedTrend.tsx');
- assert.deepEqual(speedTrendResets([{startUpperUnix:null,expectedResetUnix:4000},{startUpperUnix:5000,startLowerUnix:4800,expectedResetUnix:9000}]),[{observedAt:5000,previousAt:4800}]);
-}));
-test('production chart restores detailed clipped lines, measured dots and complete numeric tooltips',async()=>withSsrModules(async load=>{
- const {SpeedTrendPlot}=await load('/src/components/liveRate/BodySpeedTrend.tsx');
- const html=renderToStaticMarkup(React.createElement(SpeedTrendPlot,{points:[point('gpt-6.1-sol',6400),point('gpt-6.1-sol',6700,45),point('gpt-6.1-sol',9000,50)],minimum:30,maximum:60,asOf:11000,windowSeconds:5000,days:1,resets:[{observedAt:8000,previousAt:7800}],clipId:'test'}));
- const w=new Window();w.document.body.innerHTML=html;
- assert.equal(w.document.querySelectorAll('polyline').length,2);
- assert.equal(w.document.querySelectorAll('circle').length,3);
- assert.equal(w.document.querySelectorAll('.bst-band,.bst-median').length,0);
- assert.equal(w.document.querySelectorAll('.bst-reset').length,1);
- assert.equal(w.document.querySelector('g[clip-path]').getAttribute('clip-path'),'url(#test)');
- assert.match(w.document.querySelector('circle title').textContent,/40.0 TPS.*1段正文.*80 token \/ 2.00秒/);
- w.happyDOM.abort();
-}));
+const point=(model,bucketStart,median=40)=>({model,bucketStart,bucketEnd:bucketStart+1800,lowerQuartile:median-5,median,upperQuartile:median+5,bucketCount:4,sampleCount:8,tokensPerSecond:median+9,outputTokens:100,durationSeconds:2,isPartial:false});
+test('distribution projection uses quartiles for tight Y bounds and rejects legacy or malformed points',async()=>{
+ await withSsrModules(async load=>{
+  const {trendPlot}=await load('/src/components/liveRate/BodySpeedTrend.tsx');
+  const rows=[point('sol',6400,35),point('sol',8200,40),point('luna',8200,160),point('sol',4000,300),point('sol',10300,80),{...point('sol',9500),median:undefined},{...point('sol',9400),lowerQuartile:60}];
+  const plot=trendPlot(rows,10000,3600,'sol');
+  assert.deepEqual(plot.rows.map(p=>p.median),[35,40]);
+  assert.equal(plot.minimum,27);assert.equal(plot.maximum,48);
+  assert.equal(plot.last.median,40);assert.equal(plot.last.tokensPerSecond,49);
+  assert.equal(trendPlot(rows,10000,3600,'missing').last,undefined);
+ });
+});
+test('missing intervals have no nearest-value fallback and reset markers never use schedules or unknown starts',async()=>{
+ await withSsrModules(async load=>{
+  const {distributionsAt,distributionResets}=await load('/src/components/liveRate/BodySpeedTrend.tsx');
+  const rows=[point('sol',1000),point('sol',5000)];
+  assert.equal(distributionsAt(rows,3000).length,0);
+  assert.equal(distributionsAt(rows,2000).length,1);
+  assert.deepEqual(distributionResets([{startUpperUnix:null,expectedResetUnix:4000},{startUpperUnix:5000,startLowerUnix:4800,expectedResetUnix:9000}]),[{observedAt:5000,previousAt:4800}]);
+ });
+});
+test('production SVG renders separate IQR rectangles and median rules, not old connected mean lines',async()=>{
+ await withSsrModules(async load=>{
+  const {SpeedDistributionPlot}=await load('/src/components/liveRate/BodySpeedTrend.tsx');
+  const html=renderToStaticMarkup(React.createElement(SpeedDistributionPlot,{points:[point('gpt-6.1-sol',6400),{...point('gpt-6.1-sol',9000),isPartial:true}],minimum:30,maximum:60,asOf:11000,windowSeconds:5000,days:1,resets:[{observedAt:8000,previousAt:7800}],clipId:'test'}));
+  const w=new Window();w.document.body.innerHTML=html;
+  assert.equal(w.document.querySelectorAll('.bst-band').length,2);
+  assert.equal(w.document.querySelectorAll('.bst-median').length,2);
+  assert.equal(w.document.querySelectorAll('polyline,circle').length,0);
+  assert.equal(w.document.querySelectorAll('.bst-reset').length,1);
+  assert.match(w.document.querySelector('.bst-distribution title').textContent,/中位数 40.0.*加权均速 49.0/);
+  assert.equal(w.document.querySelectorAll('.bst-median')[1].getAttribute('stroke-dasharray'),'3 2');
+  w.happyDOM.abort();
+ });
+});

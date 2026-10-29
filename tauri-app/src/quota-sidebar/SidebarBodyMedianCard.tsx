@@ -30,7 +30,7 @@ export function SidebarBodyMedian({latest=[],sourceToken,active,onOpen}:Props) {
   return <SidebarBodyMedianContent latest={latest} snapshot={result?.key===key?result.snapshot:null} error={result?.key===key?result.error:null} onOpen={onOpen}/>;
 }
 const description=(series:MedianSeries,end:number)=>series.model+" · "+series.slots.map((p,i)=>
-  `${medianInterval(end-(5-i)*1800)} ${p?`中位数 ${p.median.toFixed(1)} TPS，中间50% ${p.lower.toFixed(1)}–${p.upper.toFixed(1)} TPS，${p.bucketCount}桶、${p.sampleCount}段正文`:"采样不足"}`).join("；")+"。折线表示各半小时的中位数；各模型纵轴独立，缺样本断线。";
+  `${medianInterval(end-(5-i)*1800)} ${p?`中位数 ${p.median.toFixed(1)} TPS，中间50% ${p.lower.toFixed(1)}–${p.upper.toFixed(1)} TPS，${p.bucketCount}桶、${p.sampleCount}段正文`:"采样不足"}`).join("；")+"。色柱表示中间50%的分布，横线表示中位数；各模型纵轴独立，缺样本留空。";
 export const SidebarBodyMedianContent=memo(function SidebarBodyMedianContent({snapshot,latest=[],error,onOpen}:{snapshot:MedianSnapshot|null;latest?:ModelSpeedSummary[];error:string|null;onOpen:()=>void}) {
   return <div className="qs-median-speeds"><button type="button" onClick={onOpen} title="最近3小时，每半小时一个中位数；当前未满区间不计。点击查看测速记录">
     <span className="qs-median-heading"><span className="qs-median-title">正文 TPS</span><span className="qs-median-caption">近3小时</span></span>
@@ -43,13 +43,10 @@ export const SidebarBodyMedianContent=memo(function SidebarBodyMedianContent({sn
         <span className="qs-median-reading"><span className="qs-median-name"><i style={{background:color}}/>{reading.model.replace(/^gpt-/,"")}</span><span className="qs-median-value"><b>{reading.tokensPerSecond.toFixed(1)}</b></span></span>
         <svg viewBox="0 0 74 32" className="qs-median-bars" aria-hidden="true">
           <line x1="0" x2="74" y1="29" y2="29" stroke="#ffffff0e"/>
-          {series && (()=>{
-            const segments:{x:number;y:number}[][]=[];let segment:{x:number;y:number}[]=[];
-            series.slots.forEach((p,i)=>{if(!p){if(segment.length)segments.push(segment);segment=[];return;}segment.push({x:(i+.5)*step,y:y(p.median)});});
-            if(segment.length)segments.push(segment);
-            return segments.map((points,i)=><g key={i}><polyline className="qs-median-line" points={points.map(p=>`${p.x},${p.y}`).join(" ")} fill="none" stroke={color} strokeWidth="1.4" strokeLinejoin="round"/>{points.map((p,j)=><circle className="qs-median-point" key={j} cx={p.x} cy={p.y} r="1.5" fill={color}/>)}</g>);
-          })()}
-          {series?.slots.map((p,i)=>p?null:<line className="qs-median-gap" key={i} x1={(i+.5)*step-1.5} x2={(i+.5)*step+1.5} y1="29" y2="29" stroke="#ffffff50"/>)}
+          {series?.slots.map((p,i)=>p?<g key={i}>
+            <rect className="qs-median-band" x={i*step+1} y={y(p.upper)} width={step-2} height={Math.max(1,y(p.lower)-y(p.upper))} fill={color} opacity=".25"/>
+            <line className="qs-median-tick" x1={i*step+1} x2={(i+1)*step-1} y1={y(p.median)} y2={y(p.median)} stroke={color} strokeWidth="2"/>
+          </g>:<line className="qs-median-gap" key={i} x1={(i+.5)*step-1.5} x2={(i+.5)*step+1.5} y1="29" y2="29" stroke="#ffffff50"/>)}
         </svg><span className="qs-median-time">中位 {current?current.median.toFixed(1):"—"}</span>
       </span>;
     }):<span className="qs-median-caption">等待采样</span>}

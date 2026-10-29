@@ -30,29 +30,17 @@ final class BodySpeedTrendProjectionTests: XCTestCase {
         XCTAssertEqual(BodySpeedTrendProjection(input: input(rows), selectedModel: "sol").focusModel, "sol")
         XCTAssertEqual(BodySpeedTrendProjection(input: input(rows), selectedModel: "old").focusModel, "luna")
     }
-    func testEmptyIntervalsNeverSelectTheNearestMeasuredBucket() {
+    func testEmptyIntervalsNeverSelectTheNearestMeasuredDistribution() {
         let rows = [point("sol", -1200), point("sol", -300)]
         let result = BodySpeedTrendProjection(input: input(rows), selectedModel: "sol")
         XCTAssertTrue(result.selected(at: Date(timeIntervalSince1970: Double(now - 600))).isEmpty)
         XCTAssertEqual(result.selected(at: Date(timeIntervalSince1970: Double(now - 100))).first?.id, rows.last?.id)
     }
-    func testCurveSegmentsKeepModelsSeparateAndDoNotBridgeMissingBuckets() {
-        let rows = [point("sol", -300), point("luna", -600),
-                    point("sol", -1200), point("sol", -900)]
-        let result = BodySpeedTrendProjection(input: input(rows), selectedModel: "*")
-        let sol = result.entries.filter { $0.point.model == "sol" }
-        XCTAssertEqual(sol.map { $0.point.bucketStart }, [now - 1200, now - 900, now - 300])
-        XCTAssertEqual(sol[0].segment, sol[1].segment)
-        XCTAssertNotEqual(sol[1].segment, sol[2].segment)
-        XCTAssertNotEqual(result.entries.first { $0.point.model == "luna" }?.segment, sol[0].segment)
-        let onlySol = BodySpeedTrendProjection(input: input(rows), selectedModel: "sol")
-        XCTAssertTrue(onlySol.selected(at: Date(timeIntervalSince1970: Double(now - 450))).isEmpty)
-    }
-    func testSparseMeanPointsStayVisibleWithoutDistributionThresholds() {
+    func testLegacyMeanPointsAreNotDisplayedAsDistributions() {
         var legacy = point("sol", -300)
         legacy.median = nil
         let result = BodySpeedTrendProjection(input: input([legacy]), selectedModel: nil)
-        XCTAssertEqual(result.visiblePoints, [legacy])
+        XCTAssertTrue(result.visiblePoints.isEmpty)
     }
     func testWindowFilteringBoundsAndFirstLastDoNotDependOnInputOrder() {
         let rows = [point("sol", -300, 80), point("sol", -90000), point("sol", -600, 40), point("sol", 300)]
@@ -60,14 +48,14 @@ final class BodySpeedTrendProjectionTests: XCTestCase {
         XCTAssertEqual(result.visiblePoints.count, 2)
         XCTAssertEqual(result.first?.tokensPerSecond, 40)
         XCTAssertEqual(result.last?.tokensPerSecond, 80)
-        XCTAssertEqual(result.yBounds, 32...88)
+        XCTAssertEqual(result.yBounds, 27.5...92.5)
     }
     func testEmptyAndChangedInput() {
         let empty = input([])
         XCTAssertEqual(empty, input([]))
         let result = BodySpeedTrendProjection(input: empty, selectedModel: nil)
         XCTAssertTrue(result.visiblePoints.isEmpty)
-        XCTAssertEqual(result.yBounds, 0...15)
+        XCTAssertEqual(result.yBounds, 0...13)
         var changed = empty
         changed.points = [point("sol", -300)]
         XCTAssertNotEqual(empty, changed)

@@ -165,7 +165,7 @@ final class BodySpeedHistoryTests: XCTestCase {
         let kept = try await writer.load(from: url, now: now)
         XCTAssertEqual(kept.count, 1)
         let trend = try await writer.trend(from: url, now: now, days: 1)
-        XCTAssertEqual(trend.count, 1, "A single measured body remains visible in the detailed curve")
+        XCTAssertTrue(trend.isEmpty, "A single body stays in history but cannot define a distribution")
         let numeric = try BodySpeedTrendStore(url: url).read(now: now, days: 1)
         let point = try XCTUnwrap(numeric.first)
         XCTAssertEqual(point.model, "m")
@@ -193,7 +193,7 @@ final class BodySpeedHistoryTests: XCTestCase {
         let after = try await writer.load(from: url, now: body.endedAt)
         XCTAssertEqual(after.map(\.id), [body.id])
         let trend = try await writer.trend(from: url, now: body.endedAt, days: 1)
-        XCTAssertEqual(trend.count, 1, "The body becomes visible once its actual end time is reached")
+        XCTAssertTrue(trend.isEmpty, "The stored future body needs more buckets before becoming a distribution")
     }
 
     func testLocalHistoryPerformanceAudit() throws {

@@ -72,13 +72,8 @@ mod speed_trend;
 pub use speed_trend::BodySpeedTrendStore;
 pub use speed_trend::BodySpeedTrendPoint;
 
-pub fn read_body_speed_trend(
-    scope: &LiveRateSourceScope,
-    now: f64,
-    days: u16,
-    curve: Option<bool>,
-) -> Result<Vec<BodySpeedTrendPoint>, String> {
-    observed::trend_points(scope, now, days, curve)
+pub fn read_body_speed_trend(scope: &LiveRateSourceScope, now: f64, days: u16) -> Result<Vec<BodySpeedTrendPoint>, String> {
+    observed::trend_points(scope, now, days)
 }
 pub fn read_sidebar_body_speed_buckets(scope: &LiveRateSourceScope, now: f64) -> Result<Vec<BodySpeedTrendPoint>, String> {
     observed::sidebar_trend_buckets(scope, now)
