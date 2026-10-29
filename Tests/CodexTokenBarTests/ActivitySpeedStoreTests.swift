@@ -102,15 +102,15 @@ final class ActivitySpeedStoreTests: XCTestCase {
             base,
             makeSample(id: "source", startedAt: 110, endedAt: 112, rate: 20, sourceIdentity: "source-b"),
             makeSample(id: "mode", startedAt: 110, endedAt: 112, rate: 30,
-                       sourceIdentity: "source-a", displayMode: "agentSpeed"),
+                       displayMode: "agentSpeed", sourceIdentity: "source-a"),
             makeSample(id: "estimator", startedAt: 110, endedAt: 112, rate: 40,
-                       sourceIdentity: "source-a", estimator: "statusline"),
+                       estimator: "statusline", sourceIdentity: "source-a"),
             makeSample(id: "estimator-version", startedAt: 110, endedAt: 112, rate: 45,
-                       sourceIdentity: "source-a", estimatorVersion: "2"),
+                       estimatorVersion: "2", sourceIdentity: "source-a"),
             makeSample(id: "client", startedAt: 110, endedAt: 112, rate: 50,
-                       sourceIdentity: "source-a", client: "claude"),
+                       client: "claude", sourceIdentity: "source-a"),
             makeSample(id: "model", startedAt: 110, endedAt: 112, rate: 60,
-                       sourceIdentity: "source-a", model: "model-b")
+                       model: "model-b", sourceIdentity: "source-a")
         ]
         _ = try await store.addBatch(samples: samples, now: 120)
 

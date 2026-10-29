@@ -149,7 +149,7 @@ test("Claude-only analytics does not expose Codex quota, pricing, or cache-rank 
   });
 });
 
-test("activity panel SSR shows the one-minute trend rule without window means or a fabricated zero", async () => {
+test("activity panel defaults to Agent Speed day detail without rolling mean tables or a fabricated zero", async () => {
   await withSsrModules(async load => {
     const { ClientActivitySpeedPanel } = await load("/src/multiClient/ClaudeLocalRuntime.tsx");
     const markup = renderToStaticMarkup(React.createElement(ClientActivitySpeedPanel, {
@@ -157,9 +157,11 @@ test("activity panel SSR shows the one-minute trend rule without window means or
       monitoringEnabled: true,
     }));
 
-    assert.match(markup, /近半小时 · 每分钟加权速度 · 空缺表示无活动采样/);
+    assert.match(markup, /活动速率 · Agent Speed/);
+    assert.match(markup, /每30秒平均速率 · 无活动采样的时段留空/);
+    assert.match(markup, /aria-pressed="true">24小时/);
     assert.match(markup, /等待本地活动记录/);
-    assert.doesNotMatch(markup, /(?:5|15|30)\s*分钟|5、15、30分钟|(?:5|15|30)\s*min/i);
-    assert.doesNotMatch(markup, /(?:^|\D)0\.0\s*t\/s/);
+    assert.doesNotMatch(markup, /(?:5|15|30)\s*分钟均速|5、15、30分钟|rolling5m/i);
+    assert.doesNotMatch(markup, /(?:^|\D)0\.0\s*(?:t|tok)\/s/);
   });
 });
