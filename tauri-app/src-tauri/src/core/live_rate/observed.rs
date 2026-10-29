@@ -1853,8 +1853,8 @@ mod tests {
                 .unwrap()
                 .as_nanos();
             let key = format!("observed-trend-test-{}-{nonce}", std::process::id());
-            let scope = LiveRateSourceScope::new(key.clone(), key);
             let root = std::env::temp_dir().join(format!("{key}-db"));
+            let scope = LiveRateSourceScope::new(key.clone(), key);
             fs::create_dir_all(&root).unwrap();
             let trend_store = BodySpeedTrendStore::open(root.join("body-speed.sqlite")).unwrap();
             trend_store.ingest(samples, now, 30).unwrap();
