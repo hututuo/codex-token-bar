@@ -325,6 +325,7 @@ struct HeaderView: View {
     var clientQuotaItems: [ClientQuotaItem]? = nil
     var clientPlanLabels: [String: String] = [:]
     var showsClientScopePicker = false
+    var includesCodex = true
     let status: String
     let dataSourceLabel: String
     let dataSourceOrigin: String
@@ -434,12 +435,11 @@ struct HeaderView: View {
     }
 
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 14) {
             HStack(alignment: .top, spacing: 24) {
                 VStack(alignment: .leading, spacing: 9) {
                     HStack(alignment: .firstTextBaseline, spacing: 12) {
-                        Text("用量概览")
-                            .font(.system(size: 27, weight: .semibold))
+                        Text("用量概览").font(.system(size: 27, weight: .semibold))
                         if isRefreshing || progressPresentation.showsProgress {
                             Text("读取中").font(.system(size: 11)).foregroundStyle(.secondary)
                         }
@@ -447,283 +447,143 @@ struct HeaderView: View {
                     if showsClientScopePicker { ClientScopePicker(showsDiscovery: false, plainTabs: true) }
                 }
                 Spacer(minLength: 12)
-                if presentationMode.showsActions {
-                    AgentSpeedReportingDashboardStatus(compact: true, unframed: true)
-                        .padding(.top, 8)
-                }
+                if presentationMode.showsActions { globalTools }
             }
             .padding(.bottom, 13)
             .overlay(alignment: .bottom) { Rectangle().fill(AppTheme.border).frame(height: 1) }
-            .frame(maxWidth: 980)
-                VStack(spacing: 8) {
-                    HStack(spacing: 0) {
-                        if presentationMode.showsActions {
-                            InterfaceScaleMenuButton(
-                                isPresented: $showingInterfaceScaleMenu,
-                                autoEnabled: $interfaceScaleAutoEnabled,
-                                manualMultiplier: $interfaceScaleManualMultiplier
-                            )
-                            DashboardHeaderRailDivider()
-                        }
-
-                        HStack(spacing: 7) {
-                            Circle()
-                                .fill(AppTheme.accentBlue)
-                                .frame(width: 7, height: 7)
-                            Text("Swift 原生版")
-                                .foregroundStyle(AppTheme.accentBlue)
-                            Text(headerPlanLabel)
-                                .foregroundStyle(.primary)
-                        }
-                        .font(.system(size: 12, weight: .semibold))
-                        .padding(.horizontal, 10)
-
-                        DashboardHeaderRailDivider()
-                        DataSourceBadge(path: dataSourceLabel, origin: dataSourceOrigin)
-
-                        DashboardHeaderRailDivider()
-                        HStack(spacing: 6) {
-                            Circle()
-                                .fill(runningThreadIndicatorColor)
-                                .frame(width: 6, height: 6)
-                            Text(runningThreadPresentation.displayText)
-                                .foregroundStyle(
-                                    runningThreadSummary.freshness == .stale
-                                        ? Color.orange
-                                        : Color.primary
-                                )
-                                .monospacedDigit()
-                                .lineLimit(1)
-                        }
-                        .font(.system(size: 11, weight: .semibold))
-                        .padding(.horizontal, 9)
-                        .help(runningThreadPresentation.accessibilityText)
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityLabel("运行线程")
-                        .accessibilityValue(runningThreadPresentation.accessibilityText)
-
-                        DashboardHeaderRailDivider()
-                        HStack(spacing: 7) {
-                            Circle()
-                                .fill(preciseProgressColor)
-                                .frame(width: 6, height: 6)
-                            VStack(alignment: .leading, spacing: 1) {
-                                HStack(spacing: 4) {
-                                    Text(headerPrecisionLabel)
-                                        .help("按输入与输出分项统计")
-                                        .foregroundStyle(headerPrecisionColor)
-                                    Text(freshnessPresentation.text)
-                                        .foregroundStyle(freshnessPresentation.needsAttention ? AppTheme.accentRed : .secondary)
-                                        .lineLimit(1)
-                                        .truncationMode(.middle)
-                                    if let countText = progressPresentation.countText,
-                                       progressPresentation.stage.isVisible {
-                                        Text(countText)
-                                            .foregroundStyle(.secondary)
-                                            .monospacedDigit()
-                                    }
-                                }
-                                if progressPresentation.showsReassurance {
-                                    Text(DashboardHeaderProgressPresentation.reassurance)
-                                        .font(.system(size: 9, weight: .regular))
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                        .truncationMode(.tail)
-                                }
-                            }
-                            if freshnessPresentation.showsProgress {
-                                if let fraction = freshnessPresentation.progressFraction {
-                                    ProgressView(value: fraction)
-                                        .tint(preciseProgressColor)
-                                        .frame(width: 52)
-                                } else {
-                                    ProgressView()
-                                        .tint(preciseProgressColor)
-                                        .frame(width: 52)
-                                }
-                            }
-                        }
-                        .font(.system(size: 11, weight: .medium))
-                        .padding(.horizontal, 10)
-                        .help(
-                            progressPresentation.showsReassurance
-                                ? DashboardHeaderProgressPresentation.reassurance
-                                : freshnessPresentation.text
-                        )
-                        .accessibilityValue(
-                            progressPresentation.countText.map {
-                                "\(freshnessPresentation.text)，\($0)"
-                            } ?? freshnessPresentation.text
-                        )
-                    }
-                    .padding(4)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(AppTheme.solidControlBackground)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .stroke(AppTheme.border, lineWidth: 1)
-                    )
-                    .frame(maxWidth: .infinity, alignment: .center)
-
-                    if presentationMode.showsActions {
-                        HStack(spacing: 4) {
-                            HStack(spacing: 2) {
-                                if actions.contains(.markAllRead) {
-                                    Button(action: markAllRead) {
-                                        DashboardHeaderCommandLabel(
-                                            title: "全部已读",
-                                            systemImage: "checkmark.circle",
-                                            color: markAllReadPresentation.tone == .active
-                                                ? AppTheme.accentBlue
-                                                : .secondary,
-                                            highlighted: markAllReadPresentation.tone == .active
-                                        )
-                                    }
-                                    .buttonStyle(.plain)
-                                    .disabled(!markAllReadPresentation.isEnabled)
-                                    .accessibilityLabel(markAllReadPresentation.accessibilityLabel)
-                                    .accessibilityValue(markAllReadPresentation.accessibilityValue)
-                                    .accessibilityHint(markAllReadPresentation.accessibilityHint)
-                                }
-
-                                if actions.contains(.refresh) {
-                                    Button(action: onRefresh) {
-                                        DashboardHeaderCommandLabel(
-                                            title: isRefreshing ? "刷新中" : "立即刷新",
-                                            systemImage: "arrow.clockwise",
-                                            color: AppTheme.accentBlue
-                                        )
-                                    }
-                                    .buttonStyle(.plain)
-                                    .disabled(isRefreshing)
-                                    .accessibilityLabel(isRefreshing ? "刷新中" : "立即刷新")
-                                }
-                            }
-
-                            DashboardHeaderRailDivider(height: 20)
-
-                            HStack(spacing: 2) {
-                                if actions.contains(.changeDirectory) {
-                                    Button(action: onChangeDirectory) {
-                                        DashboardHeaderCommandLabel(
-                                            title: "更改目录",
-                                            systemImage: "folder",
-                                            color: .primary
-                                        )
-                                    }
-                                    .buttonStyle(.plain)
-                                    .accessibilityLabel("更改目录")
-                                }
-
-                                if actions.contains(.providerRepair) {
-                                    Button(action: onOpenProviderSync) {
-                                        DashboardHeaderCommandLabel(
-                                            title: "会话消失修复",
-                                            systemImage: "wrench.and.screwdriver",
-                                            color: .primary
-                                        )
-                                    }
-                                    .buttonStyle(.plain)
-                                    .accessibilityLabel("会话消失修复")
-                                }
-                            }
-
-                            DashboardHeaderRailDivider(height: 20)
-
-                            HStack(spacing: 2) {
-                                if actions.contains(.sessionManagement) {
-                                    Button(action: onOpenSessionManagement) {
-                                        DashboardHeaderCommandLabel(
-                                            title: "会话管理",
-                                            systemImage: "rectangle.stack.badge.gearshape",
-                                            color: AppTheme.accentBlue
-                                        )
-                                    }
-                                    .buttonStyle(.plain)
-                                    .help("按项目浏览上下文，管理官方归档、恢复包和容量清理")
-                                    .accessibilityLabel("会话管理")
-                                }
-
-                                if actions.contains(.sessionEnhancements) {
-                                    Button(action: onOpenSessionEnhancements) {
-                                        DashboardHeaderCommandLabel(
-                                            title: threadDeleteStatus.dashboardActionTitle,
-                                            systemImage: threadDeleteStatus.connected ? "sparkles.rectangle.stack.fill" : "sparkles.rectangle.stack",
-                                            color: threadDeleteStatus.connected
-                                                ? AppTheme.accentGreen
-                                                : AppTheme.accentBlue,
-                                            highlighted: threadDeleteStatus.connected
-                                        )
-                                    }
-                                    .buttonStyle(.plain)
-                                    .help("管理 Codex 会话删除、导出、移动、输入和阅读增强。\n\(threadDeleteStatus.message)")
-                                    .accessibilityLabel("会话增强")
-                                    .accessibilityValue(threadDeleteStatus.message)
-                                    .accessibilityHint("打开会话增强设置")
-                                }
-
-                                if actions.contains(.autoResume) {
-                                    Button(action: onOpenAutoResume) {
-                                        DashboardHeaderCommandLabel(
-                                            title: "自动续跑",
-                                            systemImage: autoResumeEnabled ? "play.circle.fill" : "play.circle",
-                                            color: autoResumeEnabled
-                                                ? AppTheme.accentGreen
-                                                : AppTheme.accentBlue,
-                                            highlighted: autoResumeEnabled
-                                        )
-                                    }
-                                    .buttonStyle(.plain)
-                                    .help(autoResumeEnabled ? "自动续跑已开启，点击管理" : "管理失败中断、定时和额度恢复续跑")
-                                    .accessibilityLabel("自动续跑")
-                                    .accessibilityValue(autoResumeEnabled ? "已开启" : "已关闭")
-                                    .accessibilityHint("打开自动续跑设置")
-                                }
-                            }
-
-                            DashboardHeaderRailDivider(height: 20)
-
-                            Button(action: onOpenSettings) {
-                                DashboardHeaderCommandLabel(
-                                    title: "设置",
-                                    systemImage: "gearshape",
-                                    color: AppTheme.accentBlue
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("总体设置")
-
-                            DiagnosticNotice(summary: "", logs: "", buttonOnly: true)
-                        }
-                        .padding(4)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(AppTheme.solidControlBackground)
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .stroke(AppTheme.border, lineWidth: 1)
-                        )
-                        .frame(maxWidth: .infinity, alignment: .center)
-                    }
-                }
-                .font(.system(size: 14))
-                .frame(maxWidth: 980)
-
-                AccountQuotaStrip(
-                    snapshot: quotaSnapshot,
-                    showingResetCreditDetails: $showingResetCreditDetails,
-                    clientItems: clientQuotaItems,
-                    clientPlanLabels: clientPlanLabels
-                )
+            if includesCodex { codexTools }
+            AccountQuotaStrip(snapshot: quotaSnapshot, showingResetCreditDetails: $showingResetCreditDetails,
+                clientItems: clientQuotaItems, clientPlanLabels: clientPlanLabels)
         }
+        .frame(maxWidth: 980)
         .zIndex(showingResetCreditDetails ? 10_000 : 0)
         .onReceive(NotificationCenter.default.publisher(for: .dashboardBlankAreaClicked)) { _ in
             showingResetCreditDetails = false
             showingInterfaceScaleMenu = false
         }
+    }
+
+    private var globalTools: some View {
+        VStack(alignment: .trailing, spacing: 8) {
+            HStack(spacing: 12) {
+                Text("全局工具").font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
+                AgentSpeedReportingDashboardStatus(compact: true, unframed: true)
+            }
+            HStack(spacing: 6) {
+                Button(action: onRefresh) {
+                    DashboardHeaderCommandLabel(title: isRefreshing ? "刷新中" : "刷新", systemImage: "arrow.clockwise", color: AppTheme.accentBlue)
+                }.disabled(isRefreshing).accessibilityLabel("立即刷新")
+                Button(action: onOpenSettings) {
+                    DashboardHeaderCommandLabel(title: "设置", systemImage: "gearshape", color: AppTheme.accentBlue)
+                }.accessibilityLabel("总体设置")
+                DiagnosticNotice(summary: "", logs: "", buttonOnly: true)
+                InterfaceScaleMenuButton(isPresented: $showingInterfaceScaleMenu,
+                    autoEnabled: $interfaceScaleAutoEnabled, manualMultiplier: $interfaceScaleManualMultiplier)
+            }.buttonStyle(.plain)
+        }
+    }
+
+    private var codexTools: some View {
+        HStack(alignment: .top, spacing: 16) {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 9) {
+                    Text("Codex").font(.system(size: 13, weight: .bold))
+                    Text("专属工具").font(.system(size: 10)).foregroundStyle(.secondary)
+                    Label(runningThreadPresentation.displayText, systemImage: "terminal")
+                        .font(.system(size: 10)).foregroundStyle(runningThreadIndicatorColor)
+                        .help(runningThreadPresentation.accessibilityText)
+                        .accessibilityLabel("运行线程")
+                }
+                Button(action: onChangeDirectory) { DataSourceBadge(path: dataSourceLabel, origin: dataSourceOrigin) }
+                    .buttonStyle(.plain).help("更改 Codex 目录")
+                preciseStatus
+            }.frame(maxWidth: .infinity, alignment: .leading)
+            if presentationMode.showsActions {
+                VStack(alignment: .trailing, spacing: 5) {
+                    HStack(spacing: 2) {
+                        if actions.contains(.sessionManagement) {
+                            Button(action:onOpenSessionManagement) { DashboardHeaderCommandLabel(title:"会话管理",systemImage:"rectangle.stack.badge.gearshape",color:AppTheme.accentBlue) }
+                        }
+                        if actions.contains(.sessionEnhancements) {
+                            Button(action:onOpenSessionEnhancements) { DashboardHeaderCommandLabel(title:threadDeleteStatus.dashboardActionTitle,systemImage:"sparkles.rectangle.stack",color:threadDeleteStatus.connected ? AppTheme.accentGreen : AppTheme.accentBlue,highlighted:threadDeleteStatus.connected) }
+                                .help(threadDeleteStatus.message).accessibilityLabel("会话增强")
+                        }
+                        if actions.contains(.autoResume) {
+                            Button(action:onOpenAutoResume) { DashboardHeaderCommandLabel(title:"自动续跑",systemImage:autoResumeEnabled ? "play.circle.fill" : "play.circle",color:autoResumeEnabled ? AppTheme.accentGreen : AppTheme.accentBlue,highlighted:autoResumeEnabled) }
+                                .help("管理失败中断、定时和额度恢复续跑")
+                        }
+                    }
+                    HStack(spacing: 14) {
+                        if actions.contains(.markAllRead) {
+                            Button(action:markAllRead) { Text("全部已读") }
+                                .disabled(!markAllReadPresentation.isEnabled)
+                                .accessibilityLabel(markAllReadPresentation.accessibilityLabel)
+                                .accessibilityValue(markAllReadPresentation.accessibilityValue)
+                                .accessibilityHint(markAllReadPresentation.accessibilityHint)
+                        }
+                        Button("更改目录",action:onChangeDirectory)
+                        Button("会话消失修复",action:onOpenProviderSync)
+                    }.font(.system(size: 10)).foregroundStyle(.secondary).padding(.horizontal, 8)
+                }.buttonStyle(.plain)
+            }
+        }
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .contain).accessibilityLabel("Codex 专属工具")
+    }
+
+    private var preciseStatus: some View {
+        HStack(spacing: 7) {
+            Circle()
+                .fill(preciseProgressColor)
+                .frame(width: 6, height: 6)
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 4) {
+                    Text(headerPrecisionLabel)
+                        .help("按输入与输出分项统计")
+                        .foregroundStyle(headerPrecisionColor)
+                    Text(freshnessPresentation.text)
+                        .foregroundStyle(freshnessPresentation.needsAttention ? AppTheme.accentRed : .secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if let countText = progressPresentation.countText,
+                       progressPresentation.stage.isVisible {
+                        Text(countText)
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                }
+                if progressPresentation.showsReassurance {
+                    Text(DashboardHeaderProgressPresentation.reassurance)
+                        .font(.system(size: 9, weight: .regular))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+            if freshnessPresentation.showsProgress {
+                if let fraction = freshnessPresentation.progressFraction {
+                    ProgressView(value: fraction)
+                        .tint(preciseProgressColor)
+                        .frame(width: 52)
+                } else {
+                    ProgressView()
+                        .tint(preciseProgressColor)
+                        .frame(width: 52)
+                }
+            }
+        }
+        .font(.system(size: 11, weight: .medium))
+        .padding(.horizontal, 10)
+        .help(
+            progressPresentation.showsReassurance
+                ? DashboardHeaderProgressPresentation.reassurance
+                : freshnessPresentation.text
+        )
+        .accessibilityValue(
+            progressPresentation.countText.map {
+                "\(freshnessPresentation.text)，\($0)"
+            } ?? freshnessPresentation.text
+        )
     }
 
     private func markAllRead() {
@@ -1370,8 +1230,8 @@ struct DashboardModelCostRow: View {
                             .frame(width: 78, alignment: .leading)
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 204), spacing: 7)], alignment: .leading, spacing: 7) {
                             ForEach(group.items) { item in
-                                DashboardModelCostChip(item: item)
-                                    .modifier(ModelColorEditModifier(model: ModelUsagePresentation.autoReviewUnderlyingModelKey(for: item.id) ?? String(item.id.split(separator: "|", maxSplits: 1).last ?? Substring(item.id)), enabled: scope == .lifetime))
+                                DashboardModelCostChip(item: item, color: ModelUsagePresentation.dashboardColor(for: item.id, latest: group.id == "6" || group.id.hasSuffix(":latest")))
+                                    .modifier(ModelColorEditModifier(model: ModelUsagePresentation.autoReviewUnderlyingModelKey(for: item.id) ?? String(item.id.split(separator: "|", maxSplits: 1).last ?? Substring(item.id)), enabled: true, grayDefault: !(group.id == "6" || group.id.hasSuffix(":latest"))))
                             }
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -1443,6 +1303,7 @@ private struct DashboardModelCostScopePicker: View {
 
 private struct DashboardModelCostChip: View {
     let item: FloatingTodayModelUsageItem
+    let color: Color
 
     private var amount: String {
         guard item.tokens > 0 else { return "—" }
@@ -1457,7 +1318,7 @@ private struct DashboardModelCostChip: View {
 
     var body: some View {
         HStack(spacing: 5) {
-            Circle().fill(item.color).frame(width: 6, height: 6)
+            Circle().fill(color).frame(width: 6, height: 6)
             Text(item.label.replacingOccurrences(of: #"(?i)^GPT[- ]*"#, with: "", options: .regularExpression))
                 .font(.system(size: 10.5, weight: .semibold))
                 .foregroundStyle(.secondary).truncationMode(.middle)
@@ -1477,9 +1338,9 @@ private struct DashboardModelCostChip: View {
         .padding(.horizontal, 8)
         .frame(maxWidth: .infinity).frame(height: 30)
         .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
-            .fill(item.color.opacity(0.075)))
+            .fill(color.opacity(0.075)))
         .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous)
-            .stroke(item.color.opacity(0.16), lineWidth: 1))
+            .stroke(color.opacity(0.16), lineWidth: 1))
         .help(description)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(description)

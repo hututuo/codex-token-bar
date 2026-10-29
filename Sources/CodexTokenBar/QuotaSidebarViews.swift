@@ -436,6 +436,7 @@ struct QuotaSidebarRail: View {
         switch item {
         case .speed:
             rateRing
+            ActivitySpeedSummaryView(allowed: allowedClients, compact: true)
         case .tps:
             if supportsCodex {
                 QuotaSidebarBodySpeedReadings(monitor: monitor, latest: recentBodySpeeds, active: controller.interaction.expanded, onOpen: { controller.select(.speeds) })
@@ -587,7 +588,7 @@ struct QuotaSidebarRail: View {
     }
 
     private var rateRing: some View {
-        Button { controller.select(.overview, section: "usage") } label: {
+        Button { controller.select(.speeds) } label: {
             VStack(spacing: 5) {
                 ZStack {
                     MatchedStrokeMorphParticipant(ids: ["speed"], size: CGSize(width: ClientSidebarMetrics.ringSize, height: ClientSidebarMetrics.ringSize)) {
@@ -606,7 +607,7 @@ struct QuotaSidebarRail: View {
             .accessibilityLabel("全会话实时速率（估算）\(rateText)，点击查看详情")
             .accessibilityIdentifier("quota-sidebar-rate")
             .accessibilityAddTraits(.isButton)
-            .accessibilityAction { controller.select(.overview, section: "usage") }
+            .accessibilityAction { controller.select(.speeds) }
     }
 
     private var rateFraction: CGFloat {
@@ -728,7 +729,7 @@ struct QuotaSidebarDetailView: View {
                     })
                     }
                     SpeedDisplayControls()
-                    ActivitySpeedSummaryView(allowed: allowedClients, codexRates: monitor.totalSnapshot.modelRates, codexAvailable: monitor.monitoringEnabled && monitor.dataSource != nil)
+                    ActivitySpeedSummaryView(allowed: allowedClients)
                 }
                 else if controller.interaction.detail == .modeltrace {
                     ModelTraceView(controller: ModelTraceController.shared, compact: true).id("top")

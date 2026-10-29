@@ -313,6 +313,7 @@ export function DashboardPage({
       <section className="dashboard">
         <AgentSpeedReportingDashboardStatus errorsOnly onOpenSettings={() => openSettings("speedReporting")} />
         <DashboardHeader
+          includesCodex={clientScope.allowed.includes("codex")}
           scopeControl={<ClientScopeSelector showsDiscovery={false}/>}
           reportingStatus={<AgentSpeedReportingDashboardStatus compact onOpenSettings={() => openSettings("speedReporting")}/>}
           account={dashboard.account}

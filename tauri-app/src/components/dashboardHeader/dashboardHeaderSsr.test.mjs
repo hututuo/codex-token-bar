@@ -8,25 +8,19 @@ function renderComponent(Component, props) {
   return renderToStaticMarkup(React.createElement(Component, props));
 }
 
-test("DashboardHeader renders the overview title and keeps the compact action strip", async () => {
+test("DashboardHeader renders separate global and Codex tools without two full-width action strips", async () => {
   await withSsrModules(async (load) => {
     const { DashboardHeader } = await load("/src/components/DashboardHeader.tsx");
     const html = renderComponent(DashboardHeader, headerProps());
 
     assert.match(html, /class="dashboard-header"/);
     assert.match(html, /<h1 class="dashboard-overview-title">用量概览/);
-    assert.match(html, /class="dash-head"/);
-    assert.match(html, /class="dash-head__top dash-head__top--actions-only"/);
-    assert.match(html, /class="dash-head__strip"/);
-    assert.match(html, /class="dash-head__platform"/);
-    assert.match(html, />Codex Token Bar</);
-    assert.match(html, /class="plan-badge">Plus/);
-    assert.match(html, /class="platform-runtime">Tauri/);
+    assert.match(html, /class="dash-head dash-head--scoped"/);
+    assert.match(html, /aria-label="全局工具"/);
+    assert.match(html, /aria-label="Codex 专属工具"/);
     assert.match(html, /总 5 · 主 2 · 子 3/);
-    assert.match(html, /class="platform-badge">跨平台版/);
+    assert.doesNotMatch(html, /platform-runtime|dash-head__strip|dash-head__top--actions-only/);
     assert.doesNotMatch(html, /Test User|dashboard-profile|account-row|account-name|brand-mark|avatar/i);
-    assert.ok(html.indexOf('class="plan-badge"') < html.indexOf('class="platform-badge"'));
-    assert.match(html, /class="dash-head__actions"/);
     assert.match(html, /立即刷新/);
     assert.match(html, />更改目录<\/button>/);
     assert.match(html, />会话消失修复<\/button>/);
@@ -36,8 +30,7 @@ test("DashboardHeader renders the overview title and keeps the compact action st
     assert.match(html, />设置<\/button>/);
     assert.match(html, /aria-label="更多操作"/);
     assert.doesNotMatch(html, /dash-head__mark|dash-head__identity|dash-head__name/);
-    assert.ok(html.indexOf('class="dashboard-overview-title"') < html.indexOf('class="dash-head"'));
-    assert.ok(html.indexOf('class="dash-head__strip"') < html.indexOf('class="dash-head__top dash-head__top--actions-only"'));
+    assert.ok(html.indexOf('class="dashboard-overview-title"') < html.indexOf('class="dash-head dash-head--scoped"'));
     assert.doesNotMatch(html, /role="menu"|启用侧栏删除|启用会话删除/);
   });
 });

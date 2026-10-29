@@ -1,7 +1,7 @@
 import { clientCostGroups, type ClientCostPeriods } from "../multiClient/originalDashboardProjection";
 import { ClientColorSettings, ModelColorEditor, type ColorEditTarget } from "./liveRate/ModelColorEditor";
 import { useSpeedPalette } from "./liveRate/useSpeedPalette";
-import { floatingModelUsageKey } from "./modelUsagePresentation";
+import { dashboardModelUsageColor, floatingModelUsageKey } from "./modelUsagePresentation";
 import { DiagnosticNotice } from "./DiagnosticNotice";
 import { memo, useEffect, useMemo, useState, type CSSProperties } from "react";
 import type { DashboardStats, LocalDataWarning, ModelTokenBreakdown, RecentUsagePoint } from "../types/dashboard";
@@ -253,6 +253,7 @@ function StatsStripView({
                 <span className="stats-model-cost-group-label">{group.id === "6" ? "GPT" : group.label}</span>
                 <div className={(group.id === "6" || group.id.endsWith(":latest")) ? "stats-model-cost-primary-grid" : "stats-model-cost-secondary-grid"}>
                   {group.items.map(item => {
+                    const color = dashboardModelUsageColor(item.key, group.id === "6" || group.id.endsWith(":latest"));
                     const referenceOnly = isReferenceOnlyModelUsage(item);
                     const label = item.label.replace(/^GPT[- ]*/i, "");
                     const qualifiedLabel = label.match(/^(.*?)(（[^）]*）)$/);
@@ -263,12 +264,12 @@ function StatsStripView({
                       : `${referenceOnly ? "参考 · " : ""}${formatTokens(item.tokens)} · ${floatingModelUsageValue(item,"share")}`;
                     const description = item.tokens === 0 ? `${item.label} · 暂无本地记录`
                       : `${item.label} · ${floatingModelUsageValue(item,"cost")} · ${detail}`;
-                    return <span className={(group.id === "6" || group.id.endsWith(":latest")) ? "stats-model-cost-primary-card" : "stats-model-cost-secondary-chip"} key={item.key} style={{"--model-color":item.color} as CSSProperties}
-                    aria-label={description} title={`${description}${modelCostScope === "lifetime" ? " · 双击修改该模型颜色" : ""}`}
-                    role={modelCostScope === "lifetime" ? "button" : undefined} tabIndex={modelCostScope === "lifetime" ? 0 : undefined}
-                    onDoubleClick={modelCostScope === "lifetime" ? event => setEditingColor({ model: floatingModelUsageKey(item.key.split("|").at(-1)), x: event.clientX, y: event.clientY }) : undefined}
-                    onKeyDown={modelCostScope === "lifetime" ? event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); setEditingColor({ model: floatingModelUsageKey(item.key.split("|").at(-1)), x: rect.left, y: rect.bottom }); } } : undefined}>
-                    <i style={{backgroundColor:item.color}}/><em><span className="model-cost-name">{qualifiedLabel ? qualifiedLabel[1] : label}</span>{qualifiedLabel && <span className="model-cost-name-suffix">{qualifiedLabel[2]}</span>}</em><small className="model-cost-tokens">{item.tokens === 0 ? "暂无记录" : formatTokens(item.tokens)}</small>{item.tokens > 0 && <small className="model-cost-share">{floatingModelUsageValue(item,"share")}</small>}<b>{amount}</b>
+                    return <span className={(group.id === "6" || group.id.endsWith(":latest")) ? "stats-model-cost-primary-card" : "stats-model-cost-secondary-chip"} key={item.key} style={{"--model-color":color} as CSSProperties}
+                    aria-label={description} title={`${description} · 双击修改该模型颜色`}
+                    role="button" tabIndex={0}
+                    onDoubleClick={event => setEditingColor({ model: floatingModelUsageKey(item.key.split("|").at(-1)), x: event.clientX, y: event.clientY, grayDefault: !(group.id === "6" || group.id.endsWith(":latest")) })}
+                    onKeyDown={event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); setEditingColor({ model: floatingModelUsageKey(item.key.split("|").at(-1)), x: rect.left, y: rect.bottom, grayDefault: !(group.id === "6" || group.id.endsWith(":latest")) }); } }}>
+                    <i style={{backgroundColor:color}}/><em><span className="model-cost-name">{qualifiedLabel ? qualifiedLabel[1] : label}</span>{qualifiedLabel && <span className="model-cost-name-suffix">{qualifiedLabel[2]}</span>}</em><small className="model-cost-tokens">{item.tokens === 0 ? "暂无记录" : formatTokens(item.tokens)}</small>{item.tokens > 0 && <small className="model-cost-share">{floatingModelUsageValue(item,"share")}</small>}<b>{amount}</b>
                   </span>;
                   })}
                 </div>

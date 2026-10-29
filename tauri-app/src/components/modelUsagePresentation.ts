@@ -173,6 +173,13 @@ export function modelUsageColor(keyOrModel: string | null | undefined): string {
   return "#" + [16, 8, 0].map(shift => (80 + ((hash >>> shift) & 127)).toString(16).padStart(2, "0")).join("");
 }
 
+/** Homepage defaults: color only the latest GPT/Claude groups. Explicit user overrides always win. */
+export const DASHBOARD_OTHER_MODEL_COLOR = "#87919e";
+export function dashboardModelUsageColor(model: string, latest: boolean): string {
+  const key = floatingModelUsageKey(model.split("|").at(-1));
+  return readSpeedColors()[key] ?? (latest ? modelUsageColor(key) : DASHBOARD_OTHER_MODEL_COLOR);
+}
+
 function finiteNonnegative(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? Math.max(value, 0) : 0;
 }

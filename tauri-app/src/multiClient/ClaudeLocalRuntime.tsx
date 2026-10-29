@@ -1,13 +1,12 @@
 import type {CodexHomeSourceToken} from "../types/platform";
-import { useCallback, useSyncExternalStore, useEffect, useState, useMemo } from "react";
-import { useActivitySpeedMode, selectedActivityRates, type ActivityModelRate } from "./activitySpeedMode";
+import { useCallback, useSyncExternalStore, useEffect } from "react";
+import { useActivitySpeedMode, type ActivityModelRate } from "./activitySpeedMode";
 import { callCommandStrict } from "../api/command";
 import { isTauriRuntimeAvailable } from "../platform/runtime";
 import { useMultiClientUsage } from "./MultiClientUsage";
-import { ActivitySpeedHistoryPlot } from "./ActivitySpeedHistoryPlot";
-import {useDocumentVisible} from "../components/useDocumentVisible";
+import {ActivitySpeedLivePlot} from "./ActivitySpeedLivePlot";
+import {ActivityLiveHistory} from "./activityLiveHistory";
 import {ActivityRateUnitControl,useActivityRatePreferences} from "../components/liveRate/ActivityRateUnits";
-import {activityRateText,activityRateValue} from "../components/liveRate/activityRatePresentation";
 import { modelUsageColor } from "../components/modelUsagePresentation";
 
 export interface ClaudeRuntimeAgent {
@@ -25,6 +24,8 @@ export interface ClaudeRuntimeSnapshot {
 const empty: ClaudeRuntimeSnapshot = { enabled: false, capturedAt: null, sourceAvailable: {}, liveOutputTps: 0, liveTotalTps: 0, estimatedShare: 0, modelRates: [], mainAgents: [], subagents: [], latestResponse: null, configurationIssue: null };
 let cached = empty, pending = false, timer: ReturnType<typeof setTimeout> | undefined;
 const listeners = new Set<() => void>();
+const activityLiveHistory = new ActivityLiveHistory();
+const barActivityLiveHistory = new ActivityLiveHistory();
 const recent = new Map<string, NonNullable<ClaudeRuntimeSnapshot["latestResponse"]>>();
 export function qualifiedClaudeInterval(row: NonNullable<ClaudeRuntimeSnapshot["latestResponse"]>): number | null {
   if (!row.durationMs || row.durationMs <= 400 || !Number.isFinite(row.outputTokens)) return null;
@@ -45,6 +46,8 @@ async function poll() {
     // A stopped/expired reader cannot leave old activity visible indefinitely.
     const fresh = next.capturedAt && Math.abs(Date.now() - Date.parse(next.capturedAt)) <= 10000;
     cached = next.enabled && fresh ? next : { ...empty, enabled: next.enabled, configurationIssue: next.configurationIssue };
+    if (fresh && cached.enabled) activityLiveHistory.record(Date.parse(cached.capturedAt!) / 1000, cached.sourceAvailable, cached.modelRates);
+    else if (!next.enabled) activityLiveHistory.clear();
     const response = cached.latestResponse;
     if (response && ["claudeCode", "claudeDesktop"].includes(response.client)) {
       recent.set([response.client, response.model, response.endedAt, response.outputTokens, response.durationMs].join("|"), response);
@@ -72,9 +75,11 @@ export function useClaudeLocalRuntime(allowed: readonly string[], monitoringEnab
   const selected = new Set(allowed.filter(c => ["claudeCode", "claudeDesktop", "deepseek", "gemini", "opencode"].includes(c) || (c === "codex" && (includeAgentSpeedCodex || mode === "agentSpeed"))));
   const active = (agent: ClaudeRuntimeAgent) => selected.has(agent.client) && ["generating", "tools"].includes(agent.phase)
     && Date.parse(agent.lastActivity) >= Date.now() - 300000;
+  const sourceSelectionKey = JSON.stringify(snapshot.preferences.map(p=>[p.client,p.enabled,p.path]));
+  useEffect(()=>activityLiveHistory.selectSource(sourceSelectionKey),[sourceSelectionKey]);
   const enabledSources = snapshot.preferences.filter(p => p.enabled);
   const estimatedShareForSelection = scopedClaudeEstimateShare(value.estimatedShare, enabledSources.map(p => p.client), allowed);
-  return { ...value, enabled, configuredClients: snapshot.preferences.filter(p=>p.enabled).map(p=>p.client), sourceSelectionKey: JSON.stringify(snapshot.preferences.map(p=>[p.client,p.enabled,p.path])),
+  return { ...value, enabled, configuredClients: snapshot.preferences.filter(p=>p.enabled).map(p=>p.client), sourceSelectionKey, activitySeries: activityLiveHistory.snapshot(Date.now()/1000, allowed),
     // Upstream's fraction is aggregate-only. Do not apply another client's
     // calibration to a filtered client view.
     estimatedShareForSelection,
@@ -84,40 +89,25 @@ export function useClaudeLocalRuntime(allowed: readonly string[], monitoringEnab
   };
 }
 
-interface Aggregate { weightedOutput:number; coveredSeconds:number }
-interface ActivitySeries { dimensions:{displayMode:string;client:string;model:string;estimatorId?:string}; rolling5m:Aggregate|null;rolling15m:Aggregate|null;rolling30m:Aggregate|null;fiveMinuteTrend:{bucketStart:number;value:Aggregate}[];halfMinuteTrend?:{bucketStart:number;value:Aggregate}[] }
-export function ClientActivitySpeedPanel({ allowed, sourceToken = null, compact = false, monitoringEnabled = true, codexRates = [], codexAvailable = false, codexOutputRate }: { allowed: readonly string[]; sourceToken?: CodexHomeSourceToken | null; compact?: boolean; monitoringEnabled?: boolean; codexRates?: readonly ActivityModelRate[]; codexAvailable?: boolean; codexOutputRate?: number }) {
-  const runtime = useClaudeLocalRuntime(allowed, monitoringEnabled, true), mode="agentSpeed";
-  const [history,setHistory]=useState<ActivitySeries[]>([]),[issue,setIssue]=useState("");
-  const sourceKey=JSON.stringify([sourceToken,runtime.sourceSelectionKey]);
-  const [historyKey,setHistoryKey]=useState("");
-  const [asOf,setAsOf]=useState(Date.now()/1000),[windowSeconds,setWindowSeconds]=useState(86400);
-  const visible=useDocumentVisible(),{unit,fx}=useActivityRatePreferences();
-  const rates=selectedActivityRates([],runtime.modelRates,allowed,mode);
+export function ClientActivitySpeedPanel({ allowed, sourceToken = null, compact = false, monitoringEnabled = true, codexRates = [], codexOutputRate, codexAvailable = false }: { allowed: readonly string[]; sourceToken?: CodexHomeSourceToken | null; compact?: boolean; monitoringEnabled?: boolean; codexRates?: readonly ActivityModelRate[]; codexAvailable?: boolean; codexOutputRate?: number }) {
+  const runtime = useClaudeLocalRuntime(allowed, monitoringEnabled, true);
+  const {unit,fx}=useActivityRatePreferences(),mode=useActivitySpeedMode();
+  const sourceKey=JSON.stringify(sourceToken);
+  useEffect(()=>barActivityLiveHistory.selectSource(sourceKey),[sourceKey]);
   useEffect(()=>{
-    if(compact||!monitoringEnabled||!visible||!isTauriRuntimeAvailable())return;
-    let alive=true, timer:ReturnType<typeof setTimeout>;
-    const refresh=async()=>{try{const result=await callCommandStrict<{series:ActivitySeries[]}>("read_activity_speed_history",{windowSeconds:86400});if(alive){setHistory(result.series);setHistoryKey(sourceKey);setAsOf(Date.now()/1000);setIssue("");}}catch{if(alive)setIssue("活动速度索引暂不可用");}finally{if(alive)timer=setTimeout(refresh,60000);}};
-    void refresh();return()=>{alive=false;clearTimeout(timer);};
-  },[compact,monitoringEnabled,mode,visible,sourceKey]);
-  const hasCoverage=monitoringEnabled&&allowed.some(client=>runtime.sourceAvailable[client]);
-  const allowedKey=allowed.join("|"), configuredKey=runtime.configuredClients.join("|");
-  const groups=useMemo(()=>{
-    const rows=historyKey===sourceKey?history.filter(s=>s.dimensions.displayMode===mode&&allowed.includes(s.dimensions.client)&&(s.halfMinuteTrend?.length??0)>0):[];
-    const clients=[...rows.map(row=>row.dimensions.client),...allowed.filter(client=>client==="codex"||runtime.configuredClients.includes(client as typeof runtime.configuredClients[number]))];
-    return [...new Set(clients)].sort().map(client=>({client,rows:rows.filter(row=>row.dimensions.client===client)}));
-  },[history,historyKey,sourceKey,mode,allowedKey,configuredKey]);
-  const hasHistory=groups.length>0;
-  return <div className="client-activity-speed" style={{fontSize:compact?10:12,paddingBlock:compact?3:8}}>
-    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}><strong>活动速率 · Agent Speed</strong><strong>{hasCoverage?activityRateText(activityRateValue(rates.reduce((n,r)=>n+r.tokensPerSecond,0),rates,unit,fx),unit)+" "+unit:"—"}</strong></div>
-    {!compact&&<><div className="activity-speed-history-controls"><span style={{fontSize:10,opacity:.75}}>Agent Speed 本地活动速率</span><ActivityRateUnitControl/></div>
-      <div className="activity-speed-history-ranges">{[86400,1800].map(seconds=><button key={seconds} type="button" aria-pressed={windowSeconds===seconds} onClick={()=>setWindowSeconds(seconds)}>{seconds===86400?"24小时":"近30分钟"}</button>)}</div></>}
-    {!rates.length&&!hasHistory&&<p className="qs-muted">{monitoringEnabled?"等待本地活动记录":"本地读取已关闭"}</p>}
-    {!compact&&groups.map(({client,rows})=><div key={client} style={{paddingTop:10}}>
-      <strong>{client==="codex"?"Codex":client==="claudeCode"?"Claude CLI":client==="claudeDesktop"?"Claude Desktop":client}</strong>
-      <ActivitySpeedHistoryPlot rows={rows} asOf={asOf} windowSeconds={windowSeconds} unit={unit} fx={fx}/>
-    </div>)}
-    {!compact&&<small>{issue||"每30秒平均速率 · 无活动采样的时段留空"}</small>}
+    if(!monitoringEnabled){barActivityLiveHistory.clear();return;}
+    if(mode!=="bar"||!allowed.includes("codex"))return;
+    const finite=codexRates.filter(rate=>Number.isFinite(rate.tokensPerSecond)&&rate.tokensPerSecond>0);
+    const known=finite.reduce((n,r)=>n+r.tokensPerSecond,0),total=Number.isFinite(codexOutputRate)?Math.max(0,codexOutputRate!):known;
+    const scale=known>total?total/known:1;
+    const rates=finite.map(r=>({client:"codex",model:r.model,outputTps:r.tokensPerSecond*scale}));
+    if(total>known)rates.push({client:"codex",model:"unknown",outputTps:total-known});
+    barActivityLiveHistory.record(Date.now()/1000,{codex:codexAvailable},rates);
+  },[monitoringEnabled,mode,codexRates,codexOutputRate,codexAvailable,sourceKey]);
+  const rows=mode==="bar"?[...barActivityLiveHistory.snapshot(Date.now()/1000,allowed),...runtime.activitySeries.filter(row=>row.client!=="codex")]:runtime.activitySeries;
+  return <div className="client-activity-speed">
+    {!compact&&<div className="activity-live-controls"><span>{mode==="bar"&&allowed.includes("codex")?"Bar 活动速率":"Agent Speed"} · 仅保留内存中的近3分钟</span><ActivityRateUnitControl/></div>}
+    <ActivitySpeedLivePlot rows={monitoringEnabled?rows:[]} asOf={Date.now()/1000} compact={compact} unit={unit} fx={fx} modeLabel={mode==="bar"&&allowed.includes("codex")?"Bar 活动速率":"Agent Speed"}/>
   </div>;
 }
 export function ClaudeLocalTasks({ allowed }: { allowed: readonly string[] }) {

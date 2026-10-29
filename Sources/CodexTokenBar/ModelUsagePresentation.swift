@@ -312,6 +312,17 @@ enum ModelUsagePresentation {
         }
     }
 
+    static let dashboardOtherModelColor = "#87919e"
+    static func dashboardColorHex(for model: String?, latest: Bool) -> String {
+        let raw = model?.split(separator: "|").last.map(String.init)
+        let modelKey = autoReviewUnderlyingModelKey(for: raw ?? "unknown") ?? key(for: raw)
+        return SpeedColorOverrides.shared.color(for: modelKey) ?? (latest ? colorHex(for: modelKey) : dashboardOtherModelColor)
+    }
+    static func dashboardColor(for model: String?, latest: Bool) -> Color {
+        let rgb = UInt32(dashboardColorHex(for: model, latest: latest).dropFirst(), radix:16) ?? 0x87919e
+        return Color(red:Double((rgb>>16)&255)/255,green:Double((rgb>>8)&255)/255,blue:Double(rgb&255)/255)
+    }
+
     static func colorHex(for model: String?) -> String {
         let overrideKey = key(for: model)
         if let custom = SpeedColorOverrides.shared.color(for: overrideKey) { return custom }

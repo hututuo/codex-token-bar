@@ -55,7 +55,6 @@ struct LiveRateView: View {
             } else {
                 if localClients.isDisjoint(with: ["claudeCode", "claudeDesktop"]) { Text("暂无正文测速样本").font(.callout).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading) }
             }
-            ActivitySpeedSummaryView(allowed: localClients.union(sourceAvailable ? ["codex"] : []), codexRates: monitor.totalSnapshot.modelRates, codexAvailable: monitor.monitoringEnabled && monitor.dataSource != nil)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)

@@ -17,6 +17,7 @@ import type { AppSettingsCategory } from "./settings/AppSettingsDialog";
 import type { DashboardLineageScalar } from "../types/usage";
 
 interface DashboardHeaderProps {
+  includesCodex?: boolean;
   scopeControl?: ReactNode;
   reportingStatus?: ReactNode;
   account: AccountInfo;
@@ -104,7 +105,7 @@ function generationIsAhead(
 }
 
 export function DashboardHeader({
-  scopeControl, reportingStatus,
+  includesCodex = true, scopeControl, reportingStatus,
   account,
   autostartStatus,
   codexHome,
@@ -240,106 +241,14 @@ export function DashboardHeader({
   return (
     <header className="dashboard-header">
       <div className="dashboard-header-top">
-      <div className="dashboard-scope-slot">
-        <h1 className="dashboard-overview-title">用量概览{refreshing && <span>读取中</span>}</h1>
-        {scopeControl}
-      </div>
-      {reportingStatus}
-      </div>
-      <div className="dash-head">
-        <div aria-label="运行信息" className="dash-head__strip">
-          <span className="dash-head__platform">
-            <small>
-              <span>Codex Token Bar</span>
-              <span className="plan-badge">{account.planLabel}</span>
-            </small>
-            <strong>
-              <i aria-hidden="true" className="platform-indicator" />
-              <span className="platform-badge">跨平台版</span>
-              <span aria-label="跨平台运行框架" className="platform-runtime">Tauri</span>
-            </strong>
-          </span>
-          <button className="dash-head__source" onClick={() => setEditingPath((value) => !value)} title={codexHome.path} type="button">
-            <span className={codexHome.exists ? "status-dot status-dot--ok" : "status-dot"} />
-            <span>{sourceLabel}</span>
-            <strong>{codexHome.path}</strong>
-          </button>
-          <span aria-live="polite" className={`dash-head__threads is-${runningThreads.status}`} title={runningThreads.detail}>
-            <small>运行线程</small>
-            <strong>{runningThreadHeaderText(runningThreads)}</strong>
-          </span>
-          <span className={`dash-head__freshness${freshnessStage ? ` is-${freshnessStage}` : ""}`}>
-            <small>{activeProgress?.phaseLabel ?? (fullPrecisionPending ? "等待精确统计" : "精确统计")}</small>
-            <strong>
-              <i aria-hidden="true" className="precise-progress-dot" />
-              {activeProgress
-                ? activeProgress.text
-                : aggregateSourceLeading
-                  ? `${summaryProgressTime} · 模型与图表同步中`
-                  : preciseStatisticsPending
-                    ? `${summaryProgressTime} · 等待精确统计`
-                  : aggregateWaitingWithoutLineage
-                    ? `${summaryProgressTime} · 等待图表聚合`
-                  : lightSummarySyncing
-                    ? `${summaryProgressTime} · 同步中`
-                  : aggregateTimeLabel === null
-                    ? summaryCompleteTime
-                    : `${summaryCompleteTime} · 图表至 ${aggregateTimeLabel}`}
-              {activeProgress?.countLabel ? ` ${activeProgress.countLabel}` : ""}
-            </strong>
-            {activeProgress?.showsReassurance ? (
-              <small className="precise-progress-hint">{PRECISE_PROGRESS_REASSURANCE}</small>
-            ) : null}
-            {activeProgress?.showsProgress ? (
-              <span
-                aria-label={activeProgress.countLabel ?? activeProgress.text}
-                aria-valuemax={preciseProgress?.total ?? undefined}
-                aria-valuemin={preciseProgress?.total == null ? undefined : 0}
-                aria-valuenow={preciseProgress?.total == null ? undefined : preciseProgress.completed}
-                className={`precise-progress-bar${activeProgress.fraction == null ? " is-indeterminate" : ""}`}
-                role="progressbar"
-              >
-                <span style={{ width: `${Math.round((activeProgress.fraction ?? 0) * 100)}%` }} />
-              </span>
-            ) : null}
-          </span>
+        <div className="dashboard-scope-slot">
+          <h1 className="dashboard-overview-title">用量概览{refreshing && <span>读取中</span>}</h1>
+          {scopeControl}
         </div>
-
-        <div className="dash-head__top dash-head__top--actions-only">
-          <div aria-label="常用操作" className="dash-head__actions">
-            <div className="dash-head__action-group">
-              <button className="dash-head__action dash-head__action--accent" disabled={refreshing} onClick={onRefresh} type="button">
-                {refreshing ? "刷新中…" : "立即刷新"}
-              </button>
-            </div>
-            <div className="dash-head__action-group">
-              <button className="dash-head__action" onClick={() => setEditingPath((value) => !value)} type="button">
-                {editingPath ? "收起目录" : "更改目录"}
-              </button>
-              <button className="dash-head__action" onClick={onOpenProviderRepair} title="找回消失的历史会话" type="button">会话消失修复</button>
-            </div>
-            <div className="dash-head__action-group">
-              <button className="dash-head__action dash-head__action--accent" onClick={onOpenSessionManagement} title="按项目浏览上下文，管理归档、恢复包和容量清理" type="button">会话管理</button>
-              <button
-                aria-label="会话增强"
-                className={`dash-head__action${threadDeleteBridgeStatus.connected ? " is-enabled" : ""}`}
-                onClick={() => onOpenSettings("session")}
-                title={threadDeleteBridgeStatus.message}
-                type="button"
-              >
-                会话增强{threadDeleteBridgeStatus.connected ? " · 已连接" : ""}
-              </button>
-              <button
-                aria-label="自动续跑"
-                aria-pressed={autoResumeEnabled}
-                className={`dash-head__action${autoResumeEnabled ? " is-enabled" : ""}`}
-                onClick={() => onOpenSettings("automation")}
-                title={autoResumeEnabled ? "自动续跑已开启，点击管理" : "管理失败中断、定时和额度恢复续跑"}
-                type="button"
-              >
-                自动续跑{autoResumeEnabled ? " · 已开启" : ""}
-              </button>
-            </div>
+        <div className="dashboard-global-tools" role="group" aria-label="全局工具">
+          <div className="dashboard-global-meta"><span>全局工具</span>{reportingStatus}</div>
+          <div className="dashboard-global-actions">
+            <button className="dash-head__action dash-head__action--accent" disabled={refreshing} onClick={onRefresh} type="button">{refreshing ? "刷新中…" : "立即刷新"}</button>
             <div className="dash-head__action-group">
               <button className="dash-head__action dash-head__action--accent" onClick={() => onOpenSettings("general")} type="button">设置</button>
               <DiagnosticNotice summary="" logs="" buttonOnly />
@@ -392,15 +301,80 @@ export function DashboardHeader({
             </div>
           </div>
         </div>
-        {editingPath ? (
-          <CodexHomeEditor
-            codexHome={codexHome}
-            onCodexHomeChange={onCodexHomeChange}
-            onCodexHomeReset={onCodexHomeReset}
-            onDone={() => setEditingPath(false)}
-          />
-        ) : null}
       </div>
+      {includesCodex && <section className="dash-head dash-head--scoped" aria-label="Codex 专属工具">
+        <div className="dashboard-codex-context">
+          <div className="dashboard-codex-heading"><strong>Codex</strong><span>专属工具</span><small title={runningThreads.detail}>任务 · {runningThreadHeaderText(runningThreads)}</small></div>
+          <button className="dashboard-codex-source" onClick={() => setEditingPath(value => !value)} title={codexHome.path} type="button" aria-label="更改 Codex 数据目录">
+            <span>{sourceLabel}</span><strong>{codexHome.path}</strong><span aria-hidden="true">⌄</span>
+          </button>
+          <span className={`dash-head__freshness${freshnessStage ? ` is-${freshnessStage}` : ""}`}>
+            <small>{activeProgress?.phaseLabel ?? (fullPrecisionPending ? "等待精确统计" : "精确统计")}</small>
+            <strong>
+              <i aria-hidden="true" className="precise-progress-dot" />
+              {activeProgress
+                ? activeProgress.text
+                : aggregateSourceLeading
+                  ? `${summaryProgressTime} · 模型与图表同步中`
+                  : preciseStatisticsPending
+                    ? `${summaryProgressTime} · 等待精确统计`
+                  : aggregateWaitingWithoutLineage
+                    ? `${summaryProgressTime} · 等待图表聚合`
+                  : lightSummarySyncing
+                    ? `${summaryProgressTime} · 同步中`
+                  : aggregateTimeLabel === null
+                    ? summaryCompleteTime
+                    : `${summaryCompleteTime} · 图表至 ${aggregateTimeLabel}`}
+              {activeProgress?.countLabel ? ` ${activeProgress.countLabel}` : ""}
+            </strong>
+            {activeProgress?.showsReassurance ? (
+              <small className="precise-progress-hint">{PRECISE_PROGRESS_REASSURANCE}</small>
+            ) : null}
+            {activeProgress?.showsProgress ? (
+              <span
+                aria-label={activeProgress.countLabel ?? activeProgress.text}
+                aria-valuemax={preciseProgress?.total ?? undefined}
+                aria-valuemin={preciseProgress?.total == null ? undefined : 0}
+                aria-valuenow={preciseProgress?.total == null ? undefined : preciseProgress.completed}
+                className={`precise-progress-bar${activeProgress.fraction == null ? " is-indeterminate" : ""}`}
+                role="progressbar"
+              >
+                <span style={{ width: `${Math.round((activeProgress.fraction ?? 0) * 100)}%` }} />
+              </span>
+            ) : null}
+          </span>
+        </div>
+        <div className="dashboard-codex-toolbox" role="group" aria-label="Codex 会话操作">
+            <div className="dash-head__action-group">
+              <button className="dash-head__action dash-head__action--accent" onClick={onOpenSessionManagement} title="按项目浏览上下文，管理归档、恢复包和容量清理" type="button">会话管理</button>
+              <button
+                aria-label="会话增强"
+                className={`dash-head__action${threadDeleteBridgeStatus.connected ? " is-enabled" : ""}`}
+                onClick={() => onOpenSettings("session")}
+                title={threadDeleteBridgeStatus.message}
+                type="button"
+              >
+                会话增强{threadDeleteBridgeStatus.connected ? " · 已连接" : ""}
+              </button>
+              <button
+                aria-label="自动续跑"
+                aria-pressed={autoResumeEnabled}
+                className={`dash-head__action${autoResumeEnabled ? " is-enabled" : ""}`}
+                onClick={() => onOpenSettings("automation")}
+                title={autoResumeEnabled ? "自动续跑已开启，点击管理" : "管理失败中断、定时和额度恢复续跑"}
+                type="button"
+              >
+                自动续跑{autoResumeEnabled ? " · 已开启" : ""}
+              </button>
+            </div>
+
+          <div className="dashboard-codex-maintenance">
+            <button className="dash-head__action" onClick={() => setEditingPath(value => !value)} type="button">{editingPath ? "收起目录" : "更改目录"}</button>
+            <button className="dash-head__action" onClick={onOpenProviderRepair} title="找回 Codex 消失的历史会话" type="button">会话消失修复</button>
+          </div>
+        </div>
+        {editingPath && <CodexHomeEditor codexHome={codexHome} onCodexHomeChange={onCodexHomeChange} onCodexHomeReset={onCodexHomeReset} onDone={() => setEditingPath(false)}/>}
+      </section>}
     </header>
   );
 }

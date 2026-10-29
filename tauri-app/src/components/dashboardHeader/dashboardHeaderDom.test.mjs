@@ -7,14 +7,8 @@ import { withSsrModules } from "../../test/ssrHarness.mjs";
 test("DashboardHeader exposes Swift-parity daily actions and keeps secondary application actions in More", async () => {
   await withMountedHeader(async ({ act, container, document, render, window, calls }) => {
     assert.deepEqual(visibleButtonNames(container), [
-      "立即刷新",
-      "更改目录",
-      "会话消失修复",
-      "会话管理",
-      "会话增强",
-      "自动续跑",
-      "设置",
-      "更多操作",
+      "立即刷新", "设置", "完整日志", "更多操作",
+      "会话管理", "会话增强", "自动续跑", "更改目录", "会话消失修复",
     ]);
     assert.equal(container.querySelector('[role="menu"]'), null);
 
@@ -197,6 +191,6 @@ function buttonByNameOrNull(container, name) {
 }
 
 function visibleButtonNames(container) {
-  return [...container.querySelectorAll(".dash-head__action-group > button, .dash-head__more > button")]
+  return [...container.querySelectorAll("button.dash-head__action")]
     .map((button) => button.getAttribute("aria-label") || button.textContent.trim());
 }

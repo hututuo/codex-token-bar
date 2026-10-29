@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { modelUsageColor, modelUsageLabel } from "../modelUsagePresentation";
+import { modelUsageColor, modelUsageLabel, DASHBOARD_OTHER_MODEL_COLOR } from "../modelUsagePresentation";
 import { readSpeedColors, writeSpeedColor } from "./speedDisplay";
 import { useSpeedPalette } from "./useSpeedPalette";
 
-export interface ColorEditTarget { model: string; x: number; y: number }
+export interface ColorEditTarget { model: string; x: number; y: number; grayDefault?: boolean }
 export function ModelColorEditor({ target, onClose }: { target: ColorEditTarget | null; onClose: () => void }) {
   useSpeedPalette();
   const panel = useRef<HTMLDivElement>(null);
@@ -19,7 +19,7 @@ export function ModelColorEditor({ target, onClose }: { target: ColorEditTarget 
   return createPortal(<div ref={panel} className="model-color-popover" role="dialog" aria-label="修改颜色"
     style={{ left: Math.max(8, Math.min(window.innerWidth - 256, target.x)), top: Math.max(8, Math.min(window.innerHeight - 160, target.y)) }}>
     <strong>{modelUsageLabel(target.model)}</strong>
-    <label>颜色 <input autoFocus type="color" aria-label="选择颜色" value={modelUsageColor(target.model)} onChange={event => writeSpeedColor(target.model, event.target.value)}/></label>
+    <label>颜色 <input autoFocus type="color" aria-label="选择颜色" value={readSpeedColors()[target.model] ?? (target.grayDefault ? DASHBOARD_OTHER_MODEL_COLOR : modelUsageColor(target.model))} onChange={event => writeSpeedColor(target.model, event.target.value)}/></label>
     <div><button type="button" disabled={!readSpeedColors()[target.model]} onClick={() => writeSpeedColor(target.model, null)}>恢复默认</button><button type="button" onClick={onClose}>完成</button></div>
   </div>, document.body);
 }

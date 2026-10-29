@@ -24,6 +24,7 @@ test("Claude-only scope keeps the original live-card and hides Codex readings", 
       platform:{platform:"windows", floatingWindow:{available:true},statusTray:{available:true},statusTrayLiveText:{available:true}} };
     const html = renderToStaticMarkup(React.createElement(LiveRateCard, props));
     assert.match(html, /class="live-card"/);
+    assert.doesNotMatch(html, /activity-live-chart|activity-history-plot|最近3分钟/);
     assert.match(html, /活动速率/);
     assert.doesNotMatch(html, /请求区间 TPS|API 耗时 TPS/);
     assert.match(html, /等待本地活动记录/);

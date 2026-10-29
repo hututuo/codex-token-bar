@@ -1,5 +1,4 @@
 import SwiftUI
-import Charts
 
 struct ActivitySpeedDisplayPicker: View {
     @AppStorage(ActivitySpeedDisplayMode.key) private var raw = ActivitySpeedDisplayMode.bar.rawValue
@@ -8,159 +7,131 @@ struct ActivitySpeedDisplayPicker: View {
             ForEach(ActivitySpeedDisplayMode.allCases) { mode in Text(mode.title).tag(mode.rawValue) }
         }.pickerStyle(.segmented)
             .help("只切换显示；排行榜始终使用 Agent Speed 标准，不会因此开启上报。")
-            .onChange(of: raw) {
-                MultiClientUsageStore.shared.syncLocalRuntime()
-                ActivitySpeedHistoryController.shared.refresh()
-                ActivitySpeedHistoryController.shared.refreshDayTrend(force: true)
-            }
+            .onChange(of: raw) { MultiClientUsageStore.shared.syncLocalRuntime() }
     }
 }
 
-/// One activity panel for all selected sources. No Claude body/API TPS route.
+/// The two menu sizes share one raw-point chart; no database/history query.
 struct ActivitySpeedSummaryView: View {
     let allowed: Set<String>
-    var codexRates: [ModelRateContribution] = []
-    var codexAvailable = false
-    @ObservedObject private var local = ClaudeLocalRuntime.shared
-    @ObservedObject private var upstream = AgentSpeedDisplayRuntime.shared
+    var compact = false
     @ObservedObject private var history = ActivitySpeedHistoryController.shared
-    private let mode = ActivitySpeedDisplayMode.agentSpeed
-    private var rates: [ModelRateContribution] {
-        ClientLocalRuntimePresentation.rates(codex: [], claude: local.projection(allowed: allowed).modelRates,
-            allowed: allowed, mode: mode, upstreamCodex: AgentSpeedDisplayRuntime.modelRates(snapshot: upstream.snapshot, source: .codex, now: Date()), others: upstream.externalModelRates(allowed: allowed))
-    }
-    private var hasCoverage: Bool {
-        let codex = allowed.contains("codex") && upstream.snapshot.sources.contains { $0.kind == .codex && $0.available }
-        return codex || local.projection(allowed: allowed).sourceAvailable || upstream.hasCoverage(allowed: allowed)
-    }
-    @State private var trendConsumer = UUID()
-    @State private var windowSeconds = 86400
-    @Environment(\.scenePhase) private var scenePhase
+    @ObservedObject private var palette = SpeedDisplayPreferences.shared
+    @AppStorage(ActivitySpeedDisplayMode.key) private var modeRaw = ActivitySpeedDisplayMode.bar.rawValue
     @AppStorage(ActivityRateUnit.preferenceKey) private var unitRaw = ActivityRateUnit.tokens.rawValue
     @AppStorage(ActivityRateUnit.exchangeRateKey) private var exchangeRate = ActivityRateUnit.defaultExchangeRate
+    @State private var selectedClient: String?
     private var unit: ActivityRateUnit { ActivityRateUnit(rawValue: unitRaw) ?? .tokens }
-    private var rows: [ActivitySpeedSeries] {
-        history.daySeries.filter { allowed.contains($0.dimensions.client) && $0.dimensions.displayMode == mode.rawValue && !$0.halfMinuteTrend.isEmpty }
-    }
-    private var visibleClients: [String] {
-        var clients = Set(rows.map { $0.dimensions.client })
-        if allowed.contains("codex") { clients.insert("codex") }
-        for client in allowed where client != "codex" {
-            let localEnabled = local.projection(allowed: [client]).enabled
-            let otherEnabled = upstream.snapshot.sources.contains { $0.enabled && ActivitySourceConfiguration.client(for: $0.kind) == client }
-            if localEnabled || otherEnabled { clients.insert(client) }
-        }
-        return clients.sorted()
-    }
+    private var mode: ActivitySpeedDisplayMode { .normalized(modeRaw) }
+    private func title(_ client: String) -> String { SpeedColorOverrides.clientTitle("client:" + client) }
+    private func value(_ point: ActivityLivePoint) -> Double? { unit.value(total: point.rate, rates: point.rates, exchangeRate: exchangeRate) }
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("活动速率 · Agent Speed").font(.system(size: 13, weight: .semibold))
-                Spacer()
-                Text(hasCoverage ? unit.text(unit.value(total: rates.reduce(0) { $0 + $1.tokensPerSecond }, rates: rates, exchangeRate: exchangeRate)) + " " + unit.rawValue : "—")
-                    .font(.system(size: 15, weight: .semibold)).monospacedDigit()
+        let now = Date().timeIntervalSince1970
+        let rows = history.rows(allowed: allowed, mode: mode, now: now)
+        let selection = rows.contains { $0.client == selectedClient } ? selectedClient : nil
+        let visible = rows.filter { selection == nil || $0.client == selection }
+        let ceiling = max(unit == .tokens ? 10 : 0.0001, (visible.flatMap { $0.points.compactMap(value) }.max() ?? 0)*1.12)
+        VStack(alignment: .leading, spacing: compact ? 4 : 8) {
+            HStack(spacing: 6) {
+                Text(compact ? "速度" : "活动速率").font(.system(size: compact ? 10 : 13, weight: .semibold))
+                Text("近3分钟").font(.system(size: 10)).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                if !compact {
+                    Text(mode.title).font(.system(size: 10)).foregroundStyle(.secondary)
+                    ActivityRateUnitControl()
+                }
             }
-            HStack {
-                Text("Agent Speed 本地活动速率").font(.system(size: 10)).foregroundStyle(.secondary)
-                Spacer(minLength: 4)
-                ActivityRateUnitControl()
+            if !rows.isEmpty {
+                HStack(spacing: 8) {
+                    if rows.count > 1 { clientButton("全部", client: nil, selection: selection) }
+                    ForEach(rows) { row in clientButton(title(row.client), client: row.client, selection: selection) }
+                }
             }
-            Picker("活动速率范围", selection: $windowSeconds) {
-                Text("24小时").tag(86400)
-                Text("近30分钟").tag(1800)
-            }.pickerStyle(.segmented).frame(maxWidth: 205)
-            if rates.isEmpty && rows.isEmpty {
-                Text("等待本地活动记录").font(.system(size: 11)).foregroundStyle(.secondary)
+            Canvas { context, size in
+                let left: CGFloat = compact ? 2 : 35, right = size.width - 4
+                let top: CGFloat = 8, bottom = size.height - 16
+                func position(_ point: ActivityLiveConnections.Point) -> CGPoint {
+                    CGPoint(x: left + (point.x - (now-180))/180*(right-left), y: bottom - point.y/ceiling*(bottom-top))
+                }
+                for fraction in [0.0, 0.5, 1.0] {
+                    let y = bottom - fraction*(bottom-top)
+                    var grid = Path(); grid.move(to:.init(x:left,y:y)); grid.addLine(to:.init(x:right,y:y))
+                    context.stroke(grid, with:.color(.secondary.opacity(0.18)), style:.init(lineWidth:0.5, dash:fraction == 0 ? [] : [1,3]))
+                    if !compact {
+                        context.draw(Text(unit.text(ceiling*fraction)).font(.system(size:9)).foregroundStyle(.secondary), at:.init(x:left-5,y:y), anchor:.trailing)
+                    }
+                }
+                var clipped = context
+                clipped.clip(to:Path(CGRect(x:left,y:top-3,width:max(0,right-left),height:max(0,bottom-top+6))))
+                for row in visible {
+                    let color = ModelUsagePresentation.color(for:"client:"+row.client)
+                    let points = row.points.map { ActivityLiveConnections.Point(x:$0.time, y:value($0) ?? .nan) }
+                    for run in ActivityLiveConnections.runs(points) {
+                        guard let first = run.first else { continue }
+                        var path = Path(); path.move(to:position(first))
+                        for segment in ActivityLiveConnections.segments(run) {
+                            path.addCurve(to:position(segment.end), control1:position(segment.first), control2:position(segment.second))
+                        }
+                        clipped.stroke(path, with:.color(color), style:.init(lineWidth:compact ? 1.3 : 1.6,lineCap:.round,lineJoin:.round))
+                    }
+                    if let point = points.last, point.y.isFinite {
+                        let pos = position(point), radius: CGFloat = compact ? 1.5 : 2.5
+                        clipped.fill(Path(ellipseIn:CGRect(x:pos.x-radius,y:pos.y-radius,width:radius*2,height:radius*2)),with:.color(color))
+                    }
+                }
+                if rows.isEmpty { context.draw(Text("等待速度读数").font(.system(size:compact ? 9 : 11)).foregroundStyle(.secondary), at:.init(x:(left+right)/2,y:(top+bottom)/2)) }
+                context.draw(Text("3分钟前").font(.system(size:9)).foregroundStyle(.secondary), at:.init(x:left,y:size.height-3),anchor:.bottomLeading)
+                context.draw(Text("现在").font(.system(size:9)).foregroundStyle(.secondary), at:.init(x:right,y:size.height-3),anchor:.bottomTrailing)
             }
-            ForEach(visibleClients, id: \.self) { client in
-                ClientActivityTrendView(client: clientTitle(client), rows: rows.filter { $0.dimensions.client == client },
-                    now: history.dayAsOf, windowSeconds: windowSeconds, unit: unit, exchangeRate: exchangeRate).equatable()
+            .frame(height:compact ? 84 : 176)
+            .overlay {
+                if !compact { ActivitySpeedInspectionOverlay(rows: visible, now: now, unit: unit, exchangeRate: exchangeRate) }
             }
-            Text(history.dayIssue ?? "每30秒平均速率 · 无活动采样的时段留空")
-                .font(.system(size: 10)).foregroundStyle(.secondary)
-        }
-        .onAppear { history.showDayTrend(true, consumer: trendConsumer) }
-        .onDisappear { history.showDayTrend(false, consumer: trendConsumer) }
-        .onChange(of: scenePhase) { _, value in history.showDayTrend(value == .active, consumer: trendConsumer) }
-        .task {
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(60))
-                if !Task.isCancelled && scenePhase == .active { history.refreshDayTrend() }
-            }
+            .accessibilityLabel("最近3分钟活动速率，原始读数连线")
+            if !compact { Text("原始速度读数 · 移到曲线上查看").font(.system(size:10)).foregroundStyle(.secondary) }
         }
     }
-
-    private func clientTitle(_ value: String) -> String {
-        switch value { case "claudeCode": "Claude CLI"; case "claudeDesktop": "Claude Desktop"; default: value.capitalized }
+    private func clientButton(_ text: String, client: String?, selection: String?) -> some View {
+        Button { selectedClient = client } label: {
+            Text(text).font(.system(size:compact ? 9 : 11, weight:selection == client || client != nil && selection == nil ? .semibold : .regular))
+                .foregroundStyle(client.map { ModelUsagePresentation.color(for:"client:"+$0) } ?? .primary)
+        }.buttonStyle(.plain)
     }
 }
 
-/// Client boundaries are explicit; a model with the same name in two clients
-/// never becomes a single line or shares the other client's activity interval.
-struct ClientActivityTrendView: View, Equatable {
-    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.client == rhs.client && lhs.rows == rhs.rows && lhs.now == rhs.now && lhs.windowSeconds == rhs.windowSeconds && lhs.unit == rhs.unit && lhs.exchangeRate == rhs.exchangeRate
-    }
-    @ObservedObject private var palette = SpeedDisplayPreferences.shared
-    let client: String
-    let rows: [ActivitySpeedSeries]
-    let now: Date
-    let windowSeconds: Int
+/// Hover state is isolated from the canvas, so moving the pointer does not
+/// regenerate all paths or publish a new speed/history value.
+private struct ActivitySpeedInspectionOverlay: View {
+    let rows: [ActivityLiveSeries]
+    let now: Double
     let unit: ActivityRateUnit
     let exchangeRate: Double
-    @State private var selectedTime: Date?
-    private struct Entry: Identifiable {
-        let row: ActivitySpeedSeries
-        let point: ActivitySpeedChartProjection.Point
-        let value: Double
-        var id: String { row.id + ":" + String(point.bucketStart) }
-    }
-    private var entries: [Entry] {
-        rows.flatMap { row -> [Entry] in
-            guard let factor = unit.value(total: 1, rates: [.init(model: row.dimensions.model, tokensPerSecond: 1)], exchangeRate: exchangeRate) else { return [] }
-            return ActivitySpeedChartProjection.points(row.halfMinuteTrend, now: now, windowSeconds: Double(windowSeconds), bucketSeconds: 30)
-                .map { Entry(row: row, point: $0, value: $0.rate * factor) }
-        }
-    }
+    @State private var selectedTime: Double?
     var body: some View {
-        let values = entries
-        VStack(alignment: .leading, spacing: 6) {
-            Text(client).font(.system(size: 12, weight: .semibold))
-            Chart {
-                ForEach(values) { entry in
-                    LineMark(x: .value("时间", Date(timeIntervalSince1970: Double(entry.point.bucketStart))),
-                        y: .value(unit.rawValue, entry.value),
-                        series: .value("连续段", entry.row.id + ":" + String(entry.point.segment)))
-                        .foregroundStyle(ModelUsagePresentation.color(for: entry.row.dimensions.model))
-                        .lineStyle(.init(lineWidth: 1.4))
-                    PointMark(x: .value("时间", Date(timeIntervalSince1970: Double(entry.point.bucketStart))), y: .value(unit.rawValue, entry.value))
-                        .symbolSize(5).foregroundStyle(ModelUsagePresentation.color(for: entry.row.dimensions.model))
+        GeometryReader { proxy in
+            Color.clear.contentShape(Rectangle())
+                .onContinuousHover { phase in
+                    switch phase {
+                    case .active(let point):
+                        let time = now-180+(point.x-35)/max(1,proxy.size.width-39)*180
+                        let next = point.x >= 35 && point.x <= proxy.size.width-4 ? time.rounded() : nil
+                        if selectedTime != next { selectedTime = next }
+                    case .ended: selectedTime = nil
+                    }
                 }
-            }
-            .chartXScale(domain: now.addingTimeInterval(-Double(windowSeconds))...now)
-            .chartYScale(domain: 0...max(unit == .tokens ? 1 : 0.0001, (values.map(\.value).max() ?? 0) * 1.12))
-            .chartXAxis { AxisMarks(values: .automatic(desiredCount: 5)) { _ in
-                AxisGridLine(); AxisValueLabel(format: .dateTime.hour().minute())
-            } }
-            .chartXSelection(value: $selectedTime)
-            .chartPlotStyle { plot in plot.clipped() }
-            .frame(height: 165)
-            HStack(spacing: 12) {
-                ForEach(Array(Set(values.map { $0.row.dimensions.model })).sorted(), id: \.self) { model in
-                    Label(ModelUsagePresentation.label(for: model), systemImage: "circle.fill")
-                        .foregroundStyle(ModelUsagePresentation.color(for: model)).font(.system(size: 10)).lineLimit(1)
+                .overlay(alignment:.topLeading) {
+                    if let selectedTime {
+                        VStack(alignment:.leading,spacing:3) {
+                            ForEach(rows) { row in
+                                if let point = row.points.min(by:{ abs($0.time-selectedTime)<abs($1.time-selectedTime) }), abs(point.time-selectedTime)<=2 {
+                                    Text(SpeedColorOverrides.clientTitle("client:"+row.client)+" · "+unit.text(unit.value(total:point.rate,rates:point.rates,exchangeRate:exchangeRate))+" "+unit.rawValue)
+                                        .font(.system(size:10)).monospacedDigit()
+                                }
+                            }
+                        }.padding(5).background(AppTheme.solidControlBackground,in:RoundedRectangle(cornerRadius:5))
+                            .allowsHitTesting(false)
+                    }
                 }
-            }
-            if let selectedTime {
-                let selected = values.filter { Double($0.point.bucketStart) <= selectedTime.timeIntervalSince1970 && selectedTime.timeIntervalSince1970 < Double($0.point.bucketStart + 60) }
-                if selected.isEmpty { Text("该时段没有活动采样").font(.caption2).foregroundStyle(.secondary) }
-                ForEach(selected) { entry in
-                    Text("\(Date(timeIntervalSince1970: Double(entry.point.bucketStart)).formatted(.dateTime.month().day().hour().minute().second())) · \(ModelUsagePresentation.label(for: entry.row.dimensions.model)) · \(unit.text(entry.value)) \(unit.rawValue)")
-                        .font(.system(size: 10)).monospacedDigit()
-                }
-            }
-            if values.isEmpty { Text(unit == .yuan ? "暂无可换算的活动速率采样" : "暂无活动速率采样").font(.caption2).foregroundStyle(.secondary) }
-        }.accessibilityElement(children: .contain)
-            .accessibilityLabel(client + (windowSeconds == 86400 ? "全天活动速率" : "近半小时活动速率") + "，每30秒一个点")
+        }
     }
 }

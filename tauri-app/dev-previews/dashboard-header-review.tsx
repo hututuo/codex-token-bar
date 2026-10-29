@@ -33,7 +33,7 @@ function Review(){
  const tokens=(allowed.includes('codex')?sum(local.codexRows):0)+local.clients.filter(r=>allowed.includes(r.client)).reduce((n,r)=>n+r.inputTokens+r.outputTokens,0);
  return <main className="app-shell"><section className="dashboard" style={{paddingTop:18}}>
   <p style={{fontSize:10,color:'var(--muted)',margin:'0 0 14px'}}>候选版真实组件渲染 · 本地数据快照 {new Date(local.capturedAt).toLocaleString()} · 本页不采集、不上报、不修改正式版设置 {openHeaderPreview&&<button type="button" className="review-loading-toggle" onClick={()=>setPreviewLoading(value=>!value)}>{previewLoading?'显示已就绪':'预览读取中'}</button>}</p>
-  <DashboardHeader account={local.account} customAccountDisplayName={nickname} onCustomAccountDisplayNameChange={async value=>setNickname(value)}
+  <DashboardHeader includesCodex={allowed.includes("codex")} account={local.account} customAccountDisplayName={nickname} onCustomAccountDisplayNameChange={async value=>setNickname(value)}
    scopeControl={<div className="integrated-scope"><ClientScopeButtons value={scope} clients={knownClients} onChange={setScope}/></div>}
    refreshing={openHeaderPreview&&previewLoading}
    reportingStatus={<AgentSpeedReportingNotice compact status={observedReporting} onRetry={nop} onOpenSettings={nop}/>}

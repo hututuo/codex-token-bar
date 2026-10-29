@@ -149,7 +149,7 @@ test("Claude-only analytics does not expose Codex quota, pricing, or cache-rank 
   });
 });
 
-test("activity panel defaults to Agent Speed day detail without rolling mean tables or a fabricated zero", async () => {
+test("activity panel uses only a three-minute memory plot without a history query or fabricated zero", async () => {
   await withSsrModules(async load => {
     const { ClientActivitySpeedPanel } = await load("/src/multiClient/ClaudeLocalRuntime.tsx");
     const markup = renderToStaticMarkup(React.createElement(ClientActivitySpeedPanel, {
@@ -157,10 +157,11 @@ test("activity panel defaults to Agent Speed day detail without rolling mean tab
       monitoringEnabled: true,
     }));
 
-    assert.match(markup, /活动速率 · Agent Speed/);
-    assert.match(markup, /每30秒平均速率 · 无活动采样的时段留空/);
-    assert.match(markup, /aria-pressed="true">24小时/);
-    assert.match(markup, /等待本地活动记录/);
+    assert.match(markup, /活动速率/);
+    assert.match(markup, /Agent Speed/);
+    assert.match(markup, /仅保留内存中的近3分钟/);
+    assert.doesNotMatch(markup, /24小时|近30分钟/);
+    assert.match(markup, /等待速度读数/);
     assert.doesNotMatch(markup, /(?:5|15|30)\s*分钟均速|5、15、30分钟|rolling5m/i);
     assert.doesNotMatch(markup, /(?:^|\D)0\.0\s*(?:t|tok)\/s/);
   });

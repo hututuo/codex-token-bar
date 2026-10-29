@@ -1,5 +1,5 @@
 import { selectedActivityRates, useActivitySpeedMode } from "../multiClient/activitySpeedMode";
-import { ClientActivitySpeedPanel, useClaudeLocalRuntime } from "../multiClient/ClaudeLocalRuntime";
+import { useClaudeLocalRuntime } from "../multiClient/ClaudeLocalRuntime";
 import type { QuotaAttributionIdentity } from "../types/quota";
 import { CacheUsageNotice } from "./cacheReminder/CacheUsageNotice";
 import { ObservedSpeedDetails } from "./liveRate/ObservedSpeedDetails";
@@ -89,6 +89,7 @@ export function LiveRateCard({
 
   return (
     <section className={liveRateEnabled ? "live-card" : "live-card is-live-disabled"} aria-label="实时速率">
+      {!includesCodex && <div className="section-title-row"><h2>活动速率</h2><strong>{local.modelRates.length ? activitySnapshot.tokensPerSecond.toFixed(1) + " tok/s" : "等待本地活动记录"}</strong></div>}
       {includesCodex && <>
       <div className="section-title-row">
         <div>
@@ -217,7 +218,6 @@ export function LiveRateCard({
       </div>
       <ObservedSpeedDetails quotaIdentity={quotaIdentity} quotaUpdatedAt={quotaUpdatedAt} data={snapshot} threads={liveThreadOptions} sourceToken={sourceToken} />
       </>}
-      <ClientActivitySpeedPanel sourceToken={sourceToken} allowed={allowed} monitoringEnabled={liveRateEnabled} codexRates={snapshot.modelRates??[]} codexOutputRate={snapshot.tokensPerSecond} codexAvailable={liveRateEnabled && failureNotice === null}/>
     </section>
   );
 }

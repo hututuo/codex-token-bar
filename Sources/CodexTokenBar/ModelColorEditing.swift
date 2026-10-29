@@ -5,6 +5,7 @@ import SwiftUI
 struct ModelColorEditModifier: ViewModifier {
     let model: String
     let enabled: Bool
+    var grayDefault = false
     @State private var showingEditor = false
     @ViewBuilder func body(content: Content) -> some View {
         if enabled {
@@ -14,7 +15,7 @@ struct ModelColorEditModifier: ViewModifier {
                 .accessibilityHint("双击修改该模型颜色")
                 .accessibilityAction(named: "修改模型颜色") { showingEditor = true }
                 .popover(isPresented: $showingEditor) {
-                    ModelColorEditor(model: model) { showingEditor = false }
+                    ModelColorEditor(model: model, grayDefault: grayDefault) { showingEditor = false }
                 }
         } else { content }
     }
@@ -22,13 +23,14 @@ struct ModelColorEditModifier: ViewModifier {
 
 struct ModelColorEditor: View {
     let model: String
+    var grayDefault = false
     var onClose: () -> Void
     @ObservedObject private var preferences = SpeedDisplayPreferences.shared
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(ModelUsagePresentation.label(for: model)).font(.headline)
             ColorPicker(model.hasPrefix("client:") ? "客户端颜色" : "模型颜色", selection: Binding(
-                get: { ModelUsagePresentation.color(for: model) },
+                get: { grayDefault ? ModelUsagePresentation.dashboardColor(for: model, latest: false) : ModelUsagePresentation.color(for: model) },
                 set: { value in
                     guard let rgb = NSColor(value).usingColorSpace(.sRGB) else { return }
                     preferences.setColor(String(format: "#%02x%02x%02x", Int((rgb.redComponent * 255).rounded()), Int((rgb.greenComponent * 255).rounded()), Int((rgb.blueComponent * 255).rounded())), for: model)
