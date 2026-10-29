@@ -489,7 +489,7 @@ struct HeaderView: View {
                 HStack(spacing: 9) {
                     Text("Codex").font(.system(size: 13, weight: .bold))
                     Text("专属工具").font(.system(size: 10)).foregroundStyle(.secondary)
-                    Label(runningThreadPresentation.displayText, systemImage: "terminal")
+                    Label { Text(runningThreadPresentation.displayText) } icon: { Image(systemName: "terminal") }
                         .font(.system(size: 10)).foregroundStyle(runningThreadIndicatorColor)
                         .help(runningThreadPresentation.accessibilityText)
                         .accessibilityLabel("运行线程")
@@ -509,7 +509,7 @@ struct HeaderView: View {
                                 .help(threadDeleteStatus.message).accessibilityLabel("会话增强")
                         }
                         if actions.contains(.autoResume) {
-                            Button(action:onOpenAutoResume) { DashboardHeaderCommandLabel(title:"自动续跑",systemImage:autoResumeEnabled ? "play.circle.fill" : "play.circle",color:autoResumeEnabled ? AppTheme.accentGreen : AppTheme.accentBlue,highlighted:autoResumeEnabled) }
+                            Button(action:onOpenAutoResume) { DashboardHeaderCommandLabel(title: "自动续跑",systemImage:autoResumeEnabled ? "play.circle.fill" : "play.circle",color:autoResumeEnabled ? AppTheme.accentGreen : AppTheme.accentBlue,highlighted:autoResumeEnabled) }
                                 .help("管理失败中断、定时和额度恢复续跑")
                         }
                     }

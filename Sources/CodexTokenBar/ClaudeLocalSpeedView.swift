@@ -31,6 +31,7 @@ struct ActivitySpeedSummaryView: View {
         let selection = rows.contains { $0.client == selectedClient } ? selectedClient : nil
         let visible = rows.filter { selection == nil || $0.client == selection }
         let ceiling = max(unit == .tokens ? 10 : 0.0001, (visible.flatMap { $0.points.compactMap(value) }.max() ?? 0)*1.12)
+        if !compact || !rows.isEmpty {
         VStack(alignment: .leading, spacing: compact ? 4 : 8) {
             HStack(spacing: 6) {
                 Text(compact ? "速度" : "活动速率").font(.system(size: compact ? 10 : 13, weight: .semibold))
@@ -90,6 +91,7 @@ struct ActivitySpeedSummaryView: View {
             .accessibilityLabel("最近3分钟活动速率，原始读数连线")
             if !compact { Text("原始速度读数 · 移到曲线上查看").font(.system(size:10)).foregroundStyle(.secondary) }
         }
+    }
     }
     private func clientButton(_ text: String, client: String?, selection: String?) -> some View {
         Button { selectedClient = client } label: {

@@ -24,6 +24,7 @@ export const ActivitySpeedLivePlot=memo(function ActivitySpeedLivePlot({rows,asO
     const nearest=row.points.reduce<typeof row.points[number]|undefined>((best,p)=>!best||Math.abs(p.time-hoverTime)<Math.abs(best.time-hoverTime)?p:best,undefined);
     return nearest&&Math.abs(nearest.time-hoverTime)<=2&&nearest.value!==null?[{client:row.client,...nearest}]:[];
   });
+  if(compact&&rows.length===0)return null;
   return <div className={compact?'activity-live-chart is-compact':'activity-live-chart'}>
     <div className="activity-live-heading"><strong>{compact?'速度':'活动速率'}</strong><span>近3分钟</span>{!compact&&<small>{modeLabel}</small>}</div>
     {rows.length>0&&<div className="activity-live-clients" role="group" aria-label="速度客户端">{rows.length>1&&<button aria-pressed={selection===null} onClick={()=>setSelectedClient(null)}>全部</button>}{rows.map(row=><button key={row.client} style={{color:modelUsageColor('client:'+row.client)}} aria-pressed={selection===row.client||rows.length===1} onClick={()=>setSelectedClient(row.client)}>{title(row.client)}</button>)}</div>}

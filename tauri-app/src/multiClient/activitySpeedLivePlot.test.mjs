@@ -17,3 +17,8 @@ test('a new chart never adds detected client names before a real speed reading',
  const html=renderToStaticMarkup(React.createElement(ActivitySpeedLivePlot,{rows:[],asOf:103}));
  assert.match(html,/等待速度读数/);assert.doesNotMatch(html,/Codex|Claude|data-live-client=/);
 }));
+
+test('the compact menu reserves no empty chart height before the first speed reading',async()=>withSsrModules(async load=>{
+ const {ActivitySpeedLivePlot}=await load('/src/multiClient/ActivitySpeedLivePlot.tsx');
+ assert.equal(renderToStaticMarkup(React.createElement(ActivitySpeedLivePlot,{rows:[],asOf:103,compact:true})), '');
+}));
