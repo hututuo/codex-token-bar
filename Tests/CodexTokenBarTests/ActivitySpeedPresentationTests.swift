@@ -44,4 +44,14 @@ final class ActivitySpeedPresentationTests: XCTestCase {
                        [.init(model: "unknown", tokensPerSecond: 70)])
     }
 
+    @MainActor func testFloatingPointRemaindersDoNotCreateAnUnknownModel() {
+        var snapshot = SpeedSnapshot.empty
+        snapshot.sources = [.init(kind: .codex, enabled: true, rootPath: "", available: true,
+            sessionCount: 1, live: .init(output: 70 + 1e-13, total: 120), today: .zero, activeAgents: 0)]
+        snapshot.liveModels = [.init(source: .codex, model: "model", rate: .init(output: 70, total: 120)),
+            .init(source: .codex, model: nil, rate: .init(output: 1e-14, total: 1e-14))]
+        XCTAssertEqual(AgentSpeedDisplayRuntime.modelRates(snapshot: snapshot, source: .codex),
+            [.init(model: "model", tokensPerSecond: 70)])
+    }
+
 }

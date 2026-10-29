@@ -30,3 +30,8 @@ test("DSH Gemini and OpenCode contribute only when selected and never duplicate 
   assert.equal(selectedActivityRates(bar,upstream,["opencode"],"bar").reduce((n,r)=>n+r.tokensPerSecond,0),30);
  });
 });
+
+test("numeric output residuals cannot become a zero-looking unknown model",async()=>withSsrModules(async load=>{
+ const {selectedActivityRates}=await load("/src/multiClient/activitySpeedMode.tsx");
+ assert.deepEqual(selectedActivityRates([],[{client:"codex",model:"real",outputTps:70},{client:"codex",model:"unknown",outputTps:1e-14}],["codex"],"agentSpeed"),[{model:"real",tokensPerSecond:70}]);
+}));

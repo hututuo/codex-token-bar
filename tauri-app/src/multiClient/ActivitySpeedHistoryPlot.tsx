@@ -12,9 +12,11 @@ export const ActivitySpeedHistoryPlot=memo(function ActivitySpeedHistoryPlot({ro
   const palette=useSpeedPalette(),clipId=useId();
   const [selectedBucket,setSelectedBucket]=useState<number|null>(null);
   const start=asOf-windowSeconds,left=44,right=785,top=16,bottom=160;
-  const prepared=useMemo(()=>rows.filter(row=>row.dimensions.displayMode==="agentSpeed").map(row=>{
+  const prepared=useMemo(()=>rows.filter(row=>row.dimensions.displayMode==="agentSpeed").flatMap(row=>{
+    const rawPoints=activityChartPoints(row.halfMinuteTrend??[],asOf,windowSeconds,30);
+    if(!rawPoints.length)return [];
     const factor=activityRateValue(1,[{model:row.dimensions.model,tokensPerSecond:1}],unit,fx);
-    return {row,key:JSON.stringify(row.dimensions),missingPrice:factor===null,points:factor===null?[]:activityChartPoints(row.halfMinuteTrend??[],asOf,windowSeconds,30).map(p=>({...p,value:p.rate*factor}))};
+    return [{row,key:JSON.stringify(row.dimensions),missingPrice:factor===null,points:factor===null?[]:rawPoints.map(p=>({...p,value:p.rate*factor}))}];
   }),[rows,asOf,windowSeconds,unit,fx]);
   const maximum=useMemo(()=>Math.max(unit==="tok/s"?1:.0001,prepared.reduce((max,s)=>s.points.reduce((value,p)=>Math.max(value,p.value*1.12),max),0)),[prepared,unit]);
   const markAllPoints=useMemo(()=>prepared.reduce((n,s)=>n+s.points.length,0)<=1500,[prepared]);

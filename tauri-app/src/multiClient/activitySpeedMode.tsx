@@ -63,7 +63,7 @@ export function ActivitySpeedModePicker() {
 export interface ActivityModelRate { model: string; tokensPerSecond: number }
 export function selectedActivityRates(codex: readonly ActivityModelRate[], upstream: readonly {client:string;model:string;outputTps:number}[], allowed: readonly string[], mode: ActivitySpeedMode, codexOutputRate?: number): ActivityModelRate[] {
   const sums = new Map<string,number>();
-  const add=(model:string,rate:number)=>{ if (Number.isFinite(rate)&&rate>0) { const key=floatingModelUsageKey(model.trim()||"unknown"); sums.set(key,(sums.get(key)??0)+rate); } };
+  const add=(model:string,rate:number)=>{ if (Number.isFinite(rate)&&rate>1e-9) { const key=floatingModelUsageKey(model.trim()||"unknown"); sums.set(key,(sums.get(key)??0)+rate); } };
   if (mode==="bar" && allowed.includes("codex")) {
     const valid=codex.filter(row=>Number.isFinite(row.tokensPerSecond)&&row.tokensPerSecond>0);
     const known=valid.reduce((sum,row)=>sum+row.tokensPerSecond,0);

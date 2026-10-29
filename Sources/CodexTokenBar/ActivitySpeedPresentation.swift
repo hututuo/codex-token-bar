@@ -81,13 +81,13 @@ final class AgentSpeedDisplayRuntime: ObservableObject {
         let total = snapshot.sources.first { $0.kind == source && $0.enabled && $0.available }?.live.output ?? 0
         guard total.isFinite, total > 0 else { return [] }
         var sums: [String: Double] = [:]
-        for item in snapshot.liveModels where item.source == source && item.rate.output.isFinite && item.rate.output > 0 {
+        for item in snapshot.liveModels where item.source == source && item.rate.output.isFinite && item.rate.output > 1e-9 {
             let raw = item.model?.trimmingCharacters(in: .whitespacesAndNewlines)
             let model = raw.flatMap { $0.isEmpty ? nil : $0 } ?? "unknown"
             sums[model, default: 0] += item.rate.output
         }
         let known = sums.values.reduce(0, +)
-        if known < total { sums["unknown", default: 0] += total - known }
+        if total - known > 1e-9 { sums["unknown", default: 0] += total - known }
         if known > total { for key in Array(sums.keys) { sums[key]! *= total / known } }
         return sums.keys.sorted().map { .init(model: $0, tokensPerSecond: sums[$0]!) }
     }

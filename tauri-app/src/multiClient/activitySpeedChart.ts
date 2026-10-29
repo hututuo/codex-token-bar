@@ -10,7 +10,7 @@ export function activityChartPoints(values: readonly ActivityTrendPoint[], now: 
     const rate = point.value.weightedOutput / point.value.coveredSeconds;
     if (!Number.isFinite(point.bucketStart) || point.bucketStart < now - windowSeconds || point.bucketStart > now
       || !Number.isFinite(point.value.coveredSeconds) || point.value.coveredSeconds <= 0
-      || !Number.isFinite(rate) || rate < 0) return [];
+      || !Number.isFinite(rate) || rate < 0 || (rate > 0 && rate <= 1e-9)) return [];
     if (prior !== undefined && point.bucketStart - prior > bucketSeconds) segment++;
     prior = point.bucketStart;
     return [{ bucketStart: point.bucketStart, rate, segment }];

@@ -146,7 +146,7 @@ struct ClientActivityTrendView: View, Equatable {
             .chartPlotStyle { plot in plot.clipped() }
             .frame(height: 165)
             HStack(spacing: 12) {
-                ForEach(Array(Set(rows.map { $0.dimensions.model })).sorted(), id: \.self) { model in
+                ForEach(Array(Set(values.map { $0.row.dimensions.model })).sorted(), id: \.self) { model in
                     Label(ModelUsagePresentation.label(for: model), systemImage: "circle.fill")
                         .foregroundStyle(ModelUsagePresentation.color(for: model)).font(.system(size: 10)).lineLimit(1)
                 }

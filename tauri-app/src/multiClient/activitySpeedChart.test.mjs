@@ -14,7 +14,7 @@ test('expiry does not invalidate point values produced for an earlier render', (
   assert.deepEqual(after.map(p => p.bucketStart), [8260, 8320]);
 });
 test('invalid rates are omitted and valid zero remains', () => {
-  assert.deepEqual(activityChartPoints([point(9700, NaN), point(9800, 1, 0), point(9900, 0)], 10000).map(p => p.rate), [0]);
+  assert.deepEqual(activityChartPoints([point(9700, NaN), point(9800, 1, 0), point(9900, 0), point(9950,1e-14)], 10000).map(p => p.rate), [0]);
   assert.deepEqual(activityChartPoints([], NaN), []);
 });
 

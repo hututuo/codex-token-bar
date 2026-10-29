@@ -33,7 +33,7 @@ final class ActivitySpeedChartProjectionTests: XCTestCase {
         XCTAssertEqual(detail.map(\.segment), [0, 0, 1])
     }
     func testInvalidAggregatesDoNotDistortScaleAndValidZeroStillPlots() {
-        let rows = [point(9_700, rate: .nan), point(9_800, seconds: 0), point(9_900, rate: 0)]
+        let rows = [point(9_700, rate: .nan), point(9_800, seconds: 0), point(9_900, rate: 0), point(9_950, rate: 1e-14)]
         XCTAssertEqual(ActivitySpeedChartProjection.points(rows, now: Date(timeIntervalSince1970: 10_000)).map(\.rate), [0])
         XCTAssertTrue(ActivitySpeedChartProjection.points(rows, now: Date(timeIntervalSince1970: .nan)).isEmpty)
     }
