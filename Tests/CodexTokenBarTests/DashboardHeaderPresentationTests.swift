@@ -305,32 +305,32 @@ final class DashboardHeaderPresentationTests: XCTestCase {
         )
     }
 
-    func testSecondaryModelCostCardsNeverReplaceModelDetailsWithEllipsis() throws {
+    func testCompactModelCostRowsPreserveFullDetailsInHelpAndAccessibility() throws {
         let projectRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        let headerFile = projectRoot.appendingPathComponent("Sources/CodexTokenBar/DashboardHeaderView.swift")
-        let source = try String(contentsOf: headerFile, encoding: .utf8)
+        let source = try String(contentsOf: projectRoot.appendingPathComponent(
+            "Sources/CodexTokenBar/DashboardHeaderView.swift"), encoding: .utf8)
         let rowStart = try XCTUnwrap(source.range(of: "struct DashboardModelCostRow"))
-        let rowEnd = try XCTUnwrap(
-            source.range(of: "private struct DashboardPrimaryModelCostCard", range: rowStart.upperBound..<source.endIndex)
-        )
+        let rowEnd = try XCTUnwrap(source.range(of: "private struct DashboardModelCostScopePicker",
+            range: rowStart.upperBound..<source.endIndex))
         let rowSource = String(source[rowStart.lowerBound..<rowEnd.lowerBound])
-        let start = try XCTUnwrap(source.range(of: "private struct DashboardSecondaryModelCostChip"))
-        let end = try XCTUnwrap(
-            source.range(of: "struct StatCell", range: start.upperBound..<source.endIndex)
-        )
-        let chipSource = String(source[start.lowerBound..<end.lowerBound])
+        let chipStart = try XCTUnwrap(source.range(of: "private struct DashboardModelCostChip"))
+        let chipEnd = try XCTUnwrap(source.range(of: "struct StatCell",
+            range: chipStart.upperBound..<source.endIndex))
+        let chipSource = String(source[chipStart.lowerBound..<chipEnd.lowerBound])
 
-        XCTAssertTrue(rowSource.contains("LazyVGrid("))
-        XCTAssertTrue(rowSource.contains("GridItem(.flexible(minimum: 108)"))
         XCTAssertTrue(rowSource.contains("DashboardModelCostScopePicker(scope: $scope"))
         XCTAssertFalse(rowSource.contains("pickerStyle(.segmented)"))
-        XCTAssertTrue(chipSource.contains("ViewThatFits(in: .horizontal)"))
-        XCTAssertTrue(chipSource.contains(".fixedSize(horizontal: true, vertical: false)"))
-        XCTAssertTrue(chipSource.contains(".fixedSize(horizontal: false, vertical: true)"))
-        XCTAssertFalse(chipSource.contains(".lineLimit(1)"))
+        // Thin rows may truncate visually; full model/quantity/share/cost must remain available.
+        XCTAssertTrue(chipSource.contains("item.label"))
+        XCTAssertTrue(chipSource.contains("item.tokens.abbreviatedTokens"))
+        XCTAssertTrue(chipSource.contains("item.valueText(for: .share)"))
+        XCTAssertTrue(chipSource.contains("item.valueText(for: .cost)"))
+        XCTAssertTrue(chipSource.contains(".help(description)"))
+        XCTAssertTrue(chipSource.contains(".accessibilityLabel(description)"))
+        XCTAssertFalse(chipSource.contains("Text(\"…\")"))
     }
 
     func testModelCostRowDoesNotRemoveTheOverviewRowsTopInset() throws {
