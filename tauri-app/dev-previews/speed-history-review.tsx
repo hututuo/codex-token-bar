@@ -20,7 +20,7 @@ function Preview(){
     <header style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><strong>活动速率 · Codex · Agent Speed</strong><ActivityRateUnitControl/></header>
     <div className="activity-speed-history-ranges">{[86400,1800].map(seconds=><button key={seconds} aria-pressed={windowSeconds===seconds} onClick={()=>setWindowSeconds(seconds)}>{seconds===86400?'24小时':'近30分钟'}</button>)}</div>
     <ActivitySpeedHistoryPlot rows={activity.series.filter(s=>s.dimensions.displayMode==='agentSpeed')} asOf={activity.now} windowSeconds={windowSeconds} unit={unit} fx={fx}/>
-    <small style={{color:'var(--muted)'}}>本次仅独立采集了约95秒 Agent Speed 读数；旧 Bar 历史没有混入。每30秒平均，正文 TPS 保持原样。</small>
+    <small style={{color:'var(--muted)'}}>本次独立采集约{Math.round(activity.captureSeconds/60)}分钟 Agent Speed 读数，并非全天历史；旧 Bar 未混入。每30秒平均，正文 TPS 保持原样。</small>
    </section>
   </div>
  </main>;
