@@ -29,7 +29,12 @@ enum ClientQuotaMorphGeometry {
             // Both sides keep bottom-to-top point order. Squeeze the circle
             // sideways into one line; never turn either side over into a
             // different half of the destination (which looks like wringing).
-            let endY = bottom + (top - bottom) * t
+            // Preserve each arc's vertical shape while squeezing: every frame
+            // is an ellipse, rather than re-spacing vertices into a warped arc.
+            // Full production rings use the two convex halves above; keep the
+            // legacy unsplit full-ring endpoint available for callers.
+            let endY = half == 0 ? bottom + (top - bottom) * t
+                : track.midY + sin(angle) / cos(gap) * (bottom - top) / 2
             return CGPoint(x: x + (track.midX - x) * p, y: y + (endY - y) * p)
         }
     }

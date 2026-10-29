@@ -105,3 +105,22 @@ test("unsupported or failed WebView animation never hides the original strokes",
     });
   } finally { w.close(); }
 });
+
+test("ellipse squeeze retains a regular shape and fills use physical path length", async () => {
+  await withSsrModules(async load => {
+    const { squeezePoints, sidebarStrokes } = await load("/src/quota-sidebar/sidebarStrokeGeometry.ts");
+    const source = { x: 21, y: 110, width: 46, height: 46 }, target = { x: 6, y: 250, width: 4, height: 24 };
+    for (const p of [.25, .5, .75]) {
+      const cx = 44 + (8 - 44) * p, cy = 133 + (262 - 133) * p;
+      const rx = 23 * (1 - p), ry = 23 * (1 - p) + 10 * p;
+      for (const half of [-2, 2]) for (const point of squeezePoints(source, target, half, p)) {
+        assert.ok(Math.abs(((point.x - cx) / rx) ** 2 + ((point.y - cy) / ry) ** 2 - 1) < .0001);
+      }
+    }
+    const filled = sidebarStrokes({ id: "quota", half: -1, fraction: .62, color: "#abc" }, source, target).find(row => row.id.endsWith(":fill"));
+    assert.ok(filled);
+    assert.ok(Math.abs(Math.abs(filled.target.at(-1).y - filled.target[0].y) - (.62 * 24 - 4)) < .0001);
+    assert.equal(filled.targetPath.length, 33);
+    assert.deepEqual(filled.targetRange, [0, (.62 * 24 - 4) / 20]);
+  });
+});

@@ -126,6 +126,8 @@ def main(argv=None):
     parser.add_argument("--patch-reasons", type=Path, help="JSON map of every permitted divergent path to its reason")
     parser.add_argument("--addition-reasons", type=Path, help="JSON map of every reviewed local-only added path to its reason")
     parser.add_argument("--reviewed", action="store_true", help="explicit acknowledgement after local patches and tests are reviewed")
+    parser.add_argument("--reviewed-upstream-pin", help="exact locked SHA acknowledged for a manual candidate run")
+    parser.add_argument("--reason", help="non-empty reason for acknowledging upstream drift on a manual candidate run")
     args = parser.parse_args(argv)
     vendor = args.vendor.resolve()
     try:
@@ -158,8 +160,39 @@ def main(argv=None):
             (vendor / "UPSTREAM.json").write_text(json.dumps(lock, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             load_lock(vendor)
         else:
-            lock = load_lock(vendor)
-            offline_check(vendor, lock)
+            lock = None
+            preflight_error = None
+            try:
+                lock = load_lock(vendor)
+                offline_check(vendor, lock)
+            except (ValueError, OSError, subprocess.SubprocessError, json.JSONDecodeError) as error:
+                preflight_error = error
+            # A remote check always observes the real upstream HEAD, even if
+            # local provenance is invalid. Either failure remains fatal.
+            remote_upstream_head = None
+            if args.remote:
+                try:
+                    remote_upstream_head = remote_head()
+                except (ValueError, OSError, subprocess.SubprocessError) as error:
+                    if preflight_error is not None:
+                        raise ValueError(f"{preflight_error}; upstream HEAD lookup also failed: {error}") from error
+                    raise
+            if preflight_error is not None:
+                raise preflight_error
+            has_acknowledgement = args.reviewed_upstream_pin is not None or args.reason is not None
+            if has_acknowledgement and not args.remote:
+                raise ValueError("--reviewed-upstream-pin and --reason require --remote")
+            reviewed_pin = None
+            reviewed_reason = None
+            if has_acknowledgement:
+                if not re.fullmatch(r"[0-9a-f]{40}", args.reviewed_upstream_pin or ""):
+                    raise ValueError("--reviewed-upstream-pin must be the exact locked 40-character SHA")
+                if args.reviewed_upstream_pin != lock["commit"]:
+                    raise ValueError("Reviewed upstream pin does not match UPSTREAM.json")
+                if not isinstance(args.reason, str) or not args.reason.strip():
+                    raise ValueError("--reason must be non-empty when acknowledging upstream drift")
+                reviewed_pin = args.reviewed_upstream_pin
+                reviewed_reason = args.reason.strip()
             if args.upstream:
                 upstream = args.upstream.resolve()
                 head = git(upstream, "rev-parse", "HEAD")
@@ -170,9 +203,16 @@ def main(argv=None):
             elif args.action == "compare":
                 raise ValueError("compare requires a clean --upstream checkout")
             if args.remote:
-                head = remote_head()
-                if head != lock["commit"]:
-                    raise ValueError("Agent Speed changed to " + head + "; review and synchronize before release (see sync guide)")
+                if remote_upstream_head != lock["commit"] and reviewed_pin is not None:
+                    print(json.dumps({
+                        "status": "upstream-drift-acknowledged",
+                        "pinned": lock["commit"],
+                        "remoteHead": remote_upstream_head,
+                        "reviewedPin": reviewed_pin,
+                        "reason": reviewed_reason,
+                    }, ensure_ascii=False))
+                elif remote_upstream_head != lock["commit"]:
+                    raise ValueError("Agent Speed changed to " + remote_upstream_head + "; review and synchronize before release (see sync guide)")
         print("Agent Speed vendor check passed")
         return 0
     except (ValueError, OSError, subprocess.SubprocessError, json.JSONDecodeError) as error:

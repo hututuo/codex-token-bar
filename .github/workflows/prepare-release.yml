@@ -18,6 +18,14 @@ on:
         description: 'Optional numeric macOS candidate build number; does not publish updates'
         type: string
         default: ''
+      reviewed_upstream_pin:
+        description: 'Optional exact Agent Speed UPSTREAM.json SHA for this manual candidate run; leave empty for strict HEAD matching'
+        type: string
+        default: ''
+      reason:
+        description: 'Required explanation when acknowledging Agent Speed upstream drift for this manual candidate run'
+        type: string
+        default: ''
   workflow_call:
     inputs:
       source_sha:
@@ -64,7 +72,18 @@ jobs:
           persist-credentials: false
           ref: ${{ needs.source.outputs.sha }}
       - name: Check Agent Speed upstream before preparing installers
-        run: python3 scripts/agent_speed_vendor.py check --remote
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REVIEWED_UPSTREAM_PIN: ${{ github.event.inputs.reviewed_upstream_pin || '' }}
+          UPSTREAM_DRIFT_REASON: ${{ github.event.inputs.reason || '' }}
+        run: |
+          if [[ "$EVENT_NAME" == "workflow_dispatch" && ( -n "$REVIEWED_UPSTREAM_PIN" || -n "$UPSTREAM_DRIFT_REASON" ) ]]; then
+            python3 scripts/agent_speed_vendor.py check --remote \
+              --reviewed-upstream-pin "$REVIEWED_UPSTREAM_PIN" \
+              --reason "$UPSTREAM_DRIFT_REASON"
+          else
+            python3 scripts/agent_speed_vendor.py check --remote
+          fi
 
   macos:
     needs: [source, agent-speed-sync]

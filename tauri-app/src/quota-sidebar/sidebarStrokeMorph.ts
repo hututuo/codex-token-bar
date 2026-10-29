@@ -1,6 +1,6 @@
 import { sidebarStrokes, strokePath, type SidebarStrokeSpec } from "./sidebarStrokeGeometry";
 
-type StrokePresentation = { d: string; width: string };
+type StrokePresentation = { d: string; width: string; dash?: string; offset?: string; opacity?: string };
 const namespace = "http://www.w3.org/2000/svg";
 
 /** One bounded compositor animation. Original strokes remain mounted and are
@@ -50,12 +50,21 @@ export function animateSidebarStrokes(root: HTMLElement, expanded: boolean, prev
         const guide=guides.get(spec.id);if(guide && strokes.some(stroke=>stroke.foreground))hide(guide);
         for (const stroke of strokes) {
           const path = doc.createElementNS(namespace, "path");
-          const from = previous.get(stroke.id) ?? { d: `path("${strokePath(expanded ? stroke.target : stroke.source)}")`, width: String(expanded ? stroke.targetWidth : stroke.sourceWidth) };
-          const points = expanded ? stroke.source : stroke.target;
+          const sourcePath = stroke.sourcePath ?? stroke.source, targetPath = stroke.targetPath ?? stroke.target;
+          const fromRange = (expanded ? stroke.targetRange : stroke.sourceRange) ?? [0, 1];
+          const toRange = (expanded ? stroke.sourceRange : stroke.targetRange) ?? [0, 1];
+          const rangeStyle = (range: number[]) => ({ dash: `${Math.max(0, range[1] - range[0])} 2`, offset: String(-range[0]), opacity: range[1] > range[0] ? "1" : "0" });
+          const from = previous.get(stroke.id) ?? { d: `path("${strokePath(expanded ? targetPath : sourcePath)}")`, width: String(expanded ? stroke.targetWidth : stroke.sourceWidth), ...rangeStyle(fromRange) };
+          const endStyle = rangeStyle(toRange);
+          const points = expanded ? sourcePath : targetPath;
           const width = expanded ? stroke.sourceWidth : stroke.targetWidth;
           path.setAttribute("d", strokePath(points)); path.setAttribute("fill", "none");
           path.setAttribute("stroke", stroke.color); path.setAttribute("stroke-width", String(width));
           path.setAttribute("stroke-linecap", "round"); path.setAttribute("stroke-linejoin", "round");
+          // Keep the whole arc as an affine ellipse. Animate the actual fill
+          // interval along it instead of bending a separately trimmed path.
+          path.setAttribute("pathLength", "1");
+          path.style.strokeDasharray = endStyle.dash; path.style.strokeDashoffset = endStyle.offset; path.style.opacity = endStyle.opacity;
           let group = groups.get(stroke.group);
           if (!group) {
             group = doc.createElementNS(namespace, "g"); group.setAttribute("opacity", String(stroke.opacity));
@@ -63,8 +72,8 @@ export function animateSidebarStrokes(root: HTMLElement, expanded: boolean, prev
           }
           group.append(path); paths.push({ id: stroke.id, node: path });
           animations.push(path.animate([
-            { d: from.d, strokeWidth: from.width },
-            { d: `path("${strokePath(points)}")`, strokeWidth: String(width) },
+            { d: from.d, strokeWidth: from.width, strokeDasharray: from.dash ?? rangeStyle(fromRange).dash, strokeDashoffset: from.offset ?? rangeStyle(fromRange).offset, opacity: from.opacity ?? rangeStyle(fromRange).opacity },
+            { d: `path("${strokePath(points)}")`, strokeWidth: String(width), strokeDasharray: endStyle.dash, strokeDashoffset: endStyle.offset, opacity: endStyle.opacity },
           ] as Keyframe[], { duration: 440, easing: expanded ? "cubic-bezier(.2,.8,.2,1)" : "cubic-bezier(.333333,1,.666667,1)", fill: "forwards" }));
         }
       }
@@ -81,7 +90,7 @@ export function animateSidebarStrokes(root: HTMLElement, expanded: boolean, prev
     if (removed) return empty();
     const presentation = new Map(paths.map(({ id, node }) => {
       const style = win.getComputedStyle(node);
-      return [id, { d: style.d || `path("${node.getAttribute("d")}")`, width: style.strokeWidth }];
+      return [id, { d: style.d || `path("${node.getAttribute("d")}")`, width: style.strokeWidth, dash: style.strokeDasharray, offset: style.strokeDashoffset, opacity: style.opacity }];
     }));
     restore(); return presentation;
   };

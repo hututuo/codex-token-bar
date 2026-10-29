@@ -10,6 +10,8 @@ export type SidebarStrokeSpec = {
 export type SidebarStroke = {
   id: string; group: string; source: StrokePoint[]; target: StrokePoint[]; color: string;
   sourceWidth: number; targetWidth: number; opacity: number; foreground?: boolean;
+  sourcePath?: StrokePoint[]; targetPath?: StrokePoint[];
+  sourceRange?: [number, number]; targetRange?: [number, number];
 };
 const clamp = (value: number) => Math.min(1, Math.max(0, value));
 export function squeezePoints(ring: StrokeRect, bar: StrokeRect, half: number, progress: number): StrokePoint[] {
@@ -20,7 +22,9 @@ export function squeezePoints(ring: StrokeRect, bar: StrokeRect, half: number, p
     const t = index / 32, angle = start + sweep * t;
     const x = ring.x + ring.width / 2 + ring.width / 2 * Math.cos(angle);
     const y = ring.y + ring.height / 2 + ring.height / 2 * Math.sin(angle);
-    const endY = bar.y + bar.height - 2 - Math.max(0, bar.height - 4) * t;
+    // Affine ellipse squeeze; do not re-space the arc vertices during motion.
+    const endY = half === 0 ? bar.y + bar.height - 2 - Math.max(0, bar.height - 4) * t
+      : bar.y + bar.height / 2 + Math.sin(angle) / Math.cos(gap) * Math.max(0, bar.height - 4) / 2;
     return { x: x + (bar.x + bar.width / 2 - x) * p, y: y + (endY - y) * p };
   });
 }
@@ -31,9 +35,15 @@ export function strokeInterval(half: number, lower: number, upper: number, colla
   return half > 0 && !collapsed ? [1 - upper, 1 - lower] : [lower, upper];
 }
 function trim(points: StrokePoint[], lower: number, upper: number): StrokePoint[] {
+  const lengths = [0];
+  for (let i = 1; i < points.length; i++) lengths.push(lengths[i - 1] + Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y));
+  const total = lengths[lengths.length - 1];
   return Array.from({ length: 33 }, (_, index) => {
-    const offset = clamp(lower + (upper - lower) * index / 32) * (points.length - 1);
-    const a = Math.floor(offset), b = Math.min(points.length - 1, a + 1), t = offset - a;
+    const distance = clamp(lower + (upper - lower) * index / 32) * total;
+    let b = 1;
+    while (b < lengths.length - 1 && lengths[b] < distance) b++;
+    const a = b - 1, length = lengths[b] - lengths[a];
+    const t = length > 0 ? (distance - lengths[a]) / length : 0;
     return { x: points[a].x + (points[b].x - points[a].x) * t, y: points[a].y + (points[b].y - points[a].y) * t };
   });
 }
@@ -47,6 +57,7 @@ export function sidebarStrokes(spec: SidebarStrokeSpec, source: StrokeRect, targ
     const b = strip ? [{ x: target.x + target.width / 2, y: target.y + 2 }, { x: target.x + target.width / 2, y: target.y + target.height - 2 }] : squeezePoints(source, target, part, 1);
     const make = (id: string, color: string, range: [number, number], end: [number, number], opacity: number): SidebarStroke => ({
       id: `${spec.id}:${part}:${id}`, group: `${spec.id}:${id}`, source: trim(a, ...range), target: trim(b, ...end), color,
+      sourcePath: a, targetPath: b, sourceRange: range, targetRange: end,
       sourceWidth: spec.width ?? (strip ? 4 : 3), targetWidth: 4, opacity,
     });
     const strokes = [make("track", spec.trackColor ?? "#ffffff", [0, 1], [0, 1], spec.trackOpacity ?? .12)];

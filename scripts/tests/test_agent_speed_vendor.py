@@ -35,8 +35,13 @@ class AgentSpeedVendorTests(unittest.TestCase):
         (self.vendor / 'UPSTREAM.json').write_text(json.dumps(self.lock), encoding='utf-8')
 
     def run_tool(self, *args):
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            return vendor_tool.main([*args, '--vendor', str(self.vendor)])
+        return self.run_tool_output(*args)[0]
+
+    def run_tool_output(self, *args):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            result = vendor_tool.main([*args, '--vendor', str(self.vendor)])
+        return result, stdout.getvalue(), stderr.getvalue()
 
     def test_default_check_is_offline_and_detects_content_added_and_removed_files(self):
         with patch.object(vendor_tool, 'remote_head', side_effect=AssertionError('no network')):
@@ -135,6 +140,71 @@ class AgentSpeedVendorTests(unittest.TestCase):
             self.assertEqual(self.run_tool('check', '--remote'), 0)
         with patch.object(vendor_tool, 'remote_head', return_value='b' * 40):
             self.assertEqual(self.run_tool('check', '--remote'), 1)
+
+    def test_remote_drift_can_be_acknowledged_only_for_the_exact_pin_with_a_reason(self):
+        remote = 'b' * 40
+        lock_before = (self.vendor / 'UPSTREAM.json').read_bytes()
+        with patch.object(vendor_tool, 'remote_head', return_value=remote) as lookup:
+            result, stdout, stderr = self.run_tool_output(
+                'check', '--remote', '--reviewed-upstream-pin', SHA, '--reason', 'Keep the verified local candidate for this fix.'
+            )
+        self.assertEqual(result, 0, stderr)
+        lookup.assert_called_once_with()
+        receipt = json.loads(next(line for line in stdout.splitlines() if line.startswith('{')))
+        self.assertEqual(receipt, {
+            'status': 'upstream-drift-acknowledged',
+            'pinned': SHA,
+            'remoteHead': remote,
+            'reviewedPin': SHA,
+            'reason': 'Keep the verified local candidate for this fix.',
+        })
+        self.assertIn('Agent Speed vendor check passed', stdout)
+        self.assertEqual((self.vendor / 'UPSTREAM.json').read_bytes(), lock_before)
+
+    def test_remote_drift_acknowledgement_rejects_malformed_or_incomplete_input(self):
+        cases = (
+            (('check', '--remote', '--reviewed-upstream-pin', 'z' * 40, '--reason', 'reviewed'), 'exact locked'),
+            (('check', '--remote', '--reviewed-upstream-pin', 'b' * 40, '--reason', 'reviewed'), 'does not match'),
+            (('check', '--remote', '--reviewed-upstream-pin', SHA, '--reason', '  \n'), 'non-empty'),
+            (('check', '--remote', '--reviewed-upstream-pin', SHA), 'non-empty'),
+            (('check', '--remote', '--reason', 'reviewed'), 'exact locked'),
+        )
+        for args, message in cases:
+            with self.subTest(args=args), patch.object(vendor_tool, 'remote_head', return_value='b' * 40) as lookup:
+                result, _, stderr = self.run_tool_output(*args)
+                self.assertEqual(result, 1)
+                self.assertIn(message, stderr)
+                lookup.assert_called_once_with()
+
+    def test_network_failure_cannot_be_overridden_by_a_valid_acknowledgement(self):
+        with patch.object(vendor_tool, 'remote_head', side_effect=OSError('mocked network failure')) as lookup:
+            result, stdout, stderr = self.run_tool_output(
+                'check', '--remote', '--reviewed-upstream-pin', SHA, '--reason', 'Candidate review'
+            )
+        self.assertEqual(result, 1)
+        self.assertEqual(stdout, '')
+        self.assertIn('mocked network failure', stderr)
+        lookup.assert_called_once_with()
+
+    def test_acknowledgement_does_not_override_offline_vendor_drift(self):
+        file = self.vendor / vendor_tool.SCOPES[0] / 'fixture.txt'
+        file.write_text('unrecorded local edit\n', encoding='utf-8')
+        with patch.object(vendor_tool, 'remote_head', return_value='b' * 40) as lookup:
+            result, stdout, stderr = self.run_tool_output(
+                'check', '--remote', '--reviewed-upstream-pin', SHA, '--reason', 'Candidate review'
+            )
+        self.assertEqual(result, 1)
+        self.assertEqual(stdout, '')
+        self.assertIn('Unrecorded vendor drift', stderr)
+        lookup.assert_called_once_with()
+
+    def test_acknowledgement_requires_remote_check(self):
+        with patch.object(vendor_tool, 'remote_head', side_effect=AssertionError('no remote check expected')):
+            result, _, stderr = self.run_tool_output(
+                'check', '--reviewed-upstream-pin', SHA, '--reason', 'Candidate review'
+            )
+        self.assertEqual(result, 1)
+        self.assertIn('require --remote', stderr)
 
     def test_record_requires_review_and_does_not_change_existing_lock(self):
         before = (self.vendor / 'UPSTREAM.json').read_bytes()

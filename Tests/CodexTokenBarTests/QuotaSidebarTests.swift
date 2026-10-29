@@ -594,6 +594,8 @@ extension QuotaSidebarTests {
             tasks: TaskCompletionMonitor(defaults: defaults), radar: CodexRadarStore(detailRefreshDefaults: defaults),
             history: QuotaHistoryStore(), edge: .right)
         defer { controller.close() }
+        XCTAssertEqual(controller.railPanel?.appearance?.name, .darkAqua)
+        XCTAssertEqual(controller.detailPanel?.appearance?.name, .darkAqua)
         func settle(_ seconds: Double) {
             let end = Date().addingTimeInterval(seconds)
             while Date() < end { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }

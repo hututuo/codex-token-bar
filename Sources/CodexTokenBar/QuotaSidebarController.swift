@@ -451,6 +451,9 @@ final class QuotaSidebarController: NSObject, ObservableObject {
                                      styleMask: [.borderless, .nonactivatingPanel],
                                      backing: .buffered, defer: false)
         panel.identifier = NSUserInterfaceItemIdentifier(identifier)
+        // The sidebar is always dark; native segmented controls must use the
+        // same appearance instead of inheriting a light desktop's black labels.
+        panel.appearance = NSAppearance(named: .darkAqua)
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false

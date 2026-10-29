@@ -296,3 +296,8 @@ html.quota-sidebar-fixed-canvas,html.quota-sidebar-fixed-canvas body,html.quota-
 @media(prefers-reduced-motion:reduce){.integrated-quota-track>.qs-pace-mark{transition:none}}
 
 .qs-pace-morph{position:absolute;inset:0;width:100%;height:100%;overflow:visible;z-index:13;pointer-events:none}
+
+/* Sidebar surfaces are always dark, regardless of the desktop/app theme. */
+.qs-detail .activity-speed-choice{color:#edf1e9;color-scheme:dark}
+.qs-detail .activity-speed-choice button{font-weight:500}
+.qs-detail .activity-speed-choice button[aria-pressed=true]{color:#fff!important}

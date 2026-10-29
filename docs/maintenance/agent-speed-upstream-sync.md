@@ -101,6 +101,12 @@ dotnet run --project tools/ActivityEngineProbe/ActivityEngineProbe.csproj \
 
 `UPSTREAM.json` schema version 2 keeps `files` as the exact pinned upstream inventory, `patches` for local changes to upstream-owned paths, and `additions` for reviewed local-only files inside the vendored scopes. Each patch/addition records the current SHA-256 and a specific reason. An addition must not also appear in `files` or `patches`; it is never represented as upstream code. `record` requires `--addition-reasons` to map every and only added scoped path, and refuses removed scoped files. `check` validates the complete combined inventory offline. When vendored implementations change after recording, rerun the reviewed record/check workflow to refresh hashes and reasons together; do not copy hashes from another worktree.
 
+## 2026-10-29 manual candidate drift acknowledgement
+
+For the current fix, the user chose to keep the verified Agent Speed pin `a94a67fcc78e5d8eea5f82d8d5e737bccf994e2c` as the local candidate rather than upgrade the vendor. This records a candidate-preparation choice only; it does not approve an upstream sync or a public release.
+
+`prepare-release.yml` exposes `reviewed_upstream_pin` and `reason` only through `workflow_dispatch`; both default to empty, and `workflow_call` has no acknowledgement inputs. Empty inputs retain the strict `remote HEAD == UPSTREAM.json commit` check. To prepare a manual candidate while upstream has moved, provide the exact SHA from `UPSTREAM.json` and a non-empty reason. The script still checks the complete local hash/patch/addition inventory, MIT license, and `VENDOR.md` pin, then looks up the real remote HEAD. It accepts only that exact locked pin plus the reason for the HEAD-drift condition. A malformed or mismatched pin, missing reason, local vendor drift, invalid license/provenance, or remote lookup failure still fails the job. The acknowledgement does not modify the lock or vendor files.
+
 ## 2026-10-29 Swift 6 compiler-compatibility patch
 
 The pinned Agent Speed Swift tests now build their repeated-scalar protobuf message and process-argument fixture with typed byte arrays and incremental appends. This is a test-only compiler-compatibility change: the emitted fixture bytes and assertions are unchanged. The upstream commit remains `a94a67fcc78e5d8eea5f82d8d5e737bccf994e2c`; `UPSTREAM.json` records both test-file patches and retains every prior patch/addition reason. No Agent Speed runtime algorithm or fixture count changes.

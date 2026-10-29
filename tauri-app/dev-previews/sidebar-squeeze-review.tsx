@@ -23,7 +23,7 @@ function Review(){
  useQuotaMarkerMorph(root,expanded,true);
  const items=['modeltrace','speed','quota:codex',...(paired?['quota:claudeCode']:[]),'models','tasks','tps','credits'];
  const selected=paired?quotas:quotas.slice(0,1);
- return <main className="squeeze-review"><header><h1>向内压合，整环对应整条</h1><p>候选版实际组件 · 沿用原侧栏尺寸、字体与配色 · 本页不采集、不上报、不修改设置</p></header>
+ return <main className="squeeze-review"><header><h1>规则椭圆压合，整环对应整条</h1><p>候选版实际组件 · 沿用原侧栏尺寸、字体与配色 · 本页不采集、不上报、不修改设置</p></header>
  <div className="review-layout"><div className="quota-sidebar-document"><div className={`qs-rail qs-left preview-rail ${expanded?'expanded':''}`} ref={root}>
   <SidebarCompactBars items={items} quotas={selected} selection={defaultQuotaSelection} ratePercent={65} modelRates={rates} models={models}
    taskStatus="ready" taskLabel="显示测试：2 个任务" visible={!expanded}/>
@@ -34,10 +34,10 @@ function Review(){
    <button className="qs-model-trigger"><SidebarModelShareStrip models={models} title="本地模型占比快照"/><span>模型占比</span></button>
    <button className="qs-running-trigger"><SidebarTaskRing><strong>2</strong></SidebarTaskRing><span>显示测试</span></button>
   </>}/>
- </div></div><section className="review-controls"><span className="review-tag">同一套生产组件与路径</span><h2>{expanded?'二级菜单':'一级菜单'}</h2>
+ </div></div><section className="review-controls"><span className="review-tag">生产组件 · 规则椭圆 v2</span><h2>{expanded?'二级菜单':'一级菜单'}</h2>
  <div className="review-buttons"><button onClick={()=>setExpanded(true)}>展开</button><button onClick={()=>setExpanded(false)}>收起</button><button onClick={()=>setExpanded(value=>!value)}>反向切换</button></div>
  <label><input type="checkbox" checked={paired} onChange={event=>setPaired(event.target.checked)}/>显示 Claude 双周期（模拟额度）</label>
- <p>圆环两侧保持同向，逐渐压成细椭圆，再并拢成直条。速度和任务复用这一变换；模型占比的横条对应竖条，颜色顺序和占比保留。</p>
+ <p>圆环保持规则椭圆，只压窄和移动，不再拉扯弧线顶点；用量刻度沿完整轮廓变化，再并拢成直条。速度和任务复用这一变换；模型占比的横条对应竖条，颜色顺序和占比保留。</p>
  <p>Codex 额度与模型占比来自本地快照；Claude 额度、速度与任务数字仅用于动画测试。</p>
  <p className="review-note">展开与收起均为 440ms，可连续点“反向切换”检查中断恢复。没有循环播放；停止操作后不保留动画层。</p>
  </section></div></main>;

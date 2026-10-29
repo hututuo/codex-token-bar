@@ -103,6 +103,21 @@ final class ClientQuotaMorphTests: XCTestCase {
         }
     }
 
+    func testSqueezingPreservesAnEllipseInsteadOfWarpingTheArc() {
+        for p in [0.25, 0.5, 0.75] {
+            let center = CGPoint(x: ring.midX + (track.midX - ring.midX) * p,
+                                 y: ring.midY + (track.midY - ring.midY) * p)
+            let rx = ring.width / 2 * (1 - p)
+            let ry = ring.height / 2 * (1 - p) + (track.height / 2 - 2) * p
+            for half in [-2, 2] {
+                for point in ClientQuotaMorphGeometry.points(ring: ring, track: track, half: half, progress: p) {
+                    let x = (point.x - center.x) / rx, y = (point.y - center.y) / ry
+                    XCTAssertEqual(x * x + y * y, 1, accuracy: 0.0001)
+                }
+            }
+        }
+    }
+
     func testModelUsageStripMatchesEveryColorToTheVerticalBar() throws {
         let source = CGRect(x: 18, y: 100, width: 52, height: 4)
         let route = ClientQuotaMorphRoute(id: "models", ring: source, track: track, half: 0, fraction: 1, color: .gray,
