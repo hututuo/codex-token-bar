@@ -6,7 +6,7 @@ import TiktokenSwift
 /// Fully local, bundled tokenizer. Never downloads a vocabulary or sends response text.
 enum BodySpeedTokenizer {
     static func load() throws -> CoreBpe {
-        guard let url = Bundle.module.url(forResource: "o200k_base", withExtension: "tiktoken") else {
+        guard let url = AppResources.url(forResource: "o200k_base", withExtension: "tiktoken") else {
             throw CocoaError(.fileNoSuchFile)
         }
         let data = try Data(contentsOf: url)

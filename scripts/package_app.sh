@@ -181,6 +181,10 @@ sign_target "$MACOS_DIR/TokenBarClaudeLocal"
 sign_target "$APP_DIR" app
 codesign --verify --deep --strict --verbose=2 "$APP_DIR" >/dev/null
 
+# Exercise the signed executable's real resource lookup outside the checkout.
+# This mode exits before creating App/runtime owners or touching user data.
+(cd /private/tmp && "$MACOS_DIR/$PRODUCT_NAME" --verify-bundled-resources)
+
 echo "$APP_DIR"
 
 if [[ "$CONFIGURATION" == "debug" && "${CODEX_TOKEN_BAR_NO_OPEN:-0}" != "1" ]]; then

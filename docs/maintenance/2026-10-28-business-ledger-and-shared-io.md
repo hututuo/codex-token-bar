@@ -43,7 +43,7 @@ Pin 仍为 `a94a67fcc78e5d8eea5f82d8d5e737bccf994e2c`。来源锁登记 34 个�
 
 ## 验收
 
-最终结果在下方追加；日志仅位于本分支忽略目录 `scratch/`。所有迁移运行均为临时夹具，不是实际安装验收。Rust 除旧 cfg(test) 回归外，还提供显式 feature-only `business-store-fixture` 二进制，运行真实非 cfg(test) 的 bootstrap/Exact/Quota/ModelTrace/BodySpeed 路径；必须给五个任务专用路径覆盖且全部落在临时根内，拒绝用户 Home。
+最终结果在下方追加；日志仅位于本分支忽略目录 `scratch/`。所有迁移运行均为临时夹具，不是实际安装验收。Rust 除旧 cfg(test) 回归外，还提供显式 feature-gated `business-store-fixture` Cargo example，运行真实非 cfg(test) 的 bootstrap/Exact/Quota/ModelTrace/BodySpeed 路径；使用 `cargo run --example business-store-fixture --features business-store-fixture -- <临时根>`，必须给五个任务专用路径覆盖且全部落在临时根内，拒绝用户 Home。该 example 不作为应用 binary 被 Tauri installer bundle 收集。
 
 Windows 真机文件系统、正式包升级、长期运行/功耗为 NOT_RUN；交叉编译与离线管道自测不能替代这些验收。
 

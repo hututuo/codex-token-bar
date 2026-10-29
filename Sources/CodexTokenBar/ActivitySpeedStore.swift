@@ -102,7 +102,7 @@ actor ActivitySpeedStore {
 
     init(url: URL) throws {
         database = SQLiteDatabaseDriver(url: url, enableWAL: true)
-        guard let schemaURL = Bundle.module.url(forResource: "activity-speed-schema", withExtension: "sql"),
+        guard let schemaURL = AppResources.url(forResource: "activity-speed-schema", withExtension: "sql"),
               let schema = try? String(contentsOf: schemaURL, encoding: .utf8) else {
             throw ActivitySpeedStoreError.schemaUnavailable
         }

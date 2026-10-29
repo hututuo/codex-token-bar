@@ -11,7 +11,7 @@ enum ModelTrace {
     struct Failure: LocalizedError { let message: String; var errorDescription: String? { message } }
     static func fail(_ text: String) -> Failure { Failure(message: text) }
     static func resource(_ file: String) throws -> URL {
-        guard let folder = Bundle.module.url(forResource: "ModelTrace", withExtension: nil) else { throw fail("缺少 ModelTrace 参考库") }
+        guard let folder = AppResources.url(forResource: "ModelTrace", withExtension: nil) else { throw fail("缺少 ModelTrace 参考库") }
         return folder.appendingPathComponent(file)
     }
     static func parse(_ text: String, expected: Int) throws -> Sample {

@@ -2,6 +2,23 @@ import Sparkle
 import SwiftUI
 
 @main
+@MainActor
+enum CodexTokenBarEntry {
+    static func main() {
+        if CommandLine.arguments.contains("--verify-bundled-resources") {
+            do {
+                try AppResources.verifyPackagedResources()
+                print("PASS packaged resources")
+                exit(0)
+            } catch {
+                FileHandle.standardError.write(Data("Packaged resource verification failed: \(error)\n".utf8))
+                exit(1)
+            }
+        }
+        CodexTokenBarApp.main()
+    }
+}
+
 struct CodexTokenBarApp: App {
     @NSApplicationDelegateAdaptor(CodexTokenBarApplicationDelegate.self)
     private var applicationDelegate

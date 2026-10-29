@@ -160,6 +160,20 @@ test("Windows build passes a temporary config file and protects tracked config",
   assert.match(source, /Remove-Item[^\n]+\$ConfigPath/);
 });
 
+test("Cargo exposes the offline fixture as a feature-gated example, not an application binary", async () => {
+  const config = JSON.parse(await readFile(path.join(projectRoot, "tauri-app", "src-tauri", "tauri.conf.json"), "utf8"));
+  const cargo = await readFile(path.join(projectRoot, "tauri-app", "src-tauri", "Cargo.toml"), "utf8");
+  const fixtureTarget = cargo.match(/\[\[example\]\][\s\S]*?(?=\n(?:\[\[|\[)|$)/)?.[0];
+
+  assert.equal(config.mainBinaryName, undefined);
+  assert.match(cargo, /business-store-fixture\s*=\s*\[\]/);
+  assert.ok(fixtureTarget, "offline business-store fixture example was removed");
+  assert.match(fixtureTarget, /name\s*=\s*"business-store-fixture"/);
+  assert.match(fixtureTarget, /path\s*=\s*"examples\/business-store-fixture\.rs"/);
+  assert.match(fixtureTarget, /required-features\s*=\s*\["business-store-fixture"\]/);
+  assert.doesNotMatch(cargo, /\[\[bin\]\][\s\S]*business-store-fixture/);
+});
+
 test("Windows build clears each NSIS output and accepts exactly one fresh versioned installer", async () => {
   const source = await readFile(windowsScript, "utf8");
   assert.match(source, /Remove-Item[^\n]+\$BundleDir/);

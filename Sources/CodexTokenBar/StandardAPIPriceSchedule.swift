@@ -129,7 +129,7 @@ enum StandardAPIPriceSchedule {
         let rows: [Row]
     }
     private static let history: History = {
-        guard let url = Bundle.module.url(forResource: "standard-api-price-history", withExtension: "json"),
+        guard let url = AppResources.url(forResource: "standard-api-price-history", withExtension: "json"),
               let data = try? Data(contentsOf: url), let value = try? JSONDecoder().decode(History.self, from: data),
               value.schema == 1 else { preconditionFailure("Missing or invalid bundled standard price history") }
         return value

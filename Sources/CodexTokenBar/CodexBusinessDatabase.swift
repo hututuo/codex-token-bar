@@ -189,7 +189,7 @@ final class CodexBusinessDatabase {
     let url: URL
     let driver: SQLiteDatabaseDriver
     private static let bundledSchemaSQL: String? = {
-        guard let resource = Bundle.module.url(forResource: "codex-ledger-schema", withExtension: "sql") else { return nil }
+        guard let resource = AppResources.url(forResource: "codex-ledger-schema", withExtension: "sql") else { return nil }
         return try? String(contentsOf: resource, encoding: .utf8)
     }()
     private static let expectedSchemaEntries: [SchemaEntry]? = {

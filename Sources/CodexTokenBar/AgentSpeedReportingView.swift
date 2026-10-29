@@ -272,13 +272,16 @@ private struct SpeedReportingNicknameStep: View {
 
 struct SpeedLeaderboardMovie: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var player = AVPlayer(url: Bundle.module.url(forResource: "leaderboard", withExtension: "mp4", subdirectory: "SpeedLeaderboard")!)
+    @State private var player: AVPlayer = {
+        guard let url = AppResources.url(forResource: "leaderboard", withExtension: "mp4", subdirectory: "SpeedLeaderboard") else { return AVPlayer() }
+        return AVPlayer(url: url)
+    }()
     @State private var playing = false
     @State private var playback = LeaderboardMoviePlayback()
     @State private var lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
     var body: some View {
         ZStack(alignment: .bottom) {
-            if let url = Bundle.module.url(forResource: "poster", withExtension: "jpg", subdirectory: "SpeedLeaderboard"),
+            if let url = AppResources.url(forResource: "poster", withExtension: "jpg", subdirectory: "SpeedLeaderboard"),
                let poster = NSImage(contentsOf: url) {
                 Image(nsImage: poster).resizable().aspectRatio(contentMode: .fit)
             }
