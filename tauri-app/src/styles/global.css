@@ -2521,9 +2521,9 @@ button.quota-side-card:hover {
   align-items: center;
   min-width: 0;
   height: 30px;
-  border: 1px solid color-mix(in srgb, var(--line) 86%, transparent);
+  border: 1px solid color-mix(in srgb, var(--model-color) 17%, var(--line));
   border-radius: 6px;
-  background: color-mix(in srgb, var(--panel) 72%, transparent);
+  background: color-mix(in srgb, var(--model-color) 8%, transparent);
   padding: 0 8px;
   font-size: 10.5px;
   line-height: 1.2;
@@ -2556,6 +2556,7 @@ button.quota-side-card:hover {
 
 .stats-model-cost-primary-card b,
 .stats-model-cost-secondary-chip b {
+  grid-column: 5;
   justify-self: end;
   color: var(--text);
   font-size: 10.5px;
@@ -2573,6 +2574,9 @@ button.quota-side-card:hover {
   font-weight: var(--weight-medium);
   font-variant-numeric: tabular-nums;
 }
+
+.model-cost-tokens { grid-column:3; }
+.model-cost-share { grid-column:4; }
 
 .stats-model-cost-total {
   color: var(--accent-strong);

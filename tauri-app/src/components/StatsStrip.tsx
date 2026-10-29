@@ -268,7 +268,7 @@ function StatsStripView({
                     role={modelCostScope === "lifetime" ? "button" : undefined} tabIndex={modelCostScope === "lifetime" ? 0 : undefined}
                     onDoubleClick={modelCostScope === "lifetime" ? event => setEditingColor({ model: floatingModelUsageKey(item.key.split("|").at(-1)), x: event.clientX, y: event.clientY }) : undefined}
                     onKeyDown={modelCostScope === "lifetime" ? event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); setEditingColor({ model: floatingModelUsageKey(item.key.split("|").at(-1)), x: rect.left, y: rect.bottom }); } } : undefined}>
-                    <i style={{backgroundColor:item.color}}/><em><span className="model-cost-name">{qualifiedLabel ? qualifiedLabel[1] : label}</span>{qualifiedLabel && <span className="model-cost-name-suffix">{qualifiedLabel[2]}</span>}</em><b>{amount}</b><small className="model-cost-tokens">{item.tokens === 0 ? "暂无记录" : formatTokens(item.tokens)}</small>{item.tokens > 0 && <small className="model-cost-share">{floatingModelUsageValue(item,"share")}</small>}
+                    <i style={{backgroundColor:item.color}}/><em><span className="model-cost-name">{qualifiedLabel ? qualifiedLabel[1] : label}</span>{qualifiedLabel && <span className="model-cost-name-suffix">{qualifiedLabel[2]}</span>}</em><small className="model-cost-tokens">{item.tokens === 0 ? "暂无记录" : formatTokens(item.tokens)}</small>{item.tokens > 0 && <small className="model-cost-share">{floatingModelUsageValue(item,"share")}</small>}<b>{amount}</b>
                   </span>;
                   })}
                 </div>
