@@ -1368,12 +1368,10 @@ struct DashboardModelCostRow: View {
                         Text(group.id == "6" ? "GPT" : group.title)
                             .font(.system(size: 10, weight: .bold)).foregroundStyle(.secondary)
                             .frame(width: 78, alignment: .leading)
-                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 108), spacing: 7), count: group.id == "6" || group.id.hasSuffix(":latest") ? min(5, max(1, group.items.count)) : 4), alignment: .leading, spacing: 7) {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 154), spacing: 7)], alignment: .leading, spacing: 7) {
                             ForEach(group.items) { item in
-                                Group {
-                                    if group.id == "6" || group.id.hasSuffix(":latest") { DashboardPrimaryModelCostCard(item: item) }
-                                    else { DashboardSecondaryModelCostChip(item: item) }
-                                }.modifier(ModelColorEditModifier(model: ModelUsagePresentation.autoReviewUnderlyingModelKey(for: item.id) ?? String(item.id.split(separator: "|", maxSplits: 1).last ?? Substring(item.id)), enabled: scope == .lifetime))
+                                DashboardModelCostCard(item: item, prominent: group.id == "6" || group.id.hasSuffix(":latest"))
+                                    .modifier(ModelColorEditModifier(model: ModelUsagePresentation.autoReviewUnderlyingModelKey(for: item.id) ?? String(item.id.split(separator: "|", maxSplits: 1).last ?? Substring(item.id)), enabled: scope == .lifetime))
                             }
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -1443,106 +1441,51 @@ private struct DashboardModelCostScopePicker: View {
     }
 }
 
-private struct DashboardPrimaryModelCostCard: View {
+private struct DashboardModelCostCard: View {
     let item: FloatingTodayModelUsageItem
+    let prominent: Bool
+
+    private var amount: String {
+        guard item.tokens > 0 else { return "—" }
+        if item.isReferenceOnly { return item.referenceCostUSD?.quotaEstimatorMoneyText ?? "—" }
+        return item.valueText(for: .cost)
+    }
+
+    private var detail: String {
+        guard item.tokens > 0 else { return "暂无本地记录" }
+        return (item.isReferenceOnly ? "参考 · " : "")
+            + item.tokens.abbreviatedTokens + " · " + item.valueText(for: .share)
+    }
+
+    private var description: String {
+        item.tokens == 0 ? "\(item.label) · 暂无本地记录"
+            : "\(item.label)，费用 \(item.valueText(for: .cost))，用量 \(item.tokens.abbreviatedTokens)，占比 \(item.valueText(for: .share))"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
                 Circle().fill(item.color).frame(width: 7, height: 7)
                 Text(item.label.replacingOccurrences(of: #"(?i)^GPT[- ]*"#, with: "", options: .regularExpression))
-                    .font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary).truncationMode(.middle)
                 Spacer(minLength: 2)
-                Text(item.tokens == 0 ? "—" : item.valueText(for: .cost))
-                    .font(.system(size: 12, weight: .semibold)).foregroundStyle(.primary).monospacedDigit()
+                Text(amount).font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.primary).monospacedDigit().fixedSize()
             }
-            Text(item.tokens == 0 ? "暂无本地记录" : item.tokens.abbreviatedTokens + " · " + item.valueText(for: .share))
-                .font(.system(size: 9.5, weight: .medium)).foregroundStyle(.secondary).monospacedDigit().padding(.leading, 13)
-        }.lineLimit(1)
-        .padding(.horizontal, 8).padding(.vertical, 5)
-        .frame(maxWidth: .infinity, minHeight: 40)
-        .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(item.color.opacity(0.075))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .stroke(item.color.opacity(0.16), lineWidth: 1)
-        )
-    }
-}
-
-private struct DashboardSecondaryModelCostChip: View {
-    let item: FloatingTodayModelUsageItem
-
-    var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 5) {
-                modelIndicator
-                modelLabel
-                    .fixedSize(horizontal: true, vertical: false)
-                Spacer(minLength: 4)
-                costText
-                    .fixedSize(horizontal: true, vertical: false)
-                shareText
-                    .fixedSize(horizontal: true, vertical: false)
-            }
-
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 5) {
-                    modelIndicator
-                    modelLabel
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                HStack(spacing: 7) {
-                    costText
-                        .fixedSize(horizontal: true, vertical: false)
-                    shareText
-                        .fixedSize(horizontal: true, vertical: false)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            Text(detail).font(.system(size: 9.5, weight: .medium))
+                .foregroundStyle(.secondary).monospacedDigit().padding(.leading, 13)
         }
-        .font(.system(size: 10.5, weight: .semibold))
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
-        .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(AppTheme.panelBackground.opacity(0.72))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .stroke(AppTheme.border.opacity(0.8), lineWidth: 1)
-        )
+        .lineLimit(1)
+        .padding(.horizontal, 8).padding(.vertical, 5)
+        .frame(maxWidth: .infinity).frame(height: 42)
+        .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+            .fill(prominent ? item.color.opacity(0.075) : AppTheme.panelBackground.opacity(0.72)))
+        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
+            .stroke(prominent ? item.color.opacity(0.16) : AppTheme.border.opacity(0.8), lineWidth: 1))
+        .help(description)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(
-            "\(item.label)，费用 \(item.valueText(for: .cost))，占比 \(item.valueText(for: .share))"
-        )
-    }
-
-    private var modelIndicator: some View {
-        Circle()
-            .fill(item.color)
-            .frame(width: 6, height: 6)
-    }
-
-    private var modelLabel: some View {
-        Text(item.label)
-            .foregroundStyle(.secondary)
-    }
-
-    private var costText: some View {
-        Text(item.valueText(for: .cost))
-            .foregroundStyle(.primary)
-            .monospacedDigit()
-    }
-
-    private var shareText: some View {
-        Text(item.valueText(for: .share))
-            .foregroundStyle(.tertiary)
-            .monospacedDigit()
+        .accessibilityLabel(description)
     }
 }
 

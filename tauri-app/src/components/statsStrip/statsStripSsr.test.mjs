@@ -238,7 +238,10 @@ test("StatsStrip defaults to current observed period and can switch to cumulativ
     assert.equal(scope[2].getAttribute("aria-pressed"), "true");
     assert.match(container.textContent, /Terra/);
     assert.match(container.textContent, /Spark 参考 \$1\.75/);
-    assert.match(container.textContent, /Spark\$1\.75（不计入总计）/);
+    const spark = [...container.querySelectorAll(".stats-model-cost-secondary-chip")].find(card => card.querySelector("em").textContent === "Spark");
+    assert.equal(spark.querySelector("b").textContent, "$1.75");
+    assert.match(spark.querySelector("small").textContent, /参考/);
+    assert.match(spark.getAttribute("aria-label"), /不计入总计/);
     await React.act(async () => { scope[1].click(); await settle(); });
     assert.equal(scope[1].getAttribute("aria-pressed"), "true");
     assert.match(container.textContent, /Sol/);

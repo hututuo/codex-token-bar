@@ -2505,29 +2505,40 @@ button.quota-side-card:hover {
   letter-spacing: 0.02em;
 }
 
-.stats-model-cost-primary-grid {
+.stats-model-cost-primary-grid,
+.stats-model-cost-secondary-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(154px, 1fr));
   gap: 7px;
   min-width: 0;
 }
 
-.stats-model-cost-primary-card {
+.stats-model-cost-primary-card,
+.stats-model-cost-secondary-chip {
   display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr) auto;
-  gap: 6px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  column-gap: 6px;
+  row-gap: 3px;
+  align-content: center;
   align-items: center;
   min-width: 0;
-  min-height: 30px;
+  height: 42px;
   border: 1px solid color-mix(in srgb, var(--model-color) 17%, var(--line));
-  border-radius: 8px;
+  border-radius: 7px;
   background: color-mix(in srgb, var(--model-color) 8%, transparent);
-  padding: 0 9px;
+  padding: 5px 8px;
   font-size: 11px;
+  line-height: 1.2;
   white-space: nowrap;
 }
 
-.stats-model-cost-primary-card i {
+.stats-model-cost-secondary-chip {
+  border-color: color-mix(in srgb, var(--line) 86%, transparent);
+  background: color-mix(in srgb, var(--panel) 72%, transparent);
+}
+
+.stats-model-cost-primary-card i,
+.stats-model-cost-secondary-chip i {
   width: 7px;
   height: 7px;
   border-radius: 50%;
@@ -2548,44 +2559,22 @@ button.quota-side-card:hover {
 .stats-model-cost-secondary-chip b {
   justify-self: end;
   color: var(--text);
+  font-size: 12px;
   font-weight: var(--weight-semibold);
   font-variant-numeric: tabular-nums;
 }
 
 .stats-model-cost-primary-card small,
 .stats-model-cost-secondary-chip small {
+  grid-column: 2 / -1;
+  grid-row: 2;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--muted);
   font-size: 9.5px;
   font-weight: var(--weight-medium);
   font-variant-numeric: tabular-nums;
-}
-
-.stats-model-cost-secondary-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(108px, 1fr));
-  gap: 6px;
-  min-width: 0;
-}
-
-.stats-model-cost-secondary-chip {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
-  gap: 5px;
-  align-items: center;
-  min-width: 0;
-  min-height: 26px;
-  border: 1px solid color-mix(in srgb, var(--line) 86%, transparent);
-  border-radius: 7px;
-  background: color-mix(in srgb, var(--panel) 72%, transparent);
-  padding: 0 8px;
-  font-size: 10.5px;
-  white-space: nowrap;
-}
-
-.stats-model-cost-secondary-chip i {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
 }
 
 .stats-model-cost-total {
@@ -10989,10 +10978,6 @@ html:not(.floating-document):not(.status-document) .brand-mark {
     border-left: 0;
   }
 
-  .stats-model-cost-secondary-grid {
-    grid-template-columns: repeat(2, minmax(108px, 1fr));
-  }
-
   .settings-panel,
   .session-row,
   .codex-home-editor {
@@ -11029,11 +11014,6 @@ html:not(.floating-document):not(.status-document) .brand-mark {
   .cache-ranking-search input {
     width: 100%;
     min-width: 0;
-  }
-
-  .stats-model-cost-primary-grid,
-  .stats-model-cost-secondary-grid {
-    grid-template-columns: 1fr;
   }
 
   .app-settings-general-grid,
@@ -13019,13 +12999,11 @@ details.session-management-banner {
 @media(max-width:850px){.quota-client-row:has(.quota-strip--embedded){grid-template-columns:max-content minmax(0,1fr)}}
 @media(max-width:620px){.dashboard-header-top{column-gap:12px}.dashboard-overview-title{font-size:24px}.dashboard-scope-slot .integrated-scope nav{gap:13px}.dashboard-scope-slot .integrated-scope nav>button{font-size:11px}.speed-report-header-status{font-size:10px}}
 
-.stats-model-cost-primary-card{grid-template-columns:auto minmax(0,1fr) auto;row-gap:3px;min-height:40px;padding:5px 9px;line-height:1.2}
-.stats-model-cost-primary-card small{grid-column:2 / -1;grid-row:2}
-.stats-model-cost-primary-grid{grid-template-columns:repeat(var(--model-columns,4),minmax(0,1fr))}
-@media(max-width:760px){.stats-model-cost-group{grid-template-columns:65px minmax(0,1fr)}.stats-model-cost-primary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.stats-model-cost-secondary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
-
-.stats-model-cost-secondary-chip{grid-template-columns:auto minmax(0,1fr) auto;row-gap:3px;padding:5px 8px;line-height:1.2;min-height:40px}
-.stats-model-cost-secondary-chip em{grid-column:2 / -1;grid-row:1}.stats-model-cost-secondary-chip b{grid-column:1 / 3;grid-row:2;justify-self:start}.stats-model-cost-secondary-chip small{grid-column:3;grid-row:2;justify-self:end}
+@media(max-width:760px) {
+  .stats-model-cost-group { grid-template-columns:65px minmax(0,1fr); }
+  .stats-model-cost-primary-grid,
+  .stats-model-cost-secondary-grid { grid-template-columns:repeat(auto-fill,minmax(128px,1fr)); }
+}
 
 .client-analytics { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
 .client-analytics > h2 { font-size: 18px; margin: 8px 0 0; }
