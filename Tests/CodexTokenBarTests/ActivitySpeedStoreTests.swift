@@ -120,7 +120,7 @@ final class ActivitySpeedStoreTests: XCTestCase {
         let filtered = try await store.activityHistory(
             now: 120,
             filter: ActivitySpeedFilter(sourceIdentity: "source-a", displayMode: "tokens",
-                                        estimatorID: "agent-speed", client: "codex", model: "model-a"),
+                                        estimatorID: "agent-speed", estimatorVersion: "1", client: "codex", model: "model-a"),
             windowSeconds: 86_400
         )
         XCTAssertEqual(filtered.series.count, 1)

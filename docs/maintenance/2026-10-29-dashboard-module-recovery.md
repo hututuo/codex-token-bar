@@ -67,3 +67,5 @@ Focused verification before hosted checks: 22 frontend regressions pass, includi
 The isolated real capture exposed a ~1e-14 tok/s unknown-model residual from floating-point summation. Activity projections ignore positive numerical dust below 1e-9 while preserving real zero samples and meaningful unknown output. This prevents a false zero-looking model/unknown-price entry without touching token accounting or body TPS.
 
 Full local frontend run passes 1352 tests. Hosted compilation caught argument ordering in five new Swift fixture calls; the calls now follow the existing helper signature. The activity SSR contract follows the approved fixed Agent Speed/24-hour/30-second presentation and still rejects rolling-mean tables and fabricated zero readouts. These follow-ups change test code only.
+
+Hosted XCTest completed 2158 cases and found the version-isolation fixture omitted its intended estimatorVersion filter while expecting one version. The fixture now explicitly selects version1, matching the Rust case; production grouping already retained both versions separately. This follow-up changes only the test fixture.
