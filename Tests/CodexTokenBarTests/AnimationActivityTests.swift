@@ -36,6 +36,10 @@ final class AnimationActivityTests: XCTestCase {
         let document = NSView(frame: .init(x: 0, y: 0, width: 200, height: 800))
         let probe = AnimationVisibilityView(frame: .init(x: 0, y: 0, width: 200, height: 800))
         probe.pausesDuringScroll = true
+        // A loaded host may resume a 60ms sleep after the real 180ms idle
+        // deadline. Drive event time separately from run-loop delivery time.
+        var scrollTime: TimeInterval = 0
+        probe.scrollClock = { scrollTime }
         var states: [Bool] = []
         probe.changed = { states.append($0) }
         document.addSubview(probe); scroll.documentView = document
@@ -47,12 +51,14 @@ final class AnimationActivityTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(250))
         XCTAssertEqual(states.last, true)
         for offset in [20, 40, 60, 80, 100] {
+            scrollTime += 0.06
             scroll.contentView.scroll(to: .init(x: 0, y: offset))
             scroll.reflectScrolledClipView(scroll.contentView)
             try await Task.sleep(for: .milliseconds(60))
             XCTAssertEqual(states.last, false, "Pause must cover continuous wheel/trackpad or programmatic scrolling")
         }
         XCTAssertEqual(states.filter { !$0 }.count, 1, "Do not invalidate the guide once per scroll frame")
+        scrollTime += 0.25
         try await Task.sleep(for: .milliseconds(250))
         XCTAssertEqual(states.last, true, "Resume after scrolling settles")
         let count = states.count

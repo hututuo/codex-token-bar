@@ -37,7 +37,7 @@ fn main() {
         let center = work.position.y as f64 + work.size.height as f64 / 2.0;
         let rest = SidebarFrame { x: if left { edge } else { edge - 16.0 * scale },
             y: center - 96.0 * scale, width: 16.0 * scale, height: 192.0 * scale };
-        canvas_windows::set_frame(&rail, rest, left, scale)?;
+        canvas_windows::set_frame(&rail, rest, left, scale, canvas_geometry::BASE_CANVAS_WIDTH)?;
         rail.show()?;
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs(2));
@@ -57,7 +57,7 @@ fn main() {
                     let w = rail.clone();
                     let (send, receive) = std::sync::mpsc::sync_channel(1);
                     rail.run_on_main_thread(move || {
-                        let result = canvas_windows::set_frame(&w, frame, left, scale).and_then(|()| {
+                        let result = canvas_windows::set_frame(&w, frame, left, scale, canvas_geometry::BASE_CANVAS_WIDTH).and_then(|()| {
                             w.eval(&format!(r#"(()=>{{
                                 const rail=document.querySelector('.qs-rail');
                                 rail.classList.toggle('qs-left',{left});rail.classList.toggle('qs-right',!{left});

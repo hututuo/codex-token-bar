@@ -40,6 +40,7 @@ final class AnimationVisibilityView: NSView {
     var changed: ((Bool) -> Void)?
     var includesMotionPolicy = false
     var pausesDuringScroll = false
+    var scrollClock: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
     private var clipOrigins: [ObjectIdentifier: CGPoint] = [:]
     private var scrollActive = false
     private var lastScrollTime: TimeInterval = 0
@@ -99,7 +100,7 @@ final class AnimationVisibilityView: NSView {
         let previous = clipOrigins.updateValue(clip.bounds.origin, forKey: id)
         guard pausesDuringScroll, let previous, previous != clip.bounds.origin else { return }
         scrollActive = true
-        lastScrollTime = ProcessInfo.processInfo.systemUptime
+        lastScrollTime = scrollClock()
         if scrollResume == nil { scheduleScrollResume(after: Self.scrollIdleDelay) }
     }
     private func scheduleScrollResume(after delay: TimeInterval) {
@@ -107,7 +108,7 @@ final class AnimationVisibilityView: NSView {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.scrollResume = nil
-                let remaining = Self.scrollIdleDelay - (ProcessInfo.processInfo.systemUptime - self.lastScrollTime)
+                let remaining = Self.scrollIdleDelay - (self.scrollClock() - self.lastScrollTime)
                 if remaining > 0 {
                     self.scheduleScrollResume(after: remaining)
                 } else {
