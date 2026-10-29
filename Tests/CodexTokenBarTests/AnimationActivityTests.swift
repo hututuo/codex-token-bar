@@ -41,14 +41,28 @@ final class AnimationActivityTests: XCTestCase {
         var scrollTime: TimeInterval = 0
         probe.scrollClock = { scrollTime }
         var states: [Bool] = []
-        probe.changed = { states.append($0) }
+        let initiallyVisible = expectation(description: "Initial exposure is published")
+        let resumedAfterIdle = expectation(description: "Idle scroll callback resumes animation")
+        var awaitingInitialExposure = true
+        var awaitingIdleResume = false
+        probe.changed = { visible in
+            states.append(visible)
+            if visible && awaitingInitialExposure {
+                awaitingInitialExposure = false
+                initiallyVisible.fulfill()
+            }
+            if visible && awaitingIdleResume {
+                awaitingIdleResume = false
+                resumedAfterIdle.fulfill()
+            }
+        }
         document.addSubview(probe); scroll.documentView = document
         let window = VisibilityTestWindow(contentRect: .init(x: 140, y: 140, width: 200, height: 100),
             styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; window.contentView = scroll
         defer { probe.changed = nil; probe.stop(); window.close() }
         window.orderFrontRegardless()
-        try await Task.sleep(for: .milliseconds(250))
+        await fulfillment(of: [initiallyVisible], timeout: 10)
         XCTAssertEqual(states.last, true)
         for offset in [20, 40, 60, 80, 100] {
             scrollTime += 0.06
@@ -58,8 +72,11 @@ final class AnimationActivityTests: XCTestCase {
             XCTAssertEqual(states.last, false, "Pause must cover continuous wheel/trackpad or programmatic scrolling")
         }
         XCTAssertEqual(states.filter { !$0 }.count, 1, "Do not invalidate the guide once per scroll frame")
+        awaitingIdleResume = true
         scrollTime += 0.25
-        try await Task.sleep(for: .milliseconds(250))
+        // Await the real coalesced callback. A wall-time sleep can resume ahead
+        // of an already-due dispatch work item on an overloaded CI main queue.
+        await fulfillment(of: [resumedAfterIdle], timeout: 10)
         XCTAssertEqual(states.last, true, "Resume after scrolling settles")
         let count = states.count
         // A duplicate bounds notification with no position change is not scrolling.
