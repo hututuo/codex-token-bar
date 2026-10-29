@@ -2508,7 +2508,7 @@ button.quota-side-card:hover {
 .stats-model-cost-primary-grid,
 .stats-model-cost-secondary-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(154px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(204px, 1fr));
   gap: 7px;
   min-width: 0;
 }
@@ -2516,31 +2516,24 @@ button.quota-side-card:hover {
 .stats-model-cost-primary-card,
 .stats-model-cost-secondary-chip {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  column-gap: 6px;
-  row-gap: 3px;
-  align-content: center;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  column-gap: 5px;
   align-items: center;
   min-width: 0;
-  height: 42px;
-  border: 1px solid color-mix(in srgb, var(--model-color) 17%, var(--line));
-  border-radius: 7px;
-  background: color-mix(in srgb, var(--model-color) 8%, transparent);
-  padding: 5px 8px;
-  font-size: 11px;
+  height: 30px;
+  border: 1px solid color-mix(in srgb, var(--line) 86%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--panel) 72%, transparent);
+  padding: 0 8px;
+  font-size: 10.5px;
   line-height: 1.2;
   white-space: nowrap;
 }
 
-.stats-model-cost-secondary-chip {
-  border-color: color-mix(in srgb, var(--line) 86%, transparent);
-  background: color-mix(in srgb, var(--panel) 72%, transparent);
-}
-
 .stats-model-cost-primary-card i,
 .stats-model-cost-secondary-chip i {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: var(--model-color);
 }
@@ -2555,24 +2548,28 @@ button.quota-side-card:hover {
   text-overflow: ellipsis;
 }
 
+/* Keep a model qualifier visible even when its longer name is truncated. */
+.stats-model-cost-primary-card em,
+.stats-model-cost-secondary-chip em { display:flex; align-items:center; }
+.model-cost-name { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.model-cost-name-suffix { flex:none; }
+
 .stats-model-cost-primary-card b,
 .stats-model-cost-secondary-chip b {
   justify-self: end;
   color: var(--text);
-  font-size: 12px;
+  font-size: 10.5px;
   font-weight: var(--weight-semibold);
   font-variant-numeric: tabular-nums;
 }
 
 .stats-model-cost-primary-card small,
 .stats-model-cost-secondary-chip small {
-  grid-column: 2 / -1;
-  grid-row: 2;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--muted);
-  font-size: 9.5px;
+  font-size: 9px;
   font-weight: var(--weight-medium);
   font-variant-numeric: tabular-nums;
 }
@@ -13002,7 +12999,7 @@ details.session-management-banner {
 @media(max-width:760px) {
   .stats-model-cost-group { grid-template-columns:65px minmax(0,1fr); }
   .stats-model-cost-primary-grid,
-  .stats-model-cost-secondary-grid { grid-template-columns:repeat(auto-fill,minmax(128px,1fr)); }
+  .stats-model-cost-secondary-grid { grid-template-columns:repeat(auto-fill,minmax(204px,1fr)); }
 }
 
 .client-analytics { display: flex; flex-direction: column; gap: 18px; min-width: 0; }

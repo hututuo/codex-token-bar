@@ -254,6 +254,8 @@ function StatsStripView({
                 <div className={(group.id === "6" || group.id.endsWith(":latest")) ? "stats-model-cost-primary-grid" : "stats-model-cost-secondary-grid"}>
                   {group.items.map(item => {
                     const referenceOnly = isReferenceOnlyModelUsage(item);
+                    const label = item.label.replace(/^GPT[- ]*/i, "");
+                    const qualifiedLabel = label.match(/^(.*?)(（[^）]*）)$/);
                     const amount = item.tokens === 0 ? "—" : referenceOnly
                       ? (item.referenceCostUSD === null ? "—" : floatingModelUsageMoneyText(item.referenceCostUSD))
                       : floatingModelUsageValue(item,"cost");
@@ -266,7 +268,7 @@ function StatsStripView({
                     role={modelCostScope === "lifetime" ? "button" : undefined} tabIndex={modelCostScope === "lifetime" ? 0 : undefined}
                     onDoubleClick={modelCostScope === "lifetime" ? event => setEditingColor({ model: floatingModelUsageKey(item.key.split("|").at(-1)), x: event.clientX, y: event.clientY }) : undefined}
                     onKeyDown={modelCostScope === "lifetime" ? event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); setEditingColor({ model: floatingModelUsageKey(item.key.split("|").at(-1)), x: rect.left, y: rect.bottom }); } } : undefined}>
-                    <i style={{backgroundColor:item.color}}/><em>{item.label.replace(/^GPT[- ]*/i,"")}</em><b>{amount}</b><small>{detail}</small>
+                    <i style={{backgroundColor:item.color}}/><em><span className="model-cost-name">{qualifiedLabel ? qualifiedLabel[1] : label}</span>{qualifiedLabel && <span className="model-cost-name-suffix">{qualifiedLabel[2]}</span>}</em><b>{amount}</b><small className="model-cost-tokens">{item.tokens === 0 ? "暂无记录" : formatTokens(item.tokens)}</small>{item.tokens > 0 && <small className="model-cost-share">{floatingModelUsageValue(item,"share")}</small>}
                   </span>;
                   })}
                 </div>
