@@ -81,6 +81,7 @@ pub(in crate::core) struct ActivitySpeedSeries {
     pub five_minute_trend: Vec<ActivitySpeedTrendPoint>,
     pub thirty_minute_trend: Vec<ActivitySpeedTrendPoint>,
     pub one_minute_trend: Vec<ActivitySpeedTrendPoint>,
+    pub half_minute_trend: Vec<ActivitySpeedTrendPoint>,
 }
 
 impl ActivitySpeedSeries {
@@ -93,6 +94,7 @@ impl ActivitySpeedSeries {
             five_minute_trend: Vec::new(),
             thirty_minute_trend: Vec::new(),
             one_minute_trend: Vec::new(),
+            half_minute_trend: Vec::new(),
         }
     }
 }

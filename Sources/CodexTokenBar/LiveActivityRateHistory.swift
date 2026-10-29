@@ -1,7 +1,7 @@
 import Foundation
 import SwiftUI
 
-enum ActivityRateUnit: String, CaseIterable {
+enum ActivityRateUnit: String, CaseIterable, Sendable {
     case tokens = "tok/s", yuan = "CN 元/s"
     static let preferenceKey = "activityRateDisplayUnit"
     static let exchangeRateKey = "activityRateCNYPerUSD"

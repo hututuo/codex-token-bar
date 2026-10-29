@@ -208,8 +208,8 @@ impl ClaudeLocalRuntimeRegistry {
             }
         };
         self.lock_state().last_global_enabled = Some(settings.display_surfaces.live_rate_enabled);
-        let mode = settings.display_surfaces.speed_display_mode.as_str();
-        let codex_opted_in = codex_local_activity_enabled(mode);
+        let codex_opted_in =
+            codex_local_activity_enabled(settings.display_surfaces.live_rate_enabled);
         if !settings.display_surfaces.live_rate_enabled {
             self.stop_worker();
             let disabled_clients = if codex_opted_in {
@@ -367,7 +367,7 @@ impl ClaudeLocalRuntimeRegistry {
         };
         drop(frame);
         if snapshot.configuration_issue.is_none() {
-            capture_activity_rates(&snapshot, &key, mode);
+            capture_activity_rates(&snapshot, &key);
         }
         snapshot
     }
@@ -413,11 +413,16 @@ impl ClaudeLocalRuntimeRegistry {
         preferences: &[crate::core::multi_client_usage::MultiClientUsagePreference],
     ) {
         let enabled = enabled_claude_preferences(preferences);
-        let codex_root = codex_local_activity_enabled(crate::core::activity_speed_capture::mode())
-            .then(|| {
-                std::path::PathBuf::from(crate::platform::default_codex_home_status().path)
-                    .join("sessions")
-            });
+        let last_global_enabled = self.lock_state().last_global_enabled;
+        let codex_live_rate_enabled = last_global_enabled.unwrap_or_else(|| {
+            crate::platform::read_app_settings()
+                .map(|settings| settings.display_surfaces.live_rate_enabled)
+                .unwrap_or(false)
+        });
+        let codex_root = codex_local_activity_enabled(codex_live_rate_enabled).then(|| {
+            std::path::PathBuf::from(crate::platform::default_codex_home_status().path)
+                .join("sessions")
+        });
         let next_key = runtime_configuration(&enabled, codex_root)
             .ok()
             .flatten()
@@ -688,8 +693,8 @@ pub(crate) fn selected_reporting_local_roots() -> Result<BTreeMap<String, String
         .collect()
 }
 
-fn codex_local_activity_enabled(speed_display_mode: &str) -> bool {
-    speed_display_mode == "agentSpeed"
+fn codex_local_activity_enabled(live_rate_enabled: bool) -> bool {
+    live_rate_enabled
 }
 
 fn preference_root(path: &str) -> Result<std::path::PathBuf, &'static str> {
@@ -774,7 +779,6 @@ fn normalized_path_key(path: &std::path::Path) -> String {
 fn capture_activity_rates(
     snapshot: &ClaudeLocalRuntimeSnapshot,
     key: &RuntimeConfigKey,
-    mode: &str,
 ) {
     let Some(captured_at) = snapshot
         .captured_at
@@ -785,19 +789,16 @@ fn capture_activity_rates(
     };
     let now = captured_at.unix_timestamp_nanos() as f64 / 1_000_000_000.0;
     for client in &key.enabled_clients {
-        if client == "codex" && !codex_local_activity_enabled(mode) {
-            continue;
-        }
         let root = match client.as_str() {
             "codex" => key.codex_root.as_deref(),
             "claudeCode" | "claudeDesktop" => key.claude_root.as_deref(),
             other => key.other_roots.get(other).map(String::as_str),
         };
         let Some(root) = root else { continue };
-        // Codex's monitor receives <home>/sessions; both display algorithms
-        // must persist the same home identity rather than two folder hashes.
+        // Codex's monitor receives <home>/sessions; keep Bar and Agent Speed
+        // samples under the same home identity rather than two folder hashes.
         let activity_root = if client == "codex" {
-            root.strip_suffix("\\sessions").unwrap_or(root)
+            codex_activity_root(root)
         } else {
             root
         };
@@ -816,12 +817,18 @@ fn capture_activity_rates(
         crate::core::activity_speed_capture::record(
             client,
             &source_signature,
-            mode,
+            "agentSpeed",
             rates,
             now,
             available,
         );
     }
+}
+
+fn codex_activity_root(root: &str) -> &str {
+    root.strip_suffix("\\sessions")
+        .or_else(|| root.strip_suffix("/sessions"))
+        .unwrap_or(root)
 }
 
 fn packaged_helper_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, &'static str> {
@@ -2257,20 +2264,24 @@ mod tests {
     }
 
     #[test]
-    fn selected_codex_home_adds_only_codex_and_display_mode_defaults_to_bar() {
+    fn selected_codex_home_uses_global_live_rate_not_strip_display_mode() {
         let default_settings: crate::models::AppSettingsSnapshot =
             serde_json::from_str("{}").unwrap();
         assert_eq!(default_settings.display_surfaces.speed_display_mode, "bar");
-        assert!(!codex_local_activity_enabled(
-            &default_settings.display_surfaces.speed_display_mode
-        ));
-
-        let selected_settings: crate::models::AppSettingsSnapshot = serde_json::from_str(
-            r#"{"displaySurfaces":{"liveRateEnabled":true,"speedDisplayMode":"agentSpeed"}}"#,
+        let bar_settings: crate::models::AppSettingsSnapshot = serde_json::from_str(
+            r#"{"displaySurfaces":{"liveRateEnabled":true,"speedDisplayMode":"bar"}}"#,
         )
         .unwrap();
         assert!(codex_local_activity_enabled(
-            &selected_settings.display_surfaces.speed_display_mode
+            bar_settings.display_surfaces.live_rate_enabled
+        ));
+        assert_eq!(bar_settings.display_surfaces.speed_display_mode, "bar");
+        let disabled_settings: crate::models::AppSettingsSnapshot = serde_json::from_str(
+            r#"{"displaySurfaces":{"liveRateEnabled":false,"speedDisplayMode":"agentSpeed"}}"#,
+        )
+        .unwrap();
+        assert!(!codex_local_activity_enabled(
+            disabled_settings.display_surfaces.live_rate_enabled
         ));
 
         let selected_home = std::env::current_exe()
@@ -2313,5 +2324,20 @@ mod tests {
         );
         assert_ne!(combined_key.claude_root, combined_key.codex_root);
         assert_eq!(combined_roots.codex_root, Some(separate_codex_home));
+    }
+
+    #[test]
+    fn codex_activity_source_identity_uses_the_home_for_unix_and_windows_paths() {
+        for (sessions, home) in [
+            ("/Users/example/.codex/sessions", "/Users/example/.codex"),
+            (r"C:\Users\example\.codex\sessions", r"C:\Users\example\.codex"),
+        ] {
+            assert_eq!(codex_activity_root(sessions), home);
+            assert_eq!(
+                crate::core::activity_speed_capture::root_identity(codex_activity_root(sessions)),
+                crate::core::activity_speed_capture::root_identity(home)
+            );
+        }
+        assert_eq!(codex_activity_root("/Users/example/.codex/other"), "/Users/example/.codex/other");
     }
 }

@@ -13010,3 +13010,13 @@ details.session-management-banner {
 .client-analytics > h2 { font-size: 18px; margin: 8px 0 0; }
 .client-cache-dialog-backdrop { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; background: #0008; }
 .client-cache-dialog { display: flex; flex-direction: column; gap: 12px; width: min(960px,90vw); max-height: 80vh; padding: 24px; border-radius: 16px; background: var(--panel-solid); color: var(--text); border: 1px solid var(--line); font-size: 12px; }
+
+.activity-speed-history-controls{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px}
+.activity-speed-history-ranges{display:inline-flex;gap:3px;padding:3px;margin:8px 0;border-radius:7px;background:#8090a014;border:1px solid #8090a033}
+.activity-speed-history-ranges button{border:0;border-radius:5px;padding:5px 10px;font:inherit;font-size:10px;color:inherit;background:transparent;cursor:pointer}
+.activity-speed-history-ranges button[aria-pressed=true]{background:#4e80ef2b;color:#528fff;box-shadow:0 0 0 1px #4e80ef55}
+.activity-speed-history-ranges button:focus-visible{outline:2px solid #528fff;outline-offset:2px}
+.activity-history-plot svg{cursor:crosshair;touch-action:pan-y}
+.activity-history-legend{display:flex;flex-wrap:wrap;gap:5px 14px;font-size:10px;margin:2px 0 6px}
+.activity-history-legend span{display:inline-flex;align-items:center;gap:4px}
+.activity-history-legend i{width:6px;height:6px;border-radius:50%;background:currentColor}

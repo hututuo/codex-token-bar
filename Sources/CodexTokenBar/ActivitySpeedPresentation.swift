@@ -22,25 +22,26 @@ final class AgentSpeedDisplayRuntime: ObservableObject {
     private var configuration: ActivitySourceConfiguration?
     private var sourceIdentities: [SourceKind: String] = [:]
     private var home: URL?
+    private var codexSourceReady = false
     private var preferences: [MultiClientUsagePreference] = []
     private var listener: UUID?
     init() {
         listener = store.addLiveListener { [weak self] snapshot in
             guard let self, let configuration else { return }
             self.snapshot = snapshot
-            let mode = ActivitySpeedDisplayMode.normalized(UserDefaults.standard.string(forKey: ActivitySpeedDisplayMode.key))
             for source in configuration.sources {
                 guard let client = ActivitySourceConfiguration.client(for: source), let identity = self.sourceIdentities[source] else { continue }
                 ActivitySpeedHistoryController.shared.record(client: client, sourceIdentity: identity,
                     rates: Self.modelRates(snapshot: snapshot, source: source, now: Date()), at: snapshot.timestamp.timeIntervalSince1970,
-                    available: snapshot.sources.contains { $0.kind == source && $0.available }, mode: source == .codex ? .agentSpeed : mode)
+                    available: snapshot.sources.contains { $0.kind == source && $0.available }, mode: .agentSpeed)
             }
         }
     }
-    func configure(monitoringEnabled: Bool, codexEnabled: Bool, preferences: [MultiClientUsagePreference]? = nil, codexHome: URL? = nil) {
+    func configure(monitoringEnabled: Bool, codexEnabled: Bool, preferences: [MultiClientUsagePreference]? = nil, codexHome: URL? = nil, codexSourceAvailable: Bool? = nil) {
         if let codexHome { home = codexHome }
+        if let codexSourceAvailable { codexSourceReady = codexSourceAvailable }
         if let preferences { self.preferences = preferences }
-        var next = ActivitySourceConfiguration.make(codexEnabled: codexEnabled, codexHome: home, preferences: self.preferences)
+        var next = ActivitySourceConfiguration.make(codexEnabled: codexEnabled && codexSourceReady, codexHome: home, preferences: self.preferences)
         if !monitoringEnabled { next.sources = [] }
         guard configuration != next else { return }
         let prior = configuration

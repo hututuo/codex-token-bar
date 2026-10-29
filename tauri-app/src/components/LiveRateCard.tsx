@@ -217,7 +217,7 @@ export function LiveRateCard({
       </div>
       <ObservedSpeedDetails quotaIdentity={quotaIdentity} quotaUpdatedAt={quotaUpdatedAt} data={snapshot} threads={liveThreadOptions} sourceToken={sourceToken} />
       </>}
-      <ClientActivitySpeedPanel allowed={allowed} monitoringEnabled={liveRateEnabled} codexRates={snapshot.modelRates??[]} codexOutputRate={snapshot.tokensPerSecond} codexAvailable={liveRateEnabled && failureNotice === null}/>
+      <ClientActivitySpeedPanel sourceToken={sourceToken} allowed={allowed} monitoringEnabled={liveRateEnabled} codexRates={snapshot.modelRates??[]} codexOutputRate={snapshot.tokensPerSecond} codexAvailable={liveRateEnabled && failureNotice === null}/>
     </section>
   );
 }

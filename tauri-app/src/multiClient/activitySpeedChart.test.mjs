@@ -17,3 +17,17 @@ test('invalid rates are omitted and valid zero remains', () => {
   assert.deepEqual(activityChartPoints([point(9700, NaN), point(9800, 1, 0), point(9900, 0)], 10000).map(p => p.rate), [0]);
   assert.deepEqual(activityChartPoints([], NaN), []);
 });
+
+test('activity day view keeps earlier minutes without changing the half-hour default', () => {
+  const rows=[point(10000),point(96400),point(97000),point(97060),point(100001)];
+  const day=activityChartPoints(rows,100000,86400);
+  assert.deepEqual(day.map(p=>p.bucketStart),[96400,97000,97060]);
+  assert.deepEqual(day.map(p=>p.segment),[0,1,1]);
+  assert.deepEqual(activityChartPoints(rows,100000),[]);
+  assert.deepEqual(activityChartPoints(rows,100000,999),[]);
+});
+
+test('half-minute speed detail splits gaps at thirty seconds, independently of minute callers',()=>{
+ const rows=[point(14000),point(14030),point(14090)];
+ assert.deepEqual(activityChartPoints(rows,100000,86400,30).map(p=>p.segment),[0,0,1]);
+});

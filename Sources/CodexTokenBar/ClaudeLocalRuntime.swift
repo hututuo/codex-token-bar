@@ -309,12 +309,11 @@ final class ClaudeLocalRuntime: ObservableObject {
     private func receive(_ snapshot: SpeedSnapshot) {
         guard monitoringEnabled else { return }
         latestCoreSnapshot = snapshot
-        let mode = ActivitySpeedDisplayMode.normalized(UserDefaults.standard.string(forKey: ActivitySpeedDisplayMode.key))
         for source in configuredSources {
             ActivitySpeedHistoryController.shared.record(client: source.rawValue,
                 sourceIdentity: activitySourceIdentity ?? "legacy/unscoped",
-                rates: AgentSpeedDisplayRuntime.modelRates(snapshot: snapshot, source: source), at: snapshot.timestamp.timeIntervalSince1970,
-                available: snapshot.sources.contains { $0.kind == source && $0.available }, mode: mode)
+                rates: AgentSpeedDisplayRuntime.modelRates(snapshot: snapshot, source: source, now: Date()), at: snapshot.timestamp.timeIntervalSince1970,
+                available: snapshot.sources.contains { $0.kind == source && $0.available }, mode: .agentSpeed)
         }
         pruneRows(at: snapshot.timestamp)
         publishProjection()

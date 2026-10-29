@@ -60,6 +60,7 @@ struct ActivitySpeedSeries: Equatable, Identifiable, Sendable {
     var rolling5m, rolling15m, rolling30m: ActivitySpeedAggregate?
     var fiveMinuteTrend: [ActivitySpeedTrendPoint] = [], thirtyMinuteTrend: [ActivitySpeedTrendPoint] = []
     var oneMinuteTrend: [ActivitySpeedTrendPoint] = []
+    var halfMinuteTrend: [ActivitySpeedTrendPoint] = []
 }
 
 struct ActivitySpeedQueryResult: Equatable, Sendable {
@@ -71,6 +72,8 @@ struct ActivitySpeedQueryResult: Equatable, Sendable {
 actor ActivitySpeedStore {
     private static let schemaVersion = "2"
     private static let bucketSeconds: Int64 = 300
+    private static let minuteSeconds: Int64 = 60
+    private static let halfMinuteSeconds: Int64 = 30
     private static let rawRetention: Double = 7 * 86_400, rollupRetention: Double = 30 * 86_400
     private static let maxSampleSpan: Double = 3_600
     private static let maxTextLength = 256
@@ -280,13 +283,46 @@ actor ActivitySpeedStore {
             series.thirtyMinuteTrend = points
             values[dimensions] = series
         }
-        for (dimensions, points) in try readMinuteTrend(now: now, filter: filter) {
+        for (dimensions, points) in try readSampleTrend(
+            now: now, filter: filter, windowSeconds: 1_800, bucketSeconds: Int(Self.minuteSeconds)
+        ) {
             var series = values[dimensions] ?? ActivitySpeedSeries(dimensions: dimensions)
             series.oneMinuteTrend = points
             values[dimensions] = series
         }
         guard values.count <= Self.maxSeries else { throw ActivitySpeedStoreError.tooManySeries }
         return ActivitySpeedQueryResult(series: values.values.sorted { $0.id < $1.id })
+    }
+
+    /// Reads only retained raw samples and returns sparse, measured 30-second points.
+    /// Supported windows are 30 minutes and 24 hours; this method does not read rollups
+    /// or mutate retention state.
+    func activityHistory(
+        now: Double,
+        filter: ActivitySpeedFilter = ActivitySpeedFilter(),
+        windowSeconds: Int
+    ) throws -> ActivitySpeedQueryResult {
+        guard now.isFinite, now >= 0, now < Double(Int64.max) - Self.rollupRetention else {
+            throw ActivitySpeedStoreError.invalidNow
+        }
+        guard windowSeconds == 1_800 || windowSeconds == 86_400 else {
+            throw ActivitySpeedStoreError.invalidWindow
+        }
+        if let trendSince = filter.trendSince,
+           !trendSince.isFinite || trendSince < 0 || trendSince > now {
+            throw ActivitySpeedStoreError.invalidFilter
+        }
+
+        let points = try readSampleTrend(
+            now: now, filter: filter, windowSeconds: windowSeconds,
+            bucketSeconds: Int(Self.halfMinuteSeconds)
+        )
+        let series = points.map { dimensions, points in
+            var value = ActivitySpeedSeries(dimensions: dimensions)
+            value.halfMinuteTrend = points
+            return value
+        }
+        return ActivitySpeedQueryResult(series: series.sorted { $0.id < $1.id })
     }
 
     private func readRolling(
@@ -322,24 +358,49 @@ actor ActivitySpeedStore {
         return Dictionary(rows, uniquingKeysWith: { _, later in later })
     }
 
-    /// Fine display only: split retained measured intervals at minute boundaries.
-    /// Historical 5m rollups remain unchanged. No fabricated idle points.
-    private func readMinuteTrend(now: Double, filter: ActivitySpeedFilter) throws -> [ActivitySpeedDimensions: [ActivitySpeedTrendPoint]] {
-        let first = floor(max(0, now - 1800) / 60) * 60
+    /// Splits only each overlapping retained sample at its minute boundaries.
+    /// The recursive expansion is proportional to the covered sample intervals, not
+    /// the full window multiplied by the number of samples. Gaps stay absent.
+    private func readSampleTrend(
+        now: Double,
+        filter: ActivitySpeedFilter,
+        windowSeconds: Int,
+        bucketSeconds: Int
+    ) throws -> [ActivitySpeedDimensions: [ActivitySpeedTrendPoint]] {
+        let from = max(0, now - Double(windowSeconds))
+        let pointLimit = windowSeconds / bucketSeconds + 1
         let (predicate, filterBindings) = Self.filterSQL(filter)
         let rows = try database.readRows("""
-            WITH RECURSIVE minutes(t) AS (
-                SELECT ? UNION ALL SELECT t+60 FROM minutes WHERE t+60 < ?
+            WITH RECURSIVE bounds(from_time, now_time) AS (SELECT ?, ?),
+            bucket_samples(
+                source_identity, display_mode, estimator_id, estimator_version, metric_kind, client, model,
+                started_at, ended_at, weighted_output, covered_seconds, clipped_start, clipped_end, bucket_start
+            ) AS (
+                SELECT samples.source_identity, samples.display_mode, samples.estimator_id, samples.estimator_version,
+                       samples.metric_kind, samples.client, samples.model, samples.started_at, samples.ended_at,
+                       samples.weighted_output, samples.covered_seconds,
+                       MAX(samples.started_at, bounds.from_time), MIN(samples.ended_at, bounds.now_time),
+                       CAST(MAX(samples.started_at, bounds.from_time) / \(bucketSeconds) AS INTEGER) * \(bucketSeconds)
+                FROM activity_speed_samples AS samples CROSS JOIN bounds
+                WHERE samples.ended_at > bounds.from_time AND samples.started_at < bounds.now_time \(predicate)
+                UNION ALL
+                SELECT source_identity, display_mode, estimator_id, estimator_version, metric_kind, client, model,
+                       started_at, ended_at, weighted_output, covered_seconds, clipped_start, clipped_end,
+                       bucket_start + \(bucketSeconds)
+                FROM bucket_samples
+                WHERE bucket_start + \(bucketSeconds) < clipped_end
             )
             SELECT source_identity, display_mode, estimator_id, estimator_version, metric_kind, client, model,
-                   t, SUM(weighted_output * ((MIN(ended_at,t+60,?) - MAX(started_at,t)) / (ended_at-started_at))),
-                   SUM(covered_seconds * ((MIN(ended_at,t+60,?) - MAX(started_at,t)) / (ended_at-started_at)))
-            FROM minutes JOIN activity_speed_samples ON ended_at > t AND started_at < MIN(t+60,?)
-            WHERE ended_at > ? AND started_at < ? \(predicate)
-            GROUP BY source_identity, display_mode, estimator_id, estimator_version, metric_kind, client, model,t
-            ORDER BY source_identity, display_mode, estimator_id, estimator_version, metric_kind, client, model,t LIMIT ?
-            """, bindings: [.double(first), .double(now), .double(now), .double(now), .double(now),
-                .double(first), .double(now)] + filterBindings + [.int(Self.maxSeries * 31 + 1)]) { row in
+                   bucket_start,
+                   SUM(weighted_output * ((MIN(clipped_end, bucket_start + \(bucketSeconds)) - MAX(clipped_start, bucket_start)) / (ended_at - started_at))),
+                   SUM(covered_seconds * ((MIN(clipped_end, bucket_start + \(bucketSeconds)) - MAX(clipped_start, bucket_start)) / (ended_at - started_at)))
+            FROM bucket_samples
+            GROUP BY source_identity, display_mode, estimator_id, estimator_version, metric_kind, client, model, bucket_start
+            HAVING SUM(covered_seconds * ((MIN(clipped_end, bucket_start + \(bucketSeconds)) - MAX(clipped_start, bucket_start)) / (ended_at - started_at))) > 0
+            ORDER BY source_identity, display_mode, estimator_id, estimator_version, metric_kind, client, model, bucket_start
+            LIMIT ?
+            """, bindings: [.double(from), .double(now)] + filterBindings
+                + [.int(Self.maxSeries * pointLimit + 1)]) { row in
             let dimensions = try Self.dimensions(row)
             guard let bucket = row.int64(7), let weighted = row.double(8), let covered = row.double(9),
                   weighted.isFinite, weighted >= 0, covered.isFinite, covered > 0 else {
@@ -348,10 +409,13 @@ actor ActivitySpeedStore {
             return (dimensions, ActivitySpeedTrendPoint(bucketStart: bucket,
                 value: ActivitySpeedAggregate(weightedOutput: weighted, coveredSeconds: covered)))
         }
-        guard rows.count <= Self.maxSeries * 31 else { throw ActivitySpeedStoreError.tooManySeries }
+        guard rows.count <= Self.maxSeries * pointLimit else { throw ActivitySpeedStoreError.tooManySeries }
         var result: [ActivitySpeedDimensions: [ActivitySpeedTrendPoint]] = [:]
         for (dimensions, point) in rows { result[dimensions, default: []].append(point) }
-        guard result.count <= Self.maxSeries else { throw ActivitySpeedStoreError.tooManySeries }
+        guard result.count <= Self.maxSeries,
+              result.values.allSatisfy({ $0.count <= pointLimit }) else {
+            throw ActivitySpeedStoreError.tooManySeries
+        }
         return result
     }
 
@@ -473,11 +537,12 @@ actor ActivitySpeedStore {
 }
 
 enum ActivitySpeedStoreError: LocalizedError {
-    case invalidNow, invalidFilter, invalidSample, invalidStoredAggregate, schemaUnavailable, unsupportedSchema, tooManySeries, tooManySamples
+    case invalidNow, invalidFilter, invalidWindow, invalidSample, invalidStoredAggregate, schemaUnavailable, unsupportedSchema, tooManySeries, tooManySamples
 
     var errorDescription: String? { switch self {
         case .invalidNow: "Activity speed query or write time is invalid"
         case .invalidFilter: "Activity speed trend start is invalid"
+        case .invalidWindow: "Activity speed history window is unsupported"
         case .invalidSample: "Activity speed sample is invalid"
         case .invalidStoredAggregate: "Activity speed database contains invalid aggregate data"
         case .schemaUnavailable: "Activity speed schema resource is unavailable"

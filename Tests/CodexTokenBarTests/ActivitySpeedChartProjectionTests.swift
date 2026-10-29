@@ -20,6 +20,18 @@ final class ActivitySpeedChartProjectionTests: XCTestCase {
         XCTAssertEqual(after.map(\.bucketStart), [8_260, 8_320])
         XCTAssertEqual(after.map(\.segment), [0, 0])
     }
+    func testDayActivityKeepsEarlierMinutesWhileDefaultRemainsHalfHour() {
+        let rows = [point(10_000), point(96_400), point(97_000), point(97_060), point(100_001)]
+        let day = ActivitySpeedChartProjection.points(rows, now: Date(timeIntervalSince1970: 100_000), windowSeconds: 86400)
+        XCTAssertEqual(day.map(\.bucketStart), [96_400, 97_000, 97_060])
+        XCTAssertEqual(day.map(\.segment), [0, 1, 1])
+        XCTAssertTrue(ActivitySpeedChartProjection.points(rows, now: Date(timeIntervalSince1970: 100_000)).isEmpty)
+    }
+    func testThirtySecondDetailUsesItsOwnGapBoundary() {
+        let rows = [point(14_000), point(14_030), point(14_090)]
+        let detail = ActivitySpeedChartProjection.points(rows, now: Date(timeIntervalSince1970: 100_000), windowSeconds: 86400, bucketSeconds: 30)
+        XCTAssertEqual(detail.map(\.segment), [0, 0, 1])
+    }
     func testInvalidAggregatesDoNotDistortScaleAndValidZeroStillPlots() {
         let rows = [point(9_700, rate: .nan), point(9_800, seconds: 0), point(9_900, rate: 0)]
         XCTAssertEqual(ActivitySpeedChartProjection.points(rows, now: Date(timeIntervalSince1970: 10_000)).map(\.rate), [0])

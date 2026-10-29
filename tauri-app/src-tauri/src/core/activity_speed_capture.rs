@@ -31,9 +31,8 @@ pub(crate) fn record(client: &str, source: &str, mode: &str, rates: Vec<(String,
         .insert(client.to_string(),source.to_string());
     let key=format!("{client}|{source}|{mode}");
     let mut values=PREVIOUS.get_or_init(Default::default).lock().unwrap_or_else(|p|p.into_inner());
+    retain_active_source_history(&mut values,client,source);
     if !available { values.remove(&key); return; }
-    let prefix=format!("{client}|");
-    values.retain(|other,_| !other.starts_with(&prefix) || other.ends_with(&format!("|{mode}")));
     if values.get(&key).is_some_and(|v| now-v.time < 1.0) { return; }
     let old=values.insert(key.clone(),Previous{time:now,rates});
     if values.len()>128 { values.retain(|_,v| now-v.time<=60.0); }
@@ -63,6 +62,12 @@ pub(crate) fn record(client: &str, source: &str, mode: &str, rates: Vec<(String,
     if sender.try_send(batch).is_err(){eprintln!("activity speed coverage incomplete: bounded queue full");}
 }
 
+fn retain_active_source_history(values:&mut BTreeMap<String,Previous>,client:&str,source:&str){
+    let prefix=format!("{client}|");
+    let source_prefix=format!("{client}|{source}|");
+    values.retain(|other,_| !other.starts_with(&prefix) || other.starts_with(&source_prefix));
+}
+
 pub(crate) fn query(now:f64)->Result<serde_json::Value,String>{
     let active=ACTIVE_SOURCES.get_or_init(Default::default).lock().unwrap_or_else(|p|p.into_inner()).clone();
     if active.is_empty(){return Ok(serde_json::json!({"series":[]}));}
@@ -74,4 +79,63 @@ pub(crate) fn query(now:f64)->Result<serde_json::Value,String>{
         series.extend(result.series.into_iter().filter(|row|active.get(&row.dimensions.client)==Some(&row.dimensions.source_identity)));
     }
     Ok(serde_json::json!({"series":series}))
+}
+
+/// Scoped raw-sample half-minute history for the Agent Speed chart. This stays on
+/// the existing activity database and applies the active-source fence independently
+/// of the selected speed-strip display mode.
+pub(crate) fn activity_history(now:f64, window_seconds:u64)->Result<serde_json::Value,String>{
+    if !matches!(window_seconds,1_800|86_400){return Err("unsupported_activity_history_window".into());}
+    let active=ACTIVE_SOURCES.get_or_init(Default::default).lock().unwrap_or_else(|p|p.into_inner()).clone();
+    if active.is_empty(){
+        let current=ACTIVE_SOURCES.get_or_init(Default::default).lock().unwrap_or_else(|p|p.into_inner()).clone();
+        ensure_same_active_sources(&active,&current)?;
+        return Ok(serde_json::json!({"series":[]}));
+    }
+    let db=super::multi_client_usage::open_activity_module_connection()?;
+    let mut series=Vec::new();
+    for source in active.values().collect::<std::collections::BTreeSet<_>>() {
+        let filter=ActivitySpeedFilter{source_identity:Some(source.clone()),display_mode:Some("agentSpeed".into()),..Default::default()};
+        let result=store::activity_history(&db,now,&filter,window_seconds).map_err(|e|e.to_string())?;
+        series.extend(result.series.into_iter().filter(|row|active.get(&row.dimensions.client)==Some(&row.dimensions.source_identity)));
+    }
+    let current=ACTIVE_SOURCES.get_or_init(Default::default).lock().unwrap_or_else(|p|p.into_inner()).clone();
+    ensure_same_active_sources(&active,&current)?;
+    Ok(serde_json::json!({"series":series}))
+}
+
+fn ensure_same_active_sources(
+    expected:&BTreeMap<String,String>,
+    current:&BTreeMap<String,String>,
+)->Result<(),String>{
+    if expected==current { Ok(()) } else { Err("source_changed".into()) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_changes_remove_only_obsolete_source_intervals() {
+        let mut values = BTreeMap::from([
+            ("codex|source-a|bar".into(), Previous { time: 1.0, rates: vec![] }),
+            ("codex|source-a|agentSpeed".into(), Previous { time: 2.0, rates: vec![] }),
+            ("codex|source-b|agentSpeed".into(), Previous { time: 3.0, rates: vec![] }),
+            ("claudeCode|source-c|agentSpeed".into(), Previous { time: 4.0, rates: vec![] }),
+        ]);
+        retain_active_source_history(&mut values, "codex", "source-a");
+        assert!(values.contains_key("codex|source-a|bar"));
+        assert!(values.contains_key("codex|source-a|agentSpeed"));
+        assert!(!values.contains_key("codex|source-b|agentSpeed"));
+        assert!(values.contains_key("claudeCode|source-c|agentSpeed"));
+    }
+
+    #[test]
+    fn activity_history_rejects_a_changed_active_source_snapshot() {
+        let expected = BTreeMap::from([("codex".into(), "source-a".into())]);
+        let unchanged = expected.clone();
+        let changed = BTreeMap::from([("codex".into(), "source-b".into())]);
+        assert!(ensure_same_active_sources(&expected, &unchanged).is_ok());
+        assert_eq!(ensure_same_active_sources(&expected, &changed).unwrap_err(), "source_changed");
+    }
 }

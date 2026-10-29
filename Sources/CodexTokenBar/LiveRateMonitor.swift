@@ -444,8 +444,8 @@ final class LiveRateMonitor: ObservableObject {
         ActivitySpeedHistoryController.shared.selectSource(client: "codex", identity: activitySpeedSourceIdentity)
         ActivitySpeedHistoryController.shared.reset(client: "codex")
         AgentSpeedReportingController.shared.configureCodexHome(source?.codexHome)
-        AgentSpeedDisplayRuntime.shared.configure(monitoringEnabled: monitoringEnabled, codexEnabled: monitoringEnabled && ActivitySpeedDisplayMode.normalized(UserDefaults.standard.string(forKey: ActivitySpeedDisplayMode.key)) == .agentSpeed && source != nil,
-            codexHome: source?.codexHome)
+        AgentSpeedDisplayRuntime.shared.configure(monitoringEnabled: monitoringEnabled, codexEnabled: monitoringEnabled && source != nil,
+            codexHome: source?.codexHome, codexSourceAvailable: source != nil)
         activityRateHistory.clear()
         logsDirectorySource?.cancel()
         logsDirectorySource = nil

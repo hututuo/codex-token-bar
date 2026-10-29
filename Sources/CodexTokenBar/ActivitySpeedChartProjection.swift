@@ -10,18 +10,18 @@ enum ActivitySpeedChartProjection {
         var id: Int64 { bucketStart }
     }
 
-    static func points(_ values: [ActivitySpeedTrendPoint], now: Date) -> [Point] {
+    static func points(_ values: [ActivitySpeedTrendPoint], now: Date, windowSeconds: Double = 1800, bucketSeconds: Int64 = 60) -> [Point] {
         let end = now.timeIntervalSince1970
-        guard end.isFinite else { return [] }
+        guard end.isFinite, [1800.0, 86400.0].contains(windowSeconds), [30,60].contains(bucketSeconds) else { return [] }
         var result: [Point] = []
         var previous: Int64?
         var segment = 0
         for value in values.sorted(by: { $0.bucketStart < $1.bucketStart }) {
             let stamp = Double(value.bucketStart)
-            guard stamp >= end - 1800, stamp <= end,
+            guard stamp >= end - windowSeconds, stamp <= end,
                   value.value.coveredSeconds.isFinite, value.value.coveredSeconds > 0,
                   value.value.outputRate.isFinite, value.value.outputRate >= 0 else { continue }
-            if let previous, value.bucketStart - previous > 60 { segment += 1 }
+            if let previous, value.bucketStart - previous > bucketSeconds { segment += 1 }
             result.append(Point(bucketStart: value.bucketStart, rate: value.value.outputRate, segment: segment))
             previous = value.bucketStart
         }

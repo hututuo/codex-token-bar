@@ -23,6 +23,18 @@ fn database() -> Connection {
     connection
 }
 
+fn half_minute_point(series: &ActivitySpeedSeries, bucket: i64) -> &ActivitySpeedTrendPoint {
+    series
+        .half_minute_trend
+        .iter()
+        .find(|item| item.bucket_start == bucket)
+        .unwrap()
+}
+
+fn half_minute_bucket_start(timestamp: f64) -> i64 {
+    (timestamp / HALF_MINUTE_SECONDS as f64).floor() as i64 * HALF_MINUTE_SECONDS
+}
+
 #[test]
 fn duplicate_replay_and_weighted_window_are_idempotent() {
     let connection = database();
@@ -229,13 +241,13 @@ fn one_minute_trend_keeps_gaps_and_only_reads_the_last_30_minutes() {
 fn one_minute_trend_is_bounded_to_31_nonempty_buckets() {
     let connection = database();
     let now = 1_830.5;
-    let from = now - MINUTE_TREND_WINDOW_SECONDS;
+    let from = now - DEFAULT_MINUTE_TREND_WINDOW_SECONDS as f64;
     let first_bucket = minute_bucket_start(from);
-    for minute in 0..MAX_MINUTE_TREND_POINTS {
+    for minute in 0..MAX_DEFAULT_MINUTE_TREND_POINTS {
         let bucket = first_bucket + minute as i64 * MINUTE_SECONDS;
         let offset = if minute == 0 {
             from - first_bucket as f64 + 0.1
-        } else if minute + 1 == MAX_MINUTE_TREND_POINTS {
+        } else if minute + 1 == MAX_DEFAULT_MINUTE_TREND_POINTS {
             0.1
         } else {
             1.0
@@ -246,8 +258,222 @@ fn one_minute_trend_is_bounded_to_31_nonempty_buckets() {
     }
 
     let result = query(&connection, now, &ActivitySpeedFilter::default(), 8).unwrap();
-    assert_eq!(result.series[0].one_minute_trend.len(), 31);
-    assert!(result.series[0].one_minute_trend.len() <= MAX_MINUTE_TREND_POINTS);
+    assert_eq!(result.series[0].one_minute_trend.len(), MAX_DEFAULT_MINUTE_TREND_POINTS);
+    assert!(result.series[0].one_minute_trend.len() <= MAX_DEFAULT_MINUTE_TREND_POINTS);
+}
+
+#[test]
+fn activity_history_reads_day_samples_splits_weights_and_clips_both_bounds() {
+    let connection = database();
+    let now = 100_143.5;
+    let from = now - 86_400.0;
+    let samples = [
+        // Crosses the day boundary and minute boundary; only 80s in the window count.
+        sample("window-edge", from - 20.0, from + 80.0, 10.0, 100.0),
+        sample("outside-day", from - 100.0, from - 90.0, 99.0, 10.0),
+        sample("old-day-point", now - 5_000.0, now - 4_990.0, 6.0, 10.0),
+        sample("slow-crossing", 100_010.0, 100_070.0, 10.0, 60.0),
+        sample("fast-crossing", 100_030.0, 100_070.0, 20.0, 40.0),
+        // The query clips this stored interval at now.
+        sample("future-end", now - 20.0, now + 20.0, 4.0, 40.0),
+    ];
+    for item in &samples {
+        add_sample(&connection, item, now + 20.0).unwrap();
+    }
+
+    let day = activity_history(&connection, now, &ActivitySpeedFilter::default(), 86_400).unwrap();
+    assert_eq!(day.series.len(), 1);
+    let series = &day.series[0];
+    assert!(series.rolling_5m.is_none());
+    assert!(series.five_minute_trend.is_empty());
+    assert!(series.thirty_minute_trend.is_empty());
+    assert!(series.one_minute_trend.is_empty());
+    assert_eq!(series.half_minute_trend.len(), 9);
+    assert!(series.half_minute_trend.len() <= MAX_HALF_MINUTE_TREND_POINTS);
+
+    let edge_first = half_minute_point(series, half_minute_bucket_start(from));
+    assert!((edge_first.value.covered_seconds - 26.5).abs() < 0.0001);
+    assert!((edge_first.value.weighted_output - 265.0).abs() < 0.0001);
+    assert!((edge_first.value.output_rate() - 10.0).abs() < 0.0001);
+    let edge_middle = half_minute_point(series, half_minute_bucket_start(from + 30.0));
+    assert!((edge_middle.value.covered_seconds - 30.0).abs() < 0.0001);
+    assert!((edge_middle.value.weighted_output - 300.0).abs() < 0.0001);
+    let edge_last = half_minute_point(series, half_minute_bucket_start(from + 60.0));
+    assert!((edge_last.value.covered_seconds - 23.5).abs() < 0.0001);
+    assert!((edge_last.value.weighted_output - 235.0).abs() < 0.0001);
+
+    let first_weighted = half_minute_point(series, 99_990);
+    assert!((first_weighted.value.covered_seconds - 10.0).abs() < 0.0001);
+    assert!((first_weighted.value.output_rate() - 10.0).abs() < 0.0001);
+    let second_weighted = half_minute_point(series, 100_020);
+    assert!((second_weighted.value.weighted_output - 700.0).abs() < 0.0001);
+    assert!((second_weighted.value.covered_seconds - 50.0).abs() < 0.0001);
+    assert!((second_weighted.value.output_rate() - 14.0).abs() < 0.0001);
+    let third_weighted = half_minute_point(series, 100_050);
+    assert!((third_weighted.value.weighted_output - 600.0).abs() < 0.0001);
+    assert!((third_weighted.value.covered_seconds - 40.0).abs() < 0.0001);
+    assert!((third_weighted.value.output_rate() - 15.0).abs() < 0.0001);
+
+    let clipped_now = half_minute_point(series, 100_140);
+    assert!((clipped_now.value.weighted_output - 14.0).abs() < 0.0001);
+    assert!((clipped_now.value.covered_seconds - 3.5).abs() < 0.0001);
+    assert!((clipped_now.value.output_rate() - 4.0).abs() < 0.0001);
+    let old_bucket = half_minute_bucket_start(now - 5_000.0);
+    assert!(series.half_minute_trend.iter().any(|item| item.bucket_start == old_bucket));
+    assert!(!series.half_minute_trend.iter().any(|item| item.value.output_rate() == 99.0));
+
+    let thirty_minutes = activity_history(&connection, now, &ActivitySpeedFilter::default(), 1_800).unwrap();
+    assert!(thirty_minutes.series[0].half_minute_trend.len() <= 61);
+    assert!(!thirty_minutes.series[0]
+        .half_minute_trend
+        .iter()
+        .any(|item| item.bucket_start == old_bucket));
+    let legacy = query(&connection, now, &ActivitySpeedFilter::default(), 8).unwrap();
+    assert!(legacy.series[0].one_minute_trend.len() <= MAX_DEFAULT_MINUTE_TREND_POINTS);
+    assert!(!legacy.series[0]
+        .one_minute_trend
+        .iter()
+        .any(|item| item.bucket_start == old_bucket));
+}
+
+#[test]
+fn activity_history_can_return_exactly_2881_half_minute_buckets() {
+    let connection = database();
+    let now = 100_000.5;
+    let from = now - 86_400.0;
+    let first_bucket = half_minute_bucket_start(from);
+    let samples = (0..MAX_HALF_MINUTE_TREND_POINTS)
+        .map(|index| {
+            let bucket = (first_bucket + index as i64 * HALF_MINUTE_SECONDS) as f64;
+            let start = if index == 0 { from + 0.1 } else { bucket + 1.0 };
+            let end = start + 0.2;
+            sample(
+                &format!("half-minute-{index}"),
+                start,
+                end,
+                6.0,
+                end - start,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(add_samples(&connection, &samples, now).unwrap(), MAX_HALF_MINUTE_TREND_POINTS);
+
+    let result = activity_history(&connection, now, &ActivitySpeedFilter::default(), 86_400).unwrap();
+    let points = &result.series[0].half_minute_trend;
+    assert_eq!(points.len(), MAX_HALF_MINUTE_TREND_POINTS);
+    assert_eq!(points.first().unwrap().bucket_start, first_bucket);
+    assert_eq!(points.last().unwrap().bucket_start, half_minute_bucket_start(now));
+}
+
+#[test]
+fn activity_history_enforces_the_64_series_limit() {
+    let connection = database();
+    for index in 0..65 {
+        let mut item = sample(&format!("series-{index}"), 100.0, 101.0, 1.0, 1.0);
+        item.model = format!("model-{index}");
+        add_sample(&connection, &item, 110.0).unwrap();
+    }
+    assert!(matches!(
+        activity_history(&connection, 110.0, &ActivitySpeedFilter::default(), 86_400),
+        Err(ActivitySpeedStoreError::TooManySeries)
+    ));
+}
+
+#[test]
+fn activity_history_is_read_only_and_does_not_prune_retained_tables() {
+    let connection = database();
+    let item = sample("expired-detail", 10.0, 11.0, 3.0, 1.0);
+    connection
+        .execute(
+            "INSERT INTO activity_speed_samples(source_identity,id,display_mode,estimator_id,estimator_version,metric_kind,client,model,started_at,ended_at,output_rate,covered_seconds,weighted_output) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+            rusqlite::params![
+                item.source_identity,
+                item.id,
+                item.display_mode,
+                item.estimator_id,
+                item.estimator_version,
+                item.metric_kind,
+                item.client,
+                item.model,
+                item.started_at,
+                item.ended_at,
+                item.output_rate,
+                item.covered_seconds,
+                item.output_rate * item.covered_seconds,
+            ],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO activity_speed_sample_ids(source_identity,id,ended_at) VALUES (?1,?2,?3)",
+            rusqlite::params![item.source_identity, item.id, item.ended_at],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO activity_speed_buckets_5m(source_identity,display_mode,estimator_id,estimator_version,metric_kind,client,model,bucket_start,weighted_output,covered_seconds,sample_count) VALUES (?1,?2,?3,?4,?5,?6,?7,0,3,1,1)",
+            rusqlite::params![
+                item.source_identity,
+                item.display_mode,
+                item.estimator_id,
+                item.estimator_version,
+                item.metric_kind,
+                item.client,
+                item.model,
+            ],
+        )
+        .unwrap();
+
+    let result = activity_history(&connection, 5_000_000.0, &ActivitySpeedFilter::default(), 86_400).unwrap();
+    assert!(result.series.is_empty());
+    for table in ["activity_speed_samples", "activity_speed_sample_ids", "activity_speed_buckets_5m"] {
+        let count: i64 = connection
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "activity history must not prune {table}");
+    }
+}
+
+#[test]
+fn activity_history_keeps_dimension_scopes_separate_and_rejects_other_windows() {
+    let connection = database();
+    let mut source = sample("source-b", 110.0, 112.0, 20.0, 2.0);
+    source.source_identity = "source-b".into();
+    let mut mode = sample("mode", 110.0, 112.0, 30.0, 2.0);
+    mode.display_mode = "agentSpeed".into();
+    let mut estimator = sample("estimator", 110.0, 112.0, 40.0, 2.0);
+    estimator.estimator_id = "statusline".into();
+    let mut estimator_version = sample("estimator-version", 110.0, 112.0, 45.0, 2.0);
+    estimator_version.estimator_version = "2".into();
+    let mut client = sample("client", 110.0, 112.0, 50.0, 2.0);
+    client.client = "claude".into();
+    let mut model = sample("model", 110.0, 112.0, 60.0, 2.0);
+    model.model = "model-b".into();
+    let base = sample("base", 110.0, 112.0, 10.0, 2.0);
+    for item in [&base, &source, &mode, &estimator, &estimator_version, &client, &model] {
+        add_sample(&connection, item, 120.0).unwrap();
+    }
+
+    let all = activity_history(&connection, 120.0, &ActivitySpeedFilter::default(), 86_400).unwrap();
+    assert_eq!(all.series.len(), 7);
+    assert!(all.series.iter().all(|item| item.rolling_5m.is_none()
+        && item.one_minute_trend.is_empty() && item.half_minute_trend.len() == 1));
+    let filter = ActivitySpeedFilter {
+        source_identity: Some(LEGACY_SOURCE_IDENTITY.into()),
+        display_mode: Some("tokens".into()),
+        estimator_id: Some("agent-speed".into()),
+        estimator_version: Some("1".into()),
+        client: Some("codex".into()),
+        model: Some("model-a".into()),
+        ..Default::default()
+    };
+    let filtered = activity_history(&connection, 120.0, &filter, 86_400).unwrap();
+    assert_eq!(filtered.series.len(), 1);
+    assert!((filtered.series[0].half_minute_trend[0].value.output_rate() - 10.0).abs() < 0.0001);
+    assert!(matches!(
+        activity_history(&connection, 120.0, &filter, 3_600),
+        Err(ActivitySpeedStoreError::InvalidWindow)
+    ));
 }
 
 #[test]

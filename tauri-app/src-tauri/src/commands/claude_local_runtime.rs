@@ -13,11 +13,17 @@ pub(crate) async fn read_claude_local_runtime_snapshot(
 }
 
 #[tauri::command]
-pub(crate) async fn read_activity_speed_history(window: tauri::WebviewWindow) -> Result<serde_json::Value,String> {
+pub(crate) async fn read_activity_speed_history(
+    window: tauri::WebviewWindow,
+    window_seconds: Option<u64>,
+) -> Result<serde_json::Value,String> {
     require_window_label(&window, "read_activity_speed_history")?;
     run_blocking_command(move || {
         let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e|e.to_string())?.as_secs_f64();
-        crate::core::activity_speed_capture::query(now)
+        match window_seconds {
+            Some(window_seconds) => crate::core::activity_speed_capture::activity_history(now,window_seconds),
+            None => crate::core::activity_speed_capture::query(now),
+        }
     }).await
 }
 

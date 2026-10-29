@@ -1,9 +1,13 @@
-import { useCallback, useSyncExternalStore, useEffect, useState, useId } from "react";
-import { useActivitySpeedMode, ActivitySpeedModePicker, selectedActivityRates, type ActivityModelRate } from "./activitySpeedMode";
+import type {CodexHomeSourceToken} from "../types/platform";
+import { useCallback, useSyncExternalStore, useEffect, useState, useMemo } from "react";
+import { useActivitySpeedMode, selectedActivityRates, type ActivityModelRate } from "./activitySpeedMode";
 import { callCommandStrict } from "../api/command";
 import { isTauriRuntimeAvailable } from "../platform/runtime";
 import { useMultiClientUsage } from "./MultiClientUsage";
-import { activityChartPoints } from "./activitySpeedChart";
+import { ActivitySpeedHistoryPlot } from "./ActivitySpeedHistoryPlot";
+import {useDocumentVisible} from "../components/useDocumentVisible";
+import {ActivityRateUnitControl,useActivityRatePreferences} from "../components/liveRate/ActivityRateUnits";
+import {activityRateText,activityRateValue} from "../components/liveRate/activityRatePresentation";
 import { modelUsageColor } from "../components/modelUsagePresentation";
 
 export interface ClaudeRuntimeAgent {
@@ -59,18 +63,18 @@ function subscribe(listener: () => void) {
   if (listeners.size === 1 && isTauriRuntimeAvailable()) void poll();
   return () => { listeners.delete(listener); if (!listeners.size) clearTimeout(timer); };
 }
-export function useClaudeLocalRuntime(allowed: readonly string[], monitoringEnabled = true) {
+export function useClaudeLocalRuntime(allowed: readonly string[], monitoringEnabled = true, includeAgentSpeedCodex = false) {
   const { snapshot } = useMultiClientUsage();
   const mode = useActivitySpeedMode();
-  const enabled = monitoringEnabled && (mode === "agentSpeed" || snapshot.preferences.some(p => p.enabled && ["claudeCode", "claudeDesktop", "deepseek", "gemini", "opencode"].includes(p.client)));
+  const enabled = monitoringEnabled && (includeAgentSpeedCodex || mode === "agentSpeed" || snapshot.preferences.some(p => p.enabled && ["claudeCode", "claudeDesktop", "deepseek", "gemini", "opencode"].includes(p.client)));
   const subscribeWhenEnabled = useCallback((listener: () => void) => enabled ? subscribe(listener) : () => {}, [enabled]);
   const value = useSyncExternalStore(subscribeWhenEnabled, () => cached, () => empty);
-  const selected = new Set(allowed.filter(c => ["claudeCode", "claudeDesktop", "deepseek", "gemini", "opencode"].includes(c) || (c === "codex" && mode === "agentSpeed")));
+  const selected = new Set(allowed.filter(c => ["claudeCode", "claudeDesktop", "deepseek", "gemini", "opencode"].includes(c) || (c === "codex" && (includeAgentSpeedCodex || mode === "agentSpeed"))));
   const active = (agent: ClaudeRuntimeAgent) => selected.has(agent.client) && ["generating", "tools"].includes(agent.phase)
     && Date.parse(agent.lastActivity) >= Date.now() - 300000;
   const enabledSources = snapshot.preferences.filter(p => p.enabled);
   const estimatedShareForSelection = scopedClaudeEstimateShare(value.estimatedShare, enabledSources.map(p => p.client), allowed);
-  return { ...value, enabled,
+  return { ...value, enabled, configuredClients: snapshot.preferences.filter(p=>p.enabled).map(p=>p.client), sourceSelectionKey: JSON.stringify(snapshot.preferences.map(p=>[p.client,p.enabled,p.path])),
     // Upstream's fraction is aggregate-only. Do not apply another client's
     // calibration to a filtered client view.
     estimatedShareForSelection,
@@ -81,49 +85,41 @@ export function useClaudeLocalRuntime(allowed: readonly string[], monitoringEnab
 }
 
 interface Aggregate { weightedOutput:number; coveredSeconds:number }
-interface ActivitySeries { dimensions:{displayMode:string;client:string;model:string;estimatorId?:string}; rolling5m:Aggregate|null;rolling15m:Aggregate|null;rolling30m:Aggregate|null;fiveMinuteTrend:{bucketStart:number;value:Aggregate}[];oneMinuteTrend?:{bucketStart:number;value:Aggregate}[] }
-export function ClientActivitySpeedPanel({ allowed, compact = false, monitoringEnabled = true, codexRates = [], codexAvailable = false, codexOutputRate }: { allowed: readonly string[]; compact?: boolean; monitoringEnabled?: boolean; codexRates?: readonly ActivityModelRate[]; codexAvailable?: boolean; codexOutputRate?: number }) {
-  const runtime = useClaudeLocalRuntime(allowed, monitoringEnabled), mode=useActivitySpeedMode();
+interface ActivitySeries { dimensions:{displayMode:string;client:string;model:string;estimatorId?:string}; rolling5m:Aggregate|null;rolling15m:Aggregate|null;rolling30m:Aggregate|null;fiveMinuteTrend:{bucketStart:number;value:Aggregate}[];halfMinuteTrend?:{bucketStart:number;value:Aggregate}[] }
+export function ClientActivitySpeedPanel({ allowed, sourceToken = null, compact = false, monitoringEnabled = true, codexRates = [], codexAvailable = false, codexOutputRate }: { allowed: readonly string[]; sourceToken?: CodexHomeSourceToken | null; compact?: boolean; monitoringEnabled?: boolean; codexRates?: readonly ActivityModelRate[]; codexAvailable?: boolean; codexOutputRate?: number }) {
+  const runtime = useClaudeLocalRuntime(allowed, monitoringEnabled, true), mode="agentSpeed";
   const [history,setHistory]=useState<ActivitySeries[]>([]),[issue,setIssue]=useState("");
-  const rates=selectedActivityRates(codexRates,runtime.modelRates,allowed,mode,codexOutputRate);
+  const sourceKey=JSON.stringify([sourceToken,runtime.sourceSelectionKey]);
+  const [historyKey,setHistoryKey]=useState("");
+  const [asOf,setAsOf]=useState(Date.now()/1000),[windowSeconds,setWindowSeconds]=useState(86400);
+  const visible=useDocumentVisible(),{unit,fx}=useActivityRatePreferences();
+  const rates=selectedActivityRates([],runtime.modelRates,allowed,mode);
   useEffect(()=>{
-    if(compact||!monitoringEnabled||!isTauriRuntimeAvailable())return;
+    if(compact||!monitoringEnabled||!visible||!isTauriRuntimeAvailable())return;
     let alive=true, timer:ReturnType<typeof setTimeout>;
-    const refresh=async()=>{try{const result=await callCommandStrict<{series:ActivitySeries[]}>("read_activity_speed_history");if(alive){setHistory(result.series);setIssue("");}}catch{if(alive)setIssue("活动速度索引暂不可用");}finally{if(alive)timer=setTimeout(refresh,10000);}};
+    const refresh=async()=>{try{const result=await callCommandStrict<{series:ActivitySeries[]}>("read_activity_speed_history",{windowSeconds:86400});if(alive){setHistory(result.series);setHistoryKey(sourceKey);setAsOf(Date.now()/1000);setIssue("");}}catch{if(alive)setIssue("活动速度索引暂不可用");}finally{if(alive)timer=setTimeout(refresh,60000);}};
     void refresh();return()=>{alive=false;clearTimeout(timer);};
-  },[compact,monitoringEnabled,mode]);
-  const hasCoverage=monitoringEnabled&&allowed.some(client=>client==="codex"&&mode==="bar"?codexAvailable:runtime.sourceAvailable[client]);
-  const rows=history.filter(s=>s.dimensions.displayMode===mode&&allowed.includes(s.dimensions.client)&&(s.oneMinuteTrend?.length??0)>0);
+  },[compact,monitoringEnabled,mode,visible,sourceKey]);
+  const hasCoverage=monitoringEnabled&&allowed.some(client=>runtime.sourceAvailable[client]);
+  const allowedKey=allowed.join("|"), configuredKey=runtime.configuredClients.join("|");
+  const groups=useMemo(()=>{
+    const rows=historyKey===sourceKey?history.filter(s=>s.dimensions.displayMode===mode&&allowed.includes(s.dimensions.client)&&(s.halfMinuteTrend?.length??0)>0):[];
+    const clients=[...rows.map(row=>row.dimensions.client),...allowed.filter(client=>client==="codex"||runtime.configuredClients.includes(client as typeof runtime.configuredClients[number]))];
+    return [...new Set(clients)].sort().map(client=>({client,rows:rows.filter(row=>row.dimensions.client===client)}));
+  },[history,historyKey,sourceKey,mode,allowedKey,configuredKey]);
+  const hasHistory=groups.length>0;
   return <div className="client-activity-speed" style={{fontSize:compact?10:12,paddingBlock:compact?3:8}}>
-    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}><strong>聚合活动速度</strong><strong>{hasCoverage?rates.reduce((n,r)=>n+r.tokensPerSecond,0).toFixed(1)+" t/s":"—"}</strong></div>
-    {!compact&&<ActivitySpeedModePicker/>}
-    {!rates.length&&!rows.length&&<p className="qs-muted">{monitoringEnabled?"等待本地活动记录":"本地读取已关闭"}</p>}
-    {!compact&&[...new Set(rows.map(row=>row.dimensions.client))].sort().map(client=><div key={client} style={{paddingTop:10}}>
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}><strong>活动速率 · Agent Speed</strong><strong>{hasCoverage?activityRateText(activityRateValue(rates.reduce((n,r)=>n+r.tokensPerSecond,0),rates,unit,fx),unit)+" "+unit:"—"}</strong></div>
+    {!compact&&<><div className="activity-speed-history-controls"><span style={{fontSize:10,opacity:.75}}>Agent Speed 本地活动速率</span><ActivityRateUnitControl/></div>
+      <div className="activity-speed-history-ranges">{[86400,1800].map(seconds=><button key={seconds} type="button" aria-pressed={windowSeconds===seconds} onClick={()=>setWindowSeconds(seconds)}>{seconds===86400?"24小时":"近30分钟"}</button>)}</div></>}
+    {!rates.length&&!hasHistory&&<p className="qs-muted">{monitoringEnabled?"等待本地活动记录":"本地读取已关闭"}</p>}
+    {!compact&&groups.map(({client,rows})=><div key={client} style={{paddingTop:10}}>
       <strong>{client==="codex"?"Codex":client==="claudeCode"?"Claude CLI":client==="claudeDesktop"?"Claude Desktop":client}</strong>
-      <ActivityTrend rows={rows.filter(row=>row.dimensions.client===client)}/>
-      <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>{rows.filter(row=>row.dimensions.client===client).map(row=><small key={row.dimensions.model} style={{color:modelUsageColor(row.dimensions.model)}}>{row.dimensions.model.replace(/^gpt-/i,"")}</small>)}</div>
+      <ActivitySpeedHistoryPlot rows={rows} asOf={asOf} windowSeconds={windowSeconds} unit={unit} fx={fx}/>
     </div>)}
-    {!compact&&<small>{issue||"近半小时 · 每分钟加权速度 · 空缺表示无活动采样"}</small>}
+    {!compact&&<small>{issue||"每30秒平均速率 · 无活动采样的时段留空"}</small>}
   </div>;
 }
-function ActivityTrend({rows}:{rows:ActivitySeries[]}){
-  const now=Date.now()/1000, start=now-1800, clipId=useId();
-  const plotted=rows.map(row=>({row,points:activityChartPoints(row.oneMinuteTrend??[],now)}));
-  const maximum=Math.max(1,...plotted.flatMap(series=>series.points.map(p=>p.rate)));
-  const x=(stamp:number)=>32+(stamp-start)/1800*650, y=(rate:number)=>122-rate/maximum*104;
-  return <svg viewBox="0 0 720 150" aria-label="近半小时活动速度，每分钟一个点" role="img" style={{width:"100%",height:150,display:"block"}}>
-    <defs><clipPath id={clipId}><rect x="32" y="12" width="650" height="110"/></clipPath></defs>
-    <path d="M32 12V122H682" fill="none" stroke="currentColor" opacity=".25"/>
-    {[0,1,2,3,4,5,6].map(tick=>{const stamp=start+tick*300;return <g key={tick}><path d={`M${x(stamp)} 12V122`} stroke="currentColor" opacity=".1"/><text x={x(stamp)} y="143" textAnchor="middle" fontSize="11" fill="currentColor">{new Date(stamp*1000).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</text></g>;})}
-    {[0,.5,1].map(fraction=><text key={fraction} x="28" y={y(maximum*fraction)+4} textAnchor="end" fontSize="10" fill="currentColor">{(maximum*fraction).toFixed(0)}</text>)}
-    <g clipPath={`url(#${clipId})`}>{plotted.map(({row,points})=>{
-      let previous:number|undefined;
-      const d=points.map(p=>{const command=previous===p.segment?"L":"M";previous=p.segment;return `${command}${x(p.bucketStart)},${y(p.rate)}`;}).join(" ");
-      return <g key={row.dimensions.client+row.dimensions.model}><path d={d} fill="none" stroke={modelUsageColor(row.dimensions.model)} strokeWidth="1.7"/>{points.map(p=><circle key={p.bucketStart} cx={x(p.bucketStart)} cy={y(p.rate)} r="2.5" fill={modelUsageColor(row.dimensions.model)}><title>{row.dimensions.model} · {new Date(p.bucketStart*1000).toLocaleTimeString()} · {p.rate.toFixed(1)} t/s</title></circle>)}</g>;
-    })}</g>
-  </svg>;
-}
-
 export function ClaudeLocalTasks({ allowed }: { allowed: readonly string[] }) {
   const runtime = useClaudeLocalRuntime(allowed);
   if (!allowed.some(c => ["claudeCode", "claudeDesktop"].includes(c))) return null;

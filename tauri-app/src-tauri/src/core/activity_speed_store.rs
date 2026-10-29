@@ -7,14 +7,17 @@ const SCHEMA: &str =
 const SCHEMA_VERSION: &str = "2";
 const BUCKET_SECONDS: i64 = 300;
 const MINUTE_SECONDS: i64 = 60;
+const HALF_MINUTE_SECONDS: i64 = 30;
 const RAW_RETENTION: f64 = 7.0 * 86_400.0;
 const ROLLUP_RETENTION: f64 = 30.0 * 86_400.0;
-const MINUTE_TREND_WINDOW_SECONDS: f64 = 30.0 * 60.0;
+const DEFAULT_MINUTE_TREND_WINDOW_SECONDS: u64 = 30 * 60;
+const MAX_MINUTE_TREND_WINDOW_SECONDS: u64 = 24 * 60 * 60;
 const MAX_SAMPLE_SPAN: f64 = 3_600.0;
 const MAX_TEXT_LENGTH: usize = 256;
 const MAX_SERIES: usize = 64;
 const MAX_TREND_POINTS: usize = 512;
-const MAX_MINUTE_TREND_POINTS: usize = 31;
+const MAX_DEFAULT_MINUTE_TREND_POINTS: usize = 31;
+const MAX_HALF_MINUTE_TREND_POINTS: usize = 2_881;
 const MAX_BATCH_SIZE: usize = 4_096;
 
 pub(super) type ActivitySpeedResult<T> = Result<T, ActivitySpeedStoreError>;
@@ -24,6 +27,7 @@ pub(super) enum ActivitySpeedStoreError {
     Sql(rusqlite::Error),
     InvalidNow,
     InvalidFilter,
+    InvalidWindow,
     InvalidSample,
     UnsupportedSchema,
     TooManySeries,
@@ -42,6 +46,7 @@ impl fmt::Display for ActivitySpeedStoreError {
             Self::Sql(error) => write!(f, "activity speed SQLite error: {error}"),
             Self::InvalidNow => f.write_str("activity speed time is invalid"),
             Self::InvalidFilter => f.write_str("activity speed trend start is invalid"),
+            Self::InvalidWindow => f.write_str("activity speed history window is unsupported"),
             Self::InvalidSample => f.write_str("activity speed sample is invalid"),
             Self::UnsupportedSchema => f.write_str("activity speed schema is unsupported"),
             Self::TooManySeries => {
@@ -178,7 +183,13 @@ pub(super) fn query(
             .or_insert_with(|| ActivitySpeedSeries::new(dimensions))
             .thirty_minute_trend = points;
     }
-    for (dimensions, points) in read_one_minute_trend(connection, now, filter)? {
+    for (dimensions, points) in read_sample_trend(
+        connection,
+        now,
+        filter,
+        DEFAULT_MINUTE_TREND_WINDOW_SECONDS,
+        MINUTE_SECONDS,
+    )? {
         values
             .entry(dimensions.clone())
             .or_insert_with(|| ActivitySpeedSeries::new(dimensions))
@@ -190,6 +201,37 @@ pub(super) fn query(
     Ok(ActivitySpeedQueryResult {
         series: values.into_values().collect(),
     })
+}
+
+/// Reads only retained raw samples and returns sparse, measured half-minute points.
+/// This path deliberately avoids rollup scans and does not prune or otherwise write.
+pub(super) fn activity_history(
+    connection: &Connection,
+    now: f64,
+    filter: &ActivitySpeedFilter,
+    window_seconds: u64,
+) -> ActivitySpeedResult<ActivitySpeedQueryResult> {
+    validate_now(now)?;
+    if filter
+        .trend_since
+        .is_some_and(|since| !since.is_finite() || since < 0.0 || since > now)
+    {
+        return Err(ActivitySpeedStoreError::InvalidFilter);
+    }
+    if !matches!(window_seconds, 1_800 | 86_400) {
+        return Err(ActivitySpeedStoreError::InvalidWindow);
+    }
+
+    let points = read_sample_trend(connection, now, filter, window_seconds, HALF_MINUTE_SECONDS)?;
+    let series = points
+        .into_iter()
+        .map(|(dimensions, points)| {
+            let mut series = ActivitySpeedSeries::new(dimensions);
+            series.half_minute_trend = points;
+            series
+        })
+        .collect();
+    Ok(ActivitySpeedQueryResult { series })
 }
 
 fn read_rolling(
@@ -295,65 +337,65 @@ fn read_trend(
     Ok(output)
 }
 
-/// Build a last-30-minute trend directly from retained raw samples. Each
-/// sample's measured output and covered time are apportioned across the minute
-/// buckets in proportion to the interval overlap, matching the rolling-window
-/// query's weighting and clipping at `now`.
-fn read_one_minute_trend(
+/// Split each overlapping raw sample at its requested bucket boundaries. The recursive
+/// expansion is proportional to the overlap of each sample, rather than joining
+/// every sample to every minute in the requested window. Gaps remain absent.
+fn read_sample_trend(
     connection: &Connection,
     now: f64,
     filter: &ActivitySpeedFilter,
+    window_seconds: u64,
+    bucket_seconds: i64,
 ) -> ActivitySpeedResult<BTreeMap<ActivitySpeedDimensions, Vec<ActivitySpeedTrendPoint>>> {
-    let from = now - MINUTE_TREND_WINDOW_SECONDS;
-    let last_bucket = minute_bucket_start(now);
-    let first_bucket = last_bucket - (MAX_MINUTE_TREND_POINTS as i64 - 1) * MINUTE_SECONDS;
+    let from = (now - window_seconds as f64).max(0.0);
+    let point_limit = (window_seconds / bucket_seconds as u64 + 1) as usize;
+    let max_point_limit = match (window_seconds, bucket_seconds) {
+        (DEFAULT_MINUTE_TREND_WINDOW_SECONDS, MINUTE_SECONDS) => MAX_DEFAULT_MINUTE_TREND_POINTS,
+        (1_800, HALF_MINUTE_SECONDS) => (1_800 / HALF_MINUTE_SECONDS as u64 + 1) as usize,
+        (MAX_MINUTE_TREND_WINDOW_SECONDS, HALF_MINUTE_SECONDS) => MAX_HALF_MINUTE_TREND_POINTS,
+        _ => return Err(ActivitySpeedStoreError::InvalidWindow),
+    };
+    if point_limit > max_point_limit {
+        return Err(ActivitySpeedStoreError::InvalidWindow);
+    }
     let (predicate, mut values) = filter_sql(filter);
     let sql = format!(
-        "WITH RECURSIVE minute_buckets(bucket_start) AS (
-             SELECT ? UNION ALL
-             SELECT bucket_start + {MINUTE_SECONDS} FROM minute_buckets
-             WHERE bucket_start + {MINUTE_SECONDS} <= ?
-         ), clipped_samples AS (
-             SELECT source_identity, display_mode, estimator_id, estimator_version,
-                    metric_kind, client, model, started_at, ended_at, weighted_output,
-                    covered_seconds, MAX(started_at, ?) AS clipped_start,
-                    MIN(ended_at, ?) AS clipped_end
-             FROM activity_speed_samples
-             WHERE ended_at > ? AND started_at < ? {predicate}
-         ), grouped AS (
-             SELECT source_identity, display_mode, estimator_id, estimator_version,
-                    metric_kind, client, model, minute_buckets.bucket_start AS bucket_start,
-                    SUM(clipped_samples.weighted_output * ((MIN(clipped_end, minute_buckets.bucket_start + {MINUTE_SECONDS})
-                        - MAX(clipped_start, minute_buckets.bucket_start)) / (ended_at - started_at))) AS weighted_output,
-                    SUM(clipped_samples.covered_seconds * ((MIN(clipped_end, minute_buckets.bucket_start + {MINUTE_SECONDS})
-                        - MAX(clipped_start, minute_buckets.bucket_start)) / (ended_at - started_at))) AS covered_seconds
-             FROM clipped_samples CROSS JOIN minute_buckets
-             WHERE clipped_end > minute_buckets.bucket_start
-               AND clipped_start < minute_buckets.bucket_start + {MINUTE_SECONDS}
-             GROUP BY source_identity, display_mode, estimator_id, estimator_version,
-                      metric_kind, client, model, minute_buckets.bucket_start
-             HAVING SUM(clipped_samples.covered_seconds * ((MIN(clipped_end, minute_buckets.bucket_start + {MINUTE_SECONDS})
-                        - MAX(clipped_start, minute_buckets.bucket_start)) / (ended_at - started_at))) > 0
+        "WITH RECURSIVE bounds(from_time, now_time) AS (SELECT ?, ?),
+         bucket_samples(source_identity, display_mode, estimator_id, estimator_version, metric_kind,
+             client, model, started_at, ended_at, weighted_output, covered_seconds, clipped_start,
+             clipped_end, bucket_start) AS (
+             SELECT samples.source_identity, samples.display_mode, samples.estimator_id,
+                    samples.estimator_version, samples.metric_kind, samples.client, samples.model,
+                    samples.started_at, samples.ended_at, samples.weighted_output, samples.covered_seconds,
+                    MAX(samples.started_at, bounds.from_time), MIN(samples.ended_at, bounds.now_time),
+             CAST(MAX(samples.started_at, bounds.from_time) / {bucket_seconds} AS INTEGER) * {bucket_seconds}
+             FROM activity_speed_samples AS samples CROSS JOIN bounds
+             WHERE samples.ended_at > bounds.from_time AND samples.started_at < bounds.now_time {predicate}
+             UNION ALL
+             SELECT source_identity, display_mode, estimator_id, estimator_version, metric_kind,
+                    client, model, started_at, ended_at, weighted_output, covered_seconds,
+                    clipped_start, clipped_end, bucket_start + {bucket_seconds}
+             FROM bucket_samples
+             WHERE bucket_start + {bucket_seconds} < clipped_end
          )
-         SELECT source_identity, display_mode, estimator_id, estimator_version, metric_kind,
-                client, model, bucket_start, weighted_output, covered_seconds
-         FROM grouped
+         SELECT source_identity, display_mode, estimator_id, estimator_version, metric_kind, client, model,
+                bucket_start,
+                SUM(weighted_output * ((MIN(clipped_end, bucket_start + {bucket_seconds})
+                    - MAX(clipped_start, bucket_start)) / (ended_at - started_at))),
+                SUM(covered_seconds * ((MIN(clipped_end, bucket_start + {bucket_seconds})
+                    - MAX(clipped_start, bucket_start)) / (ended_at - started_at)))
+         FROM bucket_samples
+         GROUP BY source_identity, display_mode, estimator_id, estimator_version, metric_kind,
+                  client, model, bucket_start
+         HAVING SUM(covered_seconds * ((MIN(clipped_end, bucket_start + {bucket_seconds})
+                    - MAX(clipped_start, bucket_start)) / (ended_at - started_at))) > 0
          ORDER BY source_identity, display_mode, estimator_id, estimator_version,
                   metric_kind, client, model, bucket_start
          LIMIT ?"
     );
-    let mut params = vec![
-        Value::Integer(first_bucket),
-        Value::Integer(last_bucket),
-        Value::Real(from),
-        Value::Real(now),
-        Value::Real(from),
-        Value::Real(now),
-    ];
+    let mut params = vec![Value::Real(from), Value::Real(now)];
     params.append(&mut values);
-    params.push(Value::Integer(
-        (MAX_SERIES * MAX_MINUTE_TREND_POINTS + 1) as i64,
-    ));
+    params.push(Value::Integer((MAX_SERIES * point_limit + 1) as i64));
     let mut statement = connection.prepare(&sql)?;
     let rows = statement
         .query_map(params_from_iter(params.iter()), |row| {
@@ -373,7 +415,7 @@ fn read_one_minute_trend(
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    if rows.len() > MAX_SERIES * MAX_MINUTE_TREND_POINTS {
+    if rows.len() > MAX_SERIES * point_limit {
         return Err(ActivitySpeedStoreError::TooManySeries);
     }
     let mut output = BTreeMap::<ActivitySpeedDimensions, Vec<ActivitySpeedTrendPoint>>::new();
@@ -383,7 +425,7 @@ fn read_one_minute_trend(
     if output.len() > MAX_SERIES
         || output
             .values()
-            .any(|points| points.len() > MAX_MINUTE_TREND_POINTS)
+            .any(|points| points.len() > point_limit)
     {
         return Err(ActivitySpeedStoreError::TooManySeries);
     }
@@ -494,6 +536,7 @@ fn bucket_start(timestamp: f64) -> i64 {
     (timestamp / BUCKET_SECONDS as f64).floor() as i64 * BUCKET_SECONDS
 }
 
+#[cfg(test)]
 fn minute_bucket_start(timestamp: f64) -> i64 {
     (timestamp / MINUTE_SECONDS as f64).floor() as i64 * MINUTE_SECONDS
 }

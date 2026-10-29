@@ -14,6 +14,12 @@ final class ActivitySpeedHistoryController: ObservableObject {
     static let shared = ActivitySpeedHistoryController()
     @Published private(set) var series: [ActivitySpeedSeries] = []
     @Published private(set) var issue: String?
+    @Published private(set) var daySeries: [ActivitySpeedSeries] = []
+    @Published private(set) var dayIssue: String?
+    @Published private(set) var dayAsOf = Date()
+    private var dayReaders: Set<UUID> = []
+    private var dayRequest: Task<Void, Never>?
+    private var lastDayRead: Double = 0
     private var ledger: ActivitySpeedStore?
     private var opening: Task<ActivitySpeedStore, Error>?
     private struct Last {
@@ -30,20 +36,23 @@ final class ActivitySpeedHistoryController: ObservableObject {
     private var enabled = false
     /// Production composition opts in explicitly; fixture runtimes cannot write app data.
     func start() { enabled = true }
-    func reset(client: String) { last.removeValue(forKey: client) }
+    func reset(client: String) { last = last.filter { !$0.key.hasPrefix(client + "|") } }
     func selectSource(client: String, identity: String?) {
         guard activeSources[client] != identity else { return }
         activeSources[client] = identity
         reset(client: client)
         series.removeAll { $0.dimensions.client == client && $0.dimensions.sourceIdentity != identity }
+        daySeries.removeAll { $0.dimensions.client == client && $0.dimensions.sourceIdentity != identity }
+        lastDayRead = 0
     }
 
     func record(client: String, sourceIdentity: String, rates: [ModelRateContribution], at time: Double, available: Bool, mode: ActivitySpeedDisplayMode) {
         guard enabled, time.isFinite else { return }
         selectSource(client: client, identity: sourceIdentity)
-        guard available else { last.removeValue(forKey: client); return }
-        if let prior = last[client], time - prior.time < 1 { return }
-        let prior = last.updateValue(.init(time: time, rates: rates, mode: mode.rawValue), forKey: client)
+        let captureKey = client + "|" + sourceIdentity + "|" + mode.rawValue
+        guard available else { last.removeValue(forKey: captureKey); return }
+        if let prior = last[captureKey], time - prior.time < 1 { return }
+        let prior = last.updateValue(.init(time: time, rates: rates, mode: mode.rawValue), forKey: captureKey)
         guard let prior, prior.mode == mode.rawValue, time > prior.time, time - prior.time <= 3 else { return }
         // Store interval summaries, not animation frames or transcript text. Idle
         // intervals without any active output need no raw detail record.
@@ -67,6 +76,40 @@ final class ActivitySpeedHistoryController: ObservableObject {
     func refresh() {
         guard enabled, writer == nil else { return }
         drain(now: Date().timeIntervalSince1970)
+    }
+    func showDayTrend(_ visible: Bool, consumer: UUID) {
+        if visible { dayReaders.insert(consumer); refreshDayTrend() }
+        else { dayReaders.remove(consumer) }
+    }
+    func refreshDayTrend(force: Bool = false) {
+        let now = Date().timeIntervalSince1970
+        guard enabled, !dayReaders.isEmpty, dayRequest == nil,
+              force || now - lastDayRead >= 60 else { return }
+        let sources = activeSources
+        let selectedMode = ActivitySpeedDisplayMode.agentSpeed.rawValue
+        lastDayRead = now
+        dayRequest = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let store = try await open()
+                var rows: [ActivitySpeedSeries] = []
+                for source in Set(sources.values).sorted() {
+                    let result = try await store.activityHistory(now: now,
+                        filter: .init(sourceIdentity: source, displayMode: selectedMode), windowSeconds: 86400)
+                    rows += result.series
+                }
+                guard sources == activeSources else {
+                    dayRequest = nil; lastDayRead = 0
+                    refreshDayTrend()
+                    return
+                }
+                let scoped = rows.filter { sources[$0.dimensions.client] == $0.dimensions.sourceIdentity }
+                if daySeries != scoped { daySeries = scoped }
+                dayAsOf = Date(timeIntervalSince1970: now)
+                dayIssue = nil
+            } catch { dayIssue = "活动速率历史暂不可用" }
+            dayRequest = nil
+        }
     }
     private func open() async throws -> ActivitySpeedStore {
         if let ledger { return ledger }
@@ -109,6 +152,7 @@ final class ActivitySpeedHistoryController: ObservableObject {
                 issue = nil
             } catch { issue = "活动速度索引暂不可用" }
             writer = nil
+            refreshDayTrend()
         }
     }
 }

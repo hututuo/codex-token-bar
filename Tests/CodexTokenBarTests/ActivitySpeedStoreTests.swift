@@ -21,6 +21,199 @@ final class ActivitySpeedStoreTests: XCTestCase {
         XCTAssertEqual(result.series.count, 1)
     }
 
+    func testDayHalfMinuteHistoryWeightsAcrossBoundariesClipsBoundsAndKeepsGaps() async throws {
+        let (store, url) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let historyNow = 100_143.5
+        let from = historyNow - 86_400
+        let samples = [
+            // Crosses the day boundary and three half-minute buckets; only the 80s inside count.
+            makeSample(id: "window-edge", startedAt: from - 20, endedAt: from + 80, rate: 10),
+            makeSample(id: "outside-day", startedAt: from - 100, endedAt: from - 90, rate: 99),
+            makeSample(id: "old-day-point", startedAt: historyNow - 5_000, endedAt: historyNow - 4_990, rate: 6),
+            makeSample(id: "slow-crossing", startedAt: 100_010, endedAt: 100_070, rate: 10),
+            makeSample(id: "fast-crossing", startedAt: 100_030, endedAt: 100_070, rate: 20),
+            // Stored with a later write horizon so the query proves it clips at now.
+            makeSample(id: "future-end", startedAt: historyNow - 20, endedAt: historyNow + 20, rate: 4)
+        ]
+        _ = try await store.addBatch(samples: samples, now: historyNow + 20)
+
+        let result = try await store.activityHistory(now: historyNow, windowSeconds: 86_400)
+        let series = try XCTUnwrap(result.series.first)
+        let points = Dictionary(uniqueKeysWithValues: series.halfMinuteTrend.map { ($0.bucketStart, $0.value) })
+        XCTAssertEqual(result.series.count, 1)
+        XCTAssertEqual(points.count, 9)
+        XCTAssertNil(series.rolling5m)
+        XCTAssertTrue(series.fiveMinuteTrend.isEmpty)
+        XCTAssertTrue(series.thirtyMinuteTrend.isEmpty)
+        XCTAssertTrue(series.oneMinuteTrend.isEmpty)
+
+        let edgeFirst = try XCTUnwrap(points[Int64(floor(from / 30) * 30)])
+        let edgeMiddle = try XCTUnwrap(points[Int64(floor((from + 30) / 30) * 30)])
+        let edgeLast = try XCTUnwrap(points[Int64(floor((from + 60) / 30) * 30)])
+        XCTAssertEqual(edgeFirst.outputRate, 10, accuracy: 0.0001)
+        XCTAssertEqual(edgeFirst.coveredSeconds, 26.5, accuracy: 0.0001)
+        XCTAssertEqual(edgeFirst.weightedOutput, 265, accuracy: 0.0001)
+        XCTAssertEqual(edgeMiddle.coveredSeconds, 30, accuracy: 0.0001)
+        XCTAssertEqual(edgeMiddle.weightedOutput, 300, accuracy: 0.0001)
+        XCTAssertEqual(edgeLast.outputRate, 10, accuracy: 0.0001)
+        XCTAssertEqual(edgeLast.coveredSeconds, 23.5, accuracy: 0.0001)
+        XCTAssertEqual(edgeLast.weightedOutput, 235, accuracy: 0.0001)
+
+        let firstWeighted = try XCTUnwrap(points[99_990])
+        let secondWeighted = try XCTUnwrap(points[100_020])
+        let thirdWeighted = try XCTUnwrap(points[100_050])
+        XCTAssertEqual(firstWeighted.outputRate, 10, accuracy: 0.0001)
+        XCTAssertEqual(firstWeighted.coveredSeconds, 10, accuracy: 0.0001)
+        XCTAssertEqual(secondWeighted.weightedOutput, 700, accuracy: 0.0001)
+        XCTAssertEqual(secondWeighted.coveredSeconds, 50, accuracy: 0.0001)
+        XCTAssertEqual(secondWeighted.outputRate, 14, accuracy: 0.0001)
+        XCTAssertEqual(thirdWeighted.weightedOutput, 600, accuracy: 0.0001)
+        XCTAssertEqual(thirdWeighted.coveredSeconds, 40, accuracy: 0.0001)
+        XCTAssertEqual(thirdWeighted.outputRate, 15, accuracy: 0.0001)
+
+        let clippedNow = try XCTUnwrap(points[100_140])
+        XCTAssertEqual(clippedNow.weightedOutput, 14, accuracy: 0.0001)
+        XCTAssertEqual(clippedNow.coveredSeconds, 3.5, accuracy: 0.0001)
+        XCTAssertEqual(clippedNow.outputRate, 4, accuracy: 0.0001)
+        XCTAssertTrue(points.keys.contains(Int64(floor((historyNow - 5_000) / 30) * 30)))
+        XCTAssertFalse(points.values.contains { $0.outputRate == 99 })
+
+        let thirtyMinute = try await store.activityHistory(now: historyNow, windowSeconds: 1_800)
+        XCTAssertLessThanOrEqual(thirtyMinute.series.first?.halfMinuteTrend.count ?? 0, 61)
+        XCTAssertFalse(thirtyMinute.series.first?.halfMinuteTrend.contains {
+            $0.bucketStart == Int64(floor((historyNow - 5_000) / 30) * 30)
+        } ?? false)
+        let legacy = try await store.query(now: historyNow)
+        let legacyMinutePoints = try XCTUnwrap(legacy.series.first?.oneMinuteTrend)
+        XCTAssertLessThanOrEqual(legacyMinutePoints.count, 31)
+        XCTAssertTrue(legacyMinutePoints.contains { $0.bucketStart == 100_140 })
+        XCTAssertFalse(legacyMinutePoints.contains {
+            $0.bucketStart == Int64(floor((historyNow - 5_000) / 60) * 60)
+        })
+    }
+
+    func testActivityHistoryKeepsSourceModeClientEstimatorAndModelSeparate() async throws {
+        let (store, url) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let base = makeSample(id: "base", startedAt: 110, endedAt: 112, rate: 10,
+                              sourceIdentity: "source-a")
+        let samples = [
+            base,
+            makeSample(id: "source", startedAt: 110, endedAt: 112, rate: 20, sourceIdentity: "source-b"),
+            makeSample(id: "mode", startedAt: 110, endedAt: 112, rate: 30,
+                       sourceIdentity: "source-a", displayMode: "agentSpeed"),
+            makeSample(id: "estimator", startedAt: 110, endedAt: 112, rate: 40,
+                       sourceIdentity: "source-a", estimator: "statusline"),
+            makeSample(id: "estimator-version", startedAt: 110, endedAt: 112, rate: 45,
+                       sourceIdentity: "source-a", estimatorVersion: "2"),
+            makeSample(id: "client", startedAt: 110, endedAt: 112, rate: 50,
+                       sourceIdentity: "source-a", client: "claude"),
+            makeSample(id: "model", startedAt: 110, endedAt: 112, rate: 60,
+                       sourceIdentity: "source-a", model: "model-b")
+        ]
+        _ = try await store.addBatch(samples: samples, now: 120)
+
+        let all = try await store.activityHistory(now: 120, windowSeconds: 86_400)
+        XCTAssertEqual(all.series.count, 7)
+        XCTAssertTrue(all.series.allSatisfy { $0.rolling5m == nil && $0.oneMinuteTrend.isEmpty && $0.halfMinuteTrend.count == 1 })
+        let filtered = try await store.activityHistory(
+            now: 120,
+            filter: ActivitySpeedFilter(sourceIdentity: "source-a", displayMode: "tokens",
+                                        estimatorID: "agent-speed", client: "codex", model: "model-a"),
+            windowSeconds: 86_400
+        )
+        XCTAssertEqual(filtered.series.count, 1)
+        XCTAssertEqual(filtered.series.first?.dimensions.sourceIdentity, "source-a")
+        XCTAssertEqual(
+            try XCTUnwrap(filtered.series.first?.halfMinuteTrend.first).value.outputRate,
+            10,
+            accuracy: 0.0001
+        )
+    }
+
+    func testActivityHistoryAcceptsOnlySupportedWindows() async throws {
+        let (store, url) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        do {
+            _ = try await store.activityHistory(now: now, windowSeconds: 3_600)
+            XCTFail("Unsupported activity history windows should be rejected")
+        } catch ActivitySpeedStoreError.invalidWindow { }
+    }
+
+    func testActivityHistoryCanReturnExactly2881HalfMinuteBuckets() async throws {
+        let (store, url) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let historyNow = 100_000.5
+        let from = historyNow - 86_400
+        let firstBucket = Int64(floor(from / 30) * 30)
+        let samples = (0..<2_881).map { index -> ActivitySpeedSample in
+            let bucket = Double(firstBucket + Int64(index) * 30)
+            let startedAt = index == 0 ? from + 0.1 : bucket + 1
+            return makeSample(
+                id: "half-minute-\(index)", startedAt: startedAt, endedAt: startedAt + 0.2,
+                rate: 6
+            )
+        }
+        let inserted = try await store.addBatch(samples: samples, now: historyNow)
+        XCTAssertEqual(inserted, 2_881)
+
+        let result = try await store.activityHistory(now: historyNow, windowSeconds: 86_400)
+        let series = try XCTUnwrap(result.series.first)
+        XCTAssertEqual(series.halfMinuteTrend.count, 2_881)
+        XCTAssertEqual(series.halfMinuteTrend.first?.bucketStart, firstBucket)
+        XCTAssertEqual(series.halfMinuteTrend.last?.bucketStart, Int64(floor(historyNow / 30) * 30))
+    }
+
+    func testActivityHistoryEnforces64SeriesLimit() async throws {
+        let (store, url) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let samples = (0..<65).map { index in
+            makeSample(id: "series-\(index)", startedAt: 100, endedAt: 101, rate: 1,
+                       model: "model-\(index)")
+        }
+        _ = try await store.addBatch(samples: samples, now: 110)
+        do {
+            _ = try await store.activityHistory(now: 110, windowSeconds: 86_400)
+            XCTFail("Activity history must stop at the 64-series limit")
+        } catch ActivitySpeedStoreError.tooManySeries { }
+    }
+
+    func testActivityHistoryDoesNotWriteOrPruneSharedTables() async throws {
+        let (store, url) = try makeStore()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        let database = SQLiteDatabaseDriver(url: url)
+        let expired = makeSample(id: "expired-detail", startedAt: 10, endedAt: 11, rate: 3, covered: 1)
+        let dimensions: [SQLiteBinding] = [
+            .text(expired.sourceIdentity), .text(expired.displayMode), .text(expired.estimatorID),
+            .text(expired.estimatorVersion), .text(expired.metricKind), .text(expired.client),
+            .text(expired.model)
+        ]
+        try database.execute(
+            "INSERT INTO activity_speed_samples(source_identity,id,display_mode,estimator_id,estimator_version,metric_kind,client,model,started_at,ended_at,output_rate,covered_seconds,weighted_output) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            bindings: [.text(expired.sourceIdentity), .text(expired.id), .text(expired.displayMode),
+                .text(expired.estimatorID), .text(expired.estimatorVersion), .text(expired.metricKind),
+                .text(expired.client), .text(expired.model), .double(expired.startedAt),
+                .double(expired.endedAt), .double(expired.outputRate), .double(expired.coveredSeconds),
+                .double(3)]
+        )
+        try database.execute(
+            "INSERT INTO activity_speed_sample_ids(source_identity,id,ended_at) VALUES(?,?,?)",
+            bindings: [.text(expired.sourceIdentity), .text(expired.id), .double(expired.endedAt)]
+        )
+        try database.execute(
+            "INSERT INTO activity_speed_buckets_5m(source_identity,display_mode,estimator_id,estimator_version,metric_kind,client,model,bucket_start,weighted_output,covered_seconds,sample_count) VALUES(?,?,?,?,?,?,?,0,3,1,1)",
+            bindings: dimensions
+        )
+
+        let result = try await store.activityHistory(now: 5_000_000, windowSeconds: 86_400)
+        XCTAssertTrue(result.series.isEmpty)
+        for table in ["activity_speed_samples", "activity_speed_sample_ids", "activity_speed_buckets_5m"] {
+            let count = try database.readRows("SELECT COUNT(*) FROM \(table)") { $0.int(0) ?? 0 }.first
+            XCTAssertEqual(count, 1, "Activity history must not prune \(table)")
+        }
+    }
+
     func testDuplicateReplayAddsOneRawAndBucketContribution() async throws {
         let (store, url) = try makeStore()
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
@@ -383,12 +576,14 @@ final class ActivitySpeedStoreTests: XCTestCase {
         rate: Double,
         covered: Double? = nil,
         client: String = "codex",
+        displayMode: String = "tokens",
         estimator: String = "agent-speed",
+        estimatorVersion: String = "1",
         model: String = "model-a",
         sourceIdentity: String = ActivitySpeedSample.unscopedSourceIdentity
     ) -> ActivitySpeedSample {
         ActivitySpeedSample(
-            id: id, displayMode: "tokens", estimatorID: estimator, estimatorVersion: "1",
+            id: id, displayMode: displayMode, estimatorID: estimator, estimatorVersion: estimatorVersion,
             metricKind: "output", client: client, model: model,
             startedAt: startedAt, endedAt: endedAt, outputRate: rate,
             coveredSeconds: covered ?? endedAt - startedAt,
