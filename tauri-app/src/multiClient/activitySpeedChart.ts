@@ -4,7 +4,7 @@ export interface ActivityTrendPoint {
 }
 
 export function activityChartPoints(values: readonly ActivityTrendPoint[], now: number, windowSeconds = 1800, bucketSeconds = 60) {
-  if (!Number.isFinite(now) || ![1800,43200,86400].includes(windowSeconds) || ![30,60].includes(bucketSeconds)) return [];
+  if (!Number.isFinite(now) || ![1800,86400].includes(windowSeconds) || ![30,60].includes(bucketSeconds)) return [];
   let prior: number | undefined, segment = 0;
   return [...values].sort((a, b) => a.bucketStart - b.bucketStart).flatMap(point => {
     const rate = point.value.weightedOutput / point.value.coveredSeconds;

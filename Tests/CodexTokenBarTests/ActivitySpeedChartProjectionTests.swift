@@ -32,11 +32,6 @@ final class ActivitySpeedChartProjectionTests: XCTestCase {
         let detail = ActivitySpeedChartProjection.points(rows, now: Date(timeIntervalSince1970: 100_000), windowSeconds: 86400, bucketSeconds: 30)
         XCTAssertEqual(detail.map(\.segment), [0, 0, 1])
     }
-    func testTwelveHourViewportExcludesEarlierDaySamples() {
-        let rows = [point(14_000), point(58_000)]
-        let detail = ActivitySpeedChartProjection.points(rows, now: Date(timeIntervalSince1970: 100_000), windowSeconds: 43200, bucketSeconds: 30)
-        XCTAssertEqual(detail.map(\.bucketStart), [58_000])
-    }
     func testInvalidAggregatesDoNotDistortScaleAndValidZeroStillPlots() {
         let rows = [point(9_700, rate: .nan), point(9_800, seconds: 0), point(9_900, rate: 0), point(9_950, rate: 1e-14)]
         XCTAssertEqual(ActivitySpeedChartProjection.points(rows, now: Date(timeIntervalSince1970: 10_000)).map(\.rate), [0])

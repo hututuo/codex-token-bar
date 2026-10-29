@@ -8,7 +8,7 @@ export interface ActivityHistorySeries {
   halfMinuteTrend?:ActivityTrendPoint[];
 }
 /** The dashboard and third-level activity-rate section share this numeric-only plot. */
-export const ActivitySpeedHistoryPlot=memo(function ActivitySpeedHistoryPlot({rows,asOf,windowSeconds=43200,unit="tok/s",fx=7.2}:{rows:ActivityHistorySeries[];asOf:number;windowSeconds?:number;unit?:ActivityRateUnit;fx?:number}){
+export const ActivitySpeedHistoryPlot=memo(function ActivitySpeedHistoryPlot({rows,asOf,windowSeconds=86400,unit="tok/s",fx=7.2}:{rows:ActivityHistorySeries[];asOf:number;windowSeconds?:number;unit?:ActivityRateUnit;fx?:number}){
   const palette=useSpeedPalette(),clipId=useId();
   const [selectedBucket,setSelectedBucket]=useState<number|null>(null);
   const start=asOf-windowSeconds,left=44,right=785,top=16,bottom=160;
@@ -30,7 +30,7 @@ export const ActivitySpeedHistoryPlot=memo(function ActivitySpeedHistoryPlot({ro
   const selected=selectedBucket===null?[]:prepared.flatMap(s=>s.points.filter(p=>p.bucketStart===selectedBucket).map(p=>({row:s.row,...p})));
   const time=(stamp:number)=>new Date(stamp*1000).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit",hour12:false});
   return <div className="activity-history-plot">
-    <svg viewBox="0 0 800 188" role="img" aria-label={`${windowSeconds===86400?"全天":"近12小时"}活动速率，每30秒一个点`} style={{width:"100%",display:"block"}} onPointerLeave={()=>setSelectedBucket(null)} onPointerMove={event=>{
+    <svg viewBox="0 0 800 188" role="img" aria-label={`${windowSeconds===86400?"全天":"近30分钟"}活动速率，每30秒一个点`} style={{width:"100%",display:"block"}} onPointerLeave={()=>setSelectedBucket(null)} onPointerMove={event=>{
       const bounds=event.currentTarget.getBoundingClientRect();if(!bounds.width)return;
       const coordinate=(event.clientX-bounds.left)/bounds.width*800;
       setSelectedBucket(coordinate<left||coordinate>right?null:Math.floor((start+(coordinate-left)/(right-left)*windowSeconds)/30)*30);
