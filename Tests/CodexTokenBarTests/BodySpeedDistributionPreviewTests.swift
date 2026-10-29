@@ -13,7 +13,7 @@ final class BodySpeedDistributionPreviewTests: XCTestCase {
         struct Marker: Decodable { let observedAt: Double; let previousAt: Double }
         struct Fixture: Decodable { let now: Double; let points: [BodySpeedTrendPoint]; let resetMarkers: [Marker] }
         let fixture = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf: URL(fileURLWithPath: inputPath)))
-        let points = try BodySpeedTrendStore.distributions(fixture.points, width: 1800, completedThrough: Int64(fixture.now))
+        let points = fixture.points
         XCTAssertFalse(points.isEmpty)
         let marker = fixture.resetMarkers.map { BodySpeedResetMarker(observedAt: Date(timeIntervalSince1970: $0.observedAt), previousAt: Date(timeIntervalSince1970: $0.previousAt)) }
         let input = BodySpeedTrendInput(points: points, days: 1, windowSeconds: 86400,

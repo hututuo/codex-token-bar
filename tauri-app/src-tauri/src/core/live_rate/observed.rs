@@ -1721,20 +1721,38 @@ pub(super) fn cache_path(scope: &LiveRateSourceScope) -> Option<PathBuf> {
 }
 
 pub(super) fn trend_points(
-    scope: &LiveRateSourceScope, now: f64, days: u16,
+    scope: &LiveRateSourceScope,
+    now: f64,
+    days: u16,
+    curve: Option<bool>,
 ) -> Result<Vec<BodySpeedTrendPoint>, String> {
-    with_numeric_trend_store(scope, now, |store| store.read_distribution(now, days))
+    if curve.unwrap_or(false) {
+        raw_trend_points(scope, now, days)
+    } else {
+        with_numeric_trend_store(scope, now, |store| store.read_distribution(now, days))
+    }
+}
+
+fn raw_trend_points(
+    scope: &LiveRateSourceScope,
+    now: f64,
+    days: u16,
+) -> Result<Vec<BodySpeedTrendPoint>, String> {
+    with_numeric_trend_store(scope, now, |store| store.read(now, days))
 }
 
 /// The sidebar requires raw five-minute buckets even if the home chart later
 /// selects a different grouping/distribution. Reuse the existing source owner.
 pub(super) fn sidebar_trend_buckets(
-    scope: &LiveRateSourceScope, now: f64,
+    scope: &LiveRateSourceScope,
+    now: f64,
 ) -> Result<Vec<BodySpeedTrendPoint>, String> {
     let end = (now / 1800.0).floor() as i64 * 1800;
-    with_numeric_trend_store(scope, now, |store| store.read(now, 1))
-        .map(|rows| rows.into_iter().filter(|p|
-            p.bucket_start >= end - 10800 && p.bucket_start < end).collect())
+    raw_trend_points(scope, now, 1).map(|rows| {
+        rows.into_iter()
+            .filter(|point| point.bucket_start >= end - 10800 && point.bucket_start < end)
+            .collect()
+    })
 }
 
 fn with_numeric_trend_store(
@@ -1801,6 +1819,124 @@ mod tests {
             duration_seconds: 2.0, tokens_per_second: 50.0, confidence: "medium".into(),
             network_warning: None, source: "test".into(), measurement_kind: Some("completed_body".into()),
             tokenizer: Some("o200k_base".into()), body_phase: Some("final_answer".into()), quality_reason: None }
+    }
+
+    fn trend_body(
+        id: &str,
+        model: &str,
+        ended_at: f64,
+        output_tokens: u32,
+        duration_seconds: f64,
+    ) -> SpeedSample {
+        let mut sample = audit_body(ended_at);
+        sample.id = id.into();
+        sample.item_id = id.into();
+        sample.model = Some(model.into());
+        sample.started_at = ended_at - duration_seconds;
+        sample.output_tokens = output_tokens;
+        sample.output_characters = u64::from(output_tokens);
+        sample.output_bytes = u64::from(output_tokens);
+        sample.duration_seconds = duration_seconds;
+        sample.tokens_per_second = f64::from(output_tokens) / duration_seconds;
+        sample
+    }
+
+    struct NumericTrendFixture {
+        scope: LiveRateSourceScope,
+        root: PathBuf,
+    }
+
+    impl NumericTrendFixture {
+        fn new(samples: &[SpeedSample], now: f64) -> Self {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let key = format!("observed-trend-test-{}-{nonce}", std::process::id());
+            let scope = LiveRateSourceScope::new(key.clone(), key);
+            let root = std::env::temp_dir().join(format!("{key}-db"));
+            fs::create_dir_all(&root).unwrap();
+            let trend_store = BodySpeedTrendStore::open(root.join("body-speed.sqlite")).unwrap();
+            trend_store.ingest(samples, now, 30).unwrap();
+            SPEED_STORES
+                .get_or_init(|| Mutex::new(HashMap::new()))
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(
+                    scope.clone(),
+                    SpeedStore {
+                        loaded: true,
+                        trend_store: Some(trend_store),
+                        ..Default::default()
+                    },
+                );
+            Self { scope, root }
+        }
+    }
+
+    impl Drop for NumericTrendFixture {
+        fn drop(&mut self) {
+            let removed = SPEED_STORES.get().and_then(|stores| {
+                stores
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(&self.scope)
+            });
+            drop(removed);
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn curve_mode_keeps_a_single_sparse_bucket_filtered_by_default_distribution() {
+        let base = 1_728_000.0;
+        let now = base + 86_400.0 - 60.0;
+        let fixture = NumericTrendFixture::new(
+            &[trend_body("single", "model-a", base + 30.0, 100, 2.0)],
+            now,
+        );
+
+        let curve = trend_points(&fixture.scope, now, 1, Some(true)).unwrap();
+        assert_eq!(curve.len(), 1);
+        assert_eq!(curve[0].model, "model-a");
+        assert_eq!(curve[0].sample_count, 1);
+        assert_eq!(curve[0].tokens_per_second, 50.0);
+        assert!(trend_points(&fixture.scope, now, 1, None)
+            .unwrap()
+            .is_empty());
+        assert!(trend_points(&fixture.scope, now, 1, Some(false))
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn curve_mode_keeps_sparse_points_separate_by_model() {
+        let base = 1_728_000.0;
+        let now = base + 86_400.0 - 60.0;
+        let samples = [
+            trend_body("a-first", "model-a", base + 30.0, 100, 2.0),
+            trend_body("a-next", "model-a", base + 330.0, 300, 6.0),
+            trend_body("b-first", "model-b", base + 30.0, 120, 2.0),
+        ];
+        let fixture = NumericTrendFixture::new(&samples, now);
+
+        let curve = trend_points(&fixture.scope, now, 1, Some(true)).unwrap();
+        assert_eq!(curve.len(), 3);
+        let model_a = curve
+            .iter()
+            .filter(|point| point.model == "model-a")
+            .collect::<Vec<_>>();
+        assert_eq!(model_a.len(), 2);
+        assert_eq!(model_a[0].output_tokens, 100);
+        assert_eq!(model_a[0].tokens_per_second, 50.0);
+        assert_eq!(model_a[1].output_tokens, 300);
+        assert_eq!(model_a[1].tokens_per_second, 50.0);
+        let model_b = curve.iter().find(|point| point.model == "model-b").unwrap();
+        assert_eq!(model_b.output_tokens, 120);
+        assert_eq!(model_b.tokens_per_second, 60.0);
+        assert!(trend_points(&fixture.scope, now, 1, None)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

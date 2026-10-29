@@ -1606,14 +1606,24 @@ pub async fn read_sidebar_body_speed_buckets(window: tauri::WebviewWindow, sourc
 }
 
 #[tauri::command]
-pub async fn read_body_speed_trend(window: tauri::WebviewWindow, source_token: Option<CodexHomeSourceToken>, days: u16) -> Result<Vec<live_rate::BodySpeedTrendPoint>, String> {
+pub async fn read_body_speed_trend(
+    window: tauri::WebviewWindow,
+    source_token: Option<CodexHomeSourceToken>,
+    days: u16,
+    curve: Option<bool>,
+) -> Result<Vec<live_rate::BodySpeedTrendPoint>, String> {
     require_window_label(&window, "read_body_speed_trend")?;
-    if !matches!(days, 1 | 7 | 30) { return Err("不支持的速度趋势范围".into()); }
+    if !matches!(days, 1 | 7 | 30) {
+        return Err("不支持的速度趋势范围".into());
+    }
     let captured = capture_codex_home_source(source_token.as_ref())?;
     let source_scope = live_rate_source_scope(&captured.source_token);
     let points = run_blocking_command(move || {
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
-        live_rate::read_body_speed_trend(&source_scope, now, days)
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        live_rate::read_body_speed_trend(&source_scope, now, days, curve)
     }).await?;
     validate_captured_codex_home_source(&captured)?;
     Ok(points)
