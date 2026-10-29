@@ -91,7 +91,7 @@ export function ClientActivitySpeedPanel({ allowed, sourceToken = null, compact 
   const [history,setHistory]=useState<ActivitySeries[]>([]),[issue,setIssue]=useState("");
   const sourceKey=JSON.stringify([sourceToken,runtime.sourceSelectionKey]);
   const [historyKey,setHistoryKey]=useState("");
-  const [asOf,setAsOf]=useState(Date.now()/1000),[windowSeconds,setWindowSeconds]=useState(86400);
+  const [asOf,setAsOf]=useState(Date.now()/1000),[windowSeconds,setWindowSeconds]=useState(43200);
   const visible=useDocumentVisible(),{unit,fx}=useActivityRatePreferences();
   const rates=selectedActivityRates([],runtime.modelRates,allowed,mode);
   useEffect(()=>{
@@ -111,7 +111,7 @@ export function ClientActivitySpeedPanel({ allowed, sourceToken = null, compact 
   return <div className="client-activity-speed" style={{fontSize:compact?10:12,paddingBlock:compact?3:8}}>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}><strong>活动速率 · Agent Speed</strong><strong>{hasCoverage?activityRateText(activityRateValue(rates.reduce((n,r)=>n+r.tokensPerSecond,0),rates,unit,fx),unit)+" "+unit:"—"}</strong></div>
     {!compact&&<><div className="activity-speed-history-controls"><span style={{fontSize:10,opacity:.75}}>Agent Speed 本地活动速率</span><ActivityRateUnitControl/></div>
-      <div className="activity-speed-history-ranges">{[86400,1800].map(seconds=><button key={seconds} type="button" aria-pressed={windowSeconds===seconds} onClick={()=>setWindowSeconds(seconds)}>{seconds===86400?"24小时":"近30分钟"}</button>)}</div></>}
+      <div className="activity-speed-history-ranges">{[43200,86400].map(seconds=><button key={seconds} type="button" aria-pressed={windowSeconds===seconds} onClick={()=>setWindowSeconds(seconds)}>{seconds===43200?"12小时":"24小时"}</button>)}</div></>}
     {!rates.length&&!hasHistory&&<p className="qs-muted">{monitoringEnabled?"等待本地活动记录":"本地读取已关闭"}</p>}
     {!compact&&groups.map(({client,rows})=><div key={client} style={{paddingTop:10}}>
       <strong>{client==="codex"?"Codex":client==="claudeCode"?"Claude CLI":client==="claudeDesktop"?"Claude Desktop":client}</strong>

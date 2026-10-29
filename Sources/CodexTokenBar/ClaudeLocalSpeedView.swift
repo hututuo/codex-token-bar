@@ -34,7 +34,7 @@ struct ActivitySpeedSummaryView: View {
         return codex || local.projection(allowed: allowed).sourceAvailable || upstream.hasCoverage(allowed: allowed)
     }
     @State private var trendConsumer = UUID()
-    @State private var windowSeconds = 86400
+    @State private var windowSeconds = 43200
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage(ActivityRateUnit.preferenceKey) private var unitRaw = ActivityRateUnit.tokens.rawValue
     @AppStorage(ActivityRateUnit.exchangeRateKey) private var exchangeRate = ActivityRateUnit.defaultExchangeRate
@@ -66,8 +66,8 @@ struct ActivitySpeedSummaryView: View {
                 ActivityRateUnitControl()
             }
             Picker("活动速率范围", selection: $windowSeconds) {
+                Text("12小时").tag(43200)
                 Text("24小时").tag(86400)
-                Text("近30分钟").tag(1800)
             }.pickerStyle(.segmented).frame(maxWidth: 205)
             if rates.isEmpty && rows.isEmpty {
                 Text("等待本地活动记录").font(.system(size: 11)).foregroundStyle(.secondary)
@@ -161,6 +161,6 @@ struct ClientActivityTrendView: View, Equatable {
             }
             if values.isEmpty { Text(unit == .yuan ? "暂无可换算的活动速率采样" : "暂无活动速率采样").font(.caption2).foregroundStyle(.secondary) }
         }.accessibilityElement(children: .contain)
-            .accessibilityLabel(client + (windowSeconds == 86400 ? "全天活动速率" : "近半小时活动速率") + "，每30秒一个点")
+            .accessibilityLabel(client + (windowSeconds == 86400 ? "全天活动速率" : "近12小时活动速率") + "，每30秒一个点")
     }
 }

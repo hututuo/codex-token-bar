@@ -31,3 +31,12 @@ test('Bar history cannot enter the fixed Agent Speed plot',async()=>withSsrModul
  assert.doesNotMatch(html,/data-activity-model=|<circle/);
  assert.match(html,/暂无 Agent Speed/);
 }));
+
+test('default activity viewport is twelve hours and excludes older day samples',async()=>withSsrModules(async load=>{
+ const {ActivitySpeedHistoryPlot}=await load('/src/multiClient/ActivitySpeedHistoryPlot.tsx');
+ const html=renderToStaticMarkup(React.createElement(ActivitySpeedHistoryPlot,{rows:[{dimensions:{client:'codex',model:'gpt-6.1-sol',displayMode:'agentSpeed'},halfMinuteTrend:[point(14000),point(58000)]}],asOf:100000}));
+ const w=new Window();w.document.body.innerHTML=html;
+ assert.match(html,/近12小时活动速率，每30秒一个点/);
+ assert.equal(w.document.querySelectorAll('circle').length,1);
+ w.happyDOM.abort();
+}));

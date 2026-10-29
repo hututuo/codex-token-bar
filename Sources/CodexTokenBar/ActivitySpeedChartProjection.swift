@@ -12,7 +12,7 @@ enum ActivitySpeedChartProjection {
 
     static func points(_ values: [ActivitySpeedTrendPoint], now: Date, windowSeconds: Double = 1800, bucketSeconds: Int64 = 60) -> [Point] {
         let end = now.timeIntervalSince1970
-        guard end.isFinite, [1800.0, 86400.0].contains(windowSeconds), [30,60].contains(bucketSeconds) else { return [] }
+        guard end.isFinite, [1800.0, 43200.0, 86400.0].contains(windowSeconds), [30,60].contains(bucketSeconds) else { return [] }
         var result: [Point] = []
         var previous: Int64?
         var segment = 0
