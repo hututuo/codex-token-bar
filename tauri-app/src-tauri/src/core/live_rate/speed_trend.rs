@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 mod migration;
+mod legacy_json;
 
 const BUCKET_SECONDS: i64 = 300;
 const DEDUP_RETENTION_SECONDS: f64 = 30.0 * 86_400.0;
@@ -95,6 +96,12 @@ impl BodySpeedTrendStore {
         let connection = store.connect()?;
         Self::create_schema(&connection)?;
         Ok(store)
+    }
+
+    /// Public releases through v0.9.7 persisted these samples in a JSON sibling.
+    /// Run after the SQLite/A migration and before choosing the stored retention.
+    pub(super) fn import_legacy_json(&self, now: f64) -> rusqlite::Result<()> {
+        legacy_json::import(self, now)
     }
 
     /// Upsert numeric body history and adjust old/new trend contributions atomically.

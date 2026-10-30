@@ -460,7 +460,7 @@ fn open_store_at_with_hook(
     }
     if let Some(batch) = &pending {
         for source in &batch.sources {
-            if !legacy_sources.contains(source) || !source.is_file() {
+            if !legacy_sources.contains(source) || !legacy_source_exists(source)? {
                 return Err(format!(
                     "未完成导入的来源已移走或不可用，保留候选账本：{}",
                     source.display()
@@ -471,7 +471,7 @@ fn open_store_at_with_hook(
     let mut snapshots = Vec::new();
     let mut saw_retired_input = false;
     for legacy_path in legacy_sources {
-        if !legacy_path.is_file() {
+        if !legacy_source_exists(legacy_path)? {
             continue;
         }
         if let Some(receipt) = container
@@ -818,6 +818,17 @@ pub(crate) fn export_store_to_path(
     Ok(())
 }
 
+/// Metadata failure is not evidence of absence. File symlinks are unsupported
+/// legacy inputs; configured support-directory symlinks retain normal OS traversal.
+fn legacy_source_exists(path: &Path) -> Result<bool, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => Ok(true),
+        Ok(_) => Err(format!("旧业务数据库不是普通文件；拒绝切换：{}", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("无法检查旧业务数据库 {}：{error}", path.display())),
+    }
+}
+
 fn bootstrap_legacy_stores() -> Result<(), String> {
     for path in [
         app_paths::quota_history_database_path(),
@@ -825,18 +836,20 @@ fn bootstrap_legacy_stores() -> Result<(), String> {
     ]
     .into_iter()
     .flatten()
-    .filter(|path| path.is_file())
     {
+        if !legacy_source_exists(&path)? { continue; }
         let identity = source_identity("quota_history_legacy", &path)?;
         let logical_path = format!("legacy/quota-history/{identity}");
         let _ =
             open_store_during_bootstrap("quota_history_legacy", &identity, &logical_path, &[path])?;
     }
-    if let Some(path) = app_paths::modeltrace_database_path().filter(|path| path.is_file()) {
-        let identity = source_identity("modeltrace_legacy", &path)?;
-        let logical_path = format!("legacy/modeltrace/{identity}");
-        let _ =
-            open_store_during_bootstrap("modeltrace_legacy", &identity, &logical_path, &[path])?;
+    if let Some(path) = app_paths::modeltrace_database_path() {
+        if legacy_source_exists(&path)? {
+            let identity = source_identity("modeltrace_legacy", &path)?;
+            let logical_path = format!("legacy/modeltrace/{identity}");
+            let _ =
+                open_store_during_bootstrap("modeltrace_legacy", &identity, &logical_path, &[path])?;
+        }
     }
     if let Some(directory) = app_paths::performance_trace_log_path()
         .and_then(|path| path.parent().map(Path::to_path_buf))
@@ -1104,6 +1117,41 @@ mod tests {
     use rusqlite::{params, OpenFlags};
     use std::fs;
     use uuid::Uuid;
+
+    #[test]
+    fn legacy_file_discovery_distinguishes_missing_and_nonregular_inputs() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(!legacy_source_exists(&root.path().join("absent.sqlite")).unwrap());
+        assert!(legacy_source_exists(root.path()).is_err());
+        let source = root.path().join("legacy.sqlite");
+        fs::write(&source, b"retained evidence").unwrap();
+        assert!(legacy_source_exists(&source).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_file_discovery_rejects_permission_errors_and_file_symlinks() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("modeltrace");
+        fs::create_dir(&directory).unwrap();
+        let source = directory.join("modeltrace.sqlite");
+        fs::write(&source, b"retained evidence").unwrap();
+        if unsafe { libc::geteuid() } != 0 {
+            fs::set_permissions(&directory, fs::Permissions::from_mode(0o000)).unwrap();
+            let result = legacy_source_exists(&source);
+            fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(result.is_err(), "Inaccessible metadata must not skip a legacy module");
+        }
+        let alias = root.path().join("legacy-symlink.sqlite");
+        symlink(&source, &alias).unwrap();
+        assert!(legacy_source_exists(&alias).is_err());
+        let root_alias = root.path().join("configured-support-root");
+        symlink(&directory, &root_alias).unwrap();
+        assert!(legacy_source_exists(&root_alias.join("modeltrace.sqlite")).unwrap(),
+                "Configured directory aliases retain normal OS traversal");
+        assert_eq!(fs::read(source).unwrap(), b"retained evidence");
+    }
 
     struct Fixture(PathBuf);
 

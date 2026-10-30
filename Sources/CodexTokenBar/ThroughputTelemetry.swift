@@ -562,6 +562,7 @@ actor BodySpeedSampleWriter {
         if let cache = caches[url] { return cache }
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let store = try BodySpeedTrendStore(url: url, sharedURL: sharedURL)
+        try store.importLegacyJSON(now: now, retentionDays: retentionDays)
         let samples = try store.loadSamples(now: now, retentionDays: retentionDays)
         return StoreCache(
             store: store,

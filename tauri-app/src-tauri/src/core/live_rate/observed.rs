@@ -1401,6 +1401,16 @@ fn ensure_loaded(store: &mut SpeedStore, scope: &LiveRateSourceScope, now: f64) 
             return;
         }
     };
+    if let Err(error) = database.import_legacy_json(now) {
+        let retryable = is_retryable_initial_load_error(&error);
+        record_initial_load_failure(
+            store,
+            "observed_speed_legacy_history_invalid",
+            retryable,
+            Instant::now(),
+        );
+        return;
+    }
     let retention_days = match database.retention_days() {
         Ok(days) => days,
         Err(error) => {

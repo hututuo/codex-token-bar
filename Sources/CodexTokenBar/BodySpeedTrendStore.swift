@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// A sparse, model-specific trend point backed by one or more completed body samples.
@@ -104,6 +105,83 @@ final class BodySpeedTrendStore {
             throw Self.storageError("Invalid completed body retention preference")
         }
         return days
+    }
+
+    private struct LegacyJSONReceipt: Codable {
+        let source: String
+        let backup: String
+        let digest: String
+    }
+
+    /// Public 0.9.7 used JSON before the intermediate SQLite store existed.
+    /// Import once per source, in the same transaction as its receipt. Keep the
+    /// complete original and a verified backup, including retired stream rows.
+    func importLegacyJSON(now: Double, retentionDays: Int) throws {
+        guard Self.safeNow(now) else { throw Self.storageError("Invalid body history migration time") }
+        let name = database.logicalURL.deletingPathExtension().lastPathComponent
+        guard name.hasPrefix("body-speed-") else { return }
+        let source = database.logicalURL.deletingLastPathComponent()
+            .appendingPathComponent("observed-speed-" + name.dropFirst("body-speed-".count) + ".json")
+        let backups = (database.sharedURL ?? database.logicalURL).deletingLastPathComponent()
+            .appendingPathComponent("backups", isDirectory: true)
+        let marker = "public_097_json_import_v1"
+        let receipt = try database.readRows("SELECT value FROM speed_trend_meta WHERE key=?", bindings: [.text(marker)]) { $0.text(0) }.first ?? nil
+        if let receipt {
+            let saved = try JSONDecoder().decode(LegacyJSONReceipt.self, from: Data(receipt.utf8))
+            guard saved.source == source.path, saved.digest.count == 64,
+                  saved.digest.allSatisfy({ $0.isHexDigit }),
+                  saved.backup == backups.appendingPathComponent("observed-speed-\(saved.digest).json").path,
+                  Self.legacyDigest(try Data(contentsOf: URL(fileURLWithPath: saved.backup))) == saved.digest else {
+                throw Self.storageError("Legacy JSON body history backup verification failed")
+            }
+            return
+        }
+        let attributes: [FileAttributeKey: Any]
+        do { attributes = try FileManager.default.attributesOfItem(atPath: source.path) }
+        catch let error as CocoaError where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile { return }
+        guard attributes[.type] as? FileAttributeType == .typeRegular,
+              let size = attributes[.size] as? NSNumber, size.uint64Value <= 64 * 1_048_576 else {
+            throw Self.storageError("Invalid legacy JSON body history file")
+        }
+        let handle = try FileHandle(forReadingFrom: source)
+        defer { try? handle.close() }
+        let data = try handle.read(upToCount: 64 * 1_048_576 + 1) ?? Data()
+        guard data.count <= 64 * 1_048_576 else { throw Self.storageError("Legacy JSON body history is too large") }
+        let samples = try JSONDecoder().decode([ObservedSpeedSample].self, from: data)
+        // A once-only receipt must not fence out samples merely because the
+        // local clock is behind their timestamp. Leave the source retryable.
+        guard !samples.contains(where: { $0.isBody && $0.endedAt > now }) else {
+            throw Self.storageError("Legacy body history contains future timestamps; import deferred")
+        }
+        let digest = Self.legacyDigest(data)
+        try FileManager.default.createDirectory(at: backups, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let backup = backups.appendingPathComponent("observed-speed-\(digest).json")
+        if !FileManager.default.fileExists(atPath: backup.path) { try data.write(to: backup, options: .atomic) }
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backup.path)
+        guard try Data(contentsOf: backup) == data else { throw Self.storageError("Legacy JSON body history backup mismatch") }
+        let encodedReceipt = String(decoding: try JSONEncoder().encode(LegacyJSONReceipt(source: source.path, backup: backup.path, digest: digest)), as: UTF8.self)
+        try database.transaction { connection in
+            // Recheck under the writer lock; a second process may have imported.
+            if !(try connection.readRows("SELECT value FROM speed_trend_meta WHERE key=?", bindings: [.text(marker)]) { $0.text(0) }).isEmpty { return }
+            let existing = Set(try connection.readRows("SELECT id FROM speed_sample_ids UNION SELECT id FROM speed_samples") { $0.text(0) ?? "" })
+            let aggregateRows = try connection.readRows("SELECT 1 FROM speed_5m LIMIT 1") { $0.int(0) }
+            let hasHistory = !existing.isEmpty || !aggregateRows.isEmpty
+            // A more recent SQLite record wins over an older JSON revision.
+            _ = try Self.ingest(samples.filter { $0.isBody && !existing.contains($0.id) }, now: now,
+                                retentionDays: try self.retentionDaysForImport(connection, fallback: retentionDays, hasHistory: hasHistory), connection: connection)
+            try connection.execute("INSERT INTO speed_trend_meta(key,value) VALUES(?,?)", bindings: [.text(marker), .text(encodedReceipt)])
+        }
+    }
+
+    private func retentionDaysForImport(_ connection: BodySpeedDatabaseConnection, fallback: Int, hasHistory: Bool) throws -> Int {
+        guard hasHistory else { return Self.normalizedRetentionDays(fallback) }
+        let raw = try connection.readRows("SELECT value FROM speed_trend_meta WHERE key='body_retention_days'") { $0.text(0) }.first ?? nil
+        guard let raw, let days = Int(raw), [15, 30].contains(days) else { throw Self.storageError("Invalid body retention preference") }
+        return days
+    }
+
+    private static func legacyDigest(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     /// Read sparse points for 1, 7, or 30 days. Five-minute stored totals are grouped by

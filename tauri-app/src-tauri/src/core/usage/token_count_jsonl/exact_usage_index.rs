@@ -18205,7 +18205,6 @@ pub(crate) fn bootstrap_legacy_indexes() -> Result<(), String> {
     }
 }
 
-#[cfg(not(test))]
 fn collect_exact_legacy_inputs(
     source_root: &Path,
     target_root: &Path,
@@ -18221,7 +18220,6 @@ fn collect_exact_legacy_inputs(
     ) -> Result<(), String> {
         let entries = match fs::read_dir(directory) {
             Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(format!("无法枚举旧精确 token 索引目录 {}：{error}", directory.display())),
         };
         for entry in entries {
@@ -18253,11 +18251,30 @@ fn collect_exact_legacy_inputs(
         }
         Ok(())
     }
-    if source_root.is_dir() {
-        walk(source_root, source_root, target_root, inputs, migration_manifests)?;
+    match fs::metadata(source_root) {
+        Ok(metadata) if metadata.is_dir() => {
+            // A configured root may itself be a legitimate directory symlink.
+            // Descendant symlink policy remains enforced by walk above.
+            walk(source_root, source_root, target_root, inputs, migration_manifests)?;
+        }
+        Ok(_) => return Err(format!("旧精确 token 索引根不是目录：{}", source_root.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // A dangling configured-root symlink is an unreadable source, not
+            // a genuinely absent directory that can be initialized as empty.
+            match fs::symlink_metadata(source_root) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(format!("无法检查旧精确 token 索引根 {}：{error}",source_root.display())),
+                Ok(_) => return Err(format!("旧精确 token 索引根无法解析：{}",source_root.display())),
+            }
+        }
+        Err(error) => return Err(format!("无法检查旧精确 token 索引根 {}：{error}",source_root.display())),
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "exact_legacy_discovery_tests.rs"]
+mod exact_legacy_discovery_tests;
 
 pub(super) fn database_path(codex_home: &Path) -> Result<PathBuf, String> {
     #[cfg(test)]

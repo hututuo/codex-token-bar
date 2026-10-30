@@ -297,11 +297,32 @@ final class BusinessDatabaseMigration {
         BusinessSQLiteRoutes.activate(configuration, stores: stores)
     }
     private struct Input { let source: URL; let store: BusinessSQLiteStore }
+    /// fileExists conflates ENOENT with EACCES. Only a genuinely absent root
+    /// may be skipped: otherwise activation could silently omit old accounts.
+    private static func legacyDirectoryExists(_ root: URL) throws -> Bool {
+        var info = stat()
+        // Configured roots may be directory aliases; descendant symlinks are
+        // still rejected by discovery. A dangling alias is not an absent root.
+        if stat(root.path, &info) == 0 {
+            guard (info.st_mode & S_IFMT) == S_IFDIR else { throw Failure.unsafeInput(root.path) }
+            return true
+        }
+        let code = errno
+        guard code == ENOENT else { throw POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO) }
+        guard lstat(root.path, &info) != 0 else { throw Failure.unsafeInput(root.path) }
+        let linkCode = errno
+        guard linkCode == ENOENT else { throw POSIXError(POSIXErrorCode(rawValue: linkCode) ?? .EIO) }
+        return false
+    }
     private static func discover(_ c: Configuration, fileManager: FileManager) throws -> [Input] {
         var found: [Input] = []
         for root in [c.support, c.exact] {
-            guard fileManager.fileExists(atPath: root.path) else { continue }
-            guard let enumerator = fileManager.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey], options: [.skipsHiddenFiles]) else { throw Failure.unsafeInput(root.path) }
+            guard try legacyDirectoryExists(root) else { continue }
+            var enumerationError: Error?
+            guard let enumerator = fileManager.enumerator(at: root.resolvingSymlinksInPath(), includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey], options: [.skipsHiddenFiles], errorHandler: { _, error in
+                enumerationError = error
+                return false
+            }) else { throw Failure.unsafeInput(root.path) }
             while let discovered = enumerator.nextObject() as? URL {
                 // DirectoryEnumerator may return /private/var URLs for a /var
                 // root. Keep logical registry paths in the configured spelling;
@@ -327,9 +348,10 @@ final class BusinessDatabaseMigration {
                 guard values.isRegularFile == true, values.isSymbolicLink != true else { throw Failure.unsafeInput(file.path) }
                 found.append(.init(source: file, store: store))
             }
+            if let enumerationError { throw enumerationError }
         }
         if c.legacyExact.standardizedFileURL != c.exact.standardizedFileURL,
-           fileManager.fileExists(atPath: c.legacyExact.path) {
+           try legacyDirectoryExists(c.legacyExact) {
             let cacheFiles = try fileManager.contentsOfDirectory(at: c.legacyExact, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey])
             for file in cacheFiles { try validateOrphanCandidate(file, fileManager: fileManager) }
             for manifest in cacheFiles where manifest.lastPathComponent.hasSuffix(".schema11-migration.json") {
