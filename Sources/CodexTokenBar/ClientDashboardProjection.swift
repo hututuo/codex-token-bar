@@ -69,7 +69,7 @@ enum ClientDashboardProjection {
                 }
                 keys = result
             } else {
-                keys = Array(stride(from: first, through: last, by: Int64(width)))
+                keys = Array(stride(from: first, through: last, by: width))
             }
             return keys.map { key in
                 let value = values[key] ?? (0, 0)

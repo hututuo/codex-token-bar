@@ -440,7 +440,7 @@ final class AgentSpeedReportingController: ObservableObject {
 
     private func suspendReporting() {
         guard enabled else { return }
-        sleeping = true; recovery?.cancel(); recovery = nil; nextRetryAt = nil
+        sleeping = true; recovery?.cancel(); recovery = nil
         socketFlush?.cancel(); socketFlush = nil
         socketWindow = nil; socketObservation = nil; socketLastSample = nil
         if transport == .websocket && !usingHTTPFallback { socket?.suspend(); monitor?.stop(); phase = "paused"; message = "已暂停 · 等待唤醒" }
@@ -449,6 +449,10 @@ final class AgentSpeedReportingController: ObservableObject {
     private func resumeReporting() {
         guard enabled else { return }
         sleeping = false
+        if let retryAt = nextRetryAt, retryAt > Date() {
+            fail("已唤醒 · 等待服务重试窗口", retryAfter: retryAt.timeIntervalSinceNow)
+            return
+        }
         if monitor == nil { stopRuntime(resetRecovery: false); begin(); return }
         socketWindow = nil; socketObservation = nil; socketLastSample = nil
         socket?.resume(); monitor?.start()

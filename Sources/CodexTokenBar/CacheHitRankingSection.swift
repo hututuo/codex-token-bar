@@ -1,6 +1,6 @@
 import SwiftUI
 
-private enum CacheRankingScope: String, CaseIterable, Identifiable {
+enum CacheRankingScope: String, CaseIterable, Identifiable {
     case sessions = "会话"
     case turns = "单轮"
 

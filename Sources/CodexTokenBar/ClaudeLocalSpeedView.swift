@@ -32,7 +32,7 @@ struct ActivitySpeedSummaryView: View {
                 .accessibilityLabel("打开速度曲线详情")
         } else { content }
     }
-    private var content: some View {
+    @ViewBuilder private var content: some View {
         let now = Date().timeIntervalSince1970
         let rows = history.rows(allowed: allowed, mode: mode, now: now)
         let selection = rows.contains { $0.client == selectedClient } ? selectedClient : nil

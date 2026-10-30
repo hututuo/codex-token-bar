@@ -275,7 +275,8 @@ impl AgentSpeedReportingRegistry {
             } else {
                 let mut data = self.data.lock().unwrap_or_else(|error| error.into_inner());
                 data.active_local_display = false;
-                data.display_snapshot = Some(AgentSpeedDisplaySnapshot::empty("unsupported", false));
+                data.display_snapshot =
+                    Some(AgentSpeedDisplaySnapshot::empty("unsupported", false));
                 Ok(())
             }
         }
@@ -306,7 +307,14 @@ impl AgentSpeedReportingRegistry {
                         return Err("Local activity source configuration is unavailable.".into());
                     }
                 };
-            if self.child_is_running_for(&username, &codex_home, &local_source_roots, settings.transport, settings.enabled, local_display) {
+            if self.child_is_running_for(
+                &username,
+                &codex_home,
+                &local_source_roots,
+                settings.transport,
+                settings.enabled,
+                local_display,
+            ) {
                 return Ok(());
             }
             let source_read_roots = crate::core::claude_local_runtime::reporting_source_read_roots(
@@ -368,7 +376,9 @@ impl AgentSpeedReportingRegistry {
                 serde_json::json!({"enabled": false, "localDisplay": true})
             };
             startup["deniedSourceIds"] = serde_json::json!(REPORTER_DENIED_SOURCE_IDS);
-            if !local_source_roots.is_empty() { startup["localSourceRoots"] = serde_json::json!(local_source_roots); }
+            if !local_source_roots.is_empty() {
+                startup["localSourceRoots"] = serde_json::json!(local_source_roots);
+            }
             let mut line = serde_json::to_vec(&startup)
                 .map_err(|_| "Agent Speed reporter helper could not start.".to_owned())?;
             if line.len() >= STATUS_LINE_LIMIT {
@@ -449,13 +459,13 @@ impl AgentSpeedReportingRegistry {
                     return;
                 }
 
-                tokio::select! {
-                    _ = tokio::time::sleep(delay) => {}
-                    changed = retry_cancel_rx.changed() => {
-                        if changed.is_err() || *retry_cancel_rx.borrow() {
-                            return;
-                        }
-                    }
+                // The existing Tokio feature set has time/sync, not macros.
+                // Any cancellation-channel change invalidates this retry owner.
+                if tokio::time::timeout(delay, retry_cancel_rx.changed())
+                    .await
+                    .is_ok()
+                {
+                    return;
                 }
                 if !retry_registry.generation_is_current(generation) {
                     return;
@@ -978,7 +988,16 @@ fn sanitize_display_snapshot(raw: RawDisplaySnapshot) -> Option<AgentSpeedDispla
     let now = current_time_ms();
     if !matches!(
         raw.status.as_str(),
-        "starting" | "running" | "idle" | "noSources" | "stale" | "error" | "unsupported" | "helperExit" | "disabled" | "unavailable"
+        "starting"
+            | "running"
+            | "idle"
+            | "noSources"
+            | "stale"
+            | "error"
+            | "unsupported"
+            | "helperExit"
+            | "disabled"
+            | "unavailable"
     ) || raw.status.len() > 32
         || !raw.tokens_per_second.is_finite()
         || !(0.0..=MAX_TPS).contains(&raw.tokens_per_second)
@@ -990,15 +1009,23 @@ fn sanitize_display_snapshot(raw: RawDisplaySnapshot) -> Option<AgentSpeedDispla
 
     let model_rates = sanitize_display_rates(raw.model_rates, false)?;
     let client_rates = sanitize_display_rates(raw.client_rates, true)?;
-    let model_total = model_rates.iter().map(|rate| rate.tokens_per_second).sum::<f64>();
-    let client_total = client_rates.iter().map(|rate| rate.tokens_per_second).sum::<f64>();
+    let model_total = model_rates
+        .iter()
+        .map(|rate| rate.tokens_per_second)
+        .sum::<f64>();
+    let client_total = client_rates
+        .iter()
+        .map(|rate| rate.tokens_per_second)
+        .sum::<f64>();
     let tolerance = (raw.tokens_per_second.max(1.0)) * 1e-6;
     if !model_total.is_finite()
         || !client_total.is_finite()
         || (model_total - raw.tokens_per_second).abs() > tolerance
         || (client_total - raw.tokens_per_second).abs() > tolerance
         || (!raw.available
-            && (raw.tokens_per_second != 0.0 || !model_rates.is_empty() || !client_rates.is_empty()))
+            && (raw.tokens_per_second != 0.0
+                || !model_rates.is_empty()
+                || !client_rates.is_empty()))
     {
         return None;
     }
@@ -1013,7 +1040,10 @@ fn sanitize_display_snapshot(raw: RawDisplaySnapshot) -> Option<AgentSpeedDispla
     })
 }
 
-fn sanitize_display_rates(raw: Vec<RawDisplayRate>, clients: bool) -> Option<Vec<AgentSpeedDisplayRate>> {
+fn sanitize_display_rates(
+    raw: Vec<RawDisplayRate>,
+    clients: bool,
+) -> Option<Vec<AgentSpeedDisplayRate>> {
     if raw.len() > 512 {
         return None;
     }
@@ -1111,7 +1141,7 @@ fn message_for(code: &str) -> &'static str {
         "websocket_protocol_error" => "WebSocket 服务协议不兼容",
         "websocket_replaced" => "此设备已在其他位置连接",
         "unknown_device" => "服务端找不到此设备，请稍后重试",
-        "service_unavailable" => "上报服务不可用",
+        "service_unavailable" => "上报服务暂不可用，将自动重试",
         "service_unsupported" => "上报服务不受支持",
         "username_invalid" => "用户名不符合服务要求",
         "username_taken" => "用户名已被使用",
@@ -1311,8 +1341,14 @@ mod tests {
 
         assert_eq!(status.transport, AgentSpeedReportingTransport::Websocket);
         assert_eq!(status.phase, "running");
-        assert_eq!(status.status_message, "WebSocket 连接中断，本次运行改用 HTTP");
-        assert_eq!(status.last_report_at.as_deref(), Some("2026-10-26T00:00:00Z"));
+        assert_eq!(
+            status.status_message,
+            "WebSocket 连接中断，本次运行改用 HTTP"
+        );
+        assert_eq!(
+            status.last_report_at.as_deref(),
+            Some("2026-10-26T00:00:00Z")
+        );
 
         let waiting = sanitize_status(
             RawStatusLine {
@@ -1470,13 +1506,25 @@ mod tests {
         };
         let snapshot = sanitize_display_snapshot(raw.clone()).unwrap();
         let json = serde_json::to_value(snapshot).unwrap();
-        let fields = json.as_object().unwrap().keys().cloned().collect::<std::collections::BTreeSet<_>>();
+        let fields = json
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(
             fields,
-            ["available", "tokensPerSecond", "modelRates", "clientRates", "status", "updatedAtMs"]
-                .into_iter()
-                .map(str::to_owned)
-                .collect()
+            [
+                "available",
+                "tokensPerSecond",
+                "modelRates",
+                "clientRates",
+                "status",
+                "updatedAtMs"
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
         );
         assert_eq!(json["tokensPerSecond"], 12.0);
         assert_eq!(json["clientRates"][0]["model"], "client:codex");

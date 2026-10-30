@@ -9,6 +9,7 @@ import { DEFAULT_MODULE_VISIBILITY, SIDEBAR_MODULES, sidebarModuleForPage, sanit
 test('all six pages map to independent preferences; legacy settings default visible', () => {
  assert.deepEqual(sanitizeModuleVisibility(null), DEFAULT_MODULE_VISIBILITY);
  assert.equal(sanitizeModuleVisibility({ speeds:false }).speeds, false);
+ assert.equal(sidebarModuleForPage('quota','activity-speed'),'speeds');
  assert.equal(sanitizeModuleVisibility({ tasks:'false' }).tasks, true);
  assert.deepEqual([sidebarModuleForPage('quota'),sidebarModuleForPage('quota','speeds'),sidebarModuleForPage('running'),sidebarModuleForPage('radar'),sidebarModuleForPage('credits'),sidebarModuleForPage('modeltrace')],SIDEBAR_MODULES);
 });

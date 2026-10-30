@@ -1,5 +1,5 @@
 export type SidebarMode = "rest" | "hover" | "detail";
-export type SidebarSection = "top" | "usage" | "five" | "seven" | "models" | "credits" | "ranking" | "speeds";
+export type SidebarSection = "top" | "usage" | "five" | "seven" | "models" | "credits" | "ranking" | "speeds" | "activity-speed";
 export interface SidebarState { cacheNoticeID?: string; section?: SidebarSection; focusRevision?: number; mode: SidebarMode; tab: "quota" | "running" | "radar" | "credits" | "modeltrace" | "settings"; pinned: boolean }
 export type SidebarAction = { type: "cache-advice"; id: string | null } | { type: "enter" } | { type: "leave" } | { type: "open"; tab: SidebarState["tab"]; section?: SidebarSection } | { type: "pin" } | { type: "close" } | { type: "dismiss" } | { type: "disable" } | { type: "drag" };
 export const initialSidebarState: SidebarState = { mode: "rest", tab: "quota", pinned: false };
@@ -39,7 +39,7 @@ export function quotaText(value: number | null): string { return value === null 
 export function isSidebarAction(value: unknown): value is SidebarAction {
   if (!value || typeof value !== "object" || !("type" in value)) return false;
   const action = value as Record<string, unknown>;
-  return action.type === "open" ? (action.tab === "quota" || action.tab === "running" || action.tab === "radar" || action.tab === "credits" || action.tab === "modeltrace" || action.tab === "settings") && (action.section === undefined || ["top", "usage", "five", "seven", "models", "credits", "ranking", "speeds"].includes(String(action.section)))
+  return action.type === "open" ? (action.tab === "quota" || action.tab === "running" || action.tab === "radar" || action.tab === "credits" || action.tab === "modeltrace" || action.tab === "settings") && (action.section === undefined || ["top", "usage", "five", "seven", "models", "credits", "ranking", "speeds", "activity-speed"].includes(String(action.section)))
     : ["enter", "leave", "pin", "close", "dismiss", "disable", "drag"].includes(String(action.type));
 }
 

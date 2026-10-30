@@ -4,7 +4,7 @@ export type SidebarModuleVisibility = Record<SidebarModule, boolean>;
 export const DEFAULT_MODULE_VISIBILITY: SidebarModuleVisibility = { overview: true, speeds: true, tasks: true, radar: true, credits: true, modeltrace: true };
 export function sidebarModuleForPage(tab: string, section?: string): SidebarModule | null {
   if (tab === "settings") return null;
-  return tab === "quota" ? section === "speeds" ? "speeds" : "overview" : tab === "running" ? "tasks" : tab === "credits" ? "credits" : tab === "modeltrace" ? "modeltrace" : "radar";
+  return tab === "quota" ? (section === "speeds" || section === "activity-speed") ? "speeds" : "overview" : tab === "running" ? "tasks" : tab === "credits" ? "credits" : tab === "modeltrace" ? "modeltrace" : "radar";
 }
 export function sanitizeModuleVisibility(value: unknown): SidebarModuleVisibility {
   const input = value && typeof value === "object" ? value as Record<string, unknown> : {};
