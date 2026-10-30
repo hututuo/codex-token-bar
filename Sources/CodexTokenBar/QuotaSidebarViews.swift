@@ -492,7 +492,7 @@ struct QuotaSidebarRail: View {
                 .contentShape(Rectangle())
             }.buttonStyle(SidebarPulseButtonStyle())
                 .accessibilityLabel("查看任务，\(runningText)")
-                .help("所选客户端的本地主任务与子 Agent；过期活动标记为未知")
+                .help("合计已读到的本地主任务与子 Agent；各客户端读取状态见任务详情")
                 .accessibilityIdentifier("quota-sidebar-tasks")
                 .accessibilityAddTraits(.isButton)
                 .accessibilityAction { controller.select(.tasks) }
@@ -628,10 +628,7 @@ struct QuotaSidebarRail: View {
         let summary = runningSummary
         switch summary.freshness {
         case .fresh: return "\(summary.main) 主 · \(summary.subagents) 子"
-        case .stale:
-            let issue = ClientLocalRuntimePresentation.taskSourceIssue(codex: tasks.runningThreadSummary,
-                claude: localLive.running, allowed: taskClients) ?? "上次数据"
-            return "\(summary.total) 运行\n\(issue)"
+        case .stale: return "\(summary.total) 运行 · 上次数据"
         case .loading: return "读取任务中"
         case .unavailable: return "任务未知"
         }
@@ -691,11 +688,13 @@ struct QuotaSidebarDetailView: View {
     var quotaItemsOverride: [ClientQuotaItem]? = nil
 
     private var allowedClients: Set<String> { ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs) }
-    private var selectedRunning: RunningThreadSummary {
-        let taskClients = allowedClients.filter { id in
+    private var taskClients: Set<String> {
+        allowedClients.filter { id in
             id == "codex" || clients.preferences.contains { $0.client.rawValue == id && $0.enabled }
         }
-        return ClientLocalRuntimePresentation.running(codex: tasks.runningThreadSummary,
+    }
+    private var selectedRunning: RunningThreadSummary {
+        ClientLocalRuntimePresentation.running(codex: tasks.runningThreadSummary,
             claude: claudeRuntime.projection(allowed: taskClients).running, allowed: taskClients)
     }
     var body: some View {
@@ -993,6 +992,11 @@ struct QuotaSidebarDetailView: View {
     private func taskContent(_ summary: RunningThreadSummary) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             sectionTitle("运行中的任务", subtitle: "主任务与子代理")
+            if let issue = ClientLocalRuntimePresentation.taskSourceIssue(codex: tasks.runningThreadSummary,
+                claude: claudeRuntime.projection(allowed: taskClients).running, allowed: taskClients) {
+                Text("来源状态：\(issue)；合计仅包含已读到的任务")
+                    .font(.system(size: 10)).foregroundStyle(.white.opacity(0.7))
+            }
             switch summary.freshness {
             case .loading:
                 taskNotice("正在读取运行任务…", icon: "clock")

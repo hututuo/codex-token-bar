@@ -97,13 +97,35 @@ final class ClaudeStatuslineMetricsTests: XCTestCase {
         XCTAssertEqual(buckets.count, 2)
     }
 
-    func testTaskSourceIssueNamesTheMissingReaderWithoutPretendingCountsAreFresh() {
+    func testTaskSourceIssueIsSeparateFromKnownFreshCounts() {
         let fresh = RunningThreadSummary(main: 2, subagents: 1, updatedAt: now, freshness: .fresh)
         XCTAssertNil(ClientLocalRuntimePresentation.taskSourceIssue(codex: fresh, claude: .unavailable, allowed: ["codex"]))
-        XCTAssertEqual(ClientLocalRuntimePresentation.taskSourceIssue(codex: fresh, claude: .unavailable, allowed: ["codex", "claudeCode"]), "Claude 未就绪")
-        XCTAssertEqual(ClientLocalRuntimePresentation.running(codex: fresh, claude: .unavailable, allowed: ["codex", "claudeCode"]).freshness, .stale)
+        XCTAssertEqual(ClientLocalRuntimePresentation.taskSourceIssue(codex: fresh, claude: .unavailable, allowed: ["codex", "claudeCode"]), "Claude 暂无任务数据")
+        let known = ClientLocalRuntimePresentation.running(codex: fresh, claude: .unavailable, allowed: ["codex", "claudeCode"])
+        XCTAssertEqual(known.freshness, .fresh)
+        XCTAssertEqual(known.main, 2)
+        XCTAssertEqual(known.subagents, 1)
         XCTAssertEqual(ClientLocalRuntimePresentation.taskSourceIssue(codex: fresh.markedStale(), claude: fresh, allowed: ["codex", "claudeCode"]), "Codex 上次数据")
         XCTAssertNil(ClientLocalRuntimePresentation.taskSourceIssue(codex: fresh, claude: fresh, allowed: ["codex", "claudeCode"]))
+    }
+
+    func testTaskAggregationUsesCurrentSourcesWithoutMixingStaleCounts() {
+        let codex = RunningThreadSummary(main: 2, subagents: 1, updatedAt: now, freshness: .fresh)
+        let claude = RunningThreadSummary(main: 4, subagents: 2, updatedAt: now, freshness: .fresh)
+        let scope: Set<String> = ["codex", "claudeCode"]
+        let fromCodex = ClientLocalRuntimePresentation.running(codex: codex, claude: claude.markedStale(), allowed: scope)
+        XCTAssertEqual(fromCodex.total, 3)
+        XCTAssertEqual(fromCodex.freshness, .fresh)
+        let fromClaude = ClientLocalRuntimePresentation.running(codex: codex.markedStale(), claude: claude, allowed: scope)
+        XCTAssertEqual(fromClaude.total, 6)
+        XCTAssertEqual(fromClaude.freshness, .fresh)
+        let old = ClientLocalRuntimePresentation.running(codex: codex.markedStale(), claude: .unavailable, allowed: scope)
+        XCTAssertEqual(old.total, 3)
+        XCTAssertEqual(old.freshness, .stale)
+        XCTAssertEqual(ClientLocalRuntimePresentation.running(codex: .unavailable, claude: .unavailable, allowed: scope).freshness, .unavailable)
+        XCTAssertEqual(ClientLocalRuntimePresentation.running(codex: .loading, claude: .unavailable, allowed: scope).freshness, .loading)
+        XCTAssertEqual(ClientLocalRuntimePresentation.running(codex: codex, claude: claude, allowed: []).freshness, .unavailable)
+        XCTAssertEqual(ClientLocalRuntimePresentation.running(codex: .init(main: 0, subagents: 0, updatedAt: now, freshness: .fresh), claude: .unavailable, allowed: scope).freshness, .fresh)
     }
 
     func testSelectedScopeCannotLeakCodexRatesOrTasks() {

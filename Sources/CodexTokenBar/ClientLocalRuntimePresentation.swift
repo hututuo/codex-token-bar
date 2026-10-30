@@ -14,10 +14,15 @@ enum ClientLocalRuntimePresentation {
     }
 
     static func running(codex: RunningThreadSummary, claude: RunningThreadSummary, allowed: Set<String>) -> RunningThreadSummary {
-        if !allowed.contains("codex") { return claude }
-        if !allowed.contains("claudeCode") && !allowed.contains("claudeDesktop") { return codex }
-        let valid = [codex, claude].filter { $0.freshness == .fresh || $0.freshness == .stale }
-        guard !valid.isEmpty else { return .unavailable }
+        let selected = (allowed.contains("codex") ? [codex] : [])
+            + (allowed.contains("claudeCode") || allowed.contains("claudeDesktop") ? [claude] : [])
+        let fresh = selected.filter { $0.freshness == .fresh }
+        // Only aggregate current observations when any are available. A missing
+        // reader neither invalidates another reader nor contributes a fake zero.
+        let valid = fresh.isEmpty ? selected.filter { $0.freshness == .stale } : fresh
+        guard !valid.isEmpty else {
+            return selected.contains { $0.freshness == .loading } ? .loading : .unavailable
+        }
         func models(_ rows: [RunningThreadModelBreakdown]) -> [RunningThreadModelBreakdown] {
             let grouped = Dictionary(grouping: rows, by: \.id)
             return grouped.keys.sorted().compactMap { key in
@@ -29,18 +34,18 @@ enum ClientLocalRuntimePresentation {
             mainModels: models(valid.flatMap(\.mainModels)), subagentModels: models(valid.flatMap(\.subagentModels)),
             groups: valid.flatMap(\.groups), unassignedSubagents: valid.flatMap(\.unassignedSubagents),
             lastCheckedAt: valid.compactMap(\.lastCheckedAt).max(), dataUpdatedAt: valid.compactMap(\.dataUpdatedAt).max(),
-            freshness: valid.count == 2 && valid.allSatisfy { $0.freshness == .fresh } ? .fresh : .stale)
+            freshness: fresh.isEmpty ? .stale : .fresh)
     }
 
-    /// A missing client is different from a stale Codex scan. Keep the counts'
-    /// conservative freshness while explaining which selected reader is missing.
+    /// Supplementary source status for task details, independent of the current
+    /// task count from readers that have a fresh observation.
     static func taskSourceIssue(codex: RunningThreadSummary, claude: RunningThreadSummary,
                                 allowed: Set<String>) -> String? {
         if allowed.contains("codex"), codex.freshness != .fresh {
-            return codex.freshness == .stale ? "Codex 上次数据" : codex.freshness == .loading ? "Codex 读取中" : "Codex 未就绪"
+            return codex.freshness == .stale ? "Codex 上次数据" : codex.freshness == .loading ? "Codex 读取中" : "Codex 暂无任务数据"
         }
         if allowed.contains("claudeCode") || allowed.contains("claudeDesktop"), claude.freshness != .fresh {
-            return claude.freshness == .stale ? "Claude 上次数据" : claude.freshness == .loading ? "Claude 读取中" : "Claude 未就绪"
+            return claude.freshness == .stale ? "Claude 上次数据" : claude.freshness == .loading ? "Claude 读取中" : "Claude 暂无任务数据"
         }
         return nil
     }

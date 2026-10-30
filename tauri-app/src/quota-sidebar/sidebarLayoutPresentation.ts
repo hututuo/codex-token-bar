@@ -25,11 +25,20 @@ export function compactSidebarIDs(items: readonly string[], quotas: readonly Quo
     ? quotaWindowsForClient(quotas, id.slice(6)).map(q => q.id)
     : [id]);
 }
-/** Historical client visibility does not imply its task collector is enabled. */
+/** Missing/stale readers cannot invalidate another client's current tasks. */
 export function sidebarCombinedTaskStatus(codexStatus: RunningThreadSummaryStatus, includesCodex: boolean, requiresClaude: boolean, claudeReady: boolean): RunningThreadSummaryStatus {
-  if (!requiresClaude) return includesCodex ? codexStatus : "unavailable";
-  if (claudeReady) return includesCodex ? codexStatus : "ready";
-  return includesCodex ? "stale" : "unavailable";
+  if ((includesCodex && codexStatus === "ready") || (requiresClaude && claudeReady)) return "ready";
+  return includesCodex ? codexStatus : "unavailable";
+}
+
+export function sidebarCombinedTaskCounts(codexStatus: RunningThreadSummaryStatus, includesCodex: boolean,
+  requiresClaude: boolean, claudeReady: boolean, codexMain: number, codexSubagents: number,
+  claudeMain: number, claudeSubagents: number) {
+  const status = sidebarCombinedTaskStatus(codexStatus, includesCodex, requiresClaude, claudeReady);
+  const useCodex = includesCodex && (codexStatus === "ready" || (status === "stale" && codexStatus === "stale"));
+  const useClaude = requiresClaude && claudeReady;
+  return { status, main: (useCodex ? codexMain : 0) + (useClaude ? claudeMain : 0),
+    subagents: (useCodex ? codexSubagents : 0) + (useClaude ? claudeSubagents : 0) };
 }
 
 export function sidebarTaskStateLabel(total: number | null | undefined, status: string): string {

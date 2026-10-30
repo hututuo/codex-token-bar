@@ -113,6 +113,12 @@ export function ClientActivitySpeedPanel({ allowed, sourceToken = null, compact 
 export function ClaudeLocalTasks({ allowed }: { allowed: readonly string[] }) {
   const runtime = useClaudeLocalRuntime(allowed);
   if (!allowed.some(c => ["claudeCode", "claudeDesktop"].includes(c))) return null;
+  const ready = !!runtime.capturedAt && allowed.some(client =>
+    ["claudeCode", "claudeDesktop"].includes(client) && runtime.sourceAvailable[client]);
+  if (!ready) return <section style={{fontSize:12,paddingBlock:8}}>
+    <strong>Claude · 暂无任务数据</strong>
+    <p className="qs-muted">未读到当前本地活动记录，未计入任务合计；不会请求 Claude 接口。</p>
+  </section>;
   return <section style={{fontSize:12,paddingBlock:8}}>
     <strong>Claude · {runtime.mainAgents.length} 主任务 · {runtime.subagents.length} 子 Agent</strong>
     {runtime.mainAgents.map(agent => <div key={agent.id} style={{paddingBlock:6}}>
@@ -120,6 +126,5 @@ export function ClaudeLocalTasks({ allowed }: { allowed: readonly string[] }) {
       {runtime.subagents.filter(child => child.parentId === agent.id).map(child => <div key={child.id} style={{paddingLeft:12,paddingTop:4}}>↳ {child.model ?? "未知模型"} · {child.phase === "tools" ? "工具执行中" : "生成中"} · {child.id.slice(-8)}</div>)}
     </div>)}
     {runtime.subagents.filter(child => !runtime.mainAgents.some(main => main.id === child.parentId)).map(child => <p key={child.id}>子 Agent · {child.model ?? "未知模型"} · {child.id.slice(-8)}</p>)}
-    {!runtime.capturedAt && <p className="qs-muted">等待本地活动记录；不会请求 Claude 接口。</p>}
   </section>;
 }

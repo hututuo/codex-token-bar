@@ -11,7 +11,7 @@ import { quotaRingGroups } from "../multiClient/integratedClientModel";
 import { modelUsageColor } from "../components/modelUsagePresentation";
 import { useSidebarLayout } from "./useSidebarLayout";
 import { SidebarCompactBars } from "./SidebarCompactBars";
-import { compactSidebarIDs, sidebarUsesCompactDot, fixedSidebarRailLayout, quotaWindowsForClient, sidebarTaskStateLabel, sidebarCombinedTaskStatus, visibleSidebarItems } from "./sidebarLayoutPresentation";
+import { compactSidebarIDs, sidebarUsesCompactDot, fixedSidebarRailLayout, quotaWindowsForClient, sidebarTaskStateLabel, sidebarCombinedTaskCounts, visibleSidebarItems } from "./sidebarLayoutPresentation";
 import { isSidebarItemVisible, isSidebarLayoutItemId, migrateSidebarLayout, type SidebarLayoutConfig } from "./sidebarLayoutModel";
 import { SidebarModuleSettings } from "./SidebarModuleSettings";
 import { ModelTraceContent } from "../modelTrace/ModelTracePanel";
@@ -364,11 +364,13 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
   const palette = useSpeedDisplayPreferences();
   const rates = selectedActivityRates(data.snapshot.modelRates??[],local.modelRates,allowedClients,speedMode,data.snapshot.tokensPerSecond);
   const totalRate = rates.reduce((n,r)=>n+r.tokensPerSecond,0);
-  const mainCount = (scopeHasCodex ? data.runningThreads.mainThreads ?? 0 : 0) + local.mainAgents.filter(agent=>taskClaudeClients.includes(agent.client)).length;
-  const subCount = (scopeHasCodex ? data.runningThreads.subagents ?? 0 : 0) + local.subagents.filter(agent=>taskClaudeClients.includes(agent.client)).length;
-  const taskTotal = mainCount + subCount;
   const localReady = !!local.capturedAt && taskClaudeClients.some(c => local.sourceAvailable[c]);
-  const taskStatus = sidebarCombinedTaskStatus(data.runningThreads.status, scopeHasCodex, taskClaudeClients.length > 0, localReady);
+  const { status: taskStatus, main: mainCount, subagents: subCount } = sidebarCombinedTaskCounts(
+    data.runningThreads.status, scopeHasCodex, taskClaudeClients.length > 0, localReady,
+    data.runningThreads.mainThreads ?? 0, data.runningThreads.subagents ?? 0,
+    local.mainAgents.filter(agent=>taskClaudeClients.includes(agent.client)).length,
+    local.subagents.filter(agent=>taskClaudeClients.includes(agent.client)).length);
+  const taskTotal = mainCount + subCount;
   const recentBodySpeeds=useRecentBodySpeeds(data.snapshot.latestModelSpeeds30m??[]);
   const layoutItems = visibleSidebarItems(layout, quotaItems, scopeHasCodex || hasClaude).filter(id=>(scopeHasCodex&&recentBodySpeeds.length>0)||id!=="tps");
   const compactItems = visibleSidebarItems(layout, quotaItems, scopeHasCodex || hasClaude, "compact").filter(id=>scopeHasCodex||id!=="tps");
@@ -430,7 +432,7 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
         tps: <>{scopeHasCodex && <SidebarBodyMedian latest={recentBodySpeeds} sourceToken={data.sourceToken} active={state.mode !== "rest"} onOpen={() => onOpen("quota", "speeds")}/>}</>,
         modeltrace: <button className="qs-modeltrace-trigger" onClick={() => onOpen("modeltrace", "top")} title="打开 ModelTrace，手动检测模型"><svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 3 4 6v6c0 5 8 9 8 9s8-4 8-9V6l-8-3Z"/><path d="m8 12 3 3 5-6"/></svg>模型检测</button>,
         models: <button className="qs-model-trigger" onClick={() => onOpen("quota", "models")} aria-label="查看今日模型 Token 占比" title={modelTitle}><SidebarModelShareStrip models={models} title={modelTitle}/><span>模型占比</span></button>,
-        tasks: <button className="qs-running-trigger" onClick={() => onOpen("running", "top")}><SidebarTaskRing><Value value={taskStatus === "ready" ? String(taskTotal) : "—"}/></SidebarTaskRing><span>{taskStatus === "ready" ? mainCount + " 主 · " + subCount + " 子" : taskClaudeClients.length > 0 && !localReady && data.runningThreads.status === "ready" ? "Claude 未就绪" : taskStatus === "stale" ? "上次任务数据" : "任务读取中"}</span></button>,
+        tasks: <button className="qs-running-trigger" onClick={() => onOpen("running", "top")} title="合计已读到的本地主任务与子 Agent；各客户端读取状态见任务详情"><SidebarTaskRing><Value value={taskStatus === "ready" ? String(taskTotal) : "—"}/></SidebarTaskRing><span>{taskStatus === "ready" ? mainCount + " 主 · " + subCount + " 子" : taskStatus === "stale" ? "上次任务数据" : taskStatus === "scanning" ? "任务读取中" : "任务未知"}</span></button>,
         radar: <><SidebarRecommendations rows={radar?.crowd.rows ?? []} visible={state.mode !== "rest"} onOpen={() => onOpen("radar", "ranking")}/><div className="qs-divider"/><button className="qs-window-status" data-active={sidebarRadarIsActive(radar)} onClick={() => onOpen("radar", "top")}><span>{sidebarRadarCompact(radar)}</span>{sidebarRadarIsActive(radar) && radar?.official.deadlineMs && <small>{radar.official.countdown}</small>}</button></>,
         credits: data.quota?.quota?.resetCredit?.updatedAt ? <button className="qs-reset-count" onClick={() => onOpen("credits", "top")}>重置卡 {data.quota.quota.resetCredit.availableCount} 张{nearestCredit && <small>{sidebarLocalTime(nearestCredit.expiresAt, nearestCredit.expiresAtUnix)}</small>}</button> : null,
         clientUsage: <><strong className="qs-client-usage-title">累计 Token</strong>{scopeHasCodex && <button className="integrated-client-usage" onClick={() => onOpen("quota", "usage")}><span>Codex</span><strong>{data.snapshot.totalTokensLabel ?? "—"}</strong></button>}<ClientSidebarUsageRows onOpen={() => onOpen("quota", "usage")}/></>,
