@@ -26,6 +26,42 @@ final class RecentChartPreparationStoreTests: XCTestCase {
         XCTAssertGreaterThan(original.bucketCostsUSD.reduce(0,+),0)
         XCTAssertEqual(combined.bucketCostsUSD,original.bucketCostsUSD)
     }
+    func testAggregateHoverPinRefreshAndReselectUseSameCodexCostAtRightBoundary() throws {
+        func input(_ tokens: Int) -> RecentChartPreparationInput {
+            let base = makeInput(tokens: tokens)
+            let buckets = base.bins.map { TokenCacheBucket(start: $0.start, breakdown: .init(
+                inputTokens: tokens, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0,
+                totalTokens: tokens, calls: 1)) }
+            return .init(bins: base.bins, hourlyBins: base.hourlyBins,
+                cacheRecentBins: buckets, cacheHourlyBins: buckets, attributionEvents: [],
+                quotaRecentBins: [], quotaHourlyBins: [])
+        }
+        var aggregate = input(100_000)
+        let codex = input(100)
+        aggregate.quotaCostSource = .init(bins: codex.bins, hourlyBins: codex.hourlyBins,
+            cacheRecentBins: codex.cacheRecentBins, cacheHourlyBins: codex.cacheHourlyBins, attributionEvents: [])
+        var snapshot = RecentChartPreparedSnapshot.build(range: .twentyFourHours, input: aggregate, priceModel: .gpt56Sol)
+        let last = snapshot.data.bins.count - 1
+        var state = RecentChartConsumptionSelectionState()
+        func selected() throws -> QuotaConsumptionSelection {
+            try XCTUnwrap(state.selection(displayedData: snapshot.data, quotaData: snapshot.quotaData,
+                hoveredIndex: last, priceCard: .officialAPI(.gpt56Sol)))
+        }
+        state.click(index: 0, validCount: last + 1)
+        let preview = try selected()
+        state.click(index: last, validCount: last + 1)
+        let pinned = try selected()
+        XCTAssertEqual(pinned, preview)
+        snapshot = RecentChartPreparedSnapshot.build(range: .twentyFourHours, input: aggregate, priceModel: .gpt56Sol)
+        XCTAssertEqual(try selected(), preview, "Refresh must use the same provider source")
+        state.click(index: 0, validCount: last + 1)
+        XCTAssertEqual(try selected(), preview, "Reselecting the same interval cannot change its price")
+        XCTAssertEqual(pinned.fullCurrentAPIPriceEstimate.costUSD, snapshot.bucketCostsUSD.reduce(0, +), accuracy: 0.000001)
+        XCTAssertEqual(pinned.breakdown.totalTokens, 200)
+        let wrongAggregate = try XCTUnwrap(snapshot.data.quotaConsumptionSelection(startIndex: 0, endIndex: last, priceCard: .officialAPI(.gpt56Sol)))
+        XCTAssertGreaterThan(wrongAggregate.fullCurrentAPIPriceEstimate.costUSD, pinned.fullCurrentAPIPriceEstimate.costUSD * 100)
+    }
+
     func testRealClickFixturePrewarmsAllRangesWithoutLosingUsageOrQuotaObservations() async throws {
         let input = makeRecentChartInteractionPreparationInput()
         XCTAssertEqual(input.bins.count, 12)

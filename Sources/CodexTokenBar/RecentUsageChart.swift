@@ -2416,17 +2416,14 @@ struct RecentUsageChart: View {
     }
 
     private func rebuildFixedConsumptionSelectionCache() {
-        guard let startIndex = consumptionSelectionState.startIndex,
-              let fixedEndIndex = consumptionSelectionState.fixedEndIndex else {
+        guard consumptionSelectionState.startIndex != nil,
+              consumptionSelectionState.fixedEndIndex != nil else {
             cachedFixedConsumptionSelection = nil
             return
         }
-        cachedFixedConsumptionSelection = (cachedQuotaData ?? preparedData).quotaConsumptionSelection(
-            startIndex: startIndex,
-            endIndex: fixedEndIndex,
-            priceCard: .officialAPI(selectedQuotaEstimateModel),
-            attributionEvents: attributionEvents
-        )
+        cachedFixedConsumptionSelection = consumptionSelectionState.selection(
+            displayedData: preparedData, quotaData: cachedQuotaData,
+            priceCard: .officialAPI(selectedQuotaEstimateModel), attributionEvents: attributionEvents)
     }
 
     private var activeConsumptionSelection: QuotaConsumptionSelection? {
@@ -2444,12 +2441,8 @@ struct RecentUsageChart: View {
            cachedSelection.endIndex == endIndex {
             return cachedSelection
         }
-        return (cachedQuotaData ?? preparedData).quotaConsumptionSelection(
-            startIndex: startIndex,
-            endIndex: endIndex,
-            priceCard: .officialAPI(selectedQuotaEstimateModel),
-            attributionEvents: attributionEvents
-        )
+        return consumptionSelectionState.selection(displayedData: preparedData, quotaData: cachedQuotaData,
+            hoveredIndex: validHover, priceCard: .officialAPI(selectedQuotaEstimateModel), attributionEvents: attributionEvents)
     }
 
     private func activeSelectionAttribution(
@@ -2483,15 +2476,8 @@ struct RecentUsageChart: View {
         )
         consumptionSelectionState = nextSelectionState
 
-        if let startIndex = nextSelectionState.startIndex,
-           let fixedEndIndex = nextSelectionState.fixedEndIndex,
-           let selection = preparedData.quotaConsumptionSelection(
-               startIndex: startIndex,
-               endIndex: fixedEndIndex,
-               priceCard: .officialAPI(selectedQuotaEstimateModel),
-               attributionEvents: attributionEvents
-           ) {
-            cachedFixedConsumptionSelection = selection
+        rebuildFixedConsumptionSelectionCache()
+        if let selection = cachedFixedConsumptionSelection {
             consumptionSelectionTimeAnchor = RecentChartSelectionTimeAnchor(
                 selection: selection,
                 bucketInterval: preparedData.bucketInterval

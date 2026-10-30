@@ -921,6 +921,19 @@ struct RecentChartConsumptionSelectionState: Equatable {
         }
     }
 
+    /// Hover, second-click pin and refresh must price the same provider series.
+    /// Displayed bins may contain other clients' usage in aggregate mode.
+    func selection(displayedData: RecentChartPreparedData, quotaData: RecentChartPreparedData?,
+                   hoveredIndex: Int? = nil, priceCard: QuotaConsumptionPriceCard,
+                   attributionEvents: [TokenCacheAttributionEvent] = []) -> QuotaConsumptionSelection? {
+        guard let startIndex, !displayedData.bins.isEmpty else { return nil }
+        let validHover = hoveredIndex.flatMap { displayedData.bins.indices.contains($0) ? $0 : nil }
+        let endIndex = activeEndIndex(hoveredIndex: validHover, fallbackEndIndex: displayedData.bins.count - 1)
+            ?? displayedData.bins.count - 1
+        return (quotaData ?? displayedData).quotaConsumptionSelection(startIndex: startIndex, endIndex: endIndex,
+            priceCard: priceCard, attributionEvents: attributionEvents)
+    }
+
     func activeEndIndex(hoveredIndex: Int?, fallbackEndIndex: Int) -> Int? {
         fixedEndIndex ?? hoveredIndex ?? startIndex ?? fallbackEndIndex
     }
