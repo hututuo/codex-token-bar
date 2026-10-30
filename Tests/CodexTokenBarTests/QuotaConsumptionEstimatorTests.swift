@@ -92,7 +92,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertFalse(presentation.showsBudgetRatio)
         XCTAssertEqual(
             presentation.accessibilityValue,
-            "选区 \(presentation.timeRangeText)，持续 10分钟，本段消耗 $1.18，5 小时 当前无 5 小时额度，7 天 反推总额度 $552，下降 1.1%"
+            "选区 \(presentation.timeRangeText)，持续 10分钟，本段消耗 $1.18，5 小时 当前无 5 小时额度，7 天 反推总额度 $552，下降 1.1%，Token 20.0万，请求 2 次"
         )
     }
 
@@ -2301,7 +2301,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(presentation.accessibilityLabel, "额度估算")
         XCTAssertEqual(
             presentation.accessibilityValue,
-            "选区 \(expectedRange)，持续 10分钟，本段消耗 $1.18，5 小时 反推总额度 $92.0，下降 10%，7 天 反推总额度 $552，下降 1.1%，倍率 6.0x"
+            "选区 \(expectedRange)，持续 10分钟，本段消耗 $1.18，5 小时 反推总额度 $92.0，下降 10%，7 天 反推总额度 $552，下降 1.1%，Token 20.0万，请求 2 次，倍率 6.0x"
         )
     }
 
@@ -2383,7 +2383,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             QuotaConsumptionEstimatePresentation(title: "5h", estimate: insufficient).accessibilityText,
             "额度下降 0%，不能反推总额度"
         )
-        XCTAssertEqual(QuotaConsumptionEstimatePresentation(title: "7d", estimate: noToken).detail, "无 token")
+        XCTAssertEqual(QuotaConsumptionEstimatePresentation(title: "7d", estimate: noToken).detail, "无可比用量")
         XCTAssertEqual(
             QuotaConsumptionEstimatePresentation(title: "7d", estimate: noToken).accessibilityText,
             "没有 token 用量"

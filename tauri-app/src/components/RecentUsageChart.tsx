@@ -1349,7 +1349,7 @@ function estimateText(estimate: QuotaConsumptionEstimate, title: string, isQuota
     case "insufficientQuotaMovement":
       return `降 ${oneDecimalPercent(estimate.quotaDropPercent)} · 不反推${boundaryNote}${excludedNote}`;
     case "noTokenUsage":
-      return `无 token${excludedNote}`;
+      return `无可比用量${excludedNote}`;
   }
 }
 

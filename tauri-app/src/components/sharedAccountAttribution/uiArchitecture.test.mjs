@@ -66,7 +66,6 @@ test("attribution leaves the top quota strip and fixed selections feed the lower
   assert.match(chart, /quotaSelectionAttribution\(consumptionSelection, sharedAccountAttribution\)/);
   assert.match(chart, /fixedSelectionEndIndex !== null/);
   assert.match(chart, /aria-label="选区账号额度变化"/);
-  assert.match(chart, /账号实降/);
   assert.doesNotMatch(chart, /本机折算/);
 
   for (const [range, bucketSeconds, pointsKey] of [

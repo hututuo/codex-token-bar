@@ -66,3 +66,10 @@ Claude CLI/Desktop默认共用projects并按entrypoint区分；如用户给二�
 - 所改Swift及测试源文件语法检查通过；全量Swift/Rust/前端交由冻结提交的云端CI，结果另附。
 - 新增设置无额外计时器；关闭引导时移除动效观察，价格查询不加网络。原始JSONL、两个业务库、历史价格文件均未进行生产写入/迁移。
 - 本批不打包、不替换正式版、不重启、不动Windows EXE。
+
+
+### 冻结提交第一次云端反馈
+
+[3f2004b6 / 41083785367](https://github.com/hututuo/codex-token-bar/actions/runs/41083785367)：Mac和Windows完整Rust回归、Windows更新器通过。前端1375项中1374通过，唯一失败是仍硬匹配旧“账号实降”的源代码文案断言；已移除重复的文案断言，保留对应语义标识、DOM读数和不显示折算/差额的验证。Swift2196项（28跳过）中仅两处旧辅助功能整串期望未包含新加入的Token/请求数，已更新为精确完整期望；新增计价、根链接、选区分子和气泡恢复用例全部通过。修正后本地相关22项通过，仍需新冻结SHA的完整云端复验，不把首次失败写成全绿。
+
+将反推芯片原先含糊的“无 token”改成“无可比用量”：完整选区有用量，并不保证同周期可比段也有用量。价格版本使用内置共享book，AgentSpeedReportingController上报的priceVersion也取PriceBook.bundled.version。

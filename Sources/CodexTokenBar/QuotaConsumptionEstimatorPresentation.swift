@@ -61,7 +61,7 @@ struct QuotaConsumptionEstimatePresentation: Equatable {
             }
             accessibilityText = "\(dropDescription) \(estimate.quotaDropPercent.quotaEstimatorOneDecimalPercent)，不能反推总额度"
         case .noTokenUsage:
-            detail = "无 token"
+            detail = "无可比用量"
             accessibilityText = "没有 token 用量"
         }
     }
