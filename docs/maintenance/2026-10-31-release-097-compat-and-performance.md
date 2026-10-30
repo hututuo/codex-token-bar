@@ -1,6 +1,6 @@
 # v0.9.7 升级兼容与性能复验
 
-状态：候选源码验证中；只推代码，不发布安装包、不安装或重启正式版。上一正式发布基线为 `v0.9.7` / `0219554ce444b0013987da7b82e3c2e891f4afdb`。候选测试 SHA 和云端结果在通过后补录，不以旧候选 CI 代替。
+状态：源码验证完成，测试冻结 SHA 为 `ddd2a350891da9b44e95e17cd7adb093de3e8dc7`。只推代码，不发布安装包、不安装或重启正式版。上一正式发布基线为 `v0.9.7` / `0219554ce444b0013987da7b82e3c2e891f4afdb`。
 
 ## 数据门槛
 
@@ -53,3 +53,15 @@ build985 的非受控活跃现场样本确认主线程安全账本开库和费�
 [正式版升级流程 41107433352](https://github.com/hututuo/codex-token-bar/actions/runs/41107433352)：Mac 8/8、Windows 3/3及非 cfg(test) crash/resume/reopen/missing-A/reopen 全部成功；整个 workflow 最终因 upload-artifact 不能跨 C/D 盘合并证据失败，不能将其写成完整门禁已过。现改为校验独占 temp marker 后将合成证据复制到 workspace 同盘再上传，并对生产探针实际衍生 A/B/Exact 路径补充开库前 containment 检查；需用新 SHA 复验到整个 workflow 成功。
 
 当前生产驱动原文编译的独立7轮合成大库基准：三读分别开连接平均157.885ms，单次操作共用平均40.867ms。数据无用户行、无模块绑定器或应用锁，仅证明驱动路径减少重复 schema 解析；不宣称整体耗电或滚动改善比例。
+
+## 最终验证与交付
+
+冻结 `ddd2a350891da9b44e95e17cd7adb093de3e8dc7`：
+
+- [完整项目 CI 41109771931](https://github.com/hututuo/codex-token-bar/actions/runs/41109771931) 成功。前端1376通过；Swift XCTest 2218项、36项跳过、0失败，Swift Testing665通过；Mac与Windows Rust完整回归及Windows更新器全部成功，Windows Rust1498通过、14项ignored。
+- [真实正式版升级 41109771914](https://github.com/hututuo/codex-token-bar/actions/runs/41109771914) 整体成功，双端证据已上传。Mac8项实际执行、0跳过；Windows3个输入依赖用例显式运行、0 ignored；非 cfg(test) 生产探针的 resume/reopen/missing-A/reopen 四阶段全部PASS。普通CI中的这8项/3项输入用例跳过不代替本专用lane结果。
+- 根代理已下载双端证据并核对：固定候选/正式版SHA、8项名称及0失败、Windows真实生产路径、两个Home的162/310保留值、B中的旧正文测速、原输入哈希不变、崩溃WAL保留。私有本机核验摘要在 `scratch/release-097-compatibility/verified-cloud-upgrade-evidence.json`，只含合成证明与数值。
+
+代码推送到 `codex/dashboard-header-client-identity`；最终文档提交不修改已测试生产源码。没有更新main、创建tag/GitHub Release、发布appcast、构建安装包或替换正式应用；本机正式版仍是有末格计价问题的build985，修复需后续另行替换才生效。A/B生产库只做了只读检查，没有在本机执行本轮迁移。
+
+实机滚动FPS、空闲功耗和正式安装/回退验收保持未执行，不用本次CI替代。没有用AXScrollToTop/Bottom触发已知macOS27懒列表辅助功能问题，该既有问题不在本轮关闭范围。
