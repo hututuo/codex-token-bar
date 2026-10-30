@@ -140,6 +140,32 @@ fn verify_export(source: &Path, spec: &StoreSpec, target: &Path) -> Result<(), S
 }
 
 #[cfg(not(test))]
+fn resolved_destination(path: &Path) -> Result<PathBuf, String> {
+    let mut existing = path.to_path_buf();
+    let mut suffix = Vec::new();
+    loop {
+        match fs::symlink_metadata(&existing) {
+            Ok(_) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                suffix.push(
+                    existing
+                        .file_name()
+                        .ok_or("No existing destination ancestor")?
+                        .to_os_string(),
+                );
+                require!(existing.pop(), "Destination escaped its filesystem root");
+            }
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    let mut resolved = checked!(fs::canonicalize(existing));
+    for part in suffix.into_iter().rev() {
+        resolved.push(part);
+    }
+    Ok(resolved)
+}
+
+#[cfg(not(test))]
 fn validated_runtime(input: &Path, frozen: &Path) -> Result<PathBuf, String> {
     require!(
         input.is_absolute(),
@@ -186,6 +212,17 @@ fn validated_runtime(input: &Path, frozen: &Path) -> Result<PathBuf, String> {
         .parent()
         .ok_or("No support parent")?
         .to_path_buf();
+    for derived in [
+        support.clone(),
+        app_paths::usage_history_dir().ok_or("Missing isolated Exact root")?,
+        app_paths::multi_client_usage_database_path().ok_or("Missing isolated B")?,
+        route::container_path()?,
+    ] {
+        require!(
+            resolved_destination(&derived)?.starts_with(&root),
+            "A production data-path resolver ignored its isolated override"
+        );
+    }
     require!(
         app_paths::multi_client_usage_database_path()
             == Some(support.join("multi-client-usage.sqlite")),

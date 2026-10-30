@@ -45,3 +45,11 @@ build985 的非受控活跃现场样本确认主线程安全账本开库和费�
 ## 云端首轮与修正
 
 `b46a85a9` / `41101247885`：前端1376通过，最后一格的3项原生功能回归通过。Swift唯一失败为旧源码断言仍要求直接调用旧选区入口，现改为要求已发布快照入口。双平台 Rust 唯一失败来自夹具把每条聚合行当作一次请求；现在按原聚合调用数合成确定性数据包，保持所有 Token 和请求数，时间戳明确只用于解析测试，不用作真实速度证据。全部仍须在新的冻结源码下重跑，不把修正未复验写成全绿。
+
+### 5937117b 云端结果
+
+[完整项目检查 41107433402](https://github.com/hututuo/codex-token-bar/actions/runs/41107433402) 已成功，包括新增数据库保护和后台费用派生回归。独立 Sol Max 复审未见可确认 P0/P1，作用域连接的 owner/recovery 锁、独立 IMMEDIATE/FULL 提交、路由/inode 校验和异步发布门均保留。
+
+[正式版升级流程 41107433352](https://github.com/hututuo/codex-token-bar/actions/runs/41107433352)：Mac 8/8、Windows 3/3及非 cfg(test) crash/resume/reopen/missing-A/reopen 全部成功；整个 workflow 最终因 upload-artifact 不能跨 C/D 盘合并证据失败，不能将其写成完整门禁已过。现改为校验独占 temp marker 后将合成证据复制到 workspace 同盘再上传，并对生产探针实际衍生 A/B/Exact 路径补充开库前 containment 检查；需用新 SHA 复验到整个 workflow 成功。
+
+当前生产驱动原文编译的独立7轮合成大库基准：三读分别开连接平均157.885ms，单次操作共用平均40.867ms。数据无用户行、无模块绑定器或应用锁，仅证明驱动路径减少重复 schema 解析；不宣称整体耗电或滚动改善比例。

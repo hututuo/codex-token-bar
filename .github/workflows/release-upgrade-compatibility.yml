@@ -217,6 +217,20 @@ jobs:
           }
           python scripts/prepare_v097_upgrade_validation.py verify $env:TOKENBAR_V097_FIXTURE_ROOT --platform rust | Tee-Object upgrade-evidence/windows-fixture-reverified.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Stage synthetic Windows evidence on the workspace drive
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:TOKENBAR_V097_RUNTIME_ROOT) {
+            $root = [IO.Path]::GetFullPath($env:TOKENBAR_V097_RUNTIME_ROOT)
+            $temp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+            if (-not $root.StartsWith($temp, [StringComparison]::OrdinalIgnoreCase)) { throw 'Evidence root escaped OS temp' }
+            $marker = Join-Path $root '.tokenbar-v097-disposable'
+            if ((Get-Content -LiteralPath $marker -Raw).Trim() -ne '0219554ce444b0013987da7b82e3c2e891f4afdb') { throw 'Evidence ownership marker mismatch' }
+            $destination = Join-Path $env:GITHUB_WORKSPACE 'upgrade-evidence/windows-runtime'
+            Copy-Item -LiteralPath $root -Destination $destination -Recurse -Force
+          }
       - name: Preserve synthetic Windows A/B, original inputs and all proof logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -224,7 +238,6 @@ jobs:
           name: public097-windows-upgrade-${{ inputs.source_sha || github.sha }}
           path: |
             upgrade-evidence/
-            ${{ env.TOKENBAR_V097_RUNTIME_ROOT }}/
           if-no-files-found: error
           include-hidden-files: true
           retention-days: 14
