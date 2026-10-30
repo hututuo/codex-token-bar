@@ -2138,7 +2138,9 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertTrue(source.contains(".offset(x: -buttonWidth - 6)"))
         XCTAssertTrue(source.contains(".offset(x: buttonWidth + 6)"))
         XCTAssertTrue(source.contains("consumptionSelectionState"))
-        XCTAssertTrue(source.contains("quotaConsumptionSelection("))
+        XCTAssertTrue(source.contains("consumptionSelectionState.selection("))
+        XCTAssertFalse(source.contains("let selection = preparedData.quotaConsumptionSelection("),
+            "Pinning must not bypass the provider-aware selection path in aggregate mode")
         XCTAssertTrue(source.contains("onClick:"))
         XCTAssertTrue(source.contains(".accessibilityAdjustableAction"))
         XCTAssertTrue(source.contains(".accessibilityAction(named: Text(\"设置选区点\"))"))
