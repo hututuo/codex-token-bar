@@ -44,7 +44,7 @@ function usagePoint(startUnix, { tokens, calls, inputTokens, cachedInputTokens, 
   };
 }
 
-test("aggregate dashboard renders distinct Codex and Claude analytics while keeping Codex controls", async () => {
+test("aggregate dashboard renders one combined analytics block and preserves provider controls", async () => {
   await withSsrModules(async load => {
     const { emptyDashboardSnapshot } = await load("/src/api/fallback/dashboardFallback.ts");
     const { DashboardAnalyticsSection } = await load("/src/pages/dashboard/DashboardAnalyticsSection.tsx");
@@ -84,32 +84,27 @@ test("aggregate dashboard renders distinct Codex and Claude analytics while keep
     const dom = new Window({ url: "http://localhost/" });
     dom.document.body.innerHTML = markup;
     try {
-      const codexSection = dom.document.querySelector('[data-client="codex"]');
-      const claudeSection = dom.document.querySelector('[data-client="claudeCode"]');
-      assert.ok(codexSection, "aggregate scope should render a Codex section");
-      assert.ok(claudeSection, "aggregate scope should render a separate Claude CLI section");
-      assert.match(codexSection.textContent, /Codex · 用量与缓存/);
-      assert.match(claudeSection.textContent, /Claude CLI · 用量与缓存/);
+      const section = dom.document.querySelector('[data-client="all"]');
+      assert.ok(section);
+      assert.equal(dom.document.querySelectorAll('.client-analytics').length,1);
+      assert.equal(section.querySelectorAll('.activity-section').length,1);
+      assert.equal(section.querySelectorAll('.ranking-section').length,1);
+      assert.equal(section.querySelectorAll('[aria-label="曲线范围"]').length,1);
+      assert.doesNotMatch(section.textContent,/Claude CLI · 用量与缓存|Codex · 用量与缓存/);
+      const projected = (await load("/src/multiClient/originalDashboardProjection.ts"))
+        .projectOriginalDashboard(codex,clients,["codex","claudeCode","opencode"]);
+      const point=projected.recentUsage24h.find(point=>point.startUnix===now);
+      assert.equal(point.tokens,1500);
+      assert.equal(point.calls,3);
+      assert.equal(point.cacheHitRate,700/1100,"cache is input-weighted, not a mean of client percentages");
+      assert.ok(section.querySelector('.toggle-five'));
+      assert.ok(section.querySelector('.toggle-seven'));
+      assert.equal(section.querySelector('.toggle-cost').getAttribute('aria-pressed'),'true');
+      assert.match(section.querySelector('.toggle-cost').textContent,/Codex/);
+      assert.match(section.textContent,/fixture-codex-session|查看完整排行/);
+      assert.ok(section.querySelector('[aria-label="缓存命中排行控制"]'));
+      assert.equal(dom.document.querySelector('[data-client="opencode"]'),null,"detected empty clients add no placeholder blocks");
 
-      // The synthetic Claude row is 700 input + 300 output tokens; it remains client-scoped.
-      const projectedClaude = (await load("/src/multiClient/originalDashboardProjection.ts"))
-        .projectOriginalDashboard(codex, clients, ["claudeCode"]);
-      assert.equal(projectedClaude.stats.totalTokens, 1000);
-      assert.equal(projectedClaude.recentUsage24h.reduce((sum, point) => sum + point.tokens, 0), 1000);
-
-      // Codex retains its original quota, price visibility, and cache ranking controls.
-      assert.ok(codexSection.querySelector(".chart-line-toggle.toggle-five"));
-      assert.ok(codexSection.querySelector(".chart-line-toggle.toggle-seven"));
-      assert.equal(codexSection.querySelector(".chart-line-toggle.toggle-cost")?.getAttribute("aria-pressed"), "true");
-      assert.ok(codexSection.querySelector('[aria-label="缓存命中排行控制"]'));
-      assert.match(codexSection.textContent, /查看完整排行/);
-
-      // A Claude projection may inherit Codex source fields internally, but no Codex quota series or API price is exposed.
-      assert.equal(claudeSection.querySelector(".chart-line-toggle.toggle-five"), null);
-      assert.equal(claudeSection.querySelector(".chart-line-toggle.toggle-seven"), null);
-      assert.equal(claudeSection.querySelector(".chart-line-toggle.toggle-cost")?.getAttribute("aria-pressed"), "false");
-      assert.equal(claudeSection.querySelector('[aria-label="缓存命中排行控制"]'), null);
-      assert.ok(claudeSection.querySelector(".ranking-section"));
     } finally {
       dom.close();
     }
@@ -141,7 +136,8 @@ test("Claude-only analytics does not expose Codex quota, pricing, or cache-rank 
       assert.equal(section.querySelector(".chart-line-toggle.toggle-five"), null);
       assert.equal(section.querySelector(".chart-line-toggle.toggle-seven"), null);
       assert.equal(section.querySelector(".chart-line-toggle.toggle-cost")?.getAttribute("aria-pressed"), "false");
-      assert.equal(section.querySelector('[aria-label="缓存命中排行控制"]'), null);
+      assert.equal(section.querySelector('[aria-label="排行类型"]'), null);
+      assert.equal(section.querySelector(".ranking-check"),null);
       assert.ok(section.querySelector(".ranking-section"));
     } finally {
       dom.close();

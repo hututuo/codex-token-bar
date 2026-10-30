@@ -43,6 +43,7 @@ import {
   recentChartVisibleWindowLabel,
   recentChartVisibleWindowSummary,
   smoothPath,
+  alignProviderPoints,
   shouldReopenPreviewOnHoverMove,
   tokenAreaPath,
   type OfficialAPIPriceModel,
@@ -61,6 +62,7 @@ import { modelUsageSlices } from "./modelUsagePresentation.ts";
 
 interface RecentUsageChartProps {
   pricingAvailable?: boolean;
+  quotaCostSeries?: { recentUsage24h: RecentUsagePoint[]; recentUsage7d: RecentUsagePoint[]; recentUsage30d: RecentUsagePoint[] };
   recentUsage24h: RecentUsagePoint[];
   recentUsage7d: RecentUsagePoint[];
   recentUsage30d: RecentUsagePoint[];
@@ -104,6 +106,7 @@ function useChartBubbleWidth(fallbackWidth: number) {
 
 export function RecentUsageChart({
   pricingAvailable = true,
+  quotaCostSeries,
   recentUsage24h,
   recentUsage7d,
   recentUsage30d,
@@ -143,9 +146,17 @@ export function RecentUsageChart({
     return prepared;
   }
   const data = preparedDataForRange(range);
+  // Keep the quota provider's numeric basis separate from aggregate usage.
+  // Claude input must never be charged using a Codex price or quota window.
+  const quotaData = useMemo(() => {
+    if (!quotaCostSeries) return data;
+    const original = data.bucketSeconds === 300 ? quotaCostSeries.recentUsage24h
+      : data.bucketSeconds === 3600 ? quotaCostSeries.recentUsage7d : quotaCostSeries.recentUsage30d;
+    return {...data, points: alignProviderPoints(data.points, original)};
+  }, [data, quotaCostSeries]);
   const bucketCostCache = useMemo(
     () => new Map<RecentUsagePoint[], number[]>(),
-    [preparedDataCache, quotaModel],
+    [preparedDataCache, quotaModel, quotaCostSeries],
   );
   const costSource = data.bucketSeconds === 300
     ? recentUsage24h
@@ -169,12 +180,12 @@ export function RecentUsageChart({
     () => {
       let costs = bucketCostCache.get(costSource);
       if (!costs) {
-        costs = recentChartBucketCosts(data.points, quotaModel);
+        costs = recentChartBucketCosts(quotaData.points, quotaModel);
         bucketCostCache.set(costSource, costs);
       }
       return costs;
     },
-    [data.points, costSource, quotaModel, bucketCostCache],
+    [quotaData.points, costSource, quotaModel, bucketCostCache],
   );
   const visibleWindowCostUSD = useMemo(() => {
     if (visibleWindowSummary.endIndex < visibleWindowSummary.startIndex) return 0;
@@ -252,12 +263,12 @@ export function RecentUsageChart({
   );
   const consumptionSelection = useMemo(() => (
     quotaSelectionState.startIndex !== null && quotaEndIndex !== null
-      ? quotaConsumptionSelection(data, quotaSelectionState.startIndex, quotaEndIndex, quotaModel, {
+      ? quotaConsumptionSelection(quotaData, quotaSelectionState.startIndex, quotaEndIndex, quotaModel, {
         fiveHour: { resetAtUnix: fiveHourResetAtUnix, periodSeconds: 5 * 60 * 60 },
         sevenDay: { resetAtUnix: sevenDayResetAtUnix, periodSeconds: 7 * 24 * 60 * 60 },
       })
       : null
-  ), [data, quotaSelectionState.startIndex, quotaEndIndex, quotaModel, fiveHourResetAtUnix, sevenDayResetAtUnix]);
+  ), [quotaData, quotaSelectionState.startIndex, quotaEndIndex, quotaModel, fiveHourResetAtUnix, sevenDayResetAtUnix]);
   const selectionAttribution = useMemo(() => fixedSelectionEndIndex !== null
     && consumptionSelection !== null
     ? quotaSelectionAttribution(consumptionSelection, sharedAccountAttribution)
@@ -570,7 +581,7 @@ export function RecentUsageChart({
             <LegendDot className="legend-dot--token" label="Token" value={formatTokens(visibleWindowSummary.tokenTotal)} />
             <LegendDot className="legend-dot--calls" label="调用" value={`${visibleWindowSummary.callTotal}`} />
             <LegendDot className="legend-dot--hit" label="命中率" value={percentText(visibleWindowSummary.cacheHitRate)} />
-            <LegendDot className="legend-dot--cost" label="金额" value={pricingAvailable ? moneyText(visibleWindowCostUSD) : "—"} />
+            <LegendDot className="legend-dot--cost" label={quotaCostSeries ? "金额 · Codex" : "金额"} value={pricingAvailable ? moneyText(visibleWindowCostUSD) : "—"} />
             {fiveHourQuotaPresent ? <LegendDot className="legend-dot--five" label="5h" value={percentText(visibleWindowSummary.latestFiveHourRemaining)} /> : null}
             {sevenDayQuotaPresent ? <LegendDot className="legend-dot--seven" label="7d" value={percentText(visibleWindowSummary.latestSevenDayRemaining)} /> : null}
           </div>
@@ -583,7 +594,7 @@ export function RecentUsageChart({
               label="命中率"
               onClick={() => updateVisibility("cacheHitRate")}
             />
-            <LineToggle active={visibility.cost} className="toggle-cost" label="金额" onClick={() => { if (pricingAvailable) updateVisibility("cost"); }} />
+            <LineToggle active={visibility.cost} className="toggle-cost" label={quotaCostSeries ? "金额 · Codex" : "金额"} onClick={() => { if (pricingAvailable) updateVisibility("cost"); }} />
             {fiveHourQuotaPresent ? <LineToggle active={visibility.fiveHourQuota} className="toggle-five" label="5h" onClick={() => updateVisibility("fiveHourQuota")} /> : null}
             {sevenDayQuotaPresent ? <LineToggle active={visibility.sevenDayQuota} className="toggle-seven" label="7d" onClick={() => updateVisibility("sevenDayQuota")} /> : null}
           </div>

@@ -11,7 +11,7 @@ export function hoverSummary(
   modelCostDataAvailable = true,
 ): string {
   if (mode === "cache") {
-    return `${day.date} · 命中率 ${formatPercent(day.cacheHitRate)} · ${day.calls} calls`;
+    return `${day.date} · 命中率 ${day.cacheHitRateKnown === false ? "未知" : formatPercent(day.cacheHitRate)} · ${day.calls} calls`;
   }
 
   if (mode === "quota") {

@@ -92,3 +92,29 @@ test('summary period rows use exact indexed models without borrowing lifetime or
  assert.deepEqual(pending.today,[]);assert.deepEqual(pending.sevenDay,[]);
  assert.deepEqual(pending.codexPendingScopes,['today','sevenDay']);
 }));
+
+
+test('aggregate preserves Codex quota observations and daily model provenance without modifying originals',async()=>withSsrModules(async load=>{
+ const {projectOriginalDashboard}=await load('/src/multiClient/originalDashboardProjection.ts');
+ const source=dashboard(); const now=stamp;
+ const point={startUnix:now-3600,label:'',tokens:100,calls:1,inputTokens:90,cachedInputTokens:60,outputTokens:10,cacheHitRate:2/3,fiveHourRemainingPercent:0.8,sevenDayRemainingPercent:0.7,fiveHourCycleId:'cycle-a',modelBreakdowns:[{model:'gpt-6-luna',breakdown:{inputTokens:90,cachedInputTokens:60,outputTokens:10,totalTokens:100,calls:1}}]};
+ source.recentUsage24h=[point];source.recentUsage7d=[point];source.recentUsage30d=[point];source.usageSummary={todayRequests:3};
+ const day=new Date(point.startUnix*1000);const key=`${day.getFullYear()}-${String(day.getMonth()+1).padStart(2,'0')}-${String(day.getDate()).padStart(2,'0')}`;
+ source.activityDays=[{date:key,tokens:100,calls:1,cacheHitRate:2/3,fiveHourRemainingPercent:.8,sevenDayRemainingPercent:.7,modelBreakdowns:point.modelBreakdowns}];
+ const original=JSON.stringify(source); const clients=snapshot();clients.todaySummaries=[row];
+ const aggregate=projectOriginalDashboard(source,clients,['codex','claudeCode']);
+ assert.equal(aggregate.recentUsage24h[0].tokens,1300);assert.equal(aggregate.recentUsage24h[0].fiveHourRemainingPercent,.8);assert.equal(aggregate.recentUsage24h[0].fiveHourCycleId,'cycle-a');
+ const projectedDay=aggregate.activityDays.find(day=>day.date===key);assert.equal(projectedDay.tokens,1300);assert.equal(projectedDay.cacheHitRate,860/1090);assert.equal(projectedDay.modelBreakdowns[0].model,'gpt-6-luna');
+ assert.equal(aggregate.usageSummary.todayRequests,5);assert.equal(JSON.stringify(source),original);
+}));
+
+test('missing aggregate cache fields remain unknown on heatmaps and ranges',async()=>withSsrModules(async load=>{
+ const {projectOriginalDashboard}=await load('/src/multiClient/originalDashboardProjection.ts');
+ const {buildHeatmapDays}=await load('/src/components/tokenActivity/heatmap.ts');
+ const {hoverSummary}=await load('/src/components/tokenActivity/hoverSummary.ts');
+ const {summarizeRange}=await load('/src/components/tokenActivity/rangeSummary.ts');
+ const clients=snapshot();clients.dailyBuckets=[{...bucket,cacheReadTokens:null}];
+ const day=projectOriginalDashboard(dashboard(),clients,['claudeCode']).activityDays.find(day=>day.tokens>0);
+ assert.equal(day.cacheHitRateKnown,false);assert.equal(buildHeatmapDays([day],'cache')[0].intensity,0);
+ assert.match(hoverSummary(day,'cache'),/未知/);assert.match(summarizeRange([day],day.date,day.date,'cache').value,/字段不完整/);
+}));

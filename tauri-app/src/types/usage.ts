@@ -69,6 +69,10 @@ export interface DashboardStats {
 }
 
 export interface ActivityDay {
+  /** Derived aggregate metadata; not a persisted ledger schema. */
+  cacheHitRateKnown?: boolean;
+  cacheInputTokens?: number;
+  cacheReadTokens?: number;
   date: string;
   tokens: number;
   calls: number;

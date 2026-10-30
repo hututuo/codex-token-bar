@@ -26,7 +26,7 @@ export function buildHeatmapDays(
         cumulative += day.tokens;
         return cumulative > 0 ? cumulative : null;
       case "cache":
-        return day.tokens > 0 ? day.cacheHitRate : null;
+        return day.tokens > 0 && day.cacheHitRateKnown !== false ? day.cacheHitRate : null;
       case "quota":
         return day.sevenDayRemainingPercent ?? day.fiveHourRemainingPercent;
       case "model":
@@ -108,7 +108,7 @@ export function cellLabel(
   modelCostDataAvailable = true,
 ): string {
   if (mode === "cache") {
-    return `${day.date} · 命中率 ${formatPercent(day.cacheHitRate)} · ${day.calls} calls`;
+    return `${day.date} · 命中率 ${day.cacheHitRateKnown === false ? "未知" : formatPercent(day.cacheHitRate)} · ${day.calls} calls`;
   }
   if (mode === "quota") {
     return `${day.date} · 7d ${formatOptionalPercent(day.sevenDayRemainingPercent)} · 5h ${formatOptionalPercent(

@@ -13068,3 +13068,5 @@ details.session-management-banner {
 .dashboard-global-meta{display:flex;align-items:center;justify-content:space-between;gap:16px;width:100%}
 .dashboard-global-meta>span{font-size:10px;color:var(--muted)}
 .dashboard-global-meta>.speed-report-header-status{height:22px;margin:0}
+
+.analytics-source-note{font-size:11px;line-height:1.5;color:var(--muted);margin:-8px 0 0}

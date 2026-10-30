@@ -1272,7 +1272,7 @@ test("recent chart horizontal viewport keeps overlay outside the clipped scroll 
   assert.equal(source.includes("chart-time-marker--"), true);
   assert.equal(source.includes("chart-day-separator"), true);
   assert.equal(source.includes("x={activeTokenPoint.x - chartScrollLeft}"), true);
-  assert.equal(source.includes("recentChartBucketCosts(data.points, quotaModel)"), true);
+  assert.equal(source.includes("recentChartBucketCosts(quotaData.points, quotaModel)"), true);
   assert.equal(source.includes("window.requestAnimationFrame"), true);
   assert.equal(source.includes("visibleWindowSummary.startIndex"), true);
   assert.equal(source.includes("visibleWindowSummary.endIndex"), true);
@@ -1333,4 +1333,17 @@ test("short legacy fine cache retains the longer hourly history", () => {
   const data=prepareRecentChartData("7d",{recentUsage24h:[point(86400)],recentUsage7d:[point(0),point(86400)],recentUsage30d:[]});
   assert.equal(data.bucketSeconds,3600);
   assert.equal(data.points[0].startUnix,0);
+});
+
+
+test("aggregate client usage cannot inflate Codex cost or quota attribution", async () => {
+ const {alignProviderPoints,prepareRecentChartData,recentChartBucketCosts,quotaConsumptionSelection}=await import("./model.ts");
+ const point=(time,tokens)=>({startUnix:time,label:"",tokens,calls:1,inputTokens:tokens,outputTokens:0,cachedInputTokens:0,cacheHitRate:0,fiveHourRemainingPercent:.8,sevenDayRemainingPercent:.7});
+ const codex=[point(1800000000,100)];const all=[point(1800000000,100000),point(1800000300,99999)];
+ const aligned=alignProviderPoints(all,codex);
+ assert.equal(aligned[0].tokens,100);assert.equal(aligned[1].tokens,0);assert.equal(aligned[1].sevenDayRemainingPercent,null);
+ assert.deepEqual(recentChartBucketCosts(aligned,"gpt56Sol"),[...recentChartBucketCosts(codex,"gpt56Sol"),0]);
+ const data=prepareRecentChartData("24h",{recentUsage24h:aligned,recentUsage7d:[],recentUsage30d:[]});
+ const selection=quotaConsumptionSelection(data,0,1,"gpt56Sol");assert.equal(selection.inputTokens,100);
+ assert.equal(all[0].tokens,100000,"display aggregate is not overwritten by the provider basis");
 });

@@ -38,7 +38,9 @@ export function summarizeRange(
   if (mode === "cache") {
     return {
       hint: `${rangeStart} - ${rangeEnd}`,
-      value: `命中率均值 ${formatPercent(weightedCacheRate(selectedDays))} · ${calls} calls`,
+      value: selectedDays.some(day => day.tokens > 0 && day.cacheHitRateKnown === false)
+        ? `缓存字段不完整 · ${calls} calls`
+        : `命中率均值 ${formatPercent(weightedCacheRate(selectedDays))} · ${calls} calls`,
     };
   }
   if (mode === "quota") {
@@ -110,6 +112,11 @@ export function isInRange(date: string, rangeStart: string | null, rangeEnd: str
 }
 
 function weightedCacheRate(days: ActivityDay[]): number {
+  const recorded = days.filter(day => day.tokens > 0);
+  if (recorded.length && recorded.every(day => day.cacheInputTokens !== undefined && day.cacheHitRateKnown !== false)) {
+    const inputs = recorded.reduce((n,day)=>n+(day.cacheInputTokens ?? 0),0);
+    return inputs > 0 ? recorded.reduce((n,day)=>n+(day.cacheReadTokens ?? 0),0)/inputs : 0;
+  }
   const activeDays = days.filter((day) => day.tokens > 0);
   const weightedCalls = activeDays.reduce((total, day) => total + day.calls, 0);
   if (weightedCalls === 0) {

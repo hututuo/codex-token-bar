@@ -202,33 +202,49 @@ export function railLayout(
   };
 }
 
+const clientNamesForDays: Record<string,string> = {claudeCode:"Claude CLI",claudeDesktop:"Claude Desktop",gemini:"Gemini CLI",opencode:"OpenCode",deepseek:"DeepSeek / DSH"};
+
 export function projectClientDays(
   codex: ActivityDay[],
   others: ClientTrendBucket[],
   allowed: string[],
 ): ActivityDay[] {
   const byDate = new Map<string, ActivityDay>();
-  const add = (date: string, tokens: number, calls: number) => {
+  if (allowed.includes("codex")) codex.forEach(day => {
+    const models = day.modelBreakdowns ?? [];
+    const inputs = models.reduce((n,row)=>n+row.breakdown.inputTokens,0);
+    byDate.set(day.date, {...day,
+      cacheInputTokens: inputs || undefined,
+      cacheReadTokens: inputs ? models.reduce((n,row)=>n+row.breakdown.cachedInputTokens,0) : undefined,
+    });
+  });
+  others.filter(row => allowed.includes(row.client)).forEach(row => {
+    const d = new Date(row.startUnix * 1000);
+    const date = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
     const old = byDate.get(date);
+    const input = (old?.cacheInputTokens ?? 0) + row.inputTokens;
+    const cached = (old?.cacheReadTokens ?? 0) + (row.cacheReadTokens ?? 0);
+    const known = old?.cacheHitRateKnown !== false
+      && !(old && old.tokens > 0 && old.cacheInputTokens === undefined)
+      && (row.inputTokens === 0 || row.cacheReadTokens !== null && row.cacheReadTokens !== undefined);
     byDate.set(date, {
-      date,
-      tokens: (old?.tokens ?? 0) + tokens,
-      calls: (old?.calls ?? 0) + calls,
-      cacheHitRate: 0,
-      fiveHourRemainingPercent: null,
-      sevenDayRemainingPercent: null,
+      ...old, date, tokens: (old?.tokens ?? 0) + row.inputTokens + row.outputTokens,
+      calls: (old?.calls ?? 0) + row.requests,
+      cacheInputTokens: input, cacheReadTokens: cached, cacheHitRateKnown: known,
+      cacheHitRate: known && input > 0 ? cached/input : 0,
+      fiveHourRemainingPercent: old?.fiveHourRemainingPercent ?? null,
+      sevenDayRemainingPercent: old?.sevenDayRemainingPercent ?? null,
+      // A client/time bucket has no model identity. Explicitly mark those tokens
+      // unknown rather than pricing them with the user's Codex fallback model.
+      modelBreakdowns: [...(old?.modelBreakdowns ?? []), {
+        model: (clientNamesForDays[row.client] ?? row.client) + " · 模型明细未提供",
+        eventStartUnix: row.startUnix,
+        breakdown: {inputTokens: row.inputTokens, cachedInputTokens: row.cacheReadTokens ?? 0,
+          outputTokens: row.outputTokens, totalTokens: row.inputTokens+row.outputTokens, calls: row.requests},
+      }],
     });
-  };
-  if (allowed.includes("codex"))
-    codex.forEach((day) => add(day.date, day.tokens, day.calls));
-  others
-    .filter((row) => allowed.includes(row.client))
-    .forEach((row) => {
-      const d = new Date(row.startUnix * 1000);
-      const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-      add(date, row.inputTokens + row.outputTokens, row.requests);
-    });
-  return [...byDate.values()].sort((a, b) => a.date.localeCompare(b.date));
+  });
+  return [...byDate.values()].sort((a,b)=>a.date.localeCompare(b.date));
 }
 
 export function quotaRingGroups(

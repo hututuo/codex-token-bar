@@ -4,6 +4,7 @@ import { CacheTurnRequestsDialog } from "./cacheHitRanking/CacheTurnRequestsDial
 import { formatPercent, formatTokens } from "../utils/format";
 import {
   buildCacheRankingItems,
+  compareRankingItems,
   cacheHitMeterWidthPercent,
   cacheHitRate,
   cacheHitTone,
@@ -22,6 +23,10 @@ interface CacheHitRankingProps {
   cacheUsage: TokenCacheUsage;
   sourceToken?: CodexHomeSourceToken | null;
   legacyItems?: CacheHitRankingItem[];
+  aggregate?: boolean;
+  localOnly?: boolean;
+  additionalItems?: CacheRankingDisplayItem[];
+  onOpenLocalSession?: (client: string, sessionID: string) => void;
 }
 
 interface CacheHitRankingDetailProps {
@@ -29,6 +34,9 @@ interface CacheHitRankingDetailProps {
   sourceToken?: CodexHomeSourceToken | null;
   legacyItems: CacheHitRankingItem[];
   rankingItems: CacheRankingDisplayItem[];
+  aggregate?: boolean;
+  localOnly?: boolean;
+  onOpenLocalSession?: (client: string, sessionID: string) => void;
   onClose: () => void;
   scope: CacheRankingScope;
   sortOrder: CacheRankingSortOrder;
@@ -47,7 +55,9 @@ const DEFAULT_RANKING_OPTIONS = {
   excludesFirstTurns: true,
 };
 
-export function CacheHitRanking({ cacheUsage, legacyItems = [], sourceToken = null }: CacheHitRankingProps) {
+const NO_ADDITIONAL_ITEMS: CacheRankingDisplayItem[] = [];
+
+export function CacheHitRanking({ cacheUsage, legacyItems = [], sourceToken = null, aggregate = false, localOnly = false, additionalItems = NO_ADDITIONAL_ITEMS, onOpenLocalSession }: CacheHitRankingProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [scope, setScope] = useState<CacheRankingScope>(DEFAULT_RANKING_OPTIONS.scope);
   const [sortOrder, setSortOrder] = useState<CacheRankingSortOrder>(DEFAULT_RANKING_OPTIONS.sortOrder);
@@ -58,19 +68,23 @@ export function CacheHitRanking({ cacheUsage, legacyItems = [], sourceToken = nu
   const triggerRef = useRef<HTMLButtonElement>(null);
   const hasOpenedRef = useRef(false);
 
-  const rankingItems = useMemo(
-    () => buildCacheRankingItems(cacheUsage, {
-      scope,
-      sortOrder,
-      excludesSingleTurnSessions,
-      excludesFirstTurns,
-      // The native cacheUsage payload already contains the candidate pool. The
-      // outer surface and detail overlay slice this memoized result locally.
+  const rankingItems = useMemo(() => {
+    const codex = buildCacheRankingItems(cacheUsage, {
+      scope, sortOrder, excludesSingleTurnSessions, excludesFirstTurns,
       limit: Number.POSITIVE_INFINITY,
-    }),
-    [cacheUsage, excludesFirstTurns, excludesSingleTurnSessions, scope, sortOrder],
-  );
-  const hasCurrentRows = Boolean(cacheUsage.rankingActiveSince) || cacheUsage.sessions.length > 0 || cacheUsage.turns.length > 0;
+    });
+    if (!aggregate) return codex;
+    const original = codex.map(item => ({...item, id: "codex|" + item.id,
+      title: "Codex · " + item.title, client: "codex"}));
+    if (!cacheUsage.sessions.length && !cacheUsage.turns.length && !cacheUsage.rankingActiveSince) {
+      original.push(...legacyItems.map(item => ({id: "codex|legacy|" + item.rank,
+        title: "Codex · " + item.title, subtitle: item.subtitle, client: "codex", context: null, sortDate: null,
+        breakdown: {inputTokens: item.inputTokens, cachedInputTokens: item.cachedTokens,
+          outputTokens: 0, totalTokens: item.inputTokens, calls: 1}})));
+    }
+    return [...original, ...additionalItems].sort((a,b) => compareRankingItems(a,b,sortOrder));
+  }, [cacheUsage, aggregate, legacyItems, additionalItems, excludesFirstTurns, excludesSingleTurnSessions, scope, sortOrder]);
+  const hasCurrentRows = aggregate || Boolean(cacheUsage.rankingActiveSince) || cacheUsage.sessions.length > 0 || cacheUsage.turns.length > 0;
   const fallbackItems = hasCurrentRows ? [] : legacyItems;
   const outerItems = hasCurrentRows ? rankingItems.slice(0, CACHE_RANKING_PAGE_SIZE) : [];
   const outerFallbackItems = hasCurrentRows ? [] : fallbackItems.slice(0, CACHE_RANKING_PAGE_SIZE);
@@ -95,10 +109,11 @@ export function CacheHitRanking({ cacheUsage, legacyItems = [], sourceToken = nu
           <div>
             <h2>缓存命中排行</h2>
             {cacheUsage.rankingActiveSince && <p className="cache-ranking-scope-notice">已开启历史压缩，仅显示最近 7 天活跃会话。较早的历史会话可能已压缩。</p>}
-            <span>整轮加权 · {rankingSubtitle(scope, sortOrder, excludesSingleTurnSessions, excludesFirstTurns)}</span>
+            <span>{aggregate ? "缓存读取 / 输入 · 明细标注客户端及轮次或会话" : "整轮加权 · " + rankingSubtitle(scope, sortOrder, excludesSingleTurnSessions, excludesFirstTurns)}</span>
           </div>
           <div className="ranking-controls" aria-label="缓存命中排行控制">
             <CacheRankingControls
+              localOnly={localOnly}
               scope={scope}
               sortOrder={sortOrder}
               excludesSingleTurnSessions={excludesSingleTurnSessions}
@@ -127,7 +142,7 @@ export function CacheHitRanking({ cacheUsage, legacyItems = [], sourceToken = nu
           ) : (
             outerFallbackItems.length > 0
               ? outerFallbackItems.map((item) => <LegacyRankingRow key={`${item.rank}-${item.title}`} item={item} />)
-              : outerItems.map((item, index) => <CurrentRankingRow key={item.id} item={item} index={index} sourceToken={sourceToken} />)
+              : outerItems.map((item, index) => <CurrentRankingRow key={item.id} item={item} index={index} sourceToken={sourceToken} onOpenLocalSession={onOpenLocalSession} />)
           )}
         </div>
       </section>
@@ -138,6 +153,9 @@ export function CacheHitRanking({ cacheUsage, legacyItems = [], sourceToken = nu
           sourceToken={sourceToken}
           legacyItems={fallbackItems}
           rankingItems={rankingItems}
+          aggregate={aggregate}
+          localOnly={localOnly}
+          onOpenLocalSession={onOpenLocalSession}
           onClose={close}
           scope={scope}
           sortOrder={sortOrder}
@@ -158,6 +176,9 @@ export function CacheHitRankingDetail({
   sourceToken = null,
   legacyItems,
   rankingItems,
+  aggregate = false,
+  localOnly = false,
+  onOpenLocalSession,
   onClose,
   scope,
   sortOrder,
@@ -179,7 +200,7 @@ export function CacheHitRankingDetail({
     () => legacyItems.filter((item) => legacyCacheRankingItemMatchesQuery(item, searchQuery)),
     [legacyItems, searchQuery],
   );
-  const hasCurrentRows = Boolean(cacheUsage.rankingActiveSince) || cacheUsage.sessions.length > 0 || cacheUsage.turns.length > 0;
+  const hasCurrentRows = aggregate || Boolean(cacheUsage.rankingActiveSince) || cacheUsage.sessions.length > 0 || cacheUsage.turns.length > 0;
   const filteredItems = hasCurrentRows ? searchedItems : [];
   const filteredFallbackItems = hasCurrentRows ? [] : searchedLegacyItems;
   const totalCount = hasCurrentRows ? filteredItems.length : filteredFallbackItems.length;
@@ -224,7 +245,7 @@ export function CacheHitRankingDetail({
           <div>
             <strong id="cache-hit-ranking-detail-title">缓存命中排行</strong>
             {cacheUsage.rankingActiveSince && <p className="cache-ranking-scope-notice">已开启历史压缩，仅显示最近 7 天活跃会话。较早的历史会话可能已压缩。</p>}
-            <span>整轮加权 · {rankingSubtitle(scope, sortOrder, excludesSingleTurnSessions, excludesFirstTurns)}</span>
+            <span>{aggregate ? "缓存读取 / 输入 · 明细标注客户端及轮次或会话" : "整轮加权 · " + rankingSubtitle(scope, sortOrder, excludesSingleTurnSessions, excludesFirstTurns)}</span>
           </div>
           <button
             aria-label="关闭缓存命中排行详情"
@@ -242,6 +263,7 @@ export function CacheHitRankingDetail({
             <div className="cache-ranking-detail-toolbar">
               <div className="ranking-controls" aria-label="缓存命中排行控制">
                 <CacheRankingControls
+                  localOnly={localOnly}
                   scope={scope}
                   sortOrder={sortOrder}
                   excludesSingleTurnSessions={excludesSingleTurnSessions}
@@ -288,7 +310,7 @@ export function CacheHitRankingDetail({
               ) : (
                 filteredFallbackItems.length > 0
                   ? visibleFallbackItems.map((item) => <LegacyRankingRow key={`${item.rank}-${item.title}`} item={item} />)
-                  : visibleItems.map((item, index) => <CurrentRankingRow key={item.id} item={item} index={index} sourceToken={sourceToken} />)
+                  : visibleItems.map((item, index) => <CurrentRankingRow key={item.id} item={item} index={index} sourceToken={sourceToken} onOpenLocalSession={onOpenLocalSession} />)
               )}
             </div>
 
@@ -309,6 +331,7 @@ export function CacheHitRankingDetail({
 }
 
 function CacheRankingControls({
+  localOnly = false,
   scope,
   sortOrder,
   excludesSingleTurnSessions,
@@ -318,6 +341,7 @@ function CacheRankingControls({
   onToggleSingleTurnSessions,
   onToggleFirstTurns,
 }: {
+  localOnly?: boolean;
   scope: CacheRankingScope;
   sortOrder: CacheRankingSortOrder;
   excludesSingleTurnSessions: boolean;
@@ -329,7 +353,7 @@ function CacheRankingControls({
 }) {
   return (
     <>
-      <button
+      {!localOnly && <button
         type="button"
         className={`ranking-check ${scope === "sessions" ? "ranking-check--visible" : ""}`}
         onClick={scope === "sessions" ? onToggleSingleTurnSessions : onToggleFirstTurns}
@@ -337,7 +361,7 @@ function CacheRankingControls({
       >
         <span>{(scope === "sessions" ? excludesSingleTurnSessions : excludesFirstTurns) ? "✓" : ""}</span>
         {scope === "sessions" ? "排除单轮会话" : "排除首轮"}
-      </button>
+      </button>}
       <div className="ranking-scope-tabs" role="tablist" aria-label="排序方式">
         <button
           type="button"
@@ -358,7 +382,7 @@ function CacheRankingControls({
           最新
         </button>
       </div>
-      <div className="ranking-scope-tabs" role="tablist" aria-label="排行类型">
+      {!localOnly && <div className="ranking-scope-tabs" role="tablist" aria-label="排行类型">
         <button
           type="button"
           className={scope === "sessions" ? "is-active" : ""}
@@ -377,13 +401,14 @@ function CacheRankingControls({
         >
           单轮
         </button>
-      </div>
+      </div>}
     </>
   );
 }
 
-function CurrentRankingRow({ item, index, sourceToken }: {
+function CurrentRankingRow({ item, index, sourceToken, onOpenLocalSession }: {
   item: CacheRankingDisplayItem; index: number; sourceToken?: CodexHomeSourceToken | null;
+  onOpenLocalSession?: (client: string, sessionID: string) => void;
 }) {
   const [showRequests, setShowRequests] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -407,6 +432,8 @@ function CurrentRankingRow({ item, index, sourceToken }: {
         <em className={tone}>{(hitRate * 100).toFixed(2)}%</em>
         <span>未命中 {formatTokens(uncachedInputTokens(item.breakdown))}</span>
         <span>{formatTokens(item.breakdown.cachedInputTokens)} / {formatTokens(item.breakdown.inputTokens)}</span>
+        {item.localSessionID && item.client && <button type="button" className="cache-request-open"
+          onClick={() => onOpenLocalSession?.(item.client!,item.localSessionID!)}>请求明细 ›</button>}
         {item.turn && <button type="button" className="cache-request-open" ref={trigger}
           disabled={!sourceToken} onClick={() => setShowRequests(true)} aria-label="查看本轮每次请求的时间和用量">请求明细 ›</button>}
       </article>

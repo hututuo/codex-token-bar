@@ -20,6 +20,8 @@ export interface CacheRankingDisplayItem {
   breakdown: TokenCacheBreakdown;
   sortDate: string | null;
   turn?: TurnCacheUsage;
+  client?: string;
+  localSessionID?: string;
 }
 
 export function cacheRankingItemMatchesQuery(item: CacheRankingDisplayItem, query: string) {
@@ -99,7 +101,7 @@ export function uncachedInputTokens(breakdown: TokenCacheBreakdown) {
   return Math.max(0, breakdown.inputTokens - breakdown.cachedInputTokens);
 }
 
-function compareRankingItems(
+export function compareRankingItems(
   left: CacheRankingDisplayItem,
   right: CacheRankingDisplayItem,
   sortOrder: CacheRankingSortOrder,

@@ -413,6 +413,17 @@ export function recentChartScrollTarget(
     : Math.min(targetWindowIndex * presentation.viewportWidth, presentation.maxOffset);
 }
 
+/** Align a provider's cost/quota basis to aggregate time indices without borrowing aggregate usage. */
+export function alignProviderPoints(points: RecentUsagePoint[], provider: RecentUsagePoint[]): RecentUsagePoint[] {
+  const byTime = new Map(provider.map(point => [point.startUnix, point]));
+  return points.map(point => byTime.get(point.startUnix) ?? {
+    ...point, tokens: 0, calls: 0, inputTokens: 0, outputTokens: 0, cachedInputTokens: 0,
+    cacheHitRate: null, modelBreakdowns: [], minuteModelBreakdowns: [],
+    fiveHourRemainingPercent: null, sevenDayRemainingPercent: null,
+    fiveHourCycleId: null, sevenDayCycleId: null,
+  });
+}
+
 export function prepareRecentChartData(
   range: RecentChartRange,
   series: RecentUsageChartSeries,

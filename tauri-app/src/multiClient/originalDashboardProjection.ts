@@ -67,7 +67,10 @@ export function projectOriginalDashboard(codex:DashboardSnapshot, snapshot:Snaps
   stats.totalCalls=(includes?codex.stats.totalCalls:0)+rows.reduce((n,x)=>n+x.requests,0);
   stats.totalThreads=0;stats.peakThreadTokens=0;
   stats.modelBreakdowns=(includes?codex.stats.modelBreakdowns??[]:[]).concat(rows.map(x=>({model:clientNames[x.client]+' · '+x.model,breakdown:{inputTokens:x.inputTokens,cachedInputTokens:x.cacheReadTokens??0,outputTokens:x.outputTokens,totalTokens:x.inputTokens+x.outputTokens,calls:x.requests}})));
-  const recordedDays=projectClientDays(codex.activityDays,snapshot.dailyBuckets??[],allowed);
+  const complete=new Set<string>(rows.filter(x=>x.cacheReadComplete).map(x=>x.client));
+  rows.filter(x=>!x.cacheReadComplete).forEach(x=>complete.delete(x.client));
+  const recordedDays=projectClientDays(codex.activityDays,(snapshot.dailyBuckets??[]).map(row =>
+    complete.has(row.client) ? row : {...row, cacheReadTokens: null}),allowed);
   const recordedByDate=new Map(recordedDays.map(x=>[x.date,x]));
   const endDate=new Date(snapshot.updatedAt??codex.generatedAt);endDate.setHours(12,0,0,0);
   const activityDays=Array.from({length:365},(_,index)=>{const date=new Date(endDate);date.setDate(date.getDate()+index-364);const key=`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;return recordedByDate.get(key)??{date:key,tokens:0,calls:0,cacheHitRate:0,fiveHourRemainingPercent:null,sevenDayRemainingPercent:null};});
@@ -80,8 +83,7 @@ export function projectOriginalDashboard(codex:DashboardSnapshot, snapshot:Snaps
     stats.longestStreakDays=Math.max(stats.longestStreakDays,run);last=day.date;
   }
   if(last){const today=new Date();today.setHours(12,0,0,0);const diff=Math.round((today.getTime()-new Date(last+'T12:00:00').getTime())/86400000);if(diff<=1)stats.currentStreakDays=run;}
-  const complete=new Set<string>(rows.filter(x=>x.cacheReadComplete).map(x=>x.client));
-  rows.filter(x=>!x.cacheReadComplete).forEach(x=>complete.delete(x.client));
+
   function points(width:number, original:RecentUsagePoint[]) {
     const sums=new Map<number,RecentUsagePoint>(), unknown=new Set<number>();
     function add(t:number,tokens:number,calls:number,input:number,cached:number,output:number,known:boolean){
@@ -90,7 +92,15 @@ export function projectOriginalDashboard(codex:DashboardSnapshot, snapshot:Snaps
       old.tokens+=tokens;old.calls+=calls;old.inputTokens+=input;old.cachedInputTokens+=cached;old.outputTokens+=output;
       if(!known&&input>0)unknown.add(key);sums.set(key,old);
     }
-    if(includes)original.forEach(x=>add(x.startUnix,x.tokens,x.calls,x.inputTokens,x.cachedInputTokens,x.outputTokens,x.cacheHitRate!==null));
+    if(includes)original.forEach(x=>{
+      add(x.startUnix,x.tokens,x.calls,x.inputTokens,x.cachedInputTokens,x.outputTokens,x.cacheHitRate!==null);
+      const key=Math.floor(x.startUnix/width)*width, point=sums.get(key)!;
+      // Provider history remains a labeled overlay, never a sum of percentages.
+      point.fiveHourRemainingPercent=x.fiveHourRemainingPercent;
+      point.sevenDayRemainingPercent=x.sevenDayRemainingPercent;
+      point.fiveHourCycleId=x.fiveHourCycleId; point.sevenDayCycleId=x.sevenDayCycleId;
+      point.modelBreakdowns=[...(point.modelBreakdowns??[]),...(x.modelBreakdowns??[])];
+    });
     trend.forEach(x=>add(x.startUnix,x.inputTokens+x.outputTokens,x.requests,x.inputTokens,x.cacheReadTokens??0,x.outputTokens,complete.has(x.client)&&x.cacheReadTokens!==null));
     if(!sums.size)return [];
     const now=Math.max(Date.parse(codex.generatedAt)/1000,Date.parse(snapshot.updatedAt??codex.generatedAt)/1000);
@@ -104,6 +114,6 @@ export function projectOriginalDashboard(codex:DashboardSnapshot, snapshot:Snaps
   return {...codex,stats,activityDays,recentUsage24h:points(300,codex.recentUsage24h),recentUsage7d:points(3600,codex.recentUsage7d),recentUsage30d:points(21600,codex.recentUsage30d),
     cacheUsage:includes?codex.cacheUsage:{sessions:[],turns:[]},cacheHitRanking:includes?codex.cacheHitRanking:[],
     attributionIdentity:null,preciseRecentUsageFresh:true,
-    usageSummary:{...(codex.usageSummary??{}),totalTokens:stats.totalTokens,todayTokens,todayRequests:todayRows.reduce((n,x)=>n+x.requests,0),todayModelBreakdowns:[]},usageSummaryFresh:true,
+    usageSummary:{...(codex.usageSummary??{}),totalTokens:stats.totalTokens,todayTokens,todayRequests:(includes?codex.usageSummary?.todayRequests??0:0)+todayRows.reduce((n,x)=>n+x.requests,0),todayModelBreakdowns:[]},usageSummaryFresh:true,
     warnings:includes?codex.warnings:[]};
 }
