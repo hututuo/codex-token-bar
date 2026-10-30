@@ -28,6 +28,6 @@ test('compact curve is a bounded accessible detail trigger without nested button
  const {ActivitySpeedLivePlot}=await load('/src/multiClient/ActivitySpeedLivePlot.tsx');
  const html=renderToStaticMarkup(React.createElement(ActivitySpeedLivePlot,{rows:[row,{...row,client:'claudeCode'}],asOf:103,compact:true,onOpen:()=>{}}));
  assert.match(html,/aria-label="打开速度曲线详情"/);assert.equal((html.match(/<button/g)||[]).length,1);
- assert.match(html,/viewBox="0 0 108 50"/);assert.match(html,/clipPath/);
+ assert.match(html,/viewBox="0 0 74 50"/);assert.match(html,/clipPath/);
  assert.equal(renderToStaticMarkup(React.createElement(ActivitySpeedLivePlot,{rows:[],asOf:103,compact:true,onOpen:()=>{}})),'');
 }));

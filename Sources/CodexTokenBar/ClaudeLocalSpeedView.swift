@@ -16,21 +16,32 @@ struct ActivitySpeedSummaryView: View {
     let allowed: Set<String>
     var compact = false
     var onOpen: (() -> Void)? = nil
-    @ObservedObject private var history = ActivitySpeedHistoryController.shared
+    @ObservedObject private var history: ActivitySpeedHistoryController
     @ObservedObject private var palette = SpeedDisplayPreferences.shared
     @AppStorage(ActivitySpeedDisplayMode.key) private var modeRaw = ActivitySpeedDisplayMode.bar.rawValue
     @AppStorage(ActivityRateUnit.preferenceKey) private var unitRaw = ActivityRateUnit.tokens.rawValue
     @AppStorage(ActivityRateUnit.exchangeRateKey) private var exchangeRate = ActivityRateUnit.defaultExchangeRate
     @State private var selectedClient: String?
+    init(allowed: Set<String>, compact: Bool = false, onOpen: (() -> Void)? = nil,
+         history: ActivitySpeedHistoryController? = nil) {
+        self.allowed = allowed; self.compact = compact; self.onOpen = onOpen
+        _history = ObservedObject(wrappedValue: history ?? .shared)
+    }
     private var unit: ActivityRateUnit { ActivityRateUnit(rawValue: unitRaw) ?? .tokens }
     private var mode: ActivitySpeedDisplayMode { .normalized(modeRaw) }
     private func title(_ client: String) -> String { SpeedColorOverrides.clientTitle("client:" + client) }
     private func value(_ point: ActivityLivePoint) -> Double? { unit.value(total: point.rate, rates: point.rates, exchangeRate: exchangeRate) }
     var body: some View {
         if compact, let onOpen {
-            Button(action: onOpen) { content }.buttonStyle(.plain)
+            Button(action: onOpen) { compactContent }.buttonStyle(SidebarPulseButtonStyle())
                 .accessibilityLabel("打开速度曲线详情")
-        } else { content }
+        } else if compact { compactContent } else { content }
+    }
+    private var compactContent: some View {
+        // Match SidebarBodyMedianContent: a 74pt canvas centered in the 88pt rail.
+        content.frame(width: 74)
+            .padding(.horizontal, 5).padding(.vertical, 4)
+            .frame(width: 88).contentShape(Rectangle())
     }
     @ViewBuilder private var content: some View {
         let now = Date().timeIntervalSince1970
@@ -40,9 +51,9 @@ struct ActivitySpeedSummaryView: View {
         let ceiling = max(unit == .tokens ? 10 : 0.0001, (visible.flatMap { $0.points.compactMap(value) }.max() ?? 0)*1.12)
         if !compact || !rows.isEmpty {
         VStack(alignment: .leading, spacing: compact ? 4 : 8) {
-            HStack(spacing: 6) {
-                Text(compact ? "速度" : "活动速率").font(.system(size: compact ? 10 : 13, weight: .semibold))
-                Text("近3分钟").font(.system(size: 10)).foregroundStyle(.secondary)
+            HStack(spacing: compact ? 3 : 6) {
+                Text(compact ? "速度" : "活动速率").font(.system(size: compact ? 9 : 13, weight: .semibold))
+                Text("近3分钟").font(.system(size: compact ? 7 : 10)).foregroundStyle(.secondary)
                 Spacer(minLength: 0)
                 if !compact {
                     Text(mode.title).font(.system(size: 10)).foregroundStyle(.secondary)
@@ -74,7 +85,9 @@ struct ActivitySpeedSummaryView: View {
                     }
                 }
                 var clipped = context
-                clipped.clip(to:Path(CGRect(x:left,y:top-3,width:max(0,right-left),height:max(0,bottom-top+6))))
+                // Receipts are already bounded to the visible time window. Keep the
+                // full stroke caps inside the inset canvas instead of slicing them at x=left.
+                clipped.clip(to:Path(CGRect(x:0,y:top-3,width:size.width,height:max(0,bottom-top+6))))
                 for row in visible {
                     let color = ModelUsagePresentation.color(for:"client:"+row.client)
                     let points = row.points.map { ActivityLiveConnections.Point(x:$0.time, y:value($0) ?? .nan) }
@@ -102,7 +115,7 @@ struct ActivitySpeedSummaryView: View {
             }
             .accessibilityLabel("最近3分钟活动速率，原始读数连线")
             if !compact { Text("原始速度读数 · 移到曲线上查看").font(.system(size:10)).foregroundStyle(.secondary) }
-        }.frame(maxWidth: .infinity, alignment: .leading).clipped()
+        }.frame(maxWidth: .infinity, alignment: .leading)
     }
     }
     private func clientButton(_ text: String, client: String?, selection: String?) -> some View {

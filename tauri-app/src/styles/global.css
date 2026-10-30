@@ -13071,11 +13071,12 @@ details.session-management-banner {
 
 .analytics-source-note{font-size:11px;line-height:1.5;color:var(--muted);margin:-8px 0 0}
 
-.activity-live-open{display:block;width:100%;min-width:0;padding:0;border:0;background:transparent;color:inherit;text-align:left;cursor:pointer;overflow:hidden;border-radius:5px}
+.activity-live-open{display:flex;justify-content:center;width:100%;min-width:0;box-sizing:border-box;padding:4px 0;border:0;background:transparent;color:inherit;text-align:left;cursor:pointer;border-radius:5px}
 .activity-live-open:hover{background:rgb(255 255 255 / 4%)}
 .activity-live-open:active{transform:translateY(1px)}
 .activity-live-open:focus-visible{outline:1px solid #78b7ff;outline-offset:1px}
-.activity-live-chart.is-compact{width:100%;max-width:100%;min-width:0;overflow:hidden;box-sizing:border-box}
+.activity-live-chart.is-compact{width:74px;max-width:74px;min-width:0;flex:none;box-sizing:border-box;margin-inline:auto}
 .activity-live-chart.is-compact svg{height:50px;max-width:100%;cursor:pointer}
-.activity-live-chart.is-compact .activity-live-heading{white-space:nowrap;overflow:hidden}
+.activity-live-chart.is-compact .activity-live-heading{white-space:nowrap;font-size:7px;gap:3px}
+.activity-live-chart.is-compact .activity-live-heading strong{font-size:9px}
 .activity-live-client-label{font-size:8px;line-height:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted)}
