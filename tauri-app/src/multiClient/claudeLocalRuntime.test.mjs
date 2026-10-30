@@ -4,6 +4,16 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { withSsrModules } from "../test/ssrHarness.mjs";
 
+test("missing Claude task records are described in details without fabricating zero tasks", async () => {
+  await withSsrModules(async load => {
+    const { ClaudeLocalTasks } = await load("/src/multiClient/ClaudeLocalRuntime.tsx");
+    const html = renderToStaticMarkup(React.createElement(ClaudeLocalTasks, {allowed:["codex", "claudeCode"]}));
+    assert.match(html, /Claude · 暂无任务数据/);
+    assert.match(html, /未计入任务合计/);
+    assert.doesNotMatch(html, /0 主任务|0 子 Agent/);
+  });
+});
+
 test("Claude interval speed rejects backfilled timestamps and outliers", async () => {
   await withSsrModules(async load => {
     const { qualifiedClaudeInterval } = await load("/src/multiClient/ClaudeLocalRuntime.tsx");
