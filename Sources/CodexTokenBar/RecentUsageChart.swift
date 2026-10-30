@@ -1075,6 +1075,10 @@ struct RecentChartPreviewVisibilityState: Equatable {
         topDismissedGeneration = interactionGeneration
     }
 
+    mutating func revealTopPreview() {
+        topDismissedGeneration = nil
+    }
+
     mutating func dismissSelectionSummary() {
         selectionDismissedGeneration = interactionGeneration
     }
@@ -2113,8 +2117,11 @@ struct RecentUsageChart: View {
                     if let selection = consumptionSelection {
                         ChartSelectionSummaryBubble(
                             selection: selection,
+                            clientLabel: quotaCostSource == nil ? nil : "Codex",
                             onClose: dismissTopPreview,
-                            showsCost: pricingAvailable
+                            showsCost: pricingAvailable,
+                            showsFiveHourQuota: quotaEstimateVisibility.showsFiveHour,
+                            showsSevenDayQuota: quotaEstimateVisibility.showsSevenDay
                         )
                     }
                 } else {
@@ -2209,6 +2216,7 @@ struct RecentUsageChart: View {
         if previewVisibility.showsSelectionSummary, let consumptionSelection {
             RecentChartQuotaEstimateOverlay(
                 selection: consumptionSelection,
+                clientLabel: quotaCostSource == nil ? nil : "Codex",
                 attribution: attribution,
                 isSelectionFixed: consumptionSelectionState.fixedEndIndex != nil,
                 showsFiveHourQuota: quotaEstimateVisibility.showsFiveHour,
@@ -2216,7 +2224,8 @@ struct RecentUsageChart: View {
                 currentFiveHourQuotaPresent: currentFiveHourQuotaPresent,
                 currentSevenDayQuotaPresent: currentSevenDayQuotaPresent,
                 attributionEventsComplete: attributionEventsComplete,
-                onClose: dismissSelectionSummary
+                onClose: dismissSelectionSummary,
+                onRevealPreview: { previewVisibility.revealTopPreview() }
             )
             .frame(maxWidth: .infinity, alignment: .leading)
         } else if let consumptionSelectionInvalidationMessage {

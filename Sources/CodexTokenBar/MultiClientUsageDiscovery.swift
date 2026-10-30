@@ -90,8 +90,8 @@ enum MultiClientUsageDiscovery {
         var truncated = false
         for root in roots {
             guard remainingEntries > 0,
-                  seenRoots.insert(root.standardizedFileURL.path).inserted,
-                  isDirectoryNonSymlink(root)
+                  seenRoots.insert(root.resolvingSymlinksInPath().standardizedFileURL.path).inserted,
+                  isDirectoryNonSymlink(root.resolvingSymlinksInPath())
             else { continue }
             let entryBudget = remainingEntries
             let result = walk(root: root, client: client, entryBudget: entryBudget)
@@ -119,9 +119,12 @@ enum MultiClientUsageDiscovery {
         entryBudget: Int
     ) -> (files: [Candidate], visitedEntries: Int, truncated: Bool) {
         guard entryBudget > 0 else { return ([], 0, true) }
-        guard isDirectoryNonSymlink(root) else { return ([], 0, false) }
+        // Follow the selected root only. Keep logical paths for source/checkpoint identity;
+        // child links remain excluded by fileKind and the directory enumerator.
+        let physicalRoot = root.resolvingSymlinksInPath()
+        guard isDirectoryNonSymlink(physicalRoot) else { return ([], 0, false) }
         let fileManager = FileManager.default
-        guard let enumerator = fileManager.enumerator(atPath: root.path) else { return ([], 0, true) }
+        guard let enumerator = fileManager.enumerator(atPath: physicalRoot.path) else { return ([], 0, true) }
         var visitedEntries = 0
         var files: [Candidate] = []
 

@@ -653,6 +653,8 @@ enum QuotaConsumptionPriceCard: Equatable {
 
 struct QuotaConsumptionEstimate: Equatable {
     let selectedCostUSD: Double
+    /// Amount used in the quota calculation; it may cover a smaller interval than the selection.
+    let comparisonCostUSD: Double
     let impliedWindowBudgetUSD: Double?
     let quotaDropPercent: Double
     let quotaDropBasis: QuotaConsumptionDropBasis
@@ -678,6 +680,7 @@ struct QuotaConsumptionEstimate: Equatable {
 
     init(
         selectedCostUSD: Double,
+        comparisonCostUSD: Double? = nil,
         impliedWindowBudgetUSD: Double?,
         quotaDropPercent: Double,
         quotaDropObserved: Bool = true,
@@ -697,6 +700,7 @@ struct QuotaConsumptionEstimate: Equatable {
         excludedCalls: Int = 0
     ) {
         self.selectedCostUSD = selectedCostUSD
+        self.comparisonCostUSD = comparisonCostUSD ?? selectedCostUSD
         self.impliedWindowBudgetUSD = impliedWindowBudgetUSD
         self.quotaDropPercent = quotaDropPercent
         self.quotaDropBasis = quotaDropBasis
@@ -783,6 +787,7 @@ enum QuotaConsumptionEstimator {
 
         return QuotaConsumptionEstimate(
             selectedCostUSD: selectedCost,
+            comparisonCostUSD: comparableCost,
             impliedWindowBudgetUSD: impliedBudget,
             quotaDropPercent: drop,
             quotaDropBasis: resolvedBasis,

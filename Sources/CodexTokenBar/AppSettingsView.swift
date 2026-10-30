@@ -111,6 +111,8 @@ enum AppSettingsRouteRequest {
 }
 
 struct AppSettingsView: View {
+    @AppStorage("recentChartInteractionGuideHidden") private var chartGuideHidden = false
+    @AppStorage("recentChartInteractionGuideDismissed") private var chartGuideDismissed = false
     @AppStorage(QuotaHistoryFilterSettings.enabledKey) private var filterQuotaHistoryAnomalies = true
     @AppStorage(QuotaSidebarSettings.enabledKey) private var quotaSidebarEnabled = false
     @AppStorage(QuotaSidebarSettings.edgeKey) private var quotaSidebarEdgeRaw = QuotaSidebarEdge.right.rawValue
@@ -519,6 +521,18 @@ struct AppSettingsView: View {
                     display: InterfaceScaleSettings.displayValue(interfaceScaleManualMultiplier),
                     disabled: interfaceScaleAutoEnabled
                 )
+            }
+            settingsSection(title: "图表使用引导", subtitle: "重新显示已关闭的鼠标预览与选区演示") {
+                settingsActionRow(
+                    "图表怎么用",
+                    systemImage: "cursorarrow.motionlines.click",
+                    detail: "重新打开后，可随时收起或关闭。",
+                    buttonTitle: "重新显示引导",
+                    buttonSystemImage: "arrow.counterclockwise"
+                ) {
+                    chartGuideDismissed = false
+                    chartGuideHidden = false
+                }
             }
         }
     }

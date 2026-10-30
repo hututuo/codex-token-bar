@@ -3,57 +3,77 @@ import SwiftUI
 /// A small, isolated animation: no data reads, sampling, or dashboard timer.
 struct RecentChartInteractionGuide: View {
     @AppStorage("recentChartInteractionGuideDismissed") private var dismissed = false
+    @AppStorage("recentChartInteractionGuideHidden") private var hidden = false
     @State private var manuallyExpanded = false
     private var expanded: Bool { !dismissed || manuallyExpanded }
     @State private var visible = false
     @State private var lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Button {
-                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
-                    if expanded {
-                        dismissed = true
+        if !hidden {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Button {
+                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+                            if expanded {
+                                dismissed = true
+                                manuallyExpanded = false
+                            } else {
+                                manuallyExpanded = true
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 7) {
+                            Image(systemName: "cursorarrow.motionlines.click")
+                            Text("图表怎么用").fontWeight(.semibold)
+                            Spacer()
+                            Text(expanded ? "知道了，收起" : "展开演示").font(.system(size: 11))
+                            Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.system(size: 10, weight: .bold))
+                        }.font(.system(size: 14)).foregroundStyle(AppTheme.accentBlue).contentShape(Rectangle())
+                    }.buttonStyle(ChartGuidePressStyle()).accessibilityValue(expanded ? "已展开" : "已收起")
+                    Button {
+                        visible = false
                         manuallyExpanded = false
-                    } else {
-                        manuallyExpanded = true
+                        hidden = true
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(AppTheme.accentBlue.opacity(0.8))
+                            .frame(width: 26, height: 26)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(ChartGuidePressStyle())
+                    .accessibilityLabel("关闭图表使用引导")
+                    .help("关闭引导，可在总体设置中重新打开")
+                }
+                if expanded {
+                    HStack(spacing: 20) {
+                        Group {
+                            if !AnimationActivity.runs(visible: visible, reducedMotion: reduceMotion, lowPower: lowPower) { RecentChartGuideDemo(step: .result) }
+                            else {
+                                PhaseAnimator(RecentChartGuideStep.allCases) { step in
+                                    RecentChartGuideDemo(step: step)
+                                } animation: { step in .easeInOut(duration: step.duration) }
+                            }
+                        }.frame(width: 220, height: 108).accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("移上去预览：鼠标移到图上，查看当前点的时间和用量。")
+                                .font(.system(size: 13, weight: .medium)).fixedSize(horizontal: false, vertical: true)
+                            Text("点选计算：点一下定起点，移动选择区间，再点一下定终点，弹出用量与反推额度；再点可重选。")
+                                .font(.system(size: 13, weight: .medium)).fixedSize(horizontal: false, vertical: true)
+                        }.foregroundStyle(AppTheme.textPrimary).frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
-            } label: {
-                HStack(spacing: 7) {
-                    Image(systemName: "cursorarrow.motionlines.click")
-                    Text("图表怎么用").fontWeight(.semibold)
-                    Spacer()
-                    Text(expanded ? "知道了，收起" : "展开演示").font(.system(size: 11))
-                    Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.system(size: 10, weight: .bold))
-                }.font(.system(size: 14)).foregroundStyle(AppTheme.accentBlue).contentShape(Rectangle())
-            }.buttonStyle(ChartGuidePressStyle()).accessibilityValue(expanded ? "已展开" : "已收起")
-            if expanded {
-                HStack(spacing: 20) {
-                    Group {
-                        if !AnimationActivity.runs(visible: visible, reducedMotion: reduceMotion, lowPower: lowPower) { RecentChartGuideDemo(step: .result) }
-                        else {
-                            PhaseAnimator(RecentChartGuideStep.allCases) { step in
-                                RecentChartGuideDemo(step: step)
-                            } animation: { step in .easeInOut(duration: step.duration) }
-                        }
-                    }.frame(width: 220, height: 108).accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("移上去预览：鼠标移到图上，查看当前点的时间和用量。")
-                            .font(.system(size: 13, weight: .medium)).fixedSize(horizontal: false, vertical: true)
-                        Text("点选计算：点一下定起点，移动选择区间，再点一下定终点，弹出用量与反推额度；再点可重选。")
-                            .font(.system(size: 13, weight: .medium)).fixedSize(horizontal: false, vertical: true)
-                    }.foregroundStyle(AppTheme.textPrimary).frame(maxWidth: .infinity, alignment: .leading)
-                }
             }
+            .background(AnimationVisibilityProbe(pausesDuringScroll: true) { if visible != $0 { visible = $0 } })
+            .onAppear { lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled }
+            .onReceive(NotificationCenter.default.publisher(for: .NSProcessInfoPowerStateDidChange)) { _ in
+                lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+            }
+            .padding(12)
+                .background(AppTheme.accentBlue.opacity(0.055), in: RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(AppTheme.accentBlue.opacity(0.2), lineWidth: 1))
         }
-        .background(AnimationVisibilityProbe(pausesDuringScroll: true) { if visible != $0 { visible = $0 } })
-        .onReceive(NotificationCenter.default.publisher(for: .NSProcessInfoPowerStateDidChange)) { _ in
-            lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
-        }
-        .padding(12)
-            .background(AppTheme.accentBlue.opacity(0.055), in: RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(AppTheme.accentBlue.opacity(0.2), lineWidth: 1))
     }
 }
 

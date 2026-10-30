@@ -4,6 +4,18 @@ import XCTest
 @testable import CodexTokenBar
 
 final class RecentChartSelectionInteractionTests: XCTestCase {
+    func testRevealingTopPreviewDoesNotChangeSelectionOrLowerCardDismissal() {
+        var preview = RecentChartPreviewVisibilityState()
+        preview.beginInteraction()
+        preview.dismissTopPreview()
+        preview.dismissSelectionSummary()
+        let generation = preview.interactionGeneration
+        preview.revealTopPreview()
+        XCTAssertTrue(preview.showsTopPreview)
+        XCTAssertFalse(preview.showsSelectionSummary)
+        XCTAssertEqual(preview.interactionGeneration, generation)
+    }
+
     func testGuideCursorFollowsEveryActualPolylineVertexAndIntermediateSegment() {
         for point in RecentChartGuideGeometry.curve { XCTAssertEqual(RecentChartGuideGeometry.point(at: point.x), point) }
         XCTAssertEqual(RecentChartGuideGeometry.point(at: 80), CGPoint(x: 80, y: 61.5))

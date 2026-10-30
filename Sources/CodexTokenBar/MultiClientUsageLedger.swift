@@ -530,7 +530,7 @@ final class MultiClientUsageLedger: @unchecked Sendable {
 
         var totals: [ClientPriceKey: ClientPriceTally] = [:]
         try connection.forEachRow("""
-        SELECT client,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens
+        SELECT client,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,timestamp
         FROM client_usage_events WHERE timestamp >= ?
         """, bindings: [.date(since ?? Date(timeIntervalSince1970: 0))]) { row in
             guard let client = UsageClient(rawValue: row.text(0) ?? "") else { return }
@@ -541,7 +541,8 @@ final class MultiClientUsageLedger: @unchecked Sendable {
                 input: row.int64(2) ?? 0,
                 output: row.int64(3) ?? 0,
                 cacheRead: row.int64(4),
-                cacheWrite: row.int64(5)
+                cacheWrite: row.int64(5),
+                timestamp: row.double(6)
             )
             var tally = totals[key] ?? ClientPriceTally(knownCostMicroUSD: nil)
             tally.add(cost)
@@ -555,7 +556,8 @@ final class MultiClientUsageLedger: @unchecked Sendable {
         input: Int64,
         output: Int64,
         cacheRead: Int64?,
-        cacheWrite: Int64?
+        cacheWrite: Int64?,
+        timestamp: Double? = nil
     ) -> Int64? {
         var identifier = rawModel.split(separator: "/", omittingEmptySubsequences: false).last.map(String.init)?
             .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
@@ -570,21 +572,19 @@ final class MultiClientUsageLedger: @unchecked Sendable {
         }
         guard case .unique(let priceModel)? = entry else { return nil }
         if priceModel.isFree { return 0 }
-        guard priceModel.periods.isEmpty,
-              let standardPricing = priceModel.pricing,
-              standardPricing.offPeak == nil else { return nil }
-
-        let pricing: TieredPrices
-        if explicitFast {
-            guard let fastPricing = priceModel.fast else { return nil }
-            pricing = fastPricing
-        } else {
-            pricing = standardPricing.base
+        let endMs = timestamp.flatMap { value -> Int64? in
+            guard value.isFinite, abs(value) < Double(Int64.max) / 1_000 - 1 else { return nil }
+            return Int64((value * 1_000).rounded(.down))
         }
+        let timeDependent = !priceModel.periods.isEmpty || priceModel.pricing?.offPeak != nil
+        guard !timeDependent || explicitFast || endMs != nil,
+              let pricing = priceModel.pricing(endMs: endMs, fast: explicitFast) else { return nil }
 
         let rates = pricing.select(inputTokens: input).prices
+        let resolvedCacheWrite: Int64? = cacheWrite
+            ?? (rates.cacheWrite == rates.input && rates.cacheWrite1h == rates.input ? 0 : nil)
         guard input >= 0, output >= 0,
-              let cacheRead, let cacheWrite,
+              let cacheRead, let cacheWrite = resolvedCacheWrite,
               cacheRead >= 0, cacheWrite >= 0,
               cacheRead <= input, cacheWrite <= input - cacheRead,
               cacheWrite == 0 || rates.cacheWrite == rates.cacheWrite1h else { return nil }

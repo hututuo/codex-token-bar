@@ -1,4 +1,6 @@
 import { RecentChartInteractionGuide } from "./recentUsageChart/InteractionGuide";
+import { EMPTY_QUOTA_SELECTION, clickQuotaSelectionAnchor, quotaSelectionIndices,
+  type QuotaSelectionAnchors } from "./recentUsageChart/selectionAnchors";
 import {
   useEffect,
   useLayoutEffect,
@@ -17,7 +19,6 @@ import {
 } from "../settings/quotaPriceModel";
 import {
   activeQuotaSelectionEndIndex,
-  clickQuotaSelection,
   clampQuotaSelection,
   DEFAULT_SERIES_VISIBILITY,
   hoverIndexForX,
@@ -50,7 +51,6 @@ import {
   type QuotaConsumptionEstimate,
   type QuotaConsumptionSelection,
   type QuotaSelectionAttributionResult,
-  type QuotaSelectionState,
   type Point,
   type RecentChartScrollDirection,
   type RecentChartRange,
@@ -122,7 +122,8 @@ export function RecentUsageChart({
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const [previewDismissed, setPreviewDismissed] = useState(false);
   const [quotaModel, setQuotaModel] = useState<OfficialAPIPriceModel>(() => readStoredQuotaModel());
-  const [quotaSelectionState, setQuotaSelectionState] = useState<QuotaSelectionState>({ startIndex: null, fixedEndIndex: null });
+  const [selectionAnchors, setSelectionAnchors] = useState<QuotaSelectionAnchors>(EMPTY_QUOTA_SELECTION);
+  const [selectionNotice, setSelectionNotice] = useState<string | null>(null);
   const interactionRootRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -154,6 +155,14 @@ export function RecentUsageChart({
       : data.bucketSeconds === 3600 ? quotaCostSeries.recentUsage7d : quotaCostSeries.recentUsage30d;
     return {...data, points: alignProviderPoints(data.points, original)};
   }, [data, quotaCostSeries]);
+  const quotaSelectionState = useMemo(() => quotaSelectionIndices(selectionAnchors, data), [selectionAnchors, data]);
+  useEffect(() => {
+    if (selectionAnchors.startUnix !== null && quotaSelectionState.startIndex === null) {
+      setSelectionAnchors(EMPTY_QUOTA_SELECTION);
+      setHoveredIndex(null);
+      setSelectionNotice("所选时间段已不在当前数据范围，请重新选择。");
+    }
+  }, [selectionAnchors, quotaSelectionState.startIndex]);
   const bucketCostCache = useMemo(
     () => new Map<RecentUsagePoint[], number[]>(),
     [preparedDataCache, quotaModel, quotaCostSeries],
@@ -411,11 +420,7 @@ export function RecentUsageChart({
       if (!interactionRoot || !(target instanceof Node) || interactionRoot.contains(target)) return;
       setHoveredIndex(null);
       setPreviewDismissed(false);
-      setQuotaSelectionState((current) => (
-        current.startIndex === null && current.fixedEndIndex === null
-          ? current
-          : { startIndex: null, fixedEndIndex: null }
-      ));
+      setSelectionAnchors(EMPTY_QUOTA_SELECTION);
     };
     document.addEventListener("pointerdown", clearForOutsidePointer);
     return () => document.removeEventListener("pointerdown", clearForOutsidePointer);
@@ -443,9 +448,10 @@ export function RecentUsageChart({
     // render cannot use an offset belonging to the previous range's geometry.
     setChartScrollLeft(nextLayout.latestScrollLeft);
     setRange(next);
+    setSelectionNotice(null);
     setHoveredIndex(null);
     setPreviewDismissed(false);
-    setQuotaSelectionState({ startIndex: null, fixedEndIndex: null });
+    setSelectionAnchors(EMPTY_QUOTA_SELECTION);
     window.localStorage.setItem(RANGE_STORAGE_KEY, next);
   }
 
@@ -489,9 +495,10 @@ export function RecentUsageChart({
     if (clickedIndex === null) {
       return;
     }
+    setSelectionNotice(null);
     setPreviewDismissed(false);
     setHoveredIndex(clickedIndex);
-    setQuotaSelectionState((current) => clickQuotaSelection(current, clickedIndex, data.points.length));
+    setSelectionAnchors((current) => clickQuotaSelectionAnchor(current, clickedIndex, data));
   }
 
   function scrollChart(direction: RecentChartScrollDirection) {
@@ -556,6 +563,7 @@ export function RecentUsageChart({
 
   return (
     <div id="recent-usage-chart" ref={interactionRootRef} className="recent-chart-composition">
+      {selectionNotice ? <p className="quota-estimate-scope-note" role="status">{selectionNotice}</p> : null}
       <section className="chart-section" aria-label={data.title}>
         <div className="recent-chart-head">
           <div className="recent-chart-title">
@@ -750,6 +758,9 @@ export function RecentUsageChart({
           ) : null}
           {!previewDismissed && fixedSelectionEndIndex !== null && consumptionSelection ? (
             <SelectionSummaryBubble
+              clientLabel={quotaCostSeries ? "Codex" : undefined}
+              showsFiveHourQuota={quotaEstimateVisibility.fiveHour}
+              showsSevenDayQuota={quotaEstimateVisibility.sevenDay}
               pricingAvailable={pricingAvailable}
               onClose={() => setPreviewDismissed(true)}
               selection={consumptionSelection}
@@ -801,13 +812,15 @@ export function RecentUsageChart({
       </section>
       {consumptionSelection ? (
         <RecentChartQuotaEstimateOverlay
+          clientLabel={quotaCostSeries ? "Codex" : undefined}
           currentFiveHourQuotaPresent={fiveHourQuotaPresent}
           currentSevenDayQuotaPresent={sevenDayQuotaPresent}
           showsFiveHourQuota={quotaEstimateVisibility.fiveHour}
           selection={consumptionSelection}
           attribution={selectionAttribution}
           showsSevenDayQuota={quotaEstimateVisibility.sevenDay}
-          onClose={() => setQuotaSelectionState({ startIndex: null, fixedEndIndex: null })}
+          onClose={() => setSelectionAnchors(EMPTY_QUOTA_SELECTION)}
+          onRevealPreview={fixedSelectionEndIndex === null ? undefined : () => setPreviewDismissed(false)}
         />
       ) : null}
     </div>
@@ -952,12 +965,18 @@ function HoverBubble({
 }
 
 function SelectionSummaryBubble({
+  clientLabel,
+  showsFiveHourQuota,
+  showsSevenDayQuota,
   pricingAvailable = true,
   onClose,
   selection,
   viewportWidth,
   x,
 }: {
+  clientLabel?: string;
+  showsFiveHourQuota: boolean;
+  showsSevenDayQuota: boolean;
   pricingAvailable?: boolean;
   onClose: () => void;
   selection: QuotaConsumptionSelection;
@@ -970,13 +989,13 @@ function SelectionSummaryBubble({
   return (
     <div ref={bubbleRef} className="chart-hover-bubble chart-selection-summary-bubble" style={{ left: `${left}px` }}>
       <div className="chart-hover-heading">
-        <strong>选中区间</strong>
+        <strong>{clientLabel ? `${clientLabel} 选中区间` : "选中区间"}</strong>
         <span>{timeRange(selection.startUnix, selection.endUnix - selection.startUnix)}</span>
         <PreviewCloseButton ariaLabel="关闭选中区间预览" onClose={onClose} />
       </div>
       <b>{formatTokens(selection.totalTokens)}</b>
       <span className="chart-hover-row">请求 {selection.calls} 次 · avg {formatTokens(average)}</span>
-      <span className="chart-hover-row chart-hover-row--cost">金额 {pricingAvailable ? moneyText(selection.selectedCostUSD) : "未接入"}</span>
+      <span className="chart-hover-row chart-hover-row--cost">{selection.unpricedModels.length > 0 ? "已知价格小计" : "金额"} {pricingAvailable ? moneyText(selection.selectedCostUSD) : "未接入"}</span>
       {selection.calls > 0 ? (
         <em className="chart-hover-row chart-hover-row--cache">
           缓存命中 {percentText(selection.cacheHitRate)} · 命中 {formatTokens(selection.cachedInputTokens)}
@@ -984,6 +1003,7 @@ function SelectionSummaryBubble({
       ) : null}
       <ModelUsageInline rows={selection.modelBreakdowns} />
       <span className="chart-hover-row">{quotaSelectionDurationText(selection)}</span>
+      {pricingAvailable ? <QuotaComparisonRows selection={selection} showsFiveHourQuota={showsFiveHourQuota} showsSevenDayQuota={showsSevenDayQuota} /> : null}
     </div>
   );
 }
@@ -1032,6 +1052,7 @@ function ModelUsageInline({
 }
 
 function RecentChartQuotaEstimateOverlay({
+  clientLabel,
   attribution,
   currentFiveHourQuotaPresent,
   currentSevenDayQuotaPresent,
@@ -1039,7 +1060,9 @@ function RecentChartQuotaEstimateOverlay({
   selection,
   showsSevenDayQuota,
   onClose,
+  onRevealPreview,
 }: {
+  clientLabel?: string;
   attribution: QuotaSelectionAttributionResult | null;
   currentFiveHourQuotaPresent: boolean;
   currentSevenDayQuotaPresent: boolean;
@@ -1047,6 +1070,7 @@ function RecentChartQuotaEstimateOverlay({
   selection: QuotaConsumptionSelection;
   showsSevenDayQuota: boolean;
   onClose: () => void;
+  onRevealPreview?: () => void;
 }) {
   const pricesIncomplete = (selection.unpricedModels?.length ?? 0) > 0;
   const showsBudgetRatio = !pricesIncomplete && showsFiveHourQuota
@@ -1062,7 +1086,7 @@ function RecentChartQuotaEstimateOverlay({
     <div className="chart-quota-estimate-card" role="dialog" aria-label="额度估算">
       <div className="quota-estimate-main">
         <div className="quota-estimate-row">
-          <span>{pricesIncomplete ? "已知价格小计" : "本段消耗"}</span>
+          <span>{clientLabel ? `${clientLabel} · ` : ""}{pricesIncomplete ? "已知价格小计" : "本段消耗"}</span>
           <strong>{moneyText(selection.selectedCostUSD)}</strong>
           <b>{quotaSelectionDurationText(selection)}</b>
           <em>{timeRange(selection.startUnix, selection.endUnix - selection.startUnix)}</em>
@@ -1097,6 +1121,10 @@ function RecentChartQuotaEstimateOverlay({
         {comparisonScopeText ? (
           <div className="quota-estimate-scope-note">{comparisonScopeText}</div>
         ) : null}
+        <div className="quota-estimate-row quota-estimate-usage" aria-label="选区用量">
+          <span>Token {formatTokens(selection.totalTokens)} · 请求 {selection.calls} 次</span>
+        </div>
+        {!pricesIncomplete ? <QuotaComparisonRows selection={selection} showsFiveHourQuota={showsFiveHourQuota} showsSevenDayQuota={showsSevenDayQuota} /> : null}
         {showsBudgetRatio ? (
           <div className="quota-estimate-row">
             <span>倍率</span>
@@ -1108,6 +1136,7 @@ function RecentChartQuotaEstimateOverlay({
           </div>
         ) : null}
         {attribution ? <QuotaSelectionAttributionRow attribution={attribution} /> : null}
+        {onRevealPreview ? <button className="quota-selection-reveal" onClick={onRevealPreview} type="button">显示区间气泡</button> : null}
       </div>
       <button aria-label="关闭额度估算" onClick={onClose} type="button">×</button>
     </div>
@@ -1115,45 +1144,35 @@ function RecentChartQuotaEstimateOverlay({
 }
 
 function QuotaSelectionAttributionRow({ attribution }: { attribution: QuotaSelectionAttributionResult }) {
-  if ((attribution.unpricedModels?.length ?? 0) > 0) {
-    return <div className="quota-estimate-row quota-estimate-attribution-detail" aria-label="未知价格说明">
-      <span>已知价格小计 {moneyText(attribution.localCurrentAPIEquivalentUSD)}</span>
-      <em>{attribution.unpricedModels.join("、")} 价格未知，暂不判断共享差额</em>
-    </div>;
-  }
-  const accountTitle = attribution.accountDropPercent === null ? "账号下降" : "账号实降";
-  const differenceTitle = attribution.state === "suspectedNonLocalUsage"
-    ? "疑似他人"
-    : attribution.state === "localEstimateExceedsAccountDrop"
-      ? "本机估高"
-      : attribution.allowsAttributionConclusion ? "差额" : "暂算差额";
-  const difference = attribution.nonLocalDifferencePercent;
+  const accountTitle = "7d 额度下降";
   return (
-    <>
-      <div className="quota-estimate-row quota-estimate-attribution" aria-label="选区共享账号归因">
-        <span>{accountTitle}</span>
-        <strong>{oneDecimalPercent(attribution.accountDropPercent)}</strong>
-        <i aria-hidden="true">｜</i>
-        <span>本机折算</span>
-        <strong>{attribution.localSharePercent === null ? "--" : `≈${oneDecimalPercent(attribution.localSharePercent)}`}</strong>
-        <i aria-hidden="true">｜</i>
-        <span>{differenceTitle}</span>
-        <strong>{attribution.allowsAttributionConclusion && difference !== null
-          ? `≈${signedOneDecimalPercent(difference)}`
-          : signedOneDecimalPercent(difference)}</strong>
-      </div>
-      <div className="quota-estimate-row quota-estimate-attribution-detail" aria-label="选区本机 API 等价金额">
-        <span>本机同基准 {moneyText(attribution.localComparableCostUSD)}</span>
-        <em>当前 API {moneyText(attribution.localCurrentAPIEquivalentUSD)}</em>
-      </div>
-      {attribution.excludedModels.length > 0 ? (
-        <div className="quota-estimate-row quota-estimate-attribution-detail" aria-label="不计入费用说明">
-          <span>{attribution.excludedModels.join("、")} {attribution.excludedCalls} 次调用</span>
-          <em>免费检查或独立额度，不计入费用</em>
-        </div>
-      ) : null}
-    </>
+    <div className="quota-estimate-row quota-estimate-attribution" aria-label="选区账号额度变化">
+      <span>{accountTitle}</span>
+      <strong>{oneDecimalPercent(attribution.accountDropPercent)}</strong>
+    </div>
   );
+}
+
+/** The bubble and lower card render the same actual comparison interval and numerator. */
+function QuotaComparisonRows({ selection, showsFiveHourQuota, showsSevenDayQuota }: {
+  selection: QuotaConsumptionSelection;
+  showsFiveHourQuota: boolean;
+  showsSevenDayQuota: boolean;
+}) {
+  const windows = [
+    { title: "5h", visible: showsFiveHourQuota, estimate: selection.fiveHour },
+    { title: "7d", visible: showsSevenDayQuota, estimate: selection.sevenDay },
+  ].filter(({ visible, estimate }) => visible && estimate.quotaDropAvailable
+    && estimate.comparisonStartUnix !== null && estimate.comparisonEndUnix !== null
+    && estimate.unpricedModels.length === 0);
+  if (windows.length === 0) return null;
+  return <div className="quota-comparison-rows" aria-label="额度反推可比区间">
+    {windows.map(({ title, estimate }) => <span key={title}>
+      {title} 反推使用 {timeRange(estimate.comparisonStartUnix!, estimate.comparisonEndUnix! - estimate.comparisonStartUnix!)}
+      {" · "}{moneyText(estimate.comparisonCostUSD)} ÷ {oneDecimalPercent(estimate.quotaDropPercent)}
+      {estimate.impliedWindowBudgetUSD === null ? "（下降不足，暂不反推）" : ` ≈ ${moneyText(estimate.impliedWindowBudgetUSD)}`}
+    </span>)}
+  </div>;
 }
 
 function QuotaEstimateChip({
@@ -1352,16 +1371,10 @@ function oneDecimalPercent(value: number | null): string {
   return Number.isInteger(value) ? `${value}%` : `${value.toFixed(1)}%`;
 }
 
-function signedOneDecimalPercent(value: number | null): string {
-  if (value === null || !Number.isFinite(value)) return "--";
-  const sign = value >= 0 ? "+" : "";
-  return `${sign}${oneDecimalPercent(value)}`;
-}
-
 function timeRange(startUnix: number, bucketSeconds: number): string {
   const start = new Date(startUnix * 1_000);
   const end = new Date((startUnix + bucketSeconds) * 1_000);
-  if (bucketSeconds <= 60 * 60 && start.toDateString() === end.toDateString()) {
+  if (start.toDateString() === end.toDateString()) {
     return `${formatHourMinute(startUnix)} - ${formatHourMinute(startUnix + bucketSeconds)}`;
   }
   return `${formatMonthDayHour(startUnix)} - ${formatMonthDayHour(startUnix + bucketSeconds)}`;

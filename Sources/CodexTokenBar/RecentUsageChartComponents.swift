@@ -208,6 +208,7 @@ struct RecentChartSelectionInvalidationBanner: View {
 
 struct RecentChartQuotaEstimateOverlay: View {
     let selection: QuotaConsumptionSelection
+    let clientLabel: String?
     let attribution: QuotaSelectionAttributionResult?
     let isSelectionFixed: Bool
     let showsFiveHourQuota: Bool
@@ -216,10 +217,12 @@ struct RecentChartQuotaEstimateOverlay: View {
     let currentSevenDayQuotaPresent: Bool
     let attributionEventsComplete: Bool
     let onClose: () -> Void
+    let onRevealPreview: () -> Void
     @State private var detailSnapshot: QuotaConsumptionSelectionDetailSnapshot?
 
     init(
         selection: QuotaConsumptionSelection,
+        clientLabel: String? = nil,
         attribution: QuotaSelectionAttributionResult?,
         isSelectionFixed: Bool,
         showsFiveHourQuota: Bool,
@@ -227,9 +230,11 @@ struct RecentChartQuotaEstimateOverlay: View {
         currentFiveHourQuotaPresent: Bool,
         currentSevenDayQuotaPresent: Bool,
         attributionEventsComplete: Bool = true,
-        onClose: @escaping () -> Void = {}
+        onClose: @escaping () -> Void = {},
+        onRevealPreview: @escaping () -> Void = {}
     ) {
         self.selection = selection
+        self.clientLabel = clientLabel
         self.attribution = attribution
         self.isSelectionFixed = isSelectionFixed
         self.showsFiveHourQuota = showsFiveHourQuota
@@ -238,6 +243,7 @@ struct RecentChartQuotaEstimateOverlay: View {
         self.currentSevenDayQuotaPresent = currentSevenDayQuotaPresent
         self.attributionEventsComplete = attributionEventsComplete
         self.onClose = onClose
+        self.onRevealPreview = onRevealPreview
     }
 
     var body: some View {
@@ -254,7 +260,7 @@ struct RecentChartQuotaEstimateOverlay: View {
             HStack(alignment: .top, spacing: 8) {
                 VStack(alignment: .leading, spacing: 7) {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(presentation.costTitle)
+                        Text(clientLabel.map { "\($0) · \(presentation.costTitle)" } ?? presentation.costTitle)
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(.secondary)
                         Text(presentation.costText)
@@ -295,6 +301,15 @@ struct RecentChartQuotaEstimateOverlay: View {
                             .lineLimit(nil)
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
+                    Text("Token \(selection.breakdown.totalTokens.abbreviatedTokens) · 请求 \(selection.breakdown.calls) 次")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    if !hasUnknownPrices {
+                        QuotaComparisonIntervalRows(selection: selection,
+                            showsFiveHourQuota: showsFiveHourQuota,
+                            showsSevenDayQuota: showsSevenDayQuota)
                     }
 
                     if presentation.showsBudgetRatio && !hasUnknownPrices {
@@ -367,6 +382,10 @@ struct RecentChartQuotaEstimateOverlay: View {
                 Spacer(minLength: 6)
 
                 if isSelectionFixed {
+                    Button("显示区间气泡", action: onRevealPreview)
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .buttonStyle(.plain)
+                        .foregroundStyle(AppTheme.accentBlue)
                     Button(action: showDetails) {
                         Label("查看详情", systemImage: "chevron.right")
                             .font(.system(size: 9.5, weight: .semibold))
@@ -448,18 +467,10 @@ private struct QuotaSelectionAttributionSummaryRow: View {
     var body: some View {
         HStack(spacing: 6) {
             compactMetric(presentation.accountTitle, presentation.accountText, color: AppTheme.accentBlue)
-            Text("｜").foregroundStyle(.tertiary)
-            compactMetric(presentation.localTitle, presentation.localText, color: AppTheme.accentGreen)
-            Text("｜").foregroundStyle(.tertiary)
-            compactMetric(
-                presentation.differenceTitle,
-                presentation.differenceText,
-                color: result.state == .withinTolerance ? AppTheme.accentGreen : AppTheme.accentAmber
-            )
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("选区共享账号归因")
-        .accessibilityValue(presentation.accessibilityValue)
+        .accessibilityLabel("选区账号额度变化")
+        .accessibilityValue("\(presentation.accountTitle) \(presentation.accountText)")
     }
 
     private func compactMetric(_ title: String, _ value: String, color: Color) -> some View {
@@ -1063,26 +1074,60 @@ struct ChartHoverBubble: View {
     }
 }
 
+/// Both summaries use the same interval, actual cost numerator and quota movement.
+private struct QuotaComparisonIntervalRows: View {
+    let selection: QuotaConsumptionSelection
+    let showsFiveHourQuota: Bool
+    let showsSevenDayQuota: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            if showsFiveHourQuota { row("5h", estimate: selection.fiveHour) }
+            if showsSevenDayQuota { row("7d", estimate: selection.sevenDay) }
+        }
+        .font(.system(size: 10))
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityLabel("额度反推可比区间")
+    }
+
+    @ViewBuilder
+    private func row(_ title: String, estimate: QuotaConsumptionEstimate) -> some View {
+        if let text = estimate.quotaEstimatorComparisonText(title: title) {
+            Text(text)
+        }
+    }
+}
+
 struct ChartSelectionSummaryBubble: View {
     let selection: QuotaConsumptionSelection
+    let clientLabel: String?
     let onClose: () -> Void
     let showsCost: Bool
+    let showsFiveHourQuota: Bool
+    let showsSevenDayQuota: Bool
 
     init(
         selection: QuotaConsumptionSelection,
+        clientLabel: String? = nil,
         onClose: @escaping () -> Void = {},
-        showsCost: Bool = true
+        showsCost: Bool = true,
+        showsFiveHourQuota: Bool = true,
+        showsSevenDayQuota: Bool = true
     ) {
         self.selection = selection
+        self.clientLabel = clientLabel
         self.onClose = onClose
         self.showsCost = showsCost
+        self.showsFiveHourQuota = showsFiveHourQuota
+        self.showsSevenDayQuota = showsSevenDayQuota
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
                 HStack(spacing: 6) {
-                    Text("选中区间")
+                    Text(clientLabel.map { "\($0) 选中区间" } ?? "选中区间")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(AppTheme.accentBlue)
                     Text(timeRange)
@@ -1120,6 +1165,12 @@ struct ChartSelectionSummaryBubble: View {
             Text("持续 \(durationText)")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
+            if showsCost && selection.fullCurrentAPIPriceEstimate.unpricedModels.isEmpty {
+                QuotaComparisonIntervalRows(selection: selection,
+                    showsFiveHourQuota: showsFiveHourQuota,
+                    showsSevenDayQuota: showsSevenDayQuota)
+                    .frame(maxWidth: 290, alignment: .leading)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
@@ -1157,12 +1208,7 @@ struct ChartSelectionSummaryBubble: View {
     }
 
     private var timeRange: String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = Calendar.current.isDate(selection.startDate, inSameDayAs: selection.endDate)
-            ? "HH:mm"
-            : "M月d日 HH:mm"
-        return "\(formatter.string(from: selection.startDate)) - \(formatter.string(from: selection.endDate))"
+        selection.quotaEstimatorTimeRangeText
     }
 
     private var durationText: String {

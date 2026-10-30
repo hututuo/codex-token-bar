@@ -146,11 +146,17 @@ struct ClientRailLayout: Equatable {
 // Show a reference rate instead of inventing a billed total from those missing facts.
 enum ClientReferencePrice {
     static func text(_ model: String) -> String {
+        text(model, at: Date())
+    }
+
+    static func text(_ model: String, at date: Date) -> String {
+        guard date.timeIntervalSince1970.isFinite,
+              abs(date.timeIntervalSince1970) < Double(Int64.max) / 1_000 else { return "未计价" }
         let table = AgentSpeedCore.PriceBook.bundled
         switch table.resolver.resolve(model: model, provider: nil) {
         case .free: return "免费模型"
         case let .priced(index, fast):
-            guard let prices = table.models[index].pricing(endMs: nil, fast: fast)?.prices else { return "未计价" }
+            guard let prices = table.models[index].pricing(endMs: Int64(date.timeIntervalSince1970 * 1_000), fast: fast)?.prices else { return "未计价" }
             return String(format: "$%.2f / $%.2f", Double(prices.input) / 1_000_000, Double(prices.output) / 1_000_000)
         case .unknown: return "未计价"
         }

@@ -2,6 +2,22 @@ import XCTest
 @testable import CodexTokenBar
 
 final class IntegratedClientPresentationTests: XCTestCase {
+    func testReferencePricesUseSharedPeriodsAndActualUTCWindows() throws {
+        let formatter = ISO8601DateFormatter()
+        for (time, expected) in [
+            ("2026-10-30T01:00:00Z", "$0.30 / $1.20"),
+            ("2026-10-30T04:00:00Z", "$0.15 / $0.60"),
+            ("2026-10-31T02:00:00Z", "$0.15 / $0.60"),
+            ("2026-10-01T02:00:00Z", "$0.15 / $0.60"),
+            ("2026-08-10T02:00:00Z", "$0.14 / $0.28")
+        ] {
+            let date = try XCTUnwrap(formatter.date(from: time))
+            XCTAssertEqual(ClientReferencePrice.text("deepseek-v4-flash", at: date), expected, time)
+        }
+        XCTAssertEqual(ClientReferencePrice.text("claude-opus-5-5-fast"), "$8.00 / $40.00")
+        XCTAssertEqual(ClientReferencePrice.text("claude-fable-5-1"), "$10.00 / $50.00")
+    }
+
     func testPreviewQuotaIsExplicitDisplayOnlyAndKeepsProSingleWindow() {
         let source = AccountQuotaSnapshot.empty
         let reading = ClaudeCapturedQuotaProvider(snapshot: .missing).reading()

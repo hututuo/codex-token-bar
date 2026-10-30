@@ -614,9 +614,8 @@ fn read_multi_client_cache_rankings_at(
             |row| {
                 let input_tokens: i64 = row.get(4)?;
                 let raw_cache_read: Option<i64> = row.get(6)?;
-                let cache_read_tokens = raw_cache_read.map(|value| {
-                    value.max(0).min(input_tokens.max(0)) as u64
-                });
+                let cache_read_tokens =
+                    raw_cache_read.map(|value| value.max(0).min(input_tokens.max(0)) as u64);
                 let cache_hit_rate = cache_read_tokens.and_then(|cached| {
                     (input_tokens > 0).then(|| cached as f64 / input_tokens as f64)
                 });
@@ -638,7 +637,8 @@ fn read_multi_client_cache_rankings_at(
                         .map(|value| value.max(0) as u64),
                     cached_input_tokens: cache_read_tokens,
                     cache_hit_rate,
-                    uncached_input_tokens: cache_read_tokens.map(|cached| input.saturating_sub(cached)),
+                    uncached_input_tokens: cache_read_tokens
+                        .map(|cached| input.saturating_sub(cached)),
                     is_rankable: input_tokens >= CACHE_RANKING_MIN_INPUT_TOKENS
                         && cache_hit_rate.is_some(),
                     is_low_hit,
@@ -734,7 +734,9 @@ fn read_multi_client_cache_rankings_at(
         models_by_session.entry(session_id).or_default().push(model);
     }
     for session in &mut sessions {
-        session.model_ids = models_by_session.remove(&session.session_id).unwrap_or_default();
+        session.model_ids = models_by_session
+            .remove(&session.session_id)
+            .unwrap_or_default();
     }
     drop(model_statement);
     transaction.commit().map_err(|error| error.to_string())?;
@@ -766,14 +768,17 @@ pub fn save_multi_client_usage_preferences(
 }
 
 /// Shared B file for activity tables. Never starts a source scan or opens a third business DB.
-pub(crate) fn open_activity_module_connection() -> Result<Connection,String> {
-    let _guard=usage_gate();
-    let path=app_paths::multi_client_usage_database_path().ok_or("多客户端索引目录不可用")?;
-    if let Some(parent)=path.parent(){fs::create_dir_all(parent).map_err(|e|e.to_string())?;}
-    let db=Connection::open(&path).map_err(|e|e.to_string())?;
-    db.busy_timeout(Duration::from_secs(2)).map_err(|e|e.to_string())?;
-    ensure_schema(&db,&path).map_err(|e|e.to_string())?;
-    super::activity_speed_store::create_schema(&db).map_err(|e|e.to_string())?;
+pub(crate) fn open_activity_module_connection() -> Result<Connection, String> {
+    let _guard = usage_gate();
+    let path = app_paths::multi_client_usage_database_path().ok_or("多客户端索引目录不可用")?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let db = Connection::open(&path).map_err(|e| e.to_string())?;
+    db.busy_timeout(Duration::from_secs(2))
+        .map_err(|e| e.to_string())?;
+    ensure_schema(&db, &path).map_err(|e| e.to_string())?;
+    super::activity_speed_store::create_schema(&db).map_err(|e| e.to_string())?;
     Ok(db)
 }
 
@@ -783,7 +788,8 @@ pub(crate) fn open_activity_module_connection() -> Result<Connection,String> {
 pub(crate) fn initialize_usage_database_at(path: &Path) -> rusqlite::Result<()> {
     let _guard = usage_gate();
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+        fs::create_dir_all(parent)
+            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
     }
     let connection = Connection::open(path)?;
     connection.busy_timeout(DATABASE_BUSY_TIMEOUT)?;
@@ -795,19 +801,22 @@ pub(crate) fn initialize_usage_database_at(path: &Path) -> rusqlite::Result<()> 
     }
     if version == SCHEMA_VERSION {
         if !has_expected_usage_tables(&connection)? {
-            return Err(rusqlite::Error::InvalidParameterName("多客户端用量数据库结构与版本不匹配".to_owned()));
+            return Err(rusqlite::Error::InvalidParameterName(
+                "多客户端用量数据库结构与版本不匹配".to_owned(),
+            ));
         }
     } else {
         ensure_schema(&connection, path)?;
         if !has_expected_usage_tables(&connection)? {
-            return Err(rusqlite::Error::InvalidParameterName("多客户端用量数据库初始化后结构无效".to_owned()));
+            return Err(rusqlite::Error::InvalidParameterName(
+                "多客户端用量数据库初始化后结构无效".to_owned(),
+            ));
         }
     }
-    let journal_mode: String = connection
-        .query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+    let journal_mode: String = connection.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
     if !journal_mode.eq_ignore_ascii_case("wal") {
-        let configured: String = connection
-            .query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))?;
+        let configured: String =
+            connection.query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))?;
         if !configured.eq_ignore_ascii_case("wal") {
             return Err(rusqlite::Error::InvalidParameterName(format!(
                 "无法启用多客户端用量数据库 WAL 模式：{configured}"
@@ -1130,15 +1139,26 @@ pub fn read_claude_local_quota() -> ClaudeLocalQuotaSnapshot {
     cached_claude_local_quota_read(&mut cache, now, || {
         let home = app_paths::home_dir();
         let app_capture = if cfg!(target_os = "windows") {
-            std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
+            std::env::var_os("LOCALAPPDATA")
+                .map(PathBuf::from)
                 .unwrap_or_else(|| home.join("AppData").join("Local"))
-                .join("CodexTokenBar").join("claude-local-statusline").join("latest.json")
+                .join("CodexTokenBar")
+                .join("claude-local-statusline")
+                .join("latest.json")
         } else {
-            home.join("Library").join("Application Support").join("CodexTokenBar")
-                .join("claude-local-statusline").join("latest.json")
+            home.join("Library")
+                .join("Application Support")
+                .join("CodexTokenBar")
+                .join("claude-local-statusline")
+                .join("latest.json")
         };
-        let path = if fs::symlink_metadata(&app_capture).is_ok() { app_capture }
-            else { home.join(".claude-monitor").join("statusline").join("latest.json") };
+        let path = if fs::symlink_metadata(&app_capture).is_ok() {
+            app_capture
+        } else {
+            home.join(".claude-monitor")
+                .join("statusline")
+                .join("latest.json")
+        };
         read_claude_local_quota_at(&path, OffsetDateTime::now_utc().unix_timestamp() as f64)
     })
 }
@@ -3245,6 +3265,7 @@ struct BundledApiPriceModel {
     aliases: Vec<String>,
     free: bool,
     has_time_dependent_price: bool,
+    time_pricing: Option<Value>,
     base: Option<ApiTieredPrices>,
     fast: Option<ApiTieredPrices>,
 }
@@ -3292,6 +3313,8 @@ fn bundled_api_price_catalog() -> &'static BundledApiPriceCatalog {
                     aliases,
                     free: raw.get("free").and_then(Value::as_bool).unwrap_or(false),
                     has_time_dependent_price: time_dependent_period || time_dependent_off_peak,
+                    time_pricing: (time_dependent_period || time_dependent_off_peak)
+                        .then(|| raw.clone()),
                     base,
                     fast,
                 })
@@ -3387,12 +3410,109 @@ fn price_rate_micro_usd(value: &Value) -> Option<i64> {
     whole.checked_mul(1_000_000)?.checked_add(scaled_fraction)
 }
 
+/// No timestamp means time-dependent prices remain unknown. Kept for the
+/// admission tests; production passes each record's existing event timestamp.
+#[cfg(test)]
 fn api_cost_micro_usd(
     raw_model: &str,
     input: i64,
     output: i64,
     cache_read: Option<i64>,
     cache_write: Option<i64>,
+) -> Option<i64> {
+    api_cost_micro_usd_at(raw_model, input, output, cache_read, cache_write, None)
+}
+
+fn price_period_timestamp(value: &Value) -> Option<i64> {
+    let value = value.as_str()?;
+    let expanded = if value.len() == 10 {
+        format!("{value}T00:00:00Z")
+    } else if value.len() == 17 && value.ends_with('Z') {
+        format!("{}:00Z", &value[..16])
+    } else {
+        value.to_string()
+    };
+    OffsetDateTime::parse(&expanded, &Rfc3339)
+        .ok()
+        .map(|date| date.unix_timestamp())
+}
+
+fn price_minute(value: &str) -> Option<u16> {
+    let (hour, minute) = value.split_once(':')?;
+    let hour: u16 = hour.parse().ok()?;
+    let minute: u16 = minute.parse().ok()?;
+    (hour <= 24 && minute < 60 && (hour < 24 || minute == 0)).then(|| hour * 60 + minute)
+}
+
+/// Same periods, UTC weekday/holiday rule and half-open peak windows as the
+/// shared Agent Speed price asset. There are no copied model prices here.
+fn time_dependent_pricing(model: &BundledApiPriceModel, timestamp: f64) -> Option<ApiTieredPrices> {
+    if !timestamp.is_finite() || timestamp.abs() >= i64::MAX as f64 {
+        return None;
+    }
+    let epoch = timestamp.floor() as i64;
+    let date = OffsetDateTime::from_unix_timestamp(epoch).ok()?;
+    let raw = model.time_pricing.as_ref()?;
+    let mut active = raw;
+    for period in raw
+        .get("periods")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let from = match period.get("from") {
+            Some(value) => Some(price_period_timestamp(value)?),
+            None => None,
+        };
+        let to = match period.get("to") {
+            Some(value) => Some(price_period_timestamp(value)?),
+            None => None,
+        };
+        if from.is_none_or(|from| epoch >= from) && to.is_none_or(|to| epoch < to) {
+            active = period;
+            break;
+        }
+    }
+    if let Some(rule) = active.get("offPeak").filter(|value| !value.is_null()) {
+        let weekday = date.weekday().number_from_monday() as u64;
+        let peak_day = rule
+            .get("peakWeekdays")
+            .and_then(Value::as_array)
+            .is_none_or(|days| days.iter().any(|day| day.as_u64() == Some(weekday)));
+        let day_key = format!(
+            "{:04}-{:02}-{:02}",
+            date.year(),
+            date.month() as u8,
+            date.day()
+        );
+        let holiday = rule
+            .get("offPeakDates")
+            .and_then(Value::as_array)
+            .is_some_and(|days| {
+                days.iter()
+                    .any(|day| day.as_str() == Some(day_key.as_str()))
+            });
+        let minute = u16::from(date.hour()) * 60 + u16::from(date.minute());
+        let mut peak_time = false;
+        for window in rule.get("peakUtc")?.as_array()? {
+            let (start, end) = window.as_str()?.split_once('-')?;
+            let (start, end) = (price_minute(start)?, price_minute(end)?);
+            peak_time |= start <= minute && minute < end;
+        }
+        if !peak_day || holiday || !peak_time {
+            active = rule;
+        }
+    }
+    parse_tiered_prices(active.get("prices")?, active.get("tiers"))
+}
+
+fn api_cost_micro_usd_at(
+    raw_model: &str,
+    input: i64,
+    output: i64,
+    cache_read: Option<i64>,
+    cache_write: Option<i64>,
+    timestamp: Option<f64>,
 ) -> Option<i64> {
     let identifier = raw_model.rsplit('/').next()?.trim().to_ascii_lowercase();
     if identifier.is_empty() {
@@ -3415,17 +3535,20 @@ fn api_cost_micro_usd(
     if model.free {
         return Some(0);
     }
-    if model.has_time_dependent_price {
-        return None;
-    }
+    let timed;
     let pricing = if explicit_fast {
         model.fast.as_ref()?
+    } else if model.has_time_dependent_price {
+        timed = time_dependent_pricing(model, timestamp?)?;
+        &timed
     } else {
         model.base.as_ref()?
     };
     let rates = pricing.select(input);
     let cache_read = cache_read?;
-    let cache_write = cache_write?;
+    let cache_write = cache_write.or_else(|| {
+        (rates.cache_write == rates.input && rates.cache_write_1h == rates.input).then_some(0)
+    })?;
     if input < 0
         || output < 0
         || cache_read < 0
@@ -3540,7 +3663,7 @@ fn read_scoped_api_price_aggregates(
     let mut totals = HashMap::<MultiClientPriceModelKey, MultiClientPriceTally>::new();
     let mut statement = connection
         .prepare(
-            "SELECT client,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens \
+            "SELECT client,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,timestamp \
              FROM client_usage_events WHERE timestamp >= ?1",
         )
         .map_err(|error| error.to_string())?;
@@ -3553,11 +3676,12 @@ fn read_scoped_api_price_aggregates(
                 row.get::<_, i64>(3)?,
                 row.get::<_, Option<i64>>(4)?,
                 row.get::<_, Option<i64>>(5)?,
+                row.get::<_, f64>(6)?,
             ))
         })
         .map_err(|error| error.to_string())?;
     for row in rows {
-        let (client, model, input, output, cache_read, cache_write) =
+        let (client, model, input, output, cache_read, cache_write, timestamp) =
             row.map_err(|error| error.to_string())?;
         totals
             .entry(MultiClientPriceModelKey {
@@ -3565,12 +3689,13 @@ fn read_scoped_api_price_aggregates(
                 model: model.clone(),
             })
             .or_default()
-            .add(api_cost_micro_usd(
+            .add(api_cost_micro_usd_at(
                 &model,
                 input,
                 output,
                 cache_read,
                 cache_write,
+                Some(timestamp),
             ));
     }
     Ok(totals)
@@ -3640,7 +3765,7 @@ fn read_cached_api_price_aggregates(
     let mut totals = HashMap::<MultiClientPriceModelKey, MultiClientPriceTally>::new();
     let mut statement = connection
         .prepare(
-            "SELECT client,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens \
+            "SELECT client,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,timestamp \
              FROM client_usage_events",
         )
         .map_err(|error| error.to_string())?;
@@ -3653,22 +3778,24 @@ fn read_cached_api_price_aggregates(
                 row.get::<_, i64>(3)?,
                 row.get::<_, Option<i64>>(4)?,
                 row.get::<_, Option<i64>>(5)?,
+                row.get::<_, f64>(6)?,
             ))
         })
         .map_err(|error| error.to_string())?;
     for row in rows {
-        let (client, model, input, output, cache_read, cache_write) =
+        let (client, model, input, output, cache_read, cache_write, timestamp) =
             row.map_err(|error| error.to_string())?;
         let key = MultiClientPriceModelKey {
             client,
             model: model.clone(),
         };
-        totals.entry(key).or_default().add(api_cost_micro_usd(
+        totals.entry(key).or_default().add(api_cost_micro_usd_at(
             &model,
             input,
             output,
             cache_read,
             cache_write,
+            Some(timestamp),
         ));
     }
 
@@ -3998,13 +4125,20 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("shared.sqlite");
         let blocker = rusqlite::Connection::open(&path).unwrap();
-        blocker.execute_batch("PRAGMA journal_mode=WAL; BEGIN IMMEDIATE;").unwrap();
+        blocker
+            .execute_batch("PRAGMA journal_mode=WAL; BEGIN IMMEDIATE;")
+            .unwrap();
         let error = super::initialize_usage_database_at(&path).unwrap_err();
         assert!(matches!(error, rusqlite::Error::SqliteFailure(code, _)
             if matches!(code.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)));
         blocker.execute_batch("ROLLBACK").unwrap();
         super::initialize_usage_database_at(&path).unwrap();
-        assert_eq!(blocker.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0)).unwrap(), 2);
+        assert_eq!(
+            blocker
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
     }
 
     use super::*;
@@ -4164,8 +4298,15 @@ mod tests {
             available,
         );
 
-        assert!(snapshot.preferences.iter().all(|preference| !preference.enabled));
-        let claude = snapshot.quotas.iter().find(|quota| quota.client == "claudeCode").unwrap();
+        assert!(snapshot
+            .preferences
+            .iter()
+            .all(|preference| !preference.enabled));
+        let claude = snapshot
+            .quotas
+            .iter()
+            .find(|quota| quota.client == "claudeCode")
+            .unwrap();
         assert_eq!(claude.state, "available");
         assert_eq!(claude.windows[0].used_percent, Some(25.0));
     }
@@ -4185,14 +4326,11 @@ mod tests {
             probes += 1;
             fresh.clone()
         });
-        let within_interval = cached_claude_local_quota_read(
-            &mut cache,
-            start + Duration::from_secs(59),
-            || {
+        let within_interval =
+            cached_claude_local_quota_read(&mut cache, start + Duration::from_secs(59), || {
                 probes += 1;
                 claude_quota_state("missing")
-            },
-        );
+            });
         let after_interval = cached_claude_local_quota_read(
             &mut cache,
             start + CLAUDE_LOCAL_QUOTA_PROBE_INTERVAL,
@@ -4203,8 +4341,14 @@ mod tests {
         );
 
         assert_eq!(first.state, "available");
-        assert_eq!(within_interval, first, "rapid callers share the bounded cache read");
-        assert_eq!(after_interval.state, "stale", "a later probe observes freshness expiry");
+        assert_eq!(
+            within_interval, first,
+            "rapid callers share the bounded cache read"
+        );
+        assert_eq!(
+            after_interval.state, "stale",
+            "a later probe observes freshness expiry"
+        );
         assert_eq!(probes, 2);
     }
 
@@ -4918,14 +5062,78 @@ mod tests {
         let connection = open_database(&database).unwrap();
         ensure_schema(&connection, &database).unwrap();
         let rows = [
-            ("zero", "weighted", "claude-opus-5", 10.0, 30_000, Some(0), Some(2_000)),
-            ("low", "weighted", "claude-sonnet-5", 20.0, 100_000, Some(20_000), Some(10_000)),
-            ("high", "weighted", "claude-opus-5", 30.0, 100_000, Some(80_000), Some(0)),
-            ("unknown", "unknown-cache", "claude-haiku-5", 70.0, 150_000, None, None),
-            ("known-zero", "unknown-cache", "claude-sonnet-5", 50.0, 30_000, Some(0), Some(0)),
-            ("low-boundary", "boundary", "claude-opus-5", 40.0, 20_000, Some(5_999), Some(0)),
-            ("not-low-boundary", "boundary", "claude-opus-5", 60.0, 20_000, Some(6_000), Some(0)),
-            ("under-minimum", "small", "claude-opus-5", 80.0, 999, Some(0), Some(0)),
+            (
+                "zero",
+                "weighted",
+                "claude-opus-5",
+                10.0,
+                30_000,
+                Some(0),
+                Some(2_000),
+            ),
+            (
+                "low",
+                "weighted",
+                "claude-sonnet-5",
+                20.0,
+                100_000,
+                Some(20_000),
+                Some(10_000),
+            ),
+            (
+                "high",
+                "weighted",
+                "claude-opus-5",
+                30.0,
+                100_000,
+                Some(80_000),
+                Some(0),
+            ),
+            (
+                "unknown",
+                "unknown-cache",
+                "claude-haiku-5",
+                70.0,
+                150_000,
+                None,
+                None,
+            ),
+            (
+                "known-zero",
+                "unknown-cache",
+                "claude-sonnet-5",
+                50.0,
+                30_000,
+                Some(0),
+                Some(0),
+            ),
+            (
+                "low-boundary",
+                "boundary",
+                "claude-opus-5",
+                40.0,
+                20_000,
+                Some(5_999),
+                Some(0),
+            ),
+            (
+                "not-low-boundary",
+                "boundary",
+                "claude-opus-5",
+                60.0,
+                20_000,
+                Some(6_000),
+                Some(0),
+            ),
+            (
+                "under-minimum",
+                "small",
+                "claude-opus-5",
+                80.0,
+                999,
+                Some(0),
+                Some(0),
+            ),
         ];
         for (event_id, session_id, model, timestamp, input, cache_read, cache_write) in rows {
             connection
@@ -4942,7 +5150,9 @@ mod tests {
             )
             .unwrap();
         let before_revision_count: i64 = connection
-            .query_row("SELECT count(*) FROM client_usage_revisions", [], |row| row.get(0))
+            .query_row("SELECT count(*) FROM client_usage_revisions", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         let before_version = read_schema_version(&connection).unwrap();
         drop(connection);
@@ -4954,12 +5164,23 @@ mod tests {
                 .iter()
                 .map(|row| row.event_id.as_str())
                 .collect::<Vec<_>>(),
-            ["known-zero", "zero", "low", "low-boundary", "not-low-boundary", "high", "unknown"]
+            [
+                "known-zero",
+                "zero",
+                "low",
+                "low-boundary",
+                "not-low-boundary",
+                "high",
+                "unknown"
+            ]
         );
         assert_eq!(projection.matching_request_count, 7);
         assert_eq!(projection.request_limit, 10);
         assert!(!projection.has_more_requests);
-        assert!(projection.sessions.iter().all(|session| session.session_id != "small"));
+        assert!(projection
+            .sessions
+            .iter()
+            .all(|session| session.session_id != "small"));
         let wire = serde_json::to_value(&projection).unwrap();
         assert_eq!(wire["requests"][0]["eventID"], "known-zero");
         assert_eq!(wire["requests"][0]["sessionID"], "unknown-cache");
@@ -4971,7 +5192,10 @@ mod tests {
         assert!(projection.requests[1].is_low_hit);
         assert!(projection.requests[2].is_low_hit);
         assert!(projection.requests[3].is_low_hit);
-        assert!(!projection.requests[4].is_low_hit, "exactly 30 percent is not below the threshold");
+        assert!(
+            !projection.requests[4].is_low_hit,
+            "exactly 30 percent is not below the threshold"
+        );
 
         let unknown = projection
             .requests
@@ -5016,7 +5240,8 @@ mod tests {
         assert_eq!(read_schema_version(&reopened).unwrap(), before_version);
         assert_eq!(
             reopened
-                .query_row("SELECT count(*) FROM client_usage_revisions", [], |row| row.get::<_, i64>(0))
+                .query_row("SELECT count(*) FROM client_usage_revisions", [], |row| row
+                    .get::<_, i64>(0))
                 .unwrap(),
             before_revision_count
         );
@@ -5470,6 +5695,90 @@ mod tests {
         );
         assert!(cache.get(&keys[3]).is_none());
         assert_eq!(cache.entries.len(), MAX_SCOPED_SUMMARY_CACHE_ENTRIES);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn selected_directory_link_keeps_logical_identity_and_skips_nested_links() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let physical = root.path().join("physical");
+        let external = root.path().join("external");
+        fs::create_dir_all(physical.join("project")).unwrap();
+        fs::create_dir_all(external.join("project")).unwrap();
+        fs::write(physical.join("project/session.jsonl"), "{}").unwrap();
+        fs::write(external.join("project/outside.jsonl"), "{}").unwrap();
+        let logical = root.path().join("projects");
+        symlink(&physical, &logical).unwrap();
+        symlink(&external, physical.join("outside")).unwrap();
+        let (files, truncated) = enumerate_source_files("claudeCode", &logical).unwrap();
+        assert!(!truncated);
+        assert_eq!(files, vec![logical.join("project/session.jsonl")]);
+    }
+
+    #[test]
+    fn shared_price_book_respects_event_time_peak_holidays_and_history() {
+        let cases = [
+            ("2026-10-30T01:00:00Z", 1_441_200),
+            ("2026-10-30T03:59:59Z", 1_441_200),
+            ("2026-10-30T04:00:00Z", 720_600),
+            ("2026-10-30T06:00:00Z", 1_441_200),
+            ("2026-10-30T10:00:00Z", 720_600),
+            ("2026-10-31T02:00:00Z", 720_600),
+            ("2026-10-01T02:00:00Z", 720_600),
+            ("2026-08-10T02:00:00Z", 392_560),
+            ("2026-08-17T02:00:00Z", 1_674_800),
+        ];
+        for (time, expected) in cases {
+            let timestamp = price_period_timestamp(&serde_json::json!(time)).unwrap() as f64;
+            assert_eq!(
+                api_cost_micro_usd_at(
+                    "deepseek-v4-flash",
+                    1_000_000,
+                    1_000_000,
+                    Some(200_000),
+                    None,
+                    Some(timestamp)
+                ),
+                Some(expected),
+                "{time}"
+            );
+        }
+        assert_eq!(
+            api_cost_micro_usd_at("deepseek-flash", 10, 10, Some(0), None, None),
+            None
+        );
+        assert_eq!(
+            api_cost_micro_usd_at("deepseek-flash", 10, 10, Some(0), None, Some(f64::NAN)),
+            None
+        );
+    }
+
+    #[test]
+    fn scoped_price_query_passes_each_record_timestamp_without_mutating_ledger() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE client_usage_events(client TEXT,model TEXT,
+            input_tokens INTEGER,output_tokens INTEGER,cache_read_tokens INTEGER,cache_write_tokens INTEGER,timestamp REAL)").unwrap();
+        for time in ["2026-10-30T01:00:00Z", "2026-10-30T04:00:00Z"] {
+            let timestamp = price_period_timestamp(&serde_json::json!(time)).unwrap() as f64;
+            connection.execute("INSERT INTO client_usage_events VALUES('deepseek','deepseek-flash',1000000,1000000,200000,NULL,?1)", [timestamp]).unwrap();
+        }
+        let totals = read_scoped_api_price_aggregates(&connection, 0).unwrap();
+        let tally = totals
+            .get(&MultiClientPriceModelKey {
+                client: "deepseek".into(),
+                model: "deepseek-flash".into(),
+            })
+            .unwrap();
+        assert_eq!(tally.known_cost_micro_usd, Some(2_161_800));
+        assert_eq!(tally.unpriced_requests, 0);
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM client_usage_events", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
     }
 
     #[test]

@@ -4,6 +4,28 @@ import XCTest
 @testable import CodexTokenBar
 
 final class MultiClientUsageParserTests: XCTestCase {
+    func testSelectedClaudeRootLinkPreservesLogicalPathsAndDoesNotTraverseChildLinks() throws {
+        let manager = FileManager.default
+        let root = manager.temporaryDirectory.appendingPathComponent("client-root-link-\(UUID().uuidString)")
+        defer { try? manager.removeItem(at: root) }
+        let home = root.appendingPathComponent("home")
+        let physical = root.appendingPathComponent("physical")
+        let external = root.appendingPathComponent("external")
+        for directory in [home.appendingPathComponent(".claude"), physical.appendingPathComponent("project"), external.appendingPathComponent("project")] {
+            try manager.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        let line = claudeLine(session: "local", entrypoint: "cli", id: "a",
+            timestamp: "2026-10-20T10:00:00Z", usage: ["input_tokens": 3, "output_tokens": 1])
+        try jsonl([line]).write(to: physical.appendingPathComponent("project/session.jsonl"))
+        try jsonl([line]).write(to: external.appendingPathComponent("project/outside.jsonl"))
+        let logical = home.appendingPathComponent(".claude/projects")
+        try manager.createSymbolicLink(at: logical, withDestinationURL: physical)
+        try manager.createSymbolicLink(at: physical.appendingPathComponent("outside"), withDestinationURL: external)
+        let found = MultiClientUsageDiscovery.discover(client: .claudeCode, home: home, environment: [:])
+        XCTAssertFalse(found.truncated)
+        XCTAssertEqual(found.files.map(\.path), [logical.appendingPathComponent("project/session.jsonl").path])
+    }
+
     func testDeepSeekNativeSessionHeaderNamesLaterLines() throws {
         let data = Data((#"{"type":"session","id":"native-session","version":4}"# + "\n" + #"{"type":"assistant/message","seq":2,"time":1797000000000,"data":{"usage":{"inputTokens":10,"outputTokens":2}}}"# + "\n").utf8)
         let events = try MultiClientUsageParsers.parse(data: data, client: .deepseek, sessionHint: "directory")

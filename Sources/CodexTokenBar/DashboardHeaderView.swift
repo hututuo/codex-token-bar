@@ -600,23 +600,20 @@ struct DataSourceBadge: View {
     let origin: String
 
     var body: some View {
-        Label {
-            HStack(spacing: 5) {
-                Text(origin)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: true, vertical: false)
-                Text(path)
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-        } icon: {
-            Image(systemName: "externaldrive")
-                .foregroundStyle(AppTheme.accentCyan)
+        HStack(spacing: 5) {
+            Text(origin)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: true, vertical: false)
+            Text(path)
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Image(systemName: "chevron.down")
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.secondary)
         }
         .font(.system(size: 12, weight: .medium))
-        .padding(.horizontal, DashboardHeaderContextLayout.badgeHorizontalPadding)
-        .frame(width: DashboardHeaderContextLayout.dataSourceWidth)
+        .frame(width: DashboardHeaderContextLayout.dataSourceWidth, alignment: .leading)
         .help(path)
         .accessibilityLabel("数据源 \(origin) \(path)")
     }

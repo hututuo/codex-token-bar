@@ -1,4 +1,5 @@
 import type { QuotaSnapshot } from "../../types/quota";
+import { setChartGuideHidden } from "../recentUsageChart/guidePreferences";
 import { ClientQuotaSettings } from "../../multiClient/IntegratedClients";
 import { MultiClientUsageSettings } from "../../multiClient/MultiClientUsage";
 import {
@@ -742,6 +743,11 @@ function SurfaceSettings({
       <div className="app-settings-note">
         跨平台版会按当前系统能力开放显示面；主窗口缩放由系统窗口尺寸自动适配。
       </div>
+      <SettingRow title="图表使用引导" description="重新显示已关闭的鼠标预览与选区演示。">
+        <button className="app-settings-secondary-button" type="button" onClick={() => setChartGuideHidden(false)}>
+          重新显示引导
+        </button>
+      </SettingRow>
     </SettingsGroup>
   );
 }

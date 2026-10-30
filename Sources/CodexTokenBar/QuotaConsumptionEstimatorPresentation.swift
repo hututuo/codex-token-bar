@@ -195,6 +195,13 @@ struct QuotaConsumptionEstimatorOverlayPresentation: Equatable {
         if showsFiveHourQuota { accessibilityParts.append("5 小时 \(fiveHourChip.accessibilityText)") }
         if showsSevenDayQuota { accessibilityParts.append("7 天 \(sevenDayChip.accessibilityText)") }
         if let comparisonScopeText { accessibilityParts.append(comparisonScopeText) }
+        accessibilityParts.append("Token \(selection.breakdown.totalTokens.abbreviatedTokens)，请求 \(selection.breakdown.calls) 次")
+        if showsFiveHourQuota, let text = selection.fiveHour.quotaEstimatorComparisonText(title: "5h") {
+            accessibilityParts.append(text)
+        }
+        if showsSevenDayQuota, let text = selection.sevenDay.quotaEstimatorComparisonText(title: "7d") {
+            accessibilityParts.append(text)
+        }
         if showsBudgetRatio { accessibilityParts.append("倍率 \(budgetRatioText)") }
         accessibilityValue = accessibilityParts.joined(separator: "，")
     }
@@ -376,7 +383,13 @@ extension QuotaSelectionAttributionResult {
 
 extension QuotaConsumptionSelection {
     var quotaEstimatorTimeRangeText: String {
-        "\(DateFormatter.hourMinute.string(from: startDate))-\(DateFormatter.hourMinute.string(from: endDate))"
+        Self.quotaEstimatorTimeRangeText(startDate: startDate, endDate: endDate)
+    }
+
+    static func quotaEstimatorTimeRangeText(startDate: Date, endDate: Date) -> String {
+        let formatter = Calendar.current.isDate(startDate, inSameDayAs: endDate)
+            ? DateFormatter.hourMinute : DateFormatter.monthDayHourMinute
+        return "\(formatter.string(from: startDate))-\(formatter.string(from: endDate))"
     }
 
     var quotaEstimatorDurationText: String {
@@ -401,6 +414,16 @@ extension QuotaConsumptionSelection {
 }
 
 extension QuotaConsumptionEstimate {
+    func quotaEstimatorComparisonText(title: String) -> String? {
+        guard quotaDropBasis != .unavailable,
+              let start = comparisonStartDate, let end = comparisonEndDate else { return nil }
+        let range = QuotaConsumptionSelection.quotaEstimatorTimeRangeText(startDate: start, endDate: end)
+        let drop = String(format: "%.1f%%", quotaDropPercent)
+        let result = impliedWindowBudgetUSD == nil
+            ? "（下降不足，暂不反推）" : " ≈ \(quotaEstimatorBudgetText)"
+        return "\(title) 反推使用 \(range) · \(comparisonCostUSD.quotaEstimatorMoneyText) ÷ \(drop)\(result)"
+    }
+
     var quotaEstimatorBudgetText: String {
         guard let impliedWindowBudgetUSD else { return "--" }
         return "$\(Self.quotaEstimatorMoneyString(impliedWindowBudgetUSD))"

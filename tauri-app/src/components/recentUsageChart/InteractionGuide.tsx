@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { chartGuideHidden, setChartGuideHidden, subscribeChartGuidePreferences } from "./guidePreferences";
 
 const DISMISSED_STORAGE_KEY = "recentChartInteractionGuideDismissed";
 
@@ -11,17 +12,24 @@ function wasDismissed(): boolean {
 /** Native CSS animation; no sampling timer and no requests. */
 export function RecentChartInteractionGuide() {
   const [expanded, setExpanded] = useState(() => !wasDismissed());
+  const [hidden, setHidden] = useState(chartGuideHidden);
   const [active, setActive] = useState(false);
   const root = useRef<HTMLDetailsElement>(null);
+  useEffect(() => subscribeChartGuidePreferences(() => {
+    const nextHidden = chartGuideHidden();
+    setHidden(nextHidden);
+    if (!nextHidden) setExpanded(!wasDismissed());
+  }), []);
   useEffect(() => {
-    const element = root.current; if (!element || !expanded || typeof IntersectionObserver === "undefined") return;
+    const element = root.current; if (!element || hidden || !expanded || typeof IntersectionObserver === "undefined") return;
     let visible = false;
     const update = () => setActive(visible && !document.hidden);
     const observer = new IntersectionObserver(entries => { visible = entries[0]?.isIntersecting ?? false; update(); });
     observer.observe(element); document.addEventListener("visibilitychange", update);
     return () => { observer.disconnect(); document.removeEventListener("visibilitychange", update); };
-  }, [expanded]);
-  return <details ref={root} className="recent-interaction-guide" open={expanded} onToggle={event => {
+  }, [expanded, hidden]);
+  if (hidden) return null;
+  return <div className="recent-chart-guide-shell"><details ref={root} className="recent-interaction-guide" open={expanded} onToggle={event => {
     const next = event.currentTarget.open;
     setExpanded(next);
     // A manual replay never clears the acknowledgement for the next visit.
@@ -40,5 +48,6 @@ export function RecentChartInteractionGuide() {
       <g className="rig-bubble"><rect x="0" y="0" width="144" height="23" rx="5"/><text className="rig-reading rig-reading-a" x="72" y="15">单点 3.2万 Token</text><text className="rig-reading rig-reading-b" x="72" y="15">区间 8.4万 Token</text><text className="rig-reading rig-reading-c" x="72" y="15">区间 12.6万 Token</text></g>
       <text className="rig-demo-caption" x="110" y="102">演示数据 · 移动 → 点起点 → 点终点</text>
     </svg></div><div className="rig-instructions"><p><strong>移上去预览：</strong>鼠标移到图上，查看当前点的时间和用量。</p><p><strong>点选计算：</strong>点一下定起点，移动选择区间，再点一下定终点，弹出用量与反推额度；再点可重选。</p></div></div>}
-  </details>;
+  </details><button className="rig-close" type="button" aria-label="关闭图表使用引导" title="关闭引导，可在总体设置中重新打开"
+    onClick={() => { setChartGuideHidden(true); setHidden(true); }}>×</button></div>;
 }

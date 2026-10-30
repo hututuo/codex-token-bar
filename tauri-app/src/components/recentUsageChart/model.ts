@@ -196,6 +196,7 @@ interface TokenBreakdown {
 
 export interface QuotaConsumptionEstimate {
   selectedCostUSD: number;
+  comparisonCostUSD: number;
   impliedWindowBudgetUSD: number | null;
   quotaDropPercent: number;
   inputTokens: number;
@@ -1276,6 +1277,7 @@ function quotaConsumptionEstimate(
   }
   return {
     selectedCostUSD,
+    comparisonCostUSD,
     impliedWindowBudgetUSD,
     quotaDropPercent: drop,
     inputTokens: breakdown.inputTokens,

@@ -290,7 +290,7 @@ test("quota estimate keeps the range summary visible when quota stays at zero", 
   }
 });
 
-test("fixed 24h selection renders shared-account attribution in the lower result card", async () => {
+test("fixed 24h selection retains account drop without local conversion or residual placeholders", async () => {
   const window = new Window({ url: "http://localhost/" });
   const restoreGlobals = installDomGlobals(window);
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -347,11 +347,10 @@ test("fixed 24h selection renders shared-account attribution in the lower result
           })));
         }
 
-        const attribution = container.querySelector('[aria-label="选区共享账号归因"]');
+        const attribution = container.querySelector('[aria-label="选区账号额度变化"]');
         assert.ok(attribution);
-        assert.match(attribution.textContent, /账号实降3%/);
-        assert.match(attribution.textContent, /本机折算≈1\.2%/);
-        assert.match(attribution.textContent, /差额\+1\.8%/);
+        assert.match(attribution.textContent, /7d 额度下降3%/);
+        assert.doesNotMatch(attribution.textContent, /本机折算|差额/);
 
         await React.act(async () => root.render(React.createElement(RecentUsageChart, {
           recentUsage24h: [point(0, 0.8, 0.90), point(300, 0.78, 0.88), point(600, 0.76, 0.87)],
@@ -359,9 +358,10 @@ test("fixed 24h selection renders shared-account attribution in the lower result
           recentUsage30d: [],
           sharedAccountAttribution: { ...attributionContext, radarPlanTotalUSD: 10 },
         })));
-        const negative = container.querySelector('[aria-label="选区共享账号归因"]');
+        const negative = container.querySelector('[aria-label="选区账号额度变化"]');
         assert.ok(negative);
-        assert.match(negative.textContent, /暂算差额-9%/);
+        assert.match(negative.textContent, /7d 额度下降3%/);
+        assert.doesNotMatch(negative.textContent, /差额|本机估高|疑似他人/);
       } finally {
         await React.act(async () => root.unmount());
       }
@@ -373,7 +373,7 @@ test("fixed 24h selection renders shared-account attribution in the lower result
   }
 });
 
-test("fixed 24h selection keeps local conversion visible when quota history is missing", async () => {
+test("fixed 24h selection keeps unavailable quota explicit without conversion placeholders", async () => {
   const window = new Window({ url: "http://localhost/" });
   const restoreGlobals = installDomGlobals(window);
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -426,15 +426,12 @@ test("fixed 24h selection keeps local conversion visible when quota history is m
             pointerId: 1,
           })));
         }
-        const attribution = container.querySelector('[aria-label="选区共享账号归因"]');
+        const attribution = container.querySelector('[aria-label="选区账号额度变化"]');
         assert.ok(attribution);
-        assert.match(attribution.textContent, /账号下降--/);
-        assert.match(attribution.textContent, /本机折算≈1%/);
-        assert.match(attribution.textContent, /暂算差额--/);
+        assert.match(attribution.textContent, /7d 额度下降--/);
+        assert.doesNotMatch(attribution.textContent, /本机折算|差额/);
         const detail = container.querySelector('[aria-label="选区本机 API 等价金额"]');
-        assert.ok(detail);
-        assert.match(detail.textContent, /本机同基准 \$1\.00/);
-        assert.match(detail.textContent, /当前 API \$0\.80/);
+        assert.equal(detail, null);
       } finally {
         await React.act(async () => root.unmount());
       }
@@ -446,7 +443,7 @@ test("fixed 24h selection keeps local conversion visible when quota history is m
   }
 });
 
-test("fixed 7d and 30d selections render shared-account attribution", async () => {
+test("fixed 7d and 30d selections show account drop without removed conversion fields", async () => {
   const window = new Window({ url: "http://localhost/" });
   const restoreGlobals = installDomGlobals(window);
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
@@ -503,10 +500,10 @@ test("fixed 7d and 30d selections render shared-account attribution", async () =
             })));
           }
 
-          const attribution = container.querySelector('[aria-label="选区共享账号归因"]');
+          const attribution = container.querySelector('[aria-label="选区账号额度变化"]');
           assert.ok(attribution, range);
-          assert.match(attribution.textContent, /账号实降3%/, range);
-          assert.match(attribution.textContent, /本机折算≈1\.5%/, range);
+          assert.match(attribution.textContent, /7d 额度下降3%/, range);
+          assert.doesNotMatch(attribution.textContent, /本机折算|差额/, range);
         }
       } finally {
         await React.act(async () => root.unmount());
@@ -572,10 +569,22 @@ test("top hover and fixed-selection previews can be dismissed without clearing t
         }
         assert.ok(container.querySelector('[aria-label="关闭选中区间预览"]'));
         assert.ok(container.querySelector('[role="dialog"][aria-label="额度估算"]'));
+        const comparedRows = [...container.querySelectorAll('[aria-label="额度反推可比区间"]')];
+        assert.equal(comparedRows.length, 2);
+        assert.equal(comparedRows[0].textContent, comparedRows[1].textContent);
+        assert.match(comparedRows[0].textContent, /反推使用.*÷.*%.*≈/);
         const selectionClose = container.querySelector('[aria-label="关闭选中区间预览"]');
         await React.act(async () => selectionClose.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true })));
         assert.equal(container.querySelector('[aria-label="关闭选中区间预览"]'), null);
         assert.ok(container.querySelector('[role="dialog"][aria-label="额度估算"]'));
+
+        const pinnedSummary = container.querySelector('[role="dialog"][aria-label="额度估算"]').textContent;
+        const reveal = container.querySelector('button.quota-selection-reveal');
+        assert.ok(reveal);
+        await React.act(async () => reveal.dispatchEvent(new window.MouseEvent("click", { bubbles: true })));
+        assert.ok(container.querySelector('[aria-label="关闭选中区间预览"]'));
+        assert.equal(container.querySelector('[role="dialog"][aria-label="额度估算"]').textContent, pinnedSummary);
+        await React.act(async () => container.querySelector('[aria-label="关闭选中区间预览"]').dispatchEvent(new window.MouseEvent("click", { bubbles: true })));
 
         // Moving across a pinned selection must not reopen its dismissed top card.
         await React.act(async () => chart.dispatchEvent(new window.PointerEvent("pointermove", {
@@ -960,3 +969,49 @@ function installDomGlobals(window) {
     }
   };
 }
+
+test("pinned dates survive rolling source refresh and expired selections cannot resurrect", async () => {
+  const window = new Window({ url: "http://localhost/" });
+  const restoreGlobals = installDomGlobals(window);
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  try {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    await withSsrModules(async (load) => {
+      const { RecentUsageChart } = await load("/src/components/RecentUsageChart.tsx");
+      const container = window.document.createElement("div");
+      window.document.body.append(container);
+      const root = createRoot(container);
+      const render = (points) => React.act(async () => root.render(React.createElement(RecentUsageChart, {
+        recentUsage24h: points, recentUsage7d: [], recentUsage30d: [],
+      })));
+      try {
+        const a = point(0, 0.82, 0.91), b = point(300, 0.78, 0.89), c = point(600, 0.74, 0.87);
+        await render([a, b, c]);
+        const chart = container.querySelector("svg.usage-chart");
+        chart.getBoundingClientRect = () => ({ bottom: 185, height: 185, left: 0, right: 980, top: 0, width: 980, x: 0, y: 0, toJSON: () => ({}) });
+        for (const clientX of [490, 980]) {
+          await React.act(async () => chart.dispatchEvent(new window.PointerEvent("pointerdown", {
+            bubbles: true, cancelable: true, clientX, clientY: 80, pointerId: 1,
+          })));
+        }
+        const snapshot = () => ({
+          range: container.querySelector(".chart-selection-summary-bubble .chart-hover-heading span")?.textContent,
+          tokens: container.querySelector(".chart-selection-summary-bubble > b")?.textContent,
+          amount: container.querySelector(".chart-selection-summary-bubble .chart-hover-row--cost")?.textContent,
+          usage: container.querySelector('[aria-label="选区用量"]')?.textContent,
+        });
+        const before = snapshot();
+        assert.ok(before.range);
+        await render([b, c, point(900, 0.70, 0.85)]);
+        assert.deepEqual(snapshot(), before, "same-length shift must not move selected dates to the next buckets");
+        await render([point(900, 0.70, 0.85), point(1200, 0.68, 0.83), point(1500, 0.66, 0.81)]);
+        assert.equal(container.querySelector('[aria-label="额度估算"]'), null);
+        assert.equal(container.querySelector(".chart-hover-bubble"), null);
+        assert.match(container.querySelector('[role="status"]').textContent, /重新选择/);
+        await render([a, b, c]);
+        assert.equal(container.querySelector('[aria-label="额度估算"]'), null, "expired dates must be cleared, not silently revived");
+      } finally { await React.act(async () => root.unmount()); }
+    });
+  } finally { restoreGlobals(); window.close(); }
+});

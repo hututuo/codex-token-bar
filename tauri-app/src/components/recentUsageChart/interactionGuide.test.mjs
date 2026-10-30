@@ -36,6 +36,22 @@ test('guide acknowledgement survives remount and manual replay without retaining
    await React.act(async()=>root.render(React.createElement(RecentChartInteractionGuide)));
    assert.equal(dom.document.querySelector('details').open,false, 'Manual replay must not reset acknowledgement');
    assert.equal(dom.document.querySelector('.rig-demo'),null);
+   await React.act(async()=>dom.document.querySelector('[aria-label="关闭图表使用引导"]').click());
+   assert.equal(dom.document.querySelector('.recent-chart-guide-shell'),null,'Closing removes the header as well as the animation');
+   assert.equal(dom.localStorage.getItem('recentChartInteractionGuideHidden'),'true');
+   await React.act(async()=>root.unmount());
+   root=createRoot(dom.document.body);
+   await React.act(async()=>root.render(React.createElement(RecentChartInteractionGuide)));
+   assert.equal(dom.document.querySelector('details'),null,'A closed guide stays absent after remount');
+   assert.equal(observers,2,'A closed guide does not start an animation visibility observer');
+   const {setChartGuideHidden}=await load('/src/components/recentUsageChart/guidePreferences.ts');
+   await React.act(async()=>setChartGuideHidden(false));
+   assert.equal(dom.document.querySelector('details').open,true,'Restoring in settings reopens the mounted guide immediately');
+   assert.ok(dom.document.querySelector('.rig-demo'));
+   assert.equal(observers,3);
+   await React.act(async()=>dom.document.querySelector('[aria-label="关闭图表使用引导"]').click());
+   assert.equal(dom.document.querySelector('.rig-demo'),null);
+   assert.equal(disconnects,3,'Closing an expanded guide disconnects its visibility observer');
   });
  } finally {
   if(root)await React.act(async()=>root.unmount());

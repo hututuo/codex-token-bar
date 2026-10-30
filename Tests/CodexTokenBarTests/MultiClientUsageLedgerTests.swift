@@ -193,8 +193,8 @@ final class MultiClientUsageLedgerTests: XCTestCase {
         XCTAssertNil(lifetime.apiCostUSD)
         XCTAssertEqual(lifetime.unpricedRequests, 1)
         let timeDependent = try XCTUnwrap(summaries.first { $0.model == "deepseek-reasoner" })
-        XCTAssertNil(timeDependent.apiCostUSD)
-        XCTAssertEqual(timeDependent.unpricedRequests, 1)
+        XCTAssertEqual(try XCTUnwrap(timeDependent.apiCostUSD), 0.000017, accuracy: 0.000000001)
+        XCTAssertEqual(timeDependent.unpricedRequests, 0)
         let alias = try XCTUnwrap(summaries.first { $0.model == "openai/gpt-5.5-2026-04-23" })
         XCTAssertEqual(alias.apiCostUSD, 0.0008)
         let fast = try XCTUnwrap(summaries.first { $0.model == "gpt-6.1-sol-fast" })
@@ -204,6 +204,34 @@ final class MultiClientUsageLedgerTests: XCTestCase {
         let free = try XCTUnwrap(summaries.first { $0.model == "glm-4.7-flash" })
         XCTAssertEqual(free.apiCostUSD, 0)
         XCTAssertEqual(free.unpricedRequests, 0)
+    }
+
+    func testSharedPriceBookUsesEventTimeForDeepSeekPeakHolidayAndHistoricalRates() throws {
+        let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("timed-prices.sqlite"))
+        let cases: [(String, String, Double)] = [
+            ("peak", "2026-10-30T01:00:00Z", 1.4412),
+            ("before-boundary", "2026-10-30T03:59:59Z", 1.4412),
+            ("offpeak", "2026-10-30T04:00:00Z", 0.7206),
+            ("second-peak", "2026-10-30T06:00:00Z", 1.4412),
+            ("second-end", "2026-10-30T10:00:00Z", 0.7206),
+            ("weekend", "2026-10-31T02:00:00Z", 0.7206),
+            ("holiday", "2026-10-01T02:00:00Z", 0.7206),
+            ("historical", "2026-08-10T02:00:00Z", 0.39256),
+            ("older-peak", "2026-08-17T02:00:00Z", 1.6748)
+        ]
+        let formatter = ISO8601DateFormatter()
+        for (id, time, _) in cases {
+            _ = try ledger.ingest([ClientUsageEvent(client: .deepseek, eventID: id, sessionID: id,
+                model: "\(id)/deepseek-v4-flash", timestamp: try XCTUnwrap(formatter.date(from: time)),
+                inputTokens: 1_000_000, outputTokens: 1_000_000, cacheReadTokens: 200_000,
+                cacheWriteTokens: nil)])
+        }
+        let summaries = try ledger.summaries()
+        for (id, _, expected) in cases {
+            let row = try XCTUnwrap(summaries.first { $0.model == "\(id)/deepseek-v4-flash" })
+            XCTAssertEqual(try XCTUnwrap(row.apiCostUSD), expected, accuracy: 0.000000001, id)
+            XCTAssertEqual(row.unpricedRequests, 0, id)
+        }
     }
 
     func testPriceAggregateCacheInvalidatesWhenLedgerRevisionChanges() throws {

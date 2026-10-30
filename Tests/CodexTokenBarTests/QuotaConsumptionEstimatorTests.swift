@@ -5,6 +5,27 @@ import XCTest
 @testable import CodexTokenBar
 
 final class QuotaConsumptionEstimatorTests: XCTestCase {
+    func testComparisonPresentationUsesComparableCostRatherThanWholeSelection() throws {
+        let start = Date(timeIntervalSince1970: 1_793_318_400)
+        let estimate = QuotaConsumptionEstimator.estimate(
+            breakdown: TokenCacheBreakdown(inputTokens: 100, cachedInputTokens: 90,
+                outputTokens: 10, reasoningOutputTokens: 0, totalTokens: 110, calls: 1),
+            quotaDropPercent: 12, priceCard: .officialAPI(.gpt55),
+            selectedCostUSD: 201, comparisonCostUSD: 51.48,
+            comparisonStartDate: start, comparisonEndDate: start.addingTimeInterval(3600))
+        XCTAssertEqual(estimate.selectedCostUSD, 201)
+        XCTAssertEqual(estimate.comparisonCostUSD, 51.48)
+        XCTAssertEqual(try XCTUnwrap(estimate.impliedWindowBudgetUSD), 429, accuracy: 0.00001)
+        let text = try XCTUnwrap(estimate.quotaEstimatorComparisonText(title: "7d"))
+        XCTAssertTrue(text.contains("$51.5"))
+        XCTAssertTrue(text.contains("12.0%"))
+        XCTAssertTrue(text.contains("$429"))
+        XCTAssertFalse(text.contains("$201"))
+        let later = start.addingTimeInterval(2 * 86400 + 300)
+        let expected = "\(DateFormatter.monthDayHourMinute.string(from: start))-\(DateFormatter.monthDayHourMinute.string(from: later))"
+        XCTAssertEqual(QuotaConsumptionSelection.quotaEstimatorTimeRangeText(startDate: start, endDate: later), expected)
+    }
+
     @MainActor
     func testRecentChartVisibilityUpdatesLocallyBeforeDeferredPersistence() throws {
         let suiteName = "RecentChartVisibilityTests-\(UUID().uuidString)"
