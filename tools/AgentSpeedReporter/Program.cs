@@ -174,16 +174,16 @@ internal static class SelfTests
 
     private static void RegistrationTransientRepliesAreRetryable()
     {
-        if (ReporterRuntime.FailureCode(new ReportReply(429)) != "service_unavailable"
-            || ReporterRuntime.FailureCode(new ReportReply(408)) != "service_unavailable"
-            || ReporterRuntime.FailureCode(new ReportReply(503)) != "service_unavailable"
-            || ReporterRuntime.FailureCode(new ReportReply(403) { Code = "forbidden" }) != "forbidden"
-            || ReporterRuntime.FailureCode(new ReportReply(400) { Code = "username_taken" }) != "username_taken")
+        if (ReporterRetryPolicy.FailureCode(new ReportReply(429)) != "service_unavailable"
+            || ReporterRetryPolicy.FailureCode(new ReportReply(408)) != "service_unavailable"
+            || ReporterRetryPolicy.FailureCode(new ReportReply(503)) != "service_unavailable"
+            || ReporterRetryPolicy.FailureCode(new ReportReply(403) { Code = "forbidden" }) != "forbidden"
+            || ReporterRetryPolicy.FailureCode(new ReportReply(400) { Code = "username_taken" }) != "username_taken")
         {
             throw new InvalidOperationException();
         }
 
-        var registrationFailure = ReporterRuntime.FailureForReply(
+        var registrationFailure = ReporterRetryPolicy.FailureForReply(
             new ReportReply(503) { RetryAfterSeconds = 45 });
         if (registrationFailure.Code != "service_unavailable"
             || registrationFailure.RetryAfterSeconds != 45)

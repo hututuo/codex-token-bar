@@ -23,6 +23,27 @@ internal static class ReporterRetryPolicy
 {
     private static readonly int[] BackoffSeconds = [5, 10, 20, 40, 80, 160, 300];
 
+    internal static string FailureCode(ReportReply? reply)
+    {
+        if (reply is null || reply.Status is 408 or 429 || reply.Status >= 500)
+        {
+            return "service_unavailable";
+        }
+
+        return reply.Code switch
+        {
+            "api_key_required" or "api_key_invalid" => "api_key_required",
+            "username_taken" => "username_taken",
+            "username_invalid" => "username_invalid",
+            "forbidden" => "forbidden",
+            "gone" => "service_unsupported",
+            _ => "reporting_failed",
+        };
+    }
+
+    internal static ReporterFailure FailureForReply(ReportReply? reply) =>
+        new(FailureCode(reply), reply?.RetryAfterSeconds);
+
     public static bool IsRetryable(ReporterFailure failure) => failure.Code == "service_unavailable";
 
     public static TimeSpan DelayForAttempt(int attempt, int? retryAfterSeconds = null)
@@ -1516,7 +1537,7 @@ internal static class ReporterRuntime
                 continue;
             }
 
-            throw FailureForReply(result.Reply);
+            throw ReporterRetryPolicy.FailureForReply(result.Reply);
         }
 
         throw new ReporterFailure("service_unavailable");
@@ -1538,7 +1559,7 @@ internal static class ReporterRuntime
         var result = await api.CallAsync(request, cancellationToken).ConfigureAwait(false);
         if (result.Reply is not { Result: "updated" or "unchanged" } reply)
         {
-            throw FailureForReply(result.Reply);
+            throw ReporterRetryPolicy.FailureForReply(result.Reply);
         }
 
         var updated = identity with
@@ -1549,27 +1570,6 @@ internal static class ReporterRuntime
         keyStore.WriteIdentity(updated);
         return updated;
     }
-
-    internal static string FailureCode(ReportReply? reply)
-    {
-        if (reply is null || reply.Status is 408 or 429 || reply.Status >= 500)
-        {
-            return "service_unavailable";
-        }
-
-        return reply.Code switch
-        {
-            "api_key_required" or "api_key_invalid" => "api_key_required",
-            "username_taken" => "username_taken",
-            "username_invalid" => "username_invalid",
-            "forbidden" => "forbidden",
-            "gone" => "service_unsupported",
-            _ => "reporting_failed",
-        };
-    }
-
-    internal static ReporterFailure FailureForReply(ReportReply? reply) =>
-        new(FailureCode(reply), reply?.RetryAfterSeconds);
 
     private static string? SafeProfileUrl(string? value)
     {
