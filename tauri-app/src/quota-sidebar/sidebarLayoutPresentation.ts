@@ -1,3 +1,4 @@
+import type { RunningThreadSummaryStatus } from "../types/threadActivity";
 import type { QuotaItem } from "../multiClient/integratedClientModel";
 import { arrangedSidebarItems, isSidebarItemVisible, type SidebarLayoutConfig, type SidebarVisibilityLevel } from "./sidebarLayoutModel";
 
@@ -24,6 +25,13 @@ export function compactSidebarIDs(items: readonly string[], quotas: readonly Quo
     ? quotaWindowsForClient(quotas, id.slice(6)).map(q => q.id)
     : [id]);
 }
+/** Historical client visibility does not imply its task collector is enabled. */
+export function sidebarCombinedTaskStatus(codexStatus: RunningThreadSummaryStatus, includesCodex: boolean, requiresClaude: boolean, claudeReady: boolean): RunningThreadSummaryStatus {
+  if (!requiresClaude) return includesCodex ? codexStatus : "unavailable";
+  if (claudeReady) return includesCodex ? codexStatus : "ready";
+  return includesCodex ? "stale" : "unavailable";
+}
+
 export function sidebarTaskStateLabel(total: number | null | undefined, status: string): string {
   const count = typeof total === "number" && Number.isFinite(total)
     ? `${Math.max(0, Math.floor(total))} 个`

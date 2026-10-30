@@ -97,8 +97,7 @@ struct ObservedSpeedSidebarView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("各模型最新速度 · 正文 TPS").font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
-            BodySpeedModelTable(monitor: monitor, dark: true)
+            Text("正文速度分布 · TPS").font(.system(size: 12, weight: .semibold)).foregroundStyle(.white)
             BodySpeedTrendView(monitor: monitor, compact: true, resetMarkers: BodySpeedResetMarker.from(quotaHistory))
             Text("最近10条").font(.system(size: 10)).foregroundStyle(.secondary)
             if samples.isEmpty { Text("等待带模型的正文测速").font(.caption).foregroundStyle(.secondary) }

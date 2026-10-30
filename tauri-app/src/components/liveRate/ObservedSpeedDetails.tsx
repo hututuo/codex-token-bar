@@ -133,10 +133,10 @@ export function ObservedSpeedDetails({ data, threads = [], sourceToken = null, s
     const titles = useMemo(() => new Map(threads.map(t => [t.id, t.title])), [threads]);
     return <section className={`observed-speed body-speed-surface-${surface}`} aria-label="正文测速" id="qs-section-speeds">
         <div className="observed-speed-heading body-speed-overview-heading">
-            <h3>{surface === "sidebar" ? <>各模型最新速度 <small>正文 TPS</small></> : <>正文测速 <small>TPS · token/秒</small></>}</h3>
+            <h3>{surface === "sidebar" ? <>正文速度分布 <small>TPS</small></> : <>正文测速 <small>TPS · token/秒</small></>}</h3>
             <button className="body-speed-more-details" onClick={() => { void invoke("open_modeltrace").catch(error => setDetailsFailure(String(error))); }}>模型指纹 · 手动检测</button>
         </div>
-        <ModelSpeedWindows data={data}/>
+        {surface === "home" && <ModelSpeedWindows data={data}/>}
         <BodySpeedTrend quotaIdentity={quotaIdentity} quotaUpdatedAt={quotaUpdatedAt} preferredModel={[...(data.modelSpeeds15m ?? [])].sort((a,b)=>b.sampleCount-a.sampleCount)[0]?.model} sourceToken={sourceToken} compact={surface === "sidebar" ? "detail" : undefined} revision={(data.speedSamples ?? []).map(s => `${s.id}/${s.model}/${s.confidence}`).join("|")}/>
         <div className="body-speed-recent-heading"><span>最近{limit}条{surface === "home" ? " · 已识别模型" : ""}</span>{surface === "home" && <button disabled={!sourceToken} onClick={() => void openDetails()}>查看详情</button>}</div>
         <ol className="body-speed-recent-list" aria-label="最近测速">{samples.map(s => {

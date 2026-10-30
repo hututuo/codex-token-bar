@@ -32,6 +32,19 @@ enum ClientLocalRuntimePresentation {
             freshness: valid.count == 2 && valid.allSatisfy { $0.freshness == .fresh } ? .fresh : .stale)
     }
 
+    /// A missing client is different from a stale Codex scan. Keep the counts'
+    /// conservative freshness while explaining which selected reader is missing.
+    static func taskSourceIssue(codex: RunningThreadSummary, claude: RunningThreadSummary,
+                                allowed: Set<String>) -> String? {
+        if allowed.contains("codex"), codex.freshness != .fresh {
+            return codex.freshness == .stale ? "Codex 上次数据" : codex.freshness == .loading ? "Codex 读取中" : "Codex 未就绪"
+        }
+        if allowed.contains("claudeCode") || allowed.contains("claudeDesktop"), claude.freshness != .fresh {
+            return claude.freshness == .stale ? "Claude 上次数据" : claude.freshness == .loading ? "Claude 读取中" : "Claude 未就绪"
+        }
+        return nil
+    }
+
     static func models(codex: [ModelTokenBreakdown], clients: [ClientUsageSummary], allowed: Set<String>) -> [ModelTokenBreakdown] {
         (allowed.contains("codex") ? codex : []) + clients.filter { allowed.contains($0.client.rawValue) }.map { row in
             .init(model: row.model, breakdown: .init(inputTokens: Int(row.inputTokens), cachedInputTokens: Int(row.cacheReadTokens ?? 0),

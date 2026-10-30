@@ -196,7 +196,10 @@ struct QuotaSidebarRail: View {
         }
     }
     private var liveRate: Double { liveRates.reduce(0) { $0 + $1.tokensPerSecond } }
-    private var runningSummary: RunningThreadSummary { ClientLocalRuntimePresentation.running(codex: tasks.runningThreadSummary, claude: localLive.running, allowed: allowedClients) }
+    private var taskClients: Set<String> { allowedClients.filter { id in
+        id == "codex" || clients.preferences.contains { $0.client.rawValue == id && $0.enabled }
+    } }
+    private var runningSummary: RunningThreadSummary { ClientLocalRuntimePresentation.running(codex: tasks.runningThreadSummary, claude: localLive.running, allowed: taskClients) }
     private var selectedModelRows: [ModelTokenBreakdown] { ClientLocalRuntimePresentation.models(codex: store.todayModelBreakdowns, clients: clients.todaySummaries, allowed: allowedClients) }
     private var availableQuotaItems: [ClientQuotaItem] {
         if let quotaItemsOverride { return quotaItemsOverride }
@@ -625,7 +628,10 @@ struct QuotaSidebarRail: View {
         let summary = runningSummary
         switch summary.freshness {
         case .fresh: return "\(summary.main) 主 · \(summary.subagents) 子"
-        case .stale: return "\(summary.total) 运行 · 待刷新"
+        case .stale:
+            let issue = ClientLocalRuntimePresentation.taskSourceIssue(codex: tasks.runningThreadSummary,
+                claude: localLive.running, allowed: taskClients) ?? "上次数据"
+            return "\(summary.total) 运行\n\(issue)"
         case .loading: return "读取任务中"
         case .unavailable: return "任务未知"
         }
@@ -686,8 +692,11 @@ struct QuotaSidebarDetailView: View {
 
     private var allowedClients: Set<String> { ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs) }
     private var selectedRunning: RunningThreadSummary {
-        ClientLocalRuntimePresentation.running(codex: tasks.runningThreadSummary,
-            claude: claudeRuntime.projection(allowed: allowedClients).running, allowed: allowedClients)
+        let taskClients = allowedClients.filter { id in
+            id == "codex" || clients.preferences.contains { $0.client.rawValue == id && $0.enabled }
+        }
+        return ClientLocalRuntimePresentation.running(codex: tasks.runningThreadSummary,
+            claude: claudeRuntime.projection(allowed: taskClients).running, allowed: taskClients)
     }
     var body: some View {
         // Capture one projection for every quota, usage and running field in

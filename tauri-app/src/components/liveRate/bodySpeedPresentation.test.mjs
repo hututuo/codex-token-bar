@@ -139,8 +139,10 @@ test('sidebar detail shows ten records directly without dashboard cards, selecto
    assert.equal(win.document.querySelectorAll('.body-speed-model,.observed-speed-window,dialog').length,0);
    assert.match(win.document.body.textContent,/最近10条/);
    assert.match(win.document.body.textContent,/打开详细信息/);
-   assert.match(win.document.body.textContent,/各模型最新速度/);
-   assert.deepEqual([...win.document.querySelectorAll('.body-speed-window-model-row')].map(r=>[...r.children].map(c=>c.textContent)),[['sol','50.0','48.0','40.0','45.0'],['luna','120.0','—','—','110.0']]);
+   assert.match(win.document.body.textContent,/正文速度分布/);
+   assert.equal(win.document.querySelectorAll('.body-speed-window-model-row').length,0);
+   assert.doesNotMatch(win.document.body.textContent,/5分钟|15分钟|30分钟平均速度/);
+   assert.equal(win.document.querySelectorAll('.body-speed-trend').length,1);
    assert.doesNotMatch(win.document.body.textContent,/展开历史|查看详情/);
   }finally{win.close();}
  });

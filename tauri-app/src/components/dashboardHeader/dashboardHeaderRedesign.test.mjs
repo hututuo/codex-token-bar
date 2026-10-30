@@ -49,6 +49,10 @@ test("overview title, client scope, and report status share the top row", async 
   assert.deepEqual(Array.from(scopeSlot.children).map(element => element.tagName), ["H1", "NAV"]);
   assert.equal(globals.parentElement, top);
   assert.ok(globals.contains(reportingStatus));
+  const rightStatus = globals.querySelector(".dashboard-global-status");
+  assert.ok(rightStatus.contains(reportingStatus));
+  assert.ok(rightStatus.querySelector(".dash-head__freshness"));
+  assert.equal(codex.querySelector(".dash-head__freshness"), null);
   assert.match(globals.textContent, /立即刷新.*设置.*完整日志.*更多/);
   assert.doesNotMatch(globals.textContent, /会话管理|会话增强|自动续跑|更改目录/);
   assert.ok(dashHead === codex);

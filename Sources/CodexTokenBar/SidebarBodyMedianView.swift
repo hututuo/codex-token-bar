@@ -89,7 +89,7 @@ struct SidebarBodyMedianContent: View, Equatable {
             if let series { SidebarBodyMedianBars(series: series).frame(height: 32) }
             else { Text("趋势待采样").font(.system(size: 7)).foregroundStyle(.secondary).frame(height: 32) }
             Text(medianLabel).font(.system(size: 7)).monospacedDigit()
-                .foregroundStyle(.white.opacity(0.75)).frame(maxWidth: .infinity)
+                .foregroundStyle(.white).frame(maxWidth: .infinity)
         }.frame(width: 74).padding(.vertical, 2)
             .background(GeometryReader { proxy in
                 Color.clear.preference(key: QuotaSidebarContentMeasurementKey.self,

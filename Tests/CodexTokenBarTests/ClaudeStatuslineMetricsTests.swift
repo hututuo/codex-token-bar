@@ -97,6 +97,15 @@ final class ClaudeStatuslineMetricsTests: XCTestCase {
         XCTAssertEqual(buckets.count, 2)
     }
 
+    func testTaskSourceIssueNamesTheMissingReaderWithoutPretendingCountsAreFresh() {
+        let fresh = RunningThreadSummary(main: 2, subagents: 1, updatedAt: now, freshness: .fresh)
+        XCTAssertNil(ClientLocalRuntimePresentation.taskSourceIssue(codex: fresh, claude: .unavailable, allowed: ["codex"]))
+        XCTAssertEqual(ClientLocalRuntimePresentation.taskSourceIssue(codex: fresh, claude: .unavailable, allowed: ["codex", "claudeCode"]), "Claude 未就绪")
+        XCTAssertEqual(ClientLocalRuntimePresentation.running(codex: fresh, claude: .unavailable, allowed: ["codex", "claudeCode"]).freshness, .stale)
+        XCTAssertEqual(ClientLocalRuntimePresentation.taskSourceIssue(codex: fresh.markedStale(), claude: fresh, allowed: ["codex", "claudeCode"]), "Codex 上次数据")
+        XCTAssertNil(ClientLocalRuntimePresentation.taskSourceIssue(codex: fresh, claude: fresh, allowed: ["codex", "claudeCode"]))
+    }
+
     func testSelectedScopeCannotLeakCodexRatesOrTasks() {
         let codex = RunningThreadSummary(main: 3, subagents: 2, updatedAt: now, freshness: .fresh)
         let claude = RunningThreadSummary(main: 1, subagents: 4, updatedAt: now, freshness: .fresh)

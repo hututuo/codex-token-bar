@@ -448,6 +448,7 @@ struct HeaderView: View {
                 }
                 Spacer(minLength: 12)
                 if presentationMode.showsActions { globalTools }
+                else if includesCodex { preciseStatus }
             }
             .padding(.bottom, 13)
             .overlay(alignment: .bottom) { Rectangle().fill(AppTheme.border).frame(height: 1) }
@@ -469,6 +470,7 @@ struct HeaderView: View {
                 Text("全局工具").font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
                 AgentSpeedReportingDashboardStatus(compact: true, unframed: true)
             }
+            if includesCodex { preciseStatus.frame(maxWidth: .infinity, alignment: .trailing) }
             HStack(spacing: 6) {
                 Button(action: onRefresh) {
                     DashboardHeaderCommandLabel(title: isRefreshing ? "刷新中" : "刷新", systemImage: "arrow.clockwise", color: AppTheme.accentBlue)
@@ -496,7 +498,6 @@ struct HeaderView: View {
                 }
                 Button(action: onChangeDirectory) { DataSourceBadge(path: dataSourceLabel, origin: dataSourceOrigin) }
                     .buttonStyle(.plain).help("更改 Codex 目录")
-                preciseStatus
             }.frame(maxWidth: .infinity, alignment: .leading)
             if presentationMode.showsActions {
                 VStack(alignment: .trailing, spacing: 5) {

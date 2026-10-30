@@ -246,7 +246,41 @@ export function DashboardHeader({
           {scopeControl}
         </div>
         <div className="dashboard-global-tools" role="group" aria-label="全局工具">
-          <div className="dashboard-global-meta"><span>全局工具</span>{reportingStatus}</div>
+          <div className="dashboard-global-meta"><span>全局工具</span><div className="dashboard-global-status">{reportingStatus}{includesCodex && (<span className={`dash-head__freshness${freshnessStage ? ` is-${freshnessStage}` : ""}`}>
+            <small>{activeProgress?.phaseLabel ?? (fullPrecisionPending ? "等待精确统计" : "精确统计")}</small>
+            <strong>
+              <i aria-hidden="true" className="precise-progress-dot" />
+              {activeProgress
+                ? activeProgress.text
+                : aggregateSourceLeading
+                  ? `${summaryProgressTime} · 模型与图表同步中`
+                  : preciseStatisticsPending
+                    ? `${summaryProgressTime} · 等待精确统计`
+                  : aggregateWaitingWithoutLineage
+                    ? `${summaryProgressTime} · 等待图表聚合`
+                  : lightSummarySyncing
+                    ? `${summaryProgressTime} · 同步中`
+                  : aggregateTimeLabel === null
+                    ? summaryCompleteTime
+                    : `${summaryCompleteTime} · 图表至 ${aggregateTimeLabel}`}
+              {activeProgress?.countLabel ? ` ${activeProgress.countLabel}` : ""}
+            </strong>
+            {activeProgress?.showsReassurance ? (
+              <small className="precise-progress-hint">{PRECISE_PROGRESS_REASSURANCE}</small>
+            ) : null}
+            {activeProgress?.showsProgress ? (
+              <span
+                aria-label={activeProgress.countLabel ?? activeProgress.text}
+                aria-valuemax={preciseProgress?.total ?? undefined}
+                aria-valuemin={preciseProgress?.total == null ? undefined : 0}
+                aria-valuenow={preciseProgress?.total == null ? undefined : preciseProgress.completed}
+                className={`precise-progress-bar${activeProgress.fraction == null ? " is-indeterminate" : ""}`}
+                role="progressbar"
+              >
+                <span style={{ width: `${Math.round((activeProgress.fraction ?? 0) * 100)}%` }} />
+              </span>
+            ) : null}
+          </span>)}</div></div>
           <div className="dashboard-global-actions">
             <button className="dash-head__action dash-head__action--accent" disabled={refreshing} onClick={onRefresh} type="button">{refreshing ? "刷新中…" : "立即刷新"}</button>
             <div className="dash-head__action-group">
@@ -308,41 +342,7 @@ export function DashboardHeader({
           <button className="dashboard-codex-source" onClick={() => setEditingPath(value => !value)} title={codexHome.path} type="button" aria-label="更改 Codex 数据目录">
             <span>{sourceLabel}</span><strong>{codexHome.path}</strong><span aria-hidden="true">⌄</span>
           </button>
-          <span className={`dash-head__freshness${freshnessStage ? ` is-${freshnessStage}` : ""}`}>
-            <small>{activeProgress?.phaseLabel ?? (fullPrecisionPending ? "等待精确统计" : "精确统计")}</small>
-            <strong>
-              <i aria-hidden="true" className="precise-progress-dot" />
-              {activeProgress
-                ? activeProgress.text
-                : aggregateSourceLeading
-                  ? `${summaryProgressTime} · 模型与图表同步中`
-                  : preciseStatisticsPending
-                    ? `${summaryProgressTime} · 等待精确统计`
-                  : aggregateWaitingWithoutLineage
-                    ? `${summaryProgressTime} · 等待图表聚合`
-                  : lightSummarySyncing
-                    ? `${summaryProgressTime} · 同步中`
-                  : aggregateTimeLabel === null
-                    ? summaryCompleteTime
-                    : `${summaryCompleteTime} · 图表至 ${aggregateTimeLabel}`}
-              {activeProgress?.countLabel ? ` ${activeProgress.countLabel}` : ""}
-            </strong>
-            {activeProgress?.showsReassurance ? (
-              <small className="precise-progress-hint">{PRECISE_PROGRESS_REASSURANCE}</small>
-            ) : null}
-            {activeProgress?.showsProgress ? (
-              <span
-                aria-label={activeProgress.countLabel ?? activeProgress.text}
-                aria-valuemax={preciseProgress?.total ?? undefined}
-                aria-valuemin={preciseProgress?.total == null ? undefined : 0}
-                aria-valuenow={preciseProgress?.total == null ? undefined : preciseProgress.completed}
-                className={`precise-progress-bar${activeProgress.fraction == null ? " is-indeterminate" : ""}`}
-                role="progressbar"
-              >
-                <span style={{ width: `${Math.round((activeProgress.fraction ?? 0) * 100)}%` }} />
-              </span>
-            ) : null}
-          </span>
+
         </div>
         <div className="dashboard-codex-toolbox" role="group" aria-label="Codex 会话操作">
             <div className="dash-head__action-group">
