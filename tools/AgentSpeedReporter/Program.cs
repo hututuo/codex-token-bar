@@ -101,6 +101,10 @@ internal static class SelfTests
             await InvalidShortUsernameDoesNotStartAsync().ConfigureAwait(false);
             await ParentEofCancelsAsync().ConfigureAwait(false);
             await TransportChoiceIsExplicitAsync().ConfigureAwait(false);
+            RegistrationTransientRepliesAreRetryable();
+            ReportingRetryDelayIsBoundedAndHonorsRetryAfter();
+            await ReportingRetryLoopRetriesInPlaceAndCancelsAsync().ConfigureAwait(false);
+            await ReportingRetryLoopLeavesTerminalErrorsExplicitAsync().ConfigureAwait(false);
             await LocalDisplayStartupDoesNotRequireReportingIdentityAsync().ConfigureAwait(false);
             LocalDisplayUsesOnlyFreshActiveAgentContributions();
             LocalDisplayWireContractIsExact();
@@ -165,6 +169,162 @@ internal static class SelfTests
         if (websocket?.Transport != "websocket")
         {
             throw new InvalidOperationException();
+        }
+    }
+
+    private static void RegistrationTransientRepliesAreRetryable()
+    {
+        if (ReporterRuntime.FailureCode(new ReportReply(429)) != "service_unavailable"
+            || ReporterRuntime.FailureCode(new ReportReply(408)) != "service_unavailable"
+            || ReporterRuntime.FailureCode(new ReportReply(503)) != "service_unavailable"
+            || ReporterRuntime.FailureCode(new ReportReply(403) { Code = "forbidden" }) != "forbidden"
+            || ReporterRuntime.FailureCode(new ReportReply(400) { Code = "username_taken" }) != "username_taken")
+        {
+            throw new InvalidOperationException();
+        }
+
+        var registrationFailure = ReporterRuntime.FailureForReply(
+            new ReportReply(503) { RetryAfterSeconds = 45 });
+        if (registrationFailure.Code != "service_unavailable"
+            || registrationFailure.RetryAfterSeconds != 45)
+        {
+            throw new InvalidOperationException();
+        }
+    }
+
+    private static void ReportingRetryDelayIsBoundedAndHonorsRetryAfter()
+    {
+        int[] expected = [5, 10, 20, 40, 80, 160, 300, 300, 300];
+        for (var attempt = 1; attempt <= expected.Length; attempt++)
+        {
+            if (ReporterRetryPolicy.DelayForAttempt(attempt).TotalSeconds != expected[attempt - 1])
+            {
+                throw new InvalidOperationException();
+            }
+        }
+
+        if (ReporterRetryPolicy.DelayForAttempt(1, 90).TotalSeconds != 90
+            || ReporterRetryPolicy.DelayForAttempt(2, 3).TotalSeconds != 10
+            || ReporterRetryPolicy.DelayForAttempt(7, 172_800).TotalSeconds != 86_400)
+        {
+            throw new InvalidOperationException();
+        }
+    }
+
+    private static async Task ReportingRetryLoopRetriesInPlaceAndCancelsAsync()
+    {
+        const bool reportingEnabled = true;
+        const bool localDisplayEnabled = true;
+        using var lifetime = new CancellationTokenSource();
+        var releaseBackoff = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var backoffEntered = new TaskCompletionSource<TimeSpan>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var retryEntered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondDisplayTick = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thirdDisplayTick = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var attempts = 0;
+        var monitorStarts = 0;
+        var displayTicks = 0;
+
+        async Task DisplayLoopAsync(CancellationToken cancellationToken)
+        {
+            monitorStarts++;
+            using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(10));
+            try
+            {
+                while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    var tick = ++displayTicks;
+                    if (tick >= 2) secondDisplayTick.TrySetResult(true);
+                    if (tick >= 3) thirdDisplayTick.TrySetResult(true);
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+            }
+        }
+
+        var displayTask = DisplayLoopAsync(lifetime.Token);
+        var reportingTask = reportingEnabled && localDisplayEnabled
+            ? ReporterRetryPolicy.RunAsync(
+                async cancellationToken =>
+                {
+                    if (Interlocked.Increment(ref attempts) == 1)
+                    {
+                        throw new ReporterFailure("service_unavailable", 60);
+                    }
+
+                    retryEntered.TrySetResult(true);
+                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+                },
+                (_, _) => Task.CompletedTask,
+                lifetime.Token,
+                async (delay, cancellationToken) =>
+                {
+                    backoffEntered.TrySetResult(delay);
+                    await releaseBackoff.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                })
+            : Task.CompletedTask;
+
+        var delay = await backoffEntered.Task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+        await secondDisplayTick.Task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+        if (delay != TimeSpan.FromSeconds(60)
+            || attempts != 1
+            || monitorStarts != 1
+            || displayTask.IsCompleted
+            || reportingTask.IsCompleted)
+        {
+            throw new InvalidOperationException("The local display or reporter stopped during transient backoff.");
+        }
+
+        releaseBackoff.TrySetResult(true);
+        await retryEntered.Task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+        await thirdDisplayTick.Task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+        if (attempts != 2 || monitorStarts != 1 || displayTask.IsCompleted || reportingTask.IsCompleted)
+        {
+            throw new InvalidOperationException("The reporter restarted its monitor instead of retrying in place.");
+        }
+
+        lifetime.Cancel();
+        try
+        {
+            await reportingTask.ConfigureAwait(false);
+            throw new InvalidOperationException("Cancellation did not stop the reporting retry loop.");
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        {
+        }
+
+        await displayTask.ConfigureAwait(false);
+    }
+
+    private static async Task ReportingRetryLoopLeavesTerminalErrorsExplicitAsync()
+    {
+        var attempts = 0;
+        var delays = 0;
+        try
+        {
+            await ReporterRetryPolicy.RunAsync(
+                _ =>
+                {
+                    attempts++;
+                    throw new ReporterFailure("forbidden");
+                },
+                (_, _) => Task.CompletedTask,
+                CancellationToken.None,
+                (_, _) =>
+                {
+                    delays++;
+                    return Task.CompletedTask;
+                }).ConfigureAwait(false);
+            throw new InvalidOperationException("A terminal registration error was retried.");
+        }
+        catch (ReporterFailure failure) when (failure.Code == "forbidden")
+        {
+        }
+
+        if (attempts != 1 || delays != 0)
+        {
+            throw new InvalidOperationException("Terminal errors must not enter the retry loop.");
         }
     }
 

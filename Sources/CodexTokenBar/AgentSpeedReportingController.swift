@@ -74,6 +74,11 @@ final class AgentSpeedReportingController: ObservableObject {
     private var listener: UUID?
     private var work: Task<Void, Never>?
     private var delivery: Task<Void, Never>?
+    private var recovery: Task<Void, Never>?
+    private var recoveryAttempt = 0
+    private var sleeping = false
+    @Published private(set) var nextRetryAt: Date? = nil
+    private let retryWait: @Sendable (TimeInterval) async throws -> Void
     private var generation = UUID()
     private var signer: (any ReportSigner)?
     private var document: ReportDiscovery?
@@ -108,7 +113,9 @@ final class AgentSpeedReportingController: ObservableObject {
          apiURLOverride: String? = nil,
          startWebSocket: @escaping (AgentSpeedWebSocket) -> Void = { $0.start() },
          makeRealtimeMonitor: ((SpeedStore) -> any AgentSpeedReportingMonitor)? = nil,
-         makeMonitor: ((SpeedStore) -> any AgentSpeedReportingMonitor)? = nil) {
+         makeMonitor: ((SpeedStore) -> any AgentSpeedReportingMonitor)? = nil,
+         retryWait: @escaping @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) }) {
+        self.retryWait = retryWait
         self.serviceAddress = serviceURLOverride ?? Self.serviceURL
         self.permittedAPI = apiURLOverride ?? Self.apiURL
         self.makeRealtimeMonitor = makeRealtimeMonitor
@@ -182,7 +189,9 @@ final class AgentSpeedReportingController: ObservableObject {
     func retry() { guard enabled else { return }; socketDiscoveryRefreshes = 0; stopRuntime(); begin() }
     func shutdown() { stopRuntime() }
 
-    private func stopRuntime() {
+    private func stopRuntime(resetRecovery: Bool = true) {
+        recovery?.cancel(); recovery = nil; nextRetryAt = nil
+        if resetRecovery { recoveryAttempt = 0; sleeping = false }
         socket?.stop(); socket = nil; socketFlush?.cancel(); socketFlush = nil
         socketWindow = nil; socketObservation = nil; socketLastSample = nil; socketSeq = 0; socketQuiet = false; socketTitle = ReportTitleTracker()
         for observer in lifecycle { NSWorkspace.shared.notificationCenter.removeObserver(observer) }; lifecycle = []
@@ -221,7 +230,9 @@ final class AgentSpeedReportingController: ObservableObject {
         let outcome = await api.discover(service)
         guard valid(token) else { return }
         guard case .document(let discovered, _) = outcome else {
-            fail(Self.discoveryFailureMessage(outcome)); return
+            if case .failed = outcome { fail(Self.discoveryFailureMessage(outcome), retryAfter: Self.discoveryRetryMinimum(outcome)) }
+            else { fail(Self.discoveryFailureMessage(outcome)) }
+            return
         }
         guard discovered.supportsThisClient, discovered.api.string == permittedAPI, discovered.apiKeyMode != .required else {
             fail("服务协议或接收地址已变化，请更新客户端后重试"); return
@@ -247,17 +258,18 @@ final class AgentSpeedReportingController: ObservableObject {
             guard case .success(let value) = reply, value.isSuccess,
                   value.deviceId == id, let registeredName = value.username,
                   ["created", "exists", "updated"].contains(value.result ?? "") else {
-                fail(Self.failureMessage(reply)); return
+                fail(Self.failureMessage(reply), retryAfter: Self.retryMinimum(reply)); return
             }
             if registeredName != username {
                 let renamed = await request(endpoint: ReportEndpoint.device(id), body: ReportDocuments.rename(username: username), signer: key, method: "PATCH")
                 guard valid(token) else { return }
                 guard case .success(let renamedReply) = renamed, renamedReply.isSuccess, renamedReply.username == username else {
-                    fail(Self.failureMessage(renamed)); return
+                    fail(Self.failureMessage(renamed), retryAfter: Self.retryMinimum(renamed)); return
                 }
             } else { username = registeredName }
             defaults.set(username, forKey: Self.usernameKey)
             profileURL = Self.safeProfile(value.profileURL)
+            recoveryAttempt = 0; nextRetryAt = nil
             lastRegistration = Date()
             if transport == .websocket { startSocket(document: discovered, signer: key, token: token) }
             listener = store.addLiveListener { [weak self] snapshot in self?.receive(snapshot) }
@@ -428,6 +440,7 @@ final class AgentSpeedReportingController: ObservableObject {
 
     private func suspendReporting() {
         guard enabled else { return }
+        sleeping = true; recovery?.cancel(); recovery = nil; nextRetryAt = nil
         socketFlush?.cancel(); socketFlush = nil
         socketWindow = nil; socketObservation = nil; socketLastSample = nil
         if transport == .websocket && !usingHTTPFallback { socket?.suspend(); monitor?.stop(); phase = "paused"; message = "已暂停 · 等待唤醒" }
@@ -435,6 +448,8 @@ final class AgentSpeedReportingController: ObservableObject {
     }
     private func resumeReporting() {
         guard enabled else { return }
+        sleeping = false
+        if monitor == nil { stopRuntime(resetRecovery: false); begin(); return }
         socketWindow = nil; socketObservation = nil; socketLastSample = nil
         socket?.resume(); monitor?.start()
         phase = "connecting"; message = "已唤醒 · 重新连接并从新数据开始"
@@ -456,7 +471,7 @@ final class AgentSpeedReportingController: ObservableObject {
             phase = "connected"
         }
         socket.onDisconnected = { [weak self] in
-            guard let self else { return }
+            guard let self, valid(token) else { return }
             socketFlush?.cancel(); socketFlush = nil; socketWindow = nil; socketObservation = nil; socketLastSample = nil
             if enabled && transport == .websocket { phase = "reconnecting" }
         }
@@ -478,13 +493,15 @@ final class AgentSpeedReportingController: ObservableObject {
                 return
             }
             if code == "unknown_device", Date().timeIntervalSince(lastRegistration) < 3600 {
-                fail("设备注册需要确认，请手动重试"); return
+                fail("设备注册需要确认", retryAfter: max(5, 3600 - Date().timeIntervalSince(lastRegistration))); return
             }
             if code == "seq_conflict" { stopRuntime(); begin(); return }
             if socketDiscoveryRefreshes >= 1 { fail("服务连接设置不一致，请手动重试"); return }
             socketDiscoveryRefreshes += 1; stopRuntime(); begin()
         }
-        socket.onTerminal = { [weak self] text in self?.fail(text) }
+        socket.onTerminal = { [weak self] text in
+            guard let self, valid(token) else { return }; fail(text)
+        }
         socket.onConfigurationChanged = { [weak self] in
             guard let self, valid(token) else { return }
             if socketDiscoveryRefreshes >= 1 { fail("服务连接设置不一致，请手动重试"); return }
@@ -626,8 +643,8 @@ final class AgentSpeedReportingController: ObservableObject {
             case .newRun: self.run = nil
             case .reRegister, .recheckRegistration:
                 if Date().timeIntervalSince(lastRegistration) >= 3600 { retry() }
-                else { fail("设备注册需要确认，请重试连接") }
-            case .refreshDiscovery: fail("服务协议有变化，请重试连接")
+                else { fail("设备注册需要确认", retryAfter: max(5, 3600 - Date().timeIntervalSince(lastRegistration))) }
+            case .refreshDiscovery: fail("服务协议有变化", retryAfter: 60)
             case .rename, .needsUser, .strike, .usePendingKey: fail(Self.failureMessage(result))
             }
         }
@@ -653,12 +670,48 @@ final class AgentSpeedReportingController: ObservableObject {
     }
 
     private func valid(_ token: UUID) -> Bool { enabled && token == generation && !Task.isCancelled }
-    private func fail(_ text: String) {
+    private func fail(_ text: String, retryAfter: TimeInterval? = nil) {
+        recovery?.cancel(); recovery = nil; nextRetryAt = nil
+        generation = UUID()
         socket?.stop(); socket = nil; socketFlush?.cancel(); socketFlush = nil
         monitor?.stop(); monitor = nil
         if let listener { store.removeLiveListener(listener) }; listener = nil
         run = nil; liveOutputTps = 0; estimatedShare = 0; sources = []
         phase = "error"; message = text
+        if let retryAfter { scheduleRecovery(minimum: retryAfter) }
+    }
+    static func recoveryDelay(attempt: Int, minimum: TimeInterval = 0) -> TimeInterval {
+        max(min(300, 5 * pow(2, Double(min(6, max(0, attempt))))), min(86400, max(0, minimum)))
+    }
+    static func discoveryRetryMinimum(_ outcome: ReportAPI.DiscoveryOutcome) -> TimeInterval {
+        // Discovery collapses HTTP429/5xx into unavailable in the pinned SDK.
+        if case .failed(.unavailable) = outcome { return 60 }
+        return 5
+    }
+    static func retryMinimum(_ result: Result<ReportReply, ReportTransportError>) -> TimeInterval? {
+        switch result {
+        case .failure: return 5
+        case .success(let reply):
+            if reply.status == 429 || reply.status == 408 || reply.status >= 500 {
+                return TimeInterval(max(5, reply.retryAfterSeconds ?? (reply.status == 429 ? 60 : 5)))
+            }
+            return nil
+        }
+    }
+    private func scheduleRecovery(minimum: TimeInterval) {
+        guard enabled, !sleeping, recovery == nil else { return }
+        let delay = Self.recoveryDelay(attempt: recoveryAttempt, minimum: minimum)
+        recoveryAttempt = min(30, recoveryAttempt + 1)
+        let token = generation, wait = retryWait
+        nextRetryAt = Date().addingTimeInterval(delay)
+        message += " · \(Int(delay))秒后自动重试"
+        recovery = Task { [weak self] in
+            do { try await wait(delay) } catch { return }
+            guard !Task.isCancelled, let self, valid(token), !sleeping else { return }
+            recovery = nil
+            stopRuntime(resetRecovery: false)
+            begin()
+        }
     }
     static func failureMessage(_ result: Result<ReportReply, ReportTransportError>) -> String {
         guard case .success(let reply) = result else { return "连接暂不可用，请稍后重试" }

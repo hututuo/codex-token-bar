@@ -1,5 +1,7 @@
 use crate::models::{AgentSpeedReportingSettingsSnapshot, AgentSpeedReportingTransport};
 use serde::{Deserialize, Serialize};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 #[cfg(windows)]
@@ -11,12 +13,27 @@ use std::{io, os::windows::process::CommandExt, process::Stdio, time::Duration};
 use tokio::{
     io::{AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, Command},
-    sync::Mutex as AsyncMutex,
+    sync::{watch, Mutex as AsyncMutex},
 };
 
 const STATUS_LINE_LIMIT: usize = 4096;
 const MAX_TPS: f64 = 1_000_000_000.0;
 const REPORTER_DENIED_SOURCE_IDS: &[&str] = &["claudeCode", "claudeDesktop"];
+const REPORTING_RETRY_BACKOFF_SECONDS: [u64; 7] = [5, 10, 20, 40, 80, 160, 300];
+
+fn reporting_retry_delay_seconds(attempt: u32, retry_after_seconds: Option<u64>) -> u64 {
+    let index = attempt
+        .saturating_sub(1)
+        .min((REPORTING_RETRY_BACKOFF_SECONDS.len() - 1) as u32) as usize;
+    let backoff = REPORTING_RETRY_BACKOFF_SECONDS[index];
+    retry_after_seconds
+        .map(|seconds| backoff.max(seconds.clamp(5, 86_400)))
+        .unwrap_or(backoff)
+}
+
+fn helper_failure_is_retryable(message_code: Option<&str>) -> bool {
+    matches!(message_code, None | Some("service_unavailable"))
+}
 
 fn reporter_start_payload(
     username: &str,
@@ -126,6 +143,7 @@ struct RegistryData {
     active_local_display: bool,
     active_reporting: bool,
     display_snapshot: Option<AgentSpeedDisplaySnapshot>,
+    retry_attempt: u32,
     #[cfg(any(windows, test))]
     generation: u64,
 }
@@ -144,6 +162,8 @@ pub struct AgentSpeedReportingRegistry {
     stdin: Arc<AsyncMutex<Option<ChildStdin>>>,
     #[cfg(windows)]
     transition: Arc<AsyncMutex<()>>,
+    #[cfg(windows)]
+    retry_cancel: Arc<Mutex<Option<watch::Sender<bool>>>>,
 }
 
 impl AgentSpeedReportingRegistry {
@@ -210,10 +230,19 @@ impl AgentSpeedReportingRegistry {
             })
     }
 
-    pub async fn start(
-        &self,
-        app: &tauri::AppHandle,
-        settings: &AgentSpeedReportingSettingsSnapshot,
+    pub fn start<'a>(
+        &'a self,
+        app: &'a tauri::AppHandle,
+        settings: &'a AgentSpeedReportingSettingsSnapshot,
+        local_display: bool,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(self.start_inner(app, settings, local_display))
+    }
+
+    async fn start_inner<'a>(
+        &'a self,
+        app: &'a tauri::AppHandle,
+        settings: &'a AgentSpeedReportingSettingsSnapshot,
         local_display: bool,
     ) -> Result<(), String> {
         if !settings.enabled && !local_display {
@@ -227,6 +256,7 @@ impl AgentSpeedReportingRegistry {
             data.active_username = None;
             data.active_reporting = false;
             data.active_local_display = false;
+            data.retry_attempt = 0;
             data.display_snapshot = Some(AgentSpeedDisplaySnapshot::empty("disabled", false));
             data.status = Some(AgentSpeedReportingStatus::from_settings(settings));
             #[cfg(windows)]
@@ -375,6 +405,11 @@ impl AgentSpeedReportingRegistry {
             }
             *self.stdin.lock().await = Some(child_stdin);
             *self.child.lock().unwrap_or_else(|error| error.into_inner()) = Some(child);
+            let (retry_cancel_tx, mut retry_cancel_rx) = watch::channel(false);
+            *self
+                .retry_cancel
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()) = Some(retry_cancel_tx);
 
             let data = Arc::clone(&self.data);
             let status_username = username.clone();
@@ -382,13 +417,16 @@ impl AgentSpeedReportingRegistry {
             let status_transport = settings.transport;
             let reporting_enabled = settings.enabled;
             let display_enabled = local_display;
+            let retry_registry = self.clone();
+            let retry_app = app.clone();
+            let retry_settings = settings.clone();
             let generation = self
                 .data
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .generation;
             tauri::async_runtime::spawn(async move {
-                read_helper_status(
+                let failure_code = read_helper_status(
                     child_stdout,
                     data,
                     status_stdin,
@@ -400,6 +438,37 @@ impl AgentSpeedReportingRegistry {
                     generation,
                 )
                 .await;
+                if !reporting_enabled || !helper_failure_is_retryable(failure_code.as_deref()) {
+                    return;
+                }
+
+                let Some(delay) = retry_registry.next_retry_delay(generation, None) else {
+                    return;
+                };
+                if !retry_registry.reap_helper_for_retry(generation).await {
+                    return;
+                }
+
+                tokio::select! {
+                    _ = tokio::time::sleep(delay) => {}
+                    changed = retry_cancel_rx.changed() => {
+                        if changed.is_err() || *retry_cancel_rx.borrow() {
+                            return;
+                        }
+                    }
+                }
+                if !retry_registry.generation_is_current(generation) {
+                    return;
+                }
+
+                if let Err(error) = retry_registry
+                    .start(&retry_app, &retry_settings, display_enabled)
+                    .await
+                {
+                    eprintln!(
+                        "Codex Token Bar: Agent Speed reporter retry could not start: {error}"
+                    );
+                }
             });
             Ok(())
         }
@@ -417,6 +486,7 @@ impl AgentSpeedReportingRegistry {
         data.active_username = None;
         data.active_reporting = false;
         data.active_local_display = false;
+        data.retry_attempt = 0;
         data.display_snapshot = Some(AgentSpeedDisplaySnapshot::empty("disabled", false));
         #[cfg(windows)]
         {
@@ -491,12 +561,58 @@ impl AgentSpeedReportingRegistry {
 
     #[cfg(windows)]
     fn invalidate_generation(&self) {
+        {
+            let mut data = self.data.lock().unwrap_or_else(|error| error.into_inner());
+            data.generation = data.generation.wrapping_add(1).max(1);
+            data.active_username = None;
+            data.active_transport = None;
+            data.active_reporting = false;
+            data.active_local_display = false;
+        }
+        if let Some(cancel) = self
+            .retry_cancel
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        {
+            let _ = cancel.send(true);
+        }
+    }
+
+    #[cfg(windows)]
+    fn generation_is_current(&self, generation: u64) -> bool {
+        self.data
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .generation
+            == generation
+    }
+
+    #[cfg(windows)]
+    fn next_retry_delay(
+        &self,
+        generation: u64,
+        retry_after_seconds: Option<u64>,
+    ) -> Option<Duration> {
         let mut data = self.data.lock().unwrap_or_else(|error| error.into_inner());
-        data.generation = data.generation.wrapping_add(1).max(1);
-        data.active_username = None;
-        data.active_transport = None;
-        data.active_reporting = false;
-        data.active_local_display = false;
+        if data.generation != generation {
+            return None;
+        }
+        data.retry_attempt = data.retry_attempt.saturating_add(1);
+        Some(Duration::from_secs(reporting_retry_delay_seconds(
+            data.retry_attempt,
+            retry_after_seconds,
+        )))
+    }
+
+    #[cfg(windows)]
+    async fn reap_helper_for_retry(&self, generation: u64) -> bool {
+        let _transition = self.transition.lock().await;
+        if !self.generation_is_current(generation) {
+            return false;
+        }
+        self.stop_process().await;
+        true
     }
 
     #[cfg(windows)]
@@ -622,13 +738,24 @@ async fn read_helper_status(
     reporting_enabled: bool,
     display_enabled: bool,
     generation: u64,
-) {
+) -> Option<String> {
     let mut reader = BufReader::new(stdout);
+    let mut failure_code = None;
     loop {
-        let line = match read_bounded_line(&mut reader, DISPLAY_STATUS_LINE_LIMIT.max(STATUS_LINE_LIMIT)).await {
+        let line = match read_bounded_line(
+            &mut reader,
+            DISPLAY_STATUS_LINE_LIMIT.max(STATUS_LINE_LIMIT),
+        )
+        .await
+        {
             Ok(Some(line)) => line,
             Ok(None) => break,
-            Err(_) => continue,
+            Err(error) => {
+                if error.kind() == io::ErrorKind::InvalidData {
+                    failure_code = Some("reporting_failed".into());
+                }
+                break;
+            }
         };
         if crate::core::claude_local_runtime::is_source_read_request(&line) {
             let roots = source_read_roots.clone();
@@ -653,17 +780,42 @@ async fn read_helper_status(
             }
             continue;
         }
-        let Ok(raw) = serde_json::from_slice::<RawStatusLine>(&line) else {
-            continue;
+        let raw = match serde_json::from_slice::<RawStatusLine>(&line) {
+            Ok(raw) => raw,
+            Err(_) => {
+                failure_code = Some("reporting_failed".into());
+                continue;
+            }
         };
-        let display = raw.local_display.clone().and_then(sanitize_display_snapshot);
+        let raw_phase = raw.phase.clone();
+        let raw_message_code = raw.message_code.clone();
+        let display = raw
+            .local_display
+            .clone()
+            .and_then(sanitize_display_snapshot);
         let status = reporting_enabled
             .then(|| sanitize_status(raw, &username, transport))
             .flatten();
+        if reporting_enabled && status.is_none() {
+            failure_code = Some("reporting_failed".into());
+        }
         let mut state = data.lock().unwrap_or_else(|error| error.into_inner());
         if status_writer_is_current(&state, generation, &username) {
             if let Some(status) = status {
                 state.status = Some(status);
+                if reporting_enabled {
+                    if raw_phase == "error" {
+                        failure_code = Some(raw_message_code);
+                    } else {
+                        failure_code = None;
+                    }
+                    if matches!(
+                        raw_phase.as_str(),
+                        "connected" | "reporting" | "waiting_for_activity"
+                    ) {
+                        state.retry_attempt = 0;
+                    }
+                }
             }
             if display_enabled {
                 if let Some(display) = display {
@@ -691,6 +843,7 @@ async fn read_helper_status(
             state.display_snapshot = Some(AgentSpeedDisplaySnapshot::empty("helperExit", false));
         }
     }
+    failure_code
 }
 
 #[cfg(windows)]
@@ -1251,6 +1404,36 @@ mod tests {
         assert!(!status_writer_is_current(&data, 8, "TokenBar-current"));
         assert!(!status_writer_is_current(&data, 9, "TokenBar-previous"));
         assert!(status_writer_is_current(&data, 9, "TokenBar-current"));
+    }
+
+    #[test]
+    fn reporting_retry_backoff_caps_and_respects_retry_after() {
+        let delays: Vec<u64> = (1..=9)
+            .map(|attempt| reporting_retry_delay_seconds(attempt, None))
+            .collect();
+        assert_eq!(delays, [5, 10, 20, 40, 80, 160, 300, 300, 300]);
+        assert_eq!(reporting_retry_delay_seconds(1, Some(60)), 60);
+        assert_eq!(reporting_retry_delay_seconds(2, Some(2)), 10);
+        assert_eq!(reporting_retry_delay_seconds(7, Some(172_800)), 86_400);
+    }
+
+    #[test]
+    fn only_transient_service_unavailable_and_unclassified_exit_retry() {
+        assert!(helper_failure_is_retryable(None));
+        assert!(helper_failure_is_retryable(Some("service_unavailable")));
+        for code in [
+            "api_key_required",
+            "forbidden",
+            "username_invalid",
+            "username_taken",
+            "service_unsupported",
+            "websocket_protocol_error",
+            "websocket_configuration_mismatch",
+            "unknown_device",
+            "reporting_failed",
+        ] {
+            assert!(!helper_failure_is_retryable(Some(code)), "code {code}");
+        }
     }
 
     #[test]

@@ -105,7 +105,7 @@ struct AgentSpeedReportingDashboardStatus: View {
                 Button { AppSettingsRouteRequest.request(.speedReporting) } label: {
                     HStack(spacing: 6) {
                         Circle().fill(controller.phase == "error" ? Color.orange : confirmed ? Color.green : Color.orange).frame(width: 6, height: 6)
-                        Text("速蹬 · " + (controller.phase == "error" ? "上报异常" : confirmed ? "正在上报" : "正在连接"))
+                        Text("速蹬 · " + (controller.phase == "error" ? (controller.nextRetryAt == nil ? "上报异常" : "自动重试中") : confirmed ? "正在上报" : "正在连接"))
                             .font(.system(size: 11, weight: .medium)).lineLimit(1)
                     }.padding(.horizontal, unframed ? 0 : 10).frame(height: 28)
                         .foregroundStyle(unframed ? .secondary : .primary)

@@ -4,6 +4,28 @@ import XCTest
 
 @MainActor
 final class RecentChartPreparationStoreTests: XCTestCase {
+    func testAggregateProviderBasisCannotPriceOtherClientUsageAsCodex() {
+        func pricedInput(_ tokens: Int) -> RecentChartPreparationInput {
+            let base = makeInput(tokens: tokens)
+            let buckets = base.bins.map { TokenCacheBucket(start: $0.start, breakdown: .init(
+                inputTokens: tokens, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0,
+                totalTokens: tokens, calls: 1)) }
+            return .init(bins: base.bins, hourlyBins: base.hourlyBins,
+                cacheRecentBins: buckets, cacheHourlyBins: buckets, attributionEvents: [],
+                quotaRecentBins: [], quotaHourlyBins: [])
+        }
+        var input = pricedInput(100_000)
+        let source = pricedInput(100)
+        input.quotaCostSource = .init(bins: source.bins, hourlyBins: source.hourlyBins,
+            cacheRecentBins: source.cacheRecentBins, cacheHourlyBins: source.cacheHourlyBins,
+            attributionEvents: source.attributionEvents)
+        let combined = RecentChartPreparedSnapshot.build(range: .twentyFourHours, input: input, priceModel: .gpt56Sol)
+        let original = RecentChartPreparedSnapshot.build(range: .twentyFourHours, input: source, priceModel: .gpt56Sol)
+        XCTAssertEqual(combined.data.tokenTotal,200_000)
+        XCTAssertEqual(combined.quotaData?.tokenTotal,200)
+        XCTAssertGreaterThan(original.bucketCostsUSD.reduce(0,+),0)
+        XCTAssertEqual(combined.bucketCostsUSD,original.bucketCostsUSD)
+    }
     func testRealClickFixturePrewarmsAllRangesWithoutLosingUsageOrQuotaObservations() async throws {
         let input = makeRecentChartInteractionPreparationInput()
         XCTAssertEqual(input.bins.count, 12)

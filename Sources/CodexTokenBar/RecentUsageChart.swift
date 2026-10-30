@@ -589,6 +589,14 @@ struct RecentChartEdgeFadeState: Equatable {
     }
 }
 
+struct RecentChartQuotaCostSource: Equatable, Sendable {
+    let bins: [BinUsage]
+    let hourlyBins: [BinUsage]
+    let cacheRecentBins: [TokenCacheBucket]
+    let cacheHourlyBins: [TokenCacheBucket]
+    let attributionEvents: [TokenCacheAttributionEvent]
+}
+
 struct RecentChartPreparationInput: Equatable, Sendable {
     let bins: [BinUsage]
     let hourlyBins: [BinUsage]
@@ -597,6 +605,7 @@ struct RecentChartPreparationInput: Equatable, Sendable {
     let attributionEvents: [TokenCacheAttributionEvent]
     let quotaRecentBins: [QuotaHistoryRecentBucket]
     let quotaHourlyBins: [QuotaHistoryRecentBucket]
+    var quotaCostSource: RecentChartQuotaCostSource? = nil
 }
 
 struct RecentChartPreparedData: Equatable, Sendable {
@@ -1322,6 +1331,7 @@ enum RecentChartViewportGeometry {
 
 struct RecentUsageChart: View {
     let pricingAvailable: Bool
+    let quotaCostSource: RecentChartQuotaCostSource?
     let bins: [BinUsage]
     let hourlyBins: [BinUsage]
     let cacheRecentBins: [TokenCacheBucket]
@@ -1358,6 +1368,7 @@ struct RecentUsageChart: View {
     @Namespace private var scrollViewportSpace
     @State private var scrollGeometryPositioned = false
     @State private var scrollPresentation: RecentChartScrollPresentation?
+    @State private var cachedQuotaData: RecentChartPreparedData?
     @State private var cachedBucketCostsUSD: [Double]
     @State private var cachedFixedScales: RecentChartFixedScaleMap
     @State private var renderGeneration: Int
@@ -1377,9 +1388,11 @@ struct RecentUsageChart: View {
         currentFiveHourQuotaPresent: Bool = true,
         currentSevenDayQuotaPresent: Bool = true,
         sharedAccountAttributionContext: QuotaSelectionAttributionContext? = nil,
-        pricingAvailable: Bool = true
+        pricingAvailable: Bool = true,
+        quotaCostSource: RecentChartQuotaCostSource? = nil
     ) {
         self.pricingAvailable = pricingAvailable
+        self.quotaCostSource = quotaCostSource
         self.bins = bins
         self.hourlyBins = hourlyBins
         self.cacheRecentBins = cacheRecentBins
@@ -1472,7 +1485,8 @@ struct RecentUsageChart: View {
             cacheHourlyBins: cacheHourlyBins,
             attributionEvents: attributionEvents,
             quotaRecentBins: quotaRecentBins,
-            quotaHourlyBins: quotaHourlyBins
+            quotaHourlyBins: quotaHourlyBins,
+            quotaCostSource: quotaCostSource
         )
     }
 
@@ -1511,7 +1525,7 @@ struct RecentUsageChart: View {
                     ChartLegend(color: .blue, label: "Token", value: visibleWindowSummary.tokenTotal.abbreviatedTokens)
                     ChartLegend(color: .orange, label: "调用", value: "\(visibleWindowSummary.callTotal)")
                     ChartLegend(color: AppTheme.accentCyan, label: "命中率", value: visibleWindowSummary.recentCacheBreakdown.cacheHitRate.percentString)
-                    ChartLegend(color: AppTheme.chartCost, label: "金额", value: pricingAvailable ? visibleWindowCostUSD.quotaEstimatorMoneyText : "—")
+                    ChartLegend(color: AppTheme.chartCost, label: quotaCostSource == nil ? "金额" : "金额 · Codex", value: pricingAvailable ? visibleWindowCostUSD.quotaEstimatorMoneyText : "—")
                     if quotaSeriesVisibility.showsFiveHour {
                         ChartLegend(color: .purple, label: "5h", value: Self.percentText(visibleWindowSummary.latestFiveHourRemaining))
                     }
@@ -2319,6 +2333,8 @@ struct RecentUsageChart: View {
         )
         guard let snapshot = preparationStore.snapshot(for: range) else { return }
         let updatedData = snapshot.data
+        if snapshot.quotaData != cachedQuotaData { cachedFixedConsumptionSelection = nil }
+        cachedQuotaData = snapshot.quotaData
         let updatedBucketCostsUSD = snapshot.bucketCostsUSD
         let updatedFixedScales = Self.fixedScales(for: updatedData)
         hasPreparedData = true
@@ -2388,9 +2404,9 @@ struct RecentUsageChart: View {
         if let cachedCost = cachedBucketCostsUSD[safe: index] {
             return cachedCost
         }
-        let fallbackBreakdown = preparedData.cacheBreakdowns[safe: index] ?? .empty
+        let fallbackBreakdown = (cachedQuotaData ?? preparedData).cacheBreakdowns[safe: index] ?? .empty
         let estimate = ModelAwareAPIPriceEstimator.estimate(
-            modelBreakdowns: preparedData.modelBreakdowns[safe: index] ?? [],
+            modelBreakdowns: (cachedQuotaData ?? preparedData).modelBreakdowns[safe: index] ?? [],
             fallbackBreakdown: fallbackBreakdown,
             fallbackModel: selectedQuotaEstimateModel,
             standardAPI: true,
@@ -2405,7 +2421,7 @@ struct RecentUsageChart: View {
             cachedFixedConsumptionSelection = nil
             return
         }
-        cachedFixedConsumptionSelection = preparedData.quotaConsumptionSelection(
+        cachedFixedConsumptionSelection = (cachedQuotaData ?? preparedData).quotaConsumptionSelection(
             startIndex: startIndex,
             endIndex: fixedEndIndex,
             priceCard: .officialAPI(selectedQuotaEstimateModel),
@@ -2428,7 +2444,7 @@ struct RecentUsageChart: View {
            cachedSelection.endIndex == endIndex {
             return cachedSelection
         }
-        return preparedData.quotaConsumptionSelection(
+        return (cachedQuotaData ?? preparedData).quotaConsumptionSelection(
             startIndex: startIndex,
             endIndex: endIndex,
             priceCard: .officialAPI(selectedQuotaEstimateModel),

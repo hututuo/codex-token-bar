@@ -436,7 +436,7 @@ struct QuotaSidebarRail: View {
         switch item {
         case .speed:
             rateRing
-            ActivitySpeedSummaryView(allowed: allowedClients, compact: true)
+            ActivitySpeedSummaryView(allowed: allowedClients, compact: true, onOpen: { controller.select(.speeds) })
         case .tps:
             if supportsCodex {
                 QuotaSidebarBodySpeedReadings(monitor: monitor, latest: recentBodySpeeds, active: controller.interaction.expanded, onOpen: { controller.select(.speeds) })

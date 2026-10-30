@@ -6,7 +6,8 @@ import SwiftUI
 enum ClientDashboardProjection {
     static func snapshot(codex: DashboardSnapshot, rows: [ClientUsageSummary],
                          trend: [ClientTrendBucket], daily: [ClientTrendBucket],
-                         allowed: Set<String>, now: Date = Date()) -> DashboardSnapshot {
+                         allowed: Set<String>, now: Date = Date(),
+                         calendar: Calendar = .current) -> DashboardSnapshot {
         guard allowed != ["codex"] else { return codex }
         let includeCodex = allowed.contains("codex")
         let selected = rows.filter { allowed.contains($0.client.rawValue) }
@@ -19,8 +20,7 @@ enum ClientDashboardProjection {
         }
         let total = (includeCodex ? [codex.cacheUsage.total] : []) + selected.map(breakdown)
         let combined = total.combined
-        let recordedDays = ClientActivityProjection.days(codex: includeCodex ? codex.dailyUsage : [], others: selectedDaily, allowed: allowed, now: now)
-        let calendar = Calendar.current
+        let recordedDays = ClientActivityProjection.days(codex: includeCodex ? codex.dailyUsage : [], others: selectedDaily, allowed: allowed, now: now, calendar: calendar)
         let recordedByDate = Dictionary(grouping: recordedDays, by: { calendar.startOfDay(for: $0.date) })
         let today = calendar.startOfDay(for: now)
         let days = (-364...0).compactMap { offset -> DayUsage? in
@@ -34,40 +34,91 @@ enum ClientDashboardProjection {
             longest = max(longest, run); previous = day.date
         }
         if let previous, let gap = calendar.dateComponents([.day], from: previous, to: calendar.startOfDay(for: now)).day, gap <= 1 { current = run }
+        func bucketKey(_ date: Date, width: Int) -> Int64 {
+            if width == 86400 {
+                return Int64(calendar.startOfDay(for: date).timeIntervalSince1970)
+            }
+            return Int64(floor(date.timeIntervalSince1970 / Double(width))) * Int64(width)
+        }
         func bins(_ width: Int, codexValues: [BinUsage]) -> [BinUsage] {
             var values: [Int64: (Int, Int)] = [:]
-            func add(_ stamp: Int64, _ tokens: Int, _ calls: Int) {
-                let key = Int64(floor(Double(stamp) / Double(width))) * Int64(width)
+            func add(_ date: Date, _ tokens: Int, _ calls: Int) {
+                let key = bucketKey(date, width: width)
                 let old = values[key] ?? (0, 0); values[key] = (old.0 + tokens, old.1 + calls)
             }
-            if includeCodex { for row in codexValues { add(Int64(row.start.timeIntervalSince1970), row.tokens, row.calls) } }
-            for row in selectedTrend { add(row.startUnix, Int(row.tokens), row.requests) }
+            if includeCodex { for row in codexValues { add(row.start, row.tokens, row.calls) } }
+            for row in selectedTrend { add(Date(timeIntervalSince1970: Double(row.startUnix)), Int(row.tokens), row.requests) }
             guard let earliest = values.keys.min() else { return [] }
-            let last = Int64(floor(now.timeIntervalSince1970 / Double(width))) * Int64(width)
-            let first = max(earliest, last - Int64(30 * 86400))
-            return stride(from: first, through: last, by: width).map { key in
+            let last = bucketKey(now, width: width)
+            let thirtyDaysAgo: Int64
+            if width == 86400,
+               let start = calendar.date(byAdding: .day, value: -30, to: Date(timeIntervalSince1970: Double(last))) {
+                thirtyDaysAgo = bucketKey(start, width: width)
+            } else {
+                thirtyDaysAgo = bucketKey(Date(timeIntervalSince1970: Double(last - Int64(30 * 86400))), width: width)
+            }
+            let first = max(earliest, thirtyDaysAgo)
+            let keys: [Int64]
+            if width == 86400 {
+                var result: [Int64] = []
+                var cursor = Date(timeIntervalSince1970: Double(first))
+                while cursor <= Date(timeIntervalSince1970: Double(last)) {
+                    result.append(Int64(cursor.timeIntervalSince1970))
+                    guard let next = calendar.date(byAdding: .day, value: 1, to: cursor), next > cursor else { break }
+                    cursor = next
+                }
+                keys = result
+            } else {
+                keys = Array(stride(from: first, through: last, by: Int64(width)))
+            }
+            return keys.map { key in
                 let value = values[key] ?? (0, 0)
                 return BinUsage(start: Date(timeIntervalSince1970: Double(key)), tokens: value.0, calls: value.1)
             }
         }
+        // Trend buckets lack their own completeness flag, so stay conservative
+        // until raw bucket completeness is available for every model row.
         let completeClients = Set(selected.filter(\.cacheReadComplete).map { $0.client.rawValue }).subtracting(selected.filter { !$0.cacheReadComplete }.map { $0.client.rawValue })
         func cacheBins(_ width: Int, codexValues: [TokenCacheBucket], source: [ClientTrendBucket]) -> [TokenCacheBucket] {
             var values: [Int64: [TokenCacheBreakdown]] = [:], unknown = Set<Int64>()
-            if includeCodex { for row in codexValues { values[Int64(floor(row.start.timeIntervalSince1970 / Double(width))) * Int64(width), default: []].append(row.breakdown) } }
+            if includeCodex { for row in codexValues { values[bucketKey(row.start, width: width), default: []].append(row.breakdown) } }
             for row in source {
-                let key = Int64(floor(Double(row.startUnix) / Double(width))) * Int64(width)
+                let key = bucketKey(Date(timeIntervalSince1970: Double(row.startUnix)), width: width)
                 guard completeClients.contains(row.client.rawValue), let cached = row.cacheReadTokens else { if row.inputTokens > 0 { unknown.insert(key) }; continue }
                 values[key, default: []].append(.init(inputTokens: Int(row.inputTokens), cachedInputTokens: Int(cached), outputTokens: Int(row.outputTokens), reasoningOutputTokens: Int(row.reasoningTokens ?? 0), totalTokens: Int(row.tokens), calls: row.requests))
             }
             return values.filter { !unknown.contains($0.key) }.map { TokenCacheBucket(start: Date(timeIntervalSince1970: Double($0.key)), breakdown: $0.value.combined) }.sorted { $0.start < $1.start }
         }
         let models = (includeCodex ? codex.cacheUsage.modelBreakdowns : []) + selected.map { ModelTokenBreakdown(model: $0.client.displayName + " · " + $0.model, breakdown: breakdown($0)) }
-        let cache = TokenCacheUsage(total: combined, modelBreakdowns: models,
-            daily: cacheBins(86400, codexValues: [], source: selectedDaily),
+        let externalActivityDays = Set((selectedDaily + selectedTrend).filter {
+            ($0.tokens > 0 || $0.requests > 0)
+                && Date(timeIntervalSince1970: Double($0.startUnix)) <= now
+        }.map {
+            calendar.startOfDay(for: Date(timeIntervalSince1970: Double($0.startUnix)))
+        })
+        let codexDailyModels = includeCodex
+            ? codex.cacheUsage.dailyModelBreakdowns.filter { !externalActivityDays.contains(calendar.startOfDay(for: $0.start)) }
+            : []
+        // Mixed days have no per-client model split. Keep exact Codex details
+        // on days with no other-client activity and let mixed days stay unknown.
+        // Event locators stay available for Codex-specific pricing. Their
+        // completeness metadata is withheld from a mixed-client aggregate.
+        let codexOnly = includeCodex && selected.isEmpty && selectedTrend.isEmpty && selectedDaily.isEmpty
+        var cache = TokenCacheUsage(total: combined, modelBreakdowns: models,
+            dailyModelBreakdowns: codexDailyModels,
+            daily: cacheBins(86400, codexValues: includeCodex ? codex.cacheUsage.daily : [], source: selectedDaily),
             hourly: cacheBins(3600, codexValues: codex.cacheUsage.hourly, source: selectedTrend),
             recentBins: cacheBins(300, codexValues: codex.cacheUsage.recentBins, source: selectedTrend),
             sessions: includeCodex ? codex.cacheUsage.sessions : [], turns: includeCodex ? codex.cacheUsage.turns : [],
-            attributionEventsComplete: false)
+            attributionEvents: includeCodex ? codex.cacheUsage.attributionEvents : [],
+            attributionEventsComplete: codexOnly && codex.cacheUsage.attributionEventsComplete,
+            attributionModelBucketsComplete: codexOnly && codex.cacheUsage.attributionModelBucketsComplete,
+            attributionProvenanceEpoch: codexOnly ? codex.cacheUsage.attributionProvenanceEpoch : nil,
+            attributionGeneration: codexOnly ? codex.cacheUsage.attributionGeneration : nil,
+            attributionUnsafeSinceGeneration: codexOnly ? codex.cacheUsage.attributionUnsafeSinceGeneration : nil,
+            attributionCurrentScanUnsafeCauseDetected: codexOnly && codex.cacheUsage.attributionCurrentScanUnsafeCauseDetected,
+            attributionSourceMutationDetected: codexOnly && codex.cacheUsage.attributionSourceMutationDetected)
+        cache.rankingActiveSince = includeCodex ? codex.cacheUsage.rankingActiveSince : nil
         let stats = DashboardStats(totalTokens: combined.totalTokens, peakDayTokens: days.map(\.tokens).max() ?? 0,
             peakThreadTokens: 0, currentStreakDays: current, longestStreakDays: longest,
             totalCalls: combined.calls, totalThreads: 0, mostUsedReasoning: "", skillsExplored: 0, totalSkillsUsed: 0,

@@ -13,9 +13,64 @@ using CodexTokenBar.LocalSource;
 
 namespace CodexTokenBar.AgentSpeedReporter;
 
-internal sealed class ReporterFailure(string code) : Exception(code)
+internal sealed class ReporterFailure(string code, int? retryAfterSeconds = null) : Exception(code)
 {
     public string Code { get; } = code;
+    public int? RetryAfterSeconds { get; } = retryAfterSeconds;
+}
+
+internal static class ReporterRetryPolicy
+{
+    private static readonly int[] BackoffSeconds = [5, 10, 20, 40, 80, 160, 300];
+
+    public static bool IsRetryable(ReporterFailure failure) => failure.Code == "service_unavailable";
+
+    public static TimeSpan DelayForAttempt(int attempt, int? retryAfterSeconds = null)
+    {
+        var index = Math.Clamp(attempt - 1, 0, BackoffSeconds.Length - 1);
+        var seconds = BackoffSeconds[index];
+        if (retryAfterSeconds is { } retryAfter)
+        {
+            seconds = Math.Max(seconds, Math.Clamp(retryAfter, 5, 86_400));
+        }
+
+        return TimeSpan.FromSeconds(seconds);
+    }
+
+    public static async Task RunAsync(
+        Func<CancellationToken, Task> attempt,
+        Func<ReporterFailure, CancellationToken, Task> onTransientFailure,
+        CancellationToken cancellationToken,
+        Func<TimeSpan, CancellationToken, Task>? delayAsync = null)
+    {
+        var failures = 0;
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                await attempt(cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (ReporterFailure failure) when (IsRetryable(failure))
+            {
+                var delay = DelayForAttempt(++failures, failure.RetryAfterSeconds);
+                await onTransientFailure(failure, cancellationToken).ConfigureAwait(false);
+                if (delayAsync is null)
+                {
+                    await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    await delayAsync(delay, cancellationToken).ConfigureAwait(false);
+                }
+            }
+        }
+    }
 }
 
 [SupportedOSPlatform("windows")]
@@ -119,7 +174,10 @@ internal static class ReporterRuntime
 
         try
         {
-            await RunReportingAsync(start.Username, start.Transport, snapshots, status, cancellationToken).ConfigureAwait(false);
+            await ReporterRetryPolicy.RunAsync(
+                token => RunReportingAsync(start.Username, start.Transport, snapshots, status, token),
+                (failure, token) => status.PublishErrorAsync(failure.Code, token),
+                cancellationToken).ConfigureAwait(false);
         }
         catch (ReporterFailure failure) when (start.LocalDisplay && !cancellationToken.IsCancellationRequested)
         {
@@ -1458,7 +1516,7 @@ internal static class ReporterRuntime
                 continue;
             }
 
-            throw new ReporterFailure(FailureCode(result.Reply));
+            throw FailureForReply(result.Reply);
         }
 
         throw new ReporterFailure("service_unavailable");
@@ -1480,7 +1538,7 @@ internal static class ReporterRuntime
         var result = await api.CallAsync(request, cancellationToken).ConfigureAwait(false);
         if (result.Reply is not { Result: "updated" or "unchanged" } reply)
         {
-            throw new ReporterFailure(FailureCode(result.Reply));
+            throw FailureForReply(result.Reply);
         }
 
         var updated = identity with
@@ -1492,15 +1550,26 @@ internal static class ReporterRuntime
         return updated;
     }
 
-    private static string FailureCode(ReportReply? reply) => reply?.Code switch
+    internal static string FailureCode(ReportReply? reply)
     {
-        "api_key_required" or "api_key_invalid" => "api_key_required",
-        "username_taken" => "username_taken",
-        "username_invalid" => "username_invalid",
-        "forbidden" => "forbidden",
-        "gone" => "service_unsupported",
-        _ => reply is null ? "service_unavailable" : "reporting_failed",
-    };
+        if (reply is null || reply.Status is 408 or 429 || reply.Status >= 500)
+        {
+            return "service_unavailable";
+        }
+
+        return reply.Code switch
+        {
+            "api_key_required" or "api_key_invalid" => "api_key_required",
+            "username_taken" => "username_taken",
+            "username_invalid" => "username_invalid",
+            "forbidden" => "forbidden",
+            "gone" => "service_unsupported",
+            _ => "reporting_failed",
+        };
+    }
+
+    internal static ReporterFailure FailureForReply(ReportReply? reply) =>
+        new(FailureCode(reply), reply?.RetryAfterSeconds);
 
     private static string? SafeProfileUrl(string? value)
     {

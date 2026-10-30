@@ -108,7 +108,7 @@ export function CacheHitRanking({ cacheUsage, legacyItems = [], sourceToken = nu
         <div className="section-title-row cache-ranking-section-title-row">
           <div>
             <h2>缓存命中排行</h2>
-            {cacheUsage.rankingActiveSince && <p className="cache-ranking-scope-notice">已开启历史压缩，仅显示最近 7 天活跃会话。较早的历史会话可能已压缩。</p>}
+            {cacheUsage.rankingActiveSince && <p className="cache-ranking-scope-notice">{aggregate ? "Codex：" : ""}已开启历史压缩，仅显示最近 7 天活跃会话。较早的历史会话可能已压缩。</p>}
             <span>{aggregate ? "缓存读取 / 输入 · 明细标注客户端及轮次或会话" : "整轮加权 · " + rankingSubtitle(scope, sortOrder, excludesSingleTurnSessions, excludesFirstTurns)}</span>
           </div>
           <div className="ranking-controls" aria-label="缓存命中排行控制">
@@ -244,7 +244,7 @@ export function CacheHitRankingDetail({
         <div className="codex-radar-detail-head cache-ranking-detail-head">
           <div>
             <strong id="cache-hit-ranking-detail-title">缓存命中排行</strong>
-            {cacheUsage.rankingActiveSince && <p className="cache-ranking-scope-notice">已开启历史压缩，仅显示最近 7 天活跃会话。较早的历史会话可能已压缩。</p>}
+            {cacheUsage.rankingActiveSince && <p className="cache-ranking-scope-notice">{aggregate ? "Codex：" : ""}已开启历史压缩，仅显示最近 7 天活跃会话。较早的历史会话可能已压缩。</p>}
             <span>{aggregate ? "缓存读取 / 输入 · 明细标注客户端及轮次或会话" : "整轮加权 · " + rankingSubtitle(scope, sortOrder, excludesSingleTurnSessions, excludesFirstTurns)}</span>
           </div>
           <button

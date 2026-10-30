@@ -9,6 +9,10 @@ private actor SpeedReportTestTransport: ReportTransport {
     var held = false
     var alteredAPI = false
     var websocket = false
+    var discoveryFailures = 0
+    var registrationFailures = 0
+    func failDiscovery(_ count: Int) { discoveryFailures = count }
+    func failRegistration(_ count: Int) { registrationFailures = count }
     func offerWebSocket() { websocket = true }
     func holdDiscovery() { held = true }
     func alterAPI() { alteredAPI = true }
@@ -17,6 +21,7 @@ private actor SpeedReportTestTransport: ReportTransport {
     func get(_ url: URL, etag: String?, userAgent: String, maxBytes: Int, timeout: TimeInterval)
         async throws(ReportTransportError) -> ReportHTTPResponse {
         gets += 1
+        if discoveryFailures > 0 { discoveryFailures -= 1; throw .offline }
         while held {
             do { try await Task.sleep(for: .milliseconds(10)) }
             catch { throw .other(-999) }
@@ -31,6 +36,7 @@ private actor SpeedReportTestTransport: ReportTransport {
         async throws(ReportTransportError) -> ReportHTTPResponse {
         sent.append(request)
         if request.url.path.hasSuffix("/devices") {
+            if registrationFailures > 0 { registrationFailures -= 1; return .init(status:503,body:Data()) }
             let value = (try? JSONSerialization.jsonObject(with: request.body)) as? [String: Any] ?? [:]
             let reply: [String: Any] = ["status":"created","deviceId":value["deviceId"] ?? "", "username":value["username"] ?? ""]
             return .init(status: 201, body: (try? JSONSerialization.data(withJSONObject: reply)) ?? Data())
@@ -49,6 +55,58 @@ private final class SpeedReportTestMonitor: AgentSpeedReportingMonitor {
 
 @MainActor
 final class AgentSpeedReportingTests: XCTestCase {
+    func testTransientDiscoveryAutomaticallyRecoversWithoutChangingConsent() async throws {
+        let prefs = defaults(), transport = SpeedReportTestTransport(), monitor = SpeedReportTestMonitor()
+        await transport.failDiscovery(2)
+        let controller = AgentSpeedReportingController(defaults: prefs, transport: transport,
+            makeSigner: { _ in SoftwareReportSigner() }, makeMonitor: { _ in monitor },
+            retryWait: { _ in try await Task.sleep(for: .milliseconds(30)) })
+        controller.setEnabled(true, username: "RetryTest")
+        try await waitFor { monitor.starts == 1 }
+        XCTAssertTrue(controller.enabled); XCTAssertNil(controller.nextRetryAt)
+        let requests = await transport.requests()
+        XCTAssertEqual(requests.filter { $0.url.path.hasSuffix("/devices") }.count,1)
+        controller.shutdown()
+    }
+    func testFailedRegistrationRetriesTheSameDeviceIdentity() async throws {
+        let prefs = defaults(), transport = SpeedReportTestTransport(), monitor = SpeedReportTestMonitor()
+        await transport.failRegistration(1)
+        let controller = AgentSpeedReportingController(defaults: prefs, transport: transport,
+            makeSigner: { _ in SoftwareReportSigner() }, makeMonitor: { _ in monitor },
+            retryWait: { _ in try await Task.sleep(for: .milliseconds(30)) })
+        controller.setEnabled(true, username: "RetryDevice")
+        try await waitFor { monitor.starts == 1 }
+        let bodies = await transport.requests().filter { $0.url.path.hasSuffix("/devices") }
+            .compactMap { try? JSONSerialization.jsonObject(with:$0.body) as? [String:Any] }
+        XCTAssertEqual(bodies.count,2)
+        XCTAssertEqual(bodies[0]["deviceId"] as? String,bodies[1]["deviceId"] as? String)
+        XCTAssertEqual(prefs.string(forKey:AgentSpeedReportingController.deviceKey),bodies[0]["deviceId"] as? String)
+        controller.shutdown()
+    }
+    func testOptOutCancelsScheduledBootstrapRetry() async throws {
+        let prefs = defaults(), transport = SpeedReportTestTransport(), monitor = SpeedReportTestMonitor()
+        await transport.failDiscovery(20)
+        let controller = AgentSpeedReportingController(defaults: prefs, transport: transport,
+            makeSigner: { _ in SoftwareReportSigner() }, makeMonitor: { _ in monitor },
+            retryWait: { _ in try await Task.sleep(for: .milliseconds(150)) })
+        controller.setEnabled(true, username:"CancelRetry")
+        try await waitFor { controller.nextRetryAt != nil }
+        controller.setEnabled(false)
+        let count = await transport.count()
+        try await Task.sleep(for:.milliseconds(180))
+        let after = await transport.count()
+        XCTAssertEqual(count,after); XCTAssertEqual(monitor.starts,0)
+        XCTAssertNil(controller.nextRetryAt); XCTAssertEqual(controller.phase,"off")
+        controller.shutdown()
+    }
+    func testOuterRecoveryBackoffHonorsServiceDelayAndHardRejections() {
+        XCTAssertEqual((0...8).map { AgentSpeedReportingController.recoveryDelay(attempt:$0) },[5,10,20,40,80,160,300,300,300])
+        XCTAssertEqual(AgentSpeedReportingController.recoveryDelay(attempt:0,minimum:900),900)
+        var limited = ReportReply(status:429); limited.retryAfterSeconds=90
+        XCTAssertEqual(AgentSpeedReportingController.retryMinimum(.success(limited)),90)
+        XCTAssertNil(AgentSpeedReportingController.retryMinimum(.success(.init(status:403,code:"forbidden"))))
+        XCTAssertNil(AgentSpeedReportingController.retryMinimum(.success(.init(status:409,code:"username_taken"))))
+    }
     func testDiscoveryErrorsDistinguishConnectionFailureFromUnsupportedService() {
         let connection = AgentSpeedReportingController.discoveryFailureMessage(.failed(.unreachable))
         XCTAssertTrue(connection.contains("超时"))

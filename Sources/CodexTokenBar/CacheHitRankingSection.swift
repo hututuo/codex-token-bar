@@ -96,7 +96,7 @@ private enum CacheRankingPolicy {
     static let minimumInputTokens = 1_000
 }
 
-private struct CacheRankingItem: Identifiable {
+struct CacheRankingItem: Identifiable {
     let id: String
     let title: String
     let subtitle: String
@@ -104,6 +104,7 @@ private struct CacheRankingItem: Identifiable {
     let sortDate: Date?
     let breakdown: TokenCacheBreakdown
     var turn: TurnCacheUsage? = nil
+    var externalSession: ClientCacheRankingSession? = nil
 
     var sortValue: CacheRankingSortValue {
         CacheRankingSortValue(id: id, sortDate: sortDate, breakdown: breakdown)
@@ -124,14 +125,16 @@ enum CacheRankingSearchMatcher {
     }
 }
 
-private enum CacheRankingItemsBuilder {
+enum CacheRankingItemsBuilder {
     static func build(
         cacheUsage: TokenCacheUsage,
         scope: CacheRankingScope,
         sortOrder: CacheRankingSortOrder,
         excludesSingleTurnSessions: Bool,
         excludesFirstTurns: Bool,
-        searchText: String = ""
+        searchText: String = "",
+        additionalSessions: [ClientCacheRankingSession] = [],
+        aggregate: Bool = false
     ) -> [CacheRankingItem] {
         let source: [CacheRankingItem]
         switch scope {
@@ -165,7 +168,22 @@ private enum CacheRankingItemsBuilder {
                 }
         }
 
-        return source
+        let labeled = aggregate ? source.map { item in
+            CacheRankingItem(id: "codex|" + item.id, title: "Codex · " + item.title,
+                subtitle: item.subtitle, context: item.context, sortDate: item.sortDate,
+                breakdown: item.breakdown, turn: item.turn)
+        } : source
+        let others = additionalSessions.filter(\.isRankable).map { session in
+            CacheRankingItem(id: session.id,
+                title: session.client.displayName + " · 会话 " + String(session.sessionID.suffix(12)),
+                subtitle: "\(session.requests) 请求 · \(session.lowHitRequests) 次低命中 · \(session.zeroHitRequests) 次零命中",
+                context: "会话加权 · 缓存写入不算命中", sortDate: session.lastSeen,
+                breakdown: .init(inputTokens: Int(session.inputTokens), cachedInputTokens: Int(session.cacheReadTokens ?? 0),
+                    outputTokens: Int(session.outputTokens), reasoningOutputTokens: 0,
+                    totalTokens: Int(session.inputTokens + session.outputTokens), calls: session.requests),
+                externalSession: session)
+        }
+        return (labeled + others)
             .filter {
                 $0.breakdown.inputTokens >= CacheRankingPolicy.minimumInputTokens
                     && $0.breakdown.calls > 0
@@ -192,6 +210,9 @@ struct CacheHitRankingSection: View {
     let cacheUsageRevision: Date
     var codexHome: URL? = nil
     let onOpenDetails: () -> Void
+    var additionalSessions: [ClientCacheRankingSession] = []
+    var aggregate = false
+    var localOnly = false
     @State private var scope: CacheRankingScope = .turns
     @State private var sortOrder: CacheRankingSortOrder = .latest
     @State private var excludesSingleTurnSessions = true
@@ -204,12 +225,12 @@ struct CacheHitRankingSection: View {
                     Text("缓存命中排行")
                         .font(.system(size: 19, weight: .semibold))
                     if cacheUsage.rankingActiveSince != nil {
-                        Text(CacheRankingHistoryPolicy.notice)
+                        Text((aggregate ? "Codex：" : "") + CacheRankingHistoryPolicy.notice)
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    Text("整轮加权 · " + rankingSubtitle)
+                    Text(aggregate ? "缓存读取 / 输入 · 明细标注客户端及轮次或会话" : "整轮加权 · " + rankingSubtitle)
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
@@ -221,7 +242,8 @@ struct CacheHitRankingSection: View {
                         scope: $scope,
                         sortOrder: $sortOrder,
                         excludesSingleTurnSessions: $excludesSingleTurnSessions,
-                        excludesFirstTurns: $excludesFirstTurns
+                        excludesFirstTurns: $excludesFirstTurns,
+                        localOnly: localOnly
                     )
 
                     Button(action: onOpenDetails) {
@@ -236,6 +258,7 @@ struct CacheHitRankingSection: View {
                 cacheUsage: cacheUsage,
                 cacheUsageRevision: cacheUsageRevision,
                 codexHome: codexHome,
+                additionalSessions: additionalSessions, aggregate: aggregate,
                 scope: scope,
                 sortOrder: sortOrder,
                 excludesSingleTurnSessions: excludesSingleTurnSessions,
@@ -260,6 +283,8 @@ private struct CacheRankingTopTenList: View, Equatable {
     let cacheUsage: TokenCacheUsage
     let cacheUsageRevision: Date
     var codexHome: URL? = nil
+    var additionalSessions: [ClientCacheRankingSession] = []
+    var aggregate = false
     let scope: CacheRankingScope
     let sortOrder: CacheRankingSortOrder
     let excludesSingleTurnSessions: Bool
@@ -267,6 +292,7 @@ private struct CacheRankingTopTenList: View, Equatable {
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.cacheUsageRevision == rhs.cacheUsageRevision
+            && lhs.additionalSessions == rhs.additionalSessions && lhs.aggregate == rhs.aggregate
             && lhs.codexHome == rhs.codexHome
             && lhs.cacheUsage.sessions.count == rhs.cacheUsage.sessions.count
             && lhs.cacheUsage.turns.count == rhs.cacheUsage.turns.count
@@ -282,7 +308,8 @@ private struct CacheRankingTopTenList: View, Equatable {
             scope: scope,
             sortOrder: sortOrder,
             excludesSingleTurnSessions: excludesSingleTurnSessions,
-            excludesFirstTurns: excludesFirstTurns
+            excludesFirstTurns: excludesFirstTurns,
+            additionalSessions: additionalSessions, aggregate: aggregate
         )
 
         if rankingItems.isEmpty {
@@ -301,6 +328,9 @@ struct CacheHitRankingDetailView: View {
     let cacheUsage: TokenCacheUsage
     let onClose: () -> Void
     var codexHome: URL? = nil
+    var additionalSessions: [ClientCacheRankingSession] = []
+    var aggregate = false
+    var localOnly = false
     @State private var scope: CacheRankingScope = .turns
     @State private var sortOrder: CacheRankingSortOrder = .latest
     @State private var excludesSingleTurnSessions = true
@@ -315,7 +345,7 @@ struct CacheHitRankingDetailView: View {
             sortOrder: sortOrder,
             excludesSingleTurnSessions: excludesSingleTurnSessions,
             excludesFirstTurns: excludesFirstTurns,
-            searchText: searchText
+            searchText: searchText, additionalSessions: additionalSessions, aggregate: aggregate
         )
         let visibleRankingItems = Array(
             allRankingItems.prefix(
@@ -329,12 +359,12 @@ struct CacheHitRankingDetailView: View {
                     Text("缓存命中排行")
                         .font(.system(size: 19, weight: .semibold))
                     if cacheUsage.rankingActiveSince != nil {
-                        Text(CacheRankingHistoryPolicy.notice)
+                        Text((aggregate ? "Codex：" : "") + CacheRankingHistoryPolicy.notice)
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    Text("整轮加权 · " + rankingSubtitle)
+                    Text(aggregate ? "缓存读取 / 输入 · 明细标注客户端及轮次或会话" : "整轮加权 · " + rankingSubtitle)
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
@@ -368,7 +398,7 @@ struct CacheHitRankingDetailView: View {
                         paging.reset()
                         excludesFirstTurns = $0
                     }
-                )
+                ), localOnly: localOnly
             )
 
             HStack(spacing: 8) {
@@ -508,15 +538,16 @@ private struct CacheRankingControls: View {
     @Binding var sortOrder: CacheRankingSortOrder
     @Binding var excludesSingleTurnSessions: Bool
     @Binding var excludesFirstTurns: Bool
+    var localOnly = false
 
     var body: some View {
         HStack(spacing: 8) {
-            CacheRankingCheckmark(
+            if !localOnly { CacheRankingCheckmark(
                 isOn: scope == .sessions
                     ? $excludesSingleTurnSessions
                     : $excludesFirstTurns,
                 title: scope == .sessions ? "排除单轮会话" : "排除首轮"
-            )
+            ) }
 
             Picker("", selection: $sortOrder) {
                 ForEach(CacheRankingSortOrder.allCases) { item in
@@ -528,7 +559,7 @@ private struct CacheRankingControls: View {
             .accessibilityLabel("缓存命中排行排序")
             .accessibilityValue(sortOrder.rawValue)
 
-            Picker("", selection: $scope) {
+            if !localOnly { Picker("", selection: $scope) {
                 ForEach(CacheRankingScope.allCases) { item in
                     Text(item.rawValue).tag(item)
                 }
@@ -536,7 +567,7 @@ private struct CacheRankingControls: View {
             .pickerStyle(.segmented)
             .frame(width: 132)
             .accessibilityLabel("缓存命中排行类型")
-            .accessibilityValue(scope.rawValue)
+            .accessibilityValue(scope.rawValue) }
         }
     }
 }
@@ -645,7 +676,7 @@ private struct CacheRankingRow: View {
             }
             .frame(width: 88, alignment: .trailing)
 
-            if item.turn != nil {
+            if item.turn != nil || item.externalSession != nil {
                 Button { showingRequests = true } label: {
                     Label("明细", systemImage: "chevron.right")
                         .font(.system(size: 11, weight: .medium))
@@ -653,7 +684,7 @@ private struct CacheRankingRow: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("查看本轮每次请求的时间和用量")
-                .disabled(codexHome == nil)
+                .disabled(item.turn != nil && codexHome == nil)
             }
         }
         .padding(.horizontal, 10)
@@ -666,6 +697,8 @@ private struct CacheRankingRow: View {
         .sheet(isPresented: $showingRequests) {
             if let turn = item.turn, let codexHome {
                 CacheTurnRequestDetailView(turn: turn, codexHome: codexHome)
+            } else if let session = item.externalSession {
+                ClientCacheRequestDetailView(session: session)
             }
         }
         .accessibilityElement(children: .contain)

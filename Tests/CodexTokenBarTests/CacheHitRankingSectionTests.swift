@@ -3,6 +3,23 @@ import XCTest
 @testable import CodexTokenBar
 
 final class CacheHitRankingSectionTests: XCTestCase {
+    func testAggregateRankerKeepsClientSessionIdentityAndFiltersUnknownCaches() {
+        let now = Date()
+        func session(_ client: UsageClient, cached: Int64?) -> ClientCacheRankingSession {
+            .init(client:client,sessionID:"same-id",inputTokens:2000,outputTokens:20,
+                cacheReadTokens:cached,cacheWriteTokens:0,requests:2,firstSeen:now,lastSeen:now,
+                unknownCacheReadRequests:cached == nil ? 1 : 0,unknownCacheWriteRequests:0,
+                lowHitRequests:0,zeroHitRequests:0,modelIDs:[])
+        }
+        let sessions = [session(.claudeCode,cached:1000),session(.opencode,cached:1500),session(.gemini,cached:nil)]
+        let items = CacheRankingItemsBuilder.build(cacheUsage:.empty,scope:.turns,sortOrder:.lowHit,
+            excludesSingleTurnSessions:true,excludesFirstTurns:true,additionalSessions:sessions,aggregate:true)
+        XCTAssertEqual(items.count,2)
+        XCTAssertEqual(Set(items.map(\.id)).count,2)
+        XCTAssertTrue(items.allSatisfy { $0.turn == nil && $0.externalSession != nil })
+        XCTAssertEqual(items[0].breakdown.cachedInputTokens,1000)
+    }
+
     func testPagingLoadsTenAtATimeAndStopsAtTotal() {
         var paging = CacheRankingPagingState()
 

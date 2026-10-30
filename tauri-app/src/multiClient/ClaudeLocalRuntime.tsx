@@ -89,7 +89,7 @@ export function useClaudeLocalRuntime(allowed: readonly string[], monitoringEnab
   };
 }
 
-export function ClientActivitySpeedPanel({ allowed, sourceToken = null, compact = false, monitoringEnabled = true, codexRates = [], codexOutputRate, codexAvailable = false }: { allowed: readonly string[]; sourceToken?: CodexHomeSourceToken | null; compact?: boolean; monitoringEnabled?: boolean; codexRates?: readonly ActivityModelRate[]; codexAvailable?: boolean; codexOutputRate?: number }) {
+export function ClientActivitySpeedPanel({ allowed, sourceToken = null, compact = false, monitoringEnabled = true, codexRates = [], codexOutputRate, codexAvailable = false, onOpen }: { onOpen?:()=>void; allowed: readonly string[]; sourceToken?: CodexHomeSourceToken | null; compact?: boolean; monitoringEnabled?: boolean; codexRates?: readonly ActivityModelRate[]; codexAvailable?: boolean; codexOutputRate?: number }) {
   const runtime = useClaudeLocalRuntime(allowed, monitoringEnabled, true);
   const {unit,fx}=useActivityRatePreferences(),mode=useActivitySpeedMode();
   const sourceKey=JSON.stringify(sourceToken);
@@ -107,7 +107,7 @@ export function ClientActivitySpeedPanel({ allowed, sourceToken = null, compact 
   const rows=mode==="bar"?[...barActivityLiveHistory.snapshot(Date.now()/1000,allowed),...runtime.activitySeries.filter(row=>row.client!=="codex")]:runtime.activitySeries;
   return <div className="client-activity-speed">
     {!compact&&<div className="activity-live-controls"><span>{mode==="bar"&&allowed.includes("codex")?"Bar 活动速率":"Agent Speed"} · 仅保留内存中的近3分钟</span><ActivityRateUnitControl/></div>}
-    <ActivitySpeedLivePlot rows={monitoringEnabled?rows:[]} asOf={Date.now()/1000} compact={compact} unit={unit} fx={fx} modeLabel={mode==="bar"&&allowed.includes("codex")?"Bar 活动速率":"Agent Speed"}/>
+    <ActivitySpeedLivePlot rows={monitoringEnabled?rows:[]} asOf={Date.now()/1000} compact={compact} onOpen={onOpen} unit={unit} fx={fx} modeLabel={mode==="bar"&&allowed.includes("codex")?"Bar 活动速率":"Agent Speed"}/>
   </div>;
 }
 export function ClaudeLocalTasks({ allowed }: { allowed: readonly string[] }) {

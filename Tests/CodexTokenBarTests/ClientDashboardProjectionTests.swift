@@ -2,6 +2,30 @@ import XCTest
 @testable import CodexTokenBar
 
 final class ClientDashboardProjectionTests: XCTestCase {
+    private func cacheUsage(total: TokenCacheBreakdown,
+                            daily: [TokenCacheBucket] = [],
+                            dailyModelBreakdowns: [ModelTokenBucket] = [],
+                            hourly: [TokenCacheBucket] = [],
+                            recentBins: [TokenCacheBucket] = [],
+                            events: [TokenCacheAttributionEvent] = []) -> TokenCacheUsage {
+        TokenCacheUsage(total: total, dailyModelBreakdowns: dailyModelBreakdowns, daily: daily,
+            hourly: hourly, recentBins: recentBins, sessions: [], turns: [],
+            attributionEvents: events, attributionEventsComplete: true,
+            attributionModelBucketsComplete: true, attributionProvenanceEpoch: "codex-epoch",
+            attributionGeneration: 77, attributionUnsafeSinceGeneration: 12)
+    }
+
+    private func snapshot(now: Date, dailyUsage: [DayUsage] = [], recentBins: [BinUsage] = [],
+                          hourlyUsage: [BinUsage] = [], cacheUsage: TokenCacheUsage) -> DashboardSnapshot {
+        DashboardSnapshot(stats: DashboardStats(totalTokens: cacheUsage.total.totalTokens, peakDayTokens: 0,
+                peakThreadTokens: 0, currentStreakDays: 0, longestStreakDays: 0,
+                totalCalls: cacheUsage.total.calls, totalThreads: 0, mostUsedReasoning: "",
+                skillsExplored: 0, totalSkillsUsed: 0, totalInputTokens: cacheUsage.total.inputTokens,
+                totalCachedInputTokens: cacheUsage.total.cachedInputTokens, totalOutputTokens: cacheUsage.total.outputTokens),
+            dailyUsage: dailyUsage, recentBins: recentBins, hourlyUsage: hourlyUsage,
+            pluginUsage: [], cacheUsage: cacheUsage, generatedAt: now, exactGeneration: 77)
+    }
+
     func testSummaryUsesRecordedPeriodModelsAndNeverLifetimeTotalsAsFallback() {
         let now = Date()
         let counts = TokenCacheBreakdown(inputTokens: 100, cachedInputTokens: 40, outputTokens: 20, reasoningOutputTokens: 0, totalTokens: 120, calls: 1)
@@ -76,6 +100,119 @@ final class ClientDashboardProjectionTests: XCTestCase {
         XCTAssertEqual(result.recentBins.first?.tokens, 1020)
         XCTAssertTrue(result.cacheUsage.recentBins.isEmpty)
     }
+
+    func testMixedProjectionSumsClientBinsAndUsesInputWeightedCacheTotals() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let day = Calendar.current.startOfDay(for: now)
+        let originalEvent = TokenCacheAttributionEvent(id: "codex-event", start: now, model: "gpt-6-luna",
+            breakdown: .init(inputTokens: 1000, cachedInputTokens: 500, outputTokens: 100,
+                reasoningOutputTokens: 0, totalTokens: 1100, calls: 1))
+        let codexTotal = TokenCacheBreakdown(inputTokens: 1000, cachedInputTokens: 500,
+            outputTokens: 100, reasoningOutputTokens: 0, totalTokens: 1100, calls: 1)
+        let codexDay = TokenCacheBucket(start: day, breakdown: .init(inputTokens: 100,
+            cachedInputTokens: 70, outputTokens: 10, reasoningOutputTokens: 0, totalTokens: 110, calls: 1))
+        let priorDay = Calendar.current.date(byAdding: .day, value: -1, to: day)!
+        let preservedDailyModels = ModelTokenBucket(start: priorDay,
+            modelBreakdowns: [.init(model: "gpt-5.6-sol", breakdown: codexTotal)])
+        let codex = snapshot(now: now,
+            dailyUsage: [DayUsage(date: day, tokens: 1100, calls: 1)],
+            recentBins: [BinUsage(start: now, tokens: 1100, calls: 1)],
+            hourlyUsage: [BinUsage(start: now, tokens: 1100, calls: 1)],
+            cacheUsage: cacheUsage(total: codexTotal, daily: [codexDay],
+                dailyModelBreakdowns: [preservedDailyModels], hourly: [codexDay], recentBins: [codexDay],
+                events: [originalEvent]))
+        let client = ClientUsageSummary(client: .claudeCode, model: "claude-sonnet-4-6",
+            inputTokens: 3000, outputTokens: 400, cacheReadTokens: 600, cacheWriteTokens: 0,
+            reasoningTokens: 50, requests: 2, lastSeen: now, incompleteFields: false,
+            apiCostUSD: 0.1, cacheReadComplete: true)
+        let trend = ClientTrendBucket(client: .claudeCode, startUnix: Int64(now.timeIntervalSince1970),
+            inputTokens: 3000, outputTokens: 400, cacheReadTokens: 600, cacheWriteTokens: 0,
+            reasoningTokens: 50, requests: 2)
+
+        let result = ClientDashboardProjection.snapshot(codex: codex, rows: [client], trend: [trend],
+            daily: [trend], allowed: ["codex", "claudeCode"], now: now)
+
+        XCTAssertEqual(result.cacheUsage.total.inputTokens, 4000)
+        XCTAssertEqual(result.cacheUsage.total.cachedInputTokens, 1100)
+        XCTAssertEqual(result.cacheUsage.total.outputTokens, 500)
+        XCTAssertEqual(result.cacheUsage.total.cacheHitRate, 0.275, accuracy: 0.0001)
+        XCTAssertEqual(result.stats.totalTokens, 4500)
+        XCTAssertEqual(result.recentBins.first(where: { $0.start == now })?.tokens, 4500)
+        XCTAssertEqual(result.hourlyUsage.first(where: { $0.start == now })?.tokens, 4500)
+        XCTAssertEqual(result.dailyUsage.first(where: { $0.date == day })?.tokens, 4500)
+        XCTAssertEqual(result.cacheUsage.daily.first?.start, day)
+        XCTAssertEqual(result.cacheUsage.daily.first?.breakdown.inputTokens, 3100)
+        XCTAssertEqual(result.cacheUsage.daily.first?.breakdown.cachedInputTokens, 670)
+        XCTAssertEqual(result.cacheUsage.dailyModelBreakdowns, [preservedDailyModels])
+        XCTAssertEqual(result.cacheUsage.attributionEvents, [originalEvent])
+        XCTAssertFalse(result.cacheUsage.attributionEventsComplete)
+        XCTAssertFalse(result.cacheUsage.attributionModelBucketsComplete)
+        XCTAssertNil(result.cacheUsage.attributionProvenanceEpoch)
+        XCTAssertNil(result.cacheUsage.attributionGeneration)
+
+        // Projection must not write aggregate facts back into the Codex source snapshot.
+        XCTAssertEqual(codex.cacheUsage.total, codexTotal)
+        XCTAssertEqual(codex.cacheUsage.daily, [codexDay])
+        XCTAssertEqual(codex.cacheUsage.dailyModelBreakdowns, [preservedDailyModels])
+        XCTAssertEqual(codex.cacheUsage.attributionEvents, [originalEvent])
+        XCTAssertTrue(codex.cacheUsage.attributionEventsComplete)
+        XCTAssertEqual(codex.cacheUsage.attributionGeneration, 77)
+        XCTAssertEqual(codex.stats.totalTokens, 1100)
+        XCTAssertEqual(codex.recentBins, [BinUsage(start: now, tokens: 1100, calls: 1)])
+    }
+
+    func testDailyCacheBucketsAlignToLocalCalendarAcrossDST() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "America/New_York"))
+        let dayStart = try XCTUnwrap(calendar.date(from: DateComponents(year: 2024, month: 3, day: 10)))
+        let nextDay = try XCTUnwrap(calendar.date(byAdding: .day, value: 1, to: dayStart))
+        XCTAssertEqual(nextDay.timeIntervalSince(dayStart), 23 * 60 * 60)
+        let now = calendar.date(byAdding: .hour, value: 12, to: nextDay)!
+        let dailyCache = TokenCacheBucket(start: dayStart.addingTimeInterval(2 * 60 * 60),
+            breakdown: .init(inputTokens: 100, cachedInputTokens: 25, outputTokens: 20,
+                reasoningOutputTokens: 0, totalTokens: 120, calls: 1))
+        let codex = snapshot(now: now,
+            dailyUsage: [DayUsage(date: dayStart.addingTimeInterval(5 * 60 * 60), tokens: 120, calls: 1)],
+            cacheUsage: cacheUsage(total: dailyCache.breakdown, daily: [dailyCache]))
+        let clientSummary = ClientUsageSummary(client: .claudeCode, model: "claude-sonnet-4-6",
+            inputTokens: 30, outputTokens: 10, cacheReadTokens: 10, cacheWriteTokens: 0,
+            reasoningTokens: nil, requests: 1, lastSeen: now, incompleteFields: false,
+            cacheReadComplete: true)
+        let clientDaily = ClientTrendBucket(client: .claudeCode,
+            startUnix: Int64(dayStart.addingTimeInterval(7 * 60 * 60).timeIntervalSince1970),
+            inputTokens: 30, outputTokens: 10, cacheReadTokens: 10, cacheWriteTokens: 0,
+            reasoningTokens: nil, requests: 1)
+
+        let result = ClientDashboardProjection.snapshot(codex: codex, rows: [clientSummary], trend: [],
+            daily: [clientDaily], allowed: ["codex", "claudeCode"], now: now, calendar: calendar)
+
+        XCTAssertEqual(result.cacheUsage.daily.count, 1)
+        XCTAssertEqual(result.cacheUsage.daily.first?.start, dayStart)
+        XCTAssertEqual(result.cacheUsage.daily.first?.breakdown.inputTokens, 130)
+        XCTAssertEqual(result.dailyUsage.first(where: { $0.date == dayStart })?.tokens, 160)
+    }
+
+    func testUnknownClientBucketCacheRemainsUnknownBesideCodexCache() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let codexBreakdown = TokenCacheBreakdown(inputTokens: 100, cachedInputTokens: 40,
+            outputTokens: 20, reasoningOutputTokens: 0, totalTokens: 120, calls: 1)
+        let codexBucket = TokenCacheBucket(start: now, breakdown: codexBreakdown)
+        let codex = snapshot(now: now,
+            cacheUsage: cacheUsage(total: codexBreakdown, hourly: [codexBucket], recentBins: [codexBucket]))
+        let summary = ClientUsageSummary(client: .claudeCode, model: "unknown", inputTokens: 1000,
+            outputTokens: 20, cacheReadTokens: nil, cacheWriteTokens: nil, reasoningTokens: nil,
+            requests: 1, lastSeen: now, incompleteFields: true, cacheReadComplete: false)
+        let point = ClientTrendBucket(client: .claudeCode, startUnix: Int64(now.timeIntervalSince1970),
+            inputTokens: 1000, outputTokens: 20, cacheReadTokens: nil, cacheWriteTokens: nil,
+            reasoningTokens: nil, requests: 1)
+
+        let result = ClientDashboardProjection.snapshot(codex: codex, rows: [summary], trend: [point],
+            daily: [], allowed: ["codex", "claudeCode"], now: now)
+
+        XCTAssertTrue(result.cacheUsage.recentBins.isEmpty)
+        XCTAssertTrue(result.cacheUsage.hourly.isEmpty)
+    }
+
     func testSparseHistoryKeepsTheOriginalYearGridAndEmptyDates() {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let point = ClientTrendBucket(client: .claudeCode, startUnix: Int64(now.timeIntervalSince1970), inputTokens: 100, outputTokens: 20, cacheReadTokens: 80, cacheWriteTokens: 0, reasoningTokens: nil, requests: 1)

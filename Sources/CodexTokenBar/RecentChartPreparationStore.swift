@@ -4,6 +4,7 @@ import Foundation
 struct RecentChartPreparedSnapshot: Sendable {
     let data: RecentChartPreparedData
     let bucketCostsUSD: [Double]
+    var quotaData: RecentChartPreparedData? = nil
 
     static func build(
         range: RecentChartRange,
@@ -20,7 +21,20 @@ struct RecentChartPreparedSnapshot: Sendable {
             quotaRecentBins: input.quotaRecentBins,
             quotaHourlyBins: input.quotaHourlyBins
         )
-        return Self(data: data, bucketCostsUSD: RecentUsageChart.bucketCosts(for: data, priceModel: priceModel))
+        let quotaData: RecentChartPreparedData?
+        if let source = input.quotaCostSource {
+            func align(_ displayed: [BinUsage], _ original: [BinUsage]) -> [BinUsage] {
+                let byTime = Dictionary(original.map { ($0.start, $0) }, uniquingKeysWith: { _, last in last })
+                return displayed.map { byTime[$0.start] ?? BinUsage(start: $0.start, tokens: 0, calls: 0) }
+            }
+            quotaData = RecentUsageChart.prepare(range: range,
+                recentBins: align(input.bins, source.bins), hourlyBins: align(input.hourlyBins, source.hourlyBins),
+                cacheRecentBins: source.cacheRecentBins, cacheHourlyBins: source.cacheHourlyBins,
+                attributionEvents: source.attributionEvents,
+                quotaRecentBins: input.quotaRecentBins, quotaHourlyBins: input.quotaHourlyBins)
+        } else { quotaData = nil }
+        return Self(data: data,
+            bucketCostsUSD: RecentUsageChart.bucketCosts(for: quotaData ?? data, priceModel: priceModel), quotaData: quotaData)
     }
 }
 

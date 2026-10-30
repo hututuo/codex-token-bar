@@ -124,6 +124,14 @@ struct DashboardView: View {
     @State private var showingCodexRadarDetails = false
     @State private var recentUsageScrollRequest = 0
     @State private var showingCacheHitRankingDetails = false
+    @State private var clientCacheProjection = ClientCacheRankingProjection.empty
+    @State private var clientCacheIssue: String?
+    private var cacheClients: Set<UsageClient> {
+        Set(clients.summaries.filter { allowedClients.contains($0.client.rawValue) && $0.requests > 0 }.map(\.client))
+    }
+    private var extraCacheSessions: [ClientCacheRankingSession] {
+        clientCacheProjection.sessions.filter { cacheClients.contains($0.client) }
+    }
     @State private var showingSharedAccountAttributionDetails = false
     @State private var showingInterfaceScaleMenu = false
     @State private var showingPaletteMenu = false
@@ -247,9 +255,11 @@ struct DashboardView: View {
                             }
 
                         CacheHitRankingDetailView(
-                            cacheUsage: store.snapshot.cacheUsage,
+                            cacheUsage: allowedClients.contains("codex") ? store.snapshot.cacheUsage : .empty,
                             onClose: { showingCacheHitRankingDetails = false },
-                            codexHome: store.currentDataSource?.codexHome
+                            codexHome: store.currentDataSource?.codexHome,
+                            additionalSessions: extraCacheSessions, aggregate: !codexOnly,
+                            localOnly: !allowedClients.contains("codex")
                         )
                         .id(store.dataSourceBindingKey)
                         .frame(width: min(900, max(680, proxy.size.width - 108)))
@@ -1208,60 +1218,57 @@ struct DashboardView: View {
                 sourceAvailable: allowedClients.contains("codex"), localClients: allowedClients
             )
 
-            // Aggregation is a summary operation, not permission to erase the
-            // original client's quota, money, or request provenance.
-            ForEach(allowedClients.sorted { lhs, rhs in lhs == "codex" || (rhs != "codex" && lhs < rhs) }, id: \.self) { client in
-                let isCodex = client == "codex"
-                let source = clientProjectionCache.value(codex: store.snapshot, clients: clients, allowed: [client])
-                if allowedClients.count > 1 {
-                    HStack {
-                        Text(ClientDisplayScope.title(client) + " · 用量与缓存")
-                            .font(.system(size: 17, weight: .semibold))
-                        Spacer()
-                    }
-                }
-                ActivitySection(
-                    dailyUsage: source.dailyUsage,
-                    cacheDaily: source.cacheUsage.daily,
-                    dailyModelBreakdowns: source.cacheUsage.dailyModelBreakdowns,
-                    attributionEvents: source.cacheUsage.attributionEvents,
-                    quotaDaily: isCodex ? quotaHistoryStore.snapshot.daily : [],
-                    selectedMode: $store.selectedMode,
-                    tokensOnly: !isCodex
-                )
-                RecentUsageChart(
-                    bins: source.recentBins,
-                    hourlyBins: source.hourlyUsage,
-                    cacheRecentBins: source.cacheUsage.recentBins,
-                    cacheHourlyBins: source.cacheUsage.hourly,
-                    attributionEvents: source.cacheUsage.attributionEvents,
-                    attributionEventsComplete: source.cacheUsage.attributionEventsComplete,
-                    quotaRecentBins: isCodex ? quotaHistoryStore.snapshot.recentBins : [],
-                    quotaHourlyBins: isCodex ? quotaHistoryStore.snapshot.hourlyBins : [],
-                    currentFiveHourQuotaPresent: isCodex && quotaStore.snapshot.fiveHour != nil,
-                    currentSevenDayQuotaPresent: isCodex && quotaStore.snapshot.sevenDay != nil,
-                    sharedAccountAttributionContext: isCodex && sharedAccountAttributionEnabled
-                        ? sharedAccountAttributionResult.map(QuotaSelectionAttributionContext.init(result:)) : nil,
-                    pricingAvailable: isCodex
-                )
-                .id(client == "codex" ? "recent-usage-chart" : "recent-usage-chart-" + client)
-                if isCodex {
-                    CacheHitRankingSection(
-                        cacheUsage: store.snapshot.cacheUsage,
-                        cacheUsageRevision: store.snapshot.generatedAt,
-                        codexHome: store.currentDataSource?.codexHome,
-                        onOpenDetails: {
-                            showingCodexRadarDetails = false
-                            showingSharedAccountAttributionDetails = false
-                            showingCacheHitRankingDetails = true
-                        }
-                    ).id("codex|" + store.dataSourceBindingKey)
-                } else if let usageClient = UsageClient(rawValue: client) {
-                    ClientCacheRankingSection(client: usageClient)
-                }
+            ActivitySection(
+                dailyUsage: display.dailyUsage,
+                cacheDaily: display.cacheUsage.daily,
+                dailyModelBreakdowns: display.cacheUsage.dailyModelBreakdowns,
+                attributionEvents: codexOnly ? display.cacheUsage.attributionEvents : [],
+                quotaDaily: allowedClients.contains("codex") ? quotaHistoryStore.snapshot.daily : [],
+                selectedMode: $store.selectedMode,
+                tokensOnly: !allowedClients.contains("codex")
+            )
+            RecentUsageChart(
+                bins: display.recentBins, hourlyBins: display.hourlyUsage,
+                cacheRecentBins: display.cacheUsage.recentBins, cacheHourlyBins: display.cacheUsage.hourly,
+                attributionEvents: allowedClients.contains("codex") ? store.snapshot.cacheUsage.attributionEvents : [],
+                attributionEventsComplete: allowedClients.contains("codex") && store.snapshot.cacheUsage.attributionEventsComplete,
+                quotaRecentBins: allowedClients.contains("codex") ? quotaHistoryStore.snapshot.recentBins : [],
+                quotaHourlyBins: allowedClients.contains("codex") ? quotaHistoryStore.snapshot.hourlyBins : [],
+                currentFiveHourQuotaPresent: allowedClients.contains("codex") && quotaStore.snapshot.fiveHour != nil,
+                currentSevenDayQuotaPresent: allowedClients.contains("codex") && quotaStore.snapshot.sevenDay != nil,
+                sharedAccountAttributionContext: allowedClients.contains("codex") && sharedAccountAttributionEnabled
+                    ? sharedAccountAttributionResult.map(QuotaSelectionAttributionContext.init(result:)) : nil,
+                pricingAvailable: allowedClients.contains("codex"),
+                quotaCostSource: !codexOnly && allowedClients.contains("codex") ? .init(
+                    bins: store.snapshot.recentBins, hourlyBins: store.snapshot.hourlyUsage,
+                    cacheRecentBins: store.snapshot.cacheUsage.recentBins, cacheHourlyBins: store.snapshot.cacheUsage.hourly,
+                    attributionEvents: store.snapshot.cacheUsage.attributionEvents) : nil
+            ).id("recent-usage-chart")
+            if !codexOnly && allowedClients.contains("codex") {
+                Text("Token、调用和命中率为汇总；额度、逐桶金额及额度反推保留 Codex 来源。其他客户端尚无逐桶模型金额，不按 Codex 单价估填。")
+                    .font(.system(size: 11)).foregroundStyle(.secondary).frame(maxWidth: 980, alignment: .leading)
             }
+            if let clientCacheIssue { Text(clientCacheIssue).font(.caption).foregroundStyle(AppTheme.accentAmber) }
+            CacheHitRankingSection(
+                cacheUsage: display.cacheUsage, cacheUsageRevision: display.generatedAt,
+                codexHome: store.currentDataSource?.codexHome,
+                onOpenDetails: {
+                    showingCodexRadarDetails = false; showingSharedAccountAttributionDetails = false
+                    showingCacheHitRankingDetails = true
+                },
+                additionalSessions: extraCacheSessions, aggregate: !codexOnly,
+                localOnly: !allowedClients.contains("codex")
+            ).id("ranking|" + allowedClients.sorted().joined(separator: ",") + "|" + store.dataSourceBindingKey)
 
         }
+        .task(id: allowedClients.sorted().joined(separator: ",") + "|" + String(clients.updatedAt?.timeIntervalSince1970 ?? 0)) {
+            guard !cacheClients.isEmpty else { clientCacheProjection = .empty; clientCacheIssue = nil; return }
+            do {
+                let result = try await clients.cacheRankingProjection(clients: cacheClients, order: .latest, requestLimit: 200)
+                guard !Task.isCancelled else { return }; clientCacheProjection = result; clientCacheIssue = nil
+            } catch { if !Task.isCancelled { clientCacheIssue = "部分客户端的本地缓存排行暂不可用" } }
+        }
+        .onChange(of: clientScope) { _, _ in showingCacheHitRankingDetails = false }
         .padding(.horizontal, 54)
         .padding(.vertical, 20)
         .frame(minWidth: logicalWidth, maxWidth: .infinity, alignment: .top)

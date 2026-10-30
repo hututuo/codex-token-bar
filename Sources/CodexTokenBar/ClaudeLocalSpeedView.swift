@@ -15,6 +15,7 @@ struct ActivitySpeedDisplayPicker: View {
 struct ActivitySpeedSummaryView: View {
     let allowed: Set<String>
     var compact = false
+    var onOpen: (() -> Void)? = nil
     @ObservedObject private var history = ActivitySpeedHistoryController.shared
     @ObservedObject private var palette = SpeedDisplayPreferences.shared
     @AppStorage(ActivitySpeedDisplayMode.key) private var modeRaw = ActivitySpeedDisplayMode.bar.rawValue
@@ -26,6 +27,12 @@ struct ActivitySpeedSummaryView: View {
     private func title(_ client: String) -> String { SpeedColorOverrides.clientTitle("client:" + client) }
     private func value(_ point: ActivityLivePoint) -> Double? { unit.value(total: point.rate, rates: point.rates, exchangeRate: exchangeRate) }
     var body: some View {
+        if compact, let onOpen {
+            Button(action: onOpen) { content }.buttonStyle(.plain)
+                .accessibilityLabel("打开速度曲线详情")
+        } else { content }
+    }
+    private var content: some View {
         let now = Date().timeIntervalSince1970
         let rows = history.rows(allowed: allowed, mode: mode, now: now)
         let selection = rows.contains { $0.client == selectedClient } ? selectedClient : nil
@@ -42,14 +49,18 @@ struct ActivitySpeedSummaryView: View {
                     ActivityRateUnitControl()
                 }
             }
-            if !rows.isEmpty {
+            if compact {
+                Text(rows.map { title($0.client) }.joined(separator: " · "))
+                    .font(.system(size: 8)).foregroundStyle(.secondary)
+                    .lineLimit(1).truncationMode(.tail).frame(maxWidth: .infinity, alignment: .leading)
+            } else if !rows.isEmpty {
                 HStack(spacing: 8) {
                     if rows.count > 1 { clientButton("全部", client: nil, selection: selection) }
                     ForEach(rows) { row in clientButton(title(row.client), client: row.client, selection: selection) }
                 }
             }
             Canvas { context, size in
-                let left: CGFloat = compact ? 2 : 35, right = size.width - 4
+                let left: CGFloat = compact ? 2 : 35, right = max(compact ? 2 : 35, size.width - 4)
                 let top: CGFloat = 8, bottom = size.height - 16
                 func position(_ point: ActivityLiveConnections.Point) -> CGPoint {
                     CGPoint(x: left + (point.x - (now-180))/180*(right-left), y: bottom - point.y/ceiling*(bottom-top))
@@ -84,13 +95,14 @@ struct ActivitySpeedSummaryView: View {
                 context.draw(Text("3分钟前").font(.system(size:9)).foregroundStyle(.secondary), at:.init(x:left,y:size.height-3),anchor:.bottomLeading)
                 context.draw(Text("现在").font(.system(size:9)).foregroundStyle(.secondary), at:.init(x:right,y:size.height-3),anchor:.bottomTrailing)
             }
-            .frame(height:compact ? 84 : 176)
+            .frame(height:compact ? 50 : 176)
+            .clipped()
             .overlay {
                 if !compact { ActivitySpeedInspectionOverlay(rows: visible, now: now, unit: unit, exchangeRate: exchangeRate) }
             }
             .accessibilityLabel("最近3分钟活动速率，原始读数连线")
             if !compact { Text("原始速度读数 · 移到曲线上查看").font(.system(size:10)).foregroundStyle(.secondary) }
-        }
+        }.frame(maxWidth: .infinity, alignment: .leading).clipped()
     }
     }
     private func clientButton(_ text: String, client: String?, selection: String?) -> some View {
