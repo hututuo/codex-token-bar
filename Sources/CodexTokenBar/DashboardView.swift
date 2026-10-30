@@ -1242,7 +1242,9 @@ struct DashboardView: View {
                 quotaCostSource: !codexOnly && allowedClients.contains("codex") ? .init(
                     bins: store.snapshot.recentBins, hourlyBins: store.snapshot.hourlyUsage,
                     cacheRecentBins: store.snapshot.cacheUsage.recentBins, cacheHourlyBins: store.snapshot.cacheUsage.hourly,
-                    attributionEvents: store.snapshot.cacheUsage.attributionEvents) : nil
+                    attributionEvents: store.snapshot.cacheUsage.attributionEvents,
+                    settledThrough: store.snapshot.settledThrough ?? store.snapshot.preciseTimeSeriesGeneratedAt) : nil,
+                settledThrough: store.snapshot.settledThrough ?? store.snapshot.preciseTimeSeriesGeneratedAt
             ).id("recent-usage-chart")
             if !codexOnly && allowedClients.contains("codex") {
                 Text("Token、调用和命中率为汇总；额度、逐桶金额及额度反推保留 Codex 来源。其他客户端尚无逐桶模型金额，不按 Codex 单价估填。")

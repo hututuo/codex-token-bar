@@ -5,19 +5,41 @@ struct RecentChartPreparedSnapshot: Sendable {
     let data: RecentChartPreparedData
     let bucketCostsUSD: [Double]
     var quotaData: RecentChartPreparedData? = nil
+    var costAttributionEvents: [TokenCacheAttributionEvent] = []
+
+    func consumptionSelection(
+        state: RecentChartConsumptionSelectionState,
+        hoveredIndex: Int? = nil,
+        priceCard: QuotaConsumptionPriceCard
+    ) -> QuotaConsumptionSelection? {
+        state.selection(displayedData: data, quotaData: quotaData,
+            hoveredIndex: hoveredIndex, priceCard: priceCard,
+            attributionEvents: costAttributionEvents)
+    }
 
     static func build(
         range: RecentChartRange,
         input: RecentChartPreparationInput,
         priceModel: OfficialAPIPriceModel
     ) -> Self {
+        // Attribution also serves today's/live totals and intentionally contains
+        // the open bucket. Chart amounts must use the closed-bucket coverage
+        // of this snapshot, including when the visible axis pads an empty tail.
+        func closedEvents(_ events: [TokenCacheAttributionEvent], through end: Date?) -> [TokenCacheAttributionEvent] {
+            guard let end else { return events }
+            return events.filter { $0.start < end }
+        }
+        let displayedEvents = closedEvents(input.attributionEvents, through: input.settledThrough)
+        let costEvents = input.quotaCostSource.map {
+            closedEvents($0.attributionEvents, through: $0.settledThrough ?? input.settledThrough)
+        } ?? displayedEvents
         let data = RecentUsageChart.prepare(
             range: range,
             recentBins: input.bins,
             hourlyBins: input.hourlyBins,
             cacheRecentBins: input.cacheRecentBins,
             cacheHourlyBins: input.cacheHourlyBins,
-            attributionEvents: input.attributionEvents,
+            attributionEvents: displayedEvents,
             quotaRecentBins: input.quotaRecentBins,
             quotaHourlyBins: input.quotaHourlyBins
         )
@@ -30,11 +52,12 @@ struct RecentChartPreparedSnapshot: Sendable {
             quotaData = RecentUsageChart.prepare(range: range,
                 recentBins: align(input.bins, source.bins), hourlyBins: align(input.hourlyBins, source.hourlyBins),
                 cacheRecentBins: source.cacheRecentBins, cacheHourlyBins: source.cacheHourlyBins,
-                attributionEvents: source.attributionEvents,
+                attributionEvents: costEvents,
                 quotaRecentBins: input.quotaRecentBins, quotaHourlyBins: input.quotaHourlyBins)
         } else { quotaData = nil }
         return Self(data: data,
-            bucketCostsUSD: RecentUsageChart.bucketCosts(for: quotaData ?? data, priceModel: priceModel), quotaData: quotaData)
+            bucketCostsUSD: RecentUsageChart.bucketCosts(for: quotaData ?? data, priceModel: priceModel),
+            quotaData: quotaData, costAttributionEvents: costEvents)
     }
 }
 

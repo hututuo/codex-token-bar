@@ -56,6 +56,35 @@ function localUnix(year, monthIndex, day, hour = 0, minute = 0) {
   return Math.floor(new Date(year, monthIndex, day, hour, minute).getTime() / 1_000);
 }
 
+test("real Codex aggregates keep the same price when an empty final bucket is included", async () => {
+  const fixture = JSON.parse(await readFile(new URL("../../../../Tests/Fixtures/last-bucket-chart-cost.json", import.meta.url), "utf8"));
+  const byStart = new Map();
+  for (const row of fixture.rows.filter((row) => row.startUnix < fixture.settledThroughUnix)) {
+    const group = byStart.get(row.startUnix) ?? [];
+    group.push(row);
+    byStart.set(row.startUnix, group);
+  }
+  const points = [];
+  for (let start = Math.min(...fixture.rows.map((row) => row.startUnix)); start <= fixture.settledThroughUnix; start += 300) {
+    const rows = byStart.get(start) ?? [];
+    const sum = (key) => rows.reduce((total, row) => total + row.breakdown[key], 0);
+    points.push(point(start, {tokens: sum("totalTokens"), calls: sum("calls"),
+      inputTokens: sum("inputTokens"), cachedInputTokens: sum("cachedInputTokens"),
+      outputTokens: sum("outputTokens"), modelBreakdowns: rows}));
+  }
+  const data = prepareRecentChartData("24h", {recentUsage24h: points, recentUsage7d: [], recentUsage30d: []});
+  const last = data.points.length - 1;
+  const before = quotaConsumptionSelection(data, 0, last - 1, "gpt56Sol");
+  const withTail = quotaConsumptionSelection(data, 0, last, "gpt56Sol");
+  assert.equal(before.calls, 842);
+  assert.equal(before.totalTokens, 170_322_445);
+  assert.ok(Math.abs(before.selectedCostUSD - 23.51656288) < 1e-7);
+  assert.equal(withTail.selectedCostUSD, before.selectedCostUSD);
+  assert.equal(withTail.totalTokens, before.totalTokens);
+  assert.equal(withTail.calls, before.calls);
+  assert.equal(withTail.modelBreakdowns.length, before.modelBreakdowns.length);
+});
+
 test("all recent chart ranges use the 278px canvas", () => {
   const expected = {
     canvasHeight: 278,

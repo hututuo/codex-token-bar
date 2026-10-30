@@ -1,0 +1,750 @@
+{
+  "description": "Readonly local Codex ledger aggregates captured 2026-10-31; last collected 5-minute bucket is left open to replay chart settlement mismatch. No session IDs, messages or account data.",
+  "settledThroughUnix": 1793380500,
+  "rows": [
+    {
+      "startUnix": 1793366100,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 7108225,
+        "cachedInputTokens": 7070720,
+        "outputTokens": 3351,
+        "reasoningOutputTokens": 1644,
+        "totalTokens": 7111576,
+        "calls": 17
+      }
+    },
+    {
+      "startUnix": 1793366400,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 2733875,
+        "cachedInputTokens": 2277888,
+        "outputTokens": 10424,
+        "reasoningOutputTokens": 4376,
+        "totalTokens": 2744299,
+        "calls": 13
+      }
+    },
+    {
+      "startUnix": 1793366700,
+      "model": "gpt-6-luna",
+      "breakdown": {
+        "inputTokens": 1117314,
+        "cachedInputTokens": 963968,
+        "outputTokens": 22360,
+        "reasoningOutputTokens": 13022,
+        "totalTokens": 1139674,
+        "calls": 24
+      }
+    },
+    {
+      "startUnix": 1793366700,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 6341181,
+        "cachedInputTokens": 6160256,
+        "outputTokens": 16597,
+        "reasoningOutputTokens": 9376,
+        "totalTokens": 6357778,
+        "calls": 24
+      }
+    },
+    {
+      "startUnix": 1793367000,
+      "model": "gpt-6-luna",
+      "breakdown": {
+        "inputTokens": 2864146,
+        "cachedInputTokens": 2763520,
+        "outputTokens": 20824,
+        "reasoningOutputTokens": 15106,
+        "totalTokens": 2884970,
+        "calls": 21
+      }
+    },
+    {
+      "startUnix": 1793367000,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 5569665,
+        "cachedInputTokens": 5430784,
+        "outputTokens": 12504,
+        "reasoningOutputTokens": 9655,
+        "totalTokens": 5582169,
+        "calls": 22
+      }
+    },
+    {
+      "startUnix": 1793367300,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 5170766,
+        "cachedInputTokens": 5116928,
+        "outputTokens": 25252,
+        "reasoningOutputTokens": 13841,
+        "totalTokens": 5196018,
+        "calls": 24
+      }
+    },
+    {
+      "startUnix": 1793367600,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 5492489,
+        "cachedInputTokens": 5471104,
+        "outputTokens": 21696,
+        "reasoningOutputTokens": 9319,
+        "totalTokens": 5514185,
+        "calls": 18
+      }
+    },
+    {
+      "startUnix": 1793367900,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 4681365,
+        "cachedInputTokens": 4598144,
+        "outputTokens": 7688,
+        "reasoningOutputTokens": 5274,
+        "totalTokens": 4689053,
+        "calls": 21
+      }
+    },
+    {
+      "startUnix": 1793368200,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 1721621,
+        "cachedInputTokens": 1685888,
+        "outputTokens": 7713,
+        "reasoningOutputTokens": 5782,
+        "totalTokens": 1729334,
+        "calls": 7
+      }
+    },
+    {
+      "startUnix": 1793368500,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 2055174,
+        "cachedInputTokens": 2028032,
+        "outputTokens": 16135,
+        "reasoningOutputTokens": 7861,
+        "totalTokens": 2071309,
+        "calls": 10
+      }
+    },
+    {
+      "startUnix": 1793368800,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 1485264,
+        "cachedInputTokens": 1477632,
+        "outputTokens": 11859,
+        "reasoningOutputTokens": 7908,
+        "totalTokens": 1497123,
+        "calls": 7
+      }
+    },
+    {
+      "startUnix": 1793369100,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 598579,
+        "cachedInputTokens": 595072,
+        "outputTokens": 9866,
+        "reasoningOutputTokens": 8077,
+        "totalTokens": 608445,
+        "calls": 2
+      }
+    },
+    {
+      "startUnix": 1793369400,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 2476768,
+        "cachedInputTokens": 2471936,
+        "outputTokens": 5451,
+        "reasoningOutputTokens": 4753,
+        "totalTokens": 2482219,
+        "calls": 8
+      }
+    },
+    {
+      "startUnix": 1793369700,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 2910949,
+        "cachedInputTokens": 2904960,
+        "outputTokens": 5306,
+        "reasoningOutputTokens": 4058,
+        "totalTokens": 2916255,
+        "calls": 9
+      }
+    },
+    {
+      "startUnix": 1793370000,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 3049433,
+        "cachedInputTokens": 3037440,
+        "outputTokens": 9947,
+        "reasoningOutputTokens": 5910,
+        "totalTokens": 3059380,
+        "calls": 9
+      }
+    },
+    {
+      "startUnix": 1793370300,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 1411538,
+        "cachedInputTokens": 1406080,
+        "outputTokens": 8960,
+        "reasoningOutputTokens": 5972,
+        "totalTokens": 1420498,
+        "calls": 4
+      }
+    },
+    {
+      "startUnix": 1793370600,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 726235,
+        "cachedInputTokens": 724480,
+        "outputTokens": 1743,
+        "reasoningOutputTokens": 1410,
+        "totalTokens": 727978,
+        "calls": 2
+      }
+    },
+    {
+      "startUnix": 1793370900,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 365938,
+        "cachedInputTokens": 364672,
+        "outputTokens": 8983,
+        "reasoningOutputTokens": 8699,
+        "totalTokens": 374921,
+        "calls": 1
+      }
+    },
+    {
+      "startUnix": 1793371200,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 1147515,
+        "cachedInputTokens": 1143552,
+        "outputTokens": 10342,
+        "reasoningOutputTokens": 9023,
+        "totalTokens": 1157857,
+        "calls": 3
+      }
+    },
+    {
+      "startUnix": 1793371500,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 1972527,
+        "cachedInputTokens": 1966208,
+        "outputTokens": 7506,
+        "reasoningOutputTokens": 6375,
+        "totalTokens": 1980033,
+        "calls": 5
+      }
+    },
+    {
+      "startUnix": 1793371800,
+      "model": "gpt-6-luna",
+      "breakdown": {
+        "inputTokens": 2919115,
+        "cachedInputTokens": 2687104,
+        "outputTokens": 19561,
+        "reasoningOutputTokens": 13310,
+        "totalTokens": 2938676,
+        "calls": 41
+      }
+    },
+    {
+      "startUnix": 1793371800,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 2294374,
+        "cachedInputTokens": 2184704,
+        "outputTokens": 13634,
+        "reasoningOutputTokens": 4991,
+        "totalTokens": 2308008,
+        "calls": 16
+      }
+    },
+    {
+      "startUnix": 1793372100,
+      "model": "gpt-6-luna",
+      "breakdown": {
+        "inputTokens": 2684785,
+        "cachedInputTokens": 2610432,
+        "outputTokens": 35155,
+        "reasoningOutputTokens": 28832,
+        "totalTokens": 2719940,
+        "calls": 18
+      }
+    },
+    {
+      "startUnix": 1793372100,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 4243674,
+        "cachedInputTokens": 4204288,
+        "outputTokens": 15117,
+        "reasoningOutputTokens": 9090,
+        "totalTokens": 4258791,
+        "calls": 22
+      }
+    },
+    {
+      "startUnix": 1793372400,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 2848996,
+        "cachedInputTokens": 2832256,
+        "outputTokens": 18128,
+        "reasoningOutputTokens": 9174,
+        "totalTokens": 2867124,
+        "calls": 11
+      }
+    },
+    {
+      "startUnix": 1793372700,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 3172702,
+        "cachedInputTokens": 3142528,
+        "outputTokens": 13517,
+        "reasoningOutputTokens": 9686,
+        "totalTokens": 3186219,
+        "calls": 9
+      }
+    },
+    {
+      "startUnix": 1793373000,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 1785000,
+        "cachedInputTokens": 1634944,
+        "outputTokens": 14322,
+        "reasoningOutputTokens": 11043,
+        "totalTokens": 1799322,
+        "calls": 11
+      }
+    },
+    {
+      "startUnix": 1793373300,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 3340973,
+        "cachedInputTokens": 3315584,
+        "outputTokens": 21226,
+        "reasoningOutputTokens": 8557,
+        "totalTokens": 3362199,
+        "calls": 18
+      }
+    },
+    {
+      "startUnix": 1793373600,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 2783259,
+        "cachedInputTokens": 2769280,
+        "outputTokens": 18366,
+        "reasoningOutputTokens": 9333,
+        "totalTokens": 2801625,
+        "calls": 14
+      }
+    },
+    {
+      "startUnix": 1793373900,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 2196541,
+        "cachedInputTokens": 2192512,
+        "outputTokens": 18833,
+        "reasoningOutputTokens": 10388,
+        "totalTokens": 2215374,
+        "calls": 9
+      }
+    },
+    {
+      "startUnix": 1793374200,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 2111520,
+        "cachedInputTokens": 2091648,
+        "outputTokens": 11310,
+        "reasoningOutputTokens": 8454,
+        "totalTokens": 2122830,
+        "calls": 10
+      }
+    },
+    {
+      "startUnix": 1793374500,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 3101383,
+        "cachedInputTokens": 3094144,
+        "outputTokens": 20336,
+        "reasoningOutputTokens": 12318,
+        "totalTokens": 3121719,
+        "calls": 13
+      }
+    },
+    {
+      "startUnix": 1793374800,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 1275833,
+        "cachedInputTokens": 1273472,
+        "outputTokens": 7167,
+        "reasoningOutputTokens": 5205,
+        "totalTokens": 1283000,
+        "calls": 5
+      }
+    },
+    {
+      "startUnix": 1793375100,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 2081534,
+        "cachedInputTokens": 2078208,
+        "outputTokens": 9649,
+        "reasoningOutputTokens": 6654,
+        "totalTokens": 2091183,
+        "calls": 9
+      }
+    },
+    {
+      "startUnix": 1793375400,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 726991,
+        "cachedInputTokens": 722176,
+        "outputTokens": 5844,
+        "reasoningOutputTokens": 5177,
+        "totalTokens": 732835,
+        "calls": 3
+      }
+    },
+    {
+      "startUnix": 1793375700,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 246789,
+        "cachedInputTokens": 246400,
+        "outputTokens": 4029,
+        "reasoningOutputTokens": 3789,
+        "totalTokens": 250818,
+        "calls": 1
+      }
+    },
+    {
+      "startUnix": 1793376000,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 1026866,
+        "cachedInputTokens": 1022464,
+        "outputTokens": 5177,
+        "reasoningOutputTokens": 4718,
+        "totalTokens": 1032043,
+        "calls": 4
+      }
+    },
+    {
+      "startUnix": 1793376300,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 1533447,
+        "cachedInputTokens": 1517824,
+        "outputTokens": 6908,
+        "reasoningOutputTokens": 4968,
+        "totalTokens": 1540355,
+        "calls": 5
+      }
+    },
+    {
+      "startUnix": 1793376600,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 2615546,
+        "cachedInputTokens": 2612096,
+        "outputTokens": 13277,
+        "reasoningOutputTokens": 10152,
+        "totalTokens": 2628823,
+        "calls": 9
+      }
+    },
+    {
+      "startUnix": 1793376900,
+      "model": "gpt-6-luna",
+      "breakdown": {
+        "inputTokens": 221563,
+        "cachedInputTokens": 132352,
+        "outputTokens": 1647,
+        "reasoningOutputTokens": 1248,
+        "totalTokens": 223210,
+        "calls": 5
+      }
+    },
+    {
+      "startUnix": 1793376900,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 3099038,
+        "cachedInputTokens": 3075712,
+        "outputTokens": 5828,
+        "reasoningOutputTokens": 4351,
+        "totalTokens": 3104866,
+        "calls": 10
+      }
+    },
+    {
+      "startUnix": 1793377200,
+      "model": "gpt-6-luna",
+      "breakdown": {
+        "inputTokens": 62817,
+        "cachedInputTokens": 60544,
+        "outputTokens": 2178,
+        "reasoningOutputTokens": 1156,
+        "totalTokens": 64995,
+        "calls": 1
+      }
+    },
+    {
+      "startUnix": 1793377200,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 2233604,
+        "cachedInputTokens": 2211200,
+        "outputTokens": 9443,
+        "reasoningOutputTokens": 7967,
+        "totalTokens": 2243047,
+        "calls": 7
+      }
+    },
+    {
+      "startUnix": 1793377500,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 3282637,
+        "cachedInputTokens": 3271936,
+        "outputTokens": 11884,
+        "reasoningOutputTokens": 6285,
+        "totalTokens": 3294521,
+        "calls": 10
+      }
+    },
+    {
+      "startUnix": 1793377800,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 1407423,
+        "cachedInputTokens": 1387008,
+        "outputTokens": 6111,
+        "reasoningOutputTokens": 4397,
+        "totalTokens": 1413534,
+        "calls": 4
+      }
+    },
+    {
+      "startUnix": 1793378100,
+      "model": "gpt-6-luna",
+      "breakdown": {
+        "inputTokens": 825384,
+        "cachedInputTokens": 702208,
+        "outputTokens": 12567,
+        "reasoningOutputTokens": 7907,
+        "totalTokens": 837951,
+        "calls": 20
+      }
+    },
+    {
+      "startUnix": 1793378100,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 3431896,
+        "cachedInputTokens": 3403264,
+        "outputTokens": 19587,
+        "reasoningOutputTokens": 13046,
+        "totalTokens": 3451483,
+        "calls": 14
+      }
+    },
+    {
+      "startUnix": 1793378400,
+      "model": "gpt-6-luna",
+      "breakdown": {
+        "inputTokens": 2851930,
+        "cachedInputTokens": 2733696,
+        "outputTokens": 35606,
+        "reasoningOutputTokens": 26719,
+        "totalTokens": 2887536,
+        "calls": 40
+      }
+    },
+    {
+      "startUnix": 1793378400,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 4871235,
+        "cachedInputTokens": 4833536,
+        "outputTokens": 21439,
+        "reasoningOutputTokens": 13840,
+        "totalTokens": 4892674,
+        "calls": 16
+      }
+    },
+    {
+      "startUnix": 1793378700,
+      "model": "gpt-6-luna",
+      "breakdown": {
+        "inputTokens": 3222301,
+        "cachedInputTokens": 3146880,
+        "outputTokens": 24438,
+        "reasoningOutputTokens": 16880,
+        "totalTokens": 3246739,
+        "calls": 34
+      }
+    },
+    {
+      "startUnix": 1793378700,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 4370359,
+        "cachedInputTokens": 4349312,
+        "outputTokens": 12731,
+        "reasoningOutputTokens": 7374,
+        "totalTokens": 4383090,
+        "calls": 18
+      }
+    },
+    {
+      "startUnix": 1793379000,
+      "model": "gpt-6-luna",
+      "breakdown": {
+        "inputTokens": 1441019,
+        "cachedInputTokens": 1424640,
+        "outputTokens": 13276,
+        "reasoningOutputTokens": 11462,
+        "totalTokens": 1454295,
+        "calls": 13
+      }
+    },
+    {
+      "startUnix": 1793379000,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 1449087,
+        "cachedInputTokens": 1430528,
+        "outputTokens": 4794,
+        "reasoningOutputTokens": 3837,
+        "totalTokens": 1453881,
+        "calls": 6
+      }
+    },
+    {
+      "startUnix": 1793379300,
+      "model": "gpt-6-luna",
+      "breakdown": {
+        "inputTokens": 1685864,
+        "cachedInputTokens": 1636352,
+        "outputTokens": 11161,
+        "reasoningOutputTokens": 5011,
+        "totalTokens": 1697025,
+        "calls": 14
+      }
+    },
+    {
+      "startUnix": 1793379300,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 3932527,
+        "cachedInputTokens": 3926272,
+        "outputTokens": 9893,
+        "reasoningOutputTokens": 3747,
+        "totalTokens": 3942420,
+        "calls": 14
+      }
+    },
+    {
+      "startUnix": 1793379600,
+      "model": "gpt-6-luna",
+      "breakdown": {
+        "inputTokens": 5860606,
+        "cachedInputTokens": 5737472,
+        "outputTokens": 49729,
+        "reasoningOutputTokens": 34209,
+        "totalTokens": 5910335,
+        "calls": 43
+      }
+    },
+    {
+      "startUnix": 1793379600,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 5667026,
+        "cachedInputTokens": 5644416,
+        "outputTokens": 12568,
+        "reasoningOutputTokens": 8053,
+        "totalTokens": 5679594,
+        "calls": 21
+      }
+    },
+    {
+      "startUnix": 1793379900,
+      "model": "gpt-6-luna",
+      "breakdown": {
+        "inputTokens": 4928148,
+        "cachedInputTokens": 4856320,
+        "outputTokens": 26182,
+        "reasoningOutputTokens": 19996,
+        "totalTokens": 4954330,
+        "calls": 34
+      }
+    },
+    {
+      "startUnix": 1793379900,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 6324737,
+        "cachedInputTokens": 6289664,
+        "outputTokens": 18670,
+        "reasoningOutputTokens": 12358,
+        "totalTokens": 6343407,
+        "calls": 24
+      }
+    },
+    {
+      "startUnix": 1793380200,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 4324698,
+        "cachedInputTokens": 4297984,
+        "outputTokens": 12856,
+        "reasoningOutputTokens": 8415,
+        "totalTokens": 4337554,
+        "calls": 15
+      }
+    },
+    {
+      "startUnix": 1793380500,
+      "model": "gpt-6.1-sol",
+      "breakdown": {
+        "inputTokens": 748665,
+        "cachedInputTokens": 747392,
+        "outputTokens": 501,
+        "reasoningOutputTokens": 501,
+        "totalTokens": 749166,
+        "calls": 2
+      }
+    }
+  ]
+}

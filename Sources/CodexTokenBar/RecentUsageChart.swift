@@ -595,6 +595,7 @@ struct RecentChartQuotaCostSource: Equatable, Sendable {
     let cacheRecentBins: [TokenCacheBucket]
     let cacheHourlyBins: [TokenCacheBucket]
     let attributionEvents: [TokenCacheAttributionEvent]
+    var settledThrough: Date? = nil
 }
 
 struct RecentChartPreparationInput: Equatable, Sendable {
@@ -606,6 +607,7 @@ struct RecentChartPreparationInput: Equatable, Sendable {
     let quotaRecentBins: [QuotaHistoryRecentBucket]
     let quotaHourlyBins: [QuotaHistoryRecentBucket]
     var quotaCostSource: RecentChartQuotaCostSource? = nil
+    var settledThrough: Date? = nil
 }
 
 struct RecentChartPreparedData: Equatable, Sendable {
@@ -1336,6 +1338,7 @@ enum RecentChartViewportGeometry {
 struct RecentUsageChart: View {
     let pricingAvailable: Bool
     let quotaCostSource: RecentChartQuotaCostSource?
+    let settledThrough: Date?
     let bins: [BinUsage]
     let hourlyBins: [BinUsage]
     let cacheRecentBins: [TokenCacheBucket]
@@ -1373,6 +1376,7 @@ struct RecentUsageChart: View {
     @State private var scrollGeometryPositioned = false
     @State private var scrollPresentation: RecentChartScrollPresentation?
     @State private var cachedQuotaData: RecentChartPreparedData?
+    @State private var cachedPricingSnapshot: RecentChartPreparedSnapshot?
     @State private var cachedBucketCostsUSD: [Double]
     @State private var cachedFixedScales: RecentChartFixedScaleMap
     @State private var renderGeneration: Int
@@ -1393,10 +1397,12 @@ struct RecentUsageChart: View {
         currentSevenDayQuotaPresent: Bool = true,
         sharedAccountAttributionContext: QuotaSelectionAttributionContext? = nil,
         pricingAvailable: Bool = true,
-        quotaCostSource: RecentChartQuotaCostSource? = nil
+        quotaCostSource: RecentChartQuotaCostSource? = nil,
+        settledThrough: Date? = nil
     ) {
         self.pricingAvailable = pricingAvailable
         self.quotaCostSource = quotaCostSource
+        self.settledThrough = settledThrough
         self.bins = bins
         self.hourlyBins = hourlyBins
         self.cacheRecentBins = cacheRecentBins
@@ -1490,7 +1496,8 @@ struct RecentUsageChart: View {
             attributionEvents: attributionEvents,
             quotaRecentBins: quotaRecentBins,
             quotaHourlyBins: quotaHourlyBins,
-            quotaCostSource: quotaCostSource
+            quotaCostSource: quotaCostSource,
+            settledThrough: settledThrough
         )
     }
 
@@ -2342,13 +2349,16 @@ struct RecentUsageChart: View {
         )
         guard let snapshot = preparationStore.snapshot(for: range) else { return }
         let updatedData = snapshot.data
-        if snapshot.quotaData != cachedQuotaData { cachedFixedConsumptionSelection = nil }
+        let costBasisChanged = snapshot.quotaData != cachedQuotaData
+            || snapshot.costAttributionEvents != cachedPricingSnapshot?.costAttributionEvents
+        if costBasisChanged { cachedFixedConsumptionSelection = nil }
         cachedQuotaData = snapshot.quotaData
+        cachedPricingSnapshot = snapshot
         let updatedBucketCostsUSD = snapshot.bucketCostsUSD
         let updatedFixedScales = Self.fixedScales(for: updatedData)
         hasPreparedData = true
         guard updatedData != preparedData else {
-            var renderInputsChanged = false
+            var renderInputsChanged = costBasisChanged
             if updatedBucketCostsUSD != cachedBucketCostsUSD {
                 cachedFixedConsumptionSelection = nil
                 cachedBucketCostsUSD = updatedBucketCostsUSD
@@ -2430,9 +2440,8 @@ struct RecentUsageChart: View {
             cachedFixedConsumptionSelection = nil
             return
         }
-        cachedFixedConsumptionSelection = consumptionSelectionState.selection(
-            displayedData: preparedData, quotaData: cachedQuotaData,
-            priceCard: .officialAPI(selectedQuotaEstimateModel), attributionEvents: attributionEvents)
+        cachedFixedConsumptionSelection = cachedPricingSnapshot?.consumptionSelection(
+            state: consumptionSelectionState, priceCard: .officialAPI(selectedQuotaEstimateModel))
     }
 
     private var activeConsumptionSelection: QuotaConsumptionSelection? {
@@ -2450,8 +2459,8 @@ struct RecentUsageChart: View {
            cachedSelection.endIndex == endIndex {
             return cachedSelection
         }
-        return consumptionSelectionState.selection(displayedData: preparedData, quotaData: cachedQuotaData,
-            hoveredIndex: validHover, priceCard: .officialAPI(selectedQuotaEstimateModel), attributionEvents: attributionEvents)
+        return cachedPricingSnapshot?.consumptionSelection(state: consumptionSelectionState,
+            hoveredIndex: validHover, priceCard: .officialAPI(selectedQuotaEstimateModel))
     }
 
     private func activeSelectionAttribution(

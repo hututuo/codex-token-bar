@@ -7890,6 +7890,48 @@ fn dashboard_temp_view_keeps_one_wal_snapshot_across_all_sections() {
 }
 
 #[test]
+fn real_chart_tail_keeps_closed_usage_and_model_coverage_identical() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(concat!(env!("CARGO_MANIFEST_DIR"),
+        "/../../Tests/Fixtures/last-bucket-chart-cost.json"))).unwrap();
+    let cutoff = fixture["settledThroughUnix"].as_i64().unwrap();
+    let root = temp_root();
+    let session_dir = root.join("sessions");
+    fs::create_dir_all(&session_dir).unwrap();
+    let now = OffsetDateTime::from_unix_timestamp(cutoff + 60).unwrap().format(&Rfc3339).unwrap();
+    let _clock = DashboardTestClock::at(&root, &now);
+    let mut lines = Vec::new();
+    for row in fixture["rows"].as_array().unwrap() {
+        let timestamp = OffsetDateTime::from_unix_timestamp(row["startUnix"].as_i64().unwrap() + 1)
+            .unwrap().format(&Rfc3339).unwrap();
+        lines.push(serde_json::json!({"timestamp": timestamp, "type": "turn_context", "payload": {"model": row["model"]}}).to_string());
+        let b = &row["breakdown"];
+        lines.push(serde_json::json!({"timestamp": timestamp, "type": "event_msg", "payload": {
+            "type": "token_count", "info": {"last_token_usage": {
+                "input_tokens": b["inputTokens"], "cached_input_tokens": b["cachedInputTokens"],
+                "output_tokens": b["outputTokens"], "reasoning_output_tokens": b["reasoningOutputTokens"],
+                "total_tokens": b["totalTokens"]}}}}).to_string());
+    }
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    write_lines(&session_dir.join("rollout-019e-chart-tail-real-aggregate.jsonl"), &refs);
+    let dashboard = dashboard_snapshot(&root).unwrap();
+    for series in [&dashboard.recent_usage_24h, &dashboard.recent_usage_7d, &dashboard.recent_usage_30d] {
+        assert_eq!(series.iter().map(|point| u64::from(point.calls)).sum::<u64>(), 842);
+        assert_eq!(series.iter().map(|point| point.tokens).sum::<u64>(), 170_322_445);
+        for point in series {
+            assert_eq!(point.model_breakdowns.iter().map(|row| row.breakdown.input_tokens).sum::<u64>(), point.input_tokens);
+            assert_eq!(point.model_breakdowns.iter().map(|row| row.breakdown.cached_input_tokens).sum::<u64>(), point.cached_input_tokens);
+            assert_eq!(point.model_breakdowns.iter().map(|row| row.breakdown.output_tokens).sum::<u64>(), point.output_tokens);
+            assert_eq!(point.model_breakdowns.iter().map(|row| u64::from(row.breakdown.calls)).sum::<u64>(), u64::from(point.calls));
+        }
+    }
+    // The open bucket remains in real lifetime/today usage; only chart coverage
+    // is closed. No raw usage is discarded to make the chart totals agree.
+    assert_eq!(dashboard.stats.total_tokens, 171_071_611);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn recent_usage_downsample_preserves_model_breakdowns_and_cache_rates() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
