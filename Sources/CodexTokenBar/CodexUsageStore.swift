@@ -1794,42 +1794,46 @@ final class CodexUsageStore: ObservableObject {
     }
 
     private func loadContinuityLoss(for source: CodexDataSource?) {
-        guard migrateLegacyContinuityLossesIfNeeded() else {
-            preciseTimeSeriesContinuityLostAt = nil
-            preciseTimeSeriesContinuityLossID = nil
-            preciseTimeSeriesContinuityLossReason = nil
-            return
-        }
-        guard let source,
-              let loss = continuityLosses()?[Self.continuityIdentifier(for: source)] else {
-            preciseTimeSeriesContinuityLostAt = nil
-            preciseTimeSeriesContinuityLossID = nil
-            preciseTimeSeriesContinuityLossReason = nil
-            return
-        }
-        preciseTimeSeriesContinuityLostAt = loss.detectedAt
-        preciseTimeSeriesContinuityLossID = loss.id
-        preciseTimeSeriesContinuityLossReason = loss.reason
-        if loss.reason == .storageRecovery,
-           sharedAccountSafetyRecoveryState != .rebuilding {
+        // One authoritative safety read per callback; never cache across events.
+        let values = loadMigratedContinuityLosses()
+        let loss = source.flatMap { values?[Self.continuityIdentifier(for: $0)] }
+        if preciseTimeSeriesContinuityLostAt != loss?.detectedAt { preciseTimeSeriesContinuityLostAt = loss?.detectedAt }
+        if preciseTimeSeriesContinuityLossID != loss?.id { preciseTimeSeriesContinuityLossID = loss?.id }
+        if preciseTimeSeriesContinuityLossReason != loss?.reason { preciseTimeSeriesContinuityLossReason = loss?.reason }
+        if loss?.reason == .storageRecovery,
+           sharedAccountSafetyRecoveryState != .rebuilding,
+           sharedAccountSafetyRecoveryState != .awaitingFreshBaseline {
             sharedAccountSafetyRecoveryState = .awaitingFreshBaseline
         }
     }
 
-    private func migrateLegacyContinuityLossesIfNeeded() -> Bool {
+    private func setContinuityPersistenceHealthy(_ value: Bool) {
+        if preciseContinuityPersistenceHealthy != value { preciseContinuityPersistenceHealthy = value }
+    }
+
+    private func decodeContinuityLosses(_ data: Data) -> [String: PreciseTimeSeriesContinuityLossRecord]? {
+        guard let values = try? JSONDecoder().decode([String: PreciseTimeSeriesContinuityLossRecord].self, from: data) else {
+            continuitySafetyDatabase?.reportCorruptPayload(.preciseContinuity)
+            setContinuityPersistenceHealthy(false)
+            return nil
+        }
+        setContinuityPersistenceHealthy(true)
+        return values
+    }
+
+    private func loadMigratedContinuityLosses() -> [String: PreciseTimeSeriesContinuityLossRecord]? {
         if let continuitySafetyDatabase {
-            if continuitySafetyDatabase.load(.preciseContinuity) != nil {
+            if let data = continuitySafetyDatabase.load(.preciseContinuity) {
                 guard retireContinuityDefaultsMigrationSources() else {
                     continuitySafetyDatabase.reportRecoveryRequired()
-                    preciseContinuityPersistenceHealthy = false
-                    return false
+                    setContinuityPersistenceHealthy(false)
+                    return nil
                 }
-                preciseContinuityPersistenceHealthy = true
-                return true
+                return decodeContinuityLosses(data)
             }
             guard continuitySafetyDatabase.persistenceHealthy else {
-                preciseContinuityPersistenceHealthy = false
-                return false
+                setContinuityPersistenceHealthy(false)
+                return nil
             }
             let migrationData: Data
             if let currentData = continuityDefaults.data(forKey: continuityStorageKey) {
@@ -1838,8 +1842,8 @@ final class CodexUsageStore: ObservableObject {
                     from: currentData
                 )) != nil else {
                     continuitySafetyDatabase.reportRecoveryRequired()
-                    preciseContinuityPersistenceHealthy = false
-                    return false
+                    setContinuityPersistenceHealthy(false)
+                    return nil
                 }
                 migrationData = currentData
             } else if let legacyContinuityStorageKey,
@@ -1851,8 +1855,8 @@ final class CodexUsageStore: ObservableObject {
                     }
                 ) else {
                     continuitySafetyDatabase.reportRecoveryRequired()
-                    preciseContinuityPersistenceHealthy = false
-                    return false
+                    setContinuityPersistenceHealthy(false)
+                    return nil
                 }
                 migrationData = migratedData
             } else {
@@ -1860,8 +1864,8 @@ final class CodexUsageStore: ObservableObject {
                     [String: PreciseTimeSeriesContinuityLossRecord]()
                 ) else {
                     continuitySafetyDatabase.reportRecoveryRequired()
-                    preciseContinuityPersistenceHealthy = false
-                    return false
+                    setContinuityPersistenceHealthy(false)
+                    return nil
                 }
                 migrationData = emptyData
             }
@@ -1873,32 +1877,31 @@ final class CodexUsageStore: ObservableObject {
                   continuitySafetyDatabase.load(.preciseContinuity) == installed,
                   retireContinuityDefaultsMigrationSources() else {
                 continuitySafetyDatabase.reportRecoveryRequired()
-                preciseContinuityPersistenceHealthy = false
-                return false
+                setContinuityPersistenceHealthy(false)
+                return nil
             }
-            preciseContinuityPersistenceHealthy = true
-            return true
+            return decodeContinuityLosses(installed)
         }
 
         guard continuityDefaults.data(forKey: continuityStorageKey) == nil,
               let legacyContinuityStorageKey,
               let legacyData = continuityDefaults.data(forKey: legacyContinuityStorageKey) else {
-            return true
+            return continuityLosses()
         }
         guard let legacy = try? JSONDecoder().decode([String: Date].self, from: legacyData) else {
-            preciseContinuityPersistenceHealthy = false
-            return false
+            setContinuityPersistenceHealthy(false)
+            return nil
         }
         let migrated = legacy.mapValues {
             PreciseTimeSeriesContinuityLossRecord(id: UUID(), detectedAt: $0)
         }
-        guard persistContinuityLosses(migrated) else { return false }
+        guard persistContinuityLosses(migrated) else { return nil }
         continuityDefaults.removeObject(forKey: legacyContinuityStorageKey)
         guard continuityDefaults.data(forKey: legacyContinuityStorageKey) == nil else {
-            preciseContinuityPersistenceHealthy = false
-            return false
+            setContinuityPersistenceHealthy(false)
+            return nil
         }
-        return true
+        return migrated
     }
 
     private func retireContinuityDefaultsMigrationSources() -> Bool {
@@ -1917,33 +1920,16 @@ final class CodexUsageStore: ObservableObject {
     private func continuityLosses() -> [String: PreciseTimeSeriesContinuityLossRecord]? {
         if let continuitySafetyDatabase {
             guard let data = continuitySafetyDatabase.load(.preciseContinuity) else {
-                preciseContinuityPersistenceHealthy = continuitySafetyDatabase.persistenceHealthy
+                setContinuityPersistenceHealthy(continuitySafetyDatabase.persistenceHealthy)
                 return continuitySafetyDatabase.persistenceHealthy ? [:] : nil
             }
-            guard let values = try? JSONDecoder().decode(
-                [String: PreciseTimeSeriesContinuityLossRecord].self,
-                from: data
-            ) else {
-                continuitySafetyDatabase.reportCorruptPayload(.preciseContinuity)
-                preciseContinuityPersistenceHealthy = false
-                return nil
-            }
-            preciseContinuityPersistenceHealthy = true
-            return values
+            return decodeContinuityLosses(data)
         }
         guard let data = continuityDefaults.data(forKey: continuityStorageKey) else {
-            preciseContinuityPersistenceHealthy = true
+            setContinuityPersistenceHealthy(true)
             return [:]
         }
-        guard let values = try? JSONDecoder().decode(
-            [String: PreciseTimeSeriesContinuityLossRecord].self,
-            from: data
-        ) else {
-            preciseContinuityPersistenceHealthy = false
-            return nil
-        }
-        preciseContinuityPersistenceHealthy = true
-        return values
+        return decodeContinuityLosses(data)
     }
 
     @discardableResult

@@ -84,14 +84,14 @@ export function useClientScope() {
   const surface = useContext(ClientScopeSurface);
   const { snapshot } = useMultiClientUsage(),
     [raw, setScope] = useSharedChoice(surface === "sidebar" ? sidebarScopeKey : scopeKey, surface === "sidebar" ? "all" : "codex");
-  const available = snapshot.preferences
+  const available = useMemo(() => snapshot.preferences
       .filter(
         (p) =>
           p.enabled || snapshot.summaries.some((s) => s.client === p.client) ||
           (p.client === "claudeCode" && snapshot.quotas?.some(q => q.client === "claudeCode" && q.state === "available" && q.windows.length > 0)),
       )
-      .map((p) => p.client),
-    allowed = scopeClients(raw, available);
+      .map((p) => p.client), [snapshot.preferences, snapshot.summaries, snapshot.quotas]);
+  const allowed = useMemo(() => scopeClients(raw, available), [raw, available]);
   return {
     raw,
     setScope,

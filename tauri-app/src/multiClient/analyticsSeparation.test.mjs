@@ -48,6 +48,7 @@ test("aggregate dashboard renders one combined analytics block and preserves pro
   await withSsrModules(async load => {
     const { emptyDashboardSnapshot } = await load("/src/api/fallback/dashboardFallback.ts");
     const { DashboardAnalyticsSection } = await load("/src/pages/dashboard/DashboardAnalyticsSection.tsx");
+    const { projectOriginalDashboard } = await load("/src/multiClient/originalDashboardProjection.ts");
     const now = Math.floor(Date.now() / 300) * 300;
 
     // Disposable fixture values make the two client projections easy to distinguish.
@@ -75,7 +76,7 @@ test("aggregate dashboard renders one combined analytics block and preserves pro
     };
 
     const markup = renderWithBrowserStorage(React.createElement(DashboardAnalyticsSection, {
-      dashboard: codex,
+      dashboard: projectOriginalDashboard(codex, clients, ["claudeCode", "codex"]),
       originalCodex: codex,
       clients,
       allowed: ["claudeCode", "codex"],
@@ -115,13 +116,14 @@ test("Claude-only analytics does not expose Codex quota, pricing, or cache-rank 
   await withSsrModules(async load => {
     const { emptyDashboardSnapshot } = await load("/src/api/fallback/dashboardFallback.ts");
     const { DashboardAnalyticsSection } = await load("/src/pages/dashboard/DashboardAnalyticsSection.tsx");
+    const { projectOriginalDashboard } = await load("/src/multiClient/originalDashboardProjection.ts");
     const codex = emptyDashboardSnapshot();
     const clients = {
       preferences: [], summaries: [], todaySummaries: [], sevenDaySummaries: [],
       trendBuckets: [], dailyBuckets: [], diagnostics: [], updatedAt: null,
     };
     const markup = renderWithBrowserStorage(React.createElement(DashboardAnalyticsSection, {
-      dashboard: codex,
+      dashboard: projectOriginalDashboard(codex, clients, ["claudeCode"]),
       originalCodex: codex,
       clients,
       allowed: ["claudeCode"],

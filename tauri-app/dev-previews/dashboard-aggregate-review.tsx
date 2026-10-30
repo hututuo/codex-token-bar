@@ -5,7 +5,7 @@ import {ClientScopeButtons} from '../src/multiClient/ClientScopeControls';
 import {AgentSpeedReportingNotice,type AgentSpeedReportingStatus} from '../src/components/settings/AgentSpeedReporting';
 import {QuotaStrip} from '../src/components/QuotaStrip';
 import {StatsStrip} from '../src/components/StatsStrip';
-import {clientCostPeriods} from '../src/multiClient/originalDashboardProjection';
+import {clientCostPeriods,projectOriginalDashboard} from '../src/multiClient/originalDashboardProjection';
 import {defaultClientPreferences} from '../src/multiClient/MultiClientUsage';
 import type {DashboardSnapshot,QuotaSnapshot} from '../src/types/dashboard';
 import local from './dashboard-header.local.json';
@@ -35,6 +35,7 @@ function Review(){
  const [scope,setScope]=useState('all'),[nickname,setNickname]=useState(local.account.displayName),[cadence,setCadence]=useState(60000),[previewLoading,setPreviewLoading]=useState(false);
  const allowed=scope==='all'?['codex',...knownClients]:[scope];
  const costs=useMemo(()=>clientCostPeriods(codex,snapshot as never,allowed,captured),[scope]);
+ const display=useMemo(()=>projectOriginalDashboard(codex,snapshot as never,allowed),[scope]);
  const tokens=(allowed.includes('codex')?sum(local.codexRows):0)+local.clients.filter(r=>allowed.includes(r.client)).reduce((n,r)=>n+r.inputTokens+r.outputTokens,0);
  return <main className="app-shell"><section className="dashboard" style={{paddingTop:18}}>
   <p style={{fontSize:10,color:'var(--muted)',margin:'0 0 14px'}}>候选版真实组件 · 底部仅一套聚合图表 · 本机账本只读快照 {new Date(local.capturedAt).toLocaleString()} · 本页不采集、不上报、不修改正式版设置 {openHeaderPreview&&<button type="button" className="review-loading-toggle" onClick={()=>setPreviewLoading(value=>!value)}>{previewLoading?'显示已就绪':'预览读取中'}</button>}</p>
@@ -49,7 +50,7 @@ function Review(){
    appUpdateState={{kind:'idle',message:''}} threadDeleteBridgeStatus={{connected:false,debugPort:null,message:'未连接'}} autoResumeEnabled={false}/>
   {allowed.includes('codex')&&<div style={{marginTop:14}}><QuotaStrip clientPlanLabels={{codex:local.account.planLabel}} snapshot={quota} clientItems={quotaItems} includesCodex quotaRefreshIntervalMs={cadence} onQuotaRefreshIntervalChange={async value=>setCadence(value)}/></div>}
   <div style={{marginTop:18}}><StatsStrip stats={{...codex.stats,totalTokens:tokens}} planLabel={local.account.planLabel} clientCosts={costs}/></div>
- <DashboardAnalyticsSection dashboard={codex} originalCodex={codex} clients={snapshot} allowed={allowed} sharedAccountAttribution={null}/>
+ <DashboardAnalyticsSection dashboard={display} originalCodex={codex} clients={snapshot} allowed={allowed} sharedAccountAttribution={null}/>
  </section></main>;
 }
 createRoot(document.getElementById('root')!).render(<Review/>);

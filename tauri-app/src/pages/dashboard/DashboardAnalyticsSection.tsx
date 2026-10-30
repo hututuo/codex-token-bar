@@ -1,5 +1,4 @@
-import { memo, useEffect, useMemo, useState } from "react";
-import { projectOriginalDashboard } from "../../multiClient/originalDashboardProjection";
+import { memo, useEffect, useState } from "react";
 import type { Snapshot } from "../../multiClient/MultiClientUsage";
 import { ClientCacheRanking } from "../../multiClient/ClientCacheRanking";
 import { useAggregateClientCacheRows } from "../../multiClient/aggregateCacheRanking";
@@ -26,9 +25,9 @@ function DashboardAnalyticsSectionView({ dashboard, originalCodex, clients, allo
   const scope = allowed ?? (clientScoped ? LOCAL : CODEX);
   const includesCodex = scope.includes("codex");
   const aggregate = scope.length !== 1 || !includesCodex;
-  const source = useMemo(() => originalCodex && clients
-    ? projectOriginalDashboard(originalCodex, clients, [...scope]) : dashboard,
-    [dashboard, originalCodex, clients, scope.join(",")]);
+  // The parent prepares the scoped dashboard once for summary and analytics.
+  // Keep originalCodex only for provider-specific quota/cost provenance.
+  const source = dashboard;
   const codex = originalCodex ?? dashboard;
   const localRanking = useAggregateClientCacheRows(clients, scope);
   const [localDetail, setLocalDetail] = useState<{client: string; sessionID: string} | null>(null);
