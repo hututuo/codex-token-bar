@@ -73,3 +73,13 @@ Claude CLI/Desktop默认共用projects并按entrypoint区分；如用户给二�
 [3f2004b6 / 41083785367](https://github.com/hututuo/codex-token-bar/actions/runs/41083785367)：Mac和Windows完整Rust回归、Windows更新器通过。前端1375项中1374通过，唯一失败是仍硬匹配旧“账号实降”的源代码文案断言；已移除重复的文案断言，保留对应语义标识、DOM读数和不显示折算/差额的验证。Swift2196项（28跳过）中仅两处旧辅助功能整串期望未包含新加入的Token/请求数，已更新为精确完整期望；新增计价、根链接、选区分子和气泡恢复用例全部通过。修正后本地相关22项通过，仍需新冻结SHA的完整云端复验，不把首次失败写成全绿。
 
 将反推芯片原先含糊的“无 token”改成“无可比用量”：完整选区有用量，并不保证同周期可比段也有用量。价格版本使用内置共享book，AgentSpeedReportingController上报的priceVersion也取PriceBook.bundled.version。
+
+
+## 最终云端复验与交付边界（2026-10-31）
+
+源码冻结SHA：`dd165a05aad8d1658358702d596ec240cbb478ec`。
+[完整CI 41087231519](https://github.com/hututuo/codex-token-bar/actions/runs/41087231519)全部通过：前端1375/1375、云端脚本11/11；Swift XCTest2196项（28跳过、0失败）、Swift Testing665项；发布脚本105项（104通过、1跳过、0失败）。Mac与Windows的完整Rust回归、原始压力案例、Windows打包自检/上报隐私自检及更新器检查均通过。未调度正式候选打包。
+
+本机CFBundleVersion再次只读确认仍为984；本批没有替换、重启、操作Windows EXE或生产数据库。本节为文档补记，不改动上述已测试源码。其余旧预览文件未跟进提交或清理。
+
+本地证据：scratch/20261030-price-and-chart-audit/cloud-dd165a05-results.json、cloud-dd165a05-swift.log、cloud-dd165a05-frontend.log。header-alignment-reference.png为真实跨平台组件的只读快照局部，左边缘数据源和所属区域均x=150；它是Mac改动的样式参考，不能代替已安装原生界面的验收。
