@@ -27,19 +27,32 @@ final class BusinessDatabaseMigration {
                 legacyExact: CodexUsageHistoryIndex.businessIndexDirectory(legacyCache: true))
         }
         func specification(for url: URL) -> BusinessSQLiteStore? {
-            let path = url.standardizedFileURL.path
+            func relativePath(in root: URL) -> String? {
+                let path = url.standardizedFileURL.path
+                let logicalRoot = root.standardizedFileURL.path
+                if path.hasPrefix(logicalRoot + "/") { return String(path.dropFirst(logicalRoot.count + 1)) }
+                // Enumeration uses physical roots, while persisted ownership
+                // uses configured logical roots. Resolve the parent, not the
+                // database leaf, so deleting a legacy file does not change ID.
+                let physicalPath = url.deletingLastPathComponent().resolvingSymlinksInPath()
+                    .appendingPathComponent(url.lastPathComponent).standardizedFileURL.path
+                let physicalRoot = root.resolvingSymlinksInPath().standardizedFileURL.path
+                guard physicalPath.hasPrefix(physicalRoot + "/") else { return nil }
+                return String(physicalPath.dropFirst(physicalRoot.count + 1))
+            }
             let relative: String, module: String
-            let exactPath = exact.standardizedFileURL.path
-            let supportPath = support.standardizedFileURL.path
-            if path.hasPrefix(exactPath + "/") {
-                relative = String(path.dropFirst(exactPath.count + 1))
+            let logicalURL: URL
+            if let found = relativePath(in: exact) {
+                relative = found
+                logicalURL = exact.appendingPathComponent(relative)
                 if relative.hasPrefix("staging/") && relative.hasSuffix(".sqlite") && relative.split(separator: "/").count >= 3 { module = "exact.swift.stage" }
                 else if !relative.contains("/"), relative.hasSuffix(".sqlite"),
                         relative.dropLast(7).count == 64,
                         relative.dropLast(7).allSatisfy({ $0.isHexDigit }) { module = "exact.swift" }
                 else { return nil }
-            } else if path.hasPrefix(supportPath + "/") {
-                relative = String(path.dropFirst(supportPath.count + 1))
+            } else if let found = relativePath(in: support) {
+                relative = found
+                logicalURL = support.appendingPathComponent(relative)
                 switch relative {
                 case "quota-history.sqlite": module = "quota.swift"
                 case "shared-account-usage-safety.sqlite": module = "safety.swift"
@@ -49,7 +62,7 @@ final class BusinessDatabaseMigration {
                     module = "body.swift"
                 }
             } else { return nil }
-            return BusinessSQLiteStore(containerURL: container, logicalURL: url, module: module, sourceIdentity: relative)
+            return BusinessSQLiteStore(containerURL: container, logicalURL: logicalURL, module: module, sourceIdentity: relative)
         }
     }
     struct Receipt: Codable {

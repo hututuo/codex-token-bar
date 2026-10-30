@@ -645,6 +645,14 @@ private struct SQLiteDatabaseFamilySnapshot {
 
 final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
     let url: URL
+    private let operationConnectionKey = "TokenBar.SQLite.operation.\(UUID().uuidString)"
+    private final class OperationConnection {
+        let connection: SQLiteDatabaseConnection
+        let identity: String
+        init(_ connection: SQLiteDatabaseConnection, identity: String) {
+            self.connection = connection; self.identity = identity
+        }
+    }
 
     private let readOnly: Bool
     private let createsFileIfMissing: Bool
@@ -713,7 +721,49 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
         }
     }
 
+    /// Reuse one connection only for this synchronous operation and thread.
+    /// This is not a pool or a transaction: every nested write still commits
+    /// normally, and another thread gets its own connection. No await may span
+    /// this scope. Recovery/ownership locks remain the caller's responsibility.
+    func withOperationConnection<T>(_ body: () throws -> T) throws -> T {
+        guard consistency != .externallyOwnedWAL else { return try body() }
+        if Thread.current.threadDictionary[operationConnectionKey] != nil {
+            return try withConnection { _ in try body() }
+        }
+        return try withConnection { connection in
+            let dictionary = Thread.current.threadDictionary
+            dictionary[operationConnectionKey] = OperationConnection(connection, identity: try operationFileIdentity())
+            defer { dictionary.removeObject(forKey: operationConnectionKey) }
+            return try body()
+        }
+    }
+
+    private func operationFileIdentity() throws -> String {
+        let attributes = try fileManager.attributesOfItem(atPath: backingURL.path)
+        guard attributes[.type] as? FileAttributeType == .typeRegular,
+              let device = attributes[.systemNumber] as? NSNumber,
+              let inode = attributes[.systemFileNumber] as? NSNumber else {
+            throw SQLiteDatabaseError(operation: "Validate SQLite operation", code: SQLITE_ABORT,
+                message: "Database identity is unavailable", path: url.path)
+        }
+        return "\(device):\(inode)"
+    }
+
     func withConnection<T>(_ body: (SQLiteDatabaseConnection) throws -> T) throws -> T {
+        if let scoped = Thread.current.threadDictionary[operationConnectionKey] as? OperationConnection {
+            if let businessStore {
+                guard BusinessSQLiteRoutes.store(for: url) == businessStore else {
+                    throw SQLiteDatabaseError(operation: "Reuse module connection", code: SQLITE_ABORT,
+                        message: "Module route changed", path: url.path)
+                }
+                _ = try BusinessSQLiteRoutes.validateActiveContainer(backingURL)
+            }
+            guard try operationFileIdentity() == scoped.identity else {
+                throw SQLiteDatabaseError(operation: "Reuse SQLite connection", code: SQLITE_ABORT,
+                    message: "Database was replaced during the operation", path: url.path)
+            }
+            return try body(scoped.connection)
+        }
         if consistency == .externallyOwnedWAL {
             guard readOnly else {
                 throw SQLiteDatabaseError(

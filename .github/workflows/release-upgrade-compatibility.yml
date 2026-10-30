@@ -1,0 +1,230 @@
+name: Public v0.9.7 database upgrade
+
+on:
+  push:
+    branches: [main, 'codex/**', 'fix/**']
+    paths:
+      - '.github/workflows/release-upgrade-compatibility.yml'
+      - 'Sources/**'
+      - 'tauri-app/src-tauri/**'
+      - 'Tests/CodexTokenBarTests/**'
+      - 'scripts/prepare_v097_upgrade_validation.py'
+      - 'Package.swift'
+      - 'Package.resolved'
+  pull_request:
+    paths:
+      - '.github/workflows/release-upgrade-compatibility.yml'
+      - 'Sources/**'
+      - 'tauri-app/src-tauri/**'
+      - 'Tests/CodexTokenBarTests/**'
+      - 'scripts/prepare_v097_upgrade_validation.py'
+      - 'Package.swift'
+      - 'Package.resolved'
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: 'Exact candidate commit; empty means the workflow commit'
+        type: string
+        default: ''
+  workflow_call:
+    inputs:
+      source_sha:
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-upgrade-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  swift-release-upgrade:
+    runs-on: macos-26
+    timeout-minutes: 65
+    env:
+      GIT_LFS_SKIP_SMUDGE: '1'
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      TOKENBAR_V097_REQUIRE_FIXTURES: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ inputs.source_sha || github.sha }}
+      - name: Verify candidate and pinned public release identity
+        env:
+          CANDIDATE_SHA: ${{ inputs.source_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test "$(git rev-parse 'v0.9.7^{commit}')" = 0219554ce444b0013987da7b82e3c2e891f4afdb
+          mkdir -p upgrade-evidence
+          git rev-parse HEAD > upgrade-evidence/candidate-sha.txt
+          git rev-parse 'v0.9.7^{commit}' > upgrade-evidence/release-sha.txt
+          echo "TOKENBAR_V097_FIXTURE_ROOT=$RUNNER_TEMP/tokenbar-v097-fixtures" >> "$GITHUB_ENV"
+          echo "TOKENBAR_V097_INPUTS=$RUNNER_TEMP/tokenbar-v097-fixtures/inputs" >> "$GITHUB_ENV"
+          python3 scripts/prepare_v097_upgrade_validation.py prepare "$RUNNER_TEMP/tokenbar-v097-source" "$RUNNER_TEMP/tokenbar-v097-fixtures"
+      - name: Swift dependency cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .build/artifacts
+            .build/checkouts
+            .build/repositories
+            ${{ runner.temp }}/tokenbar-v097-source/.build/artifacts
+            ${{ runner.temp }}/tokenbar-v097-source/.build/checkouts
+            ${{ runner.temp }}/tokenbar-v097-source/.build/repositories
+          key: release097-swift-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Package.resolved') }}-v1
+      - name: Produce real schema14 and quota inputs with public v0.9.7 code
+        run: |
+          set -euo pipefail
+          command -v git-lfs >/dev/null || brew install git-lfs
+          bash "$RUNNER_TEMP/tokenbar-v097-source/scripts/prepare_tiktoken_lfs.sh"
+          python3 scripts/prepare_v097_upgrade_validation.py verify-v097-swift-dependency "$RUNNER_TEMP/tokenbar-v097-source" | tee upgrade-evidence/old-swift-lfs-verification.json
+          swift test --package-path "$RUNNER_TEMP/tokenbar-v097-source" --filter Release097FixtureProducerTests 2>&1 | tee upgrade-evidence/old-producer.log
+          grep -q 'V097_PRODUCER_READY' upgrade-evidence/old-producer.log
+          python3 scripts/prepare_v097_upgrade_validation.py verify "$TOKENBAR_V097_FIXTURE_ROOT" | tee upgrade-evidence/fixture-verification.json
+      - name: Run current production migration against required public release inputs
+        run: |
+          set -euo pipefail
+          bash scripts/prepare_tiktoken_lfs.sh
+          swift test --filter Release097DatabaseUpgradeTests 2>&1 | tee upgrade-evidence/current-upgrade.log
+          grep -q 'V097_ACCOUNTING_PROOF' upgrade-evidence/current-upgrade.log
+          grep -q 'V097_CRASH_RESTART_PROOF' upgrade-evidence/current-upgrade.log
+          python3 - <<'PY'
+          import pathlib, re
+          log = pathlib.Path('upgrade-evidence/current-upgrade.log').read_text()
+          source = pathlib.Path('Tests/CodexTokenBarTests/Release097DatabaseUpgradeTests.swift').read_text()
+          expected = set(re.findall(r'func (test\w+)\(', source))
+          tests = {name for name in expected if any(name in line and 'Release097DatabaseUpgradeTests' in line and 'passed' in line for line in log.splitlines())}
+          if len(expected) != 8 or tests != expected:
+              raise SystemExit(f'Expected all 8 public-release upgrade tests to pass, missing: {sorted(expected - tests)}')
+          if re.search(r"Release097DatabaseUpgradeTests.*(?:skipped|XCTSkip)", log, re.I):
+              raise SystemExit('A required public-release fixture test was skipped')
+          PY
+      - name: Recheck B, dormant schemas and UI startup fences
+        run: |
+          set -euo pipefail
+          swift test --skip-build --filter '(BusinessDatabaseMigrationTests|CodexBusinessDatabaseTests|UpgradeCompatibilitySolAuditTests|ApplicationStartupCoordinatorTests|MultiClientUsageLedgerTests|BodySpeedTrendStoreTests|LegacyClaudeSpeedMigrationTests|ActivitySpeedStoreTests)' 2>&1 | tee upgrade-evidence/supporting-regressions.log
+          python3 scripts/prepare_v097_upgrade_validation.py verify "$TOKENBAR_V097_FIXTURE_ROOT" > upgrade-evidence/fixture-reverified.json
+      - name: Preserve synthetic inputs and verification evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: public097-upgrade-${{ inputs.source_sha || github.sha }}
+          path: |
+            upgrade-evidence/
+            ${{ runner.temp }}/tokenbar-v097-fixtures/inputs/
+          if-no-files-found: error
+          retention-days: 14
+
+  windows-release-upgrade:
+    runs-on: windows-2025
+    timeout-minutes: 80
+    env:
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_BUILD_JOBS: '3'
+      CARGO_INCREMENTAL: '0'
+      RUSTUP_TOOLCHAIN: '1.93.1'
+      CARGO_TARGET_DIR: ${{ github.workspace }}/tauri-app/src-tauri/target-upgrade
+      TOKENBAR_V097_REQUIRE_FIXTURES: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ inputs.source_sha || github.sha }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Allocate isolated data roots and exact source archives
+        shell: pwsh
+        env:
+          CANDIDATE_SHA: ${{ inputs.source_sha || github.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:CANDIDATE_SHA -notmatch '^[0-9a-f]{40}$') { throw 'An exact candidate SHA is required' }
+          if ((git rev-parse HEAD) -ne $env:CANDIDATE_SHA) { throw 'Candidate SHA mismatch' }
+          if ((git rev-parse 'v0.9.7^{commit}') -ne '0219554ce444b0013987da7b82e3c2e891f4afdb') { throw 'Public tag SHA mismatch' }
+          New-Item -ItemType Directory -Path upgrade-evidence -Force | Out-Null
+          $allocation = python scripts/prepare_v097_upgrade_validation.py allocate-rust-runtime $env:GITHUB_ENV
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $allocation | Set-Content upgrade-evidence/windows-isolation.json
+          $settings = $allocation | ConvertFrom-Json
+          python scripts/prepare_v097_upgrade_validation.py prepare "$env:RUNNER_TEMP/tokenbar-v097-source" $settings.TOKENBAR_V097_FIXTURE_ROOT --platform rust
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/prepare_v097_upgrade_validation.py prepare-current-rust "$env:RUNNER_TEMP/tokenbar-v097-candidate" | Tee-Object upgrade-evidence/windows-candidate-injection.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Cache Windows Rust dependencies and compilation
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            tauri-app/src-tauri/target-upgrade
+          key: public097-rust-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-${{ inputs.source_sha || github.sha }}
+          restore-keys: |
+            public097-rust-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-
+      - name: Prepare actual old and current Windows builds
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          rustup toolchain install 1.93.1 --profile minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($source in @('tokenbar-v097-source', 'tokenbar-v097-candidate')) {
+            Push-Location "$env:RUNNER_TEMP/$source/tauri-app"
+            npm ci --registry=https://registry.npmjs.org
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            npm run build
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Pop-Location
+          }
+      - name: Generate real Rust schema14 and quota rows with the public tag
+        shell: pwsh
+        run: |
+          cargo test --locked --manifest-path "$env:RUNNER_TEMP/tokenbar-v097-source/tauri-app/src-tauri/Cargo.toml" --lib release097_export_actual_rust_inputs -- --test-threads=1 --nocapture 2>&1 | Tee-Object upgrade-evidence/windows-old-producer.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Select-String -Path upgrade-evidence/windows-old-producer.log -SimpleMatch 'V097_RUST_PRODUCER_READY')) { throw 'The real old producer did not run' }
+          python scripts/prepare_v097_upgrade_validation.py verify $env:TOKENBAR_V097_FIXTURE_ROOT --platform rust | Tee-Object upgrade-evidence/windows-fixture-verification.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify real importer proofs and interrupted pending sources
+        shell: pwsh
+        run: |
+          cargo test --locked --manifest-path "$env:RUNNER_TEMP/tokenbar-v097-candidate/tauri-app/src-tauri/Cargo.toml" --lib release097_upgrade_tests -- --ignored --test-threads=1 --nocapture 2>&1 | Tee-Object upgrade-evidence/windows-upgrade-unit.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($marker in @('V097_RUST_UNIT_PROOF_OK', 'V097_RUST_PENDING_RETRY_OK', 'V097_RUST_QUOTA_PROOF_OK', '3 passed; 0 failed; 0 ignored')) {
+            if (-not (Select-String -Path upgrade-evidence/windows-upgrade-unit.log -SimpleMatch $marker)) { throw "Required importer evidence missing: $marker" }
+          }
+      - name: Compile non-test production A and B routing probe
+        shell: pwsh
+        run: |
+          cargo build --locked --manifest-path "$env:RUNNER_TEMP/tokenbar-v097-candidate/tauri-app/src-tauri/Cargo.toml" --features business-store-fixture --example release097-upgrade-probe 2>&1 | Tee-Object upgrade-evidence/windows-production-build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run real production migration, abrupt restart, B import and missing-A fences
+        shell: pwsh
+        run: |
+          $probe = Join-Path $env:CARGO_TARGET_DIR 'debug/examples/release097-upgrade-probe.exe'
+          if (-not (Test-Path $probe)) { throw 'Non-test production probe is missing' }
+          & $probe crash 2>&1 | Tee-Object upgrade-evidence/windows-crash.log
+          if ($LASTEXITCODE -ne 86) { throw "Expected the committed-WAL crash exit 86, found $LASTEXITCODE" }
+          foreach ($phase in @('resume', 'reopen', 'missing-a', 'reopen')) {
+            & $probe $phase 2>&1 | Tee-Object -Append upgrade-evidence/windows-production-upgrade.log
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          python scripts/prepare_v097_upgrade_validation.py verify $env:TOKENBAR_V097_FIXTURE_ROOT --platform rust | Tee-Object upgrade-evidence/windows-fixture-reverified.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Preserve synthetic Windows A/B, original inputs and all proof logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: public097-windows-upgrade-${{ inputs.source_sha || github.sha }}
+          path: |
+            upgrade-evidence/
+            ${{ env.TOKENBAR_V097_RUNTIME_ROOT }}/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 14

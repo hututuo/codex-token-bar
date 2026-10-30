@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import Combine
 
 /// Adapts source facts to the original dashboard contracts. Contains no views,
 /// scanners or persistence; selecting a source never changes an original ledger.
@@ -131,11 +132,12 @@ enum ClientDashboardProjection {
     }
 }
 
-struct ClientModelCostPeriods: Equatable {
+struct ClientModelCostPeriods: Equatable, Sendable {
     let lifetime: [FloatingTodayModelUsageItem]
     let today: [FloatingTodayModelUsageItem]
     let sevenDay: [FloatingTodayModelUsageItem]
     var codexPendingScopes: Set<DashboardModelCostScope> = []
+    var isPreparing = false
     func items(_ scope: DashboardModelCostScope) -> [FloatingTodayModelUsageItem] {
         switch scope { case .lifetime: lifetime; case .today: today; case .sevenDay: sevenDay }
     }
@@ -175,11 +177,11 @@ struct ClientModelCostPeriods: Equatable {
     }
     static func make(codex: DashboardSnapshot, todayCodex: [ModelTokenBreakdown],
                      rows: [ClientUsageSummary], today: [ClientUsageSummary], sevenDay: [ClientUsageSummary],
-                     allowed: Set<String>, now: Date = Date()) -> Self {
+                     allowed: Set<String>, now: Date = Date(), calendar: Calendar = .current) -> Self {
         let cutoff = now.addingTimeInterval(-7 * 86400)
         let recentEvents = codex.cacheUsage.attributionEvents.filter { $0.start >= cutoff && $0.start <= now }
         let recentCodex = ModelUsagePresentation.rows(from: recentEvents)
-        let todayStart = Calendar.current.startOfDay(for: now)
+        let todayStart = calendar.startOfDay(for: now)
         let indexedToday = ModelUsagePresentation.rows(from: recentEvents.filter { $0.start >= todayStart })
         let resolvedToday = todayCodex.isEmpty ? indexedToday : todayCodex
         var pending: Set<DashboardModelCostScope> = []
@@ -244,8 +246,29 @@ final class ClientDashboardProjectionCache {
 /// One presentation result, invalidated by source generations and rolling time.
 /// Hover/radar/progress publications must not reprice every historical request.
 @MainActor
-final class ClientModelCostPeriodsCache {
-    private struct Key: Equatable {
+final class ClientModelCostPeriodsCache: ObservableObject {
+    struct Input: Sendable {
+        let codex: DashboardSnapshot
+        let todayCodex: [ModelTokenBreakdown]
+        let rows: [ClientUsageSummary]
+        let today: [ClientUsageSummary]
+        let sevenDay: [ClientUsageSummary]
+        let allowed: Set<String>
+        let now: Date
+        let calendar: Calendar
+        nonisolated func make() -> ClientModelCostPeriods {
+            .make(codex: codex, todayCodex: todayCodex, rows: rows, today: today,
+                sevenDay: sevenDay, allowed: allowed, now: now, calendar: calendar)
+        }
+    }
+    typealias Builder = @Sendable (Input) -> ClientModelCostPeriods
+    private struct Scope: Hashable, Sendable {
+        let source: String?
+        let allowed: Set<String>
+        let day: Date
+        let timeZone: String
+    }
+    private struct Key: Equatable, Sendable {
         let source: String?
         let generation: Int64?
         let generatedAt: Date
@@ -256,23 +279,73 @@ final class ClientModelCostPeriodsCache {
         let attributionCount: Int
         let attributionGeneration: Int64?
         let modelBucketsComplete: Bool
+        let rows: [ClientUsageSummary]
+        let today: [ClientUsageSummary]
+        let sevenDay: [ClientUsageSummary]
+        let scope: Scope
+        let paletteVersion: Int
     }
-    private var key: Key?
-    private var cached: ClientModelCostPeriods?
+    private struct Request: Sendable { let key: Key; let input: Input }
+    private struct Entry { let key: Key; let value: ClientModelCostPeriods }
+    private var cached: [Scope: Entry] = [:]
+    private var latestKey: Key?
+    private var inFlight: Key?
+    private var pending: Request?
+    private var task: Task<Void, Never>?
+    private let builder: Builder
+    @Published private(set) var revision = 0
     private(set) var computationCount = 0
+    init(builder: @escaping Builder = { $0.make() }) { self.builder = builder }
+
     func value(codex: DashboardSnapshot, todayCodex: [ModelTokenBreakdown],
                rows: [ClientUsageSummary], today: [ClientUsageSummary], sevenDay: [ClientUsageSummary],
                clientsUpdatedAt: Date?, allowed: Set<String>, now: Date = Date()) -> ClientModelCostPeriods {
+        let calendar = Calendar.current
+        let scope = Scope(source: codex.homeIdentity, allowed: allowed,
+            day: calendar.startOfDay(for: now), timeZone: calendar.timeZone.identifier)
         let next = Key(source: codex.homeIdentity, generation: codex.exactGeneration,
             generatedAt: codex.generatedAt, clientsUpdatedAt: clientsUpdatedAt,
             minute: Int64(floor(now.timeIntervalSince1970 / 60)), allowed: allowed, todayCodex: todayCodex,
             attributionCount: codex.cacheUsage.attributionEvents.count,
             attributionGeneration: codex.cacheUsage.attributionGeneration,
-            modelBucketsComplete: codex.cacheUsage.attributionModelBucketsComplete)
-        if next == key, let cached { return cached }
-        let result = ClientModelCostPeriods.make(codex: codex, todayCodex: todayCodex,
-            rows: rows, today: today, sevenDay: sevenDay, allowed: allowed, now: now)
-        key = next; cached = result; computationCount += 1
-        return result
+            modelBucketsComplete: codex.cacheUsage.attributionModelBucketsComplete,
+            rows: rows, today: today, sevenDay: sevenDay, scope: scope,
+            paletteVersion: SpeedColorOverrides.shared.version)
+        latestKey = next
+        if cached[scope]?.key == next {
+            pending = nil
+            return cached[scope]!.value
+        }
+        if inFlight == next { pending = nil }
+        else if pending?.key != next {
+            pending = Request(key: next, input: Input(codex: codex, todayCodex: todayCodex,
+                rows: rows, today: today, sevenDay: sevenDay, allowed: allowed, now: now, calendar: calendar))
+        }
+        startIfNeeded()
+        // Keep only same-source/scope/day values while deriving their update;
+        // a newly selected client must never briefly display the prior one.
+        return cached[scope]?.value ?? .init(lifetime: [], today: [], sevenDay: [], isPreparing: true)
+    }
+
+    func waitForPendingComputation() async { await task?.value }
+
+    private func startIfNeeded() {
+        guard task == nil, pending != nil else { return }
+        let builder = self.builder
+        task = Task { [weak self] in
+            while let request = self?.pending {
+                self?.pending = nil
+                self?.inFlight = request.key
+                let result = await Task.detached(priority: .utility) { builder(request.input) }.value
+                guard let self else { return }
+                self.inFlight = nil
+                self.computationCount += 1
+                guard self.latestKey == request.key else { continue }
+                if self.cached.count >= 4, self.cached[request.key.scope] == nil { self.cached.removeAll() }
+                self.cached[request.key.scope] = Entry(key: request.key, value: result)
+                self.revision &+= 1
+            }
+            self?.task = nil
+        }
     }
 }

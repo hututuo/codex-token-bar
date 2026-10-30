@@ -13,7 +13,7 @@ enum FloatingTodayModelUsagePage: String, Equatable, Sendable {
     }
 }
 
-struct FloatingTodayModelUsageItem: Identifiable, Equatable {
+struct FloatingTodayModelUsageItem: Identifiable, Equatable, Sendable {
     let id: String
     let label: String
     let tokens: Int

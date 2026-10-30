@@ -50,7 +50,7 @@ struct DashboardView: View {
         ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs)
     }
     @State private var clientProjectionCache = ClientDashboardProjectionCache()
-    @State private var clientCostCache = ClientModelCostPeriodsCache()
+    @StateObject private var clientCostCache = ClientModelCostPeriodsCache()
     private var codexOnly: Bool { allowedClients == ["codex"] }
 
     @Environment(\.openWindow) private var openWindow
@@ -755,10 +755,6 @@ struct DashboardView: View {
         sharedAccountSegmentStore.setObserverInstanceID(
             store.preciseObservationSessionID
         )
-        let tier = selectedSharedAccountRadarTier
-        let model = selectedSharedAccountPriceModel
-        let quota = quotaStore.snapshot
-        let radar = radarStore.snapshot?.modelIQ.quotaRadar
         let safetyLock = sharedAccountAttributionEnabled
             && sharedAccountSafetyDatabase.isObserverOwner
             ? sharedAccountSafetyDatabase.acquireCrossProcessLock()
@@ -766,6 +762,20 @@ struct DashboardView: View {
         defer { safetyLock?.release() }
         let storageCoordinationHealthy = !sharedAccountAttributionEnabled
             || (safetyLock != nil && sharedAccountSafetyDatabase.isObserverOwner)
+        if sharedAccountAttributionEnabled, storageCoordinationHealthy {
+            sharedAccountSafetyDatabase.withOperationConnection {
+                refreshSharedAccountAttributionBody(storageCoordinationHealthy: true)
+            }
+        } else {
+            refreshSharedAccountAttributionBody(storageCoordinationHealthy: storageCoordinationHealthy)
+        }
+    }
+
+    private func refreshSharedAccountAttributionBody(storageCoordinationHealthy: Bool) {
+        let tier = selectedSharedAccountRadarTier
+        let model = selectedSharedAccountPriceModel
+        let quota = quotaStore.snapshot
+        let radar = radarStore.snapshot?.modelIQ.quotaRadar
         if sharedAccountAttributionEnabled, storageCoordinationHealthy {
             store.reloadPreciseTimeSeriesContinuityLoss()
         }

@@ -2159,7 +2159,9 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertTrue(source.contains(".offset(x: -buttonWidth - 6)"))
         XCTAssertTrue(source.contains(".offset(x: buttonWidth + 6)"))
         XCTAssertTrue(source.contains("consumptionSelectionState"))
-        XCTAssertTrue(source.contains("consumptionSelectionState.selection("))
+        XCTAssertTrue(source.contains("cachedPricingSnapshot?.consumptionSelection("))
+        XCTAssertFalse(source.contains("consumptionSelectionState.selection("),
+            "Selection must bind the published snapshot, not newer parent attribution events")
         XCTAssertFalse(source.contains("let selection = preparedData.quotaConsumptionSelection("),
             "Pinning must not bypass the provider-aware selection path in aggregate mode")
         XCTAssertTrue(source.contains("onClick:"))

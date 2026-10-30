@@ -11,6 +11,29 @@ final class BusinessDatabaseMigrationTests: XCTestCase {
         return (root, .init(container: support.appendingPathComponent("codex-ledger.sqlite"), support: support,
             exact: root.appendingPathComponent("exact"), legacyExact: root.appendingPathComponent("cache")))
     }
+    func testDirectoryAliasAndDeletedLegacyFileKeepOneRegisteredHistoryPartition() throws {
+        let (root, physical) = try fixture()
+        let legacy = physical.support.appendingPathComponent("quota-history.sqlite")
+        try SQLiteDatabaseDriver(url: legacy).execute("CREATE TABLE samples(id INTEGER PRIMARY KEY); INSERT INTO samples VALUES(42)")
+        let alias = root.appendingPathComponent("support-alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: physical.support)
+        let configured = BusinessDatabaseMigration.Configuration(container: physical.container, support: alias,
+            exact: physical.exact, legacyExact: physical.legacyExact)
+        try BusinessDatabaseMigration.migrate(configured, availableBytes: 1 << 32)
+        let logical = alias.appendingPathComponent("quota-history.sqlite")
+        XCTAssertEqual(BusinessSQLiteRoutes.store(for: legacy)?.id, BusinessSQLiteRoutes.store(for: logical)?.id)
+        try SQLiteDatabaseDriver(url: logical).execute("INSERT INTO samples VALUES(43)")
+        BusinessSQLiteRoutes.deactivate()
+        try FileManager.default.removeItem(at: legacy)
+        // A new launch may spell the same configured root physically. Ownership
+        // is module/source identity, not whether the old leaf still resolves.
+        try BusinessDatabaseMigration.migrate(physical, availableBytes: 0)
+        let routed = SQLiteDatabaseDriver(url: legacy, readOnly: true, createsFileIfMissing: false)
+        XCTAssertEqual(try routed.readRows("SELECT id FROM samples ORDER BY id") { $0.int(0)! }, [42,43])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacy.path))
+        let raw = SQLiteDatabaseDriver(url: physical.container, readOnly: true, bypassBusinessRoutes: true)
+        XCTAssertEqual(try raw.readRows("SELECT COUNT(*) FROM tb_stores WHERE module='quota.swift'") { $0.int(0) }.first!, 1)
+    }
     func testRetryOfAddedLegacyInputDoesNotSkipChangedSource() throws {
         let (_, c) = try fixture()
         let active = c.support.appendingPathComponent("quota-history.sqlite")

@@ -176,6 +176,21 @@ final class SharedAccountUsageSafetyDatabase: @unchecked Sendable {
         healthy = initializationSucceeded
     }
 
+    /// The caller holds the attribution owner lock. Keep the expensive schema
+    /// binding for this operation, not between refreshes; load/mutate retain
+    /// their recovery gates and immediate/FULL durable transactions.
+    func withOperationConnection<Result>(_ body: () -> Result) -> Result {
+        guard let driver = healthyDriver(), backingStoreExists() else {
+            markUnhealthy()
+            return body()
+        }
+        do { return try driver.withOperationConnection(body) }
+        catch {
+            markUnhealthy()
+            return body()
+        }
+    }
+
     func load(_ kind: RecordKind) -> Data? {
         guard let recoveryGate = acquireRecoveryGate(waitingUpTo: 2) else {
             markUnhealthy()

@@ -22,7 +22,7 @@ final class ReleaseDatabaseUpgradeTests: XCTestCase {
         let count = try scalar("SELECT COUNT(*) FROM events")
         XCTAssertGreaterThan(count, 0)
         _ = try CodexUsageHistoryIndex(sessionCatalogTestingDatabaseURL: target)
-        XCTAssertEqual(try db.readRows("SELECT value FROM schema_meta WHERE key='schema_version'") { $0.text(0) }.first!, "13")
+        XCTAssertEqual(try db.readRows("SELECT value FROM schema_meta WHERE key='schema_version'") { $0.text(0) }.first!, "14")
         XCTAssertEqual(try scalar("SELECT COUNT(*) FROM events"), count)
         XCTAssertEqual(try scalar("SELECT COUNT(*) FROM (SELECT \(fields) FROM release_expected EXCEPT SELECT \(fields) FROM events)"), 0)
         XCTAssertEqual(try scalar("SELECT COUNT(*) FROM (SELECT \(fields) FROM events EXCEPT SELECT \(fields) FROM release_expected)"), 0)
@@ -109,7 +109,7 @@ final class ReleaseDatabaseUpgradeTests: XCTestCase {
             _ = try sync([]); XCTAssertEqual(try scalar("SELECT SUM(tokens) FROM events"),112)
             print("ACTUAL RELEASE Swift rewrite 100 -> 105, incremental append 112, missing source retained")
         }
-        print("ACTUAL RELEASE 6 -> 13: \(count) rows, every original component and old total preserved; reopen stable; total \(total)")
+        print("ACTUAL RELEASE 6 -> 14: \(count) rows, every original component and old total preserved; reopen stable; total \(total)")
     }
 }
 
@@ -159,7 +159,7 @@ extension ReleaseDatabaseUpgradeTests {
             XCTAssertTrue(manager.fileExists(atPath:old.path));XCTAssertTrue(manager.fileExists(atPath:current.path))
             let migrated=SQLiteDatabaseDriver(url:current)
             XCTAssertEqual(try migrated.readRows("SELECT value FROM release_wal_proof"){$0.text(0)}.first!,"committed-in-wal")
-            XCTAssertEqual(try migrated.readRows("SELECT value FROM schema_meta WHERE key='schema_version'"){$0.text(0)}.first!,"13")
+            XCTAssertEqual(try migrated.readRows("SELECT value FROM schema_meta WHERE key='schema_version'"){$0.text(0)}.first!,"14")
             XCTAssertEqual(try migrated.readRows("SELECT COUNT(*) FROM events"){$0.int64(0)}.first!,count)
             let total=try migrated.readRows("SELECT SUM(tokens) FROM events"){$0.int64(0)}.first!
             _=try CodexUsageHistoryIndex(codexHome:home)

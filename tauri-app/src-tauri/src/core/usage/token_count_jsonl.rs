@@ -46,6 +46,8 @@ mod session_files;
 mod session_parser;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod release097_upgrade_tests;
 
 #[cfg(test)]
 use aggregates::{activity_days_at, stats_at};

@@ -7901,16 +7901,34 @@ fn real_chart_tail_keeps_closed_usage_and_model_coverage_identical() {
     let now = OffsetDateTime::from_unix_timestamp(cutoff + 60).unwrap().format(&Rfc3339).unwrap();
     let _clock = DashboardTestClock::at(&root, &now);
     let mut lines = Vec::new();
+    let mut cumulative = [0_i64; 5];
+    let mut bucket_ordinals = HashMap::<i64, i64>::new();
     for row in fixture["rows"].as_array().unwrap() {
         let timestamp = OffsetDateTime::from_unix_timestamp(row["startUnix"].as_i64().unwrap() + 1)
             .unwrap().format(&Rfc3339).unwrap();
         lines.push(serde_json::json!({"timestamp": timestamp, "type": "turn_context", "payload": {"model": row["model"]}}).to_string());
         let b = &row["breakdown"];
-        lines.push(serde_json::json!({"timestamp": timestamp, "type": "event_msg", "payload": {
-            "type": "token_count", "info": {"last_token_usage": {
-                "input_tokens": b["inputTokens"], "cached_input_tokens": b["cachedInputTokens"],
-                "output_tokens": b["outputTokens"], "reasoning_output_tokens": b["reasoningOutputTokens"],
-                "total_tokens": b["totalTokens"]}}}}).to_string());
+        // The fixture contains aggregates, not original packets. Deterministic
+        // synthetic fan-out preserves every numeric total and request count;
+        // these generated timestamps are never used as speed evidence.
+        let count = b["calls"].as_i64().unwrap();
+        for i in 0..count {
+            let start = row["startUnix"].as_i64().unwrap();
+            let ordinal = bucket_ordinals.entry(start).or_insert(1);
+            assert!(*ordinal < 300);
+            let timestamp = OffsetDateTime::from_unix_timestamp(start + *ordinal).unwrap().format(&Rfc3339).unwrap();
+            *ordinal += 1;
+            let part = |value: i64| value / count + i64::from(i < value % count);
+            let cached = part(b["cachedInputTokens"].as_i64().unwrap());
+            let uncached = part(b["inputTokens"].as_i64().unwrap() - b["cachedInputTokens"].as_i64().unwrap());
+            let output = part(b["outputTokens"].as_i64().unwrap());
+            let last = [cached + uncached, cached, output, part(b["reasoningOutputTokens"].as_i64().unwrap()), cached + uncached + output];
+            for (total, value) in cumulative.iter_mut().zip(last) { *total += value; }
+            let usage = |v: [i64; 5]| serde_json::json!({"input_tokens": v[0], "cached_input_tokens": v[1],
+                "output_tokens": v[2], "reasoning_output_tokens": v[3], "total_tokens": v[4]});
+            lines.push(serde_json::json!({"timestamp": timestamp, "type": "event_msg", "payload": {
+                "type": "token_count", "info": {"last_token_usage": usage(last), "total_token_usage": usage(cumulative)}}}).to_string());
+        }
     }
     let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
     write_lines(&session_dir.join("rollout-019e-chart-tail-real-aggregate.jsonl"), &refs);

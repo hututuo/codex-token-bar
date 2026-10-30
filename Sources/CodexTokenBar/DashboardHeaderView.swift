@@ -1077,6 +1077,7 @@ struct DashboardModelCostRow: View {
     }
 
     private var emptyDetailText: String {
+        if clientCosts?.isPreparing == true { return "模型费用计算中…" }
         switch scope {
         case .sevenDay: return clientCosts?.codexPendingScopes.contains(.sevenDay) == true ? "Codex 近7天模型明细同步中" : "\(periodLabel)暂无模型用量"
         case .today: return clientCosts?.codexPendingScopes.contains(.today) == true ? "Codex 今日模型明细同步中" : "今日暂无模型用量"

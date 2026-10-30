@@ -241,29 +241,33 @@ final class ClientDashboardProjectionTests: XCTestCase {
     }
 
     @MainActor
-    func testCostProjectionReusesResultsButInvalidatesScopeSourceAndRollingWindow() {
+    func testCostProjectionReusesResultsButInvalidatesScopeSourceAndRollingWindow() async {
         let cache = ClientModelCostPeriodsCache()
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let snapshot = DashboardSnapshot.empty
         let row = ClientUsageSummary(client: .claudeCode, model: "claude-sonnet-4-6", inputTokens: 1000, outputTokens: 20,
             cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: nil, requests: 1, lastSeen: now, incompleteFields: false, apiCostUSD: 0.05, cacheReadComplete: true)
         func value(_ allowed: Set<String> = ["codex", "claudeCode"], time: Date? = nil, updated: Date? = nil,
-                   todayCodex: [ModelTokenBreakdown] = []) -> ClientModelCostPeriods {
-            cache.value(codex: snapshot, todayCodex: todayCodex, rows: [row], today: [row], sevenDay: [row],
+                   todayCodex: [ModelTokenBreakdown] = []) async -> ClientModelCostPeriods {
+            _ = cache.value(codex: snapshot, todayCodex: todayCodex, rows: [row], today: [row], sevenDay: [row],
+                clientsUpdatedAt: updated ?? now, allowed: allowed, now: time ?? now)
+            await cache.waitForPendingComputation()
+            return cache.value(codex: snapshot, todayCodex: todayCodex, rows: [row], today: [row], sevenDay: [row],
                 clientsUpdatedAt: updated ?? now, allowed: allowed, now: time ?? now)
         }
-        let first = value()
-        for _ in 0..<120 { XCTAssertEqual(value(), first) }
+        let first = await value()
+        for _ in 0..<120 { let actual = await value(); XCTAssertEqual(actual, first) }
         XCTAssertEqual(cache.computationCount, 1)
-        XCTAssertTrue(value(["codex"]).lifetime.isEmpty)
+        let codexOnly = await value(["codex"])
+        XCTAssertTrue(codexOnly.lifetime.isEmpty)
         XCTAssertEqual(cache.computationCount, 2)
-        _ = value(time: now.addingTimeInterval(61))
+        _ = await value(time: now.addingTimeInterval(61))
         XCTAssertEqual(cache.computationCount, 3)
-        _ = value(time: now.addingTimeInterval(61), updated: now.addingTimeInterval(1))
+        _ = await value(time: now.addingTimeInterval(61), updated: now.addingTimeInterval(1))
         XCTAssertEqual(cache.computationCount, 4)
         let todayRow = ModelTokenBreakdown(model: "gpt-6-luna", breakdown: .init(inputTokens: 100, cachedInputTokens: 0,
             outputTokens: 10, reasoningOutputTokens: 0, totalTokens: 110, calls: 1))
-        let refreshed = value(time: now.addingTimeInterval(61), updated: now.addingTimeInterval(1), todayCodex: [todayRow])
+        let refreshed = await value(time: now.addingTimeInterval(61), updated: now.addingTimeInterval(1), todayCodex: [todayRow])
         XCTAssertEqual(cache.computationCount, 5)
         XCTAssertTrue(refreshed.today.contains { $0.id.hasPrefix("codex|") })
     }

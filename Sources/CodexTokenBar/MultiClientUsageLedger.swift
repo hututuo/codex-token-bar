@@ -109,9 +109,25 @@ final class MultiClientUsageLedger: @unchecked Sendable {
         self.url = url
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
                                                attributes: [.posixPermissions: 0o700])
-        database = SQLiteDatabaseDriver(url: url, enableWAL: true)
-        let version = try database.readRows("PRAGMA user_version") { $0.int(0) ?? 0 }.first ?? 0
+        // Validate an existing file without enabling WAL or touching its header.
+        // A newer client may own this file; refusing it must be read-only.
+        let existing = FileManager.default.fileExists(atPath: url.path)
+        let probe = SQLiteDatabaseDriver(url: url, readOnly: existing, createsFileIfMissing: !existing)
+        let version = try probe.readRows("PRAGMA user_version") { $0.int(0) ?? 0 }.first ?? 0
         guard version <= Self.schemaVersion else { throw LedgerError.newerSchema(version) }
+        guard version >= 0 else { throw LedgerError.incompatibleSchema }
+        if version == Self.schemaVersion {
+            let required: [String: Set<String>] = [
+                "client_usage_events": ["client", "event_id", "session_id", "model", "timestamp", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "payload"],
+                "client_usage_revisions": ["revision", "client", "event_id", "captured_at", "payload"],
+                "client_file_checkpoints": ["client", "source_key", "offset", "size", "modified", "identity"]
+            ]
+            for (table, fields) in required {
+                let actual = try probe.readRows("PRAGMA table_info(\(table))") { $0.text(1) ?? "" }
+                guard fields.isSubset(of: Set(actual)) else { throw LedgerError.incompatibleSchema }
+            }
+        }
+        database = SQLiteDatabaseDriver(url: url, enableWAL: true)
         if version < Self.schemaVersion {
             // A preexisting unversioned database is backed up too; VACUUM INTO includes committed WAL data.
             let tables = try database.readRows("SELECT name FROM sqlite_master WHERE type='table'") { $0.text(0) ?? "" }
@@ -145,11 +161,12 @@ final class MultiClientUsageLedger: @unchecked Sendable {
     }
 
     enum LedgerError: LocalizedError {
-        case newerSchema(Int), invalidEvent
+        case newerSchema(Int), invalidEvent, incompatibleSchema
         var errorDescription: String? {
             switch self {
             case .newerSchema(let version): "多客户端账本版本 \(version) 比当前软件新，已停止写入"
             case .invalidEvent: "日志包含无效 Token 计数，未写入账本"
+            case .incompatibleSchema: "多客户端账本结构与版本不匹配，已停止写入并保留原文件"
             }
         }
     }

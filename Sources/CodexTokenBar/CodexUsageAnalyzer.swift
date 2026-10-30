@@ -577,6 +577,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         let historyIndex: CodexUsageHistoryIndex
         let initialAttributionState: CodexUsageHistoryIndex.AttributionState
         let initialEventEnrichmentComplete: Bool
+        let publishedCertificate: UsageIndexCoverageCertificate?
         do {
             guard let existingOrNewIndex = try usageHistoryIndex(
                 for: sessionFiles, onProgress: onProgress
@@ -588,8 +589,10 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 )
             }
             historyIndex = existingOrNewIndex
-            initialAttributionState = try historyIndex.attributionState()
-            initialEventEnrichmentComplete = try historyIndex.eventEnrichmentIsComplete()
+            let metadata = try historyIndex.readMetadata()
+            initialAttributionState = metadata.attribution
+            initialEventEnrichmentComplete = metadata.enrichmentComplete
+            publishedCertificate = metadata.certificate
         } catch let error as CodexUsagePreciseDataUnavailableError {
             throw error
         } catch {
@@ -610,7 +613,6 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             // and synchronization rather than aggregating the wrong generation.
             sessionFiles = try usageJSONLFiles()
         }
-        let publishedCertificate = try historyIndex.coverageCertificate()
         let preciseCoverageAt = receiptMatchesPublishedIndex
             ? min(requestedReceipt?.observedAt ?? discoveryStartedAt,
                   publishedCertificate?.observedAt ?? discoveryStartedAt)

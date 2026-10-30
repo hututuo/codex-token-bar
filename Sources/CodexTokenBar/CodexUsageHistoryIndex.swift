@@ -2152,6 +2152,36 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         return result
     }
 
+    struct ReadMetadata {
+        let attribution: AttributionState
+        let enrichmentComplete: Bool
+        let certificate: UsageIndexCoverageCertificate?
+    }
+
+    /// One short WAL read snapshot, not a transaction spanning a source scan.
+    /// Avoid parsing the unified container schema three times and ensure the
+    /// provenance, enrichment and coverage decision describe one generation.
+    func readMetadata() throws -> ReadMetadata {
+        try driver.withConnection { connection in
+            try configure(connection)
+            return try connection.readTransaction { tx in
+                let state = try currentAttributionState(connection: tx)
+                let revision = try tx.readRows("SELECT value FROM schema_meta WHERE key = ? LIMIT 1;",
+                    bindings: [.text(Self.eventEnrichmentRevisionKey)]) { $0.text(0) }.first ?? nil
+                let complete: Bool
+                if revision == Self.eventEnrichmentRevision {
+                    complete = try eventEnrichmentPendingSourceIDs(connection: tx).isEmpty
+                } else { complete = false }
+                let receipt = try UsageIndexCoverageCertificate.read(on: tx)
+                let certificate: UsageIndexCoverageCertificate? = receipt.flatMap {
+                    $0.revision == 1 && $0.generation == state.generation
+                        && $0.provenanceEpoch == state.provenanceEpoch ? $0 : nil
+                }
+                return ReadMetadata(attribution: state, enrichmentComplete: complete, certificate: certificate)
+            }
+        }
+    }
+
     func coverageCertificate() throws -> UsageIndexCoverageCertificate? {
         try driver.withConnection { connection in
             try connection.readTransaction { tx in

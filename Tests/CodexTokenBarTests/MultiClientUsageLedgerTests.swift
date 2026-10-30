@@ -48,6 +48,33 @@ final class MultiClientUsageLedgerTests: XCTestCase {
         XCTAssertThrowsError(try MultiClientUsageLedger(url: url))
         XCTAssertEqual(try ledger.database.readRows("PRAGMA user_version") { $0.int(0) }.first!, 99)
     }
+
+    func testRefusingFutureDeleteModeDatabasePreservesEveryByteAndCreatesNoSidecars() throws {
+        let url = root.appendingPathComponent("future.sqlite")
+        let original = SQLiteDatabaseDriver(url: url)
+        try original.execute("CREATE TABLE future_proof(id INTEGER PRIMARY KEY, payload BLOB)")
+        try original.execute("INSERT INTO future_proof VALUES(42, X'001122334455')")
+        try original.execute("PRAGMA user_version=99")
+        XCTAssertEqual(try original.readRows("PRAGMA journal_mode") { $0.text(0) }.first!, "delete")
+        let before = try Data(contentsOf: url)
+        XCTAssertThrowsError(try MultiClientUsageLedger(url: url))
+        XCTAssertEqual(try Data(contentsOf: url), before)
+        for suffix in ["-wal", "-shm", "-journal"] {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: url.path + suffix))
+        }
+        XCTAssertEqual(try original.readRows("SELECT id FROM future_proof") { $0.int(0) }.first!, 42)
+    }
+
+    func testCurrentVersionWithUnrelatedSchemaIsRejectedBeforeAnyWrite() throws {
+        let url = root.appendingPathComponent("wrong-shape.sqlite")
+        let original = SQLiteDatabaseDriver(url: url)
+        try original.execute("CREATE TABLE unrelated(id INTEGER PRIMARY KEY); INSERT INTO unrelated VALUES(42); PRAGMA user_version=2")
+        let before = try Data(contentsOf: url)
+        XCTAssertThrowsError(try MultiClientUsageLedger(url: url))
+        XCTAssertEqual(try Data(contentsOf: url), before)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path + "-wal"))
+        XCTAssertEqual(try original.readRows("SELECT id FROM unrelated") { $0.int(0)! }, [42])
+    }
     func testTrendBucketsUseFiveMinuteUTCWindowsAndConserveRawEvents() throws {
         let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("usage.sqlite"))
         let now: Int64 = 1_800_000_600

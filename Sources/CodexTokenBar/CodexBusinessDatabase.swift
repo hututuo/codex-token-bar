@@ -39,6 +39,13 @@ enum BusinessSQLiteRoutes {
         if state.resolvedPaths.contains(path) { return state.routes[path] }
         guard let configuration = state.configuration,
               let specification = configuration.specification(for: url) else { return nil }
+        // Old catalogs may contain the physical spelling of a configured
+        // directory alias. Match stable module/source identity, retaining the
+        // catalog's logical path. Do not create another namespace or alias
+        // cache entry that could survive a later forget/rename.
+        if let existing = state.routes.values.first(where: { $0.id == specification.id }) {
+            return existing
+        }
         let resolved = {
             guard specification.module == "exact.swift.stage" else { return specification }
             return BusinessSQLiteStore(
