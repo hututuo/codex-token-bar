@@ -12,4 +12,15 @@
 - 跨平台预览：http://127.0.0.1:58914/dev-previews/sidebar-chart-inset-review.html
 - 跨平台1366项通过；TypeScript通过；小型原生源码Swift6编译与渲染通过。
 
-本机当前仍为978，后续云端构建与替换另记。无schema/日志扫描/价格/账本变化，既有数据与其他预览保留。
+## 云端检查和本机替换
+
+- 源码：`be11283c1b8827fce54798e462b30890d2fedd70`。
+- 全量检查：https://github.com/hututuo/codex-token-bar/actions/runs/41015363740 （全部通过）。Swift XCTest2173项、28项平台跳过、0失败；另665项Swift Testing通过；前端1366项、TypeScript、双端Rust和updater检查通过。
+- 构建：https://github.com/hututuo/codex-token-bar/actions/runs/41015382518 。Mac候选已通过签名、资源、manifest与SHA核对。Windows安装包结果另以该运行最终状态为准，未替换Windows EXE。
+- 15:04退出978、备份后替换0.9.7 build979；从/Applications正式位置启动，进程92225，SHA256 `8d9ea447a8dd8dba3d90e326b9a9c89dfdcdbe5453a2a570e0a91034c43319ca` 与云端一致。
+- 备份：`/Users/huyiyang/Library/Application Support/CodexTokenBar-InstallBackups/20261030-150409-build978-before979`。
+- 576份历史索引无旧事件键缺失，527397条、85481203509 token替换前后完全一致；客户端历史、正文测速和旧活动速率记录均保留，核对JSON在scratch/local-install-build979。
+- 新版已加载精确数据，速蹬15:06:06显示统计已上报。当前自动化仍只暴露主窗口，不能把组件渲染/像素测试说成已在正式非激活侧栏完成点击验收。跨平台实际组件88px边界与点击通过；原生全项目像素测试通过。
+- 原生旧图在两侧4pt保护边距绘入269个像素，修复后0个；云端真实项目测试产物见scratch/20261030-sidebar-chart-inset/cloud-previews/native-sidebar-speed-insets.png。
+
+无schema/日志扫描/价格/账本变化，既有数据与其他预览保留。
