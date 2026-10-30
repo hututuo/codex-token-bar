@@ -357,6 +357,80 @@ final class AgentSpeedReportingTests: XCTestCase {
         ))
     }
 
+    func testFilteredIdleWindowKeepsPriorPeakWithoutInventingCurrentSources() throws {
+        let active = ReportSample(live: .init(output: 40, total: 80),
+                                  sources: [.codex: .init(live: .init(output: 40, total: 80))])
+        let envelope = ReportEnvelope(client: AgentSpeedReportingController.client, deviceId: "fixture",
+            username: "Fixture", runId: "fixture", seq: 1, sentAtMs: 1_767_000_000_000,
+            windowMs: 5000, activity: .idle, titleLevel: 0)
+        for activeCount in [0, 1] {
+            var window = ReportWindow(.init())
+            window.observe(AgentSpeedReportingController.reportableSample(active))
+            let idle = AgentSpeedReportingController.reportableSample(ReportSample(sources: [.codex: .init()],
+                facts: .init(agents: [.codex: .init(active: activeCount)])))
+            let body = ReportBody.data(envelope, window.take(idle), idle, .init(sections: [.sources, .models]))
+            let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+            XCTAssertTrue((json["sources"] as? [Any])?.isEmpty == true)
+            XCTAssertEqual((json["peak"] as? [String: Any])?["outputTokS"] as? Int, 40)
+            XCTAssertFalse(AgentSpeedReportingController.reportPayloadHasOnlyReportableSources(body))
+            XCTAssertTrue(AgentSpeedReportingController.reportPayloadHasOnlyReportableSources(body, filteredWindow: true))
+            // The next idle window contains only agents.active, which upstream
+            // also deliberately omits from source-row activity.
+            let next = ReportBody.data(envelope, window.take(idle), idle, .init(sections: [.sources, .models]))
+            XCTAssertTrue(AgentSpeedReportingController.reportPayloadHasOnlyReportableSources(next, filteredWindow: true))
+        }
+        for text in [
+            #"{"sources":[],"models":[],"live":{"outputTokS":1}}"#,
+            #"{"sources":[],"models":[],"live":{"agents":{"generating":1}}}"#,
+            #"{"sources":[],"models":[],"live":{"agents":{"tools":1}}}"#,
+            #"{"sources":[],"models":[],"delta":{"output":1}}"#,
+            #"{"sources":[{"source":"claudeCode"}],"peak":{"outputTokS":40}}"#,
+            #"{"sources":[{"source":"claudeDesktop"}],"peak":{"outputTokS":40}}"#,
+            #"{"sources":[{"source":"unknown"}],"peak":{"outputTokS":40}}"#
+        ] {
+            XCTAssertFalse(AgentSpeedReportingController.reportPayloadHasOnlyReportableSources(Data(text.utf8), filteredWindow: true))
+        }
+    }
+
+    func testActiveToIdleToActiveKeepsReportingWithoutManualReconnect() async throws {
+        let transport = SpeedReportTestTransport(), monitor = SpeedReportTestMonitor()
+        var clock: Int64 = 0
+        let controller = AgentSpeedReportingController(defaults: defaults(), transport: transport,
+            makeSigner: { _ in SoftwareReportSigner() }, monotonic: { clock }, makeMonitor: { _ in monitor })
+        controller.setEnabled(true, username: "IdleRecovery")
+        defer { controller.shutdown() }
+        try await waitFor { monitor.starts == 1 }
+        var snapshot = SpeedSnapshot.empty
+        snapshot.state = .running
+        func emit(_ at: Int64, rate: Double, settled: Bool = false) {
+            clock = at
+            snapshot.live = .init(output: rate, total: rate * 2)
+            snapshot.sources = [.init(kind: .codex, enabled: true, rootPath: "", available: true,
+                sessionCount: 1, live: snapshot.live, today: .zero, activeAgents: 1)]
+            snapshot.report.agents = [.codex: .init(active: 1)]
+            if settled { snapshot.report.counters.add(.init(requests: 1, output: 100),
+                to: .init(modelId: "gpt-6.1-sol", source: .codex)) }
+            controller.receive(snapshot)
+        }
+        emit(0, rate: 40); emit(1000, rate: 40); emit(5000, rate: 0)
+        try await waitFor { controller.lastReportAt != nil || controller.phase == "error" }
+        XCTAssertNotEqual(controller.phase, "error", controller.message)
+        // Await the accepted request before the next scheduler step.
+        for (at, rate, settled) in [(Int64(10000), 0.0, false), (15000, 45.0, true)] {
+            emit(at, rate: rate, settled: settled)
+            try await Task.sleep(for: .milliseconds(30))
+            XCTAssertNotEqual(controller.phase, "error", controller.message)
+        }
+        let requests = await transport.requests()
+        let reports = requests.filter { $0.url.path.hasSuffix("/reports") }
+        XCTAssertEqual(reports.count, 3)
+        XCTAssertEqual(requests.filter { $0.url.path.hasSuffix("/devices") }.count, 1)
+        XCTAssertEqual(monitor.starts, 1); XCTAssertEqual(monitor.stops, 0)
+        let last = try XCTUnwrap(reports.last)
+        let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: last.body) as? [String: Any])
+        XCTAssertEqual((json["delta"] as? [String: Any])?["output"] as? Int, 100)
+    }
+
     func testFailedNicknameCannotGrantConsent() {
         let prefs = defaults()
         let controller = AgentSpeedReportingController(defaults: prefs)

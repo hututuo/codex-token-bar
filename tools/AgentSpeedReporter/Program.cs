@@ -111,6 +111,7 @@ internal static class SelfTests
             RealtimeModeOnlyTightensEventDrivenPublication();
             PayloadIsWhitelisted();
             SourcePayloadIsWhitelisted();
+            FilteredIdleWindowsRemainReportable();
             CostReportingPreservesKnownAndUnknownParts();
             DiscoveryWebSocketCapabilityIsStrict();
             WebSocketRealtimeTimingCarriesFreshSourceReadMetadata();
@@ -1200,6 +1201,51 @@ internal static class SelfTests
         {
             throw new InvalidOperationException();
         }
+    }
+
+    private static void FilteredIdleWindowsRemainReportable()
+    {
+        var active = ReportSample.Empty with {
+            Live = new Rate(40, 80),
+            Sources = new Dictionary<SourceKind, ReportSourceSample> {
+                [SourceKind.Codex] = new(new Rate(40, 80), Rate.Zero, LiveCost.Zero)
+            }
+        };
+        var envelope = new ReportEnvelope(ReportClientInfo.Windows("0.9.7"), ReportCanonical.NewUuid(),
+            "idle-fixture", ReportCanonical.NewUuid(), 1, 0, 5000, ReportActivity.Idle, 0);
+        var options = new ReportOptions(new HashSet<ReportSection> { ReportSection.Sources, ReportSection.Models });
+        foreach (var activeCount in new[] { 0, 1 })
+        {
+            var idle = ReportSample.Empty with {
+                Sources = new Dictionary<SourceKind, ReportSourceSample> { [SourceKind.Codex] = default },
+                Facts = ReportLiveFacts.Empty with {
+                    Agents = new Dictionary<SourceKind, ReportAgentCounts> { [SourceKind.Codex] = new(Active: activeCount) }
+                }
+            };
+            var window = new ReportWindow(ReportSample.Empty);
+            window.Observe(active);
+            var body = ReportBody.Data(envelope, window.Take(idle), idle, options);
+            using var parsed = JsonDocument.Parse(body);
+            if (parsed.RootElement.GetProperty("sources").GetArrayLength() != 0
+                || parsed.RootElement.GetProperty("peak").GetProperty("outputTokS").GetDouble() != 40
+                || ReportPayloadWhitelist.IsAllowed(body)
+                || !ReportPayloadWhitelist.IsAllowed(body, filteredWindow: true))
+                throw new InvalidOperationException("Filtered idle peak must not terminate reporting");
+            var next = ReportBody.Data(envelope, window.Take(idle), idle, options);
+            if (!ReportPayloadWhitelist.IsAllowed(next, filteredWindow: true))
+                throw new InvalidOperationException("Idle active count must not terminate reporting");
+        }
+        string[] rejected = [
+            """{"sources":[],"models":[],"live":{"outputTokS":1}}""",
+            """{"sources":[],"models":[],"live":{"agents":{"generating":1}}}""",
+            """{"sources":[],"models":[],"live":{"agents":{"tools":1}}}""",
+            """{"sources":[],"models":[],"delta":{"output":1}}""",
+            """{"sources":[{"source":"claudeCode"}],"peak":{"outputTokS":40}}""",
+            """{"sources":[{"source":"claudeDesktop"}],"peak":{"outputTokS":40}}""",
+            """{"sources":[{"source":"unknown"}],"peak":{"outputTokS":40}}"""
+        ];
+        if (rejected.Any(text => ReportPayloadWhitelist.IsAllowed(Encoding.UTF8.GetBytes(text), filteredWindow: true)))
+            throw new InvalidOperationException("Filtered windows must still reject forbidden or unattributed activity");
     }
 
 

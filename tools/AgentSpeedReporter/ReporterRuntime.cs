@@ -552,7 +552,7 @@ internal static class ReporterRuntime
                             build.Ticket.Activity,
                             TitleLevel: titleTracker.Level);
                         var body = ReportBody.Data(envelope, content, current, reportOptions);
-                        if (!ReportPayloadWhitelist.IsAllowed(body))
+                        if (!ReportPayloadWhitelist.IsAllowed(body, filteredWindow: true))
                         {
                             throw new ReporterFailure("reporting_failed");
                         }
@@ -1238,7 +1238,7 @@ internal static class ReporterRuntime
                 break;
             }
 
-            if (!ReportPayloadWhitelist.IsAllowed(body, allowRealtime: true)
+            if (!ReportPayloadWhitelist.IsAllowed(body, allowRealtime: true, filteredWindow: true)
                 || body.Length > state.Discovery.Limits.SendLimitBytes)
             {
                 message = null;

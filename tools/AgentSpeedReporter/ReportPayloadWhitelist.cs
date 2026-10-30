@@ -20,7 +20,7 @@ internal static class ReportPayloadWhitelist
         "token", "path", "rootPath", "transcriptPath", "sessionPath",
     };
 
-    public static bool IsAllowed(ReadOnlySpan<byte> body, bool allowRealtime = false)
+    public static bool IsAllowed(ReadOnlySpan<byte> body, bool allowRealtime = false, bool filteredWindow = false)
     {
         try
         {
@@ -36,7 +36,7 @@ internal static class ReportPayloadWhitelist
                 return false;
             }
 
-            return ContainsOnlyReportableSources(root) && AggregatesHaveSourceAttribution(root)
+            return ContainsOnlyReportableSources(root) && AggregatesHaveSourceAttribution(root, filteredWindow)
                 && (!allowRealtime || HasRealtime(root));
         }
         catch (JsonException)
@@ -252,7 +252,7 @@ internal static class ReportPayloadWhitelist
         }
     }
 
-    private static bool AggregatesHaveSourceAttribution(JsonElement root)
+    private static bool AggregatesHaveSourceAttribution(JsonElement root, bool filteredWindow)
     {
         var hasSources = root.TryGetProperty("sources", out var sourceRows)
             && sourceRows.ValueKind == JsonValueKind.Array && sourceRows.GetArrayLength() > 0;
@@ -261,10 +261,13 @@ internal static class ReportPayloadWhitelist
             && modelRows.EnumerateArray().Any(model => model.ValueKind == JsonValueKind.Object
                 && model.TryGetProperty("sources", out var modelSources)
                 && modelSources.ValueKind == JsonValueKind.Array && modelSources.GetArrayLength() > 0);
-        var hasLiveOrPeak = IsNonZero(root, "live") || IsNonZero(root, "peak");
+        // Only the reporter's source-filtered monitor attests retained peaks and
+        // idle active counts. All explicit source IDs remain checked above.
+        var needsCurrentSource = filteredWindow ? HasCurrentSourceActivity(root)
+            : IsNonZero(root, "live") || IsNonZero(root, "peak");
         var hasDelta = IsNonZero(root, "delta");
 
-        if (hasLiveOrPeak && !hasSources)
+        if (needsCurrentSource && !hasSources)
         {
             return false;
         }
@@ -275,6 +278,15 @@ internal static class ReportPayloadWhitelist
         }
 
         return true;
+    }
+
+    private static bool HasCurrentSourceActivity(JsonElement root)
+    {
+        if (!root.TryGetProperty("live", out var live)) return false;
+        if (live.ValueKind != JsonValueKind.Object) return ContainsNonZeroNumber(live);
+        return IsNonZero(live, "outputTokS") || IsNonZero(live, "totalTokS")
+            || (live.TryGetProperty("agents", out var agents) && agents.ValueKind == JsonValueKind.Object
+                && (IsNonZero(agents, "generating") || IsNonZero(agents, "tools")));
     }
 
     private static bool IsNonZero(JsonElement root, string propertyName) =>

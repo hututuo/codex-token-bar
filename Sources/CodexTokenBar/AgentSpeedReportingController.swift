@@ -329,7 +329,7 @@ final class AgentSpeedReportingController: ObservableObject {
     }
 
     /// The last in-process boundary before a report is signed or passed to HTTP.
-    static func reportPayloadHasOnlyReportableSources(_ data: Data) -> Bool {
+    static func reportPayloadHasOnlyReportableSources(_ data: Data, filteredWindow: Bool = false) -> Bool {
         guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return false }
         var hasSourceProvenance = false
         var sourceReferenceCount = 0
@@ -374,13 +374,24 @@ final class AgentSpeedReportingController: ObservableObject {
         let hasModelRows = (root["models"] as? [[String: Any]])?.contains(where: {
             ($0["sources"] as? [String])?.isEmpty == false
         }) == true
-        if Self.containsNonzeroNumber(root["live"]) || Self.containsNonzeroNumber(root["peak"]) {
-            guard hasSourceRows else { return false }
-        }
+        // ReportBody omits zero-current source rows, but retains window peaks
+        // and agents.active. Only our filtered-monitor builder can attest these
+        // idle windows; arbitrary bodies keep the stricter default boundary.
+        let requiresCurrentSource = filteredWindow
+            ? Self.hasCurrentSourceActivity(root["live"])
+            : Self.containsNonzeroNumber(root["live"]) || Self.containsNonzeroNumber(root["peak"])
+        if requiresCurrentSource && !hasSourceRows { return false }
         if Self.containsNonzeroNumber(root["delta"]), sourceReferenceCount == 0 || (!hasSourceRows && !hasModelRows) {
             return false
         }
         return true
+    }
+
+    private static func hasCurrentSourceActivity(_ value: Any?) -> Bool {
+        guard let live = value as? [String: Any] else { return containsNonzeroNumber(value) }
+        let agents = live["agents"] as? [String: Any] ?? [:]
+        return [live["outputTokS"], live["totalTokS"], agents["generating"], agents["tools"]]
+            .contains(where: containsNonzeroNumber)
     }
 
     private static func containsNonzeroNumber(_ value: Any?) -> Bool {
@@ -610,7 +621,7 @@ final class AgentSpeedReportingController: ObservableObject {
                     runId: run.id, seq: ticket.seq, sentAtMs: Self.nowMS + clockCorrection * 1000,
                     windowMs: ticket.windowMs, activity: ticket.activity, titleLevel: run.title.level)
                 let body = ReportBody.data(envelope, content, sample, Self.options(document))
-                guard Self.reportPayloadHasOnlyReportableSources(body) else {
+                guard Self.reportPayloadHasOnlyReportableSources(body, filteredWindow: true) else {
                     fail("报告来源无法确认，已停止上报")
                     return
                 }
@@ -625,7 +636,7 @@ final class AgentSpeedReportingController: ObservableObject {
 
     private func send(_ ticket: ReportScheduler.Ticket) {
         guard let run, let body = run.bodies[ticket.seq], let signer else { return }
-        guard Self.reportPayloadHasOnlyReportableSources(body) else {
+        guard Self.reportPayloadHasOnlyReportableSources(body, filteredWindow: true) else {
             fail("报告来源无法确认，已停止上报")
             return
         }
@@ -656,7 +667,7 @@ final class AgentSpeedReportingController: ObservableObject {
 
     private func request(endpoint: String, body: Data, signer: any ReportSigner, method: String = "POST") async -> Result<ReportReply, ReportTransportError> {
         guard enabled, !Task.isCancelled, let document else { return .failure(.other(-999)) }
-        if endpoint == ReportEndpoint.reports && !Self.reportPayloadHasOnlyReportableSources(body) {
+        if endpoint == ReportEndpoint.reports && !Self.reportPayloadHasOnlyReportableSources(body, filteredWindow: true) {
             return .failure(.other(-999))
         }
         let builder = ReportRequestBuilder(userAgent: Self.userAgent, deviceId: deviceID, apiKey: nil)
@@ -666,7 +677,7 @@ final class AgentSpeedReportingController: ObservableObject {
                 try builder.make(method: method, url: url, body: body, signer: signer, timestamp: timestamp)
             }.value
             guard enabled, !Task.isCancelled else { return .failure(.other(-999)) }
-            if endpoint == ReportEndpoint.reports && !Self.reportPayloadHasOnlyReportableSources(request.body) {
+            if endpoint == ReportEndpoint.reports && !Self.reportPayloadHasOnlyReportableSources(request.body, filteredWindow: true) {
                 return .failure(.other(-999))
             }
             return await api.call(request)
