@@ -2124,7 +2124,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertTrue(source.contains("private func lineVisibilityBinding("))
         XCTAssertTrue(source.contains("RecentChartSeriesVisibilityStore"))
         XCTAssertTrue(source.contains("title: \"金额\""))
-        XCTAssertTrue(source.contains("ChartLegend(color: AppTheme.chartCost, label: \"金额\""))
+        XCTAssertTrue(source.contains("ChartLegend(color: AppTheme.chartCost, label: quotaCostSource == nil ? \"金额\" : \"金额 · Codex\""))
         XCTAssertTrue(source.contains("// These are summary values, not line visibility indicators."))
         XCTAssertFalse(source.contains("if showTokens {\n                        ChartLegend"))
         XCTAssertFalse(source.contains("if showCalls {\n                        ChartLegend"))

@@ -212,7 +212,7 @@ final class CodexRadarViewPlacementTests: XCTestCase {
         XCTAssertTrue(dashboardSource.contains("scrollProxy.scrollTo(\"recent-usage-chart\", anchor: .center)"))
         XCTAssertTrue(dashboardSource.contains("onShowRecentUsage: {"))
         XCTAssertTrue(dashboardSource.contains("recentUsageScrollRequest &+= 1"))
-        XCTAssertTrue(dashboardSource.contains(".id(client == \"codex\" ? \"recent-usage-chart\" : \"recent-usage-chart-\" + client)"))
+        XCTAssertTrue(dashboardSource.contains(".id(\"recent-usage-chart\")"))
     }
 
     func testRadarDetailKeepsEnvironmentPressureAfterSummaryReplacement() throws {
