@@ -1947,7 +1947,8 @@ fn exact_history_covers_attached(db: &Connection, prefix: &str) -> BusinessStore
             | "pending_dashboard_turn_candidates" | "pending_dashboard_turn_tombstones"
             | "attribution_source_buckets" | "metadata" | "source_chunks" | "source_enrichment" | "source_observations"
                 | "source_representations" | "session_catalog_files" | "session_metadata"
-                | "usage_ledger_sources" | "usage_ledger_duplicates" | "usage_scan_certificate");
+                | "usage_ledger_sources" | "usage_ledger_duplicates" | "usage_scan_certificate"
+                | "usage_ledger_message_receipts");
         if operational { continue; }
         let target = format!("{prefix}{name}");
         if !has_table(db, "main", &target)? { return Ok(false); }
@@ -1970,9 +1971,25 @@ fn exact_history_covers_attached(db: &Connection, prefix: &str) -> BusinessStore
                 continue;
             }
         }
+        if name == "event_rows" {
+            let target_table = SQLiteStoreNamespace::quote(&target);
+            let required = ["id","source_id","ordinal","timestamp","tokens","input_tokens","cached_input_tokens","output_tokens","accounting_kind"];
+            if required.iter().any(|c| !old_columns.iter().any(|old| old == c)) { return Ok(false); }
+            let differences = old_columns.iter().map(|column| {
+                let q = SQLiteStoreNamespace::quote(column);
+                let changed = format!("(typeof(old.{q})<>typeof(current.{q}) OR old.{q} IS NOT current.{q})");
+                if required.contains(&column.as_str()) { changed }
+                else { format!("(old.{q} IS NOT NULL AND {changed})") }
+            }).collect::<Vec<_>>().join(" OR ");
+            // Message/model backfills fill previously unknown fields. They
+            // never authorize changing an existing amount or known link.
+            let missing: bool = db.query_row(&format!("SELECT EXISTS(SELECT 1 FROM tb_exact_history_source.event_rows old LEFT JOIN main.{target_table} current ON current.id=old.id AND current.source_id=old.source_id WHERE current.id IS NULL OR {differences})"), [], |r| r.get(0))?;
+            if missing { return Ok(false); }
+            continue;
+        }
         if name == "usage_ledger_bindings" {
             let target_table = SQLiteStoreNamespace::quote(&target);
-            let missing: bool = db.query_row(&format!("SELECT EXISTS(SELECT 1 FROM tb_exact_history_source.usage_ledger_bindings old LEFT JOIN main.{target_table} current ON current.event_id=old.event_id AND current.source_id=old.source_id WHERE current.event_id IS NULL OR (old.fingerprint IS NOT NULL AND old.fingerprint IS NOT current.fingerprint) OR (old.raw_generation IS current.raw_generation AND (old.raw_offset IS NOT current.raw_offset OR old.user_prompt_start IS NOT current.user_prompt_start OR old.user_prompt_end IS NOT current.user_prompt_end OR old.assistant_response_start IS NOT current.assistant_response_start OR old.assistant_response_end IS NOT current.assistant_response_end)) OR (old.raw_generation IS NOT current.raw_generation AND (old.fingerprint IS NULL OR old.fingerprint IS NOT current.fingerprint)))"), [], |r| r.get(0))?;
+            let missing: bool = db.query_row(&format!("SELECT EXISTS(SELECT 1 FROM tb_exact_history_source.usage_ledger_bindings old LEFT JOIN main.{target_table} current ON current.event_id=old.event_id AND current.source_id=old.source_id WHERE current.event_id IS NULL OR (old.fingerprint IS NOT NULL AND old.fingerprint IS NOT current.fingerprint) OR (old.raw_generation IS current.raw_generation AND ((old.raw_offset IS NOT NULL AND old.raw_offset IS NOT current.raw_offset) OR (old.user_prompt_start IS NOT NULL AND old.user_prompt_start IS NOT current.user_prompt_start) OR (old.user_prompt_end IS NOT NULL AND old.user_prompt_end IS NOT current.user_prompt_end) OR (old.assistant_response_start IS NOT NULL AND old.assistant_response_start IS NOT current.assistant_response_start) OR (old.assistant_response_end IS NOT NULL AND old.assistant_response_end IS NOT current.assistant_response_end))) OR (old.raw_generation IS NOT current.raw_generation AND (old.fingerprint IS NULL OR old.fingerprint IS NOT current.fingerprint)))"), [], |r| r.get(0))?;
             if missing { return Ok(false); }
             continue;
         }

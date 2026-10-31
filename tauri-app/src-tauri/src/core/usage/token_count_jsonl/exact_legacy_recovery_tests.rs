@@ -602,6 +602,15 @@ fn run_relocated_pair(advance: bool, advance_cache: bool, freeze_before_advance:
             check.execute("ALTER TABLE held_scan_certificate RENAME TO usage_scan_certificate", []).unwrap();
             assert!(Container::exact_snapshot_covers(primary, old).unwrap());
         }
+        check.execute("UPDATE event_rows SET assistant_response_start=17,model='gpt-6.1-sol' WHERE assistant_response_start IS NULL AND model IS NULL", []).unwrap();
+        check.execute("UPDATE usage_ledger_bindings SET assistant_response_start=17 WHERE assistant_response_start IS NULL", []).unwrap();
+        assert!(Container::exact_snapshot_covers(primary, old).unwrap(), "Filling unknown message/model fields is additive, not a lost historical amount");
+        check.execute("UPDATE event_rows SET tokens=tokens+1 WHERE id=(SELECT MIN(id) FROM event_rows)", []).unwrap();
+        assert!(!Container::exact_snapshot_covers(primary, old).unwrap(), "Enrichment must never hide a numeric change");
+        check.execute("UPDATE event_rows SET tokens=tokens-1 WHERE id=(SELECT MIN(id) FROM event_rows)", []).unwrap();
+        check.execute("UPDATE event_rows SET assistant_response_start=NULL,model=NULL WHERE assistant_response_start=17 AND model='gpt-6.1-sol'", []).unwrap();
+        check.execute("UPDATE usage_ledger_bindings SET assistant_response_start=NULL WHERE assistant_response_start=17", []).unwrap();
+        assert!(Container::exact_snapshot_covers(primary, old).unwrap());
         let sequence: String = check.query_row("SELECT value FROM metadata WHERE key='event_id_sequence'", [], |r| r.get(0)).unwrap();
         check.execute("UPDATE metadata SET value='0' WHERE key='event_id_sequence'", []).unwrap();
         assert!(!Container::exact_snapshot_covers(primary, old).unwrap(), "A cover must not regress the future event ID allocator");
