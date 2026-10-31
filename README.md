@@ -94,22 +94,24 @@ macOS 使用 Swift / SwiftUI 原生实现；Windows 提供 Tauri + React + Rust 
 
 从 [GitHub Releases](https://github.com/hututuo/codex-token-bar/releases/latest) 下载对应平台安装包和同版本 `SHA256SUMS`。
 
+如果 Windows 0.9.8 提示“账本准备未完成”而无法进入，请下载新版安装包直接覆盖安装；无需卸载，不要删除数据目录、旧数据库或迁移清单。
+
 | 平台 | 安装包 | 要求 |
 |---|---|---|
-| macOS Apple Silicon | `CodexTokenBar-v0.9.8-macos-arm64.dmg` | macOS 14+；打开 DMG，拖到 Applications。 |
-| Windows x64 | `CodexTokenBar-v0.9.8-windows-x64-setup.exe` | Intel / AMD Windows 10/11。 |
-| Windows ARM64 | `CodexTokenBar-v0.9.8-windows-arm64-setup.exe` | Windows on ARM，应用二进制为 ARM64。 |
+| macOS Apple Silicon | `CodexTokenBar-v0.9.9-macos-arm64.dmg` | macOS 14+；打开 DMG，拖到 Applications。 |
+| Windows x64 | `CodexTokenBar-v0.9.9-windows-x64-setup.exe` | Intel / AMD Windows 10/11。 |
+| Windows ARM64 | `CodexTokenBar-v0.9.9-windows-arm64-setup.exe` | Windows on ARM，应用二进制为 ARM64。 |
 
 可选校验：
 
 ```bash
 # macOS：与同版本 SHA256SUMS 中的值比较
-shasum -a 256 CodexTokenBar-v0.9.8-macos-arm64.dmg
+shasum -a 256 CodexTokenBar-v0.9.9-macos-arm64.dmg
 ```
 
 ```powershell
 # Windows：与同版本 SHA256SUMS 中的值比较
-Get-FileHash .\CodexTokenBar-v0.9.8-windows-x64-setup.exe -Algorithm SHA256
+Get-FileHash .\CodexTokenBar-v0.9.9-windows-x64-setup.exe -Algorithm SHA256
 ```
 
 macOS 目前为 ad-hoc 签名，尚未公证。首次打开如提示未知开发者，可在“系统设置 → 隐私与安全”中确认“仍要打开”。Windows 暂无商业代码签名，SmartScreen 可能提示未知发布者；请从本仓库 Release 下载。缺少 WebView2 Runtime 时，安装器按默认策略处理。
