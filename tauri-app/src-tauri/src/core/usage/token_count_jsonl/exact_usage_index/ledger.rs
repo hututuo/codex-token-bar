@@ -9,6 +9,9 @@ const FIELDS: &str = "id,source_id,ordinal,timestamp,tokens,input_tokens,cached_
 const BINDINGS: &str = "event_id,source_id,raw_generation,raw_offset,user_prompt_start,user_prompt_end,assistant_response_start,assistant_response_end,fingerprint,available";
 const GROUP_BASE: i64 = 1_i64 << 62;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum CompactionEventDisposition { Insert, Existing, Corrected }
+
 pub(super) fn validate(db: &Connection) -> Result<(),String> {
     if !table_exists_checked(db,"usage_ledger_meta")? {
         if table_exists_checked(db,"metadata")? && metadata_i64(db,"schema_version")?.is_some_and(|v| (13..=CURRENT_SCHEMA_VERSION).contains(&v)) {
@@ -127,6 +130,88 @@ pub(super) fn record_append(db: &Connection,path: &str,ordinal: u64,event: &Exac
     Ok(())
 }
 
+/// Keep a previously emitted UNKNOWN compaction row at its original event ID
+/// when an appended matching response record supplies the late usage proof.
+/// The regular retention triggers and correction ledger then preserve the old
+/// diagnostic as evidence when the delta generation is published.
+pub(super) fn upsert_compaction_event(
+    db: &Transaction<'_>,
+    path: &str,
+    event: &ExactTokenEvent,
+) -> Result<CompactionEventDisposition, String> {
+    let Some(fingerprint) = event.usage_fingerprint.as_deref() else {
+        return Ok(CompactionEventDisposition::Insert);
+    };
+    let source: i64 = db.query_row("SELECT source_id FROM sources WHERE path=?1", params![path], |row| row.get(0))
+        .map_err(|error| format!("无法查找 compaction 来源：{error}"))?;
+
+    let pending: Option<Vec<Value>> = db.query_row(
+        &format!("SELECT e.id,e.source_id,e.ordinal,e.timestamp,e.tokens,e.input_tokens,e.cached_input_tokens,e.output_tokens,e.reasoning_output_tokens,e.model,e.user_prompt_start,e.user_prompt_end,e.assistant_response_start,e.assistant_response_end,e.accounting_kind,e.reported_total_tokens,e.token_source_offset,e.legacy_tokens FROM pending_event_rows e JOIN usage_ledger_pending_bindings b ON b.event_id=e.id WHERE e.source_id=?1 AND b.fingerprint=?2 ORDER BY e.id LIMIT 1"),
+        params![source, fingerprint],
+        read_values,
+    ).optional().map_err(|error| format!("无法检查暂存 compaction 响应身份：{error}"))?;
+    if let Some(mut row) = pending {
+        if number(&row, 14)? != crate::core::usage::token_count_jsonl::accounting::UNREPORTED_COMPACTION {
+            return Ok(CompactionEventDisposition::Existing);
+        }
+        let old_tokens = number(&row, 4)?;
+        write_compaction_values(&mut row, event)?;
+        db.execute("UPDATE pending_event_rows SET tokens=?1,input_tokens=?2,cached_input_tokens=?3,output_tokens=?4,reasoning_output_tokens=?5,model=COALESCE(model,?6),accounting_kind=?7,reported_total_tokens=?8,token_source_offset=?9 WHERE id=?10",
+            params![row[4],row[5],row[6],row[7],row[8],row[9],row[14],row[15],row[16],row[0]]).map_err(|e|e.to_string())?;
+        record_compaction_correction(db, &row, event, old_tokens)?;
+        return Ok(CompactionEventDisposition::Corrected);
+    }
+
+    let existing: Option<Vec<Value>> = db.query_row(
+        &format!("SELECT e.id,e.source_id,e.ordinal,e.timestamp,e.tokens,e.input_tokens,e.cached_input_tokens,e.output_tokens,e.reasoning_output_tokens,e.model,e.user_prompt_start,e.user_prompt_end,e.assistant_response_start,e.assistant_response_end,e.accounting_kind,e.reported_total_tokens,e.token_source_offset,e.legacy_tokens FROM event_rows e JOIN usage_ledger_bindings b ON b.event_id=e.id WHERE e.source_id=?1 AND b.fingerprint=?2 ORDER BY e.id LIMIT 1"),
+        params![source, fingerprint],
+        read_values,
+    ).optional().map_err(|error| format!("无法检查已发布 compaction 响应身份：{error}"))?;
+    let Some(mut row) = existing else { return Ok(CompactionEventDisposition::Insert); };
+    if number(&row, 14)? != crate::core::usage::token_count_jsonl::accounting::UNREPORTED_COMPACTION {
+        return Ok(CompactionEventDisposition::Existing);
+    }
+    let old_tokens = number(&row, 4)?;
+    write_compaction_values(&mut row, event)?;
+    write_pending(db, &row)?;
+    record_compaction_correction(db, &row, event, old_tokens)?;
+    let binding: Option<Vec<Value>> = db.query_row(
+        "SELECT event_id,source_id,raw_generation,raw_offset,user_prompt_start,user_prompt_end,assistant_response_start,assistant_response_end,fingerprint,available FROM usage_ledger_bindings WHERE event_id=?1",
+        params![row[0]],
+        |binding| (0..10).map(|index| binding.get(index)).collect(),
+    ).optional().map_err(|error| format!("无法读取 compaction 修正原文绑定：{error}"))?;
+    if let Some(binding) = binding {
+        db.execute(&format!("INSERT INTO usage_ledger_pending_bindings({BINDINGS}) VALUES({}) ON CONFLICT(event_id) DO UPDATE SET raw_offset=excluded.raw_offset,fingerprint=COALESCE(excluded.fingerprint,usage_ledger_pending_bindings.fingerprint),available=1", vec!["?"; 10].join(",")),
+            rusqlite::params_from_iter(binding.iter().cloned()))
+            .map_err(|error| format!("无法暂存 compaction 修正原文绑定：{error}"))?;
+    }
+    Ok(CompactionEventDisposition::Corrected)
+}
+
+fn write_compaction_values(row: &mut [Value], event: &ExactTokenEvent) -> Result<(), String> {
+    row[3] = Value::Integer(event.timestamp.unix_timestamp());
+    row[4] = Value::Integer(checked_i64(event.tokens, "compaction token 总数")?);
+    row[5] = Value::Integer(checked_i64(event.input_tokens, "compaction 输入 token")?);
+    row[6] = Value::Integer(checked_i64(event.cached_input_tokens, "compaction 缓存 token")?);
+    row[7] = Value::Integer(checked_i64(event.output_tokens, "compaction 输出 token")?);
+    row[8] = Value::Integer(checked_i64(event.reasoning_output_tokens, "compaction 推理 token")?);
+    if row[9] == Value::Null { row[9] = event.model.clone().map(Value::Text).unwrap_or(Value::Null); }
+    row[14] = Value::Integer(event.accounting_kind);
+    row[15] = event.reported_total_tokens.map(|value| checked_i64(value, "compaction reported total")).transpose()?.map(Value::Integer).unwrap_or(Value::Null);
+    row[16] = Value::Integer(checked_i64(event.token_source_offset, "compaction 原文偏移")?);
+    Ok(())
+}
+
+fn record_compaction_correction(db: &Connection, row: &[Value], event: &ExactTokenEvent, old_tokens: i64) -> Result<(), String> {
+    let generation: i64 = db.query_row("SELECT target_generation FROM pending_sources WHERE source_id=?1", params![number(row,1)?], |row| row.get(0))
+        .map_err(|error| format!("无法读取 compaction 修正代次：{error}"))?;
+    db.execute("INSERT OR IGNORE INTO usage_ledger_corrections VALUES(?1,?2,?3,?4,?5,?6,?7,'compaction-response-id-proof')",
+        params![number(row,1)?, number(row,0)?, generation, checked_i64(event.token_source_offset,"compaction 原文偏移")?,
+            super::STAGED_FULL_REBUILD_PARSER_REVISION, old_tokens, checked_i64(event.tokens,"compaction token 总数")?])
+        .map_err(|error| format!("无法记录 compaction 响应身份修正：{error}"))?;
+    Ok(())
+}
+
 fn full_prefix_matches(db: &Connection,staged: &StagedFullRebuild) -> Result<bool,String> {
     let source=staged.job.source_id;
     let old: Vec<(i64,i64,Vec<u8>)> = db.prepare("SELECT chunk_index,byte_count,sha256 FROM source_chunks WHERE source_id=?1 ORDER BY chunk_index").map_err(|e|e.to_string())?
@@ -237,7 +322,8 @@ pub(super) fn reconcile_full(db: &Connection,staged: &StagedFullRebuild) -> Resu
         let held: bool=if let Some(fp)=&fp { db.query_row("SELECT EXISTS(SELECT 1 FROM usage_ledger_unresolved WHERE source_id=?1 AND fingerprint=?2)",params![source,fp],|r|r.get(0)).map_err(|e|e.to_string())? } else {false};
         let new_snapshot=if let Some(fp)=&fp {
             let values=fingerprint_codec::decode(fp).map_err(|e|e.to_string())?;
-            let complete=values[5]==1 || values[6..].iter().all(|n|*n==0);
+            let complete=values[5]==1 || values[6..].iter().all(|n|*n==0)
+                || fingerprint_codec::is_compaction_response_fingerprint(&values);
             complete && !db.query_row("SELECT EXISTS(SELECT 1 FROM source_fingerprints WHERE source_id=?1 AND fingerprint=?2)",params![source,fp],|r|r.get::<_,bool>(0)).map_err(|e|e.to_string())?
         } else { false };
         if existing.is_some() || held || ambiguous_legacy_identity || (has_old && !unchanged && !(paginated && new_snapshot)) {

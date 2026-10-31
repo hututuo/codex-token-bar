@@ -100,38 +100,57 @@ pub(crate) fn read_consumption_evidence(
             if let Some(evidence) = cache.get(&key) {
                 return *evidence;
             }
-            let evidence = if !from.is_finite() || !through.is_finite() || through <= from {
-                ConsumptionEvidence::Unknown
-            } else {
-                match interval_has_consumption(&connection, from, through) {
-                    // Home-local event presence cannot be assigned to an
-                    // account, but it always vetoes withdrawing the drop.
-                    Ok(true) => ConsumptionEvidence::Present,
-                    Ok(false) if absence_safe && receipt_matches => {
-                        let covered = receipt.as_ref().is_some_and(|(_, _, started_us)| {
-                            let through_us = through * 1_000_000.0;
-                            through_us.is_finite() && (*started_us as f64) >= through_us
-                        });
-                        if !covered {
-                            ConsumptionEvidence::Unknown
-                        } else {
-                            match connection.query_row(
-                                "SELECT EXISTS(SELECT 1 FROM usage_ledger_unresolved WHERE timestamp>?1 AND timestamp<=?2)",
-                                params![from, through],
-                                |row| row.get::<_, bool>(0),
-                            ) {
-                                Ok(false) => ConsumptionEvidence::Absent,
-                                _ => ConsumptionEvidence::Unknown,
-                            }
-                        }
-                    }
-                    _ => ConsumptionEvidence::Unknown,
-                }
-            };
+            let evidence = interval_consumption_evidence(
+                &connection,
+                from,
+                through,
+                absence_safe,
+                receipt_matches,
+                receipt.as_ref().map(|(_, _, started_us)| *started_us),
+            );
             cache.insert(key, evidence);
             evidence
         })
         .collect()
+}
+
+fn interval_consumption_evidence(
+    connection: &Connection,
+    from: f64,
+    through: f64,
+    absence_safe: bool,
+    receipt_matches: bool,
+    receipt_started_us: Option<i64>,
+) -> ConsumptionEvidence {
+    if !from.is_finite() || !through.is_finite() || through <= from {
+        return ConsumptionEvidence::Unknown;
+    }
+    match interval_has_unreported_compaction(connection, from, through) {
+        Ok(true) | Err(_) => return ConsumptionEvidence::Unknown,
+        Ok(false) => {}
+    }
+    match interval_has_consumption(connection, from, through) {
+        // Home-local event presence cannot be assigned to an account, but it
+        // always vetoes withdrawing the drop.
+        Ok(true) => return ConsumptionEvidence::Present,
+        Ok(false) if absence_safe && receipt_matches => {}
+        _ => return ConsumptionEvidence::Unknown,
+    }
+    let covered = receipt_started_us.is_some_and(|started_us| {
+        let through_us = through * 1_000_000.0;
+        through_us.is_finite() && (started_us as f64) >= through_us
+    });
+    if !covered {
+        return ConsumptionEvidence::Unknown;
+    }
+    match connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM usage_ledger_unresolved WHERE timestamp>?1 AND timestamp<=?2)",
+        params![from, through],
+        |row| row.get::<_, bool>(0),
+    ) {
+        Ok(false) => ConsumptionEvidence::Absent,
+        _ => ConsumptionEvidence::Unknown,
+    }
 }
 
 fn interval_has_consumption(
@@ -142,6 +161,54 @@ fn interval_has_consumption(
     connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM published_events WHERE timestamp>?1 AND timestamp<=?2 AND tokens>0)",
         params![from, through],
+        |row| row.get(0),
+    )
+}
+
+fn interval_has_unreported_compaction(
+    connection: &Connection,
+    from: f64,
+    through: f64,
+) -> rusqlite::Result<bool> {
+    connection.query_row(
+        r#"
+        WITH unreported AS (
+            SELECT e.timestamp
+            FROM canonical_usage_events e
+            JOIN published_files f
+              ON f.source_id = e.source_id
+             AND f.generation = e.file_generation
+            WHERE e.accounting_kind = ?1
+            UNION
+            SELECT retained.timestamp
+            FROM retained_usage_events retained
+            JOIN retained_usage_sources history
+              ON history.snapshot_id = retained.snapshot_id
+            WHERE retained.accounting_kind = ?1
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM event_rows current
+                  JOIN sources source
+                    ON source.source_id = current.source_id
+                   AND source.session_id = history.session_id
+                   AND source.path = history.path
+                  JOIN usage_ledger_bindings binding
+                    ON binding.event_id = current.id
+                   AND binding.source_id = current.source_id
+                  JOIN retained_usage_fingerprints fingerprint
+                    ON fingerprint.snapshot_id = retained.snapshot_id
+                   AND fingerprint.value = binding.fingerprint
+                  WHERE current.source_id = history.source_id
+                    AND current.ordinal = retained.position
+                    AND current.timestamp = retained.timestamp
+                    AND (retained.token_source_offset IS NULL
+                         OR current.token_source_offset = retained.token_source_offset)
+                    AND current.accounting_kind = 0
+              )
+        )
+        SELECT EXISTS(SELECT 1 FROM unreported WHERE timestamp > ?2 AND timestamp <= ?3)
+        "#,
+        params![super::super::accounting::UNREPORTED_COMPACTION, from, through],
         |row| row.get(0),
     )
 }
@@ -187,6 +254,55 @@ pub(crate) fn read(
         .iter()
         .map(|&(start, end)| query(&connection, start, end))
         .collect()
+}
+
+#[cfg(test)]
+fn range_has_unreported_compaction(
+    connection: &Connection,
+    start: f64,
+    end: f64,
+) -> Result<bool, String> {
+    connection.query_row(
+        r#"
+        WITH unreported AS (
+            SELECT e.timestamp
+            FROM canonical_usage_events e
+            JOIN published_files f
+              ON f.source_id = e.source_id
+             AND f.generation = e.file_generation
+            WHERE e.accounting_kind = ?1
+            UNION
+            SELECT retained.timestamp
+            FROM retained_usage_events retained
+            JOIN retained_usage_sources history
+              ON history.snapshot_id = retained.snapshot_id
+            WHERE retained.accounting_kind = ?1
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM event_rows current
+                  JOIN sources source
+                    ON source.source_id = current.source_id
+                   AND source.session_id = history.session_id
+                   AND source.path = history.path
+                  JOIN usage_ledger_bindings binding
+                    ON binding.event_id = current.id
+                   AND binding.source_id = current.source_id
+                  JOIN retained_usage_fingerprints fingerprint
+                    ON fingerprint.snapshot_id = retained.snapshot_id
+                   AND fingerprint.value = binding.fingerprint
+                  WHERE current.source_id = history.source_id
+                    AND current.ordinal = retained.position
+                    AND current.timestamp = retained.timestamp
+                    AND (retained.token_source_offset IS NULL
+                         OR current.token_source_offset = retained.token_source_offset)
+                    AND current.accounting_kind = 0
+              )
+        )
+        SELECT EXISTS(SELECT 1 FROM unreported WHERE timestamp >= ?2 AND timestamp < ?3)
+        "#,
+        params![super::super::accounting::UNREPORTED_COMPACTION, start, end],
+        |row| row.get(0),
+    ).map_err(|error| format!("无法检查周期明细中的未报告 compaction：{error}"))
 }
 
 fn ensure_safe_source(connection: &Connection, published: u64) -> Result<(), String> {
@@ -290,6 +406,59 @@ mod tests {
         assert!(interval_has_consumption(&c, 20.0, 21.0).unwrap());
         assert!(interval_has_consumption(&c, 21.0, 30.0).unwrap());
         assert!(!interval_has_consumption(&c, 30.0, 30.5).unwrap());
+    }
+
+    #[test]
+    fn unreported_compaction_blocks_absence_but_keeps_known_cycle_cost_visible() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE canonical_usage_events(source_id INTEGER,file_generation INTEGER,timestamp INTEGER,accounting_kind INTEGER);
+             CREATE TABLE published_files(source_id INTEGER,generation INTEGER);
+             CREATE TABLE published_events(timestamp INTEGER,model TEXT,input_tokens INTEGER,cached_input_tokens INTEGER,output_tokens INTEGER,tokens INTEGER);
+             CREATE TABLE usage_ledger_unresolved(timestamp INTEGER);
+             CREATE TABLE retained_usage_events(snapshot_id INTEGER,position INTEGER,timestamp INTEGER,accounting_kind INTEGER,token_source_offset INTEGER);
+             CREATE TABLE retained_usage_sources(snapshot_id INTEGER,source_id INTEGER,session_id TEXT,path TEXT);
+             CREATE TABLE event_rows(id INTEGER,source_id INTEGER,ordinal INTEGER,timestamp INTEGER,accounting_kind INTEGER,token_source_offset INTEGER);
+             CREATE TABLE sources(source_id INTEGER,session_id TEXT,path TEXT);
+             CREATE TABLE usage_ledger_bindings(event_id INTEGER,source_id INTEGER,fingerprint BLOB);
+             CREATE TABLE retained_usage_fingerprints(snapshot_id INTEGER,value BLOB);
+             INSERT INTO published_files VALUES(1,7);
+             INSERT INTO canonical_usage_events VALUES(1,7,20,4);
+             INSERT INTO retained_usage_sources VALUES(2,3,'session-1','/sessions/one.jsonl');
+             INSERT INTO retained_usage_events VALUES(2,1,20,4,200);
+             INSERT INTO published_events VALUES(15,'gpt-6-astra',5,0,0,5);",
+        ).unwrap();
+
+        // Consumption evidence uses (from, through]. Known costs remain
+        // visible in exact timestamp-bounded detail while kind 4 prevents the
+        // interval from being certified as complete.
+        assert_eq!(
+            interval_consumption_evidence(&c, 10.0, 20.0, true, true, Some(30_000_000)),
+            ConsumptionEvidence::Unknown
+        );
+        assert!(!range_has_unreported_compaction(&c, 10.0, 20.0).unwrap());
+        assert!(range_has_unreported_compaction(&c, 20.0, 21.0).unwrap());
+        let known = query(&c, 10.0, 21.0).unwrap();
+        assert_eq!(known.len(), 1);
+        assert_eq!(known[0].breakdown.total_tokens, 5);
+
+        c.execute("DELETE FROM canonical_usage_events", []).unwrap();
+        assert_eq!(
+            interval_consumption_evidence(&c, 10.0, 20.0, true, true, Some(30_000_000)),
+            ConsumptionEvidence::Unknown
+        );
+        assert!(range_has_unreported_compaction(&c, 20.0, 21.0).unwrap());
+        c.execute_batch(
+            "INSERT INTO sources VALUES(3,'session-1','/sessions/one.jsonl');
+             INSERT INTO event_rows VALUES(99,3,1,20,0,200);
+             INSERT INTO usage_ledger_bindings VALUES(99,3,x'01');
+             INSERT INTO retained_usage_fingerprints VALUES(2,x'01');",
+        ).unwrap();
+        assert!(!range_has_unreported_compaction(&c, 20.0, 21.0).unwrap());
+        assert_eq!(
+            interval_consumption_evidence(&c, 10.0, 20.0, true, true, Some(30_000_000)),
+            ConsumptionEvidence::Present
+        );
     }
 
     #[test]

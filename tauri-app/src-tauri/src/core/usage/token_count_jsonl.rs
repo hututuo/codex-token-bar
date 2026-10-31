@@ -3786,6 +3786,7 @@ fn persistent_numeric_test_snapshot(summary: &TokenUsageSummary) -> DashboardSna
             total_output_tokens: 0,
             model_breakdowns: Vec::new(),
             first_usage_at: None,
+            unreported_compaction_unix: Vec::new(),
         },
         quota: placeholder_quota(),
         activity_days: Vec::new(),

@@ -7685,6 +7685,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """
                 )
+                let compactionCorrection = try transaction.prepare("""
+                    UPDATE events SET timestamp=?2,tokens=?3,input_tokens=?4,cached_input_tokens=?5,
+                        output_tokens=?6,reasoning_output_tokens=?7,model=COALESCE(model,?8),
+                        user_prompt_offset=COALESCE(user_prompt_offset,?9),
+                        assistant_start_offset=COALESCE(assistant_start_offset,?10),
+                        accounting_kind=?11,reported_total_tokens=?12
+                    WHERE source_offset=?1 AND accounting_kind=4 AND usage_fingerprint=?13
+                    """)
                 let result = try parser(
                     job.file,
                     job.sessionID,
@@ -7711,7 +7719,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         } else {
                             assistantStartOffset = .null
                         }
-                        _ = try eventStatement.execute([
+                        let bindings: [SQLiteBinding] = [
                             .int64(try sqliteInt64(indexedEvent.sourceOffset)),
                             .date(event.timestamp),
                             .int(event.tokens),
@@ -7725,7 +7733,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                             .int(indexedEvent.accountingKind.rawValue),
                             indexedEvent.reportedTotalTokens.map(SQLiteBinding.int) ?? .null,
                             indexedEvent.usageFingerprint.map(SQLiteBinding.blob) ?? .null
-                        ])
+                        ]
+                        if indexedEvent.accountingKind == .counted,
+                           indexedEvent.usageFingerprint != nil,
+                           try compactionCorrection.execute(bindings) == 1 { return }
+                        _ = try eventStatement.execute(bindings)
                     }
                 )
                 guard result.lastOffset == committedSignature.size else {

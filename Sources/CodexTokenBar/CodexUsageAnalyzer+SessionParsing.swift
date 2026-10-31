@@ -274,7 +274,7 @@ extension CodexUsageAnalyzer {
                 userPromptOffset:item.prompt, assistantStartOffset:item.assistant,
                 accountingKind:item.components == nil ? .unreportedCompaction : .counted,
                 reportedTotalTokens:item.reportedTotal, usageFingerprint:try identity.databaseValue))
-            eventCount += 1
+            if !item.unknownEmitted { eventCount += 1 }
             compaction.markEmitted(item)
         }
         func modernRecord(_ payload: [String:Any], offset: UInt64, timestamp: Date, ordinal: UInt64?, rejecting: Set<String> = []) -> CodexCompactionAccounting.Record? {
@@ -415,7 +415,9 @@ extension CodexUsageAnalyzer {
                    usageLine.last?.accounting.usable == true,
                    usageLine.last?.accounting.components.total == 0,
                    let baseline = usageLine.total?.accounting, baseline.usable {
-                    nextAccounting.previous = baseline.components
+                    nextAccounting.previous = baseline.components.total > 0 || (baseline.reportedTotal ?? 0) == 0
+                        ? baseline.components : nil
+                    nextAccounting.unreflected = UsageAccountingComponents()
                     nextAccounting.canStartFromZero = false
                 }
                 let measured = nextAccounting.observe(
@@ -443,7 +445,7 @@ extension CodexUsageAnalyzer {
                     lastSkippedForkReplayTokenAt = usageLine.timestamp
                     return
                 }
-                let mirror = compaction.observeLegacy(last:usageLine.last?.accounting.components,
+                let mirror = compaction.observeLegacy(last:measured?.components,
                     counted:measured?.kind == .counted)
                 guard let measured, !mirror else { return }
                 let delta = measured.tokens

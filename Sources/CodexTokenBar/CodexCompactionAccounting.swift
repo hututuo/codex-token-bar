@@ -48,6 +48,11 @@ struct CodexCompactionAccounting: Codable, Equatable {
             guard !recent[i].compacted else { return nil }
             recent[i].compacted = true
             recent[i].offset = fallback.offset
+            if recent[i].components == nil, fallback.components != nil {
+                recent[i].components = fallback.components
+                recent[i].cacheWriteInputTokens = fallback.cacheWriteInputTokens
+                recent[i].reportedTotal = fallback.reportedTotal
+            }
             // Preserve usage time/model/turn links from the actual response.
             return recent[i].mirrored ? nil : recent[i]
         }

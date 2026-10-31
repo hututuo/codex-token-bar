@@ -1,9 +1,25 @@
 use std::fmt;
+use sha2::{Digest, Sha256};
 
 pub(super) const FINGERPRINT_VERSION: u8 = 1;
 pub(super) const FINGERPRINT_VALUE_COUNT: usize = 11;
 pub(super) const LEGACY_FIXED_WIDTH_BYTE_COUNT: usize =
     FINGERPRINT_VALUE_COUNT * std::mem::size_of::<u64>();
+
+/// Stable request identity for a modern Codex compaction response. This uses
+/// the existing partial-snapshot digest layout, with `last.total_tokens = 2`
+/// reserved for response-ID proofs (ordinary partial snapshots use `1`).
+pub(super) fn compaction_response_fingerprint(response_id: &str) -> [u64; FINGERPRINT_VALUE_COUNT] {
+    let digest = Sha256::digest(format!("codex-compaction-request-v1|{response_id}").as_bytes());
+    let words = digest.chunks_exact(4)
+        .map(|bytes| u32::from_be_bytes(bytes.try_into().expect("four-byte digest word")) as u64)
+        .collect::<Vec<_>>();
+    [words[0], words[1], words[2], words[3], words[4], 0, words[5], words[6], words[7], 0, 2]
+}
+
+pub(super) fn is_compaction_response_fingerprint(values: &[u64; FINGERPRINT_VALUE_COUNT]) -> bool {
+    values[5] == 0 && values[9] == 0 && values[10] == 2
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum FingerprintCodecError {
@@ -215,6 +231,18 @@ mod tests {
             hex(&encode(&decode_legacy_fixed_width(&legacy_fixed).unwrap()).unwrap()),
             "01017f8001ff01ac0201808001ffffffff0fffffffffffffffffff012a00"
         );
+    }
+
+    #[test]
+    fn compaction_response_marker_uses_the_reserved_no_last_digest_identity() {
+        let response = compaction_response_fingerprint("resp-compact-1");
+        assert_eq!(response[5], 0);
+        assert_eq!(response[9], 0);
+        assert_eq!(response[10], 2);
+        assert!(is_compaction_response_fingerprint(&response));
+        assert_eq!(response, compaction_response_fingerprint("resp-compact-1"));
+        assert_ne!(response, compaction_response_fingerprint("resp-compact-2"));
+        assert_eq!(decode(&encode(&response).unwrap()).unwrap(), response);
     }
 
     #[test]

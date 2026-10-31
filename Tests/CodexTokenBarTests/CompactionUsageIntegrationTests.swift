@@ -53,6 +53,21 @@ final class CompactionUsageIntegrationTests: XCTestCase {
             XCTAssertEqual(result.filter{$0.accountingKind == .counted}.count,1)
         }
     }
+    func testCumulativeOnlyLegacyMirrorCountsOnceInBothArrivalOrders() throws {
+        let cumulative=try line("event_msg",["type":"token_count","info":["total_token_usage":usage]],ordinal:22)
+        for lines in [try [modern(),compact(),cumulative],try [modern(),cumulative,compact()]] {
+            let result=try parse(lines)
+            XCTAssertEqual(result.reduce(0){$0+$1.event.tokens},334108)
+        }
+    }
+    func testExactInlineUsageCanRepairAnUnusablePrecedingModernRecord() throws {
+        let invalid=try line("token_usage_record",["response_id":"resp_compact","usage":["input_tokens":1]],ordinal:20)
+        let inline=try line("compacted",["compaction_response_id":"resp_compact",
+            "latest_token_usage_record":["response_id":"resp_compact","usage":usage]],ordinal:21)
+        let result=try parse([invalid,inline])
+        XCTAssertEqual(result.reduce(0){$0+$1.event.tokens},334108)
+        XCTAssertEqual(result.first?.accountingKind,.counted)
+    }
     func testInlineOnlyCompactionAndFollowingMirrorCountOnce() throws {
         let inline=try line("compacted",["compaction_response_id":"resp_compact",
             "latest_token_usage_record":["response_id":"resp_compact","usage":usage]],ordinal:21)
@@ -77,7 +92,7 @@ final class CompactionUsageIntegrationTests: XCTestCase {
         let rates=APIPriceRates(inputUSDPerMillion:2,cachedInputUSDPerMillion:0.1,outputUSDPerMillion:10)
         let sample=TokenCacheBreakdown(inputTokens:326340,cachedInputTokens:323968,
             outputTokens:7768,reasoningOutputTokens:7768,totalTokens:334108,calls:1)
-        XCTAssertEqual(rates.costUSD(for:sample),(2372*2+323968*0.1+7768*10)/1000000,accuracy:0.0000001)
+        XCTAssertEqual(rates.costUSD(for:sample),0.1148208,accuracy:0.0000001)
     }
     func testUnknownUsageStopsQuotaInversionButKeepsKnownCost() {
         let sample=TokenCacheBreakdown(inputTokens:100,cachedInputTokens:50,outputTokens:10,

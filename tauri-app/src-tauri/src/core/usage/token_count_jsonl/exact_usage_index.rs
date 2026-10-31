@@ -82,10 +82,14 @@ const PAGINATED_V4_PARSER_REVISION: &str = "paginated-subagent-boundary-v4";
 const PAGINATED_V4_STAGED_REVISION: &str = "components-v1-paginated-subagent-boundary-v4";
 const PAGINATED_V5_PARSER_REVISION: &str = "paginated-owned-turn-v5";
 const PAGINATED_V5_STAGED_REVISION: &str = "components-v1-paginated-owned-turn-v5";
-const EXACT_SESSION_PARSER_REVISION: &str = "paginated-owned-turn-v6";
-const FORK_REPLAY_BOUNDARY_REVISION: &str = EXACT_SESSION_PARSER_REVISION;
+const PRE_COMPACTION_SESSION_PARSER_REVISION: &str = "paginated-owned-turn-v6";
+const PRE_COMPACTION_STAGED_PARSER_REVISION: &str = "components-v1-paginated-owned-turn-v6";
+const EXACT_SESSION_PARSER_REVISION: &str = "paginated-owned-turn-v7-compaction-v1";
+// Compaction accounting does not change the ownership boundary rules. Keep
+// the boundary receipt on v6 while the broader parser revision advances.
+const FORK_REPLAY_BOUNDARY_REVISION: &str = PRE_COMPACTION_SESSION_PARSER_REVISION;
 pub(super) const PARSER_REPAIR_VERIFY_KEY: &str = "parser_repair_verify_pending";
-pub(super) const STAGED_FULL_REBUILD_PARSER_REVISION: &str = "components-v1-paginated-owned-turn-v6";
+pub(super) const STAGED_FULL_REBUILD_PARSER_REVISION: &str = "components-v1-paginated-owned-turn-v7-compaction-v1";
 // This marker is independent from the parser/schema revisions because it
 // records completion of a one-time logical repair for legacy databases that
 // were written with foreign-key enforcement disabled. Keep it separate so a
@@ -94,7 +98,8 @@ pub(super) const STAGED_FULL_REBUILD_PARSER_REVISION: &str = "components-v1-pagi
 pub(super) const ORPHAN_REPAIR_REVISION_KEY: &str = "orphan_repair_revision";
 pub(super) const ORPHAN_REPAIR_REVISION: &str = "events-fingerprints-chunks-v1";
 const EVENT_ENRICHMENT_REVISION_KEY: &str = "event_enrichment_revision";
-const EVENT_ENRICHMENT_REVISION: &str = "model-reasoning-v1";
+const PRE_COMPACTION_EVENT_ENRICHMENT_REVISION: &str = "model-reasoning-v1";
+const EVENT_ENRICHMENT_REVISION: &str = "model-reasoning-v2-compaction-v1";
 const SESSION_CATALOG_SCHEMA_VERSION: i64 = 2;
 const ATTRIBUTION_PROVENANCE_EPOCH_KEY: &str = "attribution_provenance_epoch";
 const ATTRIBUTION_LEDGER_EPOCH_KEY: &str = "attribution_ledger_epoch";
@@ -1414,7 +1419,14 @@ fn assess_index_migration(
         ),
     ] {
         if let Some(stored) = metadata_text(connection, key)? {
-            if stored != supported && !(key == "fork_replay_boundary_revision" && [LEGACY_SESSION_PARSER_REVISION, PAGINATED_V4_PARSER_REVISION, PAGINATED_V5_PARSER_REVISION, PAGINATED_V5_STAGED_REVISION].contains(&stored.as_str())) {
+            let compatible_previous = (key == "fork_replay_boundary_revision"
+                && [LEGACY_SESSION_PARSER_REVISION, LEGACY_STAGED_PARSER_REVISION,
+                    PAGINATED_V4_PARSER_REVISION, PAGINATED_V4_STAGED_REVISION,
+                    PAGINATED_V5_PARSER_REVISION, PAGINATED_V5_STAGED_REVISION,
+                    PRE_COMPACTION_STAGED_PARSER_REVISION].contains(&stored.as_str()))
+                || (key == EVENT_ENRICHMENT_REVISION_KEY
+                    && stored == PRE_COMPACTION_EVENT_ENRICHMENT_REVISION);
+            if stored != supported && !compatible_previous {
                 return Ok(MigrationAssessment::UpgradeRequired {
                     component,
                     stored,
@@ -1757,7 +1769,10 @@ impl ExactUsageIndex {
             metadata_text(&connection, EVENT_ENRICHMENT_REVISION_KEY)?;
         if stored_event_enrichment_revision
             .as_deref()
-            .is_some_and(|revision| revision != EVENT_ENRICHMENT_REVISION)
+            .is_some_and(|revision| {
+                revision != EVENT_ENRICHMENT_REVISION
+                    && revision != PRE_COMPACTION_EVENT_ENRICHMENT_REVISION
+            })
         {
             return Err(format!(
                 "精确 token 历史字段补全版本 {} 高于或不同于当前支持版本 {}，已拒绝覆盖",
@@ -4650,6 +4665,7 @@ impl ExactUsageIndex {
                 |row| row.get::<_, i64>(0),
             )
             .map_err(|error| format!("无法读取精确 token 会话峰值：{error}"))?;
+        let unreported_compaction_unix = self.unreported_compaction_unix()?;
         let mut model_breakdowns = Vec::new();
         let mut model_statement = self
             .connection
@@ -4700,6 +4716,7 @@ impl ExactUsageIndex {
             total_output_tokens: nonnegative_u64(row.5),
             model_breakdowns,
             first_usage_at: row.6.and_then(format_rfc3339_unix),
+            unreported_compaction_unix,
         };
         Ok((
             stats,
@@ -4714,6 +4731,57 @@ impl ExactUsageIndex {
                 )?,
             },
         ))
+    }
+
+    /// Retain exact event timestamps for unresolved compaction requests in
+    /// the published generation. These rows are explicit unknown-usage
+    /// diagnostics and are excluded from normal event totals.
+    fn unreported_compaction_unix(&self) -> Result<Vec<i64>, String> {
+        let mut statement = self.connection.prepare(
+            r#"
+            WITH unreported AS (
+                SELECT e.timestamp
+                FROM canonical_usage_events e
+                JOIN published_files f
+                  ON f.source_id = e.source_id
+                 AND f.generation = e.file_generation
+                WHERE e.accounting_kind = ?1
+                UNION
+                SELECT retained.timestamp
+                FROM retained_usage_events retained
+                JOIN retained_usage_sources history
+                  ON history.snapshot_id = retained.snapshot_id
+                WHERE retained.accounting_kind = ?1
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM event_rows current
+                      JOIN sources source
+                        ON source.source_id = current.source_id
+                       AND source.session_id = history.session_id
+                       AND source.path = history.path
+                      JOIN usage_ledger_bindings binding
+                        ON binding.event_id = current.id
+                       AND binding.source_id = current.source_id
+                      JOIN retained_usage_fingerprints fingerprint
+                        ON fingerprint.snapshot_id = retained.snapshot_id
+                       AND fingerprint.value = binding.fingerprint
+                      WHERE current.source_id = history.source_id
+                        AND current.ordinal = retained.position
+                        AND current.timestamp = retained.timestamp
+                        AND (retained.token_source_offset IS NULL
+                             OR current.token_source_offset = retained.token_source_offset)
+                        AND current.accounting_kind = 0
+                  )
+            )
+            SELECT DISTINCT timestamp FROM unreported ORDER BY timestamp
+            "#,
+        ).map_err(|error| format!("无法准备未报告 compaction 时间诊断：{error}"))?;
+        let rows = statement.query_map(
+            params![super::accounting::UNREPORTED_COMPACTION],
+            |row| row.get::<_, i64>(0),
+        ).map_err(|error| format!("无法读取未报告 compaction 时间诊断：{error}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("无法解码未报告 compaction 时间诊断：{error}"))
     }
 
     fn usage_series_bundle(
@@ -5403,7 +5471,10 @@ pub(super) fn peek_startup_identity(
     let parser_revision = metadata_text(&connection, "fork_replay_boundary_revision")?;
     if parser_revision
         .as_deref()
-        .is_some_and(|revision| ![EXACT_SESSION_PARSER_REVISION, LEGACY_SESSION_PARSER_REVISION, PAGINATED_V4_PARSER_REVISION, PAGINATED_V5_PARSER_REVISION].contains(&revision))
+        .is_some_and(|revision| ![EXACT_SESSION_PARSER_REVISION, PRE_COMPACTION_SESSION_PARSER_REVISION,
+            LEGACY_SESSION_PARSER_REVISION, LEGACY_STAGED_PARSER_REVISION,
+            PAGINATED_V4_PARSER_REVISION, PAGINATED_V4_STAGED_REVISION,
+            PAGINATED_V5_PARSER_REVISION, PAGINATED_V5_STAGED_REVISION].contains(&revision))
     {
         return Err(format!(
             "精确 token 启动缓存 parser revision 不兼容：{}",
@@ -5896,6 +5967,17 @@ impl ExactSessionEventSink for SqliteEventSink<'_> {
         ledger::record_append(self.transaction,self.file_path,self.ordinal,event)?;
         Ok(())
     }
+
+    fn upsert_compaction_event(&mut self, event: &ExactTokenEvent) -> Result<bool, String> {
+        match ledger::upsert_compaction_event(self.transaction, self.file_path, event)? {
+            ledger::CompactionEventDisposition::Insert => {
+                self.insert_event(event)?;
+                Ok(true)
+            }
+            ledger::CompactionEventDisposition::Existing
+            | ledger::CompactionEventDisposition::Corrected => Ok(false),
+        }
+    }
 }
 
 struct StagingEventSink<'transaction> {
@@ -5977,6 +6059,25 @@ impl ExactSessionEventSink for StagingEventSink<'_> {
             )
             .map(|_| ())
             .map_err(|error| format!("无法写入精确 token 暂存事件：{error}"))
+    }
+
+    fn upsert_compaction_event(&mut self, event: &ExactTokenEvent) -> Result<bool, String> {
+        if let Some(fingerprint) = event.usage_fingerprint.as_deref() {
+            let existing_ordinal: Option<i64> = self.transaction.query_row(
+                "SELECT ordinal FROM events WHERE usage_fingerprint=?1 ORDER BY ordinal LIMIT 1",
+                params![fingerprint],
+                |row| row.get(0),
+            ).optional().map_err(|error| format!("无法查找暂存 compaction 响应：{error}"))?;
+            if let Some(ordinal) = existing_ordinal {
+                self.transaction.execute(
+                    "UPDATE events SET timestamp=?1,tokens=?2,input_tokens=?3,cached_input_tokens=?4,output_tokens=?5,reasoning_output_tokens=?6,model=COALESCE(model,?7),accounting_kind=?8,reported_total_tokens=?9,token_source_offset=?10 WHERE ordinal=?11",
+                    params![event.timestamp.unix_timestamp(), checked_i64(event.tokens,"暂存 compaction token")?, checked_i64(event.input_tokens,"暂存 compaction input")?, checked_i64(event.cached_input_tokens,"暂存 compaction cached input")?, checked_i64(event.output_tokens,"暂存 compaction output")?, checked_i64(event.reasoning_output_tokens,"暂存 compaction reasoning")?, event.model, event.accounting_kind, checked_optional_i64(event.reported_total_tokens,"暂存 compaction reported total")?, checked_i64(event.token_source_offset,"暂存 compaction offset")?, ordinal],
+                ).map_err(|error| format!("无法修正暂存 compaction 响应：{error}"))?;
+                return Ok(false);
+            }
+        }
+        self.insert_event(event)?;
+        Ok(true)
     }
 }
 
@@ -6324,6 +6425,10 @@ fn stage_or_reuse_full_rebuild(
     let mut blocked = false;
     for database_path in &existing_paths {
         if !existing_regular_index(database_path)? {
+            continue;
+        }
+        if superseded_compaction_private_stage(database_path, job)? {
+            preserve_private_stage_family(database_path)?;
             continue;
         }
         if restartable_private_stage(database_path, job)? {
@@ -11549,6 +11654,7 @@ fn ensure_estimate_deadline(deadline: &Instant) -> Result<(), String> {
     } else {
         Ok(())
     }
+
 }
 
 fn enqueue_directory(
@@ -14861,7 +14967,11 @@ fn receipt_connection_metadata_matches(
             .flatten()
             .and_then(|generation| generation.parse::<i64>().ok())
             .is_some_and(|generation| generation == receipt.published_generation)
-        && receipt.parser_revision == EXACT_SESSION_PARSER_REVISION
+        && [EXACT_SESSION_PARSER_REVISION, PRE_COMPACTION_SESSION_PARSER_REVISION,
+            LEGACY_SESSION_PARSER_REVISION, LEGACY_STAGED_PARSER_REVISION,
+            PAGINATED_V4_PARSER_REVISION, PAGINATED_V4_STAGED_REVISION,
+            PAGINATED_V5_PARSER_REVISION, PAGINATED_V5_STAGED_REVISION]
+            .contains(&receipt.parser_revision.as_str())
 }
 
 fn receipt_metadata(connection: &Connection, path: &Path) -> Result<ReceiptMetadata, String> {
@@ -15806,12 +15916,6 @@ fn repair_explicit_subagent_replay_boundary(connection: &Connection) -> Result<b
             .map_err(|error| format!("无法标记子 Agent replay 定向修复：{error}"))?;
     }
 
-    if column_exists_checked(&transaction, "event_enrichment_sources", "parser_revision")? {
-        // Unaffected sources retain valid enrichment. Affected checkpoints
-        // above are invalid regardless of this receipt promotion.
-        transaction.execute("UPDATE event_enrichment_sources SET parser_revision=?1 WHERE parser_revision IN (?2,?3,?4,?5)",
-            params![STAGED_FULL_REBUILD_PARSER_REVISION, LEGACY_STAGED_PARSER_REVISION, PAGINATED_V4_STAGED_REVISION, PAGINATED_V4_PARSER_REVISION, PAGINATED_V5_STAGED_REVISION]).map_err(|e| e.to_string())?;
-    }
     if !explicit_paths.is_empty() {
         set_metadata(&transaction, PARSER_REPAIR_VERIFY_KEY, EXACT_SESSION_PARSER_REVISION)?;
     }
@@ -15917,10 +16021,9 @@ fn apply_accounting_migration(connection: &mut Connection,receipt: Option<String
             UPDATE {table} SET tokens=CASE WHEN accounting_kind=0 THEN input_tokens+output_tokens ELSE 0 END;"))
             .map_err(|e| e.to_string())?;
     }
-    // Existing model/reasoning coverage remains valid. Accounting gaps are
-    // exposed separately; changing this receipt must not trigger a cold scan.
-    tx.execute("UPDATE event_enrichment_sources SET parser_revision=?1 WHERE parser_revision IN (?2,?3,?4,?5,?6)",
-        params![STAGED_FULL_REBUILD_PARSER_REVISION, EXACT_SESSION_PARSER_REVISION, LEGACY_SESSION_PARSER_REVISION, LEGACY_STAGED_PARSER_REVISION, PAGINATED_V4_STAGED_REVISION, PAGINATED_V4_PARSER_REVISION]).map_err(|e| e.to_string())?;
+    // Keep historical enrichment receipts on their original parser revision.
+    // The bumped event-enrichment contract must reparse those sources before
+    // they can be marked complete for compaction accounting.
     preparation.advance("accounting_aggregates");
     rebuild_published_dashboard_aggregates(&tx)?;
     let pending = {
@@ -19209,6 +19312,47 @@ fn restartable_private_stage(path: &Path, job: &FullRebuildJob) -> Result<bool, 
         return super::session_parser::paginated_subagent_boundary(&mut RolloutReader::open(&job.file).map_err(|e| e.to_string())?).map(|b| b.is_some());
     }
     Ok(false)
+}
+
+/// A completed stage from the old event-enrichment/parser contract cannot be
+/// reused for compaction reconciliation. Keep it as private recovery evidence
+/// and let the current parser build a fresh stage from the same source.
+fn superseded_compaction_private_stage(path: &Path, job: &FullRebuildJob) -> Result<bool, String> {
+    if !job.event_enrichment || !existing_regular_index(path)? {
+        return Ok(false);
+    }
+    let connection = open_read_only_index(path, StdDuration::from_secs(1))
+        .map_err(|error| format!("无法只读检查旧 compaction 暂存：{error}"))?;
+    quick_check_staged(&connection)?;
+    for column in ["manifest_schema_version", "parser_revision", "migration_revision", "path"] {
+        if !column_exists_checked(&connection, "manifest", column)? {
+            return Ok(false);
+        }
+    }
+    let manifest: Option<(i64, String, String, String)> = connection.query_row(
+        "SELECT manifest_schema_version,parser_revision,migration_revision,path FROM manifest LIMIT 1",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    ).optional().map_err(|error| format!("无法读取旧 compaction 暂存证明：{error}"))?;
+    let Some((schema, parser_revision, migration_revision, source_path)) = manifest else {
+        return Ok(false);
+    };
+    let known_old_parser = [
+        PRE_COMPACTION_STAGED_PARSER_REVISION,
+        PRE_COMPACTION_SESSION_PARSER_REVISION,
+        PAGINATED_V5_STAGED_REVISION,
+        PAGINATED_V5_PARSER_REVISION,
+        PAGINATED_V4_STAGED_REVISION,
+        PAGINATED_V4_PARSER_REVISION,
+        LEGACY_STAGED_PARSER_REVISION,
+        LEGACY_SESSION_PARSER_REVISION,
+    ].contains(&parser_revision.as_str());
+    let known_old_migration = migration_revision == PRE_COMPACTION_EVENT_ENRICHMENT_REVISION
+        || migration_revision == "exact-source-rebuild-v1";
+    Ok(matches!(schema, 1 | 2 | STAGING_MANIFEST_SCHEMA_VERSION)
+        && known_old_parser
+        && known_old_migration
+        && source_path == job.path)
 }
 
 /// Preserve private recovery artifacts outside the active staging enumeration.

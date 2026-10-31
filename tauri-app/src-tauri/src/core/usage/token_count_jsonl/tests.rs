@@ -5274,7 +5274,7 @@ fn exact_index_event_enrichment_resumes_a_durable_missing_source_tombstone() {
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "model-reasoning-v1"
+        "model-reasoning-v2-compaction-v1"
     );
     drop(completed);
     fs::remove_dir_all(root).unwrap();
@@ -5370,7 +5370,7 @@ fn event_enrichment_keeps_the_previous_published_generation_until_every_source_c
     assert_eq!(
         interrupted
             .query_row(
-                "SELECT COUNT(*) FROM event_enrichment_sources WHERE revision = 'model-reasoning-v1'",
+                "SELECT COUNT(*) FROM event_enrichment_sources WHERE revision = 'model-reasoning-v2-compaction-v1'",
                 [],
                 |row| row.get::<_, i64>(0),
             )
@@ -5409,7 +5409,7 @@ fn event_enrichment_keeps_the_previous_published_generation_until_every_source_c
                 |row| row.get::<_, String>(0),
             )
             .unwrap(),
-        "model-reasoning-v1"
+        "model-reasoning-v2-compaction-v1"
     );
     drop(completed);
     fs::remove_dir_all(root).unwrap();

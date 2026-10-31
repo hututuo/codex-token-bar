@@ -146,6 +146,7 @@ fn read_stats(connection: &Connection) -> Result<DashboardStats> {
         total_output_tokens: 0,
         model_breakdowns: Vec::new(),
         first_usage_at: None,
+        unreported_compaction_unix: Vec::new(),
     })
 }
 
