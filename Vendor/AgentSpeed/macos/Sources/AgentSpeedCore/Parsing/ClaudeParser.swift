@@ -64,7 +64,7 @@ struct ClaudeParser: Sendable {
             state.setPhase(.generating, at: timestamp, inFlightStartMs: timestamp)
 
         case .user:
-            if line.isInterrupt {
+            if line.isInterrupt || line.toolEndsTurn {
                 state.setPhase(.idle, at: timestamp)
                 pendingStartMs = nil
                 preciseStart = false

@@ -47,6 +47,38 @@ final class AgentSpeedWebSocketTests: XCTestCase {
         XCTAssertFalse(ledger.acknowledge(try XCTUnwrap(JSONParser.parse(ack).object)))
         XCTAssertEqual(ledger.counters.accepted, 1)
     }
+    func testUnknownServiceTypesAreIgnoredButKnownMessagesStayStrict() throws {
+        let unknown = try XCTUnwrap(JSONParser.parse(#"{"type":"future_notice","detail":"optional"}"#, rejectDuplicateKeys: true).object)
+        XCTAssertEqual(try SpeedSocketServiceMessage.kind(unknown), .other)
+        for raw in [#"{}"#, #"{"type":1}"#, #"{"type":""}"#, #"{"type":"ack"}"#, #"{"type":"error"}"#] {
+            let object = try XCTUnwrap(JSONParser.parse(raw, rejectDuplicateKeys: true).object)
+            XCTAssertThrowsError(try SpeedSocketServiceMessage.kind(object))
+        }
+        XCTAssertThrowsError(try JSONParser.parse(#"{"type":"future_notice","type":"other"}"#, rejectDuplicateKeys: true))
+        let error = try XCTUnwrap(JSONParser.parse(#"{"type":"error","run":null,"httpStatus":422,"error":{"code":"payload_invalid"},"fatal":true}"#).object)
+        XCTAssertEqual(try SpeedSocketServiceMessage.kind(error), .error)
+    }
+
+    func testValidUnmatchedACKIsNotAnAcceptedReportOrProtocolFailure() throws {
+        let run = ReportCanonical.newUUID(), body = Data("{}".utf8)
+        var ledger = SpeedSocketLedger(runID: run)
+        XCTAssertTrue(ledger.reserve(seq: 1, body: body, at: 0, limit: 8))
+        ledger.pending[1]?.sentAt = 3
+        let raw = #"{"type":"ack","run":{"id":"RUN","seq":987},"status":"accepted","bodySha256":"HASH","receivedAt":"2026-10-25T10:00:00.000Z","acceptedAt":"2026-10-25T10:00:00.001Z","processingMs":1}"#
+            .replacingOccurrences(of: "RUN", with: run).replacingOccurrences(of: "HASH", with: SpeedSocketLedger.hash(body))
+        let ack = try XCTUnwrap(JSONParser.parse(raw).object)
+        XCTAssertEqual(try SpeedSocketServiceMessage.kind(ack), .ack)
+        XCTAssertFalse(ledger.acknowledge(ack, at: 4))
+        XCTAssertEqual(ledger.pending.count, 1)
+        XCTAssertEqual(ledger.pending[1]?.sentAt, 3)
+        XCTAssertEqual(ledger.counters.accepted, 0)
+        for invalid in [raw.replacingOccurrences(of: "accepted\"", with: "queued\""),
+                        raw.replacingOccurrences(of: "\"processingMs\":1", with: "\"processingMs\":1.0"),
+                        raw.replacingOccurrences(of: SpeedSocketLedger.hash(body), with: "INVALID")] {
+            XCTAssertThrowsError(try SpeedSocketServiceMessage.kind(XCTUnwrap(JSONParser.parse(invalid).object)))
+        }
+    }
+
     func testBackpressureAndDisconnectDropRatherThanQueueOrReplay() {
         var ledger = SpeedSocketLedger(runID: ReportCanonical.newUUID())
         XCTAssertTrue(ledger.reserve(seq: 1, body: Data(), at: 0, limit: 1))

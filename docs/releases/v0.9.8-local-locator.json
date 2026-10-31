@@ -1,0 +1,23 @@
+{
+  "version": "0.9.8",
+  "macBuild": 987,
+  "tag": "v0.9.8",
+  "status": "PREPARING_NOT_PUBLISHED",
+  "sourceBranch": "codex/dashboard-header-client-identity",
+  "targetBranch": "main",
+  "previousPublicBoundary": "v0.9.7",
+  "previousPublicCommit": "0219554ce444b0013987da7b82e3c2e891f4afdb",
+  "releaseNotes": "release-notes/v0.9.8.md",
+  "audit": "docs/maintenance/2026-10-31-agent-speed-release-audit.md",
+  "feed": "https://raw.githubusercontent.com/hututuo/codex-token-bar/main/appcast.xml",
+  "upstreamReviewed": "384ce020cc655133e95aaad5cc085f3985f0ed99",
+  "vendorBase": "a94a67fcc78e5d8eea5f82d8d5e737bccf994e2c",
+  "strategy": "selective compatibility backports; no full SDK upgrade",
+  "sourceCommit": null,
+  "ciRunID": null,
+  "buildRunID": null,
+  "signingRunID": null,
+  "assets": [],
+  "userInteractionAcceptance": "user performs; no automated interaction replay",
+  "publicUploadAuthorized": false
+}

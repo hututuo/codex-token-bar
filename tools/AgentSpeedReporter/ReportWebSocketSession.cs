@@ -243,15 +243,37 @@ internal sealed class ReportWebSocketSession : IAsyncDisposable
 
     public async Task<WebSocketMessage> ReadMessageAsync(CancellationToken cancellationToken)
     {
-        var data = await ReadRawMessageAsync(cancellationToken).ConfigureAwait(false);
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var data = await ReadRawMessageAsync(cancellationToken).ConfigureAwait(false);
+            if (ParseServiceMessage(data) is { } message)
+            {
+                return message;
+            }
+        }
+    }
+
+    internal static WebSocketMessage? ParseServiceMessage(byte[] data)
+    {
         using var document = ParseObject(data);
         var root = document.RootElement;
-        var type = ReadString(root, "type");
+        if (!root.TryGetProperty("type", out var typeElement) || typeElement.ValueKind != JsonValueKind.String)
+        {
+            throw new InvalidDataException("Missing WebSocket service message type.");
+        }
+
+        var type = typeElement.GetString();
+        if (string.IsNullOrEmpty(type))
+        {
+            throw new InvalidDataException("Missing WebSocket service message type.");
+        }
+
         return type switch
         {
             "ack" => new WebSocketMessage.Ack(ParseAck(root)),
             "error" => new WebSocketMessage.Error(ParseError(root)),
-            _ => throw new InvalidDataException("Unknown WebSocket report message type."),
+            _ => null,
         };
     }
 

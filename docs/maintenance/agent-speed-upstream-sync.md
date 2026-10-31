@@ -110,3 +110,7 @@ For the current fix, the user chose to keep the verified Agent Speed pin `a94a67
 ## 2026-10-29 Swift 6 compiler-compatibility patch
 
 The pinned Agent Speed Swift tests now build their repeated-scalar protobuf message and process-argument fixture with typed byte arrays and incremental appends. This is a test-only compiler-compatibility change: the emitted fixture bytes and assertions are unchanged. The upstream commit remains `a94a67fcc78e5d8eea5f82d8d5e737bccf994e2c`; `UPSTREAM.json` records both test-file patches and retains every prior patch/addition reason. No Agent Speed runtime algorithm or fixture count changes.
+
+## 2026-10-31 选择性兼容回补
+
+已审查公开1.6.1 `384ce020cc655133e95aaad5cc085f3985f0ed99`，保留原pin并选择性回补分页子Agent、Claude工具结束、Mac跨夜发现与WebSocket前向兼容。源码、上下游差异和未引入项见[发版审查](2026-10-31-agent-speed-release-audit.md)。不得将此补丁集描述成已完整升级到1.6.1；后续全量同步需继续保留停止规则、模型归属、共享IO与本地隐私边界。

@@ -66,6 +66,18 @@ internal static class JsonScan
         return reader.ValueSpan[0] == (byte)'-' ? 0 : TokenCounts.MaxValue;
     }
 
+    /// <summary>A Codex rollout ordinal (METRICS 3.5): an integer literal from 0 through <see cref="long.MaxValue"/>; anything else is null.</summary>
+    public static long? ReadOrdinal(ref Utf8JsonReader reader)
+    {
+        if (reader.TokenType != JsonTokenType.Number)
+        {
+            SkipValue(ref reader);
+            return null;
+        }
+
+        return reader.ValueSpan.IndexOfAny(".eE"u8) < 0 && reader.TryGetInt64(out var value) && value >= 0 ? value : null;
+    }
+
     public static bool TryReadTimestamp(ref Utf8JsonReader reader, out long unixMs)
     {
         unixMs = 0;

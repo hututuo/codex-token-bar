@@ -67,7 +67,7 @@ internal sealed class ClaudeParser : TranscriptParser<ClaudeLine>
                 _preciseStart = true;
                 SetPhase(AgentPhase.Generating, ts, ts);
                 break;
-            case ClaudeLineKind.User when line.IsInterrupt:
+            case ClaudeLineKind.User when line.IsInterrupt || line.ToolEndsTurn:
                 _pendingStartMs = null;
                 _preciseStart = false;
                 SetPhase(AgentPhase.Idle, ts, null);

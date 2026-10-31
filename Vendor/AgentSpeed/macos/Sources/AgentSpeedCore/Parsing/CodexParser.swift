@@ -16,6 +16,7 @@ struct CodexParser: Sendable {
     private var previousLegacyTotals: CodexRawUsage?
     /// `model_provider` of the first `session_meta` (METRICS 3.2).
     private var provider: String?
+    private var subagentStartOrdinal: Int64?
 
     init(agentId: String, fileID: FileID) {
         self.agentId = agentId
@@ -43,6 +44,8 @@ struct CodexParser: Sendable {
     }
 
     private mutating func consume(_ line: CodexLine, deduper: inout Deduper, emit: (ResponseUpsert) -> Void) {
+        // Ignore inherited facts before local stop handling as well as token accounting.
+        if let start = subagentStartOrdinal, let ordinal = line.ordinal, ordinal < start { return }
         guard let timestamp = line.timestampMs else {
             if line.localDisplayStop { state.localDisplayStopped = true }
             return
@@ -56,6 +59,7 @@ struct CodexParser: Sendable {
             myAgentPath = meta.agentPath ?? Self.defaultAgentPath
             state.isSubagent = meta.isSubagent
             provider = meta.modelProvider
+            subagentStartOrdinal = meta.subagentStartOrdinal
             return
         }
         if let created = state.thread?.createdMs, timestamp < created - Self.copiedHistoryToleranceMs {

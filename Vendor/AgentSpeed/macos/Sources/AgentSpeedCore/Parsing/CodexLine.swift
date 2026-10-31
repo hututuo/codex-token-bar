@@ -40,6 +40,8 @@ struct CodexSessionMeta: Equatable, Sendable {
     var parentThreadId: String?
     /// `payload.model_provider` (METRICS 3.2).
     var modelProvider: String?
+    /// Upstream 004bc9b: lower ordinals are inherited parent history.
+    var subagentStartOrdinal: Int64? = nil
 }
 
 struct CodexLegacyInfo: Equatable, Sendable {
@@ -63,6 +65,7 @@ enum CodexLineKind: Equatable, Sendable {
 struct CodexLine: Equatable, Sendable {
     var timestampMs: Int64?
     var kind: CodexLineKind
+    var ordinal: Int64? = nil
     var modes: ExecutionModes = .empty
     var hasModeSelection = false
     var localDisplayStop = false
@@ -87,6 +90,7 @@ enum CodexLineExtractor {
         var spawnParentThreadId: String?
         var model: String?
         var modelProvider: String?
+        var subagentStartOrdinal: Int64?
         var serviceTier: String?
         var serviceTierPresent = false
         var responseId: String?
@@ -101,12 +105,15 @@ enum CodexLineExtractor {
         if scanner.isBlank { return .blank }
         do {
             var timestamp: Int64?
+            var ordinal: Int64?
             var envelope: Int?
             var payload: Payload?
             try scanner.beginObject()
             while let key = try scanner.nextMember() {
                 if scanner.key(key, is: "timestamp") {
                     timestamp = try scanner.readTimestamp()
+                } else if scanner.key(key, is: "ordinal") {
+                    ordinal = try scanner.readOrdinal()
                 } else if scanner.key(key, is: "type") {
                     envelope = try scanner.readStringMatch(envelopeTypes)
                 } else if scanner.key(key, is: "payload") {
@@ -116,7 +123,7 @@ enum CodexLineExtractor {
                 }
             }
             try scanner.finish()
-            var line = CodexLine(timestampMs: timestamp, kind: classify(envelope: envelope, payload: payload))
+            var line = CodexLine(timestampMs: timestamp, kind: classify(envelope: envelope, payload: payload), ordinal: ordinal)
             line.localDisplayStop = envelope == 3 && ["error", "stream_error", "request_failed", "task_aborted"].contains(payload?.type ?? "")
             if envelope == 1 {
                 line.hasModeSelection = payload?.serviceTierPresent ?? false
@@ -140,7 +147,8 @@ enum CodexLineExtractor {
                 agentPath: payload.agentPath,
                 isSubagent: payload.threadSource == "subagent" || payload.sourceHasSubagent,
                 parentThreadId: payload.parentThreadId ?? payload.spawnParentThreadId,
-                modelProvider: payload.modelProvider
+                modelProvider: payload.modelProvider,
+                subagentStartOrdinal: payload.subagentStartOrdinal
             ))
         case 1:
             return .turnContext(model: payload?.model, cwd: payload?.cwd)
@@ -210,6 +218,8 @@ enum CodexLineExtractor {
                 payload.serviceTier = try scanner.readString()
             } else if scanner.key(key, is: "model_provider") {
                 payload.modelProvider = try scanner.readNonEmptyString()
+            } else if scanner.key(key, is: "subagent_history_start_ordinal") {
+                payload.subagentStartOrdinal = try scanner.readOrdinal()
             } else if scanner.key(key, is: "response_id") {
                 payload.responseId = try scanner.readNonEmptyString()
             } else if scanner.key(key, is: "thread_id") {

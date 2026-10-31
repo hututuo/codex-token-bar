@@ -9,6 +9,12 @@ Codex 在干活，额度还剩多少、哪几个任务在跑、缓存有没有�
 
 macOS 使用 Swift / SwiftUI 原生实现；Windows 提供 Tauri + React + Rust 的 x64 / ARM64 版本。用量与正文统计在本地处理，支持多个会话并行使用。
 
+## 多客户端，本地统计
+
+默认保持 Codex 视图；检测到 Claude CLI、Claude Desktop 等已支持客户端后，可主动启用，在单客户端与汇总范围间切换。Claude 只读取本地会话及已有额度缓存，不发起 Anthropic 网络请求；没有本地额度缓存时不会显示虚构额度。Codex 官方额度功能仍需要本机已登录的 Codex。
+
+速蹬排行榜上报是独立选项，默认关闭，可随时关闭；仅上传允许来源的速度、Token、模型及 Harness 等统计，不上传对话或账号凭据，Claude 来源不参与上报。两个本地业务数据库保留已有 Codex 账本与新客户端/测速记录；升级有备份，删除原始会话不会抹除已入账历史。
+
 ## 不用切回主窗口，也知道发生了什么
 
 **侧边栏、悬浮窗、菜单栏／托盘、主界面，选你顺手的显示方式。** 官方额度监控直接融入这些显示面，无需反复打开账号页面。
@@ -90,20 +96,20 @@ macOS 使用 Swift / SwiftUI 原生实现；Windows 提供 Tauri + React + Rust 
 
 | 平台 | 安装包 | 要求 |
 |---|---|---|
-| macOS Apple Silicon | `CodexTokenBar-v0.9.7-macos-arm64.dmg` | macOS 14+；打开 DMG，拖到 Applications。 |
-| Windows x64 | `CodexTokenBar-v0.9.7-windows-x64-setup.exe` | Intel / AMD Windows 10/11。 |
-| Windows ARM64 | `CodexTokenBar-v0.9.7-windows-arm64-setup.exe` | Windows on ARM，应用二进制为 ARM64。 |
+| macOS Apple Silicon | `CodexTokenBar-v0.9.8-macos-arm64.dmg` | macOS 14+；打开 DMG，拖到 Applications。 |
+| Windows x64 | `CodexTokenBar-v0.9.8-windows-x64-setup.exe` | Intel / AMD Windows 10/11。 |
+| Windows ARM64 | `CodexTokenBar-v0.9.8-windows-arm64-setup.exe` | Windows on ARM，应用二进制为 ARM64。 |
 
 可选校验：
 
 ```bash
 # macOS：与同版本 SHA256SUMS 中的值比较
-shasum -a 256 CodexTokenBar-v0.9.7-macos-arm64.dmg
+shasum -a 256 CodexTokenBar-v0.9.8-macos-arm64.dmg
 ```
 
 ```powershell
 # Windows：与同版本 SHA256SUMS 中的值比较
-Get-FileHash .\CodexTokenBar-v0.9.7-windows-x64-setup.exe -Algorithm SHA256
+Get-FileHash .\CodexTokenBar-v0.9.8-windows-x64-setup.exe -Algorithm SHA256
 ```
 
 macOS 目前为 ad-hoc 签名，尚未公证。首次打开如提示未知开发者，可在“系统设置 → 隐私与安全”中确认“仍要打开”。Windows 暂无商业代码签名，SmartScreen 可能提示未知发布者；请从本仓库 Release 下载。缺少 WebView2 Runtime 时，安装器按默认策略处理。

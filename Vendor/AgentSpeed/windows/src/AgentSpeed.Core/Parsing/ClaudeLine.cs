@@ -36,6 +36,7 @@ internal struct ClaudeLine
     public EntrypointKind Entrypoint;
     public bool IsSidechain;
     public bool IsInterrupt;
+    public bool ToolEndsTurn;
     public bool IsApiError;
     public bool HasToolUse;
     public StopReasonKind StopReason;
@@ -139,6 +140,12 @@ internal static class ClaudeLineReader
             {
                 JsonScan.SkipValue(ref reader);
             }
+        }
+        else if (reader.ValueTextEquals("toolEndsTurn"u8))
+        {
+            reader.Read();
+            result.ToolEndsTurn = reader.TokenType == JsonTokenType.True;
+            JsonScan.SkipValue(ref reader);
         }
         else if (reader.ValueTextEquals("entrypoint"u8))
         {

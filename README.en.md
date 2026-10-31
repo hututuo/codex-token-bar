@@ -9,6 +9,12 @@ How much quota is left? Which sessions are running? Did the cache hit? How quick
 
 Native Swift / SwiftUI on macOS; Tauri + React + Rust on Windows x64 and ARM64. Usage accounting and body-speed analysis run locally and support concurrent sessions.
 
+## Local statistics across clients
+
+Codex remains the default. When supported clients such as Claude CLI or Claude Desktop are detected, enable them explicitly and switch between individual and aggregate views. Claude reads only local transcripts and existing quota caches, never making requests to Anthropic; unavailable local quota is not fabricated. Official Codex quota requires a locally signed-in Codex.
+
+Leaderboard reporting is a separate, default-off option that can be disabled at any time. It uploads only permitted speed, Token, model, and Harness statistics, never conversations or account credentials; Claude sources are excluded. Two local business databases preserve the Codex ledger and additional client/speed records. Upgrades keep backups, and deleting original transcripts does not erase recorded history.
+
 ## See what is happening without switching windows
 
 **An edge sidebar, floating panel, menu bar / tray, and dashboard. Choose the view that fits your work.** Official quota monitoring is built into those views.
@@ -90,18 +96,18 @@ Download the installer for your platform and matching `SHA256SUMS` from [GitHub 
 
 | Platform | Asset | Requirements |
 |---|---|---|
-| macOS Apple Silicon | `CodexTokenBar-v0.9.7-macos-arm64.dmg` | macOS 14+. Open the DMG and drag the app to Applications. |
-| Windows x64 | `CodexTokenBar-v0.9.7-windows-x64-setup.exe` | Intel / AMD Windows 10/11. |
-| Windows ARM64 | `CodexTokenBar-v0.9.7-windows-arm64-setup.exe` | Windows on ARM; the app binary is ARM64. |
+| macOS Apple Silicon | `CodexTokenBar-v0.9.8-macos-arm64.dmg` | macOS 14+. Open the DMG and drag the app to Applications. |
+| Windows x64 | `CodexTokenBar-v0.9.8-windows-x64-setup.exe` | Intel / AMD Windows 10/11. |
+| Windows ARM64 | `CodexTokenBar-v0.9.8-windows-arm64-setup.exe` | Windows on ARM; the app binary is ARM64. |
 
 Optional checksum verification; compare the result with the matching release manifest:
 
 ```bash
-shasum -a 256 CodexTokenBar-v0.9.7-macos-arm64.dmg
+shasum -a 256 CodexTokenBar-v0.9.8-macos-arm64.dmg
 ```
 
 ```powershell
-Get-FileHash .\CodexTokenBar-v0.9.7-windows-x64-setup.exe -Algorithm SHA256
+Get-FileHash .\CodexTokenBar-v0.9.8-windows-x64-setup.exe -Algorithm SHA256
 ```
 
 The macOS app is ad-hoc signed and not notarized. If blocked on first launch, confirm Open Anyway in System Settings → Privacy & Security. Windows installers do not currently have commercial code signing; SmartScreen may show an unknown-publisher warning. Download from this repository's Releases. The installer handles missing WebView2 according to its default policy.

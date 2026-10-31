@@ -108,6 +108,9 @@ final class TranscriptSession {
 
     static let startupLookbackMs: Int64 = 15 * 60_000
     static let hotWindowMs: Int64 = 120_000
+    // Upstream c668286: open writers may not emit FSEvents after a quiet day.
+    static let recheckWindowMs: Int64 = 24 * 3_600_000
+    static let recheckTurns = 6
     static let maxDecodeWorkers = 8
     /// A changed Antigravity database is read at most this often; its WAL is written continuously (METRICS 5.4).
     static let databaseReadIntervalNs: UInt64 = 500_000_000
@@ -130,6 +133,7 @@ final class TranscriptSession {
     private var parentLinks: [String: String] = [:]
     private var parentLinksAreStale = false
     private var nextFileID: FileID = 0
+    private var recheckTurn = 0
     private var pendingEvents: [SpeedEvent] = []
     private var unreadablePaths: Set<String> = []
     private var removedMalformedLines = 0
@@ -463,11 +467,14 @@ final class TranscriptSession {
         var changed = refreshAvailability()
         var seen: Set<String> = []
         var fresh: [(DiscoveredFile, Root)] = []
-        let activeSince = todayStartMs - Self.startupLookbackMs
+        let recentSince = clock() - Self.recheckWindowMs
+        let turn = FileID(recheckTurn)
+        recheckTurn = (recheckTurn + 1) % Self.recheckTurns
         for root in roots where root.enabled && root.available {
             for path in boundedCandidates(root) where seen.insert(path).inserted {
                 if let file = files[path] {
-                    guard file.lastStat.modifiedMs >= activeSince, let stat = root.family.stat(path) else { continue }
+                    guard file.lastStat.modifiedMs >= recentSince || file.fileID % FileID(Self.recheckTurns) == turn,
+                          let stat = root.family.stat(path) else { continue }
                     if file.hasChanged(comparedTo: stat) { changed = read(file, live: true, readContext: readContext) || changed }
                 } else if let stat = root.family.stat(path) {
                     fresh.append((DiscoveredFile(path: path, stat: stat), root))

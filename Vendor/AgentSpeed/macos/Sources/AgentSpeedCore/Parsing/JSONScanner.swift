@@ -300,6 +300,29 @@ struct JSONScanner {
         return Self.integerValue(base: base, start: start, end: position, isInteger: isInteger)
     }
 
+    /// Reads an integer literal from 0 through `Int64.max` (a Codex ordinal, METRICS 3.5). Anything else gives nil.
+    mutating func readOrdinal() throws(JSONScanError) -> Int64? {
+        skipWhitespace()
+        guard position < end else { throw JSONScanError() }
+        let first = base[position]
+        guard first == UInt8(ascii: "-") || Self.isDigit(first) else {
+            try skipValue()
+            return nil
+        }
+        let start = position
+        guard try skipNumber() else { return nil }
+        var index = first == UInt8(ascii: "-") ? start + 1 : start
+        var value: Int64 = 0
+        while index < position {
+            let (multiplied, overflow1) = value.multipliedReportingOverflow(by: 10)
+            let (added, overflow2) = multiplied.addingReportingOverflow(Int64(base[index] - UInt8(ascii: "0")))
+            if overflow1 || overflow2 { return nil }
+            value = added
+            index += 1
+        }
+        return first == UInt8(ascii: "-") && value != 0 ? nil : value
+    }
+
     /// Reads a number the way Python's `json` does: integer literals are exact (saturated here), every other literal
     /// is the nearest `Double`, so it can be `-0.0` or infinite. Non-numbers are skipped and give nil.
     mutating func readNumber() throws(JSONScanError) -> JSONNumber? {

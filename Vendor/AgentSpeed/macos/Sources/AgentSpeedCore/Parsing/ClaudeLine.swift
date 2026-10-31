@@ -33,6 +33,8 @@ struct ClaudeLine: Equatable, Sendable {
     var modes: ExecutionModes = .empty
     /// A user line whose content starts with `[Request interrupted by user`.
     var isInterrupt = false
+    /// Upstream b89d983: StructuredOutput/SubagentHandback can finish a Desktop run.
+    var toolEndsTurn = false
     /// `message.content` contains a block of type `tool_use`.
     var hasToolUse = false
     var localDisplayStop = false
@@ -75,6 +77,8 @@ enum ClaudeLineExtractor {
                     line.cwd = try scanner.readNonEmptyString()
                 } else if scanner.key(key, is: "isSidechain") {
                     line.isSidechain = try scanner.readBool() ?? false
+                } else if scanner.key(key, is: "toolEndsTurn") {
+                    line.toolEndsTurn = try scanner.readBool() ?? false
                 } else if scanner.key(key, is: "requestId") {
                     line.requestId = try scanner.readNonEmptyString()
                 } else if scanner.key(key, is: "uuid") {
@@ -92,7 +96,7 @@ enum ClaudeLineExtractor {
                 line.uuid = nil
                 line.model = nil
             }
-            if line.type != .user { line.isInterrupt = false }
+            if line.type != .user { line.isInterrupt = false; line.toolEndsTurn = false }
             if line.type != .assistant { line.hasToolUse = false }
             return .line(line)
         } catch {

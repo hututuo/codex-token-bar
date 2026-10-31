@@ -69,6 +69,8 @@ internal struct CodexLine
     public LineStatus Status;
     public bool HasTimestamp;
     public long TimestampMs;
+    public long? Ordinal;
+    public long? SubagentStartOrdinal;
     public CodexLineKind Kind;
     public CodexPayloadKind PayloadKind;
     public CodexRole Role;
@@ -126,6 +128,11 @@ internal static class CodexLineReader
                 {
                     reader.Read();
                     result.HasTimestamp = JsonScan.TryReadTimestamp(ref reader, out result.TimestampMs);
+                }
+                else if (reader.ValueTextEquals("ordinal"u8))
+                {
+                    reader.Read();
+                    result.Ordinal = JsonScan.ReadOrdinal(ref reader);
                 }
                 else if (reader.ValueTextEquals("type"u8))
                 {
@@ -221,6 +228,11 @@ internal static class CodexLineReader
             {
                 reader.Read();
                 result.AgentPath = JsonScan.ReadString(ref reader);
+            }
+            else if (hints.Meta && reader.ValueTextEquals("subagent_history_start_ordinal"u8))
+            {
+                reader.Read();
+                result.SubagentStartOrdinal = JsonScan.ReadOrdinal(ref reader);
             }
             else if (hints.Meta && reader.ValueTextEquals("thread_source"u8))
             {

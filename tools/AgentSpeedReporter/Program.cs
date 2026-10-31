@@ -91,6 +91,8 @@ internal static class SelfTests
         try
         {
             await LocalSourceReadPipeSelfTests.RunAsync().ConfigureAwait(false);
+            ParserCompatibilitySelfTests.Run();
+            WebSocketMessageCompatibilitySelfTests.Run();
             await InvalidSourcePolicyDoesNotStartAsync().ConfigureAwait(false);
             await LegacyStartFrameIsCompatibleAsync().ConfigureAwait(false);
             await LocalSourceRootsAreAcceptedAsync().ConfigureAwait(false);

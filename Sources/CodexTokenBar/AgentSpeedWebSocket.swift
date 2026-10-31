@@ -60,6 +60,50 @@ struct SpeedSocketLedger {
     mutating func discardAll() { counters.unknown += pending.count; pending.removeAll() }
 }
 
+/// Validate service structure separately from matching an ACK to an in-flight report.
+/// Unknown typed messages are forward-compatible and never count as acceptance.
+enum SpeedSocketServiceMessage {
+    enum Kind { case ack, error, other }
+    enum Invalid: Error { case message }
+
+    static func kind(_ object: [String: JSONValue]) throws -> Kind {
+        guard let type = object["type"]?.string, !type.isEmpty else { throw Invalid.message }
+        switch type {
+        case "ack":
+            guard let run = object["run"]?.object, validRun(run),
+                  let status = object["status"]?.string, ["accepted", "duplicate"].contains(status),
+                  let hash = object["bodySha256"]?.string, hash.utf8.count == 64,
+                  hash.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
+                  let received = object["receivedAt"]?.string, ReportWebSocketConfiguration.isTimestamp(received),
+                  let accepted = object["acceptedAt"]?.string, ReportWebSocketConfiguration.isTimestamp(accepted),
+                  integer(object["processingMs"], in: 0...900000),
+                  object["rank"] == nil || integer(object["rank"], in: 1...Int64(Int32.max))
+            else { throw Invalid.message }
+            return .ack
+        case "error":
+            guard integer(object["httpStatus"], in: 400...599), object["fatal"]?.bool != nil,
+                  let error = object["error"]?.object, let code = error["code"]?.string,
+                  !code.isEmpty, code.count <= 64,
+                  error["retryAfterSeconds"] == nil || integer(error["retryAfterSeconds"], in: 1...86400),
+                  error["serverTime"] == nil || integer(error["serverTime"], in: Int64.min...Int64.max)
+            else { throw Invalid.message }
+            if let run = object["run"], run != .null {
+                guard let fields = run.object, validRun(fields) else { throw Invalid.message }
+            }
+            return .error
+        default: return .other
+        }
+    }
+    private static func validRun(_ run: [String: JSONValue]) -> Bool {
+        guard let id = run["id"]?.string, UUID(uuidString: id)?.uuidString.lowercased() == id else { return false }
+        return integer(run["seq"], in: 1...Int64(Int32.max))
+    }
+    private static func integer(_ value: JSONValue?, in range: ClosedRange<Int64>) -> Bool {
+        guard let literal = value?.literal, literal.isInteger, let number = literal.int64 else { return false }
+        return range.contains(number)
+    }
+}
+
 private final class SpeedSocketDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) { completionHandler(nil) }
@@ -264,7 +308,10 @@ final class AgentSpeedWebSocket {
             guard id == connectionID else { throw Failure.retry }
             guard case .string(let text) = message, text.utf8.count <= config.maxMessageBytes,
                   let object = try JSONParser.parse(Data(text.utf8), maxDepth: 32, rejectDuplicateKeys: true).object else { throw Failure.protocolError }
-            if object["type"]?.string == "ack" {
+            let kind: SpeedSocketServiceMessage.Kind
+            do { kind = try SpeedSocketServiceMessage.kind(object) }
+            catch { throw Failure.protocolError }
+            if kind == .ack {
                 if ledger.acknowledge(object, at: Self.tick) {
                     let now = Self.tick
                     if ackStableSince == nil { ackStableSince = now }
@@ -272,7 +319,7 @@ final class AgentSpeedWebSocket {
                     strikes = 0
                     onAccepted()
                 }
-            } else if object["type"]?.string == "error" {
+            } else if kind == .error {
                 let code = object["error"]?.object?["code"]?.string ?? "unknown"
                 if let run = object["run"]?.object, run["id"]?.string == runID, let seq = run["seq"]?.literal?.int64,
                    ledger.pending.removeValue(forKey: Int(seq)) != nil { ledger.counters.rejected += 1 }
@@ -293,7 +340,7 @@ final class AgentSpeedWebSocket {
                 if ["signature_invalid","forbidden","api_key_invalid","api_key_required","unknown_device","username_mismatch","gone","run_conflict","seq_conflict"].contains(code) || object["fatal"]?.bool == true || strikes >= 3 {
                     throw Failure.terminal("服务拒绝上报，请确认昵称、设备和协议后手动重试")
                 }
-            } else { throw Failure.protocolError }
+            } // Unknown typed service messages leave pending reports and deadlines untouched.
         }
     }
     /// No application queue. A built window consumes its sequence even if it is dropped here.

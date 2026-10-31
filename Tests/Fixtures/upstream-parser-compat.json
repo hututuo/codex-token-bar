@@ -1,0 +1,388 @@
+[
+  {
+    "name": "paginated prefix never contributes usage or copied stop facts",
+    "family": "codex",
+    "lines": [
+      "{\"type\":\"session_meta\",\"payload\":{\"id\":\"child\",\"thread_source\":\"subagent\",\"subagent_history_start_ordinal\":5},\"timestamp\":\"2026-10-20T10:00:00Z\",\"ordinal\":0}",
+      "{\"type\":\"turn_context\",\"payload\":{\"model\":\"copied-model\"},\"timestamp\":\"2026-10-20T10:00:00Z\",\"ordinal\":1}",
+      "{\"type\":\"token_usage_record\",\"payload\":{\"response_id\":\"copied\",\"usage\":{\"input_tokens\":10,\"output_tokens\":900}},\"timestamp\":\"2026-10-20T10:00:02Z\",\"ordinal\":2}",
+      "{\"type\":\"event_msg\",\"payload\":{\"type\":\"error\"},\"ordinal\":3}",
+      "{\"type\":\"turn_context\",\"payload\":{\"model\":\"child-model\"},\"timestamp\":\"2026-10-20T10:00:00Z\",\"ordinal\":5}",
+      "{\"type\":\"token_usage_record\",\"payload\":{\"response_id\":\"own\",\"usage\":{\"input_tokens\":10,\"output_tokens\":7}},\"timestamp\":\"2026-10-20T10:00:02Z\",\"ordinal\":6}"
+    ],
+    "expected": {
+      "output": 7,
+      "responseCount": 1,
+      "phase": "tools",
+      "model": "child-model",
+      "stopped": false
+    }
+  },
+  {
+    "name": "copied prefix alone never starts or stops child",
+    "family": "codex",
+    "lines": [
+      "{\"type\":\"session_meta\",\"payload\":{\"id\":\"child\",\"thread_source\":\"subagent\",\"subagent_history_start_ordinal\":5},\"timestamp\":\"2026-10-20T10:00:00Z\",\"ordinal\":0}",
+      "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\"},\"timestamp\":\"2026-10-20T10:00:00Z\",\"ordinal\":1}",
+      "{\"type\":\"token_usage_record\",\"payload\":{\"response_id\":\"copied\",\"usage\":{\"input_tokens\":10,\"output_tokens\":900}},\"timestamp\":\"2026-10-20T10:00:02Z\",\"ordinal\":2}",
+      "{\"type\":\"event_msg\",\"payload\":{\"type\":\"error\"},\"timestamp\":\"2026-10-20T10:00:00Z\",\"ordinal\":3}"
+    ],
+    "expected": {
+      "output": 0,
+      "responseCount": 0,
+      "phase": "idle",
+      "model": null,
+      "stopped": false
+    }
+  },
+  {
+    "name": "boundary ordinal belongs to child",
+    "family": "codex",
+    "lines": [
+      "{\"type\":\"session_meta\",\"payload\":{\"id\":\"child\",\"thread_source\":\"subagent\",\"subagent_history_start_ordinal\":5},\"timestamp\":\"2026-10-20T10:00:00Z\",\"ordinal\":0}",
+      "{\"type\":\"token_usage_record\",\"payload\":{\"response_id\":\"own\",\"usage\":{\"input_tokens\":10,\"output_tokens\":7}},\"timestamp\":\"2026-10-20T10:00:02Z\",\"ordinal\":5}"
+    ],
+    "expected": {
+      "output": 7,
+      "responseCount": 1,
+      "phase": "tools",
+      "model": null,
+      "stopped": false
+    }
+  },
+  {
+    "name": "missing ordinal stays backward compatible",
+    "family": "codex",
+    "lines": [
+      "{\"type\":\"session_meta\",\"payload\":{\"id\":\"child\",\"thread_source\":\"subagent\",\"subagent_history_start_ordinal\":5},\"timestamp\":\"2026-10-20T10:00:00Z\",\"ordinal\":0}",
+      "{\"type\":\"token_usage_record\",\"payload\":{\"response_id\":\"own\",\"usage\":{\"input_tokens\":10,\"output_tokens\":9}},\"timestamp\":\"2026-10-20T10:00:02Z\"}"
+    ],
+    "expected": {
+      "output": 9,
+      "responseCount": 1,
+      "phase": "tools",
+      "model": null,
+      "stopped": false
+    }
+  },
+  {
+    "name": "own error still stops after prefix filtering",
+    "family": "codex",
+    "lines": [
+      "{\"type\":\"session_meta\",\"payload\":{\"id\":\"child\",\"thread_source\":\"subagent\",\"subagent_history_start_ordinal\":5},\"timestamp\":\"2026-10-20T10:00:00Z\",\"ordinal\":0}",
+      "{\"type\":\"token_usage_record\",\"payload\":{\"response_id\":\"own\",\"usage\":{\"input_tokens\":10,\"output_tokens\":7}},\"timestamp\":\"2026-10-20T10:00:02Z\",\"ordinal\":5}",
+      "{\"type\":\"event_msg\",\"payload\":{\"type\":\"error\"},\"timestamp\":\"2026-10-20T10:00:00Z\",\"ordinal\":6}"
+    ],
+    "expected": {
+      "output": 7,
+      "responseCount": 1,
+      "phase": "tools",
+      "model": null,
+      "stopped": true
+    }
+  },
+  {
+    "name": "non ordinal boundary 1.0",
+    "family": "codex",
+    "lines": [
+      "{\"type\":\"session_meta\",\"payload\":{\"id\":\"child\",\"thread_source\":\"subagent\",\"subagent_history_start_ordinal\":1.0},\"timestamp\":\"2026-10-20T10:00:00Z\",\"ordinal\":0}",
+      "{\"type\":\"token_usage_record\",\"payload\":{\"response_id\":\"unknown-boundary\",\"usage\":{\"input_tokens\":10,\"output_tokens\":9}},\"timestamp\":\"2026-10-20T10:00:02Z\",\"ordinal\":1}"
+    ],
+    "expected": {
+      "output": 9,
+      "responseCount": 1,
+      "phase": "tools",
+      "model": null,
+      "stopped": false
+    }
+  },
+  {
+    "name": "non ordinal boundary 1e0",
+    "family": "codex",
+    "lines": [
+      "{\"type\":\"session_meta\",\"payload\":{\"id\":\"child\",\"thread_source\":\"subagent\",\"subagent_history_start_ordinal\":1e0},\"timestamp\":\"2026-10-20T10:00:00Z\",\"ordinal\":0}",
+      "{\"type\":\"token_usage_record\",\"payload\":{\"response_id\":\"unknown-boundary\",\"usage\":{\"input_tokens\":10,\"output_tokens\":9}},\"timestamp\":\"2026-10-20T10:00:02Z\",\"ordinal\":1}"
+    ],
+    "expected": {
+      "output": 9,
+      "responseCount": 1,
+      "phase": "tools",
+      "model": null,
+      "stopped": false
+    }
+  },
+  {
+    "name": "non ordinal boundary -1",
+    "family": "codex",
+    "lines": [
+      "{\"type\":\"session_meta\",\"payload\":{\"id\":\"child\",\"thread_source\":\"subagent\",\"subagent_history_start_ordinal\":-1},\"timestamp\":\"2026-10-20T10:00:00Z\",\"ordinal\":0}",
+      "{\"type\":\"token_usage_record\",\"payload\":{\"response_id\":\"unknown-boundary\",\"usage\":{\"input_tokens\":10,\"output_tokens\":9}},\"timestamp\":\"2026-10-20T10:00:02Z\",\"ordinal\":1}"
+    ],
+    "expected": {
+      "output": 9,
+      "responseCount": 1,
+      "phase": "tools",
+      "model": null,
+      "stopped": false
+    }
+  },
+  {
+    "name": "non ordinal boundary \"1\"",
+    "family": "codex",
+    "lines": [
+      "{\"type\":\"session_meta\",\"payload\":{\"id\":\"child\",\"thread_source\":\"subagent\",\"subagent_history_start_ordinal\":\"1\"},\"timestamp\":\"2026-10-20T10:00:00Z\",\"ordinal\":0}",
+      "{\"type\":\"token_usage_record\",\"payload\":{\"response_id\":\"unknown-boundary\",\"usage\":{\"input_tokens\":10,\"output_tokens\":9}},\"timestamp\":\"2026-10-20T10:00:02Z\",\"ordinal\":1}"
+    ],
+    "expected": {
+      "output": 9,
+      "responseCount": 1,
+      "phase": "tools",
+      "model": null,
+      "stopped": false
+    }
+  },
+  {
+    "name": "non ordinal boundary 9223372036854775808",
+    "family": "codex",
+    "lines": [
+      "{\"type\":\"session_meta\",\"payload\":{\"id\":\"child\",\"thread_source\":\"subagent\",\"subagent_history_start_ordinal\":9223372036854775808},\"timestamp\":\"2026-10-20T10:00:00Z\",\"ordinal\":0}",
+      "{\"type\":\"token_usage_record\",\"payload\":{\"response_id\":\"unknown-boundary\",\"usage\":{\"input_tokens\":10,\"output_tokens\":9}},\"timestamp\":\"2026-10-20T10:00:02Z\",\"ordinal\":1}"
+    ],
+    "expected": {
+      "output": 9,
+      "responseCount": 1,
+      "phase": "tools",
+      "model": null,
+      "stopped": false
+    }
+  },
+  {
+    "name": "non ordinal boundary null",
+    "family": "codex",
+    "lines": [
+      "{\"type\":\"session_meta\",\"payload\":{\"id\":\"child\",\"thread_source\":\"subagent\",\"subagent_history_start_ordinal\":null},\"timestamp\":\"2026-10-20T10:00:00Z\",\"ordinal\":0}",
+      "{\"type\":\"token_usage_record\",\"payload\":{\"response_id\":\"unknown-boundary\",\"usage\":{\"input_tokens\":10,\"output_tokens\":9}},\"timestamp\":\"2026-10-20T10:00:02Z\",\"ordinal\":1}"
+    ],
+    "expected": {
+      "output": 9,
+      "responseCount": 1,
+      "phase": "tools",
+      "model": null,
+      "stopped": false
+    }
+  },
+  {
+    "name": "non ordinal boundary {}",
+    "family": "codex",
+    "lines": [
+      "{\"type\":\"session_meta\",\"payload\":{\"id\":\"child\",\"thread_source\":\"subagent\",\"subagent_history_start_ordinal\":{}},\"timestamp\":\"2026-10-20T10:00:00Z\",\"ordinal\":0}",
+      "{\"type\":\"token_usage_record\",\"payload\":{\"response_id\":\"unknown-boundary\",\"usage\":{\"input_tokens\":10,\"output_tokens\":9}},\"timestamp\":\"2026-10-20T10:00:02Z\",\"ordinal\":1}"
+    ],
+    "expected": {
+      "output": 9,
+      "responseCount": 1,
+      "phase": "tools",
+      "model": null,
+      "stopped": false
+    }
+  },
+  {
+    "name": "non ordinal boundary true",
+    "family": "codex",
+    "lines": [
+      "{\"type\":\"session_meta\",\"payload\":{\"id\":\"child\",\"thread_source\":\"subagent\",\"subagent_history_start_ordinal\":true},\"timestamp\":\"2026-10-20T10:00:00Z\",\"ordinal\":0}",
+      "{\"type\":\"token_usage_record\",\"payload\":{\"response_id\":\"unknown-boundary\",\"usage\":{\"input_tokens\":10,\"output_tokens\":9}},\"timestamp\":\"2026-10-20T10:00:02Z\",\"ordinal\":1}"
+    ],
+    "expected": {
+      "output": 9,
+      "responseCount": 1,
+      "phase": "tools",
+      "model": null,
+      "stopped": false
+    }
+  },
+  {
+    "name": "non ordinal line 1.0",
+    "family": "codex",
+    "lines": [
+      "{\"type\":\"session_meta\",\"payload\":{\"id\":\"child\",\"thread_source\":\"subagent\",\"subagent_history_start_ordinal\":5},\"timestamp\":\"2026-10-20T10:00:00Z\",\"ordinal\":0}",
+      "{\"type\":\"token_usage_record\",\"payload\":{\"response_id\":\"unknown-ordinal\",\"usage\":{\"input_tokens\":10,\"output_tokens\":9}},\"timestamp\":\"2026-10-20T10:00:02Z\",\"ordinal\":1.0}"
+    ],
+    "expected": {
+      "output": 9,
+      "responseCount": 1,
+      "phase": "tools",
+      "model": null,
+      "stopped": false
+    }
+  },
+  {
+    "name": "non ordinal line 1e0",
+    "family": "codex",
+    "lines": [
+      "{\"type\":\"session_meta\",\"payload\":{\"id\":\"child\",\"thread_source\":\"subagent\",\"subagent_history_start_ordinal\":5},\"timestamp\":\"2026-10-20T10:00:00Z\",\"ordinal\":0}",
+      "{\"type\":\"token_usage_record\",\"payload\":{\"response_id\":\"unknown-ordinal\",\"usage\":{\"input_tokens\":10,\"output_tokens\":9}},\"timestamp\":\"2026-10-20T10:00:02Z\",\"ordinal\":1e0}"
+    ],
+    "expected": {
+      "output": 9,
+      "responseCount": 1,
+      "phase": "tools",
+      "model": null,
+      "stopped": false
+    }
+  },
+  {
+    "name": "non ordinal line -1",
+    "family": "codex",
+    "lines": [
+      "{\"type\":\"session_meta\",\"payload\":{\"id\":\"child\",\"thread_source\":\"subagent\",\"subagent_history_start_ordinal\":5},\"timestamp\":\"2026-10-20T10:00:00Z\",\"ordinal\":0}",
+      "{\"type\":\"token_usage_record\",\"payload\":{\"response_id\":\"unknown-ordinal\",\"usage\":{\"input_tokens\":10,\"output_tokens\":9}},\"timestamp\":\"2026-10-20T10:00:02Z\",\"ordinal\":-1}"
+    ],
+    "expected": {
+      "output": 9,
+      "responseCount": 1,
+      "phase": "tools",
+      "model": null,
+      "stopped": false
+    }
+  },
+  {
+    "name": "non ordinal line \"1\"",
+    "family": "codex",
+    "lines": [
+      "{\"type\":\"session_meta\",\"payload\":{\"id\":\"child\",\"thread_source\":\"subagent\",\"subagent_history_start_ordinal\":5},\"timestamp\":\"2026-10-20T10:00:00Z\",\"ordinal\":0}",
+      "{\"type\":\"token_usage_record\",\"payload\":{\"response_id\":\"unknown-ordinal\",\"usage\":{\"input_tokens\":10,\"output_tokens\":9}},\"timestamp\":\"2026-10-20T10:00:02Z\",\"ordinal\":\"1\"}"
+    ],
+    "expected": {
+      "output": 9,
+      "responseCount": 1,
+      "phase": "tools",
+      "model": null,
+      "stopped": false
+    }
+  },
+  {
+    "name": "non ordinal line 9223372036854775808",
+    "family": "codex",
+    "lines": [
+      "{\"type\":\"session_meta\",\"payload\":{\"id\":\"child\",\"thread_source\":\"subagent\",\"subagent_history_start_ordinal\":5},\"timestamp\":\"2026-10-20T10:00:00Z\",\"ordinal\":0}",
+      "{\"type\":\"token_usage_record\",\"payload\":{\"response_id\":\"unknown-ordinal\",\"usage\":{\"input_tokens\":10,\"output_tokens\":9}},\"timestamp\":\"2026-10-20T10:00:02Z\",\"ordinal\":9223372036854775808}"
+    ],
+    "expected": {
+      "output": 9,
+      "responseCount": 1,
+      "phase": "tools",
+      "model": null,
+      "stopped": false
+    }
+  },
+  {
+    "name": "non ordinal line null",
+    "family": "codex",
+    "lines": [
+      "{\"type\":\"session_meta\",\"payload\":{\"id\":\"child\",\"thread_source\":\"subagent\",\"subagent_history_start_ordinal\":5},\"timestamp\":\"2026-10-20T10:00:00Z\",\"ordinal\":0}",
+      "{\"type\":\"token_usage_record\",\"payload\":{\"response_id\":\"unknown-ordinal\",\"usage\":{\"input_tokens\":10,\"output_tokens\":9}},\"timestamp\":\"2026-10-20T10:00:02Z\",\"ordinal\":null}"
+    ],
+    "expected": {
+      "output": 9,
+      "responseCount": 1,
+      "phase": "tools",
+      "model": null,
+      "stopped": false
+    }
+  },
+  {
+    "name": "non ordinal line {}",
+    "family": "codex",
+    "lines": [
+      "{\"type\":\"session_meta\",\"payload\":{\"id\":\"child\",\"thread_source\":\"subagent\",\"subagent_history_start_ordinal\":5},\"timestamp\":\"2026-10-20T10:00:00Z\",\"ordinal\":0}",
+      "{\"type\":\"token_usage_record\",\"payload\":{\"response_id\":\"unknown-ordinal\",\"usage\":{\"input_tokens\":10,\"output_tokens\":9}},\"timestamp\":\"2026-10-20T10:00:02Z\",\"ordinal\":{}}"
+    ],
+    "expected": {
+      "output": 9,
+      "responseCount": 1,
+      "phase": "tools",
+      "model": null,
+      "stopped": false
+    }
+  },
+  {
+    "name": "non ordinal line true",
+    "family": "codex",
+    "lines": [
+      "{\"type\":\"session_meta\",\"payload\":{\"id\":\"child\",\"thread_source\":\"subagent\",\"subagent_history_start_ordinal\":5},\"timestamp\":\"2026-10-20T10:00:00Z\",\"ordinal\":0}",
+      "{\"type\":\"token_usage_record\",\"payload\":{\"response_id\":\"unknown-ordinal\",\"usage\":{\"input_tokens\":10,\"output_tokens\":9}},\"timestamp\":\"2026-10-20T10:00:02Z\",\"ordinal\":true}"
+    ],
+    "expected": {
+      "output": 9,
+      "responseCount": 1,
+      "phase": "tools",
+      "model": null,
+      "stopped": false
+    }
+  },
+  {
+    "name": "Int64 max boundary excludes copied but keeps exact end",
+    "family": "codex",
+    "lines": [
+      "{\"type\":\"session_meta\",\"payload\":{\"id\":\"child\",\"thread_source\":\"subagent\",\"subagent_history_start_ordinal\":9223372036854775807},\"timestamp\":\"2026-10-20T10:00:00Z\",\"ordinal\":0}",
+      "{\"type\":\"token_usage_record\",\"payload\":{\"response_id\":\"copied\",\"usage\":{\"input_tokens\":10,\"output_tokens\":900}},\"timestamp\":\"2026-10-20T10:00:02Z\",\"ordinal\":9223372036854775806}",
+      "{\"type\":\"token_usage_record\",\"payload\":{\"response_id\":\"own\",\"usage\":{\"input_tokens\":10,\"output_tokens\":7}},\"timestamp\":\"2026-10-20T10:00:02Z\",\"ordinal\":9223372036854775807}"
+    ],
+    "expected": {
+      "output": 7,
+      "responseCount": 1,
+      "phase": "tools",
+      "model": null,
+      "stopped": false
+    }
+  },
+  {
+    "name": "Claude toolEndsTurn True",
+    "family": "claude",
+    "lines": [
+      "{\"type\": \"user\", \"timestamp\": \"2026-10-20T10:00:00Z\", \"message\": {\"content\": \"go\"}}",
+      "{\"type\": \"assistant\", \"timestamp\": \"2026-10-20T10:00:01Z\", \"message\": {\"id\": \"body\", \"model\": \"claude-fixture\", \"stop_reason\": \"tool_use\", \"usage\": {\"output_tokens\": 20}}}",
+      "{\"type\": \"user\", \"timestamp\": \"2026-10-20T10:00:02Z\", \"toolEndsTurn\": true, \"message\": {\"content\": [{\"type\": \"tool_result\", \"content\": \"ok\"}]}}"
+    ],
+    "expected": {
+      "output": 20,
+      "responseCount": 1,
+      "phase": "idle",
+      "model": "claude-fixture",
+      "stopped": false
+    }
+  },
+  {
+    "name": "Claude toolEndsTurn False",
+    "family": "claude",
+    "lines": [
+      "{\"type\": \"user\", \"timestamp\": \"2026-10-20T10:00:00Z\", \"message\": {\"content\": \"go\"}}",
+      "{\"type\": \"assistant\", \"timestamp\": \"2026-10-20T10:00:01Z\", \"message\": {\"id\": \"body\", \"model\": \"claude-fixture\", \"stop_reason\": \"tool_use\", \"usage\": {\"output_tokens\": 20}}}",
+      "{\"type\": \"user\", \"timestamp\": \"2026-10-20T10:00:02Z\", \"toolEndsTurn\": false, \"message\": {\"content\": [{\"type\": \"tool_result\", \"content\": \"ok\"}]}}"
+    ],
+    "expected": {
+      "output": 20,
+      "responseCount": 1,
+      "phase": "generating",
+      "model": "claude-fixture",
+      "stopped": false
+    }
+  },
+  {
+    "name": "Claude toolEndsTurn 'true'",
+    "family": "claude",
+    "lines": [
+      "{\"type\": \"user\", \"timestamp\": \"2026-10-20T10:00:00Z\", \"message\": {\"content\": \"go\"}}",
+      "{\"type\": \"assistant\", \"timestamp\": \"2026-10-20T10:00:01Z\", \"message\": {\"id\": \"body\", \"model\": \"claude-fixture\", \"stop_reason\": \"tool_use\", \"usage\": {\"output_tokens\": 20}}}",
+      "{\"type\": \"user\", \"timestamp\": \"2026-10-20T10:00:02Z\", \"toolEndsTurn\": \"true\", \"message\": {\"content\": [{\"type\": \"tool_result\", \"content\": \"ok\"}]}}"
+    ],
+    "expected": {
+      "output": 20,
+      "responseCount": 1,
+      "phase": "generating",
+      "model": "claude-fixture",
+      "stopped": false
+    }
+  }
+]
