@@ -12109,17 +12109,15 @@ fn schema11_manifest_path(index_path: &Path) -> PathBuf {
 }
 
 // A physical legacy receipt describes physical DB/WAL stamps, not the new A
-// namespace. Keep all three A-owned artifacts separate when bootstrap imported
-// such a receipt. Already-activated 0.9.8 namespaces keep their existing paths.
+// namespace. Preserve pre-hotfix receipts, including 0.9.8's derived migration
+// work. Canonical A is authoritative; unfinished derived work can be prepared
+// again without guessing whether a physical receipt belongs to A or an old DB.
 fn active_schema11_paths(index_path: &Path) -> Result<(PathBuf, PathBuf, PathBuf), String> {
     #[cfg(not(test))]
     let isolated = {
         use crate::core::business_store_route as route;
         let mut isolated = route::preserves_legacy_exact_migration(index_path)?;
-        if !isolated && schema11_manifest_path(index_path).try_exists().map_err(|e| e.to_string())?
-            && !route::owns_exact_migration_artifact(&schema11_candidate_path(index_path))?
-            && !route::owns_exact_migration_artifact(&schema11_rollback_path(index_path))?
-        {
+        if !isolated && schema11_manifest_path(index_path).try_exists().map_err(|e| e.to_string())? {
             let (_, proof) = exact_legacy_recovery::runtime_source(index_path, route::exact_store_has_objects(index_path)?)?;
             let proof = proof.ok_or("旧迁移凭据在核验时移走，已停止写入")?;
             route::preserve_legacy_exact_migration(index_path, &[proof])?;

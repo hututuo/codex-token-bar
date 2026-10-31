@@ -551,6 +551,7 @@ fn run_legacy_manifest_probe(root: &Path, frozen: &Path, scenario: &str) -> Resu
         "manifest-late-retained" => ("Retained", true, true),
         "manifest-late-switching" => ("Switching", true, true),
         "manifest-late-rollback" => ("Switching", true, false),
+        "manifest-late-mixed" => ("Switching", true, true),
         _ => return Err("Unknown manifest probe scenario".into()),
     };
     let stores = paths(frozen)?;
@@ -596,12 +597,17 @@ fn run_legacy_manifest_probe(root: &Path, frozen: &Path, scenario: &str) -> Resu
             "published_generation":1,"building_generation":null,
             "database":{"size":checked!(fs::metadata(&rollback)).len(),"modified_ns":"0"},"wal":null}
     });
+    if scenario == "manifest-late-mixed" {
+        let spec = route::exact_store_spec(target)?;
+        drop(route::open_store("exact", &spec.source_identity, &spec.logical_path, &[main.clone()])?);
+        route::clone_exact_store(target, &rollback)?;
+    }
     if scenario != "manifest-existing-a" {
         checked!(fs::write(&manifest, checked!(serde_json::to_vec(&receipt))));
     }
     let stray = PathBuf::from(format!("{}-wal", main.display()));
     if scenario == "manifest-stray-wal" { checked!(fs::write(&stray, b"unmoved committed WAL")); }
-    let original_files: Vec<(PathBuf, String)> = [&main, &candidate, &rollback, &manifest, &stray]
+    let mut original_files: Vec<(PathBuf, String)> = [&main, &candidate, &rollback, &manifest, &stray]
         .iter().filter(|p| p.is_file()).map(|p| Ok((p.to_path_buf(), sha(p)?)))
         .collect::<Result<_, String>>()?;
 
@@ -616,13 +622,14 @@ fn run_legacy_manifest_probe(root: &Path, frozen: &Path, scenario: &str) -> Resu
     require!(marker.is_file() == expect_ready, "Startup marker published in the wrong state");
     if expect_ready {
         if scenario == "manifest-existing-a" {
-            // An already-activated 0.9.8 namespace must keep its own original
-            // artifact paths; it was not imported with a physical receipt.
+            // Keep 0.9.8 canonical data and its derived A rollback, but never
+            // rewrite its old physical receipt when preparing new work.
             route::clone_exact_store(target, &rollback)?;
             checked!(fs::write(&manifest, checked!(serde_json::to_vec(&receipt))));
+            original_files.push((manifest.clone(), sha(&manifest)?));
         }
         let isolated = crate::core::usage::token_count_jsonl::verify_legacy_migration_fixture(home, target)?;
-        let expected_isolated = scenario != "manifest-existing-a" && (!late || current);
+        let expected_isolated = !late || current;
         require!(isolated == expected_isolated, "A/legacy artifact ownership was not preserved");
         let spec = route::exact_store_spec(target)?;
         let exported = root.join("recovered-exact.sqlite");
