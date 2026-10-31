@@ -3,6 +3,47 @@
     <channel>
         <title>Codex Token Bar</title>
         <item>
+            <title>0.9.10</title>
+            <pubDate>Sat, 31 Oct 2026 18:25:15 +0000</pubDate>
+            <sparkle:version>989</sparkle:version>
+            <sparkle:shortVersionString>0.9.10</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"># Codex Token Bar v0.9.10
+
+## 简体中文
+
+本次合并升级恢复与压缩用量计账修复，Mac 和 Windows 同步更新。
+
+- 修复部分 0.9.8／0.9.9 用户被正常保留的旧索引副本拦截、无法进入应用的问题，兼容旧版 schema 13 与 14 的接续。
+- 保护运行中新建的数据分区，避免晚到旧库将其误判为空并覆盖；完善迁移中断、旧文件或目录被移走后的备份恢复；已接收的旧库不再反复作为活动来源打开。无法安全核验的来源会保留并提示，不通过清空账本绕过。
+- 相同输入重试复用已验证的迁移备份，修复重复制造副本；现有旧账、备份和恢复材料继续保留。
+- 正确计入可确认的 Codex 压缩请求用量，排除累计快照、继承计数和重复镜像；费用、缓存统计、图表及周期归因同步修正。
+- 未报告用量保持为未知；存在缺口的区间保留已知费用小计，避免输出不可靠的整期额度反推或本机／非本机消耗结论。
+- 可读取的历史由后台回算；原始会话已删除时仍保留已入账历史，不猜补缺失用量。测速和排行榜上报口径保持独立。
+
+如果旧版提示“账本准备未完成”，请直接覆盖安装 0.9.10。无需先卸载，也不要删除数据目录、旧数据库或迁移清单。
+
+macOS 为 Apple Silicon、ad-hoc 签名且未公证；Windows 提供 x64 和 ARM64 安装包，无商业代码签名。自动更新继续使用原有 Sparkle 与 Tauri 更新签名。
+
+## English
+
+This release combines upgrade recovery and compaction-usage accounting fixes for Mac and Windows.
+
+- Fix startup blocks affecting some 0.9.8/0.9.9 users when valid retained index copies coexist, including the schema 13-to-14 upgrade path.
+- Protect namespaces created by running modules from being mistaken for empty import destinations. Improve interrupted migration and verified-backup recovery after old files or directories move. Consumed originals are no longer reopened as active inputs. Sources that cannot be safely verified are preserved with a diagnostic rather than bypassed by clearing history.
+- Reuse verified migration backups for unchanged retries instead of generating duplicate copies. Existing accounting history, backups, and recovery evidence remain preserved.
+- Account for confirmed Codex compaction requests while excluding cumulative snapshots, inherited counters, and duplicate mirrors. Update costs, cache statistics, charts, and cycle attribution consistently.
+- Keep unreported usage unknown. Intervals with gaps retain known cost subtotals without unreliable full-cycle quota estimates or definitive local-versus-other-device attribution.
+- Reprocess readable history in the background. Keep recorded history when original sessions are missing, without inventing usage. Speed measurements and leaderboard reporting retain their separate accounting rules.
+
+If an older version reports “Ledger preparation incomplete,” install 0.9.10 over it. Do not uninstall first or delete data directories, old databases, or migration receipts.
+
+The Apple Silicon Mac package is ad-hoc signed and not notarized. Windows x64 and ARM64 installers have no commercial code-signing certificate. Automatic updates retain the existing Sparkle and Tauri signatures.
+</description>
+            <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.9.10/CodexTokenBar-v0.9.10-macos-arm64.app.zip" length="27675982" type="application/octet-stream" sparkle:edSignature="yXaNqUMaiLp7/q26JZgvQAZPNEuibyzWguKmBvm5zaT9u1qrVTeQy5HvViMgCcn5TMrU4ERNsbMwusQ7z16qCA==" />
+        </item>
+        <item>
             <title>0.9.9</title>
             <pubDate>Sat, 31 Oct 2026 13:07:55 +0000</pubDate>
             <sparkle:version>988</sparkle:version>
@@ -133,39 +174,6 @@ Quota queries require a locally installed and signed-in Codex. macOS 14 or newer
 If an earlier update already replaced a proxy shortcut, restore the original launch entry first. This update protects future updates but cannot reconstruct unknown previous launcher arguments.
 </description>
             <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.9.6/CodexTokenBar-v0.9.6-macos-arm64.app.zip" length="14665445" type="application/octet-stream" sparkle:edSignature="T53zcdjaf9k1jJZ83pFQks9UJQ8HSDIpldNzGsBkAb4srRH1mraI7NYy5oRigs6TfPmjkGiHEKUcFeOWrSGsBQ==" />
-        </item>
-        <item>
-            <title>0.9.5</title>
-            <pubDate>Thu, 22 Oct 2026 02:07:47 +0800</pubDate>
-            <sparkle:version>926</sparkle:version>
-            <sparkle:shortVersionString>0.9.5</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"># Codex Token Bar v0.9.5
-
-## 简体中文
-
-- 新增正文测速：按本地消息记录的起止时间与正文分词量计算 TPS，区分中间消息和最终文本，展示会话、时间、模型及样本可信度。短时或异常样本可查看，但不计入模型均速。
-- 主页展示最近 6 条已识别模型的测速记录，详情面板支持查看历史；额度侧栏展示各模型最近速度，展开面板同时显示最新、15 分钟和 30 分钟速度。
-- 更新全会话活动曲线：中断时及时停止，正常结束最多收尾 5 秒。活动曲线是显示估算，与正文 TPS 分开呈现。
-- 归档、移动或删除原会话文件后，保留已记录的历史用量；失效会话路径不再阻断其他正常来源的统计。fork 后新增轮次继续统计，重复 UUID 的相同用量副本可逆去重。
-- 移除低缓存命中提醒和续问时间建议；缓存命中统计、排行、费用账本及已有历史数据继续保留。
-- 更新公共众测雷达展示；macOS 改善额度观测刷新、周期归因、已知模型费用小计和图表交互。
-
-正文 TPS 来自本地可验证的消息时间和 `o200k_base` 分词估算，并非服务端纯推理速度；隐藏思考和工具返回不计入正文测速。网络等待可能影响结果。macOS 为 ad-hoc 签名，未经过 Apple 公证；请从官方发布页下载安装包。Windows 自动更新失败时，可使用官方安装器安装到原目录并保留历史数据。
-
-## English
-
-- Adds body-text TPS from local message start/end times and tokenized text, separating intermediate messages from final text. Samples show the conversation, time, model and confidence. Short or anomalous samples remain inspectable but are excluded from model averages.
-- Shows the six latest model-identified samples on the dashboard, with history in a details panel. The quota sidebar shows recent model speeds; its expanded panel includes latest, 15-minute and 30-minute speeds.
-- Updates the all-session activity curve: interruptions stop it promptly, and normal completion finishes within five seconds. This display estimate is shown separately from body-text TPS.
-- Preserves recorded usage after session files are archived, moved or deleted. Missing rollout references no longer block other valid sources. Fork-owned new rounds remain counted, and identical usage copies within one UUID are reversibly deduplicated.
-- Removes low-cache-hit reminders and follow-up timing recommendations while retaining cache-hit statistics, rankings, the cost ledger and existing history.
-- Updates public benchmark presentation. macOS also improves quota refresh, cycle attribution, known-price subtotals and chart interaction.
-
-Body-text TPS uses verifiable local message timing and estimated `o200k_base` token counts; it is not pure server-generation throughput. Hidden reasoning and tool-return text are excluded. Network waits can affect results. The macOS build is ad-hoc signed and is not Apple notarized; download installers from the official release page. If Windows automatic updating fails, use the official installer in the original directory and retain local history.
-</description>
-            <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.9.5/CodexTokenBar-v0.9.5-macos-arm64.app.zip" length="14662479" type="application/octet-stream" sparkle:edSignature="3hEXy1koH6VmbwdBN93qSodOpGdAbhGr2pORAmuuh1bVMGXTHBFy8UjmM2rJy4AnTv2pnWbaXi6QbvwGlZmaDQ==" />
         </item>
     </channel>
 </rss>
