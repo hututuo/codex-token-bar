@@ -300,11 +300,25 @@ impl Container {
 
     pub(crate) fn has_imported_objects(&self, store: &StoreSpec) -> BusinessStoreResult<bool> {
         self.ensure_registered(store)?;
-        Ok(self.connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM tb_store_objects WHERE store_id=?1 AND type='table')",
-            [&store.id],
+        // Runtime-created tables need no legacy import catalog entry. Their
+        // physical namespace is nevertheless live data, never an empty slot
+        // that a newly discovered old snapshot may replace.
+        let present: bool = self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM main.sqlite_master WHERE type='table' AND substr(name,1,?1)=?2)",
+            params![store.prefix.len() as i64,store.prefix],
             |row| row.get(0),
-        )?)
+        )?;
+        if !present {
+            // The catalog describes original objects, not later migrations:
+            // files/events can legitimately become views. Only a completely
+            // vanished physical store contradicts a previously imported one.
+            let had_tables: bool = self.connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM tb_store_objects WHERE store_id=?1 AND type='table')",
+                [&store.id], |row| row.get(0),
+            )?;
+            if had_tables { return Err(BusinessStoreError::ProofMismatch); }
+        }
+        Ok(present)
     }
 
     /// Make a SQLite online-backup snapshot of an old module database. The
@@ -724,6 +738,10 @@ impl Container {
                 tx.commit()?;
                 return Ok(source);
             }
+        }
+
+        if !replace_existing && !schema_objects(&tx,"main",&store.prefix)?.is_empty() {
+            return Err(BusinessStoreError::ProofMismatch);
         }
 
         let objects = schema_objects(&tx, IMPORT_ALIAS, "")?;
@@ -2595,6 +2613,25 @@ mod tests {
 
     fn store(path: &Path, source: &str) -> StoreSpec {
         StoreSpec::new("usage", source, path.to_string_lossy().to_string()).unwrap()
+    }
+
+    #[test]
+    fn default_import_cannot_replace_a_runtime_created_namespace_without_an_import_catalog() {
+        let fixture = Fixture::new();
+        let path = fixture.path("container.sqlite");
+        let spec = store(&fixture.path("logical"),"fresh-runtime");
+        let container = Container::open(&path).unwrap();
+        container.register(&spec).unwrap();
+        let active = container.into_store_connection(&spec).unwrap();
+        active.execute_batch("CREATE TABLE records(id INTEGER PRIMARY KEY,amount INTEGER); INSERT INTO records VALUES(1,334108)").unwrap();
+        drop(active);
+        let source = fixture.path("late-old.sqlite");
+        Connection::open(&source).unwrap().execute_batch("CREATE TABLE records(id INTEGER PRIMARY KEY,amount INTEGER); INSERT INTO records VALUES(1,99)").unwrap();
+        let mut container = Container::open_existing(&path).unwrap();
+        assert!(container.has_imported_objects(&spec).unwrap());
+        let before = container.proof(&spec).unwrap();
+        assert!(container.import_snapshot(&source,&spec,&source,1.0,false).is_err());
+        assert_eq!(container.proof(&spec).unwrap(),before);
     }
 
     #[test]

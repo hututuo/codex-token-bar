@@ -452,6 +452,10 @@ final class CodexBusinessDatabase {
                     guard Set(columns.map { $0.lowercased() }).isDisjoint(with: namespace.objectNames) else { throw BusinessStoreError.unsupportedSchema("object/column name collision") }
                 }
                 let old = try tx.readRows("SELECT name,type FROM main.sqlite_master WHERE substr(name,1,?)=? ORDER BY CASE type WHEN 'view' THEN 0 WHEN 'trigger' THEN 1 WHEN 'index' THEN 2 ELSE 3 END", bindings:[.int(store.prefix.count),.text(store.prefix)]) { ($0.text(0) ?? "",$0.text(1) ?? "") }
+                // A namespace created directly by a running module may have
+                // no old-import receipt. It still contains live data. Only
+                // an explicitly authorized replacement may drop its objects.
+                guard replaceExisting || old.isEmpty else { throw BusinessStoreError.proofMismatch }
                 for (name,type) in old { try tx.execute("DROP \(type.uppercased()) IF EXISTS \(SQLiteStoreNamespace.quote(name))") }
                 try tx.execute("DELETE FROM tb_store_objects WHERE store_id=?",bindings:[.text(store.id)])
                 let hasStoreSeals = try tx.readRows("SELECT 1 FROM main.sqlite_master WHERE type='table' AND name='tb_store_seals'") { $0.int(0) }.first == 1

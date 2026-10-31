@@ -3,6 +3,25 @@ import XCTest
 @testable import CodexTokenBar
 
 final class CodexBusinessDatabaseTests: XCTestCase {
+    func testDefaultImportNeverReplacesANewlyCreatedRuntimeNamespace() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let ledger = try CodexBusinessDatabase(url: root.appendingPathComponent("codex-ledger.sqlite"))
+        let logical = root.appendingPathComponent("runtime.sqlite")
+        let store = BusinessSQLiteStore(containerURL: ledger.url, logicalURL: logical, module: "fixture", sourceIdentity: "runtime")
+        try ledger.register(store)
+        BusinessSQLiteRoutes.install([store])
+        defer { BusinessSQLiteRoutes.remove([store]) }
+        let active = SQLiteDatabaseDriver(url: logical)
+        try active.execute("CREATE TABLE records(id INTEGER PRIMARY KEY,amount INTEGER); INSERT INTO records VALUES(1,334108)")
+        let source = root.appendingPathComponent("late-old.sqlite")
+        let old = SQLiteDatabaseDriver(url: source, bypassBusinessRoutes: true)
+        try old.execute("CREATE TABLE records(id INTEGER PRIMARY KEY,amount INTEGER); INSERT INTO records VALUES(1,99)")
+        XCTAssertThrowsError(try ledger.importSnapshot(source, into: store, backupURL: source))
+        XCTAssertEqual(try active.readRows("SELECT amount FROM records") { $0.int(0)! }, [334108])
+        XCTAssertEqual(try old.readRows("SELECT amount FROM records") { $0.int(0)! }, [99])
+    }
+
     func testProofDoesNotDependOnAnotherModulesAutoincrementTable() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
