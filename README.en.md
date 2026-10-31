@@ -98,18 +98,18 @@ If Windows version 0.9.8 cannot open with “Ledger preparation incomplete,” i
 
 | Platform | Asset | Requirements |
 |---|---|---|
-| macOS Apple Silicon | `CodexTokenBar-v0.9.9-macos-arm64.dmg` | macOS 14+. Open the DMG and drag the app to Applications. |
-| Windows x64 | `CodexTokenBar-v0.9.9-windows-x64-setup.exe` | Intel / AMD Windows 10/11. |
-| Windows ARM64 | `CodexTokenBar-v0.9.9-windows-arm64-setup.exe` | Windows on ARM; the app binary is ARM64. |
+| macOS Apple Silicon | `CodexTokenBar-v0.9.10-macos-arm64.dmg` | macOS 14+. Open the DMG and drag the app to Applications. |
+| Windows x64 | `CodexTokenBar-v0.9.10-windows-x64-setup.exe` | Intel / AMD Windows 10/11. |
+| Windows ARM64 | `CodexTokenBar-v0.9.10-windows-arm64-setup.exe` | Windows on ARM; the app binary is ARM64. |
 
 Optional checksum verification; compare the result with the matching release manifest:
 
 ```bash
-shasum -a 256 CodexTokenBar-v0.9.9-macos-arm64.dmg
+shasum -a 256 CodexTokenBar-v0.9.10-macos-arm64.dmg
 ```
 
 ```powershell
-Get-FileHash .\CodexTokenBar-v0.9.9-windows-x64-setup.exe -Algorithm SHA256
+Get-FileHash .\CodexTokenBar-v0.9.10-windows-x64-setup.exe -Algorithm SHA256
 ```
 
 The macOS app is ad-hoc signed and not notarized. If blocked on first launch, confirm Open Anyway in System Settings → Privacy & Security. Windows installers do not currently have commercial code signing; SmartScreen may show an unknown-publisher warning. Download from this repository's Releases. The installer handles missing WebView2 according to its default policy.

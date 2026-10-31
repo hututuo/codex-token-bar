@@ -999,6 +999,9 @@ impl Container {
     ) -> BusinessStoreResult<()> {
         if store.module != "exact" { return Err(BusinessStoreError::InvalidStore); }
         self.ensure_registered(store)?;
+        if self.record_consumed_exact_alias(snapshot, store, original, backup)? {
+            return Ok(());
+        }
         let imported = self.proof(store)?;
         let source = Connection::open_with_flags(snapshot, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         let source_marker = valid_exact_relocation_marker(&source, "")?;
@@ -1051,6 +1054,69 @@ impl Container {
         tx.execute("INSERT OR REPLACE INTO tb_container_meta(key,value) VALUES(?1,?2)", params![key,evidence])?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// A moved/copied frozen input may appear under a new physical name after
+    /// the owning ledger has applied audited corrections or parser backfills.
+    /// Full proof equality with an already-consumed input is sufficient to
+    /// recognize that old baseline; replaying it over current A is forbidden.
+    /// This does not accept an unknown or changed history by similarity.
+    fn record_consumed_exact_alias(
+        &mut self, snapshot: &Path, store: &StoreSpec, original: &Path, backup: &Path,
+    ) -> BusinessStoreResult<bool> {
+        let mut marker = self.path.as_os_str().to_os_string();
+        marker.push(".initialized");
+        if !PathBuf::from(marker).is_file() { return Ok(false); }
+        let digest = Self::snapshot_digest(snapshot)?;
+        let path = canonical_input_path(original)?;
+        if let Some(previous) = self.legacy_input_receipt_by_key(&path)? {
+            if previous.retired || previous.store_id != store.id || previous.module != store.module
+                || previous.logical_path != store.logical_path || previous.source_digest != digest {
+                return Err(BusinessStoreError::ProofMismatch);
+            }
+        }
+        let witness: Option<String> = self.connection.query_row(
+            "SELECT source_path FROM tb_legacy_inputs WHERE store_id=?1 AND module=?2 AND logical_path=?3 AND source_digest=?4 AND retired=0 ORDER BY source_path LIMIT 1",
+            params![store.id,store.module,store.logical_path,digest], |r| r.get(0),
+        ).optional()?;
+        let Some(witness) = witness else { return Ok(false); };
+        if !self.has_imported_objects(store)? { return Ok(false); }
+        let version = self.user_version(store)?;
+        let current = self.proof(store)?;
+        let key = format!("exact_consumed_alias_v1:{}:{}", store.id,
+            hex_digest(&Sha256::digest(format!("{path}\0{digest}").as_bytes())));
+        let evidence = serde_json::json!({"version":1,"sourcePath":path,"sourceDigest":digest,
+            "acceptedSourcePath":witness,"storeID":store.id,"logicalPath":store.logical_path,
+            "backupPath":backup.to_string_lossy(),"currentProof":current}).to_string();
+        let tx = self.connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if proof_for(&tx,"main",&store.prefix,true,Some(version))? != current {
+            return Err(BusinessStoreError::ProofMismatch);
+        }
+        let previous: Option<String> = tx.query_row("SELECT value FROM tb_container_meta WHERE key=?1", [&key], |r| r.get(0)).optional()?;
+        if let Some(previous) = previous {
+            let previous: serde_json::Value = serde_json::from_str(&previous).map_err(|_| BusinessStoreError::ProofMismatch)?;
+            if previous["version"] != 1 || previous["sourcePath"] != path || previous["sourceDigest"] != digest
+                || previous["storeID"] != store.id || previous["logicalPath"] != store.logical_path {
+                return Err(BusinessStoreError::ProofMismatch);
+            }
+        }
+        let still_owned: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tb_legacy_inputs WHERE source_path=?1 AND store_id=?2 AND module=?3 AND logical_path=?4 AND source_digest=?5 AND retired=0)",
+            params![witness,store.id,store.module,store.logical_path,digest], |r| r.get(0),
+        )?;
+        if !still_owned { return Err(BusinessStoreError::ProofMismatch); }
+        match fs::symlink_metadata(original) {
+            Ok(meta) if meta.is_file() && !meta.file_type().is_symlink() => {
+                if Self::snapshot_digest(original)? != digest { return Err(BusinessStoreError::ProofMismatch); }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+            _ => return Err(BusinessStoreError::InvalidStore),
+        }
+        write_legacy_receipt(&tx,&LegacyReceiptWrite { source_path:path,module:store.module.clone(),store_id:store.id.clone(),logical_path:store.logical_path.clone(),source_digest:digest,backup_path:backup.to_string_lossy().into_owned() })?;
+        tx.execute("INSERT OR IGNORE INTO tb_container_meta(key,value) VALUES(?1,?2)",params![key,evidence])?;
+        tx.commit()?;
+        Ok(true)
     }
 
     pub(crate) fn snapshot_digest_path(path: impl AsRef<Path>) -> BusinessStoreResult<String> {

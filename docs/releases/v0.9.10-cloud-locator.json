@@ -1,0 +1,17 @@
+{
+  "version": "0.9.10",
+  "macos_build": "989",
+  "source_sha": null,
+  "tag": "v0.9.10",
+  "previous_release": "v0.9.9",
+  "release_url": "https://github.com/hututuo/codex-token-bar/releases/tag/v0.9.10",
+  "status": "preparing",
+  "integration_branch": "codex/diagnose-dual-legacy-ledgers",
+  "included_compaction_commit": "f5b7358e978dff9e7845057f083e896c2857d337",
+  "ci_run_id": null,
+  "upgrade_run_id": null,
+  "build_run_id": null,
+  "signing_run_id": null,
+  "publish_run_id": null,
+  "assets": []
+}

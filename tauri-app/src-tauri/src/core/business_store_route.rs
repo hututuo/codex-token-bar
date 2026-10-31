@@ -824,6 +824,18 @@ pub(crate) fn exact_sources_already_consumed(
         || !container.has_imported_objects(&store).map_err(|e| e.to_string())? {
         return Ok(false);
     }
+    let pending: Option<String> = container.connection().query_row(
+        "SELECT value FROM tb_container_meta WHERE key=?1",
+        [format!("migration_pending_store_v1:{}",store.id)], |r| r.get(0),
+    ).optional().map_err(|e| e.to_string())?;
+    if let Some(pending) = pending {
+        let batch: PendingLegacyImport = serde_json::from_str(&pending).map_err(|e| format!("未完成导入记录无效：{e}"))?;
+        if ![1,2].contains(&batch.version) { return Err("未知的未完成导入版本，已保留旧账".into()); }
+        // Only the initialized marker commits a first-bootstrap batch. A
+        // failed late import remains pending even if it already wrote a path
+        // receipt; it must be revalidated before that path can be frozen.
+        if !batch.bootstrap { return Ok(false); }
+    }
     for source in sources {
         if let Some(receipt) = container.legacy_input_receipt(source).map_err(|e| e.to_string())? {
             if receipt.store_id != store.id || receipt.module != store.module
@@ -1537,6 +1549,92 @@ mod tests {
         Connection::open(path).unwrap().execute_batch(
             "CREATE TABLE events(id INTEGER PRIMARY KEY, value TEXT); INSERT INTO events VALUES(1,'old');"
         ).unwrap();
+    }
+
+    #[test]
+    fn late_exact_alias_of_consumed_baseline_preserves_current_corrections() {
+        let fixture = Fixture::new();
+        let db = fixture.path("codex-ledger.sqlite");
+        let original = fixture.path("old.sqlite");
+        seed_legacy(&original);
+        drop(open_store_at(&db,"exact","home","exact",std::slice::from_ref(&original),false).unwrap());
+        fs::write(initialized_marker_path(&db),b"tokenbar-codex-ledger-v1\n").unwrap();
+        let active = open_store_at(&db,"exact","home","exact",std::slice::from_ref(&original),true).unwrap();
+        active.execute("UPDATE events SET value='audited compaction correction' WHERE id=1",[]).unwrap();
+        active.execute("INSERT INTO events VALUES(2,'new active usage')",[]).unwrap();
+        drop(active);
+        let spec = StoreSpec::new("exact","home","exact").unwrap();
+        let before = Container::open_existing(&db).unwrap().proof(&spec).unwrap();
+        let alias = fixture.path("moved-old-copy.sqlite");
+        fs::copy(&original,&alias).unwrap();
+        let frozen = fs::read(&alias).unwrap();
+        drop(open_store_at(&db,"exact","home","exact",std::slice::from_ref(&alias),true).unwrap());
+        let container = Container::open_existing(&db).unwrap();
+        assert_eq!(container.proof(&spec).unwrap(),before,"An old alias must never roll back corrected or newly recorded usage");
+        assert!(container.legacy_input_receipt(&alias).unwrap().is_some());
+        assert_eq!(fs::read(&alias).unwrap(),frozen);
+        drop(container);
+        let changed = fixture.path("unknown-new-history.sqlite");
+        fs::copy(&original,&changed).unwrap();
+        Connection::open(&changed).unwrap().execute("INSERT INTO events VALUES(3,'unproven history')",[]).unwrap();
+        assert!(open_store_at(&db,"exact","home","exact",std::slice::from_ref(&changed),true).is_err());
+        assert_eq!(Container::open_existing(&db).unwrap().proof(&spec).unwrap(),before);
+        // An accepted path belonging to another partition is never stolen,
+        // even when both baseline proofs are identical.
+        let foreign = fixture.path("foreign.sqlite");
+        fs::copy(&original,&foreign).unwrap();
+        drop(open_store_at(&db,"exact","other-home","other-exact",std::slice::from_ref(&foreign),true).unwrap());
+        assert!(open_store_at(&db,"exact","home","exact",std::slice::from_ref(&foreign),true).is_err());
+        assert_eq!(Container::open_existing(&db).unwrap().proof(&spec).unwrap(),before);
+    }
+
+    #[test]
+    fn failed_late_alias_cannot_be_frozen_by_its_partial_path_receipt() {
+        let fixture = Fixture::new();
+        let support = fixture.path("support");
+        fs::create_dir_all(&support).unwrap();
+        let _guard = app_paths::app_path_test_env_guard(&[("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR",support.clone())]);
+        let db = container_path().unwrap();
+        let target = support.join("logical-exact.sqlite");
+        let spec = exact_store_spec(&target).unwrap();
+        let original = fixture.path("original.sqlite");
+        seed_legacy(&original);
+        drop(open_store_at(&db,"exact",&spec.source_identity,&spec.logical_path,std::slice::from_ref(&original),false).unwrap());
+        fs::write(initialized_marker_path(&db),b"tokenbar-codex-ledger-v1\n").unwrap();
+        let active = open_store_at(&db,"exact",&spec.source_identity,&spec.logical_path,std::slice::from_ref(&original),true).unwrap();
+        active.execute("UPDATE events SET value='corrected active ledger'",[]).unwrap();
+        drop(active);
+        let alias = fixture.path("late-copy.sqlite");
+        fs::copy(&original,&alias).unwrap();
+        let before = Container::open_existing(&db).unwrap().proof(&spec).unwrap();
+        let result = open_store_at_with_hook(&db,"exact",&spec.source_identity,&spec.logical_path,std::slice::from_ref(&alias),true,&|| {
+            Connection::open(&alias).unwrap().execute("UPDATE events SET value='source changed after import'",[]).unwrap();
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert_eq!(Container::open_existing(&db).unwrap().proof(&spec).unwrap(),before);
+        assert!(!exact_sources_already_consumed(&target,&[original,alias]).unwrap(),"An unfinished late batch must not take the consumed-source shortcut");
+    }
+
+    #[test]
+    fn exact_alias_witness_must_belong_to_the_target_partition() {
+        let fixture = Fixture::new();
+        let db = fixture.path("codex-ledger.sqlite");
+        let original = fixture.path("foreign-original.sqlite");
+        seed_legacy(&original);
+        drop(open_store_at(&db,"exact","foreign","foreign",std::slice::from_ref(&original),false).unwrap());
+        fs::write(initialized_marker_path(&db),b"tokenbar-codex-ledger-v1\n").unwrap();
+        let target = open_store_at(&db,"exact","target","target",&[],true).unwrap();
+        target.execute_batch("CREATE TABLE events(id INTEGER PRIMARY KEY,value TEXT); INSERT INTO events VALUES(1,'target current value')").unwrap();
+        drop(target);
+        let spec = StoreSpec::new("exact","target","target").unwrap();
+        let before = Container::open_existing(&db).unwrap().proof(&spec).unwrap();
+        let alias = fixture.path("unknown-alias.sqlite");
+        fs::copy(&original,&alias).unwrap();
+        assert!(open_store_at(&db,"exact","target","target",std::slice::from_ref(&alias),true).is_err());
+        let container = Container::open_existing(&db).unwrap();
+        assert_eq!(container.proof(&spec).unwrap(),before);
+        assert!(container.legacy_input_receipt(&alias).unwrap().is_none());
     }
 
     #[test]
