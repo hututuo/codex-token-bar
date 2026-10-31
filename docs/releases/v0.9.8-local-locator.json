@@ -2,7 +2,7 @@
   "version": "0.9.8",
   "macBuild": 987,
   "tag": "v0.9.8",
-  "status": "SIGNED_PREPARED_NOT_PUBLISHED",
+  "status": "USER_APPROVED_PUBLICATION_PENDING",
   "sourceBranch": "codex/dashboard-header-client-identity",
   "targetBranch": "main",
   "previousPublicBoundary": "v0.9.7",
@@ -64,13 +64,13 @@
       "sha256": "c02f3e6275f62bc5a3ca74da6249ec48358ac58e215b22a0bcd29b141704158a"
     }
   ],
-  "userInteractionAcceptance": "user performs; no automated interaction replay",
-  "publicUploadAuthorized": false,
+  "userInteractionAcceptance": "User accepted installed macOS 0.9.8 build987 and explicitly authorized joint Mac/Windows publication.",
+  "publicUploadAuthorized": true,
   "upgradeRunID": 41161283661,
   "signingApproved": true,
   "signaturesVerified": true,
   "published": false,
-  "installed": false,
+  "installed": true,
   "localPacket": "scratch/release-098-preparation/signed-packet",
   "tests": {
     "frontendPassed": 1376,
@@ -91,5 +91,7 @@
     "Three high-severity development dependency findings; production dependency audit is zero. Development/test tools are not shipped.",
     "Known macOS27 accessibility AXScrollToTop/Bottom crash remains open; no interactive acceptance is claimed.",
     "Windows ARM64 hardware/runtime and this candidate interaction acceptance were not repeated; user performs acceptance."
-  ]
+  ],
+  "publicationAuthorizationAt": "2026-10-31T12:44:34.693699+08:00",
+  "installationReceipt": "scratch/release-098-preparation/local-install-current.json"
 }
