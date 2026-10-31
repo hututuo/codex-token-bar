@@ -465,3 +465,50 @@ fn ordinary_open_for_new_home_resolves_switching_rollback_and_rejects_unknown_ma
     fs::write(&manifest, serde_json::to_vec(&object).unwrap()).unwrap();
     assert!(super::runtime_source(&main, true).is_err());
 }
+
+// Characterization of the reported startup failure, not a recovery policy.
+#[test]
+fn diagnostic_relocated_legacy_pair_reproduces_conflicting_candidates() {
+    let temporary = tempfile::tempdir().unwrap();
+    let base = temporary.path();
+    let support = base.join("support");
+    let current = support.join("exact-token-index");
+    let cache_base = base.join("cache");
+    let cache = cache_base.join("exact-token-index");
+    let home = base.join("home");
+    fs::create_dir_all(home.join("sessions")).unwrap();
+    fs::create_dir_all(&current).unwrap();
+    fs::create_dir_all(&cache).unwrap();
+    let _environment = app_paths::app_path_test_env_guard(&[
+        ("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR", support),
+        ("CODEX_TOKEN_BAR_TAURI_CACHE_DIR", base.join("tauri-cache")),
+        ("CODEX_TOKEN_BAR_SUPPORT_BASE_DIR", base.join("shared-support")),
+        ("CODEX_TOKEN_BAR_CACHE_BASE_DIR", base.join("shared-cache")),
+        ("CODEX_TOKEN_BAR_TAURI_USAGE_CACHE_DIR", cache_base),
+    ]);
+    let session = home.join("sessions/rollout-019ff8b9-09e7-75c1-b9a5-14fe7b60065a.jsonl");
+    let usage = json!({"input_tokens":100,"cached_input_tokens":0,"output_tokens":15,"reasoning_output_tokens":0,"total_tokens":115});
+    let event = json!({"timestamp":"2026-10-31T12:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":usage,"last_token_usage":usage}}});
+    fs::write(&session, format!("{}\n{}\n", json!({"type":"session_meta","payload":{"id":"019ff8b9-09e7-75c1-b9a5-14fe7b60065a"}}), event)).unwrap();
+    let legacy = cache.join("home.sqlite3");
+    let durable = current.join("home.sqlite3");
+    let mut index = super::super::ExactUsageIndex::open_at_for_testing(&home, legacy.clone()).unwrap();
+    index.sync(&home, &mut Vec::new()).unwrap();
+    drop(index);
+    // This is the relocation implementation retained from public v0.9.7.
+    super::super::relocate_legacy_index(&home, &legacy, &durable).unwrap();
+    let sum = |path: &Path| Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap()
+        .query_row("SELECT SUM(tokens) FROM event_rows", [], |row| row.get::<_, i64>(0)).unwrap();
+    assert_eq!(sum(&legacy), 115);
+    assert_eq!(sum(&durable), 115);
+    let before = capture(&[&legacy, &durable]);
+    let error = super::bootstrap_at(&current, &cache, |target, sources, _| {
+        assert_eq!(sources.len(), 2);
+        let store = route::exact_store_spec(target)?;
+        drop(route::open_store_during_bootstrap("exact", &store.source_identity, &store.logical_path, sources)?);
+        Ok(())
+    }).unwrap_err();
+    assert!(error.contains("exact/index/"), "{error}");
+    assert_unchanged(&before);
+    println!("RELOCATED_PAIR_REPRO: old_tokens=115 new_tokens=115 originals_unchanged=true error={error}");
+}
