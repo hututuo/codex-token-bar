@@ -11361,6 +11361,11 @@ fn cached_usage_summary_is_scoped_to_codex_home() {
     let session_dir_b = home_b.join("sessions");
     fs::create_dir_all(&session_dir_a).unwrap();
     fs::create_dir_all(&session_dir_b).unwrap();
+    // This test checks Home isolation, not clock invalidation. Crossing the
+    // eligible aggregate boundary between refresh/startup legitimately expires
+    // the cache and made hosted runs fail depending on the wall-clock second.
+    let _clock_a = DashboardTestClock::at(&home_a, "2026-06-18T01:10:00Z");
+    let _clock_b = DashboardTestClock::at(&home_b, "2026-06-18T01:10:00Z");
     write_lines(
         &session_dir_a.join("rollout-019ehome-a-0000-0000-0000-summary.jsonl"),
         &[
