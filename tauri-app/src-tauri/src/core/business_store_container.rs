@@ -1769,12 +1769,22 @@ fn drop_store_objects(connection: &Connection, prefix: &str) -> BusinessStoreRes
 }
 
 fn canonical_input_path(path: &Path) -> BusinessStoreResult<String> {
-    // A deleted leaf must retain its original physical identity, including
-    // Windows' canonical path prefix and configured parent-directory aliases.
+    // Resolve the nearest surviving ancestor, not only the immediate parent:
+    // an OS cache cleanup can remove the entire old index directory during a
+    // pending upgrade. Keep Windows canonical prefixes and /var aliases stable
+    // without recreating any old directory or file.
     let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| {
-        match (path.parent(), path.file_name()) {
-            (Some(parent), Some(name)) => std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf()).join(name),
-            _ => path.to_path_buf(),
+        let mut ancestor = path;
+        let mut missing = Vec::new();
+        loop {
+            if let Ok(mut physical) = std::fs::canonicalize(ancestor) {
+                for name in missing.iter().rev() { physical.push(name); }
+                break physical;
+            }
+            match (ancestor.parent(), ancestor.file_name()) {
+                (Some(parent), Some(name)) => { missing.push(name.to_os_string()); ancestor = parent; }
+                _ => break path.to_path_buf(),
+            }
         }
     });
     canonical

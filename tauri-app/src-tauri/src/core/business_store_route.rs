@@ -1695,7 +1695,8 @@ mod tests {
         for truncate in [false, true] {
             let fixture = Fixture::new();
             let db = fixture.path("codex-ledger.sqlite");
-            let raw = fixture.path("legacy.sqlite");
+            let raw = fixture.path("old-cache/legacy.sqlite");
+            fs::create_dir_all(raw.parent().unwrap()).unwrap();
             seed_legacy(&raw);
             drop(open_store_at(&db, "quota_history", "home", "quota", std::slice::from_ref(&raw), false).unwrap());
             let container = Container::open_existing(&db).unwrap();
@@ -1706,7 +1707,7 @@ mod tests {
             let before = container.proof(&store).unwrap();
             drop(container);
             if truncate { Connection::open(&raw).unwrap().execute("DELETE FROM events", []).unwrap(); }
-            else { fs::remove_file(&raw).unwrap(); }
+            else { fs::remove_file(&raw).unwrap(); fs::remove_dir(raw.parent().unwrap()).unwrap(); }
             let result = resume_pending_bootstrap_imports(&db);
             if truncate {
                 assert!(result.is_err());
