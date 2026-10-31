@@ -169,6 +169,14 @@ jobs:
           key: rust-test-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-${{ needs.source.outputs.sha }}
           restore-keys: |
             rust-test-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-
+      - name: Agent Speed reporter compile and privacy self-test
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          dotnet build tools/AgentSpeedReporter/AgentSpeedReporter.csproj --configuration Release -p:LangVersion=latest -p:Nullable=enable -p:ImplicitUsings=enable
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet run --project tools/AgentSpeedReporter/AgentSpeedReporter.csproj --configuration Release -p:LangVersion=latest -p:Nullable=enable -p:ImplicitUsings=enable -- --self-test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Prepare Rust and frontend
         shell: bash
         run: |
@@ -192,14 +200,6 @@ jobs:
         run: |
           . ./scripts/cloud/prepare-windows.ps1
           ./scripts/build_tauri_windows_release.selftest.ps1
-      - name: Agent Speed reporter compile and privacy self-test
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          dotnet build tools/AgentSpeedReporter/AgentSpeedReporter.csproj --configuration Release -p:LangVersion=latest -p:Nullable=enable -p:ImplicitUsings=enable
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          dotnet run --project tools/AgentSpeedReporter/AgentSpeedReporter.csproj --configuration Release -p:LangVersion=latest -p:Nullable=enable -p:ImplicitUsings=enable -- --self-test
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:

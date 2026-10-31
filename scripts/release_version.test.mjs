@@ -20,6 +20,8 @@ test("all tracked application versions agree before a release can be packaged", 
   assert.ok(read("scripts/build_tauri_windows_release.ps1").includes(`[string]$Version = "${version}"`));
   assert.ok(read("scripts/build_release.sh").includes(`APP_VERSION:-${version}`));
   assert.ok(read("scripts/package_app.sh").includes(`APP_VERSION:-${version}`));
+  assert.equal(read("tools/AgentSpeedReporter/AgentSpeedReporter.csproj").match(/<Version>([^<]+)<\/Version>/)?.[1], version);
+  assert.equal(read("tools/AgentSpeedReporter/ReporterRuntime.cs").match(/ClientVersion = "([^"]+)"/)?.[1], version);
 });
 test("Swift bundle metadata uses the same version without building or opening the app", {
   skip: process.platform === "win32" ? "Swift bundle packaging requires the Unix shell lane" : false,
