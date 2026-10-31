@@ -1572,6 +1572,9 @@ fn prepare_exact_store_for_home(home: &Path, path: &Path) -> Result<(), String> 
     }
     let legacy = app_paths::tauri_usage_cache_dir().ok_or("无法定位旧用量索引目录")?
         .join("exact-token-index").join(format!("{}.sqlite3", stable_path_fingerprint(home)));
+    if route::exact_sources_already_consumed(path, &[path.to_path_buf(), legacy.clone()])? {
+        return Ok(());
+    }
     let already_imported = route::exact_store_has_objects(path)?;
     let mut sources = Vec::new();
     let mut manifests = Vec::new();

@@ -676,6 +676,36 @@ pub(crate) fn exact_store_spec(path: &Path) -> Result<StoreSpec, String> {
         .map_err(|error| error.to_string())
 }
 
+/// Once A has been activated, its imported source receipts are historical
+/// ownership records, not invitations to reopen old physical writers. Unknown
+/// inputs still need reconciliation; mere registration never commits a store.
+pub(crate) fn exact_sources_already_consumed(
+    target: &Path,
+    sources: &[PathBuf],
+) -> Result<bool, String> {
+    let path = container_path()?;
+    if !initialized_marker_path(&path).is_file() {
+        return Ok(false);
+    }
+    let container = open_ready_container(&path)?;
+    let store = exact_store_spec(target)?;
+    if !container.is_registered(&store).map_err(|e| e.to_string())?
+        || !container.has_imported_objects(&store).map_err(|e| e.to_string())? {
+        return Ok(false);
+    }
+    for source in sources {
+        if let Some(receipt) = container.legacy_input_receipt(source).map_err(|e| e.to_string())? {
+            if receipt.store_id != store.id || receipt.module != store.module
+                || receipt.logical_path != store.logical_path {
+                return Ok(false);
+            }
+        } else if legacy_source_exists(source)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 const LEGACY_EXACT_MIGRATION_KEY: &str = "legacy_exact_migration_v1:";
 
 /// Bootstrap alone owns this receipt. It distinguishes immutable physical
@@ -1175,6 +1205,34 @@ mod tests {
     use rusqlite::{params, OpenFlags};
     use std::fs;
     use uuid::Uuid;
+
+    #[test]
+    fn consumed_sources_require_activation_rows_and_complete_path_ownership() {
+        let fixture = Fixture::new();
+        let support = fixture.path("support");
+        fs::create_dir_all(&support).unwrap();
+        let _guard = app_paths::app_path_test_env_guard(&[("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR", support)]);
+        let target = fixture.path("active.sqlite3");
+        let old = fixture.path("old.sqlite3");
+        seed_legacy(&old);
+        let store = exact_store_spec(&target).unwrap();
+        drop(open_store_during_bootstrap("exact", &store.source_identity, &store.logical_path, &[old.clone()]).unwrap());
+        assert!(!exact_sources_already_consumed(&target, &[old.clone()]).unwrap());
+        fs::write(initialized_marker_path(&container_path().unwrap()), b"tokenbar-codex-ledger-v1\n").unwrap();
+        assert!(exact_sources_already_consumed(&target, &[target.clone(), old.clone()]).unwrap());
+        // A owns the committed rows; retired files can disappear or become
+        // unreadable without making an ordinary open replay them over A.
+        fs::write(&old, b"must never be opened as SQLite again").unwrap();
+        assert!(exact_sources_already_consumed(&target, &[old.clone()]).unwrap());
+        fs::remove_file(&old).unwrap();
+        assert!(exact_sources_already_consumed(&target, &[old]).unwrap());
+        let unknown = fixture.path("unknown.sqlite3");
+        seed_legacy(&unknown);
+        assert!(!exact_sources_already_consumed(&target, &[unknown]).unwrap());
+        let empty = fixture.path("empty.sqlite3");
+        Container::open_existing(container_path().unwrap()).unwrap().register(&exact_store_spec(&empty).unwrap()).unwrap();
+        assert!(!exact_sources_already_consumed(&empty, &[]).unwrap());
+    }
 
     #[test]
     fn physical_candidates_and_empty_registration_are_not_owned_a_migration_artifacts() {
