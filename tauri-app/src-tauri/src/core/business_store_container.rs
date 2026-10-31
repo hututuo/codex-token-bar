@@ -994,6 +994,27 @@ impl Container {
         source: &StoreSpec,
         target: &StoreSpec,
     ) -> BusinessStoreResult<StoreProof> {
+        // Match verified snapshot import: tables are not necessarily emitted
+        // in FK dependency order, and cycles cannot be topologically sorted.
+        // Disable enforcement on this private handle only, prove every target
+        // FK before commit, then restore the caller's setting on every exit.
+        let foreign_keys: bool = self.connection.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
+        self.connection.execute_batch("PRAGMA foreign_keys=OFF")?;
+        let result = self.clone_store_namespace_inner(source, target);
+        let restored = self.connection.execute_batch(if foreign_keys {
+            "PRAGMA foreign_keys=ON"
+        } else {
+            "PRAGMA foreign_keys=OFF"
+        });
+        restored?;
+        result
+    }
+
+    fn clone_store_namespace_inner(
+        &mut self,
+        source: &StoreSpec,
+        target: &StoreSpec,
+    ) -> BusinessStoreResult<StoreProof> {
         self.ensure_registered(source)?;
         if source.id == target.id {
             return Err(BusinessStoreError::InvalidStore);
@@ -1070,6 +1091,11 @@ impl Container {
         if actual != source_proof {
             return Err(BusinessStoreError::ProofMismatch);
         }
+        let broken: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM pragma_foreign_key_check WHERE substr(\"table\",1,?1)=?2",
+            params![target.prefix.len() as i64, target.prefix], |r| r.get(0),
+        )?;
+        if broken != 0 { return Err(BusinessStoreError::ProofMismatch); }
         tx.commit()?;
         Ok(actual)
     }
@@ -2194,6 +2220,31 @@ mod tests {
 
     fn store(path: &Path, source: &str) -> StoreSpec {
         StoreSpec::new("usage", source, path.to_string_lossy().to_string()).unwrap()
+    }
+
+    #[test]
+    fn namespace_clone_preserves_cyclic_foreign_keys_and_rolls_back_invalid_copy() {
+        let fixture = Fixture::new();
+        let original = fixture.path("cyclic.sqlite");
+        let raw = Connection::open(&original).unwrap();
+        raw.execute_batch("PRAGMA foreign_keys=OFF; CREATE TABLE a_child(id INTEGER PRIMARY KEY,parent_id INTEGER NOT NULL REFERENCES z_parent(id)); CREATE TABLE z_parent(id INTEGER PRIMARY KEY,child_id INTEGER NOT NULL REFERENCES a_child(id)); INSERT INTO a_child VALUES(11,22); INSERT INTO z_parent VALUES(22,11);").unwrap();
+        drop(raw);
+        let before = fs::read(&original).unwrap();
+        let source = store(&fixture.path("source"), "source");
+        let target = store(&fixture.path("target"), "target");
+        let mut container = Container::open(fixture.path("a.sqlite")).unwrap();
+        container.import_snapshot(&original, &source, fixture.path("backup.sqlite"), 1.0, false).unwrap();
+        let proof = container.proof(&source).unwrap();
+        assert_eq!(container.clone_store_namespace(&source, &target).unwrap(), proof);
+        assert_eq!(container.proof(&target).unwrap(), proof);
+        assert_eq!(container.connection.query_row("PRAGMA foreign_keys", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        // Corrupt only a synthetic source namespace. The rejected copy must
+        // preserve the already-good target and restore FK enforcement.
+        container.connection.execute_batch(&format!("PRAGMA foreign_keys=OFF; INSERT INTO {}a_child VALUES(33,999); PRAGMA foreign_keys=ON;", source.prefix)).unwrap();
+        assert!(container.clone_store_namespace(&source, &target).is_err());
+        assert_eq!(container.proof(&target).unwrap(), proof);
+        assert_eq!(container.connection.query_row("PRAGMA foreign_keys", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(fs::read(&original).unwrap(), before);
     }
 
     fn create_source(path: &Path, version: i64, id: i64, text: &str) -> Connection {
