@@ -747,35 +747,26 @@ mod tests {
 
     #[test]
     #[ignore = "dedicated workflow provides actual public-release inputs"]
-    fn actual_v097_pending_source_disappearance_blocks_and_retries() {
+    fn actual_v097_pending_source_disappearance_recovers_verified_snapshot() {
         isolated(|root, old| {
             let source = root.join("old14.sqlite3");
             fs::copy(old.join("exact/a.sqlite3"), &source).unwrap();
             import_exact(&source).unwrap();
-            let saved = root.join("parked.sqlite3");
-            fs::rename(&source, &saved).unwrap();
-            assert!(route::bootstrap().is_err());
-            assert!(!PathBuf::from(format!(
-                "{}.initialized",
-                route::container_path().unwrap().display()
-            ))
-            .exists());
-            fs::rename(saved, &source).unwrap();
+            // A changed but covering source is accepted while the batch is
+            // unfinished, and its previous snapshot remains retained.
             let db = Connection::open(&source).unwrap();
-            db.execute(
-                "INSERT INTO metadata(key,value) VALUES('release097_late_source','observed')",
-                [],
-            )
-            .unwrap();
+            db.execute("INSERT INTO metadata(key,value) VALUES('release097_late_source','observed')", []).unwrap();
             drop(db);
             import_exact(&source).unwrap();
+            let saved = root.join("parked.sqlite3");
+            fs::rename(&source, &saved).unwrap();
+            // Discovery cannot see the physical original now. The v2 batch
+            // must resume using only its explicitly bound SQLite snapshot.
             route::bootstrap().unwrap();
-            verify_export(
-                &source,
-                &exact_spec(&source).unwrap(),
-                &root.join("recovered.sqlite3"),
-            )
-            .unwrap();
+            assert!(PathBuf::from(format!("{}.initialized", route::container_path().unwrap().display())).exists());
+            assert!(!source.exists(), "Recovery must never recreate an old writer");
+            verify_export(&saved, &exact_spec(&source).unwrap(), &root.join("recovered.sqlite3")).unwrap();
+            route::bootstrap().unwrap();
             println!("V097_RUST_PENDING_RETRY_OK");
         });
     }
