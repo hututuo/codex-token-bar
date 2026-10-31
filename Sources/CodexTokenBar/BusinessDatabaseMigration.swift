@@ -71,6 +71,7 @@ final class BusinessDatabaseMigration {
         /// An unsupported source is retained verbatim, never rebuilt. Opening
         /// that particular Home still enforces its existing version gate.
         let normalizationDeferredReason: String?
+        let normalizationRevision: Int?
     }
     enum Failure: LocalizedError {
         case runningWriter, unsafeInput(String), insufficientSpace, incompleteActivation, unmigratedInput(String), untrackedInterruptedImport
@@ -183,7 +184,8 @@ final class BusinessDatabaseMigration {
             let store = BusinessSQLiteStore(containerURL: working, logicalURL: input.store.logicalURL, module: input.store.module, sourceIdentity: input.store.sourceIdentity)
             let folder = configuration.backups.appendingPathComponent(store.id, isDirectory: true)
             try fileManager.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            let attempt = UUID().uuidString
+            let reusable = try reusableAttempt(input: input, folder: folder, fileManager: fileManager)
+            let attempt = reusable.map { URL(fileURLWithPath: $0.backupPath).deletingPathExtension().lastPathComponent.replacingOccurrences(of: "original-", with: "") } ?? UUID().uuidString
             let backup = folder.appendingPathComponent("original-\(attempt).sqlite")
             if !fileManager.fileExists(atPath: backup.path) {
                 // sqlite3_backup observes a consistent WAL snapshot. No raw
@@ -201,41 +203,44 @@ final class BusinessDatabaseMigration {
             if !fileManager.fileExists(atPath: normalized.path) {
                 try SQLiteDatabaseDriver(url: normalized, bypassBusinessRoutes: true).withConnection { try $0.restoreDatabase(from: backup) }
             }
-            var normalizationDeferredReason: String?
-            if store.module == "exact.swift" || store.module == "exact.swift.retired" {
-                do {
-                    try CodexUsageHistoryIndex.prepareBusinessSnapshot(at: normalized)
-                } catch let error as CodexUsageIndexUpgradeRequiredError {
-                    // Every old Home is collected, including dormant Homes
-                    // from an older/newer app. Their version must not prevent
-                    // an unrelated, supported Home from starting. Restore the
-                    // untouched snapshot before importing it; do not weaken
-                    // the per-Home reader's fail-closed compatibility checks.
-                    try SQLiteDatabaseDriver(url: normalized, bypassBusinessRoutes: true)
-                        .withConnection { try $0.restoreDatabase(from: backup) }
-                    normalizationDeferredReason = error.localizedDescription
+            var normalizationDeferredReason = reusable?.normalizationDeferredReason
+            if reusable == nil {
+                if store.module == "exact.swift" || store.module == "exact.swift.retired" {
+                    do {
+                        try CodexUsageHistoryIndex.prepareBusinessSnapshot(at: normalized)
+                    } catch let error as CodexUsageIndexUpgradeRequiredError {
+                        // Every old Home is collected, including dormant Homes
+                        // from an older/newer app. Their version must not prevent
+                        // an unrelated, supported Home from starting. Restore the
+                        // untouched snapshot before importing it; do not weaken
+                        // the per-Home reader's fail-closed compatibility checks.
+                        try SQLiteDatabaseDriver(url: normalized, bypassBusinessRoutes: true)
+                            .withConnection { try $0.restoreDatabase(from: backup) }
+                        normalizationDeferredReason = error.localizedDescription
+                    }
                 }
-            }
-            if store.module == "exact.swift.stage" {
-                let normalizedDB = SQLiteDatabaseDriver(url: normalized, bypassBusinessRoutes: true)
-                try normalizedDB.withConnection { connection in
-                    let tables = try connection.readRows("SELECT name FROM sqlite_master WHERE type='table'") { $0.text(0) ?? "" }
-                    if tables.contains("manifest") {
-                        let columns = Set(try connection.readRows("PRAGMA table_info(manifest)") { $0.text(1) ?? "" })
-                        if columns.isSuperset(of: ["complete", "actual_bytes"]),
-                           try connection.readRows("SELECT complete FROM manifest", map: { $0.int(0) }).first == 1 {
-                            let bytes = try BusinessStoreFiles.footprint(connection)
-                            try connection.execute("UPDATE manifest SET actual_bytes=?", bindings: [.int64(Int64(bytes))])
+                if store.module == "exact.swift.stage" {
+                    let normalizedDB = SQLiteDatabaseDriver(url: normalized, bypassBusinessRoutes: true)
+                    try normalizedDB.withConnection { connection in
+                        let tables = try connection.readRows("SELECT name FROM sqlite_master WHERE type='table'") { $0.text(0) ?? "" }
+                        if tables.contains("manifest") {
+                            let columns = Set(try connection.readRows("PRAGMA table_info(manifest)") { $0.text(1) ?? "" })
+                            if columns.isSuperset(of: ["complete", "actual_bytes"]),
+                               try connection.readRows("SELECT complete FROM manifest", map: { $0.int(0) }).first == 1 {
+                                let bytes = try BusinessStoreFiles.footprint(connection)
+                                try connection.execute("UPDATE manifest SET actual_bytes=?", bindings: [.int64(Int64(bytes))])
+                            }
                         }
                     }
                 }
+                try SQLiteDatabaseDriver(url: normalized, bypassBusinessRoutes: true).withConnection { connection in
+                    _ = try connection.readRows("PRAGMA wal_checkpoint(TRUNCATE)") { $0.int(0) }
+                    _ = try connection.readRows("PRAGMA journal_mode=DELETE") { $0.text(0) }
+                }
+                try synchronize(normalized)
             }
-            try SQLiteDatabaseDriver(url: normalized, bypassBusinessRoutes: true).withConnection { connection in
-                _ = try connection.readRows("PRAGMA wal_checkpoint(TRUNCATE)") { $0.int(0) }
-                _ = try connection.readRows("PRAGMA journal_mode=DELETE") { $0.text(0) }
-            }
-            try synchronize(normalized)
             let imported = try database.importSnapshot(normalized, into: store, backupURL: backup, replaceExisting: !exists || journal[input.source.path] != nil)
+            if let reusable, imported != reusable.imported { throw BusinessStoreError.sourceChanged }
             try fileManager.setAttributes([.posixPermissions: 0o400], ofItemAtPath: normalized.path)
             if store.module == "exact.swift.stage" {
                 try database.driver.withConnection { connection in
@@ -251,7 +256,7 @@ final class BusinessDatabaseMigration {
                     .text(original.schemaDigest + ":" + original.rowsDigest), .text(backup.path)])
             let receipt = Receipt(sourcePath: input.source.path, backupPath: backup.path, normalizedPath: normalized.path,
                 storeID: store.id, original: original, imported: imported,
-                normalizationDeferredReason: normalizationDeferredReason)
+                normalizationDeferredReason: normalizationDeferredReason, normalizationRevision: normalizationRevision)
             let json = try JSONEncoder().encode(receipt)
             try json.write(to: folder.appendingPathComponent("receipt.json"), options: .atomic)
             try synchronize(folder.appendingPathComponent("receipt.json"))
@@ -309,6 +314,39 @@ final class BusinessDatabaseMigration {
         }
         BusinessSQLiteRoutes.activate(configuration, stores: stores)
     }
+    // Bump when normalization semantics change. Old/unversioned receipts are
+    // preserved, but never reused as if produced by the current normalizer.
+    private static let normalizationRevision = 1
+
+    private static func reusableAttempt(input: Input, folder: URL, fileManager: FileManager) throws -> Receipt? {
+        let receiptURL = folder.appendingPathComponent("receipt.json")
+        guard let data = try? Data(contentsOf: receiptURL),
+              let receipt = try? JSONDecoder().decode(Receipt.self, from: data),
+              receipt.normalizationRevision == normalizationRevision,
+              receipt.sourcePath == input.source.path, receipt.storeID == input.store.id else { return nil }
+        let original = URL(fileURLWithPath: receipt.backupPath).standardizedFileURL
+        let normalized = URL(fileURLWithPath: receipt.normalizedPath).standardizedFileURL
+        let name = original.deletingPathExtension().lastPathComponent
+        guard original.pathExtension == "sqlite", name.hasPrefix("original-"),
+              UUID(uuidString: String(name.dropFirst("original-".count))) != nil,
+              original.deletingLastPathComponent() == folder.standardizedFileURL,
+              normalized == folder.appendingPathComponent("normalized-" + String(name.dropFirst("original-".count)) + ".sqlite").standardizedFileURL else { return nil }
+        for url in [folder, receiptURL, original, normalized] {
+            guard let attributes = try? fileManager.attributesOfItem(atPath: url.path),
+                  attributes[.type] as? FileAttributeType == (url == folder ? .typeDirectory : .typeRegular) else { return nil }
+        }
+        let readProof: (URL) throws -> BusinessStoreProof = { url in
+            try SQLiteDatabaseDriver(url: url, readOnly: true, createsFileIfMissing: false, bypassBusinessRoutes: true)
+                .withConnection { try CodexBusinessDatabase.proof($0) }
+        }
+        // An invalid or interrupted backup is left intact and a fresh attempt
+        // is built. A changed input must never reuse its older snapshot.
+        guard let sourceProof = try? readProof(input.source), sourceProof == receipt.original,
+              let originalProof = try? readProof(original), originalProof == receipt.original,
+              let normalizedProof = try? readProof(normalized), normalizedProof == receipt.imported else { return nil }
+        return receipt
+    }
+
     private struct Input { let source: URL; let store: BusinessSQLiteStore }
     /// fileExists conflates ENOENT with EACCES. Only a genuinely absent root
     /// may be skipped: otherwise activation could silently omit old accounts.

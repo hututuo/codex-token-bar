@@ -3,6 +3,40 @@ import XCTest
 @testable import CodexTokenBar
 
 final class BusinessDatabaseMigrationTests: XCTestCase {
+    func testUnchangedInterruptedMigrationReusesVerifiedSnapshotPair() throws {
+        let (_, c) = try fixture()
+        let source = c.support.appendingPathComponent("quota-history.sqlite")
+        try SQLiteDatabaseDriver(url: source).execute("CREATE TABLE samples(id INTEGER PRIMARY KEY); INSERT INTO samples VALUES(77)")
+        enum Stop: Error { case now }
+        for _ in 0..<3 {
+            XCTAssertThrowsError(try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32, beforeActivation: { throw Stop.now }))
+        }
+        let files = try FileManager.default.subpathsOfDirectory(atPath: c.backups.path)
+        XCTAssertEqual(files.filter { $0.contains("original-") && $0.hasSuffix(".sqlite") }.count, 1)
+        XCTAssertEqual(files.filter { $0.contains("normalized-") && $0.hasSuffix(".sqlite") }.count, 1)
+        try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32)
+        XCTAssertEqual(try SQLiteDatabaseDriver(url: source).readRows("SELECT id FROM samples") { $0.int(0)! }, [77])
+    }
+
+    func testReceiptWithOutsideSnapshotPathIsNotReusedOrModified() throws {
+        let (root, c) = try fixture()
+        let source = c.support.appendingPathComponent("quota-history.sqlite")
+        try SQLiteDatabaseDriver(url: source).execute("CREATE TABLE samples(id INTEGER PRIMARY KEY); INSERT INTO samples VALUES(88)")
+        enum Stop: Error { case now }
+        XCTAssertThrowsError(try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32, beforeActivation: { throw Stop.now }))
+        let outside = root.appendingPathComponent("user-file.sqlite")
+        let bytes = Data("unrelated user data".utf8)
+        try bytes.write(to: outside)
+        let receiptPath = try XCTUnwrap(FileManager.default.subpathsOfDirectory(atPath: c.backups.path).first { $0.hasSuffix("receipt.json") })
+        let url = c.backups.appendingPathComponent(receiptPath)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        object["backupPath"] = outside.path
+        try JSONSerialization.data(withJSONObject: object).write(to: url)
+        try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32)
+        XCTAssertEqual(try Data(contentsOf: outside), bytes)
+        XCTAssertEqual(try SQLiteDatabaseDriver(url: source).readRows("SELECT id FROM samples") { $0.int(0)! }, [88])
+    }
+
     private func fixture() throws -> (URL, BusinessDatabaseMigration.Configuration) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("business-migration-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
