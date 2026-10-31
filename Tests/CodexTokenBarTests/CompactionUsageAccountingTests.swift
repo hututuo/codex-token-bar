@@ -24,6 +24,11 @@ final class CompactionUsageAccountingTests: XCTestCase {
         XCTAssertTrue(state.observeLegacy(last:record().components,counted:true))
         XCTAssertFalse(state.observeLegacy(last:record().components,counted:true))
     }
+    func testInlineCompactionFallbackAlsoSuppressesItsFollowingLegacyMirror() throws {
+        var state=CodexCompactionAccounting()
+        state.markEmitted(try XCTUnwrap(state.compact(record())))
+        XCTAssertTrue(state.observeLegacy(last:record().components,counted:true))
+    }
     func testLegacyMirrorBeforeMarkerKeepsOriginalLegacyIdentity() {
         var state=CodexCompactionAccounting()
         _=state.remember(record())

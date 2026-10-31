@@ -43,6 +43,7 @@ struct CodexCompactionAccounting: Codable, Equatable {
 
     mutating func compact(_ fallback: Record) -> Record? {
         anchorNextEmptyLegacy = true
+        lastModernID = fallback.responseID
         if let i = recent.firstIndex(where: { $0.responseID == fallback.responseID }) {
             guard !recent[i].compacted else { return nil }
             recent[i].compacted = true

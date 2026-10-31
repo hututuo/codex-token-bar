@@ -53,10 +53,22 @@ final class CompactionUsageIntegrationTests: XCTestCase {
             XCTAssertEqual(result.filter{$0.accountingKind == .counted}.count,1)
         }
     }
+    func testInlineOnlyCompactionAndFollowingMirrorCountOnce() throws {
+        let inline=try line("compacted",["compaction_response_id":"resp_compact",
+            "latest_token_usage_record":["response_id":"resp_compact","usage":usage]],ordinal:21)
+        let result=try parse([inline,legacy(last:usage,total:usage)])
+        XCTAssertEqual(result.reduce(0){$0+$1.event.tokens},334108)
+    }
     func testLatestOfDifferentResponseIsUnknownRatherThanInventedUsage() throws {
         let wrong=try line("compacted",["compaction_response_id":"resp_missing",
             "latest_token_usage_record":["response_id":"resp_other","usage":usage]],ordinal:21)
         let result=try parse([wrong])
+        XCTAssertEqual(result.count,1)
+        XCTAssertEqual(result.first?.accountingKind,.unreportedCompaction)
+        XCTAssertEqual(result.first?.event.tokens,0)
+    }
+    func testMarkerWithoutResponseIDRetainsUnknownUsageEvidence() throws {
+        let result=try parse([line("compacted",[:],ordinal:21)])
         XCTAssertEqual(result.count,1)
         XCTAssertEqual(result.first?.accountingKind,.unreportedCompaction)
         XCTAssertEqual(result.first?.event.tokens,0)

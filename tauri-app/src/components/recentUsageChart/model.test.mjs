@@ -1376,3 +1376,23 @@ test("aggregate client usage cannot inflate Codex cost or quota attribution", as
  const selection=quotaConsumptionSelection(data,0,1,"gpt56Sol");assert.equal(selection.inputTokens,100);
  assert.equal(all[0].tokens,100000,"display aggregate is not overwritten by the provider basis");
 });
+
+
+test("missing compaction usage blocks quota extrapolation without erasing recorded cost", () => {
+  const data = prepareRecentChartData("24h", {
+    recentUsage24h: [
+      point(0, { inputTokens: 100000, tokens: 100000, calls: 1, fiveHourRemainingPercent: 0.8, sevenDayRemainingPercent: 0.9 }),
+      point(300, { inputTokens: 100000, tokens: 100000, calls: 1, fiveHourRemainingPercent: 0.75, sevenDayRemainingPercent: 0.88 }),
+      point(600, { inputTokens: 100000, tokens: 100000, calls: 1, fiveHourRemainingPercent: 0.7, sevenDayRemainingPercent: 0.86 }),
+    ], recentUsage7d: [], recentUsage30d: [],
+  });
+  const complete = quotaConsumptionSelection(data, 0, 2, "gpt55");
+  const incomplete = quotaConsumptionSelection(data, 0, 2, "gpt55", { unreportedCompactionUnix: [450] });
+  assert.ok(complete?.sevenDay.impliedWindowBudgetUSD > 0);
+  assert.equal(incomplete?.sevenDay.impliedWindowBudgetUSD, null);
+  assert.equal(incomplete?.fiveHour.impliedWindowBudgetUSD, null);
+  assert.equal(incomplete?.sevenDay.confidence, "incompleteUsage");
+  assert.equal(incomplete?.sevenDay.selectedCostUSD, complete?.sevenDay.selectedCostUSD);
+  const outside = quotaConsumptionSelection(data, 0, 2, "gpt55", { unreportedCompactionUnix: [1000] });
+  assert.equal(outside?.sevenDay.confidence, complete?.sevenDay.confidence);
+});

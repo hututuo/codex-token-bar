@@ -119,4 +119,34 @@ final class UsageEventLedgerTests: XCTestCase {
         }
         XCTAssertEqual(try total(db),100)
     }
+    func testLateCompactionUsageResolvesUnknownWithAnAuditedStableLedgerID() throws {
+        let db=try fixture()
+        let fingerprint=try CodexUsageAnalyzer.UsageSnapshotFingerprint(
+            identityDigest:Array(repeating:UInt8(7),count:32),requestIdentity:true).databaseValue
+        func candidate(_ kind:Int64,_ amount:Int64,_ offset:Int64) -> UsageEventLedger.Candidate {
+            .init(rawOffset:offset,timestamp:2000,tokens:amount,input:amount,cached:0,output:0,reasoning:0,
+                model:"known-model",promptOffset:10,assistantOffset:15,accountingKind:kind,
+                reported:kind == 4 ? nil:amount,legacy:nil,fingerprint:fingerprint)
+        }
+        var stableID:Int64=0
+        try db.transaction { tx in
+            guard case .inserted(let id)=try UsageEventLedger.admit(candidate(4,0,300),source:1,
+                generation:"unknown",admission:.newConsumption,on:tx) else { return XCTFail("retain unknown observation") }
+            stableID=id
+        }
+        XCTAssertEqual(try total(db),100)
+        try db.transaction { tx in
+            guard case .associated(let id)=try UsageEventLedger.admit(candidate(0,334108,400),source:1,
+                generation:"late",admission:.newConsumption,on:tx) else { return XCTFail("resolve exact response ID") }
+            XCTAssertEqual(id,stableID)
+        }
+        XCTAssertEqual(try total(db),334208)
+        XCTAssertEqual(try db.readRows("SELECT old_tokens || ':' || new_tokens FROM usage_ledger_corrections") { $0.text(0) }.first,"0:334108")
+        try db.transaction { tx in
+            _=try UsageEventLedger.admit(candidate(0,334108,400),source:1,generation:"replay",admission:.reconcile,on:tx)
+        }
+        XCTAssertEqual(try total(db),334208)
+        XCTAssertEqual(try db.readRows("SELECT COUNT(*) FROM usage_ledger_corrections") { $0.int(0) }.first,1)
+    }
+
 }

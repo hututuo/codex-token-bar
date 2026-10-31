@@ -60,7 +60,9 @@ import {
 import type { SharedAccountAttributionResult } from "./sharedAccountAttribution/model";
 import { modelUsageSlices } from "./modelUsagePresentation.ts";
 
+const NO_UNREPORTED_COMPACTIONS: readonly number[] = [];
 interface RecentUsageChartProps {
+  unreportedCompactionUnix?: readonly number[];
   pricingAvailable?: boolean;
   quotaCostSeries?: { recentUsage24h: RecentUsagePoint[]; recentUsage7d: RecentUsagePoint[]; recentUsage30d: RecentUsagePoint[] };
   recentUsage24h: RecentUsagePoint[];
@@ -105,6 +107,7 @@ function useChartBubbleWidth(fallbackWidth: number) {
 }
 
 export function RecentUsageChart({
+  unreportedCompactionUnix = NO_UNREPORTED_COMPACTIONS,
   pricingAvailable = true,
   quotaCostSeries,
   recentUsage24h,
@@ -273,11 +276,12 @@ export function RecentUsageChart({
   const consumptionSelection = useMemo(() => (
     quotaSelectionState.startIndex !== null && quotaEndIndex !== null
       ? quotaConsumptionSelection(quotaData, quotaSelectionState.startIndex, quotaEndIndex, quotaModel, {
+        unreportedCompactionUnix,
         fiveHour: { resetAtUnix: fiveHourResetAtUnix, periodSeconds: 5 * 60 * 60 },
         sevenDay: { resetAtUnix: sevenDayResetAtUnix, periodSeconds: 7 * 24 * 60 * 60 },
       })
       : null
-  ), [quotaData, quotaSelectionState.startIndex, quotaEndIndex, quotaModel, fiveHourResetAtUnix, sevenDayResetAtUnix]);
+  ), [quotaData, quotaSelectionState.startIndex, quotaEndIndex, quotaModel, fiveHourResetAtUnix, sevenDayResetAtUnix, unreportedCompactionUnix]);
   const selectionAttribution = useMemo(() => fixedSelectionEndIndex !== null
     && consumptionSelection !== null
     ? quotaSelectionAttribution(consumptionSelection, sharedAccountAttribution)
@@ -1348,6 +1352,8 @@ function estimateText(estimate: QuotaConsumptionEstimate, title: string, isQuota
       return `${moneyText(estimate.impliedWindowBudgetUSD)} · 降 ${oneDecimalPercent(estimate.quotaDropPercent)}${boundaryNote}${excludedNote}`;
     case "insufficientQuotaMovement":
       return `降 ${oneDecimalPercent(estimate.quotaDropPercent)} · 不反推${boundaryNote}${excludedNote}`;
+    case "incompleteUsage":
+      return "压缩用量缺失 · 不反推";
     case "noTokenUsage":
       return `无可比用量${excludedNote}`;
   }

@@ -75,4 +75,26 @@ final class QuotaCycleLedgerReadTests: XCTestCase {
             XCTAssertEqual(physical, 3)
         }
     }
+    func testMissingCompactionUsageCannotCertifyZeroConsumptionAndKeepsKnownCycleAmounts() throws {
+        try fixture { index,driver in
+            let state=try index.attributionState()
+            try driver.withConnection { db in
+                try UsageIndexCoverageCertificate.publish(epoch:state.provenanceEpoch,generation:state.generation,
+                    scanID:"complete-files-but-unknown-usage",observedAt:Date(timeIntervalSince1970:300),sourceCount:1,on:db)
+                try db.execute("""
+                    INSERT INTO events(source_id,source_offset,timestamp,tokens,input_tokens,cached_input_tokens,
+                        output_tokens,reasoning_output_tokens,accounting_kind)
+                    VALUES(1,4,250,0,0,0,0,0,4)
+                    """)
+            }
+            XCTAssertEqual(try index.cycleConsumption(after:Date(timeIntervalSince1970:200),through:Date(timeIntervalSince1970:300)),.unknown)
+            XCTAssertTrue(try index.cycleExactUsage(provenanceEpoch:state.provenanceEpoch,generation:state.generation,
+                from:Date(timeIntervalSince1970:200),before:Date(timeIntervalSince1970:300)).isEmpty)
+            XCTAssertEqual(try index.unreportedCompactionDates().map { $0.timeIntervalSince1970 },[250])
+            // Known earlier consumption remains readable and physically untouched.
+            XCTAssertEqual(try index.cycleExactUsage(provenanceEpoch:state.provenanceEpoch,generation:state.generation,
+                from:Date(timeIntervalSince1970:99),before:Date(timeIntervalSince1970:102)).reduce(0) { $0+$1.breakdown.totalTokens },660)
+        }
+    }
+
 }

@@ -280,7 +280,11 @@ extension CodexUsageAnalyzer {
         func modernRecord(_ payload: [String:Any], offset: UInt64, timestamp: Date, ordinal: UInt64?, rejecting: Set<String> = []) -> CodexCompactionAccounting.Record? {
             guard let id = payload["response_id"] as? String, !id.isEmpty else { return nil }
             let parsed = parseTokenUsage(payload["usage"] as? [String:Any], rejecting: rejecting)
-            let c = parsed.flatMap { $0.accounting.usable ? $0.accounting.components : nil }
+            let c = parsed.flatMap { usage -> UsageAccountingComponents? in
+                guard usage.accounting.usable,
+                      usage.accounting.components.total > 0 || (usage.accounting.reportedTotal ?? 0) == 0 else { return nil }
+                return usage.accounting.components
+            }
             let write = (payload["usage"] as? [String:Any])?["cache_write_input_tokens"] as? Int
             return .init(responseID:id,timestamp:timestamp.timeIntervalSince1970,components:c,
                 cacheWriteInputTokens:write,reportedTotal:parsed?.accounting.reportedTotal,ordinal:ordinal,
@@ -373,7 +377,12 @@ extension CodexUsageAnalyzer {
                             return
                         }
                         if root["type"] as? String == "compacted" {
-                            guard try owned(ordinal), let id = payload["compaction_response_id"] as? String, !id.isEmpty else { return }
+                            guard try owned(ordinal) else { return }
+                            let reportedID = payload["compaction_response_id"] as? String
+                            // Old compacted entries without an ID are unknown usage,
+                            // not a free request. Give the observation a stable local key.
+                            let id = reportedID.flatMap { $0.isEmpty ? nil : $0 }
+                                ?? "missing-compaction-id|\(sessionID)|\(lineOffset)"
                             let latest = payload["latest_token_usage_record"] as? [String:Any]
                             var item = latest.flatMap { $0["response_id"] as? String == id
                                 ? modernRecord($0,offset:lineOffset,timestamp:timestamp,ordinal:ordinal,

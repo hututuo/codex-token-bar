@@ -40,6 +40,7 @@ function DashboardAnalyticsSectionView({ dashboard, originalCodex, clients, allo
       modelCostDataAvailable={modelCostProjectionAvailable(source.activityDays, source.preciseRecentUsageFresh)}
     />
     <RecentUsageChart
+      unreportedCompactionUnix={includesCodex ? codex.stats.unreportedCompactionUnix : undefined}
       pricingAvailable={includesCodex}
       quotaCostSeries={aggregate && includesCodex ? codex : undefined}
       fiveHourQuotaPresent={includesCodex && codex.quota.fiveHour.availability !== "absent"}

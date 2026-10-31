@@ -54,6 +54,8 @@ export interface DashboardPayloadLineage {
 }
 
 export interface DashboardStats {
+  /** Observed compaction response IDs without reported usage; never measured zero. */
+  unreportedCompactionUnix?: number[];
   totalTokens: number;
   peakDayTokens: number;
   peakThreadTokens: number;

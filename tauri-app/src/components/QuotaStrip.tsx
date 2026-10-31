@@ -85,7 +85,9 @@ import { quotaReadWarnings, quotaRefreshAttemptStatus } from "./quota/quotaWarni
 import { quotaPaceAccent, semanticMetricColor } from "../styles/semanticColors";
 import { hasStaleAccountQuotaData } from "../state/dashboardWarnings";
 
+const NO_COMPACTION_GAPS: readonly number[] = [];
 interface QuotaStripProps {
+  unreportedCompactionUnix?: readonly number[];
   clientItems?: QuotaItem[];
   clientPlanLabels?: Record<string, string>;
   includesCodex?: boolean;
@@ -448,6 +450,7 @@ function SharedAccountAttributionDetail({
 }
 
 function QuotaStripView({
+  unreportedCompactionUnix = NO_COMPACTION_GAPS,
   clientPlanLabels,
   attributionIdentity = null,
   onAttributionPreciseRefreshNeeded,
@@ -1180,7 +1183,8 @@ function QuotaStripView({
     scannedBoundaryBuckets: bucketMerge.scannedBoundaryBuckets,
     usagePendingQuotaRefresh: bucketMerge.hasPendingUsage,
     historyChangedLowConfidence: bucketMerge.usedHistoricalHighWater,
-    localHistoryAmbiguous: bucketMerge.ambiguityDetected,
+    localHistoryAmbiguous: bucketMerge.ambiguityDetected
+      || unreportedCompactionUnix.some((at) => Number.isFinite(at) && at >= nowUnix - 7 * 86400 && at <= nowUnix),
     quotaDataStale,
     radarDataStale,
     sevenDayQuota: snapshot.sevenDay,
@@ -1199,6 +1203,7 @@ function QuotaStripView({
     attributionStorageReadsHealthy,
     continuityState.gap,
     bucketMerge.ambiguityDetected,
+    unreportedCompactionUnix,
     bucketMerge.changed,
     bucketMerge.effectiveBuckets,
     bucketMerge.hasPendingUsage,

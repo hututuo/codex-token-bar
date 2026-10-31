@@ -1136,6 +1136,14 @@ struct DashboardView: View {
             AgentSpeedReportingDashboardStatus(errorsOnly: true)
             MultiClientDiscoveryNotice()
 
+            if allowedClients.contains("codex"), !store.snapshot.cacheUsage.unreportedCompactionDates.isEmpty {
+                Label("\(store.snapshot.cacheUsage.unreportedCompactionDates.count) 次压缩用量未报告 · Token 和金额仅含已记录部分", systemImage:"exclamationmark.circle")
+                    .font(.system(size:12,weight:.medium))
+                    .foregroundStyle(AppTheme.accentAmber)
+                    .frame(maxWidth:.infinity,alignment:.leading)
+                    .help("相关区间暂停额度反推；不会把缺失用量当作零，也不会改写原始日志。")
+            }
+
             if let upgrade = store.indexUpgradeRequired {
                 HStack(spacing: 14) {
                     Image(systemName: "exclamationmark.triangle.fill")

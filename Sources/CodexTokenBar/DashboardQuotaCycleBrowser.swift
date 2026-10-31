@@ -248,7 +248,9 @@ struct DashboardQuotaCycleBrowser: View {
                 fallbackModel: fallbackModel, dataAvailable: visibleResult != nil,
                 todayModelDisplayState: .pending, sevenDayDataAvailable: visibleResult != nil,
                 sevenDayModelDisplayState: visibleResult == nil ? .pending : (!history.isStale && request?.isCurrentResult(for: snapshot, preciseFresh: preciseFresh) == true && resultKey == request ? .current : .stale),
-                sevenDayEstimateSource: "该周期本机记录",
+                sevenDayEstimateSource: request.map { bounds in
+                    snapshot.cacheUsage.unreportedCompactionDates.contains { $0 >= bounds.outerStart && $0 < bounds.outerEnd }
+                } == true ? "已记录小计 · 压缩用量缺失" : "该周期本机记录",
                 sevenDayPendingRows: visibleResult?.unassignedRows ?? [],
                 sevenDayStatisticsThrough: visibleResult == nil ? nil : resultKey?.outerEnd, periodLabel: selected?.isCurrent == false ? "所选周期" : "本期",
                 cycles: cycles, selectedCycle: selected, cycleSummary: cycleSummary,
