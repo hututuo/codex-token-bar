@@ -3,6 +3,45 @@
     <channel>
         <title>Codex Token Bar</title>
         <item>
+            <title>0.9.8</title>
+            <pubDate>Sat, 31 Oct 2026 03:38:56 +0000</pubDate>
+            <sparkle:version>987</sparkle:version>
+            <sparkle:shortVersionString>0.9.8</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"># Codex Token Bar v0.9.8
+
+## 简体中文
+
+本次更新加入多客户端本地用量统计，并重点修复升级兼容、历史账本保留和图表计价。
+
+- 支持在 Codex、Claude CLI、Claude Desktop 与汇总范围之间切换；其他已支持客户端可按需启用。Claude 仅读取本地记录和已有额度缓存，不向 Anthropic 发起请求。
+- 保留 Codex 历史账本，新增客户端及测速数据独立存储。升级前保留备份；归档、删除或移动原始会话文件不会删除已经记录的历史用量。
+- 修复选区包含最后一个空时间格时金额突然跳涨的问题，使气泡、固定选区与明细使用同一份模型和用量快照。
+- 新增正文 TPS 明细与速度分布；活动速率曲线保留原始采样点。改进模型配色、侧栏设置、多屏拖动吸附和展开收起效果。
+- 提供可随时关闭、默认关闭的速蹬排行榜上报；只上报允许的统计字段，不上传对话内容或账号凭据。Claude 来源不参与上报。改善临时失败后的自动重试及 WebSocket 消息兼容。
+- 同步修复 Codex 分页子 Agent 继承记录重复计算、Claude Desktop 工具结束后继续估速，以及 Mac 跨夜恢复会话后未及时读取的问题。
+- 减少首页重复费用计算和数据库连接开销，增强旧版本升级、中断恢复、锁冲突和未知数据库版本的保护。
+
+额度查询需要本机已安装并登录 Codex；Claude 额度仅在本地有有效缓存时显示。macOS 14 起，Mac 包支持 Apple Silicon；Windows 提供 x64 和 ARM64。Mac 应用为 ad-hoc 签名、未公证；Windows 安装包无商业代码签名。自动更新分别验证 Sparkle 与 Tauri 更新签名。
+
+## English
+
+This update adds local multi-client usage statistics and focuses on upgrade compatibility, historical ledger retention, and chart pricing.
+
+- Switch between Codex, Claude CLI, Claude Desktop, and an aggregate view. Other supported clients can be enabled as needed. Claude reads only local records and existing quota caches; it makes no requests to Anthropic.
+- Retain the Codex ledger while storing additional clients and speed measurements separately. Preserve upgrade backups and recorded usage when original sessions are archived, deleted, or moved.
+- Fix the sudden cost increase when a selection includes the final empty chart bucket. Tooltips, pinned selections, and details use the same model and usage snapshot.
+- Add body-TPS details and speed distributions while retaining raw activity-rate samples. Improve model colors, sidebar settings, multi-monitor dragging and docking, and expansion transitions.
+- Offer optional leaderboard reporting, disabled by default and switchable at any time. Only permitted statistics are uploaded, never conversations or account credentials. Claude sources are excluded. Improve transient retries and WebSocket message compatibility.
+- Fix inherited-prefix accounting for paginated Codex subagents, lingering Claude Desktop estimates after tool-ended runs, and missed macOS updates when quiet sessions resume after midnight.
+- Reduce repeated homepage cost calculations and database connection overhead. Strengthen legacy upgrades, interrupted recovery, lock-contention handling, and unknown-version safeguards.
+
+Codex quota queries require a locally installed, signed-in Codex. Claude quota appears only when a valid local cache is available. Requires macOS 14 or newer; the Mac package is for Apple Silicon. Windows x64 and ARM64 packages are provided. The Mac app is ad-hoc signed and not notarized; Windows installers have no commercial code-signing certificate. Automatic updates verify their respective Sparkle and Tauri update signatures.
+</description>
+            <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.9.8/CodexTokenBar-v0.9.8-macos-arm64.app.zip" length="27640334" type="application/octet-stream" sparkle:edSignature="4wW15uv/F56cOlYSWH03dhZ3HGZIow1s6bRrSLMPg2rLjEm9a8hGikgNdhPQ7WERfARMeJ+bBYeZ7Wes+iqVAA==" />
+        </item>
+        <item>
             <title>0.9.7</title>
             <pubDate>Thu, 22 Oct 2026 13:26:50 +0800</pubDate>
             <sparkle:version>929</sparkle:version>
@@ -119,39 +158,6 @@ Windows 旧版更新器的行为由旧版程序决定。如自动更新失败，
 The old Windows executable controls its own updater behavior. If automatic updating fails, use this version's official installer in the original directory and check the version after launch. Keep local history data.
 </description>
             <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.9.4/CodexTokenBar-v0.9.4-macos-arm64.app.zip" length="13169570" type="application/octet-stream" sparkle:edSignature="KEBbJ3ekpmU4nIi53iEtHLtBsXQoWscCFLbStdCueJttKQxJNDxMDlJO1d4YzUPHcL34hFRcxAKWW3PKVBDSCQ==" />
-        </item>
-        <item>
-            <title>0.9.3</title>
-            <pubDate>Wed, 30 Sep 2026 16:46:59 +0000</pubDate>
-            <sparkle:version>903</sparkle:version>
-            <sparkle:shortVersionString>0.9.3</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"># Codex Token Bar v0.9.3
-
-## 简体中文
-
-- 增加 GPT-6.1 Sol 的模型识别、价格卡和显示选项，按 2026-09-29 起的标准 API 价格计算。
-
-- 额度改为直接请求官方接口，读取当前 Codex 登录对应的额度，不依赖模型服务商配置。
-- 增加 Reserve 储备额度展示：接口返回可识别的储备窗口时，单独显示其剩余额度和重置时间。
-- 低缓存命中提醒改为完整的二级侧栏面板，突出命中率、会话标题和排查提示；关闭按钮更明显，也可点击其他应用或在移入后移开鼠标收起。
-- 修复 macOS 提醒图标被裁切的问题，并同步 Windows 侧栏的关闭与显示行为。
-
-普通 API Key 不支持订阅额度查询；登录过期时，请先在 Codex 中重新登录。
-
-## English
-
-- Adds GPT-6.1 Sol model recognition, pricing, and display options using the standard API rates effective from September 29, 2026.
-
-- Quotas now come directly from the official endpoint for the current Codex login, independent of model-provider settings.
-- Adds a separate Reserve quota display, including remaining quota and reset times when the endpoint returns recognized Reserve windows.
-- Low-cache-hit alerts now use the full second-level sidebar, with a clear hit rate, session title, and troubleshooting guidance. Alerts have a more visible close button and can also be dismissed by clicking another app or leaving after entering the panel.
-- Fixes cropped alert icons on macOS and synchronizes sidebar display and dismissal behavior on Windows.
-
-Ordinary API keys cannot query subscription quotas. If the login expires, sign in again in Codex.
-</description>
-            <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.9.3/CodexTokenBar-v0.9.3-macos-arm64.app.zip" length="13052707" type="application/octet-stream" sparkle:edSignature="F5nDJpadOvVLIo8urNDGayUoNndAsawD3OHb3hSgB1vAEaN5Lq7swKavsyl/X0Yb1sOJBMkHwrf3k5vA+nL+AA==" />
         </item>
     </channel>
 </rss>
