@@ -80,8 +80,14 @@ final class BusinessDatabaseMigrationTests: XCTestCase {
         try protectedBytes.write(to: attemptURL, options: .atomic)
 
         XCTAssertThrowsError(try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32)) { error in
-            XCTAssertTrue(error.localizedDescription.contains(attemptURL.path),
-                          "A mismatched attempt receipt must be reported as the protected input")
+            guard let failure = error as? BusinessDatabaseMigration.Failure,
+                  case .unsafeInput(let path) = failure else {
+                XCTFail("Expected the protected attempt receipt, received: \(error)")
+                return
+            }
+            XCTAssertEqual(URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL,
+                           attemptURL.resolvingSymlinksInPath().standardizedFileURL,
+                           "The error must name the protected receipt even through /var aliases")
         }
         XCTAssertEqual(try Data(contentsOf: attemptURL), protectedBytes,
                        "Retry must not overwrite or repair a preexisting mismatched attempt receipt")
