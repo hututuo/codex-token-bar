@@ -1759,6 +1759,7 @@ fn summary_after_precise_sync(
         Some(file_contributions),
         Some(published_generation),
         aggregate_identity,
+        Some(index.unreported_compaction_unix()?),
     );
     store_usage_summary(signature.clone(), summary.clone());
     Ok(summary)
@@ -2360,6 +2361,9 @@ pub(super) struct SummaryFileContribution {
 pub struct TokenUsageSummarySnapshot {
     #[serde(flatten)]
     pub summary: TokenUsageSummary,
+    /// Missing on old payloads means unknown, not a proof that gaps cleared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unreported_compaction_unix: Option<Vec<i64>>,
     pub dashboard_revision: u64,
     pub aggregate_boundary_unix: i64,
     /// Exact source generation represented by this summary. This is distinct
@@ -3138,6 +3142,7 @@ struct DashboardUsageScope {
 struct CachedUsageSummary {
     signature: DashboardScanSignature,
     summary: TokenUsageSummary,
+    unreported_compaction_unix: Option<Vec<i64>>,
     generated_at: String,
     data_updated_at: Option<String>,
     file_contributions: Option<HashMap<String, SummaryFileContribution>>,
@@ -3247,6 +3252,7 @@ fn cached_dashboard_usage_summary_snapshot_at(
     {
         return Ok(Some(TokenUsageSummarySnapshot {
             summary: cached.summary,
+            unreported_compaction_unix: cached.unreported_compaction_unix,
             dashboard_revision: cached.signature.index_revision,
             aggregate_boundary_unix: cached.signature.aggregate_boundary_unix,
             exact_generation: cached.published_generation,
@@ -3290,6 +3296,7 @@ fn cached_dashboard_usage_summary_snapshot_at(
         .and_then(|cached| {
             let generated_at = cached.snapshot.as_ref()?.generated_at.clone();
             Some(TokenUsageSummarySnapshot {
+                unreported_compaction_unix: cached.snapshot.as_ref().map(|snapshot| snapshot.stats.unreported_compaction_unix.clone()),
                 summary: cached.summary,
                 dashboard_revision: cached.signature.index_revision,
                 aggregate_boundary_unix: cached.signature.aggregate_boundary_unix,
@@ -3682,7 +3689,8 @@ fn store_dashboard_aggregate_with_binding(
     summary: TokenUsageSummary,
     persistent_binding: Option<PersistentNumericCacheBinding>,
 ) -> Option<LocalDataWarning> {
-    store_usage_summary_cache(signature.clone(), summary.clone());
+    store_usage_summary_cache(signature.clone(), summary.clone(),
+        snapshot.as_ref().map(|snapshot| snapshot.stats.unreported_compaction_unix.clone()));
     let cache = DASHBOARD_AGGREGATE_CACHE
         .get_or_init(|| Mutex::new(DashboardAggregateCacheState::default()));
     let snapshot_complete = snapshot.as_ref().is_some_and(|snapshot| {
@@ -3786,6 +3794,7 @@ fn persistent_numeric_test_snapshot(summary: &TokenUsageSummary) -> DashboardSna
             total_output_tokens: 0,
             model_breakdowns: Vec::new(),
             first_usage_at: None,
+            unreported_compaction_unix: Vec::new(),
         },
         quota: placeholder_quota(),
         activity_days: Vec::new(),
@@ -3804,7 +3813,7 @@ fn store_usage_summary(signature: DashboardScanSignature, summary: TokenUsageSum
     // existing binding is carried forward instead of silently downgrading the
     // in-memory aggregate to an unbound snapshot.
     let _ = hydrate_dashboard_aggregate_cache_once();
-    store_usage_summary_cache(signature.clone(), summary.clone());
+    store_usage_summary_cache(signature.clone(), summary.clone(), None);
 
     let memory_snapshot = DASHBOARD_AGGREGATE_CACHE
         .get_or_init(|| Mutex::new(DashboardAggregateCacheState::default()))
@@ -3830,7 +3839,8 @@ fn store_usage_summary(signature: DashboardScanSignature, summary: TokenUsageSum
     }
 }
 
-fn store_usage_summary_cache(signature: DashboardScanSignature, summary: TokenUsageSummary) {
+fn store_usage_summary_cache(signature: DashboardScanSignature, summary: TokenUsageSummary,
+    unreported_compaction_unix: Option<Vec<i64>>) {
     let existing_contributions = USAGE_SUMMARY_CACHE
         .get_or_init(|| Mutex::new(None))
         .lock()
@@ -3871,6 +3881,10 @@ fn store_usage_summary_cache(signature: DashboardScanSignature, summary: TokenUs
                 .filter(|cached| cached.signature.usage_scope() == signature.usage_scope())
                 .and_then(|cached| cached.aggregate_identity.clone())
         });
+    let completeness = unreported_compaction_unix.or_else(|| USAGE_SUMMARY_CACHE
+        .get_or_init(|| Mutex::new(None)).lock().ok().and_then(|cached| cached.as_ref()
+            .filter(|cached| cached.signature.usage_scope() == signature.usage_scope())
+            .and_then(|cached| cached.unreported_compaction_unix.clone())));
     store_usage_summary_cache_with_contributions(
         signature,
         summary,
@@ -3878,6 +3892,7 @@ fn store_usage_summary_cache(signature: DashboardScanSignature, summary: TokenUs
         existing_contributions,
         existing_published_generation,
         existing_aggregate_identity,
+        completeness,
     );
 }
 
@@ -3888,12 +3903,14 @@ fn store_usage_summary_cache_with_contributions(
     file_contributions: Option<HashMap<String, SummaryFileContribution>>,
     published_generation: Option<u64>,
     aggregate_identity: Option<DashboardAggregateIdentity>,
+    unreported_compaction_unix: Option<Vec<i64>>,
 ) {
     let cache = USAGE_SUMMARY_CACHE.get_or_init(|| Mutex::new(None));
     if let Ok(mut guard) = cache.lock() {
         *guard = Some(CachedUsageSummary {
             signature,
             summary,
+            unreported_compaction_unix,
             generated_at: OffsetDateTime::now_utc()
                 .format(&Rfc3339)
                 .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into()),

@@ -2024,13 +2024,15 @@ final class CodexUsageStore: ObservableObject {
             totalOutputTokens: previous.stats.totalOutputTokens,
             firstUsageAt: previous.stats.firstUsageAt
         )
+        var cacheUsage = previous.cacheUsage
+        cacheUsage.unreportedCompactionDates = summary.unreportedCompactionDates
         return DashboardSnapshot(
             stats: stats,
             dailyUsage: previous.dailyUsage,
             recentBins: previous.recentBins,
             hourlyUsage: previous.hourlyUsage,
             pluginUsage: previous.pluginUsage,
-            cacheUsage: previous.cacheUsage,
+            cacheUsage: cacheUsage,
             usagePrecision: previous.usagePrecision,
             preciseTimeSeriesGeneratedAt: previous.preciseTimeSeriesGeneratedAt,
             generatedAt: summary.generatedAt,

@@ -56,6 +56,7 @@ enum UsageAccountingKind: Int, Codable, Sendable {
     case reportedOnly = 1
     case invalid = 2
     case legacyUnresolved = 3
+    case unreportedCompaction = 4
 }
 
 struct UsageAccountingResult {
@@ -68,6 +69,7 @@ struct UsageAccountingResult {
 /// absent legacy checkpoint is deliberately different from a fresh file.
 struct UsageAccountingState: Codable, Equatable, Sendable {
     static let revision = "codex-components-v1"
+    var compaction: CodexCompactionAccounting?
     var previous: UsageAccountingComponents?
     var unreflected = UsageAccountingComponents()
     var canStartFromZero = false
@@ -196,6 +198,11 @@ enum TokenUsageLexicalValidation {
             } else {
                 let start = index
                 while index < bytes.count && ![UInt8(9), 10, 13, 32, 44, 93, 125].contains(bytes[index]) { index += 1 }
+                if bytes[start..<index].elementsEqual([45,48]), fields.contains(path.last ?? ""),
+                   (path.count == 3 && path[0] == "payload" && path[1] == "usage"
+                    || path.count == 4 && path[0] == "payload" && path[1] == "latest_token_usage_record" && path[2] == "usage") {
+                    result["usage", default: []].insert(path.last!)
+                }
                 if bytes[start..<index].elementsEqual([45, 48]), path.count == 4,
                    path[0] == "payload", path[1] == "info",
                    ["last_token_usage", "total_token_usage"].contains(path[2]), fields.contains(path[3]) {

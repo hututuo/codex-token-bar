@@ -608,6 +608,7 @@ struct RecentChartPreparationInput: Equatable, Sendable {
     let quotaHourlyBins: [QuotaHistoryRecentBucket]
     var quotaCostSource: RecentChartQuotaCostSource? = nil
     var settledThrough: Date? = nil
+    var unreportedCompactionDates: [Date] = []
 }
 
 struct RecentChartPreparedData: Equatable, Sendable {
@@ -1339,6 +1340,7 @@ struct RecentUsageChart: View {
     let pricingAvailable: Bool
     let quotaCostSource: RecentChartQuotaCostSource?
     let settledThrough: Date?
+    let unreportedCompactionDates: [Date]
     let bins: [BinUsage]
     let hourlyBins: [BinUsage]
     let cacheRecentBins: [TokenCacheBucket]
@@ -1398,10 +1400,12 @@ struct RecentUsageChart: View {
         sharedAccountAttributionContext: QuotaSelectionAttributionContext? = nil,
         pricingAvailable: Bool = true,
         quotaCostSource: RecentChartQuotaCostSource? = nil,
-        settledThrough: Date? = nil
+        settledThrough: Date? = nil,
+        unreportedCompactionDates: [Date] = []
     ) {
         self.pricingAvailable = pricingAvailable
         self.quotaCostSource = quotaCostSource
+        self.unreportedCompactionDates = unreportedCompactionDates
         self.settledThrough = settledThrough
         self.bins = bins
         self.hourlyBins = hourlyBins
@@ -1497,7 +1501,8 @@ struct RecentUsageChart: View {
             quotaRecentBins: quotaRecentBins,
             quotaHourlyBins: quotaHourlyBins,
             quotaCostSource: quotaCostSource,
-            settledThrough: settledThrough
+            settledThrough: settledThrough,
+            unreportedCompactionDates: unreportedCompactionDates
         )
     }
 

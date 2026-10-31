@@ -106,6 +106,7 @@ export function DashboardSummarySection({
     <>
       {!speedOnly && <>
       <QuotaStrip
+        unreportedCompactionUnix={quotaData.stats.unreportedCompactionUnix}
         clientItems={clientQuotaItems}
         clientPlanLabels={{codex: quotaData.account.planLabel}}
         includesCodex={includesCodex}
@@ -136,6 +137,9 @@ export function DashboardSummarySection({
         sourceHomeIdentity={sourceHomeIdentity}
         warnings={quotaData.warnings}
       />
+      {includesCodex && (quotaData.stats.unreportedCompactionUnix?.length ?? 0) > 0 && <p role="status" className="analytics-source-note">
+        有压缩用量未报告 · Token、金额为已记录小计；相关区间暂停额度反推。
+      </p>}
       <StatsStrip
         clientCosts={clientCosts}
         sourceToken={sourceToken}

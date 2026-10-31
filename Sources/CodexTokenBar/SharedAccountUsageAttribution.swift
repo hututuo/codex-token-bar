@@ -1783,6 +1783,7 @@ enum SharedAccountUsageAttributionEstimator {
         recentAttributionEvents: [TokenCacheAttributionEvent]? = nil,
         attributionProvenanceEpoch: String? = nil,
         attributionSourceMutationDetected: Bool = false,
+        unreportedCompactionDates: [Date] = [],
         sevenDayQuota: AccountQuotaWindow?,
         quotaUpdatedAt: Date?,
         historyIdentity: QuotaHistoryIdentity?,
@@ -1815,6 +1816,10 @@ enum SharedAccountUsageAttributionEstimator {
                 radarRow: radarRow,
                 radar: radar
             )
+        }
+        if unreportedCompactionDates.contains(where: { $0 >= now.addingTimeInterval(-sevenDayDuration) && $0 <= now }) {
+            return unavailable(.localHistoryAmbiguous, tier:tier, model:model, priceRevision:priceRevision,
+                breakdown:empty, radarTotalUSD:radarTotal, radarRow:radarRow, radar:radar)
         }
         guard preciseUsageReady else {
             return unavailable(

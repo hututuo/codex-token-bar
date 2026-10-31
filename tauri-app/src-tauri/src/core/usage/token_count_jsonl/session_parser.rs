@@ -1,5 +1,8 @@
 use super::rollout_source::{self, RolloutReader};
-use super::accounting::{AccountingState, Components, Snapshot, COUNTED};
+use super::accounting::{
+    AccountingState, CompactionUsageRecord, Components, Snapshot, COUNTED,
+    MAX_RECENT_COMPACTION_RECORDS, REPORTED_ONLY, UNREPORTED_COMPACTION,
+};
 #[cfg(test)]
 use super::TokenEvent;
 use crate::models::LocalDataWarning;
@@ -64,7 +67,28 @@ struct ParsedUsage {
     output_tokens: u64,
     reasoning_output_tokens: u64,
     total_tokens: u64,
+    observed_input_tokens: Option<u64>,
+    observed_cached_input_tokens: Option<u64>,
+    observed_output_tokens: Option<u64>,
+    observed_reasoning_output_tokens: Option<u64>,
     accounting: Snapshot,
+}
+
+#[derive(Clone, Debug)]
+struct ParsedModernUsageRecord {
+    response_id: Option<String>,
+    usage: Option<ParsedUsage>,
+    cache_write_tokens: Option<u64>,
+    invalid_cache_write: bool,
+    has_usage_object: bool,
+    timestamp: OffsetDateTime,
+}
+
+#[derive(Clone, Debug)]
+struct ParsedCompactedLine {
+    response_id: Option<String>,
+    latest_usage: Option<ParsedModernUsageRecord>,
+    timestamp: OffsetDateTime,
 }
 
 #[derive(Clone, Debug)]
@@ -153,6 +177,14 @@ pub(super) trait ExactSessionEventSink {
     ) -> Result<bool, String>;
 
     fn insert_event(&mut self, event: &ExactTokenEvent) -> Result<(), String>;
+
+    /// Upserts an event identified by a stable compaction response fingerprint.
+    /// Returning `false` means an existing event was corrected or was already
+    /// admitted; it does not mean the caller should forget the response.
+    fn upsert_compaction_event(&mut self, event: &ExactTokenEvent) -> Result<bool, String> {
+        self.insert_event(event)?;
+        Ok(true)
+    }
 }
 
 pub(super) fn stream_session_file_exact(
@@ -344,12 +376,173 @@ pub(super) fn stream_session_file_exact_from(
             });
             continue;
         }
+        if line.contains("\"compacted\"") {
+            if let Some(compacted) = parse_compacted_line(line) {
+                let inherited = line_is_inherited(
+                    serde_json::from_str::<Value>(line).ok().and_then(|value| value.get("ordinal").and_then(Value::as_u64)),
+                    paginated_metadata.as_ref(),
+                    &accounting,
+                    fork_replay_active,
+                );
+                if !inherited {
+                    accounting.compaction.zero_io_anchor_pending = true;
+                    if let Some(response_id) = compacted.response_id.clone() {
+                        let mut record_index = accounting.compaction.records.iter()
+                            .rposition(|record| record.response_id == response_id);
+                        if let Some(latest) = compacted.latest_usage.as_ref()
+                            .filter(|latest| latest.response_id.as_deref() == Some(response_id.as_str()))
+                        {
+                            let latest_record = stored_compaction_record(latest, response_id.clone(), line_start);
+                            let should_use_inline = record_index.is_none_or(|index| {
+                                let prior = &accounting.compaction.records[index];
+                                !prior.has_usage_object
+                                    || (compaction_accounting(prior).0 != COUNTED
+                                        && compaction_accounting(&latest_record).0 == COUNTED)
+                            });
+                            if should_use_inline {
+                                record_index = Some(accounting.compaction.push(latest_record));
+                            }
+                        }
+                        let record_index = record_index.unwrap_or_else(|| {
+                            accounting.compaction.push(CompactionUsageRecord {
+                                response_id: response_id.clone(),
+                                input_tokens: None,
+                                cached_input_tokens: None,
+                                output_tokens: None,
+                                reasoning_output_tokens: None,
+                                reported_total_tokens: None,
+                                cache_write_tokens: None,
+                                has_usage_object: false,
+                                invalid_number: false,
+                                invalid_cache_write: false,
+                                emitted_kind: None,
+                                timestamp_unix_seconds: compacted.timestamp.unix_timestamp(),
+                                raw_offset: line_start,
+                                was_mirrored: false,
+                                was_emitted: false,
+                                legacy_association_attempted: false,
+                                compacted_offset: None,
+                                compacted_timestamp_unix_seconds: None,
+                                compacted_user_prompt: None,
+                                compacted_assistant_response: None,
+                            })
+                        });
+                        accounting.compaction.select_nearest_response(&response_id, line_start);
+                        let record = &mut accounting.compaction.records[record_index];
+                        if record.compacted_offset.is_none() {
+                            record.compacted_offset = Some(line_start);
+                            record.compacted_timestamp_unix_seconds = Some(compacted.timestamp.unix_timestamp());
+                            record.compacted_user_prompt = current_user_prompt.map(|range| (range.start, range.end));
+                            record.compacted_assistant_response = assistant_response.map(|range| (range.start, range.end));
+                        }
+                        if emit_tracked_compaction(
+                            record,
+                            compacted.timestamp,
+                            line_start,
+                            session_id,
+                            current_model.clone(),
+                            ExactEventSourceOffsets { user_prompt: current_user_prompt, assistant_response },
+                            sink,
+                        )? {
+                            #[cfg(test)]
+                            { event_count = event_count.saturating_add(1); }
+                        }
+                    } else {
+                        let synthetic_id = format!("missing-compaction-id|{session_id}|{line_start}");
+                        let record_index = accounting.compaction.records.iter()
+                            .rposition(|record| record.response_id == synthetic_id)
+                            .unwrap_or_else(|| accounting.compaction.push(CompactionUsageRecord {
+                                response_id: synthetic_id.clone(),
+                                input_tokens: None,
+                                cached_input_tokens: None,
+                                output_tokens: None,
+                                reasoning_output_tokens: None,
+                                reported_total_tokens: None,
+                                cache_write_tokens: None,
+                                has_usage_object: false,
+                                invalid_number: false,
+                                invalid_cache_write: false,
+                                emitted_kind: None,
+                                timestamp_unix_seconds: compacted.timestamp.unix_timestamp(),
+                                raw_offset: line_start,
+                                was_mirrored: false,
+                                was_emitted: false,
+                                legacy_association_attempted: false,
+                                compacted_offset: None,
+                                compacted_timestamp_unix_seconds: None,
+                                compacted_user_prompt: None,
+                                compacted_assistant_response: None,
+                            }));
+                        accounting.compaction.select_nearest_response(&synthetic_id, line_start);
+                        let record = &mut accounting.compaction.records[record_index];
+                        record.compacted_offset.get_or_insert(line_start);
+                        record.compacted_timestamp_unix_seconds.get_or_insert(compacted.timestamp.unix_timestamp());
+                        record.compacted_user_prompt = current_user_prompt.map(|range| (range.start, range.end));
+                        record.compacted_assistant_response = assistant_response.map(|range| (range.start, range.end));
+                        if emit_tracked_compaction(
+                            record,
+                            compacted.timestamp,
+                            line_start,
+                            session_id,
+                            current_model.clone(),
+                            ExactEventSourceOffsets { user_prompt: current_user_prompt, assistant_response },
+                            sink,
+                        )? {
+                            #[cfg(test)]
+                            { event_count = event_count.saturating_add(1); }
+                        }
+                    }
+                }
+            }
+            continue;
+        }
+        if is_modern_token_usage_record_line(line) {
+            if let Some(parsed_modern) = parse_modern_token_usage_line(line) {
+                if let Some(index) = merge_parsed_modern_record(
+                    &mut accounting.compaction,
+                    parsed_modern.clone(),
+                    line_start,
+                ) {
+                    let record = &mut accounting.compaction.records[index];
+                    if record.compacted_offset.is_some() && record.was_emitted && !record.was_mirrored {
+                        let fallback_timestamp = parsed_modern.timestamp;
+                        if emit_tracked_compaction(
+                            record,
+                            fallback_timestamp,
+                            line_start,
+                            session_id,
+                            current_model.clone(),
+                            ExactEventSourceOffsets { user_prompt: current_user_prompt, assistant_response },
+                            sink,
+                        )? {
+                            #[cfg(test)]
+                            { event_count = event_count.saturating_add(1); }
+                        }
+                    }
+                }
+            } else {
+                accounting.compaction.note_modern_request(line_start);
+            }
+            continue;
+        }
         if !line.contains("\"token_count\"") {
             continue;
         }
         let Some(usage_line) = parse_usage_line(line) else {
             continue;
         };
+
+        let has_zero_io_anchor = accounting.compaction.zero_io_anchor_pending
+            && usage_line.last.as_ref().is_some_and(|last| {
+                last.accounting.has_input_and_output && !last.accounting.invalid_number
+                    && last.accounting.components.input == 0
+                    && last.accounting.components.output == 0
+            })
+            && usage_line.total.as_ref().is_some_and(|total| {
+                total.accounting.reported_total.unwrap_or(0) > 0
+                    || total.accounting.components.total() > 0
+            });
+        accounting.compaction.zero_io_anchor_pending = false;
 
         let total_tokens = usage_line.total.as_ref().and_then(|u| u.accounting.reported_total);
         if let Some(total_tokens) = total_tokens {
@@ -365,24 +558,77 @@ pub(super) fn stream_session_file_exact_from(
             Some(fingerprint) => sink.insert_fingerprint(fingerprint)?,
             None => true,
         };
-        if adjacent_duplicate { continue; }
         let mut next_accounting = accounting.clone();
-        let measured = next_accounting.observe(
+        let observed = next_accounting.observe(
             usage_line.last.as_ref().map(|u| &u.accounting),
             usage_line.total.as_ref().map(|u| &u.accounting));
         next_accounting.last_snapshot = Some(signature);
-        if !is_new_snapshot { continue; }
-        accounting = next_accounting;
-        let inherited = match paginated_metadata.as_ref().filter(|m| !m.is_main_fork || accounting.paginated_own_start_ordinal.is_some()).map(|m| m.ordinal.min(accounting.paginated_own_start_ordinal.unwrap_or(m.ordinal))) {
+        let measured = if has_zero_io_anchor {
+            usage_line.last.as_ref().map(|last| super::accounting::AccountingResult {
+                components: last.accounting.components,
+                kind: REPORTED_ONLY,
+            }).or(observed)
+        } else {
+            observed
+        };
+
+        let inherited = match paginated_metadata.as_ref().filter(|m| !m.is_main_fork || next_accounting.paginated_own_start_ordinal.is_some()).map(|m| m.ordinal.min(next_accounting.paginated_own_start_ordinal.unwrap_or(m.ordinal))) {
             Some(boundary) => usage_line.ordinal.ok_or_else(|| format!("分页会话 token 记录缺少有效 ordinal：{}", file.display()))? < boundary,
             None => fork_replay_active,
         };
+
+        let mut suppress_legacy_mirror = false;
+        let mut admitted_legacy_mirror = false;
+        if !inherited {
+            if let Some(measured) = measured.filter(|value| value.kind == COUNTED) {
+                if let Some(record) = next_accounting.compaction.nearest_preceding_mut(line_start) {
+                    if !record.legacy_association_attempted {
+                        if let Some(modern_components) = record.components() {
+                            record.legacy_association_attempted = true;
+                            if modern_components == measured.components {
+                                suppress_legacy_mirror = record.was_emitted
+                                    && record.emitted_kind == Some(COUNTED);
+                                record.was_mirrored = true;
+                                record.was_emitted = true;
+                                record.emitted_kind = Some(COUNTED);
+                                admitted_legacy_mirror = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if adjacent_duplicate {
+            accounting.compaction = next_accounting.compaction;
+            continue;
+        }
+
+        if !is_new_snapshot && !suppress_legacy_mirror && !has_zero_io_anchor {
+            accounting.compaction = next_accounting.compaction.clone();
+            if admitted_legacy_mirror {
+                accounting = next_accounting;
+            }
+            continue;
+        }
+
+        accounting = next_accounting;
         if inherited {
             last_skipped_fork_replay_token_at = Some(usage_line.timestamp);
             continue;
         }
+        if suppress_legacy_mirror {
+            continue;
+        }
         let Some(measured) = measured else { continue; };
         let delta = measured.tokens();
+        let reported_total_tokens = if has_zero_io_anchor {
+            usage_line.total.as_ref().and_then(|u| u.accounting.reported_total)
+                .or_else(|| usage_line.total.as_ref().map(|u| u.total_tokens))
+        } else {
+            usage_line.last.as_ref().and_then(|u| u.accounting.reported_total)
+                .or_else(|| usage_line.total.as_ref().and_then(|u| u.accounting.reported_total))
+        };
         sink.insert_event(&ExactTokenEvent {
             usage_fingerprint: fingerprint.as_ref().map(super::fingerprint_codec::encode).transpose().map_err(|e|e.to_string())?,
             timestamp: usage_line.timestamp,
@@ -394,8 +640,7 @@ pub(super) fn stream_session_file_exact_from(
             reasoning_output_tokens: measured.components.reasoning,
             token_source_offset: line_start,
             accounting_kind: measured.kind,
-            reported_total_tokens: usage_line.last.as_ref().and_then(|u| u.accounting.reported_total)
-                .or_else(|| usage_line.total.as_ref().and_then(|u| u.accounting.reported_total)),
+            reported_total_tokens,
             model: current_model.clone(),
             source_offsets: ExactEventSourceOffsets {
                 user_prompt: current_user_prompt,
@@ -784,6 +1029,19 @@ impl ExactSessionEventSink for TestExactSessionSink {
     fn insert_event(&mut self, event: &ExactTokenEvent) -> Result<(), String> {
         self.events.push(event.clone());
         Ok(())
+    }
+
+    fn upsert_compaction_event(&mut self, event: &ExactTokenEvent) -> Result<bool, String> {
+        if let Some(fingerprint) = event.usage_fingerprint.as_deref() {
+            if let Some(existing) = self.events.iter_mut().find(|existing| {
+                existing.usage_fingerprint.as_deref() == Some(fingerprint)
+            }) {
+                *existing = event.clone();
+                return Ok(false);
+            }
+        }
+        self.insert_event(event)?;
+        Ok(true)
     }
 }
 
@@ -1220,10 +1478,235 @@ fn parse_usage(value: Option<&Value>) -> Option<ParsedUsage> {
     Some(ParsedUsage {
         input_tokens: components.input, cached_input_tokens: components.cached,
         output_tokens: components.output, reasoning_output_tokens: components.reasoning,
+        observed_input_tokens: values[0], observed_cached_input_tokens: values[1],
+        observed_output_tokens: values[2], observed_reasoning_output_tokens: values[3],
         total_tokens: values[4].unwrap_or_else(|| if components.valid() { components.total() } else { 0 }),
         accounting: Snapshot { components, reported_total: values[4],
             has_input_and_output: values[0].is_some() && values[2].is_some(), invalid_number, signature },
     })
+}
+
+fn parse_modern_usage_record_value(
+    value: &Value,
+    fallback_timestamp: OffsetDateTime,
+) -> Option<ParsedModernUsageRecord> {
+    let payload = value.get("payload").unwrap_or(value);
+    let response_id = payload.get("response_id").and_then(Value::as_str)
+        .filter(|value| !value.is_empty()).map(str::to_owned);
+    let timestamp = value.get("timestamp").and_then(Value::as_str)
+        .and_then(parse_timestamp).unwrap_or(fallback_timestamp);
+    let usage_value = payload.get("usage");
+    let cache_write_value = usage_value.and_then(|usage| usage.get("cache_write_input_tokens"));
+    let cache_write_tokens = cache_write_value.and_then(|value| {
+        value.as_u64()
+            .or_else(|| value.as_str().and_then(|text| text.parse::<u64>().ok()))
+            .filter(|value| *value <= i64::MAX as u64)
+    });
+    let invalid_cache_write = cache_write_value.is_some() && cache_write_tokens.is_none();
+    Some(ParsedModernUsageRecord {
+        response_id,
+        usage: parse_usage(usage_value),
+        cache_write_tokens,
+        invalid_cache_write,
+        has_usage_object: usage_value.is_some_and(Value::is_object),
+        timestamp,
+    })
+}
+
+fn parse_modern_token_usage_line(line: &str) -> Option<ParsedModernUsageRecord> {
+    let value: Value = serde_json::from_str(line).ok()?;
+    if value.get("type")?.as_str()? != "token_usage_record" { return None; }
+    let timestamp = parse_timestamp(value.get("timestamp")?.as_str()?)?;
+    parse_modern_usage_record_value(&value, timestamp)
+}
+
+fn is_modern_token_usage_record_line(line: &str) -> bool {
+    serde_json::from_str::<Value>(line).ok()
+        .and_then(|value| value.get("type").and_then(Value::as_str).map(str::to_owned))
+        .as_deref() == Some("token_usage_record")
+}
+
+fn parse_compacted_line(line: &str) -> Option<ParsedCompactedLine> {
+    let value: Value = serde_json::from_str(line).ok()?;
+    if value.get("type")?.as_str()? != "compacted" { return None; }
+    let timestamp = parse_timestamp(value.get("timestamp")?.as_str()?)?;
+    let payload = value.get("payload")?;
+    let response_id = payload.get("compaction_response_id").and_then(Value::as_str)
+        .filter(|value| !value.is_empty()).map(str::to_owned);
+    let latest_usage = payload.get("latest_token_usage_record")
+        .and_then(|record| parse_modern_usage_record_value(record, timestamp));
+    Some(ParsedCompactedLine { response_id, latest_usage, timestamp })
+}
+
+fn stored_compaction_record(
+    parsed: &ParsedModernUsageRecord,
+    response_id: String,
+    raw_offset: u64,
+) -> CompactionUsageRecord {
+    let usage = parsed.usage.as_ref();
+    CompactionUsageRecord {
+        response_id,
+        input_tokens: usage.and_then(|value| value.observed_input_tokens),
+        cached_input_tokens: usage.and_then(|value| value.observed_cached_input_tokens),
+        output_tokens: usage.and_then(|value| value.observed_output_tokens),
+        reasoning_output_tokens: usage.and_then(|value| value.observed_reasoning_output_tokens),
+        reported_total_tokens: usage.and_then(|value| value.accounting.reported_total),
+        cache_write_tokens: parsed.cache_write_tokens,
+        has_usage_object: parsed.has_usage_object,
+        invalid_number: usage.is_some_and(|value| value.accounting.invalid_number),
+        invalid_cache_write: parsed.invalid_cache_write,
+        emitted_kind: None,
+        timestamp_unix_seconds: parsed.timestamp.unix_timestamp(),
+        raw_offset,
+        was_mirrored: false,
+        was_emitted: false,
+        legacy_association_attempted: false,
+        compacted_offset: None,
+        compacted_timestamp_unix_seconds: None,
+        compacted_user_prompt: None,
+        compacted_assistant_response: None,
+    }
+}
+
+fn compaction_response_fingerprint(response_id: &str) -> UsageSnapshotFingerprint {
+    super::fingerprint_codec::compaction_response_fingerprint(response_id)
+}
+
+fn compaction_event(
+    record: &CompactionUsageRecord,
+    timestamp: OffsetDateTime,
+    session_id: &str,
+    token_source_offset: u64,
+    model: Option<String>,
+    source_offsets: ExactEventSourceOffsets,
+    accounting_kind: i64,
+    components: Components,
+) -> Result<ExactTokenEvent, String> {
+    Ok(ExactTokenEvent {
+        usage_fingerprint: Some(super::fingerprint_codec::encode(
+            &compaction_response_fingerprint(&record.response_id),
+        ).map_err(|error| error.to_string())?),
+        timestamp,
+        session_id: session_id.to_owned(),
+        tokens: if accounting_kind == COUNTED { components.total() } else { 0 },
+        input_tokens: components.input,
+        cached_input_tokens: components.cached,
+        output_tokens: components.output,
+        reasoning_output_tokens: components.reasoning,
+        model,
+        source_offsets,
+        token_source_offset,
+        accounting_kind,
+        reported_total_tokens: record.reported_total_tokens,
+    })
+}
+
+fn emit_compaction_record(
+    record: &CompactionUsageRecord,
+    timestamp: OffsetDateTime,
+    session_id: &str,
+    marker_offset: u64,
+    model: Option<String>,
+    source_offsets: ExactEventSourceOffsets,
+    sink: &mut impl ExactSessionEventSink,
+) -> Result<(bool, i64), String> {
+    let (kind, components) = compaction_accounting(record);
+    let event = compaction_event(
+        record, timestamp, session_id, marker_offset, model, source_offsets,
+        kind, components,
+    )?;
+    let fingerprint = compaction_response_fingerprint(&record.response_id);
+    let _ = sink.insert_fingerprint(&fingerprint)?;
+    let inserted = sink.upsert_compaction_event(&event)?;
+    Ok((inserted, kind))
+}
+
+fn emit_tracked_compaction(
+    record: &mut CompactionUsageRecord,
+    fallback_timestamp: OffsetDateTime,
+    fallback_offset: u64,
+    session_id: &str,
+    model: Option<String>,
+    source_offsets: ExactEventSourceOffsets,
+    sink: &mut impl ExactSessionEventSink,
+) -> Result<bool, String> {
+    if record.was_mirrored {
+        record.was_emitted = true;
+        record.emitted_kind = Some(COUNTED);
+        return Ok(false);
+    }
+    let (kind, _) = compaction_accounting(record);
+    let needs_initial = !record.was_emitted;
+    let needs_correction = record.was_emitted
+        && record.emitted_kind != Some(COUNTED)
+        && record.emitted_kind != Some(kind)
+        && (record.emitted_kind == Some(UNREPORTED_COMPACTION) || record.has_usage_object);
+    if !needs_initial && !needs_correction { return Ok(false); }
+    let marker_timestamp = record.compacted_timestamp_unix_seconds
+        .and_then(|value| OffsetDateTime::from_unix_timestamp(value).ok())
+        .unwrap_or(fallback_timestamp);
+    let timestamp = if record.emitted_kind == Some(UNREPORTED_COMPACTION) {
+        marker_timestamp
+    } else if record.has_usage_object {
+        OffsetDateTime::from_unix_timestamp(record.timestamp_unix_seconds).unwrap_or(marker_timestamp)
+    } else {
+        marker_timestamp
+    };
+    let token_offset = record.compacted_offset.unwrap_or(fallback_offset);
+    let source_offsets = ExactEventSourceOffsets {
+        user_prompt: record.compacted_user_prompt.map(|(start, end)| SourceByteRange { start, end })
+            .or(source_offsets.user_prompt),
+        assistant_response: record.compacted_assistant_response.map(|(start, end)| SourceByteRange { start, end })
+            .or(source_offsets.assistant_response),
+    };
+    let (_, components) = compaction_accounting(record);
+    let event = compaction_event(
+        record, timestamp, session_id, token_offset, model, source_offsets,
+        kind, components,
+    )?;
+    let fingerprint = compaction_response_fingerprint(&record.response_id);
+    let _ = sink.insert_fingerprint(&fingerprint)?;
+    let inserted = sink.upsert_compaction_event(&event)?;
+    record.was_emitted = true;
+    record.emitted_kind = Some(kind);
+    Ok(inserted)
+}
+
+fn merge_parsed_modern_record(
+    tracker: &mut super::accounting::CompactionTrackingState,
+    parsed: ParsedModernUsageRecord,
+    raw_offset: u64,
+) -> Option<usize> {
+    let Some(response_id) = parsed.response_id.clone() else {
+        tracker.note_modern_request(raw_offset);
+        return None;
+    };
+    let record = stored_compaction_record(&parsed, response_id, raw_offset);
+    Some(tracker.push(record))
+}
+
+fn compaction_accounting(record: &CompactionUsageRecord) -> (i64, Components) {
+    if !record.has_usage_object { return (UNREPORTED_COMPACTION, Components::default()); }
+    let Some(components) = record.components() else {
+        return (UNREPORTED_COMPACTION, Components::default());
+    };
+    if components.total() == 0 && record.reported_total_tokens.is_some_and(|reported| reported > 0) {
+        return (UNREPORTED_COMPACTION, Components::default());
+    }
+    (COUNTED, components)
+}
+
+fn line_is_inherited(
+    ordinal: Option<u64>,
+    metadata: Option<&PaginatedSubagentMetadata>,
+    accounting: &AccountingState,
+    fork_replay_active: bool,
+) -> bool {
+    match metadata.filter(|metadata| !metadata.is_main_fork || accounting.paginated_own_start_ordinal.is_some())
+        .map(|metadata| metadata.ordinal.min(accounting.paginated_own_start_ordinal.unwrap_or(metadata.ordinal))) {
+        Some(boundary) => ordinal.is_none_or(|ordinal| ordinal < boundary),
+        None => fork_replay_active,
+    }
 }
 
 fn number_field(value: &Value, key: &str) -> Option<u64> {
@@ -1247,6 +1730,271 @@ fn jsonl_file_warning(message: String) -> LocalDataWarning {
 
 #[cfg(test)]
 mod tests {
+    use super::{ExactTokenEvent, TestExactSessionSink};
+
+    fn parse_exact_lines(lines: &[serde_json::Value]) -> Vec<ExactTokenEvent> {
+        let file = std::env::temp_dir().join(format!("compaction-parser-{}.jsonl", uuid::Uuid::new_v4()));
+        let data = lines.iter().map(serde_json::Value::to_string).collect::<Vec<_>>().join("\n") + "\n";
+        std::fs::write(&file, &data).unwrap();
+        let mut handle = std::fs::File::open(&file).unwrap();
+        let mut sink = TestExactSessionSink::default();
+        let mut warnings = Vec::new();
+        super::stream_session_file_exact(&file, &mut handle, data.len() as u64, "test-session", &mut sink, &mut warnings).unwrap();
+        std::fs::remove_file(file).unwrap();
+        sink.events
+    }
+
+    fn modern_record(response_id: Option<&str>, timestamp: &str, usage: serde_json::Value) -> serde_json::Value {
+        let mut payload = serde_json::json!({ "usage": usage });
+        if let Some(response_id) = response_id {
+            payload["response_id"] = serde_json::Value::String(response_id.to_owned());
+        }
+        serde_json::json!({ "timestamp": timestamp, "type": "token_usage_record", "payload": payload })
+    }
+
+    fn compacted(response_id: &str, timestamp: &str, latest: Option<serde_json::Value>) -> serde_json::Value {
+        let mut payload = serde_json::json!({ "compaction_response_id": response_id });
+        if let Some(latest) = latest {
+            payload["latest_token_usage_record"] = latest;
+        }
+        serde_json::json!({ "timestamp": timestamp, "type": "compacted", "payload": payload })
+    }
+
+    fn usage(input: u64, cached: u64, output: u64, reasoning: u64, total: u64) -> serde_json::Value {
+        serde_json::json!({
+            "input_tokens": input, "cached_input_tokens": cached,
+            "output_tokens": output, "reasoning_output_tokens": reasoning,
+            "total_tokens": total
+        })
+    }
+
+    fn legacy_count(timestamp: &str, total: serde_json::Value, last: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "timestamp": timestamp, "type": "event_msg",
+            "payload": { "type": "token_count", "info": {
+                "total_token_usage": total, "last_token_usage": last
+            }}
+        })
+    }
+
+    fn legacy_cumulative_count(timestamp: &str, total: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "timestamp": timestamp, "type": "event_msg",
+            "payload": { "type": "token_count", "info": {
+                "total_token_usage": total
+            }}
+        })
+    }
+
+    #[test]
+    fn modern_compaction_response_and_legacy_mirror_count_once() {
+        let record = modern_record(Some("resp-compact-1"), "2026-10-01T01:00:00Z", {
+            let mut value = usage(100, 50, 20, 6, 120);
+            value["cache_write_input_tokens"] = serde_json::json!(9_000);
+            value
+        });
+        let inline = modern_record(Some("resp-compact-1"), "2026-10-01T01:00:00Z", {
+            let mut value = usage(100, 50, 20, 6, 120);
+            value["cache_write_input_tokens"] = serde_json::json!(9_000);
+            value
+        });
+        let events = parse_exact_lines(&[
+            record,
+            compacted("resp-compact-1", "2026-10-01T01:01:00Z", Some(inline)),
+            legacy_count(
+                "2026-10-01T01:02:00Z",
+                usage(100, 50, 20, 6, 120),
+                usage(100, 50, 20, 6, 120),
+            ),
+        ]);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].accounting_kind, super::super::accounting::COUNTED);
+        assert_eq!(events[0].tokens, 120);
+        assert_eq!(events[0].input_tokens, 100);
+        assert_eq!(events[0].cached_input_tokens, 50);
+        assert_eq!(events[0].output_tokens, 20);
+        assert_eq!(events[0].reasoning_output_tokens, 6);
+        assert_eq!(events[0].timestamp.unix_timestamp(), super::parse_timestamp("2026-10-01T01:00:00Z").unwrap().unix_timestamp());
+        let fingerprint = crate::core::usage::token_count_jsonl::fingerprint_codec::decode(events[0].usage_fingerprint.as_deref().unwrap()).unwrap();
+        assert!(crate::core::usage::token_count_jsonl::fingerprint_codec::is_compaction_response_fingerprint(&fingerprint));
+    }
+
+    #[test]
+    fn cumulative_only_legacy_mirror_counts_once_in_both_arrival_orders() {
+        let modern = modern_record(Some("resp-cumulative-mirror"), "2026-10-01T01:10:00Z", usage(100, 50, 20, 6, 120));
+        let inline = modern_record(Some("resp-cumulative-mirror"), "2026-10-01T01:10:00Z", usage(100, 50, 20, 6, 120));
+        let legacy = legacy_cumulative_count("2026-10-01T01:11:00Z", usage(100, 50, 20, 6, 120));
+        let marker = compacted("resp-cumulative-mirror", "2026-10-01T01:12:00Z", Some(inline));
+
+        for lines in [
+            vec![modern.clone(), legacy.clone(), marker.clone()],
+            vec![modern, marker, legacy],
+        ] {
+            let events = parse_exact_lines(&lines);
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].accounting_kind, super::super::accounting::COUNTED);
+            assert_eq!(events[0].tokens, 120);
+        }
+    }
+
+    #[test]
+    fn missing_response_usage_is_an_unknown_diagnostic_and_never_uses_cumulative_fields() {
+        let unrelated = modern_record(Some("resp-other"), "2026-10-01T02:00:00Z", usage(900, 100, 200, 30, 1_100));
+        let mut marker = compacted("resp-missing", "2026-10-01T02:01:00Z", Some(unrelated));
+        marker["payload"]["turn_token_usage"] = usage(9_000, 0, 5_000, 1_000, 14_000);
+        marker["payload"]["thread_token_usage"] = usage(19_000, 0, 5_000, 1_000, 24_000);
+        let inherited_total = usage(800, 100, 100, 10, 900);
+        let zero_last = usage(0, 0, 0, 0, 0);
+        let events = parse_exact_lines(&[
+            marker,
+            legacy_count("2026-10-01T02:02:00Z", inherited_total, zero_last),
+        ]);
+
+        let unknown = events.iter().find(|event| event.accounting_kind == super::super::accounting::UNREPORTED_COMPACTION).unwrap();
+        assert_eq!(events.iter().filter(|event| event.accounting_kind == super::super::accounting::UNREPORTED_COMPACTION).count(), 1);
+        assert_eq!(unknown.tokens, 0);
+        assert_eq!(unknown.input_tokens, 0);
+        assert_eq!(unknown.output_tokens, 0);
+        assert_eq!(unknown.reported_total_tokens, None);
+        let fp = crate::core::usage::token_count_jsonl::fingerprint_codec::decode(unknown.usage_fingerprint.as_deref().unwrap()).unwrap();
+        assert!(crate::core::usage::token_count_jsonl::fingerprint_codec::is_compaction_response_fingerprint(&fp));
+        assert_eq!(events.iter().filter(|event| event.accounting_kind == super::super::accounting::COUNTED).map(|event| event.tokens).sum::<u64>(), 0);
+    }
+
+    #[test]
+    fn mismatched_inline_response_cannot_suppress_its_own_legacy_mirror() {
+        let unrelated = modern_record(Some("resp-unrelated"), "2026-10-01T02:10:00Z", usage(900, 100, 200, 30, 1_100));
+        let marker = compacted("resp-missing", "2026-10-01T02:11:00Z", Some(unrelated));
+        let legacy = legacy_count(
+            "2026-10-01T02:12:00Z",
+            usage(900, 100, 200, 30, 1_100),
+            usage(900, 100, 200, 30, 1_100),
+        );
+        let events = parse_exact_lines(&[marker, legacy]);
+
+        assert!(events.iter().any(|event| event.accounting_kind == super::super::accounting::UNREPORTED_COMPACTION));
+        let counted = events.iter().filter(|event| event.accounting_kind == super::super::accounting::COUNTED).collect::<Vec<_>>();
+        assert_eq!(counted.len(), 1);
+        assert_eq!(counted[0].tokens, 1_100);
+    }
+
+    #[test]
+    fn matching_late_record_without_usage_keeps_the_same_unknown_compaction() {
+        let marker = compacted("resp-still-unknown", "2026-10-01T02:20:00Z", None);
+        let modern_without_usage = serde_json::json!({
+            "timestamp": "2026-10-01T02:19:00Z",
+            "type": "token_usage_record",
+            "payload": { "response_id": "resp-still-unknown" }
+        });
+        let events = parse_exact_lines(&[marker, modern_without_usage]);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].accounting_kind, super::super::accounting::UNREPORTED_COMPACTION);
+        assert_eq!(events[0].tokens, 0);
+    }
+
+    #[test]
+    fn modern_zero_io_with_positive_reported_total_stays_unknown() {
+        let modern = modern_record(Some("resp-zero-io"), "2026-10-01T02:30:00Z", usage(0, 0, 0, 0, 700));
+        let inline = modern_record(Some("resp-zero-io"), "2026-10-01T02:30:00Z", usage(0, 0, 0, 0, 700));
+        let events = parse_exact_lines(&[
+            modern,
+            compacted("resp-zero-io", "2026-10-01T02:31:00Z", Some(inline)),
+        ]);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].accounting_kind, super::super::accounting::UNREPORTED_COMPACTION);
+        assert_eq!(events[0].tokens, 0);
+        assert_eq!(events[0].input_tokens, 0);
+        assert_eq!(events[0].output_tokens, 0);
+    }
+
+    #[test]
+    fn exact_inline_usage_replaces_unusable_standalone_usage() {
+        let unusable = modern_record(Some("resp-inline-recovery"), "2026-10-01T02:35:00Z", usage(0, 0, 0, 0, 700));
+        let inline = modern_record(Some("resp-inline-recovery"), "2026-10-01T02:35:00Z", usage(100, 50, 20, 6, 120));
+        let events = parse_exact_lines(&[
+            unusable,
+            compacted("resp-inline-recovery", "2026-10-01T02:36:00Z", Some(inline)),
+        ]);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].accounting_kind, super::super::accounting::COUNTED);
+        assert_eq!(events[0].tokens, 120);
+    }
+
+    #[test]
+    fn compaction_usage_defaults_missing_cache_and_reasoning_details_to_zero() {
+        let modern = serde_json::json!({
+            "timestamp": "2026-10-01T02:40:00Z",
+            "type": "token_usage_record",
+            "payload": { "response_id": "resp-optional-details", "usage": {
+                "input_tokens": 100, "output_tokens": 20, "total_tokens": 120
+            }}
+        });
+        let inline = modern.clone();
+        let events = parse_exact_lines(&[
+            modern,
+            compacted("resp-optional-details", "2026-10-01T02:41:00Z", Some(inline)),
+        ]);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].accounting_kind, super::super::accounting::COUNTED);
+        assert_eq!(events[0].tokens, 120);
+        assert_eq!(events[0].cached_input_tokens, 0);
+        assert_eq!(events[0].reasoning_output_tokens, 0);
+    }
+
+    #[test]
+    fn compacted_without_response_id_uses_stable_noncounted_synthetic_identity() {
+        let marker = serde_json::json!({
+            "timestamp": "2026-10-01T02:45:00Z", "type": "compacted",
+            "payload": { "compaction_response_id": "", "latest_token_usage_record": {
+                "response_id": "not-authorized-without-marker-id",
+                "usage": { "input_tokens": 50, "cached_input_tokens": 10, "output_tokens": 20, "total_tokens": 70 }
+            }}
+        });
+        let first = parse_exact_lines(&[marker.clone()]);
+        let second = parse_exact_lines(&[marker]);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].accounting_kind, super::super::accounting::UNREPORTED_COMPACTION);
+        assert_eq!(first[0].tokens, 0);
+        assert_eq!(first[0].input_tokens, 0);
+        assert_eq!(first[0].reported_total_tokens, None);
+        assert_eq!(first[0].usage_fingerprint, second[0].usage_fingerprint);
+    }
+
+    #[test]
+    fn explicit_zero_io_after_compaction_anchors_a_fresh_parser_to_inherited_total() {
+        let request = modern_record(Some("resp-anchor"), "2026-10-01T03:00:00Z", usage(40, 10, 10, 2, 50));
+        let inline = modern_record(Some("resp-anchor"), "2026-10-01T03:00:00Z", usage(40, 10, 10, 2, 50));
+        let events = parse_exact_lines(&[
+            request,
+            compacted("resp-anchor", "2026-10-01T03:01:00Z", Some(inline)),
+            legacy_count(
+                "2026-10-01T03:02:00Z",
+                usage(900, 100, 100, 10, 1_000),
+                usage(0, 0, 0, 0, 0),
+            ),
+        ]);
+        assert_eq!(events.iter().filter(|event| event.accounting_kind == super::super::accounting::COUNTED).map(|event| event.tokens).sum::<u64>(), 50);
+        assert!(events.iter().any(|event| event.accounting_kind == super::super::accounting::REPORTED_ONLY));
+    }
+
+    #[test]
+    fn modern_request_without_response_id_breaks_legacy_mirror_association() {
+        let response = modern_record(Some("resp-first"), "2026-10-01T04:00:00Z", usage(100, 0, 20, 4, 120));
+        let inline = modern_record(Some("resp-first"), "2026-10-01T04:00:00Z", usage(100, 0, 20, 4, 120));
+        let missing_id = modern_record(None, "2026-10-01T04:02:00Z", usage(100, 0, 20, 4, 120));
+        let events = parse_exact_lines(&[
+            response,
+            compacted("resp-first", "2026-10-01T04:01:00Z", Some(inline)),
+            missing_id,
+            legacy_count("2026-10-01T04:03:00Z", usage(100, 0, 20, 4, 120), usage(100, 0, 20, 4, 120)),
+        ]);
+        assert_eq!(events.iter().filter(|event| event.accounting_kind == super::super::accounting::COUNTED).count(), 2);
+    }
+
     #[test]
     fn non_integer_json_spellings_match_swift_diagnostic_policy() {
         for spelling in ["1.0", "1e3", "-0", "\"-0\"", "1.5"] {

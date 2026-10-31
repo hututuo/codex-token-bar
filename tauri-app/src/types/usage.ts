@@ -54,6 +54,8 @@ export interface DashboardPayloadLineage {
 }
 
 export interface DashboardStats {
+  /** Observed compaction response IDs without reported usage; never measured zero. */
+  unreportedCompactionUnix?: number[];
   totalTokens: number;
   peakDayTokens: number;
   peakThreadTokens: number;
@@ -254,6 +256,7 @@ export interface PreciseDashboardProgress {
 }
 
 export interface UsageSummarySnapshot {
+  unreportedCompactionUnix?: number[];
   /** Minimal source identity and freshness lineage for the summary lane. */
   homeIdentity?: string | null;
   usageRevision?: DashboardLineageScalar;

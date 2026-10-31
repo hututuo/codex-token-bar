@@ -170,7 +170,7 @@ export interface RecentChartTimeMarker {
   kind: "day" | "time";
 }
 
-export type QuotaConsumptionConfidence = "measured" | "insufficientQuotaMovement" | "noTokenUsage";
+export type QuotaConsumptionConfidence = "measured" | "insufficientQuotaMovement" | "noTokenUsage" | "incompleteUsage";
 
 export interface QuotaConsumptionBoundary {
   resetAtUnix: number | null;
@@ -917,6 +917,7 @@ export function quotaConsumptionSelection(
   boundaries: {
     fiveHour?: QuotaConsumptionBoundary | null;
     sevenDay?: QuotaConsumptionBoundary | null;
+    unreportedCompactionUnix?: readonly number[];
   } = {},
 ): QuotaConsumptionSelection | null {
   if (data.points.length === 0) {
@@ -1002,6 +1003,14 @@ export function quotaConsumptionSelection(
     data.bucketSeconds,
     selectedEstimate,
   );
+  for (const estimate of [fiveHour, sevenDay]) {
+    const from = estimate.comparisonStartUnix ?? data.points[lower].startUnix;
+    const through = estimate.comparisonEndUnix ?? data.points[upper].startUnix + data.bucketSeconds;
+    if (boundaries.unreportedCompactionUnix?.some((at) => Number.isFinite(at) && at >= from && at < through)) {
+      estimate.confidence = "incompleteUsage";
+      estimate.impliedWindowBudgetUSD = null;
+    }
+  }
   const ratio = fiveHour.impliedWindowBudgetUSD && sevenDay.impliedWindowBudgetUSD
     ? sevenDay.impliedWindowBudgetUSD / fiveHour.impliedWindowBudgetUSD
     : null;
@@ -1372,6 +1381,7 @@ export function quotaSelectionAttribution(
     && !context.radarDataStale
     && !context.usagePendingQuotaRefresh
     && !context.historyChangedLowConfidence
+    && selection.sevenDay.confidence !== "incompleteUsage"
     && unpricedModels.length === 0
     && unpricedCalls === 0
     && selection.sevenDay.comparisonStartUnix === selection.startUnix

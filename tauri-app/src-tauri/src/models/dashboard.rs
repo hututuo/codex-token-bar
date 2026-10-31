@@ -102,6 +102,11 @@ pub struct DashboardStats {
     pub model_breakdowns: Vec<ModelTokenBreakdown>,
     #[serde(default)]
     pub first_usage_at: Option<String>,
+    /// Unix-second timestamps for compaction requests whose response usage is
+    /// not available yet. These rows are diagnostic only and never enter token
+    /// totals or request counts.
+    #[serde(default)]
+    pub unreported_compaction_unix: Vec<i64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

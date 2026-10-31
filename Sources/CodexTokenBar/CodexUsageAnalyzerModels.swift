@@ -31,7 +31,7 @@ extension CodexUsageAnalyzer {
         /// Reuse the existing eleven-value codec for an identity digest. The
         /// reserved no-last/nonzero-lastTokens combination can never collide
         /// with a numeric full snapshot (absent last always has five zeros).
-        init(identityDigest: [UInt8]) {
+        init(identityDigest: [UInt8], requestIdentity: Bool = false) {
             precondition(identityDigest.count == 32)
             let words = stride(from: 0, to: 32, by: 4).map { offset in
                 identityDigest[offset..<(offset + 4)].reduce(0) { ($0 << 8) | Int($1) }
@@ -46,7 +46,7 @@ extension CodexUsageAnalyzer {
             lastCachedInputTokens = words[6]
             lastOutputTokens = words[7]
             lastReasoningOutputTokens = 0
-            lastTokens = 1
+            lastTokens = requestIdentity ? 2 : 1
         }
 
         init(from decoder: Decoder) throws {

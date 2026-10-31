@@ -34,7 +34,11 @@ pub(super) fn install(db: &Connection) -> Result<(), String> {
     let trigger_count: i64 = db.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN ('retain_usage_before_event_delete','retain_usage_before_source_delete','retain_usage_before_identity_update','retain_usage_before_fingerprint_delete','retain_usage_before_event_update')", [], |r| r.get(0)).map_err(|e| e.to_string())?;
     if trigger_count == 5 {
         let previous: Option<String> = db.query_row("SELECT value FROM retained_usage_meta WHERE key='event_columns'", [], |r| r.get(0)).optional().map_err(|e| e.to_string())?;
-        if previous.as_deref() == Some(&flavor) { return Ok(()); }
+        if previous.as_deref() == Some(&flavor) {
+            db.execute_batch("CREATE INDEX IF NOT EXISTS retained_unreported_compactions ON retained_usage_events(timestamp,snapshot_id,position) WHERE accounting_kind=4")
+                .map_err(|error| format!("无法准备未报告 compaction 留存索引：{error}"))?;
+            return Ok(());
+        }
     }
     db.execute_batch("SAVEPOINT install_usage_retention").map_err(|e| e.to_string())?;
     let result = install_transaction(db, &columns, &source_columns, &flavor);
@@ -83,6 +87,7 @@ fn install_transaction(db: &Connection, columns: &HashSet<String>, source_column
             model TEXT, accounting_kind INTEGER, reported_total_tokens INTEGER, legacy_tokens INTEGER
         );
         CREATE INDEX IF NOT EXISTS retained_usage_revisions_source ON retained_usage_revisions(source_id,position);
+        CREATE INDEX IF NOT EXISTS retained_unreported_compactions ON retained_usage_events(timestamp,snapshot_id,position) WHERE accounting_kind=4;
         DROP TRIGGER IF EXISTS retain_usage_before_event_update;
         DROP TRIGGER IF EXISTS retain_usage_before_event_delete;
         DROP TRIGGER IF EXISTS retain_usage_before_source_delete;

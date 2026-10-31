@@ -4,6 +4,7 @@ enum QuotaConsumptionConfidence: Equatable {
     case measured
     case insufficientQuotaMovement
     case noTokenUsage
+    case incompleteUsage
 }
 
 enum QuotaConsumptionDropBasis: Equatable, Sendable {
@@ -760,7 +761,8 @@ enum QuotaConsumptionEstimator {
         excludedCalls: Int = 0,
         comparisonStartDate: Date? = nil,
         comparisonEndDate: Date? = nil,
-        comparisonUsesConservativeBuckets: Bool = false
+        comparisonUsesConservativeBuckets: Bool = false,
+        usageComplete: Bool = true
     ) -> QuotaConsumptionEstimate {
         let selectedCost = selectedCostUSD ?? priceCard.costUSD(for: breakdown)
         let resolvedBasis = quotaDropBasis
@@ -772,7 +774,10 @@ enum QuotaConsumptionEstimator {
         let confidence: QuotaConsumptionConfidence
         let impliedBudget: Double?
 
-        if resolvedComparisonBreakdown.totalTokens <= 0
+        if !usageComplete {
+            confidence = .incompleteUsage
+            impliedBudget = nil
+        } else if resolvedComparisonBreakdown.totalTokens <= 0
             && resolvedComparisonBreakdown.inputTokens <= 0
             && resolvedComparisonBreakdown.outputTokens <= 0 {
             confidence = .noTokenUsage
@@ -930,13 +935,15 @@ struct RecentChartConsumptionSelectionState: Equatable {
     /// Displayed bins may contain other clients' usage in aggregate mode.
     func selection(displayedData: RecentChartPreparedData, quotaData: RecentChartPreparedData?,
                    hoveredIndex: Int? = nil, priceCard: QuotaConsumptionPriceCard,
-                   attributionEvents: [TokenCacheAttributionEvent] = []) -> QuotaConsumptionSelection? {
+                   attributionEvents: [TokenCacheAttributionEvent] = [],
+                   unreportedCompactionDates: [Date] = []) -> QuotaConsumptionSelection? {
         guard let startIndex, !displayedData.bins.isEmpty else { return nil }
         let validHover = hoveredIndex.flatMap { displayedData.bins.indices.contains($0) ? $0 : nil }
         let endIndex = activeEndIndex(hoveredIndex: validHover, fallbackEndIndex: displayedData.bins.count - 1)
             ?? displayedData.bins.count - 1
         return (quotaData ?? displayedData).quotaConsumptionSelection(startIndex: startIndex, endIndex: endIndex,
-            priceCard: priceCard, attributionEvents: attributionEvents)
+            priceCard: priceCard, attributionEvents: attributionEvents,
+            unreportedCompactionDates: unreportedCompactionDates)
     }
 
     func activeEndIndex(hoveredIndex: Int?, fallbackEndIndex: Int) -> Int? {
@@ -959,7 +966,8 @@ extension RecentChartPreparedData {
         startIndex: Int,
         endIndex: Int,
         priceCard: QuotaConsumptionPriceCard,
-        attributionEvents: [TokenCacheAttributionEvent] = []
+        attributionEvents: [TokenCacheAttributionEvent] = [],
+        unreportedCompactionDates: [Date] = []
     ) -> QuotaConsumptionSelection? {
         guard !bins.isEmpty else { return nil }
         let lower = max(0, min(startIndex, endIndex))
@@ -1022,6 +1030,9 @@ extension RecentChartPreparedData {
             rates: { $0.currentPriceRates }
         )
 
+        func complete(_ from: Date?, _ to: Date?) -> Bool {
+            !unreportedCompactionDates.contains { $0 >= (from ?? start) && $0 < (to ?? end) }
+        }
         return QuotaConsumptionSelection(
             startIndex: lower,
             endIndex: upper,
@@ -1043,7 +1054,8 @@ extension RecentChartPreparedData {
                 excludedCalls: fiveHourPrice.excludedCalls,
                 comparisonStartDate: fiveHourDrop.comparisonStartDate,
                 comparisonEndDate: fiveHourDrop.comparisonEndDate,
-                comparisonUsesConservativeBuckets: fiveHourDrop.comparisonUsesConservativeBuckets
+                comparisonUsesConservativeBuckets: fiveHourDrop.comparisonUsesConservativeBuckets,
+                usageComplete: complete(fiveHourDrop.comparisonStartDate, fiveHourDrop.comparisonEndDate)
             ),
             sevenDay: QuotaConsumptionEstimator.estimate(
                 breakdown: breakdown,
@@ -1058,7 +1070,8 @@ extension RecentChartPreparedData {
                 excludedCalls: sevenDayPrice.excludedCalls,
                 comparisonStartDate: sevenDayDrop.comparisonStartDate,
                 comparisonEndDate: sevenDayDrop.comparisonEndDate,
-                comparisonUsesConservativeBuckets: sevenDayDrop.comparisonUsesConservativeBuckets
+                comparisonUsesConservativeBuckets: sevenDayDrop.comparisonUsesConservativeBuckets,
+                usageComplete: complete(sevenDayDrop.comparisonStartDate, sevenDayDrop.comparisonEndDate)
             ),
             fullAttributionEvents: fullEvents,
             fiveHourAttributionEvents: fiveHourEvents,

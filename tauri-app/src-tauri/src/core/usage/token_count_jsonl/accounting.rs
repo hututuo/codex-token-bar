@@ -55,6 +55,10 @@ impl Snapshot {
 pub(super) const COUNTED: i64 = 0;
 pub(super) const REPORTED_ONLY: i64 = 1;
 pub(super) const INVALID: i64 = 2;
+/// A compaction marker names a response but no matching per-response usage
+/// record is available yet.  The zero-valued columns on this diagnostic row
+/// are explicitly unknown and must never be treated as measured usage.
+pub(super) const UNREPORTED_COMPACTION: i64 = 4;
 #[derive(Clone, Copy, Debug)]
 pub(super) struct AccountingResult { pub components: Components, pub kind: i64 }
 impl AccountingResult {
@@ -76,6 +80,151 @@ pub(super) struct AccountingState {
     pub paginated_pending_turn_ordinal: Option<u64>,
     #[serde(default)]
     pub paginated_pending_is_context: Option<bool>,
+    #[serde(default)]
+    pub compaction: CompactionTrackingState,
+}
+
+pub(super) const MAX_RECENT_COMPACTION_RECORDS: usize = 128;
+
+/// A bounded, replay-safe association point for one modern Codex request.
+/// Optional numeric fields preserve the difference between an observed zero
+/// and missing usage. `cache_write_tokens` is kept as evidence only; Codex
+/// subscription pricing does not bill it separately.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(super) struct CompactionUsageRecord {
+    pub response_id: String,
+    pub input_tokens: Option<u64>,
+    pub cached_input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub reasoning_output_tokens: Option<u64>,
+    pub reported_total_tokens: Option<u64>,
+    pub cache_write_tokens: Option<u64>,
+    #[serde(default)]
+    pub has_usage_object: bool,
+    #[serde(default)]
+    pub invalid_number: bool,
+    #[serde(default)]
+    pub invalid_cache_write: bool,
+    #[serde(default)]
+    pub emitted_kind: Option<i64>,
+    pub timestamp_unix_seconds: i64,
+    pub raw_offset: u64,
+    #[serde(default)]
+    pub was_mirrored: bool,
+    #[serde(default)]
+    pub was_emitted: bool,
+    #[serde(default)]
+    pub legacy_association_attempted: bool,
+    #[serde(default)]
+    pub compacted_offset: Option<u64>,
+    #[serde(default)]
+    pub compacted_timestamp_unix_seconds: Option<i64>,
+    #[serde(default)]
+    pub compacted_user_prompt: Option<(u64, u64)>,
+    #[serde(default)]
+    pub compacted_assistant_response: Option<(u64, u64)>,
+}
+
+impl CompactionUsageRecord {
+    pub fn components(&self) -> Option<Components> {
+        if self.invalid_number { return None; }
+        let components = Components {
+            input: self.input_tokens?,
+            cached: self.cached_input_tokens.unwrap_or(0),
+            output: self.output_tokens?,
+            reasoning: self.reasoning_output_tokens.unwrap_or(0),
+        };
+        components.valid().then_some(components)
+    }
+}
+
+/// These records live inside the existing per-source accounting checkpoint.
+/// Keeping only the newest bounded window avoids an unbounded checkpoint while
+/// retaining response IDs needed across append/restart boundaries.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub(super) struct CompactionTrackingState {
+    #[serde(default)]
+    pub records: Vec<CompactionUsageRecord>,
+    #[serde(default)]
+    pub zero_io_anchor_pending: bool,
+    #[serde(default)]
+    pub latest_modern_request_offset: Option<u64>,
+    #[serde(default)]
+    pub latest_modern_response_id: Option<String>,
+}
+
+impl CompactionTrackingState {
+    pub fn push(&mut self, record: CompactionUsageRecord) -> usize {
+        self.latest_modern_request_offset = Some(record.raw_offset);
+        self.latest_modern_response_id = Some(record.response_id.clone());
+        if let Some(index) = self.records.iter().rposition(|item| item.response_id == record.response_id) {
+            let prior = self.records.remove(index);
+            let mut record = record;
+            if !record.has_usage_object && prior.has_usage_object {
+                record.input_tokens = prior.input_tokens;
+                record.cached_input_tokens = prior.cached_input_tokens;
+                record.output_tokens = prior.output_tokens;
+                record.reasoning_output_tokens = prior.reasoning_output_tokens;
+                record.reported_total_tokens = prior.reported_total_tokens;
+                record.cache_write_tokens = prior.cache_write_tokens;
+                record.has_usage_object = true;
+                record.invalid_number = prior.invalid_number;
+                record.invalid_cache_write = prior.invalid_cache_write;
+                record.timestamp_unix_seconds = prior.timestamp_unix_seconds;
+                record.raw_offset = prior.raw_offset;
+            }
+            let was_mirrored = prior.was_mirrored;
+            let was_emitted = prior.was_emitted;
+            let legacy_association_attempted = prior.legacy_association_attempted;
+            let compacted_offset = prior.compacted_offset;
+            let compacted_timestamp_unix_seconds = prior.compacted_timestamp_unix_seconds;
+            let compacted_user_prompt = prior.compacted_user_prompt;
+            let compacted_assistant_response = prior.compacted_assistant_response;
+            let emitted_kind = prior.emitted_kind;
+            record.was_mirrored |= was_mirrored;
+            record.was_emitted |= was_emitted;
+            record.legacy_association_attempted |= legacy_association_attempted;
+            record.compacted_offset = compacted_offset;
+            record.compacted_timestamp_unix_seconds = compacted_timestamp_unix_seconds;
+            record.compacted_user_prompt = compacted_user_prompt;
+            record.compacted_assistant_response = compacted_assistant_response;
+            record.emitted_kind = emitted_kind;
+            self.records.push(record);
+            return self.records.len() - 1;
+        }
+        self.records.push(record);
+        if self.records.len() > MAX_RECENT_COMPACTION_RECORDS {
+            self.records.remove(0);
+        }
+        self.records.len() - 1
+    }
+
+    pub fn note_modern_request(&mut self, raw_offset: u64) {
+        self.latest_modern_request_offset = Some(raw_offset);
+        self.latest_modern_response_id = None;
+    }
+
+    pub fn select_nearest_response(&mut self, response_id: &str, raw_offset: u64) {
+        self.latest_modern_request_offset = Some(raw_offset);
+        self.latest_modern_response_id = Some(response_id.to_owned());
+    }
+
+    pub fn find_response_mut(&mut self, response_id: &str) -> Option<&mut CompactionUsageRecord> {
+        self.records.iter_mut().rev().find(|record| record.response_id == response_id)
+    }
+
+    pub fn nearest_preceding_mut(&mut self, raw_offset: u64) -> Option<&mut CompactionUsageRecord> {
+        let latest = self.latest_modern_request_offset
+            .or_else(|| self.records.last().map(|record| record.raw_offset))?;
+        if latest >= raw_offset { return None; }
+        if let Some(response_id) = self.latest_modern_response_id.as_deref() {
+            self.records.iter_mut().rev().find(|record| record.response_id == response_id)
+        } else if self.latest_modern_request_offset.is_none() {
+            self.records.iter_mut().rev().find(|record| record.raw_offset == latest)
+        } else {
+            None
+        }
+    }
 }
 impl AccountingState {
     pub fn fresh() -> Self { Self { can_start_from_zero: true, ..Self::default() } }
@@ -311,5 +460,62 @@ mod tests {
 
         assert_eq!(decoded, state);
         assert!(AccountingState::decode(Some("{".to_owned())).is_err());
+    }
+
+    #[test]
+    fn old_checkpoints_default_the_compaction_tracker_and_new_state_round_trips() {
+        let old = r#"{"previous":null,"unreflected":{"input":0,"cached":0,"output":0,"reasoning":0},"can_start_from_zero":true,"counter_reset":false,"last_snapshot":null}"#;
+        let decoded = AccountingState::decode(Some(old.to_owned())).unwrap().unwrap();
+        assert!(decoded.compaction.records.is_empty());
+        assert!(!decoded.compaction.zero_io_anchor_pending);
+
+        let mut state = decoded;
+        state.compaction.records.push(CompactionUsageRecord {
+            response_id: "resp-1".into(),
+            input_tokens: Some(100),
+            cached_input_tokens: Some(80),
+            output_tokens: Some(20),
+            reasoning_output_tokens: Some(5),
+            reported_total_tokens: Some(120),
+            cache_write_tokens: Some(7),
+            timestamp_unix_seconds: 1_798_000_000,
+            raw_offset: 123,
+            has_usage_object: true,
+            invalid_number: false,
+            invalid_cache_write: false,
+            emitted_kind: Some(COUNTED),
+            was_mirrored: true,
+            was_emitted: true,
+            legacy_association_attempted: true,
+            compacted_offset: Some(456),
+            compacted_timestamp_unix_seconds: Some(1_798_000_001),
+            compacted_user_prompt: Some((10, 20)),
+            compacted_assistant_response: Some((20, 30)),
+        });
+        state.compaction.zero_io_anchor_pending = true;
+        let round_trip = AccountingState::decode(Some(state.encode())).unwrap().unwrap();
+        assert_eq!(round_trip, state);
+    }
+
+    #[test]
+    fn compaction_tracker_stays_bounded_and_keeps_nearest_record() {
+        let mut tracker = CompactionTrackingState::default();
+        for offset in 0..(MAX_RECENT_COMPACTION_RECORDS as u64 + 5) {
+            tracker.push(CompactionUsageRecord {
+                response_id: format!("resp-{offset}"),
+                input_tokens: Some(offset), cached_input_tokens: Some(0),
+                output_tokens: Some(1), reasoning_output_tokens: Some(0),
+                reported_total_tokens: Some(offset + 1), cache_write_tokens: None,
+                timestamp_unix_seconds: offset as i64, raw_offset: offset,
+                has_usage_object: true, invalid_number: false, invalid_cache_write: false,
+                emitted_kind: None, was_mirrored: false, was_emitted: false,
+                legacy_association_attempted: false, compacted_offset: None,
+                compacted_timestamp_unix_seconds: None,
+                compacted_user_prompt: None, compacted_assistant_response: None,
+            });
+        }
+        assert_eq!(tracker.records.len(), MAX_RECENT_COMPACTION_RECORDS);
+        assert!(tracker.find_response_mut("resp-0").is_none());
+        assert_eq!(tracker.nearest_preceding_mut(u64::MAX).unwrap().response_id, "resp-132");
     }
 }

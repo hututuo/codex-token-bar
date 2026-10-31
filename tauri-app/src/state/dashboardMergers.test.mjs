@@ -1171,3 +1171,20 @@ function quotaDiagnostic(overrides = {}) {
     ...overrides,
   };
 }
+
+test("light summary carries compaction completeness and legacy payloads cannot clear it", async () => {
+  return withSsrModules(async (load) => {
+    const { mergeUsageSummary } = await load("/src/state/dashboardMergers.ts");
+    const state = stateWithDashboard({});
+    const base = { totalTokens: state.dashboard.stats.totalTokens, todayTokens: 0, todayRequests: 0,
+      exactGeneration: 2, generatedAt: "2026-10-31T12:00:00Z" };
+    const missing = mergeUsageSummary(state, { ...base, unreportedCompactionUnix: [100] });
+    assert.deepEqual(missing.dashboard.stats.unreportedCompactionUnix, [100]);
+    assert.equal(missing.dashboard.recentUsage24h, state.dashboard.recentUsage24h);
+    const oldPayload = mergeUsageSummary(missing, base);
+    assert.deepEqual(oldPayload.dashboard.stats.unreportedCompactionUnix, [100]);
+    const resolved = mergeUsageSummary(oldPayload, { ...base, unreportedCompactionUnix: [] });
+    assert.deepEqual(resolved.dashboard.stats.unreportedCompactionUnix, []);
+    assert.equal(resolved.dashboard.recentUsage24h, state.dashboard.recentUsage24h);
+  });
+});

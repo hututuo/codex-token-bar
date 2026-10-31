@@ -2154,7 +2154,10 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         try db.execute("DELETE FROM usage_ledger_identities WHERE NOT EXISTS(SELECT 1 FROM events e WHERE e.source_id=usage_ledger_identities.source_id AND e.source_offset=usage_ledger_identities.event_id)")
         try db.execute("DELETE FROM usage_ledger_bindings WHERE NOT EXISTS(SELECT 1 FROM events e WHERE e.source_id=usage_ledger_bindings.source_id AND e.source_offset=usage_ledger_bindings.event_id)")
         XCTAssertEqual(try total(), 50)
-        XCTAssertEqual(parsed, [file])
+        // This fixture downgrades every parser receipt, not just the fork.
+        // The new compaction pass must inspect each old receipt once; numeric
+        // totals and the inherited-parent exclusion remain unchanged.
+        XCTAssertEqual(Set(parsed), Set(files))
         XCTAssertEqual(try total(), 50)
         XCTAssertEqual(parsed, [])
     }

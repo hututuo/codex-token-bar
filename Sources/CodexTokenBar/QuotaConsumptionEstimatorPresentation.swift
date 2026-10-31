@@ -60,6 +60,9 @@ struct QuotaConsumptionEstimatePresentation: Equatable {
                 "额度下降"
             }
             accessibilityText = "\(dropDescription) \(estimate.quotaDropPercent.quotaEstimatorOneDecimalPercent)，不能反推总额度"
+        case .incompleteUsage:
+            detail = "压缩用量缺失 · 不反推"
+            accessibilityText = "选区缺少压缩请求的实际用量，已暂停额度反推；金额仅含已记录用量"
         case .noTokenUsage:
             detail = "无可比用量"
             accessibilityText = "没有 token 用量"

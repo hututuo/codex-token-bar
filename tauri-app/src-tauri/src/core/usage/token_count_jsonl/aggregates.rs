@@ -191,6 +191,7 @@ pub(super) fn stats_at(events: &[TokenEvent], days: &[ActivityDay], today: Date)
             .map(|event| event.timestamp)
             .min()
             .and_then(|timestamp| timestamp.format(&Rfc3339).ok()),
+        unreported_compaction_unix: Vec::new(),
     }
 }
 

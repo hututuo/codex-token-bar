@@ -252,6 +252,45 @@ extension CodexUsageAnalyzer {
         var accounting = request.initialState.accountingState
             ?? (request.parsingStartOffset == 0 ? .fresh : UsageAccountingState())
 
+        var compaction = accounting.compaction ?? CodexCompactionAccounting()
+        func owned(_ ordinal: UInt64?) throws -> Bool {
+            if let metadata = paginatedMetadata, !metadata.isMainFork || accounting.paginatedOwnStartOrdinal != nil {
+                guard let ordinal else { throw CocoaError(.fileReadCorruptFile) }
+                return ordinal >= min(metadata.ordinal, accounting.paginatedOwnStartOrdinal ?? metadata.ordinal)
+            }
+            return !isSkippingForkReplay
+        }
+        func emitCompaction(_ item: CodexCompactionAccounting.Record) throws {
+            guard !item.mirrored, !item.emitted else { return }
+            let identity = UsageSnapshotFingerprint(identityDigest: Array(SHA256.hash(data:
+                Data(("codex-compaction-request-v1|" + item.responseID).utf8))), requestIdentity: true)
+            let fresh = try insertFingerprint(identity)
+            guard fresh || (item.unknownEmitted && item.components != nil) else { return }
+            let c = item.components ?? UsageAccountingComponents()
+            try emit(IndexedTokenEvent(event: TokenEvent(timestamp: Date(timeIntervalSince1970:item.timestamp),
+                sessionID: sessionID, model:item.model, tokens:c.total, inputTokens:c.input,
+                cachedInputTokens:c.cached, outputTokens:c.output, reasoningOutputTokens:c.reasoning,
+                userPrompt:"", assistantResponse:""), sourceOffset:item.offset,
+                userPromptOffset:item.prompt, assistantStartOffset:item.assistant,
+                accountingKind:item.components == nil ? .unreportedCompaction : .counted,
+                reportedTotalTokens:item.reportedTotal, usageFingerprint:try identity.databaseValue))
+            if !item.unknownEmitted { eventCount += 1 }
+            compaction.markEmitted(item)
+        }
+        func modernRecord(_ payload: [String:Any], offset: UInt64, timestamp: Date, ordinal: UInt64?, rejecting: Set<String> = []) -> CodexCompactionAccounting.Record? {
+            guard let id = payload["response_id"] as? String, !id.isEmpty else { return nil }
+            let parsed = parseTokenUsage(payload["usage"] as? [String:Any], rejecting: rejecting)
+            let c = parsed.flatMap { usage -> UsageAccountingComponents? in
+                guard usage.accounting.usable,
+                      usage.accounting.components.total > 0 || (usage.accounting.reportedTotal ?? 0) == 0 else { return nil }
+                return usage.accounting.components
+            }
+            let write = (payload["usage"] as? [String:Any])?["cache_write_input_tokens"] as? Int
+            return .init(responseID:id,timestamp:timestamp.timeIntervalSince1970,components:c,
+                cacheWriteInputTokens:write,reportedTotal:parsed?.accounting.reportedTotal,ordinal:ordinal,
+                offset:offset,model:currentModel,prompt:currentUserPromptOffset,assistant:assistantStartOffset)
+        }
+
         let stream = try streamIndexedSessionLines(
             from: file,
             startingAt: request.parsingStartOffset,
@@ -325,9 +364,39 @@ extension CodexUsageAnalyzer {
                     return
                 }
 
-                guard let usageLine = parseTokenUsageLine(lineString) else {
-                    return
+                if lineString.contains("\"token_usage_record\"") || lineString.contains("\"compacted\"") {
+                    if let bytes = lineString.data(using:.utf8),
+                       let root = try? JSONSerialization.jsonObject(with:bytes) as? [String:Any],
+                       let payload = root["payload"] as? [String:Any],
+                       let ts = root["timestamp"] as? String, let timestamp = parseDate(ts) {
+                        let ordinal = PaginatedHistoryBoundary.unsigned(root["ordinal"])
+                        if root["type"] as? String == "token_usage_record" {
+                            if try owned(ordinal), let item = modernRecord(payload,offset:lineOffset,timestamp:timestamp,ordinal:ordinal,
+                                rejecting: TokenUsageLexicalValidation.negativeZeroFields(in:lineString)["usage"] ?? []),
+                               let resolved = compaction.remember(item) { try emitCompaction(resolved) }
+                            return
+                        }
+                        if root["type"] as? String == "compacted" {
+                            guard try owned(ordinal) else { return }
+                            let reportedID = payload["compaction_response_id"] as? String
+                            // Old compacted entries without an ID are unknown usage,
+                            // not a free request. Give the observation a stable local key.
+                            let id = reportedID.flatMap { $0.isEmpty ? nil : $0 }
+                                ?? "missing-compaction-id|\(sessionID)|\(lineOffset)"
+                            let latest = payload["latest_token_usage_record"] as? [String:Any]
+                            var item = latest.flatMap { $0["response_id"] as? String == id
+                                ? modernRecord($0,offset:lineOffset,timestamp:timestamp,ordinal:ordinal,
+                                rejecting: TokenUsageLexicalValidation.negativeZeroFields(in:lineString)["usage"] ?? []) : nil }
+                                ?? .init(responseID:id,timestamp:timestamp.timeIntervalSince1970,components:nil,
+                                    cacheWriteInputTokens:nil,reportedTotal:nil,ordinal:ordinal,offset:lineOffset,
+                                    model:currentModel,prompt:currentUserPromptOffset,assistant:assistantStartOffset)
+                            item.offset = lineOffset
+                            if let observed = compaction.compact(item) { try emitCompaction(observed) }
+                            return
+                        }
+                    }
                 }
+                guard let usageLine = parseTokenUsageLine(lineString) else { return }
 
                 let totalTokens = usageLine.total?.accounting.reportedTotal
                 if let totalTokens { previousTotal = max(previousTotal ?? totalTokens, totalTokens) }
@@ -342,6 +411,15 @@ extension CodexUsageAnalyzer {
                 let isNewSnapshot = try usageFingerprint.map(insertFingerprint) ?? true
                 if adjacentDuplicate { return }
                 var nextAccounting = accounting
+                if compaction.anchorNextEmptyLegacy,
+                   usageLine.last?.accounting.usable == true,
+                   usageLine.last?.accounting.components.total == 0,
+                   let baseline = usageLine.total?.accounting, baseline.usable {
+                    nextAccounting.previous = baseline.components.total > 0 || (baseline.reportedTotal ?? 0) == 0
+                        ? baseline.components : nil
+                    nextAccounting.unreflected = UsageAccountingComponents()
+                    nextAccounting.canStartFromZero = false
+                }
                 let measured = nextAccounting.observe(
                     last: usageLine.last?.accounting,
                     total: usageLine.total?.accounting
@@ -367,7 +445,9 @@ extension CodexUsageAnalyzer {
                     lastSkippedForkReplayTokenAt = usageLine.timestamp
                     return
                 }
-                guard let measured else { return }
+                let mirror = compaction.observeLegacy(last:measured?.components,
+                    counted:measured?.kind == .counted)
+                guard let measured, !mirror else { return }
                 let delta = measured.tokens
                 let event = TokenEvent(
                     timestamp: usageLine.timestamp,
@@ -398,6 +478,7 @@ extension CodexUsageAnalyzer {
             }
         }
 
+        accounting.compaction = compaction
         return IndexedSessionParseResult(
             eventCount: eventCount,
             lastOffset: stream.lastOffset,
@@ -1237,6 +1318,8 @@ extension CodexUsageAnalyzer {
         let newline = Data([0x0A])
         let needles = [
             Data(#""token_count""#.utf8),
+            Data(#""token_usage_record""#.utf8),
+            Data(#""compacted""#.utf8),
             Data(#""turn_context""#.utf8),
             Data(#""task_started""#.utf8),
             Data(#""user_message""#.utf8),

@@ -30,7 +30,10 @@ enum UsageHistoryRetention {
         let triggerCount = try db.readRows("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN ('retain_usage_before_event_delete','retain_usage_before_source_delete','retain_usage_before_identity_update','retain_usage_before_fingerprint_delete','retain_usage_before_event_update');") { $0.int(0) }.first ?? 0
         if triggerCount == 5 {
             let stored = try db.readRows("SELECT value FROM retained_usage_meta WHERE key='event_columns';") { $0.text(0) }.first ?? nil
-            if stored == flavor { return }
+            if stored == flavor {
+                try db.execute("CREATE INDEX IF NOT EXISTS retained_unreported_compactions ON retained_usage_events(timestamp,snapshot_id,position) WHERE accounting_kind=4")
+                return
+            }
         }
         try db.transaction { tx in
             try tx.execute("""
@@ -68,6 +71,7 @@ enum UsageHistoryRetention {
                     model TEXT, accounting_kind INTEGER, reported_total_tokens INTEGER, legacy_tokens INTEGER
                 );
                 CREATE INDEX IF NOT EXISTS retained_usage_revisions_source ON retained_usage_revisions(source_id,position);
+                CREATE INDEX IF NOT EXISTS retained_unreported_compactions ON retained_usage_events(timestamp,snapshot_id,position) WHERE accounting_kind=4;
                 DROP TRIGGER IF EXISTS retain_usage_before_event_update;
                 DROP TRIGGER IF EXISTS retain_usage_before_event_delete;
                 DROP TRIGGER IF EXISTS retain_usage_before_source_delete;

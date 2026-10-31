@@ -427,6 +427,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let chunkCount: Int
         let resumeOffset: UInt64
         let parserState: CodexUsageAnalyzer.IndexedSessionParserState
+        let parserRevision: String
         let prefixSHA256: String
         var sourceValidation: StageSourceValidation? = nil
     }
@@ -569,7 +570,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     private static let oldStagingParserRevision = "token-event-v3-\(UsageAccountingState.revision)-\(oldForkReplayBoundaryRevision)"
     private static let paginatedV4StagingRevision = "token-event-v3-\(UsageAccountingState.revision)-\(paginatedV4BoundaryRevision)"
     private static let paginatedV5StagingRevision = "token-event-v3-\(UsageAccountingState.revision)-\(paginatedV5BoundaryRevision)"
-    private static let stagingParserRevision = "token-event-v3-\(UsageAccountingState.revision)-\(forkReplayBoundaryRevision)"
+    private static let preCompactionStagingRevision = "token-event-v3-\(UsageAccountingState.revision)-\(forkReplayBoundaryRevision)"
+    private static let stagingParserRevision = "token-event-v4-\(UsageAccountingState.revision)-\(forkReplayBoundaryRevision)-compaction-v1"
     private static let explicitSubagentFirstLineLimit = 256 * 1_024
     private static let cacheDirectoryName = "CodexTokenBarSwift"
     private static let indexNamespace = "exact-usage-history-v1"
@@ -705,6 +707,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         WHERE timestamp > ? AND timestamp <= ? AND tokens > 0 LIMIT 1
                         """, bindings: [.double(start.timeIntervalSince1970), .double(end.timeIntervalSince1970)]) { $0.int(0) }.first != nil
                     if found { return .present }
+                    let missingCompaction = try tx.readRows("SELECT 1 FROM (\(Self.unresolvedCompactionTimesSQL)) WHERE timestamp>? AND timestamp<=? LIMIT 1",
+                        bindings:[.double(start.timeIntervalSince1970),.double(end.timeIntervalSince1970)]) { $0.int(0) }.first != nil
+                    if missingCompaction { return .unknown }
                     guard state.unsafeSinceGeneration == nil,
                           let receipt = try UsageIndexCoverageCertificate.read(on: tx), receipt.revision == 1,
                           receipt.generation == state.generation, receipt.provenanceEpoch == state.provenanceEpoch,
@@ -1816,7 +1821,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         "SELECT DISTINCT parser_revision FROM event_enrichment_sources WHERE parser_revision <> '';"
                     ) { $0.text(0) }.compactMap { $0 }
                     if let unknown = revisions.first(where: {
-                        $0 != stagingParserRevision && $0 != legacyStagingParserRevision && $0 != oldStagingParserRevision && $0 != paginatedV4StagingRevision && $0 != paginatedV5StagingRevision
+                        $0 != stagingParserRevision && $0 != preCompactionStagingRevision && $0 != legacyStagingParserRevision && $0 != oldStagingParserRevision && $0 != paginatedV4StagingRevision && $0 != paginatedV5StagingRevision
                     }) {
                         return .upgradeRequired(
                             component: "模型补全 parser receipt",
@@ -3844,6 +3849,24 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }.compactMap { $0 }
     }
 
+    /// Retained deletions are unresolved evidence too; revision audit copies are
+    /// excluded, so a proved kind-4 -> kind-0 correction clears the gap.
+    /// Keep <>0 explicit so SQLite can use the existing unresolved-kind index.
+    private static let unresolvedCompactionTimesSQL = """
+        SELECT timestamp FROM events WHERE accounting_kind=4 AND accounting_kind<>0
+        UNION
+        SELECT r.timestamp FROM retained_usage_events r
+        JOIN retained_usage_sources s ON s.snapshot_id=r.snapshot_id
+        WHERE r.accounting_kind=4 AND NOT EXISTS(
+            SELECT 1 FROM events e WHERE e.source_id=s.source_id
+                AND e.source_offset=r.position AND e.accounting_kind=0)
+        """
+
+    func unreportedCompactionDates(since: Date = Date(timeIntervalSince1970: 0)) throws -> [Date] {
+        try driver.readRows("SELECT timestamp FROM (\(Self.unresolvedCompactionTimesSQL)) WHERE timestamp>=? ORDER BY timestamp",
+            bindings:[.date(since)]) { $0.double(0).map(Date.init(timeIntervalSince1970:)) }.compactMap { $0 }
+    }
+
     func accountingCoverage() throws -> String {
         try driver.withConnection { connection in
             let legacy = try connection.readRows("SELECT value FROM schema_meta WHERE key='accounting_coverage';") { $0.text(0) }.first ?? nil
@@ -4124,7 +4147,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     UPDATE attribution_source_buckets SET total_tokens = input_tokens + output_tokens;
                     """)
                 try transaction.execute("UPDATE event_enrichment_sources SET parser_revision = ? WHERE parser_revision = ?;",
-                                        bindings: [.text(Self.stagingParserRevision), .text(Self.legacyStagingParserRevision)])
+                                        bindings: [.text(Self.preCompactionStagingRevision), .text(Self.legacyStagingParserRevision)])
                 try backfillAttributionLedger(connection: transaction)
                 try rebuildDashboardAggregates(connection: transaction)
                 _ = try bumpAttributionGeneration(connection: transaction)
@@ -6016,7 +6039,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             """,
             bindings: [
                 .text(Self.eventEnrichmentRevision),
-                .text(Self.stagingParserRevision),
+                .text(Self.preCompactionStagingRevision),
             ]
         )
     }
@@ -6372,7 +6395,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let receiptColumns = Set(try connection.readRows("PRAGMA table_info(event_enrichment_sources);") { $0.text(1) ?? "" })
         if receiptColumns.contains("parser_revision") {
             try connection.execute("UPDATE event_enrichment_sources SET parser_revision = ? WHERE parser_revision IN (?, ?, ?, ?);",
-                bindings: [.text(Self.stagingParserRevision), .text(Self.oldStagingParserRevision), .text(Self.paginatedV4StagingRevision), .text(Self.legacyStagingParserRevision), .text(Self.paginatedV5StagingRevision)])
+                bindings: [.text(Self.preCompactionStagingRevision), .text(Self.oldStagingParserRevision), .text(Self.paginatedV4StagingRevision), .text(Self.legacyStagingParserRevision), .text(Self.paginatedV5StagingRevision)])
         }
         guard !unresolvedCandidate else {
             return false
@@ -6642,6 +6665,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         canonicalPath: String,
         generation: String,
         signature: SourceSignature,
+        parserRevision: String? = nil,
         connection: SQLiteDatabaseConnection
     ) throws {
         try connection.execute(
@@ -6662,7 +6686,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 .int64(sourceID),
                 .text(Self.eventEnrichmentRevision),
                 .text(canonicalPath),
-                .text(Self.stagingParserRevision),
+                .text(parserRevision ?? Self.stagingParserRevision),
                 .text(generation),
                 .int64(try sqliteInt64(signature.size)),
                 .text(signature.contentProbe),
@@ -7662,6 +7686,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                     """
                 )
+                let compactionCorrection = try transaction.prepare("""
+                    UPDATE events SET timestamp=?2,tokens=?3,input_tokens=?4,cached_input_tokens=?5,
+                        output_tokens=?6,reasoning_output_tokens=?7,model=COALESCE(model,?8),
+                        user_prompt_offset=COALESCE(user_prompt_offset,?9),
+                        assistant_start_offset=COALESCE(assistant_start_offset,?10),
+                        accounting_kind=?11,reported_total_tokens=?12
+                    WHERE source_offset=?1 AND accounting_kind=4 AND usage_fingerprint=?13
+                    """)
                 let result = try parser(
                     job.file,
                     job.sessionID,
@@ -7688,7 +7720,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         } else {
                             assistantStartOffset = .null
                         }
-                        _ = try eventStatement.execute([
+                        let bindings: [SQLiteBinding] = [
                             .int64(try sqliteInt64(indexedEvent.sourceOffset)),
                             .date(event.timestamp),
                             .int(event.tokens),
@@ -7702,7 +7734,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                             .int(indexedEvent.accountingKind.rawValue),
                             indexedEvent.reportedTotalTokens.map(SQLiteBinding.int) ?? .null,
                             indexedEvent.usageFingerprint.map(SQLiteBinding.blob) ?? .null
-                        ])
+                        ]
+                        if indexedEvent.accountingKind == .counted,
+                           indexedEvent.usageFingerprint != nil,
+                           try compactionCorrection.execute(bindings) == 1 { return }
+                        _ = try eventStatement.execute(bindings)
                     }
                 )
                 guard result.lastOffset == committedSignature.size else {
@@ -7815,6 +7851,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     chunkCount: result.chunkHashes.count,
                     resumeOffset: result.resumeOffset,
                     parserState: result.state,
+                    parserRevision: Self.stagingParserRevision,
                     prefixSHA256: result.contentHash
                 )
             }
@@ -7864,6 +7901,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 chunkCount: staged.chunkCount,
                 resumeOffset: staged.resumeOffset,
                 parserState: staged.parserState,
+                parserRevision: staged.parserRevision,
                 prefixSHA256: staged.prefixSHA256,
                 sourceValidation: StageSourceValidation(source: staged.committedSignature,
                     stage: try SourceFileObservation.read(at: databaseURL), artifactID: artifactID)
@@ -7964,8 +8002,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             if rows.count == 1, let row = rows.first,
                row.path == job.file.path, row.sessionID == job.sessionID,
                (row.schema == Self.stagingManifestSchemaVersion || Self.legacyStagingManifestSchemaVersions.contains(row.schema ?? -1)),
-               [Self.oldStagingParserRevision, Self.legacyStagingParserRevision, Self.paginatedV4StagingRevision, Self.paginatedV5StagingRevision].contains(row.parser ?? ""),
-               try PaginatedHistoryBoundary.read(file: job.file) != nil {
+               [Self.preCompactionStagingRevision, Self.oldStagingParserRevision, Self.legacyStagingParserRevision, Self.paginatedV4StagingRevision, Self.paginatedV5StagingRevision].contains(row.parser ?? ""),
+               try (row.parser == Self.preCompactionStagingRevision || PaginatedHistoryBoundary.read(file: job.file) != nil) {
                 return try Self.stagingIntegrityIsValid(using: stage)
             }
             guard rows.count == 1,
@@ -8104,6 +8142,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     if let parser = header.parser,
                        !parser.isEmpty,
                        parser != Self.stagingParserRevision,
+                       parser != Self.preCompactionStagingRevision,
                        parser != Self.legacyStagingParserRevision, parser != Self.oldStagingParserRevision, parser != Self.paginatedV4StagingRevision, parser != Self.paginatedV5StagingRevision {
                         throw CodexUsageIndexUpgradeRequiredError(
                             component: "staging parser",
@@ -8159,7 +8198,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                               row.text(1) == job.file.path,
                               row.text(2) == job.sessionID,
                               row.text(3) == expectedMigrationRevision,
-                              ([Self.stagingParserRevision, Self.legacyStagingParserRevision, Self.oldStagingParserRevision, Self.paginatedV4StagingRevision, Self.paginatedV5StagingRevision].contains(row.text(4) ?? "")),
+                              ([Self.stagingParserRevision, Self.preCompactionStagingRevision, Self.legacyStagingParserRevision, Self.oldStagingParserRevision, Self.paginatedV4StagingRevision, Self.paginatedV5StagingRevision].contains(row.text(4) ?? "")),
                               let artifactID = row.text(5),
                               !artifactID.isEmpty,
                               let rawActualBytes = row.int64(6),
@@ -8260,8 +8299,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                                     $0 >= 0 ? UInt64($0) : nil
                                 },
                                 currentModel: row.text(21),
-                                accountingState: [Self.stagingParserRevision, Self.oldStagingParserRevision, Self.paginatedV4StagingRevision, Self.paginatedV5StagingRevision].contains(row.text(4) ?? "") ? try UsageAccountingState.decode(row.text(24)) : nil
+                                accountingState: [Self.stagingParserRevision, Self.preCompactionStagingRevision, Self.oldStagingParserRevision, Self.paginatedV4StagingRevision, Self.paginatedV5StagingRevision].contains(row.text(4) ?? "") ? try UsageAccountingState.decode(row.text(24)) : nil
                             ),
+                            parserRevision: row.text(4) ?? Self.legacyStagingParserRevision,
                             prefixSHA256: prefixSHA256,
                             sourceValidation: currentSignature == signature && stageObservation != nil
                                 ? StageSourceValidation(source: signature, stage: stageObservation!, artifactID: artifactID) : nil
@@ -8779,6 +8819,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         canonicalPath: staged.job.file.path,
                         generation: generation,
                         signature: staged.committedSignature,
+                        parserRevision: staged.parserRevision,
                         connection: transaction
                     )
             }

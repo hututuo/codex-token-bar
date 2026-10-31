@@ -172,6 +172,12 @@ enum QuotaSelectionAttributionEstimator {
             nil
         }
 
+        if selection.sevenDay.confidence == .incompleteUsage {
+            return unavailable(.provisional, context:context, model:model,
+                currentOfficialEstimate:currentOfficialEstimate, comparableEstimate:comparableEstimate,
+                localSharePercent:nil, radarTotal:radarTotal,
+                caveats:["选区存在压缩用量缺口，金额仅含已记录部分，暂停额度归因。"])
+        }
         guard let accountDrop else {
             return unavailable(
                 .missingQuotaHistory,

@@ -359,6 +359,7 @@ struct TokenCacheUsage: Codable {
     /// became ambiguous. Such a snapshot remains displayable, but cannot
     /// advance a positive shared-account conclusion.
     let attributionSourceMutationDetected: Bool
+    var unreportedCompactionDates: [Date]
 
     init(
         total: TokenCacheBreakdown,
@@ -376,7 +377,8 @@ struct TokenCacheUsage: Codable {
         attributionGeneration: Int64? = nil,
         attributionUnsafeSinceGeneration: Int64? = nil,
         attributionCurrentScanUnsafeCauseDetected: Bool = false,
-        attributionSourceMutationDetected: Bool = false
+        attributionSourceMutationDetected: Bool = false,
+        unreportedCompactionDates: [Date] = []
     ) {
         self.total = total
         self.modelBreakdowns = modelBreakdowns
@@ -395,6 +397,7 @@ struct TokenCacheUsage: Codable {
         self.attributionCurrentScanUnsafeCauseDetected =
             attributionCurrentScanUnsafeCauseDetected
         self.attributionSourceMutationDetected = attributionSourceMutationDetected
+        self.unreportedCompactionDates = unreportedCompactionDates
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -415,6 +418,7 @@ struct TokenCacheUsage: Codable {
         case attributionUnsafeSinceGeneration
         case attributionCurrentScanUnsafeCauseDetected
         case attributionSourceMutationDetected
+        case unreportedCompactionDates
     }
 
     init(from decoder: Decoder) throws {
@@ -462,6 +466,7 @@ struct TokenCacheUsage: Codable {
             Bool.self,
             forKey: .attributionCurrentScanUnsafeCauseDetected
         ) ?? false
+        unreportedCompactionDates = try container.decodeIfPresent([Date].self, forKey: .unreportedCompactionDates) ?? []
         attributionSourceMutationDetected = try container.decodeIfPresent(
             Bool.self,
             forKey: .attributionSourceMutationDetected
@@ -470,6 +475,7 @@ struct TokenCacheUsage: Codable {
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(unreportedCompactionDates, forKey: .unreportedCompactionDates)
         try container.encode(total, forKey: .total)
         try container.encode(modelBreakdowns, forKey: .modelBreakdowns)
         try container.encode(dailyModelBreakdowns, forKey: .dailyModelBreakdowns)

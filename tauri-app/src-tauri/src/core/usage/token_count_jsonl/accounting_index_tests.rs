@@ -187,6 +187,84 @@ fn dashboard_snapshot_excludes_diagnostics_from_every_numeric_surface() {
 }
 
 #[test]
+fn appended_compaction_usage_corrects_unknown_by_response_identity_without_a_new_row() {
+    use std::io::Write;
+
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = unique_test_root();
+    let sessions = root.join("sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    let file = sessions.join("rollout-compaction-late-usage.jsonl");
+    let now = time::OffsetDateTime::now_utc();
+    let base_time = now.format(&time::format_description::well_known::Rfc3339).unwrap();
+    let marker_time = (now + time::Duration::seconds(1))
+        .format(&time::format_description::well_known::Rfc3339).unwrap();
+    write_token_count_line(&file, &base_time, 50, 10, 10, 2, 60);
+    let marker = serde_json::json!({
+        "timestamp": marker_time,
+        "type": "compacted",
+        "payload": { "compaction_response_id": "resp-late-usage" }
+    });
+    let marker_offset = fs::metadata(&file).unwrap().len() as i64;
+    let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
+    writeln!(handle, "{marker}").unwrap();
+    drop(handle);
+
+    let before = dashboard_snapshot(&root).unwrap();
+    assert_eq!(before.stats.total_tokens, 60);
+    assert_eq!(before.stats.total_calls, 1);
+    assert_eq!(before.stats.unreported_compaction_unix, vec![now.unix_timestamp() + 1]);
+    let light_before = super::usage_summary_snapshot(&root).unwrap().unwrap();
+    assert_eq!(light_before.unreported_compaction_unix, Some(vec![now.unix_timestamp() + 1]));
+
+    let index_path = super::exact_usage_index::database_path(&root).unwrap();
+    let (old_event_id, old_fingerprint) = {
+        let connection = Connection::open(&index_path).unwrap();
+        connection.query_row(
+            "SELECT e.id,b.fingerprint FROM event_rows e JOIN usage_ledger_bindings b ON b.event_id=e.id WHERE e.accounting_kind=4",
+            [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?)),
+        ).unwrap()
+    };
+
+    let modern = serde_json::json!({
+        "timestamp": base_time,
+        "type": "token_usage_record",
+        "payload": { "response_id": "resp-late-usage", "usage": {
+            "input_tokens": 80, "cached_input_tokens": 30, "output_tokens": 15,
+            "reasoning_output_tokens": 5, "total_tokens": 95,
+            "cache_write_input_tokens": 5000
+        }}
+    });
+    let mut handle = fs::OpenOptions::new().append(true).open(&file).unwrap();
+    writeln!(handle, "{modern}").unwrap();
+    drop(handle);
+
+    let after = dashboard_snapshot(&root).unwrap();
+    assert_eq!(after.stats.total_tokens, 155);
+    assert_eq!(after.stats.total_calls, 2);
+    assert!(after.stats.unreported_compaction_unix.is_empty());
+    let light_after = super::usage_summary_snapshot(&root).unwrap().unwrap();
+    assert_eq!(light_after.unreported_compaction_unix, Some(Vec::new()));
+    let connection = Connection::open(&index_path).unwrap();
+    let (new_event_id, timestamp, tokens, kind, offset, fingerprint): (i64, i64, i64, i64, i64, Vec<u8>) = connection.query_row(
+        "SELECT e.id,e.timestamp,e.tokens,e.accounting_kind,e.token_source_offset,b.fingerprint FROM event_rows e JOIN usage_ledger_bindings b ON b.event_id=e.id WHERE b.fingerprint=?1",
+        params![old_fingerprint],
+        |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?)),
+    ).unwrap();
+    assert_eq!(new_event_id, old_event_id);
+    assert_eq!(timestamp, now.unix_timestamp() + 1);
+    assert_eq!(tokens, 95);
+    assert_eq!(kind, 0);
+    assert_eq!(offset, marker_offset);
+    assert_eq!(fingerprint, old_fingerprint);
+    assert_eq!(connection.query_row("SELECT COUNT(*) FROM event_rows", [], |row| row.get::<_, i64>(0)).unwrap(), 2);
+    assert_eq!(connection.query_row("SELECT COUNT(*) FROM usage_ledger_corrections WHERE reason='compaction-response-id-proof'", [], |row| row.get::<_, i64>(0)).unwrap(), 1);
+    drop(connection);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn partial_snapshot_fingerprints_survive_nonadjacent_replay_and_reopen() {
     use std::io::Write;
     let _test_state = app_paths::app_path_test_env_guard(&[]);
