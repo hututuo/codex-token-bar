@@ -2,7 +2,7 @@
   "version": "0.9.8",
   "macBuild": 987,
   "tag": "v0.9.8",
-  "status": "USER_APPROVED_PUBLICATION_PENDING",
+  "status": "PUBLISHED_VERIFIED",
   "sourceBranch": "codex/dashboard-header-client-identity",
   "targetBranch": "main",
   "previousPublicBoundary": "v0.9.7",
@@ -69,7 +69,7 @@
   "upgradeRunID": 41161283661,
   "signingApproved": true,
   "signaturesVerified": true,
-  "published": false,
+  "published": true,
   "installed": true,
   "localPacket": "scratch/release-098-preparation/signed-packet",
   "tests": {
@@ -89,9 +89,38 @@
   },
   "warnings": [
     "Three high-severity development dependency findings; production dependency audit is zero. Development/test tools are not shipped.",
-    "Known macOS27 accessibility AXScrollToTop/Bottom crash remains open; no interactive acceptance is claimed.",
-    "Windows ARM64 hardware/runtime and this candidate interaction acceptance were not repeated; user performs acceptance."
+    "Known macOS27 accessibility AXScrollToTop/Bottom crash remains open; user accepted the installed Mac build; the specific accessibility issue remains open.",
+    "Windows ARM64 hardware/runtime and Windows GUI interaction acceptance were not repeated. Mac build987 was installed and accepted by the user."
   ],
   "publicationAuthorizationAt": "2026-10-31T12:44:34.693699+08:00",
-  "installationReceipt": "scratch/release-098-preparation/local-install-current.json"
+  "installationReceipt": "scratch/release-098-preparation/local-install-current.json",
+  "releaseURL": "https://github.com/hututuo/codex-token-bar/releases/tag/v0.9.8",
+  "releaseID": 429727649,
+  "publishedAt": "2026-10-31T04:49:15Z",
+  "publishRunID": 41169864640,
+  "publishRunAttempt": 2,
+  "publicReadbackVerifiedAt": "2026-10-31T12:50:05.375282+08:00",
+  "nextChangelogBoundary": "v0.9.8",
+  "publicUpdateFeeds": {
+    "sparkle": {
+      "url": "https://raw.githubusercontent.com/hututuo/codex-token-bar/main/appcast.xml",
+      "finalURL": "https://raw.githubusercontent.com/hututuo/codex-token-bar/main/appcast.xml",
+      "sha256": "75cd5441d6f7ba49096c507b48817561f1985e2786996b89bba87640f8e4e7b0",
+      "version": "0.9.8",
+      "build": 987,
+      "matchesSignedPacket": true
+    },
+    "windows": {
+      "url": "https://github.com/hututuo/codex-token-bar/releases/latest/download/latest-windows.json",
+      "finalURL": "https://release-assets.githubusercontent.com/github-production-release-asset/1261796913/044db24c-0477-4d7f-bf4c-0ae59cb78d18?sp=r&sv=2018-11-09&sr=b&spr=https&se=2026-10-31T05%3A47%3A30Z&rscd=attachment%3B+filename%3Dlatest-windows.json&rsct=application%2Foctet-stream&skoid=96c2d410-5711-43a1-aedd-ab1947aa7ab0&sktid=398a6654-997b-47e9-b12b-9515b896b4de&skt=2026-10-31T04%3A47%3A11Z&ske=2026-10-31T05%3A47%3A30Z&sks=b&skv=2018-11-09&sig=PDsZV8%2FPMY8PAZCV8xeGKMl5MwW4jDcYSDv27pMx%2BRI%3D&jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmVsZWFzZS1hc3NldHMuZ2l0aHVidXNlcmNvbnRlbnQuY29tIiwia2V5Ijoia2V5MSIsImV4cCI6MTc5MzQyMjUwNCwibmJmIjoxNzkzNDIyMjA0LCJwYXRoIjoicmVsZWFzZWFzc2V0cHJvZHVjdGlvbi5ibG9iLmNvcmUud2luZG93cy5uZXQifQ.b08l1f8p4tLBs7I0rJnF-QHJ9fosPVNnf_95BoIpmxU&response-content-disposition=attachment%3B%20filename%3Dlatest-windows.json&response-content-type=application%2Foctet-stream",
+      "sha256": "c02f3e6275f62bc5a3ca74da6249ec48358ac58e215b22a0bcd29b141704158a",
+      "version": "0.9.8",
+      "platforms": [
+        "windows-aarch64",
+        "windows-x86_64"
+      ],
+      "matchesSignedPacket": true
+    }
+  },
+  "publicReadbackReceipt": "scratch/release-098-preparation/public-release-readback.json"
 }
