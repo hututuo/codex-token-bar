@@ -2,7 +2,7 @@
   "version": "0.9.8",
   "macBuild": 987,
   "tag": "v0.9.8",
-  "status": "PREPARING_NOT_PUBLISHED",
+  "status": "SIGNED_PREPARED_NOT_PUBLISHED",
   "sourceBranch": "codex/dashboard-header-client-identity",
   "targetBranch": "main",
   "previousPublicBoundary": "v0.9.7",
@@ -13,11 +13,83 @@
   "upstreamReviewed": "384ce020cc655133e95aaad5cc085f3985f0ed99",
   "vendorBase": "a94a67fcc78e5d8eea5f82d8d5e737bccf994e2c",
   "strategy": "selective compatibility backports; no full SDK upgrade",
-  "sourceCommit": null,
-  "ciRunID": null,
-  "buildRunID": null,
-  "signingRunID": null,
-  "assets": [],
+  "sourceCommit": "0a9520f99c3f13e0f48c098298b07611dc7acd63",
+  "ciRunID": 41161137258,
+  "buildRunID": 41161184973,
+  "signingRunID": 41164961591,
+  "assets": [
+    {
+      "name": "CodexTokenBar-v0.9.8-macos-arm64.app.zip",
+      "bytes": 27640334,
+      "sha256": "4fc51735a3ab4daf482d22e9b696fa662e815b7363c13f5884f27dd549efac9f"
+    },
+    {
+      "name": "CodexTokenBar-v0.9.8-macos-arm64.dmg",
+      "bytes": 28563674,
+      "sha256": "537c8cfb25e65ecfa2620c65585e7f2776ec10698ecfc8ac98f6dd382f41462f"
+    },
+    {
+      "name": "CodexTokenBar-v0.9.8-windows-arm64-setup.exe",
+      "bytes": 62694671,
+      "sha256": "e34809ff8ce0e4ad24ca3af14ed47b4fbfbcc1abf95fc21d1a329381d55cf1e6"
+    },
+    {
+      "name": "CodexTokenBar-v0.9.8-windows-arm64-setup.exe.sig",
+      "bytes": 440,
+      "sha256": "51139b29684bb70728b2cbae3e763390da07c2dc8f257cd88e0c54f1a3642079"
+    },
+    {
+      "name": "CodexTokenBar-v0.9.8-windows-x64-setup.exe",
+      "bytes": 68624236,
+      "sha256": "b844e655a4e6799f448a4585375bf74eb1a3637f69af73982ebef6bd0aaca960"
+    },
+    {
+      "name": "CodexTokenBar-v0.9.8-windows-x64-setup.exe.sig",
+      "bytes": 436,
+      "sha256": "30930efc72a73ff7a22dc280288342e37a9bfcfb1422ba60eefa9002cc85e038"
+    },
+    {
+      "name": "CodexTokenBar.app.zip",
+      "bytes": 27640334,
+      "sha256": "4fc51735a3ab4daf482d22e9b696fa662e815b7363c13f5884f27dd549efac9f"
+    },
+    {
+      "name": "SHA256SUMS-v0.9.8.txt",
+      "bytes": 832,
+      "sha256": "d7f18fe553a0d7ea2511bbc3635b2404f06814ae687d3973e545616994c71b44"
+    },
+    {
+      "name": "latest-windows.json",
+      "bytes": 1368,
+      "sha256": "c02f3e6275f62bc5a3ca74da6249ec48358ac58e215b22a0bcd29b141704158a"
+    }
+  ],
   "userInteractionAcceptance": "user performs; no automated interaction replay",
-  "publicUploadAuthorized": false
+  "publicUploadAuthorized": false,
+  "upgradeRunID": 41161283661,
+  "signingApproved": true,
+  "signaturesVerified": true,
+  "published": false,
+  "installed": false,
+  "localPacket": "scratch/release-098-preparation/signed-packet",
+  "tests": {
+    "frontendPassed": 1376,
+    "swiftXCTestTotal": 2221,
+    "swiftXCTestSkipped": 36,
+    "swiftTestingPassed": 667,
+    "macRustPassed": 1553,
+    "windowsRustPassed": 1498,
+    "rustIgnoredPerPlatform": 14,
+    "real097UpgradeSwiftPassed": 8,
+    "real097UpgradeWindowsPassed": 3,
+    "real097UpgradeSkipped": 0,
+    "windowsProductionRecoveryPhasesPassed": 4,
+    "sharedParserCasesPerPlatform": 25,
+    "windowsParserResetPassed": true
+  },
+  "warnings": [
+    "Three high-severity development dependency findings; production dependency audit is zero. Development/test tools are not shipped.",
+    "Known macOS27 accessibility AXScrollToTop/Bottom crash remains open; no interactive acceptance is claimed.",
+    "Windows ARM64 hardware/runtime and this candidate interaction acceptance were not repeated; user performs acceptance."
+  ]
 }
