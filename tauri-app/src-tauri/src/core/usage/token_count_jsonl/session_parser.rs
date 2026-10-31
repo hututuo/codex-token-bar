@@ -1,6 +1,6 @@
 use super::rollout_source::{self, RolloutReader};
 use super::accounting::{
-    AccountingState, CompactionUsageRecord, Components, Snapshot, COUNTED, INVALID,
+    AccountingState, CompactionUsageRecord, Components, Snapshot, COUNTED,
     MAX_RECENT_COMPACTION_RECORDS, REPORTED_ONLY, UNREPORTED_COMPACTION,
 };
 #[cfg(test)]
@@ -1685,35 +1685,13 @@ fn merge_parsed_modern_record(
     Some(tracker.push(record))
 }
 
-fn compaction_accounting(
-    record: &CompactionUsageRecord,
-) -> (i64, Components) {
-    if record.invalid_number {
-        return (INVALID, Components {
-            input: record.input_tokens.unwrap_or(0),
-            cached: record.cached_input_tokens.unwrap_or(0),
-            output: record.output_tokens.unwrap_or(0),
-            reasoning: record.reasoning_output_tokens.unwrap_or(0),
-        });
-    }
-    if !record.has_usage_object {
+fn compaction_accounting(record: &CompactionUsageRecord) -> (i64, Components) {
+    if !record.has_usage_object { return (UNREPORTED_COMPACTION, Components::default()); }
+    let Some(components) = record.components() else {
         return (UNREPORTED_COMPACTION, Components::default());
-    }
-    let components = Components {
-        input: record.input_tokens.unwrap_or(0),
-        cached: record.cached_input_tokens.unwrap_or(0),
-        output: record.output_tokens.unwrap_or(0),
-        reasoning: record.reasoning_output_tokens.unwrap_or(0),
     };
-    let has_io = record.input_tokens.is_some() && record.output_tokens.is_some();
-    if !has_io || !components.valid() {
-        return (REPORTED_ONLY, components);
-    }
-    if components.total() == 0 {
-        if record.reported_total_tokens.is_some_and(|reported| reported > 0) {
-            return (UNREPORTED_COMPACTION, Components::default());
-        }
-        return (REPORTED_ONLY, components);
+    if components.total() == 0 && record.reported_total_tokens.is_some_and(|reported| reported > 0) {
+        return (UNREPORTED_COMPACTION, Components::default());
     }
     (COUNTED, components)
 }

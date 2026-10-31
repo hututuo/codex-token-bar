@@ -125,16 +125,16 @@ fn interval_consumption_evidence(
     if !from.is_finite() || !through.is_finite() || through <= from {
         return ConsumptionEvidence::Unknown;
     }
-    match interval_has_unreported_compaction(connection, from, through) {
-        Ok(true) | Err(_) => return ConsumptionEvidence::Unknown,
-        Ok(false) => {}
-    }
     match interval_has_consumption(connection, from, through) {
         // Home-local event presence cannot be assigned to an account, but it
         // always vetoes withdrawing the drop.
         Ok(true) => return ConsumptionEvidence::Present,
         Ok(false) if absence_safe && receipt_matches => {}
         _ => return ConsumptionEvidence::Unknown,
+    }
+    match interval_has_unreported_compaction(connection, from, through) {
+        Ok(true) | Err(_) => return ConsumptionEvidence::Unknown,
+        Ok(false) => {}
     }
     let covered = receipt_started_us.is_some_and(|started_us| {
         let through_us = through * 1_000_000.0;
@@ -434,6 +434,10 @@ mod tests {
         // interval from being certified as complete.
         assert_eq!(
             interval_consumption_evidence(&c, 10.0, 20.0, true, true, Some(30_000_000)),
+            ConsumptionEvidence::Present
+        );
+        assert_eq!(
+            interval_consumption_evidence(&c, 15.0, 20.0, true, true, Some(30_000_000)),
             ConsumptionEvidence::Unknown
         );
         assert!(!range_has_unreported_compaction(&c, 10.0, 20.0).unwrap());
@@ -445,6 +449,10 @@ mod tests {
         c.execute("DELETE FROM canonical_usage_events", []).unwrap();
         assert_eq!(
             interval_consumption_evidence(&c, 10.0, 20.0, true, true, Some(30_000_000)),
+            ConsumptionEvidence::Present
+        );
+        assert_eq!(
+            interval_consumption_evidence(&c, 15.0, 20.0, true, true, Some(30_000_000)),
             ConsumptionEvidence::Unknown
         );
         assert!(range_has_unreported_compaction(&c, 20.0, 21.0).unwrap());

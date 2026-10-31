@@ -219,7 +219,7 @@ fn appended_compaction_usage_corrects_unknown_by_response_identity_without_a_new
     let (old_event_id, old_fingerprint) = {
         let connection = Connection::open(&index_path).unwrap();
         connection.query_row(
-            "SELECT e.id,b.fingerprint FROM event_rows e JOIN usage_ledger_bindings b USING(event_id) WHERE e.accounting_kind=4",
+            "SELECT e.id,b.fingerprint FROM event_rows e JOIN usage_ledger_bindings b ON b.event_id=e.id WHERE e.accounting_kind=4",
             [],
             |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?)),
         ).unwrap()
@@ -244,7 +244,7 @@ fn appended_compaction_usage_corrects_unknown_by_response_identity_without_a_new
     assert!(after.stats.unreported_compaction_unix.is_empty());
     let connection = Connection::open(&index_path).unwrap();
     let (new_event_id, timestamp, tokens, kind, offset, fingerprint): (i64, i64, i64, i64, i64, Vec<u8>) = connection.query_row(
-        "SELECT e.id,e.timestamp,e.tokens,e.accounting_kind,e.token_source_offset,b.fingerprint FROM event_rows e JOIN usage_ledger_bindings b USING(event_id) WHERE b.fingerprint=?1",
+        "SELECT e.id,e.timestamp,e.tokens,e.accounting_kind,e.token_source_offset,b.fingerprint FROM event_rows e JOIN usage_ledger_bindings b ON b.event_id=e.id WHERE b.fingerprint=?1",
         params![old_fingerprint],
         |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?)),
     ).unwrap();

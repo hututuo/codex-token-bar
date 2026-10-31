@@ -1137,7 +1137,7 @@ struct DashboardView: View {
             MultiClientDiscoveryNotice()
 
             if allowedClients.contains("codex"), !store.snapshot.cacheUsage.unreportedCompactionDates.isEmpty {
-                Label("\(store.snapshot.cacheUsage.unreportedCompactionDates.count) 次压缩用量未报告 · Token 和金额仅含已记录部分", systemImage:"exclamationmark.circle")
+                Label("有压缩用量未报告 · Token、金额为已记录小计", systemImage:"exclamationmark.circle")
                     .font(.system(size:12,weight:.medium))
                     .foregroundStyle(AppTheme.accentAmber)
                     .frame(maxWidth:.infinity,alignment:.leading)
