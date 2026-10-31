@@ -184,6 +184,7 @@ function lightweightUsageSummarySignature(
     summary.todayTokens,
     summary.todayRequests,
     modelBreakdowns,
+    summary.unreportedCompactionUnix ?? dashboard.stats.unreportedCompactionUnix ?? [],
     nonEmptyText(summary.homeIdentity) ?? nonEmptyText(dashboard.homeIdentity),
     // A summary check can advance observed/settled time without changing any
     // token fact.  Only the exact generation is a data lineage input here;
@@ -488,6 +489,8 @@ export function mergePreciseDashboard(
               : {
                   ...precise.stats,
                   totalTokens: Math.max(0, retainedLightSummary.totalTokens),
+                  unreportedCompactionUnix: retainedLightSummary.unreportedCompactionUnix
+                    ?? previous.stats.unreportedCompactionUnix ?? precise.stats.unreportedCompactionUnix,
                 },
             // An incomplete scan intentionally publishes no new coverage
             // watermark. Keep the previous trusted watermark so the UI can
@@ -673,6 +676,8 @@ export function mergeUsageSummary(
       stats: {
         ...dashboard.stats,
         totalTokens: Math.max(0, incomingSummary.totalTokens),
+        unreportedCompactionUnix: incomingSummary.unreportedCompactionUnix
+          ?? dashboard.stats.unreportedCompactionUnix,
       },
     },
   };

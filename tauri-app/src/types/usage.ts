@@ -256,6 +256,7 @@ export interface PreciseDashboardProgress {
 }
 
 export interface UsageSummarySnapshot {
+  unreportedCompactionUnix?: number[];
   /** Minimal source identity and freshness lineage for the summary lane. */
   homeIdentity?: string | null;
   usageRevision?: DashboardLineageScalar;

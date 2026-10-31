@@ -4736,7 +4736,7 @@ impl ExactUsageIndex {
     /// Retain exact event timestamps for unresolved compaction requests in
     /// the published generation. These rows are explicit unknown-usage
     /// diagnostics and are excluded from normal event totals.
-    fn unreported_compaction_unix(&self) -> Result<Vec<i64>, String> {
+    pub(super) fn unreported_compaction_unix(&self) -> Result<Vec<i64>, String> {
         let mut statement = self.connection.prepare(
             r#"
             WITH unreported AS (
@@ -4745,13 +4745,13 @@ impl ExactUsageIndex {
                 JOIN published_files f
                   ON f.source_id = e.source_id
                  AND f.generation = e.file_generation
-                WHERE e.accounting_kind = ?1
+                WHERE e.accounting_kind = ?1 AND e.accounting_kind <> 0
                 UNION
                 SELECT retained.timestamp
                 FROM retained_usage_events retained
                 JOIN retained_usage_sources history
                   ON history.snapshot_id = retained.snapshot_id
-                WHERE retained.accounting_kind = ?1
+                WHERE retained.accounting_kind = ?1 AND retained.accounting_kind = 4
                   AND NOT EXISTS (
                       SELECT 1
                       FROM event_rows current

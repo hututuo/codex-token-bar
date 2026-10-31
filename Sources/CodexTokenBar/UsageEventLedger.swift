@@ -193,8 +193,9 @@ enum UsageEventLedger {
                 FROM events WHERE source_id=? AND source_offset=?
                 """,bindings:[.int64(row.tokens),.int64(row.input),.int64(row.cached),.int64(row.output),.int64(row.reasoning),.int64(row.accountingKind),.int64(source),.int64(existing)]) { $0.int(0) }.first == 1
             let responseProof = try row.fingerprint.map { fingerprint -> Bool in
-                let values = try UsageFingerprintCodec.decode(fingerprint)
-                guard values[5] == 0, values[9] == 0, values[10] == 2, row.accountingKind == 0 else { return false }
+                guard row.accountingKind == 0,
+                      let values = try? UsageFingerprintCodec.decode(fingerprint),
+                      values[5] == 0, values[9] == 0, values[10] == 2 else { return false }
                 return try db.readRows("SELECT accounting_kind=4 FROM events WHERE source_id=? AND source_offset=?",
                     bindings:[.int64(source),.int64(existing)]) { $0.int(0) }.first == 1
             } ?? false

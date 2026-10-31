@@ -3851,8 +3851,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
 
     /// Retained deletions are unresolved evidence too; revision audit copies are
     /// excluded, so a proved kind-4 -> kind-0 correction clears the gap.
+    /// Keep <>0 explicit so SQLite can use the existing unresolved-kind index.
     private static let unresolvedCompactionTimesSQL = """
-        SELECT timestamp FROM events WHERE accounting_kind=4
+        SELECT timestamp FROM events WHERE accounting_kind=4 AND accounting_kind<>0
         UNION
         SELECT r.timestamp FROM retained_usage_events r
         JOIN retained_usage_sources s ON s.snapshot_id=r.snapshot_id

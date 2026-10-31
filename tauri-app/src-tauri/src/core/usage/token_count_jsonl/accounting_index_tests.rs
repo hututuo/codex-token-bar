@@ -214,6 +214,8 @@ fn appended_compaction_usage_corrects_unknown_by_response_identity_without_a_new
     assert_eq!(before.stats.total_tokens, 60);
     assert_eq!(before.stats.total_calls, 1);
     assert_eq!(before.stats.unreported_compaction_unix, vec![now.unix_timestamp() + 1]);
+    let light_before = super::usage_summary_snapshot(&root).unwrap().unwrap();
+    assert_eq!(light_before.unreported_compaction_unix, Some(vec![now.unix_timestamp() + 1]));
 
     let index_path = super::exact_usage_index::database_path(&root).unwrap();
     let (old_event_id, old_fingerprint) = {
@@ -242,6 +244,8 @@ fn appended_compaction_usage_corrects_unknown_by_response_identity_without_a_new
     assert_eq!(after.stats.total_tokens, 155);
     assert_eq!(after.stats.total_calls, 2);
     assert!(after.stats.unreported_compaction_unix.is_empty());
+    let light_after = super::usage_summary_snapshot(&root).unwrap().unwrap();
+    assert_eq!(light_after.unreported_compaction_unix, Some(Vec::new()));
     let connection = Connection::open(&index_path).unwrap();
     let (new_event_id, timestamp, tokens, kind, offset, fingerprint): (i64, i64, i64, i64, i64, Vec<u8>) = connection.query_row(
         "SELECT e.id,e.timestamp,e.tokens,e.accounting_kind,e.token_source_offset,b.fingerprint FROM event_rows e JOIN usage_ledger_bindings b ON b.event_id=e.id WHERE b.fingerprint=?1",
