@@ -1,17 +1,63 @@
 {
   "version": "0.9.10",
   "macos_build": "989",
-  "source_sha": null,
+  "source_sha": "1b12dc364fd064d27617392ff9b81645d6428e00",
   "tag": "v0.9.10",
   "previous_release": "v0.9.9",
   "release_url": "https://github.com/hututuo/codex-token-bar/releases/tag/v0.9.10",
-  "status": "preparing",
+  "status": "signed-and-verified-awaiting-publication",
   "integration_branch": "codex/diagnose-dual-legacy-ledgers",
   "included_compaction_commit": "f5b7358e978dff9e7845057f083e896c2857d337",
-  "ci_run_id": null,
-  "upgrade_run_id": null,
-  "build_run_id": null,
-  "signing_run_id": null,
+  "ci_run_id": "41224982934",
+  "upgrade_run_id": "41224982790",
+  "build_run_id": "41226118231",
+  "signing_run_id": "41229208827",
   "publish_run_id": null,
-  "assets": []
+  "assets": [
+    {
+      "name": "CodexTokenBar-v0.9.10-macos-arm64.dmg",
+      "bytes": 28579353,
+      "sha256": "4d708fe728145f90a01d3dbf0b980f7151a6a6bbfd0a169f62765f159135ff42"
+    },
+    {
+      "name": "CodexTokenBar-v0.9.10-macos-arm64.app.zip",
+      "bytes": 27675982,
+      "sha256": "1ad3764f377beef1514b9c0daeb22dd811c95d9b8edc35d7b0431d9f552e86b3"
+    },
+    {
+      "name": "CodexTokenBar.app.zip",
+      "bytes": 27675982,
+      "sha256": "1ad3764f377beef1514b9c0daeb22dd811c95d9b8edc35d7b0431d9f552e86b3"
+    },
+    {
+      "name": "CodexTokenBar-v0.9.10-windows-x64-setup.exe",
+      "bytes": 68646802,
+      "sha256": "dd63618572c24e8c6ac5ae5030ef0d9be0aa6c7fd4b84949cc8b189c03cdbb58"
+    },
+    {
+      "name": "CodexTokenBar-v0.9.10-windows-x64-setup.exe.sig",
+      "bytes": 440,
+      "sha256": "1e77e983577cbe1d9fcb512d2e22987c9b91a47f83ab87e516f4f35caf0e43ac"
+    },
+    {
+      "name": "CodexTokenBar-v0.9.10-windows-arm64-setup.exe",
+      "bytes": 62770774,
+      "sha256": "4ac6527d618a3c9b784dcd6d6d9ee3c39f354f79c62e32955338256f88da82f3"
+    },
+    {
+      "name": "CodexTokenBar-v0.9.10-windows-arm64-setup.exe.sig",
+      "bytes": 440,
+      "sha256": "73d0dff0639a6102c4ba60eec06d38afb81c4bbfc403cfe839de1ad3ecaa29c7"
+    },
+    {
+      "name": "latest-windows.json",
+      "bytes": 1378,
+      "sha256": "0a517f63b8c95ebe9c4c952e0cf46b9930c01bdd297f7cd3a4711ddb63505276"
+    },
+    {
+      "name": "SHA256SUMS-v0.9.10.txt",
+      "bytes": 838,
+      "sha256": "55e01548ccccce2b8f27ce20c5b191ba3fe0bed5a2231737c76506f87fc8a6c3"
+    }
+  ]
 }
