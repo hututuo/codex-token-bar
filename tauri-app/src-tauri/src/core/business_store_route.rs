@@ -676,6 +676,47 @@ pub(crate) fn exact_store_spec(path: &Path) -> Result<StoreSpec, String> {
         .map_err(|error| error.to_string())
 }
 
+const LEGACY_EXACT_MIGRATION_KEY: &str = "legacy_exact_migration_v1:";
+
+/// Bootstrap alone owns this receipt. It distinguishes immutable physical
+/// legacy artifacts from the A-owned schema migration of the imported rows.
+pub(crate) fn preserve_legacy_exact_migration(
+    path: &Path,
+    manifests: &[(PathBuf, String)],
+) -> Result<(), String> {
+    let store = exact_store_spec(path)?;
+    let container = Container::open_existing(container_path()?).map_err(|e| e.to_string())?;
+    if !container.is_registered(&store).map_err(|e| e.to_string())? {
+        return Err("尚未导入旧 Exact 账本，拒绝登记迁移凭据".into());
+    }
+    validate_legacy_exact_migration_receipt(&container, &store)?;
+    let value = serde_json::json!({"version":1,"logicalPath":store.logical_path,"manifests":manifests});
+    container.connection().execute(
+        "INSERT OR REPLACE INTO tb_container_meta(key,value) VALUES (?1,?2)",
+        rusqlite::params![format!("{LEGACY_EXACT_MIGRATION_KEY}{}", store.id), value.to_string()],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub(crate) fn preserves_legacy_exact_migration(path: &Path) -> Result<bool, String> {
+    let store = exact_store_spec(path)?;
+    let container = open_ready_container(&container_path()?)?;
+    validate_legacy_exact_migration_receipt(&container, &store)
+}
+
+fn validate_legacy_exact_migration_receipt(container: &Container, store: &StoreSpec) -> Result<bool, String> {
+    let raw: Option<String> = container.connection().query_row(
+        "SELECT value FROM tb_container_meta WHERE key=?1",
+        [format!("{LEGACY_EXACT_MIGRATION_KEY}{}", store.id)], |r| r.get(0),
+    ).optional().map_err(|e| e.to_string())?;
+    let Some(raw) = raw else { return Ok(false); };
+    let value: serde_json::Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    if value["version"] != 1 || value["logicalPath"] != store.logical_path {
+        return Err("旧 Exact 迁移保留凭据无效，已停止写入".into());
+    }
+    Ok(true)
+}
+
 pub(crate) fn exact_store_exists(path: &Path) -> Result<bool, String> {
     let container_path = container_path()?;
     if !container_path.is_file() {
@@ -1117,6 +1158,32 @@ mod tests {
     use rusqlite::{params, OpenFlags};
     use std::fs;
     use uuid::Uuid;
+
+    #[test]
+    fn legacy_migration_ownership_is_explicit_and_unknown_receipts_are_not_overwritten() {
+        let fixture = Fixture::new();
+        let support = fixture.path("support");
+        fs::create_dir_all(&support).unwrap();
+        let _guard = app_paths::app_path_test_env_guard(&[("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR", support)]);
+        let path = fixture.path("logical.sqlite3");
+        let spec = exact_store_spec(&path).unwrap();
+        let container = Container::open(container_path().unwrap()).unwrap();
+        container.register(&spec).unwrap();
+        assert!(!validate_legacy_exact_migration_receipt(&container, &spec).unwrap());
+        drop(container);
+        preserve_legacy_exact_migration(&path, &[(fixture.path("old-manifest.json"), "proof".into())]).unwrap();
+        let container = Container::open_existing(container_path().unwrap()).unwrap();
+        assert!(validate_legacy_exact_migration_receipt(&container, &spec).unwrap());
+        let key = format!("{LEGACY_EXACT_MIGRATION_KEY}{}", spec.id);
+        let unknown = serde_json::json!({"version":999,"logicalPath":spec.logical_path}).to_string();
+        container.connection().execute("UPDATE tb_container_meta SET value=?1 WHERE key=?2", rusqlite::params![unknown,key]).unwrap();
+        assert!(validate_legacy_exact_migration_receipt(&container, &spec).is_err());
+        drop(container);
+        assert!(preserve_legacy_exact_migration(&path, &[]).is_err());
+        let container = Container::open_existing(container_path().unwrap()).unwrap();
+        let unchanged: String = container.connection().query_row("SELECT value FROM tb_container_meta WHERE key=?1", [key], |r| r.get(0)).unwrap();
+        assert_eq!(unchanged, unknown);
+    }
 
     #[test]
     fn legacy_file_discovery_distinguishes_missing_and_nonregular_inputs() {

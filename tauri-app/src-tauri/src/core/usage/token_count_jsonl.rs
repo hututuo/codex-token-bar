@@ -40,6 +40,10 @@ mod rollout_source;
 pub(crate) fn bootstrap_legacy_exact_indexes() -> Result<(), String> {
     exact_usage_index::bootstrap_legacy_indexes()
 }
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+pub(crate) fn verify_legacy_migration_fixture(home: &Path, path: &Path) -> Result<bool, String> {
+    exact_usage_index::verify_legacy_migration_fixture(home, path)
+}
 #[cfg(test)]
 mod rollout_source_tests;
 mod session_files;

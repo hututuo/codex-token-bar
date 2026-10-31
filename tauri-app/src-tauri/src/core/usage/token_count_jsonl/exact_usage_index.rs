@@ -12098,6 +12098,34 @@ fn schema11_manifest_path(index_path: &Path) -> PathBuf {
     PathBuf::from(value)
 }
 
+// A physical legacy receipt describes physical DB/WAL stamps, not the new A
+// namespace. Keep all three A-owned artifacts separate when bootstrap imported
+// such a receipt. Already-activated 0.9.8 namespaces keep their existing paths.
+fn active_schema11_paths(index_path: &Path) -> Result<(PathBuf, PathBuf, PathBuf), String> {
+    #[cfg(not(test))]
+    let isolated = crate::core::business_store_route::preserves_legacy_exact_migration(index_path)?;
+    #[cfg(test)]
+    let isolated = false;
+    Ok(schema11_paths_for_namespace(index_path, isolated))
+}
+
+fn schema11_paths_for_namespace(index_path: &Path, isolated: bool) -> (PathBuf, PathBuf, PathBuf) {
+    let base = if isolated { sqlite_sidecar_path(index_path, ".container-v1") } else { index_path.to_path_buf() };
+    (schema11_candidate_path(&base), schema11_rollback_path(&base), schema11_manifest_path(&base))
+}
+
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+pub(super) fn verify_legacy_migration_fixture(home: &Path, path: &Path) -> Result<bool, String> {
+    let paths = active_schema11_paths(path)?;
+    // Run the same production reader preparation as the application, not the
+    // cfg(test) standalone SQLite path. A current committed source needs no
+    // schema change, even when its physical legacy siblings still exist.
+    if prepare_schema11_candidate_if_needed(path, home)?.is_some() {
+        return Err("fixture unexpectedly required a structural migration".into());
+    }
+    Ok(paths != schema11_paths_for_namespace(path, false))
+}
+
 fn schema11_file_stamp(path: &Path) -> Result<Schema11FileStamp, String> {
     #[cfg(not(test))]
     {
@@ -13848,9 +13876,7 @@ fn prepare_schema11_candidate_if_needed(
     index_path: &Path,
     codex_home: &Path,
 ) -> Result<Option<Schema11ValidatedStorage>, String> {
-    let candidate_path = schema11_candidate_path(index_path);
-    let rollback_path = schema11_rollback_path(index_path);
-    let manifest_path = schema11_manifest_path(index_path);
+    let (candidate_path, rollback_path, manifest_path) = active_schema11_paths(index_path)?;
 
     let has_candidate = existing_regular_index(&candidate_path)?;
     let has_rollback = existing_regular_index(&rollback_path)?;
@@ -14420,10 +14446,12 @@ pub(super) fn cleanup_schema11_migration_for_testing(codex_home: &Path) -> Resul
 const MIGRATION_RETENTION_KEY: &str = "release_upgrade_retention_v1";
 
 fn migration_retention_receipt(source: &Path, manifest: Option<&Schema11CandidateManifest>) -> serde_json::Value {
+    let base = manifest.and_then(|m| m.candidate_path.strip_suffix(SCHEMA11_CANDIDATE_SUFFIX))
+        .map(PathBuf::from).unwrap_or_else(|| source.to_path_buf());
     serde_json::json!({
         "sourcePath": source.to_string_lossy(),
-        "rollbackPath": schema11_rollback_path(source).to_string_lossy(),
-        "manifestPath": schema11_manifest_path(source).to_string_lossy(),
+        "rollbackPath": schema11_rollback_path(&base).to_string_lossy(),
+        "manifestPath": schema11_manifest_path(&base).to_string_lossy(),
         "sourceSchema": manifest.map(|m| m.source_receipt.schema_version).unwrap_or(CURRENT_SCHEMA_VERSION),
         "targetSchema": CURRENT_SCHEMA_VERSION, "status": "copied"
     })
@@ -14436,12 +14464,12 @@ fn record_successful_migration_retention(connection: &Connection, index_path: &P
         .map(|v| serde_json::from_str(&v).map_err(|e| format!("无法读取迁移保留标识：{e}")))
         .transpose()?;
     if receipt.as_ref().is_some_and(|r| r["status"] == "succeeded") { return Ok(()); }
-    let manifest_path = schema11_manifest_path(index_path);
+    let (candidate_path, _, manifest_path) = active_schema11_paths(index_path)?;
     if manifest_path.exists() {
         let mut manifest = schema11_load_manifest(&manifest_path)?;
         if !matches!(manifest.phase, Schema11CandidatePhase::Switched | Schema11CandidatePhase::Retained)
             || manifest.source_path != index_path.to_string_lossy()
-            || existing_regular_index(&schema11_candidate_path(index_path))? { return Ok(()); }
+            || existing_regular_index(&candidate_path)? { return Ok(()); }
         if receipt.is_none() { receipt = Some(migration_retention_receipt(index_path, Some(&manifest))); }
         manifest.phase = Schema11CandidatePhase::Retained;
         schema11_store_manifest(&manifest_path, &manifest)?;
@@ -18171,28 +18199,7 @@ pub(crate) fn bootstrap_legacy_indexes() -> Result<(), String> {
         let cache_root = app_paths::tauri_usage_cache_dir()
             .ok_or_else(|| "无法定位旧精确 token 索引目录".to_string())?
             .join("exact-token-index");
-        let mut inputs = Vec::new();
-        let mut migration_manifests = Vec::new();
-        collect_exact_legacy_inputs(&current_root, &current_root, &mut inputs, &mut migration_manifests)?;
-        if cache_root != current_root {
-            collect_exact_legacy_inputs(&cache_root, &current_root, &mut inputs, &mut migration_manifests)?;
-        }
-        if let Some(manifest) = migration_manifests.first() {
-            return Err(format!(
-                "发现尚未恢复的 Exact schema 迁移清单；保留所有旧库并停止启动：{}",
-                manifest.display()
-            ));
-        }
-        let mut by_target: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
-        for (target, source) in inputs {
-            let sources = by_target.entry(target).or_default();
-            if !sources.iter().any(|prior| {
-                std::fs::canonicalize(prior).ok() == std::fs::canonicalize(&source).ok()
-            }) {
-                sources.push(source);
-            }
-        }
-        for (target, sources) in by_target {
+        exact_legacy_recovery::bootstrap_at(&current_root, &cache_root, |target, sources, manifests| {
             let store = crate::core::business_store_route::exact_store_spec(&target)?;
             let _ = crate::core::business_store_route::open_store_during_bootstrap(
                 "exact",
@@ -18200,8 +18207,11 @@ pub(crate) fn bootstrap_legacy_indexes() -> Result<(), String> {
                 &store.logical_path,
                 &sources,
             )?;
-        }
-        Ok(())
+            if !manifests.is_empty() {
+                crate::core::business_store_route::preserve_legacy_exact_migration(target, manifests)?;
+            }
+            Ok(())
+        })
     }
 }
 
@@ -18234,6 +18244,7 @@ fn collect_exact_legacy_inputs(
                 }
                 continue;
             }
+            reject_session_catalog_reparse_point(&path, &metadata)?;
             if metadata.is_dir() {
                 walk(&path, source_root, target_root, inputs, migration_manifests)?;
                 continue;
@@ -18271,6 +18282,9 @@ fn collect_exact_legacy_inputs(
     }
     Ok(())
 }
+
+#[path = "exact_legacy_recovery.rs"]
+mod exact_legacy_recovery;
 
 #[cfg(test)]
 #[path = "exact_legacy_discovery_tests.rs"]

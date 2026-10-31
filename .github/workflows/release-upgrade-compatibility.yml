@@ -217,6 +217,37 @@ jobs:
           }
           python scripts/prepare_v097_upgrade_validation.py verify $env:TOKENBAR_V097_FIXTURE_ROOT --platform rust | Tee-Object upgrade-evidence/windows-fixture-reverified.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Recover retained and interrupted legacy manifests through non-test Windows startup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $probe = Join-Path $env:CARGO_TARGET_DIR 'debug/examples/release097-upgrade-probe.exe'
+          $runtime = $env:TOKENBAR_V097_RUNTIME_ROOT
+          $frozen = $env:TOKENBAR_V097_RUST_INPUTS
+          $keys = @('TOKENBAR_V097_RUNTIME_ROOT','TOKENBAR_V097_RUST_INPUTS','CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR','CODEX_TOKEN_BAR_TAURI_CACHE_DIR','CODEX_TOKEN_BAR_SUPPORT_BASE_DIR','CODEX_TOKEN_BAR_CACHE_BASE_DIR','CODEX_TOKEN_BAR_TAURI_USAGE_CACHE_DIR')
+          $saved = @{}
+          foreach ($key in $keys) { $saved[$key] = [Environment]::GetEnvironmentVariable($key) }
+          try {
+            foreach ($case in @('retained','current-retained','switched','switching','rollback','missing','unknown','stray-wal','existing-a')) {
+              $caseRoot = Join-Path $runtime "tokenbar-v097-runtime-manifest-$case"
+              New-Item -ItemType Directory -Path $caseRoot | Out-Null
+              Set-Content -LiteralPath (Join-Path $caseRoot '.tokenbar-v097-disposable') -Value '0219554ce444b0013987da7b82e3c2e891f4afdb' -NoNewline
+              Copy-Item -LiteralPath $frozen -Destination (Join-Path $caseRoot 'inputs') -Recurse
+              $env:TOKENBAR_V097_RUNTIME_ROOT = $caseRoot
+              $env:TOKENBAR_V097_RUST_INPUTS = Join-Path $caseRoot 'inputs'
+              $slugs = @('s','c','ss','sc','uc')
+              for ($i = 0; $i -lt $slugs.Length; $i++) {
+                $key = $keys[$i + 2]
+                $path = Join-Path $caseRoot $slugs[$i]
+                New-Item -ItemType Directory -Path $path | Out-Null
+                [Environment]::SetEnvironmentVariable($key, $path)
+              }
+              & $probe "manifest-$case" 2>&1 | Tee-Object "upgrade-evidence/windows-manifest-$case.log"
+              if ($LASTEXITCODE -ne 0) { throw "Manifest production probe failed: $case" }
+            }
+          } finally {
+            foreach ($key in $keys) { [Environment]::SetEnvironmentVariable($key, $saved[$key]) }
+          }
       - name: Stage synthetic Windows evidence on the workspace drive
         if: always()
         shell: pwsh
