@@ -569,7 +569,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     private static let oldStagingParserRevision = "token-event-v3-\(UsageAccountingState.revision)-\(oldForkReplayBoundaryRevision)"
     private static let paginatedV4StagingRevision = "token-event-v3-\(UsageAccountingState.revision)-\(paginatedV4BoundaryRevision)"
     private static let paginatedV5StagingRevision = "token-event-v3-\(UsageAccountingState.revision)-\(paginatedV5BoundaryRevision)"
-    private static let stagingParserRevision = "token-event-v3-\(UsageAccountingState.revision)-\(forkReplayBoundaryRevision)"
+    private static let preCompactionStagingRevision = "token-event-v3-\(UsageAccountingState.revision)-\(forkReplayBoundaryRevision)"
+    private static let stagingParserRevision = "token-event-v4-\(UsageAccountingState.revision)-\(forkReplayBoundaryRevision)-compaction-v1"
     private static let explicitSubagentFirstLineLimit = 256 * 1_024
     private static let cacheDirectoryName = "CodexTokenBarSwift"
     private static let indexNamespace = "exact-usage-history-v1"
@@ -1816,7 +1817,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         "SELECT DISTINCT parser_revision FROM event_enrichment_sources WHERE parser_revision <> '';"
                     ) { $0.text(0) }.compactMap { $0 }
                     if let unknown = revisions.first(where: {
-                        $0 != stagingParserRevision && $0 != legacyStagingParserRevision && $0 != oldStagingParserRevision && $0 != paginatedV4StagingRevision && $0 != paginatedV5StagingRevision
+                        $0 != stagingParserRevision && $0 != preCompactionStagingRevision && $0 != legacyStagingParserRevision && $0 != oldStagingParserRevision && $0 != paginatedV4StagingRevision && $0 != paginatedV5StagingRevision
                     }) {
                         return .upgradeRequired(
                             component: "模型补全 parser receipt",
@@ -3842,6 +3843,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 )
             )
         }.compactMap { $0 }
+    }
+
+    func unreportedCompactionDates(since: Date = Date(timeIntervalSince1970: 0)) throws -> [Date] {
+        try driver.readRows("SELECT DISTINCT timestamp FROM events WHERE accounting_kind=4 AND timestamp>=? ORDER BY timestamp",
+            bindings:[.date(since)]) { $0.double(0).map(Date.init(timeIntervalSince1970:)) }.compactMap { $0 }
     }
 
     func accountingCoverage() throws -> String {
@@ -8159,7 +8165,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                               row.text(1) == job.file.path,
                               row.text(2) == job.sessionID,
                               row.text(3) == expectedMigrationRevision,
-                              ([Self.stagingParserRevision, Self.legacyStagingParserRevision, Self.oldStagingParserRevision, Self.paginatedV4StagingRevision, Self.paginatedV5StagingRevision].contains(row.text(4) ?? "")),
+                              ([Self.stagingParserRevision, Self.preCompactionStagingRevision, Self.legacyStagingParserRevision, Self.oldStagingParserRevision, Self.paginatedV4StagingRevision, Self.paginatedV5StagingRevision].contains(row.text(4) ?? "")),
                               let artifactID = row.text(5),
                               !artifactID.isEmpty,
                               let rawActualBytes = row.int64(6),
@@ -8260,7 +8266,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                                     $0 >= 0 ? UInt64($0) : nil
                                 },
                                 currentModel: row.text(21),
-                                accountingState: [Self.stagingParserRevision, Self.oldStagingParserRevision, Self.paginatedV4StagingRevision, Self.paginatedV5StagingRevision].contains(row.text(4) ?? "") ? try UsageAccountingState.decode(row.text(24)) : nil
+                                accountingState: [Self.stagingParserRevision, Self.preCompactionStagingRevision, Self.oldStagingParserRevision, Self.paginatedV4StagingRevision, Self.paginatedV5StagingRevision].contains(row.text(4) ?? "") ? try UsageAccountingState.decode(row.text(24)) : nil
                             ),
                             prefixSHA256: prefixSHA256,
                             sourceValidation: currentSignature == signature && stageObservation != nil

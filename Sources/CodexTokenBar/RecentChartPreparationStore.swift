@@ -6,6 +6,7 @@ struct RecentChartPreparedSnapshot: Sendable {
     let bucketCostsUSD: [Double]
     var quotaData: RecentChartPreparedData? = nil
     var costAttributionEvents: [TokenCacheAttributionEvent] = []
+    var unreportedCompactionDates: [Date] = []
 
     func consumptionSelection(
         state: RecentChartConsumptionSelectionState,
@@ -14,7 +15,7 @@ struct RecentChartPreparedSnapshot: Sendable {
     ) -> QuotaConsumptionSelection? {
         state.selection(displayedData: data, quotaData: quotaData,
             hoveredIndex: hoveredIndex, priceCard: priceCard,
-            attributionEvents: costAttributionEvents)
+            attributionEvents: costAttributionEvents, unreportedCompactionDates: unreportedCompactionDates)
     }
 
     static func build(
@@ -57,7 +58,8 @@ struct RecentChartPreparedSnapshot: Sendable {
         } else { quotaData = nil }
         return Self(data: data,
             bucketCostsUSD: RecentUsageChart.bucketCosts(for: quotaData ?? data, priceModel: priceModel),
-            quotaData: quotaData, costAttributionEvents: costEvents)
+            quotaData: quotaData, costAttributionEvents: costEvents,
+            unreportedCompactionDates: input.unreportedCompactionDates)
     }
 }
 

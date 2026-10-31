@@ -183,6 +183,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         let settledThrough: Date?
         let exactGeneration: Int64?
         let exactSynchronizationReceipt: ExactSynchronizationReceipt?
+        var unreportedCompactionDates: [Date] = []
 
         init(
             totalTokens: Int,
@@ -301,7 +302,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 attributionGeneration: synchronization.attributionGeneration,
                 historyIndex: historyIndex
             )
-            let summary = CompactUsageSummary(
+            var summary = CompactUsageSummary(
                 totalTokens: totals.totalTokens,
                 todayTokens: totals.todayTokens,
                 todayCalls: totals.todayCalls,
@@ -321,6 +322,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                     eventEnrichmentComplete: synchronization.eventEnrichmentComplete
                 )
             )
+            summary.unreportedCompactionDates = try historyIndex.unreportedCompactionDates()
             if structureMigrationReported || synchronization.eventEnrichmentTotal > 0 {
                 if synchronization.eventEnrichmentComplete {
                     onProgress?(PreciseIndexProgress(
@@ -676,6 +678,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 attributionSourceMutationDetected:
                     initialAttributionState.requiresSyntheticCutover
             )
+            stableCacheUsage.unreportedCompactionDates = try historyIndex.unreportedCompactionDates()
             stableCacheUsage.rankingActiveSince = cached.cacheUsage.rankingActiveSince
             return .complete(DashboardSnapshot(
                 stats: cached.stats,
@@ -887,6 +890,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 SessionCacheUsage(id: row.sessionID, title: threadInfo[row.sessionID]?.title ?? row.sessionID, lastUpdated: row.lastUpdated, breakdown: row.breakdown)
             }, activeSince: rankingActiveSince)
         }
+        aggregatedCacheUsage.unreportedCompactionDates = try historyIndex.unreportedCompactionDates()
         let totalTokens = aggregation.totalTokens
         trace?.mark("stats.begin")
         let peakThreadTokens = aggregation.peakSessionTokens
@@ -949,6 +953,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             attributionSourceMutationDetected:
                 aggregatedCacheUsage.attributionSourceMutationDetected
         )
+        numericCacheUsage.unreportedCompactionDates = aggregatedCacheUsage.unreportedCompactionDates
         numericCacheUsage.rankingActiveSince = rankingActiveSince
         let numericSnapshot = DashboardSnapshot(
             stats: stats,

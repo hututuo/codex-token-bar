@@ -918,6 +918,7 @@ struct DashboardView: View {
                     store.snapshot.cacheUsage.attributionProvenanceEpoch,
                 attributionSourceMutationDetected:
                     store.snapshot.cacheUsage.attributionSourceMutationDetected,
+                unreportedCompactionDates: store.snapshot.cacheUsage.unreportedCompactionDates,
                 sevenDayQuota: quota.sevenDay,
                 quotaUpdatedAt: segment?.comparisonUpdatedAt ?? quota.updatedAt,
                 historyIdentity: quota.historyIdentity,
@@ -1254,7 +1255,8 @@ struct DashboardView: View {
                     cacheRecentBins: store.snapshot.cacheUsage.recentBins, cacheHourlyBins: store.snapshot.cacheUsage.hourly,
                     attributionEvents: store.snapshot.cacheUsage.attributionEvents,
                     settledThrough: store.snapshot.settledThrough ?? store.snapshot.preciseTimeSeriesGeneratedAt) : nil,
-                settledThrough: store.snapshot.settledThrough ?? store.snapshot.preciseTimeSeriesGeneratedAt
+                settledThrough: store.snapshot.settledThrough ?? store.snapshot.preciseTimeSeriesGeneratedAt,
+                unreportedCompactionDates: allowedClients.contains("codex") ? store.snapshot.cacheUsage.unreportedCompactionDates : []
             ).id("recent-usage-chart")
             if !codexOnly && allowedClients.contains("codex") {
                 Text("Token、调用和命中率为汇总；额度、逐桶金额及额度反推保留 Codex 来源。其他客户端尚无逐桶模型金额，不按 Codex 单价估填。")

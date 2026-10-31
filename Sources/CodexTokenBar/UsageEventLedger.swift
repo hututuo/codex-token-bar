@@ -37,6 +37,7 @@ enum UsageEventLedger {
         let values = try UsageFingerprintCodec.decode(data)
         // The partial-snapshot digest reserves hasLast=false,lastTokens=1.
         return values[5] == 1 || values[6...10].allSatisfy { $0 == 0 }
+            || (values[5] == 0 && values[9] == 0 && values[10] == 2)
     }
 
     static func isPaginatedFile(_ file: URL) throws -> Bool {
@@ -191,15 +192,23 @@ enum UsageEventLedger {
                     AND reasoning_output_tokens=? AND accounting_kind=?
                 FROM events WHERE source_id=? AND source_offset=?
                 """,bindings:[.int64(row.tokens),.int64(row.input),.int64(row.cached),.int64(row.output),.int64(row.reasoning),.int64(row.accountingKind),.int64(source),.int64(existing)]) { $0.int(0) }.first == 1
+            let responseProof = try row.fingerprint.map { fingerprint -> Bool in
+                let values = try UsageFingerprintCodec.decode(fingerprint)
+                guard values[5] == 0, values[9] == 0, values[10] == 2, row.accountingKind == 0 else { return false }
+                return try db.readRows("SELECT accounting_kind=4 FROM events WHERE source_id=? AND source_offset=?",
+                    bindings:[.int64(source),.int64(existing)]) { $0.int(0) }.first == 1
+            } ?? false
             let verifiedLocation: Bool
-            if let oldGeneration = unchangedFromGeneration, correctionRevision != nil {
+            if responseProof { verifiedLocation = true }
+            else if let oldGeneration = unchangedFromGeneration, correctionRevision != nil {
                 verifiedLocation = try db.readRows("SELECT EXISTS(SELECT 1 FROM usage_ledger_bindings WHERE source_id=? AND event_id=? AND generation=? AND raw_offset=?)",bindings:[.int64(source),.int64(existing),.text(oldGeneration),.int64(row.rawOffset)]) { $0.int(0) }.first == 1
             } else { verifiedLocation = false }
+            let correction = correctionRevision ?? "codex-compaction-late-usage-v1"
             if !same && verifiedLocation {
                 // Reinterpreting the same byte-proved observation is a
                 // correction, not a second call. The retention trigger saves
                 // every old numeric field in this same transaction.
-                try db.execute("INSERT OR IGNORE INTO usage_ledger_corrections SELECT source_id,source_offset,?,?,?,tokens,?,? FROM events WHERE source_id=? AND source_offset=?",bindings:[.text(generation),.int64(row.rawOffset),.text(correctionRevision!),.int64(row.tokens),.text("verified-prefix-reparse"),.int64(source),.int64(existing)])
+                try db.execute("INSERT OR IGNORE INTO usage_ledger_corrections SELECT source_id,source_offset,?,?,?,tokens,?,? FROM events WHERE source_id=? AND source_offset=?",bindings:[.text(generation),.int64(row.rawOffset),.text(correction),.int64(row.tokens),.text("verified-prefix-reparse"),.int64(source),.int64(existing)])
                 try db.execute("UPDATE events SET tokens=?,input_tokens=?,cached_input_tokens=?,output_tokens=?,reasoning_output_tokens=?,accounting_kind=?,reported_total_tokens=? WHERE source_id=? AND source_offset=?",bindings:[.int64(row.tokens),.int64(row.input),.int64(row.cached),.int64(row.output),.int64(row.reasoning),.int64(row.accountingKind),optional(row.reported),.int64(source),.int64(existing)])
             }
             if same || verifiedLocation {

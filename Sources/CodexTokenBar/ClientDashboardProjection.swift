@@ -119,6 +119,7 @@ enum ClientDashboardProjection {
             attributionUnsafeSinceGeneration: codexOnly ? codex.cacheUsage.attributionUnsafeSinceGeneration : nil,
             attributionCurrentScanUnsafeCauseDetected: codexOnly && codex.cacheUsage.attributionCurrentScanUnsafeCauseDetected,
             attributionSourceMutationDetected: codexOnly && codex.cacheUsage.attributionSourceMutationDetected)
+        cache.unreportedCompactionDates = includeCodex ? codex.cacheUsage.unreportedCompactionDates : []
         cache.rankingActiveSince = includeCodex ? codex.cacheUsage.rankingActiveSince : nil
         let stats = DashboardStats(totalTokens: combined.totalTokens, peakDayTokens: days.map(\.tokens).max() ?? 0,
             peakThreadTokens: 0, currentStreakDays: current, longestStreakDays: longest,
