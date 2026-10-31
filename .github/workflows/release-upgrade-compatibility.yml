@@ -157,6 +157,8 @@ jobs:
           $settings = $allocation | ConvertFrom-Json
           python scripts/prepare_v097_upgrade_validation.py prepare "$env:RUNNER_TEMP/tokenbar-v097-source" $settings.TOKENBAR_V097_FIXTURE_ROOT --platform rust
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/prepare_v097_upgrade_validation.py prepare-v093-rust "$env:RUNNER_TEMP/tokenbar-v093-source" "$env:RUNNER_TEMP/tokenbar-v093-fixtures" | Tee-Object upgrade-evidence/windows-v093-producer.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python scripts/prepare_v097_upgrade_validation.py prepare-current-rust "$env:RUNNER_TEMP/tokenbar-v097-candidate" | Tee-Object upgrade-evidence/windows-candidate-injection.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Cache Windows Rust dependencies and compilation
@@ -175,7 +177,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           rustup toolchain install 1.93.1 --profile minimal
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          foreach ($source in @('tokenbar-v097-source', 'tokenbar-v097-candidate')) {
+          foreach ($source in @('tokenbar-v097-source', 'tokenbar-v093-source', 'tokenbar-v097-candidate')) {
             Push-Location "$env:RUNNER_TEMP/$source/tauri-app"
             npm ci --registry=https://registry.npmjs.org
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -190,6 +192,18 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (-not (Select-String -Path upgrade-evidence/windows-old-producer.log -SimpleMatch 'V097_RUST_PRODUCER_READY')) { throw 'The real old producer did not run' }
           python scripts/prepare_v097_upgrade_validation.py verify $env:TOKENBAR_V097_FIXTURE_ROOT --platform rust | Tee-Object upgrade-evidence/windows-fixture-verification.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Generate retained schema13 history with the actual public v0.9.3 code
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:TOKENBAR_V093_FIXTURE_ROOT = "$env:RUNNER_TEMP/tokenbar-v093-fixtures"
+          cargo test --locked --manifest-path "$env:RUNNER_TEMP/tokenbar-v093-source/tauri-app/src-tauri/Cargo.toml" --lib release093_export_actual_exact_inputs -- --test-threads=1 --nocapture 2>&1 | Tee-Object upgrade-evidence/windows-v093-producer.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Select-String -Path upgrade-evidence/windows-v093-producer.log -SimpleMatch 'V093_RUST_PRODUCER_READY')) { throw 'The actual public v0.9.3 producer did not run' }
+          python scripts/prepare_v097_upgrade_validation.py verify-v093-rust $env:TOKENBAR_V093_FIXTURE_ROOT | Tee-Object upgrade-evidence/windows-v093-fixtures.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/prepare_v097_upgrade_validation.py verify $env:TOKENBAR_V097_FIXTURE_ROOT --platform rust | Tee-Object upgrade-evidence/windows-shared-raw-reverified.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Verify real importer proofs and interrupted pending sources
         shell: pwsh
@@ -228,11 +242,14 @@ jobs:
           $saved = @{}
           foreach ($key in $keys) { $saved[$key] = [Environment]::GetEnvironmentVariable($key) }
           try {
-            foreach ($case in @('retained','current-retained','relocated-pair','late-relocated-pair','switched','switching','rollback','missing','unknown','stray-wal','existing-a','late-retained','late-switching','late-rollback','late-mixed')) {
+            foreach ($case in @('retained','current-retained','relocated-pair','late-relocated-pair','relocated-v13-pair','late-relocated-v13-pair','switched','switching','rollback','missing','unknown','stray-wal','existing-a','late-retained','late-switching','late-rollback','late-mixed')) {
               $caseRoot = Join-Path $runtime "tokenbar-v097-runtime-manifest-$case"
               New-Item -ItemType Directory -Path $caseRoot | Out-Null
               Set-Content -LiteralPath (Join-Path $caseRoot '.tokenbar-v097-disposable') -Value '0219554ce444b0013987da7b82e3c2e891f4afdb' -NoNewline
               Copy-Item -LiteralPath $frozen -Destination (Join-Path $caseRoot 'inputs') -Recurse
+              if ($case -like '*v13-pair') {
+                Copy-Item -LiteralPath "$env:RUNNER_TEMP/tokenbar-v093-fixtures/inputs" -Destination (Join-Path $caseRoot 'inputs13') -Recurse
+              }
               $env:TOKENBAR_V097_RUNTIME_ROOT = $caseRoot
               $env:TOKENBAR_V097_RUST_INPUTS = Join-Path $caseRoot 'inputs'
               $slugs = @('s','c','ss','sc','uc')
@@ -269,6 +286,7 @@ jobs:
           name: public097-windows-upgrade-${{ inputs.source_sha || github.sha }}
           path: |
             upgrade-evidence/
+            ${{ runner.temp }}/tokenbar-v093-fixtures/inputs/
           if-no-files-found: error
           include-hidden-files: true
           retention-days: 14

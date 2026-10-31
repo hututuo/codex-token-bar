@@ -503,22 +503,29 @@ fn ordinary_open_for_new_home_resolves_switching_rollback_and_rejects_unknown_ma
 // Public relocation must preserve both originals without counting twice.
 #[test]
 fn relocated_legacy_pair_imports_once_and_records_both_sources() {
-    run_relocated_pair(false, false, false);
+    run_relocated_pair(false, false, false, false);
 }
 
 #[test]
 fn relocated_pair_selects_proven_cover_with_deleted_raw_sessions() {
-    run_relocated_pair(true, false, false);
-    run_relocated_pair(true, true, false);
+    run_relocated_pair(true, false, false, false);
+    run_relocated_pair(true, true, false, false);
 }
 
 #[test]
 fn relocated_pair_retry_preserves_new_exact_rows_before_activation() {
-    run_relocated_pair(true, false, true);
-    run_relocated_pair(true, true, true);
+    run_relocated_pair(true, false, true, false);
+    run_relocated_pair(true, true, true, false);
 }
 
-fn run_relocated_pair(advance: bool, advance_cache: bool, freeze_before_advance: bool) {
+#[test]
+fn released_schema13_cache_and_schema14_support_pair_preserves_deleted_history() {
+    run_relocated_pair(false, false, false, true);
+    run_relocated_pair(true, false, false, true);
+    run_relocated_pair(true, false, true, true);
+}
+
+fn run_relocated_pair(advance: bool, advance_cache: bool, freeze_before_advance: bool, old_schema13: bool) {
     let temporary = tempfile::tempdir().unwrap();
     let base = temporary.path();
     let support = base.join("support");
@@ -547,6 +554,20 @@ fn run_relocated_pair(advance: bool, advance_cache: bool, freeze_before_advance:
     drop(index);
     // This is the relocation implementation retained from public v0.9.7.
     super::super::relocate_legacy_index(&home, &legacy, &durable).unwrap();
+    if old_schema13 {
+        // Inverse of the released representation-only upgrade. The real
+        // release fixture below adds the same transition to production probes.
+        Connection::open(&legacy).unwrap().execute_batch("DROP TABLE source_representations; DROP VIEW canonical_usage_events; DROP TABLE usage_ledger_duplicates; DROP TABLE usage_scan_certificate; DROP TABLE usage_ledger_attribution_floors; UPDATE usage_ledger_meta SET value='1' WHERE key='revision'; DELETE FROM metadata WHERE key IN ('representation_revision','representation_upgrade_backup','canonical_projection_pending'); UPDATE metadata SET value='13' WHERE key='schema_version';").unwrap();
+        let db = Connection::open(&durable).unwrap();
+        let mut receipt: Value = serde_json::from_str(&db.query_row("SELECT value FROM metadata WHERE key='release_upgrade_retention_v1'", [], |r| r.get::<_,String>(0)).unwrap()).unwrap();
+        receipt["sourceSchema"] = 13.into();
+        receipt["targetSchema"] = 13.into();
+        db.execute("UPDATE metadata SET value=?1 WHERE key='release_upgrade_retention_v1'", [receipt.to_string()]).unwrap();
+        drop(db);
+        // The released destination-exists guard is why cache stays at13.
+        super::super::relocate_legacy_index(&home, &legacy, &durable).unwrap();
+        assert_eq!(Connection::open(&legacy).unwrap().query_row("SELECT value FROM metadata WHERE key='schema_version'",[],|r|r.get::<_,String>(0)).unwrap(), "13");
+    }
     let sum = |path: &Path| Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap()
         .query_row("SELECT SUM(tokens) FROM event_rows", [], |row| row.get::<_, i64>(0)).unwrap();
     assert_eq!(sum(&legacy), 115);
@@ -575,6 +596,12 @@ fn run_relocated_pair(advance: bool, advance_cache: bool, freeze_before_advance:
         let (primary, old) = if advance_cache { (&legacy, &durable) } else { (&durable, &legacy) };
         assert!(Container::exact_snapshot_covers(primary, old).unwrap());
         let check = Connection::open(primary).unwrap();
+        if old_schema13 {
+            check.execute("ALTER TABLE usage_scan_certificate RENAME TO held_scan_certificate", []).unwrap();
+            assert!(!Container::exact_snapshot_covers(primary, old).unwrap(), "A declared ledger2 without its projection objects cannot cover ledger1");
+            check.execute("ALTER TABLE held_scan_certificate RENAME TO usage_scan_certificate", []).unwrap();
+            assert!(Container::exact_snapshot_covers(primary, old).unwrap());
+        }
         let sequence: String = check.query_row("SELECT value FROM metadata WHERE key='event_id_sequence'", [], |r| r.get(0)).unwrap();
         check.execute("UPDATE metadata SET value='0' WHERE key='event_id_sequence'", []).unwrap();
         assert!(!Container::exact_snapshot_covers(primary, old).unwrap(), "A cover must not regress the future event ID allocator");

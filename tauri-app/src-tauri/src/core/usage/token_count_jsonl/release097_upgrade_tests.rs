@@ -543,6 +543,8 @@ fn run_legacy_manifest_probe(root: &Path, frozen: &Path, scenario: &str) -> Resu
         "manifest-current-retained" => ("Retained", true, true),
         "manifest-relocated-pair" => ("Retained", true, true),
         "manifest-late-relocated-pair" => ("Retained", true, true),
+        "manifest-relocated-v13-pair" => ("Retained", true, true),
+        "manifest-late-relocated-v13-pair" => ("Retained", true, true),
         "manifest-switched" => ("Switched", true, false),
         "manifest-switching" => ("Switching", true, false),
         "manifest-rollback" => ("Switching", true, false),
@@ -609,18 +611,31 @@ fn run_legacy_manifest_probe(root: &Path, frozen: &Path, scenario: &str) -> Resu
     }
     let stray = PathBuf::from(format!("{}-wal", main.display()));
     if scenario == "manifest-stray-wal" { checked!(fs::write(&stray, b"unmoved committed WAL")); }
-    let relocated_pair = scenario.ends_with("relocated-pair");
+    let relocated_pair = scenario.contains("relocated-") && scenario.ends_with("pair");
+    let schema13_pair = scenario.ends_with("relocated-v13-pair");
     let mut extra_original = None;
     if relocated_pair {
         let old = app_paths::tauri_usage_cache_dir().ok_or("No guarded old cache")?
             .join("exact-token-index").join(target.file_name().ok_or("No old filename")?);
         checked!(fs::create_dir_all(old.parent().ok_or("No old parent")?));
-        checked!(fs::copy(frozen.join("exact/a.sqlite3"), &old));
+        let prior = if schema13_pair {
+            let inputs13 = root.join("inputs13");
+            let provenance: Value = checked!(serde_json::from_slice(&checked!(fs::read(inputs13.join("provenance.json")))));
+            let receipt: Value = checked!(serde_json::from_slice(&checked!(fs::read(inputs13.join("fixture-result.json")))));
+            require!(provenance["release_sha"] == "ba4c59060c240af703e42d288c303a56cb0259e3"
+                && provenance["synthetic"] == true && receipt["verified"] == true
+                && receipt["release_sha"] == provenance["release_sha"], "Unverified public v0.9.3 fixture");
+            let prior = inputs13.join("exact/a.sqlite3");
+            require!(receipt["artifacts"]["exact/a.sqlite3"]["sha256"] == sha(&prior)?, "Public v0.9.3 fixture changed");
+            prior
+        } else { frozen.join("exact/a.sqlite3") };
+        checked!(fs::copy(prior, &old));
         let db = checked!(Connection::open(&main));
+        let version = if schema13_pair { 13 } else { 14 };
         let copied = json!({"sourcePath":old.to_string_lossy(),
             "rollbackPath":format!("{}.schema11-rollback",old.display()),
             "manifestPath":format!("{}.schema11-migration.json",old.display()),
-            "sourceSchema":14,"targetSchema":14,"status":"copied"});
+            "sourceSchema":version,"targetSchema":version,"status":"copied"});
         checked!(db.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('release_upgrade_retention_v1',?1)", [copied.to_string()]));
         drop(db);
         extra_original = Some((old.clone(), sha(&old)?));
@@ -672,7 +687,7 @@ fn run_legacy_manifest_probe(root: &Path, frozen: &Path, scenario: &str) -> Resu
         require!(sha(&path)? == before, format!("Legacy evidence changed: {}", path.display()));
     }
     Ok(json!({"status":"PASS","scenario":scenario,"startupReady":expect_ready,
-        "actualPublicRelease":RELEASE_SHA,"originalFilesUnchanged":true,
+        "actualPublicRelease":RELEASE_SHA,"schema13PublicRelease":if schema13_pair { Some("ba4c59060c240af703e42d288c303a56cb0259e3") } else { None },"originalFilesUnchanged":true,
         "candidateNotImported":true,"existingPartialAPreserved":true}))
 }
 

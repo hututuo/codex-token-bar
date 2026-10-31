@@ -1863,15 +1863,35 @@ fn exact_history_covers(primary: &Connection, prefix: &str, old: &Path, require_
     let o_marker = valid_exact_relocation_marker(&old_db, "")?;
     if require_relocation && !p_marker && !o_marker { return Ok(false); }
     let metadata = SQLiteStoreNamespace::quote(&format!("{prefix}metadata"));
-    for key in ["schema_version", "codex_home_identity"] {
-        let current: Option<String> = primary.query_row(&format!("SELECT value FROM {metadata} WHERE key=?1"), [key], |r| r.get(0)).optional()?;
-        let previous: Option<String> = old_db.query_row("SELECT value FROM metadata WHERE key=?1", [key], |r| r.get(0)).optional()?;
-        if current.as_deref().is_none_or(str::is_empty) || current != previous { return Ok(false); }
-        if key == "schema_version" && current.as_deref() != Some("14") { return Ok(false); }
+    let read_meta = |db: &Connection, table: &str, key: &str| -> BusinessStoreResult<Option<String>> {
+        Ok(db.query_row(&format!("SELECT value FROM {table} WHERE key=?1"), [key], |r| r.get(0)).optional()?)
+    };
+    let current_home = read_meta(primary, &metadata, "codex_home_identity")?;
+    if current_home.as_deref().is_none_or(str::is_empty)
+        || current_home != read_meta(&old_db, "metadata", "codex_home_identity")? { return Ok(false); }
+    let current_schema = read_meta(primary, &metadata, "schema_version")?;
+    let previous_schema = read_meta(&old_db, "metadata", "schema_version")?;
+    // Released 0.9.2/0.9.3 copied schema13 to support, leaving cache frozen.
+    // 0.9.4+ upgrades only support to14. This known transition adds exactly
+    // source_representations and representation metadata; it never rewrites
+    // historical event values. Compare all old protected tables directly,
+    // allowing only that additive version boundary. No raw source reads and
+    // no temporary database/normalization writer are needed.
+    if current_schema.as_deref() != Some("14")
+        || !matches!(previous_schema.as_deref(), Some("13" | "14")) { return Ok(false); }
+    if previous_schema.as_deref() == Some("13") {
+        let representation = SQLiteStoreNamespace::quote(&format!("{prefix}source_representations"));
+        if !has_table(primary, "main", &format!("{prefix}source_representations"))?
+            || read_meta(primary, &metadata, "representation_revision")?.as_deref() != Some("rollout-storage-v1") {
+            return Ok(false);
+        }
+        // Prepare validates the additive table without requiring it to be
+        // empty: new observations in primary do not erase any old v13 row.
+        let _ = primary.prepare(&format!("SELECT source_id,physical_path,storage_format,physical_size,physical_stamp,logical_size,modified_ns,verification FROM {representation} LIMIT 0"))?;
     }
     if !has_table(&old_db, "main", "event_rows")? { return Ok(false); }
     let operational_keys = [
-        "release_upgrade_retention_v1", "revision", "dashboard_revision", "event_id_sequence",
+        "release_upgrade_retention_v1", "schema_version", "revision", "dashboard_revision", "event_id_sequence",
         "published_generation", "session_catalog_published_generation", "accounting_coverage",
         "attribution_current_scan_incomplete", "attribution_current_scan_unsafe", "attribution_ledger_epoch",
         "attribution_ledger_integrity_v1", "attribution_provenance_epoch", "canonical_projection_pending",
@@ -1924,6 +1944,22 @@ fn exact_history_covers_attached(db: &Connection, prefix: &str) -> BusinessStore
         let old_columns = table_columns(db, "tb_exact_history_source", &name)?;
         let new_columns = table_columns(db, "main", &target)?;
         if old_columns != new_columns { return Ok(false); }
+        if name == "usage_ledger_meta" {
+            let target_table = SQLiteStoreNamespace::quote(&target);
+            let old_revision: Option<String> = db.query_row("SELECT value FROM tb_exact_history_source.usage_ledger_meta WHERE key='revision'", [], |r| r.get(0)).optional()?;
+            let current_revision: Option<String> = db.query_row(&format!("SELECT value FROM main.{target_table} WHERE key='revision'"), [], |r| r.get(0)).optional()?;
+            if old_revision.as_deref() == Some("1") && current_revision.as_deref() == Some("2") {
+                // Public 0.9.7 upgrades ledger1 by adding a reversible numeric
+                // projection; it retains all physical event/binding rows.
+                for (object, kind) in [("usage_ledger_duplicates","table"),("usage_scan_certificate","table"),("usage_ledger_attribution_floors","table"),("canonical_usage_events","view")] {
+                    let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM main.sqlite_master WHERE name=?1 AND type=?2)", params![format!("{prefix}{object}"),kind], |r| r.get(0))?;
+                    if !exists { return Ok(false); }
+                }
+                let missing: bool = db.query_row(&format!("SELECT EXISTS(SELECT key,value FROM tb_exact_history_source.usage_ledger_meta WHERE key<>'revision' EXCEPT SELECT key,value FROM main.{target_table})"), [], |r| r.get(0))?;
+                if missing { return Ok(false); }
+                continue;
+            }
+        }
         if name == "usage_ledger_bindings" {
             let target_table = SQLiteStoreNamespace::quote(&target);
             let missing: bool = db.query_row(&format!("SELECT EXISTS(SELECT 1 FROM tb_exact_history_source.usage_ledger_bindings old LEFT JOIN main.{target_table} current ON current.event_id=old.event_id AND current.source_id=old.source_id WHERE current.event_id IS NULL OR (old.fingerprint IS NOT NULL AND old.fingerprint IS NOT current.fingerprint) OR (old.raw_generation IS current.raw_generation AND (old.raw_offset IS NOT current.raw_offset OR old.user_prompt_start IS NOT current.user_prompt_start OR old.user_prompt_end IS NOT current.user_prompt_end OR old.assistant_response_start IS NOT current.assistant_response_start OR old.assistant_response_end IS NOT current.assistant_response_end)) OR (old.raw_generation IS NOT current.raw_generation AND (old.fingerprint IS NULL OR old.fingerprint IS NOT current.fingerprint)))"), [], |r| r.get(0))?;
@@ -1965,7 +2001,8 @@ fn valid_exact_relocation_marker(db: &Connection, prefix: &str) -> BusinessStore
         .map_err(|_| BusinessStoreError::UnsupportedSchema("invalid Exact relocation receipt".into()))?;
     let valid = matches!(v["status"].as_str(), Some("copied" | "succeeded"))
         && exact_receipt_schema(&v["sourceSchema"]).is_some_and(|n| (9..=14).contains(&n))
-        && exact_receipt_schema(&v["targetSchema"]) == Some(14)
+        && matches!(exact_receipt_schema(&v["targetSchema"]), Some(13 | 14))
+        && exact_receipt_schema(&v["sourceSchema"]) <= exact_receipt_schema(&v["targetSchema"])
         && ["sourcePath", "rollbackPath", "manifestPath"].iter()
             .all(|key| v[*key].as_str().is_some_and(|s| !s.is_empty()));
     if !valid { return Err(BusinessStoreError::UnsupportedSchema("unknown Exact relocation receipt".into())); }

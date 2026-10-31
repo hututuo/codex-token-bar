@@ -18,6 +18,7 @@ import tempfile
 
 RELEASE_TAG = "v0.9.7"
 RELEASE_SHA = "0219554ce444b0013987da7b82e3c2e891f4afdb"
+RELEASE093_SHA = "ba4c59060c240af703e42d288c303a56cb0259e3"
 EXACT_NAMES = [character * 64 + ".sqlite" for character in "ab"]
 
 PRODUCER = r'''
@@ -204,6 +205,79 @@ fn release097_export_actual_rust_inputs() {
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+RUST093_PRODUCER = r'''
+
+#[test]
+fn release093_export_actual_exact_inputs() {
+    let root = PathBuf::from(std::env::var("TOKENBAR_V093_FIXTURE_ROOT").unwrap()).join("inputs");
+    let shared = PathBuf::from(std::env::var("TOKENBAR_V097_RUST_INPUTS").unwrap());
+    let _guard = app_paths::app_path_test_env_guard(&[
+        ("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR",root.join("producer-support")),
+        ("CODEX_TOKEN_BAR_TAURI_CACHE_DIR",root.join("producer-cache")),
+        ("CODEX_TOKEN_BAR_SUPPORT_BASE_DIR",root.join("producer-shared-support")),
+        ("CODEX_TOKEN_BAR_CACHE_BASE_DIR",root.join("producer-shared-cache")),
+        ("CODEX_TOKEN_BAR_TAURI_USAGE_CACHE_DIR",root.join("producer-old-cache")),
+    ]);
+    fs::create_dir_all(root.join("exact")).unwrap();
+    for (letter, expected) in [("a",155_i64),("b",310_i64)] {
+        // Read precisely the same synthetic Home and raw bytes as v0.9.7.
+        // Never rewrite them or point the old build at current app storage.
+        let home = shared.join(format!("home-{letter}"));
+        let target = root.join(format!("exact/{letter}.sqlite3"));
+        assert!(!target.exists());
+        let mut index = super::exact_usage_index::ExactUsageIndex::open_at_for_testing(&home,target.clone()).unwrap();
+        index.sync(&home,&mut Vec::new()).unwrap();
+        drop(index);
+        let db = Connection::open(&target).unwrap();
+        assert_eq!(db.query_row("SELECT value FROM metadata WHERE key='schema_version'",[],|r|r.get::<_,String>(0)).unwrap(),"13");
+        assert_eq!(db.query_row("SELECT SUM(tokens) FROM event_rows",[],|r|r.get::<_,i64>(0)).unwrap(),expected);
+        db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;").unwrap();
+    }
+    println!("V093_RUST_PRODUCER_READY exact=2 schema=13 same_raw_inputs=true");
+}
+'''
+
+
+def prepare093(source_dir, fixture_dir):
+    repository = Path(__file__).resolve().parents[1]
+    actual = subprocess.check_output(["git", "rev-parse", "v0.9.3^{commit}"], cwd=repository, text=True).strip()
+    if actual != RELEASE093_SHA:
+        raise SystemExit("Public v0.9.3 tag mismatch")
+    if source_dir.exists() or fixture_dir.exists():
+        raise SystemExit("Use new source and fixture directories")
+    extract_revision(repository, RELEASE093_SHA, source_dir)
+    with (source_dir / "tauri-app/src-tauri/src/core/usage/token_count_jsonl/tests.rs").open("a") as output:
+        output.write(RUST093_PRODUCER)
+    inputs = fixture_dir / "inputs"
+    inputs.mkdir(parents=True)
+    (inputs / "provenance.json").write_text(json.dumps({
+        "release_tag": "v0.9.3", "release_sha": RELEASE093_SHA, "platform": "rust", "synthetic": True,
+        "producer_sha256": hashlib.sha256(RUST093_PRODUCER.encode()).hexdigest(),
+    }, indent=2))
+    print(json.dumps({"source_dir": str(source_dir), "fixture_dir": str(fixture_dir), "release_sha": actual}))
+
+
+def verify093(fixture_dir):
+    inputs = fixture_dir / "inputs"
+    provenance = json.loads((inputs / "provenance.json").read_text())
+    if provenance.get("release_sha") != RELEASE093_SHA or provenance.get("synthetic") is not True:
+        raise SystemExit("Wrong v0.9.3 provenance")
+    artifacts = {}
+    for letter, expected in [("a", 155), ("b", 310)]:
+        relative = f"exact/{letter}.sqlite3"
+        path = inputs / relative
+        with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as db:
+            version = db.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
+            check = db.execute("PRAGMA quick_check").fetchall()
+            total = db.execute("SELECT SUM(tokens) FROM event_rows").fetchone()[0]
+        if version != ("13",) or check != [("ok",)] or total != expected:
+            raise SystemExit("The public v0.9.3 producer did not create the expected schema13 history")
+        artifacts[relative] = {"sha256": digest(path), "tokens": total}
+    receipt = {"verified": True, "release_sha": RELEASE093_SHA, "artifacts": artifacts}
+    (inputs / "fixture-result.json").write_text(json.dumps(receipt, indent=2))
+    print(json.dumps(receipt))
 
 
 def extract_revision(repository, revision, destination):
@@ -406,6 +480,11 @@ def main():
     current.add_argument("source_dir", type=lambda value: Path(value).resolve())
     dependency = commands.add_parser("verify-v097-swift-dependency")
     dependency.add_argument("source_dir", type=lambda value: Path(value).resolve())
+    old13 = commands.add_parser("prepare-v093-rust")
+    old13.add_argument("source_dir", type=lambda value: Path(value).resolve())
+    old13.add_argument("fixture_dir", type=lambda value: Path(value).resolve())
+    verify13 = commands.add_parser("verify-v093-rust")
+    verify13.add_argument("fixture_dir", type=lambda value: Path(value).resolve())
     arguments = parser.parse_args()
     if arguments.command == "prepare":
         prepare(arguments.source_dir, arguments.fixture_dir, arguments.platform)
@@ -415,6 +494,10 @@ def main():
         allocate_rust_runtime(arguments.env_file)
     elif arguments.command == "prepare-current-rust":
         prepare_current_rust(arguments.source_dir)
+    elif arguments.command == "prepare-v093-rust":
+        prepare093(arguments.source_dir, arguments.fixture_dir)
+    elif arguments.command == "verify-v093-rust":
+        verify093(arguments.fixture_dir)
     else:
         verify_release_swift_dependency(arguments.source_dir)
 
