@@ -11,7 +11,7 @@
     <InvariantGlobalization>true</InvariantGlobalization>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
-    <Version>0.9.8</Version>
+    <Version>0.9.9</Version>
     <Description>Codex Token Bar Agent Speed Reporter</Description>
   </PropertyGroup>
   <ItemGroup>

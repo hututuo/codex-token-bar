@@ -1,7 +1,7 @@
 [package]
 name = "codex-token-bar"
 default-run = "codex-token-bar"
-version = "0.9.8"
+version = "0.9.9"
 description = "Cross-platform Codex Token Bar for Windows"
 authors = ["Codex Token Bar"]
 license = "AGPL-3.0-only"

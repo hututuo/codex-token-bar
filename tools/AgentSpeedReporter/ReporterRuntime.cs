@@ -99,7 +99,7 @@ internal static class ReporterRuntime
 {
     private const string ServiceText = "https://deng.codexradar.com";
     private const string ExpectedApiText = "https://speed-api.codexradar.com/api/agent-speed";
-    private const string ClientVersion = "0.9.8";
+    private const string ClientVersion = "0.9.9";
     private static readonly ReportServiceUrl Service = ReportServiceUrl.Parse(ServiceText)!;
     private static readonly ReportClientInfo Client = ReportClientInfo.Windows(ClientVersion);
     private static readonly HashSet<ReportSection> AllowedSections = [ReportSection.Sources, ReportSection.Models, ReportSection.Cost];
