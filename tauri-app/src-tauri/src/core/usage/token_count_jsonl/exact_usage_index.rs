@@ -1567,6 +1567,9 @@ pub(super) fn maintain_exact_index_storage_for_testing(
 #[cfg(not(test))]
 fn prepare_exact_store_for_home(home: &Path, path: &Path) -> Result<(), String> {
     use crate::core::business_store_route as route;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("无法准备精确索引目录：{e}"))?;
+    }
     let legacy = app_paths::tauri_usage_cache_dir().ok_or("无法定位旧用量索引目录")?
         .join("exact-token-index").join(format!("{}.sqlite3", stable_path_fingerprint(home)));
     let already_imported = route::exact_store_has_objects(path)?;
@@ -18223,6 +18226,11 @@ pub(crate) fn bootstrap_legacy_indexes() -> Result<(), String> {
             .ok_or_else(|| "无法定位旧精确 token 索引目录".to_string())?
             .join("exact-token-index");
         exact_legacy_recovery::bootstrap_at(&current_root, &cache_root, |target, sources, manifests| {
+            // Canonicalization on Windows adds the physical path prefix. Do
+            // this before deriving the store ID, not after the first import.
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).map_err(|e| format!("无法准备旧索引导入目录：{e}"))?;
+            }
             let store = crate::core::business_store_route::exact_store_spec(&target)?;
             let _ = crate::core::business_store_route::open_store_during_bootstrap(
                 "exact",
