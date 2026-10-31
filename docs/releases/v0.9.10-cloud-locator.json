@@ -5,14 +5,14 @@
   "tag": "v0.9.10",
   "previous_release": "v0.9.9",
   "release_url": "https://github.com/hututuo/codex-token-bar/releases/tag/v0.9.10",
-  "status": "signed-and-verified-awaiting-publication",
+  "status": "published-and-verified",
   "integration_branch": "codex/diagnose-dual-legacy-ledgers",
   "included_compaction_commit": "f5b7358e978dff9e7845057f083e896c2857d337",
   "ci_run_id": "41224982934",
   "upgrade_run_id": "41224982790",
   "build_run_id": "41226118231",
   "signing_run_id": "41229208827",
-  "publish_run_id": null,
+  "publish_run_id": "41229500617",
   "assets": [
     {
       "name": "CodexTokenBar-v0.9.10-macos-arm64.dmg",
@@ -59,5 +59,12 @@
       "bytes": 838,
       "sha256": "55e01548ccccce2b8f27ce20c5b191ba3fe0bed5a2231737c76506f87fc8a6c3"
     }
-  ]
+  ],
+  "publish_attempt": 2,
+  "publication_tooling_sha": "525954e271f6f9ab32031bf5fdcc44c2cf775a06",
+  "published_at": "2026-10-31T18:30:11Z",
+  "next_changelog_start": "v0.9.10",
+  "public_asset_readback_verified": 9,
+  "sparkle_public_feed_verified": true,
+  "windows_public_feed_verified": true
 }
