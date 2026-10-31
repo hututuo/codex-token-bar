@@ -80,6 +80,40 @@ fn assert_unchanged(files: &[(PathBuf, Vec<u8>)]) {
 }
 
 #[test]
+fn relocation_equivalence_never_ignores_usage_other_metadata_or_unknown_receipts() {
+    use crate::core::business_store_container::Container;
+    let temporary = tempfile::tempdir().unwrap();
+    let a = temporary.path().join("a.sqlite3");
+    let b = temporary.path().join("b.sqlite3");
+    for path in [&a, &b] {
+        write_database(path, "same usage");
+        Connection::open(path).unwrap().execute_batch("CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT); INSERT INTO metadata VALUES('codex_home_identity','same-home')").unwrap();
+    }
+    let receipt = json!({"status":"copied","sourceSchema":14,"targetSchema":14,
+        "sourcePath":a.to_string_lossy(),"rollbackPath":"kept-rollback","manifestPath":"kept-manifest"});
+    let db = Connection::open(&b).unwrap();
+    db.execute("INSERT INTO metadata VALUES('release_upgrade_retention_v1',?1)", [receipt.to_string()]).unwrap();
+    assert!(Container::exact_relocation_equivalent(&a, &b).unwrap());
+    // Native Swift's Codable receipt uses canonical decimal strings.
+    let mut native_receipt = receipt.clone();
+    native_receipt["sourceSchema"] = "13".into();
+    native_receipt["targetSchema"] = "14".into();
+    db.execute("UPDATE metadata SET value=?1 WHERE key='release_upgrade_retention_v1'", [native_receipt.to_string()]).unwrap();
+    assert!(Container::exact_relocation_equivalent(&a, &b).unwrap());
+
+    db.execute("UPDATE sample SET value='extra historical usage'", []).unwrap();
+    assert!(!Container::exact_relocation_equivalent(&a, &b).unwrap());
+    db.execute("UPDATE sample SET value='same usage'", []).unwrap();
+    db.execute("UPDATE metadata SET value='other-home' WHERE key='codex_home_identity'", []).unwrap();
+    assert!(!Container::exact_relocation_equivalent(&a, &b).unwrap());
+    db.execute("UPDATE metadata SET value='same-home' WHERE key='codex_home_identity'", []).unwrap();
+    let mut unknown = receipt;
+    unknown["targetSchema"] = 999.into();
+    db.execute("UPDATE metadata SET value=?1 WHERE key='release_upgrade_retention_v1'", [unknown.to_string()]).unwrap();
+    assert!(Container::exact_relocation_equivalent(&a, &b).is_err());
+}
+
+#[test]
 fn valid_manifest_phases_select_only_the_committed_main_and_preserve_evidence() {
     for phase in [
         Phase::Prepared,
@@ -466,9 +500,25 @@ fn ordinary_open_for_new_home_resolves_switching_rollback_and_rejects_unknown_ma
     assert!(super::runtime_source(&main, true).is_err());
 }
 
-// Characterization of the reported startup failure, not a recovery policy.
+// Public relocation must preserve both originals without counting twice.
 #[test]
-fn diagnostic_relocated_legacy_pair_reproduces_conflicting_candidates() {
+fn relocated_legacy_pair_imports_once_and_records_both_sources() {
+    run_relocated_pair(false, false, false);
+}
+
+#[test]
+fn relocated_pair_selects_proven_cover_with_deleted_raw_sessions() {
+    run_relocated_pair(true, false, false);
+    run_relocated_pair(true, true, false);
+}
+
+#[test]
+fn relocated_pair_retry_preserves_new_exact_rows_before_activation() {
+    run_relocated_pair(true, false, true);
+    run_relocated_pair(true, true, true);
+}
+
+fn run_relocated_pair(advance: bool, advance_cache: bool, freeze_before_advance: bool) {
     let temporary = tempfile::tempdir().unwrap();
     let base = temporary.path();
     let support = base.join("support");
@@ -501,14 +551,65 @@ fn diagnostic_relocated_legacy_pair_reproduces_conflicting_candidates() {
         .query_row("SELECT SUM(tokens) FROM event_rows", [], |row| row.get::<_, i64>(0)).unwrap();
     assert_eq!(sum(&legacy), 115);
     assert_eq!(sum(&durable), 115);
+    if freeze_before_advance {
+        let store = route::exact_store_spec(&durable).unwrap();
+        drop(route::open_store_during_bootstrap("exact", &store.source_identity, &store.logical_path, &[durable.clone(), legacy.clone()]).unwrap());
+        assert!(!route::exact_sources_already_consumed(&durable, &[durable.clone(), legacy.clone()]).unwrap());
+    }
+    let expected = if advance {
+        let total = json!({"input_tokens":107,"cached_input_tokens":0,"output_tokens":15,"reasoning_output_tokens":0,"total_tokens":122});
+        let last = json!({"input_tokens":7,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":7});
+        let event = json!({"timestamp":"2026-10-31T12:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":total,"last_token_usage":last}}});
+        let mut file = fs::OpenOptions::new().append(true).open(&session).unwrap();
+        std::io::Write::write_all(&mut file, format!("{event}\n").as_bytes()).unwrap();
+        drop(file);
+        let path = if advance_cache { &legacy } else { &durable };
+        let mut index = super::super::ExactUsageIndex::open_at_for_testing(&home, path.clone()).unwrap();
+        index.sync(&home, &mut Vec::new()).unwrap();
+        drop(index);
+        assert_eq!(sum(path), 122);
+        122
+    } else { 115 };
+    if advance {
+        use crate::core::business_store_container::Container;
+        let (primary, old) = if advance_cache { (&legacy, &durable) } else { (&durable, &legacy) };
+        assert!(Container::exact_snapshot_covers(primary, old).unwrap());
+        let check = Connection::open(primary).unwrap();
+        let sequence: String = check.query_row("SELECT value FROM metadata WHERE key='event_id_sequence'", [], |r| r.get(0)).unwrap();
+        check.execute("UPDATE metadata SET value='0' WHERE key='event_id_sequence'", []).unwrap();
+        assert!(!Container::exact_snapshot_covers(primary, old).unwrap(), "A cover must not regress the future event ID allocator");
+        check.execute("UPDATE metadata SET value=?1 WHERE key='event_id_sequence'", [&sequence]).unwrap();
+        let path: String = check.query_row("SELECT path FROM sources ORDER BY source_id LIMIT 1", [], |r| r.get(0)).unwrap();
+        check.execute("UPDATE sources SET path=path||'.unrelated'", []).unwrap();
+        assert!(!Container::exact_snapshot_covers(primary, old).unwrap(), "Equal numeric rows do not prove raw-source identity");
+        check.execute("UPDATE sources SET path=?1", [&path]).unwrap();
+        check.execute("UPDATE usage_ledger_bindings SET raw_offset=COALESCE(raw_offset,0)+1", []).unwrap();
+        assert!(!Container::exact_snapshot_covers(primary, old).unwrap(), "Raw offsets in an unchanged generation cannot silently diverge");
+        // Restore the complete binding rows from the unchanged predecessor;
+        // the appended event's binding is not part of this comparison.
+        check.execute("UPDATE usage_ledger_bindings SET raw_offset=raw_offset-1", []).unwrap();
+        assert!(Container::exact_snapshot_covers(primary, old).unwrap());
+    }
+    fs::remove_file(&session).unwrap();
     let before = capture(&[&legacy, &durable]);
-    let error = super::bootstrap_at(&current, &cache, |target, sources, _| {
+    super::bootstrap_at(&current, &cache, |target, sources, _| {
         assert_eq!(sources.len(), 2);
         let store = route::exact_store_spec(target)?;
         drop(route::open_store_during_bootstrap("exact", &store.source_identity, &store.logical_path, sources)?);
         Ok(())
-    }).unwrap_err();
-    assert!(error.contains("exact/index/"), "{error}");
+    }).unwrap();
     assert_unchanged(&before);
-    println!("RELOCATED_PAIR_REPRO: old_tokens=115 new_tokens=115 originals_unchanged=true error={error}");
+    let store = route::exact_store_spec(&durable).unwrap();
+    let container = crate::core::business_store_container::Container::open_existing(route::container_path().unwrap()).unwrap();
+    for source in [&legacy, &durable] {
+        let receipt = container.legacy_input_receipt(source).unwrap().unwrap();
+        assert_eq!(receipt.store_id, store.id);
+    }
+    drop(container);
+    route::bootstrap().unwrap();
+    assert!(route::exact_sources_already_consumed(&durable, &[durable.clone(), legacy.clone()]).unwrap());
+    let exported = base.join("exported.sqlite3");
+    route::export_store_to_path(&store.source_identity, &store.module, &store.logical_path, &exported).unwrap();
+    assert_eq!(sum(&exported), expected);
+    println!("RELOCATED_PAIR_RECOVERY: expected={expected} advance_cache={advance_cache} both_receipts=true originals_unchanged=true raw_missing=true");
 }

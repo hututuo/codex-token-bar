@@ -258,6 +258,24 @@ final class BusinessDatabaseMigration {
                 storeID: store.id, original: original, imported: imported,
                 normalizationDeferredReason: normalizationDeferredReason, normalizationRevision: normalizationRevision)
             let json = try JSONEncoder().encode(receipt)
+            // Keep provenance for every completed attempt, not just whichever
+            // receipt happened to be the last retry. This is ownership evidence
+            // for future cleanup; an untracked file is never deleted by name.
+            let attemptReceipt = folder.appendingPathComponent("attempt-\(attempt).json")
+            if fileManager.fileExists(atPath: attemptReceipt.path) {
+                let attributes = try fileManager.attributesOfItem(atPath: attemptReceipt.path)
+                guard attributes[.type] as? FileAttributeType == .typeRegular,
+                      let previous = try? JSONDecoder().decode(Receipt.self, from: Data(contentsOf: attemptReceipt)),
+                      previous.sourcePath == receipt.sourcePath, previous.backupPath == receipt.backupPath,
+                      previous.normalizedPath == receipt.normalizedPath, previous.storeID == receipt.storeID,
+                      previous.original == receipt.original, previous.imported == receipt.imported,
+                      previous.normalizationRevision == receipt.normalizationRevision else {
+                    throw Failure.unsafeInput(attemptReceipt.path)
+                }
+            } else {
+                try json.write(to: attemptReceipt, options: .withoutOverwriting)
+                try synchronize(attemptReceipt)
+            }
             try json.write(to: folder.appendingPathComponent("receipt.json"), options: .atomic)
             try synchronize(folder.appendingPathComponent("receipt.json"))
             onProgress?(.init(stage: .importing, completed: index + 1, total: pending.count))

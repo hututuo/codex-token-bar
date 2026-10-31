@@ -541,6 +541,8 @@ fn run_legacy_manifest_probe(root: &Path, frozen: &Path, scenario: &str) -> Resu
     let (phase, expect_ready, current) = match scenario {
         "manifest-retained" => ("Retained", true, false),
         "manifest-current-retained" => ("Retained", true, true),
+        "manifest-relocated-pair" => ("Retained", true, true),
+        "manifest-late-relocated-pair" => ("Retained", true, true),
         "manifest-switched" => ("Switched", true, false),
         "manifest-switching" => ("Switching", true, false),
         "manifest-rollback" => ("Switching", true, false),
@@ -607,12 +609,32 @@ fn run_legacy_manifest_probe(root: &Path, frozen: &Path, scenario: &str) -> Resu
     }
     let stray = PathBuf::from(format!("{}-wal", main.display()));
     if scenario == "manifest-stray-wal" { checked!(fs::write(&stray, b"unmoved committed WAL")); }
+    let relocated_pair = scenario.ends_with("relocated-pair");
+    let mut extra_original = None;
+    if relocated_pair {
+        let old = app_paths::tauri_usage_cache_dir().ok_or("No guarded old cache")?
+            .join("exact-token-index").join(target.file_name().ok_or("No old filename")?);
+        checked!(fs::create_dir_all(old.parent().ok_or("No old parent")?));
+        checked!(fs::copy(frozen.join("exact/a.sqlite3"), &old));
+        let db = checked!(Connection::open(&main));
+        let copied = json!({"sourcePath":old.to_string_lossy(),
+            "rollbackPath":format!("{}.schema11-rollback",old.display()),
+            "manifestPath":format!("{}.schema11-migration.json",old.display()),
+            "sourceSchema":14,"targetSchema":14,"status":"copied"});
+        checked!(db.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('release_upgrade_retention_v1',?1)", [copied.to_string()]));
+        drop(db);
+        extra_original = Some((old.clone(), sha(&old)?));
+        // v0.9.9 registers this Exact partition before rejecting divergent
+        // sources. Recreate that failed-startup residue, not a clean install.
+        if !late { checked!(checked!(Container::open_existing(&a)).register(&route::exact_store_spec(target)?)); }
+    }
     let mut original_files: Vec<(PathBuf, String)> = [&main, &candidate, &rollback, &manifest, &stray]
         .iter().filter(|p| p.is_file()).map(|p| Ok((p.to_path_buf(), sha(p)?)))
         .collect::<Result<_, String>>()?;
 
+    if let Some(original) = extra_original { original_files.push(original); }
     let prepared = if late { Ok(()) } else {
-        coordinator.finish(Err("simulated previous 0.9.8 legacy-manifest startup failure".into()));
+        coordinator.finish(Err("simulated previous 0.9.8/0.9.9 legacy startup failure".into()));
         coordinator.begin_retry()?;
         let prepared = route::bootstrap();
         coordinator.finish(prepared.clone());
@@ -635,7 +657,7 @@ fn run_legacy_manifest_probe(root: &Path, frozen: &Path, scenario: &str) -> Resu
         let exported = root.join("recovered-exact.sqlite");
         route::export_store_to_path(&spec.source_identity, "exact", &spec.logical_path, &exported)?;
         require!(checked!(Container::snapshot_digest_path(&exported)) ==
-            checked!(Container::snapshot_digest_path(frozen.join("exact/a.sqlite3"))),
+            checked!(Container::snapshot_digest_path(if relocated_pair { main.clone() } else { frozen.join("exact/a.sqlite3") })),
             "Schema, typed values, rows or usage changed during recovery");
         route::bootstrap()?;
         route::export_store_to_path(&spec.source_identity, "exact", &spec.logical_path, &root.join("repeated-exact.sqlite"))?;

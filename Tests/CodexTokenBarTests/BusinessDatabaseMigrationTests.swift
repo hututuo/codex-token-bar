@@ -14,8 +14,12 @@ final class BusinessDatabaseMigrationTests: XCTestCase {
         let files = try FileManager.default.subpathsOfDirectory(atPath: c.backups.path)
         XCTAssertEqual(files.filter { $0.contains("original-") && $0.hasSuffix(".sqlite") }.count, 1)
         XCTAssertEqual(files.filter { $0.contains("normalized-") && $0.hasSuffix(".sqlite") }.count, 1)
+        XCTAssertEqual(try attemptReceipts(for: source, configuration: c).count, 1,
+                       "An unchanged interrupted retry must reuse its attempt provenance receipt")
         try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32)
         XCTAssertEqual(try SQLiteDatabaseDriver(url: source).readRows("SELECT id FROM samples") { $0.int(0)! }, [77])
+        XCTAssertEqual(try attemptReceipts(for: source, configuration: c).count, 1,
+                       "Activation must not create another receipt for the same input snapshot")
     }
 
     func testReceiptWithOutsideSnapshotPathIsNotReusedOrModified() throws {
@@ -45,6 +49,44 @@ final class BusinessDatabaseMigrationTests: XCTestCase {
         return (root, .init(container: support.appendingPathComponent("codex-ledger.sqlite"), support: support,
             exact: root.appendingPathComponent("exact"), legacyExact: root.appendingPathComponent("cache")))
     }
+
+    private func attemptReceipts(for source: URL, configuration: BusinessDatabaseMigration.Configuration) throws -> [(URL, BusinessDatabaseMigration.Receipt)] {
+        let store = try XCTUnwrap(configuration.specification(for: source))
+        let folder = configuration.backups.appendingPathComponent(store.id, isDirectory: true)
+        return try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix("attempt-") && $0.pathExtension == "json" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            .map { url in
+                (url, try JSONDecoder().decode(BusinessDatabaseMigration.Receipt.self, from: Data(contentsOf: url)))
+            }
+    }
+
+    func testMismatchedAttemptReceiptIsPreservedAndBlocksReuse() throws {
+        let (_, c) = try fixture()
+        let source = c.support.appendingPathComponent("quota-history.sqlite")
+        try SQLiteDatabaseDriver(url: source).execute("CREATE TABLE samples(id INTEGER PRIMARY KEY); INSERT INTO samples VALUES(88)")
+        enum Stop: Error { case now }
+        XCTAssertThrowsError(try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32, beforeActivation: { throw Stop.now }))
+
+        let attempts = try attemptReceipts(for: source, configuration: c)
+        let (attemptURL, receipt) = try XCTUnwrap(attempts.first)
+        let attemptID = URL(fileURLWithPath: receipt.backupPath).deletingPathExtension().lastPathComponent
+            .replacingOccurrences(of: "original-", with: "")
+        XCTAssertEqual(attemptURL.lastPathComponent, "attempt-\(attemptID).json")
+
+        var mismatched = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: attemptURL)) as? [String: Any])
+        mismatched["sourcePath"] = source.appendingPathComponent("different-source.sqlite").path
+        let protectedBytes = try JSONSerialization.data(withJSONObject: mismatched, options: [.sortedKeys])
+        try protectedBytes.write(to: attemptURL, options: .atomic)
+
+        XCTAssertThrowsError(try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32)) { error in
+            XCTAssertTrue(error.localizedDescription.contains(attemptURL.path),
+                          "A mismatched attempt receipt must be reported as the protected input")
+        }
+        XCTAssertEqual(try Data(contentsOf: attemptURL), protectedBytes,
+                       "Retry must not overwrite or repair a preexisting mismatched attempt receipt")
+    }
+
     func testDirectoryAliasAndDeletedLegacyFileKeepOneRegisteredHistoryPartition() throws {
         let (root, physical) = try fixture()
         let legacy = physical.support.appendingPathComponent("quota-history.sqlite")
@@ -82,6 +124,24 @@ final class BusinessDatabaseMigrationTests: XCTestCase {
         XCTAssertThrowsError(try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32, beforeActivation: { throw Stop.now }))
         try raw.execute("INSERT INTO samples VALUES(2)")
         try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32)
+        let attempts = try attemptReceipts(for: added, configuration: c)
+        XCTAssertEqual(attempts.count, 2, "A changed source must get a new attempt receipt while preserving the old attempt")
+        XCTAssertTrue(attempts.allSatisfy { $0.1.sourcePath == added.path })
+        XCTAssertEqual(Set(attempts.map { $0.1.backupPath }).count, 2)
+        XCTAssertEqual(Set(attempts.map { $0.1.normalizedPath }).count, 2)
+        let snapshotRowCounts = try attempts.map { item -> Int in
+            let receipt = item.1
+            for path in [receipt.backupPath, receipt.normalizedPath] {
+                XCTAssertTrue(FileManager.default.fileExists(atPath: path), "Each attempt must retain its original/normalized snapshot pair")
+            }
+            let backupCount = try SQLiteDatabaseDriver(url: URL(fileURLWithPath: receipt.backupPath), readOnly: true, bypassBusinessRoutes: true)
+                .readRows("SELECT COUNT(*) FROM samples") { $0.int(0)! }.first!
+            let normalizedCount = try SQLiteDatabaseDriver(url: URL(fileURLWithPath: receipt.normalizedPath), readOnly: true, bypassBusinessRoutes: true)
+                .readRows("SELECT COUNT(*) FROM samples") { $0.int(0)! }.first!
+            XCTAssertEqual(normalizedCount, backupCount, "The retained normalized snapshot must still match its original pair")
+            return backupCount
+        }
+        XCTAssertEqual(snapshotRowCounts.sorted(), [1, 2], "Both the old and changed source snapshots must remain verifiable")
         XCTAssertEqual(try SQLiteDatabaseDriver(url: added).readRows("SELECT COUNT(*) FROM samples") { $0.int(0) }.first!, 2,
                        "Retry must re-verify the incomplete import rather than silently omit the newly committed legacy row")
         XCTAssertEqual(try SQLiteDatabaseDriver(url: active).readRows("SELECT COUNT(*) FROM samples") { $0.int(0) }.first!, 2, "Previously activated new rows must survive the retry")

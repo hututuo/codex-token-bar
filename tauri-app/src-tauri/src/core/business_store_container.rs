@@ -950,6 +950,109 @@ impl Container {
         Ok(format!("{}:{}", proof.schema_digest, proof.rows_digest))
     }
 
+    /// Only the relocator's provenance row may differ. All other schema,
+    /// numeric, retained and unresolved rows still require an exact proof.
+    pub(crate) fn exact_relocation_equivalent(a: &Path, b: &Path) -> BusinessStoreResult<bool> {
+        let left = Connection::open_with_flags(a, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let right = Connection::open_with_flags(b, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let left_marker = valid_exact_relocation_marker(&left, "")?;
+        let right_marker = valid_exact_relocation_marker(&right, "")?;
+        if !left_marker && !right_marker {
+            return Ok(false);
+        }
+        Ok(proof_for_filtered(&left, "main", "", false, None, true)?
+            == proof_for_filtered(&right, "main", "", false, None, true)?)
+    }
+
+    pub(crate) fn exact_snapshot_covers(primary: &Path, old: &Path) -> BusinessStoreResult<bool> {
+        if Self::exact_relocation_equivalent(primary, old)? { return Ok(true); }
+        let db = Connection::open_with_flags(primary, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        exact_history_covers(&db, "", old, true)
+    }
+
+    /// A retry already owns both proof-bound snapshots. A changed source may
+    /// replace its uncommitted predecessor only if it contains every protected
+    /// historical row. An append is allowed; truncation is never a fresh start.
+    pub(crate) fn retry_snapshot_covers(primary: &Path, old: &Path, exact: bool) -> BusinessStoreResult<bool> {
+        if Self::snapshot_digest(primary)? == Self::snapshot_digest(old)? { return Ok(true); }
+        let db = Connection::open_with_flags(primary, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        if exact { return exact_history_covers(&db, "", old, false); }
+        db.execute("ATTACH DATABASE ?1 AS tb_exact_history_source", [readonly_file_uri(old)])?;
+        let mut statement = db.prepare("SELECT name,sql FROM tb_exact_history_source.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")?;
+        let tables = statement.query_map([], |r| Ok((r.get::<_, String>(0)?,r.get::<_, Option<String>>(1)?)))?.collect::<Result<Vec<_>,_>>()?;
+        for (name, old_sql) in tables {
+            let new_sql: Option<String> = db.query_row("SELECT sql FROM main.sqlite_master WHERE type='table' AND name=?1", [&name], |r| r.get(0)).optional()?.flatten();
+            if old_sql != new_sql { return Ok(false); }
+            let mut columns = table_columns(&db, "tb_exact_history_source", &name)?;
+            if columns.is_empty() { return Ok(false); }
+            if let Some(rowid) = rowid_alias(old_sql.as_deref().ok_or(BusinessStoreError::ProofMismatch)?, &columns)? { columns.insert(0, rowid); }
+            let columns = columns.iter().map(|c| { let q=SQLiteStoreNamespace::quote(c); format!("typeof({q}),{q}") }).collect::<Vec<_>>().join(",");
+            let table = SQLiteStoreNamespace::quote(&name);
+            let sql = format!("SELECT EXISTS(SELECT {columns} FROM tb_exact_history_source.{table} EXCEPT SELECT {columns} FROM main.{table})");
+            if db.query_row(&sql, [], |r| r.get::<_, bool>(0))? { return Ok(false); }
+        }
+        Ok(true)
+    }
+
+    pub(crate) fn record_exact_relocation_input(
+        &mut self, snapshot: &Path, store: &StoreSpec, original: &Path, backup: &Path,
+    ) -> BusinessStoreResult<()> {
+        if store.module != "exact" { return Err(BusinessStoreError::InvalidStore); }
+        self.ensure_registered(store)?;
+        let imported = self.proof(store)?;
+        let source = Connection::open_with_flags(snapshot, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let source_marker = valid_exact_relocation_marker(&source, "")?;
+        let target_marker = valid_exact_relocation_marker(&self.connection, &store.prefix)?;
+        if !source_marker && !target_marker {
+            return Err(BusinessStoreError::ProofMismatch);
+        }
+        let version = self.user_version(store)?;
+        let equivalent = proof_for_filtered(&source, "main", "", false, None, true)?
+            == proof_for_filtered(&self.connection, "main", &store.prefix, true, Some(version), true)?;
+        if !equivalent && !exact_history_covers(&self.connection, &store.prefix, snapshot, true)? {
+            return Err(BusinessStoreError::ProofMismatch);
+        }
+        let rule = if equivalent { "exact-relocation-metadata-only-v1" } else { "exact-published-history-covered-v1" };
+        let path = canonical_input_path(original)?;
+        let digest = Self::snapshot_digest(snapshot)?;
+        if let Some(existing) = self.legacy_input_receipt_by_key(&path)? {
+            if existing.retired || existing.store_id != store.id || existing.module != store.module
+                || existing.logical_path != store.logical_path || existing.source_digest != digest {
+                return Err(BusinessStoreError::ProofMismatch);
+            }
+        }
+        let evidence = serde_json::json!({
+            "version": 1, "rule": rule,
+            "sourcePath": path, "sourceDigest": digest,
+            "backupPath": backup.to_string_lossy(), "importedProof": imported,
+            "storeID": store.id, "logicalPath": store.logical_path,
+        }).to_string();
+        let key = format!("exact_relocation_input_v1:{}:{}", store.id,
+            hex_digest(&Sha256::digest(format!("{path}\0{digest}\0{}:{}", imported.schema_digest, imported.rows_digest).as_bytes())));
+        let tx = self.connection.transaction()?;
+        let previous: Option<String> = tx.query_row("SELECT value FROM tb_container_meta WHERE key=?1", [&key], |r| r.get(0)).optional()?;
+        if let Some(previous) = previous {
+            let value: serde_json::Value = serde_json::from_str(&previous)
+                .map_err(|_| BusinessStoreError::ProofMismatch)?;
+            if value["version"] != 1 || value["rule"] != rule
+                || value["sourcePath"] != path || value["sourceDigest"] != digest
+                || value["storeID"] != store.id || value["logicalPath"] != store.logical_path {
+                return Err(BusinessStoreError::ProofMismatch);
+            }
+        }
+        if proof_for(&tx, "main", &store.prefix, true, Some(version))? != imported {
+            return Err(BusinessStoreError::ProofMismatch);
+        }
+        write_legacy_receipt(&tx, &LegacyReceiptWrite {
+            source_path: path, module: store.module.clone(), store_id: store.id.clone(),
+            logical_path: store.logical_path.clone(), source_digest: digest,
+            backup_path: backup.to_string_lossy().into_owned(),
+        })?;
+        tx.execute("INSERT OR REPLACE INTO tb_container_meta(key,value) VALUES(?1,?2)", params![key,evidence])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub(crate) fn snapshot_digest_path(path: impl AsRef<Path>) -> BusinessStoreResult<String> {
         Self::snapshot_digest(path.as_ref())
     }
@@ -1743,12 +1846,144 @@ fn drop_object(
     Ok(())
 }
 
+// A covering image can replace an older *copy*, not another Home. Every
+// published event and immutable history/evidence row in the old image must
+// remain present. Operational scan cursors and regenerated projections are
+// selected from the covering writer rather than combined or summed.
+fn exact_history_covers(primary: &Connection, prefix: &str, old: &Path, require_relocation: bool) -> BusinessStoreResult<bool> {
+    let old_db = Connection::open_with_flags(old, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let p_marker = valid_exact_relocation_marker(primary, prefix)?;
+    let o_marker = valid_exact_relocation_marker(&old_db, "")?;
+    if require_relocation && !p_marker && !o_marker { return Ok(false); }
+    let metadata = SQLiteStoreNamespace::quote(&format!("{prefix}metadata"));
+    for key in ["schema_version", "codex_home_identity"] {
+        let current: Option<String> = primary.query_row(&format!("SELECT value FROM {metadata} WHERE key=?1"), [key], |r| r.get(0)).optional()?;
+        let previous: Option<String> = old_db.query_row("SELECT value FROM metadata WHERE key=?1", [key], |r| r.get(0)).optional()?;
+        if current.is_none() || current != previous { return Ok(false); }
+        if key == "schema_version" && current.as_deref() != Some("14") { return Ok(false); }
+    }
+    if !has_table(&old_db, "main", "event_rows")? { return Ok(false); }
+    let operational_keys = [
+        "release_upgrade_retention_v1", "revision", "dashboard_revision", "event_id_sequence",
+        "published_generation", "session_catalog_published_generation", "accounting_coverage",
+        "attribution_current_scan_incomplete", "attribution_current_scan_unsafe", "attribution_ledger_epoch",
+        "attribution_ledger_integrity_v1", "attribution_provenance_epoch", "canonical_projection_pending",
+        "dashboard_aggregate_exact_generation", "dashboard_aggregate_pricing_revision",
+        "dashboard_aggregate_published_generation", "dashboard_aggregate_settled_through",
+        "building_generation", "building_changed", "building_dashboard_changed", "building_attribution_provenance_rotate",
+        "building_discovery_started_us", "building_discovery_complete", "building_estimated_total_files",
+        "building_processed_files", "building_total_bytes", "building_processed_bytes",
+    ];
+    // IDs are database-local but monotonic across this copy lineage. A cover
+    // must not regress a counter merely because deleted IDs leave no rows.
+    let sequence = |db: &Connection, table: &str| -> BusinessStoreResult<Option<i64>> {
+        let value: Option<String> = db.query_row(&format!("SELECT value FROM {table} WHERE key='event_id_sequence'"), [], |r| r.get(0)).optional()?;
+        value.map(|s| s.parse::<i64>().map_err(|_| BusinessStoreError::ProofMismatch)).transpose()
+    };
+    if let Some(previous) = sequence(&old_db, "metadata")? {
+        if sequence(primary, &metadata)?.is_none_or(|current| current < previous) { return Ok(false); }
+    }
+    let mut metadata_rows = old_db.prepare("SELECT key,value FROM metadata")?;
+    let old_values = metadata_rows.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    for (key, value) in old_values {
+        if operational_keys.contains(&key.as_str()) { continue; }
+        let current: Option<String> = primary.query_row(&format!("SELECT value FROM {metadata} WHERE key=?1"), [&key], |r| r.get(0)).optional()?;
+        if current.as_deref() != Some(value.as_str()) { return Ok(false); }
+    }
+    primary.execute("ATTACH DATABASE ?1 AS tb_exact_history_source", [readonly_file_uri(old)])?;
+    let result = exact_history_covers_attached(primary, prefix);
+    let detached = primary.execute_batch("DETACH DATABASE tb_exact_history_source");
+    match result { Err(e) => Err(e), Ok(value) => { detached?; Ok(value) } }
+}
+
+fn exact_history_covers_attached(db: &Connection, prefix: &str) -> BusinessStoreResult<bool> {
+    let mut statement = db.prepare("SELECT name FROM tb_exact_history_source.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")?;
+    let names = statement.query_map([], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+    for name in names {
+        // These contain no independent published consumption. Retained tables,
+        // unresolved observations and corrections are deliberately NOT skipped.
+        let operational = matches!(name.as_str(), "dashboard_5m_current" | "dashboard_source_5m"
+            | "dashboard_source_totals" | "dashboard_turn_candidates_current"
+            | "pending_dashboard_5m" | "pending_dashboard_5m_tombstones"
+            | "pending_dashboard_source_5m" | "pending_dashboard_source_totals"
+            | "pending_dashboard_turn_candidates" | "pending_dashboard_turn_tombstones"
+            | "attribution_source_buckets" | "metadata" | "source_chunks" | "source_enrichment" | "source_observations"
+                | "source_representations" | "session_catalog_files" | "session_metadata"
+                | "usage_ledger_sources" | "usage_ledger_duplicates" | "usage_scan_certificate");
+        if operational { continue; }
+        let target = format!("{prefix}{name}");
+        if !has_table(db, "main", &target)? { return Ok(false); }
+        let old_columns = table_columns(db, "tb_exact_history_source", &name)?;
+        let new_columns = table_columns(db, "main", &target)?;
+        if old_columns != new_columns { return Ok(false); }
+        if name == "usage_ledger_bindings" {
+            let target_table = SQLiteStoreNamespace::quote(&target);
+            let missing: bool = db.query_row(&format!("SELECT EXISTS(SELECT 1 FROM tb_exact_history_source.usage_ledger_bindings old LEFT JOIN main.{target_table} current ON current.event_id=old.event_id AND current.source_id=old.source_id WHERE current.event_id IS NULL OR (old.fingerprint IS NOT NULL AND old.fingerprint IS NOT current.fingerprint) OR (old.raw_generation IS current.raw_generation AND (old.raw_offset IS NOT current.raw_offset OR old.user_prompt_start IS NOT current.user_prompt_start OR old.user_prompt_end IS NOT current.user_prompt_end OR old.assistant_response_start IS NOT current.assistant_response_start OR old.assistant_response_end IS NOT current.assistant_response_end)) OR (old.raw_generation IS NOT current.raw_generation AND (old.fingerprint IS NULL OR old.fingerprint IS NOT current.fingerprint)))"), [], |r| r.get(0))?;
+            if missing { return Ok(false); }
+            continue;
+        }
+        let columns = if name == "sources" { vec!["source_id".into(), "session_id".into(), "path".into(), "is_explicit_subagent_fork".into()] }
+            else { old_columns };
+        let projection = columns.iter().map(|c| {
+            let quoted = SQLiteStoreNamespace::quote(c);
+            format!("typeof({quoted}),{quoted}")
+        }).collect::<Vec<_>>().join(",");
+        let old_table = SQLiteStoreNamespace::quote(&name);
+        let target_table = SQLiteStoreNamespace::quote(&target);
+        let sql = format!("SELECT EXISTS(SELECT {projection} FROM tb_exact_history_source.{old_table} EXCEPT SELECT {projection} FROM main.{target_table})");
+        if db.query_row(&sql, [], |r| r.get::<_, bool>(0))? { return Ok(false); }
+    }
+    Ok(true)
+}
+
+// Rust historically encoded these as integers; native Codable encoded decimal
+// strings. Accept only canonical supported decimal versions, never floats.
+fn exact_receipt_schema(value: &serde_json::Value) -> Option<i64> {
+    value.as_i64().or_else(|| {
+        let text = value.as_str()?;
+        let number = text.parse::<i64>().ok()?;
+        (number.to_string() == text).then_some(number)
+    })
+}
+
+fn valid_exact_relocation_marker(db: &Connection, prefix: &str) -> BusinessStoreResult<bool> {
+    let table = format!("{prefix}metadata");
+    if !has_table(db, "main", &table)? { return Ok(false); }
+    let value: Option<String> = db.query_row(
+        &format!("SELECT value FROM {} WHERE key='release_upgrade_retention_v1'", SQLiteStoreNamespace::quote(&table)),
+        [], |r| r.get(0)).optional()?;
+    let Some(value) = value else { return Ok(false); };
+    let v = serde_json::from_str::<serde_json::Value>(&value)
+        .map_err(|_| BusinessStoreError::UnsupportedSchema("invalid Exact relocation receipt".into()))?;
+    let valid = matches!(v["status"].as_str(), Some("copied" | "succeeded"))
+        && exact_receipt_schema(&v["sourceSchema"]).is_some_and(|n| (9..=14).contains(&n))
+        && exact_receipt_schema(&v["targetSchema"]) == Some(14)
+        && ["sourcePath", "rollbackPath", "manifestPath"].iter()
+            .all(|key| v[*key].as_str().is_some_and(|s| !s.is_empty()));
+    if !valid { return Err(BusinessStoreError::UnsupportedSchema("unknown Exact relocation receipt".into())); }
+    Ok(true)
+}
+
 fn proof_for(
     connection: &Connection,
     schema: &str,
     prefix: &str,
     unbind_schema: bool,
     module_version: Option<i64>,
+) -> BusinessStoreResult<StoreProof> {
+    proof_for_filtered(connection, schema, prefix, unbind_schema, module_version, false)
+}
+
+// Exact relocation adds only this known provenance row. This narrowly scoped
+// proof is never used by generic imports or full backup verification.
+fn proof_for_filtered(
+    connection: &Connection,
+    schema: &str,
+    prefix: &str,
+    unbind_schema: bool,
+    module_version: Option<i64>,
+    exclude_exact_relocation: bool,
 ) -> BusinessStoreResult<StoreProof> {
     if prefix.is_empty() && !unbind_schema {
         let sql = format!("PRAGMA {schema}.quick_check");
@@ -1955,8 +2190,11 @@ fn proof_for(
             .collect::<Vec<_>>()
             .join(",");
         let table_ref = format!("{schema}.{quoted}");
+        let filter = if exclude_exact_relocation && name.eq_ignore_ascii_case("metadata") {
+            " WHERE key <> 'release_upgrade_retention_v1'"
+        } else { "" };
         let query = format!(
-            "SELECT {} FROM {table_ref} ORDER BY {order_by}",
+            "SELECT {} FROM {table_ref}{filter} ORDER BY {order_by}",
             projection.join(",")
         );
         let mut statement = connection.prepare(&query)?;
