@@ -155,8 +155,12 @@ fn release097_export_actual_rust_inputs() {
         };
         write_lines(&file, &[
             r#"{"type":"session_meta","payload":{"id":"019ff8b9-09e7-75c1-b9a5-14fe7b60065a"}}"#.to_owned(),
+            serde_json::json!({"timestamp":date(now-66),"type":"event_msg","payload":{"type":"user_message","message":"Synthetic upgrade compatibility request"}}).to_string(),
             serde_json::json!({"timestamp":date(now-65),"type":"turn_context","payload":{"model":"gpt-6.1-sol"}}).to_string(),
-            token(64,80,32,20,5,80,32,20,5), token(63,120,48,35,8,40,16,15,3),
+            token(64,80,32,20,5,80,32,20,5),
+            serde_json::json!({"timestamp":date(now-64),"type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"synthetic-tool","arguments":"{\"cmd\":\"echo synthetic\"}"}}).to_string(),
+            serde_json::json!({"timestamp":date(now-64),"type":"response_item","payload":{"type":"function_call_output","call_id":"synthetic-tool","output":"synthetic"}}).to_string(),
+            token(63,120,48,35,8,40,16,15,3),
         ]);
         assert_eq!(dashboard_snapshot(&home).unwrap().stats.total_tokens,155*scale);
         let source = super::exact_usage_index::database_path(&home).unwrap();
@@ -199,6 +203,44 @@ fn release097_export_actual_rust_inputs() {
     let bytes=serde_json::to_vec(&serde_json::json!({"version":1,"samples":[sample,stream],"bodyRetentionDays":15})).unwrap();
     fs::write(root.join("support/observed-speed-release097.json"),bytes).unwrap();
     println!("V097_RUST_PRODUCER_READY exact=2 quota=1 json=1 synthetic=true");
+}
+
+#[test]
+fn release097_upgrade_actual_v093_pair() {
+    let root = PathBuf::from(std::env::var("TOKENBAR_V093_FIXTURE_ROOT").unwrap()).join("inputs");
+    let shared = PathBuf::from(std::env::var("TOKENBAR_V097_RUST_INPUTS").unwrap());
+    let _guard = app_paths::app_path_test_env_guard(&[
+        ("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR",root.join("upgrade-support")),
+        ("CODEX_TOKEN_BAR_TAURI_CACHE_DIR",root.join("upgrade-cache")),
+        ("CODEX_TOKEN_BAR_SUPPORT_BASE_DIR",root.join("upgrade-shared-support")),
+        ("CODEX_TOKEN_BAR_CACHE_BASE_DIR",root.join("upgrade-shared-cache")),
+        ("CODEX_TOKEN_BAR_TAURI_USAGE_CACHE_DIR",root.join("upgrade-old-cache")),
+    ]);
+    for (letter, expected) in [("a",155_i64),("b",310_i64)] {
+        let original = root.join(format!("exact/{letter}.sqlite3"));
+        let target = root.join(format!("exact/{letter}-upgraded.sqlite3"));
+        assert!(!target.exists());
+        // The producer closed a DELETE-mode image. This test-only copy
+        // models an existing support copy made by the released v0.9.3 app.
+        assert!(!PathBuf::from(format!("{}-wal",original.display())).exists());
+        fs::copy(&original,&target).unwrap();
+        let db = Connection::open(&target).unwrap();
+        let receipt = serde_json::json!({"sourcePath":original.to_string_lossy(),
+            "rollbackPath":format!("{}.schema11-rollback",original.display()),
+            "manifestPath":format!("{}.schema11-migration.json",original.display()),
+            "sourceSchema":13,"targetSchema":13,"status":"copied"});
+        db.execute("INSERT OR REPLACE INTO metadata VALUES('release_upgrade_retention_v1',?1)",[receipt.to_string()]).unwrap();
+        drop(db);
+        let home = shared.join(format!("home-{letter}"));
+        let mut index = super::exact_usage_index::ExactUsageIndex::open_at_for_testing(&home,target.clone()).unwrap();
+        index.sync(&home,&mut Vec::new()).unwrap();
+        drop(index);
+        let db = Connection::open(&target).unwrap();
+        assert_eq!(db.query_row("SELECT value FROM metadata WHERE key='schema_version'",[],|r|r.get::<_,String>(0)).unwrap(),"14");
+        assert_eq!(db.query_row("SELECT SUM(tokens) FROM event_rows",[],|r|r.get::<_,i64>(0)).unwrap(),expected);
+        db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;").unwrap();
+    }
+    println!("V097_UPGRADED_V093_PAIR_READY schema13_and14=true actual_released_upgrade=true");
 }
 '''
 
@@ -266,16 +308,17 @@ def verify093(fixture_dir):
         raise SystemExit("Wrong v0.9.3 provenance")
     artifacts = {}
     for letter, expected in [("a", 155), ("b", 310)]:
-        relative = f"exact/{letter}.sqlite3"
-        path = inputs / relative
-        with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as db:
-            version = db.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
-            check = db.execute("PRAGMA quick_check").fetchall()
-            total = db.execute("SELECT SUM(tokens) FROM event_rows").fetchone()[0]
-        if version != ("13",) or check != [("ok",)] or total != expected:
-            raise SystemExit("The public v0.9.3 producer did not create the expected schema13 history")
-        artifacts[relative] = {"sha256": digest(path), "tokens": total}
-    receipt = {"verified": True, "release_sha": RELEASE093_SHA, "artifacts": artifacts}
+        for suffix, schema in [("", "13"), ("-upgraded", "14")]:
+            relative = f"exact/{letter}{suffix}.sqlite3"
+            path = inputs / relative
+            with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as db:
+                version = db.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
+                check = db.execute("PRAGMA quick_check").fetchall()
+                total = db.execute("SELECT SUM(tokens) FROM event_rows").fetchone()[0]
+            if version != (schema,) or check != [("ok",)] or total != expected:
+                raise SystemExit("The public producers did not create the expected schema13/14 pair")
+            artifacts[relative] = {"sha256": digest(path), "tokens": total, "schema": schema}
+    receipt = {"verified": True, "release_sha": RELEASE093_SHA, "upgrade_release_sha": RELEASE_SHA, "artifacts": artifacts}
     (inputs / "fixture-result.json").write_text(json.dumps(receipt, indent=2))
     print(json.dumps(receipt))
 

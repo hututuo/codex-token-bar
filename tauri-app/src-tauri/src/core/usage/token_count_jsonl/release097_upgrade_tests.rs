@@ -627,6 +627,10 @@ fn run_legacy_manifest_probe(root: &Path, frozen: &Path, scenario: &str) -> Resu
                 && receipt["release_sha"] == provenance["release_sha"], "Unverified public v0.9.3 fixture");
             let prior = inputs13.join("exact/a.sqlite3");
             require!(receipt["artifacts"]["exact/a.sqlite3"]["sha256"] == sha(&prior)?, "Public v0.9.3 fixture changed");
+            require!(receipt["upgrade_release_sha"] == RELEASE_SHA, "The pair was not upgraded by public v0.9.7");
+            let upgraded = inputs13.join("exact/a-upgraded.sqlite3");
+            require!(receipt["artifacts"]["exact/a-upgraded.sqlite3"]["sha256"] == sha(&upgraded)?, "The released upgraded support fixture changed");
+            checked!(fs::copy(&upgraded, &main));
             prior
         } else { frozen.join("exact/a.sqlite3") };
         checked!(fs::copy(prior, &old));

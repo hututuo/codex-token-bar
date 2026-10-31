@@ -201,6 +201,9 @@ jobs:
           cargo test --locked --manifest-path "$env:RUNNER_TEMP/tokenbar-v093-source/tauri-app/src-tauri/Cargo.toml" --lib release093_export_actual_exact_inputs -- --test-threads=1 --nocapture 2>&1 | Tee-Object upgrade-evidence/windows-v093-producer.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (-not (Select-String -Path upgrade-evidence/windows-v093-producer.log -SimpleMatch 'V093_RUST_PRODUCER_READY')) { throw 'The actual public v0.9.3 producer did not run' }
+          cargo test --locked --manifest-path "$env:RUNNER_TEMP/tokenbar-v097-source/tauri-app/src-tauri/Cargo.toml" --lib release097_upgrade_actual_v093_pair -- --test-threads=1 --nocapture 2>&1 | Tee-Object upgrade-evidence/windows-v093-through-v097.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Select-String -Path upgrade-evidence/windows-v093-through-v097.log -SimpleMatch 'V097_UPGRADED_V093_PAIR_READY')) { throw 'The released schema13 to14 upgrade did not run' }
           python scripts/prepare_v097_upgrade_validation.py verify-v093-rust $env:TOKENBAR_V093_FIXTURE_ROOT | Tee-Object upgrade-evidence/windows-v093-fixtures.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python scripts/prepare_v097_upgrade_validation.py verify $env:TOKENBAR_V097_FIXTURE_ROOT --platform rust | Tee-Object upgrade-evidence/windows-shared-raw-reverified.json
