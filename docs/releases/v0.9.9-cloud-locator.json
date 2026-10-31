@@ -1,0 +1,58 @@
+{
+  "version": "0.9.9",
+  "source_sha": "35f31628e05930993c6c07155291a9740f04953d",
+  "tag": "v0.9.9",
+  "release_url": "https://github.com/hututuo/codex-token-bar/releases/tag/v0.9.9",
+  "build_run_id": "41201203746",
+  "ci_run_id": "41201188116",
+  "signing_run_id": "41204065423",
+  "publish_run_id": "41204498597",
+  "publication_tooling_sha": "5b625396527d65a4b0570d412d1caed08ce85cbe",
+  "assets": [
+    {
+      "name": "CodexTokenBar-v0.9.9-macos-arm64.dmg",
+      "bytes": 28563663,
+      "sha256": "f5d18a262d0b481595d6280b46ef986889fb4bd13beffdfa28471a5c9894b2b2"
+    },
+    {
+      "name": "CodexTokenBar-v0.9.9-macos-arm64.app.zip",
+      "bytes": 27640353,
+      "sha256": "140fd64cb739917b9de74d4e1a52123aab16451b1f35156bf24e55749a0a9f71"
+    },
+    {
+      "name": "CodexTokenBar.app.zip",
+      "bytes": 27640353,
+      "sha256": "140fd64cb739917b9de74d4e1a52123aab16451b1f35156bf24e55749a0a9f71"
+    },
+    {
+      "name": "CodexTokenBar-v0.9.9-windows-x64-setup.exe",
+      "bytes": 68621529,
+      "sha256": "ba2081fe3779f05344874ebf0a55af4922dee0fb73fd2006acbae30da0926270"
+    },
+    {
+      "name": "CodexTokenBar-v0.9.9-windows-x64-setup.exe.sig",
+      "bytes": 436,
+      "sha256": "c700365586ea84fcc620a2068d985e07ec947ed33e3cf6aa7c73ef866b32fd11"
+    },
+    {
+      "name": "CodexTokenBar-v0.9.9-windows-arm64-setup.exe",
+      "bytes": 62740147,
+      "sha256": "abde4385cb3b7649e25aca2b55e84802946b0cf66cfc2e2c16bfa98fd6dae671"
+    },
+    {
+      "name": "CodexTokenBar-v0.9.9-windows-arm64-setup.exe.sig",
+      "bytes": 440,
+      "sha256": "3639e89941f8e8e4c488a274e3594f74b8b98a136ab42db9f06c1ca50ab822cd"
+    },
+    {
+      "name": "latest-windows.json",
+      "bytes": 1368,
+      "sha256": "9005ca9c5a27942787e9e450c815aaeec656074bf6fca56fa0f1ea4e6bc922a9"
+    },
+    {
+      "name": "SHA256SUMS-v0.9.9.txt",
+      "bytes": 832,
+      "sha256": "23d39409886304615e272624dcc596a0b7c4889f4c8c3b3ed251a7e137a83c92"
+    }
+  ]
+}
