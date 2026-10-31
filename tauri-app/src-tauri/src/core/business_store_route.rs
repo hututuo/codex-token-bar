@@ -393,14 +393,32 @@ fn validate_pending_snapshot(container_path: &Path, store: &StoreSpec, snapshot:
 
 fn validate_pending_batch(batch: &PendingLegacyImport, path: &Path, store: &StoreSpec) -> Result<(), String> {
     if ![1, 2].contains(&batch.version) { return Err("未知的未完成导入版本，已保留旧账".into()); }
-    if batch.version == 2 {
-        if batch.sources.len() != batch.snapshots.len() { return Err("未完成导入快照数量不匹配".into()); }
-        let mut seen = std::collections::HashSet::new();
-        for snapshot in &batch.snapshots {
-            if !batch.sources.contains(&snapshot.source) || !seen.insert(&snapshot.source) {
-                return Err("未完成导入快照来源不匹配".into());
+    if batch.version == 2 && batch.sources.len() != batch.snapshots.len() {
+        return Err("未完成导入快照数量不匹配".into());
+    }
+    let mut seen = std::collections::HashSet::new();
+    for snapshot in &batch.snapshots {
+        if !batch.sources.contains(&snapshot.source) || !seen.insert(&snapshot.source) {
+            return Err("未完成导入快照来源不匹配".into());
+        }
+        validate_pending_snapshot(path, store, snapshot)?;
+    }
+    Ok(())
+}
+
+// Public 0.9.8/0.9.9 journals list only paths. A committed per-source receipt
+// can bind its missing frozen proof without guessing a backup from filenames.
+// This also prevents a v1 retry from replacing an imported row with a later
+// truncation. An unreceipted missing v1 input still cannot be reconstructed.
+fn bind_legacy_pending_receipts(batch: &mut PendingLegacyImport, container: &Container, store: &StoreSpec) -> Result<(), String> {
+    if batch.version != 1 { return Ok(()); }
+    if !batch.snapshots.is_empty() { return Err("旧版本批次包含未知快照字段，已保留旧账".into()); }
+    for source in &batch.sources {
+        if let Some(receipt) = container.legacy_input_receipt(source).map_err(|e| e.to_string())? {
+            if receipt.retired || receipt.store_id != store.id || receipt.module != store.module || receipt.logical_path != store.logical_path {
+                return Err("旧版本未完成批次与来源归属不一致".into());
             }
-            validate_pending_snapshot(path, store, snapshot)?;
+            batch.snapshots.push(PendingSnapshot { source: source.clone(), backup: PathBuf::from(receipt.backup_path), digest: receipt.source_digest });
         }
     }
     Ok(())
@@ -550,6 +568,7 @@ fn open_store_at_with_hook(
             .map_err(|error| error.to_string())?;
         pending = None;
     }
+    if let Some(batch) = &mut pending { bind_legacy_pending_receipts(batch, &container, &store)?; }
     let mut all_sources = legacy_sources.to_vec();
     if let Some(batch) = &pending {
         validate_pending_batch(batch, container_path, &store)?;
@@ -1668,6 +1687,36 @@ mod tests {
             let active = open_store_at(&db, "quota_history", "home", "quota", &[], false).unwrap();
             assert_eq!(active.query_row("SELECT COUNT(*) FROM events", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
             assert!(!raw.exists(), "Recovery must not recreate the old writer");
+        }
+    }
+
+    #[test]
+    fn public_v1_pending_receipts_bind_missing_sources_without_losing_frozen_rows() {
+        for truncate in [false, true] {
+            let fixture = Fixture::new();
+            let db = fixture.path("codex-ledger.sqlite");
+            let raw = fixture.path("legacy.sqlite");
+            seed_legacy(&raw);
+            drop(open_store_at(&db, "quota_history", "home", "quota", std::slice::from_ref(&raw), false).unwrap());
+            let container = Container::open_existing(&db).unwrap();
+            let store = StoreSpec::new("quota_history", "home", "quota").unwrap();
+            let key = format!("migration_pending_store_v1:{}", store.id);
+            let v1 = serde_json::json!({"sources":[raw],"bootstrap":true,"replace_uncommitted":true}).to_string();
+            container.connection().execute("UPDATE tb_container_meta SET value=?1 WHERE key=?2", rusqlite::params![v1,key]).unwrap();
+            let before = container.proof(&store).unwrap();
+            drop(container);
+            if truncate { Connection::open(&raw).unwrap().execute("DELETE FROM events", []).unwrap(); }
+            else { fs::remove_file(&raw).unwrap(); }
+            let result = resume_pending_bootstrap_imports(&db);
+            if truncate {
+                assert!(result.is_err());
+                assert_eq!(Container::open_existing(&db).unwrap().proof(&store).unwrap(), before);
+            } else {
+                result.unwrap();
+                verify_bootstrap_pending_inputs(&Container::open_existing(&db).unwrap()).unwrap();
+                assert_eq!(Container::open_existing(&db).unwrap().proof(&store).unwrap(), before);
+                assert!(!raw.exists());
+            }
         }
     }
 

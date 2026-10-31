@@ -57,3 +57,6 @@
 ## 本轮验证入口
 
 本地日志位于 scratch/legacy-migration-hotfix：`journal-v2-tests.log`、`relocation-equivalence-progress.log`、`full-rust-regression.log`、`production-fixture-check.log`。最后两项分别覆盖全量测试与非 cfg(test) 编译；最终提交仍须跑云端 Mac/Windows 完整 CI 和公开 0.9.7 实际产库升级工作流。上一提交 5e0f8fe3 的两个绿色 run 不代替本候选的回归。
+
+
+追加旧格式兼容：公开 0.9.8/0.9.9 的 v1 批次可从已提交的同分区来源收据绑定原快照，避免重试时覆盖曾经接收过的独有记录，也允许原件已删除但证明完整的批次继续完成。不存在收据的旧批次缺失输入仍不猜测。原件删除后，收据身份改为规范化现存父目录再拼叶子，保持 macOS `/var` 别名及 Windows canonical 前缀一致。新增 v1 删除/截断回归与既有路由共 18 项通过；最后一次被终止的本地编译不记为通过，清理本 worktree 可重建 incremental 缓存后重新执行通过。未清理用户数据。

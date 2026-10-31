@@ -1769,7 +1769,14 @@ fn drop_store_objects(connection: &Connection, prefix: &str) -> BusinessStoreRes
 }
 
 fn canonical_input_path(path: &Path) -> BusinessStoreResult<String> {
-    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    // A deleted leaf must retain its original physical identity, including
+    // Windows' canonical path prefix and configured parent-directory aliases.
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| {
+        match (path.parent(), path.file_name()) {
+            (Some(parent), Some(name)) => std::fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf()).join(name),
+            _ => path.to_path_buf(),
+        }
+    });
     canonical
         .to_str()
         .map(str::to_owned)
@@ -1859,7 +1866,7 @@ fn exact_history_covers(primary: &Connection, prefix: &str, old: &Path, require_
     for key in ["schema_version", "codex_home_identity"] {
         let current: Option<String> = primary.query_row(&format!("SELECT value FROM {metadata} WHERE key=?1"), [key], |r| r.get(0)).optional()?;
         let previous: Option<String> = old_db.query_row("SELECT value FROM metadata WHERE key=?1", [key], |r| r.get(0)).optional()?;
-        if current.is_none() || current != previous { return Ok(false); }
+        if current.as_deref().is_none_or(str::is_empty) || current != previous { return Ok(false); }
         if key == "schema_version" && current.as_deref() != Some("14") { return Ok(false); }
     }
     if !has_table(&old_db, "main", "event_rows")? { return Ok(false); }
