@@ -1564,21 +1564,31 @@ pub(super) fn maintain_exact_index_storage_for_testing(
     )
 }
 
+#[cfg(not(test))]
+fn prepare_exact_store_for_home(home: &Path, path: &Path) -> Result<(), String> {
+    use crate::core::business_store_route as route;
+    let legacy = app_paths::tauri_usage_cache_dir().ok_or("无法定位旧用量索引目录")?
+        .join("exact-token-index").join(format!("{}.sqlite3", stable_path_fingerprint(home)));
+    let already_imported = route::exact_store_has_objects(path)?;
+    let mut sources = Vec::new();
+    let mut manifests = Vec::new();
+    for input in [path, legacy.as_path()] {
+        let (source, manifest) = exact_legacy_recovery::runtime_source(input, already_imported)?;
+        if let Some(source) = source { sources.push(source); }
+        if let Some(manifest) = manifest { manifests.push(manifest); }
+        if legacy == path { break; }
+    }
+    let store = route::exact_store_spec(path)?;
+    exact_legacy_recovery::verify_manifests(&manifests)?;
+    drop(route::open_store("exact", &store.source_identity, &store.logical_path, &sources)?);
+    exact_legacy_recovery::verify_manifests(&manifests)
+}
+
 impl ExactUsageIndex {
     pub(super) fn open(codex_home: &Path) -> Result<Self, String> {
         let path=database_path(codex_home)?;
         #[cfg(not(test))]
-        {
-            let legacy=app_paths::tauri_usage_cache_dir().ok_or("无法定位旧用量索引目录")?
-                .join("exact-token-index").join(format!("{}.sqlite3",stable_path_fingerprint(codex_home)));
-            let mut sources = Vec::new();
-            if path.is_file() { sources.push(path.clone()); }
-            if legacy.is_file() && legacy != path { sources.push(legacy); }
-            let store = crate::core::business_store_route::exact_store_spec(&path)?;
-            drop(crate::core::business_store_route::open_store(
-                "exact", &store.source_identity, &store.logical_path, &sources,
-            )?);
-        }
+        prepare_exact_store_for_home(codex_home, &path)?;
         Self::open_at(codex_home,path)
     }
 
@@ -12103,7 +12113,20 @@ fn schema11_manifest_path(index_path: &Path) -> PathBuf {
 // such a receipt. Already-activated 0.9.8 namespaces keep their existing paths.
 fn active_schema11_paths(index_path: &Path) -> Result<(PathBuf, PathBuf, PathBuf), String> {
     #[cfg(not(test))]
-    let isolated = crate::core::business_store_route::preserves_legacy_exact_migration(index_path)?;
+    let isolated = {
+        use crate::core::business_store_route as route;
+        let mut isolated = route::preserves_legacy_exact_migration(index_path)?;
+        if !isolated && schema11_manifest_path(index_path).try_exists().map_err(|e| e.to_string())?
+            && !route::owns_exact_migration_artifact(&schema11_candidate_path(index_path))?
+            && !route::owns_exact_migration_artifact(&schema11_rollback_path(index_path))?
+        {
+            let (_, proof) = exact_legacy_recovery::runtime_source(index_path, route::exact_store_has_objects(index_path)?)?;
+            let proof = proof.ok_or("旧迁移凭据在核验时移走，已停止写入")?;
+            route::preserve_legacy_exact_migration(index_path, &[proof])?;
+            isolated = true;
+        }
+        isolated
+    };
     #[cfg(test)]
     let isolated = false;
     Ok(schema11_paths_for_namespace(index_path, isolated))
@@ -12116,6 +12139,7 @@ fn schema11_paths_for_namespace(index_path: &Path, isolated: bool) -> (PathBuf, 
 
 #[cfg(all(feature = "business-store-fixture", not(test)))]
 pub(super) fn verify_legacy_migration_fixture(home: &Path, path: &Path) -> Result<bool, String> {
+    prepare_exact_store_for_home(home, path)?;
     let paths = active_schema11_paths(path)?;
     // Run the same production reader preparation as the application, not the
     // cfg(test) standalone SQLite path. A current committed source needs no
@@ -14196,17 +14220,18 @@ fn schema11_finish_candidate_switch(
 ) -> Result<Schema11ValidatedStorage, String> {
     #[cfg(not(test))]
     {
-        if existing_regular_index(index_path)? && !existing_regular_index(rollback_path)? {
+        use crate::core::business_store_route as route;
+        if existing_regular_index(index_path)? && !route::owns_exact_migration_artifact(rollback_path)? {
             if !schema11_receipt_matches_current(index_path, &manifest.source_receipt)? {
                 return Err("活动索引在候选切换前发生变化；已保留候选库和清单".into());
             }
             crate::core::business_store_route::clone_exact_store(index_path, rollback_path)?;
             maybe_fail_schema11_migration_for_testing(10)?;
         }
-        if !existing_regular_index(rollback_path)? {
+        if !route::owns_exact_migration_artifact(rollback_path)? {
             return Err("schema 11 切换缺少受管回滚命名空间；已保留候选和清单".into());
         }
-        if existing_regular_index(candidate_path)? {
+        if route::owns_exact_migration_artifact(candidate_path)? {
             crate::core::business_store_route::replace_exact_store(candidate_path, index_path)?;
             schema11_sync_file(index_path)?;
             maybe_fail_schema11_migration_for_testing(11)?;

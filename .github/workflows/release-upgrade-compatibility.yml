@@ -228,7 +228,7 @@ jobs:
           $saved = @{}
           foreach ($key in $keys) { $saved[$key] = [Environment]::GetEnvironmentVariable($key) }
           try {
-            foreach ($case in @('retained','current-retained','switched','switching','rollback','missing','unknown','stray-wal','existing-a')) {
+            foreach ($case in @('retained','current-retained','switched','switching','rollback','missing','unknown','stray-wal','existing-a','late-retained','late-switching','late-rollback')) {
               $caseRoot = Join-Path $runtime "tokenbar-v097-runtime-manifest-$case"
               New-Item -ItemType Directory -Path $caseRoot | Out-Null
               Set-Content -LiteralPath (Join-Path $caseRoot '.tokenbar-v097-disposable') -Value '0219554ce444b0013987da7b82e3c2e891f4afdb' -NoNewline

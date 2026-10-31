@@ -435,3 +435,33 @@ fn a_namespace_schema11_paths_are_separate_from_legacy_default_siblings() {
         "the A-owned namespace paths must remain deterministic across retries"
     );
 }
+
+#[test]
+fn ordinary_open_preserves_registered_history_after_original_main_is_deleted() {
+    let temporary = tempfile::tempdir().unwrap();
+    let main = temporary.path().join("home.sqlite3");
+    write_database(&main, "committed");
+    let manifest = write_manifest(&main, Phase::Retained);
+    let before = fs::read(&manifest).unwrap();
+    fs::remove_file(&main).unwrap();
+    let (source, proof) = super::runtime_source(&main, true).unwrap();
+    assert!(source.is_none());
+    assert!(proof.is_some());
+    assert!(super::runtime_source(&main, false).is_err());
+    assert_eq!(fs::read(&manifest).unwrap(), before);
+}
+
+#[test]
+fn ordinary_open_for_new_home_resolves_switching_rollback_and_rejects_unknown_manifest() {
+    let temporary = tempfile::tempdir().unwrap();
+    let main = temporary.path().join("home.sqlite3");
+    let rollback = super::super::schema11_rollback_path(&main);
+    write_database(&rollback, "preserved source");
+    let manifest = write_manifest(&main, Phase::Switching);
+    let (source, _) = super::runtime_source(&main, false).unwrap();
+    assert_eq!(source, Some(rollback));
+    let mut object: Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+    object["manifest_version"] = json!(999);
+    fs::write(&manifest, serde_json::to_vec(&object).unwrap()).unwrap();
+    assert!(super::runtime_source(&main, true).is_err());
+}

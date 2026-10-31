@@ -704,6 +704,23 @@ pub(crate) fn preserves_legacy_exact_migration(path: &Path) -> Result<bool, Stri
     validate_legacy_exact_migration_receipt(&container, &store)
 }
 
+/// Registration alone is insufficient: a physical legacy candidate must not
+/// become a resumable A candidate simply because somebody opened its path.
+pub(crate) fn owns_exact_migration_artifact(path: &Path) -> Result<bool, String> {
+    let store = exact_store_spec(path)?;
+    let container = open_ready_container(&container_path()?)?;
+    Ok(container.is_registered(&store).map_err(|e| e.to_string())?
+        && container.has_imported_objects(&store).map_err(|e| e.to_string())?
+        && container.legacy_input_receipt(path).map_err(|e| e.to_string())?.is_none())
+}
+
+pub(crate) fn exact_store_has_objects(path: &Path) -> Result<bool, String> {
+    let store = exact_store_spec(path)?;
+    let container = open_ready_container(&container_path()?)?;
+    Ok(container.is_registered(&store).map_err(|e| e.to_string())?
+        && container.has_imported_objects(&store).map_err(|e| e.to_string())?)
+}
+
 fn validate_legacy_exact_migration_receipt(container: &Container, store: &StoreSpec) -> Result<bool, String> {
     let raw: Option<String> = container.connection().query_row(
         "SELECT value FROM tb_container_meta WHERE key=?1",
@@ -1158,6 +1175,30 @@ mod tests {
     use rusqlite::{params, OpenFlags};
     use std::fs;
     use uuid::Uuid;
+
+    #[test]
+    fn physical_candidates_and_empty_registration_are_not_owned_a_migration_artifacts() {
+        let fixture = Fixture::new();
+        let support = fixture.path("support");
+        fs::create_dir_all(&support).unwrap();
+        let _guard = app_paths::app_path_test_env_guard(&[("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR", support)]);
+        let raw = fixture.path("old.schema11-candidate");
+        seed_legacy(&raw);
+        let spec = exact_store_spec(&raw).unwrap();
+        drop(open_store_during_bootstrap("exact", &spec.source_identity, &spec.logical_path, &[raw.clone()]).unwrap());
+        fs::write(initialized_marker_path(&container_path().unwrap()), b"tokenbar-codex-ledger-v1\n").unwrap();
+        assert!(exact_store_has_objects(&raw).unwrap());
+        assert!(!owns_exact_migration_artifact(&raw).unwrap());
+        let empty = fixture.path("registered-only");
+        let container = Container::open_existing(container_path().unwrap()).unwrap();
+        container.register(&exact_store_spec(&empty).unwrap()).unwrap();
+        drop(container);
+        assert!(!exact_store_has_objects(&empty).unwrap());
+        assert!(!owns_exact_migration_artifact(&empty).unwrap());
+        let native = fixture.path("native-a-candidate");
+        clone_exact_store(&raw, &native).unwrap();
+        assert!(owns_exact_migration_artifact(&native).unwrap());
+    }
 
     #[test]
     fn legacy_migration_ownership_is_explicit_and_unknown_receipts_are_not_overwritten() {

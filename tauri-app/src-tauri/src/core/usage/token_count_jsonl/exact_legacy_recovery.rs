@@ -47,7 +47,10 @@ fn manifest_digest(path: &Path) -> Result<String, String> {
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
-fn resolve_manifest(main: &Path, manifest_path: &Path) -> Result<PathBuf, String> {
+fn validated_manifest(
+    main: &Path,
+    manifest_path: &Path,
+) -> Result<Schema11CandidateManifest, String> {
     let manifest = schema11_load_manifest(manifest_path)?;
     if manifest.manifest_version != SCHEMA11_CANDIDATE_MANIFEST_VERSION
         || sibling_identity(Path::new(&manifest.source_path))? != sibling_identity(main)?
@@ -61,6 +64,11 @@ fn resolve_manifest(main: &Path, manifest_path: &Path) -> Result<PathBuf, String
             manifest_path.display()
         ));
     }
+    Ok(manifest)
+}
+
+fn resolve_manifest(main: &Path, manifest_path: &Path) -> Result<PathBuf, String> {
+    let manifest = validated_manifest(main, manifest_path)?;
     // An old writer may have legitimately continued after a successful switch.
     // Import its current committed rows, not the older source_facts/candidate.
     if regular_file(main)? {
@@ -94,6 +102,46 @@ fn resolve_manifest(main: &Path, manifest_path: &Path) -> Result<PathBuf, String
         ));
     }
     Ok(rollback)
+}
+
+/// The initialized A ledger remains authoritative if its physical originals
+/// were later deleted. New Homes still require a committed source, never a
+/// candidate. This is shared by the ordinary (post-bootstrap) open path.
+pub(super) fn runtime_source(
+    main: &Path,
+    already_imported: bool,
+) -> Result<(Option<PathBuf>, Option<(PathBuf, String)>), String> {
+    let manifest = schema11_manifest_path(main);
+    if !regular_file(&manifest)? {
+        return Ok((
+            if regular_file(main)? {
+                Some(main.to_path_buf())
+            } else {
+                None
+            },
+            None,
+        ));
+    }
+    let proof = manifest_digest(&manifest)?;
+    validated_manifest(main, &manifest)?;
+    let source = if already_imported && !regular_file(main)? {
+        None
+    } else {
+        Some(resolve_manifest(main, &manifest)?)
+    };
+    Ok((source, Some((manifest, proof))))
+}
+
+pub(super) fn verify_manifests(manifests: &[(PathBuf, String)]) -> Result<(), String> {
+    for (path, expected) in manifests {
+        if manifest_digest(path)? != *expected {
+            return Err(format!(
+                "旧迁移清单在导入期间变化，保留旧账并停止激活：{}",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn add_source(group: &mut Inputs, source: PathBuf) -> Result<(), String> {
@@ -148,20 +196,9 @@ pub(super) fn bootstrap_at(
     // The existing importer verifies SQLite backups and source proofs; these
     // additional proofs prevent a changed receipt from completing activation.
     for (target, group) in groups {
-        let verify = || -> Result<(), String> {
-            for (path, expected) in &group.manifests {
-                if manifest_digest(path)? != *expected {
-                    return Err(format!(
-                        "旧迁移清单在导入期间变化，保留旧账并停止激活：{}",
-                        path.display()
-                    ));
-                }
-            }
-            Ok(())
-        };
-        verify()?;
+        verify_manifests(&group.manifests)?;
         import(&target, &group.sources, &group.manifests)?;
-        verify()?;
+        verify_manifests(&group.manifests)?;
     }
     Ok(())
 }

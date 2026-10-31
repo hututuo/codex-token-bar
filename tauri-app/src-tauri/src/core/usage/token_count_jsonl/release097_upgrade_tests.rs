@@ -548,6 +548,9 @@ fn run_legacy_manifest_probe(root: &Path, frozen: &Path, scenario: &str) -> Resu
         "manifest-unknown" => ("Retained", false, false),
         "manifest-stray-wal" => ("Switching", false, false),
         "manifest-existing-a" => ("Retained", true, true),
+        "manifest-late-retained" => ("Retained", true, true),
+        "manifest-late-switching" => ("Switching", true, true),
+        "manifest-late-rollback" => ("Switching", true, false),
         _ => return Err("Unknown manifest probe scenario".into()),
     };
     let stores = paths(frozen)?;
@@ -555,6 +558,21 @@ fn run_legacy_manifest_probe(root: &Path, frozen: &Path, scenario: &str) -> Resu
     let a = route::container_path()?;
     let marker = PathBuf::from(format!("{}.initialized", a.display()));
     require!(!a.exists() && !marker.exists(), "Probe refuses an existing A");
+    // Recreate the partial A left before 0.9.8 hit its unconditional guard.
+    // No initialized marker exists; the durable import journal must survive.
+    let partial = root.join("partial-before-exact.sqlite");
+    let db = checked!(Connection::open(&partial));
+    checked!(db.execute_batch("CREATE TABLE canary(id INTEGER PRIMARY KEY, tokens INTEGER NOT NULL); INSERT INTO canary VALUES(1,77);"));
+    drop(db);
+    drop(route::open_store_during_bootstrap("fixture-partial", "fixture", "fixture/partial", &[partial.clone()])?);
+    let coordinator = crate::core::business_startup::process_coordinator();
+    require!(coordinator.begin_initial(), "Fresh probe startup already claimed");
+    let late = scenario.starts_with("manifest-late-");
+    if late {
+        let initial = route::bootstrap();
+        coordinator.finish(initial.clone());
+        initial?;
+    }
     let main = if current { target.clone() } else {
         app_paths::tauri_usage_cache_dir().ok_or("No guarded old cache")?
             .join("exact-token-index").join(target.file_name().ok_or("No Exact filename")?)
@@ -567,7 +585,7 @@ fn run_legacy_manifest_probe(root: &Path, frozen: &Path, scenario: &str) -> Resu
     // A different candidate amount catches accidental candidate resurrection.
     checked!(fs::copy(frozen.join("exact/b.sqlite3"), &candidate));
     checked!(fs::copy(frozen.join("exact/a.sqlite3"), &rollback));
-    if matches!(scenario, "manifest-rollback" | "manifest-missing" | "manifest-stray-wal") {
+    if matches!(scenario, "manifest-rollback" | "manifest-missing" | "manifest-stray-wal" | "manifest-late-rollback") {
         checked!(fs::remove_file(&main));
     }
     let receipt = json!({
@@ -587,35 +605,31 @@ fn run_legacy_manifest_probe(root: &Path, frozen: &Path, scenario: &str) -> Resu
         .iter().filter(|p| p.is_file()).map(|p| Ok((p.to_path_buf(), sha(p)?)))
         .collect::<Result<_, String>>()?;
 
-    // Recreate the partial A left before 0.9.8 hit its unconditional guard.
-    // No initialized marker exists; the durable import journal must survive.
-    let partial = root.join("partial-before-exact.sqlite");
-    let db = checked!(Connection::open(&partial));
-    checked!(db.execute_batch("CREATE TABLE canary(id INTEGER PRIMARY KEY, tokens INTEGER NOT NULL); INSERT INTO canary VALUES(1,77);"));
-    drop(db);
-    drop(route::open_store_during_bootstrap("fixture-partial", "fixture", "fixture/partial", &[partial.clone()])?);
-    let coordinator = crate::core::business_startup::process_coordinator();
-    require!(coordinator.begin_initial(), "Fresh probe startup already claimed");
-    coordinator.finish(Err("simulated previous 0.9.8 legacy-manifest startup failure".into()));
-    coordinator.begin_retry()?;
-    let prepared = route::bootstrap();
-    coordinator.finish(prepared.clone());
+    let prepared = if late { Ok(()) } else {
+        coordinator.finish(Err("simulated previous 0.9.8 legacy-manifest startup failure".into()));
+        coordinator.begin_retry()?;
+        let prepared = route::bootstrap();
+        coordinator.finish(prepared.clone());
+        prepared
+    };
     require!(prepared.is_ok() == expect_ready, format!("Unexpected startup result: {prepared:?}"));
     require!(marker.is_file() == expect_ready, "Startup marker published in the wrong state");
     if expect_ready {
         if scenario == "manifest-existing-a" {
             // An already-activated 0.9.8 namespace must keep its own original
             // artifact paths; it was not imported with a physical receipt.
+            route::clone_exact_store(target, &rollback)?;
             checked!(fs::write(&manifest, checked!(serde_json::to_vec(&receipt))));
         }
+        let isolated = crate::core::usage::token_count_jsonl::verify_legacy_migration_fixture(home, target)?;
+        let expected_isolated = scenario != "manifest-existing-a" && (!late || current);
+        require!(isolated == expected_isolated, "A/legacy artifact ownership was not preserved");
         let spec = route::exact_store_spec(target)?;
         let exported = root.join("recovered-exact.sqlite");
         route::export_store_to_path(&spec.source_identity, "exact", &spec.logical_path, &exported)?;
         require!(checked!(Container::snapshot_digest_path(&exported)) ==
             checked!(Container::snapshot_digest_path(frozen.join("exact/a.sqlite3"))),
             "Schema, typed values, rows or usage changed during recovery");
-        let isolated = crate::core::usage::token_count_jsonl::verify_legacy_migration_fixture(home, target)?;
-        require!(isolated == (scenario != "manifest-existing-a"), "A/legacy artifact ownership was not preserved");
         route::bootstrap()?;
         route::export_store_to_path(&spec.source_identity, "exact", &spec.logical_path, &root.join("repeated-exact.sqlite"))?;
         require!(checked!(Container::snapshot_digest_path(root.join("repeated-exact.sqlite"))) ==
