@@ -1,0 +1,16 @@
+{
+  "version": "0.9.11",
+  "macos_build": "990",
+  "status": "preparing",
+  "source_sha": null,
+  "previous_release": "v0.9.10",
+  "integration_branch": "codex/fix-0910-recovery-metadata",
+  "tag": "v0.9.11",
+  "release_url": "https://github.com/hututuo/codex-token-bar/releases/tag/v0.9.11",
+  "ci_run_id": null,
+  "upgrade_run_id": null,
+  "build_run_id": null,
+  "signing_run_id": null,
+  "publish_run_id": null,
+  "assets": []
+}

@@ -268,6 +268,16 @@ fn start() -> Result<(), String> {
 
 #[cfg(not(test))]
 fn body_check(frozen: &Path, home: &Path) -> Result<(), String> {
+    body_check_with_b_initial_state(frozen, home, true)
+}
+
+#[cfg(not(test))]
+fn incident_0910_body_check(frozen: &Path, home: &Path) -> Result<(), String> {
+    body_check_with_b_initial_state(frozen, home, false)
+}
+
+#[cfg(not(test))]
+fn body_check_with_b_initial_state(frozen: &Path, home: &Path, existing_b_canary: bool) -> Result<(), String> {
     use crate::core::live_rate;
     let now =
         checked!(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)).as_secs_f64();
@@ -309,8 +319,12 @@ fn body_check(frozen: &Path, home: &Path) -> Result<(), String> {
         |row| row.get(0)
     ));
     require!(
-        sentinel == 1,
-        "Body migration erased an unrelated committed B module row"
+        sentinel == if existing_b_canary { 1 } else { 0 },
+        if existing_b_canary {
+            "Body migration erased an unrelated committed B module row"
+        } else {
+            "First B initialization unexpectedly created the pre-existing B canary"
+        }
     );
     require!(
         sha(&legacy_json)? == sha(&original)?,
@@ -538,6 +552,9 @@ pub fn run_production_probe(input: &Path, phase: &str) -> Result<Value, String> 
 /// database, path override fallback, or provider connection is used.
 #[cfg(not(test))]
 fn run_legacy_manifest_probe(root: &Path, frozen: &Path, scenario: &str) -> Result<Value, String> {
+    if let Some(stage) = scenario.strip_prefix("manifest-0910-combined-relocated-v13-pair-") {
+        return run_incident_0910_probe(root, frozen, stage);
+    }
     let (phase, expect_ready, current) = match scenario {
         "manifest-retained" => ("Retained", true, false),
         "manifest-current-retained" => ("Retained", true, true),
@@ -693,6 +710,653 @@ fn run_legacy_manifest_probe(root: &Path, frozen: &Path, scenario: &str) -> Resu
     Ok(json!({"status":"PASS","scenario":scenario,"startupReady":expect_ready,
         "actualPublicRelease":RELEASE_SHA,"schema13PublicRelease":if schema13_pair { Some("ba4c59060c240af703e42d288c303a56cb0259e3") } else { None },"originalFilesUnchanged":true,
         "candidateNotImported":true,"existingPartialAPreserved":true}))
+}
+
+#[cfg(not(test))]
+const INCIDENT_0910_SESSION_ID: &str = "019ff8b9-09e7-75c1-b9a5-14fe7b60065a";
+
+#[cfg(not(test))]
+const INCIDENT_0910_SCENARIO: &str = "manifest-0910-combined-relocated-v13-pair";
+
+#[cfg(not(test))]
+fn run_incident_0910_probe(root: &Path, frozen: &Path, stage: &str) -> Result<Value, String> {
+    match stage {
+        "prepare" => prepare_incident_0910_probe(root, frozen),
+        "resume" => resume_incident_0910_probe(root, frozen, false),
+        "reopen" => resume_incident_0910_probe(root, frozen, true),
+        _ => Err("Unknown 0.9.10 incident probe phase".into()),
+    }
+}
+
+#[cfg(not(test))]
+fn incident_0910_state_path(root: &Path) -> PathBuf {
+    root.join("incident-0910-combined-state.json")
+}
+
+#[cfg(not(test))]
+fn incident_0910_file_record(path: &Path) -> Result<Value, String> {
+    Ok(json!({ "path": path.to_string_lossy(), "sha256": sha(path)? }))
+}
+
+#[cfg(not(test))]
+fn incident_0910_check_files(root: &Path, state: &Value) -> Result<(), String> {
+    let records = state["immutableFiles"]
+        .as_array()
+        .ok_or("Combined incident fixture has no file evidence")?;
+    for record in records {
+        let path = PathBuf::from(record["path"].as_str().ok_or("Incident file has no path")?);
+        require!(path.starts_with(root), "Incident evidence escaped its isolated root");
+        require!(sha(&path)? == record["sha256"].as_str().ok_or("Incident file has no digest")?,
+            format!("A source or frozen artifact changed: {}", path.display()));
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn incident_0910_read_state(root: &Path) -> Result<Value, String> {
+    let state: Value = checked!(serde_json::from_slice(&checked!(fs::read(incident_0910_state_path(root)))));
+    require!(state["scenario"] == INCIDENT_0910_SCENARIO, "Wrong combined incident state file");
+    incident_0910_check_files(root, &state)?;
+    Ok(state)
+}
+
+#[cfg(not(test))]
+fn incident_0910_table_exists(connection: &Connection, table: &str) -> Result<bool, String> {
+    checked!(connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+        [table],
+        |row| row.get(0)
+    ))
+}
+
+#[cfg(not(test))]
+fn incident_0910_event_facts(connection: &Connection) -> Result<(i64, String), String> {
+    let mut statement = checked!(connection.prepare(
+        "SELECT id,source_id,ordinal,timestamp,tokens,input_tokens,cached_input_tokens,output_tokens,reasoning_output_tokens,model,user_prompt_start,user_prompt_end,assistant_response_start,assistant_response_end,accounting_kind,reported_total_tokens,token_source_offset,legacy_tokens FROM event_rows ORDER BY id"
+    ));
+    let rows = checked!(statement.query_map([], |row| Ok(json!([
+        row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?,
+        row.get::<_, i64>(3)?, row.get::<_, i64>(4)?, row.get::<_, i64>(5)?,
+        row.get::<_, i64>(6)?, row.get::<_, i64>(7)?, row.get::<_, i64>(8)?,
+        row.get::<_, Option<String>>(9)?, row.get::<_, Option<i64>>(10)?,
+        row.get::<_, Option<i64>>(11)?, row.get::<_, Option<i64>>(12)?,
+        row.get::<_, Option<i64>>(13)?, row.get::<_, i64>(14)?,
+        row.get::<_, Option<i64>>(15)?, row.get::<_, Option<i64>>(16)?,
+        row.get::<_, Option<i64>>(17)?
+    ]))));
+    let rows = rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|error| error.to_string())?;
+    let bytes = serde_json::to_vec(&rows).map_err(|error| error.to_string())?;
+    Ok((rows.len() as i64, format!("{:x}", Sha256::digest(bytes))))
+}
+
+#[cfg(not(test))]
+fn incident_0910_source_chunks(connection: &Connection, source_id: i64) -> Result<Vec<(i64, i64, Vec<u8>)>, String> {
+    require!(incident_0910_table_exists(connection, "source_chunks")?,
+        "Public schema13/14 fixture lacks persisted source_chunks");
+    let mut statement = checked!(connection.prepare(
+        "SELECT chunk_index,byte_count,sha256 FROM source_chunks WHERE source_id=?1 ORDER BY chunk_index"
+    ));
+    checked!(statement.query_map([source_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .map_err(|error| error.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| error.to_string()))
+}
+
+#[cfg(not(test))]
+fn incident_0910_source(connection: &Connection, session_id: &str) -> Result<(i64, String, String, bool), String> {
+    let mut statement = checked!(connection.prepare(
+        "SELECT source_id,path,session_id,is_explicit_subagent_fork FROM sources WHERE session_id=?1 ORDER BY source_id"
+    ));
+    let rows = checked!(statement.query_map([session_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get::<_, i64>(3)? != 0)))
+        .map_err(|error| error.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|error| error.to_string()));
+    require!(rows.len() == 1, "Public Exact pair does not have one matching source identity");
+    Ok(rows[0].clone())
+}
+
+#[cfg(not(test))]
+#[derive(Clone)]
+struct Incident0910Binding {
+    event_id: i64,
+    source_id: i64,
+    ordinal: i64,
+    timestamp: i64,
+    tokens: i64,
+    input_tokens: i64,
+    cached_input_tokens: i64,
+    output_tokens: i64,
+    reasoning_output_tokens: i64,
+    accounting_kind: i64,
+    raw_generation: i64,
+    raw_offset: Option<i64>,
+    fingerprint: Option<Vec<u8>>,
+    available: i64,
+}
+
+#[cfg(not(test))]
+fn incident_0910_first_binding(connection: &Connection, source_id: i64) -> Result<Incident0910Binding, String> {
+    require!(incident_0910_table_exists(connection, "usage_ledger_bindings")?,
+        "Public schema13/14 fixture lacks persisted per-event ledger bindings");
+    checked!(connection.query_row(
+        "SELECT e.id,e.source_id,e.ordinal,e.timestamp,e.tokens,e.input_tokens,e.cached_input_tokens,e.output_tokens,e.reasoning_output_tokens,e.accounting_kind,b.raw_generation,b.raw_offset,b.fingerprint,b.available FROM event_rows e JOIN usage_ledger_bindings b ON b.event_id=e.id AND b.source_id=e.source_id WHERE e.source_id=?1 ORDER BY e.ordinal LIMIT 1",
+        [source_id],
+        |row| Ok(Incident0910Binding {
+            event_id: row.get(0)?, source_id: row.get(1)?, ordinal: row.get(2)?,
+            timestamp: row.get(3)?, tokens: row.get(4)?, input_tokens: row.get(5)?,
+            cached_input_tokens: row.get(6)?, output_tokens: row.get(7)?,
+            reasoning_output_tokens: row.get(8)?, accounting_kind: row.get(9)?,
+            raw_generation: row.get(10)?, raw_offset: row.get(11)?,
+            fingerprint: row.get(12)?, available: row.get(13)?,
+        })
+    ))
+}
+
+#[cfg(not(test))]
+fn incident_0910_metadata(connection: &Connection, key: &str, value: &str) -> Result<(), String> {
+    checked!(connection.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES(?1,?2)", rusqlite::params![key, value]));
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn incident_0910_check_partial_canary(a: &Path) -> Result<(), String> {
+    let spec = checked!(StoreSpec::new("fixture-partial", "fixture", "fixture/partial"));
+    let store = checked!(checked!(Container::open_existing(a)).into_store_connection(&spec));
+    let tokens: i64 = checked!(store.query_row("SELECT tokens FROM canary WHERE id=1", [], |row| row.get(0)));
+    require!(tokens == 77, "The independent partial A canary was overwritten");
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn stage_incident_0910_exact_transition(old_path: &Path, current_path: &Path, home: &Path) -> Result<Value, String> {
+    let old = checked!(Connection::open(old_path));
+    let current = checked!(Connection::open(current_path));
+    let old_schema: String = checked!(old.query_row("SELECT value FROM metadata WHERE key='schema_version'", [], |row| row.get(0)));
+    let current_schema: String = checked!(current.query_row("SELECT value FROM metadata WHERE key='schema_version'", [], |row| row.get(0)));
+    require!(old_schema == "13" && current_schema == "14", "Incident requires the actual public schema13/14 pair");
+
+    let old_source = incident_0910_source(&old, INCIDENT_0910_SESSION_ID)?;
+    let current_source = incident_0910_source(&current, INCIDENT_0910_SESSION_ID)?;
+    let raw_path = home.join("sessions").join(format!("rollout-{INCIDENT_0910_SESSION_ID}.jsonl"));
+    require!(old_source.0 == current_source.0 && old_source.1 == current_source.1
+        && old_source.2 == current_source.2
+        && Path::new(&old_source.1).file_name() == raw_path.file_name(),
+        "Schema13/14 pair does not identify the same raw source, path, and session");
+    // The real public producer stores the fixture's original temporary path.
+    // This isolated copy owns its own Home path, so rebind both copies to the
+    // matching session file under this case root before the interrupted scan.
+    checked!(old.execute("UPDATE sources SET path=?1 WHERE source_id=?2", rusqlite::params![raw_path.to_string_lossy(), old_source.0]));
+    checked!(current.execute("UPDATE sources SET path=?1 WHERE source_id=?2", rusqlite::params![raw_path.to_string_lossy(), current_source.0]));
+    require!(!old_source.3 && !current_source.3, "Synthetic fork transition must begin from a non-fork source");
+
+    let old_chunks = incident_0910_source_chunks(&old, old_source.0)?;
+    let current_chunks = incident_0910_source_chunks(&current, current_source.0)?;
+    require!(!old_chunks.is_empty() && old_chunks == current_chunks, "Public schema13/14 source chunk prefixes differ");
+    let old_facts = incident_0910_event_facts(&old)?;
+    let current_facts = incident_0910_event_facts(&current)?;
+    require!(old_facts == current_facts && old_facts.0 >= 2, "Public schema13/14 event rows differ before incident transitions");
+
+    let old_binding = incident_0910_first_binding(&old, old_source.0)?;
+    let current_binding = incident_0910_first_binding(&current, current_source.0)?;
+    require!(old_binding.event_id == current_binding.event_id
+        && old_binding.source_id == current_binding.source_id
+        && old_binding.ordinal == current_binding.ordinal
+        && old_binding.timestamp == current_binding.timestamp
+        && old_binding.tokens == current_binding.tokens
+        && old_binding.input_tokens == current_binding.input_tokens
+        && old_binding.cached_input_tokens == current_binding.cached_input_tokens
+        && old_binding.output_tokens == current_binding.output_tokens
+        && old_binding.reasoning_output_tokens == current_binding.reasoning_output_tokens
+        && old_binding.accounting_kind == current_binding.accounting_kind
+        && old_binding.raw_offset == current_binding.raw_offset
+        && old_binding.available == current_binding.available,
+        "Public pair lacks one immutable, position-preserving per-event identity");
+    let fingerprint = current_binding.fingerprint.clone().ok_or("Public schema14 event has no stored per-event fingerprint")?;
+    let old_membership: i64 = checked!(old.query_row(
+        "SELECT COUNT(*) FROM source_fingerprints WHERE source_id=?1 AND fingerprint=?2",
+        rusqlite::params![old_source.0, &fingerprint], |row| row.get(0)));
+    let current_membership: i64 = checked!(current.query_row(
+        "SELECT COUNT(*) FROM source_fingerprints WHERE source_id=?1 AND fingerprint=?2",
+        rusqlite::params![current_source.0, &fingerprint], |row| row.get(0)));
+    require!(old_membership == 1 && current_membership == 1, "Known fingerprint is not retained in both same-source fingerprint sets");
+    let semantic_matches: i64 = checked!(old.query_row(
+        "SELECT COUNT(*) FROM event_rows WHERE source_id=?1 AND timestamp=?2 AND tokens=?3 AND input_tokens=?4 AND cached_input_tokens=?5 AND output_tokens=?6 AND reasoning_output_tokens=?7 AND accounting_kind=?8",
+        rusqlite::params![old_source.0, old_binding.timestamp, old_binding.tokens, old_binding.input_tokens,
+            old_binding.cached_input_tokens, old_binding.output_tokens, old_binding.reasoning_output_tokens,
+            old_binding.accounting_kind], |row| row.get(0)));
+    let current_semantic_matches: i64 = checked!(current.query_row(
+        "SELECT COUNT(*) FROM event_rows WHERE source_id=?1 AND timestamp=?2 AND tokens=?3 AND input_tokens=?4 AND cached_input_tokens=?5 AND output_tokens=?6 AND reasoning_output_tokens=?7 AND accounting_kind=?8",
+        rusqlite::params![current_source.0, current_binding.timestamp, current_binding.tokens, current_binding.input_tokens,
+            current_binding.cached_input_tokens, current_binding.output_tokens, current_binding.reasoning_output_tokens,
+            current_binding.accounting_kind], |row| row.get(0)));
+    require!(semantic_matches == 1 && current_semantic_matches == 1, "Old/current event numeric identity is not unique within the source");
+    let old_generation: i64 = checked!(old.query_row("SELECT raw_generation FROM usage_ledger_sources WHERE source_id=?1", [old_source.0], |row| row.get(0)));
+    let current_generation: i64 = checked!(current.query_row("SELECT raw_generation FROM usage_ledger_sources WHERE source_id=?1", [current_source.0], |row| row.get(0)));
+    require!(old_binding.raw_generation == old_generation && current_binding.raw_generation == current_generation,
+        "Per-event binding generation does not match its source generation");
+    let next_generation = old_generation
+        .checked_add(1)
+        .ok_or("Incident raw generation overflow")?
+        .max(current_generation);
+
+    incident_0910_metadata(&old, "parser_repair_verify_pending", "paginated-owned-turn-v6")?;
+    incident_0910_metadata(&old, "fork_replay_boundary_revision", "paginated-owned-turn-v6")?;
+    incident_0910_metadata(&current, "fork_replay_boundary_revision", "paginated-owned-turn-v6")?;
+    checked!(current.execute("DELETE FROM metadata WHERE key='parser_repair_verify_pending'", []));
+    for (key, old_value, new_value) in [
+        ("state_size", "700", "701"),
+        ("state_modified_ns", "1700000000000000000", "1700000000000000001"),
+        ("storage_maintenance_last_checked_unix", "1700000000", "1700086400"),
+        ("storage_maintenance_last_compacted_unix", "1700000000", "1700086400"),
+    ] {
+        incident_0910_metadata(&old, key, old_value)?;
+        incident_0910_metadata(&current, key, new_value)?;
+    }
+    checked!(old.execute("UPDATE sources SET is_explicit_subagent_fork=1 WHERE source_id=?1", [old_source.0]));
+    checked!(current.execute("UPDATE sources SET is_explicit_subagent_fork=0 WHERE source_id=?1", [current_source.0]));
+    checked!(old.execute("UPDATE usage_ledger_bindings SET fingerprint=NULL WHERE event_id=?1 AND source_id=?2",
+        rusqlite::params![old_binding.event_id, old_binding.source_id]));
+    checked!(current.execute("UPDATE usage_ledger_sources SET raw_generation=?1 WHERE source_id=?2",
+        rusqlite::params![next_generation, current_source.0]));
+    checked!(current.execute("UPDATE usage_ledger_bindings SET raw_generation=?1 WHERE source_id=?2",
+        rusqlite::params![next_generation, current_source.0]));
+    checked!(current.execute("UPDATE usage_ledger_bindings SET fingerprint=?1 WHERE event_id=?2 AND source_id=?3",
+        rusqlite::params![&fingerprint, current_binding.event_id, current_binding.source_id]));
+    let unique_mapping: i64 = checked!(current.query_row(
+        "SELECT COUNT(*) FROM usage_ledger_bindings WHERE source_id=?1 AND fingerprint=?2 AND available=1",
+        rusqlite::params![current_source.0, &fingerprint], |row| row.get(0)));
+    require!(unique_mapping == 1, "Current known fingerprint does not map to exactly one available event");
+    require!(incident_0910_event_facts(&old)? == old_facts && incident_0910_event_facts(&current)? == current_facts,
+        "Staging changed old published event rows");
+    require!(incident_0910_source_chunks(&old, old_source.0)? == old_chunks
+        && incident_0910_source_chunks(&current, current_source.0)? == current_chunks,
+        "Staging changed persisted source chunk evidence");
+    drop(old);
+    drop(current);
+    Ok(json!({
+        "sessionId": INCIDENT_0910_SESSION_ID,
+        "sourceId": old_source.0,
+        "sourcePath": old_source.1,
+        "chunkCount": old_chunks.len(),
+        "eventCount": old_facts.0,
+        "eventDigest": old_facts.1,
+        "oldGeneration": old_generation,
+        "currentGeneration": next_generation,
+        "unknownOldFingerprint": true,
+        "oldFingerprintMembership": old_membership,
+        "uniqueCurrentFingerprintMapping": unique_mapping,
+        "rawOffsetWasNull": old_binding.raw_offset.is_none(),
+        "forkTransition": "1-to-0",
+        "parserRepairPendingRemoved": true
+    }))
+}
+
+#[cfg(not(test))]
+fn prepare_incident_0910_probe(root: &Path, frozen: &Path) -> Result<Value, String> {
+    let inputs13 = root.join("inputs13");
+    let provenance: Value = checked!(serde_json::from_slice(&checked!(fs::read(inputs13.join("provenance.json")))));
+    let pair_receipt: Value = checked!(serde_json::from_slice(&checked!(fs::read(inputs13.join("fixture-result.json")))));
+    require!(provenance["release_sha"] == "ba4c59060c240af703e42d288c303a56cb0259e3"
+        && provenance["synthetic"] == true && pair_receipt["verified"] == true
+        && pair_receipt["release_sha"] == provenance["release_sha"]
+        && pair_receipt["upgrade_release_sha"] == RELEASE_SHA,
+        "Combined incident requires verified public v0.9.3/v0.9.7 schema13/14 inputs");
+    let original13 = inputs13.join("exact/a.sqlite3");
+    let upgraded14 = inputs13.join("exact/a-upgraded.sqlite3");
+    require!(pair_receipt["artifacts"]["exact/a.sqlite3"]["sha256"] == sha(&original13)?, "Public schema13 evidence changed");
+    require!(pair_receipt["artifacts"]["exact/a-upgraded.sqlite3"]["sha256"] == sha(&upgraded14)?, "Public schema14 evidence changed");
+
+    let stores = paths(frozen)?;
+    let (home, target) = &stores[0];
+    let a = route::container_path()?;
+    let marker = PathBuf::from(format!("{}.initialized", a.display()));
+    let b = app_paths::multi_client_usage_database_path().ok_or("No isolated B")?;
+    require!(!a.exists() && !marker.exists() && !b.exists(), "Combined incident requires fresh A, marker, and B");
+    let prior_cache = app_paths::tauri_usage_cache_dir().ok_or("No guarded old cache")?;
+    let old = prior_cache.join("exact-token-index").join(target.file_name().ok_or("No old Exact filename")?);
+    let main = target.clone();
+    for path in [&old, &main] {
+        require!(!path.exists(), "Refusing an existing combined incident Exact source");
+        checked!(fs::create_dir_all(path.parent().ok_or("No Exact parent")?));
+    }
+    checked!(fs::copy(&original13, &old));
+    checked!(fs::copy(&upgraded14, &main));
+
+    let candidate = PathBuf::from(format!("{}.schema11-candidate", main.display()));
+    let rollback = PathBuf::from(format!("{}.schema11-rollback", main.display()));
+    let manifest = PathBuf::from(format!("{}.schema11-migration.json", main.display()));
+    checked!(fs::copy(frozen.join("exact/b.sqlite3"), &candidate));
+    checked!(fs::copy(frozen.join("exact/a.sqlite3"), &rollback));
+    let source_receipt = json!({
+        "manifest_version": 1,
+        "phase": "Retained",
+        "source_path": main.to_string_lossy(),
+        "candidate_path": candidate.to_string_lossy(),
+        "rollback_path": rollback.to_string_lossy(),
+        "source_receipt": {"schema_version":9,"revision":null,"dashboard_revision":null,
+            "published_generation":1,"building_generation":null,
+            "database":{"size":checked!(fs::metadata(&rollback)).len(),"modified_ns":"0"},"wal":null}
+    });
+    checked!(fs::write(&manifest, checked!(serde_json::to_vec(&source_receipt))));
+    let retention = json!({
+        "sourcePath": old.to_string_lossy(),
+        "rollbackPath": format!("{}.schema11-rollback", old.display()),
+        "manifestPath": format!("{}.schema11-migration.json", old.display()),
+        "sourceSchema": 13,
+        "targetSchema": 13,
+        "status": "copied"
+    });
+    {
+        let database = checked!(Connection::open(&main));
+        checked!(database.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('release_upgrade_retention_v1',?1)", [retention.to_string()]));
+    }
+    let exact_transition = stage_incident_0910_exact_transition(&old, &main, home)?;
+
+    let partial = root.join("partial-before-exact.sqlite");
+    require!(!partial.exists(), "Refusing an existing partial A fixture");
+    {
+        let database = checked!(Connection::open(&partial));
+        checked!(database.execute_batch("CREATE TABLE canary(id INTEGER PRIMARY KEY, tokens INTEGER NOT NULL); INSERT INTO canary VALUES(1,77);"));
+    }
+    drop(route::open_store_during_bootstrap("fixture-partial", "fixture", "fixture/partial", std::slice::from_ref(&partial))?);
+    let exact_spec = route::exact_store_spec(target)?;
+    checked!(checked!(Container::open_existing(&a)).register(&exact_spec));
+
+    let quota = app_paths::quota_history_database_path().ok_or("No isolated quota path")?;
+    require!(!quota.exists(), "Refusing an existing quota source in the incident root");
+    checked!(fs::copy(frozen.join("support/quota-history.sqlite"), &quota));
+    let last_compacted_before: String;
+    {
+        let database = checked!(Connection::open(&quota));
+        checked!(database.execute("UPDATE quota_history_maintenance SET value='3' WHERE key='policy_version'", []));
+        last_compacted_before = checked!(database.query_row(
+            "SELECT value FROM quota_history_maintenance WHERE key='last_compacted_at'", [], |row| row.get(0)));
+        checked!(database.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;"));
+    }
+    let quota_identity = route::source_identity("quota_history_legacy", &quota)?;
+    let quota_logical = format!("legacy/quota-history/{quota_identity}");
+    let quota_spec = checked!(StoreSpec::new("quota_history_legacy", &quota_identity, &quota_logical));
+    let coordinator = crate::core::business_startup::process_coordinator();
+    require!(coordinator.begin_initial(), "Combined incident preparation already claimed startup");
+    drop(route::open_store_during_bootstrap("quota_history_legacy", &quota_identity, &quota_logical, std::slice::from_ref(&quota))?);
+
+    let container = checked!(Container::open_existing(&a));
+    let journal_key = format!("migration_pending_store_v1:{}", quota_spec.id);
+    let journal_text: String = checked!(container.connection().query_row("SELECT value FROM tb_container_meta WHERE key=?1", [&journal_key], |row| row.get(0)));
+    let journal: Value = checked!(serde_json::from_str(&journal_text));
+    require!(journal["version"] == 2 && journal["bootstrap"] == true
+        && journal["snapshots"].as_array().is_some_and(|items| items.len() == 1),
+        "Initial quota import did not persist its bootstrap v2 snapshot journal");
+    let snapshot = &journal["snapshots"][0];
+    let quota_backup = PathBuf::from(snapshot["backup"].as_str().ok_or("Quota journal has no frozen backup")?);
+    let original_snapshot_digest = snapshot["digest"].as_str().ok_or("Quota journal has no digest")?.to_owned();
+    require!(Container::snapshot_digest_path(&quota_backup).map_err(|error| error.to_string())? == original_snapshot_digest,
+        "Quota journal backup does not match its original source digest");
+    let legacy_receipt = container.legacy_input_receipt(&quota).map_err(|error| error.to_string())?
+        .ok_or("Quota import receipt was not persisted")?;
+    require!(legacy_receipt.store_id == quota_spec.id && legacy_receipt.module == "quota_history_legacy"
+        && legacy_receipt.source_digest == original_snapshot_digest
+        && PathBuf::from(&legacy_receipt.backup_path) == quota_backup,
+        "Quota import receipt does not bind the interrupted input and frozen backup");
+    let public_v1_journal = json!({
+        "sources": [quota.to_string_lossy()],
+        "bootstrap": true,
+        "replace_uncommitted": true
+    });
+    checked!(container.connection().execute(
+        "UPDATE tb_container_meta SET value=?1 WHERE key=?2",
+        rusqlite::params![public_v1_journal.to_string(), journal_key]
+    ));
+    let persisted_v1: String = checked!(container.connection().query_row(
+        "SELECT value FROM tb_container_meta WHERE key=?1", [&journal_key], |row| row.get(0)
+    ));
+    let persisted_v1: Value = checked!(serde_json::from_str(&persisted_v1));
+    require!(persisted_v1.get("version").is_none() && persisted_v1.get("snapshots").is_none()
+        && persisted_v1["sources"].as_array().is_some_and(|items| items.len() == 1)
+        && persisted_v1["sources"][0] == quota.to_string_lossy().as_ref()
+        && persisted_v1["bootstrap"] == true && persisted_v1["replace_uncommitted"] == true,
+        "Interrupted fixture did not retain the public v1 path-only journal shape");
+    let imported_count: i64 = checked!(container.connection().query_row(
+        &format!("SELECT COUNT(*) FROM {}quota_snapshots", quota_spec.prefix), [], |row| row.get(0)));
+    let imported_id: i64 = checked!(container.connection().query_row(
+        &format!("SELECT id FROM {}quota_snapshots", quota_spec.prefix), [], |row| row.get(0)));
+    require!(imported_count == 1 && imported_id == 42, "Partial A did not retain the original quota row before interruption");
+    drop(container);
+
+    let advanced_at = last_compacted_before.parse::<f64>().map_err(|error| format!("Invalid quota maintenance timestamp: {error}"))? + 86_400.0;
+    let appended_id: i64;
+    {
+        let database = checked!(Connection::open(&quota));
+        let observed_at = time::OffsetDateTime::now_utc().unix_timestamp() as f64;
+        checked!(database.execute("INSERT INTO quota_snapshots(created_at,account_key,status) VALUES(?1,'incident-0910-appended','ok')", [observed_at]));
+        checked!(database.execute("UPDATE quota_history_maintenance SET value=?1 WHERE key='last_compacted_at'", [advanced_at.to_string()]));
+        checked!(database.execute("UPDATE quota_history_maintenance SET value='3' WHERE key='policy_version'", []));
+        appended_id = checked!(database.query_row("SELECT MAX(id) FROM quota_snapshots", [], |row| row.get(0)));
+        checked!(database.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;"));
+    }
+    require!(appended_id > 12345, "Quota observation did not append after the released sequence");
+    let changed_quota_digest = Container::snapshot_digest_path(&quota).map_err(|error| error.to_string())?;
+    require!(changed_quota_digest != original_snapshot_digest, "Quota append and maintenance advance did not change the retry snapshot");
+
+    let raw_path = home.join("sessions").join(format!("rollout-{INCIDENT_0910_SESSION_ID}.jsonl"));
+    let old_raw_bytes = checked!(fs::read(&raw_path));
+    let header: Value = checked!(serde_json::from_slice(old_raw_bytes.split(|byte| *byte == b'\n').next().ok_or("Session header is absent")?));
+    require!(header["type"] == "session_meta" && header["payload"]["id"] == INCIDENT_0910_SESSION_ID
+        && header["payload"]["history_mode"] == "paginated"
+        && header["payload"]["forked_from_id"].as_str().unwrap_or("").is_empty(),
+        "Incident raw header does not prove its matching paginated non-fork session");
+    let header_timestamp = header["timestamp"].as_str().ok_or("Session header has no RFC3339 timestamp")?;
+    time::OffsetDateTime::parse(header_timestamp, &time::format_description::well_known::Rfc3339)
+        .map_err(|error| format!("Session header timestamp is not RFC3339: {error}"))?;
+    let appended_timestamp = (time::OffsetDateTime::now_utc() + time::Duration::seconds(10))
+        .format(&time::format_description::well_known::Rfc3339).map_err(|error| error.to_string())?;
+    let usage = json!({"input_tokens":5,"output_tokens":2,"total_tokens":7});
+    let line = json!({"timestamp":appended_timestamp,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":usage,"last_token_usage":usage}}}).to_string() + "\n";
+    {
+        use std::io::Write as _;
+        let mut file = checked!(fs::OpenOptions::new().append(true).open(&raw_path));
+        checked!(file.write_all(line.as_bytes()));
+        checked!(file.sync_all());
+    }
+    let raw_after = checked!(fs::read(&raw_path));
+    require!(raw_after.starts_with(&old_raw_bytes), "Synthetic usage append changed the stored raw source prefix");
+
+    let body_scope = format!("{}\n{}", home.to_string_lossy(), home.to_string_lossy());
+    let legacy_body = quota.with_file_name(format!("observed-speed-{}.json", fnv(&body_scope)));
+    checked!(fs::copy(frozen.join("support/observed-speed-release097.json"), &legacy_body));
+    require!(!b.exists(), "B was initialized before its first production use");
+    let source_count: i64 = checked!(Connection::open(&quota).and_then(|database| database.query_row("SELECT COUNT(*) FROM quota_snapshots", [], |row| row.get(0))));
+    require!(source_count == 2, "Quota source does not contain one appended observation");
+    let marker = PathBuf::from(format!("{}.initialized", a.display()));
+    require!(!marker.exists(), "Interrupted quota import published the ready marker");
+    let interrupted = coordinator.finish(Err("simulated process interruption after committed quota import, before Exact activation".into()));
+    require!(interrupted.phase == crate::core::business_startup::BusinessStartupPhase::Error
+        && coordinator.ensure_ready().is_err() && !marker.exists(),
+        "Interrupted import exposed startup readiness before Exact activation");
+
+    let mut records = Vec::new();
+    for path in [
+        &original13, &upgraded14, &frozen.join("exact/a.sqlite3"), &frozen.join("exact/b.sqlite3"),
+        &frozen.join("support/quota-history.sqlite"), &frozen.join("support/observed-speed-release097.json"),
+        &old, &main, &candidate, &rollback, &manifest, &quota, &raw_path, &legacy_body, &quota_backup,
+    ] {
+        records.push(incident_0910_file_record(path)?);
+    }
+    let state = json!({
+        "scenario": INCIDENT_0910_SCENARIO,
+        "home": home.to_string_lossy(), "a": a.to_string_lossy(), "marker": marker.to_string_lossy(),
+        "b": b.to_string_lossy(), "quota": quota.to_string_lossy(), "quotaIdentity": quota_identity,
+        "quotaLogicalPath": quota_logical, "quotaStoreId": quota_spec.id,
+        "quotaBackup": quota_backup.to_string_lossy(), "quotaBackupSha256": sha(&quota_backup)?,
+        "quotaInitialSnapshotDigest": original_snapshot_digest, "quotaChangedSnapshotDigest": changed_quota_digest,
+        "quotaExpectedLastCompactedAt": advanced_at.to_string(), "quotaAppendedId": appended_id,
+        "rawPath": raw_path.to_string_lossy(), "legacyBody": legacy_body.to_string_lossy(),
+        "oldExact": old.to_string_lossy(), "currentExact": main.to_string_lossy(),
+        "exactTransition": exact_transition.clone(), "immutableFiles": records, "syntheticTransitionOnPublicPair": true
+    });
+    checked!(fs::write(incident_0910_state_path(root), checked!(serde_json::to_vec_pretty(&state))));
+    Ok(json!({"status":"PASS","scenario":INCIDENT_0910_SCENARIO,"phase":"prepare","startupReady":false,
+        "publicV1PathOnlyJournalRestored":true,"quotaReceiptAndFrozenBackupRetained":true,
+        "quotaObservationAppended":true,"exactTransition":exact_transition,
+        "rawPrefixPreserved":true,"frozenEvidenceRetained":true}))
+}
+
+#[cfg(not(test))]
+fn incident_0910_check_quota(state: &Value) -> Result<(), String> {
+    let quota = PathBuf::from(state["quota"].as_str().ok_or("Incident state has no quota source")?);
+    let identity = state["quotaIdentity"].as_str().ok_or("Incident state has no quota identity")?;
+    let logical = state["quotaLogicalPath"].as_str().ok_or("Incident state has no quota logical path")?;
+    let active = route::open_store("quota_history_legacy", identity, logical, &[])?;
+    let mut statement = checked!(active.prepare("SELECT id FROM quota_snapshots ORDER BY id"));
+    let ids = checked!(statement.query_map([], |row| row.get(0))
+        .map_err(|error| error.to_string())?
+        .collect::<rusqlite::Result<Vec<i64>>>()
+        .map_err(|error| error.to_string()));
+    require!(ids == [42, state["quotaAppendedId"].as_i64().ok_or("Incident state has no appended quota id")?],
+        "Retry lost, rewrote, or duplicated quota observations");
+    let (policy, compacted): (String, String) = checked!(active.query_row(
+        "SELECT (SELECT value FROM quota_history_maintenance WHERE key='policy_version'),(SELECT value FROM quota_history_maintenance WHERE key='last_compacted_at')",
+        [], |row| Ok((row.get(0)?, row.get(1)?))));
+    require!(policy == "3" && compacted == state["quotaExpectedLastCompactedAt"].as_str().ok_or("Incident state has no maintenance timestamp")?,
+        "Retry failed to preserve policy3 maintenance metadata");
+    let source_digest = Container::snapshot_digest_path(&quota).map_err(|error| error.to_string())?;
+    let container = checked!(Container::open_existing(route::container_path()?));
+    let receipt = container.legacy_input_receipt(&quota).map_err(|error| error.to_string())?
+        .ok_or("Ready A has no quota source receipt")?;
+    require!(receipt.source_digest == source_digest && !receipt.retired, "Ready quota receipt is stale or retired");
+    require!(PathBuf::from(&receipt.backup_path).is_file(), "Ready quota receipt lost its frozen backup");
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn incident_0910_check_exact(root: &Path, state: &Value, export_label: &str) -> Result<(), String> {
+    use crate::core::usage::token_count_jsonl as token;
+    let home = PathBuf::from(state["home"].as_str().ok_or("Incident state has no Home")?);
+    let current = PathBuf::from(state["currentExact"].as_str().ok_or("Incident state has no current Exact")?);
+    require!(token::dashboard_snapshot(&home)?.stats.total_tokens == 162,
+        "Interrupted Exact recovery did not include the appended 7-token observation exactly once");
+    require!(token::dashboard_snapshot(&home)?.stats.total_tokens == 162,
+        "Repeated Exact refresh replayed the appended observation");
+    require!(token::verify_legacy_migration_fixture(&home, &current)?,
+        "Public schema13/14 Exact sources were not consumed by A");
+    let spec = route::exact_store_spec(&current)?;
+    let exported = root.join(format!("incident-0910-recovered-exact-{export_label}.sqlite3"));
+    route::export_store_to_path(&spec.source_identity, "exact", &spec.logical_path, &exported)?;
+    let database = read_only(&exported)?;
+    let (count, total): (i64, i64) = checked!(database.query_row(
+        "SELECT COUNT(*),COALESCE(SUM(tokens),0) FROM event_rows", [],
+        |row| Ok((row.get(0)?, row.get(1)?))));
+    let expected_count = state["exactTransition"]["eventCount"].as_i64().ok_or("Incident state has no original Exact event count")? + 1;
+    require!(count == expected_count && total == 162,
+        "Recovered Exact rows do not preserve all old events plus exactly one new observation");
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn resume_incident_0910_probe(root: &Path, frozen: &Path, reopen: bool) -> Result<Value, String> {
+    let state = incident_0910_read_state(root)?;
+    let a = PathBuf::from(state["a"].as_str().ok_or("Incident state has no A")?);
+    let marker = PathBuf::from(state["marker"].as_str().ok_or("Incident state has no ready marker")?);
+    require!(a.starts_with(root) && marker.starts_with(root), "Incident A path escaped its isolated root");
+    if reopen {
+        require!(marker.is_file(), "Repeated startup began before the first complete migration");
+        start()?;
+        require!(crate::core::business_startup::process_coordinator().snapshot().phase
+            == crate::core::business_startup::BusinessStartupPhase::Ready,
+            "Repeated production startup did not reach ready");
+    } else {
+        require!(a.is_file() && !marker.exists(), "Resume did not start from an interrupted, unready A");
+        let quota = PathBuf::from(state["quota"].as_str().ok_or("Incident state has no quota source")?);
+        let quota_spec = checked!(StoreSpec::new(
+            "quota_history_legacy",
+            state["quotaIdentity"].as_str().ok_or("Incident state has no quota identity")?,
+            state["quotaLogicalPath"].as_str().ok_or("Incident state has no quota logical path")?
+        ));
+        let container = checked!(Container::open_existing(&a));
+        let journal: String = checked!(container.connection().query_row(
+            "SELECT value FROM tb_container_meta WHERE key=?1",
+            [format!("migration_pending_store_v1:{}", quota_spec.id)], |row| row.get(0)));
+        let journal: Value = checked!(serde_json::from_str(&journal));
+        require!(journal.get("version").map_or(true, |version| version.as_i64() == Some(1))
+            && journal.get("snapshots").is_none()
+            && journal["sources"].as_array().is_some_and(|items| items.len() == 1)
+            && journal["sources"][0] == quota.to_string_lossy().as_ref()
+            && journal["bootstrap"] == true && journal["replace_uncommitted"] == true,
+            "Retry did not begin from the persisted public v1 path-only journal");
+        require!(Container::snapshot_digest_path(&quota).map_err(|error| error.to_string())?
+            == state["quotaChangedSnapshotDigest"].as_str().ok_or("Incident state has no changed quota digest")?,
+            "Quota source changed after the interrupted fixture was frozen");
+        let backup = PathBuf::from(state["quotaBackup"].as_str().ok_or("Incident state has no quota backup")?);
+        require!(sha(&backup)? == state["quotaBackupSha256"].as_str().ok_or("Incident state has no quota backup hash")?,
+            "Interrupted import backup was modified before retry");
+        drop(container);
+        incident_0910_check_partial_canary(&a)?;
+        let coordinator = crate::core::business_startup::process_coordinator();
+        require!(coordinator.ensure_ready().is_err(), "Interrupted process became ready before retry began");
+        require!(coordinator.begin_initial(), "Combined incident resume already claimed startup");
+        let result = route::bootstrap();
+        let startup = coordinator.finish(result.clone());
+        result?;
+        require!(startup.phase == crate::core::business_startup::BusinessStartupPhase::Ready
+            && coordinator.ensure_ready().is_ok() && marker.is_file(),
+            "A became ready before the complete quota and Exact recovery finished");
+
+        let resumed = checked!(Container::open_existing(&a));
+        let v2_text: String = checked!(resumed.connection().query_row(
+            "SELECT value FROM tb_container_meta WHERE key=?1",
+            [format!("migration_pending_store_v1:{}", state["quotaStoreId"].as_str().ok_or("Incident state has no quota store id")?)],
+            |row| row.get(0)
+        ));
+        let v2: Value = checked!(serde_json::from_str(&v2_text));
+        require!(v2["version"] == 2 && v2["bootstrap"] == true
+            && v2["snapshots"].as_array().is_some_and(|items| items.len() == 1)
+            && v2["snapshots"][0]["digest"] == state["quotaChangedSnapshotDigest"],
+            "Production retry did not upgrade the receipt-bound v1 journal to its current v2 snapshot");
+        drop(resumed);
+
+        let b = app_paths::multi_client_usage_database_path().ok_or("No isolated B")?;
+        require!(!b.exists(), "B was unexpectedly opened before the combined incident resume");
+        let home = PathBuf::from(state["home"].as_str().ok_or("Incident state has no Home")?);
+        incident_0910_body_check(frozen, &home)?;
+        require!(b.is_file(), "The first production Body import did not initialize B");
+        let activity = crate::core::multi_client_usage::open_activity_module_connection()?;
+        checked!(activity.execute("INSERT INTO activity_speed_samples(source_identity,id,display_mode,estimator_id,estimator_version,metric_kind,client,model,started_at,ended_at,output_rate,covered_seconds,weighted_output) VALUES('incident-0910','incident-0910-b-canary','model','fixture','1','output','codex','gpt-6.1-sol',1800000000,1800000010,12,10,120)", []));
+        drop(activity);
+        incident_0910_check_quota(&state)?;
+        incident_0910_check_exact(root, &state, "resume-first")?;
+        incident_0910_check_partial_canary(&a)?;
+        route::bootstrap()?;
+        incident_0910_check_exact(root, &state, "resume-repeat")?;
+        incident_0910_check_quota(&state)?;
+        incident_0910_check_files(root, &state)?;
+        require!(sha(&backup)? == state["quotaBackupSha256"].as_str().ok_or("Incident state has no quota backup hash")?,
+            "Successful retry discarded or rewrote the first frozen quota backup");
+        return Ok(json!({"status":"PASS","scenario":INCIDENT_0910_SCENARIO,"phase":"resume",
+            "startupReady":true,"legacyV1JournalUpgradedToV2":true,
+            "quotaObservationsExactlyOnce":true,"exactTotalTokens":162,
+            "partialACanaryPreserved":true,"bFirstInitialization":true,"frozenEvidenceRetained":true}));
+    }
+
+    require!(marker.is_file(), "Ready marker disappeared on repeated startup");
+    incident_0910_check_partial_canary(&a)?;
+    let b = app_paths::multi_client_usage_database_path().ok_or("No isolated B")?;
+    require!(b.is_file(), "B was not initialized by the first completed startup");
+    let activity = crate::core::multi_client_usage::open_activity_module_connection()?;
+    let sentinel: i64 = checked!(activity.query_row(
+        "SELECT COUNT(*) FROM activity_speed_samples WHERE id='incident-0910-b-canary'", [], |row| row.get(0)));
+    require!(sentinel == 1, "Repeated startup erased or duplicated B's independent canary");
+    drop(activity);
+    let home = PathBuf::from(state["home"].as_str().ok_or("Incident state has no Home")?);
+    incident_0910_body_check(frozen, &home)?;
+    incident_0910_check_quota(&state)?;
+    incident_0910_check_exact(root, &state, "reopen")?;
+    incident_0910_check_files(root, &state)?;
+    let backup = PathBuf::from(state["quotaBackup"].as_str().ok_or("Incident state has no quota backup")?);
+    require!(sha(&backup)? == state["quotaBackupSha256"].as_str().ok_or("Incident state has no quota backup hash")?,
+        "Repeated startup discarded or rewrote frozen quota evidence");
+    Ok(json!({"status":"PASS","scenario":INCIDENT_0910_SCENARIO,"phase":"reopen",
+        "startupReady":true,"quotaObservationsExactlyOnce":true,"exactTotalTokens":162,
+        "partialACanaryPreserved":true,"bFirstInitializationRetained":true,"frozenEvidenceRetained":true}))
 }
 
 #[cfg(test)]

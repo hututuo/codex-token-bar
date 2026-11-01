@@ -46,6 +46,14 @@ struct BlockKey {
     index: u64,
 }
 
+/// Opaque platform file identity plus size/change stamps for validating a
+/// bounded read across concurrent atomic source rotation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SourceFileWitness(FileStamp);
+pub(crate) fn source_file_witness(file:&File)->io::Result<SourceFileWitness> {
+    file_stamp(file).map(SourceFileWitness)
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct BrokerSnapshotStats {
     pub(crate) physical_reads: u64,

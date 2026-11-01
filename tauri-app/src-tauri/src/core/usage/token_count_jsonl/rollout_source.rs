@@ -322,6 +322,9 @@ pub(super) struct RolloutReader {
     logical_position: u64,
 }
 impl RolloutReader {
+    pub(crate) fn source_witness(&self)->io::Result<crate::core::shared_source_io::SourceFileWitness> {
+        crate::core::shared_source_io::source_file_witness(&self.raw_file)
+    }
     /// Return the logical JSONL size only when it can be read from plain-file
     /// metadata or an existing compressed-layout cache entry. This never
     /// inspects a frame or constructs a decoder.

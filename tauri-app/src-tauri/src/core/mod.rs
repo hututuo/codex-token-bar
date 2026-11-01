@@ -39,3 +39,5 @@ pub(crate) mod business_store_sql;
 pub(crate) mod business_store_connection;
 pub(crate) mod business_store_route;
 pub(crate) mod business_startup;
+
+pub(crate) mod business_store_recovery;

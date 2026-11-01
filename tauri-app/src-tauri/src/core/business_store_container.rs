@@ -564,7 +564,20 @@ impl Container {
             now,
             replace_existing,
             None,
+            None,
+            None,
         )
+    }
+
+    pub(crate) fn replace_frozen_snapshot(
+        &mut self, source: &Path, store: &StoreSpec, backup: &Path, now: f64, expected: &StoreProof, expected_source: &StoreProof,
+    ) -> BusinessStoreResult<StoreProof> {
+        self.import_snapshot_inner(source, store, backup, now, true, None, Some(expected), Some(expected_source))
+    }
+
+    pub(crate) fn snapshot_proof_path(path: &Path) -> BusinessStoreResult<StoreProof> {
+        let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        proof_for(&db,"main","",false,None)
     }
 
     /// Import a legacy input and durably record its original path in the same
@@ -624,6 +637,8 @@ impl Container {
             now,
             replace_existing,
             Some(receipt),
+            None,
+            None,
         )?;
         Ok(Some(proof))
     }
@@ -677,6 +692,8 @@ impl Container {
         now: f64,
         replace_existing: bool,
         legacy_receipt: Option<LegacyReceiptWrite>,
+        expected_current: Option<&StoreProof>,
+        expected_source: Option<&StoreProof>,
     ) -> BusinessStoreResult<StoreProof> {
         if !now.is_finite() {
             return Err(BusinessStoreError::InvalidTimestamp);
@@ -690,7 +707,7 @@ impl Container {
             .query_row("PRAGMA foreign_keys", [], |row| row.get(0))?;
         self.connection.execute_batch("PRAGMA foreign_keys=OFF")?;
         let result =
-            self.import_attached(store, backup_path, now, replace_existing, legacy_receipt);
+            self.import_attached(store, backup_path, now, replace_existing, legacy_receipt, expected_current, expected_source);
         let detach_result = self
             .connection
             .execute_batch("DETACH DATABASE tb_import_source");
@@ -716,10 +733,22 @@ impl Container {
         now: f64,
         replace_existing: bool,
         legacy_receipt: Option<LegacyReceiptWrite>,
+        expected_current: Option<&StoreProof>,
+        expected_source: Option<&StoreProof>,
     ) -> BusinessStoreResult<StoreProof> {
-        let tx = self.connection.transaction()?;
+        let tx = self.connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if let Some(expected) = expected_current {
+            let version: i64 = tx.query_row("SELECT user_version FROM tb_stores WHERE store_id=?1", [&store.id], |r|r.get(0))?;
+            if proof_for(&tx,"main",&store.prefix,true,Some(version))? != *expected {
+                return Err(BusinessStoreError::ProofMismatch);
+            }
+        }
         let source = proof_for(&tx, IMPORT_ALIAS, "", false, None)?;
         let source_digest = format!("{}:{}", source.schema_digest, source.rows_digest);
+        if expected_source.is_some_and(|expected| expected != &source)
+            || legacy_receipt.as_ref().is_some_and(|receipt| receipt.source_digest != source_digest) {
+            return Err(BusinessStoreError::ProofMismatch);
+        }
         let existing: Option<String> = tx
             .query_row(
                 "SELECT rows_digest FROM tb_store_imports WHERE store_id=?1 AND source_digest=?2",
@@ -991,16 +1020,20 @@ impl Container {
     /// A retry already owns both proof-bound snapshots. A changed source may
     /// replace its uncommitted predecessor only if it contains every protected
     /// historical row. An append is allowed; truncation is never a fresh start.
-    pub(crate) fn retry_snapshot_covers(primary: &Path, old: &Path, exact: bool) -> BusinessStoreResult<bool> {
+    pub(crate) fn retry_snapshot_covers(primary: &Path, old: &Path, module: &str) -> BusinessStoreResult<bool> {
         if Self::snapshot_digest(primary)? == Self::snapshot_digest(old)? { return Ok(true); }
         let db = Connection::open_with_flags(primary, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-        if exact { return exact_history_covers(&db, "", old, false); }
+        if module == "exact" { return exact_history_covers(&db, "", old, false); }
         db.execute("ATTACH DATABASE ?1 AS tb_exact_history_source", [readonly_file_uri(old)])?;
         let mut statement = db.prepare("SELECT name,sql FROM tb_exact_history_source.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")?;
         let tables = statement.query_map([], |r| Ok((r.get::<_, String>(0)?,r.get::<_, Option<String>>(1)?)))?.collect::<Result<Vec<_>,_>>()?;
         for (name, old_sql) in tables {
             let new_sql: Option<String> = db.query_row("SELECT sql FROM main.sqlite_master WHERE type='table' AND name=?1", [&name], |r| r.get(0)).optional()?.flatten();
             if old_sql != new_sql { return Ok(false); }
+            if module == "quota_history_legacy" && name == "quota_history_maintenance" {
+                if !super::business_store_recovery::quota_maintenance_covers(&db)? { return Ok(false); }
+                continue;
+            }
             let mut columns = table_columns(&db, "tb_exact_history_source", &name)?;
             if columns.is_empty() { return Ok(false); }
             if let Some(rowid) = rowid_alias(old_sql.as_deref().ok_or(BusinessStoreError::ProofMismatch)?, &columns)? { columns.insert(0, rowid); }
@@ -1033,7 +1066,7 @@ impl Container {
         if !equivalent && !exact_history_covers(&self.connection, &store.prefix, snapshot, true)? {
             return Err(BusinessStoreError::ProofMismatch);
         }
-        let rule = if equivalent { "exact-relocation-metadata-only-v1" } else { "exact-published-history-covered-v1" };
+        let rule = if equivalent { "exact-relocation-metadata-only-v1" } else { "exact-published-history-covered-v2" };
         let path = canonical_input_path(original)?;
         let digest = Self::snapshot_digest(snapshot)?;
         if let Some(existing) = self.legacy_input_receipt_by_key(&path)? {
@@ -1969,8 +2002,10 @@ fn exact_history_covers(primary: &Connection, prefix: &str, old: &Path, require_
     // 0.9.4+ upgrades only support to14. This known transition adds exactly
     // source_representations and representation metadata; it never rewrites
     // historical event values. Compare all old protected tables directly,
-    // allowing only that additive version boundary. No raw source reads and
-    // no temporary database/normalization writer are needed.
+    // allowing only that additive version boundary. The narrow parser-repair
+    // cases below additionally prove content continuity, using stored chunk
+    // hashes and bounded local reads only for affected headers/partial tails.
+    // No second persistent database or full source replay is introduced.
     if current_schema.as_deref() != Some("14")
         || !matches!(previous_schema.as_deref(), Some("13" | "14")) { return Ok(false); }
     if previous_schema.as_deref() == Some("13") {
@@ -1984,8 +2019,10 @@ fn exact_history_covers(primary: &Connection, prefix: &str, old: &Path, require_
         let _ = primary.prepare(&format!("SELECT source_id,physical_path,storage_format,physical_size,physical_stamp,logical_size,modified_ns,verification FROM {representation} LIMIT 0"))?;
     }
     if !has_table(&old_db, "main", "event_rows")? { return Ok(false); }
+    if !super::business_store_recovery::exact_operational_metadata_covers(primary,prefix,&old_db)? { return Ok(false); }
     let operational_keys = [
         "release_upgrade_retention_v1", "schema_version", "revision", "dashboard_revision", "event_id_sequence",
+        "state_size", "state_modified_ns", "storage_maintenance_last_checked_unix", "storage_maintenance_last_compacted_unix",
         "published_generation", "session_catalog_published_generation", "accounting_coverage",
         "attribution_current_scan_incomplete", "attribution_current_scan_unsafe", "attribution_ledger_epoch",
         "attribution_ledger_integrity_v1", "attribution_provenance_epoch", "canonical_projection_pending",
@@ -2010,6 +2047,9 @@ fn exact_history_covers(primary: &Connection, prefix: &str, old: &Path, require_
     for (key, value) in old_values {
         if operational_keys.contains(&key.as_str()) { continue; }
         let current: Option<String> = primary.query_row(&format!("SELECT value FROM {metadata} WHERE key=?1"), [&key], |r| r.get(0)).optional()?;
+        if key == "parser_repair_verify_pending" && current.is_none() && value == "paginated-owned-turn-v6"
+            && read_meta(&old_db, "metadata", "fork_replay_boundary_revision")?.as_deref() == Some("paginated-owned-turn-v6")
+            && read_meta(primary, &metadata, "fork_replay_boundary_revision")?.as_deref() == Some("paginated-owned-turn-v6") { continue; }
         if current.as_deref() != Some(value.as_str()) { return Ok(false); }
     }
     primary.execute("ATTACH DATABASE ?1 AS tb_exact_history_source", [readonly_file_uri(old)])?;
@@ -2019,6 +2059,7 @@ fn exact_history_covers(primary: &Connection, prefix: &str, old: &Path, require_
 }
 
 fn exact_history_covers_attached(db: &Connection, prefix: &str) -> BusinessStoreResult<bool> {
+    let mut verified = super::business_store_recovery::VerifiedLegacySources::prepare(db, prefix)?;
     let mut statement = db.prepare("SELECT name FROM tb_exact_history_source.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")?;
     let names = statement.query_map([], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
     for name in names {
@@ -2072,13 +2113,14 @@ fn exact_history_covers_attached(db: &Connection, prefix: &str) -> BusinessStore
             continue;
         }
         if name == "usage_ledger_bindings" {
-            let target_table = SQLiteStoreNamespace::quote(&target);
-            let missing: bool = db.query_row(&format!("SELECT EXISTS(SELECT 1 FROM tb_exact_history_source.usage_ledger_bindings old LEFT JOIN main.{target_table} current ON current.event_id=old.event_id AND current.source_id=old.source_id WHERE current.event_id IS NULL OR (old.fingerprint IS NOT NULL AND old.fingerprint IS NOT current.fingerprint) OR (old.raw_generation IS current.raw_generation AND ((old.raw_offset IS NOT NULL AND old.raw_offset IS NOT current.raw_offset) OR (old.user_prompt_start IS NOT NULL AND old.user_prompt_start IS NOT current.user_prompt_start) OR (old.user_prompt_end IS NOT NULL AND old.user_prompt_end IS NOT current.user_prompt_end) OR (old.assistant_response_start IS NOT NULL AND old.assistant_response_start IS NOT current.assistant_response_start) OR (old.assistant_response_end IS NOT NULL AND old.assistant_response_end IS NOT current.assistant_response_end))) OR (old.raw_generation IS NOT current.raw_generation AND (old.fingerprint IS NULL OR old.fingerprint IS NOT current.fingerprint)))"), [], |r| r.get(0))?;
-            if missing { return Ok(false); }
+            if !verified.bindings_cover()? { return Ok(false); }
             continue;
         }
-        let columns = if name == "sources" { vec!["source_id".into(), "session_id".into(), "path".into(), "is_explicit_subagent_fork".into()] }
-            else { old_columns };
+        if name == "sources" {
+            if !verified.sources_cover()? { return Ok(false); }
+            continue;
+        }
+        let columns = old_columns;
         let projection = columns.iter().map(|c| {
             let quoted = SQLiteStoreNamespace::quote(c);
             format!("typeof({quoted}),{quoted}")

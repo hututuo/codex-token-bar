@@ -245,7 +245,7 @@ jobs:
           $saved = @{}
           foreach ($key in $keys) { $saved[$key] = [Environment]::GetEnvironmentVariable($key) }
           try {
-            foreach ($case in @('retained','current-retained','relocated-pair','late-relocated-pair','relocated-v13-pair','late-relocated-v13-pair','switched','switching','rollback','missing','unknown','stray-wal','existing-a','late-retained','late-switching','late-rollback','late-mixed')) {
+            foreach ($case in @('retained','current-retained','relocated-pair','late-relocated-pair','relocated-v13-pair','late-relocated-v13-pair','switched','switching','rollback','missing','unknown','stray-wal','existing-a','late-retained','late-switching','late-rollback','late-mixed','0910-combined-relocated-v13-pair')) {
               $caseRoot = Join-Path $runtime "tokenbar-v097-runtime-manifest-$case"
               New-Item -ItemType Directory -Path $caseRoot | Out-Null
               Set-Content -LiteralPath (Join-Path $caseRoot '.tokenbar-v097-disposable') -Value '0219554ce444b0013987da7b82e3c2e891f4afdb' -NoNewline
@@ -262,8 +262,16 @@ jobs:
                 New-Item -ItemType Directory -Path $path | Out-Null
                 [Environment]::SetEnvironmentVariable($key, $path)
               }
-              & $probe "manifest-$case" 2>&1 | Tee-Object "upgrade-evidence/windows-manifest-$case.log"
-              if ($LASTEXITCODE -ne 0) { throw "Manifest production probe failed: $case" }
+              $log = "upgrade-evidence/windows-manifest-$case.log"
+              if ($case -eq '0910-combined-relocated-v13-pair') {
+                foreach ($phase in @('prepare','resume','reopen')) {
+                  & $probe "manifest-$case-$phase" 2>&1 | Tee-Object -Append $log
+                  if ($LASTEXITCODE -ne 0) { throw "Combined incident production probe failed: $phase" }
+                }
+              } else {
+                & $probe "manifest-$case" 2>&1 | Tee-Object $log
+                if ($LASTEXITCODE -ne 0) { throw "Manifest production probe failed: $case" }
+              }
             }
           } finally {
             foreach ($key in $keys) { [Environment]::SetEnvironmentVariable($key, $saved[$key]) }

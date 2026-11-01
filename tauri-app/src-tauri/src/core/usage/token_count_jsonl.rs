@@ -36,6 +36,7 @@ mod exact_usage_index;
 mod fingerprint_codec;
 mod scan_failure;
 mod rollout_source;
+pub(crate) mod recovery_source;
 
 pub(crate) fn bootstrap_legacy_exact_indexes() -> Result<(), String> {
     exact_usage_index::bootstrap_legacy_indexes()

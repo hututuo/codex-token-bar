@@ -643,7 +643,7 @@ fn open_store_at_with_hook(
             ));
         }
         if let Some(frozen) = pending.as_ref().and_then(|batch| batch.snapshots.iter().find(|s| &s.source == legacy_path)) {
-            if source_digest != frozen.digest && !Container::retry_snapshot_covers(&backup_path, &frozen.backup, module == "exact").map_err(|e| e.to_string())? {
+            if source_digest != frozen.digest && !Container::retry_snapshot_covers(&backup_path, &frozen.backup, module).map_err(|e| e.to_string())? {
                 return Err(format!("重试来源不再覆盖已冻结的旧账，保留两个快照并停止替换：{}", legacy_path.display()));
             }
         }
@@ -686,6 +686,28 @@ fn open_store_at_with_hook(
         }
         container.record_identical_legacy_input(backup, &store, source, backup, now_unix()).map_err(|e| e.to_string())
     };
+    // A journal authorizes retrying an import, not discarding any rows that
+    // another writer added to its destination. Only a complete receipt-bound
+    // frozen image may be replaced; compare again under the SQLite write lock.
+    let expected_destination = if pending.as_ref().is_some_and(|p| p.replace_uncommitted) && !snapshots.is_empty() {
+        let actual = container.proof(&store).map_err(|e|e.to_string())?;
+        if has_objects {
+            let mut frozen = pending.as_ref().unwrap().snapshots.clone();
+            for source in &pending.as_ref().unwrap().sources {
+                if let Some(r)=container.legacy_input_receipt(source).map_err(|e|e.to_string())? {
+                    if r.retired || r.store_id!=store.id || r.module!=store.module || r.logical_path!=store.logical_path { return Err("未完成批次的目标归属不一致，已保留旧账".into()); }
+                    frozen.push(PendingSnapshot { source: source.clone(), backup: PathBuf::from(r.backup_path), digest: r.source_digest });
+                }
+            }
+            let mut matches = false;
+            for snapshot in &frozen {
+                validate_pending_snapshot(container_path,&store,snapshot)?;
+                if Container::snapshot_proof_path(&snapshot.backup).map_err(|e|e.to_string())? == actual { matches=true; break; }
+            }
+            if !matches { return Err("未完成导入的目标已有独立账目变化，保留现有账目与全部快照，拒绝覆盖".into()); }
+        }
+        Some(actual)
+    } else { None };
     // A journal is written BEFORE the first namespace replacement. Only a
     // journaled, never-activated import may be replaced during recovery.
     if !snapshots.is_empty() {
@@ -725,9 +747,11 @@ fn open_store_at_with_hook(
         .is_some_and(|batch| batch.replace_uncommitted)
         && !snapshots.is_empty()
     {
-        let (_, backup, _) = &snapshots[0];
+        let (_, backup, digest) = &snapshots[0];
+        let expected_source=Container::snapshot_proof_path(backup).map_err(|e|e.to_string())?;
+        if format!("{}:{}",expected_source.schema_digest,expected_source.rows_digest)!=*digest { return Err("未完成导入快照在替换前发生变化，已保留旧账".into()); }
         container
-            .import_snapshot(backup, &store, backup, now_unix(), true)
+            .replace_frozen_snapshot(backup, &store, backup, now_unix(), expected_destination.as_ref().ok_or("未完成导入缺少目标证明")?, &expected_source)
             .map_err(|error| error.to_string())?;
         // The journal remains durable across every step, including a crash
         // between replacing rows and updating source receipts.
@@ -2007,4 +2031,36 @@ mod tests {
         )
         .is_err());
     }
+    fn seed_incident_quota_source(path:&Path) {
+        Connection::open(path).unwrap().execute_batch("CREATE TABLE quota_snapshots(id INTEGER PRIMARY KEY,account_key TEXT NOT NULL,used REAL NOT NULL);INSERT INTO quota_snapshots VALUES(1,'account',10),(2,'account',11);CREATE TABLE quota_history_legacy_claims(name TEXT PRIMARY KEY,owner TEXT NOT NULL);INSERT INTO quota_history_legacy_claims VALUES('display','account');CREATE TABLE quota_history_maintenance(key TEXT PRIMARY KEY,value TEXT NOT NULL);INSERT INTO quota_history_maintenance VALUES('policy_version','3'),('last_compacted_at','100')").unwrap();
+    }
+    #[test]
+    fn incident_v1_quota_daily_maintenance_append_interrupt_and_repeated_retry_preserve_history() {
+        let fixture=Fixture::new();let db=fixture.path("codex-ledger.sqlite");let source=fixture.path("quota-history.sqlite");seed_incident_quota_source(&source);
+        let inputs=std::slice::from_ref(&source);
+        assert!(open_store_at_with_hook(&db,"quota_history_legacy","home","quota",inputs,false,&||Err("interrupted".into())).is_err());
+        let store=StoreSpec::new("quota_history_legacy","home","quota").unwrap();
+        let a=Container::open_existing(&db).unwrap();let receipt=a.legacy_input_receipt(&source).unwrap().unwrap();let frozen=fs::read(&receipt.backup_path).unwrap();
+        let journal=serde_json::json!({"sources":inputs,"bootstrap":true,"replace_uncommitted":true});
+        a.connection().execute("UPDATE tb_container_meta SET value=?1 WHERE key=?2",params![journal.to_string(),format!("migration_pending_store_v1:{}",store.id)]).unwrap();drop(a);
+        Connection::open(&source).unwrap().execute_batch("INSERT INTO quota_snapshots VALUES(3,'account',12);UPDATE quota_history_maintenance SET value='200' WHERE key='last_compacted_at'").unwrap();let original=fs::read(&source).unwrap();
+        assert!(open_store_at_with_hook(&db,"quota_history_legacy","home","quota",inputs,false,&||Err("interrupted again".into())).is_err());
+        for _ in 0..3 {
+            let ready=open_store_at(&db,"quota_history_legacy","home","quota",inputs,false).unwrap();
+            assert_eq!(ready.query_row("SELECT count(*),sum(used) FROM quota_snapshots",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,f64>(1)?))).unwrap(),(3,33.0));
+        }
+        assert_eq!(fs::read(&source).unwrap(),original);assert_eq!(fs::read(&receipt.backup_path).unwrap(),frozen);
+        assert!(!initialized_marker_path(&db).exists(),"Module recovery must not prematurely publish global readiness");
+    }
+    #[test]
+    fn incident_quota_recovery_never_overwrites_independent_partial_destination_rows() {
+        let fixture=Fixture::new();let db=fixture.path("codex-ledger.sqlite");let source=fixture.path("quota-history.sqlite");seed_incident_quota_source(&source);let inputs=std::slice::from_ref(&source);
+        assert!(open_store_at_with_hook(&db,"quota_history_legacy","home","quota",inputs,false,&||Err("interrupted".into())).is_err());
+        let active=open_store_at(&db,"quota_history_legacy","home","quota",inputs,false).unwrap();active.execute("INSERT INTO quota_snapshots VALUES(999,'independent',334108)",[]).unwrap();drop(active);
+        let store=StoreSpec::new("quota_history_legacy","home","quota").unwrap();let before=Container::open_existing(&db).unwrap().proof(&store).unwrap();
+        Connection::open(&source).unwrap().execute_batch("INSERT INTO quota_snapshots VALUES(3,'account',12);UPDATE quota_history_maintenance SET value='200' WHERE key='last_compacted_at'").unwrap();
+        let error=match open_store_at(&db,"quota_history_legacy","home","quota",inputs,false){Ok(_)=>panic!("Independent destination was overwritten"),Err(e)=>e};assert!(error.contains("目标已有独立账目变化"),"{error}");
+        assert_eq!(Container::open_existing(&db).unwrap().proof(&store).unwrap(),before);assert!(!initialized_marker_path(&db).exists());
+    }
+
 }

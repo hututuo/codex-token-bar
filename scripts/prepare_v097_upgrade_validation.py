@@ -154,7 +154,7 @@ fn release097_export_actual_rust_inputs() {
                 "last_token_usage":usage(li,lc,lo,lr)}}}).to_string()
         };
         write_lines(&file, &[
-            r#"{"type":"session_meta","payload":{"id":"019ff8b9-09e7-75c1-b9a5-14fe7b60065a"}}"#.to_owned(),
+            serde_json::json!({"timestamp":date(now-67),"type":"session_meta","payload":{"id":"019ff8b9-09e7-75c1-b9a5-14fe7b60065a","history_mode":"paginated"}}).to_string(),
             serde_json::json!({"timestamp":date(now-66),"type":"event_msg","payload":{"type":"user_message","message":"Synthetic upgrade compatibility request"}}).to_string(),
             serde_json::json!({"timestamp":date(now-65),"type":"turn_context","payload":{"model":"gpt-6.1-sol"}}).to_string(),
             token(64,80,32,20,5,80,32,20,5),
@@ -404,6 +404,17 @@ def verify(fixture_dir, platform="swift"):
         raise SystemExit("Released JSON encoder fixture is incomplete")
     if platform == "rust" and (saved["version"] != 1 or saved["bodyRetentionDays"] != 15):
         raise SystemExit("Released Rust JSON envelope or retention preference is incomplete")
+    if platform == "rust":
+        for letter, session_id in [("a", "019ff8b9-09e7-75c1-b9a5-14fe7b60065a"), ("b", "019ff8b9-09e7-75c1-b9a5-14fe7b60065a")]:
+            source = inputs / f"home-{letter}/sessions/rollout-{session_id}.jsonl"
+            header = json.loads(source.read_text(encoding="utf-8").splitlines()[0])
+            payload = header.get("payload", {})
+            if header.get("type") != "session_meta" or not header.get("timestamp"):
+                raise SystemExit(f"Synthetic Rust Home is missing a timestamped session header: {source}")
+            if payload.get("id") != session_id or payload.get("history_mode") != "paginated":
+                raise SystemExit(f"Synthetic Rust Home is missing its paginated session identity: {source}")
+            if payload.get("forked_from_id") not in (None, ""):
+                raise SystemExit(f"Synthetic Rust Home unexpectedly claims a fork parent: {source}")
     artifacts["support/observed-speed-release097.json"] = {"sha256": digest(body)}
     summary = {"release_sha": RELEASE_SHA, "artifacts": artifacts, "verified": True}
     receipt = inputs / "fixture-result.json"
