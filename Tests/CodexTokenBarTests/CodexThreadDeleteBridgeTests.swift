@@ -212,7 +212,7 @@ final class CodexThreadDeleteBridgeTests: XCTestCase {
             executableURL: URL(fileURLWithPath: "/bin/sh"),
             arguments: [
                 "-c",
-                "sleep 2 & printf 'PARENT_DONE\\n'",
+                "sleep 5 & printf 'PARENT_DONE\\n'",
             ],
             timeout: 2
         )
@@ -221,7 +221,10 @@ final class CodexThreadDeleteBridgeTests: XCTestCase {
         XCTAssertTrue(result.stdout.hasSuffix("PARENT_DONE"))
         XCTAssertLessThan(
             Date().timeIntervalSince(startedAt),
-            1.5
+            // Both pipes may consume their separate drain grace periods.
+            // Leave hosted-runner scheduling room while still rejecting a
+            // wait for the inherited descriptor's five-second lifetime.
+            3
         )
     }
 

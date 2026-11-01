@@ -315,11 +315,17 @@ fn body_check_with_b_initial_state(frozen: &Path, home: &Path, existing_b_canary
         version == 2,
         "B's physical version is not owned by the usage ledger"
     );
-    let sentinel: i64 = checked!(database.query_row(
-        "SELECT COUNT(*) FROM activity_speed_samples WHERE id='v097-existing-b-row'",
-        [],
-        |row| row.get(0)
-    ));
+    // The body owner legitimately initializes B before the activity owner.
+    // An absent activity table is empty only in this explicitly fresh case;
+    // the original pre-existing-B case still requires its durable row.
+    let activity_kind:Option<String>=checked!(database.query_row(
+        "SELECT type FROM sqlite_master WHERE name='activity_speed_samples'",[],|row|row.get(0)).optional());
+    let sentinel:i64=match activity_kind.as_deref() {
+        Some("table")=>checked!(database.query_row(
+            "SELECT COUNT(*) FROM activity_speed_samples WHERE id='v097-existing-b-row'",[],|row|row.get(0))),
+        None if !existing_b_canary=>0,
+        other=>return Err(format!("Unexpected activity owner state during Body import: {other:?}")),
+    };
     require!(
         sentinel == if existing_b_canary { 1 } else { 0 },
         if existing_b_canary {

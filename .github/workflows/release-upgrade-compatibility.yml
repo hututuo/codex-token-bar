@@ -260,38 +260,45 @@ jobs:
           $keys = @('TOKENBAR_V097_RUNTIME_ROOT','TOKENBAR_V097_RUST_INPUTS','CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR','CODEX_TOKEN_BAR_TAURI_CACHE_DIR','CODEX_TOKEN_BAR_SUPPORT_BASE_DIR','CODEX_TOKEN_BAR_CACHE_BASE_DIR','CODEX_TOKEN_BAR_TAURI_USAGE_CACHE_DIR')
           $saved = @{}
           foreach ($key in $keys) { $saved[$key] = [Environment]::GetEnvironmentVariable($key) }
+          $caseFailures = @()
           try {
             foreach ($case in @('retained','current-retained','relocated-pair','late-relocated-pair','relocated-v13-pair','late-relocated-v13-pair','switched','switching','rollback','missing','unknown','stray-wal','existing-a','late-retained','late-switching','late-rollback','late-mixed','0910-combined-relocated-v13-pair','0910-combined-unavailable-relocated-v13-pair')) {
-              $caseRoot = Join-Path $runtime "tokenbar-v097-runtime-manifest-$case"
-              New-Item -ItemType Directory -Path $caseRoot | Out-Null
-              Set-Content -LiteralPath (Join-Path $caseRoot '.tokenbar-v097-disposable') -Value '0219554ce444b0013987da7b82e3c2e891f4afdb' -NoNewline
-              Copy-Item -LiteralPath $frozen -Destination (Join-Path $caseRoot 'inputs') -Recurse
-              if ($case -like '*v13-pair') {
-                Copy-Item -LiteralPath "$env:RUNNER_TEMP/tokenbar-v093-fixtures/inputs" -Destination (Join-Path $caseRoot 'inputs13') -Recurse
-              }
-              $env:TOKENBAR_V097_RUNTIME_ROOT = $caseRoot
-              $env:TOKENBAR_V097_RUST_INPUTS = Join-Path $caseRoot 'inputs'
-              $slugs = @('s','c','ss','sc','uc')
-              for ($i = 0; $i -lt $slugs.Length; $i++) {
-                $key = $keys[$i + 2]
-                $path = Join-Path $caseRoot $slugs[$i]
-                New-Item -ItemType Directory -Path $path | Out-Null
-                [Environment]::SetEnvironmentVariable($key, $path)
-              }
-              $log = "upgrade-evidence/windows-manifest-$case.log"
-              if ($case -like '0910-combined*-relocated-v13-pair') {
-                foreach ($phase in @('prepare','resume','reopen')) {
-                  & $probe "manifest-$case-$phase" 2>&1 | Tee-Object -Append $log
-                  if ($LASTEXITCODE -ne 0) { throw "Combined incident production probe failed: $phase" }
+              try {
+                $caseRoot = Join-Path $runtime "tokenbar-v097-runtime-manifest-$case"
+                New-Item -ItemType Directory -Path $caseRoot | Out-Null
+                Set-Content -LiteralPath (Join-Path $caseRoot '.tokenbar-v097-disposable') -Value '0219554ce444b0013987da7b82e3c2e891f4afdb' -NoNewline
+                Copy-Item -LiteralPath $frozen -Destination (Join-Path $caseRoot 'inputs') -Recurse
+                if ($case -like '*v13-pair') {
+                  Copy-Item -LiteralPath "$env:RUNNER_TEMP/tokenbar-v093-fixtures/inputs" -Destination (Join-Path $caseRoot 'inputs13') -Recurse
                 }
-              } else {
-                & $probe "manifest-$case" 2>&1 | Tee-Object $log
-                if ($LASTEXITCODE -ne 0) { throw "Manifest production probe failed: $case" }
+                $env:TOKENBAR_V097_RUNTIME_ROOT = $caseRoot
+                $env:TOKENBAR_V097_RUST_INPUTS = Join-Path $caseRoot 'inputs'
+                $slugs = @('s','c','ss','sc','uc')
+                for ($i = 0; $i -lt $slugs.Length; $i++) {
+                  $key = $keys[$i + 2]
+                  $path = Join-Path $caseRoot $slugs[$i]
+                  New-Item -ItemType Directory -Path $path | Out-Null
+                  [Environment]::SetEnvironmentVariable($key, $path)
+                }
+                $log = "upgrade-evidence/windows-manifest-$case.log"
+                if ($case -like '0910-combined*-relocated-v13-pair') {
+                  foreach ($phase in @('prepare','resume','reopen')) {
+                    & $probe "manifest-$case-$phase" 2>&1 | Tee-Object -Append $log
+                    if ($LASTEXITCODE -ne 0) { throw "Combined incident production probe failed: $phase" }
+                  }
+                } else {
+                  & $probe "manifest-$case" 2>&1 | Tee-Object $log
+                  if ($LASTEXITCODE -ne 0) { throw "Manifest production probe failed: $case" }
+                }
+              } catch {
+                $caseFailures += "${case}: $($_.Exception.Message)"
+                Write-Warning "Independent recovery case failed: ${case}; continuing the remaining isolated cases"
               }
             }
           } finally {
             foreach ($key in $keys) { [Environment]::SetEnvironmentVariable($key, $saved[$key]) }
           }
+          if ($caseFailures.Count -gt 0) { throw ("Recovery case failures: " + ($caseFailures -join '; ')) }
       - name: Stage synthetic Windows evidence on the workspace drive
         if: always()
         shell: pwsh
