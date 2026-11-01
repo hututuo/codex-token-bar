@@ -25,6 +25,7 @@ static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[test]
 fn live_append_during_incremental_scan_publishes_each_prefix_once() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let at = OffsetDateTime::parse("2026-07-20T12:00:00Z", &Rfc3339).unwrap();
     ExactUsageIndex::reset_scan_bytes_for_testing();
     let root = temp_root();
     fs::create_dir_all(root.join("sessions")).unwrap();
@@ -54,14 +55,14 @@ fn live_append_during_incremental_scan_publishes_each_prefix_once() {
     });
     index.sync(&root, &mut Vec::new()).unwrap();
     assert_eq!(hook_calls.load(Ordering::SeqCst), 1);
-    let first = index.summary(OffsetDateTime::now_utc(), UtcOffset::UTC).unwrap();
-    assert_eq!((first.total_tokens, first.total_calls), (120, 2), "publish only the scan-start prefix");
+    let first = index.summary(at, UtcOffset::UTC).unwrap();
+    assert_eq!((first.total_tokens, first.today_requests), (120, 2), "publish only the scan-start prefix");
     index.sync(&root, &mut Vec::new()).unwrap();
-    let next = index.summary(OffsetDateTime::now_utc(), UtcOffset::UTC).unwrap();
-    assert_eq!((next.total_tokens, next.total_calls), (150, 3), "the concurrent suffix is counted once next time");
+    let next = index.summary(at, UtcOffset::UTC).unwrap();
+    assert_eq!((next.total_tokens, next.today_requests), (150, 3), "the concurrent suffix is counted once next time");
     index.sync(&root, &mut Vec::new()).unwrap();
-    let stable = index.summary(OffsetDateTime::now_utc(), UtcOffset::UTC).unwrap();
-    assert_eq!((stable.total_tokens, stable.total_calls), (150, 3));
+    let stable = index.summary(at, UtcOffset::UTC).unwrap();
+    assert_eq!((stable.total_tokens, stable.today_requests), (150, 3));
     assert_eq!(ExactUsageIndex::scan_bytes_for_testing().0, initial_bytes, "a proven live append must not rebuild history");
     // Owned fixtures stay available for runner disposal / local Recycle Bin cleanup.
 }
@@ -69,6 +70,7 @@ fn live_append_during_incremental_scan_publishes_each_prefix_once() {
 #[test]
 fn live_append_validation_keeps_rewrite_truncate_and_replacement_guards() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let at = OffsetDateTime::parse("2026-07-20T12:00:00Z", &Rfc3339).unwrap();
     let event = |minute: u64, tokens: u64| serde_json::json!({
         "timestamp": format!("2026-07-20T01:{minute:02}:00Z"),
         "type":"event_msg", "payload":{"type":"token_count","info":{"last_token_usage":{
@@ -108,8 +110,8 @@ fn live_append_validation_keeps_rewrite_truncate_and_replacement_guards() {
         let error = index.sync(&root, &mut Vec::new()).unwrap_err();
         assert!(error.contains("非追加变化"), "{mutation}: {error}");
         assert_eq!(index.revision().unwrap(), published, "{mutation} must retain the published generation");
-        let summary = index.summary(OffsetDateTime::now_utc(), UtcOffset::UTC).unwrap();
-        assert_eq!((summary.total_tokens, summary.total_calls), (100, 1), "{mutation} must roll back partial rows");
+        let summary = index.summary(at, UtcOffset::UTC).unwrap();
+        assert_eq!((summary.total_tokens, summary.today_requests), (100, 1), "{mutation} must roll back partial rows");
     }
 }
 
