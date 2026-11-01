@@ -1,7 +1,7 @@
 {
   "version": "0.9.11",
   "macos_build": "990",
-  "status": "published-and-verified",
+  "status": "withdrawn",
   "source_sha": "25af234290b6410016d34b898682cca26c62e08a",
   "previous_release": "v0.9.10",
   "integration_branch": "codex/fix-0910-recovery-metadata",
@@ -75,5 +75,25 @@
         "sha256": "6b94ce3b400f3e75a99b88e5aa98d9ddc1afa921448853791135a36e42807f77"
       }
     }
+  },
+  "withdrawal": {
+    "withdrawn_at": "2026-11-01T19:35:37+08:00",
+    "reason": "升级后触发大规模历史补全，存在进度失真及大 schema 性能问题；停止本次版本分发，等待修复。",
+    "release_is_draft": true,
+    "assets_and_tags_preserved": true,
+    "automatic_update_baseline": "v0.9.7",
+    "feed_commit": "130b9fd4a57a17cd2e58cad5559f941ab7de3901",
+    "download_counts_as_of": "2026-11-01T19:36:36+08:00",
+    "installer_downloads": {
+      "macos_app_zip": 4,
+      "macos_dmg": 1,
+      "windows_x64": 2,
+      "windows_arm64": 1,
+      "total": 8
+    },
+    "counts_are_downloads_not_users": true,
+    "includes_verification_downloads": true,
+    "already_installed_versions_are_not_downgraded": true,
+    "republishing_requires_new_authorization": true
   }
 }
