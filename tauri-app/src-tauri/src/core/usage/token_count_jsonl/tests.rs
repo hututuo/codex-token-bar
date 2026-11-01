@@ -23,6 +23,47 @@ use time::{OffsetDateTime, UtcOffset};
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+fn broad_published_reads_seek_sources_and_preserve_daily_totals() {
+    let root = temp_root();
+    let now = OffsetDateTime::now_utc();
+    let mut lines = Vec::new();
+    for offset in 0..512 {
+        let timestamp = (now - time::Duration::seconds(offset))
+            .format(&Rfc3339).unwrap();
+        lines.push(format!(r#"{{"timestamp":"{timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":3,"cached_input_tokens":1,"output_tokens":2,"total_tokens":5}}}}}}}}"#));
+    }
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    let line_refs = lines.iter().map(String::as_str).collect::<Vec<_>>();
+    for id in ["019eaaaa-bbbb-cccc-dddd-eeeeffffffff", "019eaaaa-bbbb-cccc-dddd-eeeefffffffe"] {
+        write_lines(&root.join(format!("sessions/rollout-{id}.jsonl")), &line_refs);
+    }
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    index.sync(&root, &mut Vec::new()).unwrap();
+    index.ensure_dashboard_aggregates(&root).unwrap();
+    let (activity, count) = index.published_event_read_plans_for_testing(
+        (now - time::Duration::days(365)).unix_timestamp(),
+        (now + time::Duration::days(1)).unix_timestamp(),
+    ).unwrap();
+    for plan in [activity, count] {
+        assert!(plan.iter().any(|step| step.contains("SEARCH e") && step.contains("source_id=?")), "{plan:?}");
+        assert!(!plan.iter().any(|step| step.contains("event_rows_timestamp_idx")), "{plan:?}");
+        assert!(!plan.iter().any(|step| step.contains("MATERIALIZE") && step.contains("events")), "{plan:?}");
+    }
+    let dashboard = index.dashboard_data(now, UtcOffset::UTC).unwrap();
+    assert_eq!(index.published_event_count().unwrap(), 1024);
+    let (seed, contributions) = index.summary_with_file_contributions(now, None).unwrap();
+    let (incremental, _) = index.summary_with_file_contributions(now, Some(&contributions)).unwrap();
+    assert_eq!(contributions.len(), 2);
+    assert_eq!(seed.total_tokens, 5120);
+    assert_eq!(serde_json::to_value(seed).unwrap(), serde_json::to_value(incremental).unwrap());
+    assert_eq!(dashboard.activity_days.iter().map(|day| day.tokens).sum::<u64>(), 5120);
+    assert_eq!(dashboard.activity_days.iter().map(|day| day.calls as u64).sum::<u64>(), 1024);
+    assert_eq!(dashboard.stats.total_tokens, 5120);
+    drop(index);
+    // Retain this small fixture for inspection; hosted runner teardown owns it.
+}
+
+#[test]
 fn staging_budget_batches_cap_workers_artifacts_and_ready_bytes() {
     const MIB: u64 = 1024 * 1024;
     let batches = staging_batch_shape_for_testing(&[

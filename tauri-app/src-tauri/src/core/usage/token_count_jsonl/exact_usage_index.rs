@@ -145,6 +145,22 @@ const SIX_HOUR_INTERVAL_SECONDS: i64 = 6 * 60 * 60;
 const THIRTY_DAY_POINT_COUNT: i64 = 30 * 4;
 const CACHE_USAGE_MIN_INPUT_TOKENS: i64 = 1_000;
 const CACHE_USAGE_CANDIDATE_LIMIT: i64 = 40;
+// A full-history timestamp range can make SQLite choose hundreds of thousands
+// of scattered row reads. Drive these broad reads from the small, published
+// file selector so the existing (source_id, timestamp) index stays usable.
+const ACTIVITY_DAYS_SQL: &str = r#"
+    SELECT e.timestamp, e.model, e.tokens, e.input_tokens,
+           e.cached_input_tokens, e.output_tokens
+    FROM published_files f
+    CROSS JOIN main.canonical_usage_events e
+      ON f.generation = e.file_generation AND f.path = e.file_path
+    WHERE e.tokens > 0 AND e.timestamp >= ?1 AND e.timestamp < ?2
+"#;
+const FILE_EVENT_COUNT_SQL: &str = r#"
+    SELECT COUNT(*)
+    FROM main.canonical_usage_events
+    WHERE tokens > 0 AND file_generation = ?1 AND file_path = ?2
+"#;
 const THREAD_METADATA_FALLBACK_MAX_CHARS: usize = 240;
 const PARALLEL_HEAVY_FILE_BYTES: u64 = 512 * 1024 * 1024;
 const STAGING_MAX_WORKERS: usize = 4;
@@ -3005,6 +3021,7 @@ impl ExactUsageIndex {
                 Some(1),
             );
             let run_migrations = !migration_markers_complete(&self.connection, true)?;
+            let finalize_started = Instant::now();
             let revision = finalize_generation(
                 &mut self.connection,
                 generation,
@@ -3014,6 +3031,10 @@ impl ExactUsageIndex {
                 mode,
                 run_migrations,
             )?;
+            startup_trace::mark_performance(format!(
+                "precise_sync_finalize elapsed_ms={} derived={}",
+                finalize_started.elapsed().as_millis(), u8::from(mode.builds_dashboard_derived_data()),
+            ));
             diagnostics.published_watermark = revision;
             startup_trace::mark_performance(format!(
             "precise_scan candidate_count={} scanned_files={} append_scan_bytes={} metadata_validation_bytes={} metadata_only_files={} full_body_bytes={} pending_tail_bytes={} full_rebuild_files={} source_drift={} published_watermark={}",
@@ -3798,8 +3819,8 @@ impl ExactUsageIndex {
     }
 
     /// Builds the lightweight total/today/model projection from per-file
-    /// contributions.  A missing previous map performs one grouped SQLite
-    /// read and seeds the map; later Summary owners only re-read files whose
+    /// contributions. A missing map uses the indexed per-file reads to seed
+    /// it; later Summary owners only re-read files whose
     /// published generation changed.  This deliberately does not touch
     /// dashboard time-series, heatmap, ranking, or aggregate publication
     /// tables.
@@ -3808,12 +3829,14 @@ impl ExactUsageIndex {
         now_utc: OffsetDateTime,
         previous: Option<&HashMap<String, SummaryFileContribution>>,
     ) -> Result<(TokenUsageSummary, HashMap<String, SummaryFileContribution>), String> {
+        let snapshot = self.connection.unchecked_transaction()
+            .map_err(|error| format!("无法开始轻量摘要读取事务：{error}"))?;
         let today = LocalDayMode::System.date_at(now_utc.unix_timestamp());
         let (start, end) = LocalDayMode::System.day_bounds(today)?;
         let current_files = self.published_file_generations()?;
         let (contributions, recomputed_files, mode) = match previous {
             None => (
-                self.summary_file_contributions_full(start, end)?,
+                self.summary_file_contributions_full(start, end, &current_files)?,
                 current_files.len(),
                 "seed",
             ),
@@ -3842,13 +3865,32 @@ impl ExactUsageIndex {
         ));
         let mut summary = summary_from_file_contributions(&contributions);
         summary.today_model_breakdowns = self.model_breakdowns_from_events(start, end)?;
+        snapshot.commit().map_err(|error| format!("无法结束轻量摘要读取事务：{error}"))?;
         Ok((summary, contributions))
+    }
+
+    pub(super) fn published_event_count(&self) -> Result<u64, String> {
+        // COUNT over the joined UNION view also materializes every event.
+        // Bind the published file identity before each count instead.
+        let snapshot = self.connection.unchecked_transaction()
+            .map_err(|error| format!("无法开始已发布事件计数事务：{error}"))?;
+        let files = self.published_file_generations()?;
+        let mut statement = self.connection.prepare(FILE_EVENT_COUNT_SQL)
+            .map_err(|error| format!("无法准备已发布事件计数：{error}"))?;
+        let mut total = 0_u64;
+        for (path, generation) in files {
+            let count = statement.query_row(params![generation, path], |row| row.get::<_, i64>(0))
+                .map_err(|error| format!("无法统计待回填的仪表盘事件：{error}"))?;
+            total = total.saturating_add(nonnegative_u64(count));
+        }
+        snapshot.commit().map_err(|error| format!("无法结束已发布事件计数事务：{error}"))?;
+        Ok(total)
     }
 
     fn published_file_generations(&self) -> Result<HashMap<String, i64>, String> {
         let mut statement = self
             .connection
-            .prepare("SELECT path, generation FROM published_files")
+            .prepare("SELECT path, generation FROM main.published_files")
             .map_err(|error| format!("无法准备轻量摘要文件代次：{error}"))?;
         let rows = statement
             .query_map([], |row| {
@@ -3878,60 +3920,14 @@ impl ExactUsageIndex {
         &self,
         start: i64,
         end: i64,
+        current_files: &HashMap<String, i64>,
     ) -> Result<HashMap<String, SummaryFileContribution>, String> {
-        let mut statement = self
-            .connection
-            .prepare(
-                r#"
-                SELECT
-                    e.file_path,
-                    e.file_generation,
-                    e.model,
-                    COALESCE(SUM(e.tokens), 0),
-                    COALESCE(SUM(CASE WHEN e.timestamp >= ?1 AND e.timestamp < ?2 THEN e.tokens ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN e.timestamp >= ?1 AND e.timestamp < ?2 THEN e.input_tokens ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN e.timestamp >= ?1 AND e.timestamp < ?2 THEN MIN(e.cached_input_tokens, e.input_tokens) ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN e.timestamp >= ?1 AND e.timestamp < ?2 THEN e.output_tokens ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN e.timestamp >= ?1 AND e.timestamp < ?2 THEN 1 ELSE 0 END), 0)
-                FROM (SELECT * FROM canonical_usage_events WHERE tokens > 0) e
-                JOIN published_files f
-                  ON f.generation = e.file_generation
-                 AND f.path = e.file_path
-                GROUP BY e.file_path, e.file_generation, e.model
-                "#,
-            )
-            .map_err(|error| format!("无法准备轻量摘要全量种子：{error}"))?;
-        let rows = statement
-            .query_map(params![start, end], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, i64>(5)?,
-                    row.get::<_, i64>(6)?,
-                    row.get::<_, i64>(7)?,
-                    row.get::<_, i64>(8)?,
-                ))
-            })
-            .map_err(|error| format!("无法读取轻量摘要全量种子：{error}"))?;
-        let mut contributions = HashMap::<String, SummaryFileContribution>::new();
-        for row in rows {
-            let (path, generation, model, total, today, input, cached, output, calls) =
-                row.map_err(|error| format!("无法解码轻量摘要全量种子：{error}"))?;
-            add_summary_file_row(
-                &mut contributions,
-                path,
-                generation,
-                model,
-                total,
-                today,
-                input,
-                cached,
-                output,
-                calls,
-            );
+        // The events compatibility view is a UNION. A global grouped join
+        // materializes every wide event row before filtering published files.
+        // Reuse the indexed per-file projection used by later incremental reads.
+        let mut contributions = HashMap::with_capacity(current_files.len());
+        for (path, generation) in current_files {
+            contributions.insert(path.clone(), self.summary_file_contribution(path, *generation, start, end)?);
         }
         Ok(contributions)
     }
@@ -4113,6 +4109,7 @@ impl ExactUsageIndex {
     /// existing SQLite events once in one transaction; it never opens JSONL.
     /// Normal append/rewrite transactions maintain the same tables per file.
     pub(super) fn ensure_dashboard_aggregates(&mut self, codex_home: &Path) -> Result<(), String> {
+        let aggregate_started = Instant::now();
         self.validate_dashboard_aggregate_compatibility()?;
         let stored_version =
             metadata_i64(&self.connection, DASHBOARD_AGGREGATE_SCHEMA_VERSION_KEY)?;
@@ -4145,13 +4142,10 @@ impl ExactUsageIndex {
             return Ok(());
         }
 
-        let event_count = self
-            .connection
-            .query_row("SELECT COUNT(*) FROM published_events", [], |row| {
-                row.get::<_, i64>(0)
-            })
-            .map(nonnegative_u64)
-            .map_err(|error| format!("无法统计待回填的仪表盘事件：{error}"))?;
+        let count_started = Instant::now();
+        let event_count = self.published_event_count()?;
+        let count_ms = count_started.elapsed().as_millis();
+        let rebuild_started = Instant::now();
         super::update_precise_dashboard_progress(
             codex_home,
             "migrating",
@@ -4208,6 +4202,11 @@ impl ExactUsageIndex {
             event_count.max(1),
             Some(event_count.max(1)),
         );
+        startup_trace::mark_performance(format!(
+            "precise_aggregate_repair count_ms={count_ms} rebuild_ms={} total_ms={} events={event_count} incremental={}",
+            rebuild_started.elapsed().as_millis(), aggregate_started.elapsed().as_millis(),
+            u8::from(can_repair_incrementally),
+        ));
         Ok(())
     }
 
@@ -4412,6 +4411,26 @@ impl ExactUsageIndex {
             .collect()
     }
 
+    #[cfg(test)]
+    pub(super) fn published_event_read_plans_for_testing(
+        &self, start: i64, end: i64,
+    ) -> Result<(Vec<String>, Vec<String>), String> {
+        self.prepare_dashboard_event_snapshot()?;
+        let mut activity = self.connection.prepare(&format!("EXPLAIN QUERY PLAN {ACTIVITY_DAYS_SQL}"))
+            .map_err(|error| error.to_string())?;
+        let activity_plan = activity.query_map(params![start, end], |row| row.get::<_, String>(3))
+            .map_err(|error| error.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>().map_err(|error| error.to_string())?;
+        let (path, generation) = self.published_file_generations()?.into_iter().next()
+            .ok_or("query-plan fixture needs a published file")?;
+        let mut count = self.connection.prepare(&format!("EXPLAIN QUERY PLAN {FILE_EVENT_COUNT_SQL}"))
+            .map_err(|error| error.to_string())?;
+        let count_plan = count.query_map(params![generation, path], |row| row.get::<_, String>(3))
+            .map_err(|error| error.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>().map_err(|error| error.to_string())?;
+        Ok((activity_plan, count_plan))
+    }
+
     fn prepare_dashboard_event_snapshot(&self) -> Result<(), String> {
         self.connection
             .execute_batch(
@@ -4546,19 +4565,7 @@ impl ExactUsageIndex {
         let mut model_grouped = HashMap::<Date, Vec<ModelTokenBreakdown>>::new();
         let mut statement = self
             .connection
-            .prepare(
-                r#"
-                SELECT
-                    e.timestamp,
-                    e.model,
-                    e.tokens,
-                    e.input_tokens,
-                    e.cached_input_tokens,
-                    e.output_tokens
-                FROM published_events e
-                WHERE e.timestamp >= ?1 AND e.timestamp < ?2
-                "#,
-            )
+            .prepare(ACTIVITY_DAYS_SQL)
             .map_err(|error| format!("无法准备 365 日精确 token 汇总：{error}"))?;
         let rows = statement
             .query_map(params![start_unix, end_unix], |row| {
@@ -5520,49 +5527,6 @@ pub(super) fn peek_startup_identity(
         published_generation,
         attribution_safety,
     }))
-}
-
-fn add_summary_file_row(
-    contributions: &mut HashMap<String, SummaryFileContribution>,
-    path: String,
-    generation: i64,
-    model: Option<String>,
-    total: i64,
-    today: i64,
-    input: i64,
-    cached: i64,
-    output: i64,
-    calls: i64,
-) {
-    let contribution = contributions
-        .entry(path)
-        .or_insert_with(|| SummaryFileContribution {
-            generation,
-            ..SummaryFileContribution::default()
-        });
-    contribution.total_tokens = contribution
-        .total_tokens
-        .saturating_add(nonnegative_u64(total));
-    contribution.today_tokens = contribution
-        .today_tokens
-        .saturating_add(nonnegative_u64(today));
-    contribution.today_requests = contribution
-        .today_requests
-        .saturating_add(saturating_u32(calls));
-    if calls > 0 {
-        contribution
-            .today_model_breakdowns
-            .push(ModelTokenBreakdown { event_start_unix: None,
-                model,
-                breakdown: TokenCacheBreakdown {
-                    input_tokens: nonnegative_u64(input),
-                    cached_input_tokens: nonnegative_u64(cached),
-                    output_tokens: nonnegative_u64(output),
-                    total_tokens: nonnegative_u64(today),
-                    calls: saturating_u32(calls),
-                },
-            });
-    }
 }
 
 fn summary_from_file_contributions(
