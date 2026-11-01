@@ -1,0 +1,117 @@
+name: Recovery formed states and backfill scale
+
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  RUSTUP_TOOLCHAIN: '1.93.1'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_BUILD_JOBS: '3'
+  CARGO_INCREMENTAL: '0'
+
+jobs:
+  formed-states:
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        os: [macos-15, windows-2025]
+        release: ['0.9.8', '0.9.9', '0.9.10', '0.9.11']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: rust-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-v1
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: tauri-app/src-tauri/target
+          key: formed-state-${{ runner.os }}-${{ matrix.release }}-1.93.1-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-${{ inputs.source_sha }}
+          restore-keys: |
+            formed-state-${{ runner.os }}-${{ matrix.release }}-1.93.1-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-
+            rust-test-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-
+      - name: Require exact candidate and prepare build
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          rustup toolchain install 1.93.1 --profile minimal
+          npm ci --prefix tauri-app --registry=https://registry.npmjs.org
+          npm run build --prefix tauri-app
+          python3 -m unittest discover -s scripts/tests -p test_formed_release_upgrade.py -v
+      - name: Old production creates the state; candidate resumes it twice
+        shell: bash
+        env:
+          OLD_RELEASE: ${{ matrix.release }}
+        run: python3 scripts/check_formed_release_upgrade.py --release "$OLD_RELEASE"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: formed-state-${{ matrix.os }}-${{ matrix.release }}-${{ inputs.source_sha }}
+          path: formed-state-evidence/
+          if-no-files-found: warn
+          retention-days: 14
+
+  backfill-scale:
+    runs-on: macos-26
+    timeout-minutes: 55
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      GIT_LFS_SKIP_SMUDGE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .build/artifacts
+            .build/checkouts
+            .build/repositories
+          key: swift-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Package.resolved') }}-v1
+      - name: Prepare actual Swift parser and database implementation
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          command -v git-lfs >/dev/null || brew install git-lfs
+          bash scripts/prepare_tiktoken_lfs.sh
+      - name: Measure 64, 256, 1024 and 4124 source backfill with accounting proofs
+        run: python3 scripts/check_backfill_scale.py
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: backfill-scale-${{ inputs.source_sha }}
+          path: backfill-scale-evidence/
+          if-no-files-found: warn
+          retention-days: 30
