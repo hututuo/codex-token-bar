@@ -1,2 +1,70 @@
-# tokenbar-recovery {"base_sha":"57784427619a6855ea73467c1f75cfa7d8155485","tree_sha":"2cb8ab3417f4ff3b952c588c6a199b710fec2791","native_changed":true,"message":"fix(recovery): continue known module migrations inside the consolidated ledger","encoding":"gzip-base64","diff_sha256":"46ac929b16e27b2cd8c909bc048fda1f48646a2169d1b7c381dc36c283cf23f3"}
-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
+# tokenbar-recovery {"base_sha":"57784427619a6855ea73467c1f75cfa7d8155485","tree_sha":"2cb8ab3417f4ff3b952c588c6a199b710fec2791","native_changed":true,"message":"fix(recovery): continue known module migrations inside the consolidated ledger","encoding":"plain","diff_sha256":"46ac929b16e27b2cd8c909bc048fda1f48646a2169d1b7c381dc36c283cf23f3"}
+diff --git a/Sources/CodexTokenBar/BusinessDatabaseMigration.swift b/Sources/CodexTokenBar/BusinessDatabaseMigration.swift
+index e0b0e7a26d134a80bb7e541b36d76c428a70748e..cd1bfb0984df91b11cf8dbbc16467d3181e557a7 100644
+--- a/Sources/CodexTokenBar/BusinessDatabaseMigration.swift
++++ b/Sources/CodexTokenBar/BusinessDatabaseMigration.swift
+@@ -203,7 +203,7 @@ final class BusinessDatabaseMigration {
+         for input in pending {
+             do {
+                 let version = try SQLiteDatabaseDriver(url: input.source, readOnly: true, createsFileIfMissing: false, bypassBusinessRoutes: true)
+-                    .readRows("PRAGMA user_version") { $0.int(0) }.first ?? 0
++                    .readRows("PRAGMA user_version") { $0.int(0) ?? 0 }.first ?? 0
+                 diagnostics.record("input-preflight", "succeeded", ["store": input.store.id, "module": input.store.module, "userVersion": String(version)])
+             } catch {
+                 diagnostics.record("input-preflight", "failed", ["store": input.store.id, "module": input.store.module, "error": String(describing: error)])
+diff --git a/Sources/CodexTokenBar/CodexUsageHistoryIndex.swift b/Sources/CodexTokenBar/CodexUsageHistoryIndex.swift
+index 8e6bef1a3b61475eef66976b787a053c415eb15f..a8b2bccac244c55ba742d0d03058cc4c5235cdd5 100644
+--- a/Sources/CodexTokenBar/CodexUsageHistoryIndex.swift
++++ b/Sources/CodexTokenBar/CodexUsageHistoryIndex.swift
+@@ -858,6 +858,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
+         if BusinessSQLiteRoutes.store(for: databaseURL) != nil {
+             switch try assessMigration(databaseURL: databaseURL, fileManager: fileManager) {
+             case .compatible: return false
++            case let .knownMigrationRequired(stages) where Set(stages).isSubset(of: [
++                "forkReplay", "attributionLedger", "eventEnrichment", "sessionCatalog", "aggregate"
++            ]):
++                // These are module-owned, retryable migrations implemented below;
++                // none swaps the physical database. A missing enrichment receipt
++                // is not a request to replace container A. Structural/representation
++                // changes still require an independently validated module candidate.
++                return false
+             case let .upgradeRequired(component, stored, supported):
+                 throw CodexUsageIndexUpgradeRequiredError(component: component, stored: stored, supported: supported)
+             default: throw CodexUsageIndexRepairRequiredError(reason: "归并后的索引需要模块迁移，已保留账本并停止旧文件交换")
+diff --git a/Tests/CodexTokenBarTests/CodexUsageAnalyzerTests.swift b/Tests/CodexTokenBarTests/CodexUsageAnalyzerTests.swift
+index 8dcfd5e3e7c879b4d70940f0a8ce4f0db16e2c59..57638582dc9d5e96171513f833e1ddee3ea78b56 100644
+--- a/Tests/CodexTokenBarTests/CodexUsageAnalyzerTests.swift
++++ b/Tests/CodexTokenBarTests/CodexUsageAnalyzerTests.swift
+@@ -81,6 +81,19 @@ final class CodexUsageAnalyzerTests: XCTestCase {
+         XCTAssertEqual(tokens, (0..<13).reduce(0) { $0 + 120 + $1 })
+         XCTAssertEqual(events, files.count)
+         XCTAssertEqual(try Data(contentsOf: indexURL), original, "The legacy ledger must remain frozen")
++        // The new bounded exception must not open unknown or structural contracts.
++        try database.execute("UPDATE schema_meta SET value='future-enrichment' WHERE key='event_enrichment_revision';")
++        XCTAssertThrowsError(try CodexUsageHistoryIndex(codexHome: home)) { error in
++            XCTAssertTrue(error is CodexUsageIndexUpgradeRequiredError)
++        }
++        XCTAssertEqual(try database.withConnection { db in
++            try db.readRows("SELECT value FROM schema_meta WHERE key='event_enrichment_revision'") { $0.text(0) }
++        }.first, "future-enrichment")
++        try database.execute("DELETE FROM schema_meta WHERE key='event_enrichment_revision'; UPDATE schema_meta SET value='13' WHERE key='schema_version';")
++        XCTAssertThrowsError(try CodexUsageHistoryIndex(codexHome: home)) { error in
++            XCTAssertTrue(error is CodexUsageIndexRepairRequiredError)
++        }
++        XCTAssertEqual(try Data(contentsOf: indexURL), original)
+     }
+ 
+     func testCompressionScopeToggleInvalidatesFastMemoryAndPersistentSnapshots() throws {
+diff --git a/tauri-app/src-tauri/src/business_store_fixture.rs b/tauri-app/src-tauri/src/business_store_fixture.rs
+index e6f161a115252dad6d8de40fe184d470a3b82bfb..573e2226dd73b71d4ee2426c9a04f64689729d52 100644
+--- a/tauri-app/src-tauri/src/business_store_fixture.rs
++++ b/tauri-app/src-tauri/src/business_store_fixture.rs
+@@ -335,7 +335,7 @@ fn seed_quota(path: &Path, home: &Path, at: f64, source: &str) -> Result<(), Str
+     parent(path)?;
+     let c = ok!(Connection::open(path));
+     ok!(c.execute_batch("CREATE TABLE quota_snapshots(id INTEGER PRIMARY KEY AUTOINCREMENT,created_at REAL NOT NULL,account_key TEXT NOT NULL,plan_type TEXT,limit_name TEXT,account_name TEXT,source TEXT,five_hour_used_percent INTEGER,five_hour_resets_at REAL,five_hour_cycle_generation INTEGER,five_hour_reset_anchor INTEGER NOT NULL DEFAULT 0,seven_day_used_percent INTEGER,seven_day_resets_at REAL,seven_day_cycle_generation INTEGER,seven_day_reset_anchor INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL,identity_version INTEGER,home_identity TEXT,stable_account_key TEXT,identity_plan_type TEXT,identity_limit_id TEXT);"));
+-    ok!(c.execute("INSERT INTO quota_snapshots(created_at,account_key,plan_type,limit_name,account_name,source,five_hour_used_percent,five_hour_resets_at,five_hour_cycle_generation,seven_day_used_percent,seven_day_resets_at,seven_day_cycle_generation,status,identity_version,home_identity,stable_account_key,identity_plan_type,identity_limit_id) VALUES(?1,'sub:fixture-account','pro','codex','Fixture','swift',20,?2,1,30,?3,1,'ok',1,?4,'sub:fixture-account','pro','codex')",params![at,at+10000.0,at+200000.0,home.to_string_lossy().as_ref()]));
++    ok!(c.execute("INSERT INTO quota_snapshots(created_at,account_key,plan_type,limit_name,account_name,source,five_hour_used_percent,five_hour_resets_at,five_hour_cycle_generation,seven_day_used_percent,seven_day_resets_at,seven_day_cycle_generation,status,identity_version,home_identity,stable_account_key,identity_plan_type,identity_limit_id) VALUES(?1,'sub:fixture-account','pro','codex','Fixture','swift',20,?2,1,30,?3,1,'ok',1,?4,'sub:fixture-account','Pro','codex')",params![at,at+10000.0,at+200000.0,home.to_string_lossy().as_ref()]));
+     ok!(c.execute("UPDATE quota_snapshots SET source=?1", [source]));
+     if source == "tauri" {
+         // Published databases and interrupted upgrades may lack all four
