@@ -1,0 +1,36 @@
+name: Recovery source snapshot
+
+on:
+  push:
+    branches: ['codex/tokenbar-recovery-control-20261101']
+    paths: ['.github/workflows/recovery-source-snapshot.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bundle public repository history without credentials or working data
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p recovery-source
+          git bundle create recovery-source/tokenbar-source.bundle HEAD
+          git bundle verify recovery-source/tokenbar-source.bundle
+          git rev-parse HEAD > recovery-source/source-sha.txt
+          git rev-parse HEAD^{tree} > recovery-source/source-tree.txt
+          sha256sum recovery-source/tokenbar-source.bundle > recovery-source/SHA256SUMS
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tokenbar-recovery-source-${{ github.sha }}
+          path: recovery-source/
+          if-no-files-found: error
+          retention-days: 30
