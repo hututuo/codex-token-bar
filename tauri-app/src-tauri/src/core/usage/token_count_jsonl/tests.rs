@@ -10822,6 +10822,7 @@ fn v18_cache_is_automatically_upgraded_by_the_next_successful_full_refresh() {
     let _cache_env = AggregateCacheEnvGuard::new(cache_path.clone());
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
+    let _clock = DashboardTestClock::at(&root, "2026-06-18T02:00:30Z");
     write_lines(
         &session_dir.join("rollout-019ev18-upgrade.jsonl"),
         &[
@@ -10864,6 +10865,9 @@ fn v20_cache_ignores_legacy_physical_identity_and_upgrades_to_v22() {
     let _cache_env = AggregateCacheEnvGuard::new(cache_path.clone());
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
+    // Keep cache creation and startup validation in the same aggregate window.
+    // Crossing a real five-minute + 15-second boundary changes its signature.
+    let _clock = DashboardTestClock::at(&root, "2026-06-18T02:00:30Z");
     write_lines(
         &session_dir.join("rollout-v20-cache-upgrade.jsonl"),
         &[
@@ -10909,6 +10913,7 @@ fn v21_cache_is_read_as_legacy_numeric_and_upgrades_to_v22() {
     let _cache_env = AggregateCacheEnvGuard::new(cache_path.clone());
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
+    let _clock = DashboardTestClock::at(&root, "2026-06-18T02:00:30Z");
     write_lines(
         &session_dir.join("rollout-v21-cache-upgrade.jsonl"),
         &[
