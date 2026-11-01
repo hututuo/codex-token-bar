@@ -1549,10 +1549,9 @@ fn tauri_history_peer_identity_mismatch_is_not_read() {
             31.0 * 24.0 * 60.0 * 60.0,
         )
         .unwrap();
-    assert!(
-        rows.is_empty(),
-        "peer rows from another identity or non-Swift source must be ignored"
-    );
+    assert_eq!(rows.len(), 1, "writer runtime is not account ownership");
+    assert_eq!(rows[0].five_hour_used_percent, Some(88));
+    assert_eq!(rows[0].stable_identity().as_ref(), Some(&identity));
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -3076,5 +3075,40 @@ fn recent_point(start_unix: i64) -> RecentUsagePoint {
         seven_day_remaining_percent: None,
         source_contribution_epoch: None,
         source_contributions: Vec::new(),
+    }
+}
+
+
+#[test]
+fn retained_quota_reader_handles_every_partial_cycle_schema_without_mutating_it() {
+    let identity = QuotaHistoryIdentity::from_canonical_parts(
+        Path::new("/fixture/retained-quota"), Some("sub:retained"), "Pro", "codex").unwrap();
+    let optional = ["five_hour_cycle_generation", "five_hour_reset_anchor",
+        "seven_day_cycle_generation", "seven_day_reset_anchor"];
+    for mask in 0_u8..16 {
+        let connection = Connection::open_in_memory().unwrap();
+        ensure_schema(&connection).unwrap();
+        let mut original = stable_history_row(&identity, now_unix() - 120.0, 37, "tauri");
+        original.five_hour_cycle_generation = Some(7);
+        original.five_hour_reset_anchor = Some(1);
+        original.seven_day_cycle_generation = Some(9);
+        original.seven_day_reset_anchor = Some(1);
+        insert_stable_history_row(&connection, &original);
+        for (bit, column) in optional.iter().enumerate() {
+            if mask & (1 << bit) == 0 {
+                connection.execute_batch(&format!("ALTER TABLE quota_snapshots DROP COLUMN {column}")).unwrap();
+            }
+        }
+        let before: i64 = connection.query_row("PRAGMA schema_version", [], |r| r.get(0)).unwrap();
+        connection.execute_batch("PRAGMA query_only=ON").unwrap();
+        let rows = database::rows_since_for_read_only_peer(&connection, f64::MAX, &identity).unwrap();
+        assert_eq!(rows.len(), 1, "partial cycle schema {mask}");
+        assert_eq!(rows[0].five_hour_used_percent, Some(37));
+        assert_eq!(rows[0].source.as_deref(), Some("tauri"));
+        assert_eq!(rows[0].five_hour_cycle_generation, if mask & 1 != 0 {Some(7)} else {None});
+        assert_eq!(rows[0].five_hour_reset_anchor, Some(if mask & 2 != 0 {1} else {0}));
+        assert_eq!(rows[0].seven_day_cycle_generation, if mask & 4 != 0 {Some(9)} else {None});
+        assert_eq!(rows[0].seven_day_reset_anchor, Some(if mask & 8 != 0 {1} else {0}));
+        assert_eq!(connection.query_row("PRAGMA schema_version", [], |r| r.get::<_, i64>(0)).unwrap(), before);
     }
 }

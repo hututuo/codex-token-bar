@@ -218,33 +218,46 @@ pub(super) fn rows_since_for_row(
     matching_rows(connection, &filter, Some(cutoff), "ASC")
 }
 
-/// Read a peer (Swift) database without touching its schema or its legacy
-/// bridge claims. A peer database is optional and may be from an older
-/// version, so the caller deliberately treats any error as an empty result.
+/// Read a retained legacy partition without changing its schema or assigning
+/// unscoped observations to an account. These partitions may originate in
+/// either runtime; the stable identity, not the writer label, owns the rows.
 pub(super) fn rows_since_for_read_only_peer(
     connection: &Connection,
     age_seconds: f64,
     identity: &QuotaHistoryIdentity,
 ) -> SqlResult<Vec<QuotaHistoryRow>> {
-    let cutoff = now_unix() - age_seconds;
-    let rows = query_stable_identity_rows(connection, identity, Some(cutoff))?;
-    Ok(rows
-        .into_iter()
-        .filter(|row| {
-            // Reset timestamps stay attached to each historical sample: using
-            // the current bundle's reset as a filter would erase prior cycles.
-            // The stable identity already includes the account, plan, and
-            // limit; display names and derived account keys are not scope.
-            row.stable_identity().as_ref() == Some(identity)
-                && is_swift_source(row.source.as_deref())
-        })
-        .collect())
-}
-
-fn is_swift_source(source: Option<&str>) -> bool {
-    source
-        .map(str::trim)
-        .is_some_and(|value| value.eq_ignore_ascii_case("swift"))
+    let mut statement = connection.prepare("PRAGMA table_info(quota_snapshots)")?;
+    let columns = statement.query_map([], |row| row.get::<_, String>(1))?
+        .collect::<SqlResult<std::collections::HashSet<_>>>()?;
+    // Older, unscoped rows remain in their immutable archive. Do not infer an
+    // account from a display name, and do not add identity columns while reading.
+    if ["identity_version", "home_identity", "stable_account_key",
+        "identity_plan_type", "identity_limit_id"].iter().any(|name| !columns.contains(*name)) {
+        return Ok(Vec::new());
+    }
+    // Capabilities are per column: interrupted historical ALTER sequences may
+    // contain only some cycle fields. Keep every available piece of evidence.
+    let project = |name: &str, absent: &str| {
+        if columns.contains(name) { name.to_owned() } else { format!("{absent} AS {name}") }
+    };
+    let sql = format!(
+        "SELECT created_at, account_key, plan_type, limit_name, account_name, {source},
+            five_hour_used_percent, five_hour_resets_at, {five_generation}, {five_anchor},
+            seven_day_used_percent, seven_day_resets_at, {seven_generation}, {seven_anchor}, status,
+            identity_version, home_identity, stable_account_key, identity_plan_type, identity_limit_id
+         FROM quota_snapshots
+         WHERE identity_version=?1 AND home_identity=?2 AND stable_account_key=?3
+            AND identity_plan_type=?4 AND identity_limit_id=?5 AND created_at>=?6
+         ORDER BY created_at ASC",
+        source=project("source", "NULL"),
+        five_generation=project("five_hour_cycle_generation", "NULL"),
+        five_anchor=project("five_hour_reset_anchor", "0"),
+        seven_generation=project("seven_day_cycle_generation", "NULL"),
+        seven_anchor=project("seven_day_reset_anchor", "0"),
+    );
+    query_rows(connection, &sql, params![identity.version, identity.home_identity,
+        identity.stable_account_key, identity.plan_type, identity.limit_id,
+        now_unix() - age_seconds])
 }
 
 fn matching_rows(

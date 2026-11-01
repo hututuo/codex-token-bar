@@ -7,6 +7,8 @@ mod canonical;
 mod message_links;
 mod empty_sources;
 mod representations;
+#[cfg(any(test, feature = "business-store-fixture"))]
+mod reader_recovery;
 use super::accounting::{AccountingState, ACCOUNTING_REVISION};
 use super::fingerprint_codec;
 use super::session_files::session_id_from_file;
@@ -11551,7 +11553,7 @@ fn estimate_active_rollouts(
     if !database.is_file() {
         return Ok(());
     }
-    let state_connection = open_read_only_index(&database, StdDuration::from_millis(100))
+    let state_connection = open_external_state_database(&database, StdDuration::from_millis(100))
         .map_err(|error| format!("无法预扫描 active rollout：{error}"))?;
     if !column_exists_checked(&state_connection, "threads", "rollout_path")? {
         return Ok(());
@@ -11718,7 +11720,7 @@ fn visit_active_rollouts(
     if !database.exists() {
         return Ok(());
     }
-    let state_connection = match open_read_only_index(&database, StdDuration::from_millis(100)) {
+    let state_connection = match open_external_state_database(&database, StdDuration::from_millis(100)) {
         Ok(connection) => connection,
         Err(error) => {
             scan_completeness.mark_incomplete();
@@ -11896,7 +11898,7 @@ fn stage_thread_metadata(
             )));
             return Ok(ThreadMetadataStage::Failed);
         }
-        match file_signature(&database) {
+        match external_state_signature(&database) {
             Ok(value) => Some(value),
             Err(error) => {
                 warnings.push(thread_info_warning(format!(
@@ -11910,9 +11912,15 @@ fn stage_thread_metadata(
     } else {
         None
     };
-    let signature_text =
-        signature.map(|value| (value.size.to_string(), value.modified_ns.to_string()));
-    if previous == signature_text.clone().unzip() {
+    let signature_text = signature.map(|(db, wal)| (
+        db.size.to_string(),
+        format!("sqlite-family-v1:{db:?}:{wal:?}"),
+    ));
+    // An external WAL writer can overwrite frames without changing file length
+    // (and some filesystems coalesce timestamp updates). Never treat a live WAL
+    // as an immutable snapshot merely because its stat metadata is unchanged.
+    let has_live_wal = signature.is_some_and(|(_, wal)| wal.is_some_and(|w| w.size > 0));
+    if !has_live_wal && previous == signature_text.clone().unzip() {
         return Ok(ThreadMetadataStage::Unchanged);
     }
 
@@ -11923,7 +11931,7 @@ fn stage_thread_metadata(
         }));
     };
 
-    let connection = match open_read_only_index(&database, StdDuration::from_secs(3)) {
+    let connection = match open_external_state_database(&database, StdDuration::from_secs(3)) {
         Ok(connection) => connection,
         Err(error) => {
             warnings.push(thread_info_warning(format!(
@@ -11934,12 +11942,33 @@ fn stage_thread_metadata(
             return Ok(ThreadMetadataStage::Failed);
         }
     };
-    let mut statement = match connection.prepare(
-        r#"
-        SELECT id, title, first_user_message, preview, COALESCE(updated_at_ms, updated_at)
-        FROM threads
-        "#,
-    ) {
+    let mut columns_statement = match connection.prepare("PRAGMA table_info(threads)") {
+        Ok(statement) => statement,
+        Err(error) => {
+            warnings.push(thread_info_warning(format!("读取会话标题索引列信息失败：{error}")));
+            return Ok(ThreadMetadataStage::Failed);
+        }
+    };
+    let columns = columns_statement.query_map([], |row| row.get::<_, String>(1))
+        .and_then(|rows| rows.collect::<rusqlite::Result<HashSet<_>>>());
+    let columns = match columns {
+        Ok(columns) => columns,
+        Err(error) => {
+            warnings.push(thread_info_warning(format!("读取会话标题索引列信息失败：{error}")));
+            return Ok(ThreadMetadataStage::Failed);
+        }
+    };
+    drop(columns_statement);
+    if !columns.contains("id") || !columns.contains("title")
+        || (!columns.contains("updated_at") && !columns.contains("updated_at_ms")) {
+        warnings.push(thread_info_warning("读取会话标题索引结构失败：缺少必需的 id、title 或更新时间列".into()));
+        return Ok(ThreadMetadataStage::Failed);
+    }
+    let project = |name: &'static str| if columns.contains(name) { name } else { "NULL" };
+    let sql = format!("SELECT id, {}, {}, {}, COALESCE({}, {}) FROM threads",
+        project("title"), project("first_user_message"), project("preview"),
+        project("updated_at_ms"), project("updated_at"));
+    let mut statement = match connection.prepare(&sql) {
         Ok(statement) => statement,
         Err(error) => {
             warnings.push(thread_info_warning(format!(
@@ -11989,7 +12018,7 @@ fn stage_thread_metadata(
     drop(statement);
     drop(connection);
 
-    let signature_after = match file_signature(&database) {
+    let signature_after = match external_state_signature(&database) {
         Ok(value) => value,
         Err(error) => {
             warnings.push(thread_info_warning(format!(
@@ -12258,6 +12287,11 @@ pub(super) fn verify_legacy_migration_fixture(home: &Path, path: &Path) -> Resul
         return Err("fixture unexpectedly required a structural migration".into());
     }
     Ok(paths != schema11_paths_for_namespace(path, false))
+}
+
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+pub(super) fn verify_live_state_fixture(home: &Path) -> Result<serde_json::Value, String> {
+    reader_recovery::verify_live_state(home)
 }
 
 fn schema11_file_stamp(path: &Path) -> Result<Schema11FileStamp, String> {
@@ -15215,6 +15249,28 @@ fn open_exact_business_store(path: &Path) -> Result<Connection, String> {
         &store.logical_path,
         &legacy_sources,
     )
+}
+
+/// Codex owns state_5.sqlite and continues writing it after Token Bar starts.
+/// It is not a legacy Token Bar ledger and must never enter snapshot/import
+/// routing, even in a production build with business namespaces enabled.
+fn open_external_state_database(path: &Path, timeout: StdDuration) -> Result<Connection, String> {
+    let raw = sqlite::open_read_only(path, timeout).map_err(|error| error.to_string())?;
+    #[cfg(test)]
+    { Ok(raw) }
+    #[cfg(not(test))]
+    { Ok(Connection::unbound(raw)) }
+}
+
+fn external_state_signature(path: &Path) -> Result<(FileSignature, Option<FileSignature>), String> {
+    let database = file_signature(path)?;
+    let wal_path = sqlite_sidecar_path(path, "-wal");
+    let wal = match fs::metadata(&wal_path) {
+        Ok(_) => Some(file_signature(&wal_path)?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(format!("无法检查外部会话索引 WAL：{error}")),
+    };
+    Ok((database, wal))
 }
 
 fn open_read_only_index(path: &Path, timeout: StdDuration) -> Result<Connection, String> {
