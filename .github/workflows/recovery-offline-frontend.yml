@@ -1,0 +1,42 @@
+name: Recovery offline frontend environment
+
+on:
+  push:
+    branches: ['codex/tokenbar-recovery-control-20261101']
+    paths: ['.github/workflows/recovery-offline-frontend.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  environment:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Install exactly the committed dependency lock
+        working-directory: tauri-app
+        run: npm ci --registry=https://registry.npmjs.org
+      - name: Package public dependencies and Node, excluding credentials and user data
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p node-runtime/bin offline-frontend
+          cp "$(command -v node)" node-runtime/bin/node
+          tar -czf offline-frontend/frontend-environment.tar.gz tauri-app/node_modules node-runtime
+          git rev-parse HEAD > offline-frontend/source-sha.txt
+          sha256sum tauri-app/package-lock.json > offline-frontend/lock-sha256.txt
+          sha256sum offline-frontend/frontend-environment.tar.gz > offline-frontend/SHA256SUMS
+          node --version > offline-frontend/node-version.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tokenbar-offline-frontend-${{ github.sha }}
+          path: offline-frontend/
+          if-no-files-found: error
+          retention-days: 14
