@@ -49,7 +49,7 @@ fn broad_published_reads_seek_sources_and_preserve_daily_totals() {
         assert!(!plan.iter().any(|step| step.contains("event_rows_timestamp_idx")), "{plan:?}");
         assert!(!plan.iter().any(|step| step.contains("MATERIALIZE") && step.contains("events")), "{plan:?}");
     }
-    let dashboard = index.dashboard_data(now, UtcOffset::UTC).unwrap();
+    let dashboard = index.dashboard_data(&root, now, UtcOffset::UTC, &mut Vec::new()).unwrap();
     assert_eq!(index.published_event_count().unwrap(), 1024);
     let (seed, contributions) = index.summary_with_file_contributions(now, None).unwrap();
     let (incremental, _) = index.summary_with_file_contributions(now, Some(&contributions)).unwrap();
