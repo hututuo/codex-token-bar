@@ -431,6 +431,11 @@ pub(crate) fn read_body_speed_history(
     page
 }
 
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+pub(crate) fn verify_body_storage_fixture(scope: &LiveRateSourceScope) -> Result<(), String> {
+    observed::verify_fixture_storage(scope)
+}
+
 fn empty_unread_summary() -> UnreadSummary {
     UnreadSummary {
         active: false,

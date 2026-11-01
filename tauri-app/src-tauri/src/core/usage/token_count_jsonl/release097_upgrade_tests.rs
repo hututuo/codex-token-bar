@@ -292,10 +292,12 @@ fn body_check_with_b_initial_state(frozen: &Path, home: &Path, existing_b_canary
         "The legacy JSON changed before its body owner loaded"
     );
     let page = live_rate::read_body_speed_history(home, &scope, 0, 100, Some(now), Some(15));
-    require!(
-        page.samples.len() == 1 && page.samples[0].id == "v097-rust-body",
-        "Actual production JSON-to-B import lost or duplicated the released body sample"
-    );
+    if page.samples.len() != 1 || page.samples[0].id != "v097-rust-body" {
+        // Diagnostics run only after the original owner failed; a successful
+        // diagnostic retry must never convert that failed assertion to PASS.
+        let detail = live_rate::verify_body_storage_fixture(&scope);
+        return Err(format!("Actual production JSON-to-B import lost or duplicated the released body sample; diagnostic={detail:?}"));
+    }
     require!(
         page.retention_days == 15,
         "Released body retention was lost"

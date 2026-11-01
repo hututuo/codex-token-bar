@@ -1726,6 +1726,17 @@ fn storage_path(scope: &LiveRateSourceScope) -> Option<PathBuf> {
     base.map(|path| path.with_file_name(format!("body-speed-{hash:016x}.sqlite")))
 }
 
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+pub(super) fn verify_fixture_storage(scope: &LiveRateSourceScope) -> Result<(), String> {
+    let path = storage_path(scope).ok_or("fixture body path missing")?;
+    let shared = crate::core::app_paths::multi_client_usage_database_path().ok_or("fixture B path missing")?;
+    let store = BodySpeedTrendStore::open_shared(&path, &shared)
+        .map_err(|error| format!("body open/migration: {error}"))?;
+    store.import_legacy_json(current_time_seconds())
+        .map_err(|error| format!("body legacy JSON: {error}"))?;
+    Ok(())
+}
+
 pub(super) fn cache_path(scope: &LiveRateSourceScope) -> Option<PathBuf> {
     storage_path(scope)
 }

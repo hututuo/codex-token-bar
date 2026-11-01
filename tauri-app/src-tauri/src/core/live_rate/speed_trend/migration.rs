@@ -247,7 +247,7 @@ fn verify_shared_receipt(
         return Err(rusqlite::Error::InvalidQuery);
     }
     validate_body_schema(&target, prefix)?;
-    let backup_path = PathBuf::from(&receipt.backup_path);
+    let backup_path = sqlite_backup_path(&PathBuf::from(&receipt.backup_path))?;
     let backup = Connection::open_with_flags(
         &backup_path,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
@@ -645,11 +645,25 @@ fn retained_backup_path(shared_path: &Path, source_identity: &str) -> rusqlite::
     let backup_directory = parent.join("backups");
     std::fs::create_dir_all(&backup_directory)
         .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+    let backup_directory = sqlite_backup_path(&backup_directory)?;
     let source_key = hex_digest(&Sha256::digest(source_identity.as_bytes()));
     Ok(backup_directory.join(format!(
         "body-speed-{source_key}-{}.sqlite",
         uuid::Uuid::new_v4()
     )))
+}
+
+/// Rust's filesystem APIs support long Windows paths, but SQLite also needs
+/// the verbatim prefix. Resolve an existing owned parent before appending the
+/// generated filename; keep source identities and stored old receipts intact.
+fn sqlite_backup_path(path: &Path) -> rusqlite::Result<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::fs::canonicalize(path)
+            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))
+    }
+    #[cfg(not(windows))]
+    { Ok(path.to_path_buf()) }
 }
 
 #[cfg(unix)]
@@ -725,6 +739,28 @@ fn to_sql_error(error: impl std::fmt::Display) -> rusqlite::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn generated_long_backup_can_be_created_and_reopened_without_rewriting_old_receipt() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("owned-body-history-".repeat(7));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = retained_backup_path(&directory.join("multi-client-usage.sqlite"), "synthetic-source").unwrap();
+        assert!(path.as_os_str().to_string_lossy().len() > 260);
+        assert!(path.as_os_str().to_string_lossy().starts_with("\\\\?\\"));
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE proof(value INTEGER); INSERT INTO proof VALUES(123)").unwrap();
+        drop(db);
+        // Existing receipts keep their historical spelling. Resolve only at
+        // SQLite's I/O boundary, without changing identity or receipt bytes.
+        let old_spelling = PathBuf::from(path.to_string_lossy().strip_prefix("\\\\?\\").unwrap());
+        let old_receipt = old_spelling.to_string_lossy().into_owned();
+        let resolved = sqlite_backup_path(&old_spelling).unwrap();
+        let read = Connection::open_with_flags(&resolved, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI).unwrap();
+        assert_eq!(read.query_row("SELECT value FROM proof", [], |r| r.get::<_,i64>(0)).unwrap(), 123);
+        assert_eq!(old_spelling.to_string_lossy(), old_receipt);
+    }
     use tempfile::tempdir;
 
     #[test]
