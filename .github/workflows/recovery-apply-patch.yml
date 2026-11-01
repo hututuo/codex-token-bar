@@ -37,7 +37,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import hashlib, json, os, pathlib, re, subprocess
+          import base64, gzip, hashlib, io, json, os, pathlib, re, subprocess
           work = pathlib.Path('work').resolve()
           patch = pathlib.Path('control/recovery-patches/current.patch').read_bytes()
           header, separator, diff = patch.partition(b'\n')
@@ -49,6 +49,15 @@ jobs:
                   raise SystemExit('Invalid exact source identity')
           if type(spec.get('native_changed')) is not bool or not isinstance(spec.get('message'), str):
               raise SystemExit('Invalid patch metadata')
+          if spec.get('encoding') == 'gzip-base64':
+              with gzip.GzipFile(fileobj=io.BytesIO(base64.b64decode(diff.strip(), validate=True))) as stream:
+                  diff = stream.read(8 * 1024 * 1024 + 1)
+          elif spec.get('encoding', 'plain') != 'plain':
+              raise SystemExit('Unsupported patch encoding')
+          if len(diff) > 8 * 1024 * 1024:
+              raise SystemExit('Patch exceeds the bounded review transport')
+          if spec.get('diff_sha256') and hashlib.sha256(diff).hexdigest() != spec['diff_sha256']:
+              raise SystemExit('Diff transport integrity mismatch')
           def git(*args, **kwargs):
               return subprocess.check_output(['git', '-C', str(work), *args], **kwargs).decode().strip()
           if git('rev-parse', 'HEAD') != spec['base_sha']:
@@ -86,3 +95,54 @@ jobs:
     uses: ./.github/workflows/release-upgrade-compatibility.yml
     with:
       source_sha: ${{ needs.apply.outputs.source_sha }}
+  production-readers:
+    needs: [apply, checks]
+    if: needs.apply.outputs.native_changed == 'true' && !cancelled() && needs.apply.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    env:
+      RUSTUP_TOOLCHAIN: '1.93.1'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_BUILD_JOBS: '3'
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.apply.outputs.source_sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: rust-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-v1
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: tauri-app/src-tauri/target
+          key: rust-test-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-${{ needs.apply.outputs.source_sha }}
+          restore-keys: |
+            rust-test-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-
+      - name: Verify actual non-test reader routes
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.93.1 --profile minimal
+          npm ci --prefix tauri-app --registry=https://registry.npmjs.org
+          npm run build --prefix tauri-app
+          python3 scripts/check_business_store_fixture.py
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: production-reader-evidence-${{ matrix.os }}-${{ needs.apply.outputs.source_sha }}
+          path: |
+            native-production-readers.log
+            native-production-readers.json
+          retention-days: 30
