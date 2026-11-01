@@ -1,0 +1,88 @@
+name: Apply verified recovery patch
+
+on:
+  push:
+    branches: ['codex/tokenbar-recovery-control-20261101']
+    paths: ['recovery-patches/current.patch']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tokenbar-recovery-patch-writer
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      source_sha: ${{ steps.apply.outputs.source_sha }}
+      native_changed: ${{ steps.apply.outputs.native_changed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: codex/tokenbar-recovery-20261101
+          path: work
+          fetch-depth: 0
+      - id: apply
+        name: Require exact parent and resulting tree; never force-push or publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, re, subprocess
+          work = pathlib.Path('work').resolve()
+          patch = pathlib.Path('control/recovery-patches/current.patch').read_bytes()
+          header, separator, diff = patch.partition(b'\n')
+          if not separator or not header.startswith(b'# tokenbar-recovery '):
+              raise SystemExit('Missing recovery patch manifest')
+          spec = json.loads(header.removeprefix(b'# tokenbar-recovery '))
+          for field in ('base_sha', 'tree_sha'):
+              if not re.fullmatch('[0-9a-f]{40}', spec[field]):
+                  raise SystemExit('Invalid exact source identity')
+          if type(spec.get('native_changed')) is not bool or not isinstance(spec.get('message'), str):
+              raise SystemExit('Invalid patch metadata')
+          def git(*args, **kwargs):
+              return subprocess.check_output(['git', '-C', str(work), *args], **kwargs).decode().strip()
+          if git('rev-parse', 'HEAD') != spec['base_sha']:
+              raise SystemExit('Repair branch advanced; rebase and verify again, do not overwrite')
+          git('apply', '--index', '--check', '--whitespace=error-all', '-', input=diff)
+          git('apply', '--index', '--whitespace=error-all', '-', input=diff)
+          if git('write-tree') != spec['tree_sha']:
+              raise SystemExit('Patched tree differs from the locally verified tree; no commit made')
+          git('-c', 'user.name=Token Bar Recovery', '-c', 'user.email=138413246+hututuo@users.noreply.github.com',
+              'commit', '-m', spec['message'])
+          sha = git('rev-parse', 'HEAD')
+          git('push', 'origin', 'HEAD:refs/heads/codex/tokenbar-recovery-20261101')
+          out = pathlib.Path('patch-evidence'); out.mkdir()
+          (out/'result.json').write_text(json.dumps({**spec, 'source_sha': sha,
+              'patch_sha256': hashlib.sha256(patch).hexdigest(), 'control_sha': os.environ['GITHUB_SHA']}, indent=2)+'\n')
+          git('bundle', 'create', str((out/'repair-changes.bundle').resolve()), 'HEAD', '^d831ae416c78f9f1950e8b4ed9755c8718a5b51d')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'source_sha={sha}\nnative_changed={str(spec["native_changed"]).lower()}\n')
+          print(json.dumps({'source_sha':sha, 'tree_sha':spec['tree_sha']}))
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: recovery-patch-${{ github.run_id }}
+          path: patch-evidence/
+          if-no-files-found: error
+          retention-days: 30
+  checks:
+    needs: apply
+    uses: ./.github/workflows/ci.yml
+    with:
+      source_sha: ${{ needs.apply.outputs.source_sha }}
+  upgrade:
+    needs: apply
+    if: needs.apply.outputs.native_changed == 'true'
+    uses: ./.github/workflows/release-upgrade-compatibility.yml
+    with:
+      source_sha: ${{ needs.apply.outputs.source_sha }}
