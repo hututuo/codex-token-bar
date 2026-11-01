@@ -211,7 +211,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
   // the pending bit at timer start must not make a later unrelated render
   // change the effect dependency and cancel the in-flight owner.
   const activeForcedPreciseGenerationRef = useRef<number | null>(null);
-  const activePreciseRequestRef = useRef<PreciseDashboardRequestIntent | null>(null);
+  const activePreciseRequestRef = useRef<(PreciseDashboardRequestIntent & { generation: number }) | null>(null);
   latestPreciseCoverageRef.current = state.dashboard?.preciseRecentUsageCoveredAt
     ?? state.dashboard?.settledThrough
     ?? null;
@@ -265,6 +265,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     setPreciseRequestInFlight(true);
     activeForcedPreciseGenerationRef.current = forced ? generation : null;
     activePreciseRequestRef.current = {
+      generation,
       force: forced,
       reason,
       revision,
@@ -1210,6 +1211,12 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     onWake: refreshAfterWake,
   });
 
+  // Consuming a non-forced quota request must retain its reason and boundary
+  // until this generation settles. Falling back to "cadence" would tear down
+  // the effect and unsubscribe its only publisher from the running owner.
+  const activePreciseRequest = activePreciseRequestRef.current?.generation === loadGeneration
+    ? activePreciseRequestRef.current
+    : null;
   useDeferredDashboardLoads({
     active: fastSnapshotLoaded,
     preciseActive: fastSnapshotLoaded && preciseIndexUpgradeRequired === null,
@@ -1220,29 +1227,14 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     forcePreciseRefresh: pendingForcedPreciseRefreshRef.current
       || activeForcedPreciseGenerationRef.current === loadGeneration,
     preciseRefreshReason: pendingPreciseRequestRef.current?.reason
-      ?? (activePreciseRequestRef.current
-        && activePreciseRequestRef.current.force
-        && activeForcedPreciseGenerationRef.current === loadGeneration
-        ? activePreciseRequestRef.current.reason
-        : retryPreciseRefreshRef.current ? "retry" : "cadence"),
+      ?? activePreciseRequest?.reason
+      ?? (retryPreciseRefreshRef.current ? "retry" : "cadence"),
     preciseRefreshRevision: pendingPreciseRequestRef.current?.revision
-      ?? (activePreciseRequestRef.current
-        && activePreciseRequestRef.current.force
-        && activeForcedPreciseGenerationRef.current === loadGeneration
-        ? activePreciseRequestRef.current.revision
-        : undefined),
+      ?? activePreciseRequest?.revision,
     preciseRefreshDedupeDomain: pendingPreciseRequestRef.current?.dedupeDomain
-      ?? (activePreciseRequestRef.current
-        && activePreciseRequestRef.current.force
-        && activeForcedPreciseGenerationRef.current === loadGeneration
-        ? activePreciseRequestRef.current.dedupeDomain
-        : undefined),
+      ?? activePreciseRequest?.dedupeDomain,
     preciseRefreshDedupeKey: pendingPreciseRequestRef.current?.dedupeKey
-      ?? (activePreciseRequestRef.current
-        && activePreciseRequestRef.current.force
-        && activeForcedPreciseGenerationRef.current === loadGeneration
-        ? activePreciseRequestRef.current.dedupeKey
-        : undefined),
+      ?? activePreciseRequest?.dedupeKey,
     quotaGeneration: quotaLoadGeneration,
     forceQuotaRefresh: forceNextQuotaLoad,
     sourceToken,

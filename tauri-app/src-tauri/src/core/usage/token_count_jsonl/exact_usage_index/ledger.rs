@@ -38,6 +38,18 @@ pub(super) fn verify_performance_fixture(home: &Path) -> Result<serde_json::Valu
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum CompactionEventDisposition { Insert, Existing, Corrected }
 
+fn published_compaction_event(db: &Connection, source: i64, fingerprint: &[u8]) -> Result<Option<Vec<Value>>, String> {
+    // Seek the existing (source_id, fingerprint) binding index for both hits
+    // and new responses. Filtering only e.source_id scans the whole source.
+    let mut statement = db.prepare(&format!("SELECT e.id,e.source_id,e.ordinal,e.timestamp,e.tokens,e.input_tokens,e.cached_input_tokens,e.output_tokens,e.reasoning_output_tokens,e.model,e.user_prompt_start,e.user_prompt_end,e.assistant_response_start,e.assistant_response_end,e.accounting_kind,e.reported_total_tokens,e.token_source_offset,e.legacy_tokens FROM event_rows e JOIN usage_ledger_bindings b ON b.event_id=e.id WHERE e.source_id=?1 AND b.source_id=?1 AND b.fingerprint=?2 ORDER BY e.id LIMIT 1"))
+        .map_err(|error| format!("无法检查已发布 compaction 响应身份：{error}"))?;
+    let result = statement.query_row(params![source, fingerprint], read_values).optional()
+        .map_err(|error| format!("无法检查已发布 compaction 响应身份：{error}"))?;
+    #[cfg(all(feature = "business-store-fixture", not(test)))]
+    performance_fixture::record_lookup("compaction-identity", &statement)?;
+    Ok(result)
+}
+
 pub(super) fn validate(db: &Connection) -> Result<(),String> {
     if !table_exists_checked(db,"usage_ledger_meta")? {
         if table_exists_checked(db,"metadata")? && metadata_i64(db,"schema_version")?.is_some_and(|v| (13..=CURRENT_SCHEMA_VERSION).contains(&v)) {
@@ -188,11 +200,7 @@ pub(super) fn upsert_compaction_event(
         return Ok(CompactionEventDisposition::Corrected);
     }
 
-    let existing: Option<Vec<Value>> = db.query_row(
-        &format!("SELECT e.id,e.source_id,e.ordinal,e.timestamp,e.tokens,e.input_tokens,e.cached_input_tokens,e.output_tokens,e.reasoning_output_tokens,e.model,e.user_prompt_start,e.user_prompt_end,e.assistant_response_start,e.assistant_response_end,e.accounting_kind,e.reported_total_tokens,e.token_source_offset,e.legacy_tokens FROM event_rows e JOIN usage_ledger_bindings b ON b.event_id=e.id WHERE e.source_id=?1 AND b.fingerprint=?2 ORDER BY e.id LIMIT 1"),
-        params![source, fingerprint],
-        read_values,
-    ).optional().map_err(|error| format!("无法检查已发布 compaction 响应身份：{error}"))?;
+    let existing = published_compaction_event(db, source, fingerprint)?;
     let Some(mut row) = existing else { return Ok(CompactionEventDisposition::Insert); };
     if number(&row, 14)? != crate::core::usage::token_count_jsonl::accounting::UNREPORTED_COMPACTION {
         return Ok(CompactionEventDisposition::Existing);

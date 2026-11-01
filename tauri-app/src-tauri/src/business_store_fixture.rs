@@ -190,6 +190,9 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
         "BodySpeed detail or weighted trend missing"
     );
     checks.push(json!({"name":"body-speed","status":"PASS","samples":samples.len(),"trendPoints":trend.len()}));
+    // The later missing-container check renames A. Windows must not still
+    // have the BodySpeed connection open when that check parks the file.
+    drop(store);
 
     let b = crate::core::multi_client_usage::open_activity_module_connection()?;
     ok!(b.execute("INSERT INTO activity_speed_samples(source_identity,id,display_mode,estimator_id,estimator_version,metric_kind,client,model,started_at,ended_at,output_rate,covered_seconds,weighted_output) VALUES(?1,?2,'model','fixture','1','output','codex','gpt-6.1-sol',?3,?4,12,10,120)", params!["fixture-b", "fixture-b-activity", now - 10.0, now]));
@@ -200,6 +203,7 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
     ));
     need!(b_rows == 1, "B activity write missing");
     checks.push(json!({"name":"ledger-b","status":"PASS","rows":b_rows}));
+    drop(b);
 
     checks.push(exact_fixture(&h1, &h2, &p)?);
     checks.push(token_count_jsonl::verify_runtime_recovery_fixture(&root.join("runtime-home"))?);

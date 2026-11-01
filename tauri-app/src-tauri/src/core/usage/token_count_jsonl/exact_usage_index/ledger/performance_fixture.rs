@@ -7,10 +7,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static MAX_RAW_STEPS: AtomicU64 = AtomicU64::new(0);
 static MAX_COUNT_STEPS: AtomicU64 = AtomicU64::new(0);
 static LEGACY_COUNT_CALLS: AtomicU64 = AtomicU64::new(0);
+static MAX_COMPACTION_STEPS: AtomicU64 = AtomicU64::new(0);
 
 pub(super) fn record_lookup(kind: &str, statement: &rusqlite::Statement<'_>) -> Result<(), String> {
     let steps = statement.get_status(rusqlite::StatementStatus::VmStep) as u64;
-    let maximum = if kind == "raw-location" {
+    let maximum = if kind == "compaction-identity" {
+        &MAX_COMPACTION_STEPS
+    } else if kind == "raw-location" {
         &MAX_RAW_STEPS
     } else {
         LEGACY_COUNT_CALLS.fetch_add(1, Ordering::Relaxed);
@@ -129,6 +132,17 @@ pub(super) fn verify(home: &Path) -> Result<serde_json::Value, String> {
         "legacy backfill did not restore verified raw bindings"
     );
     index.sync(&home, &mut Vec::new())?;
+    let (event_id, fingerprint): (i64, Vec<u8>) = sql!(index.connection.query_row(
+        "SELECT event_id,fingerprint FROM usage_ledger_bindings WHERE source_id=?1 AND fingerprint IS NOT NULL ORDER BY event_id DESC LIMIT 1",
+        params![source], |row| Ok((row.get(0)?, row.get(1)?))));
+    MAX_COMPACTION_STEPS.store(0, Ordering::Relaxed);
+    let found = super::published_compaction_event(&index.connection, source, &fingerprint)?;
+    need!(found.as_ref().and_then(|row| row.first()) == Some(&rusqlite::types::Value::Integer(event_id)),
+        "compaction identity lookup returned a different event");
+    need!(super::published_compaction_event(&index.connection, source, b"missing-compaction-response")?.is_none(),
+        "new compaction response incorrectly matched an old event");
+    need!(super::published_compaction_event(&index.connection, source + 1, &fingerprint)?.is_none(),
+        "compaction response crossed source identity");
     need!(
         index
             .summary(OffsetDateTime::now_utc(), UtcOffset::UTC)?
@@ -142,6 +156,7 @@ pub(super) fn verify(home: &Path) -> Result<serde_json::Value, String> {
         "legacyCountCalls":LEGACY_COUNT_CALLS.load(Ordering::Relaxed),
         "rawLookupMaxVmSteps":MAX_RAW_STEPS.load(Ordering::Relaxed),
         "identityCountMaxVmSteps":MAX_COUNT_STEPS.load(Ordering::Relaxed),
+        "compactionIdentityMaxVmSteps":MAX_COMPACTION_STEPS.load(Ordering::Relaxed),
         "backfillElapsedMs":elapsed}),
     )
 }

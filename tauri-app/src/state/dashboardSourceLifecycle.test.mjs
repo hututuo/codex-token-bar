@@ -4,6 +4,55 @@ import { Window } from "happy-dom";
 
 import { withSsrModules } from "../test/ssrHarness.mjs";
 
+test("a non-forced initial quota request retains its precise subscriber after starting", async () => {
+  await withMountedDashboard(async ({ React, container, load, render }) => {
+    const { emptyDashboardSnapshot } = await load("/src/api/fallback/dashboardFallback.ts");
+    const { emptyAccountQuotaBundle } = await load("/src/api/fallback/quotaFallback.ts");
+    const { fallbackPlatformCapabilities } = await load("/src/api/fallback/platformFallback.ts");
+    const cached = emptyDashboardSnapshot();
+    cached.stats.totalTokens = 100;
+    const owner = deferred();
+    let reads = 0;
+    const reasons = [];
+    const source = dashboardSource({
+      fallbackPlatformCapabilities,
+      getCodexHome: async () => ({
+        ...sourceEnvelope("quota-subscriber-physical", 1),
+        canonicalHomeKey: "/quota-subscriber-fixture/.codex",
+      }),
+      readDashboardSnapshot: async () => ({ status: "stale", snapshot: cached }),
+      readPreciseDashboardSnapshot: (_token, reason) => { reasons.push(reason); reads += 1; return owner.promise; },
+    });
+    source.readAccountQuota = async () => {
+      const quota = emptyAccountQuotaBundle();
+      quota.quota.sevenDay.resetsAtUnix = Math.floor(Date.now() / 1000) + 86400;
+      quota.quota.sevenDay.usedPercent = 0.2;
+      quota.quota.sevenDay.remainingPercent = 0.8;
+      quota.quota.sevenDay.availability = "measured";
+      quota.attributionIdentity = { scopeKey: "fixture-quota", plan: "pro", limit: "codex" };
+      return quota;
+    };
+    await render(source, {
+      includeFreshness: true,
+      subscribeToSourceChanges: async () => ({ ok: true, unlisten() {} }),
+    });
+    const { INITIAL_PRECISE_DASHBOARD_DELAY_MS } = await load("/src/state/preciseDashboardSchedule.ts");
+    await React.act(() => new Promise(resolve => setTimeout(resolve, INITIAL_PRECISE_DASHBOARD_DELAY_MS + 50)));
+    await waitForAct(React, () => reads === 1);
+    assert.deepEqual(reasons, ["quota"]);
+    await React.act(tick);
+    owner.resolve({
+      ...cached,
+      preciseRecentUsageFresh: true,
+      preciseRecentUsageCoveredAt: new Date().toISOString(),
+    });
+    await React.act(async () => { await owner.promise; await tick(); });
+    assert.equal(JSON.parse(container.textContent).preciseFresh, true,
+      "the quota reason must survive consumption of the pending request");
+    assert.equal(reads, 1);
+  });
+});
+
 test("cached and precise dashboard clients invoke production IPC with the exact source token", async () => {
   const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
   const calls = [];
@@ -456,6 +505,7 @@ async function withMountedDashboard(run) {
             physical: result.providerSourceKey.split(":").at(-1),
             platform: result.state.platform?.platform ?? null,
             generatedAt: result.state.dashboard?.generatedAt ?? null,
+            ...(options.includeFreshness ? { preciseFresh: result.state.dashboard?.preciseRecentUsageFresh } : {}),
           }));
         }
         const probe = React.createElement(Probe);
