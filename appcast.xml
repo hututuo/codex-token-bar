@@ -3,6 +3,45 @@
     <channel>
         <title>Codex Token Bar</title>
         <item>
+            <title>0.9.11</title>
+            <pubDate>Sun, 01 Nov 2026 08:19:17 +0000</pubDate>
+            <sparkle:version>990</sparkle:version>
+            <sparkle:shortVersionString>0.9.11</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"># Codex Token Bar v0.9.11
+
+## 简体中文
+
+修复部分用户覆盖安装 0.9.10 后仍停留在“账本准备未完成”的问题，Mac 与 Windows 同步更新。
+
+- 修复每日维护时钟正常推进、额度观察继续追加后，未完成迁移被误判为旧账改写的问题；旧观察和账户归属仍完整核验。
+- 完善 Exact 索引接续：区分运行元数据与历史消费，验证已知解析修复与原文关联；已发布的历史用量保留，原文不可用的关联仍保持不可用，不合并重复副本、不重复计账。
+- 加强恢复目标保护：现有分区若出现冻结快照之外的记录，拒绝覆盖；真正替换前会在写入事务内再次核对。
+- 保留原始会话、旧账、迁移备份和中断恢复证据；金额改写、归属冲突、已知指纹矛盾或无法证明的变化继续安全拒绝。
+- 兼容Windows较长数据目录中的测速恢复备份，旧回执和来源标识保持不变。
+- 补充组合故障、启动、中断恢复和重复启动的双端回归。
+- 修复侧栏三级菜单在汇总范围丢失24小时Codex额度曲线的问题；稀疏额度采样也能显示，不伪造缺失窗口。
+
+遇到旧版启动提示的用户可直接覆盖更新，无需先卸载或删除数据目录。请保留旧数据库与迁移清单。
+
+## English
+
+Fix startup blocks that still affected some users after installing 0.9.10. Mac and Windows are updated together.
+
+- Allow unfinished quota migrations to resume after normal maintenance-clock advancement and appended observations, while verifying all historical observations and account ownership.
+- Improve Exact index continuity by separating operational state from historical consumption and verifying known parser repairs and raw bindings. Preserve already-published historical usage while keeping unavailable raw links unavailable. Duplicate copies are not summed or counted twice.
+- Protect recovery destinations: refuse replacement when a partition contains changes outside its frozen snapshots, and recheck its proof inside the write transaction before replacement.
+- Preserve original sessions, accounting history, migration backups, and recovery evidence. Changed historical amounts, ownership conflicts, conflicting known fingerprints, and unproved transitions remain safely rejected.
+- Support completed-body recovery backups in longer Windows data directories while preserving existing receipts and source identities.
+- Add cross-platform regression coverage for the combined incident, startup, interruption recovery, and repeated startup.
+- Restore the sidebar detail's 24-hour Codex quota trend in aggregate scope. Sparse observations remain visible without inventing missing quota windows.
+
+Install over the existing version without uninstalling or deleting data directories. Keep old databases and migration receipts.
+</description>
+            <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.9.11/CodexTokenBar-v0.9.11-macos-arm64.app.zip" length="27680863" type="application/octet-stream" sparkle:edSignature="2k5jLX0rvZF2+Ip5NKGCLAfEosPYqRasq8oGMFhkF+ZfuG4OSlFr2/w0G2Kt/W9M6ax8ZPxH32peoH0g7P42BA==" />
+        </item>
+        <item>
             <title>0.9.10</title>
             <pubDate>Sat, 31 Oct 2026 18:25:15 +0000</pubDate>
             <sparkle:version>989</sparkle:version>
@@ -147,33 +186,6 @@ Codex quota queries require a locally installed, signed-in Codex. Claude quota a
 Quota queries require a locally installed and signed-in Codex. macOS 14 or newer is required; the Mac package is for Apple Silicon. Windows x64 and ARM64 packages are included. The Mac app is ad-hoc signed and not notarized; Windows installers do not have a commercial code-signing certificate. Both automatic-update lanes verify their respective update signatures.
 </description>
             <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.9.7/CodexTokenBar-v0.9.7-macos-arm64.app.zip" length="14754032" type="application/octet-stream" sparkle:edSignature="uOnGv8Z/Uvf8w16e3kdBhJx3LP7OthHeJCymr5EXzumOOVDd8HpSYwV3P86xnzxMDqh3otUgu1dbqs6AYiLYAQ==" />
-        </item>
-        <item>
-            <title>0.9.6</title>
-            <pubDate>Thu, 22 Oct 2026 11:12:37 +0800</pubDate>
-            <sparkle:version>928</sparkle:version>
-            <sparkle:shortVersionString>0.9.6</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown">## 简体中文
-
-- 修复 Windows 更新或覆盖安装时覆盖自定义快捷方式的问题，保留代理启动器、启动参数和工作目录。
-- 修复 Windows 自启动路径修复时丢失已有启动参数的问题。
-- macOS 与 Windows 同步兼容众测雷达新版 v6 数据，保留 v5 兼容和评分校验。
-- 保留现有用量索引、历史统计与费用账本，无需重新导入。
-
-若旧版更新已经覆盖代理快捷方式，请先恢复原有代理启动入口；本版本会保护后续更新，无法重建未知的旧启动脚本参数。
-
-## English
-
-- Preserve custom Windows shortcuts, proxy launchers, arguments and working directories during updates and reinstalls.
-- Preserve existing arguments when repairing Windows startup registration.
-- Support RadarBench v6 on macOS and Windows while retaining v5 compatibility and score validation.
-- Keep existing usage indexes, historical statistics and cost ledgers without reimporting data.
-
-If an earlier update already replaced a proxy shortcut, restore the original launch entry first. This update protects future updates but cannot reconstruct unknown previous launcher arguments.
-</description>
-            <enclosure url="https://github.com/hututuo/codex-token-bar/releases/download/v0.9.6/CodexTokenBar-v0.9.6-macos-arm64.app.zip" length="14665445" type="application/octet-stream" sparkle:edSignature="T53zcdjaf9k1jJZ83pFQks9UJQ8HSDIpldNzGsBkAb4srRH1mraI7NYy5oRigs6TfPmjkGiHEKUcFeOWrSGsBQ==" />
         </item>
     </channel>
 </rss>
