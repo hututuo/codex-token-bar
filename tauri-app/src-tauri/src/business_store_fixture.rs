@@ -332,9 +332,12 @@ fn validate_root(input: &Path) -> Result<PathBuf, String> {
 
 fn seed_quota(path: &Path, home: &Path, at: f64, legacy: bool) -> Result<(), String> {
     parent(path)?;
+    let plan = quota_history::QuotaHistoryIdentity::from_canonical_parts(home,
+        Some("sub:fixture-account"), "pro", "codex")
+        .ok_or("legacy quota fixture identity rejected")?.attribution_identity().plan;
     let c = ok!(Connection::open(path));
     ok!(c.execute_batch("CREATE TABLE quota_snapshots(id INTEGER PRIMARY KEY AUTOINCREMENT,created_at REAL NOT NULL,account_key TEXT NOT NULL,plan_type TEXT,limit_name TEXT,account_name TEXT,source TEXT,five_hour_used_percent INTEGER,five_hour_resets_at REAL,five_hour_cycle_generation INTEGER,five_hour_reset_anchor INTEGER NOT NULL DEFAULT 0,seven_day_used_percent INTEGER,seven_day_resets_at REAL,seven_day_cycle_generation INTEGER,seven_day_reset_anchor INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL,identity_version INTEGER,home_identity TEXT,stable_account_key TEXT,identity_plan_type TEXT,identity_limit_id TEXT);"));
-    ok!(c.execute("INSERT INTO quota_snapshots(created_at,account_key,plan_type,limit_name,account_name,source,five_hour_used_percent,five_hour_resets_at,five_hour_cycle_generation,seven_day_used_percent,seven_day_resets_at,seven_day_cycle_generation,status,identity_version,home_identity,stable_account_key,identity_plan_type,identity_limit_id) VALUES(?1,'sub:fixture-account','pro','codex','Fixture','tauri',20,?2,1,30,?3,1,'ok',1,?4,'sub:fixture-account','pro','codex')",params![at,at+10000.0,at+200000.0,home.to_string_lossy().as_ref()]));
+    ok!(c.execute("INSERT INTO quota_snapshots(created_at,account_key,plan_type,limit_name,account_name,source,five_hour_used_percent,five_hour_resets_at,five_hour_cycle_generation,seven_day_used_percent,seven_day_resets_at,seven_day_cycle_generation,status,identity_version,home_identity,stable_account_key,identity_plan_type,identity_limit_id) VALUES(?1,'sub:fixture-account','pro','codex','Fixture','tauri',20,?2,1,30,?3,1,'ok',1,?4,'sub:fixture-account',?5,'codex')",params![at,at+10000.0,at+200000.0,home.to_string_lossy().as_ref(),plan]));
     if legacy {
         // One duplicate of the other legacy store, one unclaimed row and one
         // different identity. The source file and its old shape stay immutable
