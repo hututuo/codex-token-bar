@@ -2612,10 +2612,17 @@ fn hex_digest(bytes: &[u8]) -> String {
 }
 
 fn readonly_file_uri(path: &Path) -> String {
-    let path = path.to_string_lossy().replace('\\', "/");
+    // Preserve the native filename, especially Windows \\?\ and UNC prefixes.
+    // Turning those backslashes into '/' creates a URI authority ("%3F" for
+    // a verbatim path). Encode separators that could introduce an authority;
+    // SQLite decodes the pathname before handing it to the native VFS.
+    let path = path.to_string_lossy();
+    let leading_slashes = path.starts_with("//");
     let mut encoded = String::with_capacity(path.len());
-    for byte in path.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b':' | b'-' | b'.' | b'_' | b'~') {
+    for (offset, byte) in path.bytes().enumerate() {
+        if (byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b':' | b'-' | b'.' | b'_' | b'~'))
+            && !(leading_slashes && offset < 2 && byte == b'/')
+        {
             encoded.push(byte as char);
         } else {
             use std::fmt::Write as _;
@@ -2656,6 +2663,34 @@ mod tests {
 
     fn store(path: &Path, source: &str) -> StoreSpec {
         StoreSpec::new("usage", source, path.to_string_lossy().to_string()).unwrap()
+    }
+
+    #[test]
+    fn readonly_uri_preserves_verbatim_and_unc_paths_without_a_uri_authority() {
+        assert_eq!(readonly_file_uri(Path::new(r"\\?\C:\fixture\#%.sqlite")),
+            "file:%5C%5C%3F%5CC:%5Cfixture%5C%23%25.sqlite?mode=ro");
+        assert_eq!(readonly_file_uri(Path::new(r"\\?\UNC\server\share\source.sqlite")),
+            "file:%5C%5C%3F%5CUNC%5Cserver%5Cshare%5Csource.sqlite?mode=ro");
+        assert_eq!(readonly_file_uri(Path::new(r"\\server\share\source.sqlite")),
+            "file:%5C%5Cserver%5Cshare%5Csource.sqlite?mode=ro");
+        assert_eq!(readonly_file_uri(Path::new("//server/share/source.sqlite")),
+            "file:%2F%2Fserver/share/source.sqlite?mode=ro");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn canonical_windows_readonly_attach_reads_committed_wal_and_refuses_writes() {
+        let fixture = Fixture::new();
+        let source = fixture.path("中文 #%.sqlite");
+        let writer = Connection::open(&source).unwrap();
+        writer.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE records(amount INTEGER); INSERT INTO records VALUES(7)").unwrap();
+        let canonical = fs::canonicalize(&source).unwrap();
+        assert!(canonical.to_string_lossy().starts_with(r"\\?\"));
+        let reader = Connection::open_in_memory().unwrap();
+        reader.execute("ATTACH DATABASE ?1 AS legacy", [readonly_file_uri(&canonical)]).unwrap();
+        assert_eq!(reader.query_row("SELECT amount FROM legacy.records", [], |row| row.get::<_, i64>(0)).unwrap(), 7);
+        assert!(reader.execute("UPDATE legacy.records SET amount=9", []).is_err());
+        assert_eq!(writer.query_row("SELECT amount FROM records", [], |row| row.get::<_, i64>(0)).unwrap(), 7);
     }
 
     #[test]
