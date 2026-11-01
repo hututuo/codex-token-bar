@@ -826,9 +826,63 @@ fn open_store_at_with_hook(
 }
 
 pub(crate) fn exact_store_spec(path: &Path) -> Result<StoreSpec, String> {
+    if let Some((family, name)) = exact_stage_candidate_address(path)? {
+        // A virtual stage must keep its identity when a physical staging
+        // directory appears later. Its catalog address also permits recovery
+        // without relying on fs::read_dir for namespace-only artifacts.
+        let mut digest = Sha256::new();
+        digest.update(b"tokenbar-exact-stage-candidate-v2\0");
+        digest.update(family.as_bytes());
+        digest.update(b"\0");
+        digest.update(name.as_bytes());
+        return StoreSpec::new("exact", format!("{:x}", digest.finalize()),
+            format!("exact/staging/{family}/{name}"))
+            .map_err(|error| error.to_string());
+    }
     let identity = source_identity("exact", path)?;
     StoreSpec::new("exact", identity.clone(), format!("exact/index/{identity}"))
         .map_err(|error| error.to_string())
+}
+
+fn exact_stage_candidate_address(path: &Path) -> Result<Option<(String, String)>, String> {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else { return Ok(None) };
+    let Some((source, contract)) = name.strip_suffix(".sqlite3")
+        .and_then(|name| name.split_once(".candidate-v2-")) else { return Ok(None) };
+    let hash = |text: &str| text.len() == 64 && text.bytes().all(|byte| byte.is_ascii_hexdigit());
+    if !hash(source) || !hash(contract) { return Ok(None); }
+    let Some(directory) = path.parent() else { return Ok(None) };
+    let Some(index_name) = directory.file_name().and_then(|name| name.to_str())
+        .and_then(|name| name.strip_suffix(".staging")) else { return Ok(None) };
+    let index = directory.with_file_name(index_name);
+    Ok(Some((source_identity("exact", &index)?, name.to_owned())))
+}
+
+pub(crate) fn exact_stage_candidates(index: &Path, source_digest: &str) -> Result<Vec<PathBuf>, String> {
+    let family = source_identity("exact", index)?;
+    let prefix = format!("exact/staging/{family}/{source_digest}.candidate-v2-");
+    let container = open_ready_container(&container_path()?)?;
+    let mut statement = container.connection().prepare(
+        "SELECT logical_path,source_identity FROM tb_stores \
+         WHERE module='exact' AND state IN ('ready','sealed') AND substr(logical_path,1,?1)=?2"
+    ).map_err(|error| error.to_string())?;
+    let entries = statement.query_map(rusqlite::params![prefix.len(), prefix], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    }).map_err(|error| error.to_string())?;
+    let mut directory = index.as_os_str().to_os_string();
+    directory.push(".staging");
+    let directory = PathBuf::from(directory);
+    let mut paths = Vec::new();
+    for entry in entries {
+        let (logical, identity) = entry.map_err(|error| error.to_string())?;
+        let name = logical.rsplit('/').next().ok_or("暂存候选缺少目录项")?;
+        let path = directory.join(name);
+        let expected = exact_store_spec(&path)?;
+        if expected.logical_path != logical || expected.source_identity != identity {
+            return Err("暂存候选目录与业务分区身份不一致；已保留候选".into());
+        }
+        paths.push(path);
+    }
+    Ok(paths)
 }
 
 /// Once A has been activated, its imported source receipts are historical

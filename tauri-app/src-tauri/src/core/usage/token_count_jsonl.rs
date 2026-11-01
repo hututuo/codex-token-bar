@@ -45,6 +45,10 @@ pub(crate) fn bootstrap_legacy_exact_indexes() -> Result<(), String> {
 pub(crate) fn verify_legacy_migration_fixture(home: &Path, path: &Path) -> Result<bool, String> {
     exact_usage_index::verify_legacy_migration_fixture(home, path)
 }
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+pub(crate) fn verify_runtime_recovery_fixture(home: &Path) -> Result<serde_json::Value, String> {
+    exact_usage_index::verify_runtime_recovery_fixture(home)
+}
 #[cfg(test)]
 mod rollout_source_tests;
 mod session_files;

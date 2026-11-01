@@ -7,6 +7,7 @@ mod canonical;
 mod message_links;
 mod empty_sources;
 mod representations;
+mod runtime_recovery;
 use super::accounting::{AccountingState, ACCOUNTING_REVISION};
 use super::fingerprint_codec;
 use super::session_files::session_id_from_file;
@@ -6426,6 +6427,7 @@ fn stage_or_reuse_full_rebuild(
     let primary_path = staging_database_path(index_path, &job.path);
     let existing_paths = staging_database_paths(index_path, &job.path)?;
     let mut blocked = false;
+    let mut preserved_other_request = false;
     for database_path in &existing_paths {
         if !existing_regular_index(database_path)? {
             continue;
@@ -6441,16 +6443,26 @@ fn stage_or_reuse_full_rebuild(
         if let Some(staged) = reusable_staged_full_rebuild(database_path, job, target_generation)? {
             return Ok(staged);
         }
+        if runtime_recovery::valid_for_earlier_request(database_path, job, target_generation)? {
+            // A validated completed artifact is evidence for its own bound,
+            // not corruption and not permission to overwrite that artifact.
+            preserved_other_request = true;
+            continue;
+        }
         blocked = true;
     }
-    if blocked || existing_regular_index(&primary_path)? {
+    let database_path = if preserved_other_request {
+        runtime_recovery::candidate_path(index_path, job, target_generation)
+    } else {
+        primary_path.clone()
+    };
+    if blocked || existing_regular_index(&database_path)? {
         return Err(StagedFullRebuildError::Fatal(format!(
-            "精确 token 现有暂存未通过内容与 checkpoint 验证，已保留暂存和上一代统计；需要修复后重试：{}", primary_path.display()
+            "精确 token 现有暂存未通过内容与 checkpoint 验证，已保留暂存和上一代统计；需要修复后重试：{}", database_path.display()
         )));
     }
     // Also preserve sidecars left by interruption between family renames.
-    preserve_private_stage_family(&primary_path)?;
-    let database_path = primary_path;
+    preserve_private_stage_family(&database_path)?;
     build_staged_full_rebuild(job, database_path, target_generation, codex_home, warnings)
 }
 
@@ -7848,9 +7860,17 @@ fn staging_database_paths(index_path: &Path, source_path: &str) -> Result<Vec<Pa
     let primary = staging_database_path(index_path, source_path);
     let digest = staging_database_digest(source_path);
     let candidate_prefix = format!("{digest}.candidate-");
+    let mut paths = vec![primary.clone()];
+    #[cfg(not(test))]
+    paths.extend(crate::core::business_store_route::exact_stage_candidates(index_path, &digest)?);
     let entries = match fs::read_dir(&directory) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![primary]),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            paths.sort();
+            paths.dedup();
+            paths.sort_by_key(|path| (path != &primary, path.clone()));
+            return Ok(paths);
+        }
         Err(error) => {
             return Err(format!(
                 "无法枚举精确 token 暂存目录 {}：{error}",
@@ -7858,7 +7878,6 @@ fn staging_database_paths(index_path: &Path, source_path: &str) -> Result<Vec<Pa
             ))
         }
     };
-    let mut paths = vec![primary.clone()];
     paths.extend(entries
         .filter_map(Result::ok)
         .map(|entry| entry.path())
@@ -7869,6 +7888,8 @@ fn staging_database_paths(index_path: &Path, source_path: &str) -> Result<Vec<Pa
             path == &primary || (name.starts_with(&candidate_prefix) && name.ends_with(".sqlite3"))
         })
         .filter(|path| path != &primary));
+    paths.sort();
+    paths.dedup();
     paths.sort_by_key(|path| {
         if path == &primary {
             (0, String::new())
@@ -11551,7 +11572,7 @@ fn estimate_active_rollouts(
     if !database.is_file() {
         return Ok(());
     }
-    let state_connection = open_read_only_index(&database, StdDuration::from_millis(100))
+    let state_connection = open_read_only_source(&database, StdDuration::from_millis(100))
         .map_err(|error| format!("无法预扫描 active rollout：{error}"))?;
     if !column_exists_checked(&state_connection, "threads", "rollout_path")? {
         return Ok(());
@@ -11718,7 +11739,7 @@ fn visit_active_rollouts(
     if !database.exists() {
         return Ok(());
     }
-    let state_connection = match open_read_only_index(&database, StdDuration::from_millis(100)) {
+    let state_connection = match open_read_only_source(&database, StdDuration::from_millis(100)) {
         Ok(connection) => connection,
         Err(error) => {
             scan_completeness.mark_incomplete();
@@ -11923,7 +11944,7 @@ fn stage_thread_metadata(
         }));
     };
 
-    let connection = match open_read_only_index(&database, StdDuration::from_secs(3)) {
+    let connection = match open_read_only_source(&database, StdDuration::from_secs(3)) {
         Ok(connection) => connection,
         Err(error) => {
             warnings.push(thread_info_warning(format!(
@@ -12245,6 +12266,11 @@ fn active_schema11_paths(index_path: &Path) -> Result<(PathBuf, PathBuf, PathBuf
 fn schema11_paths_for_namespace(index_path: &Path, isolated: bool) -> (PathBuf, PathBuf, PathBuf) {
     let base = if isolated { sqlite_sidecar_path(index_path, ".container-v1") } else { index_path.to_path_buf() };
     (schema11_candidate_path(&base), schema11_rollback_path(&base), schema11_manifest_path(&base))
+}
+
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+pub(super) fn verify_runtime_recovery_fixture(home: &Path) -> Result<serde_json::Value, String> {
+    runtime_recovery::verify_fixture(home)
 }
 
 #[cfg(all(feature = "business-store-fixture", not(test)))]
@@ -15215,6 +15241,17 @@ fn open_exact_business_store(path: &Path) -> Result<Connection, String> {
         &store.logical_path,
         &legacy_sources,
     )
+}
+
+/// An externally owned live database must never enter the one-time legacy
+/// import route. Keep the same unbound, read-only source in every build mode.
+fn open_read_only_source(path: &Path, timeout: StdDuration) -> Result<Connection, String> {
+    let raw = sqlite::open_read_only(path, timeout).map_err(|error| error.to_string())?;
+    raw.pragma_update(None, "query_only", true).map_err(|error| error.to_string())?;
+    #[cfg(test)]
+    { Ok(raw) }
+    #[cfg(not(test))]
+    { Ok(Connection::unbound(raw)) }
 }
 
 fn open_read_only_index(path: &Path, timeout: StdDuration) -> Result<Connection, String> {

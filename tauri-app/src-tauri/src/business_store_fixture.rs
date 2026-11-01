@@ -86,8 +86,8 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
         p.quota != p.shared_quota,
         "fixture requires distinct legacy quota paths"
     );
-    seed_quota(&p.quota, &h1, now - 1200.0)?;
-    seed_quota(&p.shared_quota, &h1, now - 900.0)?;
+    seed_quota(&p.quota, &h1, now - 1200.0, false)?;
+    seed_quota(&p.shared_quota, &h1, now - 900.0, true)?;
     seed_modeltrace(&p.modeltrace)?;
     let scope = live_rate::LiveRateSourceScope::new(
         h1.to_string_lossy().into_owned(),
@@ -141,9 +141,10 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
         .map(|f| quota_facts(f))
         .collect::<Result<Vec<_>, _>>()?;
     need!(
-        active > 0 && imported == [1, 1],
+        active > 0 && imported == [1, 2],
         "quota legacy typed facts or active write missing"
     );
+    quota_history::verify_legacy_runtime_fixture(&qi)?;
     checks.push(json!({"name":"quota","status":"PASS","activeRows":active,"legacyFacts":imported,"historyPoints":history.recent_7d.len()}));
 
     let mid = route::source_identity("modeltrace", &h1)?;
@@ -201,6 +202,7 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
     checks.push(json!({"name":"ledger-b","status":"PASS","rows":b_rows}));
 
     checks.push(exact_fixture(&h1, &h2, &p)?);
+    checks.push(token_count_jsonl::verify_runtime_recovery_fixture(&root.join("runtime-home"))?);
     for (f, before) in &digests {
         need!(
             digest(f)? == *before,
@@ -328,11 +330,21 @@ fn validate_root(input: &Path) -> Result<PathBuf, String> {
     Ok(root)
 }
 
-fn seed_quota(path: &Path, home: &Path, at: f64) -> Result<(), String> {
+fn seed_quota(path: &Path, home: &Path, at: f64, legacy: bool) -> Result<(), String> {
     parent(path)?;
     let c = ok!(Connection::open(path));
     ok!(c.execute_batch("CREATE TABLE quota_snapshots(id INTEGER PRIMARY KEY AUTOINCREMENT,created_at REAL NOT NULL,account_key TEXT NOT NULL,plan_type TEXT,limit_name TEXT,account_name TEXT,source TEXT,five_hour_used_percent INTEGER,five_hour_resets_at REAL,five_hour_cycle_generation INTEGER,five_hour_reset_anchor INTEGER NOT NULL DEFAULT 0,seven_day_used_percent INTEGER,seven_day_resets_at REAL,seven_day_cycle_generation INTEGER,seven_day_reset_anchor INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL,identity_version INTEGER,home_identity TEXT,stable_account_key TEXT,identity_plan_type TEXT,identity_limit_id TEXT);"));
-    ok!(c.execute("INSERT INTO quota_snapshots(created_at,account_key,plan_type,limit_name,account_name,source,five_hour_used_percent,five_hour_resets_at,five_hour_cycle_generation,seven_day_used_percent,seven_day_resets_at,seven_day_cycle_generation,status,identity_version,home_identity,stable_account_key,identity_plan_type,identity_limit_id) VALUES(?1,'sub:fixture-account','pro','codex','Fixture','swift',20,?2,1,30,?3,1,'ok',1,?4,'sub:fixture-account','pro','codex')",params![at,at+10000.0,at+200000.0,home.to_string_lossy().as_ref()]));
+    ok!(c.execute("INSERT INTO quota_snapshots(created_at,account_key,plan_type,limit_name,account_name,source,five_hour_used_percent,five_hour_resets_at,five_hour_cycle_generation,seven_day_used_percent,seven_day_resets_at,seven_day_cycle_generation,status,identity_version,home_identity,stable_account_key,identity_plan_type,identity_limit_id) VALUES(?1,'sub:fixture-account','pro','codex','Fixture','tauri',20,?2,1,30,?3,1,'ok',1,?4,'sub:fixture-account','pro','codex')",params![at,at+10000.0,at+200000.0,home.to_string_lossy().as_ref()]));
+    if legacy {
+        // One duplicate of the other legacy store, one unclaimed row and one
+        // different identity. The source file and its old shape stay immutable
+        // when the production legacy readers are exercised below.
+        ok!(c.execute("INSERT INTO quota_snapshots(created_at,account_key,plan_type,limit_name,account_name,source,five_hour_used_percent,five_hour_resets_at,five_hour_cycle_generation,seven_day_used_percent,seven_day_resets_at,seven_day_cycle_generation,status,identity_version,home_identity,stable_account_key,identity_plan_type,identity_limit_id) SELECT created_at-300,account_key,plan_type,limit_name,account_name,source,five_hour_used_percent,five_hour_resets_at-300,five_hour_cycle_generation,seven_day_used_percent,seven_day_resets_at-300,seven_day_cycle_generation,status,identity_version,home_identity,stable_account_key,identity_plan_type,identity_limit_id FROM quota_snapshots", []));
+        ok!(c.execute_batch("INSERT INTO quota_snapshots(created_at,account_key,source,status) VALUES(1,'fixture-unclaimed','tauri','ok'); INSERT INTO quota_snapshots(created_at,account_key,source,status,identity_version,home_identity,stable_account_key,identity_plan_type,identity_limit_id) SELECT created_at+1,'fixture-other','tauri','ok',identity_version,home_identity,'sub:fixture-other',identity_plan_type,identity_limit_id FROM quota_snapshots WHERE id=1;"));
+        for column in ["five_hour_cycle_generation", "five_hour_reset_anchor", "seven_day_cycle_generation", "seven_day_reset_anchor"] {
+            ok!(c.execute_batch(&format!("ALTER TABLE quota_snapshots DROP COLUMN {column}")));
+        }
+    }
     Ok(())
 }
 

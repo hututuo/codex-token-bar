@@ -13,6 +13,10 @@ use rusqlite::OptionalExtension;
 const FREELIST_RECLAIM_MIN_FREE_BYTES: i64 = 1_048_576;
 const FREELIST_RECLAIM_MIN_RATIO: f64 = 0.20;
 
+#[cfg(test)]
+#[path = "database_runtime_tests.rs"]
+mod runtime_tests;
+
 pub(super) fn ensure_schema(connection: &Connection) -> SqlResult<()> {
     connection.execute_batch(
         r#"
@@ -221,13 +225,14 @@ pub(super) fn rows_since_for_row(
 /// Read a peer (Swift) database without touching its schema or its legacy
 /// bridge claims. A peer database is optional and may be from an older
 /// version, so the caller deliberately treats any error as an empty result.
+#[cfg(test)]
 pub(super) fn rows_since_for_read_only_peer(
     connection: &Connection,
     age_seconds: f64,
     identity: &QuotaHistoryIdentity,
 ) -> SqlResult<Vec<QuotaHistoryRow>> {
     let cutoff = now_unix() - age_seconds;
-    let rows = query_stable_identity_rows(connection, identity, Some(cutoff))?;
+    let rows = compatible_legacy_identity_rows(connection, identity, Some(cutoff))?;
     Ok(rows
         .into_iter()
         .filter(|row| {
@@ -241,6 +246,60 @@ pub(super) fn rows_since_for_read_only_peer(
         .collect())
 }
 
+/// Imported legacy stores can contain both Tauri and Swift observations. Their
+/// stable identity, rather than the writer's platform, defines ownership. Never
+/// claim identity-less rows while reading an immutable legacy namespace.
+pub(super) fn rows_since_for_legacy_store(
+    connection: &Connection,
+    age_seconds: f64,
+    identity: &QuotaHistoryIdentity,
+) -> SqlResult<Vec<QuotaHistoryRow>> {
+    compatible_legacy_identity_rows(connection, identity, Some(now_unix() - age_seconds))
+}
+
+fn compatible_legacy_identity_rows(
+    connection: &Connection,
+    identity: &QuotaHistoryIdentity,
+    cutoff: Option<f64>,
+) -> SqlResult<Vec<QuotaHistoryRow>> {
+    let mut statement = connection.prepare("PRAGMA table_info(quota_snapshots)")?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<SqlResult<Vec<_>>>()?;
+    for required in ["created_at", "account_key", "status"] {
+        if !columns.iter().any(|column| column == required) {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+    }
+    // Older unscoped histories are preserved, but cannot be assigned to an
+    // account by display name or by whichever account happens to be active.
+    if ["identity_version", "home_identity", "stable_account_key",
+        "identity_plan_type", "identity_limit_id"]
+        .iter().any(|required| !columns.iter().any(|column| column.as_str() == *required))
+    {
+        return Ok(Vec::new());
+    }
+    let optional = |column: &str, fallback: &str| {
+        if columns.iter().any(|existing| existing == column) {
+            column.to_string()
+        } else {
+            format!("{fallback} AS {column}")
+        }
+    };
+    let projection = format!(
+        "created_at, account_key, plan_type, limit_name, account_name, source, \
+         five_hour_used_percent, five_hour_resets_at, {}, {}, \
+         seven_day_used_percent, seven_day_resets_at, {}, {}, status, \
+         identity_version, home_identity, stable_account_key, identity_plan_type, identity_limit_id",
+        optional("five_hour_cycle_generation", "NULL"),
+        optional("five_hour_reset_anchor", "0"),
+        optional("seven_day_cycle_generation", "NULL"),
+        optional("seven_day_reset_anchor", "0"),
+    );
+    stable_identity_rows_with_projection(connection, identity, cutoff, &projection)
+}
+
+#[cfg(test)]
 fn is_swift_source(source: Option<&str>) -> bool {
     source
         .map(str::trim)
@@ -449,17 +508,26 @@ pub(super) fn query_stable_identity_rows(
     identity: &QuotaHistoryIdentity,
     cutoff: Option<f64>,
 ) -> SqlResult<Vec<QuotaHistoryRow>> {
+    stable_identity_rows_with_projection(connection, identity, cutoff,
+        "created_at, account_key, plan_type, limit_name, account_name, source, \
+         five_hour_used_percent, five_hour_resets_at, \
+         five_hour_cycle_generation, five_hour_reset_anchor, \
+         seven_day_used_percent, seven_day_resets_at, \
+         seven_day_cycle_generation, seven_day_reset_anchor, status, \
+         identity_version, home_identity, stable_account_key, identity_plan_type, identity_limit_id")
+}
+
+fn stable_identity_rows_with_projection(
+    connection: &Connection,
+    identity: &QuotaHistoryIdentity,
+    cutoff: Option<f64>,
+    projection: &str,
+) -> SqlResult<Vec<QuotaHistoryRow>> {
     if let Some(cutoff) = cutoff {
         query_rows(
             connection,
-            r#"
-            SELECT created_at, account_key, plan_type, limit_name, account_name, source,
-                   five_hour_used_percent, five_hour_resets_at,
-                   five_hour_cycle_generation, five_hour_reset_anchor,
-                   seven_day_used_percent, seven_day_resets_at,
-                   seven_day_cycle_generation, seven_day_reset_anchor, status,
-                   identity_version, home_identity, stable_account_key,
-                   identity_plan_type, identity_limit_id
+            &format!(r#"
+            SELECT {projection}
             FROM quota_snapshots
             WHERE identity_version = ?1
               AND home_identity = ?2
@@ -468,7 +536,7 @@ pub(super) fn query_stable_identity_rows(
               AND identity_limit_id = ?5
               AND created_at >= ?6
             ORDER BY created_at ASC;
-            "#,
+            "#),
             params![
                 identity.version,
                 identity.home_identity,
@@ -481,14 +549,8 @@ pub(super) fn query_stable_identity_rows(
     } else {
         query_rows(
             connection,
-            r#"
-            SELECT created_at, account_key, plan_type, limit_name, account_name, source,
-                   five_hour_used_percent, five_hour_resets_at,
-                   five_hour_cycle_generation, five_hour_reset_anchor,
-                   seven_day_used_percent, seven_day_resets_at,
-                   seven_day_cycle_generation, seven_day_reset_anchor, status,
-                   identity_version, home_identity, stable_account_key,
-                   identity_plan_type, identity_limit_id
+            &format!(r#"
+            SELECT {projection}
             FROM quota_snapshots
             WHERE identity_version = ?1
               AND home_identity = ?2
@@ -496,7 +558,7 @@ pub(super) fn query_stable_identity_rows(
               AND identity_plan_type = ?4
               AND identity_limit_id = ?5
             ORDER BY created_at ASC;
-            "#,
+            "#),
             params![
                 identity.version,
                 identity.home_identity,
