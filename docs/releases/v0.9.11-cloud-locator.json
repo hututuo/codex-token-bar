@@ -1,16 +1,62 @@
 {
   "version": "0.9.11",
   "macos_build": "990",
-  "status": "preparing",
-  "source_sha": null,
+  "status": "signed-and-verified-awaiting-publication",
+  "source_sha": "25af234290b6410016d34b898682cca26c62e08a",
   "previous_release": "v0.9.10",
   "integration_branch": "codex/fix-0910-recovery-metadata",
   "tag": "v0.9.11",
   "release_url": "https://github.com/hututuo/codex-token-bar/releases/tag/v0.9.11",
-  "ci_run_id": null,
-  "upgrade_run_id": null,
-  "build_run_id": null,
-  "signing_run_id": null,
+  "ci_run_id": "41284309254",
+  "upgrade_run_id": "41284309253",
+  "build_run_id": "41285449189",
+  "signing_run_id": "41288217407",
   "publish_run_id": null,
-  "assets": []
+  "assets": [
+    {
+      "name": "CodexTokenBar-v0.9.11-macos-arm64.dmg",
+      "bytes": 28580928,
+      "sha256": "c6defbc79507f6f606fdeb34b23ced3f81840d6bd6c89f01dd9d1386a4f2008f"
+    },
+    {
+      "name": "CodexTokenBar-v0.9.11-macos-arm64.app.zip",
+      "bytes": 27680863,
+      "sha256": "f76d46c73c9fe3e907595ac3a148513d0cdb6803e1de4908d695902ddb98a9e2"
+    },
+    {
+      "name": "CodexTokenBar.app.zip",
+      "bytes": 27680863,
+      "sha256": "f76d46c73c9fe3e907595ac3a148513d0cdb6803e1de4908d695902ddb98a9e2"
+    },
+    {
+      "name": "CodexTokenBar-v0.9.11-windows-x64-setup.exe",
+      "bytes": 68736234,
+      "sha256": "cc2a670b6e0f26eb5a4c9b47b454c11271e2c2f98b13bae6d0793718f268bec7"
+    },
+    {
+      "name": "CodexTokenBar-v0.9.11-windows-x64-setup.exe.sig",
+      "bytes": 440,
+      "sha256": "48d6a53984a26d53e8f3018eb09bd4e7e9e264b7022a7ed7824a07d0a434637d"
+    },
+    {
+      "name": "CodexTokenBar-v0.9.11-windows-arm64-setup.exe",
+      "bytes": 62792834,
+      "sha256": "531e443496dc6f631bc2291de76f1e139532edae0e32536ab0de53e895579675"
+    },
+    {
+      "name": "CodexTokenBar-v0.9.11-windows-arm64-setup.exe.sig",
+      "bytes": 440,
+      "sha256": "b08075a0e3adfec10bb63015beccbe419a473f3406662031b1b6d9b63a133373"
+    },
+    {
+      "name": "latest-windows.json",
+      "bytes": 1378,
+      "sha256": "6b94ce3b400f3e75a99b88e5aa98d9ddc1afa921448853791135a36e42807f77"
+    },
+    {
+      "name": "SHA256SUMS-v0.9.11.txt",
+      "bytes": 838,
+      "sha256": "d634e3e8d364e6066a1a15dd7671115f00696bac713cc836327a7b63ba12bd3b"
+    }
+  ]
 }
