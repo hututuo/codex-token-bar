@@ -203,7 +203,7 @@ final class BusinessDatabaseMigration {
         for input in pending {
             do {
                 let version = try SQLiteDatabaseDriver(url: input.source, readOnly: true, createsFileIfMissing: false, bypassBusinessRoutes: true)
-                    .readRows("PRAGMA user_version") { $0.int(0) }.first ?? 0
+                    .readRows("PRAGMA user_version") { $0.int(0) ?? 0 }.first ?? 0
                 diagnostics.record("input-preflight", "succeeded", ["store": input.store.id, "module": input.store.module, "userVersion": String(version)])
             } catch {
                 diagnostics.record("input-preflight", "failed", ["store": input.store.id, "module": input.store.module, "error": String(describing: error)])

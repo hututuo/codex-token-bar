@@ -81,6 +81,19 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(tokens, (0..<13).reduce(0) { $0 + 120 + $1 })
         XCTAssertEqual(events, files.count)
         XCTAssertEqual(try Data(contentsOf: indexURL), original, "The legacy ledger must remain frozen")
+        // The new bounded exception must not open unknown or structural contracts.
+        try database.execute("UPDATE schema_meta SET value='future-enrichment' WHERE key='event_enrichment_revision';")
+        XCTAssertThrowsError(try CodexUsageHistoryIndex(codexHome: home)) { error in
+            XCTAssertTrue(error is CodexUsageIndexUpgradeRequiredError)
+        }
+        XCTAssertEqual(try database.withConnection { db in
+            try db.readRows("SELECT value FROM schema_meta WHERE key='event_enrichment_revision'") { $0.text(0) }
+        }.first, "future-enrichment")
+        try database.execute("DELETE FROM schema_meta WHERE key='event_enrichment_revision'; UPDATE schema_meta SET value='13' WHERE key='schema_version';")
+        XCTAssertThrowsError(try CodexUsageHistoryIndex(codexHome: home)) { error in
+            XCTAssertTrue(error is CodexUsageIndexRepairRequiredError)
+        }
+        XCTAssertEqual(try Data(contentsOf: indexURL), original)
     }
 
     func testCompressionScopeToggleInvalidatesFastMemoryAndPersistentSnapshots() throws {

@@ -858,6 +858,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         if BusinessSQLiteRoutes.store(for: databaseURL) != nil {
             switch try assessMigration(databaseURL: databaseURL, fileManager: fileManager) {
             case .compatible: return false
+            case let .knownMigrationRequired(stages) where Set(stages).isSubset(of: [
+                "forkReplay", "attributionLedger", "eventEnrichment", "sessionCatalog", "aggregate"
+            ]):
+                // These are module-owned, retryable migrations implemented below;
+                // none swaps the physical database. A missing enrichment receipt
+                // is not a request to replace container A. Structural/representation
+                // changes still require an independently validated module candidate.
+                return false
             case let .upgradeRequired(component, stored, supported):
                 throw CodexUsageIndexUpgradeRequiredError(component: component, stored: stored, supported: supported)
             default: throw CodexUsageIndexRepairRequiredError(reason: "归并后的索引需要模块迁移，已保留账本并停止旧文件交换")
