@@ -1,7 +1,7 @@
 {
   "version": "0.9.11",
   "macos_build": "990",
-  "status": "signed-and-verified-awaiting-publication",
+  "status": "published-and-verified",
   "source_sha": "25af234290b6410016d34b898682cca26c62e08a",
   "previous_release": "v0.9.10",
   "integration_branch": "codex/fix-0910-recovery-metadata",
@@ -11,7 +11,7 @@
   "upgrade_run_id": "41284309253",
   "build_run_id": "41285449189",
   "signing_run_id": "41288217407",
-  "publish_run_id": null,
+  "publish_run_id": "41288851831",
   "assets": [
     {
       "name": "CodexTokenBar-v0.9.11-macos-arm64.dmg",
@@ -58,5 +58,22 @@
       "bytes": 838,
       "sha256": "d634e3e8d364e6066a1a15dd7671115f00696bac713cc836327a7b63ba12bd3b"
     }
-  ]
+  ],
+  "publish_attempt": 2,
+  "publication_tooling_sha": "4533aa9c8a223ffb842409db6b46562a4fe24c54",
+  "public_release_id": 430450029,
+  "verification": {
+    "payloads": "Hosted publication job re-downloaded all9 assets and checked full SHA256 against the sealed packet before activating the feed",
+    "local": "Public asset names/sizes/server digests and both public updater URLs matched sealed metadata; metadata-only artifact reads, no local full payload verification claim",
+    "feeds": {
+      "appcast.xml": {
+        "bytes": 18348,
+        "sha256": "03223b808f2c27ee94e2f15413cc16df63a0952168df28a1e24ca789f5ab9012"
+      },
+      "latest-windows.json": {
+        "bytes": 1378,
+        "sha256": "6b94ce3b400f3e75a99b88e5aa98d9ddc1afa921448853791135a36e42807f77"
+      }
+    }
+  }
 }
