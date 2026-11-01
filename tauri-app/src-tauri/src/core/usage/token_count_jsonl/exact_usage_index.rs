@@ -728,6 +728,7 @@ impl PhysicalFileStamp {
 #[derive(Clone, Debug)]
 struct StagedThreadMetadata {
     signature: Option<(String, String)>,
+    source_signature: Option<String>,
     rows: Vec<(String, String, Option<i64>)>,
 }
 
@@ -2791,7 +2792,8 @@ impl ExactUsageIndex {
                         metadata_text(&self.connection, "state_modified_ns")?,
                     );
                     let staged_thread_metadata =
-                        stage_thread_metadata(codex_home, previous, warnings)?;
+                        stage_thread_metadata(codex_home, previous,
+                            metadata_text(&self.connection, "state_source_signature")?, warnings)?;
                     if !mode.builds_dashboard_derived_data() {
                         // Summary owns exact facts only. Leave state_5.sqlite
                         // metadata for the Full owner; its signature is not
@@ -3102,7 +3104,8 @@ impl ExactUsageIndex {
             metadata_text(&self.connection, "state_size")?,
             metadata_text(&self.connection, "state_modified_ns")?,
         );
-        match stage_thread_metadata(codex_home, previous, warnings)? {
+        match stage_thread_metadata(codex_home, previous,
+            metadata_text(&self.connection, "state_source_signature")?, warnings)? {
             ThreadMetadataStage::Updated(staged) => {
                 self.connection.mark_receipt_dirty();
                 let result = publish_thread_metadata_only(&mut self.connection, staged);
@@ -11851,7 +11854,8 @@ fn sync_thread_metadata(
         metadata_text(transaction, "state_size")?,
         metadata_text(transaction, "state_modified_ns")?,
     );
-    let stage = stage_thread_metadata(codex_home, previous, warnings)?;
+    let stage = stage_thread_metadata(codex_home, previous,
+        metadata_text(transaction, "state_source_signature")?, warnings)?;
     Ok(matches!(
         apply_thread_metadata_stage(transaction, stage)?,
         ThreadMetadataApplyOutcome::ContentChanged
@@ -11894,6 +11898,7 @@ fn display_thread_title(
 fn stage_thread_metadata(
     codex_home: &Path,
     previous: (Option<String>, Option<String>),
+    previous_source: Option<String>,
     warnings: &mut Vec<LocalDataWarning>,
 ) -> Result<ThreadMetadataStage, String> {
     let database = codex_home.join("state_5.sqlite");
@@ -11933,13 +11938,23 @@ fn stage_thread_metadata(
     };
     let signature_text =
         signature.map(|value| (value.size.to_string(), value.modified_ns.to_string()));
-    if previous == signature_text.clone().unzip() {
+    let source_signature = if signature.is_some() {
+        match live_state_wal_stamp(&database) {
+            Ok(value) => Some(value),
+            Err(error) => {
+                warnings.push(thread_info_warning(error));
+                return Ok(ThreadMetadataStage::Failed);
+            }
+        }
+    } else { None };
+    if previous == signature_text.clone().unzip() && previous_source == source_signature {
         return Ok(ThreadMetadataStage::Unchanged);
     }
 
     let Some(signature_before) = signature else {
         return Ok(ThreadMetadataStage::Updated(StagedThreadMetadata {
             signature: None,
+            source_signature: None,
             rows: Vec::new(),
         }));
     };
@@ -12021,7 +12036,14 @@ fn stage_thread_metadata(
             return Ok(ThreadMetadataStage::Failed);
         }
     };
-    if signature_after != signature_before {
+    let source_after = match live_state_wal_stamp(&database) {
+        Ok(value) => Some(value),
+        Err(error) => {
+            warnings.push(thread_info_warning(error));
+            return Ok(ThreadMetadataStage::Failed);
+        }
+    };
+    if signature_after != signature_before || source_after != source_signature {
         warnings.push(thread_info_warning(format!(
             "会话标题索引在读取期间发生变化，本轮保留已有标题：{}",
             database.display()
@@ -12031,8 +12053,29 @@ fn stage_thread_metadata(
 
     Ok(ThreadMetadataStage::Updated(StagedThreadMetadata {
         signature: signature_text,
+        source_signature,
         rows: staged_rows,
     }))
+}
+
+/// The live database's committed changes may exist only in WAL. This is a
+/// disposable cache identity, separate from any accounting checkpoint. The
+/// revision also forces one fresh read after older builds imported state as a
+/// frozen legacy namespace, even when the main-file stat has not changed.
+fn live_state_wal_stamp(database: &Path) -> Result<String, String> {
+    let wal = sqlite_sidecar_path(database, "-wal");
+    match fs::symlink_metadata(&wal) {
+        Ok(metadata) if !metadata.is_file() || metadata.file_type().is_symlink() =>
+            Err("会话标题索引 WAL 不是普通文件，已保留原有标题".into()),
+        Ok(metadata) if metadata.len() == 0 => Ok("sqlite-live-wal-v1:none".into()),
+        Ok(_) => {
+            let signature = file_signature(&wal)?;
+            Ok(format!("sqlite-live-wal-v1:{}:{}:{}", signature.size, signature.modified_ns,
+                signature.physical.map(|stamp| stamp.encode()).unwrap_or_default()))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok("sqlite-live-wal-v1:none".into()),
+        Err(error) => Err(format!("无法读取会话标题索引 WAL 签名：{error}")),
+    }
 }
 
 fn apply_thread_metadata_stage(
@@ -12143,6 +12186,12 @@ fn apply_thread_metadata_stage(
                 [],
             )
             .map_err(|error| format!("无法清理会话标题索引签名：{error}"))?;
+    }
+    if let Some(signature) = staged.source_signature {
+        set_metadata(transaction, "state_source_signature", &signature)?;
+    } else {
+        transaction.execute("DELETE FROM metadata WHERE key='state_source_signature'", [])
+            .map_err(|error| format!("无法清理会话标题来源签名：{error}"))?;
     }
     Ok(if content_changed {
         ThreadMetadataApplyOutcome::ContentChanged
