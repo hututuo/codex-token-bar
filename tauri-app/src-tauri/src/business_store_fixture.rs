@@ -203,6 +203,7 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
 
     checks.push(exact_fixture(&h1, &h2, &p)?);
     checks.push(token_count_jsonl::verify_live_state_fixture(&root.join("live-state-home"))?);
+    checks.push(token_count_jsonl::verify_bounded_stage_fixture(&root.join("bounded-stage-home"))?);
     for (f, before) in &digests {
         need!(
             digest(f)? == *before,

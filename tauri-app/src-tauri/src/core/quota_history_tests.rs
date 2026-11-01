@@ -3093,7 +3093,7 @@ fn retained_quota_reader_handles_every_partial_cycle_schema_without_mutating_it(
         original.five_hour_reset_anchor = Some(1);
         original.seven_day_cycle_generation = Some(9);
         original.seven_day_reset_anchor = Some(1);
-        insert_stable_history_row(&connection, &original);
+        database::insert_row(&connection, &original).unwrap();
         for (bit, column) in optional.iter().enumerate() {
             if mask & (1 << bit) == 0 {
                 connection.execute_batch(&format!("ALTER TABLE quota_snapshots DROP COLUMN {column}")).unwrap();

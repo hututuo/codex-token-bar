@@ -22,6 +22,67 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         try super.tearDownWithError()
     }
 
+    func testNamespacedMultiBatchEnrichmentReportsCumulativeProgressWithoutReparsingOrChangingHistory() throws {
+        BusinessSQLiteRoutes.deactivate()
+        defer { BusinessSQLiteRoutes.deactivate() }
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let root = try makeTemporaryDirectory(named: "NamespacedMultiBatchEnrichment")
+        let cacheRoot = root.appendingPathComponent("cache")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        let home = try makeCodexHome()
+        let now = Date()
+        let files = try (0..<13).map { offset -> URL in
+            let file = home.appendingPathComponent("sessions/multi-batch-\(offset).jsonl")
+            let context = "{\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-6.1-sol\"}}"
+            let token = try tokenCountLine(timestamp: now.addingTimeInterval(Double(-100 + offset)),
+                total: Usage(input: 100 + offset, cachedInput: 20, output: 20, reasoning: 0, total: 120 + offset),
+                last: Usage(input: 100 + offset, cachedInput: 20, output: 20, reasoning: 0, total: 120 + offset))
+            try (context + "\n" + token + "\n").write(to: file, atomically: true, encoding: .utf8)
+            return file
+        }
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: home))
+        let oldIndex = try CodexUsageHistoryIndex(codexHome: home)
+        _ = try oldIndex.synchronize(files: files, sessionID: analyzer.sessionID(from:),
+            parser: analyzer.parseSessionIntoHistoryIndex(file:sessionID:request:insertFingerprint:emit:))
+        let indexURL = try exactUsageDatabaseURL(in: cacheRoot)
+        let support = root.appendingPathComponent("support")
+        let configuration = BusinessDatabaseMigration.Configuration(
+            container: support.appendingPathComponent("codex-ledger.sqlite"), support: support,
+            exact: swiftUsageCacheRoot(in: cacheRoot), legacyExact: root.appendingPathComponent("unused-legacy"))
+        try BusinessDatabaseMigration.migrate(configuration, availableBytes: 1 << 32)
+        let original = try Data(contentsOf: indexURL)
+        let database = SQLiteDatabaseDriver(url: indexURL)
+        XCTAssertEqual(database.backingURL, configuration.container)
+        try database.execute("DELETE FROM event_enrichment_sources; DELETE FROM schema_meta WHERE key='event_enrichment_revision'; UPDATE events SET model=NULL;")
+        let index = try CodexUsageHistoryIndex(codexHome: home)
+        let parsed = ThreadSafeCounter()
+        let lock = NSLock()
+        var completed: [Int] = []
+        let result = try index.synchronize(files: files, sessionID: analyzer.sessionID(from:), parser: { file, id, request, fp, emit in
+            parsed.increment()
+            return try analyzer.parseSessionIntoHistoryIndex(file: file, sessionID: id, request: request,
+                insertFingerprint: fp, emit: emit)
+        }, onProgress: { count, total, phase in
+            if phase == .backfillingModel {
+                lock.lock(); defer { lock.unlock() }
+                XCTAssertEqual(total, files.count)
+                completed.append(count)
+            }
+        })
+        XCTAssertTrue(result.eventEnrichmentComplete)
+        XCTAssertEqual(parsed.value, files.count, "The publication retry must reuse verified staged work")
+        XCTAssertEqual(completed.first, 0)
+        XCTAssertEqual(completed.last, files.count)
+        XCTAssertEqual(completed, completed.sorted(), "Batch boundaries and publication retries must not rewind progress")
+        XCTAssertTrue(completed.contains(9), "Progress must reach later batches, not repeat only 1...4")
+        var tokens = 0, events = 0
+        try index.forEachStoredEvent { tokens += $0.event.tokens; events += 1 }
+        XCTAssertEqual(tokens, (0..<13).reduce(0) { $0 + 120 + $1 })
+        XCTAssertEqual(events, files.count)
+        XCTAssertEqual(try Data(contentsOf: indexURL), original, "The legacy ledger must remain frozen")
+    }
+
     func testCompressionScopeToggleInvalidatesFastMemoryAndPersistentSnapshots() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CompressionRankingScopeCache")

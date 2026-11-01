@@ -46,6 +46,11 @@ pub(crate) fn verify_legacy_migration_fixture(home: &Path, path: &Path) -> Resul
     exact_usage_index::verify_legacy_migration_fixture(home, path)
 }
 #[cfg(all(feature = "business-store-fixture", not(test)))]
+pub(crate) fn verify_bounded_stage_fixture(home: &Path) -> Result<serde_json::Value, String> {
+    exact_usage_index::verify_bounded_stage_fixture(home)
+}
+
+#[cfg(all(feature = "business-store-fixture", not(test)))]
 pub(crate) fn verify_live_state_fixture(home: &Path) -> Result<serde_json::Value, String> {
     exact_usage_index::verify_live_state_fixture(home)
 }

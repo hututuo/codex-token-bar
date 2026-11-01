@@ -47,7 +47,7 @@ def main() -> None:
         checks = {item["name"]: item for item in report["checks"]}
         required = {"bootstrap", "quota", "modeltrace", "body-speed", "ledger-b",
                     "exact-import-stage-and-home-scope", "live-external-state-readers",
-                    "legacy-source-preservation", "rerun-and-fail-closed"}
+                    "legacy-source-preservation", "rerun-and-fail-closed", "bounded-stage-replacement"}
         if report.get("status") != "PASS" or set(checks) != required:
             raise SystemExit("Incomplete production-path evidence")
         if any(item.get("status") != "PASS" for item in checks.values()):

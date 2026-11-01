@@ -7,6 +7,7 @@ mod canonical;
 mod message_links;
 mod empty_sources;
 mod representations;
+mod stage_recovery;
 #[cfg(any(test, feature = "business-store-fixture"))]
 mod reader_recovery;
 use super::accounting::{AccountingState, ACCOUNTING_REVISION};
@@ -6443,6 +6444,14 @@ fn stage_or_reuse_full_rebuild(
         if let Some(staged) = reusable_staged_full_rebuild(database_path, job, target_generation)? {
             return Ok(staged);
         }
+        // A verified fixed-prefix enrichment stage is not corruption merely
+        // because reconciliation now needs the longer, still matching source.
+        // Keep its sealed evidence before reusing the primary job name. Unknown
+        // contracts, changed prefixes and damaged checkpoints continue to block.
+        if stage_recovery::is_superseded_bounded_stage(database_path, job, target_generation)? {
+            preserve_private_stage_family(database_path)?;
+            continue;
+        }
         blocked = true;
     }
     if blocked || existing_regular_index(&primary_path)? {
@@ -12287,6 +12296,11 @@ pub(super) fn verify_legacy_migration_fixture(home: &Path, path: &Path) -> Resul
         return Err("fixture unexpectedly required a structural migration".into());
     }
     Ok(paths != schema11_paths_for_namespace(path, false))
+}
+
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+pub(super) fn verify_bounded_stage_fixture(home: &Path) -> Result<serde_json::Value, String> {
+    stage_recovery::verify_bounded_stage(home)
 }
 
 #[cfg(all(feature = "business-store-fixture", not(test)))]
