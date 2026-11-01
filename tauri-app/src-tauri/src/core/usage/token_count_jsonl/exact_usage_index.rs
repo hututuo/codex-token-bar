@@ -2269,8 +2269,7 @@ impl ExactUsageIndex {
     {
         self.connection.mark_receipt_dirty();
         let existing = load_stored_session_catalog(&self.connection)?;
-        let known = complete_source_observations(&self.connection)?;
-        let observations = collect_session_catalog_observations(codex_home, &known)?;
+        let observations = collect_session_catalog_observations(codex_home)?;
         let published_generation =
             metadata_i64(&self.connection, "session_catalog_published_generation")?.unwrap_or(0);
         let generation = published_generation
@@ -5235,9 +5234,13 @@ impl ExactUsageIndex {
         }
         let mut excerpt_batches: HashMap<PathBuf, Result<HashMap<ExactEventSourceOffsets, (String, String)>, String>> = HashMap::new();
         let mut verified_excerpts = HashMap::new();
+        let mut changed_excerpt_sources = HashSet::new();
         Ok(selected
             .into_iter()
             .map(|mut item| {
+                if changed_excerpt_sources.contains(&item.file_path) {
+                    return item.usage;
+                }
                 let ResolvedSessionFile::Accepted(file) = resolve_file_within_codex_home(
                     &canonical_home,
                     &item.file_path,
@@ -5260,6 +5263,7 @@ impl ExactUsageIndex {
                     }
                 };
                 if !before.matches_stored(item.file_size, &item.file_modified_ns) {
+                    changed_excerpt_sources.insert(item.file_path.clone());
                     warnings.push(excerpt_warning(format!(
                         "会话摘录源文件已在索引后变化，将在下一次刷新重建：{}",
                         file.display()
@@ -17972,7 +17976,6 @@ fn load_stored_session_catalog(
 
 fn collect_session_catalog_observations(
     codex_home: &Path,
-    known: &HashMap<String, (u64, String, Option<String>)>,
 ) -> Result<Vec<SessionCatalogObservation>, String> {
     let mut observations = Vec::new();
     for (relative_root, archived) in [("sessions", false), ("archived_sessions", true)] {
@@ -18027,7 +18030,7 @@ fn collect_session_catalog_observations(
                 let selected = rollout_source::physical_path(&logical).map_err(|e|format!("无法解析目录来源 {}：{e}",logical.display()))?;
                 let selected_metadata = fs::symlink_metadata(&selected).map_err(|e|e.to_string())?;
                 reject_session_catalog_reparse_point(&selected, &selected_metadata)?;
-                observations.push(session_catalog_observation(logical.clone(), archived, &selected_metadata, known.get(logical.to_string_lossy().as_ref()))?);
+                observations.push(session_catalog_observation(logical, archived, &selected_metadata)?);
             }
         }
     }
@@ -18040,12 +18043,12 @@ fn session_catalog_observation(
     path: PathBuf,
     archived: bool,
     metadata: &fs::Metadata,
-    known: Option<&(u64, String, Option<String>)>,
 ) -> Result<SessionCatalogObservation, String> {
     let modified = metadata.modified().ok();
     let created = metadata.created().ok();
-    let size = lightweight_file_signature(&path, known)?.ok_or_else(||
-        format!("压缩会话目录元数据未就绪，保留上次完整目录：{}", path.display()))?.size;
+    // Invalidation and displayed disk usage track the physical source. A
+    // catalog header does not require the accounting index or logical length.
+    let size = metadata.len();
     Ok(SessionCatalogObservation {
         path,
         archived,
@@ -18076,10 +18079,7 @@ where
     F: FnMut(&[u8]) -> Result<IndexedSessionMetadata, String>,
 {
     let physical = rollout_source::physical_path(&observation.path).map_err(|e|e.to_string())?;
-    if rollout_source::is_compressed(&physical) {
-        return Err(format!("压缩会话目录原文读取已延期，保留上次完整目录：{}", observation.path.display()));
-    }
-    // Plain-only pinning prevents a storage conversion from creating a decoder.
+    // Pin and validate the physical source while reading only session_meta.
     let mut file = open_session_catalog_rollout(&physical)?;
     let before = file_signature_from_handle(&file, &observation.path)?;
     if before.size != observation.size || before.modified_ns.to_string() != observation.modified_ns
@@ -18091,7 +18091,8 @@ where
     }
     let mut first_line = Vec::new();
     {
-        let mut reader = BufReader::new(&mut file);
+        let source = rollout_source::metadata_reader(&mut file).map_err(|error| error.to_string())?;
+        let mut reader = BufReader::new(source);
         reader.read_until(b'\n', &mut first_line).map_err(|error| {
             format!(
                 "读取会话文件首行失败：{}（{error}）",
@@ -18113,6 +18114,13 @@ where
         ));
     }
     let physical_path = rollout_source::physical_path(&observation.path).map_err(|error| error.to_string())?;
+    if physical_path != physical {
+        return Err(format!("会话物理表示在首行校验期间变化，请重试：{}", observation.path.display()));
+    }
+    let current_file = open_session_catalog_rollout(&physical_path)?;
+    if file_signature_from_handle(&current_file, &observation.path)? != before {
+        return Err(format!("会话文件路径在首行校验期间被替换，请重试：{}", observation.path.display()));
+    }
     let path_metadata = fs::symlink_metadata(&physical_path).map_err(|error| {
         format!(
             "会话文件首行校验后无法复核路径 {}：{error}",
@@ -18124,7 +18132,6 @@ where
         observation.path.clone(),
         observation.archived,
         &path_metadata,
-        None,
     )?;
     if !session_catalog_observation_values_match(&observation, &path_observation) {
         return Err(format!(

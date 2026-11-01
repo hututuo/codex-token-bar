@@ -23,6 +23,33 @@ use time::{OffsetDateTime, UtcOffset};
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+fn changed_excerpt_source_warns_once_without_changing_indexed_usage() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    let file = root.join("sessions/rollout-019f1111-1111-7111-8111-111111111118.jsonl");
+    let mut lines = Vec::new();
+    for turn in 0..4 {
+        lines.push(format!(r#"{{"timestamp":"2026-06-18T01:0{turn}:00Z","type":"event_msg","payload":{{"type":"user_message","message":"fixture {turn}"}}}}"#));
+        lines.push(format!(r#"{{"timestamp":"2026-06-18T01:0{turn}:10Z","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":1200,"cached_input_tokens":100,"output_tokens":50,"total_tokens":1250}}}}}}}}"#));
+    }
+    write_lines(&file, &lines.iter().map(String::as_str).collect::<Vec<_>>());
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    index.sync(&root, &mut Vec::new()).unwrap();
+    index.ensure_dashboard_aggregates(&root).unwrap();
+    fs::OpenOptions::new().append(true).open(&file).unwrap().write_all(b"\n").unwrap();
+    let now = OffsetDateTime::parse("2026-06-19T00:00:00Z", &Rfc3339).unwrap();
+    let mut warnings = Vec::new();
+    let data = index.dashboard_data(&root, now, UtcOffset::UTC, &mut warnings).unwrap();
+    assert!(data.cache_usage.turns.len() >= 2);
+    assert_eq!(data.stats.total_tokens, 5000);
+    assert_eq!(warnings.iter().filter(|warning| warning.source == "thread_excerpt" && warning.message.contains("源文件已在索引后变化")).count(), 1);
+    assert!(data.cache_usage.turns.iter().all(|turn| turn.user_prompt.is_empty()));
+    drop(index);
+    // Hosted-runner fixture; retain for inspection rather than deleting here.
+}
+
+#[test]
 fn broad_published_reads_seek_sources_and_preserve_daily_totals() {
     let root = temp_root();
     let now = OffsetDateTime::now_utc();

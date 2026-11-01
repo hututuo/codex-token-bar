@@ -312,7 +312,96 @@ fn decoder<R: Read>(reader: R) -> io::Result<Decoder<R>> {
     d.window_log_max(27)?; // at most 128 MiB, independently of I/O buffers
     Ok(d)
 }
+/// Read metadata without a frame-inspection or decoded-length pass. Recovery
+/// packages keep original bytes, so detect representation by magic, not name.
+pub(super) fn metadata_reader<'a>(mut reader: impl Read + 'a) -> io::Result<Box<dyn Read + 'a>> {
+    let mut magic = [0_u8; 4];
+    let mut count = 0;
+    while count < magic.len() {
+        match reader.read(&mut magic[count..]) {
+            Ok(0) => break,
+            Ok(read) => count += read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    let header = u32::from_le_bytes(magic);
+    let compressed = count == 4 && (header == 0xfd2f_b528 || header & 0xffff_fff0 == 0x184d_2a50);
+    let replay = io::Cursor::new(magic[..count].to_vec()).chain(reader);
+    if compressed {
+        // Bound malformed compressed metadata; keep plain-reader behavior.
+        Ok(Box::new(decoder(replay)?.take(64 * 1024 * 1024)))
+    } else {
+        Ok(Box::new(replay))
+    }
+}
+
 enum Storage { Plain(SourceReader), Compressed(Decoder<SourceReader>) }
+
+/// Forward-only context reader: no decoded-length pass or repeated backwards
+/// decompression, and no materialized copy of the original transcript.
+pub(crate) struct RolloutStream {
+    storage: Storage,
+    raw_file: File,
+    physical: PathBuf,
+    version_key: String,
+}
+
+impl RolloutStream {
+    pub(crate) fn open(path: &Path) -> io::Result<Self> {
+        for _ in 0..3 {
+            let physical = match physical_path(path) {
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                result => result?,
+            };
+            let file = match File::open(&physical) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                result => result?,
+            };
+            if is_compressed(&physical) && plain_entry_exists(path)? { continue; }
+            let version_key = cache_key(&physical, &file)?;
+            let storage = if is_compressed(&physical) {
+                Storage::Compressed(decoder(SourceReader::new(&file)?)?)
+            } else {
+                Storage::Plain(SourceReader::new(&file)?)
+            };
+            #[cfg(test)]
+            record_open();
+            return Ok(Self { storage, raw_file: file, physical, version_key });
+        }
+        Err(io::Error::new(io::ErrorKind::Interrupted, "rollout representations changed during open; retry"))
+    }
+
+    pub(crate) fn metadata(&self) -> io::Result<Metadata> { self.raw_file.metadata() }
+
+    pub(crate) fn verify_unchanged(&self) -> io::Result<()> {
+        let selected = physical_path(&self.physical)?;
+        let current = File::open(&selected)?;
+        if selected != self.physical
+            || cache_key(&self.physical, &self.raw_file)? != self.version_key
+            || cache_key(&selected, &current)? != self.version_key
+        {
+            return Err(invalid("rollout changed during context read"));
+        }
+        Ok(())
+    }
+}
+
+impl Read for RolloutStream {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        let compressed = matches!(&self.storage, Storage::Compressed(_));
+        let read = match &mut self.storage {
+            Storage::Plain(reader) => reader.read(bytes)?,
+            Storage::Compressed(reader) => reader.read(bytes)?,
+        };
+        #[cfg(test)]
+        if compressed { record_decoded_bytes(read as u64); }
+        #[cfg(not(test))]
+        let _ = compressed;
+        Ok(read)
+    }
+}
+
 pub(super) struct RolloutReader {
     storage: Option<Storage>,
     raw_file: File,
