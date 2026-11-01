@@ -118,6 +118,68 @@ pub(super) fn valid_for_earlier_request(
     Ok(validated_staged_full_rebuild(&connection, path, &own_request, target, None)?.is_some())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_state_cache_observes_wal_only_commits_and_invalidates_frozen_reader_cache() {
+        let root = std::env::temp_dir().join(format!("tokenbar-wal-source-{}", Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let database = root.join("state_5.sqlite");
+        let writer = Connection::open(&database).unwrap();
+        writer.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE threads(id TEXT PRIMARY KEY,title TEXT,first_user_message TEXT,preview TEXT,updated_at INTEGER,updated_at_ms INTEGER); INSERT INTO threads VALUES('fixture','first',NULL,NULL,100,NULL);").unwrap();
+        let ThreadMetadataStage::Updated(first) =
+            stage_thread_metadata(&root, (None, None), None, &mut Vec::new()).unwrap()
+        else {
+            panic!("first state read did not produce metadata");
+        };
+        assert_eq!(first.rows[0].1, "first");
+        writer
+            .execute("UPDATE threads SET title='second',updated_at=200", [])
+            .unwrap();
+        let main = file_signature(&database).unwrap();
+        assert_eq!(
+            first.signature,
+            Some((main.size.to_string(), main.modified_ns.to_string()))
+        );
+        let ThreadMetadataStage::Updated(second) = stage_thread_metadata(
+            &root,
+            first.signature.clone().unzip(),
+            first.source_signature,
+            &mut Vec::new(),
+        )
+        .unwrap() else {
+            panic!("a committed WAL change was hidden by the unchanged main-file stat");
+        };
+        assert_eq!(second.rows[0].1, "second");
+        assert!(matches!(
+            stage_thread_metadata(
+                &root,
+                second.signature.clone().unzip(),
+                second.source_signature.clone(),
+                &mut Vec::new()
+            )
+            .unwrap(),
+            ThreadMetadataStage::Unchanged
+        ));
+        assert!(matches!(
+            stage_thread_metadata(
+                &root,
+                second.signature.clone().unzip(),
+                None,
+                &mut Vec::new()
+            )
+            .unwrap(),
+            ThreadMetadataStage::Updated(_)
+        ));
+        let reader = open_read_only_source(&database, StdDuration::from_secs(1)).unwrap();
+        assert!(reader
+            .execute("UPDATE threads SET updated_at=999", [])
+            .is_err());
+    }
+}
+
 #[cfg(all(feature = "business-store-fixture", not(test)))]
 pub(super) fn verify_fixture(home: &Path) -> Result<serde_json::Value, String> {
     use crate::core::business_store_route as route;
@@ -317,25 +379,46 @@ pub(super) fn verify_fixture(home: &Path) -> Result<serde_json::Value, String> {
     let state = home.join("state_5.sqlite");
     let writer = sql!(rusqlite::Connection::open(&state));
     sql!(writer.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE threads(id TEXT PRIMARY KEY,title TEXT,first_user_message TEXT,preview TEXT,updated_at INTEGER,updated_at_ms INTEGER); INSERT INTO threads VALUES('fixture-thread','fixture-title-one',NULL,NULL,100,NULL);"));
-    let read_title = || -> Result<Option<String>, String> {
-        match stage_thread_metadata(&home, (None, None), &mut Vec::new())? {
-            ThreadMetadataStage::Updated(rows) => {
-                Ok(rows.rows.first().and_then(|row| row.1.clone()))
-            }
+    let read_state = |previous, previous_source| -> Result<StagedThreadMetadata, String> {
+        match stage_thread_metadata(&home, previous, previous_source, &mut Vec::new())? {
+            ThreadMetadataStage::Updated(rows) => Ok(rows),
             _ => Err("live thread metadata fixture could not read the source".into()),
         }
     };
+    let first = read_state((None, None), None)?;
     need!(
-        read_title()?.as_deref() == Some("fixture-title-one"),
+        first.rows.first().map(|row| row.1.as_str()) == Some("fixture-title-one"),
         "initial live state read failed"
     );
     sql!(writer.execute(
         "UPDATE threads SET title='fixture-title-two',updated_at=200",
         []
     ));
+    let main_signature = file_signature(&state)?;
     need!(
-        read_title()?.as_deref() == Some("fixture-title-two"),
+        first.signature.as_ref()
+            == Some(&(
+                main_signature.size.to_string(),
+                main_signature.modified_ns.to_string()
+            )),
+        "WAL fixture unexpectedly changed the main database signature"
+    );
+    let second = read_state(first.signature.clone().unzip(), first.source_signature)?;
+    need!(
+        second.rows.first().map(|row| row.1.as_str()) == Some("fixture-title-two"),
         "live state was read from a frozen legacy import"
+    );
+    need!(
+        matches!(
+            stage_thread_metadata(
+                &home,
+                second.signature.clone().unzip(),
+                second.source_signature,
+                &mut Vec::new()
+            )?,
+            ThreadMetadataStage::Unchanged
+        ),
+        "unchanged WAL state bypassed the cache"
     );
     let reader = open_read_only_source(&state, StdDuration::from_secs(1))?;
     need!(

@@ -2023,7 +2023,7 @@ fn exact_history_covers(primary: &Connection, prefix: &str, old: &Path, require_
     if !super::business_store_recovery::exact_operational_metadata_covers(primary,prefix,&old_db)? { return Ok(false); }
     let operational_keys = [
         "release_upgrade_retention_v1", "schema_version", "revision", "dashboard_revision", "event_id_sequence",
-        "state_size", "state_modified_ns", "storage_maintenance_last_checked_unix", "storage_maintenance_last_compacted_unix",
+        "state_size", "state_modified_ns", "state_source_signature", "storage_maintenance_last_checked_unix", "storage_maintenance_last_compacted_unix",
         "published_generation", "session_catalog_published_generation", "accounting_coverage",
         "attribution_current_scan_incomplete", "attribution_current_scan_unsafe", "attribution_ledger_epoch",
         "attribution_ledger_integrity_v1", "attribution_provenance_epoch", "canonical_projection_pending",
