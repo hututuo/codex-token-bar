@@ -146,15 +146,14 @@ const THIRTY_DAY_POINT_COUNT: i64 = 30 * 4;
 const CACHE_USAGE_MIN_INPUT_TOKENS: i64 = 1_000;
 const CACHE_USAGE_CANDIDATE_LIMIT: i64 = 40;
 // A full-history timestamp range can make SQLite choose hundreds of thousands
-// of scattered row reads. Drive these broad reads from the small, published
-// file selector so the existing (source_id, timestamp) index stays usable.
+// of scattered row reads. Bind one published file at a time so each UNION
+// branch can seek the existing source index, without relying on join ordering.
 const ACTIVITY_DAYS_SQL: &str = r#"
     SELECT e.timestamp, e.model, e.tokens, e.input_tokens,
            e.cached_input_tokens, e.output_tokens
-    FROM published_files f
-    CROSS JOIN main.canonical_usage_events e
-      ON f.generation = e.file_generation AND f.path = e.file_path
+    FROM main.canonical_usage_events e
     WHERE e.tokens > 0 AND e.timestamp >= ?1 AND e.timestamp < ?2
+      AND e.file_generation = ?3 AND e.file_path = ?4
 "#;
 const FILE_EVENT_COUNT_SQL: &str = r#"
     SELECT COUNT(*)
@@ -4416,13 +4415,13 @@ impl ExactUsageIndex {
         &self, start: i64, end: i64,
     ) -> Result<(Vec<String>, Vec<String>), String> {
         self.prepare_dashboard_event_snapshot()?;
-        let mut activity = self.connection.prepare(&format!("EXPLAIN QUERY PLAN {ACTIVITY_DAYS_SQL}"))
-            .map_err(|error| error.to_string())?;
-        let activity_plan = activity.query_map(params![start, end], |row| row.get::<_, String>(3))
-            .map_err(|error| error.to_string())?
-            .collect::<rusqlite::Result<Vec<_>>>().map_err(|error| error.to_string())?;
         let (path, generation) = self.published_file_generations()?.into_iter().next()
             .ok_or("query-plan fixture needs a published file")?;
+        let mut activity = self.connection.prepare(&format!("EXPLAIN QUERY PLAN {ACTIVITY_DAYS_SQL}"))
+            .map_err(|error| error.to_string())?;
+        let activity_plan = activity.query_map(params![start, end, generation, path], |row| row.get::<_, String>(3))
+            .map_err(|error| error.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>().map_err(|error| error.to_string())?;
         let mut count = self.connection.prepare(&format!("EXPLAIN QUERY PLAN {FILE_EVENT_COUNT_SQL}"))
             .map_err(|error| error.to_string())?;
         let count_plan = count.query_map(params![generation, path], |row| row.get::<_, String>(3))
@@ -4567,31 +4566,44 @@ impl ExactUsageIndex {
             .connection
             .prepare(ACTIVITY_DAYS_SQL)
             .map_err(|error| format!("无法准备 365 日精确 token 汇总：{error}"))?;
-        let rows = statement
-            .query_map(params![start_unix, end_unix], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, i64>(5)?,
-                ))
-            })
-            .map_err(|error| format!("无法读取 365 日精确 token 汇总：{error}"))?;
-        for row in rows {
-            let (timestamp, model, tokens, input, cached, output) =
-                row.map_err(|error| format!("无法解码 365 日精确 token 汇总：{error}"))?;
-            let date = local_day_mode.date_at(timestamp);
-            let totals = UsageBinTotals {
-                tokens: nonnegative_u64(tokens),
-                calls: 1,
-                input_tokens: nonnegative_u64(input),
-                cached_input_tokens: nonnegative_u64(cached).min(nonnegative_u64(input)),
-                output_tokens: nonnegative_u64(output),
-            };
-            grouped.entry(date).or_default().add_breakdown(totals);
-            add_model_usage_breakdown(model_grouped.entry(date).or_default(), model, totals, timestamp);
+        // Use the same file selector and WAL snapshot as the other dashboard
+        // reads. Binding a file identity avoids compatibility-UNION plans that
+        // flatten a CROSS JOIN back into the broad timestamp scan.
+        let mut files = self.connection
+            .prepare("SELECT path, generation FROM temp.published_files")
+            .map_err(|error| format!("无法准备 365 日精确 token 文件范围：{error}"))?;
+        let file_rows = files.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        }).map_err(|error| format!("无法读取 365 日精确 token 文件范围：{error}"))?;
+        for file in file_rows {
+            let (path, generation) = file
+                .map_err(|error| format!("无法解码 365 日精确 token 文件范围：{error}"))?;
+            let rows = statement
+                .query_map(params![start_unix, end_unix, generation, path], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, i64>(5)?,
+                    ))
+                })
+                .map_err(|error| format!("无法读取 365 日精确 token 汇总：{error}"))?;
+            for row in rows {
+                let (timestamp, model, tokens, input, cached, output) =
+                    row.map_err(|error| format!("无法解码 365 日精确 token 汇总：{error}"))?;
+                let date = local_day_mode.date_at(timestamp);
+                let totals = UsageBinTotals {
+                    tokens: nonnegative_u64(tokens),
+                    calls: 1,
+                    input_tokens: nonnegative_u64(input),
+                    cached_input_tokens: nonnegative_u64(cached).min(nonnegative_u64(input)),
+                    output_tokens: nonnegative_u64(output),
+                };
+                grouped.entry(date).or_default().add_breakdown(totals);
+                add_model_usage_breakdown(model_grouped.entry(date).or_default(), model, totals, timestamp);
+            }
         }
         Ok((0..365)
             .map(|offset| {
