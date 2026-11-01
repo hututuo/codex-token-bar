@@ -212,10 +212,12 @@ fn quota_available(quota: &QuotaSnapshot) -> bool {
 pub(crate) fn verify_legacy_runtime_fixture(identity: &QuotaHistoryIdentity) -> Result<(), String> {
     let database = QuotaHistoryDatabase::default()?;
     let rows = database.read_peer_rows_for_identity(identity, f64::MAX).map_err(|error| error.to_string())?;
-    if rows.len() != 3 || rows.iter().any(|row| row.stable_identity().as_ref() != Some(identity))
-        || merge_history_rows(Vec::new(), rows).len() != 2
+    let total = rows.len();
+    let foreign = rows.iter().filter(|row| row.stable_identity().as_ref() != Some(identity)).count();
+    let unique = merge_history_rows(Vec::new(), rows).len();
+    if total != 3 || foreign != 0 || unique != 2
     {
-        return Err("legacy Tauri quota observations were hidden, duplicated or assigned to the wrong identity".into());
+        return Err(format!("legacy Tauri quota identity mismatch: rows={total} unique={unique} foreign={foreign}"));
     }
     Ok(())
 }
