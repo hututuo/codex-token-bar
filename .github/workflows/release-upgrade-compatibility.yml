@@ -108,7 +108,20 @@ jobs:
       - name: Recheck B, dormant schemas and UI startup fences
         run: |
           set -euo pipefail
-          swift test --skip-build --filter '(BusinessDatabaseMigrationTests|CodexBusinessDatabaseTests|UpgradeCompatibilitySolAuditTests|ApplicationStartupCoordinatorTests|MultiClientUsageLedgerTests|BodySpeedTrendStoreTests|LegacyClaudeSpeedMigrationTests|ActivitySpeedStoreTests)' 2>&1 | tee upgrade-evidence/supporting-regressions.log
+          swift test --skip-build --filter '(BusinessDatabaseMigrationTests|CodexBusinessDatabaseTests|UpgradeCompatibilitySolAuditTests|ApplicationStartupCoordinatorTests|MultiClientUsageLedgerTests|BodySpeedTrendStoreTests|LegacyClaudeSpeedMigrationTests|ActivitySpeedStoreTests|Incident0910MigrationRecoveryTests)' 2>&1 | tee upgrade-evidence/supporting-regressions.log
+          python3 - <<'PY'
+          import pathlib, re
+          log = pathlib.Path('upgrade-evidence/supporting-regressions.log').read_text()
+          required = {
+              'testQuotaMetadataDriftAndAppendedObservationRetryPreservesDestinationAndWaitsForReady',
+              'testSchemaThirteenExactInputNormalizesOnSnapshotAndKeepsSourceBytes',
+          }
+          passed = {name for name in required if any(name in line and 'Incident0910MigrationRecoveryTests' in line and 'passed' in line for line in log.splitlines())}
+          if passed != required:
+              raise SystemExit(f'Expected both native incident recovery tests to pass, missing: {sorted(required - passed)}')
+          if re.search(r'Incident0910MigrationRecoveryTests.*(?:skipped|XCTSkip)', log, re.I):
+              raise SystemExit('A required native incident recovery test was skipped')
+          PY
           python3 scripts/prepare_v097_upgrade_validation.py verify "$TOKENBAR_V097_FIXTURE_ROOT" > upgrade-evidence/fixture-reverified.json
       - name: Preserve synthetic inputs and verification evidence
         if: always()
@@ -204,6 +217,9 @@ jobs:
           cargo test --locked --manifest-path "$env:RUNNER_TEMP/tokenbar-v097-source/tauri-app/src-tauri/Cargo.toml" --lib release097_upgrade_actual_v093_pair -- --test-threads=1 --nocapture 2>&1 | Tee-Object upgrade-evidence/windows-v093-through-v097.log
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if (-not (Select-String -Path upgrade-evidence/windows-v093-through-v097.log -SimpleMatch 'V097_UPGRADED_V093_PAIR_READY')) { throw 'The released schema13 to14 upgrade did not run' }
+          cargo test --locked --manifest-path "$env:RUNNER_TEMP/tokenbar-v097-source/tauri-app/src-tauri/Cargo.toml" --lib release097_export_actual_settled_copy -- --test-threads=1 --nocapture 2>&1 | Tee-Object upgrade-evidence/windows-v097-settled-copy.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Select-String -Path upgrade-evidence/windows-v097-settled-copy.log -SimpleMatch 'V097_SETTLED_COPY_READY')) { throw 'The released producer did not create a settled, certified schema14 copy' }
           python scripts/prepare_v097_upgrade_validation.py verify-v093-rust $env:TOKENBAR_V093_FIXTURE_ROOT | Tee-Object upgrade-evidence/windows-v093-fixtures.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python scripts/prepare_v097_upgrade_validation.py verify $env:TOKENBAR_V097_FIXTURE_ROOT --platform rust | Tee-Object upgrade-evidence/windows-shared-raw-reverified.json
@@ -245,7 +261,7 @@ jobs:
           $saved = @{}
           foreach ($key in $keys) { $saved[$key] = [Environment]::GetEnvironmentVariable($key) }
           try {
-            foreach ($case in @('retained','current-retained','relocated-pair','late-relocated-pair','relocated-v13-pair','late-relocated-v13-pair','switched','switching','rollback','missing','unknown','stray-wal','existing-a','late-retained','late-switching','late-rollback','late-mixed','0910-combined-relocated-v13-pair')) {
+            foreach ($case in @('retained','current-retained','relocated-pair','late-relocated-pair','relocated-v13-pair','late-relocated-v13-pair','switched','switching','rollback','missing','unknown','stray-wal','existing-a','late-retained','late-switching','late-rollback','late-mixed','0910-combined-relocated-v13-pair','0910-combined-unavailable-relocated-v13-pair')) {
               $caseRoot = Join-Path $runtime "tokenbar-v097-runtime-manifest-$case"
               New-Item -ItemType Directory -Path $caseRoot | Out-Null
               Set-Content -LiteralPath (Join-Path $caseRoot '.tokenbar-v097-disposable') -Value '0219554ce444b0013987da7b82e3c2e891f4afdb' -NoNewline
@@ -263,7 +279,7 @@ jobs:
                 [Environment]::SetEnvironmentVariable($key, $path)
               }
               $log = "upgrade-evidence/windows-manifest-$case.log"
-              if ($case -eq '0910-combined-relocated-v13-pair') {
+              if ($case -like '0910-combined*-relocated-v13-pair') {
                 foreach ($phase in @('prepare','resume','reopen')) {
                   & $probe "manifest-$case-$phase" 2>&1 | Tee-Object -Append $log
                   if ($LASTEXITCODE -ne 0) { throw "Combined incident production probe failed: $phase" }

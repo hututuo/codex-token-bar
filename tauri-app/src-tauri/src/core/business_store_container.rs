@@ -1066,7 +1066,7 @@ impl Container {
         if !equivalent && !exact_history_covers(&self.connection, &store.prefix, snapshot, true)? {
             return Err(BusinessStoreError::ProofMismatch);
         }
-        let rule = if equivalent { "exact-relocation-metadata-only-v1" } else { "exact-published-history-covered-v2" };
+        let rule = if equivalent { "exact-relocation-metadata-only-v1" } else { "exact-published-accounting-history-covered-v2" };
         let path = canonical_input_path(original)?;
         let digest = Self::snapshot_digest(snapshot)?;
         if let Some(existing) = self.legacy_input_receipt_by_key(&path)? {
@@ -1077,6 +1077,7 @@ impl Container {
         }
         let evidence = serde_json::json!({
             "version": 1, "rule": rule,
+            "rawBindingPolicy": "copy-existing-unavailable-without-raw-identity-claim;verify-available-links",
             "sourcePath": path, "sourceDigest": digest,
             "backupPath": backup.to_string_lossy(), "importedProof": imported,
             "storeID": store.id, "logicalPath": store.logical_path,

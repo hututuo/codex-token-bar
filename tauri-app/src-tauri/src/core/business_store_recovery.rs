@@ -160,12 +160,112 @@ pub(crate) fn exact_operational_metadata_covers(
     Ok(true)
 }
 
+/// A whole-copy adoption may retain an already unavailable historical link
+/// without asserting raw equivalence. It must keep the candidate's settled,
+/// pre-existing numeric projection, not activate an unfinished generation.
+fn published_copy_settled(db: &Connection, prefix: &str) -> BusinessStoreResult<bool> {
+    let metadata = q(&format!("{prefix}metadata"));
+    if meta(db, &metadata, "canonical_projection_pending")?.as_deref() != Some("0")
+        || meta(db, &metadata, "building_generation")?.is_some()
+    {
+        return Ok(false);
+    }
+    let Some(raw) = meta(db, &metadata, "published_generation")? else {
+        return Ok(false);
+    };
+    let Ok(generation) = raw.parse::<i64>() else {
+        return Ok(false);
+    };
+    if generation < 0 || generation.to_string() != raw {
+        return Ok(false);
+    }
+    let pending = [
+        "pending_sources",
+        "pending_event_rows",
+        "pending_fingerprints",
+        "pending_chunks",
+        "pending_enrichment",
+        "pending_dashboard_source_totals",
+        "pending_dashboard_source_5m",
+        "pending_dashboard_5m",
+        "pending_dashboard_5m_tombstones",
+        "pending_dashboard_turn_candidates",
+        "pending_dashboard_turn_tombstones",
+        "usage_ledger_pending_bindings",
+        "usage_ledger_pending_missing",
+    ];
+    for table in [
+        "usage_ledger_meta",
+        "usage_scan_certificate",
+        "usage_ledger_duplicates",
+        "sources",
+        "pending_sources",
+        "pending_event_rows",
+        "pending_fingerprints",
+        "usage_ledger_pending_bindings",
+        "usage_ledger_pending_missing",
+    ] {
+        if !has_table(db, "main", &format!("{prefix}{table}"))? {
+            return Ok(false);
+        }
+    }
+    if meta(db, &q(&format!("{prefix}usage_ledger_meta")), "revision")?.as_deref() != Some("2") {
+        return Ok(false);
+    }
+    let view: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM main.sqlite_master WHERE name=?1 AND type='view')",
+        [format!("{prefix}canonical_usage_events")],
+        |r| r.get(0),
+    )?;
+    if !view {
+        return Ok(false);
+    }
+    for table in pending {
+        if !has_table(db, "main", &format!("{prefix}{table}"))? {
+            return Ok(false);
+        }
+        if db.query_row(
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM main.{})",
+                q(&format!("{prefix}{table}"))
+            ),
+            [],
+            |r| r.get::<_, bool>(0),
+        )? {
+            return Ok(false);
+        }
+    }
+    let cert = q(&format!("{prefix}usage_scan_certificate"));
+    let row=db.query_row(&format!("SELECT generation,provenance_epoch,scan_id,source_count,source_witness,discovery_started_us FROM main.{cert} WHERE id=1"),[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?,r.get::<_,String>(4)?,r.get::<_,i64>(5)?))).optional()?;
+    let Some((cert_generation, epoch, scan_id, count, witness, started)) = row else {
+        return Ok(false);
+    };
+    let source_count: i64 = db.query_row(
+        &format!(
+            "SELECT COUNT(*) FROM main.{}",
+            q(&format!("{prefix}sources"))
+        ),
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(cert_generation == generation
+        && !epoch.is_empty()
+        && meta(db, &metadata, "attribution_provenance_epoch")?.as_deref() == Some(epoch.as_str())
+        && uuid::Uuid::parse_str(&scan_id).is_ok()
+        && count >= 0
+        && count <= source_count
+        && started >= 0
+        && witness.len() == 64
+        && witness.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
 /// This temporary proof set is local to one comparison, never a business DB.
 /// Prefix checks run once per affected source, not once per event.
 pub(crate) struct VerifiedLegacySources<'a> {
     db: &'a Connection,
     prefix: String,
     prefixes: HashMap<i64, bool>,
+    settled: bool,
 }
 impl<'a> VerifiedLegacySources<'a> {
     pub(crate) fn prepare(db: &'a Connection, prefix: &str) -> BusinessStoreResult<Self> {
@@ -174,15 +274,16 @@ impl<'a> VerifiedLegacySources<'a> {
             db,
             prefix: prefix.into(),
             prefixes: HashMap::new(),
+            settled: published_copy_settled(db, prefix)?,
         };
         if has_table(db, OLD, "usage_ledger_bindings")?
             && has_table(db, "main", &format!("{prefix}usage_ledger_bindings"))?
         {
             let table = q(&format!("{prefix}usage_ledger_bindings"));
-            let ids=db.prepare(&format!("SELECT DISTINCT old.source_id FROM {OLD}.usage_ledger_bindings old JOIN main.{table} current ON current.event_id=old.event_id AND current.source_id=old.source_id WHERE old.fingerprint IS NULL AND current.fingerprint IS NOT NULL"))?
-                .query_map([],|r|r.get::<_,i64>(0))?.collect::<Result<Vec<_>,_>>()?;
-            for id in ids {
-                if result.prefix_unchanged(id)? {
+            let ids=db.prepare(&format!("SELECT old.source_id,MAX(CASE WHEN typeof(current.available)='integer' AND current.available=0 THEN 0 ELSE 1 END) FROM {OLD}.usage_ledger_bindings old JOIN main.{table} current ON current.event_id=old.event_id AND current.source_id=old.source_id WHERE old.fingerprint IS NULL AND current.fingerprint IS NOT NULL GROUP BY old.source_id"))?
+                .query_map([],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?)))?.collect::<Result<Vec<_>,_>>()?;
+            for (id, needs_raw_proof) in ids {
+                if (!result.settled || needs_raw_proof != 0) && result.prefix_unchanged(id)? {
                     db.execute(&format!("INSERT INTO temp.{VERIFIED} VALUES(?1)"), [id])?;
                 }
             }
@@ -292,10 +393,36 @@ impl<'a> VerifiedLegacySources<'a> {
             return Ok(false);
         }
         for (id, old, current, path, session) in changed {
-            if old!=1 || current!=0 || !self.prefix_unchanged(id)?
-                || !crate::core::usage::token_count_jsonl::recovery_source::is_paginated_without_parent(Path::new(&path),&session) { return Ok(false); }
+            if old != 1 || current != 0 {
+                return Ok(false);
+            }
+            if !crate::core::usage::token_count_jsonl::recovery_source::is_paginated_without_parent(
+                Path::new(&path),
+                &session,
+            ) && !self.missing_published_history(id, Path::new(&path))?
+            {
+                return Ok(false);
+            }
         }
         Ok(true)
+    }
+    fn missing_published_history(&self, id: i64, path: &Path) -> BusinessStoreResult<bool> {
+        if !self.settled
+            || !crate::core::usage::token_count_jsonl::recovery_source::is_missing(path)
+            || !has_table(
+                self.db,
+                "main",
+                &format!("{}usage_ledger_sources", self.prefix),
+            )?
+        {
+            return Ok(false);
+        }
+        let sources = q(&format!("{}usage_ledger_sources", self.prefix));
+        let bindings = q(&format!("{}usage_ledger_bindings", self.prefix));
+        // This adopts an existing completed repair, not an assertion about a
+        // missing header. Every old binding still has to pass bindings_cover.
+        Ok(self.db.query_row(&format!("SELECT EXISTS(SELECT 1 FROM main.{sources} WHERE source_id=?1 AND typeof(missing)='integer' AND missing=1) AND NOT EXISTS(SELECT 1 FROM main.{bindings} WHERE source_id=?1 AND (typeof(available)<>'integer' OR available<>0))"),[id],|r|r.get::<_,bool>(0))?
+            && crate::core::usage::token_count_jsonl::recovery_source::is_missing(path))
     }
     pub(crate) fn bindings_cover(&self) -> BusinessStoreResult<bool> {
         let bindings = q(&format!("{}usage_ledger_bindings", self.prefix));
@@ -326,6 +453,14 @@ impl<'a> VerifiedLegacySources<'a> {
               AND EXISTS(SELECT 1 FROM temp.tb_legacy_new_observations candidate WHERE candidate.source_id=old.source_id AND {observation} AND candidate.n=1)
           ))"#
         );
+        let historical = format!(
+            r#"{}=1 AND typeof(old.raw_generation)='integer' AND typeof(current.raw_generation)='integer'
+            AND old.raw_generation>=0 AND current.raw_generation>=old.raw_generation
+            AND old.fingerprint IS NULL AND typeof(current.fingerprint)='blob' AND length(current.fingerprint)>0
+            AND typeof(current.available)='integer' AND current.available=0 AND event.id IS NOT NULL
+            AND EXISTS(SELECT 1 FROM {OLD}.source_fingerprints f WHERE f.source_id=old.source_id AND f.fingerprint=current.fingerprint)"#,
+            if self.settled { 1 } else { 0 }
+        );
         let sql = format!(
             r#"SELECT EXISTS(
           SELECT 1 FROM {OLD}.usage_ledger_bindings old
@@ -334,11 +469,11 @@ impl<'a> VerifiedLegacySources<'a> {
           WHERE current.event_id IS NULL
              OR (old.fingerprint IS NOT NULL AND (typeof(old.fingerprint)<>typeof(current.fingerprint) OR old.fingerprint IS NOT current.fingerprint))
              OR (old.raw_generation IS current.raw_generation AND ({known_positions}))
-             OR (old.fingerprint IS NULL AND current.fingerprint IS NOT NULL AND NOT ({enrichment}))
+             OR (old.fingerprint IS NULL AND current.fingerprint IS NOT NULL AND NOT (({enrichment}) OR ({historical})))
              OR (old.raw_generation IS NOT current.raw_generation AND NOT (
                 typeof(old.raw_generation)='integer' AND typeof(current.raw_generation)='integer'
                 AND old.raw_generation>=0 AND current.raw_generation>old.raw_generation
-                AND (old.fingerprint IS NOT NULL AND old.fingerprint IS current.fingerprint OR ({enrichment}))
+                AND (old.fingerprint IS NOT NULL AND old.fingerprint IS current.fingerprint OR ({enrichment}) OR ({historical}))
              ))
         )"#
         );

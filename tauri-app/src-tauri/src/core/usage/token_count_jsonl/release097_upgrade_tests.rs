@@ -5,7 +5,7 @@
 
 use crate::core::business_store_container::{Container, StoreSpec};
 use crate::core::{app_paths, business_store_route as route};
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 #[cfg(not(test))]
 use serde_json::json;
 use serde_json::Value;
@@ -552,8 +552,11 @@ pub fn run_production_probe(input: &Path, phase: &str) -> Result<Value, String> 
 /// database, path override fallback, or provider connection is used.
 #[cfg(not(test))]
 fn run_legacy_manifest_probe(root: &Path, frozen: &Path, scenario: &str) -> Result<Value, String> {
+    if let Some(stage) = scenario.strip_prefix("manifest-0910-combined-unavailable-relocated-v13-pair-") {
+        return run_incident_0910_probe(root, frozen, stage, true);
+    }
     if let Some(stage) = scenario.strip_prefix("manifest-0910-combined-relocated-v13-pair-") {
-        return run_incident_0910_probe(root, frozen, stage);
+        return run_incident_0910_probe(root, frozen, stage, false);
     }
     let (phase, expect_ready, current) = match scenario {
         "manifest-retained" => ("Retained", true, false),
@@ -576,7 +579,21 @@ fn run_legacy_manifest_probe(root: &Path, frozen: &Path, scenario: &str) -> Resu
         _ => return Err("Unknown manifest probe scenario".into()),
     };
     let stores = paths(frozen)?;
-    let (home, target) = &stores[0];
+    let (case_home, case_target) = &stores[0];
+    let (home, target) = if settled_unavailable {
+        let database = read_only(&upgraded14)?;
+        let source = incident_0910_source(&database, INCIDENT_0910_SESSION_ID)?;
+        let published_raw = PathBuf::from(&source.1);
+        require!(published_raw.is_file(), "Settled public source path is missing");
+        let published_home = fs::canonicalize(
+            published_raw.parent().and_then(Path::parent).ok_or("Settled source has no Home parent")?
+        ).map_err(|error| error.to_string())?;
+        let exact_root = app_paths::usage_history_dir().ok_or("No isolated Exact root")?;
+        let target = exact_root.join(format!("{}.sqlite3", fnv(&published_home.to_string_lossy())));
+        (published_home, target)
+    } else {
+        (case_home.clone(), case_target.clone())
+    };
     let a = route::container_path()?;
     let marker = PathBuf::from(format!("{}.initialized", a.display()));
     require!(!a.exists() && !marker.exists(), "Probe refuses an existing A");
@@ -719,11 +736,14 @@ const INCIDENT_0910_SESSION_ID: &str = "019ff8b9-09e7-75c1-b9a5-14fe7b60065a";
 const INCIDENT_0910_SCENARIO: &str = "manifest-0910-combined-relocated-v13-pair";
 
 #[cfg(not(test))]
-fn run_incident_0910_probe(root: &Path, frozen: &Path, stage: &str) -> Result<Value, String> {
+const INCIDENT_0910_UNAVAILABLE_SCENARIO: &str = "manifest-0910-combined-unavailable-relocated-v13-pair";
+
+#[cfg(not(test))]
+fn run_incident_0910_probe(root: &Path, frozen: &Path, stage: &str, settled_unavailable: bool) -> Result<Value, String> {
     match stage {
-        "prepare" => prepare_incident_0910_probe(root, frozen),
-        "resume" => resume_incident_0910_probe(root, frozen, false),
-        "reopen" => resume_incident_0910_probe(root, frozen, true),
+        "prepare" => prepare_incident_0910_probe(root, frozen, settled_unavailable),
+        "resume" => resume_incident_0910_probe(root, frozen, false, settled_unavailable),
+        "reopen" => resume_incident_0910_probe(root, frozen, true, settled_unavailable),
         _ => Err("Unknown 0.9.10 incident probe phase".into()),
     }
 }
@@ -743,9 +763,13 @@ fn incident_0910_check_files(root: &Path, state: &Value) -> Result<(), String> {
     let records = state["immutableFiles"]
         .as_array()
         .ok_or("Combined incident fixture has no file evidence")?;
+    let published_raw = state["publishedRawPath"].as_str().map(PathBuf::from);
+    let settled_unavailable = state["settledUnavailable"].as_bool() == Some(true);
     for record in records {
         let path = PathBuf::from(record["path"].as_str().ok_or("Incident file has no path")?);
-        require!(path.starts_with(root), "Incident evidence escaped its isolated root");
+        require!(path.starts_with(root)
+            || (settled_unavailable && published_raw.as_ref() == Some(&path)),
+            "Incident evidence escaped its isolated root and the declared synthetic producer source");
         require!(sha(&path)? == record["sha256"].as_str().ok_or("Incident file has no digest")?,
             format!("A source or frozen artifact changed: {}", path.display()));
     }
@@ -753,20 +777,20 @@ fn incident_0910_check_files(root: &Path, state: &Value) -> Result<(), String> {
 }
 
 #[cfg(not(test))]
-fn incident_0910_read_state(root: &Path) -> Result<Value, String> {
+fn incident_0910_read_state(root: &Path, expected_scenario: &str) -> Result<Value, String> {
     let state: Value = checked!(serde_json::from_slice(&checked!(fs::read(incident_0910_state_path(root)))));
-    require!(state["scenario"] == INCIDENT_0910_SCENARIO, "Wrong combined incident state file");
+    require!(state["scenario"] == expected_scenario, "Wrong combined incident state file");
     incident_0910_check_files(root, &state)?;
     Ok(state)
 }
 
 #[cfg(not(test))]
 fn incident_0910_table_exists(connection: &Connection, table: &str) -> Result<bool, String> {
-    checked!(connection.query_row(
+    Ok(checked!(connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
         [table],
         |row| row.get(0)
-    ))
+    )))
 }
 
 #[cfg(not(test))]
@@ -790,16 +814,96 @@ fn incident_0910_event_facts(connection: &Connection) -> Result<(i64, String), S
 }
 
 #[cfg(not(test))]
+fn incident_0910_canonical_facts(connection: &Connection) -> Result<(i64, String, i64), String> {
+    let mut statement = checked!(connection.prepare(
+        "SELECT id,source_id,ordinal,timestamp,tokens,input_tokens,cached_input_tokens,output_tokens,reasoning_output_tokens,model,user_prompt_start,user_prompt_end,assistant_response_start,assistant_response_end,accounting_kind,reported_total_tokens,token_source_offset,legacy_tokens FROM canonical_usage_events ORDER BY id"
+    ));
+    let rows = checked!(statement.query_map([], |row| Ok(json!([
+        row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?,
+        row.get::<_, i64>(3)?, row.get::<_, i64>(4)?, row.get::<_, i64>(5)?,
+        row.get::<_, i64>(6)?, row.get::<_, i64>(7)?, row.get::<_, i64>(8)?,
+        row.get::<_, Option<String>>(9)?, row.get::<_, Option<i64>>(10)?,
+        row.get::<_, Option<i64>>(11)?, row.get::<_, Option<i64>>(12)?,
+        row.get::<_, Option<i64>>(13)?, row.get::<_, i64>(14)?,
+        row.get::<_, Option<i64>>(15)?, row.get::<_, Option<i64>>(16)?,
+        row.get::<_, Option<i64>>(17)?
+    ]))));
+    let rows = rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|error| error.to_string())?;
+    let bytes = serde_json::to_vec(&rows).map_err(|error| error.to_string())?;
+    let tokens: i64 = checked!(connection.query_row("SELECT COALESCE(SUM(tokens),0) FROM canonical_usage_events", [], |row| row.get(0)));
+    Ok((rows.len() as i64, format!("{:x}", Sha256::digest(bytes)), tokens))
+}
+
+#[cfg(not(test))]
+fn incident_0910_published_projection(connection: &Connection) -> Result<Value, String> {
+    let metadata = |key: &str| -> Result<Option<String>, String> {
+        Ok(checked!(connection.query_row("SELECT value FROM metadata WHERE key=?1", [key], |row| row.get::<_, String>(0)).optional()))
+    };
+    require!(metadata("canonical_projection_pending")?.as_deref() == Some("0")
+        && metadata("building_generation")?.is_none(),
+        "Settled schema14 candidate has an unfinished canonical generation");
+    let generation_text = metadata("published_generation")?.ok_or("Settled schema14 candidate has no published generation")?;
+    let generation = generation_text.parse::<i64>().map_err(|error| format!("Invalid settled publication generation: {error}"))?;
+    require!(generation >= 0 && generation.to_string() == generation_text,
+        "Settled schema14 candidate has a noncanonical published generation");
+    for table in [
+        "usage_ledger_meta", "usage_scan_certificate", "usage_ledger_duplicates", "sources",
+        "pending_sources", "pending_event_rows", "pending_fingerprints", "pending_chunks",
+        "pending_enrichment", "pending_dashboard_source_totals", "pending_dashboard_source_5m",
+        "pending_dashboard_5m", "pending_dashboard_5m_tombstones", "pending_dashboard_turn_candidates",
+        "pending_dashboard_turn_tombstones", "usage_ledger_pending_bindings", "usage_ledger_pending_missing",
+    ] {
+        require!(incident_0910_table_exists(connection, table)?,
+            format!("Settled schema14 candidate lacks {table}"));
+    }
+    let revision: String = checked!(connection.query_row("SELECT value FROM usage_ledger_meta WHERE key='revision'", [], |row| row.get(0)));
+    require!(revision == "2", "Settled schema14 candidate has an unexpected ledger revision");
+    let view: bool = checked!(connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='view' AND name='canonical_usage_events')", [], |row| row.get(0)));
+    require!(view, "Settled schema14 candidate has no canonical usage view");
+    for table in [
+        "pending_sources", "pending_event_rows", "pending_fingerprints", "pending_chunks",
+        "pending_enrichment", "pending_dashboard_source_totals", "pending_dashboard_source_5m",
+        "pending_dashboard_5m", "pending_dashboard_5m_tombstones", "pending_dashboard_turn_candidates",
+        "pending_dashboard_turn_tombstones", "usage_ledger_pending_bindings", "usage_ledger_pending_missing",
+    ] {
+        let rows: i64 = checked!(connection.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0)));
+        require!(rows == 0, format!("Settled schema14 candidate has pending rows in {table}"));
+    }
+    let (certificate_generation, epoch, scan_id, certified_sources, witness, discovery_started): (i64, String, String, i64, String, i64) = checked!(connection.query_row(
+        "SELECT generation,provenance_epoch,scan_id,source_count,source_witness,discovery_started_us FROM usage_scan_certificate WHERE id=1", [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))));
+    let provenance_epoch = metadata("attribution_provenance_epoch")?.ok_or("Settled schema14 candidate has no provenance epoch")?;
+    let source_count: i64 = checked!(connection.query_row("SELECT COUNT(*) FROM sources", [], |row| row.get(0)));
+    require!(certificate_generation == generation && !epoch.is_empty() && provenance_epoch == epoch
+        && uuid::Uuid::parse_str(&scan_id).is_ok() && certified_sources >= 0 && certified_sources <= source_count
+        && discovery_started >= 0 && witness.len() == 64 && witness.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "Settled schema14 candidate's scan certificate is not current for its published generation");
+    let event = incident_0910_event_facts(connection)?;
+    let canonical = incident_0910_canonical_facts(connection)?;
+    let event_tokens: i64 = checked!(connection.query_row("SELECT COALESCE(SUM(tokens),0) FROM event_rows", [], |row| row.get(0)));
+    require!(canonical.0 == event.0 && canonical.1 == event.1 && canonical.2 == event_tokens,
+        "Settled schema14 canonical projection does not match its immutable numeric events");
+    Ok(json!({
+        "generation": generation, "eventCount": event.0, "eventDigest": event.1,
+        "canonicalCount": canonical.0, "canonicalDigest": canonical.1, "canonicalTokens": canonical.2,
+        "certificateGeneration": certificate_generation, "provenanceEpoch": epoch,
+        "scanId": scan_id, "sourceCount": certified_sources, "sourceWitness": witness,
+        "discoveryStartedUs": discovery_started
+    }))
+}
+
+#[cfg(not(test))]
 fn incident_0910_source_chunks(connection: &Connection, source_id: i64) -> Result<Vec<(i64, i64, Vec<u8>)>, String> {
     require!(incident_0910_table_exists(connection, "source_chunks")?,
         "Public schema13/14 fixture lacks persisted source_chunks");
     let mut statement = checked!(connection.prepare(
         "SELECT chunk_index,byte_count,sha256 FROM source_chunks WHERE source_id=?1 ORDER BY chunk_index"
     ));
-    checked!(statement.query_map([source_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+    Ok(checked!(statement.query_map([source_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
         .map_err(|error| error.to_string())?
         .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|error| error.to_string()))
+        .map_err(|error| error.to_string())))
 }
 
 #[cfg(not(test))]
@@ -838,7 +942,7 @@ struct Incident0910Binding {
 fn incident_0910_first_binding(connection: &Connection, source_id: i64) -> Result<Incident0910Binding, String> {
     require!(incident_0910_table_exists(connection, "usage_ledger_bindings")?,
         "Public schema13/14 fixture lacks persisted per-event ledger bindings");
-    checked!(connection.query_row(
+    Ok(checked!(connection.query_row(
         "SELECT e.id,e.source_id,e.ordinal,e.timestamp,e.tokens,e.input_tokens,e.cached_input_tokens,e.output_tokens,e.reasoning_output_tokens,e.accounting_kind,b.raw_generation,b.raw_offset,b.fingerprint,b.available FROM event_rows e JOIN usage_ledger_bindings b ON b.event_id=e.id AND b.source_id=e.source_id WHERE e.source_id=?1 ORDER BY e.ordinal LIMIT 1",
         [source_id],
         |row| Ok(Incident0910Binding {
@@ -849,7 +953,7 @@ fn incident_0910_first_binding(connection: &Connection, source_id: i64) -> Resul
             raw_generation: row.get(10)?, raw_offset: row.get(11)?,
             fingerprint: row.get(12)?, available: row.get(13)?,
         })
-    ))
+    )))
 }
 
 #[cfg(not(test))]
@@ -868,7 +972,7 @@ fn incident_0910_check_partial_canary(a: &Path) -> Result<(), String> {
 }
 
 #[cfg(not(test))]
-fn stage_incident_0910_exact_transition(old_path: &Path, current_path: &Path, home: &Path) -> Result<Value, String> {
+fn stage_incident_0910_exact_transition(old_path: &Path, current_path: &Path, home: &Path, settled_unavailable: bool) -> Result<Value, String> {
     let old = checked!(Connection::open(old_path));
     let current = checked!(Connection::open(current_path));
     let old_schema: String = checked!(old.query_row("SELECT value FROM metadata WHERE key='schema_version'", [], |row| row.get(0)));
@@ -878,23 +982,43 @@ fn stage_incident_0910_exact_transition(old_path: &Path, current_path: &Path, ho
     let old_source = incident_0910_source(&old, INCIDENT_0910_SESSION_ID)?;
     let current_source = incident_0910_source(&current, INCIDENT_0910_SESSION_ID)?;
     let raw_path = home.join("sessions").join(format!("rollout-{INCIDENT_0910_SESSION_ID}.jsonl"));
-    require!(old_source.0 == current_source.0 && old_source.1 == current_source.1
-        && old_source.2 == current_source.2
+    require!(old_source.0 == current_source.0 && old_source.2 == current_source.2
         && Path::new(&old_source.1).file_name() == raw_path.file_name(),
-        "Schema13/14 pair does not identify the same raw source, path, and session");
-    // The real public producer stores the fixture's original temporary path.
-    // This isolated copy owns its own Home path, so rebind both copies to the
-    // matching session file under this case root before the interrupted scan.
-    checked!(old.execute("UPDATE sources SET path=?1 WHERE source_id=?2", rusqlite::params![raw_path.to_string_lossy(), old_source.0]));
-    checked!(current.execute("UPDATE sources SET path=?1 WHERE source_id=?2", rusqlite::params![raw_path.to_string_lossy(), current_source.0]));
+        "Schema13/14 pair does not identify the same source, session, and raw filename");
+    // The public producer roots are separate directories, so the schema13
+    // copy records a different absolute path for the same synthetic Home.
+    // Rebind only that isolated older copy to the schema14 path. The normal
+    // lane then relocates both copies into this case; the settled lane keeps
+    // the certified schema14 path unchanged.
+    if settled_unavailable {
+        require!(Path::new(&current_source.1).is_file(), "Settled producer source path is missing");
+        checked!(old.execute("UPDATE sources SET path=?1 WHERE source_id=?2", rusqlite::params![current_source.1, old_source.0]));
+    } else {
+        checked!(old.execute("UPDATE sources SET path=?1 WHERE source_id=?2", rusqlite::params![raw_path.to_string_lossy(), old_source.0]));
+        checked!(current.execute("UPDATE sources SET path=?1 WHERE source_id=?2", rusqlite::params![raw_path.to_string_lossy(), current_source.0]));
+    }
     require!(!old_source.3 && !current_source.3, "Synthetic fork transition must begin from a non-fork source");
 
     let old_chunks = incident_0910_source_chunks(&old, old_source.0)?;
     let current_chunks = incident_0910_source_chunks(&current, current_source.0)?;
-    require!(!old_chunks.is_empty() && old_chunks == current_chunks, "Public schema13/14 source chunk prefixes differ");
+    require!(!old_chunks.is_empty(), "Public schema13/14 pair has no source chunk evidence");
+    if settled_unavailable {
+        require!(old_chunks != current_chunks,
+            "Settled-copy lane must use actual v0.9.7 rescanned chunks that differ from schema13");
+    } else {
+        require!(old_chunks == current_chunks, "Public schema13/14 source chunk prefixes differ");
+    }
     let old_facts = incident_0910_event_facts(&old)?;
     let current_facts = incident_0910_event_facts(&current)?;
     require!(old_facts == current_facts && old_facts.0 >= 2, "Public schema13/14 event rows differ before incident transitions");
+    let initial_projection = if settled_unavailable {
+        let projection = incident_0910_published_projection(&current)?;
+        require!(projection["eventCount"] == old_facts.0
+            && projection["eventDigest"] == old_facts.1
+            && projection["canonicalTokens"] == 155,
+            "Settled public candidate does not certify the untouched schema13 numeric projection");
+        Some(projection)
+    } else { None };
 
     let old_binding = incident_0910_first_binding(&old, old_source.0)?;
     let current_binding = incident_0910_first_binding(&current, current_source.0)?;
@@ -960,31 +1084,61 @@ fn stage_incident_0910_exact_transition(old_path: &Path, current_path: &Path, ho
         rusqlite::params![next_generation, current_source.0]));
     checked!(current.execute("UPDATE usage_ledger_bindings SET raw_generation=?1 WHERE source_id=?2",
         rusqlite::params![next_generation, current_source.0]));
+    if settled_unavailable {
+        checked!(current.execute("UPDATE usage_ledger_bindings SET available=0 WHERE source_id=?1", [current_source.0]));
+    }
     checked!(current.execute("UPDATE usage_ledger_bindings SET fingerprint=?1 WHERE event_id=?2 AND source_id=?3",
         rusqlite::params![&fingerprint, current_binding.event_id, current_binding.source_id]));
     let unique_mapping: i64 = checked!(current.query_row(
-        "SELECT COUNT(*) FROM usage_ledger_bindings WHERE source_id=?1 AND fingerprint=?2 AND available=1",
+        "SELECT COUNT(*) FROM usage_ledger_bindings WHERE source_id=?1 AND fingerprint=?2",
         rusqlite::params![current_source.0, &fingerprint], |row| row.get(0)));
-    require!(unique_mapping == 1, "Current known fingerprint does not map to exactly one available event");
+    require!(unique_mapping == 1, "Current known fingerprint does not map to exactly one event");
+    if !settled_unavailable {
+        let available_mapping: i64 = checked!(current.query_row(
+            "SELECT COUNT(*) FROM usage_ledger_bindings WHERE source_id=?1 AND fingerprint=?2 AND available=1",
+            rusqlite::params![current_source.0, &fingerprint], |row| row.get(0)));
+        require!(available_mapping == 1, "Available current binding does not map uniquely to its fingerprint");
+    }
     require!(incident_0910_event_facts(&old)? == old_facts && incident_0910_event_facts(&current)? == current_facts,
         "Staging changed old published event rows");
     require!(incident_0910_source_chunks(&old, old_source.0)? == old_chunks
         && incident_0910_source_chunks(&current, current_source.0)? == current_chunks,
         "Staging changed persisted source chunk evidence");
+    let normalized_old_source = incident_0910_source(&old, INCIDENT_0910_SESSION_ID)?;
+    let normalized_current_source = incident_0910_source(&current, INCIDENT_0910_SESSION_ID)?;
+    require!(normalized_old_source.0 == normalized_current_source.0
+        && normalized_old_source.1 == normalized_current_source.1
+        && normalized_old_source.2 == normalized_current_source.2,
+        "Staged comparator sources do not share the same source ID, path, and session");
+    if let Some(projection) = &initial_projection {
+        require!(incident_0910_published_projection(&current)? == *projection,
+            "Synthetic parser/binding transition changed the settled canonical projection or certificate");
+        let selected_available: i64 = checked!(current.query_row(
+            "SELECT available FROM usage_ledger_bindings WHERE event_id=?1 AND source_id=?2",
+            rusqlite::params![current_binding.event_id, current_binding.source_id], |row| row.get(0)));
+        require!(selected_available == 0, "Settled historical binding did not remain unavailable");
+    }
     drop(old);
     drop(current);
+    require!(Container::exact_snapshot_covers(current_path, old_path).map_err(|error| error.to_string())?,
+        "Production comparator rejected the staged public schema13/14 incident transition");
     Ok(json!({
         "sessionId": INCIDENT_0910_SESSION_ID,
         "sourceId": old_source.0,
-        "sourcePath": old_source.1,
+        "sourcePath": current_source.1,
         "chunkCount": old_chunks.len(),
         "eventCount": old_facts.0,
         "eventDigest": old_facts.1,
         "oldGeneration": old_generation,
         "currentGeneration": next_generation,
+        "settledUnavailable": settled_unavailable,
+        "settledProjection": initial_projection,
+        "sourceChunksDiffer": old_chunks != current_chunks,
+        "selectedEventId": current_binding.event_id,
         "unknownOldFingerprint": true,
         "oldFingerprintMembership": old_membership,
         "uniqueCurrentFingerprintMapping": unique_mapping,
+        "productionExactSnapshotCovers": true,
         "rawOffsetWasNull": old_binding.raw_offset.is_none(),
         "forkTransition": "1-to-0",
         "parserRepairPendingRemoved": true
@@ -992,7 +1146,8 @@ fn stage_incident_0910_exact_transition(old_path: &Path, current_path: &Path, ho
 }
 
 #[cfg(not(test))]
-fn prepare_incident_0910_probe(root: &Path, frozen: &Path) -> Result<Value, String> {
+fn prepare_incident_0910_probe(root: &Path, frozen: &Path, settled_unavailable: bool) -> Result<Value, String> {
+    let scenario = if settled_unavailable { INCIDENT_0910_UNAVAILABLE_SCENARIO } else { INCIDENT_0910_SCENARIO };
     let inputs13 = root.join("inputs13");
     let provenance: Value = checked!(serde_json::from_slice(&checked!(fs::read(inputs13.join("provenance.json")))));
     let pair_receipt: Value = checked!(serde_json::from_slice(&checked!(fs::read(inputs13.join("fixture-result.json")))));
@@ -1002,9 +1157,25 @@ fn prepare_incident_0910_probe(root: &Path, frozen: &Path) -> Result<Value, Stri
         && pair_receipt["upgrade_release_sha"] == RELEASE_SHA,
         "Combined incident requires verified public v0.9.3/v0.9.7 schema13/14 inputs");
     let original13 = inputs13.join("exact/a.sqlite3");
-    let upgraded14 = inputs13.join("exact/a-upgraded.sqlite3");
+    let public_upgraded14 = inputs13.join("exact/a-upgraded.sqlite3");
     require!(pair_receipt["artifacts"]["exact/a.sqlite3"]["sha256"] == sha(&original13)?, "Public schema13 evidence changed");
-    require!(pair_receipt["artifacts"]["exact/a-upgraded.sqlite3"]["sha256"] == sha(&upgraded14)?, "Public schema14 evidence changed");
+    require!(pair_receipt["artifacts"]["exact/a-upgraded.sqlite3"]["sha256"] == sha(&public_upgraded14)?, "Public schema14 evidence changed");
+    let upgraded14 = if settled_unavailable {
+        frozen.join("exact/a-settled.sqlite3")
+    } else {
+        public_upgraded14
+    };
+    let settled_receipt_path = frozen.join("exact/a-settled-receipt.json");
+    if settled_unavailable {
+        let receipt: Value = checked!(serde_json::from_slice(&checked!(fs::read(&settled_receipt_path))));
+        let restored_raw = PathBuf::from(frozen.join("home-a/sessions").join(format!("rollout-{INCIDENT_0910_SESSION_ID}.jsonl")));
+        require!(receipt["release_sha"] == RELEASE_SHA && receipt["verified"] == true
+            && receipt["source13_sha256"] == sha(&original13)?
+            && receipt["current_sha256"] == sha(&upgraded14)?
+            && receipt["scanned_raw_sha256"] != receipt["restored_raw_sha256"]
+            && receipt["restored_raw_sha256"] == sha(&restored_raw)?,
+            "Settled schema14 copy lacks verified public-producer and changed-raw evidence");
+    }
 
     let stores = paths(frozen)?;
     let (home, target) = &stores[0];
@@ -1050,7 +1221,7 @@ fn prepare_incident_0910_probe(root: &Path, frozen: &Path) -> Result<Value, Stri
         let database = checked!(Connection::open(&main));
         checked!(database.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('release_upgrade_retention_v1',?1)", [retention.to_string()]));
     }
-    let exact_transition = stage_incident_0910_exact_transition(&old, &main, home)?;
+    let exact_transition = stage_incident_0910_exact_transition(&old, &main, home, settled_unavailable)?;
 
     let partial = root.join("partial-before-exact.sqlite");
     require!(!partial.exists(), "Refusing an existing partial A fixture");
@@ -1138,7 +1309,9 @@ fn prepare_incident_0910_probe(root: &Path, frozen: &Path) -> Result<Value, Stri
     let changed_quota_digest = Container::snapshot_digest_path(&quota).map_err(|error| error.to_string())?;
     require!(changed_quota_digest != original_snapshot_digest, "Quota append and maintenance advance did not change the retry snapshot");
 
+    let case_raw_path = case_home.join("sessions").join(format!("rollout-{INCIDENT_0910_SESSION_ID}.jsonl"));
     let raw_path = home.join("sessions").join(format!("rollout-{INCIDENT_0910_SESSION_ID}.jsonl"));
+    require!(sha(&case_raw_path)? == sha(&raw_path)?, "Case Home raw copy differs from the selected published Home");
     let old_raw_bytes = checked!(fs::read(&raw_path));
     let header: Value = checked!(serde_json::from_slice(old_raw_bytes.split(|byte| *byte == b'\n').next().ok_or("Session header is absent")?));
     require!(header["type"] == "session_meta" && header["payload"]["id"] == INCIDENT_0910_SESSION_ID
@@ -1148,18 +1321,25 @@ fn prepare_incident_0910_probe(root: &Path, frozen: &Path) -> Result<Value, Stri
     let header_timestamp = header["timestamp"].as_str().ok_or("Session header has no RFC3339 timestamp")?;
     time::OffsetDateTime::parse(header_timestamp, &time::format_description::well_known::Rfc3339)
         .map_err(|error| format!("Session header timestamp is not RFC3339: {error}"))?;
-    let appended_timestamp = (time::OffsetDateTime::now_utc() + time::Duration::seconds(10))
-        .format(&time::format_description::well_known::Rfc3339).map_err(|error| error.to_string())?;
-    let usage = json!({"input_tokens":5,"output_tokens":2,"total_tokens":7});
-    let line = json!({"timestamp":appended_timestamp,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":usage,"last_token_usage":usage}}}).to_string() + "\n";
-    {
-        use std::io::Write as _;
-        let mut file = checked!(fs::OpenOptions::new().append(true).open(&raw_path));
-        checked!(file.write_all(line.as_bytes()));
-        checked!(file.sync_all());
+    if settled_unavailable {
+        let receipt: Value = checked!(serde_json::from_slice(&checked!(fs::read(&settled_receipt_path))));
+        require!(sha(&raw_path)? == receipt["restored_raw_sha256"].as_str().ok_or("Settled producer receipt has no restored raw hash")?
+            && sha(&raw_path)? != receipt["scanned_raw_sha256"].as_str().ok_or("Settled producer receipt has no scanned raw hash")?,
+            "Settled lane raw source does not differ from the legitimately scanned publication snapshot");
+    } else {
+        let appended_timestamp = (time::OffsetDateTime::now_utc() + time::Duration::seconds(10))
+            .format(&time::format_description::well_known::Rfc3339).map_err(|error| error.to_string())?;
+        let usage = json!({"input_tokens":5,"output_tokens":2,"total_tokens":7});
+        let line = json!({"timestamp":appended_timestamp,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":usage,"last_token_usage":usage}}}).to_string() + "\n";
+        {
+            use std::io::Write as _;
+            let mut file = checked!(fs::OpenOptions::new().append(true).open(&raw_path));
+            checked!(file.write_all(line.as_bytes()));
+            checked!(file.sync_all());
+        }
+        let raw_after = checked!(fs::read(&raw_path));
+        require!(raw_after.starts_with(&old_raw_bytes), "Synthetic usage append changed the stored raw source prefix");
     }
-    let raw_after = checked!(fs::read(&raw_path));
-    require!(raw_after.starts_with(&old_raw_bytes), "Synthetic usage append changed the stored raw source prefix");
 
     let body_scope = format!("{}\n{}", home.to_string_lossy(), home.to_string_lossy());
     let legacy_body = quota.with_file_name(format!("observed-speed-{}.json", fnv(&body_scope)));
@@ -1175,30 +1355,39 @@ fn prepare_incident_0910_probe(root: &Path, frozen: &Path) -> Result<Value, Stri
         "Interrupted import exposed startup readiness before Exact activation");
 
     let mut records = Vec::new();
-    for path in [
+    let mut immutable_paths = vec![
         &original13, &upgraded14, &frozen.join("exact/a.sqlite3"), &frozen.join("exact/b.sqlite3"),
         &frozen.join("support/quota-history.sqlite"), &frozen.join("support/observed-speed-release097.json"),
-        &old, &main, &candidate, &rollback, &manifest, &quota, &raw_path, &legacy_body, &quota_backup,
-    ] {
+        &old, &main, &candidate, &rollback, &manifest, &quota, &case_raw_path, &legacy_body, &quota_backup,
+    ];
+    if settled_unavailable {
+        immutable_paths.push(&settled_receipt_path);
+        immutable_paths.push(&raw_path);
+    }
+    for path in immutable_paths {
         records.push(incident_0910_file_record(path)?);
     }
     let state = json!({
-        "scenario": INCIDENT_0910_SCENARIO,
+        "scenario": scenario,
         "home": home.to_string_lossy(), "a": a.to_string_lossy(), "marker": marker.to_string_lossy(),
         "b": b.to_string_lossy(), "quota": quota.to_string_lossy(), "quotaIdentity": quota_identity,
         "quotaLogicalPath": quota_logical, "quotaStoreId": quota_spec.id,
         "quotaBackup": quota_backup.to_string_lossy(), "quotaBackupSha256": sha(&quota_backup)?,
         "quotaInitialSnapshotDigest": original_snapshot_digest, "quotaChangedSnapshotDigest": changed_quota_digest,
         "quotaExpectedLastCompactedAt": advanced_at.to_string(), "quotaAppendedId": appended_id,
-        "rawPath": raw_path.to_string_lossy(), "legacyBody": legacy_body.to_string_lossy(),
+        "rawPath": case_raw_path.to_string_lossy(),
+        "publishedRawPath": if settled_unavailable { json!(raw_path.to_string_lossy()) } else { Value::Null },
+        "legacyBody": legacy_body.to_string_lossy(),
         "oldExact": old.to_string_lossy(), "currentExact": main.to_string_lossy(),
-        "exactTransition": exact_transition.clone(), "immutableFiles": records, "syntheticTransitionOnPublicPair": true
+        "exactTransition": exact_transition.clone(), "settledUnavailable": settled_unavailable,
+        "settledReceipt": if settled_unavailable { json!(settled_receipt_path.to_string_lossy()) } else { Value::Null },
+        "immutableFiles": records, "syntheticTransitionOnPublicPair": true
     });
     checked!(fs::write(incident_0910_state_path(root), checked!(serde_json::to_vec_pretty(&state))));
-    Ok(json!({"status":"PASS","scenario":INCIDENT_0910_SCENARIO,"phase":"prepare","startupReady":false,
+    Ok(json!({"status":"PASS","scenario":scenario,"phase":"prepare","startupReady":false,
         "publicV1PathOnlyJournalRestored":true,"quotaReceiptAndFrozenBackupRetained":true,
-        "quotaObservationAppended":true,"exactTransition":exact_transition,
-        "rawPrefixPreserved":true,"frozenEvidenceRetained":true}))
+        "quotaObservationAppended":true,"settledUnavailable":settled_unavailable,
+        "exactTransition":exact_transition,"rawPrefixPreserved":!settled_unavailable,"frozenEvidenceRetained":true}))
 }
 
 #[cfg(not(test))]
@@ -1229,10 +1418,52 @@ fn incident_0910_check_quota(state: &Value) -> Result<(), String> {
 }
 
 #[cfg(not(test))]
-fn incident_0910_check_exact(root: &Path, state: &Value, export_label: &str) -> Result<(), String> {
+fn incident_0910_check_exact(root: &Path, state: &Value, export_label: &str, settled_unavailable: bool) -> Result<(), String> {
     use crate::core::usage::token_count_jsonl as token;
     let home = PathBuf::from(state["home"].as_str().ok_or("Incident state has no Home")?);
     let current = PathBuf::from(state["currentExact"].as_str().ok_or("Incident state has no current Exact")?);
+    if settled_unavailable {
+        let spec = route::exact_store_spec(&current)?;
+        let exported = root.join(format!("incident-0910-settled-{export_label}.sqlite3"));
+        route::export_store_to_path(&spec.source_identity, "exact", &spec.logical_path, &exported)?;
+        let database = read_only(&exported)?;
+        let projection = incident_0910_published_projection(&database)?;
+        let facts = incident_0910_event_facts(&database)?;
+        let (event_count,event_total):(i64,i64)=checked!(database.query_row(
+            "SELECT COUNT(*),COALESCE(SUM(tokens),0) FROM event_rows", [],
+            |row| Ok((row.get(0)?,row.get(1)?))));
+        require!(event_count == state["exactTransition"]["eventCount"].as_i64().ok_or("Settled fixture has no event count")?
+            && event_total == 155 && projection["eventCount"] == event_count
+            && projection["canonicalCount"] == event_count
+            && projection["canonicalTokens"] == event_total,
+            "Settled published canonical numeric projection lost or duplicated old rows");
+        if export_label == "resume-first" {
+            require!(projection == state["exactTransition"]["settledProjection"],
+                "Adoption changed the candidate's already-published canonical projection or certificate");
+            require!(facts.0 == state["exactTransition"]["eventCount"].as_i64().ok_or("Settled fixture has no event count")?
+                && facts.1 == state["exactTransition"]["eventDigest"].as_str().ok_or("Settled fixture has no event digest")?,
+                "Initial adoption changed the immutable old event evidence");
+            let selected = state["exactTransition"]["selectedEventId"].as_i64().ok_or("Settled fixture has no selected event")?;
+            let (available, generation): (i64,i64) = checked!(database.query_row(
+                "SELECT b.available,b.raw_generation FROM usage_ledger_bindings b WHERE b.event_id=?1",
+                [selected], |row| Ok((row.get(0)?,row.get(1)?))));
+            require!(available == 0 && generation == state["exactTransition"]["currentGeneration"].as_i64().ok_or("Settled fixture has no current generation")?,
+                "Settled historical binding was activated before the first runtime read");
+        }
+        drop(database);
+        require!(token::dashboard_snapshot(&home)?.stats.total_tokens == 155,
+            "First normal runtime read changed the settled Exact total");
+        require!(token::dashboard_snapshot(&home)?.stats.total_tokens == 155,
+            "Repeated normal runtime read replayed or lost settled Exact usage");
+        let after_read_path = root.join(format!("incident-0910-settled-after-read-{export_label}.sqlite3"));
+        route::export_store_to_path(&spec.source_identity, "exact", &spec.logical_path, &after_read_path)?;
+        let after_read_database = read_only(&after_read_path)?;
+        let after_read = incident_0910_published_projection(&after_read_database)?;
+        require!(after_read["eventCount"] == event_count && after_read["canonicalCount"] == event_count
+            && after_read["canonicalTokens"] == 155,
+            "Runtime read lost or duplicated the settled published numeric rows");
+        return Ok(());
+    }
     require!(token::dashboard_snapshot(&home)?.stats.total_tokens == 162,
         "Interrupted Exact recovery did not include the appended 7-token observation exactly once");
     require!(token::dashboard_snapshot(&home)?.stats.total_tokens == 162,
@@ -1253,8 +1484,9 @@ fn incident_0910_check_exact(root: &Path, state: &Value, export_label: &str) -> 
 }
 
 #[cfg(not(test))]
-fn resume_incident_0910_probe(root: &Path, frozen: &Path, reopen: bool) -> Result<Value, String> {
-    let state = incident_0910_read_state(root)?;
+fn resume_incident_0910_probe(root: &Path, frozen: &Path, reopen: bool, settled_unavailable: bool) -> Result<Value, String> {
+    let scenario = if settled_unavailable { INCIDENT_0910_UNAVAILABLE_SCENARIO } else { INCIDENT_0910_SCENARIO };
+    let state = incident_0910_read_state(root, scenario)?;
     let a = PathBuf::from(state["a"].as_str().ok_or("Incident state has no A")?);
     let marker = PathBuf::from(state["marker"].as_str().ok_or("Incident state has no ready marker")?);
     require!(a.starts_with(root) && marker.starts_with(root), "Incident A path escaped its isolated root");
@@ -1323,17 +1555,18 @@ fn resume_incident_0910_probe(root: &Path, frozen: &Path, reopen: bool) -> Resul
         checked!(activity.execute("INSERT INTO activity_speed_samples(source_identity,id,display_mode,estimator_id,estimator_version,metric_kind,client,model,started_at,ended_at,output_rate,covered_seconds,weighted_output) VALUES('incident-0910','incident-0910-b-canary','model','fixture','1','output','codex','gpt-6.1-sol',1800000000,1800000010,12,10,120)", []));
         drop(activity);
         incident_0910_check_quota(&state)?;
-        incident_0910_check_exact(root, &state, "resume-first")?;
+        incident_0910_check_exact(root, &state, "resume-first", settled_unavailable)?;
         incident_0910_check_partial_canary(&a)?;
         route::bootstrap()?;
-        incident_0910_check_exact(root, &state, "resume-repeat")?;
+        incident_0910_check_exact(root, &state, "resume-repeat", settled_unavailable)?;
         incident_0910_check_quota(&state)?;
         incident_0910_check_files(root, &state)?;
         require!(sha(&backup)? == state["quotaBackupSha256"].as_str().ok_or("Incident state has no quota backup hash")?,
             "Successful retry discarded or rewrote the first frozen quota backup");
-        return Ok(json!({"status":"PASS","scenario":INCIDENT_0910_SCENARIO,"phase":"resume",
+        return Ok(json!({"status":"PASS","scenario":scenario,"phase":"resume",
             "startupReady":true,"legacyV1JournalUpgradedToV2":true,
-            "quotaObservationsExactlyOnce":true,"exactTotalTokens":162,
+            "quotaObservationsExactlyOnce":true,"exactTotalTokens":if settled_unavailable { 155 } else { 162 },
+            "settledUnavailableProjectionPreserved":settled_unavailable,
             "partialACanaryPreserved":true,"bFirstInitialization":true,"frozenEvidenceRetained":true}));
     }
 
@@ -1349,13 +1582,15 @@ fn resume_incident_0910_probe(root: &Path, frozen: &Path, reopen: bool) -> Resul
     let home = PathBuf::from(state["home"].as_str().ok_or("Incident state has no Home")?);
     incident_0910_body_check(frozen, &home)?;
     incident_0910_check_quota(&state)?;
-    incident_0910_check_exact(root, &state, "reopen")?;
+    incident_0910_check_exact(root, &state, "reopen", settled_unavailable)?;
     incident_0910_check_files(root, &state)?;
     let backup = PathBuf::from(state["quotaBackup"].as_str().ok_or("Incident state has no quota backup")?);
     require!(sha(&backup)? == state["quotaBackupSha256"].as_str().ok_or("Incident state has no quota backup hash")?,
         "Repeated startup discarded or rewrote frozen quota evidence");
-    Ok(json!({"status":"PASS","scenario":INCIDENT_0910_SCENARIO,"phase":"reopen",
-        "startupReady":true,"quotaObservationsExactlyOnce":true,"exactTotalTokens":162,
+    Ok(json!({"status":"PASS","scenario":scenario,"phase":"reopen",
+        "startupReady":true,"quotaObservationsExactlyOnce":true,
+        "exactTotalTokens":if settled_unavailable { 155 } else { 162 },
+        "settledUnavailableProjectionPreserved":settled_unavailable,
         "partialACanaryPreserved":true,"bFirstInitializationRetained":true,"frozenEvidenceRetained":true}))
 }
 

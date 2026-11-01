@@ -87,6 +87,257 @@ impl ExactCase {
     }
 }
 
+// Synthetic already-published canonical state. This is intentionally NOT a
+// raw-binding equivalence proof: the unavailable link must stay unavailable.
+fn settle_unavailable_copy(f: &ExactCase) {
+    f.enrich();
+    f.update("UPDATE usage_ledger_bindings SET available=0,raw_offset=900; DELETE FROM source_chunks;
+      INSERT INTO metadata VALUES('canonical_projection_pending','0'),('published_generation','2'),('attribution_provenance_epoch','synthetic-epoch');
+      CREATE TABLE usage_ledger_sources(source_id INTEGER PRIMARY KEY,missing INTEGER NOT NULL); INSERT INTO usage_ledger_sources VALUES(7,0);
+      CREATE TABLE usage_ledger_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL); INSERT INTO usage_ledger_meta VALUES('revision','2');
+      CREATE TABLE usage_scan_certificate(id INTEGER PRIMARY KEY,generation INTEGER,provenance_epoch TEXT,scan_id TEXT,source_count INTEGER,source_witness TEXT,discovery_started_us INTEGER);
+      INSERT INTO usage_scan_certificate VALUES(1,2,'synthetic-epoch','00000000-0000-4000-8000-000000000001',1,'0000000000000000000000000000000000000000000000000000000000000000',1793494800000000);
+      CREATE TABLE usage_ledger_duplicates(event_id INTEGER PRIMARY KEY,representative_source_id INTEGER NOT NULL);
+      CREATE VIEW canonical_usage_events AS SELECT e.* FROM event_rows e LEFT JOIN usage_ledger_duplicates d ON d.event_id=e.id WHERE d.event_id IS NULL;
+      CREATE TABLE pending_sources(source_id INTEGER PRIMARY KEY);
+      CREATE TABLE pending_event_rows(id INTEGER PRIMARY KEY);
+      CREATE TABLE pending_fingerprints(id INTEGER PRIMARY KEY);
+      CREATE TABLE usage_ledger_pending_bindings(event_id INTEGER PRIMARY KEY);
+      CREATE TABLE usage_ledger_pending_missing(source_id INTEGER PRIMARY KEY);
+      CREATE TABLE pending_chunks(id INTEGER PRIMARY KEY);
+      CREATE TABLE pending_enrichment(id INTEGER PRIMARY KEY);
+      CREATE TABLE pending_dashboard_source_totals(id INTEGER PRIMARY KEY);
+      CREATE TABLE pending_dashboard_source_5m(id INTEGER PRIMARY KEY);
+      CREATE TABLE pending_dashboard_5m(id INTEGER PRIMARY KEY);
+      CREATE TABLE pending_dashboard_5m_tombstones(id INTEGER PRIMARY KEY);
+      CREATE TABLE pending_dashboard_turn_candidates(id INTEGER PRIMARY KEY);
+      CREATE TABLE pending_dashboard_turn_tombstones(id INTEGER PRIMARY KEY);");
+}
+#[test]
+fn incident_settled_unavailable_historical_link_survives_rewrite_and_missing_raw_without_activation(
+) {
+    for missing in [false, true] {
+        let f = ExactCase::new();
+        settle_unavailable_copy(&f);
+        if missing {
+            fs::remove_file(&f.raw).unwrap()
+        } else {
+            fs::write(&f.raw, "rewritten source with no old bytes\n").unwrap()
+        }
+        let old = fs::read(&f.old).unwrap();
+        let current = fs::read(&f.current).unwrap();
+        assert!(f.covers());
+        assert!(f.covers());
+        assert_eq!(fs::read(&f.old).unwrap(), old);
+        assert_eq!(fs::read(&f.current).unwrap(), current);
+        let db = Connection::open(&f.current).unwrap();
+        assert_eq!(
+            db.query_row("SELECT available FROM usage_ledger_bindings", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+}
+#[test]
+fn incident_unavailable_history_requires_settled_valid_publication_and_all_old_money() {
+    for mutation in [
+        "UPDATE metadata SET value='1' WHERE key='canonical_projection_pending'",
+        "DELETE FROM metadata WHERE key='canonical_projection_pending'",
+        "INSERT INTO metadata VALUES('building_generation','3')",
+        "UPDATE usage_scan_certificate SET generation=1",
+        "UPDATE usage_scan_certificate SET provenance_epoch='other-epoch'",
+        "UPDATE usage_scan_certificate SET scan_id='invalid'",
+        "UPDATE usage_scan_certificate SET source_count=999",
+        "UPDATE usage_scan_certificate SET source_witness='invalid'",
+        "DELETE FROM usage_scan_certificate",
+        "DROP VIEW canonical_usage_events",
+        "INSERT INTO pending_sources VALUES(7)",
+        "INSERT INTO pending_event_rows VALUES(2)",
+        "INSERT INTO pending_chunks VALUES(2)",
+        "INSERT INTO pending_enrichment VALUES(2)",
+        "INSERT INTO pending_dashboard_source_totals VALUES(2)",
+        "INSERT INTO pending_dashboard_source_5m VALUES(2)",
+        "INSERT INTO pending_dashboard_5m VALUES(2)",
+        "INSERT INTO pending_dashboard_5m_tombstones VALUES(2)",
+        "INSERT INTO pending_dashboard_turn_candidates VALUES(2)",
+        "INSERT INTO pending_dashboard_turn_tombstones VALUES(2)",
+        "INSERT INTO pending_fingerprints VALUES(2)",
+        "INSERT INTO usage_ledger_pending_bindings VALUES(2)",
+        "INSERT INTO usage_ledger_pending_missing VALUES(7)",
+        "UPDATE usage_ledger_bindings SET available=1",
+        "UPDATE usage_ledger_bindings SET raw_generation=0",
+        "DELETE FROM source_fingerprints",
+        "DELETE FROM retained_usage_revisions",
+        "DELETE FROM usage_ledger_unresolved",
+        "UPDATE event_rows SET input_tokens=999",
+        "DELETE FROM event_rows",
+    ] {
+        let f = ExactCase::new();
+        settle_unavailable_copy(&f);
+        f.update(mutation);
+        assert!(!f.covers(), "must reject {mutation}");
+    }
+}
+#[test]
+fn incident_unavailable_copy_does_not_reconcile_conflicting_known_identity_or_same_generation_position(
+) {
+    let f = ExactCase::new();
+    settle_unavailable_copy(&f);
+    Connection::open(&f.old)
+        .unwrap()
+        .execute("UPDATE usage_ledger_bindings SET fingerprint=x'FF'", [])
+        .unwrap();
+    assert!(!f.covers());
+    let f = ExactCase::new();
+    settle_unavailable_copy(&f);
+    Connection::open(&f.old)
+        .unwrap()
+        .execute(
+            "UPDATE usage_ledger_bindings SET raw_offset=150,raw_generation=2",
+            [],
+        )
+        .unwrap();
+    assert!(!f.covers());
+}
+#[test]
+fn incident_unavailable_whole_copy_preserves_existing_canonical_projection_and_new_rows() {
+    let f = ExactCase::new();
+    settle_unavailable_copy(&f);
+    f.update("INSERT INTO sources VALUES(8,'synthetic-other-source','other-session',0);
+      INSERT INTO event_rows SELECT 2,8,2,timestamp,tokens,input_tokens,cached_input_tokens,output_tokens,reasoning_output_tokens,accounting_kind,model FROM event_rows;
+      INSERT INTO usage_ledger_bindings SELECT 2,8,2,900,NULL,NULL,NULL,NULL,fingerprint,0 FROM usage_ledger_bindings;
+      INSERT INTO usage_ledger_duplicates VALUES(2,7);
+      UPDATE metadata SET value='2' WHERE key='event_id_sequence'");
+    assert!(f.covers());
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("a.sqlite");
+    let mut container = Container::open(&path).unwrap();
+    let spec = StoreSpec::new("exact_index_legacy", "synthetic-exact", "synthetic/exact").unwrap();
+    container
+        .import_snapshot(
+            &f.current,
+            &spec,
+            root.path().join("frozen.sqlite"),
+            1.0,
+            false,
+        )
+        .unwrap();
+    let first = container.proof(&spec).unwrap();
+    let db = container.into_store_connection(&spec).unwrap();
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM event_rows", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        db.query_row("SELECT SUM(tokens) FROM canonical_usage_events", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap(),
+        105
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT SUM(available) FROM usage_ledger_bindings",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    drop(db);
+    assert_eq!(
+        first,
+        Container::open_existing(&path)
+            .unwrap()
+            .proof(&spec)
+            .unwrap()
+    );
+}
+#[test]
+fn incident_unavailable_repeated_fingerprint_copies_published_projection_without_raw_identity_claim(
+) {
+    let f = ExactCase::new();
+    settle_unavailable_copy(&f);
+    f.update("INSERT INTO event_rows SELECT 2,7,2,timestamp,tokens,input_tokens,cached_input_tokens,output_tokens,reasoning_output_tokens,accounting_kind,model FROM event_rows;
+      INSERT INTO usage_ledger_bindings SELECT 2,7,2,900,NULL,NULL,NULL,NULL,fingerprint,0 FROM usage_ledger_bindings;
+      INSERT INTO usage_ledger_duplicates VALUES(2,7);
+      UPDATE metadata SET value='2' WHERE key='event_id_sequence'");
+    assert!(f.covers());
+    let db = Connection::open(&f.current).unwrap();
+    assert_eq!(
+        db.query_row("SELECT SUM(tokens) FROM canonical_usage_events", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap(),
+        105
+    );
+}
+#[test]
+fn incident_deleted_completed_fork_history_stays_available_as_accounting_not_raw() {
+    let f = ExactCase::new();
+    f.repair();
+    settle_unavailable_copy(&f);
+    f.update("UPDATE usage_ledger_sources SET missing=1");
+    fs::remove_file(&f.raw).unwrap();
+    assert!(f.covers());
+    assert!(f.covers());
+}
+#[test]
+fn incident_missing_completed_repair_requires_published_missing_receipt_and_zero_availability() {
+    for mutation in [
+        "UPDATE usage_ledger_sources SET missing=0",
+        "UPDATE usage_ledger_bindings SET available=1",
+        "DELETE FROM usage_ledger_bindings",
+        "UPDATE metadata SET value='1' WHERE key='canonical_projection_pending'",
+        "UPDATE usage_scan_certificate SET generation=1",
+    ] {
+        let f = ExactCase::new();
+        f.repair();
+        settle_unavailable_copy(&f);
+        f.update("UPDATE usage_ledger_sources SET missing=1");
+        fs::remove_file(&f.raw).unwrap();
+        f.update(mutation);
+        assert!(!f.covers(), "must reject {mutation}");
+    }
+}
+#[test]
+fn incident_present_unreadable_or_malformed_repair_source_is_never_treated_as_deleted() {
+    let f = ExactCase::new();
+    f.repair();
+    settle_unavailable_copy(&f);
+    f.update("UPDATE usage_ledger_sources SET missing=1");
+    fs::write(&f.raw, "malformed header\n").unwrap();
+    assert!(!f.covers());
+    fs::remove_file(&f.raw).unwrap();
+    fs::write(
+        f.raw.with_extension("jsonl.zst"),
+        "malformed compressed source",
+    )
+    .unwrap();
+    assert!(!f.covers());
+}
+#[cfg(unix)]
+#[test]
+fn incident_dangling_repair_source_is_not_deleted_history_evidence() {
+    let f = ExactCase::new();
+    f.repair();
+    settle_unavailable_copy(&f);
+    f.update("UPDATE usage_ledger_sources SET missing=1");
+    fs::remove_file(&f.raw).unwrap();
+    std::os::unix::fs::symlink(f.raw.with_extension("absent"), &f.raw).unwrap();
+    assert!(!f.covers());
+}
+#[test]
+fn incident_completed_fork_classification_uses_current_header_after_raw_rewrite() {
+    let f = ExactCase::new();
+    f.repair();
+    f.update("UPDATE source_chunks SET sha256=zeroblob(32)");
+    assert!(f.covers());
+}
+
 #[test]
 fn incident_exact_combined_repair_metadata_fork_and_unknown_binding_is_covered_once() {
     let f = ExactCase::new();

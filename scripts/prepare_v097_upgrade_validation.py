@@ -232,6 +232,19 @@ fn release097_upgrade_actual_v093_pair() {
         db.execute("INSERT OR REPLACE INTO metadata VALUES('release_upgrade_retention_v1',?1)",[receipt.to_string()]).unwrap();
         drop(db);
         let home = shared.join(format!("home-{letter}"));
+        // Reuse the byte-identical synthetic Home emitted by public v0.9.3
+        // so schema13 and the real v0.9.7 rescan describe the same events.
+        let old = Connection::open(&target).unwrap();
+        let source_path: String = old.query_row(
+            "SELECT path FROM sources WHERE session_id='019ff8b9-09e7-75c1-b9a5-14fe7b60065a'", [], |r| r.get(0)
+        ).unwrap();
+        drop(old);
+        let old_raw = PathBuf::from(source_path);
+        let new_raw = home.join("sessions").join(old_raw.file_name().unwrap());
+        assert!(old_raw.is_file(), "public schema13 source bytes are missing");
+        fs::copy(&old_raw, &new_raw).unwrap();
+        assert_eq!(fs::read(&old_raw).unwrap(), fs::read(&new_raw).unwrap(),
+            "schema14 rescan must use the exact schema13 synthetic source bytes");
         let mut index = super::exact_usage_index::ExactUsageIndex::open_at_for_testing(&home,target.clone()).unwrap();
         index.sync(&home,&mut Vec::new()).unwrap();
         drop(index);
@@ -241,6 +254,117 @@ fn release097_upgrade_actual_v093_pair() {
         db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;").unwrap();
     }
     println!("V097_UPGRADED_V093_PAIR_READY schema13_and14=true actual_released_upgrade=true");
+}
+'''
+
+RUST_SETTLED_PRODUCER = r'''
+
+#[test]
+fn release097_export_actual_settled_copy() {
+    use sha2::{Digest, Sha256};
+    let inputs = PathBuf::from(std::env::var("TOKENBAR_V097_RUST_INPUTS").unwrap());
+    let inputs13 = PathBuf::from(std::env::var("TOKENBAR_V093_FIXTURE_ROOT").unwrap()).join("inputs");
+    let home = inputs.join("home-a");
+    let raw = home.join("sessions/rollout-019ff8b9-09e7-75c1-b9a5-14fe7b60065a.jsonl");
+    let original_raw = fs::read(&raw).unwrap();
+    let original_text = String::from_utf8(original_raw.clone()).unwrap();
+    let changed_text = original_text.replace("\"output\":\"synthetic\"", "\"output\":\"synthetic trailing evidence changed\"");
+    assert_ne!(changed_text, original_text, "the trailing non-usage fixture record must change");
+    struct RestoreRaw { path: PathBuf, bytes: Vec<u8> }
+    impl Drop for RestoreRaw {
+        fn drop(&mut self) { let _ = fs::write(&self.path, &self.bytes); }
+    }
+    let restore = RestoreRaw { path: raw.clone(), bytes: original_raw.clone() };
+    fs::write(&raw, changed_text.as_bytes()).unwrap();
+    let scanned_raw_sha256 = format!("{:x}", Sha256::digest(fs::read(&raw).unwrap()));
+
+    let current = inputs.join("exact/a-settled.sqlite3");
+    assert!(!current.exists(), "refusing to overwrite the settled schema14 fixture");
+    fs::copy(inputs.join("exact/a.sqlite3"), &current).unwrap();
+    let mut index = super::exact_usage_index::ExactUsageIndex::open_at_for_testing(&home, current.clone()).unwrap();
+    index.sync(&home, &mut Vec::new()).unwrap();
+    drop(index);
+    drop(restore); // Restore the current raw file while keeping the published copy's chunk proof.
+    let restored_raw_sha256 = format!("{:x}", Sha256::digest(fs::read(&raw).unwrap()));
+    assert_ne!(scanned_raw_sha256, restored_raw_sha256, "the raw source must differ from the settled snapshot");
+
+    fn numeric_rows(path: &Path) -> Vec<(i64,i64,i64,i64,i64,i64,i64,i64,i64,i64)> {
+        let db = Connection::open(path).unwrap();
+        let mut statement = db.prepare("SELECT id,source_id,ordinal,timestamp,tokens,input_tokens,cached_input_tokens,output_tokens,reasoning_output_tokens,accounting_kind FROM event_rows ORDER BY id").unwrap();
+        statement.query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?))).unwrap().collect::<Result<Vec<_>,_>>().unwrap()
+    }
+    let previous = inputs13.join("exact/a.sqlite3");
+    let old_rows = numeric_rows(&previous);
+    let current_rows = numeric_rows(&current);
+    assert_eq!(old_rows, current_rows, "rewriting trailing non-usage evidence changed numeric Exact events");
+    assert_eq!(old_rows.len(), 2);
+    assert_eq!(old_rows.iter().map(|row| row.4).sum::<i64>(), 155);
+
+    let old_db = Connection::open(&previous).unwrap();
+    let current_db = Connection::open(&current).unwrap();
+    let old_source: (i64,String,String) = old_db.query_row("SELECT source_id,path,session_id FROM sources WHERE session_id='019ff8b9-09e7-75c1-b9a5-14fe7b60065a'", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+    let current_source: (i64,String,String) = current_db.query_row("SELECT source_id,path,session_id FROM sources WHERE session_id='019ff8b9-09e7-75c1-b9a5-14fe7b60065a'", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+    assert_eq!((old_source.0, old_source.2.as_str()), (current_source.0, current_source.2.as_str()),
+        "schema13/settled schema14 source ID or session changed");
+    assert_eq!(Path::new(&old_source.1).file_name(), Path::new(&current_source.1).file_name(),
+        "schema13/settled schema14 raw source filename changed");
+    assert_eq!(PathBuf::from(&current_source.1), raw);
+
+    fn chunks(db: &Connection, source: i64) -> Vec<(i64,i64,Vec<u8>)> {
+        let mut statement = db.prepare("SELECT chunk_index,byte_count,sha256 FROM source_chunks WHERE source_id=?1 ORDER BY chunk_index").unwrap();
+        statement.query_map([source], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap().collect::<Result<Vec<_>,_>>().unwrap()
+    }
+    let old_chunks = chunks(&old_db, old_source.0);
+    let current_chunks = chunks(&current_db, current_source.0);
+    assert!(!old_chunks.is_empty() && old_chunks != current_chunks,
+        "settled copy must persist the actual rewritten source chunk scan");
+
+    let meta = |key: &str| current_db.query_row("SELECT value FROM metadata WHERE key=?1", [key], |r| r.get::<_,String>(0)).unwrap();
+    assert_eq!(meta("schema_version"), "14");
+    assert_eq!(meta("canonical_projection_pending"), "0");
+    assert!(current_db.query_row("SELECT value FROM metadata WHERE key='building_generation'", [], |r| r.get::<_,String>(0)).optional().unwrap().is_none());
+    let generation: i64 = meta("published_generation").parse().unwrap();
+    assert!(generation >= 0);
+    assert_eq!(current_db.query_row("SELECT value FROM usage_ledger_meta WHERE key='revision'", [], |r| r.get::<_,String>(0)).unwrap(), "2");
+    let (cert_generation, epoch, scan_id, source_count, witness, started): (i64,String,String,i64,String,i64) = current_db.query_row(
+        "SELECT generation,provenance_epoch,scan_id,source_count,source_witness,discovery_started_us FROM usage_scan_certificate WHERE id=1", [],
+        |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).unwrap();
+    assert_eq!(cert_generation, generation);
+    assert!(!epoch.is_empty() && epoch == meta("attribution_provenance_epoch"));
+    assert!(uuid::Uuid::parse_str(&scan_id).is_ok());
+    assert!(source_count >= 0 && source_count <= current_db.query_row("SELECT COUNT(*) FROM sources", [], |r| r.get::<_,i64>(0)).unwrap());
+    assert!(started >= 0 && witness.len() == 64 && witness.bytes().all(|b| b.is_ascii_hexdigit()));
+    let pending_tables = ["pending_sources","pending_event_rows","pending_fingerprints","pending_chunks","pending_enrichment","pending_dashboard_source_totals","pending_dashboard_source_5m","pending_dashboard_5m","pending_dashboard_5m_tombstones","pending_dashboard_turn_candidates","pending_dashboard_turn_tombstones","usage_ledger_pending_bindings","usage_ledger_pending_missing"];
+    for table in pending_tables {
+        let exists: bool = current_db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)", [table], |r| r.get(0)).unwrap();
+        assert!(exists, "settled copy is missing {table}");
+        let count: i64 = current_db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0, "settled copy has pending rows in {table}");
+    }
+    let (event_count,event_tokens):(i64,i64)=current_db.query_row("SELECT COUNT(*),COALESCE(SUM(tokens),0) FROM event_rows",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+    let (canonical_count,canonical_tokens):(i64,i64)=current_db.query_row("SELECT COUNT(*),COALESCE(SUM(tokens),0) FROM canonical_usage_events",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+    assert_eq!((canonical_count,canonical_tokens),(event_count,event_tokens),"published canonical projection differs from immutable numeric events");
+    assert_eq!((canonical_count,canonical_tokens),(2,155));
+    current_db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;").unwrap();
+    drop(current_db);
+    drop(old_db);
+    let bytes = fs::read(&current).unwrap();
+    let receipt = serde_json::json!({
+        "release_sha":"0219554ce444b0013987da7b82e3c2e891f4afdb",
+        "verified":true,
+        "source13_sha256":format!("{:x}",Sha256::digest(fs::read(&previous).unwrap())),
+        "current_sha256":format!("{:x}",Sha256::digest(&bytes)),
+        "scanned_raw_sha256":scanned_raw_sha256,
+        "restored_raw_sha256":restored_raw_sha256,
+        "published_generation":generation,
+        "source_chunk_count":current_chunks.len(),
+        "event_count":event_count,
+        "event_tokens":event_tokens,
+        "canonical_count":canonical_count,
+        "canonical_tokens":canonical_tokens
+    });
+    fs::write(inputs.join("exact/a-settled-receipt.json"), serde_json::to_vec_pretty(&receipt).unwrap()).unwrap();
+    println!("V097_SETTLED_COPY_READY schema13_to14=true cert_current=true chunks_differ=true raw_restored=true");
 }
 '''
 
@@ -349,7 +473,7 @@ def prepare(source_dir, fixture_dir, platform="swift"):
     if source_dir.exists() or fixture_dir.exists():
         raise SystemExit("Use new source and fixture directories; existing evidence is never overwritten")
     extract_revision(repository, RELEASE_SHA, source_dir)
-    producer_source = PRODUCER if platform == "swift" else RUST_PRODUCER
+    producer_source = PRODUCER if platform == "swift" else RUST_PRODUCER + RUST_SETTLED_PRODUCER
     if platform == "swift":
         producer = source_dir / "Tests/CodexTokenBarTests/Release097FixtureProducerTests.swift"
         producer.write_text(producer_source)

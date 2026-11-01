@@ -863,7 +863,8 @@ struct QuotaSidebarDetailView: View {
                 Text("实时：\(snapshot.status)").font(.system(size: 9)).foregroundStyle(.gray).lineLimit(1).help(snapshot.status)
             }
             modelUsage(snapshot).id("models")
-            SidebarTrendView(bins: Array((projected ?? store.snapshot).recentBins.suffix(288)), quota: projected == nil ? Array(history.snapshot.recentBins.suffix(288)) : [])
+            SidebarTrendView(data: SidebarTrendData(codexBins: store.snapshot.recentBins,
+                projectedBins: projected?.recentBins, quota: history.snapshot.recentBins, clients: allowedClients))
             tokenComposition(snapshot)
         }.padding(.bottom, 2)
     }

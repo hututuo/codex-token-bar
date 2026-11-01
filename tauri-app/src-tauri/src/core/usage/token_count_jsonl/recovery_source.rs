@@ -30,6 +30,15 @@ pub(crate) fn prefix_fragment_matches(
     check().unwrap_or(false)
 }
 
+/// Missing means both ordinary and compressed representations are absent.
+/// Permission errors, dangling links, directories and decode failures are
+/// never treated as deletion; the shared resolver already distinguishes them.
+pub(crate) fn is_missing(path: &Path) -> bool {
+    rollout_source::physical_path(path)
+        .err()
+        .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+}
+
 pub(crate) fn is_paginated_without_parent(path: &Path, session: &str) -> bool {
     let check = || -> Result<bool, Box<dyn std::error::Error>> {
         let physical = rollout_source::physical_path(path)?;

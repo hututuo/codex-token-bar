@@ -62,7 +62,7 @@ import { quotaWindowDisplayLabel, quotaWindowShortLabel } from "../utils/quota";
 
 import { prepareResetCreditsForDisplay } from "../components/quota/resetCredits";
 import type { SidebarSection } from "./model";
-import { SidebarTrend, type TrendPoint } from "./SidebarTrend";
+import { SidebarTrend, buildSidebarTrend, type TrendPoint } from "./SidebarTrend";
 
 type SidebarData = Pick<CompactPanelData, "snapshot" | "runningThreads"> & {
   trend?: TrendPoint[];
@@ -112,10 +112,7 @@ function RailSurface() {
     return () => { cancelled = true; clearInterval(timer); };
   }, [display.quotaSidebarEnabled, state.mode, sourceToken]);
   const trend = useMemo(() => {
-    const quotas = new Map(data.quota.quotaHistory24h.map(point => [point.startUnix, point]));
-    return trendTokens.map(([at, tokens]) => ({ at, tokens,
-      five: quotas.get(at)?.fiveHourRemainingPercent ?? null,
-      seven: quotas.get(at)?.sevenDayRemainingPercent ?? null }));
+    return buildSidebarTrend(trendTokens, data.quota.quotaHistory24h);
   }, [trendTokens, data.quota.quotaHistory24h]);
   const officialRadar = useFloatingRadar(display.quotaSidebarEnabled);
   const crowdRadar = useFloatingCrowdRadar(display.quotaSidebarEnabled, { clearOnError: true });
@@ -531,7 +528,7 @@ export function QuotaDetails({ data, onOpenRunning }: { data: SidebarData; onOpe
   const { quota, snapshot, runningThreads } = data;
   const scopedQuota = scopeQuota(data);
   const { items: detailQuotaItems } = useClientQuotaItems(scopedQuota);
-  const { codexOnly } = useClientScope();
+  const { codexOnly, allowed } = useClientScope();
   const models = floatingTodayModelUsageItems(snapshot.todayModelBreakdowns, "gpt56Sol", { showPlaceholders: false, mergeAutoReview: false }).filter(item => item.share > 0);
   const modelCostUSD = floatingModelUsageKnownCostUSD(models);
   const modelPricesIncomplete = hasUnknownModelPrices(models);
@@ -590,7 +587,7 @@ export function QuotaDetails({ data, onOpenRunning }: { data: SidebarData; onOpe
       <div><span className="qs-unread">{unreadLabel}</span><span>{runningThreads.status === "ready" ? "查看会话 →" : runningThreads.status === "stale" ? "运行快照已过期 →" : "运行状态未知 →"}</span></div>
     </button>
     {unread.detail && !unread.source.includes("pending") && <details className="qs-diagnostic"><summary>未读状态说明</summary><p>{unread.detail}</p></details>}
-  </> : <ScopedSidebarUsage />}
+  </> : <><ScopedSidebarUsage />{allowed.includes("codex") && <SidebarTrend points={data.trend ?? []} tokenLabel="Codex Token" />}</>}
   </>;
 }
 function Metric({ label, value }: { label: string; value: string }) {
