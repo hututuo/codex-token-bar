@@ -93,3 +93,33 @@ test("client uses fake invoke/event bridge and always releases install progress 
 function tick() {
   return new Promise(resolve => setTimeout(resolve, 0));
 }
+
+test("registry errors are not normalized to already-latest, including malformed availability", async () => {
+  for (const snapshot of [{status:"error",message:"network unavailable",revision:7},
+    {status:"available",version:null,message:"invalid registry",revision:8}]) {
+    const client=createUpdateClient({runtime:()=>true,unsupportedMessage:"unsupported",invoke:async()=>snapshot,listen:async()=>()=>{}});
+    const state=await client.check();
+    assert.equal(state.status,"error"); assert.equal(state.message,snapshot.message);
+    assert.equal(shouldApplyRegistryState("idle",state),true);
+    assert.equal(shouldApplyRegistryState("installing",state),false);
+  }
+});
+
+test("progress subscription failure cannot disable native installation", async () => {
+  let installs=0;
+  const messages=[];
+  const client=createUpdateClient({runtime:()=>true,unsupportedMessage:"unsupported",
+    listen:async()=>{throw new Error("event bridge unavailable");},
+    invoke:async command=>{assert.equal(command,"install_app_update");installs++;return "started";}});
+  assert.equal(await client.install("0.9.12",m=>messages.push(m)),"started");
+  assert.equal(installs,1); assert.match(messages[0],/进度订阅不可用/);
+});
+
+test("sync and async listener cleanup failures never mask the installer result", async () => {
+  for(const release of [()=>{throw Error("closed");},async()=>{throw Error("closed async");}]) {
+    const client=createUpdateClient({runtime:()=>true,unsupportedMessage:"unsupported",listen:async()=>release,invoke:async()=>"alreadyLatest"});
+    assert.equal(await client.install("0.9.12"),"alreadyLatest");
+    const failed=createUpdateClient({runtime:()=>true,unsupportedMessage:"unsupported",listen:async()=>release,invoke:async()=>{throw Error("signature mismatch");}});
+    await assert.rejects(()=>failed.install("0.9.12"),/signature mismatch/);
+  }
+});

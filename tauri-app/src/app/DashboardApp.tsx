@@ -205,6 +205,8 @@ function useAppUpdateState(
           setAppUpdateState({ kind: "available", message: result.message ?? `发现新版本 ${result.version}`, update: result });
         } else if (result.status === "none") {
           setAppUpdateState({ kind: "idle", message: result.message, update: null });
+        } else if (result.status === "error") {
+          setAppUpdateState({ kind: "error", message: result.message, update: null });
         }
       },
     });
@@ -235,7 +237,7 @@ async function handleCheckForUpdate(
       return;
     }
     setAppUpdateState({
-      kind: "idle",
+      kind: result.status === "error" ? "error" : "idle",
       message: result.message,
       update: null,
     });

@@ -16,6 +16,7 @@ final class ApplicationStartupCoordinator: ObservableObject {
     private let productionLifecycle: Bool
     private var job: Task<Void, Never>?
     private var progressAt = Date.distantPast
+    private var attemptID = UUID()
     static private(set) var blocksBusinessServices = false
 
     init(prepare: @escaping Prepare = { callback in
@@ -29,12 +30,14 @@ final class ApplicationStartupCoordinator: ObservableObject {
     func start() {
         guard phase == .waiting, job == nil else { return }
         phase = .preparing
+        attemptID = UUID(); let token = attemptID
+        progress = .init(stage: .preparing); progressAt = .distantPast
         job = Task { [weak self] in
             guard let self else { return }
             defer { self.job = nil }
             do {
                 try await self.prepare { [weak self] progress in
-                    Task { @MainActor in self?.receive(progress) }
+                    Task { @MainActor in self?.receive(progress, attempt: token) }
                 }
                 // Routes and the lifetime writer lock are installed first.
                 self.runtime = self.activate()
@@ -51,8 +54,8 @@ final class ApplicationStartupCoordinator: ObservableObject {
         phase = .waiting; start()
     }
 
-    private func receive(_ value: BusinessDatabaseMigration.Progress) {
-        guard phase == .preparing else { return }
+    private func receive(_ value: BusinessDatabaseMigration.Progress, attempt: UUID) {
+        guard attempt == attemptID, phase == .preparing else { return }
         let now = Date()
         guard value.stage != progress.stage || value.completed == value.total
                 || now.timeIntervalSince(progressAt) >= 0.15 else { return }
@@ -80,7 +83,7 @@ struct ApplicationStartupView: View {
                 Text(message).textSelection(.enabled)
                 Text("旧账本和备份已保留，尚未启动业务写入。可以重试，或退出后检查。")
                     .foregroundStyle(.secondary)
-                HStack { Button("重试") { startup.retry() }; Button("退出") { NSApp.terminate(nil) } }
+                BusinessRecoveryView(onRetry: startup.retry)
             } else {
                 Text(title).font(.headline)
                 if startup.progress.total > 0 {
@@ -92,7 +95,7 @@ struct ApplicationStartupView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(30).frame(maxWidth: 560, alignment: .leading)
+        .padding(30).frame(maxWidth: 680, alignment: .leading)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task {
             DashboardReopenCoordinator.shared.install {

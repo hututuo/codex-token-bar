@@ -62,6 +62,9 @@ pub(super) fn verify_bounded_stage(root: &Path) -> Result<serde_json::Value, Str
         base_resume_offset: Some(bounded_signature.size), base_prefix_sha256: Some([0;32]),
         signature: bounded_signature, event_enrichment: true,
         expected_published_prefix_sha256: Some([0;32]) };
+    // The production caller prepares the stage family before scheduling jobs.
+    // Exercise that same setup in both the raw-file test and the A-route probe.
+    ensure_staging_directory(&index)?;
     let mut warnings = Vec::new();
     let explain = |e| match e { StagedFullRebuildError::IncompleteSource(s) | StagedFullRebuildError::Fatal(s) => s };
     let old = stage_or_reuse_full_rebuild(&job, &index, 2, &root, &mut warnings).map_err(explain)?;

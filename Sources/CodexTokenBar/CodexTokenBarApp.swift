@@ -50,6 +50,15 @@ struct CodexTokenBarApp: App {
     }
 }
 
+/// Software repair remains available even when business initialization fails.
+/// Lazy creation preserves normal launch policy and prevents two Sparkle owners.
+@MainActor
+final class ApplicationSoftwareUpdater {
+    static let shared = ApplicationSoftwareUpdater()
+    let controller = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+    private init() {}
+}
+
 /// All business owners are built once, only after the background gate succeeds.
 @MainActor
 final class CodexReadyApplicationRuntime {
@@ -63,11 +72,7 @@ final class CodexReadyApplicationRuntime {
     let updaterController: SPUStandardUpdaterController
 
     init() {
-        let updaterController = SPUStandardUpdaterController(
-            startingUpdater: true,
-            updaterDelegate: nil,
-            userDriverDelegate: nil
-        )
+        let updaterController = ApplicationSoftwareUpdater.shared.controller
         ActivitySpeedHistoryController.shared.start()
         let floatingPanel = FloatingTokenPanelController()
         let statusBarPanel = StatusBarTokenController()

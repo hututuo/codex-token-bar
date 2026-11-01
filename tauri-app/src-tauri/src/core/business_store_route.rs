@@ -6,6 +6,7 @@
 //! untouched.
 
 use crate::core::app_paths;
+use crate::core::business_migration_log as diagnostics;
 use crate::core::business_store_connection::StoreConnection;
 use crate::core::business_store_container::{Container, StoreProof, StoreSpec};
 use fs2::available_space;
@@ -60,23 +61,46 @@ pub(crate) fn container_path() -> Result<PathBuf, String> {
 
 pub(crate) fn bootstrap() -> Result<(), String> {
     let path = container_path()?;
+    diagnostics::run(&path.with_file_name("migration-diagnostics"), "bootstrap", || bootstrap_with_diagnostics(&path))
+}
+
+fn bootstrap_with_diagnostics(path: &Path) -> Result<(), String> {
     let marker = initialized_marker_path(&path);
     match std::fs::symlink_metadata(&marker) {
         Ok(_) => {
-            verify_initialized(&path)?;
+            diagnostics::step("verify-active-container", "A", || verify_initialized(path))?;
             run_container_maintenance_if_due();
             return Ok(());
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(format!("无法检查业务数据库初始化标记：{error}")),
     }
-    Container::open(&path).map_err(|error| error.to_string())?;
-    bootstrap_legacy_stores()?;
-    crate::core::usage::token_count_jsonl::bootstrap_legacy_exact_indexes()?;
-    resume_pending_bootstrap_imports(&path)?;
-    verify_bootstrap_pending_inputs(
-        &Container::open_existing(&path).map_err(|error| error.to_string())?,
-    )?;
+    // Inventory diagnostics are independent of the fail-closed import gate.
+    let mut inputs: Vec<_> = [app_paths::quota_history_database_path(),
+        app_paths::legacy_shared_quota_history_database_path(), app_paths::modeltrace_database_path()]
+        .into_iter().flatten().filter(|p| std::fs::symlink_metadata(p).is_ok()).collect();
+    for root in [app_paths::usage_history_dir(), app_paths::tauri_usage_cache_dir().map(|p| p.join("exact-token-index")),
+        app_paths::performance_trace_log_path().and_then(|p| p.parent().map(Path::to_path_buf))].into_iter().flatten() {
+        match std::fs::read_dir(&root) {
+            Ok(entries) => for entry in entries {
+                match entry { Ok(entry) => {
+                    let candidate = entry.path();
+                    if candidate.extension().and_then(|e|e.to_str())==Some("sqlite") { inputs.push(candidate); }
+                }, Err(error) => diagnostics::event("input-discovery","failed",serde_json::json!({"path":root,"error":error.to_string()})) }
+            },
+            Err(error) if error.kind()==std::io::ErrorKind::NotFound => {},
+            Err(error) => diagnostics::event("input-discovery","failed",serde_json::json!({"path":root,"error":error.to_string()})),
+        }
+    }
+    inputs.sort(); inputs.dedup(); diagnostics::inspect_inputs(&inputs);
+    diagnostics::step("open-container", "A", || Container::open(path).map_err(|error| error.to_string()))?;
+    diagnostics::step("legacy-business-stores", "quota/modeltrace/body-speed", bootstrap_legacy_stores)?;
+    diagnostics::step("legacy-exact-indexes", "all discovered Homes", crate::core::usage::token_count_jsonl::bootstrap_legacy_exact_indexes)?;
+    diagnostics::step("resume-pending-imports", "A", || resume_pending_bootstrap_imports(path))?;
+    diagnostics::step("verify-all-pending-inputs", "A", || verify_bootstrap_pending_inputs(
+        &Container::open_existing(path).map_err(|error| error.to_string())?,
+    ))?;
+    diagnostics::event("publish-initialized-marker", "started", serde_json::json!({}));
     std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -87,7 +111,8 @@ pub(crate) fn bootstrap() -> Result<(), String> {
         .map_err(|error| format!("无法同步业务数据库目录：{error}"))?;
     crate::core::atomic_file::write_atomically(&marker, b"tokenbar-codex-ledger-v1\n")
         .map_err(|error| format!("无法写入业务数据库初始化标记：{error}"))?;
-    verify_initialized(&path)?;
+    diagnostics::step("verify-active-container", "A", || verify_initialized(path))?;
+    diagnostics::event("publish-initialized-marker", "succeeded", serde_json::json!({}));
     run_container_maintenance_if_due();
     Ok(())
 }
@@ -515,6 +540,7 @@ fn open_store_at_with_hook(
     require_initialized: bool,
     after_import: &dyn Fn() -> Result<(), String>,
 ) -> Result<StoreConnection, String> {
+    diagnostics::step("store-import", logical_path, || {
     if require_initialized {
         ensure_runtime_business_store_ready()?;
         verify_ready_container(container_path)?;
@@ -629,11 +655,12 @@ fn open_store_at_with_hook(
                 ));
             }
         }
-        let source_digest =
-            Container::snapshot_digest_path(legacy_path).map_err(|error| error.to_string())?;
+        let source_digest = diagnostics::step("source-proof", logical_path, ||
+            Container::snapshot_digest_path(legacy_path).map_err(|error| error.to_string()))?;
         let backup_path = backup_path(&container_path, &store, legacy_path, &source_digest);
-        Container::ensure_verified_backup(legacy_path, &backup_path, &source_digest)
-            .map_err(|error| error.to_string())?;
+        diagnostics::step("verified-snapshot", logical_path, ||
+            Container::ensure_verified_backup(legacy_path, &backup_path, &source_digest).map_err(|error| error.to_string()))?;
+        diagnostics::event("snapshot-proof", "succeeded", serde_json::json!({"store":store.id,"module":module,"digest":source_digest}));
         if Container::snapshot_digest_path(legacy_path).map_err(|error| error.to_string())?
             != source_digest
         {
@@ -799,6 +826,7 @@ fn open_store_at_with_hook(
         }
     }
 
+    diagnostics::event("namespace-import", "succeeded", serde_json::json!({"store":store.id,"sources":snapshots.len()}));
     after_import()?;
     for (source_path, backup, digest) in &snapshots {
         let validation_path = if legacy_source_exists(source_path)? { source_path } else { backup };
@@ -823,6 +851,7 @@ fn open_store_at_with_hook(
     container
         .into_store_connection(&store)
         .map_err(|error| error.to_string())
+    })
 }
 
 pub(crate) fn exact_store_spec(path: &Path) -> Result<StoreSpec, String> {

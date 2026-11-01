@@ -14,7 +14,7 @@ interface ReconcilerOptions {
 
 export function shouldApplyRegistryState(phase: UpdateUiPhase, state: UpdateAvailability) {
   if (phase === "checking" || phase === "installing") return false;
-  return state.status === "available" || state.status === "none";
+  return state.status === "available" || state.status === "none" || state.status === "error";
 }
 
 export function mountUpdateStateReconciler({

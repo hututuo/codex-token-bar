@@ -1,5 +1,7 @@
 pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
     "retry_business_startup",
+    "read_business_migration_diagnostics",
+    "export_business_migration_diagnostics",
     "set_codex_home",
     "reset_codex_home",
     "read_dashboard_snapshot",

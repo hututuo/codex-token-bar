@@ -158,6 +158,8 @@ pub fn run() {
             commands::startup::record_startup_event,
             commands::startup::read_business_startup_state,
             commands::startup::retry_business_startup,
+            commands::startup::read_business_migration_diagnostics,
+            commands::startup::export_business_migration_diagnostics,
             commands::settings::read_autostart_status,
             commands::settings::set_autostart_enabled,
             commands::settings::save_floating_settings,
