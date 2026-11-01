@@ -189,17 +189,17 @@ jobs:
       - name: Check production native configuration
         shell: bash
         run: cargo check --locked --manifest-path tauri-app/src-tauri/Cargo.toml
-      - name: Full native regression including original pressure case
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo test --locked --manifest-path tauri-app/src-tauri/Cargo.toml --lib -- --test-threads=1 2>&1 | tee native-library.log
       - name: Exercise production business-store routing and runtime recovery
         shell: bash
         run: |
           set -euo pipefail
           cargo build --locked --manifest-path tauri-app/src-tauri/Cargo.toml --features business-store-fixture --example business-store-fixture
           python scripts/cloud/run-business-store-fixture.py tauri-app/src-tauri/target/debug/examples/business-store-fixture
+      - name: Full native regression including original pressure case
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --manifest-path tauri-app/src-tauri/Cargo.toml --lib -- --test-threads=1 2>&1 | tee native-library.log
       - name: Windows packaging self-test
         if: runner.os == 'Windows'
         shell: pwsh

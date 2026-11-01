@@ -184,6 +184,12 @@ mod tests {
 pub(super) fn verify_fixture(home: &Path) -> Result<serde_json::Value, String> {
     use crate::core::business_store_route as route;
     use std::io::Write;
+    fn staging_error(error: StagedFullRebuildError) -> String {
+        match error {
+            StagedFullRebuildError::IncompleteSource(message)
+            | StagedFullRebuildError::Fatal(message) => message,
+        }
+    }
     macro_rules! sql {
         ($value:expr) => {
             $value.map_err(|error| error.to_string())?
@@ -249,14 +255,14 @@ pub(super) fn verify_fixture(home: &Path) -> Result<serde_json::Value, String> {
         base_prefix_sha256: base.prefix_sha256,
         signature: FileSignature {
             size: sql!(u64::try_from(size)),
-            modified_ns: sql!(modified.parse()),
+            modified_ns: sql!(modified.parse::<u128>()),
             physical: None,
         },
         event_enrichment: true,
         expected_published_prefix_sha256: Some(bad_prefix),
     };
     let old = stage_or_reuse_full_rebuild(&job, &index_path, generation, &home, &mut Vec::new())
-        .map_err(|error| format!("{error:?}"))?;
+        .map_err(staging_error)?;
     need!(
         old.prefix_sha256 != bad_prefix && !old.database_path.exists(),
         "fixture requires a valid namespace-only stage and inconsistent old checkpoint"
@@ -279,7 +285,7 @@ pub(super) fn verify_fixture(home: &Path) -> Result<serde_json::Value, String> {
         &home,
         &mut Vec::new(),
     )
-    .map_err(|error| format!("{error:?}"))?;
+    .map_err(staging_error)?;
     need!(
         candidate.database_path != old.database_path && !candidate.database_path.exists(),
         "replacement overwrote the old stage or escaped namespace storage"
@@ -308,7 +314,7 @@ pub(super) fn verify_fixture(home: &Path) -> Result<serde_json::Value, String> {
         &home,
         &mut Vec::new(),
     )
-    .map_err(|error| format!("{error:?}"))?;
+    .map_err(staging_error)?;
     need!(
         resumed.artifact_id == artifact,
         "restart reparsed instead of resuming the durable candidate"
