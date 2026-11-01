@@ -232,19 +232,8 @@ fn release097_upgrade_actual_v093_pair() {
         db.execute("INSERT OR REPLACE INTO metadata VALUES('release_upgrade_retention_v1',?1)",[receipt.to_string()]).unwrap();
         drop(db);
         let home = shared.join(format!("home-{letter}"));
-        // Reuse the byte-identical synthetic Home emitted by public v0.9.3
-        // so schema13 and the real v0.9.7 rescan describe the same events.
-        let old = Connection::open(&target).unwrap();
-        let source_path: String = old.query_row(
-            "SELECT path FROM sources WHERE session_id='019ff8b9-09e7-75c1-b9a5-14fe7b60065a'", [], |r| r.get(0)
-        ).unwrap();
-        drop(old);
-        let old_raw = PathBuf::from(source_path);
-        let new_raw = home.join("sessions").join(old_raw.file_name().unwrap());
-        assert!(old_raw.is_file(), "public schema13 source bytes are missing");
-        fs::copy(&old_raw, &new_raw).unwrap();
-        assert_eq!(fs::read(&old_raw).unwrap(), fs::read(&new_raw).unwrap(),
-            "schema14 rescan must use the exact schema13 synthetic source bytes");
+        // v0.9.3 deliberately scanned this same shared synthetic Home.
+        // Never copy its raw file onto itself or rewrite frozen evidence.
         let mut index = super::exact_usage_index::ExactUsageIndex::open_at_for_testing(&home,target.clone()).unwrap();
         index.sync(&home,&mut Vec::new()).unwrap();
         drop(index);
@@ -268,7 +257,7 @@ fn release097_export_actual_settled_copy() {
     let raw = home.join("sessions/rollout-019ff8b9-09e7-75c1-b9a5-14fe7b60065a.jsonl");
     let original_raw = fs::read(&raw).unwrap();
     let original_text = String::from_utf8(original_raw.clone()).unwrap();
-    let changed_text = original_text.replace("\"output\":\"synthetic\"", "\"output\":\"synthetic trailing evidence changed\"");
+    let changed_text = original_text.replace("\"output\":\"synthetic\"", "\"output\":\"SYNTHETIC\"");
     assert_ne!(changed_text, original_text, "the trailing non-usage fixture record must change");
     struct RestoreRaw { path: PathBuf, bytes: Vec<u8> }
     impl Drop for RestoreRaw {
@@ -280,7 +269,7 @@ fn release097_export_actual_settled_copy() {
 
     let current = inputs.join("exact/a-settled.sqlite3");
     assert!(!current.exists(), "refusing to overwrite the settled schema14 fixture");
-    fs::copy(inputs.join("exact/a.sqlite3"), &current).unwrap();
+    fs::copy(inputs13.join("exact/a-upgraded.sqlite3"), &current).unwrap();
     let mut index = super::exact_usage_index::ExactUsageIndex::open_at_for_testing(&home, current.clone()).unwrap();
     index.sync(&home, &mut Vec::new()).unwrap();
     drop(index);
@@ -308,7 +297,7 @@ fn release097_export_actual_settled_copy() {
         "schema13/settled schema14 source ID or session changed");
     assert_eq!(Path::new(&old_source.1).file_name(), Path::new(&current_source.1).file_name(),
         "schema13/settled schema14 raw source filename changed");
-    assert_eq!(PathBuf::from(&current_source.1), raw);
+    assert_eq!(fs::canonicalize(&current_source.1).unwrap(), fs::canonicalize(&raw).unwrap());
 
     fn chunks(db: &Connection, source: i64) -> Vec<(i64,i64,Vec<u8>)> {
         let mut statement = db.prepare("SELECT chunk_index,byte_count,sha256 FROM source_chunks WHERE source_id=?1 ORDER BY chunk_index").unwrap();

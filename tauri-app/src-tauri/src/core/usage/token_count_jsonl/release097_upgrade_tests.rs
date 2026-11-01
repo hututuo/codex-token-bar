@@ -579,21 +579,7 @@ fn run_legacy_manifest_probe(root: &Path, frozen: &Path, scenario: &str) -> Resu
         _ => return Err("Unknown manifest probe scenario".into()),
     };
     let stores = paths(frozen)?;
-    let (case_home, case_target) = &stores[0];
-    let (home, target) = if settled_unavailable {
-        let database = read_only(&upgraded14)?;
-        let source = incident_0910_source(&database, INCIDENT_0910_SESSION_ID)?;
-        let published_raw = PathBuf::from(&source.1);
-        require!(published_raw.is_file(), "Settled public source path is missing");
-        let published_home = fs::canonicalize(
-            published_raw.parent().and_then(Path::parent).ok_or("Settled source has no Home parent")?
-        ).map_err(|error| error.to_string())?;
-        let exact_root = app_paths::usage_history_dir().ok_or("No isolated Exact root")?;
-        let target = exact_root.join(format!("{}.sqlite3", fnv(&published_home.to_string_lossy())));
-        (published_home, target)
-    } else {
-        (case_home.clone(), case_target.clone())
-    };
+    let (home,target)=&stores[0];
     let a = route::container_path()?;
     let marker = PathBuf::from(format!("{}.initialized", a.display()));
     require!(!a.exists() && !marker.exists(), "Probe refuses an existing A");
@@ -767,8 +753,9 @@ fn incident_0910_check_files(root: &Path, state: &Value) -> Result<(), String> {
     let settled_unavailable = state["settledUnavailable"].as_bool() == Some(true);
     for record in records {
         let path = PathBuf::from(record["path"].as_str().ok_or("Incident file has no path")?);
-        require!(path.starts_with(root)
-            || (settled_unavailable && published_raw.as_ref() == Some(&path)),
+        let canonical=resolved_destination(&path)?;
+        require!(canonical.starts_with(root)
+            || (settled_unavailable && published_raw.as_ref().is_some_and(|p|resolved_destination(p).ok().as_ref()==Some(&canonical))),
             "Incident evidence escaped its isolated root and the declared synthetic producer source");
         require!(sha(&path)? == record["sha256"].as_str().ok_or("Incident file has no digest")?,
             format!("A source or frozen artifact changed: {}", path.display()));
@@ -900,10 +887,9 @@ fn incident_0910_source_chunks(connection: &Connection, source_id: i64) -> Resul
     let mut statement = checked!(connection.prepare(
         "SELECT chunk_index,byte_count,sha256 FROM source_chunks WHERE source_id=?1 ORDER BY chunk_index"
     ));
-    Ok(checked!(statement.query_map([source_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
-        .map_err(|error| error.to_string())?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|error| error.to_string())))
+    let rows=checked!(statement.query_map([source_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))));
+    let values=checked!(rows.collect::<rusqlite::Result<Vec<_>>>());
+    Ok(values)
 }
 
 #[cfg(not(test))]
@@ -997,6 +983,10 @@ fn stage_incident_0910_exact_transition(old_path: &Path, current_path: &Path, ho
         checked!(old.execute("UPDATE sources SET path=?1 WHERE source_id=?2", rusqlite::params![raw_path.to_string_lossy(), old_source.0]));
         checked!(current.execute("UPDATE sources SET path=?1 WHERE source_id=?2", rusqlite::params![raw_path.to_string_lossy(), current_source.0]));
     }
+    let current_identity:String=checked!(current.query_row("SELECT value FROM metadata WHERE key='codex_home_identity'",[],|r|r.get(0)));
+    let identity=if settled_unavailable {current_identity} else {checked!(fs::canonicalize(home)).to_string_lossy().into_owned()};
+    incident_0910_metadata(&old,"codex_home_identity",&identity)?;
+    if !settled_unavailable {incident_0910_metadata(&current,"codex_home_identity",&identity)?;}
     require!(!old_source.3 && !current_source.3, "Synthetic fork transition must begin from a non-fork source");
 
     let old_chunks = incident_0910_source_chunks(&old, old_source.0)?;
@@ -1163,7 +1153,7 @@ fn prepare_incident_0910_probe(root: &Path, frozen: &Path, settled_unavailable: 
     let upgraded14 = if settled_unavailable {
         frozen.join("exact/a-settled.sqlite3")
     } else {
-        public_upgraded14
+        frozen.join("exact/a.sqlite3")
     };
     let settled_receipt_path = frozen.join("exact/a-settled-receipt.json");
     if settled_unavailable {
@@ -1178,7 +1168,21 @@ fn prepare_incident_0910_probe(root: &Path, frozen: &Path, settled_unavailable: 
     }
 
     let stores = paths(frozen)?;
-    let (home, target) = &stores[0];
+    let (case_home, case_target) = &stores[0];
+    let (home, target) = if settled_unavailable {
+        let database = read_only(&upgraded14)?;
+        let source = incident_0910_source(&database, INCIDENT_0910_SESSION_ID)?;
+        let published_raw = PathBuf::from(&source.1);
+        require!(published_raw.is_file(), "Settled public source path is missing");
+        let published_home = fs::canonicalize(
+            published_raw.parent().and_then(Path::parent).ok_or("Settled source has no Home parent")?
+        ).map_err(|error| error.to_string())?;
+        let exact_root = app_paths::usage_history_dir().ok_or("No isolated Exact root")?;
+        let target = exact_root.join(format!("{}.sqlite3", fnv(&published_home.to_string_lossy())));
+        (published_home, target)
+    } else {
+        (case_home.clone(), case_target.clone())
+    };
     let a = route::container_path()?;
     let marker = PathBuf::from(format!("{}.initialized", a.display()));
     let b = app_paths::multi_client_usage_database_path().ok_or("No isolated B")?;
@@ -1221,7 +1225,7 @@ fn prepare_incident_0910_probe(root: &Path, frozen: &Path, settled_unavailable: 
         let database = checked!(Connection::open(&main));
         checked!(database.execute("INSERT OR REPLACE INTO metadata(key,value) VALUES('release_upgrade_retention_v1',?1)", [retention.to_string()]));
     }
-    let exact_transition = stage_incident_0910_exact_transition(&old, &main, home, settled_unavailable)?;
+    let exact_transition = stage_incident_0910_exact_transition(&old, &main, &home, settled_unavailable)?;
 
     let partial = root.join("partial-before-exact.sqlite");
     require!(!partial.exists(), "Refusing an existing partial A fixture");
@@ -1230,7 +1234,7 @@ fn prepare_incident_0910_probe(root: &Path, frozen: &Path, settled_unavailable: 
         checked!(database.execute_batch("CREATE TABLE canary(id INTEGER PRIMARY KEY, tokens INTEGER NOT NULL); INSERT INTO canary VALUES(1,77);"));
     }
     drop(route::open_store_during_bootstrap("fixture-partial", "fixture", "fixture/partial", std::slice::from_ref(&partial))?);
-    let exact_spec = route::exact_store_spec(target)?;
+    let exact_spec = route::exact_store_spec(&target)?;
     checked!(checked!(Container::open_existing(&a)).register(&exact_spec));
 
     let quota = app_paths::quota_history_database_path().ok_or("No isolated quota path")?;
@@ -1327,7 +1331,7 @@ fn prepare_incident_0910_probe(root: &Path, frozen: &Path, settled_unavailable: 
             && sha(&raw_path)? != receipt["scanned_raw_sha256"].as_str().ok_or("Settled producer receipt has no scanned raw hash")?,
             "Settled lane raw source does not differ from the legitimately scanned publication snapshot");
     } else {
-        let appended_timestamp = (time::OffsetDateTime::now_utc() + time::Duration::seconds(10))
+        let appended_timestamp = time::OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Rfc3339).map_err(|error| error.to_string())?;
         let usage = json!({"input_tokens":5,"output_tokens":2,"total_tokens":7});
         let line = json!({"timestamp":appended_timestamp,"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":usage,"last_token_usage":usage}}}).to_string() + "\n";
@@ -1356,15 +1360,15 @@ fn prepare_incident_0910_probe(root: &Path, frozen: &Path, settled_unavailable: 
 
     let mut records = Vec::new();
     let mut immutable_paths = vec![
-        &original13, &upgraded14, &frozen.join("exact/a.sqlite3"), &frozen.join("exact/b.sqlite3"),
-        &frozen.join("support/quota-history.sqlite"), &frozen.join("support/observed-speed-release097.json"),
-        &old, &main, &candidate, &rollback, &manifest, &quota, &case_raw_path, &legacy_body, &quota_backup,
+        original13.clone(), upgraded14.clone(), frozen.join("exact/a.sqlite3"), frozen.join("exact/b.sqlite3"),
+        frozen.join("support/quota-history.sqlite"), frozen.join("support/observed-speed-release097.json"),
+        old.clone(), main.clone(), candidate.clone(), rollback.clone(), manifest.clone(), quota.clone(), case_raw_path.clone(), legacy_body.clone(), quota_backup.clone(),
     ];
     if settled_unavailable {
-        immutable_paths.push(&settled_receipt_path);
-        immutable_paths.push(&raw_path);
+        immutable_paths.push(settled_receipt_path.clone());
+        immutable_paths.push(raw_path.clone());
     }
-    for path in immutable_paths {
+    for path in &immutable_paths {
         records.push(incident_0910_file_record(path)?);
     }
     let state = json!({
@@ -1489,7 +1493,7 @@ fn resume_incident_0910_probe(root: &Path, frozen: &Path, reopen: bool, settled_
     let state = incident_0910_read_state(root, scenario)?;
     let a = PathBuf::from(state["a"].as_str().ok_or("Incident state has no A")?);
     let marker = PathBuf::from(state["marker"].as_str().ok_or("Incident state has no ready marker")?);
-    require!(a.starts_with(root) && marker.starts_with(root), "Incident A path escaped its isolated root");
+    require!(resolved_destination(&a)?.starts_with(root) && resolved_destination(&marker)?.starts_with(root), "Incident A path escaped its isolated root");
     if reopen {
         require!(marker.is_file(), "Repeated startup began before the first complete migration");
         start()?;
