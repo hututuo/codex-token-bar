@@ -23,6 +23,97 @@ use time::{OffsetDateTime, UtcOffset};
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+fn live_append_during_incremental_scan_publishes_each_prefix_once() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let root = temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    let file = root.join("sessions/rollout-live-append.jsonl");
+    let event = |minute: u64, tokens: u64| serde_json::json!({
+        "timestamp": format!("2026-07-20T01:{minute:02}:00Z"),
+        "type":"event_msg", "payload":{"type":"token_count","info":{"last_token_usage":{
+            "input_tokens":tokens,"cached_input_tokens":0,"output_tokens":0,"total_tokens":tokens
+        }}}
+    }).to_string();
+    write_lines(&file, &[event(0, 100)]);
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    index.sync(&root, &mut Vec::new()).unwrap();
+    let initial_bytes = ExactUsageIndex::scan_bytes_for_testing().0;
+    let mut writer = fs::OpenOptions::new().append(true).open(&file).unwrap();
+    writeln!(writer, "{}", event(1, 20)).unwrap();
+    writer.sync_all().unwrap();
+    drop(writer);
+    let during_scan = event(2, 30);
+    let hook_calls = Arc::new(AtomicU64::new(0));
+    let calls = Arc::clone(&hook_calls);
+    ExactUsageIndex::set_after_prefix_scan_hook_for_testing(move |scanned_file| {
+        calls.fetch_add(1, Ordering::SeqCst);
+        let mut writer = fs::OpenOptions::new().append(true).open(scanned_file).unwrap();
+        writeln!(writer, "{during_scan}").unwrap();
+        writer.sync_all().unwrap();
+    });
+    index.sync(&root, &mut Vec::new()).unwrap();
+    assert_eq!(hook_calls.load(Ordering::SeqCst), 1);
+    let first = index.summary(OffsetDateTime::now_utc(), UtcOffset::UTC).unwrap();
+    assert_eq!((first.total_tokens, first.total_calls), (120, 2), "publish only the scan-start prefix");
+    index.sync(&root, &mut Vec::new()).unwrap();
+    let next = index.summary(OffsetDateTime::now_utc(), UtcOffset::UTC).unwrap();
+    assert_eq!((next.total_tokens, next.total_calls), (150, 3), "the concurrent suffix is counted once next time");
+    index.sync(&root, &mut Vec::new()).unwrap();
+    let stable = index.summary(OffsetDateTime::now_utc(), UtcOffset::UTC).unwrap();
+    assert_eq!((stable.total_tokens, stable.total_calls), (150, 3));
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing().0, initial_bytes, "a proven live append must not rebuild history");
+    // Owned fixtures stay available for runner disposal / local Recycle Bin cleanup.
+}
+
+#[test]
+fn live_append_validation_keeps_rewrite_truncate_and_replacement_guards() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let event = |minute: u64, tokens: u64| serde_json::json!({
+        "timestamp": format!("2026-07-20T01:{minute:02}:00Z"),
+        "type":"event_msg", "payload":{"type":"token_count","info":{"last_token_usage":{
+            "input_tokens":tokens,"cached_input_tokens":0,"output_tokens":0,"total_tokens":tokens
+        }}}
+    }).to_string();
+    for mutation in ["rewrite", "truncate", "replace"] {
+        let root = temp_root();
+        fs::create_dir_all(root.join("sessions")).unwrap();
+        let file = root.join("sessions/rollout-live-mutation.jsonl");
+        write_lines(&file, &[event(0, 100)]);
+        let mut index = ExactUsageIndex::open(&root).unwrap();
+        let published = index.sync(&root, &mut Vec::new()).unwrap();
+        let mut writer = fs::OpenOptions::new().append(true).open(&file).unwrap();
+        writeln!(writer, "{}", event(1, 20)).unwrap();
+        writer.sync_all().unwrap();
+        drop(writer);
+        let extra = event(2, 30);
+        ExactUsageIndex::set_after_prefix_scan_hook_for_testing(move |scanned_file| {
+            match mutation {
+                "rewrite" => {
+                    let before = fs::read_to_string(scanned_file).unwrap();
+                    let after = before.replacen("\"total_tokens\":20", "\"total_tokens\":21", 1);
+                    assert_ne!(before, after);
+                    assert_eq!(before.len(), after.len());
+                    fs::write(scanned_file, after).unwrap();
+                }
+                "truncate" => fs::OpenOptions::new().write(true).open(scanned_file).unwrap().set_len(8).unwrap(),
+                "replace" => {
+                    let before = fs::read_to_string(scanned_file).unwrap();
+                    fs::rename(scanned_file, scanned_file.with_extension("retained-original")).unwrap();
+                    fs::write(scanned_file, format!("{before}{extra}\n")).unwrap();
+                }
+                _ => unreachable!(),
+            }
+        });
+        let error = index.sync(&root, &mut Vec::new()).unwrap_err();
+        assert!(error.contains("非追加变化"), "{mutation}: {error}");
+        assert_eq!(index.revision().unwrap(), published, "{mutation} must retain the published generation");
+        let summary = index.summary(OffsetDateTime::now_utc(), UtcOffset::UTC).unwrap();
+        assert_eq!((summary.total_tokens, summary.total_calls), (100, 1), "{mutation} must roll back partial rows");
+    }
+}
+
+#[test]
 fn changed_excerpt_source_warns_once_without_changing_indexed_usage() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();

@@ -589,7 +589,12 @@ impl SourceHandle for File {
 }
 impl SourceHandle for RolloutReader {
     fn raw_file(&self) -> &File {self.raw()}
-    fn logical_length(&self) -> io::Result<u64> {Ok(self.logical_size())}
+    fn logical_length(&self) -> io::Result<u64> {
+        // Compressed length belongs to the validated frame snapshot. Plain
+        // files can keep growing while that snapshot is parsed; signatures
+        // must observe the current handle length to validate a pure append.
+        if self.compressed() { Ok(self.logical_size()) } else { Ok(self.raw().metadata()?.len()) }
+    }
     fn validate_decoded_end(&mut self, size: u64) -> io::Result<()> {self.verify_end(size)}
 }
 
@@ -597,7 +602,45 @@ impl SourceHandle for RolloutReader {
 mod shared_read_tests {
     use super::*;
     use crate::core::shared_source_io::snapshot_stats;
+    use std::io::Write;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn mutation_fixture(label: &str) -> PathBuf {
+        let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("rollout-{label}-{}-{unique}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        // Retain owned fixtures for runner disposal or local Recycle Bin cleanup.
+        root
+    }
+
+    #[test]
+    fn plain_handle_length_tracks_mutation_without_moving_snapshot_bounds() {
+        let path = mutation_fixture("plain-length").join("rollout.jsonl");
+        fs::write(&path, b"initial\n").unwrap();
+        let reader = RolloutReader::open(&path).unwrap();
+        let initial = reader.logical_size();
+        let mut writer = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writer.write_all(b"appended\n").unwrap();
+        writer.sync_all().unwrap();
+        assert_eq!(reader.logical_size(), initial, "the scan boundary stays frozen");
+        assert_eq!(reader.logical_length().unwrap(), initial + 9, "validation observes the live handle");
+        fs::OpenOptions::new().write(true).open(&path).unwrap().set_len(2).unwrap();
+        assert_eq!(reader.logical_length().unwrap(), 2, "truncation must be visible to validation");
+        assert_eq!(reader.logical_size(), initial);
+    }
+
+    #[test]
+    fn compressed_handle_keeps_decoded_length_and_rejects_source_mutation() {
+        let path = mutation_fixture("compressed-length").join("rollout.jsonl.zst");
+        let original = b"initial\n";
+        fs::write(&path, zstd::stream::encode_all(original.as_slice(), 1).unwrap()).unwrap();
+        let mut reader = RolloutReader::open(&path).unwrap();
+        assert_eq!(reader.logical_length().unwrap(), original.len() as u64);
+        reader.validate_decoded_end(original.len() as u64).unwrap();
+        fs::write(&path, zstd::stream::encode_all(b"a different longer snapshot\n".as_slice(), 1).unwrap()).unwrap();
+        assert_eq!(reader.logical_length().unwrap(), original.len() as u64);
+        assert!(reader.validate_decoded_end(original.len() as u64).is_err(), "compressed frame mutation must still fail closed");
+    }
 
     #[test]
     fn payload_readers_share_physical_blocks_but_validation_bypasses_cache() {
