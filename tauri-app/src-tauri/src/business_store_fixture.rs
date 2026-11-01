@@ -203,6 +203,7 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
 
     checks.push(exact_fixture(&h1, &h2, &p)?);
     checks.push(token_count_jsonl::verify_runtime_recovery_fixture(&root.join("runtime-home"))?);
+    checks.push(token_count_jsonl::verify_backfill_performance_fixture(&root.join("legacy-backfill-home"))?);
     for (f, before) in &digests {
         need!(
             digest(f)? == *before,

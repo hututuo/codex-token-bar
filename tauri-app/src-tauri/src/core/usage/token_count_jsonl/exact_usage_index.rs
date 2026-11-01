@@ -12323,6 +12323,11 @@ pub(super) fn verify_runtime_recovery_fixture(home: &Path) -> Result<serde_json:
 }
 
 #[cfg(all(feature = "business-store-fixture", not(test)))]
+pub(super) fn verify_backfill_performance_fixture(home: &Path) -> Result<serde_json::Value, String> {
+    ledger::verify_performance_fixture(home)
+}
+
+#[cfg(all(feature = "business-store-fixture", not(test)))]
 pub(super) fn verify_legacy_migration_fixture(home: &Path, path: &Path) -> Result<bool, String> {
     prepare_exact_store_for_home(home, path)?;
     let paths = active_schema11_paths(path)?;
