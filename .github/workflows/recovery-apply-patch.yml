@@ -8,12 +8,11 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: tokenbar-recovery-patch-writer
-  cancel-in-progress: false
-
 jobs:
   apply:
+    concurrency:
+      group: tokenbar-recovery-patch-writer
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -93,6 +92,12 @@ jobs:
     needs: apply
     if: needs.apply.outputs.native_changed == 'true'
     uses: ./.github/workflows/release-upgrade-compatibility.yml
+    with:
+      source_sha: ${{ needs.apply.outputs.source_sha }}
+  deep-checks:
+    needs: apply
+    if: needs.apply.outputs.native_changed == 'true'
+    uses: ./.github/workflows/recovery-deep-checks.yml
     with:
       source_sha: ${{ needs.apply.outputs.source_sha }}
   production-readers:
