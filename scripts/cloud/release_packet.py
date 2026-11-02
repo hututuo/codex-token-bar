@@ -6,6 +6,7 @@ directory outside the checkout and are never included in packet contents.
 """
 import argparse, base64, hashlib, json, os, pathlib, re, shutil, subprocess, tempfile
 from manifest import digest, load_verified
+from ci_evidence import read_evidence, validate_ci_evidence
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 REPO = 'hututuo/codex-token-bar'
@@ -32,7 +33,7 @@ def public_names(version):
             f'{prefix}-windows-arm64-setup.exe',f'{prefix}-windows-arm64-setup.exe.sig',
             'latest-windows.json',f'SHA256SUMS-v{version}.txt']
 
-SUPPORT = ['appcast.xml','appcast-baseline.json','release-notes.md','windows-build-manifest.json']
+SUPPORT = ['appcast.xml','appcast-baseline.json','release-notes.md','windows-build-manifest.json','checked-source.json']
 
 def source_public_key(source):
     match=re.search(r'SPARKLE_PUBLIC_ED_KEY:-([^}]+)',source)
@@ -64,7 +65,7 @@ def verify_packet(packet, source_sha=None):
     if (packet/'release-manifest.json').is_symlink(): raise ValueError('Manifest cannot be a symlink')
     data=json.loads((packet/'release-manifest.json').read_text())
     version=data.get('version','')
-    if data.get('schema')!=1 or not re.fullmatch(r'\d+\.\d+\.\d+',version): raise ValueError('Invalid release manifest')
+    if data.get('schema')!=2 or not re.fullmatch(r'\d+\.\d+\.\d+',version): raise ValueError('Invalid release manifest; a new recovery-verified signing packet is required')
     if not re.fullmatch(r'[0-9a-f]{40}',data.get('source_sha','')): raise ValueError('Invalid source SHA')
     if source_sha and data['source_sha']!=source_sha: raise ValueError('Release source SHA mismatch')
     if data.get('update_signed') is not True or data.get('public_release') is not False:
@@ -81,6 +82,9 @@ def verify_packet(packet, source_sha=None):
             raise ValueError(f'Packet integrity failure: {name}')
     if observed!=expected or {p.name for p in packet.iterdir()}!=expected|{'release-manifest.json'}:
         raise ValueError('Incomplete or extra packet contents')
+    # Publication uses this same verifier. Retain and validate the actual CI
+    # proof so an old/flag-only signing packet cannot bypass the new gate.
+    validate_ci_evidence(read_evidence(packet/'checked-source.json'), data['source_sha'], data.get('ci_run_id'))
     # Verify both updater schemes again before permitting publication.
     baseline=json.loads((packet/'appcast-baseline.json').read_text())
     current_sparkle=source_public_key((ROOT/'scripts/package_app.sh').read_text())
@@ -113,8 +117,7 @@ def sign(args):
     version=mac['version']
     if win['version']!=version: raise ValueError('Candidate versions differ')
     if json.loads((ROOT/'tauri-app/package.json').read_text())['version']!=version: raise ValueError('Source version differs')
-    evidence=json.loads(args.ci_evidence.read_text())
-    if evidence!={'source_sha':sha,'run_id':str(args.ci_run),'passed':True}: raise ValueError('CI evidence is not for this source/run')
+    evidence=validate_ci_evidence(read_evidence(args.ci_evidence), sha, str(args.ci_run))
     keys=[os.environ.get('SPARKLE_PRIVATE_KEY',''),os.environ.get('TAURI_UPDATER_PRIVATE_KEY','')]
     if not all(keys): raise ValueError('Both existing update keys must be configured in the protected signing environment')
     if args.output.exists(): raise ValueError('Refusing to overwrite a signed release packet')
@@ -163,8 +166,9 @@ def sign(args):
         for name in public_names(version)+['appcast.xml']: shutil.copy2(assembled/name,packet/name)
         shutil.copy2(windows/'build-manifest.json',packet/'windows-build-manifest.json')
         shutil.copy2(notes,packet/'release-notes.md')
+        (packet/'checked-source.json').write_text(json.dumps(evidence,indent=2)+'\n')
         (packet/'appcast-baseline.json').write_text(json.dumps(baseline_info,indent=2)+'\n')
-        manifest={'schema':1,'source_sha':sha,'version':version,'build_run_id':str(args.build_run),
+        manifest={'schema':2,'source_sha':sha,'version':version,'build_run_id':str(args.build_run),
           'ci_run_id':str(args.ci_run),'signing_run_id':os.environ['GITHUB_RUN_ID'],
           'update_signed':True,'public_release':False,'public_assets':public_names(version),
           'files':[{'name':p.name,'bytes':p.stat().st_size,'sha256':digest(p)} for p in sorted(packet.iterdir())]}

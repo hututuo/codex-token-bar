@@ -1234,10 +1234,27 @@ function QuotaStripView({
     [attributionInput],
   );
 
+  const attributionPublishedKeyRef = useRef<string | null>(null);
+  const attributionCallbackRef = useRef(onAttributionChange);
+  attributionCallbackRef.current = onAttributionChange;
   useEffect(() => {
-    onAttributionChange?.(attributionSettings.enabled ? attribution : null);
-    return () => onAttributionChange?.(null);
-  }, [attribution, attributionSettings.enabled, onAttributionChange]);
+    if (!onAttributionChange) return;
+    const result = attributionSettings.enabled ? attribution : null;
+    // nowUnix and presentation props can change object identity on every
+    // parent render. Publishing identical facts back into parent state would
+    // keep rendering forever and starve quota/Radar/full-data transitions.
+    const key = JSON.stringify([sourceHomeIdentity, result]);
+    if (attributionPublishedKeyRef.current === key) return;
+    attributionPublishedKeyRef.current = key;
+    onAttributionChange(result);
+  }, [attribution, attributionSettings.enabled, onAttributionChange, sourceHomeIdentity]);
+
+  useEffect(() => () => {
+    // Clear the consumer only when this producer leaves the page, not during
+    // an ordinary result update. Reset the key for StrictMode effect replay.
+    attributionPublishedKeyRef.current = null;
+    attributionCallbackRef.current?.(null);
+  }, []);
 
   useEffect(() => {
     if (!attributionSettings.enabled

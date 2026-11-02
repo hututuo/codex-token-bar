@@ -6,7 +6,17 @@ fn main() {
         std::process::exit(2);
     };
 
-    match codex_token_bar_lib::business_store_fixture::run_fixture(&root) {
+    let remaining = std::env::args_os().skip(2).collect::<Vec<_>>();
+    let result = if remaining.is_empty() {
+        codex_token_bar_lib::business_store_fixture::run_fixture(&root)
+    } else if remaining.len() == 2 && remaining[0] == "--source-count" {
+        remaining[1].to_str().and_then(|value| value.parse::<u64>().ok())
+            .ok_or_else(|| "--source-count requires an integer in 9...8192".to_string())
+            .and_then(|count| codex_token_bar_lib::business_store_fixture::run_source_count_fixture(&root, count))
+    } else {
+        Err("usage: business-store-fixture <absolute-temp-root> [--source-count N]".into())
+    };
+    match result {
         Ok(report) => {
             println!(
                 "{}",

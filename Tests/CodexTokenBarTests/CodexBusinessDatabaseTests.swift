@@ -3,6 +3,125 @@ import XCTest
 @testable import CodexTokenBar
 
 final class CodexBusinessDatabaseTests: XCTestCase {
+    func testRetryCoveragePreservesTypedRowsHiddenIDsAndAutoincrementState() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = root.appendingPathComponent("original.sqlite")
+        let newer = root.appendingPathComponent("newer.sqlite")
+        let old = SQLiteDatabaseDriver(url: original, bypassBusinessRoutes: true)
+        try old.execute("CREATE TABLE records(value); CREATE TABLE retry_coverage(payload BLOB); CREATE TABLE sequence_records(id INTEGER PRIMARY KEY AUTOINCREMENT)")
+        try old.execute("INSERT INTO records(rowid,value) VALUES(7,?), (11,?), (19,?), (31,?)",
+            bindings: [.int(5), .double(5), .text("kept\0suffix"), .blob(Data([0, 255, 0]))])
+        try old.execute("INSERT INTO retry_coverage VALUES(x'00ff'); INSERT INTO sequence_records VALUES(99); DELETE FROM sequence_records")
+        let updated = SQLiteDatabaseDriver(url: newer, bypassBusinessRoutes: true)
+        func reset() throws { try updated.withConnection { try $0.restoreDatabase(from: original) } }
+        try reset()
+        try updated.execute("INSERT INTO records(rowid,value) VALUES(55,'appended')")
+        XCTAssertTrue(try CodexBusinessDatabase.snapshot(newer, covers: original),
+            "Pure append must preserve hidden IDs and may coexist with a user table named like the TEMP proof table")
+        for mutation in [
+            "UPDATE records SET value=5.0 WHERE rowid=7",
+            "UPDATE records SET rowid=8 WHERE rowid=7",
+            "UPDATE records SET value='kept' WHERE rowid=19",
+            "DELETE FROM records WHERE rowid=31",
+            "UPDATE sqlite_sequence SET seq=98 WHERE name='sequence_records'"
+        ] {
+            try reset()
+            try updated.execute(mutation)
+            XCTAssertFalse(try CodexBusinessDatabase.snapshot(newer, covers: original), mutation)
+        }
+    }
+
+    func testExpectedDestinationProofRejectsAWriteBeforeReplacement() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let ledger = try CodexBusinessDatabase(url: root.appendingPathComponent("codex-ledger.sqlite"))
+        let source = root.appendingPathComponent("source.sqlite")
+        let plain = SQLiteDatabaseDriver(url: source, bypassBusinessRoutes: true)
+        try plain.execute("CREATE TABLE records(id INTEGER PRIMARY KEY,tokens INTEGER); INSERT INTO records VALUES(1,120)")
+        let store = BusinessSQLiteStore(containerURL: ledger.url, logicalURL: source, module: "fixture", sourceIdentity: "cas")
+        let frozen = try ledger.importSnapshot(source, into: store, backupURL: source)
+        BusinessSQLiteRoutes.install([store])
+        defer { BusinessSQLiteRoutes.remove([store]) }
+        let live = SQLiteDatabaseDriver(url: source)
+        try live.execute("INSERT INTO records VALUES(99,999)")
+        try plain.execute("INSERT INTO records VALUES(2,55)")
+        XCTAssertThrowsError(try ledger.importSnapshot(source, into: store, backupURL: source,
+            replaceExisting: true, expectedDestination: frozen))
+        XCTAssertEqual(try live.readRows("SELECT id,tokens FROM records ORDER BY id") { [$0.int(0), $0.int(1)] }, [[1,120], [99,999]])
+        XCTAssertEqual(try plain.readRows("SELECT id,tokens FROM records ORDER BY id") { [$0.int(0), $0.int(1)] }, [[1,120], [2,55]])
+    }
+
+    func testCoveredCandidateCannotChangeBeforeNamespaceReplacement() throws {
+        for mutation in [
+            "DELETE FROM records WHERE id=1",
+            "UPDATE records SET tokens=CASE id WHEN 1 THEN 119 WHEN 2 THEN 56 ELSE tokens END"
+        ] {
+            let root = try temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let retained = root.appendingPathComponent("retained.sqlite")
+            let candidate = root.appendingPathComponent("candidate.sqlite")
+            let original = SQLiteDatabaseDriver(url: retained, bypassBusinessRoutes: true)
+            try original.execute("CREATE TABLE records(id INTEGER PRIMARY KEY,tokens INTEGER); INSERT INTO records VALUES(1,120),(2,55)")
+            let next = SQLiteDatabaseDriver(url: candidate, bypassBusinessRoutes: true)
+            try next.withConnection { try $0.restoreDatabase(from: retained) }
+            try next.execute("INSERT INTO records VALUES(3,10)")
+            let ledger = try CodexBusinessDatabase(url: root.appendingPathComponent("codex-ledger.sqlite"))
+            let store = BusinessSQLiteStore(containerURL: ledger.url, logicalURL: retained, module: "fixture", sourceIdentity: "source-proof")
+            let frozen = try ledger.importSnapshot(retained, into: store, backupURL: retained)
+            let authorizedSource = try next.withConnection { try CodexBusinessDatabase.proof($0) }
+            XCTAssertTrue(try CodexBusinessDatabase.snapshot(candidate, covers: retained,
+                expectedRetained: frozen, expectedCandidate: authorizedSource))
+
+            // The new file changes after history coverage has succeeded, while
+            // A stays unchanged. Neither a consistent new SQLite image nor an
+            // unchanged total is permission to import this different source.
+            try next.execute(mutation)
+            XCTAssertThrowsError(try ledger.importSnapshot(candidate, into: store, backupURL: retained,
+                replaceExisting: true, expectedDestination: frozen, expectedSource: authorizedSource))
+            XCTAssertThrowsError(try CodexBusinessDatabase.snapshot(candidate, covers: retained,
+                expectedRetained: frozen, expectedCandidate: authorizedSource))
+            XCTAssertEqual(try ledger.driver.withConnection {
+                try CodexBusinessDatabase.proof($0, namespace: SQLiteStoreNamespace(prefix: store.prefix, objectNames: []))
+            }, frozen)
+        }
+    }
+
+    func testQuotaRetryAllowsOnlyPolicyThreeClockProgress() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = root.appendingPathComponent("original.sqlite")
+        let newer = root.appendingPathComponent("newer.sqlite")
+        let old = SQLiteDatabaseDriver(url: original, bypassBusinessRoutes: true)
+        try old.execute("CREATE TABLE quota_history_maintenance(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE observations(tokens INTEGER); INSERT INTO observations VALUES(120)")
+        try old.execute("INSERT INTO quota_history_maintenance VALUES('policy_version','3'),('last_compacted_at','100'),('unknown_evidence','keep')")
+        let updated = SQLiteDatabaseDriver(url: newer, bypassBusinessRoutes: true)
+        func reset() throws { try updated.withConnection { try $0.restoreDatabase(from: original) } }
+        try reset()
+        try updated.execute("UPDATE quota_history_maintenance SET value='200' WHERE key='last_compacted_at'; INSERT INTO observations VALUES(55)")
+        XCTAssertTrue(try CodexBusinessDatabase.snapshot(newer, covers: original, module: "quota.swift"))
+        XCTAssertFalse(try CodexBusinessDatabase.snapshot(newer, covers: original, module: "body.swift"), "The exception is module scoped")
+        for mutation in [
+            "UPDATE quota_history_maintenance SET value='99' WHERE key='last_compacted_at'",
+            "UPDATE quota_history_maintenance SET value='nan' WHERE key='last_compacted_at'",
+            "UPDATE quota_history_maintenance SET value='253402300800' WHERE key='last_compacted_at'",
+            "UPDATE quota_history_maintenance SET value='4' WHERE key='policy_version'",
+            "UPDATE quota_history_maintenance SET value='changed' WHERE key='unknown_evidence'",
+            "UPDATE quota_history_maintenance SET rowid=200 WHERE key='last_compacted_at'",
+            "INSERT INTO quota_history_maintenance VALUES('future_key','unknown')",
+            "UPDATE observations SET tokens=119"
+        ] {
+            try reset()
+            try updated.execute(mutation)
+            XCTAssertFalse(try CodexBusinessDatabase.snapshot(newer, covers: original, module: "quota.swift"), mutation)
+        }
+        try old.execute("DELETE FROM quota_history_maintenance")
+        try reset()
+        try updated.execute("INSERT INTO observations VALUES(55)")
+        XCTAssertTrue(try CodexBusinessDatabase.snapshot(newer, covers: original, module: "quota.swift"),
+            "An unchanged empty maintenance table must not block an ordinary append")
+    }
+
     func testDefaultImportNeverReplacesANewlyCreatedRuntimeNamespace() throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
-const previewSource = readFileSync(join(currentDir, "FloatingPanelPreview.tsx"), "utf8");
+const previewSource = readFileSync(join(currentDir, "FloatingPanelPreview.tsx"), "utf8").replace(/\r\n/g, "\n");
 const floatingWindowSource = readFileSync(join(currentDir, "FloatingWindowApp.tsx"), "utf8");
 const structureEditorSource = readFileSync(join(currentDir, "../components/settings/FloatingStructureEditor.tsx"), "utf8");
 const floatingSettingsSource = readFileSync(join(currentDir, "floatingSettings.ts"), "utf8");

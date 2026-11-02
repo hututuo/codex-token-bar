@@ -31,6 +31,74 @@ class FormedEvidenceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 probe.parse_report(text, 'resume', '0.9.8', 'committed')
 
+    def test_matrix_requires_both_states_and_both_process_restarts(self):
+        results = [dict(status='PASS', scenario=scenario, phase=phase)
+                   for scenario in probe.SCENARIOS for phase in probe.PHASES]
+        probe.validate_matrix(results)
+        for broken in (results[:-1], results + [results[0]],
+                       [dict(item, status='FAIL') if n == 1 else item for n, item in enumerate(results)],
+                       [results[0]] * 4):
+            with self.subTest(results=broken), self.assertRaises(ValueError):
+                probe.validate_matrix(broken)
+
+    def test_first_scenario_failure_does_not_hide_independent_second_state(self):
+        visited, saved = [], []
+        report = {'scenarios': []}
+        def operation(scenario):
+            visited.append(scenario)
+            if scenario == 'committed':
+                raise RuntimeError('committed producer failed')
+            return [dict(status='PASS', scenario=scenario, phase=phase) for phase in probe.PHASES]
+        with self.assertRaisesRegex(ValueError, 'committed producer failed'):
+            probe.collect_scenarios(operation, report, lambda: saved.append(len(report['scenarios'])))
+        self.assertEqual(visited, ['committed', 'interrupted'])
+        self.assertEqual(saved, [2, 4])
+        self.assertEqual([item['status'] for item in report['scenarios']], ['FAIL', 'FAIL', 'PASS', 'PASS'])
+
+    def test_failed_resume_still_captures_reopen_and_preserves_synthetic_state(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            output = base / 'evidence'; output.mkdir()
+            root = base / 'committed'
+            phases = []
+            def execute(command, cwd, env, log, **options):
+                phase = command[-1]; phases.append(phase)
+                log.write_text(phase)
+                if phase == 'committed':
+                    quota = root / 'support/quota.sqlite'; quota.write_bytes(b'synthetic')
+                    (root / 'formed-state.json').write_text(json.dumps(dict(
+                        producerVersion='0.9.8', cfgTest=False, phase='committed',
+                        proofs={'synthetic': {}}, formedExact=True, formedB=True, legacyQuota=str(quota))))
+                    return ''
+                if phase == 'resume':
+                    raise RuntimeError('resume failed')
+                return self.report(phase='reopen')
+            with patch.object(probe, 'execute', side_effect=execute):
+                results = probe.run_scenario(base, '0.9.8', 'committed', root, base,
+                    {'release': Path('old'), 'candidate': Path('new')}, output)
+            self.assertEqual(phases, ['committed', 'resume', 'reopen'])
+            self.assertEqual([item['status'] for item in results], ['FAIL', 'PASS'])
+            self.assertTrue((output / 'committed-synthetic-state.zip').is_file())
+            self.assertTrue((output / 'committed-resume.log').is_file())
+
+    def test_producer_metadata_cannot_redirect_late_quota_write_outside_fixture(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            output = base / 'evidence'; output.mkdir()
+            root = base / 'interrupted'
+            outside = base / 'outside.sqlite'; outside.write_bytes(b'preserve')
+            def execute(command, cwd, env, log, **options):
+                (root / 'formed-state.json').write_text(json.dumps(dict(
+                    producerVersion='0.9.8', cfgTest=False, phase='interrupted',
+                    proofs={'synthetic': {}}, formedExact=False, formedB=False, legacyQuota=str(outside))))
+                return ''
+            with patch.object(probe, 'execute', side_effect=execute) as runner:
+                results = probe.run_scenario(base, '0.9.8', 'interrupted', root, base,
+                    {'release': Path('old'), 'candidate': Path('new')}, output)
+            self.assertEqual(runner.call_count, 1)
+            self.assertTrue(all(item['status'] == 'FAIL' and 'escapes' in item['error'] for item in results))
+            self.assertEqual(outside.read_bytes(), b'preserve')
+
     def test_wrong_tag_cannot_silently_test_another_release(self):
         with patch.object(probe.subprocess, 'check_output', return_value='0'*40+'\n'):
             with self.assertRaises(ValueError): probe.pinned_revision(Path('.'), '0.9.8')

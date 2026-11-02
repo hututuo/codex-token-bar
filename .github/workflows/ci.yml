@@ -189,6 +189,12 @@ jobs:
       - name: Check production native configuration
         shell: bash
         run: cargo check --locked --manifest-path tauri-app/src-tauri/Cargo.toml
+      - name: Exercise production business-store routing and runtime recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --manifest-path tauri-app/src-tauri/Cargo.toml --features business-store-fixture --example business-store-fixture
+          python scripts/cloud/run-business-store-fixture.py tauri-app/src-tauri/target/debug/examples/business-store-fixture
       - name: Full native regression including original pressure case
         shell: bash
         run: |
@@ -204,7 +210,10 @@ jobs:
         if: always()
         with:
           name: native-check-logs-${{ matrix.os }}-${{ github.run_id }}
-          path: '*.log'
+          path: |
+            *.log
+            runtime-recovery-production.json
+            tauri-app/src-tauri/target/debug/examples/business-store-fixture.exe
           retention-days: 7
 
   windows-updater:
@@ -227,20 +236,31 @@ jobs:
           $env:PATH = "$nsis;$env:PATH"
           ./scripts/windows_update_faults.ps1
 
+  database-recovery:
+    needs: source
+    uses: ./.github/workflows/production-database-recovery.yml
+    with:
+      source_sha: ${{ needs.source.outputs.sha }}
+
   evidence:
-    needs: [source, frontend, swift, native, windows-updater]
+    needs: [source, frontend, swift, native, windows-updater, database-recovery]
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.source.outputs.sha }}
+      - name: Download the required recovery verdict from this CI run
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: recovery-checked-source-${{ needs.source.outputs.sha }}
+          path: recovery-evidence
       - name: Seal successful check identity
         env:
           SOURCE_SHA: ${{ needs.source.outputs.sha }}
         run: |
-          python3 - <<'PY'
-          import json, os, pathlib
-          pathlib.Path('checked-source.json').write_text(json.dumps({
-            'source_sha':os.environ['SOURCE_SHA'],'run_id':os.environ['GITHUB_RUN_ID'],'passed':True
-          })+'\n')
-          PY
+          python3 scripts/cloud/ci_evidence.py seal --source-sha "$SOURCE_SHA" --run-id "$GITHUB_RUN_ID" \
+            --input recovery-evidence/recovery-checked-source.json --output checked-source.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ci-passed-${{ needs.source.outputs.sha }}

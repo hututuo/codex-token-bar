@@ -3101,7 +3101,7 @@ fn retained_quota_reader_handles_every_partial_cycle_schema_without_mutating_it(
         }
         let before: i64 = connection.query_row("PRAGMA schema_version", [], |r| r.get(0)).unwrap();
         connection.execute_batch("PRAGMA query_only=ON").unwrap();
-        let rows = database::rows_since_for_read_only_peer(&connection, f64::MAX, &identity).unwrap();
+        let rows = database::rows_since_for_legacy_store(&connection, f64::MAX, &identity).unwrap();
         assert_eq!(rows.len(), 1, "partial cycle schema {mask}");
         assert_eq!(rows[0].five_hour_used_percent, Some(37));
         assert_eq!(rows[0].source.as_deref(), Some("tauri"));

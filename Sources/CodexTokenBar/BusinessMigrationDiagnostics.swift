@@ -4,7 +4,7 @@ import Foundation
 /// Independent of A/B and the 15-second startup trace. One durable JSONL file
 /// per attempt; no source rows, raw conversations or credentials are collected.
 final class BusinessMigrationDiagnostics: @unchecked Sendable {
-    struct Event: Codable {
+    struct Event: Codable, Sendable {
         let schemaVersion: Int
         let attemptId: String
         let sequence: Int
@@ -14,6 +14,11 @@ final class BusinessMigrationDiagnostics: @unchecked Sendable {
         let status: String
         let details: [String: String]
     }
+    struct PreviewSnapshot: Sendable {
+        let attemptID: String?
+        let persistenceError: String?
+        let text: String
+    }
     let attemptID = UUID().uuidString
     let url: URL
     private let lock = NSLock()
@@ -22,10 +27,13 @@ final class BusinessMigrationDiagnostics: @unchecked Sendable {
     private let started = DispatchTime.now().uptimeNanoseconds
     private var failure: String?
     private var tail: [String] = []
+    private let beforePersistForTesting: (@Sendable (Event) throws -> Void)?
     private static let latestLock = NSLock()
     nonisolated(unsafe) private static var latest: BusinessMigrationDiagnostics?
 
-    init(root: URL, operation: String) {
+    init(root: URL, operation: String,
+         beforePersistForTesting: (@Sendable (Event) throws -> Void)? = nil) {
+        self.beforePersistForTesting = beforePersistForTesting
         url = root.appendingPathComponent("attempt-\(attemptID).jsonl")
         do {
             try Self.validateDirectory(root, create: true)
@@ -48,6 +56,9 @@ final class BusinessMigrationDiagnostics: @unchecked Sendable {
             var data = try JSONEncoder().encode(event); data.append(10)
             tail.append(String(decoding: data, as: UTF8.self))
             if tail.count > 100 { tail.removeFirst(tail.count - 100) }
+            // Tests can hold the real writer at its persistence boundary. The
+            // normal write and fsync below always retain their durable behavior.
+            try beforePersistForTesting?(event)
             try file?.write(contentsOf: data)
             if let file, Darwin.fsync(file.fileDescriptor) != 0 { throw Self.posixError() }
         } catch { failure = error.localizedDescription; file = nil }
@@ -67,6 +78,30 @@ final class BusinessMigrationDiagnostics: @unchecked Sendable {
     }
     static var currentPersistenceError: String? {
         latestLock.lock(); let current = latest; latestLock.unlock(); return current?.persistenceError
+    }
+    private var previewSnapshot: PreviewSnapshot {
+        lock.lock(); defer { lock.unlock() }
+        return .init(attemptID: attemptID, persistenceError: failure, text: tail.joined())
+    }
+    static var currentPreviewSnapshot: PreviewSnapshot? {
+        latestLock.lock(); let current = latest; latestLock.unlock()
+        // Capture one attempt before waiting for its writer. A retry may replace
+        // latest while that wait is suspended; error and text must still agree.
+        return current?.previewSnapshot
+    }
+    /// UI entry point: even an in-memory preview can wait behind write/fsync.
+    /// Keep both that wait and the disk fallback off the main actor.
+    @MainActor static func readPreview(at root: URL? = nil) async -> PreviewSnapshot {
+        await Task.detached(priority: .utility) {
+            if let current = currentPreviewSnapshot { return current }
+            do {
+                let directory = try root ?? productionDirectory()
+                return PreviewSnapshot(attemptID: nil, persistenceError: nil, text: try preview(at: directory))
+            } catch {
+                return PreviewSnapshot(attemptID: nil, persistenceError: nil,
+                    text: "读取诊断失败：\(error.localizedDescription)")
+            }
+        }.value
     }
     static func productionDirectory() throws -> URL {
         try BusinessDatabaseMigration.Configuration.production().container.deletingLastPathComponent()
@@ -142,9 +177,9 @@ final class BusinessMigrationDiagnostics: @unchecked Sendable {
                     try output.write(contentsOf: data); remaining -= UInt64(data.count)
                 }
             }
-            if let failure = currentPersistenceError {
+            if let current = currentPreviewSnapshot, let failure = current.persistenceError {
                 try output.write(contentsOf: Data("\nWARNING: current attempt logging failed; this bundle is incomplete: \(failure)\n".utf8))
-                try output.write(contentsOf: Data(currentMemoryPreview.utf8))
+                try output.write(contentsOf: Data(current.text.utf8))
             }
             guard Darwin.fsync(output.fileDescriptor) == 0 else { throw posixError() }
             try output.close()

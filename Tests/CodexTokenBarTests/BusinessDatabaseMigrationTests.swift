@@ -3,6 +3,151 @@ import XCTest
 @testable import CodexTokenBar
 
 final class BusinessDatabaseMigrationTests: XCTestCase {
+    func testIncompleteDiscoveryLogsIndependentRootsAndReadableInputsWithoutImporting() throws {
+        let (_, c) = try fixture()
+        for directory in [c.support, c.exact, c.legacyExact] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        let manifests = [c.exact.appendingPathComponent(String(repeating: "a", count: 64) + ".sqlite.schema11-migration.json"),
+                         c.legacyExact.appendingPathComponent(String(repeating: "b", count: 64) + ".sqlite.schema11-migration.json")]
+        let manifestBytes = Data("{\"manifestVersion\":999}".utf8)
+        for manifest in manifests { try manifestBytes.write(to: manifest) }
+        let quota = c.support.appendingPathComponent("quota-history.sqlite")
+        let corruptBytes = Data("not a SQLite database".utf8)
+        try corruptBytes.write(to: quota)
+        let valid = c.support.appendingPathComponent("shared-account-usage-safety.sqlite")
+        try SQLiteDatabaseDriver(url: valid).execute("CREATE TABLE samples(id INTEGER PRIMARY KEY); INSERT INTO samples VALUES(42)")
+        XCTAssertThrowsError(try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 33)) { error in
+            guard case .batchFailures(let errors) = error as? BusinessDatabaseMigration.Failure else {
+                return XCTFail("Independent discovery and database failures must be collected: \(error)")
+            }
+            XCTAssertEqual(errors.count, 3)
+        }
+        let events = try migrationEvents(c)
+        XCTAssertEqual(events.filter { $0.stage == "discover-input" && $0.status == "failed" }.count, 2)
+        XCTAssertEqual(events.filter { $0.stage == "blocked-input-readonly-proof" && $0.status == "failed" }.count, 1)
+        XCTAssertEqual(events.filter { $0.stage == "blocked-input-readonly-proof" && $0.status == "succeeded" }.count, 1)
+        XCTAssertEqual(events.filter { $0.stage == "store-import" && $0.status == "skipped" }.count, 2)
+        XCTAssertFalse(events.contains { $0.stage == "store-import" && $0.status == "started" })
+        XCTAssertFalse(FileManager.default.fileExists(atPath: c.container.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: c.support.appendingPathComponent(".codex-ledger-migrating.sqlite").path))
+        for manifest in manifests { XCTAssertEqual(try Data(contentsOf: manifest), manifestBytes) }
+        XCTAssertEqual(try Data(contentsOf: quota), corruptBytes)
+    }
+
+    func testEverySourceLockFailureIsLoggedBeforeGlobalImportIsStopped() throws {
+        let (_, c) = try fixture()
+        var locks: [CodexCrossProcessFileLock] = []
+        defer { for lock in locks { lock.release() } }
+        for letter in ["a", "b"] {
+            let exact = c.exact.appendingPathComponent(String(repeating: letter, count: 64) + ".sqlite")
+            try SQLiteDatabaseDriver(url: exact).execute("CREATE TABLE schema_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL); INSERT INTO schema_meta VALUES('schema_version','99')")
+            locks.append(try CodexCrossProcessFileLock(url: exact.appendingPathExtension("operation.lock"), label: "test held migration"))
+        }
+        let quota = c.support.appendingPathComponent("quota-history.sqlite")
+        try SQLiteDatabaseDriver(url: quota).execute("CREATE TABLE samples(id INTEGER PRIMARY KEY); INSERT INTO samples VALUES(42)")
+        XCTAssertThrowsError(try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 33)) { error in
+            guard case .batchFailures(let errors) = error as? BusinessDatabaseMigration.Failure else { return XCTFail("Missing independent lock errors: \(error)") }
+            XCTAssertEqual(errors.count, 2)
+        }
+        let events = try migrationEvents(c)
+        XCTAssertEqual(events.filter { $0.stage == "acquire-source-lock" && $0.status == "failed" }.count, 2)
+        XCTAssertEqual(events.filter { $0.stage == "blocked-input-readonly-proof" && $0.status == "succeeded" }.count, 3)
+        XCTAssertEqual(events.filter { $0.stage == "store-import" && $0.status == "skipped" }.count, 3)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: c.container.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: c.support.appendingPathComponent(".codex-ledger-migrating.sqlite").path))
+    }
+
+    func testExactRootNestedInsideSupportIsImportedAndLockedOnlyOnce() throws {
+        let (root, original) = try fixture()
+        let c = BusinessDatabaseMigration.Configuration(container: original.container, support: original.support,
+            exact: original.support.appendingPathComponent("exact"), legacyExact: original.legacyExact)
+        let source = c.exact.appendingPathComponent(String(repeating: "a", count: 64) + ".sqlite")
+        let index = try CodexUsageHistoryIndex(sessionCatalogTestingDatabaseURL: source)
+        let rollout = root.appendingPathComponent("rollout-019f1234-1234-1234-1234-123456789abc.jsonl")
+        try Data("{\"timestamp\":\"2026-10-01T00:00:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":120,\"total_tokens\":120}}}}\n".utf8).write(to: rollout)
+        let analyzer = CodexUsageAnalyzer(dataSource: CodexDataSource(codexHome: root, origin: .userSelected))
+        _ = try index.synchronize(files: [rollout], sessionID: analyzer.sessionID(from:)) { file, id, request, fingerprint, emit in
+            try analyzer.parseSessionIntoHistoryIndex(file: file, sessionID: id, request: request, insertFingerprint: fingerprint, emit: emit)
+        }
+        let quota = c.support.appendingPathComponent("quota-history.sqlite")
+        try SQLiteDatabaseDriver(url: quota).execute("CREATE TABLE samples(id INTEGER PRIMARY KEY); INSERT INTO samples VALUES(42)")
+        try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 33)
+        let physical = SQLiteDatabaseDriver(url: c.container, readOnly: true, bypassBusinessRoutes: true)
+        XCTAssertEqual(try physical.readRows("SELECT module FROM tb_stores ORDER BY module") { $0.text(0) }, ["exact.swift", "quota.swift"])
+        XCTAssertEqual(try SQLiteDatabaseDriver(url: source).readRows("SELECT SUM(tokens) FROM events") { $0.int(0) }.first!, 120)
+        let events = try migrationEvents(c)
+        XCTAssertEqual(events.filter { $0.stage == "acquire-source-lock" && $0.status == "succeeded" }.count, 1)
+        XCTAssertEqual(events.filter { $0.stage == "duplicate-input" && $0.status == "coalesced" }.count, 1)
+        XCTAssertEqual(events.filter { $0.stage == "store-import" && $0.status == "succeeded" }.count, 2)
+    }
+
+    func testSamePhysicalInputAssignedToTwoStoresDoesNotChooseAnOverwriteSource() throws {
+        let (_, c) = try fixture()
+        let first = c.support.appendingPathComponent("body-speed-one.sqlite")
+        let second = c.support.appendingPathComponent("body-speed-two.sqlite")
+        let old = SQLiteDatabaseDriver(url: first)
+        try old.execute("CREATE TABLE samples(id INTEGER PRIMARY KEY); INSERT INTO samples VALUES(42)")
+        try FileManager.default.linkItem(at: first, to: second)
+        let original = try old.withConnection { try CodexBusinessDatabase.proof($0) }
+        XCTAssertThrowsError(try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 33))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: c.container.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: c.support.appendingPathComponent(".codex-ledger-migrating.sqlite").path))
+        XCTAssertEqual(try old.withConnection { try CodexBusinessDatabase.proof($0) }, original)
+        XCTAssertTrue(try migrationEvents(c).contains { $0.stage == "discover-ownership" && $0.status == "failed" })
+    }
+
+    private func migrationEvents(_ configuration: BusinessDatabaseMigration.Configuration) throws -> [BusinessMigrationDiagnostics.Event] {
+        let paths = try BusinessMigrationDiagnostics.files(at: configuration.container.deletingLastPathComponent().appendingPathComponent("migration-diagnostics"))
+        XCTAssertEqual(paths.count, 1)
+        return try String(contentsOf: XCTUnwrap(paths.first), encoding: .utf8).split(separator: "\n")
+            .map { try JSONDecoder().decode(BusinessMigrationDiagnostics.Event.self, from: Data($0.utf8)) }
+    }
+
+    func testAllIndependentInputFailuresAreLoggedBeforeActivationIsWithheld() throws {
+        let (_, c) = try fixture()
+        try FileManager.default.createDirectory(at: c.support, withIntermediateDirectories: true)
+        let broken = [c.support.appendingPathComponent("body-speed-broken.sqlite"),
+                      c.support.appendingPathComponent("quota-history.sqlite")]
+        let bytes = Data("deliberately invalid SQLite input".utf8)
+        for file in broken { try bytes.write(to: file) }
+        let valid = c.support.appendingPathComponent("shared-account-usage-safety.sqlite")
+        try SQLiteDatabaseDriver(url: valid).execute("CREATE TABLE samples(id INTEGER PRIMARY KEY); INSERT INTO samples VALUES(42)")
+        XCTAssertThrowsError(try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 33)) { error in
+            guard case .batchFailures(let errors) = error as? BusinessDatabaseMigration.Failure else {
+                return XCTFail("Both independent failures must appear in the same result: \(error)")
+            }
+            XCTAssertEqual(errors.count, 2)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: c.container.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: c.container.appendingPathExtension("initialized").path))
+        for file in broken { XCTAssertEqual(try Data(contentsOf: file), bytes) }
+        let candidate = SQLiteDatabaseDriver(url: c.support.appendingPathComponent(".codex-ledger-migrating.sqlite"),
+            readOnly: true, createsFileIfMissing: false, bypassBusinessRoutes: true)
+        XCTAssertEqual(try candidate.readRows("SELECT value FROM tb_container_meta WHERE key='activation_state'") { $0.text(0) }.first!, "importing")
+        XCTAssertEqual(try candidate.readRows("SELECT module FROM tb_stores") { $0.text(0) }, ["safety.swift"],
+            "A later independent store must finish its proof after earlier inputs fail")
+        let paths = try BusinessMigrationDiagnostics.files(at: c.support.appendingPathComponent("migration-diagnostics"))
+        XCTAssertEqual(paths.count, 1)
+        let events = try String(contentsOf: XCTUnwrap(paths.first), encoding: .utf8).split(separator: "\n")
+            .map { try JSONDecoder().decode(BusinessMigrationDiagnostics.Event.self, from: Data($0.utf8)) }
+        XCTAssertEqual(Set(events.filter { $0.stage == "store-import" && $0.status == "failed" }.compactMap { $0.details["module"] }),
+            ["body.swift", "quota.swift"])
+        XCTAssertEqual(events.filter { $0.stage == "store-import" && $0.status == "succeeded" }.count, 1)
+        XCTAssertFalse(events.contains { $0.stage == "activate-container" })
+        XCTAssertEqual(events.last?.stage, "attempt")
+        XCTAssertEqual(events.last?.status, "failed")
+        XCTAssertEqual(events.map(\.sequence), Array(1...events.count))
+
+        for file in broken {
+            try FileManager.default.removeItem(at: file)
+            try SQLiteDatabaseDriver(url: file).execute("CREATE TABLE samples(id INTEGER PRIMARY KEY); INSERT INTO samples VALUES(7)")
+        }
+        try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 33)
+        XCTAssertEqual(try SQLiteDatabaseDriver(url: valid).readRows("SELECT id FROM samples") { $0.int(0) }, [42])
+        for file in broken { XCTAssertEqual(try SQLiteDatabaseDriver(url: file).readRows("SELECT id FROM samples") { $0.int(0) }, [7]) }
+    }
+
     func testUnchangedInterruptedMigrationReusesVerifiedSnapshotPair() throws {
         let (_, c) = try fixture()
         let source = c.support.appendingPathComponent("quota-history.sqlite")
@@ -20,6 +165,117 @@ final class BusinessDatabaseMigrationTests: XCTestCase {
         XCTAssertEqual(try SQLiteDatabaseDriver(url: source).readRows("SELECT id FROM samples") { $0.int(0)! }, [77])
         XCTAssertEqual(try attemptReceipts(for: source, configuration: c).count, 1,
                        "Activation must not create another receipt for the same input snapshot")
+    }
+
+    func testRetryRejectsTruncatedLegacyHistoryAndIndependentlyChangedDestination() throws {
+        for destinationChanged in [false, true] {
+            BusinessSQLiteRoutes.deactivate()
+            let (_, c) = try fixture()
+            let source = c.support.appendingPathComponent("quota-history.sqlite")
+            let old = SQLiteDatabaseDriver(url: source, bypassBusinessRoutes: true)
+            try old.execute("CREATE TABLE samples(id INTEGER PRIMARY KEY,tokens INTEGER); INSERT INTO samples VALUES(1,120),(2,55)")
+            enum Stop: Error { case now }
+            XCTAssertThrowsError(try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 33, beforeActivation: { throw Stop.now }))
+            let store = try XCTUnwrap(c.specification(for: source))
+            let working = c.support.appendingPathComponent(".codex-ledger-migrating.sqlite")
+            let frozen = SQLiteDatabaseDriver(url: working, bypassBusinessRoutes: true)
+            let table = SQLiteStoreNamespace.quote(store.prefix + "samples")
+            if destinationChanged {
+                try frozen.execute("INSERT INTO \(table) VALUES(99,999)")
+                try old.execute("INSERT INTO samples VALUES(3,10)")
+            } else {
+                try old.execute("DELETE FROM samples WHERE id=1")
+            }
+            let before = try frozen.withConnection { try CodexBusinessDatabase.proof($0) }
+            let receipts = try attemptReceipts(for: source, configuration: c)
+            let protected = try receipts.map { (URL(fileURLWithPath: $0.1.normalizedPath), try Data(contentsOf: URL(fileURLWithPath: $0.1.normalizedPath))) }
+            XCTAssertThrowsError(try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 33)) { error in
+                guard let failure = error as? BusinessDatabaseMigration.Failure else { return XCTFail("Unexpected error: \(error)") }
+                if destinationChanged {
+                    guard case .pendingDestinationChanged = failure else { return XCTFail("A changed destination must not be overwritten: \(failure)") }
+                } else {
+                    guard case .retryHistoryNotCovered = failure else { return XCTFail("Truncation must not replace the frozen complete history: \(failure)") }
+                }
+            }
+            XCTAssertEqual(try frozen.withConnection { try CodexBusinessDatabase.proof($0) }, before)
+            XCTAssertEqual(try frozen.readRows("SELECT id,tokens FROM \(table) ORDER BY id") { [$0.int(0), $0.int(1)] },
+                destinationChanged ? [[1,120], [2,55], [99,999]] : [[1,120], [2,55]])
+            for (url, data) in protected { XCTAssertEqual(try Data(contentsOf: url), data) }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: c.container.path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: c.container.appendingPathExtension("initialized").path))
+        }
+    }
+
+    func testRetryAfterCommittedNamespaceWithoutAttemptJSONUsesFrozenDatabaseReceipt() throws {
+        let (_, c) = try fixture()
+        let source = c.support.appendingPathComponent("quota-history.sqlite")
+        try SQLiteDatabaseDriver(url: source).execute("CREATE TABLE samples(id INTEGER PRIMARY KEY); INSERT INTO samples VALUES(88)")
+        enum Stop: Error { case now }
+        XCTAssertThrowsError(try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 33, beforeActivation: { throw Stop.now }))
+        let attempts = try attemptReceipts(for: source, configuration: c)
+        let receipt = try XCTUnwrap(attempts.first)
+        try FileManager.default.removeItem(at: receipt.0)
+        try FileManager.default.removeItem(at: receipt.0.deletingLastPathComponent().appendingPathComponent("receipt.json"))
+        try SQLiteDatabaseDriver(url: source, bypassBusinessRoutes: true).execute("INSERT INTO samples VALUES(89)")
+        try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 33)
+        XCTAssertEqual(try SQLiteDatabaseDriver(url: source).readRows("SELECT id FROM samples ORDER BY id") { $0.int(0) }, [88,89])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: receipt.1.backupPath))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: receipt.1.normalizedPath))
+    }
+
+    func testQuotaMaintenanceClockCanAdvanceDuringInterruptedRetryWithoutLosingObservations() throws {
+        let (_, c) = try fixture()
+        let source = c.support.appendingPathComponent("quota-history.sqlite")
+        let old = SQLiteDatabaseDriver(url: source, bypassBusinessRoutes: true)
+        try old.execute("CREATE TABLE quota_history_maintenance(key TEXT PRIMARY KEY,value TEXT NOT NULL); CREATE TABLE samples(id INTEGER PRIMARY KEY,tokens INTEGER)")
+        try old.execute("INSERT INTO quota_history_maintenance VALUES('policy_version','3'),('last_compacted_at','100'); INSERT INTO samples VALUES(1,120)")
+        enum Stop: Error { case now }
+        XCTAssertThrowsError(try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 33, beforeActivation: { throw Stop.now }))
+        try old.execute("UPDATE quota_history_maintenance SET value='200.5' WHERE key='last_compacted_at'; INSERT INTO samples VALUES(2,55)")
+        try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 33)
+        let active = SQLiteDatabaseDriver(url: source)
+        XCTAssertEqual(try active.readRows("SELECT SUM(tokens) FROM samples") { $0.int(0) }.first!, 175)
+        XCTAssertEqual(try active.readRows("SELECT value FROM quota_history_maintenance WHERE key='last_compacted_at'") { $0.text(0) }.first!, "200.5")
+        XCTAssertEqual(try attemptReceipts(for: source, configuration: c).count, 2)
+    }
+
+    func testExactSchemaThirteenUpgradeAndEquivalentBackupPathsCanResumeFrozenImport() throws {
+        let (root, c) = try fixture()
+        let source = c.exact.appendingPathComponent(String(repeating: "e", count: 64) + ".sqlite")
+        let index = try CodexUsageHistoryIndex(sessionCatalogTestingDatabaseURL: source)
+        let file = root.appendingPathComponent("rollout-019f1234-1234-1234-1234-123456789abc.jsonl")
+        try Data("{\"timestamp\":\"2026-10-01T00:00:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":120,\"cached_input_tokens\":30,\"total_tokens\":120}}}}\n".utf8).write(to: file)
+        let analyzer = CodexUsageAnalyzer(dataSource: CodexDataSource(codexHome: root, origin: .userSelected))
+        _ = try index.synchronize(files: [file], sessionID: analyzer.sessionID(from:)) { file, id, request, fingerprint, emit in
+            try analyzer.parseSessionIntoHistoryIndex(file: file, sessionID: id, request: request,
+                insertFingerprint: fingerprint, emit: emit)
+        }
+        let raw = SQLiteDatabaseDriver(url: source, bypassBusinessRoutes: true)
+        try raw.execute("DROP TABLE source_representations; DELETE FROM schema_meta WHERE key IN ('representation_revision','representation_upgrade_backup'); UPDATE schema_meta SET value='13' WHERE key='schema_version'")
+        enum Stop: Error { case now }
+        XCTAssertThrowsError(try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 33, beforeActivation: { throw Stop.now }))
+        let first = try XCTUnwrap(attemptReceipts(for: source, configuration: c).first?.1)
+        XCTAssertEqual(try raw.readRows("SELECT value FROM schema_meta WHERE key='schema_version'") { $0.text(0) }.first!, "13")
+
+        // A legacy application independently reaches the same additive schema
+        // upgrade. Its backup path differs from our private normalization path.
+        _ = try CodexUsageHistoryIndex(sessionCatalogTestingDatabaseURL: source)
+        XCTAssertEqual(try raw.readRows("SELECT value FROM schema_meta WHERE key='schema_version'") { $0.text(0) }.first!, "14")
+        let retained = SQLiteDatabaseDriver(url: URL(fileURLWithPath: first.normalizedPath), readOnly: true, bypassBusinessRoutes: true)
+        XCTAssertNotEqual(try raw.readRows("SELECT value FROM schema_meta WHERE key='representation_upgrade_backup'") { $0.text(0) },
+            try retained.readRows("SELECT value FROM schema_meta WHERE key='representation_upgrade_backup'") { $0.text(0) })
+        XCTAssertTrue(try CodexBusinessDatabase.snapshot(source, covers: URL(fileURLWithPath: first.normalizedPath),
+            module: "exact.swift", legacySourceURL: source, expectedRetained: first.imported))
+        try raw.execute("UPDATE events SET tokens=119,input_tokens=119")
+        XCTAssertFalse(try CodexBusinessDatabase.snapshot(source, covers: URL(fileURLWithPath: first.normalizedPath),
+            module: "exact.swift", legacySourceURL: source, expectedRetained: first.imported),
+            "Equivalent representation backups do not authorize a changed numeric observation")
+        try raw.execute("UPDATE events SET tokens=120,input_tokens=120")
+        try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 33)
+        XCTAssertEqual(try SQLiteDatabaseDriver(url: source).readRows("SELECT SUM(tokens),SUM(cached_input_tokens) FROM events") { [$0.int(0), $0.int(1)] }.first!, [120,30])
+        XCTAssertEqual(try attemptReceipts(for: source, configuration: c).count, 2)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: first.backupPath))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: first.normalizedPath))
     }
 
     func testReceiptWithOutsideSnapshotPathIsNotReusedOrModified() throws {
@@ -450,6 +706,159 @@ final class BusinessDatabaseMigrationTests: XCTestCase {
                 insertFingerprint: fingerprint, emit: emit)
         }
         XCTAssertEqual(try SQLiteDatabaseDriver(url: exactURL).readRows("SELECT SUM(tokens),SUM(cached_input_tokens) FROM events") { [$0.int(0),$0.int(1)] }.first!, [120,30])
+    }
+
+    func testLegacyAStageSurvivesDeletedFilesAndChangedConfiguredDirectoryAlias() throws {
+        let (root, physical) = try fixture()
+        let file = root.appendingPathComponent("rollout-019f1234-1234-1234-1234-123456789abc.jsonl")
+        try Data("{\"timestamp\":\"2026-10-01T00:00:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":120,\"cached_input_tokens\":30,\"total_tokens\":120}}}}\n".utf8).write(to: file)
+        let exactURL = physical.exact.appendingPathComponent(String(repeating: "c", count: 64) + ".sqlite")
+        let index = try CodexUsageHistoryIndex(sessionCatalogTestingDatabaseURL: exactURL)
+        let analyzer = CodexUsageAnalyzer(dataSource: CodexDataSource(codexHome: root, origin: .userSelected))
+        CodexUsageHistoryIndex.failNextImportAfterStagingForTesting()
+        XCTAssertThrowsError(try index.synchronize(files: [file], sessionID: analyzer.sessionID(from:)) { file, id, request, fingerprint, emit in
+            try analyzer.parseSessionIntoHistoryIndex(file: file, sessionID: id, request: request,
+                insertFingerprint: fingerprint, emit: emit)
+        })
+        let legacyDirectory = physical.exact.appendingPathComponent("staging/\(exactURL.lastPathComponent)")
+        let physicalStage = try XCTUnwrap(FileManager.default.contentsOfDirectory(at: legacyDirectory, includingPropertiesForKeys: nil)
+            .first { $0.pathExtension == "sqlite" })
+        let alias = root.appendingPathComponent("exact-alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: physical.exact)
+        let configured = BusinessDatabaseMigration.Configuration(container: physical.container, support: physical.support,
+            exact: alias, legacyExact: physical.legacyExact)
+        try BusinessDatabaseMigration.migrate(configured, availableBytes: 1 << 33)
+        let migratedStage = try XCTUnwrap(BusinessStoreFiles.stageURLs(in: legacyDirectory).first)
+        XCTAssertTrue(migratedStage.path.hasPrefix(alias.path + "/"), "The catalog retains its configured logical spelling")
+        let stageID = try XCTUnwrap(BusinessSQLiteRoutes.store(for: migratedStage)?.id)
+        BusinessSQLiteRoutes.deactivate()
+        for database in [exactURL, physicalStage] {
+            for suffix in ["", "-wal", "-shm"] where FileManager.default.fileExists(atPath: database.path + suffix) {
+                try FileManager.default.removeItem(atPath: database.path + suffix)
+            }
+        }
+        try FileManager.default.removeItem(at: physical.exact.appendingPathComponent("staging"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacyDirectory.path))
+
+        try BusinessDatabaseMigration.migrate(physical, availableBytes: 0)
+        XCTAssertEqual(BusinessStoreFiles.stageURLs(in: legacyDirectory).count, 1,
+            "A legacy namespace must remain discoverable when its leaves and all staging parents are absent")
+        XCTAssertEqual(BusinessSQLiteRoutes.store(for: migratedStage)?.id, stageID)
+        let resumed = try CodexUsageHistoryIndex(sessionCatalogTestingDatabaseURL: exactURL)
+        _ = try resumed.synchronize(files: [file], sessionID: analyzer.sessionID(from:)) { file, id, request, fingerprint, emit in
+            XCTFail("The retained A job must be reused through the new physical root spelling")
+            return try analyzer.parseSessionIntoHistoryIndex(file: file, sessionID: id, request: request,
+                insertFingerprint: fingerprint, emit: emit)
+        }
+        XCTAssertEqual(try SQLiteDatabaseDriver(url: exactURL).readRows("SELECT SUM(tokens),SUM(cached_input_tokens) FROM events") { [$0.int(0), $0.int(1)] }.first!, [120,30])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: physicalStage.path))
+        XCTAssertTrue(BusinessStoreFiles.stageURLs(in: legacyDirectory).isEmpty, "The old job retires only after successful publication")
+    }
+
+    func testPrivateParserJobsKeepContainerSchemaBoundedAndResumeAtomicPublication() throws {
+        let (root, c) = try fixture()
+        try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 33)
+        let exactURL = c.exact.appendingPathComponent(String(repeating: "a", count: 64) + ".sqlite")
+        let index = try CodexUsageHistoryIndex(sessionCatalogTestingDatabaseURL: exactURL)
+        let analyzer = CodexUsageAnalyzer(dataSource: CodexDataSource(codexHome: root, origin: .userSelected))
+        let files = try (0..<9).map { number -> URL in
+            let file = root.appendingPathComponent("rollout-019f1234-1234-1234-1234-\(String(format: "%012d", number)).jsonl")
+            let tokens = 120 + number
+            try Data("{\"timestamp\":\"2026-10-01T00:00:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":\(tokens),\"total_tokens\":\(tokens)}}}}\n".utf8).write(to: file)
+            return file
+        }
+        let parse: CodexUsageHistoryIndex.SessionParser = { file, id, request, fingerprint, emit in
+            try analyzer.parseSessionIntoHistoryIndex(file: file, sessionID: id, request: request,
+                insertFingerprint: fingerprint, emit: emit)
+        }
+        _ = try index.synchronize(files: [files[0]], sessionID: analyzer.sessionID(from:), parser: parse)
+        let logical = SQLiteDatabaseDriver(url: exactURL)
+        let physical = SQLiteDatabaseDriver(url: c.container, readOnly: true, bypassBusinessRoutes: true)
+        let schemaBefore = try physical.readRows("SELECT name FROM sqlite_master ORDER BY name") { $0.text(0) }
+        let ledgerBefore = try logical.readRows("SELECT source_id,source_offset,tokens FROM events ORDER BY source_id,source_offset") {
+            [$0.int64(0), $0.int64(1), $0.int64(2)]
+        }
+        CodexUsageHistoryIndex.failNextBatchAfterFirstImportForTesting()
+        XCTAssertThrowsError(try index.synchronize(files: files, sessionID: analyzer.sessionID(from:), parser: parse))
+        XCTAssertEqual(try logical.readRows("SELECT source_id,source_offset,tokens FROM events ORDER BY source_id,source_offset") {
+            [$0.int64(0), $0.int64(1), $0.int64(2)]
+        }, ledgerBefore, "A failure after importing a source must roll back the whole new generation")
+        XCTAssertEqual(try physical.readRows("SELECT name FROM sqlite_master ORDER BY name") { $0.text(0) }, schemaBefore,
+            "Ready parser jobs must not add four shared-A tables per rollout")
+        XCTAssertEqual(try physical.readRows("SELECT COUNT(*) FROM tb_stores WHERE module='exact.swift.stage'") { $0.int(0) }.first!, 0)
+        let directory = c.exact.appendingPathComponent("staging-private-v1/\(exactURL.lastPathComponent)")
+        let stages = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "sqlite" }
+        XCTAssertEqual(stages.count, 8, "All private jobs remain available after publication rolls back")
+        for stage in stages {
+            XCTAssertNil(c.specification(for: stage), "Private jobs must never reenter automatic legacy import")
+            XCTAssertNil(BusinessSQLiteRoutes.store(for: stage))
+            XCTAssertTrue(try CodexUsageHistoryIndex.stagingIntegrityIsValid(using: SQLiteDatabaseDriver(url: stage, readOnly: true)))
+        }
+
+        // A fresh startup must neither import these private jobs into A nor
+        // drop them; the owning Exact index resumes and verifies their data.
+        BusinessSQLiteRoutes.deactivate()
+        try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 33)
+        let resumed = try CodexUsageHistoryIndex(sessionCatalogTestingDatabaseURL: exactURL)
+        _ = try resumed.synchronize(files: files, sessionID: analyzer.sessionID(from:)) { file, id, request, fingerprint, emit in
+            XCTFail("Completed private jobs must not be parsed again after restart")
+            return try parse(file, id, request, fingerprint, emit)
+        }
+        let restored = SQLiteDatabaseDriver(url: exactURL)
+        XCTAssertEqual(try restored.readRows("SELECT COUNT(*),SUM(tokens) FROM events") { [$0.int(0), $0.int(1)] }.first!,
+            [9, (0..<9).reduce(0) { $0 + 120 + $1 }])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path), "Cleanup follows the complete generation's commit")
+    }
+
+    func testCheckpointResetPreservesVerifiedEnrichmentStageAndRejectsCorruptEvidence() throws {
+        for corrupt in [false, true] {
+            let (root, c) = try fixture()
+            try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 33)
+            let exactURL = c.exact.appendingPathComponent(String(repeating: "b", count: 64) + ".sqlite")
+            let index = try CodexUsageHistoryIndex(sessionCatalogTestingDatabaseURL: exactURL)
+            let analyzer = CodexUsageAnalyzer(dataSource: CodexDataSource(codexHome: root, origin: .userSelected))
+            let file = root.appendingPathComponent("rollout-019f1234-1234-1234-1234-123456789abc.jsonl")
+            func line(_ tokens: Int, second: Int) -> String {
+                "{\"timestamp\":\"2026-10-01T00:00:0\(second)Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":\(tokens),\"total_tokens\":\(tokens)}}}}\n"
+            }
+            try Data(line(120, second: 0).utf8).write(to: file)
+            let parse: CodexUsageHistoryIndex.SessionParser = { file, id, request, fingerprint, emit in
+                try analyzer.parseSessionIntoHistoryIndex(file: file, sessionID: id, request: request,
+                    insertFingerprint: fingerprint, emit: emit)
+            }
+            _ = try index.synchronize(files: [file], sessionID: analyzer.sessionID(from:), parser: parse)
+            let db = SQLiteDatabaseDriver(url: exactURL)
+            try db.execute("DELETE FROM event_enrichment_sources; DELETE FROM schema_meta WHERE key='event_enrichment_revision';")
+            CodexUsageHistoryIndex.failNextImportAfterStagingForTesting()
+            XCTAssertThrowsError(try index.synchronize(files: [file], sessionID: analyzer.sessionID(from:), parser: parse))
+            let directory = c.exact.appendingPathComponent("staging-private-v1/\(exactURL.lastPathComponent)")
+            let stage = try XCTUnwrap(FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+                .first { $0.pathExtension == "sqlite" })
+            if corrupt { try SQLiteDatabaseDriver(url: stage).execute("UPDATE manifest SET actual_bytes=actual_bytes+1") }
+            let evidence = try Data(contentsOf: stage)
+            // A released replay repair may clear this checkpoint; the active
+            // rollout can grow while its old bounded enrichment stage remains.
+            try db.execute("UPDATE sources SET append_ready=0")
+            try Data((line(120, second: 0) + line(55, second: 1)).utf8).write(to: file)
+            if corrupt {
+                XCTAssertThrowsError(try index.synchronize(files: [file], sessionID: analyzer.sessionID(from:)) { file, id, request, fingerprint, emit in
+                    XCTFail("Unproven stage contents must not trigger a replacement parse")
+                    return try parse(file, id, request, fingerprint, emit)
+                })
+                XCTAssertEqual(try Data(contentsOf: stage), evidence)
+                XCTAssertEqual(try db.readRows("SELECT SUM(tokens) FROM events") { $0.int(0) }.first!, 120)
+            } else {
+                _ = try index.synchronize(files: [file], sessionID: analyzer.sessionID(from:), parser: parse)
+                XCTAssertEqual(try db.readRows("SELECT SUM(tokens) FROM events") { $0.int(0) }.first!, 175)
+                let preserved = try FileManager.default.subpathsOfDirectory(atPath: directory.path)
+                    .filter { $0.hasPrefix("preserved/") && $0.hasSuffix(".sqlite") }
+                XCTAssertEqual(preserved.count, 1)
+                XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent(XCTUnwrap(preserved.first))), evidence,
+                    "The superseded complete stage remains unchanged as recovery evidence")
+            }
+            BusinessSQLiteRoutes.deactivate()
+        }
     }
 
     func testColdParserDoesNotHoldTheContainersWriteLock() throws {

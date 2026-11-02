@@ -80,7 +80,9 @@ struct ApplicationStartupView: View {
             Label("Codex Token Bar", systemImage: "chart.bar.xaxis").font(.title2.bold())
             if case let .failed(message) = startup.phase {
                 Label("账本准备未完成", systemImage: "exclamationmark.triangle").font(.headline)
-                Text(message).textSelection(.enabled)
+                ScrollView {
+                    Text(message).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                }.frame(maxHeight: 140)
                 Text("旧账本和备份已保留，尚未启动业务写入。可以重试，或退出后检查。")
                     .foregroundStyle(.secondary)
                 BusinessRecoveryView(onRetry: startup.retry)
@@ -94,6 +96,7 @@ struct ApplicationStartupView: View {
                 Text("首次升级可能需要几分钟。迁移在后台执行，完成校验后自动进入主页；原始账本和备份都会保留。")
                     .foregroundStyle(.secondary)
             }
+            BusinessMigrationDiagnosticsView(isPreparing: startup.phase == .waiting || startup.phase == .preparing)
         }
         .padding(30).frame(maxWidth: 680, alignment: .leading)
         .frame(maxWidth: .infinity, maxHeight: .infinity)

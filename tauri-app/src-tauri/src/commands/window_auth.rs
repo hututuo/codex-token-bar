@@ -163,6 +163,13 @@ pub(crate) fn require_window_label(
 }
 
 pub(crate) fn allows_window_label(command: &str, label: &str) -> bool {
+    // Every App entry mounts the shared startup gate, including detail and
+    // guide windows. Keep its status/navigation separate from business access;
+    // retry_business_startup remains a main-window-only mutation.
+    if matches!(command, "read_business_startup_state" | "record_startup_event" | "show_dashboard_window") {
+        return matches!(label, MAIN_WINDOW_LABEL | FLOATING_WINDOW_LABEL | STATUS_WINDOW_LABEL
+            | "quota-sidebar" | "quota-sidebar-detail" | "floating-guide-card" | "floating-guide-cursor");
+    }
     if command == "read_sidebar_body_speed_buckets" {
         return matches!(label, MAIN_WINDOW_LABEL | "quota-sidebar" | "quota-sidebar-detail");
     }
@@ -230,6 +237,28 @@ fn is_app_surface_label(label: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_startup_commands_cover_every_app_entry_window() {
+        for label in ["main", "floating", "status", "quota-sidebar", "quota-sidebar-detail", "floating-guide-card", "floating-guide-cursor"] {
+            for command in ["read_business_startup_state", "record_startup_event", "show_dashboard_window"] {
+                assert!(allows_window_label(command, label), "{command} from {label}");
+            }
+            assert_eq!(allows_window_label("retry_business_startup", label), label == "main");
+        }
+        for command in ["read_business_startup_state", "record_startup_event", "show_dashboard_window", "retry_business_startup"] {
+            assert!(!allows_window_label(command, "unknown"), "{command}");
+        }
+    }
+
+    #[test]
+    fn startup_observation_does_not_grant_child_window_business_authority() {
+        for label in ["quota-sidebar-detail", "floating-guide-card", "floating-guide-cursor"] {
+            for command in ["retry_business_startup", "read_app_settings", "read_account_quota", "read_precise_dashboard_snapshot", "save_display_surfaces"] {
+                assert!(!allows_window_label(command, label), "{command} from {label}");
+            }
+        }
+    }
 
     #[test]
     fn activity_controls_are_narrow_and_details_do_not_gain_account_settings() {

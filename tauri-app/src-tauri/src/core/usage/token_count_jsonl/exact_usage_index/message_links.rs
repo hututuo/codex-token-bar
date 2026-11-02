@@ -23,6 +23,7 @@ pub(super) fn repair(db: &mut ManagedIndexConnection, home: &Path, warnings: &mu
     if pending.is_empty() { return Ok(()); }
     let canonical_home = canonical_codex_home(home)?;
     for (position,(source,path,session,size,modified,generation)) in pending.iter().enumerate() {
+        super::super::update_precise_dashboard_progress(home,"repairingLinks","正在检查历史会话关联；保留原有用量",position as u64,Some(pending.len() as u64));
         let ResolvedSessionFile::Accepted(file) = resolve_file_within_codex_home(&canonical_home,Path::new(path),"缓存排行轮次补全",warnings) else { continue; };
         if !rollout_source::physical_path(&file).is_ok_and(|physical| !rollout_source::is_compressed(&physical)) { continue; }
         let Ok(Some(before)) = lightweight_file_signature(&file, None) else { continue; };
@@ -30,7 +31,6 @@ pub(super) fn repair(db: &mut ManagedIndexConnection, home: &Path, warnings: &mu
         let bindings: HashMap<u64,i64> = db.prepare("SELECT b.raw_offset,b.event_id FROM usage_ledger_bindings b JOIN event_rows e ON e.id=b.event_id WHERE b.source_id=?1 AND b.available=1 AND b.raw_generation=?2 AND b.raw_offset IS NOT NULL AND e.user_prompt_start IS NULL")
             .map_err(|e|e.to_string())?.query_map(params![source,generation],|r|Ok((r.get(0)?,r.get(1)?)))
             .map_err(|e|e.to_string())?.collect::<Result<_,_>>().map_err(|e|e.to_string())?;
-        super::super::update_precise_dashboard_progress(home,"backfillingModel","正在补全缓存排行榜的轮次关联；保留原有用量",position as u64,Some(pending.len() as u64));
         let scan = match scan_message_links(&file,*size,&bindings.keys().copied().collect()) {
             Ok(scan) => scan,
             Err(error) => { warnings.push(excerpt_warning(format!("缓存排行明细暂未补全：{error}"))); continue; }
@@ -66,5 +66,38 @@ pub(super) fn repair(db: &mut ManagedIndexConnection, home: &Path, warnings: &mu
         tx.commit().map_err(|e|e.to_string())?;
         db.mark_receipt_eligible();
     }
+    super::super::update_precise_dashboard_progress(home,"repairingLinks","历史会话关联检查完成；保留原有用量",pending.len() as u64,Some(pending.len() as u64));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn association_repair_has_its_own_complete_progress_after_model_backfill() {
+        let _guard = crate::core::app_paths::app_path_test_env_guard(&[]);
+        let home = std::env::temp_dir().join(format!("tokenbar-link-progress-{}", Uuid::new_v4()));
+        fs::create_dir_all(home.join("sessions")).unwrap();
+        let file = home.join("sessions/rollout-019f0000-0000-4000-8000-000000000001.jsonl");
+        let original = concat!(r#"{"timestamp":"2026-10-01T00:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"output_tokens":20,"total_tokens":120}}}}"#, "\n");
+        fs::write(&file, original).unwrap();
+        let mut index = ExactUsageIndex::open(&home).unwrap();
+        index.sync(&home, &mut Vec::new()).unwrap();
+        index.connection.execute("DELETE FROM usage_ledger_message_receipts", []).unwrap();
+        super::super::super::update_precise_dashboard_progress(&home, "backfillingModel", "model complete", 1, Some(1));
+        let before: (i64, i64) = index.connection.query_row("SELECT COUNT(*), SUM(tokens) FROM event_rows", [],
+            |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        let mut warnings = Vec::new();
+        repair(&mut index.connection, &home, &mut warnings).unwrap();
+        let progress = super::super::super::precise_dashboard_progress(&home);
+        assert_eq!(progress.phase, "repairingLinks");
+        assert_eq!((progress.completed, progress.total), (1, Some(1)));
+        assert!(warnings.is_empty());
+        assert_eq!(index.connection.query_row("SELECT COUNT(*), SUM(tokens) FROM event_rows", [],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))).unwrap(), before);
+        assert_eq!(fs::read(&file).unwrap(), original.as_bytes());
+        drop(index);
+        fs::remove_dir_all(home).unwrap();
+    }
 }

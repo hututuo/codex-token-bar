@@ -19,19 +19,19 @@ pub(super) fn verify_live_state(home: &Path) -> Result<serde_json::Value, String
     check!(fs::write(home.join("live/one.jsonl"), b"{}\n"));
     check!(fs::write(home.join("live/two.jsonl"), b"{}\n"));
     let database_bytes = check!(fs::read(&database));
-    let read = open_external_state_database(&database, StdDuration::from_secs(1))?;
+    let read = open_read_only_source(&database, StdDuration::from_secs(1))?;
     require!(read.execute("DELETE FROM threads", []).is_err(), "external state handle was writable");
     drop(read);
     let mut warnings = Vec::new();
-    let ThreadMetadataStage::Updated(first) = stage_thread_metadata(&home, (None,None), &mut warnings)? else {
+    let ThreadMetadataStage::Updated(first) = stage_thread_metadata(&home, (None,None), None, &mut warnings)? else {
         return Err("initial old-column state schema was not read".into());
     };
     require!(first.rows.len()==1 && first.rows[0].1=="before", "initial state metadata mismatch");
     check!(writer.execute_batch("UPDATE threads SET title='after',updated_at=1781715700 WHERE id='one';
         INSERT INTO threads VALUES('two','second',1781715800,'live/two.jsonl',0);"));
     require!(check!(fs::read(&database)) == database_bytes, "fixture write escaped WAL into the main DB");
-    let ThreadMetadataStage::Updated(second) = stage_thread_metadata(&home, first.signature.unzip(), &mut warnings)? else {
-        return Err("WAL-only update was hidden by an immutable import or stale signature".into());
+    let ThreadMetadataStage::Updated(second) = stage_thread_metadata(&home, first.signature.unzip(), first.source_signature, &mut warnings)? else {
+        return Err(format!("WAL-only update was hidden by an immutable import or stale signature: {warnings:?}"));
     };
     require!(second.rows.len()==2 && second.rows.iter().any(|r|r.0=="one" && r.1=="after"),
         "dynamic external metadata was not refreshed");
@@ -51,7 +51,7 @@ pub(super) fn verify_live_state(home: &Path) -> Result<serde_json::Value, String
     // A malformed replacement must keep last-good metadata, not publish an
     // empty successful scan simply because optional-column fallbacks exist.
     check!(writer.execute_batch("DROP TABLE threads; CREATE TABLE threads(id TEXT PRIMARY KEY);"));
-    require!(matches!(stage_thread_metadata(&home, second.signature.unzip(), &mut warnings)?,
+    require!(matches!(stage_thread_metadata(&home, second.signature.unzip(), second.source_signature, &mut warnings)?,
         ThreadMetadataStage::Failed), "malformed external schema was treated as empty metadata");
     drop(writer);
     Ok(serde_json::json!({"name":"live-external-state-readers","status":"PASS",

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -41,24 +42,48 @@ def parse_profile(text: str, count: int) -> dict:
         raise ValueError("Required scale XCTest did not pass")
     for field in ("bootstrapSeconds", "backfillSeconds", "largestProgressGapSeconds", "totalSeconds"):
         value = profile.get(field)
-        if not isinstance(value, (int, float)) or not 0 <= value < float("inf"):
+        if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
             raise ValueError(f"Invalid timing {field}: {value}")
     return profile
 
 
+def validate_options(sizes: tuple[int, ...], timeout: int, max_gap: float, max_backfill: float) -> None:
+    if (not sizes or any(type(value) is not int or not 9 <= value <= 8192 for value in sizes)
+            or len(set(sizes)) != len(sizes)):
+        raise ValueError("sizes must be nonempty, unique and in 9...8192")
+    for value in (timeout, max_gap, max_backfill):
+        if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+            raise ValueError("execution deadline and budgets must be positive finite numbers")
+
+
+def validate_profiles(profiles: list[dict], sizes: tuple[int, ...], max_gap: float, max_backfill: float) -> None:
+    if [item.get("files") for item in profiles] != list(sizes):
+        raise ValueError("Every requested scale must have one completed profile in execution order")
+    for profile in profiles:
+        if profile["largestProgressGapSeconds"] > max_gap:
+            raise RuntimeError(f"{profile['files']}-file progress silent for {profile['largestProgressGapSeconds']:.2f}s")
+        if profile["backfillSeconds"] > max_backfill:
+            raise RuntimeError(f"{profile['files']}-file backfill exceeded the configured latency budget")
+
+
 def run_sizes(repository: Path, output: Path, sizes: tuple[int, ...], timeout: int,
               max_gap: float, max_backfill: float) -> dict:
+    validate_options(sizes, timeout, max_gap, max_backfill)
     output.mkdir(parents=True, exist_ok=False)
     sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repository, text=True).strip()
     report = {"schemaVersion": 1, "sourceSha": sha, "test": TEST, "status": "RUNNING", "profiles": [],
-              "budgets": {"maxProgressGapSeconds": max_gap, "maxBackfillSeconds": max_backfill},
-              "scope": "Synthetic scale fixture through actual Swift A routes; not installed-app UX acceptance"}
+              "requestedSizes": list(sizes),
+              "budgets": {"executionTimeoutSeconds": timeout,
+                          "maxProgressGapSeconds": max_gap, "maxBackfillSeconds": max_backfill},
+              "scope": "Synthetic source-count scale through actual Swift A routes; one event per file, not real-history byte-volume or installed-app UX acceptance"}
     target = output / "report.json"
     def save() -> None:
         target.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     save()
     try:
         for number, count in enumerate(sizes):
+            report["runningSize"] = count
+            save()
             env = os.environ.copy()
             env["TOKENBAR_BACKFILL_FILE_COUNT"] = str(count)
             # The XCTest owns fresh temporary database roots and all routing.
@@ -80,11 +105,10 @@ def run_sizes(repository: Path, output: Path, sizes: tuple[int, ...], timeout: i
             profile["log"] = log.name
             report["profiles"].append(profile)
             save()
-            if profile["largestProgressGapSeconds"] > max_gap:
-                raise RuntimeError(f"{count}-file progress silent for {profile['largestProgressGapSeconds']:.2f}s")
-            if profile["backfillSeconds"] > max_backfill:
-                raise RuntimeError(f"{count}-file backfill exceeded the configured latency budget")
+            validate_profiles(report["profiles"], sizes[:number + 1], max_gap, max_backfill)
+        validate_profiles(report["profiles"], sizes, max_gap, max_backfill)
         report["status"] = "PASS"
+        report.pop("runningSize", None)
     except Exception as error:
         report["status"] = "FAIL"
         report["error"] = str(error)
@@ -102,10 +126,10 @@ def main() -> None:
     parser.add_argument("--max-backfill-seconds", type=float, default=600)
     parser.add_argument("--output", type=Path, default=Path("backfill-scale-evidence"))
     args = parser.parse_args()
-    if any(not 9 <= value <= 8192 for value in args.sizes) or len(set(args.sizes)) != len(args.sizes):
-        parser.error("sizes must be unique and in 9...8192")
-    if min(args.timeout, args.max_progress_gap, args.max_backfill_seconds) <= 0:
-        parser.error("execution deadline and budgets must be positive")
+    try:
+        validate_options(tuple(args.sizes), args.timeout, args.max_progress_gap, args.max_backfill_seconds)
+    except ValueError as error:
+        parser.error(str(error))
     repository = Path(__file__).resolve().parents[1]
     report = run_sizes(repository, args.output.resolve(), tuple(args.sizes), args.timeout,
                        args.max_progress_gap, args.max_backfill_seconds)

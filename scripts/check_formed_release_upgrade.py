@@ -33,6 +33,8 @@ OVERRIDES = dict(zip(("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR", "CODEX_TOKEN_BAR_TAUR
 INJECTION = ("tauri-app/src-tauri/src/lib.rs", "tauri-app/src-tauri/Cargo.toml",
     "tauri-app/src-tauri/src/formed_release_probe.rs", "tauri-app/src-tauri/examples/formed-release-probe.rs")
 PREFIX = "TOKENBAR_FORMED_REPORT "
+SCENARIOS = ("committed", "interrupted")
+PHASES = ("resume", "reopen")
 EXAMPLE = '''fn main() {
     let args: Vec<_> = std::env::args_os().collect();
     if args.len()!=3 { eprintln!("required root and phase"); std::process::exit(2); }
@@ -126,6 +128,74 @@ def parse_report(text: str, phase: str, release: str, scenario: str) -> dict:
     return value
 
 
+def validate_matrix(results: list[dict]) -> None:
+    expected = {(scenario, phase) for scenario in SCENARIOS for phase in PHASES}
+    actual = [(item.get("scenario"), item.get("phase")) for item in results]
+    if len(actual) != len(expected) or set(actual) != expected:
+        raise ValueError("Every committed/interrupted resume and reopen must produce one result")
+    failed = [item for item in results if item.get("status") != "PASS"]
+    if failed:
+        raise ValueError("Historical state checks failed: " + "; ".join(
+            f"{item.get('scenario')}/{item.get('phase')}: {item.get('error', 'not passed')}" for item in failed))
+
+
+def run_scenario(repository: Path, release: str, scenario: str, root: Path, base: Path,
+                 bins: dict[str, Path], output: Path) -> list[dict]:
+    root.mkdir()
+    (root / ".formed-release-fixture").write_text("synthetic-only-v1\n")
+    env = probe_environment(base)
+    for key, slug in OVERRIDES.items():
+        path = root / slug; path.mkdir(); env[key] = str(path)
+    results = []
+    try:
+        execute([str(bins["release"]), str(root), scenario], repository, env,
+                output / (scenario+"-release.log"), expected=86, timeout=300)
+        state = json.loads((root / "formed-state.json").read_text(encoding="utf-8"))
+        if (state.get("producerVersion") != release or state.get("cfgTest") is not False
+                or state.get("phase") != scenario or not isinstance(state.get("proofs"), dict)
+                or not state["proofs"] or state.get("formedExact") is not (scenario == "committed")
+                or state.get("formedB") is not (scenario == "committed")):
+            raise ValueError("Released binary failed to create the required proved, populated production state")
+        quota = Path(state["legacyQuota"]).resolve(strict=True)
+        if not quota.is_relative_to(root.resolve()) or not quota.is_file():
+            raise ValueError("Released quota source escapes the disposable fixture")
+        shutil.copyfile(root / "formed-state.json", output / (scenario+"-formed-state.json"))
+        if scenario == "interrupted":
+            execute([sys.executable, "-c", LATE_QUOTA, str(quota)], repository, env,
+                    output / "interrupted-late-quota.log", timeout=30)
+            wal = Path(str(quota)+"-wal")
+            if not wal.is_file() or wal.stat().st_size == 0:
+                raise ValueError("Late observation was not left committed in a nonempty source WAL")
+        for phase in PHASES:
+            try:
+                text = execute([str(bins["candidate"]), str(root), phase], repository, env,
+                    output / (scenario+"-"+phase+".log"), timeout=300)
+                results.append(parse_report(text, phase, release, scenario))
+            except Exception as error:
+                results.append({"status": "FAIL", "scenario": scenario, "phase": phase, "error": str(error)})
+    except Exception as error:
+        # A failed producer leaves both required phases unverified. They must
+        # never be silently omitted or treated as passing skipped work.
+        results = [{"status": "FAIL", "scenario": scenario, "phase": phase,
+                    "error": "Producer/preparation failed: " + str(error)} for phase in PHASES]
+    finally:
+        # Preserve the entire synthetic state even when an intermediate phase
+        # fails. This is app data created in this isolated run, never user data.
+        shutil.make_archive(str(output / (scenario+"-synthetic-state")), "zip", root)
+    return results
+
+
+def collect_scenarios(operation, report: dict, save) -> None:
+    for scenario in SCENARIOS:
+        try:
+            report["scenarios"].extend(operation(scenario))
+        except Exception as error:
+            report["scenarios"].extend({"status": "FAIL", "scenario": scenario, "phase": phase,
+                "error": str(error)} for phase in PHASES)
+        save()
+    validate_matrix(report["scenarios"])
+
+
 def external_temporary_base(candidates: list[Path], home: Path) -> Path:
     """Select an existing OS/runner temp location outside any real home.
 
@@ -153,7 +223,9 @@ def run(repository: Path, release: str, output: Path) -> dict:
     old = pinned_revision(repository, release)
     candidate = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repository, text=True).strip()
     report = {"schemaVersion": 1, "release": release, "releaseSha": old, "candidateSha": candidate,
-              "status": "RUNNING", "scenarios": [], "scope": "Actual Rust production; native Swift uses separate gates"}
+              "status": "RUNNING", "scenarios": [],
+              "requiredScenarios": list(SCENARIOS), "requiredPhases": list(PHASES),
+              "scope": "Actual Rust production; this is not native Swift formed-release validation"}
     def save():
         (output / "report.json").write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8")
     save()
@@ -184,34 +256,14 @@ def run(repository: Path, release: str, output: Path) -> dict:
                 executable = "formed-release-probe" + (".exe" if os.name == "nt" else "")
                 bins[label] = scratch / (label + (".exe" if os.name == "nt" else ""))
                 shutil.copy2(target / "debug/examples" / executable, bins[label])
-            for scenario in ("committed", "interrupted"):
-                root = scratch / scenario; root.mkdir()
-                (root / ".formed-release-fixture").write_text("synthetic-only-v1\n")
-                env = probe_environment(base)
-                for key, slug in OVERRIDES.items():
-                    path = root / slug; path.mkdir(); env[key] = str(path)
-                execute([str(bins["release"]), str(root), scenario], repository, env,
-                    output / (scenario+"-release.log"), expected=86, timeout=300)
-                state = json.loads((root / "formed-state.json").read_text(encoding="utf-8"))
-                if state.get("producerVersion") != release or state.get("cfgTest") is not False or not state.get("proofs"):
-                    raise ValueError("Released binary failed to create a proved, populated production state")
-                shutil.copyfile(root / "formed-state.json", output / (scenario+"-formed-state.json"))
-                if scenario == "interrupted":
-                    execute([sys.executable, "-c", LATE_QUOTA, state["legacyQuota"]], repository, env,
-                            output / "interrupted-late-quota.log", timeout=30)
-                    if not Path(state["legacyQuota"]+"-wal").is_file():
-                        raise ValueError("Late observation was not left committed in a real source WAL")
-                for phase in ("resume", "reopen"):
-                    text = execute([str(bins["candidate"]), str(root), phase], repository, env,
-                        output / (scenario+"-"+phase+".log"), timeout=300)
-                    report["scenarios"].append(parse_report(text, phase, release, scenario)); save()
-                shutil.make_archive(str(output / (scenario+"-synthetic-state")), "zip", root)
+            collect_scenarios(lambda scenario: run_scenario(repository, release, scenario,
+                scratch / scenario, base, bins, output), report, save)
             report["status"] = "PASS"
         except Exception as error:
             report["status"] = "FAIL"; report["error"] = str(error)
             # Preserve a failed state, not just its last error. Exclude source/
             # build artifacts and executable binaries; there is no user data.
-            for scenario in ("committed", "interrupted"):
+            for scenario in SCENARIOS:
                 if (scratch / scenario).exists():
                     shutil.make_archive(str(output / (scenario+"-failed-state")), "zip", scratch / scenario)
             raise

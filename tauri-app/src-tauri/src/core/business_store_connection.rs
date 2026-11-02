@@ -40,6 +40,8 @@ impl StoreConnection {
     }
 
     pub(crate) fn bound(raw: Connection, binding: StoreSqlBinding) -> Result<Self> {
+        #[cfg(all(feature = "business-store-fixture", not(test)))]
+        let _scope = crate::core::usage::token_count_jsonl::measure_source_count_scope("connection.bind");
         let prefix = binding.prefix().to_owned();
         let namespace = binding.namespace().clone();
         // temp_store must be selected before the logical catalog views are

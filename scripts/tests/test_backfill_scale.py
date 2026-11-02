@@ -27,6 +27,29 @@ class ScaleEvidenceTests(unittest.TestCase):
     def test_rejects_accounting_progress_and_timing_changes(self):
         for field, value in (('tokens', 1637), ('events', 12), ('files', 12), ('parsed', 26),
                              ('complete', False), ('monotonic', False), ('backfillSeconds', float('nan')),
-                             ('largestProgressGapSeconds', -1), ('totalSeconds', float('inf'))):
+                             ('largestProgressGapSeconds', -1), ('totalSeconds', float('inf')),
+                             ('bootstrapSeconds', True)):
             with self.subTest(field=field), self.assertRaises(ValueError):
                 module.parse_profile(self.fixture(**{field: value}), 13)
+
+    def test_empty_duplicate_and_nonfinite_budgets_cannot_bypass_scale_gate(self):
+        module.validate_options((13, 128, 512, 4124), 1500, 30, 600)
+        invalid = [((), 1500, 30, 600), ((13, 13), 1500, 30, 600),
+                   ((13,), 1500, float('nan'), 600), ((13,), 1500, 30, float('inf')),
+                   ((13,), 0, 30, 600), ((13,), True, 30, 600), ((13.0,), 1500, 30, 600)]
+        for options in invalid:
+            with self.subTest(options=options), self.assertRaises(ValueError):
+                module.validate_options(*options)
+
+    def test_partial_or_over_budget_scale_results_cannot_pass(self):
+        profiles = [dict(files=size, largestProgressGapSeconds=.2, backfillSeconds=2)
+                    for size in (13, 128, 512, 4124)]
+        module.validate_profiles(profiles, (13, 128, 512, 4124), 30, 600)
+        for broken in (profiles[:-1], profiles[::-1], profiles + [profiles[0]]):
+            with self.subTest(profiles=broken), self.assertRaises(ValueError):
+                module.validate_profiles(broken, (13, 128, 512, 4124), 30, 600)
+        for field, value in [('largestProgressGapSeconds', 30.1), ('backfillSeconds', 600.1)]:
+            changed = [dict(profile) for profile in profiles]
+            changed[-1][field] = value
+            with self.subTest(field=field), self.assertRaises(RuntimeError):
+                module.validate_profiles(changed, (13, 128, 512, 4124), 30, 600)

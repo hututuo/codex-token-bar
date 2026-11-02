@@ -4,6 +4,66 @@ import test from "node:test";
 import { withSsrModules } from "../test/ssrHarness.mjs";
 import { LONG_RECENT_POINT_COUNT } from "../timeSeriesTimeline.ts";
 
+test("a newer light summary cannot prevent the first completed full canvas from publishing", async () => {
+  await withSsrModules(async (load) => {
+    const { mergeUsageSummary, mergePreciseDashboard } = await load("/src/state/dashboardMergers.ts");
+    const { initialDashboardState } = await load("/src/state/dashboardDefaults.ts");
+    const cached = {
+      ...initialDashboardState.dashboard,
+      homeIdentity: "fixture-home",
+      exactGeneration: "100",
+      dashboardRevision: "1000",
+      aggregateExactGeneration: "100",
+      aggregatePublishedGeneration: "100",
+      settledThrough: "2026-11-01T17:00:00Z",
+      preciseRecentUsageCoveredAt: "2026-11-01T17:01:00Z",
+      preciseRecentUsageFresh: false,
+      stats: { ...initialDashboardState.dashboard.stats, totalTokens: 100 },
+    };
+    const current = mergeUsageSummary({ ...initialDashboardState, dashboard: cached }, {
+      homeIdentity: "fixture-home",
+      exactGeneration: "102",
+      dashboardRevision: "1002",
+      observedThrough: "2026-11-01T17:06:00Z",
+      generatedAt: "2026-11-01T17:06:10Z",
+      totalTokens: 120,
+      todayTokens: 20,
+      todayRequests: 2,
+      todayModelBreakdowns: [],
+    });
+    const full = {
+      ...cached,
+      exactGeneration: "101",
+      dashboardRevision: "1001",
+      aggregateExactGeneration: "101",
+      aggregatePublishedGeneration: "101",
+      settledThrough: "2026-11-01T17:05:00Z",
+      preciseRecentUsageCoveredAt: "2026-11-01T17:05:30Z",
+      preciseRecentUsageFresh: true,
+      cacheHitRanking: [{ threadId: "fixture-thread", cacheHitRate: 0.75 }],
+      stats: { ...cached.stats, totalTokens: 110 },
+    };
+    const next = mergePreciseDashboard(current, full);
+    assert.equal(next.dashboard.preciseRecentUsageFresh, true);
+    assert.deepEqual(next.dashboard.cacheHitRanking, full.cacheHitRanking);
+    assert.equal(next.dashboard.aggregateExactGeneration, "101");
+    assert.equal(next.dashboard.exactGeneration, "102");
+    assert.equal(next.dashboard.dashboardRevision, "1002");
+    assert.equal(next.dashboard.usageSummary.totalTokens, 120);
+    assert.equal(next.dashboard.stats.totalTokens, 120);
+    assert.equal(mergePreciseDashboard(next, { ...cached, preciseRecentUsageFresh: true }), next,
+      "an actually older full canvas must still be rejected");
+    const legacyCurrent = mergeUsageSummary({
+      ...initialDashboardState,
+      dashboard: { ...cached, aggregateExactGeneration: null, aggregatePublishedGeneration: null },
+    }, current.dashboard.usageSummary);
+    const legacyNext = mergePreciseDashboard(legacyCurrent, full);
+    assert.equal(legacyNext.dashboard.preciseRecentUsageFresh, true,
+      "a legacy startup cache without aggregate lineage must not borrow the light generation");
+    assert.deepEqual(legacyNext.dashboard.cacheHitRanking, full.cacheHitRanking);
+  });
+});
+
 test("mergeQuota aligns quota history by startUnix instead of array position", async () => {
   return withSsrModules(async (load) => {
     const { mergeQuota } = await load("/src/state/dashboardMergers.ts");

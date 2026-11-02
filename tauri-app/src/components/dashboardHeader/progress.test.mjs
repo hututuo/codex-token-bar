@@ -82,6 +82,26 @@ test("single-file reconciliation and waiting remain distinct from migration", ()
   })), "reconciliation");
 });
 
+test("session link repair starts its own count after completed model backfill", () => {
+  const model = presentDashboardHeaderProgress(progress({
+    phase: "backfillingModel", completed: 13, total: 13, fraction: 1,
+    message: "历史模型补全完成",
+  }));
+  const links = presentDashboardHeaderProgress(progress({
+    phase: "repairingLinks", completed: 0, total: 13, fraction: 0,
+    message: "正在检查历史会话关联；保留原有用量",
+  }));
+  assert.equal(model?.stage, "historyModelBackfill");
+  assert.equal(model?.countLabel, "13/13");
+  assert.equal(links?.stage, "historyLinkRepair");
+  assert.equal(links?.phaseLabel, "历史会话关联检查");
+  assert.equal(links?.countLabel, "0/13");
+  assert.equal(links?.fraction, 0);
+  assert.equal(links?.showsProgress, true);
+  assert.equal(links?.isReady, false);
+  assert.doesNotMatch(links?.text ?? "", /历史模型补全/);
+});
+
 test("publishing exposes a determinate bar and completion returns to freshness", () => {
   const publishing = presentDashboardHeaderProgress(progress({
     phase: "publishing",

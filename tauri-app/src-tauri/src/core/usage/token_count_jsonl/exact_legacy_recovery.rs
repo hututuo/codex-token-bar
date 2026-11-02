@@ -160,33 +160,42 @@ pub(super) fn bootstrap_at(
     cache_root: &Path,
     mut import: impl FnMut(&Path, &[PathBuf], &[(PathBuf, String)]) -> Result<(), String>,
 ) -> Result<(), String> {
-    let mut groups: HashMap<PathBuf, Inputs> = HashMap::new();
+    let mut groups: std::collections::BTreeMap<PathBuf, Inputs> = std::collections::BTreeMap::new();
+    let mut failures = Vec::new();
     for source_root in [current_root, cache_root] {
         let mut inputs = Vec::new();
         let mut manifests = Vec::new();
-        collect_exact_legacy_inputs(source_root, current_root, &mut inputs, &mut manifests)?;
+        if let Err(error) = collect_exact_legacy_inputs(source_root, current_root, &mut inputs, &mut manifests) {
+            failures.push(format!("{}：{error}", source_root.display()));
+        }
         for manifest_path in manifests {
-            let digest = manifest_digest(&manifest_path)?;
-            let main = PathBuf::from(
-                manifest_path
-                    .to_str()
-                    .ok_or("旧迁移清单路径无法编码")?
-                    .strip_suffix(SCHEMA11_MIGRATION_SUFFIX)
-                    .ok_or("旧迁移清单文件名无效")?,
-            );
-            let relative = main.strip_prefix(source_root).map_err(|e| e.to_string())?;
-            let target = current_root.join(relative);
-            let source = resolve_manifest(&main, &manifest_path)?;
-            inputs.retain(|(_, path)| path != &main);
-            inputs.push((target.clone(), source));
-            groups
-                .entry(target)
-                .or_default()
-                .manifests
-                .push((manifest_path, digest));
+            let result = (|| -> Result<(), String> {
+                let digest = manifest_digest(&manifest_path)?;
+                let main = PathBuf::from(
+                    manifest_path
+                        .to_str()
+                        .ok_or("旧迁移清单路径无法编码")?
+                        .strip_suffix(SCHEMA11_MIGRATION_SUFFIX)
+                        .ok_or("旧迁移清单文件名无效")?,
+                );
+                let relative = main.strip_prefix(source_root).map_err(|e| e.to_string())?;
+                let target = current_root.join(relative);
+                let source = resolve_manifest(&main, &manifest_path)?;
+                inputs.retain(|(_, path)| path != &main);
+                inputs.push((target.clone(), source));
+                groups
+                    .entry(target)
+                    .or_default()
+                    .manifests
+                    .push((manifest_path.clone(), digest));
+                Ok(())
+            })();
+            if let Err(error) = result { failures.push(format!("{}：{error}", manifest_path.display())); }
         }
         for (target, source) in inputs {
-            add_source(groups.entry(target).or_default(), source)?;
+            if let Err(error) = add_source(groups.entry(target.clone()).or_default(), source) {
+                failures.push(format!("{}：{error}", target.display()));
+            }
         }
         if cache_root == current_root {
             break;
@@ -197,12 +206,28 @@ pub(super) fn bootstrap_at(
     // Discover/validate the complete batch before importing any Exact namespace.
     // The existing importer verifies SQLite backups and source proofs; these
     // additional proofs prevent a changed receipt from completing activation.
+    // Invalid discovery may have hidden a competing candidate. Report all
+    // manifest/root faults together, but never import a partial discovery set.
+    finish_batch("Exact 来源发现", std::mem::take(&mut failures))?;
     for (target, group) in groups {
-        verify_manifests(&group.manifests)?;
-        import(&target, &group.sources, &group.manifests)?;
-        verify_manifests(&group.manifests)?;
+        let result = crate::core::business_migration_log::step("exact-legacy-group", &target.display().to_string(), || {
+            verify_manifests(&group.manifests)?;
+            import(&target, &group.sources, &group.manifests)?;
+            verify_manifests(&group.manifests)
+        });
+        if let Err(error) = result { failures.push(format!("{}：{error}", target.display())); }
     }
-    Ok(())
+    finish_batch("Exact 旧账导入", failures)
+}
+
+fn finish_batch(subject: &str, failures: Vec<String>) -> Result<(), String> {
+    if failures.is_empty() { return Ok(()); }
+    for error in &failures {
+        crate::core::business_migration_log::event("exact-legacy-failure", "failed",
+            serde_json::json!({"stage":subject,"error":error}));
+    }
+    Err(format!("{subject}发现 {} 项错误；全部来源和快照保留，停止激活：\n{}",
+        failures.len(), failures.join("\n")))
 }
 
 #[cfg(test)]

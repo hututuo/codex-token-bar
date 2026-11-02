@@ -7,6 +7,21 @@ import SwiftUI
 @MainActor
 struct BusinessRecoveryView: View {
     let onRetry: () -> Void
+
+    var body: some View {
+        HStack {
+            Button("重试账本准备", action: onRetry)
+            Button("检查软件更新") { ApplicationSoftwareUpdater.shared.controller.updater.checkForUpdates() }
+            Button("退出") { NSApp.terminate(nil) }
+        }
+    }
+}
+
+/// The same read-only diagnostic controls remain mounted while preparation
+/// runs and when it fails. They never start a second migration or installer.
+@MainActor
+struct BusinessMigrationDiagnosticsView: View {
+    let isPreparing: Bool
     @State private var exporting = false
     @State private var detailsVisible = false
     @State private var preview = "正在读取诊断…"
@@ -15,12 +30,8 @@ struct BusinessRecoveryView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Button("重试账本准备", action: onRetry)
-                Button("检查软件更新") { ApplicationSoftwareUpdater.shared.controller.updater.checkForUpdates() }
-                Button(exporting ? "正在导出…" : "导出完整迁移日志") { export() }.disabled(exporting)
-                Button("退出") { NSApp.terminate(nil) }
-            }
+            Button(exporting ? "正在导出…" : "导出完整迁移日志") { export() }.disabled(exporting)
+                .accessibilityIdentifier("business-migration-export")
             if let message { Text(message).font(.caption).textSelection(.enabled) }
             if let persistenceError {
                 Text("日志未能完整写入磁盘：\(persistenceError)。下方仅保留最近的内存记录，请先保存。")
@@ -34,16 +45,20 @@ struct BusinessRecoveryView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }.frame(maxHeight: 230)
             }
-        }.task {
-            do {
-                let text = try await Task.detached(priority: .utility) {
-                    try BusinessMigrationDiagnostics.preview(at: BusinessMigrationDiagnostics.productionDirectory())
-                }.value
-                preview = text
-            } catch { preview = "读取诊断失败：\(error.localizedDescription)" }
-            persistenceError = BusinessMigrationDiagnostics.currentPersistenceError
-            if persistenceError != nil { preview = BusinessMigrationDiagnostics.currentMemoryPreview }
+        }.task(id: isPreparing) {
+            repeat {
+                await refreshPreview()
+                guard isPreparing, !Task.isCancelled else { return }
+                do { try await Task.sleep(for: .seconds(1)) }
+                catch { return }
+            } while !Task.isCancelled
         }
+    }
+    private func refreshPreview() async {
+        let snapshot = await BusinessMigrationDiagnostics.readPreview()
+        guard !Task.isCancelled else { return }
+        persistenceError = snapshot.persistenceError
+        preview = snapshot.text
     }
     private func export() {
         guard !exporting else { return }

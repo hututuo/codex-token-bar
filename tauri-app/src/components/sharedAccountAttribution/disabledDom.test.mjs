@@ -3,6 +3,58 @@ import test from "node:test";
 import { Window } from "happy-dom";
 import { withSsrModules } from "../../test/ssrHarness.mjs";
 
+test("publishing attribution to a parent state settles and only clears it on unmount", async () => {
+  const window = new Window({ url: "http://localhost/" });
+  const restoreGlobals = installDomGlobals(window);
+  const realNow = Date.now;
+  let clock = realNow();
+  Date.now = () => ++clock;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  try {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    await withSsrModules(async (load) => {
+      const { QuotaStrip } = await load("/src/components/QuotaStrip.tsx");
+      const { emptyQuotaSnapshot } = await load("/src/api/fallback/quotaFallback.ts");
+      const container = window.document.createElement("div");
+      window.document.body.append(container);
+      const root = createRoot(container);
+      const publications = [];
+      const snapshot = emptyQuotaSnapshot();
+      function Parent() {
+        const [, setResult] = React.useState(null);
+        const publish = React.useCallback((value) => {
+          publications.push(value);
+          // Bound the broken implementation so the regression fails without
+          // locking up the test runner in the same loop as the real page.
+          if (publications.length < 12) setResult(value);
+        }, []);
+        return React.createElement(QuotaStrip, {
+          snapshot, sourceHomeIdentity: "attribution-loop-fixture", onAttributionChange: publish,
+          clientPlanLabels: { codex: "计划待读取" },
+        });
+      }
+      try {
+        await React.act(async () => root.render(React.createElement(Parent)));
+        assert.ok(publications.length < 12, "attribution feedback did not settle");
+        assert.equal(publications.filter(value => value === null).length, 0,
+          "changing a result must not publish an intermediate unmount");
+        const before = publications.length;
+        await React.act(async () => root.unmount());
+        assert.equal(publications.length, before + 1);
+        assert.equal(publications.at(-1), null);
+      } finally {
+        await React.act(async () => root.unmount());
+      }
+    });
+  } finally {
+    Date.now = realNow;
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    restoreGlobals();
+    window.close();
+  }
+});
+
 test("disabled attribution renders no trigger and performs no segment or bucket storage writes", async () => {
   const window = new Window({ url: "http://localhost/" });
   const restoreGlobals = installDomGlobals(window);

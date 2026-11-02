@@ -6,6 +6,7 @@ export type DashboardHeaderProgressStage =
   | "idle"
   | "structureUpgrade"
   | "historyModelBackfill"
+  | "historyLinkRepair"
   | "reconciliation"
   | "waiting"
   | "preparing"
@@ -31,6 +32,7 @@ const phaseLabels: Record<DashboardHeaderProgressStage, string> = {
   idle: "本地统计",
   structureUpgrade: "索引升级",
   historyModelBackfill: "历史模型补全",
+  historyLinkRepair: "历史会话关联检查",
   reconciliation: "单文件对账",
   waiting: "等待精确统计",
   preparing: "准备精确统计",
@@ -84,6 +86,8 @@ export function dashboardHeaderProgressStage(
     case "backfillingmodel":
     case "backfillmodel":
       return "historyModelBackfill";
+    case "repairinglinks":
+      return "historyLinkRepair";
     case "migrating":
     case "migration":
       return modelBackfill ? "historyModelBackfill" : "structureUpgrade";
