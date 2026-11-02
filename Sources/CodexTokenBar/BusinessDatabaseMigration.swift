@@ -104,10 +104,20 @@ final class BusinessDatabaseMigration {
         // The application window/event loop exists before this operation is
         // requested. No business owner starts until this background gate ends.
         try await Task.detached(priority: .utility) {
-            do { try migrate(configuration, onProgress: onProgress) }
+            let diagnostics = RecoveryDiagnostics(root: configuration.support.appendingPathComponent("recovery-diagnostics/v1"))
+            defer { diagnostics?.close() }
+            do {
+                try migrate(configuration, onProgress: { progress in
+                    diagnostics?.record(RecoveryDiagnostics.Phase(rawValue: progress.stage.rawValue) ?? .preparing,
+                        completed: progress.completed, total: progress.total)
+                    onProgress(progress)
+                })
+            }
             catch {
+                diagnostics?.record(.failure, code: (error as? SQLiteDatabaseError)?.code)
                 if BusinessSQLiteRoutes.hasPublishedAdmission {
-                    throw PublishedBusinessAdmission.Deferred(message: error.localizedDescription)
+                    throw PublishedBusinessAdmission.Deferred(message: error.localizedDescription,
+                        canRetryAutomatically: LocalRecoveryRetryPolicy.canRetry(error))
                 }
                 throw error
             }
@@ -518,25 +528,53 @@ final class BusinessDatabaseMigration {
     }
     private static func discover(_ c: Configuration, fileManager: FileManager) throws -> [Input] {
         var found: [Input] = []
+        var enumeratedRoots = Set<String>()
         for root in [c.support, c.exact] {
             guard try legacyDirectoryExists(root) else { continue }
+            let canonicalRoot = root.resolvingSymlinksInPath().standardizedFileURL.path
+            guard enumeratedRoots.insert(canonicalRoot).inserted else { continue }
             var enumerationError: Error?
             guard let enumerator = fileManager.enumerator(at: root.resolvingSymlinksInPath(), includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey], options: [.skipsHiddenFiles], errorHandler: { _, error in
                 enumerationError = error
                 return false
             }) else { throw Failure.unsafeInput(root.path) }
             while let discovered = enumerator.nextObject() as? URL {
+                let entryPath = discovered.standardizedFileURL.path
+                guard entryPath.hasPrefix(canonicalRoot + "/") else { throw Failure.unsafeInput(discovered.path) }
+                let relative = String(entryPath.dropFirst(canonicalRoot.count + 1))
+                let logicalEntry = root.appendingPathComponent(relative)
+                let logicalPath = logicalEntry.standardizedFileURL.path
+                let backupRoot = c.backups.standardizedFileURL.path
+                if logicalPath == backupRoot || logicalPath.hasPrefix(backupRoot + "/") {
+                    enumerator.skipDescendants(); continue
+                }
+                if root.standardizedFileURL == c.support.standardizedFileURL,
+                   root.standardizedFileURL != c.exact.standardizedFileURL {
+                    // Only the supported root files and modeltrace directory
+                    // contain legacy A inputs. Never descend diagnostics, B,
+                    // exports, vendor trees, or exact (scanned once below).
+                    let sidecar = ["-wal", "-shm", "-journal"].first { logicalPath.hasSuffix($0) }
+                        .map { URL(fileURLWithPath: String(logicalPath.dropLast($0.count))) }
+                    let supportedFamily = c.specification(for: logicalEntry) != nil
+                        || sidecar.flatMap { c.specification(for: $0) } != nil
+                    if relative != "modeltrace" && !supportedFamily {
+                        enumerator.skipDescendants(); continue
+                    }
+                }
+                if root.standardizedFileURL == c.exact.standardizedFileURL,
+                   relative.contains("/"), !relative.hasPrefix("staging/") {
+                    enumerator.skipDescendants(); continue
+                }
                 // DirectoryEnumerator may return /private/var URLs for a /var
                 // root. Keep logical registry paths in the configured spelling;
                 // derive only the relative child from the existing parent.
                 let discoveredValues = try discovered.resourceValues(forKeys: [.isSymbolicLinkKey])
                 guard discoveredValues.isSymbolicLink != true else { throw Failure.unsafeInput(discovered.path) }
-                let canonicalRoot = root.resolvingSymlinksInPath().path
                 let discoveredPath = discovered.resolvingSymlinksInPath().path
                 guard discoveredPath.hasPrefix(canonicalRoot + "/") else { throw Failure.unsafeInput(discovered.path) }
                 let file = root.appendingPathComponent(String(discoveredPath.dropFirst(canonicalRoot.count + 1)))
                 // Backups and the active A/B files are never rediscovered as inputs.
-                if file.standardizedFileURL.path.hasPrefix(c.backups.standardizedFileURL.path) { enumerator.skipDescendants(); continue }
+                if file.standardizedFileURL.path == backupRoot || file.standardizedFileURL.path.hasPrefix(backupRoot + "/") { enumerator.skipDescendants(); continue }
                 if file.standardizedFileURL.path.hasPrefix(c.exact.standardizedFileURL.path + "/"), file.lastPathComponent.hasSuffix(".schema11-migration.json") {
                     let main = URL(fileURLWithPath: String(file.path.dropLast(".schema11-migration.json".count)))
                     let source = try recoverableLegacyInput(main: main, manifest: file, fileManager: fileManager)

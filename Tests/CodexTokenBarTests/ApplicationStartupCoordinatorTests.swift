@@ -17,6 +17,17 @@ final class ApplicationStartupCoordinatorTests: XCTestCase {
         var count = 0
         func run() throws { count += 1; if count == 1 { throw Failure.interrupted } }
     }
+    private actor TransientAttempts {
+        var count = 0
+        let alwaysFails: Bool
+        init(alwaysFails: Bool = false) { self.alwaysFails = alwaysFails }
+        func run() throws {
+            count += 1
+            if alwaysFails || count == 1 {
+                throw SQLiteDatabaseError(operation: "fixture", code: 5, message: "busy", path: "fixture")
+            }
+        }
+    }
     private func waitFor(_ condition: @MainActor () -> Bool) async {
         for _ in 0..<200 {
             if condition() { return }
@@ -61,6 +72,39 @@ final class ApplicationStartupCoordinatorTests: XCTestCase {
         startup.retry()
         await waitFor { startup.phase == .ready }
         XCTAssertEqual(activations, 1)
+    }
+
+    func testTransientRecoveryRetriesThroughTheSameGateAndActivatesOnlyOnce() async {
+        let attempts = TransientAttempts()
+        var activations = 0
+        let startup = ApplicationStartupCoordinator(prepare: { _ in try await attempts.run() },
+            activate: { activations += 1; return nil }, productionLifecycle: false,
+            retryDelay: { $0 == 0 ? 0.01 : nil })
+        startup.start(); startup.start()
+        await waitFor { startup.phase == .ready }
+        let count = await attempts.count
+        XCTAssertEqual(count, 2)
+        XCTAssertEqual(activations, 1)
+    }
+
+    func testAutomaticRetriesAreBoundedAndNeverRetryUnknownContracts() async {
+        XCTAssertEqual((0..<6).compactMap(LocalRecoveryRetryPolicy.delay), [5, 15, 30, 60, 180, 300])
+        XCTAssertNil(LocalRecoveryRetryPolicy.delay(6))
+        XCTAssertFalse(LocalRecoveryRetryPolicy.canRetry(PublishedBusinessAdmission.Deferred(message: "unknown contract")))
+        XCTAssertFalse(LocalRecoveryRetryPolicy.canRetry(BusinessStoreError.proofMismatch))
+        let attempts = TransientAttempts(alwaysFails: true)
+        let startup = ApplicationStartupCoordinator(prepare: { _ in try await attempts.run() },
+            activate: { XCTFail("Failed recovery cannot activate a writer"); return nil }, productionLifecycle: false,
+            retryDelay: { $0 < 2 ? 0.01 : nil })
+        startup.start()
+        for _ in 0..<200 {
+            if await attempts.count == 3 { break }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        try? await Task.sleep(for: .milliseconds(30))
+        let count = await attempts.count
+        XCTAssertEqual(count, 3)
+        if case .failed = startup.phase {} else { XCTFail("Failure must remain visible after retry budget") }
     }
 
     func testPublishedRecoveryRetryKeepsOneRuntimeAndShowsRecoveryNotice() async throws {

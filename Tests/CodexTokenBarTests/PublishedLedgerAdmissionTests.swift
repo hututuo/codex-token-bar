@@ -40,6 +40,23 @@ final class PublishedLedgerAdmissionTests: XCTestCase {
         return late
     }
 
+    func testUnrelatedSupportTreesAndDiagnosticsAreNotMigrationInputs() throws {
+        let (root, c, quota) = try readyLedger()
+        let export = c.support.appendingPathComponent("exports/user-backup.sqlite")
+        let diagnostics = c.support.appendingPathComponent("recovery-diagnostics/v1")
+        try FileManager.default.createDirectory(at: export.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: diagnostics, withIntermediateDirectories: true)
+        let bytes = Data("user-owned material".utf8); try bytes.write(to: export)
+        let outside = root.appendingPathComponent("outside"); try bytes.write(to: outside)
+        let link = diagnostics.appendingPathComponent("not-a-ledger.sqlite")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+        try BusinessDatabaseMigration.migrate(c, availableBytes: 0)
+        XCTAssertEqual(try SQLiteDatabaseDriver(url: quota, readOnly: true).readRows("SELECT amount FROM preserved ORDER BY id") { $0.int(0) }, [123, 789])
+        XCTAssertEqual(try Data(contentsOf: export), bytes)
+        XCTAssertEqual(try Data(contentsOf: outside), bytes)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: link.path), outside.path)
+    }
+
     private func assertPriorGenerationAvailable(
         _ c: BusinessDatabaseMigration.Configuration, quota: URL,
         file: StaticString = #filePath, line: UInt = #line

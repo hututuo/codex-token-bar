@@ -107,6 +107,10 @@ enum BusinessSQLiteRoutes {
         state.lock.lock(); defer { state.lock.unlock() }
         return state.publishedAdmission
     }
+    static var isActive: Bool {
+        state.lock.lock(); defer { state.lock.unlock() }
+        return state.configuration != nil
+    }
     static func requireAccess(to store: BusinessSQLiteStore, readOnly: Bool) throws {
         state.lock.lock(); defer { state.lock.unlock() }
         if state.blockedReads.contains(store.id) || (!readOnly && (state.blocksAllWriters || state.blockedWrites.contains(store.id))) {

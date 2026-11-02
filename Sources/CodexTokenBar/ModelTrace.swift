@@ -85,6 +85,9 @@ struct ModelTraceHistoryStore: Sendable {
         guard let owner = BusinessSQLiteRoutes.store(for: url) else { return BusinessSQLiteRoutes.hasPublishedAdmission }
         return BusinessSQLiteRoutes.writesArePaused(for: owner)
     }
+    var hasPublishedOwner: Bool {
+        BusinessSQLiteRoutes.store(for: url).map(BusinessSQLiteRoutes.isRegistered) ?? false
+    }
 
     // A verified owner can remain readable while a different import is pending.
     // This path neither creates missing tables nor opens a writer connection.
@@ -96,7 +99,7 @@ struct ModelTraceHistoryStore: Sendable {
         try database().execute("INSERT INTO modeltrace_runs(scope,id,started_at,payload) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload WHERE scope=excluded.scope", bindings: [.text(scope), .text(run.id), .int64(Int64(run.startedAt)), .text(json)])
     }
     func history(scope: String) throws -> [ModelTrace.Run] {
-        if writesArePaused {
+        if hasPublishedOwner || writesArePaused {
             return try publishedReader().withConnection { db in try db.readTransaction { tx in
                 guard try tx.readRows("SELECT 1 FROM sqlite_master WHERE type='table' AND name='modeltrace_runs'", map: { $0.int(0) }).first == 1 else { return [] }
                 return try tx.readRows("SELECT payload FROM modeltrace_runs WHERE scope=? ORDER BY started_at DESC,id DESC LIMIT 100", bindings: [.text(scope)]) { statement in

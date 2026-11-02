@@ -96,9 +96,10 @@ jobs:
       - name: Run actual Swift backfill sizes
         run: |
           set -euo pipefail
-          printf '%s\n' 'command=python3 scripts/check_backfill_scale.py --sizes 13 128 512 4124 --timeout 1200 --max-progress-gap 30 --max-backfill-seconds 600 --output backfill-scale-results' >> backfill-scale-evidence/toolchain.txt
+          printf '%s\n' 'command=python3 scripts/check_backfill_scale.py --sizes 13 128 512 4124 --pressure --timeout 1200 --max-progress-gap 30 --max-backfill-seconds 600 --output backfill-scale-results' >> backfill-scale-evidence/toolchain.txt
           python3 scripts/check_backfill_scale.py \
             --sizes 13 128 512 4124 \
+            --pressure \
             --timeout 1200 \
             --max-progress-gap 30 \
             --max-backfill-seconds 600 \

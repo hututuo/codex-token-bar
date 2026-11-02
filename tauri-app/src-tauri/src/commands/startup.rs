@@ -44,8 +44,21 @@ fn schedule_business_startup(
 ) {
     startup_trace::mark("business store bootstrap scheduled");
     tauri::async_runtime::spawn(async move {
+        let mut retry_count = 0;
+        loop {
         let result =
-            tauri::async_runtime::spawn_blocking(crate::core::business_store_route::bootstrap)
+            tauri::async_runtime::spawn_blocking(move || {
+                use crate::core::recovery_diagnostics::{Phase,RecoveryDiagnostics};
+                let diagnostics=crate::core::business_store_route::container_path().ok()
+                    .and_then(|path|path.parent().map(|root|RecoveryDiagnostics::start(&root.join("recovery-diagnostics").join("v1"))));
+                if let Some(log)=&diagnostics {log.record(Phase::Preparing,0,0,retry_count,None);}
+                let result=crate::core::business_store_route::bootstrap();
+                if let Some(log)=&diagnostics {
+                    log.record(if result.is_ok(){Phase::Ready}else{Phase::Failure},0,0,retry_count,None);
+                    log.close();
+                }
+                result
+            })
                 .await
                 .map_err(|error| format!("本地业务数据初始化任务异常结束：{error}"))
                 .and_then(|result| result);
@@ -68,7 +81,13 @@ fn schedule_business_startup(
             }
             business_startup::BusinessStartupPhase::Preparing => {}
         }
+        let retry = coordinator.plan_automatic_retry();
         let _ = app.emit(BUSINESS_STARTUP_STATE_EVENT, snapshot);
+        let Some((epoch, delay)) = retry else { break };
+        tokio::time::sleep(delay).await;
+        if !coordinator.begin_automatic_retry(epoch) { break; }
+        retry_count += 1;
+        }
     });
 }
 

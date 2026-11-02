@@ -22,6 +22,9 @@ struct CoordinatorState {
     snapshot: BusinessStartupSnapshot,
     job_running: bool,
     initial_job_claimed: bool,
+    retry_epoch: u64,
+    retry_attempt: usize,
+    retry_scheduled: bool,
 }
 
 /// Process-owned readiness coordinator for business container A.
@@ -44,6 +47,9 @@ impl Default for BusinessStartupCoordinator {
                 },
                 job_running: false,
                 initial_job_claimed: false,
+                retry_epoch: 0,
+                retry_attempt: 0,
+                retry_scheduled: false,
             })),
             changed: Arc::new(Notify::new()),
         }
@@ -61,6 +67,7 @@ impl BusinessStartupCoordinator {
             return false;
         }
         state.initial_job_claimed = true;
+        state.retry_epoch = state.retry_epoch.wrapping_add(1);
         state.job_running = true;
         state.snapshot = BusinessStartupSnapshot {
             phase: BusinessStartupPhase::Preparing,
@@ -80,6 +87,9 @@ impl BusinessStartupCoordinator {
             return Err("本地业务数据初始化仅可在失败后重试".into());
         }
         state.job_running = true;
+        state.retry_epoch = state.retry_epoch.wrapping_add(1);
+        state.retry_attempt = 0;
+        state.retry_scheduled = false;
         if state.snapshot.phase != BusinessStartupPhase::ReadyWithPendingRecovery {
             state.snapshot = BusinessStartupSnapshot { phase: BusinessStartupPhase::Preparing, message: None };
         }
@@ -108,10 +118,49 @@ impl BusinessStartupCoordinator {
                 message: Some(message),
             },
         };
+        if state.snapshot.phase == BusinessStartupPhase::Ready {
+            state.retry_attempt = 0;
+            state.retry_scheduled = false;
+        }
         let snapshot = state.snapshot.clone();
         drop(state);
         self.changed.notify_waiters();
         snapshot
+    }
+
+    /// Advisory only: a retry still passes the complete storage gate. String
+    /// matching here never admits a reader/writer or changes an error to Ready.
+    pub(crate) fn plan_automatic_retry(&self) -> Option<(u64, std::time::Duration)> {
+        let mut state = lock(&self.state);
+        let message = state.snapshot.message.as_deref()?.to_ascii_lowercase();
+        let transient = ["database is locked", "database is busy", "database or disk is full", "空间不足"]
+            .iter().any(|hint| message.contains(hint));
+        let delays = [5, 15, 30, 60, 180, 300];
+        if state.job_running || state.retry_scheduled || !transient
+            || !matches!(state.snapshot.phase, BusinessStartupPhase::Error | BusinessStartupPhase::ReadyWithPendingRecovery) {
+            return None;
+        }
+        let seconds = *delays.get(state.retry_attempt)?;
+        state.retry_attempt += 1;
+        state.retry_scheduled = true;
+        Some((state.retry_epoch, std::time::Duration::from_secs(seconds)))
+    }
+
+    pub(crate) fn begin_automatic_retry(&self, epoch: u64) -> bool {
+        let mut state = lock(&self.state);
+        if state.retry_epoch != epoch || state.job_running || !state.retry_scheduled
+            || !matches!(state.snapshot.phase, BusinessStartupPhase::Error | BusinessStartupPhase::ReadyWithPendingRecovery) {
+            return false;
+        }
+        state.retry_scheduled = false;
+        state.retry_epoch = state.retry_epoch.wrapping_add(1);
+        state.job_running = true;
+        if state.snapshot.phase != BusinessStartupPhase::ReadyWithPendingRecovery {
+            state.snapshot = BusinessStartupSnapshot { phase: BusinessStartupPhase::Preparing, message: None };
+        }
+        drop(state);
+        self.changed.notify_waiters();
+        true
     }
 
     pub(crate) fn ensure_ready(&self) -> Result<(), String> {
@@ -259,6 +308,43 @@ mod tests {
         coordinator.finish(Ok(()));
         assert_eq!(coordinator.snapshot().phase, BusinessStartupPhase::Ready);
         assert!(coordinator.ensure_ready().is_ok());
+    }
+
+    #[test]
+    fn automatic_retry_is_bounded_preserves_reads_and_does_not_admit_writers() {
+        let coordinator = BusinessStartupCoordinator::default();
+        assert!(coordinator.begin_initial());
+        for seconds in [5, 15, 30, 60, 180, 300] {
+            coordinator.finish_with_published_reads(Err("SQLite: database is locked".into()), true);
+            let (epoch, delay) = coordinator.plan_automatic_retry().unwrap();
+            assert_eq!(delay.as_secs(), seconds);
+            assert!(coordinator.plan_automatic_retry().is_none());
+            assert!(coordinator.ensure_readable().is_ok());
+            assert!(coordinator.ensure_ready().is_err());
+            assert!(coordinator.begin_automatic_retry(epoch));
+            assert!(!coordinator.begin_automatic_retry(epoch));
+            assert!(coordinator.ensure_readable().is_ok());
+        }
+        coordinator.finish_with_published_reads(Err("database is locked".into()), true);
+        assert!(coordinator.plan_automatic_retry().is_none());
+        assert_eq!(coordinator.snapshot().phase, BusinessStartupPhase::ReadyWithPendingRecovery);
+    }
+
+    #[test]
+    fn manual_retry_invalidates_an_old_timer_and_unknown_failures_do_not_loop() {
+        let coordinator = BusinessStartupCoordinator::default();
+        assert!(coordinator.begin_initial());
+        coordinator.finish(Err("database is busy".into()));
+        let (epoch, _) = coordinator.plan_automatic_retry().unwrap();
+        coordinator.begin_retry().unwrap();
+        assert!(!coordinator.begin_automatic_retry(epoch));
+        coordinator.finish(Ok(()));
+        assert!(!coordinator.begin_automatic_retry(epoch));
+        assert!(coordinator.plan_automatic_retry().is_none());
+        let unknown = BusinessStartupCoordinator::default();
+        unknown.begin_initial();
+        unknown.finish(Err("Unknown schema or mismatching proof; preserved".into()));
+        assert!(unknown.plan_automatic_retry().is_none());
     }
 }
 

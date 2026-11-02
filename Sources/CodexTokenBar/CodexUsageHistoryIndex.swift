@@ -8975,6 +8975,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             _ = try? BusinessStoreFiles.removeCompletedStage(url)
             return
         }
+        // An unregistered physical fallback is not proven to belong to the
+        // published A generation. A filename alone never authorizes unlink.
+        guard !BusinessSQLiteRoutes.isActive else { return }
         try? fileManager.removeItem(at: url)
         try? fileManager.removeItem(atPath: url.path + "-wal")
         try? fileManager.removeItem(atPath: url.path + "-shm")

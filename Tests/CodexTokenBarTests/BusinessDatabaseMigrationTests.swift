@@ -156,7 +156,7 @@ final class BusinessDatabaseMigrationTests: XCTestCase {
         try BusinessDatabaseMigration.migrate(c, availableBytes: 0)
         XCTAssertEqual(try SQLiteDatabaseDriver(url: added).readRows("SELECT COUNT(*) FROM samples") { $0.int(0) }.first!, 2, "After activation the old file is frozen evidence")
     }
-    func testInterruptedBatchMissingSourceFailsAndCanResumeWhenRestored() throws {
+    func testInterruptedBatchMissingSourceAndUnusableBoundBackupFailsUntilRestored() throws {
         let (_, c) = try fixture()
         try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32)
         BusinessSQLiteRoutes.deactivate()
@@ -164,11 +164,16 @@ final class BusinessDatabaseMigrationTests: XCTestCase {
         try SQLiteDatabaseDriver(url: added).execute("CREATE TABLE samples(id INTEGER PRIMARY KEY); INSERT INTO samples VALUES(8)")
         enum Stop: Error { case now }
         XCTAssertThrowsError(try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32, beforeActivation: { throw Stop.now }))
+        let receipt = try XCTUnwrap(attemptReceipts(for: added, configuration: c).first?.1)
+        let backup = URL(fileURLWithPath: receipt.backupPath), savedBackup = URL(fileURLWithPath: receipt.backupPath + ".saved")
         let saved = added.appendingPathExtension("saved")
         try FileManager.default.moveItem(at: added, to: saved)
+        try FileManager.default.moveItem(at: backup, to: savedBackup)
         XCTAssertThrowsError(try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32))
-        XCTAssertNil(BusinessSQLiteRoutes.store(for: added))
+        XCTAssertThrowsError(try SQLiteDatabaseDriver(url: added, readOnly: true).readRows("SELECT id FROM samples") { $0.int(0) },
+            "A registry address is not permission to expose the incomplete owner")
         try FileManager.default.moveItem(at: saved, to: added)
+        try FileManager.default.moveItem(at: savedBackup, to: backup)
         try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32)
         XCTAssertEqual(try SQLiteDatabaseDriver(url: added).readRows("SELECT id FROM samples") { $0.int(0) }.first!, 8)
     }

@@ -41,3 +41,4 @@ pub(crate) mod business_store_route;
 pub(crate) mod business_startup;
 
 pub(crate) mod business_store_recovery;
+pub(crate) mod recovery_diagnostics;

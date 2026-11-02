@@ -74,7 +74,12 @@ final class ExactStagePoolTests: XCTestCase {
         let wanted = [digest + ".sqlite", digest + ".candidate-previous.sqlite"].map { directory.appendingPathComponent($0) }
         let foreign = f.configuration.exact.appendingPathComponent("staging/other-home.sqlite/\(digest).sqlite")
         for path in wanted + [foreign, directory.appendingPathComponent(String(repeating: "c", count: 64) + ".sqlite")] {
-            try BusinessStoreFiles.registerInActiveContainer(try XCTUnwrap(f.configuration.specification(for: path)))
+            let base = try XCTUnwrap(f.configuration.specification(for: path))
+            let store = path == wanted[1]
+                ? BusinessSQLiteStore(containerURL: base.containerURL, logicalURL: base.logicalURL,
+                    module: base.module, sourceIdentity: base.sourceIdentity + "\0job:" + UUID().uuidString)
+                : base
+            try BusinessStoreFiles.registerInActiveContainer(store)
         }
         XCTAssertEqual(Set(try pool.legacyURLs(for: f.target, sourceDigest: digest)), Set(wanted))
         let plan = try f.raw.readRows("EXPLAIN QUERY PLAN " + ExactStagePool.legacyLookupSQL,
@@ -93,6 +98,30 @@ final class ExactStagePoolTests: XCTestCase {
         XCTAssertThrowsError(try pool.persist(job, from: source.connection))
         XCTAssertNil(try pool.seal(of: job))
         XCTAssertEqual(try count(f, pool.store.prefix + "publication_receipts"), 0)
+        XCTAssertEqual(try f.writer.readRows("SELECT value FROM schema_meta WHERE key='published_tokens'") { $0.text(0) }, ["123"])
+    }
+
+    func testVerifiedWorkCacheIsReadOnlyBoundedAndInvalidatedByForeignCommits() throws {
+        let f = try fixture(), pool = try ExactStagePool.shared(for: f.target)
+        let firstJob = try makeJob(pool, f), firstSource = try seed(firstJob)
+        try pool.persist(firstJob, from: firstSource.connection)
+        let first = try pool.restore(firstJob)
+        XCTAssertTrue(first === (try pool.restore(firstJob)))
+        XCTAssertThrowsError(try first.connection.execute("UPDATE events SET tokens=99"))
+        try f.writer.execute("UPDATE schema_meta SET value='foreign-epoch' WHERE key='provenance_epoch'")
+        let afterCommit = try pool.restore(firstJob)
+        XCTAssertFalse(first === afterCommit)
+        for index in 1...4 {
+            let job = try makeJob(pool, f, index), source = try seed(job)
+            try pool.persist(job, from: source.connection)
+            _ = try pool.restore(job)
+        }
+        XCTAssertFalse(afterCommit === (try pool.restore(firstJob)), "A completed batch cannot accumulate private work forever")
+        // Bypass the normal immutable-payload guard to simulate damaged A.
+        // A foreign data_version invalidates the verified cached copy first.
+        try f.raw.execute("DROP TRIGGER \(SQLiteStoreNamespace.quote(pool.store.prefix + "guard_event_rows_update"))")
+        try f.raw.execute("UPDATE \(SQLiteStoreNamespace.quote(pool.store.prefix + "event_rows")) SET payload=x'00' WHERE job_id=?", bindings: [.text(firstJob.id)])
+        XCTAssertThrowsError(try pool.restore(firstJob))
         XCTAssertEqual(try f.writer.readRows("SELECT value FROM schema_meta WHERE key='published_tokens'") { $0.text(0) }, ["123"])
     }
 

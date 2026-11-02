@@ -1242,6 +1242,16 @@ final class SQLiteDatabaseConnection: DatabaseAccessing {
             : nil
         let openingStatement = savepointName.map { "SAVEPOINT \"\($0)\";" } ?? beginStatement
         try execute(openingStatement)
+        #if DEBUG
+        let lockStarted = ProcessInfo.processInfo.systemUptime
+        defer {
+            if !isNested, beginStatement == "BEGIN IMMEDIATE;",
+               let filename = sqlite3_db_filename(database, "main") {
+                SQLiteWriteMetrics.record(path: String(cString: filename),
+                    seconds: ProcessInfo.processInfo.systemUptime - lockStarted)
+            }
+        }
+        #endif
 
         do {
             let result = try body(self)
@@ -1419,6 +1429,34 @@ final class SQLiteDatabaseConnection: DatabaseAccessing {
 /// A private, short-lived SQLite work area. Empty filename is SQLite's own
 /// temporary on-disk database, deleted on close/process exit. It never becomes
 /// another durable business database and never registers a namespace in A.
+/// An opt-in test probe of actual outer writer lock duration. No release-build
+/// callbacks, SQL changes, logging, or recovery decisions depend on this probe.
+enum SQLiteWriteMetrics {
+    struct Snapshot { var count = 0; var maximumSeconds = 0.0; var totalSeconds = 0.0 }
+    private final class State: @unchecked Sendable {
+        let lock = NSLock()
+        var paths: Set<String> = []
+        var value = Snapshot()
+    }
+    private static let state = State()
+    static func begin(at url: URL) {
+        state.lock.lock(); defer { state.lock.unlock() }
+        state.paths = [url.standardizedFileURL.path, url.resolvingSymlinksInPath().standardizedFileURL.path]
+        state.value = Snapshot()
+    }
+    static func end() -> Snapshot {
+        state.lock.lock(); defer { state.lock.unlock() }
+        let value = state.value; state.paths.removeAll(); return value
+    }
+    static func record(path: String, seconds: Double) {
+        state.lock.lock(); defer { state.lock.unlock() }
+        guard state.paths.contains(path) else { return }
+        state.value.count += 1
+        state.value.maximumSeconds = max(state.value.maximumSeconds, seconds)
+        state.value.totalSeconds += seconds
+    }
+}
+
 final class SQLiteTemporaryDatabase {
     let connection: SQLiteDatabaseConnection
     private let handle: OpaquePointer

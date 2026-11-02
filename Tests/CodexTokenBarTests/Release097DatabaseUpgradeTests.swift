@@ -177,15 +177,21 @@ final class Release097DatabaseUpgradeTests: XCTestCase {
         try compareAccounting(f)
     }
 
-    func testPendingSourceDisappearanceCannotActivateAndRestoredSourceResumes() throws {
+    func testPendingSourceAndBoundBackupDisappearanceCannotActivateUntilRestored() throws {
         let f = try fixture()
         XCTAssertThrowsError(try migrate(f, beforeActivation: { throw Injected.beforeActivation }))
         let quota = f.configuration.support.appendingPathComponent("quota-history.sqlite")
+        let owner = try XCTUnwrap(f.configuration.specification(for: quota))
+        let receipt = try JSONDecoder().decode(BusinessDatabaseMigration.Receipt.self,
+            from: Data(contentsOf: f.configuration.backups.appendingPathComponent(owner.id).appendingPathComponent("receipt.json")))
+        let backup = URL(fileURLWithPath: receipt.backupPath), savedBackup = URL(fileURLWithPath: receipt.backupPath + ".saved")
         let saved = quota.appendingPathExtension("saved")
         try FileManager.default.moveItem(at: quota, to: saved)
+        try FileManager.default.moveItem(at: backup, to: savedBackup)
         XCTAssertThrowsError(try migrate(f))
         XCTAssertFalse(FileManager.default.fileExists(atPath: f.configuration.container.appendingPathExtension("initialized").path))
         try FileManager.default.moveItem(at: saved, to: quota)
+        try FileManager.default.moveItem(at: savedBackup, to: backup)
         try migrate(f)
         try compareAccounting(f)
     }

@@ -1528,7 +1528,8 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         if BusinessSQLiteRoutes.hasPublishedAdmission, BusinessSQLiteRoutes.store(for: url) == nil {
             throw PublishedBusinessAdmission.Deferred(message: "该额度来源没有已核实的已发布分区，旧材料已保留")
         }
-        if let owner = BusinessSQLiteRoutes.store(for: url), BusinessSQLiteRoutes.writesArePaused(for: owner) {
+        if let owner = BusinessSQLiteRoutes.store(for: url),
+           BusinessSQLiteRoutes.isRegistered(owner) || BusinessSQLiteRoutes.writesArePaused(for: owner) {
             let reader = SQLiteDatabaseDriver(url: url, readOnly: true, createsFileIfMissing: false,
                 busyTimeoutMilliseconds: 3_000, enableWAL: false, fileManager: fileManager)
             return try reader.withConnection { db in try db.readTransaction { tx in

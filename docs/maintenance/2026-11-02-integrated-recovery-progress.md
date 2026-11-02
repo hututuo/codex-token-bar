@@ -171,3 +171,18 @@ Windows连接寿命作平台适配：实际锁定SQLite源码的`winOpen`使用F
 - 未报告压缩用量只影响当前账户segment的可比闭合桶区间；Mac保留已知Token／费用小计，双端只暂停重叠区间的份额／差额推断。区间外、旧账户segment和尚未闭合桶不再让整个七天账变空。Rust原周期消费证据与图表区间保护保留。
 - 本地存储模块XCTest30通过／0失败，含候选索引计划、owner拒绝和29项既有恢复测试；Rust实际storage源码探针（13job，旧stage原子回滚、building保留、篡改拒绝、重复回收）通过。共享归因28项通过，TypeScript及Swift语法检查通过。这些不是整包或实机证明。
 - 新增显式手动云端规模门禁，13／128／512／4124全部保留；默认push不启动额外大型矩阵。工作流结构单测6项、formed结构单测7项通过。真实0.9.8双端producer pilot运行中，尚未算PASS。17b的公开0.9.7升级双端已通过；其Swift整包仍因上述已定位补全准入失败，本批必须转绿。
+
+### C05b／C06b · 规模实测反馈和有界日常成本
+
+- edff云端双native／前端／更新器通过。Swift整包2294项、36 skipped、2条断言失败，均在一个旧测试中要求“原文件不在，即使绑定快照有效也必须拒绝”；真实0.9.7 lane同类旧断言2条失败。C04d允许沿有效绑定快照恢复是本次获准的新行为。现将这两项负面用例明确改为“原文件与绑定原始快照都不可用必须拒绝，恢复后继续”，保留拒绝准入与旧账核对；有效快照恢复、篡改与无绑定拒绝的新增用例仍在。没有删除负面保护来过关，修改后整包待复测。
+- edff规模lane **FAIL**：13／128／512的XCTest正确性均通过；backfill分别1.232／9.891／37.845秒，512最长进度空窗32.805秒，超过30秒预算。原脚本遇此失败提前结束，4124未测，不能算通过。新脚本收集失败后继续全部尺寸，并显式增加4124×122＝503128事件、6250个未消费空stage namespace（25000表）的synthetic压力case；不冒充真实旧版产物。
+- 对只读恢复后的同一小job增加有界四项／编码数据至多8MiB的私有SQLite work复用，按seal、owner／contract及A连接data_version校验；外部提交强制失效，篡改payload不能由缓存掩盖，reclaimed不可重读。无任何新长期数据库。增加真实外层SQLite writer锁计时，报告20次无变化同步P95、对象数、原文件hash、计数及准备耗时；1秒P95／10秒写锁目标未达到时保留FAIL和profile，不改预算。
+- 已注册的正常Mac quota／ModelTrace历史与设置读取也改为只读，不再为了读数做schema维护／legacy claim；认领仍由原有明确record writer执行。新增正常准入不写A的整包回归，待云端。
+- Mac与Windows本地恢复增加最多6次的5／15／30／60／180／300秒退避，所有重试复用原coordinator／writer gate；手动重试使旧timer失效，未知合同／proof冲突不自动循环。Swift以结构化错误分类；Windows现有字符串错误只作为保守重试提示，绝不用于读写准入。
+- 新恢复诊断只收固定phase、时间、计数、重试与数字错误码；不收路径、账号、凭据或会话内容。详细文件有界buffer、每session256KiB、30天／50MiB轮换，失败摘要至多4KiB独立保留。GC要求确切目录owner marker、UUID文件名／头部和文件身份，未知／symlink保留；诊断失败不改变账务结果。没有逐源fsync，也没有为日志增加业务库。
+- Swift旧输入发现只遍历合同中的来源树，跳过诊断／导出等无关子树，并防重复扫描重叠根；已归并状态下未注册的物理stage不再凭文件名unlink。新／旧已消费A内payload仍按原回执后台回收。**物理旧库、不同证明的备份、schema11 rollback继续保留，尚未增加可越过证明的删除器**；存在无变化启动的必要目录发现，尚不能报告“零发现IO”。
+- 本地当前storage32项通过；诊断Swift4项、Rust9项，Rust coordinator6项，脚本／workflow16＋7项通过；TypeScript及修改的Swift/Rust解析通过。最终同SHA整包、跨进程pool故障、所有历史版本及完整规模仍是未完成门禁。
+
+### 真实0.9.8产库pilot（独立证据）
+
+[41520268814](https://github.com/hututuo/codex-token-bar/actions/runs/41520268814)在候选7ebf194上双端PASS。producer为tag0.9.8固定SHA`0a9520f99c3f13e0f48c098298b07611dc7acd63`，非cfg(test)。两端均执行committed／interrupted（故意退出86）→resume→reopen，保留typed proofs／中断WAL；新增rollout后连续读取不双计，移走原始sessions后A仍162、B仍310。此lane是实际Rust生产路径；Swift单独验证。不把新增raw rollout子断言称为独立target-extra场景。

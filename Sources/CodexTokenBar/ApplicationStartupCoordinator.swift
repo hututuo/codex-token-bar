@@ -17,13 +17,18 @@ final class ApplicationStartupCoordinator: ObservableObject {
     private var job: Task<Void, Never>?
     private var progressAt = Date.distantPast
     private var hasActivated = false
+    private let retryDelay: @Sendable (Int) -> TimeInterval?
+    private var retryAttempt = 0
+    private var retryTimer: Task<Void, Never>?
     static private(set) var blocksBusinessServices = false
 
     init(prepare: @escaping Prepare = { callback in
         try await BusinessDatabaseMigration.startProduction(onProgress: callback)
     }, activate: @escaping @MainActor () -> CodexReadyApplicationRuntime? = { CodexReadyApplicationRuntime() },
-         productionLifecycle: Bool = true) {
+         productionLifecycle: Bool = true,
+         retryDelay: @escaping @Sendable (Int) -> TimeInterval? = LocalRecoveryRetryPolicy.delay) {
         self.prepare = prepare; self.activate = activate; self.productionLifecycle = productionLifecycle
+        self.retryDelay = retryDelay
         if productionLifecycle { Self.blocksBusinessServices = true }
     }
 
@@ -41,14 +46,17 @@ final class ApplicationStartupCoordinator: ObservableObject {
                 self.activateOnce()
                 if self.productionLifecycle { Self.blocksBusinessServices = false }
                 self.phase = .ready
+                self.retryTimer?.cancel(); self.retryTimer = nil; self.retryAttempt = 0
             } catch let deferred as PublishedBusinessAdmission.Deferred where BusinessSQLiteRoutes.hasPublishedAdmission {
                 // The backend installed per-owner capabilities before returning
                 // this state. Do not grant an unfinished owner writer access.
                 if self.productionLifecycle { Self.blocksBusinessServices = false }
                 self.activateOnce()
                 self.phase = .readyWithPendingRecovery(deferred.localizedDescription)
+                self.scheduleRetry(for: deferred)
             } catch {
                 self.phase = .failed(error.localizedDescription)
+                self.scheduleRetry(for: error)
             }
         }
     }
@@ -56,7 +64,22 @@ final class ApplicationStartupCoordinator: ObservableObject {
     func retry() {
         guard job == nil else { return }
         switch phase { case .failed, .readyWithPendingRecovery: break; default: return }
+        retryTimer?.cancel(); retryTimer = nil; retryAttempt = 0
         phase = .waiting; start()
+    }
+
+    private func scheduleRetry(for error: Error) {
+        guard LocalRecoveryRetryPolicy.canRetry(error), retryTimer == nil,
+              let delay = retryDelay(retryAttempt), delay.isFinite, delay >= 0, delay <= 3600 else { return }
+        retryAttempt += 1
+        retryTimer = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
+            catch { return }
+            guard let self, !Task.isCancelled, self.job == nil else { return }
+            self.retryTimer = nil
+            switch self.phase { case .failed, .readyWithPendingRecovery: break; default: return }
+            self.phase = .waiting; self.start()
+        }
     }
 
     var recoveryNotice: String? {

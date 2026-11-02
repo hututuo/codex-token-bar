@@ -1,7 +1,19 @@
+import CryptoKit
 import XCTest
 @testable import CodexTokenBar
 
 final class CodexUsageAnalyzerTests: XCTestCase {
+    private struct MainCatalogCounts: Equatable {
+        let objects: Int
+        let stores: Int
+    }
+    private struct SyntheticLegacyStageCounts: Equatable {
+        let stores: Int
+        let objects: Int
+        let seals: Int
+        let imports: Int
+        let legacyInputs: Int
+    }
     private var temporaryDirectories: [URL] = []
 
     override func setUpWithError() throws {
@@ -27,7 +39,13 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let fileCount: Int
         if let configuredCount { fileCount = try XCTUnwrap(Int(configuredCount)) }
         else { fileCount = 13 }
-        guard (9...8192).contains(fileCount) else { return XCTFail("Unsupported backfill probe size") }
+        let eventsPerFile = try XCTUnwrap(Int(ProcessInfo.processInfo.environment["TOKENBAR_BACKFILL_EVENTS_PER_FILE"] ?? "1"))
+        let legacyJobs = try XCTUnwrap(Int(ProcessInfo.processInfo.environment["TOKENBAR_BACKFILL_LEGACY_JOBS"] ?? "0"))
+        guard (9...8192).contains(fileCount), (1...256).contains(eventsPerFile), (0...8192).contains(legacyJobs) else {
+            return XCTFail("Unsupported synthetic backfill pressure fixture")
+        }
+        let expectedEvents = fileCount * eventsPerFile
+        let expectedTokens = (120 * fileCount + fileCount * (fileCount - 1) / 2) * eventsPerFile
         let overallStarted = Date()
         BusinessSQLiteRoutes.deactivate()
         defer { BusinessSQLiteRoutes.deactivate() }
@@ -41,16 +59,45 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let files = try (0..<fileCount).map { offset -> URL in
             let file = home.appendingPathComponent("sessions/multi-batch-\(offset).jsonl")
             let context = "{\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-6.1-sol\"}}"
-            let token = try tokenCountLine(timestamp: now.addingTimeInterval(Double(-fileCount + offset)),
-                total: Usage(input: 100 + offset, cachedInput: 20, output: 20, reasoning: 0, total: 120 + offset),
-                last: Usage(input: 100 + offset, cachedInput: 20, output: 20, reasoning: 0, total: 120 + offset))
-            try (context + "\n" + token + "\n").write(to: file, atomically: true, encoding: .utf8)
+            var lines = [context]
+            lines.reserveCapacity(eventsPerFile + 1)
+            for eventIndex in 0..<eventsPerFile {
+                let baseTokens = 120 + offset
+                let cumulativeCount = eventIndex + 1
+                let timestampOrdinal = offset * eventsPerFile + eventIndex
+                let total = Usage(
+                    input: (100 + offset) * cumulativeCount,
+                    cachedInput: 20 * cumulativeCount,
+                    output: 20 * cumulativeCount,
+                    reasoning: 0,
+                    total: baseTokens * cumulativeCount
+                )
+                let last = Usage(input: 100 + offset, cachedInput: 20, output: 20, reasoning: 0, total: baseTokens)
+                lines.append(try tokenCountLine(
+                    timestamp: now.addingTimeInterval(Double(timestampOrdinal - expectedEvents)),
+                    total: total,
+                    last: last
+                ))
+            }
+            try (lines.joined(separator: "\n") + "\n").write(to: file, atomically: true, encoding: .utf8)
             return file
         }
+        let sourceDigestsBefore = try files.map(sha256Digest(of:))
         let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: home))
         let oldIndex = try CodexUsageHistoryIndex(codexHome: home)
         _ = try oldIndex.synchronize(files: files, sessionID: analyzer.sessionID(from:),
             parser: analyzer.parseSessionIntoHistoryIndex(file:sessionID:request:insertFingerprint:emit:))
+        var rawTokens = 0
+        var rawEvents = 0
+        var rawTimestamps = Set<Double>()
+        try oldIndex.forEachStoredEvent {
+            rawTokens += $0.event.tokens
+            rawEvents += 1
+            rawTimestamps.insert($0.event.timestamp.timeIntervalSince1970)
+        }
+        XCTAssertEqual(rawTokens, expectedTokens)
+        XCTAssertEqual(rawEvents, expectedEvents)
+        XCTAssertEqual(rawTimestamps.count, expectedEvents, "Every raw source event must have a unique timestamp")
         let indexURL = try exactUsageDatabaseURL(in: cacheRoot)
         let support = root.appendingPathComponent("support")
         let configuration = BusinessDatabaseMigration.Configuration(
@@ -63,10 +110,25 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let database = SQLiteDatabaseDriver(url: indexURL)
         XCTAssertEqual(database.backingURL, configuration.container)
         try database.execute("DELETE FROM event_enrichment_sources; DELETE FROM schema_meta WHERE key='event_enrichment_revision'; UPDATE events SET model=NULL;")
+        let exactStore = try XCTUnwrap(configuration.specification(for: indexURL))
+        XCTAssertEqual(exactStore.module, "exact.swift")
+        let preparationStarted = Date()
+        try seedSyntheticLegacyStageCatalog(configuration: configuration, target: exactStore, jobCount: legacyJobs)
+        let stagePool = try ExactStagePool.shared(for: exactStore)
+        defer { withExtendedLifetime(stagePool) {} }
+        let mainBefore = try mainCatalogCounts(in: configuration)
+        let legacyCatalogBefore = try syntheticLegacyStageCounts(in: configuration, target: exactStore)
+        XCTAssertEqual(legacyCatalogBefore.stores, legacyJobs)
+        XCTAssertEqual(legacyCatalogBefore.objects, legacyJobs * ExactStageSchema.tables.count)
+        XCTAssertEqual(legacyCatalogBefore.seals, 0, "Empty building fixtures cannot be sealed or consumed")
+        XCTAssertEqual(legacyCatalogBefore.imports, 0, "Synthetic fixtures do not claim imported historical work")
+        XCTAssertEqual(legacyCatalogBefore.legacyInputs, 0, "Synthetic fixtures do not forge legacy receipts")
+        let preparationSeconds = Date().timeIntervalSince(preparationStarted)
         let index = try CodexUsageHistoryIndex(codexHome: home)
         let parsed = ThreadSafeCounter()
         let lock = NSLock()
         var completed: [Int] = []
+        SQLiteWriteMetrics.begin(at: configuration.container)
         let backfillStarted = Date()
         var lastProgress = backfillStarted
         var largestGap: TimeInterval = 0
@@ -85,6 +147,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             }
         })
         let backfillSeconds = Date().timeIntervalSince(backfillStarted)
+        let writeMetrics = SQLiteWriteMetrics.end()
         largestGap = max(largestGap, Date().timeIntervalSince(lastProgress))
         XCTAssertTrue(result.eventEnrichmentComplete)
         XCTAssertEqual(parsed.value, files.count, "The publication retry must reuse verified staged work")
@@ -93,14 +156,62 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(completed, completed.sorted(), "Batch boundaries and publication retries must not rewind progress")
         XCTAssertTrue(completed.contains(9), "Progress must reach later batches, not repeat only 1...4")
         var tokens = 0, events = 0
-        try index.forEachStoredEvent { tokens += $0.event.tokens; events += 1 }
-        XCTAssertEqual(tokens, (0..<fileCount).reduce(0) { $0 + 120 + $1 })
-        XCTAssertEqual(events, files.count)
-        XCTAssertEqual(try Data(contentsOf: indexURL), original, "The legacy ledger must remain frozen")
+        var eventTimestamps = Set<Double>()
+        try index.forEachStoredEvent {
+            tokens += $0.event.tokens
+            events += 1
+            eventTimestamps.insert($0.event.timestamp.timeIntervalSince1970)
+        }
+        XCTAssertEqual(tokens, expectedTokens)
+        XCTAssertEqual(events, expectedEvents)
+        XCTAssertEqual(eventTimestamps.count, expectedEvents, "Published event timestamps must stay unique")
+        XCTAssertEqual(try Data(contentsOf: indexURL), original, "The standalone legacy ledger must remain frozen after backfill")
+        XCTAssertEqual(try files.map(sha256Digest(of:)), sourceDigestsBefore, "Raw JSONL sources must remain frozen")
+
+        let mainAfter = try mainCatalogCounts(in: configuration)
+        XCTAssertEqual(mainAfter.objects - mainBefore.objects, 0, "New pooled jobs must not add MAIN objects")
+        XCTAssertEqual(mainAfter.stores - mainBefore.stores, 0, "New pooled jobs must not add catalog stores")
+        let legacyCatalogAfter = try syntheticLegacyStageCounts(in: configuration, target: exactStore)
+        XCTAssertEqual(legacyCatalogAfter, legacyCatalogBefore, "Unsealed synthetic legacy objects remain untouched")
+        XCTAssertEqual(try legacyConsumptionReceiptCount(in: configuration, pool: stagePool), 0,
+            "No synthetic catalog fixture may be marked consumed")
+
+        let unchangedParserCalls = ThreadSafeCounter()
+        var unchangedSeconds: [TimeInterval] = []
+        unchangedSeconds.reserveCapacity(20)
+        for _ in 0..<20 {
+            let started = Date()
+            let unchanged = try index.synchronize(files: files, sessionID: analyzer.sessionID(from:), parser: { file, id, request, fp, emit in
+                unchangedParserCalls.increment()
+                return try analyzer.parseSessionIntoHistoryIndex(file: file, sessionID: id, request: request,
+                    insertFingerprint: fp, emit: emit)
+            })
+            XCTAssertTrue(unchanged.eventEnrichmentComplete)
+            unchangedSeconds.append(Date().timeIntervalSince(started))
+        }
+        let unchangedP95Index = max(0, Int(ceil(Double(unchangedSeconds.count) * 0.95)) - 1)
+        let unchangedP95Seconds = unchangedSeconds.sorted()[unchangedP95Index]
+        XCTAssertEqual(unchangedParserCalls.value, 0, "Unchanged synchronizations must never invoke the parser")
+        XCTAssertEqual(try Data(contentsOf: indexURL), original, "Unchanged synchronizations cannot mutate the standalone ledger")
+        XCTAssertEqual(try files.map(sha256Digest(of:)), sourceDigestsBefore, "Unchanged synchronizations cannot mutate raw sources")
+        XCTAssertEqual(try mainCatalogCounts(in: configuration), mainAfter)
+        XCTAssertEqual(try syntheticLegacyStageCounts(in: configuration, target: exactStore), legacyCatalogBefore)
+        XCTAssertEqual(try legacyConsumptionReceiptCount(in: configuration, pool: stagePool), 0)
+
         let profile: [String: Any] = ["files": fileCount, "parsed": parsed.value,
-            "events": events, "tokens": tokens, "complete": result.eventEnrichmentComplete,
-            "monotonic": completed == completed.sorted(), "bootstrapSeconds": bootstrapSeconds,
-            "backfillSeconds": backfillSeconds, "largestProgressGapSeconds": largestGap,
+            "eventsPerFile": eventsPerFile, "events": events, "expectedEvents": expectedEvents,
+            "tokens": tokens, "expectedTokens": expectedTokens, "complete": result.eventEnrichmentComplete,
+            "monotonic": completed == completed.sorted(), "legacyJobs": legacyJobs,
+            "mainObjectsBefore": mainBefore.objects, "mainObjectsAfter": mainAfter.objects,
+            "mainObjectDelta": mainAfter.objects - mainBefore.objects,
+            "mainStoresBefore": mainBefore.stores, "mainStoresAfter": mainAfter.stores,
+            "mainStoreDelta": mainAfter.stores - mainBefore.stores,
+            "unchangedSamples": unchangedSeconds.count, "unchangedParserCalls": unchangedParserCalls.value,
+            "unchangedP95Seconds": unchangedP95Seconds, "preparationSeconds": preparationSeconds,
+            "writeLockCount": writeMetrics.count, "maximumWriteLockSeconds": writeMetrics.maximumSeconds,
+            "totalWriteLockSeconds": writeMetrics.totalSeconds,
+            "bootstrapSeconds": bootstrapSeconds, "backfillSeconds": backfillSeconds,
+            "largestProgressGapSeconds": largestGap,
             "totalSeconds": Date().timeIntervalSince(overallStarted)]
         let json = try JSONSerialization.data(withJSONObject: profile, options: [.sortedKeys])
         print("TOKENBAR_BACKFILL_PROFILE " + String(decoding: json, as: UTF8.self))
@@ -117,6 +228,142 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             XCTAssertTrue(error is CodexUsageIndexRepairRequiredError)
         }
         XCTAssertEqual(try Data(contentsOf: indexURL), original)
+        XCTAssertEqual(try files.map(sha256Digest(of:)), sourceDigestsBefore)
+    }
+
+    private func seedSyntheticLegacyStageCatalog(
+        configuration: BusinessDatabaseMigration.Configuration,
+        target: BusinessSQLiteStore,
+        jobCount: Int
+    ) throws {
+        guard jobCount > 0 else { return }
+        let rawA = SQLiteDatabaseDriver(
+            url: configuration.container,
+            createsFileIfMissing: false,
+            bypassBusinessRoutes: true
+        )
+        try rawA.withConnection { connection in
+            try connection.transaction { tx in
+                let insertStore = try tx.prepare("""
+                    INSERT INTO tb_stores(store_id,module,source_identity,logical_path,namespace_prefix,state)
+                    VALUES(?,?,?,?,?,'staging')
+                    """)
+                let insertObject = try tx.prepare("""
+                    INSERT INTO tb_store_objects(store_id,name,type,original_sql) VALUES(?,?,?,?)
+                    """)
+                let directory = configuration.exact
+                    .appendingPathComponent("staging", isDirectory: true)
+                    .appendingPathComponent(target.logicalURL.lastPathComponent, isDirectory: true)
+                for number in 0..<jobCount {
+                    let name = String(format: "synthetic-pressure-%05d.sqlite", number)
+                    let logicalURL = directory.appendingPathComponent(name)
+                    let store = try XCTUnwrap(configuration.specification(for: logicalURL))
+                    guard store.module == "exact.swift.stage", store.containerURL == configuration.container else {
+                        throw BusinessStoreError.invalidStore
+                    }
+                    try insertStore.execute([
+                        .text(store.id), .text(store.module), .text(store.sourceIdentity),
+                        .text(store.logicalURL.path), .text(store.prefix)
+                    ])
+                    var namespace = SQLiteStoreNamespace(prefix: store.prefix, objectNames: Set(ExactStageSchema.tables))
+                    try tx.execute(namespace.bind(ExactStageSchema.sql))
+                    let tables = try tx.readRows("""
+                        SELECT name,sql FROM main.sqlite_master
+                        WHERE type='table' AND substr(name,1,?)=? ORDER BY name
+                        """, bindings: [.int(store.prefix.count), .text(store.prefix)]) {
+                            ($0.text(0) ?? "", $0.text(1))
+                        }
+                    guard Set(tables.map { String($0.0.dropFirst(store.prefix.count)) }) == Set(ExactStageSchema.tables) else {
+                        throw BusinessStoreError.proofMismatch
+                    }
+                    for (physicalName, rawSQL) in tables {
+                        guard let rawSQL else { throw BusinessStoreError.proofMismatch }
+                        let logicalName = String(physicalName.dropFirst(store.prefix.count))
+                        try insertObject.execute([
+                            .text(store.id), .text(logicalName), .text("table"), .text(try namespace.unbind(rawSQL))
+                        ])
+                    }
+                }
+            }
+        }
+    }
+
+    private func mainCatalogCounts(
+        in configuration: BusinessDatabaseMigration.Configuration
+    ) throws -> MainCatalogCounts {
+        let rawA = SQLiteDatabaseDriver(
+            url: configuration.container,
+            readOnly: true,
+            createsFileIfMissing: false,
+            bypassBusinessRoutes: true
+        )
+        return try rawA.withConnection { db in
+            let objects = try XCTUnwrap(db.readRows(
+                "SELECT COUNT(*) FROM main.sqlite_master WHERE name NOT LIKE 'sqlite_%'",
+                map: { $0.int(0) }
+            ).first ?? nil)
+            let stores = try XCTUnwrap(db.readRows("SELECT COUNT(*) FROM tb_stores", map: { $0.int(0) }).first ?? nil)
+            return MainCatalogCounts(objects: objects, stores: stores)
+        }
+    }
+
+    private func syntheticLegacyStageCounts(
+        in configuration: BusinessDatabaseMigration.Configuration,
+        target: BusinessSQLiteStore
+    ) throws -> SyntheticLegacyStageCounts {
+        let rawA = SQLiteDatabaseDriver(
+            url: configuration.container,
+            readOnly: true,
+            createsFileIfMissing: false,
+            bypassBusinessRoutes: true
+        )
+        let identityPrefix = "staging/\(target.logicalURL.lastPathComponent)/synthetic-pressure-"
+        return try rawA.withConnection { db in
+            let stores = try XCTUnwrap(db.readRows("""
+                SELECT COUNT(*) FROM tb_stores WHERE module='exact.swift.stage'
+                  AND substr(source_identity,1,?)=?
+                """, bindings: [.int(identityPrefix.count), .text(identityPrefix)], map: { $0.int(0) }).first ?? nil)
+            let objects = try XCTUnwrap(db.readRows("""
+                SELECT COUNT(*) FROM tb_store_objects o JOIN tb_stores s ON s.store_id=o.store_id
+                WHERE s.module='exact.swift.stage' AND substr(s.source_identity,1,?)=?
+                """, bindings: [.int(identityPrefix.count), .text(identityPrefix)], map: { $0.int(0) }).first ?? nil)
+            let seals = try XCTUnwrap(db.readRows("""
+                SELECT COUNT(*) FROM tb_store_seals x JOIN tb_stores s ON s.store_id=x.store_id
+                WHERE s.module='exact.swift.stage' AND substr(s.source_identity,1,?)=?
+                """, bindings: [.int(identityPrefix.count), .text(identityPrefix)], map: { $0.int(0) }).first ?? nil)
+            let imports = try XCTUnwrap(db.readRows("""
+                SELECT COUNT(*) FROM tb_store_imports x JOIN tb_stores s ON s.store_id=x.store_id
+                WHERE s.module='exact.swift.stage' AND substr(s.source_identity,1,?)=?
+                """, bindings: [.int(identityPrefix.count), .text(identityPrefix)], map: { $0.int(0) }).first ?? nil)
+            let legacyInputs = try XCTUnwrap(db.readRows("""
+                SELECT COUNT(*) FROM tb_legacy_inputs x JOIN tb_stores s ON s.store_id=x.store_id
+                WHERE s.module='exact.swift.stage' AND substr(s.source_identity,1,?)=?
+                """, bindings: [.int(identityPrefix.count), .text(identityPrefix)], map: { $0.int(0) }).first ?? nil)
+            return SyntheticLegacyStageCounts(
+                stores: stores, objects: objects, seals: seals, imports: imports, legacyInputs: legacyInputs
+            )
+        }
+    }
+
+    private func legacyConsumptionReceiptCount(
+        in configuration: BusinessDatabaseMigration.Configuration,
+        pool: ExactStagePool
+    ) throws -> Int {
+        let rawA = SQLiteDatabaseDriver(
+            url: configuration.container,
+            readOnly: true,
+            createsFileIfMissing: false,
+            bypassBusinessRoutes: true
+        )
+        let receipts = SQLiteStoreNamespace.quote(pool.store.prefix + "publication_receipts")
+        return try XCTUnwrap(rawA.readRows(
+            "SELECT COUNT(*) FROM \(receipts) WHERE job_id LIKE 'legacy:%'",
+            map: { $0.int(0) }
+        ).first ?? nil)
+    }
+
+    private func sha256Digest(of url: URL) throws -> String {
+        SHA256.hash(data: try Data(contentsOf: url)).map { String(format: "%02x", $0) }.joined()
     }
 
     func testPausedPublishedLedgerBuildsFullCompactAndFastViewsWithoutRawSessionsOrSnapshotCache() throws {

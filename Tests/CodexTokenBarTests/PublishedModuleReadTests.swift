@@ -13,7 +13,7 @@ final class PublishedModuleReadTests: XCTestCase {
         let settings: ModelTraceAutoSettings
     }
 
-    private func fixture() throws -> Fixture {
+    private func fixture(writesPaused: Bool = true) throws -> Fixture {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("published-module-read-\(UUID().uuidString)", isDirectory: true)
         addTeardownBlock {
@@ -67,8 +67,8 @@ final class PublishedModuleReadTests: XCTestCase {
         BusinessSQLiteRoutes.activate(
             configuration,
             stores: [quotaStore, modelTraceStore],
-            publishedAdmission: true,
-            blocksAllWriters: true
+            publishedAdmission: writesPaused,
+            blocksAllWriters: writesPaused
         )
 
         return Fixture(
@@ -173,6 +173,20 @@ final class PublishedModuleReadTests: XCTestCase {
         )
         XCTAssertFalse(FileManager.default.fileExists(atPath: unknownURL.path))
         XCTAssertEqual(try containerProof(fixture.configuration), proofBefore)
+    }
+
+    func testHealthyPublishedQuotaAndModelTraceReadsAlsoNeverMigrateOrClaim() throws {
+        let fixture = try fixture(writesPaused: false)
+        let before = try containerProof(fixture.configuration)
+        let quota = QuotaHistoryDatabase(databaseURL: fixture.quotaStore.logicalURL)
+        XCTAssertEqual(try quota.recordedFiveHourUsedPercents(for: fixture.quota,
+            now: fixture.observedAt.addingTimeInterval(60), age: 31 * 86400), [37])
+        let model = ModelTraceHistoryStore(url: fixture.modelTraceStore.logicalURL)
+        XCTAssertFalse(model.writesArePaused)
+        XCTAssertEqual(try model.history(scope: "scope:published-account").map(\.id), ["published-run"])
+        XCTAssertEqual(try model.autoSettings(), fixture.settings)
+        XCTAssertEqual(try containerProof(fixture.configuration), before,
+            "A healthy reader must not issue DDL, maintain history, or create legacy claims")
     }
 
     private func makeQuota(

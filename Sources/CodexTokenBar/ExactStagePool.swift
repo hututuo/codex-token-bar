@@ -84,6 +84,15 @@ final class ExactStagePool: @unchecked Sendable {
     private let openedIdentity: String
     private let handle: Handle
     private let lock = NSLock()
+    private struct CachedWork {
+        let digest: String
+        let dataVersion: Int
+        let work: SQLiteTemporaryDatabase
+    }
+    // At most one staging batch and 8 MiB of encoded payload. Large jobs stay
+    // streamed. These are private, auto-deleted read-only work areas, not ledgers.
+    private var workCache: [String: CachedWork] = [:]
+    private var workOrder: [String] = []
     private static let names = ["operations", "jobs", "event_rows", "fingerprints", "chunks", "publication_receipts"]
     private static let payloadTables = ["events": "event_rows", "fingerprints": "fingerprints", "chunks": "chunks"]
 
@@ -255,8 +264,13 @@ final class ExactStagePool: @unchecked Sendable {
                 bindings: [.text(primary), .text(lower), .text(upper)]) {
                 guard let path = $0.text(0) else { throw Failure.invalid }
                 let url = URL(fileURLWithPath: path)
+                let expected = identityPrefix + url.lastPathComponent
+                let identity = $0.text(1) ?? ""
+                let jobPrefix = expected + "\0job:"
+                let knownJob = identity.hasPrefix(jobPrefix)
+                    && UUID(uuidString: String(identity.dropFirst(jobPrefix.count))) != nil
                 guard url.deletingLastPathComponent().standardizedFileURL.path == directory.standardizedFileURL.path,
-                      $0.text(1) == identityPrefix + url.lastPathComponent else { throw Failure.invalid }
+                      identity == expected || knownJob else { throw Failure.invalid }
                 return url
             }
         }
@@ -330,10 +344,22 @@ final class ExactStagePool: @unchecked Sendable {
 
     func restore(_ job: Job) throws -> SQLiteTemporaryDatabase {
         guard let seal = try seal(of: job) else { throw Failure.unsealed }
-        let work = try SQLiteTemporaryDatabase()
-        try work.connection.execute(ExactStageSchema.sql)
-        var hash = SHA256(), rows: Int64 = 0
-        try work.connection.transaction { tx in
+        return try use { db in try db.readTransaction { snapshot in
+            let version = try snapshot.readRows("PRAGMA data_version") { $0.int(0) ?? -1 }.first ?? -1
+            let valid = try snapshot.readRows("SELECT digest,state,owner,contract_digest FROM \(table("jobs")) WHERE job_id=?", bindings: [.text(job.id)]) {
+                $0.text(0) == seal.digest && ["sealed", "consumed"].contains($0.text(1) ?? "")
+                    && $0.text(2) == job.owner && $0.text(3) == job.contract
+            }.first == true
+            guard valid else { throw Failure.invalid }
+            if let cached = workCache[job.id], cached.digest == seal.digest, cached.dataVersion == version {
+                workOrder.removeAll { $0 == job.id }; workOrder.append(job.id)
+                return cached.work
+            }
+            workCache.removeValue(forKey: job.id); workOrder.removeAll { $0 == job.id }
+            let work = try SQLiteTemporaryDatabase()
+            try work.connection.execute(ExactStageSchema.sql)
+            var hash = SHA256(), rows: Int64 = 0
+            try work.connection.transaction { tx in
             for name in ExactStageSchema.tables {
                 Self.update(&hash, Data(name.utf8))
                 let columns = ExactStageSchema.columns[name]!
@@ -342,26 +368,30 @@ final class ExactStagePool: @unchecked Sendable {
                     try insert.execute(ExactStageRowCodec.decode(payload, expectedColumns: columns))
                     Self.update(&hash, payload); rows += 1
                 }
-                try use { db in
                     if name == "manifest" {
-                        let values = try db.readRows("SELECT manifest,length(manifest) FROM \(table("jobs")) WHERE job_id=?", bindings: [.text(job.id)]) { row -> Data in
+                        let values = try snapshot.readRows("SELECT manifest,length(manifest) FROM \(table("jobs")) WHERE job_id=?", bindings: [.text(job.id)]) { row -> Data in
                             guard let size = row.int(1), size <= ExactStageRowCodec.maximumRowBytes, let data = row.data(0) else { throw Failure.invalid }
                             return data
                         }
                         guard let value = values.first else { throw Failure.invalid }; try copy(value)
                     } else {
-                        try db.forEachRow("SELECT payload,length(payload) FROM \(table(Self.payloadTables[name]!)) WHERE job_id=? ORDER BY ordinal", bindings: [.text(job.id)]) { row in
+                        try snapshot.forEachRow("SELECT payload,length(payload) FROM \(table(Self.payloadTables[name]!)) WHERE job_id=? ORDER BY ordinal", bindings: [.text(job.id)]) { row in
                             guard let size = row.int(1), size <= ExactStageRowCodec.maximumRowBytes, let value = row.data(0) else { throw Failure.invalid }
                             try copy(value)
                         }
                     }
-                }
             }
-        }
-        guard rows == seal.rows, hash.finalize().map({ String(format: "%02x", $0) }).joined() == seal.digest,
-              try BusinessStoreFiles.footprint(work.connection) == seal.bytes else { throw Failure.invalid }
-        try work.connection.execute("PRAGMA query_only=ON")
-        return work
+            }
+            guard rows == seal.rows, hash.finalize().map({ String(format: "%02x", $0) }).joined() == seal.digest,
+                  try BusinessStoreFiles.footprint(work.connection) == seal.bytes else { throw Failure.invalid }
+            try work.connection.execute("PRAGMA query_only=ON")
+            if seal.bytes <= 2 * 1024 * 1024 {
+                while workOrder.count >= 4 { workCache.removeValue(forKey: workOrder.removeFirst()) }
+                workCache[job.id] = CachedWork(digest: seal.digest, dataVersion: version, work: work)
+                workOrder.append(job.id)
+            }
+            return work
+        } }
     }
 
     /// Read a verified old namespace using the retained A handle. Preserve its

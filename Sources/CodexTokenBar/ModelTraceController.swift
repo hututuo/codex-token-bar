@@ -173,7 +173,7 @@ extension ModelTraceHistoryStore {
         return db
     }
     func autoSettings() throws -> ModelTraceAutoSettings {
-        if writesArePaused {
+        if hasPublishedOwner || writesArePaused {
             return try publishedReader().withConnection { db in try db.readTransaction { tx in
                 guard try tx.readRows("SELECT 1 FROM sqlite_master WHERE type='table' AND name='modeltrace_settings'", map: { $0.int(0) }).first == 1 else { return ModelTraceAutoSettings() }
                 return try tx.readRows("SELECT payload FROM modeltrace_settings WHERE id=1") { statement in

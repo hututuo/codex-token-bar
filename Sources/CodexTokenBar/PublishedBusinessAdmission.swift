@@ -30,6 +30,7 @@ enum PublishedBusinessAdmission {
     }
     struct Deferred: LocalizedError {
         let message: String
+        var canRetryAutomatically = false
         var errorDescription: String? { message }
     }
 
