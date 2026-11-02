@@ -83,6 +83,17 @@ class BackfillScaleWorkflowTests(unittest.TestCase):
         self.assertEqual(scale_triggers['workflow_dispatch']['inputs']['source_sha']['type'], 'string')
         self.assertEqual(scale_triggers['workflow_call']['inputs']['source_sha']['type'], 'string')
 
+    def test_production_failure_stays_red_without_suppressing_original_native_regressions(self):
+        steps = self.ci['jobs']['native']['steps']
+        fixture = next(step for step in steps if step.get('id') == 'production_fixture')
+        self.assertNotIn('continue-on-error', fixture)
+        regression = next(step for step in steps if step.get('name') == 'Full native regression including original pressure case')
+        self.assertEqual(regression['if'], '${{ !cancelled() }}')
+        guard = next(step for step in steps if step.get('name', '').startswith('Require the production fixture'))
+        self.assertEqual(guard['if'], 'always()')
+        self.assertIn('steps.production_fixture.outcome', guard['env']['FIXTURE_OUTCOME'])
+        self.assertEqual(guard['run'], 'test "$FIXTURE_OUTCOME" = success')
+
     def test_scale_only_skips_standard_jobs_and_never_emits_full_ci_evidence(self):
         jobs = self.ci['jobs']
         for name in ('frontend', 'swift', 'native', 'windows-updater'):

@@ -200,7 +200,7 @@ Windows连接寿命作平台适配：实际锁定SQLite源码的`winOpen`使用F
 
 ### C05c／C06c · 目录事实、重复绑定成本和真实字节进度
 
-- `0c98e5d1`完整检查 [41536039477](https://github.com/hututuo/codex-token-bar/actions/runs/41536039477)：Swift **2307项／36 skipped／0失败**，包含末桶／午夜／pending换价及写锁仪表回归。13源backfill 0.810秒，67次实际外层写事务最大0.659秒；phase中importing累计0.402秒占比最高。两端实际fixture已经跑过8点强退与重启；native全量的两个新增legacy存在性用例失败，不能把该完整检查记为通过。
+- `0c98e5d1`完整检查 [41536039477](https://github.com/hututuo/codex-token-bar/actions/runs/41536039477)：Swift **2307项／36 skipped／0失败**，包含末桶／午夜／pending换价及写锁仪表回归。13源backfill 0.810秒，67次实际外层写事务最大0.659秒；phase中importing累计0.402秒占比最高。生产fixture因新增压力代码的四条编译错误尚未运行；native单测另有两个新增legacy存在性用例失败，不能把该完整检查记为通过。
 - 两个native失败揭示了真实错误：`tb_store_objects`保存原始导入布局，运行时DDL并不一定登记它。现在held pool读取实际MAIN对象名，按`schema_version`＋`data_version`失效；只缓存名称／类型，编码预算16MiB，超预算继续以流式方式核对，不丢弃事实。owner、路径、source identity和prefix仍逐一核对；空的已知布局不变成账，未知表／列继续拒绝并保留。Rust选择性生产storage探针已复现运行时catalog为0、外部写入manifest后为true、外部新增未知表被拒绝，且13job目录/store增量0。完整双端重测待下一SHA。
 - Swift同样改为实际结构核对。新增测试先前没有激活fixture的已注册路由，误获得新的随机job身份；现按实际启动安装原catalog identities，再核对运行时表确有数据且不在原导入目录，以及外部DDL使缓存失效。没有让未登记身份获得访问，也没有删掉原断言。
 - 在同一namespace／TEMP标识符上下文中复用已经验证的单条DML／SELECT绑定结果，上限256项／512KiB SQL文本；上下文不同必须重新校验，不缓存DDL／PRAGMA，不缓存SQLite查询结果或绕开准备执行。真实存储模块35项本地通过，包含TEMP撤销和未知／跨库访问拒绝。实际绑定微基准同一SQL重复1万次，7.343秒→0.005秒，输出字节数一致；这是绑定层CPU结果，不冒充整轮补全加速，规模预算保持原值待CI。
@@ -208,3 +208,7 @@ Windows连接寿命作平台适配：实际锁定SQLite源码的`winOpen`使用F
 - Swift relay选定模块1项、Rust真实进度状态辅助函数提取2项本地通过；解析器“有／无回调”的事件、hash、边界和checkpoint对照已补，完整编译执行待云端。压力fixture补充测试内阶段标记与显式flush，使超时材料能区分旧账形成、目录构造、实际backfill和无变化刷新；标记不参与产品进度或门禁计算。
 
 最终通过尚缺：本批完整双端及历史矩阵、规模与日常成本预算。未合并main、未替换正式版、未签名发布。
+
+### C07b · 正式fixture门禁反馈
+
+复核0c98的最终require步骤证实，生产fixture并未通过：新增scale fixture有路径函数参数强制转换、可变namespace及块尾iterator借用三处编译问题（四条编译诊断），已逐项修正。此前`continue-on-error`让步骤conclusion显示success，但实际outcome失败，末尾门禁正确使双端job失败；没有形成整体PASS。已去掉该步骤continue-on-error，以`!cancelled()`单独允许原native回归继续运行，末尾严格门禁保留并补结构测试。**8点全生产跨进程证据仍NOT_RUN**，选定模块证据不升级为全生产证据。下个源码SHA重测。

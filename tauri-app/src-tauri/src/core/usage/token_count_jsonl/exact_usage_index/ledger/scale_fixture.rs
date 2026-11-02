@@ -269,7 +269,7 @@ pub(super) fn verify_scale(home: &Path) -> Result<Value, String> {
     let final_empty_candidate_rows = empty_candidate_table_rows(&index_path)?;
     let physical_candidate_files_absent = seeded_paths
         .iter()
-        .map(path_is_absent)
+        .map(|path| path_is_absent(path))
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
         .all(|absent| absent);
@@ -703,7 +703,7 @@ fn seed_candidate_path(connection: &RawConnection, path: &Path) -> Result<(), St
         ));
     }
 
-    let namespace = SQLiteStoreNamespace::new(spec.prefix.clone(), TABLES.map(str::to_owned));
+    let mut namespace = SQLiteStoreNamespace::new(spec.prefix.clone(), TABLES.map(str::to_owned));
     connection
         .execute(
             "INSERT INTO tb_stores(store_id,module,source_identity,logical_path,namespace_prefix,state) \
@@ -849,11 +849,12 @@ fn empty_candidate_table_rows(index_path: &Path) -> Result<i64, String> {
                  AND logical_path>=?1 AND logical_path<?2 ORDER BY logical_path",
             )
             .map_err(|error| error.to_string())?;
-        statement
+        let values = statement
             .query_map(params![lower, upper], |row| row.get::<_, String>(0))
             .map_err(|error| error.to_string())?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())?;
+        values
     };
     let mut nonempty = 0_i64;
     for prefix in prefixes {

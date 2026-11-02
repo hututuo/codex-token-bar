@@ -228,7 +228,6 @@ jobs:
         run: cargo check --locked --manifest-path tauri-app/src-tauri/Cargo.toml
       - name: Exercise production business-store routing and runtime recovery
         id: production_fixture
-        continue-on-error: true
         shell: bash
         env:
           TOKENBAR_NATIVE_SCALE: ${{ inputs.scale && '1' || '' }}
@@ -237,6 +236,7 @@ jobs:
           cargo build --locked --manifest-path tauri-app/src-tauri/Cargo.toml --features business-store-fixture --example business-store-fixture
           python scripts/cloud/run-business-store-fixture.py tauri-app/src-tauri/target/debug/examples/business-store-fixture
       - name: Full native regression including original pressure case
+        if: ${{ !cancelled() }}
         shell: bash
         run: |
           set -euo pipefail
