@@ -11927,7 +11927,7 @@ fn display_thread_title(
 
 fn stage_thread_metadata(
     codex_home: &Path,
-    _previous: (Option<String>, Option<String>),
+    previous: (Option<String>, Option<String>),
     previous_source: Option<String>,
     warnings: &mut Vec<LocalDataWarning>,
 ) -> Result<ThreadMetadataStage, String> {
@@ -11951,15 +11951,20 @@ fn stage_thread_metadata(
             return Ok(ThreadMetadataStage::Failed);
         }
     };
-    let result = external_state::read_snapshot(&database, previous_source.as_deref(), |connection| {
-        let mut column_query = connection.prepare("PRAGMA table_info(threads)").map_err(|e| e.to_string())?;
+    let signature_text = Some((signature.size.to_string(), signature.modified_ns.to_string()));
+    // Stat is provenance, not proof of freshness. A stat-only change still
+    // refreshes that provenance without advancing the row-content revision.
+    let previous_token = if previous == signature_text.clone().unzip() { previous_source.as_deref() } else { None };
+    let result = external_state::read_snapshot(&database, previous_token, |connection| {
+        let mut column_query = connection.prepare("PRAGMA table_info(threads)")
+            .map_err(|e| format!("读取会话标题索引结构失败：{e}"))?;
         let columns = column_query.query_map([], |row| row.get::<_, String>(1))
             .map_err(|e| e.to_string())?.collect::<rusqlite::Result<HashSet<_>>>()
             .map_err(|e| e.to_string())?;
         drop(column_query);
         if !columns.contains("id") || !columns.contains("title")
             || (!columns.contains("updated_at") && !columns.contains("updated_at_ms")) {
-            return Err("会话标题索引缺少必需的 id、title 或更新时间列".into());
+            return Err("读取会话标题索引结构失败：缺少必需的 id、title 或更新时间列".into());
         }
         let project = |name: &'static str| if columns.contains(name) { name } else { "NULL" };
         let sql = format!("SELECT id, title, {}, {}, COALESCE({}, {}) FROM threads",
@@ -11983,11 +11988,11 @@ fn stage_thread_metadata(
                 let identity = signature.physical.map(|s| (s.volume, s.file_id));
                 format!("sqlite-live-rows-v2:{identity:?}:{:x}", Sha256::digest(bytes))
             } else { token };
-            if previous_source.as_deref() == Some(token.as_str()) {
+            if previous_source.as_deref() == Some(token.as_str()) && previous == signature_text.clone().unzip() {
                 return Ok(ThreadMetadataStage::Unchanged);
             }
             Ok(ThreadMetadataStage::Updated(StagedThreadMetadata {
-                signature: Some((signature.size.to_string(), signature.modified_ns.to_string())),
+                signature: signature_text,
                 source_signature: Some(token), rows: value,
             }))
         }

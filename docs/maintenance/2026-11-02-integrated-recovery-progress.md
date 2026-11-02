@@ -62,3 +62,12 @@ C01已固定基线／映射和新增故障入口；剩余规模、形成状态�
 Windows连接寿命作平台适配：实际锁定SQLite源码的`winOpen`使用FILE_SHARE_READ|FILE_SHARE_WRITE，没有FILE_SHARE_DELETE；持久只读句柄会阻挡其他程序替换state。Windows改为每轮短连接真读，读完比较稳定行内容，不把跨连接data_version当版本。测试同时核对读取后来源可替换，原PR7的unchanged元数据语义保留。
 
 本地针对性结果：原67项加PR6额外5项，共**72通过、0失败、0跳过**；原11个失败已转绿；TypeScript noEmit通过，Rust新增模块／整合文件语法解析通过。新外部读取器的四项真实SQLite/WAL测试在小型隔离crate中通过：直接编译本checkout的external_state.rs／sqlite.rs／native identity helper，不是重写算法。探针首次module布局不匹配，修正隔离crate的路径后通过；未修改产品测试期望来通过。完整Rust生产配置／Windows与Swift整包仍待云端，不能据此前端绿灯宣称数据库修复完成。
+
+### 首轮云端反馈，源码e19f4551
+
+[完整检查41479626985](https://github.com/hututuo/codex-token-bar/actions/runs/41479626985)、[旧版升级41479626893](https://github.com/hututuo/codex-token-bar/actions/runs/41479626893)已启动，只推送隔离分支，没有合并／签名／发布。
+
+- 全量前端和Windows更新器故障测试通过；Windows旧版升级生产路径通过。
+- macOS Rust生产配置编译及生产reader fixture通过；单测1653通过、2失败、14 ignored。两项失败定位为本轮新增读取器漏保留旧的结构错误提示，以及stat-only变更时漏刷新provenance。已按原合同修源码，原测试断言不改；等待新提交双端复测。
+- Swift实际执行2257项、36 skipped；4条失败断言全部来自C01新增的2个PublishedLedgerAdmission用例，准确复现importing／路由关闭问题。未把它们豁免或删除，C04必须转绿。
+- 以上是中间批次结果，不是最终整合通过；进行中与未运行项目不计成功。
