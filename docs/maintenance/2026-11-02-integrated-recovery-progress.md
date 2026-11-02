@@ -156,3 +156,10 @@ Windows连接寿命作平台适配：实际锁定SQLite源码的`winOpen`使用F
 ## C06a · 累计进度（待执行）
 
 按PR6已审查实现复用同一个串行progress box，修正每4项重置、worker回调交错、发布重试回零；各批offset按实际封存结果累计，输入签名真的变化则另行重置。已落库的正式数值／parser算法不变。两端保留真实N/N任务数，但图形百分比在正式complete前最多99%；新增失败／回滚不能变为100%的断言。规模fixture仍保留原精确账目／原库字节／不重解析断言，尚待执行结果。托管历史矩阵与普通检查分开并发组，避免新push把排队的历史验证无声顶掉。
+
+### C04d · 原始旧库丢失后的绑定快照接续
+
+- Mac补齐directory discovery看不到原始文件时的恢复：pending journal的source／store必须与A中未退休legacy receipt一致，备份只能是该receipt绑定的owned路径；original和normalized的完整typed proof均需匹配。优先使用确切UUID的attempt receipt，不按目录顺序、时间或文件名相似度选副本；未知归属、权限错误、坏proof和未绑定导出不被当成空输入。
+- 当前归一化合同的有效快照直接接续；0.9.8这类未标注normalizationRevision的旧回执只作为原始备份证明，另建当前归一化attempt，保留原来一对文件。原始路径不重新创建，目标独有升级后事实仍受原typed-row覆盖／CAS保护。
+- 存储源码隔离XCTest **29通过／0失败**：新增原始文件丢失＋convenience receipt损坏、目标额外999保留和三次无变化重启；未标注归一化版本的两对attempt保全；首次bootstrap中断丢原始库后接续；original／normalized被改坏及未绑定export均拒绝，其他已发布123／789和原目标456保持。
+- 仍需同SHA整包和真实历史生产验证；这里不把29项模块测试当作整个C04退出。未消除“缺原始文件且没有任何可验证绑定证明”的真实未知状态，也没有从未知备份猜造账。

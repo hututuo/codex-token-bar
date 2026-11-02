@@ -96,6 +96,108 @@ final class PublishedLedgerAdmissionTests: XCTestCase {
         }
     }
 
+    func testMissingOriginalResumesItsBoundAttemptAndKeepsPostImportFacts() throws {
+        let (_, c, quota) = try readyLedger()
+        let late = try addLateSource(c)
+        enum Interrupted: Error { case beforeActivation }
+        XCTAssertThrowsError(try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32,
+            beforeActivation: { throw Interrupted.beforeActivation }))
+        let target = try XCTUnwrap(c.specification(for: late))
+        let raw = SQLiteDatabaseDriver(url: c.container, bypassBusinessRoutes: true)
+        try raw.execute("INSERT INTO \(SQLiteStoreNamespace.quote(target.prefix + "preserved")) VALUES(78,999)")
+        try FileManager.default.removeItem(at: late)
+        // The per-attempt receipt is authoritative; a broken convenience
+        // pointer must not make the app pick a different backup by timestamp.
+        let pointer = c.backups.appendingPathComponent(target.id).appendingPathComponent("receipt.json")
+        try Data("interrupted convenience pointer".utf8).write(to: pointer)
+        try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32)
+        try assertPriorGenerationAvailable(c, quota: quota)
+        XCTAssertEqual(try SQLiteDatabaseDriver(url: late, readOnly: true).readRows("SELECT amount FROM preserved ORDER BY id") { $0.int(0) }, [456,999])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: late.path))
+        XCTAssertTrue(try raw.readRows("SELECT value FROM tb_container_meta WHERE key='migration_pending_sources_v1'") { $0.text(0) }.isEmpty)
+        for _ in 0..<3 { try BusinessDatabaseMigration.migrate(c, availableBytes: 0) }
+        XCTAssertEqual(try SQLiteDatabaseDriver(url: late, readOnly: true).readRows("SELECT amount FROM preserved ORDER BY id") { $0.int(0) }, [456,999])
+    }
+
+    func testMissingUnversionedOriginalGetsANewVerifiedAttemptFromItsBoundBackup() throws {
+        let (_, c, quota) = try readyLedger()
+        let late = try addLateSource(c)
+        enum Interrupted: Error { case beforeActivation }
+        XCTAssertThrowsError(try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32,
+            beforeActivation: { throw Interrupted.beforeActivation }))
+        let target = try XCTUnwrap(c.specification(for: late))
+        let folder = c.backups.appendingPathComponent(target.id)
+        for file in try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) where file.pathExtension == "json" {
+            var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+            object.removeValue(forKey: "normalizationRevision")
+            try JSONSerialization.data(withJSONObject: object).write(to: file, options: .atomic)
+        }
+        try FileManager.default.removeItem(at: late)
+        try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32)
+        let attempts = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.hasPrefix("attempt-") && $0.pathExtension == "json" }
+        XCTAssertEqual(attempts.count, 2, "An unversioned normalization is preserved, not relabelled as current")
+        let receipts = try attempts.map { try JSONDecoder().decode(BusinessDatabaseMigration.Receipt.self, from: Data(contentsOf: $0)) }
+        XCTAssertEqual(receipts.filter { $0.normalizationRevision == nil }.count, 1)
+        XCTAssertEqual(receipts.filter { $0.normalizationRevision == 1 }.count, 1)
+        XCTAssertEqual(receipts.first?.original, receipts.last?.original)
+        try assertPriorGenerationAvailable(c, quota: quota)
+        XCTAssertEqual(try SQLiteDatabaseDriver(url: late, readOnly: true).readRows("SELECT amount FROM preserved") { $0.int(0) }, [456])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: late.path))
+    }
+
+    func testInitialBootstrapCanFinishAfterOriginalDisappearsOnlyWithItsBoundVerifiedPair() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("missing-bootstrap-\(UUID().uuidString)")
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let support = root.appendingPathComponent("support")
+        let c = BusinessDatabaseMigration.Configuration(container: support.appendingPathComponent("codex-ledger.sqlite"),
+            support: support, exact: root.appendingPathComponent("exact"), legacyExact: root.appendingPathComponent("legacy"))
+        let quota = support.appendingPathComponent("quota-history.sqlite")
+        try SQLiteDatabaseDriver(url: quota, bypassBusinessRoutes: true).execute("CREATE TABLE preserved(id INTEGER PRIMARY KEY,amount INTEGER); INSERT INTO preserved VALUES(1,123)")
+        enum Interrupted: Error { case beforeActivation }
+        XCTAssertThrowsError(try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32,
+            beforeActivation: { throw Interrupted.beforeActivation }))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: c.container.path))
+        try FileManager.default.removeItem(at: quota)
+        try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32)
+        XCTAssertEqual(try SQLiteDatabaseDriver(url: quota, readOnly: true).readRows("SELECT amount FROM preserved") { $0.int(0) }, [123])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: quota.path))
+        try BusinessDatabaseMigration.migrate(c, availableBytes: 0)
+        XCTAssertEqual(try SQLiteDatabaseDriver(url: quota, readOnly: true).readRows("SELECT amount FROM preserved") { $0.int(0) }, [123])
+    }
+
+    func testMissingOriginalCannotAuthorizeADamagedSnapshotOrAnUnboundExport() throws {
+        for damage in ["original", "normalized", "unbound"] {
+            let (root, c, quota) = try readyLedger()
+            let late = try addLateSource(c)
+            enum Interrupted: Error { case beforeActivation }
+            XCTAssertThrowsError(try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32,
+                beforeActivation: { throw Interrupted.beforeActivation }))
+            let target = try XCTUnwrap(c.specification(for: late))
+            let folder = c.backups.appendingPathComponent(target.id)
+            let attempt = try XCTUnwrap(FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+                .first { $0.lastPathComponent.hasPrefix("attempt-") && $0.pathExtension == "json" })
+            let receipt = try JSONDecoder().decode(BusinessDatabaseMigration.Receipt.self, from: Data(contentsOf: attempt))
+            if damage == "unbound" {
+                let export = root.appendingPathComponent("user-export.sqlite")
+                try FileManager.default.copyItem(at: URL(fileURLWithPath: receipt.backupPath), to: export)
+                var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: attempt)) as? [String: Any])
+                object["backupPath"] = export.path
+                try JSONSerialization.data(withJSONObject: object).write(to: attempt, options: .atomic)
+            } else {
+                let damaged = URL(fileURLWithPath: damage == "original" ? receipt.backupPath : receipt.normalizedPath)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: damaged.path)
+                try SQLiteDatabaseDriver(url: damaged, bypassBusinessRoutes: true).execute("UPDATE preserved SET amount=9999")
+            }
+            try FileManager.default.removeItem(at: late)
+            XCTAssertThrowsError(try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32), damage)
+            try assertPriorGenerationAvailable(c, quota: quota)
+            XCTAssertEqual(try SQLiteDatabaseDriver(url: c.container, readOnly: true, bypassBusinessRoutes: true)
+                .readRows("SELECT amount FROM \(SQLiteStoreNamespace.quote(target.prefix + "preserved"))") { $0.int(0) }, [456])
+            XCTAssertFalse(FileManager.default.fileExists(atPath: late.path))
+        }
+    }
+
     func testPendingOwnerCannotReadOrWriteBeforeVerificationWhileOtherOwnersRemainAvailable() throws {
         let (_, c, quota) = try readyLedger()
         let late = try addLateSource(c)

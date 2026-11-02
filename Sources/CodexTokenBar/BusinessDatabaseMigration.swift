@@ -178,8 +178,8 @@ final class BusinessDatabaseMigration {
         let journalKey = "migration_pending_sources_v1"
         let journalRaw = try database.driver.readRows("SELECT value FROM tb_container_meta WHERE key=?", bindings: [.text(journalKey)]) { $0.text(0) }.first ?? nil
         let journal = try journalRaw.map { try JSONDecoder().decode([String: String].self, from: Data($0.utf8)) } ?? [:]
-        let discovered = Dictionary(uniqueKeysWithValues: inputs.map { ($0.source.path, $0.store.id) })
-        let pending = exists ? inputs.filter { !known.contains($0.source.path) || journal[$0.source.path] != nil } : inputs
+        var discovered = Dictionary(uniqueKeysWithValues: inputs.map { ($0.source.path, $0.store.id) })
+        var pending = exists ? inputs.filter { !known.contains($0.source.path) || journal[$0.source.path] != nil } : inputs
         let activation = try database.driver.readRows("SELECT value FROM tb_container_meta WHERE key='activation_state'") { $0.text(0) }.first ?? nil
         if exists, activation == "importing", journalRaw == nil {
             // An older interrupted writer did not persist which partitions
@@ -194,10 +194,15 @@ final class BusinessDatabaseMigration {
         let publishedAdmission = exists && !pendingOwners.isEmpty
             ? try PublishedBusinessAdmission.install(configuration: configuration, database: database,
                 pending: pendingOwners, activation: activation) : false
-        // Missing sources remain an explicit pending operation. Admission above
-        // may retain unrelated verified owners, never invent a successful import.
-        for (path, storeID) in journal {
-            guard discovered[path] == storeID else { throw Failure.unmigratedInput(path) }
+        // Directory discovery cannot find an original that disappeared after a
+        // committed import. Resume only its exact receipt-bound immutable pair;
+        // a filename/mtime scan must never select a different old snapshot.
+        for (path, storeID) in journal.sorted(by: { $0.key < $1.key }) {
+            if discovered[path] == storeID { continue }
+            let recovered = try missingInput(path: path, storeID: storeID, configuration: configuration,
+                database: database, fileManager: fileManager)
+            pending.append(recovered)
+            discovered[path] = storeID
         }
         for input in pending where exists && journal[input.source.path] == nil {
             let registered = try database.driver.readRows("SELECT 1 FROM tb_stores WHERE store_id=?", bindings: [.text(input.store.id)]) { $0.int(0) }.first != nil
@@ -225,7 +230,8 @@ final class BusinessDatabaseMigration {
         var needed: UInt64 = 256 * 1024 * 1024
         for input in pending {
             for suffix in ["", "-wal"] {
-                let size = ((try? fileManager.attributesOfItem(atPath: input.source.path + suffix)[.size]) as? NSNumber)?.uint64Value ?? 0
+                let budgetSource = input.frozen.map { URL(fileURLWithPath: $0.backupPath) } ?? input.source
+                let size = ((try? fileManager.attributesOfItem(atPath: budgetSource.path + suffix)[.size]) as? NSNumber)?.uint64Value ?? 0
                 let (scaled, overflow) = size.multipliedReportingOverflow(by: 4)
                 let (next, additionOverflow) = needed.addingReportingOverflow(scaled)
                 guard !overflow, !additionOverflow else { throw Failure.insufficientSpace }
@@ -239,14 +245,15 @@ final class BusinessDatabaseMigration {
             let store = BusinessSQLiteStore(containerURL: working, logicalURL: input.store.logicalURL, module: input.store.module, sourceIdentity: input.store.sourceIdentity)
             let folder = configuration.backups.appendingPathComponent(store.id, isDirectory: true)
             try fileManager.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            let reusable = try reusableAttempt(input: input, folder: folder, fileManager: fileManager)
+            let reusable = input.frozen?.normalizationRevision == normalizationRevision ? input.frozen
+                : try reusableAttempt(input: input, folder: folder, fileManager: fileManager)
             let attempt = reusable.map { URL(fileURLWithPath: $0.backupPath).deletingPathExtension().lastPathComponent.replacingOccurrences(of: "original-", with: "") } ?? UUID().uuidString
             let backup = folder.appendingPathComponent("original-\(attempt).sqlite")
             if !fileManager.fileExists(atPath: backup.path) {
                 // sqlite3_backup observes a consistent WAL snapshot. No raw
                 // main-file copy, checkpoint, DELETE, or schema write on input.
                 try SQLiteDatabaseDriver(url: backup, bypassBusinessRoutes: true).withConnection { connection in
-                    try connection.restorePhysicalDatabase(from: input.source)
+                    try connection.restorePhysicalDatabase(from: input.frozen.map { URL(fileURLWithPath: $0.backupPath) } ?? input.source)
                     _ = try connection.readRows("PRAGMA wal_checkpoint(TRUNCATE)") { $0.int(0) }
                     _ = try connection.readRows("PRAGMA journal_mode=DELETE") { $0.text(0) }
                 }
@@ -254,6 +261,7 @@ final class BusinessDatabaseMigration {
                 try fileManager.setAttributes([.posixPermissions: 0o400], ofItemAtPath: backup.path)
             }
             let original = try SQLiteDatabaseDriver(url: backup, readOnly: true, bypassBusinessRoutes: true).withConnection { try CodexBusinessDatabase.proof($0) }
+            if let expected = input.frozen ?? reusable, original != expected.original { throw BusinessStoreError.sourceChanged }
             let normalized = folder.appendingPathComponent("normalized-\(attempt).sqlite")
             if !fileManager.fileExists(atPath: normalized.path) {
                 try SQLiteDatabaseDriver(url: normalized, bypassBusinessRoutes: true).withConnection { try $0.restorePhysicalDatabase(from: backup) }
@@ -343,7 +351,11 @@ final class BusinessDatabaseMigration {
         // source while the candidate was being prepared.
         for (index, input) in pending.enumerated() {
             onProgress?(.init(stage: .verifying, completed: index, total: pending.count))
-            let source = SQLiteDatabaseDriver(url: input.source, readOnly: true, createsFileIfMissing: false, bypassBusinessRoutes: true)
+            let validationSource: URL
+            if input.frozen != nil, try !regularInputExists(input.source) {
+                validationSource = URL(fileURLWithPath: input.frozen!.backupPath)
+            } else { validationSource = input.source }
+            let source = SQLiteDatabaseDriver(url: validationSource, readOnly: true, createsFileIfMissing: false, bypassBusinessRoutes: true)
             let current = try source.withConnection { try CodexBusinessDatabase.proof($0) }
             let storeID = input.store.id
             let folder = configuration.backups.appendingPathComponent(storeID)
@@ -409,11 +421,12 @@ final class BusinessDatabaseMigration {
     // preserved, but never reused as if produced by the current normalizer.
     private static let normalizationRevision = 1
 
-    private static func reusableAttempt(input: Input, folder: URL, fileManager: FileManager) throws -> Receipt? {
-        let receiptURL = folder.appendingPathComponent("receipt.json")
+    private static func reusableAttempt(input: Input, folder: URL, fileManager: FileManager,
+        receiptURL requestedReceipt: URL? = nil, permitsMissingSource: Bool = false, permitsPriorNormalizer: Bool = false) throws -> Receipt? {
+        let receiptURL = requestedReceipt ?? folder.appendingPathComponent("receipt.json")
         guard let data = try? Data(contentsOf: receiptURL),
               let receipt = try? JSONDecoder().decode(Receipt.self, from: data),
-              receipt.normalizationRevision == normalizationRevision,
+              (receipt.normalizationRevision == normalizationRevision || (permitsPriorNormalizer && receipt.normalizationRevision == nil)),
               receipt.sourcePath == input.source.path, receipt.storeID == input.store.id else { return nil }
         let original = URL(fileURLWithPath: receipt.backupPath).standardizedFileURL
         let normalized = URL(fileURLWithPath: receipt.normalizedPath).standardizedFileURL
@@ -432,13 +445,60 @@ final class BusinessDatabaseMigration {
         }
         // An invalid or interrupted backup is left intact and a fresh attempt
         // is built. A changed input must never reuse its older snapshot.
-        guard let sourceProof = try? readProof(input.source), sourceProof == receipt.original,
-              let originalProof = try? readProof(original), originalProof == receipt.original,
+        let sourceMatches: Bool
+        if permitsMissingSource, try !regularInputExists(input.source) { sourceMatches = true }
+        else { sourceMatches = (try? readProof(input.source)) == receipt.original }
+        guard sourceMatches, let originalProof = try? readProof(original), originalProof == receipt.original,
               let normalizedProof = try? readProof(normalized), normalizedProof == receipt.imported else { return nil }
         return receipt
     }
 
-    private struct Input { let source: URL; let store: BusinessSQLiteStore }
+    private struct Input {
+        let source: URL; let store: BusinessSQLiteStore; let frozen: Receipt?
+        init(source: URL, store: BusinessSQLiteStore, frozen: Receipt? = nil) {
+            self.source = source; self.store = store; self.frozen = frozen
+        }
+    }
+
+    private static func regularInputExists(_ url: URL) throws -> Bool {
+        var status = stat()
+        if lstat(url.path, &status) == 0 {
+            guard status.st_mode & S_IFMT == S_IFREG else { throw Failure.unsafeInput(url.path) }
+            return true
+        }
+        if errno == ENOENT { return false }
+        throw Failure.unsafeInput(url.path)
+    }
+
+    private static func missingInput(path: String, storeID: String, configuration: Configuration,
+        database: CodexBusinessDatabase, fileManager: FileManager) throws -> Input {
+        let source = URL(fileURLWithPath: path)
+        guard try !regularInputExists(source), let owner = try database.driver.readRows(
+            "SELECT logical_path,module,source_identity FROM tb_stores WHERE store_id=?", bindings: [.text(storeID)], map: {
+                BusinessSQLiteStore(containerURL: configuration.container, logicalURL: URL(fileURLWithPath: $0.text(0) ?? ""),
+                    module: $0.text(1) ?? "", sourceIdentity: $0.text(2) ?? "")
+            }).first, owner.id == storeID,
+            ["exact.swift", "exact.swift.retired", "exact.swift.stage", "quota.swift", "safety.swift", "modeltrace.swift", "body.swift"].contains(owner.module) else {
+            throw Failure.unmigratedInput(path)
+        }
+        guard let bound = try database.driver.readRows("SELECT backup_path,source_digest FROM tb_legacy_inputs WHERE source_path=? AND store_id=? AND logical_path=? AND module=? AND retired=0",
+            bindings: [.text(path), .text(storeID), .text(owner.logicalURL.path), .text(owner.module)], map: { ($0.text(0), $0.text(1)) }).first,
+              let backupPath = bound.0, let digest = bound.1 else { throw Failure.unmigratedInput(path) }
+        let folder = configuration.backups.appendingPathComponent(storeID)
+        let backup = URL(fileURLWithPath: backupPath).standardizedFileURL
+        let name = backup.deletingPathExtension().lastPathComponent
+        guard backup.deletingLastPathComponent() == folder.standardizedFileURL, name.hasPrefix("original-"),
+              UUID(uuidString: String(name.dropFirst(9))) != nil, backup.pathExtension == "sqlite" else { throw Failure.unsafeInput(backupPath) }
+        let attempt = folder.appendingPathComponent("attempt-" + String(name.dropFirst(9)) + ".json")
+        let receiptURL = fileManager.fileExists(atPath: attempt.path) ? attempt : folder.appendingPathComponent("receipt.json")
+        let input = Input(source: source, store: owner)
+        guard let receipt = try reusableAttempt(input: input, folder: folder, fileManager: fileManager,
+            receiptURL: receiptURL, permitsMissingSource: true, permitsPriorNormalizer: true),
+              receipt.backupPath == backupPath, receipt.original.schemaDigest + ":" + receipt.original.rowsDigest == digest else {
+            throw Failure.unmigratedInput(path)
+        }
+        return Input(source: source, store: owner, frozen: receipt)
+    }
     /// fileExists conflates ENOENT with EACCES. Only a genuinely absent root
     /// may be skipped: otherwise activation could silently omit old accounts.
     private static func legacyDirectoryExists(_ root: URL) throws -> Bool {
