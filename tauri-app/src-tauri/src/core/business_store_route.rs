@@ -16,6 +16,15 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[path = "business_store_route/path_identity.rs"]
+mod path_identity;
+
+#[cfg(any(test, feature = "business-store-fixture"))]
+#[path = "business_store_route/pending_recovery_fixture.rs"]
+mod pending_recovery_fixture;
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+pub(crate) use pending_recovery_fixture::verify as verify_pending_exact_discovery_fixture;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ContainerFileIdentity {
     volume: u64,
@@ -85,21 +94,44 @@ fn bootstrap_with_diagnostics(path: &Path) -> Result<(), String> {
             Ok(entries) => for entry in entries {
                 match entry { Ok(entry) => {
                     let candidate = entry.path();
-                    if candidate.extension().and_then(|e|e.to_str())==Some("sqlite") { inputs.push(candidate); }
-                }, Err(error) => diagnostics::event("input-discovery","failed",serde_json::json!({"path":root,"error":error.to_string()})) }
+                    if diagnostics::is_sqlite_input(&candidate) { inputs.push(candidate); }
+                }, Err(error) => diagnostics::event("input-discovery","failed",serde_json::json!({"path":root.to_string_lossy(),"error":error.to_string()})) }
             },
             Err(error) if error.kind()==std::io::ErrorKind::NotFound => {},
-            Err(error) => diagnostics::event("input-discovery","failed",serde_json::json!({"path":root,"error":error.to_string()})),
+            Err(error) => diagnostics::event("input-discovery","failed",serde_json::json!({"path":root.to_string_lossy(),"error":error.to_string()})),
         }
     }
     inputs.sort(); inputs.dedup(); diagnostics::inspect_inputs(&inputs);
     diagnostics::step("open-container", "A", || Container::open(path).map_err(|error| error.to_string()))?;
-    diagnostics::step("legacy-business-stores", "quota/modeltrace/body-speed", bootstrap_legacy_stores)?;
-    diagnostics::step("legacy-exact-indexes", "all discovered Homes", crate::core::usage::token_count_jsonl::bootstrap_legacy_exact_indexes)?;
-    diagnostics::step("resume-pending-imports", "A", || resume_pending_bootstrap_imports(path))?;
-    diagnostics::step("verify-all-pending-inputs", "A", || verify_bootstrap_pending_inputs(
-        &Container::open_existing(path).map_err(|error| error.to_string())?,
-    ))?;
+    // Inspect every independent module in this attempt. Successful imports
+    // remain journaled and recoverable, but *any* error withholds activation.
+    // This prevents a quota failure from hiding a separate Exact failure until
+    // the user installs another release. Never continue past an invalid A
+    // container itself: the open/contract check above remains the prerequisite.
+    let business_result = diagnostics::step("legacy-business-stores", "quota/modeltrace/body-speed", bootstrap_legacy_stores);
+    let exact_result = diagnostics::step("legacy-exact-indexes", "all discovered Homes", crate::core::usage::token_count_jsonl::bootstrap_legacy_exact_indexes);
+    // An invalid Exact manifest/root may hide a competing source. Its old
+    // pending journal cannot override the complete-discovery gate. Keep both
+    // pending recovery and final backup checks read-only for this module in
+    // this attempt, including when another Exact group's import failed.
+    let exact_recovery = if exact_result.is_ok() {
+        PendingRecovery::Resume
+    } else {
+        PendingRecovery::InspectOnly
+    };
+    let mut failures = Vec::new();
+    for (subject, result) in [
+        ("旧业务库", business_result),
+        ("旧 Exact 索引", exact_result),
+        ("未完成导入", diagnostics::step("resume-pending-imports", "A", || resume_pending_bootstrap_imports(path, exact_recovery))),
+        ("来源最终核验", diagnostics::step("verify-all-pending-inputs", "A", || verify_bootstrap_pending_inputs(
+            &Container::open_read_only_existing(path, std::time::Duration::from_secs(30)).map_err(|error| error.to_string())?,
+            exact_recovery,
+        ))),
+    ] {
+        if let Err(error) = result { failures.push(format!("{subject}：{error}")); }
+    }
+    finish_bootstrap_batch("本地账本准备", failures)?;
     diagnostics::event("publish-initialized-marker", "started", serde_json::json!({}));
     std::fs::OpenOptions::new()
         .read(true)
@@ -165,6 +197,43 @@ pub(crate) fn open_store(
     open_store_inner(module, source_identity, logical_path, legacy_sources, true)
 }
 
+/// Exact resolves historical spellings on the same A connection used for
+/// registration/import. It never re-hashes an existing owner's durable ID.
+pub(crate) fn open_exact_store(path: &Path, legacy_sources: &[PathBuf]) -> Result<StoreConnection, String> {
+    open_exact_store_at(&container_path()?, path, legacy_sources, true)
+}
+
+pub(crate) fn open_exact_store_during_bootstrap(path: &Path, legacy_sources: &[PathBuf]) -> Result<StoreConnection, String> {
+    open_exact_store_at(&container_path()?, path, legacy_sources, false)
+}
+
+fn open_exact_store_at(container: &Path, path: &Path, legacy_sources: &[PathBuf], ready: bool) -> Result<StoreConnection, String> {
+    let address = path_identity::ExactAddress::new(path)?;
+    open_store_at_address_with_hook(container, "exact", &address.preferred.source_identity,
+        &address.preferred.logical_path, legacy_sources, ready, Some(&address), &|| Ok(()))
+}
+
+pub(crate) fn open_exact_registered_read_only(path: &Path, timeout: std::time::Duration) -> Result<Option<StoreConnection>, String> {
+    ensure_runtime_business_store_ready()?;
+    open_exact_registered_read_only_at(&container_path()?, path, timeout)
+}
+
+fn open_exact_registered_read_only_at(container_path: &Path, path: &Path, timeout: std::time::Duration) -> Result<Option<StoreConnection>, String> {
+    verify_ready_container(container_path)?;
+    let container = Container::open_read_only_existing(container_path, timeout).map_err(|error| error.to_string())?;
+    #[cfg(not(test))]
+    verify_active_container_identity(container_path)?;
+    let Some(store) = path_identity::ExactAddress::new(path)?.resolve(container.connection(), false)? else {
+        return Ok(None);
+    };
+    container.into_store_connection(&store).map(Some).map_err(|error| error.to_string())
+}
+
+fn resolve_exact_store_spec_on(connection: &Connection, path: &Path, writing: bool) -> Result<StoreSpec, String> {
+    let address = path_identity::ExactAddress::new(path)?;
+    Ok(address.resolve(connection, writing)?.unwrap_or(address.preferred))
+}
+
 /// Open an already-imported namespace without consulting its original file.
 /// Legacy readers use this after an old physical source has been archived or
 /// removed; absence must not hide rows already preserved in A.
@@ -196,6 +265,39 @@ fn open_registered_store_at(
         .into_store_connection(&store)
         .map(Some)
         .map_err(|error| error.to_string())
+}
+
+/// Read an existing namespace without registration, import, or a write lock.
+pub(crate) fn open_registered_store_read_only(
+    module: &str,
+    source_identity: &str,
+    logical_path: &str,
+    timeout: std::time::Duration,
+) -> Result<Option<StoreConnection>, String> {
+    ensure_runtime_business_store_ready()?;
+    open_registered_store_read_only_at(
+        &container_path()?, module, source_identity, logical_path, timeout,
+    )
+}
+
+fn open_registered_store_read_only_at(
+    path: &Path,
+    module: &str,
+    source_identity: &str,
+    logical_path: &str,
+    timeout: std::time::Duration,
+) -> Result<Option<StoreConnection>, String> {
+    verify_ready_container(path)?;
+    let container = Container::open_read_only_existing(path, timeout)
+        .map_err(|error| error.to_string())?;
+    #[cfg(not(test))]
+    verify_active_container_identity(path)?;
+    let store = StoreSpec::new(module, source_identity, logical_path)
+        .map_err(|error| error.to_string())?;
+    if !container.is_registered(&store).map_err(|error| error.to_string())? {
+        return Ok(None);
+    }
+    container.into_store_connection(&store).map(Some).map_err(|error| error.to_string())
 }
 
 /// Run the shared A container compaction policy. Module-local VACUUM SQL is
@@ -398,7 +500,19 @@ struct PendingSnapshot {
     digest: String,
 }
 
-fn validate_pending_snapshot(container_path: &Path, store: &StoreSpec, snapshot: &PendingSnapshot) -> Result<(), String> {
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum PendingRecovery {
+    Resume,
+    InspectOnly,
+}
+
+impl PendingRecovery {
+    fn for_module(self, module: &str) -> Self {
+        if module == "exact" { self } else { Self::Resume }
+    }
+}
+
+fn validate_pending_snapshot(container_path: &Path, store: &StoreSpec, snapshot: &PendingSnapshot, recovery: PendingRecovery) -> Result<(), String> {
     if snapshot.backup != backup_path(container_path, store, &snapshot.source, &snapshot.digest) {
         return Err(format!("未完成导入的绑定路径无效，保留全部旧账：{}", snapshot.backup.display()));
     }
@@ -406,6 +520,9 @@ fn validate_pending_snapshot(container_path: &Path, store: &StoreSpec, snapshot:
     // corrupt app-owned file aside. It must never touch an external export.
     let exists = legacy_source_exists(&snapshot.backup)?;
     if exists && Container::snapshot_digest_path(&snapshot.backup).ok().as_deref() == Some(&snapshot.digest) { return Ok(()); }
+    if recovery == PendingRecovery::InspectOnly {
+        return Err(format!("Exact 来源准备未完成，本次仅核验并保留无效的绑定快照，未修复或隔离文件：{}", snapshot.backup.display()));
+    }
     // A missing/corrupt backup is recoverable only from the *same* frozen
     // source proof. A newer or truncated original is not its replacement.
     if legacy_source_exists(&snapshot.source)?
@@ -416,7 +533,7 @@ fn validate_pending_snapshot(container_path: &Path, store: &StoreSpec, snapshot:
     Err(format!("未完成导入的绑定快照无效，保留全部旧账：{}", snapshot.backup.display()))
 }
 
-fn validate_pending_batch(batch: &PendingLegacyImport, path: &Path, store: &StoreSpec) -> Result<(), String> {
+fn validate_pending_batch(batch: &PendingLegacyImport, path: &Path, store: &StoreSpec, recovery: PendingRecovery) -> Result<(), String> {
     if ![1, 2].contains(&batch.version) { return Err("未知的未完成导入版本，已保留旧账".into()); }
     if batch.version == 2 && batch.sources.len() != batch.snapshots.len() {
         return Err("未完成导入快照数量不匹配".into());
@@ -426,7 +543,7 @@ fn validate_pending_batch(batch: &PendingLegacyImport, path: &Path, store: &Stor
         if !batch.sources.contains(&snapshot.source) || !seen.insert(&snapshot.source) {
             return Err("未完成导入快照来源不匹配".into());
         }
-        validate_pending_snapshot(path, store, snapshot)?;
+        validate_pending_snapshot(path, store, snapshot, recovery)?;
     }
     Ok(())
 }
@@ -453,36 +570,68 @@ fn bind_legacy_pending_receipts(batch: &mut PendingLegacyImport, container: &Con
 /// binds their immutable SQLite backups, so restart visits every unfinished
 /// store even if no physical source was rediscovered. No unjournaled file or
 /// backup is guessed from a directory scan.
-fn resume_pending_bootstrap_imports(path: &Path) -> Result<(), String> {
-    let container = Container::open_existing(path).map_err(|e| e.to_string())?;
+fn resume_pending_bootstrap_imports(path: &Path, exact_recovery: PendingRecovery) -> Result<(), String> {
+    let container = Container::open_read_only_existing(path, std::time::Duration::from_secs(30)).map_err(|e| e.to_string())?;
     let mut statement = container.connection().prepare(
-        "SELECT s.module,s.source_identity,s.logical_path,m.value FROM tb_stores s JOIN tb_container_meta m ON m.key='migration_pending_store_v1:'||s.store_id"
+        "SELECT s.store_id,s.module,s.source_identity,s.logical_path,m.value FROM tb_stores s JOIN tb_container_meta m ON m.key='migration_pending_store_v1:'||s.store_id"
     ).map_err(|e| e.to_string())?;
-    let batches = statement.query_map([], |r| Ok((r.get::<_, String>(0)?,r.get::<_, String>(1)?,r.get::<_, String>(2)?,r.get::<_, String>(3)?)))
+    let batches = statement.query_map([], |r| Ok((r.get::<_, String>(0)?,r.get::<_, String>(1)?,r.get::<_, String>(2)?,r.get::<_, String>(3)?,r.get::<_, String>(4)?)))
         .map_err(|e| e.to_string())?.collect::<Result<Vec<_>,_>>().map_err(|e| e.to_string())?;
     drop(statement);
     drop(container);
-    for (module, identity, logical, json) in batches {
-        let batch: PendingLegacyImport = serde_json::from_str(&json).map_err(|e| format!("未完成导入记录无效：{e}"))?;
-        let container = Container::open_existing(path).map_err(|e| e.to_string())?;
-        let store = StoreSpec::new(&module, &identity, &logical).map_err(|e| e.to_string())?;
-        validate_pending_batch(&batch, path, &store)?;
-        let mut complete = container.has_imported_objects(&store).map_err(|e| e.to_string())?;
-        for source in &batch.sources {
-            complete &= container.legacy_input_receipt(source).map_err(|e| e.to_string())?
-                .is_some_and(|r| !r.retired && r.store_id == store.id && r.module == store.module && r.logical_path == store.logical_path
-                    && batch.snapshots.iter().any(|s| &s.source == source && s.digest == r.source_digest));
+    let mut failures = Vec::new();
+    for (store_id, module, identity, logical, json) in batches {
+        let recovery = exact_recovery.for_module(&module);
+        if recovery == PendingRecovery::InspectOnly {
+            diagnostics::event("pending-store-recovery-policy", "inspect-only",
+                serde_json::json!({"module":module,"logicalPath":logical,"reason":"Exact preparation failed in this attempt"}));
         }
-        drop(container);
-        if complete { continue; }
-        drop(open_store_at_with_hook(path, &module, &identity, &logical, &batch.sources, false, &|| Ok(()))?);
+        let result = diagnostics::step("pending-store-resume", &logical, || {
+            let mut batch: PendingLegacyImport = serde_json::from_str(&json).map_err(|e| format!("未完成导入记录无效：{e}"))?;
+            let container = Container::open_read_only_existing(path, std::time::Duration::from_secs(30)).map_err(|e| e.to_string())?;
+            let store = StoreSpec::new(&module, &identity, &logical).map_err(|e| e.to_string())?;
+            if store.id != store_id { return Err("未完成导入记录与业务分区身份不一致".into()); }
+            // v1 receipts bind frozen snapshots in memory only. Inspect-only
+            // attempts must diagnose a bad bound backup as fully as v2,
+            // without rewriting the old journal or repairing its files.
+            bind_legacy_pending_receipts(&mut batch, &container, &store)?;
+            validate_pending_batch(&batch, path, &store, recovery)?;
+            let mut complete = container.has_imported_objects(&store).map_err(|e| e.to_string())?;
+            for source in &batch.sources {
+                let receipt = container.legacy_input_receipt(source).map_err(|e| e.to_string())?;
+                let snapshot_matches = receipt.as_ref().is_some_and(|r|
+                    !r.retired && r.store_id == store.id && r.module == store.module
+                        && r.logical_path == store.logical_path
+                        && batch.snapshots.iter().any(|s| &s.source == source && s.digest == r.source_digest));
+                // A pending receipt is not activation. A legacy writer may have
+                // committed more rows after the failed attempt, including at an
+                // old path that current discovery no longer visits. A frozen
+                // proof alone would skip recovery forever: final validation sees
+                // the changed source on every retry but no importer consumes it.
+                let live_matches = if legacy_source_exists(source)? {
+                    let digest = Container::snapshot_digest_path(source).map_err(|e| e.to_string())?;
+                    receipt.as_ref().is_some_and(|r| r.source_digest == digest)
+                } else {
+                    true // The bound snapshot was verified above; do not recreate a retired writer.
+                };
+                complete &= snapshot_matches && live_matches;
+            }
+            drop(container);
+            if complete { return Ok(()); }
+            if recovery == PendingRecovery::InspectOnly {
+                return Err("Exact 来源准备未完成，本次仅核验未完成导入，保留当前分区与全部来源，未重新选择候选".into());
+            }
+            drop(open_store_at_with_hook(path, &module, &identity, &logical, &batch.sources, false, &|| Ok(()))?);
+            Ok(())
+        });
+        if let Err(error) = result { failures.push(format!("{logical}：{error}")); }
     }
-    Ok(())
+    finish_bootstrap_batch("未完成导入恢复", failures)
 }
 
 // Discovery can omit a source that disappeared after an earlier attempt.
 // Check the complete journal, including stores not visited on this retry.
-fn verify_bootstrap_pending_inputs(container: &Container) -> Result<(), String> {
+fn verify_bootstrap_pending_inputs(container: &Container, exact_recovery: PendingRecovery) -> Result<(), String> {
     let mut statement = container
         .connection()
         .prepare(
@@ -494,39 +643,58 @@ fn verify_bootstrap_pending_inputs(container: &Container) -> Result<(), String> 
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
         .map_err(|error| error.to_string())?;
-    for batch in batches {
-        let (key, json) = batch.map_err(|error| error.to_string())?;
-        let pending: PendingLegacyImport =
-            serde_json::from_str(&json).map_err(|error| error.to_string())?;
-        if ![1, 2].contains(&pending.version) { return Err("未知的未完成导入版本，已保留旧账".into()); }
-        for source in &pending.sources {
-            let receipt = container
-                .legacy_input_receipt(source)
-                .map_err(|error| error.to_string())?
-                .ok_or_else(|| format!("未完成导入缺少来源收据：{}", source.display()))?;
-            let store = StoreSpec::new(&receipt.module,
-                container.connection().query_row("SELECT source_identity FROM tb_stores WHERE store_id=?1", [&receipt.store_id], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?,
-                &receipt.logical_path).map_err(|e| e.to_string())?;
-            validate_pending_batch(&pending, container.path(), &store)?;
-            let actual = if legacy_source_exists(source)? {
-                Container::snapshot_digest_path(source).map_err(|e| e.to_string())?
-            } else {
-                let snapshot = pending.snapshots.iter().find(|s| &s.source == source)
-                    .ok_or_else(|| format!("旧版本未完成导入缺少绑定快照：{}", source.display()))?;
-                snapshot.digest.clone()
-            };
-            if receipt.retired
-                || key != format!("migration_pending_store_v1:{}", receipt.store_id)
-                || actual != receipt.source_digest
-            {
-                return Err(format!(
-                    "未完成导入的来源发生变化，已保留旧账：{}",
-                    source.display()
-                ));
+    let batches = batches.collect::<Result<Vec<_>,_>>().map_err(|error| error.to_string())?;
+    let mut failures = Vec::new();
+    for (key, json) in batches {
+        let result = diagnostics::step("pending-store-verify", &key, || {
+            let mut pending: PendingLegacyImport =
+                serde_json::from_str(&json).map_err(|error| error.to_string())?;
+            if ![1, 2].contains(&pending.version) { return Err("未知的未完成导入版本，已保留旧账".into()); }
+            // The catalog/journal owns the module policy. A damaged receipt
+            // cannot reclassify an Exact journal as another module and permit
+            // backup repair during an inspect-only attempt.
+            let store_id = key.strip_prefix("migration_pending_store_v1:")
+                .ok_or("未完成导入记录缺少业务分区身份")?;
+            let (module, identity, logical): (String, String, String) = container.connection()
+                .query_row("SELECT module,source_identity,logical_path FROM tb_stores WHERE store_id=?1",
+                    [store_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .map_err(|error| error.to_string())?;
+            let store = StoreSpec::new(module, identity, logical).map_err(|error| error.to_string())?;
+            if store.id != store_id { return Err("未完成导入记录与业务分区身份不一致".into()); }
+            bind_legacy_pending_receipts(&mut pending, container, &store)?;
+            let mut receipts = Vec::new();
+            for source in &pending.sources {
+                let receipt = container
+                    .legacy_input_receipt(source)
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("未完成导入缺少来源收据：{}", source.display()))?;
+                if receipt.retired || receipt.store_id != store.id || receipt.module != store.module
+                    || receipt.logical_path != store.logical_path {
+                    return Err(format!("未完成导入的来源归属不一致，已保留旧账：{}", source.display()));
+                }
+                receipts.push((source, receipt));
             }
-        }
+            validate_pending_batch(&pending, container.path(), &store, exact_recovery.for_module(&store.module))?;
+            for (source, receipt) in receipts {
+                let actual = if legacy_source_exists(source)? {
+                    Container::snapshot_digest_path(source).map_err(|e| e.to_string())?
+                } else {
+                    let snapshot = pending.snapshots.iter().find(|s| &s.source == source)
+                        .ok_or_else(|| format!("旧版本未完成导入缺少绑定快照：{}", source.display()))?;
+                    snapshot.digest.clone()
+                };
+                if actual != receipt.source_digest {
+                    return Err(format!(
+                        "未完成导入的来源发生变化，已保留旧账：{}",
+                        source.display()
+                    ));
+                }
+            }
+            Ok(())
+        });
+        if let Err(error) = result { failures.push(format!("{key}：{error}")); }
     }
-    Ok(())
+    finish_bootstrap_batch("未完成导入核验", failures)
 }
 
 // The hook permits deterministic interruption/source-change tests without
@@ -540,6 +708,22 @@ fn open_store_at_with_hook(
     require_initialized: bool,
     after_import: &dyn Fn() -> Result<(), String>,
 ) -> Result<StoreConnection, String> {
+    open_store_at_address_with_hook(container_path, module, source_identity, logical_path,
+        legacy_sources, require_initialized, None, after_import)
+}
+
+fn open_store_at_address_with_hook(
+    container_path: &Path,
+    module: &str,
+    source_identity: &str,
+    logical_path: &str,
+    legacy_sources: &[PathBuf],
+    require_initialized: bool,
+    address: Option<&path_identity::ExactAddress>,
+    after_import: &dyn Fn() -> Result<(), String>,
+) -> Result<StoreConnection, String> {
+    #[cfg(all(feature = "business-store-fixture", not(test)))]
+    let _scope = crate::core::usage::token_count_jsonl::measure_source_count_scope("route.open-store");
     diagnostics::step("store-import", logical_path, || {
     if require_initialized {
         ensure_runtime_business_store_ready()?;
@@ -555,6 +739,15 @@ fn open_store_at_with_hook(
     if require_initialized {
         #[cfg(not(test))]
         verify_active_container_identity(container_path)?;
+    }
+    let store = if let Some(address) = address {
+        address.resolve(container.connection(), true)?.unwrap_or(store)
+    } else { store };
+    if address.is_some_and(|address| address.preferred.id != store.id) {
+        diagnostics::event("exact-path-owner", "resumed", serde_json::json!({
+            "requestedOwner": source_identity, "retainedOwner": store.source_identity,
+            "retainedLogicalPath": store.logical_path,
+        }));
     }
     container
         .register(&store)
@@ -597,7 +790,7 @@ fn open_store_at_with_hook(
     if let Some(batch) = &mut pending { bind_legacy_pending_receipts(batch, &container, &store)?; }
     let mut all_sources = legacy_sources.to_vec();
     if let Some(batch) = &pending {
-        validate_pending_batch(batch, container_path, &store)?;
+        validate_pending_batch(batch, container_path, &store, PendingRecovery::Resume)?;
         for source in &batch.sources {
             if !all_sources.contains(source) { all_sources.push(source.clone()); }
         }
@@ -728,7 +921,7 @@ fn open_store_at_with_hook(
             }
             let mut matches = false;
             for snapshot in &frozen {
-                validate_pending_snapshot(container_path,&store,snapshot)?;
+                validate_pending_snapshot(container_path,&store,snapshot,PendingRecovery::Resume)?;
                 if Container::snapshot_proof_path(&snapshot.backup).map_err(|e|e.to_string())? == actual { matches=true; break; }
             }
             if !matches { return Err("未完成导入的目标已有独立账目变化，保留现有账目与全部快照，拒绝覆盖".into()); }
@@ -855,9 +1048,43 @@ fn open_store_at_with_hook(
 }
 
 pub(crate) fn exact_store_spec(path: &Path) -> Result<StoreSpec, String> {
-    let identity = source_identity("exact", path)?;
-    StoreSpec::new("exact", identity.clone(), format!("exact/index/{identity}"))
-        .map_err(|error| error.to_string())
+    Ok(path_identity::ExactAddress::new(path)?.preferred)
+}
+
+pub(crate) fn exact_stage_candidates(index: &Path, source_digest: &str) -> Result<Vec<PathBuf>, String> {
+    if source_digest.len() != 64 || !source_digest.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()) {
+        return Err("暂存来源摘要无效；拒绝扩大历史分区查询范围".into());
+    }
+    let families = path_identity::candidate_families(index)?;
+    let container = open_ready_container_read_only(&container_path()?, std::time::Duration::from_secs(30))?;
+    let mut statement = container.connection().prepare(
+        "SELECT logical_path,source_identity FROM tb_stores \
+         WHERE logical_path>=?1 AND logical_path<?2 AND module='exact' AND state IN ('ready','staging','sealed')"
+    ).map_err(|error| error.to_string())?;
+    let mut directory = index.as_os_str().to_os_string();
+    directory.push(".staging");
+    let directory = PathBuf::from(directory);
+    let mut paths = Vec::new();
+    for family in families {
+      let prefix = format!("exact/staging/{family}/{source_digest}.candidate-v2-");
+      let upper = format!("{prefix}~");
+      let entries = statement.query_map(rusqlite::params![prefix, upper], |row| {
+          Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+      }).map_err(|error| error.to_string())?;
+      for entry in entries {
+        let (logical, identity) = entry.map_err(|error| error.to_string())?;
+        let name = logical.rsplit('/').next().ok_or("暂存候选缺少目录项")?;
+        let path = directory.join(name);
+        let matches = path_identity::ExactAddress::new(&path)?.registered(container.connection())?
+            .iter().any(|store| store.logical_path == logical && store.source_identity == identity);
+        if !matches {
+            return Err("暂存候选目录与业务分区身份不一致；已保留候选".into());
+        }
+        paths.push(path);
+      }
+    }
+    paths.sort(); paths.dedup();
+    Ok(paths)
 }
 
 /// Once A has been activated, its imported source receipts are historical
@@ -871,8 +1098,8 @@ pub(crate) fn exact_sources_already_consumed(
     if !initialized_marker_path(&path).is_file() {
         return Ok(false);
     }
-    let container = open_ready_container(&path)?;
-    let store = exact_store_spec(target)?;
+    let container = open_ready_container_read_only(&path, std::time::Duration::from_secs(30))?;
+    let store = resolve_exact_store_spec_on(container.connection(), target, false)?;
     if !container.is_registered(&store).map_err(|e| e.to_string())?
         || !container.has_imported_objects(&store).map_err(|e| e.to_string())? {
         return Ok(false);
@@ -910,8 +1137,8 @@ pub(crate) fn preserve_legacy_exact_migration(
     path: &Path,
     manifests: &[(PathBuf, String)],
 ) -> Result<(), String> {
-    let store = exact_store_spec(path)?;
     let container = Container::open_existing(container_path()?).map_err(|e| e.to_string())?;
+    let store = resolve_exact_store_spec_on(container.connection(), path, true)?;
     if !container.is_registered(&store).map_err(|e| e.to_string())? {
         return Err("尚未导入旧 Exact 账本，拒绝登记迁移凭据".into());
     }
@@ -925,24 +1152,24 @@ pub(crate) fn preserve_legacy_exact_migration(
 }
 
 pub(crate) fn preserves_legacy_exact_migration(path: &Path) -> Result<bool, String> {
-    let store = exact_store_spec(path)?;
-    let container = open_ready_container(&container_path()?)?;
+    let container = open_ready_container_read_only(&container_path()?, std::time::Duration::from_secs(30))?;
+    let store = resolve_exact_store_spec_on(container.connection(), path, false)?;
     validate_legacy_exact_migration_receipt(&container, &store)
 }
 
 /// Registration alone is insufficient: a physical legacy candidate must not
 /// become a resumable A candidate simply because somebody opened its path.
 pub(crate) fn owns_exact_migration_artifact(path: &Path) -> Result<bool, String> {
-    let store = exact_store_spec(path)?;
-    let container = open_ready_container(&container_path()?)?;
+    let container = open_ready_container_read_only(&container_path()?, std::time::Duration::from_secs(30))?;
+    let store = resolve_exact_store_spec_on(container.connection(), path, false)?;
     Ok(container.is_registered(&store).map_err(|e| e.to_string())?
         && container.has_imported_objects(&store).map_err(|e| e.to_string())?
         && container.legacy_input_receipt(path).map_err(|e| e.to_string())?.is_none())
 }
 
 pub(crate) fn exact_store_has_objects(path: &Path) -> Result<bool, String> {
-    let store = exact_store_spec(path)?;
-    let container = open_ready_container(&container_path()?)?;
+    let container = open_ready_container_read_only(&container_path()?, std::time::Duration::from_secs(30))?;
+    let store = resolve_exact_store_spec_on(container.connection(), path, false)?;
     Ok(container.is_registered(&store).map_err(|e| e.to_string())?
         && container.has_imported_objects(&store).map_err(|e| e.to_string())?)
 }
@@ -965,10 +1192,8 @@ pub(crate) fn exact_store_exists(path: &Path) -> Result<bool, String> {
     if !container_path.is_file() {
         return Ok(false);
     }
-    let store = exact_store_spec(path)?;
-    open_ready_container(&container_path)?
-        .is_registered(&store)
-        .map_err(|error| error.to_string())
+    let container = open_ready_container_read_only(&container_path, std::time::Duration::from_secs(30))?;
+    Ok(path_identity::ExactAddress::new(path)?.resolve(container.connection(), false)?.is_some())
 }
 
 pub(crate) fn exact_legacy_input_is_retired_unchanged(path: &Path) -> Result<bool, String> {
@@ -985,18 +1210,24 @@ pub(crate) fn clone_exact_store(
     source_path: &Path,
     target_path: &Path,
 ) -> Result<StoreProof, String> {
-    let source = exact_store_spec(source_path)?;
-    let target = exact_store_spec(target_path)?;
-    let source_connection = open_store(
-        "exact",
-        &source.source_identity,
-        &source.logical_path,
-        &[source_path.to_path_buf()],
-    )?;
+    clone_exact_store_with_identity(source_path, target_path).map(|(_, proof)| proof)
+}
+
+/// Return the actual copied owner together with its content proof. A later
+/// conditional removal must not recalculate this owner from a path whose
+/// canonical spelling or physical parent may have changed after the copy.
+pub(crate) fn clone_exact_store_with_identity(
+    source_path: &Path,
+    target_path: &Path,
+) -> Result<(StoreSpec, StoreProof), String> {
+    let source_connection = open_exact_store(source_path, &[source_path.to_path_buf()])?;
+    let source = source_connection.bound_store_spec().map_err(|error| error.to_string())?;
     drop(source_connection);
-    open_ready_container(&container_path()?)?
-        .clone_store_namespace(&source, &target)
-        .map_err(|error| error.to_string())
+    let mut container = open_ready_container(&container_path()?)?;
+    let target = resolve_exact_store_spec_on(container.connection(), target_path, true)?;
+    let proof = container.clone_store_namespace(&source, &target)
+        .map_err(|error| error.to_string())?;
+    Ok((source, proof))
 }
 
 pub(crate) fn replace_exact_store(
@@ -1011,8 +1242,8 @@ pub(crate) fn remove_exact_store(path: &Path) -> Result<bool, String> {
     if !container_path.is_file() {
         return Ok(false);
     }
-    let store = exact_store_spec(path)?;
     let mut container = open_ready_container(&container_path)?;
+    let store = resolve_exact_store_spec_on(container.connection(), path, true)?;
     if !container
         .is_registered(&store)
         .map_err(|error| error.to_string())?
@@ -1025,10 +1256,23 @@ pub(crate) fn remove_exact_store(path: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
-pub(crate) fn seal_exact_store(path: &Path) -> Result<(), String> {
-    let store = exact_store_spec(path)?;
+pub(crate) fn remove_exact_store_if_unchanged(
+    copied_owner: &StoreSpec,
+    copied: &StoreProof,
+) -> Result<(), String> {
+    if copied_owner.module != "exact" {
+        return Err("精确 token 暂存保留后原分区身份无效；已保留原分区与副本".into());
+    }
     open_ready_container(&container_path()?)?
-        .seal_store(&store, now_unix())
+        .remove_store_namespace_if_unchanged(copied_owner, copied)
+        .map_err(|error| format!(
+            "精确 token 暂存保留后原分区已变化或无法验证；已保留原分区与副本：{error}"))
+}
+
+pub(crate) fn seal_exact_store(path: &Path) -> Result<(), String> {
+    let mut container = open_ready_container(&container_path()?)?;
+    let store = resolve_exact_store_spec_on(container.connection(), path, true)?;
+    container.seal_store(&store, now_unix())
         .map(|_| ())
         .map_err(|error| error.to_string())
 }
@@ -1036,23 +1280,19 @@ pub(crate) fn seal_exact_store(path: &Path) -> Result<(), String> {
 pub(crate) fn exact_store_observation(
     path: &Path,
 ) -> Result<Option<(u64, i64, String, f64)>, String> {
-    let store = exact_store_spec(path)?;
-    open_ready_container(&container_path()?)?
-        .seal_observation(&store)
+    Ok(exact_store_observation_with_owner(path)?.map(|(_, observation)| observation))
+}
+
+pub(crate) fn exact_store_observation_with_owner(path: &Path) -> Result<Option<(StoreSpec, (u64, i64, String, f64))>, String> {
+    let container = open_ready_container_read_only(&container_path()?, std::time::Duration::from_secs(30))?;
+    let store = resolve_exact_store_spec_on(container.connection(), path, false)?;
+    container.seal_observation(&store).map(|value| value.map(|observation| (store, observation)))
         .map_err(|error| error.to_string())
 }
 
-pub(crate) fn attach_exact_store_alias(
-    connection: &StoreConnection,
-    alias: &str,
-    path: &Path,
-) -> Result<(), String> {
-    let container_path = container_path()?;
-    if !container_path.is_file() {
-        return Err("业务数据库 A 不存在，不能附加精确 token 暂存分区".into());
-    }
-    let store = exact_store_spec(path)?;
-    let container = open_ready_container(&container_path)?;
+pub(crate) fn attach_exact_store_owner(connection: &StoreConnection, alias: &str, store: &StoreSpec) -> Result<(), String> {
+    if store.module != "exact" { return Err("精确 token 暂存归属无效".into()); }
+    let container = open_ready_container_read_only(&container_path()?, std::time::Duration::from_secs(30))?;
     if !container
         .is_registered(&store)
         .map_err(|error| error.to_string())?
@@ -1113,7 +1353,24 @@ fn legacy_source_exists(path: &Path) -> Result<bool, String> {
     }
 }
 
+fn finish_bootstrap_batch(subject: &str, failures: Vec<String>) -> Result<(), String> {
+    if failures.is_empty() { return Ok(()); }
+    Err(format!("{subject}发现 {} 项错误；保留已有账本和全部快照，未激活业务写入：\n{}",
+        failures.len(), failures.join("\n")))
+}
+
 fn bootstrap_legacy_stores() -> Result<(), String> {
+    let mut failures = Vec::new();
+    let mut import = |module: &str, path: PathBuf, fixed_identity: Option<String>, logical_prefix: &str| {
+        let result = diagnostics::step("legacy-module-input", &path.display().to_string(), || {
+            if !legacy_source_exists(&path)? { return Ok(()); }
+            let identity = match fixed_identity { Some(value) => value, None => source_identity(module, &path)? };
+            let logical = format!("{logical_prefix}/{identity}");
+            drop(open_store_during_bootstrap(module, &identity, &logical, std::slice::from_ref(&path))?);
+            Ok(())
+        });
+        if let Err(error) = result { failures.push(format!("{}：{error}", path.display())); }
+    };
     for path in [
         app_paths::quota_history_database_path(),
         app_paths::legacy_shared_quota_history_database_path(),
@@ -1121,20 +1378,12 @@ fn bootstrap_legacy_stores() -> Result<(), String> {
     .into_iter()
     .flatten()
     {
-        if !legacy_source_exists(&path)? { continue; }
-        let identity = source_identity("quota_history_legacy", &path)?;
-        let logical_path = format!("legacy/quota-history/{identity}");
-        let _ =
-            open_store_during_bootstrap("quota_history_legacy", &identity, &logical_path, &[path])?;
+        import("quota_history_legacy", path, None, "legacy/quota-history");
     }
     if let Some(path) = app_paths::modeltrace_database_path() {
-        if legacy_source_exists(&path)? {
-            let identity = source_identity("modeltrace_legacy", &path)?;
-            let logical_path = format!("legacy/modeltrace/{identity}");
-            let _ =
-                open_store_during_bootstrap("modeltrace_legacy", &identity, &logical_path, &[path])?;
-        }
+        import("modeltrace_legacy", path, None, "legacy/modeltrace");
     }
+    drop(import);
     if let Some(directory) = app_paths::performance_trace_log_path()
         .and_then(|path| path.parent().map(Path::to_path_buf))
     {
@@ -1142,15 +1391,19 @@ fn bootstrap_legacy_stores() -> Result<(), String> {
             Ok(entries) => Some(entries),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => {
-                return Err(format!(
+                failures.push(format!(
                     "无法枚举旧 Body Speed 数据库目录 {}：{error}",
                     directory.display()
                 ));
+                None
             }
         };
         if let Some(entries) = entries {
             for entry in entries {
-                let entry = entry.map_err(|error| error.to_string())?;
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(error) => { failures.push(format!("{}：{error}", directory.display())); continue; }
+                };
                 let path = entry.path();
                 let Some(filename) = path.file_name().and_then(|name| name.to_str()) else {
                     continue;
@@ -1164,26 +1417,21 @@ fn bootstrap_legacy_stores() -> Result<(), String> {
                 if identity_part.is_empty() {
                     continue;
                 }
-                let metadata = std::fs::symlink_metadata(&path).map_err(|error| {
-                    format!("无法检查旧 Body Speed 数据库 {}：{error}", path.display())
-                })?;
-                if metadata.file_type().is_symlink() || !metadata.is_file() {
-                    return Err(format!(
-                        "旧 Body Speed 数据库不是普通文件；拒绝切换：{}",
-                        path.display()
-                    ));
-                }
                 // The physical Home fingerprint is already embedded in the
                 // legacy filename. Keep this identity stable when the source
                 // file is later archived or removed.
                 let identity = filename.to_owned();
                 let logical_path = format!("body-speed/{filename}");
-                let _ =
-                    open_store_during_bootstrap("body-speed", &identity, &logical_path, &[path])?;
+                let result = diagnostics::step("legacy-module-input", &path.display().to_string(), || {
+                    if !legacy_source_exists(&path)? { return Ok(()); }
+                    drop(open_store_during_bootstrap("body-speed", &identity, &logical_path, std::slice::from_ref(&path))?);
+                    Ok(())
+                });
+                if let Err(error) = result { failures.push(format!("{}：{error}", path.display())); }
             }
         }
     }
-    Ok(())
+    finish_bootstrap_batch("旧业务库导入", failures)
 }
 
 fn initialized_marker_path(container_path: &Path) -> PathBuf {
@@ -1223,6 +1471,15 @@ fn verify_initialized(container_path: &Path) -> Result<(), String> {
 fn open_ready_container(container_path: &Path) -> Result<Container, String> {
     ensure_runtime_business_store_ready()?;
     open_ready_container_during_bootstrap(container_path)
+}
+
+fn open_ready_container_read_only(path: &Path, timeout: std::time::Duration) -> Result<Container, String> {
+    ensure_runtime_business_store_ready()?;
+    verify_ready_container(path)?;
+    let container = Container::open_read_only_existing(path, timeout).map_err(|error| error.to_string())?;
+    #[cfg(not(test))]
+    verify_active_container_identity(path)?;
+    Ok(container)
 }
 
 fn open_ready_container_during_bootstrap(container_path: &Path) -> Result<Container, String> {
@@ -1401,6 +1658,80 @@ mod tests {
     use rusqlite::{params, OpenFlags};
     use std::fs;
     use uuid::Uuid;
+
+    #[test]
+    fn registered_read_only_store_does_not_wait_for_or_modify_a_publisher() {
+        let fixture = Fixture::new();
+        let support = fixture.path("support");
+        fs::create_dir_all(&support).unwrap();
+        let _environment = app_paths::app_path_test_env_guard(&[
+            ("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR", support.clone()),
+        ]);
+        let path = container_path().unwrap();
+        assert_eq!(path, support.join("codex-ledger.sqlite"));
+        let spec = StoreSpec::new("exact", "test-home", "test-index").unwrap();
+        let container = Container::open(&path).unwrap();
+        container.register(&spec).unwrap();
+        let store = container.into_store_connection(&spec).unwrap();
+        store.execute_batch("CREATE TABLE records(value INTEGER); INSERT INTO records VALUES(41)").unwrap();
+        drop(store);
+        fs::write(initialized_marker_path(&path), b"tokenbar-codex-ledger-v1\n").unwrap();
+        let writer = Container::open_existing(&path).unwrap();
+        let physical_table = format!("{}records", spec.prefix);
+        writer.connection().execute_batch(&format!(
+            "BEGIN IMMEDIATE; UPDATE \"{physical_table}\" SET value=42"
+        )).unwrap();
+
+        // Registration would need the writer lock and fail at this timeout.
+        let reader = open_registered_store_read_only(
+            "exact", "test-home", "test-index", std::time::Duration::from_millis(25),
+        ).unwrap().unwrap();
+        assert_eq!(reader.query_row("SELECT value FROM records", [], |row| row.get::<_, i64>(0)).unwrap(), 41);
+        let error = reader.execute("INSERT INTO records VALUES(99)", []).unwrap_err();
+        assert_eq!(error.sqlite_error_code(), Some(rusqlite::ErrorCode::ReadOnly));
+        drop(reader);
+        writer.connection().execute_batch("ROLLBACK").unwrap();
+        assert_eq!(writer.connection().query_row(
+            &format!("SELECT value FROM \"{physical_table}\""), [], |row| row.get::<_, i64>(0),
+        ).unwrap(), 41);
+    }
+
+    #[test]
+    fn registered_read_only_store_never_creates_or_registers_missing_inputs() {
+        let fixture = Fixture::new();
+        let support = fixture.path("support");
+        fs::create_dir_all(&support).unwrap();
+        let _environment = app_paths::app_path_test_env_guard(&[
+            ("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR", support.clone()),
+        ]);
+        let path = container_path().unwrap();
+        assert_eq!(path, support.join("codex-ledger.sqlite"));
+        assert!(open_registered_store_read_only(
+            "exact", "home", "index", std::time::Duration::from_millis(25),
+        ).is_err());
+        assert!(!path.exists());
+        let container = Container::open(&path).unwrap();
+        drop(container);
+        // A valid physical database without the activation marker stays gated.
+        assert!(open_registered_store_read_only(
+            "exact", "home", "index", std::time::Duration::from_millis(25),
+        ).is_err());
+        fs::write(initialized_marker_path(&path), b"tokenbar-codex-ledger-v1\n").unwrap();
+        assert!(open_registered_store_read_only(
+            "exact", "home", "index", std::time::Duration::from_millis(25),
+        ).unwrap().is_none());
+        let container = Container::open_existing(&path).unwrap();
+        assert!(!container.is_registered(&StoreSpec::new("exact", "home", "index").unwrap()).unwrap());
+        container.connection().execute(
+            "UPDATE tb_container_meta SET value='999' WHERE key='schema_version'", [],
+        ).unwrap();
+        assert!(open_registered_store_read_only(
+            "exact", "home", "index", std::time::Duration::from_millis(25),
+        ).is_err(), "unknown container versions must never be repaired by a reader");
+        assert_eq!(container.connection().query_row(
+            "SELECT value FROM tb_container_meta WHERE key='schema_version'", [], |row| row.get::<_, String>(0),
+        ).unwrap(), "999");
+    }
 
     #[test]
     fn consumed_sources_require_activation_rows_and_complete_path_ownership() {
@@ -1605,6 +1936,48 @@ mod tests {
     }
 
     #[test]
+    fn bootstrap_reports_independent_legacy_failures_and_keeps_successful_imports_pending() {
+        let fixture = Fixture::new();
+        let support = fixture.path("support");
+        let shared = fixture.path("shared");
+        let cache = fixture.path("cache");
+        fs::create_dir_all(&support).unwrap();
+        fs::create_dir_all(&shared).unwrap();
+        fs::create_dir_all(&cache).unwrap();
+        let _environment = app_paths::app_path_test_env_guard(&[
+            ("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR", support.clone()),
+            ("CODEX_TOKEN_BAR_SUPPORT_BASE_DIR", shared),
+            ("CODEX_TOKEN_BAR_TAURI_CACHE_DIR", cache.clone()),
+            ("CODEX_TOKEN_BAR_CACHE_BASE_DIR", cache.clone()),
+            ("CODEX_TOKEN_BAR_TAURI_USAGE_CACHE_DIR", cache.join("usage")),
+        ]);
+        let quota = app_paths::quota_history_database_path().unwrap();
+        let modeltrace = app_paths::modeltrace_database_path().unwrap();
+        fs::create_dir_all(modeltrace.parent().unwrap()).unwrap();
+        fs::write(&quota, b"damaged quota evidence").unwrap();
+        fs::write(&modeltrace, b"damaged modeltrace evidence").unwrap();
+        let body = support.join("body-speed-retained-home.sqlite");
+        seed_legacy(&body);
+        let body_bytes = fs::read(&body).unwrap();
+        let db = container_path().unwrap();
+        for _ in 0..2 {
+            let error = bootstrap_with_diagnostics(&db).unwrap_err();
+            assert!(error.contains(quota.to_str().unwrap()), "{error}");
+            assert!(error.contains(modeltrace.to_str().unwrap()), "{error}");
+            assert!(!initialized_marker_path(&db).exists());
+            let spec = StoreSpec::new("body-speed", "body-speed-retained-home.sqlite",
+                "body-speed/body-speed-retained-home.sqlite").unwrap();
+            let container = Container::open_existing(&db).unwrap();
+            let active = container.into_store_connection(&spec).unwrap();
+            assert_eq!(active.query_row("SELECT value FROM events WHERE id=1", [], |row|
+                row.get::<_, String>(0)).unwrap(), "old");
+        }
+        assert_eq!(fs::read(&quota).unwrap(), b"damaged quota evidence");
+        assert_eq!(fs::read(&modeltrace).unwrap(), b"damaged modeltrace evidence");
+        assert_eq!(fs::read(&body).unwrap(), body_bytes);
+    }
+
+    #[test]
     fn late_exact_alias_of_consumed_baseline_preserves_current_corrections() {
         let fixture = Fixture::new();
         let db = fixture.path("codex-ledger.sqlite");
@@ -1722,7 +2095,7 @@ mod tests {
             2
         );
         drop(recovered);
-        verify_bootstrap_pending_inputs(&Container::open_existing(&db).unwrap()).unwrap();
+        verify_bootstrap_pending_inputs(&Container::open_existing(&db).unwrap(), PendingRecovery::Resume).unwrap();
         fs::write(initialized_marker_path(&db), b"tokenbar-codex-ledger-v1\n").unwrap();
         let active = open_store_at(&db, "quota_history", "home", "quota", sources, true).unwrap();
         active
@@ -1827,18 +2200,102 @@ mod tests {
             drop(container);
             fs::remove_file(&raw).unwrap();
             if corrupt { fs::write(&receipt.backup_path, b"invalid frozen copy").unwrap(); }
-            let result = resume_pending_bootstrap_imports(&db);
+            let result = resume_pending_bootstrap_imports(&db, PendingRecovery::Resume);
             if corrupt {
                 assert!(result.is_err());
                 assert!(!initialized_marker_path(&db).exists());
                 continue;
             }
             result.unwrap();
-            verify_bootstrap_pending_inputs(&Container::open_existing(&db).unwrap()).unwrap();
+            verify_bootstrap_pending_inputs(&Container::open_existing(&db).unwrap(), PendingRecovery::Resume).unwrap();
             let active = open_store_at(&db, "quota_history", "home", "quota", &[], false).unwrap();
             assert_eq!(active.query_row("SELECT COUNT(*) FROM events", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
             assert!(!raw.exists(), "Recovery must not recreate the old writer");
         }
+    }
+
+    #[test]
+    fn pending_source_outside_discovery_resumes_late_committed_rows_before_activation() {
+        let fixture = Fixture::new();
+        let db = fixture.path("codex-ledger.sqlite");
+        let raw = fixture.path("retired-layout/legacy.sqlite");
+        fs::create_dir_all(raw.parent().unwrap()).unwrap();
+        seed_legacy(&raw);
+        let sources = std::slice::from_ref(&raw);
+        assert!(open_store_at_with_hook(&db, "quota_history", "home", "quota", sources,
+            false, &|| Err("failed after committing the namespace".into())).is_err());
+        let receipt = Container::open_existing(&db).unwrap().legacy_input_receipt(&raw)
+            .unwrap().unwrap();
+        let frozen_bytes = fs::read(&receipt.backup_path).unwrap();
+        // No discovery/open_store call revisits this retired layout. Only its
+        // durable pending journal can find a later commit from the old writer.
+        Connection::open(&raw).unwrap().execute_batch(
+            "INSERT INTO events VALUES(2,'late committed history')").unwrap();
+        let source_bytes = fs::read(&raw).unwrap();
+        resume_pending_bootstrap_imports(&db, PendingRecovery::Resume).unwrap();
+        let container = Container::open_existing(&db).unwrap();
+        verify_bootstrap_pending_inputs(&container, PendingRecovery::Resume).unwrap();
+        let store = StoreSpec::new("quota_history", "home", "quota").unwrap();
+        let expected = container.proof(&store).unwrap();
+        let active = container.into_store_connection(&store).unwrap();
+        let rows: Vec<(i64, String)> = active.prepare("SELECT id,value FROM events ORDER BY id")
+            .unwrap().query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap().collect::<rusqlite::Result<_>>().unwrap();
+        assert_eq!(rows, vec![(1, "old".into()), (2, "late committed history".into())]);
+        drop(active);
+        for _ in 0..2 {
+            resume_pending_bootstrap_imports(&db, PendingRecovery::Resume).unwrap();
+            let container = Container::open_existing(&db).unwrap();
+            verify_bootstrap_pending_inputs(&container, PendingRecovery::Resume).unwrap();
+            assert_eq!(container.proof(&store).unwrap(), expected);
+        }
+        assert_eq!(fs::read(&raw).unwrap(), source_bytes);
+        assert_eq!(fs::read(&receipt.backup_path).unwrap(), frozen_bytes);
+        assert!(!initialized_marker_path(&db).exists(), "module recovery cannot publish readiness");
+    }
+
+    #[test]
+    fn pending_source_outside_discovery_never_replaces_history_with_truncated_rows() {
+        let fixture = Fixture::new();
+        let db = fixture.path("codex-ledger.sqlite");
+        let raw = fixture.path("legacy.sqlite");
+        seed_legacy(&raw);
+        drop(open_store_at(&db, "quota_history", "home", "quota",
+            std::slice::from_ref(&raw), false).unwrap());
+        let store = StoreSpec::new("quota_history", "home", "quota").unwrap();
+        let container = Container::open_existing(&db).unwrap();
+        let expected = container.proof(&store).unwrap();
+        let receipt = container.legacy_input_receipt(&raw).unwrap().unwrap();
+        let frozen_bytes = fs::read(&receipt.backup_path).unwrap();
+        drop(container);
+        Connection::open(&raw).unwrap().execute("DELETE FROM events", []).unwrap();
+        let error = resume_pending_bootstrap_imports(&db, PendingRecovery::Resume).unwrap_err();
+        assert!(error.contains("不再覆盖已冻结的旧账"), "{error}");
+        assert_eq!(Container::open_existing(&db).unwrap().proof(&store).unwrap(), expected);
+        assert_eq!(fs::read(&receipt.backup_path).unwrap(), frozen_bytes);
+        assert!(!initialized_marker_path(&db).exists());
+    }
+
+    #[test]
+    fn pending_recovery_reports_every_independent_failure_and_preserves_each_destination() {
+        let fixture = Fixture::new();
+        let db = fixture.path("codex-ledger.sqlite");
+        let mut retained = Vec::new();
+        for name in ["first", "second"] {
+            let raw = fixture.path(&format!("{name}.sqlite"));
+            seed_legacy(&raw);
+            drop(open_store_at(&db, "quota_history", name, name,
+                std::slice::from_ref(&raw), false).unwrap());
+            let spec = StoreSpec::new("quota_history", name, name).unwrap();
+            let before = Container::open_existing(&db).unwrap().proof(&spec).unwrap();
+            retained.push((spec, before));
+            Connection::open(&raw).unwrap().execute("DELETE FROM events", []).unwrap();
+        }
+        let error = resume_pending_bootstrap_imports(&db, PendingRecovery::Resume).unwrap_err();
+        assert!(error.contains("first.sqlite") && error.contains("second.sqlite"), "{error}");
+        let container = Container::open_existing(&db).unwrap();
+        for (spec, before) in retained { assert_eq!(container.proof(&spec).unwrap(), before); }
+        assert!(!initialized_marker_path(&db).exists());
     }
 
     #[test]
@@ -1859,13 +2316,13 @@ mod tests {
             drop(container);
             if truncate { Connection::open(&raw).unwrap().execute("DELETE FROM events", []).unwrap(); }
             else { fs::remove_file(&raw).unwrap(); fs::remove_dir(raw.parent().unwrap()).unwrap(); }
-            let result = resume_pending_bootstrap_imports(&db);
+            let result = resume_pending_bootstrap_imports(&db, PendingRecovery::Resume);
             if truncate {
                 assert!(result.is_err());
                 assert_eq!(Container::open_existing(&db).unwrap().proof(&store).unwrap(), before);
             } else {
                 result.unwrap();
-                verify_bootstrap_pending_inputs(&Container::open_existing(&db).unwrap()).unwrap();
+                verify_bootstrap_pending_inputs(&Container::open_existing(&db).unwrap(), PendingRecovery::Resume).unwrap();
                 assert_eq!(Container::open_existing(&db).unwrap().proof(&store).unwrap(), before);
                 assert!(!raw.exists());
             }
@@ -1884,7 +2341,7 @@ mod tests {
         drop(container);
         let corrupt = b"partial app-owned backup";
         fs::write(&receipt.backup_path, corrupt).unwrap();
-        resume_pending_bootstrap_imports(&db).unwrap();
+        resume_pending_bootstrap_imports(&db, PendingRecovery::Resume).unwrap();
         assert_eq!(Container::snapshot_digest_path(&receipt.backup_path).unwrap(), receipt.source_digest);
         let parent = Path::new(&receipt.backup_path).parent().unwrap();
         assert!(fs::read_dir(parent).unwrap().filter_map(Result::ok)
@@ -1913,7 +2370,7 @@ mod tests {
             container.connection().execute("UPDATE tb_container_meta SET value=?1 WHERE key=?2", rusqlite::params![forged, key]).unwrap();
             drop(container);
             fs::remove_file(&raw).unwrap();
-            assert!(resume_pending_bootstrap_imports(&db).is_err());
+            assert!(resume_pending_bootstrap_imports(&db, PendingRecovery::Resume).is_err());
             assert_eq!(fs::read(&outside).unwrap(), bytes);
             let container = Container::open_existing(&db).unwrap();
             let retained: String = container.connection().query_row("SELECT value FROM tb_container_meta WHERE key=?1", [&key], |r| r.get(0)).unwrap();

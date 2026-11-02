@@ -24,6 +24,8 @@ const EXPORT_ALIAS: &str = "tb_export_source";
 static BACKUP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) type BusinessStoreResult<T> = Result<T, BusinessStoreError>;
+pub(crate) type StoreSealObservation = (u64, i64, String, f64);
+pub(crate) type VerifiedStoreSeal = (StoreSealObservation, StoreProof);
 
 #[derive(Debug)]
 pub(crate) enum BusinessStoreError {
@@ -230,16 +232,36 @@ impl Container {
     /// store callers use this path so a missing A can never be silently
     /// replaced with an empty database.
     pub(crate) fn open_existing(path: impl AsRef<Path>) -> BusinessStoreResult<Self> {
-        let path = path.as_ref().to_path_buf();
+        Self::open_existing_mode(path.as_ref(), false, Duration::from_secs(30))
+    }
+
+    pub(crate) fn open_read_only_existing(
+        path: impl AsRef<Path>,
+        timeout: Duration,
+    ) -> BusinessStoreResult<Self> {
+        Self::open_existing_mode(path.as_ref(), true, timeout)
+    }
+
+    fn open_existing_mode(
+        path: &Path,
+        read_only: bool,
+        timeout: Duration,
+    ) -> BusinessStoreResult<Self> {
+        #[cfg(all(feature = "business-store-fixture", not(test)))]
+        let _scope = crate::core::usage::token_count_jsonl::measure_source_count_scope(
+            if read_only { "container.open-read" } else { "container.open-write" });
+        let path = path.to_path_buf();
         if std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_symlink())
         {
             return Err(BusinessStoreError::InvalidContainerVersion);
         }
-        let connection = Connection::open_with_flags(
-            &path,
-            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_URI,
-        )?;
-        connection.busy_timeout(Duration::from_secs(30))?;
+        let mode = if read_only {
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+        } else {
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+        };
+        let connection = Connection::open_with_flags(&path, mode | OpenFlags::SQLITE_OPEN_URI)?;
+        connection.busy_timeout(timeout)?;
         let physical_version: i64 =
             connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         if physical_version != 1 {
@@ -295,7 +317,7 @@ impl Container {
             names
         };
         let binding = StoreSqlBinding::new(store.id.clone(), store.prefix.clone(), names)?;
-        Ok(StoreConnection::bound(self.connection, binding)?)
+        Ok(StoreConnection::bound_with_store(self.connection, binding, store.clone())?)
     }
 
     pub(crate) fn has_imported_objects(&self, store: &StoreSpec) -> BusinessStoreResult<bool> {
@@ -916,21 +938,25 @@ impl Container {
     pub(crate) fn remove_store_namespace(&mut self, store: &StoreSpec) -> BusinessStoreResult<()> {
         self.ensure_registered(store)?;
         let tx = self.connection.transaction()?;
-        tx.execute(
-            "UPDATE tb_legacy_inputs SET retired=1 WHERE store_id=?1",
-            [&store.id],
-        )?;
-        drop_store_objects(&tx, &store.prefix)?;
-        tx.execute("DELETE FROM tb_store_seals WHERE store_id=?1", [&store.id])?;
-        tx.execute(
-            "DELETE FROM tb_store_imports WHERE store_id=?1",
-            [&store.id],
-        )?;
-        tx.execute(
-            "DELETE FROM tb_store_objects WHERE store_id=?1",
-            [&store.id],
-        )?;
-        tx.execute("DELETE FROM tb_stores WHERE store_id=?1", [&store.id])?;
+        remove_store_namespace_rows(&tx, store)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// A successful copy authorizes deleting only the exact owner and full
+    /// content that was copied. Hold the writer lock across proof and deletion
+    /// so a later writer cannot lose new rows in the clone/remove interval.
+    pub(crate) fn remove_store_namespace_if_unchanged(
+        &mut self,
+        store: &StoreSpec,
+        copied: &StoreProof,
+    ) -> BusinessStoreResult<()> {
+        let tx = self.connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        ensure_registered_store(&tx, store)?;
+        if proof_for(&tx, "main", &store.prefix, true, None)? != *copied {
+            return Err(BusinessStoreError::ProofMismatch);
+        }
+        remove_store_namespace_rows(&tx, store)?;
         tx.commit()?;
         Ok(())
     }
@@ -940,13 +966,15 @@ impl Container {
         store: &StoreSpec,
         sealed_at: f64,
     ) -> BusinessStoreResult<StoreProof> {
-        self.ensure_registered(store)?;
+        #[cfg(all(feature = "business-store-fixture", not(test)))]
+        let _scope = crate::core::usage::token_count_jsonl::measure_source_count_scope("container.seal");
         if !sealed_at.is_finite() {
             return Err(BusinessStoreError::InvalidTimestamp);
         }
-        let proof = self.proof(store)?;
-        let byte_count = logical_footprint(&self.connection, &store.prefix)?;
-        let tx = self.connection.transaction()?;
+        let tx = self.connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        ensure_registered_store(&tx, store)?;
+        let proof = proof_for(&tx, "main", &store.prefix, true, None)?;
+        let byte_count = logical_footprint(&tx, &store.prefix)?;
         tx.execute(
             "INSERT INTO tb_store_seals(store_id,byte_count,row_count,rows_digest,sealed_at) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(store_id) DO UPDATE SET byte_count=excluded.byte_count,row_count=excluded.row_count,rows_digest=excluded.rows_digest,sealed_at=excluded.sealed_at",
             params![store.id, byte_count as i64, proof.row_count, proof.rows_digest, sealed_at],
@@ -962,30 +990,8 @@ impl Container {
     pub(crate) fn seal_observation(
         &self,
         store: &StoreSpec,
-    ) -> BusinessStoreResult<Option<(u64, i64, String, f64)>> {
-        self.ensure_registered(store)?;
-        let row = self
-            .connection
-            .query_row(
-                "SELECT byte_count,row_count,rows_digest,sealed_at FROM tb_store_seals WHERE store_id=?1",
-                [&store.id],
-                |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, f64>(3)?,
-                    ))
-                },
-            )
-            .optional()?;
-        row.map(|(bytes, rows, digest, sealed_at)| {
-            if bytes < 0 || rows < 0 || !sealed_at.is_finite() {
-                return Err(BusinessStoreError::ProofMismatch);
-            }
-            Ok((bytes as u64, rows, digest, sealed_at))
-        })
-        .transpose()
+    ) -> BusinessStoreResult<Option<StoreSealObservation>> {
+        store_seal_observation(&self.connection, store)
     }
 
     fn snapshot_digest(path: &Path) -> BusinessStoreResult<String> {
@@ -1322,16 +1328,117 @@ impl Container {
     }
 
     fn ensure_registered(&self, store: &StoreSpec) -> BusinessStoreResult<()> {
-        let matches: bool = self.connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM tb_stores WHERE store_id=?1 AND module=?2 AND source_identity=?3 AND logical_path=?4 AND namespace_prefix=?5)",
-            params![store.id, store.module, store.source_identity, store.logical_path, store.prefix],
-            |row| row.get(0),
-        )?;
-        if !matches || !valid_store_spec(store) {
-            return Err(BusinessStoreError::InvalidStore);
-        }
-        Ok(())
+        ensure_registered_store(&self.connection, store)
     }
+}
+
+fn ensure_registered_store(connection: &Connection, store: &StoreSpec) -> BusinessStoreResult<()> {
+    let matches: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM tb_stores WHERE store_id=?1 AND module=?2 AND source_identity=?3 AND logical_path=?4 AND namespace_prefix=?5)",
+        params![store.id, store.module, store.source_identity, store.logical_path, store.prefix],
+        |row| row.get(0),
+    )?;
+    if !matches || !valid_store_spec(store) {
+        return Err(BusinessStoreError::InvalidStore);
+    }
+    Ok(())
+}
+
+fn remove_store_namespace_rows(
+    tx: &rusqlite::Transaction<'_>,
+    store: &StoreSpec,
+) -> BusinessStoreResult<()> {
+    tx.execute("UPDATE tb_legacy_inputs SET retired=1 WHERE store_id=?1", [&store.id])?;
+    drop_store_objects(tx, &store.prefix)?;
+    tx.execute("DELETE FROM tb_store_seals WHERE store_id=?1", [&store.id])?;
+    tx.execute("DELETE FROM tb_store_imports WHERE store_id=?1", [&store.id])?;
+    tx.execute("DELETE FROM tb_store_objects WHERE store_id=?1", [&store.id])?;
+    tx.execute("DELETE FROM tb_stores WHERE store_id=?1", [&store.id])?;
+    Ok(())
+}
+
+/// Observe metadata only. Callers accepting persistent content must use the
+/// transaction-bound verification below, not treat this row as a fresh hash.
+pub(crate) fn store_seal_observation(
+    connection: &Connection,
+    store: &StoreSpec,
+) -> BusinessStoreResult<Option<StoreSealObservation>> {
+    ensure_registered_store(connection, store)?;
+    let row = connection.query_row(
+        "SELECT byte_count,row_count,rows_digest,sealed_at FROM tb_store_seals WHERE store_id=?1",
+        [&store.id],
+        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?,
+            row.get::<_, String>(2)?, row.get::<_, f64>(3)?)),
+    ).optional()?;
+    row.map(|(bytes, rows, digest, sealed_at)| {
+        if bytes < 0 || rows < 0 || !sealed_at.is_finite() {
+            return Err(BusinessStoreError::ProofMismatch);
+        }
+        Ok((bytes as u64, rows, digest, sealed_at))
+    }).transpose()
+}
+
+/// Verify both the persisted seal and current typed rows in the caller's
+/// existing snapshot. Requiring a transaction also lets the final importer
+/// hold its write lock from this check through publication of the stage rows.
+/// A mismatch never repairs/replaces the old seal or any artifact content.
+pub(crate) fn verify_sealed_store_in_transaction(
+    connection: &Connection,
+    store: &StoreSpec,
+    expected_schema_digests: &[String],
+) -> BusinessStoreResult<VerifiedStoreSeal> {
+    #[cfg(all(feature = "business-store-fixture", not(test)))]
+    let _scope = crate::core::usage::token_count_jsonl::measure_source_count_scope("stage.verify-seal");
+    if connection.is_autocommit() {
+        return Err(BusinessStoreError::InvalidStore);
+    }
+    let seal = store_seal_observation(connection, store)?
+        .ok_or(BusinessStoreError::ProofMismatch)?;
+    let (state, version): (String, i64) = connection.query_row(
+        "SELECT state,user_version FROM tb_stores WHERE store_id=?1", [&store.id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if state != StoreState::Sealed.as_str() {
+        return Err(BusinessStoreError::InvalidStore);
+    }
+    let actual = proof_for(connection, "main", &store.prefix, true, Some(version))?;
+    if !expected_schema_digests.contains(&actual.schema_digest)
+        || actual.row_count != seal.1 || actual.rows_digest != seal.2
+        || logical_footprint(connection, &store.prefix)? != seal.0 {
+        return Err(BusinessStoreError::ProofMismatch);
+    }
+    Ok((seal, actual))
+}
+
+pub(crate) fn store_state(connection: &Connection, store: &StoreSpec) -> BusinessStoreResult<StoreState> {
+    ensure_registered_store(connection, store)?;
+    let state: String = connection.query_row("SELECT state FROM tb_stores WHERE store_id=?1",
+        [&store.id], |row| row.get(0))?;
+    match state.as_str() {
+        "ready" => Ok(StoreState::Ready),
+        "staging" => Ok(StoreState::Staging),
+        "sealed" => Ok(StoreState::Sealed),
+        _ => Err(BusinessStoreError::InvalidStore),
+    }
+}
+
+pub(crate) fn store_proof_in_transaction(
+    connection: &Connection,
+    store: &StoreSpec,
+) -> BusinessStoreResult<StoreProof> {
+    if connection.is_autocommit() {
+        return Err(BusinessStoreError::InvalidStore);
+    }
+    ensure_registered_store(connection, store)?;
+    proof_for(connection, "main", &store.prefix, true, None)
+}
+
+/// Build trusted format contracts from compiled producer DDL, never from an
+/// artifact being accepted. The Exact owner caches these immutable digests.
+pub(crate) fn schema_digest_for_ddl(ddl: &str) -> BusinessStoreResult<String> {
+    let connection = Connection::open_in_memory()?;
+    connection.execute_batch(ddl)?;
+    Ok(proof_for(&connection, "main", "", false, None)?.schema_digest)
 }
 
 fn backup_parent(path: &Path) -> &Path {
@@ -2023,7 +2130,7 @@ fn exact_history_covers(primary: &Connection, prefix: &str, old: &Path, require_
     if !super::business_store_recovery::exact_operational_metadata_covers(primary,prefix,&old_db)? { return Ok(false); }
     let operational_keys = [
         "release_upgrade_retention_v1", "schema_version", "revision", "dashboard_revision", "event_id_sequence",
-        "state_size", "state_modified_ns", "storage_maintenance_last_checked_unix", "storage_maintenance_last_compacted_unix",
+        "state_size", "state_modified_ns", "state_source_signature", "storage_maintenance_last_checked_unix", "storage_maintenance_last_compacted_unix",
         "published_generation", "session_catalog_published_generation", "accounting_coverage",
         "attribution_current_scan_incomplete", "attribution_current_scan_unsafe", "attribution_ledger_epoch",
         "attribution_ledger_integrity_v1", "attribution_provenance_epoch", "canonical_projection_pending",
@@ -2612,10 +2719,17 @@ fn hex_digest(bytes: &[u8]) -> String {
 }
 
 fn readonly_file_uri(path: &Path) -> String {
-    let path = path.to_string_lossy().replace('\\', "/");
+    // Preserve the native filename, especially Windows \\?\ and UNC prefixes.
+    // Turning those backslashes into '/' creates a URI authority ("%3F" for
+    // a verbatim path). Encode separators that could introduce an authority;
+    // SQLite decodes the pathname before handing it to the native VFS.
+    let path = path.to_string_lossy();
+    let leading_slashes = path.starts_with("//");
     let mut encoded = String::with_capacity(path.len());
-    for byte in path.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b':' | b'-' | b'.' | b'_' | b'~') {
+    for (offset, byte) in path.bytes().enumerate() {
+        if (byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b':' | b'-' | b'.' | b'_' | b'~'))
+            && !(leading_slashes && offset < 2 && byte == b'/')
+        {
             encoded.push(byte as char);
         } else {
             use std::fmt::Write as _;
@@ -2656,6 +2770,165 @@ mod tests {
 
     fn store(path: &Path, source: &str) -> StoreSpec {
         StoreSpec::new("usage", source, path.to_string_lossy().to_string()).unwrap()
+    }
+
+    #[test]
+    fn sealed_content_verification_preserves_snapshot_and_rejects_committed_row_changes() {
+        let fixture = Fixture::new();
+        let path = fixture.path("sealed.sqlite");
+        let mut container = Container::open(&path).unwrap();
+        let spec = StoreSpec::new("exact", "sealed-source", "exact/staging/one").unwrap();
+        container.register(&spec).unwrap();
+        let writer = Container::open_existing(&path).unwrap().into_store_connection(&spec).unwrap();
+        writer.execute_batch("CREATE TABLE events(id INTEGER PRIMARY KEY,tokens INTEGER NOT NULL); INSERT INTO events VALUES(1,120);").unwrap();
+        container.seal_store(&spec, 1.0).unwrap();
+        let schemas = vec![container.proof(&spec).unwrap().schema_digest];
+        let seal = container.seal_observation(&spec).unwrap().unwrap();
+        let reader = Container::open_read_only_existing(&path, Duration::from_secs(1)).unwrap();
+        assert!(matches!(verify_sealed_store_in_transaction(reader.connection(), &spec, &schemas),
+            Err(BusinessStoreError::InvalidStore)), "verification must require a snapshot");
+        reader.connection().execute_batch("BEGIN DEFERRED").unwrap();
+        assert_eq!(verify_sealed_store_in_transaction(reader.connection(), &spec, &schemas).unwrap().0, seal);
+        writer.execute("UPDATE events SET tokens=121 WHERE id=1", []).unwrap();
+        assert_eq!(verify_sealed_store_in_transaction(reader.connection(), &spec, &schemas).unwrap().0, seal,
+            "an existing read snapshot must not combine the old seal with newer rows");
+        reader.connection().execute_batch("ROLLBACK; BEGIN DEFERRED").unwrap();
+        assert!(matches!(verify_sealed_store_in_transaction(reader.connection(), &spec, &schemas),
+            Err(BusinessStoreError::ProofMismatch)));
+        reader.connection().execute_batch("ROLLBACK").unwrap();
+        assert_eq!(container.seal_observation(&spec).unwrap(), Some(seal),
+            "a bad artifact must not be re-sealed by verification");
+        assert_eq!(writer.query_row::<i64, _, _>("SELECT tokens FROM events", [], |row| row.get(0)).unwrap(), 121,
+            "verification must retain the damaged evidence");
+    }
+
+    #[test]
+    fn sealed_content_verification_requires_matching_owner_state_and_existing_seal() {
+        let fixture = Fixture::new();
+        let path = fixture.path("sealed-ownership.sqlite");
+        let mut container = Container::open(&path).unwrap();
+        let spec = StoreSpec::new("exact", "sealed-owner", "exact/staging/owner").unwrap();
+        container.register(&spec).unwrap();
+        let writer = Container::open_existing(&path).unwrap().into_store_connection(&spec).unwrap();
+        writer.execute_batch("CREATE TABLE events(tokens INTEGER NOT NULL); INSERT INTO events VALUES(120);").unwrap();
+        container.seal_store(&spec, 1.0).unwrap();
+        let schemas = vec![container.proof(&spec).unwrap().schema_digest];
+        let original = container.seal_observation(&spec).unwrap();
+        let mut wrong_owner = spec.clone();
+        wrong_owner.module = "quota-history".into();
+        let tx = container.connection().unchecked_transaction().unwrap();
+        assert!(matches!(verify_sealed_store_in_transaction(&tx, &wrong_owner, &schemas),
+            Err(BusinessStoreError::InvalidStore)));
+        tx.rollback().unwrap();
+        container.connection().execute("UPDATE tb_stores SET state='ready' WHERE store_id=?1", [&spec.id]).unwrap();
+        let tx = container.connection().unchecked_transaction().unwrap();
+        assert!(matches!(verify_sealed_store_in_transaction(&tx, &spec, &schemas),
+            Err(BusinessStoreError::InvalidStore)));
+        tx.rollback().unwrap();
+        assert_eq!(container.seal_observation(&spec).unwrap(), original);
+        container.connection().execute("DELETE FROM tb_store_seals WHERE store_id=?1", [&spec.id]).unwrap();
+        let tx = container.connection().unchecked_transaction().unwrap();
+        assert!(matches!(verify_sealed_store_in_transaction(&tx, &spec, &schemas),
+            Err(BusinessStoreError::ProofMismatch)));
+        tx.rollback().unwrap();
+        assert!(container.seal_observation(&spec).unwrap().is_none(),
+            "verification must not create a missing seal");
+    }
+
+    #[test]
+    fn sealed_content_verification_rejects_column_role_swaps_with_unchanged_row_digest() {
+        let fixture = Fixture::new();
+        let path = fixture.path("sealed-schema.sqlite");
+        let mut container = Container::open(&path).unwrap();
+        let spec = StoreSpec::new("exact", "sealed-schema", "exact/staging/schema").unwrap();
+        container.register(&spec).unwrap();
+        // The real Exact index already creates sqlite_sequence. SQLite checks
+        // every view during ALTER TABLE, including this connection's logical
+        // sequence view, so reproduce that prerequisite in this isolated store.
+        container.connection().execute_batch(
+            "CREATE TABLE seal_schema_sequence_seed(id INTEGER PRIMARY KEY AUTOINCREMENT); DROP TABLE seal_schema_sequence_seed;"
+        ).unwrap();
+        let writer = Container::open_existing(&path).unwrap().into_store_connection(&spec).unwrap();
+        writer.execute_batch("CREATE TABLE events(input_tokens INTEGER NOT NULL,output_tokens INTEGER NOT NULL); INSERT INTO events VALUES(120,0);").unwrap();
+        let before = container.seal_store(&spec, 1.0).unwrap();
+        let seal = container.seal_observation(&spec).unwrap();
+        writer.execute_batch("ALTER TABLE events RENAME COLUMN input_tokens TO swapped_tokens; ALTER TABLE events RENAME COLUMN output_tokens TO input_tokens; ALTER TABLE events RENAME COLUMN swapped_tokens TO output_tokens;").unwrap();
+        let after = container.proof(&spec).unwrap();
+        assert_eq!(before.rows_digest, after.rows_digest);
+        assert_eq!(before.row_count, after.row_count);
+        assert_ne!(before.schema_digest, after.schema_digest);
+        let tx = container.connection().unchecked_transaction().unwrap();
+        assert!(matches!(verify_sealed_store_in_transaction(&tx, &spec, &[before.schema_digest]),
+            Err(BusinessStoreError::ProofMismatch)));
+        tx.rollback().unwrap();
+        assert_eq!(container.seal_observation(&spec).unwrap(), seal);
+        assert_eq!(writer.query_row::<i64, _, _>("SELECT input_tokens FROM events", [], |row| row.get(0)).unwrap(), 0);
+    }
+
+    #[test]
+    fn preserved_namespace_removal_requires_the_copied_row_and_schema_proof() {
+        let fixture = Fixture::new();
+        let path = fixture.path("preserved-cas.sqlite");
+        let mut container = Container::open(&path).unwrap();
+        let source = StoreSpec::new("exact", "preserved-cas-source", "exact/staging/source").unwrap();
+        let target = StoreSpec::new("exact", "preserved-cas-copy", "exact/staging/copy").unwrap();
+        container.register(&source).unwrap();
+        let writer = Container::open_existing(&path).unwrap().into_store_connection(&source).unwrap();
+        writer.execute_batch("CREATE TABLE events(id INTEGER PRIMARY KEY AUTOINCREMENT,input_tokens INTEGER NOT NULL,output_tokens INTEGER NOT NULL); INSERT INTO events(input_tokens,output_tokens) VALUES(120,0);").unwrap();
+        let copied = container.clone_store_namespace(&source, &target).unwrap();
+        writer.execute("INSERT INTO events(input_tokens,output_tokens) VALUES(55,0)", []).unwrap();
+        let appended = container.proof(&source).unwrap();
+        assert!(matches!(container.remove_store_namespace_if_unchanged(&source, &copied),
+            Err(BusinessStoreError::ProofMismatch)));
+        assert_eq!(container.proof(&source).unwrap(), appended);
+        assert_eq!(container.proof(&target).unwrap(), copied);
+
+        let copied = container.clone_store_namespace(&source, &target).unwrap();
+        writer.execute_batch("ALTER TABLE events RENAME COLUMN input_tokens TO swapped_tokens; ALTER TABLE events RENAME COLUMN output_tokens TO input_tokens; ALTER TABLE events RENAME COLUMN swapped_tokens TO output_tokens;").unwrap();
+        let changed = container.proof(&source).unwrap();
+        assert_eq!(changed.rows_digest, copied.rows_digest);
+        assert_ne!(changed.schema_digest, copied.schema_digest);
+        assert!(matches!(container.remove_store_namespace_if_unchanged(&source, &copied),
+            Err(BusinessStoreError::ProofMismatch)));
+        assert_eq!(container.proof(&source).unwrap(), changed);
+        assert_eq!(container.proof(&target).unwrap(), copied);
+
+        let copied = container.clone_store_namespace(&source, &target).unwrap();
+        let mut wrong_owner = source.clone();
+        wrong_owner.module = "quota-history".into();
+        assert!(matches!(container.remove_store_namespace_if_unchanged(&wrong_owner, &copied),
+            Err(BusinessStoreError::InvalidStore)));
+        container.remove_store_namespace_if_unchanged(&source, &copied).unwrap();
+        assert!(!container.is_registered(&source).unwrap());
+        assert_eq!(container.proof(&target).unwrap(), copied);
+    }
+
+    #[test]
+    fn readonly_uri_preserves_verbatim_and_unc_paths_without_a_uri_authority() {
+        assert_eq!(readonly_file_uri(Path::new(r"\\?\C:\fixture\#%.sqlite")),
+            "file:%5C%5C%3F%5CC:%5Cfixture%5C%23%25.sqlite?mode=ro");
+        assert_eq!(readonly_file_uri(Path::new(r"\\?\UNC\server\share\source.sqlite")),
+            "file:%5C%5C%3F%5CUNC%5Cserver%5Cshare%5Csource.sqlite?mode=ro");
+        assert_eq!(readonly_file_uri(Path::new(r"\\server\share\source.sqlite")),
+            "file:%5C%5Cserver%5Cshare%5Csource.sqlite?mode=ro");
+        assert_eq!(readonly_file_uri(Path::new("//server/share/source.sqlite")),
+            "file:%2F%2Fserver/share/source.sqlite?mode=ro");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn canonical_windows_readonly_attach_reads_committed_wal_and_refuses_writes() {
+        let fixture = Fixture::new();
+        let source = fixture.path("中文 #%.sqlite");
+        let writer = Connection::open(&source).unwrap();
+        writer.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE records(amount INTEGER); INSERT INTO records VALUES(7)").unwrap();
+        let canonical = fs::canonicalize(&source).unwrap();
+        assert!(canonical.to_string_lossy().starts_with(r"\\?\"));
+        let reader = Connection::open_in_memory().unwrap();
+        reader.execute("ATTACH DATABASE ?1 AS legacy", [readonly_file_uri(&canonical)]).unwrap();
+        assert_eq!(reader.query_row("SELECT amount FROM legacy.records", [], |row| row.get::<_, i64>(0)).unwrap(), 7);
+        assert!(reader.execute("UPDATE legacy.records SET amount=9", []).is_err());
+        assert_eq!(writer.query_row("SELECT amount FROM records", [], |row| row.get::<_, i64>(0)).unwrap(), 7);
     }
 
     #[test]

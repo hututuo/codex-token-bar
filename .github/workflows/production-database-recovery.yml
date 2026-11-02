@@ -1,38 +1,91 @@
 name: Production database recovery checks
 
 on:
-  push:
-    branches: [main, 'codex/tokenbar-recovery-20261101']
-    paths-ignore: ['docs/**', '**.md']
-  pull_request:
-    paths-ignore: ['docs/**', '**.md']
   workflow_dispatch:
+    inputs:
+      source_sha:
+        description: 'Exact candidate commit; empty means the workflow commit'
+        type: string
+        default: ''
+  workflow_call:
+    inputs:
+      source_sha:
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  group: production-database-recovery-${{ github.ref }}
-  cancel-in-progress: true
+  group: production-database-recovery-${{ github.workflow }}-${{ github.ref }}-${{ inputs.source_sha || github.sha }}
+  cancel-in-progress: false
+
+env:
+  RUSTUP_TOOLCHAIN: '1.93.1'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_BUILD_JOBS: '3'
+  CARGO_INCREMENTAL: '0'
 
 jobs:
-  readers:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-2025, macos-15]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 35
-    env:
-      RUSTUP_TOOLCHAIN: '1.93.1'
-      CARGO_PROFILE_TEST_DEBUG: '0'
-      CARGO_PROFILE_DEV_DEBUG: '0'
-      CARGO_BUILD_JOBS: '3'
-      CARGO_INCREMENTAL: '0'
+  source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - id: resolve
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+        run: |
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'An exact source SHA is required'; exit 1; }
+          echo "sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+
+  harness-contracts:
+    needs: source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ needs.source.outputs.sha }}
+      - name: Check evidence validation and independent scenario collection
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s scripts/tests -p 'test_formed_release_upgrade.py' -v 2>&1 | tee formed-harness-tests.log
+          python3 -m unittest discover -s scripts/tests -p 'test_swift_formed_release_upgrade.py' -v 2>&1 | tee swift-formed-harness-tests.log
+          python3 -m unittest discover -s scripts/tests -p 'test_backfill_scale.py' -v 2>&1 | tee backfill-harness-tests.log
+          python3 -m unittest discover -s scripts/tests -p 'test_rust_backfill_scale.py' -v 2>&1 | tee rust-backfill-harness-tests.log
+          python3 -m unittest discover -s scripts/tests -p 'test_business_store_fixture_harness.py' -v 2>&1 | tee reader-harness-tests.log
+          python3 -m unittest discover -s scripts/tests -p 'test_native_fixture_evidence.py' -v 2>&1 | tee native-evidence-harness-tests.log
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: recovery-harness-${{ needs.source.outputs.sha }}
+          path: '*-harness-tests.log'
+          if-no-files-found: error
+          retention-days: 30
+
+  public-v097:
+    needs: [source, harness-contracts]
+    uses: ./.github/workflows/release-upgrade-compatibility.yml
+    with:
+      source_sha: ${{ needs.source.outputs.sha }}
+
+  readers:
+    needs: [source, harness-contracts]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.source.outputs.sha }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
@@ -59,9 +112,234 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: production-reader-evidence-${{ matrix.os }}-${{ github.sha }}
+          name: production-reader-evidence-${{ matrix.os }}-${{ needs.source.outputs.sha }}
           path: |
             native-production-readers.log
             native-production-readers.json
+            business-fixture-evidence/
+          if-no-files-found: error
+          retention-days: 30
+
+  formed-release:
+    needs: [source, harness-contracts]
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        os: [windows-2025, macos-15-intel]
+        release: ['0.9.8', '0.9.9', '0.9.10', '0.9.11']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 80
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.source.outputs.sha }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: rust-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-v1
+      # Each extracted release/candidate gets a fresh target in the runner.
+      # Vendored Tauri plugin build metadata embeds absolute source paths and
+      # cannot be restored into a different temporary source archive safely.
+      - name: Compile actual released code and resume its populated database states
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ matrix.release }}
+          EXPECTED_SOURCE: ${{ needs.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          rustup toolchain install 1.93.1 --profile minimal
+          npm ci --prefix tauri-app --registry=https://registry.npmjs.org
+          npm run build --prefix tauri-app
+          git fetch --no-tags https://github.com/hututuo/codex-token-bar.git "refs/tags/v$RELEASE_VERSION:refs/tags/v$RELEASE_VERSION"
+          python3 scripts/check_formed_release_upgrade.py --release "$RELEASE_VERSION" --output formed-state-evidence
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: formed-release-${{ matrix.os }}-${{ matrix.release }}-${{ needs.source.outputs.sha }}
+          path: formed-state-evidence/
+          if-no-files-found: error
+          retention-days: 30
+
+  swift-formed-release:
+    needs: [source, harness-contracts]
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        release: ['0.9.8', '0.9.9', '0.9.10', '0.9.11']
+    runs-on: macos-26-intel
+    timeout-minutes: 80
+    env:
+      GIT_LFS_SKIP_SMUDGE: '1'
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.source.outputs.sha }}
+      - name: Compile released Swift code, interrupt and resume real formed ledgers
+        env:
+          RELEASE_VERSION: ${{ matrix.release }}
+          EXPECTED_SOURCE: ${{ needs.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          command -v git-lfs >/dev/null || brew install git-lfs
+          git fetch --no-tags https://github.com/hututuo/codex-token-bar.git "refs/tags/v$RELEASE_VERSION:refs/tags/v$RELEASE_VERSION"
+          python3 scripts/check_swift_formed_release_upgrade.py --release "$RELEASE_VERSION" --output swift-formed-state-evidence
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: native-swift-formed-${{ matrix.release }}-${{ needs.source.outputs.sha }}
+          path: swift-formed-state-evidence/
+          if-no-files-found: error
+          retention-days: 30
+
+  rust-backfill-scale:
+    needs: [source, harness-contracts]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 80
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.source.outputs.sha }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: rust-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-v1
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: tauri-app/src-tauri/target
+          key: recovery-rust-scale-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-${{ needs.source.outputs.sha }}
+          restore-keys: |
+            recovery-rust-scale-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-
+      - name: Verify real Rust model backfill and warm no-op at every required source count
+        shell: bash
+        env:
+          EXPECTED_SOURCE: ${{ needs.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          rustup toolchain install 1.93.1 --profile minimal
+          npm ci --prefix tauri-app --registry=https://registry.npmjs.org
+          npm run build --prefix tauri-app
+          python3 scripts/check_rust_backfill_scale.py --sizes 13 128 512 4124 --profile release --timeout 1200 --max-progress-gap 30 --max-backfill-seconds 600 --output rust-backfill-scale-evidence
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: native-rust-backfill-scale-${{ matrix.os }}-${{ needs.source.outputs.sha }}
+          path: rust-backfill-scale-evidence/
+          if-no-files-found: error
+          retention-days: 30
+
+  swift-backfill-scale:
+    needs: [source, harness-contracts]
+    runs-on: macos-26-intel
+    timeout-minutes: 65
+    env:
+      GIT_LFS_SKIP_SMUDGE: '1'
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.source.outputs.sha }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .build/artifacts
+            .build/checkouts
+            .build/repositories
+          key: swift-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Package.resolved') }}-v1
+      - name: Prepare the same Swift compiler and resources as full application CI
+        env:
+          EXPECTED_SOURCE: ${{ needs.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          mkdir -p scale-host-evidence
+          swift --version | tee scale-host-evidence/swift-version.txt
+          xcodebuild -version | tee scale-host-evidence/xcode-version.txt
+          command -v git-lfs >/dev/null || brew install git-lfs
+          bash scripts/prepare_tiktoken_lfs.sh
+      - name: Verify small, medium and 4124-source backfills with bounded progress gaps
+        run: |
+          set -euo pipefail
+          python3 scripts/check_backfill_scale.py --sizes 13 128 512 4124 --timeout 1500 --max-progress-gap 30 --max-backfill-seconds 600 --output backfill-scale-evidence
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: native-swift-backfill-scale-${{ needs.source.outputs.sha }}
+          path: |
+            scale-host-evidence/
+            backfill-scale-evidence/
+          if-no-files-found: error
+          retention-days: 30
+
+  verdict:
+    if: always()
+    needs: [source, harness-contracts, public-v097, readers, formed-release, swift-formed-release, rust-backfill-scale, swift-backfill-scale]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every native recovery and historical matrix job
+        env:
+          SOURCE_SHA: ${{ needs.source.outputs.sha }}
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib
+          results = json.loads(os.environ['RESULTS'])
+          expected = {'source', 'harness-contracts', 'public-v097', 'readers', 'formed-release', 'swift-formed-release', 'rust-backfill-scale', 'swift-backfill-scale'}
+          passed = set(results) == expected and all(x.get('result') == 'success' for x in results.values())
+          evidence = {'source_sha': os.environ['SOURCE_SHA'], 'run_id': os.environ['GITHUB_RUN_ID'],
+              'passed': passed, 'jobs': {k: v.get('result') for k, v in results.items()},
+              'public_release': '0.9.7',
+              'public_release_sha': '0219554ce444b0013987da7b82e3c2e891f4afdb',
+              'formed_releases': ['0.9.8', '0.9.9', '0.9.10', '0.9.11'],
+              'rust_macos_runner': 'macos-15-intel',
+              'swift_macos_runner': 'macos-26-intel',
+              'macos_recovery_architecture': 'x86_64',
+              'formed_runtime': 'Rust non-cfg(test), Windows and macOS; not native Swift formed-release evidence',
+              'swift_formed_releases': ['0.9.8', '0.9.9', '0.9.10', '0.9.11'],
+              'swift_formed_runtime': 'native-swift-xctest-production-apis',
+              'swift_formed_scenarios': ['committed', 'interrupted', 'enriched'],
+              'swift_formed_phases': ['resume', 'reopen'],
+              'swift_formed_enriched_proofs': ['nullModelAndTurnCompleted', 'originalVersionsRetained',
+                  'repeatedMetadataGenerationsPreserved', 'rawMissingBeforeMigration', 'completeImportedNamespacePreserved'],
+              'swift_backfill_sizes': [13, 128, 512, 4124],
+              'rust_backfill_sizes': [13, 128, 512, 4124],
+              'rust_backfill_profile': 'release',
+              'rust_backfill_runtime': 'non-cfg-test-production-apis-windows-macos',
+              'scope': 'Isolated synthetic inputs through production database routes; not installed-app GUI acceptance'}
+          pathlib.Path('recovery-checked-source.json').write_text(json.dumps(evidence, indent=2) + '\n')
+          if not passed:
+              raise SystemExit('Required recovery gate failed, was cancelled, skipped, or absent: ' + str(evidence['jobs']))
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: recovery-checked-source-${{ needs.source.outputs.sha }}
+          path: recovery-checked-source.json
           if-no-files-found: error
           retention-days: 30

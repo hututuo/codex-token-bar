@@ -241,6 +241,7 @@ export type PreciseDashboardProgressPhase =
   | "migrating"
   | "scanning"
   | "backfillingModel"
+  | "repairingLinks"
   | "publishing"
   | "complete"
   | "failed";

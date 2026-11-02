@@ -1068,6 +1068,7 @@ fn stage_incident_0910_exact_transition(old_path: &Path, current_path: &Path, ho
     for (key, old_value, new_value) in [
         ("state_size", "700", "701"),
         ("state_modified_ns", "1700000000000000000", "1700000000000000001"),
+        ("state_source_signature", "sqlite-live-wal-v1:none", "sqlite-live-wal-v1:128:1700000000000000001:"),
         ("storage_maintenance_last_checked_unix", "1700000000", "1700086400"),
         ("storage_maintenance_last_compacted_unix", "1700000000", "1700086400"),
     ] {

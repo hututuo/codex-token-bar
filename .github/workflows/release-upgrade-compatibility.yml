@@ -1,25 +1,6 @@
 name: Public v0.9.7 database upgrade
 
 on:
-  push:
-    branches: [main, 'codex/**', 'fix/**']
-    paths:
-      - '.github/workflows/release-upgrade-compatibility.yml'
-      - 'Sources/**'
-      - 'tauri-app/src-tauri/**'
-      - 'Tests/CodexTokenBarTests/**'
-      - 'scripts/prepare_v097_upgrade_validation.py'
-      - 'Package.swift'
-      - 'Package.resolved'
-  pull_request:
-    paths:
-      - '.github/workflows/release-upgrade-compatibility.yml'
-      - 'Sources/**'
-      - 'tauri-app/src-tauri/**'
-      - 'Tests/CodexTokenBarTests/**'
-      - 'scripts/prepare_v097_upgrade_validation.py'
-      - 'Package.swift'
-      - 'Package.resolved'
   workflow_dispatch:
     inputs:
       source_sha:
@@ -36,12 +17,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-upgrade-${{ github.ref }}
+  group: release-upgrade-${{ github.workflow }}-${{ github.ref }}-${{ inputs.source_sha || github.sha }}
   cancel-in-progress: false
 
 jobs:
   swift-release-upgrade:
-    runs-on: macos-26
+    runs-on: macos-26-intel
     timeout-minutes: 65
     env:
       GIT_LFS_SKIP_SMUDGE: '1'
@@ -60,6 +41,7 @@ jobs:
           set -euo pipefail
           [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          git fetch --no-tags https://github.com/hututuo/codex-token-bar.git refs/tags/v0.9.7:refs/tags/v0.9.7
           test "$(git rev-parse 'v0.9.7^{commit}')" = 0219554ce444b0013987da7b82e3c2e891f4afdb
           mkdir -p upgrade-evidence
           git rev-parse HEAD > upgrade-evidence/candidate-sha.txt
@@ -108,7 +90,7 @@ jobs:
       - name: Recheck B, dormant schemas and UI startup fences
         run: |
           set -euo pipefail
-          swift test --skip-build --filter '(BusinessDatabaseMigrationTests|CodexBusinessDatabaseTests|UpgradeCompatibilitySolAuditTests|ApplicationStartupCoordinatorTests|MultiClientUsageLedgerTests|BodySpeedTrendStoreTests|LegacyClaudeSpeedMigrationTests|ActivitySpeedStoreTests|Incident0910MigrationRecoveryTests)' 2>&1 | tee upgrade-evidence/supporting-regressions.log
+          swift test --skip-build --filter '(BusinessDatabaseMigrationTests|CodexBusinessDatabaseTests|UpgradeCompatibilitySolAuditTests|ApplicationStartupCoordinatorTests|MultiClientUsageLedgerTests|BodySpeedTrendStoreTests|LegacyClaudeSpeedMigrationTests|ActivitySpeedStoreTests|Incident0910MigrationRecoveryTests|BusinessDatabaseMigrationAliasTests|BusinessMigrationDiagnosticsTests|BusinessDatabaseMigrationExactAppendTests|ApplicationRecoveryOperationGateTests)' 2>&1 | tee upgrade-evidence/supporting-regressions.log
           python3 - <<'PY'
           import pathlib, re
           log = pathlib.Path('upgrade-evidence/supporting-regressions.log').read_text()
@@ -121,6 +103,12 @@ jobs:
               raise SystemExit(f'Expected both native incident recovery tests to pass, missing: {sorted(required - passed)}')
           if re.search(r'Incident0910MigrationRecoveryTests.*(?:skipped|XCTSkip)', log, re.I):
               raise SystemExit('A required native incident recovery test was skipped')
+          for suite in ('BusinessDatabaseMigrationAliasTests', 'BusinessMigrationDiagnosticsTests', 'BusinessDatabaseMigrationExactAppendTests', 'ApplicationRecoveryOperationGateTests'):
+              source = pathlib.Path(f'Tests/CodexTokenBarTests/{suite}.swift').read_text()
+              expected = set(re.findall(r'func (test\w+)\(', source))
+              passed = {name for name in expected if any(name in line and suite in line and 'passed' in line for line in log.splitlines())}
+              if not expected or passed != expected or re.search(rf'{suite}.*(?:skipped|XCTSkip)', log, re.I):
+                  raise SystemExit(f'Required native suite {suite} was incomplete, failed or skipped; missing: {sorted(expected - passed)}')
           PY
           python3 scripts/prepare_v097_upgrade_validation.py verify "$TOKENBAR_V097_FIXTURE_ROOT" > upgrade-evidence/fixture-reverified.json
       - name: Preserve synthetic inputs and verification evidence
@@ -162,6 +150,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           if ($env:CANDIDATE_SHA -notmatch '^[0-9a-f]{40}$') { throw 'An exact candidate SHA is required' }
           if ((git rev-parse HEAD) -ne $env:CANDIDATE_SHA) { throw 'Candidate SHA mismatch' }
+          git fetch --no-tags https://github.com/hututuo/codex-token-bar.git refs/tags/v0.9.3:refs/tags/v0.9.3 refs/tags/v0.9.7:refs/tags/v0.9.7
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if ((git rev-parse 'v0.9.7^{commit}') -ne '0219554ce444b0013987da7b82e3c2e891f4afdb') { throw 'Public tag SHA mismatch' }
           New-Item -ItemType Directory -Path upgrade-evidence -Force | Out-Null
           $allocation = python scripts/prepare_v097_upgrade_validation.py allocate-rust-runtime $env:GITHUB_ENV

@@ -22,7 +22,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.source_sha || github.sha }}
   cancel-in-progress: false
 
 env:
@@ -76,7 +76,11 @@ jobs:
 
   swift:
     needs: source
-    runs-on: macos-26
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26, macos-26-intel]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 35
     env:
       GIT_LFS_SKIP_SMUDGE: '1'
@@ -119,7 +123,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: swift-check-logs-${{ github.run_id }}
+          name: swift-check-logs-${{ matrix.os }}-${{ github.run_id }}
           path: |
             *.log
             hosted-diagnostics/
@@ -128,7 +132,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: swift-visual-previews-${{ needs.source.outputs.sha }}
+          name: swift-visual-previews-${{ matrix.os }}-${{ needs.source.outputs.sha }}
           path: visual-previews/*.png
           if-no-files-found: warn
           retention-days: 14
@@ -138,7 +142,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2025, macos-15]
+        os: [windows-2025, macos-15-intel]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
     steps:
@@ -169,6 +173,12 @@ jobs:
           key: rust-test-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-${{ needs.source.outputs.sha }}
           restore-keys: |
             rust-test-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-
+      - name: Validate native fixture isolation and retained evidence on this platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s scripts/tests -p 'test_native_fixture_evidence.py' -v 2>&1 | tee native-evidence-platform-tests.log
+          python -m unittest discover -s scripts/tests -p 'test_business_store_fixture_harness.py' -v 2>&1 | tee native-reader-platform-tests.log
       - name: Agent Speed reporter compile and privacy self-test
         if: runner.os == 'Windows'
         shell: pwsh
@@ -189,6 +199,12 @@ jobs:
       - name: Check production native configuration
         shell: bash
         run: cargo check --locked --manifest-path tauri-app/src-tauri/Cargo.toml
+      - name: Exercise production business-store routing and runtime recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --manifest-path tauri-app/src-tauri/Cargo.toml --features business-store-fixture --example business-store-fixture
+          python scripts/cloud/run-business-store-fixture.py tauri-app/src-tauri/target/debug/examples/business-store-fixture
       - name: Full native regression including original pressure case
         shell: bash
         run: |
@@ -204,7 +220,11 @@ jobs:
         if: always()
         with:
           name: native-check-logs-${{ matrix.os }}-${{ github.run_id }}
-          path: '*.log'
+          path: |
+            *.log
+            runtime-recovery-production.json
+            business-fixture-evidence/
+            tauri-app/src-tauri/target/debug/examples/business-store-fixture.exe
           retention-days: 7
 
   windows-updater:
@@ -227,20 +247,31 @@ jobs:
           $env:PATH = "$nsis;$env:PATH"
           ./scripts/windows_update_faults.ps1
 
+  database-recovery:
+    needs: source
+    uses: ./.github/workflows/production-database-recovery.yml
+    with:
+      source_sha: ${{ needs.source.outputs.sha }}
+
   evidence:
-    needs: [source, frontend, swift, native, windows-updater]
+    needs: [source, frontend, swift, native, windows-updater, database-recovery]
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.source.outputs.sha }}
+      - name: Download the required recovery verdict from this CI run
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: recovery-checked-source-${{ needs.source.outputs.sha }}
+          path: recovery-evidence
       - name: Seal successful check identity
         env:
           SOURCE_SHA: ${{ needs.source.outputs.sha }}
         run: |
-          python3 - <<'PY'
-          import json, os, pathlib
-          pathlib.Path('checked-source.json').write_text(json.dumps({
-            'source_sha':os.environ['SOURCE_SHA'],'run_id':os.environ['GITHUB_RUN_ID'],'passed':True
-          })+'\n')
-          PY
+          python3 scripts/cloud/ci_evidence.py seal --source-sha "$SOURCE_SHA" --run-id "$GITHUB_RUN_ID" \
+            --input recovery-evidence/recovery-checked-source.json --output checked-source.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ci-passed-${{ needs.source.outputs.sha }}

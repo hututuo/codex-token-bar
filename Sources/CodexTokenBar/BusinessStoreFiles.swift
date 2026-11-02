@@ -112,7 +112,12 @@ enum BusinessStoreFiles {
                 bindings: [.text(store.logicalURL.path)], map: { $0.int(0) }).first == 1
     }
     static func stageURLs(in directory: URL) -> [URL] {
-        BusinessSQLiteRoutes.allStores(in: directory).filter { $0.module == "exact.swift.stage" && $0.logicalURL.deletingLastPathComponent().standardizedFileURL == directory.standardizedFileURL && BusinessSQLiteRoutes.exists($0.logicalURL) }.map(\.logicalURL)
+        let physicalDirectory = BusinessSQLiteRoutes.resolvedDirectoryIdentity(directory)
+        return BusinessSQLiteRoutes.allStores(in: directory).filter {
+            $0.module == "exact.swift.stage"
+                && BusinessSQLiteRoutes.resolvedDirectoryIdentity($0.logicalURL.deletingLastPathComponent()) == physicalDirectory
+                && BusinessSQLiteRoutes.exists($0.logicalURL)
+        }.map(\.logicalURL)
     }
     static func quarantine(_ url: URL, into directory: URL) throws -> Bool {
         guard let store = BusinessSQLiteRoutes.store(for: url) else { return false }

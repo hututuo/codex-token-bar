@@ -5,7 +5,10 @@
 //! identifier is rewritten to that store's private namespace before SQLite
 //! prepares it.
 
-use crate::core::business_store_container::{BusinessStoreError, Container, StoreSpec};
+use crate::core::business_store_container::{
+    BusinessStoreError, Container, StoreProof, StoreSealObservation, StoreSpec, StoreState,
+    VerifiedStoreSeal,
+};
 use crate::core::business_store_sql::StoreSqlBinding;
 use rusqlite::{
     functions::FunctionFlags,
@@ -20,6 +23,7 @@ use std::time::Duration;
 pub(crate) struct StoreConnection {
     raw: Connection,
     binding: Option<RefCell<StoreSqlBinding>>,
+    owner: Option<StoreSpec>,
 }
 
 impl StoreConnection {
@@ -36,10 +40,12 @@ impl StoreConnection {
     }
 
     pub(crate) fn unbound(raw: Connection) -> Self {
-        Self { raw, binding: None }
+        Self { raw, binding: None, owner: None }
     }
 
     pub(crate) fn bound(raw: Connection, binding: StoreSqlBinding) -> Result<Self> {
+        #[cfg(all(feature = "business-store-fixture", not(test)))]
+        let _scope = crate::core::usage::token_count_jsonl::measure_source_count_scope("connection.bind");
         let prefix = binding.prefix().to_owned();
         let namespace = binding.namespace().clone();
         // temp_store must be selected before the logical catalog views are
@@ -85,7 +91,17 @@ impl StoreConnection {
         Ok(Self {
             raw,
             binding: Some(RefCell::new(binding)),
+            owner: None,
         })
+    }
+
+    pub(crate) fn bound_with_store(raw: Connection, binding: StoreSqlBinding, owner: StoreSpec) -> Result<Self> {
+        if owner.id != binding.store_id() || owner.prefix != binding.prefix() {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        let mut connection = Self::bound(raw, binding)?;
+        connection.owner = Some(owner);
+        Ok(connection)
     }
 
     /// Open a standalone SQLite database with an explicitly scoped logical
@@ -263,6 +279,63 @@ impl StoreConnection {
 
     pub(crate) fn total_changes(&self) -> u64 {
         self.raw.total_changes()
+    }
+
+    /// Read A metadata using the already-open handle. This does not register
+    /// an input, mutate the seal, or assert that its current rows still match.
+    pub(crate) fn store_seal_observation(
+        &self,
+        store: &StoreSpec,
+    ) -> std::result::Result<Option<StoreSealObservation>, BusinessStoreError> {
+        if self.binding.is_none() {
+            return Err(BusinessStoreError::InvalidStore);
+        }
+        crate::core::business_store_container::store_seal_observation(&self.raw, store)
+    }
+
+    /// The namespace selected when this handle was opened, verified against
+    /// the current catalog in this handle's snapshot. Do not derive it again
+    /// from a virtual filename whose directories may have appeared meanwhile.
+    pub(crate) fn bound_store_spec(&self) -> std::result::Result<StoreSpec, BusinessStoreError> {
+        let owner = self.owner.as_ref().ok_or(BusinessStoreError::InvalidStore)?;
+        let binding = self.binding.as_ref().ok_or(BusinessStoreError::InvalidStore)?.borrow();
+        let (module, source, logical, prefix): (String, String, String, String) = self.raw.query_row(
+            "SELECT module,source_identity,logical_path,namespace_prefix FROM tb_stores WHERE store_id=?1",
+            [binding.store_id()], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        let store = StoreSpec::new(module, source, logical)?;
+        if &store != owner || store.id != binding.store_id() || store.prefix != binding.prefix() || store.prefix != prefix {
+            return Err(BusinessStoreError::InvalidStore);
+        }
+        Ok(store)
+    }
+
+    /// Verify an owned/attached A namespace in this handle's transaction.
+    /// The importer uses its existing IMMEDIATE transaction so verification
+    /// and copying the namespace cannot observe different committed states.
+    pub(crate) fn verify_sealed_store_in_transaction(
+        &self,
+        store: &StoreSpec,
+        expected_schema_digests: &[String],
+    ) -> std::result::Result<VerifiedStoreSeal, BusinessStoreError> {
+        if self.binding.is_none() {
+            return Err(BusinessStoreError::InvalidStore);
+        }
+        crate::core::business_store_container::verify_sealed_store_in_transaction(
+            &self.raw, store, expected_schema_digests)
+    }
+
+    pub(crate) fn store_state(&self, store: &StoreSpec) -> std::result::Result<StoreState, BusinessStoreError> {
+        if self.binding.is_none() { return Err(BusinessStoreError::InvalidStore); }
+        crate::core::business_store_container::store_state(&self.raw, store)
+    }
+
+    pub(crate) fn store_proof_in_transaction(
+        &self,
+        store: &StoreSpec,
+    ) -> std::result::Result<StoreProof, BusinessStoreError> {
+        if self.binding.is_none() { return Err(BusinessStoreError::InvalidStore); }
+        crate::core::business_store_container::store_proof_in_transaction(&self.raw, store)
     }
 
     pub(crate) fn register_readonly_namespace_alias(

@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use std::{
     fs,
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 const ENV: [&str; 5] = [
@@ -26,17 +26,23 @@ const ENV: [&str; 5] = [
 
 // Called only by the explicitly enabled offline fixture binary, after the
 // producer has written TEMP rows but before it commits its parsing transaction.
+static CONCURRENT_A_WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub(crate) fn concurrent_a_write_count() -> u64 {
+    CONCURRENT_A_WRITES.load(std::sync::atomic::Ordering::Relaxed)
+}
 pub(crate) fn assert_concurrent_a_write() -> Result<(), String> {
     let connection = route::open_store("fixture_concurrent", "fixture", "fixture/concurrent", &[])?;
     connection
         .busy_timeout(std::time::Duration::from_millis(250))
         .map_err(|e| e.to_string())?;
     connection.execute_batch("CREATE TABLE IF NOT EXISTS observations(id INTEGER PRIMARY KEY); INSERT INTO observations DEFAULT VALUES;")
-        .map_err(|e| format!("producer held A writer lock during TEMP parsing: {e}"))
+        .map_err(|e| format!("producer held A writer lock during TEMP parsing: {e}"))?;
+    CONCURRENT_A_WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
 }
 macro_rules! ok {
     ($e:expr) => {
-        $e.map_err(|e| e.to_string())?
+        $e.map_err(|e| format!("{}:{}: {e}", file!(), line!()))?
     };
 }
 macro_rules! need {
@@ -47,7 +53,29 @@ macro_rules! need {
     };
 }
 
+fn fixture_started(name: &str) {
+    eprintln!("{}", json!({"fixtureScenario":name,"status":"RUNNING"}));
+}
+
+fn push_check(checks: &mut Vec<Value>, check: Value) {
+    // A later native error must not erase which real scenarios completed.
+    // The launcher retains stderr from process start, including on timeout.
+    eprintln!("{}", json!({"fixtureScenario":check.get("name"),"status":check.get("status"),"proof":check}));
+    checks.push(check);
+}
+
+fn checked_scenario<T>(name: &str, operation: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    fixture_started(name);
+    let started = Instant::now();
+    operation().map_err(|error| {
+        eprintln!("{}", json!({"fixtureScenario":name,"status":"FAIL",
+            "elapsedSeconds":started.elapsed().as_secs_f64(),"error":error}));
+        format!("{name}: {error}")
+    })
+}
+
 pub fn run_fixture(input: &Path) -> Result<Value, String> {
+    fixture_started("prepare-owned-fixture");
     let root = validate_root(input)?;
     let p = Paths::resolve(&root)?;
     for file in [
@@ -86,8 +114,8 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
         p.quota != p.shared_quota,
         "fixture requires distinct legacy quota paths"
     );
-    seed_quota(&p.quota, &h1, now - 1200.0, "tauri")?;
-    seed_quota(&p.shared_quota, &h1, now - 900.0, "swift")?;
+    seed_quota(&p.quota, &h1, now - 1200.0, "tauri", false)?;
+    seed_quota(&p.shared_quota, &h1, now - 900.0, "swift", true)?;
     seed_modeltrace(&p.modeltrace)?;
     let scope = live_rate::LiveRateSourceScope::new(
         h1.to_string_lossy().into_owned(),
@@ -108,6 +136,15 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
 
     let startup = crate::core::business_startup::process_coordinator();
     need!(startup.begin_initial(), "fixture startup already claimed");
+    need!(
+        route::open_registered_store_read_only(
+            "fixture_readonly", "fixture", "fixture/public-read-only",
+            std::time::Duration::from_millis(25),
+        ).is_err() && !p.a.exists(),
+        "public read-only route bypassed startup readiness or created A"
+    );
+    let bootstrap_proof = checked_scenario("bootstrap", ||
+        route::verify_pending_exact_discovery_fixture(&root.join("pending-exact-recovery")))?;
     let prepared = route::bootstrap();
     startup.finish(prepared.clone());
     prepared?;
@@ -115,8 +152,12 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
         p.a.is_file() && p.marker.is_file() && p.a != p.b,
         "bootstrap did not initialize distinct A and B"
     );
-    let mut checks = vec![json!({"name":"bootstrap","status":"PASS"})];
+    let mut checks = Vec::new();
+    push_check(&mut checks, bootstrap_proof);
+    let proof = checked_scenario("public-read-only-routing", || public_read_only_fixture(&p))?;
+    push_check(&mut checks, proof);
 
+    fixture_started("quota");
     let qi = quota_history::QuotaHistoryIdentity::from_canonical_parts(
         &h1,
         Some("sub:fixture-account"),
@@ -124,7 +165,7 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
         "codex",
     )
     .ok_or("quota fixture identity rejected")?;
-    quota_history::verify_retained_reader_fixture(&qi, &[(now - 1200.0,"tauri"),(now - 900.0,"swift")])?;
+    quota_history::verify_retained_reader_fixture(&qi, &[(now - 1200.0,"tauri"),(now - 1200.0,"swift"),(now - 900.0,"swift")])?;
     let bundle = quota_bundle(now);
     quota_history::record_bundle(&qi, &bundle)?;
     let history = quota_history::history_bundle_for(&qi, &bundle, 30, true)?;
@@ -142,11 +183,13 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
         .map(|f| quota_facts(f))
         .collect::<Result<Vec<_>, _>>()?;
     need!(
-        active > 0 && imported == [1, 1],
+        active > 0 && imported == [1, 2],
         "quota legacy typed facts or active write missing"
     );
-    checks.push(json!({"name":"quota","status":"PASS","activeRows":active,"legacyFacts":imported,"historyPoints":history.recent_7d.len(),"retainedReaderRows":2,"oldCycleSchema":true}));
+    quota_history::verify_legacy_runtime_fixture(&qi)?;
+    push_check(&mut checks, json!({"name":"quota","status":"PASS","activeRows":active,"legacyFacts":imported,"historyPoints":history.recent_7d.len(),"retainedReaderRows":3,"uniqueRetainedRows":2,"oldCycleSchema":true}));
 
+    fixture_started("modeltrace");
     let mid = route::source_identity("modeltrace", &h1)?;
     let scope = "fixture:modeltrace-scope";
     let old = modeltrace::store::history(&p.modeltrace, &mid, scope)?;
@@ -162,8 +205,9 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
             && runs.iter().any(|r| r.id == "fixture-active-modeltrace-run"),
         "ModelTrace legacy or active row missing"
     );
-    checks.push(json!({"name":"modeltrace","status":"PASS","runs":runs.len()}));
+    push_check(&mut checks, json!({"name":"modeltrace","status":"PASS","runs":runs.len()}));
 
+    fixture_started("body-speed");
     let store = live_rate::BodySpeedTrendStore::open(&body).map_err(|e| e.to_string())?;
     need!(
         store
@@ -189,8 +233,12 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
             && trend.iter().map(|p| p.sample_count).sum::<i64>() >= 2,
         "BodySpeed detail or weighted trend missing"
     );
-    checks.push(json!({"name":"body-speed","status":"PASS","samples":samples.len(),"trendPoints":trend.len()}));
+    push_check(&mut checks, json!({"name":"body-speed","status":"PASS","samples":samples.len(),"trendPoints":trend.len()}));
+    // The later missing-container check renames A. Windows must not still
+    // have the BodySpeed connection open when that check parks the file.
+    drop(store);
 
+    fixture_started("ledger-b");
     let b = crate::core::multi_client_usage::open_activity_module_connection()?;
     ok!(b.execute("INSERT INTO activity_speed_samples(source_identity,id,display_mode,estimator_id,estimator_version,metric_kind,client,model,started_at,ended_at,output_rate,covered_seconds,weighted_output) VALUES(?1,?2,'model','fixture','1','output','codex','gpt-6.1-sol',?3,?4,12,10,120)", params!["fixture-b", "fixture-b-activity", now - 10.0, now]));
     let b_rows: i64 = ok!(b.query_row(
@@ -199,27 +247,66 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
         |r| r.get(0)
     ));
     need!(b_rows == 1, "B activity write missing");
-    checks.push(json!({"name":"ledger-b","status":"PASS","rows":b_rows}));
+    push_check(&mut checks, json!({"name":"ledger-b","status":"PASS","rows":b_rows}));
+    drop(b);
 
-    checks.push(exact_fixture(&h1, &h2, &p)?);
-    checks.push(token_count_jsonl::verify_live_state_fixture(&root.join("live-state-home"))?);
-    checks.push(token_count_jsonl::verify_bounded_stage_fixture(&root.join("bounded-stage-home"))?);
+    let proof = checked_scenario("exact-import-stage-and-home-scope", || exact_fixture(&h1, &h2, &p))?;
+    push_check(&mut checks, proof);
+    let proof = checked_scenario("live-external-state-readers", || token_count_jsonl::verify_live_state_fixture(&root.join("live-state-home")))?;
+    push_check(&mut checks, proof);
+    let proof = checked_scenario("bounded-stage-replacement", || token_count_jsonl::verify_bounded_stage_fixture(&root.join("bounded-stage-home")))?;
+    push_check(&mut checks, proof);
+    let proof = checked_scenario("runtime-recovery-production-path", || token_count_jsonl::verify_runtime_recovery_fixture(&root.join("runtime-home")))?;
+    push_check(&mut checks, proof);
+    let proof = checked_scenario("legacy-backfill-indexed-reconciliation", || token_count_jsonl::verify_backfill_performance_fixture(&root.join("legacy-backfill-home")))?;
+    push_check(&mut checks, proof);
+    fixture_started("legacy-source-preservation");
     for (f, before) in &digests {
         need!(
             digest(f)? == *before,
             format!("legacy source changed: {}", f.display())
         );
     }
-    checks.push(json!({"name":"legacy-source-preservation","status":"PASS","count":digests.len()}));
+    push_check(&mut checks, json!({"name":"legacy-source-preservation","status":"PASS","count":digests.len()}));
+    fixture_started("rerun-and-fail-closed");
     let count = store_count(&p.a)?;
     route::bootstrap()?;
     need!(
         store_count(&p.a)? == count,
         "bootstrap rerun changed A store catalog"
     );
-    park_a_and_test(&p)?;
-    checks.push(json!({"name":"rerun-and-fail-closed","status":"PASS","storeCount":count}));
-    Ok(json!({"status":"PASS","root":root,"containerA":p.a,"clientB":p.b,"checks":checks}))
+    checked_scenario("park-and-restore-container-a", || park_a_and_test(&p))?;
+    push_check(&mut checks, json!({"name":"rerun-and-fail-closed","status":"PASS","storeCount":count}));
+    need!(concurrent_a_write_count() > 0, "default fixture did not exercise its concurrent writer assertions");
+    Ok(json!({"status":"PASS","root":root,"containerA":p.a,"clientB":p.b,"checks":checks,
+        "concurrentWriterProbeEnabled":true,"concurrentWriteAssertions":concurrent_a_write_count()}))
+}
+
+/// Separate pressure mode. It creates only synthetic sources inside a fresh,
+/// explicitly overridden root and uses the application's normal A routes.
+pub fn run_source_count_fixture(input: &Path, count: u64) -> Result<Value, String> {
+    need!((9..=8192).contains(&count), "source count must be in 9...8192");
+    let root = validate_root(input)?;
+    let p = Paths::resolve(&root)?;
+    for file in [&p.a, &p.marker, &p.b, &p.quota, &p.shared_quota, &p.modeltrace] {
+        need!(!file.exists(), format!("refusing existing scale-fixture DB: {}", file.display()));
+    }
+    for directory in [&p.exact_root, &p.old_exact_root] {
+        if directory.exists() {
+            need!(ok!(fs::read_dir(directory)).next().is_none(), "source-count fixture requires empty Exact directories");
+        }
+    }
+    let home = root.join("source-count-home");
+    match fs::symlink_metadata(&home) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+        _ => return Err("source-count fixture requires a new Home, without existing directories or symlinks".into()),
+    }
+    let startup = crate::core::business_startup::process_coordinator();
+    need!(startup.begin_initial(), "fixture startup already claimed");
+    let prepared = route::bootstrap();
+    startup.finish(prepared.clone());
+    prepared?;
+    token_count_jsonl::verify_source_count_fixture(&home, count)
 }
 
 struct Paths {
@@ -340,19 +427,66 @@ fn validate_root(input: &Path) -> Result<PathBuf, String> {
     Ok(root)
 }
 
-fn seed_quota(path: &Path, home: &Path, at: f64, source: &str) -> Result<(), String> {
+fn public_read_only_fixture(paths: &Paths) -> Result<Value, String> {
+    let writer = route::open_store(
+        "fixture_readonly", "fixture", "fixture/public-read-only", &[],
+    )?;
+    ok!(writer.execute_batch("CREATE TABLE observations(value INTEGER); INSERT INTO observations VALUES(41);"));
+    let catalog = ok!(Connection::open_with_flags(
+        &paths.a, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ));
+    let before: i64 = ok!(catalog.query_row("SELECT COUNT(*) FROM tb_stores", [], |row| row.get(0)));
+    ok!(writer.execute_batch("BEGIN IMMEDIATE; UPDATE observations SET value=42;"));
+    let checked = (|| -> Result<(), String> {
+        let reader = route::open_registered_store_read_only(
+            "fixture_readonly", "fixture", "fixture/public-read-only",
+            std::time::Duration::from_millis(25),
+        )?.ok_or("public read-only route lost its registered namespace")?;
+        let value: i64 = ok!(reader.query_row("SELECT value FROM observations", [], |row| row.get(0)));
+        need!(value == 41, "read-only route exposed the publisher's uncommitted value");
+        let error = reader.execute("INSERT INTO observations VALUES(99)", [])
+            .err().ok_or("public read-only route allowed a main-database write")?;
+        need!(error.sqlite_error_code() == Some(rusqlite::ErrorCode::ReadOnly),
+            "read-only fixture did not reach SQLite write enforcement");
+        need!(route::open_registered_store_read_only(
+            "fixture_readonly", "unknown-home", "fixture/public-read-only",
+            std::time::Duration::from_millis(25),
+        )?.is_none(), "public read-only route created an unknown namespace");
+        let after: i64 = ok!(catalog.query_row("SELECT COUNT(*) FROM tb_stores", [], |row| row.get(0)));
+        need!(after == before, "public read-only route registered an unknown partition");
+        Ok(())
+    })();
+    let rollback = writer.execute_batch("ROLLBACK;");
+    checked?;
+    ok!(rollback);
+    need!(ok!(writer.query_row("SELECT value FROM observations", [], |row| row.get::<_, i64>(0))) == 41,
+        "read-only fixture changed its committed source");
+    Ok(json!({"name":"public-read-only-routing","status":"PASS",
+        "startupReadRefused":true,"concurrentPublisherRead":true,
+        "uncommittedValueHidden":true,"mainWriteRefused":true,
+        "unknownPartitionNotRegistered":true}))
+}
+
+fn seed_quota(path: &Path, home: &Path, at: f64, source: &str, legacy: bool) -> Result<(), String> {
     parent(path)?;
+    let plan = quota_history::QuotaHistoryIdentity::from_canonical_parts(home,
+        Some("sub:fixture-account"), "pro", "codex")
+        .ok_or("legacy quota fixture identity rejected")?.attribution_identity().plan;
     let c = ok!(Connection::open(path));
     ok!(c.execute_batch("CREATE TABLE quota_snapshots(id INTEGER PRIMARY KEY AUTOINCREMENT,created_at REAL NOT NULL,account_key TEXT NOT NULL,plan_type TEXT,limit_name TEXT,account_name TEXT,source TEXT,five_hour_used_percent INTEGER,five_hour_resets_at REAL,five_hour_cycle_generation INTEGER,five_hour_reset_anchor INTEGER NOT NULL DEFAULT 0,seven_day_used_percent INTEGER,seven_day_resets_at REAL,seven_day_cycle_generation INTEGER,seven_day_reset_anchor INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL,identity_version INTEGER,home_identity TEXT,stable_account_key TEXT,identity_plan_type TEXT,identity_limit_id TEXT);"));
-    ok!(c.execute("INSERT INTO quota_snapshots(created_at,account_key,plan_type,limit_name,account_name,source,five_hour_used_percent,five_hour_resets_at,five_hour_cycle_generation,seven_day_used_percent,seven_day_resets_at,seven_day_cycle_generation,status,identity_version,home_identity,stable_account_key,identity_plan_type,identity_limit_id) VALUES(?1,'sub:fixture-account','pro','codex','Fixture','swift',20,?2,1,30,?3,1,'ok',1,?4,'sub:fixture-account','Pro','codex')",params![at,at+10000.0,at+200000.0,home.to_string_lossy().as_ref()]));
+    ok!(c.execute("INSERT INTO quota_snapshots(created_at,account_key,plan_type,limit_name,account_name,source,five_hour_used_percent,five_hour_resets_at,five_hour_cycle_generation,seven_day_used_percent,seven_day_resets_at,seven_day_cycle_generation,status,identity_version,home_identity,stable_account_key,identity_plan_type,identity_limit_id) VALUES(?1,'sub:fixture-account','pro','codex','Fixture','tauri',20,?2,1,30,?3,1,'ok',1,?4,'sub:fixture-account',?5,'codex')",params![at,at+10000.0,at+200000.0,home.to_string_lossy().as_ref(),plan]));
     ok!(c.execute("UPDATE quota_snapshots SET source=?1", [source]));
-    if source == "tauri" {
-        // Published databases and interrupted upgrades may lack all four
-        // derived cycle columns. The production reader must not ALTER them.
-        ok!(c.execute_batch("ALTER TABLE quota_snapshots DROP COLUMN five_hour_cycle_generation;
-            ALTER TABLE quota_snapshots DROP COLUMN five_hour_reset_anchor;
-            ALTER TABLE quota_snapshots DROP COLUMN seven_day_cycle_generation;
-            ALTER TABLE quota_snapshots DROP COLUMN seven_day_reset_anchor;"));
+    if legacy {
+        // One duplicate of the other legacy store, one unclaimed row and one
+        // different identity. The source file and its old shape stay immutable
+        // when the production legacy readers are exercised below.
+        ok!(c.execute("INSERT INTO quota_snapshots(created_at,account_key,plan_type,limit_name,account_name,source,five_hour_used_percent,five_hour_resets_at,five_hour_cycle_generation,seven_day_used_percent,seven_day_resets_at,seven_day_cycle_generation,status,identity_version,home_identity,stable_account_key,identity_plan_type,identity_limit_id) SELECT created_at-300,account_key,plan_type,limit_name,account_name,source,five_hour_used_percent,five_hour_resets_at-300,five_hour_cycle_generation,seven_day_used_percent,seven_day_resets_at-300,seven_day_cycle_generation,status,identity_version,home_identity,stable_account_key,identity_plan_type,identity_limit_id FROM quota_snapshots", []));
+        ok!(c.execute_batch("INSERT INTO quota_snapshots(created_at,account_key,source,status) VALUES(1,'fixture-unclaimed','tauri','ok'); INSERT INTO quota_snapshots(created_at,account_key,source,status,identity_version,home_identity,stable_account_key,identity_plan_type,identity_limit_id) SELECT created_at+1,'fixture-other','tauri','ok',identity_version,home_identity,'sub:fixture-other',identity_plan_type,identity_limit_id FROM quota_snapshots WHERE id=1;"));
+    }
+    if legacy || source == "tauri" {
+        for column in ["five_hour_cycle_generation", "five_hour_reset_anchor", "seven_day_cycle_generation", "seven_day_reset_anchor"] {
+            ok!(c.execute_batch(&format!("ALTER TABLE quota_snapshots DROP COLUMN {column}")));
+        }
     }
     Ok(())
 }
@@ -420,19 +554,49 @@ fn exact_fixture(h1: &Path, h2: &Path, p: &Paths) -> Result<Value, String> {
     let index = exact_path(&p.exact_root, h1)?;
     let store = route::exact_store_spec(&index)?;
     route::export_store_to_path(&store.source_identity, "exact", &store.logical_path, &index)?;
+    // Receipts use the physical canonical path (including Windows' extended
+    // path prefix), while callers may supply a normal absolute path. Check
+    // that both spellings still address the same namespace before using the
+    // receipt spelling; canonicalizing must not conceal a routing regression.
+    let canonical_index = ok!(fs::canonicalize(&index));
+    let canonical_store = route::exact_store_spec(&canonical_index)?;
+    need!(
+        canonical_store == store,
+        format!(
+            "Exact canonical path changed namespace identity: input={} canonical={} input_store={store:?} canonical_store={canonical_store:?}",
+            index.display(), canonical_index.display()
+        )
+    );
     let source_digest = digest(&index)?;
     need!(
         route::remove_exact_store(&index)?,
         "Exact namespace was not removed for legacy import test"
     );
     token_count_jsonl::bootstrap_legacy_exact_indexes()?;
-    let receipt: bool = ok!(ok!(Connection::open(&p.a)).query_row(
-        "SELECT EXISTS(SELECT 1 FROM tb_legacy_inputs WHERE source_path=?1 AND module='exact' AND retired=0)",
-        [index.to_string_lossy().as_ref()], |r| r.get(0)));
     need!(
-        route::exact_store_exists(&index)? && receipt,
-        "Exact legacy import or active receipt missing"
+        route::exact_store_exists(&index)?,
+        format!("Exact legacy namespace missing after import: {} ({})", index.display(), store.id)
     );
+    let receipt_connection = ok!(Connection::open(&p.a));
+    let receipt: bool = ok!(receipt_connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM tb_legacy_inputs WHERE source_path=?1 AND store_id=?2 AND logical_path=?3 AND module='exact' AND retired=0)",
+        params![canonical_index.to_string_lossy().as_ref(), store.id, store.logical_path],
+        |r| r.get(0)
+    ));
+    if !receipt {
+        let mut statement = ok!(receipt_connection.prepare(
+            "SELECT source_path,store_id,logical_path,retired FROM tb_legacy_inputs WHERE module='exact' ORDER BY source_path"
+        ));
+        let rows = ok!(statement.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?))
+        }));
+        let actual = ok!(rows.collect::<Result<Vec<_>, _>>());
+        return Err(format!(
+            "Exact active receipt missing: expected source={} store_id={} logical_path={}; actual={actual:?}",
+            canonical_index.display(), store.id, store.logical_path
+        ));
+    }
+    drop(receipt_connection);
     need!(
         digest(&index)? == source_digest
             && token_count_jsonl::dashboard_snapshot(h1)?

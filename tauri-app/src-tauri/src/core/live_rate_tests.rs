@@ -110,7 +110,10 @@ fn cache_advice_same_length_rollout_rewrite_resets_the_reminder() {
             "{{\"type\":\"token_count\",\"info\":{{\"last_token_usage\":{{\"input_tokens\":20000,\"cached_input_tokens\":{cached}}},\"total_token_usage\":{{\"total_tokens\":{total}}}}}}}"
         ));
     }
-    let before_rewrite = read_snapshot_result_at(&root, &scope, None, now + 0.5).unwrap();
+    // Keep new observations at this poll's logical time. Slow Windows setup can
+    // exceed the reminder's five-second resume guard; older fixture timestamps
+    // would then be discarded before this test reaches the rewrite it covers.
+    let before_rewrite = read_snapshot_result_at(&root, &scope, None, now).unwrap();
     if cache_reminder::CACHE_MISS_REMINDER_ENABLED {
         assert!(before_rewrite
             .cache_advice

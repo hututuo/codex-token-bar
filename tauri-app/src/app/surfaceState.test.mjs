@@ -313,7 +313,7 @@ test("direct compact quota fallback remains capped at one-minute refreshes", asy
 });
 
 test("dashboard and direct compact quota fallback force refresh after system wake", async () => {
-  const dashboardData = await readFile(new URL("../state/useDashboardData.ts", import.meta.url), "utf8");
+  const dashboardData = (await readFile(new URL("../state/useDashboardData.ts", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
   const dashboardPage = await readFile(new URL("../pages/DashboardPage.tsx", import.meta.url), "utf8");
   const compactQuota = await readFile(new URL("../surfaces/useCompactPanelQuota.ts", import.meta.url), "utf8");
   const wakeRefresh = await readFile(new URL("../utils/useWakeRefresh.ts", import.meta.url), "utf8");

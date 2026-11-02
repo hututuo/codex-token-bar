@@ -92,8 +92,26 @@ enum BusinessSQLiteRoutes {
         state.resolvedPaths.removeAll()
         state.registeredIDs.removeAll()
     }
+    /// A-only legacy jobs may have no physical staging directories at all.
+    /// Resolve the nearest existing ancestor, then append absent components;
+    /// resolving a wholly absent parent can retain a configured alias spelling.
+    static func resolvedDirectoryIdentity(_ directory: URL) -> URL {
+        var ancestor = directory.standardizedFileURL
+        var missing: [String] = []
+        var value = Darwin.stat()
+        while lstat(ancestor.path, &value) != 0, errno == ENOENT {
+            let parent = ancestor.deletingLastPathComponent()
+            guard parent.path != ancestor.path else { break }
+            missing.append(ancestor.lastPathComponent)
+            ancestor = parent
+        }
+        var resolved = ancestor.resolvingSymlinksInPath()
+        for component in missing.reversed() { resolved.appendPathComponent(component, isDirectory: true) }
+        return resolved.standardizedFileURL
+    }
     static func allStores(in directory: URL) -> [BusinessSQLiteStore] {
         let root = directory.standardizedFileURL.path
+        let physicalRoot = resolvedDirectoryIdentity(directory).path
         state.lock.lock()
         let candidates = Array(state.routes.values)
         state.lock.unlock()
@@ -106,8 +124,14 @@ enum BusinessSQLiteRoutes {
         }
         return candidates.filter { store in
             let path = store.logicalURL.path
+            // A completed legacy job can live only in A after its old file
+            // disappears. Resolve its parent directory, never the absent leaf,
+            // so a configured root alias still finds that retained namespace.
+            let physicalPath = resolvedDirectoryIdentity(store.logicalURL.deletingLastPathComponent())
+                .appendingPathComponent(store.logicalURL.lastPathComponent).standardizedFileURL.path
             return registeredPaths.contains(path)
-                && (path == root || path.hasPrefix(root.hasSuffix("/") ? root : root + "/"))
+                && (path == root || path.hasPrefix(root.hasSuffix("/") ? root : root + "/")
+                    || physicalPath == physicalRoot || physicalPath.hasPrefix(physicalRoot.hasSuffix("/") ? physicalRoot : physicalRoot + "/"))
         }.sorted { $0.logicalURL.path < $1.logicalURL.path }
     }
     @discardableResult static func rename(_ oldStore: BusinessSQLiteStore, to newLogicalURL: URL) throws -> BusinessSQLiteStore {
@@ -407,13 +431,16 @@ final class CodexBusinessDatabase {
     /// by copying a live main file without its WAL. Only this namespace changes.
     /// The original snapshot, schema, all typed row values and old integer IDs
     /// remain available for proof/rollback. Re-importing the same image is a no-op.
-    @discardableResult func importSnapshot(_ source: URL, into store: BusinessSQLiteStore, backupURL: URL, now: Date = Date(), replaceExisting: Bool = false) throws -> BusinessStoreProof {
+    @discardableResult func importSnapshot(_ source: URL, into store: BusinessSQLiteStore, backupURL: URL, now: Date = Date(), replaceExisting: Bool = false,
+                                          expectedDestination: BusinessStoreProof? = nil,
+                                          expectedSource: BusinessStoreProof? = nil) throws -> BusinessStoreProof {
         guard store.containerURL == url.standardizedFileURL else { throw BusinessStoreError.invalidStore }
         let sourceSignature = try Self.sourceFileSignature(source)
         let sourceDB = SQLiteDatabaseDriver(url: source, readOnly: true, createsFileIfMissing: false, bypassBusinessRoutes: true)
         let proof = try sourceDB.withConnection { db in
             try db.readTransaction { try Self.proof($0) }
         }
+        if let expectedSource, proof != expectedSource { throw BusinessStoreError.sourceChanged }
         guard try Self.sourceFileSignature(source) == sourceSignature else { throw BusinessStoreError.sourceChanged }
         let sourceDigest = proof.schemaDigest + ":" + proof.rowsDigest + ":v" + String(proof.moduleUserVersion)
         let existing = try driver.readRows("SELECT rows_digest FROM tb_store_imports WHERE store_id=? AND source_digest=?",bindings:[.text(store.id),.text(sourceDigest)]) { $0.text(0) }.first ?? nil
@@ -441,7 +468,8 @@ final class CodexBusinessDatabase {
                 }.first ?? false
                 guard registered else { throw BusinessStoreError.invalidStore }
                 let attachedProof = try Self.proof(tx, namespace: nil, schemaName: "tb_import_source")
-                guard attachedProof == proof else { throw BusinessStoreError.sourceChanged }
+                guard attachedProof == proof,
+                      expectedSource.map({ $0 == attachedProof }) ?? true else { throw BusinessStoreError.sourceChanged }
                 let names = try tx.readRows("SELECT name,type,sql FROM tb_import_source.sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY CASE type WHEN 'table' THEN 0 ELSE 1 END,name") { ($0.text(0) ?? "",$0.text(1) ?? "",$0.text(2)) }
                 guard names.allSatisfy({ ["table","index","view","trigger"].contains($0.1) }) else { throw BusinessStoreError.unsupportedSchema("object type") }
                 var namespace = SQLiteStoreNamespace(prefix: store.prefix, objectNames: Set(names.map { $0.0.lowercased() }))
@@ -452,6 +480,15 @@ final class CodexBusinessDatabase {
                     guard Set(columns.map { $0.lowercased() }).isDisjoint(with: namespace.objectNames) else { throw BusinessStoreError.unsupportedSchema("object/column name collision") }
                 }
                 let old = try tx.readRows("SELECT name,type FROM main.sqlite_master WHERE substr(name,1,?)=? ORDER BY CASE type WHEN 'view' THEN 0 WHEN 'trigger' THEN 1 WHEN 'index' THEN 2 ELSE 3 END", bindings:[.int(store.prefix.count),.text(store.prefix)]) { ($0.text(0) ?? "",$0.text(1) ?? "") }
+                if let expectedDestination {
+                    // The coordinator proved this exact unfinished image against
+                    // retained evidence. Recheck under the replacement write lock:
+                    // an independently committed destination row is not permission
+                    // to replay the older snapshot over it.
+                    guard try Self.proof(tx, namespace: namespace) == expectedDestination else {
+                        throw BusinessStoreError.sourceChanged
+                    }
+                }
                 // A namespace created directly by a running module may have
                 // no old-import receipt. It still contains live data. Only
                 // an explicitly authorized replacement may drop its objects.
@@ -508,11 +545,213 @@ final class CodexBusinessDatabase {
         return proof
     }
 
+    /// Conservative retry coverage: all prior typed values, hidden rowids and
+    /// duplicate multiplicities must survive. TEMP btrees bound memory for large
+    /// histories; SQL equality alone would conflate REAL/INTEGER or collation-
+    /// equivalent text. Callers normalize both images before this comparison;
+    /// only the narrowly verified metadata transitions below may differ. A
+    /// released Exact writer can also append while activation is unfinished;
+    /// that path must prove its raw prefix, parser checkpoint and projections
+    /// before any mutable bookkeeping is exempted from the typed comparison.
+    static func snapshot(_ candidateURL: URL, covers retainedURL: URL, module: String = "",
+                         legacySourceURL: URL? = nil, expectedRetained: BusinessStoreProof? = nil,
+                         expectedCandidate: BusinessStoreProof? = nil,
+                         diagnostics: BusinessMigrationDiagnostics? = nil) throws -> Bool {
+        let candidateStamp = try sourceFileSignature(candidateURL)
+        let retainedStamp = try sourceFileSignature(retainedURL)
+        let candidate = SQLiteDatabaseDriver(url: candidateURL, readOnly: true, createsFileIfMissing: false, bypassBusinessRoutes: true)
+        let retained = SQLiteDatabaseDriver(url: retainedURL, readOnly: true, createsFileIfMissing: false, bypassBusinessRoutes: true)
+        let covered = try candidate.withConnection { current in
+            try current.execute("PRAGMA temp_store=FILE; PRAGMA temp.cache_size=-2048; CREATE TEMP TABLE retry_coverage(encoded BLOB PRIMARY KEY, needed INTEGER NOT NULL, found INTEGER NOT NULL) WITHOUT ROWID")
+            return try current.readTransaction { current in
+                try retained.withConnection { previous in
+                    try previous.readTransaction { previous in
+                        let before = try proof(previous), after = try proof(current)
+                        if let expectedRetained, before != expectedRetained { throw BusinessStoreError.sourceChanged }
+                        if let expectedCandidate, after != expectedCandidate { throw BusinessStoreError.sourceChanged }
+                        if before == after { return true }
+                        guard before.moduleUserVersion == after.moduleUserVersion else { return false }
+                        if before.schemaDigest != after.schemaDigest {
+                            guard ["exact.swift", "exact.swift.retired"].contains(module),
+                                  try knownExactIndexAddition(current, previous: previous) else { return false }
+                            diagnostics?.record("retry-exact-additive-index", "succeeded",
+                                ["index": UsageHistoryRetention.unreportedCompactionIndexName])
+                        }
+                        let tables = try previous.readRows("SELECT name,sql FROM main.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name") {
+                            ($0.text(0) ?? "", $0.text(1) ?? "")
+                        }
+                        let expected = try current.prepare("INSERT INTO temp.retry_coverage VALUES(?,1,0) ON CONFLICT(encoded) DO UPDATE SET needed=needed+1")
+                        let observed = try current.prepare("UPDATE temp.retry_coverage SET found=found+1 WHERE encoded=?")
+                        var uncovered = Set<String>()
+                        var provedMetadataChanges = Set<String>()
+                        for (name, sql) in tables {
+                            if module == "quota.swift", name == "quota_history_maintenance" {
+                                guard try quotaMaintenanceCovers(current, previous: previous) else { return false }
+                                continue
+                            }
+                            var predicate = ""
+                            if ["exact.swift", "exact.swift.retired"].contains(module), name == "schema_meta",
+                               try metadata(current, key: "representation_upgrade_backup") != metadata(previous, key: "representation_upgrade_backup") {
+                                guard try representationBackupEquivalent(current, previous: previous,
+                                    candidateURL: candidateURL, retainedURL: retainedURL, legacySourceURL: legacySourceURL) else { return false }
+                                predicate = " WHERE key IS NULL OR key<>'representation_upgrade_backup'"
+                                provedMetadataChanges.insert("representation_upgrade_backup")
+                            }
+                            try current.execute("DELETE FROM temp.retry_coverage")
+                            let quoted = SQLiteStoreNamespace.quote(name)
+                            let columns = try previous.readRows("PRAGMA main.table_xinfo(\(quoted))") { ($0.text(1) ?? "", $0.int(6) ?? 0) }
+                                .filter { $0.1 != 1 }.map(\.0)
+                            let alias = try rowIDAlias(sql: sql, columns: columns)
+                            let projection = ((alias.map { [$0] } ?? []) + columns).map(SQLiteStoreNamespace.quote).joined(separator: ",")
+                            try previous.forEachRow("SELECT \(projection) FROM main.\(quoted)\(predicate)") { row in
+                                _ = try expected.execute([.blob(encodedRow(row))])
+                            }
+                            try current.forEachRow("SELECT \(projection) FROM main.\(quoted)\(predicate)") { row in
+                                _ = try observed.execute([.blob(encodedRow(row))])
+                            }
+                            if try current.readRows("SELECT 1 FROM temp.retry_coverage WHERE needed>found LIMIT 1", map: { $0.int(0) }).first == 1 {
+                                uncovered.insert(name)
+                            }
+                        }
+                        if try previous.readRows("SELECT 1 FROM main.sqlite_master WHERE name='sqlite_sequence'", map: { $0.int(0) }).first == 1 {
+                            let prior = try previous.readRows("SELECT name,seq FROM main.sqlite_sequence") { ($0.text(0) ?? "", $0.int64(1) ?? 0) }
+                            for (name, value) in prior {
+                                guard let next = try current.readRows("SELECT seq FROM main.sqlite_sequence WHERE name=?", bindings: [.text(name)], map: { $0.int64(0) }).first ?? nil,
+                                      next >= value else { return false }
+                            }
+                        }
+                        if !uncovered.isEmpty {
+                            diagnostics?.record("retry-history-typed-coverage", "requires-proof", ["module": module,
+                                "tables": uncovered.sorted().joined(separator: ",")])
+                            guard ["exact.swift", "exact.swift.retired"].contains(module),
+                                  uncovered.isSubset(of: ExactRetryAppendCoverage.mutableTables),
+                                  try ExactRetryAppendCoverage.verify(current: current, previous: previous,
+                                      candidateURL: candidateURL, provedMetadataChanges: provedMetadataChanges,
+                                      diagnostics: diagnostics) else { return false }
+                        }
+                        return true
+                    }
+                }
+            }
+        }
+        guard try sourceFileSignature(candidateURL) == candidateStamp,
+              try sourceFileSignature(retainedURL) == retainedStamp else { throw BusinessStoreError.sourceChanged }
+        return covered
+    }
+
+    private static func encodedRow(_ row: SQLiteStatement) -> Data {
+        var value = Data()
+        for column in 0..<row.columnCount { value.append(row.canonicalBytes(column)) }
+        return value
+    }
+
+    /// v0.9.8/0.9.9 formed imports predate this one non-unique query index.
+    /// Current normalization adds it without changing history. All other
+    /// schema evidence (including columns, FK lists and index_xinfo) must be
+    /// identical. This is not permission for an arbitrary additive migration.
+    private static func knownExactIndexAddition(_ current: SQLiteDatabaseConnection,
+                                                previous: SQLiteDatabaseConnection) throws -> Bool {
+        let name = UsageHistoryRetention.unreportedCompactionIndexName
+        for db in [previous, current] {
+            guard try metadata(db, key: "schema_version") == "14",
+                  try metadata(db, key: "schema_version", table: "retained_usage_meta") == UsageHistoryRetention.revision,
+                  try metadata(db, key: "writer_revision", table: "retained_usage_meta") == UsageHistoryRetention.writerRevision else { return false }
+        }
+        guard try previous.readRows("SELECT 1 FROM main.sqlite_master WHERE name=?", bindings: [.text(name)], map: { $0.int(0) }).isEmpty else { return false }
+        let objects = try current.readRows("SELECT type,tbl_name,sql FROM main.sqlite_master WHERE name=?", bindings: [.text(name)]) {
+            ($0.text(0), $0.text(1), $0.text(2))
+        }
+        guard objects.count == 1, objects[0].0 == "index", objects[0].1 == "retained_usage_events",
+              let sql = objects[0].2,
+              try SQLiteStoreNamespace.canonicalSQL(sql) == SQLiteStoreNamespace.canonicalSQL(UsageHistoryRetention.unreportedCompactionIndexSQL) else { return false }
+        let indexes = try current.readRows("PRAGMA main.index_list(retained_usage_events)") { ($0.text(1), $0.int(2), $0.text(3), $0.int(4)) }
+        guard indexes.contains(where: { $0.0 == name && $0.1 == 0 && $0.2 == "c" && $0.3 == 1 }) else { return false }
+        let before = try proof(previous, namespace: nil, schemaName: "main", ignoringIndex: name, includeRows: false)
+        let after = try proof(current, namespace: nil, schemaName: "main", ignoringIndex: name, includeRows: false)
+        return before.schemaDigest == after.schemaDigest
+    }
+
+    private static func metadata(_ db: SQLiteDatabaseConnection, key: String,
+                                 table: String = "schema_meta") throws -> String? {
+        try db.readRows("SELECT value FROM main.\(SQLiteStoreNamespace.quote(table)) WHERE key=? AND typeof(value)='text'",
+            bindings: [.text(key)]) { $0.text(0) }.first ?? nil
+    }
+
+    /// Released quota policy 3 keeps raw observations. Its maintenance clock
+    /// can advance, while identities, types, policy and unknown values cannot.
+    private static func quotaMaintenanceCovers(_ current: SQLiteDatabaseConnection,
+                                              previous: SQLiteDatabaseConnection) throws -> Bool {
+        let table = "quota_history_maintenance"
+        for db in [previous, current] {
+            let columns = try db.readRows("PRAGMA main.table_info(quota_history_maintenance)") {
+                ($0.text(1) ?? "", ($0.text(2) ?? "").uppercased(), $0.int(3) ?? 0, $0.int(5) ?? 0)
+            }
+            guard columns.count == 2, columns[0].0 == "key", columns[0].1 == "TEXT", columns[0].3 == 1,
+                  columns[1].0 == "value", columns[1].1 == "TEXT", columns[1].2 == 1, columns[1].3 == 0 else { return false }
+        }
+        let complete = "SELECT rowid,key,value FROM main.quota_history_maintenance ORDER BY rowid"
+        if try previous.readRows(complete, map: encodedRow) == current.readRows(complete, map: encodedRow) { return true }
+        for db in [previous, current] {
+            guard try metadata(db, key: "policy_version", table: table) == "3",
+                  try db.readRows("SELECT 1 FROM main.quota_history_maintenance WHERE key IS NULL LIMIT 1", map: { $0.int(0) }).first == nil else { return false }
+        }
+        guard let oldRaw = try metadata(previous, key: "last_compacted_at", table: table),
+              let newRaw = try metadata(current, key: "last_compacted_at", table: table),
+              let old = Double(oldRaw), let new = Double(newRaw), old.isFinite, new.isFinite,
+              (0.0...253_402_300_799.0).contains(old), (0.0...253_402_300_799.0).contains(new), new >= old else { return false }
+        let identities = "SELECT rowid,key,typeof(value) FROM main.quota_history_maintenance ORDER BY rowid"
+        let values = "SELECT rowid,key,value FROM main.quota_history_maintenance WHERE key<>'last_compacted_at' ORDER BY rowid"
+        return try previous.readRows(identities, map: encodedRow) == current.readRows(identities, map: encodedRow)
+            && previous.readRows(values, map: encodedRow) == current.readRows(values, map: encodedRow)
+    }
+
+    /// Schema 13→14 adds a location for a complete pre-representation image.
+    /// Isolated normalization and a legacy writer can record different paths
+    /// for the same image. Authorize that single changed value only when both
+    /// paths are owned expected siblings and their full schema-13 proofs agree.
+    private static func representationBackupEquivalent(_ current: SQLiteDatabaseConnection,
+        previous: SQLiteDatabaseConnection, candidateURL: URL, retainedURL: URL,
+        legacySourceURL: URL?) throws -> Bool {
+        for db in [previous, current] {
+            guard try metadata(db, key: "schema_version") == "14",
+                  try metadata(db, key: "representation_revision") == "rollout-storage-v1" else { return false }
+        }
+        let identities = "SELECT rowid,key,typeof(value) FROM main.schema_meta WHERE key='representation_upgrade_backup'"
+        guard try previous.readRows(identities, map: encodedRow) == current.readRows(identities, map: encodedRow),
+              let before = try metadata(previous, key: "representation_upgrade_backup"),
+              let after = try metadata(current, key: "representation_upgrade_backup") else { return false }
+        func canonical(_ url: URL) -> URL {
+            url.deletingLastPathComponent().resolvingSymlinksInPath().appendingPathComponent(url.lastPathComponent).standardizedFileURL
+        }
+        let allowed = Set(([candidateURL, retainedURL] + (legacySourceURL.map { [$0] } ?? [])).map {
+            canonical(URL(fileURLWithPath: $0.path + ".schema13-before-representations.sqlite"))
+        })
+        func backupProof(_ path: String) throws -> BusinessStoreProof? {
+            let url = URL(fileURLWithPath: path).standardizedFileURL
+            guard path.hasPrefix("/"), url.path == path, allowed.contains(canonical(url)),
+                  let attributes = try? FileManager.default.attributesOfItem(atPath: path),
+                  attributes[.type] as? FileAttributeType == .typeRegular else { return nil }
+            let stamp = try sourceFileSignature(url)
+            let result: BusinessStoreProof? = try SQLiteDatabaseDriver(url: url, readOnly: true, createsFileIfMissing: false, bypassBusinessRoutes: true)
+                .withConnection { db in
+                    try db.readTransaction { db in
+                        guard try metadata(db, key: "schema_version") == "13" else { return nil }
+                        return try proof(db)
+                    }
+                }
+            guard try sourceFileSignature(url) == stamp else { throw BusinessStoreError.sourceChanged }
+            return result
+        }
+        guard let beforeProof = try backupProof(before), let afterProof = try backupProof(after) else { return false }
+        return beforeProof == afterProof
+    }
+
     static func proof(_ db: SQLiteDatabaseConnection, namespace: SQLiteStoreNamespace? = nil) throws -> BusinessStoreProof {
         try proof(db, namespace: namespace, schemaName: "main")
     }
 
-    private static func proof(_ db: SQLiteDatabaseConnection, namespace: SQLiteStoreNamespace?, schemaName: String) throws -> BusinessStoreProof {
+    private static func proof(_ db: SQLiteDatabaseConnection, namespace: SQLiteStoreNamespace?, schemaName: String,
+                              ignoringIndex: String? = nil, includeRows: Bool = true) throws -> BusinessStoreProof {
         guard schemaName == "main" || schemaName == "tb_import_source" else { throw BusinessStoreError.invalidStore }
         let schemaPrefix = SQLiteStoreNamespace.quote(schemaName)
         let prefix = namespace?.prefix ?? ""
@@ -568,6 +807,7 @@ final class CodexBusinessDatabase {
             } else {
                 logicalSQL = try logicalNamespace.unbind(rawSQL)
             }
+            if type == "index", name.lowercased() == ignoringIndex?.lowercased() { continue }
             objects.append((type, name, table, logicalSQL))
         }
         objects.sort { ($0.0, $0.1.lowercased()) < ($1.0, $1.1.lowercased()) }
@@ -616,7 +856,8 @@ final class CodexBusinessDatabase {
             }.map { index in
                 (index.0, logicalNamespace.logicalName(forPhysical: index.0) ?? index.0,
                  index.1, index.2, index.3)
-            }.sorted { $0.1.lowercased() < $1.1.lowercased() }
+            }.filter { $0.1.lowercased() != ignoringIndex?.lowercased() }
+                .sorted { $0.1.lowercased() < $1.1.lowercased() }
             Self.update(&schemaHash, fields: ["index-list", name.lowercased()])
             for (physicalIndex, logicalIndex, unique, origin, partial) in indexes {
                 Self.update(&schemaHash, fields: [logicalIndex.lowercased(), String(unique), origin, String(partial)])
@@ -625,6 +866,8 @@ final class CodexBusinessDatabase {
                 }
                 for fields in indexInfo { Self.update(&schemaHash, binaryFields: fields) }
             }
+
+            if !includeRows { continue }
 
             let columns = try db.readRows("PRAGMA \(schemaPrefix).table_xinfo(\(quotedTable))") {
                 ($0.text(1) ?? "", $0.int(6) ?? 0)

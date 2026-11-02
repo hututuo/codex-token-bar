@@ -80,6 +80,53 @@ fn assert_unchanged(files: &[(PathBuf, Vec<u8>)]) {
 }
 
 #[test]
+fn discovery_reports_all_bad_manifests_before_importing_any_partial_set() {
+    let temporary = tempfile::tempdir().unwrap();
+    let current = temporary.path().join("current");
+    let cache = temporary.path().join("cache");
+    fs::create_dir_all(&current).unwrap();
+    fs::create_dir_all(&cache).unwrap();
+    let main_a = current.join("first.sqlite3");
+    let main_b = cache.join("second.sqlite3");
+    write_database(&main_a, "first committed history");
+    write_database(&main_b, "second committed history");
+    let manifest_a = super::super::schema11_manifest_path(&main_a);
+    let manifest_b = super::super::schema11_manifest_path(&main_b);
+    fs::write(&manifest_a, b"malformed-first-manifest").unwrap();
+    fs::write(&manifest_b, b"malformed-second-manifest").unwrap();
+    let originals = capture(&[&main_a, &main_b, &manifest_a, &manifest_b]);
+    let mut imported = Vec::new();
+    let error = super::bootstrap_at(&current, &cache, |target, _, _| {
+        imported.push(target.to_path_buf());
+        Ok(())
+    }).unwrap_err();
+    assert!(error.contains("first.sqlite3.schema11-migration.json"), "{error}");
+    assert!(error.contains("second.sqlite3.schema11-migration.json"), "{error}");
+    assert!(imported.is_empty(), "partial discovery is not permission to select a source");
+    assert_unchanged(&originals);
+}
+
+#[test]
+fn independent_import_failures_are_all_reported_in_the_same_attempt() {
+    let temporary = tempfile::tempdir().unwrap();
+    let current = temporary.path().join("current");
+    let cache = temporary.path().join("cache");
+    let first = current.join("first.sqlite3");
+    let second = current.join("second.sqlite3");
+    write_database(&first, "first committed history");
+    write_database(&second, "second committed history");
+    let originals = capture(&[&first, &second]);
+    let mut attempted = Vec::new();
+    let error = super::bootstrap_at(&current, &cache, |target, _, _| {
+        attempted.push(target.to_path_buf());
+        Err(format!("synthetic proof failure for {}", target.display()))
+    }).unwrap_err();
+    assert_eq!(attempted, vec![first, second]);
+    assert!(error.contains("first.sqlite3") && error.contains("second.sqlite3"), "{error}");
+    assert_unchanged(&originals);
+}
+
+#[test]
 fn relocation_equivalence_never_ignores_usage_other_metadata_or_unknown_receipts() {
     use crate::core::business_store_container::Container;
     let temporary = tempfile::tempdir().unwrap();

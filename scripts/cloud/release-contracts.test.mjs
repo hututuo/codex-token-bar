@@ -6,6 +6,32 @@ import { fileURLToPath } from 'node:url';
 const root=fileURLToPath(new URL('../../',import.meta.url));
 const python=process.platform==='win32'?'python':'python3';
 const read=p=>readFileSync(new URL(`../../${p}`,import.meta.url),'utf8');
+test('CI, signing and publication require the same-run native recovery proof',()=>{
+  const result=spawnSync(python,['-m','unittest','discover','-s','scripts/tests','-p','test_ci_evidence.py','-v'],{cwd:root,encoding:'utf8'});
+  assert.equal(result.status,0,result.stdout+result.stderr);
+});
+test('the current CI recovery artifact reaches signing and the cloud console cannot select old workflow definitions',()=>{
+  const ci=read('.github/workflows/ci.yml');
+  assert.match(ci,/needs: \[source, frontend, swift, native, windows-updater, database-recovery\]/);
+  assert.match(ci,/name: recovery-checked-source-\$\{\{ needs\.source\.outputs\.sha \}\}/);
+  assert.match(ci,/--input recovery-evidence\/recovery-checked-source\.json --output checked-source\.json/);
+  const signing=read('.github/workflows/sign-release.yml');
+  assert.match(signing,/--input verified-ci\/checked-source\.json/);
+  assert.match(signing,/--ci-evidence downloaded\/ci\/checked-source\.json/);
+  const consoleWorkflow=read('.github/workflows/cloud-console.yml');
+  for(const workflow of ['ci','prepare-release','sign-release','publish-release']) {
+    assert.ok(consoleWorkflow.includes(`uses: ./.github/workflows/${workflow}.yml`));
+  }
+  const recovery=read('.github/workflows/production-database-recovery.yml');
+  assert.match(recovery,/public-v097:\s+needs: \[source, harness-contracts\]\s+uses: \.\/\.github\/workflows\/release-upgrade-compatibility\.yml\s+with:\s+source_sha: \$\{\{ needs\.source\.outputs\.sha \}\}/);
+  assert.match(recovery,/needs: \[source, harness-contracts, public-v097, readers, formed-release, swift-formed-release, rust-backfill-scale, swift-backfill-scale\]/);
+  assert.match(recovery,/swift-formed-release:\s+needs: \[source, harness-contracts\]/);
+  assert.match(recovery,/python3 scripts\/check_swift_formed_release_upgrade.py --release "\$RELEASE_VERSION" --output swift-formed-state-evidence/);
+  assert.match(recovery,/python3 scripts\/check_rust_backfill_scale.py --sizes 13 128 512 4124 --profile release --timeout 1200 --max-progress-gap 30 --max-backfill-seconds 600 --output rust-backfill-scale-evidence/);
+  const publicRelease=read('.github/workflows/release-upgrade-compatibility.yml');
+  assert.ok(publicRelease.includes('workflow_call:'));
+  assert.ok(!/^\s+(push|pull_request):/m.test(publicRelease),'the same historical native gates must not run twice per push');
+});
 test('signing key files remain strict Base64, private and create-only',()=>{
   const script=[
     "import sys,base64,pathlib,tempfile,stat",

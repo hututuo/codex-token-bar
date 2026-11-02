@@ -115,6 +115,12 @@ pub(crate) fn step<T>(stage: &str, subject: &str, work: impl FnOnce() -> Result<
 }
 /// Advisory read-only inventory: report all independently observable faults,
 /// never stop at the first bad source or treat a successful probe as a proof.
+pub(crate) fn is_sqlite_input(path: &Path) -> bool {
+    path.extension().and_then(|extension| extension.to_str())
+        .is_some_and(|extension| ["sqlite", "sqlite3", "db"].iter()
+            .any(|known| extension.eq_ignore_ascii_case(known)))
+}
+
 pub(crate) fn inspect_inputs(paths: &[PathBuf]) {
     for path in paths {
         let result = (|| -> Result<Value, String> {
@@ -126,11 +132,13 @@ pub(crate) fn inspect_inputs(paths: &[PathBuf]) {
             db.busy_timeout(std::time::Duration::from_millis(500)).map_err(|e| e.to_string())?;
             let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0)).map_err(|e| e.to_string())?;
             let objects: i64 = db.query_row("SELECT COUNT(*) FROM sqlite_master", [], |row| row.get(0)).map_err(|e| e.to_string())?;
-            Ok(json!({"path":path,"sizeBytes":meta.len(),"userVersion":version,"schemaObjects":objects,
+            // SQLite accepts native paths that are not UTF-8 on Unix. An
+            // advisory logger must not panic while serializing those paths.
+            Ok(json!({"path":path.to_string_lossy(),"sizeBytes":meta.len(),"userVersion":version,"schemaObjects":objects,
                 "scope":"metadata-only; import still requires complete content proofs"}))
         })();
         match result { Ok(details) => event("input-preflight", "succeeded", details),
-            Err(error) => event("input-preflight", "failed", json!({"path":path,"error":error})) }
+            Err(error) => event("input-preflight", "failed", json!({"path":path.to_string_lossy(),"error":error})) }
     }
 }
 fn log_paths(root: &Path) -> Result<Vec<PathBuf>, String> {
@@ -206,6 +214,31 @@ pub(crate) fn export_at(root: &Path) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn inventory_includes_real_exact_extensions_without_treating_manifests_or_wal_as_databases() {
+        for name in ["quota-history.sqlite", "exact.sqlite3", "legacy.db", "Exact.SQLITE3"] {
+            assert!(is_sqlite_input(Path::new(name)), "{name}");
+        }
+        for name in ["exact.sqlite3.schema11-migration.json", "exact.sqlite3-wal", "auth.json"] {
+            assert!(!is_sqlite_input(Path::new(name)), "{name}");
+        }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn advisory_inventory_handles_non_utf8_paths_without_panicking_or_rewriting_inputs() {
+        use std::os::unix::ffi::OsStringExt;
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join(std::ffi::OsString::from_vec(b"retained-\xff.sqlite3".to_vec()));
+        fs::write(&path, b"retained invalid database evidence").unwrap();
+        let logs = root.path().join("logs");
+        run(&logs, "inventory", || { inspect_inputs(std::slice::from_ref(&path)); Ok(()) }).unwrap();
+        let state = preview_at(&logs).unwrap();
+        assert!(state.preview.iter().any(|line| {
+            let value: Value = serde_json::from_str(line).unwrap();
+            value["stage"] == "input-preflight" && value["status"] == "failed"
+        }));
+        assert_eq!(fs::read(&path).unwrap(), b"retained invalid database evidence");
+    }
     #[test]
     fn retries_have_separate_files_and_full_events_outlive_preview_and_time_window() {
         let root = tempfile::tempdir().unwrap();

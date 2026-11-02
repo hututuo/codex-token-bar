@@ -1019,6 +1019,7 @@ button {
 .dash-head__freshness.is-scanning,
 .dash-head__freshness.is-backfillingModel,
 .dash-head__freshness.is-historyModelBackfill,
+.dash-head__freshness.is-historyLinkRepair,
 .dash-head__freshness.is-reconciliation,
 .dash-head__freshness.is-publishing,
 .dash-head__freshness.is-failed {
@@ -1046,7 +1047,8 @@ button {
   background: #8a55d9;
 }
 
-.dash-head__freshness.is-reconciliation .precise-progress-dot {
+.dash-head__freshness.is-reconciliation .precise-progress-dot,
+.dash-head__freshness.is-historyLinkRepair .precise-progress-dot {
   background: #e28a1b;
 }
 
@@ -12967,7 +12969,8 @@ details.session-management-banner {
 
 @keyframes rig-press{0%,19%,24%,76%,81%,100%{transform:scale(1)}21%,78%{transform:scale(.78)}}
 .recent-interaction-guide summary{transition:transform .12s,opacity .12s}.recent-interaction-guide summary:active{transform:translateY(1px) scale(.99);opacity:.7}
-.business-startup { max-width:560px;margin:15vh auto;padding:30px;line-height:1.6; }
+.business-startup { max-width:560px;max-height:100dvh;margin:0 auto;padding:clamp(12px,4vh,30px);line-height:1.6;overflow:auto;overscroll-behavior:contain; }
+.business-startup-message { max-height:min(10rem,35dvh);overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;user-select:text; }
 .business-startup progress { display:block;width:100%;margin:18px 0; }
 
 .speed-display-controls { display:flex; align-items:center; flex-wrap:wrap; gap:8px 14px; padding:6px 0; font-size:12px; }
@@ -13092,7 +13095,7 @@ details.session-management-banner {
 .dashboard-global-meta>span{font-size:10px;color:var(--muted)}
 .dashboard-global-meta>.speed-report-header-status{height:22px;margin:0}
 
-.analytics-source-note{font-size:11px;line-height:1.5;color:var(--muted);margin:-8px 0 0}
+.analytics-source-note{font-size:11px;line-height:1.5;color:var(--muted);margin:8px 0 0}
 
 .activity-live-open{display:flex;justify-content:center;width:100%;min-width:0;box-sizing:border-box;padding:4px 0;border:0;background:transparent;color:inherit;text-align:left;cursor:pointer;border-radius:5px}
 .activity-live-open:hover{background:rgb(255 255 255 / 4%)}

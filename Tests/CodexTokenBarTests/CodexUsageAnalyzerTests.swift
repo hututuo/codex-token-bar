@@ -64,6 +64,8 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(database.backingURL, configuration.container)
         try database.execute("DELETE FROM event_enrichment_sources; DELETE FROM schema_meta WHERE key='event_enrichment_revision'; UPDATE events SET model=NULL;")
         let index = try CodexUsageHistoryIndex(codexHome: home)
+        let container = SQLiteDatabaseDriver(url: configuration.container, readOnly: true, bypassBusinessRoutes: true)
+        let sharedSchemaObjects = try XCTUnwrap(container.readRows("SELECT COUNT(*) FROM sqlite_master") { $0.int(0) ?? -1 }.first)
         let parsed = ThreadSafeCounter()
         let lock = NSLock()
         var completed: [Int] = []
@@ -82,6 +84,10 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                 let now = Date()
                 largestGap = max(largestGap, now.timeIntervalSince(lastProgress))
                 lastProgress = now
+                if count > 0 && (count.isMultiple(of: 64) || count == files.count) {
+                    XCTAssertEqual(try? container.readRows("SELECT COUNT(*) FROM sqlite_master") { $0.int(0) ?? -1 }.first, sharedSchemaObjects,
+                        "A must not accumulate stage tables while the backfill waits to publish")
+                }
             }
         })
         let backfillSeconds = Date().timeIntervalSince(backfillStarted)

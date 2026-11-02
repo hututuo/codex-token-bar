@@ -127,7 +127,23 @@ function normalizeSummaryLineage(
 }
 
 function normalizeFullLineage(snapshot: DashboardSnapshot): NormalizedDashboardLineage {
-  return normalizeDashboardLineage(snapshot, "full");
+  const aggregateGeneration = normalizeScalar(snapshot.aggregateExactGeneration);
+  const exactGeneration = normalizeScalar(snapshot.exactGeneration);
+  const summaryGeneration = normalizeScalar(snapshot.usageSummary?.exactGeneration);
+  const summaryOwnsUnboundGeneration = aggregateGeneration === null
+    && summaryGeneration !== null && summaryGeneration === exactGeneration;
+  const summaryIsAhead = summaryOwnsUnboundGeneration
+    || compareScalar(aggregateGeneration, exactGeneration) === -1;
+  // The light lane can advance exactGeneration/dashboardRevision while the
+  // chart still belongs to the last published aggregate. Compare completed
+  // full reads with that aggregate, not with the independent light owner.
+  return normalizeDashboardLineage({
+    ...snapshot,
+    exactGeneration: summaryOwnsUnboundGeneration
+      ? null
+      : aggregateGeneration ?? snapshot.exactGeneration,
+    ...(summaryIsAhead ? { usageRevision: null, dashboardRevision: null } : {}),
+  }, "full");
 }
 
 function nonEmptyText(value: unknown): string | null {
@@ -469,8 +485,12 @@ export function mergePreciseDashboard(
               ?? (incomingCoverageIsTrusted ? incomingCoverageAt : null)
               ?? previous.settledThrough
               ?? null,
-            exactGeneration: precise.exactGeneration ?? previous.exactGeneration ?? null,
-            dashboardRevision: precise.dashboardRevision ?? previous.dashboardRevision ?? null,
+            exactGeneration: retainLightSummaryForLineage
+              ? previous.exactGeneration ?? precise.exactGeneration ?? null
+              : precise.exactGeneration ?? previous.exactGeneration ?? null,
+            dashboardRevision: retainLightSummaryForLineage
+              ? previous.dashboardRevision ?? precise.dashboardRevision ?? null
+              : precise.dashboardRevision ?? previous.dashboardRevision ?? null,
             ...preciseLineageFields,
             aggregateBoundaryUnix: precise.aggregateBoundaryUnix
               ?? previous.aggregateBoundaryUnix

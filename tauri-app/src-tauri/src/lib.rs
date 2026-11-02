@@ -1,4 +1,4 @@
-#[cfg(feature = "business-store-fixture")]
+#[cfg(all(feature = "business-store-fixture", not(test)))]
 pub mod business_store_fixture;
 
 mod commands;
