@@ -72,7 +72,7 @@ class ProductionFixtureEvidenceTests(unittest.TestCase):
                  patch.object(fixture.subprocess, "check_output", side_effect=git), \
                  patch.object(fixture, "execute_native", return_value=SimpleNamespace(
                      returncode=0, stdout=json.dumps(native), stderr="native probe output\n")) as run, \
-                 patch.dict(fixture.os.environ, {"RUNNER_TEMP": temp}), patch("builtins.print"):
+                 patch.dict(os.environ, {"RUNNER_TEMP": temp}), patch("builtins.print"):
                 if succeeds:
                     fixture.main()
                 else:
@@ -195,7 +195,7 @@ class ProductionFixtureEvidenceTests(unittest.TestCase):
                 with patch.object(fixture, "__file__", str(root / "scripts/check_business_store_fixture.py")), \
                      patch.object(fixture.subprocess, "check_output", side_effect=git), \
                      patch.object(fixture, "execute_native", side_effect=native), \
-                     patch.dict(fixture.os.environ, {"RUNNER_TEMP": temp}), \
+                     patch.dict(os.environ, {"RUNNER_TEMP": temp}), \
                      patch("builtins.print"), \
                      self.assertRaises((subprocess.TimeoutExpired, SystemExit)):
                     fixture.main()

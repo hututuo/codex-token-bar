@@ -173,6 +173,12 @@ jobs:
           key: rust-test-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-${{ needs.source.outputs.sha }}
           restore-keys: |
             rust-test-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-
+      - name: Validate native fixture isolation and retained evidence on this platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s scripts/tests -p 'test_native_fixture_evidence.py' -v 2>&1 | tee native-evidence-platform-tests.log
+          python -m unittest discover -s scripts/tests -p 'test_business_store_fixture_harness.py' -v 2>&1 | tee native-reader-platform-tests.log
       - name: Agent Speed reporter compile and privacy self-test
         if: runner.os == 'Windows'
         shell: pwsh

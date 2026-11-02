@@ -12,7 +12,8 @@ from unittest.mock import patch
 import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from native_fixture_evidence import FixtureAttempt, OVERRIDES, execute_native, native_path
+from native_fixture_evidence import (FixtureAttempt, OVERRIDES, execute_native,
+    fixture_temporary_base, native_path, _cross_api_identity, _identity)
 from test_business_store_fixture_harness import complete_native_report, fixture, STAGE_PROOFS
 
 SPEC = importlib.util.spec_from_file_location("native_cloud_fixture", Path(__file__).resolve().parents[1] / "cloud/run-business-store-fixture.py")
@@ -22,9 +23,8 @@ SPEC.loader.exec_module(cloud)
 
 class NativeFixtureEvidenceTests(unittest.TestCase):
     def temporary_directory(self):
-        # Hosted Windows' default Python temp may be under the account home;
-        # use the same external Actions root required by the real launchers.
-        return tempfile.TemporaryDirectory(dir=os.environ.get("RUNNER_TEMP"))
+        # Hosted runner temp paths are not necessarily outside the real home.
+        return tempfile.TemporaryDirectory(dir=fixture_temporary_base())
 
     def create(self, temporary, label="test"):
         root = Path(temporary)
@@ -161,7 +161,6 @@ print(json.dumps({'directories':len(paths),'scope':'python-harness-contract-only
                     return SimpleNamespace(returncode=0, stdout=json.dumps(result), stderr="cloud native diagnostic")
                 with patch.object(sys, "argv", ["launcher", "synthetic-binary", "--output", str(report_path)]), \
                      patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "RUNNER_TEMP": temporary}), \
-                     patch.object(cloud.tempfile, "gettempdir", return_value=temporary), \
                      patch.object(cloud.subprocess, "check_output", side_effect=lambda args, **_: "d" * 40 if args[1] == "rev-parse" else ""), \
                      patch.object(cloud, "execute_native", side_effect=native), patch("builtins.print"):
                     if rejected:
@@ -178,6 +177,63 @@ print(json.dumps({'directories':len(paths),'scope':'python-harness-contract-only
         self.assertEqual(native_path(r"D:\agent\temp\fixture", windows=True), "\\\\?\\D:\\agent\\temp\\fixture")
         self.assertEqual(native_path(r"\\server\share\fixture", windows=True), "\\\\?\\UNC\\server\\share\\fixture")
         self.assertEqual(native_path(r"\\?\D:\fixture", windows=True), r"\\?\D:\fixture")
+
+    def test_home_nested_runner_and_default_temp_fall_back_to_external_system_temp(self):
+        # Put the simulated home outside the system temp base, as hosted POSIX
+        # runners do. A home inside /tmp would correctly make /tmp ineligible.
+        with tempfile.TemporaryDirectory(prefix="tokenbar-home-layout-", dir=Path(__file__).resolve().parents[1]) as temporary:
+            home = Path(temporary) / "home"
+            nested = home / "work/_temp"
+            nested.mkdir(parents=True)
+            with patch.object(Path, "home", return_value=home), \
+                 patch.dict(os.environ, {"RUNNER_TEMP": str(nested), "TOKENBAR_FIXTURE_TEMP_BASE": ""}), \
+                 patch("native_fixture_evidence.tempfile.gettempdir", return_value=str(nested)):
+                base = fixture_temporary_base()
+                self.assertFalse(base.is_relative_to(home))
+                self.assertFalse(home.is_relative_to(base))
+                attempt = FixtureAttempt(Path(temporary) / "latest.json", label="home-nested-runner")
+                with self.assertRaises(ValueError):
+                    attempt.create_root(nested, prefix="unsafe-", slugs=("s", "c", "ss", "sc", "uc"))
+                attempt.create_root(base, prefix="tokenbar-external-test-", slugs=("s", "c", "ss", "sc", "uc"))
+                self.assertFalse(attempt.root.is_relative_to(home))
+                attempt.succeed({"scope": "python-harness-contract-only"})
+
+    def test_explicit_home_or_home_ancestor_override_is_rejected(self):
+        with self.temporary_directory() as temporary:
+            home = Path(temporary) / "home"
+            nested = home / "temp"
+            nested.mkdir(parents=True)
+            for candidate in (home, nested, home.parent):
+                with self.subTest(candidate=candidate), patch.object(Path, "home", return_value=home), \
+                     patch.dict(os.environ, {"TOKENBAR_FIXTURE_TEMP_BASE": str(candidate)}), \
+                     self.assertRaises(ValueError):
+                    fixture_temporary_base()
+
+    def test_windows_cross_api_birthtime_does_not_disable_same_api_change_checks(self):
+        fields = dict(st_dev=7, st_ino=19, st_size=20, st_mtime_ns=1000, st_nlink=1, st_birthtime_ns=100)
+        by_path = SimpleNamespace(**fields, st_ctime_ns=100)
+        by_handle = SimpleNamespace(**fields, st_ctime_ns=900)
+        self.assertEqual(_cross_api_identity(by_path, windows=True), _cross_api_identity(by_handle, windows=True))
+        self.assertNotEqual(_cross_api_identity(by_path, windows=False), _cross_api_identity(by_handle, windows=False))
+        self.assertNotEqual(_identity(by_path), _identity(by_handle))
+        for key in fields:
+            changed = SimpleNamespace(**{**fields, key: fields[key] + 1}, st_ctime_ns=900)
+            self.assertNotEqual(_cross_api_identity(changed, windows=True), _cross_api_identity(by_handle, windows=True), key)
+        changed_after_open = SimpleNamespace(**fields, st_ctime_ns=901)
+        self.assertNotEqual(_identity(changed_after_open), _identity(by_handle))
+
+    def test_archive_keeps_complete_rewritten_file_using_real_path_and_handle_metadata(self):
+        with self.temporary_directory() as temporary:
+            attempt, _ = self.create(temporary)
+            target = attempt.root / "s/rewritten.sqlite"
+            target.write_bytes(b"initial synthetic history")
+            target.write_bytes(b"newly committed synthetic history")
+            os.utime(target, ns=(123_000_000_000, 456_000_000_000))
+            attempt.fail(RuntimeError("retain rewritten fixture"), phase="native-execution")
+            report = json.loads(attempt.report_path.read_text())
+            self.assertTrue(report["archiveComplete"], report.get("archiveSkipped"))
+            with zipfile.ZipFile(report["failureArchive"]) as archive:
+                self.assertEqual(archive.read("state/s/rewritten.sqlite"), target.read_bytes())
 
 
 if __name__ == "__main__":

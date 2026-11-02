@@ -7,14 +7,12 @@ separate, required gate. Python contract tests do not substitute for its run.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 import subprocess
 import sys
-import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from native_fixture_evidence import FixtureAttempt, execute_native, native_path
+from native_fixture_evidence import FixtureAttempt, execute_native, fixture_temporary_base, native_path
 
 
 def validate_native_report(report: object) -> dict:
@@ -73,12 +71,7 @@ def main() -> None:
                                             cwd=repository, text=True).strip())
         attempt.update(source_sha=source_sha, working_tree_dirty=dirty)
         phase = "prepare-root"
-        home = Path.home().resolve()
-        base = Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir())).resolve()
-        if base.is_relative_to(home) or home.is_relative_to(base):
-            if os.name == "nt":
-                raise ValueError("An external RUNNER_TEMP is required; refusing the user's home")
-            base = Path("/tmp").resolve()
+        base = fixture_temporary_base()
         env = attempt.create_root(base, prefix="tokenbar-production-readers-", slugs=("s", "c", "ss", "sc", "uc"))
         phase = "native-execution"
         attempt.update(phase=phase)

@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use std::{
     fs,
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 const ENV: [&str; 5] = [
@@ -42,7 +42,7 @@ pub(crate) fn assert_concurrent_a_write() -> Result<(), String> {
 }
 macro_rules! ok {
     ($e:expr) => {
-        $e.map_err(|e| e.to_string())?
+        $e.map_err(|e| format!("{}:{}: {e}", file!(), line!()))?
     };
 }
 macro_rules! need {
@@ -53,7 +53,29 @@ macro_rules! need {
     };
 }
 
+fn fixture_started(name: &str) {
+    eprintln!("{}", json!({"fixtureScenario":name,"status":"RUNNING"}));
+}
+
+fn push_check(checks: &mut Vec<Value>, check: Value) {
+    // A later native error must not erase which real scenarios completed.
+    // The launcher retains stderr from process start, including on timeout.
+    eprintln!("{}", json!({"fixtureScenario":check.get("name"),"status":check.get("status"),"proof":check}));
+    checks.push(check);
+}
+
+fn checked_scenario<T>(name: &str, operation: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    fixture_started(name);
+    let started = Instant::now();
+    operation().map_err(|error| {
+        eprintln!("{}", json!({"fixtureScenario":name,"status":"FAIL",
+            "elapsedSeconds":started.elapsed().as_secs_f64(),"error":error}));
+        format!("{name}: {error}")
+    })
+}
+
 pub fn run_fixture(input: &Path) -> Result<Value, String> {
+    fixture_started("prepare-owned-fixture");
     let root = validate_root(input)?;
     let p = Paths::resolve(&root)?;
     for file in [
@@ -121,7 +143,8 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
         ).is_err() && !p.a.exists(),
         "public read-only route bypassed startup readiness or created A"
     );
-    let bootstrap_proof = route::verify_pending_exact_discovery_fixture(&root.join("pending-exact-recovery"))?;
+    let bootstrap_proof = checked_scenario("bootstrap", ||
+        route::verify_pending_exact_discovery_fixture(&root.join("pending-exact-recovery")))?;
     let prepared = route::bootstrap();
     startup.finish(prepared.clone());
     prepared?;
@@ -129,9 +152,12 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
         p.a.is_file() && p.marker.is_file() && p.a != p.b,
         "bootstrap did not initialize distinct A and B"
     );
-    let mut checks = vec![bootstrap_proof];
-    checks.push(public_read_only_fixture(&p)?);
+    let mut checks = Vec::new();
+    push_check(&mut checks, bootstrap_proof);
+    let proof = checked_scenario("public-read-only-routing", || public_read_only_fixture(&p))?;
+    push_check(&mut checks, proof);
 
+    fixture_started("quota");
     let qi = quota_history::QuotaHistoryIdentity::from_canonical_parts(
         &h1,
         Some("sub:fixture-account"),
@@ -161,8 +187,9 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
         "quota legacy typed facts or active write missing"
     );
     quota_history::verify_legacy_runtime_fixture(&qi)?;
-    checks.push(json!({"name":"quota","status":"PASS","activeRows":active,"legacyFacts":imported,"historyPoints":history.recent_7d.len(),"retainedReaderRows":3,"uniqueRetainedRows":2,"oldCycleSchema":true}));
+    push_check(&mut checks, json!({"name":"quota","status":"PASS","activeRows":active,"legacyFacts":imported,"historyPoints":history.recent_7d.len(),"retainedReaderRows":3,"uniqueRetainedRows":2,"oldCycleSchema":true}));
 
+    fixture_started("modeltrace");
     let mid = route::source_identity("modeltrace", &h1)?;
     let scope = "fixture:modeltrace-scope";
     let old = modeltrace::store::history(&p.modeltrace, &mid, scope)?;
@@ -178,8 +205,9 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
             && runs.iter().any(|r| r.id == "fixture-active-modeltrace-run"),
         "ModelTrace legacy or active row missing"
     );
-    checks.push(json!({"name":"modeltrace","status":"PASS","runs":runs.len()}));
+    push_check(&mut checks, json!({"name":"modeltrace","status":"PASS","runs":runs.len()}));
 
+    fixture_started("body-speed");
     let store = live_rate::BodySpeedTrendStore::open(&body).map_err(|e| e.to_string())?;
     need!(
         store
@@ -205,11 +233,12 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
             && trend.iter().map(|p| p.sample_count).sum::<i64>() >= 2,
         "BodySpeed detail or weighted trend missing"
     );
-    checks.push(json!({"name":"body-speed","status":"PASS","samples":samples.len(),"trendPoints":trend.len()}));
+    push_check(&mut checks, json!({"name":"body-speed","status":"PASS","samples":samples.len(),"trendPoints":trend.len()}));
     // The later missing-container check renames A. Windows must not still
     // have the BodySpeed connection open when that check parks the file.
     drop(store);
 
+    fixture_started("ledger-b");
     let b = crate::core::multi_client_usage::open_activity_module_connection()?;
     ok!(b.execute("INSERT INTO activity_speed_samples(source_identity,id,display_mode,estimator_id,estimator_version,metric_kind,client,model,started_at,ended_at,output_rate,covered_seconds,weighted_output) VALUES(?1,?2,'model','fixture','1','output','codex','gpt-6.1-sol',?3,?4,12,10,120)", params!["fixture-b", "fixture-b-activity", now - 10.0, now]));
     let b_rows: i64 = ok!(b.query_row(
@@ -218,29 +247,36 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
         |r| r.get(0)
     ));
     need!(b_rows == 1, "B activity write missing");
-    checks.push(json!({"name":"ledger-b","status":"PASS","rows":b_rows}));
+    push_check(&mut checks, json!({"name":"ledger-b","status":"PASS","rows":b_rows}));
     drop(b);
 
-    checks.push(exact_fixture(&h1, &h2, &p)?);
-    checks.push(token_count_jsonl::verify_live_state_fixture(&root.join("live-state-home"))?);
-    checks.push(token_count_jsonl::verify_bounded_stage_fixture(&root.join("bounded-stage-home"))?);
-    checks.push(token_count_jsonl::verify_runtime_recovery_fixture(&root.join("runtime-home"))?);
-    checks.push(token_count_jsonl::verify_backfill_performance_fixture(&root.join("legacy-backfill-home"))?);
+    let proof = checked_scenario("exact-import-stage-and-home-scope", || exact_fixture(&h1, &h2, &p))?;
+    push_check(&mut checks, proof);
+    let proof = checked_scenario("live-external-state-readers", || token_count_jsonl::verify_live_state_fixture(&root.join("live-state-home")))?;
+    push_check(&mut checks, proof);
+    let proof = checked_scenario("bounded-stage-replacement", || token_count_jsonl::verify_bounded_stage_fixture(&root.join("bounded-stage-home")))?;
+    push_check(&mut checks, proof);
+    let proof = checked_scenario("runtime-recovery-production-path", || token_count_jsonl::verify_runtime_recovery_fixture(&root.join("runtime-home")))?;
+    push_check(&mut checks, proof);
+    let proof = checked_scenario("legacy-backfill-indexed-reconciliation", || token_count_jsonl::verify_backfill_performance_fixture(&root.join("legacy-backfill-home")))?;
+    push_check(&mut checks, proof);
+    fixture_started("legacy-source-preservation");
     for (f, before) in &digests {
         need!(
             digest(f)? == *before,
             format!("legacy source changed: {}", f.display())
         );
     }
-    checks.push(json!({"name":"legacy-source-preservation","status":"PASS","count":digests.len()}));
+    push_check(&mut checks, json!({"name":"legacy-source-preservation","status":"PASS","count":digests.len()}));
+    fixture_started("rerun-and-fail-closed");
     let count = store_count(&p.a)?;
     route::bootstrap()?;
     need!(
         store_count(&p.a)? == count,
         "bootstrap rerun changed A store catalog"
     );
-    park_a_and_test(&p)?;
-    checks.push(json!({"name":"rerun-and-fail-closed","status":"PASS","storeCount":count}));
+    checked_scenario("park-and-restore-container-a", || park_a_and_test(&p))?;
+    push_check(&mut checks, json!({"name":"rerun-and-fail-closed","status":"PASS","storeCount":count}));
     need!(concurrent_a_write_count() > 0, "default fixture did not exercise its concurrent writer assertions");
     Ok(json!({"status":"PASS","root":root,"containerA":p.a,"clientB":p.b,"checks":checks,
         "concurrentWriterProbeEnabled":true,"concurrentWriteAssertions":concurrent_a_write_count()}))

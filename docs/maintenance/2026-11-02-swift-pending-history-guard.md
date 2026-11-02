@@ -39,8 +39,8 @@ They are not a claim that every historical user state has passed acceptance.
 | --- | --- | --- |
 | Unchanged interrupted import | Current A equals the retained normalized image; new image has the same full proof | Resume with the same history |
 | Same-schema pure row append | Every prior typed value, hidden row ID, duplicate multiplicity and autoincrement high-water mark survives | Import the appended history |
-| Released Exact writer continues ordinary append or adds a new rollout during unfinished import | Every old typed historical event/identity/binding survives; changed source prefixes, parser checkpoints, complete new ledger rows and production projections pass the separate proof below | Import the complete incoming ledger without resetting its checkpoints |
-| Released Exact writer fills NULL model/turn metadata after a representation rewrite | Complete production replay proves the new raw bindings and only the permitted metadata completion; all old numeric facts, identities and known metadata remain exact; old model versions remain in retention | Resume with usable enriched history after the semantic witness matches |
+| Released Exact writer appends or adds a rollout during unfinished import, including raw files already gone | All frozen numeric/identity facts survive; the complete candidate ledger, ownership, checkpoints and production projections satisfy the durable proof below | Import the complete incoming ledger and keep both source images |
+| Released Exact writer fills NULL model/turn metadata across one or several rewrites | Old numeric/time/known non-NULL fields remain exact, old model versions and old turn generations survive, current bindings have valid owners and references | Resume with all formed generations even when raw disappeared before migration |
 | Database import committed before JSON receipt | Database receipt identifies a retained normalized image equal to A | Resume after validating the new image |
 | Quota policy 3 maintenance with appended observations | Same schema; all observation rows survive; maintenance keys, row IDs, value types, policy and unknown values stay identical; finite clock moves forward within valid bounded seconds | Resume with the new maintenance time |
 | Exact schema 13 to 14, additive representation metadata | Existing normalizer produces the supported schema on the isolated copies; all prior rows survive | Resume after coverage proof |
@@ -78,186 +78,150 @@ existing normalizer still handles known first-time migrations on isolated
 copies. This guard does not replace those migrations or relax their version
 checks.
 
-### Bounded Exact append proof
+### Durable Exact continuation proof
 
-`ExactRetryAppendCoverage` implements a deliberately separate schema-14,
-ledger-revision-2 compatibility path for ordinary continuation by a released
-writer. It is reached only when the generic typed comparison finds changes
-exclusively in recognized source bookkeeping, metadata, projection tables or
-the explicitly verified event/binding continuation described below. Any
-uncovered ledger identity/turn, retained-history row, unknown table or unknown
-column still rejects replacement. Event and binding changes require their own
-complete parser witness; membership in a mutable-table list is never permission
-to discard a prior fact.
+`ExactRetryAppendCoverage` remains a separate compatibility boundary for
+recognized schema-14, ledger-revision-2 images produced by the released
+0.9.8–0.9.11 chain. The caller checks the complete schema, full typed contents
+of all unaffected tables, hidden row identities, duplicate multiplicity and
+sequence high-water marks. Only recognized bookkeeping, event metadata,
+bindings and projections enter semantic comparison. Listing a table as mutable
+does not authorize dropping any fact. Unknown tables, opaque data, old
+identities, fingerprints, logical-turn mappings, corrections, unresolved
+observations and retained revisions still require complete typed coverage.
 
-The source catalog is compared with typed digests, so unchanged sources do
-not require their raw files to remain present. A released writer can add a
-`verified_full` representation hint on the first unchanged refresh after a
-full parse. That absent-to-present hint is accepted without raw bytes only
-when the complete typed source checkpoint, prefix chunks, enrichment receipt
-and physical observation are identical to the frozen image, and the new known
-hint agrees with that observation and logical prefix. The complete ledger
-witness still disallows any new event or identity for this skipped source.
-Changed physical observations, `metadata_only` hints and unrecognized hint
-transitions do not receive this exemption. No extra warm-up scan is a recovery
-prerequisite.
+The former implementation authorized changes by replaying from the frozen
+checkpoint or a single frozen metadata state. Independent review demonstrated
+two legitimate counterexamples: G0→G1→G2 reparses retain G1 event metadata while
+bindings refer to G2; and raw files can disappear after the old writer has
+committed the complete database but before migration. The final raw file cannot
+reconstruct vanished intermediate generations. `ExactRetryDurableHistory`
+replaces that authorization; the old single-reparse witness implementation has
+been removed rather than accumulating exceptions for each number of rewrites.
 
-For every source whose parser evidence changed, the verifier pins the current
-raw reader, verifies **all** frozen prefix chunks and
-**all** incoming prefix chunks, and runs the actual bounded incremental parser
-from the frozen checkpoint to the incoming recorded size. A raw file may
-already have additional bytes beyond that size; those bytes are left for
-normal synchronization after activation. Parser state, resume offset, chunk
-hashes, source probe and recognized parser receipts must agree. Unknown JSON
-checkpoint fields cannot be lost through Codable's permissive decoding.
+The durable proof requires:
 
-A TEMP witness starts with all frozen typed event, identity, binding, turn and
-fingerprint rows. Only complete rows justified by the parser's emitted events
-and their incoming raw-to-logical bindings can be added. Every incoming row in
-those tables must then equal that witness. This rejects missing new events
-behind an advanced checkpoint, extra fabricated identities, and replay whose
-numeric total happens to match while individual values differ. The verifier
-does not allocate new logical IDs; real multi-source append order is preserved.
+- Every frozen event ID, source ID, time, numeric component, accounting kind,
+  reported/legacy value and SQLite storage type remains exact. Known model,
+  logical-turn and assistant metadata cannot be cleared or replaced. NULL
+  fields can acquire information; filling a model additionally requires the
+  complete old event payload and its old raw positions in retained revisions.
+- Source identity and session ownership remain fixed. Every event has one
+  binding owned by that same source. A binding claiming availability belongs
+  to the current source generation and lies within that generation's saved
+  prefix. Same-generation positions and known links cannot change; a full
+  reparse can establish a new UUID generation and new raw locations. Missing
+  sources can mark text unavailable while leaving all numeric history intact.
+- Logical turn mappings retain all old rows. A new mapping must be referenced
+  by a same-source event; allocated event and turn IDs stay in the correct
+  sequence interval and cannot share another source or identity role. A raw
+  prompt key can legitimately represent a different retained logical turn
+  from one event's earlier turn, so no false equality between those two fields
+  is imposed.
+- The complete candidate's recognized columns, row-ID contracts, references,
+  integer/REAL/BLOB types, fingerprint codec, counted component arithmetic,
+  checkpoint JSON round trips, prefix chunk structure and source receipts
+  remain valid. New unresolved diagnostics require a real source owner,
+  typed payload, finite time, valid identity codec and valid generation. A
+  current-generation diagnostic is bounded by the current prefix and cannot
+  simultaneously claim an available event binding. Intermediate-generation
+  diagnostics remain historical evidence; they need not belong to the latest
+  raw generation.
+- Frozen canonical consumption remains visible by ID and exact numeric fields.
+  The current canonical exclusion set and dashboard projections are rebuilt
+  with production functions into TEMP tables and compared by complete typed
+  rows. Attribution starts from frozen historical maxima. A NULL-to-known
+  model can reclassify a bucket only when its complete frozen floor is
+  explained by the frozen event ledger. An unexplained larger maximum cannot
+  be erased. Text rebinding alone never authorizes resetting that floor.
 
-The canonical exclusion set and all four dashboard projections are regenerated
-with the production projection functions into TEMP tables and compared by
-complete typed rows. Attribution starts from frozen historical maxima, then
-runs the production lineage aggregation with maximum preservation. An incoming
-cache cannot erase a retained maximum or invent an increment. Existing
-canonical history must also remain visible. Generation counters, publication
-receipts, coverage certificates and storage-maintenance clocks have explicit
-bounded checks; all other metadata values remain subject to typed coverage.
-Both full snapshot proofs are still bound to the later import transaction.
+The proof reads the complete candidate and imports that same complete snapshot;
+it does not copy only selected events, flatten retained versions or synthesize
+a new history from totals. TEMP copies and comparison B-trees use the caller's
+bounded disk-backed cache. Source inventory and production projection memory
+remain subject to their existing bounds; this change is not a claim about the
+independent 4,124-source performance acceptance gate.
 
-This does **not** authorize arbitrary source rewrite, old-event correction,
-provenance rotation, dropped ledger bindings, or a changed source whose raw
-prefix is no longer available for verification. Such states remain protected
-acceptance gaps rather than being silently converted to ordinary append.
-Independent session-catalog mutations are still subject to the ordinary typed
-history rule. No claim of complete phase-1 acceptance follows from this code.
+### Raw evidence is supplementary and explicitly labelled
 
-An ambiguous source catalog also fails through an ordinary diagnostic error.
-The catalog loader does not construct a dictionary with an unchecked unique-key
-precondition: SQLite BINARY uniqueness permits distinct Unicode encodings that
-Swift treats as equal strings. Such a pair retains both source rows and reports
-their IDs instead of terminating the process or choosing a surviving owner.
+For a changed source whose raw bytes still match the incoming checkpoint's
+complete saved prefix, `ExactRetryRawCorroboration` runs the production parser
+and verifies numeric observations, current binding positions, identities and
+the checkpoint. The prefix can be followed by newer unindexed bytes; they
+remain for ordinary synchronization after activation. Missing raw, unreadable
+raw, a raw file rewritten after the database commit, or a file that changes
+while being examined cannot revoke already durable history. Each source log
+records `evidence=durable-history` and a separate `rawEvidence` result, such as
+`current-prefix-parser-and-bindings`, `recorded-missing`, `raw-unavailable` or
+`raw-differs-from-durable-prefix`. A contradiction against an unchanged,
+hash-matching prefix remains a failure, with independent sources still logged.
 
-The v0.9.8/v0.9.9 source review identified two required differences from later
-releases. Their recognized v3 parser receipt predates the v4 compaction parser,
-and the checkpoint omits `compaction`. Only when the recorded receipt is that
-explicit v3 revision and production replay yields a strictly empty compaction
-state may absent and empty be treated as equivalent. The imported receipt is
-kept at v3, so this proof cannot mark the historical parser upgrade complete.
-Nonempty compaction state, changed accounting, and unknown revisions still
-reject. The later `retained_unreported_compactions` index is also absent from
-those old normalized images. Its exact declaration is shared with production
-installation; its addition is accepted only after all remaining schema proof
-evidence (objects, columns, foreign keys and other indexes) compares equal.
-No frozen file is altered to obtain either proof.
+Current raw model, timestamp and assistant positions are not treated as proof
+of historical metadata: the real writer preserves those fields from earlier
+associations. The proof protects all known frozen values directly and preserves
+new formed values as recorded history. Without independent raw evidence, a
+coherent new 55-token observation cannot be distinguished from an externally
+fabricated but internally coherent 55-token row. The migration makes no claim
+to authenticate such external history. It guarantees continuity of the frozen
+facts, internal ownership/integrity of the incoming database, full preservation
+of both images and publication of exactly the validated candidate.
 
-Native tests cover the real freeze→legacy append→resume path, extra
-unindexed raw bytes, an unchanged source with its raw file deleted, differently
-ordered repeated appends, a new rollout, deletion/reopen after activation, and
-negative history/checkpoint/chunk/projection/identity/raw-rewrite cases. The
-same attempt records each changed-source proof and continues independent raw
-source, metadata and projection checks after a rejection, while withholding
-import. A two-source corruption case requires both failures in one log. These
-tests have not run on this Linux host. A narrow portable SQLite experiment did
-execute the actual production dashboard and attribution SQL against read-only
-main plus TEMP shadow tables; the four derived dashboards and preserved
-attribution maximum matched the selected fixture and the main file bytes did
-not change. That is SQL evidence only, not Swift compilation or native recovery
-acceptance. The actual released-version subprocess gate and macOS XCTest remain
-required.
+This changes two earlier test assumptions deliberately. A later raw rewrite is
+now a successful durable continuation, with a log stating that the raw file no
+longer corroborates the saved prefix. An arbitrary model replacing a frozen
+NULL cannot be called externally disproved merely because final raw has a
+different model; known-model replacement, missing retained payload, broken
+references, hidden old events and typed numeric changes remain rejection cases.
+Metadata-only representation hints are accepted when they agree with their
+source receipt; they are not evidence for numeric accounting.
 
-### NULL metadata completion and changed raw bindings
+### Native cases, historical gates and remaining boundaries
 
-An ordinary released full reparse calls `UsageEventLedger.admit`,
-`enrichTurn` and `bind`. A stable old usage identity can gain a model that was
-previously NULL, a previously missing logical turn, and a binding to the new
-raw generation. A typed append-only rule rejected this legitimate state even
-when every old numeric fact remained intact. The regression producer starts
-with actual token records containing no model or message context, freezes the
-import, then prepends a model and real `response_item` user/assistant messages.
-The old writer performs its normal full synchronization; no SQL clears or
-manufactures the missing metadata.
+The native tests include real old-writer append, a new rollout, independent
+allocation order, NULL metadata completion, repeated G0→G1→G2 completion,
+all raw files removed **before** migration, and an old writer that already
+observed the removal and marked sources missing. Successful migration compares
+the whole imported namespace proof against the independently verified new
+normalized snapshot, preserves opaque NUL/BLOB data, verifies original files
+and frozen evidence byte-for-byte, and reopens without raw or reparsing.
+Counterexamples retain positive controls and cover lost old events, same-total
+numeric changes, known metadata replacement, broken or cross-source references,
+canonical hiding, unknown-table loss, schema-role swaps, destructive triggers,
+a newly allocated orphan turn, malformed unresolved diagnostics and a candidate
+changed between coverage and final publication.
 
-`ExactRetryMetadataReplay` is a separate, read-only proof for this transition:
+The source catalog also reports canonically equivalent Swift path keys as an
+ordinary error rather than triggering an unchecked Dictionary precondition.
+Recognized v3 checkpoints still permit only the absent-versus-strictly-empty
+compaction field equivalence; the imported v3 receipt remains unchanged. The
+one known later retained-compaction query index may be added only after every
+other schema proof remains equal. No frozen image is modified to obtain these
+proofs, and unknown future schema/checkpoint revisions do not enter this path.
 
-- The incoming source's entire recorded prefix, chunks, probe and checkpoint
-  are verified through the production parser. A rewritten prefix need not
-  equal the frozen prefix. Association with an old event instead requires its
-  unchanged source-scoped usage identity. The alternative raw-position proof
-  is available only when all frozen chunks still match the current prefix.
-- Each old event keeps its exact typed ID, timestamp, component counts,
-  accounting classification, reported/legacy totals and non-NULL metadata.
-  Parser time, counts and classification must independently equal the old
-  fact. Only NULL model/turn fields receive the parsed value under the same
-  rules as `admit` and `enrichTurn`; a known logical turn is never replaced.
-- A NULL model becoming known requires a full retained revision containing
-  the old numeric/model payload, source/session/path identity and old raw
-  locations. All pre-existing retained rows, hidden IDs and unknown tables
-  still pass the generic typed coverage rule. A retention row count is not
-  sufficient evidence.
-- Bindings are reconstructed from the bounded raw replay and the actual
-  incoming raw generation. Every previously available observation must be
-  replayed. Already unavailable historical rows remain seeded unchanged.
-  Source path and session identity compare exact UTF-8 bytes, not Swift's
-  canonically equivalent string equality.
-- Logical turn keys are simulated in raw event order. Fresh IDs must lie in
-  the recorded allocation interval and may not reuse any old event/turn or
-  another new allocation. A TEMP index avoids repeatedly scanning the old
-  history for each allocation. Different sources can have been processed in
-  a different order by the actual old writer.
-- The complete candidate event, identity, binding, turn, source and
-  fingerprint tables must equal the resulting witness. Additional rows that
-  were not emitted by the parser, dropped old rows and altered numeric facts
-  cannot be hidden behind a valid aggregate.
-- Model completion can move attribution from an unknown model bucket to a
-  named model. Before replacing that derived cache, the frozen bucket must
-  exactly equal a production aggregation of the frozen canonical events.
-  A larger historical maximum that those events do not explain remains
-  protected. Canonical numeric history must retain every old event ID; all
-  dashboard and attribution rows are then rebuilt and compared exactly.
+The actual unchanged-release subprocess gate remains mandatory: v0.9.8,
+v0.9.9, v0.9.10 and v0.9.11 each produce committed, interrupted and enriched
+states, and the candidate must resume then reopen in separate processes. The
+Swift matrix is independent of the Rust two-scenario matrix. The complete
+candidate namespace, second Exact owner, retained versions and old source
+proofs are checked; aggregate totals alone do not satisfy that gate.
 
-Five focused native cases cover successful migration, append and missing-raw
-reopen after real enrichment, forged models/numerics/timestamps/turn links,
-missing retained payloads, replacing known metadata, independent source
-allocation order, older retained revisions and unexplained attribution floors.
-These tests and the earlier append cases must run on macOS; their presence is
-not a native pass.
+This implementation is not yet native acceptance. No Swift/macOS toolchain is
+installed on the Linux work host. A portable SQLite check parsed the exact new
+reference queries against extracted production table DDL and a synthetic
+reference graph; it checked SQL grammar/reference rules only. Hosted macOS
+compilation, XCTest, the unchanged released-version subprocess matrix and scale
+acceptance are still required. Python harness tests are likewise contract tests
+and cannot replace native execution.
 
-The actual released-source harness additionally requires **three scenarios by
-two candidate processes** for each pinned v0.9.8–v0.9.11 producer: `committed`,
-`interrupted`, and `enriched`, each with `resume` and `reopen`. `enriched` uses
-an independent unchanged release process to perform the full reparse while A
-stays frozen. It preserves the old database/raw bytes, exact before/after
-numeric images, all retained table images, real committed crash WAL, and B.
-The candidate must expose the enriched rows, ingest another 11 tokens, remove
-all source raw files, and reopen with history and every retained version still
-readable. The required enriched totals are 155/310 before candidate use and
-166/310 afterwards. The Swift runner has its own six-entry matrix; the Rust
-runner's two-scenario matrix cannot satisfy it.
-
-The 16 Python tests of that harness passed on Linux. They verify source-archive
-identity, matrix completeness, process exit/deadline handling and evidence
-rejection. Their intentionally synthetic contract bytes are not native
-database execution. Swift compilation and all new native scenarios remain
-pending the hosted macOS run.
-
-This boundary does not authorize numerical parser corrections, provenance
-rotation, source ownership changes, loss of a formerly available event,
-unknown checkpoint/receipt revisions, or completion whose required raw prefix
-has disappeared. An older incomplete checkpoint that cannot satisfy the
-recognized parser-receipt contract still requires a separately demonstrated
-recovery route. Those states must not be labelled phase-1 acceptance merely
-because the guard preserves their files.
-
-If a newer legacy source is truncated while A and its frozen snapshot remain
-complete, this guard preserves both sides and blocks. It does not yet select
-the frozen image as an automatic fallback or reconcile a contradictory
-same-key accounting value. Those recovery decisions remain explicit stage-1
-acceptance gaps.
+Unknown same-key numeric correction, source reassignment, provenance rotation,
+a missing frozen proof or an independently changed unfinished destination still
+block replacement. An unexplained attribution floor, an older incomplete
+checkpoint outside the recognized receipt contract, or source truncation while
+A remains complete also needs a separately demonstrated recovery decision.
+These protections preserve files but must not be represented as all affected
+users already being able to enter the application. Raw disappearance alone,
+multiple legitimate metadata generations and recorded text unavailability are
+now intended automatic continuation states, pending their native gates.
 
 ## Verification added and execution status
 

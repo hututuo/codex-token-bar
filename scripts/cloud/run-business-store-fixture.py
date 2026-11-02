@@ -7,11 +7,10 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from check_business_store_fixture import validate_native_report
-from native_fixture_evidence import FixtureAttempt, execute_native, native_path
+from native_fixture_evidence import FixtureAttempt, execute_native, fixture_temporary_base, native_path
 
 
 def main():
@@ -30,10 +29,7 @@ def main():
                                             cwd=repository, text=True).strip())
         attempt.update(source_sha=source_sha, working_tree_dirty=dirty)
         phase = "prepare-root"
-        base = os.environ.get("RUNNER_TEMP") if os.name == "nt" else tempfile.gettempdir()
-        if not base:
-            raise ValueError("Missing hosted temp directory")
-        env = attempt.create_root(Path(base), prefix="tokenbar-runtime-",
+        env = attempt.create_root(fixture_temporary_base(), prefix="tokenbar-runtime-",
             slugs=("tauri-support", "tauri-cache", "shared-support", "shared-cache", "legacy-usage"))
         binary = args.binary.resolve()
         if os.name == "nt":

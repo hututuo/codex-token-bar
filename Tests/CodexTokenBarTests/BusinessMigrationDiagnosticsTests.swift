@@ -21,11 +21,14 @@ final class BusinessMigrationDiagnosticsTests: XCTestCase {
             }
         }
         let writer = Task.detached {
-            journal.record("delayed-durable-write", "succeeded", ["proof": "retained"])
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    journal.record("delayed-durable-write", "succeeded", ["proof": "retained"])
+                    continuation.resume()
+                }
+            }
         }
-        let entered = await Task.detached {
-            writerEntered.wait(timeout: .now() + 5) == .success
-        }.value
+        let entered = await waitOnBackgroundQueue(writerEntered, timeout: .now() + 5)
         XCTAssertTrue(entered, "The real writer must hold the same lock used by previews")
         guard entered else { releaseWriter.signal(); await writer.value; return }
 
@@ -36,15 +39,19 @@ final class BusinessMigrationDiagnosticsTests: XCTestCase {
         // The watchdog must not need the main actor to release the writer:
         // otherwise the regressed synchronous read would deadlock the test.
         let watchdog = Task.detached {
-            guard previewStarted.wait(timeout: .now() + 5) == .success else {
-                releaseWriter.signal()
-                return false
+            await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    guard previewStarted.wait(timeout: .now() + 5) == .success else {
+                        releaseWriter.signal()
+                        continuation.resume(returning: false)
+                        return
+                    }
+                    Task { @MainActor in heartbeat.signal() }
+                    let responsive = heartbeat.wait(timeout: .now() + 2) == .success
+                    releaseWriter.signal()
+                    continuation.resume(returning: responsive)
+                }
             }
-            let ping = Task { @MainActor in heartbeat.signal() }
-            let responsive = heartbeat.wait(timeout: .now() + 2) == .success
-            releaseWriter.signal()
-            await ping.value
-            return responsive
         }
         let responsive = await watchdog.value
         let snapshot = await refresh.value
@@ -165,5 +172,15 @@ final class BusinessMigrationDiagnosticsTests: XCTestCase {
         XCTAssertThrowsError(try BusinessMigrationDiagnostics.export(at: root, to: target))
         XCTAssertFalse(FileManager.default.fileExists(atPath: target.path))
         XCTAssertEqual(try String(contentsOf: privateFile, encoding: .utf8), "not a diagnostic")
+    }
+}
+
+private func waitOnBackgroundQueue(_ semaphore: DispatchSemaphore, timeout: DispatchTime) async -> Bool {
+    // Deliberately blocking test synchronization belongs on a dispatch worker,
+    // never on Swift's cooperative executor or the application's main actor.
+    await withCheckedContinuation { continuation in
+        DispatchQueue.global(qos: .userInitiated).async {
+            continuation.resume(returning: semaphore.wait(timeout: timeout) == .success)
+        }
     }
 }

@@ -131,7 +131,7 @@ final class BusinessDatabaseMigrationExactAppendTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: receipt.backupPath)), originalBytes)
     }
 
-    func testMetadataReplayRejectsChangedFactsForgedLinksMissingRetentionAndHiddenRows() throws {
+    func testDurableContinuationAndCurrentRawRejectChangedFactsBrokenLinksMissingRetentionAndHiddenRows() throws {
         let f = try fixture(hasMessages: false)
         let receipt = try freeze(f)
         try addMetadataToRewrittenSource(f.files[0])
@@ -139,7 +139,7 @@ final class BusinessDatabaseMigrationExactAppendTests: XCTestCase {
         let frozen = URL(fileURLWithPath: receipt.normalizedPath)
         XCTAssertTrue(try CodexBusinessDatabase.snapshot(f.source, covers: frozen, module: "exact.swift"))
         let mutations = [
-            "UPDATE events SET model='unproved-model' WHERE source_id=1",
+            "UPDATE events SET assistant_start_offset=-1 WHERE source_id=1",
             "UPDATE events SET input_tokens=input_tokens-1,output_tokens=output_tokens+1 WHERE source_id=1",
             "UPDATE events SET timestamp=timestamp+1 WHERE source_id=1",
             "UPDATE events SET user_prompt_offset=user_prompt_offset+1 WHERE source_id=1",
@@ -464,6 +464,68 @@ final class BusinessDatabaseMigrationExactAppendTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: frozen), frozenBytes)
     }
 
+    func testDurableContinuationRejectsNewOrphanTurnsAndMalformedUnresolvedObservations() throws {
+        let f = try fixture()
+        let receipt = try freeze(f)
+        let frozen = URL(fileURLWithPath: receipt.normalizedPath)
+        try append(17, second: 3, to: f.files[0])
+        _ = try synchronize(f)
+        for file in f.files { try FileManager.default.removeItem(at: file) }
+        XCTAssertTrue(try CodexBusinessDatabase.snapshot(f.source, covers: frozen, module: "exact.swift"))
+        // This is an internal-contract fixture, not a claim that a parser
+        // independently authenticated this new diagnostic observation.
+        let diagnostic = """
+            INSERT INTO usage_ledger_unresolved
+            SELECT source_id,generation,0,1.0,1,1,0,0,0,NULL,0,NULL,NULL,NULL,NULL,NULL,'unproved-rewrite-observation'
+            FROM usage_ledger_sources WHERE source_id=1
+            """
+        let valid = f.root.appendingPathComponent("valid-durable-diagnostic.sqlite")
+        let validDB = SQLiteDatabaseDriver(url: valid, enableWAL: false, bypassBusinessRoutes: true)
+        try validDB.withConnection { try $0.restoreDatabase(from: f.source) }
+        try validDB.execute(diagnostic)
+        XCTAssertTrue(try CodexBusinessDatabase.snapshot(valid, covers: frozen, module: "exact.swift"))
+        let attacks = [
+            """
+                INSERT INTO usage_ledger_turns
+                SELECT source_id,generation,900000,(SELECT CAST(value AS INTEGER) FROM usage_ledger_meta WHERE key='next_id')
+                FROM usage_ledger_sources WHERE source_id=1;
+                UPDATE usage_ledger_meta SET value=CAST(CAST(value AS INTEGER)+1 AS TEXT) WHERE key='next_id'
+                """,
+            "UPDATE usage_ledger_unresolved SET source_id=999",
+            "UPDATE usage_ledger_unresolved SET raw_offset=-1",
+            "UPDATE usage_ledger_unresolved SET timestamp=X'01'",
+            "UPDATE usage_ledger_unresolved SET accounting_kind=99",
+            "UPDATE usage_ledger_unresolved SET tokens=2",
+            "UPDATE usage_ledger_unresolved SET identity=X'010203'",
+            "UPDATE usage_ledger_unresolved SET raw_offset=(SELECT size_bytes+1 FROM sources WHERE source_id=1)",
+            "UPDATE usage_ledger_unresolved SET raw_offset=(SELECT MIN(raw_offset) FROM usage_ledger_bindings WHERE source_id=1 AND available=1)",
+            "UPDATE usage_ledger_unresolved SET generation='not-a-released-generation'",
+            "UPDATE usage_ledger_unresolved SET prompt_offset=-1",
+            "UPDATE usage_ledger_bindings SET raw_offset=raw_offset+1 WHERE source_id=1"
+        ]
+        let original = try Data(contentsOf: valid)
+        for (number, attack) in attacks.enumerated() {
+            let copy = f.root.appendingPathComponent("bad-durable-diagnostic-\(number).sqlite")
+            let db = SQLiteDatabaseDriver(url: copy, enableWAL: false, bypassBusinessRoutes: true)
+            try db.withConnection { try $0.restoreDatabase(from: valid) }
+            try db.execute(attack)
+            XCTAssertEqual(try db.readRows("PRAGMA quick_check") { $0.text(0) }, ["ok"], attack)
+            if number == 0 {
+                let values = try db.readRows("SELECT MAX(turn_id),(SELECT CAST(value AS INTEGER) FROM usage_ledger_meta WHERE key='next_id') FROM usage_ledger_turns") {
+                    ($0.int64(0)!, $0.int64(1)!)
+                }
+                XCTAssertEqual(values.first!.0 + 1, values.first!.1, "The orphan is within the new allocation interval")
+            }
+            let proof = try db.withConnection { try CodexBusinessDatabase.proof($0) }
+            let bytes = try Data(contentsOf: copy)
+            do { XCTAssertFalse(try CodexBusinessDatabase.snapshot(copy, covers: frozen, module: "exact.swift"), attack) }
+            catch { XCTAssertFalse(error is CancellationError) }
+            XCTAssertEqual(try db.withConnection { try CodexBusinessDatabase.proof($0) }, proof)
+            XCTAssertEqual(try Data(contentsOf: copy), bytes)
+        }
+        XCTAssertEqual(try Data(contentsOf: valid), original)
+    }
+
     func testMetadataReplayAllocationDoesNotDependOnSourceOrderAndRetainsOlderRevisions() throws {
         let f = try fixture(hasMessages: false)
         // A real earlier fill creates historical revisions before the receipt.
@@ -554,7 +616,7 @@ final class BusinessDatabaseMigrationExactAppendTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: receipt.backupPath)), originalBytes)
     }
 
-    func testAddedRepresentationHintCannotHideChangedCheckpointObservationOrNewLedgerRowsWithoutRaw() throws {
+    func testDurableSourceReceiptsRejectContradictoryHintsCheckpointsAndInvalidIdentitiesWithoutRaw() throws {
         let f = try fixture()
         let receipt = try freeze(f)
         try append(17, second: 3, to: f.files[0])
@@ -563,10 +625,10 @@ final class BusinessDatabaseMigrationExactAppendTests: XCTestCase {
         let frozen = URL(fileURLWithPath: receipt.normalizedPath)
         XCTAssertTrue(try CodexBusinessDatabase.snapshot(f.source, covers: frozen, module: "exact.swift"))
         let mutations = [
-            "UPDATE source_representations SET verification='metadata_only' WHERE source_id=2",
+            "UPDATE source_representations SET verification='unknown-future-proof' WHERE source_id=2",
             "UPDATE source_representations SET physical_path='/unrelated.jsonl' WHERE source_id=2",
             "UPDATE source_representations SET logical_size=logical_size+1 WHERE source_id=2",
-            "UPDATE source_observations SET physical_stamp='different-physical-file' WHERE source_id=2; UPDATE source_representations SET physical_stamp='different-physical-file' WHERE source_id=2",
+            "UPDATE source_representations SET physical_stamp='contradicts-recorded-observation' WHERE source_id=2",
             "UPDATE sources SET current_model='forged-checkpoint' WHERE source_id=2",
             "UPDATE source_chunks SET sha256=printf('%064d',0) WHERE source_id=2",
             "UPDATE event_enrichment_sources SET imported_generation='unproved-generation' WHERE source_id=2",
@@ -614,7 +676,7 @@ final class BusinessDatabaseMigrationExactAppendTests: XCTestCase {
         XCTAssertFalse(try CodexBusinessDatabase.snapshot(f.source, covers: frozen, module: "exact.swift", diagnostics: diagnostics))
         let events = try String(contentsOf: diagnostics.url, encoding: .utf8).split(separator: "\n")
             .map { try JSONDecoder().decode(BusinessMigrationDiagnostics.Event.self, from: Data($0.utf8)) }
-        XCTAssertTrue(events.contains { $0.stage == "retry-exact-parser-witness" && $0.status == "failed"
+        XCTAssertTrue(events.contains { $0.stage == "retry-exact-source-continuity" && $0.status == "failed"
             && ($0.details["error"]?.contains("duplicate source path identity") ?? false) })
         XCTAssertTrue(events.contains { $0.stage == "retry-exact-projections" && $0.status == "started" })
         XCTAssertEqual(try raw.withConnection { try CodexBusinessDatabase.proof($0) }, original)
@@ -701,7 +763,7 @@ final class BusinessDatabaseMigrationExactAppendTests: XCTestCase {
             "UPDATE events SET tokens=tokens+1,input_tokens=input_tokens+1 WHERE tokens=120; UPDATE events SET tokens=tokens-1,input_tokens=input_tokens-1 WHERE tokens=35",
             "UPDATE sources SET current_model='forged-checkpoint' WHERE source_id=1",
             "UPDATE sources SET resume_offset=0 WHERE source_id=1",
-            "UPDATE source_chunks SET sha256=printf('%064d',0) WHERE source_id=1",
+            "UPDATE source_chunks SET sha256='unknown-chunk-codec' WHERE source_id=1",
             "UPDATE dashboard_source_totals SET total_tokens=total_tokens+1 WHERE source_id=1",
             "UPDATE attribution_source_buckets SET total_tokens=total_tokens+1",
             "DELETE FROM usage_ledger_identities WHERE event_id=(SELECT MIN(source_offset) FROM events)",
@@ -728,25 +790,34 @@ final class BusinessDatabaseMigrationExactAppendTests: XCTestCase {
         XCTAssertEqual(try SQLiteDatabaseDriver(url: f.source).readRows("SELECT SUM(tokens) FROM events") { $0.int(0) }.first!, 482)
     }
 
-    func testRawRewriteAfterLegacyAppendDoesNotAuthorizeDroppingFrozenDestination() throws {
+    func testRawRewrittenAfterDurableAppendDoesNotRevokeTheFormedHistory() throws {
         let f = try fixture()
         let receipt = try freeze(f)
+        let frozen = URL(fileURLWithPath: receipt.normalizedPath)
+        let frozenBytes = try Data(contentsOf: frozen)
         try append(17, second: 3, to: f.files[0])
         _ = try synchronize(f)
+        let raw = SQLiteDatabaseDriver(url: f.source, bypassBusinessRoutes: true)
+        let incoming = try typedRows(raw, table: "events")
+        let sourceProof = try raw.withConnection { try CodexBusinessDatabase.proof($0) }
+        let sourceBytes = try Data(contentsOf: f.source)
         let priorRaw = try Data(contentsOf: f.files[0])
         let rewritten = String(decoding: priorRaw, as: UTF8.self).replacingOccurrences(of: "retained turn", with: "replaced turn")
         try Data(rewritten.utf8).write(to: f.files[0])
-        XCTAssertThrowsError(try BusinessDatabaseMigration.migrate(f.configuration, availableBytes: 1 << 33))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: f.configuration.container.path))
-        let store = try XCTUnwrap(f.configuration.specification(for: f.source))
-        let pending = SQLiteDatabaseDriver(url: f.configuration.support.appendingPathComponent(".codex-ledger-migrating.sqlite"),
-            readOnly: true, bypassBusinessRoutes: true)
-        let count = try pending.readRows("SELECT SUM(tokens) FROM \(SQLiteStoreNamespace.quote(store.prefix + "events"))") { $0.int(0) }.first!
-        XCTAssertEqual(count, 465)
-        try priorRaw.write(to: f.files[0])
+        let diagnostics = BusinessMigrationDiagnostics(root: f.root.appendingPathComponent("changed-raw-diagnostics"), operation: "retry-proof")
+        XCTAssertTrue(try CodexBusinessDatabase.snapshot(f.source, covers: frozen, module: "exact.swift", diagnostics: diagnostics))
+        let events = try String(contentsOf: diagnostics.url, encoding: .utf8).split(separator: "\n")
+            .map { try JSONDecoder().decode(BusinessMigrationDiagnostics.Event.self, from: Data($0.utf8)) }
+        XCTAssertTrue(events.contains { $0.details["evidence"] == "durable-history"
+            && $0.details["rawEvidence"] == "raw-differs-from-durable-prefix" })
         try BusinessDatabaseMigration.migrate(f.configuration, availableBytes: 1 << 33)
-        XCTAssertEqual(try SQLiteDatabaseDriver(url: f.source).readRows("SELECT SUM(tokens) FROM events") { $0.int(0) }.first!, 482)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: receipt.normalizedPath))
+        let active = SQLiteDatabaseDriver(url: f.source)
+        XCTAssertEqual(try active.readRows("SELECT SUM(tokens) FROM events") { $0.int(0) }.first!, 482)
+        XCTAssertEqual(try typedRows(active, table: "events"), incoming)
+        XCTAssertEqual(try Data(contentsOf: frozen), frozenBytes)
+        XCTAssertEqual(try raw.withConnection { try CodexBusinessDatabase.proof($0) }, sourceProof)
+        XCTAssertEqual(try Data(contentsOf: f.source), sourceBytes)
+        XCTAssertEqual(try Data(contentsOf: f.files[0]), Data(rewritten.utf8))
     }
 
     func testOneRetryLogsEveryIndependentChangedSourceProofFailure() throws {
@@ -755,11 +826,10 @@ final class BusinessDatabaseMigrationExactAppendTests: XCTestCase {
         try append(17, second: 3, to: f.files[0])
         try append(19, second: 3, to: f.files[1])
         XCTAssertEqual(try synchronize(f).incrementallyParsedFiles, 2)
-        for file in f.files {
-            let text = try String(contentsOf: file, encoding: .utf8)
-                .replacingOccurrences(of: "retained turn", with: "damaged turn")
-            try Data(text.utf8).write(to: file)
-        }
+        // Both saved prefixes still match their files, making the mismatched
+        // parser checkpoints a decidable contradiction for each source.
+        let raw = SQLiteDatabaseDriver(url: f.source, bypassBusinessRoutes: true)
+        try raw.execute("UPDATE sources SET current_model='contradicts-the-matching-prefix'")
         XCTAssertThrowsError(try BusinessDatabaseMigration.migrate(f.configuration, availableBytes: 1 << 33))
         let directory = f.configuration.container.deletingLastPathComponent().appendingPathComponent("migration-diagnostics")
         var events: [BusinessMigrationDiagnostics.Event] = []
@@ -771,7 +841,7 @@ final class BusinessDatabaseMigrationExactAppendTests: XCTestCase {
         XCTAssertEqual(Set(failed.compactMap { $0.details["source"] }), Set(f.files.map(\.path)))
         XCTAssertEqual(failed.count, 2)
         XCTAssertTrue(events.contains { $0.stage == "retry-exact-projections" && $0.status == "started" },
-            "Independent read-only projection diagnostics still run when a raw prefix is invalid")
+            "Independent read-only projection diagnostics still run when current parser checkpoints contradict matching raw")
         XCTAssertFalse(FileManager.default.fileExists(atPath: f.configuration.container.path))
     }
 

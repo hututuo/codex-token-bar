@@ -24,6 +24,32 @@ OVERRIDES = ("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR", "CODEX_TOKEN_BAR_TAURI_CACHE_D
     "CODEX_TOKEN_BAR_SUPPORT_BASE_DIR", "CODEX_TOKEN_BAR_CACHE_BASE_DIR", "CODEX_TOKEN_BAR_TAURI_USAGE_CACHE_DIR")
 
 
+def fixture_temporary_base() -> Path:
+    """Choose a writable external temp directory without trusting runner layout.
+
+    Linux and macOS Actions runners may put RUNNER_TEMP inside their home.
+    Resolve candidates before checking; an explicit unsafe override is an error,
+    while the normal search can fall back to the system temporary directory.
+    The root creator still independently checks ownership and home isolation.
+    """
+    explicit = os.environ.get("TOKENBAR_FIXTURE_TEMP_BASE")
+    system_temp = Path(os.environ.get("SystemRoot", "C:/Windows")) / "Temp" if os.name == "nt" else Path("/tmp")
+    candidates = [Path(explicit)] if explicit else [
+        Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir())),
+        Path(tempfile.gettempdir()), system_temp,
+    ]
+    home = Path.home().resolve()
+    for candidate in candidates:
+        try:
+            base = candidate.resolve(strict=True)
+        except (OSError, RuntimeError):
+            continue
+        if (base.is_dir() and not base.is_relative_to(home)
+                and not home.is_relative_to(base) and os.access(base, os.W_OK | os.X_OK)):
+            return base
+    raise ValueError("No writable external temporary directory; refusing user home")
+
+
 def native_path(path: Path | str, *, windows: bool | None = None) -> str:
     text = str(path)
     if not (os.name == "nt" if windows is None else windows) or text.startswith("\\\\?\\"):
@@ -37,6 +63,16 @@ def _link(info: os.stat_result) -> bool:
 
 def _identity(info: os.stat_result) -> tuple:
     return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_nlink)
+
+
+def _cross_api_identity(info: os.stat_result, *, windows: bool | None = None) -> tuple:
+    # Windows stat/lstat may expose birth time as ctime while fstat exposes
+    # change time (https://github.com/python/cpython/issues/157671). Compare
+    # birth time across APIs, but retain full ctime in both same-API before/
+    # after checks below. Never discard inode, device, size, mtime or nlink.
+    stamp = (getattr(info, "st_birthtime_ns", info.st_ctime_ns)
+        if (os.name == "nt" if windows is None else windows) else info.st_ctime_ns)
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, stamp, info.st_nlink)
 
 
 def atomic_text(path: Path, text: str) -> None:
@@ -220,10 +256,13 @@ class FixtureAttempt:
                     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0))
                     with os.fdopen(descriptor, "rb") as source, tempfile.TemporaryFile(dir=self.directory) as copy:
                         before = os.fstat(source.fileno())
-                        if not stat.S_ISREG(before.st_mode) or _identity(before) != _identity(expected) \
-                                or _identity(path.lstat()) != _identity(expected) \
+                        current = path.lstat()
+                        if not stat.S_ISREG(before.st_mode) or _cross_api_identity(before) != _cross_api_identity(expected) \
+                                or _identity(current) != _identity(expected) \
                                 or not path.resolve(strict=True).is_relative_to(root):
-                            raise ValueError("file-identity-changed-before-read")
+                            raise ValueError("file-identity-changed-before-read: " + json.dumps({
+                                "expected": _identity(expected), "opened": _identity(before),
+                                "current": _identity(current)}))
                         digest = hashlib.sha256()
                         for chunk in iter(lambda: source.read(1024 * 1024), b""):
                             copy.write(chunk); digest.update(chunk)
