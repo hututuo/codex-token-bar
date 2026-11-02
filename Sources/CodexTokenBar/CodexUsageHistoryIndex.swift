@@ -8913,10 +8913,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     private func removeStagingDatabase(at url: URL) {
         if let pool = stagePool, let target = BusinessSQLiteRoutes.store(for: driver.url) {
             do {
-                if let job = try pool.lookup(url, for: target) { try pool.reclaim(job); return }
+                if try pool.lookup(url, for: target) != nil { return }
                 if let legacy = BusinessSQLiteRoutes.store(for: url), legacy.module == "exact.swift.stage" {
-                    guard try pool.mayReclaimLegacy(legacy, for: target) else { return }
-                    _ = try BusinessStoreFiles.removeCompletedStage(url)
+                    // A durable receipt schedules background cleanup. Never
+                    // run schema drops on the scan/publication return path.
                     return
                 }
             } catch { return } // Cleanup remains retryable after a committed generation.

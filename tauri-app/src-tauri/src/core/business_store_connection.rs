@@ -372,6 +372,27 @@ impl StoreConnection {
         Ok(())
     }
 
+    pub(crate) fn mark_exact_legacy_stage_pending(&self, stage_path: &Path, digest: &str, generation: i64) -> std::result::Result<(), String> {
+        if self.raw.is_autocommit() || generation <= 0 { return Err("旧暂存关联必须在原导入事务内".into()); }
+        let directory = stage_path.parent().ok_or("旧暂存缺少目录")?;
+        let index_name = directory.file_name().and_then(|name|name.to_str()).and_then(|name|name.strip_suffix(".staging")).ok_or("旧暂存目录不属于Exact")?;
+        let target = crate::core::business_store_route::exact_store_spec(&directory.with_file_name(index_name))?;
+        let pool = self.exact_stage_pool(&target.id)?;
+        let stage = crate::core::business_store_route::exact_store_spec(stage_path)?;
+        if stage.id == target.id { return Err("主索引不能当作旧暂存消费".into()); }
+        let proof = Container::exact_stage_proof_on_connection(&self.raw,&stage).map_err(|error|error.to_string())?;
+        if format!("{}:{}",proof.schema_digest,proof.rows_digest) != digest { return Err("旧暂存导入证明发生变化".into()); }
+        let key = format!("legacy:{}",stage.id);
+        let phase = format!("pending:{generation}");
+        let prior: Option<(String,String,String)> = self.raw.query_row(&format!("SELECT owner,base_proof,phase FROM {}operations WHERE operation_id=?1",pool.prefix),[&key],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).optional().map_err(|error|error.to_string())?;
+        if let Some(prior) = prior {
+            if prior != (target.id,digest.to_owned(),phase) { return Err("旧暂存已关联另一发布，保留原任务".into()); }
+        } else {
+            self.raw.execute(&format!("INSERT INTO {}operations(operation_id,owner,base_proof,phase) VALUES(?1,?2,?3,?4)",pool.prefix),rusqlite::params![key,target.id,digest,phase]).map_err(|error|error.to_string())?;
+        }
+        Ok(())
+    }
+
     /// Final exact generation and its job receipts commit on this *same*
     /// handle. No caller gets arbitrary SQL access to another namespace.
     pub(crate) fn consume_exact_stage_generation(
@@ -418,21 +439,9 @@ impl StoreConnection {
         }
         self.raw.execute(&format!("INSERT INTO {}publication_receipts(owner,job_id,payload_digest,generation) SELECT owner,job_id,digest,?1 FROM {}jobs WHERE owner=?2 AND pending_generation=?1 AND state='sealed'",p.prefix,p.prefix),rusqlite::params![generation,owner]).map_err(|e|e.to_string())?;
         self.raw.execute(&format!("UPDATE {}jobs SET state='consumed' WHERE owner=?1 AND pending_generation=?2 AND state='sealed'",p.prefix),rusqlite::params![owner,generation]).map_err(|e|e.to_string())?;
+        self.raw.execute(&format!("INSERT INTO {}publication_receipts(owner,job_id,payload_digest,generation) SELECT owner,operation_id,base_proof,?1 FROM {}operations WHERE owner=?2 AND phase=?3 AND substr(operation_id,1,7)='legacy:'",p.prefix,p.prefix),rusqlite::params![generation,owner,format!("pending:{generation}")]).map_err(|error|error.to_string())?;
+        self.raw.execute(&format!("UPDATE {}operations SET phase='consumed' WHERE owner=?1 AND phase=?2 AND substr(operation_id,1,7)='legacy:'",p.prefix),rusqlite::params![owner,format!("pending:{generation}")]).map_err(|error|error.to_string())?;
         Ok(())
-    }
-
-    pub(crate) fn has_exact_stage_pool(&self) -> Result<bool> {
-        let p = StoreSpec::new(
-            "exact.rust.pool",
-            "exact-stage-pool-v1",
-            "exact/stage-pool-v1",
-        )
-        .map_err(|_| rusqlite::Error::InvalidQuery)?;
-        self.raw.query_row(
-            "SELECT EXISTS(SELECT 1 FROM tb_stores WHERE store_id=?1)",
-            [p.id],
-            |r| r.get(0),
-        )
     }
 
     /// The immutable artifact was verified before reaching this method.

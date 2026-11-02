@@ -54,6 +54,7 @@ struct CodexTokenBarApp: App {
 /// All business owners are built once, only after the background gate succeeds.
 @MainActor
 final class CodexReadyApplicationRuntime {
+    private let exactStageMaintenance = ExactStageMaintenance()
     let loginItemStore = LoginItemStore()
     let updateSettingsStore: AppUpdateSettingsStore
     let floatingPanel: FloatingTokenPanelController
@@ -100,6 +101,7 @@ final class CodexReadyApplicationRuntime {
         self.threadDeleteBridge = threadDeleteBridge
         self.dashboardRuntime = dashboardRuntime
         self.autoResumeController = autoResumeController
+        exactStageMaintenance.start()
         Task { @MainActor in
             threadDeleteBridge.start()
             autoResumeController.start()

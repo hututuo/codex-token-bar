@@ -16,6 +16,7 @@ mod stage_pool_backup;
 pub(crate) fn with_staging_quiesced_for_container_maintenance<T>(operation:impl FnOnce()->Result<T,String>)->Result<T,String> {
     stage_pool::with_idle_handles(operation)
 }
+pub(crate) fn start_stage_maintenance() { stage_pool::start_background_maintenance(); }
 use super::accounting::{AccountingState, ACCOUNTING_REVISION};
 use super::fingerprint_codec;
 use super::session_files::session_id_from_file;
@@ -7474,6 +7475,9 @@ fn import_staged_full_rebuild(
         return Err("精确 token 单文件暂存清单在导入前发生变化".into());
     }
     #[cfg(not(test))]
+    let legacy_digest = if stage_pool::is_path(&staged.database_path) { None }
+        else { Some(stage_pool::Pool::current()?.legacy_digest(&staged.database_path)?) };
+    #[cfg(not(test))]
     attach_stage_alias(
         connection,
         "exact_stage_import",
@@ -7695,6 +7699,10 @@ fn import_staged_full_rebuild(
             let job=pool.lookup(&staged.database_path)?.ok_or("待导入暂存job缺失")?;
             let seal=pool.seal(&job)?.ok_or("待导入暂存job未封存")?;
             transaction.mark_exact_stage_pending(&job.owner,&job.id,&seal.digest,generation)?;
+        }
+        #[cfg(not(test))]
+        if let Some(digest) = &legacy_digest {
+            transaction.mark_exact_legacy_stage_pending(&staged.database_path,digest,generation)?;
         }
         transaction
             .commit()
@@ -9763,18 +9771,6 @@ fn finalize_generation(
     transaction
         .commit()
         .map_err(|error| format!("无法原子发布完整精确 token 代次：{error}"))?;
-    #[cfg(not(test))]
-    {
-        let cleanup=(||->Result<(),String>{
-            if !connection.has_exact_stage_pool().map_err(|e|e.to_string())? { return Ok(()); }
-            let pool=stage_pool::Pool::current()?;
-            let target=crate::core::business_store_route::exact_store_spec(&database_path(codex_home)?)?;
-            pool.reclaim_generation(&target.id,generation)
-        })();
-        if let Err(error)=cleanup {
-            warnings.push(LocalDataWarning{source:"exact_stage_cleanup".into(),message:format!("正式统计已发布；已消费暂存清理将在后续重试：{error}")});
-        }
-    }
     Ok(u64::try_from(revision).unwrap_or(0))
 }
 

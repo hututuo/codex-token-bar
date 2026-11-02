@@ -567,6 +567,41 @@ impl Container {
         )
     }
 
+    /// Restricted bridge for a retained four-table Exact artifact. A main
+    /// index, another module, or an unregistered prefix is not a stage.
+    pub(crate) fn exact_stage_proof_on_connection(connection: &Connection, store: &StoreSpec) -> BusinessStoreResult<StoreProof> {
+        if store.module != "exact" { return Err(BusinessStoreError::InvalidStore); }
+        let version: Option<i64> = connection.query_row("SELECT user_version FROM tb_stores WHERE store_id=?1 AND module=?2 AND source_identity=?3 AND logical_path=?4 AND namespace_prefix=?5",
+            params![store.id,store.module,store.source_identity,store.logical_path,store.prefix], |row| row.get(0)).optional()?;
+        let version = version.ok_or(BusinessStoreError::InvalidStore)?;
+        let mut statement = connection.prepare("SELECT substr(name,?1) FROM sqlite_master WHERE type='table' AND substr(name,1,?2)=?3")?;
+        let names = statement.query_map(params![store.prefix.len()+1,store.prefix.len(),store.prefix],|row|row.get::<_,String>(0))?.collect::<Result<HashSet<_>,_>>()?;
+        if names != ["manifest","events","fingerprints","chunks"].into_iter().map(str::to_owned).collect() { return Err(BusinessStoreError::InvalidStore); }
+        proof_for(connection, "main", &store.prefix, true, Some(version))
+    }
+
+    /// `data_version` is a CAS fence between a read-only proof and the short
+    /// deletion transaction. Any foreign commit makes cleanup retry, including
+    /// an unrelated commit; it can never authorize deleting changed evidence.
+    pub(crate) fn reclaim_consumed_exact_stage(&mut self, store: &StoreSpec, owner: &str,
+        pool: &StoreSpec, digest: &str, data_version: i64) -> BusinessStoreResult<()> {
+        self.ensure_registered(store)?;
+        if store.module != "exact" || pool.module != "exact.rust.pool" || owner == store.id { return Err(BusinessStoreError::InvalidStore); }
+        let tx = self.connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let current: i64 = tx.query_row("PRAGMA data_version", [], |row|row.get(0))?;
+        let receipted: bool = tx.query_row(&format!("SELECT EXISTS(SELECT 1 FROM {}publication_receipts r JOIN {}operations o ON o.operation_id=r.job_id AND o.owner=r.owner AND o.base_proof=r.payload_digest WHERE r.job_id=?1 AND r.owner=?2 AND r.payload_digest=?3 AND o.phase='consumed')",pool.prefix,pool.prefix),
+            params![format!("legacy:{}",store.id),owner,digest], |row|row.get(0))?;
+        if current != data_version || !receipted { return Err(BusinessStoreError::ProofMismatch); }
+        tx.execute("UPDATE tb_legacy_inputs SET retired=1 WHERE store_id=?1",[&store.id])?;
+        drop_store_objects(&tx,&store.prefix)?;
+        for table in ["tb_store_seals","tb_store_imports","tb_store_objects","tb_stores"] {
+            tx.execute(&format!("DELETE FROM {table} WHERE store_id=?1"),[&store.id])?;
+        }
+        tx.execute("DELETE FROM tb_container_meta WHERE key=?1",[format!("migration_pending_store_v1:{}",store.id)])?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Import one immutable SQLite snapshot into a single store namespace.
     /// The source is attached read-only and never modified; receipt and table
     /// replacement are committed together in the container transaction.

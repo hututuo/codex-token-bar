@@ -117,6 +117,10 @@ enum BusinessSQLiteRoutes {
         state.lock.lock(); defer { state.lock.unlock() }
         return state.blocksAllWriters || state.blockedWrites.contains(store.id)
     }
+    static func registeredStores(module: String) -> [BusinessSQLiteStore] {
+        state.lock.lock(); defer { state.lock.unlock() }
+        return state.routes.values.filter { $0.module == module && state.registeredIDs.contains($0.id) }
+    }
     static func allStores(in directory: URL) -> [BusinessSQLiteStore] {
         let root = directory.standardizedFileURL.path
         state.lock.lock()

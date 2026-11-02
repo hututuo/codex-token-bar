@@ -37,6 +37,7 @@ mod exact_usage_index;
 pub(crate) fn with_staging_quiesced_for_container_maintenance<T>(operation:impl FnOnce()->Result<T,String>)->Result<T,String> {
     exact_usage_index::with_staging_quiesced_for_container_maintenance(operation)
 }
+pub(crate) fn start_stage_maintenance() { exact_usage_index::start_stage_maintenance(); }
 mod fingerprint_codec;
 mod scan_failure;
 mod rollout_source;

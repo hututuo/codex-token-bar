@@ -54,6 +54,7 @@ fn schedule_business_startup(
         match snapshot.phase {
             business_startup::BusinessStartupPhase::Ready => {
                 startup_trace::mark("business store bootstrap ready");
+                crate::core::usage::token_count_jsonl::start_stage_maintenance();
                 super::multi_client_usage::initialize_background_refresh(app.clone());
                 app.state::<super::auto_resume::AutoResumeRegistry>()
                     .initialize_and_start(app.clone());

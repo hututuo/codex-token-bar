@@ -492,27 +492,101 @@ impl Pool {
         Ok(work)
     }
     pub(super) fn reclaim(&self, job: &Job) -> Result<()> {
-        self.with(|c|{let tx=c.connection().unchecked_transaction().map_err(|e|e.to_string())?;
+        self.with(|c|{
+            c.connection().busy_timeout(std::time::Duration::from_millis(50)).map_err(|error|error.to_string())?;
+            let result = (|| { let tx=c.connection().unchecked_transaction().map_err(|e|e.to_string())?;
             let state:Option<String>=tx.query_row(&format!("SELECT j.state FROM {} j JOIN {} r ON r.job_id=j.job_id AND r.owner=j.owner AND r.payload_digest=j.digest WHERE j.job_id=?1 AND j.owner=?2 AND j.contract_digest=?3",self.table("jobs"),self.table("publication_receipts")),params![job.id,job.owner,job.contract],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
             if state.as_deref()==Some("reclaimed"){return Ok(())} if state.as_deref()!=Some("consumed"){return Ok(())}
             for name in ["event_rows","fingerprints","chunks"] {tx.execute(&format!("DELETE FROM {} WHERE job_id=?1",self.table(name)),[&job.id]).map_err(|e|e.to_string())?;}
             tx.execute(&format!("UPDATE {} SET state='reclaimed' WHERE job_id=?1",self.table("jobs")),[&job.id]).map_err(|e|e.to_string())?;tx.commit().map_err(|e|e.to_string())
+            })();
+            let _ = c.connection().busy_timeout(std::time::Duration::from_secs(30));
+            result
         })
     }
 
-    pub(super) fn reclaim_generation(&self, owner: &str, generation: i64) -> Result<()> {
-        let paths=self.with(|c|{
-            let mut s=c.connection().prepare(&format!("SELECT logical_path FROM {} WHERE owner=?1 AND pending_generation=?2 AND state='consumed' LIMIT 16",self.table("jobs"))).map_err(|e|e.to_string())?;
-            let rows=s.query_map(params![owner,generation],|r|r.get::<_,String>(0)).map_err(|e|e.to_string())?;
-            rows.map(|r|r.map(PathBuf::from).map_err(|e|e.to_string())).collect::<Result<Vec<_>>>()
-        })?;
-        for path in paths {
-            if let Some(job) = self.lookup(&path)? {
-                self.reclaim(&job)?;
-            }
-        }
-        Ok(())
+    pub(super) fn legacy_digest(&self, path: &Path) -> Result<String> {
+        let stage = crate::core::business_store_route::exact_store_spec(path)?;
+        self.with(|container| {
+            let tx = container.connection().unchecked_transaction().map_err(|error|error.to_string())?;
+            let proof = Container::exact_stage_proof_on_connection(&tx, &stage).map_err(|error|error.to_string())?;
+            tx.commit().map_err(|error|error.to_string())?;
+            Ok(format!("{}:{}",proof.schema_digest,proof.rows_digest))
+        })
     }
+
+    pub(super) fn reclaim_published(&self, maximum: usize, budget: std::time::Duration) -> Result<usize> {
+        if !(1..=16).contains(&maximum) { return Err("清理批次超出上限".into()); }
+        crate::core::business_store_route::validate_exact_stage_container(&self.path)?;
+        let started = std::time::Instant::now();
+        let paths = self.with(|container| {
+            let mut statement = container.connection().prepare(&format!("SELECT logical_path FROM {} WHERE state='consumed' LIMIT ?1",self.table("jobs"))).map_err(|error|error.to_string())?;
+            let rows = statement.query_map([maximum as i64],|row|row.get::<_,String>(0)).map_err(|error|error.to_string())?;
+            rows.map(|row|row.map(PathBuf::from).map_err(|error|error.to_string())).collect::<Result<Vec<_>>>()
+        })?;
+        let mut done = 0;
+        for path in paths {
+            if started.elapsed() >= budget { return Ok(done); }
+            if let Some(job) = self.lookup(&path)? { self.reclaim(&job)?; done += 1; }
+        }
+        if done >= maximum || started.elapsed() >= budget { return Ok(done); }
+        let mut container = self.container.lock().map_err(|_| "暂存池锁失败")?;
+        if identity(&self.path)? != self.identity { return Err("清理前A身份已变化".into()); }
+        let candidates = {
+            let mut statement = container.connection().prepare(&format!("SELECT s.module,s.source_identity,s.logical_path,r.owner,r.payload_digest FROM {} r JOIN {} o ON o.operation_id=r.job_id AND o.owner=r.owner AND o.base_proof=r.payload_digest JOIN tb_stores s ON r.job_id='legacy:'||s.store_id WHERE o.phase='consumed' AND s.module='exact' LIMIT ?1",self.table("publication_receipts"),self.table("operations"))).map_err(|error|error.to_string())?;
+            let rows = statement.query_map([(maximum-done) as i64],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?,row.get::<_,String>(4)?))).map_err(|error|error.to_string())?;
+            rows.collect::<std::result::Result<Vec<_>,_>>().map_err(|error|error.to_string())?
+        };
+        for (module,source,logical,owner,digest) in candidates {
+            if started.elapsed() >= budget { break; }
+            let stage = StoreSpec::new(module,source,logical).map_err(|error|error.to_string())?;
+            let version = {
+                let tx = container.connection().unchecked_transaction().map_err(|error|error.to_string())?;
+                let proof = Container::exact_stage_proof_on_connection(&tx,&stage).map_err(|error|error.to_string())?;
+                if format!("{}:{}",proof.schema_digest,proof.rows_digest) != digest { return Err("已消费的旧暂存发生变化，保留证据".into()); }
+                let version = tx.query_row("PRAGMA data_version",[],|row|row.get::<_,i64>(0)).map_err(|error|error.to_string())?;
+                tx.commit().map_err(|error|error.to_string())?;
+                version
+            };
+            container.connection().busy_timeout(std::time::Duration::from_millis(50)).map_err(|error|error.to_string())?;
+            let result = container.reclaim_consumed_exact_stage(&stage,&owner,&self.store,&digest,version).map_err(|error|error.to_string());
+            let _ = container.connection().busy_timeout(std::time::Duration::from_secs(30));
+            result?;
+            done += 1;
+        }
+        Ok(done)
+    }
+}
+
+pub(crate) fn start_background_maintenance() {
+    use std::sync::atomic::{AtomicBool,Ordering};
+    static STARTED: AtomicBool = AtomicBool::new(false);
+    if STARTED.swap(true,Ordering::AcqRel) { return; }
+    let started = std::thread::Builder::new().name("exact-stage-maintenance".into()).spawn(|| {
+        let mut delay = std::time::Duration::from_secs(30);
+        let mut last_error = None;
+        loop {
+            std::thread::sleep(delay);
+            delay = std::time::Duration::from_secs(30);
+            if crate::core::business_startup::process_coordinator().ensure_ready().is_err() { continue; }
+            let began = std::time::Instant::now();
+            let result = (|| {
+                let path = crate::core::business_store_route::container_path()?;
+                let has_pool = {
+                    let container = Container::open_read_only_existing(path,std::time::Duration::from_millis(250)).map_err(|error|error.to_string())?;
+                    container.connection().query_row("SELECT EXISTS(SELECT 1 FROM tb_stores WHERE module='exact.rust.pool')",[],|row|row.get::<_,bool>(0)).map_err(|error|error.to_string())?
+                };
+                if !has_pool { return Ok(0); }
+                Pool::current()?.reclaim_published(4,std::time::Duration::from_millis(250))
+            })();
+            match result {
+                Ok(count) => { last_error = None; if count > 0 { delay = std::time::Duration::from_secs(2); } }
+                Err(error) => { delay = std::time::Duration::from_secs(60); if last_error.as_ref() != Some(&error) { eprintln!("Exact stage maintenance deferred: {error}"); last_error = Some(error); } }
+            }
+            delay = delay.max(began.elapsed().saturating_mul(4));
+        }
+    });
+    if started.is_err() { STARTED.store(false,Ordering::Release); }
 }
 
 #[cfg(test)]
@@ -616,9 +690,65 @@ pub(super) fn verify_fixture() -> Result<serde_json::Value> {
             return Err("fixture failed job-only cleanup/catalog bound".into());
         }
     }
+    let legacy = verify_legacy_receipts(&pool)?;
     Ok(
-        serde_json::json!({"jobs":13,"catalogGrowth":0,"storeGrowth":0,"typedTempAlias":true,"readOnly":true,"publicationRollback":true,"idempotentCleanup":true}),
+        serde_json::json!({"jobs":13,"catalogGrowth":0,"storeGrowth":0,"typedTempAlias":true,"readOnly":true,"publicationRollback":true,"idempotentCleanup":true,"legacy":legacy}),
     )
+}
+
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+fn verify_legacy_receipts(pool: &Arc<Pool>) -> Result<serde_json::Value> {
+    // Clear only already-consumed, proven queue entries left by other checks.
+    for _ in 0..64 { if pool.reclaim_published(16,std::time::Duration::from_secs(2))? == 0 { break; } }
+    let index = pool.path.with_file_name("fixed-pool-legacy-index.sqlite3");
+    let mut directory = index.as_os_str().to_os_string(); directory.push(".staging");
+    let path = PathBuf::from(directory).join(format!("{}.sqlite3","a".repeat(64)));
+    let target = crate::core::business_store_route::exact_store_spec(&index)?;
+    let stage = crate::core::business_store_route::exact_store_spec(&path)?;
+    let container = Container::open_existing(&pool.path).map_err(|error|error.to_string())?;
+    container.register(&target).map_err(|error|error.to_string())?;
+    container.register(&stage).map_err(|error|error.to_string())?;
+    let mut writer = container.into_store_connection(&target).map_err(|error|error.to_string())?;
+    writer.execute_batch("CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL); INSERT INTO metadata VALUES('published_generation','1'),('fixture_tokens','123')").map_err(|error|error.to_string())?;
+    let container = Container::open_existing(&pool.path).map_err(|error|error.to_string())?;
+    let legacy = container.into_store_connection(&stage).map_err(|error|error.to_string())?;
+    legacy.execute_batch(&super::staging_schema_sql(false)).map_err(|error|error.to_string())?;
+    let work = seed_fixture_stage("/fixed-pool-legacy-source.jsonl")?;
+    for (table, columns, _) in TABLES {
+        let mut select = work.prepare(&format!("SELECT * FROM {table}")).map_err(|error|error.to_string())?;
+        let mut rows = select.query([]).map_err(|error|error.to_string())?;
+        while let Some(row) = rows.next().map_err(|error|error.to_string())? {
+            let cells = (0..columns).map(|column|row.get::<_,rusqlite::types::Value>(column)).collect::<std::result::Result<Vec<_>,_>>().map_err(|error|error.to_string())?;
+            legacy.execute(&format!("INSERT INTO {table} VALUES({})",vec!["?";columns].join(",")),params_from_iter(cells)).map_err(|error|error.to_string())?;
+        }
+    }
+    let digest = pool.legacy_digest(&path)?;
+    {
+        let tx = writer.transaction().map_err(|error|error.to_string())?;
+        tx.mark_exact_legacy_stage_pending(&path,&digest,2)?;
+        tx.execute("UPDATE metadata SET value='2' WHERE key='published_generation'",[]).map_err(|error|error.to_string())?;
+        tx.consume_exact_stage_generation(2)?;
+        // Intentionally roll back both formal generation and its receipt.
+    }
+    if pool.reclaim_published(4,std::time::Duration::from_secs(2))? != 0 { return Err("legacy rollback became a cleanup receipt".into()); }
+    { let tx = writer.transaction().map_err(|error|error.to_string())?;
+      tx.mark_exact_legacy_stage_pending(&path,&digest,2)?; tx.commit().map_err(|error|error.to_string())?; }
+    if pool.reclaim_published(4,std::time::Duration::from_secs(2))? != 0 { return Err("legacy BUILDING artifact was deleted before final publication".into()); }
+    { let tx = writer.transaction().map_err(|error|error.to_string())?;
+      tx.execute("UPDATE metadata SET value='2' WHERE key='published_generation'",[]).map_err(|error|error.to_string())?;
+      tx.execute("UPDATE metadata SET value='134' WHERE key='fixture_tokens'",[]).map_err(|error|error.to_string())?;
+      tx.consume_exact_stage_generation(2)?; tx.commit().map_err(|error|error.to_string())?; }
+    legacy.execute("UPDATE events SET tokens=99",[]).map_err(|error|error.to_string())?;
+    if pool.reclaim_published(4,std::time::Duration::from_secs(2)).is_ok() { return Err("changed legacy evidence was accepted for deletion".into()); }
+    legacy.execute("UPDATE events SET tokens=11",[]).map_err(|error|error.to_string())?;
+    if pool.reclaim_published(1,std::time::Duration::from_secs(2))? != 1 || pool.reclaim_published(1,std::time::Duration::from_secs(2))? != 0 {
+        return Err("legacy receipt cleanup was not idempotent".into());
+    }
+    let container = Container::open_read_only_existing(&pool.path,std::time::Duration::from_secs(1)).map_err(|error|error.to_string())?;
+    if container.is_registered(&stage).map_err(|error|error.to_string())? { return Err("consumed legacy namespace retained after cleanup".into()); }
+    let tokens: String = writer.query_row("SELECT value FROM metadata WHERE key='fixture_tokens'",[],|row|row.get(0)).map_err(|error|error.to_string())?;
+    if tokens != "134" { return Err("legacy cleanup changed formal facts".into()); }
+    Ok(serde_json::json!({"rollback":true,"buildingKept":true,"changedEvidenceKept":true,"idempotent":true,"publishedTokens":134}))
 }
 
 #[cfg(any(test, feature = "business-store-fixture"))]

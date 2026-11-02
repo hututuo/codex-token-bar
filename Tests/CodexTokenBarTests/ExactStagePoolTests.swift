@@ -146,6 +146,67 @@ final class ExactStagePoolTests: XCTestCase {
         XCTAssertEqual(try f.writer.readRows("SELECT value FROM schema_meta WHERE key='published_tokens'") { $0.text(0) }, ["123"])
     }
 
+    func testBackgroundCleanupLimitsEachPassAndKeepsPendingPayloadAndAllReceipts() throws {
+        let f = try fixture(), pool = try ExactStagePool.shared(for: f.target)
+        for index in 0..<5 {
+            let job = try makeJob(pool, f, index), source = try seed(job)
+            try pool.persist(job, from: source.connection)
+            if index < 4 {
+                try f.writer.transaction { try pool.consume(job, generation: "published-2", on: $0) }
+            }
+        }
+        XCTAssertEqual(try pool.reclaimPublished(maximumJobs: 2, budget: 10), 2)
+        XCTAssertEqual(try f.raw.readRows("SELECT state,COUNT(*) FROM \(SQLiteStoreNamespace.quote(pool.store.prefix + "jobs")) GROUP BY state ORDER BY state") { "\($0.text(0)!):\($0.int(1)!)" }, ["consumed:2", "reclaimed:2", "sealed:1"])
+        XCTAssertEqual(try pool.reclaimPublished(maximumJobs: 4, budget: 10), 2)
+        XCTAssertEqual(try pool.reclaimPublished(maximumJobs: 4, budget: 10), 0)
+        XCTAssertEqual(try count(f, pool.store.prefix + "publication_receipts"), 4)
+        XCTAssertEqual(try count(f, pool.store.prefix + "event_rows"), 1, "An unconsumed payload survives every cleanup pass")
+        XCTAssertEqual(try count(f, pool.store.prefix + "jobs"), 5)
+        XCTAssertEqual(try f.writer.readRows("SELECT value FROM schema_meta WHERE key='published_tokens'") { $0.text(0) }, ["123"])
+    }
+
+    func testChangedConsumedLegacyCannotBeDeletedByAnOldReceipt() throws {
+        let f = try fixture(), pool = try ExactStagePool.shared(for: f.target)
+        let request = try makeJob(pool, f), source = try seed(request)
+        let url = f.configuration.exact.appendingPathComponent("staging/\(f.target.logicalURL.lastPathComponent)/changed.sqlite")
+        try SQLiteDatabaseDriver(url: url).withConnection { db in
+            try db.execute(ExactStageSchema.sql)
+            for name in ExactStageSchema.tables {
+                let columns = try XCTUnwrap(ExactStageSchema.columns[name])
+                let insert = try db.prepare("INSERT INTO \(SQLiteStoreNamespace.quote(name)) VALUES(\(Array(repeating: "?", count: columns).joined(separator: ",")))")
+                try source.connection.forEachRow("SELECT * FROM \(SQLiteStoreNamespace.quote(name))") { row in
+                    try insert.execute(ExactStageRowCodec.decode(ExactStageRowCodec.encode(row), expectedColumns: columns))
+                }
+            }
+            try BusinessStoreFiles.seal(at: url, connection: db)
+        }
+        let legacy = try XCTUnwrap(BusinessSQLiteRoutes.store(for: url))
+        try f.writer.transaction { try pool.consumeLegacy(legacy, generation: "legacy-2", on: $0) }
+        try f.raw.execute("UPDATE \(SQLiteStoreNamespace.quote(legacy.prefix + "events")) SET tokens=99")
+        XCTAssertThrowsError(try pool.reclaimLegacy(legacy, for: f.target))
+        XCTAssertEqual(try f.raw.readRows("SELECT tokens FROM \(SQLiteStoreNamespace.quote(legacy.prefix + "events"))") { $0.int(0) }, [99])
+        XCTAssertEqual(try count(f, pool.store.prefix + "publication_receipts"), 1)
+        XCTAssertEqual(try f.writer.readRows("SELECT value FROM schema_meta WHERE key='published_tokens'") { $0.text(0) }, ["123"])
+    }
+
+    func testBusyMaintenanceDefersWithoutHoldingTheForegroundWriterOrLosingItsReceipt() throws {
+        let f = try fixture(), pool = try ExactStagePool.shared(for: f.target)
+        let job = try makeJob(pool, f), source = try seed(job)
+        try pool.persist(job, from: source.connection)
+        try f.writer.transaction { try pool.consume(job, generation: "published-2", on: $0) }
+        try f.raw.transaction { tx in
+            try tx.execute("INSERT INTO tb_container_meta VALUES('unrelated-writer','committing')")
+            let began = Date()
+            XCTAssertThrowsError(try pool.reclaim(job))
+            XCTAssertLessThan(Date().timeIntervalSince(began), 1.5)
+        }
+        XCTAssertEqual(try count(f, pool.store.prefix + "publication_receipts"), 1)
+        XCTAssertEqual(try count(f, pool.store.prefix + "event_rows"), 1)
+        try pool.reclaim(job)
+        XCTAssertEqual(try count(f, pool.store.prefix + "event_rows"), 0)
+        XCTAssertEqual(try f.raw.readRows("SELECT value FROM tb_container_meta WHERE key='unrelated-writer'") { $0.text(0) }, ["committing"])
+    }
+
     func testJobIdentityTracksFactBaseButNotUnrelatedQuotaWrites() throws {
         let f = try fixture(), pool = try ExactStagePool.shared(for: f.target)
         let first = try makeJob(pool, f)
@@ -177,12 +238,15 @@ final class ExactStagePoolTests: XCTestCase {
         XCTAssertEqual(try work.connection.readRows("SELECT tokens FROM events") { $0.int(0) }, [11])
         XCTAssertThrowsError(try work.connection.execute("DELETE FROM events"))
         XCTAssertFalse(try pool.mayReclaimLegacy(legacy, for: f.target))
+        XCTAssertFalse(try pool.reclaimLegacy(legacy, for: f.target), "Unconsumed evidence is never a cleanup candidate")
         try f.writer.transaction { try pool.consumeLegacy(legacy, generation: "legacy-generation", on: $0) }
         XCTAssertTrue(try pool.mayReclaimLegacy(legacy, for: f.target))
         let retained = try XCTUnwrap(pool.legacyObservation(legacy))
         XCTAssertEqual(retained.size, original.size)
         XCTAssertEqual(retained.physicalStamp, original.physicalStamp)
-        XCTAssertTrue(try BusinessStoreFiles.removeCompletedStage(legacyURL))
+        XCTAssertEqual(try pool.reclaimPublished(maximumJobs: 1, budget: 2), 1)
+        XCTAssertFalse(try pool.reclaimLegacy(legacy, for: f.target), "A repeated cleanup is harmless")
+        XCTAssertEqual(try count(f, pool.store.prefix + "publication_receipts"), 1, "The authority outlives its payload")
         XCTAssertEqual(try f.writer.readRows("SELECT value FROM schema_meta WHERE key='published_tokens'") { $0.text(0) }, ["123"])
     }
 

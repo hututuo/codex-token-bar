@@ -133,3 +133,20 @@ Windows连接寿命作平台适配：实际锁定SQLite源码的`winOpen`使用F
 - Exact在该状态直接读取已发布分区，不启动同步／迁移。full数据和元数据取同一读快照，图表水位保留旧值、不授予新observer／freshness、不重新写缓存；compact读取已知汇总。可选对话摘录不读原文。ModelTrace历史／设置不再用建表或导入连接；quota暂停路径不维护、不认领未知身份，兼容旧周期列并复用原投影。
 - 前端与Mac主页增加简短恢复状态及重试入口；子窗口只读取状态，不能触发迁移。前端8项专项已通过，覆盖全部surface准入、main唯一重试、重试时保留owner和状态请求失败不清空旧页。TS本地noEmit通过。Mac协调器补单次激活／保留旧账读取测试；重试增加活跃A物理身份门槛。
 - 新Windows生产fixture会验证全量／compact无原始会话读取、旧123＋升级后789保留、未完成分区拒读、writer拒绝、重试仍可读及A整库proof不变。**这些Rust／Mac新增接线仅完成语法检查；真实生产fixture和整包类型／测试需本提交云端执行，不提前计PASS。** C03后台清理、跨进程强退、C04历史产库矩阵与C05–C07保持未完成。
+
+源码`64907294`的[全量检查41508815056](https://github.com/hututuo/codex-token-bar/actions/runs/41508815056)：Swift2281项／36 skipped／0失败，新增无原文与缓存读取、quota旧列、ModelTrace scope／settings、未知owner反例全部执行通过；[公开0.9.7升级41508814980](https://github.com/hututuo/codex-token-bar/actions/runs/41508814980)双端通过。
+
+源码`3ac20b56`的[全量检查41510648154](https://github.com/hututuo/codex-token-bar/actions/runs/41510648154)：Swift2282项／36 skipped／0失败，Windows native1614通过／14 ignored／0失败，实际生产fixture包括`published-recovery-reads`通过；前端和Windows更新器通过。[公开0.9.7升级41510648109](https://github.com/hututuo/codex-token-bar/actions/runs/41510648109)双端通过。Mac Rust job未分配runner、steps为空即取消，不能计通过；下批改用已能执行本项目Swift／Rust升级检查的macOS26 runner，保留完整native测试与生产fixture，不跳过或降低断言。
+
+## C03d · 已消费暂存的后台回收（待整包复测）
+
+- 两端正式事实与消费回执仍在原同A事务提交；Rust旧四表artifact也写入固定pool的operation行，只有最终generation事务才转为消费回执。BUILDING、回滚和未消费材料不进入删除队列，不增加新表／逐文件store。
+- Mac与Windows各一个utility维护器。每轮最多4项、250ms软预算，空闲30秒、失败60秒退避；实际单项耗时计入后续退让。清理写锁等待50ms，不把长等待传给前台writer或发布返回。Windows空闲期不额外持有Arc，保留已有离线维护租约。恢复状态下不运行结构清理。
+- 回收旧namespace前核对完整typed schema／row proof和消费回执；只删它自己的对象并退休其输入receipt，原始物理旧库及其他账不动。proof后到短删除事务之间有`data_version` CAS，任何外来提交都延期重试；内容改变则保留证据。消费回执／轻量头继续保留，原同步清理入口不再承担生产回收。
+- 存储模块隔离XCTest **25通过／0失败**，新增限量回收、未消费payload保留、已消费旧stage变化拒删、writer忙时50ms退避及随后重试。选定真实Rust模块probe编译／运行通过：13项MAIN／store增长0；旧stage的回滚、BUILDING不删、内容变化拒删、幂等清理及正式134保全均通过。此probe复制实际路径映射辅助函数，但运行环境／coordinator门槛仍是隔离stub，不能替代生产fixture。
+- 增加3项Rust旧quota只读单测，覆盖缺cycle列、已有claim不更新、无claim不猜、foreign身份排除及原writer认领语义保持；当前仅语法检查，待云端执行。
+- PR6真实backfill规模fixture和脚本原样移入，保留13／128／512／4124、精确Token／事件／原库字节和累计进度断言；脚本3项unit通过，实际规模尚NOT_RUN。没有用SQL小库或新库改版本号代替真实旧版形成状态。
+
+### 历史形成状态的托管入口
+
+新增独立reusable workflow，固定0.9.8／0.9.9／0.9.10／0.9.11生产源码形成输入，再由同SHA候选恢复和重复启动；双平台外部TEMP、只读仓库权限、不涉及签名发布。通过原有CI的显式`formed_release`／`formed_only`参数调用，普通push不启动8个历史构建；只跑历史矩阵不会生成全项目通过artifact。工作流矩阵实际生成／拒绝非法输入、SHA／权限／输出目录合同等7项，以及既有helper8项unit通过；历史托管生产执行尚NOT_RUN。F03原调查包无SQLite，仍不宣称这些合成形成场景就是用户原库验收。

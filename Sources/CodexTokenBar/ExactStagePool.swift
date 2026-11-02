@@ -68,6 +68,7 @@ final class ExactStagePool: @unchecked Sendable {
         return needed ? try shared(for: target) : nil
     }
     static func shared(for target: BusinessSQLiteStore) throws -> ExactStagePool {
+        try BusinessSQLiteRoutes.requireAccess(to: target, readOnly: false)
         registry.lock.lock(); defer { registry.lock.unlock() }
         registry.pools = registry.pools.filter { $0.value.value != nil }
         if let existing = registry.pools[target.containerURL]?.value {
@@ -176,6 +177,7 @@ final class ExactStagePool: @unchecked Sendable {
 
     private func use<T>(_ body: (SQLiteDatabaseConnection) throws -> T) throws -> T {
         lock.lock(); defer { lock.unlock() }
+        try BusinessSQLiteRoutes.requireAccess(to: store, readOnly: false)
         guard try BusinessSQLiteRoutes.validateActiveContainer(store.containerURL),
               try Self.fileIdentity(store.containerURL) == openedIdentity,
               try handle.db.readRows("SELECT user_version FROM tb_stores WHERE store_id=? AND state='ready'", bindings: [.text(store.id)], map: { $0.int(0) }).first == 1 else {
@@ -421,6 +423,84 @@ final class ExactStagePool: @unchecked Sendable {
         }
     }
 
+    /// A bounded maintenance operation, never part of the publication result.
+    /// Receipts survive a restart and are the only cleanup queue. No directory
+    /// scan or age/filename heuristic authorizes removing a namespace.
+    func reclaimPublished(maximumJobs: Int = 4, budget: TimeInterval = 0.25) throws -> Int {
+        guard (1...16).contains(maximumJobs), budget > 0 else { throw Failure.invalid }
+        let started = Date()
+        let candidates = try use { db in
+            try db.readRows("""
+            SELECT o.logical_path,o.module,o.source_identity,j.logical_path,NULL
+            FROM \(table("jobs")) j JOIN tb_stores o ON o.store_id=j.owner
+            WHERE j.state='consumed' AND o.module='exact.swift'
+            UNION ALL
+            SELECT o.logical_path,o.module,o.source_identity,l.logical_path,l.source_identity
+            FROM \(table("publication_receipts")) r
+            JOIN tb_stores l ON r.job_id='legacy:'||l.store_id
+            JOIN tb_stores o ON o.store_id=r.owner
+            WHERE l.module='exact.swift.stage' AND o.module='exact.swift'
+            LIMIT ?
+            """, bindings: [.int(maximumJobs)]) { row in
+                (BusinessSQLiteStore(containerURL: store.containerURL, logicalURL: URL(fileURLWithPath: row.text(0)!),
+                    module: row.text(1)!, sourceIdentity: row.text(2)!), URL(fileURLWithPath: row.text(3)!), row.text(4))
+            }
+        }
+        var reclaimed = 0
+        for (target, url, legacySource) in candidates {
+            if Date().timeIntervalSince(started) >= budget { break }
+            try BusinessSQLiteRoutes.requireAccess(to: target, readOnly: false)
+            if let legacySource {
+                let legacy = BusinessSQLiteStore(containerURL: store.containerURL, logicalURL: url,
+                    module: "exact.swift.stage", sourceIdentity: legacySource)
+                if try reclaimLegacy(legacy, for: target) { reclaimed += 1 }
+            } else if let job = try lookup(url, for: target) {
+                try reclaim(job); reclaimed += 1
+            }
+        }
+        return reclaimed
+    }
+
+    @discardableResult
+    func reclaimLegacy(_ legacy: BusinessSQLiteStore, for target: BusinessSQLiteStore) throws -> Bool {
+        guard legacy.module == "exact.swift.stage", target.module == "exact.swift",
+              legacy.containerURL == store.containerURL, target.containerURL == store.containerURL,
+              legacy.sourceIdentity.hasPrefix("staging/" + target.logicalURL.lastPathComponent + "/") else { throw Failure.invalid }
+        try BusinessSQLiteRoutes.requireAccess(to: target, readOnly: false)
+        let removed = try use { db in
+            try db.execute("PRAGMA busy_timeout=50")
+            defer { try? db.execute("PRAGMA busy_timeout=30000") }
+            let verified: (String, Int)? = try db.readTransaction { tx in
+                guard let seal = try legacySeal(legacy, on: tx) else { return nil }
+                let receipt = try tx.readRows("SELECT 1 FROM \(table("publication_receipts")) WHERE job_id=? AND owner=? AND payload_digest=?",
+                    bindings: [.text("legacy:" + legacy.id), .text(target.id), .text(seal.digest)]) { $0.int(0) }.first == 1
+                guard receipt else { return nil }
+                let proof = try CodexBusinessDatabase.proof(tx, namespace: SQLiteStoreNamespace(prefix: legacy.prefix, objectNames: Set(ExactStageSchema.tables)))
+                guard proof.rowsDigest == seal.digest, proof.rowCount == seal.rows else { throw Failure.invalid }
+                let version = try tx.readRows("PRAGMA data_version") { $0.int(0) }.first ?? nil
+                guard let version else { throw Failure.invalid }
+                return (seal.digest, version)
+            }
+            guard let (digest, version) = verified else { return false }
+            return try db.transaction { tx in
+                guard try tx.readRows("PRAGMA data_version", map: { $0.int(0) }).first == version,
+                      try legacySeal(legacy, on: tx)?.digest == digest else { throw Failure.unavailable }
+                let objects = try tx.readRows("SELECT name,type FROM sqlite_master WHERE substr(name,1,?)=? ORDER BY CASE type WHEN 'trigger' THEN 0 WHEN 'view' THEN 1 WHEN 'index' THEN 2 ELSE 3 END",
+                    bindings: [.int(legacy.prefix.count), .text(legacy.prefix)]) { ($0.text(0)!, $0.text(1)!) }
+                guard Set(objects.filter { $0.1 == "table" }.map { String($0.0.dropFirst(legacy.prefix.count)) }) == Set(ExactStageSchema.tables),
+                      objects.allSatisfy({ ["table", "index", "view", "trigger"].contains($0.1) }) else { throw Failure.invalid }
+                for (name, kind) in objects { try tx.execute("DROP \(kind.uppercased()) IF EXISTS \(SQLiteStoreNamespace.quote(name))") }
+                try tx.execute("UPDATE tb_legacy_inputs SET retired=1 WHERE store_id=?", bindings: [.text(legacy.id)])
+                for name in ["tb_store_seals", "tb_store_objects", "tb_store_imports", "tb_stores"] {
+                    try tx.execute("DELETE FROM \(name) WHERE store_id=?", bindings: [.text(legacy.id)])
+                }
+                return true
+            }
+        }
+        if removed { BusinessSQLiteRoutes.forget(legacy) }
+        return removed
+    }
+
     /// Narrow same-A bridge: only the verified Exact binding may consume its
     /// own job, within the actual publication transaction. No arbitrary prefix
     /// SQL or independent second transaction is exposed to callers.
@@ -442,7 +522,10 @@ final class ExactStagePool: @unchecked Sendable {
     }
 
     func reclaim(_ job: Job) throws {
-        try use { db in try db.transaction { tx in
+        try use { db in
+            try db.execute("PRAGMA busy_timeout=50")
+            defer { try? db.execute("PRAGMA busy_timeout=30000") }
+            try db.transaction { tx in
             let permitted = try tx.readRows("SELECT j.state FROM \(table("jobs")) j JOIN \(table("publication_receipts")) r ON r.job_id=j.job_id AND r.owner=j.owner AND r.payload_digest=j.digest WHERE j.job_id=? AND j.owner=? AND j.contract_digest=?",
                 bindings: [.text(job.id), .text(job.owner), .text(job.contract)]) { $0.text(0) }.first ?? nil
             if permitted == "reclaimed" { return }
