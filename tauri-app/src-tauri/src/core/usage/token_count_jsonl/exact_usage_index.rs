@@ -12,6 +12,10 @@ mod external_state;
 mod stage_row_codec;
 mod stage_pool;
 mod stage_pool_backup;
+
+pub(crate) fn with_staging_quiesced_for_container_maintenance<T>(operation:impl FnOnce()->Result<T,String>)->Result<T,String> {
+    stage_pool::with_idle_handles(operation)
+}
 use super::accounting::{AccountingState, ACCOUNTING_REVISION};
 use super::fingerprint_codec;
 use super::session_files::session_id_from_file;
@@ -18779,6 +18783,10 @@ fn hash_file_prefix(
     prefix_size: u64,
     path: &Path,
 ) -> Result<[u8; 32], String> {
+    crate::core::shared_source_io::with_uncached_reads(|| hash_physical_file_prefix(handle,prefix_size,path))
+}
+
+fn hash_physical_file_prefix(handle: &mut impl SourceHandle, prefix_size:u64, path:&Path)->Result<[u8;32],String> {
     #[cfg(test)]
     PREFIX_REHASH_COUNT.with(|count| count.set(count.get().saturating_add(1)));
 

@@ -13,6 +13,31 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 type Result<T> = std::result::Result<T, String>;
+type Registry = Mutex<HashMap<PathBuf, Arc<Pool>>>;
+fn registry() -> &'static Registry {
+    static POOLS: OnceLock<Registry> = OnceLock::new();
+    POOLS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn release_idle(pools: &mut HashMap<PathBuf, Arc<Pool>>) -> Result<()> {
+    if pools.values().any(|p| Arc::strong_count(p) != 1) {
+        return Err("暂存任务仍在使用A，不能进行离线维护".into());
+    }
+    pools.clear();
+    Ok(())
+}
+
+/// An offline container operation must first quiesce business owners. Windows
+/// SQLite holds A without FILE_SHARE_DELETE; do not rename a still-live file.
+pub(super) fn with_idle_handles<T>(operation: impl FnOnce() -> Result<T>) -> Result<T> {
+    let mut pools = registry().lock().map_err(|_| "暂存池注册锁失败")?;
+    release_idle(&mut pools)?;
+    // Retain the registry lease through the offline operation. Another worker
+    // cannot reopen A in the gap between closing idle handles and renaming it.
+    let result = operation();
+    drop(pools);
+    result
+}
 const TABLES: [(&str, usize, &str); 4] = [
     ("manifest", 35, "complete"),
     ("fingerprints", 1, "fingerprint"),
@@ -95,13 +120,9 @@ impl Pool {
     /// Retain one schema-loaded connection. Growing the old catalog must not
     /// make every manifest/count query reopen and reparse A.
     pub(super) fn current() -> Result<Arc<Self>> {
-        static POOLS: OnceLock<Mutex<HashMap<PathBuf, Arc<Pool>>>> = OnceLock::new();
         let path = crate::core::business_store_route::container_path()?;
         crate::core::business_store_route::validate_exact_stage_container(&path)?;
-        let mut pools = POOLS
-            .get_or_init(|| Mutex::new(HashMap::new()))
-            .lock()
-            .map_err(|_| "暂存池注册锁失败")?;
+        let mut pools = registry().lock().map_err(|_| "暂存池注册锁失败")?;
         if let Some(pool) = pools.get(&path) {
             if identity(&path)? == pool.identity {
                 return Ok(pool.clone());

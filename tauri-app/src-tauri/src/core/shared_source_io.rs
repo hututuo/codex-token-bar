@@ -277,6 +277,16 @@ impl State {
 }
 
 static BROKER: OnceLock<SourceReadBroker> = OnceLock::new();
+thread_local! {static VALIDATION_READS:std::cell::Cell<bool>=const {std::cell::Cell::new(false)};}
+
+/// Validation re-reads physical bytes; it must not certify the same cached
+/// blocks the parser just consumed. Nesting and unwinding restore the caller.
+pub(crate) fn with_uncached_reads<T>(body:impl FnOnce()->T)->T {
+    struct Restore(bool);
+    impl Drop for Restore {fn drop(&mut self){VALIDATION_READS.with(|v|v.set(self.0));}}
+    let restore=Restore(VALIDATION_READS.with(|v|v.replace(true)));
+    let result=body();drop(restore);result
+}
 
 fn global_broker() -> &'static SourceReadBroker {
     BROKER.get_or_init(SourceReadBroker::new)
@@ -284,6 +294,7 @@ fn global_broker() -> &'static SourceReadBroker {
 
 /// Reads up to 4 MiB from the supplied handle without moving its cursor; data is cached in 64 KiB blocks.
 pub(crate) fn read_range(file: &File, offset: u64, max: usize) -> io::Result<Vec<u8>> {
+    if VALIDATION_READS.with(|v|v.get()) {return probe_uncached(file,offset,max);}
     global_broker().read_range(file, offset, max)
 }
 
@@ -496,6 +507,25 @@ fn changed_during_read() -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validation_reads_bypass_cached_payloads_and_restore_the_callers_mode() {
+        let root=tempfile::tempdir().unwrap();let path=root.path().join("source.jsonl");
+        std::fs::write(&path,b"trusted-prefix").unwrap();
+        let file=File::open(&path).unwrap();
+        assert_eq!(read_range(&file,0,14).unwrap(),b"trusted-prefix");
+        let before=snapshot_stats().physical_reads;
+        with_uncached_reads(||{
+            assert!(VALIDATION_READS.with(|v|v.get()));
+            assert_eq!(read_range(&file,0,14).unwrap(),b"trusted-prefix");
+            with_uncached_reads(||assert!(VALIDATION_READS.with(|v|v.get())));
+            assert!(VALIDATION_READS.with(|v|v.get()));
+        });
+        assert!(!VALIDATION_READS.with(|v|v.get()));
+        assert!(snapshot_stats().physical_reads>=before+1);
+        let _=std::panic::catch_unwind(||with_uncached_reads(||panic!("validation interruption")));
+        assert!(!VALIDATION_READS.with(|v|v.get()));
+    }
     use std::fs::{self, OpenOptions};
     use std::io::Write;
     use std::path::PathBuf;

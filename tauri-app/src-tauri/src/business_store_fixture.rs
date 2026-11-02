@@ -540,10 +540,13 @@ fn stage_objects(path: &Path) -> Result<i64, String> {
     .query_row("SELECT COUNT(*) FROM sqlite_master o JOIN tb_stores s ON substr(o.name,1,length(s.namespace_prefix))=s.namespace_prefix WHERE s.module='exact' AND substr(o.name,length(s.namespace_prefix)+1)='manifest' AND o.type='table'",[],|r|r.get(0)).map_err(|e|e.to_string())
 }
 fn park_a_and_test(p: &Paths) -> Result<(), String> {
+    token_count_jsonl::with_staging_quiesced_for_container_maintenance(||park_a_with_idle_owners(p))
+}
+fn park_a_with_idle_owners(p:&Paths)->Result<(),String> {
     let a = p.a.with_extension("fixture-parked");
     let m = p.marker.with_extension("fixture-parked");
     need!(!a.exists() && !m.exists(), "A parking path already exists");
-    ok!(fs::rename(&p.a, &a));
+    fs::rename(&p.a, &a).map_err(|e|format!("park A after owner quiescence: {e}"))?;
     if let Err(e) = fs::rename(&p.marker, &m) {
         let _ = fs::rename(&a, &p.a);
         return Err(e.to_string());

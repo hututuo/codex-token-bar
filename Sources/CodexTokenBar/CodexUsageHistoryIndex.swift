@@ -2,6 +2,7 @@ import CryptoKit
 import Darwin
 import Foundation
 import SQLite3
+import SharedSourceIO
 
 struct CodexUsageHistoryIndexError: LocalizedError, SQLiteTransientReadFailureReporting {
     let operation: String
@@ -7552,6 +7553,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             ) {
                 return reusable
             }
+            if try validStageForOtherKnownRequest(at: existingStage, for: job) {
+                // A complete artifact belongs to its recorded request. Keep
+                // it as evidence; a new pool job has its own contract/address.
+                if stagePool == nil, existingStage.standardizedFileURL == primaryStage.standardizedFileURL {
+                    try quarantineIncompleteStage(at: existingStage, for: job)
+                }
+                continue
+            }
             if try isKnownCurrentIncompleteStage(
                 at: existingStage,
                 for: job
@@ -8011,6 +8020,24 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         try Self.synchronizeDirectory(at: stagingDirectoryURL)
     }
 
+    /// This only changes request classification, never stage validation. The
+    /// normal full validator still checks supported parser/schema, seal,
+    /// counts, checkpoint bounds and the actual retained source prefix.
+    private func validStageForOtherKnownRequest(at url: URL, for job: FullRebuildJob) throws -> Bool {
+        let access = try stageAccess(at: url)
+        let migration: String?
+        do { migration = try access.readRows("SELECT migration_revision FROM manifest WHERE complete=1 LIMIT 1") { $0.text(0) }.first ?? nil }
+        catch { return false }
+        let other: FullRebuildJob.Reason
+        switch (job.reason, migration) {
+        case (.sourceChange, Self.eventEnrichmentRevision): other = .eventEnrichment
+        case (.eventEnrichment, "exact-source-rebuild-v1"): other = .sourceChange
+        default: return false
+        }
+        return try reusableStage(at: url, for: FullRebuildJob(file: job.file, sessionID: job.sessionID,
+            observedSignature: job.observedSignature, reason: other)) != nil
+    }
+
     private func reusableStage(
         at databaseURL: URL,
         for job: FullRebuildJob,
@@ -8082,6 +8109,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     if let migration = header.migration,
                        !migration.isEmpty,
                        migration != expectedMigrationRevision {
+                        if [Self.eventEnrichmentRevision,"exact-source-rebuild-v1"].contains(migration) { return nil }
                         throw CodexUsageIndexUpgradeRequiredError(
                             component: "staging migration",
                             stored: migration,
@@ -8999,7 +9027,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         defer { try? handle.close() }
         let opened = try SourceFileObservation.readPhysical(handle: handle.physicalHandle)
         guard opened.matches(before.observation) else { throw CodexUsageSourceChangedError(path: file.path) }
-        let hash = try contentHash(forOpenHandle: handle, length: length, file: file)
+        let hash = try SharedSourceIO.shared.withUncachedReads {
+            try contentHash(forOpenHandle: handle, length: length, file: file)
+        }
         let after = try SourceFileObservation.readPreferredPhysical(at: file)
         guard before.file == after.file, before.observation.matches(after.observation),
               opened.matches(try SourceFileObservation.readPhysical(handle: handle.physicalHandle)) else {

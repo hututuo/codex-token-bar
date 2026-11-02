@@ -629,7 +629,7 @@ fn identity_from_file(_file: &File) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ensure_with_available_space, snapshot_is_complete, Receipt};
+    use super::{ensure_with_available_space, snapshot_is_complete, Receipt, BACKUP_ID};
     use rusqlite::Connection;
     use std::{fs, path::PathBuf};
 

@@ -4116,6 +4116,48 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         )
     }
 
+    func testCompletedStageForAnotherKnownRequestIsPreservedInsteadOfBlockingNewWork() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let root = try makeTemporaryDirectory(named: "CodexKnownStageRequestRecovery")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", root.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", root.path, 1)
+        defer {
+            setenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "1", 1)
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR")
+            unsetenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR")
+        }
+        let home = try makeCodexHome()
+        let file = try writeTokenCountRollout(in: home.appendingPathComponent("sessions"),
+            sessionID: "019eaaaa-bbbb-4ccc-8ddd-otherrequest", timestamp: Date().addingTimeInterval(-60), totalTokens: 120)
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: home))
+        let count = ThreadSafeCounter()
+        let parser: CodexUsageHistoryIndex.SessionParser = { file,id,request,fingerprint,emit in
+            count.increment()
+            return try analyzer.parseSessionIntoHistoryIndex(file: file, sessionID: id,
+                request: request, insertFingerprint: fingerprint, emit: emit)
+        }
+        let index = try CodexUsageHistoryIndex(codexHome: home)
+        CodexUsageHistoryIndex.failNextImportAfterStagingForTesting()
+        XCTAssertThrowsError(try index.synchronize(files: [file], sessionID: analyzer.sessionID(from:), parser: parser))
+        let stages = swiftUsageCacheRoot(in: root).appendingPathComponent("staging")
+        let enumerator = try XCTUnwrap(FileManager.default.enumerator(at: stages, includingPropertiesForKeys: nil))
+        let stage = try XCTUnwrap(enumerator.compactMap { $0 as? URL }.first { $0.pathExtension == "sqlite" })
+        // Same known parser and complete numeric rows, different known request
+        // kind. Unknown migrations still retain their original rejection tests.
+        try SQLiteDatabaseDriver(url: stage).execute("UPDATE manifest SET migration_revision='model-v1'")
+        let saved = try Data(contentsOf: stage)
+        _ = try index.synchronize(files: [file], sessionID: analyzer.sessionID(from:), parser: parser)
+        XCTAssertEqual(count.value, 2)
+        let preserved = try XCTUnwrap(FileManager.default.enumerator(at: stages, includingPropertiesForKeys: nil))
+            .compactMap { $0 as? URL }.filter { $0.pathExtension == "sqlite" && $0.path.contains("/preserved/") }
+        XCTAssertEqual(preserved.count, 1)
+        if let old = preserved.first { XCTAssertEqual(try Data(contentsOf: old), saved) }
+        let db = SQLiteDatabaseDriver(url: try exactUsageDatabaseURL(in: root))
+        XCTAssertEqual(try scalarInt("SELECT SUM(tokens) FROM events", in: db), 120)
+        _ = try index.synchronize(files: [file], sessionID: analyzer.sessionID(from:), parser: parser)
+        XCTAssertEqual(count.value, 2, "The completed replacement must not restart on every refresh")
+    }
+
     func testFutureEventEnrichmentReceiptFailsClosedBeforeSchemaWrites() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CodexUsageFutureReceipt")

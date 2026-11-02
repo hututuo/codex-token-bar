@@ -1,5 +1,19 @@
 use super::*;
 
+#[test]
+fn offline_maintenance_cannot_close_a_pool_while_an_owner_is_using_it() {
+    let (_root, pool, _) = fixture();
+    let path = pool.path.clone();
+    let owner = Arc::new(pool);
+    let mut pools = HashMap::new();
+    pools.insert(path, owner.clone());
+    assert!(release_idle(&mut pools).is_err());
+    assert_eq!(pools.len(), 1);
+    drop(owner);
+    release_idle(&mut pools).unwrap();
+    assert!(pools.is_empty());
+}
+
 fn fixture() -> (tempfile::TempDir, Pool, StoreSpec) {
     let root = tempfile::tempdir().unwrap();
     let a = root.path().join("codex-ledger.sqlite");

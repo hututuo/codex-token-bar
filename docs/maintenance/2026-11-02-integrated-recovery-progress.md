@@ -99,3 +99,9 @@ Windows连接寿命作平台适配：实际锁定SQLite源码的`winOpen`使用F
 本地：直接编译实际Container／SQL binder／StoreConnection／pool／backup源码的小crate通过，13个任务MAIN和store增长0；原子回滚、只读别名、重复回收均通过。此探针仅替换路径定位／未使用的源证明，不能替代实际启动路径。新增3项pool单测、1项binder单测及共享codec／backup单测待整包；codec原3项与backup原4项曾在独立小crate通过，备份根合同调整后的全量结果不得提前算成功。
 
 尚未退出C03：旧stage合格短边界／旧base的Swift分类、两端旧namespace带回执后台清理、未消费job跨进程强退和最终源前缀复核仍须收尾；C04启动读写准入、C05规模／图表、C06诊断与C07组合验收继续保留门禁。当前没有安装、合并main或发布。
+
+### C03b云端反馈与收尾修正
+
+源码`42019d54`的[完整检查41498844813](https://github.com/hututuo/codex-token-bar/actions/runs/41498844813)：生产配置双端编译通过；Mac生产fixture（含新pool13任务、实际parser旧短stage→新pool恢复）通过。Mac整包测试编译暴露backup测试未导入常量，已修；Windows生产fixture最后离线改名A时因常驻pool句柄报共享冲突，原Windows SQLite没有FILE_SHARE_DELETE。这不是删除／跳过缺库测试的理由：已增加真实维护用的空闲owner租约，拒绝关闭仍在使用的pool，并在租约持有期间阻止重开；原改名／拒绝新建空A／恢复测试继续执行。该修正待双端重测。
+
+同时补充：Swift已知不同请求种类的完整stage通过原有全验证器分类，保留证据后分配新任务；未知格式／坏proof仍拒绝，新增实际扫描器回归。两端需要读取冻结前缀字节时显式绕过共享物理块缓存，不改变正常解析游标；Rust嵌套与异常展开有恢复测试。新的13任务探针仍通过。旧stage后台清理、跨进程强退、启动准入及规模预算仍NOT_DONE，不能用上述局部通过替代。
