@@ -7,12 +7,27 @@ import SwiftUI
 @MainActor
 struct BusinessRecoveryView: View {
     let onRetry: () -> Void
+    @ObservedObject private var operationGate = ApplicationRecoveryOperationGate.shared
+    @StateObject private var softwareUpdater = ApplicationSoftwareUpdater.shared
 
     var body: some View {
-        HStack {
-            Button("重试账本准备", action: onRetry)
-            Button("检查软件更新") { ApplicationSoftwareUpdater.shared.controller.updater.checkForUpdates() }
-            Button("退出") { NSApp.terminate(nil) }
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Button("重试账本准备") {
+                    guard operationGate.canBeginMigration else { return }
+                    onRetry()
+                }.disabled(!operationGate.canBeginMigration)
+                Button("检查软件更新") { softwareUpdater.checkForRecoveryUpdates() }
+                    .disabled(!operationGate.canRequestUpdate || !softwareUpdater.canCheckForUpdates)
+                Button("退出") { NSApp.terminate(nil) }
+            }
+            if operationGate.installationInProgress {
+                Text("软件更新正在安装，等待应用重新启动。")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if operationGate.updateSessionInProgress || operationGate.updateRequestPending {
+                Text("软件更新正在进行。取消或完成更新检查后，可再次重试账本准备。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
 }

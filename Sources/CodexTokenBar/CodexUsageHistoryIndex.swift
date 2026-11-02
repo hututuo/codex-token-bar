@@ -630,9 +630,16 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         witness: ExactRetryAppendCoverage.AppendWitness, diagnostics: BusinessMigrationDiagnostics?) throws -> Bool {
         let old = try indexedSources(connection: previous, includeMissing: true)
         let next = try indexedSources(connection: current, includeMissing: true)
+        var nextPaths: [Int64: Data] = [:]
+        for (path, source) in next {
+            guard nextPaths.updateValue(Data(path.utf8), forKey: source.id) == nil else {
+                throw malformedIndexedSourceError("duplicate source identifier during retry proof")
+            }
+        }
         for (path, source) in old {
             guard let incoming = next[path], incoming.id == source.id,
-                  incoming.sessionID == source.sessionID else { return false }
+                  nextPaths[source.id] == Data(path.utf8),
+                  Data(incoming.sessionID.utf8) == Data(source.sessionID.utf8) else { return false }
         }
         let oldProofs = try retrySourceDigests(previous), nextProofs = try retrySourceDigests(current)
         guard Set(oldProofs.keys) == Set(old.values.map(\.id)),
@@ -652,7 +659,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 }
                 guard try verifyRetryAppendSource(path: path, source: source, prior: old[path],
                     current: current, previous: previous, witness: witness) else { throw BusinessStoreError.proofMismatch }
-                diagnostics?.record("retry-exact-source-proof", "succeeded", details)
+                var verified = details
+                if witness.replayedSources.contains(source.id) { verified["evidence"] = "complete-metadata-replay" }
+                diagnostics?.record("retry-exact-source-proof", "succeeded", verified)
             } catch is CancellationError { throw CancellationError() }
             catch {
                 var failed = details
@@ -662,7 +671,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             }
         }
         guard failures.isEmpty else {
-            throw CodexUsageIndexRepairRequiredError(reason: "旧版追加验证失败：\n" + failures.joined(separator: "\n"))
+            throw CodexUsageIndexRepairRequiredError(reason: "旧版历史接续验证失败：\n" + failures.joined(separator: "\n"))
         }
         return true
     }
@@ -702,7 +711,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
               let checkpoint = source.checkpoint, checkpoint.resumeOffset <= source.signature.size,
               checkpoint.auditChunkIndex < max(1, chunkCount(for: source.signature.size)),
               source.signature.modifiedAt.isFinite,
-              prior.map({ $0.signature.size <= source.signature.size && $0.checkpoint != nil }) ?? true,
+              prior.map({ $0.checkpoint != nil }) ?? true,
               try retrySourceFieldsAreValid(source.id, on: current),
               try retrySourceReceiptMatches(source.id, on: current) else { return false }
         if let prior, !retryAccountingRoundTrips(prior.checkpoint?.parserState.accountingState,
@@ -720,17 +729,49 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         guard pathBefore == openedBefore, openedBefore.size >= source.signature.size,
               try retryChunksMatch(source: source, file: file, handle: handle, on: current),
               try retryPrefixProbe(handle: handle, size: source.signature.size) == source.signature.contentProbe else { return false }
-        if let prior, try !retryChunksMatch(source: prior, file: file, handle: handle, on: previous) { return false }
-        let oldCheckpoint = prior?.checkpoint
+        let unchangedPrefix: Bool
+        if let prior {
+            if prior.signature.size <= source.signature.size {
+                unchangedPrefix = try retryChunksMatch(source: prior, file: file, handle: handle, on: previous)
+            } else { unchangedPrefix = false }
+        } else { unchangedPrefix = false }
+        var metadataChanged = false
+        if let prior {
+            for table in ["events", "usage_ledger_bindings", "usage_ledger_sources"] {
+                let query = "SELECT \(ExactRetryAppendCoverage.columns(table)) FROM main.\(SQLiteStoreNamespace.quote(table)) WHERE source_id=?"
+                if try !ExactRetryAppendCoverage.rows(current, query, cover: previous, query, bindings: [.int64(prior.id)]) {
+                    metadataChanged = true
+                }
+            }
+        }
+        let replay: ExactRetryMetadataReplay?
+        if metadataChanged {
+            replay = try ExactRetryMetadataReplay(witness: witness, source: source.id, session: source.sessionID,
+                path: path, generation: generation, format: UsageEventLedger.isPaginatedFile(file) ? "paginated" : "legacy",
+                unchangedPrefix: unchangedPrefix)
+        } else {
+            guard prior == nil || unchangedPrefix else { return false }
+            replay = nil
+            if prior == nil {
+                try witness.source(source.id, session: source.sessionID,
+                    format: UsageEventLedger.isPaginatedFile(file) ? "paginated" : "legacy", generation: generation)
+            }
+        }
+        let oldCheckpoint = replay == nil ? prior?.checkpoint : nil
         let resume = oldCheckpoint?.resumeOffset ?? 0
         let chunkIndex = resume > 0 && resume % Self.chunkSize == 0 ? resume / Self.chunkSize - 1 : resume / Self.chunkSize
         let analyzer = CodexUsageAnalyzer(dataSource: CodexDataSource(codexHome: file.deletingLastPathComponent(), origin: .userSelected))
         let parsed = try analyzer.parseSessionIntoHistoryIndex(file: file, sessionID: source.sessionID,
             request: .init(hashingStartOffset: chunkIndex * Self.chunkSize, parsingStartOffset: resume,
-                endOffset: source.signature.size, validationBoundary: prior?.signature.size,
+                endOffset: source.signature.size, validationBoundary: replay == nil ? prior?.signature.size : nil,
                 initialState: oldCheckpoint?.parserState ?? .empty, readHandle: handle),
-            insertFingerprint: { try witness.fingerprint($0, source: source.id) },
-            emit: { try witness.event($0, source: source.id, generation: generation) })
+            insertFingerprint: { fingerprint in
+                if let replay { return try replay.fingerprint(fingerprint) }
+                return try witness.fingerprint(fingerprint, source: source.id)
+            }, emit: { event in
+                if let replay { try replay.event(event) }
+                else { try witness.event(event, source: source.id, generation: generation) }
+            })
         let parserRevision = try current.readRows("SELECT parser_revision FROM main.event_enrichment_sources WHERE source_id=?",
             bindings: [.int64(source.id)]) { $0.text(0) }.first ?? nil
         guard parsed.lastOffset == source.signature.size, parsed.resumeOffset == checkpoint.resumeOffset,
@@ -741,6 +782,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         if openedBefore.size == source.signature.size { try handle.validateDecodedEnd(at: source.signature.size) }
         guard try sourceSignatureMetadata(forOpenHandle: handle, file: file) == openedBefore,
               try sourceSignatureMetadata(for: file) == pathBefore else { throw CodexUsageSourceChangedError(path: file.path) }
+        try replay?.finish()
         return true
     }
 
@@ -762,7 +804,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
 
     private func retrySourceDigests(_ db: SQLiteDatabaseConnection) throws -> [Int64: Data] {
         var digests: [Int64: SHA256] = [:]
-        for table in ["sources", "source_chunks", "source_observations", "source_representations", "event_enrichment_sources"] {
+        for table in ["sources", "source_chunks", "source_observations", "source_representations", "event_enrichment_sources",
+                      "events", "usage_ledger_bindings", "usage_ledger_sources"] {
             let projection = ExactRetryAppendCoverage.columns(table)
             try db.forEachRow("SELECT source_id,\(projection) FROM main.\(SQLiteStoreNamespace.quote(table)) ORDER BY \(projection)") { row in
                 guard row.canonicalBytes(0).first == UInt8(SQLITE_INTEGER), let id = row.int64(0) else { throw BusinessStoreError.proofMismatch }
@@ -874,7 +917,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     }
 
     static func verifyRetryAppendProjections(current: SQLiteDatabaseConnection, previous: SQLiteDatabaseConnection,
-                                             candidateURL: URL) throws -> Bool {
+                                             candidateURL: URL, replayedSources: Set<Int64> = []) throws -> Bool {
         let reader = Self(retryProofURL: candidateURL)
         let tables = ExactRetryAppendCoverage.projectionTables
         for table in tables {
@@ -888,15 +931,42 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             cover: current, "SELECT \(ExactRetryAppendCoverage.columns("usage_ledger_duplicates")) FROM temp.usage_ledger_duplicates", exactly: true) else { return false }
         try reader.rebuildDashboardAggregates(connection: current)
         try ExactRetryAppendCoverage.seedAttribution(current: current, previous: previous)
-        guard let epoch = try ExactRetryAppendCoverage.metadata(current, "provenance_epoch") else { return false }
+        guard let epoch = try ExactRetryAppendCoverage.metadata(current, "provenance_epoch"),
+              try ExactRetryAppendCoverage.metadata(previous, "provenance_epoch") == epoch else { return false }
         let sources = try current.readRows("SELECT source_id,session_id FROM main.sources ORDER BY source_id") { ($0.int64(0), $0.text(1)) }
+        var replayedLineages = Set<String>()
+        for (sourceID, sessionID) in sources {
+            guard let sourceID, let sessionID else { return false }
+            if replayedSources.contains(sourceID) {
+                replayedLineages.insert(reader.attributionLineage(sessionID: sessionID, sourceID: sourceID).key)
+            }
+        }
+        if !replayedLineages.isEmpty {
+            try previous.execute("CREATE TEMP TABLE attribution_source_buckets AS SELECT * FROM main.attribution_source_buckets WHERE 0")
+            try previous.execute("CREATE UNIQUE INDEX temp.exact_retry_old_attribution_key ON attribution_source_buckets(provenance_epoch,source_lineage,bucket_start,model)")
+        }
+        defer { if !replayedLineages.isEmpty { try? previous.execute("DROP TABLE temp.attribution_source_buckets") } }
         var completed = Set<String>()
         for (sourceID, sessionID) in sources {
             guard let sourceID, let sessionID else { return false }
             let lineage = reader.attributionLineage(sessionID: sessionID, sourceID: sourceID)
             if !completed.insert(lineage.key).inserted { continue }
+            let replayed = replayedLineages.contains(lineage.key)
+            if replayed {
+                // Model completion legitimately moves a bucket from unknown to
+                // known. Replacing that cache is safe only when every frozen
+                // bucket is fully explained by the preserved event ledger.
+                // A larger historical maximum remains protected, not dropped.
+                try reader.publishAttributionLedger(lineage: lineage, sourceID: sourceID, provenanceEpoch: epoch,
+                    affectedBuckets: nil, replacing: true, preservingExistingMaximum: false,
+                    connection: previous, refreshCanonicalProjection: false)
+                let projection = ExactRetryAppendCoverage.columns("attribution_source_buckets")
+                let query = "SELECT \(projection) FROM temp.attribution_source_buckets WHERE provenance_epoch=? AND source_lineage=?"
+                guard try ExactRetryAppendCoverage.rows(current, query, cover: previous, query,
+                    bindings: [.text(epoch), .text(lineage.key)], exactly: true) else { return false }
+            }
             try reader.publishAttributionLedger(lineage: lineage, sourceID: sourceID, provenanceEpoch: epoch,
-                affectedBuckets: nil, replacing: false, preservingExistingMaximum: true,
+                affectedBuckets: nil, replacing: replayed, preservingExistingMaximum: !replayed,
                 connection: current, refreshCanonicalProjection: false)
         }
         for table in tables where table != "usage_ledger_duplicates" {

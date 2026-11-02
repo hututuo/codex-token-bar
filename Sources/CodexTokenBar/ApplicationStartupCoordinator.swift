@@ -14,6 +14,10 @@ final class ApplicationStartupCoordinator: ObservableObject {
     private let prepare: Prepare
     private let activate: @MainActor () -> CodexReadyApplicationRuntime?
     private let productionLifecycle: Bool
+    private let operationGate: ApplicationRecoveryOperationGate?
+    private var operationObservation: AnyCancellable?
+    private var startRequested = false
+    @Published private(set) var waitingForSoftwareUpdate = false
     private var job: Task<Void, Never>?
     private var progressAt = Date.distantPast
     private var attemptID = UUID()
@@ -22,19 +26,38 @@ final class ApplicationStartupCoordinator: ObservableObject {
     init(prepare: @escaping Prepare = { callback in
         try await BusinessDatabaseMigration.startProduction(onProgress: callback)
     }, activate: @escaping @MainActor () -> CodexReadyApplicationRuntime? = { CodexReadyApplicationRuntime() },
-         productionLifecycle: Bool = true) {
+         productionLifecycle: Bool = true, operationGate: ApplicationRecoveryOperationGate? = nil) {
         self.prepare = prepare; self.activate = activate; self.productionLifecycle = productionLifecycle
+        self.operationGate = operationGate ?? (productionLifecycle ? .shared : nil)
         if productionLifecycle { Self.blocksBusinessServices = true }
+        operationObservation = self.operationGate?.objectWillChange.sink { [weak self] in
+            // objectWillChange precedes the property mutation. Resume on the
+            // next main-actor turn using the complete new gate state.
+            Task { @MainActor [weak self] in self?.resumeRequestedPreparation() }
+        }
     }
 
     func start() {
         guard phase == .waiting, job == nil else { return }
+        startRequested = true
+        resumeRequestedPreparation()
+    }
+
+    private func resumeRequestedPreparation() {
+        guard startRequested, phase == .waiting, job == nil else { return }
+        guard operationGate?.beginMigration() != false else {
+            waitingForSoftwareUpdate = operationGate.map {
+                $0.updateRequestPending || $0.updateSessionInProgress || $0.installationInProgress
+            } ?? false
+            return
+        }
+        waitingForSoftwareUpdate = false
         phase = .preparing
         attemptID = UUID(); let token = attemptID
         progress = .init(stage: .preparing); progressAt = .distantPast
         job = Task { [weak self] in
             guard let self else { return }
-            defer { self.job = nil }
+            defer { self.job = nil; self.operationGate?.finishMigration() }
             do {
                 try await self.prepare { [weak self] progress in
                     Task { @MainActor in self?.receive(progress, attempt: token) }
@@ -51,6 +74,7 @@ final class ApplicationStartupCoordinator: ObservableObject {
 
     func retry() {
         guard case .failed = phase, job == nil else { return }
+        guard operationGate?.canBeginMigration != false else { return }
         phase = .waiting; start()
     }
 
@@ -87,13 +111,13 @@ struct ApplicationStartupView: View {
                     .foregroundStyle(.secondary)
                 BusinessRecoveryView(onRetry: startup.retry)
             } else {
-                Text(title).font(.headline)
+                Text(startup.waitingForSoftwareUpdate ? "正在等待软件更新结束" : title).font(.headline)
                 if startup.progress.total > 0 {
                     ProgressView(value: Double(startup.progress.completed), total: Double(startup.progress.total))
                     Text("\(startup.progress.completed) / \(startup.progress.total) 个索引")
                         .monospacedDigit().foregroundStyle(.secondary)
                 } else { ProgressView().controlSize(.small) }
-                Text("首次升级可能需要几分钟。迁移在后台执行，完成校验后自动进入主页；原始账本和备份都会保留。")
+                Text(startup.waitingForSoftwareUpdate ? "软件更新结束后会自动继续准备账本。" : "首次升级可能需要几分钟。迁移在后台执行，完成校验后自动进入主页；原始账本和备份都会保留。")
                     .foregroundStyle(.secondary)
             }
             BusinessMigrationDiagnosticsView(isPreparing: startup.phase == .waiting || startup.phase == .preparing)

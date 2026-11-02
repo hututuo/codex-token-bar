@@ -90,7 +90,7 @@ jobs:
       - name: Recheck B, dormant schemas and UI startup fences
         run: |
           set -euo pipefail
-          swift test --skip-build --filter '(BusinessDatabaseMigrationTests|CodexBusinessDatabaseTests|UpgradeCompatibilitySolAuditTests|ApplicationStartupCoordinatorTests|MultiClientUsageLedgerTests|BodySpeedTrendStoreTests|LegacyClaudeSpeedMigrationTests|ActivitySpeedStoreTests|Incident0910MigrationRecoveryTests|BusinessDatabaseMigrationAliasTests|BusinessMigrationDiagnosticsTests|BusinessDatabaseMigrationExactAppendTests)' 2>&1 | tee upgrade-evidence/supporting-regressions.log
+          swift test --skip-build --filter '(BusinessDatabaseMigrationTests|CodexBusinessDatabaseTests|UpgradeCompatibilitySolAuditTests|ApplicationStartupCoordinatorTests|MultiClientUsageLedgerTests|BodySpeedTrendStoreTests|LegacyClaudeSpeedMigrationTests|ActivitySpeedStoreTests|Incident0910MigrationRecoveryTests|BusinessDatabaseMigrationAliasTests|BusinessMigrationDiagnosticsTests|BusinessDatabaseMigrationExactAppendTests|ApplicationRecoveryOperationGateTests)' 2>&1 | tee upgrade-evidence/supporting-regressions.log
           python3 - <<'PY'
           import pathlib, re
           log = pathlib.Path('upgrade-evidence/supporting-regressions.log').read_text()
@@ -103,7 +103,7 @@ jobs:
               raise SystemExit(f'Expected both native incident recovery tests to pass, missing: {sorted(required - passed)}')
           if re.search(r'Incident0910MigrationRecoveryTests.*(?:skipped|XCTSkip)', log, re.I):
               raise SystemExit('A required native incident recovery test was skipped')
-          for suite in ('BusinessDatabaseMigrationAliasTests', 'BusinessMigrationDiagnosticsTests', 'BusinessDatabaseMigrationExactAppendTests'):
+          for suite in ('BusinessDatabaseMigrationAliasTests', 'BusinessMigrationDiagnosticsTests', 'BusinessDatabaseMigrationExactAppendTests', 'ApplicationRecoveryOperationGateTests'):
               source = pathlib.Path(f'Tests/CodexTokenBarTests/{suite}.swift').read_text()
               expected = set(re.findall(r'func (test\w+)\(', source))
               passed = {name for name in expected if any(name in line and suite in line and 'passed' in line for line in log.splitlines())}

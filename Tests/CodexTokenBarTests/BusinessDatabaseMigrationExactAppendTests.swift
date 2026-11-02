@@ -12,7 +12,7 @@ final class BusinessDatabaseMigrationExactAppendTests: XCTestCase {
         let analyzer: CodexUsageAnalyzer
     }
 
-    private func fixture(hasMessages: Bool = true) throws -> Fixture {
+    private func fixture(hasMessages: Bool = true, model: String? = nil) throws -> Fixture {
         BusinessSQLiteRoutes.deactivate()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("exact-retry-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -25,7 +25,8 @@ final class BusinessDatabaseMigrationExactAppendTests: XCTestCase {
         let files = ["019f1234-1234-1234-1234-123456789abc", "019f1234-1234-1234-1234-123456789def"]
             .map { root.appendingPathComponent("rollout-\($0).jsonl") }
         let prompt = hasMessages ? "{\"timestamp\":\"2026-10-01T00:00:00Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"retained turn\"}}\n" : ""
-        try Data((prompt + line(120, second: 1) + line(35, second: 2)).utf8).write(to: files[0])
+        let context = model.map { "{\"timestamp\":\"2026-10-01T00:00:00Z\",\"type\":\"turn_context\",\"payload\":{\"model\":\"\($0)\"}}\n" } ?? ""
+        try Data((context + prompt + line(120, second: 1) + line(35, second: 2)).utf8).write(to: files[0])
         try Data((prompt + line(310, second: 1)).utf8).write(to: files[1])
         let fixture = Fixture(root: root, configuration: configuration, source: source, files: files, index: index,
             analyzer: CodexUsageAnalyzer(dataSource: CodexDataSource(codexHome: root, origin: .userSelected)))
@@ -78,7 +79,7 @@ final class BusinessDatabaseMigrationExactAppendTests: XCTestCase {
         try (Data(prefix.utf8) + original).write(to: file, options: .atomic)
     }
 
-    func testRealLedgerEnrichmentAfterFrozenImportRequiresConstrainedMetadataCoverage() throws {
+    func testRealLedgerEnrichmentAfterFrozenImportResumesWithConstrainedMetadataCoverage() throws {
         let f = try fixture(hasMessages: false)
         let raw = SQLiteDatabaseDriver(url: f.source, bypassBusinessRoutes: true)
         let numeric = "SELECT source_id,source_offset,timestamp,tokens,input_tokens,cached_input_tokens,output_tokens,reasoning_output_tokens,accounting_kind,reported_total_tokens,legacy_tokens FROM events"
@@ -99,13 +100,128 @@ final class BusinessDatabaseMigrationExactAppendTests: XCTestCase {
         XCTAssertEqual(try raw.readRows("SELECT COUNT(DISTINCT generation) FROM usage_ledger_bindings WHERE source_id=1") { $0.int(0) }, [1])
         let incoming = try raw.withConnection { try CodexBusinessDatabase.proof($0) }
         let incomingBytes = try Data(contentsOf: f.source)
-        XCTAssertFalse(try CodexBusinessDatabase.snapshot(f.source, covers: frozen, module: "exact.swift",
-            expectedRetained: receipt.imported, expectedCandidate: incoming),
-            "Baseline reproduction: typed append-only coverage still rejects production NULL metadata enrichment")
+        let incomingEvents = try typedRows(raw, table: "events")
+        let retained = try typedRows(raw, table: "retained_usage_revisions")
+        try FileManager.default.removeItem(at: f.files[1])
+        XCTAssertFalse(try CodexBusinessDatabase.snapshot(f.source, covers: frozen),
+            "Generic typed subset comparison cannot authorize a metadata replacement")
+        XCTAssertTrue(try CodexBusinessDatabase.snapshot(f.source, covers: frozen, module: "exact.swift",
+            expectedRetained: receipt.imported, expectedCandidate: incoming))
+        try BusinessDatabaseMigration.migrate(f.configuration, availableBytes: 1 << 33)
+        let active = SQLiteDatabaseDriver(url: f.source)
+        XCTAssertEqual(try typedRows(active, table: "events"), incomingEvents)
+        XCTAssertEqual(try typedRows(active, table: "retained_usage_revisions"), retained)
+        try append(11, second: 3, to: f.files[0])
+        let owner = try CodexUsageHistoryIndex(sessionCatalogTestingDatabaseURL: f.source)
+        _ = try owner.synchronize(files: [f.files[0]], sessionID: f.analyzer.sessionID(from:)) { file, id, request, fingerprint, emit in
+            try f.analyzer.parseSessionIntoHistoryIndex(file: file, sessionID: id, request: request,
+                insertFingerprint: fingerprint, emit: emit)
+        }
+        XCTAssertEqual(try active.readRows("SELECT SUM(tokens) FROM events") { $0.int(0) }, [476])
+        try FileManager.default.removeItem(at: f.files[0])
+        BusinessSQLiteRoutes.deactivate()
+        try BusinessDatabaseMigration.migrate(f.configuration, availableBytes: 1 << 33)
+        _ = try CodexUsageHistoryIndex(sessionCatalogTestingDatabaseURL: f.source)
+        XCTAssertEqual(try active.readRows("SELECT SUM(tokens) FROM events") { $0.int(0) }, [476])
+        XCTAssertTrue(oldNumeric.isSubset(of: Set(try active.readRows(numeric, map: ExactRetryAppendCoverage.encoded))))
+        XCTAssertTrue(retained.isSubset(of: try typedRows(active, table: "retained_usage_revisions")))
         XCTAssertEqual(try raw.withConnection { try CodexBusinessDatabase.proof($0) }, incoming)
         XCTAssertEqual(try Data(contentsOf: f.source), incomingBytes)
         XCTAssertEqual(try Data(contentsOf: frozen), frozenBytes)
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: receipt.backupPath)), originalBytes)
+    }
+
+    func testMetadataReplayRejectsChangedFactsForgedLinksMissingRetentionAndHiddenRows() throws {
+        let f = try fixture(hasMessages: false)
+        let receipt = try freeze(f)
+        try addMetadataToRewrittenSource(f.files[0])
+        _ = try synchronize(f)
+        let frozen = URL(fileURLWithPath: receipt.normalizedPath)
+        XCTAssertTrue(try CodexBusinessDatabase.snapshot(f.source, covers: frozen, module: "exact.swift"))
+        let mutations = [
+            "UPDATE events SET model='unproved-model' WHERE source_id=1",
+            "UPDATE events SET input_tokens=input_tokens-1,output_tokens=output_tokens+1 WHERE source_id=1",
+            "UPDATE events SET timestamp=timestamp+1 WHERE source_id=1",
+            "UPDATE events SET user_prompt_offset=user_prompt_offset+1 WHERE source_id=1",
+            "UPDATE usage_ledger_bindings SET assistant_offset=0 WHERE source_id=1",
+            "UPDATE usage_ledger_bindings SET raw_offset=raw_offset+1 WHERE source_id=1",
+            "DELETE FROM retained_usage_revisions WHERE source_id=1",
+            "UPDATE retained_usage_revisions SET token_source_offset=token_source_offset+1 WHERE source_id=1",
+            "DELETE FROM usage_ledger_identities WHERE source_id=1",
+            "UPDATE usage_ledger_meta SET value=CAST(CAST(value AS INTEGER)-1 AS TEXT) WHERE key='next_id'",
+            "INSERT INTO usage_ledger_duplicates SELECT source_id,source_offset,2 FROM events WHERE source_id=1"
+        ]
+        for (number, mutation) in mutations.enumerated() {
+            let url = f.root.appendingPathComponent("bad-enrichment-\(number).sqlite")
+            let db = SQLiteDatabaseDriver(url: url, enableWAL: false, bypassBusinessRoutes: true)
+            try db.withConnection { try $0.restoreDatabase(from: f.source) }
+            try db.execute(mutation)
+            let bytes = try Data(contentsOf: url)
+            do { XCTAssertFalse(try CodexBusinessDatabase.snapshot(url, covers: frozen, module: "exact.swift"), mutation) }
+            catch { XCTAssertFalse(error is CancellationError) }
+            XCTAssertEqual(try Data(contentsOf: url), bytes)
+        }
+    }
+
+    func testMetadataReplayKeepsKnownModelAndTurnAndRejectsTheirReplacement() throws {
+        let f = try fixture(model: "gpt-4")
+        let receipt = try freeze(f)
+        let raw = SQLiteDatabaseDriver(url: f.source, bypassBusinessRoutes: true)
+        let oldEvents = try typedRows(raw, table: "events")
+        try addMetadataToRewrittenSource(f.files[0])
+        _ = try synchronize(f)
+        // The old model and logical turn win over a rewritten raw context;
+        // the new generation supplies bindings, not permission to replace them.
+        XCTAssertEqual(try typedRows(raw, table: "events"), oldEvents)
+        let frozen = URL(fileURLWithPath: receipt.normalizedPath)
+        XCTAssertTrue(try CodexBusinessDatabase.snapshot(f.source, covers: frozen, module: "exact.swift"))
+        for (number, mutation) in [
+            "UPDATE events SET model='gpt-5' WHERE source_id=1",
+            "UPDATE events SET user_prompt_offset=user_prompt_offset+1 WHERE source_id=1"
+        ].enumerated() {
+            let copy = f.root.appendingPathComponent("known-metadata-\(number).sqlite")
+            let db = SQLiteDatabaseDriver(url: copy, enableWAL: false, bypassBusinessRoutes: true)
+            try db.withConnection { try $0.restoreDatabase(from: f.source) }
+            try db.execute(mutation)
+            XCTAssertFalse(try CodexBusinessDatabase.snapshot(copy, covers: frozen, module: "exact.swift"))
+        }
+    }
+
+    func testMetadataReplayAllocationDoesNotDependOnSourceOrderAndRetainsOlderRevisions() throws {
+        let f = try fixture(hasMessages: false)
+        // A real earlier fill creates historical revisions before the receipt.
+        let priorRaw = try Data(contentsOf: f.files[0])
+        let modelOnly = "{\"timestamp\":\"2026-10-01T00:00:00Z\",\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-5\"}}\n"
+        try (Data(modelOnly.utf8) + priorRaw).write(to: f.files[0], options: .atomic)
+        _ = try synchronize(f)
+        let receipt = try freeze(f)
+        let raw = SQLiteDatabaseDriver(url: f.source, bypassBusinessRoutes: true)
+        let retained = try typedRows(raw, table: "retained_usage_revisions")
+        XCTAssertFalse(retained.isEmpty)
+        for file in [f.files[1], f.files[0]] {
+            try addMetadataToRewrittenSource(file)
+            _ = try synchronize(f)
+        }
+        let frozen = URL(fileURLWithPath: receipt.normalizedPath)
+        XCTAssertTrue(try CodexBusinessDatabase.snapshot(f.source, covers: frozen, module: "exact.swift"))
+        XCTAssertTrue(retained.isSubset(of: try typedRows(raw, table: "retained_usage_revisions")))
+        let copy = f.root.appendingPathComponent("lost-old-retention.sqlite")
+        let db = SQLiteDatabaseDriver(url: copy, enableWAL: false, bypassBusinessRoutes: true)
+        try db.withConnection { try $0.restoreDatabase(from: f.source) }
+        try db.execute("DELETE FROM retained_usage_revisions WHERE source_id=1")
+        XCTAssertFalse(try CodexBusinessDatabase.snapshot(copy, covers: frozen, module: "exact.swift"))
+    }
+
+    func testMetadataReclassificationCannotDiscardAnUnexplainedAttributionMaximum() throws {
+        let f = try fixture(hasMessages: false)
+        let raw = SQLiteDatabaseDriver(url: f.source, bypassBusinessRoutes: true)
+        try raw.execute("UPDATE attribution_source_buckets SET total_tokens=total_tokens+99 WHERE source_lineage LIKE '%789abc'")
+        XCTAssertEqual(try raw.readRows("SELECT SUM(total_tokens) FROM attribution_source_buckets") { $0.int(0) }, [564])
+        let receipt = try freeze(f)
+        try addMetadataToRewrittenSource(f.files[0])
+        _ = try synchronize(f)
+        XCTAssertFalse(try CodexBusinessDatabase.snapshot(f.source, covers: URL(fileURLWithPath: receipt.normalizedPath), module: "exact.swift"),
+            "A derived-cache reclassification cannot erase an older floor not explained by the frozen events")
     }
 
     func testRealLegacyAppendResumesFrozenImportAndKeepsUnchangedHistoryWithoutRawFiles() throws {

@@ -1,3 +1,5 @@
+import base64
+import copy
 import hashlib
 import json
 import os
@@ -24,9 +26,10 @@ def proof():
 def report(phase="resume", scenario="committed"):
     return {"status": "PASS", "phase": phase, "scenario": scenario, "producerVersion": RELEASE,
         "producerSha": probe.RELEASES[RELEASE], "candidateSha": SHA, "runtime": probe.RUNTIME,
-        "totals": [173 if scenario == "committed" else 183, 310],
+        "totals": [{"committed": 173, "interrupted": 183, "enriched": 166}[scenario], 310],
         "oldTypedProofsPreserved": True, "originalDatabasesUnchanged": True,
-        "crashWALPreserved": True, "oldBPreserved": True, "rawDisappearanceRetainsHistory": True}
+        "crashWALPreserved": True, "oldBPreserved": True, "rawDisappearanceRetainsHistory": True,
+        **({"nullModelAndTurnCompleted": True, "originalVersionsRetained": True} if scenario == "enriched" else {})}
 
 
 def output(value=None):
@@ -52,7 +55,99 @@ def formed_state(root, scenario):
     return value
 
 
+def enrichment_state(root):
+    """Contract-only fake bytes; this helper cannot supply a native test PASS."""
+    formed = formed_state(root, "enriched")
+    relative = "10-exact/" + "a" * 64 + ".sqlite"
+    original = root / relative
+    (root / "pre-enrichment-exact.sqlite").write_bytes(original.read_bytes())
+    original.write_bytes(b"new synthetic enrichment contract bytes")
+    latest = copy.deepcopy(formed["originalProofs"])
+    latest["originals"][relative]["sha256"] = hashlib.sha256(original.read_bytes()).hexdigest()
+    null = base64.b64encode(bytes([5]) + bytes(8)).decode()
+    integer = base64.b64encode(bytes([1]) + (8).to_bytes(8, "big") + (1).to_bytes(8, "big")).decode()
+    numeric = {"columns": probe.NUMERIC_COLUMNS, "rows": [[integer] * len(probe.NUMERIC_COLUMNS) for _ in range(2)]}
+    retained = {"columns": probe.RETAINED_COLUMNS, "rows": [[null] * len(probe.RETAINED_COLUMNS) for _ in range(2)]}
+    latest["originals"][relative]["tables"] = {"retained_usage_revisions": retained}
+    before = root / "pre-enrichment-rollout.jsonl"
+    after = root / "home-a/sessions/rollout-019ff8b9-09e7-75c1-b9a5-14fe7b60065a.jsonl"
+    before.write_bytes(b"old raw contract fixture")
+    after.parent.mkdir(parents=True); after.write_bytes(b"new raw contract fixture")
+    value = {"latest": latest, "previousExactBackup": "pre-enrichment-exact.sqlite", "enrichment": {
+        "numericBefore": numeric, "numericAfter": copy.deepcopy(numeric), "retainedVersions": retained,
+        "rawBeforeSha256": hashlib.sha256(before.read_bytes()).hexdigest(),
+        "rawAfterSha256": hashlib.sha256(after.read_bytes()).hexdigest()}}
+    (root / "late-source-state.json").write_text(json.dumps(value))
+    return value
+
+
+def enrichment_report():
+    return {"status": "PASS", "phase": "legacy-enrich", "scenario": "enriched",
+        "producerVersion": RELEASE, "producerSha": probe.RELEASES[RELEASE], "runtime": probe.RUNTIME,
+        "totals": [155, 310], "frozenDestinationUnchanged": True, "previousOriginalPreserved": True,
+        "oldNumericRowsPreserved": True, "oldIdentityRowsPreserved": True,
+        "nullModelAndTurnCompleted": True, "originalVersionsRetained": True}
+
+
 class SwiftFormedHarnessTests(unittest.TestCase):
+    def test_all_three_scenarios_and_both_candidate_processes_are_required(self):
+        expected = {(scenario, phase) for scenario in probe.SCENARIOS for phase in probe.PHASES}
+        self.assertEqual(len(expected), 6)
+        saved = []
+        evidence = {"scenarios": []}
+        probe.collect_scenarios(lambda scenario: [report(phase, scenario) for phase in probe.PHASES],
+                                evidence, lambda: saved.append(len(evidence["scenarios"])))
+        self.assertEqual(saved, [2, 4, 6])
+        self.assertEqual({(item["scenario"], item["phase"]) for item in evidence["scenarios"]}, expected)
+        for bad in ([], [report("resume", "enriched")] * 2,
+                    [{**report(phase, "enriched"), "status": "SKIP"} for phase in probe.PHASES]):
+            attempted = []
+            def run(scenario):
+                attempted.append(scenario)
+                return bad if scenario == "enriched" else [report(phase, scenario) for phase in probe.PHASES]
+            with self.subTest(bad=bad), self.assertRaisesRegex(ValueError, "Every required Swift"):
+                probe.collect_scenarios(run, {"scenarios": []}, lambda: None)
+            self.assertEqual(attempted, list(probe.SCENARIOS))
+
+    def test_enriched_candidate_report_cannot_reuse_the_append_or_total_only_result(self):
+        value = report("resume", "enriched")
+        self.assertEqual(probe.parse_report(output(value), "resume", "enriched", RELEASE, SHA), value)
+        for key, wrong in [("totals", [183, 310]), ("nullModelAndTurnCompleted", False),
+                           ("originalVersionsRetained", None), ("originalVersionsRetained", 1)]:
+            invalid = {**value, key: wrong}
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                probe.parse_report(output(invalid), "resume", "enriched", RELEASE, SHA)
+
+    def test_released_enrichment_requires_retained_full_typed_images_and_real_raw_rewrite(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = enrichment_state(root)
+            value = enrichment_report()
+            self.assertEqual(probe.validate_late_enrichment(output(value), root, RELEASE), value)
+            for key in ("oldNumericRowsPreserved", "oldIdentityRowsPreserved", "nullModelAndTurnCompleted",
+                        "originalVersionsRetained", "frozenDestinationUnchanged", "previousOriginalPreserved"):
+                with self.subTest(key=key), self.assertRaises(ValueError):
+                    probe.validate_late_enrichment(output({**value, key: False}), root, RELEASE)
+            for change in ("missing", "numeric", "cell", "retention", "raw"):
+                invalid = copy.deepcopy(state)
+                if change == "missing":
+                    del invalid["enrichment"]
+                elif change == "numeric":
+                    invalid["enrichment"]["numericAfter"]["rows"][0][0] = base64.b64encode(bytes([5]) + bytes(8)).decode()
+                elif change == "cell":
+                    invalid["enrichment"]["numericBefore"]["rows"][0][0] = "not a typed cell"
+                elif change == "retention":
+                    invalid["enrichment"]["retainedVersions"]["columns"] = ["total_only"]
+                else:
+                    invalid["enrichment"]["rawBeforeSha256"] = invalid["enrichment"]["rawAfterSha256"]
+                (root / "late-source-state.json").write_text(json.dumps(invalid))
+                with self.subTest(change=change), self.assertRaises(ValueError):
+                    probe.validate_late_enrichment(output(value), root, RELEASE)
+            (root / "late-source-state.json").write_text(json.dumps(state))
+            (root / "pre-enrichment-exact.sqlite").write_bytes(b"lost original")
+            with self.assertRaisesRegex(ValueError, "not preserved"):
+                probe.validate_late_enrichment(output(value), root, RELEASE)
+
     def test_source_archive_injection_preserves_actual_git_production_blobs(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
@@ -249,6 +344,27 @@ class SwiftFormedHarnessTests(unittest.TestCase):
             self.assertEqual(phases, ["produce", "legacy-append"])
             self.assertEqual([item["status"] for item in results], ["FAIL", "FAIL"])
             self.assertTrue((artifacts / "interrupted-synthetic-state.zip").is_file())
+
+    def test_missing_released_enrichment_blocks_both_candidate_phases(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            artifacts = directory / "artifacts"; artifacts.mkdir()
+            fixture = directory / "enriched"
+            bundles = {"release": directory / "old.xctest", "candidate": directory / "current.xctest"}
+            phases = []
+            def execute(command, cwd, env, log, **kwargs):
+                phase = env["TOKENBAR_SWIFT_FORMED_PHASE"]
+                phases.append(phase)
+                if phase == "produce":
+                    formed_state(fixture, "enriched")
+                    return ""
+                raise RuntimeError("old writer failed to form actual enrichment")
+            with patch.object(probe, "execute", side_effect=execute):
+                results = probe.run_scenario(ROOT, RELEASE, "enriched", fixture, directory,
+                                             bundles, artifacts, SHA)
+            self.assertEqual(phases, ["produce", "legacy-enrich"])
+            self.assertEqual([item["status"] for item in results], ["FAIL", "FAIL"])
+            self.assertTrue((artifacts / "enriched-synthetic-state.zip").is_file())
 
 
 if __name__ == "__main__":

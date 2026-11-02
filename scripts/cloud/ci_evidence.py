@@ -41,7 +41,9 @@ def validate_recovery_verdict(value: object, source_sha: str, run_id: str) -> di
     if value.get("formed_releases") != FORMED_RELEASES:
         raise ValueError("Native recovery verdict does not cover all required formed releases")
     if (value.get("swift_formed_releases") != FORMED_RELEASES
-            or value.get("swift_formed_runtime") != "native-swift-xctest-production-apis"):
+            or value.get("swift_formed_runtime") != "native-swift-xctest-production-apis"
+            or value.get("swift_formed_scenarios") != ["committed", "interrupted", "enriched"]
+            or value.get("swift_formed_phases") != ["resume", "reopen"]):
         raise ValueError("Native recovery verdict does not cover the actual Swift formed-release matrix")
     sizes = value.get("swift_backfill_sizes")
     if sizes != SWIFT_SIZES or any(type(size) is not int for size in sizes):

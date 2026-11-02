@@ -40,6 +40,7 @@ They are not a claim that every historical user state has passed acceptance.
 | Unchanged interrupted import | Current A equals the retained normalized image; new image has the same full proof | Resume with the same history |
 | Same-schema pure row append | Every prior typed value, hidden row ID, duplicate multiplicity and autoincrement high-water mark survives | Import the appended history |
 | Released Exact writer continues ordinary append or adds a new rollout during unfinished import | Every old typed historical event/identity/binding survives; changed source prefixes, parser checkpoints, complete new ledger rows and production projections pass the separate proof below | Import the complete incoming ledger without resetting its checkpoints |
+| Released Exact writer fills NULL model/turn metadata after a representation rewrite | Complete production replay proves the new raw bindings and only the permitted metadata completion; all old numeric facts, identities and known metadata remain exact; old model versions remain in retention | Resume with usable enriched history after the semantic witness matches |
 | Database import committed before JSON receipt | Database receipt identifies a retained normalized image equal to A | Resume after validating the new image |
 | Quota policy 3 maintenance with appended observations | Same schema; all observation rows survive; maintenance keys, row IDs, value types, policy and unknown values stay identical; finite clock moves forward within valid bounded seconds | Resume with the new maintenance time |
 | Exact schema 13 to 14, additive representation metadata | Existing normalizer produces the supported schema on the isolated copies; all prior rows survive | Resume after coverage proof |
@@ -82,9 +83,12 @@ checks.
 `ExactRetryAppendCoverage` implements a deliberately separate schema-14,
 ledger-revision-2 compatibility path for ordinary continuation by a released
 writer. It is reached only when the generic typed comparison finds changes
-exclusively in the recognized source bookkeeping, metadata and projection
-tables. Any uncovered event, ledger identity/binding/turn, retained-history
-row, unknown table, or unknown column still rejects replacement.
+exclusively in recognized source bookkeeping, metadata, projection tables or
+the explicitly verified event/binding continuation described below. Any
+uncovered ledger identity/turn, retained-history row, unknown table or unknown
+column still rejects replacement. Event and binding changes require their own
+complete parser witness; membership in a mutable-table list is never permission
+to discard a prior fact.
 
 The source catalog is compared with typed digests, so unchanged sources do
 not require their raw files to remain present. A released writer can add a
@@ -151,7 +155,7 @@ installation; its addition is accepted only after all remaining schema proof
 evidence (objects, columns, foreign keys and other indexes) compares equal.
 No frozen file is altered to obtain either proof.
 
-Eight new native tests cover the real freeze→legacy append→resume path, extra
+Native tests cover the real freeze→legacy append→resume path, extra
 unindexed raw bytes, an unchanged source with its raw file deleted, differently
 ordered repeated appends, a new rollout, deletion/reopen after activation, and
 negative history/checkpoint/chunk/projection/identity/raw-rewrite cases. The
@@ -165,6 +169,89 @@ attribution maximum matched the selected fixture and the main file bytes did
 not change. That is SQL evidence only, not Swift compilation or native recovery
 acceptance. The actual released-version subprocess gate and macOS XCTest remain
 required.
+
+### NULL metadata completion and changed raw bindings
+
+An ordinary released full reparse calls `UsageEventLedger.admit`,
+`enrichTurn` and `bind`. A stable old usage identity can gain a model that was
+previously NULL, a previously missing logical turn, and a binding to the new
+raw generation. A typed append-only rule rejected this legitimate state even
+when every old numeric fact remained intact. The regression producer starts
+with actual token records containing no model or message context, freezes the
+import, then prepends a model and real `response_item` user/assistant messages.
+The old writer performs its normal full synchronization; no SQL clears or
+manufactures the missing metadata.
+
+`ExactRetryMetadataReplay` is a separate, read-only proof for this transition:
+
+- The incoming source's entire recorded prefix, chunks, probe and checkpoint
+  are verified through the production parser. A rewritten prefix need not
+  equal the frozen prefix. Association with an old event instead requires its
+  unchanged source-scoped usage identity. The alternative raw-position proof
+  is available only when all frozen chunks still match the current prefix.
+- Each old event keeps its exact typed ID, timestamp, component counts,
+  accounting classification, reported/legacy totals and non-NULL metadata.
+  Parser time, counts and classification must independently equal the old
+  fact. Only NULL model/turn fields receive the parsed value under the same
+  rules as `admit` and `enrichTurn`; a known logical turn is never replaced.
+- A NULL model becoming known requires a full retained revision containing
+  the old numeric/model payload, source/session/path identity and old raw
+  locations. All pre-existing retained rows, hidden IDs and unknown tables
+  still pass the generic typed coverage rule. A retention row count is not
+  sufficient evidence.
+- Bindings are reconstructed from the bounded raw replay and the actual
+  incoming raw generation. Every previously available observation must be
+  replayed. Already unavailable historical rows remain seeded unchanged.
+  Source path and session identity compare exact UTF-8 bytes, not Swift's
+  canonically equivalent string equality.
+- Logical turn keys are simulated in raw event order. Fresh IDs must lie in
+  the recorded allocation interval and may not reuse any old event/turn or
+  another new allocation. A TEMP index avoids repeatedly scanning the old
+  history for each allocation. Different sources can have been processed in
+  a different order by the actual old writer.
+- The complete candidate event, identity, binding, turn, source and
+  fingerprint tables must equal the resulting witness. Additional rows that
+  were not emitted by the parser, dropped old rows and altered numeric facts
+  cannot be hidden behind a valid aggregate.
+- Model completion can move attribution from an unknown model bucket to a
+  named model. Before replacing that derived cache, the frozen bucket must
+  exactly equal a production aggregation of the frozen canonical events.
+  A larger historical maximum that those events do not explain remains
+  protected. Canonical numeric history must retain every old event ID; all
+  dashboard and attribution rows are then rebuilt and compared exactly.
+
+Five focused native cases cover successful migration, append and missing-raw
+reopen after real enrichment, forged models/numerics/timestamps/turn links,
+missing retained payloads, replacing known metadata, independent source
+allocation order, older retained revisions and unexplained attribution floors.
+These tests and the earlier append cases must run on macOS; their presence is
+not a native pass.
+
+The actual released-source harness additionally requires **three scenarios by
+two candidate processes** for each pinned v0.9.8–v0.9.11 producer: `committed`,
+`interrupted`, and `enriched`, each with `resume` and `reopen`. `enriched` uses
+an independent unchanged release process to perform the full reparse while A
+stays frozen. It preserves the old database/raw bytes, exact before/after
+numeric images, all retained table images, real committed crash WAL, and B.
+The candidate must expose the enriched rows, ingest another 11 tokens, remove
+all source raw files, and reopen with history and every retained version still
+readable. The required enriched totals are 155/310 before candidate use and
+166/310 afterwards. The Swift runner has its own six-entry matrix; the Rust
+runner's two-scenario matrix cannot satisfy it.
+
+The 16 Python tests of that harness passed on Linux. They verify source-archive
+identity, matrix completeness, process exit/deadline handling and evidence
+rejection. Their intentionally synthetic contract bytes are not native
+database execution. Swift compilation and all new native scenarios remain
+pending the hosted macOS run.
+
+This boundary does not authorize numerical parser corrections, provenance
+rotation, source ownership changes, loss of a formerly available event,
+unknown checkpoint/receipt revisions, or completion whose required raw prefix
+has disappeared. An older incomplete checkpoint that cannot satisfy the
+recognized parser-receipt contract still requires a separately demonstrated
+recovery route. Those states must not be labelled phase-1 acceptance merely
+because the guard preserves their files.
 
 If a newer legacy source is truncated while A and its frozen snapshot remain
 complete, this guard preserves both sides and blocks. It does not yet select

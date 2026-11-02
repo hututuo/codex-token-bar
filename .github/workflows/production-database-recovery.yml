@@ -321,6 +321,8 @@ jobs:
               'formed_runtime': 'Rust non-cfg(test), Windows and macOS; not native Swift formed-release evidence',
               'swift_formed_releases': ['0.9.8', '0.9.9', '0.9.10', '0.9.11'],
               'swift_formed_runtime': 'native-swift-xctest-production-apis',
+              'swift_formed_scenarios': ['committed', 'interrupted', 'enriched'],
+              'swift_formed_phases': ['resume', 'reopen'],
               'swift_backfill_sizes': [13, 128, 512, 4124],
               'rust_backfill_sizes': [13, 128, 512, 4124],
               'rust_backfill_profile': 'release',

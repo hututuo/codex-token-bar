@@ -53,10 +53,60 @@ struct CodexTokenBarApp: App {
 /// Software repair remains available even when business initialization fails.
 /// Lazy creation preserves normal launch policy and prevents two Sparkle owners.
 @MainActor
-final class ApplicationSoftwareUpdater {
+final class ApplicationSoftwareUpdater: NSObject, ObservableObject, SPUUpdaterDelegate {
     static let shared = ApplicationSoftwareUpdater()
-    let controller = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
-    private init() {}
+    @Published private(set) var canCheckForUpdates = false
+    private var ownedController: SPUStandardUpdaterController?
+    private var observations: [NSKeyValueObservation] = []
+    private let operationGate = ApplicationRecoveryOperationGate.shared
+
+    var controller: SPUStandardUpdaterController {
+        if let ownedController { return ownedController }
+        let controller = SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: self, userDriverDelegate: nil)
+        ownedController = controller
+        // The pinned Sparkle API requires all updater access on the main
+        // thread. Observe before starting it, including automatic sessions.
+        observations = [
+            controller.updater.observe(\.sessionInProgress, options: [.initial, .new]) { [weak self] updater, _ in
+                MainActor.assumeIsolated { self?.operationGate.observeUpdateSession(updater.sessionInProgress) }
+            },
+            controller.updater.observe(\.canCheckForUpdates, options: [.initial, .new]) { [weak self] updater, _ in
+                MainActor.assumeIsolated { self?.canCheckForUpdates = updater.canCheckForUpdates }
+            },
+        ]
+        controller.startUpdater()
+        return controller
+    }
+
+    private override init() {
+        super.init()
+        _ = controller
+    }
+
+    func checkForRecoveryUpdates() {
+        let updater = controller.updater
+        guard updater.canCheckForUpdates, operationGate.beginUpdateRequest() else { return }
+        updater.checkForUpdates()
+        // Focusing an existing update window does not emit a new KVO change.
+        // A refused/no-op check must not leave a permanent pending latch.
+        if updater.sessionInProgress { operationGate.observeUpdateSession(true) }
+        else { operationGate.updateRequestDidNotStart() }
+    }
+
+    func updater(_ updater: SPUUpdater, mayPerform updateCheck: SPUUpdateCheck) throws {
+        guard !operationGate.migrationInProgress else {
+            throw NSError(domain: "CodexTokenBar.Recovery", code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "账本准备正在进行，请完成后再检查软件更新。"])
+        }
+    }
+
+    func updater(_ updater: SPUUpdater, willInstallUpdate item: SUAppcastItem) {
+        operationGate.installationWillBegin()
+    }
+
+    func updater(_ updater: SPUUpdater, didFinishUpdateCycleFor updateCheck: SPUUpdateCheck, error: Error?) {
+        operationGate.updateCycleFinished(failed: error != nil)
+    }
 }
 
 /// All business owners are built once, only after the background gate succeeds.

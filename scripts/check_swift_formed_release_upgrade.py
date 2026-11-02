@@ -8,6 +8,7 @@ execution is required: missing builds, profiles or phases can never be PASS.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -20,7 +21,7 @@ import sys
 import tempfile
 
 from check_formed_release_upgrade import (
-    RELEASES, SCENARIOS, PHASES, collect_scenarios, external_temporary_base, pinned_revision,
+    RELEASES, external_temporary_base, pinned_revision,
 )
 from prepare_v097_upgrade_validation import extract_revision
 
@@ -30,6 +31,31 @@ SELECTOR = f"CodexTokenBarTests.{TEST_CLASS}/{TEST_METHOD}"
 INJECTED_TEST = f"Tests/CodexTokenBarTests/{TEST_CLASS}.swift"
 MARKER = "TOKENBAR_SWIFT_FORMED_REPORT "
 RUNTIME = "native-swift-xctest-production-apis"
+SCENARIOS = ("committed", "interrupted", "enriched")
+PHASES = ("resume", "reopen")
+NUMERIC_COLUMNS = ["source_id", "source_offset", "timestamp", "tokens", "input_tokens",
+    "cached_input_tokens", "output_tokens", "reasoning_output_tokens", "accounting_kind", "reported_total_tokens", "legacy_tokens"]
+RETAINED_COLUMNS = ["revision_id", "source_id", "session_id", "path", "signature", "parser_revision", "position", "timestamp",
+    "tokens", "input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens", "model", "accounting_kind",
+    "reported_total_tokens", "legacy_tokens", "user_prompt_start", "user_prompt_end", "assistant_response_start",
+    "assistant_response_end", "token_source_offset"]
+
+
+def collect_scenarios(operation, report: dict, save) -> None:
+    """Swift has its own required matrix; Rust's two scenarios cannot satisfy it."""
+    for scenario in SCENARIOS:
+        try:
+            report["scenarios"].extend(operation(scenario))
+        except Exception as error:
+            report["scenarios"].extend({"status": "FAIL", "scenario": scenario, "phase": phase,
+                "error": str(error)} for phase in PHASES)
+        save()
+    expected = {(scenario, phase) for scenario in SCENARIOS for phase in PHASES}
+    values = report["scenarios"]
+    actual = [(item.get("scenario"), item.get("phase")) for item in values if isinstance(item, dict)]
+    if len(values) != len(expected) or len(actual) != len(expected) or set(actual) != expected \
+            or any(item.get("status") != "PASS" for item in values):
+        raise ValueError("Every required Swift formed scenario and phase must actually pass")
 
 
 def production_manifest(repository: Path, revision: str, source: Path) -> dict[str, str]:
@@ -168,9 +194,11 @@ def parse_report(output: str, phase: str, scenario: str, release: str, candidate
     value = native_report(output)
     required = {"status": "PASS", "phase": phase, "scenario": scenario, "producerVersion": release,
         "producerSha": RELEASES[release], "candidateSha": candidate, "runtime": RUNTIME,
-        "totals": [173 if scenario == "committed" else 183, 310],
+        "totals": [{"committed": 173, "interrupted": 183, "enriched": 166}[scenario], 310],
         "oldTypedProofsPreserved": True, "originalDatabasesUnchanged": True,
         "crashWALPreserved": True, "oldBPreserved": True, "rawDisappearanceRetainsHistory": True}
+    if scenario == "enriched":
+        required.update(nullModelAndTurnCompleted=True, originalVersionsRetained=True)
     for key, expected in required.items():
         if value.get(key) != expected or (type(expected) is bool and value.get(key) is not expected):
             raise ValueError(f"Invalid native proof {key}: {value.get(key)!r}")
@@ -246,6 +274,66 @@ def validate_late_append(output: str, root: Path, release: str) -> dict:
     return value
 
 
+def validate_table_image(value: object, *, rows: int, columns: list[str] | None = None) -> None:
+    if not isinstance(value, dict) or not isinstance(value.get("columns"), list) \
+            or not value["columns"] or any(not isinstance(name, str) or not name for name in value["columns"]) \
+            or len(set(value["columns"])) != len(value["columns"]) \
+            or (columns is not None and value["columns"] != columns) \
+            or not isinstance(value.get("rows"), list) or len(value["rows"]) != rows:
+        raise ValueError("Complete typed enrichment table evidence is required")
+    for row in value["rows"]:
+        if not isinstance(row, list) or len(row) != len(value["columns"]):
+            raise ValueError("Incomplete typed enrichment row")
+        for cell in row:
+            if not isinstance(cell, str):
+                raise ValueError("Typed enrichment cell is not encoded")
+            data = base64.b64decode(cell, validate=True)
+            if len(data) < 9 or data[0] not in range(1, 6) or int.from_bytes(data[1:9], "big") != len(data) - 9 \
+                    or (data[0] in (1, 2) and len(data) != 17) or (data[0] == 5 and len(data) != 9):
+                raise ValueError("Invalid canonical SQLite cell encoding")
+
+
+def validate_late_enrichment(output: str, root: Path, release: str) -> dict:
+    value = native_report(output)
+    required = {"status": "PASS", "phase": "legacy-enrich", "scenario": "enriched",
+        "producerVersion": release, "producerSha": RELEASES[release], "runtime": RUNTIME,
+        "totals": [155, 310], "frozenDestinationUnchanged": True, "previousOriginalPreserved": True,
+        "oldNumericRowsPreserved": True, "oldIdentityRowsPreserved": True,
+        "nullModelAndTurnCompleted": True, "originalVersionsRetained": True}
+    for key, expected in required.items():
+        if value.get(key) != expected or (type(expected) is bool and value.get(key) is not expected):
+            raise ValueError(f"Invalid released enrichment proof {key}")
+    late = json.loads((root / "late-source-state.json").read_text())
+    if late.get("previousExactBackup") != "pre-enrichment-exact.sqlite":
+        raise ValueError("Invalid pre-enrichment database evidence path")
+    validate_originals(late.get("latest", {}), root)
+    before = json.loads((root / "formed-state.json").read_text())["originalProofs"]["originals"]
+    backup = root / "pre-enrichment-exact.sqlite"
+    expected_digest = before["10-exact/" + "a" * 64 + ".sqlite"]["sha256"]
+    if backup.is_symlink() or hashlib.sha256(backup.read_bytes()).hexdigest() != expected_digest:
+        raise ValueError("Pre-enrichment Exact original was not preserved")
+    evidence = late.get("enrichment")
+    if not isinstance(evidence, dict):
+        raise ValueError("Released enrichment did not provide complete typed evidence")
+    for key in ("numericBefore", "numericAfter"):
+        validate_table_image(evidence.get(key), rows=2, columns=NUMERIC_COLUMNS)
+    if evidence["numericBefore"] != evidence["numericAfter"]:
+        raise ValueError("Released enrichment changed a historical typed numeric fact")
+    validate_table_image(evidence.get("retainedVersions"), rows=2, columns=RETAINED_COLUMNS)
+    retained = late["latest"]["originals"]["10-exact/" + "a" * 64 + ".sqlite"].get("tables", {}).get("retained_usage_revisions")
+    if retained != evidence["retainedVersions"]:
+        raise ValueError("Retained metadata versions do not match the actual released source image")
+    raw_before = root / "pre-enrichment-rollout.jsonl"
+    raw_after = root / "home-a/sessions/rollout-019ff8b9-09e7-75c1-b9a5-14fe7b60065a.jsonl"
+    for path, key in [(raw_before, "rawBeforeSha256"), (raw_after, "rawAfterSha256")]:
+        if path.is_symlink() or not path.resolve(strict=True).is_relative_to(root.resolve()) \
+                or hashlib.sha256(path.read_bytes()).hexdigest() != evidence.get(key):
+            raise ValueError("Enrichment raw representation is absent or changed")
+    if evidence["rawBeforeSha256"] == evidence["rawAfterSha256"]:
+        raise ValueError("The released metadata scenario did not exercise a real source rewrite")
+    return value
+
+
 def run_scenario(repository: Path, release: str, scenario: str, root: Path, base: Path,
                  bundles: dict[str, Path], output: Path, candidate: str) -> list[dict]:
     root.mkdir()
@@ -268,6 +356,13 @@ def run_scenario(repository: Path, release: str, scenario: str, root: Path, base
             late = validate_late_append(log, root, release)
             (output / "interrupted-late-append-report.json").write_text(json.dumps(late, indent=2) + "\n")
             shutil.copyfile(root / "late-source-state.json", output / "interrupted-late-source-state.json")
+        elif scenario == "enriched":
+            env["TOKENBAR_SWIFT_FORMED_PHASE"] = "legacy-enrich"
+            log = execute(["/usr/bin/xcrun", "xctest", "-XCTest", SELECTOR, str(bundles["release"])],
+                repository, env, output / "enriched-late-released-writer.log", timeout=300)
+            late = validate_late_enrichment(log, root, release)
+            (output / "enriched-late-writer-report.json").write_text(json.dumps(late, indent=2) + "\n")
+            shutil.copyfile(root / "late-source-state.json", output / "enriched-late-source-state.json")
         for phase in PHASES:
             try:
                 env["TOKENBAR_SWIFT_FORMED_PHASE"] = phase
@@ -295,6 +390,7 @@ def run(repository: Path, release: str, output: Path) -> dict:
     report = {"schemaVersion": 1, "release": release, "releaseSha": old, "candidateSha": candidate,
         "runtime": RUNTIME, "status": "RUNNING", "scenarios": [],
         "requiredScenarios": list(SCENARIOS), "requiredPhases": list(PHASES),
+        "requiredLegacyPhases": {"interrupted": "legacy-append", "enriched": "legacy-enrich"},
         "scope": "Actual archived Swift production APIs under XCTest with synthetic A/B; not a signed/installed GUI or every incident variant"}
     def save():
         (output / "report.json").write_text(json.dumps(report, indent=2) + "\n")

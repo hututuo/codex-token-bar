@@ -2,8 +2,9 @@ import Foundation
 import SQLite3
 
 /// Compatibility boundary for an unfinished 0.9.8–0.9.11 Exact import whose
-/// legacy writer continued to append. The caller has already proved the two
-/// schemas equal and every historical row outside `mutableTables` preserved.
+/// legacy writer continued to append or fill missing model/turn metadata. The
+/// caller has proved the schemas equal and every historical row outside
+/// `mutableTables` preserved.
 /// This verifier changes neither main database. Its TEMP witnesses are scoped
 /// to the candidate's existing read transaction and disappear on close.
 enum ExactRetryAppendCoverage {
@@ -11,7 +12,8 @@ enum ExactRetryAppendCoverage {
         "sources", "source_chunks", "source_observations", "source_representations",
         "event_enrichment_sources", "schema_meta", "usage_ledger_meta",
         "usage_ledger_duplicates", "attribution_source_buckets", "dashboard_source_5m",
-        "dashboard_source_totals", "dashboard_5m", "dashboard_turn_candidates"
+        "dashboard_source_totals", "dashboard_5m", "dashboard_turn_candidates",
+        "events", "usage_ledger_bindings", "usage_ledger_sources"
     ]
 
     static let eventColumns = ["source_id", "source_offset", "timestamp", "tokens", "input_tokens",
@@ -22,7 +24,8 @@ enum ExactRetryAppendCoverage {
         "source_fingerprints": ["source_id", "value"],
         "usage_ledger_bindings": ["source_id", "event_id", "generation", "raw_offset", "prompt_offset", "assistant_offset", "available"],
         "usage_ledger_identities": ["source_id", "identity", "event_id"],
-        "usage_ledger_turns": ["source_id", "generation", "raw_offset", "turn_id"]
+        "usage_ledger_turns": ["source_id", "generation", "raw_offset", "turn_id"],
+        "usage_ledger_sources": ["source_id", "session_id", "missing", "format", "generation"]
     ]
     static let projectionTables = ["usage_ledger_duplicates", "dashboard_source_5m",
         "dashboard_source_totals", "dashboard_5m", "dashboard_turn_candidates", "attribution_source_buckets"]
@@ -77,9 +80,14 @@ enum ExactRetryAppendCoverage {
         // Canonical rows are also history: physical row preservation alone
         // would allow a fabricated duplicate marker to hide prior consumption.
         try current.execute("CREATE TEMP TABLE exact_retry_rows(encoded BLOB PRIMARY KEY, needed INTEGER NOT NULL, found INTEGER NOT NULL) WITHOUT ROWID")
+        let numericHistory = eventColumns.filter { !["model", "user_prompt_offset", "assistant_start_offset"].contains($0) }
+            .map(quote).joined(separator: ",")
         var covered = try checked("retry-exact-canonical-history", diagnostics: diagnostics) {
-            try rows(current, "SELECT * FROM main.canonical_usage_events",
-                cover: previous, "SELECT * FROM main.canonical_usage_events")
+            // The complete witness below separately proves every metadata
+            // field. Canonical visibility must retain the same event IDs and
+            // exact numeric payload even when a NULL model becomes known.
+            try rows(current, "SELECT \(numericHistory) FROM main.canonical_usage_events",
+                cover: previous, "SELECT \(numericHistory) FROM main.canonical_usage_events")
         }
         let witness = try AppendWitness(current: current, previous: previous)
         covered = try checked("retry-exact-parser-witness", diagnostics: diagnostics) {
@@ -92,7 +100,7 @@ enum ExactRetryAppendCoverage {
         } && covered
         covered = try checked("retry-exact-projections", diagnostics: diagnostics) {
             try CodexUsageHistoryIndex.verifyRetryAppendProjections(current: current, previous: previous,
-                candidateURL: candidateURL)
+                candidateURL: candidateURL, replayedSources: witness.replayedSources)
         } && covered
         return covered
     }
@@ -222,25 +230,57 @@ enum ExactRetryAppendCoverage {
     /// with omitted events as well as fabricated new ledger identities.
     final class AppendWitness {
         let current: SQLiteDatabaseConnection
+        let previous: SQLiteDatabaseConnection
+        private(set) var replayedSources = Set<Int64>()
         private let insert: SQLitePreparedStatement
 
         init(current: SQLiteDatabaseConnection, previous: SQLiteDatabaseConnection) throws {
             self.current = current
+            self.previous = previous
             try current.execute("CREATE TEMP TABLE exact_retry_ledger(kind TEXT NOT NULL, encoded BLOB NOT NULL, PRIMARY KEY(kind,encoded)) WITHOUT ROWID")
+            try current.execute("""
+                CREATE TEMP TABLE exact_retry_replay_fingerprints(source_id INTEGER NOT NULL,value BLOB NOT NULL,PRIMARY KEY(source_id,value)) WITHOUT ROWID;
+                CREATE TEMP TABLE exact_retry_replay_events(source_id INTEGER NOT NULL,event_id INTEGER NOT NULL,PRIMARY KEY(source_id,event_id)) WITHOUT ROWID;
+                CREATE TEMP TABLE exact_retry_reserved_ids(id INTEGER PRIMARY KEY);
+                CREATE TEMP TABLE exact_retry_allocations(id INTEGER PRIMARY KEY,kind TEXT NOT NULL,source_id INTEGER NOT NULL,raw_offset INTEGER NOT NULL);
+                CREATE TEMP TABLE exact_retry_turns(source_id INTEGER NOT NULL,generation TEXT NOT NULL,raw_offset INTEGER NOT NULL,turn_id INTEGER NOT NULL,PRIMARY KEY(source_id,generation,raw_offset)) WITHOUT ROWID;
+                """)
             insert = try current.prepare("INSERT OR IGNORE INTO temp.exact_retry_ledger VALUES (?,?)")
+            let reserve = try current.prepare("INSERT OR IGNORE INTO temp.exact_retry_reserved_ids VALUES(?)")
             for (table, names) in ExactRetryAppendCoverage.witnessColumns {
                 try previous.forEachRow("SELECT \(names.map(ExactRetryAppendCoverage.quote).joined(separator: ",")) FROM main.\(ExactRetryAppendCoverage.quote(table))") {
                     _ = try insert.execute([.text(table), .blob(ExactRetryAppendCoverage.encoded($0))])
+                    if table == "events" || table == "usage_ledger_turns" {
+                        guard let id = $0.int64(table == "events" ? 1 : 3) else { throw BusinessStoreError.proofMismatch }
+                        _ = try reserve.execute([.int64(id)])
+                    }
                 }
+            }
+            let turn = try current.prepare("INSERT INTO temp.exact_retry_turns VALUES(?,?,?,?)")
+            try previous.forEachRow("SELECT source_id,generation,raw_offset,turn_id FROM main.usage_ledger_turns") {
+                guard let source = $0.int64(0), let generation = $0.text(1), let raw = $0.int64(2), let id = $0.int64(3) else { throw BusinessStoreError.proofMismatch }
+                _ = try turn.execute([.int64(source), .text(generation), .int64(raw), .int64(id)])
             }
         }
 
         @discardableResult
-        private func remember(_ table: String, _ values: [SQLiteBinding]) throws -> Bool {
+        func remember(_ table: String, _ values: [SQLiteBinding]) throws -> Bool {
             let sql = "SELECT " + values.map { _ in "?" }.joined(separator: ",")
             let bytes = try current.readRows(sql, bindings: values, map: ExactRetryAppendCoverage.encoded)
             guard let bytes = bytes.first else { throw BusinessStoreError.proofMismatch }
             return try insert.execute([.text(table), .blob(bytes)]) > 0
+        }
+
+        func replace(_ table: String, old: Data, with values: [SQLiteBinding]) throws {
+            let remove = try current.prepare("DELETE FROM temp.exact_retry_ledger WHERE kind=? AND encoded=?")
+            guard try remove.execute([.text(table), .blob(old)]) == 1 else { throw BusinessStoreError.proofMismatch }
+            try remember(table, values)
+        }
+
+        func didReplay(source: Int64) { replayedSources.insert(source) }
+
+        func source(_ source: Int64, session: String, format: String, generation: String) throws {
+            try remember("usage_ledger_sources", [.int64(source), .text(session), .int(0), .text(format), .text(generation)])
         }
 
         func fingerprint(_ fingerprint: CodexUsageAnalyzer.UsageSnapshotFingerprint, source: Int64) throws -> Bool {

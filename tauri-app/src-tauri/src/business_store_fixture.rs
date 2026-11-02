@@ -518,19 +518,49 @@ fn exact_fixture(h1: &Path, h2: &Path, p: &Paths) -> Result<Value, String> {
     let index = exact_path(&p.exact_root, h1)?;
     let store = route::exact_store_spec(&index)?;
     route::export_store_to_path(&store.source_identity, "exact", &store.logical_path, &index)?;
+    // Receipts use the physical canonical path (including Windows' extended
+    // path prefix), while callers may supply a normal absolute path. Check
+    // that both spellings still address the same namespace before using the
+    // receipt spelling; canonicalizing must not conceal a routing regression.
+    let canonical_index = ok!(fs::canonicalize(&index));
+    let canonical_store = route::exact_store_spec(&canonical_index)?;
+    need!(
+        canonical_store == store,
+        format!(
+            "Exact canonical path changed namespace identity: input={} canonical={} input_store={store:?} canonical_store={canonical_store:?}",
+            index.display(), canonical_index.display()
+        )
+    );
     let source_digest = digest(&index)?;
     need!(
         route::remove_exact_store(&index)?,
         "Exact namespace was not removed for legacy import test"
     );
     token_count_jsonl::bootstrap_legacy_exact_indexes()?;
-    let receipt: bool = ok!(ok!(Connection::open(&p.a)).query_row(
-        "SELECT EXISTS(SELECT 1 FROM tb_legacy_inputs WHERE source_path=?1 AND module='exact' AND retired=0)",
-        [index.to_string_lossy().as_ref()], |r| r.get(0)));
     need!(
-        route::exact_store_exists(&index)? && receipt,
-        "Exact legacy import or active receipt missing"
+        route::exact_store_exists(&index)?,
+        format!("Exact legacy namespace missing after import: {} ({})", index.display(), store.id)
     );
+    let receipt_connection = ok!(Connection::open(&p.a));
+    let receipt: bool = ok!(receipt_connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM tb_legacy_inputs WHERE source_path=?1 AND store_id=?2 AND logical_path=?3 AND module='exact' AND retired=0)",
+        params![canonical_index.to_string_lossy().as_ref(), store.id, store.logical_path],
+        |r| r.get(0)
+    ));
+    if !receipt {
+        let mut statement = ok!(receipt_connection.prepare(
+            "SELECT source_path,store_id,logical_path,retired FROM tb_legacy_inputs WHERE module='exact' ORDER BY source_path"
+        ));
+        let rows = ok!(statement.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?))
+        }));
+        let actual = ok!(rows.collect::<Result<Vec<_>, _>>());
+        return Err(format!(
+            "Exact active receipt missing: expected source={} store_id={} logical_path={}; actual={actual:?}",
+            canonical_index.display(), store.id, store.logical_path
+        ));
+    }
+    drop(receipt_connection);
     need!(
         digest(&index)? == source_digest
             && token_count_jsonl::dashboard_snapshot(h1)?
