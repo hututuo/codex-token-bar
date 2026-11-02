@@ -659,20 +659,10 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         let now = quota.updatedAt ?? Date()
         guard let row = Self.row(from: quota, createdAt: now) else { return quota }
         let peerRows = loadPeerRows(for: row, cutoff: nil)
-        return try withDatabase { database in
-            try ensureSchema(database)
-            let localRows = try matchingRows(
-                database: database,
-                row: row,
-                cutoff: nil,
-                now: now
-            )
-            let history = Self.sanitizedRows(mergedRows(localRows + peerRows), now: now, filterAnomalies: filterAnomalies())
-            let annotatedRow = Self.annotatedCurrentRow(row, after: history)
-            // This compatibility API may decorate cycle IDs but never filters
-            // the realtime response through the historical accepted sequence.
-            return Self.snapshot(from: annotatedRow, base: quota)
-        }
+        let localRows = try matchingHistoryRows(row: row, cutoff: nil, now: now)
+        let history = Self.sanitizedRows(mergedRows(localRows + peerRows), now: now, filterAnomalies: filterAnomalies())
+        let annotatedRow = Self.annotatedCurrentRow(row, after: history)
+        return Self.snapshot(from: annotatedRow, base: quota)
     }
 
     func loadSnapshot(for quota: AccountQuotaSnapshot, now: Date = Date()) throws -> QuotaHistorySnapshot {
@@ -680,15 +670,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         // Replay the retained identity timeline before selecting visible
         // ranges; the accepted baseline can predate any chart cutoff.
         let cutoff: Date? = nil
-        let localRows = try withDatabase { database in
-            try ensureSchema(database)
-            return try matchingRows(
-                database: database,
-                row: row,
-                cutoff: cutoff,
-                now: now
-            )
-        }
+        let localRows = try matchingHistoryRows(row: row, cutoff: cutoff, now: now)
         let peerRows = loadPeerRows(
             for: row,
             cutoff: cutoff
@@ -709,15 +691,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         age: TimeInterval = 31 * 24 * 60 * 60
     ) throws -> [Int] {
         guard let row = Self.row(from: quota, createdAt: now) else { return [] }
-        let localRows = try withDatabase { database in
-            try ensureSchema(database)
-            return try matchingRows(
-                database: database,
-                row: row,
-                cutoff: now.addingTimeInterval(-age),
-                now: now
-            )
-        }
+        let localRows = try matchingHistoryRows(row: row, cutoff: now.addingTimeInterval(-age), now: now)
         let peerRows = loadPeerRows(for: row, cutoff: now.addingTimeInterval(-age))
         return mergedRows(localRows + peerRows).compactMap(\.fiveHourUsedPercent)
     }
@@ -1549,20 +1523,43 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         return Self.sanitizedRows(rawRows, now: now, filterAnomalies: filterAnomalies()).last
     }
 
+    private func matchingHistoryRows(row: QuotaHistoryRow, cutoff: Date?, now: Date) throws -> [QuotaHistoryRow] {
+        guard let url = databaseURL ?? Self.defaultDatabaseURL else { throw BusinessStoreError.invalidStore }
+        if BusinessSQLiteRoutes.hasPublishedAdmission, BusinessSQLiteRoutes.store(for: url) == nil {
+            throw PublishedBusinessAdmission.Deferred(message: "该额度来源没有已核实的已发布分区，旧材料已保留")
+        }
+        if let owner = BusinessSQLiteRoutes.store(for: url), BusinessSQLiteRoutes.writesArePaused(for: owner) {
+            let reader = SQLiteDatabaseDriver(url: url, readOnly: true, createsFileIfMissing: false,
+                busyTimeoutMilliseconds: 3_000, enableWAL: false, fileManager: fileManager)
+            return try reader.withConnection { db in try db.readTransaction { tx in
+                guard try peerSupportsStableIdentitySchema(tx) else { throw BusinessStoreError.unsupportedSchema("quota stable identity") }
+                return try matchingRows(database: tx, row: row, cutoff: cutoff, now: now,
+                    allowClaimWrites: false, includeCycleMetadata: peerSupportsCycleSchema(tx))
+            } }
+        }
+        return try withDatabase { db in
+            try ensureSchema(db)
+            return try matchingRows(database: db, row: row, cutoff: cutoff, now: now)
+        }
+    }
+
     private func matchingRows(
         database: SQLiteDatabaseConnection,
         row: QuotaHistoryRow,
         cutoff: Date?,
-        now: Date
+        now: Date,
+        allowClaimWrites: Bool = true,
+        includeCycleMetadata: Bool = true
     ) throws -> [QuotaHistoryRow] {
         guard let identity = stableIdentity(from: row) else { return [] }
-        var matched = try stableRows(database: database, identity: identity, cutoff: cutoff)
+        var matched = try stableRows(database: database, identity: identity, cutoff: cutoff, includeCycleMetadata: includeCycleMetadata)
         let legacyCutoff = cutoff ?? .distantPast
         for bridge in legacyBridges(row: row, identity: identity) {
             let legacyRows = try legacyRows(
                 database: database,
                 bridge: bridge,
-                cutoff: legacyCutoff
+                cutoff: legacyCutoff,
+                includeCycleMetadata: includeCycleMetadata
             )
             guard !legacyRows.isEmpty else { continue }
             let knownAmbiguous = try legacyBridgeHasOtherStableIdentity(
@@ -1570,13 +1567,16 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
                 bridge: bridge,
                 identity: identity
             )
-            if try claimLegacyBridge(
-                database: database,
-                bridge: bridge,
-                identity: identity,
-                knownAmbiguous: knownAmbiguous,
-                now: now
-            ) {
+            let claimed: Bool
+            if allowClaimWrites {
+                claimed = try claimLegacyBridge(database: database, bridge: bridge, identity: identity,
+                    knownAmbiguous: knownAmbiguous, now: now)
+            } else {
+                let hasClaims = try database.readRows("SELECT 1 FROM sqlite_master WHERE type='table' AND name='quota_history_legacy_claims'",map:{$0.int(0)}).first == 1
+                let existing = hasClaims ? try legacyBridgeClaim(database: database, bridge: bridge) : nil
+                claimed = !knownAmbiguous && existing?.state == "claimed" && existing?.belongs(to: identity) == true
+            }
+            if claimed {
                 matched.append(contentsOf: legacyRows)
             }
         }
@@ -1649,9 +1649,13 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
     private func legacyRows(
         database: SQLiteDatabaseConnection,
         bridge: LegacyBridge,
-        cutoff: Date
+        cutoff: Date,
+        includeCycleMetadata: Bool = true
     ) throws -> [QuotaHistoryRow] {
-        try rows(
+        let cycleColumns = includeCycleMetadata
+            ? "id, five_hour_cycle_generation, five_hour_reset_anchor, seven_day_cycle_generation, seven_day_reset_anchor"
+            : "NULL, NULL, 0, NULL, 0"
+        return try rows(
             database: database,
             sql: """
             SELECT created_at, account_key, plan_type, limit_name, account_name,
@@ -1659,8 +1663,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
                    seven_day_used_percent, seven_day_resets_at, status,
                    identity_version, home_identity, stable_account_key,
                    identity_plan_type, identity_limit_id,
-                   id, five_hour_cycle_generation, five_hour_reset_anchor,
-                   seven_day_cycle_generation, seven_day_reset_anchor
+                   \(cycleColumns)
             FROM quota_snapshots
             WHERE identity_version IS NULL
               AND account_name = ?

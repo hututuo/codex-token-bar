@@ -226,6 +226,24 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             "source": dataSource.displayPath
         ])
         do {
+            if CodexUsageHistoryIndex.publicationIsPaused(codexHome: dataSource.codexHome) {
+                guard let reader = try CodexUsageHistoryIndex.openPublished(codexHome: dataSource.codexHome) else { return nil }
+                return try reader.withPublishedReadSnapshot {
+                    let metadata = try reader.readMetadata()
+                    let now = Date(), start = calendar.startOfDay(for: now)
+                    guard let end = calendar.date(byAdding: .day, value: 1, to: start) else { throw PublishedBusinessAdmission.Deferred(message: "无法计算自然日边界") }
+                    let totals = try reader.compactTotals(todayStart: start, before: end)
+                    var result = CompactUsageSummary(totalTokens: totals.totalTokens, todayTokens: totals.todayTokens,
+                        todayCalls: totals.todayCalls, todayModelBreakdowns: ModelUsagePresentation.rows(from: totals.todayModelBreakdowns, at: now),
+                        generatedAt: now, lastCheckedAt: metadata.certificate?.observedAt,
+                        dataUpdatedAt: try reader.publishedSourceUpdatedAt(), homeIdentity: dataSource.usageIdentityKey,
+                        coverageKind: .summary, observedThrough: metadata.certificate?.observedAt,
+                        exactGeneration: metadata.attribution.generation, exactSynchronizationReceipt: nil)
+                    result.unreportedCompactionDates = try reader.unreportedCompactionDates()
+                    trace?.end("published-read-only")
+                    return result
+                }
+            }
             let discoveryStartedAt = Date()
             let sessionFiles = try usageJSONLFiles()
             var structureMigrationReported = false
@@ -354,6 +372,9 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         for sessionFiles: [URL],
         onProgress: ((PreciseIndexProgress) -> Void)? = nil
     ) throws -> CodexUsageHistoryIndex? {
+        if CodexUsageHistoryIndex.publicationIsPaused(codexHome: dataSource.codexHome) {
+            return try CodexUsageHistoryIndex.openPublished(codexHome: dataSource.codexHome)
+        }
         if sessionFiles.isEmpty {
             return try CodexUsageHistoryIndex.openExisting(
                 codexHome: dataSource.codexHome, onProgress: onProgress
@@ -365,6 +386,9 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
     }
 
     private func cachedPreciseSnapshot() throws -> DashboardFastSnapshotResult? {
+        if CodexUsageHistoryIndex.publicationIsPaused(codexHome: dataSource.codexHome) {
+            return DashboardFastSnapshotResult(snapshot: try loadFromTokenCountJSONL(), freshness: .staleCompatible)
+        }
         let sessionFiles = try usageJSONLFiles()
         guard let historyIndex = try usageHistoryIndex(for: sessionFiles) else {
             return nil
@@ -551,12 +575,22 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
     private func loadFromTokenCountJSONLExclusively(
         onProgress: (@Sendable (PreciseIndexProgress) -> Void)? = nil,
         reusing synchronizationReceipt:
-            CompactUsageSummary.ExactSynchronizationReceipt? = nil
+            CompactUsageSummary.ExactSynchronizationReceipt? = nil,
+        publishedReader: CodexUsageHistoryIndex? = nil
     ) throws -> PreparedPreciseLoad {
+        let publishedOnly = publishedReader != nil || CodexUsageHistoryIndex.publicationIsPaused(codexHome: dataSource.codexHome)
+        if publishedOnly, publishedReader == nil {
+            guard let reader = try CodexUsageHistoryIndex.openPublished(codexHome: dataSource.codexHome) else {
+                throw PublishedBusinessAdmission.Deferred(message: "该来源暂无已核实的已发布索引，旧材料已保留")
+            }
+            return try reader.withPublishedReadSnapshot {
+                try loadFromTokenCountJSONLExclusively(onProgress: onProgress, publishedReader: reader)
+            }
+        }
         let trace = RefreshPerformanceProbe.begin("usageAnalyzer.preciseJSONL", metadata: [
             "sessionsRoot": dataSource.sessionsRoot.path
         ])
-        let requestedReceipt = synchronizationReceipt.flatMap { receipt in
+        let requestedReceipt = (publishedOnly ? nil : synchronizationReceipt).flatMap { receipt in
             receipt.homeIdentity == dataSource.usageIdentityKey ? receipt : nil
         }
         let discoveryStartedAt = Date()
@@ -566,6 +600,8 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             sessionFiles = requestedReceipt.sourcePaths.map {
                 URL(fileURLWithPath: $0)
             }
+        } else if publishedOnly {
+            sessionFiles = []
         } else {
             sessionFiles = try usageJSONLFiles()
         }
@@ -581,7 +617,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         let initialEventEnrichmentComplete: Bool
         let publishedCertificate: UsageIndexCoverageCertificate?
         do {
-            guard let existingOrNewIndex = try usageHistoryIndex(
+            guard let existingOrNewIndex = try publishedReader ?? usageHistoryIndex(
                 for: sessionFiles, onProgress: onProgress
             ) else {
                 trace?.end("missing-token-jsonl-files-and-history")
@@ -615,7 +651,10 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             // and synchronization rather than aggregating the wrong generation.
             sessionFiles = try usageJSONLFiles()
         }
-        let preciseCoverageAt = receiptMatchesPublishedIndex
+        if publishedOnly, publishedCertificate == nil {
+            throw PublishedBusinessAdmission.Deferred(message: "旧索引尚无完整图表覆盖证明；已保留已知汇总，等待该来源恢复")
+        }
+        let preciseCoverageAt = publishedOnly ? publishedCertificate!.observedAt : receiptMatchesPublishedIndex
             ? min(requestedReceipt?.observedAt ?? discoveryStartedAt,
                   publishedCertificate?.observedAt ?? discoveryStartedAt)
             : discoveryStartedAt
@@ -636,7 +675,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         // `preciseCoverageAt` is the time this owner observed/published the
         // index, not the time the source data changed. Keep the two concepts
         // separate so a successful check cannot masquerade as new usage.
-        let sourceDataUpdatedAt = signature.files
+        let sourceDataUpdatedAt = publishedOnly ? try historyIndex.publishedSourceUpdatedAt() : signature.files
             .map { Date(timeIntervalSince1970: $0.modifiedAt) }
             .max()
         trace?.mark("signature.end", metadata: [
@@ -645,7 +684,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             "attributionGeneration": String(signature.attributionGeneration)
         ])
         let compressionEnabled = CacheRankingHistoryPolicy.isEnabled(codexHome: dataSource.codexHome)
-        if publishedCertificate != nil, initialEventEnrichmentComplete,
+        if !publishedOnly, publishedCertificate != nil, initialEventEnrichmentComplete,
            !initialAttributionState.currentScanUnsafeCauseDetected,
            let cached = Self.sessionEventCache.snapshot(for: dataSource.codexHome.path, signature: signature),
            cached.cacheUsage.attributionEventsComplete,
@@ -728,7 +767,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         let firstAggregatedEventAt: Date?
         let exactSessionCount: Int
         do {
-            if receiptMatchesPublishedIndex {
+            if receiptMatchesPublishedIndex || publishedOnly {
                 synchronization = CodexUsageHistoryIndex.SynchronizationResult(
                     changedFiles: 0,
                     unchangedFiles: sessionFiles.count,
@@ -977,6 +1016,18 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             // Event-level attribution/detail readiness remains represented by
             // `attributionEventsComplete` and is intentionally independent.
         )
+        if publishedOnly {
+            // One committed read snapshot, with the original coverage horizon.
+            // Never promote it into a new synchronization or persisted cache.
+            return .complete(DashboardSnapshot(stats: stats, dailyUsage: daily, recentBins: recentBins,
+                hourlyUsage: hourlyUsage, pluginUsage: metadata.plugins, cacheUsage: aggregatedCacheUsage,
+                usagePrecision: .precise, preciseTimeSeriesGeneratedAt: settledThrough,
+                generatedAt: Date(), lastCheckedAt: publishedCertificate?.observedAt,
+                dataUpdatedAt: sourceDataUpdatedAt, homeIdentity: dataSource.usageIdentityKey,
+                coverageKind: .full, observedThrough: publishedCertificate?.observedAt,
+                settledThrough: settledThrough, exactGeneration: synchronization.attributionGeneration,
+                accountingCoverage: try historyIndex.accountingCoverage()))
+        }
         let synchronizedSourceSignature = signature.withAttributionState(
             provenanceEpoch: synchronization.provenanceEpoch,
             generation: synchronization.attributionGeneration

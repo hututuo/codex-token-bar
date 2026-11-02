@@ -113,6 +113,10 @@ enum BusinessSQLiteRoutes {
             throw PublishedBusinessAdmission.Deferred(message: "该来源的旧账导入尚未完成，已保留已发布统计；暂停该来源新写入")
         }
     }
+    static func writesArePaused(for store: BusinessSQLiteStore) -> Bool {
+        state.lock.lock(); defer { state.lock.unlock() }
+        return state.blocksAllWriters || state.blockedWrites.contains(store.id)
+    }
     static func allStores(in directory: URL) -> [BusinessSQLiteStore] {
         let root = directory.standardizedFileURL.path
         state.lock.lock()

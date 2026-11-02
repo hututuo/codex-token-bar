@@ -81,12 +81,30 @@ enum ModelTrace {
 
 struct ModelTraceHistoryStore: Sendable {
     let url: URL
+    var writesArePaused: Bool {
+        guard let owner = BusinessSQLiteRoutes.store(for: url) else { return BusinessSQLiteRoutes.hasPublishedAdmission }
+        return BusinessSQLiteRoutes.writesArePaused(for: owner)
+    }
+
+    // A verified owner can remain readable while a different import is pending.
+    // This path neither creates missing tables nor opens a writer connection.
+    func publishedReader() -> SQLiteDatabaseDriver {
+        SQLiteDatabaseDriver(url: url, readOnly: true, createsFileIfMissing: false, enableWAL: false)
+    }
     func save(_ run: ModelTrace.Run, scope: String) throws {
         let json = String(decoding: try JSONEncoder().encode(run), as: UTF8.self)
         try database().execute("INSERT INTO modeltrace_runs(scope,id,started_at,payload) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload WHERE scope=excluded.scope", bindings: [.text(scope), .text(run.id), .int64(Int64(run.startedAt)), .text(json)])
     }
     func history(scope: String) throws -> [ModelTrace.Run] {
-        try database().readRows("SELECT payload FROM modeltrace_runs WHERE scope=? ORDER BY started_at DESC,id DESC LIMIT 100", bindings: [.text(scope)]) { statement in
+        if writesArePaused {
+            return try publishedReader().withConnection { db in try db.readTransaction { tx in
+                guard try tx.readRows("SELECT 1 FROM sqlite_master WHERE type='table' AND name='modeltrace_runs'", map: { $0.int(0) }).first == 1 else { return [] }
+                return try tx.readRows("SELECT payload FROM modeltrace_runs WHERE scope=? ORDER BY started_at DESC,id DESC LIMIT 100", bindings: [.text(scope)]) { statement in
+                    try JSONDecoder().decode(ModelTrace.Run.self, from: Data((statement.text(0) ?? "").utf8))
+                }
+            } }
+        }
+        return try database().readRows("SELECT payload FROM modeltrace_runs WHERE scope=? ORDER BY started_at DESC,id DESC LIMIT 100", bindings: [.text(scope)]) { statement in
             try JSONDecoder().decode(ModelTrace.Run.self, from: Data((statement.text(0) ?? "").utf8))
         }
     }

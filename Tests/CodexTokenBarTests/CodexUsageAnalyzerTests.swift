@@ -22,6 +22,50 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         try super.tearDownWithError()
     }
 
+    func testPausedPublishedLedgerBuildsFullCompactAndFastViewsWithoutRawSessionsOrSnapshotCache() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let root = try makeTemporaryDirectory(named: "PublishedReadOnlyAnalyzer")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", root.appendingPathComponent("cache").path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", root.appendingPathComponent("snapshot-cache").path, 1)
+        defer { BusinessSQLiteRoutes.deactivate() }
+        let support = root.appendingPathComponent("support")
+        let configuration = BusinessDatabaseMigration.Configuration(container: support.appendingPathComponent("codex-ledger.sqlite"),
+            support: support, exact: CodexUsageHistoryIndex.businessIndexDirectory(),
+            legacyExact: root.appendingPathComponent("legacy"))
+        try BusinessDatabaseMigration.migrate(configuration, availableBytes: 1 << 32)
+        let home = try makeCodexHome()
+        let source = try writeTokenCountRollout(in: home.appendingPathComponent("sessions"),
+            sessionID: "019eaaaa-bbbb-4ccc-8ddd-published-only", timestamp: Date().addingTimeInterval(-640), totalTokens: 120)
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: home))
+        let published = try analyzer.load()
+        let raw = SQLiteDatabaseDriver(url: configuration.container, readOnly: true, bypassBusinessRoutes: true)
+        let stores = try raw.readRows("SELECT logical_path,module,source_identity FROM tb_stores") {
+            BusinessSQLiteStore(containerURL: configuration.container, logicalURL: URL(fileURLWithPath: $0.text(0)!),
+                module: $0.text(1)!, sourceIdentity: $0.text(2)!)
+        }
+        let exact = try XCTUnwrap(stores.first(where: { $0.module == "exact.swift" }))
+        BusinessSQLiteRoutes.activate(configuration, stores: stores, blockedWrites: [exact.id], publishedAdmission: true)
+        try FileManager.default.removeItem(at: source)
+        CodexUsageAnalyzer.clearUsageCachesForTesting()
+        CodexUsageAnalyzer.resetPersistentExactSnapshotStateForTesting()
+        try? FileManager.default.removeItem(at: root.appendingPathComponent("snapshot-cache"))
+        CodexUsageHistoryIndex.resetSynchronizationInvocationCountForTesting()
+
+        let full = try analyzer.load()
+        let compact = try XCTUnwrap(analyzer.loadCompactSummary())
+        let fast = try analyzer.loadFastSnapshotResult()
+        XCTAssertEqual(full.stats.totalTokens, 120)
+        XCTAssertEqual(full.exactGeneration, published.exactGeneration)
+        XCTAssertEqual(full.preciseTimeSeriesGeneratedAt, published.preciseTimeSeriesGeneratedAt)
+        XCTAssertEqual(full.cacheUsage.total, published.cacheUsage.total)
+        XCTAssertEqual(compact.totalTokens, 120)
+        XCTAssertNil(compact.exactSynchronizationReceipt, "Read-only projections cannot authorize promotion")
+        XCTAssertEqual(fast.snapshot.stats.totalTokens, 120)
+        XCTAssertEqual(fast.freshness, .staleCompatible)
+        XCTAssertEqual(CodexUsageHistoryIndex.synchronizationInvocationCountForTesting, 0)
+        XCTAssertThrowsError(try SQLiteDatabaseDriver(url: exact.logicalURL).execute("UPDATE schema_meta SET value='changed' WHERE key='attribution_generation'"))
+    }
+
     func testCompressionScopeToggleInvalidatesFastMemoryAndPersistentSnapshots() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let cacheRoot = try makeTemporaryDirectory(named: "CompressionRankingScopeCache")

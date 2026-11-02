@@ -596,6 +596,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         .appendingPathComponent(indexNamespace, isDirectory: true)
 
     private let driver: SQLiteDatabaseDriver
+    private(set) var isPublishedReadOnly = false
     private var stagePool: ExactStagePool?
     private let fileManager: FileManager
     private let operationGate: CodexUsageHistoryIndexOperationGate
@@ -668,10 +669,32 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         operationGate = Self.operationGate(for: url)
         driver = SQLiteDatabaseDriver(url: url, readOnly: true, createsFileIfMissing: false,
             enableWAL: false)
+        isPublishedReadOnly = true
         guard case .compatible = try Self.assessMigration(databaseURL: url, fileManager: .default) else {
             throw SQLiteDatabaseError(operation: "Read quota cycle", code: SQLITE_ABORT,
                 message: "精确索引尚未就绪", path: url.path)
         }
+    }
+
+    static func publicationIsPaused(codexHome: URL) -> Bool {
+        guard let owner = BusinessSQLiteRoutes.store(for: databaseURL(for: codexHome)) else { return false }
+        return BusinessSQLiteRoutes.writesArePaused(for: owner)
+    }
+
+    static func openPublished(codexHome: URL) throws -> CodexUsageHistoryIndex? {
+        guard BusinessStoreFiles.exists(databaseURL(for: codexHome)) else { return nil }
+        return try Self(readOnlyCycleHome: codexHome)
+    }
+
+    func withPublishedReadSnapshot<T>(_ body: () throws -> T) throws -> T {
+        guard isPublishedReadOnly else { throw BusinessStoreError.invalidStore }
+        return try driver.withOperationConnection {
+            try driver.withConnection { try $0.readTransaction { _ in try body() } }
+        }
+    }
+
+    func publishedSourceUpdatedAt() throws -> Date? {
+        try driver.readRows("SELECT MAX(modified_at) FROM sources") { $0.double(0).map(Date.init(timeIntervalSince1970:)) }.first ?? nil
     }
 
     static func quotaCycleSourceBuckets(codexHome: URL, provenanceEpoch: String,

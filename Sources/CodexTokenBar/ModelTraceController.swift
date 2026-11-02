@@ -74,7 +74,7 @@ final class ModelTraceController: ObservableObject {
                 }.value
                 guard self.source == source else { loading = false; refresh(); return }
                 scopeKey = loaded.0; runs = loaded.1; settings = loaded.2; error = nil
-                if !busy {
+                if !busy, !store.writesArePaused {
                     for index in runs.indices where runs[index].status == "running" {
                         runs[index].status = "interrupted"; runs[index].completedAt = Int(Date().timeIntervalSince1970); runs[index].message = "上次检测已中断，未自动重试"
                         let run = runs[index], scope = scopeKey
@@ -88,6 +88,10 @@ final class ModelTraceController: ObservableObject {
     }
     func start(model: String = ModelTrace.defaultModel) {
         guard !busy, ModelTrace.models.contains(model), let source else { return }
+        guard !store.writesArePaused else {
+            error = "模型检测历史正在恢复；已有结果仍可查看，新检测暂缓"
+            return
+        }
         busy = true; error = nil
         let token = ModelTraceCancellation(); cancel = token
         let store = store
@@ -141,7 +145,7 @@ final class ModelTraceController: ObservableObject {
     }
     private func autoTick() {
         guard settings.enabled, !busy, !loading, !settingsSaving, !checkingAuto,
-              let source, !scopeKey.isEmpty, (1...168).contains(settings.intervalHours) else { return }
+              !store.writesArePaused, let source, !scopeKey.isEmpty, (1...168).contains(settings.intervalHours) else { return }
         checkingAuto = true
         Task {
             let current = try? await Task.detached(priority: .utility) { try Self.scope(source: source) }.value
@@ -169,7 +173,15 @@ extension ModelTraceHistoryStore {
         return db
     }
     func autoSettings() throws -> ModelTraceAutoSettings {
-        try settingsDB().readRows("SELECT payload FROM modeltrace_settings WHERE id=1") { statement in
+        if writesArePaused {
+            return try publishedReader().withConnection { db in try db.readTransaction { tx in
+                guard try tx.readRows("SELECT 1 FROM sqlite_master WHERE type='table' AND name='modeltrace_settings'", map: { $0.int(0) }).first == 1 else { return ModelTraceAutoSettings() }
+                return try tx.readRows("SELECT payload FROM modeltrace_settings WHERE id=1") { statement in
+                    try JSONDecoder().decode(ModelTraceAutoSettings.self, from: Data((statement.text(0) ?? "").utf8))
+                }.first ?? ModelTraceAutoSettings()
+            } }
+        }
+        return try settingsDB().readRows("SELECT payload FROM modeltrace_settings WHERE id=1") { statement in
             try JSONDecoder().decode(ModelTraceAutoSettings.self, from: Data((statement.text(0) ?? "").utf8))
         }.first ?? ModelTraceAutoSettings()
     }

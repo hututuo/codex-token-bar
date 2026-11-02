@@ -118,3 +118,11 @@ Windows连接寿命作平台适配：实际锁定SQLite源码的`winOpen`使用F
 - 已存在A的打开路径显式NO_CREATE，避免物理A丢失时默默建空库。
 
 当前实际证据：admission生产模块probe编译／运行PASS，低空间失败后ready、routes可用，旧123与新456都保留。生产数据库源码的隔离XCTest共**22通过、0失败**：原14项pool/codec＋8项admission，覆盖低空间、提交前中断／三次重启、pending读写门禁、其他owner继续写、physical/logical备份分离、同输入保留目标新账、来源与目标独有数据冲突保留、坏discovery只读准入与恢复、NO_CREATE。非完整app、非Windows C04验证；跨进程强退／实际旧版产库／读UI适配／规模仍待完成。
+
+### C04b · 已发布读取入口（进行中）
+
+- Mac Exact全量／compact／fast在owner暂停时使用显式只读连接和同一SQLite读快照。没有JSON缓存或原始会话时仍投影已发布账；不扫描、不迁移、不推进generation、不签发同步receipt，覆盖时间沿用原证明。没有完整图表覆盖证明时保留已知汇总并明确失败，不伪造完整覆盖。
+- quota历史的暂停路径不执行ensureSchema／维护／legacy claim写入；可选周期列在同一读事务中按旧格式投影。稳定身份保持原过滤，未认领旧行不按显示名推归属。ModelTrace历史和设置可读，检测新请求与自动检测在对应writer暂停时停止。
+- 新增真实Analyzer读取、quota旧列／身份、ModelTrace scope／设置和未注册owner的回归测试；语法检查通过，整包类型检查与执行留待本批云端，不预报通过。
+- 源码`601c5f5f`的[旧版升级41505616299](https://github.com/hututuo/codex-token-bar/actions/runs/41505616299)中，Mac与Windows实际v0.9.7升级步骤均通过；Mac后续兼容复查有1个旧进程来源漂移fixture的4条断言失败。[完整检查41505616287](https://github.com/hututuo/codex-token-bar/actions/runs/41505616287)Swift2278项／36 skipped也仅该4条失败。新门禁正确拦住了fixture用普通产品writer模拟的外部变化；已改成先断言该writer被拒，再以隔离的物理来源writer模拟旧进程追加，保留原两次快照／目标新账／独立分区的全部保全断言。待云端复测。
+- 同一源码的22项存储模块隔离XCTest再次通过。Windows读权限、前端恢复提示／调度、真正跨进程和规模门禁仍未退出。

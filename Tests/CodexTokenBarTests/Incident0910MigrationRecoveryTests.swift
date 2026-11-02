@@ -66,7 +66,30 @@ final class Incident0910MigrationRecoveryTests: XCTestCase {
             bindings: [.text(String(oldMaintenanceTime.timeIntervalSince1970))]
         )
         let secondAt = Date()
-        XCTAssertTrue(try quotaDatabase.record(quota(usedPercent: 21, at: secondAt), createdAt: secondAt))
+        XCTAssertThrowsError(try quotaDatabase.record(quota(usedPercent: 21, at: secondAt), createdAt: secondAt)) {
+            XCTAssertTrue($0 is PublishedBusinessAdmission.Deferred)
+        }
+        // This runtime must not mutate a pending owner. Model a different,
+        // older process appending to the physical input instead of bypassing
+        // the new writer guard through the ordinary product entry point.
+        let physicalSource = SQLiteDatabaseDriver(url: quotaURL, bypassBusinessRoutes: true)
+        try physicalSource.transaction { tx in
+            let columns = try tx.readRows("PRAGMA table_info(quota_snapshots)") { $0.text(1)! }.filter { $0 != "id" }
+            let expressions = columns.map { name in
+                switch name {
+                case "created_at", "five_hour_resets_at", "seven_day_resets_at": return "?"
+                case "five_hour_used_percent", "seven_day_used_percent": return "21"
+                default: return SQLiteStoreNamespace.quote(name)
+                }
+            }
+            let timestamps: [String: Date] = ["created_at": secondAt,
+                "five_hour_resets_at": secondAt.addingTimeInterval(3 * 3600),
+                "seven_day_resets_at": secondAt.addingTimeInterval(4 * 86400)]
+            try tx.execute("INSERT INTO quota_snapshots (\(columns.map(SQLiteStoreNamespace.quote).joined(separator: ","))) SELECT \(expressions.joined(separator: ",")) FROM quota_snapshots ORDER BY id LIMIT 1",
+                bindings: columns.compactMap { timestamps[$0].map(SQLiteBinding.date) })
+            try tx.execute("UPDATE quota_history_maintenance SET value=? WHERE key='last_compacted_at'",
+                bindings: [.text(String(secondAt.timeIntervalSince1970))])
+        }
         let advancedMaintenanceTime = try maintenanceTime(at: quotaURL)
         XCTAssertGreaterThan(advancedMaintenanceTime, oldMaintenanceTime.timeIntervalSince1970 + 24 * 60 * 60)
         XCTAssertEqual(try quotaSnapshotRows(at: quotaURL), 2)
