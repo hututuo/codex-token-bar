@@ -4,17 +4,17 @@ import Foundation
 struct RecentChartPreparedSnapshot: Sendable {
     let data: RecentChartPreparedData
     let bucketCostsUSD: [Double]
+    let priceModel: OfficialAPIPriceModel
     var quotaData: RecentChartPreparedData? = nil
     var costAttributionEvents: [TokenCacheAttributionEvent] = []
     var unreportedCompactionDates: [Date] = []
 
     func consumptionSelection(
         state: RecentChartConsumptionSelectionState,
-        hoveredIndex: Int? = nil,
-        priceCard: QuotaConsumptionPriceCard
+        hoveredIndex: Int? = nil
     ) -> QuotaConsumptionSelection? {
         state.selection(displayedData: data, quotaData: quotaData,
-            hoveredIndex: hoveredIndex, priceCard: priceCard,
+            hoveredIndex: hoveredIndex, priceCard: .officialAPI(priceModel),
             attributionEvents: costAttributionEvents, unreportedCompactionDates: unreportedCompactionDates)
     }
 
@@ -58,6 +58,7 @@ struct RecentChartPreparedSnapshot: Sendable {
         } else { quotaData = nil }
         return Self(data: data,
             bucketCostsUSD: RecentUsageChart.bucketCosts(for: quotaData ?? data, priceModel: priceModel),
+            priceModel: priceModel,
             quotaData: quotaData, costAttributionEvents: costEvents,
             unreportedCompactionDates: input.unreportedCompactionDates)
     }

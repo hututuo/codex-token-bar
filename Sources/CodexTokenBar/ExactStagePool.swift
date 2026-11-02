@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import SQLite3
+import Darwin
 
 /// One durable pool in A. Jobs are rows, never new stores or MAIN tables.
 /// Parsing happens in private SQLite work areas; only verified numeric rows
@@ -129,6 +130,9 @@ final class ExactStagePool: @unchecked Sendable {
                     try tx.execute("INSERT INTO tb_store_objects VALUES(?,?,?,?)",
                         bindings: [.text(store.id), .text(name), .text(type), .text(try namespace.unbind(sql))])
                 }
+                #if DEBUG
+                ExactStagePoolProcessFault.check("initialize-before-commit", container: store.containerURL)
+                #endif
             }
         }
         try validateSchema()
@@ -320,6 +324,9 @@ final class ExactStagePool: @unchecked Sendable {
                     let insert = try tx.prepare("INSERT INTO \(table(physical)) VALUES(?,?,?)")
                     for (position, data) in batch { try insert.execute([.text(job.id), .int64(position), .blob(data)]) }
                 } }
+                #if DEBUG
+                ExactStagePoolProcessFault.check("chunk-committed", container: store.containerURL)
+                #endif
                 batch.removeAll(keepingCapacity: true); batchBytes = 0
             }
             try source.forEachRow("SELECT * FROM \(SQLiteStoreNamespace.quote(name)) ORDER BY \(ExactStageSchema.ordering[name]!)") { row in
@@ -339,6 +346,9 @@ final class ExactStagePool: @unchecked Sendable {
         try use { db in try db.transaction { tx in
             guard try tx.executeChangedRows("UPDATE \(table("jobs")) SET manifest=?,digest=?,byte_count=?,row_count=?,sealed_at=?,state='sealed' WHERE job_id=? AND state='building' AND owner=? AND contract_digest=?",
                 bindings: [.blob(manifest), .text(digest), .int64(count), .int64(total), .double(Date().timeIntervalSince1970), .text(job.id), .text(job.owner), .text(job.contract)]) == 1 else { throw Failure.invalid }
+            #if DEBUG
+            ExactStagePoolProcessFault.check("seal-before-commit", container: store.containerURL)
+            #endif
         } }
     }
 
@@ -436,6 +446,24 @@ final class ExactStagePool: @unchecked Sendable {
         guard legacy.module == "exact.swift.stage", legacy.containerURL == store.containerURL else { throw Failure.invalid }
         return try use { db in
             try legacySeal(legacy, on: db).map { SourceFileObservation(indexedLogicalSize: $0.bytes, modifiedAt: $0.timestamp, physicalStamp: $0.digest) }
+        }
+    }
+    func legacyPresence(_ legacy: BusinessSQLiteStore, for target: BusinessSQLiteStore) throws -> Bool {
+        guard legacy.module == "exact.swift.stage", legacy.containerURL == store.containerURL,
+              target.module == "exact.swift", target.containerURL == store.containerURL,
+              legacy.sourceIdentity.hasPrefix("staging/" + target.logicalURL.lastPathComponent + "/") else { throw Failure.invalid }
+        return try use { db in
+            let record = try db.readRows("SELECT module,source_identity,logical_path,namespace_prefix,state FROM tb_stores WHERE store_id=?",
+                bindings: [.text(legacy.id)]) { ($0.text(0), $0.text(1), $0.text(2), $0.text(3), $0.text(4)) }.first
+            guard let record else { return false }
+            guard record.0 == legacy.module, record.1 == legacy.sourceIdentity,
+                  record.2 == legacy.logicalURL.path, record.3 == legacy.prefix,
+                  ["ready", "sealed", "staging"].contains(record.4 ?? "") else { throw Failure.invalid }
+            // Old producers registered their namespace before TEMP parsing.
+            // A crash before materialization leaves no MAIN object or fact;
+            // do not reopen the whole A catalog merely to rediscover that.
+            return try db.readRows("SELECT EXISTS(SELECT 1 FROM tb_store_objects WHERE store_id=? AND type='table')",
+                bindings: [.text(legacy.id)], map: { $0.int(0) }).first == 1
         }
     }
 
@@ -562,6 +590,9 @@ final class ExactStagePool: @unchecked Sendable {
         }
         try tx.execute("INSERT INTO \(table("publication_receipts")) VALUES(?,?,?,?)", bindings: [.text(job.owner), .text(job.id), .text(digest), .text(generation)])
         try tx.execute("UPDATE \(table("jobs")) SET state='consumed' WHERE job_id=? AND state='sealed'", bindings: [.text(job.id)])
+        #if DEBUG
+        ExactStagePoolProcessFault.check("publication-before-commit", container: store.containerURL)
+        #endif
     }
 
     func reclaim(_ job: Job) throws {
@@ -575,6 +606,30 @@ final class ExactStagePool: @unchecked Sendable {
             guard permitted == "consumed" else { throw Failure.unsealed }
             for name in ["event_rows", "fingerprints", "chunks"] { try tx.execute("DELETE FROM \(table(name)) WHERE job_id=?", bindings: [.text(job.id)]) }
             try tx.execute("UPDATE \(table("jobs")) SET state='reclaimed' WHERE job_id=?", bindings: [.text(job.id)])
+            #if DEBUG
+            ExactStagePoolProcessFault.check("cleanup-before-commit", container: store.containerURL)
+            #endif
         } }
     }
 }
+
+#if DEBUG
+/// Fault injection is absent from release builds and requires a fresh, marked
+/// XCTest-owned temporary root. It cannot select a user's application ledger.
+private enum ExactStagePoolProcessFault {
+    private static let point = ProcessInfo.processInfo.environment["TOKENBAR_POOL_CRASH_POINT"]
+    private static let rootPath = ProcessInfo.processInfo.environment["TOKENBAR_POOL_CRASH_ROOT"]
+    static func check(_ current: String, container: URL) {
+        guard point == current, let rootPath else { return }
+        let root = URL(fileURLWithPath: rootPath).resolvingSymlinksInPath().standardizedFileURL
+        let temporary = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().standardizedFileURL
+        let marker = root.appendingPathComponent(".tokenbar-pool-crash-fixture")
+        guard root.lastPathComponent.hasPrefix("pool-crash-"),
+              root.deletingLastPathComponent().path == temporary.path,
+              container.resolvingSymlinksInPath().path == root.appendingPathComponent("support/codex-ledger.sqlite").path,
+              (try? FileManager.default.attributesOfItem(atPath: marker.path)[.type] as? FileAttributeType) == .typeRegular,
+              (try? Data(contentsOf: marker)) == Data("tokenbar-pool-crash-fixture-v1\n".utf8) else { return }
+        Darwin._exit(86)
+    }
+}
+#endif

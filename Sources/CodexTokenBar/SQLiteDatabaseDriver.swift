@@ -1450,7 +1450,12 @@ enum SQLiteWriteMetrics {
     }
     static func record(path: String, seconds: Double) {
         state.lock.lock(); defer { state.lock.unlock() }
-        guard state.paths.contains(path) else { return }
+        guard !state.paths.isEmpty else { return }
+        // SQLite reports /private/var while Foundation may shorten the same
+        // macOS temporary path to /var. Apply the same normalization at both
+        // ends; otherwise real writer transactions silently disappear.
+        guard state.paths.contains(path)
+                || state.paths.contains(URL(fileURLWithPath: path).standardizedFileURL.path) else { return }
         state.value.count += 1
         state.value.maximumSeconds = max(state.value.maximumSeconds, seconds)
         state.value.totalSeconds += seconds

@@ -2717,8 +2717,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     }
                 }
                 // Only the complete generation's commit permits job cleanup.
-                for artifact in stagedArtifacts { removeStagingDatabase(at: artifact) }
-                removeStagingDirectoryIfEmpty()
+                ExactBackfillMetrics.measure(.cleanup) {
+                    for artifact in stagedArtifacts { removeStagingDatabase(at: artifact) }
+                    removeStagingDirectoryIfEmpty()
+                }
                 return result
             } catch let demand as BusinessStageDemand {
                 // SQLite has one writer per physical A file. Build durable
@@ -2736,9 +2738,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 for batch in stagingBatches(for: demand.jobs) {
                     try ensureStagingCapacity(for: batch)
                     let offset = completedBeforeBatch
-                    let staged = try stageFullRebuilds(batch, parser: parser,
-                        eventEnrichmentTotal: demand.enrichmentTotal) { completed,total in
-                        reportProgress(min(offset + completed, total), total, .backfillingModel)
+                    let staged = try ExactBackfillMetrics.measure(.staging) {
+                        try stageFullRebuilds(batch, parser: parser,
+                            eventEnrichmentTotal: demand.enrichmentTotal) { completed,total in
+                            reportProgress(min(offset + completed, total), total, .backfillingModel)
+                        }
                     }
                     completedBeforeBatch += staged.filter { $0.job.reason == .eventEnrichment }.count
                 }
@@ -2785,7 +2789,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             .scanning
         )
 
-        do {
+        try ExactBackfillMetrics.measure(.discovery) {
             let indexedSources = try indexedSources(connection: connection, includeMissing: true)
             let missingSourceIDs = Set(try connection.readRows("SELECT source_id FROM usage_ledger_sources WHERE missing=1") { $0.int64(0) }.compactMap { $0 })
             let representedSourceIDs = Set(try connection.readRows("SELECT source_id FROM source_representations") { $0.int64(0) }.compactMap { $0 })
@@ -2969,12 +2973,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         var provenanceRotated = false
         let stagingBatches = stagingBatches(for: fullRebuildJobs)
         if BusinessSQLiteRoutes.store(for: driver.url) != nil {
-            for job in fullRebuildJobs {
-                var ready = false
-                for url in try stagingDatabaseURLs(for: job.file) {
-                    if try reusableStage(at: url, for: job) != nil { ready = true; break }
+            try ExactBackfillMetrics.measure(.readyValidation) {
+                for job in fullRebuildJobs {
+                    var ready = false
+                    for url in try stagingDatabaseURLs(for: job.file) {
+                        if try reusableStage(at: url, for: job) != nil { ready = true; break }
+                    }
+                    if !ready { throw BusinessStageDemand(jobs: fullRebuildJobs, enrichmentTotal: eventEnrichmentTotal) }
                 }
-                if !ready { throw BusinessStageDemand(jobs: fullRebuildJobs, enrichmentTotal: eventEnrichmentTotal) }
             }
         }
         let finalSynchronization = try connection.transaction { connection in
@@ -2990,16 +2996,18 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             for batch in stagingBatches {
                 try ensureStagingCapacity(for: batch)
                 let completedBeforeBatch = completedEventEnrichmentJobs
-                let stagedRebuilds = try stageFullRebuilds(
-                    batch,
-                    parser: parser,
-                    eventEnrichmentTotal: eventEnrichmentTotal
-                ) { completed, total in
-                    onProgress?(
-                        min(completedBeforeBatch + completed, total),
-                        total,
-                        .backfillingModel
-                    )
+                let stagedRebuilds = try ExactBackfillMetrics.measure(.staging) {
+                    try stageFullRebuilds(
+                        batch,
+                        parser: parser,
+                        eventEnrichmentTotal: eventEnrichmentTotal
+                    ) { completed, total in
+                        onProgress?(
+                            min(completedBeforeBatch + completed, total),
+                            total,
+                            .backfillingModel
+                        )
+                    }
                 }
                 if Self.stagingTestState.consumeFailure() {
                     throw SQLiteDatabaseError(
@@ -3013,6 +3021,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     $0.job.reason == .eventEnrichment
                 }.count
 
+                try ExactBackfillMetrics.measure(.sourceComparison) {
                 for staged in stagedRebuilds where staged.job.reason == .eventEnrichment {
                     guard let source = try indexedSource(
                         path: staged.job.file.path,
@@ -3034,6 +3043,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         rewrittenFiles += 1
                     }
                 }
+                }
+                try ExactBackfillMetrics.measure(.lineage) {
                 for staged in stagedRebuilds {
                     let resolution = try lineageReplacement(
                         for: staged,
@@ -3049,7 +3060,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     lineageAmbiguityDetected = lineageAmbiguityDetected
                         || resolution.ambiguous
                 }
+                }
 
+                try ExactBackfillMetrics.measure(.importing) {
                 try connection.transaction { transaction in
                     // Rotate in the same transaction as the first unsafe
                     // replacement. A reader sees either the old batch and old
@@ -3090,6 +3103,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         }
                     }
                 }
+                }
                 for staged in stagedRebuilds {
                     changedFiles += 1
                     indexedEvents += staged.eventCount
@@ -3098,10 +3112,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 }
             }
 
-            let projectionChanged = try CanonicalUsageProjection.refresh(on:connection)
+            let projectionChanged = try ExactBackfillMetrics.measure(.projection) { try CanonicalUsageProjection.refresh(on:connection) }
             let projectionPending = try connection.readRows("SELECT value FROM schema_meta WHERE key='canonical_projection_pending'") { $0.text(0) }.first != nil
             if projectionChanged || projectionPending {
-                try reconcileCanonicalAggregates(connection:connection)
+                try ExactBackfillMetrics.measure(.projection) { try reconcileCanonicalAggregates(connection:connection) }
                 sourceMutationDetected = true
             }
 
@@ -3117,7 +3131,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             let currentScanUnsafeCauseDetected = lineageAmbiguityDetected
             let unsafeEpisodeBegan = currentScanUnsafeCauseDetected
                 && !preRotationAttributionState.currentScanUnsafeCauseDetected
-            return try connection.transaction { transaction in
+            return try ExactBackfillMetrics.measure(.publication) {
+            try connection.transaction { transaction in
                 if currentScanUnsafeCauseDetected
                     && !provenanceRotated
                     && !preRotationAttributionState.requiresSyntheticCutover {
@@ -3237,6 +3252,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     eventEnrichmentComplete: eventEnrichmentComplete,
                     eventEnrichmentPendingCount: eventEnrichmentPendingCount
                 )
+            }
             }
         }
         if eventEnrichmentTotal > 0 {
@@ -8945,8 +8961,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             timeout: busyTimeoutMilliseconds, fileManager: fileManager ?? self.fileManager)
     }
     private func stageExists(_ url: URL) throws -> Bool {
-        if let pool = stagePool, let target = BusinessSQLiteRoutes.store(for: driver.url),
-           let job = try pool.lookup(url, for: target) { return try pool.seal(of: job) != nil }
+        if let pool = stagePool, let target = BusinessSQLiteRoutes.store(for: driver.url) {
+            if let job = try pool.lookup(url, for: target) { return try pool.seal(of: job) != nil }
+            if let legacy = BusinessSQLiteRoutes.store(for: url), legacy.module == "exact.swift.stage" {
+                return try pool.legacyPresence(legacy, for: target)
+            }
+        }
         return BusinessStoreFiles.exists(url, fileManager: fileManager)
     }
     private func stageByteCount(at url: URL) throws -> UInt64 { try stageAccess(at: url).byteCount() }

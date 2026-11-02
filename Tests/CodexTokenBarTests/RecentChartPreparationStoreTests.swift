@@ -156,6 +156,49 @@ final class RecentChartPreparationStoreTests: XCTestCase {
         XCTAssertEqual(calls.count, 6)
     }
 
+    func testPendingPriceModelChangeCannotRepriceTheStillDisplayedSnapshot() async throws {
+        let store = RecentChartPreparationStore()
+        let started = expectation(description: "new price snapshot is pending")
+        let gate = DispatchSemaphore(value: 0)
+        defer { gate.signal(); store.cancel() }
+        let base = makeInput(tokens: 100_000)
+        let buckets = base.bins.map { TokenCacheBucket(start: $0.start, breakdown: .init(
+            inputTokens: 100_000, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0,
+            totalTokens: 100_000, calls: 1)) }
+        let input = RecentChartPreparationInput(bins: base.bins, hourlyBins: base.hourlyBins,
+            cacheRecentBins: buckets, cacheHourlyBins: buckets, attributionEvents: [],
+            quotaRecentBins: [], quotaHourlyBins: [])
+        store.prepare(input: input, priceModel: .gpt56Sol, preferredRange: .twentyFourHours)
+        try await waitForSnapshots(store)
+        let displayed = try XCTUnwrap(store.snapshot(for: .twentyFourHours))
+        var state = RecentChartConsumptionSelectionState()
+        state.click(index: 0, validCount: displayed.data.bins.count)
+        let last = displayed.data.bins.count - 1
+        let before = try XCTUnwrap(displayed.consumptionSelection(state: state, hoveredIndex: last))
+        store.prepare(input: input, priceModel: .gpt56Luna, preferredRange: .twentyFourHours) { range, input, model in
+            if range == .twentyFourHours {
+                started.fulfill()
+                _ = gate.wait(timeout: .now() + 5)
+            }
+            return .build(range: range, input: input, priceModel: model)
+        }
+        await fulfillment(of: [started], timeout: 2)
+        XCTAssertNil(store.snapshot(for: .twentyFourHours))
+        // The view retains this immutable snapshot until its replacement is
+        // ready. Both hover and one-click selection must keep its old price.
+        XCTAssertEqual(displayed.priceModel, .gpt56Sol)
+        XCTAssertEqual(displayed.consumptionSelection(state: state, hoveredIndex: last), before)
+        XCTAssertEqual(before.fullCurrentAPIPriceEstimate.costUSD, displayed.bucketCostsUSD.reduce(0, +), accuracy: 0.000001)
+        gate.signal()
+        try await waitForSnapshots(store)
+        let refreshed = try XCTUnwrap(store.snapshot(for: .twentyFourHours))
+        let after = try XCTUnwrap(refreshed.consumptionSelection(state: state, hoveredIndex: last))
+        XCTAssertEqual(refreshed.priceModel, .gpt56Luna)
+        XCTAssertNotEqual(refreshed.bucketCostsUSD, displayed.bucketCostsUSD)
+        XCTAssertEqual(after.fullCurrentAPIPriceEstimate.costUSD, refreshed.bucketCostsUSD.reduce(0, +), accuracy: 0.000001)
+        XCTAssertEqual(displayed.consumptionSelection(state: state, hoveredIndex: last), before)
+    }
+
     func testSupersededWorkerCannotPublishOldHistoryAfterRefresh() async throws {
         let store = RecentChartPreparationStore()
         let started = expectation(description: "old background preparation started")

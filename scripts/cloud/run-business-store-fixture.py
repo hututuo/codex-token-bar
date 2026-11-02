@@ -9,6 +9,22 @@ import subprocess
 import tempfile
 
 
+def validate_native_scale(result, required):
+    if not required:
+        return
+    profiles = [check for check in result.get("checks", [])
+                if check.get("name") == "exact-rust-production-scale-fixture"]
+    if len(profiles) != 1:
+        raise ValueError("Required native production scale profile was not executed exactly once")
+    profile = profiles[0]
+    if profile.get("sourceCounts") != 4124 or profile.get("events") != 503128:
+        raise ValueError("Native pressure input changed")
+    if profile.get("stores", {}).get("seededEmptyCandidateNamespaces") != 6250:
+        raise ValueError("Native large-catalog pressure was omitted")
+    if profile.get("budgetPassed") is not True:
+        raise ValueError("Native scale exceeded its unchanged/backfill budget; full profile retained")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path)
@@ -54,6 +70,10 @@ def main():
         raise SystemExit("Production-path fixture did not pass")
     result["fixtureRootRetained"] = True
     args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    try:
+        validate_native_scale(result, env.get("TOKENBAR_NATIVE_SCALE") == "1")
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
 
 
 if __name__ == "__main__":

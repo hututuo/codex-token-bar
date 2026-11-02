@@ -186,3 +186,14 @@ Windows连接寿命作平台适配：实际锁定SQLite源码的`winOpen`使用F
 ### 真实0.9.8产库pilot（独立证据）
 
 [41520268814](https://github.com/hututuo/codex-token-bar/actions/runs/41520268814)在候选7ebf194上双端PASS。producer为tag0.9.8固定SHA`0a9520f99c3f13e0f48c098298b07611dc7acd63`，非cfg(test)。两端均执行committed／interrupted（故意退出86）→resume→reopen，保留typed proofs／中断WAL；新增rollout后连续读取不双计，移走原始sessions后A仍162、B仍310。此lane是实际Rust生产路径；Swift单独验证。不把新增raw rollout子断言称为独立target-extra场景。
+
+### C07a · 跨进程故障门禁与实测反馈（仍未退出验收）
+
+- `6c59f4ca`公开0.9.7升级 [41527073541](https://github.com/hututuo/codex-token-bar/actions/runs/41527073541) 双端PASS。完整 [41527073325](https://github.com/hututuo/codex-token-bar/actions/runs/41527073325) 前端／更新器通过；Swift和Mac native在分配runner前取消，不能算通过。Windows实际生产fixture通过，但全量1625通过／3失败：诊断目录检查把verbatim Windows路径的裸prefix当目录检查，提前禁用了日志模块。改为逐个完整祖先检查，保留reparse／symlink拒绝与原断言，新增Windows专用测试；本地9项和Windows目标编译通过，实际Windows执行待后续CI。
+- `6c59f4ca`规模 [41527237426](https://github.com/hututuo/codex-token-bar/actions/runs/41527237426) **FAIL**。13／128／512／4124源的XCTest正确性均完成，backfill分别1.099／10.685／37.398／283.699秒；最长无进度间隔0.904／9.030／31.815／240.439秒；20次无变化P95为0.045／0.111／0.380／2.164秒。4124明确已完成，512进度与4124进度／P95超预算。压力case在1200秒被停止，日志只有Planning build，无XCTest/profile，不能声称压力已执行。
+- 上述四档锁遥测全为0而被checker拒收，并非“没有写锁”。实际DEBUG storage probe证实SQLite报告`/private/var`而Foundation保存`/var`，同一文件路径匹配失败。已统一记录端标准化，并新增实际外层事务、嵌套savepoint和无关数据库测试；本地34项storage测试通过。增加固定phase的可选DEBUG计时，继续定位discovery、ready校验、stage、source比较、lineage、import、projection、publication和cleanup，不凭尾段时间猜唯一根因。
+- 双端固定pool新增8个强退点：初始化commit前、chunk提交后、seal前／后、正式publication前／后、cleanup前／后。Swift DEBUG仅接受标记过的临时根，Rust仅fixture feature且非cfg(test)；发布与回执仍同A事务。父进程核对旧代／新代完整性，再连续3次重启。Swift实际storage模块及Rust选择性storage模块均通过；Rust probe的bootstrap依赖为stub，不冒充Tauri完整生产证据。实际Tauri fixture已接8点及完整bootstrap，待云端执行。
+- 原生压力fixture已接4124源×122＝503128事件与6250个未封存candidate namespace（25000表），调用实际Rust同步／补全／汇总，保留输入hash、旧行ID与用量、目录对象增量0和无变化P95门禁。其synthetic输入不称历史producer；整包类型和运行验证尚未完成。`scale=true`时强制执行并校验完整profile，失败后原native全套仍跑，末尾门禁不会把fixture失败掩成成功。
+- 新增Swift价格模型切换中的快照一致性保护：价格模型跟桶成本一起封在已准备快照，待新快照时选区继续沿用旧价格，不把新选择器值与旧hover混算。新增pending换价及跨本地午夜闭桶的24h／7d／30d回归；既有末桶／旧账断言保留，整包待CI。
+
+余项：定位并修复大库耗时、长源字节进度、日常无变化发现成本、满足证明的物理冗余材料收纳、日志成本／隐藏窗口代理指标，以及最终同SHA双端全量／真实各版本产库／压力组合。当前没有正式版替换、main合并或发布。

@@ -67,6 +67,16 @@ pub(crate) fn verify_runtime_recovery_fixture(home: &Path) -> Result<serde_json:
 pub(crate) fn verify_backfill_performance_fixture(home: &Path) -> Result<serde_json::Value, String> {
     exact_usage_index::verify_backfill_performance_fixture(home)
 }
+
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+pub(crate) fn verify_native_scale_fixture(home: &Path) -> Result<serde_json::Value, String> {
+    exact_usage_index::verify_native_scale_fixture(home)
+}
+
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+pub(crate) fn run_pool_crash_step(root: &Path, point: &str, resume: bool) -> Result<serde_json::Value, String> {
+    exact_usage_index::run_pool_crash_step(root,point,resume)
+}
 #[cfg(test)]
 mod rollout_source_tests;
 mod session_files;

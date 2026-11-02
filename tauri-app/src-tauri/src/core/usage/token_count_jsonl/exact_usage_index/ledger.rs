@@ -6,6 +6,13 @@ use rusqlite::types::Value;
 
 #[cfg(all(feature = "business-store-fixture", not(test)))]
 mod performance_fixture;
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+mod scale_fixture;
+
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+pub(super) fn verify_scale_fixture(home: &Path) -> Result<serde_json::Value, String> {
+    scale_fixture::verify_scale(home)
+}
 
 const REVISION: &str = "2";
 const FIELDS: &str = "id,source_id,ordinal,timestamp,tokens,input_tokens,cached_input_tokens,output_tokens,reasoning_output_tokens,model,user_prompt_start,user_prompt_end,assistant_response_start,assistant_response_end,accounting_kind,reported_total_tokens,token_source_offset,legacy_tokens";

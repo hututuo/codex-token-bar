@@ -82,6 +82,10 @@ final class ExactStagePoolTests: XCTestCase {
             try BusinessStoreFiles.registerInActiveContainer(store)
         }
         XCTAssertEqual(Set(try pool.legacyURLs(for: f.target, sourceDigest: digest)), Set(wanted))
+        for url in wanted {
+            XCTAssertFalse(try pool.legacyPresence(try XCTUnwrap(BusinessSQLiteRoutes.store(for: url)), for: f.target),
+                "A namespace registered before its producer wrote MAIN tables is unfinished, not published usage")
+        }
         let plan = try f.raw.readRows("EXPLAIN QUERY PLAN " + ExactStagePool.legacyLookupSQL,
             bindings: [.text(wanted[0].path), .text(directory.appendingPathComponent(digest + ".candidate-").path),
                        .text(directory.appendingPathComponent(digest + ".candidate.").path)]) { $0.text(3) ?? "" }

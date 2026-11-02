@@ -14,6 +14,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 type Result<T> = std::result::Result<T, String>;
 type Registry = Mutex<HashMap<PathBuf, Arc<Pool>>>;
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+#[path = "stage_pool/crash_fixture.rs"]
+mod crash_fixture;
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+pub(super) fn run_crash_step(root: &Path, point: &str, resume: bool) -> Result<serde_json::Value> {
+    crash_fixture::run(root, point, resume)
+}
 fn registry() -> &'static Registry {
     static POOLS: OnceLock<Registry> = OnceLock::new();
     POOLS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -116,6 +123,11 @@ pub(super) fn is_path(path: &Path) -> bool {
             == Some(".exact-stage-pool-rust-v1")
 }
 
+pub(super) fn is_legacy_path(path: &Path) -> bool {
+    path.parent().and_then(Path::file_name).and_then(|s|s.to_str())
+        .is_some_and(|s|s.ends_with(".staging")) && path.extension().is_some_and(|s|s=="sqlite3")
+}
+
 impl Pool {
     /// Retain one schema-loaded connection. Growing the old catalog must not
     /// make every manifest/count query reopen and reparse A.
@@ -167,6 +179,8 @@ impl Pool {
                         c.execute("INSERT INTO tb_store_objects VALUES(?1,?2,?3,?4)",params![pool.store.id,name,kind,namespace.unbind(&sql).map_err(|e|format!("{e:?}"))?]).map_err(|e|e.to_string())?;
                     }
                     c.execute("UPDATE tb_stores SET user_version=1 WHERE store_id=?1",[&pool.store.id]).map_err(|e|e.to_string())?;
+                    #[cfg(all(feature = "business-store-fixture", not(test)))]
+                    crash_fixture::process_fault("initialize-before-commit",path);
                     c.execute_batch("COMMIT").map_err(|e|e.to_string())?; Ok(())
                 })();
                 if result.is_err() { let _=c.execute_batch("ROLLBACK"); } result?;
@@ -330,6 +344,43 @@ impl Pool {
     pub(super) fn legacy_candidates(&self, index: &Path, source_digest: &str) -> Result<Vec<PathBuf>> {
         self.with(|c|crate::core::business_store_route::exact_stage_candidates_on(c.connection(),index,source_digest))
     }
+    pub(super) fn legacy_presence(&self, path: &Path) -> Result<Option<bool>> {
+        if !is_legacy_path(path) {return Ok(None)}
+        let spec=crate::core::business_store_route::exact_store_spec(path)?;
+        self.with(|c| {
+            let registered:Option<(String,String,String)>=c.connection().query_row("SELECT module,logical_path,state FROM tb_stores WHERE store_id=?1",[&spec.id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(|e|e.to_string())?;
+            let Some((module,logical,state))=registered else {return Ok(Some(false))};
+            if module!="exact" || logical!=spec.logical_path || !matches!(state.as_str(),"ready"|"sealed") {return Err("旧暂存owner或状态不匹配，已保留任务".into());}
+            let mut statement=c.connection().prepare("SELECT name,type FROM tb_store_objects WHERE store_id=?1 ORDER BY name").map_err(|e|e.to_string())?;
+            let objects=statement.query_map([&spec.id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).map_err(|e|e.to_string())?
+                .collect::<std::result::Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
+            if objects.is_empty() {return Ok(Some(false))}
+            let mut names=objects.iter().map(|(name,_)|name.as_str()).collect::<Vec<_>>();names.sort();
+            if names!=["chunks","events","fingerprints","manifest"] || objects.iter().any(|(_,kind)|kind!="table") {
+                return Err("旧暂存结构不可识别，已保留任务".into());
+            }
+            let has_rows:bool=c.connection().query_row(&format!("SELECT EXISTS(SELECT 1 FROM {})",quote(&format!("{}manifest",spec.prefix))),[],|r|r.get(0)).map_err(|e|e.to_string())?;
+            if has_rows {return Ok(Some(true))}
+            // A known empty producer is unfinished, not a corrupt published
+            // ledger. Read its four bounded layouts on this held A handle.
+            static SHAPE:OnceLock<Result<Vec<(String,Vec<String>)>>>=OnceLock::new();
+            let expected=SHAPE.get_or_init(|| {
+                let work=Connection::open_in_memory().map_err(|e|e.to_string())?;
+                work.execute_batch(&super::staging_schema_sql(false)).map_err(|e|e.to_string())?;
+                TABLES.iter().map(|(name,_,_)| {
+                    let mut info=work.prepare(&format!("PRAGMA table_info({name})")).map_err(|e|e.to_string())?;
+                    let names=info.query_map([],|r|r.get::<_,String>(1)).map_err(|e|e.to_string())?.collect::<std::result::Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
+                    Ok(((*name).to_owned(),names))
+                }).collect()
+            }).as_ref().map_err(Clone::clone)?;
+            for (name,columns) in expected {
+                let mut info=c.connection().prepare(&format!("PRAGMA table_info({})",quote(&format!("{}{name}",spec.prefix)))).map_err(|e|e.to_string())?;
+                let actual=info.query_map([],|r|r.get::<_,String>(1)).map_err(|e|e.to_string())?.collect::<std::result::Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
+                if &actual!=columns {return Err("空暂存并非受支持的producer布局，已保留".into());}
+            }
+            Ok(Some(false))
+        })
+    }
     pub(super) fn seal(&self, job: &Job) -> Result<Option<Seal>> {
         self.with(|c|{
             let v=c.connection().query_row(&format!("SELECT codec,state,digest,byte_count,row_count,sealed_at,owner,contract_digest FROM {} WHERE job_id=?1",self.table("jobs")),[&job.id],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,Option<i64>>(3)?,r.get::<_,Option<i64>>(4)?,r.get::<_,Option<f64>>(5)?,r.get::<_,String>(6)?,r.get::<_,String>(7)?))).optional().map_err(|e|e.to_string())?;
@@ -436,6 +487,8 @@ impl Pool {
                     }
                     tx.commit().map_err(|e| e.to_string())
                 })?;
+                #[cfg(all(feature = "business-store-fixture", not(test)))]
+                crash_fixture::process_fault("chunk-committed",&self.path);
                 batch.clear();
                 Ok(())
             };
@@ -466,7 +519,14 @@ impl Pool {
             .duration_since(UNIX_EPOCH)
             .map_err(|e| e.to_string())?
             .as_secs_f64();
-        self.with(|c|{let changed=c.connection().execute(&format!("UPDATE {} SET manifest=?1,digest=?2,byte_count=?3,row_count=?4,sealed_at=?5,state='sealed' WHERE job_id=?6 AND owner=?7 AND state='building' AND contract_digest=?8",self.table("jobs")),params![manifest,digest,i64::try_from(bytes).map_err(|e|e.to_string())?,total,time,job.id,job.owner,job.contract]).map_err(|e|e.to_string())?;if changed!=1{return Err("暂存封存失效".into());}Ok(())})
+        self.with(|c| {
+            let tx=c.connection().unchecked_transaction().map_err(|e|e.to_string())?;
+            let changed=tx.execute(&format!("UPDATE {} SET manifest=?1,digest=?2,byte_count=?3,row_count=?4,sealed_at=?5,state='sealed' WHERE job_id=?6 AND owner=?7 AND state='building' AND contract_digest=?8",self.table("jobs")),params![manifest,digest,i64::try_from(bytes).map_err(|e|e.to_string())?,total,time,job.id,job.owner,job.contract]).map_err(|e|e.to_string())?;
+            if changed!=1 {return Err("暂存封存失效".into());}
+            #[cfg(all(feature = "business-store-fixture", not(test)))]
+            crash_fixture::process_fault("seal-before-commit",&self.path);
+            tx.commit().map_err(|e|e.to_string())
+        })
     }
     pub(super) fn restore(&self, job: &Job) -> Result<Connection> {
         let seal = self.seal(job)?.ok_or("暂存尚未封存")?;
@@ -501,7 +561,10 @@ impl Pool {
             let state:Option<String>=tx.query_row(&format!("SELECT j.state FROM {} j JOIN {} r ON r.job_id=j.job_id AND r.owner=j.owner AND r.payload_digest=j.digest WHERE j.job_id=?1 AND j.owner=?2 AND j.contract_digest=?3",self.table("jobs"),self.table("publication_receipts")),params![job.id,job.owner,job.contract],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
             if state.as_deref()==Some("reclaimed"){return Ok(())} if state.as_deref()!=Some("consumed"){return Ok(())}
             for name in ["event_rows","fingerprints","chunks"] {tx.execute(&format!("DELETE FROM {} WHERE job_id=?1",self.table(name)),[&job.id]).map_err(|e|e.to_string())?;}
-            tx.execute(&format!("UPDATE {} SET state='reclaimed' WHERE job_id=?1",self.table("jobs")),[&job.id]).map_err(|e|e.to_string())?;tx.commit().map_err(|e|e.to_string())
+            tx.execute(&format!("UPDATE {} SET state='reclaimed' WHERE job_id=?1",self.table("jobs")),[&job.id]).map_err(|e|e.to_string())?;
+            #[cfg(all(feature = "business-store-fixture", not(test)))]
+            crash_fixture::process_fault("cleanup-before-commit",&self.path);
+            tx.commit().map_err(|e|e.to_string())
             })();
             let _ = c.connection().busy_timeout(std::time::Duration::from_secs(30));
             result

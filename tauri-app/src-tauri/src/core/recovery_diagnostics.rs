@@ -358,23 +358,32 @@ fn ensure_directory_chain(path: &Path) -> std::io::Result<(PathBuf, bool)> {
             "empty diagnostics root",
         ));
     }
-    let mut current = PathBuf::new();
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "parent component rejected",
+        ));
+    }
+    // Probe complete ancestors. Windows canonical paths can use a verbatim
+    // prefix (`\\?\C:\...`); the bare prefix component is not a path to stat.
+    let mut ancestors: Vec<_> = path
+        .ancestors()
+        .filter(|ancestor| !ancestor.as_os_str().is_empty())
+        .collect();
+    ancestors.reverse();
+    if ancestors.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "diagnostics root has no filesystem ancestor",
+        ));
+    }
     let mut created_final = false;
-    let components: Vec<_> = path.components().collect();
-    for (index, component) in components.iter().enumerate() {
-        match component {
-            Component::Prefix(_) | Component::RootDir => current.push(component.as_os_str()),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    "parent component rejected",
-                ));
-            }
-            Component::Normal(name) => current.push(name),
-        }
-        let is_last = index + 1 == components.len();
-        match fs::symlink_metadata(&current) {
+    for (index, ancestor) in ancestors.iter().enumerate() {
+        let is_last = index + 1 == ancestors.len();
+        match fs::symlink_metadata(ancestor) {
             Ok(metadata) => {
                 if !metadata.is_dir() || is_link_or_reparse(&metadata) {
                     return Err(std::io::Error::new(
@@ -384,7 +393,7 @@ fn ensure_directory_chain(path: &Path) -> std::io::Result<(PathBuf, bool)> {
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                match create_directory(&current) {
+                match create_directory(ancestor) {
                     Ok(()) => {
                         if is_last {
                             created_final = true;
@@ -393,7 +402,7 @@ fn ensure_directory_chain(path: &Path) -> std::io::Result<(PathBuf, bool)> {
                     Err(create_error)
                         if create_error.kind() == std::io::ErrorKind::AlreadyExists =>
                     {
-                        let metadata = fs::symlink_metadata(&current)?;
+                        let metadata = fs::symlink_metadata(ancestor)?;
                         if !metadata.is_dir() || is_link_or_reparse(&metadata) {
                             return Err(std::io::Error::new(
                                 std::io::ErrorKind::PermissionDenied,
@@ -407,14 +416,14 @@ fn ensure_directory_chain(path: &Path) -> std::io::Result<(PathBuf, bool)> {
             Err(error) => return Err(error),
         }
     }
-    let metadata = fs::symlink_metadata(&current)?;
+    let metadata = fs::symlink_metadata(path)?;
     if !metadata.is_dir() || is_link_or_reparse(&metadata) {
         return Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "unsafe diagnostics root",
         ));
     }
-    Ok((current, created_final))
+    Ok((path.to_path_buf(), created_final))
 }
 
 fn create_directory(path: &Path) -> std::io::Result<()> {
@@ -1123,6 +1132,16 @@ mod tests {
         );
         assert_eq!(diagnostics.close(), RecordStatus::Disabled);
         assert_eq!(business_result, Err("recovery result"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn canonical_windows_temp_path_walks_complete_ancestors() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap().join("chain-probe/leaf");
+        let (ensured, created_final) = ensure_directory_chain(&root).unwrap();
+        assert_eq!(ensured, root);
+        assert!(created_final);
     }
 
     #[cfg(unix)]

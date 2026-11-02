@@ -2356,6 +2356,7 @@ struct RecentUsageChart: View {
         let updatedData = snapshot.data
         let costBasisChanged = snapshot.quotaData != cachedQuotaData
             || snapshot.costAttributionEvents != cachedPricingSnapshot?.costAttributionEvents
+            || snapshot.priceModel != cachedPricingSnapshot?.priceModel
         if costBasisChanged { cachedFixedConsumptionSelection = nil }
         cachedQuotaData = snapshot.quotaData
         cachedPricingSnapshot = snapshot
@@ -2432,7 +2433,7 @@ struct RecentUsageChart: View {
         let estimate = ModelAwareAPIPriceEstimator.estimate(
             modelBreakdowns: (cachedQuotaData ?? preparedData).modelBreakdowns[safe: index] ?? [],
             fallbackBreakdown: fallbackBreakdown,
-            fallbackModel: selectedQuotaEstimateModel,
+            fallbackModel: cachedPricingSnapshot?.priceModel ?? selectedQuotaEstimateModel,
             standardAPI: true,
             rates: { $0.currentPriceRates }
         )
@@ -2446,7 +2447,7 @@ struct RecentUsageChart: View {
             return
         }
         cachedFixedConsumptionSelection = cachedPricingSnapshot?.consumptionSelection(
-            state: consumptionSelectionState, priceCard: .officialAPI(selectedQuotaEstimateModel))
+            state: consumptionSelectionState)
     }
 
     private var activeConsumptionSelection: QuotaConsumptionSelection? {
@@ -2465,7 +2466,7 @@ struct RecentUsageChart: View {
             return cachedSelection
         }
         return cachedPricingSnapshot?.consumptionSelection(state: consumptionSelectionState,
-            hoveredIndex: validHover, priceCard: .officialAPI(selectedQuotaEstimateModel))
+            hoveredIndex: validHover)
     }
 
     private func activeSelectionAttribution(

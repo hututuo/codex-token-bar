@@ -129,6 +129,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let lock = NSLock()
         var completed: [Int] = []
         SQLiteWriteMetrics.begin(at: configuration.container)
+        ExactBackfillMetrics.begin()
         let backfillStarted = Date()
         var lastProgress = backfillStarted
         var largestGap: TimeInterval = 0
@@ -148,6 +149,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         })
         let backfillSeconds = Date().timeIntervalSince(backfillStarted)
         let writeMetrics = SQLiteWriteMetrics.end()
+        let phaseMetrics = ExactBackfillMetrics.end()
         largestGap = max(largestGap, Date().timeIntervalSince(lastProgress))
         XCTAssertTrue(result.eventEnrichmentComplete)
         XCTAssertEqual(parsed.value, files.count, "The publication retry must reuse verified staged work")
@@ -210,6 +212,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             "unchangedP95Seconds": unchangedP95Seconds, "preparationSeconds": preparationSeconds,
             "writeLockCount": writeMetrics.count, "maximumWriteLockSeconds": writeMetrics.maximumSeconds,
             "totalWriteLockSeconds": writeMetrics.totalSeconds,
+            "phaseSeconds": phaseMetrics.seconds, "phaseCalls": phaseMetrics.calls,
             "bootstrapSeconds": bootstrapSeconds, "backfillSeconds": backfillSeconds,
             "largestProgressGapSeconds": largestGap,
             "totalSeconds": Date().timeIntervalSince(overallStarted)]

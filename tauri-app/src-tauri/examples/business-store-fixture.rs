@@ -6,7 +6,12 @@ fn main() {
         std::process::exit(2);
     };
 
-    match codex_token_bar_lib::business_store_fixture::run_fixture(&root) {
+    let mode=std::env::args().nth(2);
+    let result=if matches!(mode.as_deref(),Some("--pool-crash-child"|"--pool-crash-resume")) {
+        let point=std::env::args().nth(3).unwrap_or_default();
+        codex_token_bar_lib::business_store_fixture::run_pool_crash_probe(&root,&point,mode.as_deref()==Some("--pool-crash-resume"))
+    } else {codex_token_bar_lib::business_store_fixture::run_fixture(&root)};
+    match result {
         Ok(report) => {
             println!(
                 "{}",

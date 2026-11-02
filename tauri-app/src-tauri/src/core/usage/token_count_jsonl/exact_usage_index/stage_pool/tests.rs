@@ -1,6 +1,42 @@
 use super::*;
 
 #[test]
+fn missing_and_known_empty_legacy_candidates_use_the_held_pool_without_becoming_facts() {
+    let (root,pool,_)=fixture();
+    let path=root.path().join("index.sqlite3.staging").join(format!("{}.candidate-v2-{}.sqlite3","a".repeat(64),"b".repeat(64)));
+    assert_eq!(pool.legacy_presence(&path).unwrap(),Some(false));
+    let spec=crate::core::business_store_route::exact_store_spec(&path).unwrap();
+    let container=Container::open_existing(&pool.path).unwrap();
+    container.register(&spec).unwrap();
+    let writer=container.into_store_connection(&spec).unwrap();
+    writer.execute_batch(&super::super::staging_schema_sql(false)).unwrap();
+    assert_eq!(pool.legacy_presence(&path).unwrap(),Some(false));
+    assert!(!path.exists());
+    let work=seed_fixture_stage("/fixture.jsonl").unwrap();
+    let count=TABLES[0].1;
+    let values=work.query_row("SELECT * FROM manifest",[],|row| {
+        (0..count).map(|i|row.get::<_,rusqlite::types::Value>(i)).collect::<rusqlite::Result<Vec<_>>>()
+    }).unwrap();
+    writer.execute(&format!("INSERT INTO manifest VALUES({})",vec!["?";count].join(",")),params_from_iter(values)).unwrap();
+    assert_eq!(pool.legacy_presence(&path).unwrap(),Some(true));
+}
+
+#[test]
+fn an_unknown_empty_legacy_layout_is_preserved_and_refused() {
+    let (root,pool,_)=fixture();
+    let path=root.path().join("index.sqlite3.staging").join(format!("{}.candidate-v2-{}.sqlite3","a".repeat(64),"c".repeat(64)));
+    let spec=crate::core::business_store_route::exact_store_spec(&path).unwrap();
+    let container=Container::open_existing(&pool.path).unwrap();
+    container.register(&spec).unwrap();
+    let writer=container.into_store_connection(&spec).unwrap();
+    writer.execute_batch(&super::super::staging_schema_sql(false)).unwrap();
+    writer.execute_batch("CREATE TABLE unknown_future(value TEXT)").unwrap();
+    assert!(pool.legacy_presence(&path).is_err());
+    assert_eq!(writer.query_row("SELECT COUNT(*) FROM manifest",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    assert_eq!(pool.legacy_presence(&root.path().join("ordinary-index.sqlite3")).unwrap(),None);
+}
+
+#[test]
 fn offline_maintenance_cannot_close_a_pool_while_an_owner_is_using_it() {
     let (_root, pool, _) = fixture();
     let path = pool.path.clone();

@@ -216,6 +216,10 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
     checks.push(exact_fixture(&h1, &h2, &p)?);
     checks.push(token_count_jsonl::verify_runtime_recovery_fixture(&root.join("runtime-home"))?);
     checks.push(token_count_jsonl::verify_backfill_performance_fixture(&root.join("legacy-backfill-home"))?);
+    checks.push(pool_process_crash_fixture(&root)?);
+    if std::env::var("TOKENBAR_NATIVE_SCALE").as_deref() == Ok("1") {
+        checks.push(token_count_jsonl::verify_native_scale_fixture(&root.join("native-scale-home"))?);
+    }
     checks.push(published_recovery_read_fixture(&h1, &p)?);
     for (f, before) in &digests {
         need!(
@@ -233,6 +237,76 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
     park_a_and_test(&p)?;
     checks.push(json!({"name":"rerun-and-fail-closed","status":"PASS","storeCount":count}));
     Ok(json!({"status":"PASS","root":root,"containerA":p.a,"clientB":p.b,"checks":checks}))
+}
+
+pub fn run_pool_crash_probe(input: &Path, point: &str, resume: bool) -> Result<Value,String> {
+    let root=validate_root(input)?;
+    let p=Paths::resolve(&root)?;
+    need!(fs::read(root.join(".tokenbar-pool-crash-fixture")).map_err(|e|e.to_string())?==b"tokenbar-pool-crash-fixture-v1\n", "unowned crash root");
+    if !resume {need!(!p.a.exists(),"crash producer refuses an existing A");}
+    else {need!(p.a.is_file(),"crash resume refuses a missing A");}
+    let startup=crate::core::business_startup::process_coordinator();
+    need!(startup.begin_initial(),"crash process already has a startup owner");
+    let result=route::bootstrap();startup.finish(result.clone());result?;
+    let mut report=token_count_jsonl::run_pool_crash_step(&root,point,resume)?;
+    for _ in 0..3 {route::bootstrap()?;}
+    report["repeatedStartupChecks"]=json!(3);
+    Ok(report)
+}
+
+fn pool_process_crash_fixture(root:&Path) -> Result<Value,String> {
+    let phases=["initialize-before-commit","chunk-committed","seal-before-commit","seal-committed",
+        "publication-before-commit","publication-committed","cleanup-before-commit","cleanup-committed"];
+    let mut reports=Vec::new();
+    for phase in phases {
+        let case=root.join(format!("pool-crash-{}",uuid::Uuid::new_v4()));
+        fs::create_dir(&case).map_err(|e|e.to_string())?;
+        fs::write(case.join(".tokenbar-pool-crash-fixture"),b"tokenbar-pool-crash-fixture-v1\n").map_err(|e|e.to_string())?;
+        let case=fs::canonicalize(case).map_err(|e|e.to_string())?;
+        run_pool_process(&case,phase,false,0)?;
+        let mut reopens=Vec::new();
+        for attempt in 0..3 {reopens.push(run_pool_process(&case,phase,true,attempt)?);}
+        reports.push(json!({"phase":phase,"forcedExit":86,"resumes":reopens}));
+    }
+    Ok(json!({"name":"pool-process-crash-recovery","status":"PASS","phases":reports,
+        "scope":"actual production storage bootstrap, fixed pool and same-A publication bridge; disposable numeric fixtures; not UI/parser acceptance"}))
+}
+
+fn run_pool_process(root:&Path, point:&str, resume:bool, attempt:usize) -> Result<Value,String> {
+    use std::process::{Command,Stdio};
+    use std::time::{Duration,Instant};
+    let mode=if resume{"--pool-crash-resume"}else{"--pool-crash-child"};
+    let output=root.join(format!("{}-{attempt}.log",if resume{"resume"}else{"crash"}));
+    let log=fs::OpenOptions::new().write(true).create_new(true).open(&output).map_err(|e|e.to_string())?;
+    let error_path=output.with_extension("stderr.log");
+    let error_log=fs::OpenOptions::new().write(true).create_new(true).open(&error_path).map_err(|e|e.to_string())?;
+    let mut command=Command::new(std::env::current_exe().map_err(|e|e.to_string())?);
+    command.arg(root).arg(mode).arg(point).env_clear()
+        .stdout(Stdio::from(log)).stderr(Stdio::from(error_log));
+    for (key,value) in std::env::vars_os() {
+        if ["PATH","HOME","USERPROFILE","APPDATA","LOCALAPPDATA","TMPDIR","TEMP","TMP","SystemRoot","SYSTEMROOT","WINDIR","LD_LIBRARY_PATH","DYLD_LIBRARY_PATH","DYLD_FRAMEWORK_PATH","GITHUB_ACTIONS","RUNNER_TEMP"].iter().any(|allowed|key==*allowed) {
+            command.env(key,value);
+        }
+    }
+    for (key,folder) in ENV.iter().zip(["tauri-support","tauri-cache","shared-support","shared-cache","legacy-usage"]) {command.env(key,root.join(folder));}
+    if !resume {command.env("TOKENBAR_POOL_CRASH_ROOT",root).env("TOKENBAR_POOL_CRASH_POINT",point);}
+    let mut child=command.spawn().map_err(|e|e.to_string())?;
+    let started=Instant::now();
+    let status=loop {
+        if let Some(status)=child.try_wait().map_err(|e|e.to_string())? {break status;}
+        if started.elapsed()>Duration::from_secs(60) {let _=child.kill();let _=child.wait();return Err(format!("own pool crash process timed out: {point}"));}
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let text=fs::read_to_string(&output).map_err(|e|e.to_string())?;
+    let errors=fs::read_to_string(&error_path).map_err(|e|e.to_string())?;
+    if !resume {
+        need!(status.code()==Some(86),format!("fault was not reached {point}: {text} {errors}"));
+        return Ok(json!({"forcedExit":86}));
+    }
+    need!(status.success(),format!("pool recovery failed {point}: {text} {errors}"));
+    let value:Value=serde_json::from_str(&text).map_err(|e|format!("pool recovery report: {e}: {text}"))?;
+    need!(value["status"]=="PASS" && value["publishedTokens"]==134 && value["publicationReceipts"]==1,"pool recovery report did not prove preserved accounting");
+    Ok(value)
 }
 
 fn published_recovery_read_fixture(home: &Path, paths: &Paths) -> Result<Value, String> {

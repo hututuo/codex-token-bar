@@ -12215,7 +12215,11 @@ fn existing_regular_index(path: &Path) -> Result<bool, String> {
     }
     #[cfg(not(test))]
     {
-        if existing_regular_legacy_file(path)? {
+        let physical_exists=existing_regular_legacy_file(path)?;
+        if !physical_exists && stage_pool::is_legacy_path(path) {
+            if let Some(present)=stage_pool::Pool::current()?.legacy_presence(path)? {return Ok(present)}
+        }
+        if physical_exists {
             if crate::core::business_store_route::exact_store_exists(path)? {
                 return Ok(true);
             }
@@ -12315,6 +12319,16 @@ pub(super) fn verify_runtime_recovery_fixture(home: &Path) -> Result<serde_json:
 #[cfg(all(feature = "business-store-fixture", not(test)))]
 pub(super) fn verify_backfill_performance_fixture(home: &Path) -> Result<serde_json::Value, String> {
     ledger::verify_performance_fixture(home)
+}
+
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+pub(super) fn verify_native_scale_fixture(home: &Path) -> Result<serde_json::Value, String> {
+    ledger::verify_scale_fixture(home)
+}
+
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+pub(super) fn run_pool_crash_step(root: &Path, point: &str, resume: bool) -> Result<serde_json::Value, String> {
+    stage_pool::run_crash_step(root,point,resume)
 }
 
 #[cfg(all(feature = "business-store-fixture", not(test)))]

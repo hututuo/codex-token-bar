@@ -13,11 +13,14 @@ final class RecentChartLastBucketPricingTests: XCTestCase {
         let rows: [Row]
     }
 
-    private func input() throws -> RecentChartPreparationInput {
+    private func input(anchorEnd: Date? = nil, closedThroughAdvance: TimeInterval = 0) throws -> RecentChartPreparationInput {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
-        let fixture = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf:
+        let original = try JSONDecoder().decode(Fixture.self, from: Data(contentsOf:
             root.appendingPathComponent("Tests/Fixtures/last-bucket-chart-cost.json")))
+        let offset = (anchorEnd?.timeIntervalSince1970 ?? original.settledThroughUnix) - original.settledThroughUnix
+        let fixture = Fixture(settledThroughUnix: original.settledThroughUnix + offset + closedThroughAdvance,
+            rows: original.rows.map { .init(startUnix: $0.startUnix + offset, model: $0.model, breakdown: $0.breakdown) })
         let end = Date(timeIntervalSince1970: fixture.settledThroughUnix)
         let closed = fixture.rows.filter { $0.startUnix < fixture.settledThroughUnix }
         let byStart = Dictionary(grouping: closed, by: \.startUnix)
@@ -60,10 +63,10 @@ final class RecentChartLastBucketPricingTests: XCTestCase {
             let last = snapshot.data.bins.count - 1
             var state = RecentChartConsumptionSelectionState()
             state.click(index: 0, validCount: last + 1)
-            let before = try XCTUnwrap(snapshot.consumptionSelection(state: state, hoveredIndex: last - 1, priceCard: .officialAPI(.gpt56Sol)))
-            let preview = try XCTUnwrap(snapshot.consumptionSelection(state: state, hoveredIndex: last, priceCard: .officialAPI(.gpt56Sol)))
+            let before = try XCTUnwrap(snapshot.consumptionSelection(state: state, hoveredIndex: last - 1))
+            let preview = try XCTUnwrap(snapshot.consumptionSelection(state: state, hoveredIndex: last))
             state.click(index: last, validCount: last + 1)
-            let pinned = try XCTUnwrap(snapshot.consumptionSelection(state: state, priceCard: .officialAPI(.gpt56Sol)))
+            let pinned = try XCTUnwrap(snapshot.consumptionSelection(state: state))
             XCTAssertEqual(before.breakdown, preview.breakdown)
             XCTAssertEqual(preview, pinned)
             XCTAssertEqual(preview.breakdown.calls, 842)
@@ -73,7 +76,7 @@ final class RecentChartLastBucketPricingTests: XCTestCase {
             XCTAssertEqual(preview.fullCurrentAPIPriceEstimate.costUSD, snapshot.bucketCostsUSD.reduce(0, +), accuracy: 0.0000001)
             XCTAssertFalse(snapshot.costAttributionEvents.contains { $0.start >= original.settledThrough! })
             let refreshed = RecentChartPreparedSnapshot.build(range: .twentyFourHours, input: input, priceModel: .gpt56Sol)
-            XCTAssertEqual(refreshed.consumptionSelection(state: state, priceCard: .officialAPI(.gpt56Sol)), pinned)
+            XCTAssertEqual(refreshed.consumptionSelection(state: state), pinned)
         }
     }
 
@@ -85,7 +88,7 @@ final class RecentChartLastBucketPricingTests: XCTestCase {
             var state = RecentChartConsumptionSelectionState()
             state.click(index: 0, validCount: snapshot.data.bins.count)
             state.click(index: snapshot.data.bins.count - 1, validCount: snapshot.data.bins.count)
-            let selected = try XCTUnwrap(snapshot.consumptionSelection(state: state, priceCard: .officialAPI(.gpt56Sol)))
+            let selected = try XCTUnwrap(snapshot.consumptionSelection(state: state))
             XCTAssertEqual(selected.fullCurrentAPIPriceEstimate.costUSD, 23.51656288, accuracy: 0.0000001, range.rawValue)
             XCTAssertEqual(selected.breakdown.calls, 842, range.rawValue)
             for index in snapshot.data.bins.indices {
@@ -111,12 +114,35 @@ final class RecentChartLastBucketPricingTests: XCTestCase {
             var state = RecentChartConsumptionSelectionState()
             state.click(index: 0, validCount: snapshot.data.bins.count)
             state.click(index: snapshot.data.bins.count - 1, validCount: snapshot.data.bins.count)
-            return try XCTUnwrap(snapshot.consumptionSelection(state: state, priceCard: .officialAPI(.gpt56Sol)))
+            return try XCTUnwrap(snapshot.consumptionSelection(state: state))
         }
         let old = try selection(previous), new = try selection(next)
         XCTAssertEqual(old.fullCurrentAPIPriceEstimate.costUSD, 23.51656288, accuracy: 0.0000001)
         XCTAssertEqual(new.fullCurrentAPIPriceEstimate.costUSD, 23.59885808, accuracy: 0.0000001)
         XCTAssertEqual(new.breakdown.calls, old.breakdown.calls + tail.calls)
         XCTAssertEqual(try selection(previous), old, "Pending/new raw inputs must not reprice the displayed snapshot")
+    }
+
+    func testMidnightClosureKeepsAllRangesAndRetainedSelectionsOnOnePublishedBasis() throws {
+        let midnight = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-11-01T00:00:00+08:00"))
+        let beforeInput = try input(anchorEnd: midnight)
+        let afterInput = try input(anchorEnd: midnight, closedThroughAdvance: 300)
+        let newlyClosed = beforeInput.attributionEvents.filter { $0.start == midnight }.map(\.breakdown).combined
+        for range in RecentChartRange.allCases {
+            let before = RecentChartPreparedSnapshot.build(range: range, input: beforeInput, priceModel: .gpt56Sol)
+            let after = RecentChartPreparedSnapshot.build(range: range, input: afterInput, priceModel: .gpt56Sol)
+            func select(_ snapshot: RecentChartPreparedSnapshot) throws -> QuotaConsumptionSelection {
+                var state = RecentChartConsumptionSelectionState()
+                state.click(index: 0, validCount: snapshot.data.bins.count)
+                state.click(index: snapshot.data.bins.count - 1, validCount: snapshot.data.bins.count)
+                return try XCTUnwrap(snapshot.consumptionSelection(state: state))
+            }
+            let oldSelection = try select(before), newSelection = try select(after)
+            XCTAssertEqual(oldSelection.fullCurrentAPIPriceEstimate.costUSD, 23.51656288, accuracy: 0.0000001, range.rawValue)
+            XCTAssertEqual(newSelection.fullCurrentAPIPriceEstimate.costUSD, 23.59885808, accuracy: 0.0000001, range.rawValue)
+            XCTAssertEqual(newSelection.breakdown.calls, oldSelection.breakdown.calls + newlyClosed.calls, range.rawValue)
+            XCTAssertEqual(newSelection.fullCurrentAPIPriceEstimate.costUSD, after.bucketCostsUSD.reduce(0, +), accuracy: 0.0000001, range.rawValue)
+            XCTAssertEqual(try select(before), oldSelection, "The displayed old generation remains stable across midnight refresh")
+        }
     }
 }
