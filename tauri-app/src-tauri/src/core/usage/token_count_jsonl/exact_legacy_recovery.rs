@@ -192,6 +192,8 @@ pub(super) fn bootstrap_at(
             break;
         }
     }
+    let all_sources: Vec<_> = groups.values().flat_map(|group| group.sources.iter().cloned()).collect();
+    crate::core::business_migration_log::inspect_inputs(&all_sources);
     // Discover/validate the complete batch before importing any Exact namespace.
     // The existing importer verifies SQLite backups and source proofs; these
     // additional proofs prevent a changed receipt from completing activation.

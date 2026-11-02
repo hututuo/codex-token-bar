@@ -86,8 +86,8 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
         p.quota != p.shared_quota,
         "fixture requires distinct legacy quota paths"
     );
-    seed_quota(&p.quota, &h1, now - 1200.0)?;
-    seed_quota(&p.shared_quota, &h1, now - 900.0)?;
+    seed_quota(&p.quota, &h1, now - 1200.0, "tauri")?;
+    seed_quota(&p.shared_quota, &h1, now - 900.0, "swift")?;
     seed_modeltrace(&p.modeltrace)?;
     let scope = live_rate::LiveRateSourceScope::new(
         h1.to_string_lossy().into_owned(),
@@ -124,6 +124,7 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
         "codex",
     )
     .ok_or("quota fixture identity rejected")?;
+    quota_history::verify_retained_reader_fixture(&qi, &[(now - 1200.0,"tauri"),(now - 900.0,"swift")])?;
     let bundle = quota_bundle(now);
     quota_history::record_bundle(&qi, &bundle)?;
     let history = quota_history::history_bundle_for(&qi, &bundle, 30, true)?;
@@ -144,7 +145,7 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
         active > 0 && imported == [1, 1],
         "quota legacy typed facts or active write missing"
     );
-    checks.push(json!({"name":"quota","status":"PASS","activeRows":active,"legacyFacts":imported,"historyPoints":history.recent_7d.len()}));
+    checks.push(json!({"name":"quota","status":"PASS","activeRows":active,"legacyFacts":imported,"historyPoints":history.recent_7d.len(),"retainedReaderRows":2,"oldCycleSchema":true}));
 
     let mid = route::source_identity("modeltrace", &h1)?;
     let scope = "fixture:modeltrace-scope";
@@ -201,6 +202,8 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
     checks.push(json!({"name":"ledger-b","status":"PASS","rows":b_rows}));
 
     checks.push(exact_fixture(&h1, &h2, &p)?);
+    checks.push(token_count_jsonl::verify_live_state_fixture(&root.join("live-state-home"))?);
+    checks.push(token_count_jsonl::verify_bounded_stage_fixture(&root.join("bounded-stage-home"))?);
     for (f, before) in &digests {
         need!(
             digest(f)? == *before,
@@ -272,8 +275,16 @@ impl Paths {
             &a,
             &marker,
         ] {
+            need!(f.is_absolute(), "fixture destination must be absolute");
+            // Destinations need not exist yet. Resolve their existing ancestor,
+            // not a raw spelling with a different Windows verbatim prefix.
+            // All overrides were checked before this pass; no writes occur here.
+            let mut ancestor = f.as_path();
+            while !ancestor.exists() {
+                ancestor = ancestor.parent().ok_or("fixture path has no existing ancestor")?;
+            }
             need!(
-                f.starts_with(root),
+                ok!(fs::canonicalize(ancestor)).starts_with(root),
                 format!("path escaped fixture root: {}", f.display())
             );
         }
@@ -315,24 +326,34 @@ fn validate_root(input: &Path) -> Result<PathBuf, String> {
     for key in ENV {
         let value = std::env::var_os(key).ok_or_else(|| format!("missing path override {key}"))?;
         let p = PathBuf::from(value);
+        need!(p.is_absolute(), format!("{key} must be absolute"));
+        // canonicalize uses a verbatim \?\ prefix on Windows; comparing that
+        // to an uncanonicalized D:\ path rejects a valid isolated fixture.
+        // Require the harness-created directory and compare both resolved
+        // paths before creating anything. A symlink escaping the root fails.
+        let resolved = ok!(fs::canonicalize(&p));
         need!(
-            p.is_absolute() && p.starts_with(&root),
-            format!("{key} must be absolute and inside fixture root")
-        );
-        ok!(fs::create_dir_all(&p));
-        need!(
-            ok!(fs::canonicalize(p)).starts_with(&root),
-            format!("{key} resolves outside fixture root")
+            resolved != root && resolved.starts_with(&root) && resolved.is_dir(),
+            format!("{key} must resolve to an existing directory inside fixture root")
         );
     }
     Ok(root)
 }
 
-fn seed_quota(path: &Path, home: &Path, at: f64) -> Result<(), String> {
+fn seed_quota(path: &Path, home: &Path, at: f64, source: &str) -> Result<(), String> {
     parent(path)?;
     let c = ok!(Connection::open(path));
     ok!(c.execute_batch("CREATE TABLE quota_snapshots(id INTEGER PRIMARY KEY AUTOINCREMENT,created_at REAL NOT NULL,account_key TEXT NOT NULL,plan_type TEXT,limit_name TEXT,account_name TEXT,source TEXT,five_hour_used_percent INTEGER,five_hour_resets_at REAL,five_hour_cycle_generation INTEGER,five_hour_reset_anchor INTEGER NOT NULL DEFAULT 0,seven_day_used_percent INTEGER,seven_day_resets_at REAL,seven_day_cycle_generation INTEGER,seven_day_reset_anchor INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL,identity_version INTEGER,home_identity TEXT,stable_account_key TEXT,identity_plan_type TEXT,identity_limit_id TEXT);"));
-    ok!(c.execute("INSERT INTO quota_snapshots(created_at,account_key,plan_type,limit_name,account_name,source,five_hour_used_percent,five_hour_resets_at,five_hour_cycle_generation,seven_day_used_percent,seven_day_resets_at,seven_day_cycle_generation,status,identity_version,home_identity,stable_account_key,identity_plan_type,identity_limit_id) VALUES(?1,'sub:fixture-account','pro','codex','Fixture','swift',20,?2,1,30,?3,1,'ok',1,?4,'sub:fixture-account','pro','codex')",params![at,at+10000.0,at+200000.0,home.to_string_lossy().as_ref()]));
+    ok!(c.execute("INSERT INTO quota_snapshots(created_at,account_key,plan_type,limit_name,account_name,source,five_hour_used_percent,five_hour_resets_at,five_hour_cycle_generation,seven_day_used_percent,seven_day_resets_at,seven_day_cycle_generation,status,identity_version,home_identity,stable_account_key,identity_plan_type,identity_limit_id) VALUES(?1,'sub:fixture-account','pro','codex','Fixture','swift',20,?2,1,30,?3,1,'ok',1,?4,'sub:fixture-account','Pro','codex')",params![at,at+10000.0,at+200000.0,home.to_string_lossy().as_ref()]));
+    ok!(c.execute("UPDATE quota_snapshots SET source=?1", [source]));
+    if source == "tauri" {
+        // Published databases and interrupted upgrades may lack all four
+        // derived cycle columns. The production reader must not ALTER them.
+        ok!(c.execute_batch("ALTER TABLE quota_snapshots DROP COLUMN five_hour_cycle_generation;
+            ALTER TABLE quota_snapshots DROP COLUMN five_hour_reset_anchor;
+            ALTER TABLE quota_snapshots DROP COLUMN seven_day_cycle_generation;
+            ALTER TABLE quota_snapshots DROP COLUMN seven_day_reset_anchor;"));
+    }
     Ok(())
 }
 

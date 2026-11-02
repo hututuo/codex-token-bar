@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { callCommandStrict } from "../api/command";
 import { isTauriRuntimeAvailable } from "../platform/runtime";
 import { listen } from "@tauri-apps/api/event";
+import { BusinessRecoveryActions } from "./BusinessRecoveryActions";
 
 export interface BusinessStartupState { phase:"preparing"|"ready"|"error"; message:string|null }
 export function BusinessStartupScreen({state,onRetry}:{state:BusinessStartupState;onRetry:()=>void}) {
@@ -11,7 +12,7 @@ export function BusinessStartupScreen({state,onRetry}:{state:BusinessStartupStat
     {state.phase !== "error" && <progress aria-label="本地账本准备进度"/>}
     <p>{state.message || "首次升级可能需要几分钟，正在后台备份并核对旧账本。完成后自动进入主页。"}</p>
     <p>原始账本和备份保留，准备完成前暂停业务写入。</p>
-    {state.phase === "error" && <button type="button" onClick={onRetry}>重试</button>}
+    {state.phase === "error" && <BusinessRecoveryActions onRetry={onRetry}/>}
   </section>;
 }
 export function BusinessStartupGate({children}:{children:ReactNode}) {
@@ -37,12 +38,13 @@ export function BusinessStartupGate({children}:{children:ReactNode}) {
       setState({phase:"preparing",message:null}); void read(generation,"retry_business_startup");
     };
     void read(generation);
+    const release=(stop:()=>void)=>{try{void Promise.resolve(stop()).catch(()=>{});}catch{/* Already disposed. */}};
     void listen<BusinessStartupState>("business-startup-state-changed",event=>{
       if(disposed) return;
       clearTimeout(timer); generation+=1; setState(event.payload);
       if(event.payload.phase === "preparing") void read(generation);
-    }).then(stop=>{if(disposed)stop();else unlisten=stop;}).catch(()=>{});
-    return ()=>{disposed=true;generation+=1;clearTimeout(timer);retry.current=()=>{};unlisten?.();};
+    }).then(stop=>{if(disposed)release(stop);else unlisten=stop;}).catch(()=>{});
+    return ()=>{disposed=true;generation+=1;clearTimeout(timer);retry.current=()=>{};if(unlisten)release(unlisten);};
   },[runtime]);
   return state.phase === "ready"?<>{children}</>:<BusinessStartupScreen state={state} onRetry={()=>retry.current()}/>;
 }

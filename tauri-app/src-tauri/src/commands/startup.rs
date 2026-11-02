@@ -29,6 +29,40 @@ pub fn retry_business_startup(
     Ok(coordinator.snapshot())
 }
 
+#[tauri::command]
+pub async fn read_business_migration_diagnostics(
+    window: tauri::WebviewWindow,
+) -> Result<crate::core::business_migration_log::Snapshot, String> {
+    require_window_label(&window, "read_business_migration_diagnostics")?;
+    super::run_blocking_command(crate::core::business_migration_log::snapshot).await
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrationDiagnosticsExport { path: String, reveal_error: Option<String> }
+
+#[tauri::command]
+pub async fn export_business_migration_diagnostics(
+    window: tauri::WebviewWindow,
+) -> Result<MigrationDiagnosticsExport, String> {
+    require_window_label(&window, "export_business_migration_diagnostics")?;
+    super::run_blocking_command(|| {
+        let path = crate::core::business_migration_log::export_at(
+            &crate::core::business_migration_log::directory()?)?;
+        // Export succeeded even if the desktop file manager is unavailable.
+        // Reveal only the newly generated local file; no shell or caller path.
+        #[cfg(target_os = "macos")]
+        let reveal = std::process::Command::new("/usr/bin/open").arg("-R").arg(&path).spawn();
+        #[cfg(target_os = "windows")]
+        let reveal = std::process::Command::new("explorer.exe")
+            .arg(format!("/select,{}", path.display())).spawn();
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        let reveal = std::process::Command::new("xdg-open").arg(path.parent().unwrap()).spawn();
+        Ok(MigrationDiagnosticsExport { path: path.display().to_string(),
+            reveal_error: reveal.err().map(|error| error.to_string()) })
+    }).await
+}
+
 pub(crate) fn start_initial_business_startup(
     app: tauri::AppHandle,
     coordinator: business_startup::BusinessStartupCoordinator,

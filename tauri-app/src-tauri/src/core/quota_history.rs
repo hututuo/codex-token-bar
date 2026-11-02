@@ -182,6 +182,23 @@ pub fn history_bundle_for(
         .map_err(|error| format!("读取额度历史失败：{error}"))
 }
 
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+pub(crate) fn verify_retained_reader_fixture(
+    identity: &QuotaHistoryIdentity,
+    expected: &[(f64, &str)],
+) -> Result<(), String> {
+    let database = QuotaHistoryDatabase::default()?;
+    let rows = database.read_peer_rows_for_identity(identity, f64::MAX)
+        .map_err(|error| error.to_string())?;
+    if rows.len() != expected.len() || expected.iter().any(|(at, source)| {
+        !rows.iter().any(|row| row.created_at == *at && row.source.as_deref() == Some(*source)
+            && row.stable_identity().as_ref() == Some(identity))
+    }) {
+        return Err("Production quota reader lost a retained stable-identity observation".into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 pub fn overlay_history(points: &mut [RecentUsagePoint], history: &[QuotaHistoryPoint]) {
     let history_by_start: HashMap<i64, &QuotaHistoryPoint> = history

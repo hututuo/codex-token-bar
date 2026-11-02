@@ -7,6 +7,9 @@ mod canonical;
 mod message_links;
 mod empty_sources;
 mod representations;
+mod stage_recovery;
+#[cfg(any(test, feature = "business-store-fixture"))]
+mod reader_recovery;
 use super::accounting::{AccountingState, ACCOUNTING_REVISION};
 use super::fingerprint_codec;
 use super::session_files::session_id_from_file;
@@ -3121,10 +3124,37 @@ impl ExactUsageIndex {
         warnings: &mut Vec<LocalDataWarning>,
         mode: ExactSyncMode,
     ) -> Result<u64, String> {
+        #[cfg(test)]
+        let root = index_path.with_extension("migration-diagnostics");
+        #[cfg(not(test))]
+        let root = crate::core::business_migration_log::directory()
+            .unwrap_or_else(|_| index_path.with_extension("migration-diagnostics"));
+        crate::core::business_migration_log::run(&root, "exact-runtime-backfill", || {
+            crate::core::business_migration_log::event("backfill-scope", "started",
+                serde_json::json!({"homeIdentity":stable_path_fingerprint(codex_home)}));
+            let result = self.synchronize_event_enrichment_with_diagnostics(codex_home, index_path, warnings, mode);
+            if let Ok(revision) = &result {
+                crate::core::business_migration_log::event("backfill-publication",
+                    if self.migration_pending { "pending" } else { "succeeded" },
+                    serde_json::json!({"revision":revision,"migrationPending":self.migration_pending}));
+            }
+            result
+        })
+    }
+
+    fn synchronize_event_enrichment_with_diagnostics(
+        &mut self,
+        codex_home: &Path,
+        index_path: &Path,
+        warnings: &mut Vec<LocalDataWarning>,
+        mode: ExactSyncMode,
+    ) -> Result<u64, String> {
         self.connection.mark_receipt_dirty();
         let total = event_enrichment_source_count(&self.connection)?;
         let completed_receipts = event_enrichment_receipt_count(&self.connection)?.min(total);
         let candidates = event_enrichment_pending_candidates(&self.connection)?;
+        crate::core::business_migration_log::event("backfill-plan", "started",
+            serde_json::json!({"total":total,"completed":completed_receipts,"pending":candidates.len()}));
         super::update_precise_dashboard_progress(
             codex_home,
             "backfillingModel",
@@ -3208,6 +3238,9 @@ impl ExactUsageIndex {
             let handle = match RolloutReader::open(&file) {
                 Ok(handle) => handle,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    crate::core::business_migration_log::event("backfill-input", "retained-missing",
+                        serde_json::json!({"sourceIdentity":stable_path_fingerprint(&file),
+                            "action":"retain-published-history"}));
                     record_missing_event_enrichment_source(
                         &mut self.connection,
                         generation,
@@ -3236,6 +3269,9 @@ impl ExactUsageIndex {
                     continue;
                 }
                 Err(error) => {
+                    crate::core::business_migration_log::event("backfill-input", "failed",
+                        serde_json::json!({"sourceIdentity":stable_path_fingerprint(&file),
+                            "error":error.to_string(),"action":"retain-published-history-and-retry"}));
                     scan_completeness.mark_incomplete();
                     warnings.push(scan_warning(format!(
                         "历史字段补全暂时无法读取来源，保留上次可信数据并将在下次启动继续：{}（{}）",
@@ -3255,6 +3291,9 @@ impl ExactUsageIndex {
             let current_signature = match file_signature_from_handle(&handle, &file) {
                 Ok(signature) => signature,
                 Err(error) => {
+                    crate::core::business_migration_log::event("backfill-input", "failed",
+                        serde_json::json!({"sourceIdentity":stable_path_fingerprint(&file),
+                            "error":error.to_string(),"action":"retain-published-history-and-retry"}));
                     scan_completeness.mark_incomplete();
                     warnings.push(scan_warning(format!(
                         "历史字段补全暂时无法确认来源数据，保留上次可信数据并将在下次启动继续：{}（{}）",
@@ -6200,9 +6239,10 @@ fn stage_full_rebuilds(
         let next_light_job = AtomicUsize::new(0);
         let collected = Mutex::new(Vec::with_capacity(ordered_jobs.len()));
         let worker_count = cold_build_worker_count(ordered_jobs.len());
+        let diagnostics = crate::core::business_migration_log::capture();
         thread::scope(|scope| {
             if has_heavy_jobs {
-                scope.spawn(|| {
+                scope.spawn(|| crate::core::business_migration_log::with_context(&diagnostics, || {
                     for (order, job) in heavy_jobs {
                         let result = stage_full_rebuild_result(
                             order,
@@ -6218,7 +6258,7 @@ fn stage_full_rebuilds(
                             .unwrap_or_else(|poisoned| poisoned.into_inner())
                             .push(result);
                     }
-                });
+                }));
             }
             let light_worker_count = if light_jobs.is_empty() {
                 0
@@ -6228,7 +6268,7 @@ fn stage_full_rebuilds(
                 worker_count
             };
             for _ in 0..light_worker_count {
-                scope.spawn(|| loop {
+                scope.spawn(|| crate::core::business_migration_log::with_context(&diagnostics, || loop {
                     let light_index = next_light_job.fetch_add(1, Ordering::SeqCst);
                     let Some((order, job)) = light_jobs.get(light_index).copied() else {
                         break;
@@ -6246,7 +6286,7 @@ fn stage_full_rebuilds(
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .push(result);
-                });
+                }));
             }
         });
         collected
@@ -6291,6 +6331,9 @@ fn stage_full_rebuild_result(
     on_completed: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> StagedFullRebuildResult {
     let mut warnings = Vec::new();
+    let source_identity = stable_path_fingerprint(&job.file);
+    crate::core::business_migration_log::event("source-stage", "started",
+        serde_json::json!({"sourceIdentity":source_identity,"bytes":job.signature.size,"generation":target_generation}));
     let result = stage_or_reuse_full_rebuild(
         job,
         index_path,
@@ -6298,6 +6341,12 @@ fn stage_full_rebuild_result(
         codex_home,
         &mut warnings,
     );
+    let details = match &result {
+        Ok(staged) => serde_json::json!({"sourceIdentity":source_identity,"artifactId":staged.artifact_id,"events":staged.event_count}),
+        Err(StagedFullRebuildError::IncompleteSource(error)) => serde_json::json!({"sourceIdentity":source_identity,"error":error,"retryable":true}),
+        Err(StagedFullRebuildError::Fatal(error)) => serde_json::json!({"sourceIdentity":source_identity,"error":error,"retryable":false}),
+    };
+    crate::core::business_migration_log::event("source-stage", if result.is_ok() { "succeeded" } else { "failed" }, details);
     if result.is_ok() {
         let value = completed.fetch_add(1, Ordering::SeqCst).saturating_add(1);
         if let Some(on_completed) = on_completed {
@@ -6440,6 +6489,14 @@ fn stage_or_reuse_full_rebuild(
         }
         if let Some(staged) = reusable_staged_full_rebuild(database_path, job, target_generation)? {
             return Ok(staged);
+        }
+        // A verified fixed-prefix enrichment stage is not corruption merely
+        // because reconciliation now needs the longer, still matching source.
+        // Keep its sealed evidence before reusing the primary job name. Unknown
+        // contracts, changed prefixes and damaged checkpoints continue to block.
+        if stage_recovery::is_superseded_bounded_stage(database_path, job, target_generation)? {
+            preserve_private_stage_family(database_path)?;
+            continue;
         }
         blocked = true;
     }
@@ -11551,7 +11608,7 @@ fn estimate_active_rollouts(
     if !database.is_file() {
         return Ok(());
     }
-    let state_connection = open_read_only_index(&database, StdDuration::from_millis(100))
+    let state_connection = open_external_state_database(&database, StdDuration::from_millis(100))
         .map_err(|error| format!("无法预扫描 active rollout：{error}"))?;
     if !column_exists_checked(&state_connection, "threads", "rollout_path")? {
         return Ok(());
@@ -11718,7 +11775,7 @@ fn visit_active_rollouts(
     if !database.exists() {
         return Ok(());
     }
-    let state_connection = match open_read_only_index(&database, StdDuration::from_millis(100)) {
+    let state_connection = match open_external_state_database(&database, StdDuration::from_millis(100)) {
         Ok(connection) => connection,
         Err(error) => {
             scan_completeness.mark_incomplete();
@@ -11896,7 +11953,7 @@ fn stage_thread_metadata(
             )));
             return Ok(ThreadMetadataStage::Failed);
         }
-        match file_signature(&database) {
+        match external_state_signature(&database) {
             Ok(value) => Some(value),
             Err(error) => {
                 warnings.push(thread_info_warning(format!(
@@ -11910,9 +11967,15 @@ fn stage_thread_metadata(
     } else {
         None
     };
-    let signature_text =
-        signature.map(|value| (value.size.to_string(), value.modified_ns.to_string()));
-    if previous == signature_text.clone().unzip() {
+    let signature_text = signature.map(|(db, wal)| (
+        db.size.to_string(),
+        format!("sqlite-family-v1:{db:?}:{wal:?}"),
+    ));
+    // An external WAL writer can overwrite frames without changing file length
+    // (and some filesystems coalesce timestamp updates). Never treat a live WAL
+    // as an immutable snapshot merely because its stat metadata is unchanged.
+    let has_live_wal = signature.is_some_and(|(_, wal)| wal.is_some_and(|w| w.size > 0));
+    if !has_live_wal && previous == signature_text.clone().unzip() {
         return Ok(ThreadMetadataStage::Unchanged);
     }
 
@@ -11923,7 +11986,7 @@ fn stage_thread_metadata(
         }));
     };
 
-    let connection = match open_read_only_index(&database, StdDuration::from_secs(3)) {
+    let connection = match open_external_state_database(&database, StdDuration::from_secs(3)) {
         Ok(connection) => connection,
         Err(error) => {
             warnings.push(thread_info_warning(format!(
@@ -11934,12 +11997,33 @@ fn stage_thread_metadata(
             return Ok(ThreadMetadataStage::Failed);
         }
     };
-    let mut statement = match connection.prepare(
-        r#"
-        SELECT id, title, first_user_message, preview, COALESCE(updated_at_ms, updated_at)
-        FROM threads
-        "#,
-    ) {
+    let mut columns_statement = match connection.prepare("PRAGMA table_info(threads)") {
+        Ok(statement) => statement,
+        Err(error) => {
+            warnings.push(thread_info_warning(format!("读取会话标题索引列信息失败：{error}")));
+            return Ok(ThreadMetadataStage::Failed);
+        }
+    };
+    let columns = columns_statement.query_map([], |row| row.get::<_, String>(1))
+        .and_then(|rows| rows.collect::<rusqlite::Result<HashSet<_>>>());
+    let columns = match columns {
+        Ok(columns) => columns,
+        Err(error) => {
+            warnings.push(thread_info_warning(format!("读取会话标题索引列信息失败：{error}")));
+            return Ok(ThreadMetadataStage::Failed);
+        }
+    };
+    drop(columns_statement);
+    if !columns.contains("id") || !columns.contains("title")
+        || (!columns.contains("updated_at") && !columns.contains("updated_at_ms")) {
+        warnings.push(thread_info_warning("读取会话标题索引结构失败：缺少必需的 id、title 或更新时间列".into()));
+        return Ok(ThreadMetadataStage::Failed);
+    }
+    let project = |name: &'static str| if columns.contains(name) { name } else { "NULL" };
+    let sql = format!("SELECT id, {}, {}, {}, COALESCE({}, {}) FROM threads",
+        project("title"), project("first_user_message"), project("preview"),
+        project("updated_at_ms"), project("updated_at"));
+    let mut statement = match connection.prepare(&sql) {
         Ok(statement) => statement,
         Err(error) => {
             warnings.push(thread_info_warning(format!(
@@ -11989,7 +12073,7 @@ fn stage_thread_metadata(
     drop(statement);
     drop(connection);
 
-    let signature_after = match file_signature(&database) {
+    let signature_after = match external_state_signature(&database) {
         Ok(value) => value,
         Err(error) => {
             warnings.push(thread_info_warning(format!(
@@ -12258,6 +12342,16 @@ pub(super) fn verify_legacy_migration_fixture(home: &Path, path: &Path) -> Resul
         return Err("fixture unexpectedly required a structural migration".into());
     }
     Ok(paths != schema11_paths_for_namespace(path, false))
+}
+
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+pub(super) fn verify_bounded_stage_fixture(home: &Path) -> Result<serde_json::Value, String> {
+    stage_recovery::verify_bounded_stage(home)
+}
+
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+pub(super) fn verify_live_state_fixture(home: &Path) -> Result<serde_json::Value, String> {
+    reader_recovery::verify_live_state(home)
 }
 
 fn schema11_file_stamp(path: &Path) -> Result<Schema11FileStamp, String> {
@@ -15215,6 +15309,28 @@ fn open_exact_business_store(path: &Path) -> Result<Connection, String> {
         &store.logical_path,
         &legacy_sources,
     )
+}
+
+/// Codex owns state_5.sqlite and continues writing it after Token Bar starts.
+/// It is not a legacy Token Bar ledger and must never enter snapshot/import
+/// routing, even in a production build with business namespaces enabled.
+fn open_external_state_database(path: &Path, timeout: StdDuration) -> Result<Connection, String> {
+    let raw = sqlite::open_read_only(path, timeout).map_err(|error| error.to_string())?;
+    #[cfg(test)]
+    { Ok(raw) }
+    #[cfg(not(test))]
+    { Ok(Connection::unbound(raw)) }
+}
+
+fn external_state_signature(path: &Path) -> Result<(FileSignature, Option<FileSignature>), String> {
+    let database = file_signature(path)?;
+    let wal_path = sqlite_sidecar_path(path, "-wal");
+    let wal = match fs::metadata(&wal_path) {
+        Ok(_) => Some(file_signature(&wal_path)?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(format!("无法检查外部会话索引 WAL：{error}")),
+    };
+    Ok((database, wal))
 }
 
 fn open_read_only_index(path: &Path, timeout: StdDuration) -> Result<Connection, String> {
@@ -18536,7 +18652,6 @@ fn resolve_file_within_codex_home(
     ResolvedSessionFile::Accepted(canonical)
 }
 
-#[cfg(not(test))]
 fn stable_path_fingerprint(path: &Path) -> String {
     let identity = codex_home_identity(path);
     let mut hash = 0xcbf29ce484222325_u64;

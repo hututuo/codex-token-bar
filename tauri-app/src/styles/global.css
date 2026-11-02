@@ -13113,3 +13113,9 @@ details.session-management-banner {
 .dashboard-global-status .dash-head__freshness>small{font-size:9px;color:var(--muted)}
 .dashboard-global-status .dash-head__freshness>strong{font-size:10px;font-weight:var(--weight-regular);white-space:normal;color:var(--muted)}
 .dashboard-global-status .precise-progress-bar{flex-basis:100%;margin-left:auto;max-width:250px}
+
+.business-recovery-actions { display:flex;flex-wrap:wrap;gap:10px;margin-top:16px; }
+.business-recovery-path { overflow-wrap:anywhere;user-select:text; }
+.business-recovery pre { max-height:260px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;user-select:text; }
+.business-recovery details { margin-top:16px; }
+.business-recovery summary { cursor:pointer; }

@@ -10,6 +10,7 @@ export type AppUpdateSnapshot = {
 export type UpdateAvailability =
   | { status: "unsupported"; message: string }
   | { status: "none"; message: string; revision?: number }
+  | { status: "error"; message: string; revision?: number }
   | { status: "available"; message: string; version: string; body: string; date: string | null; revision: number };
 
 interface UpdateBridge {
@@ -22,6 +23,9 @@ interface UpdateBridge {
 function normalize(snapshot: AppUpdateSnapshot): UpdateAvailability {
   if (snapshot.status === "available" && snapshot.version) {
     return { status: "available", message: snapshot.message, version: snapshot.version, body: snapshot.body ?? "", date: snapshot.date, revision: snapshot.revision };
+  }
+  if (snapshot.status !== "none") {
+    return { status: "error", message: snapshot.message || "更新状态无效，请重新检查", revision: snapshot.revision };
   }
   return { status: "none", message: snapshot.message || "已是最新版", revision: snapshot.revision };
 }
@@ -43,13 +47,19 @@ export function createUpdateClient(bridge: UpdateBridge) {
     install: async (version: string, onProgress?: (message: string) => void) => {
       let unlisten: (() => void) | null = null;
       try {
-        unlisten = await bridge.listen<{ finished?: boolean }>(
-          "app-update-install-progress",
-          event => onProgress?.(event.payload.finished ? "正在安装更新..." : "正在下载更新..."),
-        );
+        // Progress delivery is advisory. Its failure must not disable the
+        // signed native installer, especially on the startup repair screen.
+        try {
+          unlisten = await bridge.listen<{ finished?: boolean }>(
+            "app-update-install-progress",
+            event => onProgress?.(event.payload.finished ? "正在安装更新..." : "正在下载更新..."),
+          );
+        } catch { onProgress?.("进度订阅不可用，正在请求安装更新..."); }
         return await bridge.invoke<"started" | "alreadyLatest">("install_app_update", { version });
       } finally {
-        unlisten?.();
+        // Native UnlistenFn is typed void but may return a rejected Promise.
+        // Cleanup must never mask the authoritative installer outcome.
+        if (unlisten) { try { await unlisten(); } catch { /* Already disposed. */ } }
       }
     },
   };

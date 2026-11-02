@@ -90,21 +90,27 @@ final class BusinessDatabaseMigration {
 
     @MainActor static func startProduction(onProgress: @escaping @Sendable (Progress) -> Void = { _ in }) async throws {
         let configuration = try Configuration.production()
-        // Previous releases do not know the new migration lock. Reject their
-        // live writers as well; never kill/restart a running application.
-        let ownPID = ProcessInfo.processInfo.processIdentifier
-        let other = NSWorkspace.shared.runningApplications.contains { app in
-            app.processIdentifier != ownPID && (app.executableURL?.lastPathComponent == "CodexTokenBar"
-                || app.localizedName == "Codex Token Bar")
-        }
-        guard !other else { throw Failure.runningWriter }
-        let lock = try CodexCrossProcessFileLock(url: configuration.container.appendingPathExtension("writer.lock"), label: "统一账本")
-        // The application window/event loop exists before this operation is
-        // requested. No business owner starts until this background gate ends.
-        try await Task.detached(priority: .utility) {
-            try migrate(configuration, onProgress: onProgress)
-        }.value
-        lifetimeLock = lock
+        let diagnostics = BusinessMigrationDiagnostics(root: configuration.container.deletingLastPathComponent()
+            .appendingPathComponent("migration-diagnostics", isDirectory: true), operation: "startup-gate")
+        do {
+            // Legacy versions do not participate in the new lifetime lock.
+            // Observe, never terminate, their processes before mutating a DB.
+            let lock = try diagnostics.perform("acquire-writer-ownership") {
+                let ownPID = ProcessInfo.processInfo.processIdentifier
+                let other = NSWorkspace.shared.runningApplications.contains { app in
+                    app.processIdentifier != ownPID && (app.executableURL?.lastPathComponent == "CodexTokenBar"
+                        || app.localizedName == "Codex Token Bar")
+                }
+                guard !other else { throw Failure.runningWriter }
+                return try CodexCrossProcessFileLock(url: configuration.container.appendingPathExtension("writer.lock"), label: "统一账本")
+            }
+            try await Task.detached(priority: .utility) {
+                try migrateWithDiagnostics(configuration, fileManager: .default, availableBytes: nil,
+                    beforeActivation: nil, onProgress: onProgress, diagnostics: diagnostics)
+            }.value
+            lifetimeLock = lock
+            diagnostics.finish()
+        } catch { diagnostics.finish(error); throw error }
     }
 
     /// Isolated configurations are used by tests. No production path discovery
@@ -113,8 +119,21 @@ final class BusinessDatabaseMigration {
                         availableBytes: UInt64? = nil,
                         beforeActivation: (() throws -> Void)? = nil,
                         onProgress: (@Sendable (Progress) -> Void)? = nil) throws {
+        let diagnostics = BusinessMigrationDiagnostics(root: configuration.container.deletingLastPathComponent()
+            .appendingPathComponent("migration-diagnostics", isDirectory: true), operation: "bootstrap")
+        do {
+            try migrateWithDiagnostics(configuration, fileManager: fileManager, availableBytes: availableBytes,
+                beforeActivation: beforeActivation, onProgress: onProgress, diagnostics: diagnostics)
+            diagnostics.finish()
+        } catch { diagnostics.finish(error); throw error }
+    }
+
+    private static func migrateWithDiagnostics(_ configuration: Configuration, fileManager: FileManager,
+                        availableBytes: UInt64?, beforeActivation: (() throws -> Void)?,
+                        onProgress: (@Sendable (Progress) -> Void)?, diagnostics: BusinessMigrationDiagnostics) throws {
         onProgress?(.init(stage: .preparing))
-        let inputs = try discover(configuration, fileManager: fileManager)
+        let inputs = try diagnostics.perform("discover-inputs") { try discover(configuration, fileManager: fileManager) }
+        diagnostics.record("input-inventory", "succeeded", ["count": String(inputs.count)])
         var legacyLocks: [CodexCrossProcessFileLock] = []
         for input in inputs where input.store.module == "exact.swift" || input.store.module == "exact.swift.retired" {
             let original = input.source.path.hasSuffix(".schema11-rollback")
@@ -129,7 +148,7 @@ final class BusinessDatabaseMigration {
         let working = exists ? configuration.container : configuration.container.deletingLastPathComponent().appendingPathComponent(".codex-ledger-migrating.sqlite")
         // A fixed private candidate is resumable. Atomic import transactions
         // and receipts make replay idempotent; activation is a separate gate.
-        let database = try CodexBusinessDatabase(url: working)
+        let database = try diagnostics.perform("open-container", subject: "A") { try CodexBusinessDatabase(url: working) }
         let known = Set(try database.driver.readRows("SELECT source_path FROM tb_legacy_inputs") { $0.text(0) ?? "" })
         let journalKey = "migration_pending_sources_v1"
         let journalRaw = try database.driver.readRows("SELECT value FROM tb_container_meta WHERE key=?", bindings: [.text(journalKey)]) { $0.text(0) }.first ?? nil
@@ -179,7 +198,19 @@ final class BusinessDatabaseMigration {
         }
         let free = try availableBytes ?? configuration.container.deletingLastPathComponent().resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage.map(UInt64.init) ?? 0
         guard pending.isEmpty || free >= needed else { throw Failure.insufficientSpace }
+        // Independently inspect every pending input before the first import.
+        // These observations never authorize a repair or replace the proof gate.
+        for input in pending {
+            do {
+                let version = try SQLiteDatabaseDriver(url: input.source, readOnly: true, createsFileIfMissing: false, bypassBusinessRoutes: true)
+                    .readRows("PRAGMA user_version") { $0.int(0) ?? 0 }.first ?? 0
+                diagnostics.record("input-preflight", "succeeded", ["store": input.store.id, "module": input.store.module, "userVersion": String(version)])
+            } catch {
+                diagnostics.record("input-preflight", "failed", ["store": input.store.id, "module": input.store.module, "error": String(describing: error)])
+            }
+        }
         for (index, input) in pending.enumerated() {
+            diagnostics.record("store-import", "started", ["store": input.store.id, "module": input.store.module])
             onProgress?(.init(stage: .importing, completed: index, total: pending.count))
             let store = BusinessSQLiteStore(containerURL: working, logicalURL: input.store.logicalURL, module: input.store.module, sourceIdentity: input.store.sourceIdentity)
             let folder = configuration.backups.appendingPathComponent(store.id, isDirectory: true)
@@ -198,7 +229,10 @@ final class BusinessDatabaseMigration {
                 try synchronize(backup)
                 try fileManager.setAttributes([.posixPermissions: 0o400], ofItemAtPath: backup.path)
             }
-            let original = try SQLiteDatabaseDriver(url: backup, readOnly: true, bypassBusinessRoutes: true).withConnection { try CodexBusinessDatabase.proof($0) }
+            let original = try diagnostics.perform("original-proof", subject: store.id) {
+                try SQLiteDatabaseDriver(url: backup, readOnly: true, bypassBusinessRoutes: true).withConnection { try CodexBusinessDatabase.proof($0) }
+            }
+            diagnostics.record("verified-snapshot", "succeeded", ["store": store.id, "schemaDigest": original.schemaDigest, "rowsDigest": original.rowsDigest])
             let normalized = folder.appendingPathComponent("normalized-\(attempt).sqlite")
             if !fileManager.fileExists(atPath: normalized.path) {
                 try SQLiteDatabaseDriver(url: normalized, bypassBusinessRoutes: true).withConnection { try $0.restoreDatabase(from: backup) }
@@ -207,7 +241,9 @@ final class BusinessDatabaseMigration {
             if reusable == nil {
                 if store.module == "exact.swift" || store.module == "exact.swift.retired" {
                     do {
-                        try CodexUsageHistoryIndex.prepareBusinessSnapshot(at: normalized)
+                        try diagnostics.perform("normalize-exact-snapshot", subject: store.id) {
+                            try CodexUsageHistoryIndex.prepareBusinessSnapshot(at: normalized)
+                        }
                     } catch let error as CodexUsageIndexUpgradeRequiredError {
                         // Every old Home is collected, including dormant Homes
                         // from an older/newer app. Their version must not prevent
@@ -217,6 +253,7 @@ final class BusinessDatabaseMigration {
                         try SQLiteDatabaseDriver(url: normalized, bypassBusinessRoutes: true)
                             .withConnection { try $0.restoreDatabase(from: backup) }
                         normalizationDeferredReason = error.localizedDescription
+                        diagnostics.record("dormant-home-preserved", "deferred", ["store": store.id, "reason": error.localizedDescription])
                     }
                 }
                 if store.module == "exact.swift.stage" {
@@ -239,7 +276,9 @@ final class BusinessDatabaseMigration {
                 }
                 try synchronize(normalized)
             }
-            let imported = try database.importSnapshot(normalized, into: store, backupURL: backup, replaceExisting: !exists || journal[input.source.path] != nil)
+            let imported = try diagnostics.perform("namespace-import-and-proof", subject: store.id) {
+                try database.importSnapshot(normalized, into: store, backupURL: backup, replaceExisting: !exists || journal[input.source.path] != nil)
+            }
             if let reusable, imported != reusable.imported { throw BusinessStoreError.sourceChanged }
             try fileManager.setAttributes([.posixPermissions: 0o400], ofItemAtPath: normalized.path)
             if store.module == "exact.swift.stage" {
@@ -278,6 +317,7 @@ final class BusinessDatabaseMigration {
             }
             try json.write(to: folder.appendingPathComponent("receipt.json"), options: .atomic)
             try synchronize(folder.appendingPathComponent("receipt.json"))
+            diagnostics.record("store-import", "succeeded", ["store": store.id, "schemaDigest": imported.schemaDigest, "rowsDigest": imported.rowsDigest])
             onProgress?(.init(stage: .importing, completed: index + 1, total: pending.count))
         }
         // A stale copy must never win over a legacy writer that changed its
@@ -285,13 +325,16 @@ final class BusinessDatabaseMigration {
         for (index, input) in pending.enumerated() {
             onProgress?(.init(stage: .verifying, completed: index, total: pending.count))
             let source = SQLiteDatabaseDriver(url: input.source, readOnly: true, createsFileIfMissing: false, bypassBusinessRoutes: true)
-            let current = try source.withConnection { try CodexBusinessDatabase.proof($0) }
+            let current = try diagnostics.perform("verify-original-unchanged", subject: input.store.id) {
+                try source.withConnection { try CodexBusinessDatabase.proof($0) }
+            }
             let storeID = input.store.id
             let folder = configuration.backups.appendingPathComponent(storeID)
             let receipt = try JSONDecoder().decode(Receipt.self, from: Data(contentsOf: folder.appendingPathComponent("receipt.json")))
             guard current == receipt.original else { throw BusinessStoreError.sourceChanged }
         }
         try beforeActivation?()
+        diagnostics.record("activate-container", "started")
         onProgress?(.init(stage: .activating, completed: pending.count, total: pending.count))
         try database.driver.withConnection { db in
             guard try db.readRows("PRAGMA quick_check", map: { $0.text(0) }) == ["ok"] else { throw BusinessStoreError.proofMismatch }
@@ -317,6 +360,7 @@ final class BusinessDatabaseMigration {
         }
         let ready = try CodexBusinessDatabase(url: configuration.container)
         try activateRoutes(configuration, database: ready)
+        diagnostics.record("activate-container", "succeeded")
         onProgress?(.init(stage: .ready, completed: pending.count, total: pending.count))
     }
 

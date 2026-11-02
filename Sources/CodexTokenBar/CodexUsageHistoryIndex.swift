@@ -858,6 +858,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         if BusinessSQLiteRoutes.store(for: databaseURL) != nil {
             switch try assessMigration(databaseURL: databaseURL, fileManager: fileManager) {
             case .compatible: return false
+            case let .knownMigrationRequired(stages) where Set(stages).isSubset(of: [
+                "forkReplay", "attributionLedger", "eventEnrichment", "sessionCatalog", "aggregate"
+            ]):
+                // These are module-owned, retryable migrations implemented below;
+                // none swaps the physical database. A missing enrichment receipt
+                // is not a request to replace container A. Structural/representation
+                // changes still require an independently validated module candidate.
+                return false
             case let .upgradeRequired(component, stored, supported):
                 throw CodexUsageIndexUpgradeRequiredError(component: component, stored: stored, supported: supported)
             default: throw CodexUsageIndexRepairRequiredError(reason: "归并后的索引需要模块迁移，已保留账本并停止旧文件交换")
@@ -2141,20 +2149,34 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         onProgress: ((Int, Int, PreciseIndexProgressPhase) -> Void)? = nil
     ) throws -> SynchronizationResult {
         Self.sourceProbeTestState.recordSynchronization()
-        let result = try withExclusiveAccess {
-            let result = try synchronizeExclusively(
-                files: files,
-                sessionID: sessionID,
-                messageScanner: messageScanner,
-                observedAt: observedAt,
-                parser: parser,
-                onProgress: onProgress
-            )
-            if result.eventEnrichmentComplete { recordSuccessfulMigrationRetention(generation: result.attributionGeneration) }
+        let diagnostics = BusinessBackfillDiagnostics(database: driver.backingURL)
+        do {
+            let result = try withExclusiveAccess {
+                let result = try synchronizeExclusively(
+                    files: files,
+                    sessionID: sessionID,
+                    messageScanner: messageScanner,
+                    observedAt: observedAt,
+                    parser: { file, id, request, fingerprint, emit in
+                        try diagnostics.source(file) {
+                            try parser(file, id, request, fingerprint, emit)
+                        }
+                    },
+                    onProgress: { completed, total, phase in
+                        diagnostics.progress(completed, total, phase)
+                        onProgress?(completed, total, phase)
+                    }
+                )
+                if result.eventEnrichmentComplete { recordSuccessfulMigrationRetention(generation: result.attributionGeneration) }
+                return result
+            }
+            diagnostics.finish(generation: result.attributionGeneration, complete: result.eventEnrichmentComplete)
+            Self.scheduleStorageMaintenance(databaseURL: driver.url)
             return result
+        } catch {
+            diagnostics.fail(error)
+            throw error
         }
-        Self.scheduleStorageMaintenance(databaseURL: driver.url)
-        return result
     }
 
     struct ReadMetadata {
@@ -2651,6 +2673,15 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         parser: @escaping SessionParser,
         onProgress: ((Int, Int, PreciseIndexProgressPhase) -> Void)? = nil
     ) throws -> SynchronizationResult {
+        // Parsing and publication are separate attempts, but the user sees one
+        // operation. Do not reset a multi-batch backfill to zero on each retry.
+        let enrichmentProgress = EventEnrichmentProgressBox { completed, total in
+            onProgress?(completed, total, .backfillingModel)
+        }
+        let reportProgress: (Int, Int, PreciseIndexProgressPhase) -> Void = { completed, total, phase in
+            if phase == .backfillingModel { enrichmentProgress.callback(completed, total) }
+            else { onProgress?(completed, total, phase) }
+        }
         var attempt = 0
         while true {
             var stagedArtifacts: [URL] = []
@@ -2659,7 +2690,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     try configure(connection)
                     return try connection.transaction { transaction in
                         try synchronizeInTransaction(files: files, sessionID: sessionID,
-                            messageScanner: messageScanner, observedAt: observedAt, parser: parser, onProgress: onProgress,
+                            messageScanner: messageScanner, observedAt: observedAt, parser: parser, onProgress: reportProgress,
                             connection: transaction, stagedArtifacts: &stagedArtifacts)
                     }
                 }
@@ -2673,12 +2704,15 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 // then retry its original accounting transaction unchanged.
                 attempt += 1
                 guard attempt <= 8 else { throw CodexUsageIndexRepairRequiredError(reason: "源会话持续变化，已保留旧账和扫描断点，等待下次刷新") }
+                var completedBeforeBatch = 0
                 for batch in stagingBatches(for: demand.jobs) {
                     try ensureStagingCapacity(for: batch)
-                    _ = try stageFullRebuilds(batch, parser: parser,
-                        eventEnrichmentTotal: demand.enrichmentTotal) { completed,total in
-                        onProgress?(completed, total, .backfillingModel)
+                    let offset = completedBeforeBatch
+                    let staged = try stageFullRebuilds(batch, parser: parser,
+                        eventEnrichmentTotal: demand.enrichmentTotal) { completed, total in
+                        reportProgress(min(offset + completed, total), total, .backfillingModel)
                     }
+                    completedBeforeBatch += staged.filter { $0.job.reason == .eventEnrichment }.count
                 }
             }
         }
@@ -7317,10 +7351,24 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     }
 
     private final class EventEnrichmentProgressBox: @unchecked Sendable {
-        let callback: (Int, Int) -> Void
+        private let lock = NSRecursiveLock()
+        private let report: (Int, Int) -> Void
+        private var completed = -1
+        private var total = -1
 
-        init(_ callback: @escaping (Int, Int) -> Void) {
-            self.callback = callback
+        init(_ callback: @escaping (Int, Int) -> Void) { report = callback }
+
+        func callback(_ count: Int, _ total: Int) {
+            lock.lock()
+            defer { lock.unlock() }
+            let boundedTotal = max(0, total)
+            let next = min(max(max(0, count), completed), boundedTotal)
+            guard next != completed || boundedTotal != self.total else { return }
+            completed = next
+            self.total = boundedTotal
+            // Serial delivery matters: worker 2 may finish calling the collector
+            // before worker 1 has delivered its earlier count to the UI.
+            report(next, boundedTotal)
         }
     }
 
