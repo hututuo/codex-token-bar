@@ -92,7 +92,7 @@ def main() -> None:
             "stageMutationBeforePublicationRejected",
             "sealedStageMissingSealRejected", "resealedStageImportRejected",
             "stageSchemaMutationRejected", "stageSchemaMutationBeforePublicationRejected",
-            "unsealedStageRebuiltFromSource",
+            "unsealedStageRebuiltFromSource", "pendingHistoryOverwriteRejected",
         )):
             raise SystemExit("Retained stage content, schema, seal ownership and safe rebuild were not verified")
         report["source_sha"] = source_sha

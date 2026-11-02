@@ -10,7 +10,7 @@
 - 本轮在 `9767859d` 合并两条历史，并处理重叠的前端状态、事件、额度查询、暂存恢复和生产探针。后续实际测试发现的整合错误继续修复，不把成功合并当成恢复成功。
 - 用户提供的 v4 资料包只作背景与调查线索。它不包含能够重跑 F03 现场的真实 SQLite 数据库；旧报告中的 PASS、截图和历史流水线不作为本轮候选的通过证据。
 
-当前工作分支为 `codex/recovery-phase1-20261102`。GitHub 连接账户 `shawway` 对上游只有读取权限；现已完成授权登录并创建可写 fork [shawway/codex-token-bar](https://github.com/shawway/codex-token-bar)。远端恢复分支已建立，首批本轮提交和 draft PR 正在同步。建分支自动触发的是继承基线 `41058ffe` 的工作流，不能算作本轮新代码的验证。后续验收必须绑定实际推送候选的 SHA。
+当前工作分支为 `codex/recovery-phase1-20261102`。GitHub 连接账户 `shawway` 对上游只有读取权限；现已完成授权登录并创建可写 fork [shawway/codex-token-bar](https://github.com/shawway/codex-token-bar)。远端恢复分支已建立，本轮 [draft PR #8](https://github.com/hututuo/codex-token-bar/pull/8) 已创建。首批远端提交 `f6582f3df82b4eb11fd787bf252a940717a73637` 与本地 `fff58c0e01a73f6d105ab2999a3b6cad4841c9d0` 的完整 tree `f3b0741c665c81afb90add2047258997fa4a0de3` 一致；它保留 #6、#7 为父历史。建分支自动触发的是继承基线 `41058ffe` 的工作流，不能算作本轮新代码的验证。后续验收必须绑定实际推送候选的 SHA。首批候选的 [CI run 41478671352](https://github.com/shawway/codex-token-bar/actions/runs/41478671352) 已触发，尚未取得通过结果。
 
 ## 已落地的修复
 

@@ -160,6 +160,7 @@ jobs:
           rustup toolchain install 1.93.1 --profile minimal
           npm ci --prefix tauri-app --registry=https://registry.npmjs.org
           npm run build --prefix tauri-app
+          git fetch --no-tags https://github.com/hututuo/codex-token-bar.git "refs/tags/v$RELEASE_VERSION:refs/tags/v$RELEASE_VERSION"
           python3 scripts/check_formed_release_upgrade.py --release "$RELEASE_VERSION" --output formed-state-evidence
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
@@ -195,6 +196,7 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
           command -v git-lfs >/dev/null || brew install git-lfs
+          git fetch --no-tags https://github.com/hututuo/codex-token-bar.git "refs/tags/v$RELEASE_VERSION:refs/tags/v$RELEASE_VERSION"
           python3 scripts/check_swift_formed_release_upgrade.py --release "$RELEASE_VERSION" --output swift-formed-state-evidence
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()

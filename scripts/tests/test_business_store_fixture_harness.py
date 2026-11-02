@@ -35,7 +35,7 @@ STAGE_PROOFS = (
     "stageMutationBeforePublicationRejected",
     "sealedStageMissingSealRejected", "resealedStageImportRejected",
     "stageSchemaMutationRejected", "stageSchemaMutationBeforePublicationRejected",
-    "unsealedStageRebuiltFromSource",
+    "unsealedStageRebuiltFromSource", "pendingHistoryOverwriteRejected",
 )
 
 

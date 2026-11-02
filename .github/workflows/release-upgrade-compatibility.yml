@@ -41,6 +41,7 @@ jobs:
           set -euo pipefail
           [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
+          git fetch --no-tags https://github.com/hututuo/codex-token-bar.git refs/tags/v0.9.7:refs/tags/v0.9.7
           test "$(git rev-parse 'v0.9.7^{commit}')" = 0219554ce444b0013987da7b82e3c2e891f4afdb
           mkdir -p upgrade-evidence
           git rev-parse HEAD > upgrade-evidence/candidate-sha.txt
@@ -149,6 +150,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           if ($env:CANDIDATE_SHA -notmatch '^[0-9a-f]{40}$') { throw 'An exact candidate SHA is required' }
           if ((git rev-parse HEAD) -ne $env:CANDIDATE_SHA) { throw 'Candidate SHA mismatch' }
+          git fetch --no-tags https://github.com/hututuo/codex-token-bar.git refs/tags/v0.9.3:refs/tags/v0.9.3 refs/tags/v0.9.7:refs/tags/v0.9.7
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if ((git rev-parse 'v0.9.7^{commit}') -ne '0219554ce444b0013987da7b82e3c2e891f4afdb') { throw 'Public tag SHA mismatch' }
           New-Item -ItemType Directory -Path upgrade-evidence -Force | Out-Null
           $allocation = python scripts/prepare_v097_upgrade_validation.py allocate-rust-runtime $env:GITHUB_ENV
