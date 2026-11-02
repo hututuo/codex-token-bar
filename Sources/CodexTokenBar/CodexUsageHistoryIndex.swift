@@ -152,6 +152,9 @@ extension CodexUsageAnalyzer {
         /// Process-local pinned source handle. It is never persisted; the
         /// caller owns and closes it after the synchronous parser returns.
         let readHandle: (any CodexReadHandle)?
+        /// Informational decoded-byte progress from this bounded scan. It
+        /// cannot advance completed jobs or participate in accounting.
+        var onReadProgress: ((UInt64, UInt64) -> Void)? = nil
 
         static func full(
             endOffset: UInt64,

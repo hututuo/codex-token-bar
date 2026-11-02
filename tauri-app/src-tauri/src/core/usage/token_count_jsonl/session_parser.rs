@@ -195,7 +195,29 @@ pub(super) fn stream_session_file_exact(
     sink: &mut impl ExactSessionEventSink,
     warnings: &mut Vec<LocalDataWarning>,
 ) -> Result<ExactSessionParseResult, String> {
-    stream_session_file_exact_from(
+    stream_session_file_exact_with_progress(
+        file,
+        handle,
+        prefix_size,
+        session_id,
+        sink,
+        warnings,
+        None,
+    )
+}
+
+/// Streams the same fixed logical prefix as [`stream_session_file_exact`],
+/// optionally reporting each positive read's absolute byte offset and prefix size.
+pub(super) fn stream_session_file_exact_with_progress(
+    file: &Path,
+    handle: &mut (impl Read + Seek),
+    prefix_size: u64,
+    session_id: &str,
+    sink: &mut impl ExactSessionEventSink,
+    warnings: &mut Vec<LocalDataWarning>,
+    on_read_progress: Option<&dyn Fn(u64, u64)>,
+) -> Result<ExactSessionParseResult, String> {
+    stream_session_file_exact_from_with_progress(
         file,
         handle,
         0,
@@ -206,6 +228,7 @@ pub(super) fn stream_session_file_exact(
         session_id,
         sink,
         warnings,
+        on_read_progress,
     )
 }
 
@@ -221,6 +244,35 @@ pub(super) fn stream_session_file_exact_from(
     session_id: &str,
     sink: &mut impl ExactSessionEventSink,
     warnings: &mut Vec<LocalDataWarning>,
+) -> Result<ExactSessionParseResult, String> {
+    stream_session_file_exact_from_with_progress(
+        file,
+        handle,
+        hashing_start_offset,
+        parsing_start_offset,
+        prefix_size,
+        validation_boundary,
+        initial_state,
+        session_id,
+        sink,
+        warnings,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stream_session_file_exact_from_with_progress(
+    file: &Path,
+    handle: &mut (impl Read + Seek),
+    hashing_start_offset: u64,
+    parsing_start_offset: u64,
+    prefix_size: u64,
+    validation_boundary: Option<u64>,
+    initial_state: ExactSessionParserState,
+    session_id: &str,
+    sink: &mut impl ExactSessionEventSink,
+    warnings: &mut Vec<LocalDataWarning>,
+    on_read_progress: Option<&dyn Fn(u64, u64)>,
 ) -> Result<ExactSessionParseResult, String> {
     if hashing_start_offset > parsing_start_offset || parsing_start_offset > prefix_size {
         return Err(format!(
@@ -246,10 +298,12 @@ pub(super) fn stream_session_file_exact_from(
             message
         })?;
     let byte_count = prefix_size.saturating_sub(hashing_start_offset);
-    let mut hashing_reader = PrefixHashingReader::new(
+    let mut hashing_reader = PrefixHashingReader::new_with_progress(
         handle.take(byte_count),
         hashing_start_offset,
         validation_boundary,
+        prefix_size,
+        on_read_progress,
     );
     let mut skipped = parsing_start_offset.saturating_sub(hashing_start_offset);
     let mut skip_buffer = [0_u8; 64 * 1024];
@@ -695,7 +749,7 @@ pub(super) fn stream_session_file_exact_from(
     })
 }
 
-struct PrefixHashingReader<R> {
+struct PrefixHashingReader<'a, R> {
     inner: R,
     hasher: Sha256,
     bytes_read: u64,
@@ -706,6 +760,8 @@ struct PrefixHashingReader<R> {
     chunk_hashes: Vec<ExactChunkHash>,
     validation_boundary: Option<u64>,
     validation_chunk_hash: Option<ExactChunkHash>,
+    progress_total: u64,
+    on_read_progress: Option<&'a dyn Fn(u64, u64)>,
 }
 
 pub(super) struct MessageLinkScan {
@@ -779,8 +835,18 @@ pub(super) fn scan_message_links(file: &Path, size: u64, offsets: &std::collecti
     Ok(MessageLinkScan { links, chunks, prompt, assistant })
 }
 
-impl<R> PrefixHashingReader<R> {
+impl<'a, R> PrefixHashingReader<'a, R> {
     fn new(inner: R, absolute_offset: u64, validation_boundary: Option<u64>) -> Self {
+        Self::new_with_progress(inner, absolute_offset, validation_boundary, 0, None)
+    }
+
+    fn new_with_progress(
+        inner: R,
+        absolute_offset: u64,
+        validation_boundary: Option<u64>,
+        progress_total: u64,
+        on_read_progress: Option<&'a dyn Fn(u64, u64)>,
+    ) -> Self {
         debug_assert_eq!(absolute_offset % EXACT_INDEX_CHUNK_SIZE, 0);
         Self {
             inner,
@@ -793,6 +859,8 @@ impl<R> PrefixHashingReader<R> {
             chunk_hashes: Vec::new(),
             validation_boundary,
             validation_chunk_hash: None,
+            progress_total,
+            on_read_progress,
         }
     }
 
@@ -842,7 +910,7 @@ impl<R> PrefixHashingReader<R> {
     }
 }
 
-impl<R: Read> Read for PrefixHashingReader<R> {
+impl<R: Read> Read for PrefixHashingReader<'_, R> {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
         let bytes_read = self.inner.read(buffer)?;
         self.hasher.update(&buffer[..bytes_read]);
@@ -873,6 +941,12 @@ impl<R: Read> Read for PrefixHashingReader<R> {
                 self.finish_chunk();
             }
             self.capture_validation_hash();
+        }
+        if bytes_read > 0 {
+            if let Some(on_read_progress) = self.on_read_progress {
+                debug_assert!(self.absolute_offset <= self.progress_total);
+                on_read_progress(self.absolute_offset, self.progress_total);
+            }
         }
         Ok(bytes_read)
     }
@@ -1766,6 +1840,133 @@ mod tests {
             "output_tokens": output, "reasoning_output_tokens": reasoning,
             "total_tokens": total
         })
+    }
+
+    #[test]
+    fn exact_read_progress_preserves_parse_results_and_stays_within_fixed_prefix() {
+        use std::cell::RefCell;
+
+        let lines = [
+            modern_record(
+                Some("progress-record-1"),
+                "2026-10-02T01:00:00Z",
+                usage(120, 40, 30, 5, 150),
+            ),
+            modern_record(
+                Some("progress-record-2"),
+                "2026-10-02T01:01:00Z",
+                usage(150, 40, 35, 7, 185),
+            ),
+        ];
+        let mut prefix = format!(
+            r#"{{"type":"ignored","payload":"{}"}}"#,
+            "x".repeat(24 * 1024)
+        );
+        prefix.push('\n');
+        prefix.push_str(
+            &lines
+            .iter()
+            .map(serde_json::Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+        );
+        prefix.push('\n');
+        let fixed_prefix_size = prefix.len() as u64;
+        let file = std::env::temp_dir().join(format!(
+            "exact-read-progress-{}.jsonl",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&file, format!("{prefix}outside-fixed-prefix")).unwrap();
+
+        let mut plain_handle = std::fs::File::open(&file).unwrap();
+        let mut plain_sink = TestExactSessionSink::default();
+        let mut plain_warnings = Vec::new();
+        let plain_result = super::stream_session_file_exact(
+            &file,
+            &mut plain_handle,
+            fixed_prefix_size,
+            "progress-session",
+            &mut plain_sink,
+            &mut plain_warnings,
+        )
+        .unwrap();
+
+        let observed = RefCell::new(Vec::new());
+        let on_read_progress = |offset, total| observed.borrow_mut().push((offset, total));
+        let mut progress_handle = std::fs::File::open(&file).unwrap();
+        let mut progress_sink = TestExactSessionSink::default();
+        let mut progress_warnings = Vec::new();
+        let progress_result = super::stream_session_file_exact_with_progress(
+            &file,
+            &mut progress_handle,
+            fixed_prefix_size,
+            "progress-session",
+            &mut progress_sink,
+            &mut progress_warnings,
+            Some(&on_read_progress),
+        )
+        .unwrap();
+
+        assert_eq!(plain_warnings.len(), 0);
+        assert_eq!(progress_warnings.len(), 0);
+        assert_eq!(progress_result.prefix_sha256, plain_result.prefix_sha256);
+        assert_eq!(progress_result.bytes_read, plain_result.bytes_read);
+        assert_eq!(progress_result.resume_offset, plain_result.resume_offset);
+        assert_eq!(progress_result.state, plain_result.state);
+        assert_eq!(progress_result.chunk_hashes, plain_result.chunk_hashes);
+        assert_eq!(
+            progress_result.validation_chunk_hash,
+            plain_result.validation_chunk_hash
+        );
+        assert_eq!(progress_result.event_count, plain_result.event_count);
+        assert_eq!(
+            progress_result.previous_total_tokens,
+            plain_result.previous_total_tokens
+        );
+        assert_eq!(
+            progress_result.fork_replay_active,
+            plain_result.fork_replay_active
+        );
+        assert_eq!(progress_sink.events.len(), plain_sink.events.len());
+        for (progress_event, plain_event) in progress_sink.events.iter().zip(&plain_sink.events) {
+            assert_eq!(progress_event.timestamp, plain_event.timestamp);
+            assert_eq!(progress_event.session_id, plain_event.session_id);
+            assert_eq!(progress_event.tokens, plain_event.tokens);
+            assert_eq!(progress_event.input_tokens, plain_event.input_tokens);
+            assert_eq!(
+                progress_event.cached_input_tokens,
+                plain_event.cached_input_tokens
+            );
+            assert_eq!(progress_event.output_tokens, plain_event.output_tokens);
+            assert_eq!(
+                progress_event.reasoning_output_tokens,
+                plain_event.reasoning_output_tokens
+            );
+            assert_eq!(progress_event.model, plain_event.model);
+            assert_eq!(progress_event.source_offsets, plain_event.source_offsets);
+            assert_eq!(
+                progress_event.token_source_offset,
+                plain_event.token_source_offset
+            );
+            assert_eq!(progress_event.accounting_kind, plain_event.accounting_kind);
+            assert_eq!(
+                progress_event.reported_total_tokens,
+                plain_event.reported_total_tokens
+            );
+            assert_eq!(
+                progress_event.usage_fingerprint,
+                plain_event.usage_fingerprint
+            );
+        }
+
+        let observed = observed.into_inner();
+        assert!(observed.len() >= 2, "expected multiple underlying reads: {observed:?}");
+        assert!(observed.iter().all(|(offset, total)| {
+            *offset > 0 && *offset <= fixed_prefix_size && *total == fixed_prefix_size
+        }));
+        assert!(observed.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        assert_eq!(observed.last().map(|(offset, _)| *offset), Some(fixed_prefix_size));
+        std::fs::remove_file(file).unwrap();
     }
 
     fn legacy_count(timestamp: &str, total: serde_json::Value, last: serde_json::Value) -> serde_json::Value {

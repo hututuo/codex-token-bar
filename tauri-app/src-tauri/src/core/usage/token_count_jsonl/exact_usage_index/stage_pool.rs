@@ -54,9 +54,16 @@ const TABLES: [(&str, usize, &str); 4] = [
 
 pub(super) struct Pool {
     container: Mutex<Container>,
+    legacy_catalog: Mutex<Option<LegacyCatalog>>,
     path: PathBuf,
     identity: String,
     pub(super) store: StoreSpec,
+}
+struct LegacyCatalog {
+    schema_version: i64,
+    data_version: i64,
+    prefix_len: usize,
+    objects: HashMap<String, Vec<(String, String)>>,
 }
 #[derive(Clone)]
 pub(super) struct Job {
@@ -156,6 +163,7 @@ impl Pool {
         let store = pool_spec()?;
         let pool = Self {
             container: Mutex::new(container),
+            legacy_catalog: Mutex::new(None),
             path: path.to_path_buf(),
             identity: physical,
             store,
@@ -344,16 +352,46 @@ impl Pool {
     pub(super) fn legacy_candidates(&self, index: &Path, source_digest: &str) -> Result<Vec<PathBuf>> {
         self.with(|c|crate::core::business_store_route::exact_stage_candidates_on(c.connection(),index,source_digest))
     }
+    fn legacy_objects(&self, raw: &Connection, prefix: &str) -> Result<Vec<(String, String)>> {
+        let version = raw.query_row("PRAGMA schema_version", [], |row| row.get::<_, i64>(0)).map_err(|e| e.to_string())?;
+        let data_version = raw.query_row("PRAGMA data_version", [], |row| row.get::<_, i64>(0)).map_err(|e| e.to_string())?;
+        let mut cache = self.legacy_catalog.lock().map_err(|_| "旧暂存目录锁失败")?;
+        if let Some(catalog) = cache.as_ref().filter(|catalog| catalog.schema_version == version && catalog.data_version == data_version && catalog.prefix_len == prefix.len()) {
+            return Ok(catalog.objects.get(prefix).cloned().unwrap_or_default());
+        }
+        // The import catalog records ORIGINAL objects, not later runtime DDL.
+        // Read the actual schema once per schema_version on the held handle.
+        // Names only; no SQL/rows. Large catalogs fall back to bounded streaming.
+        let mut objects: HashMap<String, Vec<(String, String)>> = HashMap::new();
+        let mut selected = Vec::new();
+        let mut bytes = 0usize;
+        let mut keep = true;
+        let mut statement = raw.prepare("SELECT name,type FROM main.sqlite_master WHERE name NOT LIKE 'sqlite_%'").map_err(|e| e.to_string())?;
+        let mut rows = statement.query([]).map_err(|e| e.to_string())?;
+        while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+            let name: String = row.get(0).map_err(|e| e.to_string())?;
+            let kind: String = row.get(1).map_err(|e| e.to_string())?;
+            let Some(owner) = name.get(..prefix.len()) else { continue };
+            if owner == prefix && selected.len() < 5 { selected.push((name[prefix.len()..].to_owned(), kind.clone())); }
+            bytes = bytes.saturating_add(name.len() + kind.len() + 96);
+            if bytes > 16 * 1024 * 1024 { keep = false; objects.clear(); }
+            if keep {
+                let values = objects.entry(owner.to_owned()).or_default();
+                if values.len() < 5 { values.push((name[prefix.len()..].to_owned(), kind)); }
+            }
+        }
+        if keep { *cache = Some(LegacyCatalog { schema_version: version, data_version, prefix_len: prefix.len(), objects }); }
+        else { *cache = None; }
+        Ok(selected)
+    }
     pub(super) fn legacy_presence(&self, path: &Path) -> Result<Option<bool>> {
         if !is_legacy_path(path) {return Ok(None)}
         let spec=crate::core::business_store_route::exact_store_spec(path)?;
         self.with(|c| {
-            let registered:Option<(String,String,String)>=c.connection().query_row("SELECT module,logical_path,state FROM tb_stores WHERE store_id=?1",[&spec.id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(|e|e.to_string())?;
-            let Some((module,logical,state))=registered else {return Ok(Some(false))};
-            if module!="exact" || logical!=spec.logical_path || !matches!(state.as_str(),"ready"|"sealed") {return Err("旧暂存owner或状态不匹配，已保留任务".into());}
-            let mut statement=c.connection().prepare("SELECT name,type FROM tb_store_objects WHERE store_id=?1 ORDER BY name").map_err(|e|e.to_string())?;
-            let objects=statement.query_map([&spec.id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).map_err(|e|e.to_string())?
-                .collect::<std::result::Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
+            let registered:Option<(String,String,String,String,String)>=c.connection().query_row("SELECT module,source_identity,logical_path,namespace_prefix,state FROM tb_stores WHERE store_id=?1",[&spec.id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional().map_err(|e|e.to_string())?;
+            let Some((module,source,logical,prefix,state))=registered else {return Ok(Some(false))};
+            if module!="exact" || source!=spec.source_identity || logical!=spec.logical_path || prefix!=spec.prefix || !matches!(state.as_str(),"ready"|"sealed") {return Err("旧暂存owner或状态不匹配，已保留任务".into());}
+            let objects=self.legacy_objects(c.connection(), &spec.prefix)?;
             if objects.is_empty() {return Ok(Some(false))}
             let mut names=objects.iter().map(|(name,_)|name.as_str()).collect::<Vec<_>>();names.sort();
             if names!=["chunks","events","fingerprints","manifest"] || objects.iter().any(|(_,kind)|kind!="table") {

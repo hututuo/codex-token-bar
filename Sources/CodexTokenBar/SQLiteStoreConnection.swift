@@ -4,6 +4,14 @@ import SQLite3
 final class SQLiteStoreBinding {
     let store: BusinessSQLiteStore
     var namespace: SQLiteStoreNamespace
+    private struct Translation {
+        let namespace: SQLiteStoreNamespace
+        let sql: String
+        let bytes: Int
+    }
+    private var translations: [String: Translation] = [:]
+    private var translationOrder: [String] = []
+    private var translationBytes = 0
 
     init(store: BusinessSQLiteStore, names: Set<String>) {
         self.store = store
@@ -11,8 +19,14 @@ final class SQLiteStoreBinding {
     }
 
     func sql(_ sql: String) throws -> String {
+        // Reuse only a validated translation under the IDENTICAL identifier
+        // context. SQLite still prepares/executes the SQL and checks its schema.
+        // TEMP/DDL or explicit namespace changes cannot reuse an old binding.
+        if let cached = translations[sql], cached.namespace == namespace { return cached.sql }
+        let context = namespace
+        let tokens = try SQLiteStoreNamespace.tokens(sql)
         var statements: [String] = [], pending = ""
-        for token in try SQLiteStoreNamespace.tokens(sql) {
+        for token in tokens {
             pending += token.raw
             if token.raw == ";", token.kind == .punctuation, sqlite3_complete(pending) != 0 {
                 statements.append(try bindStatement(pending))
@@ -22,10 +36,28 @@ final class SQLiteStoreBinding {
         if !pending.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             statements.append(try bindStatement(pending))
         }
-        return statements.map { statement in
+        let result = statements.map { statement in
             let trimmed = statement.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.hasSuffix(";") ? trimmed : trimmed + ";"
         }.joined(separator: "\n")
+        if statements.count == 1, context == namespace,
+           let first = tokens.first(where: { $0.kind != .trivia }),
+           first.kind == .identifier, first.raw == first.value,
+           ["SELECT", "INSERT", "UPDATE", "DELETE", "REPLACE", "WITH"].contains(first.value.uppercased()) {
+            let bytes = sql.utf8.count + result.utf8.count
+            if bytes <= 512 * 1024 {
+                if let old = translations.removeValue(forKey: sql) {
+                    translationBytes -= old.bytes; translationOrder.removeAll { $0 == sql }
+                }
+                while translationOrder.count >= 256 || translationBytes + bytes > 512 * 1024 {
+                    guard !translationOrder.isEmpty else { break }
+                    if let removed = translations.removeValue(forKey: translationOrder.removeFirst()) { translationBytes -= removed.bytes }
+                }
+                translations[sql] = Translation(namespace: context, sql: result, bytes: bytes)
+                translationOrder.append(sql); translationBytes += bytes
+            }
+        }
+        return result
     }
 
     private func bindStatement(_ sql: String) throws -> String {

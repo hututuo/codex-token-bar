@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import XCTest
 @testable import CodexTokenBar
 
@@ -34,8 +35,44 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         try super.tearDownWithError()
     }
 
+    func testRealParserByteProgressPreservesTheSameBoundedEventsAndCheckpoint() throws {
+        let home = try makeCodexHome()
+        let file = home.appendingPathComponent("sessions/byte-progress.jsonl")
+        let usage = Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120)
+        let line = try tokenCountLine(timestamp: Date(), total: usage, last: usage)
+        let filler = "{\"type\":\"unrelated\",\"padding\":\"" + String(repeating: "x", count: 32 * 1024) + "\"}\n"
+        let bytes = Data((line + "\n" + String(repeating: filler, count: 32)).utf8)
+        try bytes.write(to: file)
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: home))
+        var observed: [(UInt64, UInt64)] = []
+        var withProgress: [CodexUsageAnalyzer.IndexedTokenEvent] = []
+        var request = CodexUsageAnalyzer.IndexedSessionParseRequest.full(endOffset: UInt64(bytes.count))
+        request.onReadProgress = { observed.append(($0, $1)) }
+        let reported = try analyzer.parseSessionIntoHistoryIndex(file: file, sessionID: "byte-fixture", request: request,
+            insertFingerprint: { _ in true }, emit: { withProgress.append($0) })
+        var control: [CodexUsageAnalyzer.IndexedTokenEvent] = []
+        let original = try analyzer.parseSessionIntoHistoryIndex(file: file, sessionID: "byte-fixture",
+            request: .full(endOffset: UInt64(bytes.count)), insertFingerprint: { _ in true }, emit: { control.append($0) })
+        XCTAssertGreaterThan(observed.count, 1)
+        XCTAssertEqual(observed.map(\.0), observed.map(\.0).sorted())
+        XCTAssertTrue(observed.allSatisfy { $0.0 > 0 && $0.0 <= $0.1 && $0.1 == UInt64(bytes.count) })
+        XCTAssertEqual(observed.last?.0, UInt64(bytes.count))
+        XCTAssertEqual(withProgress.map { $0.event.tokens }, control.map { $0.event.tokens })
+        XCTAssertEqual(withProgress.map(\.sourceOffset), control.map(\.sourceOffset))
+        XCTAssertEqual(reported.resumeOffset, original.resumeOffset)
+        XCTAssertEqual(reported.contentHash, original.contentHash)
+        XCTAssertEqual(reported.state, original.state)
+        XCTAssertEqual(try Data(contentsOf: file), bytes)
+    }
+
     func testNamespacedMultiBatchEnrichmentReportsCumulativeProgressWithoutReparsingOrChangingHistory() throws {
         let configuredCount = ProcessInfo.processInfo.environment["TOKENBAR_BACKFILL_FILE_COUNT"]
+        func phase(_ value: String) {
+            guard configuredCount != nil else { return }
+            print("TOKENBAR_BACKFILL_PHASE \(value) uptime=\(ProcessInfo.processInfo.systemUptime)")
+            fflush(nil)
+        }
+        phase("fixture-start")
         let fileCount: Int
         if let configuredCount { fileCount = try XCTUnwrap(Int(configuredCount)) }
         else { fileCount = 13 }
@@ -84,9 +121,11 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         }
         let sourceDigestsBefore = try files.map(sha256Digest(of:))
         let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: home))
+        phase("old-ledger-start")
         let oldIndex = try CodexUsageHistoryIndex(codexHome: home)
         _ = try oldIndex.synchronize(files: files, sessionID: analyzer.sessionID(from:),
             parser: analyzer.parseSessionIntoHistoryIndex(file:sessionID:request:insertFingerprint:emit:))
+        phase("old-ledger-complete")
         var rawTokens = 0
         var rawEvents = 0
         var rawTimestamps = Set<Double>()
@@ -113,7 +152,9 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let exactStore = try XCTUnwrap(configuration.specification(for: indexURL))
         XCTAssertEqual(exactStore.module, "exact.swift")
         let preparationStarted = Date()
+        phase("legacy-catalog-start")
         try seedSyntheticLegacyStageCatalog(configuration: configuration, target: exactStore, jobCount: legacyJobs)
+        phase("legacy-catalog-complete")
         let stagePool = try ExactStagePool.shared(for: exactStore)
         defer { withExtendedLifetime(stagePool) {} }
         let mainBefore = try mainCatalogCounts(in: configuration)
@@ -130,6 +171,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         var completed: [Int] = []
         SQLiteWriteMetrics.begin(at: configuration.container)
         ExactBackfillMetrics.begin()
+        phase("backfill-start")
         let backfillStarted = Date()
         var lastProgress = backfillStarted
         var largestGap: TimeInterval = 0
@@ -150,6 +192,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let backfillSeconds = Date().timeIntervalSince(backfillStarted)
         let writeMetrics = SQLiteWriteMetrics.end()
         let phaseMetrics = ExactBackfillMetrics.end()
+        phase("backfill-complete")
         largestGap = max(largestGap, Date().timeIntervalSince(lastProgress))
         XCTAssertTrue(result.eventEnrichmentComplete)
         XCTAssertEqual(parsed.value, files.count, "The publication retry must reuse verified staged work")
@@ -181,6 +224,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let unchangedParserCalls = ThreadSafeCounter()
         var unchangedSeconds: [TimeInterval] = []
         unchangedSeconds.reserveCapacity(20)
+        phase("unchanged-start")
         for _ in 0..<20 {
             let started = Date()
             let unchanged = try index.synchronize(files: files, sessionID: analyzer.sessionID(from:), parser: { file, id, request, fp, emit in
@@ -193,6 +237,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         }
         let unchangedP95Index = max(0, Int(ceil(Double(unchangedSeconds.count) * 0.95)) - 1)
         let unchangedP95Seconds = unchangedSeconds.sorted()[unchangedP95Index]
+        phase("unchanged-complete")
         XCTAssertEqual(unchangedParserCalls.value, 0, "Unchanged synchronizations must never invoke the parser")
         XCTAssertEqual(try Data(contentsOf: indexURL), original, "Unchanged synchronizations cannot mutate the standalone ledger")
         XCTAssertEqual(try files.map(sha256Digest(of:)), sourceDigestsBefore, "Unchanged synchronizations cannot mutate raw sources")

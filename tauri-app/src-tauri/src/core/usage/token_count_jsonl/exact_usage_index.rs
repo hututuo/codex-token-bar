@@ -22,7 +22,7 @@ use super::fingerprint_codec;
 use super::session_files::session_id_from_file;
 use super::session_parser::{
     probe_explicit_subagent_session_file, read_event_excerpt_batch, stream_session_file_exact,
-    stream_session_file_exact_from, ExactChunkHash, ExactEventSourceOffsets, ExactSessionEventSink,
+    stream_session_file_exact_from, stream_session_file_exact_with_progress, ExactChunkHash, ExactEventSourceOffsets, ExactSessionEventSink,
     ExactSessionParserState, ExactTokenEvent, ExplicitSubagentSessionFileProbe, SourceByteRange,
     UsageSnapshotFingerprint, EXACT_INDEX_CHUNK_SIZE,
 };
@@ -6629,13 +6629,15 @@ fn build_staged_full_rebuild(
         transaction: &transaction,
         ordinal: 0,
     };
-    let parsed = stream_session_file_exact(
+    let source_progress = super::precise_source_read_progress(codex_home);
+    let parsed = stream_session_file_exact_with_progress(
         &job.file,
         &mut handle,
         committed_signature.size,
         &job.session_id,
         &mut sink,
         warnings,
+        source_progress.as_ref().map(|callback| callback as &dyn Fn(u64, u64)),
     )
     .map_err(StagedFullRebuildError::IncompleteSource)?;
     let event_count = sink.ordinal;

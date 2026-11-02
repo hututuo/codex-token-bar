@@ -80,12 +80,23 @@ final class ExactStagePoolTests: XCTestCase {
                     module: base.module, sourceIdentity: base.sourceIdentity + "\0job:" + UUID().uuidString)
                 : base
             try BusinessStoreFiles.registerInActiveContainer(store)
+            // Direct fixture registration does not activate its route. A real
+            // startup installs these catalog identities before module reads.
+            BusinessSQLiteRoutes.install([store])
         }
         XCTAssertEqual(Set(try pool.legacyURLs(for: f.target, sourceDigest: digest)), Set(wanted))
         for url in wanted {
             XCTAssertFalse(try pool.legacyPresence(try XCTUnwrap(BusinessSQLiteRoutes.store(for: url)), for: f.target),
                 "A namespace registered before its producer wrote MAIN tables is unfinished, not published usage")
         }
+        let runtime = try XCTUnwrap(BusinessSQLiteRoutes.store(for: wanted[0]))
+        let physical = SQLiteStoreNamespace.quote(runtime.prefix + "runtime_fact")
+        try f.raw.execute("CREATE TABLE \(physical)(value INTEGER); INSERT INTO \(physical) VALUES(11)")
+        XCTAssertEqual(try f.raw.readRows("SELECT COUNT(*) FROM tb_store_objects WHERE store_id=?", bindings: [.text(runtime.id)]) { $0.int(0) }, [0])
+        XCTAssertTrue(try pool.legacyPresence(runtime, for: f.target),
+            "Runtime-created facts must not disappear merely because the original import catalog is empty")
+        try f.raw.execute("DROP TABLE \(physical)")
+        XCTAssertFalse(try pool.legacyPresence(runtime, for: f.target), "Schema/foreign commits invalidate the held catalog")
         let plan = try f.raw.readRows("EXPLAIN QUERY PLAN " + ExactStagePool.legacyLookupSQL,
             bindings: [.text(wanted[0].path), .text(directory.appendingPathComponent(digest + ".candidate-").path),
                        .text(directory.appendingPathComponent(digest + ".candidate.").path)]) { $0.text(3) ?? "" }

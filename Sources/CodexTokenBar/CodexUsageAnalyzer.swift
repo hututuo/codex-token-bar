@@ -259,13 +259,16 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 trace?.end("no-token-jsonl-files-or-history")
                 return nil
             }
+            let sourceProgress = ExactSourceProgressRelay(onProgress)
             let synchronization = try historyIndex.synchronize(
                 files: sessionFiles,
                 sessionID: sessionID(from:),
                 messageScanner: { try self.scanMessageLinks(file: $0, endOffset: $1, eventOffsets: $2) },
                 observedAt: discoveryStartedAt
             ) { [self] file, sessionID, request, insertFingerprint, emit in
-                try parseSessionIntoHistoryIndex(
+                var request = request
+                if onProgress != nil { request.onReadProgress = { sourceProgress.sourceBytes($0, total: $1) } }
+                return try parseSessionIntoHistoryIndex(
                     file: file,
                     sessionID: sessionID,
                     request: request,
@@ -277,7 +280,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 // Only the one-time historical enrichment belongs in the
                 // top-right migration indicator.
                 guard phase == .backfillingModel else { return }
-                onProgress?(PreciseIndexProgress(
+                sourceProgress.report(PreciseIndexProgress(
                     phase: phase,
                     message: "正在补全历史模型信息 \(completed)/\(total)；首次升级可能需要几分钟，原始数据不会丢失",
                     completed: completed,
@@ -793,13 +796,16 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                     "files": String(sessionFiles.count),
                 ])
             } else {
+                let sourceProgress = ExactSourceProgressRelay(onProgress)
                 synchronization = try historyIndex.synchronize(
                     files: sessionFiles,
                     sessionID: sessionID(from:),
                 messageScanner: { try self.scanMessageLinks(file: $0, endOffset: $1, eventOffsets: $2) },
                 observedAt: preciseCoverageAt
                 ) { [self] file, sessionID, request, insertFingerprint, emit in
-                    try parseSessionIntoHistoryIndex(
+                    var request = request
+                    if onProgress != nil { request.onReadProgress = { sourceProgress.sourceBytes($0, total: $1) } }
+                    return try parseSessionIntoHistoryIndex(
                         file: file,
                         sessionID: sessionID,
                         request: request,
@@ -818,7 +824,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                     default:
                         message = "正在升级精确索引"
                     }
-                    onProgress?(PreciseIndexProgress(
+                    sourceProgress.report(PreciseIndexProgress(
                         phase: phase,
                         message: message,
                         completed: completed,

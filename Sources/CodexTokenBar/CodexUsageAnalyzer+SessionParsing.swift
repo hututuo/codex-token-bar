@@ -297,7 +297,8 @@ extension CodexUsageAnalyzer {
             endingAt: request.endOffset,
             chunkHashingFrom: request.hashingStartOffset,
             validationBoundary: request.validationBoundary,
-            readHandle: request.readHandle
+            readHandle: request.readHandle,
+            onReadProgress: request.onReadProgress
         ) { lineOffset, lineString in
             if Task.isCancelled {
                 throw CancellationError()
@@ -1262,6 +1263,7 @@ extension CodexUsageAnalyzer {
         chunkHashingFrom hashingStartOffset: UInt64? = nil,
         validationBoundary: UInt64? = nil,
         readHandle suppliedHandle: (any CodexReadHandle)? = nil,
+        onReadProgress: ((UInt64, UInt64) -> Void)? = nil,
         maximumLineBytes: Int? = nil,
         handleLine: (UInt64, String) throws -> Void
     ) throws -> SessionLineStreamResult {
@@ -1311,6 +1313,7 @@ extension CodexUsageAnalyzer {
                 throw CodexUsageSourceChangedError(path: file.path)
             }
             skipRemaining -= UInt64(count)
+            if let endOffset { onReadProgress?(offset - skipRemaining, endOffset) }
         }
 
         var pending = Data()
@@ -1358,6 +1361,8 @@ extension CodexUsageAnalyzer {
             }
             if count == 0 {
                 reachedEnd = true
+            } else if let endOffset {
+                onReadProgress?(pendingStartOffset + UInt64(pending.count), endOffset)
             }
 
             var searchStart = pending.startIndex

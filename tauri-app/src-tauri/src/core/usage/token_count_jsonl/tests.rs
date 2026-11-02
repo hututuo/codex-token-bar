@@ -23,6 +23,35 @@ use time::{OffsetDateTime, UtcOffset};
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+fn source_bytes_keep_real_file_counts_and_old_workers_cannot_replace_new_progress() {
+    let root = temp_root();
+    begin_precise_dashboard_progress(&root);
+    update_precise_dashboard_progress(&root, "backfillingModel", "历史补全", 4, Some(4124));
+    let report = precise_source_read_progress(&root).unwrap();
+    report(600, 1000);
+    let current = precise_dashboard_progress(&root);
+    assert_eq!((current.completed, current.total), (4, Some(4124)));
+    assert_eq!(current.phase, "backfillingModel");
+    assert!(current.message.contains("当前来源已读取"));
+    let expected = serde_json::to_value(&current).unwrap();
+    report(2000, 1000);
+    assert_eq!(serde_json::to_value(precise_dashboard_progress(&root)).unwrap(), expected);
+    // A new operation in the same Home has its own private progress fence.
+    begin_precise_dashboard_progress(&root);
+    update_precise_dashboard_progress(&root, "backfillingModel", "new operation", 5, Some(4124));
+    let fresh = serde_json::to_value(precise_dashboard_progress(&root)).unwrap();
+    report(1000, 1000);
+    assert_eq!(serde_json::to_value(precise_dashboard_progress(&root)).unwrap(), fresh);
+    let fresh_report = precise_source_read_progress(&root).unwrap();
+    fresh_report(1000, 1000);
+    assert_eq!(precise_dashboard_progress(&root).completed, 5, "EOF is not another completed job");
+    finish_precise_dashboard_progress(&root, true, "committed");
+    let finished = serde_json::to_value(precise_dashboard_progress(&root)).unwrap();
+    fresh_report(1000, 1000);
+    assert_eq!(serde_json::to_value(precise_dashboard_progress(&root)).unwrap(), finished);
+}
+
+#[test]
 fn parsing_and_failed_publication_keep_counts_but_cannot_report_committed_full_progress() {
     let root = temp_root();
     begin_precise_dashboard_progress(&root);

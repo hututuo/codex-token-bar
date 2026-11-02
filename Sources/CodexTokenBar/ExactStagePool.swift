@@ -94,6 +94,8 @@ final class ExactStagePool: @unchecked Sendable {
     // streamed. These are private, auto-deleted read-only work areas, not ledgers.
     private var workCache: [String: CachedWork] = [:]
     private var workOrder: [String] = []
+    private var legacyCatalogVersion: (schema: Int, data: Int)?
+    private var legacyObjectCatalog: [String: [(String, String)]] = [:]
     private static let names = ["operations", "jobs", "event_rows", "fingerprints", "chunks", "publication_receipts"]
     private static let payloadTables = ["events": "event_rows", "fingerprints": "fingerprints", "chunks": "chunks"]
 
@@ -459,12 +461,33 @@ final class ExactStagePool: @unchecked Sendable {
             guard record.0 == legacy.module, record.1 == legacy.sourceIdentity,
                   record.2 == legacy.logicalURL.path, record.3 == legacy.prefix,
                   ["ready", "sealed", "staging"].contains(record.4 ?? "") else { throw Failure.invalid }
-            // Old producers registered their namespace before TEMP parsing.
-            // A crash before materialization leaves no MAIN object or fact;
-            // do not reopen the whole A catalog merely to rediscover that.
-            return try db.readRows("SELECT EXISTS(SELECT 1 FROM tb_store_objects WHERE store_id=? AND type='table')",
-                bindings: [.text(legacy.id)], map: { $0.int(0) }).first == 1
+            // tb_store_objects records the ORIGINAL import layout. Runtime
+            // DDL can create facts without adding an import-catalog entry.
+            return try !legacyObjects(prefix: legacy.prefix, on: db).isEmpty
         }
+    }
+
+    private func legacyObjects(prefix: String, on db: SQLiteDatabaseConnection) throws -> [(String, String)] {
+        let schema = try db.readRows("PRAGMA schema_version") { $0.int(0) ?? -1 }.first ?? -1
+        let data = try db.readRows("PRAGMA data_version") { $0.int(0) ?? -1 }.first ?? -1
+        guard schema >= 0, data >= 0 else { throw Failure.invalid }
+        if let version = legacyCatalogVersion, version.schema == schema, version.data == data {
+            return legacyObjectCatalog[prefix] ?? []
+        }
+        var objects: [String: [(String, String)]] = [:], selected: [(String, String)] = []
+        var bytes = 0, keep = true
+        try db.forEachRow("SELECT name,type FROM main.sqlite_master WHERE name NOT LIKE 'sqlite_%'") { row in
+            guard let name = row.text(0), let type = row.text(1), name.utf8.count >= prefix.utf8.count else { return }
+            let owner = String(name.prefix(prefix.count))
+            let logical = String(name.dropFirst(prefix.count))
+            if owner == prefix, selected.count < 5 { selected.append((logical, type)) }
+            bytes += name.utf8.count + type.utf8.count + 96
+            if bytes > 16 * 1024 * 1024 { keep = false; objects.removeAll() }
+            if keep, (objects[owner]?.count ?? 0) < 5 { objects[owner, default: []].append((logical, type)) }
+        }
+        legacyCatalogVersion = keep ? (schema, data) : nil
+        legacyObjectCatalog = keep ? objects : [:]
+        return selected
     }
 
     func consumeLegacy(_ legacy: BusinessSQLiteStore, generation: String, on tx: SQLiteDatabaseConnection) throws {

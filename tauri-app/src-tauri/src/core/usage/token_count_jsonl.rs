@@ -98,7 +98,7 @@ static PRECISE_REFRESH_COORDINATORS: OnceLock<
     Mutex<HashMap<PreciseRefreshHomeKey, Arc<PreciseRefreshCoordinator>>>,
 > = OnceLock::new();
 static PRECISE_INDEX_PROGRESS: OnceLock<
-    Mutex<HashMap<PreciseProgressKey, PreciseDashboardProgress>>,
+    Mutex<HashMap<PreciseProgressKey, PreciseProgressState>>,
 > = OnceLock::new();
 static PRECISE_REFRESH_FLIGHT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static PRECISE_PROCESS_OBSERVER_IDENTITY: OnceLock<PreciseObserverIdentity> = OnceLock::new();
@@ -195,6 +195,13 @@ struct PreciseProgressKey {
     canonical_home: PathBuf,
 }
 
+struct PreciseProgressState {
+    value: PreciseDashboardProgress,
+    base_message: String,
+    generation: Uuid,
+    last_source_notification: Option<Instant>,
+}
+
 fn precise_progress_key(codex_home: &Path) -> PreciseProgressKey {
     let canonical_home = fs::canonicalize(codex_home).unwrap_or_else(|_| codex_home.to_path_buf());
     PreciseProgressKey { canonical_home }
@@ -236,7 +243,7 @@ pub(crate) fn precise_dashboard_progress(codex_home: &Path) -> PreciseDashboardP
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .get(&key)
-        .cloned()
+        .map(|state| state.value.clone())
         .unwrap_or_else(idle_precise_dashboard_progress)
 }
 
@@ -259,7 +266,10 @@ pub(crate) fn begin_precise_dashboard_progress(codex_home: &Path) {
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .insert(key, progress);
+        .insert(key, PreciseProgressState {
+            base_message: progress.message.clone(), value: progress,
+            generation: Uuid::new_v4(), last_source_notification: None,
+        });
 }
 
 fn update_precise_dashboard_progress_for_key(
@@ -278,21 +288,50 @@ fn update_precise_dashboard_progress_for_key(
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let started_at = states
         .get(&key)
-        .map(|state| state.started_at.clone())
+        .map(|state| state.value.started_at.clone())
         .unwrap_or_else(precise_progress_now);
+    let generation = states.get(&key).map(|state| state.generation).unwrap_or_else(Uuid::new_v4);
+    let last_source_notification = states.get(&key).and_then(|state| state.last_source_notification);
+    let message = message.into();
     let clamped_completed = total.map_or(completed, |value| completed.min(value));
     states.insert(
         key,
-        PreciseDashboardProgress {
+        PreciseProgressState { base_message: message.clone(), generation, last_source_notification,
+        value: PreciseDashboardProgress {
             phase: phase.into(),
-            message: message.into(),
+            message,
             completed: clamped_completed,
             total,
             fraction: precise_progress_fraction(clamped_completed, total).map(|value| if phase == "complete" { value } else { value.min(0.99) }),
             started_at,
             updated_at: precise_progress_now(),
         },
+        },
     );
+}
+
+/// Informational decoded-byte activity only. Shared throttling and a generation
+/// fence prevent four workers or a superseded scan from rewinding UI progress.
+fn precise_source_read_progress(codex_home: &Path) -> Option<impl Fn(u64, u64) + Send + Sync> {
+    if PRECISE_PROGRESS_SUPPRESSED.with(|slot| slot.get()) { return None; }
+    let key = active_or_current_progress_key(codex_home);
+    let generation = PRECISE_INDEX_PROGRESS.get_or_init(|| Mutex::new(HashMap::new()))
+        .lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(&key)
+        .filter(|state| matches!(state.value.phase.as_str(), "scanning" | "backfillingModel"))
+        .map(|state| state.generation)?;
+    Some(move |read, total| {
+        if read == 0 || total == 0 || read > total { return; }
+        let mut states = PRECISE_INDEX_PROGRESS.get_or_init(|| Mutex::new(HashMap::new()))
+            .lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(state) = states.get_mut(&key) else { return; };
+        if state.generation != generation || !matches!(state.value.phase.as_str(), "scanning" | "backfillingModel") { return; }
+        let now = Instant::now();
+        if state.last_source_notification.is_some_and(|previous| now.duration_since(previous) < StdDuration::from_millis(250)) { return; }
+        state.last_source_notification = Some(now);
+        state.value.message = format!("{}；当前来源已读取 {:.1} MiB / {:.1} MiB", state.base_message,
+            read as f64 / 1_048_576.0, total as f64 / 1_048_576.0);
+        state.value.updated_at = precise_progress_now();
+    })
 }
 
 pub(crate) fn update_precise_dashboard_progress(
@@ -322,7 +361,7 @@ pub(crate) fn finish_precise_dashboard_progress(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .get(&key)
-        .cloned()
+        .map(|state| state.value.clone())
         .unwrap_or_else(idle_precise_dashboard_progress);
     let completed = if succeeded {
         current.total.unwrap_or(current.completed)
