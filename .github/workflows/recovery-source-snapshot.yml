@@ -12,22 +12,31 @@ permissions:
 jobs:
   snapshot:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Bundle public repository history without credentials or working data
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Preserve every public source ref and exact locked frontend dependencies
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p recovery-source
-          git bundle create recovery-source/tokenbar-source.bundle HEAD
+          git bundle create recovery-source/tokenbar-source.bundle --all
           git bundle verify recovery-source/tokenbar-source.bundle
+          git show origin/codex/tokenbar-recovery-20261101:tauri-app/package-lock.json > recovery-source/product-package-lock.json
+          git rev-parse origin/codex/tokenbar-recovery-20261101 > recovery-source/product-sha.txt
           git rev-parse HEAD > recovery-source/source-sha.txt
           git rev-parse HEAD^{tree} > recovery-source/source-tree.txt
-          sha256sum recovery-source/tokenbar-source.bundle > recovery-source/SHA256SUMS
+          cp recovery-patches/current.patch recovery-source/pending-control.patch
+          npm ci --prefix tauri-app --registry=https://registry.npmjs.org
+          tar -czf recovery-source/frontend-dependencies.tar.gz -C tauri-app node_modules package-lock.json
+          cp "$(command -v node)" recovery-source/node
+          sha256sum recovery-source/tokenbar-source.bundle recovery-source/frontend-dependencies.tar.gz recovery-source/node > recovery-source/SHA256SUMS
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: tokenbar-recovery-source-${{ github.sha }}
