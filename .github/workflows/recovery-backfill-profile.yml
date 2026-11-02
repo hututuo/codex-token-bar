@@ -1,0 +1,81 @@
+name: Profile verified recovery backfill
+
+on:
+  push:
+    branches: ['codex/tokenbar-recovery-control-20261101']
+    paths: ['.github/workflows/recovery-backfill-profile.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  profile:
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      GIT_LFS_SKIP_SMUDGE: '1'
+      TOKENBAR_BACKFILL_FILE_COUNT: '512'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: '41058ffe4b59fb921d2bdf962db1d0624aac9b87'
+          persist-credentials: false
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: .build
+          key: backfill-profile-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Package.resolved') }}-41058ffe
+          restore-keys: |
+            backfill-scale-${{ runner.os }}-${{ runner.arch }}-
+            swift-${{ runner.os }}-
+      - name: Profile only this job's synthetic native XCTest descendant
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib, signal, subprocess, time
+          root=pathlib.Path.cwd().resolve(); out=root/'backfill-cpu-evidence'; out.mkdir()
+          sha=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+          assert sha=='41058ffe4b59fb921d2bdf962db1d0624aac9b87'
+          command=['swift','test','--filter','CodexUsageAnalyzerTests.testNamespacedMultiBatchEnrichmentReportsCumulativeProgressWithoutReparsingOrChangingHistory']
+          report={'sourceSha':sha,'files':512,'samples':[],'status':'RUNNING','scope':'Isolated synthetic XCTest, not release acceptance'}
+          start=time.monotonic(); last=0
+          with (out/'test.log').open('w') as log:
+              proc=subprocess.Popen(command,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
+              try:
+                  while proc.poll() is None:
+                      if time.monotonic()-start>1000:
+                          raise TimeoutError('Profile execution deadline reached')
+                      if time.monotonic()-last>20 and len(report['samples'])<8:
+                          rows=[]
+                          for line in subprocess.check_output(['ps','-axo','pid=,ppid=,command='],text=True).splitlines():
+                              parts=line.strip().split(None,2)
+                              if len(parts)==3: rows.append((int(parts[0]),int(parts[1]),parts[2]))
+                          descendants={proc.pid}
+                          while True:
+                              children={pid for pid,parent,_ in rows if parent in descendants}
+                              if children.issubset(descendants): break
+                              descendants.update(children)
+                          targets=[pid for pid,_,cmd in rows if pid in descendants and '.xctest' in cmd and str(root) in cmd]
+                          if targets:
+                              last=time.monotonic()
+                              path=out/f'sample-{len(report["samples"])+1}.txt'
+                              result=subprocess.run(['/usr/bin/sample',str(targets[0]),'2','10','-file',str(path)],capture_output=True,text=True,timeout=20)
+                              report['samples'].append({'pid':targets[0],'elapsedSeconds':last-start,'exit':result.returncode,'file':path.name,'message':result.stdout+result.stderr})
+                      time.sleep(1)
+                  report.update(status='PASS' if proc.returncode==0 else 'FAIL',exit=proc.returncode,seconds=time.monotonic()-start)
+              except BaseException as error:
+                  report.update(status='FAIL',error=str(error))
+                  if proc.poll() is None: os.killpg(proc.pid,signal.SIGKILL); proc.wait()
+                  raise
+              finally:
+                  (out/'report.json').write_text(json.dumps(report,indent=2)+'\n')
+          if proc.returncode: raise SystemExit(proc.returncode)
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: backfill-cpu-41058ffe-${{ github.run_id }}
+          path: backfill-cpu-evidence/
+          if-no-files-found: error
+          retention-days: 30
