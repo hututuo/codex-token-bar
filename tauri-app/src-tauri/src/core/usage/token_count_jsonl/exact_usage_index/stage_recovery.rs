@@ -79,8 +79,27 @@ pub(super) fn verify_bounded_stage(root: &Path) -> Result<serde_json::Value, Str
     #[cfg(not(test))]
     {
         let raw = check!(rusqlite::Connection::open(crate::core::business_store_route::container_path()?));
-        let found: i64 = check!(raw.query_row("SELECT COUNT(*) FROM tb_stores WHERE logical_path LIKE '%.preserved.%'", [], |r|r.get(0)));
-        require!(found > 0, "old private stage was not retained in A");
+        // Logical paths deliberately contain only an identity hash. A filename
+        // substring cannot prove retention in the namespaced production route.
+        // Find the exact sealed artifact, not merely any unrelated old stage.
+        let prefixes = {
+            let mut query = check!(raw.prepare("SELECT namespace_prefix FROM tb_stores WHERE module='exact'"));
+            let rows = check!(query.query_map([], |r| r.get::<_, String>(0)));
+            check!(rows.collect::<rusqlite::Result<Vec<_>>>())
+        };
+        let mut retained = 0_i64;
+        for prefix in prefixes {
+            let table = format!("{prefix}manifest");
+            let has_artifact: i64 = check!(raw.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name='artifact_id'",
+                [&table], |r| r.get(0)));
+            if has_artifact == 0 { continue; }
+            let quoted = table.replace('"', "\"\"");
+            retained += check!(raw.query_row(&format!(
+                "SELECT COUNT(*) FROM \"{quoted}\" WHERE artifact_id=?1 AND complete=1 AND event_count=1"),
+                [&original_artifact], |r| r.get::<_, i64>(0)));
+        }
+        require!(retained == 1, "original sealed private stage was not retained exactly once in A");
     }
     #[cfg(test)]
     require!(new.database_path.parent().unwrap().join("preserved").is_dir(), "old private stage was not retained");
@@ -106,6 +125,6 @@ pub(super) fn verify_bounded_stage(root: &Path) -> Result<serde_json::Value, Str
 fn verified_bounded_stage_is_preserved_before_larger_reconciliation_but_future_stage_blocks() {
     let root=std::env::temp_dir().join(format!("tokenbar-bounded-stage-{}",Uuid::new_v4()));
     let result=verify_bounded_stage(&root);
-    let _=fs::remove_dir_all(&root);
+    let _=fs::remove_dir_all(root);
     result.unwrap();
 }

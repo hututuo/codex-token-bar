@@ -1,0 +1,67 @@
+name: Production database recovery checks
+
+on:
+  push:
+    branches: [main, 'codex/tokenbar-recovery-20261101']
+    paths-ignore: ['docs/**', '**.md']
+  pull_request:
+    paths-ignore: ['docs/**', '**.md']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-database-recovery-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  readers:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    env:
+      RUSTUP_TOOLCHAIN: '1.93.1'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_BUILD_JOBS: '3'
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: rust-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-v1
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: tauri-app/src-tauri/target
+          key: rust-test-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            rust-test-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-
+      - name: Verify actual non-test reader routes in disposable data roots
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.93.1 --profile minimal
+          npm ci --prefix tauri-app --registry=https://registry.npmjs.org
+          npm run build --prefix tauri-app
+          python3 scripts/check_business_store_fixture.py
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: production-reader-evidence-${{ matrix.os }}-${{ github.sha }}
+          path: |
+            native-production-readers.log
+            native-production-readers.json
+          if-no-files-found: error
+          retention-days: 30
