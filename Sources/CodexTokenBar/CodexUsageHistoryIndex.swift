@@ -595,6 +595,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         .appendingPathComponent(indexNamespace, isDirectory: true)
 
     private let driver: SQLiteDatabaseDriver
+    private var stagePool: ExactStagePool?
     private let fileManager: FileManager
     private let operationGate: CodexUsageHistoryIndexOperationGate
 
@@ -2651,6 +2652,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         parser: @escaping SessionParser,
         onProgress: ((Int, Int, PreciseIndexProgressPhase) -> Void)? = nil
     ) throws -> SynchronizationResult {
+        if stagePool == nil, let target = BusinessSQLiteRoutes.store(for: driver.url) {
+            stagePool = try ExactStagePool.existingOrNeededForLegacy(for: target)
+        }
         var attempt = 0
         while true {
             var stagedArtifacts: [URL] = []
@@ -2673,6 +2677,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 // then retry its original accounting transaction unchanged.
                 attempt += 1
                 guard attempt <= 8 else { throw CodexUsageIndexRepairRequiredError(reason: "源会话持续变化，已保留旧账和扫描断点，等待下次刷新") }
+                if stagePool == nil, let target = BusinessSQLiteRoutes.store(for: driver.url) {
+                    stagePool = try ExactStagePool.shared(for: target)
+                }
                 for batch in stagingBatches(for: demand.jobs) {
                     try ensureStagingCapacity(for: batch)
                     _ = try stageFullRebuilds(batch, parser: parser,
@@ -2909,7 +2916,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         if BusinessSQLiteRoutes.store(for: driver.url) != nil {
             for job in fullRebuildJobs {
                 var ready = false
-                for url in stagingDatabaseURLs(for: job.file) {
+                for url in try stagingDatabaseURLs(for: job.file) {
                     if try reusableStage(at: url, for: job) != nil { ready = true; break }
                 }
                 if !ready { throw BusinessStageDemand(jobs: fullRebuildJobs, enrichmentTotal: eventEnrichmentTotal) }
@@ -7535,7 +7542,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         _ job: FullRebuildJob,
         parser: SessionParser
     ) throws -> StagedFullRebuild {
-        let existingStages = stagingDatabaseURLs(for: job.file)
+        let existingStages = try stagingDatabaseURLs(for: job.file)
         let primaryStage = stagingDatabaseURL(for: job.file)
         var blockingStages: [URL] = []
         for existingStage in existingStages {
@@ -7568,7 +7575,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 reason: "暂存恢复校验失败；已保留暂存文件和上一代统计，未重新解析源文件"
             )
         }
-        let databaseURL = stagingDatabaseURL(for: job.file)
+        var databaseURL = stagingDatabaseURL(for: job.file)
         if ["-wal", "-shm", "-journal"].contains(where: { fileManager.fileExists(atPath: databaseURL.path + $0) }) {
             try quarantineIncompleteStage(at: databaseURL, for: job)
         }
@@ -7588,80 +7595,23 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let migrationRevision = job.reason == .eventEnrichment
             ? Self.eventEnrichmentRevision
             : "exact-source-rebuild-v1"
-        let stage = SQLiteDatabaseDriver(
-            url: databaseURL,
-            busyTimeoutMilliseconds: 30_000,
-            enableWAL: false,
-            fileManager: fileManager
-        )
+        let stage: ExactStageAccess
+        if let pool = stagePool, let target = BusinessSQLiteRoutes.store(for: driver.url) {
+            let contract = try JSONSerialization.data(withJSONObject: [
+                job.sessionID, migrationRevision, Self.stagingParserRevision,
+                String(committedSignature.size), String(committedSignature.modifiedAt.bitPattern),
+                committedSignature.contentProbe, committedSignature.physicalStamp ?? ""
+            ])
+            let pooled = try pool.job(for: target, source: job.file, contract: contract)
+            databaseURL = pooled.url
+            stage = try ExactStageAccess(pool: pool, job: pooled, creating: true)
+        } else {
+            stage = try ExactStageAccess(legacyURL: databaseURL, readOnly: false, timeout: 30_000, fileManager: fileManager)
+        }
         return try stage.withConnection { connection in
-            let temporary = connection.businessBinding != nil
-            let tableKind = temporary ? "TEMP TABLE" : "TABLE"
-            try connection.execute(
-                """
-                PRAGMA synchronous=FULL;
-                PRAGMA temp_store=FILE;
-                PRAGMA cache_size=-4096;
-
-                CREATE \(tableKind) manifest (
-                    complete INTEGER PRIMARY KEY CHECK(complete IN (0, 1)),
-                    manifest_schema_version INTEGER NOT NULL,
-                    canonical_path TEXT NOT NULL,
-                    session_id TEXT NOT NULL,
-                    migration_revision TEXT NOT NULL,
-                    parser_revision TEXT NOT NULL,
-                    artifact_id TEXT NOT NULL,
-                    actual_bytes INTEGER NOT NULL,
-                    integrity TEXT NOT NULL,
-                    prefix_sha256 TEXT NOT NULL,
-                    size_bytes INTEGER NOT NULL,
-                    modified_at REAL NOT NULL,
-                    content_probe TEXT NOT NULL,
-                    event_count INTEGER NOT NULL,
-                    resume_offset INTEGER NOT NULL,
-                    previous_total_tokens INTEGER,
-                    fork_replay_started_at REAL,
-                    is_skipping_fork_replay INTEGER NOT NULL,
-                    is_explicit_subagent_fork INTEGER NOT NULL,
-                    last_skipped_fork_replay_token_at REAL,
-                    current_user_prompt_offset INTEGER,
-                    assistant_start_offset INTEGER,
-                    current_model TEXT,
-                    fingerprint_count INTEGER NOT NULL,
-                    chunk_count INTEGER NOT NULL,
-                    accounting_state TEXT,
-                    physical_stamp TEXT
-                );
-
-                CREATE \(tableKind) fingerprints (
-                    value BLOB PRIMARY KEY
-                ) WITHOUT ROWID;
-
-                CREATE \(tableKind) events (
-                    source_offset INTEGER PRIMARY KEY,
-                    timestamp REAL NOT NULL,
-                    tokens INTEGER NOT NULL,
-                    input_tokens INTEGER NOT NULL,
-                    cached_input_tokens INTEGER NOT NULL,
-                    output_tokens INTEGER NOT NULL,
-                    reasoning_output_tokens INTEGER NOT NULL,
-                    model TEXT,
-                    user_prompt_offset INTEGER,
-                    assistant_start_offset INTEGER,
-                    accounting_kind INTEGER NOT NULL DEFAULT 0,
-                    reported_total_tokens INTEGER,
-                    usage_fingerprint BLOB
-                ) WITHOUT ROWID;
-
-                CREATE \(tableKind) chunks (
-                    chunk_index INTEGER PRIMARY KEY,
-                    byte_count INTEGER NOT NULL,
-                    sha256 TEXT NOT NULL
-                ) WITHOUT ROWID;
-                """
-            )
+            try connection.execute("PRAGMA synchronous=FULL; PRAGMA cache_size=-4096;" + ExactStageSchema.sql)
             func parseStage(_ body: (SQLiteDatabaseConnection) throws -> StagedFullRebuild) throws -> StagedFullRebuild {
-                temporary ? try connection.readTransaction(body) : try connection.transaction(body)
+                try connection.transaction(body)
             }
             var staged = try parseStage { transaction in
                 let fingerprintStatement = try transaction.prepare(
@@ -7855,7 +7805,6 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     prefixSHA256: result.contentHash
                 )
             }
-            if temporary { try BusinessStoreFiles.materializeTemporaryStage(connection) }
             guard try Self.stagingIntegrityIsValid(connection: connection,
                 namespaced: BusinessSQLiteRoutes.store(for: databaseURL) != nil) else {
                 throw SQLiteDatabaseError(
@@ -7865,7 +7814,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     path: databaseURL.path
                 )
             }
-            var actualBytes = try BusinessStoreFiles.byteCount(at: databaseURL, connection: connection, fileManager: fileManager)
+            var actualBytes = try stage.byteCount(connection: connection)
             try connection.execute(
                 """
                 UPDATE manifest
@@ -7878,7 +7827,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     .text(artifactID)
                 ]
             )
-            let publishedBytes = try BusinessStoreFiles.byteCount(at: databaseURL, connection: connection, fileManager: fileManager)
+            let publishedBytes = try stage.byteCount(connection: connection)
             if publishedBytes != actualBytes {
                 actualBytes = publishedBytes
                 try connection.execute(
@@ -7889,7 +7838,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     ]
                 )
             }
-            try BusinessStoreFiles.seal(at: databaseURL, connection: connection)
+            try stage.seal(connection: connection)
             staged = StagedFullRebuild(
                 job: staged.job,
                 databaseURL: staged.databaseURL,
@@ -7904,7 +7853,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 parserRevision: staged.parserRevision,
                 prefixSHA256: staged.prefixSHA256,
                 sourceValidation: StageSourceValidation(source: staged.committedSignature,
-                    stage: try SourceFileObservation.read(at: databaseURL), artifactID: artifactID)
+                    stage: try stage.observation(), artifactID: artifactID)
             )
             return staged
         }
@@ -7919,13 +7868,13 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         at databaseURL: URL,
         for job: FullRebuildJob
     ) throws -> Bool {
-        guard BusinessStoreFiles.exists(databaseURL, fileManager: fileManager) else {
+        guard try stageExists(databaseURL) else {
             return false
         }
         if try BusinessStoreFiles.isUnmaterializedStage(databaseURL) { return true }
         do {
-            let stage = SQLiteDatabaseDriver(
-                url: databaseURL,
+            let stage = try stageAccess(
+                at: databaseURL,
                 readOnly: true,
                 createsFileIfMissing: false,
                 busyTimeoutMilliseconds: 1_000,
@@ -8067,12 +8016,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         for job: FullRebuildJob,
         prior: StagedFullRebuild? = nil
     ) throws -> StagedFullRebuild? {
-        guard BusinessStoreFiles.exists(databaseURL, fileManager: fileManager) else {
+        guard try stageExists(databaseURL) else {
             return nil
         }
         do {
-            let stage = SQLiteDatabaseDriver(
-                url: databaseURL,
+            let stage = try stageAccess(
+                at: databaseURL,
                 readOnly: true,
                 busyTimeoutMilliseconds: 1_000,
                 fileManager: fileManager
@@ -8226,7 +8175,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                             physicalStamp: row.text(25)
                         )
                         let actualBytes = UInt64(rawActualBytes)
-                        let databaseSize = try? BusinessStoreFiles.byteCount(at: databaseURL, fileManager: self.fileManager)
+                        let databaseSize = try? self.stageByteCount(at: databaseURL)
                         let storedEventCount = try? stage.readRows(
                             "SELECT COUNT(*) FROM events;"
                         ) { $0.int(0) ?? -1 }.first
@@ -8237,7 +8186,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                             "SELECT COUNT(*) FROM chunks;"
                         ) { $0.int(0) ?? -1 }.first
                         let physical = try? SourceFileObservation.readPreferredPhysical(at: job.file)
-                        let stageObservation = try? SourceFileObservation.read(at: databaseURL)
+                        let stageObservation = try? self.stageObservation(at: databaseURL)
                         let reusableProof = prior.map { prior in
                             guard let proof = prior.sourceValidation, let physical, let stageObservation,
                                   proof.source.physicalStamp != nil else { return false }
@@ -8328,6 +8277,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         try stage.withConnection { connection in
             try stagingIntegrityIsValid(connection: connection, namespaced: BusinessSQLiteRoutes.store(for: stage.url) != nil)
         }
+    }
+
+    private static func stagingIntegrityIsValid(using stage: ExactStageAccess) throws -> Bool {
+        try stage.withConnection { try stagingIntegrityIsValid(connection: $0, namespaced: $0.businessBinding != nil) }
     }
 
     private static func stagingIntegrityIsValid(connection: SQLiteDatabaseConnection, namespaced: Bool) throws -> Bool {
@@ -8459,8 +8412,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 sha256: sha256
             )
         }.compactMap { $0 }
-        let stage = SQLiteDatabaseDriver(
-            url: staged.databaseURL,
+        let stage = try stageAccess(
+            at: staged.databaseURL,
             readOnly: true,
             busyTimeoutMilliseconds: 1_000,
             fileManager: fileManager
@@ -8498,7 +8451,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 cached_input_tokens INTEGER,output_tokens INTEGER,reasoning_output_tokens INTEGER);
             """)
         defer { try? connection.execute("DROP TABLE temp.event_enrichment_comparison") }
-        let stage=SQLiteDatabaseDriver(url:staged.databaseURL,readOnly:true,createsFileIfMissing:false)
+        let stage=try stageAccess(at:staged.databaseURL,readOnly:true,createsFileIfMissing:false)
         let insert=try connection.prepare("INSERT INTO temp.event_enrichment_comparison VALUES (?,?,?,?,?,?)")
         try stage.forEachRow("SELECT source_offset,tokens,input_tokens,cached_input_tokens,output_tokens,reasoning_output_tokens FROM events") { row in
             let values=(0..<6).map { SQLiteBinding.int64(row.int64(Int32($0))!) }
@@ -8545,8 +8498,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 path: staged.databaseURL.path
             )
         }
-        let stage = SQLiteDatabaseDriver(
-            url: staged.databaseURL,
+        let stage = try stageAccess(
+            at: staged.databaseURL,
             readOnly: true,
             busyTimeoutMilliseconds: 1_000,
             fileManager: fileManager
@@ -8824,6 +8777,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     )
             }
         }
+        try stage.consume(generation: generation, on: connection)
     }
 
     /// SQLite may reuse the highest deleted INTEGER PRIMARY KEY. Attribution
@@ -8857,34 +8811,47 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             .appendingPathComponent("\(digest).sqlite")
     }
 
-    private func stagingDatabaseURLs(for file: URL) -> [URL] {
+    private func stagingDatabaseURLs(for file: URL) throws -> [URL] {
         let primary = stagingDatabaseURL(for: file)
-        if BusinessSQLiteRoutes.store(for: primary) != nil {
-            let digest = stagingDatabaseDigest(for: file)
-            return BusinessStoreFiles.stageURLs(in: stagingDirectoryURL).filter {
-                let name = $0.lastPathComponent
-                return name == primary.lastPathComponent || (name.hasPrefix(digest + ".candidate-") && name.hasSuffix(".sqlite"))
-            }.sorted { $0.lastPathComponent < $1.lastPathComponent }
-        }
-        guard let entries = try? fileManager.contentsOfDirectory(
-            at: stagingDirectoryURL,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        ) else {
-            return fileManager.fileExists(atPath: primary.path) ? [primary] : []
-        }
         let digest = stagingDatabaseDigest(for: file)
-        let candidatePrefix = "\(digest).candidate-"
-        return entries.filter { entry in
-            let name = entry.lastPathComponent
-            return name == primary.lastPathComponent
-                || (name.hasPrefix(candidatePrefix) && name.hasSuffix(".sqlite"))
+        var legacy: [URL]
+        var pooled: [URL] = []
+        if let pool = stagePool, let target = BusinessSQLiteRoutes.store(for: driver.url) {
+            legacy = try pool.legacyURLs(for: target)
+            pooled = try pool.candidates(for: target, source: file)
+        } else if BusinessSQLiteRoutes.store(for: primary) != nil {
+            legacy = BusinessStoreFiles.stageURLs(in: stagingDirectoryURL)
+        } else {
+            legacy = (try? fileManager.contentsOfDirectory(at: stagingDirectoryURL,
+                includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]))
+                ?? (fileManager.fileExists(atPath: primary.path) ? [primary] : [])
+        }
+        legacy = legacy.filter {
+            let name = $0.lastPathComponent
+            return name == primary.lastPathComponent || (name.hasPrefix(digest + ".candidate-") && name.hasSuffix(".sqlite"))
         }.sorted { lhs, rhs in
-            if lhs == primary { return true }
-            if rhs == primary { return false }
+            if lhs == primary { return true }; if rhs == primary { return false }
             return lhs.lastPathComponent < rhs.lastPathComponent
         }
+        return pooled + legacy
     }
+
+    private func stageAccess(at url: URL, readOnly: Bool = true, createsFileIfMissing: Bool = false,
+        busyTimeoutMilliseconds: Int32 = 1_000, fileManager: FileManager? = nil) throws -> ExactStageAccess {
+        if let pool = stagePool, let target = BusinessSQLiteRoutes.store(for: driver.url),
+           let job = try pool.lookup(url, for: target) {
+            return try ExactStageAccess(pool: pool, job: job)
+        }
+        return try ExactStageAccess(legacyURL: url, readOnly: readOnly, pool: stagePool,
+            timeout: busyTimeoutMilliseconds, fileManager: fileManager ?? self.fileManager)
+    }
+    private func stageExists(_ url: URL) throws -> Bool {
+        if let pool = stagePool, let target = BusinessSQLiteRoutes.store(for: driver.url),
+           let job = try pool.lookup(url, for: target) { return try pool.seal(of: job) != nil }
+        return BusinessStoreFiles.exists(url, fileManager: fileManager)
+    }
+    private func stageByteCount(at url: URL) throws -> UInt64 { try stageAccess(at: url).byteCount() }
+    private func stageObservation(at url: URL) throws -> SourceFileObservation { try stageAccess(at: url).observation() }
 
     private func stagingDatabaseDigest(for file: URL) -> String {
         SHA256.hash(data: Data(file.path.utf8))
@@ -8893,6 +8860,16 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     }
 
     private func removeStagingDatabase(at url: URL) {
+        if let pool = stagePool, let target = BusinessSQLiteRoutes.store(for: driver.url) {
+            do {
+                if let job = try pool.lookup(url, for: target) { try pool.reclaim(job); return }
+                if let legacy = BusinessSQLiteRoutes.store(for: url), legacy.module == "exact.swift.stage" {
+                    guard try pool.mayReclaimLegacy(legacy, for: target) else { return }
+                    _ = try BusinessStoreFiles.removeCompletedStage(url)
+                    return
+                }
+            } catch { return } // Cleanup remains retryable after a committed generation.
+        }
         if BusinessSQLiteRoutes.store(for: url) != nil {
             // Publication already committed. A failed cleanup is retryable;
             // it must never fall through to deleting a physical A family.

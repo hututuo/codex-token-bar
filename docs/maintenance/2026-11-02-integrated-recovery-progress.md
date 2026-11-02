@@ -71,3 +71,17 @@ Windows连接寿命作平台适配：实际锁定SQLite源码的`winOpen`使用F
 - macOS Rust生产配置编译及生产reader fixture通过；单测1653通过、2失败、14 ignored。两项失败定位为本轮新增读取器漏保留旧的结构错误提示，以及stat-only变更时漏刷新provenance。已按原合同修源码，原测试断言不改；等待新提交双端复测。
 - Swift实际执行2257项、36 skipped；4条失败断言全部来自C01新增的2个PublishedLedgerAdmission用例，准确复现importing／路由关闭问题。未把它们豁免或删除，C04必须转绿。
 - 以上是中间批次结果，不是最终整合通过；进行中与未运行项目不计成功。
+
+### C02复测，源码f8d93d22
+
+[完整检查41486330788](https://github.com/hututuo/codex-token-bar/actions/runs/41486330788)中，Mac／Windows的native整包、实际业务存储fixture、前端与Windows更新器全部通过；[公开旧版升级41486330731](https://github.com/hututuo/codex-token-bar/actions/runs/41486330731)双端通过。Swift仍为2257项、36 skipped，4条失败断言全部是上述两项新增admission用例，未出现其他失败。待C04修复，不豁免。
+
+## C03a · Swift固定暂存池与扫描器接线（进行中）
+
+- 新pool独立module／稳定namespace，六张固定表和固定保护trigger；新job只加行，不注册逐源store。原Exact主schema、parser和A根版本不变。
+- 解析仍用现有解析器，写SQLite自动删除的私有工作区；完成后以有大小限制的typed-row块封存进A。Int64、REAL位型、NULL、TEXT原始字节和BLOB不经JSON；双端共用字节向量。
+- seal保护单个job；正式事实与消费回执在原整轮发布的同一个A事务提交。只有匹配owner／摘要／回执才能回收payload。旧namespace通过只读适配恢复，不再作为新任务写入目标。
+- 第一次追加pool结构前做一次WAL一致的SQLite备份；已完成备份缺回执可接续，已确认归属的未完成副本保留后重试；未知副本不搬动。不会用旧备份覆盖升级后新事实。
+- 已接到Swift实际stage创建／验证／发布入口；完成新job后不再调用逐源TEMP→MAIN建四表路径。Windows固定池接线、旧stage后台清理、完整规模／恢复验证仍待完成。
+
+本地结果：实际生产存储源码的隔离XCTest **14通过、0失败**，含共享codec向量、13个job的MAIN／store数量不增长、封存拒写、回执与事实回滚、旧stage只读／回收门槛、备份中断恢复。只替换资源查找及不使用的app发现依赖；不是完整app测试。Swift扫描器接线已通过语法检查，整包类型／调用路径和规模验证留给本批云端；原admission红用例继续保留。

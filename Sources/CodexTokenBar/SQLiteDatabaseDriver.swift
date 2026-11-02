@@ -6,6 +6,9 @@ enum SQLiteBinding {
     case null
     case blob(Data)
     case text(String)
+    /// Preserve SQLite TEXT bytes exactly (including NUL/non-UTF8) in owned
+    /// recovery payloads. This is not a user-visible String conversion.
+    case textBytes(Data)
     case int(Int)
     case int64(Int64)
     case double(Double)
@@ -1087,7 +1090,7 @@ final class SQLiteDatabaseConnection: DatabaseAccessing {
     var rawDatabase: OpaquePointer? { database }
     var businessBinding: SQLiteStoreBinding?
 
-    fileprivate init(database: OpaquePointer?, path: String?) {
+    init(database: OpaquePointer?, path: String?) {
         self.database = database
         self.path = path
     }
@@ -1358,6 +1361,18 @@ final class SQLiteDatabaseConnection: DatabaseAccessing {
                     throw error(operation: "Bind SQLite text", code: SQLITE_TOOBIG)
                 }
                 status = value.withCString { sqlite3_bind_text(statement, index, $0, Int32(byteCount), sqliteTransient) }
+            case .textBytes(let value):
+                guard value.count <= Int(Int32.max) else {
+                    throw error(operation: "Bind SQLite text bytes", code: SQLITE_TOOBIG)
+                }
+                if value.isEmpty {
+                    status = sqlite3_bind_text(statement, index, "", 0, sqliteTransient)
+                } else {
+                    status = value.withUnsafeBytes { bytes in
+                        sqlite3_bind_text(statement, index, bytes.baseAddress!.assumingMemoryBound(to: CChar.self),
+                            Int32(bytes.count), sqliteTransient)
+                    }
+                }
             case .int(let value):
                 status = sqlite3_bind_int64(statement, index, sqlite3_int64(value))
             case .int64(let value):
@@ -1383,6 +1398,32 @@ final class SQLiteDatabaseConnection: DatabaseAccessing {
             systemErrno: SQLiteDatabaseDriver.systemErrno(from: database)
         )
     }
+}
+
+/// A private, short-lived SQLite work area. Empty filename is SQLite's own
+/// temporary on-disk database, deleted on close/process exit. It never becomes
+/// another durable business database and never registers a namespace in A.
+final class SQLiteTemporaryDatabase {
+    let connection: SQLiteDatabaseConnection
+    private let handle: OpaquePointer
+
+    init() throws {
+        var database: OpaquePointer?
+        let status = sqlite3_open_v2("", &database,
+            SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil)
+        guard status == SQLITE_OK, let database else {
+            if let database { sqlite3_close_v2(database) }
+            throw SQLiteDatabaseError(operation: "Open temporary exact stage", code: status,
+                message: "Unable to open a private SQLite work area", path: nil)
+        }
+        let opened = SQLiteDatabaseConnection(database: database, path: "temporary-exact-stage")
+        do { try opened.execute("PRAGMA temp_store=FILE; PRAGMA cache_size=-4096; PRAGMA journal_mode=DELETE;") }
+        catch { sqlite3_close_v2(database); throw error }
+        handle = database
+        connection = opened
+    }
+
+    deinit { sqlite3_close_v2(handle) }
 }
 
 final class SQLitePreparedStatement {

@@ -1,0 +1,167 @@
+{
+  "fixture": "exact-stage-row-v1",
+  "format": {
+    "magicHex": "54425201",
+    "columnCount": "u32 big-endian",
+    "columnEncoding": "type byte + u64 big-endian payload length + payload bytes",
+    "types": [
+      {
+        "type": "INTEGER",
+        "typeByte": 1,
+        "payload": "signed i64 two's-complement big-endian"
+      },
+      {
+        "type": "REAL",
+        "typeByte": 2,
+        "payload": "IEEE-754 binary64 bit pattern, u64 big-endian"
+      },
+      {
+        "type": "TEXT",
+        "typeByte": 3,
+        "payload": "raw SQLite text bytes"
+      },
+      {
+        "type": "BLOB",
+        "typeByte": 4,
+        "payload": "raw blob bytes"
+      },
+      {
+        "type": "NULL",
+        "typeByte": 5,
+        "payload": "empty"
+      }
+    ]
+  },
+  "validRows": [
+    {
+      "name": "storage_classes_and_integer_real_boundaries",
+      "expectedColumns": 11,
+      "columns": [
+        {
+          "name": "int64_min",
+          "type": "INTEGER",
+          "typeByte": 1,
+          "value": "-9223372036854775808",
+          "payloadHex": "8000000000000000",
+          "encodedHex": "0100000000000000088000000000000000"
+        },
+        {
+          "name": "int64_max",
+          "type": "INTEGER",
+          "typeByte": 1,
+          "value": "9223372036854775807",
+          "payloadHex": "7fffffffffffffff",
+          "encodedHex": "0100000000000000087fffffffffffffff"
+        },
+        {
+          "name": "integer_above_binary64_exact_range",
+          "type": "INTEGER",
+          "typeByte": 1,
+          "value": "9007199254740993",
+          "payloadHex": "0020000000000001",
+          "encodedHex": "0100000000000000080020000000000001"
+        },
+        {
+          "name": "real_non_integer",
+          "type": "REAL",
+          "typeByte": 2,
+          "value": "1.2345678901234567",
+          "payloadHex": "3ff3c0ca428c59fb",
+          "encodedHex": "0200000000000000083ff3c0ca428c59fb"
+        },
+        {
+          "name": "real_negative_zero_bits",
+          "type": "REAL",
+          "typeByte": 2,
+          "value": "-0.0 (sign bit set)",
+          "payloadHex": "8000000000000000",
+          "encodedHex": "0200000000000000088000000000000000"
+        },
+        {
+          "name": "null",
+          "type": "NULL",
+          "typeByte": 5,
+          "value": null,
+          "payloadHex": "",
+          "encodedHex": "050000000000000000"
+        },
+        {
+          "name": "empty_text",
+          "type": "TEXT",
+          "typeByte": 3,
+          "value": "",
+          "payloadHex": "",
+          "encodedHex": "030000000000000000"
+        },
+        {
+          "name": "empty_blob",
+          "type": "BLOB",
+          "typeByte": 4,
+          "value": "empty bytes",
+          "payloadHex": "",
+          "encodedHex": "040000000000000000"
+        },
+        {
+          "name": "text_with_embedded_nul",
+          "type": "TEXT",
+          "typeByte": 3,
+          "value": "A\\u0000B",
+          "payloadHex": "410042",
+          "encodedHex": "030000000000000003410042"
+        },
+        {
+          "name": "text_with_invalid_utf8",
+          "type": "TEXT",
+          "typeByte": 3,
+          "value": "invalid UTF-8 bytes ff8000",
+          "payloadHex": "ff8000",
+          "encodedHex": "030000000000000003ff8000"
+        },
+        {
+          "name": "blob_00ff",
+          "type": "BLOB",
+          "typeByte": 4,
+          "value": "bytes 00ff",
+          "payloadHex": "00ff",
+          "encodedHex": "04000000000000000200ff"
+        }
+      ],
+      "rowHex": "544252010000000b01000000000000000880000000000000000100000000000000087fffffffffffffff01000000000000000800200000000000010200000000000000083ff3c0ca428c59fb0200000000000000088000000000000000050000000000000000030000000000000000040000000000000000030000000000000003410042030000000000000003ff800004000000000000000200ff",
+      "sha256": "572db1833ad473fc6144a1dbdbe8ecd632c1056b9d6f11aefa8514edd26197ce"
+    }
+  ],
+  "invalidRows": [
+    {
+      "name": "future_version",
+      "expectedColumns": 1,
+      "rowHex": "5442520200000001050000000000000000",
+      "sha256": "d4d06169961a34984902bc75f55c2c471e6669a67e6b1b80fc8be0b803dd252e",
+      "expectedRejection": "magic/version byte is not v1"
+    },
+    {
+      "name": "truncated_length_payload",
+      "expectedColumns": 1,
+      "rowHex": "544252010000000103000000000000000241",
+      "sha256": "bcf3237554ce124cf802f230e6e9c507d7fac9a1e54ad6f770be0cd60fec6565",
+      "expectedRejection": "declares 2 TEXT bytes but contains 1"
+    },
+    {
+      "name": "trailing_bytes",
+      "expectedColumns": 1,
+      "rowHex": "5442520100000001050000000000000000ff",
+      "sha256": "acc55d370350995b7a04f5d2171cbae9ebb38c066085d446e6a2920b5684fb5a",
+      "expectedRejection": "one unconsumed trailing byte"
+    },
+    {
+      "name": "oversized_declared_length",
+      "expectedColumns": 1,
+      "rowHex": "544252010000000103ffffffffffffffff",
+      "sha256": "0fa4725e3614ca317b1711a4b6f590dc4e119393cec3b6661986be0a18891cff",
+      "expectedRejection": "u64 length exceeds remaining row bytes"
+    }
+  ],
+  "notes": [
+    "The negative-zero REAL vector encodes IEEE-754 0x8000000000000000; SQLite column affinity and insert/readback storage semantics must be checked separately.",
+    "TEXT payloads are bytes and must not be decoded or normalized as UTF-8; the invalid-UTF8 and embedded-NUL vectors are intentional."
+  ]
+}
