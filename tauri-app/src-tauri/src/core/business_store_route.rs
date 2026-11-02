@@ -1278,6 +1278,16 @@ fn verify_initialized(container_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Retained Exact staging uses the runtime readiness and physical identity
+/// fences without reopening A and reparsing its large MAIN catalog.
+pub(crate) fn validate_exact_stage_container(path: &Path) -> Result<(), String> {
+    ensure_runtime_business_store_ready()?;
+    verify_marker(path)?;
+    #[cfg(not(test))]
+    verify_active_container_identity(path)?;
+    Ok(())
+}
+
 fn open_ready_container(container_path: &Path) -> Result<Container, String> {
     ensure_runtime_business_store_ready()?;
     open_ready_container_during_bootstrap(container_path)

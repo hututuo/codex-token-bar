@@ -9,6 +9,9 @@ mod empty_sources;
 mod representations;
 mod runtime_recovery;
 mod external_state;
+mod stage_row_codec;
+mod stage_pool;
+mod stage_pool_backup;
 use super::accounting::{AccountingState, ACCOUNTING_REVISION};
 use super::fingerprint_codec;
 use super::session_files::session_id_from_file;
@@ -6491,12 +6494,13 @@ fn stage_or_reuse_full_rebuild(
     }
     // Also preserve sidecars left by interruption between family renames.
     preserve_private_stage_family(&database_path)?;
-    build_staged_full_rebuild(job, database_path, target_generation, codex_home, warnings)
+    build_staged_full_rebuild(job, database_path, index_path, target_generation, codex_home, warnings)
 }
 
 fn build_staged_full_rebuild(
     job: &FullRebuildJob,
     database_path: PathBuf,
+    index_path: &Path,
     target_generation: i64,
     codex_home: &Path,
     warnings: &mut Vec<LocalDataWarning>,
@@ -6540,7 +6544,10 @@ fn build_staged_full_rebuild(
     };
 
     let staging_sync = prepare_staging_database_sync(&database_path)?;
+    #[cfg(test)]
     let mut stage = open_staging_connection(&database_path)?;
+    #[cfg(not(test))]
+    let mut stage = Connection::unbound(rusqlite::Connection::open("").map_err(|e|e.to_string())?);
     initialize_staging_schema(&stage)?;
     let staging_behavior = if cfg!(test) {
         TransactionBehavior::Immediate
@@ -6709,8 +6716,6 @@ fn build_staged_full_rebuild(
     transaction
         .commit()
         .map_err(|error| format!("无法耐久提交精确 token 单文件暂存：{error}"))?;
-    #[cfg(not(test))]
-    materialize_staging_temp_tables(&mut stage)?;
     quick_check_staged(&stage)?;
 
     #[cfg(test)]
@@ -6752,39 +6757,24 @@ fn build_staged_full_rebuild(
     };
 
     #[cfg(not(test))]
-    let actual_bytes = {
-        stage.execute(
-            r#"UPDATE manifest SET complete=1, actual_bytes=0, integrity=?1
-               WHERE complete=0 AND artifact_id=?2"#,
-            params![STAGING_MANIFEST_INTEGRITY, &artifact_id],
-        ).map_err(|error| format!("无法发布精确 token 暂存清单：{error}"))?;
-        drop(stage);
-        sync_staging_database(&database_path, &staging_sync)?;
-        let mut actual_bytes = staged_store_size(&database_path)?;
-        let mut stage = open_staging_connection(&database_path)?;
-        stage.execute(
-            "UPDATE manifest SET actual_bytes=?1 WHERE complete=1 AND artifact_id=?2",
-            params![checked_i64(actual_bytes, "暂存实际大小")?, &artifact_id],
-        ).map_err(|error| format!("无法校准精确 token 暂存大小：{error}"))?;
-        drop(stage);
-        sync_staging_database(&database_path, &staging_sync)?;
-        let final_bytes = staged_store_size(&database_path)?;
-        if final_bytes != actual_bytes {
-            actual_bytes = final_bytes;
-            let stage = open_staging_connection(&database_path)?;
-            stage.execute(
-                "UPDATE manifest SET actual_bytes=?1 WHERE complete=1 AND artifact_id=?2",
-                params![checked_i64(actual_bytes, "暂存实际大小")?, &artifact_id],
-            ).map_err(|error| format!("无法再次校准精确 token 暂存大小：{error}"))?;
-            drop(stage);
-            sync_staging_database(&database_path, &staging_sync)?;
-            if staged_store_size(&database_path)? != actual_bytes {
-                return Err(StagedFullRebuildError::Fatal(
-                    "精确 token 暂存大小在封存时持续变化".into(),
-                ));
-            }
-        }
-        actual_bytes
+    let (database_path, actual_bytes) = {
+        stage.execute("UPDATE manifest SET complete=1,actual_bytes=0,integrity=?1 WHERE complete=0 AND artifact_id=?2",params![STAGING_MANIFEST_INTEGRITY,artifact_id]).map_err(|e|e.to_string())?;
+        let raw=stage.unbound_connection().map_err(|e|e.to_string())?;
+        let actual_bytes=stage_pool::Pool::footprint(raw)?;
+        stage.execute("UPDATE manifest SET actual_bytes=?1 WHERE complete=1 AND artifact_id=?2",params![checked_i64(actual_bytes,"暂存实际大小")?,artifact_id]).map_err(|e|e.to_string())?;
+        let pool=stage_pool::Pool::current()?;
+        let target=crate::core::business_store_route::exact_store_spec(index_path)?;
+        // All numeric identity fields are decimal strings; no JSON number can
+        // round a timestamp/Int64 or change the typed payload codec.
+        let contract=serde_json::to_vec(&serde_json::json!([
+            job.source_id.to_string(),job.base_generation.to_string(),job.base_resume_offset.map(|v|v.to_string()),
+            job.base_prefix_sha256.map(|v|format!("{v:x?}")),target_generation.to_string(),migration_revision,
+            STAGED_FULL_REBUILD_PARSER_REVISION,committed_signature.size.to_string(),committed_signature.modified_ns.to_string(),
+            committed_signature.physical.map(PhysicalFileStamp::encode),format!("{:x?}",parsed.prefix_sha256)
+        ])).map_err(|e|e.to_string())?;
+        let pooled=pool.job(&target,&job.path,&contract)?;
+        pool.persist(&pooled,raw)?;
+        (pooled.path,actual_bytes)
     };
 
     let stage_signature = staged_store_signature(&database_path)?;
@@ -6885,6 +6875,13 @@ fn sync_staging_database(path: &Path, handle: &StagingDatabaseSyncHandle) -> Res
 
 fn staged_store_signature(path: &Path) -> Result<StageStoreSignature, String> {
     #[cfg(not(test))]
+    if stage_pool::is_path(path) {
+        let pool=stage_pool::Pool::current()?;
+        let job=pool.lookup(path)?.ok_or("暂存job不存在")?;
+        let seal=pool.seal(&job)?.ok_or("暂存job尚未封存")?;
+        return Ok(StageStoreSignature{size:seal.bytes,modified_ns:(seal.time*1_000_000_000.0).round() as u128,digest:seal.digest});
+    }
+    #[cfg(not(test))]
     {
         if crate::core::business_store_route::exact_store_observation(path)?.is_none() {
             crate::core::business_store_route::seal_exact_store(path)?;
@@ -6944,11 +6941,11 @@ fn open_staging_connection(path: &Path) -> Result<Connection, String> {
 
 fn initialize_staging_schema(connection: &Connection) -> Result<(), String> {
     #[cfg(not(test))]
+    if connection.is_bound() {
+        return Err("新Exact任务不得创建逐源暂存namespace".into());
+    }
     connection
-        .set_temporary_namespace_mode(true)
-        .map_err(|error| format!("无法启用精确 token TEMP 暂存命名空间：{error}"))?;
-    connection
-        .execute_batch(&staging_schema_sql(!cfg!(test)))
+        .execute_batch(&staging_schema_sql(false))
         .map_err(|error| format!("无法初始化精确 token 单文件暂存结构：{error}"))
 }
 
@@ -7023,46 +7020,6 @@ fn staging_schema_sql(temporary: bool) -> String {
     )
 }
 
-#[cfg(not(test))]
-fn materialize_staging_temp_tables(connection: &mut Connection) -> Result<(), String> {
-    connection
-        .set_temporary_namespace_mode(false)
-        .map_err(|error| format!("无法切换精确 token 暂存目标命名空间：{error}"))?;
-    let transaction = connection
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(|error| format!("无法开始精确 token 暂存物化事务：{error}"))?;
-    transaction
-        .execute_batch(&staging_schema_sql(false))
-        .map_err(|error| format!("无法创建精确 token 持久暂存表：{error}"))?;
-
-    const TABLES: [(&str, &str); 4] = [
-        (
-            "manifest",
-            "complete,manifest_schema_version,staging_mode,source_id,base_generation,base_resume_offset,base_prefix_sha256,fingerprint_codec_version,path,session_id,migration_revision,parser_revision,target_building_generation,artifact_id,actual_bytes,integrity,size,modified_ns,prefix_sha256,resume_offset,previous_total_tokens,fork_replay_started_ns,fork_replay_active,is_explicit_subagent_fork,last_skipped_fork_replay_token_ns,current_model,current_user_prompt_start,current_user_prompt_end,assistant_response_start,assistant_response_end,event_count,fingerprint_count,chunk_count,accounting_state,physical_stamp",
-        ),
-        ("fingerprints", "fingerprint"),
-        (
-            "events",
-            "ordinal,timestamp,tokens,input_tokens,cached_input_tokens,output_tokens,reasoning_output_tokens,model,user_prompt_start,user_prompt_end,assistant_response_start,assistant_response_end,accounting_kind,reported_total_tokens,token_source_offset,usage_fingerprint",
-        ),
-        ("chunks", "chunk_index,byte_count,sha256"),
-    ];
-    for (table, columns) in TABLES {
-        transaction
-            .execute_batch(&format!(
-                "INSERT INTO {table} ({columns}) SELECT {columns} FROM temp.{table}"
-            ))
-            .map_err(|error| format!("无法物化精确 token 暂存表 {table}：{error}"))?;
-    }
-    transaction
-        .execute_batch(
-            "DROP TABLE temp.manifest; DROP TABLE temp.fingerprints; DROP TABLE temp.events; DROP TABLE temp.chunks;",
-        )
-        .map_err(|error| format!("无法清理精确 token TEMP 暂存表：{error}"))?;
-    transaction
-        .commit()
-        .map_err(|error| format!("无法提交精确 token 暂存物化事务：{error}"))
-}
 
 fn reusable_staged_full_rebuild(
     database_path: &Path,
@@ -7452,7 +7409,7 @@ fn import_staged_full_rebuild(
         return Err("精确 token 单文件暂存清单在导入前发生变化".into());
     }
     #[cfg(not(test))]
-    crate::core::business_store_route::attach_exact_store_alias(
+    attach_stage_alias(
         connection,
         "exact_stage_import",
         &staged.database_path,
@@ -7667,16 +7624,20 @@ fn import_staged_full_rebuild(
             }
         }
         mark_dashboard_changed(&transaction)?;
+        #[cfg(not(test))]
+        if stage_pool::is_path(&staged.database_path) {
+            let pool=stage_pool::Pool::current()?;
+            let job=pool.lookup(&staged.database_path)?.ok_or("待导入暂存job缺失")?;
+            let seal=pool.seal(&job)?.ok_or("待导入暂存job未封存")?;
+            transaction.mark_exact_stage_pending(&job.owner,&job.id,&seal.digest,generation)?;
+        }
         transaction
             .commit()
             .map_err(|error| format!("无法提交精确 token 单文件暂存导入：{error}"))
     })();
 
     #[cfg(not(test))]
-    let detach_result = crate::core::business_store_route::detach_exact_store_alias(
-        connection,
-        "exact_stage_import",
-    );
+    let detach_result = detach_stage_alias(connection,"exact_stage_import",&staged.database_path);
     #[cfg(test)]
     let detach_result = connection
         .execute_batch("DETACH DATABASE exact_stage_import")
@@ -7688,12 +7649,32 @@ fn import_staged_full_rebuild(
     }
 }
 
+#[cfg(not(test))]
+fn attach_stage_alias(connection: &Connection, alias: &str, path: &Path) -> Result<(), String> {
+    if !stage_pool::is_path(path) {
+        return crate::core::business_store_route::attach_exact_store_alias(connection,alias,path);
+    }
+    let pool=stage_pool::Pool::current()?;
+    let job=pool.lookup(path)?.ok_or("挂载的暂存job不存在")?;
+    let source=pool.restore(&job)?;
+    connection.mount_exact_stage_rows(&job.owner,alias,&source)
+}
+
+#[cfg(not(test))]
+fn detach_stage_alias(connection: &Connection, alias: &str, path: &Path) -> Result<(), String> {
+    if stage_pool::is_path(path) {
+        connection.unmount_exact_stage_rows(alias).map_err(|e|e.to_string())
+    } else {
+        crate::core::business_store_route::detach_exact_store_alias(connection,alias)
+    }
+}
+
 fn staged_enrichment_matches_published_events(
     connection: &Connection,
     staged: &StagedFullRebuild,
 ) -> Result<bool, String> {
     #[cfg(not(test))]
-    crate::core::business_store_route::attach_exact_store_alias(
+    attach_stage_alias(
         connection,
         "exact_enrichment_compare",
         &staged.database_path,
@@ -7754,10 +7735,7 @@ fn staged_enrichment_matches_published_events(
         )
         .map_err(|error| format!("无法核对历史 model/reasoning 补全事件：{error}"));
     #[cfg(not(test))]
-    let detach = crate::core::business_store_route::detach_exact_store_alias(
-        connection,
-        "exact_enrichment_compare",
-    );
+    let detach = detach_stage_alias(connection,"exact_enrichment_compare",&staged.database_path);
     #[cfg(test)]
     let detach = connection
         .execute_batch("DETACH DATABASE exact_enrichment_compare")
@@ -7773,6 +7751,7 @@ fn ensure_staging_directory(index_path: &Path) -> Result<(), String> {
     #[cfg(not(test))]
     {
         let _ = index_path;
+        stage_pool::Pool::current()?;
         return Ok(());
     }
     #[cfg(test)]
@@ -7890,6 +7869,8 @@ fn staging_database_paths(index_path: &Path, source_path: &str) -> Result<Vec<Pa
     let candidate_prefix = format!("{digest}.candidate-");
     let mut paths = vec![primary.clone()];
     #[cfg(not(test))]
+    let pooled=stage_pool::Pool::current()?.candidates(&crate::core::business_store_route::exact_store_spec(index_path)?,source_path)?;
+    #[cfg(not(test))]
     paths.extend(crate::core::business_store_route::exact_stage_candidates(index_path, &digest)?);
     let entries = match fs::read_dir(&directory) {
         Ok(entries) => entries,
@@ -7897,6 +7878,8 @@ fn staging_database_paths(index_path: &Path, source_path: &str) -> Result<Vec<Pa
             paths.sort();
             paths.dedup();
             paths.sort_by_key(|path| (path != &primary, path.clone()));
+            #[cfg(not(test))]
+            { paths.splice(0..0,pooled); }
             return Ok(paths);
         }
         Err(error) => {
@@ -7925,6 +7908,8 @@ fn staging_database_paths(index_path: &Path, source_path: &str) -> Result<Vec<Pa
             (1, path.to_string_lossy().into_owned())
         }
     });
+    #[cfg(not(test))]
+    { paths.splice(0..0,pooled); }
     Ok(paths)
 }
 
@@ -9708,9 +9693,23 @@ fn finalize_generation(
         )
         .map_err(|error| format!("无法结束精确 token 同步状态：{error}"))?;
     canonical::certify(&transaction)?;
+    #[cfg(not(test))]
+    transaction.consume_exact_stage_generation(generation)?;
     transaction
         .commit()
         .map_err(|error| format!("无法原子发布完整精确 token 代次：{error}"))?;
+    #[cfg(not(test))]
+    {
+        let cleanup=(||->Result<(),String>{
+            if !connection.has_exact_stage_pool().map_err(|e|e.to_string())? { return Ok(()); }
+            let pool=stage_pool::Pool::current()?;
+            let target=crate::core::business_store_route::exact_store_spec(&database_path(codex_home)?)?;
+            pool.reclaim_generation(&target.id,generation)
+        })();
+        if let Err(error)=cleanup {
+            warnings.push(LocalDataWarning{source:"exact_stage_cleanup".into(),message:format!("正式统计已发布；已消费暂存清理将在后续重试：{error}")});
+        }
+    }
     Ok(u64::try_from(revision).unwrap_or(0))
 }
 
@@ -12148,6 +12147,11 @@ fn publish_thread_metadata_only(
 }
 
 fn existing_regular_index(path: &Path) -> Result<bool, String> {
+    #[cfg(not(test))]
+    if stage_pool::is_path(path) {
+        let pool=stage_pool::Pool::current()?;
+        return match pool.lookup(path)? {Some(job)=>Ok(pool.seal(&job)?.is_some()),None=>Ok(false)};
+    }
     #[cfg(not(test))]
     {
         if existing_regular_legacy_file(path)? {
@@ -15234,6 +15238,12 @@ fn open_read_only_source(path: &Path, timeout: StdDuration) -> Result<Connection
 }
 
 fn open_read_only_index(path: &Path, timeout: StdDuration) -> Result<Connection, String> {
+    #[cfg(not(test))]
+    if stage_pool::is_path(path) {
+        let pool=stage_pool::Pool::current()?;
+        let job=pool.lookup(path)?.ok_or("读取的暂存job缺失")?;
+        return pool.restore(&job).map(Connection::unbound);
+    }
     #[cfg(test)]
     {
         return sqlite::open_read_only(path, timeout).map_err(|error| error.to_string());
@@ -18247,7 +18257,14 @@ fn remove_staging_database_storage(path: &Path) -> Result<(), String> {
     #[cfg(not(test))]
     {
         invalidate_index_integrity_signature(path);
-        return crate::core::business_store_route::remove_exact_store(path).map(|_| ());
+        if stage_pool::is_path(path) {
+            let pool=stage_pool::Pool::current()?;
+            if let Some(job)=pool.lookup(path)? { pool.reclaim(&job)?; }
+        }
+        // Old namespaces remain recovery evidence until their final-generation
+        // receipt is verified by the bounded legacy sweeper. Never drop one
+        // from the earlier per-file BUILDING transaction.
+        return Ok(());
     }
     #[cfg(test)]
     {

@@ -1,0 +1,137 @@
+use super::*;
+
+fn fixture() -> (tempfile::TempDir, Pool, StoreSpec) {
+    let root = tempfile::tempdir().unwrap();
+    let a = root.path().join("codex-ledger.sqlite");
+    let c = Container::open(&a).unwrap();
+    let target = StoreSpec::new("exact", "fixture", "exact/index/fixture").unwrap();
+    c.register(&target).unwrap();
+    c.into_store_connection(&target).unwrap().execute_batch("CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT);INSERT INTO metadata VALUES('published_generation','1'),('fixture_tokens','123')").unwrap();
+    let pool = Pool::open(&a).unwrap();
+    (root, pool, target)
+}
+
+#[test]
+fn sealed_jobs_reopen_without_per_job_catalog_growth_or_lossy_values() {
+    let (_root, pool, target) = fixture();
+    let raw = Connection::open(&pool.path).unwrap();
+    let count = || {
+        (
+            raw.query_row("SELECT COUNT(*) FROM sqlite_master", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap(),
+            raw.query_row("SELECT COUNT(*) FROM tb_stores", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+        )
+    };
+    let before = count();
+    let mut paths = Vec::new();
+    for i in 0..13 {
+        let source = format!("/fixture/{i}.jsonl");
+        let job = pool.job(&target, &source, source.as_bytes()).unwrap();
+        let work = seed_fixture_stage(&source).unwrap();
+        work.execute(
+            "UPDATE events SET tokens=9007199254740993,model=CAST(x'ff0061' AS TEXT)",
+            [],
+        )
+        .unwrap();
+        work.execute(
+            "UPDATE manifest SET actual_bytes=?1",
+            [Pool::footprint(&work).unwrap() as i64],
+        )
+        .unwrap();
+        pool.persist(&job, &work).unwrap();
+        assert_eq!(pool.seal(&job).unwrap().unwrap().rows, 4);
+        let restored = pool.restore(&job).unwrap();
+        assert_eq!(
+            restored
+                .query_row("SELECT tokens FROM events", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            9007199254740993
+        );
+        assert_eq!(
+            restored
+                .query_row("SELECT hex(model) FROM events", [], |r| r
+                    .get::<_, String>(0))
+                .unwrap(),
+            "FF0061"
+        );
+        assert!(restored.execute("DELETE FROM events", []).is_err());
+        assert!(raw
+            .execute(
+                &format!("DELETE FROM {} WHERE job_id=?1", pool.table("event_rows")),
+                [&job.id]
+            )
+            .is_err());
+        assert!(pool.persist(&job, &work).is_err());
+        pool.reclaim(&job).unwrap(); // no publication receipt: retains payload
+        assert!(pool.restore(&job).is_ok());
+        paths.push(job.path);
+        assert_eq!(count(), before);
+    }
+    let reopened = Pool::open(&pool.path).unwrap();
+    for path in paths {
+        let job = reopened.lookup(&path).unwrap().unwrap();
+        assert!(reopened.restore(&job).is_ok());
+    }
+    assert_eq!(count(), before);
+}
+
+#[test]
+fn mismatched_manifest_cannot_be_sealed_or_replace_a_published_fact() {
+    let (_root, pool, target) = fixture();
+    let job = pool.job(&target, "/source.jsonl", b"request").unwrap();
+    let work = seed_fixture_stage("/source.jsonl").unwrap();
+    work.execute("UPDATE manifest SET event_count=99", [])
+        .unwrap();
+    assert!(pool.persist(&job, &work).is_err());
+    assert!(pool.seal(&job).unwrap().is_none());
+    let raw = Connection::open(&pool.path).unwrap();
+    assert_eq!(
+        raw.query_row(
+            &format!(
+                "SELECT value FROM {}metadata WHERE key='fixture_tokens'",
+                target.prefix
+            ),
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "123"
+    );
+}
+
+#[test]
+fn future_pool_and_foreign_path_are_rejected_without_mutating_jobs_or_facts() {
+    let (root, pool, target) = fixture();
+    let job = pool.job(&target, "/source.jsonl", b"request").unwrap();
+    pool.persist(&job, &seed_fixture_stage("/source.jsonl").unwrap())
+        .unwrap();
+    assert!(pool
+        .lookup(
+            &root
+                .path()
+                .join("other/.exact-stage-pool-rust-v1")
+                .join(&target.id)
+                .join(format!("{}.stage", job.id))
+        )
+        .is_err());
+    let raw = Connection::open(&pool.path).unwrap();
+    raw.execute(
+        "UPDATE tb_stores SET user_version=2 WHERE store_id=?1",
+        [&pool.store.id],
+    )
+    .unwrap();
+    assert!(pool.restore(&job).is_err());
+    assert!(Pool::open(&pool.path).is_err());
+    assert_eq!(
+        raw.query_row(
+            &format!("SELECT COUNT(*) FROM {}", pool.table("event_rows")),
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+}

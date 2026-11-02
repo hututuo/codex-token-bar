@@ -364,8 +364,17 @@ final class BusinessDatabaseMigrationTests: XCTestCase {
             XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
         }
         XCTAssertNotEqual(BusinessSQLiteRoutes.store(for: urls[0])?.id, BusinessSQLiteRoutes.store(for: urls[1])?.id)
-        let physical = try FileManager.default.subpathsOfDirectory(atPath: root.path).filter { $0.hasSuffix(".sqlite") }
-        XCTAssertEqual(physical, ["support/codex-ledger.sqlite"])
+        let physical = try FileManager.default.subpathsOfDirectory(atPath: root.path).filter { $0.hasSuffix(".sqlite") }.sorted()
+        // The approved pool change keeps one verified immutable pre-DDL
+        // snapshot; it is evidence, never a third active business writer.
+        XCTAssertEqual(physical, ["support/codex-ledger.sqlite", "support/ledger-migration-backups/structural-stage-pool-v1/image/snapshot.sqlite"])
+        let backupRoot = c.backups.appendingPathComponent("structural-stage-pool-v1")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: backupRoot.appendingPathComponent("receipt.json").path))
+        let snapshot = SQLiteDatabaseDriver(url: backupRoot.appendingPathComponent("image/snapshot.sqlite"), readOnly: true, createsFileIfMissing: false, bypassBusinessRoutes: true)
+        XCTAssertEqual(try snapshot.readRows("PRAGMA quick_check") { $0.text(0) }, ["ok"])
+        let catalog = SQLiteDatabaseDriver(url: c.container, readOnly: true, bypassBusinessRoutes: true)
+        XCTAssertEqual(try catalog.readRows("SELECT COUNT(*) FROM tb_stores WHERE module='exact.swift.pool'") { $0.int(0) }, [1])
+        XCTAssertEqual(try catalog.readRows("SELECT COUNT(*) FROM tb_stores WHERE module='exact.swift.stage'") { $0.int(0) }, [0], "Normal new jobs must not register old per-file stores")
     }
     func testSafetyRecoveryIsScopedAndDoesNotEraseQuotaOrExact() throws {
         let (_, c) = try fixture()

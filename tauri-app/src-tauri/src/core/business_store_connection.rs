@@ -10,7 +10,8 @@ use crate::core::business_store_sql::StoreSqlBinding;
 use rusqlite::{
     functions::FunctionFlags,
     types::{ToSql, ToSqlOutput, Value},
-    CachedStatement, Connection, OpenFlags, Params, Result, Row, Statement, TransactionBehavior,
+    CachedStatement, Connection, OpenFlags, OptionalExtension, Params, Result, Row, Statement,
+    TransactionBehavior,
 };
 use std::cell::RefCell;
 use std::ops::Deref;
@@ -303,6 +304,242 @@ impl StoreConnection {
         self.binding.is_some()
     }
 
+    /// Only private work areas can expose their raw handle. A bound A writer
+    /// never escapes the namespace facade through this method.
+    pub(crate) fn unbound_connection(&self) -> Result<&Connection> {
+        if self.binding.is_some() {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        Ok(&self.raw)
+    }
+
+    fn exact_stage_pool(&self, owner: &str) -> std::result::Result<StoreSpec, String> {
+        let main = self.raw.path().ok_or("暂存目标没有物理A")?;
+        let active = crate::core::business_store_route::container_path()?;
+        if std::fs::canonicalize(main).map_err(|e| e.to_string())?
+            != std::fs::canonicalize(active).map_err(|e| e.to_string())?
+        {
+            return Err("暂存发布目标不是当前A".into());
+        }
+        let binding = self
+            .binding
+            .as_ref()
+            .ok_or("暂存发布需要已绑定的Exact writer")?;
+        if binding.borrow().store_id() != owner {
+            return Err("暂存发布owner不匹配".into());
+        }
+        let module: String = self
+            .raw
+            .query_row(
+                "SELECT module FROM tb_stores WHERE store_id=?1",
+                [owner],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if module != "exact" {
+            return Err("非Exact owner不能消费暂存".into());
+        }
+        let pool = StoreSpec::new(
+            "exact.rust.pool",
+            "exact-stage-pool-v1",
+            "exact/stage-pool-v1",
+        )
+        .map_err(|e| e.to_string())?;
+        let valid: bool = self.raw.query_row("SELECT EXISTS(SELECT 1 FROM tb_stores WHERE store_id=?1 AND module=?2 AND source_identity=?3 AND namespace_prefix=?4 AND user_version=1 AND state='ready')", rusqlite::params![pool.id,pool.module,pool.source_identity,pool.prefix], |r| r.get(0)).map_err(|e|e.to_string())?;
+        if !valid {
+            return Err("暂存池合同不可用".into());
+        }
+        Ok(pool)
+    }
+
+    /// Typed same-A bridge. This is the per-file BUILDING transaction, not a
+    /// consumption receipt. The receipt is written by the final publication.
+    pub(crate) fn mark_exact_stage_pending(
+        &self,
+        owner: &str,
+        job: &str,
+        digest: &str,
+        generation: i64,
+    ) -> std::result::Result<(), String> {
+        if self.raw.is_autocommit() || generation <= 0 {
+            return Err("暂存关联必须在原导入事务内".into());
+        }
+        let p = self.exact_stage_pool(owner)?;
+        let changed = self.raw.execute(&format!("UPDATE {}jobs SET pending_generation=?1 WHERE job_id=?2 AND owner=?3 AND digest=?4 AND state='sealed' AND (pending_generation IS NULL OR pending_generation=?1)",p.prefix), rusqlite::params![generation,job,owner,digest]).map_err(|e|e.to_string())?;
+        if changed != 1 {
+            return Err("暂存关联证明不匹配，已保留任务".into());
+        }
+        Ok(())
+    }
+
+    /// Final exact generation and its job receipts commit on this *same*
+    /// handle. No caller gets arbitrary SQL access to another namespace.
+    pub(crate) fn consume_exact_stage_generation(
+        &self,
+        generation: i64,
+    ) -> std::result::Result<(), String> {
+        if self.raw.is_autocommit() {
+            return Err("暂存消费必须在正式发布事务内".into());
+        }
+        let binding = self.binding.as_ref().ok_or("正式发布缺少Exact owner")?;
+        let owner = binding.borrow().store_id().to_owned();
+        let p = StoreSpec::new(
+            "exact.rust.pool",
+            "exact-stage-pool-v1",
+            "exact/stage-pool-v1",
+        )
+        .map_err(|e| e.to_string())?;
+        let exists: bool = self
+            .raw
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM tb_stores WHERE store_id=?1)",
+                [&p.id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if !exists {
+            return Ok(());
+        }
+        let p = self.exact_stage_pool(&owner)?;
+        let published: Option<String> = self
+            .raw
+            .query_row(
+                &format!(
+                    "SELECT value FROM {}metadata WHERE key='published_generation'",
+                    binding.borrow().prefix()
+                ),
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if published.as_deref() != Some(&generation.to_string()) {
+            return Err("暂存消费与正式发布代不一致".into());
+        }
+        self.raw.execute(&format!("INSERT INTO {}publication_receipts(owner,job_id,payload_digest,generation) SELECT owner,job_id,digest,?1 FROM {}jobs WHERE owner=?2 AND pending_generation=?1 AND state='sealed'",p.prefix,p.prefix),rusqlite::params![generation,owner]).map_err(|e|e.to_string())?;
+        self.raw.execute(&format!("UPDATE {}jobs SET state='consumed' WHERE owner=?1 AND pending_generation=?2 AND state='sealed'",p.prefix),rusqlite::params![owner,generation]).map_err(|e|e.to_string())?;
+        Ok(())
+    }
+
+    pub(crate) fn has_exact_stage_pool(&self) -> Result<bool> {
+        let p = StoreSpec::new(
+            "exact.rust.pool",
+            "exact-stage-pool-v1",
+            "exact/stage-pool-v1",
+        )
+        .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        self.raw.query_row(
+            "SELECT EXISTS(SELECT 1 FROM tb_stores WHERE store_id=?1)",
+            [p.id],
+            |r| r.get(0),
+        )
+    }
+
+    /// The immutable artifact was verified before reaching this method.
+    /// Mount just four typed tables in TEMP; no job-specific MAIN DDL or store.
+    pub(crate) fn mount_exact_stage_rows(
+        &self,
+        owner: &str,
+        alias: &str,
+        source: &Connection,
+    ) -> std::result::Result<(), String> {
+        self.exact_stage_pool(owner)?;
+        if !matches!(alias, "exact_stage_import" | "exact_enrichment_compare")
+            || !self.raw.is_autocommit()
+        {
+            return Err("无效的暂存读取挂载".into());
+        }
+        let names = ["manifest", "events", "fingerprints", "chunks"];
+        let prefix = format!("tb_{alias}_");
+        self.unmount_exact_stage_rows(alias)
+            .map_err(|e| e.to_string())?;
+        let copied = (|| -> std::result::Result<(), String> {
+            self.raw
+                .execute_batch("BEGIN DEFERRED")
+                .map_err(|e| e.to_string())?;
+            for name in names {
+                let mut info = source
+                    .prepare(&format!("PRAGMA table_info({name})"))
+                    .map_err(|e| e.to_string())?;
+                let columns = info
+                    .query_map([], |r| r.get::<_, String>(1))
+                    .map_err(|e| e.to_string())?
+                    .collect::<Result<Vec<_>>>()
+                    .map_err(|e| e.to_string())?;
+                if !(1..=64).contains(&columns.len()) {
+                    return Err("暂存列合同无效".into());
+                }
+                let q = crate::core::business_store_sql::SQLiteStoreNamespace::quote;
+                self.raw
+                    .execute_batch(&format!(
+                        "CREATE TEMP TABLE {}({})",
+                        q(&format!("{prefix}{name}")),
+                        columns.iter().map(|c| q(c)).collect::<Vec<_>>().join(",")
+                    ))
+                    .map_err(|e| e.to_string())?;
+                let mut select = source
+                    .prepare(&format!("SELECT * FROM {name}"))
+                    .map_err(|e| e.to_string())?;
+                let mut rows = select.query([]).map_err(|e| e.to_string())?;
+                let mut insert = self
+                    .raw
+                    .prepare(&format!(
+                        "INSERT INTO temp.{} VALUES({})",
+                        q(&format!("{prefix}{name}")),
+                        vec!["?"; columns.len()].join(",")
+                    ))
+                    .map_err(|e| e.to_string())?;
+                while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+                    struct RawCell<'a>(rusqlite::types::ValueRef<'a>);
+                    impl ToSql for RawCell<'_> {
+                        fn to_sql(&self) -> Result<ToSqlOutput<'_>> {
+                            Ok(ToSqlOutput::Borrowed(self.0))
+                        }
+                    }
+                    let values = (0..columns.len())
+                        .map(|i| row.get_ref(i).map(RawCell))
+                        .collect::<Result<Vec<_>>>()
+                        .map_err(|e| e.to_string())?;
+                    insert
+                        .execute(rusqlite::params_from_iter(values))
+                        .map_err(|e| e.to_string())?;
+                }
+            }
+            self.raw
+                .execute_batch("COMMIT")
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        })();
+        if let Err(error) = copied {
+            let _ = self.raw.execute_batch("ROLLBACK");
+            let _ = self.unmount_exact_stage_rows(alias);
+            return Err(error);
+        }
+        self.binding
+            .as_ref()
+            .ok_or("暂存挂载缺少owner")?
+            .borrow_mut()
+            .register_temporary_attached_namespace(
+                alias,
+                prefix,
+                names.into_iter().map(str::to_owned),
+            );
+        Ok(())
+    }
+
+    pub(crate) fn unmount_exact_stage_rows(&self, alias: &str) -> Result<()> {
+        if !matches!(alias, "exact_stage_import" | "exact_enrichment_compare") {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        let binding = self.binding.as_ref().ok_or(rusqlite::Error::InvalidQuery)?;
+        binding.borrow_mut().unregister_attached_namespace(alias);
+        for name in ["manifest", "events", "fingerprints", "chunks"] {
+            self.raw
+                .execute_batch(&format!("DROP TABLE IF EXISTS temp.tb_{alias}_{name}"))?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn has_logical_object(&self, name: &str) -> Result<bool> {
         if let Some(binding) = &self.binding {
             return Ok(binding.borrow().has_object(name));
@@ -490,7 +727,10 @@ mod tests {
             .raw()
             .query_row("PRAGMA quick_check(1)", [], |row| row.get(0))
             .unwrap();
-        assert_ne!(whole_container_check, "ok", "fixture must corrupt a sibling partition");
+        assert_ne!(
+            whole_container_check, "ok",
+            "fixture must corrupt a sibling partition"
+        );
 
         for table in stage_tables {
             let rows = db
@@ -500,7 +740,11 @@ mod tests {
                 .unwrap()
                 .collect::<std::result::Result<Vec<_>, _>>()
                 .unwrap();
-            assert_eq!(rows, vec!["ok".to_owned()], "the check for {table} must ignore the sibling");
+            assert_eq!(
+                rows,
+                vec!["ok".to_owned()],
+                "the check for {table} must ignore the sibling"
+            );
 
             let physical_table = format!("\"{prefix}{table}\"");
             db.raw()
@@ -516,12 +760,13 @@ mod tests {
                 .unwrap()
                 .collect::<std::result::Result<Vec<_>, _>>()
                 .unwrap();
-            assert_ne!(corrupt_rows, vec!["ok".to_owned()], "the check must detect corruption in {table}");
+            assert_ne!(
+                corrupt_rows,
+                vec!["ok".to_owned()],
+                "the check must detect corruption in {table}"
+            );
             db.raw()
-                .execute(
-                    &format!("DELETE FROM {physical_table} WHERE value < 0"),
-                    [],
-                )
+                .execute(&format!("DELETE FROM {physical_table} WHERE value < 0"), [])
                 .unwrap();
         }
     }

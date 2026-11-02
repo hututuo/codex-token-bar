@@ -290,12 +290,28 @@ pub(super) fn verify_fixture(home: &Path) -> Result<serde_json::Value, String> {
         event_enrichment: true,
         expected_published_prefix_sha256: Some(bad_prefix),
     };
-    let old = stage_or_reuse_full_rebuild(&job, &index_path, generation, &home, &mut Vec::new())
+    let mut old = stage_or_reuse_full_rebuild(&job, &index_path, generation, &home, &mut Vec::new())
         .map_err(staging_error)?;
     need!(
         old.prefix_sha256 != bad_prefix && !old.database_path.exists(),
         "fixture requires a valid namespace-only stage and inconsistent old checkpoint"
     );
+    // Keep the original PR7 legacy-artifact recovery assertion after new
+    // production writers move to the fixed pool. Form a real old-style stage
+    // from the parser's typed rows; only this disposable producer writes it.
+    let pool=stage_pool::Pool::current()?;
+    let old_job=pool.lookup(&old.database_path)?.ok_or("fixture missing old pool job")?;
+    let raw=pool.restore(&old_job)?;
+    let legacy=staging_database_path(&index_path,&job.path);
+    sql!(fs::create_dir_all(staging_directory(&index_path)));
+    let mut destination=sql!(rusqlite::Connection::open(&legacy));
+    {let backup=sql!(rusqlite::backup::Backup::new(&raw,&mut destination));sql!(backup.run_to_completion(128,StdDuration::from_millis(1),None));}
+    drop(destination);drop(raw);
+    let spec=route::exact_store_spec(&legacy)?;
+    drop(route::open_store("exact",&spec.source_identity,&spec.logical_path,&[legacy.clone()])?);
+    route::seal_exact_store(&legacy)?;
+    old.database_path=legacy;
+    old.source_validation=None;
     let original_proof = route::exact_store_observation(&old.database_path)?;
     let mut append = sql!(fs::OpenOptions::new().append(true).open(&file));
     sql!(append.write_all(event("2026-10-28T00:01:00Z", 55).as_bytes()));
@@ -324,10 +340,10 @@ pub(super) fn verify_fixture(home: &Path) -> Result<serde_json::Value, String> {
         "candidate creation published prematurely"
     );
     let artifact = candidate.artifact_id.clone();
-    let candidate_spec = route::exact_store_spec(&candidate.database_path)?;
+    let candidate_spec = pool.lookup(&candidate.database_path)?.ok_or("fixture missing candidate job")?.id;
     sql!(fs::create_dir_all(staging_directory(&index_path)));
     need!(
-        route::exact_store_spec(&candidate.database_path)? == candidate_spec,
+        pool.lookup(&candidate.database_path)?.ok_or("fixture lost candidate")?.id == candidate_spec,
         "candidate identity depends on physical directory existence"
     );
     drop(index); // interruption after durable staging, before import/publication
@@ -481,10 +497,11 @@ pub(super) fn verify_fixture(home: &Path) -> Result<serde_json::Value, String> {
     let retained_schema: String = sql!(legacy_writer.query_row("SELECT sql FROM sqlite_master WHERE name='threads'", [], |r| r.get(0)));
     need!(original_schema == retained_schema && !route::exact_store_exists(&legacy_state)?,
         "legacy external state was altered or registered as a ledger");
+    let fixed_pool=stage_pool::verify_fixture()?;
     Ok(
         serde_json::json!({"name":"runtime-recovery-production-path","status":"PASS",
         "legacyCheckpointMismatch":true,"namespaceCandidateResumed":true,"oldStagePreserved":true,
         "invalidCandidateRejected":true,"tokensAfterReplay":175,"liveStateRefreshed":true,
-        "externalStateReadOnly":true,"legacyStateColumnsReadWithoutImport":true}),
+        "externalStateReadOnly":true,"legacyStateColumnsReadWithoutImport":true,"fixedPool":fixed_pool}),
     )
 }

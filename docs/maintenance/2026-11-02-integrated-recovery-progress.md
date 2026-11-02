@@ -85,3 +85,17 @@ Windows连接寿命作平台适配：实际锁定SQLite源码的`winOpen`使用F
 - 已接到Swift实际stage创建／验证／发布入口；完成新job后不再调用逐源TEMP→MAIN建四表路径。Windows固定池接线、旧stage后台清理、完整规模／恢复验证仍待完成。
 
 本地结果：实际生产存储源码的隔离XCTest **14通过、0失败**，含共享codec向量、13个job的MAIN／store数量不增长、封存拒写、回执与事实回滚、旧stage只读／回收门槛、备份中断恢复。只替换资源查找及不使用的app发现依赖；不是完整app测试。Swift扫描器接线已通过语法检查，整包类型／调用路径和规模验证留给本批云端；原admission红用例继续保留。
+
+源码`7f27eca7`的[完整检查41495387633](https://github.com/hututuo/codex-token-bar/actions/runs/41495387633)：Swift2271项、36 skipped，5条失败。4条仍为C01的admission；1条是旧测试把获准增加的唯一结构备份误计作第三个活动数据库。已将该断言改为精确核对“A＋固定路径的唯一备份”、备份完整性／回执，并新增pool仅1个、旧逐文件stage为0的断言；没有移除旧账／缺原文／多Home断言。该修改待下一轮云端。Mac与Windows的native／前端／更新器通过（此SHA尚无Rust pool）。
+
+## C03b · Rust固定池与同A发布桥（待整包核验）
+
+- Rust新任务解析到自动删除的SQLite私有工作区，存入独立的`exact.rust.pool`六表；旧candidate名称保留为legacy读取入口，新任务不再物化逐源MAIN四表。
+- Rust逐源导入只登记pending_generation；整代发布事务核对正式published_generation，并在同句柄写消费回执。旧事实／回执一起回滚；清理不能把building当成已发布。固定TEMP只读投影复用现有导入SQL，不开放任意namespace SQL。
+- 两端共享typed-row fixture；Rust保留Int64／REAL位型与原始TEXT字节。备份采用Rust实际根合同：容器schema1和initialized提交点，兼容其原本没有Swift activation_state的情况；未知显式activation状态不放行。
+- Rust pool独立结构备份目录为`structural-stage-pool-rust-v1`，原A不覆盖；初始副本／receipt中断处理与Swift同原则。
+- 生产fixture继续形成真实旧式stage，核对旧短合同保留、较长新job恢复、原文不变、旧账幂等；另加入13个pool任务的固定对象数量／typed TEMP／只读／原子回执测试。全量双端fixture待云端。
+
+本地：直接编译实际Container／SQL binder／StoreConnection／pool／backup源码的小crate通过，13个任务MAIN和store增长0；原子回滚、只读别名、重复回收均通过。此探针仅替换路径定位／未使用的源证明，不能替代实际启动路径。新增3项pool单测、1项binder单测及共享codec／backup单测待整包；codec原3项与backup原4项曾在独立小crate通过，备份根合同调整后的全量结果不得提前算成功。
+
+尚未退出C03：旧stage合格短边界／旧base的Swift分类、两端旧namespace带回执后台清理、未消费job跨进程强退和最终源前缀复核仍须收尾；C04启动读写准入、C05规模／图表、C06诊断与C07组合验收继续保留门禁。当前没有安装、合并main或发布。

@@ -46,6 +46,7 @@ pub(crate) struct StoreSqlBinding {
     store_id: String,
     namespace: SQLiteStoreNamespace,
     attached: HashMap<String, SQLiteStoreNamespace>,
+    temporary_attached: HashSet<String>,
 }
 
 impl StoreSqlBinding {
@@ -70,6 +71,7 @@ impl StoreSqlBinding {
             store_id,
             namespace: SQLiteStoreNamespace::new(prefix, object_names),
             attached: HashMap::new(),
+            temporary_attached: HashSet::new(),
         })
     }
 
@@ -164,7 +166,15 @@ impl StoreSqlBinding {
                     return Err(BindingError::ReadOnlyAttachedStore);
                 }
                 return Ok(format!(
-                    "PRAGMA main.{name}({})",
+                    "PRAGMA {}.{name}({})",
+                    if self
+                        .temporary_attached
+                        .contains(&significant[1].value.to_ascii_lowercase())
+                    {
+                        "temp"
+                    } else {
+                        "main"
+                    },
                     SQLiteStoreNamespace::quote(&namespace.physical(&significant[5].value))
                 ));
             }
@@ -269,7 +279,15 @@ impl StoreSqlBinding {
                 .unwrap_or(&tokens[index].value)
                 .to_owned();
             if namespace.has_object(&logical) {
-                tokens[schema_position].raw = "main".to_string();
+                tokens[schema_position].raw = if self
+                    .temporary_attached
+                    .contains(&tokens[schema_position].value.to_ascii_lowercase())
+                {
+                    "temp"
+                } else {
+                    "main"
+                }
+                .to_string();
                 tokens[index].raw = SQLiteStoreNamespace::quote(&namespace.physical(&logical));
             }
         }
@@ -290,6 +308,7 @@ impl StoreSqlBinding {
         prefix: String,
         object_names: impl IntoIterator<Item = String>,
     ) {
+        self.temporary_attached.remove(&alias.to_ascii_lowercase());
         self.attached.insert(
             alias.to_ascii_lowercase(),
             SQLiteStoreNamespace::new(prefix, object_names),
@@ -298,6 +317,17 @@ impl StoreSqlBinding {
 
     pub(crate) fn unregister_attached_namespace(&mut self, alias: &str) {
         self.attached.remove(&alias.to_ascii_lowercase());
+        self.temporary_attached.remove(&alias.to_ascii_lowercase());
+    }
+
+    pub(crate) fn register_temporary_attached_namespace(
+        &mut self,
+        alias: &str,
+        prefix: String,
+        names: impl IntoIterator<Item = String>,
+    ) {
+        self.register_attached_namespace(alias, prefix, names);
+        self.temporary_attached.insert(alias.to_ascii_lowercase());
     }
 
     pub(crate) fn store_id(&self) -> &str {
@@ -1068,7 +1098,12 @@ mod tests {
         let mut binding = StoreSqlBinding::new(
             store_id,
             prefix.clone(),
-            ["manifest".into(), "fingerprints".into(), "events".into(), "chunks".into()],
+            [
+                "manifest".into(),
+                "fingerprints".into(),
+                "events".into(),
+                "chunks".into(),
+            ],
         )
         .unwrap();
 
@@ -1086,11 +1121,55 @@ mod tests {
                 .unwrap(),
             format!("SELECT quick_check FROM pragma_quick_check('{prefix}chunks')")
         );
-        assert_eq!(binding.sql("PRAGMA quick_check(1)").unwrap(), "PRAGMA quick_check(1)");
+        assert_eq!(
+            binding.sql("PRAGMA quick_check(1)").unwrap(),
+            "PRAGMA quick_check(1)"
+        );
         assert_eq!(
             binding.sql("PRAGMA integrity_check(1)").unwrap(),
             "PRAGMA integrity_check(1)"
         );
+    }
+
+    #[test]
+    fn pooled_stage_alias_stays_in_temp_and_cannot_mutate_stage_rows() {
+        let id = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let mut b = StoreSqlBinding::new(id, format!("s{id}_"), ["events".into()]).unwrap();
+        b.register_temporary_attached_namespace(
+            "exact_stage_import",
+            "tb_exact_stage_import_".into(),
+            ["events".into(), "manifest".into()],
+        );
+        assert_eq!(
+            b.sql("SELECT * FROM exact_stage_import.events").unwrap(),
+            "SELECT * FROM temp.\"tb_exact_stage_import_events\""
+        );
+        assert_eq!(
+            b.sql("PRAGMA exact_stage_import.table_info(events)")
+                .unwrap(),
+            "PRAGMA temp.table_info(\"tb_exact_stage_import_events\")"
+        );
+        assert!(b
+            .sql("UPDATE exact_stage_import.events SET tokens=0")
+            .is_err());
+        assert!(b.sql("DELETE FROM exact_stage_import.events").is_err());
+        assert!(b
+            .sql("INSERT INTO exact_stage_import.events VALUES(1)")
+            .is_err());
+        assert!(b
+            .sql("INSERT INTO events SELECT * FROM exact_stage_import.events")
+            .unwrap()
+            .contains("FROM temp.\"tb_exact_stage_import_events\""));
+        b.unregister_attached_namespace("exact_stage_import");
+        b.register_attached_namespace(
+            "exact_stage_import",
+            "saaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_".into(),
+            ["events".into()],
+        );
+        assert!(b
+            .sql("SELECT * FROM exact_stage_import.events")
+            .unwrap()
+            .contains("main.\"saaaaaaaa"));
     }
 
     #[test]
