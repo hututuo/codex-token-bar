@@ -271,13 +271,14 @@ fn published_read_raw_proof(connection: &Connection) -> rusqlite::Result<Publish
     ) -> rusqlite::Result<Vec<Vec<rusqlite::types::Value>>> {
         let mut statement = connection.prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))?;
         let column_count = statement.column_count();
-        statement
+        let rows = statement
             .query_map([], |row| {
                 (0..column_count)
                     .map(|column| row.get::<_, rusqlite::types::Value>(column))
                     .collect::<rusqlite::Result<Vec<_>>>()
             })?
-            .collect()
+            .collect();
+        rows
     }
 
     let schema_version = connection.query_row("PRAGMA schema_version", [], |row| row.get(0))?;

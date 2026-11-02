@@ -90,7 +90,9 @@ struct PreciseIndexProgress: Equatable, Sendable {
         let resolvedFraction = fraction ?? normalizedTotal.flatMap { total in
             total > 0 ? Double(normalizedCompleted) / Double(total) : nil
         }
-        self.fraction = resolvedFraction.map { min(max($0, 0), 1) }
+        // Completed parsing is not a committed accounting generation. Keep
+        // the actual count (including N/N), but reserve 100% for completion.
+        self.fraction = resolvedFraction.map { min(max($0, 0), phase == .complete ? 1 : 0.99) }
     }
 
     var isActive: Bool {

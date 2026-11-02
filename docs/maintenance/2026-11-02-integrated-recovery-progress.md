@@ -150,3 +150,9 @@ Windows连接寿命作平台适配：实际锁定SQLite源码的`winOpen`使用F
 ### 历史形成状态的托管入口
 
 新增独立reusable workflow，固定0.9.8／0.9.9／0.9.10／0.9.11生产源码形成输入，再由同SHA候选恢复和重复启动；双平台外部TEMP、只读仓库权限、不涉及签名发布。通过原有CI的显式`formed_release`／`formed_only`参数调用，普通push不启动8个历史构建；只跑历史矩阵不会生成全项目通过artifact。工作流矩阵实际生成／拒绝非法输入、SHA／权限／输出目录合同等7项，以及既有helper8项unit通过；历史托管生产执行尚NOT_RUN。F03原调查包无SQLite，仍不宣称这些合成形成场景就是用户原库验收。
+
+源码`65f98b26`的[检查41515343966](https://github.com/hututuo/codex-token-bar/actions/runs/41515343966)中，macOS26 native实际生产fixture已执行通过，含旧artifact消费／变化保留和published只读完整数据。随后原库unit编译在新增quota测试辅助函数发生E0597临时迭代器生命周期错误；已给collection结果显式局部绑定，不改产品或数据断言，待重测。Windows同一测试编译会遇到同项错误，不计unit通过。
+
+## C06a · 累计进度（待执行）
+
+按PR6已审查实现复用同一个串行progress box，修正每4项重置、worker回调交错、发布重试回零；各批offset按实际封存结果累计，输入签名真的变化则另行重置。已落库的正式数值／parser算法不变。两端保留真实N/N任务数，但图形百分比在正式complete前最多99%；新增失败／回滚不能变为100%的断言。规模fixture仍保留原精确账目／原库字节／不重解析断言，尚待执行结果。托管历史矩阵与普通检查分开并发组，避免新push把排队的历史验证无声顶掉。

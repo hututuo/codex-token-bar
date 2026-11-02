@@ -278,7 +278,7 @@ fn update_precise_dashboard_progress_for_key(
             message: message.into(),
             completed: clamped_completed,
             total,
-            fraction: precise_progress_fraction(clamped_completed, total),
+            fraction: precise_progress_fraction(clamped_completed, total).map(|value| if phase == "complete" { value } else { value.min(0.99) }),
             started_at,
             updated_at: precise_progress_now(),
         },

@@ -23,6 +23,22 @@ use time::{OffsetDateTime, UtcOffset};
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+fn parsing_and_failed_publication_keep_counts_but_cannot_report_committed_full_progress() {
+    let root = temp_root();
+    begin_precise_dashboard_progress(&root);
+    update_precise_dashboard_progress(&root, "backfillingModel", "all artifacts sealed", 13, Some(13));
+    let staged = precise_dashboard_progress(&root);
+    assert_eq!((staged.completed, staged.total, staged.fraction),(13,Some(13),Some(0.99)));
+    finish_precise_dashboard_progress(&root,false,"publication rolled back");
+    assert_eq!(precise_dashboard_progress(&root).fraction,Some(0.99));
+    begin_precise_dashboard_progress(&root);
+    update_precise_dashboard_progress(&root,"publishing","committing generation",13,Some(13));
+    assert_eq!(precise_dashboard_progress(&root).fraction,Some(0.99));
+    finish_precise_dashboard_progress(&root,true,"generation committed");
+    assert_eq!(precise_dashboard_progress(&root).fraction,Some(1.0));
+}
+
+#[test]
 fn live_append_during_incremental_scan_publishes_each_prefix_once() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let at = OffsetDateTime::parse("2026-07-20T12:00:00Z", &Rfc3339).unwrap();

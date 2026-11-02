@@ -34,7 +34,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.formed_release || 'standard' }}-${{ inputs.formed_platform || 'all' }}
   cancel-in-progress: false
 
 env:

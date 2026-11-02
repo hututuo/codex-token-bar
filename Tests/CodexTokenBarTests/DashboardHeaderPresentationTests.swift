@@ -4,6 +4,17 @@ import XCTest
 @testable import CodexTokenBar
 
 final class DashboardHeaderPresentationTests: XCTestCase {
+    func testParsingAndPublicationKeepRealCountsButReserveFullProgressForCommittedCompletion() {
+        for phase in [PreciseIndexProgressPhase.preparing, .migrating, .scanning, .backfillingModel, .publishing, .failed] {
+            let progress = PreciseIndexProgress(phase: phase, message: "pending commit", completed: 13, total: 13)
+            XCTAssertEqual(progress.completed, 13)
+            XCTAssertEqual(progress.total, 13)
+            XCTAssertEqual(progress.fraction, 0.99)
+        }
+        XCTAssertEqual(PreciseIndexProgress(phase: .complete, message: "committed", completed: 13, total: 13).fraction, 1)
+        XCTAssertNil(PreciseIndexProgress(phase: .scanning, message: "unknown total", completed: 0, total: nil).fraction)
+    }
+
     func testMarkAllReadRemainsVisibleWithIdleToneAtZeroUnread() {
         let presentation = DashboardMarkAllReadPresentation(unreadCount: 0, isBusy: false)
 

@@ -2676,6 +2676,17 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         parser: @escaping SessionParser,
         onProgress: ((Int, Int, PreciseIndexProgressPhase) -> Void)? = nil
     ) throws -> SynchronizationResult {
+        // Parsing, batching and the publication retry are one visible backfill.
+        // Reuse the serialized progress box rather than retaining a second UI
+        // counter or reporting each four-job batch as a new operation.
+        let enrichmentProgress = EventEnrichmentProgressBox { completed, total in
+            onProgress?(completed, total, .backfillingModel)
+        }
+        let reportProgress: (Int, Int, PreciseIndexProgressPhase) -> Void = { completed, total, phase in
+            if phase == .backfillingModel { enrichmentProgress.callback(completed, total) }
+            else { onProgress?(completed, total, phase) }
+        }
+        var demandContracts: [URL: SourceSignature]?
         if stagePool == nil, let target = BusinessSQLiteRoutes.store(for: driver.url) {
             stagePool = try ExactStagePool.existingOrNeededForLegacy(for: target)
         }
@@ -2687,7 +2698,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     try configure(connection)
                     return try connection.transaction { transaction in
                         try synchronizeInTransaction(files: files, sessionID: sessionID,
-                            messageScanner: messageScanner, observedAt: observedAt, parser: parser, onProgress: onProgress,
+                            messageScanner: messageScanner, observedAt: observedAt, parser: parser, onProgress: reportProgress,
                             connection: transaction, stagedArtifacts: &stagedArtifacts)
                     }
                 }
@@ -2704,12 +2715,18 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 if stagePool == nil, let target = BusinessSQLiteRoutes.store(for: driver.url) {
                     stagePool = try ExactStagePool.shared(for: target)
                 }
+                let contracts = Dictionary(demand.jobs.filter { $0.reason == .eventEnrichment }.map { ($0.file, $0.observedSignature) }, uniquingKeysWith: { _, newer in newer })
+                if let previous = demandContracts, previous != contracts { enrichmentProgress.reset() }
+                demandContracts = contracts
+                var completedBeforeBatch = 0
                 for batch in stagingBatches(for: demand.jobs) {
                     try ensureStagingCapacity(for: batch)
-                    _ = try stageFullRebuilds(batch, parser: parser,
+                    let offset = completedBeforeBatch
+                    let staged = try stageFullRebuilds(batch, parser: parser,
                         eventEnrichmentTotal: demand.enrichmentTotal) { completed,total in
-                        onProgress?(completed, total, .backfillingModel)
+                        reportProgress(min(offset + completed, total), total, .backfillingModel)
                     }
+                    completedBeforeBatch += staged.filter { $0.job.reason == .eventEnrichment }.count
                 }
             }
         }
@@ -7348,10 +7365,27 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     }
 
     private final class EventEnrichmentProgressBox: @unchecked Sendable {
-        let callback: (Int, Int) -> Void
+        private let lock = NSRecursiveLock()
+        private let report: (Int, Int) -> Void
+        private var completed = -1
+        private var total = -1
 
         init(_ callback: @escaping (Int, Int) -> Void) {
-            self.callback = callback
+            report = callback
+        }
+        func reset() {
+            lock.lock(); defer { lock.unlock() }
+            completed = -1; total = -1
+        }
+        func callback(_ count: Int, _ total: Int) {
+            lock.lock(); defer { lock.unlock() }
+            let boundedTotal = max(0, total)
+            let next = min(max(max(0, count), completed), boundedTotal)
+            guard next != completed || boundedTotal != self.total else { return }
+            completed = next; self.total = boundedTotal
+            // A worker can finish collecting before an earlier worker reports.
+            // Keep callback delivery ordered as well as counter updates.
+            report(next, boundedTotal)
         }
     }
 
