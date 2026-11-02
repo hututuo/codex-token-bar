@@ -23,6 +23,167 @@ use time::{OffsetDateTime, UtcOffset};
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[test]
+fn live_append_during_incremental_scan_publishes_each_prefix_once() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let at = OffsetDateTime::parse("2026-07-20T12:00:00Z", &Rfc3339).unwrap();
+    ExactUsageIndex::reset_scan_bytes_for_testing();
+    let root = temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    let file = root.join("sessions/rollout-live-append.jsonl");
+    let event = |minute: u64, tokens: u64| serde_json::json!({
+        "timestamp": format!("2026-07-20T01:{minute:02}:00Z"),
+        "type":"event_msg", "payload":{"type":"token_count","info":{"last_token_usage":{
+            "input_tokens":tokens,"cached_input_tokens":0,"output_tokens":0,"total_tokens":tokens
+        }}}
+    }).to_string();
+    write_lines(&file, &[event(0, 100)]);
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    index.sync(&root, &mut Vec::new()).unwrap();
+    let initial_bytes = ExactUsageIndex::scan_bytes_for_testing().0;
+    let mut writer = fs::OpenOptions::new().append(true).open(&file).unwrap();
+    writeln!(writer, "{}", event(1, 20)).unwrap();
+    writer.sync_all().unwrap();
+    drop(writer);
+    let during_scan = event(2, 30);
+    let hook_calls = Arc::new(AtomicU64::new(0));
+    let calls = Arc::clone(&hook_calls);
+    ExactUsageIndex::set_after_prefix_scan_hook_for_testing(move |scanned_file| {
+        calls.fetch_add(1, Ordering::SeqCst);
+        let mut writer = fs::OpenOptions::new().append(true).open(scanned_file).unwrap();
+        writeln!(writer, "{during_scan}").unwrap();
+        writer.sync_all().unwrap();
+    });
+    index.sync(&root, &mut Vec::new()).unwrap();
+    assert_eq!(hook_calls.load(Ordering::SeqCst), 1);
+    let first = index.summary(at, UtcOffset::UTC).unwrap();
+    assert_eq!((first.total_tokens, first.today_requests), (120, 2), "publish only the scan-start prefix");
+    index.sync(&root, &mut Vec::new()).unwrap();
+    let next = index.summary(at, UtcOffset::UTC).unwrap();
+    assert_eq!((next.total_tokens, next.today_requests), (150, 3), "the concurrent suffix is counted once next time");
+    index.sync(&root, &mut Vec::new()).unwrap();
+    let stable = index.summary(at, UtcOffset::UTC).unwrap();
+    assert_eq!((stable.total_tokens, stable.today_requests), (150, 3));
+    assert_eq!(ExactUsageIndex::scan_bytes_for_testing().0, initial_bytes, "a proven live append must not rebuild history");
+    // Owned fixtures stay available for runner disposal / local Recycle Bin cleanup.
+}
+
+#[test]
+fn live_append_validation_keeps_rewrite_truncate_and_replacement_guards() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let at = OffsetDateTime::parse("2026-07-20T12:00:00Z", &Rfc3339).unwrap();
+    let event = |minute: u64, tokens: u64| serde_json::json!({
+        "timestamp": format!("2026-07-20T01:{minute:02}:00Z"),
+        "type":"event_msg", "payload":{"type":"token_count","info":{"last_token_usage":{
+            "input_tokens":tokens,"cached_input_tokens":0,"output_tokens":0,"total_tokens":tokens
+        }}}
+    }).to_string();
+    for mutation in ["rewrite", "truncate", "replace"] {
+        let root = temp_root();
+        fs::create_dir_all(root.join("sessions")).unwrap();
+        let file = root.join("sessions/rollout-live-mutation.jsonl");
+        write_lines(&file, &[event(0, 100)]);
+        let mut index = ExactUsageIndex::open(&root).unwrap();
+        let published = index.sync(&root, &mut Vec::new()).unwrap();
+        let mut writer = fs::OpenOptions::new().append(true).open(&file).unwrap();
+        writeln!(writer, "{}", event(1, 20)).unwrap();
+        writer.sync_all().unwrap();
+        drop(writer);
+        let extra = event(2, 30);
+        ExactUsageIndex::set_after_prefix_scan_hook_for_testing(move |scanned_file| {
+            match mutation {
+                "rewrite" => {
+                    let before = fs::read_to_string(scanned_file).unwrap();
+                    let after = before.replacen("\"total_tokens\":20", "\"total_tokens\":21", 1);
+                    assert_ne!(before, after);
+                    assert_eq!(before.len(), after.len());
+                    fs::write(scanned_file, after).unwrap();
+                }
+                "truncate" => fs::OpenOptions::new().write(true).open(scanned_file).unwrap().set_len(8).unwrap(),
+                "replace" => {
+                    let before = fs::read_to_string(scanned_file).unwrap();
+                    fs::rename(scanned_file, scanned_file.with_extension("retained-original")).unwrap();
+                    fs::write(scanned_file, format!("{before}{extra}\n")).unwrap();
+                }
+                _ => unreachable!(),
+            }
+        });
+        let error = index.sync(&root, &mut Vec::new()).unwrap_err();
+        assert!(error.contains("非追加变化"), "{mutation}: {error}");
+        assert_eq!(index.revision().unwrap(), published, "{mutation} must retain the published generation");
+        let summary = index.summary(at, UtcOffset::UTC).unwrap();
+        assert_eq!((summary.total_tokens, summary.today_requests), (100, 1), "{mutation} must roll back partial rows");
+    }
+}
+
+#[test]
+fn changed_excerpt_source_warns_once_without_changing_indexed_usage() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    let file = root.join("sessions/rollout-019f1111-1111-7111-8111-111111111118.jsonl");
+    let mut lines = Vec::new();
+    for turn in 0..4 {
+        lines.push(format!(r#"{{"timestamp":"2026-06-18T01:0{turn}:00Z","type":"event_msg","payload":{{"type":"user_message","message":"fixture {turn}"}}}}"#));
+        lines.push(format!(r#"{{"timestamp":"2026-06-18T01:0{turn}:10Z","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":1200,"cached_input_tokens":100,"output_tokens":50,"total_tokens":1250}}}}}}}}"#));
+    }
+    write_lines(&file, &lines.iter().map(String::as_str).collect::<Vec<_>>());
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    index.sync(&root, &mut Vec::new()).unwrap();
+    index.ensure_dashboard_aggregates(&root).unwrap();
+    fs::OpenOptions::new().append(true).open(&file).unwrap().write_all(b"\n").unwrap();
+    let now = OffsetDateTime::parse("2026-06-19T00:00:00Z", &Rfc3339).unwrap();
+    let mut warnings = Vec::new();
+    let data = index.dashboard_data(&root, now, UtcOffset::UTC, &mut warnings).unwrap();
+    assert!(data.cache_usage.turns.len() >= 2);
+    assert_eq!(data.stats.total_tokens, 5000);
+    assert_eq!(warnings.iter().filter(|warning| warning.source == "thread_excerpt" && warning.message.contains("源文件已在索引后变化")).count(), 1);
+    assert!(data.cache_usage.turns.iter().all(|turn| turn.user_prompt.is_empty()));
+    drop(index);
+    // Hosted-runner fixture; retain for inspection rather than deleting here.
+}
+
+#[test]
+fn broad_published_reads_seek_sources_and_preserve_daily_totals() {
+    let root = temp_root();
+    let now = OffsetDateTime::now_utc();
+    let mut lines = Vec::new();
+    for offset in 0..512 {
+        let timestamp = (now - time::Duration::seconds(offset))
+            .format(&Rfc3339).unwrap();
+        lines.push(format!(r#"{{"timestamp":"{timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":3,"cached_input_tokens":1,"output_tokens":2,"total_tokens":5}}}}}}}}"#));
+    }
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    let line_refs = lines.iter().map(String::as_str).collect::<Vec<_>>();
+    for id in ["019eaaaa-bbbb-cccc-dddd-eeeeffffffff", "019eaaaa-bbbb-cccc-dddd-eeeefffffffe"] {
+        write_lines(&root.join(format!("sessions/rollout-{id}.jsonl")), &line_refs);
+    }
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    index.sync(&root, &mut Vec::new()).unwrap();
+    index.ensure_dashboard_aggregates(&root).unwrap();
+    let (activity, count) = index.published_event_read_plans_for_testing(
+        (now - time::Duration::days(365)).unix_timestamp(),
+        (now + time::Duration::days(1)).unix_timestamp(),
+    ).unwrap();
+    for plan in [activity, count] {
+        assert!(plan.iter().any(|step| step.contains("SEARCH e") && step.contains("source_id=?")), "{plan:?}");
+        assert!(!plan.iter().any(|step| step.contains("event_rows_timestamp_idx")), "{plan:?}");
+        assert!(!plan.iter().any(|step| step.contains("MATERIALIZE") && step.contains("events")), "{plan:?}");
+    }
+    let dashboard = index.dashboard_data(&root, now, UtcOffset::UTC, &mut Vec::new()).unwrap();
+    assert_eq!(index.published_event_count().unwrap(), 1024);
+    let (seed, contributions) = index.summary_with_file_contributions(now, None).unwrap();
+    let (incremental, _) = index.summary_with_file_contributions(now, Some(&contributions)).unwrap();
+    assert_eq!(contributions.len(), 2);
+    assert_eq!(seed.total_tokens, 5120);
+    assert_eq!(serde_json::to_value(seed).unwrap(), serde_json::to_value(incremental).unwrap());
+    assert_eq!(dashboard.activity_days.iter().map(|day| day.tokens).sum::<u64>(), 5120);
+    assert_eq!(dashboard.activity_days.iter().map(|day| day.calls as u64).sum::<u64>(), 1024);
+    assert_eq!(dashboard.stats.total_tokens, 5120);
+    drop(index);
+    // Retain this small fixture for inspection; hosted runner teardown owns it.
+}
+
+#[test]
 fn staging_budget_batches_cap_workers_artifacts_and_ready_bytes() {
     const MIB: u64 = 1024 * 1024;
     let batches = staging_batch_shape_for_testing(&[
@@ -9081,6 +9242,14 @@ fn cache_turns_sum_request_inputs_and_count_zero_and_low_hit_requests() {
     let second_page = read_cache_turn_requests(&root, &turn.id, 2, 101).unwrap();
     assert_eq!(first_page.len(), 2);
     assert_eq!(second_page.len(), 1);
+    assert_eq!(first_page[0].id, requests[0].id);
+    assert_eq!(first_page[1].id, requests[1].id);
+    assert_eq!(second_page[0].id, requests[2].id);
+    assert!(read_cache_turn_requests(&root, &turn.id, 3, 101).unwrap().is_empty());
+    assert!(read_cache_turn_requests(&root, &turn.id, 0, 0).unwrap().is_empty());
+    let event_id = turn.id.rsplit_once('-').unwrap().1;
+    assert!(read_cache_turn_requests(&root, &format!("stale-session-0-{event_id}"), 0, 101).unwrap().is_empty(),
+        "an event id alone cannot authorize a different or stale turn identity");
     let database = super::exact_usage_index::database_path(&root).unwrap();
     let connection = Connection::open(database).unwrap();
     assert_eq!(
@@ -9151,6 +9320,89 @@ fn cache_turns_sum_request_inputs_and_count_zero_and_low_hit_requests() {
         "indexed request details must remain available after the source disappears"
     );
 
+    // A retained aggregate can outlive its raw representative event. Keep
+    // serving its surviving canonical requests through the persisted target.
+    let db = Connection::open(super::exact_usage_index::database_path(&root).unwrap()).unwrap();
+    let representative = missing_turn.id.rsplit_once('-').unwrap().1.parse::<i64>().unwrap();
+    assert_eq!(db.execute("DELETE FROM event_rows WHERE id=?1", [representative]).unwrap(), 1);
+    drop(db);
+    let retained = read_cache_turn_requests(&root, &missing_turn.id, 0, 101).unwrap();
+    assert_eq!(retained.len(), 2);
+    assert!(retained.iter().all(|request| request.id != representative.to_string()));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cache_request_details_keep_canonical_duplicate_exclusion() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let name = "rollout-019e1111-1111-4111-8111-000000000002.jsonl";
+    let prompt = r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"user_message","message":"synthetic prompt"}}"#;
+    let usage = |at: &str, n: u64, total: u64| serde_json::json!({
+        "timestamp":at,"type":"event_msg","payload":{"type":"token_count","info":{
+            "total_token_usage":{"input_tokens":total,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":total},
+            "last_token_usage":{"input_tokens":n,"cached_input_tokens":0,"output_tokens":0,"total_tokens":n}
+        }}
+    }).to_string();
+    let first = usage("2026-06-18T01:01:00Z", 100, 100);
+    for directory in ["a", "b"] {
+        let path = root.join("sessions").join(directory).join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut lines = vec![prompt.to_string(), first.clone()];
+        if directory == "b" { lines.push(usage("2026-06-18T01:02:00Z", 300, 400)); }
+        write_lines(&path, &lines);
+    }
+    let snapshot = dashboard_snapshot(&root).unwrap();
+    assert_eq!(snapshot.stats.total_tokens, 400);
+    assert!(!snapshot.cache_usage.turns.is_empty());
+    let mut detailed_tokens = 0;
+    for turn in &snapshot.cache_usage.turns {
+        let requests = read_cache_turn_requests(&root, &turn.id, 0, 101).unwrap();
+        assert_eq!(requests.len() as u32, turn.request_count);
+        let tokens = requests.iter().map(|request| request.breakdown.total_tokens).sum::<u64>();
+        assert_eq!(tokens, turn.breakdown.total_tokens);
+        detailed_tokens += tokens;
+    }
+    assert_eq!(detailed_tokens, 400, "the duplicate raw observation must not reappear in request details");
+    let db = Connection::open(super::exact_usage_index::database_path(&root).unwrap()).unwrap();
+    assert_eq!(db.query_row("SELECT SUM(tokens) FROM event_rows", [], |row| row.get::<_, i64>(0)).unwrap(), 500);
+    drop(db);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn incremental_attribution_keeps_unchanged_copies_and_unrelated_sessions() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let name = "rollout-019e1111-1111-4111-8111-000000000003.jsonl";
+    let a = root.join("sessions/a").join(name);
+    let b = root.join("sessions/b").join(name);
+    fs::create_dir_all(a.parent().unwrap()).unwrap();
+    fs::create_dir_all(b.parent().unwrap()).unwrap();
+    let event = |minute: u64, tokens: u64, total: u64| serde_json::json!({
+        "timestamp":format!("2026-06-18T01:{minute:02}:00Z"),"type":"event_msg","payload":{"type":"token_count","info":{
+            "total_token_usage":{"input_tokens":total,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":total},
+            "last_token_usage":{"input_tokens":tokens,"cached_input_tokens":0,"output_tokens":0,"total_tokens":tokens}
+        }}
+    }).to_string();
+    write_lines(&a, &[event(1, 100, 100), event(2, 200, 300)]);
+    write_lines(&b, &[event(1, 100, 100), event(3, 300, 400)]);
+    let unrelated = root.join("sessions/rollout-unrelated.jsonl");
+    write_lines(&unrelated, &[event(4, 750, 750)]);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 1_350);
+
+    let mut writer = fs::OpenOptions::new().append(true).open(&b).unwrap();
+    writeln!(writer, "{}", event(6, 50, 450)).unwrap();
+    drop(writer);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 1_400);
+    let db = Connection::open(super::exact_usage_index::database_path(&root).unwrap()).unwrap();
+    let totals = db.prepare(
+        "SELECT SUM(tokens) AS tokens FROM attribution_source_buckets GROUP BY source_id ORDER BY tokens",
+    ).unwrap().query_map([], |row| row.get::<_, i64>(0)).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
+    assert_eq!(totals, vec![650, 750],
+        "the changed UUID includes its unchanged copy's 200 unique tokens; unrelated usage stays intact");
+    drop(db);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -10822,6 +11074,7 @@ fn v18_cache_is_automatically_upgraded_by_the_next_successful_full_refresh() {
     let _cache_env = AggregateCacheEnvGuard::new(cache_path.clone());
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
+    let _clock = DashboardTestClock::at(&root, "2026-06-18T02:00:30Z");
     write_lines(
         &session_dir.join("rollout-019ev18-upgrade.jsonl"),
         &[
@@ -10864,6 +11117,9 @@ fn v20_cache_ignores_legacy_physical_identity_and_upgrades_to_v22() {
     let _cache_env = AggregateCacheEnvGuard::new(cache_path.clone());
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
+    // Keep cache creation and startup validation in the same aggregate window.
+    // Crossing a real five-minute + 15-second boundary changes its signature.
+    let _clock = DashboardTestClock::at(&root, "2026-06-18T02:00:30Z");
     write_lines(
         &session_dir.join("rollout-v20-cache-upgrade.jsonl"),
         &[
@@ -10909,6 +11165,7 @@ fn v21_cache_is_read_as_legacy_numeric_and_upgrades_to_v22() {
     let _cache_env = AggregateCacheEnvGuard::new(cache_path.clone());
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
+    let _clock = DashboardTestClock::at(&root, "2026-06-18T02:00:30Z");
     write_lines(
         &session_dir.join("rollout-v21-cache-upgrade.jsonl"),
         &[

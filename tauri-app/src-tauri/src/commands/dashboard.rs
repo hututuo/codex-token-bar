@@ -1941,10 +1941,15 @@ pub async fn read_cache_turn_requests(
     limit: u32,
 ) -> Result<Vec<CacheRequestUsage>, String> {
     require_window_label(&window, "read_cache_turn_requests")?;
-    run_source_bound_dashboard_read(&app, source_token, move |codex_home| {
+    let started = Instant::now();
+    let result = run_source_bound_dashboard_read(&app, source_token, move |codex_home| {
         token_count_jsonl::read_cache_turn_requests(&codex_home, &turn_id, offset, limit)
-    })
-    .await
+    }).await;
+    startup_trace::mark_performance(format!(
+        "cache_turn_requests elapsed_ms={} rows={} status={}",
+        started.elapsed().as_millis(), result.as_ref().map_or(0, Vec::len), result_status(&result),
+    ));
+    result
 }
 
 #[tauri::command]

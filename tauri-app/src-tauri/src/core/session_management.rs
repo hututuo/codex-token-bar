@@ -13,7 +13,7 @@ use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
@@ -383,6 +383,9 @@ pub fn read_context_page(
         .and_then(|path| trusted_rollout_path(codex_home, path).ok())
         .or_else(|| find_rollout_by_id(codex_home, thread_id).ok().flatten())
         .ok_or_else(|| format!("找不到会话 {thread_id} 的可信 rollout 文件"))?;
+    if path.file_name().is_some_and(|name| name.to_string_lossy().ends_with(".jsonl.zst")) {
+        return read_compressed_context_page(&path, thread_id, before_offset, page_size);
+    }
     let source_meta = read_session_meta(&path)
         .map_err(|error| format!("上下文读取前无法验证 rollout 首行身份：{error}"))?;
     if source_meta.id != thread_id {
@@ -432,6 +435,111 @@ pub fn read_context_page(
         file_identity: file_identity(&path, &metadata),
         warnings,
     })
+}
+
+fn read_compressed_context_page(
+    path: &Path,
+    thread_id: &str,
+    before_offset: Option<u64>,
+    page_size: Option<usize>,
+) -> Result<SessionContextPage, String> {
+    let mut stream = token_count_jsonl::RolloutStream::open(path).map_err(|error| error.to_string())?;
+    let metadata = stream.metadata().map_err(|error| error.to_string())?;
+    let page_size = page_size.unwrap_or(DEFAULT_CONTEXT_PAGE_SIZE).clamp(1, MAX_CONTEXT_PAGE_SIZE);
+    let mut messages = VecDeque::<SessionContextMessage>::with_capacity(page_size);
+    let mut errors = Vec::<(u64, String)>::new();
+    let mut incomplete_tail = false;
+    {
+        let mut reader = BufReader::with_capacity(CONTEXT_READ_BUFFER, &mut stream);
+        let mut header = ContextLineReader::new(&mut reader);
+        let mut bytes = Vec::new();
+        Read::by_ref(&mut header).take(64 * 1024 * 1024 + 1).read_to_end(&mut bytes)
+            .map_err(|error| error.to_string())?;
+        if bytes.len() > 64 * 1024 * 1024 { return Err("压缩会话 session_meta 首行超过读取上限".into()); }
+        let meta = read_session_meta_from_reader(bytes.as_slice())?;
+        if meta.id != thread_id { return Err("压缩 rollout 首行 ID 与目标会话不一致".into()); }
+        let mut offset = header.bytes;
+        let header_complete = header.complete;
+        drop(header);
+        incomplete_tail |= !header_complete;
+        let remaining = before_offset.unwrap_or(u64::MAX).saturating_sub(offset);
+        let mut bounded = BufReader::with_capacity(CONTEXT_READ_BUFFER, reader.take(remaining));
+        while header_complete {
+            let mut line = ContextLineReader::new(&mut bounded);
+            let mut prefix = Vec::new();
+            Read::by_ref(&mut line).take(LARGE_LINE_THRESHOLD + 1).read_to_end(&mut prefix)
+                .map_err(|error| error.to_string())?;
+            if prefix.is_empty() { break; }
+            let newline_bytes = if prefix.last() == Some(&b'\n') { 1 } else { 0 };
+            let content_bytes = prefix.len().saturating_sub(newline_bytes);
+            let parsed = if content_bytes as u64 > LARGE_LINE_THRESHOLD || !line.complete && prefix.len() as u64 > LARGE_LINE_THRESHOLD {
+                parse_large_context_line(prefix.as_slice().chain(&mut line), offset)
+            } else {
+                serde_json::from_slice::<Value>(&prefix)
+                    .map_err(|error| error.to_string())
+                    .and_then(|value| context_message_from_value(&value, offset))
+            };
+            // A malformed large row must still advance to its line boundary.
+            std::io::copy(&mut line, &mut std::io::sink()).map_err(|error| error.to_string())?;
+            let bytes = line.bytes;
+            if !line.complete {
+                incomplete_tail |= before_offset.is_none();
+                break;
+            }
+            match parsed {
+                Ok(Some(message)) => {
+                    messages.push_back(message);
+                    if messages.len() > page_size { messages.pop_front(); }
+                    let first = messages.front().map(|message| message.offset).unwrap_or(0);
+                    errors.retain(|(position, _)| *position >= first);
+                }
+                Ok(None) => {},
+                Err(error) => errors.push((offset, format!("偏移 {offset} 的记录无法解析：{error}"))),
+            }
+            offset = offset.checked_add(bytes).ok_or("上下文文件偏移溢出")?;
+        }
+    }
+    stream.verify_unchanged().map_err(|error| format!("上下文读取期间源文件变化：{error}"))?;
+    let next = if messages.len() == page_size {
+        messages.front().map(|message| message.offset).filter(|offset| *offset > 0)
+    } else { None };
+    let mut warnings = errors.into_iter().map(|(_, error)| error).collect::<Vec<_>>();
+    if incomplete_tail { warnings.push("文件末尾存在尚未完成的 JSONL 记录，本页已停在最后一个完整行边界".into()); }
+    Ok(SessionContextPage {
+        thread_id: thread_id.to_string(), messages: messages.into_iter().collect(),
+        next_before_offset: next, has_more_before: next.is_some(),
+        file_identity: file_identity(path, &metadata), warnings,
+    })
+}
+
+/// Expose one logical JSONL line as a bounded stream. Large rows can use the
+/// existing streaming parser without allocating the full row or seeking back.
+struct ContextLineReader<'a, R: BufRead> {
+    reader: &'a mut R,
+    bytes: u64,
+    complete: bool,
+    ended: bool,
+}
+
+impl<'a, R: BufRead> ContextLineReader<'a, R> {
+    fn new(reader: &'a mut R) -> Self { Self { reader, bytes: 0, complete: false, ended: false } }
+}
+
+impl<R: BufRead> Read for ContextLineReader<'_, R> {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        if self.ended || output.is_empty() { return Ok(0); }
+        let available = self.reader.fill_buf()?;
+        if available.is_empty() { self.ended = true; return Ok(0); }
+        let boundary = available.iter().position(|byte| *byte == b'\n').map_or(available.len(), |index| index + 1);
+        let length = boundary.min(output.len());
+        output[..length].copy_from_slice(&available[..length]);
+        self.complete = available[length - 1] == b'\n';
+        self.ended = self.complete;
+        self.reader.consume(length);
+        self.bytes = self.bytes.checked_add(length as u64)
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "context offset overflow"))?;
+        Ok(length)
+    }
 }
 
 pub fn archive_threads(
@@ -2354,6 +2462,7 @@ fn read_session_meta(path: &Path) -> Result<SessionMeta, String> {
 }
 
 fn read_session_meta_from_reader(reader: impl Read) -> Result<SessionMeta, String> {
+    let reader = token_count_jsonl::rollout_metadata_reader(reader)?;
     let envelope = serde_json::Deserializer::from_reader(reader)
         .into_iter::<SessionMetaEnvelope>()
         .next()
@@ -2423,6 +2532,9 @@ fn trusted_rollout_path(codex_home: &Path, raw: &Path) -> Result<PathBuf, String
     } else {
         codex_home.join(raw)
     };
+    // Keep plain-sibling precedence and resolve a logical JSONL reference to
+    // its compressed representation before applying the same boundary guards.
+    let candidate = token_count_jsonl::resolve_rollout_physical_path(&candidate)?;
     reject_windows_reparse_components(codex_home, &candidate)?;
     let canonical = candidate
         .canonicalize()
@@ -4857,6 +4969,122 @@ fn sync_parent(_path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn compressed_fixture_bytes(id: &str, large: bool) -> Vec<u8> {
+        let mut lines = vec![json!({"type":"session_meta","payload":{"id":id,"cwd":"/fixture","source":"cli"}}).to_string()];
+        for number in 0..5 {
+            let text = if large && number == 3 { "x".repeat(LARGE_LINE_THRESHOLD as usize + 64) } else { format!("fixture message {number}") };
+            lines.push(json!({"type":"response_item","payload":{"type":"message","id":format!("m{number}"),"role":"user","content":[{"type":"input_text","text":text}]}}).to_string());
+        }
+        (lines.join("\n") + "\n").into_bytes()
+    }
+
+    fn write_compressed_fixture(logical: &Path, bytes: &[u8]) -> PathBuf {
+        let physical = PathBuf::from(format!("{}.zst", logical.display()));
+        fs::write(&physical, zstd::stream::encode_all(bytes, 1).unwrap()).unwrap();
+        physical
+    }
+
+    #[test]
+    fn compressed_catalog_reads_metadata_before_accounting_and_reuses_it() {
+        let home = TestHome::new("compressed-catalog");
+        let id = "019f1111-1111-7111-8111-111111111111";
+        let logical = home.archived_path(id);
+        let physical = write_compressed_fixture(&logical, &compressed_fixture_bytes(id, false));
+        let mut parsed = 0;
+        let scan = scan_rollout_supplements_with_parser(&home.root, |line| {
+            parsed += 1;
+            indexed_session_metadata_from_first_line(line)
+        });
+        assert!(scan.warnings.is_empty(), "{:?}", scan.warnings);
+        assert_eq!(scan.supplements.len(), 1);
+        assert!(scan.supplements[id].rollout_identity_verified);
+        assert_eq!(scan.supplements[id].file_bytes, Some(fs::metadata(&physical).unwrap().len()));
+        assert_eq!(parsed, 1);
+        let scan = scan_rollout_supplements_with_parser(&home.root, |_| panic!("unchanged metadata was reparsed"));
+        assert!(scan.warnings.is_empty(), "{:?}", scan.warnings);
+        assert!(scan.supplements[id].rollout_identity_verified);
+        assert!(!logical.exists(), "catalog reads must not materialize original sources");
+    }
+
+    #[test]
+    fn compressed_catalog_keeps_plain_precedence_and_atomic_failure() {
+        let home = TestHome::new("compressed-catalog-atomic");
+        let id = "019f1111-1111-7111-8111-111111111112";
+        let logical = home.session_path(id);
+        write_compressed_fixture(&logical, &compressed_fixture_bytes("019f1111-1111-7111-8111-111111111113", false));
+        fs::write(&logical, compressed_fixture_bytes(id, false)).unwrap();
+        let scan = scan_rollout_supplements(&home.root);
+        assert!(scan.warnings.is_empty(), "{:?}", scan.warnings);
+        assert_eq!(scan.supplements.len(), 1);
+        assert!(scan.supplements.contains_key(id));
+        let corrupt = home.archived_path("019f1111-1111-7111-8111-111111111114");
+        fs::write(PathBuf::from(format!("{}.zst", corrupt.display())), [0x28, 0xb5, 0x2f, 0xfd, 0]).unwrap();
+        let failed = scan_rollout_supplements(&home.root);
+        assert!(!failed.warnings.is_empty());
+        assert_eq!(failed.supplements.len(), 1, "partial catalogs must not be published");
+        assert!(!failed.supplements[id].rollout_identity_verified, "failed refreshes must retain the mutation guard");
+    }
+
+    #[test]
+    fn compressed_context_matches_plain_pages_and_preserves_partial_tail() {
+        for large in [false, true] {
+            let plain = TestHome::new("context-plain-equivalent");
+            let compressed = TestHome::new("context-compressed-equivalent");
+            let id = "019f1111-1111-7111-8111-111111111115";
+            let mut bytes = compressed_fixture_bytes(id, large);
+            bytes.extend_from_slice(b"{\"type\":");
+            let plain_path = plain.session_path(id);
+            fs::write(&plain_path, &bytes).unwrap();
+            let compressed_path = compressed.session_path(id);
+            write_compressed_fixture(&compressed_path, &bytes);
+            plain.create_db(&[(id, &plain_path, false)]);
+            compressed.create_db(&[(id, &compressed_path, false)]);
+            let mut before = None;
+            for page in 0..4 {
+                let expected = read_context_page(&plain.root, id, before, Some(2)).unwrap();
+                let actual = read_context_page(&compressed.root, id, before, Some(2)).unwrap();
+                assert_eq!(serde_json::to_value(&actual.messages).unwrap(), serde_json::to_value(&expected.messages).unwrap());
+                assert_eq!(actual.next_before_offset, expected.next_before_offset);
+                assert_eq!(actual.has_more_before, expected.has_more_before);
+                if page == 0 { assert_eq!(actual.warnings, expected.warnings); }
+                before = expected.next_before_offset;
+                if before.is_none() { break; }
+            }
+            assert!(!compressed_path.exists());
+        }
+    }
+
+    #[test]
+    fn compressed_recovery_package_preserves_and_verifies_original_bytes() {
+        let home = TestHome::new("compressed-recovery");
+        let id = "019f1111-1111-7111-8111-111111111116";
+        let logical = home.archived_path(id);
+        let physical = write_compressed_fixture(&logical, &compressed_fixture_bytes(id, false));
+        home.create_db(&[(id, &logical, true)]);
+        let original = fs::read(&physical).unwrap();
+        let package_root = home.root.join("recovery");
+        let receipt = create_recovery_archive_at(&home.root, id, &package_root).unwrap();
+        verify_recovery_receipt(&home.root, id, &receipt).unwrap();
+        let mut zip = zip::ZipArchive::new(File::open(&receipt.path).unwrap()).unwrap();
+        let mut archived = Vec::new();
+        zip.by_name("rollout.jsonl").unwrap().read_to_end(&mut archived).unwrap();
+        assert_eq!(archived, original);
+        assert_eq!(fs::read(&physical).unwrap(), original);
+        assert!(receipt.original_relative_path.ends_with(".jsonl.zst"));
+        assert!(!logical.exists());
+    }
+
+    #[test]
+    fn compressed_resolution_retains_home_boundaries() {
+        let home = TestHome::new("compressed-boundary");
+        let outside = TestHome::new("compressed-outside");
+        let id = "019f1111-1111-7111-8111-111111111117";
+        let logical = outside.session_path(id);
+        let physical = write_compressed_fixture(&logical, &compressed_fixture_bytes(id, false));
+        assert!(trusted_rollout_path(&home.root, &logical).is_err());
+        assert!(trusted_rollout_path(&home.root, &physical).is_err());
+    }
     use rusqlite::params;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 

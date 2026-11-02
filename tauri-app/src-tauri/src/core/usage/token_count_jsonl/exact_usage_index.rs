@@ -7,6 +7,7 @@ mod canonical;
 mod message_links;
 mod empty_sources;
 mod representations;
+mod runtime_recovery;
 use super::accounting::{AccountingState, ACCOUNTING_REVISION};
 use super::fingerprint_codec;
 use super::session_files::session_id_from_file;
@@ -144,6 +145,21 @@ const SIX_HOUR_INTERVAL_SECONDS: i64 = 6 * 60 * 60;
 const THIRTY_DAY_POINT_COUNT: i64 = 30 * 4;
 const CACHE_USAGE_MIN_INPUT_TOKENS: i64 = 1_000;
 const CACHE_USAGE_CANDIDATE_LIMIT: i64 = 40;
+// A full-history timestamp range can make SQLite choose hundreds of thousands
+// of scattered row reads. Bind one published file at a time so each UNION
+// branch can seek the existing source index, without relying on join ordering.
+const ACTIVITY_DAYS_SQL: &str = r#"
+    SELECT e.timestamp, e.model, e.tokens, e.input_tokens,
+           e.cached_input_tokens, e.output_tokens
+    FROM main.canonical_usage_events e
+    WHERE e.tokens > 0 AND e.timestamp >= ?1 AND e.timestamp < ?2
+      AND e.file_generation = ?3 AND e.file_path = ?4
+"#;
+const FILE_EVENT_COUNT_SQL: &str = r#"
+    SELECT COUNT(*)
+    FROM main.canonical_usage_events
+    WHERE tokens > 0 AND file_generation = ?1 AND file_path = ?2
+"#;
 const THREAD_METADATA_FALLBACK_MAX_CHARS: usize = 240;
 const PARALLEL_HEAVY_FILE_BYTES: u64 = 512 * 1024 * 1024;
 const STAGING_MAX_WORKERS: usize = 4;
@@ -491,15 +507,15 @@ pub(super) fn index_upgrade_required(
     codex_home: &Path,
 ) -> Result<Option<ExactIndexUpgradeRequired>, String> {
     let path = database_path(codex_home)?;
-    if !existing_regular_index(&path)? {
-        return Ok(None);
-    }
-    let read_only = open_read_only_index(&path, StdDuration::from_secs(1)).map_err(|error| {
+    let read_only = open_published_index_read_only(&path, StdDuration::from_secs(1)).map_err(|error| {
         format!(
             "无法只读探测精确 token 索引兼容性 {}：{error}",
             path.display()
         )
     })?;
+    let Some(read_only) = read_only else { return Ok(None); };
+    let read_only = read_only.unchecked_transaction()
+        .map_err(|error| format!("无法开始精确 token 兼容性只读快照：{error}"))?;
     let assessment = assess_index_migration(&read_only, true)?;
     if let Some(upgrade) = assessment.upgrade_required() {
         return Ok(Some(upgrade));
@@ -727,6 +743,7 @@ impl PhysicalFileStamp {
 #[derive(Clone, Debug)]
 struct StagedThreadMetadata {
     signature: Option<(String, String)>,
+    source_signature: Option<String>,
     rows: Vec<(String, String, Option<i64>)>,
 }
 
@@ -810,18 +827,17 @@ pub(super) fn read_only_source_probe(
     timeout: StdDuration,
 ) -> Result<ReadOnlySourceProbe, String> {
     let path = database_path(codex_home)?;
-    if !existing_regular_index(&path)? {
+    let connection = open_published_index_read_only(&path, timeout).map_err(|error| {
+        format!("无法只读打开精确 token 索引源探针 {}：{error}", path.display())
+    })?;
+    let Some(connection) = connection else {
         return Ok(ReadOnlySourceProbe {
             published_generation: 0,
             changed: Some(true),
         });
-    }
-    let connection = open_read_only_index(&path, timeout).map_err(|error| {
-        format!(
-            "无法只读打开精确 token 索引源探针 {}：{error}",
-            path.display()
-        )
-    })?;
+    };
+    let connection = connection.unchecked_transaction()
+        .map_err(|error| format!("无法开始精确 token 源探针只读快照：{error}"))?;
     let metadata_table_exists = connection
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'metadata')",
@@ -884,6 +900,10 @@ pub(super) fn read_only_source_probe(
     }
     drop(statement);
 
+    // Release the consistent DB snapshot before filesystem discovery. The
+    // probe's watermark and checkpoints must come from the same publication.
+    drop(connection);
+
     let discovery = match estimate_precise_scan_total_with_known_sources(codex_home, timeout, 0, &published_files) {
         Ok(discovery) => discovery,
         Err(_) => {
@@ -942,12 +962,12 @@ pub(super) fn read_cache_turn_requests(
     }
 
     let path = database_path(codex_home)?;
-    if !existing_regular_index(&path)? {
-        return Err("精确 token 索引尚不可用，无法读取请求明细".into());
-    }
-    let connection = open_read_only_index(&path, StdDuration::from_secs(2)).map_err(|error| {
+    let connection = open_published_index_read_only(&path, StdDuration::from_secs(2)).map_err(|error| {
         format!("无法只读打开精确 token 索引以读取缓存轮次请求：{error}")
-    })?;
+    })?.ok_or("精确 token 索引尚不可用，无法读取请求明细")?;
+    // The anchor, target and page must describe one published generation.
+    let connection = connection.unchecked_transaction()
+        .map_err(|error| format!("无法开始缓存轮次请求只读快照：{error}"))?;
     let schema_version = metadata_i64(&connection, "schema_version")?;
     if schema_version != Some(CURRENT_SCHEMA_VERSION) {
         return Err("精确 token 索引版本尚未就绪，无法读取缓存轮次请求".into());
@@ -957,25 +977,44 @@ pub(super) fn read_cache_turn_requests(
         return Err("缓存轮次聚合尚未升级完成，无法读取请求明细".into());
     }
 
-    let mut statement = connection
-        .prepare(
-            r#"
-            WITH published AS (
-                SELECT CAST(value AS INTEGER) AS generation
-                FROM metadata
-                WHERE key = 'published_generation'
-            ), target AS (
-                SELECT
-                    c.source_file_generation,
-                    c.file_path,
-                    c.session_id,
-                    c.user_prompt_start,
-                    c.user_prompt_end
-                FROM dashboard_turn_candidates c
-                JOIN published p ON p.generation = c.aggregate_generation
-                WHERE c.event_id = ?1
-                LIMIT 1
-            )
+    let source_hint: Option<i64> = connection.query_row(
+        "SELECT source_id FROM event_rows WHERE id = ?1", [event_id], |row| row.get(0),
+    ).optional().map_err(|error| format!("无法定位缓存轮次来源：{error}"))?;
+    type Target = (i64, i64, String, String, Option<i64>, Option<i64>);
+    let read_target = |hint: Option<i64>| -> Result<Option<Target>, String> {
+        let scope = if hint.is_some() { "AND c.source_id = ?3" } else { "" };
+        let sql = format!(r#"
+            SELECT f.source_id, c.source_file_generation, c.file_path,
+                   c.session_id, c.user_prompt_start, c.user_prompt_end
+            FROM dashboard_turn_candidates c
+            JOIN published_files f ON f.generation = c.source_file_generation
+                AND f.path = c.file_path AND f.session_id = c.session_id
+            WHERE c.aggregate_generation = (
+                SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'
+            ) AND c.event_id = ?1
+              AND (c.session_id || '-' || CAST(c.timestamp AS TEXT) || '-' || CAST(c.event_id AS TEXT)) = ?2
+              {scope}
+            LIMIT 1
+        "#);
+        let decode = |row: &rusqlite::Row<'_>| -> rusqlite::Result<Target> {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))
+        };
+        let result = if let Some(source_id) = hint {
+            connection.query_row(&sql, params![event_id, turn_id, source_id], decode)
+        } else {
+            connection.query_row(&sql, params![event_id, turn_id], decode)
+        };
+        result.optional().map_err(|error| format!("无法读取缓存轮次归属：{error}"))
+    };
+    let target = read_target(source_hint)?;
+    // Retention can remove a raw representative while the turn still owns
+    // surviving requests. Its persisted target remains authoritative.
+    let target = if target.is_none() && source_hint.is_some() {
+        read_target(None)?
+    } else { target };
+    let Some((source_id, file_generation, file_path, session_id, prompt_start, prompt_end)) = target
+        else { return Ok(Vec::new()); };
+    let mut statement = connection.prepare(r#"
             SELECT
                 e.id,
                 e.timestamp,
@@ -984,21 +1023,19 @@ pub(super) fn read_cache_turn_requests(
                 e.input_tokens,
                 e.cached_input_tokens,
                 e.output_tokens
-            FROM target t
-            JOIN published_events e
-              ON e.file_generation = t.source_file_generation
-             AND e.file_path = t.file_path
-             AND e.session_id = t.session_id
-             AND e.user_prompt_start IS t.user_prompt_start
-             AND e.user_prompt_end IS t.user_prompt_end
-            WHERE e.tokens > 0
+            FROM published_events e
+            WHERE e.source_id = ?1
+              AND e.file_generation = ?2 AND e.file_path = ?3 AND e.session_id = ?4
+              AND e.user_prompt_start IS ?5 AND e.user_prompt_end IS ?6
+              AND e.tokens > 0
             ORDER BY e.timestamp, e.ordinal, e.id
-            LIMIT ?2 OFFSET ?3
+            LIMIT ?7 OFFSET ?8
             "#,
         )
         .map_err(|error| format!("无法准备缓存轮次请求明细查询：{error}"))?;
     let rows = statement
-        .query_map(params![event_id, i64::from(limit), i64::from(offset)], |row| {
+        .query_map(params![source_id, file_generation, file_path, session_id,
+            prompt_start, prompt_end, i64::from(limit), i64::from(offset)], |row| {
             let request_id = row.get::<_, i64>(0)?;
             let timestamp = row.get::<_, i64>(1)?;
             let input_tokens = nonnegative_u64(row.get::<_, i64>(4)?);
@@ -1019,6 +1056,30 @@ pub(super) fn read_cache_turn_requests(
         .map_err(|error| format!("无法读取缓存轮次请求明细：{error}"))?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("无法解码缓存轮次请求明细：{error}"))
+}
+
+/// Runtime readers only consult the registered A namespace. Never enter the
+/// legacy import/registration route, even while another owner is publishing.
+/// Migration and staging callers continue to use their separate open path.
+fn open_published_index_read_only(path: &Path, timeout: StdDuration) -> Result<Option<Connection>, String> {
+    #[cfg(test)]
+    {
+        if !existing_regular_index(path)? { return Ok(None); }
+        sqlite::open_read_only(path, timeout).map(Some).map_err(|error| error.to_string())
+    }
+    #[cfg(not(test))]
+    {
+        let store = crate::core::business_store_route::exact_store_spec(path)?;
+        let connection = crate::core::business_store_route::open_registered_store_read_only(
+            "exact", &store.source_identity, &store.logical_path, timeout,
+        )?;
+        let Some(connection) = connection else { return Ok(None); };
+        let has_objects = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM main.sqlite_master WHERE type IN ('table','index','view','trigger'))",
+            [], |row| row.get::<_, bool>(0),
+        ).map_err(|error| format!("无法只读检查精确 token 分区对象：{error}"))?;
+        Ok(has_objects.then_some(connection))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2252,8 +2313,7 @@ impl ExactUsageIndex {
     {
         self.connection.mark_receipt_dirty();
         let existing = load_stored_session_catalog(&self.connection)?;
-        let known = complete_source_observations(&self.connection)?;
-        let observations = collect_session_catalog_observations(codex_home, &known)?;
+        let observations = collect_session_catalog_observations(codex_home)?;
         let published_generation =
             metadata_i64(&self.connection, "session_catalog_published_generation")?.unwrap_or(0);
         let generation = published_generation
@@ -2790,7 +2850,8 @@ impl ExactUsageIndex {
                         metadata_text(&self.connection, "state_modified_ns")?,
                     );
                     let staged_thread_metadata =
-                        stage_thread_metadata(codex_home, previous, warnings)?;
+                        stage_thread_metadata(codex_home, previous,
+                            metadata_text(&self.connection, "state_source_signature")?, warnings)?;
                     if !mode.builds_dashboard_derived_data() {
                         // Summary owns exact facts only. Leave state_5.sqlite
                         // metadata for the Full owner; its signature is not
@@ -3002,6 +3063,7 @@ impl ExactUsageIndex {
                 Some(1),
             );
             let run_migrations = !migration_markers_complete(&self.connection, true)?;
+            let finalize_started = Instant::now();
             let revision = finalize_generation(
                 &mut self.connection,
                 generation,
@@ -3011,6 +3073,10 @@ impl ExactUsageIndex {
                 mode,
                 run_migrations,
             )?;
+            startup_trace::mark_performance(format!(
+                "precise_sync_finalize elapsed_ms={} derived={}",
+                finalize_started.elapsed().as_millis(), u8::from(mode.builds_dashboard_derived_data()),
+            ));
             diagnostics.published_watermark = revision;
             startup_trace::mark_performance(format!(
             "precise_scan candidate_count={} scanned_files={} append_scan_bytes={} metadata_validation_bytes={} metadata_only_files={} full_body_bytes={} pending_tail_bytes={} full_rebuild_files={} source_drift={} published_watermark={}",
@@ -3101,7 +3167,8 @@ impl ExactUsageIndex {
             metadata_text(&self.connection, "state_size")?,
             metadata_text(&self.connection, "state_modified_ns")?,
         );
-        match stage_thread_metadata(codex_home, previous, warnings)? {
+        match stage_thread_metadata(codex_home, previous,
+            metadata_text(&self.connection, "state_source_signature")?, warnings)? {
             ThreadMetadataStage::Updated(staged) => {
                 self.connection.mark_receipt_dirty();
                 let result = publish_thread_metadata_only(&mut self.connection, staged);
@@ -3794,8 +3861,8 @@ impl ExactUsageIndex {
     }
 
     /// Builds the lightweight total/today/model projection from per-file
-    /// contributions.  A missing previous map performs one grouped SQLite
-    /// read and seeds the map; later Summary owners only re-read files whose
+    /// contributions. A missing map uses the indexed per-file reads to seed
+    /// it; later Summary owners only re-read files whose
     /// published generation changed.  This deliberately does not touch
     /// dashboard time-series, heatmap, ranking, or aggregate publication
     /// tables.
@@ -3804,12 +3871,14 @@ impl ExactUsageIndex {
         now_utc: OffsetDateTime,
         previous: Option<&HashMap<String, SummaryFileContribution>>,
     ) -> Result<(TokenUsageSummary, HashMap<String, SummaryFileContribution>), String> {
+        let snapshot = self.connection.unchecked_transaction()
+            .map_err(|error| format!("无法开始轻量摘要读取事务：{error}"))?;
         let today = LocalDayMode::System.date_at(now_utc.unix_timestamp());
         let (start, end) = LocalDayMode::System.day_bounds(today)?;
         let current_files = self.published_file_generations()?;
         let (contributions, recomputed_files, mode) = match previous {
             None => (
-                self.summary_file_contributions_full(start, end)?,
+                self.summary_file_contributions_full(start, end, &current_files)?,
                 current_files.len(),
                 "seed",
             ),
@@ -3838,13 +3907,32 @@ impl ExactUsageIndex {
         ));
         let mut summary = summary_from_file_contributions(&contributions);
         summary.today_model_breakdowns = self.model_breakdowns_from_events(start, end)?;
+        snapshot.commit().map_err(|error| format!("无法结束轻量摘要读取事务：{error}"))?;
         Ok((summary, contributions))
+    }
+
+    pub(super) fn published_event_count(&self) -> Result<u64, String> {
+        // COUNT over the joined UNION view also materializes every event.
+        // Bind the published file identity before each count instead.
+        let snapshot = self.connection.unchecked_transaction()
+            .map_err(|error| format!("无法开始已发布事件计数事务：{error}"))?;
+        let files = self.published_file_generations()?;
+        let mut statement = self.connection.prepare(FILE_EVENT_COUNT_SQL)
+            .map_err(|error| format!("无法准备已发布事件计数：{error}"))?;
+        let mut total = 0_u64;
+        for (path, generation) in files {
+            let count = statement.query_row(params![generation, path], |row| row.get::<_, i64>(0))
+                .map_err(|error| format!("无法统计待回填的仪表盘事件：{error}"))?;
+            total = total.saturating_add(nonnegative_u64(count));
+        }
+        snapshot.commit().map_err(|error| format!("无法结束已发布事件计数事务：{error}"))?;
+        Ok(total)
     }
 
     fn published_file_generations(&self) -> Result<HashMap<String, i64>, String> {
         let mut statement = self
             .connection
-            .prepare("SELECT path, generation FROM published_files")
+            .prepare("SELECT path, generation FROM main.published_files")
             .map_err(|error| format!("无法准备轻量摘要文件代次：{error}"))?;
         let rows = statement
             .query_map([], |row| {
@@ -3874,60 +3962,14 @@ impl ExactUsageIndex {
         &self,
         start: i64,
         end: i64,
+        current_files: &HashMap<String, i64>,
     ) -> Result<HashMap<String, SummaryFileContribution>, String> {
-        let mut statement = self
-            .connection
-            .prepare(
-                r#"
-                SELECT
-                    e.file_path,
-                    e.file_generation,
-                    e.model,
-                    COALESCE(SUM(e.tokens), 0),
-                    COALESCE(SUM(CASE WHEN e.timestamp >= ?1 AND e.timestamp < ?2 THEN e.tokens ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN e.timestamp >= ?1 AND e.timestamp < ?2 THEN e.input_tokens ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN e.timestamp >= ?1 AND e.timestamp < ?2 THEN MIN(e.cached_input_tokens, e.input_tokens) ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN e.timestamp >= ?1 AND e.timestamp < ?2 THEN e.output_tokens ELSE 0 END), 0),
-                    COALESCE(SUM(CASE WHEN e.timestamp >= ?1 AND e.timestamp < ?2 THEN 1 ELSE 0 END), 0)
-                FROM (SELECT * FROM canonical_usage_events WHERE tokens > 0) e
-                JOIN published_files f
-                  ON f.generation = e.file_generation
-                 AND f.path = e.file_path
-                GROUP BY e.file_path, e.file_generation, e.model
-                "#,
-            )
-            .map_err(|error| format!("无法准备轻量摘要全量种子：{error}"))?;
-        let rows = statement
-            .query_map(params![start, end], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, i64>(5)?,
-                    row.get::<_, i64>(6)?,
-                    row.get::<_, i64>(7)?,
-                    row.get::<_, i64>(8)?,
-                ))
-            })
-            .map_err(|error| format!("无法读取轻量摘要全量种子：{error}"))?;
-        let mut contributions = HashMap::<String, SummaryFileContribution>::new();
-        for row in rows {
-            let (path, generation, model, total, today, input, cached, output, calls) =
-                row.map_err(|error| format!("无法解码轻量摘要全量种子：{error}"))?;
-            add_summary_file_row(
-                &mut contributions,
-                path,
-                generation,
-                model,
-                total,
-                today,
-                input,
-                cached,
-                output,
-                calls,
-            );
+        // The events compatibility view is a UNION. A global grouped join
+        // materializes every wide event row before filtering published files.
+        // Reuse the indexed per-file projection used by later incremental reads.
+        let mut contributions = HashMap::with_capacity(current_files.len());
+        for (path, generation) in current_files {
+            contributions.insert(path.clone(), self.summary_file_contribution(path, *generation, start, end)?);
         }
         Ok(contributions)
     }
@@ -4109,6 +4151,7 @@ impl ExactUsageIndex {
     /// existing SQLite events once in one transaction; it never opens JSONL.
     /// Normal append/rewrite transactions maintain the same tables per file.
     pub(super) fn ensure_dashboard_aggregates(&mut self, codex_home: &Path) -> Result<(), String> {
+        let aggregate_started = Instant::now();
         self.validate_dashboard_aggregate_compatibility()?;
         let stored_version =
             metadata_i64(&self.connection, DASHBOARD_AGGREGATE_SCHEMA_VERSION_KEY)?;
@@ -4141,13 +4184,10 @@ impl ExactUsageIndex {
             return Ok(());
         }
 
-        let event_count = self
-            .connection
-            .query_row("SELECT COUNT(*) FROM published_events", [], |row| {
-                row.get::<_, i64>(0)
-            })
-            .map(nonnegative_u64)
-            .map_err(|error| format!("无法统计待回填的仪表盘事件：{error}"))?;
+        let count_started = Instant::now();
+        let event_count = self.published_event_count()?;
+        let count_ms = count_started.elapsed().as_millis();
+        let rebuild_started = Instant::now();
         super::update_precise_dashboard_progress(
             codex_home,
             "migrating",
@@ -4204,6 +4244,11 @@ impl ExactUsageIndex {
             event_count.max(1),
             Some(event_count.max(1)),
         );
+        startup_trace::mark_performance(format!(
+            "precise_aggregate_repair count_ms={count_ms} rebuild_ms={} total_ms={} events={event_count} incremental={}",
+            rebuild_started.elapsed().as_millis(), aggregate_started.elapsed().as_millis(),
+            u8::from(can_repair_incrementally),
+        ));
         Ok(())
     }
 
@@ -4408,6 +4453,26 @@ impl ExactUsageIndex {
             .collect()
     }
 
+    #[cfg(test)]
+    pub(super) fn published_event_read_plans_for_testing(
+        &self, start: i64, end: i64,
+    ) -> Result<(Vec<String>, Vec<String>), String> {
+        self.prepare_dashboard_event_snapshot()?;
+        let (path, generation) = self.published_file_generations()?.into_iter().next()
+            .ok_or("query-plan fixture needs a published file")?;
+        let mut activity = self.connection.prepare(&format!("EXPLAIN QUERY PLAN {ACTIVITY_DAYS_SQL}"))
+            .map_err(|error| error.to_string())?;
+        let activity_plan = activity.query_map(params![start, end, generation, path], |row| row.get::<_, String>(3))
+            .map_err(|error| error.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>().map_err(|error| error.to_string())?;
+        let mut count = self.connection.prepare(&format!("EXPLAIN QUERY PLAN {FILE_EVENT_COUNT_SQL}"))
+            .map_err(|error| error.to_string())?;
+        let count_plan = count.query_map(params![generation, path], |row| row.get::<_, String>(3))
+            .map_err(|error| error.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>().map_err(|error| error.to_string())?;
+        Ok((activity_plan, count_plan))
+    }
+
     fn prepare_dashboard_event_snapshot(&self) -> Result<(), String> {
         self.connection
             .execute_batch(
@@ -4542,45 +4607,46 @@ impl ExactUsageIndex {
         let mut model_grouped = HashMap::<Date, Vec<ModelTokenBreakdown>>::new();
         let mut statement = self
             .connection
-            .prepare(
-                r#"
-                SELECT
-                    e.timestamp,
-                    e.model,
-                    e.tokens,
-                    e.input_tokens,
-                    e.cached_input_tokens,
-                    e.output_tokens
-                FROM published_events e
-                WHERE e.timestamp >= ?1 AND e.timestamp < ?2
-                "#,
-            )
+            .prepare(ACTIVITY_DAYS_SQL)
             .map_err(|error| format!("无法准备 365 日精确 token 汇总：{error}"))?;
-        let rows = statement
-            .query_map(params![start_unix, end_unix], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, i64>(5)?,
-                ))
-            })
-            .map_err(|error| format!("无法读取 365 日精确 token 汇总：{error}"))?;
-        for row in rows {
-            let (timestamp, model, tokens, input, cached, output) =
-                row.map_err(|error| format!("无法解码 365 日精确 token 汇总：{error}"))?;
-            let date = local_day_mode.date_at(timestamp);
-            let totals = UsageBinTotals {
-                tokens: nonnegative_u64(tokens),
-                calls: 1,
-                input_tokens: nonnegative_u64(input),
-                cached_input_tokens: nonnegative_u64(cached).min(nonnegative_u64(input)),
-                output_tokens: nonnegative_u64(output),
-            };
-            grouped.entry(date).or_default().add_breakdown(totals);
-            add_model_usage_breakdown(model_grouped.entry(date).or_default(), model, totals, timestamp);
+        // Use the same file selector and WAL snapshot as the other dashboard
+        // reads. Binding a file identity avoids compatibility-UNION plans that
+        // flatten a CROSS JOIN back into the broad timestamp scan.
+        let mut files = self.connection
+            .prepare("SELECT path, generation FROM temp.published_files")
+            .map_err(|error| format!("无法准备 365 日精确 token 文件范围：{error}"))?;
+        let file_rows = files.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        }).map_err(|error| format!("无法读取 365 日精确 token 文件范围：{error}"))?;
+        for file in file_rows {
+            let (path, generation) = file
+                .map_err(|error| format!("无法解码 365 日精确 token 文件范围：{error}"))?;
+            let rows = statement
+                .query_map(params![start_unix, end_unix, generation, path], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, i64>(5)?,
+                    ))
+                })
+                .map_err(|error| format!("无法读取 365 日精确 token 汇总：{error}"))?;
+            for row in rows {
+                let (timestamp, model, tokens, input, cached, output) =
+                    row.map_err(|error| format!("无法解码 365 日精确 token 汇总：{error}"))?;
+                let date = local_day_mode.date_at(timestamp);
+                let totals = UsageBinTotals {
+                    tokens: nonnegative_u64(tokens),
+                    calls: 1,
+                    input_tokens: nonnegative_u64(input),
+                    cached_input_tokens: nonnegative_u64(cached).min(nonnegative_u64(input)),
+                    output_tokens: nonnegative_u64(output),
+                };
+                grouped.entry(date).or_default().add_breakdown(totals);
+                add_model_usage_breakdown(model_grouped.entry(date).or_default(), model, totals, timestamp);
+            }
         }
         Ok((0..365)
             .map(|offset| {
@@ -5212,9 +5278,13 @@ impl ExactUsageIndex {
         }
         let mut excerpt_batches: HashMap<PathBuf, Result<HashMap<ExactEventSourceOffsets, (String, String)>, String>> = HashMap::new();
         let mut verified_excerpts = HashMap::new();
+        let mut changed_excerpt_sources = HashSet::new();
         Ok(selected
             .into_iter()
             .map(|mut item| {
+                if changed_excerpt_sources.contains(&item.file_path) {
+                    return item.usage;
+                }
                 let ResolvedSessionFile::Accepted(file) = resolve_file_within_codex_home(
                     &canonical_home,
                     &item.file_path,
@@ -5237,6 +5307,7 @@ impl ExactUsageIndex {
                     }
                 };
                 if !before.matches_stored(item.file_size, &item.file_modified_ns) {
+                    changed_excerpt_sources.insert(item.file_path.clone());
                     warnings.push(excerpt_warning(format!(
                         "会话摘录源文件已在索引后变化，将在下一次刷新重建：{}",
                         file.display()
@@ -5516,49 +5587,6 @@ pub(super) fn peek_startup_identity(
         published_generation,
         attribution_safety,
     }))
-}
-
-fn add_summary_file_row(
-    contributions: &mut HashMap<String, SummaryFileContribution>,
-    path: String,
-    generation: i64,
-    model: Option<String>,
-    total: i64,
-    today: i64,
-    input: i64,
-    cached: i64,
-    output: i64,
-    calls: i64,
-) {
-    let contribution = contributions
-        .entry(path)
-        .or_insert_with(|| SummaryFileContribution {
-            generation,
-            ..SummaryFileContribution::default()
-        });
-    contribution.total_tokens = contribution
-        .total_tokens
-        .saturating_add(nonnegative_u64(total));
-    contribution.today_tokens = contribution
-        .today_tokens
-        .saturating_add(nonnegative_u64(today));
-    contribution.today_requests = contribution
-        .today_requests
-        .saturating_add(saturating_u32(calls));
-    if calls > 0 {
-        contribution
-            .today_model_breakdowns
-            .push(ModelTokenBreakdown { event_start_unix: None,
-                model,
-                breakdown: TokenCacheBreakdown {
-                    input_tokens: nonnegative_u64(input),
-                    cached_input_tokens: nonnegative_u64(cached),
-                    output_tokens: nonnegative_u64(output),
-                    total_tokens: nonnegative_u64(today),
-                    calls: saturating_u32(calls),
-                },
-            });
-    }
 }
 
 fn summary_from_file_contributions(
@@ -6426,6 +6454,7 @@ fn stage_or_reuse_full_rebuild(
     let primary_path = staging_database_path(index_path, &job.path);
     let existing_paths = staging_database_paths(index_path, &job.path)?;
     let mut blocked = false;
+    let mut preserved_other_request = false;
     for database_path in &existing_paths {
         if !existing_regular_index(database_path)? {
             continue;
@@ -6441,16 +6470,26 @@ fn stage_or_reuse_full_rebuild(
         if let Some(staged) = reusable_staged_full_rebuild(database_path, job, target_generation)? {
             return Ok(staged);
         }
+        if runtime_recovery::valid_for_earlier_request(database_path, job, target_generation)? {
+            // A validated completed artifact is evidence for its own bound,
+            // not corruption and not permission to overwrite that artifact.
+            preserved_other_request = true;
+            continue;
+        }
         blocked = true;
     }
-    if blocked || existing_regular_index(&primary_path)? {
+    let database_path = if preserved_other_request {
+        runtime_recovery::candidate_path(index_path, job, target_generation)
+    } else {
+        primary_path.clone()
+    };
+    if blocked || existing_regular_index(&database_path)? {
         return Err(StagedFullRebuildError::Fatal(format!(
-            "精确 token 现有暂存未通过内容与 checkpoint 验证，已保留暂存和上一代统计；需要修复后重试：{}", primary_path.display()
+            "精确 token 现有暂存未通过内容与 checkpoint 验证，已保留暂存和上一代统计；需要修复后重试：{}", database_path.display()
         )));
     }
     // Also preserve sidecars left by interruption between family renames.
-    preserve_private_stage_family(&primary_path)?;
-    let database_path = primary_path;
+    preserve_private_stage_family(&database_path)?;
     build_staged_full_rebuild(job, database_path, target_generation, codex_home, warnings)
 }
 
@@ -7848,9 +7887,17 @@ fn staging_database_paths(index_path: &Path, source_path: &str) -> Result<Vec<Pa
     let primary = staging_database_path(index_path, source_path);
     let digest = staging_database_digest(source_path);
     let candidate_prefix = format!("{digest}.candidate-");
+    let mut paths = vec![primary.clone()];
+    #[cfg(not(test))]
+    paths.extend(crate::core::business_store_route::exact_stage_candidates(index_path, &digest)?);
     let entries = match fs::read_dir(&directory) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![primary]),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            paths.sort();
+            paths.dedup();
+            paths.sort_by_key(|path| (path != &primary, path.clone()));
+            return Ok(paths);
+        }
         Err(error) => {
             return Err(format!(
                 "无法枚举精确 token 暂存目录 {}：{error}",
@@ -7858,7 +7905,6 @@ fn staging_database_paths(index_path: &Path, source_path: &str) -> Result<Vec<Pa
             ))
         }
     };
-    let mut paths = vec![primary.clone()];
     paths.extend(entries
         .filter_map(Result::ok)
         .map(|entry| entry.path())
@@ -7869,6 +7915,8 @@ fn staging_database_paths(index_path: &Path, source_path: &str) -> Result<Vec<Pa
             path == &primary || (name.starts_with(&candidate_prefix) && name.ends_with(".sqlite3"))
         })
         .filter(|path| path != &primary));
+    paths.sort();
+    paths.dedup();
     paths.sort_by_key(|path| {
         if path == &primary {
             (0, String::new())
@@ -9788,7 +9836,12 @@ fn synchronize_attribution_ledger(
     "#;
     let incremental_query = full_query.replace(
         "GROUP BY 1, 2",
-        "AND lower(e.session_id) IN (SELECT lower(s.session_id) FROM pending_sources p JOIN sources s USING(source_id) WHERE p.target_generation=?1) GROUP BY 1, 2"
+        // Keep the UUID predicate across every copy, while exposing source_id
+        // to the compound event view so SQLite can use its per-source indexes.
+        // files includes the effective pending layer; selecting only pending
+        // source IDs here would lose unchanged copies of an affected UUID.
+        "AND lower(e.session_id) IN (SELECT lower(s.session_id) FROM pending_sources p JOIN sources s USING(source_id) WHERE p.target_generation=?1) \
+         AND e.source_id IN (SELECT f.source_id FROM files f WHERE lower(f.session_id) IN (SELECT lower(s.session_id) FROM pending_sources p JOIN sources s USING(source_id) WHERE p.target_generation=?1)) GROUP BY 1, 2"
     );
     let mut source_rows = transaction
         .prepare(if rebuild {
@@ -11551,7 +11604,7 @@ fn estimate_active_rollouts(
     if !database.is_file() {
         return Ok(());
     }
-    let state_connection = open_read_only_index(&database, StdDuration::from_millis(100))
+    let state_connection = open_read_only_source(&database, StdDuration::from_millis(100))
         .map_err(|error| format!("无法预扫描 active rollout：{error}"))?;
     if !column_exists_checked(&state_connection, "threads", "rollout_path")? {
         return Ok(());
@@ -11718,7 +11771,7 @@ fn visit_active_rollouts(
     if !database.exists() {
         return Ok(());
     }
-    let state_connection = match open_read_only_index(&database, StdDuration::from_millis(100)) {
+    let state_connection = match open_read_only_source(&database, StdDuration::from_millis(100)) {
         Ok(connection) => connection,
         Err(error) => {
             scan_completeness.mark_incomplete();
@@ -11830,7 +11883,8 @@ fn sync_thread_metadata(
         metadata_text(transaction, "state_size")?,
         metadata_text(transaction, "state_modified_ns")?,
     );
-    let stage = stage_thread_metadata(codex_home, previous, warnings)?;
+    let stage = stage_thread_metadata(codex_home, previous,
+        metadata_text(transaction, "state_source_signature")?, warnings)?;
     Ok(matches!(
         apply_thread_metadata_stage(transaction, stage)?,
         ThreadMetadataApplyOutcome::ContentChanged
@@ -11873,6 +11927,7 @@ fn display_thread_title(
 fn stage_thread_metadata(
     codex_home: &Path,
     previous: (Option<String>, Option<String>),
+    previous_source: Option<String>,
     warnings: &mut Vec<LocalDataWarning>,
 ) -> Result<ThreadMetadataStage, String> {
     let database = codex_home.join("state_5.sqlite");
@@ -11912,18 +11967,28 @@ fn stage_thread_metadata(
     };
     let signature_text =
         signature.map(|value| (value.size.to_string(), value.modified_ns.to_string()));
-    if previous == signature_text.clone().unzip() {
+    let source_signature = if signature.is_some() {
+        match live_state_wal_stamp(&database) {
+            Ok(value) => Some(value),
+            Err(error) => {
+                warnings.push(thread_info_warning(error));
+                return Ok(ThreadMetadataStage::Failed);
+            }
+        }
+    } else { None };
+    if previous == signature_text.clone().unzip() && previous_source == source_signature {
         return Ok(ThreadMetadataStage::Unchanged);
     }
 
     let Some(signature_before) = signature else {
         return Ok(ThreadMetadataStage::Updated(StagedThreadMetadata {
             signature: None,
+            source_signature: None,
             rows: Vec::new(),
         }));
     };
 
-    let connection = match open_read_only_index(&database, StdDuration::from_secs(3)) {
+    let connection = match open_read_only_source(&database, StdDuration::from_secs(3)) {
         Ok(connection) => connection,
         Err(error) => {
             warnings.push(thread_info_warning(format!(
@@ -12000,7 +12065,14 @@ fn stage_thread_metadata(
             return Ok(ThreadMetadataStage::Failed);
         }
     };
-    if signature_after != signature_before {
+    let source_after = match live_state_wal_stamp(&database) {
+        Ok(value) => Some(value),
+        Err(error) => {
+            warnings.push(thread_info_warning(error));
+            return Ok(ThreadMetadataStage::Failed);
+        }
+    };
+    if signature_after != signature_before || source_after != source_signature {
         warnings.push(thread_info_warning(format!(
             "会话标题索引在读取期间发生变化，本轮保留已有标题：{}",
             database.display()
@@ -12010,8 +12082,29 @@ fn stage_thread_metadata(
 
     Ok(ThreadMetadataStage::Updated(StagedThreadMetadata {
         signature: signature_text,
+        source_signature,
         rows: staged_rows,
     }))
+}
+
+/// The live database's committed changes may exist only in WAL. This is a
+/// disposable cache identity, separate from any accounting checkpoint. The
+/// revision also forces one fresh read after older builds imported state as a
+/// frozen legacy namespace, even when the main-file stat has not changed.
+fn live_state_wal_stamp(database: &Path) -> Result<String, String> {
+    let wal = sqlite_sidecar_path(database, "-wal");
+    match fs::symlink_metadata(&wal) {
+        Ok(metadata) if !metadata.is_file() || metadata.file_type().is_symlink() =>
+            Err("会话标题索引 WAL 不是普通文件，已保留原有标题".into()),
+        Ok(metadata) if metadata.len() == 0 => Ok("sqlite-live-wal-v1:none".into()),
+        Ok(_) => {
+            let signature = file_signature(&wal)?;
+            Ok(format!("sqlite-live-wal-v1:{}:{}:{}", signature.size, signature.modified_ns,
+                signature.physical.map(|stamp| stamp.encode()).unwrap_or_default()))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok("sqlite-live-wal-v1:none".into()),
+        Err(error) => Err(format!("无法读取会话标题索引 WAL 签名：{error}")),
+    }
 }
 
 fn apply_thread_metadata_stage(
@@ -12122,6 +12215,12 @@ fn apply_thread_metadata_stage(
                 [],
             )
             .map_err(|error| format!("无法清理会话标题索引签名：{error}"))?;
+    }
+    if let Some(signature) = staged.source_signature {
+        set_metadata(transaction, "state_source_signature", &signature)?;
+    } else {
+        transaction.execute("DELETE FROM metadata WHERE key='state_source_signature'", [])
+            .map_err(|error| format!("无法清理会话标题来源签名：{error}"))?;
     }
     Ok(if content_changed {
         ThreadMetadataApplyOutcome::ContentChanged
@@ -12245,6 +12344,16 @@ fn active_schema11_paths(index_path: &Path) -> Result<(PathBuf, PathBuf, PathBuf
 fn schema11_paths_for_namespace(index_path: &Path, isolated: bool) -> (PathBuf, PathBuf, PathBuf) {
     let base = if isolated { sqlite_sidecar_path(index_path, ".container-v1") } else { index_path.to_path_buf() };
     (schema11_candidate_path(&base), schema11_rollback_path(&base), schema11_manifest_path(&base))
+}
+
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+pub(super) fn verify_runtime_recovery_fixture(home: &Path) -> Result<serde_json::Value, String> {
+    runtime_recovery::verify_fixture(home)
+}
+
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+pub(super) fn verify_backfill_performance_fixture(home: &Path) -> Result<serde_json::Value, String> {
+    ledger::verify_performance_fixture(home)
 }
 
 #[cfg(all(feature = "business-store-fixture", not(test)))]
@@ -15217,6 +15326,17 @@ fn open_exact_business_store(path: &Path) -> Result<Connection, String> {
     )
 }
 
+/// An externally owned live database must never enter the one-time legacy
+/// import route. Keep the same unbound, read-only source in every build mode.
+fn open_read_only_source(path: &Path, timeout: StdDuration) -> Result<Connection, String> {
+    let raw = sqlite::open_read_only(path, timeout).map_err(|error| error.to_string())?;
+    raw.pragma_update(None, "query_only", true).map_err(|error| error.to_string())?;
+    #[cfg(test)]
+    { Ok(raw) }
+    #[cfg(not(test))]
+    { Ok(Connection::unbound(raw)) }
+}
+
 fn open_read_only_index(path: &Path, timeout: StdDuration) -> Result<Connection, String> {
     #[cfg(test)]
     {
@@ -17905,7 +18025,6 @@ fn load_stored_session_catalog(
 
 fn collect_session_catalog_observations(
     codex_home: &Path,
-    known: &HashMap<String, (u64, String, Option<String>)>,
 ) -> Result<Vec<SessionCatalogObservation>, String> {
     let mut observations = Vec::new();
     for (relative_root, archived) in [("sessions", false), ("archived_sessions", true)] {
@@ -17960,7 +18079,7 @@ fn collect_session_catalog_observations(
                 let selected = rollout_source::physical_path(&logical).map_err(|e|format!("无法解析目录来源 {}：{e}",logical.display()))?;
                 let selected_metadata = fs::symlink_metadata(&selected).map_err(|e|e.to_string())?;
                 reject_session_catalog_reparse_point(&selected, &selected_metadata)?;
-                observations.push(session_catalog_observation(logical.clone(), archived, &selected_metadata, known.get(logical.to_string_lossy().as_ref()))?);
+                observations.push(session_catalog_observation(logical, archived, &selected_metadata)?);
             }
         }
     }
@@ -17973,12 +18092,12 @@ fn session_catalog_observation(
     path: PathBuf,
     archived: bool,
     metadata: &fs::Metadata,
-    known: Option<&(u64, String, Option<String>)>,
 ) -> Result<SessionCatalogObservation, String> {
     let modified = metadata.modified().ok();
     let created = metadata.created().ok();
-    let size = lightweight_file_signature(&path, known)?.ok_or_else(||
-        format!("压缩会话目录元数据未就绪，保留上次完整目录：{}", path.display()))?.size;
+    // Invalidation and displayed disk usage track the physical source. A
+    // catalog header does not require the accounting index or logical length.
+    let size = metadata.len();
     Ok(SessionCatalogObservation {
         path,
         archived,
@@ -18009,10 +18128,7 @@ where
     F: FnMut(&[u8]) -> Result<IndexedSessionMetadata, String>,
 {
     let physical = rollout_source::physical_path(&observation.path).map_err(|e|e.to_string())?;
-    if rollout_source::is_compressed(&physical) {
-        return Err(format!("压缩会话目录原文读取已延期，保留上次完整目录：{}", observation.path.display()));
-    }
-    // Plain-only pinning prevents a storage conversion from creating a decoder.
+    // Pin and validate the physical source while reading only session_meta.
     let mut file = open_session_catalog_rollout(&physical)?;
     let before = file_signature_from_handle(&file, &observation.path)?;
     if before.size != observation.size || before.modified_ns.to_string() != observation.modified_ns
@@ -18024,7 +18140,8 @@ where
     }
     let mut first_line = Vec::new();
     {
-        let mut reader = BufReader::new(&mut file);
+        let source = rollout_source::metadata_reader(&mut file).map_err(|error| error.to_string())?;
+        let mut reader = BufReader::new(source);
         reader.read_until(b'\n', &mut first_line).map_err(|error| {
             format!(
                 "读取会话文件首行失败：{}（{error}）",
@@ -18046,6 +18163,13 @@ where
         ));
     }
     let physical_path = rollout_source::physical_path(&observation.path).map_err(|error| error.to_string())?;
+    if physical_path != physical {
+        return Err(format!("会话物理表示在首行校验期间变化，请重试：{}", observation.path.display()));
+    }
+    let current_file = open_session_catalog_rollout(&physical_path)?;
+    if file_signature_from_handle(&current_file, &observation.path)? != before {
+        return Err(format!("会话文件路径在首行校验期间被替换，请重试：{}", observation.path.display()));
+    }
     let path_metadata = fs::symlink_metadata(&physical_path).map_err(|error| {
         format!(
             "会话文件首行校验后无法复核路径 {}：{error}",
@@ -18057,7 +18181,6 @@ where
         observation.path.clone(),
         observation.archived,
         &path_metadata,
-        None,
     )?;
     if !session_catalog_observation_values_match(&observation, &path_observation) {
         return Err(format!(
