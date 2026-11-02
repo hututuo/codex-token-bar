@@ -44,7 +44,8 @@ class FormedEvidenceTests(unittest.TestCase):
         source=(scripts/'fixtures/formed_release_probe.rs').read_text()
         self.assertIn('route::bootstrap()',source)
         self.assertIn('std::process::exit(86)',source)
-        self.assertIn('Container::snapshot_proof_path',source)
+        self.assertIn('Container::snapshot_digest_path',source)
+        self.assertIn('actual.schema_digest,actual.rows_digest',source)
         self.assertIn('fs::canonicalize',source)
         self.assertNotIn('std::env::set_var',source)
         self.assertNotIn('#[cfg(test)]',source)
@@ -57,3 +58,23 @@ class FormedEvidenceTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 probe.execute([sys.executable,'-c','raise SystemExit(3)'],Path(root),{},log)
             self.assertTrue(log.is_file())
+
+    def test_runner_temp_in_home_falls_back_without_weakening_native_isolation(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root).resolve()
+            home = root / "home"; home.mkdir()
+            runner = home / "work-temp"; runner.mkdir()
+            external = root / "os-temp"; external.mkdir()
+            self.assertEqual(probe.external_temporary_base([runner, external], home), external)
+            for candidate in (home, runner, root, root / "missing"):
+                with self.subTest(path=candidate), self.assertRaises(ValueError):
+                    probe.external_temporary_base([candidate], home)
+            environment = probe.probe_environment(external)
+            self.assertTrue(all(environment[key] == str(external) for key in ("TMPDIR", "TMP", "TEMP")))
+
+    @unittest.skipIf(sys.platform == "win32", "unprivileged Windows symlink creation not required")
+    def test_temp_symlink_cannot_disguise_a_real_home(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root).resolve(); home = root / "home"; home.mkdir()
+            alias = root / "not-home"; alias.symlink_to(home, target_is_directory=True)
+            with self.assertRaises(ValueError): probe.external_temporary_base([alias], home)

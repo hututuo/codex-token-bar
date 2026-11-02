@@ -62,8 +62,8 @@ fn b_canary() -> Result<(), String> {
 fn assert_b() -> Result<(), String> {
     let path=app_paths::multi_client_usage_database_path().ok_or("missing B path")?;
     let b=checked!(Connection::open_with_flags(path,rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY));
-    let row:(i64,i64,i64)=checked!(b.query_row("SELECT COUNT(*),SUM(covered_seconds),SUM(weighted_output) FROM activity_speed_samples WHERE id='formed-existing-b-row'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))));
-    require!(row==(1,10,120), "old B activity history changed"); Ok(())
+    let row:(i64,f64,f64)=checked!(b.query_row("SELECT COUNT(*),SUM(covered_seconds),SUM(weighted_output) FROM activity_speed_samples WHERE id='formed-existing-b-row'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))));
+    require!(row==(1,10.0,120.0), "old B activity history changed"); Ok(())
 }
 fn identity(home: &Path) -> Result<quota_history::QuotaHistoryIdentity, String> {
     quota_history::QuotaHistoryIdentity::from_canonical_parts(home,Some("sub:fixture-account"),"pro","codex").ok_or("quota identity rejected".into())
@@ -134,9 +134,14 @@ pub fn run(input: &Path, phase: &str) -> Result<Value,String> {
         }
         // Validate every old typed quota field, schema, rowid and sequence,
         // including the late committed WAL observation in the interrupted case.
-        let expected=checked!(Container::snapshot_proof_path(&quota));
+        // This public snapshot API exists in every pinned release. Its pair
+        // hashes typed rows, rowids, sqlite_sequence, canonical schema and the
+        // module version. Do not inject newer production APIs into old code.
+        let expected=checked!(Container::snapshot_digest_path(&quota));
         let imported=checked!(Container::open_existing(&a));
-        require!(checked!(imported.proof(&quota_spec(&quota)?))==expected,"frozen quota proof differs after recovery");
+        let actual=checked!(imported.proof(&quota_spec(&quota)?));
+        require!(format!("{}:{}",actual.schema_digest,actual.rows_digest)==expected,
+            "frozen quota typed-content or schema digest differs after recovery");
         drop(imported);
         for (home,expected) in homes.iter().zip([155_u64,310]) {
             require!(token::dashboard_snapshot(home)?.stats.total_tokens==expected,"released exact history not usable");

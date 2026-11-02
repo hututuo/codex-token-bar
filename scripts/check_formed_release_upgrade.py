@@ -126,6 +126,28 @@ def parse_report(text: str, phase: str, release: str, scenario: str) -> dict:
     return value
 
 
+def external_temporary_base(candidates: list[Path], home: Path) -> Path:
+    """Select an existing OS/runner temp location outside any real home.
+
+    Hosted macOS sets RUNNER_TEMP under /Users/runner. Do not treat that
+    convenience variable as proof of isolation, or relax the native guard.
+    Resolve links before checking; never use a home ancestor such as /.
+    """
+    home = home.resolve()
+    for candidate in candidates:
+        base = candidate.resolve()
+        if (base.is_dir() and not base.is_relative_to(home)
+                and not home.is_relative_to(base) and os.access(base, os.W_OK | os.X_OK)):
+            return base
+    raise ValueError("No writable external temporary directory; refusing user home")
+
+
+def probe_environment(base: Path) -> dict[str, str]:
+    # Rust's std::env::temp_dir and the Python producer must see the SAME
+    # canonical base. Change child environment only, not global/home settings.
+    return {**os.environ, **{key: str(base) for key in ("TMPDIR", "TMP", "TEMP")}}
+
+
 def run(repository: Path, release: str, output: Path) -> dict:
     output.mkdir(parents=True, exist_ok=False)
     old = pinned_revision(repository, release)
@@ -135,11 +157,17 @@ def run(repository: Path, release: str, output: Path) -> dict:
     def save():
         (output / "report.json").write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8")
     save()
-    base = Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir())).resolve()
-    home = Path.home().resolve()
-    if base == home or base.is_relative_to(home):
-        raise ValueError("An external temporary directory is required; refusing user home")
-    with tempfile.TemporaryDirectory(prefix="tokenbar-formed-", dir=base) as temp:
+    explicit = os.environ.get("TOKENBAR_FIXTURE_TEMP_BASE")
+    system_temp = Path(os.environ.get("SystemRoot", "C:/Windows")) / "Temp" if os.name == "nt" else Path("/tmp")
+    candidates = [Path(explicit)] if explicit else [
+        Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir())), Path(tempfile.gettempdir()), system_temp]
+    try:
+        base = external_temporary_base(candidates, Path.home())
+        context = tempfile.TemporaryDirectory(prefix="tokenbar-formed-", dir=base)
+    except Exception as error:
+        report.update(status="FAIL", error=str(error)); save()
+        raise
+    with context as temp:
         scratch = Path(temp).resolve()
         try:
             bins = {}
@@ -147,7 +175,7 @@ def run(repository: Path, release: str, output: Path) -> dict:
                 source = scratch / (label+"-source")
                 injection = inject(repository, revision, source)
                 (output / (label+"-source.json")).write_text(json.dumps(injection, indent=2)+"\n", encoding="utf-8")
-                env = os.environ.copy()
+                env = probe_environment(base)
                 target = repository / "tauri-app/src-tauri/target"
                 env["CARGO_TARGET_DIR"] = str(target)
                 execute(["cargo", "build", "--locked", "--manifest-path", str(source / "tauri-app/src-tauri/Cargo.toml"),
@@ -159,7 +187,7 @@ def run(repository: Path, release: str, output: Path) -> dict:
             for scenario in ("committed", "interrupted"):
                 root = scratch / scenario; root.mkdir()
                 (root / ".formed-release-fixture").write_text("synthetic-only-v1\n")
-                env = os.environ.copy()
+                env = probe_environment(base)
                 for key, slug in OVERRIDES.items():
                     path = root / slug; path.mkdir(); env[key] = str(path)
                 execute([str(bins["release"]), str(root), scenario], repository, env,

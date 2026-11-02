@@ -18652,7 +18652,6 @@ fn resolve_file_within_codex_home(
     ResolvedSessionFile::Accepted(canonical)
 }
 
-#[cfg(not(test))]
 fn stable_path_fingerprint(path: &Path) -> String {
     let identity = codex_home_identity(path);
     let mut hash = 0xcbf29ce484222325_u64;
