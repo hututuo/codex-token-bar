@@ -280,6 +280,10 @@ impl Container {
         &self.path
     }
 
+    pub(crate) fn validate_catalog(&self) -> BusinessStoreResult<()> {
+        validate_container_catalog(&self.connection)
+    }
+
     pub(crate) fn connection(&self) -> &Connection {
         &self.connection
     }

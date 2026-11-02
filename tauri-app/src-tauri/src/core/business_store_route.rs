@@ -180,7 +180,7 @@ pub(crate) fn open_registered_store_read_only(
     logical_path: &str,
     timeout: std::time::Duration,
 ) -> Result<Option<StoreConnection>, String> {
-    ensure_runtime_business_store_ready()?;
+    ensure_runtime_business_store_readable()?;
     open_registered_store_read_only_at(
         &container_path()?, module, source_identity, logical_path, timeout,
     )
@@ -203,7 +203,38 @@ fn open_registered_store_read_only_at(
     if !container.is_registered(&store).map_err(|error| error.to_string())? {
         return Ok(None);
     }
+    let pending: Option<String> = container.connection().query_row(
+        "SELECT value FROM tb_container_meta WHERE key=?1",
+        [format!("migration_pending_store_v1:{}", store.id)], |row| row.get(0),
+    ).optional().map_err(|error| error.to_string())?;
+    if let Some(json) = pending {
+        let batch: PendingLegacyImport = serde_json::from_str(&json).map_err(|error| format!("未完成导入记录无效：{error}"))?;
+        // The initialized marker is the commit point for retained bootstrap
+        // journals. A later, uncommitted owner must not look like empty history
+        // or leak its partially imported replacement through a reader.
+        if ![1, 2].contains(&batch.version) || !batch.bootstrap {
+            return Err("该来源的旧账恢复尚未完成，已保留其他已发布统计".into());
+        }
+    }
     container.into_store_connection(&store).map(Some).map_err(|error| error.to_string())
+}
+
+/// A failed follow-up operation cannot revoke a valid published container.
+/// No CREATE, repair, import, checkpoint, or source scan occurs here. A missing
+/// marker or an unknown root contract remains a complete startup failure.
+pub(crate) fn admit_published_reads() -> Result<(), String> {
+    let path = container_path()?;
+    admit_published_reads_at(&path)
+}
+
+fn admit_published_reads_at(path: &Path) -> Result<(), String> {
+    verify_marker(path)?;
+    let container = Container::open_read_only_existing(path, std::time::Duration::from_secs(3))
+        .map_err(|error| error.to_string())?;
+    container.validate_catalog().map_err(|error| error.to_string())?;
+    #[cfg(not(test))]
+    remember_active_container_identity(path)?;
+    Ok(())
 }
 
 /// Run the shared A container compaction policy. Module-local VACUUM SQL is
@@ -1313,6 +1344,21 @@ fn ensure_runtime_business_store_ready() -> Result<(), String> {
     {
         crate::core::business_startup::process_coordinator().ensure_ready()
     }
+}
+
+fn ensure_runtime_business_store_readable() -> Result<(), String> {
+    #[cfg(test)]
+    { Ok(()) }
+    #[cfg(not(test))]
+    { crate::core::business_startup::process_coordinator().ensure_readable() }
+}
+
+pub(crate) fn published_reads_only() -> bool {
+    #[cfg(test)]
+    { false }
+    #[cfg(not(test))]
+    { crate::core::business_startup::process_coordinator().snapshot().phase
+        == crate::core::business_startup::BusinessStartupPhase::ReadyWithPendingRecovery }
 }
 
 fn verify_ready_container(container_path: &Path) -> Result<(), String> {

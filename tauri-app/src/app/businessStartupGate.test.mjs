@@ -28,6 +28,34 @@ test("failed startup in child windows opens the main window without retrying the
  }
 });
 
+test("verified published recovery mounts every surface and only the main window offers a retry",async()=>{
+ for(const surface of surfaces) {
+  await withGate(surface,()=>({phase:"ready_with_pending_recovery",message:"fixture pending source"}),async({host,calls,owners,click})=>{
+   assert.match(host.textContent,/owner-ready/);
+   assert.equal(owners(),1,surface);
+   if(surface === "main") {
+    assert.match(host.textContent,/旧账可读/);
+    await click("重试恢复");
+    assert.deepEqual(calls,["read_business_startup_state","retry_business_startup"]);
+    assert.match(host.textContent,/owner-ready/);
+    assert.equal(owners(),1,"A local recovery retry cannot reconstruct business owners");
+   } else assert.doesNotMatch(host.textContent,/重试恢复/);
+  });
+ }
+});
+
+test("a failed recovery status read retains the already admitted published surface",async()=>{
+ await withGate("main",command=>{
+  if(command === "retry_business_startup") throw new Error("fixture transport unavailable");
+  return {phase:"ready_with_pending_recovery",message:"pending"};
+ },async({host,owners,click})=>{
+  await click("重试恢复");
+  assert.match(host.textContent,/owner-ready/);
+  assert.match(host.textContent,/fixture transport unavailable/);
+  assert.equal(owners(),1);
+ });
+});
+
 test("only the main window retries an actual failed bootstrap", async () => {
  await withGate("main", command => command === "retry_business_startup"
   ? {phase:"ready",message:null}

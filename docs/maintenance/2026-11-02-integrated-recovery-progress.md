@@ -126,3 +126,10 @@ Windows连接寿命作平台适配：实际锁定SQLite源码的`winOpen`使用F
 - 新增真实Analyzer读取、quota旧列／身份、ModelTrace scope／设置和未注册owner的回归测试；语法检查通过，整包类型检查与执行留待本批云端，不预报通过。
 - 源码`601c5f5f`的[旧版升级41505616299](https://github.com/hututuo/codex-token-bar/actions/runs/41505616299)中，Mac与Windows实际v0.9.7升级步骤均通过；Mac后续兼容复查有1个旧进程来源漂移fixture的4条断言失败。[完整检查41505616287](https://github.com/hututuo/codex-token-bar/actions/runs/41505616287)Swift2278项／36 skipped也仅该4条失败。新门禁正确拦住了fixture用普通产品writer模拟的外部变化；已改成先断言该writer被拒，再以隔离的物理来源writer模拟旧进程追加，保留原两次快照／目标新账／独立分区的全部保全断言。待云端复测。
 - 同一源码的22项存储模块隔离XCTest再次通过。Windows读权限、前端恢复提示／调度、真正跨进程和规模门禁仍未退出。
+
+### C04c · Windows读取准入与界面接线（待生产执行）
+
+- Windows新增已验证published只读状态；只有真实initialized marker、已知容器catalog和本次物理身份通过才能准入。writer仍要求完整Ready；恢复重试不撤销已准入读取、不重复调起后台owner。非bootstrap未完成分区的只读访问显式拒绝；历史bootstrap journal继续以initialized提交点为准。
+- Exact在该状态直接读取已发布分区，不启动同步／迁移。full数据和元数据取同一读快照，图表水位保留旧值、不授予新observer／freshness、不重新写缓存；compact读取已知汇总。可选对话摘录不读原文。ModelTrace历史／设置不再用建表或导入连接；quota暂停路径不维护、不认领未知身份，兼容旧周期列并复用原投影。
+- 前端与Mac主页增加简短恢复状态及重试入口；子窗口只读取状态，不能触发迁移。前端8项专项已通过，覆盖全部surface准入、main唯一重试、重试时保留owner和状态请求失败不清空旧页。TS本地noEmit通过。Mac协调器补单次激活／保留旧账读取测试；重试增加活跃A物理身份门槛。
+- 新Windows生产fixture会验证全量／compact无原始会话读取、旧123＋升级后789保留、未完成分区拒读、writer拒绝、重试仍可读及A整库proof不变。**这些Rust／Mac新增接线仅完成语法检查；真实生产fixture和整包类型／测试需本提交云端执行，不提前计PASS。** C03后台清理、跨进程强退、C04历史产库矩阵与C05–C07保持未完成。

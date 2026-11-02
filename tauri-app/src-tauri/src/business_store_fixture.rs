@@ -216,6 +216,7 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
     checks.push(exact_fixture(&h1, &h2, &p)?);
     checks.push(token_count_jsonl::verify_runtime_recovery_fixture(&root.join("runtime-home"))?);
     checks.push(token_count_jsonl::verify_backfill_performance_fixture(&root.join("legacy-backfill-home"))?);
+    checks.push(published_recovery_read_fixture(&h1, &p)?);
     for (f, before) in &digests {
         need!(
             digest(f)? == *before,
@@ -232,6 +233,62 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
     park_a_and_test(&p)?;
     checks.push(json!({"name":"rerun-and-fail-closed","status":"PASS","storeCount":count}));
     Ok(json!({"status":"PASS","root":root,"containerA":p.a,"clientB":p.b,"checks":checks}))
+}
+
+fn published_recovery_read_fixture(home: &Path, paths: &Paths) -> Result<Value, String> {
+    let original = token_count_jsonl::dashboard_snapshot(home)?;
+    let published = route::open_store("fixture_readable", "fixture", "fixture/readable", &[])?;
+    published.execute_batch("CREATE TABLE facts(id INTEGER PRIMARY KEY,amount INTEGER); INSERT INTO facts VALUES(1,123),(2,789)").map_err(|error| error.to_string())?;
+    drop(published);
+    let pending = route::open_store("fixture_pending", "fixture", "fixture/pending", &[])?;
+    pending.execute_batch("CREATE TABLE facts(id INTEGER PRIMARY KEY,amount INTEGER); INSERT INTO facts VALUES(1,456)").map_err(|error| error.to_string())?;
+    drop(pending);
+    let pending = crate::core::business_store_container::StoreSpec::new("fixture_pending", "fixture", "fixture/pending").map_err(|error| error.to_string())?;
+    let raw = Connection::open(&paths.a).map_err(|error| error.to_string())?;
+    let key = format!("migration_pending_store_v1:{}", pending.id);
+    raw.execute("INSERT INTO tb_container_meta VALUES(?1,?2)", params![key, json!({"version":2,"sources":[],"snapshots":[],"bootstrap":false,"replace_uncommitted":false}).to_string()]).map_err(|error| error.to_string())?;
+    drop(raw);
+    let before = crate::core::business_store_container::Container::snapshot_digest_path(&paths.a).map_err(|error| error.to_string())?;
+    route::admit_published_reads()?;
+    let coordinator = crate::core::business_startup::process_coordinator();
+    coordinator.finish_with_published_reads(Err("fixture follow-up import deferred".into()), true);
+    need!(route::open_store("fixture_readable", "fixture", "fixture/readable", &[]).is_err(), "read-only recovery admitted a writer");
+    let reader = route::open_registered_store_read_only("fixture_readable", "fixture", "fixture/readable", std::time::Duration::from_secs(2))?.ok_or("published owner disappeared")?;
+    let mut statement = reader.prepare("SELECT amount FROM facts ORDER BY id").map_err(|error| error.to_string())?;
+    let amounts = statement.query_map([], |row| row.get::<_,i64>(0)).map_err(|error| error.to_string())?.collect::<Result<Vec<_>,_>>().map_err(|error| error.to_string())?;
+    need!(amounts == vec![123,789], "published owner lost old or post-upgrade facts");
+    drop(statement); drop(reader);
+    need!(route::open_registered_store_read_only("fixture_pending", "fixture", "fixture/pending", std::time::Duration::from_secs(2)).is_err(), "unfinished owner leaked through published reads");
+    need!(route::open_registered_store_read_only("fixture_readable", "unknown", "fixture/missing", std::time::Duration::from_secs(2))?.is_none(), "read-only lookup created a missing owner");
+    coordinator.begin_retry()?;
+    need!(coordinator.ensure_ready().is_err() && coordinator.ensure_readable().is_ok(), "retry revoked published reads or enabled writers");
+
+    let mut parked = Vec::new();
+    for name in ["sessions", "archived_sessions"] {
+        let source = home.join(name);
+        if source.exists() {
+            let retained = home.join(format!("fixture-retained-{name}"));
+            fs::rename(&source, &retained).map_err(|error| error.to_string())?;
+            parked.push((source,retained));
+        }
+    }
+    let read = (|| {
+        let compact = token_count_jsonl::refreshed_usage_summary_snapshot_with_interval(home, Some(0))?.ok_or("no published summary")?;
+        let full = token_count_jsonl::dashboard_snapshot(home)?;
+        need!(compact.total_tokens == original.stats.total_tokens && full.stats.total_tokens == original.stats.total_tokens, "published full or compact read changed totals without sources");
+        need!(!full.precise_recent_usage_fresh && full.precise_observer_epoch.is_none(), "read-only recovery fabricated fresh coverage");
+        need!(full.settled_through == original.settled_through, "read-only recovery advanced the chart watermark");
+        Ok::<_, String>(full.stats.total_tokens)
+    })();
+    for (source,retained) in parked { fs::rename(retained, source).map_err(|error| error.to_string())?; }
+    let tokens = read?;
+    let after = crate::core::business_store_container::Container::snapshot_digest_path(&paths.a).map_err(|error| error.to_string())?;
+    need!(after == before, "published recovery read mutated A");
+    // Only this disposable failure journal is removed; no product cleanup or
+    // source replacement is being simulated by declaring startup Ready.
+    Connection::open(&paths.a).map_err(|error| error.to_string())?.execute("DELETE FROM tb_container_meta WHERE key=?1", [key]).map_err(|error| error.to_string())?;
+    coordinator.finish(Ok(()));
+    Ok(json!({"name":"published-recovery-reads","status":"PASS","oldAndNewFacts":amounts,"tokensWithoutRawSessions":tokens,"aUnchanged":true,"retryReadOnly":true}))
 }
 
 struct Paths {

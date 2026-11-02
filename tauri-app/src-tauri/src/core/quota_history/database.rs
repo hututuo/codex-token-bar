@@ -262,6 +262,11 @@ fn compatible_legacy_identity_rows(
     identity: &QuotaHistoryIdentity,
     cutoff: Option<f64>,
 ) -> SqlResult<Vec<QuotaHistoryRow>> {
+    let Some(projection) = compatible_identity_projection(connection)? else { return Ok(Vec::new()); };
+    stable_identity_rows_with_projection(connection, identity, cutoff, &projection)
+}
+
+fn compatible_identity_projection(connection: &Connection) -> SqlResult<Option<String>> {
     let mut statement = connection.prepare("PRAGMA table_info(quota_snapshots)")?;
     let columns = statement
         .query_map([], |row| row.get::<_, String>(1))?
@@ -277,7 +282,7 @@ fn compatible_legacy_identity_rows(
         "identity_plan_type", "identity_limit_id"]
         .iter().any(|required| !columns.iter().any(|column| column.as_str() == *required))
     {
-        return Ok(Vec::new());
+        return Ok(None);
     }
     let optional = |column: &str, fallback: &str| {
         if columns.iter().any(|existing| existing == column) {
@@ -296,7 +301,7 @@ fn compatible_legacy_identity_rows(
         optional("seven_day_cycle_generation", "NULL"),
         optional("seven_day_reset_anchor", "0"),
     );
-    stable_identity_rows_with_projection(connection, identity, cutoff, &projection)
+    Ok(Some(projection))
 }
 
 #[cfg(test)]
@@ -471,14 +476,30 @@ fn matching_stable_identity_rows(
     cutoff: Option<f64>,
     order: &str,
 ) -> SqlResult<Vec<QuotaHistoryRow>> {
-    let mut rows = query_stable_identity_rows(connection, identity, cutoff)?;
+    matching_stable_identity_rows_with_access(connection, filter, identity, cutoff, order, false)
+}
+
+pub(super) fn published_rows_for_row(connection: &Connection, row: &QuotaHistoryRow) -> SqlResult<Vec<QuotaHistoryRow>> {
+    let filter = AccountHistoryFilter::from_row(row);
+    let identity = filter.identity.as_ref().ok_or(rusqlite::Error::InvalidQuery)?;
+    matching_stable_identity_rows_with_access(connection, &filter, identity, None, "ASC", true)
+}
+
+fn matching_stable_identity_rows_with_access(
+    connection: &Connection, filter: &AccountHistoryFilter, identity: &QuotaHistoryIdentity,
+    cutoff: Option<f64>, order: &str, read_only: bool,
+) -> SqlResult<Vec<QuotaHistoryRow>> {
+    let projection = if read_only { compatible_identity_projection(connection)? } else { None };
+    let mut rows = if read_only { compatible_legacy_identity_rows(connection, identity, cutoff)? }
+        else { query_stable_identity_rows(connection, identity, cutoff)? };
+    if read_only && projection.is_none() { return Ok(rows); }
     // A safe legacy claim is a read-only compatibility bridge.  It follows
     // the caller's requested history window, but never applies the former
     // 45-day or 512-row truncation to an otherwise unambiguous legacy scope.
     let legacy_cutoff = cutoff.unwrap_or(f64::NEG_INFINITY);
 
     for bridge in legacy_bridges(filter, identity) {
-        let legacy_rows = query_legacy_bridge_rows(connection, &bridge, legacy_cutoff)?;
+        let legacy_rows = query_legacy_bridge_rows_with_projection(connection, &bridge, legacy_cutoff, projection.as_deref())?;
         if legacy_rows.is_empty() {
             continue;
         }
@@ -487,7 +508,10 @@ fn matching_stable_identity_rows(
             &bridge,
             identity,
         )?;
-        if claim_legacy_bridge(connection, &bridge, identity, known_ambiguous)? {
+        let claimed = if read_only {
+            !known_ambiguous && existing_legacy_claim_matches(connection, &bridge, identity)?
+        } else { claim_legacy_bridge(connection, &bridge, identity, known_ambiguous)? };
+        if claimed {
             rows.extend(legacy_rows);
         }
     }
@@ -617,17 +641,21 @@ fn query_legacy_bridge_rows(
     bridge: &LegacyBridge,
     cutoff: f64,
 ) -> SqlResult<Vec<QuotaHistoryRow>> {
+    query_legacy_bridge_rows_with_projection(connection, bridge, cutoff, None)
+}
+
+fn query_legacy_bridge_rows_with_projection(
+    connection: &Connection, bridge: &LegacyBridge, cutoff: f64, projection: Option<&str>,
+) -> SqlResult<Vec<QuotaHistoryRow>> {
+    let projection = projection.unwrap_or("created_at, account_key, plan_type, limit_name, account_name, source, \
+        five_hour_used_percent, five_hour_resets_at, five_hour_cycle_generation, five_hour_reset_anchor, \
+        seven_day_used_percent, seven_day_resets_at, seven_day_cycle_generation, seven_day_reset_anchor, status, \
+        identity_version, home_identity, stable_account_key, identity_plan_type, identity_limit_id");
     query_rows(
         connection,
         &format!(
             r#"
-            SELECT created_at, account_key, plan_type, limit_name, account_name, source,
-                   five_hour_used_percent, five_hour_resets_at,
-                   five_hour_cycle_generation, five_hour_reset_anchor,
-                   seven_day_used_percent, seven_day_resets_at,
-                   seven_day_cycle_generation, seven_day_reset_anchor, status,
-                   identity_version, home_identity, stable_account_key,
-                   identity_plan_type, identity_limit_id
+            SELECT {projection}
             FROM quota_snapshots
             WHERE identity_version IS NULL
               AND account_name = ?1
@@ -659,6 +687,13 @@ fn query_legacy_bridge_rows(
             i64::from(bridge.fake_pro)
         ],
     )
+}
+
+fn existing_legacy_claim_matches(connection: &Connection, bridge: &LegacyBridge, identity: &QuotaHistoryIdentity) -> SqlResult<bool> {
+    let exists: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='quota_history_legacy_claims')", [], |row| row.get(0))?;
+    if !exists { return Ok(false); }
+    connection.query_row("SELECT EXISTS(SELECT 1 FROM quota_history_legacy_claims WHERE legacy_account_name=?1 AND legacy_plan_type=?2 AND legacy_limit_id=?3 AND bridge_kind=?4 AND state='claimed' AND owner_identity_version=?5 AND owner_home_identity=?6 AND owner_stable_account_key=?7 AND owner_plan_type=?8 AND owner_limit_id=?9)",
+        params![bridge.account_name,bridge.plan_type,bridge.limit_id,bridge.kind,identity.version,identity.home_identity,identity.stable_account_key,identity.plan_type,identity.limit_id], |row| row.get(0))
 }
 
 fn legacy_bridge_has_other_stable_identity(

@@ -40,7 +40,8 @@ fn open_legacy(path: &Path) -> Result<Option<Connection>, String> {
         if !path.is_file() {
             return Ok(None);
         }
-        Ok(Some(Connection::open(path).map_err(|error| error.to_string())?))
+        crate::core::sqlite::open_read_only(path, std::time::Duration::from_secs(2))
+            .map(Some).map_err(|error| error.to_string())
     }
     #[cfg(not(test))]
     {
@@ -49,21 +50,27 @@ fn open_legacy(path: &Path) -> Result<Option<Connection>, String> {
             path,
         )?;
         let logical_path = format!("legacy/modeltrace/{source_identity}");
-        if path.is_file() {
-            crate::core::business_store_route::open_store(
-                "modeltrace_legacy",
-                &source_identity,
-                &logical_path,
-                &[path.to_path_buf()],
-            )
-            .map(Some)
-        } else {
-            crate::core::business_store_route::open_registered_store(
-                "modeltrace_legacy",
-                &source_identity,
-                &logical_path,
-            )
-        }
+        crate::core::business_store_route::open_registered_store_read_only(
+            "modeltrace_legacy", &source_identity, &logical_path, std::time::Duration::from_secs(2),
+        )
+    }
+}
+
+fn open_active_for_read(path: &Path, source_identity: &str) -> Result<Option<Connection>, String> {
+    #[cfg(test)]
+    {
+        let _ = source_identity;
+        if !path.exists() { return Ok(None); }
+        crate::core::sqlite::open_read_only(path, std::time::Duration::from_secs(2))
+            .map(Some).map_err(|error| error.to_string())
+    }
+    #[cfg(not(test))]
+    {
+        let _ = path;
+        crate::core::business_store_route::open_registered_store_read_only(
+            "modeltrace", source_identity, &format!("modeltrace/home/{source_identity}"),
+            std::time::Duration::from_secs(2),
+        )
     }
 }
 
@@ -83,8 +90,8 @@ pub fn save(
 }
 
 pub fn history(path: &Path, source_identity: &str, scope: &str) -> Result<Vec<Run>, String> {
-    let active = open_active(path, source_identity)?;
-    let mut runs_by_id = read_history(&active, scope)?
+    let active = open_active_for_read(path, source_identity)?;
+    let mut runs_by_id = active.as_ref().map(|db| read_history(db, scope)).transpose()?.unwrap_or_default()
         .into_iter()
         .map(|run| (run.id.clone(), run))
         .collect::<std::collections::HashMap<_, _>>();
@@ -107,6 +114,7 @@ pub fn history(path: &Path, source_identity: &str, scope: &str) -> Result<Vec<Ru
 }
 
 fn read_history(db: &Connection, scope: &str) -> Result<Vec<Run>, String> {
+    if !has_table(db, "modeltrace_runs")? { return Ok(Vec::new()); }
     let mut statement = db
         .prepare("SELECT payload FROM modeltrace_runs WHERE scope=?1 ORDER BY started_at DESC,id DESC LIMIT 100")
         .map_err(|e| e.to_string())?;
@@ -118,12 +126,12 @@ fn read_history(db: &Connection, scope: &str) -> Result<Vec<Run>, String> {
 }
 
 pub fn auto_settings(path: &Path, source_identity: &str) -> Result<super::AutoSettings, String> {
-    let active = open_active(path, source_identity)?;
-    if let Some(value) = read_setting_payload(&active, true)? {
+    let active = open_active_for_read(path, source_identity)?;
+    if let Some(value) = active.as_ref().map(read_setting_payload).transpose()?.flatten() {
         return serde_json::from_str(&value).map_err(|e| e.to_string());
     }
     if let Some(legacy) = open_legacy(path)? {
-        if let Some(value) = read_setting_payload(&legacy, false)? {
+        if let Some(value) = read_setting_payload(&legacy)? {
             let settings: super::AutoSettings =
                 serde_json::from_str(&value).map_err(|e| e.to_string())?;
             if settings.scope_key.as_deref() == Some(source_identity) {
@@ -134,27 +142,8 @@ pub fn auto_settings(path: &Path, source_identity: &str) -> Result<super::AutoSe
     Ok(super::AutoSettings::default())
 }
 
-fn read_setting_payload(db: &Connection, ensure_table: bool) -> Result<Option<String>, String> {
-    if ensure_table {
-        db.execute_batch("CREATE TABLE IF NOT EXISTS modeltrace_settings(id INTEGER PRIMARY KEY CHECK(id=1),payload TEXT NOT NULL)")
-            .map_err(|e| e.to_string())?;
-    } else {
-        #[cfg(test)]
-        let exists: bool = db
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='modeltrace_settings')",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(|e| e.to_string())?;
-        #[cfg(not(test))]
-        let exists = db
-            .has_logical_object("modeltrace_settings")
-            .map_err(|e| e.to_string())?;
-        if !exists {
-            return Ok(None);
-        }
-    }
+fn read_setting_payload(db: &Connection) -> Result<Option<String>, String> {
+    if !has_table(db, "modeltrace_settings")? { return Ok(None); }
     db.query_row(
         "SELECT payload FROM modeltrace_settings WHERE id=1",
         [],
@@ -162,6 +151,13 @@ fn read_setting_payload(db: &Connection, ensure_table: bool) -> Result<Option<St
     )
     .optional()
     .map_err(|e| e.to_string())
+}
+
+fn has_table(db: &Connection, name: &str) -> Result<bool, String> {
+    #[cfg(test)]
+    { db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)", [name], |row| row.get(0)).map_err(|error| error.to_string()) }
+    #[cfg(not(test))]
+    { db.has_logical_object(name).map_err(|error| error.to_string()) }
 }
 
 pub fn save_auto_settings(

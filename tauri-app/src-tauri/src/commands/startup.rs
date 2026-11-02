@@ -49,7 +49,8 @@ fn schedule_business_startup(
                 .await
                 .map_err(|error| format!("本地业务数据初始化任务异常结束：{error}"))
                 .and_then(|result| result);
-        let snapshot = coordinator.finish(result);
+        let published = result.is_err() && crate::core::business_store_route::admit_published_reads().is_ok();
+        let snapshot = coordinator.finish_with_published_reads(result, published);
         match snapshot.phase {
             business_startup::BusinessStartupPhase::Ready => {
                 startup_trace::mark("business store bootstrap ready");
@@ -59,7 +60,7 @@ fn schedule_business_startup(
                 app.state::<super::modeltrace::ModelTraceRegistry>()
                     .initialize(app.clone());
             }
-            business_startup::BusinessStartupPhase::Error => {
+            business_startup::BusinessStartupPhase::Error | business_startup::BusinessStartupPhase::ReadyWithPendingRecovery => {
                 let message = snapshot.message.as_deref().unwrap_or("unknown error");
                 startup_trace::mark(&format!("business store bootstrap failed: {message}"));
                 eprintln!("Codex Token Bar: business store bootstrap failed: {message}");

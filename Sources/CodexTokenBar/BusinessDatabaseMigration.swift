@@ -121,6 +121,9 @@ final class BusinessDatabaseMigration {
                         beforeActivation: (() throws -> Void)? = nil,
                         onProgress: (@Sendable (Progress) -> Void)? = nil) throws {
         onProgress?(.init(stage: .preparing))
+        // A retry must not adopt a replacement physical A merely because that
+        // file also has a recognizable root schema and marker.
+        _ = try BusinessSQLiteRoutes.validateActiveContainer(configuration.container)
         let inputs: [Input]
         do { inputs = try discover(configuration, fileManager: fileManager) }
         catch {

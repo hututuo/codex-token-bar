@@ -27,7 +27,7 @@ use super::session_parser::{
 };
 use super::{
     history_compression_enabled, IndexedSessionCatalogEntry, IndexedSessionCatalogSnapshot, IndexedSessionMetadata,
-    SummaryFileContribution, TokenUsageSummary,
+    SummaryFileContribution, TokenUsageSummary, TokenUsageSummarySnapshot,
 };
 #[cfg(not(test))]
 use crate::core::app_paths;
@@ -232,7 +232,8 @@ pub(super) struct ExactUsageIndex {
     // Keep the process-local Home lease alive for the complete index
     // operation, including migration, scan, and session-catalog publication.
     // The sidecar file lock below remains the cross-process boundary.
-    _operation_lock: AppOperationGuard,
+    _operation_lock: Option<AppOperationGuard>,
+    published_read_only: bool,
     /// True while one or more durable migration markers still need the
     /// normal scan/final publication to complete.  The open phase may repair
     /// DDL and orphan rows, but the attribution ledger is only authoritative
@@ -602,6 +603,7 @@ struct ManagedIndexConnection {
     connection: Option<Connection>,
     path: PathBuf,
     receipt_eligible: bool,
+    tracks_integrity: bool,
 }
 
 #[cfg(test)]
@@ -652,6 +654,7 @@ impl ManagedIndexConnection {
             connection: Some(connection),
             path,
             receipt_eligible: false,
+            tracks_integrity: true,
         }
     }
 
@@ -684,6 +687,10 @@ impl DerefMut for ManagedIndexConnection {
 
 impl Drop for ManagedIndexConnection {
     fn drop(&mut self) {
+        if !self.tracks_integrity {
+            drop(self.connection.take());
+            return;
+        }
         let receipt = if self.receipt_eligible {
             self.connection
                 .as_ref()
@@ -723,6 +730,13 @@ pub(super) struct ExactDashboardData {
     pub(super) cache_hit_ranking: Vec<CacheHitRankingItem>,
     pub(super) cache_usage: TokenCacheUsage,
     pub(super) settled_through: i64,
+    pub(super) published: Option<PublishedDashboardReadMetadata>,
+}
+
+pub(super) struct PublishedDashboardReadMetadata {
+    pub(super) revision: u64,
+    pub(super) aggregate: DashboardAggregateIdentity,
+    pub(super) attribution: AttributionSafetyState,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1672,6 +1686,41 @@ fn prepare_exact_store_for_home(home: &Path, path: &Path) -> Result<(), String> 
 }
 
 impl ExactUsageIndex {
+    pub(super) fn open_published(codex_home: &Path) -> Result<Self, String> {
+        let path = database_path(codex_home)?;
+        let connection = open_published_index_read_only(&path, StdDuration::from_secs(3))?
+            .ok_or("该来源没有已核实的已发布精确索引")?;
+        let assessment = assess_index_migration(&connection, true)?;
+        if !matches!(assessment, MigrationAssessment::Compatible) {
+            return Err(assessment.blocking_error().unwrap_or_else(|| "旧索引等待兼容补全，已保留原账".into()));
+        }
+        Ok(Self { connection: ManagedIndexConnection { connection: Some(connection), path,
+            receipt_eligible: false, tracks_integrity: false }, _operation_lock: None,
+            migration_pending: false, published_read_only: true })
+    }
+
+    pub(super) fn published_summary(&self, now: OffsetDateTime) -> Result<TokenUsageSummarySnapshot, String> {
+        let tx = self.connection.unchecked_transaction().map_err(|error| error.to_string())?;
+        let aggregate = self.dashboard_aggregate_identity()?;
+        let checked = aggregate.settled_through.and_then(format_rfc3339_unix).unwrap_or_default();
+        let result = TokenUsageSummarySnapshot {
+            summary: self.summary_with_system_timezone(now)?,
+            unreported_compaction_unix: Some(self.unreported_compaction_unix()?),
+            dashboard_revision: self.dashboard_revision()?,
+            aggregate_boundary_unix: aggregate.settled_through.unwrap_or(0),
+            exact_generation: Some(self.published_generation()?),
+            aggregate_schema_version: aggregate.schema_version,
+            aggregate_pricing_revision: aggregate.pricing_revision,
+            aggregate_exact_generation: aggregate.exact_generation,
+            aggregate_published_generation: aggregate.published_generation,
+            generated_at: now.format(&Rfc3339).map_err(|error| error.to_string())?,
+            checked_at: checked,
+            data_updated_at: self.latest_published_source_modified_at()?,
+        };
+        tx.commit().map_err(|error| error.to_string())?;
+        Ok(result)
+    }
+
     pub(super) fn open(codex_home: &Path) -> Result<Self, String> {
         let path=database_path(codex_home)?;
         #[cfg(not(test))]
@@ -2144,8 +2193,9 @@ impl ExactUsageIndex {
         preparation.finish();
         Ok(Self {
             connection,
-            _operation_lock: operation_lock,
+            _operation_lock: Some(operation_lock),
             migration_pending: !migration_markers_complete,
+            published_read_only: false,
         })
     }
 
@@ -4380,7 +4430,6 @@ impl ExactUsageIndex {
         warnings: &mut Vec<LocalDataWarning>,
     ) -> Result<ExactDashboardData, String> {
         let dashboard_started = Instant::now();
-        let settled_through = Self::latest_eligible_aggregate_boundary(now_utc);
         // The small temp published-files selector avoids copying every event,
         // but the view still reads main.events. Keep the complete dashboard in
         // one deferred WAL snapshot so a concurrent publisher cannot make the
@@ -4389,6 +4438,15 @@ impl ExactUsageIndex {
             .connection
             .unchecked_transaction()
             .map_err(|error| format!("无法开始精确 token 仪表盘读取事务：{error}"))?;
+        let published = if self.published_read_only {
+            Some(PublishedDashboardReadMetadata { revision: self.dashboard_revision()?,
+                aggregate: self.dashboard_aggregate_identity()?, attribution: self.attribution_safety_state()? })
+        } else { None };
+        let settled_through = match &published {
+            Some(metadata) => metadata.aggregate.settled_through.ok_or("已发布旧索引尚无完整图表覆盖证明；已知汇总仍可读取")?
+                .min(Self::latest_eligible_aggregate_boundary(now_utc)),
+            None => Self::latest_eligible_aggregate_boundary(now_utc),
+        };
         let prepare_started = Instant::now();
         self.prepare_dashboard_event_snapshot()?;
         run_after_dashboard_snapshot_hook_for_testing();
@@ -4435,6 +4493,7 @@ impl ExactUsageIndex {
             cache_hit_ranking,
             cache_usage,
             settled_through,
+            published,
         };
         snapshot_transaction
             .commit()
@@ -5278,6 +5337,8 @@ impl ExactUsageIndex {
                 }
             }
         }
+
+        if self.published_read_only { return Ok(selected.into_iter().map(|item| item.usage).collect()); }
 
         let canonical_home = canonical_codex_home(codex_home)?;
         let mut requested_excerpts: HashMap<PathBuf, Vec<ExactEventSourceOffsets>> = HashMap::new();

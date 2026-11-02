@@ -2463,11 +2463,45 @@ struct TokenEvent {
 }
 
 pub fn dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String> {
+    if crate::core::business_store_route::published_reads_only() {
+        return published_dashboard_snapshot(codex_home);
+    }
     let flight = request_precise_refresh(codex_home, PreciseRefreshIntent::Full)?;
     flight
         .wait()
         .full
         .unwrap_or_else(|| Err("精确 token full refresh 未发布结果".into()))
+}
+
+fn published_dashboard_snapshot(codex_home: &Path) -> Result<DashboardSnapshot, String> {
+    let index = ExactUsageIndex::open_published(codex_home)?;
+    let mut warnings = Vec::new();
+    let mut data = index.dashboard_data_with_system_timezone(codex_home, OffsetDateTime::now_utc(), &mut warnings)?;
+    let published = data.published.take().ok_or("只读投影缺少已发布元数据")?;
+    let settled = OffsetDateTime::from_unix_timestamp(data.settled_through)
+        .ok().and_then(|date| date.format(&Rfc3339).ok());
+    Ok(DashboardSnapshot {
+        generated_at: OffsetDateTime::now_utc().format(&Rfc3339).map_err(|error| error.to_string())?,
+        precise_recent_usage_covered_at: settled.clone(), settled_through: settled,
+        precise_recent_usage_fresh: false,
+        precise_observer_epoch: None, precise_observer_started_at_unix_micros: None, precise_observer_sequence: None,
+        precise_attribution_provenance_epoch: Some(published.attribution.provenance_epoch),
+        precise_attribution_generation: Some(published.attribution.generation),
+        precise_attribution_unsafe_since_generation: published.attribution.unsafe_since_generation,
+        precise_attribution_unsafe_id: published.attribution.unsafe_id,
+        precise_attribution_current_scan_unsafe: published.attribution.current_scan_unsafe_cause_detected,
+        exact_generation: published.aggregate.exact_generation,
+        dashboard_revision: Some(published.revision),
+        aggregate_schema_version: published.aggregate.schema_version,
+        aggregate_pricing_revision: published.aggregate.pricing_revision,
+        aggregate_exact_generation: published.aggregate.exact_generation,
+        aggregate_published_generation: published.aggregate.published_generation,
+        account: AccountInfo { display_name: "账户待读取".into(), plan_label: "计划待读取".into() },
+        stats: data.stats, quota: placeholder_quota(), activity_days: data.activity_days,
+        recent_usage_24h: data.recent_usage_24h, recent_usage_7d: data.recent_usage_7d, recent_usage_30d: data.recent_usage_30d,
+        cache_hit_ranking: data.cache_hit_ranking, cache_usage: data.cache_usage,
+        warnings, diagnostics: Vec::new(),
+    })
 }
 
 /// Returns the same-Home persisted last-good projection without opening the
@@ -2770,6 +2804,9 @@ fn trace_precise_failure(stage: &str, error: &str) {
 }
 
 fn usage_summary(codex_home: &Path) -> Result<TokenUsageSummary, String> {
+    if crate::core::business_store_route::published_reads_only() {
+        return ExactUsageIndex::open_published(codex_home)?.published_summary(OffsetDateTime::now_utc()).map(|snapshot| snapshot.summary);
+    }
     request_precise_refresh(codex_home, PreciseRefreshIntent::Summary)?
         .wait()
         .summary
@@ -2799,6 +2836,9 @@ pub fn acknowledge_attribution_safety(
 pub fn usage_summary_snapshot(
     codex_home: &Path,
 ) -> Result<Option<TokenUsageSummarySnapshot>, String> {
+    if crate::core::business_store_route::published_reads_only() {
+        return ExactUsageIndex::open_published(codex_home)?.published_summary(OffsetDateTime::now_utc()).map(Some);
+    }
     cached_dashboard_usage_summary_snapshot_cache_only(codex_home)
 }
 
@@ -2820,6 +2860,9 @@ pub fn refreshed_usage_summary_snapshot_with_interval(
     codex_home: &Path,
     refresh_interval_seconds: Option<u64>,
 ) -> Result<Option<TokenUsageSummarySnapshot>, String> {
+    if crate::core::business_store_route::published_reads_only() {
+        return usage_summary_snapshot(codex_home);
+    }
     let configured_seconds = match refresh_interval_seconds {
         Some(0) => 0,
         Some(value @ (60 | 150 | 300 | 600)) => value,

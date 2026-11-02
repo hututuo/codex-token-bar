@@ -7,6 +7,7 @@ use tokio::sync::Notify;
 pub(crate) enum BusinessStartupPhase {
     Preparing,
     Ready,
+    ReadyWithPendingRecovery,
     Error,
 }
 
@@ -75,20 +76,26 @@ impl BusinessStartupCoordinator {
         if state.job_running {
             return Err("本地业务数据初始化正在进行".into());
         }
-        if state.snapshot.phase != BusinessStartupPhase::Error {
+        if !matches!(state.snapshot.phase, BusinessStartupPhase::Error | BusinessStartupPhase::ReadyWithPendingRecovery) {
             return Err("本地业务数据初始化仅可在失败后重试".into());
         }
         state.job_running = true;
-        state.snapshot = BusinessStartupSnapshot {
-            phase: BusinessStartupPhase::Preparing,
-            message: None,
-        };
+        if state.snapshot.phase != BusinessStartupPhase::ReadyWithPendingRecovery {
+            state.snapshot = BusinessStartupSnapshot { phase: BusinessStartupPhase::Preparing, message: None };
+        }
         drop(state);
         self.changed.notify_waiters();
         Ok(())
     }
 
     pub(crate) fn finish(&self, result: Result<(), String>) -> BusinessStartupSnapshot {
+        self.finish_with_published_reads(result, false)
+    }
+
+    /// Admission is proved by the storage route, never inferred from an error
+    /// message or granted by a frontend retry. Published reads do not grant any
+    /// writer the Ready capability.
+    pub(crate) fn finish_with_published_reads(&self, result: Result<(), String>, published: bool) -> BusinessStartupSnapshot {
         let mut state = lock(&self.state);
         state.job_running = false;
         state.snapshot = match result {
@@ -97,7 +104,7 @@ impl BusinessStartupCoordinator {
                 message: None,
             },
             Err(message) => BusinessStartupSnapshot {
-                phase: BusinessStartupPhase::Error,
+                phase: if published { BusinessStartupPhase::ReadyWithPendingRecovery } else { BusinessStartupPhase::Error },
                 message: Some(message),
             },
         };
@@ -110,9 +117,16 @@ impl BusinessStartupCoordinator {
     pub(crate) fn ensure_ready(&self) -> Result<(), String> {
         match self.snapshot().phase {
             BusinessStartupPhase::Ready => Ok(()),
-            BusinessStartupPhase::Preparing | BusinessStartupPhase::Error => {
+            BusinessStartupPhase::Preparing | BusinessStartupPhase::Error | BusinessStartupPhase::ReadyWithPendingRecovery => {
                 Err("本地业务数据尚未就绪".into())
             }
+        }
+    }
+
+    pub(crate) fn ensure_readable(&self) -> Result<(), String> {
+        match self.snapshot().phase {
+            BusinessStartupPhase::Ready | BusinessStartupPhase::ReadyWithPendingRecovery => Ok(()),
+            _ => Err("本地已发布账本尚未通过只读校验".into()),
         }
     }
 
@@ -222,6 +236,28 @@ mod tests {
 
         let ready = coordinator.finish(Ok(()));
         assert_eq!(ready.phase, BusinessStartupPhase::Ready);
+        assert!(coordinator.ensure_ready().is_ok());
+    }
+
+    #[test]
+    fn verified_published_reads_survive_retry_without_granting_writers() {
+        let coordinator = BusinessStartupCoordinator::default();
+        assert!(coordinator.ensure_readable().is_err());
+        assert!(coordinator.begin_initial());
+        let deferred = coordinator.finish_with_published_reads(Err("late source deferred".into()), true);
+        assert_eq!(deferred.phase, BusinessStartupPhase::ReadyWithPendingRecovery);
+        assert!(coordinator.ensure_readable().is_ok());
+        assert!(coordinator.ensure_ready().is_err());
+        coordinator.begin_retry().unwrap();
+        assert!(coordinator.begin_retry().is_err());
+        assert_eq!(coordinator.snapshot().phase, BusinessStartupPhase::ReadyWithPendingRecovery);
+        assert!(coordinator.ensure_readable().is_ok());
+        assert!(coordinator.ensure_ready().is_err());
+        coordinator.finish_with_published_reads(Err("still pending".into()), true);
+        assert!(coordinator.ensure_readable().is_ok());
+        coordinator.begin_retry().unwrap();
+        coordinator.finish(Ok(()));
+        assert_eq!(coordinator.snapshot().phase, BusinessStartupPhase::Ready);
         assert!(coordinator.ensure_ready().is_ok());
     }
 }

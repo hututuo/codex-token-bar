@@ -59,6 +59,15 @@ final class ApplicationStartupCoordinator: ObservableObject {
         phase = .waiting; start()
     }
 
+    var recoveryNotice: String? {
+        switch phase {
+        case .readyWithPendingRecovery(let message): return "旧账可读，部分恢复尚未完成。\(message)"
+        case .preparing where hasActivated: return "旧账继续显示，正在重试本地恢复。"
+        case .failed(let message) where hasActivated: return "恢复未完成，已保留上次显示的统计。\(message)"
+        default: return nil
+        }
+    }
+
     private func activateOnce() {
         guard !hasActivated else { return }
         runtime = activate(); hasActivated = true
@@ -70,6 +79,21 @@ final class ApplicationStartupCoordinator: ObservableObject {
         guard value.stage != progress.stage || value.completed == value.total
                 || now.timeIntervalSince(progressAt) >= 0.15 else { return }
         progressAt = now; progress = value
+    }
+}
+
+struct PublishedRecoveryNotice: View {
+    @ObservedObject var startup: ApplicationStartupCoordinator
+    var body: some View {
+        if let notice = startup.recoveryNotice {
+            HStack(spacing: 12) {
+                Label(notice, systemImage: "exclamationmark.circle")
+                    .font(.caption).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                Button("重试恢复") { startup.retry() }.disabled(startup.phase == .preparing)
+            }
+            .padding(.horizontal, 16).padding(.vertical, 9)
+            .background(Color.orange.opacity(0.10))
+        }
     }
 }
 

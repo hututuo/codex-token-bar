@@ -62,4 +62,35 @@ final class ApplicationStartupCoordinatorTests: XCTestCase {
         await waitFor { startup.phase == .ready }
         XCTAssertEqual(activations, 1)
     }
+
+    func testPublishedRecoveryRetryKeepsOneRuntimeAndShowsRecoveryNotice() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("published-startup-\(UUID().uuidString)")
+        defer { BusinessSQLiteRoutes.deactivate(); try? FileManager.default.removeItem(at: root) }
+        let support = root.appendingPathComponent("support")
+        let c = BusinessDatabaseMigration.Configuration(container: support.appendingPathComponent("codex-ledger.sqlite"),
+            support: support, exact: root.appendingPathComponent("exact"), legacyExact: root.appendingPathComponent("legacy"))
+        let quota = support.appendingPathComponent("quota-history.sqlite")
+        try SQLiteDatabaseDriver(url: quota, bypassBusinessRoutes: true).execute("CREATE TABLE facts(id INTEGER PRIMARY KEY); INSERT INTO facts VALUES(123)")
+        try BusinessDatabaseMigration.migrate(c, availableBytes: 1 << 32)
+        let late = support.appendingPathComponent("body-speed-late.sqlite")
+        try SQLiteDatabaseDriver(url: late, bypassBusinessRoutes: true).execute("CREATE TABLE facts(id INTEGER PRIMARY KEY); INSERT INTO facts VALUES(456)")
+        XCTAssertThrowsError(try BusinessDatabaseMigration.migrate(c, availableBytes: 0))
+        XCTAssertTrue(BusinessSQLiteRoutes.hasPublishedAdmission)
+        let attempts = Attempts()
+        var activations = 0
+        let startup = ApplicationStartupCoordinator(prepare: { _ in
+            do { try await attempts.run() }
+            catch { throw PublishedBusinessAdmission.Deferred(message: "fixture pending import") }
+        }, activate: { activations += 1; return nil }, productionLifecycle: false)
+        startup.start()
+        await waitFor { if case .readyWithPendingRecovery = startup.phase { return true }; return false }
+        XCTAssertEqual(activations, 1)
+        XCTAssertNotNil(startup.recoveryNotice)
+        startup.retry(); startup.retry()
+        XCTAssertNotNil(startup.recoveryNotice)
+        await waitFor { startup.phase == .ready }
+        XCTAssertNil(startup.recoveryNotice)
+        XCTAssertEqual(activations, 1)
+        XCTAssertEqual(try SQLiteDatabaseDriver(url: quota, readOnly: true).readRows("SELECT id FROM facts") { $0.int(0) }, [123])
+    }
 }

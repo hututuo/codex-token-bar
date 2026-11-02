@@ -3,7 +3,7 @@ import { callCommandStrict } from "../api/command";
 import { isTauriRuntimeAvailable } from "../platform/runtime";
 import { listen } from "@tauri-apps/api/event";
 
-export interface BusinessStartupState { phase:"preparing"|"ready"|"error"; message:string|null }
+export interface BusinessStartupState { phase:"preparing"|"ready"|"ready_with_pending_recovery"|"error"; message:string|null }
 interface BusinessStartupViewState extends BusinessStartupState { statusReadFailed?:boolean }
 export function BusinessStartupScreen({state,onRetry,retryLabel="重试"}:{state:BusinessStartupViewState;onRetry:()=>void;retryLabel?:string}) {
   return <section className="business-startup" role={state.phase === "error"?"alert":"status"}>
@@ -30,9 +30,11 @@ export function BusinessStartupGate({children}:{children:ReactNode}) {
         const next=await callCommandStrict<BusinessStartupState>(command);
         if(disposed || token!==generation) return;
         setState(next);
-        if(next.phase === "preparing") timer=setTimeout(()=>void read(token),1000);
+        if(next.phase === "preparing" || next.phase === "ready_with_pending_recovery") timer=setTimeout(()=>void read(token),next.phase === "preparing"?1000:5000);
       } catch(error) {
-        if(!disposed && token===generation) setState({phase:"error",message:String(error),statusReadFailed:true});
+        if(!disposed && token===generation) setState(previous=>previous.phase === "ready_with_pending_recovery"
+          ? {...previous,message:String(error),statusReadFailed:true}
+          : {phase:"error",message:String(error),statusReadFailed:true});
       }
     }
     retry.current=()=>{
@@ -44,15 +46,22 @@ export function BusinessStartupGate({children}:{children:ReactNode}) {
       }
       const command=latestState.current.statusReadFailed?"read_business_startup_state":"retry_business_startup";
       clearTimeout(timer); generation+=1;
-      setState({phase:"preparing",message:null}); void read(generation,command);
+      if(latestState.current.phase !== "ready_with_pending_recovery") setState({phase:"preparing",message:null});
+      void read(generation,command);
     };
     void read(generation);
     void listen<BusinessStartupState>("business-startup-state-changed",event=>{
       if(disposed) return;
       clearTimeout(timer); generation+=1; setState(event.payload);
-      if(event.payload.phase === "preparing") void read(generation);
+      if(event.payload.phase === "preparing" || event.payload.phase === "ready_with_pending_recovery") void read(generation);
     }).then(stop=>{if(disposed)stop();else unlisten=stop;}).catch(()=>{});
     return ()=>{disposed=true;generation+=1;clearTimeout(timer);retry.current=()=>{};unlisten?.();};
   },[runtime,mainWindow]);
-  return state.phase === "ready"?<>{children}</>:<BusinessStartupScreen state={state} onRetry={()=>retry.current()} retryLabel={mainWindow?"重试":"打开主窗口重试"}/>;
+  return state.phase === "ready" || state.phase === "ready_with_pending_recovery"?<>
+    {state.phase === "ready_with_pending_recovery" && mainWindow && <aside className="business-recovery-notice" role="status">
+      <span>旧账可读，部分恢复尚未完成；新写入暂缓。{state.message}</span>
+      <button type="button" onClick={()=>retry.current()}>重试恢复</button>
+    </aside>}
+    {children}
+  </>:<BusinessStartupScreen state={state} onRetry={()=>retry.current()} retryLabel={mainWindow?"重试":"打开主窗口重试"}/>;
 }

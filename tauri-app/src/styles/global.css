@@ -12969,6 +12969,9 @@ details.session-management-banner {
 .recent-interaction-guide summary{transition:transform .12s,opacity .12s}.recent-interaction-guide summary:active{transform:translateY(1px) scale(.99);opacity:.7}
 .business-startup { max-width:560px;margin:15vh auto;padding:30px;line-height:1.6; }
 .business-startup progress { display:block;width:100%;margin:18px 0; }
+.business-recovery-notice { display:flex;align-items:center;gap:12px;padding:10px 16px;font-size:13px;line-height:1.5;color:var(--text-primary);background:color-mix(in srgb,#e8a23f 12%,transparent); }
+.business-recovery-notice span { flex:1;min-width:0;overflow-wrap:anywhere; }
+.business-recovery-notice button { flex:none; }
 
 .speed-display-controls { display:flex; align-items:center; flex-wrap:wrap; gap:8px 14px; padding:6px 0; font-size:12px; }
 .speed-display-controls label { display:flex; align-items:center; gap:6px; color:inherit; }

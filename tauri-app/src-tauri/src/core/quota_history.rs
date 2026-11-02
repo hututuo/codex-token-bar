@@ -350,6 +350,17 @@ impl QuotaHistoryDatabase {
         let Some(identity) = identity else {
             return Ok(QuotaHistoryBundle::default());
         };
+        if crate::core::business_store_route::published_reads_only() {
+            let connection = self.open_published_for_identity(identity)?
+                .ok_or(rusqlite::Error::InvalidQuery)?;
+            let tx = connection.unchecked_transaction()?;
+            let filter_row = QuotaHistoryRow::from_bundle(identity, bundle, now_unix());
+            let local = database::published_rows_for_row(&tx, &filter_row)?;
+            let peers = self.read_peer_rows_for_identity(identity, f64::MAX)?;
+            let result = history_bundle_from_rows_with_filter(merge_history_rows(local, peers), recent_count, Some(identity), filter_anomalies);
+            tx.commit()?;
+            return Ok(result);
+        }
         let _database_guard = quota_history_database_guard();
         let mut connection = self.open_for_identity(Some(identity))?;
         ensure_schema(&connection)?;
@@ -413,7 +424,11 @@ impl QuotaHistoryDatabase {
                 )
                 .map_err(store_route_sql_error)?;
                 let logical_path = format!("legacy/quota-history/{source_identity}");
-                let connection = if path.is_file() {
+                let connection = if crate::core::business_store_route::published_reads_only() {
+                    crate::core::business_store_route::open_registered_store_read_only(
+                        "quota_history_legacy", &source_identity, &logical_path, Duration::from_secs(2),
+                    )
+                } else if path.is_file() {
                     crate::core::business_store_route::open_store(
                         "quota_history_legacy",
                         &source_identity,
@@ -527,6 +542,22 @@ impl QuotaHistoryDatabase {
                 &[],
             )
             .map_err(store_route_sql_error)
+        }
+    }
+
+    fn open_published_for_identity(&self, identity: &QuotaHistoryIdentity) -> SqlResult<Option<Connection>> {
+        #[cfg(test)]
+        {
+            let _ = identity;
+            if !self.path.exists() { return Ok(None); }
+            sqlite::open_read_only(&self.path, Duration::from_secs(2)).map(Some)
+        }
+        #[cfg(not(test))]
+        {
+            let source = crate::core::business_store_route::source_identity("quota_history", Path::new(&identity.home_identity))
+                .map_err(store_route_sql_error)?;
+            crate::core::business_store_route::open_registered_store_read_only("quota_history", &source,
+                &format!("quota-history/home/{source}"), Duration::from_secs(2)).map_err(store_route_sql_error)
         }
     }
 }
