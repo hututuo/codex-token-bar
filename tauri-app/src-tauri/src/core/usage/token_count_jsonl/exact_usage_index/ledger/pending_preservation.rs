@@ -39,17 +39,7 @@ pub(super) fn snapshot(db: &Connection, source: i64, generation: i64) -> Result<
     if previous != generation {
         return Err(failure("旧来源与导入目标代次不一致"));
     }
-    for (table, expected) in [("pending_event_rows", FIELDS), ("usage_ledger_pending_bindings", BINDINGS)] {
-        let mut columns = db.prepare(&format!("PRAGMA table_info({table})")).map_err(failure)?;
-        let mut rows = columns.query([]).map_err(failure)?;
-        let mut wanted = expected.split(',');
-        while let Some(row) = rows.next().map_err(failure)? {
-            if wanted.next() != Some(row.get::<_, String>(1).map_err(failure)?.as_str()) {
-                return Err(failure(format!("{table} 含未知字段布局，不能替换旧记录")));
-            }
-        }
-        if wanted.next().is_some() { return Err(failure(format!("{table} 缺少旧记录字段"))); }
-    }
+    verify_pending_history_layout(db).map_err(failure)?;
     db.execute(&format!("CREATE TEMP TABLE {CONTEXT} AS \
         SELECT p.source_id,p.target_generation,p.size AS raw_size, \
                p.prefix_sha256 AS raw_prefix,p.resume_offset AS raw_resume,s.path,s.session_id \

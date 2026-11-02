@@ -30,12 +30,11 @@ final class ExactRetryRawCorroboration {
     }
 
     func event(_ indexed: CodexUsageAnalyzer.IndexedTokenEvent) throws {
-        guard indexed.sourceOffset <= UInt64(Int64.max),
+        guard let raw = Int64(exactly: indexed.sourceOffset),
               indexed.userPromptOffset.map({ $0 <= UInt64(Int64.max) }) ?? true,
               indexed.assistantStartOffset.map({ $0 <= UInt64(Int64.max) }) ?? true else {
             throw BusinessStoreError.proofMismatch
         }
-        let raw = Int64(indexed.sourceOffset)
         let rows = try current.readRows("SELECT event_id,prompt_offset,assistant_offset FROM main.usage_ledger_bindings WHERE source_id=? AND generation=? AND raw_offset=? AND available=1",
             bindings: [.int64(source), .text(generation), .int64(raw)], map: { try ExactRetryDurableHistory.Row($0) })
         guard rows.count <= 1 else { throw BusinessStoreError.proofMismatch }
@@ -43,7 +42,7 @@ final class ExactRetryRawCorroboration {
             // Released reconcile can hold a new, unproved observation while
             // retaining all previous usage. A raw observation is not authority
             // to promote that diagnostic row to counted consumption.
-            try unresolved(indexed)
+            try unresolved(indexed, rawOffset: raw)
             return
         }
         guard case .int64(let eventID) = binding.values[0] else { throw BusinessStoreError.proofMismatch }
@@ -81,7 +80,7 @@ final class ExactRetryRawCorroboration {
         }
     }
 
-    private func unresolved(_ indexed: CodexUsageAnalyzer.IndexedTokenEvent) throws {
+    private func unresolved(_ indexed: CodexUsageAnalyzer.IndexedTokenEvent, rawOffset: Int64) throws {
         let event = indexed.event
         let values: [SQLiteBinding] = [.double(event.timestamp.timeIntervalSince1970), .int(event.tokens),
             .int(event.inputTokens), .int(event.cachedInputTokens), .int(event.outputTokens), .int(event.reasoningOutputTokens),
@@ -95,7 +94,7 @@ final class ExactRetryRawCorroboration {
             SELECT timestamp,tokens,input_tokens,cached_input_tokens,output_tokens,reasoning_output_tokens,
                 model,accounting_kind,reported_total_tokens,legacy_tokens,identity,prompt_offset,assistant_offset
             FROM main.usage_ledger_unresolved WHERE source_id=? AND generation=? AND raw_offset=?
-            """, bindings: [.int64(source), .text(generation), .int64(indexed.sourceOffset)], map: ExactRetryAppendCoverage.encoded)
+            """, bindings: [.int64(source), .text(generation), .int64(rawOffset)], map: ExactRetryAppendCoverage.encoded)
         guard actual == expected else { throw BusinessStoreError.proofMismatch }
     }
 }

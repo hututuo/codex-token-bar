@@ -5,6 +5,33 @@ use super::*;
 use rusqlite::types::Value;
 
 mod pending_preservation;
+mod missing_source;
+
+/// Publication consumes these complete durable records. Do not silently
+/// discard unknown historical fields when clearing the pending generation.
+fn verify_pending_history_layout(db: &Connection) -> Result<(), String> {
+    for (table, expected) in [("pending_event_rows", FIELDS), ("usage_ledger_pending_bindings", BINDINGS)] {
+        let mut columns = db.prepare(&format!("PRAGMA table_xinfo({table})")).map_err(|error| error.to_string())?;
+        let mut rows = columns.query([]).map_err(|error| error.to_string())?;
+        let mut wanted = expected.split(',');
+        while let Some(row) = rows.next().map_err(|error| error.to_string())? {
+            if wanted.next() != Some(row.get::<_, String>(1).map_err(|error| error.to_string())?.as_str())
+                || row.get::<_, i64>(6).map_err(|error| error.to_string())? != 0 {
+                return Err(format!("{table} 含未知字段布局，不能替换旧记录"));
+            }
+        }
+        if wanted.next().is_some() { return Err(format!("{table} 缺少旧记录字段")); }
+    }
+    Ok(())
+}
+
+pub(super) fn retain_pending_when_source_missing(
+    db: &Connection,
+    source_id: i64,
+    generation: i64,
+) -> Result<bool, String> {
+    missing_source::retain(db, source_id, generation)
+}
 
 pub(super) fn snapshot_pending_import(
     db: &Connection,

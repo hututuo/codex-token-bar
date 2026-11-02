@@ -295,7 +295,7 @@ class FixtureAttempt:
 
     def succeed(self, native: dict) -> dict:
         root = self._owned_root()
-        metadata = {key: self.report[key] for key in ("attemptID", "source_sha", "working_tree_dirty", "artifactDirectory", "fixtureRoot") if key in self.report}
+        metadata = {key: self.report[key] for key in ("attemptID", "source_sha", "working_tree_dirty", "source_changes", "artifactDirectory", "fixtureRoot") if key in self.report}
         self.report = {**native, **metadata, "status": "PASS", "cfg_test": False,
             "phase": "completed", "fixtureRootRetained": True}
         self.save()

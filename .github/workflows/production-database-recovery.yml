@@ -78,7 +78,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2025, macos-15]
+        os: [windows-2025, macos-15-intel]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
     steps:
@@ -126,7 +126,7 @@ jobs:
       fail-fast: false
       max-parallel: 4
       matrix:
-        os: [windows-2025, macos-15]
+        os: [windows-2025, macos-15-intel]
         release: ['0.9.8', '0.9.9', '0.9.10', '0.9.11']
     runs-on: ${{ matrix.os }}
     timeout-minutes: 80
@@ -145,12 +145,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
           key: rust-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-v1
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: tauri-app/src-tauri/target
-          key: recovery-formed-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ matrix.release }}-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-${{ needs.source.outputs.sha }}
-          restore-keys: |
-            recovery-formed-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ matrix.release }}-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-
+      # Each extracted release/candidate gets a fresh target in the runner.
+      # Vendored Tauri plugin build metadata embeds absolute source paths and
+      # cannot be restored into a different temporary source archive safely.
       - name: Compile actual released code and resume its populated database states
         shell: bash
         env:
@@ -179,7 +176,7 @@ jobs:
       max-parallel: 4
       matrix:
         release: ['0.9.8', '0.9.9', '0.9.10', '0.9.11']
-    runs-on: macos-26
+    runs-on: macos-26-intel
     timeout-minutes: 80
     env:
       GIT_LFS_SKIP_SMUDGE: '1'
@@ -213,7 +210,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2025, macos-15]
+        os: [windows-2025, macos-15-intel]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 80
     steps:
@@ -257,7 +254,7 @@ jobs:
 
   swift-backfill-scale:
     needs: [source, harness-contracts]
-    runs-on: macos-26
+    runs-on: macos-26-intel
     timeout-minutes: 65
     env:
       GIT_LFS_SKIP_SMUDGE: '1'
@@ -320,11 +317,16 @@ jobs:
               'public_release': '0.9.7',
               'public_release_sha': '0219554ce444b0013987da7b82e3c2e891f4afdb',
               'formed_releases': ['0.9.8', '0.9.9', '0.9.10', '0.9.11'],
+              'rust_macos_runner': 'macos-15-intel',
+              'swift_macos_runner': 'macos-26-intel',
+              'macos_recovery_architecture': 'x86_64',
               'formed_runtime': 'Rust non-cfg(test), Windows and macOS; not native Swift formed-release evidence',
               'swift_formed_releases': ['0.9.8', '0.9.9', '0.9.10', '0.9.11'],
               'swift_formed_runtime': 'native-swift-xctest-production-apis',
               'swift_formed_scenarios': ['committed', 'interrupted', 'enriched'],
               'swift_formed_phases': ['resume', 'reopen'],
+              'swift_formed_enriched_proofs': ['nullModelAndTurnCompleted', 'originalVersionsRetained',
+                  'repeatedMetadataGenerationsPreserved', 'rawMissingBeforeMigration', 'completeImportedNamespacePreserved'],
               'swift_backfill_sizes': [13, 128, 512, 4124],
               'rust_backfill_sizes': [13, 128, 512, 4124],
               'rust_backfill_profile': 'release',

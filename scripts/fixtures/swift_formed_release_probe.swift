@@ -41,7 +41,11 @@ final class SwiftFormedReleaseProbeTests: XCTestCase {
         let numericAfter: TableImage
         let retainedVersions: TableImage
         let rawBeforeSha256: String
+        let rawIntermediateSha256: String
         let rawAfterSha256: String
+        let rawBSha256: String
+        let intermediate: Original
+        let rawMissingBeforeMigration: Bool
     }
     private struct Formed: Codable {
         let producerVersion: String
@@ -314,6 +318,32 @@ final class SwiftFormedReleaseProbeTests: XCTestCase {
         // the released legacy owner, including sources/checkpoints/derived
         // updates, while the previously imported A partition stays frozen.
         try sync(root, letter: "a", files: [file])
+        var intermediate: Original?
+        var intermediateRawDigest: String?
+        if scenario == "enriched" {
+            let g1DB = raw(original, readOnly: false)
+            _ = try g1DB.readRows("PRAGMA wal_checkpoint(TRUNCATE)") { $0.int(0) }
+            _ = try g1DB.readRows("PRAGMA journal_mode=DELETE") { $0.text(0) }
+            let g1Database = root.appendingPathComponent("intermediate-enrichment-exact.sqlite")
+            try FileManager.default.copyItem(at: original, to: g1Database)
+            intermediate = .init(sha256: try digest(g1Database), proof: try proof(g1Database), tables: try tables(raw(g1Database)))
+            let g1Raw = root.appendingPathComponent("intermediate-enrichment-rollout.jsonl")
+            try FileManager.default.copyItem(at: file, to: g1Raw)
+            intermediateRawDigest = try digest(g1Raw)
+            let redundantContext = "{\"timestamp\":\"2026-10-21T10:00:00Z\",\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-5\"}}\n"
+            try (Data(redundantContext.utf8) + Data(contentsOf: file)).write(to: file, options: .atomic)
+            try sync(root, letter: "a", files: [file])
+            try require(try table(raw(original), "events") == intermediate?.tables["events"],
+                "Second released reparse changed historical event metadata")
+            try require(try table(raw(original), "usage_ledger_bindings") != intermediate?.tables["usage_ledger_bindings"],
+                "Second released reparse did not move current bindings")
+            try require(try raw(original).readRows("SELECT COUNT(DISTINCT generation),COUNT(DISTINCT turn_id) FROM usage_ledger_turns") {
+                [$0.int(0) ?? -1, $0.int(1) ?? -1]
+            } == [[2, 1]], "Released writer did not retain both generations of the same logical turn")
+            try require(try raw(original).readRows("SELECT COUNT(*) FROM events e JOIN usage_ledger_bindings b ON b.source_id=e.source_id AND b.event_id=e.source_offset WHERE e.assistant_start_offset IS NOT NULL AND b.assistant_offset=e.assistant_start_offset+?",
+                bindings: [.int(redundantContext.utf8.count)]) { $0.int(0) } == [2],
+                "G2 current bindings must move while historical assistant markers remain at G1")
+        }
         let total = scenario == "enriched" ? 155 : 172
         try require(try Self.total(original) == total, "The released legacy writer changed the required numeric total")
         let db = raw(original, readOnly: false)
@@ -324,6 +354,7 @@ final class SwiftFormedReleaseProbeTests: XCTestCase {
               let afterEvents = updatedTables["events"] else { throw Failure.invalid("Missing old/current Exact events") }
         let enrichment: Enrichment?
         if scenario == "enriched" {
+            guard let intermediate, let intermediateRawDigest else { throw Failure.invalid("Missing intermediate released generation") }
             let afterNumeric = try numeric(raw(original))
             try require(afterNumeric == oldNumeric && (try table(raw(original), "usage_ledger_identities")) == oldIdentities,
                 "Released enrichment changed an old typed numeric fact or identity")
@@ -336,8 +367,19 @@ final class SwiftFormedReleaseProbeTests: XCTestCase {
                 "Released enrichment did not retain both old model versions")
             try require(try numeric(raw(original), retained: true) == oldNumeric,
                 "Retained versions do not contain every exact historical numeric field")
+            let rawAfter = try digest(file)
+            try FileManager.default.copyItem(at: file, to: root.appendingPathComponent("post-enrichment-rollout.jsonl"))
+            let bFile = source(root, "b")
+            let rawB = try digest(bFile)
+            try FileManager.default.copyItem(at: bFile, to: root.appendingPathComponent("pre-upgrade-b-rollout.jsonl"))
+            // The actual candidate must recover already formed history with
+            // both sources gone before its first migration, not merely cope
+            // with deletion after a successful upgrade.
+            try FileManager.default.removeItem(at: file)
+            try FileManager.default.removeItem(at: bFile)
             enrichment = .init(numericBefore: oldNumeric, numericAfter: afterNumeric, retainedVersions: versions,
-                rawBeforeSha256: rawBefore, rawAfterSha256: try digest(file))
+                rawBeforeSha256: rawBefore, rawIntermediateSha256: intermediateRawDigest, rawAfterSha256: rawAfter,
+                rawBSha256: rawB, intermediate: intermediate, rawMissingBeforeMigration: true)
         } else {
             try require(beforeEvents.columns == afterEvents.columns
                 && Set(beforeEvents.rows).isSubset(of: Set(afterEvents.rows)),
@@ -357,6 +399,7 @@ final class SwiftFormedReleaseProbeTests: XCTestCase {
         if scenario == "enriched" {
             report["oldNumericRowsPreserved"] = true; report["oldIdentityRowsPreserved"] = true
             report["nullModelAndTurnCompleted"] = true; report["originalVersionsRetained"] = true
+            report["repeatedMetadataGenerationsPreserved"] = true; report["rawMissingBeforeMigration"] = true
         } else { report["oldTypedEventsPreserved"] = true }
         print("TOKENBAR_SWIFT_FORMED_REPORT " + String(decoding: try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]), as: UTF8.self))
     }
@@ -365,6 +408,28 @@ final class SwiftFormedReleaseProbeTests: XCTestCase {
         let backup = root.appendingPathComponent(formed.scenario == "enriched" ? "pre-enrichment-exact.sqlite" : "pre-append-exact.sqlite")
         try require(try digest(backup) == expected?.sha256 && proof(backup) == expected?.proof,
             "The pre-append original Exact database was not preserved")
+    }
+    private static func checkEnrichment(_ late: LateSource, root: URL) throws -> Enrichment {
+        guard let enrichment = late.enrichment else { throw Failure.invalid("Required released enrichment evidence is missing") }
+        try require(enrichment.numericBefore == enrichment.numericAfter && enrichment.retainedVersions.rows.count == 2
+            && enrichment.rawMissingBeforeMigration, "Incomplete released enrichment evidence")
+        let intermediate = root.appendingPathComponent("intermediate-enrichment-exact.sqlite")
+        try require(try digest(intermediate) == enrichment.intermediate.sha256
+            && proof(intermediate) == enrichment.intermediate.proof
+            && tables(raw(intermediate)) == enrichment.intermediate.tables, "Intermediate released database changed")
+        for (name, expected) in [("pre-enrichment-rollout.jsonl", enrichment.rawBeforeSha256),
+            ("intermediate-enrichment-rollout.jsonl", enrichment.rawIntermediateSha256),
+            ("post-enrichment-rollout.jsonl", enrichment.rawAfterSha256),
+            ("pre-upgrade-b-rollout.jsonl", enrichment.rawBSha256)] {
+            try require(try digest(root.appendingPathComponent(name)) == expected, "Retained raw generation changed")
+        }
+        try require(Set([enrichment.rawBeforeSha256, enrichment.rawIntermediateSha256, enrichment.rawAfterSha256]).count == 3,
+            "Two distinct released representation rewrites are required")
+        for letter in ["a", "b"] {
+            try require(!FileManager.default.fileExists(atPath: source(root, letter).path),
+                "Old raw source must already be absent before candidate migration")
+        }
+        return enrichment
     }
     private static func resume(_ root: URL, scenario: String, phase: String) throws {
         try require(compiledRole == "candidate", "Only the candidate may resume old state")
@@ -377,9 +442,7 @@ final class SwiftFormedReleaseProbeTests: XCTestCase {
             let late = try read(LateSource.self, "late-source-state.json", in: root)
             try require(late.previousExactBackup == (scenario == "enriched" ? "pre-enrichment-exact.sqlite" : "pre-append-exact.sqlite"), "Unexpected original evidence path")
             if scenario == "enriched" {
-                guard let enrichment = late.enrichment else { throw Failure.invalid("Required released enrichment evidence is missing") }
-                try require(enrichment.numericBefore == enrichment.numericAfter && enrichment.retainedVersions.rows.count == 2,
-                    "Incomplete released enrichment evidence")
+                _ = try checkEnrichment(late, root: root)
             }
             handoff = late.latest
             try checkPreviousExact(formed, root: root)
@@ -397,6 +460,14 @@ final class SwiftFormedReleaseProbeTests: XCTestCase {
         if phase == "resume" {
             let resumedProofs = try storeProofs(c.container)
             let changedExactID = c.specification(for: c.exact.appendingPathComponent(ownerNames[0]))?.id
+            if scenario == "enriched" {
+                guard let id = changedExactID, let actual = resumedProofs[id] else { throw Failure.invalid("Missing enriched namespace") }
+                let receiptURL = c.backups.appendingPathComponent(id).appendingPathComponent("receipt.json")
+                let receipt = try JSONDecoder().decode(BusinessDatabaseMigration.Receipt.self, from: Data(contentsOf: receiptURL))
+                try require(actual == receipt.imported && (try proof(URL(fileURLWithPath: receipt.normalizedPath))) == actual,
+                    "Complete imported namespace differs from its independently verified normalized snapshot")
+                try write(actual, "enriched-imported-namespace-proof.json", in: root)
+            }
             for (id, before) in formed.formedStoreProofs {
                 if scenario != "committed" && id == changedExactID { continue }
                 try require(resumedProofs[id] == before,
@@ -410,13 +481,14 @@ final class SwiftFormedReleaseProbeTests: XCTestCase {
                 try require(try total(c.exact.appendingPathComponent(name)) == incomingTotals[number], "Pre-append total differs")
             }
             let candidateAdded = try addSource(root, released: false)
-            var files = [source(root, "a"), candidateAdded]
+            var files = scenario == "enriched" ? [candidateAdded] : [source(root, "a"), candidateAdded]
             if scenario == "committed" {
                 files.append(home(root, "a").appendingPathComponent("sessions/rollout-019ff8b9-09e7-75c1-b9a5-14fe7b60065b.jsonl"))
             }
             try sync(root, letter: "a", files: files)
             try sync(root, letter: "a", files: files, forbidParse: true)
-            for file in files + [source(root, "b")] { try FileManager.default.removeItem(at: file) }
+            let remainingRaw = scenario == "enriched" ? files : files + [source(root, "b")]
+            for file in remainingRaw { try FileManager.default.removeItem(at: file) }
             for letter in ["a", "b"] { try sync(root, letter: letter, files: [], forbidParse: true) }
             var events: [String: TableImage] = [:]
             for name in ownerNames { events[name] = try table(SQLiteDatabaseDriver(url: c.exact.appendingPathComponent(name), readOnly: true), "events") }
@@ -457,12 +529,31 @@ final class SwiftFormedReleaseProbeTests: XCTestCase {
             "totals": totals, "oldTypedProofsPreserved": true, "originalDatabasesUnchanged": true,
             "crashWALPreserved": true, "oldBPreserved": true, "rawDisappearanceRetainsHistory": true]
         if scenario == "enriched" {
+            let late = try read(LateSource.self, "late-source-state.json", in: root)
+            let enrichment = try checkEnrichment(late, root: root)
             let active = SQLiteDatabaseDriver(url: c.exact.appendingPathComponent(ownerNames[0]), readOnly: true)
             try require(try active.readRows("SELECT COUNT(*) FROM events WHERE model='gpt-5' AND user_prompt_offset IS NOT NULL") { $0.int(0) } == [2],
                 "Upgraded model/turn history is unavailable")
             try require(try active.readRows("SELECT COUNT(*) FROM retained_usage_revisions WHERE model IS NULL") { $0.int(0) } == [2],
                 "Original metadata versions were discarded")
+            guard let g1Events = enrichment.intermediate.tables["events"],
+                  let g1Turns = enrichment.intermediate.tables["usage_ledger_turns"],
+                  let g2Turns = late.latest.originals["10-exact/" + ownerNames[0]]?.tables["usage_ledger_turns"],
+                  let store = c.specification(for: c.exact.appendingPathComponent(ownerNames[0])) else {
+                throw Failure.invalid("Missing repeated-generation proof")
+            }
+            try require(Set(g1Events.rows).isSubset(of: Set(try table(active, "events").rows))
+                && Set(g1Turns.rows).isSubset(of: Set(g2Turns.rows))
+                && Set(g2Turns.rows).isSubset(of: Set(try table(active, "usage_ledger_turns").rows)),
+                "Intermediate event metadata or turn generations were discarded")
+            let initial = try read(BusinessStoreProof.self, "enriched-imported-namespace-proof.json", in: root)
+            let receipt = try JSONDecoder().decode(BusinessDatabaseMigration.Receipt.self,
+                from: Data(contentsOf: c.backups.appendingPathComponent(store.id).appendingPathComponent("receipt.json")))
+            try require(initial == receipt.imported && (try proof(URL(fileURLWithPath: receipt.normalizedPath))) == initial,
+                "Complete import proof or normalized image changed across candidate processes")
             report["nullModelAndTurnCompleted"] = true; report["originalVersionsRetained"] = true
+            report["repeatedMetadataGenerationsPreserved"] = true; report["rawMissingBeforeMigration"] = true
+            report["completeImportedNamespacePreserved"] = true
         }
         print("TOKENBAR_SWIFT_FORMED_REPORT " + String(decoding: try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]), as: UTF8.self))
     }

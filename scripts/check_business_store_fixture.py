@@ -56,6 +56,7 @@ def validate_native_report(report: object) -> dict:
         "stageSchemaMutationRejected", "stageSchemaMutationBeforePublicationRejected",
         "unsealedStageRebuiltFromSource", "pendingHistoryOverwriteRejected",
         "unsealedPreservationMutationRejected",
+        "missingSourcePendingHistoryPublished",
     )):
         raise ValueError("Retained stage content, schema, seal ownership and safe rebuild were not verified")
     return report
@@ -67,9 +68,9 @@ def main() -> None:
     phase = "source-identity"
     try:
         source_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repository, text=True).strip()
-        dirty = bool(subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"],
-                                            cwd=repository, text=True).strip())
-        attempt.update(source_sha=source_sha, working_tree_dirty=dirty)
+        changes = subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"],
+                                          cwd=repository, text=True).splitlines()
+        attempt.update(source_sha=source_sha, working_tree_dirty=bool(changes), source_changes=changes)
         phase = "prepare-root"
         base = fixture_temporary_base()
         env = attempt.create_root(base, prefix="tokenbar-production-readers-", slugs=("s", "c", "ss", "sc", "uc"))

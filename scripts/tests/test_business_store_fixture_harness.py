@@ -38,6 +38,7 @@ STAGE_PROOFS = (
     "stageSchemaMutationRejected", "stageSchemaMutationBeforePublicationRejected",
     "unsealedStageRebuiltFromSource", "pendingHistoryOverwriteRejected",
     "unsealedPreservationMutationRejected",
+    "missingSourcePendingHistoryPublished",
 )
 
 

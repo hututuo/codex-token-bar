@@ -33,6 +33,13 @@ MARKER = "TOKENBAR_SWIFT_FORMED_REPORT "
 RUNTIME = "native-swift-xctest-production-apis"
 SCENARIOS = ("committed", "interrupted", "enriched")
 PHASES = ("resume", "reopen")
+ENRICHED_PROOFS = ("nullModelAndTurnCompleted", "originalVersionsRetained",
+    "repeatedMetadataGenerationsPreserved", "rawMissingBeforeMigration", "completeImportedNamespacePreserved")
+EVENT_COLUMNS = ["source_id", "source_offset", "timestamp", "tokens", "input_tokens", "cached_input_tokens",
+    "output_tokens", "reasoning_output_tokens", "model", "user_prompt_offset", "assistant_start_offset",
+    "accounting_kind", "reported_total_tokens", "legacy_tokens"]
+BINDING_COLUMNS = ["source_id", "event_id", "generation", "raw_offset", "prompt_offset", "assistant_offset", "available"]
+TURN_COLUMNS = ["source_id", "generation", "raw_offset", "turn_id"]
 NUMERIC_COLUMNS = ["source_id", "source_offset", "timestamp", "tokens", "input_tokens",
     "cached_input_tokens", "output_tokens", "reasoning_output_tokens", "accounting_kind", "reported_total_tokens", "legacy_tokens"]
 RETAINED_COLUMNS = ["revision_id", "source_id", "session_id", "path", "signature", "parser_revision", "position", "timestamp",
@@ -198,7 +205,7 @@ def parse_report(output: str, phase: str, scenario: str, release: str, candidate
         "oldTypedProofsPreserved": True, "originalDatabasesUnchanged": True,
         "crashWALPreserved": True, "oldBPreserved": True, "rawDisappearanceRetainsHistory": True}
     if scenario == "enriched":
-        required.update(nullModelAndTurnCompleted=True, originalVersionsRetained=True)
+        required.update({key: True for key in ENRICHED_PROOFS})
     for key, expected in required.items():
         if value.get(key) != expected or (type(expected) is bool and value.get(key) is not expected):
             raise ValueError(f"Invalid native proof {key}: {value.get(key)!r}")
@@ -299,7 +306,8 @@ def validate_late_enrichment(output: str, root: Path, release: str) -> dict:
         "producerVersion": release, "producerSha": RELEASES[release], "runtime": RUNTIME,
         "totals": [155, 310], "frozenDestinationUnchanged": True, "previousOriginalPreserved": True,
         "oldNumericRowsPreserved": True, "oldIdentityRowsPreserved": True,
-        "nullModelAndTurnCompleted": True, "originalVersionsRetained": True}
+        "nullModelAndTurnCompleted": True, "originalVersionsRetained": True,
+        "repeatedMetadataGenerationsPreserved": True, "rawMissingBeforeMigration": True}
     for key, expected in required.items():
         if value.get(key) != expected or (type(expected) is bool and value.get(key) is not expected):
             raise ValueError(f"Invalid released enrichment proof {key}")
@@ -323,14 +331,48 @@ def validate_late_enrichment(output: str, root: Path, release: str) -> dict:
     retained = late["latest"]["originals"]["10-exact/" + "a" * 64 + ".sqlite"].get("tables", {}).get("retained_usage_revisions")
     if retained != evidence["retainedVersions"]:
         raise ValueError("Retained metadata versions do not match the actual released source image")
+    if evidence.get("rawMissingBeforeMigration") is not True:
+        raise ValueError("Raw loss must precede the first candidate migration")
+    intermediate = evidence.get("intermediate")
+    if not isinstance(intermediate, dict):
+        raise ValueError("The intermediate released database proof is required")
+    validate_store_proof(intermediate.get("proof"))
+    intermediate_db = root / "intermediate-enrichment-exact.sqlite"
+    if intermediate_db.is_symlink() or not intermediate_db.resolve(strict=True).is_relative_to(root.resolve()) \
+            or hashlib.sha256(intermediate_db.read_bytes()).hexdigest() != intermediate.get("sha256"):
+        raise ValueError("Intermediate released database was not preserved")
+    first_tables = intermediate.get("tables", {})
+    latest_tables = late["latest"]["originals"]["10-exact/" + "a" * 64 + ".sqlite"].get("tables", {})
+    if not isinstance(first_tables, dict) or not isinstance(latest_tables, dict):
+        raise ValueError("Complete intermediate and latest table images are required")
+    for tables, turns in [(first_tables, 1), (latest_tables, 2)]:
+        validate_table_image(tables.get("events"), rows=2, columns=EVENT_COLUMNS)
+        validate_table_image(tables.get("usage_ledger_bindings"), rows=2, columns=BINDING_COLUMNS)
+        validate_table_image(tables.get("usage_ledger_turns"), rows=turns, columns=TURN_COLUMNS)
+        validate_table_image(tables.get("retained_usage_revisions"), rows=2, columns=RETAINED_COLUMNS)
+    old_turns = {tuple(row) for row in first_tables["usage_ledger_turns"]["rows"]}
+    new_turns = {tuple(row) for row in latest_tables["usage_ledger_turns"]["rows"]}
+    if first_tables["events"] != latest_tables["events"] or first_tables["retained_usage_revisions"] != retained \
+            or first_tables["usage_ledger_bindings"] == latest_tables["usage_ledger_bindings"] \
+            or not old_turns < new_turns or len({row[1] for row in new_turns}) != 2 \
+            or len({row[3] for row in new_turns}) != 1:
+        raise ValueError("Repeated released metadata generations were not fully preserved")
     raw_before = root / "pre-enrichment-rollout.jsonl"
-    raw_after = root / "home-a/sessions/rollout-019ff8b9-09e7-75c1-b9a5-14fe7b60065a.jsonl"
-    for path, key in [(raw_before, "rawBeforeSha256"), (raw_after, "rawAfterSha256")]:
+    raw_intermediate = root / "intermediate-enrichment-rollout.jsonl"
+    raw_after = root / "post-enrichment-rollout.jsonl"
+    for path, key in [(raw_before, "rawBeforeSha256"), (raw_intermediate, "rawIntermediateSha256"),
+                      (raw_after, "rawAfterSha256"), (root / "pre-upgrade-b-rollout.jsonl", "rawBSha256")]:
         if path.is_symlink() or not path.resolve(strict=True).is_relative_to(root.resolve()) \
                 or hashlib.sha256(path.read_bytes()).hexdigest() != evidence.get(key):
             raise ValueError("Enrichment raw representation is absent or changed")
-    if evidence["rawBeforeSha256"] == evidence["rawAfterSha256"]:
-        raise ValueError("The released metadata scenario did not exercise a real source rewrite")
+    if len({evidence[key] for key in ("rawBeforeSha256", "rawIntermediateSha256", "rawAfterSha256")}) != 3 \
+            or not raw_intermediate.read_bytes().endswith(raw_before.read_bytes()) \
+            or not raw_after.read_bytes().endswith(raw_intermediate.read_bytes()):
+        raise ValueError("The released metadata scenario did not exercise both representation rewrites")
+    for letter in "ab":
+        old_raw = root / f"home-{letter}/sessions/rollout-019ff8b9-09e7-75c1-b9a5-14fe7b60065a.jsonl"
+        if old_raw.exists() or old_raw.is_symlink():
+            raise ValueError("Raw source is still present before candidate migration")
     return value
 
 

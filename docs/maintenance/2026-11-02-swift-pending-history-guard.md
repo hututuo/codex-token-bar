@@ -205,6 +205,21 @@ Swift matrix is independent of the Rust two-scenario matrix. The complete
 candidate namespace, second Exact owner, retained versions and old source
 proofs are checked; aggregate totals alone do not satisfy that gate.
 
+The enriched scenario now makes the unchanged released process form G1 and G2
+in sequence. It retains a complete closed G1 database image and full typed
+proof, both raw representations and the original G0 evidence. The source's
+event metadata must stay at G1 while G2 bindings move and both turn generations
+remain. It then removes A and B raw files **before** candidate startup. Candidate
+resume compares the whole imported A namespace with the receipt and independent
+normalized snapshot, ingests 11 tokens through a new rollout (155→166), removes
+that new raw file, and reopens in another process with B still at 310. Both
+candidate reports must explicitly prove `repeatedMetadataGenerationsPreserved`,
+`rawMissingBeforeMigration` and `completeImportedNamespacePreserved` in addition
+to the earlier model/retention/owner/WAL checks. The Python validator rejects
+missing or non-boolean flags, lost intermediate rows, collapsed turn generations,
+unchanged bindings, changed evidence bytes, and a raw file still present at the
+handoff. Its 18 contract tests passed locally; this is not native execution.
+
 This implementation is not yet native acceptance. No Swift/macOS toolchain is
 installed on the Linux work host. A portable SQLite check parsed the exact new
 reference queries against extracted production table DDL and a synthetic

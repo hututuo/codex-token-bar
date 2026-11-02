@@ -18,6 +18,8 @@ RECOVERY_JOBS = frozenset({
 FORMED_RELEASES = ["0.9.8", "0.9.9", "0.9.10", "0.9.11"]
 SWIFT_SIZES = [13, 128, 512, 4124]
 RUST_SIZES = [13, 128, 512, 4124]
+SWIFT_ENRICHED_PROOFS = ["nullModelAndTurnCompleted", "originalVersionsRetained",
+    "repeatedMetadataGenerationsPreserved", "rawMissingBeforeMigration", "completeImportedNamespacePreserved"]
 PUBLIC_RELEASE_SHA = "0219554ce444b0013987da7b82e3c2e891f4afdb"
 
 
@@ -40,10 +42,15 @@ def validate_recovery_verdict(value: object, source_sha: str, run_id: str) -> di
         raise ValueError("Native recovery verdict does not include the pinned public v0.9.7 upgrade")
     if value.get("formed_releases") != FORMED_RELEASES:
         raise ValueError("Native recovery verdict does not cover all required formed releases")
+    if (value.get("rust_macos_runner") != "macos-15-intel"
+            or value.get("swift_macos_runner") != "macos-26-intel"
+            or value.get("macos_recovery_architecture") != "x86_64"):
+        raise ValueError("Native recovery verdict must retain the actual macOS runner architecture")
     if (value.get("swift_formed_releases") != FORMED_RELEASES
             or value.get("swift_formed_runtime") != "native-swift-xctest-production-apis"
             or value.get("swift_formed_scenarios") != ["committed", "interrupted", "enriched"]
-            or value.get("swift_formed_phases") != ["resume", "reopen"]):
+            or value.get("swift_formed_phases") != ["resume", "reopen"]
+            or value.get("swift_formed_enriched_proofs") != SWIFT_ENRICHED_PROOFS):
         raise ValueError("Native recovery verdict does not cover the actual Swift formed-release matrix")
     sizes = value.get("swift_backfill_sizes")
     if sizes != SWIFT_SIZES or any(type(size) is not int for size in sizes):

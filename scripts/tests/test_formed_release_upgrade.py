@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -11,6 +12,66 @@ sys.path.insert(0, str(scripts))
 import check_formed_release_upgrade as probe
 
 class FormedEvidenceTests(unittest.TestCase):
+    def test_builds_cannot_reuse_deleted_or_other_release_plugin_metadata(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            repository = root / 'repository'; repository.mkdir()
+            restored_target = repository / 'tauri-app/src-tauri/target'
+            restored_target.mkdir(parents=True)
+            stale = restored_target / 'plugin-permissions-path'
+            stale.write_text(str(root / 'removed-previous-attempt/permissions.toml'))
+            observed = []
+            def compiler(command, cwd, env, log, **options):
+                target = Path(command[command.index('--target-dir')+1])
+                self.assertEqual(str(target), env['CARGO_TARGET_DIR'])
+                self.assertNotIn(target, observed)
+                self.assertFalse(target.exists())
+                observed.append(target)
+                source = Path(command[command.index('--manifest-path')+1]).parents[2]
+                # Model the observed Tauri path-bearing build-script output.
+                # A restored or shared target would bind a previous source.
+                target.mkdir(parents=True)
+                metadata = target / 'plugin-permissions-path'
+                metadata.write_text(str(source / 'permissions.toml'))
+                self.assertEqual(Path(metadata.read_text()).read_text(), source.name)
+                binary = target / 'debug/examples' / ('formed-release-probe'+('.exe' if os.name=='nt' else ''))
+                binary.parent.mkdir(parents=True)
+                binary.write_bytes(source.name.encode())
+                log.write_text('synthetic build isolation check; not a native compiler result\n')
+            with patch.object(probe, 'execute', side_effect=compiler), patch.dict(
+                    os.environ, {'CARGO_TARGET_DIR': str(restored_target)}):
+                for attempt in ('first', 'second'):
+                    scratch = root / attempt; scratch.mkdir()
+                    output = scratch / 'evidence'; output.mkdir()
+                    for label in ('release', 'candidate'):
+                        source = scratch / (label+'-source'); source.mkdir()
+                        (source / 'permissions.toml').write_text(source.name)
+                        binary = probe.compile_probe(repository, source, scratch, root, label, output)
+                        self.assertEqual(binary.read_bytes(), source.name.encode())
+                        proof = json.loads((output / (label+'-build.json')).read_text())
+                        self.assertEqual(proof['status'], 'PASS')
+                        self.assertEqual(proof['binarySha256'], probe.digest(binary))
+                        self.assertFalse(Path(proof['targetDirectory']).exists())
+            self.assertEqual(len(observed), 4)
+            self.assertEqual(stale.read_text(), str(root / 'removed-previous-attempt/permissions.toml'))
+
+    def test_failed_isolated_build_retains_error_and_log_without_polluting_repository(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            output = root / 'evidence'; output.mkdir()
+            def compiler(command, cwd, env, log, **options):
+                log.write_text('observed native compilation error\n')
+                raise RuntimeError('compiler returned 101')
+            with patch.object(probe, 'execute', side_effect=compiler), self.assertRaisesRegex(
+                    RuntimeError, 'returned 101'):
+                probe.compile_probe(root, root / 'release-source', root, root, 'release', output)
+            proof = json.loads((output / 'release-build.json').read_text())
+            self.assertEqual(proof['status'], 'FAIL')
+            self.assertIn('returned 101', proof['error'])
+            self.assertTrue((output / 'release-build.log').is_file())
+            self.assertFalse(Path(proof['targetDirectory']).exists())
+            self.assertFalse((root / 'tauri-app/src-tauri/target').exists())
+
     def report(self, **changes):
         value = dict(status='PASS', phase='resume', producerVersion='0.9.8', scenario='committed',
             cfgTest=False, totals=[162, 310], oldTypedProofsPreserved=True, crashWALPreserved=True,

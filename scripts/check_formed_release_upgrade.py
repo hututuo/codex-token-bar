@@ -218,6 +218,46 @@ def probe_environment(base: Path) -> dict[str, str]:
     return {**os.environ, **{key: str(base) for key in ("TMPDIR", "TMP", "TEMP")}}
 
 
+def compile_probe(repository: Path, source: Path, scratch: Path, base: Path,
+                  label: str, output: Path) -> Path:
+    """Compile each source archive with a fresh, separately owned target.
+
+    Tauri's local plugin build scripts persist absolute permission-file paths.
+    Reusing a target from another extracted archive can read that archive's
+    permissions, or fail after the old temporary directory has been removed.
+    Registry/download caches are safe to retain; these build outputs are not.
+    Copy the executable before removing its target so the two full dependency
+    builds do not occupy the runner's limited disk at the same time.
+    """
+    executable = "formed-release-probe" + (".exe" if os.name == "nt" else "")
+    binary = scratch / (label + (".exe" if os.name == "nt" else ""))
+    with tempfile.TemporaryDirectory(prefix=label+"-build-", dir=scratch) as temporary:
+        target = Path(temporary).resolve() / "target"
+        env = probe_environment(base)
+        env["CARGO_TARGET_DIR"] = str(target)
+        proof = {"status": "RUNNING", "sourceDirectory": str(source),
+                 "targetDirectory": str(target), "targetScope": "fresh-per-binary",
+                 "usesRestoredTarget": False}
+        path = output / (label+"-build.json")
+        def save():
+            path.write_text(json.dumps(proof, indent=2)+"\n", encoding="utf-8")
+        save()
+        try:
+            execute(["cargo", "build", "--locked", "--manifest-path",
+                     str(source / "tauri-app/src-tauri/Cargo.toml"),
+                     "--target-dir", str(target), "--features", "business-store-fixture",
+                     "--example", "formed-release-probe"], repository, env,
+                    output / (label+"-build.log"))
+            shutil.copy2(target / "debug/examples" / executable, binary)
+            proof.update(status="PASS", binarySha256=digest(binary))
+            return binary
+        except Exception as error:
+            proof.update(status="FAIL", error=str(error))
+            raise
+        finally:
+            save()
+
+
 def run(repository: Path, release: str, output: Path) -> dict:
     output.mkdir(parents=True, exist_ok=False)
     old = pinned_revision(repository, release)
@@ -247,15 +287,7 @@ def run(repository: Path, release: str, output: Path) -> dict:
                 source = scratch / (label+"-source")
                 injection = inject(repository, revision, source)
                 (output / (label+"-source.json")).write_text(json.dumps(injection, indent=2)+"\n", encoding="utf-8")
-                env = probe_environment(base)
-                target = repository / "tauri-app/src-tauri/target"
-                env["CARGO_TARGET_DIR"] = str(target)
-                execute(["cargo", "build", "--locked", "--manifest-path", str(source / "tauri-app/src-tauri/Cargo.toml"),
-                    "--features", "business-store-fixture", "--example", "formed-release-probe"], repository, env,
-                    output / (label+"-build.log"))
-                executable = "formed-release-probe" + (".exe" if os.name == "nt" else "")
-                bins[label] = scratch / (label + (".exe" if os.name == "nt" else ""))
-                shutil.copy2(target / "debug/examples" / executable, bins[label])
+                bins[label] = compile_probe(repository, source, scratch, base, label, output)
             collect_scenarios(lambda scenario: run_scenario(repository, release, scenario,
                 scratch / scenario, base, bins, output), report, save)
             report["status"] = "PASS"

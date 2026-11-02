@@ -29,7 +29,7 @@ def report(phase="resume", scenario="committed"):
         "totals": [{"committed": 173, "interrupted": 183, "enriched": 166}[scenario], 310],
         "oldTypedProofsPreserved": True, "originalDatabasesUnchanged": True,
         "crashWALPreserved": True, "oldBPreserved": True, "rawDisappearanceRetainsHistory": True,
-        **({"nullModelAndTurnCompleted": True, "originalVersionsRetained": True} if scenario == "enriched" else {})}
+        **({key: True for key in probe.ENRICHED_PROOFS} if scenario == "enriched" else {})}
 
 
 def output(value=None):
@@ -65,18 +65,42 @@ def enrichment_state(root):
     latest = copy.deepcopy(formed["originalProofs"])
     latest["originals"][relative]["sha256"] = hashlib.sha256(original.read_bytes()).hexdigest()
     null = base64.b64encode(bytes([5]) + bytes(8)).decode()
-    integer = base64.b64encode(bytes([1]) + (8).to_bytes(8, "big") + (1).to_bytes(8, "big")).decode()
-    numeric = {"columns": probe.NUMERIC_COLUMNS, "rows": [[integer] * len(probe.NUMERIC_COLUMNS) for _ in range(2)]}
+    def integer(number):
+        return base64.b64encode(bytes([1]) + (8).to_bytes(8, "big") + number.to_bytes(8, "big")).decode()
+    def text(value):
+        data = value.encode()
+        return base64.b64encode(bytes([3]) + len(data).to_bytes(8, "big") + data).decode()
+    one = integer(1)
+    g1, g2 = text("00000000-0000-4000-8000-000000000001"), text("00000000-0000-4000-8000-000000000002")
+    numeric = {"columns": probe.NUMERIC_COLUMNS, "rows": [[one] * len(probe.NUMERIC_COLUMNS) for _ in range(2)]}
     retained = {"columns": probe.RETAINED_COLUMNS, "rows": [[null] * len(probe.RETAINED_COLUMNS) for _ in range(2)]}
-    latest["originals"][relative]["tables"] = {"retained_usage_revisions": retained}
+    events = {"columns": probe.EVENT_COLUMNS, "rows": [[one] * len(probe.EVENT_COLUMNS) for _ in range(2)]}
+    first_turn = [one, g1, integer(0), integer(99)]
+    second_turn = [one, g2, integer(1), integer(99)]
+    first_bindings = {"columns": probe.BINDING_COLUMNS, "rows": [[one, integer(i), g1, integer(i+100), integer(0), integer(50), one] for i in (1, 2)]}
+    second_bindings = {"columns": probe.BINDING_COLUMNS, "rows": [[one, integer(i), g2, integer(i+101), integer(1), integer(51), one] for i in (1, 2)]}
+    first_tables = {"events": events, "retained_usage_revisions": retained, "usage_ledger_bindings": first_bindings,
+        "usage_ledger_turns": {"columns": probe.TURN_COLUMNS, "rows": [first_turn]}}
+    latest_tables = {"events": events, "retained_usage_revisions": retained, "usage_ledger_bindings": second_bindings,
+        "usage_ledger_turns": {"columns": probe.TURN_COLUMNS, "rows": [first_turn, second_turn]}}
+    latest["originals"][relative]["tables"] = latest_tables
     before = root / "pre-enrichment-rollout.jsonl"
-    after = root / "home-a/sessions/rollout-019ff8b9-09e7-75c1-b9a5-14fe7b60065a.jsonl"
+    intermediate_raw = root / "intermediate-enrichment-rollout.jsonl"
+    after = root / "post-enrichment-rollout.jsonl"
     before.write_bytes(b"old raw contract fixture")
-    after.parent.mkdir(parents=True); after.write_bytes(b"new raw contract fixture")
+    intermediate_raw.write_bytes(b"first rewrite prefix\n" + before.read_bytes())
+    after.write_bytes(b"second rewrite prefix\n" + intermediate_raw.read_bytes())
+    b_raw = root / "pre-upgrade-b-rollout.jsonl"; b_raw.write_bytes(b"source B raw contract fixture")
+    intermediate_db = root / "intermediate-enrichment-exact.sqlite"
+    intermediate_db.write_bytes(b"intermediate synthetic contract database")
     value = {"latest": latest, "previousExactBackup": "pre-enrichment-exact.sqlite", "enrichment": {
         "numericBefore": numeric, "numericAfter": copy.deepcopy(numeric), "retainedVersions": retained,
         "rawBeforeSha256": hashlib.sha256(before.read_bytes()).hexdigest(),
-        "rawAfterSha256": hashlib.sha256(after.read_bytes()).hexdigest()}}
+        "rawIntermediateSha256": hashlib.sha256(intermediate_raw.read_bytes()).hexdigest(),
+        "rawAfterSha256": hashlib.sha256(after.read_bytes()).hexdigest(),
+        "rawBSha256": hashlib.sha256(b_raw.read_bytes()).hexdigest(), "rawMissingBeforeMigration": True,
+        "intermediate": {"sha256": hashlib.sha256(intermediate_db.read_bytes()).hexdigest(),
+            "proof": proof(), "tables": first_tables}}}
     (root / "late-source-state.json").write_text(json.dumps(value))
     return value
 
@@ -86,7 +110,8 @@ def enrichment_report():
         "producerVersion": RELEASE, "producerSha": probe.RELEASES[RELEASE], "runtime": probe.RUNTIME,
         "totals": [155, 310], "frozenDestinationUnchanged": True, "previousOriginalPreserved": True,
         "oldNumericRowsPreserved": True, "oldIdentityRowsPreserved": True,
-        "nullModelAndTurnCompleted": True, "originalVersionsRetained": True}
+        "nullModelAndTurnCompleted": True, "originalVersionsRetained": True,
+        "repeatedMetadataGenerationsPreserved": True, "rawMissingBeforeMigration": True}
 
 
 class SwiftFormedHarnessTests(unittest.TestCase):
@@ -118,6 +143,15 @@ class SwiftFormedHarnessTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 probe.parse_report(output(invalid), "resume", "enriched", RELEASE, SHA)
 
+    def test_every_enriched_candidate_proof_must_be_boolean_true(self):
+        for key in probe.ENRICHED_PROOFS:
+            for wrong in ("missing", False, None, 0, 1, "true"):
+                value = report("resume", "enriched")
+                if wrong == "missing": value.pop(key)
+                else: value[key] = wrong
+                with self.subTest(key=key, wrong=wrong), self.assertRaises(ValueError):
+                    probe.parse_report(output(value), "resume", "enriched", RELEASE, SHA)
+
     def test_released_enrichment_requires_retained_full_typed_images_and_real_raw_rewrite(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -125,7 +159,8 @@ class SwiftFormedHarnessTests(unittest.TestCase):
             value = enrichment_report()
             self.assertEqual(probe.validate_late_enrichment(output(value), root, RELEASE), value)
             for key in ("oldNumericRowsPreserved", "oldIdentityRowsPreserved", "nullModelAndTurnCompleted",
-                        "originalVersionsRetained", "frozenDestinationUnchanged", "previousOriginalPreserved"):
+                        "originalVersionsRetained", "frozenDestinationUnchanged", "previousOriginalPreserved",
+                        "repeatedMetadataGenerationsPreserved", "rawMissingBeforeMigration"):
                 with self.subTest(key=key), self.assertRaises(ValueError):
                     probe.validate_late_enrichment(output({**value, key: False}), root, RELEASE)
             for change in ("missing", "numeric", "cell", "retention", "raw"):
@@ -147,6 +182,32 @@ class SwiftFormedHarnessTests(unittest.TestCase):
             (root / "pre-enrichment-exact.sqlite").write_bytes(b"lost original")
             with self.assertRaisesRegex(ValueError, "not preserved"):
                 probe.validate_late_enrichment(output(value), root, RELEASE)
+
+    def test_repeated_enrichment_requires_intermediate_history_and_pre_upgrade_raw_absence(self):
+        for change in ("missing-intermediate", "lost-g1-events", "lost-g1-turn", "unchanged-binding", "same-generation",
+                       "different-turn", "missing-flag", "raw-present", "bad-intermediate-db", "bad-raw-copy"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                state = enrichment_state(root)
+                value = enrichment_report()
+                self.assertEqual(probe.validate_late_enrichment(output(value), root, RELEASE), value)
+                evidence = state["enrichment"]
+                latest = state["latest"]["originals"]["10-exact/" + "a" * 64 + ".sqlite"]["tables"]
+                if change == "missing-intermediate": evidence.pop("intermediate")
+                elif change == "lost-g1-events": latest["events"] = {"columns": probe.EVENT_COLUMNS, "rows": []}
+                elif change == "lost-g1-turn": latest["usage_ledger_turns"]["rows"].pop(0)
+                elif change == "unchanged-binding": latest["usage_ledger_bindings"] = copy.deepcopy(evidence["intermediate"]["tables"]["usage_ledger_bindings"])
+                elif change == "same-generation": latest["usage_ledger_turns"]["rows"][1][1] = latest["usage_ledger_turns"]["rows"][0][1]
+                elif change == "different-turn": latest["usage_ledger_turns"]["rows"][1][3] = latest["usage_ledger_turns"]["rows"][1][0]
+                elif change == "missing-flag": evidence["rawMissingBeforeMigration"] = 1
+                elif change == "raw-present":
+                    path = root / "home-a/sessions/rollout-019ff8b9-09e7-75c1-b9a5-14fe7b60065a.jsonl"
+                    path.parent.mkdir(parents=True); path.write_bytes(b"raw is still present")
+                elif change == "bad-intermediate-db": (root / "intermediate-enrichment-exact.sqlite").write_bytes(b"changed")
+                else: (root / "post-enrichment-rollout.jsonl").write_bytes(b"changed")
+                (root / "late-source-state.json").write_text(json.dumps(state))
+                with self.assertRaises(ValueError):
+                    probe.validate_late_enrichment(output(value), root, RELEASE)
 
     def test_source_archive_injection_preserves_actual_git_production_blobs(self):
         with tempfile.TemporaryDirectory() as temporary:

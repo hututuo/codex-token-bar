@@ -141,7 +141,7 @@ print(json.dumps({'directories':len(paths),'scope':'python-harness-contract-only
             self.assertEqual(report["phase"], "source-identity")
             self.assertEqual(json.loads((Path(report["artifactDirectory"]) / "previous-report.json").read_text())["source_sha"], "old")
 
-    def test_cloud_launcher_precreates_overrides_and_enforces_all_ten_stage_proofs(self):
+    def test_cloud_launcher_precreates_overrides_and_enforces_all_required_stage_proofs(self):
         for rejected in (False, True):
             with self.subTest(rejected=rejected), self.temporary_directory() as temporary:
                 root = Path(temporary)
@@ -168,7 +168,7 @@ print(json.dumps({'directories':len(paths),'scope':'python-harness-contract-only
                     else: cloud.main()
                 report = json.loads(report_path.read_text())
                 self.assertEqual(report["status"], "FAIL" if rejected else "PASS")
-                self.assertEqual(len(STAGE_PROOFS), 10)
+                self.assertEqual(len(STAGE_PROOFS), 11)
                 self.assertEqual(observed[0].exists(), rejected)
                 if rejected:
                     self.assertTrue(Path(report["failureArchive"]).is_file())

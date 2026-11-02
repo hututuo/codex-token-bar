@@ -77,6 +77,10 @@ use time::macros::format_description;
 use time::{Date, Duration, OffsetDateTime, UtcOffset};
 use uuid::Uuid;
 
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+#[path = "exact_usage_index/path_identity_fixture.rs"]
+mod path_identity_fixture;
+
 // v0.9.1 is the only forward-migration baseline for v0.9.2. Earlier and future
 // layouts are preserved read-only and rejected instead of being deleted.
 const INDEX_SCHEMA_VERSION: i64 = 11; // durable structural candidate contract
@@ -1080,10 +1084,7 @@ fn open_published_index_read_only(path: &Path, timeout: StdDuration) -> Result<O
     }
     #[cfg(not(test))]
     {
-        let store = crate::core::business_store_route::exact_store_spec(path)?;
-        let connection = crate::core::business_store_route::open_registered_store_read_only(
-            "exact", &store.source_identity, &store.logical_path, timeout,
-        )?;
+        let connection = crate::core::business_store_route::open_exact_registered_read_only(path, timeout)?;
         let Some(connection) = connection else { return Ok(None); };
         let has_objects = connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM main.sqlite_master WHERE type IN ('table','index','view','trigger'))",
@@ -1216,6 +1217,8 @@ struct StageStoreSignature {
     modified_ns: u128,
     digest: String,
     schema_digest: String,
+    #[cfg(not(test))]
+    owner: crate::core::business_store_container::StoreSpec,
 }
 
 struct StagedFullRebuildResult {
@@ -1669,9 +1672,8 @@ fn prepare_exact_store_for_home(home: &Path, path: &Path) -> Result<(), String> 
         if let Some(manifest) = manifest { manifests.push(manifest); }
         if legacy == path { break; }
     }
-    let store = route::exact_store_spec(path)?;
     exact_legacy_recovery::verify_manifests(&manifests)?;
-    drop(route::open_store("exact", &store.source_identity, &store.logical_path, &sources)?);
+    drop(route::open_exact_store(path, &sources)?);
     exact_legacy_recovery::verify_manifests(&manifests)
 }
 
@@ -3058,14 +3060,11 @@ impl ExactUsageIndex {
                 return Err("会话源扫描不完整，已保留上一份可信索引和本轮断点，停止发布".into());
             }
             if let Err(error) =
-                validate_building_generation_commit_scope(&self.connection, generation)
+                validate_building_generation_commit_scope(&mut self.connection, generation, codex_home)
             {
-                scan_completeness.block_publish();
-                warnings.push(scan_warning(error));
-            }
-            if scan_completeness.block_generation_publish {
                 self.connection.mark_receipt_dirty();
-                return Err("会话根目录暂时不可用，已保留上一份可信索引并停止本轮发布".into());
+                warnings.push(scan_warning(error.clone()));
+                return Err(format!("精确 token 发布前复核失败，已保留已有历史和本轮断点：{error}"));
             }
             super::update_precise_dashboard_progress(
                 codex_home,
@@ -6993,9 +6992,9 @@ fn staged_store_signature(path: &Path) -> Result<StageStoreSignature, String> {
         // This lightweight observation is used only by the current builder,
         // after its explicit seal. Recovery must verify actual content using
         // its existing read snapshot; it may never manufacture a missing seal.
-        let observation = crate::core::business_store_route::exact_store_observation(path)?
+        let (owner, observation) = crate::core::business_store_route::exact_store_observation_with_owner(path)?
             .ok_or_else(|| "精确 token 暂存分区缺少原封存证明".to_string())?;
-        return stage_signature_from_seal(observation, stage_content_proof::current_schema_digest()?);
+        return stage_signature_from_seal(observation, stage_content_proof::current_schema_digest()?, owner);
     }
     #[cfg(test)]
     {
@@ -7013,12 +7012,13 @@ fn staged_store_signature(path: &Path) -> Result<StageStoreSignature, String> {
 fn stage_signature_from_seal(
     (size, _, digest, sealed_at): crate::core::business_store_container::StoreSealObservation,
     schema_digest: String,
+    owner: crate::core::business_store_container::StoreSpec,
 ) -> Result<StageStoreSignature, String> {
     let modified_ns = (sealed_at * 1_000_000_000.0).round();
     if !modified_ns.is_finite() || modified_ns < 0.0 {
         return Err("精确 token 暂存封存时间无效".into());
     }
-    Ok(StageStoreSignature { size, modified_ns: modified_ns as u128, digest, schema_digest })
+    Ok(StageStoreSignature { size, modified_ns: modified_ns as u128, digest, schema_digest, owner })
 }
 
 fn staged_store_size(path: &Path) -> Result<u64, String> {
@@ -7206,13 +7206,14 @@ fn validated_staged_full_rebuild(
 ) -> Result<Option<StagedFullRebuild>, String> {
     #[cfg(not(test))]
     {
-        let store = crate::core::business_store_route::exact_store_spec(database_path)?;
         let snapshot = connection.unchecked_transaction()
             .map_err(|error| format!("无法开始精确 token 暂存校验快照：{error}"))?;
+        let store = snapshot.bound_store_spec().map_err(|error| error.to_string())?;
+        if store.module != "exact" { return Err("精确 token 暂存连接归属无效".into()); }
         let (observation, content) = snapshot.verify_sealed_store_in_transaction(
             &store, stage_content_proof::accepted_schema_digests()?)
             .map_err(|error| format!("精确 token 暂存封存内容不一致；已保留暂存：{error}"))?;
-        let signature = stage_signature_from_seal(observation, content.schema_digest)?;
+        let signature = stage_signature_from_seal(observation, content.schema_digest, store)?;
         if proof.is_some_and(|expected| expected.stage != signature) {
             return Err("精确 token 暂存封存证明在校验后发生变化；已保留暂存".into());
         }
@@ -7614,10 +7615,10 @@ fn import_staged_full_rebuild_with_hook(
         return Err("精确 token 单文件暂存清单在导入前发生变化".into());
     }
     #[cfg(not(test))]
-    crate::core::business_store_route::attach_exact_store_alias(
+    crate::core::business_store_route::attach_exact_store_owner(
         connection,
         "exact_stage_import",
-        &staged.database_path,
+        &validated.source_validation.as_ref().ok_or("精确 token 暂存缺少已验证的分区身份")?.stage.owner,
     )?;
     #[cfg(test)]
     {
@@ -7643,13 +7644,13 @@ fn import_staged_full_rebuild_with_hook(
         ensure_active_build_generation(&transaction, generation)?;
         #[cfg(not(test))]
         {
-            let store = crate::core::business_store_route::exact_store_spec(&validated.database_path)?;
             let expected = validated.source_validation.as_ref()
                 .ok_or_else(|| "精确 token 暂存缺少本次校验证明".to_string())?;
+            let store = &expected.stage.owner;
             let (observation, content) = transaction.verify_sealed_store_in_transaction(
                 &store, std::slice::from_ref(&expected.stage.schema_digest))
                 .map_err(|error| format!("精确 token 暂存封存内容不一致；已保留暂存：{error}"))?;
-            let actual = stage_signature_from_seal(observation, content.schema_digest)?;
+            let actual = stage_signature_from_seal(observation, content.schema_digest, store.clone())?;
             if actual != expected.stage {
                 return Err("精确 token 暂存封存证明在导入前发生变化；已保留暂存".into());
             }
@@ -7874,10 +7875,10 @@ fn staged_enrichment_matches_published_events(
     #[cfg(all(feature = "business-store-fixture", not(test)))]
     let _scope = source_count_fixture::scope("stage.enrichment-compare");
     #[cfg(not(test))]
-    crate::core::business_store_route::attach_exact_store_alias(
+    crate::core::business_store_route::attach_exact_store_owner(
         connection,
         "exact_enrichment_compare",
-        &staged.database_path,
+        &staged.source_validation.as_ref().ok_or("历史字段补全暂存缺少已验证的分区身份")?.stage.owner,
     )?;
     #[cfg(test)]
     {
@@ -9239,31 +9240,6 @@ fn backfill_missing_dashboard_aggregates_for_generation(
     Ok(())
 }
 
-fn discard_schema11_tombstone_pending_children(connection: &Connection) -> Result<(), String> {
-    connection
-        .execute_batch(
-            r#"
-            DELETE FROM pending_event_rows
-            WHERE source_id IN (SELECT source_id FROM pending_sources WHERE mode = 'tombstone');
-            DELETE FROM pending_fingerprints
-            WHERE source_id IN (SELECT source_id FROM pending_sources WHERE mode = 'tombstone');
-            DELETE FROM pending_chunks
-            WHERE source_id IN (SELECT source_id FROM pending_sources WHERE mode = 'tombstone');
-            DELETE FROM pending_enrichment
-            WHERE source_id IN (SELECT source_id FROM pending_sources WHERE mode = 'tombstone');
-            DELETE FROM pending_dashboard_source_totals
-            WHERE source_id IN (SELECT source_id FROM pending_sources WHERE mode = 'tombstone');
-            DELETE FROM pending_dashboard_source_5m
-            WHERE source_id IN (SELECT source_id FROM pending_sources WHERE mode = 'tombstone');
-            DELETE FROM pending_dashboard_turn_candidates
-            WHERE source_id IN (SELECT source_id FROM pending_sources WHERE mode = 'tombstone');
-            DELETE FROM pending_dashboard_turn_tombstones
-            WHERE source_id IN (SELECT source_id FROM pending_sources WHERE mode = 'tombstone');
-            "#,
-        )
-        .map_err(|error| format!("无法隔离 schema 11 单文件墓碑的暂存子行：{error}"))
-}
-
 fn publish_schema11_pending_generation(
     transaction: &Transaction<'_>,
     generation: i64,
@@ -9386,10 +9362,18 @@ fn publish_schema11_pending_generation(
                 WHERE key = 'building_generation'
             ) AND p.mode <> 'tombstone'
             ON CONFLICT(id) DO UPDATE SET model=COALESCE(event_rows.model,excluded.model),
+                user_prompt_start=COALESCE(event_rows.user_prompt_start,excluded.user_prompt_start),
+                user_prompt_end=COALESCE(event_rows.user_prompt_end,excluded.user_prompt_end),
+                assistant_response_start=COALESCE(event_rows.assistant_response_start,excluded.assistant_response_start),
+                assistant_response_end=COALESCE(event_rows.assistant_response_end,excluded.assistant_response_end),
                 tokens=excluded.tokens,input_tokens=excluded.input_tokens,cached_input_tokens=excluded.cached_input_tokens,
                 output_tokens=excluded.output_tokens,reasoning_output_tokens=excluded.reasoning_output_tokens,
                 accounting_kind=excluded.accounting_kind,reported_total_tokens=excluded.reported_total_tokens
             WHERE (event_rows.model IS NULL AND excluded.model IS NOT NULL)
+                OR (event_rows.user_prompt_start IS NULL AND excluded.user_prompt_start IS NOT NULL)
+                OR (event_rows.user_prompt_end IS NULL AND excluded.user_prompt_end IS NOT NULL)
+                OR (event_rows.assistant_response_start IS NULL AND excluded.assistant_response_start IS NOT NULL)
+                OR (event_rows.assistant_response_end IS NULL AND excluded.assistant_response_end IS NOT NULL)
                 OR event_rows.tokens IS NOT excluded.tokens OR event_rows.input_tokens IS NOT excluded.input_tokens
                 OR event_rows.cached_input_tokens IS NOT excluded.cached_input_tokens OR event_rows.output_tokens IS NOT excluded.output_tokens
                 OR event_rows.reasoning_output_tokens IS NOT excluded.reasoning_output_tokens
@@ -10971,8 +10955,9 @@ fn revalidate_metadata_only_file(
 }
 
 fn validate_building_generation_commit_scope(
-    connection: &Connection,
+    connection: &mut Connection,
     generation: i64,
+    codex_home: &Path,
 ) -> Result<(), String> {
     let mut statement = connection
         .prepare(
@@ -10999,13 +10984,37 @@ fn validate_building_generation_commit_scope(
 
     for (path, committed_size, audit_chunk_index) in committed_files {
         let file = Path::new(&path);
-        let mut handle = RolloutReader::open(file).map_err(|error| {
-            format!(
-                "会话文件在发布前已不可读，本轮结果不会发布：{}（{}）",
-                file.display(),
-                error
-            )
-        })?;
+        let mut handle = match RolloutReader::open(file) {
+            Ok(handle) => handle,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+                && rollout_source::confirmed_missing_reference(file, codex_home) => {
+                // This building generation has already been imported and
+                // accepted. Losing both raw representations cannot revoke its
+                // durable history. Preserve it through the ordinary publisher
+                // using database continuity, while revoking excerpt access.
+                let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(|error| format!("无法开始缺失原文的发布连续性校验：{error}"))?;
+                ensure_active_build_generation(&transaction, generation)?;
+                let source: i64 = transaction.query_row(
+                    "SELECT p.source_id FROM pending_sources p JOIN sources s USING(source_id) \
+                     WHERE s.path=?1 AND p.target_generation=?2 AND p.deleted=0 \
+                       AND p.size=?3 AND p.audit_chunk_index=?4",
+                    params![path, generation, checked_i64(committed_size, "待发布来源大小")?,
+                        checked_i64(audit_chunk_index, "待发布来源内容块")?], |row| row.get(0))
+                    .map_err(|error| format!("缺失原文的已提交检查点已变化，保留原库：{error}"))?;
+                if !ledger::retain_pending_when_source_missing(&transaction, source, generation)? {
+                    return Err(format!("缺失原文没有完整的待发布历史，保留原库：{}", file.display()));
+                }
+                mark_dashboard_changed(&transaction)?;
+                transaction.commit().map_err(|error| format!("无法提交缺失原文的历史连续性证明：{error}"))?;
+                crate::core::business_migration_log::event("publish-input", "retained-pending-history",
+                    serde_json::json!({"sourceId":source,"generation":generation,
+                        "action":"publish-durable-history-without-source-excerpts"}));
+                continue;
+            }
+            Err(error) => return Err(format!(
+                "会话文件在发布前已不可读，本轮结果不会发布：{}（{}）", file.display(), error)),
+        };
         let current = file_signature_from_handle(&handle, file)?;
         if current.size < committed_size {
             return Err(format!(
@@ -15554,18 +15563,12 @@ fn open_index_connection(
 
 #[cfg(not(test))]
 fn open_exact_business_store(path: &Path) -> Result<Connection, String> {
-    let store = crate::core::business_store_route::exact_store_spec(path)?;
     let legacy_sources = if existing_regular_legacy_file(path)? {
         vec![path.to_path_buf()]
     } else {
         Vec::new()
     };
-    crate::core::business_store_route::open_store(
-        "exact",
-        &store.source_identity,
-        &store.logical_path,
-        &legacy_sources,
-    )
+    crate::core::business_store_route::open_exact_store(path, &legacy_sources)
 }
 
 /// An externally owned live database must never enter the one-time legacy
@@ -18702,13 +18705,7 @@ pub(crate) fn bootstrap_legacy_indexes() -> Result<(), String> {
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent).map_err(|e| format!("无法准备旧索引导入目录：{e}"))?;
             }
-            let store = crate::core::business_store_route::exact_store_spec(&target)?;
-            let _ = crate::core::business_store_route::open_store_during_bootstrap(
-                "exact",
-                &store.source_identity,
-                &store.logical_path,
-                &sources,
-            )?;
+            let _ = crate::core::business_store_route::open_exact_store_during_bootstrap(target, &sources)?;
             if !manifests.is_empty() {
                 crate::core::business_store_route::preserve_legacy_exact_migration(target, manifests)?;
             }
@@ -19236,9 +19233,19 @@ fn event_enrichment_source_count(connection: &Connection) -> Result<u64, String>
 }
 
 fn event_enrichment_receipt_count(connection: &Connection) -> Result<u64, String> {
+    let missing = if table_exists_checked(connection, "usage_ledger_sources")? {
+        "OR EXISTS(SELECT 1 FROM usage_ledger_sources l JOIN sources s USING(source_id) \
+            WHERE s.path=f.path AND l.missing=1) \
+         OR EXISTS(SELECT 1 FROM usage_ledger_pending_missing m JOIN sources s USING(source_id) \
+            WHERE s.path=f.path)"
+    } else { "" };
     connection
         .query_row(
-            "SELECT COUNT(*) FROM event_enrichment_sources WHERE revision = ?1 AND parser_revision = ?2",
+            &format!("SELECT COUNT(*) FROM main.published_files f WHERE EXISTS( \
+                SELECT 1 FROM event_enrichment_sources receipt WHERE receipt.path=f.path \
+                  AND receipt.revision=?1 AND receipt.parser_revision=?2 \
+                  AND receipt.completed_size=f.size AND receipt.completed_prefix_sha256=f.prefix_sha256) \
+                {missing}"),
             params![
                 EVENT_ENRICHMENT_REVISION,
                 STAGED_FULL_REBUILD_PARSER_REVISION,
@@ -19246,7 +19253,7 @@ fn event_enrichment_receipt_count(connection: &Connection) -> Result<u64, String
             |row| row.get::<_, i64>(0),
         )
         .map(nonnegative_u64)
-        .map_err(|error| format!("无法统计已完成的历史字段补全来源：{error}"))
+        .map_err(|error| format!("无法按已发布范围统计已完成的历史字段补全来源：{error}"))
 }
 
 fn record_missing_event_enrichment_source(
@@ -19257,6 +19264,20 @@ fn record_missing_event_enrichment_source(
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|error| format!("无法开始已删除历史来源补全事务：{error}"))?;
+    ensure_active_build_generation(&transaction, generation)?;
+    let source_id: i64 = transaction.query_row(
+        "SELECT source_id FROM sources WHERE path=?1 AND session_id=?2",
+        params![&candidate.path, &candidate.session_id], |row| row.get(0))
+        .map_err(|error| format!("缺失原文的来源身份已变化；已保留待发布历史：{error}"))?;
+    if ledger::retain_pending_when_source_missing(&transaction, source_id, generation)? {
+        mark_dashboard_changed(&transaction)?;
+        transaction.commit()
+            .map_err(|error| format!("无法提交缺失原文的待发布历史保全：{error}"))?;
+        crate::core::business_migration_log::event("backfill-input", "retained-pending-history",
+            serde_json::json!({"sourceId":source_id,"generation":generation,
+                "action":"publish-durable-history-without-source-excerpts"}));
+        return Ok(());
+    }
     let staged = transaction
         .execute(
             r#"
@@ -19289,7 +19310,9 @@ fn record_missing_event_enrichment_source(
     if staged != 1 {
         return Err("历史 model/reasoning 来源已从稳定来源目录消失，已保留上一份可信数据".into());
     }
-    discard_schema11_tombstone_pending_children(&transaction)?;
+    // The target has no surviving pending history (checked above), and the
+    // schema trigger already handles this target's empty deletion intent.
+    // Never sweep other sources' pending children while processing one path.
     mark_dashboard_changed(&transaction)?;
     transaction
         .commit()

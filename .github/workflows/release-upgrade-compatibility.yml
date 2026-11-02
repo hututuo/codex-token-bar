@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   swift-release-upgrade:
-    runs-on: macos-26
+    runs-on: macos-26-intel
     timeout-minutes: 65
     env:
       GIT_LFS_SKIP_SMUDGE: '1'

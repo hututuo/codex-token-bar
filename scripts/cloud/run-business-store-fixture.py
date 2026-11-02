@@ -25,9 +25,9 @@ def main():
         if os.environ.get("GITHUB_ACTIONS") != "true":
             raise ValueError("This launcher requires a hosted Actions disposable workspace.")
         source_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repository, text=True).strip()
-        dirty = bool(subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"],
-                                            cwd=repository, text=True).strip())
-        attempt.update(source_sha=source_sha, working_tree_dirty=dirty)
+        changes = subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"],
+                                          cwd=repository, text=True).splitlines()
+        attempt.update(source_sha=source_sha, working_tree_dirty=bool(changes), source_changes=changes)
         phase = "prepare-root"
         env = attempt.create_root(fixture_temporary_base(), prefix="tokenbar-runtime-",
             slugs=("tauri-support", "tauri-cache", "shared-support", "shared-cache", "legacy-usage"))

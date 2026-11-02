@@ -289,10 +289,9 @@ conditional deletion performs the full proof CAS. The subsequent container
 group passed 98/98 tests, including row, schema and owner mutation rejection and
 the successful unchanged-content deletion path.
 
-The final optimized scale revalidation remains open. A separate review is also
-checking whether the missing-source enrichment path can replace an already
-durable pending generation with a tombstone; passing the staged-import checks
-does not establish safety at that other deletion entry point.
+The final optimized scale revalidation remains open. The separate missing-source
+entry point subsequently produced the three concrete failures recorded below;
+passing staged-import checks alone did not establish its safety.
 
 The isolated container tests currently pass 97/97, including three added
 same-snapshot, owner/state/seal and schema-role tests. A separate test passed for
@@ -302,6 +301,85 @@ against every trusted contract. The first run of the new schema-role test lacked
 the fault's `ALTER TABLE` before it reached verification. The test now creates
 and drops a seed AUTOINCREMENT table to reproduce that real prerequisite. The
 initial 96/97 result is retained rather than counted as a product rejection.
+
+## Durable pending history after the raw source disappears
+
+The non-test fixture now covers both historical enrichment and an ordinary
+current-parser sync with 120 published tokens plus a complete, already imported
+building generation containing two events and 175 tokens. The raw source is
+then actually removed. Success requires normal publication and restart with
+175 tokens, identical event IDs and all 18 typed event fields, preserved raw
+binding identities, and unavailable excerpts. Keeping an artifact or returning
+a protection error does not satisfy this positive recovery case.
+
+Three separate native counterexamples were retained:
+
+| Artifact | Actual behavior before its repair |
+|---|---|
+| `rust-missing-pending-source-red/report.json` | Enrichment converted the complete pending source to a tombstone. Its trigger deleted the pending 55-token addition; the publisher subsequently restored only the older 120-token history. |
+| `rust-missing-pending-associations-red/confirmed-negative.json` | With the first deletion repaired, the total became 175, but the existing 120-token event lost all four prompt/answer associations that the real reparse had filled in pending storage. The newly inserted 55-token event kept its associations. An independent read-only A query confirmed this difference. |
+| `rust-missing-current-parser-bindings-red/confirmed-negative.json` | Ordinary sync with current parser markers stopped before publication because the commit-scope check required the now-missing raw source again. The database still held published 120 and pending 175. The later suspected availability-reset window was not reached by this run. |
+
+The first two attempts to construct the ordinary-sync control failed its fixture
+preconditions: a cold current-parser source legitimately has no historical
+enrichment receipt. Those reports remain in
+`rust-missing-pending-ordinary-bindings-red` and
+`rust-missing-pending-ordinary-bindings-red-fixed-fixture`; they are not evidence
+of the product failure. The corrected control asserts the actual current parser
+marker and follows ordinary `sync`, without inventing a backfill receipt.
+
+The repair uses a narrow durable-ledger continuity check under an IMMEDIATE
+transaction. It checks the active building generation, stable source ownership,
+the complete persisted checkpoint, known typed event/binding layouts and values,
+fingerprint encodings, and full-mode coverage of all published event IDs. Delta
+mode may contain only the new events; zero-token accounting diagnostics,
+including retained legacy invalid-component evidence, stay intact. It records
+raw absence and revokes excerpt availability without replacing the pending
+source or its events. The old global tombstone-child sweep was removed, so
+handling one missing source cannot erase another source's pending children.
+
+Historical enrichment uses this check before creating a tombstone. Ordinary
+publication uses it only when opening the raw source returns `NotFound` and
+`confirmed_missing_reference` verifies that both plain and compressed
+representations are absent. It also compares the pending generation, size and
+audit checkpoint against the commit-scope observation in that transaction.
+Truncated or rewritten content and other I/O errors retain their existing
+refusal path. The failure now reports the actual publication-check error instead
+of incorrectly labeling every failure as an unavailable session root.
+
+The publisher fills only missing prompt and answer fields and preserves known
+values, matching its existing additive model behavior. Enrichment completion
+counts now use the same published-source size/prefix scope as candidate
+selection and deduplicate receipts; a newer 175-token receipt cannot certify
+the older published 120-token scope. Unknown extra pending event or binding
+fields cause refusal with the entire namespace proof unchanged, rather than
+being silently omitted by publication.
+
+`rust-missing-pending-source-green/report.json` is the actual Linux non-test
+result: all 13 original scenarios and all eleven strict stage/history proofs
+passed in **43.049 seconds**, with **15** artificial concurrent A-writer
+assertions still enabled. It records source `3c6ba183` plus individual dirty
+native source hashes and binary SHA-256
+`a3170d2f569726a7b67d53c45d5db8dfe07079808628d8e65fcdb73794e5e691`.
+The enrichment control starts with missing old model/turn/answer associations,
+requires the real reparse to fill both events, and compares their full typed
+proof after publication and restart. The ordinary control keeps current parser
+markers, verifies both unknown-layout refusal cases, then really publishes and
+reopens all 175 tokens with excerpt bindings unavailable.
+
+The final targeted ledger run also passed **15/15** tests (the ten prior
+replacement-preservation tests plus five missing-source/completion tests),
+including full/delta continuity, zero diagnostics, malformed checkpoints and
+bindings, unknown extra fields, old tombstone evidence, and receipt
+deduplication. Its log is retained as
+`rust-missing-pending-source-green/ledger-tests.log`. The entire Exact suite and
+the optimized scale matrix must still be rerun after the remaining integration.
+
+This result establishes those recovery transitions on the recorded Linux
+binary. It does not establish the pending path-alias changes, Windows background
+maintenance quiescence, or the final optimized source-count budgets. Those
+remain separate integration gates. It also cannot reconstruct bytes that an
+older version already deleted from every durable copy.
 
 ## Nine default-ignored cases
 

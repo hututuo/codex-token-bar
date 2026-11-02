@@ -44,6 +44,24 @@ final class ApplicationRecoveryOperationGate: ObservableObject {
 
     func installationWillBegin() { installationInProgress = true }
 
+    /// Focusing an existing installer UI does not begin another update check
+    /// or release its ownership. Require the live updater observation as well
+    /// as our observed state so an ended session cannot be resumed by a stale
+    /// presentation. The caller supplies only Sparkle's public focus operation.
+    func canFocusInstallationSession(updaterSessionInProgress: Bool, canCheckForUpdates: Bool) -> Bool {
+        installationInProgress && updateSessionInProgress && updaterSessionInProgress
+            && canCheckForUpdates && !migrationInProgress && !updateRequestPending
+    }
+
+    @discardableResult
+    func focusInstallationSession(updaterSessionInProgress: Bool, canCheckForUpdates: Bool,
+                                  focus: @MainActor () -> Void) -> Bool {
+        guard canFocusInstallationSession(updaterSessionInProgress: updaterSessionInProgress,
+                                          canCheckForUpdates: canCheckForUpdates) else { return false }
+        focus()
+        return true
+    }
+
     func updateCycleFinished(failed: Bool) {
         updateRequestPending = false
         // sessionInProgress is observed independently. Sparkle can end its

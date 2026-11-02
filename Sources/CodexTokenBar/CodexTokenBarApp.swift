@@ -93,6 +93,26 @@ final class ApplicationSoftwareUpdater: NSObject, ObservableObject, SPUUpdaterDe
         else { operationGate.updateRequestDidNotStart() }
     }
 
+    var canContinueRecoveryInstallation: Bool {
+        guard let controller = ownedController,
+              controller.userDriver.showUpdateInFocus != nil else { return false }
+        return operationGate.canFocusInstallationSession(
+            updaterSessionInProgress: controller.updater.sessionInProgress,
+            canCheckForUpdates: controller.updater.canCheckForUpdates)
+    }
+
+    func continueRecoveryInstallation() {
+        guard let controller = ownedController,
+              let focus = controller.userDriver.showUpdateInFocus else { return }
+        // Do not call checkForUpdates here. A delayed/refused termination can
+        // close Sparkle's status window while its existing session still owns
+        // installation. The pinned standard driver reopens its saved retry UI.
+        operationGate.focusInstallationSession(
+            updaterSessionInProgress: controller.updater.sessionInProgress,
+            canCheckForUpdates: controller.updater.canCheckForUpdates,
+            focus: focus)
+    }
+
     func updater(_ updater: SPUUpdater, mayPerform updateCheck: SPUUpdateCheck) throws {
         guard !operationGate.migrationInProgress else {
             throw NSError(domain: "CodexTokenBar.Recovery", code: 1,

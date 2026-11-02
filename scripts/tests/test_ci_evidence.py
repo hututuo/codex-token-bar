@@ -24,11 +24,16 @@ def verdict():
         "public_release": "0.9.7",
         "public_release_sha": "0219554ce444b0013987da7b82e3c2e891f4afdb",
         "formed_releases": ["0.9.8", "0.9.9", "0.9.10", "0.9.11"],
+        "rust_macos_runner": "macos-15-intel",
+        "swift_macos_runner": "macos-26-intel",
+        "macos_recovery_architecture": "x86_64",
         "formed_runtime": "Rust production, not native Swift formed-release evidence",
         "swift_formed_releases": ["0.9.8", "0.9.9", "0.9.10", "0.9.11"],
         "swift_formed_runtime": "native-swift-xctest-production-apis",
         "swift_formed_scenarios": ["committed", "interrupted", "enriched"],
         "swift_formed_phases": ["resume", "reopen"],
+        "swift_formed_enriched_proofs": ["nullModelAndTurnCompleted", "originalVersionsRetained",
+            "repeatedMetadataGenerationsPreserved", "rawMissingBeforeMigration", "completeImportedNamespacePreserved"],
         "swift_backfill_sizes": [13, 128, 512, 4124],
         "rust_backfill_sizes": [13, 128, 512, 4124],
         "rust_backfill_profile": "release",
@@ -94,6 +99,9 @@ class CIEvidenceTests(unittest.TestCase):
             ("public_release_sha", "b" * 40),
             ("formed_releases", ["0.9.8", "0.9.9", "0.9.10"]),
             ("formed_releases", ["0.9.8", "0.9.9", "0.9.10", "0.9.10"]),
+            ("rust_macos_runner", None), ("rust_macos_runner", "macos-15"),
+            ("swift_macos_runner", None), ("swift_macos_runner", "macos-26"),
+            ("macos_recovery_architecture", None), ("macos_recovery_architecture", "arm64"),
             ("swift_formed_releases", ["0.9.8", "0.9.9", "0.9.10"]),
             ("swift_formed_releases", ["0.9.8", "0.9.9", "0.9.10", "0.9.10"]),
             ("swift_formed_runtime", "macOS Rust"),
@@ -104,6 +112,8 @@ class CIEvidenceTests(unittest.TestCase):
             ("swift_formed_phases", ["resume"]),
             ("swift_formed_phases", ["resume", "resume"]),
             ("swift_formed_phases", None),
+            ("swift_formed_enriched_proofs", None),
+            ("swift_formed_enriched_proofs", ["nullModelAndTurnCompleted", "originalVersionsRetained"]),
             ("swift_backfill_sizes", [13, 128, 512]),
             ("swift_backfill_sizes", [13, 128, 512, 512]),
             ("swift_backfill_sizes", [13, 128, 512, 4124.0]),
@@ -119,6 +129,14 @@ class CIEvidenceTests(unittest.TestCase):
             value[key] = wrong
             with self.subTest(key=key, wrong=wrong), self.assertRaises(ValueError):
                 validate_recovery_verdict(value, SHA, RUN)
+
+    def test_every_durable_history_proof_remains_in_the_sealed_native_coverage(self):
+        key = "swift_formed_enriched_proofs"
+        for missing in verdict()[key]:
+            value = verdict()
+            value[key].remove(missing)
+            with self.subTest(missing=missing), self.assertRaises(ValueError):
+                make_ci_evidence(value, SHA, RUN)
 
     def test_invalid_source_or_run_is_not_accepted(self):
         for sha, run in [("main", RUN), (SHA, "0"), (SHA, "1;unsafe"), (SHA, 12345)]:

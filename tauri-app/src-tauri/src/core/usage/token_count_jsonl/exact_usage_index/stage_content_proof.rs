@@ -46,13 +46,14 @@ pub(super) fn accepted_schema_digests() -> Result<&'static [String], String> {
 #[cfg(not(test))]
 pub(super) fn can_rebuild_unsealed(
     connection: &Connection,
-    path: &Path,
+    _path: &Path,
     job: &FullRebuildJob,
     target_generation: i64,
 ) -> Result<bool, String> {
     use crate::core::business_store_container::StoreState;
-    let store = crate::core::business_store_route::exact_store_spec(path)?;
     let snapshot = connection.unchecked_transaction().map_err(|error| error.to_string())?;
+    let store = snapshot.bound_store_spec().map_err(|error| error.to_string())?;
+    if store.module != "exact" { return Err("精确 token 暂存连接归属无效".into()); }
     let state = snapshot.store_state(&store).map_err(|error| error.to_string())?;
     let seal = snapshot.store_seal_observation(&store).map_err(|error| error.to_string())?;
     if state == StoreState::Sealed {

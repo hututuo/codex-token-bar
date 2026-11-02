@@ -714,6 +714,8 @@ pub(super) fn verify_fixture(home: &Path) -> Result<serde_json::Value, String> {
     );
     drop(index);
 
+    super::stage_content_fixture::verify_missing_pending_source(&home.join("pending-missing-home"))?;
+
     let state = home.join("state_5.sqlite");
     let writer = sql!(rusqlite::Connection::open(&state));
     sql!(writer.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE threads(id TEXT PRIMARY KEY,title TEXT,first_user_message TEXT,preview TEXT,updated_at INTEGER,updated_at_ms INTEGER); INSERT INTO threads VALUES('fixture-thread','fixture-title-one',NULL,NULL,100,NULL);"));
@@ -787,6 +789,7 @@ pub(super) fn verify_fixture(home: &Path) -> Result<serde_json::Value, String> {
         "stageSchemaMutationRejected":true,"stageSchemaMutationBeforePublicationRejected":true,
         "unsealedStageRebuiltFromSource":true,"pendingHistoryOverwriteRejected":true,
         "unsealedPreservationMutationRejected":true,
+        "missingSourcePendingHistoryPublished":true,
         "nonemptyWalReread":true,"walAllocationReuseObserved":true,"inactiveWalCache":true,
         "startupNamespaceOnlyIdentity":true,"startupLastGoodRestored":true,
         "startupConcurrentPublisherRead":true,"startupLegacySourceUnchanged":true,

@@ -23,6 +23,7 @@ use std::time::Duration;
 pub(crate) struct StoreConnection {
     raw: Connection,
     binding: Option<RefCell<StoreSqlBinding>>,
+    owner: Option<StoreSpec>,
 }
 
 impl StoreConnection {
@@ -39,7 +40,7 @@ impl StoreConnection {
     }
 
     pub(crate) fn unbound(raw: Connection) -> Self {
-        Self { raw, binding: None }
+        Self { raw, binding: None, owner: None }
     }
 
     pub(crate) fn bound(raw: Connection, binding: StoreSqlBinding) -> Result<Self> {
@@ -90,7 +91,17 @@ impl StoreConnection {
         Ok(Self {
             raw,
             binding: Some(RefCell::new(binding)),
+            owner: None,
         })
+    }
+
+    pub(crate) fn bound_with_store(raw: Connection, binding: StoreSqlBinding, owner: StoreSpec) -> Result<Self> {
+        if owner.id != binding.store_id() || owner.prefix != binding.prefix() {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        let mut connection = Self::bound(raw, binding)?;
+        connection.owner = Some(owner);
+        Ok(connection)
     }
 
     /// Open a standalone SQLite database with an explicitly scoped logical
@@ -280,6 +291,23 @@ impl StoreConnection {
             return Err(BusinessStoreError::InvalidStore);
         }
         crate::core::business_store_container::store_seal_observation(&self.raw, store)
+    }
+
+    /// The namespace selected when this handle was opened, verified against
+    /// the current catalog in this handle's snapshot. Do not derive it again
+    /// from a virtual filename whose directories may have appeared meanwhile.
+    pub(crate) fn bound_store_spec(&self) -> std::result::Result<StoreSpec, BusinessStoreError> {
+        let owner = self.owner.as_ref().ok_or(BusinessStoreError::InvalidStore)?;
+        let binding = self.binding.as_ref().ok_or(BusinessStoreError::InvalidStore)?.borrow();
+        let (module, source, logical, prefix): (String, String, String, String) = self.raw.query_row(
+            "SELECT module,source_identity,logical_path,namespace_prefix FROM tb_stores WHERE store_id=?1",
+            [binding.store_id()], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        let store = StoreSpec::new(module, source, logical)?;
+        if &store != owner || store.id != binding.store_id() || store.prefix != binding.prefix() || store.prefix != prefix {
+            return Err(BusinessStoreError::InvalidStore);
+        }
+        Ok(store)
     }
 
     /// Verify an owned/attached A namespace in this handle's transaction.

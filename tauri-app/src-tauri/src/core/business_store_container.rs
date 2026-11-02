@@ -317,7 +317,7 @@ impl Container {
             names
         };
         let binding = StoreSqlBinding::new(store.id.clone(), store.prefix.clone(), names)?;
-        Ok(StoreConnection::bound(self.connection, binding)?)
+        Ok(StoreConnection::bound_with_store(self.connection, binding, store.clone())?)
     }
 
     pub(crate) fn has_imported_objects(&self, store: &StoreSpec) -> BusinessStoreResult<bool> {

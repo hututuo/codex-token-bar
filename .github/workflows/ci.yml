@@ -22,7 +22,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.source_sha || github.sha }}
   cancel-in-progress: false
 
 env:
@@ -142,7 +142,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2025, macos-15]
+        os: [windows-2025, macos-15-intel]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
     steps:
