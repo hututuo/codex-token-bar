@@ -1,0 +1,185 @@
+name: Formed release data upgrade probe
+run-name: Formed release upgrade ${{ inputs.release || '0.9.8' }} on ${{ inputs.platform || 'macos' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact candidate commit to check out; empty uses this workflow commit
+        type: string
+        default: ''
+      release:
+        description: Historical release that creates the real source state
+        type: choice
+        options:
+          - 0.9.8
+          - 0.9.9
+          - 0.9.10
+          - 0.9.11
+          - all
+        default: 0.9.8
+      platform:
+        description: Hosted production platform
+        type: choice
+        options:
+          - macos
+          - windows
+          - all
+        default: macos
+  workflow_call:
+    inputs:
+      source_sha:
+        type: string
+        default: ''
+      release:
+        type: string
+        default: 0.9.8
+      platform:
+        type: string
+        default: macos
+
+permissions:
+  contents: read
+
+concurrency:
+  group: formed-release-upgrade-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_BUILD_JOBS: '3'
+  CARGO_INCREMENTAL: '0'
+  RUSTUP_TOOLCHAIN: '1.93.1'
+  GIT_LFS_SKIP_SMUDGE: '1'
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      matrix: ${{ steps.resolve.outputs.matrix }}
+    steps:
+      - id: resolve
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+          RELEASE_SELECTION: ${{ inputs.release || '0.9.8' }}
+          PLATFORM_SELECTION: ${{ inputs.platform || 'macos' }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'An exact candidate source SHA is required'; exit 1; }
+          matrix="$(python3 - <<'PY'
+          import json, os
+
+          releases = ('0.9.8', '0.9.9', '0.9.10', '0.9.11')
+          platforms = {
+              'macos': ('macos-26', '/tmp'),
+              'windows': ('windows-2025', r'C:\Windows\Temp'),
+          }
+          release_selection = os.environ['RELEASE_SELECTION']
+          platform_selection = os.environ['PLATFORM_SELECTION']
+          if release_selection != 'all' and release_selection not in releases:
+              raise SystemExit('Unsupported historical release selection')
+          if platform_selection != 'all' and platform_selection not in platforms:
+              raise SystemExit('Unsupported platform selection')
+          selected_releases = releases if release_selection == 'all' else (release_selection,)
+          selected_platforms = tuple(platforms) if platform_selection == 'all' else (platform_selection,)
+          include = []
+          for release in selected_releases:
+              for platform in selected_platforms:
+                  runner, external_temp = platforms[platform]
+                  include.append({
+                      'release': release,
+                      'platform': platform,
+                      'runner': runner,
+                      'external_temp': external_temp,
+                  })
+          print(json.dumps({'include': include}, separators=(',', ':')))
+          PY
+          )"
+          echo "sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  formed-release-upgrade:
+    needs: resolve
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      SOURCE_SHA: ${{ needs.resolve.outputs.sha }}
+      RELEASE: ${{ matrix.release }}
+      PLATFORM: ${{ matrix.platform }}
+      ARTIFACT_DIR: upgrade-evidence/${{ matrix.release }}-${{ matrix.platform }}
+      EVIDENCE_DIR: upgrade-evidence/${{ matrix.release }}-${{ matrix.platform }}/probe
+      TOKENBAR_FIXTURE_TEMP_BASE: ${{ matrix.external_temp }}
+      CARGO_TARGET_DIR: ${{ github.workspace }}/tauri-app/src-tauri/target
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ needs.resolve.outputs.sha }}
+
+      - name: Verify exact candidate checkout and record release identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          mkdir -p "$ARTIFACT_DIR"
+          git rev-parse HEAD > "$ARTIFACT_DIR/candidate-sha.txt"
+          git rev-parse "v${RELEASE}^{commit}" > "$ARTIFACT_DIR/historical-tag-sha.txt"
+          git status --short --branch > "$ARTIFACT_DIR/checkout-status.txt"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: tauri-app/package-lock.json
+
+      - name: Cache Cargo dependencies and the helper target directory
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            tauri-app/src-tauri/target
+          key: formed-release-rust-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-v1
+
+      - name: Install candidate frontend dependencies
+        run: npm ci --registry=https://registry.npmjs.org
+        working-directory: tauri-app
+
+      - name: Build candidate frontend assets required by the source archive probe
+        run: npm run build
+        working-directory: tauri-app
+
+      - name: Prepare macOS native toolchain and run production probe
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -version | tee "$ARTIFACT_DIR/native-toolchain.txt"
+          rustup toolchain install 1.93.1 --profile minimal
+          python3 scripts/check_formed_release_upgrade.py --release "$RELEASE" --output "$EVIDENCE_DIR"
+
+      - name: Prepare Windows native toolchain and run production probe
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          rustup toolchain install 1.93.1 --profile minimal
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/check_formed_release_upgrade.py --release $env:RELEASE --output $env:EVIDENCE_DIR
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Preserve formed-state inputs, logs, source manifests, and proof reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: formed-release-${{ matrix.release }}-${{ matrix.platform }}-${{ needs.resolve.outputs.sha }}
+          path: ${{ env.ARTIFACT_DIR }}/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 14

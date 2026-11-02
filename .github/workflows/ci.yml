@@ -12,6 +12,18 @@ on:
         description: 'Optional exact 40-character source commit; empty means this workflow commit'
         type: string
         default: ''
+      formed_release:
+        description: 'Optional real historical producer: 0.9.8, 0.9.9, 0.9.10, 0.9.11, or all'
+        type: string
+        default: ''
+      formed_platform:
+        description: 'Historical producer platform: macos, windows, or all'
+        type: string
+        default: all
+      formed_only:
+        description: 'Run only the explicitly requested historical producer matrix'
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       source_sha:
@@ -41,12 +53,16 @@ jobs:
       - id: resolve
         env:
           SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+          FORMED_ONLY: ${{ inputs.formed_only || false }}
+          FORMED_RELEASE: ${{ inputs.formed_release || '' }}
         run: |
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'An exact source SHA is required'; exit 1; }
+          [[ "$FORMED_ONLY" != true || -n "$FORMED_RELEASE" ]] || { echo 'formed_only requires an explicit historical producer'; exit 1; }
           echo "sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
 
   frontend:
     needs: source
+    if: ${{ !inputs.formed_only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -76,6 +92,7 @@ jobs:
 
   swift:
     needs: source
+    if: ${{ !inputs.formed_only }}
     runs-on: macos-26
     timeout-minutes: 35
     env:
@@ -135,10 +152,11 @@ jobs:
 
   native:
     needs: source
+    if: ${{ !inputs.formed_only }}
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2025, macos-15]
+        os: [windows-2025, macos-26]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
     steps:
@@ -182,7 +200,8 @@ jobs:
         run: |
           set -euo pipefail
           rustup toolchain install 1.93.1 --profile minimal
-          rustc --version
+          rustc -vV
+          if [[ "$RUNNER_OS" == macOS ]]; then sw_vers; xcodebuild -version; fi
           cd tauri-app
           npm ci --registry=https://registry.npmjs.org
           npm run build
@@ -218,6 +237,7 @@ jobs:
 
   windows-updater:
     needs: source
+    if: ${{ !inputs.formed_only }}
     runs-on: windows-2025
     timeout-minutes: 10
     steps:
@@ -236,8 +256,18 @@ jobs:
           $env:PATH = "$nsis;$env:PATH"
           ./scripts/windows_update_faults.ps1
 
+  formed-upgrade:
+    needs: source
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.formed_release != '' }}
+    uses: ./.github/workflows/formed-release-upgrade.yml
+    with:
+      source_sha: ${{ needs.source.outputs.sha }}
+      release: ${{ inputs.formed_release }}
+      platform: ${{ inputs.formed_platform }}
+
   evidence:
-    needs: [source, frontend, swift, native, windows-updater]
+    needs: [source, frontend, swift, native, windows-updater, formed-upgrade]
+    if: ${{ always() && !inputs.formed_only && needs.source.result == 'success' && needs.frontend.result == 'success' && needs.swift.result == 'success' && needs.native.result == 'success' && needs.windows-updater.result == 'success' && (needs.formed-upgrade.result == 'success' || needs.formed-upgrade.result == 'skipped') }}
     runs-on: ubuntu-24.04
     steps:
       - name: Seal successful check identity

@@ -22,6 +22,103 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         try super.tearDownWithError()
     }
 
+    func testNamespacedMultiBatchEnrichmentReportsCumulativeProgressWithoutReparsingOrChangingHistory() throws {
+        let configuredCount = ProcessInfo.processInfo.environment["TOKENBAR_BACKFILL_FILE_COUNT"]
+        let fileCount: Int
+        if let configuredCount { fileCount = try XCTUnwrap(Int(configuredCount)) }
+        else { fileCount = 13 }
+        guard (9...8192).contains(fileCount) else { return XCTFail("Unsupported backfill probe size") }
+        let overallStarted = Date()
+        BusinessSQLiteRoutes.deactivate()
+        defer { BusinessSQLiteRoutes.deactivate() }
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let root = try makeTemporaryDirectory(named: "NamespacedMultiBatchEnrichment")
+        let cacheRoot = root.appendingPathComponent("cache")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        let home = try makeCodexHome()
+        let now = Date()
+        let files = try (0..<fileCount).map { offset -> URL in
+            let file = home.appendingPathComponent("sessions/multi-batch-\(offset).jsonl")
+            let context = "{\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-6.1-sol\"}}"
+            let token = try tokenCountLine(timestamp: now.addingTimeInterval(Double(-fileCount + offset)),
+                total: Usage(input: 100 + offset, cachedInput: 20, output: 20, reasoning: 0, total: 120 + offset),
+                last: Usage(input: 100 + offset, cachedInput: 20, output: 20, reasoning: 0, total: 120 + offset))
+            try (context + "\n" + token + "\n").write(to: file, atomically: true, encoding: .utf8)
+            return file
+        }
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: home))
+        let oldIndex = try CodexUsageHistoryIndex(codexHome: home)
+        _ = try oldIndex.synchronize(files: files, sessionID: analyzer.sessionID(from:),
+            parser: analyzer.parseSessionIntoHistoryIndex(file:sessionID:request:insertFingerprint:emit:))
+        let indexURL = try exactUsageDatabaseURL(in: cacheRoot)
+        let support = root.appendingPathComponent("support")
+        let configuration = BusinessDatabaseMigration.Configuration(
+            container: support.appendingPathComponent("codex-ledger.sqlite"), support: support,
+            exact: swiftUsageCacheRoot(in: cacheRoot), legacyExact: root.appendingPathComponent("unused-legacy"))
+        let bootstrapStarted = Date()
+        try BusinessDatabaseMigration.migrate(configuration, availableBytes: 1 << 32)
+        let bootstrapSeconds = Date().timeIntervalSince(bootstrapStarted)
+        let original = try Data(contentsOf: indexURL)
+        let database = SQLiteDatabaseDriver(url: indexURL)
+        XCTAssertEqual(database.backingURL, configuration.container)
+        try database.execute("DELETE FROM event_enrichment_sources; DELETE FROM schema_meta WHERE key='event_enrichment_revision'; UPDATE events SET model=NULL;")
+        let index = try CodexUsageHistoryIndex(codexHome: home)
+        let parsed = ThreadSafeCounter()
+        let lock = NSLock()
+        var completed: [Int] = []
+        let backfillStarted = Date()
+        var lastProgress = backfillStarted
+        var largestGap: TimeInterval = 0
+        let result = try index.synchronize(files: files, sessionID: analyzer.sessionID(from:), parser: { file, id, request, fp, emit in
+            parsed.increment()
+            return try analyzer.parseSessionIntoHistoryIndex(file: file, sessionID: id, request: request,
+                insertFingerprint: fp, emit: emit)
+        }, onProgress: { count, total, phase in
+            if phase == .backfillingModel {
+                lock.lock(); defer { lock.unlock() }
+                XCTAssertEqual(total, files.count)
+                completed.append(count)
+                let now = Date()
+                largestGap = max(largestGap, now.timeIntervalSince(lastProgress))
+                lastProgress = now
+            }
+        })
+        let backfillSeconds = Date().timeIntervalSince(backfillStarted)
+        largestGap = max(largestGap, Date().timeIntervalSince(lastProgress))
+        XCTAssertTrue(result.eventEnrichmentComplete)
+        XCTAssertEqual(parsed.value, files.count, "The publication retry must reuse verified staged work")
+        XCTAssertEqual(completed.first, 0)
+        XCTAssertEqual(completed.last, files.count)
+        XCTAssertEqual(completed, completed.sorted(), "Batch boundaries and publication retries must not rewind progress")
+        XCTAssertTrue(completed.contains(9), "Progress must reach later batches, not repeat only 1...4")
+        var tokens = 0, events = 0
+        try index.forEachStoredEvent { tokens += $0.event.tokens; events += 1 }
+        XCTAssertEqual(tokens, (0..<fileCount).reduce(0) { $0 + 120 + $1 })
+        XCTAssertEqual(events, files.count)
+        XCTAssertEqual(try Data(contentsOf: indexURL), original, "The legacy ledger must remain frozen")
+        let profile: [String: Any] = ["files": fileCount, "parsed": parsed.value,
+            "events": events, "tokens": tokens, "complete": result.eventEnrichmentComplete,
+            "monotonic": completed == completed.sorted(), "bootstrapSeconds": bootstrapSeconds,
+            "backfillSeconds": backfillSeconds, "largestProgressGapSeconds": largestGap,
+            "totalSeconds": Date().timeIntervalSince(overallStarted)]
+        let json = try JSONSerialization.data(withJSONObject: profile, options: [.sortedKeys])
+        print("TOKENBAR_BACKFILL_PROFILE " + String(decoding: json, as: UTF8.self))
+        // The new bounded exception must not open unknown or structural contracts.
+        try database.execute("UPDATE schema_meta SET value='future-enrichment' WHERE key='event_enrichment_revision';")
+        XCTAssertThrowsError(try CodexUsageHistoryIndex(codexHome: home)) { error in
+            XCTAssertTrue(error is CodexUsageIndexUpgradeRequiredError)
+        }
+        XCTAssertEqual(try database.withConnection { db in
+            try db.readRows("SELECT value FROM schema_meta WHERE key='event_enrichment_revision'") { $0.text(0) }
+        }.first, "future-enrichment")
+        try database.execute("DELETE FROM schema_meta WHERE key='event_enrichment_revision'; UPDATE schema_meta SET value='13' WHERE key='schema_version';")
+        XCTAssertThrowsError(try CodexUsageHistoryIndex(codexHome: home)) { error in
+            XCTAssertTrue(error is CodexUsageIndexRepairRequiredError)
+        }
+        XCTAssertEqual(try Data(contentsOf: indexURL), original)
+    }
+
     func testPausedPublishedLedgerBuildsFullCompactAndFastViewsWithoutRawSessionsOrSnapshotCache() throws {
         unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
         let root = try makeTemporaryDirectory(named: "PublishedReadOnlyAnalyzer")
