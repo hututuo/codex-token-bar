@@ -275,8 +275,16 @@ impl Paths {
             &a,
             &marker,
         ] {
+            need!(f.is_absolute(), "fixture destination must be absolute");
+            // Destinations need not exist yet. Resolve their existing ancestor,
+            // not a raw spelling with a different Windows verbatim prefix.
+            // All overrides were checked before this pass; no writes occur here.
+            let mut ancestor = f.as_path();
+            while !ancestor.exists() {
+                ancestor = ancestor.parent().ok_or("fixture path has no existing ancestor")?;
+            }
             need!(
-                f.starts_with(root),
+                ok!(fs::canonicalize(ancestor)).starts_with(root),
                 format!("path escaped fixture root: {}", f.display())
             );
         }
@@ -318,14 +326,15 @@ fn validate_root(input: &Path) -> Result<PathBuf, String> {
     for key in ENV {
         let value = std::env::var_os(key).ok_or_else(|| format!("missing path override {key}"))?;
         let p = PathBuf::from(value);
+        need!(p.is_absolute(), format!("{key} must be absolute"));
+        // canonicalize uses a verbatim \?\ prefix on Windows; comparing that
+        // to an uncanonicalized D:\ path rejects a valid isolated fixture.
+        // Require the harness-created directory and compare both resolved
+        // paths before creating anything. A symlink escaping the root fails.
+        let resolved = ok!(fs::canonicalize(&p));
         need!(
-            p.is_absolute() && p.starts_with(&root),
-            format!("{key} must be absolute and inside fixture root")
-        );
-        ok!(fs::create_dir_all(&p));
-        need!(
-            ok!(fs::canonicalize(p)).starts_with(&root),
-            format!("{key} resolves outside fixture root")
+            resolved != root && resolved.starts_with(&root) && resolved.is_dir(),
+            format!("{key} must resolve to an existing directory inside fixture root")
         );
     }
     Ok(root)

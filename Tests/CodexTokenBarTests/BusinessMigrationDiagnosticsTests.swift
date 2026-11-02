@@ -32,6 +32,39 @@ final class BusinessMigrationDiagnosticsTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: target), retained)
         XCTAssertEqual(try BusinessMigrationDiagnostics.files(at: root).count, 2)
     }
+    func testRuntimeBackfillIsSilentForRefreshAndRetainsEveryWorkerFailure() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = root.appendingPathComponent("ledger.sqlite")
+        let directory = root.appendingPathComponent("migration-diagnostics")
+        let ordinary = BusinessBackfillDiagnostics(database: database)
+        ordinary.progress(0, 2, .scanning)
+        XCTAssertEqual(try ordinary.source(database) { 42 }, 42)
+        ordinary.finish(generation: 1, complete: true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+        let backfill = BusinessBackfillDiagnostics(database: database)
+        backfill.progress(0, 8, .backfillingModel)
+        backfill.progress(0, 8, .backfillingModel) // coalesce duplicate progress only
+        DispatchQueue.concurrentPerform(iterations: 8) { worker in
+            do {
+                try backfill.source(root.appendingPathComponent("source-\(worker).jsonl")) {
+                    throw NSError(domain: "synthetic-worker", code: worker)
+                }
+            } catch { /* the public attempt also records its terminal failure */ }
+        }
+        backfill.fail(NSError(domain: "synthetic-backfill", code: 1))
+        let paths = try BusinessMigrationDiagnostics.files(at: directory)
+        XCTAssertEqual(paths.count, 1)
+        let rows = try String(contentsOf: XCTUnwrap(paths.first), encoding: .utf8)
+            .split(separator: "\n").map { try JSONDecoder().decode(BusinessMigrationDiagnostics.Event.self, from: Data($0.utf8)) }
+        XCTAssertEqual(rows.filter { $0.stage == "parse-source" && $0.status == "failed" }.count, 8)
+        XCTAssertEqual(rows.filter { $0.stage == "backfill-progress" }.count, 1)
+        XCTAssertEqual(rows.last?.stage, "attempt"); XCTAssertEqual(rows.last?.status, "failed")
+        XCTAssertEqual(rows.map(\.sequence), Array(1...rows.count))
+        XCTAssertEqual(Set(rows.map(\.attemptId)).count, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: database.path))
+    }
+
     func testWriteFailureKeepsMemoryPreviewAndNeverRemovesBlockingFile() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try Data("keep".utf8).write(to: root)

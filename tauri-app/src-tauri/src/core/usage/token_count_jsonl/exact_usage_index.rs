@@ -3124,10 +3124,37 @@ impl ExactUsageIndex {
         warnings: &mut Vec<LocalDataWarning>,
         mode: ExactSyncMode,
     ) -> Result<u64, String> {
+        #[cfg(test)]
+        let root = index_path.with_extension("migration-diagnostics");
+        #[cfg(not(test))]
+        let root = crate::core::business_migration_log::directory()
+            .unwrap_or_else(|_| index_path.with_extension("migration-diagnostics"));
+        crate::core::business_migration_log::run(&root, "exact-runtime-backfill", || {
+            crate::core::business_migration_log::event("backfill-scope", "started",
+                serde_json::json!({"homeIdentity":stable_path_fingerprint(codex_home)}));
+            let result = self.synchronize_event_enrichment_with_diagnostics(codex_home, index_path, warnings, mode);
+            if let Ok(revision) = &result {
+                crate::core::business_migration_log::event("backfill-publication",
+                    if self.migration_pending { "pending" } else { "succeeded" },
+                    serde_json::json!({"revision":revision,"migrationPending":self.migration_pending}));
+            }
+            result
+        })
+    }
+
+    fn synchronize_event_enrichment_with_diagnostics(
+        &mut self,
+        codex_home: &Path,
+        index_path: &Path,
+        warnings: &mut Vec<LocalDataWarning>,
+        mode: ExactSyncMode,
+    ) -> Result<u64, String> {
         self.connection.mark_receipt_dirty();
         let total = event_enrichment_source_count(&self.connection)?;
         let completed_receipts = event_enrichment_receipt_count(&self.connection)?.min(total);
         let candidates = event_enrichment_pending_candidates(&self.connection)?;
+        crate::core::business_migration_log::event("backfill-plan", "started",
+            serde_json::json!({"total":total,"completed":completed_receipts,"pending":candidates.len()}));
         super::update_precise_dashboard_progress(
             codex_home,
             "backfillingModel",
@@ -3211,6 +3238,9 @@ impl ExactUsageIndex {
             let handle = match RolloutReader::open(&file) {
                 Ok(handle) => handle,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    crate::core::business_migration_log::event("backfill-input", "retained-missing",
+                        serde_json::json!({"sourceIdentity":stable_path_fingerprint(&file),
+                            "action":"retain-published-history"}));
                     record_missing_event_enrichment_source(
                         &mut self.connection,
                         generation,
@@ -3239,6 +3269,9 @@ impl ExactUsageIndex {
                     continue;
                 }
                 Err(error) => {
+                    crate::core::business_migration_log::event("backfill-input", "failed",
+                        serde_json::json!({"sourceIdentity":stable_path_fingerprint(&file),
+                            "error":error.to_string(),"action":"retain-published-history-and-retry"}));
                     scan_completeness.mark_incomplete();
                     warnings.push(scan_warning(format!(
                         "历史字段补全暂时无法读取来源，保留上次可信数据并将在下次启动继续：{}（{}）",
@@ -3258,6 +3291,9 @@ impl ExactUsageIndex {
             let current_signature = match file_signature_from_handle(&handle, &file) {
                 Ok(signature) => signature,
                 Err(error) => {
+                    crate::core::business_migration_log::event("backfill-input", "failed",
+                        serde_json::json!({"sourceIdentity":stable_path_fingerprint(&file),
+                            "error":error.to_string(),"action":"retain-published-history-and-retry"}));
                     scan_completeness.mark_incomplete();
                     warnings.push(scan_warning(format!(
                         "历史字段补全暂时无法确认来源数据，保留上次可信数据并将在下次启动继续：{}（{}）",
@@ -6203,9 +6239,10 @@ fn stage_full_rebuilds(
         let next_light_job = AtomicUsize::new(0);
         let collected = Mutex::new(Vec::with_capacity(ordered_jobs.len()));
         let worker_count = cold_build_worker_count(ordered_jobs.len());
+        let diagnostics = crate::core::business_migration_log::capture();
         thread::scope(|scope| {
             if has_heavy_jobs {
-                scope.spawn(|| {
+                scope.spawn(|| crate::core::business_migration_log::with_context(&diagnostics, || {
                     for (order, job) in heavy_jobs {
                         let result = stage_full_rebuild_result(
                             order,
@@ -6221,7 +6258,7 @@ fn stage_full_rebuilds(
                             .unwrap_or_else(|poisoned| poisoned.into_inner())
                             .push(result);
                     }
-                });
+                }));
             }
             let light_worker_count = if light_jobs.is_empty() {
                 0
@@ -6231,7 +6268,7 @@ fn stage_full_rebuilds(
                 worker_count
             };
             for _ in 0..light_worker_count {
-                scope.spawn(|| loop {
+                scope.spawn(|| crate::core::business_migration_log::with_context(&diagnostics, || loop {
                     let light_index = next_light_job.fetch_add(1, Ordering::SeqCst);
                     let Some((order, job)) = light_jobs.get(light_index).copied() else {
                         break;
@@ -6249,7 +6286,7 @@ fn stage_full_rebuilds(
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner())
                         .push(result);
-                });
+                }));
             }
         });
         collected
@@ -6294,6 +6331,9 @@ fn stage_full_rebuild_result(
     on_completed: Option<&(dyn Fn(u64) + Send + Sync)>,
 ) -> StagedFullRebuildResult {
     let mut warnings = Vec::new();
+    let source_identity = stable_path_fingerprint(&job.file);
+    crate::core::business_migration_log::event("source-stage", "started",
+        serde_json::json!({"sourceIdentity":source_identity,"bytes":job.signature.size,"generation":target_generation}));
     let result = stage_or_reuse_full_rebuild(
         job,
         index_path,
@@ -6301,6 +6341,12 @@ fn stage_full_rebuild_result(
         codex_home,
         &mut warnings,
     );
+    let details = match &result {
+        Ok(staged) => serde_json::json!({"sourceIdentity":source_identity,"artifactId":staged.artifact_id,"events":staged.event_count}),
+        Err(StagedFullRebuildError::IncompleteSource(error)) => serde_json::json!({"sourceIdentity":source_identity,"error":error,"retryable":true}),
+        Err(StagedFullRebuildError::Fatal(error)) => serde_json::json!({"sourceIdentity":source_identity,"error":error,"retryable":false}),
+    };
+    crate::core::business_migration_log::event("source-stage", if result.is_ok() { "succeeded" } else { "failed" }, details);
     if result.is_ok() {
         let value = completed.fetch_add(1, Ordering::SeqCst).saturating_add(1);
         if let Some(on_completed) = on_completed {

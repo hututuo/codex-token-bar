@@ -80,6 +80,13 @@ fn secure_directory(root: &Path) -> Result<(), String> {
 pub(crate) fn directory() -> Result<PathBuf, String> {
     Ok(super::business_store_route::container_path()?.with_file_name("migration-diagnostics"))
 }
+#[derive(Clone)]
+pub(crate) struct Context(Option<Shared>);
+pub(crate) fn capture() -> Context { Context(ACTIVE.with(|active| active.borrow().clone())) }
+pub(crate) fn with_context<T>(context: &Context, work: impl FnOnce() -> T) -> T {
+    let _scope = Scope(ACTIVE.with(|active| active.replace(context.0.clone())));
+    work()
+}
 struct Scope(Option<Shared>);
 impl Drop for Scope { fn drop(&mut self) { ACTIVE.with(|active| *active.borrow_mut() = self.0.take()); } }
 pub(crate) fn run<T>(root: &Path, operation: &str, work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
@@ -217,6 +224,34 @@ mod tests {
         let mut archive = zip::ZipArchive::new(File::open(exported).unwrap()).unwrap();
         assert_eq!(archive.len(),4);
         assert!(archive.by_name(paths[0].file_name().unwrap().to_str().unwrap()).unwrap().size() > 1000);
+    }
+    #[test]
+    fn worker_context_keeps_all_failures_in_one_attempt_and_restores_outer_scope() {
+        let root = tempfile::tempdir().unwrap();
+        run(root.path(), "runtime-backfill", || {
+            let context = capture();
+            std::thread::scope(|scope| {
+                for worker in 0..8 {
+                    let context = context.clone();
+                    scope.spawn(move || with_context(&context, || {
+                        event("source-stage", "started", json!({"worker":worker}));
+                        event("source-stage", "failed", json!({"worker":worker,"error":"synthetic failure"}));
+                    }));
+                }
+            });
+            assert!(capture().0.is_some());
+            Ok(())
+        }).unwrap();
+        assert!(capture().0.is_none());
+        let paths = log_paths(root.path()).unwrap(); assert_eq!(paths.len(), 1);
+        let rows: Vec<Value> = fs::read_to_string(&paths[0]).unwrap().lines()
+            .map(|line| serde_json::from_str(line).unwrap()).collect();
+        assert_eq!(rows.len(), 18);
+        for (index, row) in rows.iter().enumerate() {
+            assert_eq!(row["sequence"].as_u64().unwrap(), index as u64 + 1);
+            assert_eq!(row["attemptId"], rows[0]["attemptId"]);
+        }
+        assert_eq!(rows.iter().filter(|row| row["status"] == "failed").count(), 8);
     }
     #[test]
     fn diagnostic_failure_does_not_authorize_or_fail_business_work() {

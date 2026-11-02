@@ -2149,20 +2149,34 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         onProgress: ((Int, Int, PreciseIndexProgressPhase) -> Void)? = nil
     ) throws -> SynchronizationResult {
         Self.sourceProbeTestState.recordSynchronization()
-        let result = try withExclusiveAccess {
-            let result = try synchronizeExclusively(
-                files: files,
-                sessionID: sessionID,
-                messageScanner: messageScanner,
-                observedAt: observedAt,
-                parser: parser,
-                onProgress: onProgress
-            )
-            if result.eventEnrichmentComplete { recordSuccessfulMigrationRetention(generation: result.attributionGeneration) }
+        let diagnostics = BusinessBackfillDiagnostics(database: driver.backingURL)
+        do {
+            let result = try withExclusiveAccess {
+                let result = try synchronizeExclusively(
+                    files: files,
+                    sessionID: sessionID,
+                    messageScanner: messageScanner,
+                    observedAt: observedAt,
+                    parser: { file, id, request, fingerprint, emit in
+                        try diagnostics.source(file) {
+                            try parser(file, id, request, fingerprint, emit)
+                        }
+                    },
+                    onProgress: { completed, total, phase in
+                        diagnostics.progress(completed, total, phase)
+                        onProgress?(completed, total, phase)
+                    }
+                )
+                if result.eventEnrichmentComplete { recordSuccessfulMigrationRetention(generation: result.attributionGeneration) }
+                return result
+            }
+            diagnostics.finish(generation: result.attributionGeneration, complete: result.eventEnrichmentComplete)
+            Self.scheduleStorageMaintenance(databaseURL: driver.url)
             return result
+        } catch {
+            diagnostics.fail(error)
+            throw error
         }
-        Self.scheduleStorageMaintenance(databaseURL: driver.url)
-        return result
     }
 
     struct ReadMetadata {
