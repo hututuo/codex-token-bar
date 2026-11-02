@@ -230,16 +230,33 @@ impl Container {
     /// store callers use this path so a missing A can never be silently
     /// replaced with an empty database.
     pub(crate) fn open_existing(path: impl AsRef<Path>) -> BusinessStoreResult<Self> {
-        let path = path.as_ref().to_path_buf();
+        Self::open_existing_mode(path.as_ref(), false, Duration::from_secs(30))
+    }
+
+    pub(crate) fn open_read_only_existing(
+        path: impl AsRef<Path>,
+        timeout: Duration,
+    ) -> BusinessStoreResult<Self> {
+        Self::open_existing_mode(path.as_ref(), true, timeout)
+    }
+
+    fn open_existing_mode(
+        path: &Path,
+        read_only: bool,
+        timeout: Duration,
+    ) -> BusinessStoreResult<Self> {
+        let path = path.to_path_buf();
         if std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_symlink())
         {
             return Err(BusinessStoreError::InvalidContainerVersion);
         }
-        let connection = Connection::open_with_flags(
-            &path,
-            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_URI,
-        )?;
-        connection.busy_timeout(Duration::from_secs(30))?;
+        let mode = if read_only {
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+        } else {
+            OpenFlags::SQLITE_OPEN_READ_WRITE
+        };
+        let connection = Connection::open_with_flags(&path, mode | OpenFlags::SQLITE_OPEN_URI)?;
+        connection.busy_timeout(timeout)?;
         let physical_version: i64 =
             connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         if physical_version != 1 {

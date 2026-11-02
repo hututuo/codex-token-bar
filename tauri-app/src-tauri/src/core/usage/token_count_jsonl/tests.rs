@@ -9242,6 +9242,14 @@ fn cache_turns_sum_request_inputs_and_count_zero_and_low_hit_requests() {
     let second_page = read_cache_turn_requests(&root, &turn.id, 2, 101).unwrap();
     assert_eq!(first_page.len(), 2);
     assert_eq!(second_page.len(), 1);
+    assert_eq!(first_page[0].id, requests[0].id);
+    assert_eq!(first_page[1].id, requests[1].id);
+    assert_eq!(second_page[0].id, requests[2].id);
+    assert!(read_cache_turn_requests(&root, &turn.id, 3, 101).unwrap().is_empty());
+    assert!(read_cache_turn_requests(&root, &turn.id, 0, 0).unwrap().is_empty());
+    let event_id = turn.id.rsplit_once('-').unwrap().1;
+    assert!(read_cache_turn_requests(&root, &format!("stale-session-0-{event_id}"), 0, 101).unwrap().is_empty(),
+        "an event id alone cannot authorize a different or stale turn identity");
     let database = super::exact_usage_index::database_path(&root).unwrap();
     let connection = Connection::open(database).unwrap();
     assert_eq!(
@@ -9312,6 +9320,89 @@ fn cache_turns_sum_request_inputs_and_count_zero_and_low_hit_requests() {
         "indexed request details must remain available after the source disappears"
     );
 
+    // A retained aggregate can outlive its raw representative event. Keep
+    // serving its surviving canonical requests through the persisted target.
+    let db = Connection::open(super::exact_usage_index::database_path(&root).unwrap()).unwrap();
+    let representative = missing_turn.id.rsplit_once('-').unwrap().1.parse::<i64>().unwrap();
+    assert_eq!(db.execute("DELETE FROM event_rows WHERE id=?1", [representative]).unwrap(), 1);
+    drop(db);
+    let retained = read_cache_turn_requests(&root, &missing_turn.id, 0, 101).unwrap();
+    assert_eq!(retained.len(), 2);
+    assert!(retained.iter().all(|request| request.id != representative.to_string()));
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn cache_request_details_keep_canonical_duplicate_exclusion() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let name = "rollout-019e1111-1111-4111-8111-000000000002.jsonl";
+    let prompt = r#"{"timestamp":"2026-06-18T01:00:00Z","type":"event_msg","payload":{"type":"user_message","message":"synthetic prompt"}}"#;
+    let usage = |at: &str, n: u64, total: u64| serde_json::json!({
+        "timestamp":at,"type":"event_msg","payload":{"type":"token_count","info":{
+            "total_token_usage":{"input_tokens":total,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":total},
+            "last_token_usage":{"input_tokens":n,"cached_input_tokens":0,"output_tokens":0,"total_tokens":n}
+        }}
+    }).to_string();
+    let first = usage("2026-06-18T01:01:00Z", 100, 100);
+    for directory in ["a", "b"] {
+        let path = root.join("sessions").join(directory).join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut lines = vec![prompt.to_string(), first.clone()];
+        if directory == "b" { lines.push(usage("2026-06-18T01:02:00Z", 300, 400)); }
+        write_lines(&path, &lines);
+    }
+    let snapshot = dashboard_snapshot(&root).unwrap();
+    assert_eq!(snapshot.stats.total_tokens, 400);
+    assert!(!snapshot.cache_usage.turns.is_empty());
+    let mut detailed_tokens = 0;
+    for turn in &snapshot.cache_usage.turns {
+        let requests = read_cache_turn_requests(&root, &turn.id, 0, 101).unwrap();
+        assert_eq!(requests.len() as u32, turn.request_count);
+        let tokens = requests.iter().map(|request| request.breakdown.total_tokens).sum::<u64>();
+        assert_eq!(tokens, turn.breakdown.total_tokens);
+        detailed_tokens += tokens;
+    }
+    assert_eq!(detailed_tokens, 400, "the duplicate raw observation must not reappear in request details");
+    let db = Connection::open(super::exact_usage_index::database_path(&root).unwrap()).unwrap();
+    assert_eq!(db.query_row("SELECT SUM(tokens) FROM event_rows", [], |row| row.get::<_, i64>(0)).unwrap(), 500);
+    drop(db);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn incremental_attribution_keeps_unchanged_copies_and_unrelated_sessions() {
+    let _test_state = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    let name = "rollout-019e1111-1111-4111-8111-000000000003.jsonl";
+    let a = root.join("sessions/a").join(name);
+    let b = root.join("sessions/b").join(name);
+    fs::create_dir_all(a.parent().unwrap()).unwrap();
+    fs::create_dir_all(b.parent().unwrap()).unwrap();
+    let event = |minute: u64, tokens: u64, total: u64| serde_json::json!({
+        "timestamp":format!("2026-06-18T01:{minute:02}:00Z"),"type":"event_msg","payload":{"type":"token_count","info":{
+            "total_token_usage":{"input_tokens":total,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":total},
+            "last_token_usage":{"input_tokens":tokens,"cached_input_tokens":0,"output_tokens":0,"total_tokens":tokens}
+        }}
+    }).to_string();
+    write_lines(&a, &[event(1, 100, 100), event(2, 200, 300)]);
+    write_lines(&b, &[event(1, 100, 100), event(3, 300, 400)]);
+    let unrelated = root.join("sessions/rollout-unrelated.jsonl");
+    write_lines(&unrelated, &[event(4, 750, 750)]);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 1_350);
+
+    let mut writer = fs::OpenOptions::new().append(true).open(&b).unwrap();
+    writeln!(writer, "{}", event(6, 50, 450)).unwrap();
+    drop(writer);
+    assert_eq!(dashboard_snapshot(&root).unwrap().stats.total_tokens, 1_400);
+    let db = Connection::open(super::exact_usage_index::database_path(&root).unwrap()).unwrap();
+    let totals = db.prepare(
+        "SELECT SUM(tokens) AS tokens FROM attribution_source_buckets GROUP BY source_id ORDER BY tokens",
+    ).unwrap().query_map([], |row| row.get::<_, i64>(0)).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
+    assert_eq!(totals, vec![650, 750],
+        "the changed UUID includes its unchanged copy's 200 unique tokens; unrelated usage stays intact");
+    drop(db);
     fs::remove_dir_all(root).unwrap();
 }
 

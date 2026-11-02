@@ -4,6 +4,81 @@ import { Window } from "happy-dom";
 
 import { withSsrModules } from "../test/ssrHarness.mjs";
 
+test("manual refresh remains disabled beyond the UI budget until its native owner settles", async () => {
+  await withMountedDashboard(async ({ React, container, load, render, window }) => {
+    const { emptyDashboardSnapshot, fallbackPlatformCapabilities } = await load("/src/api/fallback.ts");
+    const { INITIAL_PRECISE_DASHBOARD_DELAY_MS } = await load("/src/state/preciseDashboardSchedule.ts");
+    const budget = captureUiBudgets(window);
+    const owner = deferred();
+    let reads = 0;
+    const source = dashboardSource({
+      fallbackPlatformCapabilities,
+      getCodexHome: async () => sourceEnvelope("manual-budget", 1),
+      readDashboardSnapshot: async () => ({ status: "stale", snapshot: snapshot(emptyDashboardSnapshot, "cached") }),
+      readPreciseDashboardSnapshot: () => { reads += 1; return owner.promise; },
+    });
+    try {
+      await render(source, {
+        includeRefreshControls: true,
+        subscribeToSourceChanges: async () => ({ ok: true, unlisten() {} }),
+      });
+      await React.act(() => new Promise(resolve => setTimeout(resolve, INITIAL_PRECISE_DASHBOARD_DELAY_MS + 50)));
+      await waitForAct(React, () => reads === 1 && budget.size > 0);
+      const button = container.querySelector("button");
+      assert.equal(button.disabled, true);
+      await React.act(async () => { budget.expire(); await tick(); });
+      assert.equal(button.disabled, true, "30 seconds is a UI waiter budget, not native completion");
+      await React.act(async () => { button.click(); button.click(); await tick(); });
+      assert.equal(reads, 1, "the busy control must not enqueue duplicate manual scans");
+      owner.resolve({
+        ...snapshot(emptyDashboardSnapshot, new Date().toISOString()),
+        preciseRecentUsageFresh: true, preciseRecentUsageCoveredAt: new Date().toISOString(),
+      });
+      await React.act(async () => { await owner.promise; await tick(); });
+      await waitForAct(React, () => !button.disabled);
+    } finally { budget.restore(); }
+  });
+});
+
+test("same-source refresh waiters stay busy while sharing one native owner", async () => {
+  await withMountedDashboard(async ({ React, container, load, render, window }) => {
+    const { emptyDashboardSnapshot, fallbackPlatformCapabilities } = await load("/src/api/fallback.ts");
+    const { INITIAL_PRECISE_DASHBOARD_DELAY_MS } = await load("/src/state/preciseDashboardSchedule.ts");
+    const budget = captureUiBudgets(window);
+    const owner = deferred();
+    let reads = 0;
+    let current;
+    const source = dashboardSource({
+      fallbackPlatformCapabilities,
+      getCodexHome: async () => sourceEnvelope("manual-generation", 1),
+      readDashboardSnapshot: async () => ({ status: "stale", snapshot: snapshot(emptyDashboardSnapshot, "cached") }),
+      readPreciseDashboardSnapshot: () => { reads += 1; return owner.promise; },
+    });
+    try {
+      await render(source, {
+        includeRefreshControls: true, observe: result => { current = result; },
+        subscribeToSourceChanges: async () => ({ ok: true, unlisten() {} }),
+      });
+      await React.act(() => new Promise(resolve => setTimeout(resolve, INITIAL_PRECISE_DASHBOARD_DELAY_MS + 50)));
+      await waitForAct(React, () => reads === 1 && budget.size > 0);
+      await React.act(async () => { budget.expire(); await tick(); });
+      // An internal refresh can supersede a generation even while the button is disabled.
+      await React.act(async () => { await current.reloadAll(); await tick(); });
+      await waitForAct(React, () => budget.size > 0);
+      await React.act(async () => { budget.expire(); await tick(); });
+      const fresh = () => ({
+        ...snapshot(emptyDashboardSnapshot, new Date().toISOString()),
+        preciseRecentUsageFresh: true, preciseRecentUsageCoveredAt: new Date().toISOString(),
+      });
+      assert.equal(container.querySelector("button").disabled, true);
+      owner.resolve(fresh());
+      await React.act(async () => { await owner.promise; await tick(); });
+      await waitForAct(React, () => !container.querySelector("button").disabled);
+      assert.equal(reads, 1, "the newer waiter must join the already-running native scan");
+    } finally { budget.restore(); }
+  });
+});
+
 test("a non-forced initial quota request retains its precise subscriber after starting", async () => {
   await withMountedDashboard(async ({ React, container, load, render }) => {
     const { emptyDashboardSnapshot } = await load("/src/api/fallback/dashboardFallback.ts");
@@ -500,13 +575,20 @@ async function withMountedDashboard(run) {
         root = createRoot(container);
         function Probe() {
           const result = useDashboardData({ ...options, source, liveRateEnabled: false });
-          return React.createElement("output", null, JSON.stringify({
+          options.observe?.(result);
+          const output = React.createElement("output", null, JSON.stringify({
             progress: result.preciseProgress?.phase ?? null,
             physical: result.providerSourceKey.split(":").at(-1),
             platform: result.state.platform?.platform ?? null,
             generatedAt: result.state.dashboard?.generatedAt ?? null,
             ...(options.includeFreshness ? { preciseFresh: result.state.dashboard?.preciseRecentUsageFresh } : {}),
           }));
+          return options.includeRefreshControls
+            ? React.createElement(React.Fragment, null, output,
+              React.createElement("button", {
+                disabled: result.refreshing, onClick: result.reloadAll,
+              }, result.refreshing ? "刷新中…" : "立即刷新"))
+            : output;
         }
         const probe = React.createElement(Probe);
         await React.act(async () => root.render(
@@ -598,5 +680,32 @@ function installDomGlobals(window) {
       if (descriptor) Object.defineProperty(globalThis, name, descriptor);
       else delete globalThis[name];
     }
+  };
+}
+
+function captureUiBudgets(window) {
+  const callbacks = new Map();
+  let sequence = -10_000;
+  const original = {
+    set: globalThis.setTimeout, clear: globalThis.clearTimeout,
+    windowSet: window.setTimeout, windowClear: window.clearTimeout,
+  };
+  const wrap = delegate => (callback, delay, ...args) => {
+    if (delay !== 30_000) return delegate(callback, delay, ...args);
+    const id = sequence--;
+    callbacks.set(id, () => callback(...args));
+    return id;
+  };
+  globalThis.setTimeout = wrap(original.set);
+  window.setTimeout = wrap(original.windowSet.bind(window));
+  globalThis.clearTimeout = id => { if (!callbacks.delete(id)) original.clear(id); };
+  window.clearTimeout = id => { if (!callbacks.delete(id)) original.windowClear.call(window, id); };
+  return {
+    get size() { return callbacks.size; },
+    expire() { const pending = [...callbacks.values()]; callbacks.clear(); pending.forEach(run => run()); },
+    restore() {
+      globalThis.setTimeout = original.set; globalThis.clearTimeout = original.clear;
+      window.setTimeout = original.windowSet; window.clearTimeout = original.windowClear;
+    },
   };
 }

@@ -507,15 +507,15 @@ pub(super) fn index_upgrade_required(
     codex_home: &Path,
 ) -> Result<Option<ExactIndexUpgradeRequired>, String> {
     let path = database_path(codex_home)?;
-    if !existing_regular_index(&path)? {
-        return Ok(None);
-    }
-    let read_only = open_read_only_index(&path, StdDuration::from_secs(1)).map_err(|error| {
+    let read_only = open_published_index_read_only(&path, StdDuration::from_secs(1)).map_err(|error| {
         format!(
             "无法只读探测精确 token 索引兼容性 {}：{error}",
             path.display()
         )
     })?;
+    let Some(read_only) = read_only else { return Ok(None); };
+    let read_only = read_only.unchecked_transaction()
+        .map_err(|error| format!("无法开始精确 token 兼容性只读快照：{error}"))?;
     let assessment = assess_index_migration(&read_only, true)?;
     if let Some(upgrade) = assessment.upgrade_required() {
         return Ok(Some(upgrade));
@@ -827,18 +827,17 @@ pub(super) fn read_only_source_probe(
     timeout: StdDuration,
 ) -> Result<ReadOnlySourceProbe, String> {
     let path = database_path(codex_home)?;
-    if !existing_regular_index(&path)? {
+    let connection = open_published_index_read_only(&path, timeout).map_err(|error| {
+        format!("无法只读打开精确 token 索引源探针 {}：{error}", path.display())
+    })?;
+    let Some(connection) = connection else {
         return Ok(ReadOnlySourceProbe {
             published_generation: 0,
             changed: Some(true),
         });
-    }
-    let connection = open_read_only_index(&path, timeout).map_err(|error| {
-        format!(
-            "无法只读打开精确 token 索引源探针 {}：{error}",
-            path.display()
-        )
-    })?;
+    };
+    let connection = connection.unchecked_transaction()
+        .map_err(|error| format!("无法开始精确 token 源探针只读快照：{error}"))?;
     let metadata_table_exists = connection
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'metadata')",
@@ -901,6 +900,10 @@ pub(super) fn read_only_source_probe(
     }
     drop(statement);
 
+    // Release the consistent DB snapshot before filesystem discovery. The
+    // probe's watermark and checkpoints must come from the same publication.
+    drop(connection);
+
     let discovery = match estimate_precise_scan_total_with_known_sources(codex_home, timeout, 0, &published_files) {
         Ok(discovery) => discovery,
         Err(_) => {
@@ -959,12 +962,12 @@ pub(super) fn read_cache_turn_requests(
     }
 
     let path = database_path(codex_home)?;
-    if !existing_regular_index(&path)? {
-        return Err("精确 token 索引尚不可用，无法读取请求明细".into());
-    }
-    let connection = open_read_only_index(&path, StdDuration::from_secs(2)).map_err(|error| {
+    let connection = open_published_index_read_only(&path, StdDuration::from_secs(2)).map_err(|error| {
         format!("无法只读打开精确 token 索引以读取缓存轮次请求：{error}")
-    })?;
+    })?.ok_or("精确 token 索引尚不可用，无法读取请求明细")?;
+    // The anchor, target and page must describe one published generation.
+    let connection = connection.unchecked_transaction()
+        .map_err(|error| format!("无法开始缓存轮次请求只读快照：{error}"))?;
     let schema_version = metadata_i64(&connection, "schema_version")?;
     if schema_version != Some(CURRENT_SCHEMA_VERSION) {
         return Err("精确 token 索引版本尚未就绪，无法读取缓存轮次请求".into());
@@ -974,25 +977,44 @@ pub(super) fn read_cache_turn_requests(
         return Err("缓存轮次聚合尚未升级完成，无法读取请求明细".into());
     }
 
-    let mut statement = connection
-        .prepare(
-            r#"
-            WITH published AS (
-                SELECT CAST(value AS INTEGER) AS generation
-                FROM metadata
-                WHERE key = 'published_generation'
-            ), target AS (
-                SELECT
-                    c.source_file_generation,
-                    c.file_path,
-                    c.session_id,
-                    c.user_prompt_start,
-                    c.user_prompt_end
-                FROM dashboard_turn_candidates c
-                JOIN published p ON p.generation = c.aggregate_generation
-                WHERE c.event_id = ?1
-                LIMIT 1
-            )
+    let source_hint: Option<i64> = connection.query_row(
+        "SELECT source_id FROM event_rows WHERE id = ?1", [event_id], |row| row.get(0),
+    ).optional().map_err(|error| format!("无法定位缓存轮次来源：{error}"))?;
+    type Target = (i64, i64, String, String, Option<i64>, Option<i64>);
+    let read_target = |hint: Option<i64>| -> Result<Option<Target>, String> {
+        let scope = if hint.is_some() { "AND c.source_id = ?3" } else { "" };
+        let sql = format!(r#"
+            SELECT f.source_id, c.source_file_generation, c.file_path,
+                   c.session_id, c.user_prompt_start, c.user_prompt_end
+            FROM dashboard_turn_candidates c
+            JOIN published_files f ON f.generation = c.source_file_generation
+                AND f.path = c.file_path AND f.session_id = c.session_id
+            WHERE c.aggregate_generation = (
+                SELECT CAST(value AS INTEGER) FROM metadata WHERE key = 'published_generation'
+            ) AND c.event_id = ?1
+              AND (c.session_id || '-' || CAST(c.timestamp AS TEXT) || '-' || CAST(c.event_id AS TEXT)) = ?2
+              {scope}
+            LIMIT 1
+        "#);
+        let decode = |row: &rusqlite::Row<'_>| -> rusqlite::Result<Target> {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))
+        };
+        let result = if let Some(source_id) = hint {
+            connection.query_row(&sql, params![event_id, turn_id, source_id], decode)
+        } else {
+            connection.query_row(&sql, params![event_id, turn_id], decode)
+        };
+        result.optional().map_err(|error| format!("无法读取缓存轮次归属：{error}"))
+    };
+    let target = read_target(source_hint)?;
+    // Retention can remove a raw representative while the turn still owns
+    // surviving requests. Its persisted target remains authoritative.
+    let target = if target.is_none() && source_hint.is_some() {
+        read_target(None)?
+    } else { target };
+    let Some((source_id, file_generation, file_path, session_id, prompt_start, prompt_end)) = target
+        else { return Ok(Vec::new()); };
+    let mut statement = connection.prepare(r#"
             SELECT
                 e.id,
                 e.timestamp,
@@ -1001,21 +1023,19 @@ pub(super) fn read_cache_turn_requests(
                 e.input_tokens,
                 e.cached_input_tokens,
                 e.output_tokens
-            FROM target t
-            JOIN published_events e
-              ON e.file_generation = t.source_file_generation
-             AND e.file_path = t.file_path
-             AND e.session_id = t.session_id
-             AND e.user_prompt_start IS t.user_prompt_start
-             AND e.user_prompt_end IS t.user_prompt_end
-            WHERE e.tokens > 0
+            FROM published_events e
+            WHERE e.source_id = ?1
+              AND e.file_generation = ?2 AND e.file_path = ?3 AND e.session_id = ?4
+              AND e.user_prompt_start IS ?5 AND e.user_prompt_end IS ?6
+              AND e.tokens > 0
             ORDER BY e.timestamp, e.ordinal, e.id
-            LIMIT ?2 OFFSET ?3
+            LIMIT ?7 OFFSET ?8
             "#,
         )
         .map_err(|error| format!("无法准备缓存轮次请求明细查询：{error}"))?;
     let rows = statement
-        .query_map(params![event_id, i64::from(limit), i64::from(offset)], |row| {
+        .query_map(params![source_id, file_generation, file_path, session_id,
+            prompt_start, prompt_end, i64::from(limit), i64::from(offset)], |row| {
             let request_id = row.get::<_, i64>(0)?;
             let timestamp = row.get::<_, i64>(1)?;
             let input_tokens = nonnegative_u64(row.get::<_, i64>(4)?);
@@ -1036,6 +1056,30 @@ pub(super) fn read_cache_turn_requests(
         .map_err(|error| format!("无法读取缓存轮次请求明细：{error}"))?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("无法解码缓存轮次请求明细：{error}"))
+}
+
+/// Runtime readers only consult the registered A namespace. Never enter the
+/// legacy import/registration route, even while another owner is publishing.
+/// Migration and staging callers continue to use their separate open path.
+fn open_published_index_read_only(path: &Path, timeout: StdDuration) -> Result<Option<Connection>, String> {
+    #[cfg(test)]
+    {
+        if !existing_regular_index(path)? { return Ok(None); }
+        sqlite::open_read_only(path, timeout).map(Some).map_err(|error| error.to_string())
+    }
+    #[cfg(not(test))]
+    {
+        let store = crate::core::business_store_route::exact_store_spec(path)?;
+        let connection = crate::core::business_store_route::open_registered_store_read_only(
+            "exact", &store.source_identity, &store.logical_path, timeout,
+        )?;
+        let Some(connection) = connection else { return Ok(None); };
+        let has_objects = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM main.sqlite_master WHERE type IN ('table','index','view','trigger'))",
+            [], |row| row.get::<_, bool>(0),
+        ).map_err(|error| format!("无法只读检查精确 token 分区对象：{error}"))?;
+        Ok(has_objects.then_some(connection))
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -9792,7 +9836,12 @@ fn synchronize_attribution_ledger(
     "#;
     let incremental_query = full_query.replace(
         "GROUP BY 1, 2",
-        "AND lower(e.session_id) IN (SELECT lower(s.session_id) FROM pending_sources p JOIN sources s USING(source_id) WHERE p.target_generation=?1) GROUP BY 1, 2"
+        // Keep the UUID predicate across every copy, while exposing source_id
+        // to the compound event view so SQLite can use its per-source indexes.
+        // files includes the effective pending layer; selecting only pending
+        // source IDs here would lose unchanged copies of an affected UUID.
+        "AND lower(e.session_id) IN (SELECT lower(s.session_id) FROM pending_sources p JOIN sources s USING(source_id) WHERE p.target_generation=?1) \
+         AND e.source_id IN (SELECT f.source_id FROM files f WHERE lower(f.session_id) IN (SELECT lower(s.session_id) FROM pending_sources p JOIN sources s USING(source_id) WHERE p.target_generation=?1)) GROUP BY 1, 2"
     );
     let mut source_rows = transaction
         .prepare(if rebuild {
