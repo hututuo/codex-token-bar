@@ -28,10 +28,9 @@ mod series;
 
 use database::{
     ensure_schema, insert_row, latest_trusted_row, maintain_if_due,
-    rows_since_for_read_only_peer,
 };
 #[cfg(test)]
-use database::{maintenance_metadata, recent_rows, rows_since, rows_since_for_row};
+use database::{maintenance_metadata, recent_rows, rows_since, rows_since_for_row, rows_since_for_read_only_peer};
 #[cfg(test)]
 use series::{make_daily_history, make_interval_history, make_recent_history, DailyQuotaHistory};
 
@@ -207,6 +206,20 @@ pub fn warning(message: String) -> LocalDataWarning {
 fn quota_available(quota: &QuotaSnapshot) -> bool {
     use crate::models::QuotaAvailability::Measured;
     quota.five_hour.availability == Measured || quota.seven_day.availability == Measured
+}
+
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+pub(crate) fn verify_legacy_runtime_fixture(identity: &QuotaHistoryIdentity) -> Result<(), String> {
+    let database = QuotaHistoryDatabase::default()?;
+    let rows = database.read_peer_rows_for_identity(identity, f64::MAX).map_err(|error| error.to_string())?;
+    let total = rows.len();
+    let foreign = rows.iter().filter(|row| row.stable_identity().as_ref() != Some(identity)).count();
+    let unique = merge_history_rows(Vec::new(), rows).len();
+    if total != 3 || foreign != 0 || unique != 2
+    {
+        return Err(format!("legacy Tauri quota identity mismatch: rows={total} unique={unique} foreign={foreign}"));
+    }
+    Ok(())
 }
 
 struct QuotaHistoryDatabase {
@@ -417,7 +430,7 @@ impl QuotaHistoryDatabase {
                 }
                 .map_err(store_route_sql_error)?;
                 if let Some(connection) = connection {
-                    rows.extend(rows_since_for_read_only_peer(
+                    rows.extend(database::rows_since_for_legacy_store(
                         &connection,
                         age_seconds,
                         identity,

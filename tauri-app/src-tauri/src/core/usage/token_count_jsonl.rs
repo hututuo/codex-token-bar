@@ -36,7 +36,16 @@ mod exact_usage_index;
 mod fingerprint_codec;
 mod scan_failure;
 mod rollout_source;
+pub(crate) use rollout_source::RolloutStream;
 pub(crate) mod recovery_source;
+
+pub(crate) fn resolve_rollout_physical_path(path: &Path) -> Result<PathBuf, String> {
+    rollout_source::physical_path(path).map_err(|error| error.to_string())
+}
+
+pub(crate) fn rollout_metadata_reader<'a>(reader: impl std::io::Read + 'a) -> Result<Box<dyn std::io::Read + 'a>, String> {
+    rollout_source::metadata_reader(reader).map_err(|error| error.to_string())
+}
 
 pub(crate) fn bootstrap_legacy_exact_indexes() -> Result<(), String> {
     exact_usage_index::bootstrap_legacy_indexes()
@@ -44,6 +53,14 @@ pub(crate) fn bootstrap_legacy_exact_indexes() -> Result<(), String> {
 #[cfg(all(feature = "business-store-fixture", not(test)))]
 pub(crate) fn verify_legacy_migration_fixture(home: &Path, path: &Path) -> Result<bool, String> {
     exact_usage_index::verify_legacy_migration_fixture(home, path)
+}
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+pub(crate) fn verify_runtime_recovery_fixture(home: &Path) -> Result<serde_json::Value, String> {
+    exact_usage_index::verify_runtime_recovery_fixture(home)
+}
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+pub(crate) fn verify_backfill_performance_fixture(home: &Path) -> Result<serde_json::Value, String> {
+    exact_usage_index::verify_backfill_performance_fixture(home)
 }
 #[cfg(test)]
 mod rollout_source_tests;

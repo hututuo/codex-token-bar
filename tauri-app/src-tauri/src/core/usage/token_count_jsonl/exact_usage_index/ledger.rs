@@ -4,13 +4,51 @@
 use super::*;
 use rusqlite::types::Value;
 
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+mod performance_fixture;
+
 const REVISION: &str = "2";
 const FIELDS: &str = "id,source_id,ordinal,timestamp,tokens,input_tokens,cached_input_tokens,output_tokens,reasoning_output_tokens,model,user_prompt_start,user_prompt_end,assistant_response_start,assistant_response_end,accounting_kind,reported_total_tokens,token_source_offset,legacy_tokens";
 const BINDINGS: &str = "event_id,source_id,raw_generation,raw_offset,user_prompt_start,user_prompt_end,assistant_response_start,assistant_response_end,fingerprint,available";
 const GROUP_BASE: i64 = 1_i64 << 62;
 
+fn event_at_raw_location(db: &Connection, source: i64, generation: Option<i64>, offset: Option<i64>) -> Result<Option<i64>, String> {
+    // Constrain both sides of the join so the existing binding index can seek
+    // by (source, generation, offset), rather than scan every event in a source.
+    let mut statement = db.prepare("SELECT e.id FROM event_rows e JOIN usage_ledger_bindings b ON b.event_id=e.id WHERE e.source_id=?1 AND b.source_id=?1 AND b.raw_generation=?2 AND b.raw_offset IS NOT NULL AND b.raw_offset=?3").map_err(|e| e.to_string())?;
+    let result = statement.query_row(params![source,generation,offset], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
+    #[cfg(all(feature = "business-store-fixture", not(test)))]
+    performance_fixture::record_lookup("raw-location", &statement)?;
+    Ok(result)
+}
+
+fn incoming_identity_count(db: &Connection, raw: &[Value]) -> Result<i64, String> {
+    let mut statement = db.prepare("SELECT COUNT(*) FROM usage_ledger_incoming WHERE timestamp=?1 AND input_tokens=?2 AND cached_input_tokens=?3 AND output_tokens=?4").map_err(|e| e.to_string())?;
+    let count = statement.query_row(params![&raw[3],&raw[5],&raw[6],&raw[7]], |row| row.get(0)).map_err(|e| e.to_string())?;
+    #[cfg(all(feature = "business-store-fixture", not(test)))]
+    performance_fixture::record_lookup("incoming-identity", &statement)?;
+    Ok(count)
+}
+
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+pub(super) fn verify_performance_fixture(home: &Path) -> Result<serde_json::Value, String> {
+    performance_fixture::verify(home)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum CompactionEventDisposition { Insert, Existing, Corrected }
+
+fn published_compaction_event(db: &Connection, source: i64, fingerprint: &[u8]) -> Result<Option<Vec<Value>>, String> {
+    // Seek the existing (source_id, fingerprint) binding index for both hits
+    // and new responses. Filtering only e.source_id scans the whole source.
+    let mut statement = db.prepare(&format!("SELECT e.id,e.source_id,e.ordinal,e.timestamp,e.tokens,e.input_tokens,e.cached_input_tokens,e.output_tokens,e.reasoning_output_tokens,e.model,e.user_prompt_start,e.user_prompt_end,e.assistant_response_start,e.assistant_response_end,e.accounting_kind,e.reported_total_tokens,e.token_source_offset,e.legacy_tokens FROM event_rows e JOIN usage_ledger_bindings b ON b.event_id=e.id WHERE e.source_id=?1 AND b.source_id=?1 AND b.fingerprint=?2 ORDER BY e.id LIMIT 1"))
+        .map_err(|error| format!("无法检查已发布 compaction 响应身份：{error}"))?;
+    let result = statement.query_row(params![source, fingerprint], read_values).optional()
+        .map_err(|error| format!("无法检查已发布 compaction 响应身份：{error}"))?;
+    #[cfg(all(feature = "business-store-fixture", not(test)))]
+    performance_fixture::record_lookup("compaction-identity", &statement)?;
+    Ok(result)
+}
 
 pub(super) fn validate(db: &Connection) -> Result<(),String> {
     if !table_exists_checked(db,"usage_ledger_meta")? {
@@ -162,11 +200,7 @@ pub(super) fn upsert_compaction_event(
         return Ok(CompactionEventDisposition::Corrected);
     }
 
-    let existing: Option<Vec<Value>> = db.query_row(
-        &format!("SELECT e.id,e.source_id,e.ordinal,e.timestamp,e.tokens,e.input_tokens,e.cached_input_tokens,e.output_tokens,e.reasoning_output_tokens,e.model,e.user_prompt_start,e.user_prompt_end,e.assistant_response_start,e.assistant_response_end,e.accounting_kind,e.reported_total_tokens,e.token_source_offset,e.legacy_tokens FROM event_rows e JOIN usage_ledger_bindings b ON b.event_id=e.id WHERE e.source_id=?1 AND b.fingerprint=?2 ORDER BY e.id LIMIT 1"),
-        params![source, fingerprint],
-        read_values,
-    ).optional().map_err(|error| format!("无法检查已发布 compaction 响应身份：{error}"))?;
+    let existing = published_compaction_event(db, source, fingerprint)?;
     let Some(mut row) = existing else { return Ok(CompactionEventDisposition::Insert); };
     if number(&row, 14)? != crate::core::usage::token_count_jsonl::accounting::UNREPORTED_COMPACTION {
         return Ok(CompactionEventDisposition::Existing);
@@ -266,6 +300,10 @@ pub(super) fn reconcile_full(db: &Connection,staged: &StagedFullRebuild) -> Resu
     // session. Preserve the incoming rows while pending is rewritten, then
     // stream them; never collect an entire source into a Rust Vec.
     db.execute("CREATE TEMP TABLE usage_ledger_incoming AS SELECT * FROM pending_event_rows WHERE source_id=?1",params![source]).map_err(|e|e.to_string())?;
+    // This immutable copy contains the validated one-for-one stage events.
+    // Index its identity columns once; legacy uniqueness checks must not scan
+    // the entire sealed stage for every event. The index lives only in TEMP.
+    db.execute_batch("CREATE INDEX usage_ledger_incoming_identity ON usage_ledger_incoming(timestamp,input_tokens,cached_input_tokens,output_tokens)").map_err(|e|e.to_string())?;
     db.execute("DELETE FROM pending_event_rows WHERE source_id=?1",params![source]).map_err(|e|e.to_string())?;
     let mut incoming=db.prepare(&format!("SELECT {FIELDS} FROM usage_ledger_incoming ORDER BY ordinal")).map_err(|e|e.to_string())?;
     let mut rows=incoming.query([]).map_err(|e|e.to_string())?;
@@ -276,7 +314,7 @@ pub(super) fn reconcile_full(db: &Connection,staged: &StagedFullRebuild) -> Resu
         let mut existing: Option<i64>=if let Some(fp)=&fp { db.query_row("SELECT event_id FROM usage_ledger_bindings WHERE source_id=?1 AND fingerprint=?2 ORDER BY event_id LIMIT 1",params![source,fp],|r|r.get(0)).optional().map_err(|e|e.to_string())? } else { None };
         let mut ambiguous_legacy_identity=false;
         if existing.is_none() && unchanged {
-            existing=db.query_row("SELECT e.id FROM event_rows e JOIN usage_ledger_bindings b ON b.event_id=e.id WHERE e.source_id=?1 AND b.raw_generation=?2 AND b.raw_offset IS NOT NULL AND b.raw_offset=?3",params![source,old_generation,optional(&raw,16)],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
+            existing=event_at_raw_location(db,source,old_generation,optional(&raw,16))?;
             if existing.is_none() {
                 // Release schema 9 has no byte location. Ordinals can change
                 // when an ownership fix admits an earlier child call. A
@@ -284,7 +322,7 @@ pub(super) fn reconcile_full(db: &Connection,staged: &StagedFullRebuild) -> Resu
                 // sides is required; ordinal equality alone is not proof.
                 let old_match: (i64,Option<i64>)=db.query_row("SELECT COUNT(*),MIN(e.id) FROM event_rows e JOIN usage_ledger_bindings b ON b.event_id=e.id WHERE e.source_id=?1 AND b.raw_offset IS NULL AND e.timestamp=?2 AND e.input_tokens=?3 AND e.cached_input_tokens=?4 AND e.output_tokens=?5",params![source,&raw[3],&raw[5],&raw[6],&raw[7]],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|e.to_string())?;
                 if old_match.0==1 {
-                    let new_count:i64=db.query_row("SELECT COUNT(*) FROM exact_stage_import.events WHERE timestamp=?1 AND input_tokens=?2 AND cached_input_tokens=?3 AND output_tokens=?4",params![&raw[3],&raw[5],&raw[6],&raw[7]],|r|r.get(0)).map_err(|e|e.to_string())?;
+                    let new_count=incoming_identity_count(db,&raw)?;
                     if new_count==1 { existing=old_match.1; }
                     else { ambiguous_legacy_identity=true; }
                 } else if old_match.0>1 { ambiguous_legacy_identity=true; }

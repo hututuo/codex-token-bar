@@ -173,6 +173,39 @@ fn open_registered_store_at(
         .map_err(|error| error.to_string())
 }
 
+/// Read an existing namespace without registration, import, or a write lock.
+pub(crate) fn open_registered_store_read_only(
+    module: &str,
+    source_identity: &str,
+    logical_path: &str,
+    timeout: std::time::Duration,
+) -> Result<Option<StoreConnection>, String> {
+    ensure_runtime_business_store_ready()?;
+    open_registered_store_read_only_at(
+        &container_path()?, module, source_identity, logical_path, timeout,
+    )
+}
+
+fn open_registered_store_read_only_at(
+    path: &Path,
+    module: &str,
+    source_identity: &str,
+    logical_path: &str,
+    timeout: std::time::Duration,
+) -> Result<Option<StoreConnection>, String> {
+    verify_ready_container(path)?;
+    let container = Container::open_read_only_existing(path, timeout)
+        .map_err(|error| error.to_string())?;
+    #[cfg(not(test))]
+    verify_active_container_identity(path)?;
+    let store = StoreSpec::new(module, source_identity, logical_path)
+        .map_err(|error| error.to_string())?;
+    if !container.is_registered(&store).map_err(|error| error.to_string())? {
+        return Ok(None);
+    }
+    container.into_store_connection(&store).map(Some).map_err(|error| error.to_string())
+}
+
 /// Run the shared A container compaction policy. Module-local VACUUM SQL is
 /// deliberately a no-op; this daily gate is the only path that checkpoints
 /// and incrementally reclaims container pages.
@@ -826,9 +859,63 @@ fn open_store_at_with_hook(
 }
 
 pub(crate) fn exact_store_spec(path: &Path) -> Result<StoreSpec, String> {
+    if let Some((family, name)) = exact_stage_candidate_address(path)? {
+        // A virtual stage must keep its identity when a physical staging
+        // directory appears later. Its catalog address also permits recovery
+        // without relying on fs::read_dir for namespace-only artifacts.
+        let mut digest = Sha256::new();
+        digest.update(b"tokenbar-exact-stage-candidate-v2\0");
+        digest.update(family.as_bytes());
+        digest.update(b"\0");
+        digest.update(name.as_bytes());
+        return StoreSpec::new("exact", format!("{:x}", digest.finalize()),
+            format!("exact/staging/{family}/{name}"))
+            .map_err(|error| error.to_string());
+    }
     let identity = source_identity("exact", path)?;
     StoreSpec::new("exact", identity.clone(), format!("exact/index/{identity}"))
         .map_err(|error| error.to_string())
+}
+
+fn exact_stage_candidate_address(path: &Path) -> Result<Option<(String, String)>, String> {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else { return Ok(None) };
+    let Some((source, contract)) = name.strip_suffix(".sqlite3")
+        .and_then(|name| name.split_once(".candidate-v2-")) else { return Ok(None) };
+    let hash = |text: &str| text.len() == 64 && text.bytes().all(|byte| byte.is_ascii_hexdigit());
+    if !hash(source) || !hash(contract) { return Ok(None); }
+    let Some(directory) = path.parent() else { return Ok(None) };
+    let Some(index_name) = directory.file_name().and_then(|name| name.to_str())
+        .and_then(|name| name.strip_suffix(".staging")) else { return Ok(None) };
+    let index = directory.with_file_name(index_name);
+    Ok(Some((source_identity("exact", &index)?, name.to_owned())))
+}
+
+pub(crate) fn exact_stage_candidates(index: &Path, source_digest: &str) -> Result<Vec<PathBuf>, String> {
+    let family = source_identity("exact", index)?;
+    let prefix = format!("exact/staging/{family}/{source_digest}.candidate-v2-");
+    let container = open_ready_container(&container_path()?)?;
+    let mut statement = container.connection().prepare(
+        "SELECT logical_path,source_identity FROM tb_stores \
+         WHERE module='exact' AND state IN ('ready','sealed') AND substr(logical_path,1,?1)=?2"
+    ).map_err(|error| error.to_string())?;
+    let entries = statement.query_map(rusqlite::params![prefix.len(), prefix], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    }).map_err(|error| error.to_string())?;
+    let mut directory = index.as_os_str().to_os_string();
+    directory.push(".staging");
+    let directory = PathBuf::from(directory);
+    let mut paths = Vec::new();
+    for entry in entries {
+        let (logical, identity) = entry.map_err(|error| error.to_string())?;
+        let name = logical.rsplit('/').next().ok_or("暂存候选缺少目录项")?;
+        let path = directory.join(name);
+        let expected = exact_store_spec(&path)?;
+        if expected.logical_path != logical || expected.source_identity != identity {
+            return Err("暂存候选目录与业务分区身份不一致；已保留候选".into());
+        }
+        paths.push(path);
+    }
+    Ok(paths)
 }
 
 /// Once A has been activated, its imported source receipts are historical
@@ -1372,6 +1459,80 @@ mod tests {
     use rusqlite::{params, OpenFlags};
     use std::fs;
     use uuid::Uuid;
+
+    #[test]
+    fn registered_read_only_store_does_not_wait_for_or_modify_a_publisher() {
+        let fixture = Fixture::new();
+        let support = fixture.path("support");
+        fs::create_dir_all(&support).unwrap();
+        let _environment = app_paths::app_path_test_env_guard(&[
+            ("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR", support.clone()),
+        ]);
+        let path = container_path().unwrap();
+        assert_eq!(path, support.join("codex-ledger.sqlite"));
+        let spec = StoreSpec::new("exact", "test-home", "test-index").unwrap();
+        let container = Container::open(&path).unwrap();
+        container.register(&spec).unwrap();
+        let store = container.into_store_connection(&spec).unwrap();
+        store.execute_batch("CREATE TABLE records(value INTEGER); INSERT INTO records VALUES(41)").unwrap();
+        drop(store);
+        fs::write(initialized_marker_path(&path), b"tokenbar-codex-ledger-v1\n").unwrap();
+        let writer = Container::open_existing(&path).unwrap();
+        let physical_table = format!("{}records", spec.prefix);
+        writer.connection().execute_batch(&format!(
+            "BEGIN IMMEDIATE; UPDATE \"{physical_table}\" SET value=42"
+        )).unwrap();
+
+        // Registration would need the writer lock and fail at this timeout.
+        let reader = open_registered_store_read_only(
+            "exact", "test-home", "test-index", std::time::Duration::from_millis(25),
+        ).unwrap().unwrap();
+        assert_eq!(reader.query_row("SELECT value FROM records", [], |row| row.get::<_, i64>(0)).unwrap(), 41);
+        let error = reader.execute("INSERT INTO records VALUES(99)", []).unwrap_err();
+        assert_eq!(error.sqlite_error_code(), Some(rusqlite::ErrorCode::ReadOnly));
+        drop(reader);
+        writer.connection().execute_batch("ROLLBACK").unwrap();
+        assert_eq!(writer.connection().query_row(
+            &format!("SELECT value FROM \"{physical_table}\""), [], |row| row.get::<_, i64>(0),
+        ).unwrap(), 41);
+    }
+
+    #[test]
+    fn registered_read_only_store_never_creates_or_registers_missing_inputs() {
+        let fixture = Fixture::new();
+        let support = fixture.path("support");
+        fs::create_dir_all(&support).unwrap();
+        let _environment = app_paths::app_path_test_env_guard(&[
+            ("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR", support.clone()),
+        ]);
+        let path = container_path().unwrap();
+        assert_eq!(path, support.join("codex-ledger.sqlite"));
+        assert!(open_registered_store_read_only(
+            "exact", "home", "index", std::time::Duration::from_millis(25),
+        ).is_err());
+        assert!(!path.exists());
+        let container = Container::open(&path).unwrap();
+        drop(container);
+        // A valid physical database without the activation marker stays gated.
+        assert!(open_registered_store_read_only(
+            "exact", "home", "index", std::time::Duration::from_millis(25),
+        ).is_err());
+        fs::write(initialized_marker_path(&path), b"tokenbar-codex-ledger-v1\n").unwrap();
+        assert!(open_registered_store_read_only(
+            "exact", "home", "index", std::time::Duration::from_millis(25),
+        ).unwrap().is_none());
+        let container = Container::open_existing(&path).unwrap();
+        assert!(!container.is_registered(&StoreSpec::new("exact", "home", "index").unwrap()).unwrap());
+        container.connection().execute(
+            "UPDATE tb_container_meta SET value='999' WHERE key='schema_version'", [],
+        ).unwrap();
+        assert!(open_registered_store_read_only(
+            "exact", "home", "index", std::time::Duration::from_millis(25),
+        ).is_err(), "unknown container versions must never be repaired by a reader");
+        assert_eq!(container.connection().query_row(
+            "SELECT value FROM tb_container_meta WHERE key='schema_version'", [], |row| row.get::<_, String>(0),
+        ).unwrap(), "999");
+    }
 
     #[test]
     fn consumed_sources_require_activation_rows_and_complete_path_ownership() {

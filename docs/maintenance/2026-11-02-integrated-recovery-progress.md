@@ -52,3 +52,13 @@
 原始结果：本worktree的`scratch/integrated-recovery/c01/`，含命令、源哈希、退出码与日志。XCTest整包、真实旧版产库、固定池及大规模测试还未执行；C01固定这些入口，不把后续门禁提前算通过。
 
 C01已固定基线／映射和新增故障入口；剩余规模、形成状态及跨进程场景按后续阶段完成。下一步C02：整合已审查的读取／前端修复，保持PR7测试不变，再加入PR6额外兼容场景。
+
+## C02 · 读取和前端基础整合
+
+已选入固定PR7的34个文件改动，按上表16项逐项保留；其旧candidate路径作为C03的legacy适配基础，不是最终新暂存writer。未合并PR，也未取入发布版本或签名操作。PR6只选取共享选择hook和它的测试，未叠加第二套stage／恢复实现。
+
+补充外部state读取器：只读／query_only，不导入A；已知旧列动态投影，缺必需列返回失败并保留旧值；Mac同连接data_version，短事务一致快照，正常并发提交留给下一刷新；物理替换重开。缓存最多16个来源，不在渲染或主线程扫描历史。
+
+Windows连接寿命作平台适配：实际锁定SQLite源码的`winOpen`使用FILE_SHARE_READ|FILE_SHARE_WRITE，没有FILE_SHARE_DELETE；持久只读句柄会阻挡其他程序替换state。Windows改为每轮短连接真读，读完比较稳定行内容，不把跨连接data_version当版本。测试同时核对读取后来源可替换，原PR7的unchanged元数据语义保留。
+
+本地针对性结果：原67项加PR6额外5项，共**72通过、0失败、0跳过**；原11个失败已转绿；TypeScript noEmit通过，Rust新增模块／整合文件语法解析通过。新外部读取器的四项真实SQLite/WAL测试在小型隔离crate中通过：直接编译本checkout的external_state.rs／sqlite.rs／native identity helper，不是重写算法。探针首次module布局不匹配，修正隔离crate的路径后通过；未修改产品测试期望来通过。完整Rust生产配置／Windows与Swift整包仍待云端，不能据此前端绿灯宣称数据库修复完成。

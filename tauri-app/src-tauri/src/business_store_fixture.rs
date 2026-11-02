@@ -86,8 +86,8 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
         p.quota != p.shared_quota,
         "fixture requires distinct legacy quota paths"
     );
-    seed_quota(&p.quota, &h1, now - 1200.0)?;
-    seed_quota(&p.shared_quota, &h1, now - 900.0)?;
+    seed_quota(&p.quota, &h1, now - 1200.0, false)?;
+    seed_quota(&p.shared_quota, &h1, now - 900.0, true)?;
     seed_modeltrace(&p.modeltrace)?;
     let scope = live_rate::LiveRateSourceScope::new(
         h1.to_string_lossy().into_owned(),
@@ -108,6 +108,13 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
 
     let startup = crate::core::business_startup::process_coordinator();
     need!(startup.begin_initial(), "fixture startup already claimed");
+    need!(
+        route::open_registered_store_read_only(
+            "fixture_readonly", "fixture", "fixture/public-read-only",
+            std::time::Duration::from_millis(25),
+        ).is_err() && !p.a.exists(),
+        "public read-only route bypassed startup readiness or created A"
+    );
     let prepared = route::bootstrap();
     startup.finish(prepared.clone());
     prepared?;
@@ -116,6 +123,7 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
         "bootstrap did not initialize distinct A and B"
     );
     let mut checks = vec![json!({"name":"bootstrap","status":"PASS"})];
+    checks.push(public_read_only_fixture(&p)?);
 
     let qi = quota_history::QuotaHistoryIdentity::from_canonical_parts(
         &h1,
@@ -141,9 +149,10 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
         .map(|f| quota_facts(f))
         .collect::<Result<Vec<_>, _>>()?;
     need!(
-        active > 0 && imported == [1, 1],
+        active > 0 && imported == [1, 2],
         "quota legacy typed facts or active write missing"
     );
+    quota_history::verify_legacy_runtime_fixture(&qi)?;
     checks.push(json!({"name":"quota","status":"PASS","activeRows":active,"legacyFacts":imported,"historyPoints":history.recent_7d.len()}));
 
     let mid = route::source_identity("modeltrace", &h1)?;
@@ -189,6 +198,9 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
         "BodySpeed detail or weighted trend missing"
     );
     checks.push(json!({"name":"body-speed","status":"PASS","samples":samples.len(),"trendPoints":trend.len()}));
+    // The later missing-container check renames A. Windows must not still
+    // have the BodySpeed connection open when that check parks the file.
+    drop(store);
 
     let b = crate::core::multi_client_usage::open_activity_module_connection()?;
     ok!(b.execute("INSERT INTO activity_speed_samples(source_identity,id,display_mode,estimator_id,estimator_version,metric_kind,client,model,started_at,ended_at,output_rate,covered_seconds,weighted_output) VALUES(?1,?2,'model','fixture','1','output','codex','gpt-6.1-sol',?3,?4,12,10,120)", params!["fixture-b", "fixture-b-activity", now - 10.0, now]));
@@ -199,8 +211,11 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
     ));
     need!(b_rows == 1, "B activity write missing");
     checks.push(json!({"name":"ledger-b","status":"PASS","rows":b_rows}));
+    drop(b);
 
     checks.push(exact_fixture(&h1, &h2, &p)?);
+    checks.push(token_count_jsonl::verify_runtime_recovery_fixture(&root.join("runtime-home"))?);
+    checks.push(token_count_jsonl::verify_backfill_performance_fixture(&root.join("legacy-backfill-home"))?);
     for (f, before) in &digests {
         need!(
             digest(f)? == *before,
@@ -328,11 +343,64 @@ fn validate_root(input: &Path) -> Result<PathBuf, String> {
     Ok(root)
 }
 
-fn seed_quota(path: &Path, home: &Path, at: f64) -> Result<(), String> {
+fn public_read_only_fixture(paths: &Paths) -> Result<Value, String> {
+    let writer = route::open_store(
+        "fixture_readonly", "fixture", "fixture/public-read-only", &[],
+    )?;
+    ok!(writer.execute_batch("CREATE TABLE observations(value INTEGER); INSERT INTO observations VALUES(41);"));
+    let catalog = ok!(Connection::open_with_flags(
+        &paths.a, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ));
+    let before: i64 = ok!(catalog.query_row("SELECT COUNT(*) FROM tb_stores", [], |row| row.get(0)));
+    ok!(writer.execute_batch("BEGIN IMMEDIATE; UPDATE observations SET value=42;"));
+    let checked = (|| -> Result<(), String> {
+        let reader = route::open_registered_store_read_only(
+            "fixture_readonly", "fixture", "fixture/public-read-only",
+            std::time::Duration::from_millis(25),
+        )?.ok_or("public read-only route lost its registered namespace")?;
+        let value: i64 = ok!(reader.query_row("SELECT value FROM observations", [], |row| row.get(0)));
+        need!(value == 41, "read-only route exposed the publisher's uncommitted value");
+        let error = reader.execute("INSERT INTO observations VALUES(99)", [])
+            .err().ok_or("public read-only route allowed a main-database write")?;
+        need!(error.sqlite_error_code() == Some(rusqlite::ErrorCode::ReadOnly),
+            "read-only fixture did not reach SQLite write enforcement");
+        need!(route::open_registered_store_read_only(
+            "fixture_readonly", "unknown-home", "fixture/public-read-only",
+            std::time::Duration::from_millis(25),
+        )?.is_none(), "public read-only route created an unknown namespace");
+        let after: i64 = ok!(catalog.query_row("SELECT COUNT(*) FROM tb_stores", [], |row| row.get(0)));
+        need!(after == before, "public read-only route registered an unknown partition");
+        Ok(())
+    })();
+    let rollback = writer.execute_batch("ROLLBACK;");
+    checked?;
+    ok!(rollback);
+    need!(ok!(writer.query_row("SELECT value FROM observations", [], |row| row.get::<_, i64>(0))) == 41,
+        "read-only fixture changed its committed source");
+    Ok(json!({"name":"public-read-only-routing","status":"PASS",
+        "startupReadRefused":true,"concurrentPublisherRead":true,
+        "uncommittedValueHidden":true,"mainWriteRefused":true,
+        "unknownPartitionNotRegistered":true}))
+}
+
+fn seed_quota(path: &Path, home: &Path, at: f64, legacy: bool) -> Result<(), String> {
     parent(path)?;
+    let plan = quota_history::QuotaHistoryIdentity::from_canonical_parts(home,
+        Some("sub:fixture-account"), "pro", "codex")
+        .ok_or("legacy quota fixture identity rejected")?.attribution_identity().plan;
     let c = ok!(Connection::open(path));
     ok!(c.execute_batch("CREATE TABLE quota_snapshots(id INTEGER PRIMARY KEY AUTOINCREMENT,created_at REAL NOT NULL,account_key TEXT NOT NULL,plan_type TEXT,limit_name TEXT,account_name TEXT,source TEXT,five_hour_used_percent INTEGER,five_hour_resets_at REAL,five_hour_cycle_generation INTEGER,five_hour_reset_anchor INTEGER NOT NULL DEFAULT 0,seven_day_used_percent INTEGER,seven_day_resets_at REAL,seven_day_cycle_generation INTEGER,seven_day_reset_anchor INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL,identity_version INTEGER,home_identity TEXT,stable_account_key TEXT,identity_plan_type TEXT,identity_limit_id TEXT);"));
-    ok!(c.execute("INSERT INTO quota_snapshots(created_at,account_key,plan_type,limit_name,account_name,source,five_hour_used_percent,five_hour_resets_at,five_hour_cycle_generation,seven_day_used_percent,seven_day_resets_at,seven_day_cycle_generation,status,identity_version,home_identity,stable_account_key,identity_plan_type,identity_limit_id) VALUES(?1,'sub:fixture-account','pro','codex','Fixture','swift',20,?2,1,30,?3,1,'ok',1,?4,'sub:fixture-account','pro','codex')",params![at,at+10000.0,at+200000.0,home.to_string_lossy().as_ref()]));
+    ok!(c.execute("INSERT INTO quota_snapshots(created_at,account_key,plan_type,limit_name,account_name,source,five_hour_used_percent,five_hour_resets_at,five_hour_cycle_generation,seven_day_used_percent,seven_day_resets_at,seven_day_cycle_generation,status,identity_version,home_identity,stable_account_key,identity_plan_type,identity_limit_id) VALUES(?1,'sub:fixture-account','pro','codex','Fixture','tauri',20,?2,1,30,?3,1,'ok',1,?4,'sub:fixture-account',?5,'codex')",params![at,at+10000.0,at+200000.0,home.to_string_lossy().as_ref(),plan]));
+    if legacy {
+        // One duplicate of the other legacy store, one unclaimed row and one
+        // different identity. The source file and its old shape stay immutable
+        // when the production legacy readers are exercised below.
+        ok!(c.execute("INSERT INTO quota_snapshots(created_at,account_key,plan_type,limit_name,account_name,source,five_hour_used_percent,five_hour_resets_at,five_hour_cycle_generation,seven_day_used_percent,seven_day_resets_at,seven_day_cycle_generation,status,identity_version,home_identity,stable_account_key,identity_plan_type,identity_limit_id) SELECT created_at-300,account_key,plan_type,limit_name,account_name,source,five_hour_used_percent,five_hour_resets_at-300,five_hour_cycle_generation,seven_day_used_percent,seven_day_resets_at-300,seven_day_cycle_generation,status,identity_version,home_identity,stable_account_key,identity_plan_type,identity_limit_id FROM quota_snapshots", []));
+        ok!(c.execute_batch("INSERT INTO quota_snapshots(created_at,account_key,source,status) VALUES(1,'fixture-unclaimed','tauri','ok'); INSERT INTO quota_snapshots(created_at,account_key,source,status,identity_version,home_identity,stable_account_key,identity_plan_type,identity_limit_id) SELECT created_at+1,'fixture-other','tauri','ok',identity_version,home_identity,'sub:fixture-other',identity_plan_type,identity_limit_id FROM quota_snapshots WHERE id=1;"));
+        for column in ["five_hour_cycle_generation", "five_hour_reset_anchor", "seven_day_cycle_generation", "seven_day_reset_anchor"] {
+            ok!(c.execute_batch(&format!("ALTER TABLE quota_snapshots DROP COLUMN {column}")));
+        }
+    }
     Ok(())
 }
 

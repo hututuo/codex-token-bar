@@ -447,16 +447,29 @@ fn automatic_claim_counts_toward_daily_limit(
 
 pub fn list_threads(codex_home: &Path) -> Result<Vec<AutoResumeThreadOption>, String> {
     let mut session = AppServerSession::launch(codex_home)?;
-    session.initialize(APP_SERVER_STARTUP_TIMEOUT)?;
+    session.initialize(APP_SERVER_STARTUP_TIMEOUT)
+        .map_err(|error| format!("读取自动续跑会话：app-server 初始化失败：{error}"))?;
+    let mut request_id = 2_i64;
+    list_thread_options_with_request(|params| {
+        let id = request_id;
+        request_id = request_id.checked_add(1)
+            .ok_or_else(|| "Codex app-server 请求编号溢出".to_string())?;
+        session.send(json!({
+            "jsonrpc": "2.0", "id": id, "method": "thread/list", "params": params
+        }))?;
+        session.wait_for_response(id, APP_SERVER_STARTUP_TIMEOUT, None)
+    })
+}
+
+fn list_thread_options_with_request(
+    mut request: impl FnMut(Value) -> Result<Value, String>,
+) -> Result<Vec<AutoResumeThreadOption>, String> {
     let mut threads = Vec::new();
     let mut cursor: Option<String> = None;
     let mut seen_cursors = HashSet::new();
-    let mut request_id = 2_i64;
+    let mut state_db_only_supported = true;
+    let mut page = 1_u64;
     loop {
-        let id = request_id;
-        request_id = request_id
-            .checked_add(1)
-            .ok_or_else(|| "Codex app-server 请求编号溢出".to_string())?;
         let mut params = json!({
             "limit": 100,
             "archived": false,
@@ -464,16 +477,25 @@ pub fn list_threads(codex_home: &Path) -> Result<Vec<AutoResumeThreadOption>, St
             "sortKey": "updated_at",
             "sortDirection": "desc"
         });
+        // A picker needs the persisted thread metadata. The default API path
+        // scans and repairs rollout bodies, which can exceed the response
+        // deadline on large compressed histories. Execution still uses the
+        // existing resume/turn validation; explicit history repair is unchanged.
+        if state_db_only_supported {
+            params["useStateDbOnly"] = Value::Bool(true);
+        }
         if let Some(cursor) = cursor.as_deref() {
             params["cursor"] = Value::String(cursor.into());
         }
-        session.send(json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": "thread/list",
-            "params": params
-        }))?;
-        let response = session.wait_for_response(id, APP_SERVER_STARTUP_TIMEOUT, None)?;
+        let context = |error| format!("读取自动续跑会话（thread/list 第{page}页）失败：{error}");
+        let mut response = request(params.clone()).map_err(context)?;
+        if state_db_only_supported && state_db_only_parameter_is_unsupported(&response) {
+            // Older strict servers can reject the optional field. Retry only
+            // that explicit compatibility error, never a timeout or data error.
+            state_db_only_supported = false;
+            params.as_object_mut().expect("thread list parameters").remove("useStateDbOnly");
+            response = request(params).map_err(context)?;
+        }
         let result = response_result(&response)?;
         let rows = result
             .get("data")
@@ -494,9 +516,18 @@ pub fn list_threads(codex_home: &Path) -> Result<Vec<AutoResumeThreadOption>, St
             ));
         }
         cursor = Some(next_cursor);
+        page = page.saturating_add(1);
     }
     threads.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
     Ok(threads)
+}
+
+fn state_db_only_parameter_is_unsupported(response: &Value) -> bool {
+    let Some(error) = response.get("error") else { return false; };
+    let message = error.get("message").and_then(Value::as_str).unwrap_or("").to_ascii_lowercase();
+    error.get("code").and_then(Value::as_i64) == Some(-32602)
+        && message.contains("usestatedbonly")
+        && ["unknown", "unrecognized", "unsupported"].iter().any(|word| message.contains(word))
 }
 
 pub fn rebuild_conversation_visibility_metadata(
@@ -2780,6 +2811,70 @@ fn configure_hidden_child(_command: &mut Command) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thread_picker_uses_metadata_pages_without_hydrating_rollouts() {
+        let mut calls = 0;
+        let threads = list_thread_options_with_request(|params| {
+            calls += 1;
+            if params.get("useStateDbOnly") != Some(&json!(true)) {
+                return Err("rollout hydration exceeded the response deadline".into());
+            }
+            assert_eq!(params["archived"], false);
+            assert_eq!(params["limit"], 100);
+            assert_eq!(params["sourceKinds"], json!(["cli", "vscode", "exec", "appServer", "unknown"]));
+            assert_eq!(params["sortKey"], "updated_at");
+            assert_eq!(params["sortDirection"], "desc");
+            match calls {
+                1 => {
+                    assert!(params.get("cursor").is_none());
+                    Ok(json!({"result":{"data":[{"id":"a","name":"first","updatedAt":2,"cwd":"/project","source":"cli","status":{"type":"notLoaded"}}],"nextCursor":"page-2"}}))
+                }
+                2 => {
+                    assert_eq!(params["cursor"], "page-2");
+                    Ok(json!({"result":{"data":[{"id":"b","preview":"second","updatedAt":3,"cwd":"/other","source":"vscode","status":{"type":"idle"}}],"nextCursor":null}}))
+                }
+                _ => panic!("unexpected metadata request"),
+            }
+        }).unwrap();
+        assert_eq!(calls, 2);
+        assert_eq!(threads.iter().map(|thread| thread.id.as_str()).collect::<Vec<_>>(), ["b", "a"]);
+        assert_eq!(threads[0].title, "second");
+        assert_eq!(threads[0].status, "idle");
+        assert_eq!(threads[1].cwd, "/project");
+    }
+
+    #[test]
+    fn thread_picker_retries_only_an_explicit_unsupported_optional_flag() {
+        let mut calls = 0;
+        let threads = list_thread_options_with_request(|params| {
+            calls += 1;
+            if calls == 1 {
+                assert_eq!(params["useStateDbOnly"], true);
+                return Ok(json!({"error":{"code":-32602,"message":"unknown field `useStateDbOnly`"}}));
+            }
+            assert!(params.get("useStateDbOnly").is_none());
+            assert_eq!(params["archived"], false);
+            Ok(json!({"result":{"data":[{"id":"legacy","updatedAt":1}],"nextCursor":null}}))
+        }).unwrap();
+        assert_eq!(calls, 2);
+        assert_eq!(threads[0].id, "legacy");
+
+        let mut calls = 0;
+        let error = list_thread_options_with_request(|_| {
+            calls += 1;
+            Ok(json!({"error":{"code":-32000,"message":"state unavailable"}}))
+        }).unwrap_err();
+        assert!(error.contains("state unavailable"));
+        assert_eq!(calls, 1, "state failures must not trigger rollout scan fallback");
+    }
+
+    #[test]
+    fn thread_picker_timeout_names_the_page_and_preserves_the_error() {
+        let error = list_thread_options_with_request(|_| Err("等待 Codex 响应超时".into())).unwrap_err();
+        assert!(error.contains("thread/list 第1页"));
+        assert!(error.contains("等待 Codex 响应超时"));
+    }
 
     #[test]
     fn automatic_start_guard_serializes_generation_change_with_start_write() {
