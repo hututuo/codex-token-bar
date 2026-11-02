@@ -48,7 +48,27 @@ jobs:
                   raise SystemExit('Invalid exact source identity')
           if type(spec.get('native_changed')) is not bool or not isinstance(spec.get('message'), str):
               raise SystemExit('Invalid patch metadata')
-          if spec.get('encoding') == 'gzip-base64':
+          if spec.get('encoding') == 'gzip-base64-parts':
+              parts = spec.get('parts')
+              if not isinstance(parts, list) or not 1 <= len(parts) <= 64:
+                  raise SystemExit('Invalid bounded multipart transport')
+              chunks = []
+              control = pathlib.Path('control').resolve()
+              for part in parts:
+                  if not isinstance(part, dict) or not re.fullmatch(r'recovery-patches/[A-Za-z0-9_-]+\.b64', part.get('path', '')):
+                      raise SystemExit('Invalid patch part path')
+                  path = control / part['path']
+                  if path.is_symlink() or not path.resolve().is_relative_to(control):
+                      raise SystemExit('Patch part escapes checkout')
+                  if type(part.get('length')) is not int or not 0 < part['length'] <= 16384:
+                      raise SystemExit('Invalid patch part length')
+                  with path.open('rb') as stream:
+                      chunk = stream.read(16385).strip()
+                  if len(chunk) != part['length'] or hashlib.sha256(chunk).hexdigest() != part.get('sha256'):
+                      raise SystemExit('Patch part transport integrity mismatch')
+                  chunks.append(chunk)
+              diff = b''.join(chunks)
+          if spec.get('encoding') in ('gzip-base64', 'gzip-base64-parts'):
               with gzip.GzipFile(fileobj=io.BytesIO(base64.b64decode(diff.strip(), validate=True))) as stream:
                   diff = stream.read(8 * 1024 * 1024 + 1)
           elif spec.get('encoding', 'plain') != 'plain':
