@@ -327,6 +327,9 @@ impl Pool {
             rows.map(|r|{let(p,v)=r.map_err(|e|e.to_string())?;if v!=1{return Err("未知暂存codec".into());}Ok(PathBuf::from(p))}).collect()
         })
     }
+    pub(super) fn legacy_candidates(&self, index: &Path, source_digest: &str) -> Result<Vec<PathBuf>> {
+        self.with(|c|crate::core::business_store_route::exact_stage_candidates_on(c.connection(),index,source_digest))
+    }
     pub(super) fn seal(&self, job: &Job) -> Result<Option<Seal>> {
         self.with(|c|{
             let v=c.connection().query_row(&format!("SELECT codec,state,digest,byte_count,row_count,sealed_at,owner,contract_digest FROM {} WHERE job_id=?1",self.table("jobs")),[&job.id],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,Option<i64>>(3)?,r.get::<_,Option<i64>>(4)?,r.get::<_,Option<f64>>(5)?,r.get::<_,String>(6)?,r.get::<_,String>(7)?))).optional().map_err(|e|e.to_string())?;

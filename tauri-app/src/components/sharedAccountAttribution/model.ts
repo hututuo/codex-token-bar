@@ -12,6 +12,7 @@ import {
 import type { SharedAccountRadarTier } from "../../settings/sharedAccountAttribution";
 import type { QuotaAttributionIdentity, QuotaLimit } from "../../types/dashboard";
 import { ATTRIBUTION_BUCKET_SECONDS, type AttributionTokenBucket } from "./highWater.ts";
+import { firstCompleteQuotaBucketStart, lastCompleteQuotaBucketEnd } from "../quotaPeriodBoundary.ts";
 import {
   type AttributionCutoverReason,
   type AttributionSegmentStatus,
@@ -113,6 +114,7 @@ export interface SharedAccountAttributionInput {
   usagePendingQuotaRefresh: boolean;
   historyChangedLowConfidence: boolean;
   localHistoryAmbiguous: boolean;
+  unreportedCompactionUnix?: readonly number[];
   quotaDataStale: boolean;
   radarDataStale: boolean;
   sevenDayQuota: QuotaLimit;
@@ -140,6 +142,7 @@ export function estimateSharedAccountAttribution({
   usagePendingQuotaRefresh,
   historyChangedLowConfidence,
   localHistoryAmbiguous,
+  unreportedCompactionUnix = [],
   quotaDataStale,
   radarDataStale,
   sevenDayQuota,
@@ -275,9 +278,17 @@ export function estimateSharedAccountAttribution({
   );
   const localSharePercent = (localComparableUSD / tierRow.sevenD) * 100;
   const residualPercent = accountUsedPercent - localSharePercent;
+  const comparisonStart = firstCompleteQuotaBucketStart(Math.max(
+    segment.segmentStartUnix, resetUnix - SEVEN_DAYS_SECONDS,
+  ));
+  const comparisonEnd = lastCompleteQuotaBucketEnd(Math.min(
+    resetUnix, nowUnix, quotaUpdatedAtUnix, preciseDataCoveredAtUnix ?? quotaUpdatedAtUnix,
+  ));
+  const hasUnreportedComparableUsage = unreportedCompactionUnix.some((at) =>
+    Number.isFinite(at) && at >= comparisonStart && at < comparisonEnd);
   const effectiveUsagePendingQuotaRefresh = usagePendingQuotaRefresh
     || segment.quotaMovementPendingUntilUnix !== null;
-  const status = effectiveUsagePendingQuotaRefresh
+  const status = hasUnreportedComparableUsage ? "localHistoryAmbiguous" : effectiveUsagePendingQuotaRefresh
     || quotaDataStale
     || radarDataStale
     ? "waitingQuotaRefresh"
@@ -297,7 +308,7 @@ export function estimateSharedAccountAttribution({
     accountRawUsedPercent,
     baselineAccountUsedPercent: segment.baselineAccountUsedPercent,
     accountUsedPercent,
-    localSharePercent,
+    localSharePercent: hasUnreportedComparableUsage ? null : localSharePercent,
     residualPercent: safeResidualPercent,
     localComparableUSD,
     scannedLocalComparableUSD,

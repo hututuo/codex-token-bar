@@ -883,6 +883,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         if BusinessSQLiteRoutes.store(for: databaseURL) != nil {
             switch try assessMigration(databaseURL: databaseURL, fileManager: fileManager) {
             case .compatible: return false
+            case let .knownMigrationRequired(stages) where !stages.isEmpty
+                && stages.allSatisfy({ $0 == "eventEnrichment" }):
+                // Model enrichment uses the existing staged publication path
+                // inside A. It never needs a physical candidate-file exchange.
+                return false
             case let .upgradeRequired(component, stored, supported):
                 throw CodexUsageIndexUpgradeRequiredError(component: component, stored: stored, supported: supported)
             default: throw CodexUsageIndexRepairRequiredError(reason: "归并后的索引需要模块迁移，已保留账本并停止旧文件交换")
@@ -1902,7 +1907,16 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     }
 
     func withExclusiveAccess<T>(_ body: () throws -> T) throws -> T {
-        try operationGate.withLock(body)
+        try operationGate.withLock {
+            // A's schema may contain thousands of retained legacy objects.
+            // Reuse this owner's fenced connection for the synchronous call;
+            // individual transactions still commit at their original boundary.
+            // Standalone migration/file-swap operations keep their old lifetime.
+            if BusinessSQLiteRoutes.store(for: driver.url) != nil {
+                return try driver.withOperationConnection(body)
+            }
+            return try body()
+        }
     }
 
     static func performStorageMaintenanceIfDue(
@@ -8902,7 +8916,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         var legacy: [URL]
         var pooled: [URL] = []
         if let pool = stagePool, let target = BusinessSQLiteRoutes.store(for: driver.url) {
-            legacy = try pool.legacyURLs(for: target)
+            legacy = try pool.legacyURLs(for: target, sourceDigest: digest)
             pooled = try pool.candidates(for: target, source: file)
         } else if BusinessSQLiteRoutes.store(for: primary) != nil {
             legacy = BusinessStoreFiles.stageURLs(in: stagingDirectoryURL)

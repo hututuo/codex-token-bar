@@ -67,6 +67,25 @@ final class ExactStagePoolTests: XCTestCase {
         XCTAssertEqual(try f.writer.readRows("SELECT value FROM schema_meta WHERE key='published_tokens'") { $0.text(0) }, ["123"])
     }
 
+    func testLegacyCandidatesUseIndexedSourceBoundsWithoutMixingOwners() throws {
+        let f = try fixture(), pool = try ExactStagePool.shared(for: f.target)
+        let digest = String(repeating: "b", count: 64)
+        let directory = f.configuration.exact.appendingPathComponent("staging/\(f.target.logicalURL.lastPathComponent)")
+        let wanted = [digest + ".sqlite", digest + ".candidate-previous.sqlite"].map { directory.appendingPathComponent($0) }
+        let foreign = f.configuration.exact.appendingPathComponent("staging/other-home.sqlite/\(digest).sqlite")
+        for path in wanted + [foreign, directory.appendingPathComponent(String(repeating: "c", count: 64) + ".sqlite")] {
+            try BusinessStoreFiles.registerInActiveContainer(try XCTUnwrap(f.configuration.specification(for: path)))
+        }
+        XCTAssertEqual(Set(try pool.legacyURLs(for: f.target, sourceDigest: digest)), Set(wanted))
+        let plan = try f.raw.readRows("EXPLAIN QUERY PLAN " + ExactStagePool.legacyLookupSQL,
+            bindings: [.text(wanted[0].path), .text(directory.appendingPathComponent(digest + ".candidate-").path),
+                       .text(directory.appendingPathComponent(digest + ".candidate.").path)]) { $0.text(3) ?? "" }
+        XCTAssertFalse(plan.contains { $0.contains("SCAN tb_stores") }, "Each source lookup must use the existing logical_path index: \(plan)")
+        XCTAssertTrue(plan.contains { $0.contains("SEARCH tb_stores") })
+        try f.raw.execute("UPDATE tb_stores SET source_identity='foreign' WHERE logical_path=?", bindings: [.text(wanted[0].path)])
+        XCTAssertThrowsError(try pool.legacyURLs(for: f.target, sourceDigest: digest))
+    }
+
     func testManifestCountMismatchCannotBecomeASealedOrPublishedJob() throws {
         let f = try fixture(), pool = try ExactStagePool.shared(for: f.target)
         let job = try makeJob(pool, f), source = try seed(job)

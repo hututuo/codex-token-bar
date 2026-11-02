@@ -499,6 +499,27 @@ test("persistence corruption and ambiguous local lineage fail closed independent
   assert.equal(ambiguous.residualPercent, null);
 });
 
+test("unreported compaction only stops inference for its closed comparison interval", () => {
+  const known = estimate();
+  const first = Math.ceil(CYCLE_START / 300) * 300;
+  const end = Math.floor((CYCLE_START + 600) / 300) * 300;
+  for (const at of [CYCLE_START - 1, first - 1, end, CYCLE_START + 900]) {
+    assert.deepEqual(estimate({ unreportedCompactionUnix: [at] }), known);
+  }
+  for (const at of [first, end - 1]) {
+    const incomplete = estimate({ unreportedCompactionUnix: [at] });
+    assert.equal(incomplete.status, "localHistoryAmbiguous");
+    assert.equal(incomplete.localSharePercent, null);
+    assert.equal(incomplete.residualPercent, null);
+    assert.equal(incomplete.localComparableUSD, known.localComparableUSD);
+    assert.equal(incomplete.localCurrentAPIEquivalentUSD, known.localCurrentAPIEquivalentUSD);
+    assert.deepEqual(incomplete.tokens, known.tokens);
+    assert.deepEqual(incomplete.scannedTokens, known.scannedTokens);
+  }
+  const switched = { segment: segment({ segmentStartUnix: CYCLE_START + 300 }), buckets: [bucket(300)] };
+  assert.deepEqual(estimate({ ...switched, unreportedCompactionUnix: [CYCLE_START + 299] }), estimate(switched));
+});
+
 test("native unsafe and quarantined rebaseline states stop every residual calculation", () => {
   const nativeUnsafe = estimate({ nativeHistoryUnsafe: true });
   assert.equal(nativeUnsafe.status, "nativeHistoryUnsafe");

@@ -1183,8 +1183,8 @@ function QuotaStripView({
     scannedBoundaryBuckets: bucketMerge.scannedBoundaryBuckets,
     usagePendingQuotaRefresh: bucketMerge.hasPendingUsage,
     historyChangedLowConfidence: bucketMerge.usedHistoricalHighWater,
-    localHistoryAmbiguous: bucketMerge.ambiguityDetected
-      || unreportedCompactionUnix.some((at) => Number.isFinite(at) && at >= nowUnix - 7 * 86400 && at <= nowUnix),
+    localHistoryAmbiguous: bucketMerge.ambiguityDetected,
+    unreportedCompactionUnix,
     quotaDataStale,
     radarDataStale,
     sevenDayQuota: snapshot.sevenDay,

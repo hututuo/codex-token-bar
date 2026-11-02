@@ -238,13 +238,26 @@ final class ExactStagePool: @unchecked Sendable {
             }
         }
     }
-    func legacyURLs(for target: BusinessSQLiteStore) throws -> [URL] {
-        guard target.containerURL == store.containerURL, target.module == "exact.swift" else { throw Failure.invalid }
+    static let legacyLookupSQL = "SELECT logical_path,source_identity FROM tb_stores WHERE module='exact.swift.stage' AND (logical_path=? OR (logical_path>=? AND logical_path<?)) ORDER BY logical_path"
+    func legacyURLs(for target: BusinessSQLiteStore, sourceDigest: String) throws -> [URL] {
+        guard target.containerURL == store.containerURL, target.module == "exact.swift",
+              sourceDigest.count == 64, sourceDigest.allSatisfy(\.isHexDigit) else { throw Failure.invalid }
+        let directory = target.logicalURL.deletingLastPathComponent()
+            .appendingPathComponent("staging").appendingPathComponent(target.logicalURL.lastPathComponent)
+        let primary = directory.appendingPathComponent(sourceDigest + ".sqlite").path
+        let lower = directory.appendingPathComponent(sourceDigest + ".candidate-").path
+        let upper = directory.appendingPathComponent(sourceDigest + ".candidate.").path
+        let identityPrefix = "staging/" + target.logicalURL.lastPathComponent + "/"
         return try use { db in
-            try db.readRows("SELECT logical_path FROM tb_stores WHERE module='exact.swift.stage' AND instr(source_identity,?)=1 ORDER BY logical_path",
-                bindings: [.text("staging/" + target.logicalURL.lastPathComponent + "/")]) {
+            // logical_path already has a UNIQUE B-tree. A bounded range uses
+            // that index; enumerating every old job for every source is O(N²).
+            try db.readRows(Self.legacyLookupSQL,
+                bindings: [.text(primary), .text(lower), .text(upper)]) {
                 guard let path = $0.text(0) else { throw Failure.invalid }
-                return URL(fileURLWithPath: path)
+                let url = URL(fileURLWithPath: path)
+                guard url.deletingLastPathComponent().standardizedFileURL.path == directory.standardizedFileURL.path,
+                      $0.text(1) == identityPrefix + url.lastPathComponent else { throw Failure.invalid }
+                return url
             }
         }
     }

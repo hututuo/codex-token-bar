@@ -24,6 +24,14 @@ on:
         description: 'Run only the explicitly requested historical producer matrix'
         type: boolean
         default: false
+      scale:
+        description: 'Add the hosted multi-size backfill performance gate'
+        type: boolean
+        default: false
+      scale_only:
+        description: 'Run only the hosted multi-size backfill performance gate'
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       source_sha:
@@ -34,7 +42,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.formed_release || 'standard' }}-${{ inputs.formed_platform || 'all' }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ inputs.formed_release || 'standard' }}-${{ inputs.formed_platform || 'all' }}-${{ inputs.scale_only && 'scale-only' || inputs.scale && 'scale' || 'standard' }}
   cancel-in-progress: false
 
 env:
@@ -55,14 +63,20 @@ jobs:
           SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
           FORMED_ONLY: ${{ inputs.formed_only || false }}
           FORMED_RELEASE: ${{ inputs.formed_release || '' }}
+          SCALE: ${{ inputs.scale || false }}
+          SCALE_ONLY: ${{ inputs.scale_only || false }}
         run: |
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'An exact source SHA is required'; exit 1; }
           [[ "$FORMED_ONLY" != true || -n "$FORMED_RELEASE" ]] || { echo 'formed_only requires an explicit historical producer'; exit 1; }
+          if [[ "$SCALE_ONLY" == true ]]; then
+            [[ "$SCALE" == true ]] || { echo 'scale_only requires scale=true'; exit 1; }
+            [[ "$FORMED_ONLY" != true && -z "$FORMED_RELEASE" ]] || { echo 'scale_only cannot be combined with formed upgrade checks'; exit 1; }
+          fi
           echo "sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
 
   frontend:
     needs: source
-    if: ${{ !inputs.formed_only }}
+    if: ${{ !inputs.formed_only && !inputs.scale_only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -76,6 +90,8 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p 'test_agent_speed_vendor.py'
       - name: Verify reversible fixture quarantine with disposable databases
         run: python3 -m unittest discover -s scripts/tests -p 'test_quarantine_usage_fixture_rows.py'
+      - name: Verify hosted backfill-scale workflow contract
+        run: python3 -m unittest discover -s scripts/tests -p 'test_backfill_scale_workflow.py'
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
@@ -92,7 +108,7 @@ jobs:
 
   swift:
     needs: source
-    if: ${{ !inputs.formed_only }}
+    if: ${{ !inputs.formed_only && !inputs.scale_only }}
     runs-on: macos-26
     timeout-minutes: 35
     env:
@@ -152,7 +168,7 @@ jobs:
 
   native:
     needs: source
-    if: ${{ !inputs.formed_only }}
+    if: ${{ !inputs.formed_only && !inputs.scale_only }}
     strategy:
       fail-fast: false
       matrix:
@@ -237,7 +253,7 @@ jobs:
 
   windows-updater:
     needs: source
-    if: ${{ !inputs.formed_only }}
+    if: ${{ !inputs.formed_only && !inputs.scale_only }}
     runs-on: windows-2025
     timeout-minutes: 10
     steps:
@@ -265,9 +281,16 @@ jobs:
       release: ${{ inputs.formed_release }}
       platform: ${{ inputs.formed_platform }}
 
+  scale:
+    needs: source
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.scale || inputs.scale_only) }}
+    uses: ./.github/workflows/backfill-scale.yml
+    with:
+      source_sha: ${{ needs.source.outputs.sha }}
+
   evidence:
-    needs: [source, frontend, swift, native, windows-updater, formed-upgrade]
-    if: ${{ always() && !inputs.formed_only && needs.source.result == 'success' && needs.frontend.result == 'success' && needs.swift.result == 'success' && needs.native.result == 'success' && needs.windows-updater.result == 'success' && (needs.formed-upgrade.result == 'success' || needs.formed-upgrade.result == 'skipped') }}
+    needs: [source, frontend, swift, native, windows-updater, formed-upgrade, scale]
+    if: ${{ always() && !inputs.formed_only && !inputs.scale_only && needs.source.result == 'success' && needs.frontend.result == 'success' && needs.swift.result == 'success' && needs.native.result == 'success' && needs.windows-updater.result == 'success' && (needs.formed-upgrade.result == 'success' || needs.formed-upgrade.result == 'skipped') && (needs.scale.result == 'success' || needs.scale.result == 'skipped') }}
     runs-on: ubuntu-24.04
     steps:
       - name: Seal successful check identity

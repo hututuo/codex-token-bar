@@ -7944,7 +7944,7 @@ fn staging_database_paths(index_path: &Path, source_path: &str) -> Result<Vec<Pa
     #[cfg(not(test))]
     let pooled=stage_pool::Pool::current()?.candidates(&crate::core::business_store_route::exact_store_spec(index_path)?,source_path)?;
     #[cfg(not(test))]
-    paths.extend(crate::core::business_store_route::exact_stage_candidates(index_path, &digest)?);
+    paths.extend(stage_pool::Pool::current()?.legacy_candidates(index_path, &digest)?);
     let entries = match fs::read_dir(&directory) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {

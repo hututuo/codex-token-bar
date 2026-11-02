@@ -8,6 +8,55 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
     private var resetAt: Date { now.addingTimeInterval(6 * 24 * 60 * 60) }
     private var cycleStart: Date { resetAt.addingTimeInterval(-7 * 24 * 60 * 60) }
 
+    func testUnreportedCompactionOnlyBlocksTheComparableIntervalAndRetainsKnownSubtotal() throws {
+        let bins = [bucket(at: cycleStart, input: 1_000_000, cached: 0, output: 0)]
+        let reference = try radar(date: "2026-07-30", tier: "20x Pro", fiveHour: nil, sevenDay: 100)
+        func estimate(_ dates: [Date]) -> SharedAccountUsageAttributionResult {
+            SharedAccountUsageAttributionEstimator.estimate(enabled: true, preciseUsageReady: true,
+                recentBins: bins, unreportedCompactionDates: dates,
+                sevenDayQuota: quota(used: 8, resetAt: resetAt), quotaUpdatedAt: now,
+                historyIdentity: identity(), radar: reference, tier: .twentyXPro, model: .gpt56Sol, now: now)
+        }
+        let known = estimate([])
+        XCTAssertNotNil(known.localComparableCostUSD)
+        for date in [cycleStart.addingTimeInterval(-1), now, now.addingTimeInterval(60)] {
+            XCTAssertEqual(estimate([date]), known, "A hole outside the closed comparison must not erase known history")
+        }
+        for date in [cycleStart, now.addingTimeInterval(-1)] {
+            let incomplete = estimate([date])
+            XCTAssertEqual(incomplete.state, .localHistoryAmbiguous)
+            XCTAssertTrue(incomplete.localHistoryAmbiguous)
+            XCTAssertFalse(incomplete.hasComputedAttribution)
+            XCTAssertFalse(incomplete.hasFinalAttributionConclusion)
+            XCTAssertNil(incomplete.localSharePercent)
+            XCTAssertNil(incomplete.nonLocalDifferencePercent)
+            XCTAssertEqual(incomplete.breakdown, known.breakdown)
+            XCTAssertEqual(incomplete.scannedBreakdown, known.scannedBreakdown)
+            XCTAssertEqual(incomplete.localComparableCostUSD, known.localComparableCostUSD)
+            XCTAssertEqual(incomplete.localCurrentOfficialCostUSD, known.localCurrentOfficialCostUSD)
+            XCTAssertEqual(incomplete.highWatermarkCandidate, known.highWatermarkCandidate)
+        }
+    }
+
+    func testUnreportedCompactionBeforeAccountSegmentDoesNotPoisonTheNewAccount() throws {
+        let start = now.addingTimeInterval(-600)
+        let segment = SharedAccountUsageSegment(cycleResetAt: resetAt, start: start,
+            accountUsedBaselinePercent: 13, switchedAccountDuringCycle: true, baselineReady: true,
+            baselineObservedAt: start, accountUsedObservedPercent: 16, comparisonUpdatedAt: now)
+        let result = SharedAccountUsageAttributionEstimator.estimate(enabled: true, preciseUsageReady: true,
+            recentBins: [bucket(at: start, input: 1_000_000, cached: 0, output: 0)],
+            unreportedCompactionDates: [start.addingTimeInterval(-1)],
+            sevenDayQuota: quota(used: 16, resetAt: resetAt), quotaUpdatedAt: now,
+            historyIdentity: identity(account: "account-b"),
+            radar: try radar(date: "2026-07-30", tier: "20x Pro", fiveHour: nil, sevenDay: 100),
+            tier: .twentyXPro, model: .gpt56Sol, now: now, segment: segment)
+        XCTAssertFalse(result.localHistoryAmbiguous)
+        XCTAssertTrue(result.hasComputedAttribution)
+        XCTAssertEqual(result.breakdown.inputTokens, 1_000_000)
+        XCTAssertEqual(result.accountUsedPercent, 3)
+        XCTAssertNotNil(result.localSharePercent)
+    }
+
     func testUsesRadarCompatibleAmountDividedByTierTotalAndPreservesPositiveDifference() throws {
         let result = SharedAccountUsageAttributionEstimator.estimate(
             enabled: true,

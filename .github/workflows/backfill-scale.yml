@@ -1,0 +1,122 @@
+name: Backfill scale performance gate
+run-name: Backfill scale ${{ inputs.source_sha || github.sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: 'Optional exact 40-character source commit; empty means this workflow commit'
+        type: string
+        default: ''
+  workflow_call:
+    inputs:
+      source_sha:
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backfill-scale-${{ github.ref }}-${{ inputs.source_sha || github.sha }}
+  cancel-in-progress: false
+
+env:
+  GIT_LFS_SKIP_SMUDGE: '1'
+  DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - id: resolve
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+        run: |
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'An exact source SHA is required'; exit 1; }
+          echo "sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+
+  scale:
+    needs: resolve
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      SOURCE_SHA: ${{ needs.resolve.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.resolve.outputs.sha }}
+          lfs: false
+      - name: Initialize failure-safe evidence envelope
+        if: always()
+        run: |
+          mkdir -p backfill-scale-evidence
+          {
+            printf 'requested_source_sha=%s\n' "$SOURCE_SHA"
+            printf 'workflow_run_id=%s\n' "$GITHUB_RUN_ID"
+            printf 'status=RUNNING\n'
+          } > backfill-scale-evidence/source.txt
+      - name: Verify checked-out source identity
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse HEAD)"
+          [[ "$actual_sha" == "$SOURCE_SHA" ]] || { echo "Expected $SOURCE_SHA, checked out $actual_sha"; exit 1; }
+          printf 'checked_out_sha=%s\n' "$actual_sha" >> backfill-scale-evidence/source.txt
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Swift dependency cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            .build/artifacts
+            .build/checkouts
+            .build/repositories
+          key: swift-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Package.resolved') }}-v1
+      - name: Record hosted toolchain
+        run: |
+          set -euo pipefail
+          {
+            echo 'runner=macos-26'
+            echo 'expected_xcode=26.6'
+            sw_vers
+            swift --version
+            xcodebuild -version
+            node --version
+          } > backfill-scale-evidence/toolchain.txt
+      - name: Prepare Git LFS inputs
+        run: |
+          set -euo pipefail
+          command -v git-lfs >/dev/null || brew install git-lfs
+          git-lfs version | tee -a backfill-scale-evidence/toolchain.txt
+          bash scripts/prepare_tiktoken_lfs.sh 2>&1 | tee backfill-scale-evidence/lfs-prepare.log
+      - name: Run actual Swift backfill sizes
+        run: |
+          set -euo pipefail
+          printf '%s\n' 'command=python3 scripts/check_backfill_scale.py --sizes 13 128 512 4124 --timeout 1200 --max-progress-gap 30 --max-backfill-seconds 600 --output backfill-scale-results' >> backfill-scale-evidence/toolchain.txt
+          python3 scripts/check_backfill_scale.py \
+            --sizes 13 128 512 4124 \
+            --timeout 1200 \
+            --max-progress-gap 30 \
+            --max-backfill-seconds 600 \
+            --output backfill-scale-results 2>&1 | tee backfill-scale-evidence/scale-run.log
+      - name: Seal evidence outcome
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          mkdir -p backfill-scale-evidence
+          printf 'job_status=%s\n' "$JOB_STATUS" >> backfill-scale-evidence/source.txt
+      - name: Upload scale evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: backfill-scale-${{ needs.resolve.outputs.sha }}-${{ github.run_id }}
+          path: |
+            backfill-scale-evidence/
+            backfill-scale-results/
+          if-no-files-found: warn
+          retention-days: 30

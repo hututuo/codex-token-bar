@@ -1715,6 +1715,7 @@ struct SharedAccountUsageAttributionResult: Equatable {
     var hasComputedAttribution: Bool {
         localSharePercent != nil
             && nonLocalDifferencePercent != nil
+            && !localHistoryAmbiguous
             && unpricedModels.isEmpty
             && unpricedCalls == 0
     }
@@ -1816,10 +1817,6 @@ enum SharedAccountUsageAttributionEstimator {
                 radarRow: radarRow,
                 radar: radar
             )
-        }
-        if unreportedCompactionDates.contains(where: { $0 >= now.addingTimeInterval(-sevenDayDuration) && $0 <= now }) {
-            return unavailable(.localHistoryAmbiguous, tier:tier, model:model, priceRevision:priceRevision,
-                breakdown:empty, radarTotalUSD:radarTotal, radarRow:radarRow, radar:radar)
         }
         guard preciseUsageReady else {
             return unavailable(
@@ -2086,7 +2083,16 @@ enum SharedAccountUsageAttributionEstimator {
             comparisonAttributionEvents
         }
         let shouldUseHighWatermark = protectedBreakdown != scannedBreakdown
-        let localHistoryAmbiguous = effectiveHighWatermark?.ambiguityDetected ?? false
+        // A missing compaction usage is a hole in this comparison interval,
+        // not evidence that all seven days (or another account segment) are
+        // unknown. Keep every known contribution and its priced subtotal.
+        // The source currently supplies timestamps, not an account identity;
+        // do not infer an owner beyond the established segment boundaries.
+        let hasUnreportedComparableUsage = unreportedCompactionDates.contains {
+            $0 >= localBucketStart && $0 < comparisonEnd
+        }
+        let localHistoryAmbiguous = (effectiveHighWatermark?.ambiguityDetected ?? false)
+            || hasUnreportedComparableUsage
         guard resolvedSegment.baselineReady else {
             let pendingCurrentCost = ModelAwareAPIPriceEstimator.estimate(
                 events: protectedAttributionEvents,
@@ -2144,7 +2150,7 @@ enum SharedAccountUsageAttributionEstimator {
                     localComparableCostUSD: pendingComparableCost.costUSD,
                     localCurrentOfficialCostUSD: pendingCurrentCost.costUSD,
                     radarSevenDayTotalUSD: pendingRadarTotal,
-                    localSharePercent: pendingShare,
+                    localSharePercent: hasUnreportedComparableUsage ? nil : pendingShare,
                     nonLocalDifferencePercent: nil,
                     radarBasis: pendingRadarRow.basis,
                     radarDate: radar.date,
@@ -2289,7 +2295,9 @@ enum SharedAccountUsageAttributionEstimator {
             || quotaDataStale
             || radarDataStale
         let state: SharedAccountUsageAttributionState
-        if quotaNeedsRefresh {
+        if hasUnreportedComparableUsage {
+            state = .localHistoryAmbiguous
+        } else if quotaNeedsRefresh {
             state = .awaitingQuotaRefresh
         } else if localHistoryAmbiguous {
             state = .localHistoryAmbiguous
@@ -2327,8 +2335,8 @@ enum SharedAccountUsageAttributionEstimator {
             localComparableCostUSD: localComparableCost,
             localCurrentOfficialCostUSD: localCurrentOfficialCost,
             radarSevenDayTotalUSD: radarTotal,
-            localSharePercent: localShare,
-            nonLocalDifferencePercent: difference,
+            localSharePercent: hasUnreportedComparableUsage ? nil : localShare,
+            nonLocalDifferencePercent: hasUnreportedComparableUsage ? nil : difference,
             radarBasis: row.basis,
             radarDate: radar.date,
             radarPricingBasisDate: radar.basisDate,

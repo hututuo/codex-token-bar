@@ -922,14 +922,24 @@ fn exact_stage_candidate_address(path: &Path) -> Result<Option<(String, String)>
 }
 
 pub(crate) fn exact_stage_candidates(index: &Path, source_digest: &str) -> Result<Vec<PathBuf>, String> {
+    let container = open_ready_container(&container_path()?)?;
+    exact_stage_candidates_on(container.connection(), index, source_digest)
+}
+
+/// Use the already fenced A owner connection during one backfill. Opening and
+/// validating the whole large SQLite catalog for every source is unnecessary.
+pub(crate) fn exact_stage_candidates_on(connection: &Connection, index: &Path, source_digest: &str) -> Result<Vec<PathBuf>, String> {
+    if source_digest.len()!=64 || !source_digest.bytes().all(|byte|byte.is_ascii_hexdigit()) {
+        return Err("暂存来源摘要无效".into());
+    }
     let family = source_identity("exact", index)?;
     let prefix = format!("exact/staging/{family}/{source_digest}.candidate-v2-");
-    let container = open_ready_container(&container_path()?)?;
-    let mut statement = container.connection().prepare(
+    let upper = format!("exact/staging/{family}/{source_digest}.candidate-v2.");
+    let mut statement = connection.prepare(
         "SELECT logical_path,source_identity FROM tb_stores \
-         WHERE module='exact' AND state IN ('ready','sealed') AND substr(logical_path,1,?1)=?2"
+         WHERE module='exact' AND state IN ('ready','sealed') AND logical_path>=?1 AND logical_path<?2"
     ).map_err(|error| error.to_string())?;
-    let entries = statement.query_map(rusqlite::params![prefix.len(), prefix], |row| {
+    let entries = statement.query_map(rusqlite::params![prefix, upper], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     }).map_err(|error| error.to_string())?;
     let mut directory = index.as_os_str().to_os_string();
