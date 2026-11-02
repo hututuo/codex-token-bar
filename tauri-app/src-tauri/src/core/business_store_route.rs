@@ -1463,7 +1463,13 @@ mod tests {
     #[test]
     fn registered_read_only_store_does_not_wait_for_or_modify_a_publisher() {
         let fixture = Fixture::new();
-        let path = fixture.path("ledger.sqlite");
+        let support = fixture.path("support");
+        fs::create_dir_all(&support).unwrap();
+        let _environment = app_paths::app_path_test_env_guard(&[
+            ("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR", support.clone()),
+        ]);
+        let path = container_path().unwrap();
+        assert_eq!(path, support.join("codex-ledger.sqlite"));
         let spec = StoreSpec::new("exact", "test-home", "test-index").unwrap();
         let container = Container::open(&path).unwrap();
         container.register(&spec).unwrap();
@@ -1478,8 +1484,8 @@ mod tests {
         )).unwrap();
 
         // Registration would need the writer lock and fail at this timeout.
-        let reader = open_registered_store_read_only_at(
-            &path, "exact", "test-home", "test-index", std::time::Duration::from_millis(25),
+        let reader = open_registered_store_read_only(
+            "exact", "test-home", "test-index", std::time::Duration::from_millis(25),
         ).unwrap().unwrap();
         assert_eq!(reader.query_row("SELECT value FROM records", [], |row| row.get::<_, i64>(0)).unwrap(), 41);
         let error = reader.execute("INSERT INTO records VALUES(99)", []).unwrap_err();
@@ -1494,28 +1500,34 @@ mod tests {
     #[test]
     fn registered_read_only_store_never_creates_or_registers_missing_inputs() {
         let fixture = Fixture::new();
-        let path = fixture.path("ledger.sqlite");
-        assert!(open_registered_store_read_only_at(
-            &path, "exact", "home", "index", std::time::Duration::from_millis(25),
+        let support = fixture.path("support");
+        fs::create_dir_all(&support).unwrap();
+        let _environment = app_paths::app_path_test_env_guard(&[
+            ("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR", support.clone()),
+        ]);
+        let path = container_path().unwrap();
+        assert_eq!(path, support.join("codex-ledger.sqlite"));
+        assert!(open_registered_store_read_only(
+            "exact", "home", "index", std::time::Duration::from_millis(25),
         ).is_err());
         assert!(!path.exists());
         let container = Container::open(&path).unwrap();
         drop(container);
         // A valid physical database without the activation marker stays gated.
-        assert!(open_registered_store_read_only_at(
-            &path, "exact", "home", "index", std::time::Duration::from_millis(25),
+        assert!(open_registered_store_read_only(
+            "exact", "home", "index", std::time::Duration::from_millis(25),
         ).is_err());
         fs::write(initialized_marker_path(&path), b"tokenbar-codex-ledger-v1\n").unwrap();
-        assert!(open_registered_store_read_only_at(
-            &path, "exact", "home", "index", std::time::Duration::from_millis(25),
+        assert!(open_registered_store_read_only(
+            "exact", "home", "index", std::time::Duration::from_millis(25),
         ).unwrap().is_none());
         let container = Container::open_existing(&path).unwrap();
         assert!(!container.is_registered(&StoreSpec::new("exact", "home", "index").unwrap()).unwrap());
         container.connection().execute(
             "UPDATE tb_container_meta SET value='999' WHERE key='schema_version'", [],
         ).unwrap();
-        assert!(open_registered_store_read_only_at(
-            &path, "exact", "home", "index", std::time::Duration::from_millis(25),
+        assert!(open_registered_store_read_only(
+            "exact", "home", "index", std::time::Duration::from_millis(25),
         ).is_err(), "unknown container versions must never be repaired by a reader");
         assert_eq!(container.connection().query_row(
             "SELECT value FROM tb_container_meta WHERE key='schema_version'", [], |row| row.get::<_, String>(0),

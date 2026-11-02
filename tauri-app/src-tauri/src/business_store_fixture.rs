@@ -108,6 +108,13 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
 
     let startup = crate::core::business_startup::process_coordinator();
     need!(startup.begin_initial(), "fixture startup already claimed");
+    need!(
+        route::open_registered_store_read_only(
+            "fixture_readonly", "fixture", "fixture/public-read-only",
+            std::time::Duration::from_millis(25),
+        ).is_err() && !p.a.exists(),
+        "public read-only route bypassed startup readiness or created A"
+    );
     let prepared = route::bootstrap();
     startup.finish(prepared.clone());
     prepared?;
@@ -116,6 +123,7 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
         "bootstrap did not initialize distinct A and B"
     );
     let mut checks = vec![json!({"name":"bootstrap","status":"PASS"})];
+    checks.push(public_read_only_fixture(&p)?);
 
     let qi = quota_history::QuotaHistoryIdentity::from_canonical_parts(
         &h1,
@@ -333,6 +341,46 @@ fn validate_root(input: &Path) -> Result<PathBuf, String> {
         );
     }
     Ok(root)
+}
+
+fn public_read_only_fixture(paths: &Paths) -> Result<Value, String> {
+    let writer = route::open_store(
+        "fixture_readonly", "fixture", "fixture/public-read-only", &[],
+    )?;
+    ok!(writer.execute_batch("CREATE TABLE observations(value INTEGER); INSERT INTO observations VALUES(41);"));
+    let catalog = ok!(Connection::open_with_flags(
+        &paths.a, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ));
+    let before: i64 = ok!(catalog.query_row("SELECT COUNT(*) FROM tb_stores", [], |row| row.get(0)));
+    ok!(writer.execute_batch("BEGIN IMMEDIATE; UPDATE observations SET value=42;"));
+    let checked = (|| -> Result<(), String> {
+        let reader = route::open_registered_store_read_only(
+            "fixture_readonly", "fixture", "fixture/public-read-only",
+            std::time::Duration::from_millis(25),
+        )?.ok_or("public read-only route lost its registered namespace")?;
+        let value: i64 = ok!(reader.query_row("SELECT value FROM observations", [], |row| row.get(0)));
+        need!(value == 41, "read-only route exposed the publisher's uncommitted value");
+        let error = reader.execute("INSERT INTO observations VALUES(99)", [])
+            .err().ok_or("public read-only route allowed a main-database write")?;
+        need!(error.sqlite_error_code() == Some(rusqlite::ErrorCode::ReadOnly),
+            "read-only fixture did not reach SQLite write enforcement");
+        need!(route::open_registered_store_read_only(
+            "fixture_readonly", "unknown-home", "fixture/public-read-only",
+            std::time::Duration::from_millis(25),
+        )?.is_none(), "public read-only route created an unknown namespace");
+        let after: i64 = ok!(catalog.query_row("SELECT COUNT(*) FROM tb_stores", [], |row| row.get(0)));
+        need!(after == before, "public read-only route registered an unknown partition");
+        Ok(())
+    })();
+    let rollback = writer.execute_batch("ROLLBACK;");
+    checked?;
+    ok!(rollback);
+    need!(ok!(writer.query_row("SELECT value FROM observations", [], |row| row.get::<_, i64>(0))) == 41,
+        "read-only fixture changed its committed source");
+    Ok(json!({"name":"public-read-only-routing","status":"PASS",
+        "startupReadRefused":true,"concurrentPublisherRead":true,
+        "uncommittedValueHidden":true,"mainWriteRefused":true,
+        "unknownPartitionNotRegistered":true}))
 }
 
 fn seed_quota(path: &Path, home: &Path, at: f64, legacy: bool) -> Result<(), String> {
