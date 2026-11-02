@@ -753,6 +753,7 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
     }
 
     func withConnection<T>(_ body: (SQLiteDatabaseConnection) throws -> T) throws -> T {
+        if let businessStore { try BusinessSQLiteRoutes.requireAccess(to: businessStore, readOnly: readOnly) }
         if let scoped = Thread.current.threadDictionary[operationConnectionKey] as? OperationConnection {
             if let businessStore {
                 guard BusinessSQLiteRoutes.store(for: url) == businessStore else {
@@ -1277,7 +1278,22 @@ final class SQLiteDatabaseConnection: DatabaseAccessing {
     }
 
     func restoreDatabase(from sourceURL: URL) throws {
-        if let binding = businessBinding {
+        try restoreDatabase(from: sourceURL, consultBusinessRoutes: true)
+    }
+
+    /// A legacy input backup must read the physical input even while its
+    /// logical name is already routed to the previous published partition.
+    /// Only an unbound private destination may use this migration boundary.
+    func restorePhysicalDatabase(from sourceURL: URL) throws {
+        guard businessBinding == nil else {
+            throw SQLiteDatabaseError(operation: "Restore physical snapshot", code: SQLITE_MISUSE,
+                message: "Physical restore cannot replace a bound business owner", path: path)
+        }
+        try restoreDatabase(from: sourceURL, consultBusinessRoutes: false)
+    }
+
+    private func restoreDatabase(from sourceURL: URL, consultBusinessRoutes: Bool) throws {
+        if consultBusinessRoutes, let binding = businessBinding {
             guard sqlite3_get_autocommit(database) != 0 else {
                 throw SQLiteDatabaseError(operation: "Restore module", code: SQLITE_MISUSE,
                     message: "Module restore must run outside an active transaction", path: path)
@@ -1294,7 +1310,7 @@ final class SQLiteDatabaseConnection: DatabaseAccessing {
             try installBusinessStore(binding.store)
             return
         }
-        if let sourceStore = BusinessSQLiteRoutes.store(for: sourceURL) {
+        if consultBusinessRoutes, let sourceStore = BusinessSQLiteRoutes.store(for: sourceURL) {
             try CodexBusinessDatabase.export(sourceStore, to: self)
             return
         }

@@ -4141,7 +4141,9 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertThrowsError(try index.synchronize(files: [file], sessionID: analyzer.sessionID(from:), parser: parser))
         let stages = swiftUsageCacheRoot(in: root).appendingPathComponent("staging")
         let enumerator = try XCTUnwrap(FileManager.default.enumerator(at: stages, includingPropertiesForKeys: nil))
-        let stage = try XCTUnwrap(enumerator.compactMap { $0 as? URL }.first { $0.pathExtension == "sqlite" })
+        let stage = try XCTUnwrap(enumerator.compactMap { $0 as? URL }.first {
+            $0.pathExtension == "sqlite" && (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+        })
         // Same known parser and complete numeric rows, different known request
         // kind. Unknown migrations still retain their original rejection tests.
         try SQLiteDatabaseDriver(url: stage).execute("UPDATE manifest SET migration_revision='model-v1'")

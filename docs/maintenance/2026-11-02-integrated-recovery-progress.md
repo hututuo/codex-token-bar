@@ -105,3 +105,16 @@ Windows连接寿命作平台适配：实际锁定SQLite源码的`winOpen`使用F
 源码`42019d54`的[完整检查41498844813](https://github.com/hututuo/codex-token-bar/actions/runs/41498844813)：生产配置双端编译通过；Mac生产fixture（含新pool13任务、实际parser旧短stage→新pool恢复）通过。Mac整包测试编译暴露backup测试未导入常量，已修；Windows生产fixture最后离线改名A时因常驻pool句柄报共享冲突，原Windows SQLite没有FILE_SHARE_DELETE。这不是删除／跳过缺库测试的理由：已增加真实维护用的空闲owner租约，拒绝关闭仍在使用的pool，并在租约持有期间阻止重开；原改名／拒绝新建空A／恢复测试继续执行。该修正待双端重测。
 
 同时补充：Swift已知不同请求种类的完整stage通过原有全验证器分类，保留证据后分配新任务；未知格式／坏proof仍拒绝，新增实际扫描器回归。两端需要读取冻结前缀字节时显式绕过共享物理块缓存，不改变正常解析游标；Rust嵌套与异常展开有恢复测试。新的13任务探针仍通过。旧stage后台清理、跨进程强退、启动准入及规模预算仍NOT_DONE，不能用上述局部通过替代。
+
+源码`0a8e9193`的[完整检查41501202269](https://github.com/hututuo/codex-token-bar/actions/runs/41501202269)：Windows生产fixture及全量native已通过，原离线缺库测试保留并执行；Mac native runner未开始步骤即被取消，不能计通过。Swift2272项、36 skipped：4条仍为旧admission基线；新增stage分类测试误把后缀为`.sqlite`的目录当作文件，EISDIR，已按同文件既有fixture筛选regular file。不是通过改产品校验或删除旧断言转绿。等待含C04a的新提交。
+
+## C04a · 已发布准入与迁移重放保护（进行中）
+
+- Mac迟到导入新增独立admission记录；初始化marker与容器合同通过后，保留已发布owner的读取，pending新owner暂不展示，相关writer在后端拒绝。旧版留下的importing＋有批次journal状态只恢复批次外已验证owner；无journal的旧importing继续保留原拒绝。
+- discovery本身遇到坏材料时，已ready A仍可只读；所有新writer暂停，直到来源可分类。正常重试解除该限制，不创建空A或删除未知材料。
+- startup可进入带恢复提示的已发布读取状态，重试不重复构造业务owner；全程保持单writer进程锁。**首页Exact／quota／ModelTrace的现有读方法还借用writer，需要C04b显式只读适配；当前不得称为完整启动UI通过。**
+- late操作不再把活跃A切到DELETE或做全库checkpoint；同线程复用既有operation connection，事务边界不扩大。原始旧库备份使用显式physical source，避免提前恢复路由后误导出A逻辑分区。这是本轮新接线中被隔离probe拦下的问题，不宣称为用户旧版本的既定原因。
+- 同一已提交输入重放前以typed-row覆盖核对保留目标独有新账；来源变化时只允许替换仍精确匹配原冻结import proof的目标，比较在原写事务内完成。独立目标新事实与变化来源冲突时保留双方、限制该owner，不猜赢家／不覆盖。原module主动restore语义未扩展到迁移器。
+- 已存在A的打开路径显式NO_CREATE，避免物理A丢失时默默建空库。
+
+当前实际证据：admission生产模块probe编译／运行PASS，低空间失败后ready、routes可用，旧123与新456都保留。生产数据库源码的隔离XCTest共**22通过、0失败**：原14项pool/codec＋8项admission，覆盖低空间、提交前中断／三次重启、pending读写门禁、其他owner继续写、physical/logical备份分离、同输入保留目标新账、来源与目标独有数据冲突保留、坏discovery只读准入与恢复、NO_CREATE。非完整app、非Windows C04验证；跨进程强退／实际旧版产库／读UI适配／规模仍待完成。

@@ -31,6 +31,10 @@ enum BusinessSQLiteRoutes {
         var registeredIDs = Set<String>()
         var configuration: BusinessDatabaseMigration.Configuration?
         var activeFileIdentity: String?
+        var blockedReads = Set<String>()
+        var blockedWrites = Set<String>()
+        var publishedAdmission = false
+        var blocksAllWriters = false
     }
     private static let state = State()
     static func store(for url: URL) -> BusinessSQLiteStore? {
@@ -75,7 +79,9 @@ enum BusinessSQLiteRoutes {
             state.registeredIDs.remove(store.id)
         }
     }
-    static func activate(_ configuration: BusinessDatabaseMigration.Configuration, stores: [BusinessSQLiteStore]) {
+    static func activate(_ configuration: BusinessDatabaseMigration.Configuration, stores: [BusinessSQLiteStore],
+                         blockedReads: Set<String> = [], blockedWrites: Set<String> = [], publishedAdmission: Bool = false,
+                         blocksAllWriters: Bool = false) {
         state.lock.lock(); defer { state.lock.unlock() }
         state.configuration = configuration
         state.activeFileIdentity = physicalIdentity(configuration.container)
@@ -83,6 +89,9 @@ enum BusinessSQLiteRoutes {
         for store in stores { state.routes[store.logicalURL.path] = store }
         state.resolvedPaths = Set(stores.map(\.logicalURL.path))
         state.registeredIDs = Set(stores.map(\.id))
+        state.blockedReads = blockedReads; state.blockedWrites = blockedWrites
+        state.publishedAdmission = publishedAdmission
+        state.blocksAllWriters = blocksAllWriters
     }
     static func deactivate() {
         state.lock.lock(); defer { state.lock.unlock() }
@@ -91,6 +100,18 @@ enum BusinessSQLiteRoutes {
         state.routes.removeAll()
         state.resolvedPaths.removeAll()
         state.registeredIDs.removeAll()
+        state.blockedReads.removeAll(); state.blockedWrites.removeAll(); state.publishedAdmission = false
+        state.blocksAllWriters = false
+    }
+    static var hasPublishedAdmission: Bool {
+        state.lock.lock(); defer { state.lock.unlock() }
+        return state.publishedAdmission
+    }
+    static func requireAccess(to store: BusinessSQLiteStore, readOnly: Bool) throws {
+        state.lock.lock(); defer { state.lock.unlock() }
+        if state.blockedReads.contains(store.id) || (!readOnly && (state.blocksAllWriters || state.blockedWrites.contains(store.id))) {
+            throw PublishedBusinessAdmission.Deferred(message: "该来源的旧账导入尚未完成，已保留已发布统计；暂停该来源新写入")
+        }
     }
     static func allStores(in directory: URL) -> [BusinessSQLiteStore] {
         let root = directory.standardizedFileURL.path
@@ -203,9 +224,9 @@ final class CodexBusinessDatabase {
         guard let schema = bundledSchemaSQL else { return nil }
         return try? expectedContainerSchema(schema)
     }()
-    init(url: URL) throws {
+    init(url: URL, createsFileIfMissing: Bool = true) throws {
         self.url = url
-        driver = SQLiteDatabaseDriver(url: url, busyTimeoutMilliseconds: 30_000, enableWAL: false, bypassBusinessRoutes: true)
+        driver = SQLiteDatabaseDriver(url: url, createsFileIfMissing: createsFileIfMissing, busyTimeoutMilliseconds: 30_000, enableWAL: false, bypassBusinessRoutes: true)
         guard let schema = Self.bundledSchemaSQL, let expected = Self.expectedSchemaEntries else {
             throw BusinessStoreError.invalidContainerVersion
         }
@@ -217,6 +238,7 @@ final class CodexBusinessDatabase {
             let existing = try Self.containerSchema(db, canonicalNames: rootNames)
             let isNewContainer = physicalVersion == 0
             if isNewContainer {
+                guard createsFileIfMissing else { throw BusinessStoreError.invalidContainerVersion }
                 let hasAnyCatalogObject = try db.readRows("SELECT 1 FROM main.sqlite_master LIMIT 1") { $0.int(0) }.first != nil
                 guard existing.isEmpty, !hasAnyCatalogObject else { throw BusinessStoreError.invalidContainerVersion }
                 // Set this before any schema DDL. Incremental vacuum can reclaim
@@ -407,7 +429,9 @@ final class CodexBusinessDatabase {
     /// by copying a live main file without its WAL. Only this namespace changes.
     /// The original snapshot, schema, all typed row values and old integer IDs
     /// remain available for proof/rollback. Re-importing the same image is a no-op.
-    @discardableResult func importSnapshot(_ source: URL, into store: BusinessSQLiteStore, backupURL: URL, now: Date = Date(), replaceExisting: Bool = false) throws -> BusinessStoreProof {
+    @discardableResult func importSnapshot(_ source: URL, into store: BusinessSQLiteStore, backupURL: URL, now: Date = Date(), replaceExisting: Bool = false,
+                                           skipAlreadyCommitted: Bool = false,
+                                           requireCommittedImportForReplacement: Bool = false) throws -> BusinessStoreProof {
         guard store.containerURL == url.standardizedFileURL else { throw BusinessStoreError.invalidStore }
         let sourceSignature = try Self.sourceFileSignature(source)
         let sourceDB = SQLiteDatabaseDriver(url: source, readOnly: true, createsFileIfMissing: false, bypassBusinessRoutes: true)
@@ -417,7 +441,7 @@ final class CodexBusinessDatabase {
         guard try Self.sourceFileSignature(source) == sourceSignature else { throw BusinessStoreError.sourceChanged }
         let sourceDigest = proof.schemaDigest + ":" + proof.rowsDigest + ":v" + String(proof.moduleUserVersion)
         let existing = try driver.readRows("SELECT rows_digest FROM tb_store_imports WHERE store_id=? AND source_digest=?",bindings:[.text(store.id),.text(sourceDigest)]) { $0.text(0) }.first ?? nil
-        if let existing, !replaceExisting {
+        if let existing, !replaceExisting && !skipAlreadyCommitted {
             guard existing == proof.rowsDigest else { throw BusinessStoreError.proofMismatch }
             guard try Self.sourceFileSignature(source) == sourceSignature else { throw BusinessStoreError.sourceChanged }
             BusinessSQLiteRoutes.didRegister(store)
@@ -452,10 +476,27 @@ final class CodexBusinessDatabase {
                     guard Set(columns.map { $0.lowercased() }).isDisjoint(with: namespace.objectNames) else { throw BusinessStoreError.unsupportedSchema("object/column name collision") }
                 }
                 let old = try tx.readRows("SELECT name,type FROM main.sqlite_master WHERE substr(name,1,?)=? ORDER BY CASE type WHEN 'view' THEN 0 WHEN 'trigger' THEN 1 WHEN 'index' THEN 2 ELSE 3 END", bindings:[.int(store.prefix.count),.text(store.prefix)]) { ($0.text(0) ?? "",$0.text(1) ?? "") }
+                if existing != nil, skipAlreadyCommitted {
+                    guard try Self.importedRowsAreCovered(tx, namespace: namespace, sourceObjects: names),
+                          try Self.sourceFileSignature(source) == sourceSignature else { throw BusinessStoreError.proofMismatch }
+                    return // Keep independent destination facts, never replay over them.
+                }
                 // A namespace created directly by a running module may have
                 // no old-import receipt. It still contains live data. Only
                 // an explicitly authorized replacement may drop its objects.
                 guard replaceExisting || old.isEmpty else { throw BusinessStoreError.proofMismatch }
+                if !old.isEmpty, requireCommittedImportForReplacement {
+                    // This is still the original SQLite write transaction.
+                    // Only replace a frozen, previously imported image. Any
+                    // app-owned rows written later invalidate this preimage;
+                    // a retry must never overwrite those with an older copy.
+                    let oldNames = Set(old.map { String($0.0.dropFirst(store.prefix.count)) })
+                    let prior = try Self.proof(tx, namespace: SQLiteStoreNamespace(prefix: store.prefix, objectNames: oldNames))
+                    let priorDigest = prior.schemaDigest + ":" + prior.rowsDigest + ":v" + String(prior.moduleUserVersion)
+                    let frozen = try tx.readRows("SELECT 1 FROM tb_store_imports WHERE store_id=? AND source_digest=? AND schema_digest=? AND row_count=? AND rows_digest=?",
+                        bindings: [.text(store.id), .text(priorDigest), .text(prior.schemaDigest), .int64(prior.rowCount), .text(prior.rowsDigest)]) { $0.int(0) }.first == 1
+                    guard frozen else { throw BusinessStoreError.proofMismatch }
+                }
                 for (name,type) in old { try tx.execute("DROP \(type.uppercased()) IF EXISTS \(SQLiteStoreNamespace.quote(name))") }
                 try tx.execute("DELETE FROM tb_store_objects WHERE store_id=?",bindings:[.text(store.id)])
                 let hasStoreSeals = try tx.readRows("SELECT 1 FROM main.sqlite_master WHERE type='table' AND name='tb_store_seals'") { $0.int(0) }.first == 1
@@ -506,6 +547,38 @@ final class CodexBusinessDatabase {
         }
         BusinessSQLiteRoutes.didRegister(store)
         return proof
+    }
+
+    /// Verify coverage using exact typed row digests, including hidden rowids.
+    /// This is only an interrupted-import replay check. SQL collation, JSON
+    /// numbers, REAL string formatting and set deduplication cannot hide a
+    /// missing/different protected row. The bounded TEMP btree spills to disk.
+    private static func importedRowsAreCovered(_ tx: SQLiteDatabaseConnection,
+        namespace: SQLiteStoreNamespace, sourceObjects: [(String,String,String?)]) throws -> Bool {
+        try tx.execute("CREATE TEMP TABLE tb_import_covered_rows(digest BLOB PRIMARY KEY,n INTEGER NOT NULL) WITHOUT ROWID")
+        defer { try? tx.execute("DROP TABLE temp.tb_import_covered_rows") }
+        let add = try tx.prepare("INSERT INTO temp.tb_import_covered_rows VALUES(?,1) ON CONFLICT(digest) DO UPDATE SET n=n+1")
+        let consume = try tx.prepare("UPDATE temp.tb_import_covered_rows SET n=n-1 WHERE digest=? AND n>0")
+        for (name,kind,sql) in sourceObjects where kind == "table" {
+            guard let sql else { return false }
+            let physical = namespace.prefix + name
+            guard try tx.readRows("SELECT 1 FROM main.sqlite_master WHERE type='table' AND name=?", bindings:[.text(physical)], map: { $0.int(0) }).first == 1 else { return false }
+            let columns = try tx.readRows("PRAGMA tb_import_source.table_xinfo(\(SQLiteStoreNamespace.quote(name)))") { $0.text(1) ?? "" }
+            let targetColumns = Set(try tx.readRows("PRAGMA main.table_xinfo(\(SQLiteStoreNamespace.quote(physical)))") { $0.text(1) ?? "" })
+            guard !columns.isEmpty, targetColumns.isSuperset(of: columns) else { return false }
+            let rowID = try Self.rowIDAlias(sql: sql, columns: columns)
+            let projection = ((rowID.map { [$0] } ?? []) + columns).map(SQLiteStoreNamespace.quote).joined(separator: ",")
+            try tx.execute("DELETE FROM temp.tb_import_covered_rows")
+            func rowDigest(_ row: SQLiteStatement) -> Data {
+                var hash = SHA256()
+                for column in 0..<row.columnCount { hash.update(data: row.canonicalBytes(column)) }
+                return Data(hash.finalize())
+            }
+            try tx.forEachRow("SELECT \(projection) FROM tb_import_source.\(SQLiteStoreNamespace.quote(name))") { try add.execute([.blob(rowDigest($0))]) }
+            try tx.forEachRow("SELECT \(projection) FROM main.\(SQLiteStoreNamespace.quote(physical))") { try consume.execute([.blob(rowDigest($0))]) }
+            if try tx.readRows("SELECT 1 FROM temp.tb_import_covered_rows WHERE n>0 LIMIT 1", map: { $0.int(0) }).first == 1 { return false }
+        }
+        return true
     }
 
     static func proof(_ db: SQLiteDatabaseConnection, namespace: SQLiteStoreNamespace? = nil) throws -> BusinessStoreProof {

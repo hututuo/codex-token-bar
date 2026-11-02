@@ -98,13 +98,20 @@ final class BusinessDatabaseMigration {
                 || app.localizedName == "Codex Token Bar")
         }
         guard !other else { throw Failure.runningWriter }
-        let lock = try CodexCrossProcessFileLock(url: configuration.container.appendingPathExtension("writer.lock"), label: "统一账本")
+        if lifetimeLock == nil {
+            lifetimeLock = try CodexCrossProcessFileLock(url: configuration.container.appendingPathExtension("writer.lock"), label: "统一账本")
+        }
         // The application window/event loop exists before this operation is
         // requested. No business owner starts until this background gate ends.
         try await Task.detached(priority: .utility) {
-            try migrate(configuration, onProgress: onProgress)
+            do { try migrate(configuration, onProgress: onProgress) }
+            catch {
+                if BusinessSQLiteRoutes.hasPublishedAdmission {
+                    throw PublishedBusinessAdmission.Deferred(message: error.localizedDescription)
+                }
+                throw error
+            }
         }.value
-        lifetimeLock = lock
     }
 
     /// Isolated configurations are used by tests. No production path discovery
@@ -114,7 +121,23 @@ final class BusinessDatabaseMigration {
                         beforeActivation: (() throws -> Void)? = nil,
                         onProgress: (@Sendable (Progress) -> Void)? = nil) throws {
         onProgress?(.init(stage: .preparing))
-        let inputs = try discover(configuration, fileManager: fileManager)
+        let inputs: [Input]
+        do { inputs = try discover(configuration, fileManager: fileManager) }
+        catch {
+            // A malformed late source is not proof that an already-published
+            // A became unreadable. Preserve its verified owners, but no new
+            // writer starts until discovery can classify the failed source.
+            if fileManager.fileExists(atPath: configuration.container.path),
+               fileManager.fileExists(atPath: configuration.container.appendingPathExtension("initialized").path) {
+                let existing = try CodexBusinessDatabase(url: configuration.container, createsFileIfMissing: false)
+                let state = try existing.driver.readRows("SELECT value FROM tb_container_meta WHERE key='activation_state'") { $0.text(0) }.first ?? nil
+                let raw = try existing.driver.readRows("SELECT value FROM tb_container_meta WHERE key='migration_pending_sources_v1'") { $0.text(0) }.first ?? nil
+                let pending = try raw.map { try JSONDecoder().decode([String:String].self, from: Data($0.utf8)) } ?? [:]
+                _ = try PublishedBusinessAdmission.install(configuration: configuration, database: existing,
+                    pending: pending, activation: state, blocksAllWriters: true)
+            }
+            throw error
+        }
         var legacyLocks: [CodexCrossProcessFileLock] = []
         for input in inputs where input.store.module == "exact.swift" || input.store.module == "exact.swift.retired" {
             let original = input.source.path.hasSuffix(".schema11-rollback")
@@ -129,23 +152,49 @@ final class BusinessDatabaseMigration {
         let working = exists ? configuration.container : configuration.container.deletingLastPathComponent().appendingPathComponent(".codex-ledger-migrating.sqlite")
         // A fixed private candidate is resumable. Atomic import transactions
         // and receipts make replay idempotent; activation is a separate gate.
-        let database = try CodexBusinessDatabase(url: working)
+        let database = try CodexBusinessDatabase(url: working, createsFileIfMissing: !exists)
+        let finish = {
+            try completeImports(configuration, inputs: inputs, database: database,
+                working: working, exists: exists, initialized: initialized,
+                fileManager: fileManager, availableBytes: availableBytes,
+                beforeActivation: beforeActivation, onProgress: onProgress)
+        }
+        // Keep one schema-loaded handle during this synchronous existing-A
+        // operation. This is not a long transaction; nested writes still have
+        // their original commit/rollback boundaries. Bootstrap file activation
+        // keeps its separate single-file handoff and does not use this scope.
+        if exists { try database.driver.withOperationConnection(finish) }
+        else { try finish() }
+    }
+
+    private static func completeImports(_ configuration: Configuration, inputs: [Input],
+        database: CodexBusinessDatabase, working: URL, exists: Bool, initialized: URL,
+        fileManager: FileManager, availableBytes: UInt64?, beforeActivation: (() throws -> Void)?,
+        onProgress: (@Sendable (Progress) -> Void)?) throws {
         let known = Set(try database.driver.readRows("SELECT source_path FROM tb_legacy_inputs") { $0.text(0) ?? "" })
         let journalKey = "migration_pending_sources_v1"
         let journalRaw = try database.driver.readRows("SELECT value FROM tb_container_meta WHERE key=?", bindings: [.text(journalKey)]) { $0.text(0) }.first ?? nil
         let journal = try journalRaw.map { try JSONDecoder().decode([String: String].self, from: Data($0.utf8)) } ?? [:]
         let discovered = Dictionary(uniqueKeysWithValues: inputs.map { ($0.source.path, $0.store.id) })
-        // A vanished/relocated uncommitted input must not silently disappear
-        // from the retry. Committed sources remain independent of old files.
-        for (path, storeID) in journal {
-            guard discovered[path] == storeID else { throw Failure.unmigratedInput(path) }
-        }
         let pending = exists ? inputs.filter { !known.contains($0.source.path) || journal[$0.source.path] != nil } : inputs
         let activation = try database.driver.readRows("SELECT value FROM tb_container_meta WHERE key='activation_state'") { $0.text(0) }.first ?? nil
         if exists, activation == "importing", journalRaw == nil {
             // An older interrupted writer did not persist which partitions
             // were new. Never guess and overwrite previously activated data.
             throw Failure.untrackedInterruptedImport
+        }
+        var pendingOwners = journal
+        for input in pending {
+            if let old = pendingOwners[input.source.path], old != input.store.id { throw Failure.unmigratedInput(input.source.path) }
+            pendingOwners[input.source.path] = input.store.id
+        }
+        let publishedAdmission = exists && !pendingOwners.isEmpty
+            ? try PublishedBusinessAdmission.install(configuration: configuration, database: database,
+                pending: pendingOwners, activation: activation) : false
+        // Missing sources remain an explicit pending operation. Admission above
+        // may retain unrelated verified owners, never invent a successful import.
+        for (path, storeID) in journal {
+            guard discovered[path] == storeID else { throw Failure.unmigratedInput(path) }
         }
         for input in pending where exists && journal[input.source.path] == nil {
             let registered = try database.driver.readRows("SELECT 1 FROM tb_stores WHERE store_id=?", bindings: [.text(input.store.id)]) { $0.int(0) }.first != nil
@@ -157,6 +206,9 @@ final class BusinessDatabaseMigration {
             // scan every data page, rewrite readiness or fsync the whole file
             // before showing the next normal launch. Readers validate pages
             // they touch; storage maintenance retains its independent cadence.
+            if try database.driver.readRows("SELECT 1 FROM tb_container_meta WHERE key=?", bindings:[.text(PublishedBusinessAdmission.key)], map:{ $0.int(0) }).first == 1 {
+                try database.driver.execute("DELETE FROM tb_container_meta WHERE key=?", bindings: [.text(PublishedBusinessAdmission.key)])
+            }
             try activateRoutes(configuration, database: database)
             onProgress?(.init(stage: .ready))
             return
@@ -165,7 +217,7 @@ final class BusinessDatabaseMigration {
         let batchJSON = String(decoding: try JSONEncoder().encode(batch), as: UTF8.self)
         try database.driver.transaction { tx in
             try tx.execute("INSERT OR REPLACE INTO tb_container_meta VALUES (?,?)", bindings: [.text(journalKey), .text(batchJSON)])
-            try tx.execute("INSERT OR REPLACE INTO tb_container_meta VALUES ('activation_state','importing')")
+            if !publishedAdmission { try tx.execute("INSERT OR REPLACE INTO tb_container_meta VALUES ('activation_state','importing')") }
         }
         var needed: UInt64 = 256 * 1024 * 1024
         for input in pending {
@@ -191,7 +243,7 @@ final class BusinessDatabaseMigration {
                 // sqlite3_backup observes a consistent WAL snapshot. No raw
                 // main-file copy, checkpoint, DELETE, or schema write on input.
                 try SQLiteDatabaseDriver(url: backup, bypassBusinessRoutes: true).withConnection { connection in
-                    try connection.restoreDatabase(from: input.source)
+                    try connection.restorePhysicalDatabase(from: input.source)
                     _ = try connection.readRows("PRAGMA wal_checkpoint(TRUNCATE)") { $0.int(0) }
                     _ = try connection.readRows("PRAGMA journal_mode=DELETE") { $0.text(0) }
                 }
@@ -201,7 +253,7 @@ final class BusinessDatabaseMigration {
             let original = try SQLiteDatabaseDriver(url: backup, readOnly: true, bypassBusinessRoutes: true).withConnection { try CodexBusinessDatabase.proof($0) }
             let normalized = folder.appendingPathComponent("normalized-\(attempt).sqlite")
             if !fileManager.fileExists(atPath: normalized.path) {
-                try SQLiteDatabaseDriver(url: normalized, bypassBusinessRoutes: true).withConnection { try $0.restoreDatabase(from: backup) }
+                try SQLiteDatabaseDriver(url: normalized, bypassBusinessRoutes: true).withConnection { try $0.restorePhysicalDatabase(from: backup) }
             }
             var normalizationDeferredReason = reusable?.normalizationDeferredReason
             if reusable == nil {
@@ -215,7 +267,7 @@ final class BusinessDatabaseMigration {
                         // untouched snapshot before importing it; do not weaken
                         // the per-Home reader's fail-closed compatibility checks.
                         try SQLiteDatabaseDriver(url: normalized, bypassBusinessRoutes: true)
-                            .withConnection { try $0.restoreDatabase(from: backup) }
+                            .withConnection { try $0.restorePhysicalDatabase(from: backup) }
                         normalizationDeferredReason = error.localizedDescription
                     }
                 }
@@ -239,11 +291,15 @@ final class BusinessDatabaseMigration {
                 }
                 try synchronize(normalized)
             }
-            let imported = try database.importSnapshot(normalized, into: store, backupURL: backup, replaceExisting: !exists || journal[input.source.path] != nil)
+            let imported = try database.importSnapshot(normalized, into: store, backupURL: backup,
+                replaceExisting: !exists || journal[input.source.path] != nil,
+                skipAlreadyCommitted: true, requireCommittedImportForReplacement: true)
             if let reusable, imported != reusable.imported { throw BusinessStoreError.sourceChanged }
             try fileManager.setAttributes([.posixPermissions: 0o400], ofItemAtPath: normalized.path)
             if store.module == "exact.swift.stage" {
                 try database.driver.withConnection { connection in
+                    let previousBinding = connection.businessBinding
+                    defer { connection.businessBinding = previousBinding; if previousBinding == nil { try? connection.execute("PRAGMA query_only=OFF") } }
                     try connection.installBusinessStore(store)
                     let columns = Set(try connection.readRows("PRAGMA table_info(manifest)") { $0.text(1) ?? "" })
                     if columns.contains("complete"), try connection.readRows("SELECT complete FROM manifest", map: { $0.int(0) }).first == 1 {
@@ -293,16 +349,23 @@ final class BusinessDatabaseMigration {
         }
         try beforeActivation?()
         onProgress?(.init(stage: .activating, completed: pending.count, total: pending.count))
-        try database.driver.withConnection { db in
-            guard try db.readRows("PRAGMA quick_check", map: { $0.text(0) }) == ["ok"] else { throw BusinessStoreError.proofMismatch }
-            _ = try db.readRows("PRAGMA wal_checkpoint(TRUNCATE)") { $0.int(0) }
-            _ = try db.readRows("PRAGMA journal_mode=DELETE") { $0.text(0) }
+        if !exists {
+            try database.driver.withConnection { db in
+                guard try db.readRows("PRAGMA quick_check", map: { $0.text(0) }) == ["ok"] else { throw BusinessStoreError.proofMismatch }
+                _ = try db.readRows("PRAGMA wal_checkpoint(TRUNCATE)") { $0.int(0) }
+                _ = try db.readRows("PRAGMA journal_mode=DELETE") { $0.text(0) }
+            }
         }
+        // Existing A is live WAL storage. Each imported partition was already
+        // compared against its typed source proof in its own transaction. Do
+        // not checkpoint or switch the whole running container to DELETE.
+
         // Completion and removal of the pending batch commit together, only
         // after all sources and the container have passed verification.
         try database.driver.transaction { tx in
             try tx.execute("INSERT OR REPLACE INTO tb_container_meta VALUES ('activation_state','ready')")
             try tx.execute("DELETE FROM tb_container_meta WHERE key=?", bindings: [.text(journalKey)])
+            try tx.execute("DELETE FROM tb_container_meta WHERE key=?", bindings: [.text(PublishedBusinessAdmission.key)])
         }
         try synchronize(working)
         if !exists {
@@ -315,12 +378,18 @@ final class BusinessDatabaseMigration {
             try synchronize(initialized)
             try synchronize(initialized.deletingLastPathComponent())
         }
-        let ready = try CodexBusinessDatabase(url: configuration.container)
-        try activateRoutes(configuration, database: ready)
+        if exists {
+            try activateRoutes(configuration, database: database)
+        } else {
+            let ready = try CodexBusinessDatabase(url: configuration.container, createsFileIfMissing: false)
+            try activateRoutes(configuration, database: ready)
+        }
         onProgress?(.init(stage: .ready, completed: pending.count, total: pending.count))
     }
 
-    private static func activateRoutes(_ configuration: Configuration, database ready: CodexBusinessDatabase) throws {
+    static func activateRoutes(_ configuration: Configuration, database ready: CodexBusinessDatabase,
+                               blockedReads: Set<String> = [], blockedWrites: Set<String> = [], publishedAdmission: Bool = false,
+                               blocksAllWriters: Bool = false) throws {
         // Candidate activation uses a single-file image. The live shared
         // container must return to WAL before any module starts writing.
         let mode = try ready.driver.readRows("PRAGMA journal_mode") { $0.text(0) }.first ?? nil
@@ -330,7 +399,8 @@ final class BusinessDatabaseMigration {
         let stores = try ready.driver.readRows("SELECT logical_path,module,source_identity FROM tb_stores") { row in
             BusinessSQLiteStore(containerURL: configuration.container, logicalURL: URL(fileURLWithPath: row.text(0) ?? ""), module: row.text(1) ?? "", sourceIdentity: row.text(2) ?? "")
         }
-        BusinessSQLiteRoutes.activate(configuration, stores: stores)
+        BusinessSQLiteRoutes.activate(configuration, stores: stores, blockedReads: blockedReads,
+            blockedWrites: blockedWrites, publishedAdmission: publishedAdmission, blocksAllWriters: blocksAllWriters)
     }
     // Bump when normalization semantics change. Old/unversioned receipts are
     // preserved, but never reused as if produced by the current normalizer.

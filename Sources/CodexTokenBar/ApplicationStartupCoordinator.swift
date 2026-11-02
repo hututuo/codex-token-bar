@@ -6,7 +6,7 @@ import SwiftUI
 /// The first window can render before the asynchronous startup gate runs.
 @MainActor
 final class ApplicationStartupCoordinator: ObservableObject {
-    enum Phase: Equatable { case waiting, preparing, ready, failed(String) }
+    enum Phase: Equatable { case waiting, preparing, ready, readyWithPendingRecovery(String), failed(String) }
     typealias Prepare = @Sendable (@escaping @Sendable (BusinessDatabaseMigration.Progress) -> Void) async throws -> Void
     @Published private(set) var phase: Phase = .waiting
     @Published private(set) var progress = BusinessDatabaseMigration.Progress(stage: .preparing)
@@ -16,6 +16,7 @@ final class ApplicationStartupCoordinator: ObservableObject {
     private let productionLifecycle: Bool
     private var job: Task<Void, Never>?
     private var progressAt = Date.distantPast
+    private var hasActivated = false
     static private(set) var blocksBusinessServices = false
 
     init(prepare: @escaping Prepare = { callback in
@@ -37,9 +38,15 @@ final class ApplicationStartupCoordinator: ObservableObject {
                     Task { @MainActor in self?.receive(progress) }
                 }
                 // Routes and the lifetime writer lock are installed first.
-                self.runtime = self.activate()
+                self.activateOnce()
                 if self.productionLifecycle { Self.blocksBusinessServices = false }
                 self.phase = .ready
+            } catch let deferred as PublishedBusinessAdmission.Deferred where BusinessSQLiteRoutes.hasPublishedAdmission {
+                // The backend installed per-owner capabilities before returning
+                // this state. Do not grant an unfinished owner writer access.
+                if self.productionLifecycle { Self.blocksBusinessServices = false }
+                self.activateOnce()
+                self.phase = .readyWithPendingRecovery(deferred.localizedDescription)
             } catch {
                 self.phase = .failed(error.localizedDescription)
             }
@@ -47,8 +54,14 @@ final class ApplicationStartupCoordinator: ObservableObject {
     }
 
     func retry() {
-        guard case .failed = phase, job == nil else { return }
+        guard job == nil else { return }
+        switch phase { case .failed, .readyWithPendingRecovery: break; default: return }
         phase = .waiting; start()
+    }
+
+    private func activateOnce() {
+        guard !hasActivated else { return }
+        runtime = activate(); hasActivated = true
     }
 
     private func receive(_ value: BusinessDatabaseMigration.Progress) {

@@ -19,7 +19,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 PRODUCTION_FILES = [
-    "BusinessDatabaseMigration.swift", "BusinessStoreFiles.swift",
+    "BusinessDatabaseMigration.swift", "PublishedBusinessAdmission.swift", "BusinessStoreFiles.swift",
     "CodexCrossProcessFileLock.swift", "CodexBusinessDatabase.swift",
     "SQLiteDatabaseDriver.swift", "SQLiteStoreConnection.swift", "SQLiteStoreNamespace.swift",
 ]

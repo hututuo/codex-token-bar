@@ -40,7 +40,8 @@ final class Incident0910MigrationRecoveryTests: XCTestCase {
         XCTAssertEqual(try quotaSnapshotRows(at: URL(fileURLWithPath: attempts[0].1.backupPath)), 1)
         XCTAssertEqual(try destinationQuotaRows(configuration, store: quotaStore).map(\.2), [20])
         XCTAssertEqual(try Data(contentsOf: quotaURL), bytesBeforeMigration)
-        XCTAssertEqual(try containerMeta(configuration.container, key: "activation_state"), "importing")
+        XCTAssertEqual(try containerMeta(configuration.container, key: "activation_state"), "ready")
+        XCTAssertNotNil(try containerMeta(configuration.container, key: PublishedBusinessAdmission.key))
         XCTAssertNotNil(try containerMeta(configuration.container, key: "migration_pending_sources_v1"))
         XCTAssertEqual(try destinationSampleIDs(configuration, store: independentStore), [1, 2])
 
@@ -100,7 +101,8 @@ final class Incident0910MigrationRecoveryTests: XCTestCase {
         XCTAssertEqual(try destinationQuotaRows(configuration, store: quotaStore).map(\.2), [20, 21])
         XCTAssertEqual(try destinationSampleIDs(configuration, store: independentStore), [1, 2])
         XCTAssertEqual(try Data(contentsOf: quotaURL), bytesAfterAppend)
-        XCTAssertEqual(try containerMeta(configuration.container, key: "activation_state"), "importing")
+        XCTAssertEqual(try containerMeta(configuration.container, key: "activation_state"), "ready")
+        XCTAssertNotNil(try containerMeta(configuration.container, key: PublishedBusinessAdmission.key))
         XCTAssertNotNil(try containerMeta(configuration.container, key: "migration_pending_sources_v1"))
 
         // Complete the same batch, then repeat a normal start. The exact two
@@ -108,6 +110,7 @@ final class Incident0910MigrationRecoveryTests: XCTestCase {
         try BusinessDatabaseMigration.migrate(configuration, availableBytes: 1 << 32)
         XCTAssertEqual(try containerMeta(configuration.container, key: "activation_state"), "ready")
         XCTAssertNil(try containerMeta(configuration.container, key: "migration_pending_sources_v1"))
+        XCTAssertNil(try containerMeta(configuration.container, key: PublishedBusinessAdmission.key))
         let completedRows = try destinationQuotaRows(configuration, store: quotaStore)
         XCTAssertEqual(completedRows.map(\.2), [20, 21])
         XCTAssertEqual(Set(completedRows.map(\.0)).count, 2)
