@@ -76,7 +76,11 @@ jobs:
 
   swift:
     needs: source
-    runs-on: macos-26
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26, macos-26-intel]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 35
     env:
       GIT_LFS_SKIP_SMUDGE: '1'
@@ -119,7 +123,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: swift-check-logs-${{ github.run_id }}
+          name: swift-check-logs-${{ matrix.os }}-${{ github.run_id }}
           path: |
             *.log
             hosted-diagnostics/
@@ -128,7 +132,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: swift-visual-previews-${{ needs.source.outputs.sha }}
+          name: swift-visual-previews-${{ matrix.os }}-${{ needs.source.outputs.sha }}
           path: visual-previews/*.png
           if-no-files-found: warn
           retention-days: 14
@@ -213,6 +217,7 @@ jobs:
           path: |
             *.log
             runtime-recovery-production.json
+            business-fixture-evidence/
             tauri-app/src-tauri/target/debug/examples/business-store-fixture.exe
           retention-days: 7
 

@@ -58,6 +58,7 @@ jobs:
           python3 -m unittest discover -s scripts/tests -p 'test_backfill_scale.py' -v 2>&1 | tee backfill-harness-tests.log
           python3 -m unittest discover -s scripts/tests -p 'test_rust_backfill_scale.py' -v 2>&1 | tee rust-backfill-harness-tests.log
           python3 -m unittest discover -s scripts/tests -p 'test_business_store_fixture_harness.py' -v 2>&1 | tee reader-harness-tests.log
+          python3 -m unittest discover -s scripts/tests -p 'test_native_fixture_evidence.py' -v 2>&1 | tee native-evidence-harness-tests.log
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
@@ -115,6 +116,7 @@ jobs:
           path: |
             native-production-readers.log
             native-production-readers.json
+            business-fixture-evidence/
           if-no-files-found: error
           retention-days: 30
 

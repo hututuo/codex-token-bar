@@ -4,6 +4,24 @@
 use super::*;
 use rusqlite::types::Value;
 
+mod pending_preservation;
+
+pub(super) fn snapshot_pending_import(
+    db: &Connection,
+    source_id: i64,
+    target_generation: i64,
+) -> Result<bool, String> {
+    pending_preservation::snapshot(db, source_id, target_generation)
+}
+
+pub(super) fn verify_pending_import(
+    db: &Connection,
+    source_id: i64,
+    had_snapshot: bool,
+) -> Result<(), String> {
+    pending_preservation::verify(db, source_id, had_snapshot)
+}
+
 #[cfg(all(feature = "business-store-fixture", not(test)))]
 mod performance_fixture;
 

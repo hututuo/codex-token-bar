@@ -12,6 +12,9 @@ mod stage_recovery;
 #[cfg(any(test, feature = "business-store-fixture"))]
 mod reader_recovery;
 mod runtime_recovery;
+mod stage_content_proof;
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+mod stage_content_fixture;
 #[cfg(any(test, feature = "business-store-fixture"))]
 mod source_count_fixture;
 #[cfg(all(feature = "business-store-fixture", not(test)))]
@@ -1212,6 +1215,7 @@ struct StageStoreSignature {
     size: u64,
     modified_ns: u128,
     digest: String,
+    schema_digest: String,
 }
 
 struct StagedFullRebuildResult {
@@ -6532,6 +6536,24 @@ fn stage_or_reuse_full_rebuild(
         if !existing_regular_index(database_path)? {
             continue;
         }
+        #[cfg(not(test))]
+        {
+            let stage = open_read_only_index(database_path, StdDuration::from_secs(1))?;
+            let rebuild = stage_content_proof::can_rebuild_unsealed(
+                &stage, database_path, job, target_generation)?;
+            drop(stage);
+            if rebuild {
+                // The artifact has no durable seal. Preserve all of its
+                // content, then parse the still-proven raw prefix afresh;
+                // never turn unverified old rows into a new trusted seal.
+                preserve_private_stage_family(database_path)?;
+                crate::core::business_migration_log::event("source-stage", "unsigned-preserved", serde_json::json!({
+                    "source": job.path, "stage": database_path,
+                    "reason": "unsealed artifact preserved before rebuilding its proven source",
+                }));
+                continue;
+            }
+        }
         if superseded_compaction_private_stage(database_path, job)? {
             preserve_private_stage_family(database_path)?;
             continue;
@@ -6968,27 +6990,12 @@ fn staged_store_signature(path: &Path) -> Result<StageStoreSignature, String> {
     let _scope = source_count_fixture::scope("stage.signature");
     #[cfg(not(test))]
     {
-        // One lookup returns the complete coherent seal row. Reuse it only
-        // within this call: later manifest/signature boundary checks still
-        // reread A. Reopening A here needlessly reloads SQLite's full schema
-        // for each of the several signature observations of every source.
-        let (size, _, digest, sealed_at) = match crate::core::business_store_route::exact_store_observation(path)? {
-            Some(observation) => observation,
-            None => {
-                crate::core::business_store_route::seal_exact_store(path)?;
-                crate::core::business_store_route::exact_store_observation(path)?
-                    .ok_or_else(|| "精确 token 暂存分区缺少封存证明".to_string())?
-            }
-        };
-        let modified_ns = (sealed_at * 1_000_000_000.0).round();
-        if !modified_ns.is_finite() || modified_ns < 0.0 {
-            return Err("精确 token 暂存封存时间无效".into());
-        }
-        return Ok(StageStoreSignature {
-            size,
-            modified_ns: modified_ns as u128,
-            digest,
-        });
+        // This lightweight observation is used only by the current builder,
+        // after its explicit seal. Recovery must verify actual content using
+        // its existing read snapshot; it may never manufacture a missing seal.
+        let observation = crate::core::business_store_route::exact_store_observation(path)?
+            .ok_or_else(|| "精确 token 暂存分区缺少原封存证明".to_string())?;
+        return stage_signature_from_seal(observation, stage_content_proof::current_schema_digest()?);
     }
     #[cfg(test)]
     {
@@ -6997,8 +7004,21 @@ fn staged_store_signature(path: &Path) -> Result<StageStoreSignature, String> {
             size: signature.size,
             modified_ns: signature.modified_ns,
             digest: signature.physical.map_or_else(String::new, PhysicalFileStamp::encode),
+            schema_digest: String::new(),
         })
     }
+}
+
+#[cfg(not(test))]
+fn stage_signature_from_seal(
+    (size, _, digest, sealed_at): crate::core::business_store_container::StoreSealObservation,
+    schema_digest: String,
+) -> Result<StageStoreSignature, String> {
+    let modified_ns = (sealed_at * 1_000_000_000.0).round();
+    if !modified_ns.is_finite() || modified_ns < 0.0 {
+        return Err("精确 token 暂存封存时间无效".into());
+    }
+    Ok(StageStoreSignature { size, modified_ns: modified_ns as u128, digest, schema_digest })
 }
 
 fn staged_store_size(path: &Path) -> Result<u64, String> {
@@ -7184,6 +7204,37 @@ fn validated_staged_full_rebuild(
     target_generation: i64,
     proof: Option<&StageSourceValidation>,
 ) -> Result<Option<StagedFullRebuild>, String> {
+    #[cfg(not(test))]
+    {
+        let store = crate::core::business_store_route::exact_store_spec(database_path)?;
+        let snapshot = connection.unchecked_transaction()
+            .map_err(|error| format!("无法开始精确 token 暂存校验快照：{error}"))?;
+        let (observation, content) = snapshot.verify_sealed_store_in_transaction(
+            &store, stage_content_proof::accepted_schema_digests()?)
+            .map_err(|error| format!("精确 token 暂存封存内容不一致；已保留暂存：{error}"))?;
+        let signature = stage_signature_from_seal(observation, content.schema_digest)?;
+        if proof.is_some_and(|expected| expected.stage != signature) {
+            return Err("精确 token 暂存封存证明在校验后发生变化；已保留暂存".into());
+        }
+        // The manifest, typed rows, counts, footprint and seal all belong to
+        // this same read snapshot. Reuse its verified size/signature only
+        // inside this call; the importer verifies again under its write lock.
+        return validated_staged_full_rebuild_inner(&snapshot, database_path, job,
+            target_generation, proof, Some(&signature));
+    }
+    #[cfg(test)]
+    validated_staged_full_rebuild_inner(connection, database_path, job,
+        target_generation, proof, None)
+}
+
+fn validated_staged_full_rebuild_inner(
+    connection: &Connection,
+    database_path: &Path,
+    job: &FullRebuildJob,
+    target_generation: i64,
+    proof: Option<&StageSourceValidation>,
+    verified_signature: Option<&StageStoreSignature>,
+) -> Result<Option<StagedFullRebuild>, String> {
     quick_check_staged(connection)?;
     let manifest_schema_version =
         if column_exists_checked(connection, "manifest", "manifest_schema_version")? {
@@ -7341,7 +7392,10 @@ fn validated_staged_full_rebuild(
         && super::session_parser::paginated_subagent_boundary(&mut RolloutReader::open(&job.file).map_err(|e| e.to_string())?)?.is_some() {
         return Ok(None);
     }
-    let artifact_bytes = staged_store_size(database_path)?;
+    let artifact_bytes = match verified_signature {
+        Some(signature) => signature.size,
+        None => staged_store_size(database_path)?,
+    };
     if manifest.path != job.path
         || manifest.session_id != job.session_id
         || manifest.migration_revision != expected_migration_revision
@@ -7392,7 +7446,10 @@ fn validated_staged_full_rebuild(
         Ok(value) => value,
         Err(_) => return Ok(None),
     };
-    let stage_signature = staged_store_signature(database_path)?;
+    let stage_signature = match verified_signature {
+        Some(signature) => signature.clone(),
+        None => staged_store_signature(database_path)?,
+    };
     let known = (manifest_signature.size, manifest_signature.modified_ns.to_string(),
         manifest_signature.physical.map(|stamp| stamp.encode()));
     let reusable_proof = proof.is_some_and(|proof| proof.source == manifest_signature
@@ -7534,6 +7591,16 @@ fn import_staged_full_rebuild(
     staged: &StagedFullRebuild,
     mode: ExactSyncMode,
 ) -> Result<(), String> {
+    import_staged_full_rebuild_with_hook(connection, generation, staged, mode, || Ok(()))
+}
+
+fn import_staged_full_rebuild_with_hook(
+    connection: &mut Connection,
+    generation: i64,
+    staged: &StagedFullRebuild,
+    mode: ExactSyncMode,
+    before_write_transaction: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
     #[cfg(all(feature = "business-store-fixture", not(test)))]
     let _scope = source_count_fixture::scope("stage.import");
     let validated = {
@@ -7569,10 +7636,24 @@ fn import_staged_full_rebuild(
     }
 
     let import_result = (|| {
+        before_write_transaction()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| format!("无法开始精确 token 暂存导入事务：{error}"))?;
         ensure_active_build_generation(&transaction, generation)?;
+        #[cfg(not(test))]
+        {
+            let store = crate::core::business_store_route::exact_store_spec(&validated.database_path)?;
+            let expected = validated.source_validation.as_ref()
+                .ok_or_else(|| "精确 token 暂存缺少本次校验证明".to_string())?;
+            let (observation, content) = transaction.verify_sealed_store_in_transaction(
+                &store, std::slice::from_ref(&expected.stage.schema_digest))
+                .map_err(|error| format!("精确 token 暂存封存内容不一致；已保留暂存：{error}"))?;
+            let actual = stage_signature_from_seal(observation, content.schema_digest)?;
+            if actual != expected.stage {
+                return Err("精确 token 暂存封存证明在导入前发生变化；已保留暂存".into());
+            }
+        }
         let durable_source_id = transaction
             .query_row(
                 "SELECT source_id FROM sources WHERE path = ?1",
@@ -7583,6 +7664,8 @@ fn import_staged_full_rebuild(
         if durable_source_id != validated.job.source_id {
             return Err("精确 token 暂存稳定来源编号与活动索引不一致".into());
         }
+        let pending_snapshot = ledger::snapshot_pending_import(
+            &transaction, durable_source_id, generation)?;
         delete_file_version_rows(&transaction, generation, &validated.job.path)?;
         transaction
             .execute(
@@ -7697,6 +7780,7 @@ fn import_staged_full_rebuild(
             ));
         }
         ledger::reconcile_full(&transaction, &validated)?;
+        ledger::verify_pending_import(&transaction, durable_source_id, pending_snapshot)?;
         if mode.builds_dashboard_derived_data() {
             refresh_dashboard_file_aggregates(&transaction, generation, &validated.job.path)?;
         }
@@ -19648,15 +19732,7 @@ fn superseded_compaction_private_stage(path: &Path, job: &FullRebuildJob) -> Res
 fn preserve_private_stage_family(path: &Path) -> Result<(), String> {
     #[cfg(not(test))]
     {
-        if !existing_regular_index(path)? {
-            return Ok(());
-        }
-        let mut preserved_name = path.as_os_str().to_os_string();
-        preserved_name.push(format!(".preserved.{}", Uuid::new_v4()));
-        let preserved = PathBuf::from(preserved_name);
-        crate::core::business_store_route::clone_exact_store(path, &preserved)?;
-        crate::core::business_store_route::remove_exact_store(path)?;
-        return Ok(());
+        return preserve_private_stage_family_with_hook(path, |_| Ok(()));
     }
     #[cfg(test)]
     {
@@ -19671,6 +19747,21 @@ fn preserve_private_stage_family(path: &Path) -> Result<(), String> {
     }
     Ok(())
     }
+}
+
+#[cfg(not(test))]
+fn preserve_private_stage_family_with_hook(
+    path: &Path,
+    before_remove: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<(), String> {
+    if !existing_regular_index(path)? { return Ok(()); }
+    let mut preserved_name = path.as_os_str().to_os_string();
+    preserved_name.push(format!(".preserved.{}", Uuid::new_v4()));
+    let preserved = PathBuf::from(preserved_name);
+    let (copied_owner, copied) = crate::core::business_store_route::clone_exact_store_with_identity(path, &preserved)?;
+    before_remove(&preserved)?;
+    crate::core::business_store_route::remove_exact_store_if_unchanged(&copied_owner, &copied)?;
+    Ok(())
 }
 
 fn is_history_repair_workspace(path: &Path) -> bool {

@@ -163,6 +163,106 @@ final class BusinessDatabaseMigrationExactAppendTests: XCTestCase {
         }
     }
 
+    func testTwoReleasedStyleMetadataReparsesAfterFrozenImportResumeWithHistoricalTurnsAndMissingRaw() throws {
+        let f = try fixture(hasMessages: false)
+        let raw = SQLiteDatabaseDriver(url: f.source, bypassBusinessRoutes: true)
+        let numeric = "SELECT source_id,source_offset,timestamp,tokens,input_tokens,cached_input_tokens,output_tokens,reasoning_output_tokens,accounting_kind,reported_total_tokens,legacy_tokens FROM events"
+        let originalNumeric = Set(try raw.readRows(numeric, map: ExactRetryAppendCoverage.encoded))
+        let originalIdentities = try typedRows(raw, table: "usage_ledger_identities")
+        let receipt = try freeze(f)
+        let frozen = URL(fileURLWithPath: receipt.normalizedPath)
+        let backup = URL(fileURLWithPath: receipt.backupPath)
+        let frozenBytes = try Data(contentsOf: frozen)
+        let backupBytes = try Data(contentsOf: backup)
+
+        // G0 has neither model nor message locations. The real owner forms G1
+        // by reparsing the rewritten source; no ledger/checkpoint row is edited.
+        try addMetadataToRewrittenSource(f.files[0])
+        XCTAssertEqual(try synchronize(f).rewrittenFiles, 1)
+        let g1Events = try typedRows(raw, table: "events")
+        let g1Bindings = try typedRows(raw, table: "usage_ledger_bindings")
+        let g1Turns = try typedRows(raw, table: "usage_ledger_turns")
+        let g1Retention = try typedRows(raw, table: "retained_usage_revisions")
+        let g1Generation = try XCTUnwrap(try raw.readRows("SELECT generation FROM usage_ledger_sources WHERE source_id=1") { $0.text(0) }.first ?? nil)
+        let g1Raw = try Data(contentsOf: f.files[0])
+        let g1Copy = f.root.appendingPathComponent("retained-g1-rollout.jsonl")
+        try g1Raw.write(to: g1Copy)
+        XCTAssertFalse(g1Turns.isEmpty)
+        XCTAssertEqual(try raw.readRows("SELECT COUNT(*) FROM events WHERE source_id=1 AND model='gpt-5' AND user_prompt_offset IS NOT NULL AND assistant_start_offset IS NOT NULL") { $0.int(0) }, [2])
+
+        // A second real full reparse adds only redundant context before G1.
+        // It moves every raw location without adding consumption. Existing
+        // logical turns and the historical event assistant marker stay at G1;
+        // the current generation binding points at the actual G2 text.
+        let redundantContext = "{\"timestamp\":\"2026-10-01T00:00:00Z\",\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-5\"}}\n"
+        let g2Raw = Data(redundantContext.utf8) + g1Raw
+        try g2Raw.write(to: f.files[0], options: .atomic)
+        XCTAssertEqual(try synchronize(f).rewrittenFiles, 1)
+        XCTAssertEqual(try typedRows(raw, table: "events"), g1Events)
+        XCTAssertNotEqual(try typedRows(raw, table: "usage_ledger_bindings"), g1Bindings)
+        XCTAssertNotEqual(try raw.readRows("SELECT generation FROM usage_ledger_sources WHERE source_id=1") { $0.text(0) }, [g1Generation])
+        XCTAssertEqual(try raw.readRows("SELECT COUNT(DISTINCT generation) FROM usage_ledger_turns WHERE source_id=1") { $0.int(0) }, [2])
+        XCTAssertEqual(try raw.readRows("SELECT COUNT(DISTINCT turn_id) FROM usage_ledger_turns WHERE source_id=1") { $0.int(0) }, [1])
+        XCTAssertEqual(try raw.readRows("SELECT COUNT(*) FROM events e JOIN usage_ledger_bindings b ON b.source_id=e.source_id AND b.event_id=e.source_offset WHERE e.source_id=1 AND e.assistant_start_offset IS NOT NULL AND b.assistant_offset=e.assistant_start_offset+?",
+            bindings: [.int(redundantContext.utf8.count)]) { $0.int(0) }, [2])
+        XCTAssertEqual(Set(try raw.readRows(numeric, map: ExactRetryAppendCoverage.encoded)), originalNumeric)
+        XCTAssertEqual(try typedRows(raw, table: "usage_ledger_identities"), originalIdentities)
+        XCTAssertTrue(g1Turns.isSubset(of: try typedRows(raw, table: "usage_ledger_turns")))
+        XCTAssertTrue(g1Retention.isSubset(of: try typedRows(raw, table: "retained_usage_revisions")))
+
+        let incoming = try raw.withConnection { try CodexBusinessDatabase.proof($0) }
+        let incomingBytes = try Data(contentsOf: f.source)
+        let histories = ["events", "source_fingerprints", "usage_ledger_identities", "usage_ledger_turns",
+            "usage_ledger_unresolved", "usage_ledger_corrections", "retained_usage_sources", "retained_usage_events",
+            "retained_usage_revisions", "retained_usage_fingerprints", "retained_usage_checkpoints"]
+        let expected = try Dictionary(uniqueKeysWithValues: histories.map { ($0, try typedRows(raw, table: $0)) })
+        // These checks also run when a current recovery guard throws. A RED
+        // must prove a protected refusal, never leave the original altered.
+        defer {
+            do {
+                XCTAssertEqual(try raw.withConnection { try CodexBusinessDatabase.proof($0) }, incoming)
+                XCTAssertEqual(try Data(contentsOf: f.source), incomingBytes)
+                XCTAssertEqual(try Data(contentsOf: frozen), frozenBytes)
+                XCTAssertEqual(try Data(contentsOf: backup), backupBytes)
+                XCTAssertEqual(try Data(contentsOf: g1Copy), g1Raw)
+            } catch { XCTFail("Recovery changed or removed original evidence: \(error)") }
+        }
+
+        XCTAssertTrue(try CodexBusinessDatabase.snapshot(f.source, covers: frozen, module: "exact.swift",
+            expectedRetained: receipt.imported, expectedCandidate: incoming),
+            "Two completed old-owner reparses must remain an upgradeable state")
+        try BusinessDatabaseMigration.migrate(f.configuration, availableBytes: 1 << 33)
+        let active = SQLiteDatabaseDriver(url: f.source)
+        for table in histories {
+            XCTAssertEqual(try typedRows(active, table: table), expected[table], table)
+        }
+        XCTAssertEqual(try Data(contentsOf: f.files[0]), g2Raw)
+        XCTAssertEqual(try active.readRows("SELECT SUM(tokens) FROM events") { $0.int(0) }, [465])
+
+        for file in f.files { try FileManager.default.removeItem(at: file) }
+        do {
+            let owner = try CodexUsageHistoryIndex(sessionCatalogTestingDatabaseURL: f.source)
+            _ = try owner.synchronize(files: [], sessionID: f.analyzer.sessionID(from:)) { _, _, _, _, _ in
+                XCTFail("Missing raw files must not cause a replacement parse")
+                throw NSError(domain: "RepeatedMetadataRecovery", code: 1)
+            }
+        }
+        BusinessSQLiteRoutes.deactivate()
+        try BusinessDatabaseMigration.migrate(f.configuration, availableBytes: 1 << 33)
+        let reopened = try CodexUsageHistoryIndex(sessionCatalogTestingDatabaseURL: f.source)
+        _ = try reopened.synchronize(files: [], sessionID: f.analyzer.sessionID(from:)) { _, _, _, _, _ in
+            XCTFail("A missing-raw reopen must use the durable migrated history")
+            throw NSError(domain: "RepeatedMetadataRecovery", code: 2)
+        }
+        XCTAssertEqual(try active.readRows("SELECT SUM(tokens) FROM events") { $0.int(0) }, [465])
+        for table in ["events", "source_fingerprints", "usage_ledger_identities", "usage_ledger_turns"] {
+            XCTAssertEqual(try typedRows(active, table: table), expected[table], table)
+        }
+        for table in histories where table.hasPrefix("retained_") {
+            XCTAssertTrue(try XCTUnwrap(expected[table]).isSubset(of: typedRows(active, table: table)), table)
+        }
+    }
+
     func testMetadataReplayKeepsKnownModelAndTurnAndRejectsTheirReplacement() throws {
         let f = try fixture(model: "gpt-4")
         let receipt = try freeze(f)
@@ -185,6 +285,183 @@ final class BusinessDatabaseMigrationExactAppendTests: XCTestCase {
             try db.execute(mutation)
             XCTAssertFalse(try CodexBusinessDatabase.snapshot(copy, covers: frozen, module: "exact.swift"))
         }
+    }
+
+    private enum MissingRawHistory: Equatable {
+        case append, enriched, enrichedTwice
+    }
+
+    private func verifyDurableLegacyHistoryWithoutRaw(_ history: MissingRawHistory,
+                                                     oldWriterObservedMissing: Bool = false) throws {
+        let f = try fixture(hasMessages: false)
+        let raw = SQLiteDatabaseDriver(url: f.source, bypassBusinessRoutes: true)
+        // Opaque application/extension history is part of the source too. Its
+        // complete typed payload must survive even though this owner does not
+        // interpret the table, including embedded NUL text and binary data.
+        try raw.execute("CREATE TABLE opaque_history(id INTEGER PRIMARY KEY,payload TEXT NOT NULL,evidence BLOB NOT NULL)")
+        try raw.execute("INSERT INTO opaque_history VALUES(1,?,?)", bindings: [.text("old\0history"), .blob(Data([0, 1, 255]))])
+        let receipt = try freeze(f)
+        let frozen = URL(fileURLWithPath: receipt.normalizedPath)
+        let backup = URL(fileURLWithPath: receipt.backupPath)
+        let frozenBytes = try Data(contentsOf: frozen), backupBytes = try Data(contentsOf: backup)
+        switch history {
+        case .append:
+            try append(17, second: 3, to: f.files[0])
+            XCTAssertEqual(try synchronize(f).incrementallyParsedFiles, 1)
+        case .enriched, .enrichedTwice:
+            try addMetadataToRewrittenSource(f.files[0])
+            XCTAssertEqual(try synchronize(f).rewrittenFiles, 1)
+            if case .enrichedTwice = history {
+                let context = "{\"timestamp\":\"2026-10-01T00:00:00Z\",\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-5\"}}\n"
+                try (Data(context.utf8) + Data(contentsOf: f.files[0])).write(to: f.files[0], options: .atomic)
+                XCTAssertEqual(try synchronize(f).rewrittenFiles, 1)
+            }
+        }
+        let expectedTotal = history == .append ? 482 : 465
+        let evidence = f.root.appendingPathComponent("raw-evidence")
+        try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
+        var rawCopies: [URL: Data] = [:]
+        for (number, file) in f.files.enumerated() {
+            let copy = evidence.appendingPathComponent("\(number).bin")
+            let bytes = try Data(contentsOf: file)
+            try bytes.write(to: copy)
+            rawCopies[copy] = bytes
+            try FileManager.default.removeItem(at: file)
+        }
+        if oldWriterObservedMissing {
+            // The released owner may already have noticed archival/removal.
+            // It marks text unavailable while retaining the numeric ledger.
+            _ = try f.index.synchronize(files: [], sessionID: f.analyzer.sessionID(from:)) { _, _, _, _, _ in
+                XCTFail("An empty discovery must not parse an absent source")
+                throw NSError(domain: "DurableMissingRawRecovery", code: 1)
+            }
+            XCTAssertEqual(try raw.readRows("SELECT COUNT(*) FROM usage_ledger_sources WHERE missing=1") { $0.int(0) }, [2])
+        }
+        let histories = ["events", "source_fingerprints", "usage_ledger_identities", "usage_ledger_turns",
+            "usage_ledger_unresolved", "usage_ledger_corrections", "retained_usage_sources", "retained_usage_events",
+            "retained_usage_revisions", "retained_usage_fingerprints", "retained_usage_checkpoints", "opaque_history"]
+        let expected = try Dictionary(uniqueKeysWithValues: histories.map { ($0, try typedRows(raw, table: $0)) })
+        let incoming = try raw.withConnection { try CodexBusinessDatabase.proof($0) }
+        let incomingBytes = try Data(contentsOf: f.source)
+        XCTAssertEqual(try raw.readRows("SELECT SUM(tokens) FROM canonical_usage_events") { $0.int(0) }, [expectedTotal])
+        defer {
+            do {
+                XCTAssertEqual(try raw.withConnection { try CodexBusinessDatabase.proof($0) }, incoming)
+                XCTAssertEqual(try Data(contentsOf: f.source), incomingBytes)
+                XCTAssertEqual(try Data(contentsOf: frozen), frozenBytes)
+                XCTAssertEqual(try Data(contentsOf: backup), backupBytes)
+                for (copy, bytes) in rawCopies { XCTAssertEqual(try Data(contentsOf: copy), bytes) }
+            } catch { XCTFail("Missing-raw recovery changed its original evidence: \(error)") }
+        }
+        XCTAssertTrue(try CodexBusinessDatabase.snapshot(f.source, covers: frozen, module: "exact.swift",
+            expectedRetained: receipt.imported, expectedCandidate: incoming),
+            "Already durable observations do not become disposable when their raw source disappears")
+        try BusinessDatabaseMigration.migrate(f.configuration, availableBytes: 1 << 33)
+        let active = SQLiteDatabaseDriver(url: f.source)
+        for table in histories { XCTAssertEqual(try typedRows(active, table: table), expected[table], table) }
+        let store = try XCTUnwrap(f.configuration.specification(for: f.source))
+        let newReceiptURL = f.configuration.backups.appendingPathComponent(store.id).appendingPathComponent("receipt.json")
+        let newReceipt = try JSONDecoder().decode(BusinessDatabaseMigration.Receipt.self, from: Data(contentsOf: newReceiptURL))
+        let container = SQLiteDatabaseDriver(url: f.configuration.container, readOnly: true, bypassBusinessRoutes: true)
+        let actualNamespace = try container.withConnection {
+            try CodexBusinessDatabase.proof($0, namespace: SQLiteStoreNamespace(prefix: store.prefix, objectNames: []))
+        }
+        let normalized = SQLiteDatabaseDriver(url: URL(fileURLWithPath: newReceipt.normalizedPath), readOnly: true, bypassBusinessRoutes: true)
+        XCTAssertEqual(try normalized.withConnection { try CodexBusinessDatabase.proof($0) }, newReceipt.imported)
+        XCTAssertEqual(actualNamespace, newReceipt.imported, "Every imported table must match the verified normalized snapshot")
+        do {
+            let owner = try CodexUsageHistoryIndex(sessionCatalogTestingDatabaseURL: f.source)
+            _ = try owner.synchronize(files: [], sessionID: f.analyzer.sessionID(from:)) { _, _, _, _, _ in
+                XCTFail("A durable missing-raw upgrade must not require reparsing")
+                throw NSError(domain: "DurableMissingRawRecovery", code: 2)
+            }
+        }
+        BusinessSQLiteRoutes.deactivate()
+        try BusinessDatabaseMigration.migrate(f.configuration, availableBytes: 1 << 33)
+        let reopened = try CodexUsageHistoryIndex(sessionCatalogTestingDatabaseURL: f.source)
+        _ = try reopened.synchronize(files: [], sessionID: f.analyzer.sessionID(from:)) { _, _, _, _, _ in
+            XCTFail("A missing-raw restart must preserve the imported ledger")
+            throw NSError(domain: "DurableMissingRawRecovery", code: 3)
+        }
+        XCTAssertEqual(try active.readRows("SELECT SUM(tokens) FROM canonical_usage_events") { $0.int(0) }, [expectedTotal])
+        for table in ["events", "source_fingerprints", "usage_ledger_identities", "usage_ledger_turns", "opaque_history"] {
+            XCTAssertEqual(try typedRows(active, table: table), expected[table], table)
+        }
+        for table in histories where table.hasPrefix("retained_") {
+            XCTAssertTrue(try XCTUnwrap(expected[table]).isSubset(of: typedRows(active, table: table)), table)
+        }
+        for file in f.files { XCTAssertFalse(FileManager.default.fileExists(atPath: file.path)) }
+    }
+
+    func testDurableOldWriterAppendRecoversWhenRawDisappearsBeforeMigration() throws {
+        try verifyDurableLegacyHistoryWithoutRaw(.append)
+    }
+
+    func testDurableOldWriterMetadataCompletionRecoversWhenRawDisappearsBeforeMigration() throws {
+        try verifyDurableLegacyHistoryWithoutRaw(.enriched)
+    }
+
+    func testDurableRepeatedMetadataCompletionRecoversWhenRawDisappearsBeforeMigration() throws {
+        try verifyDurableLegacyHistoryWithoutRaw(.enrichedTwice)
+    }
+
+    func testDurableAppendAlreadyMarkedMissingByOldWriterRecoversWithoutRaw() throws {
+        try verifyDurableLegacyHistoryWithoutRaw(.append, oldWriterObservedMissing: true)
+    }
+
+    func testMissingRawContinuationRejectsLostFactsHiddenRowsBrokenReferencesAndUnknownHistoryLoss() throws {
+        let f = try fixture(model: "gpt-4")
+        let raw = SQLiteDatabaseDriver(url: f.source, bypassBusinessRoutes: true)
+        try raw.execute("CREATE TABLE opaque_history(id INTEGER PRIMARY KEY,payload TEXT NOT NULL)")
+        try raw.execute("INSERT INTO opaque_history VALUES(1,?)", bindings: [.text("old\0opaque history")])
+        let receipt = try freeze(f)
+        let frozen = URL(fileURLWithPath: receipt.normalizedPath)
+        let frozenBytes = try Data(contentsOf: frozen)
+        try append(17, second: 3, to: f.files[0])
+        XCTAssertEqual(try synchronize(f).incrementallyParsedFiles, 1)
+        for file in f.files { try FileManager.default.removeItem(at: file) }
+        let original = try raw.withConnection { try CodexBusinessDatabase.proof($0) }
+        let originalBytes = try Data(contentsOf: f.source)
+        // A successful positive control prevents a reject-all implementation
+        // from masquerading as protection against the mutations below.
+        XCTAssertTrue(try CodexBusinessDatabase.snapshot(f.source, covers: frozen, module: "exact.swift",
+            expectedRetained: receipt.imported, expectedCandidate: original))
+        let oldEvent = "source_id=1 AND source_offset=(SELECT MIN(source_offset) FROM events WHERE source_id=1)"
+        let attacks = [
+            "DELETE FROM events WHERE \(oldEvent)",
+            "UPDATE events SET input_tokens=input_tokens-1,output_tokens=output_tokens+1 WHERE \(oldEvent)",
+            "UPDATE events SET model=NULL WHERE \(oldEvent)",
+            "UPDATE events SET user_prompt_offset=NULL WHERE \(oldEvent)",
+            "UPDATE usage_ledger_identities SET event_id=(SELECT MAX(source_offset) FROM events WHERE source_id=1) WHERE source_id=1 AND event_id=(SELECT MIN(source_offset) FROM events WHERE source_id=1)",
+            "INSERT INTO usage_ledger_bindings SELECT source_id,-1,generation,raw_offset+100000,prompt_offset,assistant_offset,1 FROM usage_ledger_bindings WHERE source_id=1 LIMIT 1",
+            "UPDATE usage_ledger_bindings SET generation='00000000-0000-4000-8000-000000000001' WHERE source_id=1 AND available=1",
+            "INSERT INTO usage_ledger_identities SELECT 999,identity,event_id FROM usage_ledger_identities WHERE source_id=1 LIMIT 1",
+            "INSERT INTO usage_ledger_turns SELECT 999,generation,raw_offset,turn_id FROM usage_ledger_turns WHERE source_id=1 LIMIT 1",
+            "UPDATE usage_ledger_sources SET session_id='019f0000-0000-4000-8000-000000000001' WHERE source_id=1",
+            "INSERT INTO usage_ledger_duplicates SELECT source_id,source_offset,2 FROM events WHERE \(oldEvent)",
+            "DELETE FROM opaque_history",
+            "UPDATE opaque_history SET payload='changed'",
+            "ALTER TABLE events RENAME COLUMN input_tokens TO swapped_tokens; ALTER TABLE events RENAME COLUMN output_tokens TO input_tokens; ALTER TABLE events RENAME COLUMN swapped_tokens TO output_tokens",
+            "CREATE TRIGGER unexpected_history_delete AFTER INSERT ON events BEGIN DELETE FROM events WHERE source_id=NEW.source_id AND source_offset<>NEW.source_offset; END"
+        ]
+        for (number, attack) in attacks.enumerated() {
+            let copy = f.root.appendingPathComponent("missing-raw-attack-\(number).sqlite")
+            let db = SQLiteDatabaseDriver(url: copy, enableWAL: false, bypassBusinessRoutes: true)
+            try db.withConnection { try $0.restoreDatabase(from: f.source) }
+            try db.execute(attack)
+            XCTAssertEqual(try db.readRows("PRAGMA quick_check") { $0.text(0) }, ["ok"], attack)
+            let mutated = try db.withConnection { try CodexBusinessDatabase.proof($0) }
+            let bytes = try Data(contentsOf: copy)
+            do {
+                XCTAssertFalse(try CodexBusinessDatabase.snapshot(copy, covers: frozen, module: "exact.swift",
+                    expectedRetained: receipt.imported, expectedCandidate: mutated), attack)
+            } catch { XCTAssertFalse(error is CancellationError, attack) }
+            XCTAssertEqual(try db.withConnection { try CodexBusinessDatabase.proof($0) }, mutated, attack)
+            XCTAssertEqual(try Data(contentsOf: copy), bytes, attack)
+        }
+        XCTAssertEqual(try raw.withConnection { try CodexBusinessDatabase.proof($0) }, original)
+        XCTAssertEqual(try Data(contentsOf: f.source), originalBytes)
+        XCTAssertEqual(try Data(contentsOf: frozen), frozenBytes)
     }
 
     func testMetadataReplayAllocationDoesNotDependOnSourceOrderAndRetainsOlderRevisions() throws {

@@ -5,7 +5,10 @@
 //! identifier is rewritten to that store's private namespace before SQLite
 //! prepares it.
 
-use crate::core::business_store_container::{BusinessStoreError, Container, StoreSpec};
+use crate::core::business_store_container::{
+    BusinessStoreError, Container, StoreProof, StoreSealObservation, StoreSpec, StoreState,
+    VerifiedStoreSeal,
+};
 use crate::core::business_store_sql::StoreSqlBinding;
 use rusqlite::{
     functions::FunctionFlags,
@@ -265,6 +268,46 @@ impl StoreConnection {
 
     pub(crate) fn total_changes(&self) -> u64 {
         self.raw.total_changes()
+    }
+
+    /// Read A metadata using the already-open handle. This does not register
+    /// an input, mutate the seal, or assert that its current rows still match.
+    pub(crate) fn store_seal_observation(
+        &self,
+        store: &StoreSpec,
+    ) -> std::result::Result<Option<StoreSealObservation>, BusinessStoreError> {
+        if self.binding.is_none() {
+            return Err(BusinessStoreError::InvalidStore);
+        }
+        crate::core::business_store_container::store_seal_observation(&self.raw, store)
+    }
+
+    /// Verify an owned/attached A namespace in this handle's transaction.
+    /// The importer uses its existing IMMEDIATE transaction so verification
+    /// and copying the namespace cannot observe different committed states.
+    pub(crate) fn verify_sealed_store_in_transaction(
+        &self,
+        store: &StoreSpec,
+        expected_schema_digests: &[String],
+    ) -> std::result::Result<VerifiedStoreSeal, BusinessStoreError> {
+        if self.binding.is_none() {
+            return Err(BusinessStoreError::InvalidStore);
+        }
+        crate::core::business_store_container::verify_sealed_store_in_transaction(
+            &self.raw, store, expected_schema_digests)
+    }
+
+    pub(crate) fn store_state(&self, store: &StoreSpec) -> std::result::Result<StoreState, BusinessStoreError> {
+        if self.binding.is_none() { return Err(BusinessStoreError::InvalidStore); }
+        crate::core::business_store_container::store_state(&self.raw, store)
+    }
+
+    pub(crate) fn store_proof_in_transaction(
+        &self,
+        store: &StoreSpec,
+    ) -> std::result::Result<StoreProof, BusinessStoreError> {
+        if self.binding.is_none() { return Err(BusinessStoreError::InvalidStore); }
+        crate::core::business_store_container::store_proof_in_transaction(&self.raw, store)
     }
 
     pub(crate) fn register_readonly_namespace_alias(

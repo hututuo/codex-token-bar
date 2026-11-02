@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
-"""Run the production-path fixture inside a retained, isolated hosted temp root."""
+"""Run the production fixture with precreated overrides and retained failures."""
 
 import argparse
 import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from check_business_store_fixture import validate_native_report
+from native_fixture_evidence import FixtureAttempt, execute_native, native_path
 
 
 def main():
@@ -14,46 +19,43 @@ def main():
     parser.add_argument("binary", type=Path)
     parser.add_argument("--output", type=Path, default=Path("runtime-recovery-production.json"))
     args = parser.parse_args()
-    if os.environ.get("GITHUB_ACTIONS") != "true":
-        raise SystemExit("This launcher requires a hosted Actions disposable workspace.")
-    base = os.environ.get("RUNNER_TEMP") if os.name == "nt" else tempfile.gettempdir()
-    if not base:
-        raise SystemExit("Missing hosted temp directory")
-    base = Path(base).resolve()
-    home = Path.home().resolve()
-    if base.is_relative_to(home) or home.is_relative_to(base):
-        raise SystemExit("Hosted temp directory overlaps the user home")
-    root = Path(tempfile.mkdtemp(prefix="tokenbar-runtime-", dir=base)).resolve()
-    # Rust canonicalize returns the extended prefix on Windows; pass that same
-    # canonical form to the fixture's strict environment containment checks.
-    native_root = str(root)
-    if os.name == "nt" and not native_root.startswith("\\\\?\\"):
-        native_root = "\\\\?\\" + native_root
-    root = Path(native_root)
-    env = os.environ.copy()
-    for name, directory in {
-        "CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR": "tauri-support",
-        "CODEX_TOKEN_BAR_TAURI_CACHE_DIR": "tauri-cache",
-        "CODEX_TOKEN_BAR_SUPPORT_BASE_DIR": "shared-support",
-        "CODEX_TOKEN_BAR_CACHE_BASE_DIR": "shared-cache",
-        "CODEX_TOKEN_BAR_TAURI_USAGE_CACHE_DIR": "legacy-usage",
-    }.items():
-        env[name] = str(root / directory)
-    binary = args.binary.resolve()
-    if os.name == "nt":
-        binary = binary.with_suffix(".exe")
-    completed = subprocess.run([str(binary), str(root)], env=env,
-                               capture_output=True, text=True, encoding="utf-8")
-    if completed.stderr:
-        print(completed.stderr, end="")
-    print(completed.stdout, end="")
-    if completed.returncode:
-        raise SystemExit(completed.returncode)
-    result = json.loads(completed.stdout)
-    if result.get("status") != "PASS":
-        raise SystemExit("Production-path fixture did not pass")
-    result["fixtureRootRetained"] = True
-    args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    repository = Path(__file__).resolve().parents[2]
+    attempt = FixtureAttempt(args.output, label="runtime")
+    phase = "source-identity"
+    try:
+        if os.environ.get("GITHUB_ACTIONS") != "true":
+            raise ValueError("This launcher requires a hosted Actions disposable workspace.")
+        source_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repository, text=True).strip()
+        dirty = bool(subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"],
+                                            cwd=repository, text=True).strip())
+        attempt.update(source_sha=source_sha, working_tree_dirty=dirty)
+        phase = "prepare-root"
+        base = os.environ.get("RUNNER_TEMP") if os.name == "nt" else tempfile.gettempdir()
+        if not base:
+            raise ValueError("Missing hosted temp directory")
+        env = attempt.create_root(Path(base), prefix="tokenbar-runtime-",
+            slugs=("tauri-support", "tauri-cache", "shared-support", "shared-cache", "legacy-usage"))
+        binary = args.binary.resolve()
+        if os.name == "nt":
+            binary = binary.with_suffix(".exe")
+        phase = "native-execution"
+        attempt.update(phase=phase)
+        command = [str(binary), native_path(attempt.root)]
+        completed = execute_native(command, cwd=repository, env=env, timeout=900, log_directory=attempt.directory)
+        attempt.logs(completed.stdout, completed.stderr)
+        if completed.stderr:
+            print(completed.stderr, end="")
+        print(completed.stdout, end="")
+        if completed.returncode:
+            raise subprocess.CalledProcessError(completed.returncode, command,
+                output=completed.stdout, stderr=completed.stderr)
+        phase = "validate-native-proof"
+        result = validate_native_report(json.loads(completed.stdout))
+        attempt.succeed(result)
+    except BaseException as error:
+        attempt.fail(error, phase=phase)
+        code = getattr(error, "returncode", 1)
+        raise SystemExit(code if isinstance(code, int) and 1 <= code <= 255 else 1) from error
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ Observation time: 2026-11-02 16:32 UTC; this is not a final job-status list.
 | Windows native production fixture failed after compilation succeeded | [Job 125392932737](https://github.com/shawway/codex-token-bar/actions/runs/41478671352/job/125392932737) returned OS error 2; the Python launcher supplies five child directory overrides without creating them, while native fixture isolation validates existing canonical directories. Full native regression steps were skipped after this failure |
 | Windows independent readers failed at the Exact import receipt assertion | [Job 125393269700](https://github.com/shawway/codex-token-bar/actions/runs/41478671352/job/125393269700) returned `Exact legacy import or active receipt missing`. Inspection found the probe queried an uncanonicalized input path although production receipt keys use a canonical physical path, including Windows' extended path prefix. The corrected probe must prove stable StoreSpec identity and match the complete receipt identity; a later Windows run must confirm the diagnosis |
 | Public 0.9.7 and formed-release jobs failed before historical execution | The new fork has no public release tag refs. [Swift public job 125393271996](https://github.com/shawway/codex-token-bar/actions/runs/41478671352/job/125393271996) obtained a native macOS runner but failed resolving `v0.9.7^{commit}`; this is not a Swift build or migration result. Windows release jobs showed the same tag prerequisite failure |
-| Windows release scale remained in progress; remaining native macOS work was queued or cancelled by dependency/fail-fast behavior | No final scale or native Swift pass is claimed |
+| Windows release scale remained in progress; remaining native macOS work was queued or cancelled | No final scale or native Swift pass is claimed; the cancellation cause has not yet been established |
 
 ## Follow-up boundaries
 
@@ -49,3 +49,31 @@ Three Node cloud pipeline / manifest / release-contract files passed (the
 Node summary counts files, not individual assertions). These results verify
 the evidence contract and script behavior, not native Swift compilation or
 the correctness of a particular user database migration.
+
+## Hosted capacity and next candidate
+
+The run summary subsequently identified a concrete infrastructure cause for
+the earlier cancelled Swift and native macOS jobs: a hosted runner was not
+acquired after multiple attempts. Notices explicitly identified constrained
+macOS arm64 capacity. Other already queued jobs were cancelled deliberately
+when this failed candidate was superseded, so the two reasons must not be
+conflated. The incomplete Windows scale task has no accepted scale result.
+
+The general Swift regression now runs on both `macos-26` and
+`macos-26-intel`, with separate logs and visual artifacts. This adds a native
+Intel execution path while retaining the Apple Silicon gate. Both labels
+are standard hosted runners, and the Intel image provides the same pinned
+Xcode 26.6; no paid larger runner or architecture substitution is used.
+Sources checked on 2026-11-02:
+
+- <https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job>
+- <https://github.com/actions/runner-images/blob/main/images/macos/macos-26-Readme.md>
+
+The shared fixture launcher fix now creates all five owned directories
+before native validation, records a fresh FAIL before starting each attempt,
+and retains independent logs, failed synthetic roots and a safely bounded
+archive. The recovery workflow runs its real subprocess/filesystem/timeout
+contracts and uploads `business-fixture-evidence/` from both native entry
+points. The tenth integrity field covers a separately reproduced
+clone-to-delete mutation window; merely including the field in a Python
+report is not a native pass.

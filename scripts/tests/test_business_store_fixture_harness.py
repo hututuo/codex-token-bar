@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -36,6 +37,7 @@ STAGE_PROOFS = (
     "sealedStageMissingSealRejected", "resealedStageImportRejected",
     "stageSchemaMutationRejected", "stageSchemaMutationBeforePublicationRejected",
     "unsealedStageRebuiltFromSource", "pendingHistoryOverwriteRejected",
+    "unsealedPreservationMutationRejected",
 )
 
 
@@ -57,7 +59,7 @@ def scenario(report, name):
 class ProductionFixtureEvidenceTests(unittest.TestCase):
     def run_main_with_report(self, native, *, succeeds):
         """Exercise stdout decoding and publication, with only native execution stubbed."""
-        with tempfile.TemporaryDirectory(prefix="tokenbar-reader-policy-") as temp:
+        with tempfile.TemporaryDirectory(prefix="tokenbar-reader-policy-", dir=os.environ.get("RUNNER_TEMP")) as temp:
             root = Path(temp) / "repository"
             (root / "scripts").mkdir(parents=True)
             report_path = root / "native-production-readers.json"
@@ -68,7 +70,7 @@ class ProductionFixtureEvidenceTests(unittest.TestCase):
 
             with patch.object(fixture, "__file__", str(root / "scripts/check_business_store_fixture.py")), \
                  patch.object(fixture.subprocess, "check_output", side_effect=git), \
-                 patch.object(fixture.subprocess, "run", return_value=SimpleNamespace(
+                 patch.object(fixture, "execute_native", return_value=SimpleNamespace(
                      returncode=0, stdout=json.dumps(native), stderr="native probe output\n")) as run, \
                  patch.dict(fixture.os.environ, {"RUNNER_TEMP": temp}), patch("builtins.print"):
                 if succeeds:
@@ -176,7 +178,7 @@ class ProductionFixtureEvidenceTests(unittest.TestCase):
 
     def test_failure_or_incomplete_rerun_cannot_reuse_a_previous_pass(self):
         for mode in ("timeout", "incomplete"):
-            with self.subTest(mode=mode), tempfile.TemporaryDirectory(prefix="tokenbar-reader-harness-") as temp:
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory(prefix="tokenbar-reader-harness-", dir=os.environ.get("RUNNER_TEMP")) as temp:
                 root = Path(temp) / "repository"
                 (root / "scripts").mkdir(parents=True)
                 report_path = root / "native-production-readers.json"
@@ -192,7 +194,7 @@ class ProductionFixtureEvidenceTests(unittest.TestCase):
 
                 with patch.object(fixture, "__file__", str(root / "scripts/check_business_store_fixture.py")), \
                      patch.object(fixture.subprocess, "check_output", side_effect=git), \
-                     patch.object(fixture.subprocess, "run", side_effect=native), \
+                     patch.object(fixture, "execute_native", side_effect=native), \
                      patch.dict(fixture.os.environ, {"RUNNER_TEMP": temp}), \
                      patch("builtins.print"), \
                      self.assertRaises((subprocess.TimeoutExpired, SystemExit)):

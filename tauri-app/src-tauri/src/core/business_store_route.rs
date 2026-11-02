@@ -1169,6 +1169,16 @@ pub(crate) fn clone_exact_store(
     source_path: &Path,
     target_path: &Path,
 ) -> Result<StoreProof, String> {
+    clone_exact_store_with_identity(source_path, target_path).map(|(_, proof)| proof)
+}
+
+/// Return the actual copied owner together with its content proof. A later
+/// conditional removal must not recalculate this owner from a path whose
+/// canonical spelling or physical parent may have changed after the copy.
+pub(crate) fn clone_exact_store_with_identity(
+    source_path: &Path,
+    target_path: &Path,
+) -> Result<(StoreSpec, StoreProof), String> {
     let source = exact_store_spec(source_path)?;
     let target = exact_store_spec(target_path)?;
     let source_connection = open_store(
@@ -1178,9 +1188,10 @@ pub(crate) fn clone_exact_store(
         &[source_path.to_path_buf()],
     )?;
     drop(source_connection);
-    open_ready_container(&container_path()?)?
+    let proof = open_ready_container(&container_path()?)?
         .clone_store_namespace(&source, &target)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    Ok((source, proof))
 }
 
 pub(crate) fn replace_exact_store(
@@ -1207,6 +1218,19 @@ pub(crate) fn remove_exact_store(path: &Path) -> Result<bool, String> {
         .remove_store_namespace(&store)
         .map_err(|error| error.to_string())?;
     Ok(true)
+}
+
+pub(crate) fn remove_exact_store_if_unchanged(
+    copied_owner: &StoreSpec,
+    copied: &StoreProof,
+) -> Result<(), String> {
+    if copied_owner.module != "exact" {
+        return Err("精确 token 暂存保留后原分区身份无效；已保留原分区与副本".into());
+    }
+    open_ready_container(&container_path()?)?
+        .remove_store_namespace_if_unchanged(copied_owner, copied)
+        .map_err(|error| format!(
+            "精确 token 暂存保留后原分区已变化或无法验证；已保留原分区与副本：{error}"))
 }
 
 pub(crate) fn seal_exact_store(path: &Path) -> Result<(), String> {

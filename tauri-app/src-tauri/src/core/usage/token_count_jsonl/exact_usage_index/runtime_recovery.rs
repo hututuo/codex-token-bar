@@ -393,7 +393,11 @@ pub(super) fn verify_fixture(home: &Path) -> Result<serde_json::Value, String> {
     }
     let event = |time: &str, tokens: i64| {
         format!(
-            "{}\n",
+            "{}\n{}\n{}\n",
+            serde_json::json!({"timestamp": time, "type": "turn_context",
+                "payload": {"model": "fixture-recovery-model"}}),
+            serde_json::json!({"timestamp": time, "type": "event_msg",
+                "payload": {"type": "user_message", "message": "fixture recovery turn"}}),
             serde_json::json!({
                 "timestamp": time, "type": "event_msg", "payload": {"type": "token_count",
                 "info": {"last_token_usage": {"input_tokens":tokens,"cached_input_tokens":0,
@@ -458,6 +462,142 @@ pub(super) fn verify_fixture(home: &Path) -> Result<serde_json::Value, String> {
         "fixture requires a valid namespace-only stage and inconsistent old checkpoint"
     );
     let original_proof = route::exact_store_observation(&old.database_path)?;
+    // A retained artifact's persisted seal is not evidence of its current
+    // rows. Keep the row count and source bytes unchanged while modifying a
+    // same-shaped numeric value, as a damaged artifact can do after sealing.
+    let damaged_contract = Sha256::digest(b"fixture-damaged-seal-v1");
+    let damaged_path = staging_directory(&index_path).join(format!(
+        "{}.candidate-v2-{damaged_contract:x}.sqlite3", staging_database_digest(&job.path)
+    ));
+    route::clone_exact_store(&old.database_path, &damaged_path)?;
+    route::seal_exact_store(&damaged_path)?;
+    let verified_before_damage = reusable_staged_full_rebuild(&damaged_path, &job, generation)?
+        .ok_or("undamaged cloned stage did not validate")?;
+    let seal_before_damage = route::exact_store_observation(&damaged_path)?;
+    let stage_raw_digest = Sha256::digest(sql!(fs::read(&file)));
+    let main_store = route::exact_store_spec(&index_path)?;
+    let main_proof = || {
+        crate::core::business_store_container::Container::open_read_only_existing(
+            route::container_path()?, StdDuration::from_secs(1))
+            .and_then(|container| container.proof(&main_store)).map_err(|error| error.to_string())
+    };
+    let main_before_damage = main_proof()?;
+    let damaged = open_staging_connection(&damaged_path)?;
+    need!(
+        sql!(damaged.execute("UPDATE events SET tokens=tokens+1,input_tokens=input_tokens+1", [])) == 1,
+        "damaged-seal fixture requires exactly one event"
+    );
+    quick_check_staged(&damaged)?;
+    drop(damaged);
+    need!(route::exact_store_observation(&damaged_path)? == seal_before_damage,
+        "damaged-seal fixture unexpectedly changed the persisted seal");
+    need!(reusable_staged_full_rebuild(&damaged_path, &job, generation).is_err(),
+        "retained stage numeric corruption bypassed its unchanged seal");
+    need!(import_staged_full_rebuild(&mut index.connection, generation,
+        &verified_before_damage, ExactSyncMode::Full).is_err(),
+        "previously validated stage accepted changed numeric content before import");
+    // Restore only this fixture's known original values. Its unchanged old
+    // seal must match again before testing the later publication boundary.
+    let restored = open_staging_connection(&damaged_path)?;
+    sql!(restored.execute("UPDATE events SET tokens=tokens-1,input_tokens=input_tokens-1", []));
+    drop(restored);
+    let verified_before_publish = reusable_staged_full_rebuild(&damaged_path, &job, generation)?
+        .ok_or("restored fixture values did not match their original seal")?;
+    let mut mutation_calls = 0;
+    let before_publish = import_staged_full_rebuild_with_hook(&mut index.connection, generation,
+        &verified_before_publish, ExactSyncMode::Full, || {
+            let changed = open_staging_connection(&damaged_path)?;
+            need!(sql!(changed.execute(
+                "UPDATE events SET tokens=tokens+1,input_tokens=input_tokens+1", [])) == 1,
+                "publication-boundary fixture did not mutate its single stage row");
+            mutation_calls += 1;
+            Ok(())
+        });
+    need!(mutation_calls == 1 && before_publish.is_err_and(|error| error.contains("封存内容不一致")),
+        "stage mutation after validation reached the import write transaction unchecked");
+    need!(route::exact_store_exists(&damaged_path)?
+        && route::exact_store_observation(&damaged_path)? == seal_before_damage
+        && main_proof()? == main_before_damage
+        && Sha256::digest(sql!(fs::read(&file))) == stage_raw_digest
+        && metadata_i64(&index.connection, "published_generation")? == Some(published)
+        && index.summary(OffsetDateTime::now_utc(), UtcOffset::UTC)?.total_tokens == 120,
+        "bad-stage rejection changed the retained artifact or published history");
+    // Re-sealing a changed artifact cannot redefine an existing owner's
+    // already-verified proof, even when artifact ID and byte count match.
+    route::seal_exact_store(&damaged_path)?;
+    let resealed = route::exact_store_observation(&damaged_path)?;
+    let replaced = import_staged_full_rebuild(&mut index.connection, generation,
+        &verified_before_publish, ExactSyncMode::Full);
+    need!(replaced.is_err_and(|error| error.contains("封存证明在校验后发生变化"))
+        && route::exact_store_observation(&damaged_path)? == resealed
+        && main_proof()? == main_before_damage,
+        "re-sealing changed content replaced the existing owner's proof");
+
+    let restored = open_staging_connection(&damaged_path)?;
+    sql!(restored.execute("UPDATE events SET tokens=120,input_tokens=120,output_tokens=0", []));
+    drop(restored);
+    route::seal_exact_store(&damaged_path)?;
+    let schema_seal = route::exact_store_observation(&damaged_path)?;
+    let stage_store = route::exact_store_spec(&damaged_path)?;
+    let stage_proof = || {
+        crate::core::business_store_container::Container::open_read_only_existing(
+            route::container_path()?, StdDuration::from_secs(1))
+            .and_then(|container| container.proof(&stage_store)).map_err(|error| error.to_string())
+    };
+    let schema_before = stage_proof()?;
+    let swap_columns = || -> Result<(), String> {
+        open_staging_connection(&damaged_path)?.execute_batch(
+            "ALTER TABLE events RENAME COLUMN input_tokens TO swapped_tokens;
+             ALTER TABLE events RENAME COLUMN output_tokens TO input_tokens;
+             ALTER TABLE events RENAME COLUMN swapped_tokens TO output_tokens;")
+            .map_err(|error| error.to_string())
+    };
+    swap_columns()?;
+    let schema_after = stage_proof()?;
+    need!(schema_before.rows_digest == schema_after.rows_digest
+        && schema_before.row_count == schema_after.row_count
+        && schema_before.schema_digest != schema_after.schema_digest
+        && route::exact_store_observation(&damaged_path)? == schema_seal,
+        "schema fixture must leave row digest/count and persisted seal unchanged");
+    need!(reusable_staged_full_rebuild(&damaged_path, &job, generation).is_err(),
+        "retained stage column-role mutation bypassed the content proof");
+    swap_columns()?;
+    let verified_before_schema_publish = reusable_staged_full_rebuild(&damaged_path, &job, generation)?
+        .ok_or("restored schema did not match the producer contract")?;
+    let mut schema_mutation_calls = 0;
+    let schema_publish = import_staged_full_rebuild_with_hook(&mut index.connection, generation,
+        &verified_before_schema_publish, ExactSyncMode::Full, || {
+            swap_columns()?;
+            schema_mutation_calls += 1;
+            Ok(())
+        });
+    need!(schema_mutation_calls == 1
+        && schema_publish.is_err_and(|error| error.contains("封存内容不一致"))
+        && route::exact_store_observation(&damaged_path)? == schema_seal
+        && main_proof()? == main_before_damage,
+        "schema mutation after validation reached publication unchecked");
+
+    swap_columns()?;
+    let damaged = open_staging_connection(&damaged_path)?;
+    sql!(damaged.execute("UPDATE events SET tokens=121,input_tokens=121", []));
+    drop(damaged);
+    let physical = sql!(crate::core::business_store_container::Container::open_existing(route::container_path()?));
+    sql!(physical.connection().execute("DELETE FROM tb_store_seals WHERE store_id=?1", [&stage_store.id]));
+    drop(physical);
+    let unsigned_reader = open_read_only_index(&damaged_path, StdDuration::from_secs(1))?;
+    need!(sql!(unsigned_reader.store_state(&stage_store))
+            == crate::core::business_store_container::StoreState::Sealed
+        && stage_content_proof::can_rebuild_unsealed(&unsigned_reader, &damaged_path, &job, generation)
+            .is_err(),
+        "missing seal turned a previously sealed artifact into a rebuildable unsigned stage");
+    drop(unsigned_reader);
+    need!(reusable_staged_full_rebuild(&damaged_path, &job, generation).is_err()
+        && route::exact_store_observation(&damaged_path)?.is_none()
+        && main_proof()? == main_before_damage,
+        "previously sealed stage with a missing seal was re-signed during restart");
+    // Only this synthetic fixture-owned artifact is removed so the existing
+    // successful restart/replay scenarios below can continue independently.
+    route::remove_exact_store(&damaged_path)?;
     let mut append = sql!(fs::OpenOptions::new().append(true).open(&file));
     sql!(append.write_all(event("2026-10-28T00:01:00Z", 55).as_bytes()));
     sql!(append.sync_all());
@@ -476,6 +616,8 @@ pub(super) fn verify_fixture(home: &Path) -> Result<serde_json::Value, String> {
         &mut Vec::new(),
     )
     .map_err(staging_error)?;
+    super::stage_content_fixture::verify_pending_and_unsealed(
+        &mut index, &index_path, &home, &old, &candidate, generation)?;
     need!(
         candidate.database_path != old.database_path && !candidate.database_path.exists(),
         "replacement overwrote the old stage or escaped namespace storage"
@@ -639,6 +781,12 @@ pub(super) fn verify_fixture(home: &Path) -> Result<serde_json::Value, String> {
         serde_json::json!({"name":"runtime-recovery-production-path","status":"PASS",
         "legacyCheckpointMismatch":true,"namespaceCandidateResumed":true,"oldStagePreserved":true,
         "invalidCandidateRejected":true,"tokensAfterReplay":175,"liveStateRefreshed":true,
+        "retainedStageContentVerified":true,"changedStageImportRejected":true,
+        "stageMutationBeforePublicationRejected":true,
+        "sealedStageMissingSealRejected":true,"resealedStageImportRejected":true,
+        "stageSchemaMutationRejected":true,"stageSchemaMutationBeforePublicationRejected":true,
+        "unsealedStageRebuiltFromSource":true,"pendingHistoryOverwriteRejected":true,
+        "unsealedPreservationMutationRejected":true,
         "nonemptyWalReread":true,"walAllocationReuseObserved":true,"inactiveWalCache":true,
         "startupNamespaceOnlyIdentity":true,"startupLastGoodRestored":true,
         "startupConcurrentPublisherRead":true,"startupLegacySourceUnchanged":true,
