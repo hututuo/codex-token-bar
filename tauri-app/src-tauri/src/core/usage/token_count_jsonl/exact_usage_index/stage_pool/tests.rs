@@ -1,6 +1,22 @@
 use super::*;
 
 #[test]
+fn known_empty_partial_stage_stays_occupied_for_the_existing_restart_validator() {
+    let (root,pool,_)=fixture();
+    let path=root.path().join("index.sqlite3.staging").join(format!("{}.sqlite3","d".repeat(64)));
+    let spec=crate::core::business_store_route::exact_store_spec(&path).unwrap();
+    let container=Container::open_existing(&pool.path).unwrap();
+    container.register(&spec).unwrap();
+    let writer=container.into_store_connection(&spec).unwrap();
+    writer.execute_batch("CREATE TABLE manifest(manifest_schema_version INTEGER NOT NULL,parser_revision TEXT NOT NULL,complete INTEGER NOT NULL,staging_mode TEXT NOT NULL,accounting_state TEXT);CREATE TABLE events(ordinal INTEGER PRIMARY KEY);CREATE TABLE fingerprints(fingerprint BLOB PRIMARY KEY);CREATE TABLE chunks(chunk_index INTEGER PRIMARY KEY);").unwrap();
+    assert_eq!(pool.legacy_presence(&path).unwrap(),Some(true));
+    assert!(!path.exists());
+    writer.execute("INSERT INTO events VALUES(17)",[]).unwrap();
+    assert!(pool.legacy_presence(&path).is_err(),"A partial artifact with facts is never an empty producer");
+    assert_eq!(writer.query_row("SELECT ordinal FROM events",[],|r|r.get::<_,i64>(0)).unwrap(),17);
+}
+
+#[test]
 fn missing_and_known_empty_legacy_candidates_use_the_held_pool_without_becoming_facts() {
     let (root,pool,_)=fixture();
     let path=root.path().join("index.sqlite3.staging").join(format!("{}.candidate-v2-{}.sqlite3","a".repeat(64),"b".repeat(64)));

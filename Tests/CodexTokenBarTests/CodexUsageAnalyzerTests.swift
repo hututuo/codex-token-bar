@@ -149,6 +149,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let database = SQLiteDatabaseDriver(url: indexURL)
         XCTAssertEqual(database.backingURL, configuration.container)
         try database.execute("DELETE FROM event_enrichment_sources; DELETE FROM schema_meta WHERE key='event_enrichment_revision'; UPDATE events SET model=NULL;")
+        let rawAccountingDigestBefore = try rawAccountingDigest(in: database)
         let exactStore = try XCTUnwrap(configuration.specification(for: indexURL))
         XCTAssertEqual(exactStore.module, "exact.swift")
         let preparationStarted = Date()
@@ -210,6 +211,9 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(tokens, expectedTokens)
         XCTAssertEqual(events, expectedEvents)
         XCTAssertEqual(eventTimestamps.count, expectedEvents, "Published event timestamps must stay unique")
+        let rawAccountingDigestAfter = try rawAccountingDigest(in: database)
+        XCTAssertEqual(rawAccountingDigestAfter, rawAccountingDigestBefore,
+            "Every non-model accounting value, identity and SQLite storage class must survive enrichment")
         XCTAssertEqual(try Data(contentsOf: indexURL), original, "The standalone legacy ledger must remain frozen after backfill")
         XCTAssertEqual(try files.map(sha256Digest(of:)), sourceDigestsBefore, "Raw JSONL sources must remain frozen")
 
@@ -244,10 +248,12 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(try mainCatalogCounts(in: configuration), mainAfter)
         XCTAssertEqual(try syntheticLegacyStageCounts(in: configuration, target: exactStore), legacyCatalogBefore)
         XCTAssertEqual(try legacyConsumptionReceiptCount(in: configuration, pool: stagePool), 0)
+        XCTAssertEqual(try rawAccountingDigest(in: database), rawAccountingDigestBefore)
 
         let profile: [String: Any] = ["files": fileCount, "parsed": parsed.value,
             "eventsPerFile": eventsPerFile, "events": events, "expectedEvents": expectedEvents,
             "tokens": tokens, "expectedTokens": expectedTokens, "complete": result.eventEnrichmentComplete,
+            "rawAccountingDigestBefore": rawAccountingDigestBefore, "rawAccountingDigestAfter": rawAccountingDigestAfter,
             "monotonic": completed == completed.sorted(), "legacyJobs": legacyJobs,
             "mainObjectsBefore": mainBefore.objects, "mainObjectsAfter": mainAfter.objects,
             "mainObjectDelta": mainAfter.objects - mainBefore.objects,
@@ -277,6 +283,24 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         }
         XCTAssertEqual(try Data(contentsOf: indexURL), original)
         XCTAssertEqual(try files.map(sha256Digest(of:)), sourceDigestsBefore)
+    }
+
+    private func rawAccountingDigest(in driver: SQLiteDatabaseDriver) throws -> String {
+        try driver.withConnection { db in
+            let columns = try db.readRows("PRAGMA table_info(events)") { $0.text(1) }.compactMap { $0 }.filter { $0 != "model" }
+            guard !columns.isEmpty else { throw BusinessStoreError.invalidStore }
+            var digest = SHA256()
+            for column in columns {
+                var length = UInt64(column.utf8.count).bigEndian
+                withUnsafeBytes(of: &length) { digest.update(data: Data($0)) }
+                digest.update(data: Data(column.utf8))
+            }
+            let sql = "SELECT " + columns.map(SQLiteStoreNamespace.quote).joined(separator: ",") + " FROM events ORDER BY source_id,source_offset"
+            try db.forEachRow(sql) { row in
+                for column in 0..<row.columnCount { digest.update(data: row.canonicalBytes(column)) }
+            }
+            return digest.finalize().map { String(format: "%02x", $0) }.joined()
+        }
     }
 
     private func seedSyntheticLegacyStageCatalog(

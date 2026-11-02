@@ -15,6 +15,7 @@ class NativeScaleRunnerTests(unittest.TestCase):
             "name": "exact-rust-production-scale-fixture", "status": "PROFILED",
             "sourceCounts": 4124, "events": 503128,
             "stores": {"seededEmptyCandidateNamespaces": 6250}, "budgetPassed": True,
+            "correctness": {"rawAccountingDigestBefore": "a" * 64, "rawAccountingDigestAfter": "a" * 64},
         }]}
 
     def test_optional_profile_does_not_change_regular_fixture_gate(self):
@@ -38,3 +39,8 @@ class NativeScaleRunnerTests(unittest.TestCase):
         invalid["checks"][0]["stores"]["seededEmptyCandidateNamespaces"] = 0
         with self.assertRaises(ValueError):
             module.validate_native_scale(invalid, True)
+        for proof in ({}, {"rawAccountingDigestBefore": "a" * 64, "rawAccountingDigestAfter": "b" * 64}):
+            invalid = self.profile()
+            invalid["checks"][0]["correctness"] = proof
+            with self.assertRaises(ValueError):
+                module.validate_native_scale(invalid, True)

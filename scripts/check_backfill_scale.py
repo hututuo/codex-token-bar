@@ -89,6 +89,10 @@ def parse_profile(text: str, count: int, events_per_file: int = 1, legacy_jobs: 
             raise ValueError(f"{field} differs from {expected}: {profile.get(field)}")
     if profile.get("complete") is not True or profile.get("monotonic") is not True:
         raise ValueError("Backfill incomplete or visible progress regressed")
+    before = profile.get("rawAccountingDigestBefore")
+    after = profile.get("rawAccountingDigestAfter")
+    if not isinstance(before, str) or re.fullmatch(r"[0-9a-f]{64}", before) is None or after != before:
+        raise ValueError("Typed raw accounting identity/value proof changed or is missing")
 
     lock_count = profile.get("writeLockCount")
     if isinstance(lock_count, bool) or not isinstance(lock_count, int) or lock_count <= 0:
@@ -181,7 +185,7 @@ def run_sizes(repository: Path, output: Path, sizes: tuple[int, ...], timeout: i
     sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repository, text=True).strip()
     cases = scale_cases(sizes, pressure)
     report = {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "sourceSha": sha,
         "test": TEST,
         "status": "RUNNING",

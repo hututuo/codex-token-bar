@@ -212,3 +212,10 @@ Windows连接寿命作平台适配：实际锁定SQLite源码的`winOpen`使用F
 ### C07b · 正式fixture门禁反馈
 
 复核0c98的最终require步骤证实，生产fixture并未通过：新增scale fixture有路径函数参数强制转换、可变namespace及块尾iterator借用三处编译问题（四条编译诊断），已逐项修正。此前`continue-on-error`让步骤conclusion显示success，但实际outcome失败，末尾门禁正确使双端job失败；没有形成整体PASS。已去掉该步骤continue-on-error，以`!cancelled()`单独允许原native回归继续运行，末尾严格门禁保留并补结构测试。**8点全生产跨进程证据仍NOT_RUN**，选定模块证据不升级为全生产证据。下个源码SHA重测。
+
+### C07c · 原有partial暂存合同与逐值保全证明
+
+- `ef1f42cd`已通过feature编译并实际进入production fixture，先在`exact_fixture`的home-one被拦截：四张运行时空表中的manifest只有原有五个字段，正是现存`restartable_private_stage`支持的partial空态。它不是完整历史producer，也不是未知未来schema。现在仅精确认出该五列＋三张一列表、且四表全空的已有合同，返回“仍占用的恢复材料”，交回原validator／preserve流程；不会把它当成不存在，也没有扩大current-empty或未知格式允许集。
+- 新单测与实际选择性storage helper验证：partial空态为占用，写入ordinal17后拒绝复用且17仍在；完整current空producer仍false，未知额外表仍拒绝，13job目录增长0。整包实际启动与8点强退继续待新SHA，不能以helper冒充。
+- 压力验证从count／SUM提升为排序后的逐列typed摘要。Swift `events`、Rust `event_rows`仅排除本次允许补全的`model`，核对其余字段、稳定行身份、NULL／INTEGER／REAL／TEXT／BLOB存储类；列名与顺序也进入摘要。补全前后摘要必须一致，脚本拒收缺失／不同／非法摘要；原有数值、源码hash、对象数量和性能门限仍保留。此为验证强化，不改业务账本或parser。
+- 0c98规模完整实测最终为：512最大写锁30.319秒，4124最大写锁197.120秒、backfill230.498秒、无变化P95 1.672秒；这些旧SHA仍FAIL。新SQL绑定复用后的整轮／压力结果等待云端，不从微基准预测通过。

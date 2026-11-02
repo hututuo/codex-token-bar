@@ -411,12 +411,33 @@ impl Pool {
                     Ok(((*name).to_owned(),names))
                 }).collect()
             }).as_ref().map_err(Clone::clone)?;
-            for (name,columns) in expected {
+            let mut actual_shapes=Vec::new();
+            for (name,_) in expected {
                 let mut info=c.connection().prepare(&format!("PRAGMA table_info({})",quote(&format!("{}{name}",spec.prefix)))).map_err(|e|e.to_string())?;
                 let actual=info.query_map([],|r|r.get::<_,String>(1)).map_err(|e|e.to_string())?.collect::<std::result::Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
-                if &actual!=columns {return Err("空暂存并非受支持的producer布局，已保留".into());}
+                actual_shapes.push((name.clone(),actual));
             }
-            Ok(Some(false))
+            if &actual_shapes == expected {return Ok(Some(false))}
+            // Existing restartable_private_stage also accepts this exact
+            // partial producer shape. It is occupied recovery work: defer to
+            // that original validator/preservation flow rather than hiding
+            // it as absent or treating any unknown empty schema as supported.
+            let known_partial=actual_shapes.iter().all(|(name,columns)| {
+                let supported:&[&str]=match name.as_str() {
+                    "manifest"=> &["manifest_schema_version","parser_revision","complete","staging_mode","accounting_state"],
+                    "events"=> &["ordinal"], "fingerprints"=> &["fingerprint"], "chunks"=> &["chunk_index"],
+                    _=> return false,
+                };
+                columns.iter().map(String::as_str).eq(supported.iter().copied())
+            });
+            if known_partial {
+                for name in ["events","fingerprints","chunks"] {
+                    let occupied:bool=c.connection().query_row(&format!("SELECT EXISTS(SELECT 1 FROM {})",quote(&format!("{}{name}",spec.prefix))),[],|r|r.get(0)).map_err(|e|e.to_string())?;
+                    if occupied {return Err("未封存partial暂存含有事实行，已保留并停止复用".into());}
+                }
+                return Ok(Some(true));
+            }
+            Err("空暂存并非受支持的producer布局，已保留".into())
         })
     }
     pub(super) fn seal(&self, job: &Job) -> Result<Option<Seal>> {

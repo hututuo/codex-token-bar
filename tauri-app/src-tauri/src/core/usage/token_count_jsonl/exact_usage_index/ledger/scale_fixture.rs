@@ -41,6 +41,7 @@ struct RawMetrics {
     token_sum: i64,
     distinct_timestamps: i64,
     sources: i64,
+    accounting_digest: [u8; 32],
 }
 
 struct SourceJob {
@@ -345,6 +346,8 @@ pub(super) fn verify_scale(home: &Path) -> Result<Value, String> {
             "initialRawRows": before_raw.rows,
             "finalRawRows": after_raw.rows,
             "preservedRawEventIdsAndTokens": before_raw == after_raw,
+            "rawAccountingDigestBefore": hex(&before_raw.accounting_digest),
+            "rawAccountingDigestAfter": hex(&after_raw.accounting_digest),
             "dashboardSummaryPreserved": true,
             "modelEnrichmentEvents": enriched_events,
             "enrichmentReceipts": enrichment_receipts,
@@ -760,6 +763,7 @@ fn raw_metrics(connection: &Connection) -> Result<RawMetrics, String> {
                     token_sum: row.get(2)?,
                     distinct_timestamps: row.get(3)?,
                     sources: 0,
+                    accounting_digest: [0; 32],
                 })
             },
         )
@@ -768,6 +772,23 @@ fn raw_metrics(connection: &Connection) -> Result<RawMetrics, String> {
             metrics.sources = connection
                 .query_row("SELECT COUNT(*) FROM published_files", [], |row| row.get(0))
                 .map_err(|error| error.to_string())?;
+            let columns = {
+                let mut info = connection.prepare("PRAGMA table_info(event_rows)").map_err(|e|e.to_string())?;
+                let values = info.query_map([],|row|row.get::<_,String>(1)).map_err(|e|e.to_string())?
+                    .collect::<rusqlite::Result<Vec<_>>>().map_err(|e|e.to_string())?;
+                values.into_iter().filter(|name|name!="model").collect::<Vec<_>>()
+            };
+            if columns.is_empty() {return Err("published raw accounting schema missing".into());}
+            let mut digest = Sha256::new();
+            for name in &columns {digest.update((name.len() as u64).to_be_bytes());digest.update(name.as_bytes());}
+            let quoted=columns.iter().map(|name|format!("\"{}\"",name.replace('"',"\"\""))).collect::<Vec<_>>().join(",");
+            let mut statement=connection.prepare(&format!("SELECT {quoted} FROM event_rows ORDER BY id")).map_err(|e|e.to_string())?;
+            let mut rows=statement.query([]).map_err(|e|e.to_string())?;
+            while let Some(row)=rows.next().map_err(|e|e.to_string())? {
+                let encoded=super::super::stage_row_codec::encode_row(row).map_err(|e|e.to_string())?;
+                digest.update((encoded.len() as u64).to_be_bytes());digest.update(encoded);
+            }
+            metrics.accounting_digest=digest.finalize().into();
             Ok(metrics)
         })
 }

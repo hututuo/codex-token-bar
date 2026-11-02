@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import re
 import os
 from pathlib import Path
 import subprocess
@@ -23,6 +24,10 @@ def validate_native_scale(result, required):
         raise ValueError("Native large-catalog pressure was omitted")
     if profile.get("budgetPassed") is not True:
         raise ValueError("Native scale exceeded its unchanged/backfill budget; full profile retained")
+    proof = profile.get("correctness", {})
+    before = proof.get("rawAccountingDigestBefore")
+    if not isinstance(before, str) or re.fullmatch(r"[0-9a-f]{64}", before) is None or proof.get("rawAccountingDigestAfter") != before:
+        raise ValueError("Native typed raw accounting proof is missing or changed")
 
 
 def main():

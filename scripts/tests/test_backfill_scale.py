@@ -29,6 +29,8 @@ class ScaleEvidenceTests(unittest.TestCase):
             legacyJobs=legacy_jobs,
             complete=True,
             monotonic=True,
+            rawAccountingDigestBefore="a" * 64,
+            rawAccountingDigestAfter="a" * 64,
             mainObjectsBefore=15,
             mainObjectsAfter=15,
             mainObjectDelta=0,
@@ -79,6 +81,8 @@ class ScaleEvidenceTests(unittest.TestCase):
             ('writeLockCount', 0),
             ('maximumWriteLockSeconds', float('inf')),
             ('totalWriteLockSeconds', -0.1),
+            ('rawAccountingDigestBefore', ''),
+            ('rawAccountingDigestAfter', 'b' * 64),
         ):
             with self.subTest(field=field), self.assertRaises(ValueError):
                 module.parse_profile(
