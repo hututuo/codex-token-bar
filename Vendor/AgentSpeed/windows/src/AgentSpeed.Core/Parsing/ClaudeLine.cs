@@ -369,9 +369,9 @@ internal static class ClaudeLineReader
     {
         if (reader.TokenType == JsonTokenType.String)
         {
-            var interrupt = JsonScan.StringStartsWith(ref reader, InterruptPrefix);
+            var stringInterrupted = JsonScan.StringStartsWith(ref reader, InterruptPrefix);
             var content = ReadDisplayString(ref reader, captureUserText);
-            return (interrupt,
+            return (stringInterrupted,
                 false,
                 captureUserText ? FirstMeaningfulDisplayTitle(content) : null);
         }

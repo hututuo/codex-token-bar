@@ -708,6 +708,10 @@
       "reason": "Use explicit isolated source roots; never read developer home during tests",
       "sha256": "2dccb1b1319ccdf24fe8392bdd998c21f8a71197f0c54abab2d9c2852d72bcc0"
     },
+    "macos/Tests/AgentSpeedCoreTests/ParserBehaviorTests.swift": {
+      "reason": "Add local regression coverage for bounded Claude display titles, metadata precedence and rename updates, property ordering, stable fallback, per-subagent labels, Unicode/control cleanup, interrupt handling and oversized text.",
+      "sha256": "6fa28e1e924ee607a4aa18e599ad772ec28da649c436ab2c22867c95db2d653b"
+    },
     "macos/Tests/AgentSpeedCoreTests/ProtobufTests.swift": {
       "reason": "Break the repeated-scalar protobuf fixture into typed byte-array appends for Swift 6 compiler compatibility; emitted fixture bytes and assertions are unchanged.",
       "sha256": "a40138a819b7518510ce26bde19d14021378afed271f363f06cc9d7bf9120de4"
@@ -822,7 +826,7 @@
     },
     "windows/src/AgentSpeed.Core/Parsing/ClaudeLine.cs": {
       "reason": "Recognize explicit Claude error and interrupt markers and upstream b89d983 toolEndsTurn; extract bounded local-only Claude task labels from agentName, title/customTitle, summary or first direct user text while preserving field-order handling and avoiding large text allocations.",
-      "sha256": "80fabb3e6443ac1b76d316d901278ff8a269f850052e6ac2d5ea08322916828b"
+      "sha256": "789b15cd58c767fd71ca5b5d5051a59a7c70d80b7d6a94c506fb5a1d034725df"
     },
     "windows/src/AgentSpeed.Core/Parsing/ClaudeParser.cs": {
       "reason": "Propagate explicit Claude error/interrupt markers, toolEndsTurn completion and bounded local-only Claude display titles; do not alter token accounting or report payloads.",
@@ -871,10 +875,6 @@
     "windows/src/AgentSpeed.Core/ZCode/ZCodeSource.cs": {
       "reason": "Attach Token Bar local source-read timing/resolution observations to ZCode source updates.",
       "sha256": "41e42ac6b1d173068b61b4cea1f3a7ed423b78d5eb6c26c5a3a31e0d4dc824bb"
-    },
-    "macos/Tests/AgentSpeedCoreTests/ParserBehaviorTests.swift": {
-      "reason": "Add local regression coverage for bounded Claude display titles, metadata precedence and rename updates, property ordering, stable fallback, per-subagent labels, Unicode/control cleanup, interrupt handling and oversized text.",
-      "sha256": "6fa28e1e924ee607a4aa18e599ad772ec28da649c436ab2c22867c95db2d653b"
     }
   },
   "repository": "https://github.com/zoefix/agent-speed",
