@@ -3,7 +3,8 @@
 //! resolve inside the caller's disposable root. This code never changes env.
 
 use crate::core::{
-    app_paths, business_store_route as route, live_rate, modeltrace, quota_history,
+    app_paths, business_store_connection::StoreConnection,
+    business_store_container::StoreSpec, business_store_route as route, live_rate, modeltrace, quota_history,
     usage::token_count_jsonl,
 };
 use crate::models::SpeedSample;
@@ -13,7 +14,8 @@ use sha2::{Digest, Sha256};
 use std::{
     fs,
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+    sync::{Mutex, OnceLock},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 const ENV: [&str; 5] = [
@@ -24,16 +26,211 @@ const ENV: [&str; 5] = [
     "CODEX_TOKEN_BAR_TAURI_USAGE_CACHE_DIR",
 ];
 
-// Called only by the explicitly enabled offline fixture binary, after the
-// producer has written TEMP rows but before it commits its parsing transaction.
-pub(crate) fn assert_concurrent_a_write() -> Result<(), String> {
-    let connection = route::open_store("fixture_concurrent", "fixture", "fixture/concurrent", &[])
-        .map_err(|e| format!("open concurrent parser writer: {e}"))?;
+const CONCURRENT_PROBE_MODULE: &str = "fixture_concurrent";
+const CONCURRENT_PROBE_IDENTITY: &str = "fixture";
+const CONCURRENT_PROBE_LOGICAL_PATH: &str = "fixture/concurrent";
+const CONCURRENT_PROBE_TIMEOUT: Duration = Duration::from_millis(250);
+
+struct ConcurrentAWriteProbe {
+    path: PathBuf,
+    store_id: String,
+    connection: StoreConnection,
+}
+
+fn concurrent_a_write_probe_slot() -> &'static Mutex<Option<ConcurrentAWriteProbe>> {
+    static PROBE: OnceLock<Mutex<Option<ConcurrentAWriteProbe>>> = OnceLock::new();
+    PROBE.get_or_init(|| Mutex::new(None))
+}
+
+/// Prepare one registered fixture namespace before any parser workers start.
+/// The persistent test connection is deliberately independent of parser TEMP
+/// connections; worker callbacks only INSERT and never register or run DDL.
+fn prepare_concurrent_a_write_probe(path: &Path) -> Result<(), String> {
+    let mut slot = concurrent_a_write_probe_slot()
+        .lock()
+        .map_err(|_| "concurrent A write probe mutex poisoned".to_string())?;
+    if let Some(probe) = slot.as_ref() {
+        if probe.path.as_path() != path {
+            return Err("concurrent A write probe is bound to another fixture root".into());
+        }
+        return Ok(());
+    }
+
+    let store = StoreSpec::new(
+        CONCURRENT_PROBE_MODULE,
+        CONCURRENT_PROBE_IDENTITY,
+        CONCURRENT_PROBE_LOGICAL_PATH,
+    )
+    .map_err(|error| error.to_string())?;
+    let connection = route::open_store(
+        CONCURRENT_PROBE_MODULE,
+        CONCURRENT_PROBE_IDENTITY,
+        CONCURRENT_PROBE_LOGICAL_PATH,
+        &[],
+    )
+    .map_err(|error| format!("prepare fixture A write probe namespace: {error}"))?;
     connection
-        .busy_timeout(std::time::Duration::from_millis(250))
-        .map_err(|e| e.to_string())?;
-    connection.execute_batch("CREATE TABLE IF NOT EXISTS observations(id INTEGER PRIMARY KEY); INSERT INTO observations DEFAULT VALUES;")
-        .map_err(|e| format!("producer held A writer lock during TEMP parsing: {e}"))
+        .busy_timeout(CONCURRENT_PROBE_TIMEOUT)
+        .map_err(|error| format!("configure fixture A write probe timeout: {error}"))?;
+    connection
+        .execute_batch("CREATE TABLE observations(id INTEGER PRIMARY KEY AUTOINCREMENT);")
+        .map_err(|error| format!("prepare fixture A write probe table: {error}"))?;
+    *slot = Some(ConcurrentAWriteProbe {
+        path: path.to_path_buf(),
+        store_id: store.id,
+        connection,
+    });
+    Ok(())
+}
+
+fn concurrent_a_write_probe_attempt(
+) -> Result<(), (Option<rusqlite::ErrorCode>, String)> {
+    let slot = concurrent_a_write_probe_slot()
+        .lock()
+        .map_err(|_| (None, "probe mutex poisoned".to_string()))?;
+    let probe = slot
+        .as_ref()
+        .ok_or_else(|| (None, "probe was not prepared before parser workers".to_string()))?;
+    probe
+        .connection
+        .execute("INSERT INTO observations DEFAULT VALUES", [])
+        .map(|_| ())
+        .map_err(|error| (error.sqlite_error_code(), error.to_string()))
+}
+
+// Called from the parser hook, which is also compiled into standalone release
+// probes. Those probes do not opt into this fixture assertion; run_fixture
+// explicitly prepares it before any parser workers start.
+pub(crate) fn assert_concurrent_a_write() -> Result<(), String> {
+    let enabled = concurrent_a_write_probe_slot()
+        .lock()
+        .map_err(|_| "concurrent A write probe mutex poisoned".to_string())?
+        .is_some();
+    if !enabled {
+        return Ok(());
+    }
+    concurrent_a_write_probe_attempt().map_err(|(code, error)| {
+        format!(
+            "fixture concurrent A write probe failed during existing-table INSERT (SQLite {code:?}): {error}"
+        )
+    })
+}
+
+fn concurrent_probe_counts(path: &Path) -> Result<(i64, i64, i64), String> {
+    let slot = concurrent_a_write_probe_slot()
+        .lock()
+        .map_err(|_| "concurrent A write probe mutex poisoned".to_string())?;
+    let probe = slot
+        .as_ref()
+        .ok_or("concurrent A write probe was not prepared")?;
+    if probe.path.as_path() != path {
+        return Err("concurrent A write probe is bound to another fixture root".into());
+    }
+    let database = Connection::open(path).map_err(|error| error.to_string())?;
+    let stores = database
+        .query_row("SELECT COUNT(*) FROM tb_stores", [], |row| row.get(0))
+        .map_err(|error| error.to_string())?;
+    let objects = database
+        .query_row(
+            "SELECT COUNT(*) FROM tb_store_objects WHERE store_id=?1",
+            [&probe.store_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let observations = probe
+        .connection
+        .query_row("SELECT COUNT(*) FROM observations", [], |row| row.get(0))
+        .map_err(|error| error.to_string())?;
+    Ok((stores, objects, observations))
+}
+
+fn concurrent_a_write_probe_fixture(path: &Path) -> Result<Value, String> {
+    prepare_concurrent_a_write_probe(path)?;
+
+    // A blocked write is a real negative control: the same independent probe
+    // connection must report SQLite's lock error while another connection
+    // holds A, then succeed as soon as the writer rolls back.
+    assert_concurrent_a_write()?;
+    let before_blocked = concurrent_probe_counts(path)?;
+    let blocker = Connection::open(path).map_err(|error| error.to_string())?;
+    blocker
+        .busy_timeout(CONCURRENT_PROBE_TIMEOUT)
+        .map_err(|error| error.to_string())?;
+    blocker
+        .execute_batch("BEGIN IMMEDIATE")
+        .map_err(|error| format!("negative-control A writer could not acquire lock: {error}"))?;
+    let blocked = concurrent_a_write_probe_attempt();
+    let rollback = blocker.execute_batch("ROLLBACK");
+    drop(blocker);
+    rollback.map_err(|error| format!("negative-control A writer rollback failed: {error}"))?;
+    let (blocked_code, blocked_message) = blocked
+        .err()
+        .ok_or("concurrent A write probe unexpectedly succeeded under BEGIN IMMEDIATE")?;
+    if !matches!(
+        blocked_code,
+        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+    ) {
+        return Err(format!(
+            "negative control returned unexpected SQLite code {blocked_code:?}: {blocked_message}"
+        ));
+    }
+    assert_concurrent_a_write()?;
+    let after_rollback = concurrent_probe_counts(path)?;
+    if after_rollback.2 != before_blocked.2 + 1 {
+        return Err("probe did not resume writing after negative-control rollback".into());
+    }
+
+    let before_parallel = concurrent_probe_counts(path)?;
+    let parallel_results = std::thread::scope(|scope| {
+        let workers = (0..4)
+            .map(|_| scope.spawn(concurrent_a_write_probe_attempt))
+            .collect::<Vec<_>>();
+        workers
+            .into_iter()
+            .map(|worker| {
+                worker
+                    .join()
+                    .map_err(|_| "concurrent probe worker panicked".to_string())?
+                    .map_err(|(code, error)| {
+                        format!("parallel existing-table INSERT failed (SQLite {code:?}): {error}")
+                    })
+            })
+            .collect::<Result<Vec<_>, String>>()
+    });
+    parallel_results?;
+    let after_parallel = concurrent_probe_counts(path)?;
+    if before_parallel.0 != after_parallel.0 || before_parallel.1 != after_parallel.1 {
+        return Err("parallel probes changed the A catalog or repeated namespace DDL".into());
+    }
+    if after_parallel.2 != before_parallel.2 + 4 {
+        return Err("parallel probes did not all leave an observations row".into());
+    }
+    Ok(json!({
+        "name":"concurrent-a-write-probe",
+        "status":"PASS",
+        "timeoutMilliseconds":CONCURRENT_PROBE_TIMEOUT.as_millis(),
+        "serializedProbeConnection":true,
+        "negativeControl":{
+            "heldByBeginImmediate":true,
+            "sqliteCode":format!("{blocked_code:?}"),
+            "writeResumedAfterRollback":true,
+        },
+        "parallelProbeRows":4,
+        "catalogStable":true,
+    }))
+}
+
+fn close_concurrent_a_write_probe(path: &Path) -> Result<(), String> {
+    let mut slot = concurrent_a_write_probe_slot()
+        .lock()
+        .map_err(|_| "concurrent A write probe mutex poisoned".to_string())?;
+    if let Some(probe) = slot.as_ref() {
+        if probe.path.as_path() != path {
+            return Err("concurrent A write probe is bound to another fixture root".into());
+        }
+    }
+    slot.take();
+    Ok(())
 }
 macro_rules! ok {
     ($e:expr) => {
@@ -124,6 +321,8 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
         "bootstrap did not initialize distinct A and B"
     );
     let mut checks = vec![json!({"name":"bootstrap","status":"PASS"})];
+    checks.push(concurrent_a_write_probe_fixture(&p.a)?);
+    let observations_before_exact = concurrent_probe_counts(&p.a)?.2;
     checks.push(public_read_only_fixture(&p)?);
 
     let qi = quota_history::QuotaHistoryIdentity::from_canonical_parts(
@@ -215,6 +414,17 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
     drop(b);
 
     checks.push(exact_fixture(&h1, &h2, &p)?);
+    let observations_after_exact = concurrent_probe_counts(&p.a)?.2;
+    let exact_probe_writes = observations_after_exact.saturating_sub(observations_before_exact);
+    need!(
+        exact_probe_writes > 0,
+        "Exact scans did not invoke the explicitly enabled concurrent A write probe"
+    );
+    checks.push(json!({
+        "name":"exact-concurrent-a-write-observed",
+        "status":"PASS",
+        "probeWrites":exact_probe_writes,
+    }));
     checks.push(token_count_jsonl::verify_runtime_recovery_fixture(&root.join("runtime-home"))?);
     checks.push(token_count_jsonl::verify_backfill_performance_fixture(&root.join("legacy-backfill-home"))?);
     checks.push(pool_process_crash_fixture(&root)?);
@@ -235,6 +445,7 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
         store_count(&p.a)? == count,
         "bootstrap rerun changed A store catalog"
     );
+    close_concurrent_a_write_probe(&p.a)?;
     park_a_and_test(&p)?;
     checks.push(json!({"name":"rerun-and-fail-closed","status":"PASS","storeCount":count}));
     Ok(json!({"status":"PASS","root":root,"containerA":p.a,"clientB":p.b,"checks":checks}))

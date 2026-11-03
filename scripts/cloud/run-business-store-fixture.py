@@ -11,6 +11,23 @@ import sys
 import tempfile
 
 
+def validate_concurrent_probe(result):
+    checks = result.get("checks", [])
+    probes = [check for check in checks if check.get("name") == "concurrent-a-write-probe"]
+    observed = [check for check in checks if check.get("name") == "exact-concurrent-a-write-observed"]
+    if len(probes) != 1 or len(observed) != 1:
+        raise ValueError("Required concurrent A write probe was not executed exactly once")
+    probe, observation = probes[0], observed[0]
+    if (probe.get("status") != "PASS" or probe.get("timeoutMilliseconds") != 250
+            or probe.get("serializedProbeConnection") is not True
+            or probe.get("parallelProbeRows") != 4 or probe.get("catalogStable") is not True
+            or probe.get("negativeControlSqliteCode") not in ("Some(DatabaseBusy)", "Some(DatabaseLocked)")):
+        raise ValueError("Concurrent probe lacks its original deadline, lock negative control or catalog proof")
+    count = observation.get("probeWrites")
+    if observation.get("status") != "PASS" or type(count) is not int or count <= 0:
+        raise ValueError("Actual Exact scans did not execute the concurrent A write probe")
+
+
 def validate_native_scale(result, required):
     if not required:
         return
@@ -88,6 +105,7 @@ def main():
     result["fixtureRootRetained"] = True
     args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     try:
+        validate_concurrent_probe(result)
         validate_native_scale(result, env.get("TOKENBAR_NATIVE_SCALE") == "1")
     except ValueError as error:
         raise SystemExit(str(error)) from error

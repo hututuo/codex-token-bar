@@ -28,6 +28,10 @@ final class RecoveryDiagnosticsTests: XCTestCase {
         XCTAssertTrue(lines[1].contains("importing"))
         XCTAssertTrue(lines[2].contains("failure"))
         XCTAssertFalse(lines.joined().contains(NSHomeDirectory()))
+        for file in [log.fileURL, folder.appendingPathComponent("owner.marker")] {
+            let permissions = try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? NSNumber
+            XCTAssertEqual(permissions?.intValue, 0o600)
+        }
         XCTAssertTrue(FileManager.default.fileExists(atPath: folder.appendingPathComponent("latest-failure.json").path))
     }
     func testRotationOnlyDeletesOwnedLogsAndPreservesLastFailureAndUnknownFiles() throws {
@@ -75,5 +79,16 @@ final class RecoveryDiagnosticsTests: XCTestCase {
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: unknown)
         XCTAssertNil(RecoveryDiagnostics(root: link))
         XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: link.path), unknown.path)
+    }
+
+    func testInterruptedDiagnosticMarkerIsRetainedWithoutAdoptingOrReplacingIt() throws {
+        let folder = try root().appendingPathComponent("partial")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let marker = folder.appendingPathComponent("owner.marker")
+        let partial = RecoveryDiagnostics.marker.prefix(9)
+        try Data(partial).write(to: marker)
+        XCTAssertNil(RecoveryDiagnostics(root: folder))
+        XCTAssertEqual(try Data(contentsOf: marker), Data(partial))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: folder.path), ["owner.marker"])
     }
 }

@@ -8827,60 +8827,62 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         )
                     }
                     var importedEventCount = 0
-                    try stage.forEachRow(
-                        """
-                        SELECT
-                            source_offset,
-                            timestamp,
-                            tokens,
-                            input_tokens,
-                            cached_input_tokens,
-                            output_tokens,
-                            reasoning_output_tokens,
-                            model,
-                            user_prompt_offset,
-                            assistant_start_offset,
-                            \(stageColumns.contains("accounting_kind") ? "accounting_kind" : "0"),
-                            \(stageColumns.contains("reported_total_tokens") ? "reported_total_tokens" : "NULL"),
-                            \(stageColumns.contains("usage_fingerprint") ? "usage_fingerprint" : "NULL")
-                        FROM events
-                        ORDER BY source_offset;
-                        """
-                    ) { row in
-                        guard let sourceOffset = row.int64(0),
-                              let timestamp = row.double(1),
-                              let tokens = row.int(2),
-                              let inputTokens = row.int(3),
-                              let cachedInputTokens = row.int(4),
-                              let outputTokens = row.int(5),
-                              let reasoningOutputTokens = row.int(6) else {
-                            throw SQLiteDatabaseError(
-                                operation: "Import exact usage staging event",
-                                code: SQLITE_CORRUPT,
-                                message: "Malformed event row",
-                                path: staged.databaseURL.path
-                            )
+                    try transaction.withReusedStatements {
+                        try stage.forEachRow(
+                            """
+                            SELECT
+                                source_offset,
+                                timestamp,
+                                tokens,
+                                input_tokens,
+                                cached_input_tokens,
+                                output_tokens,
+                                reasoning_output_tokens,
+                                model,
+                                user_prompt_offset,
+                                assistant_start_offset,
+                                \(stageColumns.contains("accounting_kind") ? "accounting_kind" : "0"),
+                                \(stageColumns.contains("reported_total_tokens") ? "reported_total_tokens" : "NULL"),
+                                \(stageColumns.contains("usage_fingerprint") ? "usage_fingerprint" : "NULL")
+                            FROM events
+                            ORDER BY source_offset;
+                            """
+                        ) { row in
+                            guard let sourceOffset = row.int64(0),
+                                  let timestamp = row.double(1),
+                                  let tokens = row.int(2),
+                                  let inputTokens = row.int(3),
+                                  let cachedInputTokens = row.int(4),
+                                  let outputTokens = row.int(5),
+                                  let reasoningOutputTokens = row.int(6) else {
+                                throw SQLiteDatabaseError(
+                                    operation: "Import exact usage staging event",
+                                    code: SQLITE_CORRUPT,
+                                    message: "Malformed event row",
+                                    path: staged.databaseURL.path
+                                )
+                            }
+                            let components = UsageAccountingComponents(input: inputTokens, cached: cachedInputTokens, output: outputTokens, reasoning: reasoningOutputTokens)
+                            let legacyCounted = components.isValid && components.total > 0
+                            let fingerprint = row.data(12)
+                            let unseenFullSnapshot = try fingerprint.map { try UsageEventLedger.isCompleteSnapshot($0) && !oldFingerprints.contains($0) } ?? false
+                            // An unchanged source supplies an exact raw-location proof.
+                            // Recognized paginated rewrites preserve snapshot payloads, so
+                            // unseen complete snapshots are new observations. Partial or
+                            // otherwise unproved changes remain separate pending evidence.
+                            let admission: UsageEventLedger.Admission = !hadConsumption || unchangedContent || (isPaginated && unseenFullSnapshot)
+                                ? .newConsumption : .reconcile
+                            _ = try UsageEventLedger.admit(
+                                .init(rawOffset:sourceOffset,timestamp:timestamp,
+                                      tokens:Int64(legacyAccounting ? (legacyCounted ? components.total : 0) : tokens),
+                                      input:Int64(inputTokens),cached:Int64(cachedInputTokens),output:Int64(outputTokens),reasoning:Int64(reasoningOutputTokens),
+                                      model:row.text(7),promptOffset:row.int64(8),assistantOffset:row.int64(9),
+                                      accountingKind:Int64(legacyAccounting ? (legacyCounted ? 0 : 3) : (row.int(10) ?? 0)),
+                                      reported:row.int64(11),legacy:legacyAccounting ? Int64(tokens) : nil,fingerprint:fingerprint),
+                                source:source.id,generation:rawGeneration,admission:admission,
+                                unchangedFromGeneration:unchangedContent ? previousRawGeneration : nil,correctionRevision:Self.stagingParserRevision,on:transaction)
+                            importedEventCount += 1
                         }
-                        let components = UsageAccountingComponents(input: inputTokens, cached: cachedInputTokens, output: outputTokens, reasoning: reasoningOutputTokens)
-                        let legacyCounted = components.isValid && components.total > 0
-                        let fingerprint = row.data(12)
-                        let unseenFullSnapshot = try fingerprint.map { try UsageEventLedger.isCompleteSnapshot($0) && !oldFingerprints.contains($0) } ?? false
-                        // An unchanged source supplies an exact raw-location proof.
-                        // Recognized paginated rewrites preserve snapshot payloads, so
-                        // unseen complete snapshots are new observations. Partial or
-                        // otherwise unproved changes remain separate pending evidence.
-                        let admission: UsageEventLedger.Admission = !hadConsumption || unchangedContent || (isPaginated && unseenFullSnapshot)
-                            ? .newConsumption : .reconcile
-                        _ = try UsageEventLedger.admit(
-                            .init(rawOffset:sourceOffset,timestamp:timestamp,
-                                  tokens:Int64(legacyAccounting ? (legacyCounted ? components.total : 0) : tokens),
-                                  input:Int64(inputTokens),cached:Int64(cachedInputTokens),output:Int64(outputTokens),reasoning:Int64(reasoningOutputTokens),
-                                  model:row.text(7),promptOffset:row.int64(8),assistantOffset:row.int64(9),
-                                  accountingKind:Int64(legacyAccounting ? (legacyCounted ? 0 : 3) : (row.int(10) ?? 0)),
-                                  reported:row.int64(11),legacy:legacyAccounting ? Int64(tokens) : nil,fingerprint:fingerprint),
-                            source:source.id,generation:rawGeneration,admission:admission,
-                            unchangedFromGeneration:unchangedContent ? previousRawGeneration : nil,correctionRevision:Self.stagingParserRevision,on:transaction)
-                        importedEventCount += 1
                     }
                     guard importedEventCount == staged.eventCount else {
                         throw SQLiteDatabaseError(

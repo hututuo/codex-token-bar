@@ -149,4 +149,45 @@ final class UsageEventLedgerTests: XCTestCase {
         XCTAssertEqual(try db.readRows("SELECT COUNT(*) FROM usage_ledger_corrections") { $0.int(0) }.first,1)
     }
 
+    func testCompiledStatementReusePreservesEveryLedgerTableAndAdmissionOutcome() throws {
+        func importRows(_ db: SQLiteDatabaseDriver, reused: Bool) throws -> [UsageEventLedger.Outcome] {
+            try db.transaction { tx in
+                var outcomes: [UsageEventLedger.Outcome] = []
+                func body() throws {
+                    try UsageEventLedger.beginGeneration(source: 1, session: "child", generation: "first", on: tx)
+                    for n in 0..<128 {
+                        outcomes.append(try UsageEventLedger.admit(row(1000 + Int64(n), Int64(n + 1), "identity-\(n)"),
+                            source: 1, generation: "first", admission: .newConsumption, on: tx))
+                    }
+                    try UsageEventLedger.beginGeneration(source: 1, session: "child", generation: "second", on: tx)
+                    for n in 0..<128 {
+                        outcomes.append(try UsageEventLedger.admit(row(2000 + Int64(n), Int64(n + 1), "identity-\(n)"),
+                            source: 1, generation: "second", admission: .reconcile, on: tx))
+                    }
+                    outcomes.append(try UsageEventLedger.admit(row(4000, 999, "identity-0"),
+                        source: 1, generation: "conflict", admission: .newConsumption, on: tx))
+                    outcomes.append(try UsageEventLedger.admit(row(100, 70, "verified-correction"), source: 1,
+                        generation: "corrected", admission: .reconcile, unchangedFromGeneration: "legacy-generation",
+                        correctionRevision: "same-byte-proof", on: tx))
+                    // A held observation cannot become newly counted merely
+                    // because a later scan happens to see the same candidate.
+                    outcomes.append(try UsageEventLedger.admit(row(5000, 55, "unproved"),
+                        source: 1, generation: "held", admission: .reconcile, on: tx))
+                    outcomes.append(try UsageEventLedger.admit(row(5000, 55, "unproved"),
+                        source: 1, generation: "held-again", admission: .newConsumption, on: tx))
+                }
+                if reused { try tx.withReusedStatements(body) } else { try body() }
+                return outcomes
+            }
+        }
+        let ordinary = try fixture(), reused = try fixture()
+        XCTAssertEqual(try importRows(ordinary, reused: false), try importRows(reused, reused: true))
+        let expected = try ordinary.withConnection { try CodexBusinessDatabase.proof($0) }
+        XCTAssertEqual(try reused.withConnection { try CodexBusinessDatabase.proof($0) }, expected,
+            "Compare all typed rows, stable IDs, turns, bindings, unresolved records and correction receipts")
+        XCTAssertEqual(try total(reused), 8346)
+        XCTAssertEqual(try reused.readRows("SELECT COUNT(*) FROM usage_ledger_corrections") { $0.int(0) }, [1])
+        XCTAssertEqual(try reused.readRows("SELECT COUNT(*) FROM usage_ledger_unresolved") { $0.int(0) }, [3])
+    }
+
 }

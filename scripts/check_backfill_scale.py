@@ -151,7 +151,7 @@ def _resolve_xctest_bundle(repository: Path, timeout: int = 60,
         raise ValueError("Repository .build is missing or resolves through a symlink")
 
     result = subprocess.run(
-        ["swift", "test", "--show-bin-path"],
+        ["swift", "build", "--show-bin-path"],
         cwd=repo,
         check=False,
         capture_output=True,
@@ -160,7 +160,7 @@ def _resolve_xctest_bundle(repository: Path, timeout: int = 60,
         env=env,
     )
     if result.returncode != 0:
-        raise ValueError(f"swift test --show-bin-path returned {result.returncode}: {result.stderr.strip()}")
+        raise ValueError(f"swift build --show-bin-path returned {result.returncode}: {result.stderr.strip()}")
     lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
     if len(lines) != 1:
         raise ValueError(f"Expected one SwiftPM binary path, found {len(lines)}")
@@ -379,6 +379,19 @@ def run_sizes(repository: Path, output: Path, sizes: tuple[int, ...], timeout: i
                 failed_command = "swift test" if runner == "swift" else "xcrun xctest"
                 raise RuntimeError(f"{failed_command} returned {code}; compile/test failure; see {log.name}")
             build_available = True
+            # Preserve the completed test's measurements even if runner discovery
+            # or another post-test tooling step fails. Those failures must not
+            # erase a real accounting result or conceal an exceeded budget.
+            profile = parse_profile(text, case["files"], case["eventsPerFile"], case["legacyJobs"])
+            profile.update({
+                "case": case["name"],
+                "kind": case["kind"],
+                "commandSeconds": command_seconds,
+                "log": log.name,
+            })
+            report["profiles"].append(profile)
+            result["profile"] = profile
+            save()
             if _is_macos() and runner == "swift":
                 discovery_started = time.monotonic()
                 try:
@@ -392,15 +405,6 @@ def run_sizes(repository: Path, output: Path, sizes: tuple[int, ...], timeout: i
                 result["bundleDiscoverySeconds"] = time.monotonic() - discovery_started
                 result["xctestBundle"] = str(xctest_bundle)
                 report["xctestBundle"] = str(xctest_bundle)
-            profile = parse_profile(text, case["files"], case["eventsPerFile"], case["legacyJobs"])
-            profile.update({
-                "case": case["name"],
-                "kind": case["kind"],
-                "commandSeconds": command_seconds,
-                "log": log.name,
-            })
-            report["profiles"].append(profile)
-            result["profile"] = profile
             if profile["largestProgressGapSeconds"] > max_gap:
                 raise RuntimeError(f"Progress silent for {profile['largestProgressGapSeconds']:.2f}s (limit {max_gap:.2f}s)")
             if profile["backfillSeconds"] > max_backfill:

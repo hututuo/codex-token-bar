@@ -243,3 +243,14 @@ Windows连接寿命作平台适配：实际锁定SQLite源码的`winOpen`使用F
 - 诊断增加真实导入回归：Swift四种sink（关闭／开启／未知目录不可用／写失败）经过生产migration/router，逐类型proof、原source和目标后续新增账都保持；Rust对应经过实际Container backup/import和owner receipt。fail注入仅DEBUG／cfg(test)，release权威账本路径不变。Rust目录首建原有marker `sync_all`使诊断端到端开销测到10.69%；该marker不是权威回执，现只write_all，丢失／partial只会安全禁用日志／GC，真实账本FULL与回执同步不改。
 - 7对交替真实导入（含诊断start／Ready／close）本地选定storage模块：Swift关闭中位0.070152秒、开启0.072002秒，开销2.64%；Rust0.062536／0.061605秒，差异-1.49%属测量噪声，不称加速。原5%门限保留，并在完整scale组合双端启用。Swift2项、Rust诊断11项通过；这些不是能耗计量或安装后UI表现证据。
 - formed helper现有每个committed／interrupted场景的resume后再独立启动三次candidate；每次仍执行原typed/WAL/A/B/缺原文断言，同时用受管场景的已知备份、schema11材料与A迁移状态完整摘要验证没有新attempt、覆盖或重复备份。不用mtime、不删除任何材料，不把排除的正常WAL／SHM当备份。44项脚本／workflow回归通过，含真实三个PID和第二轮产生backup／attempt时拒收的反例；全部旧版本实际运行待新SHA。
+
+### C05f／C07f · 保留真实压力结果、导入语句复用与并发探针负控
+
+- `e29d9294`标准整组[41554707063](https://github.com/hututuo/codex-token-bar/actions/runs/41554707063)和真实0.9.7双端[41554707170](https://github.com/hututuo/codex-token-bar/actions/runs/41554707170)通过。额外scale组合不是PASS：Swift诊断开启开销10.10%超过5%，Windows生产压力的并发探针报SQLite锁错误。不能由标准整组绿灯推出压力通过。
+- 完整解析`b03d8d4b` scale小artifact：五档实际XCTest都完成且通过，各档raw accounting digest前后相同。13／128／512／4124事件分别backfill 0.327／3.130／11.980／90.497秒；最大写锁0.223／2.110／7.623／53.736秒。503128事件压力完成（非timeout）：backfill505.131秒，写锁322.747秒，进度空窗324.157秒，无变化P95 1.406秒。最后阶段unchanged-complete；该档importing248.376秒、sourceComparison57.463秒，合计解释大部分长锁。原report profiles空是XCTest通过后调用不支持的`swift test --show-bin-path`，不是这五档没执行。
+- 报告器改用实际Swift CLI支持的`swift build --show-bin-path`；完成的profile在bundle定位前立即落盘，工具出错也不抹掉真实账务或压力数据。新增真实CLI help检查和“成功profile之后定位失败仍保留数据”的回归；不减少规模、不改预算、不把失败静默当绿。
+- Swift仅在一次逐行导入作用域内复用已编译语句，最多64条／2MiB，结束或异常立即reset、清参数、finalize。每次仍先做namespace授权；不缓存结果、账务判断或跨代事实，不绕过原`UsageEventLedger.admit`的identity、correction、unresolved和turn规则。真实连接测试覆盖嵌套同SQL游标、异常清理、schema变化与回滚、权限撤销、参数不串到下条事件和容量上限；额外逐类型对账比较开启／关闭两条实际ledger路径的全部表、稳定ID、turn、binding、未决和修正回执。
+- Swift诊断新建文件使用独占、不跟随符号链接的0600 best-effort写入，避免把非权威日志当作账本安全保存；保留已存在和中断marker，未知文件不覆盖。原SQLite FULL与权威迁移回执不改。本地实际导入7对比较开启／关闭开销先后0.80%和4.54%，这不是云端或能耗证明；5%门限仍保留，下一SHA完整组合须重新测。
+- Windows probe原先每个并发parser都注册同一store、DDL建同一表再INSERT，250ms失败被直接写成“producer持锁”，这不足以归因。现在fixture先一次准备独立连接与表，hook只序列化探针自身的一行INSERT，实际parser／pool写入不串行化。保留250ms，另连接`BEGIN IMMEDIATE`必须让探针失败、rollback后必须恢复；4个并发探针必须留4行且catalog不变，实际Exact扫描的调用计数必须增加。runner严格检查这些字段；未显式启用的独立旧版probe不声称执行这项门禁。生产逻辑与超时未因探针调整放行。
+
+当前仍不封候选：大库长锁／空窗／P95仍有明确失败，最新完整组合与三次重启材料报告尚未收齐。物理旧库／schema11 rollback缺完整所有权及恢复引用证明时继续保留，不能拿已消费A内namespace回执代替物理文件删除授权。隐藏／唤醒资源代理证据也仍缺；上述局部PASS不覆盖这些项。

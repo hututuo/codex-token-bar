@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// Best-effort diagnostics, never a recovery journal or an accounting input.
 /// The A/B transactions and receipts remain authoritative if this sink fails.
@@ -42,10 +43,7 @@ final class RecoveryDiagnostics: @unchecked Sendable {
             let attempt = UUID().uuidString.lowercased()
             let file = root.appendingPathComponent("session-\(attempt).jsonl")
             let header = try JSONEncoder().encode(Header(format: Self.format, attempt: attempt)) + Data([10])
-            try header.write(to: file, options: .withoutOverwriting)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
-            handle = try FileHandle(forWritingTo: file)
-            try handle.seekToEnd()
+            handle = try Self.createFile(file, data: header)
             self.root = root; fileURL = file; written = header.count
             let source = DispatchSource.makeTimerSource(queue: queue)
             source.schedule(deadline: .now() + 1, repeating: 1, leeway: .milliseconds(150))
@@ -126,8 +124,26 @@ final class RecoveryDiagnostics: @unchecked Sendable {
             guard try fm.attributesOfItem(atPath: parent.path)[.type] as? FileAttributeType == .typeDirectory else { throw CocoaError(.fileWriteInvalidFileName) }
         }
         try fm.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        try marker.write(to: root.appendingPathComponent("owner.marker"), options: .withoutOverwriting)
+        let markerHandle = try createFile(root.appendingPathComponent("owner.marker"), data: marker)
+        try markerHandle.close()
         try checkOwner(root)
+    }
+
+    /// Exclusive creation without Foundation's durable safe-save work. This
+    /// sink is best effort, unlike the accounting journal and FULL SQLite
+    /// commits. A crash may leave a partial log/marker; owner/header validation
+    /// then refuses it. Never adopt, follow, replace or unlink an existing file.
+    private static func createFile(_ file: URL, data: Data) throws -> FileHandle {
+        let fd = Darwin.open(file.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        do {
+            try handle.write(contentsOf: data)
+            return handle
+        } catch {
+            try? handle.close()
+            throw error
+        }
     }
 
     private static func regular(_ file: URL) throws -> Bool {

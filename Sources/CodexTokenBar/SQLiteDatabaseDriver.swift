@@ -1090,10 +1090,52 @@ final class SQLiteDatabaseConnection: DatabaseAccessing {
     private let path: String?
     var rawDatabase: OpaquePointer? { database }
     var businessBinding: SQLiteStoreBinding?
+    private var reusedStatements: [String: OpaquePointer]?
+    private var reusedStatementBytes = 0
 
     init(database: OpaquePointer?, path: String?) {
         self.database = database
         self.path = path
+    }
+
+    /// Explicitly bounded to one synchronous row-import loop. Reuse compiled
+    /// SQL, never rows, bindings or decisions. Namespace authorization still
+    /// happens before every lookup; the key is the resulting physical SQL.
+    /// No cursor or cached statement can escape this scope.
+    func withReusedStatements<T>(_ body: () throws -> T) rethrows -> T {
+        if reusedStatements != nil { return try body() }
+        reusedStatements = [:]; reusedStatementBytes = 0
+        defer {
+            reusedStatements?.values.forEach { sqlite3_finalize($0) }
+            reusedStatements = nil; reusedStatementBytes = 0
+        }
+        return try body()
+    }
+
+    private func withStatement<T>(_ sql: String, _ body: (OpaquePointer) throws -> T) throws -> T {
+        // A recursive use of the same SQL must have its own cursor. v2 keeps
+        // schema invalidation/reprepare with SQLite, including TEMP DDL.
+        if let cached = reusedStatements?[sql], sqlite3_stmt_busy(cached) == 0 {
+            defer { sqlite3_reset(cached); sqlite3_clear_bindings(cached) }
+            return try body(cached)
+        }
+        var raw: OpaquePointer?
+        let status = sqlite3_prepare_v2(database, sql, -1, &raw, nil)
+        guard status == SQLITE_OK, let statement = raw else {
+            if let raw { sqlite3_finalize(raw) }
+            throw error(operation: "Prepare SQLite statement", code: status == SQLITE_OK ? SQLITE_MISUSE : status)
+        }
+        // No eviction of a live cursor. Queries outside the explicit scope, a
+        // reentrant duplicate or inputs over either cap use ordinary lifetime.
+        let bytes = sql.utf8.count + Int(sqlite3_stmt_status(statement, SQLITE_STMTSTATUS_MEMUSED, 0))
+        let retain = reusedStatements != nil && reusedStatements?[sql] == nil
+            && (reusedStatements?.count ?? 0) < 64 && reusedStatementBytes + bytes <= 2 * 1024 * 1024
+        if retain { reusedStatements?[sql] = statement; reusedStatementBytes += bytes }
+        defer {
+            sqlite3_reset(statement); sqlite3_clear_bindings(statement)
+            if !retain { sqlite3_finalize(statement) }
+        }
+        return try body(statement)
     }
 
     func readRows<T>(
@@ -1102,24 +1144,19 @@ final class SQLiteDatabaseConnection: DatabaseAccessing {
         map: (SQLiteStatement) throws -> T
     ) throws -> [T] {
         let sql = try businessBinding?.sql(sql) ?? sql
-        var statement: OpaquePointer?
-        let prepareStatus = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
-        guard prepareStatus == SQLITE_OK else {
-            throw error(operation: "Prepare SQLite query", code: prepareStatus)
-        }
-        defer { sqlite3_finalize(statement) }
+        return try withStatement(sql) { statement in
+            try bind(bindings, to: statement)
 
-        try bind(bindings, to: statement)
-
-        var rows: [T] = []
-        while true {
-            let stepStatus = sqlite3_step(statement)
-            if stepStatus == SQLITE_ROW {
-                rows.append(try map(SQLiteStatement(raw: statement)))
-            } else if stepStatus == SQLITE_DONE {
-                return rows
-            } else {
-                throw error(operation: "Step SQLite query", code: stepStatus)
+            var rows: [T] = []
+            while true {
+                let stepStatus = sqlite3_step(statement)
+                if stepStatus == SQLITE_ROW {
+                    rows.append(try map(SQLiteStatement(raw: statement)))
+                } else if stepStatus == SQLITE_DONE {
+                    return rows
+                } else {
+                    throw error(operation: "Step SQLite query", code: stepStatus)
+                }
             }
         }
     }
@@ -1181,18 +1218,13 @@ final class SQLiteDatabaseConnection: DatabaseAccessing {
             return
         }
 
-        var statement: OpaquePointer?
-        let prepareStatus = sqlite3_prepare_v2(database, sql, -1, &statement, nil)
-        guard prepareStatus == SQLITE_OK else {
-            throw error(operation: "Prepare SQLite statement", code: prepareStatus)
-        }
-        defer { sqlite3_finalize(statement) }
+        try withStatement(sql) { statement in
+            try bind(bindings, to: statement)
 
-        try bind(bindings, to: statement)
-
-        let stepStatus = sqlite3_step(statement)
-        guard stepStatus == SQLITE_DONE else {
-            throw error(operation: "Execute SQLite statement", code: stepStatus)
+            let stepStatus = sqlite3_step(statement)
+            guard stepStatus == SQLITE_DONE else {
+                throw error(operation: "Execute SQLite statement", code: stepStatus)
+            }
         }
     }
 

@@ -16,6 +16,28 @@ spec.loader.exec_module(module)
 
 
 class NativeScaleRunnerTests(unittest.TestCase):
+    def test_concurrent_probe_requires_real_lock_control_and_observed_exact_calls(self):
+        result = {"checks": [
+            {"name": "concurrent-a-write-probe", "status": "PASS", "timeoutMilliseconds": 250,
+             "serializedProbeConnection": True, "parallelProbeRows": 4, "catalogStable": True,
+             "negativeControlSqliteCode": "Some(DatabaseBusy)"},
+            {"name": "exact-concurrent-a-write-observed", "status": "PASS", "probeWrites": 12},
+        ]}
+        module.validate_concurrent_probe(result)
+        for key, value in [("timeoutMilliseconds", 500), ("negativeControlSqliteCode", "None"),
+                           ("catalogStable", False), ("parallelProbeRows", 0)]:
+            invalid = copy.deepcopy(result)
+            invalid["checks"][0][key] = value
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                module.validate_concurrent_probe(invalid)
+        for count in (0, -1, None, True):
+            invalid = copy.deepcopy(result)
+            invalid["checks"][1]["probeWrites"] = count
+            with self.subTest(count=count), self.assertRaises(ValueError):
+                module.validate_concurrent_probe(invalid)
+        with self.assertRaises(ValueError):
+            module.validate_concurrent_probe({"checks": [result["checks"][0]]})
+
     def test_windows_style_console_cannot_hide_fixture_error_or_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()

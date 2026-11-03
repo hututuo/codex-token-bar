@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import signal
 import tempfile
 import unittest
@@ -155,7 +156,7 @@ class ScaleEvidenceTests(unittest.TestCase):
                     returncode=0, stdout=f'{bin_path}\n', stderr='')) as show_path:
                 resolved = module._resolve_xctest_bundle(repository)
             self.assertEqual(resolved, bundle.resolve())
-            self.assertEqual(show_path.call_args.args[0], ['swift', 'test', '--show-bin-path'])
+            self.assertEqual(show_path.call_args.args[0], ['swift', 'build', '--show-bin-path'])
 
             (bin_path / 'OtherTests.xctest').mkdir()
             with patch.object(module.subprocess, 'run', return_value=SimpleNamespace(
@@ -213,6 +214,43 @@ class ScaleEvidenceTests(unittest.TestCase):
         self.assertEqual(report['cases'][0]['xctestBundle'], str(bundle))
         self.assertEqual(report['cases'][1]['xctestBundle'], str(bundle))
         self.assertEqual(report['xctestSelector'], module.XCTEST_SELECTOR)
+
+    @unittest.skipUnless(shutil.which('swift'), 'Swift CLI is unavailable')
+    def test_installed_swift_build_supports_binary_path_discovery(self):
+        # Ask the real CLI rather than making a mocked command validate itself.
+        # Help does not plan or build the package.
+        help_result = module.subprocess.run(['swift', 'build', '--help'],
+                                            capture_output=True, text=True,
+                                            timeout=30, check=True)
+        self.assertIn('--show-bin-path', help_result.stdout)
+
+    def test_completed_profile_survives_bundle_discovery_failure(self):
+        class FakeProcess:
+            pid = 654321
+
+            def __init__(self, stdout):
+                self.stdout = stdout
+
+            def wait(self, timeout=None):
+                self.stdout.write(ScaleEvidenceTests().fixture(13))
+                return 0
+
+        def fake_popen(command, cwd, env, stdout, stderr, **options):
+            return FakeProcess(stdout)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / 'evidence'
+            with patch.object(module.subprocess, 'check_output', return_value='source-sha\n'), \
+                    patch.object(module.subprocess, 'Popen', side_effect=fake_popen), \
+                    patch.object(module, '_is_macos', return_value=True), \
+                    patch.object(module, '_resolve_xctest_bundle', side_effect=ValueError('discovery failed')):
+                report = module.run_sizes(Path(temporary), output, (13,), 1200, 30, 600)
+            persisted = json.loads((output / 'report.json').read_text())
+        self.assertEqual(report['status'], 'FAIL')
+        self.assertIn('discovery failed', report['cases'][0]['error'])
+        self.assertEqual(len(persisted['profiles']), 1)
+        self.assertEqual(persisted['profiles'][0]['files'], 13)
+        self.assertEqual(persisted['profiles'][0], persisted['cases'][0]['profile'])
 
     def test_failed_case_does_not_skip_later_sizes_or_pressure(self):
         case_specs = module.scale_cases((13, 128, 512, 4124), pressure=True)
