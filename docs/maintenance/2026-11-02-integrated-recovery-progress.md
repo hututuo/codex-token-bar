@@ -304,3 +304,11 @@ Windows连接寿命作平台适配：实际锁定SQLite源码的`winOpen`使用F
 - 当前Mac native1695／Windows1640通过，各14 ignored、0失败；两端实际生产存储15/15 PASS，quota／恢复期目录／固定池／强退回执检查通过。Public097双端成功，Mac选定96项、Windows选定Rust3项及旧库恢复场景均通过。原始报告细字段与边界保留在final-contract-check/cloud-02-evidence.md/json，不把缺失字段概括成全true。
 - 401的0.9.8～0.9.11八路Rust形成状态保留；根用git diff确认02没有改Rust及形成探针，不为纯Swift读字段小修重启这一组。标准run的formed/scale明确skipped，性能FAIL仍按用户决定延期。
 - 二次只读审查确认SQL投影仍21槽位、partial row-id仍NULL、stable／legacy同序，原谓词及绑定不变，无新ALTER或claim。产品不再继续改动；本轮源码复查收尾，包级检查仍未做，未合main／替换／发布。
+
+### C07m · PR8必要增补及同源码双端回归完成
+
+- 用户随后要求核对外部PR8新增遗漏并补入。确认其整合提交实际以PR6／PR7为父，但没有整份合入；保留本分支只读admission、固定stage pool、quiescence、有限重试及既有诊断。增补旧候选必须覆盖冻结历史、活旧库别名复用、Rust pending消失原文保全及已知关联补全；Windows路径候选仍须完整catalog owner证明。
+- 独立反例进一步补足pending_fingerprints未知字段、相同checkpoint JSON键序、Swift NFC/NFD字典trap，以及Windows 8.3配置根和真实fixture原生路径拼接。保留首轮失败、正向接续和负向拒绝用例，不靠删除用例或放宽事实／归属规则取得通过。完整原因、取舍及修改范围见[PR8增补记录](2026-11-03-pr8-recovery-supplement.md)。
+- 产品／测试固定28a0dc6a7411b1caf8962bd11d5e180472f92139；根经API终核同SHA三组均completed/success：[常规41603039637](https://github.com/hututuo/codex-token-bar/actions/runs/41603039637)、[Public097 41603039546](https://github.com/hututuo/codex-token-bar/actions/runs/41603039546)、[八路形成状态41603237675](https://github.com/hututuo/codex-token-bar/actions/runs/41603237675)。Swift执行2352含跳过37、0失败；Rust Mac1729／Win1673通过，各14 ignored、0失败；双端production gate实际成功，原Win os123不再出现。
+- 八路均用固定历史Rust源码形成committed／interrupted输入，由同28源码production存储入口恢复；数值[162,310]、typed/WAL/缺失原文历史及三次独立重开材料断言通过。oldBPreserved=false的interrupted前提仍按原语义保留，不声称全部布尔值true；历史producer与输入为隔离fixture，不是用户原库或完整App安装验收。
+- 本次必要增补已在独立分支推送，源码及自动化证据收束；原规模／性能FAIL继续延期。后续仅记录结果，不合main、不打包／签名／替换／重启／发布、不操作正式用户库、不请求Anthropic。

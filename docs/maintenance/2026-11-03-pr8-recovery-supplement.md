@@ -2,19 +2,21 @@
 
 核查基线：本分支产品 `02c493fae3ccbf76df21524771cee4802a330d0e`，文档 HEAD `2e64e187dc7ea65ea565e58f4a82f960f5bd19b5`。外部 PR [shawway #8](https://github.com/hututuo/codex-token-bar/pull/8) 冻结在 `3cbd383f3daf3f37ab6b5ac52676895c18a5440a`，本地只抓取审计 ref。整合提交 `f6582f3d` 的父提交为 #6 的 `41058ffe` 和 #7 的 `faa06a5b`。不再整份合并。
 
+**最终状态（2026-11-03）：本次确认的增补已实现并推送至 `codex/fix-integrated-ledger-recovery`，产品及测试源码固定为 `28a0dc6a7411b1caf8962bd11d5e180472f92139`。同一 SHA 的常规、Public097、0.9.8–0.9.11 双端形成状态矩阵均已通过，结果见文末。后面的首轮红灯与定位过程保留为历史记录，不表示当前仍失败。** 终核时 #8 仍为同一 head、open/draft。
+
 ## 已确认的增补范围
 
 1. Swift 重试替换的旧历史覆盖。当前实际存储模块、一次性 SQLite 探针中：A 原有两条事实，新候选删除其中一条，原代码接受替换并只剩一条。此前的“目标仍是冻结导入镜像”检查只保护目标未被改写，不能证明候选完整。新增反向覆盖校验；从 durable import receipt 找回同目录 UUID 绑定的 normalized 镜像，以全结构、类型、隐藏 rowid、重复数和序列证明旧历史，再在原子写事务中复核目标和源。相同候选的 no-op 仍保留 A 后来产生的独立事实。正常追加、受限额度维护时钟推进、Exact 模型/轮次补全和派生投影重算分别用窄口径证明，不能一律当成历史丢失拒绝。只读 Exact 证明算法及相关测试改编自 #8；保留本分支 admission、池化暂存和指标。
 2. Swift 活着的旧库路径别名。实际存储模块探针：physical support 完成导入后，改用指向同目录的 alias，旧库仍存在，重启报 unmigratedInput。现有测试只覆盖 alias 后旧叶子已删除。新增按真实父目录、叶子、设备/inode、catalog 和 journal 所有权核对的别名复用；不能凭内容相等、同名或其他路径硬链接改归属。保留已知 receipt/source key，不建立第二份账本。
 3. Rust 已导入但未发布的历史。正常发布前校验与历史补全两入口，在原始日志确实消失时，验证 pending 的完整数值、代次、引用后继续发布并撤销原文可读标记；不能用 tombstone 清掉待发布事实。重导入前后在同一事务中核对旧数值及已知关联，仅允许 NULL 补全；发布补齐 canonical 的四个 prompt/assistant 边界。采用 #8 的相关保全实现，保留本分支固定 stage pool。另补 #8 未覆盖的 pending_fingerprints 未知列防护，避免可空未知字段在删除/重建时丢失。
-4. Rust Exact 路径身份。静态代码及隔离文件系统/hash/catalog 探针确认：符号链接根下多级父目录从不存在到存在时，旧 fallback 身份会变，A-only 旧 owner 查不到。该探针尚不是 Rust 产品入口执行。计划采用 #8 有界路径候选及实际 catalog owner 复用；多份不同事实不能任选、覆盖或合并。只读 miss 不能注册/创建。
+4. Rust Exact 路径身份。符号链接根下多级父目录从不存在到存在时，旧 fallback 身份会变，A-only 旧 owner 查不到。采用 #8 有界路径候选及实际 catalog owner 复用，随后补足 Windows 原生分隔符和已配置系统根的旧拼写；多份不同事实不能任选、覆盖或合并。只读 miss 不注册/创建。最终双端完整 native 回归和 Windows 实际 production fixture 已通过，早期隔离探针不单独作为通过依据。
 
 ## 不采用的部分与边界
 
 - 不整份搬入 #8 的启动/UI/更新控制和额外诊断系统；未证明它们是这次数据保全修复的必要依赖。
 - 不倒退本分支已实现的只读 admission、空闲连接 quiescence、固定 stage pool、有限重试和诊断。#8 的 Windows park 路径曾删除 quiescence，不能照搬。
 - 不改 A/B 原始事实、费用规则、永久库数量；不重构性能架构、不新建清理系统、不操作用户数据库。
-- 上一轮 `02c493fa` 的云端成功不覆盖本次新增代码。当前为增补实现/验证中；完整 Exact 和 Rust 双端验证完成后另记录实际 SHA、run 和结果。
+- 上一轮 `02c493fa` 的云端成功不覆盖本次新增代码。最终结果使用文末同 `28a0dc6a` 的三个 run，不移用旧绿灯。
 - 未合并 main、未安装/替换/启动正式应用、未打包/签名/发布，未请求 Anthropic。
 
 ## 首轮验证（506d73b8，不是通过结论）
@@ -54,3 +56,21 @@
 7a24 Windows Rust全量1673 pass / 14 ignored / 0 fail，旧A-only owner单测与路径探针已过；但production fixture红灯，不能相互抵销。c875保留同样判断、只加实际路径，479-byte artifact（仅纯文本标准输出）明确报错在 `\\?\D:\a\_temp\...\index.sqlite3.staging/<64位SHA>.sqlite3`。
 
 该路径由 `business_store_fixture.rs::stage_path` 的 `format!("{}.staging/{hash}.sqlite3", index.display())` 产生；实际扫描器 `staging_database_path` 使用OsString追加`.staging`再原生`PathBuf::join`。修正fixture使用相同的原生拼接，不把os123当成文件缺失，也不放宽owner/path验证。快速Windows诊断同时抽取fixture的真实路径构造（只将无关的hash计算替换为合法固定hex输入），增加`FIXTURE_STAGE_PATH`检查；完整production gate继续保留。修复后仍需新SHA云端验证，未以单测绿灯宣布production通过。
+
+## 最终同源码验证与交付边界
+
+产品及测试源码均为 `28a0dc6a7411b1caf8962bd11d5e180472f92139`。根通过 GitHub API 复核三个 run 的 `head_sha`、最终状态，以及各 job／production 步骤；形成矩阵逐份报告的语义另核对如下。
+
+| 范围 | 最终证据与结果 |
+|---|---|
+| 常规 Swift／Rust／前端／更新器及双端实际 production 存储恢复 | [41603039637](https://github.com/hututuo/codex-token-bar/actions/runs/41603039637)，success。Swift XCTest：2352 executed，含37 skipped，0 failures，即2315项未跳过；Exact追加22/22、snapshot/alias 6/6。Rust macOS：1729 passed、14 ignored、0 failed；Windows：1673 passed、14 ignored、0 failed。两端 production fixture 及其强制校验步骤实际成功。 |
+| 公开0.9.7源码产库直接升级 | [41603039546](https://github.com/hututuo/codex-token-bar/actions/runs/41603039546)，两端success。Swift release升级8项通过、支持套件96项通过；Windows原生旧producer及3项升级恢复断言通过。Mac强退86后行保全、旧字段、目标独有事实及缺失原文历史均有实际断言。输入是历史源码产生的隔离fixture，不是用户原数据库。 |
+| 0.9.8、0.9.9、0.9.10、0.9.11 × macOS／Windows | [41603237675](https://github.com/hututuo/codex-token-bar/actions/runs/41603237675)，8/8成功。各lane运行固定历史Rust源码producer、当前production存储入口；committed及interrupted恢复后的账目均为[162,310]，typed/WAL/原日志缺失保全通过；每场景再经3个独立进程重开，恢复材料及迁移摘要保持。 |
+
+Windows快速探针记录 `matched=true aliases=24`，三例verbatim missing path和实际fixture构造的 `FIXTURE_STAGE_PATH` 均accepted=true；最终真实production步骤也通过，因此不再用抽取探针替代真实存储入口。`StoreConnection`及事务内proof继续核对完整catalog owner，未通过扩宽归属或把路径错误当missing取得通过。
+
+本轮还确认并修复了 #8 本身没有完整覆盖的四处：`pending_fingerprints` 可空未知字段保全；相同checkpoint JSON键序误拒；Swift NFC/NFD路径键碰撞导致进程trap；Windows 8.3配置根及原生stage路径构造。没有靠删除原正向测试、放宽未知数据或修改数值规则取得通过。
+
+矩阵的 `oldBPreserved=false` 在interrupted场景是形成器未创建B的既有前提；`mtimeCompared=false` 表示按材料内容而非mtime比较，SQLite sidecar排除。两者不改写为true，也不解释为账目丢失。该矩阵证明的是历史Rust源码形成状态与production存储入口，不宣称原生Swift历史producer、完整App/UI或正式安装验收。
+
+常规run里的额外scale／formed任务按配置跳过；formed已由独立run补齐。50万压力、长写锁、P95及功耗优化仍按用户决定延期，旧FAIL和未测项保留，本轮未重测为性能达标。源码和证据收束完成；未整份合并 #8，未合main、打包、签名、替换、重启或发布，未操作正式用户库、未请求Anthropic。
