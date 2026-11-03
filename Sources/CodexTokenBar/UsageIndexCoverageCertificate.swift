@@ -15,6 +15,15 @@ struct UsageIndexCoverageCertificate: Codable, Equatable {
     static func publish(epoch: String, generation: Int64, scanID: String,
                         observedAt: Date, sourceCount: Int,
                         on db: SQLiteDatabaseConnection) throws {
+        let receipt = Self(revision:1,provenanceEpoch:epoch,generation:generation,
+            scanID:scanID,observedAt:observedAt,sourceCount:sourceCount,
+            inventoryDigest:try inventoryDigest(on:db))
+        let text = String(decoding:try JSONEncoder().encode(receipt),as:UTF8.self)
+        try db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES ('usage_scan_certificate',?)",bindings:[.text(text)])
+    }
+
+    /// Shared by publication and the read-only unfinished-import verifier.
+    static func inventoryDigest(on db: SQLiteDatabaseConnection) throws -> String {
         var digest = SHA256()
         // Byte-complete witness of retained source checkpoints and availability.
         try db.forEachRow("""
@@ -25,11 +34,7 @@ struct UsageIndexCoverageCertificate: Codable, Equatable {
             """) { row in
             for column in Int32(0)..<row.columnCount { digest.update(data:row.canonicalBytes(column)) }
         }
-        let receipt = Self(revision:1,provenanceEpoch:epoch,generation:generation,
-            scanID:scanID,observedAt:observedAt,sourceCount:sourceCount,
-            inventoryDigest:digest.finalize().map { String(format:"%02x",$0) }.joined())
-        let text = String(decoding:try JSONEncoder().encode(receipt),as:UTF8.self)
-        try db.execute("INSERT OR REPLACE INTO schema_meta(key,value) VALUES ('usage_scan_certificate',?)",bindings:[.text(text)])
+        return digest.finalize().map { String(format:"%02x",$0) }.joined()
     }
 
     static func read(on db: SQLiteDatabaseConnection) throws -> Self? {

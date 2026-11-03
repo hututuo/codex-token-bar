@@ -34,9 +34,9 @@ final class BusinessDatabaseMigration {
                 // Enumeration uses physical roots, while persisted ownership
                 // uses configured logical roots. Resolve the parent, not the
                 // database leaf, so deleting a legacy file does not change ID.
-                let physicalPath = url.deletingLastPathComponent().resolvingSymlinksInPath()
+                let physicalPath = BusinessSQLiteRoutes.resolvedDirectoryIdentity(url.deletingLastPathComponent())
                     .appendingPathComponent(url.lastPathComponent).standardizedFileURL.path
-                let physicalRoot = root.resolvingSymlinksInPath().standardizedFileURL.path
+                let physicalRoot = BusinessSQLiteRoutes.resolvedDirectoryIdentity(root).path
                 guard physicalPath.hasPrefix(physicalRoot + "/") else { return nil }
                 return String(physicalPath.dropFirst(physicalRoot.count + 1))
             }
@@ -188,6 +188,10 @@ final class BusinessDatabaseMigration {
         let journalKey = "migration_pending_sources_v1"
         let journalRaw = try database.driver.readRows("SELECT value FROM tb_container_meta WHERE key=?", bindings: [.text(journalKey)]) { $0.text(0) }.first ?? nil
         let journal = try journalRaw.map { try JSONDecoder().decode([String: String].self, from: Data($0.utf8)) } ?? [:]
+        let recorded = try database.driver.readRows("SELECT source_path,logical_path,store_id,module FROM tb_legacy_inputs") {
+            RecordedInput(sourcePath: $0.text(0) ?? "", logicalPath: $0.text(1) ?? "", storeID: $0.text(2) ?? "", module: $0.text(3) ?? "")
+        }
+        let inputs = try reconcileInputAliases(inputs, recorded: recorded, journal: journal, database: database)
         var discovered = Dictionary(uniqueKeysWithValues: inputs.map { ($0.source.path, $0.store.id) })
         var pending = exists ? inputs.filter { !known.contains($0.source.path) || journal[$0.source.path] != nil } : inputs
         let activation = try database.driver.readRows("SELECT value FROM tb_container_meta WHERE key='activation_state'") { $0.text(0) }.first ?? nil
@@ -314,7 +318,7 @@ final class BusinessDatabaseMigration {
             }
             let imported = try database.importSnapshot(normalized, into: store, backupURL: backup,
                 replaceExisting: !exists || journal[input.source.path] != nil,
-                skipAlreadyCommitted: true, requireCommittedImportForReplacement: true)
+                skipAlreadyCommitted: true, requireCommittedImportForReplacement: true, legacySourceURL: input.source)
             if let reusable, imported != reusable.imported { throw BusinessStoreError.sourceChanged }
             try fileManager.setAttributes([.posixPermissions: 0o400], ofItemAtPath: normalized.path)
             if store.module == "exact.swift.stage" {
@@ -443,8 +447,9 @@ final class BusinessDatabaseMigration {
         let name = original.deletingPathExtension().lastPathComponent
         guard original.pathExtension == "sqlite", name.hasPrefix("original-"),
               UUID(uuidString: String(name.dropFirst("original-".count))) != nil,
-              original.deletingLastPathComponent() == folder.standardizedFileURL,
-              normalized == folder.appendingPathComponent("normalized-" + String(name.dropFirst("original-".count)) + ".sqlite").standardizedFileURL else { return nil }
+              BusinessSQLiteRoutes.resolvedDirectoryIdentity(original.deletingLastPathComponent()) == BusinessSQLiteRoutes.resolvedDirectoryIdentity(folder),
+              BusinessSQLiteRoutes.resolvedDirectoryIdentity(normalized.deletingLastPathComponent()) == BusinessSQLiteRoutes.resolvedDirectoryIdentity(folder),
+              normalized.lastPathComponent == "normalized-" + String(name.dropFirst("original-".count)) + ".sqlite" else { return nil }
         for url in [folder, receiptURL, original, normalized] {
             guard let attributes = try? fileManager.attributesOfItem(atPath: url.path),
                   attributes[.type] as? FileAttributeType == (url == folder ? .typeDirectory : .typeRegular) else { return nil }
@@ -470,6 +475,77 @@ final class BusinessDatabaseMigration {
         }
     }
 
+    private struct RecordedInput {
+        let sourcePath: String, logicalPath: String, storeID: String, module: String
+    }
+
+    /// An alias spelling is not a new legacy input. Keep the durable journal,
+    /// receipt and catalog keys only when both paths still name the same regular
+    /// file through the same resolved parent and leaf. Equal contents, a matching
+    /// basename, or a hard link at a different path cannot authorize relocation.
+    private static func reconcileInputAliases(_ inputs: [Input], recorded: [RecordedInput],
+        journal: [String: String], database: CodexBusinessDatabase) throws -> [Input] {
+        var owners: [String: Set<String>] = [:]
+        for item in recorded { owners[item.sourcePath, default: []].insert(item.storeID) }
+        for (path, storeID) in journal { owners[path, default: []].insert(storeID) }
+        guard !inputs.isEmpty, !owners.isEmpty else { return inputs }
+        let catalog = try database.driver.readRows("SELECT store_id,logical_path,module,source_identity FROM tb_stores") {
+            ($0.text(0) ?? "", $0.text(1) ?? "", $0.text(2) ?? "", $0.text(3) ?? "")
+        }
+        let catalogByID = Dictionary(grouping: catalog, by: { $0.0 })
+        let recordedByPath = Dictionary(grouping: recorded, by: \.sourcePath)
+        func canonical(_ url: URL) -> URL {
+            BusinessSQLiteRoutes.resolvedDirectoryIdentity(url.deletingLastPathComponent())
+                .appendingPathComponent(url.lastPathComponent).standardizedFileURL
+        }
+        var aliases: [String: [String]] = [:]
+        for path in owners.keys {
+            let url = URL(fileURLWithPath: path).standardizedFileURL
+            guard path.hasPrefix("/"), url.path == path else { continue }
+            aliases[canonical(url).path, default: []].append(path)
+        }
+        func sameSource(_ path: String, _ source: URL) -> Bool {
+            let previous = URL(fileURLWithPath: path).standardizedFileURL
+            guard path.hasPrefix("/"), previous.path == path,
+                  canonical(previous) == canonical(source) else { return false }
+            var old = stat(), new = stat()
+            guard lstat(previous.path, &old) == 0, old.st_mode & S_IFMT == S_IFREG,
+                  lstat(source.path, &new) == 0, new.st_mode & S_IFMT == S_IFREG else { return false }
+            return old.st_dev == new.st_dev && old.st_ino == new.st_ino
+        }
+        return try inputs.map { input in
+            let matches = (aliases[canonical(input.source).path] ?? []).filter { sameSource($0, input.source) }
+            guard matches.count <= 1 else { throw Failure.unsafeInput(input.source.path) }
+            guard let previous = matches.first else { return input }
+            guard owners[previous] == Set([input.store.id]) else { throw Failure.unsafeInput(input.source.path) }
+            let receipts = recordedByPath[previous] ?? []
+            guard receipts.allSatisfy({ $0.storeID == input.store.id && $0.module == input.store.module
+                && canonical(URL(fileURLWithPath: $0.logicalPath)) == canonical(input.store.logicalURL) }) else {
+                throw Failure.unsafeInput(input.source.path)
+            }
+            let registered = catalogByID[input.store.id] ?? []
+            guard registered.count <= 1 else { throw Failure.unsafeInput(input.source.path) }
+            let logicalURL: URL
+            if let old = registered.first {
+                guard old.2 == input.store.module, old.3 == input.store.sourceIdentity else {
+                    throw Failure.unsafeInput(input.source.path)
+                }
+                logicalURL = URL(fileURLWithPath: old.1)
+                // A crash can commit the namespace before tb_legacy_inputs.
+                // In that case the journal and original catalog path jointly
+                // establish ownership. A finished quarantined job can instead
+                // retain a later catalog path recorded by its owner.
+                if receipts.isEmpty, canonical(logicalURL) != canonical(input.store.logicalURL) {
+                    throw Failure.unsafeInput(input.source.path)
+                }
+            } else {
+                logicalURL = receipts.first.map { URL(fileURLWithPath: $0.logicalPath) } ?? input.store.logicalURL
+            }
+            return Input(source: URL(fileURLWithPath: previous),
+                store: BusinessSQLiteStore(containerURL: input.store.containerURL, logicalURL: logicalURL,
+                    module: input.store.module, sourceIdentity: input.store.sourceIdentity), frozen: input.frozen)
+        }
+    }
     private static func regularInputExists(_ url: URL) throws -> Bool {
         var status = stat()
         if lstat(url.path, &status) == 0 {

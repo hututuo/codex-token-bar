@@ -316,7 +316,7 @@ impl Container {
             names
         };
         let binding = StoreSqlBinding::new(store.id.clone(), store.prefix.clone(), names)?;
-        Ok(StoreConnection::bound(self.connection, binding)?)
+        Ok(StoreConnection::bound_with_owner(self.connection, binding, store.clone())?)
     }
 
     pub(crate) fn has_imported_objects(&self, store: &StoreSpec) -> BusinessStoreResult<bool> {
@@ -1388,6 +1388,15 @@ impl Container {
         }
         Ok(())
     }
+}
+
+pub(crate) fn store_proof_in_transaction(connection: &Connection, store: &StoreSpec) -> BusinessStoreResult<StoreProof> {
+    if connection.is_autocommit() || !valid_store_spec(store) { return Err(BusinessStoreError::InvalidStore); }
+    let version: Option<i64> = connection.query_row(
+        "SELECT user_version FROM tb_stores WHERE store_id=?1 AND module=?2 AND source_identity=?3 AND logical_path=?4 AND namespace_prefix=?5",
+        params![store.id,store.module,store.source_identity,store.logical_path,store.prefix], |row| row.get(0)).optional()?;
+    let version = version.ok_or(BusinessStoreError::InvalidStore)?;
+    proof_for(connection, "main", &store.prefix, true, Some(version))
 }
 
 fn backup_parent(path: &Path) -> &Path {

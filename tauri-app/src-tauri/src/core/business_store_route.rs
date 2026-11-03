@@ -5,6 +5,8 @@
 //! snapshots, then imported into one private namespace. Source files remain
 //! untouched.
 
+mod path_identity;
+
 use crate::core::app_paths;
 use crate::core::business_store_connection::StoreConnection;
 use crate::core::business_store_container::{Container, StoreProof, StoreSpec};
@@ -139,6 +141,57 @@ pub(crate) fn open_store(
 ) -> Result<StoreConnection, String> {
     open_store_inner(module, source_identity, logical_path, legacy_sources, true)
 }
+
+/// Exact resolves historical spellings on the same A connection used for
+/// registration/import. It never re-hashes an existing owner's durable ID.
+pub(crate) fn open_exact_store(path: &Path, legacy_sources: &[PathBuf]) -> Result<StoreConnection, String> {
+    open_exact_store_at(&container_path()?, path, legacy_sources, true)
+}
+
+pub(crate) fn open_exact_store_during_bootstrap(path: &Path, legacy_sources: &[PathBuf]) -> Result<StoreConnection, String> {
+    open_exact_store_at(&container_path()?, path, legacy_sources, false)
+}
+
+fn open_exact_store_at(container: &Path, path: &Path, legacy_sources: &[PathBuf], ready: bool) -> Result<StoreConnection, String> {
+    let address = path_identity::ExactAddress::new(path)?;
+    open_store_at_address_with_hook(container, "exact", &address.preferred.source_identity,
+        &address.preferred.logical_path, legacy_sources, ready, Some(&address), &|| Ok(()))
+}
+
+pub(crate) fn open_exact_registered_read_only(path: &Path, timeout: std::time::Duration) -> Result<Option<StoreConnection>, String> {
+    ensure_runtime_business_store_readable()?;
+    open_exact_registered_read_only_at(&container_path()?, path, timeout)
+}
+
+fn open_exact_registered_read_only_at(container_path: &Path, path: &Path, timeout: std::time::Duration) -> Result<Option<StoreConnection>, String> {
+    verify_ready_container(container_path)?;
+    let container = Container::open_read_only_existing(container_path, timeout).map_err(|error| error.to_string())?;
+    #[cfg(not(test))]
+    verify_active_container_identity(container_path)?;
+    let Some(store) = path_identity::ExactAddress::new(path)?.resolve(container.connection(), false)? else {
+        return Ok(None);
+    };
+    let pending: Option<String> = container.connection().query_row(
+        "SELECT value FROM tb_container_meta WHERE key=?1",
+        [format!("migration_pending_store_v1:{}", store.id)], |row| row.get(0),
+    ).optional().map_err(|error| error.to_string())?;
+    if let Some(json) = pending {
+        let batch: PendingLegacyImport = serde_json::from_str(&json).map_err(|error| format!("未完成导入记录无效：{error}"))?;
+        // The initialized marker is the commit point for retained bootstrap
+        // journals. A later, uncommitted owner must not look like empty history
+        // or leak its partially imported replacement through a reader.
+        if ![1, 2].contains(&batch.version) || !batch.bootstrap {
+            return Err("该来源的旧账恢复尚未完成，已保留其他已发布统计".into());
+        }
+    }
+    container.into_store_connection(&store).map(Some).map_err(|error| error.to_string())
+}
+
+fn resolve_exact_store_spec_on(connection: &Connection, path: &Path, writing: bool) -> Result<StoreSpec, String> {
+    let address = path_identity::ExactAddress::new(path)?;
+    Ok(address.resolve(connection, writing)?.unwrap_or(address.preferred))
+}
+
 
 /// Open an already-imported namespace without consulting its original file.
 /// Legacy readers use this after an old physical source has been archived or
@@ -579,12 +632,24 @@ fn open_store_at_with_hook(
     require_initialized: bool,
     after_import: &dyn Fn() -> Result<(), String>,
 ) -> Result<StoreConnection, String> {
+    open_store_at_address_with_hook(container_path, module, source_identity, logical_path,
+        legacy_sources, require_initialized, None, after_import)
+}
+
+fn open_store_at_address_with_hook(
+    container_path: &Path,
+    module: &str,
+    source_identity: &str,
+    logical_path: &str,
+    legacy_sources: &[PathBuf],
+    require_initialized: bool,
+    exact_address: Option<&path_identity::ExactAddress>,
+    after_import: &dyn Fn() -> Result<(), String>,
+) -> Result<StoreConnection, String> {
     if require_initialized {
         ensure_runtime_business_store_ready()?;
         verify_ready_container(container_path)?;
     }
-    let store =
-        StoreSpec::new(module, source_identity, logical_path).map_err(|error| error.to_string())?;
     let mut container = if require_initialized {
         Container::open_existing(&container_path).map_err(|error| error.to_string())?
     } else {
@@ -594,6 +659,10 @@ fn open_store_at_with_hook(
         #[cfg(not(test))]
         verify_active_container_identity(container_path)?;
     }
+    let store = match exact_address {
+        Some(address) => address.resolve(container.connection(), true)?.unwrap_or_else(|| address.preferred.clone()),
+        None => StoreSpec::new(module, source_identity, logical_path).map_err(|error| error.to_string())?,
+    };
     container
         .register(&store)
         .map_err(|error| error.to_string())?;
@@ -890,35 +959,22 @@ fn open_store_at_with_hook(
 }
 
 pub(crate) fn exact_store_spec(path: &Path) -> Result<StoreSpec, String> {
-    if let Some((family, name)) = exact_stage_candidate_address(path)? {
-        // A virtual stage must keep its identity when a physical staging
-        // directory appears later. Its catalog address also permits recovery
-        // without relying on fs::read_dir for namespace-only artifacts.
-        let mut digest = Sha256::new();
-        digest.update(b"tokenbar-exact-stage-candidate-v2\0");
-        digest.update(family.as_bytes());
-        digest.update(b"\0");
-        digest.update(name.as_bytes());
-        return StoreSpec::new("exact", format!("{:x}", digest.finalize()),
-            format!("exact/staging/{family}/{name}"))
-            .map_err(|error| error.to_string());
-    }
-    let identity = source_identity("exact", path)?;
-    StoreSpec::new("exact", identity.clone(), format!("exact/index/{identity}"))
-        .map_err(|error| error.to_string())
+    Ok(path_identity::ExactAddress::new(path)?.preferred)
 }
 
-fn exact_stage_candidate_address(path: &Path) -> Result<Option<(String, String)>, String> {
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else { return Ok(None) };
-    let Some((source, contract)) = name.strip_suffix(".sqlite3")
-        .and_then(|name| name.split_once(".candidate-v2-")) else { return Ok(None) };
-    let hash = |text: &str| text.len() == 64 && text.bytes().all(|byte| byte.is_ascii_hexdigit());
-    if !hash(source) || !hash(contract) { return Ok(None); }
-    let Some(directory) = path.parent() else { return Ok(None) };
-    let Some(index_name) = directory.file_name().and_then(|name| name.to_str())
-        .and_then(|name| name.strip_suffix(".staging")) else { return Ok(None) };
-    let index = directory.with_file_name(index_name);
-    Ok(Some((source_identity("exact", &index)?, name.to_owned())))
+pub(crate) fn existing_exact_store_spec(path: &Path, writing: bool) -> Result<StoreSpec, String> {
+    let container_path = container_path()?;
+    match std::fs::symlink_metadata(&container_path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return exact_store_spec(path),
+        Err(error) => return Err(format!("无法核对 Exact 所有者，未创建任何分区：{error}")),
+        Ok(metadata) if !metadata.file_type().is_file() => return Err("业务库 A 不是普通文件".into()),
+        Ok(_) => {}
+    }
+    // This is a pure owner lookup, also used before bootstrap activation. Its
+    // caller still owns admission; this helper cannot register or open a writer.
+    let container = Container::open_read_only_existing(&container_path, std::time::Duration::from_secs(30))
+        .map_err(|error| error.to_string())?;
+    resolve_exact_store_spec_on(container.connection(), path, writing)
 }
 
 pub(crate) fn exact_stage_candidates(index: &Path, source_digest: &str) -> Result<Vec<PathBuf>, String> {
@@ -932,7 +988,9 @@ pub(crate) fn exact_stage_candidates_on(connection: &Connection, index: &Path, s
     if source_digest.len()!=64 || !source_digest.bytes().all(|byte|byte.is_ascii_hexdigit()) {
         return Err("暂存来源摘要无效".into());
     }
-    let family = source_identity("exact", index)?;
+    let families = path_identity::candidate_families(index)?;
+    let mut paths = Vec::new();
+    for family in families {
     let prefix = format!("exact/staging/{family}/{source_digest}.candidate-v2-");
     let upper = format!("exact/staging/{family}/{source_digest}.candidate-v2.");
     let mut statement = connection.prepare(
@@ -945,17 +1003,18 @@ pub(crate) fn exact_stage_candidates_on(connection: &Connection, index: &Path, s
     let mut directory = index.as_os_str().to_os_string();
     directory.push(".staging");
     let directory = PathBuf::from(directory);
-    let mut paths = Vec::new();
     for entry in entries {
         let (logical, identity) = entry.map_err(|error| error.to_string())?;
         let name = logical.rsplit('/').next().ok_or("暂存候选缺少目录项")?;
         let path = directory.join(name);
-        let expected = exact_store_spec(&path)?;
-        if expected.logical_path != logical || expected.source_identity != identity {
+        if !path_identity::ExactAddress::new(&path)?.registered(connection)?.iter()
+            .any(|store| store.logical_path == logical && store.source_identity == identity) {
             return Err("暂存候选目录与业务分区身份不一致；已保留候选".into());
         }
         paths.push(path);
     }
+    }
+    paths.sort(); paths.dedup();
     Ok(paths)
 }
 
@@ -971,7 +1030,7 @@ pub(crate) fn exact_sources_already_consumed(
         return Ok(false);
     }
     let container = open_ready_container(&path)?;
-    let store = exact_store_spec(target)?;
+    let store = resolve_exact_store_spec_on(container.connection(), target, false)?;
     if !container.is_registered(&store).map_err(|e| e.to_string())?
         || !container.has_imported_objects(&store).map_err(|e| e.to_string())? {
         return Ok(false);
@@ -1009,7 +1068,7 @@ pub(crate) fn preserve_legacy_exact_migration(
     path: &Path,
     manifests: &[(PathBuf, String)],
 ) -> Result<(), String> {
-    let store = exact_store_spec(path)?;
+    let store = existing_exact_store_spec(path, true)?;
     let container = Container::open_existing(container_path()?).map_err(|e| e.to_string())?;
     if !container.is_registered(&store).map_err(|e| e.to_string())? {
         return Err("尚未导入旧 Exact 账本，拒绝登记迁移凭据".into());
@@ -1024,24 +1083,24 @@ pub(crate) fn preserve_legacy_exact_migration(
 }
 
 pub(crate) fn preserves_legacy_exact_migration(path: &Path) -> Result<bool, String> {
-    let store = exact_store_spec(path)?;
     let container = open_ready_container(&container_path()?)?;
+    let store = resolve_exact_store_spec_on(container.connection(), path, false)?;
     validate_legacy_exact_migration_receipt(&container, &store)
 }
 
 /// Registration alone is insufficient: a physical legacy candidate must not
 /// become a resumable A candidate simply because somebody opened its path.
 pub(crate) fn owns_exact_migration_artifact(path: &Path) -> Result<bool, String> {
-    let store = exact_store_spec(path)?;
     let container = open_ready_container(&container_path()?)?;
+    let store = resolve_exact_store_spec_on(container.connection(), path, false)?;
     Ok(container.is_registered(&store).map_err(|e| e.to_string())?
         && container.has_imported_objects(&store).map_err(|e| e.to_string())?
         && container.legacy_input_receipt(path).map_err(|e| e.to_string())?.is_none())
 }
 
 pub(crate) fn exact_store_has_objects(path: &Path) -> Result<bool, String> {
-    let store = exact_store_spec(path)?;
     let container = open_ready_container(&container_path()?)?;
+    let store = resolve_exact_store_spec_on(container.connection(), path, false)?;
     Ok(container.is_registered(&store).map_err(|e| e.to_string())?
         && container.has_imported_objects(&store).map_err(|e| e.to_string())?)
 }
@@ -1064,7 +1123,7 @@ pub(crate) fn exact_store_exists(path: &Path) -> Result<bool, String> {
     if !container_path.is_file() {
         return Ok(false);
     }
-    let store = exact_store_spec(path)?;
+    let store = existing_exact_store_spec(path, true)?;
     open_ready_container(&container_path)?
         .is_registered(&store)
         .map_err(|error| error.to_string())
@@ -1084,8 +1143,8 @@ pub(crate) fn clone_exact_store(
     source_path: &Path,
     target_path: &Path,
 ) -> Result<StoreProof, String> {
-    let source = exact_store_spec(source_path)?;
-    let target = exact_store_spec(target_path)?;
+    let source = existing_exact_store_spec(source_path, true)?;
+    let target = existing_exact_store_spec(target_path, true)?;
     let source_connection = open_store(
         "exact",
         &source.source_identity,
@@ -1110,8 +1169,8 @@ pub(crate) fn remove_exact_store(path: &Path) -> Result<bool, String> {
     if !container_path.is_file() {
         return Ok(false);
     }
-    let store = exact_store_spec(path)?;
     let mut container = open_ready_container(&container_path)?;
+    let store = resolve_exact_store_spec_on(container.connection(), path, true)?;
     if !container
         .is_registered(&store)
         .map_err(|error| error.to_string())?
@@ -1125,7 +1184,7 @@ pub(crate) fn remove_exact_store(path: &Path) -> Result<bool, String> {
 }
 
 pub(crate) fn seal_exact_store(path: &Path) -> Result<(), String> {
-    let store = exact_store_spec(path)?;
+    let store = existing_exact_store_spec(path, true)?;
     open_ready_container(&container_path()?)?
         .seal_store(&store, now_unix())
         .map(|_| ())
@@ -1135,7 +1194,7 @@ pub(crate) fn seal_exact_store(path: &Path) -> Result<(), String> {
 pub(crate) fn exact_store_observation(
     path: &Path,
 ) -> Result<Option<(u64, i64, String, f64)>, String> {
-    let store = exact_store_spec(path)?;
+    let store = existing_exact_store_spec(path, true)?;
     open_ready_container(&container_path()?)?
         .seal_observation(&store)
         .map_err(|error| error.to_string())
@@ -1150,7 +1209,7 @@ pub(crate) fn attach_exact_store_alias(
     if !container_path.is_file() {
         return Err("业务数据库 A 不存在，不能附加精确 token 暂存分区".into());
     }
-    let store = exact_store_spec(path)?;
+    let store = existing_exact_store_spec(path, true)?;
     let container = open_ready_container(&container_path)?;
     if !container
         .is_registered(&store)

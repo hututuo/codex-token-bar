@@ -14,6 +14,54 @@ pub(super) fn verify_scale_fixture(home: &Path) -> Result<serde_json::Value, Str
     scale_fixture::verify_scale(home)
 }
 
+mod pending_preservation;
+mod missing_source;
+
+/// Publication consumes these complete durable records. Do not silently
+/// discard unknown historical fields when clearing the pending generation.
+pub(super) fn verify_pending_history_layout(db: &Connection) -> Result<(), String> {
+    for (table, expected) in [("pending_event_rows", FIELDS), ("usage_ledger_pending_bindings", BINDINGS), ("pending_fingerprints", "source_id,fingerprint")] {
+        let mut columns = db.prepare(&format!("PRAGMA table_xinfo({table})")).map_err(|error| error.to_string())?;
+        let mut rows = columns.query([]).map_err(|error| error.to_string())?;
+        let mut wanted = expected.split(',');
+        while let Some(row) = rows.next().map_err(|error| error.to_string())? {
+            if wanted.next() != Some(row.get::<_, String>(1).map_err(|error| error.to_string())?.as_str())
+                || row.get::<_, i64>(6).map_err(|error| error.to_string())? != 0 {
+                return Err(format!("{table} 含未知字段布局，不能替换旧记录"));
+            }
+        }
+        if wanted.next().is_some() { return Err(format!("{table} 缺少旧记录字段")); }
+    }
+    Ok(())
+}
+
+pub(super) fn retain_pending_when_source_missing(
+    db: &Connection,
+    source_id: i64,
+    generation: i64,
+) -> Result<bool, String> {
+    missing_source::retain(db, source_id, generation)
+}
+
+pub(super) fn snapshot_pending_import(
+    db: &Connection,
+    source_id: i64,
+    target_generation: i64,
+) -> Result<bool, String> {
+    pending_preservation::snapshot(db, source_id, target_generation)
+}
+
+pub(super) fn verify_pending_import(
+    db: &Connection,
+    source_id: i64,
+    had_snapshot: bool,
+) -> Result<(), String> {
+    pending_preservation::verify(db, source_id, had_snapshot)
+}
+
+#[cfg(test)]
+mod pr8_recovery_tests;
+
 const REVISION: &str = "2";
 const FIELDS: &str = "id,source_id,ordinal,timestamp,tokens,input_tokens,cached_input_tokens,output_tokens,reasoning_output_tokens,model,user_prompt_start,user_prompt_end,assistant_response_start,assistant_response_end,accounting_kind,reported_total_tokens,token_source_offset,legacy_tokens";
 const BINDINGS: &str = "event_id,source_id,raw_generation,raw_offset,user_prompt_start,user_prompt_end,assistant_response_start,assistant_response_end,fingerprint,available";
