@@ -294,6 +294,12 @@ jobs:
           }
           $env:PATH = "$nsis;$env:PATH"
           ./scripts/windows_update_faults.ps1
+      - name: Windows Exact path spelling source probe
+        shell: pwsh
+        run: |
+          rustup toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal --no-self-update
+          if ($LASTEXITCODE -ne 0) { throw 'Rust path probe toolchain setup failed' }
+          python scripts/cloud/probe_exact_path_spelling.py
 
   formed-upgrade:
     needs: source
