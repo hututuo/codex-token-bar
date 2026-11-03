@@ -30,6 +30,17 @@ struct ActivitySpeedSummaryView: View {
     private var unit: ActivityRateUnit { ActivityRateUnit(rawValue: unitRaw) ?? .tokens }
     private var mode: ActivitySpeedDisplayMode { .normalized(modeRaw) }
     private func title(_ client: String) -> String { SpeedColorOverrides.clientTitle("client:" + client) }
+    private func compactLegend(_ rows: [ActivityLiveSeries]) -> AttributedString {
+        var legend = AttributedString()
+        for (index, row) in rows.enumerated() {
+            if index > 0 { legend.append(AttributedString(" · ")) }
+            let name = row.client == "claudeDesktop" ? "Claude D" : row.client == "claudeCode" ? "Claude C" : title(row.client)
+            var label = AttributedString(name)
+            label.foregroundColor = ModelUsagePresentation.color(for: "client:" + row.client)
+            legend.append(label)
+        }
+        return legend
+    }
     private func value(_ point: ActivityLivePoint) -> Double? { unit.value(total: point.rate, rates: point.rates, exchangeRate: exchangeRate) }
     var body: some View {
         if compact, let onOpen {
@@ -61,9 +72,10 @@ struct ActivitySpeedSummaryView: View {
                 }
             }
             if compact {
-                Text(rows.map { title($0.client) }.joined(separator: " · "))
-                    .font(.system(size: 8)).foregroundStyle(.secondary)
+                Text(compactLegend(rows))
+                    .font(.system(size: 8, weight: .medium))
                     .lineLimit(1).truncationMode(.tail).frame(maxWidth: .infinity, alignment: .leading)
+                    .help(rows.map { title($0.client) }.joined(separator: " · "))
             } else if !rows.isEmpty {
                 HStack(spacing: 8) {
                     if rows.count > 1 { clientButton("全部", client: nil, selection: selection) }

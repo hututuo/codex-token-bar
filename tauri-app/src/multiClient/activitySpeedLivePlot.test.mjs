@@ -4,6 +4,18 @@ import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {withSsrModules} from '../test/ssrHarness.mjs';
 const row={client:'codex',points:[{time:100,rate:40,modelRates:[{model:'gpt-6.1-sol',tokensPerSecond:40}]},{time:102,rate:50,modelRates:[{model:'gpt-6.1-sol',tokensPerSecond:50}]}]};
+test('compact legend abbreviates Claude clients and uses each curve color',async()=>withSsrModules(async load=>{
+ const {ActivitySpeedLivePlot}=await load('/src/multiClient/ActivitySpeedLivePlot.tsx');
+ const {modelUsageColor}=await load('/src/components/modelUsagePresentation.ts');
+ const html=renderToStaticMarkup(React.createElement(ActivitySpeedLivePlot,{rows:[{...row,client:'claudeCode'},{...row,client:'claudeDesktop'}],asOf:103,compact:true}));
+ assert.match(html,/>Claude C</);assert.match(html,/>Claude D</);
+ for(const client of ['claudeCode','claudeDesktop']){
+  const color=modelUsageColor('client:'+client);
+  assert.ok(html.includes(`data-client-label="${client}" style="color:${color};font-weight:500"`));
+  assert.ok(html.includes(`stroke="${color}"`));
+ }
+ assert.match(html,/title="Claude CLI · Claude Desktop"/);
+}));
 test('compact and detail render one three-minute point-preserving line plot with only observed client labels',async()=>withSsrModules(async load=>{
  const {ActivitySpeedLivePlot}=await load('/src/multiClient/ActivitySpeedLivePlot.tsx');
  for(const compact of [false,true]){

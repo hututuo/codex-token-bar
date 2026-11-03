@@ -39,3 +39,14 @@
 - vendored Swift ParserBehaviorTests 独立包 17 项通过；完整 Swift/Rust/C# 云端结果待本次源码提交后记录。
 
 尚未打包、安装或重启本机正式版，未发布更新。
+
+## 本轮追加反馈与定向验证
+
+用户要求停止全量检查，后续只跑改动相关检查。已取消排队及运行中的全量任务；后续源码提交跳过自动全量 CI。手动 `claude_reader_only` 只运行 Windows 本地读取器和共享解析器自检，不运行账本升级、全量回归或打包。
+
+- 二级速度曲线图例改为与对应曲线同色的短标签：Claude C / Claude D；三级详细标签保留完整名称。
+- 本机费用未知的直接原因：价表包含 `claude-opus-5-5`，但现有多客户端事件模型只保留缓存写入总量。`apiCostMicroUSD` 遇到缓存写入大于零且 5 分钟/1 小时单价不同，会拒绝给出完整金额。本地六份近期 JSONL 的抽样 264 条 usage 均含 `cache_creation.ephemeral_5m_input_tokens` 和 `ephemeral_1h_input_tokens`，也均有非零 1 小时写入；当前账本 payload 丢掉了该拆分。不能默认按 5 分钟单价估填。此轮尚未改动该计账链路。
+- 本机 Desktop 未显示额度的原因：当前额度提供者仅读取 Code statusLine 产出的两种本地缓存，两份均不存在；Code 设置也未启用 statusLine 生产者。Desktop 正在运行/有会话用量，不代表当前提供者已取得 Desktop 额度。未发出 Anthropic 请求，未修改 Claude 配置。
+- Swift/TS 原始平滑源代码同样 11 帧输入对照，最大绝对差为 0。
+- 先前已完成的云端记录中，完整 Swift 模块成功编译，相关 ClaudeLocalRuntimeTests 8 项、ActivityRateSmoothingTests 3 项通过；Windows Rust 的 `claude_local_runtime::tests` 22 项通过。这些是已取消全量任务中的相关通过记录，不能记作整轮全量成功。
+- Windows 初轮 C# 编译的 CS0136 已修正；新加的 helper CI 命令补齐与发布脚本一致的 Nullable/ImplicitUsings 编译选项。其专用定向自检结果另记。

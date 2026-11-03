@@ -3,6 +3,7 @@ import {activityLivePaths,liveChartCeiling,ACTIVITY_LIVE_SECONDS,type ActivityLi
 import {activityRateText,activityRateValue,type ActivityRateUnit} from '../components/liveRate/activityRatePresentation';
 import {modelUsageColor} from '../components/modelUsagePresentation';
 const title=(client:string)=>({codex:'Codex',claudeCode:'Claude CLI',claudeDesktop:'Claude Desktop',gemini:'Gemini CLI',opencode:'OpenCode',deepseek:'DeepSeek'} as Record<string,string>)[client]??client;
+const compactTitle=(client:string)=>client==='claudeDesktop'?'Claude D':client==='claudeCode'?'Claude C':title(client);
 
 /** Small rolling view: memory only; no history query or persisted chart points. */
 export const ActivitySpeedLivePlot=memo(function ActivitySpeedLivePlot({rows,asOf,compact=false,unit='tok/s',fx=7.2,modeLabel="Agent Speed",onOpen}:{onOpen?:()=>void;rows:readonly ActivityLiveSeries[];asOf:number;compact?:boolean;unit?:ActivityRateUnit;fx?:number;modeLabel?:string}){
@@ -27,7 +28,7 @@ export const ActivitySpeedLivePlot=memo(function ActivitySpeedLivePlot({rows,asO
   if(compact&&rows.length===0)return null;
   const content=<div className={compact?'activity-live-chart is-compact':'activity-live-chart'}>
     <div className="activity-live-heading"><strong>{compact?'速度':'活动速率'}</strong><span>近3分钟</span>{!compact&&<small>{modeLabel}</small>}</div>
-    {compact&&rows.length>0&&<div className="activity-live-client-label" title={rows.map(row=>title(row.client)).join(" · ")}>{rows.map(row=>title(row.client)).join(" · ")}</div>}
+    {compact&&rows.length>0&&<div className="activity-live-client-label" title={rows.map(row=>title(row.client)).join(" · ")}>{rows.map((row,index)=><span key={row.client}>{index>0&&' · '}<span data-client-label={row.client} style={{color:modelUsageColor('client:'+row.client),fontWeight:500}}>{compactTitle(row.client)}</span></span>)}</div>}
     {!compact&&rows.length>0&&<div className="activity-live-clients" role="group" aria-label="速度客户端">{rows.length>1&&<button aria-pressed={selection===null} onClick={()=>setSelectedClient(null)}>全部</button>}{rows.map(row=><button key={row.client} style={{color:modelUsageColor('client:'+row.client)}} aria-pressed={selection===row.client||rows.length===1} onClick={()=>setSelectedClient(row.client)}>{title(row.client)}</button>)}</div>}
     <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="最近3分钟活动速率" onPointerLeave={compact?undefined:()=>setHoverTime(null)} onPointerMove={compact?undefined:event=>{const box=event.currentTarget.getBoundingClientRect(),position=(event.clientX-box.left)/box.width*width;const next=position<left||position>right?null:Math.round(start+(position-left)/(right-left)*ACTIVITY_LIVE_SECONDS);setHoverTime(old=>old===next?old:next);}}>
       <defs><clipPath id={id+'clip'}><rect x="0" y={top-3} width={width} height={bottom-top+6}/></clipPath></defs>

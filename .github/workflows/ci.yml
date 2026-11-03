@@ -12,6 +12,10 @@ on:
         description: 'Optional exact 40-character source commit; empty means this workflow commit'
         type: string
         default: ''
+      claude_reader_only:
+        description: 'Only compile and exercise the local Claude reader and shared parser; no full regression or packaging'
+        type: boolean
+        default: false
       formed_release:
         description: 'Optional real historical producer: 0.9.8, 0.9.9, 0.9.10, 0.9.11, or all'
         type: string
@@ -76,7 +80,7 @@ jobs:
 
   frontend:
     needs: source
-    if: ${{ !inputs.formed_only && !inputs.scale_only }}
+    if: ${{ !inputs.formed_only && !inputs.scale_only && !inputs.claude_reader_only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -110,7 +114,7 @@ jobs:
 
   swift:
     needs: source
-    if: ${{ !inputs.formed_only && !inputs.scale_only }}
+    if: ${{ !inputs.formed_only && !inputs.scale_only && !inputs.claude_reader_only }}
     runs-on: macos-26
     timeout-minutes: 35
     env:
@@ -172,7 +176,7 @@ jobs:
 
   native:
     needs: source
-    if: ${{ !inputs.formed_only && !inputs.scale_only }}
+    if: ${{ !inputs.formed_only && !inputs.scale_only && !inputs.claude_reader_only }}
     strategy:
       fail-fast: false
       matrix:
@@ -282,7 +286,7 @@ jobs:
 
   windows-updater:
     needs: source
-    if: ${{ !inputs.formed_only && !inputs.scale_only }}
+    if: ${{ !inputs.formed_only && !inputs.scale_only && !inputs.claude_reader_only }}
     runs-on: windows-2025
     timeout-minutes: 10
     steps:
@@ -306,6 +310,27 @@ jobs:
           rustup toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal --no-self-update
           if ($LASTEXITCODE -ne 0) { throw 'Rust path probe toolchain setup failed' }
           python scripts/cloud/probe_exact_path_spelling.py
+
+  claude-reader:
+    needs: source
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.claude_reader_only }}
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.source.outputs.sha }}
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '10.0.303'
+      - name: Local Claude IPC and shared parser self-tests
+        shell: pwsh
+        run: |
+          dotnet run --project tools/AgentSpeedReporter/AgentSpeedReporter.csproj --configuration Release -p:LangVersion=latest -p:Nullable=enable -p:ImplicitUsings=enable -- --self-test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet run --project tools/ClaudeLocalReader/ClaudeLocalReader.csproj --configuration Release -p:LangVersion=latest -p:Nullable=enable -p:ImplicitUsings=enable -- --self-test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   formed-upgrade:
     needs: source
