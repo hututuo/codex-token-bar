@@ -640,6 +640,8 @@ final class BusinessDatabaseMigrationExactAppendTests: XCTestCase {
             "UPDATE source_representations SET logical_size=logical_size+1 WHERE source_id=2",
             "UPDATE source_representations SET physical_stamp='contradicts-recorded-observation' WHERE source_id=2",
             "UPDATE sources SET current_model='forged-checkpoint' WHERE source_id=2",
+            "UPDATE sources SET accounting_state=json_set(accounting_state,'$.future_checkpoint_field','must-not-be-discarded') WHERE source_id=2",
+            "UPDATE sources SET accounting_state=json_set(accounting_state,'$.counterReset',json('true')) WHERE source_id=2",
             "UPDATE source_chunks SET sha256=printf('%064d',0) WHERE source_id=2",
             "UPDATE event_enrichment_sources SET imported_generation='unproved-generation' WHERE source_id=2",
             "INSERT INTO usage_ledger_identities SELECT source_id,X'010203',source_offset FROM events WHERE source_id=2 LIMIT 1"
@@ -847,6 +849,34 @@ final class BusinessDatabaseMigrationExactAppendTests: XCTestCase {
         XCTAssertEqual(try raw.withConnection { try CodexBusinessDatabase.proof($0) }, sourceProof)
         XCTAssertEqual(try Data(contentsOf: f.source), sourceBytes)
         XCTAssertEqual(try Data(contentsOf: f.files[0]), Data(rewritten.utf8))
+    }
+
+    func testEquivalentCheckpointJSONKeyOrderDoesNotRejectAnUnchangedSource() throws {
+        let f = try fixture()
+        let receipt = try freeze(f)
+        try append(17, second: 3, to: f.files[0])
+        _ = try synchronize(f)
+        let raw = SQLiteDatabaseDriver(url: f.source, bypassBusinessRoutes: true)
+        let encoded = try XCTUnwrap(try raw.readRows("SELECT accounting_state FROM sources WHERE source_id=2") { $0.text(0) }.first ?? nil)
+        let state = try UsageAccountingState.decode(encoded)
+        // Deliberately reverse lexical object order, without modifying values.
+        // This also avoids depending on the host JSONEncoder's random seed.
+        let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(encoded.utf8)) as? [String: Any])
+        let members = try object.keys.sorted(by: >).map { key -> String in
+            let k = String(decoding: try JSONSerialization.data(withJSONObject: key, options: .fragmentsAllowed), as: UTF8.self)
+            let v = String(decoding: try JSONSerialization.data(withJSONObject: object[key]!, options: [.fragmentsAllowed, .sortedKeys]), as: UTF8.self)
+            return k + ":" + v
+        }
+        let reordered = "{ " + members.joined(separator: ", ") + " }"
+        XCTAssertNotEqual(reordered, encoded)
+        XCTAssertEqual(try UsageAccountingState.decode(reordered), state)
+        try raw.execute("UPDATE sources SET accounting_state=? WHERE source_id=2", bindings: [.text(reordered)])
+        let before = try typedRows(raw, table: "events")
+        XCTAssertTrue(try CodexBusinessDatabase.snapshot(f.source, covers: URL(fileURLWithPath: receipt.normalizedPath), module: "exact.swift"))
+        try BusinessDatabaseMigration.migrate(f.configuration, availableBytes: 1 << 33)
+        let active = SQLiteDatabaseDriver(url: f.source)
+        XCTAssertEqual(try typedRows(active, table: "events"), before)
+        XCTAssertEqual(try active.readRows("SELECT SUM(tokens) FROM events") { $0.int(0) }, [482])
     }
 
 }

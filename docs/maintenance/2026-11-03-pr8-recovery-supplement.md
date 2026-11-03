@@ -26,3 +26,7 @@
 - Windows另有实际native反例：旧PathBuf join保存“本机前缀+正斜杠相对父目录+本机分隔叶子”的混合路径，后续canonical调用丢失该拼写。PR8原候选也未涵盖；已增加与请求组件等价、数量随组件线性增长的legacy join拼写，仍通过完整catalog tuple/多owner proof选取，未扩大到任意目录扫描。
 - Swift几条期望不能照搬PR8：本分支助手历史标记仅挂在相应事件，不能要求同一回复的两条用量都重复标记；未变化来源也不一定新增optional representation hint。测试改为保留每条数值、模型/prompt、已知助手标记及新旧raw binding的对应关系；攻击fixture显式构造基于实际observation的可选hint，要求UPDATE实际改到行，避免“0行UPDATE”误判漏保。
 - 仍在定位v3 pre-compaction receipt正向接续的误拒，未放宽未知状态或删除该正向测试。尚未采用最后版本、未替换或发布。
+
+### 检查点编码的确定反例
+
+实际编译本分支 `TokenUsageAccounting.swift` + `CodexCompactionAccounting.swift` 后，将同一 `UsageAccountingState` 编码100次，本地观察到5种不同TEXT，解码后状态全部相等。新深验对未改变size/probe/generation的来源逐字比较 accounting_state 会误拒这种合法状态；这与金融事实不属于同一层。小修保留其余checkpoint列的SQLite类型/值精确比较，JSON双方仍须先完整round-trip（拒绝未知字段），之后比较已知状态语义，仅保留已有限定的v3缺省/已证明空compaction例外。新增重排键正向接续、未知字段和实际状态变化拒绝用例。它是独立复现的误拒；是否同时解决首轮v3用例仍以新SHA完整回归为准，不靠静态推断宣布通过。

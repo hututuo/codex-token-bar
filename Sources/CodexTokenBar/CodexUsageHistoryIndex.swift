@@ -681,10 +681,18 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                             let checkpoint = """
                                 SELECT source_id,append_ready,resume_offset,previous_total_tokens,fork_replay_started_at,
                                     is_skipping_fork_replay,is_explicit_subagent_fork,last_skipped_fork_replay_token_at,
-                                    current_model,accounting_state FROM main.sources WHERE source_id=?
+                                    current_model FROM main.sources WHERE source_id=?
                                 """
+                            // Both JSON values passed the complete round-trip
+                            // validator above. Compare known checkpoint state,
+                            // not JSON object key order; unknown keys still fail.
+                            let priorParser = try previous.readRows("SELECT parser_revision FROM main.event_enrichment_sources WHERE source_id=?",
+                                bindings: [.int64(source.id)]) { $0.text(0) }.first ?? nil
                             guard try ExactRetryAppendCoverage.rows(current, checkpoint, cover: previous, checkpoint,
-                                bindings: [.int64(source.id)], exactly: true) else { throw BusinessStoreError.proofMismatch }
+                                bindings: [.int64(source.id)], exactly: true),
+                                  retryAccountingStatesMatch(source.checkpoint?.parserState.accountingState,
+                                    prior.checkpoint?.parserState.accountingState, parserRevision: priorParser)
+                            else { throw BusinessStoreError.proofMismatch }
                         }
                     }
                 }
@@ -799,19 +807,25 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         return "current-prefix-parser-and-bindings"
     }
 
+    private func retryAccountingStatesMatch(_ current: UsageAccountingState?, _ retained: UsageAccountingState?,
+        parserRevision: String?) -> Bool {
+        if current == retained { return true }
+        // Only the released v3 missing field and a provably empty v4
+        // compaction object are equivalent. Real compaction state is history.
+        guard parserRevision == Self.preCompactionStagingRevision,
+              retained?.compaction == nil,
+              current?.compaction == CodexCompactionAccounting() else { return false }
+        var normalized = current
+        normalized?.compaction = nil
+        return normalized == retained
+    }
+
     private func retryParserStateMatches(_ parsed: CodexUsageAnalyzer.IndexedSessionParserState,
         _ recorded: CodexUsageAnalyzer.IndexedSessionParserState, parserRevision: String?) -> Bool {
-        if parsed == recorded { return true }
-        // Released v3 checkpoints predate compaction support. The v4 parser
-        // always writes an empty compaction object even for a plain token_count
-        // append. Only that provably empty additive state is equivalent to the
-        // old absent field. Keep the v3 receipt unchanged so normal backfill is
-        // still required; any actual compaction observation must be reconciled.
-        guard parserRevision == Self.preCompactionStagingRevision,
-              recorded.accountingState?.compaction == nil,
-              parsed.accountingState?.compaction == CodexCompactionAccounting() else { return false }
+        guard retryAccountingStatesMatch(parsed.accountingState, recorded.accountingState,
+            parserRevision: parserRevision) else { return false }
         var normalized = parsed
-        normalized.accountingState?.compaction = nil
+        normalized.accountingState = recorded.accountingState
         return normalized == recorded
     }
 
