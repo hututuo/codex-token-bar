@@ -47,8 +47,16 @@ fn main() {
  println!("SOURCE_EXTRACTED_PATH_INPUT_PROBE matched={matched} aliases={}",aliases.len());
  println!("legacy-input={legacy:?} preferred-input={preferred:?} temp-root={:?}",std::env::temp_dir());
  if !matched { for value in aliases { println!("candidate-input={value:?}"); } }
+ let extended=std::fs::canonicalize(&root).unwrap();
+ let mut extended_ok=true;
+ for relative in ["missing/cache/index.sqlite3", "not-created/index.sqlite3.staging/fixture.sqlite3", "runtime-home/.cache/exact-token-index.sqlite3"] {
+   let requested=extended.join(relative);
+   let result=compat::identities(&requested);
+   println!("VERBATIM_MISSING_PATH requested={requested:?} accepted={} result={result:?}",result.is_ok());
+   extended_ok &= result.is_ok();
+ }
  std::fs::remove_dir_all(&root).unwrap();
- if !matched {std::process::exit(1)}
+ if !matched || !extended_ok {std::process::exit(1)}
 }
 '''
 

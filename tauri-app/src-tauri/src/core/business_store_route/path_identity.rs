@@ -38,7 +38,12 @@ fn stable_path(path: &Path) -> Result<PathBuf, String> {
         }
         Ok(_) => return std::fs::canonicalize(path).map_err(|error| error.to_string()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(format!("无法确认 Exact 业务分区路径：{error}")),
+        Err(error) => {
+            return Err(format!(
+                "无法确认 Exact 业务分区路径 {}：{error}",
+                path.display()
+            ))
+        }
     }
     let mut ancestor = path;
     let mut suffix: Vec<OsString> = Vec::new();
@@ -226,7 +231,12 @@ impl ExactAddress {
             }
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("无法确认 Exact 业务分区路径：{error}")),
+            Err(error) => {
+                return Err(format!(
+                    "无法确认 Exact 业务分区路径 {}：{error}",
+                    path.display()
+                ))
+            }
         }
         let (preferred, mut candidates) = if let Some((index, name)) = candidate_parts(path) {
             let (preferred, aliases) = identities(&index)?;
