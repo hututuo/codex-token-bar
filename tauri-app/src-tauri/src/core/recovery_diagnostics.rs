@@ -314,7 +314,9 @@ fn prepare_session_with_limits(
     if created_final {
         let mut file = create_new_file(&marker).ok()?;
         file.write_all(OWNER_MARKER).ok()?;
-        file.sync_all().ok()?;
+        // This marker owns best-effort logs, never accounting or recovery
+        // receipts. A lost/partial marker disables future logging/GC safely;
+        // it must not force a startup fsync before the real ledger can open.
     }
     if !marker_has_exact_owner(&marker) {
         return None;
@@ -928,6 +930,8 @@ fn unix_now_fractional() -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::business_store_container::{Container, StoreSpec};
+    use rusqlite::{params, Connection};
     use std::{fs, time::Duration};
     use tempfile::tempdir;
 
@@ -1222,5 +1226,299 @@ mod tests {
         assert_eq!(summary.format, FORMAT);
         assert_eq!(summary.event.phase, Phase::Failure);
         assert_eq!(summary.event.code, Some(-7));
+    }
+
+    #[test]
+    fn diagnostics_modes_never_change_managed_legacy_import_or_later_target_rows() {
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        enum Mode {
+            Disabled,
+            Enabled,
+            UnknownDirectory,
+            InjectedWriteFailure,
+        }
+
+        for mode in [
+            Mode::Disabled,
+            Mode::Enabled,
+            Mode::UnknownDirectory,
+            Mode::InjectedWriteFailure,
+        ] {
+            let temp = tempdir().unwrap();
+            let root = temp.path().canonicalize().unwrap();
+            let source_path = root.join("old-quota.sqlite");
+            let snapshot_path = root.join("old-quota-frozen.sqlite");
+            let container_path = root.join("business-a.sqlite");
+            let retention_backup = root.join("retention-backup.sqlite");
+
+            {
+                let old = Connection::open(&source_path).unwrap();
+                old.execute_batch(
+                    "PRAGMA user_version=9;
+                     CREATE TABLE quota_snapshots(
+                         id INTEGER PRIMARY KEY,
+                         account_key TEXT NOT NULL,
+                         used REAL NOT NULL,
+                         payload BLOB NOT NULL,
+                         nullable_note TEXT
+                     );
+                     INSERT INTO quota_snapshots VALUES(1,'legacy-account',10.25,x'00ff',NULL);
+                     CREATE TABLE quota_history_legacy_claims(name TEXT PRIMARY KEY,owner TEXT NOT NULL);
+                     INSERT INTO quota_history_legacy_claims VALUES('display','legacy-account');
+                     CREATE TABLE quota_history_maintenance(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+                     INSERT INTO quota_history_maintenance VALUES('policy_version','3'),('last_compacted_at','100');",
+                )
+                .unwrap();
+            }
+            Container::backup_snapshot(&source_path, &snapshot_path).unwrap();
+            let source_bytes = fs::read(&source_path).unwrap();
+            let snapshot_bytes = fs::read(&snapshot_path).unwrap();
+            let source_proof = Container::snapshot_proof_path(&snapshot_path).unwrap();
+            assert_eq!(source_proof.module_user_version, 9, "{mode:?}");
+            assert_eq!(source_proof.table_counts.get("quota_snapshots"), Some(&1), "{mode:?}");
+
+            let source_identity = format!("recovery-diagnostics-{mode:?}");
+            let logical_path = format!("quota/history/recovery-diagnostics-{mode:?}");
+            let store = StoreSpec::new("quota_history_legacy", source_identity, logical_path).unwrap();
+            let mut container = Container::open(&container_path).unwrap();
+            let diagnostics_root = root.join("support/recovery-diagnostics/v1");
+            let (diagnostics, blocked_path, unknown_note) = match mode {
+                Mode::Disabled => {
+                    let blocked = root.join("diagnostics-parent-is-a-file");
+                    fs::write(&blocked, b"keep obstruction").unwrap();
+                    (RecoveryDiagnostics::start(&blocked.join("v1")), Some(blocked), None)
+                }
+                Mode::Enabled | Mode::InjectedWriteFailure => {
+                    (RecoveryDiagnostics::start(&diagnostics_root), None, None)
+                }
+                Mode::UnknownDirectory => {
+                    fs::create_dir_all(&diagnostics_root).unwrap();
+                    let note = diagnostics_root.join("owner-notes.txt");
+                    fs::write(&note, b"unowned diagnostics data").unwrap();
+                    (RecoveryDiagnostics::start(&diagnostics_root), None, Some(note))
+                }
+            };
+
+            let preparing = diagnostics.record(Phase::Preparing, 0, 1, 0, None);
+            match mode {
+                Mode::Disabled | Mode::UnknownDirectory => {
+                    assert_eq!(preparing.status, RecordStatus::Disabled, "{mode:?}");
+                }
+                Mode::Enabled | Mode::InjectedWriteFailure => {
+                    assert!(
+                        matches!(preparing.status, RecordStatus::Buffered | RecordStatus::Flushed),
+                        "{mode:?}: {:?}",
+                        preparing.status
+                    );
+                }
+            }
+            if mode == Mode::InjectedWriteFailure {
+                let state = diagnostics.state.as_ref().unwrap();
+                let mut state = state.lock().unwrap();
+                state.fail_next_write = true;
+                state.last_flush = Instant::now() - FLUSH_INTERVAL;
+            }
+            let importing = diagnostics.record(Phase::Importing, 0, 1, 0, None);
+            match mode {
+                Mode::Disabled | Mode::UnknownDirectory => {
+                    assert_eq!(importing.status, RecordStatus::Disabled, "{mode:?}");
+                }
+                Mode::Enabled => {
+                    assert!(
+                        matches!(importing.status, RecordStatus::Buffered | RecordStatus::Flushed),
+                        "{mode:?}: {:?}",
+                        importing.status
+                    );
+                }
+                Mode::InjectedWriteFailure => {
+                    assert_eq!(importing.status, RecordStatus::WriteFailed, "{mode:?}");
+                }
+            }
+
+            let imported = container
+                .import_legacy_snapshot(
+                    &snapshot_path,
+                    &store,
+                    &source_path,
+                    &retention_backup,
+                    1.0,
+                    false,
+                )
+                .unwrap()
+                .expect("the original legacy source should be imported");
+            assert_eq!(imported, source_proof, "typed source proof differs: {mode:?}");
+            assert_eq!(container.proof(&store).unwrap(), imported, "{mode:?}");
+            let receipt = container.legacy_input_receipt(&source_path).unwrap().unwrap();
+            assert_eq!(receipt.store_id, store.id, "{mode:?}");
+            assert!(!receipt.retired, "{mode:?}");
+            assert_eq!(
+                receipt.source_digest,
+                format!("{}:{}", source_proof.schema_digest, source_proof.rows_digest),
+                "{mode:?}"
+            );
+
+            let target = container.into_store_connection(&store).unwrap();
+            target
+                .execute(
+                    "INSERT INTO quota_snapshots(id,account_key,used,payload,nullable_note)
+                     VALUES(2,'target-only-account',12.5,x'0001ff',NULL)",
+                    params![],
+                )
+                .unwrap();
+            drop(target);
+
+            let reopened = Container::open_existing(&container_path).unwrap();
+            let expanded_proof = reopened.proof(&store).unwrap();
+            assert_eq!(expanded_proof.row_count, imported.row_count + 1, "{mode:?}");
+            assert_eq!(
+                expanded_proof.table_counts.get("quota_snapshots"),
+                Some(&2),
+                "{mode:?}"
+            );
+            let target = reopened.into_store_connection(&store).unwrap();
+            let row: (String, f64, Vec<u8>) = target
+                .query_row(
+                    "SELECT account_key,used,payload FROM quota_snapshots WHERE id=2",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!(row, ("target-only-account".into(), 12.5, vec![0, 1, 255]), "{mode:?}");
+
+            assert_eq!(Container::snapshot_proof_path(&snapshot_path).unwrap(), source_proof, "{mode:?}");
+            assert_eq!(fs::read(&source_path).unwrap(), source_bytes, "old source changed: {mode:?}");
+            assert_eq!(fs::read(&snapshot_path).unwrap(), snapshot_bytes, "snapshot changed: {mode:?}");
+
+            let ready = diagnostics.record(Phase::Ready, 1, 1, 0, None);
+            if matches!(mode, Mode::Disabled | Mode::UnknownDirectory) {
+                assert_eq!(ready.status, RecordStatus::Disabled, "{mode:?}");
+            }
+            match mode {
+                Mode::Enabled => assert_eq!(diagnostics.close(), RecordStatus::Flushed),
+                Mode::Disabled | Mode::UnknownDirectory => {
+                    assert_eq!(diagnostics.close(), RecordStatus::Disabled);
+                }
+                Mode::InjectedWriteFailure => {
+                    assert_eq!(ready.status, RecordStatus::WriteFailed, "{mode:?}");
+                }
+            }
+            if let Some(blocked) = blocked_path {
+                assert_eq!(fs::read(blocked).unwrap(), b"keep obstruction");
+            }
+            if let Some(note) = unknown_note {
+                assert!(!diagnostics_root.join("owner.marker").exists());
+                assert_eq!(fs::read(note).unwrap(), b"unowned diagnostics data");
+            }
+        }
+    }
+
+    #[test]
+    fn diagnostics_import_overhead_profile_is_opt_in_and_keeps_five_percent_budget() {
+        if std::env::var("TOKENBAR_DIAGNOSTIC_PROFILE").as_deref() != Ok("1") {
+            return;
+        }
+
+        fn import_sample(with_diagnostics: bool, sample: usize, payload: &[u8]) -> Duration {
+            let temp = tempdir().unwrap();
+            let root = temp.path().canonicalize().unwrap();
+            let source_path = root.join("legacy.sqlite");
+            let snapshot_path = root.join("frozen.sqlite");
+            let container_path = root.join("business-a.sqlite");
+            {
+                let source = Connection::open(&source_path).unwrap();
+                source.execute_batch(
+                    "PRAGMA user_version=9;
+                     CREATE TABLE quota_snapshots(
+                         id INTEGER PRIMARY KEY,
+                         account_key TEXT NOT NULL,
+                         used REAL NOT NULL,
+                         payload BLOB NOT NULL
+                     );",
+                ).unwrap();
+                source.execute(
+                    "INSERT INTO quota_snapshots VALUES(1,'profile-account',20.5,?1)",
+                    [payload],
+                ).unwrap();
+            }
+            Container::backup_snapshot(&source_path, &snapshot_path).unwrap();
+            let source_proof = Container::snapshot_proof_path(&snapshot_path).unwrap();
+            let source_bytes = fs::read(&source_path).unwrap();
+            let store = StoreSpec::new(
+                "quota_history_legacy",
+                format!("diagnostic-profile-{sample}-{with_diagnostics}"),
+                format!("quota/history/diagnostic-profile/{sample}/{with_diagnostics}"),
+            ).unwrap();
+            let mut container = Container::open(&container_path).unwrap();
+
+            let started = Instant::now();
+            let diagnostics = with_diagnostics.then(|| {
+                let diagnostics = RecoveryDiagnostics::start(&root.join("support/recovery-diagnostics/v1"));
+                assert!(diagnostics.state.is_some(), "diagnostics profile could not start");
+                for phase in [Phase::Preparing, Phase::Importing] {
+                    let outcome = diagnostics.record(phase, 0, 1, 0, None);
+                    assert!(matches!(outcome.status, RecordStatus::Buffered | RecordStatus::Flushed));
+                }
+                diagnostics
+            });
+            let imported = container.import_legacy_snapshot(
+                &snapshot_path,
+                &store,
+                &source_path,
+                &snapshot_path,
+                1.0,
+                false,
+            ).unwrap().unwrap();
+            if let Some(diagnostics) = diagnostics {
+                assert!(matches!(
+                    diagnostics.record(Phase::Ready, 1, 1, 0, None).status,
+                    RecordStatus::Buffered | RecordStatus::Flushed
+                ));
+                assert_eq!(diagnostics.close(), RecordStatus::Flushed);
+            }
+            let elapsed = started.elapsed();
+            assert_eq!(imported, source_proof);
+            assert_eq!(fs::read(&source_path).unwrap(), source_bytes);
+            elapsed
+        }
+
+        let payload = vec![0xA5; 512 * 1024];
+        let mut with = Vec::with_capacity(7);
+        let mut without = Vec::with_capacity(7);
+        for sample in 0..7 {
+            if sample % 2 == 0 {
+                with.push(import_sample(true, sample, &payload).as_secs_f64());
+                without.push(import_sample(false, sample, &payload).as_secs_f64());
+            } else {
+                without.push(import_sample(false, sample, &payload).as_secs_f64());
+                with.push(import_sample(true, sample, &payload).as_secs_f64());
+            }
+        }
+        let median = |values: &mut [f64]| {
+            values.sort_by(f64::total_cmp);
+            values[values.len() / 2]
+        };
+        let with_median = median(&mut with);
+        let without_median = median(&mut without);
+        let overhead_percent = if without_median > 0.0 {
+            (with_median / without_median - 1.0) * 100.0
+        } else {
+            f64::INFINITY
+        };
+        println!(
+            "TOKENBAR_DIAGNOSTIC_PROFILE {}",
+            serde_json::json!({
+                "format": "tokenbar-recovery-diagnostic-import-profile-v1",
+                "samplesPerMode": 7,
+                "payloadBytes": payload.len(),
+                "withDiagnosticsMedianSeconds": with_median,
+                "withoutDiagnosticsMedianSeconds": without_median,
+                "medianOverheadPercent": overhead_percent,
+                "budgetPercent": 5.0,
+            })
+        );
+        assert!(
+            overhead_percent <= 5.0,
+            "diagnostic import overhead {overhead_percent:.2}% exceeds the 5% budget"
+        );
     }
 }

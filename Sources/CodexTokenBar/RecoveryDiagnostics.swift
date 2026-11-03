@@ -30,6 +30,10 @@ final class RecoveryDiagnostics: @unchecked Sendable {
     private var closed = false
     private let intakeLock = NSLock()
     private var enqueued = 0
+    #if DEBUG
+    private var failNextFlush = false
+    func failNextFlushForTesting() { queue.sync { failNextFlush = true } }
+    #endif
 
     init?(root: URL) {
         do {
@@ -80,7 +84,12 @@ final class RecoveryDiagnostics: @unchecked Sendable {
         guard !closed, !pending.isEmpty else { return }
         let batch = pending.reduce(into: Data()) { $0.append($1) }
         pending.removeAll(keepingCapacity: true); pendingBytes = 0
-        do { try handle.write(contentsOf: batch); written += batch.count }
+        do {
+            #if DEBUG
+            if failNextFlush { failNextFlush = false; throw CocoaError(.fileWriteOutOfSpace) }
+            #endif
+            try handle.write(contentsOf: batch); written += batch.count
+        }
         catch { closed = true; timer?.cancel(); timer = nil; try? handle.close() }
     }
 

@@ -78,6 +78,7 @@ fn an_unknown_empty_legacy_layout_is_preserved_and_refused() {
     container.register(&spec).unwrap();
     let writer=container.into_store_connection(&spec).unwrap();
     writer.execute_batch(&super::super::staging_schema_sql(false)).unwrap();
+    assert_eq!(pool.legacy_presence(&path).unwrap(),Some(false),"Warm the held name catalog before external DDL");
     writer.execute_batch("CREATE TABLE unknown_future(value TEXT)").unwrap();
     assert!(pool.legacy_presence(&path).is_err());
     assert_eq!(writer.query_row("SELECT COUNT(*) FROM manifest",[],|r|r.get::<_,i64>(0)).unwrap(),0);

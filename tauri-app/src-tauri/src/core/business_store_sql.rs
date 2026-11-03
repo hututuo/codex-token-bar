@@ -3,7 +3,7 @@
 //! Only SQL identifiers are rewritten. Literals, comments, and bind parameters
 //! are preserved byte-for-byte so data values never become table names.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::CString;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -32,7 +32,7 @@ struct Token {
     value: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SQLiteStoreNamespace {
     prefix: String,
     object_names: HashSet<String>,
@@ -47,6 +47,9 @@ pub(crate) struct StoreSqlBinding {
     namespace: SQLiteStoreNamespace,
     attached: HashMap<String, SQLiteStoreNamespace>,
     temporary_attached: HashSet<String>,
+    translations: HashMap<String, String>,
+    translation_order: VecDeque<String>,
+    translation_bytes: usize,
 }
 
 impl StoreSqlBinding {
@@ -72,6 +75,9 @@ impl StoreSqlBinding {
             namespace: SQLiteStoreNamespace::new(prefix, object_names),
             attached: HashMap::new(),
             temporary_attached: HashSet::new(),
+            translations: HashMap::new(),
+            translation_order: VecDeque::new(),
+            translation_bytes: 0,
         })
     }
 
@@ -79,8 +85,46 @@ impl StoreSqlBinding {
     /// into a query/update of `tb_stores`; all other SQL goes through the
     /// identifier-only namespace binder.
     pub(crate) fn sql(&mut self, sql: &str) -> Result<String, BindingError> {
+        if let Some(bound) = self.translations.get(sql) { return Ok(bound.clone()); }
+        let statements = split_complete_statements(sql)?;
+        let cacheable = statements.len() == 1 && tokenize(statements[0])?.iter()
+            .find(|token| token.kind != TokenKind::Trivia).is_some_and(|first| {
+                first.kind == TokenKind::Identifier && first.raw == first.value &&
+                    matches!(first.value.to_ascii_uppercase().as_str(), "SELECT"|"INSERT"|"UPDATE"|"DELETE"|"REPLACE"|"WITH")
+            });
+        // Cache translations, never rows/prepared plans. DDL/PRAGMA and every
+        // namespace/TEMP/attached mutation revoke all entries. Comparing the
+        // miss's namespace also protects failed binding that registered names.
+        if !cacheable { self.clear_translations(); }
+        let before = self.namespace.clone();
+        let result = self.bind_statements(statements);
+        if before != self.namespace { self.clear_translations(); }
+        if cacheable && before == self.namespace {
+            if let Ok(bound) = &result {
+                let bytes = sql.len().saturating_add(bound.len());
+                if bytes <= 512 * 1024 {
+                    while self.translations.len() >= 256 || self.translation_bytes + bytes > 512 * 1024 {
+                        let Some(old) = self.translation_order.pop_front() else { break; };
+                        if let Some(value) = self.translations.remove(&old) { self.translation_bytes -= old.len() + value.len(); }
+                    }
+                    self.translations.insert(sql.to_owned(), bound.clone());
+                    self.translation_order.push_back(sql.to_owned());
+                    self.translation_bytes += bytes;
+                }
+            }
+        }
+        result
+    }
+
+    fn clear_translations(&mut self) {
+        self.translations.clear();
+        self.translation_order.clear();
+        self.translation_bytes = 0;
+    }
+
+    fn bind_statements(&mut self, statements: Vec<&str>) -> Result<String, BindingError> {
         let mut output = String::new();
-        for statement in split_complete_statements(sql)? {
+        for statement in statements {
             if statement.trim().is_empty() {
                 continue;
             }
@@ -102,6 +146,7 @@ impl StoreSqlBinding {
     }
 
     pub(crate) fn set_temporary_namespace_enabled(&mut self, enabled: bool) {
+        self.clear_translations();
         self.namespace.set_temporary_namespace_enabled(enabled);
     }
 
@@ -299,6 +344,7 @@ impl StoreSqlBinding {
     }
 
     pub(crate) fn namespace_mut(&mut self) -> &mut SQLiteStoreNamespace {
+        self.clear_translations();
         &mut self.namespace
     }
 
@@ -308,6 +354,7 @@ impl StoreSqlBinding {
         prefix: String,
         object_names: impl IntoIterator<Item = String>,
     ) {
+        self.clear_translations();
         self.temporary_attached.remove(&alias.to_ascii_lowercase());
         self.attached.insert(
             alias.to_ascii_lowercase(),
@@ -316,6 +363,7 @@ impl StoreSqlBinding {
     }
 
     pub(crate) fn unregister_attached_namespace(&mut self, alias: &str) {
+        self.clear_translations();
         self.attached.remove(&alias.to_ascii_lowercase());
         self.temporary_attached.remove(&alias.to_ascii_lowercase());
     }
@@ -938,6 +986,71 @@ fn is_identifier_continue(byte: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cached_binding() -> StoreSqlBinding {
+        let id = "1".repeat(64);
+        StoreSqlBinding::new(&id, format!("s{id}_"), ["events".into()]).unwrap()
+    }
+
+    #[test]
+    fn translations_are_bounded_and_preserve_literals_parameters_and_live_sql_execution() {
+        let mut binding = cached_binding();
+        let sql = "SELECT 'events',?1 FROM events WHERE id=?2";
+        let first = binding.sql(sql).unwrap();
+        assert_eq!(binding.sql(sql).unwrap(), first);
+        assert!(first.contains("'events',?1"));
+        assert!(first.contains("id=?2"));
+        assert_eq!(binding.translations.len(), 1);
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        let physical = SQLiteStoreNamespace::quote(&binding.namespace().physical("events"));
+        db.execute_batch(&format!("CREATE TABLE {physical}(id INTEGER);INSERT INTO {physical} VALUES(1)")).unwrap();
+        let live = "SELECT id FROM events";
+        assert_eq!(db.query_row(&binding.sql(live).unwrap(),[],|row|row.get::<_,i64>(0)).unwrap(),1);
+        db.execute(&format!("UPDATE {physical} SET id=2"),[]).unwrap();
+        assert_eq!(db.query_row(&binding.sql(live).unwrap(),[],|row|row.get::<_,i64>(0)).unwrap(),2);
+        for n in 0..1024 { binding.sql(&format!("SELECT {n} FROM events")).unwrap(); }
+        assert!(binding.translations.len() <= 256);
+        assert!(binding.translation_bytes <= 512*1024);
+        let too_large = format!("SELECT '{}' FROM events", "x".repeat(512*1024));
+        binding.sql(&too_large).unwrap();
+        assert!(!binding.translations.contains_key(&too_large));
+    }
+
+    #[test]
+    fn attached_alias_rebind_and_revocation_never_reuse_a_cached_other_owner() {
+        let mut binding = cached_binding();
+        let sql = "SELECT id FROM stage.events";
+        binding.register_attached_namespace("stage", "old_".into(), ["events".into()]);
+        let old = binding.sql(sql).unwrap();
+        assert!(old.contains("old_events"));
+        binding.register_attached_namespace("stage", "new_".into(), ["events".into()]);
+        let new = binding.sql(sql).unwrap();
+        assert!(new.contains("new_events") && !new.contains("old_events"));
+        assert!(matches!(binding.sql("UPDATE stage.events SET id=1"),Err(BindingError::ReadOnlyAttachedStore)));
+        binding.unregister_attached_namespace("stage");
+        assert!(!binding.sql(sql).is_ok_and(|value| value.contains("new_events") || value.contains("old_events")));
+    }
+
+    #[test]
+    fn temp_mode_ddl_and_mutable_namespace_access_revoke_translation_authority() {
+        let mut binding = cached_binding();
+        let sql = "SELECT id FROM events";
+        binding.sql(sql).unwrap();
+        binding.sql("CREATE TEMP TABLE work(id INTEGER)").unwrap();
+        assert!(binding.translations.is_empty());
+        binding.sql(sql).unwrap();
+        binding.set_temporary_namespace_enabled(true);
+        assert!(binding.translations.is_empty());
+        binding.sql(sql).unwrap();
+        binding.namespace_mut().object_names.remove("events");
+        assert!(binding.translations.is_empty());
+        // The SQLite parser still receives a new statement. Missing physical
+        // objects cannot be hidden by a result/prepared-plan cache.
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        assert!(binding.sql(sql).map_or(true, |value| db.prepare(&value).is_err()));
+        binding.sql("PRAGMA user_version").unwrap();
+        assert!(binding.translations.is_empty());
+    }
 
     fn namespace() -> SQLiteStoreNamespace {
         SQLiteStoreNamespace::new("s123_", ["events".to_string(), "idx_events".to_string()])

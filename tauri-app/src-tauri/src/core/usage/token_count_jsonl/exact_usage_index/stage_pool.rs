@@ -68,7 +68,6 @@ pub(super) struct Pool {
 }
 struct LegacyCatalog {
     schema_version: i64,
-    data_version: i64,
     prefix_len: usize,
     objects: HashMap<String, Vec<(String, String)>>,
 }
@@ -361,9 +360,11 @@ impl Pool {
     }
     fn legacy_objects(&self, raw: &Connection, prefix: &str) -> Result<Vec<(String, String)>> {
         let version = raw.query_row("PRAGMA schema_version", [], |row| row.get::<_, i64>(0)).map_err(|e| e.to_string())?;
-        let data_version = raw.query_row("PRAGMA data_version", [], |row| row.get::<_, i64>(0)).map_err(|e| e.to_string())?;
         let mut cache = self.legacy_catalog.lock().map_err(|_| "旧暂存目录锁失败")?;
-        if let Some(catalog) = cache.as_ref().filter(|catalog| catalog.schema_version == version && catalog.data_version == data_version && catalog.prefix_len == prefix.len()) {
+        // Only names/types follow schema_version. Manifests, typed rows and
+        // seals remain uncached in the original validators; a normal DML
+        // commit must not force another 25k-object name scan.
+        if let Some(catalog) = cache.as_ref().filter(|catalog| catalog.schema_version == version && catalog.prefix_len == prefix.len()) {
             return Ok(catalog.objects.get(prefix).cloned().unwrap_or_default());
         }
         // The import catalog records ORIGINAL objects, not later runtime DDL.
@@ -387,7 +388,7 @@ impl Pool {
                 if values.len() < 5 { values.push((name[prefix.len()..].to_owned(), kind)); }
             }
         }
-        if keep { *cache = Some(LegacyCatalog { schema_version: version, data_version, prefix_len: prefix.len(), objects }); }
+        if keep { *cache = Some(LegacyCatalog { schema_version: version, prefix_len: prefix.len(), objects }); }
         else { *cache = None; }
         Ok(selected)
     }

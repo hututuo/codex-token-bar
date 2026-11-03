@@ -94,7 +94,7 @@ final class ExactStagePool: @unchecked Sendable {
     // streamed. These are private, auto-deleted read-only work areas, not ledgers.
     private var workCache: [String: CachedWork] = [:]
     private var workOrder: [String] = []
-    private var legacyCatalogVersion: (schema: Int, data: Int)?
+    private var legacyCatalogVersion: Int?
     private var legacyObjectCatalog: [String: [(String, String)]] = [:]
     private static let names = ["operations", "jobs", "event_rows", "fingerprints", "chunks", "publication_receipts"]
     private static let payloadTables = ["events": "event_rows", "fingerprints": "fingerprints", "chunks": "chunks"]
@@ -469,9 +469,11 @@ final class ExactStagePool: @unchecked Sendable {
 
     private func legacyObjects(prefix: String, on db: SQLiteDatabaseConnection) throws -> [(String, String)] {
         let schema = try db.readRows("PRAGMA schema_version") { $0.int(0) ?? -1 }.first ?? -1
-        let data = try db.readRows("PRAGMA data_version") { $0.int(0) ?? -1 }.first ?? -1
-        guard schema >= 0, data >= 0 else { throw Failure.invalid }
-        if let version = legacyCatalogVersion, version.schema == schema, version.data == data {
+        guard schema >= 0 else { throw Failure.invalid }
+        // Only names/types live here. Row commits change data_version without
+        // changing names. Rows/seals remain fresh; restored payloads retain a
+        // separate data_version fence against external modifications.
+        if legacyCatalogVersion == schema {
             return legacyObjectCatalog[prefix] ?? []
         }
         var objects: [String: [(String, String)]] = [:], selected: [(String, String)] = []
@@ -485,7 +487,7 @@ final class ExactStagePool: @unchecked Sendable {
             if bytes > 16 * 1024 * 1024 { keep = false; objects.removeAll() }
             if keep, (objects[owner]?.count ?? 0) < 5 { objects[owner, default: []].append((logical, type)) }
         }
-        legacyCatalogVersion = keep ? (schema, data) : nil
+        legacyCatalogVersion = keep ? schema : nil
         legacyObjectCatalog = keep ? objects : [:]
         return selected
     }

@@ -15,6 +15,8 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -35,6 +37,9 @@ INJECTION = ("tauri-app/src-tauri/src/lib.rs", "tauri-app/src-tauri/Cargo.toml",
     "tauri-app/src-tauri/src/formed_release_probe.rs", "tauri-app/src-tauri/examples/formed-release-probe.rs")
 PREFIX = "TOKENBAR_FORMED_REPORT "
 PROBE_PACKAGE = "codex-token-bar"
+RECOVERY_DIRECTORIES = ("support/codex-ledger-snapshots", "support/ledger-migration-backups")
+SCHEMA11_RECOVERY_SUFFIXES = (".schema11-candidate", ".schema11-rollback", ".schema11-migration.json")
+TRANSIENT_RECOVERY_SUFFIXES = ("-wal", "-shm", "-journal", "-lock", ".lock")
 EXAMPLE = '''fn main() {
     let args: Vec<_> = std::env::args_os().collect();
     if args.len()!=3 { eprintln!("required root and phase"); std::process::exit(2); }
@@ -155,6 +160,198 @@ def local_patch_packages(source: Path, manifest: Path) -> list[str]:
     return sorted(packages)
 
 
+def _canonical_json(value: object) -> bytes:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _file_sha256(path: Path) -> str:
+    digest_value = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest_value.update(chunk)
+    return digest_value.hexdigest()
+
+
+def _validate_synthetic_scenario(root: Path, owned_parent: Path) -> Path:
+    if root.is_symlink():
+        raise ValueError("Refusing to inspect a symlinked scenario root")
+    resolved_root = root.resolve(strict=True)
+    resolved_parent = owned_parent.resolve(strict=True)
+    if resolved_root.parent != resolved_parent:
+        raise ValueError("Recovery-material inspection is limited to a direct disposable scenario child")
+    marker = resolved_root / ".formed-release-fixture"
+    try:
+        marker_stat = marker.lstat()
+    except OSError as error:
+        raise ValueError("Disposable scenario ownership marker is unavailable") from error
+    if not stat.S_ISREG(marker_stat.st_mode) or marker.read_text(encoding="utf-8") != "synthetic-only-v1\n":
+        raise ValueError("Disposable scenario ownership marker is invalid")
+    return resolved_root
+
+
+def _transient_recovery_sidecar(path: Path) -> bool:
+    name = path.name.lower()
+    return name.endswith(TRANSIENT_RECOVERY_SUFFIXES)
+
+
+def _manifest_file(root: Path, path: Path) -> dict:
+    metadata = path.lstat()
+    if not stat.S_ISREG(metadata.st_mode):
+        raise ValueError(f"Recovery material is not a regular file: {path.relative_to(root)}")
+    if not path.resolve(strict=True).is_relative_to(root):
+        raise ValueError(f"Recovery material escapes the disposable scenario: {path}")
+    return {"path": path.relative_to(root).as_posix(), "size": metadata.st_size, "sha256": _file_sha256(path)}
+
+
+def _walk_owned_recovery_directory(root: Path, relative: str, files: dict[str, dict]) -> None:
+    directory = root / relative
+    try:
+        metadata = directory.lstat()
+    except FileNotFoundError:
+        return
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError(f"Owned recovery directory is not a regular directory: {relative}")
+
+    def fail_walk(error):
+        raise error
+
+    for current, directories, names in os.walk(directory, followlinks=False, onerror=fail_walk):
+        parent = Path(current)
+        for name in list(directories):
+            child = parent / name
+            child_stat = child.lstat()
+            if not stat.S_ISDIR(child_stat.st_mode):
+                raise ValueError(f"Symlink or non-directory in owned recovery directory: {child.relative_to(root)}")
+        for name in names:
+            path = parent / name
+            if _transient_recovery_sidecar(path):
+                continue
+            entry = _manifest_file(root, path)
+            files[entry["path"]] = entry
+
+
+def _migration_attempt_state(root: Path) -> dict:
+    database = root / "support/codex-ledger.sqlite"
+    metadata = database.lstat()
+    if not stat.S_ISREG(metadata.st_mode) or not database.resolve(strict=True).is_relative_to(root):
+        raise ValueError("A container is not a regular file in the disposable scenario")
+    uri = database.resolve(strict=True).as_uri() + "?mode=ro"
+    try:
+        connection = sqlite3.connect(uri, uri=True, timeout=5)
+        connection.execute("PRAGMA query_only=ON")
+        try:
+            tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            required = {"tb_container_meta", "tb_legacy_inputs", "tb_store_imports", "tb_stores"}
+            if not required.issubset(tables):
+                raise ValueError(f"A container is missing migration evidence tables: {sorted(required - tables)}")
+            metadata_rows = [list(row) for row in connection.execute(
+                "SELECT key,value FROM tb_container_meta "
+                "WHERE instr(lower(key),'migration')>0 OR instr(lower(key),'normaliz')>0 ORDER BY key")]
+
+            def table_digest(table: str, ordering: str) -> dict:
+                rows = [list(row) for row in connection.execute(f'SELECT * FROM "{table}" ORDER BY {ordering}')]
+                return {"rowCount": len(rows), "sha256": hashlib.sha256(_canonical_json(rows)).hexdigest()}
+
+            state = {
+                "metadata": {"rowCount": len(metadata_rows), "sha256": hashlib.sha256(_canonical_json(metadata_rows)).hexdigest()},
+                "tb_legacy_inputs": table_digest("tb_legacy_inputs", "source_path"),
+                "tb_store_imports": table_digest("tb_store_imports", "store_id,source_digest"),
+                "tb_stores": table_digest("tb_stores", "store_id"),
+            }
+            state["sha256"] = hashlib.sha256(_canonical_json(state)).hexdigest()
+            return state
+        finally:
+            connection.close()
+    except sqlite3.Error as error:
+        raise ValueError(f"Could not inspect migration metadata in the disposable A container: {error}") from error
+
+
+def recovery_material_snapshot(root: Path, owned_parent: Path) -> dict:
+    """Hash owned recovery files and A migration records; never use mtimes."""
+    root = _validate_synthetic_scenario(root, owned_parent)
+    files: dict[str, dict] = {}
+    for relative in RECOVERY_DIRECTORIES:
+        _walk_owned_recovery_directory(root, relative, files)
+
+    def fail_walk(error):
+        raise error
+
+    for current, directories, names in os.walk(root, followlinks=False, onerror=fail_walk):
+        parent = Path(current)
+        # Never follow an arbitrary link elsewhere in the disposable root.
+        directories[:] = [name for name in directories if not (parent / name).is_symlink()]
+        for name in names:
+            path = parent / name
+            if not name.endswith(SCHEMA11_RECOVERY_SUFFIXES) or _transient_recovery_sidecar(path):
+                continue
+            entry = _manifest_file(root, path)
+            files[entry["path"]] = entry
+
+    ordered_files = [files[name] for name in sorted(files)]
+    migration_state = _migration_attempt_state(root)
+    return {"files": ordered_files, "migrationState": migration_state}
+
+
+def _recovery_snapshot_sha256(snapshot: dict) -> str:
+    return hashlib.sha256(_canonical_json(snapshot)).hexdigest()
+
+
+def _recovery_snapshot_difference(before: dict, after: dict) -> dict:
+    left = {entry["path"]: entry for entry in before["files"]}
+    right = {entry["path"]: entry for entry in after["files"]}
+    return {
+        "added": sorted(right.keys() - left.keys()),
+        "removed": sorted(left.keys() - right.keys()),
+        "changed": sorted(path for path in left.keys() & right.keys() if left[path] != right[path]),
+        "migrationStateChanged": before["migrationState"] != after["migrationState"],
+    }
+
+
+def run_candidate_reopens(candidate_command: list[str], repository: Path, root: Path, owned_parent: Path,
+        env: dict[str, str], output: Path, release: str, scenario: str, on_pass=None) -> tuple[list[dict], dict]:
+    baseline = recovery_material_snapshot(root, owned_parent)
+    baseline_sha = _recovery_snapshot_sha256(baseline)
+    evidence = {
+        "scope": [*RECOVERY_DIRECTORIES, "scenario files ending in schema11 recovery suffixes", "A migration/normalization metadata and ownership tables"],
+        "baselineAfterResume": baseline,
+        "baselineSha256": baseline_sha,
+        "excludedTransientSidecars": list(TRANSIENT_RECOVERY_SUFFIXES),
+        "mtimeCompared": False,
+        "passes": [],
+    }
+    proofs = []
+    for ordinal in range(1, 4):
+        log = output / f"{scenario}-reopen-{ordinal}.log"
+        text = execute([*candidate_command, str(root), "reopen"], repository, env, log, timeout=300)
+        proof = parse_report(text, "reopen", release, scenario)
+        observed = recovery_material_snapshot(root, owned_parent)
+        difference = _recovery_snapshot_difference(baseline, observed)
+        retained = not any(difference.values())
+        pass_evidence = {
+            "ordinal": ordinal,
+            "independentCandidateProcess": True,
+            "recoveryMaterialsRetained": retained,
+            "manifestSha256": _recovery_snapshot_sha256(observed),
+            "migrationStateSha256": observed["migrationState"]["sha256"],
+        }
+        if not retained:
+            pass_evidence["difference"] = difference
+        evidence["passes"].append(pass_evidence)
+        proof.update({
+            "reopenOrdinal": ordinal,
+            "recoveryMaterialsRetained": retained,
+            "recoveryMaterialManifestSha256": pass_evidence["manifestSha256"],
+            "migrationStateSha256": pass_evidence["migrationStateSha256"],
+            "mtimeCompared": False,
+        })
+        proofs.append(proof)
+        if on_pass:
+            on_pass(proof, evidence)
+        if not retained:
+            raise ValueError(f"Independent reopen {ordinal} changed recovery materials: {json.dumps(difference, sort_keys=True)}")
+    return proofs, evidence
+
+
 def build_probe(repository: Path, source: Path, env: dict[str, str], log: Path) -> str:
     """Rebuild the injected package while retaining cached third-party crates.
 
@@ -222,7 +419,8 @@ def run(repository: Path, release: str, output: Path) -> dict:
     old = pinned_revision(repository, release)
     candidate = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repository, text=True).strip()
     report = {"schemaVersion": 1, "release": release, "releaseSha": old, "candidateSha": candidate,
-              "status": "RUNNING", "scenarios": [], "scope": "Actual Rust production; native Swift uses separate gates"}
+              "status": "RUNNING", "scenarios": [], "recoveryMaterialChecks": {},
+              "scope": "Actual Rust production; native Swift uses separate gates"}
     def save():
         (output / "report.json").write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8")
     save()
@@ -268,10 +466,19 @@ def run(repository: Path, release: str, output: Path) -> dict:
                             output / "interrupted-late-quota.log", timeout=30)
                     if not Path(state["legacyQuota"]+"-wal").is_file():
                         raise ValueError("Late observation was not left committed in a real source WAL")
-                for phase in ("resume", "reopen"):
-                    text = execute([str(bins["candidate"]), str(root), phase], repository, env,
-                        output / (scenario+"-"+phase+".log"), timeout=300)
-                    report["scenarios"].append(parse_report(text, phase, release, scenario)); save()
+                text = execute([str(bins["candidate"]), str(root), "resume"], repository, env,
+                    output / (scenario+"-resume.log"), timeout=300)
+                report["scenarios"].append(parse_report(text, "resume", release, scenario)); save()
+
+                def record_reopen(proof, evidence):
+                    report["scenarios"].append(proof)
+                    report["recoveryMaterialChecks"][scenario] = evidence
+                    save()
+
+                _, evidence = run_candidate_reopens([str(bins["candidate"])], repository, root, scratch,
+                    env, output, release, scenario, on_pass=record_reopen)
+                report["recoveryMaterialChecks"][scenario] = evidence
+                save()
                 shutil.make_archive(str(output / (scenario+"-synthetic-state")), "zip", root)
             report["status"] = "PASS"
         except Exception as error:

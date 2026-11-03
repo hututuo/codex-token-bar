@@ -234,3 +234,12 @@ Windows连接寿命作平台适配：实际锁定SQLite源码的`winOpen`使用F
 - 双端实际native压力都停在initial production snapshot，报`database is locked`，不是seed旧stage阶段。核对发现Rust pool的持久化初始化、payload、seal与cleanup使用DEFERRED事务；初始化先SELECT job状态，遇其他owner提交后升级写事务必得`SQLITE_BUSY_SNAPSHOT`。Swift对应mutator已是IMMEDIATE。现Rust同样在这些有界写操作开始时申请writer，真正的只读proof／私有work事务仍保持DEFERRED；未扩大整代发布或绕过busy失败。
 - 本地两个真实SQLite连接控制明确复现旧顺序错误码517；新helper的竞争writer返回正常busy5，主事务提交后可重试成功，封存digest／原payload仍一致。实际Rust production storage源码的选择性probe编译并执行通过，日志`c07-writer-pool-control.log`；其route/bootstrap依赖为stub，不算完整Tauri生产验证。新Rust整包回归覆盖这个先读后写反例和当前helper，不以延长超时掩盖问题。
 - Windows wrapper的cp1252中文输出错误已经通过实际TextIOWrapper回归复现；现显式UTF-8，保留真实子进程非零退出码与失败日志，拒绝产生成功profile。该修正仅影响云端fixture启动器，不改用户数据和会计逻辑。下一源码仍须完整双端／各版本／规模重测。
+
+### C05e／C06d · 双端绑定成本、目录失效和诊断实际导入验证
+
+- `b03d8d4b`自动标准整组 [41551696408](https://github.com/hututuo/codex-token-bar/actions/runs/41551696408) **PASS**，包括双native非cfg(test)生产fixture与8点跨进程强退、前端／更新器；Swift **2311项／36 skipped／0失败**，新sealed摘要之后同大小源替换回归已实际通过，另Swift Testing667项通过。这是标准整组，不含额外50万压力或新版三次reopen材料比较。b03规模／完整formed组合仍运行，不能借此宣布C07完成。
+- Rust补上与Swift同口径的有界SQL名字翻译复用：仅单条已验证DML／SELECT／WITH，最多256项／512KiB SQL，任何DDL、PRAGMA、owner namespace可变访问、TEMP模式或attached alias变化立即清空。不缓存数据、结果、prepared plan或权限判定，不省略SQLite执行。实际binder全部16项本地通过，包括alias撤销／换owner、readonly写拒绝、TEMP／DDL失效、字面量／参数及缓存后真实查询能读到新值。1万次同一SQL微基准0.205314→0.003546秒、输出147万字节相同；不冒充整轮性能结果。
+- 双端旧stage名称目录只按`schema_version`失效；之前把`data_version`也用于纯名称缓存，其他owner每次行提交都触发整个MAIN目录重扫。未缓存manifest行、事实值或seal；Swift恢复payload的独立`data_version`篡改保护保留，最终完整proof仍不省略。外部manifest提交仍被看见、外部未来DDL仍拒绝；新增warm-cache后DDL反例。Swift实际storage35项、Rust实际storage选择性13job／legacy／writer探针通过，仍不冒充全应用。
+- 诊断增加真实导入回归：Swift四种sink（关闭／开启／未知目录不可用／写失败）经过生产migration/router，逐类型proof、原source和目标后续新增账都保持；Rust对应经过实际Container backup/import和owner receipt。fail注入仅DEBUG／cfg(test)，release权威账本路径不变。Rust目录首建原有marker `sync_all`使诊断端到端开销测到10.69%；该marker不是权威回执，现只write_all，丢失／partial只会安全禁用日志／GC，真实账本FULL与回执同步不改。
+- 7对交替真实导入（含诊断start／Ready／close）本地选定storage模块：Swift关闭中位0.070152秒、开启0.072002秒，开销2.64%；Rust0.062536／0.061605秒，差异-1.49%属测量噪声，不称加速。原5%门限保留，并在完整scale组合双端启用。Swift2项、Rust诊断11项通过；这些不是能耗计量或安装后UI表现证据。
+- formed helper现有每个committed／interrupted场景的resume后再独立启动三次candidate；每次仍执行原typed/WAL/A/B/缺原文断言，同时用受管场景的已知备份、schema11材料与A迁移状态完整摘要验证没有新attempt、覆盖或重复备份。不用mtime、不删除任何材料，不把排除的正常WAL／SHM当备份。44项脚本／workflow回归通过，含真实三个PID和第二轮产生backup／attempt时拒收的反例；全部旧版本实际运行待新SHA。

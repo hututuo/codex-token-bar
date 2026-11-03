@@ -140,6 +140,8 @@ jobs:
           command -v git-lfs >/dev/null || brew install git-lfs
           bash scripts/prepare_tiktoken_lfs.sh
       - name: Swift tests and release-script contracts
+        env:
+          TOKENBAR_DIAGNOSTIC_PROFILE: ${{ inputs.scale && '1' || '' }}
         run: |
           set -o pipefail
           mkdir -p visual-previews
@@ -244,6 +246,8 @@ jobs:
           retention-days: 7
       - name: Full native regression including original pressure case
         if: ${{ !cancelled() }}
+        env:
+          TOKENBAR_DIAGNOSTIC_PROFILE: ${{ inputs.scale && '1' || '' }}
         shell: bash
         run: |
           set -euo pipefail
