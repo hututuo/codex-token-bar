@@ -272,3 +272,9 @@ Windows连接寿命作平台适配：实际锁定SQLite源码的`winOpen`使用F
 - 2344 Swift因新测试直接访问private extension里的scanner而在编译阶段拒绝，产品目录分支没有因该test运行。现测试通过公开`FoundationSessionManagementBackend.loadCatalog`及已有mock验证，未扩大产品成员可见性。原先被新增测试妨碍的全部回归要在下一SHA真正执行，不把parse当通过。
 - Rust导入现在保留刚刚完整验证过的私有只读stage，直接挂载同一快照，不再为实际导入完整还原第二份。封存签名在打开前、验证结果及挂载前必须一致；owner／contract／源前缀和原账务逻辑均保留，legacy分支不换算法。非cfg(test)生产fixture用线程局部计数强制一次导入只restore一次；没有跨尝试缓存、无第三业务库。语法解析通过，等待下一SHA的实际生产构建／fixture。
 - 依据原C05失败处理条款，新增[长事务补充评审](../design/2026-11-02-integrated-recovery-plan/长事务补充评审.md)。不改阈值、不拆半轮发布，不以纯模型特例另写记账。推荐评审锁外完整准备／锁内CAS及批量应用；**该结构切换尚未实施**。当前继续小修与正确性验证，不封候选，不替换或发布。
+
+### C07i · 401完整正确性回归通过，Windows压力结果与六项收尾方案
+
+- 最新产品40163c48的[标准组41563902354](https://github.com/hututuo/codex-token-bar/actions/runs/41563902354)、[真实0.9.7双端41563902287](https://github.com/hututuo/codex-token-bar/actions/runs/41563902287)、[0.9.8–0.9.11双端8条形成状态41564153315](https://github.com/hututuo/codex-token-bar/actions/runs/41564153315)全部PASS。此前新测试的编译与实际生产fixture检查已在这轮运行，不能据此覆盖未启用的压力和诊断profile。
+- cb Windows native125661686981已完成，实际生产50万事件压力保留原始ID／类型／数值及源文件、模型补全和聚合，对账摘要前后相同，MAIN对象与store增量0；补全1093.275秒、无变化P95 2.883秒仍超600秒／1秒预算。该轮诊断profile6.413%超过5%，7组交错样本512KiB，耗时中位数开启0.0764439秒／关闭0.0718367秒；原因尚未细分，不能直接称为同步fsync问题。完整单测1639通过／1项诊断性能失败／14 ignored。小日志scratch/integrated-recovery/c10-status/cb-windows-native.log。
+- 用户要求给出方案，新增[剩余六项收尾方案](../design/2026-11-02-integrated-recovery-plan/剩余六项收尾方案.md)，复用原C05／C06／C07合同，明确顺序、双端处理、退出条件与失败退路。本次仅文档整理，不表示用户已批准长事务结构切换，也不实施产品改造、安装或发布。
