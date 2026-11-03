@@ -731,6 +731,9 @@ final class CodexBusinessDatabase {
                             }
                         }
                         if !uncovered.isEmpty {
+                            #if DEBUG
+                            print("Exact retry typed coverage requires proof: \(uncovered.sorted().joined(separator: ","))")
+                            #endif
                             guard ["exact.swift", "exact.swift.retired"].contains(module),
                                   uncovered.isSubset(of: ExactRetryAppendCoverage.mutableTables),
                                   try ExactRetryAppendCoverage.verify(current: current, previous: previous,

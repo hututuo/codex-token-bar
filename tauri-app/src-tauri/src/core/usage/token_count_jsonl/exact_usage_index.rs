@@ -18495,13 +18495,7 @@ pub(crate) fn bootstrap_legacy_indexes() -> Result<(), String> {
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent).map_err(|e| format!("无法准备旧索引导入目录：{e}"))?;
             }
-            let store = crate::core::business_store_route::exact_store_spec(&target)?;
-            let _ = crate::core::business_store_route::open_store_during_bootstrap(
-                "exact",
-                &store.source_identity,
-                &store.logical_path,
-                &sources,
-            )?;
+            let _ = crate::core::business_store_route::open_exact_store_during_bootstrap(target, &sources)?;
             if !manifests.is_empty() {
                 crate::core::business_store_route::preserve_legacy_exact_migration(target, manifests)?;
             }
@@ -19029,9 +19023,19 @@ fn event_enrichment_source_count(connection: &Connection) -> Result<u64, String>
 }
 
 fn event_enrichment_receipt_count(connection: &Connection) -> Result<u64, String> {
+    let missing = if table_exists_checked(connection, "usage_ledger_sources")? {
+        "OR EXISTS(SELECT 1 FROM usage_ledger_sources l JOIN sources s USING(source_id) \
+            WHERE s.path=f.path AND l.missing=1) \
+         OR EXISTS(SELECT 1 FROM usage_ledger_pending_missing m JOIN sources s USING(source_id) \
+            WHERE s.path=f.path)"
+    } else { "" };
     connection
         .query_row(
-            "SELECT COUNT(*) FROM event_enrichment_sources WHERE revision = ?1 AND parser_revision = ?2",
+            &format!("SELECT COUNT(*) FROM main.published_files f WHERE EXISTS( \
+                SELECT 1 FROM event_enrichment_sources receipt WHERE receipt.path=f.path \
+                  AND receipt.revision=?1 AND receipt.parser_revision=?2 \
+                  AND receipt.completed_size=f.size AND receipt.completed_prefix_sha256=f.prefix_sha256) \
+                {missing}"),
             params![
                 EVENT_ENRICHMENT_REVISION,
                 STAGED_FULL_REBUILD_PARSER_REVISION,
@@ -19039,7 +19043,7 @@ fn event_enrichment_receipt_count(connection: &Connection) -> Result<u64, String
             |row| row.get::<_, i64>(0),
         )
         .map(nonnegative_u64)
-        .map_err(|error| format!("无法统计已完成的历史字段补全来源：{error}"))
+        .map_err(|error| format!("无法按已发布范围统计已完成的历史字段补全来源：{error}"))
 }
 
 fn record_missing_event_enrichment_source(

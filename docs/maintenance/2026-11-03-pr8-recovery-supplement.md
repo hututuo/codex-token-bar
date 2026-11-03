@@ -16,3 +16,13 @@
 - 不改 A/B 原始事实、费用规则、永久库数量；不重构性能架构、不新建清理系统、不操作用户数据库。
 - 上一轮 `02c493fa` 的云端成功不覆盖本次新增代码。当前为增补实现/验证中；完整 Exact 和 Rust 双端验证完成后另记录实际 SHA、run 和结果。
 - 未合并 main、未安装/替换/启动正式应用、未打包/签名/发布，未请求 Anthropic。
+
+## 首轮验证（506d73b8，不是通过结论）
+
+- 本地限定实际存储模块 XCTest：首轮14项全过；新增相同内容异目录/硬链接不可改归属后15项全过。Exact解析依赖未包含在此小模块，完整Exact走云端。
+- [首轮常规](https://github.com/hututuo/codex-token-bar/actions/runs/41584919541)：前端、更新器、双端production fixture步骤通过；Swift全量2348 executed / 37 skipped / 10 failures（5个failed cases，其中1个unexpected）；Rust Mac1727 pass / 2 fail / 14 ignored，Windows1670 pass / 3 fail / 14 ignored。不能用这轮作收束绿灯。
+- [真实公开0.9.7双端升级](https://github.com/hututuo/codex-token-bar/actions/runs/41584919508)：Mac、Windows均success；仅证明该SHA的真实097入口。
+- 两端Rust同样失败于补全进度口径：旧函数直接数收据，未按published_files的size/prefix过滤，也未计入已证明missing来源。已补PR8对应窄查询，待重测。
+- Windows另有实际native反例：旧PathBuf join保存“本机前缀+正斜杠相对父目录+本机分隔叶子”的混合路径，后续canonical调用丢失该拼写。PR8原候选也未涵盖；已增加与请求组件等价、数量随组件线性增长的legacy join拼写，仍通过完整catalog tuple/多owner proof选取，未扩大到任意目录扫描。
+- Swift几条期望不能照搬PR8：本分支助手历史标记仅挂在相应事件，不能要求同一回复的两条用量都重复标记；未变化来源也不一定新增optional representation hint。测试改为保留每条数值、模型/prompt、已知助手标记及新旧raw binding的对应关系；攻击fixture显式构造基于实际observation的可选hint，要求UPDATE实际改到行，避免“0行UPDATE”误判漏保。
+- 仍在定位v3 pre-compaction receipt正向接续的误拒，未放宽未知状态或删除该正向测试。尚未采用最后版本、未替换或发布。

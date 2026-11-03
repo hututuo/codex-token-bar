@@ -114,13 +114,19 @@ enum ExactRetryAppendCoverage {
         return covered
     }
 
-    private static func checked(_ _: String,
+    private static func checked(_ stage: String,
                                 _ work: () throws -> Bool) throws -> Bool {
         do {
             let result = try work()
+            #if DEBUG
+            if !result { print("Exact retry proof rejected: \(stage)") }
+            #endif
             return result
         } catch is CancellationError { throw CancellationError() }
         catch {
+            #if DEBUG
+            print("Exact retry proof rejected: \(stage), \(type(of: error))")
+            #endif
             return false
         }
     }

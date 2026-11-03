@@ -74,6 +74,32 @@ fn add_spellings(paths: &mut BTreeSet<String>, path: &Path) -> Result<(), String
     paths.insert(value.clone());
     #[cfg(windows)]
     {
+        // Released PathBuf::join could preserve a forward-slash relative
+        // parent under a native prefix, then append the leaf with '\'. A
+        // later canonical caller loses that spelling. Enumerate only this
+        // filesystem-equivalent join family, linear in the component count;
+        // do not guess arbitrary directory names or follow other Homes.
+        let ordinary = if let Some(unc) = value.strip_prefix(r"\\?\UNC\") {
+            format!(r"\\{unc}")
+        } else if let Some(disk) = value.strip_prefix(r"\\?\") {
+            disk.to_owned()
+        } else {
+            value.clone()
+        };
+        let native = ordinary.replace('/', r"\");
+        paths.insert(native.clone());
+        paths.insert(native.replace('\\', "/"));
+        if let Some((parent, leaf)) = native.rsplit_once('\\') {
+            for (boundary, _) in parent.match_indices('\\') {
+                let split = boundary + 1;
+                paths.insert(format!(
+                    "{}{}\\{}",
+                    &parent[..split],
+                    parent[split..].replace('\\', "/"),
+                    leaf
+                ));
+            }
+        }
         // Canonical Windows paths use the verbatim prefix. Old virtual
         // owners could instead have been created from an ordinary absolute
         // path before either of the two immediate parents existed.

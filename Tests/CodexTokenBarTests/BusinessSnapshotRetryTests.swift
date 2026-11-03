@@ -131,6 +131,36 @@ final class BusinessSnapshotRetryTests: XCTestCase {
         }
     }
 
+    func testAChangedRootOrUnrelatedHardLinkCannotRelocateThePublishedOwner() throws {
+        for hardLink in [false, true] {
+            let root = try temporaryDirectory()
+            defer { BusinessSQLiteRoutes.deactivate(); try? FileManager.default.removeItem(at: root) }
+            let support = root.appendingPathComponent("support")
+            let other = root.appendingPathComponent("other")
+            try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+            let legacy = support.appendingPathComponent("quota-history.sqlite")
+            try SQLiteDatabaseDriver(url: legacy, bypassBusinessRoutes: true).execute("CREATE TABLE samples(id INTEGER PRIMARY KEY); INSERT INTO samples VALUES(42)")
+            let a = support.appendingPathComponent("codex-ledger.sqlite")
+            func configuration(_ directory: URL) -> BusinessDatabaseMigration.Configuration {
+                .init(container: a, support: directory, exact: root.appendingPathComponent("exact"), legacyExact: root.appendingPathComponent("old-exact"))
+            }
+            let original = configuration(support)
+            try BusinessDatabaseMigration.migrate(original, availableBytes: 1 << 32)
+            let store = try XCTUnwrap(original.specification(for: legacy))
+            let ledger = try CodexBusinessDatabase(url: a, createsFileIfMissing: false)
+            let before = try publishedProof(ledger, store)
+            let otherFile = other.appendingPathComponent("quota-history.sqlite")
+            if hardLink { try FileManager.default.linkItem(at: legacy, to: otherFile) }
+            else { try FileManager.default.copyItem(at: legacy, to: otherFile) }
+            BusinessSQLiteRoutes.deactivate()
+            XCTAssertThrowsError(try BusinessDatabaseMigration.migrate(configuration(other), availableBytes: 1 << 32))
+            XCTAssertEqual(try publishedProof(ledger, store), before)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: legacy.path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: otherFile.path))
+        }
+    }
+
     private func frozen(_ root: URL) throws -> (CodexBusinessDatabase, BusinessSQLiteStore, URL, URL) {
         let id = UUID().uuidString
         let original = root.appendingPathComponent("original-" + id + ".sqlite")

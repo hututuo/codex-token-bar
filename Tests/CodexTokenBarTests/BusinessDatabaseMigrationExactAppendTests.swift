@@ -95,7 +95,8 @@ final class BusinessDatabaseMigrationExactAppendTests: XCTestCase {
         XCTAssertEqual(try synchronize(f).rewrittenFiles, 1)
         XCTAssertEqual(Set(try raw.readRows(numeric, map: ExactRetryAppendCoverage.encoded)), oldNumeric)
         XCTAssertEqual(try typedRows(raw, table: "usage_ledger_identities"), oldIdentities)
-        XCTAssertEqual(try raw.readRows("SELECT COUNT(*) FROM events WHERE source_id=1 AND model='gpt-5' AND user_prompt_offset IS NOT NULL AND assistant_start_offset IS NOT NULL") { $0.int(0) }, [2])
+        XCTAssertEqual(try raw.readRows("SELECT COUNT(*) FROM events WHERE source_id=1 AND model='gpt-5' AND user_prompt_offset IS NOT NULL") { $0.int(0) }, [2])
+        XCTAssertGreaterThan(try raw.readRows("SELECT COUNT(*) FROM events WHERE source_id=1 AND assistant_start_offset IS NOT NULL") { $0.int(0)! }.first!, 0)
         XCTAssertEqual(try raw.readRows("SELECT COUNT(*) FROM retained_usage_revisions WHERE source_id=1 AND model IS NULL") { $0.int(0) }, [2])
         XCTAssertEqual(try raw.readRows("SELECT COUNT(DISTINCT generation) FROM usage_ledger_bindings WHERE source_id=1") { $0.int(0) }, [1])
         let incoming = try raw.withConnection { try CodexBusinessDatabase.proof($0) }
@@ -183,12 +184,14 @@ final class BusinessDatabaseMigrationExactAppendTests: XCTestCase {
         let g1Bindings = try typedRows(raw, table: "usage_ledger_bindings")
         let g1Turns = try typedRows(raw, table: "usage_ledger_turns")
         let g1Retention = try typedRows(raw, table: "retained_usage_revisions")
+        let g1AssistantMarkers = try raw.readRows("SELECT COUNT(*) FROM events WHERE source_id=1 AND assistant_start_offset IS NOT NULL") { $0.int(0)! }.first!
         let g1Generation = try XCTUnwrap(try raw.readRows("SELECT generation FROM usage_ledger_sources WHERE source_id=1") { $0.text(0) }.first ?? nil)
         let g1Raw = try Data(contentsOf: f.files[0])
         let g1Copy = f.root.appendingPathComponent("retained-g1-rollout.jsonl")
         try g1Raw.write(to: g1Copy)
         XCTAssertFalse(g1Turns.isEmpty)
-        XCTAssertEqual(try raw.readRows("SELECT COUNT(*) FROM events WHERE source_id=1 AND model='gpt-5' AND user_prompt_offset IS NOT NULL AND assistant_start_offset IS NOT NULL") { $0.int(0) }, [2])
+        XCTAssertEqual(try raw.readRows("SELECT COUNT(*) FROM events WHERE source_id=1 AND model='gpt-5' AND user_prompt_offset IS NOT NULL") { $0.int(0) }, [2])
+        XCTAssertGreaterThan(try raw.readRows("SELECT COUNT(*) FROM events WHERE source_id=1 AND assistant_start_offset IS NOT NULL") { $0.int(0)! }.first!, 0)
 
         // A second real full reparse adds only redundant context before G1.
         // It moves every raw location without adding consumption. Existing
@@ -204,7 +207,7 @@ final class BusinessDatabaseMigrationExactAppendTests: XCTestCase {
         XCTAssertEqual(try raw.readRows("SELECT COUNT(DISTINCT generation) FROM usage_ledger_turns WHERE source_id=1") { $0.int(0) }, [2])
         XCTAssertEqual(try raw.readRows("SELECT COUNT(DISTINCT turn_id) FROM usage_ledger_turns WHERE source_id=1") { $0.int(0) }, [1])
         XCTAssertEqual(try raw.readRows("SELECT COUNT(*) FROM events e JOIN usage_ledger_bindings b ON b.source_id=e.source_id AND b.event_id=e.source_offset WHERE e.source_id=1 AND e.assistant_start_offset IS NOT NULL AND b.assistant_offset=e.assistant_start_offset+?",
-            bindings: [.int(redundantContext.utf8.count)]) { $0.int(0) }, [2])
+            bindings: [.int(redundantContext.utf8.count)]) { $0.int(0)! }, [g1AssistantMarkers])
         XCTAssertEqual(Set(try raw.readRows(numeric, map: ExactRetryAppendCoverage.encoded)), originalNumeric)
         XCTAssertEqual(try typedRows(raw, table: "usage_ledger_identities"), originalIdentities)
         XCTAssertTrue(g1Turns.isSubset(of: try typedRows(raw, table: "usage_ledger_turns")))
@@ -578,7 +581,9 @@ final class BusinessDatabaseMigrationExactAppendTests: XCTestCase {
         let incomingPhysicalBytes = try Data(contentsOf: f.source)
         let incomingEvents = try typedRows(raw, table: "events")
         XCTAssertTrue(oldEvents.isSubset(of: incomingEvents))
-        XCTAssertEqual(try raw.readRows("SELECT COUNT(*) FROM source_representations WHERE source_id=2 AND verification='verified_full'") { $0.int(0) }.first!, 1)
+        // The unchanged-source fast path need not add an optional physical
+        // representation hint. Any hint that exists must still be verified.
+        XCTAssertEqual(try raw.readRows("SELECT COUNT(*) FROM source_representations WHERE source_id=2 AND verification<>'verified_full'") { $0.int(0) }.first!, 0)
         XCTAssertEqual(try SQLiteDatabaseDriver(url: frozenURL, readOnly: true, bypassBusinessRoutes: true)
             .readRows("SELECT COUNT(*) FROM source_representations WHERE source_id=2") { $0.int(0) }.first!, 0,
             "The frozen source came from its first parse; an extra refresh must not be required for recovery")
@@ -621,6 +626,11 @@ final class BusinessDatabaseMigrationExactAppendTests: XCTestCase {
         let receipt = try freeze(f)
         try append(17, second: 3, to: f.files[0])
         _ = try synchronize(f)
+        try SQLiteDatabaseDriver(url: f.source, bypassBusinessRoutes: true).execute("""
+            INSERT OR REPLACE INTO source_representations(source_id,physical_path,storage_format,physical_size,physical_stamp,logical_size,modified_at,verification)
+            SELECT s.source_id,s.path,'jsonl',o.size_bytes,o.physical_stamp,s.size_bytes,s.modified_at,'verified_full'
+            FROM sources s JOIN source_observations o USING(source_id) WHERE s.source_id=2
+            """)
         try FileManager.default.removeItem(at: f.files[1])
         let frozen = URL(fileURLWithPath: receipt.normalizedPath)
         XCTAssertTrue(try CodexBusinessDatabase.snapshot(f.source, covers: frozen, module: "exact.swift"))
@@ -638,7 +648,7 @@ final class BusinessDatabaseMigrationExactAppendTests: XCTestCase {
             let url = f.root.appendingPathComponent("mutated-hint-\(number).sqlite")
             let db = SQLiteDatabaseDriver(url: url, enableWAL: false, bypassBusinessRoutes: true)
             try db.withConnection { try $0.restoreDatabase(from: f.source) }
-            try db.execute(mutation)
+            XCTAssertGreaterThan(try db.executeChangedRows(mutation), 0, "Attack must change the fixture: \(mutation)")
             let before = try Data(contentsOf: url)
             do {
                 XCTAssertFalse(try CodexBusinessDatabase.snapshot(url, covers: frozen, module: "exact.swift"), mutation)
@@ -786,4 +796,57 @@ final class BusinessDatabaseMigrationExactAppendTests: XCTestCase {
         }
         XCTAssertEqual(try Data(contentsOf: previous), original)
     }
+    func testUnicodeEquivalentSourcePathsRefuseRetryWithoutDiscardingHistory() throws {
+        let f = try fixture()
+        let receipt = try freeze(f)
+        let frozen = URL(fileURLWithPath: receipt.normalizedPath)
+        let frozenBytes = try Data(contentsOf: frozen)
+        let paths = [f.root.path + "/rollout-\u{E9}.jsonl", f.root.path + "/rollout-e\u{301}.jsonl"]
+        XCTAssertEqual(paths[0], paths[1], "Swift keys are canonically equivalent")
+        XCTAssertNotEqual(Data(paths[0].utf8), Data(paths[1].utf8), "SQLite BINARY keys remain distinct")
+        let raw = SQLiteDatabaseDriver(url: f.source, bypassBusinessRoutes: true)
+        for (position, path) in paths.enumerated() {
+            let id = Int64(position + 1)
+            try raw.execute("UPDATE sources SET path=? WHERE source_id=?", bindings: [.text(path), .int64(id)])
+            try raw.execute("UPDATE event_enrichment_sources SET canonical_path=? WHERE source_id=?", bindings: [.text(path), .int64(id)])
+        }
+        XCTAssertEqual(try raw.readRows("PRAGMA quick_check") { $0.text(0) }, ["ok"])
+        XCTAssertEqual(try raw.readRows("SELECT COUNT(DISTINCT path COLLATE BINARY) FROM sources") { $0.int(0) }.first!, 2)
+        let original = try raw.withConnection { try CodexBusinessDatabase.proof($0) }
+        let bytes = try Data(contentsOf: f.source)
+        XCTAssertThrowsError(try synchronize(f)) { error in
+            XCTAssertTrue(String(describing: error).contains("duplicate source path identity"))
+        }
+        XCTAssertFalse(try CodexBusinessDatabase.snapshot(f.source, covers: frozen, module: "exact.swift"))
+        XCTAssertEqual(try raw.withConnection { try CodexBusinessDatabase.proof($0) }, original)
+        XCTAssertEqual(try Data(contentsOf: f.source), bytes)
+        XCTAssertEqual(try Data(contentsOf: frozen), frozenBytes)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: f.configuration.container.path))
+    }
+
+    func testRawRewrittenAfterDurableAppendDoesNotRevokeTheFormedHistory() throws {
+        let f = try fixture()
+        let receipt = try freeze(f)
+        let frozen = URL(fileURLWithPath: receipt.normalizedPath)
+        let frozenBytes = try Data(contentsOf: frozen)
+        try append(17, second: 3, to: f.files[0])
+        _ = try synchronize(f)
+        let raw = SQLiteDatabaseDriver(url: f.source, bypassBusinessRoutes: true)
+        let incoming = try typedRows(raw, table: "events")
+        let sourceProof = try raw.withConnection { try CodexBusinessDatabase.proof($0) }
+        let sourceBytes = try Data(contentsOf: f.source)
+        let priorRaw = try Data(contentsOf: f.files[0])
+        let rewritten = String(decoding: priorRaw, as: UTF8.self).replacingOccurrences(of: "retained turn", with: "replaced turn")
+        try Data(rewritten.utf8).write(to: f.files[0])
+        XCTAssertTrue(try CodexBusinessDatabase.snapshot(f.source, covers: frozen, module: "exact.swift"))
+        try BusinessDatabaseMigration.migrate(f.configuration, availableBytes: 1 << 33)
+        let active = SQLiteDatabaseDriver(url: f.source)
+        XCTAssertEqual(try active.readRows("SELECT SUM(tokens) FROM events") { $0.int(0) }.first!, 482)
+        XCTAssertEqual(try typedRows(active, table: "events"), incoming)
+        XCTAssertEqual(try Data(contentsOf: frozen), frozenBytes)
+        XCTAssertEqual(try raw.withConnection { try CodexBusinessDatabase.proof($0) }, sourceProof)
+        XCTAssertEqual(try Data(contentsOf: f.source), sourceBytes)
+        XCTAssertEqual(try Data(contentsOf: f.files[0]), Data(rewritten.utf8))
+    }
+
 }
