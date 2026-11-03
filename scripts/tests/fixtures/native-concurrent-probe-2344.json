@@ -1,0 +1,25 @@
+{
+  "sourceSha": "2344d1405f43abcad4cccff06a17d0e59101a752",
+  "sourceRun": 41560993784,
+  "sourceJob": 125671323918,
+  "checks": [
+    {
+      "catalogStable": true,
+      "name": "concurrent-a-write-probe",
+      "negativeControl": {
+        "heldByBeginImmediate": true,
+        "sqliteCode": "Some(DatabaseBusy)",
+        "writeResumedAfterRollback": true
+      },
+      "parallelProbeRows": 4,
+      "serializedProbeConnection": true,
+      "status": "PASS",
+      "timeoutMilliseconds": 250
+    },
+    {
+      "name": "exact-concurrent-a-write-observed",
+      "probeWrites": 3,
+      "status": "PASS"
+    }
+  ]
+}

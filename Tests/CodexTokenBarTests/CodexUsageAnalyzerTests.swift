@@ -516,11 +516,6 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             sessionID: "019eaaaa-bbbb-4ccc-8ddd-published-only", timestamp: Date().addingTimeInterval(-640), totalTokens: 120)
         let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: home))
         let published = try analyzer.load()
-        let catalogIndex = try CodexUsageHistoryIndex(codexHome: home)
-        _ = try catalogIndex.synchronizeSessionCatalog(candidates: [.init(file: source, archived: false)]) { _ in
-            .init(threadID: "published-catalog-thread", cwd: "/fixture", sessionID: nil,
-                forkedFromID: nil, parentThreadID: nil, source: "cli")
-        }
         let raw = SQLiteDatabaseDriver(url: configuration.container, readOnly: true, bypassBusinessRoutes: true)
         let stores = try raw.readRows("SELECT logical_path,module,source_identity FROM tb_stores") {
             BusinessSQLiteStore(containerURL: configuration.container, logicalURL: URL(fileURLWithPath: $0.text(0)!),
@@ -528,14 +523,6 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         }
         let exact = try XCTUnwrap(stores.first(where: { $0.module == "exact.swift" }))
         BusinessSQLiteRoutes.activate(configuration, stores: stores, blockedWrites: [exact.id], publishedAdmission: true)
-        let beforeRead = try raw.withConnection { try CodexBusinessDatabase.proof($0) }
-        let catalog = FoundationSessionManagementBackend.scanRolloutThreads(dataSource: dataSource(for: home), fileManager: .default)
-        XCTAssertEqual(catalog.threads.map(\.id), ["published-catalog-thread"])
-        XCTAssertFalse(catalog.verificationComplete)
-        XCTAssertTrue(catalog.warnings.contains { $0.contains("仅浏览上一份完整会话目录") })
-        XCTAssertTrue(catalog.threads.allSatisfy { !$0.canDelete && !$0.canArchive && !$0.canUnarchive && !$0.rolloutIdentityVerified })
-        XCTAssertEqual(try raw.withConnection { try CodexBusinessDatabase.proof($0) }, beforeRead,
-            "Browsing a paused owner must not register, import, migrate or republish its catalog")
         try FileManager.default.removeItem(at: source)
         CodexUsageAnalyzer.clearUsageCachesForTesting()
         CodexUsageAnalyzer.resetPersistentExactSnapshotStateForTesting()

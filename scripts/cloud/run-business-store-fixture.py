@@ -18,10 +18,13 @@ def validate_concurrent_probe(result):
     if len(probes) != 1 or len(observed) != 1:
         raise ValueError("Required concurrent A write probe was not executed exactly once")
     probe, observation = probes[0], observed[0]
+    negative = probe.get("negativeControl", {})
     if (probe.get("status") != "PASS" or probe.get("timeoutMilliseconds") != 250
             or probe.get("serializedProbeConnection") is not True
             or probe.get("parallelProbeRows") != 4 or probe.get("catalogStable") is not True
-            or probe.get("negativeControlSqliteCode") not in ("Some(DatabaseBusy)", "Some(DatabaseLocked)")):
+            or not isinstance(negative, dict) or negative.get("heldByBeginImmediate") is not True
+            or negative.get("writeResumedAfterRollback") is not True
+            or negative.get("sqliteCode") not in ("Some(DatabaseBusy)", "Some(DatabaseLocked)")):
         raise ValueError("Concurrent probe lacks its original deadline, lock negative control or catalog proof")
     count = observation.get("probeWrites")
     if observation.get("status") != "PASS" or type(count) is not int or count <= 0:

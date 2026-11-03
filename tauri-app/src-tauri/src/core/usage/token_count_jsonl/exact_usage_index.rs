@@ -7468,12 +7468,20 @@ fn import_staged_full_rebuild(
     staged: &StagedFullRebuild,
     mode: ExactSyncMode,
 ) -> Result<(), String> {
-    let validated = {
-        let stage = open_read_only_index(&staged.database_path, StdDuration::from_secs(1))
-            .map_err(|error| format!("无法只读打开待导入的精确 token 暂存：{error}"))?;
-        validated_staged_full_rebuild(&stage, &staged.database_path, &staged.job, generation, staged.source_validation.as_ref())?
-            .ok_or_else(|| "精确 token 单文件暂存在导入前失效".to_string())?
-    };
+    #[cfg(all(feature = "business-store-fixture", not(test)))]
+    let restores_before_import = stage_pool::fixture_restore_count();
+    #[cfg(not(test))]
+    let private_stage_signature = if stage_pool::is_path(&staged.database_path) {
+        Some(staged_store_signature(&staged.database_path)?)
+    } else { None };
+    // Validate and mount the SAME immutable work snapshot. Reopening the pool
+    // here used to decode, materialize and hash every row a second time, and
+    // the second copy was not the snapshot just checked by the validator.
+    let stage = open_read_only_index(&staged.database_path, StdDuration::from_secs(1))
+        .map_err(|error| format!("无法只读打开待导入的精确 token 暂存：{error}"))?;
+    let validated = validated_staged_full_rebuild(&stage, &staged.database_path, &staged.job,
+        generation, staged.source_validation.as_ref())?
+        .ok_or_else(|| "精确 token 单文件暂存在导入前失效".to_string())?;
     if validated.artifact_id != staged.artifact_id || validated.actual_bytes != staged.actual_bytes
     {
         return Err("精确 token 单文件暂存清单在导入前发生变化".into());
@@ -7482,11 +7490,22 @@ fn import_staged_full_rebuild(
     let legacy_digest = if stage_pool::is_path(&staged.database_path) { None }
         else { Some(stage_pool::Pool::current()?.legacy_digest(&staged.database_path)?) };
     #[cfg(not(test))]
-    attach_stage_alias(
-        connection,
-        "exact_stage_import",
-        &staged.database_path,
-    )?;
+    if stage_pool::is_path(&staged.database_path) {
+        let expected = private_stage_signature.as_ref().ok_or("导入暂存快照缺少封存身份")?;
+        if validated.source_validation.as_ref().map(|proof| &proof.stage) != Some(expected)
+            || &staged_store_signature(&staged.database_path)? != expected {
+            return Err("精确 token 单文件暂存封存在核验后发生变化".into());
+        }
+        let pool = stage_pool::Pool::current()?;
+        let job = pool.lookup(&staged.database_path)?.ok_or("挂载的暂存job不存在")?;
+        connection.mount_exact_stage_rows(&job.owner, "exact_stage_import", stage.unbound_connection().map_err(|error|error.to_string())?)?;
+        #[cfg(feature = "business-store-fixture")]
+        if stage_pool::fixture_restore_count().saturating_sub(restores_before_import) != 1 {
+            return Err("production fixture: import must use exactly the private snapshot it validated".into());
+        }
+    } else {
+        attach_stage_alias(connection, "exact_stage_import", &staged.database_path)?;
+    }
     #[cfg(test)]
     {
         let stage_path = staged.database_path.to_str().ok_or_else(|| {

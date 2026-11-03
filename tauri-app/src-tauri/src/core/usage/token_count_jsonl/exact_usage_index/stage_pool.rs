@@ -15,6 +15,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 type Result<T> = std::result::Result<T, String>;
 type Registry = Mutex<HashMap<PathBuf, Arc<Pool>>>;
 
+// A fixture-only per-thread counter proves validation and import share one
+// immutable restore. Other parser threads cannot contaminate the assertion.
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+thread_local! {
+    static FIXTURE_RESTORE_COUNT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+pub(super) fn fixture_restore_count() -> u64 { FIXTURE_RESTORE_COUNT.with(|count| count.get()) }
+
 /// Acquire A's writer before reading a mutable job state. A deferred read
 /// snapshot cannot be upgraded after another owner commits (BUSY_SNAPSHOT),
 /// regardless of busy_timeout. Private work/read-only proofs remain deferred.
@@ -594,6 +603,8 @@ impl Pool {
         })
     }
     pub(super) fn restore(&self, job: &Job) -> Result<Connection> {
+        #[cfg(all(feature = "business-store-fixture", not(test)))]
+        FIXTURE_RESTORE_COUNT.with(|count| count.set(count.get().saturating_add(1)));
         let seal = self.seal(job)?.ok_or("暂存尚未封存")?;
         let work = Connection::open("").map_err(|e| e.to_string())?;
         work.execute_batch("PRAGMA temp_store=FILE; PRAGMA cache_size=-4096;")

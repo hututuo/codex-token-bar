@@ -263,3 +263,12 @@ Windows连接寿命作平台适配：实际锁定SQLite源码的`winOpen`使用F
 - 发现并补双端的实际目录缺口：session catalog浏览仍尝试开writer，pending recovery时把已有目录挡住。Mac按该Home暂停状态开已发布只读index；Rust在全局published-only状态下先走已发布目录分支，不等维护writer gate。两端仅浏览旧目录并携带警告，不能生成新的原文校验证据或开启危险操作。目录读取增加短一致快照。
 - Swift `readCacheRequests` 经底层driver的默认Business路由原本已读A，静态初查把它当raw物理读取的猜测已纠正，未据此另写reader。本次仅把aggregate版本和分页查询放进同一短只读事务；新增实际A与留存物理旧库model不同、原文消失、writer暂停的回归，必须读A的新metadata且不改变A／物理源。
 - 新目录回归经过Mac产品scanner及非cfg(test)双端storage fixture：发布目录非空、恢复重试时parser不得调用、旧条目保留、验证状态关闭、A完整proof不变。源码已parse／rustfmt解析，本段记录新增的要求，不提前称这些新集成用例已云端执行通过。
+
+### C05g／C07h · 完整压力明确不达标，发布结构补充评审
+
+- `cb227a48`八条formed lane再次全部PASS。Swift五档XCTest实际均完成，对账通过；报告器已正确保留profile并拒绝超预算。4124事件backfill107.084s／写锁68.823s／空窗69.598s；503128事件backfill450.662s／写锁284.589s／空窗285.609s／无变化P95 1.839s。压力原始类型／稳定ID／数值摘要前后一致，20次无变化没有parser调用，MAIN对象／store增量0；这些正确性不能覆盖红色性能门禁。
+- Rust／Mac实际生产压力也已完成：503128事件、4124来源、25000旧对象的账目、model、聚合、源字节与旧候选保全断言均真；但backfill737.853s>600s，P95 1.237s>1s，`budgetPassed=false`。外层生产JSON的PASS和单项`PROFILED`只表示产出了测试／profile，不是整体性能PASS。原runner先因负控schema不匹配而拒绝，掩盖了后续预算错误；这里不将其记成“仅测试工具错误”。
+- 2344的双端非压力生产fixture中，published目录2项、parser未调用、A完整proof不变等全部通过；Mac native单测1695通过、0失败、14 ignored。runner却按旧flat负控字段检查，实际producer已输出`negativeControl.{sqliteCode,heldByBeginImmediate,writeResumedAfterRollback}`；现按实际嵌套合同核对，并保留250ms、真实busy负控／rollback恢复、4探针写入、catalog不变及Exact调用计数。新增从真实2344 job文本原样脱敏取出的控制对象回归，41项脚本／workflow测试通过；没有放宽压力budget。
+- 2344 Swift因新测试直接访问private extension里的scanner而在编译阶段拒绝，产品目录分支没有因该test运行。现测试通过公开`FoundationSessionManagementBackend.loadCatalog`及已有mock验证，未扩大产品成员可见性。原先被新增测试妨碍的全部回归要在下一SHA真正执行，不把parse当通过。
+- Rust导入现在保留刚刚完整验证过的私有只读stage，直接挂载同一快照，不再为实际导入完整还原第二份。封存签名在打开前、验证结果及挂载前必须一致；owner／contract／源前缀和原账务逻辑均保留，legacy分支不换算法。非cfg(test)生产fixture用线程局部计数强制一次导入只restore一次；没有跨尝试缓存、无第三业务库。语法解析通过，等待下一SHA的实际生产构建／fixture。
+- 依据原C05失败处理条款，新增[长事务补充评审](../design/2026-11-02-integrated-recovery-plan/长事务补充评审.md)。不改阈值、不拆半轮发布，不以纯模型特例另写记账。推荐评审锁外完整准备／锁内CAS及批量应用；**该结构切换尚未实施**。当前继续小修与正确性验证，不封候选，不替换或发布。

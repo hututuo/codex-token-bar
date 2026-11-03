@@ -988,6 +988,45 @@ final class SessionManagementBatchDeletionTests: XCTestCase {
 }
 
 final class FoundationSessionManagementBackendTests: XCTestCase {
+    func testPendingRecoveryBrowsesPublishedCatalogWithoutRepublishingOrEnablingMutations() async throws {
+        let fixture = try makeFixture(messageCount: 1)
+        let keys = ["CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE", "CODEX_TOKEN_BAR_USAGE_CACHE_DIR", "CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR"]
+        let previous = ProcessInfo.processInfo.environment
+        BusinessSQLiteRoutes.deactivate()
+        defer {
+            BusinessSQLiteRoutes.deactivate()
+            for key in keys {
+                if let value = previous[key] { setenv(key, value, 1) } else { unsetenv(key) }
+            }
+        }
+        let cache = fixture.dataSource.codexHome.appendingPathComponent("private-usage-cache")
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cache.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cache.path, 1)
+        let server = SessionManagementAppServerMock(threads: [fixture.appServerThread(status: .notLoaded)])
+        let backend = makeBackend(appServer: server)
+        let first = try await backend.loadCatalog(dataSource: fixture.dataSource)
+        XCTAssertEqual(first.threads.map(\.id), [fixture.threadID])
+        let support = fixture.dataSource.codexHome.appendingPathComponent("private-ledger-support")
+        let configuration = BusinessDatabaseMigration.Configuration(container: support.appendingPathComponent("codex-ledger.sqlite"),
+            support: support, exact: CodexUsageHistoryIndex.businessIndexDirectory(), legacyExact: fixture.dataSource.codexHome.appendingPathComponent("empty-legacy"))
+        try BusinessDatabaseMigration.migrate(configuration, availableBytes: 1 << 32)
+        let raw = SQLiteDatabaseDriver(url: configuration.container, readOnly: true, createsFileIfMissing: false, bypassBusinessRoutes: true)
+        let stores = try raw.readRows("SELECT logical_path,module,source_identity FROM tb_stores") {
+            BusinessSQLiteStore(containerURL: configuration.container, logicalURL: URL(fileURLWithPath: $0.text(0)!), module: $0.text(1)!, sourceIdentity: $0.text(2)!)
+        }
+        let owner = try XCTUnwrap(stores.first { $0.module == "exact.swift" })
+        BusinessSQLiteRoutes.activate(configuration, stores: stores, blockedWrites: [owner.id], publishedAdmission: true)
+        let before = try raw.withConnection { try CodexBusinessDatabase.proof($0) }
+        let catalog = try await backend.loadCatalog(dataSource: fixture.dataSource)
+        XCTAssertEqual(catalog.threads.map(\.id), [fixture.threadID])
+        XCTAssertFalse(catalog.deletionVerificationComplete)
+        XCTAssertTrue(catalog.warnings.contains { $0.contains("仅浏览上一份完整会话目录") })
+        XCTAssertTrue(catalog.threads.allSatisfy { !$0.canDelete && !$0.canArchive && !$0.canUnarchive && !$0.rolloutIdentityVerified })
+        XCTAssertEqual(try raw.withConnection { try CodexBusinessDatabase.proof($0) }, before,
+            "The public catalog service cannot register, import or republish a paused owner")
+    }
+
     func testCatalogMergesOfficialStateAndPreservesUnknownTokenCount() async throws {
         let fixture = try makeFixture(messageCount: 2)
         let appServer = SessionManagementAppServerMock(

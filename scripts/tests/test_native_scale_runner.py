@@ -16,19 +16,32 @@ spec.loader.exec_module(module)
 
 
 class NativeScaleRunnerTests(unittest.TestCase):
+    def test_actual_hosted_fixture_nested_negative_control_is_admitted(self):
+        # Exact redacted control objects from the 2344 production-path job,
+        # whose producer succeeded but whose old flat-field reader rejected it.
+        actual = json.loads((Path(__file__).parent / "fixtures/native-concurrent-probe-2344.json").read_text())
+        module.validate_concurrent_probe(actual)
+
     def test_concurrent_probe_requires_real_lock_control_and_observed_exact_calls(self):
         result = {"checks": [
             {"name": "concurrent-a-write-probe", "status": "PASS", "timeoutMilliseconds": 250,
              "serializedProbeConnection": True, "parallelProbeRows": 4, "catalogStable": True,
-             "negativeControlSqliteCode": "Some(DatabaseBusy)"},
+             "negativeControl": {"sqliteCode": "Some(DatabaseBusy)", "heldByBeginImmediate": True,
+                                 "writeResumedAfterRollback": True}},
             {"name": "exact-concurrent-a-write-observed", "status": "PASS", "probeWrites": 12},
         ]}
         module.validate_concurrent_probe(result)
-        for key, value in [("timeoutMilliseconds", 500), ("negativeControlSqliteCode", "None"),
+        for key, value in [("timeoutMilliseconds", 500), ("negativeControl", {}),
                            ("catalogStable", False), ("parallelProbeRows", 0)]:
             invalid = copy.deepcopy(result)
             invalid["checks"][0][key] = value
             with self.subTest(key=key), self.assertRaises(ValueError):
+                module.validate_concurrent_probe(invalid)
+        for key, value in [("sqliteCode", "None"), ("heldByBeginImmediate", False),
+                           ("writeResumedAfterRollback", False)]:
+            invalid = copy.deepcopy(result)
+            invalid["checks"][0]["negativeControl"][key] = value
+            with self.subTest(negative=key), self.assertRaises(ValueError):
                 module.validate_concurrent_probe(invalid)
         for count in (0, -1, None, True):
             invalid = copy.deepcopy(result)
