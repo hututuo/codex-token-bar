@@ -48,3 +48,9 @@
 657beedb 的 Windows job `125768598261` 实际执行抽取探针，输出 `matched=false aliases=12`：legacy与系统TEMP均为 `C:\Users\RUNNER~1\AppData\Local\Temp\...`，preferred/candidates为 `\\?\C:\Users\runneradmin\AppData\Local\Temp\...`。这是8.3系统配置根与canonical长名不一致；前一轮仅补分隔符尚不完整。证据是隔离Windows文件系统路径输入，不冒充最终Container读取已通过。
 
 增补只考虑四个已配置根（TEMP、LOCALAPPDATA、APPDATA、USERPROFILE），要求绝对路径、实际目录、OS canonicalize后确为本次请求的祖先；将同一相对组件接回已配置拼写，再复用同样的候选/完整catalog tuple/多owner冲突校验。不开全盘搜索，不以同名认领，不改旧ID、不删除旧owner。抽取的两分支在本地只做编译检查；Windows运行与native A-only旧账读取仍以新SHA云端为准。
+
+## Windows生产fixture红灯的定位
+
+7a24 Windows Rust全量1673 pass / 14 ignored / 0 fail，旧A-only owner单测与路径探针已过；但production fixture红灯，不能相互抵销。c875保留同样判断、只加实际路径，479-byte artifact（仅纯文本标准输出）明确报错在 `\\?\D:\a\_temp\...\index.sqlite3.staging/<64位SHA>.sqlite3`。
+
+该路径由 `business_store_fixture.rs::stage_path` 的 `format!("{}.staging/{hash}.sqlite3", index.display())` 产生；实际扫描器 `staging_database_path` 使用OsString追加`.staging`再原生`PathBuf::join`。修正fixture使用相同的原生拼接，不把os123当成文件缺失，也不放宽owner/path验证。快速Windows诊断同时抽取fixture的真实路径构造（只将无关的hash计算替换为合法固定hex输入），增加`FIXTURE_STAGE_PATH`检查；完整production gate继续保留。修复后仍需新SHA云端验证，未以单测绿灯宣布production通过。

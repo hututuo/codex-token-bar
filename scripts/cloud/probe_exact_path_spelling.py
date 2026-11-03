@@ -20,13 +20,22 @@ def generated_probe():
     end = route.index('    let mut digest = Sha256::new();', start)
     legacy = route[start:end].replace('pub(crate) fn source_identity(', 'fn source_identity(', 1)
     legacy += '    Ok(text.to_owned())\n}\n'
+    fixture = (REPO / 'tauri-app/src-tauri/src/business_store_fixture.rs').read_text(encoding='utf-8')
+    a = fixture.index('fn stage_path(')
+    b = fixture.index('fn write_session(', a)
+    stage = fixture[a:b].replace('fn stage_path(', 'fn fixture_stage_path(', 1)
+    # The probe diagnoses path construction, not SHA-256. Preserve the actual
+    # construction code and use a deterministic valid hex digest as input.
+    a = stage.index('    let hash = Sha256::digest(')
+    b = stage.index('        .collect::<String>();', a) + len('        .collect::<String>();')
+    stage = stage[:a] + '    let hash = "a".repeat(64);' + stage[b:]
     chunks = []
     for first, following in [('fn stable_path(', 'fn text('), ('fn text(', 'fn add_spellings('),
                              ('fn add_spellings(', 'fn identities('), ('fn identities(', 'pub(super) fn candidate_parts(')]:
         a = compat.index(first)
         b = compat.index(following, a + len(first))
         chunks.append(compat[a:b].replace('fn identities(', 'pub fn identities(', 1))
-    return 'use std::path::{Path,PathBuf};\n' + legacy + '''
+    return 'use std::path::{Path,PathBuf};\n' + legacy + stage + '''
 mod compat {
 use std::path::{Path,PathBuf};
 use std::collections::BTreeSet;
@@ -55,6 +64,10 @@ fn main() {
    println!("VERBATIM_MISSING_PATH requested={requested:?} accepted={} result={result:?}",result.is_ok());
    extended_ok &= result.is_ok();
  }
+ let fixture_stage=fixture_stage_path(&extended.join("index.sqlite3"),&path).unwrap();
+ let fixture_result=compat::identities(&fixture_stage);
+ println!("FIXTURE_STAGE_PATH requested={fixture_stage:?} accepted={}",fixture_result.is_ok());
+ extended_ok &= fixture_result.is_ok();
  std::fs::remove_dir_all(&root).unwrap();
  if !matched || !extended_ok {std::process::exit(1)}
 }

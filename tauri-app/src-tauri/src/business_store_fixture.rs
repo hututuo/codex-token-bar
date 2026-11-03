@@ -1055,10 +1055,11 @@ fn stage_path(index: &Path, source: &Path) -> Result<PathBuf, String> {
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
-    Ok(PathBuf::from(format!(
-        "{}.staging/{hash}.sqlite3",
-        index.display()
-    )))
+    // Match the production staging_directory + native join. A '/' appended
+    // directly to a Windows verbatim path is not a valid filesystem address.
+    let mut directory = index.as_os_str().to_os_string();
+    directory.push(".staging");
+    Ok(PathBuf::from(directory).join(format!("{hash}.sqlite3")))
 }
 fn write_session(path: &Path, timestamp: &str, tokens: i64) -> Result<(), String> {
     parent(path)?;
