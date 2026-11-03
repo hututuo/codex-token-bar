@@ -30,3 +30,7 @@
 ### 检查点编码的确定反例
 
 实际编译本分支 `TokenUsageAccounting.swift` + `CodexCompactionAccounting.swift` 后，将同一 `UsageAccountingState` 编码100次，本地观察到5种不同TEXT，解码后状态全部相等。新深验对未改变size/probe/generation的来源逐字比较 accounting_state 会误拒这种合法状态；这与金融事实不属于同一层。小修保留其余checkpoint列的SQLite类型/值精确比较，JSON双方仍须先完整round-trip（拒绝未知字段），之后比较已知状态语义，仅保留已有限定的v3缺省/已证明空compaction例外。新增重排键正向接续、未知字段和实际状态变化拒绝用例。它是独立复现的误拒；是否同时解决首轮v3用例仍以新SHA完整回归为准，不靠静态推断宣布通过。
+
+### Unicode路径保全
+
+013新增的Unicode反例触发当前Swift `Dictionary(uniqueKeysWithValues:)` fatal：SQLite BINARY 可区分 NFC/NFD，而 Swift String 键规范等价，不能放入同一个字典。PR8的`indexedSources`已有可恢复拒绝，本分支还需覆盖自己的`indexedSourceIdentities`/canonical fast-path入口。已改为逐项检查并抛出已存在的 malformed-source 错误；不任选、不覆盖、不改写两份旧事实。新增fixture仍保留 source/frozen 文件不变断言。此项修复尚待最终SHA云端验证。

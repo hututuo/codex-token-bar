@@ -7051,7 +7051,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             }
             return (path, try decodeIndexedSource(row, startingAt: 1))
         }
-        return Dictionary(uniqueKeysWithValues: rows)
+        var sources: [String: IndexedSource] = [:]
+        for (path, source) in rows {
+            if let prior = sources[path] {
+                throw malformedIndexedSourceError("duplicate source path identity for sources \(prior.id) and \(source.id)")
+            }
+            sources[path] = source
+        }
+        return sources
     }
 
     private func decodeIndexedSource(
@@ -7123,12 +7130,16 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     private func indexedSourceIdentities(
         connection: SQLiteDatabaseConnection
     ) throws -> [SourceIdentity] {
-        try connection.readRows(
+        var paths = Set<String>()
+        return try connection.readRows(
             "SELECT source_id, path, session_id FROM sources WHERE NOT EXISTS(SELECT 1 FROM usage_ledger_sources l WHERE l.source_id=sources.source_id AND l.missing=1) ORDER BY source_id;"
         ) { row -> SourceIdentity? in
             guard let sourceID = row.int64(0),
                   let path = row.text(1) else {
                 return nil
+            }
+            guard paths.insert(path).inserted else {
+                throw malformedIndexedSourceError("duplicate source path identity in source catalog")
             }
             return SourceIdentity(id: sourceID, path: path, sessionID: row.text(2))
         }.compactMap { $0 }

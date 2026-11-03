@@ -722,6 +722,17 @@ final class BusinessDatabaseMigrationExactAppendTests: XCTestCase {
         try append(17, second: 3, to: f.files[0])
         XCTAssertEqual(try synchronize(f).incrementallyParsedFiles, 1)
         try recordPreCompactionCheckpoint()
+        let retained = SQLiteDatabaseDriver(url: URL(fileURLWithPath: receipt.normalizedPath), readOnly: true, bypassBusinessRoutes: true)
+        let beforeSchema = try retained.readRows("SELECT name,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name") { ($0.text(0)!, $0.text(1)!) }
+        let nextSchema = try raw.readRows("SELECT name,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name") { ($0.text(0)!, $0.text(1)!) }
+        let oldSchema = Dictionary(uniqueKeysWithValues: beforeSchema)
+        let newSchema = Dictionary(uniqueKeysWithValues: nextSchema)
+        let changedSchema = Set(oldSchema.keys).union(newSchema.keys).filter { oldSchema[$0] != newSchema[$0] }.sorted()
+        print("V3 fixture schema differences: \(changedSchema.joined(separator: ","))")
+        for name in changedSchema {
+            print("V3 fixture SQL before[\(name)]: \(oldSchema[name] ?? "absent")")
+            print("V3 fixture SQL after[\(name)]: \(newSchema[name] ?? "absent")")
+        }
         XCTAssertTrue(try CodexBusinessDatabase.snapshot(f.source, covers: URL(fileURLWithPath: receipt.normalizedPath), module: "exact.swift"))
         try BusinessDatabaseMigration.migrate(f.configuration, availableBytes: 1 << 33)
         let active = SQLiteDatabaseDriver(url: f.source)
