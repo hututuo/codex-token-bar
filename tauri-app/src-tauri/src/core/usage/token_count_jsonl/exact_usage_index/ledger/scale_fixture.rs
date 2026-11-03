@@ -49,6 +49,10 @@ struct SourceJob {
 }
 
 pub(super) fn verify_scale(home: &Path) -> Result<Value, String> {
+    fn phase(name: &str) {
+        eprintln!("TOKENBAR_NATIVE_SCALE_PHASE {name}");
+    }
+    phase("source-preparation");
     let preparation_started = Instant::now();
     let home = prepare_isolated_home(home)?;
     let sessions = home.join("sessions");
@@ -62,11 +66,13 @@ pub(super) fn verify_scale(home: &Path) -> Result<Value, String> {
 
     // Establish the old, published dashboard through the normal production
     // refresh before seeding stale virtual candidate namespaces.
-    route::bootstrap()?;
+    route::bootstrap().map_err(|e| format!("native scale bootstrap: {e}"))?;
     let index_path = database_path(&home)?;
     refuse_existing_index(&index_path)?;
     let initial_started = Instant::now();
-    let initial_dashboard = super::super::super::dashboard_snapshot(&home)?;
+    phase("initial-production-snapshot");
+    let initial_dashboard = super::super::super::dashboard_snapshot(&home)
+        .map_err(|e| format!("native scale initial production snapshot: {e}"))?;
     let initial_snapshot_seconds = initial_started.elapsed().as_secs_f64();
     if !initial_dashboard.warnings.is_empty() {
         return Err(format!(
@@ -86,7 +92,9 @@ pub(super) fn verify_scale(home: &Path) -> Result<Value, String> {
         TOTAL_TOKENS,
     )?;
 
-    let mut index = ExactUsageIndex::open(&home)?;
+    phase("initial-snapshot-complete");
+    let mut index = ExactUsageIndex::open(&home)
+        .map_err(|e| format!("native scale reopen published index: {e}"))?;
     let generation = i64::try_from(index.published_generation()?)
         .map_err(|_| "published generation exceeds SQLite integer range")?;
     let target_generation = generation
@@ -139,7 +147,9 @@ pub(super) fn verify_scale(home: &Path) -> Result<Value, String> {
     }
 
     let seed_started = Instant::now();
-    let seeded_paths = seed_empty_candidate_namespaces(&index_path, &jobs, target_generation)?;
+    phase("legacy-catalog-seed");
+    let seeded_paths = seed_empty_candidate_namespaces(&index_path, &jobs, target_generation)
+        .map_err(|e| format!("native scale seed candidate catalog: {e}"))?;
     let seeded = candidate_catalog_metrics(&index_path)?;
     if seeded.0 != SEEDED_CANDIDATE_COUNT as i64
         || seeded.1 != (SEEDED_CANDIDATE_COUNT * TABLES.len()) as i64
@@ -178,8 +188,11 @@ pub(super) fn verify_scale(home: &Path) -> Result<Value, String> {
 
     let backfill_started = Instant::now();
     let mut warnings = Vec::new();
-    index.synchronize_event_enrichment(&home, &index_path, &mut warnings, ExactSyncMode::Full)?;
-    index.sync(&home, &mut warnings)?;
+    phase("backfill");
+    index.synchronize_event_enrichment(&home, &index_path, &mut warnings, ExactSyncMode::Full)
+        .map_err(|e| format!("native scale event enrichment: {e}"))?;
+    index.sync(&home, &mut warnings)
+        .map_err(|e| format!("native scale post-enrichment sync: {e}"))?;
     let backfill_summary = index.summary(OffsetDateTime::now_utc(), UtcOffset::UTC)?;
     let backfill_seconds = backfill_started.elapsed().as_secs_f64();
     if !warnings.is_empty() {
@@ -223,6 +236,7 @@ pub(super) fn verify_scale(home: &Path) -> Result<Value, String> {
         ));
     }
 
+    phase("unchanged-refreshes");
     let mut unchanged_seconds = Vec::with_capacity(20);
     for _ in 0..20 {
         let started = Instant::now();
@@ -310,6 +324,7 @@ pub(super) fn verify_scale(home: &Path) -> Result<Value, String> {
         }
     }
 
+    phase("complete");
     let budget_passed = backfill_seconds <= 600.0 && unchanged_p95 <= 1.0;
     Ok(json!({
         "name": "exact-rust-production-scale-fixture",

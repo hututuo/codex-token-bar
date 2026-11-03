@@ -219,3 +219,11 @@ Windows连接寿命作平台适配：实际锁定SQLite源码的`winOpen`使用F
 - 新单测与实际选择性storage helper验证：partial空态为占用，写入ordinal17后拒绝复用且17仍在；完整current空producer仍false，未知额外表仍拒绝，13job目录增长0。整包实际启动与8点强退继续待新SHA，不能以helper冒充。
 - 压力验证从count／SUM提升为排序后的逐列typed摘要。Swift `events`、Rust `event_rows`仅排除本次允许补全的`model`，核对其余字段、稳定行身份、NULL／INTEGER／REAL／TEXT／BLOB存储类；列名与顺序也进入摘要。补全前后摘要必须一致，脚本拒收缺失／不同／非法摘要；原有数值、源码hash、对象数量和性能门限仍保留。此为验证强化，不改业务账本或parser。
 - 0c98规模完整实测最终为：512最大写锁30.319秒，4124最大写锁197.120秒、backfill230.498秒、无变化P95 1.672秒；这些旧SHA仍FAIL。新SQL绑定复用后的整轮／压力结果等待云端，不从微基准预测通过。
+
+### C05d／C07d · 写锁内重复工作与测试设施的具体失败
+
+- `ef1f42cd`规模实际结果：512 backfill17.326秒、最大写锁13.368秒；4124 backfill158.273秒、最大写锁106.667秒、最大进度空窗107.567秒、无变化P95 1.015秒，仍FAIL。压力日志仅SwiftPM Planning build，未出现测试／fixture阶段，不能算执行了50万事件测试。现在在首档实际成功构建后解析受管`.build`里的唯一真实XCTest bundle，后续每档直接由XCTest执行同一个生产测试，保留全部原输入／断言／门限。超时保存本次进程组和实际阶段，不终止其他任务。
+- 已定位Swift补全中两处确定重复：readiness、batch scheduling与最终import反复恢复同一个完整stage；每个source导入又扫描全部source寻找canonical重复组。现在仅在一次同步内保存已通过原classifier的manifest摘要，不保留额外payload／SQLite work；最终import的完整typed seal、源前缀与原子receipt校验不变。owner UUID集合唯一且无既有exclusion时只做最终整代canonical扫描；有重复UUID、既有exclusion或路径换owner仍走原路径。新增实际规模断言要求该无重复场景只扫描一次。没有改`UsageEventLedger.admit`、数值修正或事件身份逻辑，也没有新建业务库。
+- `222e69fa`公开0.9.7双端升级 [41547445107](https://github.com/hututuo/codex-token-bar/actions/runs/41547445107) PASS；完整 [41547552120](https://github.com/hututuo/codex-token-bar/actions/runs/41547552120) 的Swift／前端／更新器通过，Mac native **1689 passed／0 failed／14 ignored**。其实际production fixture推进到新增native-scale-home后报`database is locked`，整项仍FAIL；已加明确phase与调用点上下文，并立即保存fixture证据，等待下一轮定位，未声称该写锁已修好。
+- 同一222矩阵的真实旧版producer构建还发现绝对路径缓存问题：Tauri updater的permission metadata指向上次随机archive根，旧producer尚未运行即构建失败。每次归档构建现在仅清当前包及manifest中归档内path patch包的编译产物，保留registry/git依赖；越界路径拒绝。十项helper与七项workflow回归通过；不把缓存故障称为历史账本恢复失败，也不将其结果记为PASS。
+- 本批Swift语法与41项脚本／workflow测试通过；性能、真实各版本产库、完整双端生产结果须绑定下一源码SHA重测。未安装、替换正式应用、合并main或发布。

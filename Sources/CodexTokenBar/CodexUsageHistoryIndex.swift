@@ -436,6 +436,15 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         var sourceValidation: StageSourceValidation? = nil
     }
 
+    /// Operation-local manifest summaries, never restored row payloads. The
+    /// importer still validates the complete typed stage and source prefix in
+    /// the publication transaction. This only avoids repeating the same full
+    /// restore during readiness and batch scheduling while A is write-locked.
+    private struct PreparedStage {
+        let staged: StagedFullRebuild
+        let observation: SourceFileObservation
+    }
+
     /// Ephemeral, owner-local proof. Never persisted in the stage manifest.
     private struct StageSourceValidation {
         let source: SourceSignature
@@ -2704,6 +2713,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             else { onProgress?(completed, total, phase) }
         }
         var demandContracts: [URL: SourceSignature]?
+        var preparedStages: [URL: PreparedStage] = [:]
         if stagePool == nil, let target = BusinessSQLiteRoutes.store(for: driver.url) {
             stagePool = try ExactStagePool.existingOrNeededForLegacy(for: target)
         }
@@ -2716,7 +2726,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     return try connection.transaction { transaction in
                         try synchronizeInTransaction(files: files, sessionID: sessionID,
                             messageScanner: messageScanner, observedAt: observedAt, parser: parser, onProgress: reportProgress,
-                            connection: transaction, stagedArtifacts: &stagedArtifacts)
+                            connection: transaction, stagedArtifacts: &stagedArtifacts, preparedStages: preparedStages)
                     }
                 }
                 // Only the complete generation's commit permits job cleanup.
@@ -2747,6 +2757,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                             reportProgress(min(offset + completed, total), total, .backfillingModel)
                         }
                     }
+                    for value in staged {
+                        preparedStages[value.job.file] = PreparedStage(staged: value,
+                            observation: try stageObservation(at: value.databaseURL))
+                    }
                     completedBeforeBatch += staged.filter { $0.job.reason == .eventEnrichment }.count
                 }
             }
@@ -2761,7 +2775,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         parser: @escaping SessionParser,
         onProgress: ((Int, Int, PreciseIndexProgressPhase) -> Void)?,
         connection: SQLiteDatabaseConnection,
-        stagedArtifacts: inout [URL]
+        stagedArtifacts: inout [URL],
+        preparedStages: [URL: PreparedStage]
     ) throws -> SynchronizationResult {
         let generation = UUID().uuidString
         let canonicalFiles = Array(Set(files.map { CodexRolloutReader.canonicalLogicalURL($0) })).sorted { $0.path < $1.path }
@@ -2978,14 +2993,17 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         if BusinessSQLiteRoutes.store(for: driver.url) != nil {
             try ExactBackfillMetrics.measure(.readyValidation) {
                 for job in fullRebuildJobs {
-                    var ready = false
-                    for url in try stagingDatabaseURLs(for: job.file) {
-                        if try reusableStage(at: url, for: job) != nil { ready = true; break }
+                    // Build/recover full stages outside A's writer. Even an
+                    // already sealed legacy job goes through the original
+                    // classifier there before its summary can enter this map.
+                    if try preparedStage(for: job, in: preparedStages) == nil {
+                        throw BusinessStageDemand(jobs: fullRebuildJobs, enrichmentTotal: eventEnrichmentTotal)
                     }
-                    if !ready { throw BusinessStageDemand(jobs: fullRebuildJobs, enrichmentTotal: eventEnrichmentTotal) }
                 }
             }
         }
+        let refreshProjectionPerSource = try canonicalProjectionMayChange(
+            jobs: fullRebuildJobs, connection: connection)
         let finalSynchronization = try connection.transaction { connection in
             let preRotationAttributionState = try currentAttributionState(
                 connection: connection
@@ -3003,7 +3021,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     try stageFullRebuilds(
                         batch,
                         parser: parser,
-                        eventEnrichmentTotal: eventEnrichmentTotal
+                        eventEnrichmentTotal: eventEnrichmentTotal,
+                        preparedStages: preparedStages
                     ) { completed, total in
                         onProgress?(
                             min(completedBeforeBatch + completed, total),
@@ -3092,6 +3111,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                                 lineageReplacements[staged.job.file.path]?.sourceID,
                             preserveExistingAttributionLedger:
                                 lineagesRequiringMaximumMerge.contains(staged.job.file.path),
+                            refreshCanonicalProjection: refreshProjectionPerSource,
                             connection: transaction
                         )
                         if index == 0,
@@ -5821,10 +5841,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         connection: SQLiteDatabaseConnection,
         refreshCanonicalProjection: Bool = true
     ) throws {
-        try CanonicalUsageProjection.install(on:connection)
-        if refreshCanonicalProjection, try CanonicalUsageProjection.refresh(on:connection) {
-            try connection.execute("INSERT OR REPLACE INTO schema_meta VALUES ('canonical_projection_pending','1')")
-            try rebuildDashboardAggregates(connection:connection)
+        if refreshCanonicalProjection {
+            try CanonicalUsageProjection.install(on:connection)
+            if try CanonicalUsageProjection.refresh(on:connection) {
+                try connection.execute("INSERT OR REPLACE INTO schema_meta VALUES ('canonical_projection_pending','1')")
+                try rebuildDashboardAggregates(connection:connection)
+            }
         }
         if replacing {
             try connection.execute(
@@ -7514,6 +7536,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         _ jobs: [FullRebuildJob],
         parser: @escaping SessionParser,
         eventEnrichmentTotal: Int,
+        preparedStages: [URL: PreparedStage] = [:],
         onEventEnrichmentProgress: @escaping (Int, Int) -> Void
     ) throws -> [StagedFullRebuild] {
         guard !jobs.isEmpty else { return [] }
@@ -7521,6 +7544,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             if $0.observedSignature.size == $1.observedSignature.size {
                 return $0.file.path < $1.file.path
             }
+        if !preparedStages.isEmpty {
+            let ready = try jobs.compactMap { try preparedStage(for: $0, in: preparedStages) }
+            if ready.count == jobs.count {
+                onEventEnrichmentProgress(ready.filter { $0.job.reason == .eventEnrichment }.count,
+                    eventEnrichmentTotal)
+                return ready
+            }
+        }
             return $0.observedSignature.size > $1.observedSignature.size
         }
         // 决策口径（对齐 Rust stage_full_rebuilds 的独立通道）：heavy 文件走
@@ -7575,6 +7606,48 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             }
             return $0.job.observedSignature.size > $1.job.observedSignature.size
         }
+    }
+
+    private func preparedStage(for job: FullRebuildJob,
+        in prepared: [URL: PreparedStage]) throws -> StagedFullRebuild? {
+        guard let value = prepared[job.file],
+              value.staged.job.sessionID == job.sessionID,
+              value.staged.job.reason == job.reason,
+              value.staged.job.observedSignature == job.observedSignature,
+              value.observation.matches(try stageObservation(at: value.staged.databaseURL)) else {
+            return nil
+        }
+        // This summary is not permission to import. importStagedFullRebuild
+        // retains reusableStage's full typed-payload/source validation, including
+        // data_version invalidation of private restored work after external I/O.
+        return value.staged
+    }
+
+    /// A canonical exclusion can only change within a repeated valid session
+    /// UUID. Prove that no such group exists before avoiding a whole-ledger scan
+    /// for each single-source import. Existing exclusions or owner reuse retain
+    /// the original per-source path; the final generation always refreshes it.
+    private func canonicalProjectionMayChange(jobs: [FullRebuildJob],
+        connection: SQLiteDatabaseConnection) throws -> Bool {
+        if try connection.readRows("SELECT 1 FROM usage_ledger_duplicates LIMIT 1", map: { $0.int(0) }).first != nil {
+            return true
+        }
+        let existing = try indexedSourceIdentities(connection: connection)
+        let byPath = Dictionary(uniqueKeysWithValues: existing.map { ($0.path, $0.sessionID) })
+        var ownerPaths: [UUID: Set<String>] = [:]
+        for source in existing {
+            if let raw = source.sessionID, let id = UUID(uuidString: raw) {
+                ownerPaths[id, default: []].insert(source.path)
+            }
+        }
+        for job in jobs {
+            if let prior = byPath[job.file.path] ?? nil,
+               prior.lowercased() != job.sessionID.lowercased() { return true }
+            if let id = UUID(uuidString: job.sessionID) {
+                ownerPaths[id, default: []].insert(job.file.path)
+            }
+        }
+        return ownerPaths.values.contains { $0.count > 1 }
     }
 
     private func coldBuildWorkerCount(jobCount: Int) -> Int {
@@ -8600,6 +8673,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         generation: String,
         replacementSourceID: Int64?,
         preserveExistingAttributionLedger: Bool,
+        refreshCanonicalProjection: Bool = true,
         connection: SQLiteDatabaseConnection
     ) throws {
         guard let validated = try reusableStage(
@@ -8877,7 +8951,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         affectedBuckets: nil,
                         replacing: !preserveExistingAttributionLedger,
                         preservingExistingMaximum: preserveExistingAttributionLedger,
-                        connection: transaction
+                        connection: transaction,
+                        refreshCanonicalProjection: refreshCanonicalProjection
                     )
                     try refreshDashboardSourceAggregates(
                         sourceID: source.id,

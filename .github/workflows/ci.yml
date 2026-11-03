@@ -235,6 +235,13 @@ jobs:
           set -euo pipefail
           cargo build --locked --manifest-path tauri-app/src-tauri/Cargo.toml --features business-store-fixture --example business-store-fixture
           python scripts/cloud/run-business-store-fixture.py tauri-app/src-tauri/target/debug/examples/business-store-fixture
+      - name: Preserve production fixture evidence immediately
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-production-${{ matrix.os }}-${{ github.run_id }}
+          path: runtime-recovery-production.*
+          retention-days: 7
       - name: Full native regression including original pressure case
         if: ${{ !cancelled() }}
         shell: bash

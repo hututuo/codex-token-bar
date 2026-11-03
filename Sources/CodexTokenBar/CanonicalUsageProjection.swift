@@ -25,6 +25,10 @@ enum CanonicalUsageProjection {
     /// session UUID can be copies. Different fork UUIDs never meet this test.
     @discardableResult
     static func refresh(on db: SQLiteDatabaseConnection) throws -> Bool {
+        try ExactBackfillMetrics.measure(.canonicalProjection) { try refreshChecked(on: db) }
+    }
+
+    private static func refreshChecked(on db: SQLiteDatabaseConnection) throws -> Bool {
         let ready = try db.readRows("SELECT 1 FROM sqlite_master WHERE name='usage_ledger_identities'") { $0.int(0) }.first != nil
         guard ready else { return false }
         let sources = try db.readRows("SELECT source_id,session_id FROM sources ORDER BY source_id") { s -> (Int64,String)? in

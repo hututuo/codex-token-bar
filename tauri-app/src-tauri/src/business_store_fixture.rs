@@ -27,7 +27,8 @@ const ENV: [&str; 5] = [
 // Called only by the explicitly enabled offline fixture binary, after the
 // producer has written TEMP rows but before it commits its parsing transaction.
 pub(crate) fn assert_concurrent_a_write() -> Result<(), String> {
-    let connection = route::open_store("fixture_concurrent", "fixture", "fixture/concurrent", &[])?;
+    let connection = route::open_store("fixture_concurrent", "fixture", "fixture/concurrent", &[])
+        .map_err(|e| format!("open concurrent parser writer: {e}"))?;
     connection
         .busy_timeout(std::time::Duration::from_millis(250))
         .map_err(|e| e.to_string())?;

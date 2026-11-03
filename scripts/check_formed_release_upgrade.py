@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 
 from prepare_v097_upgrade_validation import extract_revision
 
@@ -33,6 +34,7 @@ OVERRIDES = dict(zip(("CODEX_TOKEN_BAR_TAURI_SUPPORT_DIR", "CODEX_TOKEN_BAR_TAUR
 INJECTION = ("tauri-app/src-tauri/src/lib.rs", "tauri-app/src-tauri/Cargo.toml",
     "tauri-app/src-tauri/src/formed_release_probe.rs", "tauri-app/src-tauri/examples/formed-release-probe.rs")
 PREFIX = "TOKENBAR_FORMED_REPORT "
+PROBE_PACKAGE = "codex-token-bar"
 EXAMPLE = '''fn main() {
     let args: Vec<_> = std::env::args_os().collect();
     if args.len()!=3 { eprintln!("required root and phase"); std::process::exit(2); }
@@ -112,6 +114,73 @@ def execute(command: list[str], cwd: Path, env: dict, log: Path, expected: int =
     return text
 
 
+def local_patch_packages(source: Path, manifest: Path) -> list[str]:
+    """Read package names for in-archive path patches in the native manifest."""
+    archive = source.resolve()
+    manifest = manifest.resolve()
+    if not manifest.is_relative_to(archive) or not manifest.is_file() or not os.access(manifest, os.R_OK):
+        raise ValueError("Native Cargo.toml is not a readable file in the source archive")
+    with manifest.open("rb") as stream:
+        cargo = tomllib.load(stream)
+
+    packages = {PROBE_PACKAGE}
+    patch_table = cargo.get("patch", {})
+    if not isinstance(patch_table, dict):
+        raise ValueError("Invalid [patch] table in source archive")
+    patches = patch_table.get("crates-io", {})
+    if not isinstance(patches, dict):
+        raise ValueError("Invalid [patch.crates-io] table in source archive")
+    for patch_name, patch in patches.items():
+        if not isinstance(patch, dict) or "path" not in patch:
+            continue
+        relative_path = patch["path"]
+        if not isinstance(relative_path, str):
+            raise ValueError(f"Invalid local patch path for {patch_name}")
+        crate_dir = (manifest.parent / relative_path).resolve()
+        if not crate_dir.is_relative_to(archive):
+            raise ValueError(f"Local patch crate escapes the source archive: {patch_name}")
+        if not crate_dir.is_dir():
+            raise ValueError(f"Local patch crate directory is missing: {patch_name}")
+        crate_manifest = (crate_dir / "Cargo.toml").resolve()
+        if (not crate_manifest.is_relative_to(archive) or not crate_manifest.is_file()
+                or not os.access(crate_manifest, os.R_OK)):
+            raise ValueError(f"Local patch crate has no readable in-archive Cargo.toml: {patch_name}")
+        with crate_manifest.open("rb") as stream:
+            crate_cargo = tomllib.load(stream)
+        package_table = crate_cargo.get("package")
+        package = package_table.get("name") if isinstance(package_table, dict) else None
+        if not isinstance(package, str) or not package:
+            raise ValueError(f"Local patch crate has no package name: {patch_name}")
+        packages.add(package)
+    return sorted(packages)
+
+
+def build_probe(repository: Path, source: Path, env: dict[str, str], log: Path) -> str:
+    """Rebuild the injected package while retaining cached third-party crates.
+
+    Tauri and patched plugins record absolute permission paths. Historical and
+    candidate archives use different temporary roots but share this helper's
+    target directory, so Cargo can otherwise reuse successful build-script
+    outputs that point at the previous archive. Clean the root package and
+    local path-patched crates only; registry/git downloads and compiled
+    third-party dependency artifacts remain reusable.
+    """
+    target = Path(env["CARGO_TARGET_DIR"]).resolve()
+    managed_target = (repository / "tauri-app/src-tauri/target").resolve()
+    if target != managed_target:
+        raise ValueError("Refusing to clean outside the formed-release helper target")
+
+    manifest = source / "tauri-app/src-tauri/Cargo.toml"
+    packages = local_patch_packages(source, manifest)
+    for index, package in enumerate(packages):
+        clean_log = log.with_name(log.stem + f"-clean-{index}.log")
+        execute(["cargo", "clean", "--locked", "--manifest-path", str(manifest), "--package", package,
+            "--target-dir", str(target)], repository, env, clean_log, timeout=300)
+    return execute(["cargo", "build", "--locked", "--manifest-path", str(manifest),
+        "--features", "business-store-fixture", "--example", "formed-release-probe"],
+        repository, env, log)
+
+
 def parse_report(text: str, phase: str, release: str, scenario: str) -> dict:
     matches = [json.loads(line.split(PREFIX, 1)[1]) for line in text.splitlines() if PREFIX in line]
     if len(matches) != 1:
@@ -178,9 +247,7 @@ def run(repository: Path, release: str, output: Path) -> dict:
                 env = probe_environment(base)
                 target = repository / "tauri-app/src-tauri/target"
                 env["CARGO_TARGET_DIR"] = str(target)
-                execute(["cargo", "build", "--locked", "--manifest-path", str(source / "tauri-app/src-tauri/Cargo.toml"),
-                    "--features", "business-store-fixture", "--example", "formed-release-probe"], repository, env,
-                    output / (label+"-build.log"))
+                build_probe(repository, source, env, output / (label+"-build.log"))
                 executable = "formed-release-probe" + (".exe" if os.name == "nt" else "")
                 bins[label] = scratch / (label + (".exe" if os.name == "nt" else ""))
                 shutil.copy2(target / "debug/examples" / executable, bins[label])

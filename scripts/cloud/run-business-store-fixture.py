@@ -65,6 +65,11 @@ def main():
         binary = binary.with_suffix(".exe")
     completed = subprocess.run([str(binary), str(root)], env=env,
                                capture_output=True, text=True, encoding="utf-8")
+    # Preserve the first production failure before the longer unit suite runs.
+    # The disposable fixture contains no user data. Do not turn failed output
+    # into a successful profile; this is just evidence for its actual phase.
+    args.output.with_suffix(".log").write_text(
+        completed.stderr + completed.stdout, encoding="utf-8")
     if completed.stderr:
         print(completed.stderr, end="")
     print(completed.stdout, end="")

@@ -119,6 +119,101 @@ class ScaleEvidenceTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(ValueError):
                 module.parse_profile(self.fixture(**{field: value}), 13)
 
+    def test_timeout_phase_distinguishes_build_runner_setup_execution_and_completion(self):
+        test_name = module.TEST.rsplit('.', 1)[1]
+        self.assertEqual(module._timeout_phase('[0/1] Planning build\n'), 'swiftpm_build_planning')
+        self.assertEqual(module._timeout_phase('[1/3] Compiling CodexTokenBar\n'), 'swiftpm_build')
+        self.assertEqual(module._timeout_phase('Build complete!\n'), 'runner_startup')
+        self.assertEqual(module._timeout_phase("Test Suite 'Selected tests' started\n"), 'test_setup')
+        started = f"Test Suite 'Selected tests' started\nTest Case '{test_name}' started.\n"
+        self.assertEqual(module._timeout_phase(started), 'test_execution')
+        self.assertEqual(module._timeout_phase(started + f"Test Case '{test_name}' passed\n"), 'test_completion')
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX process groups are not available on Windows')
+    def test_timeout_process_snapshot_contains_only_its_own_group(self):
+        process = SimpleNamespace(pid=987654)
+        ps_output = (
+            '987654 1 987654 S /usr/bin/xcrun\n'
+            '987655 987654 987654 S /XCTestBundle.xctest\n'
+            '123 1 123 S /unrelated-process\n'
+        )
+        with patch.object(module.subprocess, 'run', return_value=SimpleNamespace(
+                returncode=0, stdout=ps_output)) as ps:
+            snapshot = module._capture_process_group(process, windows=False)
+        self.assertEqual(snapshot['processGroup'], 987654)
+        self.assertEqual([member['pid'] for member in snapshot['members']], [987654, 987655])
+        self.assertEqual(snapshot['capture'], 'ok')
+        self.assertEqual(ps.call_args.args[0], ['ps', '-axo', 'pid=,ppid=,pgid=,stat=,comm='])
+
+    def test_resolves_only_unique_actual_xctest_bundle_under_repository_build(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary) / 'repo'
+            bin_path = repository / '.build' / 'arm64-apple-macosx' / 'debug'
+            bundle = bin_path / 'CodexTokenBarPackageTests.xctest'
+            bundle.mkdir(parents=True)
+            with patch.object(module.subprocess, 'run', return_value=SimpleNamespace(
+                    returncode=0, stdout=f'{bin_path}\n', stderr='')) as show_path:
+                resolved = module._resolve_xctest_bundle(repository)
+            self.assertEqual(resolved, bundle.resolve())
+            self.assertEqual(show_path.call_args.args[0], ['swift', 'test', '--show-bin-path'])
+
+            (bin_path / 'OtherTests.xctest').mkdir()
+            with patch.object(module.subprocess, 'run', return_value=SimpleNamespace(
+                    returncode=0, stdout=f'{bin_path}\n', stderr='')):
+                with self.assertRaisesRegex(ValueError, 'Expected one XCTest bundle'):
+                    module._resolve_xctest_bundle(repository)
+
+    def test_rejects_xctest_bundle_that_resolves_outside_repository_build(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary) / 'repo'
+            bin_path = repository / '.build' / 'debug'
+            bin_path.mkdir(parents=True)
+            external = Path(temporary) / 'outside.xctest'
+            external.mkdir()
+            (bin_path / 'CodexTokenBarPackageTests.xctest').symlink_to(external, target_is_directory=True)
+            with patch.object(module.subprocess, 'run', return_value=SimpleNamespace(
+                    returncode=0, stdout=f'{bin_path}\n', stderr='')):
+                with self.assertRaisesRegex(ValueError, 'not a real directory under repository .build'):
+                    module._resolve_xctest_bundle(repository)
+
+    def test_macos_uses_first_swift_build_then_same_verified_xctest_bundle(self):
+        attempts = []
+        bundle = Path('/repo/.build/arm64-apple-macosx/debug/CodexTokenBarPackageTests.xctest')
+
+        class FakeProcess:
+            def __init__(self, command, stdout, env):
+                self.command = command
+                self.stdout = stdout
+                self.env = env
+                self.pid = 654321
+                self.returncode = None
+
+            def wait(self, timeout=None):
+                files = int(self.env['TOKENBAR_BACKFILL_FILE_COUNT'])
+                self.stdout.write(ScaleEvidenceTests().fixture(files))
+                self.returncode = 0
+                return 0
+
+        def fake_popen(command, cwd, env, stdout, stderr, **options):
+            attempts.append(command)
+            return FakeProcess(command, stdout, env)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            with patch.object(module.subprocess, 'check_output', return_value='source-sha\n'), \
+                    patch.object(module.subprocess, 'Popen', side_effect=fake_popen), \
+                    patch.object(module, '_is_macos', return_value=True), \
+                    patch.object(module, '_resolve_xctest_bundle', return_value=bundle):
+                report = module.run_sizes(Path(temporary), Path(temporary) / 'evidence',
+                                          (13, 128), 1200, 30, 600)
+
+        self.assertEqual(report['status'], 'PASS')
+        self.assertEqual(attempts[0], ['swift', 'test', '--filter', module.TEST])
+        self.assertEqual(attempts[1], ['xcrun', 'xctest', '-XCTest', module.XCTEST_SELECTOR, str(bundle)])
+        self.assertEqual([case['runner'] for case in report['cases']], ['swift', 'xctest'])
+        self.assertEqual(report['cases'][0]['xctestBundle'], str(bundle))
+        self.assertEqual(report['cases'][1]['xctestBundle'], str(bundle))
+        self.assertEqual(report['xctestSelector'], module.XCTEST_SELECTOR)
+
     def test_failed_case_does_not_skip_later_sizes_or_pressure(self):
         case_specs = module.scale_cases((13, 128, 512, 4124), pressure=True)
         attempts = []
@@ -162,7 +257,8 @@ class ScaleEvidenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / 'evidence'
             with patch.object(module.subprocess, 'check_output', return_value='source-sha\n'), \
-                    patch.object(module.subprocess, 'Popen', side_effect=fake_popen):
+                    patch.object(module.subprocess, 'Popen', side_effect=fake_popen), \
+                    patch.object(module, '_is_macos', return_value=False):
                 report = module.run_sizes(
                     Path(temporary), output, (13, 128, 512, 4124), 1200, 30, 600, pressure=True
                 )
@@ -224,10 +320,15 @@ class ScaleEvidenceTests(unittest.TestCase):
                   if os.name == 'nt' else patch.object(module.os, 'killpg'))
         with tempfile.TemporaryDirectory() as temporary:
             with patch.object(module.subprocess, 'check_output', return_value='sha'), \
-                    patch.object(module.subprocess, 'Popen', side_effect=fake_popen), killer as kill_mock:
+                    patch.object(module.subprocess, 'Popen', side_effect=fake_popen), \
+                    patch.object(module, '_is_macos', return_value=False), \
+                    patch.object(module, '_capture_process_group', return_value={
+                        'processGroup': 987654, 'members': [], 'capture': 'test'}), killer as kill_mock:
                 report = module.run_sizes(Path(temporary), Path(temporary) / 'evidence', (13, 128), 1, 30, 600)
         self.assertEqual([case['status'] for case in report['cases']], ['FAIL', 'PASS'])
         self.assertIn('1s execution deadline', report['cases'][0]['error'])
+        self.assertIn('phase=runner_startup', report['cases'][0]['error'])
+        self.assertEqual(report['cases'][0]['timeoutDiagnostics']['process']['processGroup'], 987654)
         self.assertEqual(len(attempts), 2)
         if os.name == 'nt':
             self.assertEqual(kill_mock.call_args.args[0], ['taskkill', '/PID', '987654', '/T', '/F'])
@@ -262,7 +363,8 @@ class ScaleEvidenceTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             with patch.object(module.subprocess, 'check_output', return_value='sha'), \
-                    patch.object(module.subprocess, 'Popen', side_effect=fake_popen):
+                    patch.object(module.subprocess, 'Popen', side_effect=fake_popen), \
+                    patch.object(module, '_is_macos', return_value=False):
                 report = module.run_sizes(Path(temporary), Path(temporary) / 'evidence',
                                           (13, 128, 512), 1200, 30, 600)
         self.assertEqual([case['status'] for case in report['cases']], ['FAIL', 'FAIL', 'PASS'])

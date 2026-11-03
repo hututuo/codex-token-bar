@@ -194,6 +194,8 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let writeMetrics = SQLiteWriteMetrics.end()
         let phaseMetrics = ExactBackfillMetrics.end()
         phase("backfill-complete")
+        XCTAssertEqual(phaseMetrics.calls["canonicalProjection"], 1,
+            "Unique session owners need one final canonical scan, not one whole-ledger scan per imported source")
         largestGap = max(largestGap, Date().timeIntervalSince(lastProgress))
         XCTAssertTrue(result.eventEnrichmentComplete)
         XCTAssertEqual(parsed.value, files.count, "The publication retry must reuse verified staged work")

@@ -3,7 +3,7 @@ import Foundation
 /// Opt-in timing of actual recovery work. No SQL values, paths, or user text
 /// are captured. Release builds execute the original body directly.
 enum ExactBackfillMetrics {
-    enum Phase: String { case discovery, readyValidation, staging, sourceComparison, lineage, importing, projection, publication, cleanup }
+    enum Phase: String { case discovery, readyValidation, staging, sourceComparison, lineage, importing, projection, canonicalProjection, publication, cleanup }
     struct Snapshot { var seconds: [String: Double] = [:]; var calls: [String: Int] = [:] }
     #if DEBUG
     private final class State: @unchecked Sendable {
