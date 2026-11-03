@@ -227,3 +227,10 @@ Windows连接寿命作平台适配：实际锁定SQLite源码的`winOpen`使用F
 - `222e69fa`公开0.9.7双端升级 [41547445107](https://github.com/hututuo/codex-token-bar/actions/runs/41547445107) PASS；完整 [41547552120](https://github.com/hututuo/codex-token-bar/actions/runs/41547552120) 的Swift／前端／更新器通过，Mac native **1689 passed／0 failed／14 ignored**。其实际production fixture推进到新增native-scale-home后报`database is locked`，整项仍FAIL；已加明确phase与调用点上下文，并立即保存fixture证据，等待下一轮定位，未声称该写锁已修好。
 - 同一222矩阵的真实旧版producer构建还发现绝对路径缓存问题：Tauri updater的permission metadata指向上次随机archive根，旧producer尚未运行即构建失败。每次归档构建现在仅清当前包及manifest中归档内path patch包的编译产物，保留registry/git依赖；越界路径拒绝。十项helper与七项workflow回归通过；不把缓存故障称为历史账本恢复失败，也不将其结果记为PASS。
 - 本批Swift语法与41项脚本／workflow测试通过；性能、真实各版本产库、完整双端生产结果须绑定下一源码SHA重测。未安装、替换正式应用、合并main或发布。
+
+### C03f／C07e · 两个writer的快照升级与新调度编译修正
+
+- `eafd2f17`的旧版producer缓存修复实际生效，0.9.8双端及0.9.9 Mac已完成formed升级，其余lane继续运行。Swift新调度摘要复用块误放在排序闭包中，被云端类型检查拒绝，规模测试未进入执行；已把该块移到排序之后，未将该次检查写为PASS。新增同大小源替换发生在sealed摘要准备之后的原生回归，要求发布前仍拒绝、旧值／ID完整保留，恢复原字节后复用原job完成，不能靠摘要绕过最终源证明。
+- 双端实际native压力都停在initial production snapshot，报`database is locked`，不是seed旧stage阶段。核对发现Rust pool的持久化初始化、payload、seal与cleanup使用DEFERRED事务；初始化先SELECT job状态，遇其他owner提交后升级写事务必得`SQLITE_BUSY_SNAPSHOT`。Swift对应mutator已是IMMEDIATE。现Rust同样在这些有界写操作开始时申请writer，真正的只读proof／私有work事务仍保持DEFERRED；未扩大整代发布或绕过busy失败。
+- 本地两个真实SQLite连接控制明确复现旧顺序错误码517；新helper的竞争writer返回正常busy5，主事务提交后可重试成功，封存digest／原payload仍一致。实际Rust production storage源码的选择性probe编译并执行通过，日志`c07-writer-pool-control.log`；其route/bootstrap依赖为stub，不算完整Tauri生产验证。新Rust整包回归覆盖这个先读后写反例和当前helper，不以延长超时掩盖问题。
+- Windows wrapper的cp1252中文输出错误已经通过实际TextIOWrapper回归复现；现显式UTF-8，保留真实子进程非零退出码与失败日志，拒绝产生成功profile。该修正仅影响云端fixture启动器，不改用户数据和会计逻辑。下一源码仍须完整双端／各版本／规模重测。

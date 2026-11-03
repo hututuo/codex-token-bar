@@ -7544,6 +7544,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             if $0.observedSignature.size == $1.observedSignature.size {
                 return $0.file.path < $1.file.path
             }
+            return $0.observedSignature.size > $1.observedSignature.size
+        }
         if !preparedStages.isEmpty {
             let ready = try jobs.compactMap { try preparedStage(for: $0, in: preparedStages) }
             if ready.count == jobs.count {
@@ -7551,8 +7553,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     eventEnrichmentTotal)
                 return ready
             }
-        }
-            return $0.observedSignature.size > $1.observedSignature.size
+            // A seal may change between readiness and this batch. Roll back
+            // and classify/recover outside the writer; never start a pool
+            // builder on a second A connection while this one owns its lock.
+            throw BusinessStageDemand(jobs: jobs, enrichmentTotal: eventEnrichmentTotal)
         }
         // 决策口径（对齐 Rust stage_full_rebuilds 的独立通道）：heavy 文件走
         // maxConcurrent=1 的专用队列串行处理，light 走并行队列占其余额度。
@@ -7629,6 +7633,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     /// the original per-source path; the final generation always refreshes it.
     private func canonicalProjectionMayChange(jobs: [FullRebuildJob],
         connection: SQLiteDatabaseConnection) throws -> Bool {
+        guard !jobs.isEmpty else { return false }
         if try connection.readRows("SELECT 1 FROM usage_ledger_duplicates LIMIT 1", map: { $0.int(0) }).first != nil {
             return true
         }

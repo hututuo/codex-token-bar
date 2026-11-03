@@ -287,6 +287,66 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(try files.map(sha256Digest(of:)), sourceDigestsBefore)
     }
 
+    func testNamespacedPreparedStageStillRevalidatesChangedSourceBeforePublication() throws {
+        BusinessSQLiteRoutes.deactivate()
+        defer { BusinessSQLiteRoutes.deactivate() }
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let root = try makeTemporaryDirectory(named: "PreparedStageSourceFence")
+        let cache = root.appendingPathComponent("cache")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cache.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cache.path, 1)
+        let home = try makeCodexHome()
+        let file = home.appendingPathComponent("sessions/prepared-stage.jsonl")
+        let context = "{\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-6.1-sol\"}}\n"
+        let usage = Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120)
+        let line = try tokenCountLine(timestamp: Date().addingTimeInterval(-60), total: usage, last: usage)
+        let original = Data((context + line + "\n").utf8)
+        try original.write(to: file)
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: home))
+        let old = try CodexUsageHistoryIndex(codexHome: home)
+        _ = try old.synchronize(files: [file], sessionID: analyzer.sessionID(from:),
+            parser: analyzer.parseSessionIntoHistoryIndex(file:sessionID:request:insertFingerprint:emit:))
+        let indexURL = try exactUsageDatabaseURL(in: cache)
+        let support = root.appendingPathComponent("support")
+        let configuration = BusinessDatabaseMigration.Configuration(
+            container: support.appendingPathComponent("codex-ledger.sqlite"), support: support,
+            exact: swiftUsageCacheRoot(in: cache), legacyExact: root.appendingPathComponent("unused"))
+        try BusinessDatabaseMigration.migrate(configuration, availableBytes: 1 << 32)
+        let database = SQLiteDatabaseDriver(url: indexURL)
+        try database.execute("DELETE FROM event_enrichment_sources; DELETE FROM schema_meta WHERE key='event_enrichment_revision'; UPDATE events SET model=NULL;")
+        let before = try rawAccountingDigest(in: database)
+        let index = try CodexUsageHistoryIndex(codexHome: home)
+        let parsed = ThreadSafeCounter()
+        let parser: CodexUsageHistoryIndex.SessionParser = { file, id, request, fp, emit in
+            parsed.increment()
+            return try analyzer.parseSessionIntoHistoryIndex(file: file, sessionID: id, request: request,
+                insertFingerprint: fp, emit: emit)
+        }
+        var changed = false
+        XCTAssertThrowsError(try index.synchronize(files: [file], sessionID: analyzer.sessionID(from:),
+            parser: parser, onProgress: { count, total, phase in
+                guard phase == .scanning, count == total, parsed.value > 0, !changed else { return }
+                changed = true
+                // Same-size replacement after the sealed summary is prepared.
+                // Neither that summary nor the seal is a source-prefix proof.
+                let modified = String(decoding: original, as: UTF8.self)
+                    .replacingOccurrences(of: "100", with: "900")
+                do { try Data(modified.utf8).write(to: file, options: .atomic) }
+                catch { XCTFail("Cannot inject the owned source replacement: \(error)") }
+            }))
+        XCTAssertTrue(changed)
+        XCTAssertEqual(parsed.value, 1)
+        XCTAssertEqual(try rawAccountingDigest(in: database), before)
+        XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM event_enrichment_sources", in: database), 0)
+        XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM events WHERE model IS NOT NULL", in: database), 0)
+        try original.write(to: file, options: .atomic)
+        let resumed = try index.synchronize(files: [file], sessionID: analyzer.sessionID(from:), parser: parser)
+        XCTAssertTrue(resumed.eventEnrichmentComplete)
+        XCTAssertEqual(parsed.value, 1, "The restored byte-proved source must reuse its durable job")
+        XCTAssertEqual(try rawAccountingDigest(in: database), before)
+        XCTAssertEqual(try scalarInt("SELECT SUM(tokens) FROM events", in: database), 120)
+    }
+
     private func rawAccountingDigest(in driver: SQLiteDatabaseDriver) throws -> String {
         try driver.withConnection { db in
             let columns = try db.readRows("PRAGMA table_info(events)") { $0.text(1) }.compactMap { $0 }.filter { $0 != "model" }

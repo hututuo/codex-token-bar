@@ -14,6 +14,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 type Result<T> = std::result::Result<T, String>;
 type Registry = Mutex<HashMap<PathBuf, Arc<Pool>>>;
+
+/// Acquire A's writer before reading a mutable job state. A deferred read
+/// snapshot cannot be upgraded after another owner commits (BUSY_SNAPSHOT),
+/// regardless of busy_timeout. Private work/read-only proofs remain deferred.
+fn begin_pool_write(connection: &Connection) -> rusqlite::Result<rusqlite::Transaction<'_>> {
+    rusqlite::Transaction::new_unchecked(connection, rusqlite::TransactionBehavior::Immediate)
+}
 #[cfg(all(feature = "business-store-fixture", not(test)))]
 #[path = "stage_pool/crash_fixture.rs"]
 mod crash_fixture;
@@ -501,7 +508,7 @@ impl Pool {
             }
         }
         let operation = hash(&[job.owner.as_bytes(), job.base.as_bytes()]);
-        self.with(|c|{let tx=c.connection().unchecked_transaction().map_err(|e|e.to_string())?;
+        self.with(|c|{let tx=begin_pool_write(c.connection()).map_err(|e|format!("begin stage job write: {e}"))?;
             let state:Option<String>=tx.query_row(&format!("SELECT state FROM {} WHERE job_id=?1",self.table("jobs")),[&job.id],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
             if state.as_deref().is_some_and(|s|s!="building"){return Err("封存任务不能重写".into());}
             tx.execute(&format!("INSERT OR IGNORE INTO {} VALUES(?1,?2,?3,'staging')",self.table("operations")),params![operation,job.owner,job.base]).map_err(|e|e.to_string())?;
@@ -526,10 +533,8 @@ impl Pool {
                     return Ok(());
                 }
                 self.with(|c| {
-                    let tx = c
-                        .connection()
-                        .unchecked_transaction()
-                        .map_err(|e| e.to_string())?;
+                    let tx = begin_pool_write(c.connection())
+                        .map_err(|e| format!("begin stage payload write: {e}"))?;
                     {
                         let physical = if name == "events" { "event_rows" } else { name };
                         let mut insert = tx
@@ -579,7 +584,7 @@ impl Pool {
             .map_err(|e| e.to_string())?
             .as_secs_f64();
         self.with(|c| {
-            let tx=c.connection().unchecked_transaction().map_err(|e|e.to_string())?;
+            let tx=begin_pool_write(c.connection()).map_err(|e|format!("begin stage seal write: {e}"))?;
             let changed=tx.execute(&format!("UPDATE {} SET manifest=?1,digest=?2,byte_count=?3,row_count=?4,sealed_at=?5,state='sealed' WHERE job_id=?6 AND owner=?7 AND state='building' AND contract_digest=?8",self.table("jobs")),params![manifest,digest,i64::try_from(bytes).map_err(|e|e.to_string())?,total,time,job.id,job.owner,job.contract]).map_err(|e|e.to_string())?;
             if changed!=1 {return Err("暂存封存失效".into());}
             #[cfg(all(feature = "business-store-fixture", not(test)))]
@@ -616,7 +621,7 @@ impl Pool {
     pub(super) fn reclaim(&self, job: &Job) -> Result<()> {
         self.with(|c|{
             c.connection().busy_timeout(std::time::Duration::from_millis(50)).map_err(|error|error.to_string())?;
-            let result = (|| { let tx=c.connection().unchecked_transaction().map_err(|e|e.to_string())?;
+            let result = (|| { let tx=begin_pool_write(c.connection()).map_err(|e|format!("begin stage cleanup write: {e}"))?;
             let state:Option<String>=tx.query_row(&format!("SELECT j.state FROM {} j JOIN {} r ON r.job_id=j.job_id AND r.owner=j.owner AND r.payload_digest=j.digest WHERE j.job_id=?1 AND j.owner=?2 AND j.contract_digest=?3",self.table("jobs"),self.table("publication_receipts")),params![job.id,job.owner,job.contract],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
             if state.as_deref()==Some("reclaimed"){return Ok(())} if state.as_deref()!=Some("consumed"){return Ok(())}
             for name in ["event_rows","fingerprints","chunks"] {tx.execute(&format!("DELETE FROM {} WHERE job_id=?1",self.table(name)),[&job.id]).map_err(|e|e.to_string())?;}

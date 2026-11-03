@@ -7,6 +7,7 @@ import re
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 
 
@@ -31,6 +32,12 @@ def validate_native_scale(result, required):
 
 
 def main():
+    # Windows hosted shells may default to cp1252 even though the child and
+    # retained evidence are UTF-8. Rendering a Chinese diagnostic must not stop
+    # this launcher before it checks the actual fixture exit status/report.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="backslashreplace")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path)
     parser.add_argument("--output", type=Path, default=Path("runtime-recovery-production.json"))

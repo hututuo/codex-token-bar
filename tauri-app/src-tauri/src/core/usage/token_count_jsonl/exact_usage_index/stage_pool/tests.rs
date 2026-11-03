@@ -1,6 +1,38 @@
 use super::*;
 
 #[test]
+fn pool_writer_locks_before_state_read_instead_of_upgrading_a_stale_snapshot() {
+    let (_root, pool, target) = fixture();
+    let source = "/writer-admission.jsonl";
+    let job = pool.job(&target, source, source.as_bytes()).unwrap();
+    pool.persist(&job, &seed_fixture_stage(source).unwrap()).unwrap();
+    let before = pool.seal(&job).unwrap().unwrap().digest;
+    let external = Connection::open(&pool.path).unwrap();
+    external.busy_timeout(std::time::Duration::ZERO).unwrap();
+    let update = format!("INSERT OR REPLACE INTO {} VALUES('writer-admission-control','1')",
+        quote(&format!("{}metadata", target.prefix)));
+    pool.with(|container| {
+        let tx = container.connection().unchecked_transaction().map_err(|e|e.to_string())?;
+        let _: String = tx.query_row(&format!("SELECT state FROM {} WHERE job_id=?1",pool.table("jobs")),[&job.id],|r|r.get(0)).map_err(|e|e.to_string())?;
+        external.execute(&update,[]).map_err(|e|e.to_string())?;
+        let error = tx.execute(&format!("UPDATE {} SET state=state WHERE job_id=?1",pool.table("jobs")),[&job.id]).unwrap_err();
+        assert!(matches!(error,rusqlite::Error::SqliteFailure(code,_) if code.extended_code==rusqlite::ffi::SQLITE_BUSY_SNAPSHOT));
+        tx.rollback().map_err(|e|e.to_string())
+    }).unwrap();
+    pool.with(|container| {
+        let tx = begin_pool_write(container.connection()).map_err(|e|e.to_string())?;
+        let _: String = tx.query_row(&format!("SELECT state FROM {} WHERE job_id=?1",pool.table("jobs")),[&job.id],|r|r.get(0)).map_err(|e|e.to_string())?;
+        let error = external.execute(&update,[]).unwrap_err();
+        assert!(matches!(error,rusqlite::Error::SqliteFailure(code,_) if code.code==rusqlite::ErrorCode::DatabaseBusy));
+        tx.execute(&format!("UPDATE {} SET state=state WHERE job_id=?1",pool.table("jobs")),[&job.id]).map_err(|e|e.to_string())?;
+        tx.commit().map_err(|e|e.to_string())
+    }).unwrap();
+    external.execute(&update,[]).unwrap();
+    assert_eq!(pool.seal(&job).unwrap().unwrap().digest,before);
+    assert_eq!(pool.restore(&job).unwrap().query_row("SELECT tokens FROM events",[],|r|r.get::<_,i64>(0)).unwrap(),11);
+}
+
+#[test]
 fn known_empty_partial_stage_stays_occupied_for_the_existing_restart_validator() {
     let (root,pool,_)=fixture();
     let path=root.path().join("index.sqlite3.staging").join(format!("{}.sqlite3","d".repeat(64)));
