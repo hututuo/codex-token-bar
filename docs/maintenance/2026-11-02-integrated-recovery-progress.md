@@ -297,3 +297,10 @@ Windows连接寿命作平台适配：实际锁定SQLite源码的`winOpen`使用F
 - 本机五个前端文件63项、Python3.13 native报告／formed契约17项通过。实际生产helper配既有真实SQLite驱动，旧逻辑14个partial组合不符合逐列期望，新16组合全过且typed row proof不变；两端实际暂存DDL列数与pool codec吻合。parse／helper隔离不是完整产品测试。
 - 新同源码常规[41578535879](https://github.com/hututuo/codex-token-bar/actions/runs/41578535879)及真实097[41578535851](https://github.com/hututuo/codex-token-bar/actions/runs/41578535851)运行中；已完成Mac native1695通过／14 ignored及Mac旧版选定96项通过。Swift新增用例及Windows最终结果仍待收齐。不能把401结果转记为02全过。
 - [字段复查记录](2026-11-03-final-field-contract-audit.md)列具体合同、已证实缺口及理论边界。lineage数值精度和ModelTrace usage形态均未确认实际故障，不据此扩大本轮。正式应用和用户库未动；未合main／打包／签名／发布。
+
+### C07l · 字段小修自身回归全部通过，再次收束
+
+- 产品02c493fae3ccbf76df21524771cee4802a330d0e的常规41578535879及真实09741578535851均completed/success；根通过run API再次核对head_sha和最终状态。Swift执行2324项、37 skipped、0失败，新增公开QuotaHistoryDatabase的16种列组合测试实际PASS；QuotaHistoryStore 48项和SQLite驱动28项原回归无失败。
+- 当前Mac native1695／Windows1640通过，各14 ignored、0失败；两端实际生产存储15/15 PASS，quota／恢复期目录／固定池／强退回执检查通过。Public097双端成功，Mac选定96项、Windows选定Rust3项及旧库恢复场景均通过。原始报告细字段与边界保留在final-contract-check/cloud-02-evidence.md/json，不把缺失字段概括成全true。
+- 401的0.9.8～0.9.11八路Rust形成状态保留；根用git diff确认02没有改Rust及形成探针，不为纯Swift读字段小修重启这一组。标准run的formed/scale明确skipped，性能FAIL仍按用户决定延期。
+- 二次只读审查确认SQL投影仍21槽位、partial row-id仍NULL、stable／legacy同序，原谓词及绑定不变，无新ALTER或claim。产品不再继续改动；本轮源码复查收尾，包级检查仍未做，未合main／替换／发布。

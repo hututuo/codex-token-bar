@@ -40,8 +40,8 @@ Rust lineage的u64经JSON number到JS，在超过2^53−1时可能舍入。实�
 
 ## 5. 新补丁验证状态
 
-- [02常规双端检查41578535879](https://github.com/hututuo/codex-token-bar/actions/runs/41578535879)：运行中；前端／更新器已通过，Swift新增用例及两端原生仍待最终结论。
-- [02真实0.9.7升级41578535851](https://github.com/hututuo/codex-token-bar/actions/runs/41578535851)：运行中。保留原旧库、WAL、目标独有账目及重启断言。
+- [02常规双端检查41578535879](https://github.com/hututuo/codex-token-bar/actions/runs/41578535879)：完整成功。Swift执行2324项、跳过37、失败0；新增16形状公开路径测试实际通过，peer历史48项及SQLite驱动28项无失败。Rust Mac1695／Windows1640通过，各14 ignored、0失败；两端实际生产存储fixture各15/15 PASS。
+- [02真实0.9.7升级41578535851](https://github.com/hututuo/codex-token-bar/actions/runs/41578535851)：双端成功。Mac选定96项（含Release097的8项）通过；Windows选定Rust3项及普通／combined恢复场景通过，原始冻结材料与追加观察恰好一次保留。
 - 401的0.9.8～0.9.11八条形成状态证据保留；本次Rust和相关构建输入未改，不为纯Swift字段兼容改动重启完整八路Rust压力矩阵。
 
-后续只更新真实完成结果。如新测试或既有回归失败，先定位这个小补丁，不改大结构、不降低断言。正式应用和用户数据库未触碰。
+同一02c493fa源码已完成本轮字段复查及对应回归。small evidence见scratch/integrated-recovery/final-contract-check/cloud-02-evidence.md/json；根再次通过run API核对两条run的源码身份和最终success。原有性能FAIL不改，未声称完整安装包启动验收。正式应用和用户数据库未触碰；不再继续改产品。
