@@ -1,5 +1,7 @@
 # Claude 本地速度平滑与 Agent 标题
 
+后续进展：下文“价格尚未修复”是本次首次调查时的状态。缓存时效拆分修复及新找到的 Desktop 纯本地额度来源，见 [Claude 缓存时效计价修复与 Desktop 额度来源调查](2026-11-03-claude-cache-lifetime-pricing.md)。
+
 ## 范围
 
 - 原生 Mac 与 Windows/Tauri 同步。Claude 仍仅使用已有本地日志读取器，不启动 Claude、不调用 Anthropic、不读取凭据。

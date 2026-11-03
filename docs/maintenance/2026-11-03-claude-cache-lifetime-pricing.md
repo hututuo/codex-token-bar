@@ -19,11 +19,14 @@
 - 原始 Swift 模型单文件类型检查、解析语法检查通过；最小包实测元数据合并与旧 payload 解码通过。
 - 增加 Swift 解析 ID 稳定、避免重复计入输入、混合缓存单价、原始计数保留、旧/坏字段兼容、一次补读后回到增量及来源删除保留账目的用例。
 - Rust 增加对应 payload、合并、计价、坏数据隔离、断点用例。
-- GitHub 手动 claude_usage_only 只选择 MultiClientUsage Swift 测试和 multi_client_usage::tests Rust 测试；无关前端、升级矩阵、规模、业务恢复及安装包测试不运行。结果待本轮源码完成后记录。
+- GitHub 手动 claude_usage_only 只选择 MultiClientUsage Swift 测试和 multi_client_usage::tests Rust 测试；无关前端、升级矩阵、规模、业务恢复及安装包测试不运行。
+- [定向云端检查 41666299056](https://github.com/hututuo/codex-token-bar/actions/runs/41666299056) 已成功，对应源码 `bae4dda184f32d17d70ff7262fe035c736bb2d01`：Swift 38 项、macOS Rust 44 项、Windows Rust 42 项，均零失败。Swift 实际编译完整模块后只执行这两个相关测试类；Rust 只执行 multi_client_usage::tests。其他测试任务均 skipped。
+- 云端通过了时效补全不增请求/Token、混合时效单价、原日志删除仍保留旧账、重复扫描不增修订、旧/坏可选字段容错，以及不允许较小且自相矛盾的观察借用旧合计“凑出”可计价拆分的用例。
+- 没有本机账本写入、安装、替换、重启或发布。安装后才会由现有后台扫描逐批补读历史；本轮未声称已重算本机账目。
 
 ## Desktop 额度调查（尚未接入）
 
-1. Token Monitor PR #1126 的本地方式读取 plan-usage-history.json，v2 格式为 version / samples[]，采样含 t、org、u.fh/u.sd，分别代表 5 小时和 7 天已用百分比。该 PR 尚未合并，没有从本地历史保证出精确重置时间。来源：https://github.com/Javis603/token-monitor/blob/47b18ec/src/shared/providers/claude/desktopPlanUsage.js
+1. Token Monitor PR #1126 的本地方式读取 plan-usage-history.json，v2 格式为 version / samples[]，采样含 t、org、u.fh/u.sd，分别代表 5 小时和 7 天已用百分比。该 PR 尚未合并，没有从本地历史保证出精确重置时间；其账号特定的写死每周重置时刻不能复用。来源：https://github.com/Javis603/token-monitor/blob/47b18ecaf094b296f80afef0f0ee4096b885960f/src/shared/providers/claude/desktopPlanUsage.js
 2. VibeMenu 已实现对 Desktop Chromium HTTP 磁盘缓存的只读解析，可包含更丰富的重置/模型窗口信息，但依赖未公开格式、缓存可能为空或过期。来源：https://github.com/Kirill-Chistov/VibeMenu/blob/master/docs/decisions/0016-claude-usage-limits.md
 3. CodexBar 的 Cookie/OAuth/CLI 路线会发网络请求；不能当成本地额度读取。来源：https://github.com/steipete/CodexBar/blob/main/docs/claude.md
 
