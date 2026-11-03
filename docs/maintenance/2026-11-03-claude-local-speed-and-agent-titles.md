@@ -24,7 +24,7 @@
 - 本地标题优先采用该会话文件里的 agentName，其次 title/customTitle/summary，缺少明确元数据时采用首条有效用户文本的一行摘要。
 - 不从父会话的工具参数猜测子 Agent 名称；子 Agent 只使用自身文件的证据。
 - 工具结果、系统提示块、取消标记不能充当标题；标题清除控制字符并限制长度。
-- Swift 读取器将标题传给现有 RunningThreadSummary；Windows 读取器经匿名管道传给 Rust，再传给现有任务列表。
+- Swift 读取器将标题传给现有 RunningThreadSummary，并保留没有子 Agent 的独立主任务行；Windows 读取器经匿名管道传给 Rust，再传给现有任务列表。
 - Windows IPC 增加可选 title/displayStopped 字段，旧 helper 缺少字段时仍可读取；保留字段白名单与长度检查。
 - 标题仅用于本地任务界面，不进入报告正文或签名数据。没有证据时仍显示通用名称，不编造名称。
 

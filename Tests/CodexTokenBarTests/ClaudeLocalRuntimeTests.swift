@@ -77,6 +77,16 @@ final class ClaudeLocalRuntimeTests: XCTestCase {
         XCTAssertTrue(runtime.displayModelRates(allowed: ["claudeCode"], mode: .bar).isEmpty)
     }
 
+    func testStandaloneClaudeMainTaskKeepsItsTitleWithoutAnySubagents() {
+        let now = Date()
+        var main = agent(id: "standalone", source: .claudeCode, project: "fixture", model: "claude-sonnet", phase: .generating, isSubagent: false, outputRate: 10, lastActivity: now)
+        main.displayTitle = "检查项目构建"
+        let projected = ClaudeLocalRuntime.project(from: coreSnapshot(timestamp: now, sources: [source(.claudeCode, available: true)], agents: [main]), allowedSources: [.claudeCode])
+        XCTAssertEqual(projected.running.main, 1)
+        XCTAssertEqual(projected.running.groups.first?.mainThread.title, "检查项目构建")
+        XCTAssertEqual(projected.running.groups.first?.subagents.count, 0)
+    }
+
     func testProjectionKeepsOnlyFreshActiveClaudeAgentsAndGroupsSubagentsByOpaqueParentID() {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let mainID = "/private/session-project/main.jsonl"

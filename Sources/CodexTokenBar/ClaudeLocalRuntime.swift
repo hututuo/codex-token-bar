@@ -475,7 +475,7 @@ final class ClaudeLocalRuntime: ObservableObject {
                 reasoningEffort: nil
             )
         }
-        let groups = groupedSubagents.keys.sorted().compactMap { parentID -> RunningThreadGroup? in
+        let groups = mainByID.keys.sorted().compactMap { parentID -> RunningThreadGroup? in
             guard let main = mainByID[parentID] else { return nil }
             let children = (groupedSubagents[parentID] ?? []).sorted { $0.threadID < $1.threadID }
             return RunningThreadGroup(mainThread: main, subagents: children)
