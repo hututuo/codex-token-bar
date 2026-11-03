@@ -118,12 +118,43 @@ fn add_spellings(paths: &mut BTreeSet<String>, path: &Path) -> Result<(), String
     Ok(())
 }
 
+/// Windows can expose an 8.3 spelling in TEMP/LOCALAPPDATA while
+/// canonicalize returns the long profile name. Only reuse a configured root
+/// after the OS proves that it resolves to an ancestor of this exact request.
+/// This is bounded root equivalence, never a search through other Homes.
+#[cfg(windows)]
+fn add_configured_root_spellings(
+    paths: &mut BTreeSet<String>,
+    resolved: &Path,
+) -> Result<(), String> {
+    let roots = std::iter::once(std::env::temp_dir()).chain(
+        ["LOCALAPPDATA", "APPDATA", "USERPROFILE"]
+            .into_iter()
+            .filter_map(|name| std::env::var_os(name))
+            .map(PathBuf::from),
+    );
+    for configured in roots {
+        if !configured.is_absolute() || !configured.is_dir() {
+            continue;
+        }
+        let Ok(physical) = std::fs::canonicalize(&configured) else {
+            continue;
+        };
+        if let Ok(relative) = resolved.strip_prefix(&physical) {
+            add_spellings(paths, &configured.join(relative))?;
+        }
+    }
+    Ok(())
+}
+
 fn identities(path: &Path) -> Result<(String, Vec<String>), String> {
     let resolved = stable_path(path)?;
     let preferred = identity(&text(&resolved)?);
     let mut spellings = BTreeSet::new();
     add_spellings(&mut spellings, path)?;
     add_spellings(&mut spellings, &resolved)?;
+    #[cfg(windows)]
+    add_configured_root_spellings(&mut spellings, &resolved)?;
     // Reproduce the old fallback's parent.join(leaf), including native
     // separator rules, without creating the missing parent as a side effect.
     if let (Some(parent), Some(leaf)) = (path.parent(), path.file_name()) {

@@ -42,3 +42,9 @@
 - 同SHA Public097两端success。
 - Windows Rust仍有唯一 `old_a_only_primary_owner_is_read_without_registration_after_directory_creation` 在canonical Windows caller处找不到旧owner。不能由无路径的panic猜测原因。增加快速Windows文件系统诊断：直接抽取生产路径变换/候选函数，保留hash的输入文本以便定位；它不是Container/账本native验证，完整native gate保留。
 - e76的真实Rust形成矩阵8/8成功（0.9.8–0.9.11各Mac/Windows；e76至de的Rust源码无差异）。每lane committed/interrupted数值、typed proof、WAL、原日志消失后历史和三次独立reopen材料校验均保留。该矩阵不冒称原生Swift历史producer矩阵。
+
+## Windows唯一反例的确定原因与修复
+
+657beedb 的 Windows job `125768598261` 实际执行抽取探针，输出 `matched=false aliases=12`：legacy与系统TEMP均为 `C:\Users\RUNNER~1\AppData\Local\Temp\...`，preferred/candidates为 `\\?\C:\Users\runneradmin\AppData\Local\Temp\...`。这是8.3系统配置根与canonical长名不一致；前一轮仅补分隔符尚不完整。证据是隔离Windows文件系统路径输入，不冒充最终Container读取已通过。
+
+增补只考虑四个已配置根（TEMP、LOCALAPPDATA、APPDATA、USERPROFILE），要求绝对路径、实际目录、OS canonicalize后确为本次请求的祖先；将同一相对组件接回已配置拼写，再复用同样的候选/完整catalog tuple/多owner冲突校验。不开全盘搜索，不以同名认领，不改旧ID、不删除旧owner。抽取的两分支在本地只做编译检查；Windows运行与native A-only旧账读取仍以新SHA云端为准。
