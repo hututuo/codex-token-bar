@@ -36,7 +36,7 @@
 - 补充原生任务名称、运行时原值/平滑隔离、停止清空、双模式历史隔离测试。
 - 补充 Rust 旧 helper 默认字段兼容、标题边界和停止状态测试。
 - Windows 标准 CI 增加 ClaudeLocalReader 的编译与本地隐私自检。
-- vendored Swift ParserBehaviorTests 独立包 17 项通过；完整 Swift/Rust/C# 云端结果待本次源码提交后记录。
+- vendored Swift ParserBehaviorTests 独立包 17 项通过；全量云端任务随后按用户要求取消，相关已完成记录与定向检查结果见下。
 
 尚未打包、安装或重启本机正式版，未发布更新。
 
@@ -50,3 +50,12 @@
 - Swift/TS 原始平滑源代码同样 11 帧输入对照，最大绝对差为 0。
 - 先前已完成的云端记录中，完整 Swift 模块成功编译，相关 ClaudeLocalRuntimeTests 8 项、ActivityRateSmoothingTests 3 项通过；Windows Rust 的 `claude_local_runtime::tests` 22 项通过。这些是已取消全量任务中的相关通过记录，不能记作整轮全量成功。
 - Windows 初轮 C# 编译的 CS0136 已修正；新加的 helper CI 命令补齐与发布脚本一致的 Nullable/ImplicitUsings 编译选项。其专用定向自检结果另记。
+
+### 定向收尾结果
+
+- 二级图例、Claude 本地任务和平滑相关前端测试 15/15 通过；TypeScript 类型检查通过。
+- 当前彩色图例函数的 SwiftUI 独立类型检查通过；完整界面未安装验证。
+- 定向 Windows 检查：[41659937410](https://github.com/hututuo/codex-token-bar/actions/runs/41659937410)，对应源码 `eac8abd834e4e1bcffbcc0627d00d4f4ce7a7b76`。`claude-reader` job 126000250452 成功，其他全量/升级/打包相关 job 全部 skipped；包含共享解析器（名称、重命名、长文本、顺序兼容等）与 ClaudeLocalReader IPC/缓存/隐私自检。
+- 第二次 Desktop 日志调查仅抽样六个近期文件（每份最多 512 KiB）：两个项目 JSONL、两个 Claude Logs 文件、两个 Application Support 的日志文件。未找到可供当前提供者使用的结构化额度百分比/窗口/重置字段；此结果不证明其他未调查缓存中绝对不存在额度数据。
+- 尚未补存缓存写入时效拆分或重算 Claude 金额；该问题已定位，尚非价格修复完成。
+- 本机仍是此前 build 992。没有安装本轮源码、没有发布或更改 Claude 配置。
