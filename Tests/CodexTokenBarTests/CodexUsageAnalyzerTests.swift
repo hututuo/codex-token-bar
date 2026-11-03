@@ -516,6 +516,11 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             sessionID: "019eaaaa-bbbb-4ccc-8ddd-published-only", timestamp: Date().addingTimeInterval(-640), totalTokens: 120)
         let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: home))
         let published = try analyzer.load()
+        let catalogIndex = try CodexUsageHistoryIndex(codexHome: home)
+        _ = try catalogIndex.synchronizeSessionCatalog(candidates: [.init(file: source, archived: false)]) { _ in
+            .init(threadID: "published-catalog-thread", cwd: "/fixture", sessionID: nil,
+                forkedFromID: nil, parentThreadID: nil, source: "cli")
+        }
         let raw = SQLiteDatabaseDriver(url: configuration.container, readOnly: true, bypassBusinessRoutes: true)
         let stores = try raw.readRows("SELECT logical_path,module,source_identity FROM tb_stores") {
             BusinessSQLiteStore(containerURL: configuration.container, logicalURL: URL(fileURLWithPath: $0.text(0)!),
@@ -523,6 +528,14 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         }
         let exact = try XCTUnwrap(stores.first(where: { $0.module == "exact.swift" }))
         BusinessSQLiteRoutes.activate(configuration, stores: stores, blockedWrites: [exact.id], publishedAdmission: true)
+        let beforeRead = try raw.withConnection { try CodexBusinessDatabase.proof($0) }
+        let catalog = FoundationSessionManagementBackend.scanRolloutThreads(dataSource: dataSource(for: home), fileManager: .default)
+        XCTAssertEqual(catalog.threads.map(\.id), ["published-catalog-thread"])
+        XCTAssertFalse(catalog.verificationComplete)
+        XCTAssertTrue(catalog.warnings.contains { $0.contains("仅浏览上一份完整会话目录") })
+        XCTAssertTrue(catalog.threads.allSatisfy { !$0.canDelete && !$0.canArchive && !$0.canUnarchive && !$0.rolloutIdentityVerified })
+        XCTAssertEqual(try raw.withConnection { try CodexBusinessDatabase.proof($0) }, beforeRead,
+            "Browsing a paused owner must not register, import, migrate or republish its catalog")
         try FileManager.default.removeItem(at: source)
         CodexUsageAnalyzer.clearUsageCachesForTesting()
         CodexUsageAnalyzer.resetPersistentExactSnapshotStateForTesting()
@@ -8531,6 +8544,48 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(first.requestCount, 2)
         XCTAssertEqual(first.lowHitCount, 0)
         XCTAssertEqual(first.zeroHitCount, 0)
+    }
+
+    func testPausedCacheDetailsReadRegisteredPublishedFactsInsteadOfTheRetainedPhysicalIndex() throws {
+        unsetenv("CODEX_TOKEN_BAR_DISABLE_USAGE_CACHE")
+        let root = try makeTemporaryDirectory(named: "PublishedCacheRequestDetails")
+        let cacheRoot = root.appendingPathComponent("cache")
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_DIR", cacheRoot.path, 1)
+        setenv("CODEX_TOKEN_BAR_USAGE_CACHE_STATE_DIR", cacheRoot.path, 1)
+        defer { BusinessSQLiteRoutes.deactivate() }
+        let home = try makeCodexHome(), now = Date()
+        let file = home.appendingPathComponent("sessions/published-details.jsonl")
+        let usage = Usage(input: 100, cachedInput: 40, output: 20, reasoning: 0, total: 120)
+        try [messageLine(timestamp: now.addingTimeInterval(-3), type: "user_message", message: "fixture"),
+             turnContextLine(timestamp: now.addingTimeInterval(-2), model: "gpt-6.1-sol"),
+             try tokenCountLine(timestamp: now.addingTimeInterval(-1), total: usage, last: usage)]
+            .joined(separator: "\n").appending("\n").write(to: file, atomically: true, encoding: .utf8)
+        let snapshot = try CodexUsageAnalyzer(dataSource: dataSource(for: home)).load()
+        let turn = try XCTUnwrap(snapshot.cacheUsage.turns.first)
+        let logical = try exactUsageDatabaseURL(in: cacheRoot)
+        let support = root.appendingPathComponent("support")
+        let configuration = BusinessDatabaseMigration.Configuration(container: support.appendingPathComponent("codex-ledger.sqlite"),
+            support: support, exact: CodexUsageHistoryIndex.businessIndexDirectory(), legacyExact: root.appendingPathComponent("legacy"))
+        try BusinessDatabaseMigration.migrate(configuration, availableBytes: 1 << 32)
+        let physicalBytes = try Data(contentsOf: logical)
+        try SQLiteDatabaseDriver(url: logical).execute("UPDATE events SET model='published-only-model'")
+        let raw = SQLiteDatabaseDriver(url: configuration.container, readOnly: true, createsFileIfMissing: false, bypassBusinessRoutes: true)
+        let stores = try raw.readRows("SELECT logical_path,module,source_identity FROM tb_stores") {
+            BusinessSQLiteStore(containerURL: configuration.container, logicalURL: URL(fileURLWithPath: $0.text(0)!), module: $0.text(1)!, sourceIdentity: $0.text(2)!)
+        }
+        let owner = try XCTUnwrap(BusinessSQLiteRoutes.store(for: logical))
+        XCTAssertTrue(stores.contains { $0.id == owner.id })
+        BusinessSQLiteRoutes.activate(configuration, stores: stores, blockedWrites: [owner.id], publishedAdmission: true)
+        try FileManager.default.removeItem(at: file)
+        let before = try raw.withConnection { try CodexBusinessDatabase.proof($0) }
+        let rows = try CodexUsageHistoryIndex.readCacheRequests(codexHome: home, turnID: turn.id)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.first?.model, "published-only-model")
+        XCTAssertEqual(rows.first?.breakdown.totalTokens, 120)
+        XCTAssertEqual(rows.first?.breakdown.cachedInputTokens, 40)
+        XCTAssertEqual(try raw.withConnection { try CodexBusinessDatabase.proof($0) }, before)
+        XCTAssertEqual(try Data(contentsOf: logical), physicalBytes)
+        XCTAssertThrowsError(try SQLiteDatabaseDriver(url: logical).execute("DELETE FROM events"))
     }
 
     func testTurnCacheUsageUsesWeightedRequestRatesAndPagedDetails() throws {

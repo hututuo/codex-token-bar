@@ -2565,76 +2565,78 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         -> [IndexedSessionCatalogEntry] {
         try driver.withConnection { connection in
             try configure(connection)
-            return try connection.readRows(
-                """
-                SELECT
-                    path,
-                    archived,
-                    thread_id,
-                    cwd,
-                    session_id,
-                    forked_from_id,
-                    parent_thread_id,
-                    source,
-                    size_bytes,
-                    modified_seconds,
-                    modified_nanoseconds,
-                    created_seconds,
-                    created_nanoseconds,
-                    first_line_end_offset,
-                    first_line_sha256,
-                    last_seen_generation
-                FROM session_catalog_entries
-                ORDER BY path;
-                """
-            ) { row -> IndexedSessionCatalogEntry in
-                guard let path = row.text(0),
-                      let threadID = row.text(2),
-                      let cwd = row.text(3),
-                      let source = row.text(7),
-                      let sizeBytes = row.int64(8),
-                      let modifiedSeconds = row.int64(9),
-                      let modifiedNanoseconds = row.int64(10),
-                      let createdSeconds = row.int64(11),
-                      let createdNanoseconds = row.int64(12),
-                      let firstLineEndOffset = row.int64(13),
-                      let firstLineSHA256 = row.text(14),
-                      let lastSeenGeneration = row.text(15) else {
-                    throw SQLiteDatabaseError(
-                        operation: "Read session catalog entry",
-                        code: SQLITE_CORRUPT,
-                        message: "Session catalog row is incomplete",
-                        path: driver.url.path
+            return try connection.readTransaction { connection in
+                return try connection.readRows(
+                    """
+                    SELECT
+                        path,
+                        archived,
+                        thread_id,
+                        cwd,
+                        session_id,
+                        forked_from_id,
+                        parent_thread_id,
+                        source,
+                        size_bytes,
+                        modified_seconds,
+                        modified_nanoseconds,
+                        created_seconds,
+                        created_nanoseconds,
+                        first_line_end_offset,
+                        first_line_sha256,
+                        last_seen_generation
+                    FROM session_catalog_entries
+                    ORDER BY path;
+                    """
+                ) { row -> IndexedSessionCatalogEntry in
+                    guard let path = row.text(0),
+                          let threadID = row.text(2),
+                          let cwd = row.text(3),
+                          let source = row.text(7),
+                          let sizeBytes = row.int64(8),
+                          let modifiedSeconds = row.int64(9),
+                          let modifiedNanoseconds = row.int64(10),
+                          let createdSeconds = row.int64(11),
+                          let createdNanoseconds = row.int64(12),
+                          let firstLineEndOffset = row.int64(13),
+                          let firstLineSHA256 = row.text(14),
+                          let lastSeenGeneration = row.text(15) else {
+                        throw SQLiteDatabaseError(
+                            operation: "Read session catalog entry",
+                            code: SQLITE_CORRUPT,
+                            message: "Session catalog row is incomplete",
+                            path: driver.url.path
+                        )
+                    }
+                    let signature = SessionCatalogFileSignature(
+                        sizeBytes: sizeBytes,
+                        modifiedSeconds: modifiedSeconds,
+                        modifiedNanoseconds: modifiedNanoseconds,
+                        createdSeconds: createdSeconds,
+                        createdNanoseconds: createdNanoseconds
+                    )
+                    return IndexedSessionCatalogEntry(
+                        entry: SessionCatalogEntry(
+                            path: path,
+                            archived: (row.int(1) ?? 0) != 0,
+                            metadata: SessionCatalogMetadata(
+                                threadID: threadID,
+                                cwd: cwd,
+                                sessionID: row.text(4),
+                                forkedFromID: row.text(5),
+                                parentThreadID: row.text(6),
+                                source: source
+                            ),
+                            sizeBytes: sizeBytes,
+                            modifiedAt: signature.modifiedAt,
+                            createdAt: signature.createdAt,
+                            firstLineEndOffset: firstLineEndOffset,
+                            firstLineSHA256: firstLineSHA256,
+                            lastSeenGeneration: lastSeenGeneration
+                        ),
+                        signature: signature
                     )
                 }
-                let signature = SessionCatalogFileSignature(
-                    sizeBytes: sizeBytes,
-                    modifiedSeconds: modifiedSeconds,
-                    modifiedNanoseconds: modifiedNanoseconds,
-                    createdSeconds: createdSeconds,
-                    createdNanoseconds: createdNanoseconds
-                )
-                return IndexedSessionCatalogEntry(
-                    entry: SessionCatalogEntry(
-                        path: path,
-                        archived: (row.int(1) ?? 0) != 0,
-                        metadata: SessionCatalogMetadata(
-                            threadID: threadID,
-                            cwd: cwd,
-                            sessionID: row.text(4),
-                            forkedFromID: row.text(5),
-                            parentThreadID: row.text(6),
-                            source: source
-                        ),
-                        sizeBytes: sizeBytes,
-                        modifiedAt: signature.modifiedAt,
-                        createdAt: signature.createdAt,
-                        firstLineEndOffset: firstLineEndOffset,
-                        firstLineSHA256: firstLineSHA256,
-                        lastSeenGeneration: lastSeenGeneration
-                    ),
-                    signature: signature
-                )
             }
         }
     }
@@ -3847,31 +3849,33 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             )
             return try reader.withConnection { connection in
                 try connection.execute("PRAGMA query_only=ON;")
-                let aggregateVersion = try connection.readRows(
-                    "SELECT value FROM schema_meta WHERE key='dashboard_aggregate_schema_version' LIMIT 1;"
-                ) { $0.text(0) }.first ?? nil
-                guard aggregateVersion == dashboardAggregateSchemaVersion else {
-                    if aggregateVersion == nil
-                        || aggregateVersion.flatMap(Int.init).map({
-                            $0 < Int(dashboardAggregateSchemaVersion)!
-                        }) == true {
-                        throw CodexUsageDashboardAggregateRefreshRequiredError(
+                return try connection.readTransaction { connection in
+                    let aggregateVersion = try connection.readRows(
+                        "SELECT value FROM schema_meta WHERE key='dashboard_aggregate_schema_version' LIMIT 1;"
+                    ) { $0.text(0) }.first ?? nil
+                    guard aggregateVersion == dashboardAggregateSchemaVersion else {
+                        if aggregateVersion == nil
+                            || aggregateVersion.flatMap(Int.init).map({
+                                $0 < Int(dashboardAggregateSchemaVersion)!
+                            }) == true {
+                            throw CodexUsageDashboardAggregateRefreshRequiredError(
+                                stored: aggregateVersion ?? "missing",
+                                supported: dashboardAggregateSchemaVersion
+                            )
+                        }
+                        throw CodexUsageIndexUpgradeRequiredError(
+                            component: "dashboard aggregate schema",
                             stored: aggregateVersion ?? "missing",
                             supported: dashboardAggregateSchemaVersion
                         )
                     }
-                    throw CodexUsageIndexUpgradeRequiredError(
-                        component: "dashboard aggregate schema",
-                        stored: aggregateVersion ?? "missing",
-                        supported: dashboardAggregateSchemaVersion
+                    return try cacheRequests(
+                        turnID: turnID,
+                        offset: offset,
+                        limit: limit,
+                        connection: connection
                     )
                 }
-                return try cacheRequests(
-                    turnID: turnID,
-                    offset: offset,
-                    limit: limit,
-                    connection: connection
-                )
             }
         }
         return []

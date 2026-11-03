@@ -2483,11 +2483,13 @@ impl ExactUsageIndex {
     }
 
     pub(super) fn session_catalog_snapshot(&self) -> Result<IndexedSessionCatalogSnapshot, String> {
+        let transaction = self.connection.unchecked_transaction().map_err(|error| error.to_string())?;
         let mut entries: Vec<_> = load_stored_session_catalog(&self.connection)?
             .into_values()
             .map(|entry| entry.entry)
             .collect();
         entries.sort_by(|left, right| left.path.cmp(&right.path));
+        transaction.commit().map_err(|error| error.to_string())?;
         Ok(IndexedSessionCatalogSnapshot {
             entries,
             warnings: Vec::new(),

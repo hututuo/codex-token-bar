@@ -1667,11 +1667,22 @@ private extension FoundationSessionManagementBackend {
         }
 
         let index: CodexUsageHistoryIndex
+        var publishedCatalogOnly = false
         do {
-            index = try CodexUsageHistoryIndex(
-                codexHome: dataSource.codexHome,
-                fileManager: fileManager
-            )
+            if CodexUsageHistoryIndex.publicationIsPaused(codexHome: dataSource.codexHome) {
+                guard let published = try CodexUsageHistoryIndex.openPublished(codexHome: dataSource.codexHome) else {
+                    throw SessionManagementBackendError.databaseUnavailable
+                }
+                index = published
+                publishedCatalogOnly = true
+                verificationComplete = false
+                warnings.append("本地恢复尚未完成；仅浏览上一份完整会话目录，危险操作保持关闭。")
+            } else {
+                index = try CodexUsageHistoryIndex(
+                    codexHome: dataSource.codexHome,
+                    fileManager: fileManager
+                )
+            }
         } catch {
             warnings.append(
                 "会话增量索引不可用；状态库记录仍可浏览，危险操作保持关闭：\(error.localizedDescription)"
@@ -1708,7 +1719,7 @@ private extension FoundationSessionManagementBackend {
                 )
                 verificationComplete = false
             }
-        } else {
+        } else if !publishedCatalogOnly {
             warnings.append(
                 "本轮会话目录枚举不完整；保留上一份完整增量索引，危险操作保持关闭。"
             )

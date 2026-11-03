@@ -1112,7 +1112,8 @@ final class SQLiteDatabaseConnection: DatabaseAccessing {
         return try body()
     }
 
-    private func withStatement<T>(_ sql: String, _ body: (OpaquePointer) throws -> T) throws -> T {
+    private func withStatement<T>(_ sql: String, prepareOperation: String = "Prepare SQLite statement",
+                                  _ body: (OpaquePointer) throws -> T) throws -> T {
         // A recursive use of the same SQL must have its own cursor. v2 keeps
         // schema invalidation/reprepare with SQLite, including TEMP DDL.
         if let cached = reusedStatements?[sql], sqlite3_stmt_busy(cached) == 0 {
@@ -1123,7 +1124,7 @@ final class SQLiteDatabaseConnection: DatabaseAccessing {
         let status = sqlite3_prepare_v2(database, sql, -1, &raw, nil)
         guard status == SQLITE_OK, let statement = raw else {
             if let raw { sqlite3_finalize(raw) }
-            throw error(operation: "Prepare SQLite statement", code: status == SQLITE_OK ? SQLITE_MISUSE : status)
+            throw error(operation: prepareOperation, code: status == SQLITE_OK ? SQLITE_MISUSE : status)
         }
         // No eviction of a live cursor. Queries outside the explicit scope, a
         // reentrant duplicate or inputs over either cap use ordinary lifetime.
@@ -1144,7 +1145,7 @@ final class SQLiteDatabaseConnection: DatabaseAccessing {
         map: (SQLiteStatement) throws -> T
     ) throws -> [T] {
         let sql = try businessBinding?.sql(sql) ?? sql
-        return try withStatement(sql) { statement in
+        return try withStatement(sql, prepareOperation: "Prepare SQLite query") { statement in
             try bind(bindings, to: statement)
 
             var rows: [T] = []

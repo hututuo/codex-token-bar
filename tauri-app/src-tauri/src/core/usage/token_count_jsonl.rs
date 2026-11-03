@@ -2382,6 +2382,14 @@ pub(crate) fn session_catalog_snapshot<F>(
 where
     F: FnMut(&[u8]) -> Result<IndexedSessionMetadata, String>,
 {
+    if crate::core::business_store_route::published_reads_only() {
+        // Browsing must not wait for the catalog writer or retry an import.
+        // A warning keeps the caller's destructive-action verification closed.
+        let index = ExactUsageIndex::open_published(codex_home)?;
+        let mut snapshot = index.session_catalog_snapshot()?;
+        snapshot.warnings.push("本地恢复尚未完成；仅浏览上一份完整会话目录，危险操作保持关闭。".into());
+        return Ok(snapshot);
+    }
     let build_gate = SESSION_CATALOG_BUILD_GATE.get_or_init(|| Mutex::new(()));
     let _build_guard = build_gate
         .lock()

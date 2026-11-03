@@ -105,4 +105,22 @@ final class SQLiteStatementReuseTests: XCTestCase {
             XCTAssertEqual(statements(db), 0)
         }
     }
+
+    func testPrepareErrorsKeepTheReadRecoveryOperationContractInsideAndOutsideReuse() throws {
+        try connection { db in
+            func check() {
+                XCTAssertThrowsError(try db.readRows("SELECT value FROM absent_table") { $0.int(0) }) { error in
+                    XCTAssertEqual((error as? SQLiteDatabaseError)?.operation, "Prepare SQLite query")
+                    XCTAssertEqual((error as? SQLiteDatabaseError)?.primaryCode, SQLITE_ERROR)
+                }
+                XCTAssertThrowsError(try db.execute("INSERT INTO absent_table VALUES(?)", bindings: [.int(1)])) { error in
+                    XCTAssertEqual((error as? SQLiteDatabaseError)?.operation, "Prepare SQLite statement")
+                    XCTAssertEqual((error as? SQLiteDatabaseError)?.primaryCode, SQLITE_ERROR)
+                }
+            }
+            check()
+            db.withReusedStatements(check)
+            XCTAssertEqual(statements(db), 0)
+        }
+    }
 }

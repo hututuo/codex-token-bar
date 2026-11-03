@@ -47,27 +47,6 @@ enum BusinessStoreFiles {
         if let connection { return try footprint(connection) }
         return try SQLiteDatabaseDriver(url: url, readOnly: true, createsFileIfMissing: false).withConnection { try footprint($0) }
     }
-    /// Parsing uses SQLite TEMP btrees (bounded cache, automatic spill) so
-    /// scanning a large transcript does not hold A's sole write lock. Only the
-    /// complete, verified numeric job is copied into durable MAIN tables.
-    static func materializeTemporaryStage(_ connection: SQLiteDatabaseConnection) throws {
-        guard let binding = connection.businessBinding, binding.store.module == "exact.swift.stage" else { return }
-        let prefix = binding.store.prefix
-        connection.businessBinding = nil
-        defer { connection.businessBinding = binding }
-        let tables = try connection.readRows("SELECT name,sql FROM temp.sqlite_master WHERE type='table' AND substr(name,1,?)=? ORDER BY name",
-            bindings: [.int(prefix.count), .text(prefix)]) { ($0.text(0) ?? "", $0.text(1) ?? "") }
-        guard Set(tables.map { String($0.0.dropFirst(prefix.count)) }) == ["manifest","fingerprints","events","chunks"] else { throw BusinessStoreError.proofMismatch }
-        try connection.transaction { tx in
-            for (_,sql) in tables { try tx.execute(sql) }
-            for (name,_) in tables {
-                let quoted = SQLiteStoreNamespace.quote(name)
-                try tx.execute("INSERT INTO main.\(quoted) SELECT * FROM temp.\(quoted)")
-            }
-        }
-        for (name,_) in tables { try connection.execute("DROP TABLE temp.\(SQLiteStoreNamespace.quote(name))") }
-        binding.namespace.temporaryObjectNames.subtract(["manifest","fingerprints","events","chunks"])
-    }
     static func isUnmaterializedStage(_ url: URL) throws -> Bool {
         guard let store = BusinessSQLiteRoutes.store(for: url), store.module == "exact.swift.stage" else { return false }
         let db = SQLiteDatabaseDriver(url: store.containerURL, readOnly: true, createsFileIfMissing: false, bypassBusinessRoutes: true)

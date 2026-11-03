@@ -254,3 +254,12 @@ Windows连接寿命作平台适配：实际锁定SQLite源码的`winOpen`使用F
 - Windows probe原先每个并发parser都注册同一store、DDL建同一表再INSERT，250ms失败被直接写成“producer持锁”，这不足以归因。现在fixture先一次准备独立连接与表，hook只序列化探针自身的一行INSERT，实际parser／pool写入不串行化。保留250ms，另连接`BEGIN IMMEDIATE`必须让探针失败、rollback后必须恢复；4个并发探针必须留4行且catalog不变，实际Exact扫描的调用计数必须增加。runner严格检查这些字段；未显式启用的独立旧版probe不声称执行这项门禁。生产逻辑与超时未因探针调整放行。
 
 当前仍不封候选：大库长锁／空窗／P95仍有明确失败，最新完整组合与三次重启材料报告尚未收齐。物理旧库／schema11 rollback缺完整所有权及恢复引用证明时继续保留，不能拿已消费A内namespace回执代替物理文件删除授权。隐藏／唤醒资源代理证据也仍缺；上述局部PASS不覆盖这些项。
+
+### C04f／C07g · 调用点收束、已发布目录与读错误合同
+
+- `e29d9294`完整run的8个formed lane在取消整组之前均已完成PASS：0.9.8／9／10／11 × Mac／Windows。逐份最终报告确认每种committed／interrupted场景都执行resume及三次独立candidate reopen，typed／WAL／raw-history断言保留，备份／schema11材料及迁移状态摘要不变，明确`mtimeCompared=false`。取消的父run本身不称为PASS；小型原始文字日志及整理数据在`scratch/integrated-recovery/c08-e29-evidence/formed-summary.json`。`cb227a48`的真实0.9.7双端升级也已PASS。
+- `cb227a48`完整Swift不是通过：实际2320项、36 skipped、8条失败（含1 unexpected），全部失败分布在原有peer immutable fallback／对应quota补充读取。精确根因是本轮新`withStatement`把查询prepare错误的operation从`Prepare SQLite query`误写成`Prepare SQLite statement`，既有fallback按operation和错误码限定，因而不再触发。现恢复原合同，不改旧测试；新增开启／关闭复用都保留错误身份的专用回归。实际生产SQLite driver全部28项＋复用6项＋诊断／导入7项，本地选择性41项全部通过，包括原三项WAL无sidecar／轮转反例。不是整包或quota全量通过；等新SHA整组复测。cb诊断云端开销-0.16%（噪声范围），5%门禁已通过，不能掩盖上述8条失败。
+- 新job调用点静态复查确认两端普通业务只进pool，旧物理stage writer仅服务未路由独立索引或明确的合成兼容fixture。删除Swift全仓仅定义、无调用的旧`materializeTemporaryStage`；旧格式只读恢复与证明型回收保留。
+- 发现并补双端的实际目录缺口：session catalog浏览仍尝试开writer，pending recovery时把已有目录挡住。Mac按该Home暂停状态开已发布只读index；Rust在全局published-only状态下先走已发布目录分支，不等维护writer gate。两端仅浏览旧目录并携带警告，不能生成新的原文校验证据或开启危险操作。目录读取增加短一致快照。
+- Swift `readCacheRequests` 经底层driver的默认Business路由原本已读A，静态初查把它当raw物理读取的猜测已纠正，未据此另写reader。本次仅把aggregate版本和分页查询放进同一短只读事务；新增实际A与留存物理旧库model不同、原文消失、writer暂停的回归，必须读A的新metadata且不改变A／物理源。
+- 新目录回归经过Mac产品scanner及非cfg(test)双端storage fixture：发布目录非空、恢复重试时parser不得调用、旧条目保留、验证状态关闭、A完整proof不变。源码已parse／rustfmt解析，本段记录新增的要求，不提前称这些新集成用例已云端执行通过。

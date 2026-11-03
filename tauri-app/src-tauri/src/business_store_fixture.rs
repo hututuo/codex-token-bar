@@ -523,6 +523,14 @@ fn run_pool_process(root:&Path, point:&str, resume:bool, attempt:usize) -> Resul
 
 fn published_recovery_read_fixture(home: &Path, paths: &Paths) -> Result<Value, String> {
     let original = token_count_jsonl::dashboard_snapshot(home)?;
+    let original_catalog = token_count_jsonl::session_catalog_snapshot(home, |line| {
+        Ok(token_count_jsonl::IndexedSessionMetadata {
+            thread_id: format!("published-fixture-{:x}", Sha256::digest(line)),
+            cwd: "/fixture".into(), source: "cli".into(), session_id: None,
+            forked_from_id: None, parent_thread_id: None,
+        })
+    })?;
+    need!(!original_catalog.entries.is_empty(), "published catalog fixture did not seed any metadata");
     let published = route::open_store("fixture_readable", "fixture", "fixture/readable", &[])?;
     published.execute_batch("CREATE TABLE facts(id INTEGER PRIMARY KEY,amount INTEGER); INSERT INTO facts VALUES(1,123),(2,789)").map_err(|error| error.to_string())?;
     drop(published);
@@ -548,6 +556,13 @@ fn published_recovery_read_fixture(home: &Path, paths: &Paths) -> Result<Value, 
     need!(route::open_registered_store_read_only("fixture_readable", "unknown", "fixture/missing", std::time::Duration::from_secs(2))?.is_none(), "read-only lookup created a missing owner");
     coordinator.begin_retry()?;
     need!(coordinator.ensure_ready().is_err() && coordinator.ensure_readable().is_ok(), "retry revoked published reads or enabled writers");
+    let catalog = token_count_jsonl::session_catalog_snapshot(home, |_| {
+        Err("published catalog must never invoke a raw parser".into())
+    })?;
+    let original_paths = original_catalog.entries.iter().map(|entry| &entry.path).collect::<Vec<_>>();
+    let published_paths = catalog.entries.iter().map(|entry| &entry.path).collect::<Vec<_>>();
+    need!(published_paths == original_paths, "paused owner hid the previously published session catalog");
+    need!(!catalog.warnings.is_empty(), "published-only catalog fabricated destructive-action verification");
 
     let mut parked = Vec::new();
     for name in ["sessions", "archived_sessions"] {
@@ -574,7 +589,7 @@ fn published_recovery_read_fixture(home: &Path, paths: &Paths) -> Result<Value, 
     // source replacement is being simulated by declaring startup Ready.
     Connection::open(&paths.a).map_err(|error| error.to_string())?.execute("DELETE FROM tb_container_meta WHERE key=?1", [key]).map_err(|error| error.to_string())?;
     coordinator.finish(Ok(()));
-    Ok(json!({"name":"published-recovery-reads","status":"PASS","oldAndNewFacts":amounts,"tokensWithoutRawSessions":tokens,"aUnchanged":true,"retryReadOnly":true}))
+    Ok(json!({"name":"published-recovery-reads","status":"PASS","oldAndNewFacts":amounts,"tokensWithoutRawSessions":tokens,"aUnchanged":true,"retryReadOnly":true,"publishedCatalogEntries":catalog.entries.len(),"catalogParserCalled":false,"catalogActionsVerified":false}))
 }
 
 struct Paths {
