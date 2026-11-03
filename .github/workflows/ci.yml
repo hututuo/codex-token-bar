@@ -16,6 +16,10 @@ on:
         description: 'Only compile and exercise the local Claude reader and shared parser; no full regression or packaging'
         type: boolean
         default: false
+      claude_usage_only:
+        description: 'Only the multi-client usage parser and ledger suites on Swift/Rust; no full regression or packaging'
+        type: boolean
+        default: false
       formed_release:
         description: 'Optional real historical producer: 0.9.8, 0.9.9, 0.9.10, 0.9.11, or all'
         type: string
@@ -80,7 +84,7 @@ jobs:
 
   frontend:
     needs: source
-    if: ${{ !inputs.formed_only && !inputs.scale_only && !inputs.claude_reader_only }}
+    if: ${{ !inputs.formed_only && !inputs.scale_only && !inputs.claude_reader_only && !inputs.claude_usage_only }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -146,9 +150,14 @@ jobs:
       - name: Swift tests and release-script contracts
         env:
           TOKENBAR_DIAGNOSTIC_PROFILE: ${{ inputs.scale && '1' || '' }}
+          CLAUDE_USAGE_ONLY: ${{ inputs.claude_usage_only || false }}
         run: |
           set -o pipefail
           mkdir -p visual-previews
+          if [[ "$CLAUDE_USAGE_ONLY" == true ]]; then
+            swift test --filter MultiClientUsage 2>&1 | tee swift-tests.log
+            exit 0
+          fi
           swift test 2>&1 | tee swift-tests.log
           npm ci --prefix tauri-app --registry=https://registry.npmjs.org
           node scripts/cloud/run-node-tests.mjs scripts 2>&1 | tee release-script-tests.log
@@ -194,7 +203,7 @@ jobs:
           cache: npm
           cache-dependency-path: tauri-app/package-lock.json
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
-        if: runner.os == 'Windows'
+        if: ${{ runner.os == 'Windows' && !inputs.claude_usage_only }}
         with:
           dotnet-version: '10.0.303'
       - name: Rust registry cache
@@ -212,7 +221,7 @@ jobs:
           restore-keys: |
             rust-test-${{ runner.os }}-${{ runner.arch }}-1.93.1-${{ hashFiles('tauri-app/src-tauri/Cargo.lock') }}-
       - name: Agent Speed reporter compile and privacy self-test
-        if: runner.os == 'Windows'
+        if: ${{ runner.os == 'Windows' && !inputs.claude_usage_only }}
         shell: pwsh
         run: |
           dotnet build tools/AgentSpeedReporter/AgentSpeedReporter.csproj --configuration Release -p:LangVersion=latest -p:Nullable=enable -p:ImplicitUsings=enable
@@ -220,7 +229,7 @@ jobs:
           dotnet run --project tools/AgentSpeedReporter/AgentSpeedReporter.csproj --configuration Release -p:LangVersion=latest -p:Nullable=enable -p:ImplicitUsings=enable -- --self-test
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Claude local reader compile and privacy self-test
-        if: runner.os == 'Windows'
+        if: ${{ runner.os == 'Windows' && !inputs.claude_usage_only }}
         shell: pwsh
         run: |
           dotnet run --project tools/ClaudeLocalReader/ClaudeLocalReader.csproj --configuration Release -p:LangVersion=latest -p:Nullable=enable -p:ImplicitUsings=enable -- --self-test
@@ -236,9 +245,11 @@ jobs:
           npm ci --registry=https://registry.npmjs.org
           npm run build
       - name: Check production native configuration
+        if: ${{ !inputs.claude_usage_only }}
         shell: bash
         run: cargo check --locked --manifest-path tauri-app/src-tauri/Cargo.toml
       - name: Exercise production business-store routing and runtime recovery
+        if: ${{ !inputs.claude_usage_only }}
         id: production_fixture
         shell: bash
         env:
@@ -248,7 +259,7 @@ jobs:
           cargo build --locked --manifest-path tauri-app/src-tauri/Cargo.toml --features business-store-fixture --example business-store-fixture
           python scripts/cloud/run-business-store-fixture.py tauri-app/src-tauri/target/debug/examples/business-store-fixture
       - name: Preserve production fixture evidence immediately
-        if: always()
+        if: ${{ always() && !inputs.claude_usage_only }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: native-production-${{ matrix.os }}-${{ github.run_id }}
@@ -258,18 +269,23 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           TOKENBAR_DIAGNOSTIC_PROFILE: ${{ inputs.scale && '1' || '' }}
+          CLAUDE_USAGE_ONLY: ${{ inputs.claude_usage_only || false }}
         shell: bash
         run: |
           set -euo pipefail
-          cargo test --locked --manifest-path tauri-app/src-tauri/Cargo.toml --lib -- --test-threads=1 2>&1 | tee native-library.log
+          if [[ "$CLAUDE_USAGE_ONLY" == true ]]; then
+            cargo test --locked --manifest-path tauri-app/src-tauri/Cargo.toml --lib multi_client_usage::tests -- --test-threads=1 2>&1 | tee native-library.log
+          else
+            cargo test --locked --manifest-path tauri-app/src-tauri/Cargo.toml --lib -- --test-threads=1 2>&1 | tee native-library.log
+          fi
       - name: Windows packaging self-test
-        if: runner.os == 'Windows'
+        if: ${{ runner.os == 'Windows' && !inputs.claude_usage_only }}
         shell: pwsh
         run: |
           . ./scripts/cloud/prepare-windows.ps1
           ./scripts/build_tauri_windows_release.selftest.ps1
       - name: Require the production fixture even when other regressions pass
-        if: always()
+        if: ${{ always() && !inputs.claude_usage_only }}
         shell: bash
         env:
           FIXTURE_OUTCOME: ${{ steps.production_fixture.outcome }}
@@ -286,7 +302,7 @@ jobs:
 
   windows-updater:
     needs: source
-    if: ${{ !inputs.formed_only && !inputs.scale_only && !inputs.claude_reader_only }}
+    if: ${{ !inputs.formed_only && !inputs.scale_only && !inputs.claude_reader_only && !inputs.claude_usage_only }}
     runs-on: windows-2025
     timeout-minutes: 10
     steps:

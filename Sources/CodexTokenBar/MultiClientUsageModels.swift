@@ -30,6 +30,9 @@ struct ClientUsageEvent: Codable, Equatable, Sendable {
     var outputTokens: Int64
     var cacheReadTokens: Int64?
     var cacheWriteTokens: Int64?
+    /// Optional source-reported lifetimes; absent in older payloads. Never added to input again.
+    var cacheWrite5mTokens: Int64?
+    var cacheWrite1hTokens: Int64?
     /// A subset of outputTokens; callers must not add it to outputTokens again.
     var reasoningTokens: Int64?
     /// `recorded` uses a source id; `fallback_identity` hashes normalized metadata because no id was present.
@@ -46,7 +49,9 @@ struct ClientUsageEvent: Codable, Equatable, Sendable {
         cacheReadTokens: Int64? = nil,
         cacheWriteTokens: Int64? = nil,
         reasoningTokens: Int64? = nil,
-        quality: String = "recorded"
+        quality: String = "recorded",
+        cacheWrite5mTokens: Int64? = nil,
+        cacheWrite1hTokens: Int64? = nil
     ) {
         self.client = client
         self.eventID = eventID
@@ -57,15 +62,27 @@ struct ClientUsageEvent: Codable, Equatable, Sendable {
         self.outputTokens = Self.clamp(outputTokens)
         self.cacheReadTokens = cacheReadTokens.map(Self.clamp)
         self.cacheWriteTokens = cacheWriteTokens.map(Self.clamp)
+        self.cacheWrite5mTokens = cacheWrite5mTokens.flatMap { (0...Self.maximumTokenCount).contains($0) ? $0 : nil }
+        self.cacheWrite1hTokens = cacheWrite1hTokens.flatMap { (0...Self.maximumTokenCount).contains($0) ? $0 : nil }
         self.reasoningTokens = reasoningTokens.map(Self.clamp)
         self.quality = quality
     }
 
     var totalTokens: Int64 { Self.saturatingSum(inputTokens, outputTokens) }
 
+    var cacheWriteLifetimeSplit: (fiveMinute: Int64, oneHour: Int64)? {
+        guard let total = cacheWriteTokens, let five = cacheWrite5mTokens, let hour = cacheWrite1hTokens,
+              five >= 0, hour >= 0,
+              five <= total, hour <= total - five, five + hour == total else { return nil }
+        return (five, hour)
+    }
+
     /// Streaming transcripts may write the same response more than once. Keep its largest reported counts.
     func mergingUpdate(_ update: ClientUsageEvent) -> ClientUsageEvent {
         precondition(client == update.client && eventID == update.eventID && sessionID == update.sessionID)
+        let mergedWrite = Self.maximum(cacheWriteTokens, update.cacheWriteTokens)
+        let candidates = update.timestamp >= timestamp ? [update, self] : [self, update]
+        let split = candidates.first { $0.cacheWriteTokens == mergedWrite && $0.cacheWriteLifetimeSplit != nil }?.cacheWriteLifetimeSplit
         return ClientUsageEvent(
             client: client,
             eventID: eventID,
@@ -75,11 +92,13 @@ struct ClientUsageEvent: Codable, Equatable, Sendable {
             inputTokens: max(inputTokens, update.inputTokens),
             outputTokens: max(outputTokens, update.outputTokens),
             cacheReadTokens: Self.maximum(cacheReadTokens, update.cacheReadTokens),
-            cacheWriteTokens: Self.maximum(cacheWriteTokens, update.cacheWriteTokens),
+            cacheWriteTokens: mergedWrite,
             reasoningTokens: Self.maximum(reasoningTokens, update.reasoningTokens),
             quality: quality == "fallback_identity" || update.quality == "fallback_identity"
                 ? "fallback_identity"
-                : "recorded"
+                : "recorded",
+            cacheWrite5mTokens: split?.fiveMinute,
+            cacheWrite1hTokens: split?.oneHour
         )
     }
 
@@ -104,6 +123,7 @@ struct ClientUsageEvent: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case client, eventID, sessionID, model, timestamp, inputTokens, outputTokens
         case cacheReadTokens, cacheWriteTokens, reasoningTokens, quality
+        case cacheWrite5mTokens, cacheWrite1hTokens
     }
 
     init(from decoder: Decoder) throws {
@@ -119,7 +139,9 @@ struct ClientUsageEvent: Codable, Equatable, Sendable {
             cacheReadTokens: try values.decodeIfPresent(Int64.self, forKey: .cacheReadTokens),
             cacheWriteTokens: try values.decodeIfPresent(Int64.self, forKey: .cacheWriteTokens),
             reasoningTokens: try values.decodeIfPresent(Int64.self, forKey: .reasoningTokens),
-            quality: try values.decodeIfPresent(String.self, forKey: .quality) ?? "recorded"
+            quality: try values.decodeIfPresent(String.self, forKey: .quality) ?? "recorded",
+            cacheWrite5mTokens: try? values.decodeIfPresent(Int64.self, forKey: .cacheWrite5mTokens),
+            cacheWrite1hTokens: try? values.decodeIfPresent(Int64.self, forKey: .cacheWrite1hTokens)
         )
     }
 }

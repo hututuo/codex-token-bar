@@ -6,6 +6,7 @@ use crate::core::{
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use rusqlite::backup::Backup;
+use rusqlite::types::ValueRef;
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -27,6 +28,8 @@ const MAX_SOURCE_FILE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_OPENCODE_ROWS: usize = 500;
 const MAX_OPENCODE_ROW_BYTES: usize = 1024 * 1024;
 const MAX_COUNTER: u64 = 1_000_000_000_000;
+const MAX_PRICE_PAYLOAD_BYTES: usize = 65_536;
+const CLAUDE_CACHE_LIFETIMES_FINGERPRINT: &str = "claude-cache-lifetimes-v1|";
 const CACHE_RANKING_MIN_INPUT_TOKENS: i64 = 1_000;
 const CACHE_RANKING_LOW_HIT_MIN_INPUT_TOKENS: i64 = 20_000;
 const CACHE_RANKING_LOW_HIT_RATE: f64 = 0.3;
@@ -403,6 +406,8 @@ struct UsageEvent {
     output_tokens: u64,
     cache_read_tokens: Option<u64>,
     cache_write_tokens: Option<u64>,
+    cache_write_5m_tokens: Option<u64>,
+    cache_write_1h_tokens: Option<u64>,
     reasoning_tokens: Option<u64>,
     quality: String,
 }
@@ -425,6 +430,18 @@ struct ClientUsageEventPayload {
     cache_read_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cache_write_tokens: Option<u64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_bounded_counter",
+        skip_serializing_if = "Option::is_none"
+    )]
+    cache_write_5m_tokens: Option<u64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_bounded_counter",
+        skip_serializing_if = "Option::is_none"
+    )]
+    cache_write_1h_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_tokens: Option<u64>,
     quality: String,
@@ -442,6 +459,14 @@ where
         })
         .ok_or_else(|| serde::de::Error::custom("timestamp must be finite milliseconds"))?;
     Ok(millis)
+}
+
+fn deserialize_optional_bounded_counter<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    Ok(read_bounded_counter(Some(&value)))
 }
 
 #[derive(Clone, Debug)]
@@ -1616,6 +1641,14 @@ fn is_source_name(client: &str, path: &Path) -> bool {
     }
 }
 
+fn source_checkpoint_fingerprint(client: &str, fingerprint: &str) -> String {
+    if matches!(client, "claudeCode" | "claudeDesktop") {
+        format!("{CLAUDE_CACHE_LIFETIMES_FINGERPRINT}{fingerprint}")
+    } else {
+        fingerprint.to_string()
+    }
+}
+
 fn is_gemini_name(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -1694,7 +1727,9 @@ fn scan_transcript_file(
         let start = if let Some(saved) = &previous {
             let width = saved.offset.min(4_096) as usize;
             let identity = file_prefix_identity_from_file(&source, width)?;
-            let unchanged_prefix = saved.fingerprint.as_deref() == Some(identity.as_str());
+            let checkpoint_fingerprint = source_checkpoint_fingerprint(client, &identity);
+            let unchanged_prefix =
+                saved.fingerprint.as_deref() == Some(checkpoint_fingerprint.as_str());
             if unchanged_prefix
                 && saved.offset <= metadata.len()
                 && (saved.size != metadata.len() || saved.modified == modified)
@@ -1740,6 +1775,7 @@ fn scan_transcript_file(
         };
         let offset = start.saturating_add(complete_len as u64);
         let identity = file_prefix_identity_from_file(&source, offset.min(4_096) as usize)?;
+        let checkpoint_fingerprint = source_checkpoint_fingerprint(client, &identity);
         persist_source_update(
             connection,
             client,
@@ -1747,7 +1783,7 @@ fn scan_transcript_file(
             i64::try_from(offset).unwrap_or(i64::MAX),
             metadata.len(),
             source_modified_ns,
-            &identity,
+            &checkpoint_fingerprint,
             events,
         )
         .map_err(|error| error.to_string())?;
@@ -1762,10 +1798,11 @@ fn scan_transcript_file(
     }
     let raw = read_all_cached(&source, metadata.len())?;
     let fingerprint = uncached_content_identity(&source, metadata.len())?;
+    let checkpoint_fingerprint = source_checkpoint_fingerprint(client, &fingerprint);
     if previous.as_ref().is_some_and(|checkpoint| {
         checkpoint.size == metadata.len()
             && checkpoint.modified == source_modified_ns as f64 / 1_000_000_000.0
-            && checkpoint.fingerprint.as_deref() == Some(fingerprint.as_str())
+            && checkpoint.fingerprint.as_deref() == Some(checkpoint_fingerprint.as_str())
     }) {
         return Ok(());
     }
@@ -1790,7 +1827,7 @@ fn scan_transcript_file(
         i64::try_from(metadata.len()).unwrap_or(i64::MAX),
         metadata.len(),
         source_modified_ns,
-        &fingerprint,
+        &checkpoint_fingerprint,
         events,
     )
     .map_err(|error| error.to_string())
@@ -2127,6 +2164,13 @@ fn parse_claude(bytes: &[u8], path: &Path, client: &str) -> Vec<UsageEvent> {
         let input = read_u64(usage.get("input_tokens"));
         let cache_read = read_u64(usage.get("cache_read_input_tokens"));
         let cache_write = read_u64(usage.get("cache_creation_input_tokens"));
+        let cache_creation = usage.get("cache_creation").and_then(Value::as_object);
+        let cache_write_5m = cache_creation.and_then(|cache_creation| {
+            read_bounded_counter(cache_creation.get("ephemeral_5m_input_tokens"))
+        });
+        let cache_write_1h = cache_creation.and_then(|cache_creation| {
+            read_bounded_counter(cache_creation.get("ephemeral_1h_input_tokens"))
+        });
         let output = read_u64(usage.get("output_tokens"));
         let reasoning = usage
             .get("output_tokens_details")
@@ -2151,7 +2195,7 @@ fn parse_claude(bytes: &[u8], path: &Path, client: &str) -> Vec<UsageEvent> {
             .filter(|value| !value.trim().is_empty())
             .unwrap_or(&fallback_session)
             .to_string();
-        let Some(event) = normalized_event(
+        let Some(mut event) = normalized_event(
             client,
             &session_id,
             event_id,
@@ -2170,6 +2214,8 @@ fn parse_claude(bytes: &[u8], path: &Path, client: &str) -> Vec<UsageEvent> {
         ) else {
             continue;
         };
+        event.cache_write_5m_tokens = cache_write_5m;
+        event.cache_write_1h_tokens = cache_write_1h;
         merge_file_event(&mut events, event);
     }
     events.into_values().collect()
@@ -2747,12 +2793,30 @@ fn merge_file_event(events: &mut BTreeMap<EventKey, UsageEvent>, event: UsageEve
         event.event_id.clone(),
     );
     if let Some(previous) = events.get_mut(&key) {
+        let incoming_is_newer = event.timestamp_ms >= previous.timestamp_ms;
+        let existing_cache_write_tokens = previous.cache_write_tokens;
         previous.input_tokens = previous.input_tokens.max(event.input_tokens);
         previous.output_tokens = previous.output_tokens.max(event.output_tokens);
         previous.cache_read_tokens =
             max_option(previous.cache_read_tokens, event.cache_read_tokens);
         previous.cache_write_tokens =
             max_option(previous.cache_write_tokens, event.cache_write_tokens);
+        let incoming_ttl_pair = coherent_cache_write_ttl_pair(
+            event.cache_write_5m_tokens,
+            event.cache_write_1h_tokens,
+            event.cache_write_tokens,
+            previous.cache_write_tokens,
+        );
+        let existing_ttl_pair = coherent_cache_write_ttl_pair(
+            previous.cache_write_5m_tokens,
+            previous.cache_write_1h_tokens,
+            existing_cache_write_tokens,
+            previous.cache_write_tokens,
+        );
+        set_cache_write_ttl_pair(
+            previous,
+            select_cache_write_ttl_pair(incoming_ttl_pair, incoming_is_newer, existing_ttl_pair),
+        );
         previous.reasoning_tokens = max_option(previous.reasoning_tokens, event.reasoning_tokens);
         if event.timestamp_ms >= previous.timestamp_ms && event.model != "unknown" {
             previous.model = event.model.clone();
@@ -2833,6 +2897,8 @@ fn normalized_event(
         output_tokens: output_tokens.min(MAX_COUNTER),
         cache_read_tokens: cache_read_tokens.map(|value| value.min(MAX_COUNTER)),
         cache_write_tokens: cache_write_tokens.map(|value| value.min(MAX_COUNTER)),
+        cache_write_5m_tokens: None,
+        cache_write_1h_tokens: None,
         reasoning_tokens: reasoning_tokens.map(|value| value.min(MAX_COUNTER)),
         quality: quality.into(),
     })
@@ -2850,6 +2916,46 @@ fn max_option<T: Ord>(left: Option<T>, right: Option<T>) -> Option<T> {
         (Some(value), None) | (None, Some(value)) => Some(value),
         (None, None) => None,
     }
+}
+
+fn coherent_cache_write_ttl_pair(
+    cache_write_5m_tokens: Option<u64>,
+    cache_write_1h_tokens: Option<u64>,
+    candidate_cache_write_tokens: Option<u64>,
+    cache_write_tokens: Option<u64>,
+) -> Option<(u64, u64)> {
+    let (
+        cache_write_5m_tokens,
+        cache_write_1h_tokens,
+        candidate_cache_write_tokens,
+        cache_write_tokens,
+    ) = (
+        cache_write_5m_tokens?,
+        cache_write_1h_tokens?,
+        candidate_cache_write_tokens?,
+        cache_write_tokens?,
+    );
+    (candidate_cache_write_tokens == cache_write_tokens
+        && cache_write_5m_tokens.checked_add(cache_write_1h_tokens)
+            == Some(candidate_cache_write_tokens))
+    .then_some((cache_write_5m_tokens, cache_write_1h_tokens))
+}
+
+fn select_cache_write_ttl_pair(
+    update_pair: Option<(u64, u64)>,
+    update_is_newer: bool,
+    existing_pair: Option<(u64, u64)>,
+) -> Option<(u64, u64)> {
+    if update_is_newer && update_pair.is_some() {
+        update_pair
+    } else {
+        existing_pair.or(update_pair)
+    }
+}
+
+fn set_cache_write_ttl_pair(event: &mut UsageEvent, pair: Option<(u64, u64)>) {
+    (event.cache_write_5m_tokens, event.cache_write_1h_tokens) =
+        pair.map_or((None, None), |(short, long)| (Some(short), Some(long)));
 }
 
 fn file_session_id(path: &Path) -> String {
@@ -2903,6 +3009,34 @@ fn read_u64(value: Option<&Value>) -> Option<u64> {
     let value = value?;
     let parsed = value.as_i64().and_then(|value| u64::try_from(value).ok())?;
     Some(parsed.min(MAX_COUNTER))
+}
+
+fn read_bounded_counter(value: Option<&Value>) -> Option<u64> {
+    let parsed = value?
+        .as_i64()
+        .and_then(|value| u64::try_from(value).ok())?;
+    (parsed <= MAX_COUNTER).then_some(parsed)
+}
+
+fn cache_write_ttl_pair_from_payload(payload: &[u8]) -> Option<(i64, i64)> {
+    if payload.len() > MAX_PRICE_PAYLOAD_BYTES {
+        return None;
+    }
+    let payload = std::str::from_utf8(payload).ok()?;
+    let payload = serde_json::from_str::<Value>(payload).ok()?;
+    let cache_write_5m = read_bounded_counter(payload.get("cacheWrite5mTokens"))?;
+    let cache_write_1h = read_bounded_counter(payload.get("cacheWrite1hTokens"))?;
+    Some((
+        i64::try_from(cache_write_5m).ok()?,
+        i64::try_from(cache_write_1h).ok()?,
+    ))
+}
+
+fn cache_write_ttl_pair_from_sql_value(payload: ValueRef<'_>) -> Option<(i64, i64)> {
+    match payload {
+        ValueRef::Text(payload) => cache_write_ttl_pair_from_payload(payload),
+        _ => None,
+    }
 }
 
 fn count_fields_valid(object: &Value, keys: &[&str]) -> bool {
@@ -2979,6 +3113,8 @@ fn event_payload_at(event: &UsageEvent, timestamp_ms: f64) -> rusqlite::Result<S
         output_tokens: event.output_tokens,
         cache_read_tokens: event.cache_read_tokens,
         cache_write_tokens: event.cache_write_tokens,
+        cache_write_5m_tokens: event.cache_write_5m_tokens,
+        cache_write_1h_tokens: event.cache_write_1h_tokens,
         reasoning_tokens: event.reasoning_tokens,
         quality: event.quality.clone(),
     };
@@ -2998,6 +3134,8 @@ fn upsert_event(transaction: &Transaction<'_>, event: &UsageEvent) -> rusqlite::
         .optional()?;
     let mut projected = event.clone();
     let mut projected_timestamp_ms = projected.timestamp_ms as f64;
+    let mut existing_ttl_pair = None;
+    let mut update_is_newer = true;
     if let Some(previous) = previous_payload.as_deref() {
         if let Ok(previous) = serde_json::from_str::<ClientUsageEventPayload>(previous) {
             if previous.session_id == event.session_id {
@@ -3005,8 +3143,16 @@ fn upsert_event(transaction: &Transaction<'_>, event: &UsageEvent) -> rusqlite::
                 projected.output_tokens = projected.output_tokens.max(previous.output_tokens);
                 projected.cache_read_tokens =
                     max_option(projected.cache_read_tokens, previous.cache_read_tokens);
+                let previous_cache_write_tokens = previous.cache_write_tokens;
                 projected.cache_write_tokens =
                     max_option(projected.cache_write_tokens, previous.cache_write_tokens);
+                existing_ttl_pair = coherent_cache_write_ttl_pair(
+                    previous.cache_write_5m_tokens,
+                    previous.cache_write_1h_tokens,
+                    previous_cache_write_tokens,
+                    projected.cache_write_tokens,
+                );
+                update_is_newer = event.timestamp_ms as f64 >= previous.timestamp;
                 projected.reasoning_tokens =
                     max_option(projected.reasoning_tokens, previous.reasoning_tokens);
                 if previous.timestamp >= projected_timestamp_ms && previous.model != "unknown" {
@@ -3019,13 +3165,28 @@ fn upsert_event(transaction: &Transaction<'_>, event: &UsageEvent) -> rusqlite::
             }
         }
     }
+    let update_ttl_pair = coherent_cache_write_ttl_pair(
+        event.cache_write_5m_tokens,
+        event.cache_write_1h_tokens,
+        event.cache_write_tokens,
+        projected.cache_write_tokens,
+    );
+    set_cache_write_ttl_pair(
+        &mut projected,
+        select_cache_write_ttl_pair(update_ttl_pair, update_is_newer, existing_ttl_pair),
+    );
     let projected_payload = event_payload_at(&projected, projected_timestamp_ms)?;
     if previous_payload.as_deref() == Some(projected_payload.as_str()) {
         return Ok(());
     }
     transaction.execute(
         "INSERT INTO client_usage_revisions(client,event_id,captured_at,payload) VALUES(?1,?2,?3,?4)",
-        params![event.client, event.event_id, now_ms() as f64 / 1_000.0, incoming_payload],
+        params![
+            event.client,
+            event.event_id,
+            now_ms() as f64 / 1_000.0,
+            incoming_payload
+        ],
     )?;
     transaction.execute(
         "INSERT INTO client_usage_events(client,event_id,session_id,model,timestamp,input_tokens,output_tokens, \
@@ -3420,7 +3581,15 @@ fn api_cost_micro_usd(
     cache_read: Option<i64>,
     cache_write: Option<i64>,
 ) -> Option<i64> {
-    api_cost_micro_usd_at(raw_model, input, output, cache_read, cache_write, None)
+    api_cost_micro_usd_at(
+        raw_model,
+        input,
+        output,
+        cache_read,
+        cache_write,
+        None,
+        None,
+    )
 }
 
 fn price_period_timestamp(value: &Value) -> Option<i64> {
@@ -3512,6 +3681,7 @@ fn api_cost_micro_usd_at(
     output: i64,
     cache_read: Option<i64>,
     cache_write: Option<i64>,
+    cache_write_ttl_pair: Option<(i64, i64)>,
     timestamp: Option<f64>,
 ) -> Option<i64> {
     let identifier = raw_model.rsplit('/').next()?.trim().to_ascii_lowercase();
@@ -3555,22 +3725,43 @@ fn api_cost_micro_usd_at(
         || cache_write < 0
         || cache_read > input
         || cache_write > input - cache_read
-        || (cache_write > 0 && rates.cache_write != rates.cache_write_1h)
     {
         return None;
     }
+    let (cache_write_5m, cache_write_1h) = if cache_write == 0 {
+        (0, 0)
+    } else if rates.cache_write == rates.cache_write_1h {
+        (cache_write, 0)
+    } else {
+        let (cache_write_5m, cache_write_1h) = cache_write_ttl_pair?;
+        if cache_write_5m < 0
+            || cache_write_1h < 0
+            || cache_write_5m.checked_add(cache_write_1h) != Some(cache_write)
+        {
+            return None;
+        }
+        (cache_write_5m, cache_write_1h)
+    };
     let uncached_input = input - cache_read - cache_write;
     const MAX_CLASS_TOKENS: i64 = 100_000_000;
-    if [uncached_input, cache_read, cache_write, output]
-        .into_iter()
-        .any(|count| count > MAX_CLASS_TOKENS)
+    if [
+        uncached_input,
+        cache_read,
+        cache_write,
+        cache_write_5m,
+        cache_write_1h,
+        output,
+    ]
+    .into_iter()
+    .any(|count| count > MAX_CLASS_TOKENS)
     {
         return None;
     }
     let components = [
         uncached_input.checked_mul(rates.input)?,
         cache_read.checked_mul(rates.cached_input)?,
-        cache_write.checked_mul(rates.cache_write)?,
+        cache_write_5m.checked_mul(rates.cache_write)?,
+        cache_write_1h.checked_mul(rates.cache_write_1h)?,
         output.checked_mul(rates.output)?,
     ];
     let pico_usd = components.into_iter().try_fold(0_i64, i64::checked_add)?;
@@ -3663,7 +3854,7 @@ fn read_scoped_api_price_aggregates(
     let mut totals = HashMap::<MultiClientPriceModelKey, MultiClientPriceTally>::new();
     let mut statement = connection
         .prepare(
-            "SELECT client,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,timestamp \
+            "SELECT client,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,timestamp,payload \
              FROM client_usage_events WHERE timestamp >= ?1",
         )
         .map_err(|error| error.to_string())?;
@@ -3677,12 +3868,21 @@ fn read_scoped_api_price_aggregates(
                 row.get::<_, Option<i64>>(4)?,
                 row.get::<_, Option<i64>>(5)?,
                 row.get::<_, f64>(6)?,
+                cache_write_ttl_pair_from_sql_value(row.get_ref(7)?),
             ))
         })
         .map_err(|error| error.to_string())?;
     for row in rows {
-        let (client, model, input, output, cache_read, cache_write, timestamp) =
-            row.map_err(|error| error.to_string())?;
+        let (
+            client,
+            model,
+            input,
+            output,
+            cache_read,
+            cache_write,
+            timestamp,
+            cache_write_ttl_pair,
+        ) = row.map_err(|error| error.to_string())?;
         totals
             .entry(MultiClientPriceModelKey {
                 client,
@@ -3695,6 +3895,7 @@ fn read_scoped_api_price_aggregates(
                 output,
                 cache_read,
                 cache_write,
+                cache_write_ttl_pair,
                 Some(timestamp),
             ));
     }
@@ -3765,7 +3966,7 @@ fn read_cached_api_price_aggregates(
     let mut totals = HashMap::<MultiClientPriceModelKey, MultiClientPriceTally>::new();
     let mut statement = connection
         .prepare(
-            "SELECT client,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,timestamp \
+            "SELECT client,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,timestamp,payload \
              FROM client_usage_events",
         )
         .map_err(|error| error.to_string())?;
@@ -3779,12 +3980,21 @@ fn read_cached_api_price_aggregates(
                 row.get::<_, Option<i64>>(4)?,
                 row.get::<_, Option<i64>>(5)?,
                 row.get::<_, f64>(6)?,
+                cache_write_ttl_pair_from_sql_value(row.get_ref(7)?),
             ))
         })
         .map_err(|error| error.to_string())?;
     for row in rows {
-        let (client, model, input, output, cache_read, cache_write, timestamp) =
-            row.map_err(|error| error.to_string())?;
+        let (
+            client,
+            model,
+            input,
+            output,
+            cache_read,
+            cache_write,
+            timestamp,
+            cache_write_ttl_pair,
+        ) = row.map_err(|error| error.to_string())?;
         let key = MultiClientPriceModelKey {
             client,
             model: model.clone(),
@@ -3795,6 +4005,7 @@ fn read_cached_api_price_aggregates(
             output,
             cache_read,
             cache_write,
+            cache_write_ttl_pair,
             Some(timestamp),
         ));
     }
@@ -4378,6 +4589,356 @@ mod tests {
         assert!(payload.get("eventId").is_none());
         assert!(payload.get("cacheWriteTokens").is_some());
         assert!(payload.get("incompleteFields").is_none());
+    }
+
+    #[test]
+    fn claude_ttl_payload_fields_are_optional_and_do_not_change_event_identity() {
+        let legacy = br#"{"sessionId":"s1","type":"assistant","timestamp":"2026-10-20T10:02:04.000Z","message":{"model":"claude-opus-5-5","usage":{"input_tokens":2,"cache_creation_input_tokens":100,"cache_read_input_tokens":0,"output_tokens":5}}}"#;
+        let with_ttl = br#"{"sessionId":"s1","type":"assistant","timestamp":"2026-10-20T10:02:04.000Z","message":{"model":"claude-opus-5-5","usage":{"input_tokens":2,"cache_creation_input_tokens":100,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":60,"ephemeral_1h_input_tokens":40},"output_tokens":5}}}"#;
+        let legacy_event = parse_claude(legacy, Path::new("s.jsonl"), "claudeCode")
+            .pop()
+            .unwrap();
+        let ttl_event = parse_claude(with_ttl, Path::new("s.jsonl"), "claudeCode")
+            .pop()
+            .unwrap();
+
+        assert_eq!(legacy_event.event_id, ttl_event.event_id);
+        assert_eq!(ttl_event.cache_write_5m_tokens, Some(60));
+        assert_eq!(ttl_event.cache_write_1h_tokens, Some(40));
+        let payload: Value = serde_json::from_str(&event_payload(&ttl_event).unwrap()).unwrap();
+        assert_eq!(payload["cacheWrite5mTokens"], 60);
+        assert_eq!(payload["cacheWrite1hTokens"], 40);
+
+        let mut old_payload: Value =
+            serde_json::from_str(&event_payload(&legacy_event).unwrap()).unwrap();
+        let old_object = old_payload.as_object_mut().unwrap();
+        old_object.remove("cacheWrite5mTokens");
+        old_object.remove("cacheWrite1hTokens");
+        let decoded_old: ClientUsageEventPayload =
+            serde_json::from_value(old_payload.clone()).unwrap();
+        assert_eq!(decoded_old.input_tokens, legacy_event.input_tokens);
+        assert_eq!(decoded_old.cache_write_5m_tokens, None);
+        assert_eq!(decoded_old.cache_write_1h_tokens, None);
+
+        old_payload
+            .as_object_mut()
+            .unwrap()
+            .insert("cacheWrite5mTokens".into(), serde_json::json!("malformed"));
+        old_payload
+            .as_object_mut()
+            .unwrap()
+            .insert("cacheWrite1hTokens".into(), serde_json::json!(40));
+        let decoded_malformed: ClientUsageEventPayload =
+            serde_json::from_value(old_payload).unwrap();
+        assert_eq!(decoded_malformed.input_tokens, legacy_event.input_tokens);
+        assert_eq!(decoded_malformed.cache_write_5m_tokens, None);
+        assert_eq!(decoded_malformed.cache_write_1h_tokens, Some(40));
+    }
+
+    #[test]
+    fn claude_cache_ttl_metadata_enriches_without_shrinking_counters_and_prices_from_payload() {
+        let temporary = TempDir::new("claude-cache-ttl-enrichment");
+        let database = temporary.path().join("multi-client-usage.sqlite");
+        let connection = open_database(&database).unwrap();
+        ensure_schema(&connection, &database).unwrap();
+
+        let existing = normalized_event(
+            "claudeCode",
+            "s",
+            Some("e"),
+            None,
+            Some("claude-opus-5-5"),
+            Some(1_800_000_000_000),
+            100_000,
+            9,
+            Some(0),
+            Some(100_000),
+            Some(2),
+        )
+        .unwrap();
+        let transaction = connection.unchecked_transaction().unwrap();
+        upsert_event(&transaction, &existing).unwrap();
+        transaction.commit().unwrap();
+
+        let mut update = normalized_event(
+            "claudeCode",
+            "s",
+            Some("e"),
+            None,
+            Some("claude-opus-5-5"),
+            Some(1_800_000_001_000),
+            10,
+            1,
+            Some(0),
+            Some(100_000),
+            None,
+        )
+        .unwrap();
+        update.cache_write_5m_tokens = Some(60_000);
+        update.cache_write_1h_tokens = Some(40_000);
+        let transaction = connection.unchecked_transaction().unwrap();
+        upsert_event(&transaction, &update).unwrap();
+        transaction.commit().unwrap();
+
+        let payload: Value = serde_json::from_str(
+            &connection
+                .query_row("SELECT payload FROM client_usage_events", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(payload["inputTokens"], 100_000);
+        assert_eq!(payload["outputTokens"], 9);
+        assert_eq!(payload["cacheReadTokens"], 0);
+        assert_eq!(payload["cacheWriteTokens"], 100_000);
+        assert_eq!(payload["reasoningTokens"], 2);
+        assert_eq!(payload["cacheWrite5mTokens"], 60_000);
+        assert_eq!(payload["cacheWrite1hTokens"], 40_000);
+        let revision_payloads = connection
+            .prepare("SELECT payload FROM client_usage_revisions ORDER BY revision")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            revision_payloads.len(),
+            2,
+            "both source observations remain"
+        );
+        let first_revision: Value = serde_json::from_str(&revision_payloads[0]).unwrap();
+        let second_revision: Value = serde_json::from_str(&revision_payloads[1]).unwrap();
+        assert_eq!(first_revision["inputTokens"], 100_000);
+        assert_eq!(second_revision["inputTokens"], 10);
+        assert_eq!(second_revision["outputTokens"], 1);
+        assert_eq!(second_revision["cacheWrite5mTokens"], 60_000);
+
+        let totals = read_scoped_api_price_aggregates(&connection, 0).unwrap();
+        let tally = totals
+            .get(&MultiClientPriceModelKey {
+                client: "claudeCode".into(),
+                model: "claude-opus-5-5".into(),
+            })
+            .unwrap();
+        assert_eq!(tally.known_cost_micro_usd, Some(620_180));
+        assert_eq!(tally.unpriced_requests, 0);
+        assert_eq!(
+            api_cost_micro_usd("gpt-6.1-sol", 100_000, 0, Some(0), Some(100_000)),
+            Some(250_000),
+            "equal 5m and 1h rates keep working without a TTL split"
+        );
+    }
+
+    #[test]
+    fn claude_same_timestamp_cache_ttl_update_prefers_incoming_pair() {
+        let make_event = |cache_write_5m_tokens, cache_write_1h_tokens| {
+            let mut event = normalized_event(
+                "claudeCode",
+                "s",
+                Some("tie"),
+                None,
+                Some("claude-opus-5-5"),
+                Some(1_800_000_000_000),
+                100,
+                3,
+                Some(0),
+                Some(100),
+                None,
+            )
+            .unwrap();
+            event.cache_write_5m_tokens = Some(cache_write_5m_tokens);
+            event.cache_write_1h_tokens = Some(cache_write_1h_tokens);
+            event
+        };
+
+        let mut file_events = BTreeMap::new();
+        merge_file_event(&mut file_events, make_event(60, 40));
+        merge_file_event(&mut file_events, make_event(20, 80));
+        let merged = file_events.values().next().unwrap();
+        assert_eq!(merged.cache_write_5m_tokens, Some(20));
+        assert_eq!(merged.cache_write_1h_tokens, Some(80));
+
+        let temporary = TempDir::new("claude-cache-ttl-timestamp-tie");
+        let database = temporary.path().join("multi-client-usage.sqlite");
+        let connection = open_database(&database).unwrap();
+        ensure_schema(&connection, &database).unwrap();
+        let transaction = connection.unchecked_transaction().unwrap();
+        upsert_event(&transaction, &make_event(60, 40)).unwrap();
+        transaction.commit().unwrap();
+        let transaction = connection.unchecked_transaction().unwrap();
+        upsert_event(&transaction, &make_event(20, 80)).unwrap();
+        transaction.commit().unwrap();
+
+        let payload: Value = serde_json::from_str(
+            &connection
+                .query_row("SELECT payload FROM client_usage_events", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(payload["cacheWrite5mTokens"], 20);
+        assert_eq!(payload["cacheWrite1hTokens"], 80);
+    }
+
+    #[test]
+    fn claude_lower_write_split_cannot_match_a_larger_merged_write() {
+        let make_event = |cache_write_tokens: u64, ttl_pair: Option<(u64, u64)>| {
+            let mut event = normalized_event(
+                "claudeCode",
+                "s",
+                Some("lower-write"),
+                None,
+                Some("claude-opus-5-5"),
+                Some(1_800_000_000_000),
+                cache_write_tokens,
+                0,
+                Some(0),
+                Some(cache_write_tokens),
+                None,
+            )
+            .unwrap();
+            if let Some((short, long)) = ttl_pair {
+                event.cache_write_5m_tokens = Some(short);
+                event.cache_write_1h_tokens = Some(long);
+            }
+            event
+        };
+
+        let mut file_events = BTreeMap::new();
+        merge_file_event(&mut file_events, make_event(30, None));
+        merge_file_event(&mut file_events, make_event(20, Some((10, 20))));
+        let merged = file_events.values().next().unwrap();
+        assert_eq!(merged.cache_write_tokens, Some(30));
+        assert_eq!(merged.cache_write_5m_tokens, None);
+        assert_eq!(merged.cache_write_1h_tokens, None);
+
+        let temporary = TempDir::new("claude-cache-ttl-lower-write");
+        let database = temporary.path().join("multi-client-usage.sqlite");
+        let connection = open_database(&database).unwrap();
+        ensure_schema(&connection, &database).unwrap();
+        let transaction = connection.unchecked_transaction().unwrap();
+        upsert_event(&transaction, &make_event(30, None)).unwrap();
+        transaction.commit().unwrap();
+        let transaction = connection.unchecked_transaction().unwrap();
+        upsert_event(&transaction, &make_event(20, Some((10, 20)))).unwrap();
+        transaction.commit().unwrap();
+
+        let payload: Value = serde_json::from_str(
+            &connection
+                .query_row("SELECT payload FROM client_usage_events", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(payload["cacheWriteTokens"], 30);
+        assert!(payload.get("cacheWrite5mTokens").is_none());
+        assert!(payload.get("cacheWrite1hTokens").is_none());
+    }
+
+    #[test]
+    fn malformed_claude_cache_ttl_split_keeps_usage_but_stays_unpriced() {
+        let temporary = TempDir::new("claude-cache-ttl-malformed");
+        let database = temporary.path().join("multi-client-usage.sqlite");
+        let bytes = br#"{"sessionId":"s","entrypoint":"cli","type":"assistant","timestamp":"2026-10-20T10:02:04.000Z","message":{"id":"e","model":"claude-opus-5-5","usage":{"input_tokens":0,"cache_creation_input_tokens":100000,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":"60000","ephemeral_1h_input_tokens":40000},"output_tokens":0}}}"#;
+        let event = parse_claude(bytes, Path::new("s.jsonl"), "claudeCode")
+            .pop()
+            .unwrap();
+        assert_eq!(event.cache_write_5m_tokens, None);
+        assert_eq!(event.cache_write_1h_tokens, Some(40_000));
+
+        let connection = open_database(&database).unwrap();
+        ensure_schema(&connection, &database).unwrap();
+        let transaction = connection.unchecked_transaction().unwrap();
+        upsert_event(&transaction, &event).unwrap();
+        transaction.commit().unwrap();
+
+        let summaries = read_summaries(&connection).unwrap().0;
+        assert_eq!(summaries[0].requests, 1);
+        assert_eq!(summaries[0].input_tokens, 100_000);
+        assert_eq!(summaries[0].cache_write_tokens, Some(100_000));
+        let totals = read_scoped_api_price_aggregates(&connection, 0).unwrap();
+        let tally = totals
+            .get(&MultiClientPriceModelKey {
+                client: "claudeCode".into(),
+                model: "claude-opus-5-5".into(),
+            })
+            .unwrap();
+        assert_eq!(tally.known_cost_micro_usd, None);
+        assert_eq!(tally.unpriced_requests, 1);
+    }
+
+    #[test]
+    fn claude_lifetime_fingerprint_reparses_legacy_checkpoint_once() {
+        let temporary = TempDir::new("claude-cache-ttl-checkpoint");
+        let database = temporary.path().join("multi-client-usage.sqlite");
+        let transcript = temporary.path().join("session.jsonl");
+        let content = br#"{"sessionId":"s","entrypoint":"cli","type":"assistant","timestamp":"2026-10-20T10:02:04.000Z","message":{"id":"e","model":"claude-opus-5-5","usage":{"input_tokens":0,"cache_creation_input_tokens":100000,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":60000,"ephemeral_1h_input_tokens":40000},"output_tokens":0}}}
+"#;
+        fs::write(&transcript, content).unwrap();
+        let mut connection = open_database(&database).unwrap();
+        ensure_schema(&connection, &database).unwrap();
+
+        let mut legacy_event = parse_claude(content, &transcript, "claudeCode")
+            .pop()
+            .unwrap();
+        legacy_event.cache_write_5m_tokens = None;
+        legacy_event.cache_write_1h_tokens = None;
+        let source = fs::File::open(&transcript).unwrap();
+        let metadata = source.metadata().unwrap();
+        let offset = metadata.len();
+        let legacy_fingerprint =
+            file_prefix_identity_from_file(&source, offset.min(4_096) as usize).unwrap();
+        persist_source_update(
+            &mut connection,
+            "claudeCode",
+            &transcript.to_string_lossy(),
+            i64::try_from(offset).unwrap(),
+            offset,
+            modified_ns(&metadata),
+            &legacy_fingerprint,
+            vec![legacy_event],
+        )
+        .unwrap();
+
+        scan_transcript_file(&mut connection, "claudeCode", &transcript).unwrap();
+        let stored_payload: Value = serde_json::from_str(
+            &connection
+                .query_row("SELECT payload FROM client_usage_events", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(stored_payload["cacheWrite5mTokens"], 60_000);
+        assert_eq!(stored_payload["cacheWrite1hTokens"], 40_000);
+        let checkpoint = read_checkpoint(&connection, "claudeCode", &transcript.to_string_lossy())
+            .unwrap()
+            .unwrap();
+        assert!(checkpoint
+            .fingerprint
+            .as_deref()
+            .unwrap()
+            .starts_with(CLAUDE_CACHE_LIFETIMES_FINGERPRINT));
+        let revision_count = connection
+            .query_row("SELECT count(*) FROM client_usage_revisions", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap();
+        assert_eq!(revision_count, 2, "the old checkpoint was reparsed");
+
+        scan_transcript_file(&mut connection, "claudeCode", &transcript).unwrap();
+        let revision_count = connection
+            .query_row("SELECT count(*) FROM client_usage_revisions", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap();
+        assert_eq!(
+            revision_count, 2,
+            "the versioned checkpoint skips the unchanged source next time"
+        );
     }
 
     #[test]
@@ -5738,6 +6299,7 @@ mod tests {
                     1_000_000,
                     Some(200_000),
                     None,
+                    None,
                     Some(timestamp)
                 ),
                 Some(expected),
@@ -5745,11 +6307,84 @@ mod tests {
             );
         }
         assert_eq!(
-            api_cost_micro_usd_at("deepseek-flash", 10, 10, Some(0), None, None),
+            api_cost_micro_usd_at("deepseek-flash", 10, 10, Some(0), None, None, None),
             None
         );
         assert_eq!(
-            api_cost_micro_usd_at("deepseek-flash", 10, 10, Some(0), None, Some(f64::NAN)),
+            api_cost_micro_usd_at(
+                "deepseek-flash",
+                10,
+                10,
+                Some(0),
+                None,
+                None,
+                Some(f64::NAN)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn claude_cache_write_lifetimes_require_a_complete_validated_split_when_rates_differ() {
+        assert_eq!(
+            api_cost_micro_usd_at(
+                "claude-opus-5-5",
+                100_000,
+                0,
+                Some(0),
+                Some(100_000),
+                Some((60_000, 40_000)),
+                None,
+            ),
+            Some(620_000)
+        );
+        assert_eq!(
+            api_cost_micro_usd_at(
+                "claude-opus-5-5",
+                100_000,
+                0,
+                Some(0),
+                Some(100_000),
+                None,
+                None,
+            ),
+            None,
+            "missing TTL metadata never assumes the 5m rate"
+        );
+        assert_eq!(
+            api_cost_micro_usd_at(
+                "claude-opus-5-5",
+                100_000,
+                0,
+                Some(0),
+                Some(100_000),
+                Some((60_000, 39_999)),
+                None,
+            ),
+            None,
+            "the pair must add up to the recorded cache write total"
+        );
+        assert_eq!(
+            api_cost_micro_usd_at("claude-opus-5-5", 0, 0, Some(0), Some(0), None, None,),
+            Some(0),
+            "zero cache writes remain priceable without TTL metadata"
+        );
+        assert_eq!(
+            cache_write_ttl_pair_from_payload(
+                r#"{"cacheWrite5mTokens":60000,"cacheWrite1hTokens":null}"#.as_bytes()
+            ),
+            None
+        );
+        assert_eq!(
+            cache_write_ttl_pair_from_payload(
+                r#"{"cacheWrite5mTokens":"60000","cacheWrite1hTokens":40000}"#.as_bytes()
+            ),
+            None
+        );
+        assert_eq!(
+            cache_write_ttl_pair_from_payload(
+                r#"{"cacheWrite5mTokens":1000000000001,"cacheWrite1hTokens":0}"#.as_bytes()
+            ),
             None
         );
     }
@@ -5758,10 +6393,10 @@ mod tests {
     fn scoped_price_query_passes_each_record_timestamp_without_mutating_ledger() {
         let connection = Connection::open_in_memory().unwrap();
         connection.execute_batch("CREATE TABLE client_usage_events(client TEXT,model TEXT,
-            input_tokens INTEGER,output_tokens INTEGER,cache_read_tokens INTEGER,cache_write_tokens INTEGER,timestamp REAL)").unwrap();
+            input_tokens INTEGER,output_tokens INTEGER,cache_read_tokens INTEGER,cache_write_tokens INTEGER,timestamp REAL,payload TEXT)").unwrap();
         for time in ["2026-10-30T01:00:00Z", "2026-10-30T04:00:00Z"] {
             let timestamp = price_period_timestamp(&serde_json::json!(time)).unwrap() as f64;
-            connection.execute("INSERT INTO client_usage_events VALUES('deepseek','deepseek-flash',1000000,1000000,200000,NULL,?1)", [timestamp]).unwrap();
+            connection.execute("INSERT INTO client_usage_events VALUES('deepseek','deepseek-flash',1000000,1000000,200000,NULL,?1,'{}')", [timestamp]).unwrap();
         }
         let totals = read_scoped_api_price_aggregates(&connection, 0).unwrap();
         let tally = totals
@@ -5779,6 +6414,72 @@ mod tests {
                 .unwrap(),
             2
         );
+    }
+
+    #[test]
+    fn invalid_price_payloads_leave_numeric_rows_readable_and_isolate_unknown_fees() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE client_usage_events(
+                    client TEXT,model TEXT,input_tokens INTEGER,output_tokens INTEGER,
+                    cache_read_tokens INTEGER,cache_write_tokens INTEGER,
+                    reasoning_tokens INTEGER,timestamp REAL,payload
+                );",
+            )
+            .unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO client_usage_events VALUES
+                 ('claudeCode','claude-opus-5-5',100000,0,0,100000,0,1800000000,X'FF'),
+                 ('claudeCode','claude-opus-5-5',100000,0,0,100000,0,1800000001,'{not-json'),
+                 ('claudeCode','claude-opus-5-5',100,0,0,0,0,1800000002,X'FF'),
+                 ('claudeCode','gpt-6.1-sol',100000,0,0,100000,0,1800000003,X'FF');",
+            )
+            .unwrap();
+        let oversized_payload = format!(
+            r#"{{"cacheWrite5mTokens":60000,"cacheWrite1hTokens":40000,"padding":"{}"}}"#,
+            "x".repeat(MAX_PRICE_PAYLOAD_BYTES)
+        );
+        assert!(oversized_payload.len() > MAX_PRICE_PAYLOAD_BYTES);
+        connection
+            .execute(
+                "INSERT INTO client_usage_events VALUES
+                 ('claudeCode','claude-opus-5-5',100000,0,0,100000,0,1800000004,?1)",
+                [&oversized_payload],
+            )
+            .unwrap();
+
+        let totals = read_scoped_api_price_aggregates(&connection, 0).unwrap();
+        let opus_key = MultiClientPriceModelKey {
+            client: "claudeCode".into(),
+            model: "claude-opus-5-5".into(),
+        };
+        let opus_tally = totals.get(&opus_key).unwrap();
+        assert_eq!(opus_tally.known_cost_micro_usd, Some(400));
+        assert_eq!(
+            opus_tally.unpriced_requests, 3,
+            "BLOB, malformed, and oversized TTL payloads affect only their own fees"
+        );
+        let gpt_tally = totals
+            .get(&MultiClientPriceModelKey {
+                client: "claudeCode".into(),
+                model: "gpt-6.1-sol".into(),
+            })
+            .unwrap();
+        assert_eq!(gpt_tally.known_cost_micro_usd, Some(250_000));
+        assert_eq!(gpt_tally.unpriced_requests, 0);
+
+        let summaries = read_summary_rows_with_prices(&connection, Some(&totals)).unwrap();
+        let opus_summary = summaries
+            .iter()
+            .find(|summary| summary.model == "claude-opus-5-5")
+            .unwrap();
+        assert_eq!(opus_summary.requests, 4);
+        assert_eq!(opus_summary.input_tokens, 300_100);
+        assert_eq!(opus_summary.cache_write_tokens, Some(300_000));
+        assert_eq!(opus_summary.unpriced_requests, 3);
+        assert_eq!(opus_summary.api_cost_usd, Some(0.0004));
     }
 
     #[test]

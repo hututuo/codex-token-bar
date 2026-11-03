@@ -209,6 +209,7 @@ actor MultiClientUsageScanner {
             let digest = SHA256.hash(data: prefix).map { String(format: "%02x", $0) }.joined()
             identity += ":" + String(width) + ":" + digest
         }
+        identity = MultiClientUsageParsers.checkpointIdentity(identity, client: client)
         if let saved, saved.size == size, saved.modified == modified, saved.identity == identity, saved.offset >= size { return }
         let sessionHint = client == .deepseek ? try deepSeekSession(url, identity: identity) : url.deletingPathExtension().lastPathComponent
         let events: [ClientUsageEvent]
@@ -281,7 +282,8 @@ actor MultiClientUsageScanner {
             checkpointIdentity = String(describing: attrs[.systemFileNumber] ?? "") + ":" + String(width) + ":" + SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
         }
         _ = try ledger.ingest(events, client: client, sourceKey: key,
-                              checkpoint: MultiClientFileCheckpoint(offset: offset, size: size, modified: checkpointModified, identity: checkpointIdentity))
+                              checkpoint: MultiClientFileCheckpoint(offset: offset, size: size, modified: checkpointModified,
+                                  identity: MultiClientUsageParsers.checkpointIdentity(checkpointIdentity, client: client)))
     }
     enum ScanError: LocalizedError {
         case oversized

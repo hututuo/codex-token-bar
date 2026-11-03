@@ -1,7 +1,110 @@
 import XCTest
+import CryptoKit
 @testable import CodexTokenBar
 
 final class MultiClientUsageLedgerTests: XCTestCase {
+    func testClaudeCacheLifetimeEnrichmentPricesSameRequestWithoutChangingOldUsage() throws {
+        let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("ttl.sqlite"))
+        let original = ClientUsageEvent(client: .claudeDesktop, eventID: "same-request", sessionID: "s", model: "claude-opus-5-5", timestamp: Date(timeIntervalSince1970: 1_793_000_000), inputTokens: 100, outputTokens: 10, cacheReadTokens: 20, cacheWriteTokens: 30)
+        XCTAssertEqual(try ledger.ingest([original]), 1)
+        XCTAssertEqual(try ledger.summaries().first?.unpricedRequests, 1)
+        var enriched = original
+        enriched.cacheWrite5mTokens = 10; enriched.cacheWrite1hTokens = 20
+        XCTAssertEqual(try ledger.ingest([enriched]), 1)
+        let summary = try XCTUnwrap(try ledger.summaries().first)
+        XCTAssertEqual(summary.requests, 1)
+        XCTAssertEqual(summary.inputTokens, 100); XCTAssertEqual(summary.outputTokens, 10)
+        XCTAssertEqual(summary.cacheWriteTokens, 30)
+        XCTAssertEqual(try XCTUnwrap(summary.apiCostUSD), 0.000614, accuracy: 1e-10)
+        XCTAssertEqual(summary.unpricedRequests, 0)
+        XCTAssertEqual(try ledger.ingest([original]), 0, "An older reader cannot clear a proved lifetime split")
+        XCTAssertEqual(try ledger.summaries().first?.apiCostUSD, summary.apiCostUSD)
+    }
+
+    func testIncompleteOrContradictoryCacheLifetimeDoesNotInventAPriceOrLoseUsage() throws {
+        let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("ttl-invalid.sqlite"))
+        for (index, split) in [(Int64(10), Int64(10)), (Int64(-1), Int64(31))].enumerated() {
+            var row = ClientUsageEvent(client: .claudeDesktop, eventID: "bad-\(index)", sessionID: "s", model: "claude-opus-5-5", timestamp: Date(), inputTokens: 100, outputTokens: 10, cacheReadTokens: 20, cacheWriteTokens: 30)
+            row.cacheWrite5mTokens = split.0; row.cacheWrite1hTokens = split.1
+            _ = try ledger.ingest([row])
+        }
+        let summary = try XCTUnwrap(try ledger.summaries().first)
+        XCTAssertNil(summary.apiCostUSD); XCTAssertEqual(summary.unpricedRequests, 2)
+        XCTAssertEqual(summary.inputTokens, 200); XCTAssertEqual(summary.requests, 2)
+    }
+
+    func testMalformedLowerWriteCannotBorrowOldTotalToInventACoherentSplit() throws {
+        let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("ttl-merge-invalid.sqlite"))
+        let original = ClientUsageEvent(client: .claudeDesktop, eventID: "same", sessionID: "s", model: "claude-opus-5-5", timestamp: Date(), inputTokens: 100, outputTokens: 10, cacheReadTokens: 20, cacheWriteTokens: 30)
+        var incoming = original
+        incoming.cacheWriteTokens = 20; incoming.cacheWrite5mTokens = 10; incoming.cacheWrite1hTokens = 20
+        XCTAssertNil(original.mergingUpdate(incoming).cacheWriteLifetimeSplit)
+        _ = try ledger.ingest([original]); _ = try ledger.ingest([incoming])
+        let row = try XCTUnwrap(try ledger.summaries().first)
+        XCTAssertEqual(row.cacheWriteTokens, 30); XCTAssertEqual(row.requests, 1)
+        XCTAssertEqual(row.unpricedRequests, 1); XCTAssertNil(row.apiCostUSD)
+    }
+
+    func testOldAndMalformedOptionalTTLMetadataDecodeWithoutDiscardingCounts() throws {
+        let original = ClientUsageEvent(client: .claudeDesktop, eventID: "old", sessionID: "s", model: "claude-opus-5-5", timestamp: Date(), inputTokens: 100, outputTokens: 10, cacheReadTokens: 20, cacheWriteTokens: 30)
+        let encoder = JSONEncoder(), decoder = JSONDecoder()
+        var payload = try XCTUnwrap(JSONSerialization.jsonObject(with: encoder.encode(original)) as? [String: Any])
+        payload.removeValue(forKey: "cacheWrite5mTokens"); payload.removeValue(forKey: "cacheWrite1hTokens")
+        let old = try decoder.decode(ClientUsageEvent.self, from: JSONSerialization.data(withJSONObject: payload))
+        XCTAssertEqual(old, original)
+        payload["cacheWrite5mTokens"] = "malformed"; payload["cacheWrite1hTokens"] = 30
+        let malformed = try decoder.decode(ClientUsageEvent.self, from: JSONSerialization.data(withJSONObject: payload))
+        XCTAssertEqual(malformed.eventID, original.eventID)
+        XCTAssertEqual(malformed.inputTokens, 100); XCTAssertNil(malformed.cacheWriteLifetimeSplit)
+    }
+
+    func testBadOptionalPricingPayloadDoesNotBlockKnownNumericUsage() throws {
+        let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("ttl-payloads.sqlite"))
+        for id in ["blob", "invalid", "oversized", "valid"] {
+            _ = try ledger.ingest([ClientUsageEvent(client: .claudeDesktop, eventID: id, sessionID: "s", model: "claude-opus-5-5", timestamp: Date(), inputTokens: 100, outputTokens: 10, cacheReadTokens: 20, cacheWriteTokens: 30, cacheWrite5mTokens: 10, cacheWrite1hTokens: 20)])
+        }
+        try ledger.database.execute("UPDATE client_usage_events SET payload=CAST('bad' AS BLOB) WHERE event_id='blob'")
+        try ledger.database.execute("UPDATE client_usage_events SET payload='not-json' WHERE event_id='invalid'")
+        try ledger.database.execute("UPDATE client_usage_events SET payload=? WHERE event_id='oversized'", bindings: [.text(String(repeating: "x", count: 70_000))])
+        let summary = try XCTUnwrap(try ledger.summaries().first)
+        XCTAssertEqual(summary.requests, 4); XCTAssertEqual(summary.inputTokens, 400)
+        XCTAssertEqual(summary.outputTokens, 40); XCTAssertEqual(summary.unpricedRequests, 3)
+        XCTAssertEqual(try XCTUnwrap(summary.apiCostUSD), 0.000614, accuracy: 1e-10)
+    }
+
+    func testLegacyClaudeCheckpointEnrichesOnceAndDeletedSourceKeepsOldAccountedUsage() async throws {
+        let file = root.appendingPathComponent("session.jsonl")
+        let bytes = Data("{\"type\":\"assistant\",\"sessionId\":\"s\",\"timestamp\":\"2026-11-03T10:00:00Z\",\"message\":{\"id\":\"ttl-old\",\"model\":\"claude-opus-5-5\",\"usage\":{\"input_tokens\":50,\"output_tokens\":10,\"cache_read_input_tokens\":20,\"cache_creation_input_tokens\":30,\"cache_creation\":{\"ephemeral_5m_input_tokens\":10,\"ephemeral_1h_input_tokens\":20}}}}\n".utf8)
+        try bytes.write(to: file)
+        let database = root.appendingPathComponent("ttl-checkpoint.sqlite")
+        let ledger = try MultiClientUsageLedger(url: database)
+        var old = try XCTUnwrap(try MultiClientUsageParsers.parse(data: bytes, client: .claudeCode, sessionHint: "session").first)
+        old.cacheWrite5mTokens = nil; old.cacheWrite1hTokens = nil
+        let attributes = try FileManager.default.attributesOfItem(atPath: file.path)
+        let width = min(4096, bytes.count)
+        let digest = SHA256.hash(data: bytes.prefix(width)).map { String(format: "%02x", $0) }.joined()
+        let key = SHA256.hash(data: Data(file.standardizedFileURL.path.utf8)).map { String(format: "%02x", $0) }.joined()
+        let rawIdentity = String(describing: attributes[.systemFileNumber] ?? "") + ":\(width):" + digest
+        _ = try ledger.ingest([old], client: .claudeCode, sourceKey: key, checkpoint: .init(offset: Int64(bytes.count), size: Int64(bytes.count), modified: (attributes[.modificationDate] as! Date).timeIntervalSince1970, identity: rawIdentity))
+        XCTAssertEqual(try ledger.summaries().first?.unpricedRequests, 1)
+        var preference = MultiClientUsagePreference.defaults.first { $0.client == .claudeCode }!
+        preference.enabled = true; preference.path = file.path
+        let scanner = MultiClientUsageScanner(databaseURL: database, home: root, environment: [:])
+        let first = try await scanner.scan([preference])
+        XCTAssertEqual(first.summaries.first?.apiCostUSD, 0.000614)
+        XCTAssertEqual(first.summaries.first?.requests, 1)
+        XCTAssertTrue(try ledger.checkpoint(client: .claudeCode, sourceKey: key)?.identity.hasPrefix("claude-cache-lifetimes-v1|") == true)
+        func revision() throws -> Int64 { try ledger.database.readRows("SELECT MAX(revision) FROM client_usage_revisions") { $0.int64(0) ?? 0 }.first ?? 0 }
+        let enrichedRevision = try revision()
+        _ = try await scanner.scan([preference])
+        XCTAssertEqual(try revision(), enrichedRevision)
+        try FileManager.default.removeItem(at: file)
+        let deleted = try await scanner.scan([preference])
+        XCTAssertEqual(deleted.summaries.first?.apiCostUSD, 0.000614)
+        XCTAssertEqual(deleted.summaries.first?.inputTokens, 100)
+        XCTAssertEqual(deleted.summaries.first?.requests, 1)
+    }
+
     private var root: URL!
     override func setUpWithError() throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("multi-client-tests-" + UUID().uuidString)

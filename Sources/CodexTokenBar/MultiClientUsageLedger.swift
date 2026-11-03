@@ -547,7 +547,9 @@ final class MultiClientUsageLedger: @unchecked Sendable {
 
         var totals: [ClientPriceKey: ClientPriceTally] = [:]
         try connection.forEachRow("""
-        SELECT client,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,timestamp
+        SELECT client,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,timestamp,
+               CASE WHEN typeof(payload)='text' AND length(CAST(payload AS BLOB))<=65536 THEN CASE WHEN json_valid(payload) THEN CASE WHEN json_type(payload,'$.cacheWrite5mTokens')='integer' THEN json_extract(payload,'$.cacheWrite5mTokens') END END END,
+               CASE WHEN typeof(payload)='text' AND length(CAST(payload AS BLOB))<=65536 THEN CASE WHEN json_valid(payload) THEN CASE WHEN json_type(payload,'$.cacheWrite1hTokens')='integer' THEN json_extract(payload,'$.cacheWrite1hTokens') END END END
         FROM client_usage_events WHERE timestamp >= ?
         """, bindings: [.date(since ?? Date(timeIntervalSince1970: 0))]) { row in
             guard let client = UsageClient(rawValue: row.text(0) ?? "") else { return }
@@ -559,7 +561,9 @@ final class MultiClientUsageLedger: @unchecked Sendable {
                 output: row.int64(3) ?? 0,
                 cacheRead: row.int64(4),
                 cacheWrite: row.int64(5),
-                timestamp: row.double(6)
+                timestamp: row.double(6),
+                cacheWrite5m: row.int64(7),
+                cacheWrite1h: row.int64(8)
             )
             var tally = totals[key] ?? ClientPriceTally(knownCostMicroUSD: nil)
             tally.add(cost)
@@ -574,7 +578,9 @@ final class MultiClientUsageLedger: @unchecked Sendable {
         output: Int64,
         cacheRead: Int64?,
         cacheWrite: Int64?,
-        timestamp: Double? = nil
+        timestamp: Double? = nil,
+        cacheWrite5m: Int64? = nil,
+        cacheWrite1h: Int64? = nil
     ) -> Int64? {
         var identifier = rawModel.split(separator: "/", omittingEmptySubsequences: false).last.map(String.init)?
             .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
@@ -603,8 +609,15 @@ final class MultiClientUsageLedger: @unchecked Sendable {
         guard input >= 0, output >= 0,
               let cacheRead, let cacheWrite = resolvedCacheWrite,
               cacheRead >= 0, cacheWrite >= 0,
-              cacheRead <= input, cacheWrite <= input - cacheRead,
-              cacheWrite == 0 || rates.cacheWrite == rates.cacheWrite1h else { return nil }
+              cacheRead <= input, cacheWrite <= input - cacheRead else { return nil }
+        let oneHourWrite: Int64
+        if let five = cacheWrite5m, let hour = cacheWrite1h,
+           five >= 0, hour >= 0, five <= cacheWrite, hour <= cacheWrite - five,
+           five + hour == cacheWrite {
+            oneHourWrite = hour
+        } else if cacheWrite == 0 || rates.cacheWrite == rates.cacheWrite1h {
+            oneHourWrite = 0
+        } else { return nil }
         let uncachedInput = input - cacheRead - cacheWrite
         let maxClass = ResponseCost.maxClassTokens
         guard uncachedInput <= maxClass, cacheRead <= maxClass, cacheWrite <= maxClass, output <= maxClass else { return nil }
@@ -613,7 +626,7 @@ final class MultiClientUsageLedger: @unchecked Sendable {
         // rules above; reuse the upstream integer classes, tier and rounding.
         // Do not call the broader fuzzy model resolver for historical billing.
         let usage = AgentSpeedCore.TokenUsage(input: Int(input), cachedInput: Int(cacheRead),
-            cacheWriteInput: Int(cacheWrite), output: Int(output))
+            cacheWriteInput: Int(cacheWrite), cacheWrite1hInput: Int(oneHourWrite), output: Int(output))
         return ResponseCost.microUsd(ResponseCost.picoUsd(usage: usage, pricing: pricing).pico)
     }
 }

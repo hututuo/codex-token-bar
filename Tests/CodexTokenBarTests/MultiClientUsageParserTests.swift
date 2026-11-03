@@ -4,6 +4,26 @@ import XCTest
 @testable import CodexTokenBar
 
 final class MultiClientUsageParserTests: XCTestCase {
+    func testClaudeCacheLifetimeFieldsKeepLegacyIdentityAndDoNotDoubleCountInput() throws {
+        for withID in [false, true] {
+            var message: [String: Any] = ["model": "claude-opus-5-5", "usage": ["input_tokens": 10, "output_tokens": 40, "cache_read_input_tokens": 20, "cache_creation_input_tokens": 30]]
+            if withID { message["id"] = "stable-id" }
+            var root: [String: Any] = ["type": "assistant", "timestamp": "2026-11-03T10:00:00Z", "message": message]
+            let old = try XCTUnwrap(try MultiClientUsageParsers.parse(data: JSONSerialization.data(withJSONObject: root), client: .claudeDesktop, sessionHint: "s").first)
+            var usage = try XCTUnwrap(message["usage"] as? [String: Any])
+            usage["cache_creation"] = ["ephemeral_5m_input_tokens": 10, "ephemeral_1h_input_tokens": 20]
+            message["usage"] = usage; root["message"] = message
+            let enriched = try XCTUnwrap(try MultiClientUsageParsers.parse(data: JSONSerialization.data(withJSONObject: root), client: .claudeDesktop, sessionHint: "s").first)
+            XCTAssertEqual(old.eventID, enriched.eventID)
+            XCTAssertEqual(enriched.inputTokens, 60); XCTAssertEqual(enriched.totalTokens, 100)
+            XCTAssertEqual(enriched.cacheWrite5mTokens, 10); XCTAssertEqual(enriched.cacheWrite1hTokens, 20)
+        }
+        let raw = "inode:4096:hash"
+        let revised = MultiClientUsageParsers.checkpointIdentity(raw, client: .claudeDesktop)
+        XCTAssertNotEqual(raw, revised)
+        XCTAssertEqual(MultiClientUsageParsers.checkpointIdentity(revised, client: .claudeDesktop), revised)
+        XCTAssertEqual(MultiClientUsageParsers.checkpointIdentity(raw, client: .deepseek), raw)
+    }
     func testSelectedClaudeRootLinkPreservesLogicalPathsAndDoesNotTraverseChildLinks() throws {
         let manager = FileManager.default
         let root = manager.temporaryDirectory.appendingPathComponent("client-root-link-\(UUID().uuidString)")

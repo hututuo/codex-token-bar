@@ -8,6 +8,13 @@ enum MultiClientUsageParserError: Error, Equatable {
 
 /// Parses only locally stored usage records. Transcript text and prompt contents are ignored.
 enum MultiClientUsageParsers {
+    /// Re-read old Claude files once to enrich the same v1 events with TTL metadata.
+    /// This is a scanner checkpoint revision, not a database or event identity version.
+    static func checkpointIdentity(_ identity: String, client: UsageClient) -> String {
+        guard client == .claudeCode || client == .claudeDesktop else { return identity }
+        let prefix = "claude-cache-lifetimes-v1|"
+        return identity.hasPrefix(prefix) ? identity : prefix + identity
+    }
     static let maximumInputBytes = 16 * 1_024 * 1_024
     static let maximumOpenCodePageSize = 500
     private static let maximumOpenCodeRowBytes = 64 * 1_024
@@ -231,7 +238,7 @@ enum MultiClientUsageParsers {
             ?? nonEmptyString(object["uuid"])
         let model = nonEmptyString(message["model"]) ?? "unknown"
         let input = saturatedSum(fields.input ?? 0, fields.cacheRead ?? 0, fields.cacheWrite ?? 0)
-        return makeEvent(
+        var event = makeEvent(
             client: client,
             sessionID: sessionID,
             identity: messageID.map { .sourceID($0) },
@@ -243,6 +250,10 @@ enum MultiClientUsageParsers {
             cacheWriteTokens: fields.cacheWrite,
             reasoningTokens: fields.reasoning
         )
+        // Numeric metadata only. Keep the existing v1 identity and total counts.
+        event.cacheWrite5mTokens = count(usage, keyPath: "cache_creation.ephemeral_5m_input_tokens").intValue
+        event.cacheWrite1hTokens = count(usage, keyPath: "cache_creation.ephemeral_1h_input_tokens").intValue
+        return event
     }
 
     // MARK: DeepSeek Harness / DSH
