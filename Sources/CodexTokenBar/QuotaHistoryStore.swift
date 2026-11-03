@@ -1330,6 +1330,27 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         return required.isSubset(of: Set(columns))
     }
 
+    private func cycleColumnProjection(
+        _ database: DatabaseAccessing,
+        includeCycleMetadata: Bool
+    ) throws -> String {
+        if includeCycleMetadata {
+            return "id, five_hour_cycle_generation, five_hour_reset_anchor, seven_day_cycle_generation, seven_day_reset_anchor"
+        }
+        let columns = Set(try database.readRows("PRAGMA table_info(quota_snapshots);") {
+            ($0.text(1) ?? "").lowercased()
+        })
+        // Preserve each readable legacy value even if another cycle column
+        // is missing. Keep the historical NULL row-id slot for this fallback.
+        let fields = [
+            ("five_hour_cycle_generation", "NULL"), ("five_hour_reset_anchor", "0"),
+            ("seven_day_cycle_generation", "NULL"), ("seven_day_reset_anchor", "0")
+        ]
+        return (["NULL"] + fields.map { name, fallback in
+            columns.contains(name) ? SQLiteStoreNamespace.quote(name) : fallback
+        }).joined(separator: ", ")
+    }
+
     private struct LegacyBridge {
         let accountName: String
         let planType: String
@@ -1590,9 +1611,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         cutoff: Date?,
         includeCycleMetadata: Bool = true
     ) throws -> [QuotaHistoryRow] {
-        let cycleColumns = includeCycleMetadata
-            ? "id, five_hour_cycle_generation, five_hour_reset_anchor, seven_day_cycle_generation, seven_day_reset_anchor"
-            : "NULL, NULL, 0, NULL, 0"
+        let cycleColumns = try cycleColumnProjection(database, includeCycleMetadata: includeCycleMetadata)
         var sql = """
         SELECT created_at, account_key, plan_type, limit_name, account_name,
                source, five_hour_used_percent, five_hour_resets_at,
@@ -1653,9 +1672,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         cutoff: Date,
         includeCycleMetadata: Bool = true
     ) throws -> [QuotaHistoryRow] {
-        let cycleColumns = includeCycleMetadata
-            ? "id, five_hour_cycle_generation, five_hour_reset_anchor, seven_day_cycle_generation, seven_day_reset_anchor"
-            : "NULL, NULL, 0, NULL, 0"
+        let cycleColumns = try cycleColumnProjection(database, includeCycleMetadata: includeCycleMetadata)
         return try rows(
             database: database,
             sql: """

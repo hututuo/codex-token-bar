@@ -144,6 +144,43 @@ final class PublishedModuleReadTests: XCTestCase {
         XCTAssertEqual(try modelTrace.autoSettings(), fixture.settings)
     }
 
+    func testPublishedQuotaPreservesEveryAvailableCycleColumnWithoutRepairingTheSchema() throws {
+        let optionalColumns = [
+            ("five_hour_cycle_generation", 41), ("five_hour_reset_anchor", 1),
+            ("seven_day_cycle_generation", 73), ("seven_day_reset_anchor", 1)
+        ]
+        // All 16 shapes include the old no-cycle layout and the current layout,
+        // plus every partial combination. Expected generations are independent
+        // literal values, rather than a copy of the production projection.
+        for mask in 0..<16 {
+            let fixture = try fixture()
+            let raw = SQLiteDatabaseDriver(url: fixture.configuration.container, bypassBusinessRoutes: true)
+            let table = SQLiteStoreNamespace.quote(fixture.quotaStore.prefix + "quota_snapshots")
+            try raw.execute("UPDATE \(table) SET source='swift'")
+            for (index, column) in optionalColumns.enumerated() where mask & (1 << index) != 0 {
+                let name = SQLiteStoreNamespace.quote(column.0)
+                try raw.execute("ALTER TABLE \(table) ADD COLUMN \(name) INTEGER")
+                try raw.execute("UPDATE \(table) SET \(name)=?", bindings: [.int(column.1)])
+            }
+            let before = try containerProof(fixture.configuration)
+            let columnsBefore = try columns(
+                in: fixture.configuration, store: fixture.quotaStore, table: "quota_snapshots"
+            )
+            let database = QuotaHistoryDatabase(databaseURL: fixture.quotaStore.logicalURL)
+            let normalized = try database.normalizedSnapshot(fixture.quota)
+            XCTAssertEqual(normalized.fiveHour?.cycleID, mask & 1 != 0 ? "g41" : "g0", "shape \(mask)")
+            XCTAssertEqual(normalized.sevenDay?.cycleID, mask & 4 != 0 ? "g73" : "g0", "shape \(mask)")
+            XCTAssertEqual(normalized.fiveHour?.usedPercent, 37, "shape \(mask)")
+            XCTAssertEqual(normalized.sevenDay?.usedPercent, 52, "shape \(mask)")
+            XCTAssertEqual(try containerProof(fixture.configuration), before, "read mutated shape \(mask)")
+            XCTAssertEqual(
+                try columns(in: fixture.configuration, store: fixture.quotaStore, table: "quota_snapshots"),
+                columnsBefore,
+                "read repaired shape \(mask)"
+            )
+        }
+    }
+
     func testUnregisteredConfiguredOwnerCannotReturnFakeEmptyQuotaHistory() throws {
         let fixture = try fixture()
         let proofBefore = try containerProof(fixture.configuration)
