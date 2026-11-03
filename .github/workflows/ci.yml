@@ -219,7 +219,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          dotnet run --project tools/ClaudeLocalReader/ClaudeLocalReader.csproj --configuration Release -p:LangVersion=latest -- --self-test
+          dotnet run --project tools/ClaudeLocalReader/ClaudeLocalReader.csproj --configuration Release -p:LangVersion=latest -p:Nullable=enable -p:ImplicitUsings=enable -- --self-test
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Prepare Rust and frontend
         shell: bash
