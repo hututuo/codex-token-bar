@@ -105,6 +105,10 @@ pub struct ClaudeLocalRuntimeAgent {
     pub live_output_tps: f64,
     pub live_total_tps: f64,
     pub recent_speed: Option<f64>,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub display_stopped: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -1500,6 +1504,10 @@ struct RuntimeWireAgent {
     live_output_tps: f64,
     live_total_tps: f64,
     recent_speed: Option<f64>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    display_stopped: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -1718,6 +1726,7 @@ fn validate_agents(
             return Err("helper_output_invalid");
         }
         validate_optional_text(agent.model.as_deref(), 256)?;
+        validate_optional_text(agent.title.as_deref(), 120)?;
         validate_rate(agent.live_output_tps)?;
         validate_rate(agent.live_total_tps)?;
         if let Some(speed) = agent.recent_speed {
@@ -1743,6 +1752,8 @@ fn validate_agents(
             live_output_tps: agent.live_output_tps,
             live_total_tps: agent.live_total_tps,
             recent_speed: agent.recent_speed,
+            title: agent.title,
+            display_stopped: agent.display_stopped,
         });
     }
     Ok(result)
@@ -2053,6 +2064,24 @@ mod tests {
         assert_eq!(parsed.model_rates[0].client, "claudeCode");
         assert_eq!(parsed.source_available.get("claudeDesktop"), Some(&false));
         assert_eq!(parsed.main_agents[0].id, "agent-0123456789abcdef01234567");
+        assert_eq!(parsed.main_agents[0].title, None);
+        assert!(!parsed.main_agents[0].display_stopped);
+    }
+
+    #[test]
+    fn local_agent_titles_are_optional_bounded_and_preserve_stop_state() {
+        let mut fixture: serde_json::Value = serde_json::from_str(&fresh_fixture()).unwrap();
+        fixture["mainAgents"][0]["title"] = "检查本地缓存".into();
+        fixture["mainAgents"][0]["displayStopped"] = true.into();
+        let bytes = serde_json::to_vec(&fixture).unwrap();
+        let parsed = parse_runtime_snapshot(&bytes, &enabled()).unwrap();
+        assert_eq!(parsed.main_agents[0].title.as_deref(), Some("检查本地缓存"));
+        assert!(parsed.main_agents[0].display_stopped);
+        for invalid in ["x".repeat(121), "bad\nname".into()] {
+            fixture["mainAgents"][0]["title"] = invalid.into();
+            let bytes = serde_json::to_vec(&fixture).unwrap();
+            assert_eq!(parse_runtime_snapshot(&bytes, &enabled()).unwrap_err(), "helper_output_invalid");
+        }
     }
 
     #[test]

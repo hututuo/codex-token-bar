@@ -169,6 +169,46 @@ struct JSONScanner {
         return String(decoding: bytes, as: UTF8.self)
     }
 
+    /// Reads a string only when its source representation is within the caller's byte limit.
+    /// Longer strings are consumed without allocating their contents.
+    mutating func readBoundedString(maxBytes: Int) throws(JSONScanError) -> String? {
+        guard let (start, count, escaped) = try readStringSpan() else { return nil }
+        guard count <= max(0, maxBytes) else { return nil }
+        if !escaped {
+            return String(decoding: UnsafeBufferPointer(start: base + start, count: count), as: UTF8.self)
+        }
+        guard let bytes = decodeString(start: start, count: count) else { return nil }
+        return String(decoding: bytes, as: UTF8.self)
+    }
+
+    /// Checks an ASCII prefix without materializing a string, while optionally capturing a small bounded value.
+    /// Large text is consumed but never allocated for display metadata.
+    mutating func readStringPrefixAndValue(
+        _ prefix: StaticString,
+        maxCapturedBytes: Int
+    ) throws(JSONScanError) -> (hasPrefix: Bool?, value: String?) {
+        guard let (start, count, escaped) = try readStringSpan() else { return (nil, nil) }
+        let prefixCount = prefix.utf8CodeUnitCount
+        let hasPrefix: Bool
+        if escaped {
+            let window = min(count, prefixCount * 6 + 12)
+            guard let decoded = decodePrefix(start: start, count: count, limit: window) else {
+                return (false, nil)
+            }
+            hasPrefix = decoded.count >= prefixCount
+                && decoded.prefix(prefixCount).elementsEqual(UnsafeBufferPointer(start: prefix.utf8Start, count: prefixCount))
+        } else {
+            hasPrefix = count >= prefixCount && memcmp(base + start, prefix.utf8Start, prefixCount) == 0
+        }
+
+        guard count <= max(0, maxCapturedBytes) else { return (hasPrefix, nil) }
+        if !escaped {
+            return (hasPrefix, String(decoding: UnsafeBufferPointer(start: base + start, count: count), as: UTF8.self))
+        }
+        guard let bytes = decodeString(start: start, count: count) else { return (hasPrefix, nil) }
+        return (hasPrefix, String(decoding: bytes, as: UTF8.self))
+    }
+
     /// Reads a string value: nil when the value is not a string, `.some(nil)` for a string longer than
     /// `maxCapturedStringBytes`.
     mutating func readStringValue() throws(JSONScanError) -> String?? {

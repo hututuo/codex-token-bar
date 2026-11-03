@@ -79,7 +79,8 @@ enum SnapshotBuilder {
                 parentId: row.parentId,
                 liveCost: row.liveCost,
                 cwdPath: row.agent.cwdPath,
-                modes: row.agent.modes
+                modes: row.agent.modes,
+                displayTitle: row.agent.displayTitle
             )
             status.localDisplayStopped = row.agent.localDisplayStopped
             return status

@@ -215,6 +215,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           dotnet run --project tools/AgentSpeedReporter/AgentSpeedReporter.csproj --configuration Release -p:LangVersion=latest -p:Nullable=enable -p:ImplicitUsings=enable -- --self-test
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Claude local reader compile and privacy self-test
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          dotnet run --project tools/ClaudeLocalReader/ClaudeLocalReader.csproj --configuration Release -p:LangVersion=latest -- --self-test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Prepare Rust and frontend
         shell: bash
         run: |

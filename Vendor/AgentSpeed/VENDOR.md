@@ -31,3 +31,9 @@
 
 - Swift/C# parser and agent snapshots carry a `localDisplayStopped` flag for explicit failure markers. A genuine generation/tool phase clears it. This metadata does not change upstream phases, response timing, counters, report sections or signed body construction.
 - Token Bar projects local colored speed bars from fresh per-agent rates (20-second source silence cutoff; stopped/idle agents excluded). Raw snapshots continue into Agent Speed reporting. The local display and reporting share one collector per process; local-only collection performs no discovery, registration or signing-key creation.
+
+## Local Claude task titles (2026-11-03)
+
+- Swift and Windows parsers carry an optional `displayTitle` for local session rows. Explicit `agentName`, `title`/`customTitle` and `summary` metadata take priority, followed by the first meaningful line in that transcript's direct user text. Tool-result-only and system-tag-only records do not create labels; no synthetic names are added.
+- Candidate source strings are decoded only when at most 16 KiB, titles are capped at 120 Unicode scalar values, and long interrupt markers remain detectable without retaining their full text. Titles flow through local agent snapshots only; Agent Speed report bodies, usage accounting and the upstream schema are unchanged.
+- Later explicit metadata at the same priority can update a renamed task label. The first user-text fallback remains stable unless explicit metadata later arrives.

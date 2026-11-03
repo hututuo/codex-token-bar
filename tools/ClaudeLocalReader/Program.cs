@@ -357,6 +357,7 @@ internal static class Program
         var stopped = active with { Agents = active.Agents.Select(a => a with { ConfirmedStopped = true }).ToArray() };
         var zero = RuntimeSnapshotMapper.Map(stopped, new byte[32], sources, applyDisplayGuards: true, observedNow: now);
         Require(zero.LiveOutputTps == 0 && zero.ModelRates.Count == 0, "explicit stop clears only display");
+        Require(zero.MainAgents.Concat(zero.Subagents).All(agent => agent.DisplayStopped), "local IPC carries the explicit stop to the display filter");
         var expired = RuntimeSnapshotMapper.Map(active, new byte[32], sources, applyDisplayGuards: true, observedNow: now.AddSeconds(21));
         Require(expired.LiveOutputTps == 0 && expired.ModelRates.Count == 0, "silence deadline clears display");
         Require(active.Live == sample.Live && active.LiveModels == sample.LiveModels, "raw report metrics remain unchanged");
@@ -441,6 +442,9 @@ internal static class Program
         }
 
         var mapped = RuntimeSnapshotMapper.Map(CreateSampleSnapshot(), RandomNumberGenerator.GetBytes(32));
+        var titled = CreateSampleSnapshot() with { Agents = CreateSampleSnapshot().Agents.Select(a => a with { DisplayTitle = "检查本地用量" }).ToArray() };
+        var titledLocal = RuntimeSnapshotMapper.Map(titled, new byte[32]);
+        Require(titledLocal.MainAgents.Concat(titledLocal.Subagents).All(a => a.Title == "检查本地用量"), "local IPC preserves bounded task titles");
         Require(mapped.Client == "claude", "runtime client mapping");
         Require(mapped.MainAgents.Count == 1 && mapped.Subagents.Count == 1, "main/subagent mapping");
         Require(mapped.MainAgents[0].Id.StartsWith("agent-", StringComparison.Ordinal), "opaque runtime id");

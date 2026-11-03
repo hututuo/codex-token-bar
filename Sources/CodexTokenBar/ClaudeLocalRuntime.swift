@@ -74,6 +74,8 @@ final class ClaudeLocalRuntime: ObservableObject {
     static let activeStatusFreshness: TimeInterval = 5 * 60
 
     @Published private(set) var snapshot: ClaudeLocalRuntimeSnapshot = .empty
+    @Published private var barRates: [SourceKind: [ModelRateContribution]] = [:]
+    private var barSmoothers: [SourceKind: ActivityModelRateSmoother] = [:]
 
     private let store: SpeedStore
     private let monitor: any ClaudeLocalRuntimeMonitoring
@@ -126,6 +128,8 @@ final class ClaudeLocalRuntime: ObservableObject {
 
         let configurationChanged = monitor.configuration != plan.configuration
         if configurationChanged {
+            barSmoothers.removeAll()
+            barRates = [:]
             latestCoreSnapshot = Self.startingSnapshot()
             responseRows.removeAll(keepingCapacity: true)
         }
@@ -179,6 +183,13 @@ final class ClaudeLocalRuntime: ObservableObject {
             configurationIssue: configurationIssue,
             displayNow: Date()
         )
+    }
+
+    func displayModelRates(allowed: Set<String>, mode: ActivitySpeedDisplayMode) -> [ModelRateContribution] {
+        if mode == .agentSpeed { return projection(allowed: allowed).modelRates }
+        guard monitoringEnabled, abs(Date().timeIntervalSince(latestCoreSnapshot.timestamp)) <= 3 else { return [] }
+        return configuredSources.filter { allowed.contains($0.rawValue) }.sorted { $0.rawValue < $1.rawValue }
+            .flatMap { barRates[$0] ?? [] }
     }
 
     /// Purely projects the vendored monitor snapshot into safe local presentation data.
@@ -310,10 +321,23 @@ final class ClaudeLocalRuntime: ObservableObject {
         guard monitoringEnabled else { return }
         latestCoreSnapshot = snapshot
         for source in configuredSources {
+            let raw = AgentSpeedDisplayRuntime.modelRates(snapshot: snapshot, source: source, now: Date())
+            let available = snapshot.sources.contains { $0.kind == source && $0.available }
+            let active = available && snapshot.state == .running && abs(Date().timeIntervalSince(snapshot.timestamp)) <= 3
+                && snapshot.agents.contains { $0.source == source && !$0.localDisplayStopped
+                    && snapshot.timestamp.timeIntervalSince($0.lastActivity) >= -2
+                    && snapshot.timestamp.timeIntervalSince($0.lastActivity) < ($0.phase == .idle ? 5 : 20) }
+            let smoothed = barSmoothers[source, default: ActivityModelRateSmoother()].update(
+                Dictionary(raw.map { ($0.model, $0.tokensPerSecond) }, uniquingKeysWith: +),
+                at: snapshot.timestamp.timeIntervalSince1970, active: active)
+            let rates = smoothed.keys.sorted().map { ModelRateContribution(model: $0, tokensPerSecond: smoothed[$0]!) }
+            if barRates[source] != rates { barRates[source] = rates }
             ActivitySpeedHistoryController.shared.record(client: source.rawValue,
                 sourceIdentity: activitySourceIdentity ?? "legacy/unscoped",
-                rates: AgentSpeedDisplayRuntime.modelRates(snapshot: snapshot, source: source, now: Date()), at: snapshot.timestamp.timeIntervalSince1970,
-                available: snapshot.sources.contains { $0.kind == source && $0.available }, mode: .agentSpeed)
+                rates: raw, at: snapshot.timestamp.timeIntervalSince1970, available: available, mode: .agentSpeed)
+            ActivitySpeedHistoryController.shared.record(client: source.rawValue,
+                sourceIdentity: activitySourceIdentity ?? "legacy/unscoped", rates: rates,
+                at: snapshot.timestamp.timeIntervalSince1970, available: available, mode: .bar)
         }
         pruneRows(at: snapshot.timestamp)
         publishProjection()
@@ -354,6 +378,8 @@ final class ClaudeLocalRuntime: ObservableObject {
     }
 
     private func clearLiveState() {
+        barSmoothers.removeAll()
+        barRates = [:]
         ActivitySpeedHistoryController.shared.reset(client: "claudeCode")
         ActivitySpeedHistoryController.shared.reset(client: "claudeDesktop")
         latestCoreSnapshot = .empty
@@ -395,6 +421,7 @@ final class ClaudeLocalRuntime: ObservableObject {
     }
 
     private static func isFreshActive(_ agent: AgentStatus, at now: Date) -> Bool {
+        guard !agent.localDisplayStopped else { return false }
         guard agent.phase == .generating || agent.phase == .tools else { return false }
         let age = now.timeIntervalSince(agent.lastActivity)
         return age.isFinite && age >= -5 && age <= activeStatusFreshness
@@ -422,7 +449,7 @@ final class ClaudeLocalRuntime: ObservableObject {
         func member(_ agent: AgentStatus) -> RunningThreadMember {
             RunningThreadMember(
                 threadID: opaqueThreadID(agent.id),
-                title: agent.isSubagent ? "Claude subagent" : "Claude session",
+                title: cleaned(agent.displayTitle) ?? (agent.isSubagent ? "Claude subagent" : "Claude session"),
                 model: cleaned(agent.model),
                 reasoningEffort: nil
             )
@@ -443,7 +470,7 @@ final class ClaudeLocalRuntime: ObservableObject {
             let model = allByID[parentID]?.model
             mainByID[parentID] = RunningThreadMember(
                 threadID: opaqueThreadID(parentID),
-                title: "Claude session",
+                title: cleaned(allByID[parentID]?.displayTitle) ?? "Claude session",
                 model: cleaned(model),
                 reasoningEffort: nil
             )

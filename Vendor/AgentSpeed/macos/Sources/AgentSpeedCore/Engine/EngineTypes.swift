@@ -7,6 +7,8 @@ struct EngineAgent: Equatable, Sendable {
     var project: String
     /// The transcript's full working directory (METRICS 10.6); nil when it names none.
     var cwdPath: String?
+    /// Local display-only Claude task label. Never included in Agent Speed reports.
+    var displayTitle: String?
     var model: String?
     var localDisplayStopped = false
     var modes: ExecutionModes = .empty
@@ -28,12 +30,14 @@ struct EngineAgent: Equatable, Sendable {
         lastLineMs: Int64? = nil,
         parentId: String? = nil,
         cwdPath: String? = nil,
-        modes: ExecutionModes = .empty
+        modes: ExecutionModes = .empty,
+        displayTitle: String? = nil
     ) {
         self.id = id
         self.source = source
         self.project = project
         self.cwdPath = cwdPath
+        self.displayTitle = displayTitle
         self.model = model
         self.modes = modes
         self.isSubagent = isSubagent
@@ -55,7 +59,8 @@ struct EngineAgent: Equatable, Sendable {
             lastLineMs: state.lastLineMs,
             parentId: parentId,
             cwdPath: state.cwdPath,
-            modes: state.modes
+            modes: state.modes,
+            displayTitle: state.displayTitle
         )
         self.localDisplayStopped = state.localDisplayStopped
     }

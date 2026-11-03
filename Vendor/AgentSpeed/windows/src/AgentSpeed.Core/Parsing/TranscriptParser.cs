@@ -23,6 +23,7 @@ internal interface ILineBatch : ILineSink
 internal abstract class TranscriptParser
 {
     private AgentPhase _phase = AgentPhase.Idle;
+    private int _displayTitlePriority = int.MaxValue;
 
     protected TranscriptParser(string agentId, IDeduper deduper, SourceKind initialSource)
     {
@@ -42,6 +43,9 @@ internal abstract class TranscriptParser
     public string? Project { get; protected set; }
 
     public string? Model { get; protected set; }
+
+    /// <summary>Local display-only Claude task label. Never included in Agent Speed reports.</summary>
+    public string? DisplayTitle { get; protected set; }
 
     public bool IsSubagent { get; protected set; }
 
@@ -89,6 +93,8 @@ internal abstract class TranscriptParser
         SourceDecided = false;
         Project = null;
         Model = null;
+        DisplayTitle = null;
+        _displayTitlePriority = int.MaxValue;
         Modes = ExecutionModes.Empty;
         IsSubagent = false;
         _phase = AgentPhase.Idle;
@@ -134,6 +140,15 @@ internal abstract class TranscriptParser
             Model = model;
             Version++;
         }
+    }
+
+    protected void SetDisplayTitle(string? title, int priority)
+    {
+        if (string.IsNullOrWhiteSpace(title)) return;
+        if (priority > _displayTitlePriority || (priority == _displayTitlePriority && priority >= 3)) return;
+        DisplayTitle = title;
+        _displayTitlePriority = priority;
+        Version++;
     }
 
     protected void SetSubagent(bool value)

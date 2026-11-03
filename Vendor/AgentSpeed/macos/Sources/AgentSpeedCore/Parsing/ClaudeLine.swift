@@ -22,6 +22,9 @@ struct ClaudeLine: Equatable, Sendable {
     var entrypointSource: SourceKind?
     var cwd: String?
     var isSidechain = false
+    var displayTitle: String?
+    var displayTitlePriority = Int.max
+    var userTextTitleCandidate: String?
     var messageId: String?
     var requestId: String?
     var uuid: String?
@@ -40,11 +43,12 @@ struct ClaudeLine: Equatable, Sendable {
     var localDisplayStop = false
 }
 
-/// Decodes the fields of a Claude transcript line that METRICS 4.1 needs. Conversation text is never captured.
+/// Decodes the fields needed by METRICS 4.1 plus a bounded local-only display title. Full conversation text is not retained.
 enum ClaudeLineExtractor {
     private static let lineTypes: [StaticString] = ["assistant", "user", "api-request"]
     private static let stopReasons: [StaticString] = ["pause_turn", "tool_use"]
     private static let interruptPrefix: StaticString = "[Request interrupted by user"
+    private static let displayTitleSourceByteLimit = 16 * 1024
 
     static func extract(_ bytes: UnsafeRawBufferPointer) -> LineExtraction<ClaudeLine> {
         var scanner = JSONScanner(bytes)
@@ -77,6 +81,14 @@ enum ClaudeLineExtractor {
                     line.cwd = try scanner.readNonEmptyString()
                 } else if scanner.key(key, is: "isSidechain") {
                     line.isSidechain = try scanner.readBool() ?? false
+                } else if scanner.key(key, is: "agentName") {
+                    setDisplayTitle(try scanner.readBoundedString(maxBytes: displayTitleSourceByteLimit), priority: 0, into: &line)
+                } else if scanner.key(key, is: "title") {
+                    setDisplayTitle(try scanner.readBoundedString(maxBytes: displayTitleSourceByteLimit), priority: 1, into: &line)
+                } else if scanner.key(key, is: "customTitle") {
+                    setDisplayTitle(try scanner.readBoundedString(maxBytes: displayTitleSourceByteLimit), priority: 1, into: &line)
+                } else if scanner.key(key, is: "summary") {
+                    setDisplayTitle(try scanner.readBoundedString(maxBytes: displayTitleSourceByteLimit), priority: 2, into: &line)
                 } else if scanner.key(key, is: "toolEndsTurn") {
                     line.toolEndsTurn = try scanner.readBool() ?? false
                 } else if scanner.key(key, is: "requestId") {
@@ -98,6 +110,7 @@ enum ClaudeLineExtractor {
             }
             if line.type != .user { line.isInterrupt = false; line.toolEndsTurn = false }
             if line.type != .assistant { line.hasToolUse = false }
+            if line.type != .user { line.userTextTitleCandidate = nil }
             return .line(line)
         } catch {
             return .malformed
@@ -124,7 +137,10 @@ enum ClaudeLineExtractor {
             } else if scanner.key(key, is: "usage") {
                 (line.usage, line.fast, line.modes) = try scanUsage(&scanner)
             } else if scanner.key(key, is: "content") {
-                (line.isInterrupt, line.hasToolUse) = try scanContent(&scanner)
+                (line.isInterrupt, line.hasToolUse, line.userTextTitleCandidate) = try scanContent(
+                    &scanner,
+                    captureUserText: line.type != .assistant
+                )
             } else {
                 try scanner.skipValue()
             }
@@ -189,32 +205,104 @@ enum ClaudeLineExtractor {
 
     /// Whether string content or any top-level `text` block starts with the interrupt marker, and whether any
     /// top-level block is a `tool_use`.
-    private static func scanContent(_ scanner: inout JSONScanner) throws(JSONScanError) -> (interrupt: Bool, toolUse: Bool) {
+    private static func scanContent(
+        _ scanner: inout JSONScanner,
+        captureUserText: Bool
+    ) throws(JSONScanError) -> (interrupt: Bool, toolUse: Bool, userTextTitle: String?) {
         if scanner.nextIsString {
-            return (try scanner.readStringHasPrefix(interruptPrefix) ?? false, false)
+            let value = try scanner.readStringPrefixAndValue(
+                interruptPrefix,
+                maxCapturedBytes: captureUserText ? displayTitleSourceByteLimit : 0
+            )
+            return (
+                value.hasPrefix ?? false,
+                false,
+                captureUserText ? firstMeaningfulDisplayTitle(value.value) : nil
+            )
         }
         guard try scanner.beginArrayIfPresent() else {
             try scanner.skipValue()
-            return (false, false)
+            return (false, false, nil)
         }
         var interrupted = false
         var toolUse = false
+        var userTextTitle: String?
         while try scanner.nextElement() {
             guard try scanner.beginObjectIfPresent() else { continue }
             var blockType: Int?
             var hasPrefix = false
+            var text: String?
             while let key = try scanner.nextMember() {
                 if scanner.key(key, is: "type") {
                     blockType = try scanner.readStringMatch(["text", "tool_use"])
                 } else if scanner.key(key, is: "text") {
-                    hasPrefix = try scanner.readStringHasPrefix(interruptPrefix) ?? false
+                    let value = try scanner.readStringPrefixAndValue(
+                        interruptPrefix,
+                        maxCapturedBytes: captureUserText ? displayTitleSourceByteLimit : 0
+                    )
+                    text = value.value
+                    hasPrefix = value.hasPrefix ?? false
                 } else {
                     try scanner.skipValue()
                 }
             }
             if blockType == 0 && hasPrefix { interrupted = true }
             if blockType == 1 { toolUse = true }
+            if blockType == 0 && userTextTitle == nil {
+                userTextTitle = firstMeaningfulDisplayTitle(text)
+            }
         }
-        return (interrupted, toolUse)
+        return (interrupted, toolUse, userTextTitle)
+    }
+
+    private static func setDisplayTitle(_ raw: String?, priority: Int, into line: inout ClaudeLine) {
+        guard let title = firstMeaningfulDisplayTitle(raw), priority < line.displayTitlePriority else { return }
+        line.displayTitle = title
+        line.displayTitlePriority = priority
+    }
+
+    private static let systemTags = [
+        "system-reminder", "task-notification", "command-message", "command-name", "command-args",
+        "local-command-caveat", "local-command-stdout", "local-command-stderr", "available-deferred-tools",
+        "user-prompt-submit-hook",
+    ]
+
+    private static func firstMeaningfulDisplayTitle(_ text: String?) -> String? {
+        guard let text, !text.isEmpty else { return nil }
+        var skippedTag: String?
+        for rawLine in text.components(separatedBy: .newlines) {
+            let lineScalars = String.UnicodeScalarView(rawLine.unicodeScalars.map { scalar in
+                CharacterSet.controlCharacters.contains(scalar) ? UnicodeScalar(32)! : scalar
+            })
+            var line = String(lineScalars).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty, !line.hasPrefix("[Request interrupted by user") else { continue }
+
+            if let tag = skippedTag {
+                let closing = "</\(tag)>"
+                guard let range = line.range(of: closing, options: .caseInsensitive) else { continue }
+                line = String(line[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                skippedTag = nil
+                if line.isEmpty { continue }
+            }
+
+            for tag in systemTags {
+                let opening = "<\(tag)>"
+                guard line.lowercased().hasPrefix(opening) else { continue }
+                let closing = "</\(tag)>"
+                if let range = line.range(of: closing, options: .caseInsensitive, range: line.index(line.startIndex, offsetBy: opening.count)..<line.endIndex) {
+                    line = String(line[range.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                } else {
+                    skippedTag = tag
+                    line = ""
+                }
+                break
+            }
+
+            if line.isEmpty || (line.hasPrefix("<") && line.hasSuffix(">")) { continue }
+            var titleScalars = String.UnicodeScalarView()
+            for scalar in line.unicodeScalars.prefix(120) { titleScalars.append(scalar) }
+            return String(titleScalars)
+        }
+        return nil
     }
 }

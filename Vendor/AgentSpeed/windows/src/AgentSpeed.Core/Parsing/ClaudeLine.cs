@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 
 namespace AgentSpeed.Core.Parsing;
@@ -41,6 +42,9 @@ internal struct ClaudeLine
     public bool HasToolUse;
     public StopReasonKind StopReason;
     public string? Cwd;
+    public string? DisplayTitle;
+    public int DisplayTitlePriority;
+    public string? UserTextTitleCandidate;
     public string? MessageId;
     public string? RequestId;
     public string? Uuid;
@@ -58,10 +62,12 @@ internal struct ClaudeLine
 internal static class ClaudeLineReader
 {
     private static ReadOnlySpan<byte> InterruptPrefix => "[Request interrupted by user"u8;
+    private const int DisplayTitleSourceByteLimit = 16 * 1024;
 
     public static ClaudeLine Read(ReadOnlySpan<byte> line)
     {
         var result = default(ClaudeLine);
+        result.DisplayTitlePriority = int.MaxValue;
         if (JsonScan.IsBlank(line))
         {
             result.Status = LineStatus.Blank;
@@ -70,6 +76,7 @@ internal static class ClaudeLineReader
 
         var hints = new Hints(
             line.IndexOf("\"assistant\""u8) >= 0,
+            line.IndexOf("\"user\""u8) >= 0,
             line.IndexOf(InterruptPrefix) >= 0,
             line.IndexOf("\"tool_use\""u8) >= 0,
             line.IndexOf("\"isApiErrorMessage\""u8) >= 0);
@@ -94,6 +101,11 @@ internal static class ClaudeLineReader
         catch (Exception e) when (e is JsonException or InvalidOperationException)
         {
             return Malformed();
+        }
+
+        if (result.Kind != ClaudeLineKind.User)
+        {
+            result.UserTextTitleCandidate = null;
         }
 
         return result;
@@ -132,7 +144,7 @@ internal static class ClaudeLineReader
         else if (reader.ValueTextEquals("message"u8))
         {
             reader.Read();
-            if (reader.TokenType == JsonTokenType.StartObject && (hints.Assistant || hints.Interrupt || hints.ToolUse || hints.ApiError))
+            if (reader.TokenType == JsonTokenType.StartObject && (hints.Assistant || hints.User || hints.Interrupt || hints.ToolUse || hints.ApiError))
             {
                 ReadMessage(ref reader, ref result, hints);
             }
@@ -169,6 +181,26 @@ internal static class ClaudeLineReader
             reader.Read();
             result.IsSidechain = reader.TokenType == JsonTokenType.True;
             JsonScan.SkipValue(ref reader);
+        }
+        else if (reader.ValueTextEquals("agentName"u8))
+        {
+            reader.Read();
+            SetDisplayTitle(ref result, ReadDisplayString(ref reader), 0);
+        }
+        else if (reader.ValueTextEquals("title"u8))
+        {
+            reader.Read();
+            SetDisplayTitle(ref result, ReadDisplayString(ref reader), 1);
+        }
+        else if (reader.ValueTextEquals("customTitle"u8))
+        {
+            reader.Read();
+            SetDisplayTitle(ref result, ReadDisplayString(ref reader), 1);
+        }
+        else if (reader.ValueTextEquals("summary"u8))
+        {
+            reader.Read();
+            SetDisplayTitle(ref result, ReadDisplayString(ref reader), 2);
         }
         else if (hints.Assistant && reader.ValueTextEquals("requestId"u8))
         {
@@ -225,10 +257,14 @@ internal static class ClaudeLineReader
                     JsonScan.SkipValue(ref reader);
                 }
             }
-            else if ((hints.Interrupt || hints.ToolUse) && reader.ValueTextEquals("content"u8))
+            else if ((hints.User || hints.Interrupt || hints.ToolUse) && reader.ValueTextEquals("content"u8))
             {
                 reader.Read();
-                (result.IsInterrupt, result.HasToolUse) = ReadContent(ref reader);
+                // Unknown type is allowed here so property order does not matter. The final record type is
+                // checked before returning; known assistant lines avoid retaining their message body.
+                (result.IsInterrupt, result.HasToolUse, result.UserTextTitleCandidate) = ReadContent(
+                    ref reader,
+                    result.Kind != ClaudeLineKind.Assistant);
             }
             else if (hints.ApiError && reader.ValueTextEquals("isApiErrorMessage"u8))
             {
@@ -329,20 +365,25 @@ internal static class ClaudeLineReader
     }
 
     /// <summary>Inspects the direct content blocks: an interrupt marker text and any <c>tool_use</c> block.</summary>
-    private static (bool Interrupt, bool ToolUse) ReadContent(ref Utf8JsonReader reader)
+    private static (bool Interrupt, bool ToolUse, string? UserTextTitle) ReadContent(ref Utf8JsonReader reader, bool captureUserText)
     {
         if (reader.TokenType == JsonTokenType.String)
         {
-            return (JsonScan.StringStartsWith(ref reader, InterruptPrefix), false);
+            var interrupt = JsonScan.StringStartsWith(ref reader, InterruptPrefix);
+            var content = ReadDisplayString(ref reader, captureUserText);
+            return (interrupt,
+                false,
+                captureUserText ? FirstMeaningfulDisplayTitle(content) : null);
         }
 
         if (reader.TokenType != JsonTokenType.StartArray)
         {
             JsonScan.SkipValue(ref reader);
-            return (false, false);
+            return (false, false, null);
         }
 
         bool interrupt = false, toolUse = false;
+        string? userTextTitle = null;
         while (reader.Read() && reader.TokenType != JsonTokenType.EndArray)
         {
             if (reader.TokenType != JsonTokenType.StartObject)
@@ -352,6 +393,7 @@ internal static class ClaudeLineReader
             }
 
             bool isText = false, isToolUse = false, startsWithPrefix = false;
+            string? text = null;
             while (reader.Read() && reader.TokenType == JsonTokenType.PropertyName)
             {
                 if (reader.ValueTextEquals("type"u8))
@@ -365,7 +407,7 @@ internal static class ClaudeLineReader
                 {
                     reader.Read();
                     startsWithPrefix = JsonScan.StringStartsWith(ref reader, InterruptPrefix);
-                    JsonScan.SkipValue(ref reader);
+                    text = ReadDisplayString(ref reader, captureUserText);
                 }
                 else
                 {
@@ -376,10 +418,95 @@ internal static class ClaudeLineReader
 
             interrupt |= isText && startsWithPrefix;
             toolUse |= isToolUse;
+            if (captureUserText && isText && userTextTitle is null)
+            {
+                userTextTitle = FirstMeaningfulDisplayTitle(text);
+            }
         }
 
-        return (interrupt, toolUse);
+        return (interrupt, toolUse, userTextTitle);
     }
 
-    private readonly record struct Hints(bool Assistant, bool Interrupt, bool ToolUse, bool ApiError);
+    private static string? ReadDisplayString(ref Utf8JsonReader reader, bool capture = true)
+    {
+        if (!capture || reader.TokenType != JsonTokenType.String || reader.ValueSpan.Length > DisplayTitleSourceByteLimit)
+        {
+            JsonScan.SkipValue(ref reader);
+            return null;
+        }
+
+        return reader.GetString();
+    }
+
+    private static void SetDisplayTitle(ref ClaudeLine result, string? raw, int priority)
+    {
+        var title = FirstMeaningfulDisplayTitle(raw);
+        if (title is null || priority >= result.DisplayTitlePriority) return;
+        result.DisplayTitle = title;
+        result.DisplayTitlePriority = priority;
+    }
+
+    private static string? FirstMeaningfulDisplayTitle(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return null;
+        string? skippedTag = null;
+        foreach (var rawLine in text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+        {
+            var line = new string(rawLine.Select(ch => char.IsControl(ch) ? ' ' : ch).ToArray()).Trim();
+            if (line.Length == 0 || line.StartsWith("[Request interrupted by user", StringComparison.Ordinal)) continue;
+            if (skippedTag is not null)
+            {
+                var closing = "</" + skippedTag + ">";
+                var closingAt = line.IndexOf(closing, StringComparison.OrdinalIgnoreCase);
+                if (closingAt < 0) continue;
+                line = line[(closingAt + closing.Length)..].Trim();
+                skippedTag = null;
+                if (line.Length == 0) continue;
+            }
+
+            foreach (var tag in SystemTags)
+            {
+                var opening = "<" + tag + ">";
+                if (!line.StartsWith(opening, StringComparison.OrdinalIgnoreCase)) continue;
+                var closing = "</" + tag + ">";
+                var closingAt = line.IndexOf(closing, opening.Length, StringComparison.OrdinalIgnoreCase);
+                if (closingAt < 0)
+                {
+                    skippedTag = tag;
+                    line = string.Empty;
+                }
+                else
+                {
+                    line = line[(closingAt + closing.Length)..].Trim();
+                }
+                break;
+            }
+
+            if (line.Length == 0 || line.StartsWith('<') && line.EndsWith('>')) continue;
+            return TruncateUnicode(line);
+        }
+        return null;
+    }
+
+    private static string TruncateUnicode(string value)
+    {
+        var count = 0;
+        var end = 0;
+        foreach (var rune in value.EnumerateRunes())
+        {
+            if (count == 120) break;
+            end += rune.Utf16SequenceLength;
+            count++;
+        }
+        return end < value.Length ? value[..end] : value;
+    }
+
+    private static readonly string[] SystemTags =
+    [
+        "system-reminder", "task-notification", "command-message", "command-name", "command-args",
+        "local-command-caveat", "local-command-stdout", "local-command-stderr", "available-deferred-tools",
+        "user-prompt-submit-hook",
+    ];
+
+    private readonly record struct Hints(bool Assistant, bool User, bool Interrupt, bool ToolUse, bool ApiError);
 }

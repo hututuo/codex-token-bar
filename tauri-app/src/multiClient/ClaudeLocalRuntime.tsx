@@ -6,11 +6,13 @@ import { isTauriRuntimeAvailable } from "../platform/runtime";
 import { useMultiClientUsage } from "./MultiClientUsage";
 import {ActivitySpeedLivePlot} from "./ActivitySpeedLivePlot";
 import {ActivityLiveHistory} from "./activityLiveHistory";
+import {ActivityModelRateSmoother,claudeBarAgentActive} from "./activityRateSmoothing";
 import {ActivityRateUnitControl,useActivityRatePreferences} from "../components/liveRate/ActivityRateUnits";
 import { modelUsageColor } from "../components/modelUsagePresentation";
 
 export interface ClaudeRuntimeAgent {
   id: string; client: string; parentId: string | null; phase: string; model: string | null;
+  title?: string | null; displayStopped?: boolean;
   lastActivity: string; liveOutputTps: number; liveTotalTps: number; recentSpeed: number | null;
 }
 export interface ClaudeRuntimeSnapshot {
@@ -26,6 +28,10 @@ let cached = empty, pending = false, timer: ReturnType<typeof setTimeout> | unde
 const listeners = new Set<() => void>();
 const activityLiveHistory = new ActivityLiveHistory();
 const barActivityLiveHistory = new ActivityLiveHistory();
+const claudeBarActivityLiveHistory = new ActivityLiveHistory();
+const claudeBarSmoothers = new Map<string, ActivityModelRateSmoother>();
+let barModelRates: ClaudeRuntimeSnapshot['modelRates'] = [];
+let barSourceSelectionKey: string | undefined;
 const recent = new Map<string, NonNullable<ClaudeRuntimeSnapshot["latestResponse"]>>();
 export function qualifiedClaudeInterval(row: NonNullable<ClaudeRuntimeSnapshot["latestResponse"]>): number | null {
   if (!row.durationMs || row.durationMs <= 400 || !Number.isFinite(row.outputTokens)) return null;
@@ -46,15 +52,32 @@ async function poll() {
     // A stopped/expired reader cannot leave old activity visible indefinitely.
     const fresh = next.capturedAt && Math.abs(Date.now() - Date.parse(next.capturedAt)) <= 10000;
     cached = next.enabled && fresh ? next : { ...empty, enabled: next.enabled, configurationIssue: next.configurationIssue };
+    barModelRates = cached.modelRates.filter(row => !["claudeCode","claudeDesktop"].includes(row.client));
+    for (const client of ["claudeCode","claudeDesktop"]) {
+      let smoother = claudeBarSmoothers.get(client);
+      if (!smoother) { smoother = new ActivityModelRateSmoother(); claudeBarSmoothers.set(client,smoother); }
+      const time = Date.parse(cached.capturedAt ?? '') / 1000;
+      const active = fresh && Math.abs(Date.now()/1000-time)<=3 && cached.enabled && cached.sourceAvailable[client] && [...cached.mainAgents,...cached.subagents].some(agent =>
+        agent.client === client && claudeBarAgentActive(agent,time));
+      const sourceRows = cached.modelRates.filter(row => row.client === client);
+      const raw = new Map<string,number>();
+      for (const row of sourceRows) raw.set(row.model,(raw.get(row.model) ?? 0)+row.outputTps);
+      for (const [model,outputTps] of smoother.update(raw,time,!!active)) {
+        const row = sourceRows.find(row => row.model === model);
+        barModelRates.push({client,model,outputTps,totalTps:row?.totalTps ?? 0,generatingAgents:row?.generatingAgents ?? 0,toolsAgents:row?.toolsAgents ?? 0});
+      }
+    }
     if (fresh && cached.enabled) activityLiveHistory.record(Date.parse(cached.capturedAt!) / 1000, cached.sourceAvailable, cached.modelRates);
     else if (!next.enabled) activityLiveHistory.clear();
+    if (fresh && cached.enabled) claudeBarActivityLiveHistory.record(Date.parse(cached.capturedAt!) / 1000, cached.sourceAvailable, barModelRates.filter(row => ["claudeCode","claudeDesktop"].includes(row.client)));
+    else if (!next.enabled) claudeBarActivityLiveHistory.clear();
     const response = cached.latestResponse;
     if (response && ["claudeCode", "claudeDesktop"].includes(response.client)) {
       recent.set([response.client, response.model, response.endedAt, response.outputTokens, response.durationMs].join("|"), response);
     }
     for (const [id, row] of recent) if (Date.parse(row.endedAt) < Date.now() - 1800000) recent.delete(id);
     while (recent.size > 1000) recent.delete(recent.keys().next().value!);
-  } catch { cached = { ...empty, configurationIssue: "本地 Claude 读取器暂不可用" }; }
+  } catch { cached = { ...empty, configurationIssue: "本地 Claude 读取器暂不可用" }; barModelRates=[]; claudeBarSmoothers.clear(); }
   finally {
     pending = false;
     listeners.forEach(listener => listener());
@@ -73,17 +96,25 @@ export function useClaudeLocalRuntime(allowed: readonly string[], monitoringEnab
   const subscribeWhenEnabled = useCallback((listener: () => void) => enabled ? subscribe(listener) : () => {}, [enabled]);
   const value = useSyncExternalStore(subscribeWhenEnabled, () => cached, () => empty);
   const selected = new Set(allowed.filter(c => ["claudeCode", "claudeDesktop", "deepseek", "gemini", "opencode"].includes(c) || (c === "codex" && (includeAgentSpeedCodex || mode === "agentSpeed"))));
-  const active = (agent: ClaudeRuntimeAgent) => selected.has(agent.client) && ["generating", "tools"].includes(agent.phase)
+  const active = (agent: ClaudeRuntimeAgent) => selected.has(agent.client) && !agent.displayStopped && ["generating", "tools"].includes(agent.phase)
     && Date.parse(agent.lastActivity) >= Date.now() - 300000;
   const sourceSelectionKey = JSON.stringify(snapshot.preferences.map(p=>[p.client,p.enabled,p.path]));
-  useEffect(()=>activityLiveHistory.selectSource(sourceSelectionKey),[sourceSelectionKey]);
+  useEffect(()=>{
+    activityLiveHistory.selectSource(sourceSelectionKey);
+    claudeBarActivityLiveHistory.selectSource(sourceSelectionKey);
+    if (barSourceSelectionKey !== sourceSelectionKey) {
+      barSourceSelectionKey=sourceSelectionKey; claudeBarSmoothers.clear(); barModelRates=[];
+    }
+  },[sourceSelectionKey]);
   const enabledSources = snapshot.preferences.filter(p => p.enabled);
   const estimatedShareForSelection = scopedClaudeEstimateShare(value.estimatedShare, enabledSources.map(p => p.client), allowed);
-  return { ...value, enabled, configuredClients: snapshot.preferences.filter(p=>p.enabled).map(p=>p.client), sourceSelectionKey, activitySeries: activityLiveHistory.snapshot(Date.now()/1000, allowed),
+  const activitySeries = activityLiveHistory.snapshot(Date.now()/1000, allowed);
+  const displaySeries = mode === "bar" ? [...activitySeries.filter(row => !["claudeCode","claudeDesktop"].includes(row.client)),...claudeBarActivityLiveHistory.snapshot(Date.now()/1000,allowed)] : activitySeries;
+  return { ...value, enabled, configuredClients: snapshot.preferences.filter(p=>p.enabled).map(p=>p.client), sourceSelectionKey, activitySeries: displaySeries,
     // Upstream's fraction is aggregate-only. Do not apply another client's
     // calibration to a filtered client view.
     estimatedShareForSelection,
-    modelRates: enabled ? value.modelRates.filter(r => selected.has(r.client)) : [],
+    modelRates: enabled ? (mode === "bar" ? barModelRates : value.modelRates).filter(r => selected.has(r.client)) : [],
     mainAgents: enabled ? value.mainAgents.filter(a => ["claudeCode", "claudeDesktop"].includes(a.client) && active(a)) : [], subagents: enabled ? value.subagents.filter(a => ["claudeCode", "claudeDesktop"].includes(a.client) && active(a)) : [],
     rows: enabled ? [...recent.values()].filter(r => selected.has(r.client)).sort((a,b) => Date.parse(b.endedAt) - Date.parse(a.endedAt)) : [],
   };
@@ -119,12 +150,16 @@ export function ClaudeLocalTasks({ allowed }: { allowed: readonly string[] }) {
     <strong>Claude · 暂无任务数据</strong>
     <p className="qs-muted">未读到当前本地活动记录，未计入任务合计；不会请求 Claude 接口。</p>
   </section>;
-  return <section style={{fontSize:12,paddingBlock:8}}>
-    <strong>Claude · {runtime.mainAgents.length} 主任务 · {runtime.subagents.length} 子 Agent</strong>
-    {runtime.mainAgents.map(agent => <div key={agent.id} style={{paddingBlock:6}}>
+  return <ClaudeLocalTaskList mainAgents={runtime.mainAgents} subagents={runtime.subagents}/>;
+}
+export function ClaudeLocalTaskList({mainAgents,subagents}: {mainAgents: readonly ClaudeRuntimeAgent[]; subagents: readonly ClaudeRuntimeAgent[]}) {
+  return <section style={{fontSize:12,paddingBlock:8,overflowWrap:'anywhere'}}>
+    <strong>Claude · {mainAgents.length} 主任务 · {subagents.length} 子 Agent</strong>
+    {mainAgents.map(agent => <div key={agent.id} style={{paddingBlock:6}}>
+      <strong>{agent.title || 'Claude 会话'}</strong> ·{' '}
       <span style={{color:modelUsageColor(agent.model ?? "unknown")}}>{agent.model ?? "未知模型"}</span> · {agent.phase === "tools" ? "工具执行中" : "生成中"} · {agent.id.slice(-8)}
-      {runtime.subagents.filter(child => child.parentId === agent.id).map(child => <div key={child.id} style={{paddingLeft:12,paddingTop:4}}>↳ {child.model ?? "未知模型"} · {child.phase === "tools" ? "工具执行中" : "生成中"} · {child.id.slice(-8)}</div>)}
+      {subagents.filter(child => child.parentId === agent.id).map(child => <div key={child.id} style={{paddingLeft:12,paddingTop:4}}>↳ <strong>{child.title || 'Claude 子 Agent'}</strong> · {child.model ?? "未知模型"} · {child.phase === "tools" ? "工具执行中" : "生成中"} · {child.id.slice(-8)}</div>)}
     </div>)}
-    {runtime.subagents.filter(child => !runtime.mainAgents.some(main => main.id === child.parentId)).map(child => <p key={child.id}>子 Agent · {child.model ?? "未知模型"} · {child.id.slice(-8)}</p>)}
+    {subagents.filter(child => !mainAgents.some(main => main.id === child.parentId)).map(child => <p key={child.id}>子 Agent · <strong>{child.title || 'Claude 子 Agent'}</strong> · {child.model ?? "未知模型"} · {child.id.slice(-8)}</p>)}
   </section>;
 }

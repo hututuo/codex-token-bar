@@ -110,6 +110,8 @@ public struct AgentStatus: Identifiable, Equatable, Sendable {
     public var liveCost: LiveCost
     /// The full working directory the transcript names (METRICS 10.6); nil when it names none.
     public var cwdPath: String?
+    /// Local display-only Claude task label. Never included in Agent Speed reports.
+    public var displayTitle: String?
     /// Presentation-only stop; never affects the report metric or ledger.
     public var localDisplayStopped: Bool = false
 
@@ -126,7 +128,8 @@ public struct AgentStatus: Identifiable, Equatable, Sendable {
         parentId: String? = nil,
         liveCost: LiveCost = .zero,
         cwdPath: String? = nil,
-        modes: ExecutionModes = .empty
+        modes: ExecutionModes = .empty,
+        displayTitle: String? = nil
     ) {
         self.id = id
         self.source = source
@@ -141,6 +144,7 @@ public struct AgentStatus: Identifiable, Equatable, Sendable {
         self.parentId = parentId
         self.liveCost = liveCost
         self.cwdPath = cwdPath
+        self.displayTitle = displayTitle
     }
 }
 

@@ -24,6 +24,110 @@ struct ParserBehaviorTests {
         #"{"type":"assistant","entrypoint":"cli","cwd":"/w/p","message":{"id":"\#(id)","model":"m","stop_reason":\#(stop),"usage":{"input_tokens":1,"output_tokens":\#(output)}},"timestamp":"\#(ts)"}"#
     }
 
+    @Test func claudeDisplayTitleUsesFirstDirectUserTextAndSurvivesLaterAssistantLines() {
+        var deduper = Deduper()
+        let user = #"{"type":"user","entrypoint":"cli","message":{"role":"user","content":[{"type":"tool_result","content":"not a task title"},{"type":"text","text":"<system-reminder>private reminder</system-reminder>\nInspect\u0000cache eviction\nLater context"}]},"timestamp":"2026-10-20T10:00:00Z"}"#
+        let (parser, _) = Self.run(.claude, [
+            user,
+            Self.claudeAssistant("2026-10-20T10:00:02Z", id: "title-followup", output: 8, stop: #""end_turn""#),
+            Self.claudeUser("2026-10-20T10:00:03Z", content: #""later request title""#),
+        ], path: "/p/session/subagents/agent-worker.jsonl", deduper: &deduper)
+        #expect(parser.state.isSubagent)
+        #expect(parser.state.displayTitle == "Inspect cache eviction")
+        #expect(EngineAgent(id: "/p/session/subagents/agent-worker.jsonl", state: parser.state).displayTitle == "Inspect cache eviction")
+
+        let reordered = #"{"message":{"role":"user","content":"Late type metadata still labels this task"},"type":"user","timestamp":"2026-10-20T10:00:00Z"}"#
+        let (reorderedParser, _) = Self.run(.claude, [reordered], path: "/p/session/subagents/agent-reordered.jsonl", deduper: &deduper)
+        #expect(reorderedParser.state.displayTitle == "Late type metadata still labels this task")
+    }
+
+    @Test func claudeExplicitAgentNameWinsOnMetadataOnlyRecordAndNoLabelIsInvented() throws {
+        var deduper = Deduper()
+        let (parser, _) = Self.run(.claude, [
+            #"{"type":"progress","title":"lower priority","agentName":"Explore"}"#,
+            Self.claudeUser("2026-10-20T10:00:00Z", content: #""fallback request""#),
+            Self.claudeAssistant("2026-10-20T10:00:02Z", id: "title-followup", output: 8, stop: #""end_turn""#),
+        ], path: "/p/session/subagents/agent-worker.jsonl", deduper: &deduper)
+        #expect(parser.state.displayTitle == "Explore")
+
+        let (custom, _) = Self.run(.claude, [
+            #"{"type":"progress","customTitle":"First task name"}"#,
+            #"{"type":"progress","customTitle":"Renamed task"}"#,
+        ], path: "/p/session/subagents/agent-custom-title.jsonl", deduper: &deduper)
+        #expect(custom.state.displayTitle == "Renamed task")
+
+        let resultOnly = #"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"ignored result"}]},"timestamp":"2026-10-20T10:00:00Z"}"#
+        let (unnamed, _) = Self.run(.claude, [resultOnly], path: "/p/session/subagents/agent-unnamed.jsonl", deduper: &deduper)
+        #expect(unnamed.state.displayTitle == nil)
+
+        let oversizedMetadata = try JSONSerialization.data(withJSONObject: [
+            "type": "progress",
+            "agentName": String(repeating: "x", count: 20_000),
+        ])
+        let oversizedLine = String(decoding: oversizedMetadata, as: UTF8.self)
+        let (oversized, _) = Self.run(.claude, [oversizedLine], path: "/p/session/subagents/agent-oversized.jsonl", deduper: &deduper)
+        #expect(oversized.state.displayTitle == nil)
+    }
+
+    @Test func claudeDisplayTitleTruncatesByUnicodeCharacters() throws {
+        var deduper = Deduper()
+        let text = String(repeating: "界", count: 125)
+        let data = try JSONSerialization.data(withJSONObject: [
+            "type": "user",
+            "timestamp": "2026-10-20T10:00:00Z",
+            "message": ["role": "user", "content": text],
+        ])
+        let line = String(decoding: data, as: UTF8.self)
+        let (parser, _) = Self.run(.claude, [line], path: "/p/session/subagents/agent-unicode.jsonl", deduper: &deduper)
+        #expect(parser.state.displayTitle?.unicodeScalars.count == 120)
+
+        let complex = String(repeating: "👩‍💻e\u{301}", count: 125)
+        let complexData = try JSONSerialization.data(withJSONObject: [
+            "type": "user",
+            "timestamp": "2026-10-20T10:00:00Z",
+            "message": ["role": "user", "content": complex],
+        ])
+        let complexLine = String(decoding: complexData, as: UTF8.self)
+        let (complexParser, _) = Self.run(.claude, [complexLine], path: "/p/session/subagents/agent-complex.jsonl", deduper: &deduper)
+        #expect(complexParser.state.displayTitle?.unicodeScalars.count == 120)
+    }
+
+    @Test func claudeLongInterruptKeepsPhaseHandlingAndSystemOnlyTextHasNoTitle() throws {
+        var deduper = Deduper()
+        let longInterrupt = try JSONSerialization.data(withJSONObject: [
+            "type": "user",
+            "timestamp": "2026-10-20T10:00:02Z",
+            "message": ["role": "user", "content": "[Request interrupted by user" + String(repeating: "x", count: 20_000)],
+        ])
+        let longLine = String(decoding: longInterrupt, as: UTF8.self)
+        let (interrupted, _) = Self.run(.claude, [
+            Self.claudeUser("2026-10-20T10:00:00Z", content: #""start work""#),
+            longLine,
+        ], deduper: &deduper)
+        #expect(interrupted.state.phase == .idle)
+
+        let systemOnly = #"{"type":"user","timestamp":"2026-10-20T10:00:00Z","message":{"role":"user","content":[{"type":"text","text":"<system-reminder>private reminder</system-reminder>"}]}}"#
+        let commandOnly = #"{"type":"user","timestamp":"2026-10-20T10:00:02Z","message":{"role":"user","content":[{"type":"text","text":"<command-name>help</command-name>"}]}}"#
+        let (unnamed, _) = Self.run(.claude, [systemOnly, commandOnly], path: "/p/session/subagents/agent-system.jsonl", deduper: &deduper)
+        #expect(unnamed.state.displayTitle == nil)
+    }
+
+    @Test func claudeLongUserTextDoesNotBecomeTitleOrBlockUsageParsing() throws {
+        var deduper = Deduper()
+        let longUserText = try JSONSerialization.data(withJSONObject: [
+            "type": "user",
+            "timestamp": "2026-10-20T10:00:00Z",
+            "message": ["role": "user", "content": String(repeating: "x", count: 20_000)],
+        ])
+        let line = String(decoding: longUserText, as: UTF8.self)
+        let (parser, upserts) = Self.run(.claude, [
+            line,
+            Self.claudeAssistant("2026-10-20T10:00:02Z", id: "long-user-followup", output: 9, stop: #""end_turn""#),
+        ], path: "/p/session/subagents/agent-long-user.jsonl", deduper: &deduper)
+        #expect(parser.state.displayTitle == nil)
+        #expect(upserts.first?.record.usage.output == 9)
+    }
+
     @Test func claudeInterruptEndsTheTurn() {
         var deduper = Deduper()
         let (parser, _) = Self.run(.claude, [

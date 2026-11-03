@@ -77,7 +77,8 @@ public sealed record AgentStatus(
     Rate Live,
     double? RecentSpeed,
     DateTimeOffset LastActivity,
-    string? ParentId = null)
+    string? ParentId = null,
+    string? DisplayTitle = null)
 {
     public ExecutionModes Modes { get; init; } = ExecutionModes.Empty;
 

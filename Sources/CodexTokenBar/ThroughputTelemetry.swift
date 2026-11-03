@@ -114,7 +114,7 @@ struct ThroughputCurve {
                 s.lastTick += 1
                 let horizon = s.budget > 0 ? max(1, s.moment / s.budget) : 1
                 let target = s.budget / horizon
-                s.rate += (target - s.rate) * (target >= s.rate ? 0.28 : 0.18)
+                s.rate = ActivityRateSmoothing.step(previous: s.rate, target: target)
                 let quantity = min(s.budget, max(0, s.rate))
                 if s.budget > 0 { s.moment *= 1 - quantity / s.budget }
                 s.budget -= quantity

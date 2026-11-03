@@ -182,14 +182,14 @@ struct QuotaSidebarRail: View {
     private var supportsCodex: Bool { clientScope == "codex" || clientScope == "all" }
     private var allowedClients: Set<String> { ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs) }
     private var localLive: ClaudeLocalRuntimeSnapshot { claudeRuntime.projection(allowed: allowedClients) }
-    private var liveRates: [ModelRateContribution] { ClientLocalRuntimePresentation.rates(codex: monitor.totalSnapshot.modelRates, claude: localLive.modelRates, allowed: allowedClients, mode: .normalized(speedModeRaw), upstreamCodex: AgentSpeedDisplayRuntime.modelRates(snapshot: upstreamActivity.snapshot, source: .codex, now: Date()), others: upstreamActivity.externalModelRates(allowed: allowedClients)) }
+    private var liveRates: [ModelRateContribution] { ClientLocalRuntimePresentation.rates(codex: monitor.totalSnapshot.modelRates, claude: claudeRuntime.displayModelRates(allowed: allowedClients, mode: .normalized(speedModeRaw)), allowed: allowedClients, mode: .normalized(speedModeRaw), upstreamCodex: AgentSpeedDisplayRuntime.modelRates(snapshot: upstreamActivity.snapshot, source: .codex, now: Date()), others: upstreamActivity.externalModelRates(allowed: allowedClients)) }
     @ObservedObject private var speedPalette = SpeedDisplayPreferences.shared
     private var barRates: [ModelRateContribution] {
         guard speedPalette.grouping == .client else { return liveRates }
         return allowedClients.sorted().compactMap { client in
             let rates: [ModelRateContribution]
             if client == "codex" { rates = speedModeRaw == "agentSpeed" ? AgentSpeedDisplayRuntime.modelRates(snapshot: upstreamActivity.snapshot, source: .codex, now: Date()) : monitor.totalSnapshot.modelRates }
-            else if client == "claudeCode" || client == "claudeDesktop" { rates = claudeRuntime.projection(allowed: [client]).modelRates }
+            else if client == "claudeCode" || client == "claudeDesktop" { rates = claudeRuntime.displayModelRates(allowed: [client], mode: .normalized(speedModeRaw)) }
             else { rates = upstreamActivity.externalModelRates(allowed: [client]) }
             let total = rates.reduce(0) { $0 + $1.tokensPerSecond }
             return total > 0 ? .init(model: "client:" + client, tokensPerSecond: total) : nil

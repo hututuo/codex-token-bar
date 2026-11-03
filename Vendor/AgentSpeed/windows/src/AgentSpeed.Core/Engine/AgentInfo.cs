@@ -12,7 +12,8 @@ internal readonly record struct AgentInfo(
     long? InFlightStartMs,
     long? LastLineMs,
     string? ParentId = null,
-    bool ConfirmedStopped = false)
+    bool ConfirmedStopped = false,
+    string? DisplayTitle = null)
 {
     public ExecutionModes Modes { get; init; } = ExecutionModes.Empty;
 }

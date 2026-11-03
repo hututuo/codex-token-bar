@@ -4,6 +4,21 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { withSsrModules } from "../test/ssrHarness.mjs";
 
+test("local task titles remain associated with their own parent and escape markup", async () => {
+  await withSsrModules(async load => {
+    const { ClaudeLocalTaskList } = await load("/src/multiClient/ClaudeLocalRuntime.tsx");
+    const base={client:'claudeCode',model:'claude-sonnet',phase:'tools',lastActivity:new Date().toISOString(),liveOutputTps:0,liveTotalTps:0,recentSpeed:null};
+    const html=renderToStaticMarkup(React.createElement(ClaudeLocalTaskList,{
+      mainAgents:[{...base,id:'main',parentId:null,title:'主任务'}],
+      subagents:[{...base,id:'child',parentId:'main',title:'审核 <patch>'},{...base,id:'orphan',parentId:null,title:null}],
+    }));
+    assert.match(html,/主任务/); assert.match(html,/审核 &lt;patch&gt;/);
+    assert.doesNotMatch(html,/<patch>/); assert.match(html,/Claude 子 Agent/);
+    assert.equal((html.match(/审核 &lt;patch&gt;/g)??[]).length,1);
+    assert.match(html,/1 主任务 · 2 子 Agent/);
+  });
+});
+
 test("missing Claude task records are described in details without fabricating zero tasks", async () => {
   await withSsrModules(async load => {
     const { ClaudeLocalTasks } = await load("/src/multiClient/ClaudeLocalRuntime.tsx");

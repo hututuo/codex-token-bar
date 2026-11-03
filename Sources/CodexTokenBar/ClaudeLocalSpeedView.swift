@@ -113,8 +113,8 @@ struct ActivitySpeedSummaryView: View {
             .overlay {
                 if !compact { ActivitySpeedInspectionOverlay(rows: visible, now: now, unit: unit, exchangeRate: exchangeRate) }
             }
-            .accessibilityLabel("最近3分钟活动速率，原始读数连线")
-            if !compact { Text("原始速度读数 · 移到曲线上查看").font(.system(size:10)).foregroundStyle(.secondary) }
+            .accessibilityLabel("最近3分钟活动速率，速度读数连线")
+            if !compact { Text("本地活动速度 · 移到曲线上查看").font(.system(size:10)).foregroundStyle(.secondary) }
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
     }

@@ -44,6 +44,9 @@ struct ClaudeParser: Sendable {
     }
 
     private mutating func consume(_ line: ClaudeLine, deduper: inout Deduper, emit: (ResponseUpsert) -> Void) {
+        if let title = line.displayTitle {
+            state.setDisplayTitle(title, priority: line.displayTitlePriority)
+        }
         guard let timestamp = line.timestampMs else {
             if line.localDisplayStop { state.localDisplayStopped = true }
             return
@@ -55,6 +58,9 @@ struct ClaudeParser: Sendable {
         }
         if let cwd = line.cwd { state.setProject(fromWorkingDirectory: cwd) }
         if line.isSidechain { state.isSubagent = true }
+        if line.type == .user, let title = line.userTextTitleCandidate {
+            state.setDisplayTitle(title, priority: 3)
+        }
 
         if line.localDisplayStop { state.localDisplayStopped = true }
         switch line.type {

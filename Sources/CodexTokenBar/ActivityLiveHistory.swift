@@ -32,9 +32,9 @@ struct ActivityLiveHistory {
     func snapshot(allowed: Set<String>, mode: ActivitySpeedDisplayMode, now: Double) -> [ActivityLiveSeries] {
         guard now.isFinite else { return [] }
         return allowed.sorted().compactMap { client in
-            // Codex follows the user's display choice; other clients use the
-            // Agent Speed estimator, never a fabricated body TPS estimate.
-            let selected = client == "codex" ? mode : .agentSpeed
+            // Claude's Bar mode smooths Agent Speed's activity estimate. It is
+            // still not a body TPS measurement; raw mode remains independent.
+            let selected = ["codex", "claudeCode", "claudeDesktop"].contains(client) ? mode : .agentSpeed
             let points = (rows[client + "|" + selected.rawValue] ?? []).filter { $0.time >= now - Self.window && $0.time <= now }
             return points.isEmpty ? nil : .init(client: client, points: points)
         }

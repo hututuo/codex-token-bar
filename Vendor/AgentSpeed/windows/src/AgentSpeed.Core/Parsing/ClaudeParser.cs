@@ -36,6 +36,11 @@ internal sealed class ClaudeParser : TranscriptParser<ClaudeLine>
             return;
         }
 
+        if (line.DisplayTitle is { } explicitTitle)
+        {
+            SetDisplayTitle(explicitTitle, line.DisplayTitlePriority);
+        }
+
         if (line.IsInterrupt || line.IsApiError || line.Kind == ClaudeLineKind.Error)
         {
             MarkConfirmedStopped();
@@ -54,6 +59,10 @@ internal sealed class ClaudeParser : TranscriptParser<ClaudeLine>
         }
 
         SetProjectFromCwd(line.Cwd);
+        if (line.Kind == ClaudeLineKind.User && line.UserTextTitleCandidate is { } userTitle)
+        {
+            SetDisplayTitle(userTitle, 3);
+        }
         if (line.IsSidechain)
         {
             SetSubagent(true);

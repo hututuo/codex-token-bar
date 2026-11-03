@@ -36,7 +36,9 @@ internal sealed record RuntimeAgent(
     [property: JsonPropertyName("lastActivity")] string LastActivity,
     [property: JsonPropertyName("liveOutputTps")] double LiveOutputTps,
     [property: JsonPropertyName("liveTotalTps")] double LiveTotalTps,
-    [property: JsonPropertyName("recentSpeed")] double? RecentSpeed);
+    [property: JsonPropertyName("recentSpeed")] double? RecentSpeed,
+    [property: JsonPropertyName("title")] string? Title,
+    [property: JsonPropertyName("displayStopped")] bool DisplayStopped);
 
 internal sealed record RuntimeResponse(
     [property: JsonPropertyName("client")] string Client,
@@ -125,7 +127,9 @@ internal static class RuntimeSnapshotMapper
                 agent.LastActivity.ToUniversalTime().ToString("O"),
                 FiniteNonnegative(agent.Live.Output),
                 FiniteNonnegative(agent.Live.Total),
-                agent.RecentSpeed is { } recent ? FiniteNonnegative(recent) : null))
+                agent.RecentSpeed is { } recent ? FiniteNonnegative(recent) : null,
+                agent.DisplayTitle,
+                agent.ConfirmedStopped))
             .ToArray();
         var latest = snapshot.LastResponse is { } response
             && RuntimeSources.Contains(response.Source)

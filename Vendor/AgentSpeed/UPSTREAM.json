@@ -589,8 +589,8 @@
   },
   "patches": {
     "macos/Sources/AgentSpeedCore/Engine/EngineTypes.swift": {
-      "reason": "Add per-source/per-model attribution metadata while preserving upstream numeric speed calculations and signed reporting semantics.",
-      "sha256": "71ed33af2762e0eb351a0ed7e0b0081ef54a816cd7547fa8cc172b4b8dd0c6be"
+      "reason": "Carry source/model attribution and local displayTitle metadata through engine agents while preserving upstream numeric speed calculations and signed reporting semantics.",
+      "sha256": "d38bbe9d50ac40ec67276fc19cf3e762e038cba2d8ea948e1c95ecdbaf7577de"
     },
     "macos/Sources/AgentSpeedCore/Engine/LiveRate.swift": {
       "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged",
@@ -633,16 +633,16 @@
       "sha256": "f91da40287cc2f682618439e3447187549cc8723974af8c818f16829cd8cb9c6"
     },
     "macos/Sources/AgentSpeedCore/Models.swift": {
-      "reason": "Carry source/model attribution and local stopped-state metadata in snapshots; existing rate accounting and signed report fields remain unchanged.",
-      "sha256": "92c6d2b112cfd04d7de5e65c481f2bb1f71c2b58e4e2dbca05dba074dc722fe4"
+      "reason": "Carry source/model attribution, local stopped-state metadata and optional local-only Claude displayTitle in public snapshots; existing rate accounting and signed report fields remain unchanged.",
+      "sha256": "e2d610890ac37ac236112ae7f9b990d6225a8eeceaf9d74bc4d1f4286a753198"
     },
     "macos/Sources/AgentSpeedCore/Monitor/MonitorCore.swift": {
       "reason": "Propagate source-read observations and use the negotiated low-latency event cadence only for opt-in realtime reporting.",
       "sha256": "0cc23ff3e2c62627d05e1804ca48fdb19c56ef10310ad08328817f1725e6e28c"
     },
     "macos/Sources/AgentSpeedCore/Monitor/SnapshotBuilder.swift": {
-      "reason": "Project source/model attribution and one-shot local read observations into Token Bar snapshots without changing upstream rate calculations.",
-      "sha256": "566c0e6d36dcf497f2c693a75b76fa062160eca7f0497c933671f55c8c1025a7"
+      "reason": "Project source/model attribution, one-shot local read observations and local Claude displayTitle into Token Bar snapshots without changing upstream rate calculations.",
+      "sha256": "4485314ce83db6f6984abd37b441efbff06387dbb15332ac39612a937d91c723"
     },
     "macos/Sources/AgentSpeedCore/Monitor/SnapshotMailbox.swift": {
       "reason": "Carry and merge pending source-read observations into the next published snapshot so metadata is not lost during coalescing.",
@@ -657,12 +657,12 @@
       "sha256": "14af873358a9b0141443b2c35994e9f834b81490237dd88374556f02ca3d35d9"
     },
     "macos/Sources/AgentSpeedCore/Parsing/ClaudeLine.swift": {
-      "reason": "Recognize explicit Claude API/stream errors as local display-stop metadata without changing token accounting. Backport upstream b89d983 toolEndsTurn extraction with strict Boolean and user-record scope; retain Token Bar local error-stop metadata.",
-      "sha256": "f511d5e3723a9921a25e39c40b2cb5b523847f7ff1b811e7701a3d0b513fb4e3"
+      "reason": "Recognize explicit Claude API/stream errors as local display-stop metadata and backport upstream b89d983 toolEndsTurn extraction. Extract bounded local-only Claude task labels from agentName, title/customTitle, summary or first direct user text; do not retain full text or change token accounting.",
+      "sha256": "f8cc0aaea0cb3d83e8723954caa0cf6ae5ad9b79b1e742ee6d31d47e57528f40"
     },
     "macos/Sources/AgentSpeedCore/Parsing/ClaudeParser.swift": {
-      "reason": "Propagate explicit Claude error/interrupt markers into local stopped-state metadata; reset when generation resumes. Backport upstream b89d983 toolEndsTurn completion to idle without new usage or requests; retain local explicit-stop rules.",
-      "sha256": "a453c43868ed7997fc4d2b062f7e28eb8f7223cd41c76c25c1bfa9780d8ad1a4"
+      "reason": "Propagate Claude error/interrupt markers into local stopped-state metadata and consume/update local-only display titles, including metadata-only records; preserve upstream phase, timing, token and report semantics.",
+      "sha256": "5eb8ee0871b910050e33dee99c236c8359d7d920303ace055201a7cb25ff0d78"
     },
     "macos/Sources/AgentSpeedCore/Parsing/CodexLine.swift": {
       "reason": "Recognize explicit Codex request/stream failure and aborted-turn markers for local stopped-state display. Backport upstream 004bc9b paginated ordinal extraction while preserving Token Bar source stop and execution metadata.",
@@ -681,12 +681,12 @@
       "sha256": "213525501b6d780bf2fa5f9f1141465737222c24283a8c5fbedb8f86e1ebad04"
     },
     "macos/Sources/AgentSpeedCore/Parsing/JSONScanner.swift": {
-      "reason": "Backport upstream 004bc9b strict nonnegative Int64 ordinal parsing; reject fractions, strings and overflow without changing token-count parsing.",
-      "sha256": "56236ca46b033909c0e9552d72a67d0f74652fcc6895b811c02926203bb1f01f"
+      "reason": "Backport upstream 004bc9b strict ordinal parsing and add bounded string capture/prefix scanning for Claude local display labels and interrupt detection.",
+      "sha256": "b275d23550150aa577e27aef377b4ba05c400bbeb92c80ae5c25320b3941c99a"
     },
     "macos/Sources/AgentSpeedCore/Parsing/ParserTypes.swift": {
-      "reason": "Add local display-stop metadata to parser state and clear it when an active generation phase resumes.",
-      "sha256": "3fc8f135aab389d7aa6826a160acb78d52dbb8b70216a639110c9a42d04cb866"
+      "reason": "Add local display-stop and optional local-only Claude displayTitle metadata to parser state, including same-priority explicit rename updates while preserving the first user-text fallback.",
+      "sha256": "337b87c0f66b46c618a8e24647e2cec3d59097ec67893ad26f58b606f3be9dd5"
     },
     "macos/Sources/AgentSpeedCore/Pricing/BundledPriceAssets.swift": {
       "reason": "Add the locally verified GPT-6.1 Terra price schedule, threshold tiers, fast pricing, and matching model alias to the bundled Agent Speed price asset.",
@@ -741,8 +741,8 @@
       "sha256": "2e80041acd74be3988ea03ed648217a588faf5ddb951ebaafbeaf5e86f9009a5"
     },
     "windows/src/AgentSpeed.Core/Engine/AgentInfo.cs": {
-      "reason": "Carry explicit stopped-state and parent attribution metadata to Token Bar local agent display projections.",
-      "sha256": "0b06f0db70b8942dbdbe992703ac0b00569d78728d91d5de9fed50ef3c7cbde5"
+      "reason": "Carry explicit stopped-state, parent attribution and optional local-only Claude displayTitle metadata to Token Bar agent projections.",
+      "sha256": "bddb0391ffe598be62e7ee06fd635161c6cd2a1665f03e53de17169c9c19bec6"
     },
     "windows/src/AgentSpeed.Core/Engine/EngineFrame.cs": {
       "reason": "Add per-source/per-model attribution metadata while preserving upstream numeric speed calculations and signed reporting semantics.",
@@ -793,16 +793,16 @@
       "sha256": "6d9699fd48bdb37a043a3f58d584b019a57f37013f6970d17a26f005aa15d934"
     },
     "windows/src/AgentSpeed.Core/Models.cs": {
-      "reason": "Carry source/model attribution and local stopped-state metadata in snapshots; existing rate accounting and signed report fields remain unchanged.",
-      "sha256": "9abc5d9289fd9e1a764a7b4f53b42155533ba93f30789c34286cc37bc14f71ea"
+      "reason": "Carry optional local-only Claude displayTitle in public snapshots; no report schema or token accounting changes.",
+      "sha256": "c9fd71e7f0462fc6030fde7db20e223aab463b2ba0b5dbee97c0aaa02b696ab9"
     },
     "windows/src/AgentSpeed.Core/Monitoring/MonitorCore+ZCode.cs": {
       "reason": "Propagate ZCode source-read observations to Token Bar local snapshots without changing upstream response accounting.",
       "sha256": "ed38b03c255ba4b40340c2ecddb27c1e61d8d38edba6a8910fad9e21f2d0d34b"
     },
     "windows/src/AgentSpeed.Core/Monitoring/MonitorCore.cs": {
-      "reason": "Propagate source-read observations and local display-stop metadata, with realtime event cadence opt-in; preserve default monitor and rate behavior.",
-      "sha256": "3a1296ee82c70c4c2f3bb681a11091cd8e0b077cf710878c02d75197c04a4122"
+      "reason": "Propagate source-read observations, local display-stop metadata, local Claude displayTitle and realtime event cadence opt-in; preserve default monitor and rate behavior.",
+      "sha256": "45cdba3e5dbaeaf41f78fa3f6326fb4276ab2d275b1dd6b9fd2d282390ccb2ab"
     },
     "windows/src/AgentSpeed.Core/Monitoring/TrackedFile.cs": {
       "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
@@ -821,12 +821,12 @@
       "sha256": "2920a0fe7f5120bfbc27e1cd8482305c232f15232b21a1b94becba5aeeda5497"
     },
     "windows/src/AgentSpeed.Core/Parsing/ClaudeLine.cs": {
-      "reason": "Recognize explicit Claude error and interrupt markers for local stopped-state display without changing token accounting. Backport upstream b89d983 toolEndsTurn Boolean extraction on Windows, consumed only on User records; retain local error-stop parsing.",
-      "sha256": "051d14a88b80bc5f256c39f4aadd9d3ada491d399ff106bd126fdae96330a6bf"
+      "reason": "Recognize explicit Claude error and interrupt markers and upstream b89d983 toolEndsTurn; extract bounded local-only Claude task labels from agentName, title/customTitle, summary or first direct user text while preserving field-order handling and avoiding large text allocations.",
+      "sha256": "80fabb3e6443ac1b76d316d901278ff8a269f850052e6ac2d5ea08322916828b"
     },
     "windows/src/AgentSpeed.Core/Parsing/ClaudeParser.cs": {
-      "reason": "Propagate explicit Claude error/interrupt markers into local stopped-state metadata; clear it on resumed generation. Backport upstream b89d983 user toolEndsTurn completion, clearing pending request time without synthesizing tokens or requests.",
-      "sha256": "76f9d921c1df92da8cc66b96e15bd24e67e56b79702ea3e1b096d3775ff6f868"
+      "reason": "Propagate explicit Claude error/interrupt markers, toolEndsTurn completion and bounded local-only Claude display titles; do not alter token accounting or report payloads.",
+      "sha256": "996b4b23d7833ee9e1b5b2601540e89541858799f166161b5088b55bd0bf03c0"
     },
     "windows/src/AgentSpeed.Core/Parsing/CodexLine.cs": {
       "reason": "Recognize explicit Codex request/stream failure and aborted-turn markers for local stopped-state display. Backport upstream e44df87 paginated ordinal extraction while preserving local confirmed-stop parsing.",
@@ -849,8 +849,8 @@
       "sha256": "51ed60a4d314568da2fd59ee2fd1b0e99e41f373d4ba7bbbd72054739213dc5e"
     },
     "windows/src/AgentSpeed.Core/Parsing/TranscriptParser.cs": {
-      "reason": "Add local confirmed-stopped state for explicit source errors/user interrupts and reset it on resumed turns.",
-      "sha256": "7054058957aa512eba5ee46f4f10ac278c47cddafd214634f23d64b3d6d97e71"
+      "reason": "Add local confirmed-stopped state and optional displayTitle with explicit-metadata priority and rename updates, preserve the first user-text fallback, reset per-file state, and keep report data unchanged.",
+      "sha256": "4525700cd0875aa8364acd6d3fec5f9818537b24a5be3cf6df7a42af4e8ef6f6"
     },
     "windows/src/AgentSpeed.Core/Reporting/ReportBody.cs": {
       "reason": "Token Bar report client.app identity; signing protocol unchanged",
@@ -871,6 +871,10 @@
     "windows/src/AgentSpeed.Core/ZCode/ZCodeSource.cs": {
       "reason": "Attach Token Bar local source-read timing/resolution observations to ZCode source updates.",
       "sha256": "41e42ac6b1d173068b61b4cea1f3a7ed423b78d5eb6c26c5a3a31e0d4dc824bb"
+    },
+    "macos/Tests/AgentSpeedCoreTests/ParserBehaviorTests.swift": {
+      "reason": "Add local regression coverage for bounded Claude display titles, metadata precedence and rename updates, property ordering, stable fallback, per-subagent labels, Unicode/control cleanup, interrupt handling and oversized text.",
+      "sha256": "6fa28e1e924ee607a4aa18e599ad772ec28da649c436ab2c22867c95db2d653b"
     }
   },
   "repository": "https://github.com/zoefix/agent-speed",

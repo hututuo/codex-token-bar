@@ -39,6 +39,44 @@ private final class FakeClaudeLocalMonitor: ClaudeLocalRuntimeMonitoring {
 
 @MainActor
 final class ClaudeLocalRuntimeTests: XCTestCase {
+    func testLocalAgentNamesReachTheExistingTaskGroups() {
+        let now = Date()
+        var main = agent(id: "main", source: .claudeCode, project: "fixture", model: "claude-sonnet", phase: .idle, isSubagent: false, outputRate: 0, lastActivity: now)
+        main.displayTitle = "整理主任务"
+        var child = agent(id: "child", source: .claudeCode, project: "fixture", model: "claude-opus", phase: .tools, isSubagent: true, outputRate: 0, lastActivity: now, parentId: "main")
+        child.displayTitle = "检查迁移测试"
+        let projected = ClaudeLocalRuntime.project(from: coreSnapshot(timestamp: now, sources: [source(.claudeCode, available: true)], agents: [main, child]), allowedSources: [.claudeCode])
+        XCTAssertEqual(projected.running.subagents, 1)
+        XCTAssertEqual(projected.running.groups.first?.mainThread.title, "整理主任务")
+        XCTAssertEqual(projected.running.groups.first?.subagents.first?.title, "检查迁移测试")
+    }
+
+    func testBarSmoothingDoesNotChangeRawMetricAndExplicitStopClearsIt() {
+        var store: SpeedStore?
+        let runtime = ClaudeLocalRuntime { suppliedStore, configuration in
+            store = suppliedStore
+            return FakeClaudeLocalMonitor(configuration: configuration)
+        }
+        runtime.configure(preferences: claudePreferences(codeEnabled: true, desktopEnabled: false, sharedPath: "/tmp/claude-smoothing-fixture"))
+        let now = Date()
+        var active = agent(id: "main", source: .claudeCode, project: "fixture", model: "claude-sonnet", phase: .generating, isSubagent: false, outputRate: 100, lastActivity: now)
+        store?.publishLive(coreSnapshot(timestamp: now, sources: [source(.claudeCode, available: true, output: 100)], agents: [active]))
+        XCTAssertEqual(runtime.displayModelRates(allowed: ["claudeCode"], mode: .bar).reduce(0) { $0 + $1.tokensPerSecond }, 28, accuracy: 1e-8)
+        XCTAssertEqual(runtime.displayModelRates(allowed: ["claudeCode"], mode: .agentSpeed).reduce(0) { $0 + $1.tokensPerSecond }, 100, accuracy: 1e-8)
+        var finished = active
+        finished.phase = .idle
+        finished.lastActivity = now.addingTimeInterval(0.1)
+        store?.publishLive(coreSnapshot(timestamp: now.addingTimeInterval(0.1), sources: [source(.claudeCode, available: true, output: 0)], agents: [finished]))
+        XCTAssertGreaterThan(runtime.displayModelRates(allowed: ["claudeCode"], mode: .bar).reduce(0) { $0 + $1.tokensPerSecond }, 0)
+        XCTAssertTrue(runtime.displayModelRates(allowed: ["claudeCode"], mode: .agentSpeed).isEmpty)
+        active.localDisplayStopped = true
+        store?.publishLive(coreSnapshot(timestamp: now.addingTimeInterval(0.2), sources: [source(.claudeCode, available: true, output: 100)], agents: [active]))
+        XCTAssertTrue(runtime.displayModelRates(allowed: ["claudeCode"], mode: .bar).isEmpty)
+        XCTAssertEqual(runtime.snapshot.running.main, 0)
+        runtime.stop()
+        XCTAssertTrue(runtime.displayModelRates(allowed: ["claudeCode"], mode: .bar).isEmpty)
+    }
+
     func testProjectionKeepsOnlyFreshActiveClaudeAgentsAndGroupsSubagentsByOpaqueParentID() {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let mainID = "/private/session-project/main.jsonl"

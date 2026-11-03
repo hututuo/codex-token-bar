@@ -32,7 +32,94 @@ internal static class ParserCompatibilitySelfTests
         }
 
         CodexResetClearsPaginatedOrdinal();
-        Console.WriteLine($"PASS: upstream parser compatibility ({count} fixtures and Codex reset)");
+        ClaudeDisplayTitles();
+        Console.WriteLine($"PASS: upstream parser compatibility ({count} fixtures, Codex reset and Claude display titles)");
+    }
+
+    private static void ClaudeDisplayTitles()
+    {
+        var parser = new ClaudeParser("/p/session/subagents/agent-worker.jsonl", new Deduper());
+        var sink = new RecordingSink();
+        Feed(parser, sink,
+        [
+            """{"type":"user","timestamp":"2026-10-20T10:00:00Z","message":{"role":"user","content":[{"type":"tool_result","content":"ignored result"},{"type":"text","text":"<system-reminder>private reminder</system-reminder>\nInspect\u0000cache eviction\nLater context"}]}}""",
+            """{"type":"assistant","timestamp":"2026-10-20T10:00:02Z","message":{"id":"followup","model":"fixture","stop_reason":"end_turn","usage":{"output_tokens":8}}}""",
+            """{"type":"user","timestamp":"2026-10-20T10:00:03Z","message":{"role":"user","content":"later request title"}}""",
+        ]);
+        Check("claude-display-title", "title", "Inspect cache eviction", parser.DisplayTitle, sink.Describe());
+
+        var reordered = new ClaudeParser("/p/session/subagents/agent-reordered.jsonl", new Deduper());
+        Feed(reordered, new RecordingSink(),
+        [
+            """{"message":{"role":"user","content":"Late type metadata still labels this task"},"type":"user","timestamp":"2026-10-20T10:00:00Z"}""",
+        ]);
+        Check("claude-display-title-key-order", "title", "Late type metadata still labels this task", reordered.DisplayTitle, "message before type");
+
+        var explicitParser = new ClaudeParser("/p/session/subagents/agent-explicit.jsonl", new Deduper());
+        Feed(explicitParser, new RecordingSink(),
+        [
+            """{"type":"progress","title":"lower priority","agentName":"Explore"}""",
+            """{"type":"user","timestamp":"2026-10-20T10:00:00Z","message":{"role":"user","content":"fallback request"}}""",
+        ]);
+        Check("claude-agent-name-priority", "title", "Explore", explicitParser.DisplayTitle, "metadata-only record");
+
+        var customTitle = new ClaudeParser("/p/session/subagents/agent-custom-title.jsonl", new Deduper());
+        Feed(customTitle, new RecordingSink(),
+        [
+            """{"type":"progress","customTitle":"First task name"}""",
+            """{"type":"progress","customTitle":"Renamed task"}""",
+        ]);
+        Check("claude-custom-title-metadata", "title", "Renamed task", customTitle.DisplayTitle, "metadata-only rename record");
+
+        var unnamed = new ClaudeParser("/p/session/subagents/agent-unnamed.jsonl", new Deduper());
+        Feed(unnamed, new RecordingSink(),
+        [
+            """{"type":"user","timestamp":"2026-10-20T10:00:00Z","message":{"role":"user","content":[{"type":"tool_result","content":"not a title"}]}}""",
+        ]);
+        Check("claude-no-invented-title", "title", null, unnamed.DisplayTitle, "tool-result-only record");
+
+        var oversizedMetadata = new ClaudeParser("/p/session/subagents/agent-oversized.jsonl", new Deduper());
+        Feed(oversizedMetadata, new RecordingSink(),
+        [JsonSerializer.Serialize(new { type = "progress", agentName = new string('x', 20_000) })]);
+        Check("claude-oversized-metadata-title", "title", null, oversizedMetadata.DisplayTitle, "oversized metadata is skipped");
+
+        var longText = string.Concat(Enumerable.Repeat("👩‍💻e\u0301", 125));
+        var bounded = new ClaudeParser("/p/session/subagents/agent-bounded.jsonl", new Deduper());
+        Feed(bounded, new RecordingSink(),
+        [JsonSerializer.Serialize(new { type = "user", timestamp = "2026-10-20T10:00:00Z", message = new { role = "user", content = longText } })]);
+        var runes = 0;
+        if (bounded.DisplayTitle is { } boundedTitle)
+        {
+            foreach (var _ in boundedTitle.EnumerateRunes()) runes++;
+        }
+        Check("claude-title-limit", "length", 120, runes, "Unicode title cap");
+
+        var interrupt = new ClaudeParser("/p/session/subagents/agent-interrupt.jsonl", new Deduper());
+        var longInterruptText = "[Request interrupted by user" + new string('x', 20_000);
+        Feed(interrupt, new RecordingSink(),
+        [
+            """{"type":"user","timestamp":"2026-10-20T10:00:00Z","message":{"role":"user","content":"start work"}}""",
+            JsonSerializer.Serialize(new { type = "user", timestamp = "2026-10-20T10:00:02Z", message = new { role = "user", content = longInterruptText } }),
+        ]);
+        Check("claude-long-interrupt", "phase", "idle", interrupt.Phase.ToString().ToLowerInvariant(), "bounded interrupt scan");
+
+        var systemOnly = new ClaudeParser("/p/session/subagents/agent-system.jsonl", new Deduper());
+        Feed(systemOnly, new RecordingSink(),
+        [
+            """{"type":"user","timestamp":"2026-10-20T10:00:00Z","message":{"role":"user","content":[{"type":"text","text":"<system-reminder>private reminder</system-reminder>"}]}}""",
+            """{"type":"user","timestamp":"2026-10-20T10:00:02Z","message":{"role":"user","content":[{"type":"text","text":"<command-name>help</command-name>"}]}}""",
+        ]);
+        Check("claude-system-only-title", "title", null, systemOnly.DisplayTitle, "system-tag-only record");
+
+        var longUser = new ClaudeParser("/p/session/subagents/agent-long-user.jsonl", new Deduper());
+        var longUserSink = new RecordingSink();
+        Feed(longUser, longUserSink,
+        [
+            JsonSerializer.Serialize(new { type = "user", timestamp = "2026-10-20T10:00:00Z", message = new { role = "user", content = new string('x', 20_000) } }),
+            """{"type":"assistant","timestamp":"2026-10-20T10:00:02Z","message":{"id":"long-user-followup","model":"fixture","stop_reason":"end_turn","usage":{"output_tokens":9}}}""",
+        ]);
+        Check("claude-long-user-no-title", "title", null, longUser.DisplayTitle, "oversized user text is skipped for labels");
+        Check("claude-long-user-still-parses-usage", "output", 9L, longUserSink.Latest.Values.Sum(response => response.Tokens.Output), longUserSink.Describe());
     }
 
     private static void RunFixture(JsonElement fixture)

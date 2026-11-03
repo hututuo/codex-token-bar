@@ -76,6 +76,9 @@ struct AgentState: Equatable, Sendable {
     var project: String?
     /// The full working directory the transcript names (METRICS 4, 10.6); metadata only.
     var cwdPath: String?
+    /// Local display-only Claude task label. Never included in Agent Speed reports.
+    var displayTitle: String?
+    var displayTitlePriority = Int.max
     var model: String?
     var modes: ExecutionModes = .empty
     var isSubagent: Bool
@@ -110,5 +113,12 @@ struct AgentState: Equatable, Sendable {
         let name = (cwd as NSString).lastPathComponent
         if !name.isEmpty { project = name }
         if !cwd.isEmpty { cwdPath = cwd }
+    }
+
+    mutating func setDisplayTitle(_ title: String?, priority: Int) {
+        guard let title,
+              priority < displayTitlePriority || (priority == displayTitlePriority && priority < 3) else { return }
+        displayTitle = title
+        displayTitlePriority = priority
     }
 }
