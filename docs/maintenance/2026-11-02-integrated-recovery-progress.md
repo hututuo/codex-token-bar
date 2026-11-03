@@ -289,3 +289,11 @@ Windows连接寿命作平台适配：实际锁定SQLite源码的`winOpen`使用F
 
 - 已完成401证据复核：Swift最终XCTest原行为执行2323、跳过37、失败0（不能写2323通过再外加37跳过），Rust Mac1695／Win1640通过、各14 ignored、0失败；两端production各15项PASS，quota及恢复期目录可读、A未变化。formed每条lane的committed／interrupted恢复及3次独立重开证明保留。oldBPreserved=false经形成器确认是interrupted未形成B的前提，非B丢失；settled unavailable的rawPrefixPreserved=false也不是账务损失，155-token已发布投影有实际断言。根核对字段语义后记入稳定收束文件，不仅根据父run绿灯判断。
 - 在当前用户范围内完成稳定修复源码收束；所有性能FAIL继续为已知限制。产品相对40163c48无新增差异，故复用其同源码测试证据，本次不重复大构建。结论不是所有未知现场或完整安装包验收通过。
+
+### C07k · 字段合同复查及最小缺列兼容补丁
+
+- 用户要求再检查字段写错等低级对接错误。对真实TS/Rust命令、Serde、Tauri事件与参数、两端SQL投影／getter offset、暂存manifest／codec及旧字段兼容分别复核，没有据mock名称一致直接判定安全。
+- 确认Mac只读额度读取把四个cycle列视为全有／全无，部分缺列时丢弃仍存在的metadata；Rust已逐列回退。只补QuotaHistoryStore的兼容投影，固定21槽位、旧NULL row-id和每列缺省值保持；不ALTER旧表、不改迁移或性能结构。产品提交02c493fae3ccbf76df21524771cee4802a330d0e已推送，仅产品文件与PublishedModuleReadTests一个16组合回归。
+- 本机五个前端文件63项、Python3.13 native报告／formed契约17项通过。实际生产helper配既有真实SQLite驱动，旧逻辑14个partial组合不符合逐列期望，新16组合全过且typed row proof不变；两端实际暂存DDL列数与pool codec吻合。parse／helper隔离不是完整产品测试。
+- 新同源码常规[41578535879](https://github.com/hututuo/codex-token-bar/actions/runs/41578535879)及真实097[41578535851](https://github.com/hututuo/codex-token-bar/actions/runs/41578535851)运行中；已完成Mac native1695通过／14 ignored及Mac旧版选定96项通过。Swift新增用例及Windows最终结果仍待收齐。不能把401结果转记为02全过。
+- [字段复查记录](2026-11-03-final-field-contract-audit.md)列具体合同、已证实缺口及理论边界。lineage数值精度和ModelTrace usage形态均未确认实际故障，不据此扩大本轮。正式应用和用户库未动；未合main／打包／签名／发布。
