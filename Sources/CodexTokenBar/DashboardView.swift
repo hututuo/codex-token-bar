@@ -1140,7 +1140,7 @@ struct DashboardView: View {
                 Label("有压缩用量未报告 · Token、金额为已记录小计", systemImage:"exclamationmark.circle")
                     .font(.system(size:12,weight:.medium))
                     .foregroundStyle(AppTheme.accentAmber)
-                    .frame(maxWidth:.infinity,alignment:.leading)
+                    .frame(maxWidth:980,alignment:.leading)
                     .help("相关区间暂停额度反推；不会把缺失用量当作零，也不会改写原始日志。")
             }
 
