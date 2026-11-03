@@ -312,3 +312,10 @@ Windows连接寿命作平台适配：实际锁定SQLite源码的`winOpen`使用F
 - 产品／测试固定28a0dc6a7411b1caf8962bd11d5e180472f92139；根经API终核同SHA三组均completed/success：[常规41603039637](https://github.com/hututuo/codex-token-bar/actions/runs/41603039637)、[Public097 41603039546](https://github.com/hututuo/codex-token-bar/actions/runs/41603039546)、[八路形成状态41603237675](https://github.com/hututuo/codex-token-bar/actions/runs/41603237675)。Swift执行2352含跳过37、0失败；Rust Mac1729／Win1673通过，各14 ignored、0失败；双端production gate实际成功，原Win os123不再出现。
 - 八路均用固定历史Rust源码形成committed／interrupted输入，由同28源码production存储入口恢复；数值[162,310]、typed/WAL/缺失原文历史及三次独立重开材料断言通过。oldBPreserved=false的interrupted前提仍按原语义保留，不声称全部布尔值true；历史producer与输入为隔离fixture，不是用户原库或完整App安装验收。
 - 本次必要增补已在独立分支推送，源码及自动化证据收束；原规模／性能FAIL继续延期。后续仅记录结果，不合main、不打包／签名／替换／重启／发布、不操作正式用户库、不请求Anthropic。
+
+### C07n · 用户授权本机替换后的首次timer崩溃与修复
+
+- 后续用户明确授权本机替换。build991首次窗口可见，但约34秒后在 `ExactStageMaintenance.start()` 的GCD handler发生MainActor隔离SIGTRAP；原始ips保留。维护器由23cfb3ee引入，此前自动化没有实际触发它的首轮timer，不能拿窗口初现或28绿灯当成运行通过。
+- c5e3714d仅把后台handler显式标为 `@Sendable`，保留原utility队列与30秒延时、退避、消费证明；新增两项真正触发timer的回归。无数据库／费用／parser／Windows实现变化。崩溃后A/B只读quick_check均ok，A ready／929store；未重建或恢复覆盖原账。
+- 同c5标准41615246239与Public097 41615246166均success；Swift2354 executed（含37 skipped）、0失败，新timer2项实际通过。Windows标准1673 passed／14 ignored／0 fail；但prepare41615273400中Windows同一cold-waiter测试超时，打包job失败，原失败保留，未改2秒时限。Mac独立job125847167892成功，整prepare不称全绿。
+- 本机已换992，核对签名、全部asset哈希和源码c5；相同PID在首次UI后再观察45.15秒仍存活，无新992崩溃报告，之后主页精确统计更新时间18:31:55。990原程序、991故障程序、原始报告及升级前数据快照均保留。边界与完整链接见[实际崩溃修复记录](2026-11-03-stage-maintenance-startup-crash.md)。未合main、换Windows或发布。

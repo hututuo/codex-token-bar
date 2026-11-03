@@ -1,5 +1,7 @@
 # PR #8 与当前恢复分支的增补
 
+> 后续实际安装：28源码的build991在首次后台维护回调发生actor隔离崩溃；已以c5e3714d作最小线程修复并替换本机build992。原因、独立测试、同源码回归和实际启动观测见[维护定时器崩溃记录](2026-11-03-stage-maintenance-startup-crash.md)。以下28结论保留为当时的自动化证据，不能改称991安装运行通过。
+
 核查基线：本分支产品 `02c493fae3ccbf76df21524771cee4802a330d0e`，文档 HEAD `2e64e187dc7ea65ea565e58f4a82f960f5bd19b5`。外部 PR [shawway #8](https://github.com/hututuo/codex-token-bar/pull/8) 冻结在 `3cbd383f3daf3f37ab6b5ac52676895c18a5440a`，本地只抓取审计 ref。整合提交 `f6582f3d` 的父提交为 #6 的 `41058ffe` 和 #7 的 `faa06a5b`。不再整份合并。
 
 **最终状态（2026-11-03）：本次确认的增补已实现并推送至 `codex/fix-integrated-ledger-recovery`，产品及测试源码固定为 `28a0dc6a7411b1caf8962bd11d5e180472f92139`。同一 SHA 的常规、Public097、0.9.8–0.9.11 双端形成状态矩阵均已通过，结果见文末。后面的首轮红灯与定位过程保留为历史记录，不表示当前仍失败。** 终核时 #8 仍为同一 head、open/draft。
