@@ -26,6 +26,39 @@ thread_local! {
 #[cfg(all(feature = "business-store-fixture", not(test)))]
 pub(super) fn fixture_restore_count() -> u64 { FIXTURE_RESTORE_COUNT.with(|count| count.get()) }
 
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+static FIXTURE_DISCOVERY_LOOKUPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+static FIXTURE_PERSIST_LOOKUPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+pub(super) fn fixture_assert_held_lookup(before: u64, discovery: bool) -> Result<()> {
+    if crate::core::business_store_container::fixture_existing_open_count() != before {
+        return Err("production owner lookup reopened A instead of using its admitted pool".into());
+    }
+    let counter = if discovery { &FIXTURE_DISCOVERY_LOOKUPS } else { &FIXTURE_PERSIST_LOOKUPS };
+    counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
+}
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+pub(super) fn fixture_owner_lookup_report() -> Result<serde_json::Value> {
+    let discoveries = FIXTURE_DISCOVERY_LOOKUPS.load(std::sync::atomic::Ordering::Relaxed);
+    let persists = FIXTURE_PERSIST_LOOKUPS.load(std::sync::atomic::Ordering::Relaxed);
+    if discoveries == 0 || persists == 0 { return Err("production owner lookup paths did not execute".into()); }
+    // A fresh read-only open is the independent counter control. The same
+    // instrumentation must detect it; a constant zero counter cannot pass.
+    let pool = Pool::current()?;
+    let before = crate::core::business_store_container::fixture_existing_open_count();
+    drop(Container::open_read_only_existing(&pool.path, std::time::Duration::from_secs(1)).map_err(|e|e.to_string())?);
+    if crate::core::business_store_container::fixture_existing_open_count() != before + 1 {
+        return Err("fresh container open counter control did not fire".into());
+    }
+    if fixture_assert_held_lookup(before, true).is_ok() {
+        return Err("owner lookup gate accepted the fresh-open negative control".into());
+    }
+    Ok(serde_json::json!({"name":"held-owner-lookup","status":"PASS",
+        "discoveryLookups":discoveries,"persistLookups":persists,"perSourceReopens":0,"freshOpenControl":1}))
+}
+
 /// Acquire A's writer before reading a mutable job state. A deferred read
 /// snapshot cannot be upgraded after another owner commits (BUSY_SNAPSHOT),
 /// regardless of busy_timeout. Private work/read-only proofs remain deferred.
@@ -217,6 +250,11 @@ impl Pool {
     }
     fn with<T>(&self, f: impl FnOnce(&Container) -> Result<T>) -> Result<T> {
         self.access(false, f)
+    }
+    pub(super) fn existing_exact_store_spec(&self, index: &Path) -> Result<StoreSpec> {
+        crate::core::business_store_route::validate_exact_stage_container(&self.path)?;
+        self.with(|container| crate::core::business_store_route::existing_exact_store_spec_on(
+            container.connection(), index, true))
     }
     fn access<T>(&self, preparing: bool, f: impl FnOnce(&Container) -> Result<T>) -> Result<T> {
         let c = self.container.lock().map_err(|_| "暂存池锁失败")?;

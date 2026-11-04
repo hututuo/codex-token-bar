@@ -325,6 +325,9 @@ jobs:
               --require legacy_empty_manifest_requires_the_complete_known_table_contract \
               --require legacy_catalog_rejects_foreign_named_objects_depending_on_stage_tables \
               --require known_empty_partial_stage_stays_occupied_for_the_existing_restart_validator \
+              --require held_owner_lookup_rechecks_identity_and_root_versions_without_writing \
+              --require held_owner_lookup_preserves_marker_pool_and_file_fences \
+              --require held_owner_resolution_keeps_alias_conflicts_and_reservations_live \
               --require missing_and_known_empty_legacy_candidates_use_the_held_pool_without_becoming_facts \
               --require user_tables_resembling_sqlite_internals_survive_import_and_export \
               --require foreign_dependencies_resembling_sqlite_internals_invalidate_proof \

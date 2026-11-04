@@ -23,6 +23,15 @@ const IMPORT_ALIAS: &str = "tb_import_source";
 const EXPORT_ALIAS: &str = "tb_export_source";
 static BACKUP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+thread_local! {
+    static FIXTURE_EXISTING_OPENS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+pub(crate) fn fixture_existing_open_count() -> u64 {
+    FIXTURE_EXISTING_OPENS.with(|count| count.get())
+}
+
 pub(crate) type BusinessStoreResult<T> = Result<T, BusinessStoreError>;
 
 #[derive(Debug)]
@@ -245,6 +254,8 @@ impl Container {
         read_only: bool,
         timeout: Duration,
     ) -> BusinessStoreResult<Self> {
+        #[cfg(all(feature = "business-store-fixture", not(test)))]
+        FIXTURE_EXISTING_OPENS.with(|count| count.set(count.get() + 1));
         let path = path.to_path_buf();
         if std::fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_symlink())
         {
@@ -257,12 +268,19 @@ impl Container {
         };
         let connection = Connection::open_with_flags(&path, mode | OpenFlags::SQLITE_OPEN_URI)?;
         connection.busy_timeout(timeout)?;
+        Self::validate_version_on(&connection)?;
+        connection.execute_batch("PRAGMA foreign_keys=ON;")?;
+        Ok(Self { path, connection })
+    }
+
+    /// Retained connections must recheck the same root contract as a fresh
+    /// open. The caller owns the read snapshot and physical-file admission.
+    pub(crate) fn validate_version_on(connection: &Connection) -> BusinessStoreResult<()> {
         let physical_version: i64 =
             connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         if physical_version != 1 {
             return Err(BusinessStoreError::InvalidContainerVersion);
         }
-        connection.execute_batch("PRAGMA foreign_keys=ON;")?;
         let version: Option<String> = connection
             .query_row(
                 "SELECT value FROM tb_container_meta WHERE key='schema_version'",
@@ -273,7 +291,7 @@ impl Container {
         if version.as_deref() != Some(CONTAINER_SCHEMA_VERSION) {
             return Err(BusinessStoreError::InvalidContainerVersion);
         }
-        Ok(Self { path, connection })
+        Ok(())
     }
 
     pub(crate) fn path(&self) -> &Path {

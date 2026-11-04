@@ -68,6 +68,52 @@ fn raw_spec(path: &Path) -> StoreSpec {
     plain_spec(source).unwrap()
 }
 
+#[test]
+fn held_owner_resolution_keeps_alias_conflicts_and_reservations_live() {
+    let f = Fixture::new();
+    let (_, configured) = f.roots();
+    let a = f.container();
+    let index = configured.join("missing/cache/index.sqlite3");
+    let old = raw_spec(&index);
+    let original = seed(&a, &old, 465);
+    let held = Container::open_existing(&a).unwrap();
+    let connection = held.connection();
+    let changes = connection.total_changes();
+    assert_eq!(existing_exact_store_spec_on(connection, &index, true).unwrap(), old);
+    fs::create_dir_all(index.parent().unwrap()).unwrap();
+    let preferred = exact_store_spec(&index).unwrap();
+    assert_ne!(preferred, old);
+    assert_eq!(existing_exact_store_spec_on(connection, &index, true).unwrap(), old);
+    let outside = Container::open_existing(&a).unwrap();
+    outside.register(&preferred).unwrap();
+    assert_eq!(existing_exact_store_spec_on(connection, &index, true).unwrap(), old);
+    for state in ["sealed", "staging"] {
+        outside.connection().execute("UPDATE tb_stores SET state=?1 WHERE store_id=?2", rusqlite::params![state, preferred.id]).unwrap();
+        assert!(existing_exact_store_spec_on(connection, &index, true).is_err());
+        assert!(connection.is_autocommit());
+    }
+    outside.connection().execute("UPDATE tb_stores SET state='ready' WHERE store_id=?1", [&preferred.id]).unwrap();
+    assert_eq!(existing_exact_store_spec_on(connection, &index, true).unwrap(), old);
+    // A held caller's own read snapshot is respected. External WAL commits
+    // become visible on the following lookup, never half-way through this one.
+    let snapshot = connection.unchecked_transaction().unwrap();
+    assert_eq!(existing_exact_store_spec_on(&snapshot, &index, true).unwrap(), old);
+    assert_eq!(seed(&a, &preferred, 465), original);
+    assert_eq!(existing_exact_store_spec_on(&snapshot, &index, true).unwrap(), old);
+    snapshot.commit().unwrap();
+    assert!(existing_exact_store_spec_on(connection, &index, true).is_err(), "identical populated owners still need convergence before writing");
+    assert_eq!(existing_exact_store_spec_on(connection, &index, false).unwrap(), preferred);
+    outside.connection().execute(&format!("UPDATE \"{}history\" SET tokens=466", preferred.prefix), []).unwrap();
+    assert!(existing_exact_store_spec_on(connection, &index, true).is_err());
+    assert!(existing_exact_store_spec_on(connection, &index, false).is_err());
+    assert!(connection.is_autocommit());
+    assert_eq!(connection.total_changes(), changes);
+    assert_eq!(held.proof(&old).unwrap(), original);
+    assert_eq!(held.proof(&preferred).unwrap().table_counts["history"], 1);
+    fs::remove_dir_all(configured.join("missing")).unwrap();
+    assert!(existing_exact_store_spec_on(connection, &index, true).is_err(), "removing empty directories cannot hide competing owners");
+}
+
 fn catalog_version(witness: &Connection) -> i64 {
     witness
         .query_row("PRAGMA data_version", [], |row| row.get(0))

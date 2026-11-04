@@ -977,6 +977,26 @@ pub(crate) fn existing_exact_store_spec(path: &Path, writing: bool) -> Result<St
     resolve_exact_store_spec_on(container.connection(), path, writing)
 }
 
+/// Pure owner resolution on an already admitted A handle. Revalidate root
+/// versions and all historical aliases in one short read snapshot; a warm
+/// SQLite schema is reusable, but an earlier owner decision is not.
+pub(crate) fn existing_exact_store_spec_on(
+    connection: &Connection, path: &Path, writing: bool,
+) -> Result<StoreSpec, String> {
+    let resolve = |connection: &Connection| {
+        Container::validate_version_on(connection).map_err(|error| error.to_string())?;
+        resolve_exact_store_spec_on(connection, path, writing)
+    };
+    if connection.is_autocommit() {
+        let snapshot = connection.unchecked_transaction().map_err(|error| error.to_string())?;
+        let result = resolve(&snapshot)?;
+        snapshot.commit().map_err(|error| error.to_string())?;
+        Ok(result)
+    } else {
+        resolve(connection)
+    }
+}
+
 pub(crate) fn exact_stage_candidates(index: &Path, source_digest: &str) -> Result<Vec<PathBuf>, String> {
     let container = open_ready_container(&container_path()?)?;
     exact_stage_candidates_on(container.connection(), index, source_digest)

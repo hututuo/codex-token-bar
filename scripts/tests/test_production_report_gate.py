@@ -53,6 +53,8 @@ def good_report():
          "tokensWithoutRawSessions": 175, "aUnchanged": True, "retryReadOnly": True,
          "publishedCatalogEntries": 2, "catalogParserCalled": False, "catalogActionsVerified": False},
         {"name": "legacy-source-preservation", "status": "PASS", "count": 4},
+        {"name": "held-owner-lookup", "status": "PASS", "discoveryLookups": 5,
+         "persistLookups": 3, "perSourceReopens": 0, "freshOpenControl": 1},
         {"name": "rerun-and-fail-closed", "status": "PASS", "storeCount": 20},
     ]
     return {"status": "PASS", "checks": checks}
@@ -120,6 +122,19 @@ class ProductionReportGateTests(unittest.TestCase):
                 phases[0]["resumes"][1][field] = value
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
                 self.admit(report)
+
+    def test_owner_lookup_gate_requires_both_real_paths_and_a_working_open_counter(self):
+        for field, values in {
+            "discoveryLookups": [0, -1, None, True],
+            "persistLookups": [0, -1, None, True],
+            "perSourceReopens": [1, None, False],
+            "freshOpenControl": [0, None, True],
+        }.items():
+            for value in values:
+                report = good_report()
+                check(report, "held-owner-lookup")[field] = value
+                with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                    self.admit(report)
 
     def test_malformed_report_and_unexpected_scale_are_rejected(self):
         for report in (None, [], {}, {"status": "PASS", "checks": []},

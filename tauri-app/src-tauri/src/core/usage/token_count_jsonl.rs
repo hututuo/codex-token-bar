@@ -74,6 +74,11 @@ pub(crate) fn verify_native_scale_fixture(home: &Path) -> Result<serde_json::Val
 }
 
 #[cfg(all(feature = "business-store-fixture", not(test)))]
+pub(crate) fn verify_held_owner_lookup_fixture() -> Result<serde_json::Value, String> {
+    exact_usage_index::verify_held_owner_lookup_fixture()
+}
+
+#[cfg(all(feature = "business-store-fixture", not(test)))]
 pub(crate) fn run_pool_crash_step(root: &Path, point: &str, resume: bool) -> Result<serde_json::Value, String> {
     exact_usage_index::run_pool_crash_step(root,point,resume)
 }

@@ -36,6 +36,7 @@ REQUIRED_CHECKS = {
     "legacy-backfill-indexed-reconciliation": {"preservedEventIds": True, "legacyRows": 4096,
         "legacyCountCalls": 4096, "tokensAfterReplay": 20480},
     "pool-process-crash-recovery": {},
+    "held-owner-lookup": {"perSourceReopens": 0, "freshOpenControl": 1},
     "published-recovery-reads": {"oldAndNewFacts": [123, 789], "tokensWithoutRawSessions": 175,
         "aUnchanged": True, "retryReadOnly": True},
     "legacy-source-preservation": {"count": 4},
@@ -79,6 +80,10 @@ def validate_production_report(result, scale_required):
     by_name = {c["name"]: c for c in checks}
     for name, proof in REQUIRED_CHECKS.items():
         require_fields(by_name[name], {"status": "PASS", **proof}, name)
+    for field in ("discoveryLookups", "persistLookups"):
+        count = by_name["held-owner-lookup"].get(field)
+        if type(count) is not int or count <= 0:
+            raise ValueError(f"Production held owner lookup path did not execute: {field}")
     stage = by_name["exact-import-stage-and-home-scope"]
     before, after = stage.get("stageObjectsBefore"), stage.get("stageObjectsAfter")
     if type(before) is not int or type(after) is not int or before <= 0 or after < before:

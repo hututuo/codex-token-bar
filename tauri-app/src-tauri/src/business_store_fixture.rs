@@ -431,6 +431,7 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
     if std::env::var("TOKENBAR_NATIVE_SCALE").as_deref() == Ok("1") {
         checks.push(token_count_jsonl::verify_native_scale_fixture(&root.join("native-scale-home"))?);
     }
+    checks.push(token_count_jsonl::verify_held_owner_lookup_fixture()?);
     checks.push(published_recovery_read_fixture(&h1, &p)?);
     for (f, before) in &digests {
         need!(

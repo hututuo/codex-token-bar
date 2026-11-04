@@ -1,5 +1,113 @@
 use super::*;
 
+fn owner_lookup_fixture() -> (tempfile::TempDir, Pool, PathBuf, StoreSpec) {
+    let root = tempfile::tempdir().unwrap();
+    let a = root.path().join("codex-ledger.sqlite");
+    let index = root.path().join("missing/cache/index.sqlite3");
+    let target = crate::core::business_store_route::exact_store_spec(&index).unwrap();
+    let container = Container::open(&a).unwrap();
+    container.register(&target).unwrap();
+    container.into_store_connection(&target).unwrap().execute_batch(
+        "CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT);INSERT INTO metadata VALUES('published_generation','1'),('fixture_tokens','123')"
+    ).unwrap();
+    std::fs::write(format!("{}.initialized", a.display()), b"tokenbar-codex-ledger-v1\n").unwrap();
+    let pool = Pool::open(&a).unwrap();
+    (root, pool, index, target)
+}
+
+#[test]
+fn held_owner_lookup_rechecks_identity_and_root_versions_without_writing() {
+    let (_root, pool, index, target) = owner_lookup_fixture();
+    let writer = Connection::open(&pool.path).unwrap();
+    let before = pool.with(|c| Ok(c.connection().total_changes())).unwrap();
+    assert_eq!(pool.existing_exact_store_spec(&index).unwrap(), target);
+    for (column, original) in [
+        ("module", &target.module), ("source_identity", &target.source_identity),
+        ("logical_path", &target.logical_path), ("namespace_prefix", &target.prefix),
+    ] {
+        writer.execute(&format!("UPDATE tb_stores SET {column}='invalid-owner' WHERE store_id=?1"), [&target.id]).unwrap();
+        assert!(pool.existing_exact_store_spec(&index).is_err(), "{column}");
+        assert!(pool.with(|c| Ok(c.connection().is_autocommit())).unwrap());
+        writer.execute(&format!("UPDATE tb_stores SET {column}=?1 WHERE store_id=?2"), params![original, target.id]).unwrap();
+        assert_eq!(pool.existing_exact_store_spec(&index).unwrap(), target);
+    }
+    for (invalidate, restore) in [
+        ("PRAGMA user_version=9", "PRAGMA user_version=1"),
+        ("UPDATE tb_container_meta SET value='9' WHERE key='schema_version'", "UPDATE tb_container_meta SET value='1' WHERE key='schema_version'"),
+        ("DELETE FROM tb_container_meta WHERE key='schema_version'", "INSERT INTO tb_container_meta VALUES('schema_version','1')"),
+    ] {
+        writer.execute_batch(invalidate).unwrap();
+        assert!(pool.existing_exact_store_spec(&index).is_err());
+        assert!(pool.with(|c| Ok(c.connection().is_autocommit())).unwrap());
+        writer.execute_batch(restore).unwrap();
+        assert_eq!(pool.existing_exact_store_spec(&index).unwrap(), target);
+    }
+    // A single owner is a lookup result, even when it is not writable. The
+    // original resolver never promoted this lookup to target write admission.
+    for state in ["ready", "sealed", "staging"] {
+        writer.execute("UPDATE tb_stores SET state=?1 WHERE store_id=?2", params![state, target.id]).unwrap();
+        assert_eq!(pool.existing_exact_store_spec(&index).unwrap(), target);
+    }
+    writer.execute("DELETE FROM tb_stores WHERE store_id=?1", [&target.id]).unwrap();
+    let absent = pool.existing_exact_store_spec(&index).unwrap();
+    assert_eq!(absent, target, "missing owners retain the original preferred-spec fallback");
+    assert!(pool.candidates(&absent, "/fixture.jsonl").is_err(), "a missing owner cannot use cached write admission");
+    assert_eq!(pool.with(|c| Ok(c.connection().total_changes())).unwrap(), before);
+    assert_eq!(writer.query_row(&format!("SELECT value FROM {} WHERE key='fixture_tokens'", quote(&format!("{}metadata", target.prefix))), [], |r| r.get::<_, String>(0)).unwrap(), "123");
+}
+
+#[test]
+fn held_owner_lookup_preserves_marker_pool_and_file_fences() {
+    let (_root, pool, index, target) = owner_lookup_fixture();
+    let writer = Connection::open(&pool.path).unwrap();
+    assert_eq!(pool.existing_exact_store_spec(&index).unwrap(), target);
+    let marker = format!("{}.initialized", pool.path.display());
+    for contents in [None, Some(b"broken marker".as_slice())] {
+        match contents {
+            Some(bytes) => std::fs::write(&marker, bytes).unwrap(),
+            None => std::fs::remove_file(&marker).unwrap(),
+        }
+        assert!(pool.existing_exact_store_spec(&index).is_err());
+        std::fs::write(&marker, b"tokenbar-codex-ledger-v1\n").unwrap();
+        assert_eq!(pool.existing_exact_store_spec(&index).unwrap(), target);
+    }
+    writer.execute("INSERT INTO tb_container_meta VALUES('activation_state','recovering')", []).unwrap();
+    assert!(pool.existing_exact_store_spec(&index).is_err());
+    writer.execute("DELETE FROM tb_container_meta WHERE key='activation_state'", []).unwrap();
+    for (column, bad, good) in [("user_version", "9", "1"), ("state", "staging", "ready")] {
+        writer.execute(&format!("UPDATE tb_stores SET {column}=?1 WHERE store_id=?2"), params![bad, pool.store.id]).unwrap();
+        assert!(pool.existing_exact_store_spec(&index).is_err());
+        writer.execute(&format!("UPDATE tb_stores SET {column}=?1 WHERE store_id=?2"), params![good, pool.store.id]).unwrap();
+        assert_eq!(pool.existing_exact_store_spec(&index).unwrap(), target);
+    }
+    #[cfg(unix)] {
+        let parked = pool.path.with_extension("retained.sqlite");
+        std::fs::rename(&pool.path, &parked).unwrap();
+        std::os::unix::fs::symlink(&parked, &pool.path).unwrap();
+        assert!(pool.existing_exact_store_spec(&index).is_err());
+        std::fs::remove_file(&pool.path).unwrap();
+        std::fs::write(&pool.path, b"unrelated replacement").unwrap();
+        assert!(pool.existing_exact_store_spec(&index).is_err());
+        std::fs::remove_file(&pool.path).unwrap();
+        std::fs::rename(&parked, &pool.path).unwrap();
+        assert_eq!(pool.existing_exact_store_spec(&index).unwrap(), target);
+    }
+    let pool = Arc::new(pool);
+    let workers = (0..4).map(|_| {
+        let pool = pool.clone();
+        let index = index.clone();
+        let target = target.clone();
+        std::thread::spawn(move || {
+            for _ in 0..32 {
+                let owner = pool.existing_exact_store_spec(&index).unwrap();
+                assert_eq!(owner, target);
+                assert!(pool.candidates(&owner, "/missing.jsonl").unwrap().is_empty());
+            }
+        })
+    }).collect::<Vec<_>>();
+    for worker in workers { worker.join().unwrap(); }
+}
+
 #[test]
 fn pool_writer_locks_before_state_read_instead_of_upgrading_a_stale_snapshot() {
     let (_root, pool, target) = fixture();

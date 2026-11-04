@@ -6829,7 +6829,11 @@ fn build_staged_full_rebuild(
         let actual_bytes=stage_pool::Pool::footprint(raw)?;
         stage.execute("UPDATE manifest SET actual_bytes=?1 WHERE complete=1 AND artifact_id=?2",params![checked_i64(actual_bytes,"暂存实际大小")?,artifact_id]).map_err(|e|e.to_string())?;
         let pool=stage_pool::Pool::current()?;
-        let target=crate::core::business_store_route::existing_exact_store_spec(index_path, true)?;
+        #[cfg(feature = "business-store-fixture")]
+        let lookup_opens = crate::core::business_store_container::fixture_existing_open_count();
+        let target=pool.existing_exact_store_spec(index_path)?;
+        #[cfg(feature = "business-store-fixture")]
+        stage_pool::fixture_assert_held_lookup(lookup_opens, false)?;
         // All numeric identity fields are decimal strings; no JSON number can
         // round a timestamp/Int64 or change the typed payload codec.
         let contract=serde_json::to_vec(&serde_json::json!([
@@ -7964,9 +7968,15 @@ fn staging_database_paths(index_path: &Path, source_path: &str) -> Result<Vec<Pa
     let candidate_prefix = format!("{digest}.candidate-");
     let mut paths = vec![primary.clone()];
     #[cfg(not(test))]
-    let pooled=stage_pool::Pool::current()?.candidates(&crate::core::business_store_route::existing_exact_store_spec(index_path, true)?,source_path)?;
+    let pool=stage_pool::Pool::current()?;
+    #[cfg(all(feature = "business-store-fixture", not(test)))]
+    let lookup_opens = crate::core::business_store_container::fixture_existing_open_count();
     #[cfg(not(test))]
-    paths.extend(stage_pool::Pool::current()?.legacy_candidates(index_path, &digest)?);
+    let pooled=pool.candidates(&pool.existing_exact_store_spec(index_path)?,source_path)?;
+    #[cfg(all(feature = "business-store-fixture", not(test)))]
+    stage_pool::fixture_assert_held_lookup(lookup_opens, true)?;
+    #[cfg(not(test))]
+    paths.extend(pool.legacy_candidates(index_path, &digest)?);
     let entries = match fs::read_dir(&directory) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -12377,6 +12387,11 @@ pub(super) fn verify_backfill_performance_fixture(home: &Path) -> Result<serde_j
 #[cfg(all(feature = "business-store-fixture", not(test)))]
 pub(super) fn verify_native_scale_fixture(home: &Path) -> Result<serde_json::Value, String> {
     ledger::verify_scale_fixture(home)
+}
+
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+pub(super) fn verify_held_owner_lookup_fixture() -> Result<serde_json::Value, String> {
+    stage_pool::fixture_owner_lookup_report()
 }
 
 #[cfg(all(feature = "business-store-fixture", not(test)))]

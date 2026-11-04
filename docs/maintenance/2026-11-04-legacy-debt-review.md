@@ -54,6 +54,14 @@
 
 ## 已完成验证
 
+### 2026-11-05补充：Rust每来源重复开库
+
+冻结的c91e9ecd完整Rust生产压力在backfill阶段已超过原600秒门槛。超限后3秒采样显示多个worker在`staging_database_paths → existing_exact_store_spec → Container::open_read_only_existing → sqlite3ReadSchema`重复加载25,000个旧对象。运行总计38分54秒、观察到1,109个新sealed任务时，根保存隔离现场并终止单一fixture进程；该次结果是FAIL，最终数值核对与P95未完成。不能把这段采样外推成完整耗时占比。证据为`rust-production-scale-frozen-interruption.json`及原始日志／采样；原数据库继续保留。
+
+后续小补丁只把候选发现和新stage持久化前的两处目标lookup接到已经打开的Pool连接。每次仍重新执行原ExactAddress别名、空预约与多历史owner判定；根版本与owner查询处于同一短只读快照，Pool的marker／物理文件／activation／自身版本检查保留。没有缓存owner结果或添加原lookup没有的target状态限制，原bootstrap／缺A wrapper仍保留。Container的新开库和复用连接共用同一根版本检查函数。
+
+新增真实单测覆盖热连接后的四身份字段修改、根版本错误及恢复、缺owner、single owner状态、marker损坏、Pool状态、A替换、并发lookup、空预约和同值／不同值双历史、外部WAL提交与调用者快照。非test生产fixture在两个实际调用点计数并要求每源重开为0，且用一次真实fresh open证明计数门禁会拒绝反例；CI同时要求两处确实执行。首轮三项单测及23项脚本门禁通过；冻结源码后的完整生产复验另行记录，不沿用c91中断结果。
+
 - Swift扩大回归：275项执行，270通过，5项显式选择才运行的测试跳过，0失败。跳过的是实际本地历史全量扫描、两项本地数值／元数据审计、两项额外产品渲染；这些不算已验收。
 - Rust真实产品存储回归104项、stage_pool回归11项通过；新反例均有保留的改前失败记录。
 - 非test Rust生产fixture曾在前一实现快照通过15场景及8个中断相位×3次重启；本次前缀修复后已重新构建，将对冻结源码重新验证。独立模块探针不能替代这个结果。
