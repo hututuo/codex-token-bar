@@ -383,11 +383,15 @@ def parse_report(text: str, phase: str, release: str, scenario: str) -> dict:
     if len(matches) != 1:
         raise ValueError("Expected one actual production report")
     value = matches[0]
+    if not isinstance(value, dict):
+        raise ValueError("Expected a production proof object")
     expected = dict(status="PASS", phase=phase, producerVersion=release, scenario=scenario,
         cfgTest=False, totals=[162, 310], oldTypedProofsPreserved=True, crashWALPreserved=True,
         rawDisappearanceRetainsHistory=True, oldBPreserved=scenario=="committed")
     for key, item in expected.items():
-        if value.get(key) != item:
+        observed = value.get(key)
+        if (type(observed) is not type(item) or observed != item
+                or isinstance(item, list) and any(type(v) is not int for v in observed)):
             raise ValueError(f"Invalid production proof {key}: {value.get(key)!r}, expected {item!r}")
     return value
 

@@ -81,6 +81,8 @@ class NativeScaleRunnerTests(unittest.TestCase):
             "name": "exact-rust-production-scale-fixture", "status": "PROFILED",
             "sourceCounts": 4124, "events": 503128,
             "stores": {"seededEmptyCandidateNamespaces": 6250}, "budgetPassed": True,
+            "budget": {"backfillSecondsMax": 600.0, "unchangedP95SecondsMax": 1.0},
+            "backfillSeconds": 300.0, "unchangedP95": 0.5,
             "correctness": {"rawAccountingDigestBefore": "a" * 64, "rawAccountingDigestAfter": "a" * 64},
         }]}
 
@@ -110,3 +112,12 @@ class NativeScaleRunnerTests(unittest.TestCase):
             invalid["checks"][0]["correctness"] = proof
             with self.assertRaises(ValueError):
                 module.validate_native_scale(invalid, True)
+
+    def test_reported_pass_cannot_override_the_original_timing_limits(self):
+        for field, value in (("backfillSeconds", 600.01), ("unchangedP95", 1.001),
+                             ("backfillSeconds", float("nan")), ("unchangedP95", True),
+                             ("unchangedP95", -1), ("budget", {"backfillSecondsMax": 1200.0, "unchangedP95SecondsMax": 2.0})):
+            profile = self.profile()
+            profile["checks"][0][field] = value
+            with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                module.validate_native_scale(profile, True)

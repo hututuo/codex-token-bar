@@ -90,6 +90,16 @@ print("TOKENBAR_FORMED_REPORT " + json.dumps(report, separators=(",", ":")))
             with self.subTest(field=field), self.assertRaises(ValueError):
                 probe.parse_report(self.report(**{field:value}), 'resume', '0.9.8', 'committed')
 
+    def test_numeric_boolean_substitutes_and_malformed_proofs_cannot_pass(self):
+        for field, value in [('cfgTest', 0), ('oldTypedProofsPreserved', 1),
+                             ('crashWALPreserved', 1), ('oldBPreserved', 1),
+                             ('rawDisappearanceRetainsHistory', 1), ('totals', [162.0, 310])]:
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                probe.parse_report(self.report(**{field: value}), 'resume', '0.9.8', 'committed')
+        for payload in ('null', '[]', 'true'):
+            with self.subTest(payload=payload), self.assertRaises(ValueError):
+                probe.parse_report(probe.PREFIX + payload, 'resume', '0.9.8', 'committed')
+
     def test_no_duplicate_or_absent_proof_can_pass(self):
         for text in ('', self.report()+'\n'+self.report()):
             with self.assertRaises(ValueError):

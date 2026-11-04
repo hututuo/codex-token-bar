@@ -45,6 +45,8 @@ def evaluate_expression(expression, *, event_name='workflow_dispatch', inputs=No
         'formed_only': False,
         'formed_release': '',
         'formed_platform': 'all',
+        'claude_reader_only': False,
+        'claude_usage_only': False,
     }
     input_values.update(inputs)
     need_values = {
@@ -94,15 +96,47 @@ class BackfillScaleWorkflowTests(unittest.TestCase):
         self.assertEqual(regression['if'], '${{ !cancelled() }}')
         self.assertEqual(regression['env']['TOKENBAR_DIAGNOSTIC_PROFILE'], "${{ inputs.scale && '1' || '' }}")
         guard = next(step for step in steps if step.get('name', '').startswith('Require the production fixture'))
-        self.assertEqual(guard['if'], 'always()')
+        self.assertEqual(guard['if'], '${{ always() && !inputs.claude_usage_only }}')
         self.assertIn('steps.production_fixture.outcome', guard['env']['FIXTURE_OUTCOME'])
         self.assertEqual(guard['run'], 'test "$FIXTURE_OUTCOME" = success')
+
+    def test_standard_lanes_require_actual_safety_test_execution_and_keep_decisions(self):
+        cases = (
+            ('swift', 'Swift tests and release-script contracts', 'swift-tests.log', [
+                'testDestructiveRetryRejectsMissingOrChangedHistoryAndKeepsThePublishedImage',
+                'testRecoveryLogAllowsOnlyFixedMetadataFields',
+                'testDisabledUnavailableAndWriteFailedDiagnosticsPreserveActualMigrationAndNewAccounting']),
+            ('native', 'Full native regression including original pressure case', 'native-library.log', [
+                'panic_guard_notifies_an_already_waiting_cold_reader',
+                'malformed_or_missing_state_stays_an_error_and_is_not_created',
+                'disk_failure_and_full_queue_return_status_without_panicking',
+                'diagnostics_modes_never_change_managed_legacy_import_or_later_target_rows']),
+        )
+        for job_name, name, log, required in cases:
+            steps = self.ci['jobs'][job_name]['steps']
+            step = next(s for s in steps if s.get('name') == name)
+            self.assertNotIn('continue-on-error', step)
+            self.assertIn('scripts/check_test_execution.py', step['run'])
+            self.assertIn('--log ' + log, step['run'])
+            self.assertIn('--source-sha "$SOURCE_SHA"', step['run'])
+            for test in required: self.assertIn('--require ' + test, step['run'])
+            self.assertTrue(any('*.execution.json' in s.get('with', {}).get('path', '')
+                                and s.get('if') == 'always()' for s in steps))
+        frontend = self.ci['jobs']['frontend']['steps']
+        for directory in ('tauri-app/src', 'scripts/cloud'):
+            step = next(s for s in frontend if s.get('run', '').startswith('node scripts/cloud/run-node-tests.mjs ' + directory))
+            self.assertIn('--no-skips', step['run'])
+            self.assertIn('TOKENBAR_NODE_EXECUTION_REPORT', step['env'])
 
     def test_scale_only_skips_standard_jobs_and_never_emits_full_ci_evidence(self):
         jobs = self.ci['jobs']
         for name in ('frontend', 'swift', 'native', 'windows-updater'):
             with self.subTest(job=name):
-                self.assertEqual(jobs[name]['if'], '${{ !inputs.formed_only && !inputs.scale_only }}')
+                self.assertTrue(evaluate_expression(jobs[name]['if']))
+                for mode in ('formed_only', 'scale_only', 'claude_reader_only'):
+                    self.assertFalse(evaluate_expression(jobs[name]['if'], inputs={mode: True}))
+                self.assertEqual(evaluate_expression(jobs[name]['if'], inputs={'claude_usage_only': True}),
+                                 name in ('swift', 'native'))
                 self.assertEqual(jobs[name]['needs'], 'source')
         self.assertEqual(
             jobs['formed-upgrade']['if'],
@@ -143,9 +177,19 @@ class BackfillScaleWorkflowTests(unittest.TestCase):
             results={**passing, 'frontend': 'skipped', 'swift': 'skipped', 'native': 'skipped',
                      'windows-updater': 'skipped', 'scale': 'success'},
         ))
-        self.assertFalse(evaluate_expression(
+        # The evidence job now executes on failure to retain a FAIL decision;
+        # check_ci_evidence.py still refuses the success seal (CLI negative controls).
+        self.assertTrue(evaluate_expression(
             evidence['if'], inputs={'scale': True}, results={**passing, 'scale': 'failure'}
         ))
+        for mode in ('claude_reader_only', 'claude_usage_only', 'formed_only'):
+            self.assertFalse(evaluate_expression(evidence['if'], inputs={mode: True}, results=passing))
+        seal = next(step for step in evidence['steps'] if step.get('name') == 'Seal successful check identity')
+        self.assertIn('check_ci_evidence.py', seal['run'])
+        self.assertEqual(seal['env']['JOB_OUTCOMES'], '${{ toJSON(needs) }}')
+        uploads = [step for step in evidence['steps'] if step.get('uses', '').startswith('actions/upload-artifact@')]
+        self.assertEqual(next(step for step in uploads if step['with']['path'] == 'ci-execution.json')['if'], 'always()')
+        self.assertNotIn('if', next(step for step in uploads if step['with']['path'] == 'checked-source.json'))
 
     def test_exact_sha_is_checked_and_the_same_resolved_sha_flows_to_scale(self):
         source = self.ci['jobs']['source']

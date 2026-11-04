@@ -3,12 +3,109 @@
 
 import argparse
 import json
+import math
 import re
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+
+
+REQUIRED_CHECKS = {
+    "bootstrap": {},
+    "concurrent-a-write-probe": {},
+    "public-read-only-routing": dict.fromkeys(("startupReadRefused", "concurrentPublisherRead",
+        "uncommittedValueHidden", "mainWriteRefused", "unknownPartitionNotRegistered"), True),
+    "quota": {"activeRows": 1, "legacyFacts": [1, 2]},
+    "modeltrace": {"runs": 2},
+    "body-speed": {"samples": 2, "trendPoints": 1},
+    "ledger-b": {"rows": 1},
+    "exact-import-stage-and-home-scope": {"homeOneTokens": 175, "homeTwoTokens": 240},
+    "exact-concurrent-a-write-observed": {},
+    "runtime-recovery-production-path": {
+        "tokensAfterReplay": 175,
+        **dict.fromkeys(("externalStateReadOnly", "invalidCandidateRejected", "legacyCheckpointMismatch",
+            "legacyStateColumnsReadWithoutImport", "liveStateRefreshed", "namespaceCandidateResumed",
+            "oldStagePreserved"), True),
+        "fixedPool": {"catalogGrowth": 0, "storeGrowth": 0, "jobs": 13,
+            **dict.fromkeys(("idempotentCleanup", "publicationRollback", "readOnly", "typedTempAlias"), True),
+            "legacy": {"buildingKept": True, "changedEvidenceKept": True, "idempotent": True,
+                "publishedTokens": 134, "rollback": True}},
+    },
+    "legacy-backfill-indexed-reconciliation": {"preservedEventIds": True, "legacyRows": 4096,
+        "legacyCountCalls": 4096, "tokensAfterReplay": 20480},
+    "pool-process-crash-recovery": {},
+    "published-recovery-reads": {"oldAndNewFacts": [123, 789], "tokensWithoutRawSessions": 175,
+        "aUnchanged": True, "retryReadOnly": True},
+    "legacy-source-preservation": {"count": 4},
+    "rerun-and-fail-closed": {},
+}
+CRASH_PHASES = ("initialize-before-commit", "chunk-committed", "seal-before-commit", "seal-committed",
+                "publication-before-commit", "publication-committed", "cleanup-before-commit", "cleanup-committed")
+SCALE_CHECK = "exact-rust-production-scale-fixture"
+
+
+def require_fields(actual, expected, context):
+    """Compare typed proofs; in Python True must not stand in for one row."""
+    if type(actual) is not type(expected):
+        raise ValueError(f"Invalid production proof type: {context}")
+    if isinstance(expected, dict):
+        for key, value in expected.items():
+            if key not in actual:
+                raise ValueError(f"Missing production proof: {context}.{key}")
+            require_fields(actual[key], value, f"{context}.{key}")
+    elif isinstance(expected, list):
+        if len(actual) != len(expected):
+            raise ValueError(f"Invalid production proof length: {context}")
+        for index, (value, wanted) in enumerate(zip(actual, expected)):
+            require_fields(value, wanted, f"{context}[{index}]")
+    elif actual != expected:
+        raise ValueError(f"Invalid production proof: {context}")
+
+
+def validate_production_report(result, scale_required):
+    require_fields(result, {"status": "PASS"}, "report")
+    checks = result.get("checks")
+    if not isinstance(checks, list) or any(not isinstance(c, dict) for c in checks):
+        raise ValueError("Missing or invalid production checks")
+    names = [c.get("name") for c in checks]
+    if any(not isinstance(name, str) for name in names) or len(set(names)) != len(names):
+        raise ValueError("Invalid or duplicate production check names")
+    expected_names = set(REQUIRED_CHECKS) | ({SCALE_CHECK} if scale_required else set())
+    if set(names) != expected_names:
+        raise ValueError(f"Production check set mismatch: missing={sorted(expected_names - set(names))}, "
+                         f"unexpected={sorted(set(names) - expected_names)}")
+    by_name = {c["name"]: c for c in checks}
+    for name, proof in REQUIRED_CHECKS.items():
+        require_fields(by_name[name], {"status": "PASS", **proof}, name)
+    stage = by_name["exact-import-stage-and-home-scope"]
+    before, after = stage.get("stageObjectsBefore"), stage.get("stageObjectsAfter")
+    if type(before) is not int or type(after) is not int or before <= 0 or after < before:
+        raise ValueError("Legacy stage recovery evidence was removed")
+    phases = by_name["pool-process-crash-recovery"].get("phases")
+    if not isinstance(phases, list) or len(phases) != len(CRASH_PHASES):
+        raise ValueError("Missing crash recovery phases")
+    seen = set()
+    for case in phases:
+        if not isinstance(case, dict) or case.get("phase") not in CRASH_PHASES or case["phase"] in seen:
+            raise ValueError("Invalid or duplicate crash recovery phase")
+        phase = case["phase"]
+        seen.add(phase)
+        require_fields(case, {"forcedExit": 86}, phase)
+        resumes = case.get("resumes")
+        if not isinstance(resumes, list) or len(resumes) != 3:
+            raise ValueError(f"Expected three independent reopens: {phase}")
+        for index, proof in enumerate(resumes):
+            require_fields(proof, {"status": "PASS", "phase": phase, "oldTokens": 123,
+                "publishedTokens": 134, "publicationReceipts": 1, "reclaimIdempotent": True,
+                "repeatedStartupChecks": 3}, f"{phase}.resume[{index}]")
+            if type(proof.get("alreadyRecovered")) is not bool or (index > 0 and not proof["alreadyRecovered"]):
+                raise ValueError(f"Repeated reopen was not already recovered: {phase}")
+    validate_concurrent_probe(result)
+    if scale_required:
+        require_fields(by_name[SCALE_CHECK], {"status": "PROFILED"}, SCALE_CHECK)
+    validate_native_scale(result, scale_required)
 
 
 def validate_concurrent_probe(result):
@@ -41,11 +138,20 @@ def validate_native_scale(result, required):
     profile = profiles[0]
     if profile.get("sourceCounts") != 4124 or profile.get("events") != 503128:
         raise ValueError("Native pressure input changed")
-    if profile.get("stores", {}).get("seededEmptyCandidateNamespaces") != 6250:
+    stores = profile.get("stores")
+    if not isinstance(stores, dict) or stores.get("seededEmptyCandidateNamespaces") != 6250:
         raise ValueError("Native large-catalog pressure was omitted")
     if profile.get("budgetPassed") is not True:
         raise ValueError("Native scale exceeded its unchanged/backfill budget; full profile retained")
+    # Keep the original limits independently of the producer's PASS flag.
+    require_fields(profile.get("budget"), {"backfillSecondsMax": 600.0, "unchangedP95SecondsMax": 1.0}, "scale.budget")
+    for field, maximum in (("backfillSeconds", 600.0), ("unchangedP95", 1.0)):
+        value = profile.get(field)
+        if type(value) not in (int, float) or not math.isfinite(value) or value < 0 or value > maximum:
+            raise ValueError(f"Native scale exceeds or lacks its original {field} budget")
     proof = profile.get("correctness", {})
+    if not isinstance(proof, dict):
+        raise ValueError("Native typed raw accounting proof is missing")
     before = proof.get("rawAccountingDigestBefore")
     if not isinstance(before, str) or re.fullmatch(r"[0-9a-f]{64}", before) is None or proof.get("rawAccountingDigestAfter") != before:
         raise ValueError("Native typed raw accounting proof is missing or changed")
@@ -64,6 +170,11 @@ def main():
     args = parser.parse_args()
     if os.environ.get("GITHUB_ACTIONS") != "true":
         raise SystemExit("This launcher requires a hosted Actions disposable workspace.")
+    log_path = args.output.with_suffix(".log")
+    validation_path = args.output.with_suffix(".validation.json")
+    for path in (args.output, log_path, validation_path):
+        if path.exists() or path.is_symlink():
+            raise SystemExit(f"Refusing to overwrite fixture evidence: {path}")
     base = os.environ.get("RUNNER_TEMP") if os.name == "nt" else tempfile.gettempdir()
     if not base:
         raise SystemExit("Missing hosted temp directory")
@@ -100,18 +211,21 @@ def main():
     if completed.stderr:
         print(completed.stderr, end="")
     print(completed.stdout, end="")
-    if completed.returncode:
-        raise SystemExit(completed.returncode)
-    result = json.loads(completed.stdout)
-    if result.get("status") != "PASS":
-        raise SystemExit("Production-path fixture did not pass")
+    decision = {"status": "FAIL", "producerExitCode": completed.returncode,
+                "fixtureRootRetained": True, "fixtureRoot": str(root)}
+    try:
+        if completed.returncode:
+            raise ValueError(f"Production-path fixture exited {completed.returncode}")
+        result = json.loads(completed.stdout)
+        validate_production_report(result, env.get("TOKENBAR_NATIVE_SCALE") == "1")
+    except ValueError as error:
+        decision["error"] = str(error)
+        validation_path.write_text(json.dumps(decision, indent=2) + "\n", encoding="utf-8")
+        raise SystemExit(completed.returncode or str(error)) from error
     result["fixtureRootRetained"] = True
     args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    try:
-        validate_concurrent_probe(result)
-        validate_native_scale(result, env.get("TOKENBAR_NATIVE_SCALE") == "1")
-    except ValueError as error:
-        raise SystemExit(str(error)) from error
+    decision["status"] = "PASS"
+    validation_path.write_text(json.dumps(decision, indent=2) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

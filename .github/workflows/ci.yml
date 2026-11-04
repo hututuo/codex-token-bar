@@ -102,6 +102,10 @@ jobs:
         run: python3 -m unittest discover -s scripts/tests -p 'test_backfill_scale_workflow.py'
       - name: Verify native scale report admission
         run: python3 -m unittest discover -s scripts/tests -p 'test_native_scale_runner.py'
+      - name: Verify recovery evidence gates and negative controls
+        run: |
+          python3 -m unittest discover -s scripts/tests -p 'test_*gate.py'
+          python3 -m unittest discover -s scripts/tests -p 'test_formed_release*.py'
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
@@ -109,12 +113,23 @@ jobs:
           cache-dependency-path: tauri-app/package-lock.json
       - run: npm ci --registry=https://registry.npmjs.org
         working-directory: tauri-app
-      - run: node scripts/cloud/run-node-tests.mjs tauri-app/src
-      - run: node --test scripts/cloud/*.test.mjs
+      - run: node scripts/cloud/run-node-tests.mjs tauri-app/src --no-skips
+        env:
+          TOKENBAR_NODE_EXECUTION_REPORT: frontend.execution.json
+      - run: node scripts/cloud/run-node-tests.mjs scripts/cloud --no-skips
+        env:
+          TOKENBAR_NODE_EXECUTION_REPORT: cloud-scripts.execution.json
       - run: npm run build
         working-directory: tauri-app
       - run: npm audit --omit=dev --audit-level=high --registry=https://registry.npmjs.org
         working-directory: tauri-app
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: frontend-execution-${{ needs.source.outputs.sha }}-${{ github.run_id }}
+          path: '*.execution.json'
+          if-no-files-found: error
+          retention-days: 7
 
   swift:
     needs: source
@@ -151,14 +166,23 @@ jobs:
         env:
           TOKENBAR_DIAGNOSTIC_PROFILE: ${{ inputs.scale && '1' || '' }}
           CLAUDE_USAGE_ONLY: ${{ inputs.claude_usage_only || false }}
+          SOURCE_SHA: ${{ needs.source.outputs.sha }}
+          TOKENBAR_NODE_EXECUTION_REPORT: release-scripts.execution.json
         run: |
           set -o pipefail
           mkdir -p visual-previews
           if [[ "$CLAUDE_USAGE_ONLY" == true ]]; then
-            swift test --filter 'MultiClientUsage|ClaudeDesktopQuotaHistory|ClaudeLocalQuota|MultiClientQuotaAutodiscovery|MultiClientProduct|IntegratedClientPresentation' 2>&1 | tee swift-tests.log
+            python3 scripts/check_test_execution.py --kind swift --log swift-tests.log --source-sha "$SOURCE_SHA" -- \
+              swift test --filter 'MultiClientUsage|ClaudeDesktopQuotaHistory|ClaudeLocalQuota|MultiClientQuotaAutodiscovery|MultiClientProduct|IntegratedClientPresentation'
             exit 0
           fi
-          swift test 2>&1 | tee swift-tests.log
+          python3 scripts/check_test_execution.py --kind swift --log swift-tests.log --source-sha "$SOURCE_SHA" \
+            --require testLegacyOptionalColumnCombinationsStayReadableAndUnchanged \
+            --require testLegacyMetadataAndDashboardAllKeepExistingFields \
+            --require testDestructiveRetryRejectsMissingOrChangedHistoryAndKeepsThePublishedImage \
+            --require testBufferedRecordsFlushAtCloseAndContainOnlyStructuredDiagnostics \
+            --require testRecoveryLogAllowsOnlyFixedMetadataFields \
+            --require testDisabledUnavailableAndWriteFailedDiagnosticsPreserveActualMigrationAndNewAccounting -- swift test
           npm ci --prefix tauri-app --registry=https://registry.npmjs.org
           node scripts/cloud/run-node-tests.mjs scripts 2>&1 | tee release-script-tests.log
       - name: Preserve hosted crash diagnostics on failure
@@ -172,6 +196,7 @@ jobs:
           name: swift-check-logs-${{ github.run_id }}
           path: |
             *.log
+            *.execution.json
             hosted-diagnostics/
           retention-days: 7
       - name: Upload production-view visual previews
@@ -270,13 +295,21 @@ jobs:
         env:
           TOKENBAR_DIAGNOSTIC_PROFILE: ${{ inputs.scale && '1' || '' }}
           CLAUDE_USAGE_ONLY: ${{ inputs.claude_usage_only || false }}
+          SOURCE_SHA: ${{ needs.source.outputs.sha }}
         shell: bash
         run: |
           set -euo pipefail
           if [[ "$CLAUDE_USAGE_ONLY" == true ]]; then
-            cargo test --locked --manifest-path tauri-app/src-tauri/Cargo.toml --lib multi_client_ -- --test-threads=1 2>&1 | tee native-library.log
+            python scripts/check_test_execution.py --kind rust --log native-library.log --source-sha "$SOURCE_SHA" -- \
+              cargo test --locked --manifest-path tauri-app/src-tauri/Cargo.toml --lib multi_client_ -- --test-threads=1
           else
-            cargo test --locked --manifest-path tauri-app/src-tauri/Cargo.toml --lib -- --test-threads=1 2>&1 | tee native-library.log
+            python scripts/check_test_execution.py --kind rust --log native-library.log --source-sha "$SOURCE_SHA" \
+              --require legacy_options_accept_each_optional_column_combination_without_writing \
+              --require malformed_or_missing_state_stays_an_error_and_is_not_created \
+              --require disk_failure_and_full_queue_return_status_without_panicking \
+              --require diagnostics_modes_never_change_managed_legacy_import_or_later_target_rows \
+              --require panic_guard_notifies_an_already_waiting_cold_reader -- \
+              cargo test --locked --manifest-path tauri-app/src-tauri/Cargo.toml --lib -- --test-threads=1
           fi
       - name: Windows packaging self-test
         if: ${{ runner.os == 'Windows' && !inputs.claude_usage_only }}
@@ -296,7 +329,9 @@ jobs:
           name: native-check-logs-${{ matrix.os }}-${{ github.run_id }}
           path: |
             *.log
+            *.execution.json
             runtime-recovery-production.json
+            runtime-recovery-production.validation.json
             tauri-app/src-tauri/target/debug/examples/business-store-fixture.exe
           retention-days: 7
 
@@ -366,19 +401,30 @@ jobs:
 
   evidence:
     needs: [source, frontend, swift, native, windows-updater, formed-upgrade, scale]
-    if: ${{ always() && !inputs.formed_only && !inputs.scale_only && needs.source.result == 'success' && needs.frontend.result == 'success' && needs.swift.result == 'success' && needs.native.result == 'success' && needs.windows-updater.result == 'success' && (needs.formed-upgrade.result == 'success' || needs.formed-upgrade.result == 'skipped') && (needs.scale.result == 'success' || needs.scale.result == 'skipped') }}
+    if: ${{ always() && !inputs.formed_only && !inputs.scale_only && !inputs.claude_reader_only && !inputs.claude_usage_only && needs.source.result == 'success' }}
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.source.outputs.sha }}
       - name: Seal successful check identity
         env:
           SOURCE_SHA: ${{ needs.source.outputs.sha }}
+          JOB_OUTCOMES: ${{ toJSON(needs) }}
+          FORMED_REQUESTED: ${{ inputs.formed_release != '' && true || false }}
+          SCALE_REQUESTED: ${{ inputs.scale && true || false }}
         run: |
-          python3 - <<'PY'
-          import json, os, pathlib
-          pathlib.Path('checked-source.json').write_text(json.dumps({
-            'source_sha':os.environ['SOURCE_SHA'],'run_id':os.environ['GITHUB_RUN_ID'],'passed':True
-          })+'\n')
-          PY
+          python3 scripts/cloud/check_ci_evidence.py --needs "$JOB_OUTCOMES" \
+            --source-sha "$SOURCE_SHA" --run-id "$GITHUB_RUN_ID" \
+            --formed-requested "$FORMED_REQUESTED" --scale-requested "$SCALE_REQUESTED"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: ci-execution-${{ needs.source.outputs.sha }}-${{ github.run_id }}
+          path: ci-execution.json
+          if-no-files-found: error
+          retention-days: 30
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ci-passed-${{ needs.source.outputs.sha }}
