@@ -96,6 +96,13 @@ final class ExactStagePool: @unchecked Sendable {
     private var workOrder: [String] = []
     private var legacyCatalogVersion: Int?
     private var legacyObjectCatalog: [String: [(String, String)]] = [:]
+    #if DEBUG
+    private var beforeLegacyCopy: (() throws -> Void)?
+    func beforeNextLegacyCopyForTesting(_ body: @escaping () throws -> Void) {
+        lock.lock(); defer { lock.unlock() }
+        beforeLegacyCopy = body
+    }
+    #endif
     private static let names = ["operations", "jobs", "event_rows", "fingerprints", "chunks", "publication_receipts"]
     private static let payloadTables = ["events": "event_rows", "fingerprints": "fingerprints", "chunks": "chunks"]
 
@@ -181,7 +188,7 @@ final class ExactStagePool: @unchecked Sendable {
         func normalized(_ sql: String) throws -> [String] {
             try SQLiteStoreNamespace.tokens(sql).filter { $0.kind != .trivia && $0.raw != ";" }.map(\.raw)
         }
-        let actual = try handle.db.readRows("SELECT name,sql FROM main.sqlite_master WHERE substr(name,1,?)=? AND name NOT LIKE 'sqlite_%'",
+        let actual = try handle.db.readRows("SELECT name,sql FROM main.sqlite_master WHERE substr(name,1,?)=? AND lower(substr(name,1,7)) <> 'sqlite_'",
             bindings: [.int(store.prefix.count), .text(store.prefix)]) { ($0.text(0) ?? "", $0.text(1) ?? "") }
         let dictionary = Dictionary(uniqueKeysWithValues: actual)
         guard dictionary.count == schema.count else { throw Failure.unsupported }
@@ -295,7 +302,7 @@ final class ExactStagePool: @unchecked Sendable {
     }
 
     func persist(_ job: Job, from source: SQLiteDatabaseConnection) throws {
-        let names = try source.readRows("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name") { $0.text(0) ?? "" }
+        let names = try source.readRows("SELECT name FROM sqlite_master WHERE type='table' AND lower(substr(name,1,7)) <> 'sqlite_' ORDER BY name") { $0.text(0) ?? "" }
         guard names == ExactStageSchema.tables.sorted(),
               try source.readRows("SELECT COUNT(*) FROM manifest", map: { $0.int(0) }).first == 1,
               try source.readRows("SELECT COUNT(*) FROM manifest WHERE complete=1", map: { $0.int(0) }).first == 1,
@@ -411,11 +418,17 @@ final class ExactStagePool: @unchecked Sendable {
     /// every manifest/count query or changing the old artifact in place.
     func restoreLegacy(_ legacy: BusinessSQLiteStore) throws -> SQLiteTemporaryDatabase? {
         guard legacy.module == "exact.swift.stage", legacy.containerURL == store.containerURL else { throw Failure.invalid }
-        return try use { db in
+        return try use { db in try db.readTransaction { db in
             guard let seal = try legacySeal(legacy, on: db) else { return nil }
             let namespace = SQLiteStoreNamespace(prefix: legacy.prefix, objectNames: Set(ExactStageSchema.tables))
+            // The seal, typed proof and copy must see the same rows. Equal
+            // byte counts cannot detect a concurrent same-width value change.
             let proof = try CodexBusinessDatabase.proof(db, namespace: namespace)
             guard proof.rowsDigest == seal.digest, proof.rowCount == seal.rows else { throw Failure.invalid }
+            #if DEBUG
+            let interleave = beforeLegacyCopy; beforeLegacyCopy = nil
+            try interleave?()
+            #endif
             let work = try SQLiteTemporaryDatabase()
             try work.connection.transaction { tx in
                 for name in ExactStageSchema.tables {
@@ -434,7 +447,7 @@ final class ExactStagePool: @unchecked Sendable {
             guard try BusinessStoreFiles.footprint(work.connection) == seal.bytes else { throw Failure.invalid }
             try work.connection.execute("PRAGMA query_only=ON")
             return work
-        }
+        } }
     }
     private func legacySeal(_ legacy: BusinessSQLiteStore, on db: SQLiteDatabaseConnection) throws -> Seal? {
         try db.readRows("SELECT s.byte_count,s.row_count,s.rows_digest,s.sealed_at FROM tb_store_seals s JOIN tb_stores t ON t.store_id=s.store_id WHERE t.store_id=? AND t.module='exact.swift.stage' AND t.namespace_prefix=? AND t.state='sealed'",
@@ -478,7 +491,7 @@ final class ExactStagePool: @unchecked Sendable {
         }
         var objects: [String: [(String, String)]] = [:], selected: [(String, String)] = []
         var bytes = 0, keep = true
-        try db.forEachRow("SELECT name,type FROM main.sqlite_master WHERE name NOT LIKE 'sqlite_%'") { row in
+        try db.forEachRow("SELECT name,type FROM main.sqlite_master WHERE lower(substr(name,1,7)) <> 'sqlite_'") { row in
             guard let name = row.text(0), let type = row.text(1), name.utf8.count >= prefix.utf8.count else { return }
             let owner = String(name.prefix(prefix.count))
             let logical = String(name.dropFirst(prefix.count))

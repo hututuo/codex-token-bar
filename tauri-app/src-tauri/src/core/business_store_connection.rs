@@ -88,7 +88,7 @@ impl StoreConnection {
                     CASE WHEN substr(tbl_name,1,{prefix_len})='{prefix}' THEN substr(tbl_name,{after_prefix}) ELSE tbl_name END AS tbl_name, \
                     rootpage,codex_tokenbar_unbind_sql(sql) AS sql \
              FROM main.sqlite_master \
-             WHERE substr(name,1,{prefix_len})='{prefix}' AND name NOT LIKE 'sqlite_%' \
+             WHERE substr(name,1,{prefix_len})='{prefix}' AND lower(substr(name,1,7)) <> 'sqlite_' \
              UNION ALL \
              SELECT 'sqlite_autoindex_' || substr(name,{autoindex_after_prefix}),type, \
                     substr(tbl_name,{after_prefix}),rootpage,NULL \

@@ -12,14 +12,14 @@ final class SQLiteStoreBindingCacheTests: XCTestCase {
         let owned = try binding.sql(query)
         XCTAssertTrue(owned.contains(store.prefix + "events"))
         for _ in 0..<20 { XCTAssertEqual(try binding.sql(query), owned) }
-        let temporaryQuery = "SELECT value FROM temp.events WHERE value=?"
+        let temporaryQuery = "SELECT value FROM temp.work WHERE value=?"
         XCTAssertThrowsError(try binding.sql(temporaryQuery))
-        binding.namespace.temporaryObjectNames.insert("events")
+        _ = try binding.sql("CREATE TEMP TABLE work(value INTEGER)")
         let temporary = try binding.sql(temporaryQuery)
         XCTAssertNotEqual(temporary, owned)
         XCTAssertEqual(try binding.sql(temporaryQuery), temporary)
-        XCTAssertEqual(try binding.sql(query), owned, "Unqualified names still select this owner's facts")
-        binding.namespace.temporaryObjectNames.remove("events")
+        XCTAssertEqual(try binding.sql(query), owned)
+        binding.namespace.temporaryObjectNames.remove("work")
         XCTAssertThrowsError(try binding.sql(temporaryQuery), "A cached TEMP query cannot outlive its admitted identifier")
         XCTAssertEqual(try binding.sql(query), owned)
         binding.namespace.objectNames.remove("events")

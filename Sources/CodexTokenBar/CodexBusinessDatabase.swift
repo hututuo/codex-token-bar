@@ -326,7 +326,7 @@ final class CodexBusinessDatabase {
     private static func containerSchema(_ db: SQLiteDatabaseConnection, canonicalNames: Set<String>? = nil) throws -> [SchemaEntry] {
         try db.readRows("""
         SELECT type,name,tbl_name,sql FROM main.sqlite_master
-        WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name
+        WHERE lower(substr(name,1,7)) <> 'sqlite_' ORDER BY type,name
         """) { row in
             let rawSQL = row.text(3) ?? ""
             let name = row.text(1) ?? ""
@@ -395,7 +395,7 @@ final class CodexBusinessDatabase {
             throw BusinessStoreError.invalidContainerVersion
         }
         var statement: OpaquePointer?
-        let query = "SELECT type,name,tbl_name,sql FROM main.sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
+        let query = "SELECT type,name,tbl_name,sql FROM main.sqlite_master WHERE lower(substr(name,1,7)) <> 'sqlite_' ORDER BY type,name"
         guard sqlite3_prepare_v2(database, query, -1, &statement, nil) == SQLITE_OK, let statement else {
             throw BusinessStoreError.invalidContainerVersion
         }
@@ -504,7 +504,7 @@ final class CodexBusinessDatabase {
                 guard registered else { throw BusinessStoreError.invalidStore }
                 let attachedProof = try Self.proof(tx, namespace: nil, schemaName: "tb_import_source")
                 guard attachedProof == proof else { throw BusinessStoreError.sourceChanged }
-                let names = try tx.readRows("SELECT name,type,sql FROM tb_import_source.sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY CASE type WHEN 'table' THEN 0 ELSE 1 END,name") { ($0.text(0) ?? "",$0.text(1) ?? "",$0.text(2)) }
+                let names = try tx.readRows("SELECT name,type,sql FROM tb_import_source.sqlite_master WHERE lower(substr(name,1,7)) <> 'sqlite_' ORDER BY CASE type WHEN 'table' THEN 0 ELSE 1 END,name") { ($0.text(0) ?? "",$0.text(1) ?? "",$0.text(2)) }
                 guard names.allSatisfy({ ["table","index","view","trigger"].contains($0.1) }) else { throw BusinessStoreError.unsupportedSchema("object type") }
                 var namespace = SQLiteStoreNamespace(prefix: store.prefix, objectNames: Set(names.map { $0.0.lowercased() }))
                 // Modules have disjoint object and column identifiers. Fail
@@ -687,7 +687,7 @@ final class CodexBusinessDatabase {
                             guard ["exact.swift", "exact.swift.retired"].contains(module),
                                   try knownExactIndexAddition(current, previous: previous) else { return false }
                         }
-                        let tables = try previous.readRows("SELECT name,sql FROM main.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name") {
+                        let tables = try previous.readRows("SELECT name,sql FROM main.sqlite_master WHERE type='table' AND lower(substr(name,1,7)) <> 'sqlite_' ORDER BY name") {
                             ($0.text(0) ?? "", $0.text(1) ?? "")
                         }
                         let expected = try current.prepare("INSERT INTO temp.retry_coverage VALUES(?,1,0) ON CONFLICT(encoded) DO UPDATE SET needed=needed+1")
@@ -870,16 +870,18 @@ final class CodexBusinessDatabase {
             guard check == ["ok"] else { throw BusinessStoreError.proofMismatch }
         }
 
+        // Only the literal sqlite_ prefix is internal. LIKE's underscore is a
+        // wildcard and would hide user tables or foreign sqliteX dependencies.
         let physicalObjects: [(String, String, String, String)]
         if namespace == nil {
             physicalObjects = try db.readRows("""
                 SELECT type,name,tbl_name,sql FROM \(schemaPrefix).sqlite_master
-                WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name
+                WHERE lower(substr(name,1,7)) <> 'sqlite_' ORDER BY type,name
                 """) { ($0.text(0) ?? "", $0.text(1) ?? "", $0.text(2) ?? "", $0.text(3) ?? "") }
         } else {
             physicalObjects = try db.readRows("""
                 SELECT type,name,tbl_name,sql FROM \(schemaPrefix).sqlite_master
-                WHERE name NOT LIKE 'sqlite_%'
+                WHERE lower(substr(name,1,7)) <> 'sqlite_'
                   AND (substr(name,1,?)=? OR substr(tbl_name,1,?)=?) ORDER BY type,name
                 """, bindings: [.int(prefix.count), .text(prefix), .int(prefix.count), .text(prefix)]) {
                     ($0.text(0) ?? "", $0.text(1) ?? "", $0.text(2) ?? "", $0.text(3) ?? "")
@@ -1086,7 +1088,7 @@ extension CodexBusinessDatabase {
         try target.execute("PRAGMA foreign_keys=OFF")
         defer { try? target.execute("PRAGMA foreign_keys=ON") }
         try target.transaction { tx in
-            let previous = try tx.readRows("SELECT name,type FROM main.sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY CASE type WHEN 'view' THEN 0 WHEN 'trigger' THEN 1 WHEN 'index' THEN 2 ELSE 3 END,name") { ($0.text(0) ?? "",$0.text(1) ?? "") }
+            let previous = try tx.readRows("SELECT name,type FROM main.sqlite_master WHERE lower(substr(name,1,7)) <> 'sqlite_' ORDER BY CASE type WHEN 'view' THEN 0 WHEN 'trigger' THEN 1 WHEN 'index' THEN 2 ELSE 3 END,name") { ($0.text(0) ?? "",$0.text(1) ?? "") }
             for (name,type) in previous { try tx.execute("DROP \(type.uppercased()) IF EXISTS \(SQLiteStoreNamespace.quote(name))") }
             let objects = try tx.readRows("SELECT name,type,sql FROM tb_export_source.sqlite_master WHERE substr(name,1,?)=? ORDER BY CASE type WHEN 'table' THEN 0 ELSE 1 END,name", bindings:[.int(store.prefix.count),.text(store.prefix)]) { ($0.text(0) ?? "",$0.text(1) ?? "",$0.text(2)) }
             let namespace = SQLiteStoreNamespace(

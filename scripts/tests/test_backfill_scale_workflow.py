@@ -104,12 +104,28 @@ class BackfillScaleWorkflowTests(unittest.TestCase):
         cases = (
             ('swift', 'Swift tests and release-script contracts', 'swift-tests.log', [
                 'testDestructiveRetryRejectsMissingOrChangedHistoryAndKeepsThePublishedImage',
+                'testLegacyRestoreCopiesTheSameSnapshotThatPassedItsSealProof',
+                'testBoundTemporaryObjectsCannotShadowPublishedTablesOrViews',
+                'testAbsentTemporaryDropCannotAuthorizeShadowingAMainTable',
+                'testTemporaryRenameCannotCrossMainOwnershipInEitherDirection',
+                'testRejectedBindingDoesNotReserveNamesFromUnexecutedStatements',
+                'testRepeatedWritesStillAuthorizeTheirCurrentOwnerAfterBackupClassification',
+                'testPrivateUnboundProjectionCanStillUseAnExplicitShadowTable',
+                'testUserTablesResemblingSQLiteInternalsSurviveImportAndExport',
+                'testForeignDependenciesResemblingSQLiteInternalsInvalidateProof',
                 'testRecoveryLogAllowsOnlyFixedMetadataFields',
                 'testDisabledUnavailableAndWriteFailedDiagnosticsPreserveActualMigrationAndNewAccounting']),
             ('native', 'Full native regression including original pressure case', 'native-library.log', [
                 'panic_guard_notifies_an_already_waiting_cold_reader',
                 'malformed_or_missing_state_stays_an_error_and_is_not_created',
                 'missing_threads_table_is_an_error_but_valid_empty_legacy_tables_stay_empty',
+                'legacy_empty_manifest_never_hides_payload_rows_after_a_warm_catalog',
+                'legacy_empty_manifest_requires_the_complete_known_table_contract',
+                'legacy_catalog_rejects_foreign_named_objects_depending_on_stage_tables',
+                'known_empty_partial_stage_stays_occupied_for_the_existing_restart_validator',
+                'missing_and_known_empty_legacy_candidates_use_the_held_pool_without_becoming_facts',
+                'user_tables_resembling_sqlite_internals_survive_import_and_export',
+                'foreign_dependencies_resembling_sqlite_internals_invalidate_proof',
                 'disk_failure_and_full_queue_return_status_without_panicking',
                 'diagnostics_modes_never_change_managed_legacy_import_or_later_target_rows']),
         )

@@ -1199,7 +1199,7 @@ final class SQLiteDatabaseConnection: DatabaseAccessing {
     }
 
     func execute(_ sql: String, bindings: [SQLiteBinding] = []) throws {
-        if let binding = businessBinding, try Self.isScopedVacuumBackup(sql) {
+        if let binding = businessBinding, try binding.isScopedVacuumBackup(sql) {
             let target: String?
             if case .text(let value)? = bindings.first { target = value }
             else { target = try SQLiteStoreNamespace.tokens(sql).first { $0.kind == .string }?.value }
@@ -1313,11 +1313,6 @@ final class SQLiteDatabaseConnection: DatabaseAccessing {
             throw error(operation: "Prepare SQLite statement", code: status)
         }
         return SQLitePreparedStatement(database: database, path: path, statement: statement)
-    }
-
-    private static func isScopedVacuumBackup(_ sql: String) throws -> Bool {
-        let words = try SQLiteStoreNamespace.tokens(sql).filter { $0.kind != .trivia }.map { $0.value.uppercased() }
-        return words.first == "VACUUM" && words.contains("INTO")
     }
 
     func restoreDatabase(from sourceURL: URL) throws {

@@ -182,6 +182,15 @@ jobs:
             --require testLegacyOptionalColumnCombinationsStayReadableAndUnchanged \
             --require testLegacyMetadataAndDashboardAllKeepExistingFields \
             --require testDestructiveRetryRejectsMissingOrChangedHistoryAndKeepsThePublishedImage \
+            --require testLegacyRestoreCopiesTheSameSnapshotThatPassedItsSealProof \
+            --require testBoundTemporaryObjectsCannotShadowPublishedTablesOrViews \
+            --require testAbsentTemporaryDropCannotAuthorizeShadowingAMainTable \
+            --require testTemporaryRenameCannotCrossMainOwnershipInEitherDirection \
+            --require testRejectedBindingDoesNotReserveNamesFromUnexecutedStatements \
+            --require testRepeatedWritesStillAuthorizeTheirCurrentOwnerAfterBackupClassification \
+            --require testPrivateUnboundProjectionCanStillUseAnExplicitShadowTable \
+            --require testUserTablesResemblingSQLiteInternalsSurviveImportAndExport \
+            --require testForeignDependenciesResemblingSQLiteInternalsInvalidateProof \
             --require testBufferedRecordsFlushAtCloseAndContainOnlyStructuredDiagnostics \
             --require testRecoveryLogAllowsOnlyFixedMetadataFields \
             --require testDisabledUnavailableAndWriteFailedDiagnosticsPreserveActualMigrationAndNewAccounting -- swift test
@@ -312,6 +321,13 @@ jobs:
               --require legacy_options_accept_each_optional_column_combination_without_writing \
               --require malformed_or_missing_state_stays_an_error_and_is_not_created \
               --require missing_threads_table_is_an_error_but_valid_empty_legacy_tables_stay_empty \
+              --require legacy_empty_manifest_never_hides_payload_rows_after_a_warm_catalog \
+              --require legacy_empty_manifest_requires_the_complete_known_table_contract \
+              --require legacy_catalog_rejects_foreign_named_objects_depending_on_stage_tables \
+              --require known_empty_partial_stage_stays_occupied_for_the_existing_restart_validator \
+              --require missing_and_known_empty_legacy_candidates_use_the_held_pool_without_becoming_facts \
+              --require user_tables_resembling_sqlite_internals_survive_import_and_export \
+              --require foreign_dependencies_resembling_sqlite_internals_invalidate_proof \
               --require disk_failure_and_full_queue_return_status_without_panicking \
               --require diagnostics_modes_never_change_managed_legacy_import_or_later_target_rows \
               --require panic_guard_notifies_an_already_waiting_cold_reader -- \

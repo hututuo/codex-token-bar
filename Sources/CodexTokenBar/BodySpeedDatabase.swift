@@ -67,7 +67,7 @@ final class BodySpeedDatabase: @unchecked Sendable {
     func validateNamespace(requireAll: Bool) throws {
         guard let prefix else { return }
         let physicalObjects = try driver.readRows(
-            "SELECT name,type FROM main.sqlite_master WHERE name NOT LIKE 'sqlite_%' AND substr(name,1,?)=? ORDER BY name",
+            "SELECT name,type FROM main.sqlite_master WHERE lower(substr(name,1,7)) <> 'sqlite_' AND substr(name,1,?)=? ORDER BY name",
             bindings: [.int(prefix.count), .text(prefix)]
         ) { ($0.text(0) ?? "", $0.text(1) ?? "") }
         let expectedTypes = Dictionary(uniqueKeysWithValues: Self.logicalObjects.map { name in

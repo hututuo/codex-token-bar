@@ -49,6 +49,23 @@ final class ExactStagePoolTests: XCTestCase {
         try XCTUnwrap(f.raw.readRows("SELECT COUNT(*) FROM \(SQLiteStoreNamespace.quote(table))") { $0.int(0) }.first ?? nil)
     }
 
+    private func seedLegacy(_ f: Fixture, pool: ExactStagePool) throws -> BusinessSQLiteStore {
+        let request = try makeJob(pool, f), source = try seed(request)
+        let url = f.configuration.exact.appendingPathComponent("staging/\(f.target.logicalURL.lastPathComponent)/legacy.sqlite")
+        try SQLiteDatabaseDriver(url: url).withConnection { db in
+            try db.execute(ExactStageSchema.sql)
+            for name in ExactStageSchema.tables {
+                let columns = try XCTUnwrap(ExactStageSchema.columns[name])
+                let insert = try db.prepare("INSERT INTO \(SQLiteStoreNamespace.quote(name)) VALUES(\(Array(repeating: "?", count: columns).joined(separator: ",")))")
+                try source.connection.forEachRow("SELECT * FROM \(SQLiteStoreNamespace.quote(name))") { row in
+                    try insert.execute(ExactStageRowCodec.decode(ExactStageRowCodec.encode(row), expectedColumns: columns))
+                }
+            }
+            try BusinessStoreFiles.seal(at: url, connection: db)
+        }
+        return try XCTUnwrap(BusinessSQLiteRoutes.store(for: url))
+    }
+
     func testNewJobsDoNotGrowMainCatalogOrStoresAndSealedRowsRestoreReadOnly() throws {
         let f = try fixture(), pool = try ExactStagePool.shared(for: f.target)
         let objects = try count(f, "sqlite_master"), stores = try count(f, "tb_stores")
@@ -281,21 +298,7 @@ final class ExactStagePoolTests: XCTestCase {
 
     func testLegacyNamespaceIsCopiedReadOnlyAndRequiresItsPublicationReceiptBeforeCleanup() throws {
         let f = try fixture(), pool = try ExactStagePool.shared(for: f.target)
-        let request = try makeJob(pool, f), source = try seed(request)
-        let legacyURL = f.configuration.exact.appendingPathComponent("staging/\(f.target.logicalURL.lastPathComponent)/legacy.sqlite")
-        let legacyDriver = SQLiteDatabaseDriver(url: legacyURL)
-        try legacyDriver.withConnection { db in
-            try db.execute(ExactStageSchema.sql)
-            for name in ExactStageSchema.tables {
-                let columns = try XCTUnwrap(ExactStageSchema.columns[name])
-                let insert = try db.prepare("INSERT INTO \(SQLiteStoreNamespace.quote(name)) VALUES(\(Array(repeating: "?", count: columns).joined(separator: ",")))")
-                try source.connection.forEachRow("SELECT * FROM \(SQLiteStoreNamespace.quote(name))") { row in
-                    try insert.execute(ExactStageRowCodec.decode(ExactStageRowCodec.encode(row), expectedColumns: columns))
-                }
-            }
-            try BusinessStoreFiles.seal(at: legacyURL, connection: db)
-        }
-        let legacy = try XCTUnwrap(BusinessSQLiteRoutes.store(for: legacyURL))
+        let legacy = try seedLegacy(f, pool: pool)
         let original = try XCTUnwrap(pool.legacyObservation(legacy))
         let work = try XCTUnwrap(pool.restoreLegacy(legacy))
         XCTAssertEqual(try work.connection.readRows("SELECT tokens FROM events") { $0.int(0) }, [11])
@@ -310,6 +313,28 @@ final class ExactStagePoolTests: XCTestCase {
         XCTAssertEqual(try pool.reclaimPublished(maximumJobs: 1, budget: 2), 1)
         XCTAssertFalse(try pool.reclaimLegacy(legacy, for: f.target), "A repeated cleanup is harmless")
         XCTAssertEqual(try count(f, pool.store.prefix + "publication_receipts"), 1, "The authority outlives its payload")
+        XCTAssertEqual(try f.writer.readRows("SELECT value FROM schema_meta WHERE key='published_tokens'") { $0.text(0) }, ["123"])
+    }
+
+    func testLegacyRestoreCopiesTheSameSnapshotThatPassedItsSealProof() throws {
+        let f = try fixture(), pool = try ExactStagePool.shared(for: f.target)
+        let legacy = try seedLegacy(f, pool: pool)
+        let table = SQLiteStoreNamespace.quote(legacy.prefix + "events")
+        let before = try XCTUnwrap(pool.legacyObservation(legacy))
+        pool.beforeNextLegacyCopyForTesting {
+            // Simulate external damage after the row proof. Both integers have
+            // identical encoded length, so a footprint check cannot catch it.
+            try f.raw.execute("UPDATE \(table) SET tokens=99")
+        }
+        let restored = try XCTUnwrap(pool.restoreLegacy(legacy))
+        XCTAssertEqual(try f.raw.readRows("SELECT tokens FROM \(table)") { $0.int(0) }, [99],
+            "The competing WAL write must actually commit")
+        XCTAssertEqual(try restored.connection.readRows("SELECT tokens FROM events") { $0.int(0) }, [11],
+            "The restored rows must be exactly those that passed the seal proof")
+        XCTAssertEqual(try BusinessStoreFiles.footprint(restored.connection), before.size)
+        XCTAssertThrowsError(try restored.connection.execute("UPDATE events SET tokens=77"))
+        XCTAssertThrowsError(try pool.restoreLegacy(legacy), "The next call must observe and reject the now-damaged source")
+        XCTAssertEqual(try count(f, pool.store.prefix + "publication_receipts"), 0)
         XCTAssertEqual(try f.writer.readRows("SELECT value FROM schema_meta WHERE key='published_tokens'") { $0.text(0) }, ["123"])
     }
 

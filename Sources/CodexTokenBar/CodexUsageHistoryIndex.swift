@@ -2124,7 +2124,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             ) { ($0.int(0) ?? 0) != 0 }.first ?? false
             if !schemaMetaExists {
                 let hasUserTables = try connection.readRows(
-                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%');"
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND lower(substr(name,1,7)) <> 'sqlite_');"
                 ) { ($0.int(0) ?? 0) != 0 }.first ?? false
                 return hasUserTables
                     ? .corrupt(component: "schema_version", rawValue: "missing schema_meta")
@@ -8893,7 +8893,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }
         let tableNames = ["manifest", "fingerprints", "events", "chunks"]
         let existingTables = try connection.readRows(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name;"
+            "SELECT name FROM sqlite_master WHERE type='table' AND lower(substr(name,1,7)) <> 'sqlite_' ORDER BY name;"
         ) { $0.text(0) ?? "" }
         guard existingTables == tableNames.sorted() else { return false }
         for tableName in tableNames {

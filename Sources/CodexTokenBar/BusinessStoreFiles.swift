@@ -25,7 +25,7 @@ enum BusinessStoreFiles {
     }
     static func footprint(_ connection: SQLiteDatabaseConnection) throws -> UInt64 {
         var size: UInt64 = 0
-        let tables = try connection.readRows("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name") { $0.text(0) ?? "" }
+        let tables = try connection.readRows("SELECT name FROM sqlite_master WHERE type='table' AND lower(substr(name,1,7)) <> 'sqlite_' ORDER BY name") { $0.text(0) ?? "" }
         for table in tables {
             size += UInt64(table.utf8.count + 1)
             try connection.forEachRow("SELECT * FROM \(SQLiteStoreNamespace.quote(table))") { row in

@@ -86,6 +86,102 @@ fn an_unknown_empty_legacy_layout_is_preserved_and_refused() {
 }
 
 #[test]
+fn legacy_empty_manifest_never_hides_payload_rows_after_a_warm_catalog() {
+    for table in ["events", "fingerprints", "chunks"] {
+        let (root, pool, _) = fixture();
+        let path = root.path().join("index.sqlite3.staging").join(format!("{}.sqlite3", "e".repeat(64)));
+        let spec = crate::core::business_store_route::exact_store_spec(&path).unwrap();
+        let container = Container::open_existing(&pool.path).unwrap();
+        container.register(&spec).unwrap();
+        let writer = container.into_store_connection(&spec).unwrap();
+        writer.execute_batch(&super::super::staging_schema_sql(false)).unwrap();
+        assert_eq!(pool.legacy_presence(&path).unwrap(), Some(false));
+        let seed = seed_fixture_stage("/fixture.jsonl").unwrap();
+        let values = seed.query_row(&format!("SELECT * FROM {table}"), [], |row| {
+            (0..row.as_ref().column_count()).map(|i| row.get::<_, rusqlite::types::Value>(i))
+                .collect::<rusqlite::Result<Vec<_>>>()
+        }).unwrap();
+        writer.execute(&format!("INSERT INTO {table} VALUES({})", vec!["?"; values.len()].join(",")),
+            params_from_iter(values.clone())).unwrap();
+        assert!(pool.legacy_presence(&path).is_err(), "manifest=0 with {table} facts must stop recovery");
+        let retained = writer.query_row(&format!("SELECT * FROM {table}"), [], |row| {
+            (0..row.as_ref().column_count()).map(|i| row.get::<_, rusqlite::types::Value>(i))
+                .collect::<rusqlite::Result<Vec<_>>>()
+        }).unwrap();
+        assert_eq!(retained, values);
+        assert_eq!(writer.query_row("SELECT COUNT(*) FROM manifest", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        writer.execute(&format!("DELETE FROM {table}"), []).unwrap();
+        assert_eq!(pool.legacy_presence(&path).unwrap(), Some(false));
+        let outside = Connection::open(&pool.path).unwrap();
+        let physical = quote(&format!("{}{table}", spec.prefix));
+        outside.execute(&format!("INSERT INTO {physical} VALUES({})", vec!["?"; values.len()].join(",")),
+            params_from_iter(values)).unwrap();
+        assert!(pool.legacy_presence(&path).is_err(), "External DML must invalidate empty presence without a schema change");
+        assert_eq!(outside.query_row(&format!("SELECT COUNT(*) FROM {physical}"), [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        outside.execute(&format!("DELETE FROM {physical}"), []).unwrap();
+        assert_eq!(pool.legacy_presence(&path).unwrap(), Some(false));
+        assert!(!path.exists());
+    }
+}
+
+#[test]
+fn legacy_empty_manifest_requires_the_complete_known_table_contract() {
+    let full = super::super::staging_schema_sql(false);
+    let cases = [
+        ("generated column", format!("{full} ALTER TABLE events ADD COLUMN future_value INTEGER GENERATED ALWAYS AS (tokens+1) VIRTUAL;")),
+        ("column affinity", full.replace("sha256 BLOB NOT NULL", "sha256 TEXT NOT NULL")),
+        ("nullability", full.replace("sha256 BLOB NOT NULL", "sha256 BLOB")),
+        ("default", full.replace("DEFAULT 0", "DEFAULT 7")),
+        ("check", full.replace("CHECK(complete IN (0, 1))", "CHECK(complete IN (0, 1, 2))")),
+        ("rowid", full.replace("WITHOUT ROWID", "")),
+        ("strict", full.replace("WITHOUT ROWID", "WITHOUT ROWID, STRICT")),
+        ("automatic unique index", full.replace("tokens INTEGER NOT NULL,", "tokens INTEGER NOT NULL UNIQUE,")),
+        ("payload check", full.replace("fingerprint BLOB PRIMARY KEY", "fingerprint BLOB PRIMARY KEY CHECK(length(fingerprint)=32)")),
+    ];
+    let mut accepted = Vec::new();
+    for (label, schema) in cases {
+        let (root, pool, _) = fixture();
+        let path = root.path().join("index.sqlite3.staging").join(format!("{}.sqlite3", "f".repeat(64)));
+        let spec = crate::core::business_store_route::exact_store_spec(&path).unwrap();
+        let container = Container::open_existing(&pool.path).unwrap();
+        container.register(&spec).unwrap();
+        let writer = container.into_store_connection(&spec).unwrap();
+        writer.execute_batch(&schema).unwrap();
+        if pool.legacy_presence(&path).is_ok() { accepted.push(label); }
+        assert_eq!(writer.query_row("SELECT COUNT(*) FROM manifest", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        assert!(!path.exists());
+    }
+    assert!(accepted.is_empty(), "Unknown empty layouts were accepted: {accepted:?}");
+}
+
+#[test]
+fn legacy_catalog_rejects_foreign_named_objects_depending_on_stage_tables() {
+    for kind in ["INDEX", "TRIGGER"] {
+      for name in ["foreign_named_object", "sqliteXforeign"] {
+        let (root, pool, _) = fixture();
+        let path = root.path().join("index.sqlite3.staging").join(format!("{}.sqlite3", "b".repeat(64)));
+        let spec = crate::core::business_store_route::exact_store_spec(&path).unwrap();
+        let container = Container::open_existing(&pool.path).unwrap();
+        container.register(&spec).unwrap();
+        let writer = container.into_store_connection(&spec).unwrap();
+        writer.execute_batch(&super::super::staging_schema_sql(false)).unwrap();
+        assert_eq!(pool.legacy_presence(&path).unwrap(), Some(false));
+        let outside = Connection::open(&pool.path).unwrap();
+        let table = quote(&format!("{}events", spec.prefix));
+        let sql = match kind {
+            "INDEX" => format!("CREATE INDEX {name} ON {table}(tokens)"),
+            _ => format!("CREATE TRIGGER {name} AFTER INSERT ON {table} BEGIN SELECT 1; END"),
+        };
+        outside.execute_batch(&sql).unwrap();
+        assert!(pool.legacy_presence(&path).is_err(), "A foreign named {kind} is still a dependency of the stage");
+        assert_eq!(outside.query_row("SELECT COUNT(*) FROM sqlite_master WHERE name=?1", [name], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        outside.execute_batch(&format!("DROP {kind} {name}")).unwrap();
+        assert_eq!(pool.legacy_presence(&path).unwrap(), Some(false));
+      }
+    }
+}
+
+#[test]
 fn offline_maintenance_cannot_close_a_pool_while_an_owner_is_using_it() {
     let (_root, pool, _) = fixture();
     let path = pool.path.clone();

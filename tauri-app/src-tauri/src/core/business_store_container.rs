@@ -191,7 +191,7 @@ impl Container {
         }
         if physical_version == 0 {
             let user_objects: i64 = connection.query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'",
+                "SELECT COUNT(*) FROM sqlite_master WHERE lower(substr(name,1,7)) <> 'sqlite_'",
                 [],
                 |row| row.get(0),
             )?;
@@ -301,7 +301,7 @@ impl Container {
         self.ensure_registered(store)?;
         let names = {
             let mut statement = self.connection.prepare(
-                "SELECT substr(name,?1) FROM main.sqlite_master WHERE substr(name,1,?2)=?3 AND name NOT LIKE 'sqlite_%' ORDER BY name",
+                "SELECT substr(name,?1) FROM main.sqlite_master WHERE substr(name,1,?2)=?3 AND lower(substr(name,1,7)) <> 'sqlite_' ORDER BY name",
             )?;
             let names = statement
                 .query_map(
@@ -495,7 +495,7 @@ impl Container {
     ) -> BusinessStoreResult<Vec<String>> {
         self.ensure_registered(store)?;
         let mut statement = self.connection.prepare(
-            "SELECT substr(name,?1) FROM main.sqlite_master WHERE substr(name,1,?2)=?3 AND name NOT LIKE 'sqlite_%' ORDER BY name COLLATE BINARY",
+            "SELECT substr(name,?1) FROM main.sqlite_master WHERE substr(name,1,?2)=?3 AND lower(substr(name,1,7)) <> 'sqlite_' ORDER BY name COLLATE BINARY",
         )?;
         let rows = statement.query_map(
             params![
@@ -1081,7 +1081,7 @@ impl Container {
         let db = Connection::open_with_flags(primary, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         if module == "exact" { return exact_history_covers(&db, "", old, false); }
         db.execute("ATTACH DATABASE ?1 AS tb_exact_history_source", [readonly_file_uri(old)])?;
-        let mut statement = db.prepare("SELECT name,sql FROM tb_exact_history_source.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")?;
+        let mut statement = db.prepare("SELECT name,sql FROM tb_exact_history_source.sqlite_master WHERE type='table' AND lower(substr(name,1,7)) <> 'sqlite_' ORDER BY name")?;
         let tables = statement.query_map([], |r| Ok((r.get::<_, String>(0)?,r.get::<_, Option<String>>(1)?)))?.collect::<Result<Vec<_>,_>>()?;
         for (name, old_sql) in tables {
             let new_sql: Option<String> = db.query_row("SELECT sql FROM main.sqlite_master WHERE type='table' AND name=?1", [&name], |r| r.get(0)).optional()?.flatten();
@@ -1618,7 +1618,7 @@ fn rename_without_replacement(source: &Path, destination: &Path) -> std::io::Res
 fn validate_container_catalog(connection: &Connection) -> BusinessStoreResult<()> {
     fn catalog(c: &Connection) -> BusinessStoreResult<BTreeMap<String, (String, String, String)>> {
         let mut statement = c.prepare(
-            "SELECT name,type,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'",
+            "SELECT name,type,tbl_name,sql FROM sqlite_master WHERE lower(substr(name,1,7)) <> 'sqlite_'",
         )?;
         let rows = statement.query_map([], |r| {
             Ok((
@@ -1754,7 +1754,7 @@ fn schema_objects(
     prefix: &str,
 ) -> BusinessStoreResult<Vec<SchemaObject>> {
     let sql = format!(
-        "SELECT name,type,sql FROM {schema}.sqlite_master WHERE name NOT LIKE 'sqlite_%' AND substr(name,1,?1)=?2 ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'view' THEN 1 WHEN 'index' THEN 2 WHEN 'trigger' THEN 3 ELSE 4 END,name"
+        "SELECT name,type,sql FROM {schema}.sqlite_master WHERE lower(substr(name,1,7)) <> 'sqlite_' AND substr(name,1,?1)=?2 ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'view' THEN 1 WHEN 'index' THEN 2 WHEN 'trigger' THEN 3 ELSE 4 END,name"
     );
     let mut statement = connection.prepare(&sql)?;
     let rows = statement.query_map(params![prefix.len() as i64, prefix], |row| {
@@ -2011,7 +2011,7 @@ fn write_legacy_receipt(
 
 fn drop_all_objects(connection: &Connection, schema: &str) -> BusinessStoreResult<()> {
     let sql = format!(
-        "SELECT name,type FROM {schema}.sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY CASE type WHEN 'view' THEN 0 WHEN 'trigger' THEN 1 WHEN 'index' THEN 2 ELSE 3 END,name"
+        "SELECT name,type FROM {schema}.sqlite_master WHERE lower(substr(name,1,7)) <> 'sqlite_' ORDER BY CASE type WHEN 'view' THEN 0 WHEN 'trigger' THEN 1 WHEN 'index' THEN 2 ELSE 3 END,name"
     );
     let mut statement = connection.prepare(&sql)?;
     let objects = statement
@@ -2126,7 +2126,7 @@ fn exact_history_covers(primary: &Connection, prefix: &str, old: &Path, require_
 
 fn exact_history_covers_attached(db: &Connection, prefix: &str) -> BusinessStoreResult<bool> {
     let mut verified = super::business_store_recovery::VerifiedLegacySources::prepare(db, prefix)?;
-    let mut statement = db.prepare("SELECT name FROM tb_exact_history_source.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")?;
+    let mut statement = db.prepare("SELECT name FROM tb_exact_history_source.sqlite_master WHERE type='table' AND lower(substr(name,1,7)) <> 'sqlite_' ORDER BY name")?;
     let names = statement.query_map([], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
     for name in names {
         // These contain no independent published consumption. Retained tables,
@@ -2273,7 +2273,7 @@ fn proof_for_filtered(
 
     let raw_objects = if prefix.is_empty() {
         let mut statement = connection.prepare(&format!(
-            "SELECT type,name,tbl_name,sql FROM {schema}.sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
+            "SELECT type,name,tbl_name,sql FROM {schema}.sqlite_master WHERE lower(substr(name,1,7)) <> 'sqlite_' ORDER BY type,name"
         ))?;
         let rows = statement.query_map([], |row| {
             Ok((
@@ -2286,7 +2286,7 @@ fn proof_for_filtered(
         rows.collect::<Result<Vec<_>, _>>()?
     } else {
         let mut statement = connection.prepare(&format!(
-            "SELECT type,name,tbl_name,sql FROM {schema}.sqlite_master WHERE name NOT LIKE 'sqlite_%' AND (substr(name,1,?1)=?2 OR substr(tbl_name,1,?1)=?2) ORDER BY type,name"
+            "SELECT type,name,tbl_name,sql FROM {schema}.sqlite_master WHERE lower(substr(name,1,7)) <> 'sqlite_' AND (substr(name,1,?1)=?2 OR substr(tbl_name,1,?1)=?2) ORDER BY type,name"
         ))?;
         let rows = statement.query_map(params![prefix.len() as i64, prefix], |row| {
             Ok((
@@ -2520,7 +2520,7 @@ fn proof_for_filtered(
 
 fn logical_footprint(connection: &Connection, prefix: &str) -> BusinessStoreResult<u64> {
     let mut statement = connection.prepare(
-        "SELECT substr(name,?1) FROM main.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND substr(name,1,?2)=?3 ORDER BY name",
+        "SELECT substr(name,?1) FROM main.sqlite_master WHERE type='table' AND lower(substr(name,1,7)) <> 'sqlite_' AND substr(name,1,?2)=?3 ORDER BY name",
     )?;
     let tables = statement
         .query_map(
@@ -3600,6 +3600,46 @@ mod tests {
     }
 
     #[test]
+    fn user_tables_resembling_sqlite_internals_survive_import_and_export() {
+        let fixture = Fixture::new();
+        let source_path = fixture.path("source.sqlite");
+        let source = Connection::open(&source_path).unwrap();
+        source.execute_batch("CREATE TABLE sqliteXfacts(id INTEGER PRIMARY KEY,payload BLOB); INSERT INTO sqliteXfacts VALUES(17,x'00ff'); CREATE TABLE normal(value INTEGER); INSERT INTO normal VALUES(18)").unwrap();
+        let expected = proof_for(&source, "main", "", false, None).unwrap();
+        assert_eq!(expected.table_counts.get("sqliteXfacts"), Some(&1));
+        let mut container = Container::open(fixture.path("container.sqlite")).unwrap();
+        let spec = store(&fixture.path("logical"), "internal-prefix");
+        let proof = import_and_check_round_trip(&fixture, &mut container, &source_path, &spec, "internal-prefix", 1.0);
+        assert_eq!(proof, expected);
+        let payload: Vec<u8> = container.connection().query_row(
+            &format!("SELECT payload FROM {} WHERE id=17", SQLiteStoreNamespace::quote(&format!("{}sqliteXfacts", spec.prefix))),
+            [], |row| row.get(0)).unwrap();
+        assert_eq!(payload, vec![0, 255]);
+        assert_eq!(source.query_row("SELECT id FROM sqliteXfacts", [], |row| row.get::<_,i64>(0)).unwrap(), 17);
+    }
+
+    #[test]
+    fn foreign_dependencies_resembling_sqlite_internals_invalidate_proof() {
+        let fixture = Fixture::new();
+        let source_path = fixture.path("source.sqlite");
+        let source = Connection::open(&source_path).unwrap();
+        source.execute_batch("CREATE TABLE facts(value INTEGER); INSERT INTO facts VALUES(17)").unwrap();
+        let mut container = Container::open(fixture.path("container.sqlite")).unwrap();
+        let spec = store(&fixture.path("logical"), "foreign-dependency");
+        let before = container.import_snapshot(&source_path, &spec, &source_path, 1.0, false).unwrap();
+        let table = SQLiteStoreNamespace::quote(&format!("{}facts", spec.prefix));
+        for kind in ["INDEX", "TRIGGER"] {
+            let sql = if kind == "INDEX" { format!("CREATE INDEX sqliteXforeign ON {table}(value)") }
+                else { format!("CREATE TRIGGER sqliteXforeign AFTER INSERT ON {table} BEGIN SELECT 1; END") };
+            container.connection().execute_batch(&sql).unwrap();
+            assert!(container.proof(&spec).is_err(), "{kind} dependency must not be hidden by the internal prefix filter");
+            assert_eq!(container.connection().query_row(&format!("SELECT value FROM {table}"), [], |row| row.get::<_,i64>(0)).unwrap(), 17);
+            container.connection().execute_batch(&format!("DROP {kind} sqliteXforeign")).unwrap();
+            assert_eq!(container.proof(&spec).unwrap(), before);
+        }
+    }
+
+    #[test]
     fn container_rejects_foreign_versions_before_ddl_and_versions_new_a() {
         let fixture = Fixture::new();
         let foreign_path = fixture.path("foreign.sqlite");
@@ -3616,7 +3656,7 @@ mod tests {
             .unwrap();
         let foreign_tables: i64 = preserved
             .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'",
+                "SELECT COUNT(*) FROM sqlite_master WHERE lower(substr(name,1,7)) <> 'sqlite_'",
                 [],
                 |row| row.get(0),
             )
@@ -3633,7 +3673,7 @@ mod tests {
         assert_eq!(
             preserved_v1
                 .query_row(
-                    "SELECT COUNT(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'",
+                    "SELECT COUNT(*) FROM sqlite_master WHERE lower(substr(name,1,7)) <> 'sqlite_'",
                     [],
                     |r| r.get::<_, i64>(0)
                 )

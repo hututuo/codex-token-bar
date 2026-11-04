@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod legacy;
+
 type Result<T> = std::result::Result<T, String>;
 type Registry = Mutex<HashMap<PathBuf, Arc<Pool>>>;
 
@@ -70,15 +72,10 @@ const TABLES: [(&str, usize, &str); 4] = [
 
 pub(super) struct Pool {
     container: Mutex<Container>,
-    legacy_catalog: Mutex<Option<LegacyCatalog>>,
+    legacy_catalog: Mutex<Option<legacy::Catalog>>,
     path: PathBuf,
     identity: String,
     pub(super) store: StoreSpec,
-}
-struct LegacyCatalog {
-    schema_version: i64,
-    prefix_len: usize,
-    objects: HashMap<String, Vec<(String, String)>>,
 }
 #[derive(Clone)]
 pub(super) struct Job {
@@ -367,95 +364,8 @@ impl Pool {
     pub(super) fn legacy_candidates(&self, index: &Path, source_digest: &str) -> Result<Vec<PathBuf>> {
         self.with(|c|crate::core::business_store_route::exact_stage_candidates_on(c.connection(),index,source_digest))
     }
-    fn legacy_objects(&self, raw: &Connection, prefix: &str) -> Result<Vec<(String, String)>> {
-        let version = raw.query_row("PRAGMA schema_version", [], |row| row.get::<_, i64>(0)).map_err(|e| e.to_string())?;
-        let mut cache = self.legacy_catalog.lock().map_err(|_| "旧暂存目录锁失败")?;
-        // Only names/types follow schema_version. Manifests, typed rows and
-        // seals remain uncached in the original validators; a normal DML
-        // commit must not force another 25k-object name scan.
-        if let Some(catalog) = cache.as_ref().filter(|catalog| catalog.schema_version == version && catalog.prefix_len == prefix.len()) {
-            return Ok(catalog.objects.get(prefix).cloned().unwrap_or_default());
-        }
-        // The import catalog records ORIGINAL objects, not later runtime DDL.
-        // Read the actual schema once per schema_version on the held handle.
-        // Names only; no SQL/rows. Large catalogs fall back to bounded streaming.
-        let mut objects: HashMap<String, Vec<(String, String)>> = HashMap::new();
-        let mut selected = Vec::new();
-        let mut bytes = 0usize;
-        let mut keep = true;
-        let mut statement = raw.prepare("SELECT name,type FROM main.sqlite_master WHERE name NOT LIKE 'sqlite_%'").map_err(|e| e.to_string())?;
-        let mut rows = statement.query([]).map_err(|e| e.to_string())?;
-        while let Some(row) = rows.next().map_err(|e| e.to_string())? {
-            let name: String = row.get(0).map_err(|e| e.to_string())?;
-            let kind: String = row.get(1).map_err(|e| e.to_string())?;
-            let Some(owner) = name.get(..prefix.len()) else { continue };
-            if owner == prefix && selected.len() < 5 { selected.push((name[prefix.len()..].to_owned(), kind.clone())); }
-            bytes = bytes.saturating_add(name.len() + kind.len() + 96);
-            if bytes > 16 * 1024 * 1024 { keep = false; objects.clear(); }
-            if keep {
-                let values = objects.entry(owner.to_owned()).or_default();
-                if values.len() < 5 { values.push((name[prefix.len()..].to_owned(), kind)); }
-            }
-        }
-        if keep { *cache = Some(LegacyCatalog { schema_version: version, prefix_len: prefix.len(), objects }); }
-        else { *cache = None; }
-        Ok(selected)
-    }
     pub(super) fn legacy_presence(&self, path: &Path) -> Result<Option<bool>> {
-        if !is_legacy_path(path) {return Ok(None)}
-        let spec=crate::core::business_store_route::exact_store_spec(path)?;
-        self.with(|c| {
-            let registered:Option<(String,String,String,String,String)>=c.connection().query_row("SELECT module,source_identity,logical_path,namespace_prefix,state FROM tb_stores WHERE store_id=?1",[&spec.id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional().map_err(|e|e.to_string())?;
-            let Some((module,source,logical,prefix,state))=registered else {return Ok(Some(false))};
-            if module!="exact" || source!=spec.source_identity || logical!=spec.logical_path || prefix!=spec.prefix || !matches!(state.as_str(),"ready"|"sealed") {return Err("旧暂存owner或状态不匹配，已保留任务".into());}
-            let objects=self.legacy_objects(c.connection(), &spec.prefix)?;
-            if objects.is_empty() {return Ok(Some(false))}
-            let mut names=objects.iter().map(|(name,_)|name.as_str()).collect::<Vec<_>>();names.sort();
-            if names!=["chunks","events","fingerprints","manifest"] || objects.iter().any(|(_,kind)|kind!="table") {
-                return Err("旧暂存结构不可识别，已保留任务".into());
-            }
-            let has_rows:bool=c.connection().query_row(&format!("SELECT EXISTS(SELECT 1 FROM {})",quote(&format!("{}manifest",spec.prefix))),[],|r|r.get(0)).map_err(|e|e.to_string())?;
-            if has_rows {return Ok(Some(true))}
-            // A known empty producer is unfinished, not a corrupt published
-            // ledger. Read its four bounded layouts on this held A handle.
-            static SHAPE:OnceLock<Result<Vec<(String,Vec<String>)>>>=OnceLock::new();
-            let expected=SHAPE.get_or_init(|| {
-                let work=Connection::open_in_memory().map_err(|e|e.to_string())?;
-                work.execute_batch(&super::staging_schema_sql(false)).map_err(|e|e.to_string())?;
-                TABLES.iter().map(|(name,_,_)| {
-                    let mut info=work.prepare(&format!("PRAGMA table_info({name})")).map_err(|e|e.to_string())?;
-                    let names=info.query_map([],|r|r.get::<_,String>(1)).map_err(|e|e.to_string())?.collect::<std::result::Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
-                    Ok(((*name).to_owned(),names))
-                }).collect()
-            }).as_ref().map_err(Clone::clone)?;
-            let mut actual_shapes=Vec::new();
-            for (name,_) in expected {
-                let mut info=c.connection().prepare(&format!("PRAGMA table_info({})",quote(&format!("{}{name}",spec.prefix)))).map_err(|e|e.to_string())?;
-                let actual=info.query_map([],|r|r.get::<_,String>(1)).map_err(|e|e.to_string())?.collect::<std::result::Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
-                actual_shapes.push((name.clone(),actual));
-            }
-            if &actual_shapes == expected {return Ok(Some(false))}
-            // Existing restartable_private_stage also accepts this exact
-            // partial producer shape. It is occupied recovery work: defer to
-            // that original validator/preservation flow rather than hiding
-            // it as absent or treating any unknown empty schema as supported.
-            let known_partial=actual_shapes.iter().all(|(name,columns)| {
-                let supported:&[&str]=match name.as_str() {
-                    "manifest"=> &["manifest_schema_version","parser_revision","complete","staging_mode","accounting_state"],
-                    "events"=> &["ordinal"], "fingerprints"=> &["fingerprint"], "chunks"=> &["chunk_index"],
-                    _=> return false,
-                };
-                columns.iter().map(String::as_str).eq(supported.iter().copied())
-            });
-            if known_partial {
-                for name in ["events","fingerprints","chunks"] {
-                    let occupied:bool=c.connection().query_row(&format!("SELECT EXISTS(SELECT 1 FROM {})",quote(&format!("{}{name}",spec.prefix))),[],|r|r.get(0)).map_err(|e|e.to_string())?;
-                    if occupied {return Err("未封存partial暂存含有事实行，已保留并停止复用".into());}
-                }
-                return Ok(Some(true));
-            }
-            Err("空暂存并非受支持的producer布局，已保留".into())
-        })
+        legacy::presence(self, path)
     }
     pub(super) fn seal(&self, job: &Job) -> Result<Option<Seal>> {
         self.with(|c|{
@@ -485,7 +395,7 @@ impl Pool {
         Ok(count)
     }
     pub(super) fn persist(&self, job: &Job, source: &Connection) -> Result<()> {
-        let names=source.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").map_err(|e|e.to_string())?.query_map([],|r|r.get::<_,String>(0)).map_err(|e|e.to_string())?.collect::<std::result::Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
+        let names=source.prepare("SELECT name FROM sqlite_master WHERE type='table' AND lower(substr(name,1,7)) <> 'sqlite_' ORDER BY name").map_err(|e|e.to_string())?.query_map([],|r|r.get::<_,String>(0)).map_err(|e|e.to_string())?.collect::<std::result::Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
         if names != ["chunks", "events", "fingerprints", "manifest"] {
             return Err("暂存表合同不匹配".into());
         }

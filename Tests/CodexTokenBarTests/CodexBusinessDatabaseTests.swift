@@ -3,6 +3,50 @@ import XCTest
 @testable import CodexTokenBar
 
 final class CodexBusinessDatabaseTests: XCTestCase {
+    func testUserTablesResemblingSQLiteInternalsSurviveImportAndExport() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source.sqlite")
+        let original = SQLiteDatabaseDriver(url: source, bypassBusinessRoutes: true)
+        try original.execute("CREATE TABLE sqliteXfacts(id INTEGER PRIMARY KEY,payload BLOB); INSERT INTO sqliteXfacts VALUES(17,x'00ff'); CREATE TABLE normal(value INTEGER); INSERT INTO normal VALUES(18)")
+        let expected = try original.withConnection { try CodexBusinessDatabase.proof($0) }
+        XCTAssertEqual(expected.tableCounts["sqliteXfacts"], 1)
+        let ledger = try CodexBusinessDatabase(url: root.appendingPathComponent("codex-ledger.sqlite"))
+        let store = BusinessSQLiteStore(containerURL: ledger.url, logicalURL: source, module: "fixture", sourceIdentity: "internal-prefix")
+        _ = try ledger.importSnapshot(source, into: store, backupURL: source)
+        XCTAssertEqual(try ledger.driver.readRows("SELECT payload FROM \"\(store.prefix)sqliteXfacts\" WHERE id=17") { $0.data(0) }, [Data([0, 255])])
+        let exported = root.appendingPathComponent("exported.sqlite")
+        try CodexBusinessDatabase.export(store, to: exported)
+        let copy = SQLiteDatabaseDriver(url: exported, bypassBusinessRoutes: true)
+        XCTAssertEqual(try copy.readRows("SELECT payload FROM sqliteXfacts WHERE id=17") { $0.data(0) }, [Data([0, 255])])
+        XCTAssertEqual(try copy.withConnection { try CodexBusinessDatabase.proof($0) }, expected)
+        try copy.execute("DELETE FROM sqliteXfacts")
+        XCTAssertFalse(try CodexBusinessDatabase.snapshot(exported, covers: source), "A missing user fact must not pass retry coverage")
+        XCTAssertEqual(try original.readRows("SELECT id FROM sqliteXfacts") { $0.int(0) }, [17])
+    }
+
+    func testForeignDependenciesResemblingSQLiteInternalsInvalidateProof() throws {
+        let root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source.sqlite")
+        try SQLiteDatabaseDriver(url: source).execute("CREATE TABLE facts(value INTEGER); INSERT INTO facts VALUES(17)")
+        let ledger = try CodexBusinessDatabase(url: root.appendingPathComponent("codex-ledger.sqlite"))
+        let store = BusinessSQLiteStore(containerURL: ledger.url, logicalURL: source, module: "fixture", sourceIdentity: "foreign-dependency")
+        _ = try ledger.importSnapshot(source, into: store, backupURL: source)
+        let namespace = SQLiteStoreNamespace(prefix: store.prefix, objectNames: ["facts"])
+        let before = try ledger.driver.withConnection { try CodexBusinessDatabase.proof($0, namespace: namespace) }
+        for kind in ["INDEX", "TRIGGER"] {
+            let sql = kind == "INDEX"
+                ? "CREATE INDEX sqliteXforeign ON \"\(store.prefix)facts\"(value)"
+                : "CREATE TRIGGER sqliteXforeign AFTER INSERT ON \"\(store.prefix)facts\" BEGIN SELECT 1; END"
+            try ledger.driver.execute(sql)
+            XCTAssertThrowsError(try ledger.driver.withConnection { try CodexBusinessDatabase.proof($0, namespace: namespace) })
+            XCTAssertEqual(try ledger.driver.readRows("SELECT value FROM \"\(store.prefix)facts\"") { $0.int(0) }, [17])
+            try ledger.driver.execute("DROP \(kind) sqliteXforeign")
+            XCTAssertEqual(try ledger.driver.withConnection { try CodexBusinessDatabase.proof($0, namespace: namespace) }, before)
+        }
+    }
+
     func testDefaultImportNeverReplacesANewlyCreatedRuntimeNamespace() throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }

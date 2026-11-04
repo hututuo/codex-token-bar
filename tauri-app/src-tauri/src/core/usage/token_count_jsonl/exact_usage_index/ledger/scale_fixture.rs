@@ -932,7 +932,7 @@ fn main_catalog_metrics() -> Result<CatalogMetrics, String> {
     .map_err(|error| error.to_string())?;
     let main_objects = connection
         .query_row(
-            "SELECT COUNT(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'",
+            "SELECT COUNT(*) FROM sqlite_master WHERE lower(substr(name,1,7)) <> 'sqlite_'",
             [],
             |row| row.get(0),
         )

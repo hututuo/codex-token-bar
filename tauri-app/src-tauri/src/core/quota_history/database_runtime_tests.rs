@@ -284,7 +284,7 @@ fn published_read_raw_proof(connection: &Connection) -> rusqlite::Result<Publish
     let schema_version = connection.query_row("PRAGMA schema_version", [], |row| row.get(0))?;
     let mut schema_statement = connection.prepare(
         "SELECT type,name,sql FROM sqlite_master \
-         WHERE type IN ('table','index') AND name NOT LIKE 'sqlite_%' ORDER BY type,name",
+         WHERE type IN ('table','index') AND lower(substr(name,1,7)) <> 'sqlite_' ORDER BY type,name",
     )?;
     let schema = schema_statement
         .query_map([], |row| {

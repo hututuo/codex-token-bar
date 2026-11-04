@@ -3463,7 +3463,7 @@ fn ensure_schema(connection: &Connection, database_path: &Path) -> rusqlite::Res
     }
     if schema_version < SCHEMA_VERSION {
         let existing_tables: i64 = connection.query_row(
-            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND lower(substr(name,1,7)) <> 'sqlite_'",
             [],
             |row| row.get(0),
         )?;

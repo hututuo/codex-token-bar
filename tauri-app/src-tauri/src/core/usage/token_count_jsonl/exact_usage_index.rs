@@ -1425,7 +1425,7 @@ fn assess_index_migration(
     if !metadata_exists {
         let has_user_tables = connection
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%')",
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND lower(substr(name,1,7)) <> 'sqlite_')",
                 [],
                 |row| row.get::<_, bool>(0),
             )
@@ -1444,7 +1444,7 @@ fn assess_index_migration(
     let Some(raw_schema) = raw_schema else {
         let has_other_tables = connection
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> 'metadata')",
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND lower(substr(name,1,7)) <> 'sqlite_' AND name <> 'metadata')",
                 [],
                 |row| row.get::<_, bool>(0),
             )
@@ -1929,7 +1929,7 @@ impl ExactUsageIndex {
             if !has_schema_version {
                 let has_unmarked_tables = connection
                     .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> 'metadata')",
+                        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND lower(substr(name,1,7)) <> 'sqlite_' AND name <> 'metadata')",
                         [],
                         |row| row.get::<_, bool>(0),
                     )
@@ -14850,7 +14850,7 @@ fn quick_check_bound_staging_store(connection: &BoundStoreConnection) -> Result<
     let existing_tables = {
         let mut statement = connection
             .prepare(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+                "SELECT name FROM sqlite_master WHERE type='table' AND lower(substr(name,1,7)) <> 'sqlite_' ORDER BY name",
             )
             .map_err(|error| format!("无法读取精确 token 暂存表清单：{error}"))?;
         let rows = statement

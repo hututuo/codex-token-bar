@@ -18,12 +18,25 @@ final class SQLiteStoreBinding {
         namespace = .init(prefix: store.prefix, objectNames: names)
     }
 
+    func isScopedVacuumBackup(_ sql: String) throws -> Bool {
+        // Only validated single DML statements enter this cache. Rechecking
+        // their tokens for VACUUM on every row defeats statement reuse during
+        // a full import. The identical namespace is still required, and sql()
+        // below independently authorizes the execution under its live context.
+        if let cached = translations[sql], cached.namespace == namespace { return false }
+        let words = try SQLiteStoreNamespace.tokens(sql)
+            .filter { $0.kind != .trivia }.map { $0.value.uppercased() }
+        return words.first == "VACUUM" && words.contains("INTO")
+    }
+
     func sql(_ sql: String) throws -> String {
         // Reuse only a validated translation under the IDENTICAL identifier
         // context. SQLite still prepares/executes the SQL and checks its schema.
         // TEMP/DDL or explicit namespace changes cannot reuse an old binding.
         if let cached = translations[sql], cached.namespace == namespace { return cached.sql }
         let context = namespace
+        var completed = false
+        defer { if !completed { namespace = context } }
         let tokens = try SQLiteStoreNamespace.tokens(sql)
         var statements: [String] = [], pending = ""
         for token in tokens {
@@ -57,6 +70,7 @@ final class SQLiteStoreBinding {
                 translationOrder.append(sql); translationBytes += bytes
             }
         }
+        completed = true
         return result
     }
 

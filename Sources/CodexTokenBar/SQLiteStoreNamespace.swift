@@ -55,6 +55,13 @@ struct SQLiteStoreNamespace: Equatable, Sendable {
     /// Bind logical object identifiers to this store's private physical names.
     /// All schema qualifiers and reserved objects are checked before rewriting.
     mutating func bind(_ sql: String) throws -> String {
+        var candidate = self
+        let result = try candidate.bindStatement(sql)
+        self = candidate
+        return result
+    }
+
+    private mutating func bindStatement(_ sql: String) throws -> String {
         var tokens = try Self.tokens(sql)
         let significant = tokens.indices.filter { tokens[$0].kind != .trivia }
         guard significant.first != nil else { return sql }
@@ -75,19 +82,23 @@ struct SQLiteStoreNamespace: Equatable, Sendable {
             let nameIndex = significant[next]
             guard !Self.isSchemaToken(tokens[nameIndex]) else { throw BindingError.crossDatabaseAccess }
             let lowerName = tokens[nameIndex].value.lowercased()
-            let isTemporary = tokens[index].value.uppercased() == "TABLE"
-                && significant[(createIndex + 1)..<position].contains(where: {
+            let isTemporary = significant[(createIndex + 1)..<position].contains(where: {
                     Self.keyword(tokens[$0], is: ["TEMP", "TEMPORARY"])
                 })
-            if isTemporary { temporaryObjectNames.insert(lowerName) }
-            objectNames.insert(lowerName)
+            try registerObject(lowerName, isTemporary: isTemporary)
         }
         if let alterIndex = significant.firstIndex(where: { Self.keyword(tokens[$0], is: ["ALTER"]) }),
            let renameIndex = significant.firstIndex(where: { Self.keyword(tokens[$0], is: ["RENAME"]) }),
            renameIndex > alterIndex,
            renameIndex + 2 < significant.count,
            Self.keyword(tokens[significant[renameIndex + 1]], is: ["TO"]) {
-            objectNames.insert(tokens[significant[renameIndex + 2]].value.lowercased())
+            guard let source = try Self.validateDDLTarget(tokens, significant: significant,
+                objectNames: objectNames, temporaryObjectNames: temporaryObjectNames),
+                tokens[significant[renameIndex + 2]].kind == .identifier else {
+                throw BindingError.malformedSQL
+            }
+            let target = tokens[significant[renameIndex + 2]].value.lowercased()
+            try registerObject(target, isTemporary: temporaryObjectNames.contains(source))
         }
         // Old schema installers intentionally DROP IF EXISTS obsolete objects
         // before creating the current revision. An absent target still maps
@@ -98,21 +109,20 @@ struct SQLiteStoreNamespace: Equatable, Sendable {
            let kind = significant.firstIndex(where: { Self.keyword(tokens[$0], is: ["TABLE", "INDEX", "VIEW", "TRIGGER"]) }) {
             var position = kind + 1
             while position < significant.count, Self.keyword(tokens[significant[position]], is: ["IF", "EXISTS"]) { position += 1 }
-            var isTemporary = false
+            var explicitTemporary: Bool?
             if position + 2 < significant.count,
                ["main", "temp"].contains(tokens[significant[position]].value.lowercased()),
                tokens[significant[position + 1]].value == "." {
-                isTemporary = tokens[significant[position]].value.lowercased() == "temp"
+                explicitTemporary = tokens[significant[position]].value.lowercased() == "temp"
                 position += 2
             }
             if position < significant.count, tokens[significant[position]].kind == .identifier {
                 let name = tokens[significant[position]].value.lowercased()
                 guard !name.hasPrefix("tb_"), !name.hasPrefix("sqlite_") else { throw BindingError.crossDatabaseAccess }
-                objectNames.insert(name)
-                if isTemporary { temporaryObjectNames.insert(name) }
+                try registerObject(name, isTemporary: explicitTemporary ?? temporaryObjectNames.contains(name))
             }
         }
-        try Self.validateDDLTarget(tokens, significant: significant, objectNames: objectNames, temporaryObjectNames: temporaryObjectNames)
+        _ = try Self.validateDDLTarget(tokens, significant: significant, objectNames: objectNames, temporaryObjectNames: temporaryObjectNames)
         try Self.validateObjectReferences(tokens, significant: significant, objectNames: objectNames, temporaryObjectNames: temporaryObjectNames, cteNames: cteNames)
 
         for position in significant.indices {
@@ -150,6 +160,19 @@ struct SQLiteStoreNamespace: Equatable, Sendable {
             }
         }
         return tokens.map(\.raw).joined()
+    }
+
+    /// Names reserve one schema for this connection, including after DROP.
+    /// CREATE, RENAME and absent DROP targets must enforce the same rule; a
+    /// harmless-looking DROP must not authorize a later TEMP shadow of MAIN.
+    /// Private unbound retry snapshots intentionally allow such shadows and
+    /// do not pass through this adapter.
+    private mutating func registerObject(_ name: String, isTemporary: Bool) throws {
+        if objectNames.contains(name), temporaryObjectNames.contains(name) != isTemporary {
+            throw BindingError.crossDatabaseAccess
+        }
+        objectNames.insert(name)
+        if isTemporary { temporaryObjectNames.insert(name) }
     }
 
     /// Translate physical identifiers in sqlite_master SQL back only when the
@@ -370,10 +393,10 @@ struct SQLiteStoreNamespace: Equatable, Sendable {
 
     private static func validateDDLTarget(
         _ tokens: [Token], significant: [Int], objectNames: Set<String>, temporaryObjectNames: Set<String>
-    ) throws {
-        guard let first = significant.first else { return }
+    ) throws -> String? {
+        guard let first = significant.first else { return nil }
         let operation = tokens[first].value.uppercased()
-        guard operation == "DROP" || operation == "ALTER" else { return }
+        guard operation == "DROP" || operation == "ALTER" else { return nil }
         guard let kindPosition = significant.indices.dropFirst().first(where: { position in
             keyword(tokens[significant[position]], is: ["TABLE", "INDEX", "VIEW", "TRIGGER"])
         }) else { throw BindingError.unsupportedSQL }
@@ -406,6 +429,7 @@ struct SQLiteStoreNamespace: Equatable, Sendable {
                 || (lower.hasPrefix("sqlite_autoindex_") && logicalAutoindexName(target, objectNames: objectNames) != nil) else {
             throw BindingError.crossDatabaseAccess
         }
+        return lower
     }
 
     private static func collectCTENames(_ tokens: [Token], significant: [Int]) throws -> Set<String> {
