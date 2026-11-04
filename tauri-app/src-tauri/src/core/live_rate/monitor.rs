@@ -482,6 +482,7 @@ fn file_signature(path: &Path) -> FileSignature {
 #[cfg(test)]
 mod immediate_snapshot_tests {
     use super::*;
+    use std::sync::{mpsc, Arc};
 
     fn unread(source: &str) -> UnreadSummary {
         UnreadSummary {
@@ -526,5 +527,41 @@ mod immediate_snapshot_tests {
     #[test]
     fn native_refresh_wait_budget_is_below_initial_frontend_ipc_budget() {
         assert!(REFRESH_WAIT_TIMEOUT < Duration::from_millis(1_500));
+    }
+
+    #[test]
+    fn panic_guard_notifies_an_already_waiting_cold_reader() {
+        let monitor = Arc::new(LiveRateMonitorService::new(PathBuf::from("unused")));
+        monitor.inner.lock().unwrap().refresh_in_flight = Some(1);
+        let (waiting_tx, waiting_rx) = mpsc::channel();
+        let waiting_monitor = Arc::clone(&monitor);
+        let waiter = std::thread::spawn(move || {
+            let mut state = waiting_monitor.inner.lock().unwrap();
+            // Send while holding the mutex: guard cleanup cannot happen before
+            // wait_timeout atomically releases it and starts waiting.
+            waiting_tx.send(()).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while state.refresh_in_flight.is_some() {
+                let (next_state, result) = waiting_monitor
+                    .refresh_ready
+                    .wait_timeout(state, deadline.saturating_duration_since(Instant::now()))
+                    .unwrap();
+                state = next_state;
+                assert!(!result.timed_out(), "panic must notify the waiting reader");
+            }
+            assert!(state.refresh_in_flight.is_none());
+        });
+        waiting_rx.recv().unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = RefreshClaimGuard {
+                service: &monitor,
+                nonce: 1,
+                reset_generation: 0,
+                armed: true,
+            };
+            panic!("injected refresh panic");
+        }));
+        assert!(result.is_err());
+        waiter.join().unwrap();
     }
 }

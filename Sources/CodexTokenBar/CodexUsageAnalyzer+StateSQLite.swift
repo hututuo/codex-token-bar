@@ -14,20 +14,19 @@ extension CodexUsageAnalyzer {
     func loadStateRefreshSnapshot() -> StateRefreshSnapshot {
         let db = dataSource.stateDatabase.path
         guard fileManager.fileExists(atPath: db),
-              let rows = try? sqliteRows(
-                db: db,
-                sql: """
+              let rows = try? sqliteThreadRows(db: db, sql: { columns in
+                """
                 SELECT
                     id,
                     title,
-                    first_user_message,
-                    preview,
-                    reasoning_effort,
-                    COALESCE(updated_at_ms, updated_at)
+                    \(optionalStateColumn("first_user_message", columns)),
+                    \(optionalStateColumn("preview", columns)),
+                    \(optionalStateColumn("reasoning_effort", columns)),
+                    \(stateUpdatedMilliseconds(columns))
                 FROM threads
-                ORDER BY COALESCE(updated_at_ms, updated_at) DESC;
+                ORDER BY \(stateUpdatedMilliseconds(columns)) DESC;
                 """
-              ) else {
+              }) else {
             return StateRefreshSnapshot(
                 metadata: ([], "未知"),
                 officialSummary: nil,
@@ -54,7 +53,7 @@ extension CodexUsageAnalyzer {
             ]) ?? "Untitled"
             info[id] = ThreadInfo(
                 title: title,
-                updatedAt: parseThreadTimestamp(row[safe: 5])
+                updatedAt: parseThreadMilliseconds(row[safe: 5])
             )
         }
         let pluginItems: [PluginUsage] = pluginCounts.map { entry in
@@ -97,15 +96,17 @@ extension CodexUsageAnalyzer {
             """
         )
 
-        let titleRows = try sqliteRows(
-            db: db,
-            sql: """
-            SELECT substr(title, 1, 240), substr(first_user_message, 1, 360), substr(preview, 1, 360), reasoning_effort
+        let titleRows = try sqliteThreadRows(db: db) { columns in
+            """
+            SELECT substr(title, 1, 240),
+                   substr(\(optionalStateColumn("first_user_message", columns)), 1, 360),
+                   substr(\(optionalStateColumn("preview", columns)), 1, 360),
+                   \(optionalStateColumn("reasoning_effort", columns))
             FROM threads
-            ORDER BY COALESCE(updated_at_ms, updated_at) DESC
+            ORDER BY \(stateUpdatedMilliseconds(columns)) DESC
             LIMIT 400;
             """
-        )
+        }
 
         let daily: [DayUsage] = []
         let recentBins: [BinUsage] = []
@@ -203,18 +204,52 @@ extension CodexUsageAnalyzer {
         }
     }
 
+    private func sqliteThreadRows(db: String, sql: (Set<String>) -> String) throws -> [[String]] {
+        try SQLiteReadRecovery.run {
+            let driver = SQLiteDatabaseDriver(
+                url: URL(fileURLWithPath: db),
+                readOnly: true,
+                createsFileIfMissing: false,
+                busyTimeoutMilliseconds: 3_000,
+                enableWAL: false,
+                consistency: .externallyOwnedWAL
+            )
+            // Inspect the schema and read rows in the same read-only snapshot.
+            return try driver.withConnection { connection in
+                try connection.readTransaction { snapshot in
+                    let columns = Set(try snapshot.readRows("PRAGMA table_info(threads)") { $0.text(1) ?? "" })
+                    return try snapshot.readRows(sql(columns)) { statement in
+                        (0..<statement.columnCount).map { statement.text($0) ?? "" }
+                    }
+                }
+            }
+        }
+    }
+
+    private func optionalStateColumn(_ name: String, _ columns: Set<String>) -> String {
+        columns.contains(name) ? name : "NULL"
+    }
+
+    private func stateUpdatedMilliseconds(_ columns: Set<String>) -> String {
+        let legacy = "CASE WHEN updated_at > 9999999999 THEN updated_at ELSE updated_at * 1000 END"
+        guard columns.contains("updated_at_ms") else { return legacy }
+        return columns.contains("updated_at") ? "COALESCE(updated_at_ms, \(legacy))" : "updated_at_ms"
+    }
+
     func loadThreadMetadata() -> (plugins: [PluginUsage], reasoning: String) {
         let db = dataSource.stateDatabase.path
         guard fileManager.fileExists(atPath: db),
-              let rows = try? sqliteRows(
-            db: db,
-            sql: """
-            SELECT substr(title, 1, 240), substr(first_user_message, 1, 360), substr(preview, 1, 360), reasoning_effort
+              let rows = try? sqliteThreadRows(db: db, sql: { columns in
+            """
+            SELECT substr(title, 1, 240),
+                   substr(\(optionalStateColumn("first_user_message", columns)), 1, 360),
+                   substr(\(optionalStateColumn("preview", columns)), 1, 360),
+                   \(optionalStateColumn("reasoning_effort", columns))
             FROM threads
-            ORDER BY COALESCE(updated_at_ms, updated_at) DESC
+            ORDER BY \(stateUpdatedMilliseconds(columns)) DESC
             LIMIT 500;
             """
-        ) else {
+        }) else {
             return ([], "未知")
         }
 
@@ -241,13 +276,15 @@ extension CodexUsageAnalyzer {
     func loadThreadInfo() -> [String: ThreadInfo] {
         let db = dataSource.stateDatabase.path
         guard fileManager.fileExists(atPath: db),
-              let rows = try? sqliteRows(
-            db: db,
-            sql: """
-            SELECT id, title, first_user_message, preview, COALESCE(updated_at_ms, updated_at)
+              let rows = try? sqliteThreadRows(db: db, sql: { columns in
+            """
+            SELECT id, title,
+                   \(optionalStateColumn("first_user_message", columns)),
+                   \(optionalStateColumn("preview", columns)),
+                   \(stateUpdatedMilliseconds(columns))
             FROM threads;
             """
-        ) else {
+        }) else {
             return [:]
         }
 
@@ -259,7 +296,7 @@ extension CodexUsageAnalyzer {
                 row[safe: 2],
                 row[safe: 3]
             ]) ?? "Untitled"
-            let updatedAt = parseThreadTimestamp(row[safe: 4])
+            let updatedAt = parseThreadMilliseconds(row[safe: 4])
             info[id] = ThreadInfo(title: title, updatedAt: updatedAt)
         }
         return info
@@ -295,9 +332,8 @@ extension CodexUsageAnalyzer {
         }
     }
 
-    private func parseThreadTimestamp(_ value: String?) -> Date? {
+    private func parseThreadMilliseconds(_ value: String?) -> Date? {
         guard let raw = value, let number = Double(raw) else { return nil }
-        let seconds = number > 10_000_000_000 ? number / 1000 : number
-        return Date(timeIntervalSince1970: seconds)
+        return Date(timeIntervalSince1970: number / 1000)
     }
 }

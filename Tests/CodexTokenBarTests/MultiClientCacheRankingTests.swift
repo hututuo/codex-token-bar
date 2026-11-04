@@ -109,14 +109,16 @@ final class MultiClientCacheRankingTests: XCTestCase {
         let url = root.appendingPathComponent("usage.sqlite")
         let ledger = try MultiClientUsageLedger(url: url)
         _ = try ledger.ingest([event("one", session: "s", model: "claude-opus-5", timestamp: 10, input: 2_000, cacheRead: 100)])
-        let beforeRevisionCount = try XCTUnwrap(ledger.database.readRows("SELECT COUNT(*) FROM client_usage_revisions") { $0.int(0) }.first)
-        let beforeVersion = try XCTUnwrap(ledger.database.readRows("PRAGMA user_version") { $0.int(0) }.first)
+        let beforeRevisionCount = try XCTUnwrap(ledger.database.readRows("SELECT COUNT(*) FROM client_usage_revisions") { try XCTUnwrap($0.int(0)) }.first)
+        let beforeVersion = try XCTUnwrap(ledger.database.readRows("PRAGMA user_version") { try XCTUnwrap($0.int(0)) }.first)
 
         let projection = try MultiClientUsageLedger.readOnlyCacheRankingProjection(url: url, clients: [.claudeCode])
 
         XCTAssertEqual(projection.requests.count, 1)
-        XCTAssertEqual(try ledger.database.readRows("SELECT COUNT(*) FROM client_usage_revisions") { $0.int(0) }.first, beforeRevisionCount)
-        XCTAssertEqual(try ledger.database.readRows("PRAGMA user_version") { $0.int(0) }.first, beforeVersion)
+        let afterRevisionCount = try XCTUnwrap(ledger.database.readRows("SELECT COUNT(*) FROM client_usage_revisions") { try XCTUnwrap($0.int(0)) }.first)
+        let afterVersion = try XCTUnwrap(ledger.database.readRows("PRAGMA user_version") { try XCTUnwrap($0.int(0)) }.first)
+        XCTAssertEqual(afterRevisionCount, beforeRevisionCount)
+        XCTAssertEqual(afterVersion, beforeVersion)
     }
 
     @MainActor

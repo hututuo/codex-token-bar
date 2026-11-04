@@ -803,7 +803,7 @@ fn cold_concurrent_monitor_refresh_is_single_flight() {
 }
 
 #[test]
-fn panic_after_refresh_claim_releases_cold_waiter() {
+fn panic_after_refresh_claim_allows_next_cold_snapshot() {
     let root = temp_root("live-rate-monitor-panic-claim");
     fs::create_dir_all(&root).unwrap();
     create_state_database(&root, "thread-a", "A", 1);
@@ -816,15 +816,14 @@ fn panic_after_refresh_claim_releases_cold_waiter() {
     }));
     assert!(panic_result.is_err());
 
-    let (done_tx, done_rx) = mpsc::channel();
-    let next_monitor = Arc::clone(&monitor);
-    std::thread::spawn(move || {
-        let _ = next_monitor.snapshot(None);
-        done_tx.send(()).unwrap();
-    });
-    done_rx
-        .recv_timeout(Duration::from_secs(2))
-        .expect("panic claim must not strand the next cold snapshot");
+    // Observe ownership directly. A full cold snapshot includes filesystem,
+    // unread and tokenizer work, so its duration does not prove claim release.
+    let mut claimed = false;
+    let _ = monitor.test_snapshot_after_claim(None, || claimed = true);
+    assert!(
+        claimed,
+        "panic claim must not strand the next cold snapshot"
+    );
     assert_eq!(monitor.test_refresh_count(), 1);
     fs::remove_dir_all(root).unwrap();
 }

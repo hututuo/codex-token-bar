@@ -10,15 +10,27 @@ extension LiveRateMonitor {
                 let name = columns.contains("name") ? "name" : "''"
                 let firstMessage = columns.contains("first_user_message") ? "first_user_message" : "''"
                 let source = columns.contains("thread_source") ? "COALESCE(thread_source, 'user')" : "'user'"
+                let archived = columns.contains("archived") ? "COALESCE(archived, 0) = 0" : "1 = 1"
+                // Upstream added the millisecond field after the original
+                // schema; it can also be NULL while the seconds field is valid.
+                let legacyUpdated = "CASE WHEN updated_at > 9999999999 THEN updated_at ELSE updated_at * 1000 END"
+                let updated: String
+                if columns.contains("updated_at_ms") {
+                    updated = columns.contains("updated_at")
+                        ? "COALESCE(updated_at_ms, \(legacyUpdated))" : "updated_at_ms"
+                } else {
+                    // Keep a missing required timestamp as a query error.
+                    updated = legacyUpdated
+                }
                 let sql = """
                 SELECT id, COALESCE(NULLIF(TRIM(\(name)), ''),
                            CASE WHEN TRIM(COALESCE(title, '')) != TRIM(COALESCE(\(firstMessage), ''))
                                 THEN NULLIF(TRIM(title), '') END, ''),
-                       rollout_path, coalesce(updated_at_ms, updated_at * 1000) AS updated_at_ms,
+                       rollout_path, \(updated) AS normalized_updated_at_ms,
                        \(source)
                 FROM threads
-                WHERE archived = 0
-                ORDER BY updated_at_ms DESC, updated_at DESC
+                WHERE \(archived)
+                ORDER BY normalized_updated_at_ms DESC, id ASC
                 LIMIT 20;
                 """
                 return try snapshot.readRows(sql) { statement in

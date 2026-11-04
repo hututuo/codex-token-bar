@@ -1,9 +1,13 @@
 use crate::core::sqlite;
 use crate::models::LiveThreadOption;
 use rusqlite::{params, Connection, Result};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+#[cfg(test)]
+#[path = "state_tests.rs"]
+mod tests;
 
 #[derive(Clone, Default)]
 pub(super) struct UsageSummary {
@@ -24,32 +28,32 @@ pub(super) fn read_thread_options_result(
     limit: usize,
 ) -> Result<Vec<LiveThreadOption>> {
     let connection = open_read_only(&codex_home.join("state_5.sqlite"))?;
+    let columns = ThreadColumns::read(&connection)?;
 
-    let archived_filter = if column_exists(&connection, "threads", "archived") {
+    let archived_filter = if columns.contains("archived") {
         "COALESCE(archived, 0) = 0"
     } else {
         "1 = 1"
     };
-    let source_filter = if column_exists(&connection, "threads", "thread_source") {
+    let source_filter = if columns.contains("thread_source") {
         "COALESCE(thread_source, 'user') != 'subagent'"
     } else {
         "1 = 1"
     };
-    let title_expression = if column_exists(&connection, "threads", "name") {
+    let title_expression = if columns.contains("name") {
         "COALESCE(NULLIF(TRIM(name), ''), NULLIF(TRIM(title), ''), '')"
     } else {
         "title"
     };
+    let first_message = columns.optional("first_user_message");
+    let preview = columns.optional("preview");
+    let updated_ms = columns.updated_ms()?;
     let sql = format!(
         r#"
-        SELECT id, {title_expression}, first_user_message, preview,
+        SELECT id, {title_expression}, {first_message}, {preview},
                strftime(
                  '%m/%d %H:%M',
-                 CASE
-                   WHEN COALESCE(updated_at_ms, updated_at) > 9999999999
-                     THEN COALESCE(updated_at_ms, updated_at) / 1000
-                   ELSE COALESCE(updated_at_ms, updated_at)
-                 END,
+                 ({updated_ms}) / 1000,
                  'unixepoch',
                  'localtime'
                ) AS updated_label,
@@ -57,18 +61,18 @@ pub(super) fn read_thread_options_result(
         FROM threads
         WHERE {archived_filter}
           AND {source_filter}
-        ORDER BY COALESCE(updated_at_ms, updated_at * 1000) DESC, id ASC
+        ORDER BY {updated_ms} DESC, id ASC
         LIMIT ?1;
         "#,
     );
     let mut statement = connection.prepare(&sql)?;
     let rows = statement.query_map(params![limit as i64], |row| {
         let id: String = row.get(0)?;
-        let title: String = row.get(1)?;
-        let first_message: String = row.get(2)?;
-        let preview: String = row.get(3)?;
-        let updated_at: String = row.get(4)?;
-        let tokens_used: i64 = row.get(5)?;
+        let title = row.get::<_, Option<String>>(1)?.unwrap_or_default();
+        let first_message = row.get::<_, Option<String>>(2)?.unwrap_or_default();
+        let preview = row.get::<_, Option<String>>(3)?.unwrap_or_default();
+        let updated_at = row.get::<_, Option<String>>(4)?.unwrap_or_default();
+        let tokens_used = row.get::<_, Option<i64>>(5)?.unwrap_or_default();
         Ok(LiveThreadOption {
             id,
             title: best_thread_label(&[&title, &first_message, &preview]),
@@ -86,20 +90,22 @@ pub(super) fn read_recent_rollout_threads(
     limit: usize,
 ) -> Result<Vec<RolloutThread>> {
     let connection = open_read_only(&codex_home.join("state_5.sqlite"))?;
-    if !column_exists(&connection, "threads", "rollout_path") {
+    let columns = ThreadColumns::read(&connection)?;
+    if !columns.contains("rollout_path") {
         return Ok(Vec::new());
     }
 
-    let archived_filter = if column_exists(&connection, "threads", "archived") {
+    let archived_filter = if columns.contains("archived") {
         "COALESCE(archived, 0) = 0"
     } else {
         "1 = 1"
     };
-    let source_expression = if column_exists(&connection, "threads", "thread_source") {
+    let source_expression = if columns.contains("thread_source") {
         "COALESCE(thread_source, 'user')"
     } else {
         "'user'"
     };
+    let updated_ms = columns.updated_ms()?;
     let sql = format!(
         r#"
         SELECT id, rollout_path, {source_expression}
@@ -107,7 +113,7 @@ pub(super) fn read_recent_rollout_threads(
         WHERE {archived_filter}
           AND rollout_path IS NOT NULL
           AND rollout_path <> ''
-        ORDER BY COALESCE(updated_at_ms, updated_at * 1000) DESC, id ASC
+        ORDER BY {updated_ms} DESC, id ASC
         LIMIT ?1;
         "#,
     );
@@ -128,13 +134,11 @@ pub(super) fn read_recent_rollout_threads(
 
 pub(super) fn read_thread_title(codex_home: &Path, thread_id: &str) -> Result<Option<String>> {
     let connection = open_read_only(&codex_home.join("state_5.sqlite"))?;
-    let name_expression = if column_exists(&connection, "threads", "name") {
-        "name"
-    } else {
-        "''"
-    };
+    let columns = ThreadColumns::read(&connection)?;
+    let name_expression = columns.optional("name");
+    let first_message = columns.optional("first_user_message");
     let sql = format!(
-        "SELECT {name_expression}, title, first_user_message FROM threads WHERE id = ?1 LIMIT 1;"
+        "SELECT {name_expression}, title, {first_message} FROM threads WHERE id = ?1 LIMIT 1;"
     );
     let mut statement = connection.prepare(&sql)?;
     let mut rows = statement.query(params![thread_id])?;
@@ -164,18 +168,16 @@ pub(super) fn read_thread_titles(
         return Ok(titles);
     }
     let connection = open_read_only(&codex_home.join("state_5.sqlite"))?;
-    let name_expression = if column_exists(&connection, "threads", "name") {
-        "name"
-    } else {
-        "''"
-    };
+    let columns = ThreadColumns::read(&connection)?;
+    let name_expression = columns.optional("name");
+    let first_message = columns.optional("first_user_message");
     for chunk in thread_ids.chunks(400) {
         let placeholders = std::iter::repeat("?")
             .take(chunk.len())
             .collect::<Vec<_>>()
             .join(",");
         let sql = format!(
-            "SELECT id, {name_expression}, title, first_user_message FROM threads WHERE id IN ({placeholders});"
+            "SELECT id, {name_expression}, title, {first_message} FROM threads WHERE id IN ({placeholders});"
         );
         let mut statement = connection.prepare(&sql)?;
         let mut rows =
@@ -197,16 +199,41 @@ pub(super) fn read_thread_titles(
     Ok(titles)
 }
 
-fn column_exists(connection: &Connection, table: &str, column: &str) -> bool {
-    let Ok(mut statement) = connection.prepare(&format!("PRAGMA table_info({table})")) else {
-        return false;
-    };
-    let Ok(rows) = statement.query_map([], |row| row.get::<_, String>(1)) else {
-        return false;
-    };
+struct ThreadColumns(HashSet<String>);
 
-    let exists = rows.filter_map(|row| row.ok()).any(|name| name == column);
-    exists
+impl ThreadColumns {
+    fn read(connection: &Connection) -> Result<Self> {
+        let mut statement = connection.prepare("PRAGMA table_info(threads)")?;
+        let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+        Ok(Self(columns.collect::<Result<_>>()?))
+    }
+
+    fn contains(&self, column: &str) -> bool {
+        self.0.contains(column)
+    }
+
+    fn optional(&self, column: &'static str) -> &'static str {
+        if self.contains(column) {
+            column
+        } else {
+            "NULL"
+        }
+    }
+
+    fn updated_ms(&self) -> Result<String> {
+        // The upstream millisecond migration accepts legacy timestamps in either
+        // unit. A NULL new field still falls back to the original timestamp.
+        let seconds =
+            "CASE WHEN updated_at > 9999999999 THEN updated_at ELSE updated_at * 1000 END";
+        match (self.contains("updated_at_ms"), self.contains("updated_at")) {
+            (true, true) => Ok(format!("COALESCE(updated_at_ms, {seconds})")),
+            (true, false) => Ok("updated_at_ms".into()),
+            (false, true) => Ok(seconds.into()),
+            (false, false) => Err(rusqlite::Error::InvalidColumnName(
+                "updated_at / updated_at_ms".into(),
+            )),
+        }
+    }
 }
 
 fn best_thread_label(values: &[&str]) -> String {
