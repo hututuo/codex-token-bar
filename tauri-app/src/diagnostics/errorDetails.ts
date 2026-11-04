@@ -1,11 +1,21 @@
 // Keep error codes and cause chains without serializing invocation arguments.
+function redactCredentialText(value: string): string {
+  return value
+    .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^/\s?#"'<>]+@/gi, "$1[redacted]@")
+    .replace(/(\b(?:proxy-authorization|authorization|set-cookie|cookie)["']?\s*[:=]\s*)[^\r\n]+/gim, "$1[redacted]")
+    .replace(/(\bBearer\s+)[^\s"'\\,;<>]+/gi, "$1[redacted]")
+    .replace(/((?<![a-z0-9_])["']?(?:access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|client[_-]?secret|password|passwd|secret|token)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s&,;"'{}<>]+)/gi, "$1[redacted]");
+}
+
 export function diagnosticErrorText(error: unknown): string {
   const seen = new WeakSet<object>();
   let visited = 0;
   function visit(value: unknown, depth: number): unknown {
     if (++visited > 200) return "[diagnostic item limit]";
     if (depth > 5) return "[cause depth limit]";
-    if (typeof value === "string") return value.slice(0, 16_384);
+    // Sanitize each scalar before truncating or JSON-escaping it. Object-key
+    // filtering alone misses credentials embedded in descriptions and paths.
+    if (typeof value === "string") return redactCredentialText(value).slice(0, 16_384);
     if (value === null || typeof value !== "object") return value === undefined ? "undefined" : value;
     if (seen.has(value)) return "[circular]";
     seen.add(value);
@@ -28,8 +38,10 @@ export function diagnosticErrorText(error: unknown): string {
       try { error = JSON.parse(error); } catch { /* Keep non-JSON error text. */ }
     }
     const plainError = error instanceof Error && !error.cause && Object.keys(error).length === 0;
-    const value = typeof error === "string" ? error : error instanceof Error && plainError ? error.message : JSON.stringify(visit(error, 0), null, 2);
-    const redacted = (value ?? String(error)).replace(/\bBearer\s+[^\s"\\]+/gi, "Bearer [redacted]");
+    const value = typeof error === "string" ? redactCredentialText(error)
+      : error instanceof Error && plainError ? redactCredentialText(error.message)
+      : JSON.stringify(visit(error, 0), null, 2);
+    const redacted = value ?? redactCredentialText(String(error));
     return redacted.length > 16_384 ? redacted.slice(0, 16_384) + "\n[diagnostic truncated]" : redacted;
   } catch { return "无法格式化错误对象"; }
 }

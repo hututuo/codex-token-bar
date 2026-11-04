@@ -33,7 +33,7 @@ export function subscribeCommandDiagnostics(
   listener: (diagnostics: CommandFailureDiagnostic[]) => void,
 ): () => void {
   diagnosticsListeners.add(listener);
-  listener(getCommandDiagnosticsSnapshot());
+  try { listener(getCommandDiagnosticsSnapshot()); } catch { /* Initial replay is diagnostic-only. */ }
   return () => {
     diagnosticsListeners.delete(listener);
   };
@@ -80,7 +80,9 @@ export function recordCommandFailure(command: string, error: unknown, attempt?: 
   trimCommandDiagnostics();
   emitCommandDiagnostics();
   if (!throttled) {
-    console.warn(`Local operation failed: ${command}`, commandFailureMessage(error));
+    try {
+      console.warn(`Local operation failed: ${command}`, commandFailureMessage(error));
+    } catch { /* A failed warning sink cannot change the native operation result. */ }
   }
 }
 
@@ -92,7 +94,7 @@ export function clearCommandFailure(command: string, attempt?: number, result?: 
   if (result !== undefined) {
     const value = result && typeof result === "object" ? result as Record<string, unknown> : {};
     const issues = [value.diagnostics, value.warnings].flatMap(items => Array.isArray(items) ? items : []);
-    diagnosticJournal.update(`data:${command}`, "数据读取提示", issues.length ? JSON.stringify(issues, null, 2) : "");
+    diagnosticJournal.update(`data:${command}`, "数据读取提示", issues.length ? diagnosticErrorText(issues) : "");
   }
   if (attempt === undefined) {
     latestAttemptByCommand.delete(command);
@@ -120,7 +122,9 @@ function trimCommandDiagnostics() {
 
 function emitCommandDiagnostics() {
   const snapshot = getCommandDiagnosticsSnapshot();
-  diagnosticsListeners.forEach((listener) => listener(snapshot));
+  diagnosticsListeners.forEach((listener) => {
+    try { listener(snapshot); } catch { /* One observer must not stop the remaining notifications. */ }
+  });
 }
 
 function commandFailureMessage(error: unknown): string {

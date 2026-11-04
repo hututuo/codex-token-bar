@@ -12,7 +12,11 @@ export function createDiagnosticJournal(now = () => new Date().toISOString()) {
   function emit() {
     history = history.slice(-100);
     state = { current: [...active.values()].sort((a,b) => b.lastAt.localeCompare(a.lastAt)), history: [...history].reverse() };
-    listeners.forEach(listener => listener());
+    // A diagnostic observer must not replace the result of the operation that
+    // produced this record or prevent other observers from receiving it.
+    listeners.forEach(listener => {
+      try { listener(); } catch { /* Keep the recorded state and notify the rest. */ }
+    });
   }
   return {
     subscribe(listener: () => void) { listeners.add(listener); return () => { listeners.delete(listener); }; },

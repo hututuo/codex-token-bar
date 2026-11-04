@@ -37,3 +37,15 @@ test("stale responses cannot clear a newer command failure; successful payload d
  clearCommandFailure("journal-test", newer, {diagnostics: []});
  assert.ok(!diagnosticJournal.getSnapshot().current.some(e=>e.source === "data:journal-test"));
 });
+test("successful result diagnostics use the same redaction and bounded formatter", () => {
+ const command = "successful-diagnostic-redaction";
+ const issue = {message: "upstream failure; access_token=synthetic-private-value", code: 13};
+ issue.cause = issue;
+ assert.doesNotThrow(() => clearCommandFailure(command, undefined, {diagnostics: [issue]}));
+ const detail = diagnosticJournal.getSnapshot().current.find(entry => entry.source === `data:${command}`)?.detail;
+ assert.match(detail, /upstream failure/);
+ assert.match(detail, /"code": 13/);
+ assert.match(detail, /circular/);
+ assert.doesNotMatch(detail, /synthetic-private-value/);
+ clearCommandFailure(command, undefined, {diagnostics: []});
+});

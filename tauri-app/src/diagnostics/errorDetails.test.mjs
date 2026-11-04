@@ -23,6 +23,35 @@ test("cyclic and large errors are bounded and credential fields are redacted", (
   Object.defineProperty(normalized, "commandPayload", {value:{code:"failed", access_token:"private-credential"}});
   assert.doesNotMatch(diagnosticErrorText(normalized), /private-credential/);
 });
+test("credential syntax is removed from plain errors and nested rendered fields", () => {
+  const payloads = [
+    "https://fixture-user:synthetic-private-value@example.invalid/retry",
+    "https://example.invalid/retry?access_token=synthetic-private-value&attempt=2",
+    '{"api_key":"synthetic-private-value","code":13}',
+    "refresh_token = 'synthetic-private-value'",
+    "password=synthetic-private-value",
+    "Authorization: Basic synthetic-private-value",
+    "Cookie: session=synthetic-private-value; another=synthetic-second-value",
+  ];
+  for (const payload of payloads) {
+    for (const error of [new Error(payload), {code: 13, cause: {message: payload, path: payload}}]) {
+      const text = diagnosticErrorText(error);
+      assert.doesNotMatch(text, /synthetic-private-value|synthetic-second-value/, payload);
+      assert.match(text, /\[redacted\]/, payload);
+      if (!(error instanceof Error)) assert.equal(JSON.parse(text).code, 13);
+    }
+  }
+});
+test("redaction precedes string limits and preserves ordinary diagnostic values", () => {
+  const error = {message: 'password="' + "Z".repeat(20_000) + '"', code: 13};
+  assert.doesNotMatch(diagnosticErrorText(error), /ZZZZ/);
+  const text = diagnosticErrorText({code: 5, message: "database is locked; tokens_used=123; totalTokens=456",
+    path: "/tmp/token-cache/ledger.sqlite", reason: "writer still active"});
+  assert.match(text, /tokens_used=123; totalTokens=456/);
+  assert.match(text, /\/tmp\/token-cache\/ledger.sqlite/);
+  assert.match(text, /writer still active/);
+  assert.match(text, /"code": 5/);
+});
 test("source changes do not relabel earlier failures", () => {
   const journal = createDiagnosticJournal();
   const source = path => ({codexHome:{path, source:"default", exists:true}, canonicalHomeKey:path, physicalHomeKey:path, transitionGeneration:1});
