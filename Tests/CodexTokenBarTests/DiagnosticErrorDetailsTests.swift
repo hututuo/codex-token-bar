@@ -44,6 +44,18 @@ final class DiagnosticErrorDetailsTests: XCTestCase {
         XCTAssertTrue(text.contains("writer still active"))
     }
 
+    func testProviderCredentialAssignmentsAreRedactedWithoutHidingTokenCounters() {
+        for label in ["OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN", "AZURE_OPENAI_API_KEY", "SERVICE_CLIENT_SECRET"] {
+            let error = NSError(domain: "Fixture", code: 13, userInfo: [
+                NSLocalizedDescriptionKey: "\(label)=synthetic-provider-secret; tokens_used=123; totalTokens=456"
+            ])
+            let text = DiagnosticErrorDetails.text(error)
+            XCTAssertFalse(text.contains("synthetic-provider-secret"), label)
+            XCTAssertTrue(text.contains("\(label)=[redacted]"), label)
+            XCTAssertTrue(text.contains("tokens_used=123; totalTokens=456"), label)
+        }
+    }
+
     func testRedactionRunsBeforeOutputTruncation() {
         let text = DiagnosticErrorDetails.text(NSError(domain: "Fixture", code: 1, userInfo: [
             NSLocalizedDescriptionKey: "Bearer " + String(repeating: "Z", count: 20_000)

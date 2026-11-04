@@ -49,3 +49,29 @@ test('optional platform skips are counted while required skips fail', () => {
   assert.equal(optional.evidence.skipped, 1);
   assert.notEqual(runFixture(files, ['--no-skips']).status, 0);
 });
+test('skipped suites remain visible even when Node reports no skipped leaf tests', () => {
+  for (const body of ['', "it('required case',()=>{});"]) {
+    const files = { 'pass.test.mjs': pass,
+      'suite.test.mjs': `import {describe,it} from 'node:test';describe.skip('required suite',()=>{${body}});` };
+    const optional = runFixture(files);
+    assert.equal(optional.status, 0, optional.stderr + optional.stdout);
+    assert.equal(optional.evidence.skippedSuites, 1);
+    const required = runFixture(files, ['--no-skips']);
+    assert.notEqual(required.status, 0, required.stdout);
+    assert.equal(required.evidence.status, 'FAIL');
+  }
+});
+test('TODO suites cannot pass through an unrelated passing test', () => {
+  const result = runFixture({ 'pass.test.mjs': pass,
+    'suite.test.mjs': "import {describe} from 'node:test';describe.todo('unfinished suite',()=>{});" });
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.equal(result.evidence.todoSuites, 1);
+  assert.equal(result.evidence.status, 'FAIL');
+});
+test('a file containing only empty suites cannot borrow another file\'s passing tests', () => {
+  const result = runFixture({ 'pass.test.mjs': pass,
+    'empty.test.mjs': "import {describe} from 'node:test';describe('empty suite',()=>{});" });
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.equal(result.evidence.status, 'FAIL');
+  assert.ok(result.evidence.emptyFiles.some(file => file.endsWith('empty.test.mjs')));
+});

@@ -4,7 +4,7 @@ function redactCredentialText(value: string): string {
     .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^/\s?#"'<>]+@/gi, "$1[redacted]@")
     .replace(/(\b(?:proxy-authorization|authorization|set-cookie|cookie)["']?\s*[:=]\s*)[^\r\n]+/gim, "$1[redacted]")
     .replace(/(\bBearer\s+)[^\s"'\\,;<>]+/gi, "$1[redacted]")
-    .replace(/((?<![a-z0-9_])["']?(?:access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|client[_-]?secret|password|passwd|secret|token)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s&,;"'{}<>]+)/gi, "$1[redacted]");
+    .replace(/((?<![a-z0-9_])["']?(?:[a-z][a-z0-9]*_)*(?:access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|client[_-]?secret|password|passwd|secret|token)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s&,;"'{}<>]+)/gi, "$1[redacted]");
 }
 
 export function diagnosticErrorText(error: unknown): string {
@@ -20,13 +20,14 @@ export function diagnosticErrorText(error: unknown): string {
     if (seen.has(value)) return "[circular]";
     seen.add(value);
     if (Array.isArray(value)) return value.slice(0, 50).map(item => visit(item, depth + 1));
-    const result: Record<string, unknown> = {};
+    const result: Record<string, unknown> = Object.create(null);
     const entries: [string, unknown][] = value instanceof Error
       ? [["name", value.name], ["message", value.message], ["cause", value.cause], ...Object.entries(value)]
       : Object.entries(value);
     for (const [key, item] of entries.slice(0, 50)) {
       if (item === undefined) continue;
-      result[key] = /token|password|authorization|cookie|secret|api.?key/i.test(key)
+      const safeKey = redactCredentialText(key).slice(0, 16_384);
+      result[safeKey] = /token|password|authorization|cookie|secret|api.?key/i.test(key)
         ? "[redacted]" : visit(item, depth + 1);
     }
     return result;

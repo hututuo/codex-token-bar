@@ -205,7 +205,16 @@ impl ThreadColumns {
     fn read(connection: &Connection) -> Result<Self> {
         let mut statement = connection.prepare("PRAGMA table_info(threads)")?;
         let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
-        Ok(Self(columns.collect::<Result<_>>()?))
+        let columns = columns.collect::<Result<HashSet<_>>>()?;
+        // PRAGMA succeeds with no rows when the table is absent. Treat that as
+        // a broken state database, not as a legacy table with optional fields.
+        if columns.is_empty() {
+            return Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
+                Some("missing threads table in state database".into()),
+            ));
+        }
+        Ok(Self(columns))
     }
 
     fn contains(&self, column: &str) -> bool {

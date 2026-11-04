@@ -78,6 +78,16 @@ class TestExecutionGateTests(unittest.TestCase):
             with self.subTest(log=broken), self.assertRaises(ValueError):
                 gate.validate_execution(broken, "rust")
 
+    def test_swift_started_bundles_and_cases_must_finish(self):
+        started = "Test Suite 'Main.xctest' started at now.\n"
+        partial = started + SWIFT.replace("Selected tests", "SafetyTests")
+        dangling_case = SWIFT + "Test Case '-[Module.SafetyTests unfinished]' started.\n"
+        complete = started + SWIFT.replace("Selected tests", "Main.xctest")
+        for broken in (partial, SWIFT.replace("Selected tests", "SafetyTests"), dangling_case, complete + "Test Case '-[Module.SafetyTests unfinished]' started.\n",
+                       "Test Suite 'All tests' started at now.\n" + complete):
+            with self.subTest(log=broken), self.assertRaises(ValueError):
+                gate.validate_execution(broken, "swift")
+
     def test_xctest_records_survive_interleaved_application_output(self):
         mixed = SWIFT.replace("Test Case", "Actual storage diagnostic without a newline: Test Case")
         self.assertEqual(gate.validate_execution(mixed, "swift", ["safety"])["passed"], 1)
@@ -86,7 +96,8 @@ class TestExecutionGateTests(unittest.TestCase):
 
     def test_exact_source_rejects_tracked_edits_before_or_during_execution(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory) / "repo"
+            root.mkdir()
             def git(*args):
                 return subprocess.check_output(["git", *args], cwd=root, text=True, stderr=subprocess.DEVNULL).strip()
             git("init", "-q")
@@ -95,9 +106,9 @@ class TestExecutionGateTests(unittest.TestCase):
             git("add", "source.txt")
             git("-c", "user.name=Test Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture")
             sha = git("rev-parse", "HEAD")
-            sentinel = root / "child-ran"
+            sentinel = Path(directory) / "child-ran"
             def run(label, child, exact=True):
-                log = root / f"{label}.log"
+                log = Path(directory) / f"{label}.log"
                 args = [sys.executable, str(SCRIPT), "--kind", "rust", "--log", str(log)]
                 if exact: args += ["--source-sha", sha]
                 result = subprocess.run(args + ["--", sys.executable, "-c", child], cwd=root, capture_output=True, text=True)
@@ -120,6 +131,58 @@ class TestExecutionGateTests(unittest.TestCase):
             self.assertEqual(evidence["status"], "FAIL")
             self.assertFalse(evidence["sourceBefore"]["trackedDirty"])
             self.assertTrue(evidence["sourceAfter"]["trackedDirty"])
+
+    def test_exact_source_rejects_untracked_inputs_before_and_after_execution(self):
+        for phase in ("before", "during"):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory) / "repo"
+                root.mkdir()
+                subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+                (root / "source.txt").write_text("original")
+                subprocess.run(["git", "add", "source.txt"], cwd=root, check=True)
+                subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                    "commit", "-qm", "fixture"], cwd=root, check=True)
+                sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+                if phase == "before": (root / "required_test.rs").write_text("untracked input")
+                log = root / "execution.log"
+                child = f"from pathlib import Path; Path('required_test.rs').write_text('untracked input'); print({RUST!r})"
+                result = subprocess.run([sys.executable, str(SCRIPT), "--kind", "rust", "--log", str(log),
+                    "--source-sha", sha, "--", sys.executable, "-c", child], cwd=root, capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                evidence = json.loads(log.with_suffix(".execution.json").read_text())
+                self.assertEqual(evidence["status"], "FAIL")
+                self.assertIn("Untracked", evidence["error"])
+                self.assertEqual(log.exists(), phase == "during")
+
+    def test_exact_source_allows_only_declared_outputs_and_records_exceptions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            (root / "source.txt").write_text("original")
+            subprocess.run(["git", "add", "source.txt"], cwd=root, check=True)
+            subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                "commit", "-qm", "fixture"], cwd=root, check=True)
+            sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+            (root / "runtime-recovery-production.json").write_text("{}")
+            log = root / "execution.log"
+            child = ("from pathlib import Path; Path('visual-previews').mkdir(); "
+                     f"Path('visual-previews/chart.png').write_bytes(b'fixture output'); print({RUST!r})")
+            args = [sys.executable, str(SCRIPT), "--kind", "rust", "--log", str(log), "--source-sha", sha,
+                "--allow-untracked-output", "runtime-recovery-production.json",
+                "--allow-untracked-output", "visual-previews/*.png"]
+            result = subprocess.run(args + ["--", sys.executable, "-c", child], cwd=root, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            evidence = json.loads(log.with_suffix(".execution.json").read_text())
+            self.assertEqual(evidence["status"], "PASS")
+            self.assertEqual(evidence["allowedUntrackedOutputs"], ["runtime-recovery-production.json", "visual-previews/*.png"])
+            self.assertEqual(evidence["sourceBefore"]["untrackedInputs"], [])
+            self.assertIn("visual-previews/chart.png", evidence["sourceAfter"]["allowedUntrackedOutputs"])
+            (root / "visual-previews/safety.rs").write_text("not output")
+            args[args.index(str(log))] = str(root / "retry.log")
+            args += ["--allow-untracked-output", "execution.log", "--allow-untracked-output", "execution.execution.json"]
+            result = subprocess.run(args + ["--", sys.executable, "-c", f"print({RUST!r})"], cwd=root, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("visual-previews/safety.rs", json.loads((root / "retry.execution.json").read_text())["error"])
 
     def test_actual_child_exit_and_empty_output_cannot_be_overridden_by_pass_summary(self):
         for text, code, success in ((RUST, 0, True), (RUST, 7, False), ("", 0, False)):

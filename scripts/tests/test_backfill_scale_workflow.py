@@ -109,6 +109,7 @@ class BackfillScaleWorkflowTests(unittest.TestCase):
             ('native', 'Full native regression including original pressure case', 'native-library.log', [
                 'panic_guard_notifies_an_already_waiting_cold_reader',
                 'malformed_or_missing_state_stays_an_error_and_is_not_created',
+                'missing_threads_table_is_an_error_but_valid_empty_legacy_tables_stay_empty',
                 'disk_failure_and_full_queue_return_status_without_panicking',
                 'diagnostics_modes_never_change_managed_legacy_import_or_later_target_rows']),
         )
@@ -120,6 +121,11 @@ class BackfillScaleWorkflowTests(unittest.TestCase):
             self.assertIn('--log ' + log, step['run'])
             self.assertIn('--source-sha "$SOURCE_SHA"', step['run'])
             for test in required: self.assertIn('--require ' + test, step['run'])
+            outputs = (['visual-previews/*.png'] if job_name == 'swift' else [
+                'runtime-recovery-production.log', 'runtime-recovery-production.json',
+                'runtime-recovery-production.validation.json'])
+            for output in outputs: self.assertIn(output, step['run'])
+            self.assertIn('--allow-untracked-output ', step['run'])
             self.assertTrue(any('*.execution.json' in s.get('with', {}).get('path', '')
                                 and s.get('if') == 'always()' for s in steps))
         frontend = self.ci['jobs']['frontend']['steps']

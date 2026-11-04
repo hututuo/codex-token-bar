@@ -162,3 +162,35 @@ fn malformed_or_missing_state_stays_an_error_and_is_not_created() {
     assert!(read_thread_options_result(root.path(), 20).is_err());
     assert!(read_recent_rollout_threads(root.path(), 20).is_err());
 }
+
+#[test]
+fn missing_threads_table_is_an_error_but_valid_empty_legacy_tables_stay_empty() {
+    let root = fixture("CREATE TABLE unrelated(id TEXT);");
+    let path = root.path().join("state_5.sqlite");
+    let before = fs::read(&path).unwrap();
+    assert!(read_thread_options_result(root.path(), 20).is_err());
+    assert!(read_thread_title(root.path(), "a").is_err());
+    assert!(read_thread_titles(root.path(), &["a".into()]).is_err());
+    let error = read_recent_rollout_threads(root.path(), 20).unwrap_err();
+    assert!(error.to_string().contains("missing threads table"));
+    assert_eq!(fs::read(&path).unwrap(), before);
+
+    for rollout in ["", ", rollout_path TEXT"] {
+        let root = fixture(&format!(
+            "CREATE TABLE threads(id TEXT, title TEXT, updated_at INTEGER, tokens_used INTEGER{rollout});"
+        ));
+        let path = root.path().join("state_5.sqlite");
+        let before = fs::read(&path).unwrap();
+        assert!(read_thread_options_result(root.path(), 20)
+            .unwrap()
+            .is_empty());
+        assert!(read_recent_rollout_threads(root.path(), 20)
+            .unwrap()
+            .is_empty());
+        assert!(read_thread_title(root.path(), "a").unwrap().is_none());
+        assert!(read_thread_titles(root.path(), &["a".into()])
+            .unwrap()
+            .is_empty());
+        assert_eq!(fs::read(&path).unwrap(), before);
+    }
+}

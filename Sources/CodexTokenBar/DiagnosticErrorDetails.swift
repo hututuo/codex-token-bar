@@ -8,7 +8,7 @@ enum DiagnosticErrorDetails {
         (#"(?i)(\b[a-z][a-z0-9+.-]*://)[^/\s?#\"'<>]+@"#, "$1[redacted]@"),
         (#"(?im)(\b(?:proxy-authorization|authorization|set-cookie|cookie)[\"']?\s*[:=]\s*)[^\r\n]+"#, "$1[redacted]"),
         (#"(?i)(\bBearer\s+)[^\s\"'\\,;<>]+"#, "$1[redacted]"),
-        (#"(?i)((?<![a-z0-9_])[\"']?(?:access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|client[_-]?secret|password|passwd|secret|token)[\"']?\s*[:=]\s*)(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^\s&,;\"'{}<>]+)"#, "$1[redacted]")
+        (#"(?i)((?<![a-z0-9_])[\"']?(?:[a-z][a-z0-9]*_)*(?:access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|client[_-]?secret|password|passwd|secret|token)[\"']?\s*[:=]\s*)(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^\s&,;\"'{}<>]+)"#, "$1[redacted]")
     ].map { (try! NSRegularExpression(pattern: $0.0), $0.1) }
 
     static func text(_ error: Error) -> String {

@@ -52,6 +52,31 @@ test("redaction precedes string limits and preserves ordinary diagnostic values"
   assert.match(text, /writer still active/);
   assert.match(text, /"code": 5/);
 });
+test("provider credential assignments are redacted without hiding token counters", () => {
+  for (const label of ["OPENAI_API_KEY", "ANTHROPIC_AUTH_TOKEN", "AZURE_OPENAI_API_KEY", "SERVICE_CLIENT_SECRET"]) {
+    for (const error of [new Error(`${label}=synthetic-provider-secret; tokens_used=123; totalTokens=456`),
+      {reason: `${label}=synthetic-provider-secret; tokens_used=123; totalTokens=456`}]) {
+      const text = diagnosticErrorText(error);
+      assert.doesNotMatch(text, /synthetic-provider-secret/, label);
+      assert.ok(text.includes(`${label}=[redacted]`), label);
+      assert.match(text, /tokens_used=123; totalTokens=456/);
+    }
+  }
+});
+test("credential syntax in object keys is sanitized and prototype names remain plain data", () => {
+  const input = JSON.parse('{"__proto__":{"message":"plain data"},"constructor":"plain value"}');
+  input["https://fixture.invalid/?access_token=synthetic-key-secret"] = "private value";
+  input["https://fixture-user:synthetic-userinfo-value@fixture.invalid/retry"] = "retry failed";
+  input.message = "read failed";
+  const text = diagnosticErrorText(input);
+  assert.doesNotMatch(text, /synthetic-key-secret|synthetic-userinfo-value|private value/);
+  const result = JSON.parse(text);
+  assert.equal(result["https://fixture.invalid/?access_token=[redacted]"], "[redacted]");
+  assert.equal(result["https://[redacted]@fixture.invalid/retry"], "retry failed");
+  assert.deepEqual(result.__proto__, {message: "plain data"});
+  assert.equal(result.constructor, "plain value");
+  assert.equal(result.message, "read failed");
+});
 test("source changes do not relabel earlier failures", () => {
   const journal = createDiagnosticJournal();
   const source = path => ({codexHome:{path, source:"default", exists:true}, canonicalHomeKey:path, physicalHomeKey:path, transitionGeneration:1});
