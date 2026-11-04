@@ -97,3 +97,5 @@ Node 运行可以通过 `TOKENBAR_NODE_EXECUTION_REPORT` 指定一个尚不存�
 独立交付后，根接管 `check_test_execution.py` 及对应测试，修正实际日志显示的 Swift 多 bundle／空尾包和 stdout／stderr 交错行问题，补 Rust ignored 计数一致性，以及指定 SHA 前后 tracked 源码一致性。新增四个测试方法在修改前产生实际失败；修后 Python 全套从本报告独立阶段的 90 项增加为 94 项并全部通过。`execution-gate-real-logs-final.json` 记录完整产品真实日志正控，不能只用人工摘要证明解析器可用。
 
 根另在实际 `command.ts` 三种 API 路径验证坏观察者／警告输出端不改变成功、fallback／null 与原始拒绝；成功 payload 中 diagnostics／warnings 的 JSON.stringify 旁路已替换为同一有界脱敏 formatter，并保留循环对象反例。最终源码、验证结果和本地提交以 [统一接手记录](2026-11-04-stabilization-takeover.md) 及其 `final-verification.json` 为准。本报告交付清单仍保留独立阶段的原始摘要，不冒称根随后修改属于独立阶段证据。
+
+第二普通 Astra Max 会话随后独立发现 suite 跳过／空 suite、Swift 截断日志、未跟踪输入身份、带前缀密钥／对象键和缺 threads 表五组遗漏，根在 `b3cba9ae` 补修，详见 [第二独立报告](2026-11-04-second-independent-review.md)。这不是第一轮已经覆盖这些边界的声明。根最终本机 Node 24.13.1 前端 1,421 项、全部 scripts 111 通过＋1 Windows 环境跳过，Python 97 项通过；真实 exact-SHA 包装运行 Swift 23、Rust 168 项通过且前后源码干净。原报告的 Node 26／90 项等计数保留其独立阶段含义；hosted Node 24、Windows 和安装仍未执行。

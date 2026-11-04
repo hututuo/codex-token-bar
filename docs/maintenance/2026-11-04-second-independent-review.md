@@ -6,6 +6,8 @@
 
 ## 当前结论
 
+**修后更新：五组P2已在 `b3cba9aefbb458803357730864d6c87a67a71b38` 上通过本线程的同输入独立复核；结论限已复现的输入，详细结果见文末。下文保留首次交付时的未关闭状态和原失败证据，不以修后结果覆盖它们。**
+
 在原 `4aba703c` 独立复现五组 P2 遗漏。接手线程已明确接手最小修复；本报告首写时**尚未独立复核修后结果**，故不能把下表状态写成已关闭。未发现新的可复现账目丢失或 build991 timer 修复回退。该表不是对全部产品路径、Windows 或正式安装的完整保证。
 
 | 发现 | 可复现输入与实际结果 | 最小修复建议与责任 |
@@ -52,3 +54,22 @@
 审查发现范围已收敛。没有证据支持“所有bug已消失”，也没有必要因上述5组窄缺口扩大本轮架构或清理范围。
 
 交付时状态补记：HEAD仍为 `4aba703cdc4d786c7472c97de2a07649a6fe4787`；接手线程已并行修改五个既有测试文件以加入上述回归。它们不是本审查线程的编辑，尚未表示产品修复通过。本线程新增内容仍仅为本报告及约定scratch证据。最终修后源码身份待接手线程固定并复核。
+
+
+## 冻结源码后的同输入独立复核
+
+本线程在接手线程冻结 `b3cba9aefbb458803357730864d6c87a67a71b38` 后重新执行上述原输入。开始时工作树干净；运行前后17个已选产品/门禁源文件的SHA-256一致，并逐份核对其内容等于该提交。接手线程后来修改文档，不在这组产品源码校验内。新的原始结果全部另存于 `second-audit/recheck-b3cba9ae/`，此前4aba的失败日志、夹具和清单保留。
+
+| 原发现 | 本线程在b3上的实际复核 | 状态 |
+|---|---|---|
+| Node suite skip/empty file | Node24.13.1运行原四组文件：普通测试退出0；整组skip、TODO、只有空suite的文件均退出1。新增正控：未要求no-skips时，同一skip组退出0且`skippedSuites=1`，不再藏在零skip里。5次子进程结果符合预期。 | 已复核关闭 |
+| Swift不完整执行日志 | 逐字复用原3份日志并记录其散列：正常完成日志接收，缺bundle完成和悬空case两例拒绝。仍是实际检查器的合成日志实验，不是产品XCTest执行。 | 已复核关闭 |
+| exact SHA夹带未跟踪输入 | 原微型Cargo项目及原未跟踪`tests/safety.rs`不变，新包装器在子进程启动前拒绝，并列出该文件。另一微型正控把所有测试源码提交，带明确允许的`runtime-recovery-production.json`、`visual-previews/chart.png`，真实cargo test 1项通过；源码前后无改动、untrackedInputs为空、输出例外单列。 | 已复核关闭 |
+| env/key凭据语法 | TS直接调用b3 formatter，原9输入均不再含哨兵；Swift实际formatter原7输入中已知env/header/query/token均脱敏。两端`tokens_used=123; totalTokens=456`和普通错误信息保留。Swift双重JSON转义输入仍含哨兵，按前述已知语法边界保留，不计为已修。 | 已复核关闭已确认的env/key缺口 |
+| state缺表空成功 | 同一state模块夹具重新编译b3源码，仅更换隔离数据库输出目录，原4测试全部通过、0失败/ignored。缺threads明确返回`missing threads table in state database`；合法空表、显式小毫秒/旧秒一致性、错误BLOB拒绝及原文件不变断言仍成立。 | 已复核关闭 |
+
+本次未重新执行完整产品Swift/Rust回归。接手线程报告其真实exact-SHA gate为Swift23/Rust168，并自行持有前后源码证据；本报告没有将这些数量算成本线程的独立运行。本线程的state编译是实际源码模块，Swift错误文本是实际formatter加合成NSError入口，Cargo身份正负控是微型工程，Node是真实子进程测试，Swift日志门禁是合成日志解析；各层证据不能相互替代。
+
+主要复核证据：`summary.json`、`source-before.json`、`source-after.json`、`gate-recheck.json`、`source-positive.json`、`state-edges.log`、`privacy-ts.json`、`privacy-swift.json`，以及各Node/源码门禁console日志。`source-after.json`包含17份文件对应冻结提交的逐份匹配结果。更新后的`second-audit/review-manifest.json`保留初次清单快照指针并收录本次结果摘要。
+
+最终意见：本线程提出的五组可复现P2已经最小补丁及同输入复核闭环，未发现修后新增的实质问题。本轮源码审查可收束。此结论不等于发布/安装许可，不升级Windows、hosted、历史producer或完整App的未测状态，也不改变Swift双重编码文本、并发DDL、历史性能FAIL及物理旧库清理的既有边界。
