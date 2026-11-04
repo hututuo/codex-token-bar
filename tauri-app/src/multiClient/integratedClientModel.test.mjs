@@ -3,6 +3,17 @@ import test from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { withSsrModules } from "../test/ssrHarness.mjs";
+test("Desktop quota keeps separate client windows and never substitutes CLI in Desktop scope", async()=>
+ withSsrModules(async load=>{
+  const {quotaItems,orderedQuotaItems,defaultQuotaSelection}=await load("/src/multiClient/integratedClientModel.ts");
+  const cli={client:"claudeCode",state:"available",windows:[{label:"5h",usedPercent:25,resetsAt:null}]};
+  const desktop={client:"claudeDesktop",state:"available",capturedAt:"2026-11-04T02:14:00Z",windows:[{label:"5h",usedPercent:13,resetsAt:null},{label:"7d",usedPercent:29,resetsAt:null}]};
+  const rows=quotaItems(undefined,cli,true,false,desktop);
+  const visible=orderedQuotaItems(rows,defaultQuotaSelection,["claudeDesktop"]);
+  assert.deepEqual(visible.map(r=>r.id),["claudeDesktop:5h","claudeDesktop:7d"]);
+  assert.deepEqual(visible.map(r=>r.remaining),[87,71]);assert.ok(visible.every(r=>r.resetsAt===null && r.source.includes("采样于")));
+  assert.deepEqual(orderedQuotaItems(quotaItems(undefined,cli,true),defaultQuotaSelection,["claudeDesktop"]),[]);
+ }));
 test("retained source does not display Codex during loading", async () =>
   withSsrModules(async (load) => {
     const { scopeClients } = await load(

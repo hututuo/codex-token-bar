@@ -56,7 +56,7 @@ struct ClientQuotaSelection: Codable, Equatable {
     var colors: [String: String] = [:]
     var pairAcrossClients = false
     func includes(_ item: ClientQuotaItem) -> Bool {
-        !hidden.contains(item.id) && (item.client == "codex" || item.client == "claudeCode" || enabled.contains(item.id))
+        !hidden.contains(item.id) && (item.client == "codex" || item.client == "claudeCode" || item.client == "claudeDesktop" || enabled.contains(item.id))
     }
     func arranged(_ items: [ClientQuotaItem]) -> [ClientQuotaItem] {
         items.sorted {
@@ -72,7 +72,7 @@ struct ClientQuotaSelection: Codable, Equatable {
 }
 
 enum ClientQuotaProjection {
-    static func items(codex: AccountQuotaSnapshot, claude: ClientQuotaReading, includeClaude: Bool, includeFiveHour: Bool = false, preview: Bool = false) -> [ClientQuotaItem] {
+    static func items(codex: AccountQuotaSnapshot, claude: ClientQuotaReading, claudeDesktop: ClientQuotaReading? = nil, includeClaude: Bool, includeFiveHour: Bool = false, preview: Bool = false) -> [ClientQuotaItem] {
         // Explicit display-only fixture. Callers gate this to the isolated DEBUG preview;
         // never put simulated observations into AccountQuotaStore or quota history.
         if preview { return previewItems(includeClaude: includeClaude) }
@@ -89,14 +89,17 @@ enum ClientQuotaProjection {
         }
         add("7d", "7d", codex.sevenDay)
         for window in codex.reserveWindows { add(window.label, window.compactDisplayLabel, window) }
-        if includeClaude, claude.state == "available" {
+        for reading in [claude, claudeDesktop].compactMap({ $0 }) where includeClaude && reading.state == "available" {
+            guard reading.client == "claudeCode" || reading.client == "claudeDesktop" else { continue }
             for label in ["5h", "7d"] {
-                guard let window = claude.windows.first(where: { $0.label == label }) else { continue }
+                guard let window = reading.windows.first(where: { $0.label == label }) else { continue }
                 let used = window.usedPercent
                 guard used.isFinite, (0...100).contains(used) else { continue }
-                items.append(ClientQuotaItem(id: "claudeCode:" + label, client: "claudeCode", window: label,
+                let source = reading.client == "claudeDesktop" ? "Desktop 本地历史 · 重置时间未知" : "CLI 本地缓存 · 未绑定账号"
+                let sampled = reading.capturedAt.map { " · 采样于 " + $0.formatted(date: .abbreviated, time: .shortened) } ?? ""
+                items.append(ClientQuotaItem(id: reading.client + ":" + label, client: reading.client, window: label,
                     remaining: 100 - used, resetsAt: window.resetsAt,
-                    source: "本地缓存 · 未绑定账号", status: ""))
+                    source: source + sampled, status: ""))
             }
         }
         return items

@@ -25,6 +25,23 @@ test("quota adapters only reuse existing observations and expose setup instead o
   const missing=unavailableQuota("claudeCode");assert.equal(missing.state,"notConnected");assert.deepEqual(missing.windows,[]);assert.match(missing.notice,/claude-monitor --statusline/);
  });
 });
+
+test("Desktop history keeps its own source and sampling time without reset guesses or stale values",async()=>{
+ await withSsrModules(async load=>{
+  const {claudeQuotaFromLocalCache}=await load("/src/multiClient/multiClientProduct.ts");
+  const {ClientQuotaPanel}=await load("/src/multiClient/MultiClientUsage.tsx");
+  const raw={state:"available",capturedAt:"2026-11-04T02:14:00Z",fiveHour:{usedPercent:13,resetsAt:null},sevenDay:{usedPercent:29,resetsAt:null}};
+  const desktop=claudeQuotaFromLocalCache(raw,"claudeDesktop");
+  assert.equal(desktop.client,"claudeDesktop");assert.equal(desktop.source,"local-desktop-history");
+  assert.equal(desktop.capturedAt,raw.capturedAt);assert.equal(desktop.windows[0].resetsAt,null);
+  const html=renderToStaticMarkup(React.createElement(ClientQuotaPanel,{reading:desktop}));
+  assert.match(html,/采样于/);assert.match(html,/87/);assert.match(html,/不含重置时间/);
+  const stale=claudeQuotaFromLocalCache({...raw,state:"stale"},"claudeDesktop");
+  assert.deepEqual(stale.windows,[]);assert.equal(stale.capturedAt,raw.capturedAt);
+  const old=renderToStaticMarkup(React.createElement(ClientQuotaPanel,{reading:stale}));
+  assert.match(old,/额度采样已过期/);assert.doesNotMatch(old,/剩余/);
+ });
+});
 test("uninstalled clients stay hidden while configured and retained clients remain reachable",async()=>{
  await withSsrModules(async load=>{
   const {clientIsAvailable}=await load("/src/multiClient/multiClientProduct.ts");

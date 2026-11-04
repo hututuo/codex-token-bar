@@ -43,6 +43,8 @@ pub struct QuotaProviderSnapshot {
     pub client: String,
     pub state: String,
     pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub captured_at: Option<String>,
     pub windows: Vec<QuotaProviderWindow>,
     pub notice: String,
 }
@@ -81,20 +83,24 @@ pub fn detect_clients_cached() -> Vec<ProductDetection> {
     detections
 }
 
-/// Projects the local Claude statusline reader into the shared provider shape. Codex is
-/// deliberately absent here: its already-loaded snapshot is adapted by the UI layer.
-pub fn quota_provider_snapshots(claude: &ClaudeLocalQuotaSnapshot) -> Vec<QuotaProviderSnapshot> {
-    let (state, windows, notice) = match claude.state.as_str() {
+/// Projects the independent Claude CLI statusline and Desktop plan-history readers into the
+/// shared provider shape. Codex is deliberately absent here: its already-loaded snapshot is
+/// adapted by the UI layer.
+pub fn quota_provider_snapshots(
+    claude_cli: &ClaudeLocalQuotaSnapshot,
+    claude_desktop: &ClaudeLocalQuotaSnapshot,
+) -> Vec<QuotaProviderSnapshot> {
+    let (state, windows, notice) = match claude_cli.state.as_str() {
         "available" => (
             "available",
             vec![
-                claude.five_hour.as_ref().map(|window| QuotaProviderWindow {
-                    label: "5 小时".into(),
+                claude_cli.five_hour.as_ref().map(|window| QuotaProviderWindow {
+                    label: "5h".into(),
                     used_percent: Some(window.used_percent),
                     resets_at: window.resets_at.clone(),
                 }),
-                claude.seven_day.as_ref().map(|window| QuotaProviderWindow {
-                    label: "7 天".into(),
+                claude_cli.seven_day.as_ref().map(|window| QuotaProviderWindow {
+                    label: "7d".into(),
                     used_percent: Some(window.used_percent),
                     resets_at: window.resets_at.clone(),
                 }),
@@ -129,20 +135,74 @@ pub fn quota_provider_snapshots(claude: &ClaudeLocalQuotaSnapshot) -> Vec<QuotaP
                     client: (*client).into(),
                     state: state.into(),
                     source: "local-statusline".into(),
+                    captured_at: claude_cli.captured_at.clone(),
                     windows: windows.clone(),
                     notice: notice.into(),
+                }
+            } else if *client == "claudeDesktop" {
+                let windows = claude_desktop_windows(claude_desktop);
+                let desktop_state = match claude_desktop.state.as_str() {
+                    "available" if !windows.is_empty() => "available",
+                    "missing" => "notConnected",
+                    "stale" => "stale",
+                    _ => "unavailable",
+                };
+                QuotaProviderSnapshot {
+                    client: (*client).into(),
+                    state: desktop_state.into(),
+                    source: "local-desktop-history".into(),
+                    captured_at: claude_desktop.captured_at.clone(),
+                    windows,
+                    notice: claude_desktop_notice(claude_desktop),
                 }
             } else {
                 QuotaProviderSnapshot {
                     client: (*client).into(),
                     state: "unavailable".into(),
                     source: "unsupported".into(),
+                    captured_at: None,
                     windows: Vec::new(),
                     notice: "暂不支持读取此客户端的订阅额度。".into(),
                 }
             }
         })
         .collect()
+}
+
+fn claude_desktop_windows(snapshot: &ClaudeLocalQuotaSnapshot) -> Vec<QuotaProviderWindow> {
+    if snapshot.state != "available" {
+        return Vec::new();
+    }
+    [
+        snapshot
+            .five_hour
+            .as_ref()
+            .map(|window| QuotaProviderWindow {
+                label: "5h".into(),
+                used_percent: Some(window.used_percent),
+                resets_at: None,
+            }),
+        snapshot
+            .seven_day
+            .as_ref()
+            .map(|window| QuotaProviderWindow {
+                label: "7d".into(),
+                used_percent: Some(window.used_percent),
+                resets_at: None,
+            }),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+fn claude_desktop_notice(snapshot: &ClaudeLocalQuotaSnapshot) -> String {
+    match snapshot.state.as_str() {
+        "available" => "Claude Desktop plan-usage-history.json 本地历史采样；未验证当前账号。文件不含重置时间，不与 CLI 额度合并。".into(),
+        "stale" => "Claude Desktop plan-usage-history.json 本地历史采样已超过 20 分钟；可能因应用暂停而陈旧。此状态不会唤醒应用，也不会发起网络请求。".into(),
+        "missing" => "未发现 Claude Desktop 本地套餐使用历史（plan-usage-history.json）；来源仅为本地文件，未验证当前账号。".into(),
+        _ => "Claude Desktop 本地套餐使用历史（plan-usage-history.json）无效或暂不可用；未验证当前账号。".into(),
+    }
 }
 
 fn detect_clients_from(inputs: &DetectionInputs) -> Vec<ProductDetection> {
@@ -447,15 +507,23 @@ mod tests {
             }),
             seven_day: None,
         };
-        let snapshots = quota_provider_snapshots(&available);
+        let desktop_missing = ClaudeLocalQuotaSnapshot {
+            state: "missing".into(),
+            captured_at: None,
+            five_hour: None,
+            seven_day: None,
+        };
+        let snapshots = quota_provider_snapshots(&available, &desktop_missing);
         assert_eq!(snapshots.len(), QUOTA_CLIENTS.len());
         assert!(snapshots.iter().all(|snapshot| snapshot.client != "codex"));
         assert_eq!(snapshots[0].state, "available");
         assert_eq!(snapshots[0].source, "local-statusline");
-        assert_eq!(snapshots[0].windows[0].label, "5 小时");
+        assert_eq!(snapshots[0].captured_at, available.captured_at);
+        assert_eq!(snapshots[0].windows[0].label, "5h");
         assert!(snapshots[0].notice.contains("未绑定到具体账号"));
-        assert_eq!(snapshots[1].state, "unavailable");
-        assert_eq!(snapshots[1].source, "unsupported");
+        assert_eq!(snapshots[1].state, "notConnected");
+        assert_eq!(snapshots[1].source, "local-desktop-history");
+        assert!(snapshots[1].windows.is_empty());
 
         let missing = ClaudeLocalQuotaSnapshot {
             state: "missing".into(),
@@ -463,11 +531,78 @@ mod tests {
             five_hour: None,
             seven_day: None,
         };
-        let disconnected = quota_provider_snapshots(&missing);
+        let disconnected = quota_provider_snapshots(&missing, &desktop_missing);
         assert_eq!(disconnected[0].state, "notConnected");
         assert!(disconnected[0]
             .notice
             .contains("ClaudeLocalReader --capture-statusline"));
         assert!(disconnected[0].notice.contains("10 分钟"));
+    }
+
+    #[test]
+    fn desktop_quota_projection_is_separate_and_never_invents_reset_times() {
+        let cli = ClaudeLocalQuotaSnapshot {
+            state: "available".into(),
+            captured_at: Some("2026-11-04T00:00:00Z".into()),
+            five_hour: Some(ClaudeLocalQuotaWindow {
+                used_percent: 10.0,
+                resets_at: Some("2026-11-04T05:00:00Z".into()),
+            }),
+            seven_day: None,
+        };
+        let desktop = ClaudeLocalQuotaSnapshot {
+            state: "available".into(),
+            captured_at: Some("2026-11-04T00:01:00Z".into()),
+            five_hour: Some(ClaudeLocalQuotaWindow {
+                used_percent: 25.0,
+                resets_at: Some("must-not-be-projected".into()),
+            }),
+            seven_day: Some(ClaudeLocalQuotaWindow {
+                used_percent: 60.0,
+                resets_at: None,
+            }),
+        };
+
+        let snapshots = quota_provider_snapshots(&cli, &desktop);
+        assert_eq!(snapshots[0].source, "local-statusline");
+        assert_eq!(
+            snapshots[0].windows[0].resets_at.as_deref(),
+            Some("2026-11-04T05:00:00Z")
+        );
+        assert_eq!(snapshots[1].source, "local-desktop-history");
+        assert_eq!(snapshots[1].captured_at, desktop.captured_at);
+        assert_eq!(snapshots[1].windows.len(), 2);
+        assert_eq!(snapshots[1].windows[0].label, "5h");
+        assert_eq!(snapshots[1].windows[0].used_percent, Some(25.0));
+        assert_eq!(snapshots[1].windows[0].resets_at, None);
+        assert!(snapshots[1].notice.contains("plan-usage-history.json"));
+        assert!(snapshots[1].notice.contains("未验证当前账号"));
+        assert!(snapshots[1].notice.contains("不与 CLI 额度合并"));
+
+        let stale = ClaudeLocalQuotaSnapshot {
+            state: "stale".into(),
+            captured_at: desktop.captured_at.clone(),
+            five_hour: None,
+            seven_day: None,
+        };
+        let stale_projection = quota_provider_snapshots(&cli, &stale);
+        assert_eq!(stale_projection[1].state, "stale");
+        assert!(stale_projection[1].windows.is_empty());
+        assert!(stale_projection[1].captured_at.is_some());
+        assert!(stale_projection[1].notice.contains("超过 20 分钟"));
+        assert!(stale_projection[1].notice.contains("不会唤醒应用"));
+    }
+
+    #[test]
+    fn quota_provider_snapshot_defaults_missing_capture_timestamp() {
+        let old_payload = serde_json::json!({
+            "client": "claudeCode",
+            "state": "available",
+            "source": "local-statusline",
+            "windows": [],
+            "notice": "legacy"
+        });
+        let snapshot: QuotaProviderSnapshot = serde_json::from_value(old_payload).unwrap();
+        assert_eq!(snapshot.captured_at, None);
     }
 }

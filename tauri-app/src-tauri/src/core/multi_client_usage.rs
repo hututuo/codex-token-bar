@@ -29,6 +29,9 @@ const MAX_OPENCODE_ROWS: usize = 500;
 const MAX_OPENCODE_ROW_BYTES: usize = 1024 * 1024;
 const MAX_COUNTER: u64 = 1_000_000_000_000;
 const MAX_PRICE_PAYLOAD_BYTES: usize = 65_536;
+const MAX_CLAUDE_DESKTOP_HISTORY_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_CLAUDE_DESKTOP_HISTORY_SAMPLES: usize = 50_000;
+const CLAUDE_DESKTOP_HISTORY_MAX_AGE_SECONDS: f64 = 1_200.0;
 const CLAUDE_CACHE_LIFETIMES_FINGERPRINT: &str = "claude-cache-lifetimes-v1|";
 const CACHE_RANKING_MIN_INPUT_TOKENS: i64 = 1_000;
 const CACHE_RANKING_LOW_HIT_MIN_INPUT_TOKENS: i64 = 20_000;
@@ -47,6 +50,8 @@ static DEEPSEEK_SESSION_HINT_CACHE: OnceLock<Mutex<VecDeque<(String, String, Str
     OnceLock::new();
 static CLAUDE_LOCAL_QUOTA_PROBE_CACHE: OnceLock<Mutex<ClaudeLocalQuotaProbeCache>> =
     OnceLock::new();
+static CLAUDE_DESKTOP_QUOTA_PROBE_CACHE: OnceLock<Mutex<ClaudeDesktopQuotaProbeCache>> =
+    OnceLock::new();
 const MAX_DEEPSEEK_SESSION_HINT_CACHE: usize = 1_024;
 const BUNDLED_PRICE_TABLE: &str =
     include_str!("../../../../Vendor/AgentSpeed/spec/assets/prices.json");
@@ -58,8 +63,32 @@ struct ClaudeLocalQuotaProbeCache {
     snapshot: Option<ClaudeLocalQuotaSnapshot>,
 }
 
+#[derive(Default)]
+struct ClaudeDesktopQuotaProbeCache {
+    checked_at: Option<Instant>,
+    snapshot: Option<ClaudeLocalQuotaSnapshot>,
+}
+
 fn cached_claude_local_quota_read(
     cache: &mut ClaudeLocalQuotaProbeCache,
+    now: Instant,
+    reader: impl FnOnce() -> ClaudeLocalQuotaSnapshot,
+) -> ClaudeLocalQuotaSnapshot {
+    if cache.checked_at.is_some_and(|checked_at| {
+        now.saturating_duration_since(checked_at) < CLAUDE_LOCAL_QUOTA_PROBE_INTERVAL
+    }) {
+        if let Some(snapshot) = &cache.snapshot {
+            return snapshot.clone();
+        }
+    }
+    let snapshot = reader();
+    cache.checked_at = Some(now);
+    cache.snapshot = Some(snapshot.clone());
+    snapshot
+}
+
+fn cached_claude_desktop_quota_read(
+    cache: &mut ClaudeDesktopQuotaProbeCache,
     now: Instant,
     reader: impl FnOnce() -> ClaudeLocalQuotaSnapshot,
 ) -> ClaudeLocalQuotaSnapshot {
@@ -867,6 +896,7 @@ fn read_multi_client_usage_snapshot_at(
     // Probe the app-owned cache before touching transcript aggregates. This path is bounded to
     // one small JSON file and never depends on transcript opt-in or monitoring settings.
     let local_claude_quota = read_claude_local_quota();
+    let local_claude_desktop_quota = read_claude_desktop_quota();
     let (preferences, mut diagnostics) = load_preferences(settings_path);
     let (summaries, today_summaries, seven_day_summaries, updated_at, trend_buckets, daily_buckets) =
         if database_path.exists() {
@@ -924,6 +954,7 @@ fn read_multi_client_usage_snapshot_at(
         trend_buckets,
         daily_buckets,
         local_claude_quota,
+        local_claude_desktop_quota,
     ))
 }
 
@@ -937,6 +968,7 @@ fn make_snapshot(
     trend_buckets: Vec<MultiClientUsageTrendBucket>,
     daily_buckets: Vec<MultiClientUsageTrendBucket>,
     local_claude_quota: ClaudeLocalQuotaSnapshot,
+    local_claude_desktop_quota: ClaudeLocalQuotaSnapshot,
 ) -> MultiClientUsageSnapshot {
     MultiClientUsageSnapshot {
         preferences,
@@ -946,7 +978,10 @@ fn make_snapshot(
         detections: multi_client_product::detect_clients_cached(),
         trend_buckets,
         daily_buckets,
-        quotas: multi_client_product::quota_provider_snapshots(&local_claude_quota),
+        quotas: multi_client_product::quota_provider_snapshots(
+            &local_claude_quota,
+            &local_claude_desktop_quota,
+        ),
         diagnostics,
         updated_at,
     }
@@ -959,6 +994,7 @@ fn refresh_multi_client_usage_at(
     // Always read Claude's local quota cache independently of transcript readers. The reader
     // has fixed path and byte limits, and does not launch Claude or use credentials/network.
     let local_claude_quota = read_claude_local_quota();
+    let local_claude_desktop_quota = read_claude_desktop_quota();
     let (preferences, mut diagnostics) = load_preferences(settings_path);
     let enabled = preferences
         .iter()
@@ -976,6 +1012,7 @@ fn refresh_multi_client_usage_at(
             Vec::new(),
             Vec::new(),
             local_claude_quota,
+            local_claude_desktop_quota,
         ));
     }
     // Disabling all readers stops scanning but leaves the independent ledger intact.
@@ -1002,6 +1039,7 @@ fn refresh_multi_client_usage_at(
             aggregates.arrays.trend_buckets,
             aggregates.arrays.daily_buckets,
             local_claude_quota,
+            local_claude_desktop_quota,
         ));
     }
     if let Some(parent) = database_path.parent() {
@@ -1152,6 +1190,7 @@ fn refresh_multi_client_usage_at(
         aggregates.arrays.trend_buckets,
         aggregates.arrays.daily_buckets,
         local_claude_quota,
+        local_claude_desktop_quota,
     ))
 }
 
@@ -1186,6 +1225,185 @@ pub fn read_claude_local_quota() -> ClaudeLocalQuotaSnapshot {
         };
         read_claude_local_quota_at(&path, OffsetDateTime::now_utc().unix_timestamp() as f64)
     })
+}
+
+/// Reads only Claude Desktop's bounded local plan-usage history file. This remains separate
+/// from the Claude CLI statusline reader and never reads credentials or contacts a provider.
+pub fn read_claude_desktop_quota() -> ClaudeLocalQuotaSnapshot {
+    let now = Instant::now();
+    let cache = CLAUDE_DESKTOP_QUOTA_PROBE_CACHE.get_or_init(Default::default);
+    let mut cache = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cached_claude_desktop_quota_read(&mut cache, now, || {
+        let path = claude_desktop_history_path(&app_paths::home_dir());
+        let now_epoch = OffsetDateTime::now_utc().unix_timestamp_nanos() as f64 / 1_000_000_000.0;
+        read_claude_desktop_quota_at(&path, now_epoch)
+    })
+}
+
+fn claude_desktop_history_path(home: &Path) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        home.join("Library")
+            .join("Application Support")
+            .join("Claude")
+            .join("plan-usage-history.json")
+    }
+    #[cfg(windows)]
+    {
+        std::env::var_os("APPDATA")
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join("AppData").join("Roaming"))
+            .join("Claude")
+            .join("plan-usage-history.json")
+    }
+    #[cfg(target_os = "linux")]
+    {
+        home.join(".config")
+            .join("Claude")
+            .join("plan-usage-history.json")
+    }
+    #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
+    {
+        home.join(".config")
+            .join("Claude")
+            .join("plan-usage-history.json")
+    }
+}
+
+fn read_claude_desktop_quota_at(path: &Path, now_epoch: f64) -> ClaudeLocalQuotaSnapshot {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return claude_quota_state("missing")
+        }
+        Err(_) => return claude_quota_state("invalid"),
+    };
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() > MAX_CLAUDE_DESKTOP_HISTORY_BYTES
+    {
+        return claude_quota_state("invalid");
+    }
+    let bytes = match fs::File::open(path).and_then(|file| {
+        let mut bytes = Vec::new();
+        file.take(MAX_CLAUDE_DESKTOP_HISTORY_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        Ok(bytes)
+    }) {
+        Ok(bytes) if bytes.len() as u64 <= MAX_CLAUDE_DESKTOP_HISTORY_BYTES => bytes,
+        Ok(_) => return claude_quota_state("invalid"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return claude_quota_state("missing")
+        }
+        Err(_) => return claude_quota_state("invalid"),
+    };
+    parse_claude_desktop_usage_history(&bytes, now_epoch)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ClaudeDesktopHistoryVersion {
+    V1,
+    V2,
+}
+
+fn parse_claude_desktop_usage_history(bytes: &[u8], now_epoch: f64) -> ClaudeLocalQuotaSnapshot {
+    if bytes.len() as u64 > MAX_CLAUDE_DESKTOP_HISTORY_BYTES {
+        return claude_quota_state("invalid");
+    }
+    let Ok(root) = serde_json::from_slice::<Value>(bytes) else {
+        return claude_quota_state("invalid");
+    };
+    let Some(root) = root.as_object() else {
+        return claude_quota_state("invalid");
+    };
+    let raw_version = root.get("version").and_then(Value::as_f64);
+    let version = if raw_version == Some(1.0) {
+        ClaudeDesktopHistoryVersion::V1
+    } else if raw_version == Some(2.0) {
+        ClaudeDesktopHistoryVersion::V2
+    } else {
+        return claude_quota_state("invalid");
+    };
+    let Some(samples) = root.get("samples").and_then(Value::as_array) else {
+        return claude_quota_state("invalid");
+    };
+    if samples.len() > MAX_CLAUDE_DESKTOP_HISTORY_SAMPLES {
+        return claude_quota_state("invalid");
+    }
+    if samples.is_empty() {
+        return claude_quota_state("missing");
+    }
+
+    let mut latest: Option<(f64, &Value)> = None;
+    for sample in samples {
+        let Some(sample_object) = sample.as_object() else {
+            continue;
+        };
+        let Some(timestamp_ms) = sample_object
+            .get("t")
+            .and_then(value_as_f64)
+            .filter(|value| value.is_finite() && *value >= 0.0)
+        else {
+            continue;
+        };
+        if latest.map_or(true, |(latest_ms, _)| timestamp_ms >= latest_ms) {
+            latest = Some((timestamp_ms, sample));
+        }
+    }
+    let Some((timestamp_ms, latest_sample)) = latest else {
+        return claude_quota_state("invalid");
+    };
+    let now_ms = now_epoch * 1_000.0;
+    if !now_ms.is_finite() || timestamp_ms > now_ms + 60_000.0 {
+        return claude_quota_state("invalid");
+    }
+
+    let captured_at = epoch_seconds_iso(timestamp_ms / 1_000.0);
+    let Some(captured_at) = captured_at else {
+        return claude_quota_state("invalid");
+    };
+    if now_ms - timestamp_ms > CLAUDE_DESKTOP_HISTORY_MAX_AGE_SECONDS * 1_000.0 {
+        return ClaudeLocalQuotaSnapshot {
+            state: "stale".into(),
+            captured_at: Some(captured_at),
+            five_hour: None,
+            seven_day: None,
+        };
+    }
+
+    let Some(latest_sample) = latest_sample.as_object() else {
+        return claude_quota_state("invalid");
+    };
+    let usage = match version {
+        ClaudeDesktopHistoryVersion::V1 => Some(latest_sample),
+        ClaudeDesktopHistoryVersion::V2 => latest_sample.get("u").and_then(Value::as_object),
+    };
+    let percent = |key: &str| {
+        usage
+            .and_then(|usage| usage.get(key))
+            .and_then(value_as_f64)
+            .filter(|value| value.is_finite() && (0.0..=100.0).contains(value))
+            .map(|used_percent| ClaudeLocalQuotaWindow {
+                used_percent,
+                resets_at: None,
+            })
+    };
+    let five_hour = percent("fh");
+    let seven_day = percent("sd");
+    ClaudeLocalQuotaSnapshot {
+        state: if five_hour.is_some() || seven_day.is_some() {
+            "available"
+        } else {
+            "missing"
+        }
+        .into(),
+        captured_at: Some(captured_at),
+        five_hour,
+        seven_day,
+    }
 }
 
 fn read_claude_local_quota_at(path: &Path, now_epoch: f64) -> ClaudeLocalQuotaSnapshot {
@@ -4497,6 +4715,15 @@ mod tests {
             }),
             seven_day: None,
         };
+        let desktop = ClaudeLocalQuotaSnapshot {
+            state: "available".into(),
+            captured_at: Some("2026-10-25T00:01:00Z".into()),
+            five_hour: Some(ClaudeLocalQuotaWindow {
+                used_percent: 42.0,
+                resets_at: None,
+            }),
+            seven_day: None,
+        };
         let snapshot = make_snapshot(
             default_preferences(),
             Vec::new(),
@@ -4507,6 +4734,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             available,
+            desktop,
         );
 
         assert!(snapshot
@@ -4520,6 +4748,17 @@ mod tests {
             .unwrap();
         assert_eq!(claude.state, "available");
         assert_eq!(claude.windows[0].used_percent, Some(25.0));
+        assert_eq!(claude.windows[0].label, "5h");
+        let desktop = snapshot
+            .quotas
+            .iter()
+            .find(|quota| quota.client == "claudeDesktop")
+            .unwrap();
+        assert_eq!(desktop.state, "available");
+        assert_eq!(desktop.source, "local-desktop-history");
+        assert_eq!(desktop.captured_at.as_deref(), Some("2026-10-25T00:01:00Z"));
+        assert_eq!(desktop.windows[0].used_percent, Some(42.0));
+        assert_eq!(desktop.windows[0].resets_at, None);
     }
 
     #[test]
@@ -5453,6 +5692,209 @@ mod tests {
 
         fs::write(&path, vec![b'x'; 64 * 1024 + 1]).unwrap();
         assert_eq!(read_claude_local_quota_at(&path, 10_000.0).state, "invalid");
+    }
+
+    #[test]
+    fn claude_desktop_history_uses_latest_sample_without_merging_organizations() {
+        let now = 10_000.0;
+        let snapshot = parse_claude_desktop_usage_history(
+            br#"{"version":2,"samples":[
+                {"t":9000000,"org":"org-old","u":{"fh":21,"sd":44}},
+                {"t":10000000,"org":"org-new","u":{"sd":52}}
+            ]}"#,
+            now,
+        );
+        assert_eq!(snapshot.state, "available");
+        assert_eq!(snapshot.five_hour, None);
+        assert_eq!(snapshot.seven_day.as_ref().unwrap().used_percent, 52.0);
+        assert_eq!(snapshot.seven_day.as_ref().unwrap().resets_at, None);
+        assert!(snapshot.captured_at.is_some());
+        let serialized = serde_json::to_string(&snapshot).unwrap();
+        assert!(!serialized.contains("org-old"));
+        assert!(!serialized.contains("org-new"));
+
+        let newest_missing = parse_claude_desktop_usage_history(
+            br#"{"version":2,"samples":[
+                {"t":9000000,"org":"org-old","u":{"fh":21,"sd":44}},
+                {"t":10000000,"org":"org-new"}
+            ]}"#,
+            now,
+        );
+        assert_eq!(newest_missing.state, "missing");
+        assert!(newest_missing.five_hour.is_none());
+        assert!(newest_missing.seven_day.is_none());
+        assert!(newest_missing.captured_at.is_some());
+    }
+
+    #[test]
+    fn claude_desktop_history_supports_v1_and_preserves_stale_state() {
+        let v1 = parse_claude_desktop_usage_history(
+            br#"{"version":1,"samples":[{"t":10000000,"fh":33.5,"sd":64}]}"#,
+            10_000.0,
+        );
+        assert_eq!(v1.state, "available");
+        assert_eq!(v1.five_hour.as_ref().unwrap().used_percent, 33.5);
+        assert_eq!(v1.seven_day.as_ref().unwrap().used_percent, 64.0);
+        assert_eq!(v1.five_hour.as_ref().unwrap().resets_at, None);
+
+        let stale = parse_claude_desktop_usage_history(
+            br#"{"version":2,"samples":[{"t":8799000,"org":"org-a","u":{"fh":33,"sd":64}}]}"#,
+            10_000.0,
+        );
+        assert_eq!(stale.state, "stale");
+        assert!(stale.captured_at.is_some());
+        assert!(stale.five_hour.is_none());
+        assert!(stale.seven_day.is_none());
+    }
+
+    #[test]
+    fn claude_desktop_history_rejects_future_unknown_and_oversized_samples() {
+        assert_eq!(
+            parse_claude_desktop_usage_history(
+                br#"{"version":2,"samples":[{"t":10060001,"org":"org-a","u":{"fh":10}}]}"#,
+                10_000.0,
+            )
+            .state,
+            "invalid"
+        );
+        assert_eq!(
+            parse_claude_desktop_usage_history(
+                br#"{"samples":[{"t":10000000,"unknown":true}]}"#,
+                10_000.0,
+            )
+            .state,
+            "invalid"
+        );
+        assert_eq!(
+            parse_claude_desktop_usage_history(
+                br#"{"version":3,"samples":[{"t":10000000,"fh":10}]}"#,
+                10_000.0,
+            )
+            .state,
+            "invalid"
+        );
+        assert_eq!(
+            parse_claude_desktop_usage_history(br#"{"version":true,"samples":[]}"#, 10_000.0).state,
+            "invalid"
+        );
+
+        let bad_percent = parse_claude_desktop_usage_history(
+            br#"{"version":2,"samples":[{"t":10000000,"org":"org-a","u":{"fh":101,"sd":true}}]}"#,
+            10_000.0,
+        );
+        assert_eq!(bad_percent.state, "missing");
+        assert!(bad_percent.five_hour.is_none());
+        assert!(bad_percent.seven_day.is_none());
+
+        let independent_percent = parse_claude_desktop_usage_history(
+            br#"{"version":2,"samples":[{"t":10000000,"org":"org-a","u":{"fh":101,"sd":42}}]}"#,
+            10_000.0,
+        );
+        assert_eq!(independent_percent.state, "available");
+        assert!(independent_percent.five_hour.is_none());
+        assert_eq!(
+            independent_percent.seven_day.as_ref().unwrap().used_percent,
+            42.0
+        );
+
+        let mut too_many = Vec::with_capacity(MAX_CLAUDE_DESKTOP_HISTORY_SAMPLES + 1);
+        for index in 0..=MAX_CLAUDE_DESKTOP_HISTORY_SAMPLES {
+            too_many.push(serde_json::json!({"t": index, "fh": 1}));
+        }
+        let bytes =
+            serde_json::to_vec(&serde_json::json!({"version": 1, "samples": too_many})).unwrap();
+        assert_eq!(
+            parse_claude_desktop_usage_history(&bytes, 100.0).state,
+            "invalid"
+        );
+    }
+
+    #[test]
+    fn claude_desktop_history_file_reader_enforces_bounds_and_rejects_symlinks() {
+        let temporary = TempDir::new("claude-desktop-history");
+        let path = temporary.path().join("plan-usage-history.json");
+        assert_eq!(
+            read_claude_desktop_quota_at(&path, 10_000.0).state,
+            "missing"
+        );
+
+        fs::write(
+            &path,
+            vec![b'x'; MAX_CLAUDE_DESKTOP_HISTORY_BYTES as usize + 1],
+        )
+        .unwrap();
+        assert_eq!(
+            read_claude_desktop_quota_at(&path, 10_000.0).state,
+            "invalid"
+        );
+        assert_eq!(
+            parse_claude_desktop_usage_history(
+                &vec![b'x'; MAX_CLAUDE_DESKTOP_HISTORY_BYTES as usize + 1],
+                10_000.0,
+            )
+            .state,
+            "invalid"
+        );
+
+        fs::write(&path, br#"{"samples":[{"t":true,"fh":10}]}"#).unwrap();
+        assert_eq!(
+            read_claude_desktop_quota_at(&path, 10_000.0).state,
+            "invalid"
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let target = temporary.path().join("target.json");
+            fs::write(
+                &target,
+                br#"{"version":1,"samples":[{"t":10000000,"fh":10}]}"#,
+            )
+            .unwrap();
+            let link = temporary.path().join("linked.json");
+            symlink(&target, &link).unwrap();
+            assert_eq!(
+                read_claude_desktop_quota_at(&link, 10_000.0).state,
+                "invalid"
+            );
+        }
+    }
+
+    #[test]
+    fn claude_desktop_quota_probe_is_rate_limited_independently() {
+        let start = Instant::now();
+        let mut cache = ClaudeDesktopQuotaProbeCache::default();
+        let mut probes = 0;
+        let sample = ClaudeLocalQuotaSnapshot {
+            state: "available".into(),
+            captured_at: Some("2026-11-04T00:00:00Z".into()),
+            five_hour: None,
+            seven_day: Some(ClaudeLocalQuotaWindow {
+                used_percent: 55.0,
+                resets_at: None,
+            }),
+        };
+        let first = cached_claude_desktop_quota_read(&mut cache, start, || {
+            probes += 1;
+            sample.clone()
+        });
+        let within_interval =
+            cached_claude_desktop_quota_read(&mut cache, start + Duration::from_secs(59), || {
+                probes += 1;
+                claude_quota_state("missing")
+            });
+        let after_interval = cached_claude_desktop_quota_read(
+            &mut cache,
+            start + CLAUDE_LOCAL_QUOTA_PROBE_INTERVAL,
+            || {
+                probes += 1;
+                claude_quota_state("stale")
+            },
+        );
+        assert_eq!(first.state, "available");
+        assert_eq!(within_interval, first);
+        assert_eq!(after_interval.state, "stale");
+        assert_eq!(probes, 2);
     }
 
     fn now_epoch_state(captured: f64, now: f64) -> &'static str {

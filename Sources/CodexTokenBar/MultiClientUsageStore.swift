@@ -312,9 +312,11 @@ final class MultiClientUsageStore: ObservableObject {
     @Published private(set) var refreshing = false
     @Published private(set) var updatedAt: Date?
     @Published private(set) var claudeQuota = ClaudeLocalQuota.missing
+    @Published private(set) var claudeDesktopQuota = ClaudeLocalQuota.missing
     private let defaults: UserDefaults
     private let scanner: MultiClientUsageScanner
     private let quotaReader: @Sendable () -> ClaudeLocalQuota
+    private let desktopQuotaReader: @Sendable () -> ClaudeLocalQuota
     private var loop: Task<Void, Never>?
     private var quotaLoop: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
@@ -325,9 +327,11 @@ final class MultiClientUsageStore: ObservableObject {
     private var monitoringUpdates: AnyCancellable?
 
     init(defaults: UserDefaults = .standard, databaseURL: URL = MultiClientUsageStore.defaultDatabaseURL,
-         quotaReader: @escaping @Sendable () -> ClaudeLocalQuota = { ClaudeLocalQuota.read() }) {
+         quotaReader: @escaping @Sendable () -> ClaudeLocalQuota = { ClaudeLocalQuota.read() },
+         desktopQuotaReader: @escaping @Sendable () -> ClaudeLocalQuota = { ClaudeLocalQuota.readDesktopHistory() }) {
         self.defaults = defaults
         self.quotaReader = quotaReader
+        self.desktopQuotaReader = desktopQuotaReader
         let decoded = defaults.data(forKey: Self.preferencesKey).flatMap { try? JSONDecoder().decode([MultiClientUsagePreference].self, from: $0) } ?? []
         preferences = MultiClientUsagePreference.normalized(decoded)
         scanner = MultiClientUsageScanner(databaseURL: databaseURL)
@@ -412,30 +416,33 @@ final class MultiClientUsageStore: ObservableObject {
         quotaProbeInFlight = true
         lastQuotaProbeUptime = uptime
         let reader = quotaReader
+        let desktopReader = desktopQuotaReader
         Task { [weak self] in
-            let reading = await Task.detached(priority: .utility) { reader() }.value
+            let (reading, desktop) = await Task.detached(priority: .utility) { (reader(), desktopReader()) }.value
             guard let self else { return }
-            if self.claudeQuota != reading {
+            if self.claudeQuota != reading || self.claudeDesktopQuota != desktop {
                 self.claudeQuota = reading
+                self.claudeDesktopQuota = desktop
                 self.syncMenuItems()
             }
             self.quotaProbeInFlight = false
         }
     }
-    private var hasUsableClaudeQuota: Bool {
-        claudeQuota.state == "available" && (claudeQuota.fiveHour != nil || claudeQuota.sevenDay != nil)
+    private func hasUsableClaudeQuota(_ client: UsageClient) -> Bool {
+        let value = client == .claudeCode ? claudeQuota : client == .claudeDesktop ? claudeDesktopQuota : .missing
+        return value.state == "available" && (value.fiveHour != nil || value.sevenDay != nil)
     }
     var displayClientIDs: [String] {
         preferences.filter { value in
             value.enabled || summaries.contains { $0.client == value.client }
-                || (value.client == .claudeCode && hasUsableClaudeQuota)
+                || hasUsableClaudeQuota(value.client)
         }.map { $0.client.rawValue }
     }
     var availablePreferences: [MultiClientUsagePreference] {
         preferences.filter { value in
             value.enabled || !value.path.isEmpty || detections.contains { $0.client == value.client }
                 || summaries.contains { $0.client == value.client }
-                || (value.client == .claudeCode && hasUsableClaudeQuota)
+                || hasUsableClaudeQuota(value.client)
         }
     }
     var newDetections: [DetectedUsageClient] {
@@ -447,11 +454,15 @@ final class MultiClientUsageStore: ObservableObject {
     }
     func enable(_ client: UsageClient) {
         guard var value = preferences.first(where: { $0.client == client }) else { return }
-        value.enabled = true; value.showSidebar = true; value.showQuota = client == .claudeCode
+        value.enabled = true; value.showSidebar = true; value.showQuota = client == .claudeCode || client == .claudeDesktop
         acknowledge(client); update(value)
     }
     func quotaReading(_ client: UsageClient) -> ClientQuotaReading {
-        client == .claudeCode ? ClaudeCapturedQuotaProvider(snapshot: claudeQuota).reading() : UnavailableClientQuotaProvider(client: client).reading()
+        switch client {
+        case .claudeCode: ClaudeCapturedQuotaProvider(snapshot: claudeQuota).reading()
+        case .claudeDesktop: ClaudeCapturedQuotaProvider(snapshot: claudeDesktopQuota, client: .claudeDesktop).reading()
+        default: UnavailableClientQuotaProvider(client: client).reading()
+        }
     }
     func backup() async throws -> URL { try await scanner.backup() }
     func cacheRankingProjection(

@@ -128,3 +128,8 @@ fn release_multi_client_scan() {
 pub(crate) async fn read_claude_local_quota() -> Result<ClaudeLocalQuotaSnapshot, String> {
     run_blocking_command(|| Ok(multi_client_usage::read_claude_local_quota())).await
 }
+
+#[tauri::command]
+pub(crate) async fn read_claude_desktop_quota() -> Result<ClaudeLocalQuotaSnapshot, String> {
+    run_blocking_command(|| Ok(multi_client_usage::read_claude_desktop_quota())).await
+}

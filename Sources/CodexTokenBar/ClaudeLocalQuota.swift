@@ -1,17 +1,71 @@
 import Foundation
+import CoreFoundation
 
 /// Reads app-owned statusline capture first, then a pre-existing monitor cache.
 /// Does not install a hook, launch Claude, read credentials or perform network requests.
 struct ClaudeLocalQuota: Equatable, Sendable {
     struct Window: Equatable, Sendable {
         let usedPercent: Double
-        let resetsAt: Date
+        let resetsAt: Date?
     }
     let state: String
     let capturedAt: Date?
     let fiveHour: Window?
     let sevenDay: Window?
     static let missing = Self(state: "missing", capturedAt: nil, fiveHour: nil, sevenDay: nil)
+    static let desktopHistoryMaximumBytes = 4 * 1_024 * 1_024
+    static let desktopHistoryFreshness: TimeInterval = 20 * 60
+
+    /// Separate from CLI captures: neither source proves which account the other uses.
+    static func readDesktopHistory(home: URL = FileManager.default.homeDirectoryForCurrentUser, now: Date = Date()) -> Self {
+        let url = home.appendingPathComponent("Library/Application Support/Claude/plan-usage-history.json")
+        let attributes: [FileAttributeKey: Any]
+        do { attributes = try FileManager.default.attributesOfItem(atPath: url.path) }
+        catch {
+            let error = error as NSError
+            let missing = error.domain == NSCocoaErrorDomain && [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(error.code)
+            return .init(state: missing ? "missing" : "invalid", capturedAt: nil, fiveHour: nil, sevenDay: nil)
+        }
+        guard attributes[.type] as? FileAttributeType == .typeRegular,
+              let size = attributes[.size] as? NSNumber, size.intValue >= 0,
+              size.intValue <= desktopHistoryMaximumBytes else { return .init(state: "invalid", capturedAt: nil, fiveHour: nil, sevenDay: nil) }
+        do {
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            let data = try handle.read(upToCount: desktopHistoryMaximumBytes + 1) ?? Data()
+            return decodeDesktopHistory(data, now: now)
+        } catch { return .init(state: "invalid", capturedAt: nil, fiveHour: nil, sevenDay: nil) }
+    }
+
+    static func decodeDesktopHistory(_ data: Data, now: Date) -> Self {
+        func empty(_ state: String, _ captured: Date? = nil) -> Self { .init(state: state, capturedAt: captured, fiveHour: nil, sevenDay: nil) }
+        func number(_ value: Any?) -> Double? {
+            guard let value = value as? NSNumber, CFGetTypeID(value) != CFBooleanGetTypeID(), value.doubleValue.isFinite else { return nil }
+            return value.doubleValue
+        }
+        guard data.count <= desktopHistoryMaximumBytes,
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let version = number(root["version"]), version == 1 || version == 2,
+              let samples = root["samples"] as? [Any], samples.count <= 50_000 else { return empty("invalid") }
+        var latest: (time: Double, row: [String: Any])?
+        for element in samples {
+            guard let row = element as? [String: Any] else { continue }
+            guard let time = number(row["t"]), time >= 0 else { continue }
+            if latest == nil || time >= latest!.time { latest = (time, row) }
+        }
+        guard let latest else { return empty(samples.isEmpty ? "missing" : "invalid") }
+        let captured = Date(timeIntervalSince1970: latest.time / 1_000)
+        guard captured <= now.addingTimeInterval(60) else { return empty("invalid") }
+        guard now.timeIntervalSince(captured) <= desktopHistoryFreshness else { return empty("stale", captured) }
+        // Never complete a new organization's partial sample from another row or source.
+        guard let values = version == 1 ? latest.row : latest.row["u"] as? [String: Any] else { return empty("missing", captured) }
+        func window(_ key: String) -> Window? {
+            guard let used = number(values[key]), (0...100).contains(used) else { return nil }
+            return Window(usedPercent: used, resetsAt: nil)
+        }
+        let five = window("fh"), seven = window("sd")
+        return .init(state: five == nil && seven == nil ? "missing" : "available", capturedAt: captured, fiveHour: five, sevenDay: seven)
+    }
     static func read(home: URL = FileManager.default.homeDirectoryForCurrentUser, now: Date = Date()) -> Self {
         let candidates = [home.appendingPathComponent("Library/Application Support/CodexTokenBar/claude-local-statusline/latest.json"),
                           home.appendingPathComponent(".claude-monitor/statusline/latest.json")]

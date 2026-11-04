@@ -44,12 +44,13 @@ async function refreshShared() {
       cacheError = String(error);
       // A transcript/index error must not hide an independently readable local
       // quota cache. Keep all last-good usage rows; update only this reading.
-      let reading=unavailableQuota("claudeCode");
-      try {
-        const local=await callCommandStrict<Parameters<typeof claudeQuotaFromLocalCache>[0]>("read_claude_local_quota");
-        reading=claudeQuotaFromLocalCache(local);
-      } catch { /* A missing/unreadable cache contributes no visible window. */ }
-      cached={...cached,quotas:[...(cached.quotas??[]).filter(q=>q.client!=="claudeCode"),reading]};
+      const readings=await Promise.all((["claudeCode","claudeDesktop"] as const).map(async client=>{
+        try {
+          const local=await callCommandStrict<Parameters<typeof claudeQuotaFromLocalCache>[0]>(client==="claudeCode"?"read_claude_local_quota":"read_claude_desktop_quota");
+          return claudeQuotaFromLocalCache(local,client);
+        } catch { return unavailableQuota(client); }
+      }));
+      cached={...cached,quotas:[...(cached.quotas??[]).filter(q=>q.client!=="claudeCode" && q.client!=="claudeDesktop"),...readings]};
     }
     finally { pending = null; emit(); }
   })();
@@ -183,14 +184,14 @@ export function MultiClientDiscoveryNotice() {
   const {seen, acknowledge} = useDiscoveryAcknowledgements();
   return <>{(snapshot.detections ?? []).filter(d=>d.client!=="claudeCode" && !seen.has(d.client) && !snapshot.preferences.some(p=>p.client===d.client && p.enabled)).slice(0,1).map(d=><div className="multi-client-discovery" key={d.client}>
     <div><strong>发现 {clientNames[d.client as UsageClient] ?? d.client}</strong><small>仅读取本地数据，不产生任何网络请求。可随时关闭。</small></div>
-    <button disabled={busy} onClick={async()=>{if (await save(snapshot.preferences.map(p=>p.client===d.client ? {...p,enabled:true,showSidebar:true,showQuota:p.client==="claudeCode"}:p))) acknowledge(d.client);}}>启用</button>
+    <button disabled={busy} onClick={async()=>{if (await save(snapshot.preferences.map(p=>p.client===d.client ? {...p,enabled:true,showSidebar:true,showQuota:p.client==="claudeCode" || p.client==="claudeDesktop"}:p))) acknowledge(d.client);}}>启用</button>
     <button onClick={()=>acknowledge(d.client)}>暂不启用</button>
   </div>)}</>;
 }
 export function ClientQuotaPanel({reading, compact=false}: {reading:ClientQuotaReading;compact?:boolean}) {
   return <div className={compact ? "multi-client-quota-inline" : "multi-client-quota"} title={reading.notice}>
-    {reading.state === "available" ? reading.windows.map(w=><span key={w.label}>{w.label} 剩余 {(100-w.usedPercent).toFixed(0)}%</span>) : <span>{reading.state === "notConnected" ? "额度未接入" : "额度不可用"}</span>}
-    {!compact && <small>{reading.notice}</small>}
+    {reading.state === "available" ? reading.windows.map(w=><span key={w.label}>{w.label} 剩余 {(100-w.usedPercent).toFixed(0)}%</span>) : <span>{reading.state === "stale" ? "额度采样已过期" : reading.state === "notConnected" ? "额度未接入" : "额度不可用"}</span>}
+    {!compact && <>{reading.capturedAt && Number.isFinite(Date.parse(reading.capturedAt)) && <small>采样于 {new Date(reading.capturedAt).toLocaleString()}</small>}<small>{reading.notice}</small></>}
   </div>;
 }
 function clientName(client:string) { return client === "codex" ? "Codex" : client === "all" ? "合计" : clientNames[client as UsageClient] ?? client; }

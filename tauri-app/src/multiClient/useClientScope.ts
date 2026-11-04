@@ -48,7 +48,7 @@ export function useClientScope() {
       .filter(
         (p) =>
           p.enabled || snapshot.summaries.some((s) => s.client === p.client) ||
-          (p.client === "claudeCode" && snapshot.quotas?.some(q => q.client === "claudeCode" && q.state === "available" && q.windows.length > 0)),
+          snapshot.quotas?.some(q => q.client === p.client && q.state === "available" && q.windows.length > 0),
       )
       .map((p) => p.client), [snapshot.preferences, snapshot.summaries, snapshot.quotas]);
   const allowed = useMemo(() => scopeClients(raw, available), [raw, available]);
@@ -76,12 +76,13 @@ export function useClientQuotaItems(codex?: QuotaSnapshot) {
   const claude =
     snapshot.quotas?.find((q) => q.client === "claudeCode") ??
     unavailableQuota("claudeCode");
+  const desktop = snapshot.quotas?.find(q=>q.client==="claudeDesktop") ?? unavailableQuota("claudeDesktop");
   const includeClaude =
     snapshot.preferences.some(
       (p) =>
         (p.client === "claudeCode" || p.client === "claudeDesktop") &&
         (p.enabled || snapshot.detections?.some((d) => d.client === p.client)),
-    ) || selection.enabled.some((id) => id.startsWith("claudeCode:")) || claude.state === "available";
+    ) || selection.enabled.some((id) => id.startsWith("claudeCode:") || id.startsWith("claudeDesktop:")) || claude.state === "available" || desktop.state === "available";
   return {
     items: orderedQuotaItems(
       quotaItems(
@@ -89,6 +90,7 @@ export function useClientQuotaItems(codex?: QuotaSnapshot) {
         claude,
         includeClaude,
         selection.enabled.includes("codex:5h"),
+        desktop,
       ),
       selection,
       allowed,
@@ -99,6 +101,7 @@ export function useClientQuotaItems(codex?: QuotaSnapshot) {
         claude,
         includeClaude,
         selection.enabled.includes("codex:5h"),
+        desktop,
       ),
       selection,
       allowed,

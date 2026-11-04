@@ -2,6 +2,16 @@ import XCTest
 @testable import CodexTokenBar
 
 final class IntegratedClientPresentationTests: XCTestCase {
+    func testDesktopHistoryWindowsKeepTheirOwnIdentityAndUnknownReset() {
+        let cli = ClientQuotaReading(client: "claudeCode", state: "available", source: "local-statusline", windows: [.init(label: "5h", usedPercent: 25, resetsAt: nil)], notice: "")
+        let desktop = ClientQuotaReading(client: "claudeDesktop", state: "available", source: "local-desktop-history", windows: [.init(label: "5h", usedPercent: 13, resetsAt: nil), .init(label: "7d", usedPercent: 29, resetsAt: nil)], notice: "", capturedAt: Date(timeIntervalSince1970: 1_800_000_000))
+        let items = ClientQuotaProjection.items(codex: .empty, claude: cli, claudeDesktop: desktop, includeClaude: true)
+        XCTAssertEqual(items.filter { $0.client == "claudeCode" }.map(\.remaining), [75])
+        let rows = items.filter { $0.client == "claudeDesktop" }
+        XCTAssertEqual(rows.map(\.id), ["claudeDesktop:5h", "claudeDesktop:7d"])
+        XCTAssertEqual(rows.map(\.remaining), [87, 71]); XCTAssertTrue(rows.allSatisfy { $0.resetsAt == nil })
+        XCTAssertTrue(rows.allSatisfy { ClientQuotaSelection().includes($0) && $0.source.contains("采样于") })
+    }
     func testReferencePricesUseSharedPeriodsAndActualUTCWindows() throws {
         let formatter = ISO8601DateFormatter()
         for (time, expected) in [

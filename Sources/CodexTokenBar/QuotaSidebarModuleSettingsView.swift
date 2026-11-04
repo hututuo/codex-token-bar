@@ -24,7 +24,7 @@ struct QuotaSidebarModuleSettingsView: View {
     private var selection: ClientQuotaSelection { .decode(selectionRaw) }
     private var quotas: [ClientQuotaItem] {
         if let quotaItemsOverride { return quotaItemsOverride }
-        return ClientQuotaProjection.items(codex: quotaSnapshot, claude: clients.quotaReading(.claudeCode),
+        return ClientQuotaProjection.items(codex: quotaSnapshot, claude: clients.quotaReading(.claudeCode), claudeDesktop: clients.quotaReading(.claudeDesktop),
             includeClaude: clients.availablePreferences.contains { $0.client == .claudeCode || $0.client == .claudeDesktop },
             includeFiveHour: selection.enabled.contains("codex:5h"), preview: ClientPreviewMode.simulated)
             .filter { scopeIncludes($0.client) }
@@ -135,7 +135,7 @@ struct QuotaSidebarModuleSettingsView: View {
         return QuotaSidebarContentOrder.quotaWindows(quotas, client: client)
     }
     private func scopeIncludes(_ client: String) -> Bool {
-        allowedClients.contains(client) || (client == "claudeCode" && allowedClients.contains("claudeDesktop"))
+        allowedClients.contains(client)
     }
     private func move(_ item: QuotaSidebarItem, by offset: Int) {
         guard let index = items.firstIndex(of: item), items.indices.contains(index + offset) else { return }
@@ -168,10 +168,10 @@ struct QuotaSidebarSettingsRailPreview: View {
     private var quotas: [ClientQuotaItem] {
         if let quotaItemsOverride { return quotaItemsOverride.filter(selection.includes) }
         let allowed = ClientDisplayScope.clients(scope, available: clients.displayClientIDs)
-        return ClientQuotaProjection.items(codex: quota.snapshot, claude: clients.quotaReading(.claudeCode),
+        return ClientQuotaProjection.items(codex: quota.snapshot, claude: clients.quotaReading(.claudeCode), claudeDesktop: clients.quotaReading(.claudeDesktop),
             includeClaude: clients.availablePreferences.contains { $0.client == .claudeCode || $0.client == .claudeDesktop },
             includeFiveHour: selection.enabled.contains("codex:5h"), preview: ClientPreviewMode.simulated)
-            .filter { (allowed.contains($0.client) || ($0.client == "claudeCode" && allowed.contains("claudeDesktop"))) && selection.includes($0) }
+            .filter { (allowed.contains($0.client)) && selection.includes($0) }
     }
     private var items: [QuotaSidebarItem] {
         controller.sidebarLayout.arranged(availableQuotaClients: quotas.map(\.client)).filter {

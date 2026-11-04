@@ -56,6 +56,7 @@ struct ClientQuotaReading: Equatable, Sendable {
     let source: String
     let windows: [Window]
     let notice: String
+    var capturedAt: Date? = nil
 }
 
 /// Providers project already-observed values. Creating or displaying a provider never fetches remotely.
@@ -75,14 +76,24 @@ struct CodexObservedQuotaProvider: ClientQuotaProvider {
 }
 struct ClaudeCapturedQuotaProvider: ClientQuotaProvider {
     let snapshot: ClaudeLocalQuota
+    var client: UsageClient = .claudeCode
     let allowsNetwork = false
     static let setup = "可手动将本地 TokenBarClaudeLocal 配置为 Claude Code statusLine 命令；也兼容已有 claude-monitor --statusline 缓存。本软件不修改 Claude 配置、不读凭据、不联网。"
     func reading() -> ClientQuotaReading {
+        let desktop = client == .claudeDesktop
         let windows = [("5h", snapshot.fiveHour), ("7d", snapshot.sevenDay)].compactMap { label, value in
             value.map { ClientQuotaReading.Window(label: label, usedPercent: $0.usedPercent, resetsAt: $0.resetsAt) }
         }
-        return ClientQuotaReading(client: "claudeCode", state: windows.isEmpty ? (snapshot.state == "missing" ? "notConnected" : "unavailable") : "available", source: "local-statusline", windows: windows,
-                                  notice: windows.isEmpty ? Self.setup : "最近 Claude 进程，未绑定账号；缓存有效期 10 分钟。")
+        let state = snapshot.state == "available" && !windows.isEmpty ? "available" : snapshot.state == "stale" && desktop ? "stale" : snapshot.state == "missing" ? "notConnected" : "unavailable"
+        let notice: String
+        if desktop {
+            notice = state == "available" ? "Desktop 本地历史采样；未验证当前账号。文件不含重置时间，不与 CLI 额度合并。"
+                : state == "stale" ? "Desktop 本地采样超过 20 分钟，已过期。官方后台轮询可能暂停；本软件不会唤醒轮询或发网络请求。"
+                : "未读到可用的 Desktop 本地额度历史。仅读取 plan-usage-history.json，不发网络请求。"
+        } else { notice = windows.isEmpty ? Self.setup : "最近 Claude 进程，未绑定账号；缓存有效期 10 分钟。" }
+        return ClientQuotaReading(client: client.rawValue, state: state,
+                                  source: desktop ? "local-desktop-history" : "local-statusline",
+                                  windows: state == "available" ? windows : [], notice: notice, capturedAt: snapshot.capturedAt)
     }
 }
 struct UnavailableClientQuotaProvider: ClientQuotaProvider {

@@ -58,7 +58,7 @@ struct ClientQuotaSettingsView: View {
     private var selection: ClientQuotaSelection { .decode(selectionRaw) }
     private var items: [ClientQuotaItem] {
         selection.arranged(quotaItems ?? ClientQuotaProjection.items(codex: codex,
-            claude: clients.quotaReading(.claudeCode), includeClaude: clients.availablePreferences.contains { $0.client == .claudeCode || $0.client == .claudeDesktop }, includeFiveHour: selection.enabled.contains("codex:5h"), preview: ClientPreviewMode.simulated))
+            claude: clients.quotaReading(.claudeCode), claudeDesktop: clients.quotaReading(.claudeDesktop), includeClaude: clients.availablePreferences.contains { $0.client == .claudeCode || $0.client == .claudeDesktop }, includeFiveHour: selection.enabled.contains("codex:5h"), preview: ClientPreviewMode.simulated))
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {

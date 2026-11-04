@@ -1,5 +1,7 @@
 # Claude 缓存时效计价修复与 Desktop 额度来源调查
 
+后续：Desktop 本地历史读取已进入实现，范围与验证见 [11 月 4 日本地历史额度接入](2026-11-04-claude-desktop-local-quota-integration.md)。下文“尚未接入”保留为当时调查阶段的事实，不代表最新实现状态。
+
 ## 问题与修复范围
 
 本地原始 Claude usage 同时记录 cache_creation_input_tokens 合计和 cache_creation.ephemeral_5m_input_tokens / ephemeral_1h_input_tokens 两项拆分。旧采集器只保留合计，计价器无法区分两档缓存写入单价，所以拒绝把完整金额显示成已知。价表本身包含本机使用的 Opus 5.5、Haiku 5.5，继续复用固定 Agent Speed 价表；没有另建一份价格。

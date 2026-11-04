@@ -9,6 +9,27 @@ private final class QuotaProbeCounter: @unchecked Sendable {
 }
 
 final class MultiClientQuotaAutodiscoveryTests: XCTestCase {
+    @MainActor
+    func testDesktopQuotaRemainsIndependentFromCLIAndTranscriptOptIn() async throws {
+        let root = try temporaryDirectory()
+        let (defaults, name) = isolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: name) }
+        let available = ClaudeLocalQuota(state: "available", capturedAt: Date(), fiveHour: .init(usedPercent: 13, resetsAt: nil), sevenDay: .init(usedPercent: 29, resetsAt: nil))
+        let calls = QuotaProbeCounter()
+        let databaseURL = root.appendingPathComponent("unopenable.sqlite")
+        try FileManager.default.createDirectory(at: databaseURL, withIntermediateDirectories: true)
+        let store = MultiClientUsageStore(defaults: defaults, databaseURL: databaseURL, quotaReader: { .missing }, desktopQuotaReader: {
+            calls.increment(); return available
+        })
+        store.refreshClaudeQuotaCache(); store.refreshClaudeQuotaCache(); store.refresh()
+        for _ in 0..<100 where store.claudeDesktopQuota.state != "available" || store.refreshing { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(store.claudeQuota.state, "missing")
+        XCTAssertEqual(store.quotaReading(.claudeDesktop).windows.first?.usedPercent, 13)
+        XCTAssertTrue(store.quotaReading(.claudeCode).windows.isEmpty)
+        XCTAssertTrue(store.displayClientIDs.contains("claudeDesktop")); XCTAssertFalse(store.displayClientIDs.contains("claudeCode"))
+        XCTAssertFalse(store.preferences.contains { $0.enabled }); XCTAssertEqual(calls.read(), 1)
+        XCTAssertFalse(store.diagnostics.isEmpty)
+    }
     private func temporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("multi-client-quota-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
@@ -34,7 +55,7 @@ final class MultiClientQuotaAutodiscoveryTests: XCTestCase {
         let store = MultiClientUsageStore(defaults: defaults, databaseURL: databaseURL, quotaReader: {
             calls.increment()
             return available
-        })
+        }, desktopQuotaReader: { .missing })
 
         XCTAssertFalse(store.preferences.contains { $0.enabled })
         XCTAssertFalse(store.displayClientIDs.contains(UsageClient.claudeCode.rawValue))
@@ -66,7 +87,7 @@ final class MultiClientQuotaAutodiscoveryTests: XCTestCase {
         preference.enabled = true
         preference.path = transcript.path
         defaults.set(try JSONEncoder().encode([preference]), forKey: MultiClientUsageStore.preferencesKey)
-        let store = MultiClientUsageStore(defaults: defaults, databaseURL: root.appendingPathComponent("usage.sqlite"), quotaReader: { .missing })
+        let store = MultiClientUsageStore(defaults: defaults, databaseURL: root.appendingPathComponent("usage.sqlite"), quotaReader: { .missing }, desktopQuotaReader: { .missing })
 
         store.refreshClaudeQuotaCache()
         store.refresh()

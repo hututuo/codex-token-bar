@@ -107,9 +107,14 @@ struct ClientQuotaReadingView: View {
                     Text("\(window.label) 剩余 \(Int((100 - window.usedPercent).rounded()))%").font(compact ? .system(size: 9) : .callout)
                 }
             } else {
-                Text(reading.state == "notConnected" ? "额度未接入" : "额度不可用").font(compact ? .system(size: 9) : .callout)
+                Text(reading.state == "stale" ? "额度采样已过期" : reading.state == "notConnected" ? "额度未接入" : "额度不可用").font(compact ? .system(size: 9) : .callout)
             }
-            if !compact { Text(reading.notice).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
+            if !compact {
+                if let captured = reading.capturedAt {
+                    Text("采样于 \(captured.formatted(date: .abbreviated, time: .shortened))").font(.caption).foregroundStyle(.secondary)
+                }
+                Text(reading.notice).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            }
         }.help(reading.notice)
     }
 }

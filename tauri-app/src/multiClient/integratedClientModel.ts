@@ -44,6 +44,7 @@ export function quotaItems(
   claude: ClientQuotaReading,
   includeClaude: boolean,
   includeFive = false,
+  claudeDesktop?: ClientQuotaReading,
 ): QuotaItem[] {
   const items: QuotaItem[] = [];
   function add(
@@ -83,21 +84,25 @@ export function quotaItems(
   codex?.reserveWindows?.forEach((w) =>
     add(w.label, quotaWindowShortLabel(w.label), w),
   );
-  if (includeClaude && claude.state === "available")
+  for (const reading of [claude, claudeDesktop]) {
+   if (!reading || !includeClaude || reading.state !== "available") continue;
+   const client=reading.client ?? "claudeCode";
+   if(client!=="claudeCode" && client!=="claudeDesktop") continue;
     ["5h", "7d"].forEach((label) => {
-      const w = claude.windows.find((w) => w.label === label),
+      const w = reading.windows.find((w) => w.label === label),
         u = w?.usedPercent;
       if (typeof u !== "number" || !Number.isFinite(u) || u < 0 || u > 100) return;
       items.push({
-        id: `claudeCode:${label}`,
-        client: "claudeCode",
+        id: `${client}:${label}`,
+        client,
         window: label,
         remaining: 100 - u,
         resetsAt: w?.resetsAt ?? null,
-        source: "本地缓存 · 未绑定账号",
+        source: (client==="claudeDesktop" ? "Desktop 本地历史 · 重置时间未知" : "CLI 本地缓存 · 未绑定账号")+(reading.capturedAt && Number.isFinite(Date.parse(reading.capturedAt))?` · 采样于 ${new Date(reading.capturedAt).toLocaleString()}`:""),
         status: "",
       });
     });
+  }
   return items;
 }
 export interface QuotaSelection {
@@ -152,11 +157,11 @@ export function orderedQuotaItems(
     .filter(
       (i) =>
         all ||
-        ((allowed.includes(i.client) ||
-          (i.client === "claudeCode" && allowed.includes("claudeDesktop"))) &&
+        (allowed.includes(i.client) &&
           !s.hidden.includes(i.id) &&
           (i.client === "codex" ||
             i.client === "claudeCode" ||
+            i.client === "claudeDesktop" ||
             s.enabled.includes(i.id))),
     )
     .sort((a, b) => {

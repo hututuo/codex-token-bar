@@ -17,7 +17,7 @@ on:
         type: boolean
         default: false
       claude_usage_only:
-        description: 'Only the multi-client usage parser and ledger suites on Swift/Rust; no full regression or packaging'
+        description: 'Only related multi-client usage/quota suites on Swift/Rust; no full regression or packaging'
         type: boolean
         default: false
       formed_release:
@@ -155,7 +155,7 @@ jobs:
           set -o pipefail
           mkdir -p visual-previews
           if [[ "$CLAUDE_USAGE_ONLY" == true ]]; then
-            swift test --filter MultiClientUsage 2>&1 | tee swift-tests.log
+            swift test --filter 'MultiClientUsage|ClaudeDesktopQuotaHistory|ClaudeLocalQuota|MultiClientQuotaAutodiscovery|MultiClientProduct|IntegratedClientPresentation' 2>&1 | tee swift-tests.log
             exit 0
           fi
           swift test 2>&1 | tee swift-tests.log
@@ -274,7 +274,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$CLAUDE_USAGE_ONLY" == true ]]; then
-            cargo test --locked --manifest-path tauri-app/src-tauri/Cargo.toml --lib multi_client_usage::tests -- --test-threads=1 2>&1 | tee native-library.log
+            cargo test --locked --manifest-path tauri-app/src-tauri/Cargo.toml --lib multi_client_ -- --test-threads=1 2>&1 | tee native-library.log
           else
             cargo test --locked --manifest-path tauri-app/src-tauri/Cargo.toml --lib -- --test-threads=1 2>&1 | tee native-library.log
           fi
