@@ -2,6 +2,7 @@ import copy
 import importlib.util
 import io
 import json
+import math
 from pathlib import Path
 import subprocess
 import tempfile
@@ -79,12 +80,88 @@ class NativeScaleRunnerTests(unittest.TestCase):
     def profile(self):
         return {"status": "PASS", "checks": [{
             "name": "exact-rust-production-scale-fixture", "status": "PROFILED",
-            "sourceCounts": 4124, "events": 503128,
-            "stores": {"seededEmptyCandidateNamespaces": 6250}, "budgetPassed": True,
+            "sourceCounts": 4124, "events": 503128, "tokens": 2515640,
+            "stores": {"beforeBackfill": 6269, "afterBackfill": 6269, "delta": 0,
+                "seededEmptyCandidateNamespaces": 6250, "retainedEmptyCandidateNamespaces": 6250,
+                "sealedOrReceiptedCandidates": 0, "emptyCandidateTableRows": 0},
+            "objects": {"mainUserObjectsBeforeBackfill": 25649, "mainUserObjectsAfterBackfill": 25649,
+                "mainUserObjectDelta": 0, "storeObjectCatalogBeforeBackfill": 25161,
+                "storeObjectCatalogAfterBackfill": 25161, "storeObjectCatalogDelta": 0,
+                "seededCandidateObjects": 25000}, "budgetPassed": True,
             "budget": {"backfillSecondsMax": 600.0, "unchangedP95SecondsMax": 1.0},
             "backfillSeconds": 300.0, "unchangedP95": 0.5,
-            "correctness": {"rawAccountingDigestBefore": "a" * 64, "rawAccountingDigestAfter": "a" * 64},
+            "unchangedSyncSamples": [0.5] * 20,
+            "correctness": {"rawAccountingDigestBefore": "a" * 64, "rawAccountingDigestAfter": "a" * 64,
+                "initialRawRows": 503128, "finalRawRows": 503128, "modelEnrichmentEvents": 503128,
+                "enrichmentReceipts": 4124, "uniqueRawEventTimestamps": 503128, "warnings": 0,
+                **dict.fromkeys(("preservedRawEventIdsAndTokens", "dashboardSummaryPreserved",
+                    "sourceBytesPreserved", "fixedPoolExistedBeforeCandidateSeed", "mainObjectAndStoreDeltasZero",
+                    "allEmptyCandidatesRetained", "candidateTablesRemainEmpty",
+                    "candidateSourceDigestsMatchRawSourcePaths", "candidateFilesRemainVirtual"), True)},
         }]}
+
+    def test_missing_or_corrupt_numeric_and_preservation_proofs_are_rejected(self):
+        # Start from a complete validator-only control. These values are not
+        # measured performance evidence. Each mutation represents a result
+        # the real producer can report even when its top-level status is PASS.
+        valid = self.profile()
+        module.validate_native_scale(valid, True)
+        paths = [(key,) for key in ("status", "sourceCounts", "events", "tokens", "budgetPassed")]
+        for section in ("stores", "objects", "correctness", "budget"):
+            paths.append((section,))
+            paths.extend((section, key) for key in valid["checks"][0][section])
+        for path in paths:
+            for mutation in ("missing", "wrong_value", "wrong_type"):
+                invalid = copy.deepcopy(valid)
+                target = invalid["checks"][0]
+                for part in path[:-1]:
+                    target = target[part]
+                key = path[-1]
+                value = target[key]
+                if mutation == "missing":
+                    del target[key]
+                elif mutation == "wrong_type":
+                    target[key] = True if type(value) is int else 1 if type(value) is bool else None
+                else:
+                    target[key] = (not value if type(value) is bool else value + 1
+                        if type(value) in (int, float) else {} if isinstance(value, dict) else "invalid")
+                with self.subTest(path=path, mutation=mutation), self.assertRaises(ValueError):
+                    module.validate_native_scale(invalid, True)
+
+    def test_p95_must_be_recomputed_from_twenty_finite_measurements(self):
+        for samples in (None, [], [0.5] * 19, [0.5] * 21, [0.5] * 19 + [True],
+                        [0.5] * 19 + [float("nan")], [0.5] * 19 + [float("inf")],
+                        [0.5] * 19 + [-0.1], [0.5] * 18 + [1.1, 1.2]):
+            invalid = self.profile()
+            invalid["checks"][0]["unchangedSyncSamples"] = samples
+            with self.subTest(samples=samples), self.assertRaises(ValueError):
+                module.validate_native_scale(invalid, True)
+        # Input order is immaterial. The single slowest sample may exceed the
+        # P95 budget; lowering the declared P95 below the actual rank may not.
+        valid = self.profile()
+        valid["checks"][0]["unchangedSyncSamples"] = [2.0] + [0.5] * 19
+        module.validate_native_scale(valid, True)
+        valid["checks"][0]["unchangedP95"] = 0.4
+        with self.assertRaises(ValueError):
+            module.validate_native_scale(valid, True)
+        for measured_p95 in (1.0000000000009, math.nextafter(1.0, math.inf)):
+            invalid = self.profile()
+            invalid["checks"][0]["unchangedP95"] = 1.0
+            invalid["checks"][0]["unchangedSyncSamples"] = [0.5] * 18 + [measured_p95, 1.1]
+            with self.subTest(measured_p95=measured_p95), self.assertRaises(ValueError):
+                module.validate_native_scale(invalid, True)
+
+    def test_zero_deltas_cannot_hide_mismatched_or_impossible_absolute_counts(self):
+        for section, before, after in (
+            ("stores", "beforeBackfill", "afterBackfill"),
+            ("objects", "mainUserObjectsBeforeBackfill", "mainUserObjectsAfterBackfill"),
+            ("objects", "storeObjectCatalogBeforeBackfill", "storeObjectCatalogAfterBackfill"),
+        ):
+            for invalid_counts in ((0, 0), (True, True), (25000, 25001), ("25000", "25000")):
+                invalid = self.profile()
+                invalid["checks"][0][section][before], invalid["checks"][0][section][after] = invalid_counts
+                with self.subTest(section=section, counts=invalid_counts), self.assertRaises(ValueError):
+                    module.validate_native_scale(invalid, True)
 
     def test_optional_profile_does_not_change_regular_fixture_gate(self):
         module.validate_native_scale({"status": "PASS"}, False)

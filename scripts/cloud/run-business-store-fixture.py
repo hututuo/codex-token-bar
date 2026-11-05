@@ -19,7 +19,8 @@ REQUIRED_CHECKS = {
         "uncommittedValueHidden", "mainWriteRefused", "unknownPartitionNotRegistered"), True),
     "quota": {"activeRows": 1, "legacyFacts": [1, 2]},
     "modeltrace": {"runs": 2},
-    "body-speed": {"samples": 2, "trendPoints": 1},
+    "body-speed": {"samples": 2, "trendPoints": 1, "outputTokens": 120,
+                   "durationSeconds": 10.0, "samplesInTrend": 2},
     "ledger-b": {"rows": 1},
     "exact-import-stage-and-home-scope": {"homeOneTokens": 175, "homeTwoTokens": 240},
     "exact-concurrent-a-write-observed": {},
@@ -38,7 +39,8 @@ REQUIRED_CHECKS = {
     "pool-process-crash-recovery": {},
     "held-owner-lookup": {"perSourceReopens": 0, "freshOpenControl": 1},
     "published-recovery-reads": {"oldAndNewFacts": [123, 789], "tokensWithoutRawSessions": 175,
-        "aUnchanged": True, "retryReadOnly": True},
+        "aUnchanged": True, "retryReadOnly": True, "catalogParserCalled": False,
+        "catalogActionsVerified": False},
     "legacy-source-preservation": {"count": 4},
     "rerun-and-fail-closed": {},
 }
@@ -80,6 +82,16 @@ def validate_production_report(result, scale_required):
     by_name = {c["name"]: c for c in checks}
     for name, proof in REQUIRED_CHECKS.items():
         require_fields(by_name[name], {"status": "PASS", **proof}, name)
+    for name, field in (("quota", "historyPoints"), ("published-recovery-reads", "publishedCatalogEntries"),
+                        ("rerun-and-fail-closed", "storeCount")):
+        value = by_name[name].get(field)
+        if type(value) is not int or value <= 0:
+            raise ValueError(f"Production scenario lacks a positive count: {name}.{field}")
+    reconciliation = by_name["legacy-backfill-indexed-reconciliation"]
+    for field in ("rawLookupMaxVmSteps", "identityCountMaxVmSteps", "compactionIdentityMaxVmSteps"):
+        value = reconciliation.get(field)
+        if type(value) is not int or not 0 < value <= 512:
+            raise ValueError(f"Production lookup lacks execution or exceeds its work budget: {field}")
     for field in ("discoveryLookups", "persistLookups"):
         count = by_name["held-owner-lookup"].get(field)
         if type(count) is not int or count <= 0:
@@ -105,7 +117,7 @@ def validate_production_report(result, scale_required):
             require_fields(proof, {"status": "PASS", "phase": phase, "oldTokens": 123,
                 "publishedTokens": 134, "publicationReceipts": 1, "reclaimIdempotent": True,
                 "repeatedStartupChecks": 3}, f"{phase}.resume[{index}]")
-            if type(proof.get("alreadyRecovered")) is not bool or (index > 0 and not proof["alreadyRecovered"]):
+            if type(proof.get("alreadyRecovered")) is not bool or proof["alreadyRecovered"] != (index > 0 or phase == "cleanup-committed"):
                 raise ValueError(f"Repeated reopen was not already recovered: {phase}")
     validate_concurrent_probe(result)
     if scale_required:
@@ -120,6 +132,7 @@ def validate_concurrent_probe(result):
     if len(probes) != 1 or len(observed) != 1:
         raise ValueError("Required concurrent A write probe was not executed exactly once")
     probe, observation = probes[0], observed[0]
+    require_fields(probe, {"timeoutMilliseconds": 250, "parallelProbeRows": 4}, "concurrent-a-write-probe")
     negative = probe.get("negativeControl", {})
     if (probe.get("status") != "PASS" or probe.get("timeoutMilliseconds") != 250
             or probe.get("serializedProbeConnection") is not True
@@ -141,22 +154,49 @@ def validate_native_scale(result, required):
     if len(profiles) != 1:
         raise ValueError("Required native production scale profile was not executed exactly once")
     profile = profiles[0]
-    if profile.get("sourceCounts") != 4124 or profile.get("events") != 503128:
-        raise ValueError("Native pressure input changed")
-    stores = profile.get("stores")
-    if not isinstance(stores, dict) or stores.get("seededEmptyCandidateNamespaces") != 6250:
-        raise ValueError("Native large-catalog pressure was omitted")
-    if profile.get("budgetPassed") is not True:
-        raise ValueError("Native scale exceeded its unchanged/backfill budget; full profile retained")
+    require_fields(profile, {
+        "status": "PROFILED", "sourceCounts": 4124, "events": 503128, "tokens": 2515640,
+        "budgetPassed": True,
+        "budget": {"backfillSecondsMax": 600.0, "unchangedP95SecondsMax": 1.0},
+        "stores": {"delta": 0, "seededEmptyCandidateNamespaces": 6250,
+                   "retainedEmptyCandidateNamespaces": 6250,
+                   "sealedOrReceiptedCandidates": 0, "emptyCandidateTableRows": 0},
+        "objects": {"mainUserObjectDelta": 0, "storeObjectCatalogDelta": 0,
+                    "seededCandidateObjects": 25000},
+        "correctness": {
+            "initialRawRows": 503128, "finalRawRows": 503128,
+            "modelEnrichmentEvents": 503128, "enrichmentReceipts": 4124,
+            "uniqueRawEventTimestamps": 503128, "warnings": 0,
+            **dict.fromkeys(("preservedRawEventIdsAndTokens", "dashboardSummaryPreserved",
+                "sourceBytesPreserved", "fixedPoolExistedBeforeCandidateSeed",
+                "mainObjectAndStoreDeltasZero", "allEmptyCandidatesRetained",
+                "candidateTablesRemainEmpty", "candidateSourceDigestsMatchRawSourcePaths",
+                "candidateFilesRemainVirtual"), True),
+        },
+    }, "scale")
+    # Counts are reported as well as deltas: a fabricated zero delta cannot
+    # hide object growth, candidate removal or an impossible catalog size.
+    for section, before_key, after_key, minimum in (
+        ("stores", "beforeBackfill", "afterBackfill", 6252),
+        ("objects", "mainUserObjectsBeforeBackfill", "mainUserObjectsAfterBackfill", 25000),
+        ("objects", "storeObjectCatalogBeforeBackfill", "storeObjectCatalogAfterBackfill", 25000),
+    ):
+        before, after = profile[section].get(before_key), profile[section].get(after_key)
+        if type(before) is not int or type(after) is not int or before < minimum or after != before:
+            raise ValueError(f"Native scale catalog changed or lacks counts: {section}.{before_key}")
     # Keep the original limits independently of the producer's PASS flag.
-    require_fields(profile.get("budget"), {"backfillSecondsMax": 600.0, "unchangedP95SecondsMax": 1.0}, "scale.budget")
     for field, maximum in (("backfillSeconds", 600.0), ("unchangedP95", 1.0)):
         value = profile.get(field)
         if type(value) not in (int, float) or not math.isfinite(value) or value < 0 or value > maximum:
             raise ValueError(f"Native scale exceeds or lacks its original {field} budget")
-    proof = profile.get("correctness", {})
-    if not isinstance(proof, dict):
-        raise ValueError("Native typed raw accounting proof is missing")
+    samples = profile.get("unchangedSyncSamples")
+    if (not isinstance(samples, list) or len(samples) != 20
+            or any(type(value) not in (int, float) or not math.isfinite(value) or value < 0 for value in samples)):
+        raise ValueError("Native scale lacks twenty actual unchanged sync samples")
+    actual_p95 = sorted(samples)[18]
+    if actual_p95 > 1.0 or profile["unchangedP95"] != actual_p95:
+        raise ValueError("Native scale P95 does not match the measured samples")
+    proof = profile["correctness"]
     before = proof.get("rawAccountingDigestBefore")
     if not isinstance(before, str) or re.fullmatch(r"[0-9a-f]{64}", before) is None or proof.get("rawAccountingDigestAfter") != before:
         raise ValueError("Native typed raw accounting proof is missing or changed")

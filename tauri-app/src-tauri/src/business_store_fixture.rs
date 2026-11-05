@@ -296,7 +296,7 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
         !body.exists(),
         format!("refusing existing BodySpeed DB: {}", body.display())
     );
-    let old_sample = sample("fixture-legacy-body", now - 45.0, 48, 4.0);
+    let [old_sample, new_sample] = body_fixture_samples(now);
     seed_body(&body, &old_sample)?;
     let sources = [&p.quota, &p.shared_quota, &p.modeltrace, &body];
     let digests = sources
@@ -381,7 +381,6 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
             .any(|s| s.id == old_sample.id),
         "legacy BodySpeed sample missing"
     );
-    let new_sample = sample("fixture-active-body", now - 15.0, 72, 6.0);
     need!(
         store
             .ingest(std::slice::from_ref(&new_sample), now, 30)
@@ -394,10 +393,13 @@ pub fn run_fixture(input: &Path) -> Result<Value, String> {
     need!(
         samples.iter().any(|s| s.id == old_sample.id)
             && samples.iter().any(|s| s.id == new_sample.id)
-            && trend.iter().map(|p| p.sample_count).sum::<i64>() >= 2,
+            && samples.len() == 2 && trend.len() == 1
+            && trend[0].sample_count == 2 && trend[0].output_tokens == 120
+            && trend[0].duration_seconds == 10.0 && trend[0].tokens_per_second == 12.0,
         "BodySpeed detail or weighted trend missing"
     );
-    checks.push(json!({"name":"body-speed","status":"PASS","samples":samples.len(),"trendPoints":trend.len()}));
+    checks.push(json!({"name":"body-speed","status":"PASS","samples":samples.len(),"trendPoints":trend.len(),
+        "outputTokens":trend[0].output_tokens,"durationSeconds":trend[0].duration_seconds,"samplesInTrend":trend[0].sample_count}));
     // The later missing-container check renames A. Windows must not still
     // have the BodySpeed connection open when that check parks the file.
     drop(store);
@@ -955,6 +957,15 @@ fn run(id: &str, at: i64) -> modeltrace::Run {
         samples: vec![],
     }
 }
+// Both samples belong to the previous completed five-minute bucket. The
+// former now-45 / now-15 pair straddled a boundary during some real runs.
+fn body_fixture_samples(now: f64) -> [SpeedSample; 2] {
+    let completed_bucket = (now / 300.0).floor() * 300.0 - 300.0;
+    [sample("fixture-legacy-body", completed_bucket + 45.0, 48, 4.0),
+     sample("fixture-active-body", completed_bucket + 75.0, 72, 6.0)]
+}
+
+
 fn sample(id: &str, end: f64, tokens: u32, duration: f64) -> SpeedSample {
     SpeedSample {
         id: id.into(),

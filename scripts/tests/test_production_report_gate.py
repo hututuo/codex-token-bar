@@ -29,7 +29,8 @@ def good_report():
          "mainWriteRefused": True, "unknownPartitionNotRegistered": True},
         {"name": "quota", "status": "PASS", "activeRows": 1, "legacyFacts": [1, 2], "historyPoints": 720},
         {"name": "modeltrace", "status": "PASS", "runs": 2},
-        {"name": "body-speed", "status": "PASS", "samples": 2, "trendPoints": 1},
+        {"name": "body-speed", "status": "PASS", "samples": 2, "trendPoints": 1,
+         "outputTokens": 120, "durationSeconds": 10.0, "samplesInTrend": 2},
         {"name": "ledger-b", "status": "PASS", "rows": 1},
         {"name": "exact-import-stage-and-home-scope", "status": "PASS", "homeOneTokens": 175,
          "homeTwoTokens": 240, "stageObjectsBefore": 1, "stageObjectsAfter": 1},
@@ -42,7 +43,8 @@ def good_report():
                        "legacy": {"buildingKept": True, "changedEvidenceKept": True, "idempotent": True,
                                   "publishedTokens": 134, "rollback": True}}},
         {"name": "legacy-backfill-indexed-reconciliation", "status": "PASS", "preservedEventIds": True,
-         "legacyRows": 4096, "legacyCountCalls": 4096, "tokensAfterReplay": 20480},
+         "legacyRows": 4096, "legacyCountCalls": 4096, "tokensAfterReplay": 20480,
+         "rawLookupMaxVmSteps": 18, "identityCountMaxVmSteps": 21, "compactionIdentityMaxVmSteps": 62},
         {"name": "pool-process-crash-recovery", "status": "PASS", "phases": [
             {"phase": phase, "forcedExit": 86, "resumes": [
                 {"status": "PASS", "phase": phase, "oldTokens": 123, "publishedTokens": 134,
@@ -135,6 +137,34 @@ class ProductionReportGateTests(unittest.TestCase):
                 check(report, "held-owner-lookup")[field] = value
                 with self.subTest(field=field, value=value), self.assertRaises(ValueError):
                     self.admit(report)
+
+    def test_existing_query_work_budgets_and_core_witnesses_are_required(self):
+        for field in ("rawLookupMaxVmSteps", "identityCountMaxVmSteps", "compactionIdentityMaxVmSteps"):
+            for value in (None, 0, -1, True, 18.0, 513):
+                report = good_report()
+                check(report, "legacy-backfill-indexed-reconciliation")[field] = value
+                with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                    self.admit(report)
+        for name, field, value in (
+            ("published-recovery-reads", "catalogParserCalled", True),
+            ("published-recovery-reads", "catalogActionsVerified", True),
+            ("published-recovery-reads", "publishedCatalogEntries", 0),
+            ("quota", "historyPoints", 0), ("rerun-and-fail-closed", "storeCount", True),
+            ("concurrent-a-write-probe", "timeoutMilliseconds", 250.0),
+            ("concurrent-a-write-probe", "parallelProbeRows", 4.0),
+            ("body-speed", "outputTokens", 119),
+            ("body-speed", "durationSeconds", 9.0), ("body-speed", "samplesInTrend", 1),
+        ):
+            report = good_report()
+            check(report, name)[field] = value
+            with self.subTest(name=name, field=field), self.assertRaises(ValueError):
+                self.admit(report)
+        for index in range(len(PHASES)):
+            report = good_report()
+            first = check(report, "pool-process-crash-recovery")["phases"][index]["resumes"][0]
+            first["alreadyRecovered"] = not first["alreadyRecovered"]
+            with self.subTest(phase=PHASES[index]), self.assertRaises(ValueError):
+                self.admit(report)
 
     def test_malformed_report_and_unexpected_scale_are_rejected(self):
         for report in (None, [], {}, {"status": "PASS", "checks": []},
