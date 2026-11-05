@@ -7,19 +7,21 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const DETECTION_CACHE_TTL: Duration = Duration::from_secs(60);
-const CLIENTS: [&str; 5] = [
+const CLIENTS: [&str; 6] = [
     "claudeCode",
     "claudeDesktop",
     "deepseek",
     "gemini",
     "opencode",
+    "antigravity",
 ];
-const QUOTA_CLIENTS: [&str; 5] = [
+const QUOTA_CLIENTS: [&str; 6] = [
     "claudeCode",
     "claudeDesktop",
     "deepseek",
     "gemini",
     "opencode",
+    "antigravity",
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -213,6 +215,7 @@ fn detect_clients_from(inputs: &DetectionInputs) -> Vec<ProductDetection> {
         ("deepseek", "dsh"),
         ("gemini", "gemini"),
         ("opencode", "opencode"),
+        ("antigravity", "antigravity"),
     ] {
         if inputs
             .path_directories
@@ -292,6 +295,9 @@ fn system_detection_inputs() -> DetectionInputs {
         "存在 Gemini CLI 缓存会话目录".into(),
     ));
 
+    for store in ["antigravity-cli", "antigravity", "antigravity-ide"] {
+        inputs.data_roots.push(("antigravity".into(), home.join(".gemini").join(store).join("conversations"), "存在 Antigravity 本地会话数据库目录".into()));
+    }
     let opencode_root = env_path("OPENCODE_DATA_DIR").unwrap_or_else(|| {
         env_path("XDG_DATA_HOME")
             .unwrap_or_else(|| home.join(".local").join("share"))
@@ -312,6 +318,7 @@ fn system_detection_inputs() -> DetectionInputs {
                 ("deepseek", "DeepSeek.app", "检测到 DeepSeek 应用"),
                 ("gemini", "Gemini.app", "检测到 Gemini 应用"),
                 ("opencode", "OpenCode.app", "检测到 OpenCode 应用"),
+                ("antigravity", "Antigravity.app", "检测到 Antigravity 应用"),
             ] {
                 inputs
                     .applications

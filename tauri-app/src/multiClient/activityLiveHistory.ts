@@ -4,7 +4,7 @@ export interface ActivityLivePoint { time:number; rate:number; modelRates:Activi
 export interface ActivityLiveSeries { client:string; points:ActivityLivePoint[] }
 export const ACTIVITY_LIVE_SECONDS=180;
 export const MAX_ACTIVITY_LIVE_POINTS=2048;
-const clients=['codex','claudeCode','claudeDesktop','deepseek','gemini','opencode'];
+const clients=['codex','claudeCode','claudeDesktop','deepseek','gemini','opencode','antigravity'];
 /** Bounded display-only memory. No storage, commands, timers, or database access. */
 export class ActivityLiveHistory {
   private rows=new Map<string,ActivityLivePoint[]>();

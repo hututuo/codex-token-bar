@@ -10,7 +10,7 @@ import {Window} from "happy-dom";
 test("new clients default to no collection and no visible surfaces", async () => {
   await withSsrModules(async load => {
     const { defaultClientPreferences } = await load("/src/multiClient/MultiClientUsage.tsx");
-    assert.deepEqual(defaultClientPreferences.map(p => p.client), ["claudeCode", "claudeDesktop", "deepseek", "gemini", "opencode"]);
+    assert.deepEqual(defaultClientPreferences.map(p => p.client), ["claudeCode", "claudeDesktop", "deepseek", "gemini", "opencode", "antigravity"]);
     assert.ok(defaultClientPreferences.every(p => !p.enabled && !p.showSidebar && !p.showMenuBar));
   });
 });

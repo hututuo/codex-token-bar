@@ -133,7 +133,7 @@ function RailSurface() {
   const showsFiveHour = hasFiveHourQuota(data.snapshot.fiveHourAvailability, data.snapshot.fiveHourRemainingPercent);
   const { items: selectedQuotaItems, catalog: selectedQuotaCatalog } = useClientQuotaItems(data.quota.quota);
   const currentScope = useClientScope();
-  const supportsLocalActivity = currentScope.allowed.some(c => ["codex", "claudeCode", "claudeDesktop"].includes(c));
+  const supportsLocalActivity = currentScope.allowed.some(c => ["codex", "claudeCode", "claudeDesktop", "antigravity"].includes(c));
   const compactHeight = fixedSidebarRailLayout(compactSidebarIDs(visibleSidebarItems(sidebar.layout, selectedQuotaItems, supportsLocalActivity, "compact"), selectedQuotaItems).length, 4096, visibleSidebarItems(sidebar.layout, selectedQuotaItems, supportsLocalActivity, "compact").filter(sidebarUsesCompactDot).length).height;
   const heightBudget = useRef(createSidebarHeightBudget());
   const [expandedHeight, setExpandedHeight] = useState<number>();
@@ -357,8 +357,8 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
   const scopeHasCodex = allowedClients.includes("codex");
   const local = useClaudeLocalRuntime(allowedClients, liveRateEnabled);
   const localUsage = useMultiClientUsage();
-  const hasClaude = allowedClients.some(c => ["claudeCode", "claudeDesktop"].includes(c));
-  const taskClaudeClients = allowedClients.filter(c => ["claudeCode", "claudeDesktop"].includes(c) && local.configuredClients.some(client=>client===c));
+  const hasClaude = allowedClients.some(c => ["claudeCode", "claudeDesktop", "antigravity"].includes(c));
+  const taskClaudeClients = allowedClients.filter(c => ["claudeCode", "claudeDesktop", "antigravity"].includes(c) && local.configuredClients.some(client=>client===c));
   const speedMode = useActivitySpeedMode();
   const palette = useSpeedDisplayPreferences();
   const rates = selectedActivityRates(data.snapshot.modelRates??[],local.modelRates,allowedClients,speedMode,data.snapshot.tokensPerSecond);
@@ -390,7 +390,7 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
   const models = useMemo(() => floatingTodayModelUsageItems([
     ...(scopeHasCodex ? data.snapshot.todayModelBreakdowns ?? [] : []),
     ...(localUsage.snapshot.todaySummaries ?? []).filter(r => allowedClients.includes(r.client)).map(r => ({model:r.model, breakdown:{inputTokens:r.inputTokens,cachedInputTokens:r.cacheReadTokens ?? 0,outputTokens:r.outputTokens,reasoningOutputTokens:r.reasoningTokens ?? 0,totalTokens:r.inputTokens+r.outputTokens,calls:r.requests}}))
-  ], "gpt56Sol", { showPlaceholders: false, mergeAutoReview: false }).filter(item => item.share > 0), [data.snapshot.todayModelBreakdowns, localUsage.snapshot.todaySummaries, scopeHasCodex, allowedClients.join("|")]);
+  ], "gpt56Sol", { showPlaceholders: false, mergeAutoReview: false }).filter(item => item.share > 0), [data.snapshot.todayModelBreakdowns, localUsage.snapshot.todaySummaries, scopeHasCodex, allowedClients.join("|"), palette.colors]);
   const modelTitle = models.length ? `今日模型 Token 占比：${models.map(item => `${item.label} ${(item.share * 100).toFixed(1)}%`).join("，")}` : "今日模型占比待读取";
 
   return <>
@@ -465,7 +465,7 @@ function Value({ value }: { value: string }) {
 function SidebarSettingsCompactPreview({running,...props}: Omit<ComponentProps<typeof SidebarCompactBars>,"taskMeter"> & {running:SidebarData["runningThreads"]}) {
   const {allowed} = useClientScope();
   const runtime = useClaudeLocalRuntime(allowed);
-  const configured = (client: string) => ["claudeCode","claudeDesktop"].includes(client) && runtime.configuredClients.some(value=>value===client);
+  const configured = (client: string) => ["claudeCode","claudeDesktop","antigravity"].includes(client) && runtime.configuredClients.some(value=>value===client);
   const taskMeter = sidebarTaskMeterForSources(running,allowed.includes("codex"),
     !!runtime.capturedAt && allowed.some(client=>configured(client) && runtime.sourceAvailable[client]),
     runtime.mainAgents.filter(agent=>configured(agent.client)),runtime.subagents.filter(agent=>configured(agent.client))).meter;
@@ -509,7 +509,7 @@ function DetailSurface() {
       <nav><button aria-selected={value.state.tab === "quota" && value.state.section !== "speeds"} onClick={() => action({ type: "open", tab: "quota" })}>额度概览</button><button aria-selected={value.state.tab === "quota" && value.state.section === "speeds"} onClick={() => action({ type: "open", tab: "quota", section: "speeds" })}>测速</button><button aria-selected={value.state.tab === "running"} onClick={() => action({ type: "open", tab: "running" })}>任务</button><button aria-selected={value.state.tab === "radar"} onClick={() => action({ type: "open", tab: "radar" })}>雷达</button><button aria-selected={value.state.tab === "credits"} onClick={() => action({ type: "open", tab: "credits" })}>重置卡</button><button aria-selected={value.state.tab === "modeltrace"} onClick={() => action({ type: "open", tab: "modeltrace" })}>模型检测</button><button className="qs-settings-tab" aria-label="侧栏设置" title="侧栏设置" aria-selected={value.state.tab === "settings"} onClick={() => action({ type: "open", tab: "settings" })}><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M4 6h16M4 12h16M4 18h16M8 3v6M16 9v6M10 15v6"/></svg></button></nav>
       {sidebar.error && <p className="qs-warning" role="alert">{sidebar.error} <button disabled={sidebar.pending} onClick={sidebar.retry}>重试读取</button></p>}
       <div className="qs-detail-content">{value.state.tab === "settings" ? <SidebarModuleSettings layout={sidebar.layout} catalog={settingsCatalog} selection={settingsSelection}
-        hasCodex={clientScope.allowed.some(c => ["codex", "claudeCode", "claudeDesktop"].includes(c))} disabled={!sidebar.ready || sidebar.pending}
+        hasCodex={clientScope.allowed.some(c => ["codex", "claudeCode", "claudeDesktop", "antigravity"].includes(c))} disabled={!sidebar.ready || sidebar.pending}
         onLayout={next => void sidebar.save(next)} onSelection={saveQuotaSelection} onHighlight={highlightSetting} onDragState={settingsDrag}
         compactPreview={<SidebarSettingsCompactPreview items={settingsItems} quotas={settingsQuotas} selection={settingsSelection}
           ratePercent={sidebarRatePercent(value.data.snapshot, true, DEFAULT_TOKEN_RATE_FULL_SCALE)}

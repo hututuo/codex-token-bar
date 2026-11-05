@@ -1,5 +1,9 @@
 {
   "additions": {
+    "macos/Sources/AgentSpeedCore/Antigravity/AntigravityUsageRead.swift": {
+      "reason": "Token Bar local embedding API for a read-only single-conversation ledger import using the pinned Antigravity parser; no monitor, reporting, source mutation, or metric changes.",
+      "sha256": "ceba0b8d89d244683e0ba5eaa4e78ba39c4b0e44c512fdbf0321c96c2d05bca4"
+    },
     "macos/Sources/AgentSpeedCore/Reporting/ReportWebSocketConfiguration.swift": {
       "reason": "Token Bar local strict Draft-1 WebSocket capability/limit parsing; upstream has no equivalent file, and HTTP remains the default.",
       "sha256": "e70e1feab52fcfe92a7baccbf46c30d2ba643acbb6af1dd222544ec4af7d8f1a"

@@ -20,6 +20,9 @@ use std::time::{Duration, Instant};
 use time::format_description::well_known::Rfc3339;
 use time::{Date, Duration as CalendarDuration, OffsetDateTime};
 
+#[path = "antigravity_usage.rs"]
+mod antigravity;
+
 const SCHEMA_VERSION: i64 = 2;
 const MAX_SCAN_DEPTH: usize = 6;
 const MAX_SCANNED_ENTRIES: usize = 200_000;
@@ -267,12 +270,13 @@ impl MultiClientScopedSummaryCache {
     }
 }
 
-const CLIENTS: [&str; 5] = [
+const CLIENTS: [&str; 6] = [
     "claudeCode",
     "claudeDesktop",
     "deepseek",
     "gemini",
     "opencode",
+    "antigravity",
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -523,7 +527,7 @@ struct OpenCodeDatabaseContinuation {
 }
 
 pub fn default_preferences() -> Vec<MultiClientUsagePreference> {
-    let colors = ["#D97757", "#D97757", "#4D6BFE", "#4796E4", "#B7B1B1"];
+    let colors = ["#D97757", "#D97757", "#4D6BFE", "#4796E4", "#B7B1B1", "#4285F4"];
     CLIENTS
         .iter()
         .enumerate()
@@ -577,6 +581,7 @@ pub fn configured_menu_bar_usage_lines(
                 "deepseek" => "DeepSeek",
                 "gemini" => "Gemini",
                 "opencode" => "OpenCode",
+                "antigravity" => "Antigravity",
                 _ => preference.client.as_str(),
             };
             Some(format!("{label}: {input} in · {output} out"))
@@ -1134,7 +1139,9 @@ fn refresh_multi_client_usage_at(
                     .is_some_and(|extension| {
                         matches!(extension.to_ascii_lowercase().as_str(), "db" | "sqlite")
                     });
-            let result = if is_database {
+            let result = if client == "antigravity" {
+                antigravity::scan(&mut connection, path).map(|notices| diagnostics.extend(notices))
+            } else if is_database {
                 scan_opencode(&mut connection, path).map(|notices| {
                     diagnostics.extend(
                         notices
@@ -1669,6 +1676,9 @@ fn source_roots(client: &str, override_path: Option<&str>) -> Vec<PathBuf> {
         return vec![expand_path(path)];
     }
     let home = app_paths::home_dir();
+    if client == "antigravity" {
+        return ["antigravity-cli", "antigravity", "antigravity-ide"].map(|store| home.join(".gemini").join(store)).to_vec();
+    }
     if client == "gemini" {
         let base = std::env::var_os("GEMINI_CLI_HOME")
             .filter(|value| !value.is_empty())
@@ -1722,6 +1732,7 @@ fn expand_path(path: &str) -> PathBuf {
 }
 
 fn enumerate_source_files(client: &str, root: &Path) -> Result<(Vec<PathBuf>, bool), String> {
+    if client == "antigravity" { return antigravity::discover(root); }
     if !root.exists() {
         return Ok((Vec::new(), false));
     }
@@ -3381,7 +3392,8 @@ fn upsert_event(transaction: &Transaction<'_>, event: &UsageEvent) -> rusqlite::
     let mut update_is_newer = true;
     if let Some(previous) = previous_payload.as_deref() {
         if let Ok(previous) = serde_json::from_str::<ClientUsageEventPayload>(previous) {
-            if previous.session_id == event.session_id {
+            if previous.session_id == event.session_id || event.client == "antigravity" {
+                if event.client == "antigravity" { projected.session_id = previous.session_id.clone(); }
                 projected.input_tokens = projected.input_tokens.max(previous.input_tokens);
                 projected.output_tokens = projected.output_tokens.max(previous.output_tokens);
                 projected.cache_read_tokens =
@@ -3398,7 +3410,9 @@ fn upsert_event(transaction: &Transaction<'_>, event: &UsageEvent) -> rusqlite::
                 update_is_newer = event.timestamp_ms as f64 >= previous.timestamp;
                 projected.reasoning_tokens =
                     max_option(projected.reasoning_tokens, previous.reasoning_tokens);
-                if previous.timestamp >= projected_timestamp_ms && previous.model != "unknown" {
+                if (previous.timestamp > projected_timestamp_ms
+                    || (previous.timestamp == projected_timestamp_ms && (event.client != "antigravity" || event.model == "unknown")))
+                    && previous.model != "unknown" {
                     projected.model = previous.model;
                 }
                 projected_timestamp_ms = projected_timestamp_ms.max(previous.timestamp);
@@ -4126,6 +4140,7 @@ fn read_scoped_api_price_aggregates(
             timestamp,
             cache_write_ttl_pair,
         ) = row.map_err(|error| error.to_string())?;
+        let pricing_model = if client == "antigravity" { antigravity::price_model(&model) } else { model.clone() };
         totals
             .entry(MultiClientPriceModelKey {
                 client,
@@ -4133,7 +4148,7 @@ fn read_scoped_api_price_aggregates(
             })
             .or_default()
             .add(api_cost_micro_usd_at(
-                &model,
+                &pricing_model,
                 input,
                 output,
                 cache_read,
@@ -4238,12 +4253,13 @@ fn read_cached_api_price_aggregates(
             timestamp,
             cache_write_ttl_pair,
         ) = row.map_err(|error| error.to_string())?;
+        let pricing_model = if client == "antigravity" { antigravity::price_model(&model) } else { model.clone() };
         let key = MultiClientPriceModelKey {
             client,
             model: model.clone(),
         };
         totals.entry(key).or_default().add(api_cost_micro_usd_at(
-            &model,
+            &pricing_model,
             input,
             output,
             cache_read,
@@ -4740,7 +4756,7 @@ mod tests {
             .iter()
             .all(|preference| !preference.enabled));
         assert!(database.exists() == false);
-        assert_eq!(snapshot.quotas.len(), 5);
+        assert_eq!(snapshot.quotas.len(), 6);
     }
 
     #[test]

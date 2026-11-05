@@ -201,7 +201,7 @@ struct QuotaSidebarRail: View {
     private var taskClients: Set<String> { allowedClients.filter { id in
         id == "codex" || clients.preferences.contains { $0.client.rawValue == id && $0.enabled }
     } }
-    private var runningSummary: RunningThreadSummary { ClientLocalRuntimePresentation.running(codex: tasks.runningThreadSummary, claude: localLive.running, allowed: taskClients) }
+    private var runningSummary: RunningThreadSummary { ClientLocalRuntimePresentation.running(codex: tasks.runningThreadSummary, claude: localLive.running, allowed: taskClients, antigravity: upstreamActivity.antigravityTasks(allowed: taskClients)) }
     private var selectedModelRows: [ModelTokenBreakdown] { ClientLocalRuntimePresentation.models(codex: store.todayModelBreakdowns, clients: clients.todaySummaries, allowed: allowedClients) }
     private var availableQuotaItems: [ClientQuotaItem] {
         if let quotaItemsOverride { return quotaItemsOverride }
@@ -216,7 +216,7 @@ struct QuotaSidebarRail: View {
     private var bodySpeedDeadlineKey: String { (monitor.sidebarBodyMedianSource ?? "") + monitor.latestModelSpeeds30m.map { "\($0.model):\($0.lastMeasuredAt ?? 0):\($0.tokensPerSecond)" }.joined(separator: "|") }
     private var sidebarItems: [QuotaSidebarItem] {
         controller.sidebarLayout.arranged(availableQuotaClients: availableQuotaItems.map(\.client))
-            .filter { ((supportsCodex && !recentBodySpeeds.isEmpty) || $0 != .tps) && (supportsCodex || localLive.enabled || !$0.requiresCodexLiveData) }
+            .filter { ((supportsCodex && !recentBodySpeeds.isEmpty) || $0 != .tps) && (supportsCodex || localLive.enabled || allowedClients.contains("antigravity") || !$0.requiresCodexLiveData) }
     }
     private var compactItems: [QuotaSidebarItem] { sidebarItems.filter { controller.sidebarLayout.isVisible($0, in: .compact) } }
     private var expandedItems: [QuotaSidebarItem] { sidebarItems.filter { controller.sidebarLayout.isVisible($0, in: .expanded) } }
@@ -419,6 +419,10 @@ struct QuotaSidebarRail: View {
         .onChange(of: recentBodySpeeds.map(\.model)) { _, _ in updateCompactLayout() }
         .onChange(of: selectedModelRows, initial: true) { _, rows in
             shares = FloatingTodayModelUsagePresentation.items(from: rows,
+                fallbackModel: .gpt56Sol, mergeAutoReview: false).filter { $0.share > 0 }
+        }
+        .onChange(of: speedPalette.colors) { _, _ in
+            shares = FloatingTodayModelUsagePresentation.items(from: selectedModelRows,
                 fallbackModel: .gpt56Sol, mergeAutoReview: false).filter { $0.share > 0 }
         }
         .onChange(of: quotaItems, initial: true) { _, _ in updateCompactLayout() }
@@ -698,7 +702,8 @@ struct QuotaSidebarDetailView: View {
     }
     private var selectedRunning: RunningThreadSummary {
         ClientLocalRuntimePresentation.running(codex: tasks.runningThreadSummary,
-            claude: claudeRuntime.projection(allowed: taskClients).running, allowed: taskClients)
+            claude: claudeRuntime.projection(allowed: taskClients).running, allowed: taskClients,
+            antigravity: upstreamActivity.antigravityTasks(allowed: taskClients))
     }
     var body: some View {
         // Capture one projection for every quota, usage and running field in
@@ -997,7 +1002,8 @@ struct QuotaSidebarDetailView: View {
         VStack(alignment: .leading, spacing: 14) {
             sectionTitle("运行中的任务", subtitle: "主任务与子代理")
             if let issue = ClientLocalRuntimePresentation.taskSourceIssue(codex: tasks.runningThreadSummary,
-                claude: claudeRuntime.projection(allowed: taskClients).running, allowed: taskClients) {
+                claude: claudeRuntime.projection(allowed: taskClients).running, allowed: taskClients,
+                antigravity: upstreamActivity.antigravityTasks(allowed: taskClients)) {
                 Text("来源状态：\(issue)；合计仅包含已读到的任务")
                     .font(.system(size: 10)).foregroundStyle(.white.opacity(0.7))
             }

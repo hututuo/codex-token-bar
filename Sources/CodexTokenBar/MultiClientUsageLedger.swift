@@ -198,7 +198,9 @@ final class MultiClientUsageLedger: @unchecked Sendable {
                 var payload = originalPayload
                 let key: [SQLiteBinding] = [.text(event.client.rawValue), .text(event.eventID)]
                 let previous = try connection.readRows("SELECT payload FROM client_usage_events WHERE client=? AND event_id=?", bindings: key) { $0.text(0) }.first ?? nil
-                if let previous, let old = try? Self.decode(previous), old.sessionID == event.sessionID {
+                if let previous, let old = try? Self.decode(previous), old.sessionID == event.sessionID || event.client == .antigravity {
+                    // A response copied into another store/fork keeps its first ledger owner.
+                    if event.client == .antigravity { event.sessionID = old.sessionID }
                     event = old.mergingUpdate(event)
                     payload = String(decoding: try encoder.encode(event), as: UTF8.self)
                 }
@@ -556,7 +558,7 @@ final class MultiClientUsageLedger: @unchecked Sendable {
             let model = row.text(1) ?? "unknown"
             let key = ClientPriceKey(client: client.rawValue, model: model)
             let cost = Self.apiCostMicroUSD(
-                model: model,
+                model: client == .antigravity ? AntigravityUsageSource.priceModel(for: model) : model,
                 input: row.int64(2) ?? 0,
                 output: row.int64(3) ?? 0,
                 cacheRead: row.int64(4),

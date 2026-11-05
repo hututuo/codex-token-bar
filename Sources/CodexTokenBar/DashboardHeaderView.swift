@@ -1238,6 +1238,7 @@ struct DashboardModelCostRow: View {
             }
             if scope == .lifetime {
                 HStack {
+                    Text("双击模型修改颜色 · 全局同步")
                     Spacer()
                     ClientColorSettings()
                 }.font(.system(size: 10)).foregroundStyle(.secondary)

@@ -25,7 +25,8 @@ enum UsageClientDetection {
             (.claudeDesktop, [applications.appendingPathComponent("Claude.app"), home.appendingPathComponent("Applications/Claude.app"), home.appendingPathComponent("Library/Application Support/Claude")], ""),
             (.deepseek, [root("DSH_HOME", ".dsh").appendingPathComponent("sessions")], "dsh"),
             (.gemini, [root("GEMINI_CLI_HOME", "").appendingPathComponent(".gemini/tmp"), root("GEMINI_CLI_HOME", "").appendingPathComponent(".cache/.gemini/tmp")], "gemini"),
-            (.opencode, [root("OPENCODE_DATA_DIR", ".local/share/opencode"), root("XDG_DATA_HOME", ".local/share").appendingPathComponent("opencode")], "opencode")
+            (.opencode, [root("OPENCODE_DATA_DIR", ".local/share/opencode"), root("XDG_DATA_HOME", ".local/share").appendingPathComponent("opencode")], "opencode"),
+            (.antigravity, AntigravityUsageSource.roots(home: home) + [applications.appendingPathComponent("Antigravity.app")], "antigravity")
         ]
         return roots.compactMap { client, paths, command in
             if paths.contains(where: { fm.fileExists(atPath: $0.path) }) {

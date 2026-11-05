@@ -181,6 +181,7 @@ enum MultiClientUsageParsers {
 
     private static func parseRoot(_ root: Any, client: UsageClient, sessionHint: String) -> [ClientUsageEvent] {
         switch client {
+        case .antigravity: return [] // Conversation databases use AntigravityUsageSource.
         case .claudeCode, .claudeDesktop:
             return objects(in: root).compactMap { claudeEvent($0, client: client, sessionHint: sessionHint) }
         case .deepseek:

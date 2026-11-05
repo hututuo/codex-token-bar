@@ -9,6 +9,7 @@ struct ActivitySourceConfiguration: Equatable, Sendable {
     var geminiRoot: URL
     var opencodeRoot: URL
     var useDefaultGeminiRoots = true
+    var antigravityRoot: URL? = nil
 
     static func make(codexEnabled: Bool, codexHome: URL?, preferences: [MultiClientUsagePreference],
                      home: URL = FileManager.default.homeDirectoryForCurrentUser,
@@ -34,6 +35,7 @@ struct ActivitySourceConfiguration: Equatable, Sendable {
             case .deepseek: value.deepseekRoot = root
             case .gemini: value.geminiRoot = root; value.useDefaultGeminiRoots = false
             case .opencode: value.opencodeRoot = root
+            case .antigravity: value.antigravityRoot = root
             default: break
             }
         }
@@ -45,6 +47,7 @@ struct ActivitySourceConfiguration: Equatable, Sendable {
         case "deepseek": .deepseek
         case "gemini": .gemini
         case "opencode": .opencode
+        case "antigravity": .antigravity
         default: nil // Claude remains in the separately constrained local runtime.
         }
     }
@@ -54,12 +57,13 @@ struct ActivitySourceConfiguration: Equatable, Sendable {
         case .deepseek: "deepseek"
         case .gemini: "gemini"
         case .opencode: "opencode"
+        case .antigravity: "antigravity"
         default: nil
         }
     }
     var monitorConfiguration: MonitorConfiguration {
         .init(enabledSources: sources, codexRoot: codexRoot, dshRoot: deepseekRoot,
-              opencodeRoot: opencodeRoot, geminiRoot: useDefaultGeminiRoots ? nil : geminiRoot)
+              opencodeRoot: opencodeRoot, geminiRoot: useDefaultGeminiRoots ? nil : geminiRoot, antigravityRoot: antigravityRoot)
     }
     func identity(for source: SourceKind) -> String? {
         let root: URL
@@ -68,6 +72,7 @@ struct ActivitySourceConfiguration: Equatable, Sendable {
         case .deepseek: root = deepseekRoot
         case .gemini: root = geminiRoot
         case .opencode: root = opencodeRoot
+        case .antigravity: root = antigravityRoot ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".gemini")
         default: return nil
         }
         return ActivitySpeedSourceIdentity.root(root)

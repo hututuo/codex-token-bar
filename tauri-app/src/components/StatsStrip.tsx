@@ -276,7 +276,7 @@ function StatsStripView({
               </div>)}
             </div>
           )}
-          {modelCostScope === "lifetime" && <div className="model-color-footer"><ClientColorSettings/></div>}
+          {modelCostScope === "lifetime" && <div className="model-color-footer"><span>双击模型修改颜色 · 全局同步</span><ClientColorSettings/></div>}
           <ModelColorEditor target={editingColor} onClose={() => setEditingColor(null)}/>
         </div>
       </section>

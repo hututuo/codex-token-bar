@@ -34,6 +34,8 @@ enum MultiClientUsageDiscovery {
     /// Returns local transcript files plus an explicit signal whenever a discovery or classification limit was hit.
     static func discover(client: UsageClient, home: URL, environment: [String: String]) -> Result {
         switch client {
+        case .antigravity:
+            return AntigravityUsageSource.discover(home: home)
         case .claudeCode, .claudeDesktop:
             let config = environment["CLAUDE_CONFIG_DIR"].flatMap(nonEmptyPath)
                 .map { URL(fileURLWithPath: $0, isDirectory: true) }
@@ -265,6 +267,7 @@ enum MultiClientUsageDiscovery {
 
     private static func shouldDescend(client: UsageClient, name: String, depth: Int) -> Bool {
         switch client {
+        case .antigravity: return false
         case .claudeCode, .claudeDesktop, .deepseek:
             return depth < maximumDepth
         case .gemini:
@@ -280,6 +283,7 @@ enum MultiClientUsageDiscovery {
 
     private static func matches(client: UsageClient, name: String, components: [String]) -> Bool {
         switch client {
+        case .antigravity: return components.count == 1 && AntigravityUsageSource.isConversation(URL(fileURLWithPath: name))
         case .claudeCode, .claudeDesktop:
             return name.hasSuffix(".jsonl")
         case .deepseek:

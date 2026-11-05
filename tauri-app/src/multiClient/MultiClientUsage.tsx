@@ -4,9 +4,9 @@ import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { callCommandStrict } from "../api/command";
 import { isTauriRuntimeAvailable } from "../platform/runtime";
 
-export type UsageClient = "claudeCode" | "claudeDesktop" | "deepseek" | "gemini" | "opencode";
+export type UsageClient = "claudeCode" | "claudeDesktop" | "deepseek" | "gemini" | "opencode" | "antigravity";
 export const clientNames: Record<UsageClient, string> = {
-  claudeCode: "Claude CLI", claudeDesktop: "Claude Desktop", deepseek: "DeepSeek / DSH", gemini: "Gemini CLI", opencode: "OpenCode",
+  claudeCode: "Claude CLI", claudeDesktop: "Claude Desktop", deepseek: "DeepSeek / DSH", gemini: "Gemini CLI", opencode: "OpenCode", antigravity: "Antigravity",
 };
 export interface ClientPreference {
   client: UsageClient; enabled: boolean; showSidebar: boolean; showQuota?: boolean; showMenuBar: boolean; color: string; order: number; style: string; path: string;
@@ -17,7 +17,7 @@ export interface Summary {
 }
 export interface Snapshot { detections?: ClientDetection[]; trendBuckets?: ClientTrendBucket[]; dailyBuckets?: ClientTrendBucket[]; quotas?: ClientQuotaReading[]; preferences: ClientPreference[]; summaries: Summary[]; todaySummaries?: Summary[]; sevenDaySummaries?: Summary[]; diagnostics: string[]; updatedAt: string | null; }
 export const defaultClientPreferences: ClientPreference[] = (Object.keys(clientNames) as UsageClient[]).map((client, order) => ({
-  client, enabled: false, showSidebar: false, showQuota: false, showMenuBar: false, color: { claudeCode: "#D97757", claudeDesktop: "#D97757", deepseek: "#4D6BFE", gemini: "#4796E4", opencode: "#B7B1B1" }[client], order, style: "compact", path: "",
+  client, enabled: false, showSidebar: false, showQuota: false, showMenuBar: false, color: { claudeCode: "#D97757", claudeDesktop: "#D97757", deepseek: "#4D6BFE", gemini: "#4796E4", opencode: "#B7B1B1", antigravity: "#4285F4" }[client], order, style: "compact", path: "",
 }));
 function hasRuntime() { return typeof window !== "undefined" && isTauriRuntimeAvailable(); }
 const initial: Snapshot = { preferences: defaultClientPreferences, summaries: [], diagnostics: [], updatedAt: null };
@@ -154,6 +154,7 @@ export function MultiClientUsageSettings() {
       <input className="multi-client-path" aria-label={`${clientNames[preference.client]}日志路径`} defaultValue={preference.path} placeholder="自动发现；也可指定本地日志目录或文件"
         onBlur={e => { if (e.target.value !== preference.path) change(preference.client, { path: e.target.value }); }} />
       {preference.client === "claudeDesktop" && <p>仅支持本地 Code / Agent 会话；云端聊天未落地的用量无法读取。</p>}
+      {preference.client === "antigravity" && <p>自动读取 CLI、桌面和 IDE 的本地会话数据库；自选路径可填单个存储目录或 conversations 目录。</p>}
     </fieldset>)}
     <button onClick={()=>setShowCustom(value=>!value)}>{showCustom ? "只显示已发现的客户端" : "手动接入其他日志目录"}</button>
     <ClaudeLocalQuotaPanel />

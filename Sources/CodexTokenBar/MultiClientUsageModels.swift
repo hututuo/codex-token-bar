@@ -6,12 +6,13 @@ enum UsageClient: String, Codable, CaseIterable, Sendable {
     case deepseek
     case gemini
     case opencode
+    case antigravity
 
     /// These readers account for local transcript or database records. They do not query a provider account.
     var isSupported: Bool { true }
     var supportsLocalUsage: Bool { true }
     var supportsCloudUsage: Bool { false }
-    var usesSQLite: Bool { self == .opencode }
+    var usesSQLite: Bool { self == .opencode || self == .antigravity }
 }
 
 /// A normalized, locally recorded usage event. Reasoning tokens are a subset of output tokens.

@@ -92,12 +92,12 @@ function subscribe(listener: () => void) {
 export function useClaudeLocalRuntime(allowed: readonly string[], monitoringEnabled = true, includeAgentSpeedCodex = false) {
   const { snapshot } = useMultiClientUsage();
   const mode = useActivitySpeedMode();
-  const enabled = monitoringEnabled && (includeAgentSpeedCodex || mode === "agentSpeed" || snapshot.preferences.some(p => p.enabled && ["claudeCode", "claudeDesktop", "deepseek", "gemini", "opencode"].includes(p.client)));
+  const enabled = monitoringEnabled && (includeAgentSpeedCodex || mode === "agentSpeed" || snapshot.preferences.some(p => p.enabled && ["claudeCode", "claudeDesktop", "deepseek", "gemini", "opencode", "antigravity"].includes(p.client)));
   const subscribeWhenEnabled = useCallback((listener: () => void) => enabled ? subscribe(listener) : () => {}, [enabled]);
   const value = useSyncExternalStore(subscribeWhenEnabled, () => cached, () => empty);
-  const selected = new Set(allowed.filter(c => ["claudeCode", "claudeDesktop", "deepseek", "gemini", "opencode"].includes(c) || (c === "codex" && (includeAgentSpeedCodex || mode === "agentSpeed"))));
+  const selected = new Set(allowed.filter(c => ["claudeCode", "claudeDesktop", "deepseek", "gemini", "opencode", "antigravity"].includes(c) || (c === "codex" && (includeAgentSpeedCodex || mode === "agentSpeed"))));
   const active = (agent: ClaudeRuntimeAgent) => selected.has(agent.client) && !agent.displayStopped && ["generating", "tools"].includes(agent.phase)
-    && Date.parse(agent.lastActivity) >= Date.now() - 300000;
+    && Date.parse(agent.lastActivity) >= Date.now() - 300000 && Date.parse(agent.lastActivity) <= Date.now() + 5000;
   const sourceSelectionKey = JSON.stringify(snapshot.preferences.map(p=>[p.client,p.enabled,p.path]));
   useEffect(()=>{
     activityLiveHistory.selectSource(sourceSelectionKey);
@@ -115,7 +115,7 @@ export function useClaudeLocalRuntime(allowed: readonly string[], monitoringEnab
     // calibration to a filtered client view.
     estimatedShareForSelection,
     modelRates: enabled ? (mode === "bar" ? barModelRates : value.modelRates).filter(r => selected.has(r.client)) : [],
-    mainAgents: enabled ? value.mainAgents.filter(a => ["claudeCode", "claudeDesktop"].includes(a.client) && active(a)) : [], subagents: enabled ? value.subagents.filter(a => ["claudeCode", "claudeDesktop"].includes(a.client) && active(a)) : [],
+    mainAgents: enabled ? value.mainAgents.filter(a => ["claudeCode", "claudeDesktop", "antigravity"].includes(a.client) && active(a)) : [], subagents: enabled ? value.subagents.filter(a => ["claudeCode", "claudeDesktop", "antigravity"].includes(a.client) && active(a)) : [],
     rows: enabled ? [...recent.values()].filter(r => selected.has(r.client)).sort((a,b) => Date.parse(b.endedAt) - Date.parse(a.endedAt)) : [],
   };
 }
@@ -143,23 +143,26 @@ export function ClientActivitySpeedPanel({ allowed, sourceToken = null, compact 
 }
 export function ClaudeLocalTasks({ allowed }: { allowed: readonly string[] }) {
   const runtime = useClaudeLocalRuntime(allowed);
-  if (!allowed.some(c => ["claudeCode", "claudeDesktop"].includes(c))) return null;
+  const taskClients = allowed.filter(c => ["claudeCode", "claudeDesktop", "antigravity"].includes(c));
+  if (!taskClients.length) return null;
+  const title = taskClients.every(c=>c==="antigravity") ? "Antigravity" : taskClients.includes("antigravity") ? "本地任务" : "Claude";
   const ready = !!runtime.capturedAt && allowed.some(client =>
-    ["claudeCode", "claudeDesktop"].includes(client) && runtime.sourceAvailable[client]);
+    taskClients.includes(client) && runtime.sourceAvailable[client]);
   if (!ready) return <section style={{fontSize:12,paddingBlock:8}}>
-    <strong>Claude · 暂无任务数据</strong>
-    <p className="qs-muted">未读到当前本地活动记录，未计入任务合计；不会请求 Claude 接口。</p>
+    <strong>{title} · 暂无任务数据</strong>
+    <p className="qs-muted">未读到当前本地活动记录，未计入任务合计。</p>
   </section>;
-  return <ClaudeLocalTaskList mainAgents={runtime.mainAgents} subagents={runtime.subagents}/>;
+  return <ClaudeLocalTaskList mainAgents={runtime.mainAgents} subagents={runtime.subagents} title={title}/>;
 }
-export function ClaudeLocalTaskList({mainAgents,subagents}: {mainAgents: readonly ClaudeRuntimeAgent[]; subagents: readonly ClaudeRuntimeAgent[]}) {
+export function ClaudeLocalTaskList({mainAgents,subagents,title="本地任务"}: {mainAgents: readonly ClaudeRuntimeAgent[]; subagents: readonly ClaudeRuntimeAgent[]; title?:string}) {
+  const clientTitle=(client:string)=>client==="antigravity"?"Antigravity":"Claude";
   return <section style={{fontSize:12,paddingBlock:8,overflowWrap:'anywhere'}}>
-    <strong>Claude · {mainAgents.length} 主任务 · {subagents.length} 子 Agent</strong>
+    <strong>{title} · {mainAgents.length} 主任务 · {subagents.length} 子 Agent</strong>
     {mainAgents.map(agent => <div key={agent.id} style={{paddingBlock:6}}>
-      <strong>{agent.title || 'Claude 会话'}</strong> ·{' '}
+      <strong>{agent.title || clientTitle(agent.client)+' 会话'}</strong> ·{' '}
       <span style={{color:modelUsageColor(agent.model ?? "unknown")}}>{agent.model ?? "未知模型"}</span> · {agent.phase === "tools" ? "工具执行中" : "生成中"} · {agent.id.slice(-8)}
-      {subagents.filter(child => child.parentId === agent.id).map(child => <div key={child.id} style={{paddingLeft:12,paddingTop:4}}>↳ <strong>{child.title || 'Claude 子 Agent'}</strong> · {child.model ?? "未知模型"} · {child.phase === "tools" ? "工具执行中" : "生成中"} · {child.id.slice(-8)}</div>)}
+      {subagents.filter(child => child.parentId === agent.id).map(child => <div key={child.id} style={{paddingLeft:12,paddingTop:4}}>↳ <strong>{child.title || clientTitle(child.client)+' 子 Agent'}</strong> · <span style={{color:modelUsageColor(child.model ?? "unknown")}}>{child.model ?? "未知模型"}</span> · {child.phase === "tools" ? "工具执行中" : "生成中"} · {child.id.slice(-8)}</div>)}
     </div>)}
-    {subagents.filter(child => !mainAgents.some(main => main.id === child.parentId)).map(child => <p key={child.id}>子 Agent · <strong>{child.title || 'Claude 子 Agent'}</strong> · {child.model ?? "未知模型"} · {child.id.slice(-8)}</p>)}
+    {subagents.filter(child => !mainAgents.some(main => main.id === child.parentId)).map(child => <p key={child.id}>子 Agent · <strong>{child.title || clientTitle(child.client)+' 子 Agent'}</strong> · <span style={{color:modelUsageColor(child.model ?? "unknown")}}>{child.model ?? "未知模型"}</span> · {child.id.slice(-8)}</p>)}
   </section>;
 }

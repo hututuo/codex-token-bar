@@ -10,6 +10,7 @@ export const clientBrand: Record<string, string> = {
   gemini: "#4796E4",
   deepseek: "#4D6BFE",
   opencode: "#B7B1B1",
+  antigravity: "#4285F4",
 };
 // Match the existing Windows sidebar's 49px rate/task rings.
 export const clientSidebarMetrics = { ringSize: 49, capWidth: 4, capHeight: 2, capGap: 0 } as const;

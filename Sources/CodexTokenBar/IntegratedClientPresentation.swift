@@ -24,6 +24,7 @@ enum ClientBrand {
         case "gemini": "#4796E4"
         case "deepseek": "#4D6BFE"
         case "opencode": "#B7B1B1"
+        case "antigravity": "#4285F4"
         default: "#888888"
         }
     }

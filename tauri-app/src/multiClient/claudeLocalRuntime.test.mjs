@@ -63,6 +63,7 @@ test("compact sidebar omits generic placeholders and keeps the real bars and quo
     const { compactSidebarIDs, fixedSidebarRailLayout, sidebarUsesCompactDot } = await load("/src/quota-sidebar/sidebarLayoutPresentation.ts");
     const { clientBrand, defaultQuotaSelection } = await load("/src/multiClient/integratedClientModel.ts");
     const { SidebarCompactBars } = await load("/src/quota-sidebar/SidebarCompactBars.tsx");
+    const { sidebarTaskMeter } = await load("/src/quota-sidebar/SidebarTaskMeter.tsx");
     const items = ["modeltrace", "speed", "tps", "quota:claudeCode", "models", "tasks", "radar", "credits", "clientUsage"];
     const quotas = [
       { id: "claudeCode:7d", client: "claudeCode", window: "7d", remaining: 80 },
@@ -75,7 +76,7 @@ test("compact sidebar omits generic placeholders and keeps the real bars and quo
     const html = renderToStaticMarkup(React.createElement(SidebarCompactBars, {
       items, quotas, selection: defaultQuotaSelection, ratePercent: 50,
       models: [{ key: "claude-sonnet", share: 1, color: "#c08b28" }],
-      taskStatus: "ready", taskLabel: "运行任务：2 个，数据最新",
+      taskMeter: sidebarTaskMeter(1, 1, "ready", [{model:"claude-sonnet",count:2}]),
     }));
     for (const id of ["speed", "models", "tasks"]) assert.match(html, new RegExp(`data-sidebar-item="${id}"`));
     assert.deepEqual([...html.matchAll(/data-quota-marker-start="([^"]+)"/g)].map(match => match[1]), ["claudeCode:5h", "claudeCode:7d"]);

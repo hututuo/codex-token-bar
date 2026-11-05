@@ -67,6 +67,10 @@ final class AgentSpeedDisplayRuntime: ObservableObject {
             return Self.modelRates(snapshot: snapshot, source: source, now: Date())
         }
     }
+    func antigravityTasks(allowed: Set<String>) -> RunningThreadSummary {
+        guard allowed.contains("antigravity"), configuration?.sources.contains(.antigravity) == true else { return .unavailable }
+        return ClientLocalRuntimePresentation.antigravityRunning(snapshot)
+    }
     func hasCoverage(allowed: Set<String>) -> Bool {
         snapshot.sources.contains { item in
             item.enabled && item.available && configuration?.sources.contains(item.kind) == true && ActivitySourceConfiguration.client(for: item.kind).map(allowed.contains) == true
