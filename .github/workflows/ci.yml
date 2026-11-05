@@ -344,6 +344,12 @@ jobs:
               --require dashboard_range_keeps_overflow_as_an_error_and_rolls_back \
               --require dashboard_range_executes_through_the_bound_store_namespace \
               --require current_index_reopen_adds_bucket_index_without_changing_published_events \
+              --require prepared_aggregate_waiting_for_display_does_not_count_or_take_a_write_lock \
+              --require held_retention_lookup_observes_new_receipts_and_rejects_changed_root_and_owner \
+              --require held_retention_lookup_keeps_the_callers_snapshot_and_transaction \
+              --require repeated_catalog_ddl_reuses_only_exact_owner_independent_bodies \
+              --require owner_dependent_identifiers_literals_and_comments_bypass_contract_memo \
+              --require contract_memo_bounds_and_nonmatching_headers_keep_original_validation \
               --require missing_and_known_empty_legacy_candidates_use_the_held_pool_without_becoming_facts \
               --require user_tables_resembling_sqlite_internals_survive_import_and_export \
               --require foreign_dependencies_resembling_sqlite_internals_invalidate_proof \

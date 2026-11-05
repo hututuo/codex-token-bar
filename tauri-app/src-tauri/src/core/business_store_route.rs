@@ -1108,6 +1108,19 @@ pub(crate) fn preserves_legacy_exact_migration(path: &Path) -> Result<bool, Stri
     validate_legacy_exact_migration_receipt(&container, &store)
 }
 
+/// The caller owns an admitted connection and a read snapshot covering both
+/// the owner and receipt. Reuse SQLite's schema, never a prior owner decision.
+pub(crate) fn preserves_legacy_exact_migration_on(
+    connection: &Connection, path: &Path, expected_owner: &StoreSpec,
+) -> Result<bool, String> {
+    Container::validate_version_on(connection).map_err(|error| error.to_string())?;
+    let store = resolve_exact_store_spec_on(connection, path, false)?;
+    if &store != expected_owner {
+        return Err("迁移保留凭据与当前 Exact 连接所有者不匹配".into());
+    }
+    validate_legacy_exact_migration_receipt_on(connection, &store)
+}
+
 /// Registration alone is insufficient: a physical legacy candidate must not
 /// become a resumable A candidate simply because somebody opened its path.
 pub(crate) fn owns_exact_migration_artifact(path: &Path) -> Result<bool, String> {
@@ -1126,7 +1139,11 @@ pub(crate) fn exact_store_has_objects(path: &Path) -> Result<bool, String> {
 }
 
 fn validate_legacy_exact_migration_receipt(container: &Container, store: &StoreSpec) -> Result<bool, String> {
-    let raw: Option<String> = container.connection().query_row(
+    validate_legacy_exact_migration_receipt_on(container.connection(), store)
+}
+
+fn validate_legacy_exact_migration_receipt_on(connection: &Connection, store: &StoreSpec) -> Result<bool, String> {
+    let raw: Option<String> = connection.query_row(
         "SELECT value FROM tb_container_meta WHERE key=?1",
         [format!("{LEGACY_EXACT_MIGRATION_KEY}{}", store.id)], |r| r.get(0),
     ).optional().map_err(|e| e.to_string())?;

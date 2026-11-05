@@ -33,6 +33,10 @@ REQUIRED_CHECKS = {
             **dict.fromkeys(("idempotentCleanup", "publicationRollback", "readOnly", "typedTempAlias"), True),
             "legacy": {"buildingKept": True, "changedEvidenceKept": True, "idempotent": True,
                 "publishedTokens": 134, "rollback": True}},
+        "steadyRetention": {"calls": 3, "reopens": 0, "freshOpenControl": 1, "samePaths": True},
+        "lateRetention": {"repeatReopens": 0, "invalidManifestsRejected": 2,
+            **dict.fromkeys(("sameHandle", "isolatedPaths", "physicalEvidencePreserved",
+                "accountingPreserved", "noFabricatedSuccessReceipt"), True)},
     },
     "legacy-backfill-indexed-reconciliation": {"preservedEventIds": True, "legacyRows": 4096,
         "legacyCountCalls": 4096, "tokensAfterReplay": 20480},
@@ -87,6 +91,9 @@ def validate_production_report(result, scale_required):
         value = by_name[name].get(field)
         if type(value) is not int or value <= 0:
             raise ValueError(f"Production scenario lacks a positive count: {name}.{field}")
+    late_reopens = by_name["runtime-recovery-production-path"]["lateRetention"].get("coldReopens")
+    if type(late_reopens) is not int or late_reopens <= 0:
+        raise ValueError("Late physical manifest did not execute cold admission")
     reconciliation = by_name["legacy-backfill-indexed-reconciliation"]
     for field in ("rawLookupMaxVmSteps", "identityCountMaxVmSteps", "compactionIdentityMaxVmSteps"):
         value = reconciliation.get(field)

@@ -6,6 +6,8 @@ mod ledger;
 mod canonical;
 mod message_links;
 mod dashboard_buckets;
+#[cfg(test)]
+mod steady_refresh_tests;
 use dashboard_buckets::refresh_range as refresh_dashboard_5m_range;
 mod empty_sources;
 mod representations;
@@ -1374,6 +1376,7 @@ thread_local! {
     static MIGRATION_AVAILABLE_BYTES_OVERRIDE: Cell<Option<u64>> = const { Cell::new(None) };
     static PREPARATION_FACTS_COUNT: Cell<u64> = const { Cell::new(0) };
     static AGGREGATE_REBUILD_COUNT: Cell<u64> = const { Cell::new(0) };
+    static PUBLISHED_EVENT_COUNT_CALLS: Cell<u64> = const { Cell::new(0) };
 }
 #[cfg(test)]
 static FULL_SCAN_BYTES: AtomicU64 = AtomicU64::new(0);
@@ -3963,6 +3966,8 @@ impl ExactUsageIndex {
     }
 
     pub(super) fn published_event_count(&self) -> Result<u64, String> {
+        #[cfg(test)]
+        PUBLISHED_EVENT_COUNT_CALLS.with(|count| count.set(count.get() + 1));
         // COUNT over the joined UNION view also materializes every event.
         // Bind the published file identity before each count instead.
         let snapshot = self.connection.unchecked_transaction()
@@ -4210,12 +4215,6 @@ impl ExactUsageIndex {
             metadata_i64(&self.connection, "published_generation")?.unwrap_or(0);
         let aggregate_generation =
             metadata_i64(&self.connection, DASHBOARD_AGGREGATE_EXACT_GENERATION_KEY)?;
-        let aggregate_published_generation = metadata_i64(
-            &self.connection,
-            DASHBOARD_AGGREGATE_PUBLISHED_GENERATION_KEY,
-        )?;
-        let aggregate_settled_through =
-            metadata_i64(&self.connection, DASHBOARD_AGGREGATE_SETTLED_THROUGH_KEY)?;
         let pricing_revision =
             metadata_text(&self.connection, DASHBOARD_AGGREGATE_PRICING_REVISION_KEY)?;
         let projection_matches = stored_version == Some(DASHBOARD_AGGREGATE_SCHEMA_VERSION)
@@ -4225,13 +4224,10 @@ impl ExactUsageIndex {
                 &self.connection,
                 published_generation,
             )?;
-        if stored_version == Some(DASHBOARD_AGGREGATE_SCHEMA_VERSION)
-            && aggregate_generation == Some(published_generation)
-            && aggregate_published_generation == Some(published_generation)
-            && aggregate_settled_through.is_some()
-            && pricing_revision.as_deref() == Some(DASHBOARD_AGGREGATE_PRICING_REVISION)
-            && projection_matches
-        {
+        // Display publication owns its separate generation/settled watermark.
+        // A correct numeric projection needs no migration count or writer just
+        // because the dashboard has not published those markers yet.
+        if projection_matches {
             return Ok(());
         }
 
@@ -12313,6 +12309,21 @@ fn active_schema11_paths(index_path: &Path) -> Result<(PathBuf, PathBuf, PathBuf
     Ok(schema11_paths_for_namespace(index_path, isolated))
 }
 
+fn active_schema11_paths_on(connection: &Connection, index_path: &Path) -> Result<(PathBuf, PathBuf, PathBuf), String> {
+    #[cfg(not(test))]
+    {
+        let isolated = connection.preserves_legacy_exact_migration(index_path)?;
+        if !isolated && schema11_manifest_path(index_path).try_exists().map_err(|error| error.to_string())? {
+            // A newly discovered physical legacy manifest still needs the
+            // original proof/admission path. Absence is never cached.
+            return active_schema11_paths(index_path);
+        }
+        Ok(schema11_paths_for_namespace(index_path, isolated))
+    }
+    #[cfg(test)]
+    { let _ = connection; active_schema11_paths(index_path) }
+}
+
 fn schema11_paths_for_namespace(index_path: &Path, isolated: bool) -> (PathBuf, PathBuf, PathBuf) {
     let base = if isolated { sqlite_sidecar_path(index_path, ".container-v1") } else { index_path.to_path_buf() };
     (schema11_candidate_path(&base), schema11_rollback_path(&base), schema11_manifest_path(&base))
@@ -14695,7 +14706,7 @@ fn record_successful_migration_retention(connection: &Connection, index_path: &P
         .map(|v| serde_json::from_str(&v).map_err(|e| format!("无法读取迁移保留标识：{e}")))
         .transpose()?;
     if receipt.as_ref().is_some_and(|r| r["status"] == "succeeded") { return Ok(()); }
-    let (candidate_path, _, manifest_path) = active_schema11_paths(index_path)?;
+    let (candidate_path, _, manifest_path) = active_schema11_paths_on(connection, index_path)?;
     if manifest_path.exists() {
         let mut manifest = schema11_load_manifest(&manifest_path)?;
         if !matches!(manifest.phase, Schema11CandidatePhase::Switched | Schema11CandidatePhase::Retained)

@@ -39,6 +39,50 @@ fn schema_contract(prefix: &str, sql: &str) -> Result<[u8; 32]> {
     Ok(Sha256::digest(canonical.as_bytes()).into())
 }
 
+/// Short-lived memo for identical producer DDL inside one catalog snapshot.
+/// Only the generated quoted table name may vary; the remaining SQL is an
+/// exact byte key and must not contain this owner's prefix. A first occurrence
+/// still goes through the original identifier-aware canonicalizer.
+#[derive(Default)]
+struct SchemaContractMemo {
+    templates: Vec<(String, String, [u8; 32])>,
+}
+
+impl SchemaContractMemo {
+    fn contract(&mut self, prefix: &str, table: &str, sql: &str) -> Result<[u8; 32]> {
+        let generated_prefix = prefix.len() == 66
+            && prefix.starts_with('s')
+            && prefix.ends_with('_')
+            && prefix.as_bytes()[1..65].iter().all(|byte|
+                byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase());
+        let tail = if generated_prefix && sql.len() <= 32 * 1024 {
+            sql.strip_prefix("CREATE TABLE \"")
+                .and_then(|tail| tail.strip_prefix(prefix))
+                .and_then(|tail| tail.strip_prefix(table))
+                .and_then(|tail| tail.strip_prefix('"'))
+                .filter(|tail| !tail.contains(prefix))
+        } else {
+            None
+        };
+        if let Some(tail) = tail {
+            if let Some((_, _, contract)) = self.templates.iter()
+                .find(|(name, body, _)| name == table && body == tail)
+            {
+                return Ok(*contract);
+            }
+        }
+        let contract = schema_contract(prefix, sql)?;
+        // At most 512 KiB of SQL, released before leaving this catalog pass.
+        // Unusual or owner-dependent DDL always retains the original path.
+        if let Some(tail) = tail {
+            if self.templates.len() < 16 {
+                self.templates.push((table.to_owned(), tail.to_owned(), contract));
+            }
+        }
+        Ok(contract)
+    }
+}
+
 fn columns(raw: &Connection, name: &str) -> Result<Vec<Column>> {
     let mut statement = raw.prepare(&format!("PRAGMA main.table_xinfo({})", quote(name)))
         .map_err(|e| e.to_string())?;
@@ -80,6 +124,7 @@ fn objects(pool: &Pool, raw: &Connection, prefix: &str) -> Result<Vec<Object>> {
     // One bounded catalog pass avoids a sqlite_master scan for each of the
     // thousands of historical stages. Retain a fixed-size DDL digest, not SQL
     // text or facts. Other owners' unsupported SQL must not poison this owner.
+    let mut contracts = SchemaContractMemo::default();
     let mut catalog = HashMap::<String, Vec<Object>>::new();
     let mut selected = Vec::new();
     let mut bytes = 0usize;
@@ -107,7 +152,7 @@ fn objects(pool: &Pool, raw: &Connection, prefix: &str) -> Result<Vec<Object>> {
             let logical = &name[prefix.len()..];
             let contract = if kind == "table" && table == name && TABLES.iter().any(|(known, _, _)| *known == logical) {
                 let sql: Option<String> = row.get(3).map_err(|e| e.to_string())?;
-                sql.filter(|sql| sql.len() <= 1024 * 1024).and_then(|sql| schema_contract(owner, &sql).ok())
+                sql.filter(|sql| sql.len() <= 1024 * 1024).and_then(|sql| contracts.contract(owner, logical, &sql).ok())
             } else { None };
             record(owner, Object { name: logical.to_owned(), kind: kind.clone(), contract });
         }
@@ -167,4 +212,71 @@ pub(super) fn presence(pool: &Pool, path: &Path) -> Result<Option<bool>> {
         // path. Only a complete, empty producer may be skipped as absent.
         Ok(Some(matched == 1))
     })
+}
+
+#[cfg(test)]
+mod contract_memo_tests {
+    use super::*;
+
+    fn owner(byte: char) -> String {
+        format!("s{}_", byte.to_string().repeat(64))
+    }
+
+    #[test]
+    fn repeated_catalog_ddl_reuses_only_exact_owner_independent_bodies() {
+        let mut memo = SchemaContractMemo::default();
+        for prefix in [owner('a'), owner('b')] {
+            for table in ["manifest", "events", "fingerprints", "chunks"] {
+                let sql = format!("CREATE TABLE \"{prefix}{table}\"(value TEXT DEFAULT 'same')");
+                assert_eq!(memo.contract(&prefix, table, &sql).unwrap(),
+                    schema_contract(&prefix, &sql).unwrap());
+            }
+        }
+        assert_eq!(memo.templates.len(), 4);
+        let prefix = owner('c');
+        let changed = format!("CREATE TABLE \"{prefix}events\"(value TEXT DEFAULT 'different')");
+        assert_ne!(memo.contract(&prefix, "events", &changed).unwrap(),
+            memo.templates.iter().find(|(table, _, _)| table == "events").unwrap().2);
+        assert_eq!(memo.templates.len(), 5);
+    }
+
+    #[test]
+    fn owner_dependent_identifiers_literals_and_comments_bypass_contract_memo() {
+        let mut memo = SchemaContractMemo::default();
+        for prefix in [owner('a'), owner('b')] {
+            for body in [
+                format!("(value INTEGER REFERENCES \"{prefix}events\"(ordinal))"),
+                format!("(value TEXT DEFAULT '{prefix}literal')"),
+                format!("(value TEXT) /* {prefix}comment */"),
+            ] {
+                let sql = format!("CREATE TABLE \"{prefix}manifest\"{body}");
+                assert_eq!(memo.contract(&prefix, "manifest", &sql).unwrap(),
+                    schema_contract(&prefix, &sql).unwrap());
+                assert!(memo.templates.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn contract_memo_bounds_and_nonmatching_headers_keep_original_validation() {
+        let mut memo = SchemaContractMemo::default();
+        let prefix = owner('a');
+        for number in 0..24 {
+            let sql = format!("CREATE TABLE \"{prefix}events\"(value TEXT DEFAULT '{number}')");
+            assert_eq!(memo.contract(&prefix, "events", &sql).unwrap(),
+                schema_contract(&prefix, &sql).unwrap());
+        }
+        assert_eq!(memo.templates.len(), 16);
+        for sql in [
+            format!("CREATE TABLE {prefix}events(value TEXT)"),
+            format!("create table \"{prefix}events\"(value TEXT)"),
+            format!("CREATE TABLE \"{prefix}events\"(value TEXT DEFAULT '{}')", "x".repeat(33 * 1024)),
+        ] {
+            assert_eq!(memo.contract(&prefix, "events", &sql).unwrap(),
+                schema_contract(&prefix, &sql).unwrap());
+        }
+        let bad = format!("CREATE TABLE \"{prefix}events\"(value TEXT DEFAULT 'unterminated)");
+        assert!(memo.contract(&prefix, "events", &bad).is_err());
+        assert_eq!(memo.templates.len(), 16);
+    }
 }

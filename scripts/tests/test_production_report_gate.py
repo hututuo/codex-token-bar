@@ -41,7 +41,11 @@ def good_report():
          "fixedPool": {"catalogGrowth": 0, "storeGrowth": 0, "jobs": 13,
                        **dict.fromkeys(("idempotentCleanup", "publicationRollback", "readOnly", "typedTempAlias"), True),
                        "legacy": {"buildingKept": True, "changedEvidenceKept": True, "idempotent": True,
-                                  "publishedTokens": 134, "rollback": True}}},
+                                  "publishedTokens": 134, "rollback": True}},
+         "steadyRetention": {"calls": 3, "reopens": 0, "freshOpenControl": 1, "samePaths": True},
+         "lateRetention": {"coldReopens": 4, "repeatReopens": 0, "invalidManifestsRejected": 2,
+                           **dict.fromkeys(("sameHandle", "isolatedPaths", "physicalEvidencePreserved",
+                                           "accountingPreserved", "noFabricatedSuccessReceipt"), True)}},
         {"name": "legacy-backfill-indexed-reconciliation", "status": "PASS", "preservedEventIds": True,
          "legacyRows": 4096, "legacyCountCalls": 4096, "tokensAfterReplay": 20480,
          "rawLookupMaxVmSteps": 18, "identityCountMaxVmSteps": 21, "compactionIdentityMaxVmSteps": 62},
@@ -165,6 +169,27 @@ class ProductionReportGateTests(unittest.TestCase):
             first["alreadyRecovered"] = not first["alreadyRecovered"]
             with self.subTest(phase=PHASES[index]), self.assertRaises(ValueError):
                 self.admit(report)
+
+    def test_retention_requires_executed_cold_control_and_preservation_proofs(self):
+        valid = good_report()
+        self.admit(valid)
+        proof = check(valid, "runtime-recovery-production-path")
+        for section in ("steadyRetention", "lateRetention"):
+            for field, expected in proof[section].items():
+                for mutation in ("missing", "wrong-type", "wrong-value"):
+                    invalid = copy.deepcopy(valid)
+                    target = check(invalid, "runtime-recovery-production-path")[section]
+                    if mutation == "missing": del target[field]
+                    elif mutation == "wrong-type": target[field] = 1 if type(expected) is bool else True
+                    else: target[field] = (not expected if type(expected) is bool
+                        else 0 if field == "coldReopens" else expected + 1)
+                    with self.subTest(section=section, field=field, mutation=mutation), self.assertRaises(ValueError):
+                        self.admit(invalid)
+        for section in ("steadyRetention", "lateRetention"):
+            invalid = copy.deepcopy(valid)
+            del check(invalid, "runtime-recovery-production-path")[section]
+            with self.subTest(section=section), self.assertRaises(ValueError):
+                self.admit(invalid)
 
     def test_malformed_report_and_unexpected_scale_are_rejected(self):
         for report in (None, [], {}, {"status": "PASS", "checks": []},

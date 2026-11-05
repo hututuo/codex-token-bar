@@ -18,6 +18,9 @@ use std::ops::Deref;
 use std::path::Path;
 use std::time::Duration;
 
+#[cfg(test)]
+mod retention_lookup_tests;
+
 pub(crate) struct StoreConnection {
     raw: Connection,
     binding: Option<RefCell<StoreSqlBinding>>,
@@ -42,6 +45,26 @@ impl StoreConnection {
             return Err(BusinessStoreError::InvalidStore);
         }
         Ok(store)
+    }
+
+    pub(crate) fn preserves_legacy_exact_migration(&self, index: &Path) -> std::result::Result<bool, String> {
+        use crate::core::business_store_route as route;
+        let physical = Path::new(self.raw.path().ok_or("迁移保留检查缺少物理 A")?);
+        let active = route::container_path()?;
+        if std::fs::canonicalize(physical).map_err(|error| error.to_string())?
+            != std::fs::canonicalize(&active).map_err(|error| error.to_string())? {
+            return Err("迁移保留检查连接不是当前 A".into());
+        }
+        route::validate_exact_stage_container(&active)?;
+        let snapshot = if self.raw.is_autocommit() {
+            Some(self.raw.unchecked_transaction().map_err(|error| error.to_string())?)
+        } else { None };
+        let owner = self.bound_store_spec().map_err(|error| error.to_string())?;
+        let result = route::preserves_legacy_exact_migration_on(&self.raw, index, &owner)?;
+        if let Some(snapshot) = snapshot {
+            snapshot.commit().map_err(|error| error.to_string())?;
+        }
+        Ok(result)
     }
 
     pub(crate) fn open(path: impl AsRef<Path>) -> Result<Self> {

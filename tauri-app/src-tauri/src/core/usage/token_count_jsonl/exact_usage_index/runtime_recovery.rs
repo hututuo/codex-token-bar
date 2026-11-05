@@ -1,6 +1,9 @@
 //! Preserve a complete artifact when only the requested scan contract changes.
 use super::*;
 
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+mod retention_fixture;
+
 pub(super) fn candidate_path(index: &Path, job: &FullRebuildJob, generation: i64) -> PathBuf {
     let contract = serde_json::json!({
         "path": job.path, "session": job.session_id, "source": job.source_id,
@@ -252,6 +255,23 @@ pub(super) fn verify_fixture(home: &Path) -> Result<serde_json::Value, String> {
     let home = sql!(fs::canonicalize(home));
     let index_path = database_path(&home)?;
     let mut index = ExactUsageIndex::open(&home)?;
+    // The fresh index has no completed migration receipt. Its normal success
+    // path must still resolve migration ownership without reopening A each time.
+    need!(metadata_text(&index.connection, MIGRATION_RETENTION_KEY)?.is_none(),
+        "retention fixture requires an uncached absent receipt");
+    let existing_opens = crate::core::business_store_container::fixture_existing_open_count;
+    let opens_before = existing_opens();
+    for _ in 0..3 {
+        record_successful_migration_retention(&index.connection, &index_path)?;
+    }
+    let retention_reopens = existing_opens().saturating_sub(opens_before);
+    need!(retention_reopens == 0, "steady retention lookup reopened A");
+    let held_paths = active_schema11_paths_on(&index.connection, &index_path)?;
+    let before_control = existing_opens();
+    let cold_paths = active_schema11_paths(&index_path)?;
+    let fresh_control = existing_opens().saturating_sub(before_control);
+    need!(fresh_control >= 1 && held_paths == cold_paths,
+        "retention lookup needs an executed fresh-open control with equal routing");
     index.connection.mark_receipt_dirty();
     let published = metadata_i64(&index.connection, "published_generation")?
         .ok_or("missing published generation")?;
@@ -498,10 +518,13 @@ pub(super) fn verify_fixture(home: &Path) -> Result<serde_json::Value, String> {
     need!(original_schema == retained_schema && !route::exact_store_exists(&legacy_state)?,
         "legacy external state was altered or registered as a ledger");
     let fixed_pool=stage_pool::verify_fixture()?;
+    let late_retention = retention_fixture::verify(&home)?;
     Ok(
         serde_json::json!({"name":"runtime-recovery-production-path","status":"PASS",
         "legacyCheckpointMismatch":true,"namespaceCandidateResumed":true,"oldStagePreserved":true,
         "invalidCandidateRejected":true,"tokensAfterReplay":175,"liveStateRefreshed":true,
-        "externalStateReadOnly":true,"legacyStateColumnsReadWithoutImport":true,"fixedPool":fixed_pool}),
+        "externalStateReadOnly":true,"legacyStateColumnsReadWithoutImport":true,"fixedPool":fixed_pool,
+        "steadyRetention":{"calls":3,"reopens":retention_reopens,"freshOpenControl":fresh_control,"samePaths":true},
+        "lateRetention":late_retention}),
     )
 }
