@@ -3869,51 +3869,43 @@ impl ExactUsageIndex {
     ) -> Result<TokenUsageSummary, String> {
         let today = local_day_mode.date_at(now_utc.unix_timestamp());
         let (start, end) = local_day_mode.day_bounds(today)?;
-        let (total, today_tokens, today_requests) = self
-            .connection
-            .query_row(
-                r#"
-                SELECT
-                    COALESCE((
-                        SELECT SUM(e.tokens)
-                        FROM (SELECT * FROM canonical_usage_events WHERE tokens > 0) e
-                        JOIN published_files f
-                          ON f.generation = e.file_generation
-                         AND f.path = e.file_path
-                    ), 0),
-                    COALESCE((
-                        SELECT SUM(e.tokens)
-                        FROM (SELECT * FROM canonical_usage_events WHERE tokens > 0) e
-                        JOIN published_files f
-                          ON f.generation = e.file_generation
-                         AND f.path = e.file_path
-                        WHERE e.timestamp >= ?1 AND e.timestamp < ?2
-                    ), 0),
-                    COALESCE((
-                        SELECT COUNT(*)
-                        FROM (SELECT * FROM canonical_usage_events WHERE tokens > 0) e
-                        JOIN published_files f
-                          ON f.generation = e.file_generation
-                         AND f.path = e.file_path
-                        WHERE e.timestamp >= ?1 AND e.timestamp < ?2
-                    ), 0)
-                "#,
-                params![start, end],
-                |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, i64>(2)?,
-                    ))
-                },
-            )
-            .map_err(|error| format!("无法汇总精确 token 用量：{error}"))?;
-        Ok(TokenUsageSummary {
+        // The UNION-backed event view makes a global published-file join
+        // build an automatic index over every event on each unchanged read.
+        // Read fresh file identities and bind each source before aggregation;
+        // never reuse a contribution map selected only by file generation.
+        let snapshot = if self.connection.is_autocommit() {
+            Some(self.connection.unchecked_transaction()
+                .map_err(|error| format!("无法开始精确摘要读取事务：{error}"))?)
+        } else { None };
+        let files = self.published_file_generations()?;
+        let mut statement = self.connection.prepare(r#"
+            SELECT COALESCE(SUM(tokens),0),
+                   COALESCE(SUM(CASE WHEN timestamp>=?1 AND timestamp<?2 THEN tokens ELSE 0 END),0),
+                   COALESCE(SUM(CASE WHEN timestamp>=?1 AND timestamp<?2 THEN 1 ELSE 0 END),0)
+            FROM canonical_usage_events
+            WHERE tokens>0 AND file_generation=?3 AND file_path=?4
+        "#).map_err(|error| format!("无法准备精确摘要来源查询：{error}"))?;
+        let (mut total, mut today_tokens, mut today_requests) = (0_i64, 0_i64, 0_i64);
+        for (path, generation) in files {
+            let (file_total, file_today, file_requests): (i64,i64,i64) = statement
+                .query_row(params![start,end,generation,path], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)))
+                .map_err(|error| format!("无法汇总精确 token 用量：{error}"))?;
+            // Match SQLite's integer SUM failure instead of silently extending
+            // or saturating the old accounting range when folding sources.
+            total = total.checked_add(file_total).ok_or("无法汇总精确 token 用量：integer overflow")?;
+            today_tokens = today_tokens.checked_add(file_today).ok_or("无法汇总精确 token 用量：integer overflow")?;
+            today_requests = today_requests.checked_add(file_requests).ok_or("无法汇总精确 token 用量：integer overflow")?;
+        }
+        let summary = TokenUsageSummary {
             total_tokens: nonnegative_u64(total),
             today_tokens: nonnegative_u64(today_tokens),
             today_requests: saturating_u32(today_requests),
             today_model_breakdowns: self.model_breakdowns_between(start, end, local_day_mode)?,
-        })
+        };
+        if let Some(snapshot) = snapshot {
+            snapshot.commit().map_err(|error| format!("无法结束精确摘要读取事务：{error}"))?;
+        }
+        Ok(summary)
     }
 
     /// Builds the lightweight total/today/model projection from per-file

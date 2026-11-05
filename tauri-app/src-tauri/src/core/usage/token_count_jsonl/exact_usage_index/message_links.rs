@@ -3,22 +3,30 @@
 use super::*;
 use super::super::session_parser::scan_message_links;
 
+const PENDING_SOURCES_SQL: &str = r#"
+        WITH message_repair_candidates AS MATERIALIZED (
+            SELECT s.source_id,s.path,s.session_id,s.size,s.modified_ns,l.raw_generation
+            FROM sources s JOIN usage_ledger_sources l USING(source_id)
+            WHERE s.deleted=0 AND l.missing=0 AND NOT EXISTS(
+                SELECT 1 FROM usage_ledger_message_receipts r
+                WHERE r.source_id=s.source_id AND r.raw_generation=l.raw_generation AND r.revision=1)
+        )
+        SELECT p.source_id,p.path,p.session_id,p.size,p.modified_ns,p.raw_generation
+        FROM message_repair_candidates p
+        WHERE EXISTS(
+            SELECT 1 FROM usage_ledger_bindings b JOIN event_rows e ON e.id=b.event_id
+            WHERE b.source_id=p.source_id AND b.available=1 AND b.raw_generation=p.raw_generation
+              AND b.raw_offset IS NOT NULL AND e.user_prompt_start IS NULL)
+        ORDER BY p.modified_ns DESC
+    "#;
+
 pub(super) fn repair(db: &mut ManagedIndexConnection, home: &Path, warnings: &mut Vec<LocalDataWarning>) -> Result<(), String> {
     if !table_exists_checked(db, "usage_ledger_message_receipts")? {
         db.mark_receipt_dirty();
         db.execute_batch("CREATE TABLE usage_ledger_message_receipts(source_id INTEGER PRIMARY KEY,raw_generation INTEGER NOT NULL,revision INTEGER NOT NULL);").map_err(|e| e.to_string())?;
         db.mark_receipt_eligible();
     }
-    let pending: Vec<(i64,String,String,u64,String,i64)> = db.prepare(r#"
-        SELECT s.source_id,s.path,s.session_id,s.size,s.modified_ns,l.raw_generation
-        FROM sources s JOIN usage_ledger_sources l USING(source_id)
-        LEFT JOIN usage_ledger_message_receipts r ON r.source_id=s.source_id AND r.raw_generation=l.raw_generation AND r.revision=1
-        WHERE s.deleted=0 AND l.missing=0 AND r.source_id IS NULL AND EXISTS(
-            SELECT 1 FROM usage_ledger_bindings b JOIN event_rows e ON e.id=b.event_id
-            WHERE b.source_id=s.source_id AND b.available=1 AND b.raw_generation=l.raw_generation
-              AND b.raw_offset IS NOT NULL AND e.user_prompt_start IS NULL)
-        ORDER BY s.modified_ns DESC
-    "#).map_err(|e|e.to_string())?.query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))
+    let pending: Vec<(i64,String,String,u64,String,i64)> = db.prepare(PENDING_SOURCES_SQL).map_err(|e|e.to_string())?.query_map([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))
         .map_err(|e|e.to_string())?.collect::<Result<_,_>>().map_err(|e|e.to_string())?;
     if pending.is_empty() { return Ok(()); }
     let canonical_home = canonical_codex_home(home)?;
@@ -67,4 +75,70 @@ pub(super) fn repair(db: &mut ManagedIndexConnection, home: &Path, warnings: &mu
         db.mark_receipt_eligible();
     }
     Ok(())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture() -> Connection {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("CREATE TABLE sources(source_id INTEGER PRIMARY KEY,path TEXT,session_id TEXT,size INTEGER,modified_ns TEXT,deleted INTEGER);
+            CREATE TABLE usage_ledger_sources(source_id INTEGER PRIMARY KEY,raw_generation INTEGER NOT NULL,missing INTEGER NOT NULL DEFAULT 0);
+            CREATE TABLE usage_ledger_message_receipts(source_id INTEGER PRIMARY KEY,raw_generation INTEGER NOT NULL,revision INTEGER NOT NULL);
+            CREATE TABLE usage_ledger_bindings(event_id INTEGER PRIMARY KEY,source_id INTEGER NOT NULL,raw_generation INTEGER NOT NULL,raw_offset INTEGER,available INTEGER NOT NULL DEFAULT 1);
+            CREATE INDEX usage_ledger_binding_raw ON usage_ledger_bindings(source_id,raw_generation,raw_offset);
+            CREATE TABLE event_rows(id INTEGER PRIMARY KEY,user_prompt_start INTEGER);").unwrap();
+        db
+    }
+
+    fn pending(db: &Connection) -> (Vec<i64>, i32) {
+        let mut statement = db.prepare(PENDING_SOURCES_SQL).unwrap();
+        let rows = statement.query_map([], |row| row.get(0)).unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>().unwrap();
+        (rows, statement.get_status(rusqlite::StatementStatus::VmStep))
+    }
+
+    #[test]
+    fn completed_message_receipts_do_not_rescan_event_payloads() {
+        let db = fixture();
+        db.execute_batch("INSERT INTO sources VALUES(1,'fixture','session',100,'10',0);
+            INSERT INTO usage_ledger_sources VALUES(1,7,0);
+            INSERT INTO usage_ledger_message_receipts VALUES(1,7,1);").unwrap();
+        let small_steps = pending(&db).1;
+        // All events already have prompt associations. A receipt must avoid
+        // the event existence scan, including when there is no first match.
+        db.execute_batch("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<50000)
+            INSERT INTO event_rows SELECT x,x FROM n;
+            INSERT INTO usage_ledger_bindings SELECT id,1,7,id,1 FROM event_rows;").unwrap();
+        let (rows, large_steps) = pending(&db);
+        assert!(rows.is_empty());
+        assert!(large_steps <= small_steps + 100,
+            "Completed sources must not scale with event rows: {small_steps} -> {large_steps}");
+        // An obsolete generation is not an authorization to skip the scan.
+        db.execute("UPDATE usage_ledger_message_receipts SET raw_generation=6", []).unwrap();
+        db.execute("UPDATE event_rows SET user_prompt_start=NULL WHERE id=50000", []).unwrap();
+        assert_eq!(pending(&db).0, vec![1]);
+    }
+
+    #[test]
+    fn pending_message_repairs_respect_current_receipts_and_binding_availability() {
+        let db = fixture();
+        db.execute_batch("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<10)
+            INSERT INTO sources SELECT x,'path-'||x,'session-'||x,100,printf('%02d',x),0 FROM n;
+            INSERT INTO usage_ledger_sources SELECT source_id,7,0 FROM sources;
+            INSERT INTO event_rows SELECT source_id,NULL FROM sources;
+            INSERT INTO usage_ledger_bindings SELECT id,id,7,id,1 FROM event_rows;
+            INSERT INTO usage_ledger_message_receipts VALUES(1,7,1),(2,6,1),(3,7,0);
+            UPDATE sources SET deleted=1 WHERE source_id=4;
+            UPDATE usage_ledger_sources SET missing=1 WHERE source_id=5;
+            UPDATE usage_ledger_bindings SET available=0 WHERE source_id=6;
+            UPDATE usage_ledger_bindings SET raw_offset=NULL WHERE source_id=7;
+            UPDATE event_rows SET user_prompt_start=1 WHERE id=8;
+            UPDATE usage_ledger_bindings SET raw_generation=6 WHERE source_id=9;").unwrap();
+        assert_eq!(pending(&db).0, vec![10,3,2]);
+        db.execute_batch("INSERT OR REPLACE INTO usage_ledger_message_receipts VALUES(10,7,1),(3,7,1),(2,7,1)").unwrap();
+        assert!(pending(&db).0.is_empty());
+    }
 }

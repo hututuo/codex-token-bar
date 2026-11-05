@@ -335,6 +335,10 @@ jobs:
               --require bound_sequence_projection_tracks_first_autoincrement_and_transaction_rollback \
               --require bound_batch_can_create_and_read_its_first_autoincrement_sequence \
               --require missing_sequence_does_not_reject_literal_or_comment_markers \
+              --require completed_message_receipts_do_not_rescan_event_payloads \
+              --require pending_message_repairs_respect_current_receipts_and_binding_availability \
+              --require fresh_summary_preserves_day_modes_and_same_generation_changes \
+              --require fresh_summary_keeps_integer_overflow_as_an_error_and_releases_its_snapshot \
               --require missing_and_known_empty_legacy_candidates_use_the_held_pool_without_becoming_facts \
               --require user_tables_resembling_sqlite_internals_survive_import_and_export \
               --require foreign_dependencies_resembling_sqlite_internals_invalidate_proof \

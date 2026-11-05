@@ -10264,6 +10264,64 @@ fn full_generation_after_summary_copies_the_last_aggregate_generation_not_the_ne
 }
 
 #[test]
+fn fresh_summary_preserves_day_modes_and_same_generation_changes() {
+    let _guard = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    for (id, timestamp) in [(1,"2026-06-17T18:00:00Z"),(2,"2026-06-18T01:00:00Z")] {
+        write_lines(&root.join(format!("sessions/rollout-019e-summary-fresh-{id}.jsonl")), &[
+            r#"{"type":"turn_context","payload":{"model":"gpt-5"}}"#.to_owned(),
+            format!(r#"{{"timestamp":"{timestamp}","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":3,"cached_input_tokens":1,"output_tokens":2,"total_tokens":5}}}}}}}}"#),
+        ]);
+    }
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    index.sync(&root, &mut Vec::new()).unwrap();
+    index.ensure_dashboard_aggregates(&root).unwrap();
+    let now = OffsetDateTime::parse("2026-06-18T03:00:00Z", &Rfc3339).unwrap();
+    let east = index.summary(now, UtcOffset::from_hms(8,0,0).unwrap()).unwrap();
+    assert_eq!((east.total_tokens,east.today_tokens,east.today_requests), (10,10,2));
+    let utc = index.summary(now, UtcOffset::UTC).unwrap();
+    assert_eq!((utc.total_tokens,utc.today_tokens,utc.today_requests), (10,5,1));
+    assert_eq!(east.today_model_breakdowns.len(), 2,
+        "Fixed-offset summary preserves the existing per-UTC-day model rows");
+    assert!(east.today_model_breakdowns.iter().all(|row| row.event_start_unix.is_some()));
+    // Exercise the real caller that already owns a read transaction, then
+    // leave dashboard TEMP snapshots alive while MAIN facts change.
+    assert_eq!(index.published_summary(now).unwrap().summary.total_tokens, 10);
+    index.dashboard_data(&root,now,UtcOffset::UTC,&mut Vec::new()).unwrap();
+    let db = Connection::open(super::exact_usage_index::database_path(&root).unwrap()).unwrap();
+    let generation: String = db.query_row("SELECT value FROM metadata WHERE key='published_generation'",[],|r|r.get(0)).unwrap();
+    db.execute_batch("UPDATE event_rows SET tokens=7 WHERE source_id=(SELECT MIN(source_id) FROM sources)").unwrap();
+    assert_eq!(index.summary(now,UtcOffset::UTC).unwrap().total_tokens,12,
+        "Same-generation changes cannot reuse an old contribution map");
+    db.execute_batch("UPDATE sources SET deleted=1 WHERE source_id=(SELECT MAX(source_id) FROM sources)").unwrap();
+    let expected: i64 = db.query_row("SELECT COALESCE(SUM(e.tokens),0) FROM canonical_usage_events e JOIN main.published_files f ON f.path=e.file_path AND f.generation=e.file_generation WHERE e.tokens>0",[],|r|r.get(0)).unwrap();
+    assert_eq!(index.summary(now,UtcOffset::UTC).unwrap().total_tokens, expected as u64);
+    assert_eq!(generation,db.query_row::<String,_,_>("SELECT value FROM metadata WHERE key='published_generation'",[],|r|r.get(0)).unwrap());
+}
+
+#[test]
+fn fresh_summary_keeps_integer_overflow_as_an_error_and_releases_its_snapshot() {
+    let _guard = app_paths::app_path_test_env_guard(&[]);
+    let root = temp_root();
+    fs::create_dir_all(root.join("sessions")).unwrap();
+    for id in 1..=2 {
+        write_lines(&root.join(format!("sessions/rollout-019e-summary-overflow-{id}.jsonl")), &[
+            format!(r#"{{"timestamp":"2026-06-18T0{id}:00:00Z","type":"event_msg","payload":{{"type":"token_count","info":{{"last_token_usage":{{"input_tokens":3,"cached_input_tokens":1,"output_tokens":2,"total_tokens":5}}}}}}}}"#),
+        ]);
+    }
+    let mut index = ExactUsageIndex::open(&root).unwrap();
+    index.sync(&root,&mut Vec::new()).unwrap();
+    let now = OffsetDateTime::parse("2026-06-18T03:00:00Z",&Rfc3339).unwrap();
+    let db = Connection::open(super::exact_usage_index::database_path(&root).unwrap()).unwrap();
+    db.execute_batch("UPDATE event_rows SET tokens=4611686018427387904").unwrap();
+    assert!(db.query_row::<i64,_,_>("SELECT SUM(tokens) FROM canonical_usage_events",[],|r|r.get(0)).unwrap_err().to_string().contains("integer overflow"));
+    assert!(index.summary(now,UtcOffset::UTC).unwrap_err().contains("integer overflow"));
+    db.execute_batch("UPDATE event_rows SET tokens=5").unwrap();
+    assert_eq!(index.summary(now,UtcOffset::UTC).unwrap().total_tokens,10);
+}
+
+#[test]
 fn lightweight_summary_reuses_unchanged_file_contributions() {
     let _test_state = app_paths::app_path_test_env_guard(&[]);
     let root = temp_root();
