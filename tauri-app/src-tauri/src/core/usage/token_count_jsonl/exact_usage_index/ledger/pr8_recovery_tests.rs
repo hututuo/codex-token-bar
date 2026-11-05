@@ -24,6 +24,34 @@ fn database() -> Connection {
     db
 }
 
+#[test]
+fn pending_binding_cascade_is_bounded_after_existing_ledger_upgrade() {
+    let db = database();
+    // Reproduce an already installed ledger from before the source index.
+    db.execute_batch("DROP INDEX IF EXISTS usage_ledger_pending_binding_source").unwrap();
+    db.execute_batch("BEGIN IMMEDIATE").unwrap();
+    for source in 1..=128_i64 {
+        db.execute("INSERT INTO sources(source_id,path,session_id,deleted,last_seen_generation,size,modified_ns,prefix_sha256,append_ready,audit_chunk_index) VALUES(?1,?2,'cascade-fixture',0,0,0,'0',X'',0,0)",params![source,format!("/fixture/cascade-{source}.jsonl")]).unwrap();
+        db.execute("INSERT INTO pending_sources(source_id,target_generation,mode) VALUES(?1,7,'full')",[source]).unwrap();
+        for event in 0..64_i64 {
+            db.execute("INSERT INTO usage_ledger_pending_bindings(event_id,source_id,raw_generation,available) VALUES(?1,?2,7,1)",params![source*64+event,source]).unwrap();
+        }
+    }
+    db.execute_batch("COMMIT").unwrap();
+    let before: (i64,i64) = db.query_row("SELECT COUNT(*),SUM(event_id) FROM usage_ledger_pending_bindings",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+    super::install(&db).unwrap();
+    super::install(&db).unwrap();
+    assert_eq!(before,db.query_row("SELECT COUNT(*),SUM(event_id) FROM usage_ledger_pending_bindings",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap());
+    let mut delete=db.prepare("DELETE FROM pending_sources WHERE source_id=?1").unwrap();
+    assert_eq!(delete.execute([1_i64]).unwrap(),1);
+    let scans=delete.get_status(rusqlite::StatementStatus::FullscanStep);
+    assert!(scans<=64,"one source deletion scanned {scans} unrelated binding rows");
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM usage_ledger_pending_bindings",[],|r|r.get::<_,i64>(0)).unwrap(),127*64);
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM usage_ledger_pending_bindings WHERE source_id=1",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    assert_eq!(db.query_row("SELECT COUNT(*) FROM sources",[],|r|r.get::<_,i64>(0)).unwrap(),128);
+    assert!(!db.prepare("PRAGMA foreign_key_check").unwrap().query([]).unwrap().next().unwrap().is_some());
+}
+
 fn add_source(db: &Connection, mode: &str) {
     add_source_at(db, mode, PATH);
 }

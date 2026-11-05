@@ -129,6 +129,10 @@ pub(super) fn validate(db: &Connection) -> Result<(),String> {
 pub(super) fn install(db: &Connection) -> Result<(),String> {
     validate(db)?;
     if table_exists_checked(db,"usage_ledger_meta")? {
+        // Publication deletes pending_sources with cascading child cleanup.
+        // Without this index each source rescans all remaining event bindings.
+        db.execute_batch("CREATE INDEX IF NOT EXISTS usage_ledger_pending_binding_source ON usage_ledger_pending_bindings(source_id)")
+            .map_err(|e|format!("无法安装暂存关联来源索引：{e}"))?;
         let revision:String=db.query_row("SELECT value FROM usage_ledger_meta WHERE key='revision'",[],|r|r.get(0)).map_err(|e|e.to_string())?;
         if revision=="1" {
             let tx=db.unchecked_transaction().map_err(|e|e.to_string())?;
@@ -159,6 +163,7 @@ pub(super) fn install(db: &Connection) -> Result<(),String> {
             event_id INTEGER PRIMARY KEY,source_id INTEGER NOT NULL REFERENCES pending_sources(source_id) ON DELETE CASCADE,
             raw_generation INTEGER NOT NULL,raw_offset INTEGER,user_prompt_start INTEGER,user_prompt_end INTEGER,
             assistant_response_start INTEGER,assistant_response_end INTEGER,fingerprint BLOB,available INTEGER NOT NULL DEFAULT 1);
+        CREATE INDEX usage_ledger_pending_binding_source ON usage_ledger_pending_bindings(source_id);
         CREATE TABLE usage_ledger_unresolved(
             source_id INTEGER NOT NULL,generation INTEGER NOT NULL,raw_position INTEGER NOT NULL,
             timestamp INTEGER NOT NULL,tokens INTEGER NOT NULL,input_tokens INTEGER NOT NULL,cached_input_tokens INTEGER NOT NULL,
@@ -194,11 +199,11 @@ fn optional(row: &[Value],i: usize) -> Option<i64> {
     match row.get(i) { Some(Value::Integer(v))=>Some(*v),_=>None }
 }
 fn write_pending(db: &Connection,row: &[Value]) -> Result<(),String> {
-    db.execute(&format!("INSERT INTO pending_event_rows({FIELDS}) VALUES ({})",vec!["?";18].join(",")),rusqlite::params_from_iter(row.iter())).map_err(|e|format!("无法写入对账后的事件：{e}"))?;
+    db.prepare_cached(&format!("INSERT INTO pending_event_rows({FIELDS}) VALUES ({})",vec!["?";18].join(","))).map_err(|e|e.to_string())?.execute(rusqlite::params_from_iter(row.iter())).map_err(|e|format!("无法写入对账后的事件：{e}"))?;
     Ok(())
 }
 fn bind_pending(db: &Connection,row: &[Value],event_id: i64,generation: i64,fp: Option<&[u8]>) -> Result<(),String> {
-    db.execute(&format!("INSERT INTO usage_ledger_pending_bindings({BINDINGS}) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,1) ON CONFLICT(event_id) DO UPDATE SET raw_generation=excluded.raw_generation,raw_offset=excluded.raw_offset,user_prompt_start=excluded.user_prompt_start,user_prompt_end=excluded.user_prompt_end,assistant_response_start=excluded.assistant_response_start,assistant_response_end=excluded.assistant_response_end,fingerprint=COALESCE(excluded.fingerprint,usage_ledger_pending_bindings.fingerprint),available=1"),params![event_id,number(row,1)?,generation,optional(row,16),optional(row,10),optional(row,11),optional(row,12),optional(row,13),fp]).map_err(|e|e.to_string())?;
+    db.prepare_cached(&format!("INSERT INTO usage_ledger_pending_bindings({BINDINGS}) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,1) ON CONFLICT(event_id) DO UPDATE SET raw_generation=excluded.raw_generation,raw_offset=excluded.raw_offset,user_prompt_start=excluded.user_prompt_start,user_prompt_end=excluded.user_prompt_end,assistant_response_start=excluded.assistant_response_start,assistant_response_end=excluded.assistant_response_end,fingerprint=COALESCE(excluded.fingerprint,usage_ledger_pending_bindings.fingerprint),available=1")).map_err(|e|e.to_string())?.execute(params![event_id,number(row,1)?,generation,optional(row,16),optional(row,10),optional(row,11),optional(row,12),optional(row,13),fp]).map_err(|e|e.to_string())?;
     Ok(())
 }
 fn assign_turn(db: &Connection,row: &mut [Value],generation: i64) -> Result<(),String> {
@@ -326,10 +331,13 @@ fn full_prefix_matches(db: &Connection,staged: &StagedFullRebuild) -> Result<boo
     Ok(true)
 }
 
+// Reuse compiled statements across events. Parameter binding and all identity,
+// byte-prefix and numeric checks still execute for every observation; SQLite
+// invalidates cached plans when the per-source TEMP schema changes.
 pub(super) fn reconcile_full(db: &Connection,staged: &StagedFullRebuild) -> Result<(),String> {
     let source=staged.job.source_id;
-    let generation: i64=db.query_row("SELECT target_generation FROM pending_sources WHERE source_id=?1",params![source],|r|r.get(0)).map_err(|e|e.to_string())?;
-    let has_any: bool=db.query_row("SELECT EXISTS(SELECT 1 FROM event_rows WHERE source_id=?1)",params![source],|r|r.get(0)).map_err(|e|e.to_string())?;
+    let generation: i64=db.prepare_cached("SELECT target_generation FROM pending_sources WHERE source_id=?1").map_err(|e|e.to_string())?.query_row(params![source],|r|r.get(0)).map_err(|e|e.to_string())?;
+    let has_any: bool=db.prepare_cached("SELECT EXISTS(SELECT 1 FROM event_rows WHERE source_id=?1)").map_err(|e|e.to_string())?.query_row(params![source],|r|r.get(0)).map_err(|e|e.to_string())?;
     let columns: Vec<String>=db.prepare("PRAGMA exact_stage_import.table_info(events)").map_err(|e|e.to_string())?.query_map([],|r|r.get(1)).map_err(|e|e.to_string())?.collect::<Result<_,_>>().map_err(|e|e.to_string())?;
     let has_fp=columns.iter().any(|c|c=="usage_fingerprint");
     if !has_any {
@@ -341,8 +349,8 @@ pub(super) fn reconcile_full(db: &Connection,staged: &StagedFullRebuild) -> Resu
         db.execute("UPDATE pending_event_rows SET ordinal=?3+id,user_prompt_start=(SELECT turn_id FROM usage_ledger_turns t WHERE t.source_id=?1 AND t.raw_generation=?2 AND t.raw_prompt=pending_event_rows.user_prompt_start),user_prompt_end=(SELECT turn_id FROM usage_ledger_turns t WHERE t.source_id=?1 AND t.raw_generation=?2 AND t.raw_prompt=pending_event_rows.user_prompt_start) WHERE source_id=?1",params![source,generation,GROUP_BASE]).map_err(|e|e.to_string())?;
         return Ok(());
     }
-    let old_generation: Option<i64>=db.query_row("SELECT raw_generation FROM usage_ledger_sources WHERE source_id=?1",params![source],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
-    let has_old: bool=db.query_row("SELECT EXISTS(SELECT 1 FROM event_rows WHERE source_id=?1 AND tokens>0)",params![source],|r|r.get(0)).map_err(|e|e.to_string())?;
+    let old_generation: Option<i64>=db.prepare_cached("SELECT raw_generation FROM usage_ledger_sources WHERE source_id=?1").map_err(|e|e.to_string())?.query_row(params![source],|r|r.get(0)).optional().map_err(|e|e.to_string())?;
+    let has_old: bool=db.prepare_cached("SELECT EXISTS(SELECT 1 FROM event_rows WHERE source_id=?1 AND tokens>0)").map_err(|e|e.to_string())?.query_row(params![source],|r|r.get(0)).map_err(|e|e.to_string())?;
     let unchanged=full_prefix_matches(db,staged)?;
     let paginated={
         let mut bytes=Vec::new();
@@ -365,8 +373,8 @@ pub(super) fn reconcile_full(db: &Connection,staged: &StagedFullRebuild) -> Resu
     while let Some(row)=rows.next().map_err(|e|e.to_string())? {
         let raw=read_values(row).map_err(|e|e.to_string())?;
         let ordinal=number(&raw,2)?;
-        let fp: Option<Vec<u8>>=if has_fp { db.query_row("SELECT usage_fingerprint FROM exact_stage_import.events WHERE ordinal=?1",params![ordinal],|r|r.get(0)).map_err(|e|e.to_string())? } else { None };
-        let mut existing: Option<i64>=if let Some(fp)=&fp { db.query_row("SELECT event_id FROM usage_ledger_bindings WHERE source_id=?1 AND fingerprint=?2 ORDER BY event_id LIMIT 1",params![source,fp],|r|r.get(0)).optional().map_err(|e|e.to_string())? } else { None };
+        let fp: Option<Vec<u8>>=if has_fp { db.prepare_cached("SELECT usage_fingerprint FROM exact_stage_import.events WHERE ordinal=?1").map_err(|e|e.to_string())?.query_row(params![ordinal],|r|r.get(0)).map_err(|e|e.to_string())? } else { None };
+        let mut existing: Option<i64>=if let Some(fp)=&fp { db.prepare_cached("SELECT event_id FROM usage_ledger_bindings WHERE source_id=?1 AND fingerprint=?2 ORDER BY event_id LIMIT 1").map_err(|e|e.to_string())?.query_row(params![source,fp],|r|r.get(0)).optional().map_err(|e|e.to_string())? } else { None };
         let mut ambiguous_legacy_identity=false;
         if existing.is_none() && unchanged {
             existing=event_at_raw_location(db,source,old_generation,optional(&raw,16))?;
@@ -375,7 +383,7 @@ pub(super) fn reconcile_full(db: &Connection,staged: &StagedFullRebuild) -> Resu
                 // when an ownership fix admits an earlier child call. A
                 // verified unchanged prefix plus a unique observation on both
                 // sides is required; ordinal equality alone is not proof.
-                let old_match: (i64,Option<i64>)=db.query_row("SELECT COUNT(*),MIN(e.id) FROM event_rows e JOIN usage_ledger_bindings b ON b.event_id=e.id WHERE e.source_id=?1 AND b.raw_offset IS NULL AND e.timestamp=?2 AND e.input_tokens=?3 AND e.cached_input_tokens=?4 AND e.output_tokens=?5",params![source,&raw[3],&raw[5],&raw[6],&raw[7]],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|e.to_string())?;
+                let old_match: (i64,Option<i64>)=db.prepare_cached("SELECT COUNT(*),MIN(e.id) FROM event_rows e JOIN usage_ledger_bindings b ON b.event_id=e.id WHERE e.source_id=?1 AND b.raw_offset IS NULL AND e.timestamp=?2 AND e.input_tokens=?3 AND e.cached_input_tokens=?4 AND e.output_tokens=?5").map_err(|e|e.to_string())?.query_row(params![source,&raw[3],&raw[5],&raw[6],&raw[7]],|r|Ok((r.get(0)?,r.get(1)?))).map_err(|e|e.to_string())?;
                 if old_match.0==1 {
                     let new_count=incoming_identity_count(db,&raw)?;
                     if new_count==1 { existing=old_match.1; }
@@ -384,11 +392,11 @@ pub(super) fn reconcile_full(db: &Connection,staged: &StagedFullRebuild) -> Resu
             }
         }
         if let Some(id)=existing {
-            let old=db.query_row(&format!("SELECT {FIELDS} FROM event_rows WHERE id=?1"),params![id],read_values).optional().map_err(|e|e.to_string())?;
+            let old=db.prepare_cached(&format!("SELECT {FIELDS} FROM event_rows WHERE id=?1")).map_err(|e|e.to_string())?.query_row(params![id],read_values).optional().map_err(|e|e.to_string())?;
             if let Some(mut old)=old {
                 let same=(4..8).chain(std::iter::once(14)).all(|i|old[i]==raw[i])
                     && (old[8]==raw[8] || (unchanged && staged.job.event_enrichment));
-                let verified_location=unchanged && db.query_row("SELECT EXISTS(SELECT 1 FROM usage_ledger_bindings WHERE source_id=?1 AND event_id=?2 AND raw_generation=?3 AND raw_offset=?4)",params![source,id,old_generation,optional(&raw,16)],|r|r.get::<_,bool>(0)).map_err(|e|e.to_string())?;
+                let verified_location=unchanged && db.prepare_cached("SELECT EXISTS(SELECT 1 FROM usage_ledger_bindings WHERE source_id=?1 AND event_id=?2 AND raw_generation=?3 AND raw_offset=?4)").map_err(|e|e.to_string())?.query_row(params![source,id,old_generation,optional(&raw,16)],|r|r.get::<_,bool>(0)).map_err(|e|e.to_string())?;
                 if !same && verified_location {
                     db.execute("INSERT OR IGNORE INTO usage_ledger_corrections VALUES(?1,?2,?3,?4,?5,?6,?7,'verified-prefix-reparse')",params![source,id,generation,optional(&raw,16),STAGED_FULL_REBUILD_PARSER_REVISION,&old[4],&raw[4]]).map_err(|e|e.to_string())?;
                     for i in (4..9).chain([14,15]) { old[i]=raw[i].clone(); }
@@ -402,7 +410,7 @@ pub(super) fn reconcile_full(db: &Connection,staged: &StagedFullRebuild) -> Resu
                         assign_turn(db, &mut linked, generation)?;
                         for i in 10..14 { old[i] = linked[i].clone(); }
                     }
-                    let already: bool=db.query_row("SELECT EXISTS(SELECT 1 FROM pending_event_rows WHERE id=?1)",params![id],|r|r.get(0)).map_err(|e|e.to_string())?;
+                    let already: bool=db.prepare_cached("SELECT EXISTS(SELECT 1 FROM pending_event_rows WHERE id=?1)").map_err(|e|e.to_string())?.query_row(params![id],|r|r.get(0)).map_err(|e|e.to_string())?;
                     if !already { write_pending(db,&old)?; }
                     bind_pending(db,&raw,id,generation,fp.as_deref())?;
                     if let (Some(prompt),Some(group))=(optional(&raw,10),optional(&old,10)) {
@@ -412,12 +420,12 @@ pub(super) fn reconcile_full(db: &Connection,staged: &StagedFullRebuild) -> Resu
                 }
             }
         }
-        let held: bool=if let Some(fp)=&fp { db.query_row("SELECT EXISTS(SELECT 1 FROM usage_ledger_unresolved WHERE source_id=?1 AND fingerprint=?2)",params![source,fp],|r|r.get(0)).map_err(|e|e.to_string())? } else {false};
+        let held: bool=if let Some(fp)=&fp { db.prepare_cached("SELECT EXISTS(SELECT 1 FROM usage_ledger_unresolved WHERE source_id=?1 AND fingerprint=?2)").map_err(|e|e.to_string())?.query_row(params![source,fp],|r|r.get(0)).map_err(|e|e.to_string())? } else {false};
         let new_snapshot=if let Some(fp)=&fp {
             let values=fingerprint_codec::decode(fp).map_err(|e|e.to_string())?;
             let complete=values[5]==1 || values[6..].iter().all(|n|*n==0)
                 || fingerprint_codec::is_compaction_response_fingerprint(&values);
-            complete && !db.query_row("SELECT EXISTS(SELECT 1 FROM source_fingerprints WHERE source_id=?1 AND fingerprint=?2)",params![source,fp],|r|r.get::<_,bool>(0)).map_err(|e|e.to_string())?
+            complete && !db.prepare_cached("SELECT EXISTS(SELECT 1 FROM source_fingerprints WHERE source_id=?1 AND fingerprint=?2)").map_err(|e|e.to_string())?.query_row(params![source,fp],|r|r.get::<_,bool>(0)).map_err(|e|e.to_string())?
         } else { false };
         if existing.is_some() || held || ambiguous_legacy_identity || (has_old && !unchanged && !(paginated && new_snapshot)) {
             db.execute("INSERT OR IGNORE INTO usage_ledger_unresolved VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",params![source,generation,optional(&raw,16).unwrap_or(-ordinal),&raw[3],&raw[4],&raw[5],&raw[6],&raw[7],&raw[8],&raw[9],&raw[14],&raw[15],&raw[17],fp,if existing.is_some(){"identity-conflict"}else{"unproved-rewrite-observation"}]).map_err(|e|e.to_string())?;
