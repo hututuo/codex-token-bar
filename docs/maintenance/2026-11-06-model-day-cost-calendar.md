@@ -38,8 +38,12 @@ Rust 初次编译在写入增量缓存时因磁盘空间不足失败。清除本
 
 本次仅完成修复分支的源码、测试及本地预览，没有替换 `/Applications/Codex Token Bar.app`、重启常驻应用、推送或发布。因此本机旧安装版不会立即出现新入口；需在后续候选安装验收时确认原生窗口与真实历史金额。
 
-## 宽度调整
+## 日历布局收束
 
-根据用户对日历过窄的反馈，移除 SwiftUI 和前端的 350px 宽度上限，改为随费用区域填满可用宽度。七列等宽、日期格高度 34px，增加行列间距和选中边框，月份前后切换相邻排列；跳转日期靠左，底部加分隔线。修正日历 CSS 使用未定义的 `--border`，改为现有 `--line`。仅调整布局，查询与金额计算不变。
+单日选择直接复用两端已有的 `QuotaCycleCalendar`，通过单日选择参数扩展；原有周期色带和周期点击保持原有行为。独立日历的月份网格、布局代码和样式已删除，`ModelCostDayCalendar` / `ModelDayCalendar` 仅负责将单日选择接到共用组件。
 
-Swift 构建及 TypeScript/Vite 构建通过；实际组件合成预览测得日历宽 978px、父区域宽 998px（含左右内边距），无水平溢出。证据为 `calendar-width-swift.json`、`calendar-width-frontend.json` 和 `day-cost-calendar-wide-preview.png`，与前述初版验证文件分别保留。未更新本机安装版。
+日历随费用区域填满可用宽度，不再限制 350px；沿用原日历的 26px 日期行与紧凑间距，“跳转日期”和“今天”合并到月份标题行，去掉额外底部区域。仅调整组件和布局，查询与金额计算不变。合成预览中同一个五周月份宽 978px、高 214.3px，无水平溢出；上一版加宽日历约 320px 高。
+
+最终验证：Swift 56 项、前端 22 项回归全部通过、0 跳过，TypeScript/Vite 构建通过。覆盖单日选择、Home/客户端切换、旧请求隔离、周期选择及同日周期边界；浏览器中实际组件跳转历史日期并显示合计通过。证据为 `calendar-reuse-swift-verified.json`、`calendar-reuse-frontend.json`、`calendar-reuse-ui.json` 和 `day-cost-calendar-compact-preview.png`；初版及加宽版证据分别保留。
+
+Swift 首次验证在本地签名阶段失败，当时磁盘仅剩约 145 MiB。清理当前工作树内约 923 MB、可重新生成的旧 Rust 增量缓存后，可用空间升至约 857 MiB；未改源码重跑构建、签名和测试通过。业务数据与本机安装版均未改动。

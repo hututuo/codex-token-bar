@@ -89,54 +89,7 @@ struct DashboardDayCostBrowser: View {
 
 struct ModelCostDayCalendar: View {
     @Binding var selection: Date?
-    @State private var month = Date()
-    private var calendar: Calendar { Calendar.current }
-    private var first: Date { calendar.date(from: calendar.dateComponents([.year, .month], from: month))! }
-    private var offset: Int { (calendar.component(.weekday, from: first) + 5) % 7 }
-    private var count: Int { ((offset + calendar.range(of: .day, in: .month, for: first)!.count + 6) / 7) * 7 }
     var body: some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 10) {
-                Button { month = calendar.date(byAdding: .month, value: -1, to: first)! } label: {
-                    Image(systemName: "chevron.left").frame(width: 28, height: 28)
-                }.accessibilityLabel("单日日历上个月")
-                Text(first.formatted(.dateTime.year().month(.wide))).fontWeight(.semibold)
-                Button { month = calendar.date(byAdding: .month, value: 1, to: first)! } label: {
-                    Image(systemName: "chevron.right").frame(width: 28, height: 28)
-                }
-                    .disabled(calendar.isDate(first, equalTo: Date(), toGranularity: .month)).accessibilityLabel("单日日历下个月")
-                Spacer()
-                Button("今天") { month = Date(); selection = calendar.startOfDay(for: Date()) }
-            }
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 7), spacing: 4) {
-                ForEach(["一", "二", "三", "四", "五", "六", "日"], id: \.self) {
-                    Text($0).font(.system(size: 11)).foregroundStyle(.secondary).padding(.vertical, 4)
-                }
-                ForEach(0..<count, id: \.self) { index in
-                    let date = calendar.date(byAdding: .day, value: index - offset, to: first)!
-                    let selected = selection.map { calendar.isDate(date, inSameDayAs: $0) } ?? false
-                    Button { selection = date } label: {
-                        Text("\(calendar.component(.day, from: date))").monospacedDigit().frame(maxWidth: .infinity, minHeight: 34)
-                            .foregroundStyle(selected ? AppTheme.accentBlue : .primary)
-                            .background(selected ? AppTheme.selectedControlBackground : AppTheme.panelBackground.opacity(0.45), in: RoundedRectangle(cornerRadius: 6))
-                            .overlay(RoundedRectangle(cornerRadius: 6).stroke(selected ? AppTheme.accentBlue.opacity(0.6) : .clear, lineWidth: 1))
-                    }
-                    .opacity(calendar.isDate(date, equalTo: first, toGranularity: .month) ? 1 : 0.4)
-                    .disabled(date > calendar.startOfDay(for: Date()))
-                    .accessibilityLabel(ModelCostDay(date).label + "的模型金额")
-                    .accessibilityAddTraits(selected ? .isSelected : [])
-                }
-            }
-            Divider()
-            HStack {
-                DatePicker("跳转日期", selection: Binding(get: { selection ?? Date() }, set: { selection = calendar.startOfDay(for: $0); month = $0 }),
-                    in: ...Date(), displayedComponents: [.date]).datePickerStyle(.field).font(.system(size: 11)).fixedSize()
-                Spacer()
-            }
-        }.font(.system(size: 12)).buttonStyle(.plain).padding(12)
-            .frame(maxWidth: .infinity).background(AppTheme.solidControlBackground, in: RoundedRectangle(cornerRadius: 9))
-            .overlay(RoundedRectangle(cornerRadius: 9).stroke(AppTheme.border, lineWidth: 1))
-            .accessibilityElement(children: .contain).accessibilityLabel("单日金额日历")
-            .onAppear { month = selection ?? Date() }
+        QuotaCycleCalendar(cycles: [], selectedID: nil, select: { _ in }, daySelection: $selection)
     }
 }
