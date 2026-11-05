@@ -33,8 +33,7 @@ export function clientCostGroups(items: FloatingModelUsageItem[]) {
   }
   return groups;
 }
-export function clientCostPeriods(codex: DashboardSnapshot, snapshot: Snapshot, allowed: string[], now=Date.now()/1000):ClientCostPeriods {
-  const make = (rows:Summary[], original:ModelTokenBreakdown[]) => {
+export function clientModelCostItems(rows:Summary[], original:ModelTokenBreakdown[], allowed:readonly string[]):FloatingModelUsageItem[] {
     const items:FloatingModelUsageItem[] = allowed.includes('codex') ? floatingTodayModelUsageItems(original,'gpt56Sol',{showPlaceholders:false,mergeAutoReview:false}).map(x=>({...x,key:'codex|'+x.key})) : [];
     for(const row of rows.filter(x=>allowed.includes(x.client))) items.push({key:row.client+'|'+row.model,
       label:claudeModelIdentity(row.model)?.label ?? row.model.replaceAll('-',' '),tokens:row.inputTokens+row.outputTokens,share:0,
@@ -42,7 +41,9 @@ export function clientCostPeriods(codex: DashboardSnapshot, snapshot: Snapshot, 
       knownPartialCostUSD:(row.unpricedRequests??0)>0 && row.requests>(row.unpricedRequests??0)?row.apiCostUSD??null:null,
       usesIndependentQuota:false,referenceCostUSD:null,color:modelUsageColor(row.model)});
     const total=Math.max(1,items.reduce((n,x)=>n+x.tokens,0));return items.filter(x=>x.tokens>0).map(x=>({...x,share:x.tokens/total}));
-  };
+}
+export function clientCostPeriods(codex: DashboardSnapshot, snapshot: Snapshot, allowed: string[], now=Date.now()/1000):ClientCostPeriods {
+  const make = (rows:Summary[], original:ModelTokenBreakdown[]) => clientModelCostItems(rows, original, allowed);
   const recentPoints=codex.recentUsage24h.filter(x=>x.startUnix>=now-7*86400&&x.startUnix<=now);
   const recent=recentPoints.flatMap(x=>x.modelBreakdowns??[]);
   const day=new Date(now*1000);day.setHours(0,0,0,0);const dayStart=day.getTime()/1000;

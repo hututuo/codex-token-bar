@@ -217,6 +217,15 @@ pub(crate) fn read(
     codex_home: &Path,
     ranges: &[(f64, f64)],
 ) -> Result<Vec<Vec<ModelTokenBreakdown>>, String> {
+    read_ranges(codex_home, ranges, false).map(|result| result.0)
+}
+
+pub(crate) fn read_day(codex_home: &Path, start: f64, end: f64) -> Result<(Vec<ModelTokenBreakdown>, bool), String> {
+    let (mut rows, missing) = read_ranges(codex_home, &[(start, end)], true)?;
+    Ok((rows.pop().unwrap_or_default(), missing))
+}
+
+fn read_ranges(codex_home: &Path, ranges: &[(f64, f64)], check_missing: bool) -> Result<(Vec<Vec<ModelTokenBreakdown>>, bool), String> {
     let path = database_path(codex_home)?;
     let connection = open_read_only_index(&path, StdDuration::from_secs(3))
         .map_err(|e| format!("周期明细索引待读取：{e}"))?;
@@ -250,13 +259,17 @@ pub(crate) fn read(
     if revision.as_deref() != Some("2") {
         return Err("周期明细等待 canonical 事件账本".into());
     }
-    ranges
+    let rows = ranges
         .iter()
         .map(|&(start, end)| query(&connection, start, end))
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut missing = false;
+    if check_missing {
+        for &(start, end) in ranges { missing |= range_has_unreported_compaction(&connection, start, end).map_err(|e| e.to_string())?; }
+    }
+    Ok((rows, missing))
 }
 
-#[cfg(test)]
 fn range_has_unreported_compaction(
     connection: &Connection,
     start: f64,
@@ -355,6 +368,20 @@ fn query(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn local_day_query_excludes_the_next_midnight_and_keeps_dated_models() {
+        let c=Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE published_events(timestamp INTEGER,model TEXT,input_tokens INTEGER,cached_input_tokens INTEGER,output_tokens INTEGER,tokens INTEGER);").unwrap();
+        let start=1793808000_i64; // Asia/Shanghai midnight.
+        let end=start+86400;
+        for (at,tokens) in [(start-1,1),(start,10),(end-1,20),(end,40)] {
+            c.execute("INSERT INTO published_events VALUES(?1,'gpt-6.1-sol',?2,0,0,?2)",params![at,tokens]).unwrap();
+        }
+        let first=query(&c,start as f64,end as f64).unwrap();
+        assert_eq!(first.iter().map(|row|row.breakdown.total_tokens).sum::<u64>(),30);
+        assert!(first.iter().all(|row|row.event_start_unix.is_some_and(|at|at>=start&&at<end)));
+        assert_eq!(query(&c,end as f64,(end+86400) as f64).unwrap()[0].breakdown.total_tokens,40);
+    }
     #[test]
     fn exact_fractional_ranges_aggregate_canonical_events_once() {
         let c = Connection::open_in_memory().unwrap();

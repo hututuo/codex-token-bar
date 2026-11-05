@@ -1159,14 +1159,35 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         return try reader.cycleExactUsage(provenanceEpoch: provenanceEpoch, generation: generation, from: start, before: end)
     }
 
-    func cycleExactUsage(provenanceEpoch: String, generation: Int64,
+    /// Reads the latest committed local ledger; day navigation is independent of
+    /// subscription identity and does not trigger a scan or require a quiet source.
+    static func dayExactUsage(codexHome: URL, from start: Date, before end: Date) throws -> (events: [TokenCacheAttributionEvent], hasMissingCompaction: Bool) {
+        let reader = try Self(readOnlyCycleHome: codexHome)
+        return try reader.dayExactUsage(from: start, before: end)
+    }
+
+    func dayExactUsage(from start: Date, before end: Date) throws -> (events: [TokenCacheAttributionEvent], hasMissingCompaction: Bool) {
+        return try driver.withOperationConnection {
+            try driver.withConnection { connection in
+                try connection.readTransaction { tx in
+                    let events = try cycleExactUsage(provenanceEpoch: nil, generation: nil, from: start, before: end)
+                    let missing = try tx.readRows("SELECT 1 FROM (\(Self.unresolvedCompactionTimesSQL)) WHERE timestamp>=? AND timestamp<? LIMIT 1",
+                        bindings: [.date(start), .date(end)]) { $0.int(0) }.first != nil
+                    return (events, missing)
+                }
+            }
+        }
+    }
+
+    func cycleExactUsage(provenanceEpoch: String?, generation: Int64?,
                          from start: Date, before end: Date) throws -> [TokenCacheAttributionEvent] {
         return try driver.withConnection { db in
             try db.readTransaction { tx in
                 let state = try currentAttributionState(connection: tx)
                 let pending = try tx.readRows("SELECT 1 FROM schema_meta WHERE key='canonical_projection_pending'") { $0.int(0) }.first != nil
                 guard !pending, !state.currentScanUnsafeCauseDetected,
-                      state.generation == generation, state.provenanceEpoch == provenanceEpoch else {
+                      generation.map({ state.generation == $0 }) ?? true,
+                      provenanceEpoch.map({ state.provenanceEpoch == $0 }) ?? true else {
                     throw SQLiteDatabaseError(operation: "Read observed cycle", code: SQLITE_ABORT,
                         message: "周期明细等待精确统计更新", path: driver.url.path)
                 }

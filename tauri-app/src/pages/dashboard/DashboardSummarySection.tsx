@@ -142,6 +142,8 @@ export function DashboardSummarySection({
       </p>}
       <StatsStrip
         clientCosts={clientCosts}
+        dayClients={scope.allowed}
+        dayRefreshKey={`${quotaData.generatedAt}|${scope.snapshot.updatedAt ?? ""}`}
         sourceToken={sourceToken}
         attributionIdentity={dashboard.attributionIdentity ?? null}
         quotaUpdatedAt={dashboard.quotaUpdatedAt}

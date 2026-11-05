@@ -4727,6 +4727,10 @@ pub(crate) fn quota_cycle_model_ranges(codex_home: &Path, ranges: &[(f64, f64)])
     exact_usage_index::cycle_range::read(codex_home, ranges)
 }
 
+pub(crate) fn day_model_usage(codex_home: &Path, start: f64, end: f64) -> Result<(Vec<ModelTokenBreakdown>, bool), String> {
+    exact_usage_index::cycle_range::read_day(codex_home, start, end)
+}
+
 pub(crate) fn quota_cycle_consumption_evidence(codex_home: &Path, ranges: &[(f64, f64)]) -> Vec<crate::core::quota_history::cycles::ConsumptionEvidence> {
     exact_usage_index::cycle_range::read_consumption_evidence(codex_home, ranges)
 }

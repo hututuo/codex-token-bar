@@ -695,6 +695,10 @@ struct StatStrip: View, @preconcurrency Equatable {
     var preciseTimeSeriesFresh = false
     var cacheStatus = ""
     var clientCosts: ClientModelCostPeriods? = nil
+    var dayClients: Set<String> = ["codex"]
+    var dayRefreshKey = ""
+    @State private var selectedDay: Date?
+    @State private var dayCalendarExpanded = false
 
     @AppStorage(SharedAccountUsageAttributionSettings.priceModelKey) private var quotaEstimateModelRaw = OfficialAPIPriceModel.gpt56Sol.rawValue
     @AppStorage(DashboardModelCostScope.storageKey) private var modelCostScopeRaw = DashboardModelCostScope.defaultScope.rawValue
@@ -776,6 +780,7 @@ struct StatStrip: View, @preconcurrency Equatable {
         let left = lhs.snapshot
         let right = rhs.snapshot
         return lhs.clientCosts == rhs.clientCosts
+            && lhs.dayClients == rhs.dayClients && lhs.dayRefreshKey == rhs.dayRefreshKey
             && left.generatedAt == right.generatedAt
             && left.preciseTimeSeriesGeneratedAt == right.preciseTimeSeriesGeneratedAt
             && left.usagePrecision == right.usagePrecision
@@ -848,7 +853,22 @@ struct StatStrip: View, @preconcurrency Equatable {
                 DiagnosticNotice(summary: "用量读取失败", logs: cacheStatus)
             }
 
-            if showsModelCostRow, clientCosts == nil, modelCostScopeBinding.wrappedValue == .sevenDay {
+            if showsModelCostRow {
+                HStack(spacing: 8) {
+                    Button { dayCalendarExpanded.toggle() } label: { Label("单日金额", systemImage: "calendar") }
+                        .buttonStyle(.plain).accessibilityHint("展开日历，选择某一天的模型费用")
+                    if let selectedDay {
+                        Text(ModelCostDay(selectedDay).label).foregroundStyle(.secondary)
+                        Button("返回汇总") { self.selectedDay = nil; dayCalendarExpanded = false }.buttonStyle(.plain)
+                    }
+                    Spacer()
+                }.font(.system(size: 11)).padding(.horizontal, 8).padding(.top, 6)
+                if dayCalendarExpanded { ModelCostDayCalendar(selection: $selectedDay).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 8) }
+            }
+            if showsModelCostRow, let selectedDay {
+                DashboardDayCostBrowser(day: ModelCostDay(selectedDay), home: cycleCodexHome, clients: dayClients,
+                    refreshKey: dayRefreshKey)
+            } else if showsModelCostRow, clientCosts == nil, modelCostScopeBinding.wrappedValue == .sevenDay {
                 DashboardQuotaCycleBrowser(scope: modelCostScopeBinding, history: quotaCycleHistory,
                     identity: quotaSnapshot?.historyIdentity, codexHome: cycleCodexHome,
                     snapshot: snapshot, fallbackModel: OfficialAPIPriceModel.storedValue(for: quotaEstimateModelRaw),
@@ -1021,6 +1041,8 @@ struct DashboardModelCostRow: View {
     var cycleSummary = ""
     var onSelectCycle: ((String?) -> Void)?
     var clientCosts: ClientModelCostPeriods? = nil
+    var dayLabel: String? = nil
+    var dayIncomplete = false
     @State private var calendarExpanded = false
 
     private var sourceRows: [ModelTokenBreakdown] {
@@ -1061,6 +1083,7 @@ struct DashboardModelCostRow: View {
     }
 
     private var missingDetailText: String {
+        if dayLabel != nil { return "所选日期模型明细待读取" }
         switch scope {
         case .sevenDay: return "\(periodLabel)模型明细待读取"
         case .today: return "今日模型明细待读取"
@@ -1077,6 +1100,7 @@ struct DashboardModelCostRow: View {
     }
 
     private var emptyDetailText: String {
+        if dayLabel != nil { return dayIncomplete ? "已读到的来源暂无记录；部分来源待核验" : "该日暂无已记录模型用量" }
         if clientCosts?.isPreparing == true { return "模型费用计算中…" }
         switch scope {
         case .sevenDay: return clientCosts?.codexPendingScopes.contains(.sevenDay) == true ? "Codex 近7天模型明细同步中" : "\(periodLabel)暂无模型用量"
@@ -1114,12 +1138,13 @@ struct DashboardModelCostRow: View {
                     .font(.system(size: 11.5, weight: .semibold))
                     .fixedSize()
 
-                DashboardModelCostScopePicker(scope: $scope,
+                if let dayLabel { Text(dayLabel).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary) }
+                else { DashboardModelCostScopePicker(scope: $scope,
                     periodLabel: clientCosts != nil ? "近7天" : selectedCycle?.isCurrent == false ? "历史" : "本期",
                     onCurrent: {
                         if let current = cycles.first(where: \.isCurrent) { onSelectCycle?(current.id) }
                         calendarExpanded = false
-                    })
+                    }) }
 
                 if scope == .lifetime {
                     Text("双击可修改模型配色")
@@ -1157,7 +1182,7 @@ struct DashboardModelCostRow: View {
 
                 if selectedAvailable, modelDetailAvailable, !visibleItems.isEmpty || !pendingItems.isEmpty {
                     VStack(alignment: .trailing, spacing: 1) {
-                        Text("\(scope == .sevenDay ? (hasUnknownPrices ? "已确认已知价格小计" : "已确认") : (hasUnknownPrices ? "已知价格小计" : "合计")) \(visibleTotalCostText)")
+                        Text("\(scope == .sevenDay ? (hasUnknownPrices ? "已确认已知价格小计" : "已确认") : (hasUnknownPrices || dayIncomplete ? "已知小计" : "合计")) \(visibleTotalCostText)")
                             .font(.system(size: 11.5, weight: .semibold))
                             .foregroundStyle(AppTheme.accentBlue)
                             .monospacedDigit()
@@ -1196,7 +1221,12 @@ struct DashboardModelCostRow: View {
             }
 
             if !selectedAvailable {
-                if scope == .sevenDay {
+                if dayLabel != nil {
+                    Text(dayIncomplete ? "单日金额暂不可用" : "所选日期模型明细待读取")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else if scope == .sevenDay {
                     Text(selectedModelDisplayState == .stale
                         ? "正在精准计算中，显示上次可信结果"
                         : "\(periodLabel)模型明细待读取")
@@ -1253,7 +1283,7 @@ struct DashboardModelCostRow: View {
         )
         .padding(.horizontal, 8)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(scope == .sevenDay ? periodLabel : scope.rawValue)模型费用")
+        .accessibilityLabel("\(dayLabel ?? (scope == .sevenDay ? periodLabel : scope.rawValue))模型费用")
     }
 }
 

@@ -3401,6 +3401,53 @@ pub struct QuotaCycleUsage {
     observed_end_unix: f64,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelDayUsage {
+    codex_rows: Vec<crate::models::ModelTokenBreakdown>,
+    client_rows: Vec<crate::core::multi_client_usage::MultiClientUsageSummary>,
+    available_clients: Vec<String>,
+    issues: Vec<String>,
+}
+
+fn model_day_usage(home: Option<&Path>, start: i64, end: i64, clients: &[String]) -> Result<ModelDayUsage, String> {
+    crate::core::multi_client_usage::validate_day_range(start, end, clients)?;
+    let mut value = ModelDayUsage { codex_rows: Vec::new(), client_rows: Vec::new(), available_clients: Vec::new(), issues: Vec::new() };
+    if clients.iter().any(|c| c == "codex") {
+        match home.map(|home| token_count_jsonl::day_model_usage(home, start as f64, end as f64)) {
+            Some(Ok((rows, missing))) => {
+                value.codex_rows = rows; value.available_clients.push("codex".into());
+                if missing { value.issues.push("Codex：该日有压缩用量缺失，显示已记录小计".into()); }
+            }
+            Some(Err(error)) => value.issues.push(format!("Codex 单日记录暂不可读：{error}")),
+            None => value.issues.push("Codex 数据源待读取".into()),
+        }
+    }
+    let external = clients.iter().filter(|c| c.as_str() != "codex").cloned().collect::<Vec<_>>();
+    if !external.is_empty() {
+        match crate::core::multi_client_usage::read_day_summaries(start, end, &external) {
+            Ok(rows) => { value.client_rows = rows; value.available_clients.extend(external); }
+            Err(error) => value.issues.push(format!("其他客户端单日记录暂不可读：{error}")),
+        }
+    }
+    Ok(value)
+}
+
+#[tauri::command]
+pub async fn read_model_day_usage(
+    window: tauri::WebviewWindow, app: AppHandle, source_token: Option<CodexHomeSourceToken>,
+    start_unix: i64, end_unix: i64, clients: Vec<String>,
+) -> Result<ModelDayUsage, String> {
+    require_window_label(&window, "read_model_day_usage")?;
+    crate::core::multi_client_usage::validate_day_range(start_unix, end_unix, &clients)?;
+    if clients.iter().any(|c| c == "codex") {
+        if let Some(token) = source_token {
+            return run_source_bound_dashboard_read(&app, token, move |home| model_day_usage(Some(&home), start_unix, end_unix, &clients)).await;
+        }
+    }
+    run_blocking_command(move || model_day_usage(None, start_unix, end_unix, &clients)).await
+}
+
 #[tauri::command]
 pub async fn read_quota_cycle_usage(
     window: tauri::WebviewWindow, app: AppHandle, source_token: CodexHomeSourceToken,

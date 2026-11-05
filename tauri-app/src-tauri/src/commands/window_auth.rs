@@ -14,6 +14,7 @@ pub(crate) const MAIN_WINDOW_ONLY_COMMANDS: &[&str] = &[
     "read_usage_cache_status",
     "read_quota_cycles",
     "read_quota_cycle_usage",
+    "read_model_day_usage",
     "read_live_thread_options",
     "reset_live_rate_monitor",
     "read_autostart_status",

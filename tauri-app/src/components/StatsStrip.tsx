@@ -28,11 +28,15 @@ import {
 import { useQuotaCycleHistory } from "./statsStrip/useQuotaCycleHistory";
 import { QuotaCycleControls, quotaCycleErrorStatus } from "./statsStrip/QuotaCycleControls";
 import { QuotaCycleCalendar } from "./statsStrip/QuotaCycleCalendar";
+import { ModelDayCalendar } from "./statsStrip/ModelDayCalendar";
+import { useModelDayUsage } from "./statsStrip/useModelDayUsage";
 import type { CodexHomeSourceToken, QuotaAttributionIdentity } from "../types/dashboard";
 import { modelCostRowsAvailable } from "./tokenActivity/modelCostAvailability";
 
 interface StatsStripProps {
   clientCosts?: ClientCostPeriods;
+  dayClients?: readonly string[];
+  dayRefreshKey?: string;
   sourceToken?: CodexHomeSourceToken | null;
   attributionIdentity?: QuotaAttributionIdentity | null;
   quotaUpdatedAt?: string | null;
@@ -66,6 +70,8 @@ type ModelAttributionDisplayState = "current" | "stale" | "pending";
 
 function StatsStripView({
   clientCosts,
+  dayClients = ["codex"],
+  dayRefreshKey = "",
   sourceToken = null,
   attributionIdentity = null,
   quotaUpdatedAt = null,
@@ -83,6 +89,10 @@ function StatsStripView({
   const [priceModel, setPriceModel] = useState<OfficialAPIPriceModel>("gpt56Sol");
   const [modelCostScope, setModelCostScope] = useState<ModelCostScope>("sevenDay");
   const [calendarExpanded, setCalendarExpanded] = useState(false);
+  const [selectedDay, setSelectedDay] = useState<string|null>(null);
+  const [dayCalendarExpanded, setDayCalendarExpanded] = useState(false);
+  const dayUsage = useModelDayUsage(selectedDay, sourceToken, dayClients, dayRefreshKey);
+  const leaveDay = () => {setSelectedDay(null);setDayCalendarExpanded(false);};
   const lifetimeSavings = useMemo(() => savingsPresentation(estimateLifetimeSavings({
     breakdown: lifetimeBreakdownFromStats(stats),
     firstUsageAt: stats.firstUsageAt,
@@ -91,7 +101,7 @@ function StatsStripView({
     modelBreakdowns: stats.modelBreakdowns,
   })), [planLabel, priceModel, stats]);
   const cycleHistory = useQuotaCycleHistory(sourceToken, attributionIdentity,
-    `${quotaUpdatedAt ?? ""}|${preciseDataFresh}|${stats.totalTokens}`, modelCostScope === "sevenDay" && !clientCosts);
+    `${quotaUpdatedAt ?? ""}|${preciseDataFresh}|${stats.totalTokens}`, modelCostScope === "sevenDay" && !clientCosts && !selectedDay);
   const periodLabel = clientCosts ? "近7天" : cycleHistory.selected?.current === false ? "历史周期" : "本期";
   const selectCycle = (id: string) => { cycleHistory.select(id); };
   useEffect(() => { setEditingColor(null); setCalendarExpanded(false); }, [modelCostScope, sourceToken?.canonicalHomeKey, attributionIdentity?.scopeKey]);
@@ -116,24 +126,24 @@ function StatsStripView({
     : modelCostScope === "lifetime"
     ? stats.totalTokens
     : cycleHistory.usage?.modelBreakdowns.reduce((total, row) => total + row.breakdown.totalTokens, 0) ?? 0;
-  const modelCostDataAvailable = clientCosts ? true : modelCostScope === "sevenDay"
+  const modelCostDataAvailable = selectedDay ? Boolean(dayUsage.value?.availableClients.length) : clientCosts ? true : modelCostScope === "sevenDay"
     ? sevenDayModelDisplayState !== "pending"
     : modelCostScope === "today"
     ? todayModelDisplayState !== "pending"
     : modelCostRowsAvailable(modelCostRows, preciseDataFresh);
-  const modelDetailAvailable = clientCosts ? true : modelCostScope === "sevenDay"
+  const modelDetailAvailable = selectedDay ? Boolean(dayUsage.value) : clientCosts ? true : modelCostScope === "sevenDay"
     ? sevenDayModelDisplayState !== "pending"
     : modelCostScope === "today"
     ? todayModelDisplayState !== "pending"
     : expectedModelTokens <= 0 || modelCostRows.length > 0;
   const modelCostItems = useMemo(() => (
-    clientCosts ? clientCosts[modelCostScope] : modelCostDataAvailable && modelDetailAvailable
+    selectedDay ? dayUsage.items : clientCosts ? clientCosts[modelCostScope] : modelCostDataAvailable && modelDetailAvailable
       ? floatingTodayModelUsageItems(modelCostRows, priceModel, { mergeAutoReview: false })
       : []
-  ), [clientCosts, modelCostScope, modelCostDataAvailable, modelCostRows, modelDetailAvailable, priceModel, palette]);
+  ), [selectedDay, dayUsage.items, clientCosts, modelCostScope, modelCostDataAvailable, modelCostRows, modelDetailAvailable, priceModel, palette]);
   const modelCostTotal = floatingModelUsageKnownCostUSD(modelCostItems);
   const modelPricesIncomplete = hasUnknownModelPrices(modelCostItems);
-  const selectedModelDisplayState = clientCosts ? (clientCosts.codexPendingScopes?.includes(modelCostScope as "today"|"sevenDay") ? "pending" : "current") : modelCostScope === "sevenDay"
+  const selectedModelDisplayState = selectedDay ? (dayUsage.loading ? "pending" : dayUsage.refreshing ? "stale" : "current") : clientCosts ? (clientCosts.codexPendingScopes?.includes(modelCostScope as "today"|"sevenDay") ? "pending" : "current") : modelCostScope === "sevenDay"
     ? sevenDayModelDisplayState
     : modelCostScope === "today"
     ? todayModelDisplayState
@@ -142,7 +152,7 @@ function StatsStripView({
     .filter((item) => item.referenceCostUSD !== null)
     .map((item) => `${item.label} 参考 ${floatingModelUsageMoneyText(item.referenceCostUSD ?? 0)}`)
     .join(" · ");
-  const modelFamilies = clientCosts ? clientCostGroups(modelCostItems) : dashboardModelFamilyGroups(modelCostItems);
+  const modelFamilies = clientCosts || selectedDay ? clientCostGroups(modelCostItems) : dashboardModelFamilyGroups(modelCostItems);
 
   useEffect(() => {
     setPriceModel(readStoredQuotaPriceModel());
@@ -176,10 +186,15 @@ function StatsStripView({
           ))}
         </div>
 
-        <div className="stats-model-cost-row" aria-label={`${modelCostScope === "sevenDay" ? periodLabel : modelCostScope === "today" ? "今日" : "累计"}模型费用`}>
+        <div className="stats-model-cost-row" aria-label={`${selectedDay ?? (modelCostScope === "sevenDay" ? periodLabel : modelCostScope === "today" ? "今日" : "累计")}模型费用`}>
+          <div className="model-day-controls">
+            <button type="button" aria-expanded={dayCalendarExpanded} onClick={()=>setDayCalendarExpanded(value=>!value)}>单日金额 ▦</button>
+            {selectedDay && <><span>{selectedDay}</span><button type="button" onClick={leaveDay}>返回汇总</button></>}
+          </div>
+          {dayCalendarExpanded && <ModelDayCalendar selected={selectedDay} onSelect={key=>{setSelectedDay(key);setCalendarExpanded(false);}}/>}
           <div className="stats-model-cost-header">
             <strong className="stats-model-cost-title">模型费用</strong>
-            <div className="stats-model-cost-scope-and-hint">
+            {!selectedDay && <div className="stats-model-cost-scope-and-hint">
               <div className="stats-model-cost-scope" role="group" aria-label="模型费用范围">
                 <button
                   aria-pressed={modelCostScope === "sevenDay"}
@@ -187,7 +202,7 @@ function StatsStripView({
                   onClick={() => { selectCycle("current"); setModelCostScope("sevenDay"); }}
                   type="button"
                 >
-                  {modelCostScope === "sevenDay" && periodLabel === "历史周期" ? "历史" : "本期"}
+                  {clientCosts ? "近7天" : modelCostScope === "sevenDay" && periodLabel === "历史周期" ? "历史" : "本期"}
                 </button>
                 <button
                   aria-pressed={modelCostScope === "today"}
@@ -207,19 +222,20 @@ function StatsStripView({
                 </button>
               </div>
               {modelCostScope === "lifetime" && <span className="model-color-inline-hint">双击可修改模型配色</span>}
-            </div>
-            {!clientCosts && modelCostScope === "sevenDay" ? <QuotaCycleControls cycles={cycleHistory.cycles}
+            </div>}
+            {selectedDay && <span className="model-day-label">{selectedDay}</span>}
+            {!selectedDay && !clientCosts && modelCostScope === "sevenDay" ? <QuotaCycleControls cycles={cycleHistory.cycles}
               selected={cycleHistory.selected} onSelect={selectCycle}
               expanded={calendarExpanded} onToggle={() => setCalendarExpanded(value => !value)} /> : null}
             {selectedModelDisplayState !== "current" ? (
               <span className="stats-model-cost-status" role="status">
-                {!clientCosts && modelCostScope === "sevenDay" && selectedModelDisplayState === "pending" ? (cycleHistory.error ? quotaCycleErrorStatus(cycleHistory.error) : "周期明细待读取") : "正在精准计算中…"}{selectedModelDisplayState === "stale" ? " 显示上次可信结果" : ""}
+                {selectedDay ? "正在读取单日金额…" : !clientCosts && modelCostScope === "sevenDay" && selectedModelDisplayState === "pending" ? (cycleHistory.error ? quotaCycleErrorStatus(cycleHistory.error) : "周期明细待读取") : "正在精准计算中…"}{selectedModelDisplayState === "stale" ? " 显示上次可信结果" : ""}
               </span>
             ) : null}
             {modelCostDataAvailable && modelDetailAvailable && modelCostItems.length > 0 ? (
               <span className="stats-model-cost-total-wrap">
                 <strong className="stats-model-cost-total">
-                  {modelPricesIncomplete ? "已知价格小计" : modelCostScope === "sevenDay" && cycleHistory.selected?.incomplete ? "已观测部分" : "合计"} {modelCostTotal === null ? "—" : `API ${floatingModelUsageMoneyText(modelCostTotal)}`}
+                  {modelPricesIncomplete || (selectedDay && dayUsage.value?.issues.length) ? "已知价格小计" : !selectedDay && modelCostScope === "sevenDay" && cycleHistory.selected?.incomplete ? "已观测部分" : "合计"} {modelCostTotal === null ? "—" : `API ${floatingModelUsageMoneyText(modelCostTotal)}`}
                 </strong>
                 {modelPricesIncomplete ? <small className="stats-model-cost-reference">部分模型价格未知，未计入金额</small> : null}
                 {referenceCostSummary ? (
@@ -231,11 +247,20 @@ function StatsStripView({
               </span>
             ) : null}
           </div>
-          {!clientCosts && modelCostScope === "sevenDay" && calendarExpanded ? <QuotaCycleCalendar cycles={cycleHistory.cycles}
+          {selectedDay && <div className="model-day-status">
+            <span>{Intl.DateTimeFormat().resolvedOptions().timeZone} · 所选日期的已记录参考费用</span>
+            {dayUsage.value?.issues.map(issue=><p key={issue}>{issue}</p>)}
+            {dayUsage.error && <p role="alert">单日金额读取失败：{dayUsage.error}</p>}
+            {(dayUsage.error || Boolean(dayUsage.value?.issues.length)) && <button type="button" onClick={dayUsage.retry}>重新读取单日</button>}
+          </div>}
+          {!selectedDay && !clientCosts && modelCostScope === "sevenDay" && calendarExpanded ? <QuotaCycleCalendar cycles={cycleHistory.cycles}
             selected={cycleHistory.selected} onSelect={selectCycle} /> : null}
-          {!clientCosts && modelCostScope === "sevenDay" && selectedModelDisplayState === "pending" ? (
+          {selectedDay && dayUsage.loading ? <span className="stats-model-cost-empty">所选日期模型明细待读取</span>
+          : selectedDay && !modelCostDataAvailable ? <span className="stats-model-cost-empty">单日金额暂不可用</span>
+          : selectedDay && !modelCostItems.length ? <span className="stats-model-cost-empty">{dayUsage.value?.issues.length ? "已读到的来源暂无记录；部分来源待核验" : "该日暂无已记录用量 · $0.00"}</span>
+          : !selectedDay && !clientCosts && modelCostScope === "sevenDay" && selectedModelDisplayState === "pending" ? (
             <span className="stats-model-cost-empty">{cycleHistory.error ? quotaCycleErrorStatus(cycleHistory.error) : `${periodLabel}模型明细待读取`}</span>
-          ) : modelCostScope === "today" && selectedModelDisplayState === "pending" ? (
+          ) : !selectedDay && modelCostScope === "today" && selectedModelDisplayState === "pending" ? (
             <span className="stats-model-cost-empty">{clientCosts ? "Codex 今日模型明细同步中" : "今日模型明细待读取"}</span>
           ) : !modelCostDataAvailable ? (
             <span className="stats-model-cost-empty">模型费用待读取</span>
