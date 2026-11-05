@@ -5,6 +5,8 @@ mod reconciler;
 mod ledger;
 mod canonical;
 mod message_links;
+mod dashboard_buckets;
+use dashboard_buckets::refresh_range as refresh_dashboard_5m_range;
 mod empty_sources;
 mod representations;
 mod runtime_recovery;
@@ -2149,6 +2151,7 @@ impl ExactUsageIndex {
         ledger::install(&connection)?;
         preparation.advance("accounting_migration");
         apply_accounting_migration(&mut connection, accounting_receipt)?;
+        dashboard_buckets::install(&connection)?;
         canonical::ensure_published_projection(&connection)?;
         representations::migrate(&mut connection, &path, existed_before)?;
         retention::install(&connection)?;
@@ -8862,56 +8865,6 @@ fn merge_dashboard_bucket_bounds(
     }
 }
 
-fn refresh_dashboard_5m_range(
-    transaction: &Transaction<'_>,
-    generation: i64,
-    start: i64,
-    end: i64,
-) -> Result<(), String> {
-    transaction
-        .execute(
-            "DELETE FROM dashboard_5m WHERE file_generation = ?1 AND bucket_start BETWEEN ?2 AND ?3",
-            params![generation, start, end],
-        )
-        .map_err(|error| format!("无法清理全局五分钟聚合范围：{error}"))?;
-    transaction
-        .execute(
-            r#"
-            INSERT INTO dashboard_5m(
-                file_generation, bucket_start, model_key, model,
-                total_tokens, calls, input_tokens, cached_input_tokens, output_tokens
-            )
-            SELECT
-                ?1,
-                b.bucket_start,
-                b.model_key,
-                MAX(b.model),
-                SUM(b.total_tokens),
-                SUM(b.calls),
-                SUM(b.input_tokens),
-                SUM(b.cached_input_tokens),
-                SUM(b.output_tokens)
-            FROM dashboard_file_5m b
-            JOIN (
-                SELECT path, MAX(generation) AS generation
-                FROM files
-                WHERE generation <= ?1
-                GROUP BY path
-            ) latest
-              ON latest.generation = b.file_generation
-             AND latest.path = b.file_path
-            JOIN files f
-              ON f.generation = latest.generation
-             AND f.path = latest.path
-             AND f.deleted = 0
-            WHERE b.bucket_start BETWEEN ?2 AND ?3
-            GROUP BY b.bucket_start, b.model_key
-            "#,
-            params![generation, start, end],
-        )
-        .map(|_| ())
-        .map_err(|error| format!("无法更新全局五分钟聚合范围：{error}"))
-}
 
 fn rebuild_dashboard_5m_generation(
     transaction: &Transaction<'_>,
@@ -16788,6 +16741,7 @@ fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
             "#,
         )
         .map_err(|error| format!("无法初始化 schema 11 精确 token 索引结构：{error}"))?;
+    dashboard_buckets::install(connection)?;
 
     for table in [
         "dashboard_turn_candidates_current",

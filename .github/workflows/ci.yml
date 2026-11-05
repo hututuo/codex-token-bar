@@ -339,6 +339,11 @@ jobs:
               --require pending_message_repairs_respect_current_receipts_and_binding_availability \
               --require fresh_summary_preserves_day_modes_and_same_generation_changes \
               --require fresh_summary_keeps_integer_overflow_as_an_error_and_releases_its_snapshot \
+              --require dashboard_range_ignores_unrelated_sources_after_existing_index_upgrade \
+              --require dashboard_range_preserves_pending_visibility_and_replacement_rules \
+              --require dashboard_range_keeps_overflow_as_an_error_and_rolls_back \
+              --require dashboard_range_executes_through_the_bound_store_namespace \
+              --require current_index_reopen_adds_bucket_index_without_changing_published_events \
               --require missing_and_known_empty_legacy_candidates_use_the_held_pool_without_becoming_facts \
               --require user_tables_resembling_sqlite_internals_survive_import_and_export \
               --require foreign_dependencies_resembling_sqlite_internals_invalidate_proof \
