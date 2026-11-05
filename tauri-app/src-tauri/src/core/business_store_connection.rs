@@ -6,7 +6,7 @@
 //! prepares it.
 
 use crate::core::business_store_container::{BusinessStoreError, Container, StoreSpec};
-use crate::core::business_store_sql::StoreSqlBinding;
+use crate::core::business_store_sql::{references_logical_sequence, split_complete_statements, StoreSqlBinding};
 use rusqlite::{
     functions::FunctionFlags,
     types::{ToSql, ToSqlOutput, Value},
@@ -93,16 +93,14 @@ impl StoreConnection {
              SELECT 'sqlite_autoindex_' || substr(name,{autoindex_after_prefix}),type, \
                     substr(tbl_name,{after_prefix}),rootpage,NULL \
              FROM main.sqlite_master \
-             WHERE substr(name,1,{autoindex_prefix_len})='sqlite_autoindex_{prefix}'; \
-             CREATE TEMP VIEW tb_logical_sequence AS \
-             SELECT substr(name,{after_prefix}) AS name,seq FROM main.sqlite_sequence \
-             WHERE substr(name,1,{prefix_len})='{prefix}';",
+             WHERE substr(name,1,{autoindex_prefix_len})='sqlite_autoindex_{prefix}';",
             after_prefix = prefix.len() + 1,
             prefix_len = prefix.len(),
             autoindex_after_prefix = 18 + prefix.len(),
             autoindex_prefix_len = 17 + prefix.len(),
             prefix = prefix
         ))?;
+        Self::refresh_sequence_view(&raw, &prefix, false)?;
         Ok(Self {
             raw,
             binding: Some(RefCell::new(binding)),
@@ -147,13 +145,61 @@ impl StoreConnection {
         self.raw
     }
 
-    fn bind_sql(&self, sql: &str) -> Result<String> {
+    fn translate_sql(&self, sql: &str) -> Result<String> {
         let Some(binding) = &self.binding else {
             return Ok(sql.to_owned());
         };
         binding.borrow_mut().sql(sql).map_err(|error| {
             rusqlite::Error::InvalidParameterName(format!("store SQL binding: {error:?}"))
         })
+    }
+
+    fn bind_sql(&self, sql: &str) -> Result<String> {
+        let bound = self.translate_sql(sql)?;
+        self.refresh_sequence_view_for_sql(&bound)?;
+        Ok(bound)
+    }
+
+    fn refresh_sequence_view_for_sql(&self, sql: &str) -> Result<()> {
+        if references_logical_sequence(sql).map_err(|error| {
+            rusqlite::Error::InvalidParameterName(format!("store SQL binding: {error:?}"))
+        })? {
+            if let Some(binding) = &self.binding {
+                Self::refresh_sequence_view(&self.raw, binding.borrow().prefix(), true)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn refresh_sequence_view(raw: &Connection, prefix: &str, required: bool) -> Result<()> {
+        let physical_exists: bool = raw.query_row(
+            "SELECT EXISTS(SELECT 1 FROM main.sqlite_master WHERE type='table' AND name='sqlite_sequence')",
+            [], |row| row.get(0),
+        )?;
+        // A dangling TEMP view makes SQLite reject even an unrelated ALTER.
+        // Do not synthesize an empty sequence: prepared or indirect readers
+        // could retain that projection after the first AUTOINCREMENT CREATE.
+        // Before the physical table exists, explicit sequence reads retain
+        // SQLite's missing-table error. No MAIN placeholder is created.
+        if !physical_exists {
+            if required {
+                return Err(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
+                    Some("no such table: main.sqlite_sequence".to_owned()),
+                ));
+            }
+            return Ok(());
+        }
+        let select = format!("SELECT substr(name,{}) AS name,seq FROM main.sqlite_sequence WHERE substr(name,1,{})='{prefix}'", prefix.len() + 1, prefix.len());
+        let expected = format!("CREATE VIEW tb_logical_sequence AS {select}");
+        let existing: Option<String> = raw.query_row(
+            "SELECT sql FROM sqlite_temp_master WHERE type='view' AND name='tb_logical_sequence'",
+            [], |row| row.get(0),
+        ).optional()?;
+        if existing.as_deref() != Some(&expected) {
+            raw.execute_batch(&format!("DROP VIEW IF EXISTS temp.tb_logical_sequence; CREATE TEMP VIEW tb_logical_sequence AS {select}"))?;
+        }
+        Ok(())
     }
 
     pub(crate) fn execute<P: Params>(&self, sql: &str, params: P) -> Result<usize> {
@@ -165,11 +211,25 @@ impl StoreConnection {
     }
 
     pub(crate) fn execute_batch(&self, sql: &str) -> Result<()> {
-        let sql = self.bind_sql(sql)?;
+        let sql = self.translate_sql(sql)?;
         if sql.trim().is_empty() {
             return Ok(());
         }
-        self.raw.execute_batch(&sql)
+        if self.binding.is_some() && sql.contains("tb_logical_sequence") {
+            // A batch can create its first AUTOINCREMENT table before reading
+            // its sequence. Bind the whole batch before executing any of it,
+            // then refresh the view at the statement that actually uses it.
+            let statements = split_complete_statements(&sql).map_err(|error| {
+                rusqlite::Error::InvalidParameterName(format!("store SQL binding: {error:?}"))
+            })?;
+            for statement in statements {
+                self.refresh_sequence_view_for_sql(statement)?;
+                self.raw.execute_batch(statement)?;
+            }
+            Ok(())
+        } else {
+            self.raw.execute_batch(&sql)
+        }
     }
 
     pub(crate) fn set_temporary_namespace_mode(&self, enabled: bool) -> Result<()> {
@@ -907,4 +967,130 @@ mod tests {
         drop(db);
         let _ = std::fs::remove_dir_all(directory);
     }
+    #[test]
+    fn bound_temporary_tables_and_views_cannot_shadow_published_rows() {
+        for mode in [false, true] {
+            for declaration in ["CREATE TEMP TABLE facts(value INTEGER)",
+                "CREATE TEMP VIEW facts AS SELECT 99 AS value", "CREATE TABLE temp.facts(value INTEGER)",
+                "CREATE TEMPORARY TABLE facts(value INTEGER)",
+                "CREATE TABLE \"temp\".\"facts\"(value INTEGER)",
+                "CREATE TEMP VIEW \"facts\" AS SELECT 99 AS value"] {
+                let db = bound();
+                db.set_temporary_namespace_mode(mode).unwrap();
+                db.execute_batch("CREATE TABLE facts(value INTEGER);INSERT INTO facts VALUES(17)").unwrap();
+                assert_eq!(db.query_row("SELECT value FROM facts", [], |r|r.get::<_,i64>(0)).unwrap(), 17);
+                assert!(db.execute_batch(declaration).is_err(), "{declaration}");
+                assert_eq!(db.query_row("SELECT value FROM facts", [], |r|r.get::<_,i64>(0)).unwrap(), 17);
+                db.execute("UPDATE facts SET value=18", []).unwrap();
+                assert_eq!(db.query_row("SELECT value FROM main.facts", [], |r|r.get::<_,i64>(0)).unwrap(), 18);
+                assert_eq!(db.raw().query_row("SELECT COUNT(*) FROM sqlite_temp_master WHERE type='table'", [], |r|r.get::<_,i64>(0)).unwrap(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn bound_drop_and_rename_preserve_main_and_temp_ownership() {
+        for mode in [false, true] {
+            let db = bound();
+            db.set_temporary_namespace_mode(mode).unwrap();
+            db.execute_batch("CREATE TABLE facts(value INTEGER);INSERT INTO facts VALUES(17);CREATE TEMP TABLE work(value INTEGER);INSERT INTO work VALUES(99)").unwrap();
+            for sql in ["DROP TABLE IF EXISTS temp.facts", "DROP TABLE IF EXISTS main.work",
+                "ALTER TABLE temp.work RENAME TO facts", "ALTER TABLE main.facts RENAME TO work"] {
+                assert!(db.execute_batch(sql).is_err(), "{sql}");
+            }
+            db.execute_batch("ALTER TABLE temp.work RENAME TO next").unwrap();
+            assert_eq!(db.query_row("SELECT value FROM temp.next", [], |r|r.get::<_,i64>(0)).unwrap(), 99);
+            assert_eq!(db.query_row("SELECT value FROM next", [], |r|r.get::<_,i64>(0)).unwrap(), 99);
+            assert_eq!(db.query_row("SELECT value FROM facts", [], |r|r.get::<_,i64>(0)).unwrap(), 17);
+            db.execute_batch("DROP TABLE next;CREATE TEMP TABLE next(value INTEGER);INSERT INTO next VALUES(100)").unwrap();
+            assert_eq!(db.query_row("SELECT value FROM temp.next", [], |r|r.get::<_,i64>(0)).unwrap(), 100);
+            assert!(db.execute_batch("CREATE TABLE next(value INTEGER)").is_err(), "dropped names retain their established schema reservation");
+        }
+    }
+
+    #[test]
+    fn rejected_binding_batches_leave_no_names_or_partial_sql_execution() {
+        for mode in [false, true] {
+            let db = bound();
+            db.set_temporary_namespace_mode(mode).unwrap();
+            db.execute_batch("CREATE TABLE facts(value INTEGER);INSERT INTO facts VALUES(17)").unwrap();
+            assert!(db.execute_batch("CREATE TEMP TABLE poison(value INTEGER);ALTER TABLE temp.poison RENAME TO facts").is_err());
+            assert_eq!(db.raw().query_row("SELECT COUNT(*) FROM sqlite_temp_master WHERE type='table'", [], |r|r.get::<_,i64>(0)).unwrap(), 0);
+            db.execute_batch("CREATE TABLE poison(value INTEGER);INSERT INTO poison VALUES(23)").unwrap();
+            assert_eq!(db.query_row("SELECT value FROM main.poison", [], |r|r.get::<_,i64>(0)).unwrap(), 23);
+            assert!(db.execute_batch("CREATE TEMP TABLE unused(value INTEGER);VACUUM INTO 'not-created.sqlite'").is_err());
+            db.execute_batch("CREATE TABLE unused(value INTEGER);INSERT INTO unused VALUES(29)").unwrap();
+            assert_eq!(db.query_row("SELECT value FROM main.unused", [], |r|r.get::<_,i64>(0)).unwrap(), 29);
+        }
+    }
+
+    #[test]
+    fn bound_temporary_objects_and_dependencies_remain_usable() {
+        for mode in [false, true] {
+            let db = bound();
+            db.set_temporary_namespace_mode(mode).unwrap();
+            db.execute_batch("CREATE TABLE temp.work(value INTEGER);INSERT INTO temp.work VALUES(31);CREATE INDEX work_index ON work(value);CREATE TRIGGER work_trigger AFTER INSERT ON work BEGIN SELECT 1; END").unwrap();
+            assert!(db.execute_batch("DROP INDEX main.work_index").is_err());
+            assert!(db.execute_batch("DROP TRIGGER main.work_trigger").is_err());
+            db.execute_batch("DROP INDEX temp.work_index;DROP TRIGGER temp.work_trigger").unwrap();
+            assert_eq!(db.query_row("SELECT value FROM temp.work", [], |r|r.get::<_,i64>(0)).unwrap(), 31);
+            assert!(db.execute_batch("CREATE TABLE work(value INTEGER)").is_err());
+            db.execute_batch("CREATE TEMP VIEW projection AS SELECT value FROM temp.work").unwrap();
+            assert_eq!(db.query_row("SELECT value FROM temp.projection", [], |r|r.get::<_,i64>(0)).unwrap(), 31);
+        }
+        let private = StoreConnection::open_in_memory().unwrap();
+        private.execute_batch("CREATE TABLE facts(value INTEGER);INSERT INTO main.facts VALUES(17);CREATE TEMP TABLE facts(value INTEGER);INSERT INTO temp.facts VALUES(99)").unwrap();
+        assert_eq!(private.query_row("SELECT value FROM facts", [], |r|r.get::<_,i64>(0)).unwrap(), 99);
+        assert_eq!(private.query_row("SELECT value FROM main.facts", [], |r|r.get::<_,i64>(0)).unwrap(), 17);
+    }
+
+    #[test]
+    fn bound_sequence_projection_tracks_first_autoincrement_and_transaction_rollback() {
+        let mut db = bound();
+        db.execute_batch("CREATE TABLE facts(value INTEGER);INSERT INTO facts VALUES(17)").unwrap();
+        assert!(db.query_row("SELECT COUNT(*) FROM sqlite_sequence", [], |r| r.get::<_, i64>(0)).is_err());
+        assert!(db.prepare("SELECT name,seq FROM sqlite_sequence").is_err());
+        assert!(db.execute_batch("CREATE TEMP VIEW early_sequence AS SELECT name,seq FROM sqlite_sequence").is_err());
+        assert_eq!(db.raw().query_row("SELECT COUNT(*) FROM sqlite_master WHERE name='sqlite_sequence'", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        {
+            let tx = db.transaction().unwrap();
+            tx.execute_batch("CREATE TABLE provisional(id INTEGER PRIMARY KEY AUTOINCREMENT);INSERT INTO provisional DEFAULT VALUES").unwrap();
+            assert_eq!(tx.query_row("SELECT seq FROM sqlite_sequence WHERE name='provisional'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+            // Both the first physical sequence and its TEMP projection roll back.
+        }
+        assert!(db.query_row("SELECT COUNT(*) FROM sqlite_sequence", [], |r| r.get::<_, i64>(0)).is_err());
+        db.execute_batch("ALTER TABLE facts RENAME TO renamed;CREATE TABLE stable(id INTEGER PRIMARY KEY AUTOINCREMENT);INSERT INTO stable DEFAULT VALUES").unwrap();
+        db.raw().execute_batch("CREATE TABLE sibling(id INTEGER PRIMARY KEY AUTOINCREMENT);INSERT INTO sibling DEFAULT VALUES").unwrap();
+        let sequences = db.prepare("SELECT name,seq FROM sqlite_sequence").unwrap()
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))).unwrap()
+            .collect::<Result<Vec<_>>>().unwrap();
+        assert_eq!(sequences, vec![("stable".to_owned(), 1)]);
+        db.execute_batch("CREATE TEMP VIEW later_sequence AS SELECT name,seq FROM sqlite_sequence").unwrap();
+        let mut held = db.prepare("SELECT seq FROM sqlite_sequence WHERE name='stable'").unwrap();
+        db.execute_batch("INSERT INTO stable DEFAULT VALUES").unwrap();
+        assert_eq!(held.query_row([], |r| r.get::<_, i64>(0)).unwrap(), 2);
+        assert_eq!(db.query_row("SELECT seq FROM later_sequence WHERE name='stable'", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+        assert_eq!(db.query_row("SELECT value FROM renamed", [], |r| r.get::<_, i64>(0)).unwrap(), 17);
+    }
+
+    #[test]
+    fn bound_batch_can_create_and_read_its_first_autoincrement_sequence() {
+        let db = bound();
+        db.execute_batch("CREATE TABLE records(id INTEGER PRIMARY KEY AUTOINCREMENT);INSERT INTO records DEFAULT VALUES;CREATE TEMP TABLE copied_sequence AS SELECT name,seq FROM sqlite_sequence").unwrap();
+        assert_eq!(db.query_row("SELECT seq FROM copied_sequence WHERE name='records'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        db.execute_batch("INSERT INTO records DEFAULT VALUES").unwrap();
+        assert_eq!(db.query_row("SELECT seq FROM sqlite_sequence WHERE name='records'", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+    }
+
+    #[test]
+    fn missing_sequence_does_not_reject_literal_or_comment_markers() {
+        let db = bound();
+        assert_eq!(db.query_row("SELECT 'tb_logical_sequence'", [], |r| r.get::<_, String>(0)).unwrap(), "tb_logical_sequence");
+        for sql in ["SELECT 1 /* tb_logical_sequence */", "SELECT 1 -- tb_logical_sequence\n"] {
+            assert_eq!(db.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        }
+        db.execute_batch("CREATE TABLE facts(value TEXT);INSERT INTO facts VALUES('tb_logical_sequence')").unwrap();
+        assert_eq!(db.query_row("SELECT value FROM facts", [], |r| r.get::<_, String>(0)).unwrap(), "tb_logical_sequence");
+    }
+
 }

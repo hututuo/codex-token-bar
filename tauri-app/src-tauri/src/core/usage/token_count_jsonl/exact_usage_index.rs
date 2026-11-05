@@ -2946,11 +2946,10 @@ impl ExactUsageIndex {
                         return Ok(revision);
                     }
                 } else {
-                    // sources_changed uses a temporary published-files snapshot.
-                    // Drop it before the durable scan so dashboard reads cannot
-                    // accidentally keep the pre-scan generation selector.
+                    // The source-change probe owns a separate temporary selector.
+                    // Release it once discovery hands over to the durable scan.
                     self.connection
-                        .execute("DROP TABLE IF EXISTS temp.published_files", [])
+                        .execute("DROP TABLE IF EXISTS temp.source_change_files_snapshot", [])
                         .map_err(|error| format!("无法清理精确 token 源文件快照：{error}"))?;
                 }
             }
@@ -3799,11 +3798,11 @@ impl ExactUsageIndex {
         self.connection
             .execute_batch(
                 r#"
-                DROP TABLE IF EXISTS temp.published_files;
-                CREATE TEMP TABLE published_files AS
+                DROP TABLE IF EXISTS temp.source_change_files_snapshot;
+                CREATE TEMP TABLE source_change_files_snapshot AS
                 SELECT * FROM main.published_files;
-                CREATE UNIQUE INDEX published_files_path_snapshot_idx
-                    ON published_files(path);
+                CREATE UNIQUE INDEX source_change_files_snapshot_path_idx
+                    ON source_change_files_snapshot(path);
                 "#,
             )
             .map_err(|error| format!("无法建立精确 token 源文件快照：{error}"))
@@ -3812,7 +3811,7 @@ impl ExactUsageIndex {
     fn source_change_snapshot_signatures(&self) -> Result<HashMap<String, (u64, String, Option<String>)>, String> {
         let mut statement = self
             .connection
-            .prepare("SELECT f.path,f.size,f.modified_ns,o.physical_stamp FROM temp.published_files f LEFT JOIN source_observations o ON o.path=f.path AND o.size=f.size AND o.modified_ns=f.modified_ns WHERE NOT EXISTS(SELECT 1 FROM usage_ledger_sources l WHERE l.source_id=f.source_id AND l.missing=1)")
+            .prepare("SELECT f.path,f.size,f.modified_ns,o.physical_stamp FROM temp.source_change_files_snapshot f LEFT JOIN source_observations o ON o.path=f.path AND o.size=f.size AND o.modified_ns=f.modified_ns WHERE NOT EXISTS(SELECT 1 FROM usage_ledger_sources l WHERE l.source_id=f.source_id AND l.missing=1)")
             .map_err(|error| format!("无法读取精确 token 源文件快照：{error}"))?;
         let rows = statement
             .query_map([], |row| {
@@ -4507,7 +4506,7 @@ impl ExactUsageIndex {
         let mut statement = self
             .connection
             .prepare(
-                "SELECT name, type FROM sqlite_temp_master WHERE name LIKE 'dashboard_%' OR name = 'published_events'",
+                "SELECT name, type FROM sqlite_temp_master WHERE name LIKE 'dashboard_%' OR name IN ('published_files','published_events')",
             )
             .map_err(|error| format!("无法检查仪表盘临时对象：{error}"))?;
         let rows = statement
@@ -4547,8 +4546,8 @@ impl ExactUsageIndex {
                 DROP VIEW IF EXISTS temp.published_dashboard_5m;
                 DROP VIEW IF EXISTS temp.published_dashboard_file_5m;
                 DROP VIEW IF EXISTS temp.published_dashboard_file_totals;
-                DROP VIEW IF EXISTS temp.published_events;
-                DROP TABLE IF EXISTS temp.published_files;
+                DROP VIEW IF EXISTS temp.dashboard_snapshot_events;
+                DROP TABLE IF EXISTS temp.dashboard_snapshot_files;
                 -- Materialize only the small file-generation selector. The old
                 -- path copied every published event into a temp table and built
                 -- two temp indexes on every dashboard read. On a real 280k-event
@@ -4556,15 +4555,15 @@ impl ExactUsageIndex {
                 -- exhaust temp storage. A temp view keeps all aggregate reads on
                 -- the durable main.events indexes without repeating the expensive
                 -- published-files grouping.
-                CREATE TEMP TABLE published_files AS
+                CREATE TEMP TABLE dashboard_snapshot_files AS
                 SELECT *
                 FROM main.published_files;
-                CREATE UNIQUE INDEX published_files_path_snapshot_idx
-                    ON published_files(path);
-                CREATE TEMP VIEW published_events AS
+                CREATE UNIQUE INDEX dashboard_snapshot_files_path_idx
+                    ON dashboard_snapshot_files(path);
+                CREATE TEMP VIEW dashboard_snapshot_events AS
                 SELECT e.*
                 FROM main.canonical_usage_events e
-                JOIN published_files f
+                JOIN dashboard_snapshot_files f
                   ON f.generation = e.file_generation
                  AND f.path = e.file_path
                 WHERE e.tokens > 0;
@@ -4572,7 +4571,7 @@ impl ExactUsageIndex {
                 CREATE TEMP VIEW published_dashboard_file_totals AS
                 SELECT t.*
                 FROM main.dashboard_file_totals t
-                JOIN published_files f
+                JOIN dashboard_snapshot_files f
                   ON f.generation = t.file_generation
                  AND f.path = t.file_path;
 
@@ -4595,14 +4594,14 @@ impl ExactUsageIndex {
                 CREATE TEMP VIEW published_dashboard_file_5m AS
                 SELECT b.*
                 FROM main.dashboard_file_5m b
-                JOIN published_files f
+                JOIN dashboard_snapshot_files f
                   ON f.generation = b.file_generation
                  AND f.path = b.file_path;
 
                 -- Events are physically ordered by file generation/path. Fold
                 -- them to one small row per file first, then join the published
                 -- selector and group the roughly file-count-sized result by
-                -- session. Grouping the published_events view directly makes
+                -- session. Grouping the dashboard_snapshot_events view directly makes
                 -- SQLite revisit events once per file and spill every event into
                 -- a session GROUP BY temp B-tree on large indexes.
                 CREATE TEMP TABLE dashboard_session_rows AS
@@ -4613,7 +4612,7 @@ impl ExactUsageIndex {
                         SUM(t.output_tokens) AS output_tokens,
                         MAX(t.last_timestamp) AS updated_at
                     FROM published_dashboard_file_totals t
-                    JOIN published_files f
+                    JOIN dashboard_snapshot_files f
                       ON f.generation = t.file_generation
                      AND f.path = t.file_path
                     GROUP BY f.session_id
@@ -4679,7 +4678,7 @@ impl ExactUsageIndex {
         // reads. Binding a file identity avoids compatibility-UNION plans that
         // flatten a CROSS JOIN back into the broad timestamp scan.
         let mut files = self.connection
-            .prepare("SELECT path, generation FROM temp.published_files")
+            .prepare("SELECT path, generation FROM temp.dashboard_snapshot_files")
             .map_err(|error| format!("无法准备 365 日精确 token 文件范围：{error}"))?;
         let file_rows = files.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
@@ -4759,12 +4758,12 @@ impl ExactUsageIndex {
                     MIN(first_timestamp),
                     COALESCE((
                         SELECT SUM(e.tokens)
-                        FROM published_events e
+                        FROM temp.dashboard_snapshot_events e
                         WHERE e.timestamp >= ?1 AND e.timestamp < ?2
                     ), 0),
                     COALESCE((
                         SELECT COUNT(*)
-                        FROM published_events e
+                        FROM temp.dashboard_snapshot_events e
                         WHERE e.timestamp >= ?1 AND e.timestamp < ?2
                     ), 0)
                 FROM published_dashboard_file_totals
@@ -5089,7 +5088,7 @@ impl ExactUsageIndex {
             SELECT timestamp / 60 * 60, model,
                    SUM(input_tokens), SUM(cached_input_tokens), SUM(output_tokens),
                    SUM(tokens), COUNT(*)
-            FROM published_events
+            FROM temp.dashboard_snapshot_events
             WHERE (timestamp >= ?1 AND timestamp < ?2)
                OR (timestamp >= ?3 AND timestamp < ?4)
             GROUP BY 1, model ORDER BY 1, model

@@ -8243,9 +8243,15 @@ fn recent_usage_downsample_preserves_model_breakdowns_and_cache_rates() {
         .unwrap();
     let temp_objects = index.dashboard_temp_object_types_for_testing().unwrap();
     assert_eq!(
-        temp_objects.get("published_events").map(String::as_str),
+        temp_objects.get("dashboard_snapshot_events").map(String::as_str),
         Some("view")
     );
+    assert_eq!(
+        temp_objects.get("dashboard_snapshot_files").map(String::as_str),
+        Some("table")
+    );
+    assert!(!temp_objects.contains_key("published_events"));
+    assert!(!temp_objects.contains_key("published_files"));
     assert!(
         !temp_objects.contains_key("dashboard_turn_positions"),
         "turn positions must be calculated only for selected candidates, not materialized for every event"

@@ -1,5 +1,7 @@
 # 稳定修复接手复核
 
+> 后续决定：用户已要求在本版继续处理历史遗留问题，当前入口移至 [本版历史遗留问题复查](2026-11-04-legacy-debt-review.md)。本文保留第一轮接手与回退记录；下文“下一版再处理”的范围决定已被替代，不代表当前版本已经通过全部性能或实机验收。
+
 日期：2026-11-04（Asia/Shanghai）。用户明确要求：这一版先修掉前面连续错误并收束稳定，下一版再处理遗留优化。本文是当前入口；早期调查和失败日志保留，不能将历史中间状态当成当前结论。
 
 本轮从 `0a125e15d692ce9233b54a464eca3dea475e5c4d` 新建本地分支 `codex/stabilize-recovery-20261104`。工作树为 `/Users/huyiyang/.codex/worktrees/tokenbar-integrated-recovery/codex-token-dashboard`；原项目目录的 `codex/cold-history-read-paths` 及未提交资料保留。本轮不更新正式数据库，不安装、重启、推送、合 main 或发布。
