@@ -44,6 +44,8 @@ pub struct QuotaAttributionIdentity {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection_mode: Option<String>,
     pub five_hour: QuotaLimit,
     pub seven_day: QuotaLimit,
     /// Server-returned Reserve windows. No opt-in, ordinary quota substitution, or fallback.

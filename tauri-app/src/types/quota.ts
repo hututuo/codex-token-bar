@@ -65,6 +65,7 @@ export interface ResetCreditDetail {
 }
 
 export interface QuotaSnapshot {
+  connectionMode?: "api" | "subscription" | "unknown";
   fiveHour: QuotaLimit;
   sevenDay: QuotaLimit;
   /** Optional for older native hosts; only populated from server-returned Reserve buckets. */

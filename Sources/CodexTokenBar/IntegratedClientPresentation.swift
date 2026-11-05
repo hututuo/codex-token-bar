@@ -83,14 +83,25 @@ enum ClientQuotaProjection {
                 remaining: data.remaining.map(Double.init), resetsAt: window?.resetsAt,
                 source: "Codex 现有额度观测", status: data.stale ? "旧数据" : window == nil ? "不可用" : "", expected: data.stale ? nil : window?.expectedRemainingPercentByEvenPace.map { Double($0) / 100 }))
         }
-        if codex.fiveHour != nil
-            || (includeFiveHour && codex.resolvedFiveHourAvailability != .absent) {
-            add("5h", "5h", codex.fiveHour)
+        if codex.connectionMode == .api {
+            items.append(ClientQuotaItem(id: "codex:api", client: "codex", window: "API", remaining: nil,
+                resetsAt: nil, source: "API 接入", status: "订阅额度不适用"))
+        } else {
+            if codex.fiveHour != nil
+                || (includeFiveHour && codex.resolvedFiveHourAvailability != .absent) {
+                add("5h", "5h", codex.fiveHour)
+            }
+            add("7d", "7d", codex.sevenDay)
+            for window in codex.reserveWindows { add(window.label, window.compactDisplayLabel, window) }
         }
-        add("7d", "7d", codex.sevenDay)
-        for window in codex.reserveWindows { add(window.label, window.compactDisplayLabel, window) }
-        for reading in [claude, claudeDesktop].compactMap({ $0 }) where includeClaude && reading.state == "available" {
+        for reading in [claude, claudeDesktop].compactMap({ $0 }) where includeClaude {
             guard reading.client == "claudeCode" || reading.client == "claudeDesktop" else { continue }
+            if reading.state == "api" {
+                items.append(ClientQuotaItem(id: reading.client + ":api", client: reading.client, window: "API", remaining: nil,
+                    resetsAt: nil, source: "API 接入", status: "订阅额度不适用"))
+                continue
+            }
+            guard reading.state == "available" else { continue }
             for label in ["5h", "7d"] {
                 guard let window = reading.windows.first(where: { $0.label == label }) else { continue }
                 let used = window.usedPercent

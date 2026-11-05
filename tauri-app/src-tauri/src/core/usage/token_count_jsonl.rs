@@ -3159,6 +3159,7 @@ fn no_token_events_error(warnings: &[LocalDataWarning]) -> String {
 
 fn placeholder_quota() -> QuotaSnapshot {
     QuotaSnapshot {
+        connection_mode: None,
         reserve_windows: Vec::new(),
         five_hour: QuotaLimit {
             label: "5h".into(),

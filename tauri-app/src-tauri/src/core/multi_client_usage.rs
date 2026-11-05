@@ -1195,6 +1195,9 @@ fn refresh_multi_client_usage_at(
 }
 
 pub fn read_claude_local_quota() -> ClaudeLocalQuotaSnapshot {
+    let home = app_paths::home_dir();
+    let environment = std::env::vars_os().filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?))).collect();
+    if claude_uses_api(&home, &environment) { return claude_quota_state("api"); }
     let now = Instant::now();
     let cache = CLAUDE_LOCAL_QUOTA_PROBE_CACHE.get_or_init(Default::default);
     let mut cache = cache
@@ -1225,6 +1228,28 @@ pub fn read_claude_local_quota() -> ClaudeLocalQuotaSnapshot {
         };
         read_claude_local_quota_at(&path, OffsetDateTime::now_utc().unix_timestamp() as f64)
     })
+}
+
+fn claude_uses_api(home: &Path, environment: &std::collections::HashMap<String, String>) -> bool {
+    let directory = environment.get("CLAUDE_CONFIG_DIR").filter(|s| !s.is_empty()).map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".claude"));
+    let mut env = environment.clone();
+    let settings = fs::File::open(directory.join("settings.json")).ok().and_then(|file| {
+        let mut bytes = vec![];
+        file.take(65_537).read_to_end(&mut bytes).ok()?;
+        if bytes.len() > 65_536 { return None; }
+        serde_json::from_slice::<Value>(&bytes).ok()
+    });
+    if let Some(settings) = settings {
+        if settings.get("apiKeyHelper").and_then(Value::as_str).is_some_and(|s| !s.trim().is_empty()) { return true; }
+        if let Some(configured) = settings.get("env").and_then(Value::as_object) {
+            for (key, value) in configured { if let Some(value) = value.as_str() { env.insert(key.clone(), value.into()); } }
+        }
+    }
+    ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"].iter()
+        .any(|key| env.get(*key).is_some_and(|s| !s.trim().is_empty()))
+        || ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"].iter()
+            .any(|key| env.get(*key).is_some_and(|s| matches!(s.to_lowercase().as_str(), "1" | "true")))
 }
 
 /// Reads only Claude Desktop's bounded local plan-usage history file. This remains separate
@@ -4549,6 +4574,20 @@ fn format_timestamp_seconds(timestamp_seconds: f64) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn claude_api_config_changes_do_not_reuse_subscription_mode() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path();
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        let config = home.join(".claude/settings.json");
+        std::fs::write(&config, r#"{"env":{"ANTHROPIC_BASE_URL":"https://relay.invalid"}}"#).unwrap();
+        assert!(super::claude_uses_api(home, &Default::default()));
+        std::fs::write(&config, "{}").unwrap();
+        assert!(!super::claude_uses_api(home, &Default::default()));
+        assert!(super::claude_uses_api(home, &[("CLAUDE_CODE_USE_BEDROCK".into(), "1".into())].into()));
+        assert!(!super::claude_uses_api(home, &[("CLAUDE_CODE_USE_BEDROCK".into(), "0".into())].into()));
+    }
+
     #[test]
     fn shared_usage_initialization_preserves_busy_code_for_retry() {
         let root = tempfile::tempdir().unwrap();

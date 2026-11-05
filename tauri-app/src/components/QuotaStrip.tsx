@@ -1993,27 +1993,30 @@ function ClientQuotaRows({ items, stale, codexTools, planLabels = {} }: { items:
   if (clients.length === 0) return <p className="quota-client-empty">所选客户端暂无本地额度读数</p>;
   return <div className="quota-client-rows">{clients.map(client =>
     <div className="quota-client-row" role="group" aria-label={`${clientTitle(client)} 额度`} key={client}>
-      <div className="quota-client-label"><strong><i style={{ background: clientBrand[client] ?? "#888888" }} aria-hidden="true"/>{clientTitle(client)}<b className="quota-client-plan">{planLabels[client]?.trim().toUpperCase() || "套餐未知"}</b></strong><span>{client === "codex" ? "当前账户" : "本地缓存"}</span></div>
+      <div className="quota-client-label"><strong><i style={{ background: clientBrand[client] ?? "#888888" }} aria-hidden="true"/>{clientTitle(client)}<b className="quota-client-plan">{items.some(item=>item.client===client&&item.id.endsWith(":api")) ? "API" : planLabels[client]?.trim().toUpperCase() || "套餐未知"}</b></strong><span>{client === "codex" ? "当前接入" : "本地缓存"}</span></div>
       <div className="quota-client-windows">{items.filter(item => item.client === client).map(item =>
         <div className="quota-client-window" data-quota-id={item.id} key={item.id} title={[item.source, item.status].filter(Boolean).join(" · ")}>
-          <QuotaBar stale={item.status.includes("旧") || (client === "codex" && stale)} pendingLabel={item.status || "不可用"} quota={{
+          {item.id.endsWith(":api") ? <span>{item.status}</span> : <QuotaBar stale={item.status.includes("旧") || (client === "codex" && stale)} pendingLabel={item.status || "不可用"} quota={{
             label: quotaWindowTitle(item.window), availability: item.remaining === null ? "unavailable" : "measured",
             remainingPercent: item.remaining === null ? null : item.remaining / 100,
             usedPercent: item.remaining === null ? null : 1 - item.remaining / 100,
             resetsAt: item.resetsAt && Number.isFinite(Date.parse(item.resetsAt))
               ? new Date(item.resetsAt).toLocaleString(undefined, { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "重置时间未知",
-          }}/>
+          }}/>}
         </div>)}</div>
       {client === "codex" && codexTools}
     </div>)}</div>;
 }
 
 function QuotaStripEntry(props: QuotaStripProps) {
+  if (props.snapshot?.connectionMode === "api" && !props.clientItems) {
+    return <section className="quota-strip" aria-label="账户额度"><strong>Codex · API 接入</strong><span>订阅额度不适用</span></section>;
+  }
   if (props.clientItems) {
     const includesCodex = props.includesCodex ?? props.clientItems.some(item => item.client === "codex");
     return <section className="quota-strip quota-strip--clients" aria-label="账户额度">
       <ClientQuotaRows planLabels={props.clientPlanLabels} items={props.clientItems} stale={hasStaleAccountQuotaData(props.diagnostics ?? [])}
-        codexTools={includesCodex ? <QuotaStripView {...props} toolsOnly embeddedTools/> : undefined}/>
+        codexTools={includesCodex && props.snapshot?.connectionMode !== "api" ? <QuotaStripView {...props} toolsOnly embeddedTools/> : undefined}/>
     </section>;
   }
   return <QuotaStripView {...props}/>;

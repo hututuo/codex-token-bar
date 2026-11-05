@@ -404,10 +404,12 @@ function mergeCompactQuota(
     ...latest,
     quota: {
       ...latest.quota,
-      resetCredit: previous.quota.resetCredit,
+      resetCredit: latest.quota.connectionMode === "api" ? latest.quota.resetCredit : previous.quota.resetCredit,
     },
-    warnings: replaceAccountQuotaWarnings(previous.warnings, latest.warnings),
-    diagnostics: replaceAccountQuotaDiagnostics(previous.diagnostics, latest.diagnostics),
+    warnings: replaceResetCreditWarnings(replaceAccountQuotaWarnings(previous.warnings, latest.warnings),
+      latest.quota.connectionMode === "api" ? [] : previous.warnings),
+    diagnostics: replaceResetCreditDiagnostics(replaceAccountQuotaDiagnostics(previous.diagnostics, latest.diagnostics),
+      latest.quota.connectionMode === "api" ? [] : previous.diagnostics),
   };
 }
 
@@ -415,6 +417,7 @@ function mergeCompactResetCredits(
   previous: AccountQuotaBundle,
   latest: ResetCreditBundle,
 ): AccountQuotaBundle {
+  if (previous.quota.connectionMode === "api") return previous;
   const resetCredit = latest.successful
     ? { ...latest.resetCredit, updatedAt: latest.updatedAt }
     : {

@@ -5,6 +5,11 @@ import Security
 /// Reads the credential for the Codex Home currently selected in app settings.
 enum CurrentCodexCredentialReader {
     static func currentCredential(home: URL?) throws -> QuotaAccountCredential {
+        try QuotaAccountCredential.parse(currentAuthData(home: home))
+    }
+
+    // Shared with local connection classification; never logs or returns secrets to the UI.
+    static func currentAuthData(home: URL?) throws -> Data {
         let codexHome = (home ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".codex"))
             .standardizedFileURL.resolvingSymlinksInPath()
         let configURL = codexHome.appendingPathComponent("config.toml")
@@ -20,7 +25,7 @@ enum CurrentCodexCredentialReader {
             let digest = SHA256.hash(data: Data(codexHome.path.utf8))
                 .map { String(format: "%02x", $0) }.joined()
             if let data = try? keychainSecret(account: "cli|" + digest.prefix(16)) {
-                return try QuotaAccountCredential.parse(data)
+                return data
             }
             if globalConfig.range(
                 of: #"(?m)^\s*cli_auth_credentials_store\s*=\s*["']keyring["']"#,
@@ -29,7 +34,7 @@ enum CurrentCodexCredentialReader {
                 throw DirectQuotaError.credentials
             }
         }
-        return try QuotaAccountCredential.parse(limitedRead(codexHome.appendingPathComponent("auth.json")))
+        return try limitedRead(codexHome.appendingPathComponent("auth.json"))
     }
 
     private static func limitedRead(_ url: URL) throws -> Data {

@@ -81,6 +81,10 @@ struct ClaudeCapturedQuotaProvider: ClientQuotaProvider {
     static let setup = "可手动将本地 TokenBarClaudeLocal 配置为 Claude Code statusLine 命令；也兼容已有 claude-monitor --statusline 缓存。本软件不修改 Claude 配置、不读凭据、不联网。"
     func reading() -> ClientQuotaReading {
         let desktop = client == .claudeDesktop
+        if !desktop && snapshot.state == "api" {
+            return ClientQuotaReading(client: client.rawValue, state: "api", source: "local-config", windows: [],
+                notice: "API 接入 · 订阅额度不适用")
+        }
         let windows = [("5h", snapshot.fiveHour), ("7d", snapshot.sevenDay)].compactMap { label, value in
             value.map { ClientQuotaReading.Window(label: label, usedPercent: $0.usedPercent, resetsAt: $0.resetsAt) }
         }

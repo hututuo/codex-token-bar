@@ -1005,6 +1005,7 @@ fn quota_bundle(now: f64) -> crate::models::AccountQuotaBundle {
             plan_label: "pro".into(),
         },
         quota: crate::models::QuotaSnapshot {
+            connection_mode: None,
             five_hour: crate::models::QuotaLimit {
                 label: "5h".into(),
                 availability: crate::models::QuotaAvailability::Measured,

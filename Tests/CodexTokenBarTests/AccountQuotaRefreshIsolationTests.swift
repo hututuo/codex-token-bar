@@ -4,6 +4,27 @@ import XCTest
 
 @MainActor
 final class AccountQuotaRefreshIsolationTests: XCTestCase {
+    func testPendingFailureRetryStopsWhenLocalConfigBecomesApi() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("ApiRetry-\(UUID())")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let reader = AlwaysFailingIsolationQuotaReader()
+        let retry = ControlledIsolationRetryScheduler()
+        let store = AccountQuotaStore(quotaReader: reader, timerScheduler: IsolationTimerScheduler(),
+            retryScheduler: retry, observesUserDefaults: false,
+            connectionModeReader: { CodexConnectionMode.read(dataSource: $0) })
+        defer { store.stop() }
+        store.start(dataSource: CodexDataSource(codexHome: home, origin: .userSelected))
+        await waitUntil("first failure schedules retry") { await retry.delays() == [1] }
+        try "model_provider = \"relay\"".write(to: home.appendingPathComponent("config.toml"), atomically: true, encoding: .utf8)
+        await retry.resumeNext()
+        await waitUntil("retry checks local API mode") { store.snapshot.connectionMode == .api }
+        let reads = await reader.readCount(), delays = await retry.delays()
+        XCTAssertEqual(reads, 1)
+        XCTAssertEqual(delays, [1])
+        XCTAssertEqual(store.snapshot, .apiConnection)
+    }
+
     func testFoundationTimerSchedulerRegistersQuotaClockInCommonRunLoopMode() {
         var registeredModes: [RunLoop.Mode] = []
         let scheduler = FoundationAccountQuotaTimerScheduler { timer, mode in

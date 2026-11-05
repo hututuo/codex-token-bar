@@ -81,16 +81,20 @@ fn read_codex_keyring(_: &str) -> Result<Vec<u8>, String> {
 }
 
 pub fn current_credential(home: &Path) -> Result<Credential, String> {
+    Credential::parse(&current_auth_data(home)?)
+}
+
+pub(super) fn current_auth_data(home: &Path) -> Result<Vec<u8>, String> {
     let canonical = fs::canonicalize(home).unwrap_or_else(|_| home.into());
     let config = fs::read_to_string(home.join("config.toml")).unwrap_or_default();
     let mode = config.parse::<toml::Value>().ok()
         .and_then(|value| value.get("cli_auth_credentials_store")?.as_str().map(str::to_owned));
     if matches!(mode.as_deref(), Some("keyring" | "auto")) {
         let hash = format!("{:x}", Sha256::digest(canonical.to_string_lossy().as_bytes()));
-        if let Ok(data) = read_codex_keyring(&format!("cli|{}", &hash[..16])) { return Credential::parse(&data); }
+        if let Ok(data) = read_codex_keyring(&format!("cli|{}", &hash[..16])) { return Ok(data); }
         if mode.as_deref() == Some("keyring") { return Err(AUTH_ERROR.into()); }
     }
-    Credential::parse(&limited_read(&home.join("auth.json"))?)
+    limited_read(&home.join("auth.json"))
 }
 
 #[cfg(test)]

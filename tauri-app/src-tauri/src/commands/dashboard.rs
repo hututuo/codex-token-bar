@@ -3299,6 +3299,7 @@ mod tests {
 
     fn placeholder_quota_for_test() -> QuotaSnapshot {
         QuotaSnapshot {
+            connection_mode: None,
             reserve_windows: Vec::new(),
             five_hour: QuotaLimit {
                 label: "5h".into(),

@@ -49,6 +49,7 @@ pub(crate) mod codex_binary;
 mod rate_limits;
 mod reset_credit;
 mod persistent;
+mod connection_mode;
 
 static QUOTA_READ_CACHE: OnceLock<Mutex<HashMap<PathBuf, QuotaCacheEntry>>> = OnceLock::new();
 static QUOTA_HISTORY_CACHE: OnceLock<QuotaHistoryCacheCoordinator> = OnceLock::new();
@@ -60,6 +61,7 @@ static RESET_CREDIT_READ_GATES: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct QuotaCacheScope {
+    configuration_identity: [u8; 32],
     codex_home: PathBuf,
     account_key: Option<String>,
     flight_fingerprint: [u8; 32],
@@ -68,12 +70,13 @@ struct QuotaCacheScope {
 impl QuotaCacheScope {
     fn allows_success_reuse(&self, current: &Self) -> bool {
         self.codex_home == current.codex_home
+            && self.configuration_identity == current.configuration_identity
             && self.account_key.is_some()
             && self.account_key == current.account_key
     }
 
     fn allows_flight_reuse(&self, current: &Self) -> bool {
-        if self.codex_home != current.codex_home {
+        if self.codex_home != current.codex_home || self.configuration_identity != current.configuration_identity {
             return false;
         }
 
@@ -213,6 +216,9 @@ pub fn read_account_quota(
     codex_home: &Path,
     force_refresh: bool,
 ) -> Result<AccountQuotaBundle, String> {
+    if connection_mode::read(codex_home) == connection_mode::ConnectionMode::Api {
+        return Ok(api_quota_bundle(codex_home));
+    }
     if force_refresh {
         // Startup/manual/wake refreshes begin a fresh five-minute stability
         // proof; elapsed sleep time must never count as observation evidence.
@@ -252,6 +258,11 @@ fn read_account_reset_credits_with_loader<L>(
 where
     L: FnOnce(&Path) -> Result<ResetCreditSummary, String>,
 {
+    if connection_mode::read(codex_home) == connection_mode::ConnectionMode::Api {
+        let quota = api_quota_bundle(codex_home);
+        return Ok(ResetCreditBundle { updated_at: quota.updated_at, reset_credit: quota.quota.reset_credit,
+            warnings: vec![], diagnostics: vec![], successful: true });
+    }
     let requested_at = Instant::now();
     let initial_scope = observed_quota_cache_scope(codex_home);
     if let Some(cached) = cached_reset_credit_bundle(&initial_scope, force_refresh, false, requested_at)? {
@@ -442,6 +453,9 @@ where
         Option<&str>,
     ) -> Result<AccountQuotaBundle, String>,
 {
+    if connection_mode::read(codex_home) == connection_mode::ConnectionMode::Api {
+        return Ok(api_quota_bundle(codex_home));
+    }
     let success_freshness = success_freshness_for_cadence_ms(cadence_loader());
     let initial_scope = observed_quota_cache_scope(codex_home);
     if let Some(cached) = cached_quota_result(&initial_scope, force_refresh, success_freshness)? {
@@ -526,6 +540,7 @@ fn quota_cache_scope(codex_home: &Path, account_key: Option<String>) -> QuotaCac
     let observation = read_local_auth_observation(codex_home);
     QuotaCacheScope {
         codex_home: std::fs::canonicalize(codex_home).unwrap_or_else(|_| codex_home.to_path_buf()),
+        configuration_identity: connection_mode::configuration_identity(codex_home),
         account_key,
         flight_fingerprint: observation.flight_fingerprint,
     }
@@ -537,6 +552,7 @@ fn observed_quota_cache_scope(codex_home: &Path) -> QuotaCacheScope {
         .or(observation.stable_account_key);
     QuotaCacheScope {
         codex_home: std::fs::canonicalize(codex_home).unwrap_or_else(|_| codex_home.to_path_buf()),
+        configuration_identity: connection_mode::configuration_identity(codex_home),
         account_key,
         flight_fingerprint: observation.flight_fingerprint,
     }
@@ -706,6 +722,9 @@ fn bundle_has_stale_data(bundle: &AccountQuotaBundle) -> bool {
 
 /// Re-read only the login currently active in this Codex Home.
 pub(crate) fn read_current_account_quota(codex_home: &Path) -> Result<AccountQuotaBundle, String> {
+    if connection_mode::read(codex_home) == connection_mode::ConnectionMode::Api {
+        return Ok(api_quota_bundle(codex_home));
+    }
     let credential = accounts::current_credential(codex_home)?;
     let parsed = read_rate_limits(codex_home)?;
     if accounts::current_credential(codex_home)?.id() != credential.id() {
@@ -717,6 +736,25 @@ pub(crate) fn read_current_account_quota(codex_home: &Path) -> Result<AccountQuo
         quota: parsed.quota, quota_history_daily: vec![], quota_history_24h: vec![],
         quota_history_7d: vec![], quota_history_30d: vec![], warnings: vec![], diagnostics: vec![],
     })
+}
+
+fn api_quota_bundle(codex_home: &Path) -> AccountQuotaBundle {
+    let canonical = std::fs::canonicalize(codex_home).unwrap_or_else(|_| codex_home.to_path_buf());
+    if let Some(cache) = QUOTA_READ_CACHE.get() { if let Ok(mut cache) = cache.lock() { cache.remove(&canonical); } }
+    if let Some(cache) = RESET_CREDIT_READ_CACHE.get() { if let Ok(mut cache) = cache.lock() { cache.remove(&canonical); } }
+    persistent::suspend(codex_home);
+    let mut quota = placeholder_quota();
+    quota.connection_mode = Some("api".into());
+    quota.five_hour.availability = crate::models::QuotaAvailability::Absent;
+    quota.seven_day.availability = crate::models::QuotaAvailability::Absent;
+    quota.pace_label = "API 接入 · 订阅额度不适用".into();
+    quota.reset_credit.status = "API 接入 · 重置卡不适用".into();
+    AccountQuotaBundle {
+        updated_at: diagnostic_timestamp(), attribution_identity: None,
+        account: AccountInfo { display_name: "API 接入".into(), plan_label: "API".into() }, quota,
+        quota_history_daily: vec![], quota_history_24h: vec![], quota_history_7d: vec![], quota_history_30d: vec![],
+        warnings: vec![], diagnostics: vec![],
+    }
 }
 
 fn read_account_quota_raw(codex_home: &Path) -> Result<LoadedAccountQuota, String> {
@@ -1555,6 +1593,60 @@ fn write_json_line(stdin: &mut std::process::ChildStdin, value: &Value) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn api_mode_skips_quota_and_credit_loaders_and_recovers_after_switch() {
+        let home = std::env::temp_dir().join(format!("quota-api-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join("auth.json"), r#"{"auth_mode":"chatgpt","tokens":{"access_token":"fixture"}}"#).unwrap();
+        std::fs::write(home.join("config.toml"), "model_provider = 'relay'").unwrap();
+        for _ in 0..3 {
+            let bundle = read_account_quota_with_policy_and_loader(&home, true, || 60_000, |_| panic!("API must not load subscription quota")).unwrap();
+            assert_eq!(bundle.quota.connection_mode.as_deref(), Some("api"));
+            assert!(bundle.diagnostics.is_empty());
+            assert!(!quota_available(&bundle.quota));
+            assert!(bundle.attribution_identity.is_none());
+            let reset = read_account_reset_credits_with_loader(&home, true, |_| panic!("API must not load reset credits")).unwrap();
+            assert!(reset.successful);
+            assert!(reset.reset_credit.credits.is_empty());
+        }
+        std::fs::write(home.join("config.toml"), "").unwrap();
+        let bundle = read_account_quota_with_policy_and_loader(&home, true, || 60_000, |_| Ok(measured_quota_bundle("subscription"))).unwrap();
+        assert!(quota_available(&bundle.quota));
+        std::fs::write(home.join("config.toml"), "model_provider = 'relay'").unwrap();
+        let api = read_account_quota_with_policy_and_loader(&home, false, || 60_000, |_| panic!("API cannot reuse subscription cache")).unwrap();
+        assert_eq!(api.quota.connection_mode.as_deref(), Some("api"));
+        assert!(api.quota_history_24h.is_empty());
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn provider_switch_during_quota_read_rejects_late_subscription_result() {
+        let home = std::env::temp_dir().join(format!("quota-api-flight-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        let result = read_account_quota_with_policy_and_loader(&home, true, || 60_000, |path| {
+            std::fs::write(path.join("config.toml"), "model_provider = 'relay'").unwrap();
+            Ok(measured_quota_bundle("late-subscription"))
+        }).unwrap();
+        assert!(!quota_available(&result.quota));
+        assert!(result.attribution_identity.is_none());
+        assert!(result.quota_history_24h.is_empty());
+        let api = read_account_quota(&home, false).unwrap();
+        assert_eq!(api.quota.connection_mode.as_deref(), Some("api"));
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn api_auth_change_invalidates_flight_even_with_retained_subscription_tokens() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path();
+        std::fs::write(path.join("auth.json"), r#"{"auth_mode":"chatgpt","tokens":{"access_token":"fixture"}}"#).unwrap();
+        let before = quota_cache_scope(path, Some("same-account".into()));
+        std::fs::write(path.join("auth.json"), r#"{"auth_mode":"apikey","tokens":{"access_token":"fixture"}}"#).unwrap();
+        let after = quota_cache_scope(path, Some("same-account".into()));
+        assert!(!before.allows_flight_reuse(&after));
+        assert!(!before.allows_success_reuse(&after));
+    }
+
     use std::ffi::OsStr;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -2233,11 +2325,13 @@ mod tests {
         let codex_home = PathBuf::from("rotation-home");
         let bundle = measured_quota_bundle("Stable User");
         let before_rotation = QuotaCacheScope {
+            configuration_identity: [0; 32],
             codex_home: codex_home.clone(),
             account_key: Some("sub:stable-account".into()),
             flight_fingerprint: [1; 32],
         };
         let after_rotation = QuotaCacheScope {
+            configuration_identity: [0; 32],
             codex_home,
             account_key: Some("sub:stable-account".into()),
             flight_fingerprint: [2; 32],
@@ -2275,11 +2369,13 @@ mod tests {
         let codex_home = PathBuf::from("shared-home");
         let bundle = measured_quota_bundle("Shared User");
         let account_a = QuotaCacheScope {
+            configuration_identity: [0; 32],
             codex_home: codex_home.clone(),
             account_key: Some("sub:account-a".into()),
             flight_fingerprint: [3; 32],
         };
         let account_b = QuotaCacheScope {
+            configuration_identity: [0; 32],
             codex_home,
             account_key: Some("sub:account-b".into()),
             flight_fingerprint: [4; 32],
@@ -2326,6 +2422,7 @@ mod tests {
     #[test]
     fn missing_stable_account_key_or_plan_cannot_create_history_identity() {
         let scope = QuotaCacheScope {
+            configuration_identity: [0; 32],
             codex_home: PathBuf::from("unkeyed-home"),
             account_key: None,
             flight_fingerprint: [5; 32],
@@ -2335,6 +2432,7 @@ mod tests {
             .is_none());
 
         let keyed_scope = QuotaCacheScope {
+            configuration_identity: [0; 32],
             codex_home: PathBuf::from("unknown-plan-home"),
             account_key: Some("sub:unknown-plan".into()),
             flight_fingerprint: [6; 32],

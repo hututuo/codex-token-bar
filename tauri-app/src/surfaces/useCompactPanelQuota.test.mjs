@@ -80,6 +80,15 @@ test("dashboard-following compact quota mode consumes events without issuing its
         });
 
         assert.equal(container.textContent, "dashboard-quota|重置卡已更新");
+        await React.act(async () => {
+          const api = quotaBundle(emptyAccountQuotaBundle, "api");
+          api.quota.connectionMode = "api";
+          api.quota.resetCredit.status = "API 接入 · 重置卡不适用";
+          quotaHandler({quota: api, sourceToken: source});
+          resetHandler({resetCredits: resetCreditBundle(), sourceToken: source});
+          await tick();
+        });
+        assert.equal(container.textContent, "api|API 接入 · 重置卡不适用");
         assert.equal(quotaReads, 0);
         assert.equal(resetReads, 0);
       } finally {

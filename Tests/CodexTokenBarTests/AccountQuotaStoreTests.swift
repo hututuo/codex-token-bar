@@ -4,6 +4,47 @@ import XCTest
 
 @MainActor
 final class AccountQuotaStoreTests: XCTestCase {
+    func testApiTicksSkipReadersAndChangingConfigRestoresSubscription() async throws {
+        let home = try makeTemporaryDirectory(named: "ApiMode")
+        let source = CodexDataSource(codexHome: home, origin: .userSelected)
+        let config = home.appendingPathComponent("config.toml")
+        try "model_provider = \"relay\"".write(to: config, atomically: true, encoding: .utf8)
+        let reader = SequentialQuotaReader(results: [.success(quotaSnapshot(usedPercent: 23, accountName: "new"))])
+        let reset = ApiModeResetReader()
+        let timer = ManualQuotaTimerScheduler()
+        let store = AccountQuotaStore(quotaReader: reader, resetCreditReader: reset, timerScheduler: timer,
+            observesUserDefaults: false, connectionModeReader: { CodexConnectionMode.read(dataSource: $0) })
+        defer { store.stop() }
+        store.start(dataSource: source)
+        for _ in 0..<4 { timer.fireLatest() }
+        let reads = await reader.currentReadCount(), resets = await reset.readCount
+        XCTAssertEqual(reads, 0); XCTAssertEqual(resets, 0)
+        XCTAssertEqual(store.snapshot, .apiConnection)
+        try "".write(to: config, atomically: true, encoding: .utf8)
+        timer.fireLatest()
+        await waitUntil("subscription resumes") { store.snapshot.accountName == "new" }
+        try "model_provider = \"relay\"".write(to: config, atomically: true, encoding: .utf8)
+        timer.fireLatest()
+        XCTAssertEqual(store.snapshot, .apiConnection)
+    }
+
+    func testApiSwitchRejectsInFlightSubscriptionResult() async throws {
+        let home = try makeTemporaryDirectory(named: "ApiLateResult")
+        let source = CodexDataSource(codexHome: home, origin: .userSelected)
+        let reader = SuspendedQuotaReader()
+        let timer = ManualQuotaTimerScheduler()
+        let store = AccountQuotaStore(quotaReader: reader, timerScheduler: timer, observesUserDefaults: false,
+            connectionModeReader: { CodexConnectionMode.read(dataSource: $0) })
+        defer { store.stop() }
+        store.start(dataSource: source)
+        await waitUntil("subscription request") { await reader.hasPendingRequest(for: source) }
+        try "model_provider = \"relay\"".write(to: home.appendingPathComponent("config.toml"), atomically: true, encoding: .utf8)
+        timer.fireLatest()
+        await reader.completeRequest(for: source, with: quotaSnapshot(usedPercent: 90, accountName: "stale"))
+        await waitUntil("old request completed") { await reader.currentCompletedReadCount() == 1 }
+        XCTAssertEqual(store.snapshot, .apiConnection)
+    }
+
     func testStopRejectsLateSuccessAndRestartAcceptsOnlyNewGeneration() async throws {
         let source = CodexDataSource(
             codexHome: try makeTemporaryDirectory(named: "QuotaStopLateSuccess"),
@@ -741,6 +782,14 @@ final class AccountQuotaStoreTests: XCTestCase {
             status: "额度已读取",
             updatedAt: Date(timeIntervalSince1970: TimeInterval(usedPercent))
         )
+    }
+}
+
+private actor ApiModeResetReader: AccountQuotaResetCreditReading {
+    private(set) var readCount = 0
+    func readResetCredits(dataSource: CodexDataSource?) async -> Result<AccountQuotaResetCreditSnapshot, AccountQuotaDiagnostic> {
+        readCount += 1
+        return .success(.init(availableCount: 3, credits: [], status: "ready", updatedAt: Date()))
     }
 }
 

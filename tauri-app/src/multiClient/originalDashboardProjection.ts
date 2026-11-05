@@ -38,7 +38,9 @@ export function clientCostPeriods(codex: DashboardSnapshot, snapshot: Snapshot, 
     const items:FloatingModelUsageItem[] = allowed.includes('codex') ? floatingTodayModelUsageItems(original,'gpt56Sol',{showPlaceholders:false,mergeAutoReview:false}).map(x=>({...x,key:'codex|'+x.key})) : [];
     for(const row of rows.filter(x=>allowed.includes(x.client))) items.push({key:row.client+'|'+row.model,
       label:claudeModelIdentity(row.model)?.label ?? row.model.replaceAll('-',' '),tokens:row.inputTokens+row.outputTokens,share:0,
-      costUSD:(row.unpricedRequests??0)>0?null:row.apiCostUSD??null,usesIndependentQuota:false,referenceCostUSD:null,color:modelUsageColor(row.model)});
+      costUSD:(row.unpricedRequests??0)>0?null:row.apiCostUSD??null,
+      knownPartialCostUSD:(row.unpricedRequests??0)>0 && row.requests>(row.unpricedRequests??0)?row.apiCostUSD??null:null,
+      usesIndependentQuota:false,referenceCostUSD:null,color:modelUsageColor(row.model)});
     const total=Math.max(1,items.reduce((n,x)=>n+x.tokens,0));return items.filter(x=>x.tokens>0).map(x=>({...x,share:x.tokens/total}));
   };
   const recentPoints=codex.recentUsage24h.filter(x=>x.startUnix>=now-7*86400&&x.startUnix<=now);
