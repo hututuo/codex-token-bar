@@ -111,7 +111,7 @@ struct QuotaSidebarCompactBars: View {
     var rateFraction: Double? = nil
     var modelRates: [ModelRateContribution]? = nil
     var shares: [FloatingTodayModelUsageItem] = []
-    var taskStateLabel = "任务状态，非进度百分比"
+    var taskSummary: RunningThreadSummary = .unavailable
     var highlightedItem: QuotaSidebarItem? = nil
     var colors: [String: String] = [:]
     var usesMorphAnchors = false
@@ -128,8 +128,10 @@ struct QuotaSidebarCompactBars: View {
                         }.help("全会话实时速率（估算）")
                     case .tasks:
                         compactStroke(id: "tasks") {
-                            Capsule().fill(SidebarPalette.amber.opacity(0.5)).frame(width: 4, height: layout.barHeight)
-                        }.help(taskStateLabel).accessibilityLabel(taskStateLabel)
+                            SidebarTaskMeter(presentation: SidebarTaskMeterPresentation(summary: taskSummary))
+                                .frame(width: 4, height: layout.barHeight)
+                        }.help(SidebarTaskMeterPresentation(summary: taskSummary).label)
+                            .accessibilityLabel(SidebarTaskMeterPresentation(summary: taskSummary).label)
                     case let .quota(client):
                         ForEach(QuotaSidebarContentOrder.quotaWindows(quotas, client: client)) { quota in
                             if usesMorphAnchors {
@@ -284,7 +286,8 @@ struct QuotaSidebarRail: View {
                     fraction: rateFraction, color: NSColor(ModelUsagePresentation.color(for: "unknown")), segments: segments))
             } else {
                 routes.append(ClientQuotaMorphRoute(id: item.id, ring: ring, track: track, half: 0, fraction: 1,
-                    color: NSColor(SidebarPalette.amber), expandedTrackOpacity: 0, collapsedTrackOpacity: 0, fillOpacity: 0.5))
+                    color: .gray, segments: SidebarTaskMeterPresentation(summary: runningSummary).morphSegments,
+                    expandedTrackOpacity: 0, collapsedTrackOpacity: 0, shape: .taskCells))
             }
         }
         return routes
@@ -375,7 +378,7 @@ struct QuotaSidebarRail: View {
                     ScrollView(.vertical) {
                         QuotaSidebarCompactBars(items: compactItems, quotas: quotaItems, layout: layout,
                             rateFraction: Double(rateFraction),
-                            modelRates: barRates, shares: shares, taskStateLabel: "任务状态：" + runningText + "，非进度百分比", colors: quotaSelection.colors,
+                            modelRates: barRates, shares: shares, taskSummary: runningSummary, colors: quotaSelection.colors,
                             usesMorphAnchors: true)
                             .frame(minHeight: geometry.size.height)
                     }.scrollIndicators(.hidden)
@@ -478,7 +481,7 @@ struct QuotaSidebarRail: View {
                 VStack(spacing: 5) {
                     ZStack {
                         MatchedStrokeMorphParticipant(ids: ["tasks"], size: CGSize(width: ClientSidebarMetrics.ringSize, height: ClientSidebarMetrics.ringSize)) {
-                            Circle().stroke(SidebarPalette.amber.opacity(0.5), lineWidth: 3)
+                            SidebarTaskMeter(presentation: SidebarTaskMeterPresentation(summary: runningSummary), ring: true)
                         }.anchorPreference(key: ClientQuotaMorphAnchors.self, value: .bounds) { ["ring:tasks": $0] }
                         Text(runningSummary.freshness == .fresh ? "\(runningSummary.total)" : "—").font(.system(size: 18, weight: .medium, design: .rounded)).foregroundStyle(SidebarPalette.amber)
                     }.frame(width: ClientSidebarMetrics.ringSize, height: ClientSidebarMetrics.ringSize)
@@ -492,7 +495,7 @@ struct QuotaSidebarRail: View {
                 .contentShape(Rectangle())
             }.buttonStyle(SidebarPulseButtonStyle())
                 .accessibilityLabel("查看任务，\(runningText)")
-                .help("合计已读到的本地主任务与子 Agent；各客户端读取状态见任务详情")
+                .help(SidebarTaskMeterPresentation(summary: runningSummary).label)
                 .accessibilityIdentifier("quota-sidebar-tasks")
                 .accessibilityAddTraits(.isButton)
                 .accessibilityAction { controller.select(.tasks) }

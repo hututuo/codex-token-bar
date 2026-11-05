@@ -11,7 +11,9 @@ import { quotaRingGroups } from "../multiClient/integratedClientModel";
 import { modelUsageColor } from "../components/modelUsagePresentation";
 import { useSidebarLayout } from "./useSidebarLayout";
 import { SidebarCompactBars } from "./SidebarCompactBars";
-import { compactSidebarIDs, sidebarUsesCompactDot, fixedSidebarRailLayout, quotaWindowsForClient, sidebarTaskStateLabel, sidebarCombinedTaskCounts, visibleSidebarItems } from "./sidebarLayoutPresentation";
+import type { ComponentProps } from "react";
+import { sidebarTaskMeterForSources } from "./SidebarTaskMeter";
+import { compactSidebarIDs, sidebarUsesCompactDot, fixedSidebarRailLayout, quotaWindowsForClient, visibleSidebarItems } from "./sidebarLayoutPresentation";
 import { isSidebarItemVisible, isSidebarLayoutItemId, migrateSidebarLayout, type SidebarLayoutConfig } from "./sidebarLayoutModel";
 import { SidebarModuleSettings } from "./SidebarModuleSettings";
 import { ModelTraceContent } from "../modelTrace/ModelTracePanel";
@@ -362,11 +364,10 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
   const rates = selectedActivityRates(data.snapshot.modelRates??[],local.modelRates,allowedClients,speedMode,data.snapshot.tokensPerSecond);
   const totalRate = rates.reduce((n,r)=>n+r.tokensPerSecond,0);
   const localReady = !!local.capturedAt && taskClaudeClients.some(c => local.sourceAvailable[c]);
-  const { status: taskStatus, main: mainCount, subagents: subCount } = sidebarCombinedTaskCounts(
-    data.runningThreads.status, scopeHasCodex, taskClaudeClients.length > 0, localReady,
-    data.runningThreads.mainThreads ?? 0, data.runningThreads.subagents ?? 0,
-    local.mainAgents.filter(agent=>taskClaudeClients.includes(agent.client)).length,
-    local.subagents.filter(agent=>taskClaudeClients.includes(agent.client)).length);
+  const { status: taskStatus, main: mainCount, subagents: subCount, meter: taskMeter } = sidebarTaskMeterForSources(
+    data.runningThreads, scopeHasCodex, localReady,
+    local.mainAgents.filter(agent=>taskClaudeClients.includes(agent.client)),
+    local.subagents.filter(agent=>taskClaudeClients.includes(agent.client)));
   const taskTotal = mainCount + subCount;
   const recentBodySpeeds=useRecentBodySpeeds(data.snapshot.latestModelSpeeds30m??[]);
   const layoutItems = visibleSidebarItems(layout, quotaItems, scopeHasCodex || hasClaude).filter(id=>(scopeHasCodex&&recentBodySpeeds.length>0)||id!=="tps");
@@ -397,8 +398,7 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
     {state.mode !== "rest" && <div className="qs-drag-handle" role="img" aria-label="拖动侧栏，可移到其他屏幕" title="按住拖动侧栏，可移到其他屏幕"><span /></div>}
     <SidebarCompactBars items={compactItems} quotas={quotaItems} selection={quotaSelection} ratePercent={ratePercent}
       rateLabel={rateLabel} modelRates={barRates} models={models}
-      taskStatus={taskStatus}
-      taskLabel={sidebarTaskStateLabel(taskTotal, taskStatus)}
+      taskMeter={taskMeter}
       expected={{"codex:5h":expectedFive,"codex:7d":expectedSeven}} visible={state.mode === "rest" || (state.mode === "detail" && state.tab === "settings")}
       indicator={cacheWarning ? <span className="qs-cache-indicator" role="status" aria-label={"缓存命中偏低：" + cacheAdviceTitle(cacheWarning)} title={"缓存命中偏低 · " + cacheAdviceTitle(cacheWarning)}/> : undefined}/>
     <SidebarSummaryLayer visible={state.mode !== "rest"} scrollable={!cacheWarning} reminder={!!cacheWarning} onMeasure={onContentMeasurement}>{() => {
@@ -429,7 +429,7 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
         tps: <>{scopeHasCodex && <SidebarBodyMedian latest={recentBodySpeeds} sourceToken={data.sourceToken} active={state.mode !== "rest"} onOpen={() => onOpen("quota", "speeds")}/>}</>,
         modeltrace: <button className="qs-modeltrace-trigger" onClick={() => onOpen("modeltrace", "top")} title="打开 ModelTrace，手动检测模型"><svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 3 4 6v6c0 5 8 9 8 9s8-4 8-9V6l-8-3Z"/><path d="m8 12 3 3 5-6"/></svg>模型检测</button>,
         models: <button className="qs-model-trigger" onClick={() => onOpen("quota", "models")} aria-label="查看今日模型 Token 占比" title={modelTitle}><SidebarModelShareStrip models={models} title={modelTitle}/><span>模型占比</span></button>,
-        tasks: <button className="qs-running-trigger" onClick={() => onOpen("running", "top")} title="合计已读到的本地主任务与子 Agent；各客户端读取状态见任务详情"><SidebarTaskRing><Value value={taskStatus === "ready" ? String(taskTotal) : "—"}/></SidebarTaskRing><span>{taskStatus === "ready" ? mainCount + " 主 · " + subCount + " 子" : taskStatus === "stale" ? "上次任务数据" : taskStatus === "scanning" ? "任务读取中" : "任务未知"}</span></button>,
+        tasks: <button className="qs-running-trigger" onClick={() => onOpen("running", "top")} title={taskMeter.label}><SidebarTaskRing meter={taskMeter}><Value value={taskStatus === "ready" ? String(taskTotal) : "—"}/></SidebarTaskRing><span>{taskStatus === "ready" ? mainCount + " 主 · " + subCount + " 子" : taskStatus === "stale" ? "上次任务数据" : taskStatus === "scanning" ? "任务读取中" : "任务未知"}</span></button>,
         radar: <><SidebarRecommendations rows={radar?.crowd.rows ?? []} visible={state.mode !== "rest"} onOpen={() => onOpen("radar", "ranking")}/><div className="qs-divider"/><button className="qs-window-status" data-active={sidebarRadarIsActive(radar)} onClick={() => onOpen("radar", "top")}><span>{sidebarRadarCompact(radar)}</span>{sidebarRadarIsActive(radar) && radar?.official.deadlineMs && <small>{radar.official.countdown}</small>}</button></>,
         credits: data.quota?.quota?.resetCredit?.updatedAt ? <button className="qs-reset-count" onClick={() => onOpen("credits", "top")}>重置卡 {data.quota.quota.resetCredit.availableCount} 张{nearestCredit && <small>{sidebarLocalTime(nearestCredit.expiresAt, nearestCredit.expiresAtUnix)}</small>}</button> : null,
         clientUsage: <><strong className="qs-client-usage-title">累计 Token</strong>{scopeHasCodex && <button className="integrated-client-usage" onClick={() => onOpen("quota", "usage")}><span>Codex</span><strong>{data.snapshot.totalTokensLabel ?? "—"}</strong></button>}<ClientSidebarUsageRows onOpen={() => onOpen("quota", "usage")}/></>,
@@ -460,6 +460,16 @@ function Value({ value }: { value: string }) {
     <span key={frame.revision} className={frame.previous !== null ? "qs-digit-new" : undefined} aria-hidden="true"
       onAnimationEnd={() => setFrame(current => current.revision === frame.revision ? { ...current, previous: null } : current)}>{value}</span>
   </strong>;
+}
+
+function SidebarSettingsCompactPreview({running,...props}: Omit<ComponentProps<typeof SidebarCompactBars>,"taskMeter"> & {running:SidebarData["runningThreads"]}) {
+  const {allowed} = useClientScope();
+  const runtime = useClaudeLocalRuntime(allowed);
+  const configured = (client: string) => ["claudeCode","claudeDesktop"].includes(client) && runtime.configuredClients.some(value=>value===client);
+  const taskMeter = sidebarTaskMeterForSources(running,allowed.includes("codex"),
+    !!runtime.capturedAt && allowed.some(client=>configured(client) && runtime.sourceAvailable[client]),
+    runtime.mainAgents.filter(agent=>configured(agent.client)),runtime.subagents.filter(agent=>configured(agent.client))).meter;
+  return <SidebarCompactBars {...props} taskMeter={taskMeter}/>;
 }
 
 function DetailSurface() {
@@ -501,11 +511,10 @@ function DetailSurface() {
       <div className="qs-detail-content">{value.state.tab === "settings" ? <SidebarModuleSettings layout={sidebar.layout} catalog={settingsCatalog} selection={settingsSelection}
         hasCodex={clientScope.allowed.some(c => ["codex", "claudeCode", "claudeDesktop"].includes(c))} disabled={!sidebar.ready || sidebar.pending}
         onLayout={next => void sidebar.save(next)} onSelection={saveQuotaSelection} onHighlight={highlightSetting} onDragState={settingsDrag}
-        compactPreview={<SidebarCompactBars items={settingsItems} quotas={settingsQuotas} selection={settingsSelection}
+        compactPreview={<SidebarSettingsCompactPreview items={settingsItems} quotas={settingsQuotas} selection={settingsSelection}
           ratePercent={sidebarRatePercent(value.data.snapshot, true, DEFAULT_TOKEN_RATE_FULL_SCALE)}
           modelRates={value.data.snapshot.modelRates} models={floatingTodayModelUsageItems(value.data.snapshot.todayModelBreakdowns, "gpt56Sol", { showPlaceholders: false, mergeAutoReview: false }).filter(item => item.share > 0)}
-          taskStatus={value.data.runningThreads.status}
-          taskLabel={sidebarTaskStateLabel(value.data.runningThreads.total, value.data.runningThreads.status)} preview/>}
+          running={value.data.runningThreads} preview/>}
         speedSettings={<SpeedDisplayControls/>} colorSettings={<ClientQuotaSettings codex={value.data.quota.quota} colorsOnly/>}/> : value.state.tab === "modeltrace" ? value.state.mode !== "detail" ? null : value.data.sourceToken ? <ModelTraceContent key={JSON.stringify(value.data.sourceToken)} sourceToken={value.data.sourceToken} compact/> : <p className="qs-muted">正在读取数据源…</p> : value.state.tab === "quota" && (value.state.section === "speeds" || value.state.section === "activity-speed") ? <>{clientScope.allowed.includes("codex") && <><strong>Codex · 正文 TPS</strong><ObservedSpeedDetails quotaIdentity={value.data.quota.attributionIdentity} quotaUpdatedAt={value.data.quota.updatedAt} data={value.data.snapshot} sourceToken={value.data.sourceToken} surface="sidebar" /></>}<div id="qs-section-activity-speed"><ClientActivitySpeedPanel sourceToken={value.data.sourceToken} allowed={clientScope.allowed} codexRates={value.data.snapshot.modelRates} codexOutputRate={value.data.snapshot.tokensPerSecond} codexAvailable={value.data.snapshot.liveRateAvailable===true}/></div></> : value.state.tab === "quota" ? <QuotaDetails data={value.data} onOpenRunning={() => action({ type: "open", tab: "running" })} /> : value.state.tab === "credits" ? <ResetCreditDetails data={value.data} /> : value.state.tab === "running" ? <>{clientScope.allowed.includes("codex") && <RunningDetails data={value.data} />}<ClaudeLocalTasks allowed={clientScope.allowed}/></> : <RadarDetails key={value.state.section || "official"} radar={value.radar} initialRanking={value.state.section === "ranking" ? "crowd" : "official"} />}</div>
       <footer><span>额度 · 用量 · 会话</span><span>{value.state.pinned ? "已固定 · 点击 × 收起" : "移出后收起 · 点击固定"}</span></footer>
       {value.error && <details className="qs-diagnostic"><summary>窗口状态说明</summary><p>{value.error}</p></details>}

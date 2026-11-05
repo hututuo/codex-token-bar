@@ -72,6 +72,7 @@ enum ClientQuotaMorphGeometry {
 
     static func strokes(_ routes: [ClientQuotaMorphRoute]) -> [MatchedStrokeMorphRoute] {
         let strokes = routes.flatMap { route -> [MatchedStrokeMorphRoute] in
+            if route.shape == .taskCells { return taskCellStrokes(route) }
             if route.shape == .strip { return stripStrokes(route) }
             return parts(half: route.half, fraction: route.fraction).flatMap { part -> [MatchedStrokeMorphRoute] in
                 let expandedPoints = points(ring: route.ring, track: route.track, half: part.half, progress: 0)
@@ -124,6 +125,27 @@ enum ClientQuotaMorphGeometry {
         return strokes + markers + guides
     }
 
+    private static func taskCellStrokes(_ route: ClientQuotaMorphRoute) -> [MatchedStrokeMorphRoute] {
+        route.segments.map { cell in
+            let expanded = (0...segments).map { index -> CGPoint in
+                let t = Double(index) / Double(segments)
+                let value = cell.start + 0.004 + (cell.end - cell.start - 0.008) * t
+                let angle = -Double.pi / 2 + value * 2 * Double.pi
+                return CGPoint(x: route.ring.midX + route.ring.width / 2 * cos(angle),
+                               y: route.ring.midY + route.ring.height / 2 * sin(angle))
+            }
+            let collapsed = (0...segments).map { index -> CGPoint in
+                let t = Double(index) / Double(segments)
+                let bottom = route.track.maxY - route.track.height * cell.start - SidebarTaskMeterPresentation.separator / 2
+                let top = route.track.maxY - route.track.height * cell.end + SidebarTaskMeterPresentation.separator / 2
+                return CGPoint(x: route.track.midX, y: bottom + (top - bottom) * t)
+            }
+            return .init(id: route.id + ":" + cell.id, participantID: route.id,
+                expanded: .init(points: expanded, width: 3), collapsed: .init(points: collapsed, width: 4),
+                color: cell.color, lineCap: .butt)
+        }
+    }
+
     /// Model usage already has a straight horizontal source. Match each color
     /// interval to the vertical destination through the same transient engine.
     private static func stripStrokes(_ route: ClientQuotaMorphRoute) -> [MatchedStrokeMorphRoute] {
@@ -144,7 +166,7 @@ enum ClientQuotaMorphGeometry {
 
 }
 
-enum ClientQuotaMorphShape { case ring, strip }
+enum ClientQuotaMorphShape { case ring, strip, taskCells }
 
 struct ClientQuotaMorphRoute {
     let id: String

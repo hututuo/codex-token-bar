@@ -4,7 +4,7 @@ export type StrokePoint = { x: number; y: number };
 export type StrokeRect = { x: number; y: number; width: number; height: number };
 export type StrokeSegment = { id: string; start: number; end: number; color: string };
 export type SidebarStrokeSpec = {
-  id: string; half?: number; shape?: "ring" | "strip"; fraction: number | null; color: string;
+  id: string; half?: number; shape?: "ring" | "strip" | "taskCells"; fraction: number | null; color: string;
   expected?: number | null; segments?: StrokeSegment[]; trackColor?: string; trackOpacity?: number; fillOpacity?: number; width?: number;
 };
 export type SidebarStroke = {
@@ -12,6 +12,7 @@ export type SidebarStroke = {
   sourceWidth: number; targetWidth: number; opacity: number; foreground?: boolean;
   sourcePath?: StrokePoint[]; targetPath?: StrokePoint[];
   sourceRange?: [number, number]; targetRange?: [number, number];
+  lineCap?: "round" | "butt";
 };
 const clamp = (value: number) => Math.min(1, Math.max(0, value));
 export function squeezePoints(ring: StrokeRect, bar: StrokeRect, half: number, progress: number): StrokePoint[] {
@@ -49,6 +50,20 @@ function trim(points: StrokePoint[], lower: number, upper: number): StrokePoint[
 }
 export function sidebarStrokes(spec: SidebarStrokeSpec, source: StrokeRect, target: StrokeRect): SidebarStroke[] {
   if (![source, target].every(r => r.width > 0 && r.height > 0 && Object.values(r).every(Number.isFinite))) return [];
+  if (spec.shape === "taskCells") {
+    return (spec.segments ?? []).map(cell=>({
+      id:`${spec.id}:${cell.id}`,group:`${spec.id}:${cell.id}`,color:cell.color,
+      sourceWidth:3,targetWidth:4,opacity:1,lineCap:"butt",
+      source:Array.from({length:33},(_,index)=>{
+        const value=cell.start+.004+(cell.end-cell.start-.008)*index/32,angle=-Math.PI/2+value*2*Math.PI;
+        return {x:source.x+source.width/2+source.width/2*Math.cos(angle),y:source.y+source.height/2+source.height/2*Math.sin(angle)};
+      }),
+      target:Array.from({length:33},(_,index)=>{
+        const bottom=target.y+target.height-target.height*cell.start-.3,top=target.y+target.height-target.height*cell.end+.3;
+        return {x:target.x+target.width/2,y:bottom+(top-bottom)*index/32};
+      }),
+    }));
+  }
   const q = clamp(spec.fraction ?? 0), strip = spec.shape === "strip", half = spec.half ?? 0;
   const barFraction = strip ? q : clamp((q * target.height - 4) / Math.max(1, target.height - 4));
   const parts = strip ? [0] : half === 0 ? [-2, 2] : [half];

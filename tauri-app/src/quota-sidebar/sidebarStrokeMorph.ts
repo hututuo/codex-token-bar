@@ -60,7 +60,7 @@ export function animateSidebarStrokes(root: HTMLElement, expanded: boolean, prev
           const width = expanded ? stroke.sourceWidth : stroke.targetWidth;
           path.setAttribute("d", strokePath(points)); path.setAttribute("fill", "none");
           path.setAttribute("stroke", stroke.color); path.setAttribute("stroke-width", String(width));
-          path.setAttribute("stroke-linecap", "round"); path.setAttribute("stroke-linejoin", "round");
+          path.setAttribute("stroke-linecap", stroke.lineCap ?? "round"); path.setAttribute("stroke-linejoin", "round");
           // Keep the whole arc as an affine ellipse. Animate the actual fill
           // interval along it instead of bending a separately trimmed path.
           path.setAttribute("pathLength", "1");

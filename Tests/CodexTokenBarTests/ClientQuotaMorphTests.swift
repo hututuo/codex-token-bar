@@ -283,7 +283,7 @@ final class ClientQuotaMorphTests: XCTestCase {
         let reducedMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         controller.enter(); settle(0.08)
         XCTAssertEqual(overlay.animationsStarted, started + (reducedMotion ? 0 : 1))
-        XCTAssertEqual(overlay.morphLayerCount, reducedMotion ? 0 : 16)
+        XCTAssertEqual(overlay.morphLayerCount, reducedMotion ? 0 : 24, "The task outline now has ten independent cells in place of two solid half-arcs")
         XCTAssertEqual(overlay.coveredParticipantViewCount, reducedMotion ? 0 : 16, "Quota dots join quota, speed and task source/target views until handoff; reduced motion uses the native endpoints directly")
         controller.dismiss(); settle(0.08)
         XCTAssertEqual(overlay.animationsStarted, started + (reducedMotion ? 0 : 2))

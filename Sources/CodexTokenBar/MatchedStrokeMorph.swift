@@ -19,6 +19,7 @@ struct MatchedStrokeMorphRoute {
     let collapsed: MatchedStrokeMorphEndpoint
     let color: NSColor
     var opacityGroup: String? = nil
+    var lineCap: CAShapeLayerLineCap = .round
 }
 
 struct MatchedStrokeMorphTiming {
@@ -230,7 +231,7 @@ private struct MatchedStrokeMorphHost: NSViewRepresentable {
             let style = (snapshot.start, snapshot.end, snapshot.width, snapshot.opacity)
             startingStates[route.id] = snapshot
             let shape = CAShapeLayer()
-            shape.fillColor = nil; shape.strokeColor = route.color.cgColor; shape.lineCap = .round; shape.lineJoin = .round
+            shape.fillColor = nil; shape.strokeColor = route.color.cgColor; shape.lineCap = route.lineCap; shape.lineJoin = .round
             shape.path = MatchedStrokeMorphGeometry.path(to.points)
             shape.strokeStart = to.start; shape.strokeEnd = to.end; shape.lineWidth = to.width; shape.opacity = to.opacity
             // Closing is exactly the same cubic as the frame clock. Let CA

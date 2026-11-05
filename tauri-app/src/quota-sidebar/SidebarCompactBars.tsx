@@ -2,17 +2,17 @@ import { Fragment, type CSSProperties, type ReactNode } from "react";
 import { clientBrand, quotaFill, type QuotaItem, type QuotaSelection } from "../multiClient/integratedClientModel";
 import { modelRateGradient } from "../components/liveRate/modelRatePresentation";
 import type { ModelRateContribution } from "../types/live";
-import type { RunningThreadSummaryStatus } from "../types/threadActivity";
+import { SidebarTaskCells, type SidebarTaskMeterPresentation } from "./SidebarTaskMeter";
 import { compactSidebarIDs, fixedSidebarRailLayout, quotaWindowsForClient, sidebarUsesCompactDot, sidebarHasCompactRepresentation } from "./sidebarLayoutPresentation";
 
 export function SidebarCompactBars({ items, quotas, selection, ratePercent, modelRates = [], models = [],
   expected = {}, visible = true, preview = false, indicator, rateLabel = "全会话实时速率（估算）",
-  taskStatus, taskLabel }: {
+  taskMeter }: {
   items: readonly string[]; quotas: readonly QuotaItem[]; selection: QuotaSelection;
   ratePercent: number | null; modelRates?: ModelRateContribution[];
   models?: readonly { key: string; share: number; color: string }[];
   expected?: Record<string, number | null>; visible?: boolean; preview?: boolean; rateLabel?: string; indicator?: ReactNode;
-  taskStatus: RunningThreadSummaryStatus; taskLabel: string;
+  taskMeter: SidebarTaskMeterPresentation;
 }) {
   const layout = fixedSidebarRailLayout(compactSidebarIDs(items, quotas).length,
     preview ? 100000 : typeof window === "undefined" ? 900 : window.innerHeight || 900, items.filter(sidebarUsesCompactDot).length);
@@ -26,8 +26,8 @@ export function SidebarCompactBars({ items, quotas, selection, ratePercent, mode
         <i style={{ height: `${ratePercent ?? 0}%`, background: modelRateGradient(modelRates, "0deg") }} />
       </span>}
       {id === "tasks" && <span role="img" className="qs-bar qs-task-state-bar" data-sidebar-item={id} data-sidebar-stroke-target={id}
-        data-task-state={taskStatus} style={{ height: layout.barHeight, background: "rgba(239,192,119,.5)" }}
-        aria-label={taskLabel} title={taskLabel} />}
+        data-task-state={taskMeter.status} style={{ height: layout.barHeight }}
+        aria-label={taskMeter.label} title={taskMeter.label}><SidebarTaskCells meter={taskMeter}/></span>}
       {id.startsWith("quota:") && quotaWindowsForClient(quotas, id.slice(6)).map(item =>
         <span key={item.id} data-sidebar-item={id} data-quota-id={item.id} className="integrated-quota-track" style={{ height: layout.barHeight }} title={`${item.client} · ${item.window} ${item.remaining === null ? item.status : Math.round(item.remaining) + "%"}`}>
           <i className="integrated-client-cap" data-quota-marker-start={item.id} aria-hidden="true" style={{ background: clientBrand[item.client] ?? "#888" }} />

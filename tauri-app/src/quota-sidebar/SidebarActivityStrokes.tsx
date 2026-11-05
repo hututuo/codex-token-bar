@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { modelRateSlices } from "../components/liveRate/modelRatePresentation";
 import type { sidebarRingResetTime } from "./detailsModel";
+import { taskMeterSegments, type SidebarTaskMeterPresentation } from "./SidebarTaskMeter";
 
 function ModelRateRingSegments({ rates, fraction }: { rates: import("../types/live").ModelRateContribution[]; fraction: number }) {
   const slices = modelRateSlices(rates.length ? rates : [{ model: "unknown", tokensPerSecond: 1 }]);
@@ -25,9 +26,14 @@ export function SidebarActivityRing({ label, percent, color, expected, reset, mo
   return <div className="qs-ring" data-known={percent !== null} title={title || undefined}><svg viewBox="0 0 52 52" aria-hidden="true" data-sidebar-stroke-source={morphID ? "" : undefined} data-stroke-inset={4/52} data-stroke-spec={JSON.stringify([{id:morphID,fraction:percent === null?null:percent/100,color,segments,trackColor:"#2d332e",trackOpacity:1,width:4*49/52}])}><circle cx="26" cy="26" r="22" className="qs-track" />{modelRates ? <ModelRateRingSegments rates={modelRates} fraction={(percent ?? 0) / 100}/> : <circle cx="26" cy="26" r="22" fill="none" stroke={color} strokeWidth="4" strokeLinecap="round" className="qs-ring-value" strokeDasharray="138.23" strokeDashoffset={138.23 * (1 - (percent ?? 0) / 100)} transform="rotate(-90 26 26)" />}{expected != null && <line className="qs-pace-tick" x1="26" y1="0" x2="26" y2="8" transform={`rotate(${expected * 360} 26 26)`} />}</svg><span className={reset !== undefined ? "qs-ring-center" : undefined}><span>{label}</span>{reset !== undefined && (reset ? <time className="qs-ring-reset" dateTime={reset.dateTime} aria-label={reset.title}><span>{reset.date}</span><span>{reset.time}</span></time> : <small className="qs-ring-reset-unknown">重置未知</small>)}</span></div>;
 }
 
-export function SidebarTaskRing({children}:{children:ReactNode}) {
-  return <span className="qs-task-ring"><i className="qs-task-stroke" data-sidebar-stroke-source="" data-stroke-inset={1/49}
-    data-stroke-spec={JSON.stringify([{id:"tasks",fraction:1,color:"#efc077",fillOpacity:.5,trackOpacity:0,width:2}])}/>{children}</span>;
+export function SidebarTaskRing({children,meter}:{children:ReactNode;meter:SidebarTaskMeterPresentation}) {
+  const circumference=46*Math.PI;
+  return <span className="qs-task-ring" title={meter.label}><svg className="qs-task-stroke" viewBox="0 0 49 49" aria-hidden="true"
+    data-sidebar-stroke-source="" data-stroke-inset={1.5/49}
+    data-stroke-spec={JSON.stringify([{id:"tasks",shape:"taskCells",fraction:1,color:"#7a879e",segments:taskMeterSegments(meter)}])}>
+    {meter.colors.map((color,index)=><circle key={index} cx="24.5" cy="24.5" r="23" fill="none" stroke={color}
+      strokeWidth="3" strokeLinecap="butt" strokeDasharray={`${circumference*.092} ${circumference}`}
+      strokeDashoffset={-circumference*(index/10+.004)} transform="rotate(-90 24.5 24.5)"/>)}</svg>{children}</span>;
 }
 
 export function SidebarModelShareStrip({models,title}:{models:readonly {key:string;share:number;color:string}[];title:string}) {

@@ -188,7 +188,7 @@ struct QuotaSidebarSettingsRailPreview: View {
             QuotaSidebarCompactBars(items: items, quotas: quotas, layout: layout,
                 rateFraction: QuotaSidebarRatePresentation.fraction(rate: selectedRates.reduce(0) { $0 + $1.tokensPerSecond }, fullScale: fullScale, available: (allowedClients.contains("codex") && monitor.monitoringEnabled && monitor.dataSource != nil) || runtime.projection(allowed: allowedClients).sourceAvailable),
                 modelRates: selectedRates, shares: shares,
-                taskStateLabel: "任务状态：\(selectedRunning.total) 个运行任务，非进度百分比", highlightedItem: controller.settingsHighlightedItem, colors: selection.colors)
+                taskSummary: selectedRunning, highlightedItem: controller.settingsHighlightedItem, colors: selection.colors)
                 .frame(minHeight: layout.height)
         }.scrollIndicators(.hidden).frame(width: 16)
             .background(Color(red: 0.035, green: 0.045, blue: 0.038), in: Capsule())
