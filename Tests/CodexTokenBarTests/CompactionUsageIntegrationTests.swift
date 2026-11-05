@@ -94,6 +94,28 @@ final class CompactionUsageIntegrationTests: XCTestCase {
             outputTokens:7768,reasoningOutputTokens:7768,totalTokens:334108,calls:1)
         XCTAssertEqual(rates.costUSD(for:sample),0.1148208,accuracy:0.0000001)
     }
+    func testFirstOrdinaryRequestAfterCompactionAndInheritedContextIsPriced() throws {
+        let inherited: [String: Any] = ["input_tokens": 16_981_291, "cached_input_tokens": 16_000_000,
+            "output_tokens": 50_858, "reasoning_output_tokens": 0, "total_tokens": 17_032_149]
+        let context: [String: Any] = ["input_tokens": 0, "cached_input_tokens": 0,
+            "output_tokens": 0, "reasoning_output_tokens": 0, "total_tokens": 46_525]
+        let ordinary: [String: Any] = ["input_tokens": 100, "cached_input_tokens": 40,
+            "output_tokens": 20, "reasoning_output_tokens": 7, "total_tokens": 120]
+        let rates = APIPriceRates(inputUSDPerMillion: 2, cachedInputUSDPerMillion: 0.1, outputUSDPerMillion: 10)
+        let analyzer = CodexUsageAnalyzer(dataSource: .init(codexHome: FileManager.default.temporaryDirectory,
+                                                          origin: .userSelected))
+        // Equal counts are also a legitimate new request once the inherited
+        // context snapshot has consumed the compaction association.
+        for (first, expectedTokens, expectedCost) in [(ordinary, 120, 0.000324), (usage, 334108, 0.1148208)] {
+            let records = try parse([modern(), compact(), legacy(last: context, total: inherited), legacy(last: first)])
+            let counted = records.filter { $0.accountingKind == .counted }
+            XCTAssertEqual(counted.map { $0.event.tokens }, [334108, expectedTokens])
+            let aggregate = analyzer.cacheUsage(from: records.map(\.event), recentBins: [], threadInfo: [:])
+            XCTAssertEqual(aggregate.total.totalTokens, 334108 + expectedTokens)
+            XCTAssertEqual(aggregate.total.calls, 2)
+            XCTAssertEqual(rates.costUSD(for: aggregate.total), 0.1148208 + expectedCost, accuracy: 0.000000001)
+        }
+    }
     func testUnknownUsageStopsQuotaInversionButKeepsKnownCost() {
         let sample=TokenCacheBreakdown(inputTokens:100,cachedInputTokens:50,outputTokens:10,
             reasoningOutputTokens:4,totalTokens:110,calls:1)
