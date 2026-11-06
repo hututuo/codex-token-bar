@@ -146,6 +146,7 @@ html.quota-sidebar-fixed-canvas,html.quota-sidebar-fixed-canvas body,html.quota-
 .qs-model-usage{margin-top:13px}.qs-model-row+.qs-model-row{margin-top:8px}.qs-section-heading{margin-bottom:8px}
 .qs-task-metadata{flex-direction:row;flex-wrap:wrap;gap:6px 14px}.qs-task-metadata>div{grid-template-columns:auto auto;gap:6px}
 .qs-task-group{padding:11px;margin-bottom:8px}.qs-task-title{margin:6px 0}.qs-child-tasks{margin-top:10px}.qs-child-task+.qs-child-task{padding-top:9px}.qs-child-task{padding-bottom:9px}
+.qs-task-badges{display:flex;align-items:center;flex-wrap:wrap;gap:6px}.qs-task-source{font-size:10px;color:#9daf91}
 
 .qs-extra-metrics{margin-top:8px}
 

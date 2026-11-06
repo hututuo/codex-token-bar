@@ -10,7 +10,8 @@ test('Antigravity participates in all and standalone scopes, activity history, c
  const {selectedActivityRates}=await load('/src/multiClient/activitySpeedMode.tsx');
  const {ActivityLiveHistory}=await load('/src/multiClient/activityLiveHistory.ts');
  const {sidebarTaskMeterForSources}=await load('/src/quota-sidebar/SidebarTaskMeter.tsx');
- const {ClaudeLocalTaskList}=await load('/src/multiClient/ClaudeLocalRuntime.tsx');
+ const {RunningTaskDetails}=await load('/src/quota-sidebar/RunningTaskDetails.tsx');
+ const {localTaskSummary}=await load('/src/quota-sidebar/runningTaskPresentation.ts');
  const {modelUsageColor,dashboardModelUsageColor}=await load('/src/components/modelUsagePresentation.ts');
  const {clientCostPeriods,projectOriginalDashboard}=await load('/src/multiClient/originalDashboardProjection.ts');
  const registered=defaultClientPreferences.map(p=>p.client),all=scopeClients('all',registered);
@@ -31,6 +32,7 @@ test('Antigravity participates in all and standalone scopes, activity history, c
  assert.equal(combined.main,1);assert.equal(combined.subagents,1);
  assert.deepEqual(combined.meter.colors.slice(0,2),[modelUsageColor(model),modelUsageColor(model)]);
  assert.equal(dashboardModelUsageColor(model,false),modelUsageColor(model));
- const html=renderToStaticMarkup(React.createElement(ClaudeLocalTaskList,{mainAgents:[main],subagents:[child],title:'Antigravity'}));
- assert.match(html,/Antigravity 会话/);assert.match(html,/Antigravity 子 Agent/);assert.doesNotMatch(html,/Claude/);
+ const html=renderToStaticMarkup(React.createElement(RunningTaskDetails,{running:localTaskSummary([main],[child])}));
+ assert.match(html,/data-task-source="antigravity"/);assert.match(html,/qs-child-task/);assert.doesNotMatch(html,/Claude/);
+ assert.match(html,/生成中/);assert.match(html,/工具执行中/);
 }));

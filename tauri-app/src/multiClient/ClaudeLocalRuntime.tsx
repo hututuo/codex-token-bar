@@ -8,7 +8,6 @@ import {ActivitySpeedLivePlot} from "./ActivitySpeedLivePlot";
 import {ActivityLiveHistory} from "./activityLiveHistory";
 import {ActivityModelRateSmoother,claudeBarAgentActive} from "./activityRateSmoothing";
 import {ActivityRateUnitControl,useActivityRatePreferences} from "../components/liveRate/ActivityRateUnits";
-import { modelUsageColor } from "../components/modelUsagePresentation";
 
 export interface ClaudeRuntimeAgent {
   id: string; client: string; parentId: string | null; phase: string; model: string | null;
@@ -140,29 +139,4 @@ export function ClientActivitySpeedPanel({ allowed, sourceToken = null, compact 
     {!compact&&<div className="activity-live-controls"><span>{mode==="bar"&&allowed.includes("codex")?"Bar 活动速率":"Agent Speed"} · 仅保留内存中的近3分钟</span><ActivityRateUnitControl/></div>}
     <ActivitySpeedLivePlot rows={monitoringEnabled?rows:[]} asOf={Date.now()/1000} compact={compact} onOpen={onOpen} unit={unit} fx={fx} modeLabel={mode==="bar"&&allowed.includes("codex")?"Bar 活动速率":"Agent Speed"}/>
   </div>;
-}
-export function ClaudeLocalTasks({ allowed }: { allowed: readonly string[] }) {
-  const runtime = useClaudeLocalRuntime(allowed);
-  const taskClients = allowed.filter(c => ["claudeCode", "claudeDesktop", "antigravity"].includes(c));
-  if (!taskClients.length) return null;
-  const title = taskClients.every(c=>c==="antigravity") ? "Antigravity" : taskClients.includes("antigravity") ? "本地任务" : "Claude";
-  const ready = !!runtime.capturedAt && allowed.some(client =>
-    taskClients.includes(client) && runtime.sourceAvailable[client]);
-  if (!ready) return <section style={{fontSize:12,paddingBlock:8}}>
-    <strong>{title} · 暂无任务数据</strong>
-    <p className="qs-muted">未读到当前本地活动记录，未计入任务合计。</p>
-  </section>;
-  return <ClaudeLocalTaskList mainAgents={runtime.mainAgents} subagents={runtime.subagents} title={title}/>;
-}
-export function ClaudeLocalTaskList({mainAgents,subagents,title="本地任务"}: {mainAgents: readonly ClaudeRuntimeAgent[]; subagents: readonly ClaudeRuntimeAgent[]; title?:string}) {
-  const clientTitle=(client:string)=>client==="antigravity"?"Antigravity":"Claude";
-  return <section style={{fontSize:12,paddingBlock:8,overflowWrap:'anywhere'}}>
-    <strong>{title} · {mainAgents.length} 主任务 · {subagents.length} 子 Agent</strong>
-    {mainAgents.map(agent => <div key={agent.id} style={{paddingBlock:6}}>
-      <strong>{agent.title || clientTitle(agent.client)+' 会话'}</strong> ·{' '}
-      <span style={{color:modelUsageColor(agent.model ?? "unknown")}}>{agent.model ?? "未知模型"}</span> · {agent.phase === "tools" ? "工具执行中" : "生成中"} · {agent.id.slice(-8)}
-      {subagents.filter(child => child.parentId === agent.id).map(child => <div key={child.id} style={{paddingLeft:12,paddingTop:4}}>↳ <strong>{child.title || clientTitle(child.client)+' 子 Agent'}</strong> · <span style={{color:modelUsageColor(child.model ?? "unknown")}}>{child.model ?? "未知模型"}</span> · {child.phase === "tools" ? "工具执行中" : "生成中"} · {child.id.slice(-8)}</div>)}
-    </div>)}
-    {subagents.filter(child => !mainAgents.some(main => main.id === child.parentId)).map(child => <p key={child.id}>子 Agent · <strong>{child.title || clientTitle(child.client)+' 子 Agent'}</strong> · <span style={{color:modelUsageColor(child.model ?? "unknown")}}>{child.model ?? "未知模型"}</span> · {child.id.slice(-8)}</p>)}
-  </section>;
 }
