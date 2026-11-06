@@ -327,6 +327,13 @@ jobs:
               --require known_empty_partial_stage_stays_occupied_for_the_existing_restart_validator \
               --require held_owner_lookup_rechecks_identity_and_root_versions_without_writing \
               --require held_owner_lookup_preserves_marker_pool_and_file_fences \
+              --require candidate_index_upgrades_v1_once_without_changing_retained_rows \
+              --require candidate_index_migration_rolls_back_ddl_catalog_and_version_on_failure \
+              --require candidate_index_rejects_unknown_or_partial_contracts_without_repairing_them \
+              --require candidate_index_concurrent_openers_admit_one_committed_upgrade \
+              --require candidate_index_versions_preserve_real_pending_publication_bridge \
+              --require candidate_index_preserves_order_isolation_late_seals_and_unknown_codec \
+              --require candidate_lookup_work_is_bounded_by_matches_not_retained_job_headers \
               --require held_owner_resolution_keeps_alias_conflicts_and_reservations_live \
               --require bound_temporary_tables_and_views_cannot_shadow_published_rows \
               --require bound_drop_and_rename_preserve_main_and_temp_ownership \

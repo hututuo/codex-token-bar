@@ -5,7 +5,7 @@
 //! identifier is rewritten to that store's private namespace before SQLite
 //! prepares it.
 
-use crate::core::business_store_container::{BusinessStoreError, Container, StoreSpec};
+use crate::core::business_store_container::{exact_stage_pool_spec, BusinessStoreError, Container, StoreSpec, EXACT_STAGE_POOL_VERSION};
 use crate::core::business_store_sql::{references_logical_sequence, split_complete_statements, StoreSqlBinding};
 use rusqlite::{
     functions::FunctionFlags,
@@ -443,13 +443,11 @@ impl StoreConnection {
         if module != "exact" {
             return Err("非Exact owner不能消费暂存".into());
         }
-        let pool = StoreSpec::new(
-            "exact.rust.pool",
-            "exact-stage-pool-v1",
-            "exact/stage-pool-v1",
-        )
-        .map_err(|e| e.to_string())?;
-        let valid: bool = self.raw.query_row("SELECT EXISTS(SELECT 1 FROM tb_stores WHERE store_id=?1 AND module=?2 AND source_identity=?3 AND namespace_prefix=?4 AND user_version=1 AND state='ready')", rusqlite::params![pool.id,pool.module,pool.source_identity,pool.prefix], |r| r.get(0)).map_err(|e|e.to_string())?;
+        let pool = exact_stage_pool_spec().map_err(|e| e.to_string())?;
+        // A v1 pool may reach publication before the first staging lookup on
+        // restart. Its unchanged receipt protocol remains supported; schema
+        // upgrade belongs to Pool::open, never this caller-owned transaction.
+        let valid: bool = self.raw.query_row("SELECT EXISTS(SELECT 1 FROM tb_stores WHERE store_id=?1 AND module=?2 AND source_identity=?3 AND namespace_prefix=?4 AND logical_path=?5 AND user_version IN (1,?6) AND state='ready')", rusqlite::params![pool.id,pool.module,pool.source_identity,pool.prefix,pool.logical_path,EXACT_STAGE_POOL_VERSION], |r| r.get(0)).map_err(|e|e.to_string())?;
         if !valid {
             return Err("暂存池合同不可用".into());
         }
@@ -508,12 +506,7 @@ impl StoreConnection {
         }
         let binding = self.binding.as_ref().ok_or("正式发布缺少Exact owner")?;
         let owner = binding.borrow().store_id().to_owned();
-        let p = StoreSpec::new(
-            "exact.rust.pool",
-            "exact-stage-pool-v1",
-            "exact/stage-pool-v1",
-        )
-        .map_err(|e| e.to_string())?;
+        let p = exact_stage_pool_spec().map_err(|e| e.to_string())?;
         let exists: bool = self
             .raw
             .query_row(

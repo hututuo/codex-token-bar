@@ -1,0 +1,39 @@
+# 暂存候选查询索引与旧池升级
+
+状态：本地候选实现。正确性、兼容与查询工作量验证通过；整段回填净收益尚未通过，不作为稳定版加速修复合入。
+
+本次仅处理已实测的 fixed-pool candidates 全表扫描热点。新增索引位于现有业务数据库 A、现有 Rust 暂存池的 `jobs` 表，不新建数据库、分区、任务表或账本副本；导入算法及其他性能候选不在本次修改内。原查询、候选数量、排序和未知 codec 拒绝行为保持不变。
+
+## 结构与兼容
+
+索引为 `jobs_sealed_candidates(owner, source_path, base_proof, sealed_at DESC, job_id, logical_path, codec) WHERE state='sealed'`，物理名称仍使用原 pool prefix。已 consumed/reclaimed 的保留任务不进入索引；building→sealed 和 sealed→consumed 时由 SQLite 同步维护。历史 header、manifest、payload 和 publication receipt 不做数据迁移。
+
+模块 `tb_stores.user_version` 从1升到2，物理 A 的 `PRAGMA user_version` 与根 schema 仍为1。Store ID、source identity、logical path和虚拟stage路径继续使用原身份。版本常量与StoreSpec生成集中在`business_store_container.rs`；旧表/触发器定义保留为`schema_v1()`，升级及物理/登记合同核对集中在`stage_pool/schema.rs`。
+
+打开已知v1池时先取得IMMEDIATE写事务，重读完整身份、版本及激活状态，然后核对完整v1物理定义和`tb_store_objects`登记。只有匹配时才创建索引、登记`type=index`、更新版本及revision，完整核对v2后提交。错误、额外或缺失对象不通过`IF NOT EXISTS`掩盖；任一步失败回滚。等待写锁期间另一进程已完成升级时，后到者验证v2，不重复创建或递增revision。
+
+新建池继续使用原有首次建池前备份流程，在写事务外完成备份，随后原子建立v2。v1→v2仅新增可重建索引，无额外全库复制；原pre-pool备份保留，不能把它当作升级前v1账本的回滚镜像。
+
+正常Pool访问只接受2。正式发布桥接显式接受1和2：旧池已有pending任务的启动恢复可能先发布、后进入首次Pool打开，故桥接不能只接受2，也不能在调用方发布事务内升级。两个版本的事实及receipt协议相同；版本3或未知版本仍拒绝。
+
+**回退边界：旧二进制的Pool和发布桥接要求模块版本1，因此升级后不能直接用旧二进制继续暂存写入。** 通用Container和其他模块的根版本未改变；这不等于整个A不可读取。若后续确需回退，应在停止所有写入、验证完整v2并保留证据后，另行执行只移除该索引/登记并恢复模块版本的受控迁移；本次没有增加或运行自动降级，不以还原旧全库备份覆盖后来账目。
+
+## 验证
+
+- 完整Rust库测试：1791通过、0失败、14项既有忽略。为控制本机磁盘占用，仅当前crate测试构建设`debug=0, incremental=false`；该构建不用于产品性能结论。
+- 7项新增测试覆盖：四种任务状态及typed数据保留、幂等升级、三处迁移错误回滚、确定性writer竞态、v1/v2真实mount/mark/consume与发布回滚、9类错误合同拒绝、候选顺序/隔离/晚封存/未知codec及扫描负控。CI显式要求这7项实际通过。
+- 查询工作量测试使用8272条已消费历史header及1条有效候选。有结果/无结果查询均要求FullscanStep=0、Sort=0、VM<100；在测试事务中临时移除指定索引后，原SQL结果相同且FullscanStep≥8272、VM>40000。`NOT INDEXED`在该WITHOUT ROWID路径未可靠禁用索引，因此没有将它作为有效负控。
+- 普通Astra Max会话独立阅读最终代码及日志，没有发现阻塞问题。它没有独立重跑测试；审查与根执行证据分别保存。
+- 正常dev配置的生产fixture构建及16个生产场景通过。4124来源、503128事件、2515640 tokens、4124补全回执与6250旧空候选保持，typed账目摘要仍为`442df884874a33dc15d2c5a07ef61c7aae3a52d35de9863d7459e290e4716e3d`；原始输入与前轮4124个文件逐字节一致。
+- 真实旧二进制生成v1封存任务，新二进制成功升级、恢复发布及回收，job身份和manifest/seal保持，publication receipt仅一条。旧二进制再访问v2时拒绝且未改变记录；新版再次恢复幂等。证据为`old-binary-upgrade-retry/old-binary-upgrade.json`。首个实验已完成升级与旧版拒绝，但后续宿主SQLite只读打开缺WAL/SHM的已关闭库失败；保留原失败记录，重试只在确认子进程全部退出且无WAL/journal时使用immutable只读。
+- 完成规模夹具后的只读查询证明：3类查询均使用新增索引，FullscanStep=0、Sort=0、VM=14/18、cacheWrites=0；索引最终只有1个4096-byte叶页（仅1条sealed候选）。该空间是最终状态，不代表回填期间索引峰值。单元负控原SQL移除索引后VM为41394/41378、FullscanStep=8272，恢复索引后18/14和0。
+
+本次正常配置的回填为473.792秒，普通刷新P95为0.482秒；数据准备639.697秒，整个测试进程1566.621秒。紧接着运行保留的旧二进制：回填344.814秒、普通刷新P95 0.343秒、准备389.445秒、整轮1100.541秒。候选复测为回填481.890秒、普通刷新P95 0.312秒、准备425.838秒。三次运行使用相同配置和逐字节相同输入，但系统负载未隔离；候选准备阶段也明显波动，不能直接把全程差值归因于索引，亦不能用旧版的367.702秒历史成绩选择性比较。因此本次只接受查询机制和兼容性结论，不接受整段回填提速结论。
+
+本轮首次测试23/25通过，两个失败分别是负例的proof helper错误使用旧身份，以及扫描负控没有真正禁用索引，均已修正。重编译曾发生ENOSPC；只删除本轮失败rustc留下的一个临时working目录，约回收1GiB，可由重新构建生成；用户数据、旧缓存及既有证据保留。之后较小的测试构建和正常生产构建均通过，所有失败日志保留。
+
+## 证据位置与范围
+
+`scratch/pool-candidate-index-20261106/`保留：`library-final.log/.execution.json`、`focused*.log/.execution.json`、`production-build.log`、`peer-review.md`、`product-scale.log/.producer.json/.validation.json`。正常生产运行会记录全部Rust源文件hash、二进制hash、执行前后稳定性及4124个原始输入逐字节一致性。
+
+本次尚未安装或发布；验证只使用隔离合成库，不打开或迁移正式用户数据库。Windows hosted运行及真实断电不在本机证据内；事务错误回滚与并发升级测试不能冒充这两项。恢复场景包含8个现有进程退出点各3次重启，但不是v1→v2迁移每一条DDL处的真实断电实验。回填全程变化需与阶段微测分开报告，历史两次323.102→367.702秒差值的因果归属不由本索引测试自动解决。

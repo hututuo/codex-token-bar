@@ -3,7 +3,7 @@
 //! of accounting semantics. New jobs are rows, never per-source stores.
 
 use super::stage_row_codec::{decode_row, encode_row};
-use crate::core::business_store_container::{Container, StoreSpec};
+use crate::core::business_store_container::{exact_stage_pool_spec, Container, StoreSpec, EXACT_STAGE_POOL_VERSION};
 use crate::core::business_store_sql::SQLiteStoreNamespace;
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod legacy;
+mod schema;
 
 type Result<T> = std::result::Result<T, String>;
 type Registry = Mutex<HashMap<PathBuf, Arc<Pool>>>;
@@ -158,12 +159,7 @@ fn identity(path: &Path) -> Result<String> {
         .ok_or_else(|| "暂存池无法确认A物理身份".into())
 }
 fn pool_spec() -> Result<StoreSpec> {
-    StoreSpec::new(
-        "exact.rust.pool",
-        "exact-stage-pool-v1",
-        "exact/stage-pool-v1",
-    )
-    .map_err(|e| e.to_string())
+    exact_stage_pool_spec().map_err(|e| e.to_string())
 }
 pub(super) fn is_path(path: &Path) -> bool {
     path.extension().and_then(|s| s.to_str()) == Some("stage")
@@ -213,39 +209,7 @@ impl Pool {
             identity: physical,
             store,
         };
-        pool.access(true,|container| {
-            let c=container.connection();
-            let found:Option<(i64,String,String,String,String)>=c.query_row("SELECT user_version,module,source_identity,namespace_prefix,state FROM tb_stores WHERE store_id=?1",[&pool.store.id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional().map_err(|e|e.to_string())?;
-            if let Some((version,module,source,prefix,state))=found {
-                if version!=1 || module!=pool.store.module || source!=pool.store.source_identity || prefix!=pool.store.prefix || state!="ready" { return Err("暂存池格式不可识别，已保留旧账和任务".into()); }
-            } else {
-                let other:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM tb_stores WHERE module LIKE 'exact.rust.pool%')",[],|r|r.get(0)).map_err(|e|e.to_string())?;
-                if other { return Err("未知暂存池模块，停止新增写入".into()); }
-                super::stage_pool_backup::ensure(path,c)?;
-                c.execute_batch("BEGIN IMMEDIATE").map_err(|e|e.to_string())?;
-                let result=(||->Result<()> {
-                    container.register(&pool.store).map_err(|e|e.to_string())?;
-                    let namespace=SQLiteStoreNamespace::new(pool.store.prefix.clone(),pool.schema().iter().map(|(n,_)|n.clone()));
-                    for (name,sql) in pool.schema() {
-                        c.execute_batch(&sql).map_err(|e|e.to_string())?;
-                        let kind=if name.starts_with("guard_"){ "trigger" }else{"table"};
-                        c.execute("INSERT INTO tb_store_objects VALUES(?1,?2,?3,?4)",params![pool.store.id,name,kind,namespace.unbind(&sql).map_err(|e|format!("{e:?}"))?]).map_err(|e|e.to_string())?;
-                    }
-                    c.execute("UPDATE tb_stores SET user_version=1 WHERE store_id=?1",[&pool.store.id]).map_err(|e|e.to_string())?;
-                    #[cfg(all(feature = "business-store-fixture", not(test)))]
-                    crash_fixture::process_fault("initialize-before-commit",path);
-                    c.execute_batch("COMMIT").map_err(|e|e.to_string())?; Ok(())
-                })();
-                if result.is_err() { let _=c.execute_batch("ROLLBACK"); } result?;
-            }
-            let mut stmt=c.prepare("SELECT name,sql FROM sqlite_master WHERE substr(name,1,?1)=?2 AND sql IS NOT NULL ORDER BY name").map_err(|e|e.to_string())?;
-            let actual=stmt.query_map(params![pool.store.prefix.len(),pool.store.prefix],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?))).map_err(|e|e.to_string())?.collect::<std::result::Result<HashMap<_,_>,_>>().map_err(|e|e.to_string())?;
-            if actual.len()!=pool.schema().len() { return Err("暂存池结构数量不匹配".into()); }
-            for (name,sql) in pool.schema() {
-                if actual.get(&format!("{}{name}",pool.store.prefix)).map(|s|s.trim_end_matches(';'))!=Some(sql.trim_end_matches(';')) { return Err("暂存池结构合同不匹配".into()); }
-            }
-            Ok(())
-        })?;
+        pool.access(true, |container| pool.prepare_schema(container))?;
         Ok(pool)
     }
     fn with<T>(&self, f: impl FnOnce(&Container) -> Result<T>) -> Result<T> {
@@ -284,7 +248,8 @@ impl Pool {
             )
             .optional()
             .map_err(|e| e.to_string())?;
-        if version != Some(1) && !(preparing && version.is_none()) {
+        if version != Some(EXACT_STAGE_POOL_VERSION)
+            && !(preparing && matches!(version, None | Some(1))) {
             return Err("暂存池版本或注册状态不可用".into());
         }
         f(&c)
@@ -293,6 +258,12 @@ impl Pool {
         quote(&format!("{}{name}", self.store.prefix))
     }
     fn schema(&self) -> Vec<(String, String)> {
+        let mut objects = self.schema_v1();
+        objects.push(self.candidate_index());
+        objects
+    }
+    // Keep the original table/trigger contract intact for exact v1 admission.
+    fn schema_v1(&self) -> Vec<(String, String)> {
         let jobs = self.table("jobs");
         let receipts = self.table("publication_receipts");
         let mut out=vec![
@@ -394,10 +365,13 @@ impl Pool {
     }
     pub(super) fn candidates(&self, target: &StoreSpec, source: &str) -> Result<Vec<PathBuf>> {
         self.with(|c|{
-            let mut s=c.connection().prepare(&format!("SELECT logical_path,codec FROM {} WHERE owner=?1 AND source_path=?2 AND base_proof=?3 AND state='sealed' ORDER BY sealed_at DESC,job_id",self.table("jobs"))).map_err(|e|e.to_string())?;
+            let mut s=c.connection().prepare(&self.candidates_sql()).map_err(|e|e.to_string())?;
             let rows=s.query_map(params![target.id,source,self.base(target,c.connection())?],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?))).map_err(|e|e.to_string())?;
             rows.map(|r|{let(p,v)=r.map_err(|e|e.to_string())?;if v!=1{return Err("未知暂存codec".into());}Ok(PathBuf::from(p))}).collect()
         })
+    }
+    fn candidates_sql(&self) -> String {
+        format!("SELECT logical_path,codec FROM {} WHERE owner=?1 AND source_path=?2 AND base_proof=?3 AND state='sealed' ORDER BY sealed_at DESC,job_id",self.table("jobs"))
     }
     pub(super) fn legacy_candidates(&self, index: &Path, source_digest: &str) -> Result<Vec<PathBuf>> {
         self.with(|c|crate::core::business_store_route::exact_stage_candidates_on(c.connection(),index,source_digest))
@@ -681,6 +655,8 @@ pub(crate) fn start_background_maintenance() {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod candidate_index_tests;
 
 #[cfg(all(feature = "business-store-fixture", not(test)))]
 pub(super) fn verify_fixture() -> Result<serde_json::Value> {

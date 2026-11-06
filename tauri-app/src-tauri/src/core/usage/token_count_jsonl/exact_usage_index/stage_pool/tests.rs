@@ -74,7 +74,7 @@ fn held_owner_lookup_preserves_marker_pool_and_file_fences() {
     writer.execute("INSERT INTO tb_container_meta VALUES('activation_state','recovering')", []).unwrap();
     assert!(pool.existing_exact_store_spec(&index).is_err());
     writer.execute("DELETE FROM tb_container_meta WHERE key='activation_state'", []).unwrap();
-    for (column, bad, good) in [("user_version", "9", "1"), ("state", "staging", "ready")] {
+    for (column, bad, good) in [("user_version", "9", "2"), ("state", "staging", "ready")] {
         writer.execute(&format!("UPDATE tb_stores SET {column}=?1 WHERE store_id=?2"), params![bad, pool.store.id]).unwrap();
         assert!(pool.existing_exact_store_spec(&index).is_err());
         writer.execute(&format!("UPDATE tb_stores SET {column}=?1 WHERE store_id=?2"), params![good, pool.store.id]).unwrap();
@@ -303,7 +303,7 @@ fn offline_maintenance_cannot_close_a_pool_while_an_owner_is_using_it() {
     assert!(pools.is_empty());
 }
 
-fn fixture() -> (tempfile::TempDir, Pool, StoreSpec) {
+pub(super) fn fixture() -> (tempfile::TempDir, Pool, StoreSpec) {
     let root = tempfile::tempdir().unwrap();
     let a = root.path().join("codex-ledger.sqlite");
     let c = Container::open(&a).unwrap();
@@ -422,7 +422,7 @@ fn future_pool_and_foreign_path_are_rejected_without_mutating_jobs_or_facts() {
         .is_err());
     let raw = Connection::open(&pool.path).unwrap();
     raw.execute(
-        "UPDATE tb_stores SET user_version=2 WHERE store_id=?1",
+        "UPDATE tb_stores SET user_version=3 WHERE store_id=?1",
         [&pool.store.id],
     )
     .unwrap();

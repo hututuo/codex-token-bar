@@ -19,6 +19,12 @@ use std::time::Duration;
 const SCHEMA: &str =
     include_str!("../../../../Sources/CodexTokenBar/Resources/codex-ledger-schema.sql");
 const CONTAINER_SCHEMA_VERSION: &str = "1";
+// Shared by pool admission and the same-A publication bridge. Store identity
+// remains v1 so existing jobs, receipts and virtual paths keep their owners.
+pub(crate) const EXACT_STAGE_POOL_VERSION: i64 = 2;
+pub(crate) fn exact_stage_pool_spec() -> BusinessStoreResult<StoreSpec> {
+    StoreSpec::new("exact.rust.pool", "exact-stage-pool-v1", "exact/stage-pool-v1")
+}
 const IMPORT_ALIAS: &str = "tb_import_source";
 const EXPORT_ALIAS: &str = "tb_export_source";
 static BACKUP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
