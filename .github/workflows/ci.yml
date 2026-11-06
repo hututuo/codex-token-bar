@@ -323,6 +323,13 @@ jobs:
               --require concurrent_different_backup_is_preserved_and_never_accepted_as_expected_snapshot \
               --require backup_rejects_source_alias_before_building_and_preserves_source \
               --require backup_reads_live_committed_wal_into_a_self_contained_snapshot \
+              --require namespace_clone_preserves_cyclic_foreign_keys_and_rolls_back_invalid_copy \
+              --require failed_import_rolls_back_only_the_requested_namespace \
+              --require failed_export_preserves_target_and_restores_connection_for_retry \
+              --require proof_and_round_trip_preserve_schema_details_and_hidden_rowids \
+              --require imports_are_partitioned_idempotent_and_preserve_sqlite_sequence \
+              --require incident_destination_replacement_checks_current_proof_inside_write_transaction \
+              --require incident_replacement_rechecks_the_attached_source_against_its_frozen_proof \
               --require legacy_options_accept_each_optional_column_combination_without_writing \
               --require malformed_or_missing_state_stays_an_error_and_is_not_created \
               --require missing_threads_table_is_an_error_but_valid_empty_legacy_tables_stay_empty \

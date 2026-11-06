@@ -2062,6 +2062,10 @@ mod tests {
         assert_eq!(container.proof(&target).unwrap(), proof);
         assert_eq!(container.connection.query_row("PRAGMA foreign_keys", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
         assert_eq!(fs::read(&original).unwrap(), before);
+        assert_transfer_connection_restored(&container.connection, true);
+        container.connection.execute(&format!("DELETE FROM {}a_child WHERE id=33", source.prefix), []).unwrap();
+        assert_eq!(container.clone_store_namespace(&source, &target).unwrap(), proof);
+        assert_transfer_connection_restored(&container.connection, true);
     }
 
     fn create_source(path: &Path, version: i64, id: i64, text: &str) -> Connection {
@@ -2862,6 +2866,47 @@ mod tests {
                 .unwrap(),
             2
         );
+        assert_transfer_connection_restored(container.connection(), true);
+        assert_eq!(container.import_snapshot(&good_path, &one, fixture.path("backup-retry"), 3.0, true).unwrap(), before_one);
+        assert_eq!(container.proof(&two).unwrap(), before_two);
+        assert_transfer_connection_restored(container.connection(), true);
+    }
+
+    fn assert_transfer_connection_restored(connection: &Connection, foreign_keys: bool) {
+        assert!(connection.is_autocommit(), "transfer left an open transaction");
+        assert_eq!(connection.query_row("PRAGMA foreign_keys", [], |row| row.get::<_, bool>(0)).unwrap(), foreign_keys);
+        let attached: Vec<String> = connection.prepare("PRAGMA database_list").unwrap()
+            .query_map([], |row| row.get::<_, String>(1)).unwrap()
+            .map(Result::unwrap).collect();
+        assert!(attached.iter().all(|name| name == "main" || name == "temp"), "transfer leaked an attached database: {attached:?}");
+    }
+
+    #[test]
+    fn failed_export_preserves_target_and_restores_connection_for_retry() {
+        let fixture = Fixture::new();
+        let source_path = fixture.path("source.sqlite");
+        drop(create_source(&source_path, 4, 17, "exported"));
+        let mut container = Container::open(fixture.path("container.sqlite")).unwrap();
+        let spec = store(&fixture.path("logical"), "export-home");
+        let expected = container.import_snapshot(&source_path, &spec, &source_path, 1.0, false).unwrap();
+        for foreign_keys in [false, true] {
+            let mut target = Connection::open_in_memory().unwrap();
+            target.execute_batch("CREATE TABLE retained(id INTEGER PRIMARY KEY,value TEXT); INSERT INTO retained VALUES(91,'keep-me'); PRAGMA user_version=23;").unwrap();
+            target.execute_batch(if foreign_keys { "PRAGMA foreign_keys=ON" } else { "PRAGMA foreign_keys=OFF" }).unwrap();
+            let before = proof_for(&target, "main", "", false, None).unwrap();
+            // A read-only target rejects the transactional replacement after
+            // ATTACH. The error must not strand the alias or the FK setting.
+            target.execute_batch("PRAGMA query_only=ON").unwrap();
+            let error = container.export_to(&spec, &mut target).unwrap_err();
+            assert!(matches!(error, BusinessStoreError::Sql(rusqlite::Error::SqliteFailure(code, _)) if code.code == rusqlite::ErrorCode::ReadOnly));
+            assert_eq!(proof_for(&target, "main", "", false, None).unwrap(), before);
+            assert_transfer_connection_restored(&target, foreign_keys);
+            assert_eq!(container.proof(&spec).unwrap(), expected);
+
+            target.execute_batch("PRAGMA query_only=OFF").unwrap();
+            assert_eq!(container.export_to(&spec, &mut target).unwrap(), expected);
+            assert_transfer_connection_restored(&target, foreign_keys);
+        }
     }
 
     #[test]
