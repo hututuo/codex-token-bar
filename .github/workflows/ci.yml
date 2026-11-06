@@ -321,6 +321,8 @@ jobs:
               --require failed_partial_backup_is_never_published \
               --require concurrent_matching_backup_is_reused_without_overwriting_or_leaking_temporary \
               --require concurrent_different_backup_is_preserved_and_never_accepted_as_expected_snapshot \
+              --require backup_rejects_source_alias_before_building_and_preserves_source \
+              --require backup_reads_live_committed_wal_into_a_self_contained_snapshot \
               --require legacy_options_accept_each_optional_column_combination_without_writing \
               --require malformed_or_missing_state_stays_an_error_and_is_not_created \
               --require missing_threads_table_is_an_error_but_valid_empty_legacy_tables_stay_empty \
