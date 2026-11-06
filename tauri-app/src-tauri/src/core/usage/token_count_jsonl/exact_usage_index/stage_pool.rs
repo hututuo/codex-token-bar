@@ -3,7 +3,8 @@
 //! of accounting semantics. New jobs are rows, never per-source stores.
 
 use super::stage_row_codec::{decode_row, encode_row};
-use crate::core::business_store_container::{exact_stage_pool_spec, Container, StoreSpec, EXACT_STAGE_POOL_VERSION};
+use crate::core::business_store_connection::exact::{exact_stage_pool_spec, EXACT_STAGE_POOL_VERSION};
+use crate::core::business_store_container::{Container, StoreSpec};
 use crate::core::business_store_sql::SQLiteStoreNamespace;
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
