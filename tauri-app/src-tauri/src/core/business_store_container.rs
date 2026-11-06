@@ -2523,13 +2523,20 @@ mod tests {
         let backup_path = fixture.path("backup.sqlite");
         drop(create_source(&source_path, 3, 17, "source-remains"));
         let expected_digest = Container::snapshot_digest_path(&source_path).unwrap();
+        let mut attempted_family = Vec::new();
 
         let result = Container::ensure_verified_backup_with(
             &source_path,
             &backup_path,
             &expected_digest,
             |_, temporary| {
-                fs::write(temporary, b"partial write")?;
+                for suffix in ["", "-wal", "-shm", "-journal"] {
+                    let mut name = temporary.as_os_str().to_os_string();
+                    name.push(suffix);
+                    let member = PathBuf::from(name);
+                    fs::write(&member, b"partial write")?;
+                    attempted_family.push(member);
+                }
                 Err(BusinessStoreError::ProofMismatch)
             },
         );
@@ -2540,16 +2547,93 @@ mod tests {
             Container::snapshot_digest_path(&source_path).unwrap(),
             expected_digest
         );
-        let leftover_temporary = fs::read_dir(&fixture.0)
-            .unwrap()
-            .filter_map(Result::ok)
-            .any(|entry| {
-                entry
-                    .file_name()
-                    .to_string_lossy()
-                    .contains("codex-token-bar-")
-            });
-        assert!(!leftover_temporary);
+        assert_eq!(attempted_family.len(), 4, "the failing builder must run");
+        for member in attempted_family {
+            assert!(
+                matches!(fs::symlink_metadata(&member), Err(error) if error.kind() == std::io::ErrorKind::NotFound),
+                "temporary backup family leaked after failed build: {}",
+                member.display()
+            );
+        }
+    }
+
+    #[test]
+    fn concurrent_matching_backup_is_reused_without_overwriting_or_leaking_temporary() {
+        let fixture = Fixture::new();
+        let source_path = fixture.path("source.sqlite");
+        let backup_path = fixture.path("backup.sqlite");
+        drop(create_source(&source_path, 3, 17, "same-snapshot"));
+        let expected_digest = Container::snapshot_digest_path(&source_path).unwrap();
+        let mut attempted_temporary = None;
+        let mut winner_bytes = Vec::new();
+
+        Container::ensure_verified_backup_with(
+            &source_path,
+            &backup_path,
+            &expected_digest,
+            |source, temporary| {
+                attempted_temporary = Some(temporary.to_path_buf());
+                Container::write_backup_snapshot(source, temporary)?;
+                // Another publisher wins after the initial target check.
+                Container::write_backup_snapshot(source, &backup_path)?;
+                // Give its physical image a distinct, non-accounting header.
+                // The same logical proof must not authorize overwriting it.
+                let winner = Connection::open(&backup_path)?;
+                winner.execute_batch("PRAGMA application_id=713")?;
+                drop(winner);
+                assert_eq!(Container::snapshot_digest_path(&backup_path)?, expected_digest);
+                winner_bytes = fs::read(&backup_path)?;
+                assert_ne!(winner_bytes, fs::read(temporary)?);
+                Ok(())
+            },
+        ).unwrap();
+
+        assert_eq!(fs::read(&backup_path).unwrap(), winner_bytes);
+        assert_eq!(Container::snapshot_digest_path(&source_path).unwrap(), expected_digest);
+        let temporary = attempted_temporary.expect("builder must run before the competing publish");
+        assert!(matches!(fs::symlink_metadata(temporary), Err(error) if error.kind() == std::io::ErrorKind::NotFound));
+    }
+
+    #[test]
+    fn concurrent_different_backup_is_preserved_and_never_accepted_as_expected_snapshot() {
+        let fixture = Fixture::new();
+        let source_path = fixture.path("source.sqlite");
+        let competing_source = fixture.path("other-source.sqlite");
+        let backup_path = fixture.path("backup.sqlite");
+        drop(create_source(&source_path, 3, 17, "expected-snapshot"));
+        drop(create_source(&competing_source, 3, 29, "other-snapshot"));
+        let expected_digest = Container::snapshot_digest_path(&source_path).unwrap();
+        let competing_digest = Container::snapshot_digest_path(&competing_source).unwrap();
+        assert_ne!(expected_digest, competing_digest);
+        let before: HashSet<PathBuf> = fs::read_dir(&fixture.0).unwrap()
+            .map(|entry| entry.unwrap().path()).collect();
+        let mut competing_bytes = Vec::new();
+        let mut attempted_temporary = None;
+
+        Container::ensure_verified_backup_with(
+            &source_path,
+            &backup_path,
+            &expected_digest,
+            |source, temporary| {
+                attempted_temporary = Some(temporary.to_path_buf());
+                Container::write_backup_snapshot(source, temporary)?;
+                Container::write_backup_snapshot(&competing_source, &backup_path)?;
+                competing_bytes = fs::read(&backup_path)?;
+                Ok(())
+            },
+        ).unwrap();
+
+        assert_eq!(Container::snapshot_digest_path(&backup_path).unwrap(), expected_digest);
+        assert_eq!(Container::snapshot_digest_path(&source_path).unwrap(), expected_digest);
+        assert_eq!(Container::snapshot_digest_path(&competing_source).unwrap(), competing_digest);
+        let preserved: Vec<PathBuf> = fs::read_dir(&fixture.0).unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path != &backup_path && !before.contains(path))
+            .collect();
+        assert_eq!(preserved.len(), 1, "only the displaced backup should remain alongside the new target");
+        assert_eq!(fs::read(&preserved[0]).unwrap(), competing_bytes);
+        let temporary = attempted_temporary.expect("builder must run before the competing publish");
+        assert!(matches!(fs::symlink_metadata(temporary), Err(error) if error.kind() == std::io::ErrorKind::NotFound));
     }
 
     fn import_and_check_round_trip(
