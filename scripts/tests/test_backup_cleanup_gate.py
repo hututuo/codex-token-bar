@@ -17,6 +17,7 @@ class BackupCleanupGateTests(unittest.TestCase):
                f"{gate.FAILURE} /fixture/actual-temp.sqlite\n"
                "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1792 filtered out; finished in 0.01s\n")
         gate.validate_rejection(log, 101)
+        gate.validate_rejection(log.replace("\n", "\r\n"), 101)
         invalid = [
             (log, 0),
             ("error[E0000]: compilation failed\n" + gate.FAILURE, 101),
@@ -27,8 +28,9 @@ class BackupCleanupGateTests(unittest.TestCase):
             (log.replace("0 passed; 1 failed", "1 passed; 1 failed"), 101),
         ]
         for text, code in invalid:
-            with self.subTest(text=text, code=code), self.assertRaises(ValueError):
-                gate.validate_rejection(text, code)
+            for candidate in [text, text.replace("\n", "\r\n")]:
+                with self.subTest(text=candidate, code=code), self.assertRaises(ValueError):
+                    gate.validate_rejection(candidate, code)
 
 
 if __name__ == "__main__":

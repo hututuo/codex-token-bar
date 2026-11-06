@@ -16,6 +16,10 @@ import sys
 
 
 def validate_execution(text, kind, required=()):
+    # The runner hashes raw log bytes, including Windows text-mode CRLF.
+    # Normalize only paired line endings for parsing; keep lone CR and all
+    # record/count/required-test checks intact.
+    text = text.replace("\r\n", "\n")
     if kind == "rust":
         summaries = re.findall(r"^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;.*$", text, re.M)
         if len(summaries) != 1:

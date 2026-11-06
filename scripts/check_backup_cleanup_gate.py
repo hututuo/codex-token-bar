@@ -31,6 +31,7 @@ DISABLED = "fn cleanup_backup_temporary(path: &Path) {\n    let _ = path;\n}\n"
 
 
 def validate_rejection(log, code):
+    log = log.replace("\r\n", "\n")
     records = re.findall(r"^test (\S+) \.\.\. (ok|FAILED|ignored)(?:,.*)?$", log, re.M)
     summaries = re.findall(r"^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;.*$", log, re.M)
     if (code != 101 or records != [(TEST, "FAILED")]

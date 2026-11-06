@@ -17,6 +17,22 @@ SWIFT = "Test Case '-[Module.SafetyTests safety]' passed (0.01 seconds).\nTest S
 
 
 class TestExecutionGateTests(unittest.TestCase):
+    def test_crlf_records_preserve_counts_required_tests_and_failure_rejection(self):
+        rust = RUST.replace("test result:", "test core::optional ... ignored, needs a fixture\ntest result:").replace("0 ignored", "1 ignored")
+        for kind, text in [("rust", rust), ("swift", SWIFT)]:
+            crlf = text.replace("\n", "\r\n")
+            self.assertEqual(gate.validate_execution(crlf, kind, ["safety"]),
+                             gate.validate_execution(text, kind, ["safety"]))
+            for broken in [crlf + crlf, crlf.replace("safety", "safety_extra"),
+                           crlf.replace("... ok", "... FAILED").replace("safety]' passed", "safety]' failed"),
+                           crlf.replace("1 passed", "2 passed").replace("Executed 1 test", "Executed 2 tests")]:
+                with self.subTest(kind=kind, text=broken), self.assertRaises(ValueError):
+                    gate.validate_execution(broken, kind, ["safety"])
+        with self.assertRaises(ValueError):
+            gate.validate_execution(rust.replace("\n", "\r\n"), "rust", ["optional"])
+        with self.assertRaises(ValueError):
+            gate.validate_execution(RUST.replace("... ok\n", "... ok\rhidden\n"), "rust")
+
     def test_real_pass_records_are_required_in_addition_to_summary(self):
         for kind, text in (("rust", RUST), ("swift", SWIFT)):
             with self.subTest(kind=kind):
