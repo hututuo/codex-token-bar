@@ -33,3 +33,9 @@
 `scratch/pool-index-retest-20261106/`：三轮各自的`.log/.producer.json/.validation.json`，以及最终`comparison.json`。该目录保留失败的旧版首轮，不覆盖为重试成功。`.validation.json`记录二进制hash、全部Rust源文件hash、负载采样及执行前后稳定性。
 
 另做了宿主SQLite 3.54.0的内存查询计划检查：按job_id查找仍走主键，发布receipt/消费generation两条SQL会改走新索引；这只是辅助线索，既非产品bundled SQLite 3.50.2的计时，也未证明是性能回退原因。
+
+## 后续反向顺序复测
+
+用户再次要求重测后，固定相同二进制按旧版→候选版执行：旧版回填330.104秒、候选349.260秒，候选慢19.156秒（5.80%）。两版全部规模与账目检查通过，方向与本报告上一组相反，因此仍不接受稳定净提速。另用同库bundled SQLite热缓存交替微测确认：任务查询由约2.0～2.9毫秒降到0.014～0.016毫秒，快约130～200倍；这不等于整段回填同幅度改善。详见[反向顺序复测](2026-11-06-pool-index-reverse-order-retest.md)。
+
+本报告中两个成功fixture的A数据库已无损归档到`scratch/pool-index-retest-20261106-rerun/`，其JSONL和日志保持原处，数据库家族hash与还原路径见归档清单；正式数据库未动。
