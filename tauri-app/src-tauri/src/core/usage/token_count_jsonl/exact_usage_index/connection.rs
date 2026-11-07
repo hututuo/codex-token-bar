@@ -46,7 +46,7 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
 use std::time::Duration as StdDuration;
 
 const INDEX_INTEGRITY_RECEIPT_VERSION: u32 = 2;
-const INDEX_INTEGRITY_RECEIPT_SUFFIX: &str = ".integrity-receipt.json";
+pub(super) const INDEX_INTEGRITY_RECEIPT_SUFFIX: &str = ".integrity-receipt.json";
 
 pub(super) struct ManagedIndexConnection {
     connection: Option<Connection>,

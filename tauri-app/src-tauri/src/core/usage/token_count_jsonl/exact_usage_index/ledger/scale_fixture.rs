@@ -5,6 +5,7 @@
 //! calls below are the actual Rust production entrypoints.
 
 use super::super::*;
+use super::super::connection::INDEX_INTEGRITY_RECEIPT_SUFFIX;
 use crate::core::business_store_sql::SQLiteStoreNamespace;
 use crate::core::{app_paths, business_store_route as route};
 use rusqlite::{params, Connection as RawConnection};
