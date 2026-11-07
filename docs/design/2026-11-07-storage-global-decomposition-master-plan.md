@@ -1,16 +1,16 @@
 # Exact 与业务库路由：全局复盘与一次性拆分总计划
 
-日期：2026-11-07（Asia/Shanghai）
+调查日期：2026-11-07；收官日期：2026-11-08（Asia/Shanghai）
 
 范围：`exact_usage_index.rs`、`business_store_route.rs` 及它们直接依赖的现有模块。
 
-状态：只读调查与规划；本次没有修改产品代码、测试、工作流或数据库，也没有启动本地构建。
+状态：**批次 A–D 已全部实施，并在同一最终候选 SHA 完成云端收官验收。** 原调查为只读；后续实施与验收见下列执行记录。全程遵循云端构建要求，未访问正式用户数据库。
 
-本文的调查数字和行号绑定 `ba9b222ef5e1c2de5f4368f63dbb56d2912b3270`。用户确认后，批次 A 已完成，见[执行记录](../maintenance/2026-11-07-exact-foundation-batch-a.md)；批次 B 已完成，见[读模型、投影与账本执行记录](../maintenance/2026-11-08-exact-read-projection-batch-b.md)；批次 C 已完成，见[扫描、checkpoint、暂存与回填执行记录](../maintenance/2026-11-08-exact-ingest-batch-c.md)。C 受测产品 `a865072a1208a39d27261b0e0730869678bd6080` 已通过双平台完整 Rust、生产场景、备份负控及四版本双平台历史接续矩阵。不改写下文原调查基线；批次 D 尚未实施。
+本文第一至五节保留原调查数字、行号和规划范围，绑定 `ba9b222ef5e1c2de5f4368f63dbb56d2912b3270`，不应当作当前源码行号。用户确认后，批次 A 已完成，见[连接与领域合同执行记录](../maintenance/2026-11-07-exact-foundation-batch-a.md)；批次 B 已完成，见[读模型、投影与账本执行记录](../maintenance/2026-11-08-exact-read-projection-batch-b.md)；批次 C 已完成，见[扫描、checkpoint、暂存与回填执行记录](../maintenance/2026-11-08-exact-ingest-batch-c.md)；批次 D 与最终收官已完成，见[迁移生命周期与路由恢复执行记录](../maintenance/2026-11-08-exact-migration-route-batch-d.md)。最终受测产品为 `05a2b8d56e8c32f36fb8147d0f97907da9a22895`，已通过双平台完整库、两端各 16 个生产场景、备份负控、物理 A 替换负控、四版本双平台历史矩阵及 Public097。实际终局见第七节。
 
 ## 结论先行
 
-当前待整理的两个主文件合计 **18,074 行**：Exact 主文件 15,892 行，业务库路由 2,182 行。路由文件中约 1,410 行是生产流程、约 772 行是内嵌测试；Exact 的主要业务测试在外部测试文件，主文件仍包含少量 `cfg(test)` 钩子和测试辅助。因此不能把 18,074 行都当成同等的生产复杂度。
+原调查时待整理的两个主文件合计 **18,074 行**：Exact 主文件 15,892 行，业务库路由 2,182 行。路由文件中约 1,410 行是生产流程、约 772 行是内嵌测试；Exact 的主要业务测试在外部测试文件，主文件仍包含少量 `cfg(test)` 钩子和测试辅助。因此不能把 18,074 行都当成同等的生产复杂度。
 
 前六次提取没有造成已观测的运行时回归，也没有新开连接或改变事务；但它们并没有同等程度地减少依赖。会话目录、标题同步、路由准入和迁移证明形成了可审查的局部边界；结构初始化有明确的调用合同，但仍依赖主文件的 schema 辅助；暂存发布主要是把一段 SQL 函数换到另一个文件。之前每个小步骤都重复了大范围云端验证，按“几百行一个批次”推进的工程成本明显高于把同一职责一次归位。具体额度消耗没有在证据中单独计量，不能伪造一个节省比例。
 
@@ -144,7 +144,7 @@ inline/外部路由测试                                772  暂不为拆文件
 
 **内容**：把 schema9/10 conversion、schema11 candidate/phase/switch/retention、accounting migration 归入 `migration.rs`；把 route 的 legacy journal/import coordinator 和 Exact namespace bridge 按上面的路由树归位。proof 模块继续只负责事实和比较，`migration.rs` 负责状态机；route 负责跨文件系统提交点。
 
-**保护**：逐阶段检查 Prepared→Copied→Migrated→Validated→Switching→Switched→Retained 的持久化点；验证 production A clone/replace/seal 与 `cfg(test)` 文件改名路径仍分别执行；覆盖 candidate 内容损坏、same-count corruption、Validated 重启重验、schema9/10 append checkpoint、journal source/target recheck、旧 v1 receipts、缺失/unknown/stray WAL 拒绝，以及有效但物理 A 被替换的专用负控（当前证据尚未覆盖后者）。此批及最终候选再跑 Public097、四版本历史矩阵、双平台完整库和生产场景。
+**保护**：逐阶段检查 Prepared→Copied→Migrated→Validated→Switching→Switched→Retained 的持久化点；验证 production A clone/replace/seal 与 `cfg(test)` 文件改名路径仍分别执行；覆盖 candidate 内容损坏、same-count corruption、Validated 重启重验、schema9/10 append checkpoint、journal source/target recheck、旧 v1 receipts、缺失/unknown/stray WAL 拒绝，以及有效但物理 A 被替换的专用负控（原调查时尚未覆盖，已在 D 补齐）。此批及最终候选再跑 Public097、四版本历史矩阵、双平台完整库和生产场景。
 
 ## 五、每批共同的验收和成本控制
 
@@ -155,12 +155,36 @@ inline/外部路由测试                                772  暂不为拆文件
 5. **回滚按源码提交**：若批次失败，回滚本批源码提交和工作树快照；不使用旧数据库覆盖新账，不删除候选、暂存或历史材料。
 6. **最终一次收束**：A–D 通过后，在同一个最终 SHA 上跑一套完整双平台/生产/历史/Public097 验证并封存。不要因最终模块数量变化再开新的“反向审查”循环。
 
-## 六、明确的当前未知与边界
+## 六、证据空白的收束与保留边界
 
-本次是架构级逐块调查：已阅读两个主文件的生产流程、主要 SQL 调用边界、现有子模块入口和关键测试清单；没有声称逐字重审每条 SQL 表达式，也没有运行构建或访问正式数据库。当前证据仍有三个应在对应批次补齐的空白：
+原调查逐块阅读两个主文件的生产流程、主要 SQL 调用边界、现有子模块入口和关键测试清单；调查本身没有运行构建或访问正式数据库。原先列出的证据空白现按实际验收记录收束：
 
-- route 还没有“当前有效但物理 A 文件被替换”的专用生产负控；
-- production seal/namespace 路径与 `cfg(test)` 迁移切换路径必须继续分开验收；
-- 没有新的全量性能矩阵，模块拆分本身不能被描述成速度优化。
+- “当前有效但物理 A 文件被替换”已增加真实生产负控：两端各 6 个入口在原实现/恢复实现中拒绝替换；临时禁用身份保护后按预期接受替换并使测试失败。退出码均为 0/1/0，编译失败不算负控成功，源码恢复 hash 已核对。
+- production A clone/replace/seal 与 `cfg(test)` 文件改名路径保留独立分支，并分别由非 test 生产/历史入口和完整库用例验收；未用 test 结果冒充生产绑定证明。
+- 没有新的全量性能矩阵，模块拆分不构成速度优化证据；scale 按计划未运行。Rust 两端各 14 项原有 ignored、Swift 37 项跳过和发布脚本 1 项跳过单独记录，不计入通过数。
+- 四版本矩阵是 Rust 双平台生产接续；Public097 另有 Swift/Rust 升级证据，不扩称原生 Swift 四版本 producer 矩阵。未访问正式用户库、安装、合并主线或发布。
 
-这份计划的目标是把历史遗留的边界一次收束，减少未来重复搬运和重复门禁；它不能承诺绝对零 bug。真正的安全标准是每个批次都保留原有事务、锁、连接和兼容性合同，并在最终 SHA 上用真实生产入口和历史输入复核。
+A–D 已按完整职责收束，保留原有事务、锁、连接和兼容性合同，并在最终 SHA 上用真实生产入口和历史输入复核。测试不承诺绝对零 bug，也不因剩余模块行数较大而继续开启拆分循环。
+
+## 七、实际终局与最终验收
+
+以下行数绑定最终受测产品 `05a2b8d56e8c32f36fb8147d0f97907da9a22895`。相较原调查，Exact 根文件 **15,892 → 2,885 行**，route 根文件 **2,182 → 1,195 行**；后者仍包含原约 772 行内嵌测试。这是职责归位，不代表删除了相应业务逻辑。
+
+| 最终模块 | 行数 | 实际边界 |
+| --- | ---: | --- |
+| `exact_usage_index.rs` | 2,885 | 根字段/锁、open/sync/enrichment/begin/resume/finalize 完整编排、公开 facade、原测试 hook |
+| `connection.rs` | 1,192 | managed connection、Drop、per-path gate、receipt 和连接恢复整体 |
+| `contracts.rs` / `store_metadata.rs` | 421 / 179 | 领域合同与持久化 metadata 合同；不复制运行时状态 |
+| `read_model.rs` | 2,100 | summary/dashboard 单连接单快照读取；摘录 savepoint 副作用明确保留 |
+| `projections.rs` / `ledger.rs` | 1,629 / 694 | 派生聚合/水位/归因，以及 pending/ledger 对账与缺失源保全 |
+| `ingest.rs` / `sources.rs` | 3,741 / 1,233 | 权威扫描/checkpoint/stage 生命周期，以及候选发现/源观察合同；两个 EventSink 不合并 |
+| `migration.rs` / `migration/proof.rs` | 2,934 / 805 | 迁移状态机与 legacy bootstrap / 事实和比较；proof 不拥有切换 |
+| `business_store_route.rs` | 1,195 | bootstrap、公开 facade、维护入口、原测试；全局 marker 提交点保持 |
+| `import_coordinator.rs` | 673 | 完整旧输入/journal/备份/替换/激活协调链；保留完整 open 与事务内 recheck |
+| `exact_namespace.rs` | 393 | Exact owner/注册/candidate/receipt 与 clone/replace/seal 桥接 |
+
+原有 schema、目录、标题、publication、stage_pool、path_identity、admission 等专用模块继续保留。原计划中的独立 `recovery.rs` 没有再强行建立：连接恢复随 connection 归位，legacy bootstrap 随 migration 归位，原 `exact_legacy_recovery` / `runtime_recovery` 保留既有边界。根文件和 migration 的实际行数高于最初估算，是为了保持完整编排和状态机；不再为满足估计行数切碎函数。
+
+最终 D 搬移范围的 **332 个既有函数体、1,840 个业务字符串/SQL 字面量字节一致**，8 个变动/搬移文件完整重建一致，217 个其他既有 Rust 文件未改。新增物理替换负控独立计量，未混入“函数未变”的证明。
+
+同 SHA 的[最终 CI 与历史矩阵](https://github.com/hututuo/codex-token-bar/actions/runs/42401305689)和[Public097](https://github.com/hututuo/codex-token-bar/actions/runs/42401310248)全部成功：Rust macOS 1,798 / Windows 1,742 通过，两端各 16 个生产场景、备份负控和物理替换负控通过，四版本矩阵 8/8 链路、64 份实际结果、48 次独立重开通过。Public097 的 Swift 升级 8 项及配套 104 项、Rust 升级 3 项、生产 4 个阶段及 manifest 19 类场景通过。原始证据、Git tree、源码恢复记录和 CI 封存已本地复核；详细范围、跳过项与 hash 记录见 D 维护报告和 `scratch/exact-migration-route-d-20261108/`。封存提交只更新文档，受测产品源码不变。

@@ -7,7 +7,7 @@
 | 模块 | 职责 | 行数 |
 | --- | --- | ---: |
 | `exact_usage_index/migration.rs` | 兼容性评估、schema9/10 转换、schema11 candidate/phase/switch/retention、accounting、legacy bootstrap | 2,934 |
-| `exact_usage_index/migration/proof.rs` | 原有事实生成、序列化与 preserves 比较；未移动状态机到 proof | 803，未改 |
+| `exact_usage_index/migration/proof.rs` | 原有事实生成、序列化与 preserves 比较；未移动状态机到 proof | 805，未改 |
 | `exact_usage_index.rs` | 根状态、open 外层锁与候选选择、sync/enrichment 编排、begin/resume/finalize、公开 facade 和原测试 hook | 5,695 → 2,885 |
 | `business_store_route/import_coordinator.rs` | journal、旧输入、冻结备份、替换/激活协调链，完整 `open_store_at_address_with_hook` | 673 |
 | `business_store_route/exact_namespace.rs` | Exact owner 解析、注册/已发布读取、candidate、receipt、clone/replace/seal/alias 桥接 | 393 |
@@ -57,10 +57,46 @@
 
 `scripts/check_route_identity_gate.py` 仅允许云端执行：原实现运行通过 → 临时把 `verify_active_container_identity` 改为成功返回，要求 fixture 因“接受被替换 A”而失败 → 恢复原字节并重新构建/运行通过。编译失败不能冒充负控成功。保留每轮源码/二进制/log hash、退出码和原始报告，临时 mutation 在 finally 恢复。CI native 两端均执行并上传单独 artifact。
 
-本地只检查 Python/manifest/Rust 语法及报告解析器；7 类不完整/错误负控报告均被拒绝。实际物理替换与三轮编译/运行结果等待下方云端验收，不预先宣称成功。
+本地只检查 Python/manifest/Rust 语法及报告解析器；7 类不完整/错误负控报告均被拒绝。实际物理替换和三轮编译/运行已在同一候选 SHA 的 macOS、Windows 云端完成：两端退出码均为 **0/1/0**，禁用身份保护时均因 `route identity fence accepted replaced A: generic-writer` 失败，恢复后 6 个入口再次全部拒绝替换。三轮编译均成功，源码恢复 hash 与原始日志逐份匹配。
 
 ## 收官验收
 
-待同一最终候选 SHA 的双平台完整库、两端各 16 个生产场景、备份负控、物理 A 替换负控、0.9.8–0.9.11 双平台历史矩阵及 Public097 全部通过并下载复核后填写。
+最终受测产品为 `05a2b8d56e8c32f36fb8147d0f97907da9a22895`。以下两轮工作流均已全部成功，绑定同一份产品源码：
+
+- [完整 CI、四版本历史矩阵和两类负控：42401305689](https://github.com/hututuo/codex-token-bar/actions/runs/42401305689)。
+- [Public097：42401310248](https://github.com/hututuo/codex-token-bar/actions/runs/42401310248)。
+
+原始产物于 2026-11-08（Asia/Shanghai）下载并逐份复核；本地 `native-validation.json`、`historical-validation.json`、`final-validation.json` 均为 PASS。最终 `final-validation.json` 的 SHA256 为 `5d2cbf39ce831afb654d0040842e2499c1947ed6ebae1f5a856f721947355999`。本批没有失败后改产品再重跑的云端轮次，也没有拼接不同候选的通过结果。
+
+| 证据范围 | 同一受测 SHA 的实际结果 |
+| --- | --- |
+| macOS 完整 Rust 库 | 1,798 通过、0 失败、14 项原有 opt-in ignored |
+| Windows 完整 Rust 库 | 1,742 通过、0 失败、14 项原有 opt-in ignored |
+| 旧测试身份和结果 | 两端全部测试身份和通过/ignored 状态与紧邻 C 受测产品 `a865072a1208a39d27261b0e0730869678bd6080` 完全一致；C 已核对与 B 一致，未移动或改名旧测试 |
+| D 重点保护用例 | 两端各 39 项实际通过，覆盖 schema9/10 checkpoint、accounting、phase 中断恢复、Validated 重启重验、candidate 内容损坏、旧 v1 receipts、journal/source/destination 最终复核、低空间与耐久性 |
+| 普通生产 / fixture 配置 | 两端编译通过；各 16 个非 test 生产场景通过，保留生产 `StoreConnection` 绑定和 A namespace 路径 |
+| 备份清理负控 | 两端原实现通过 → 禁用清理后失败 → 恢复后通过；退出码 0/101/0，源码恢复和日志 hash 匹配 |
+| 有效但物理 A 被替换的负控 | 两端原实现通过 → 禁用身份保护后因接受替换而失败 → 恢复后通过；退出码 0/1/0，正常/恢复轮各覆盖 6 个真实入口 |
+| Swift 完整库 | 2,361 通过、37 项原有跳过 |
+| 前端 / 云端脚本 / 发布脚本 | 1,421 / 18 / 111 通过；发布脚本原有 1 项跳过，前两组无跳过 |
+| Windows updater / packaging 检查 | 既有 CI job 与 native 步骤通过；没有安装或发布发行包 |
+| CI 封存 | sourceSha、runId、expected job outcomes、checked-source、库测试前后源码记录均匹配；formed-upgrade 为 success，scale 为原计划 skipped |
+
+历史矩阵使用固定旧 tag 的 Rust 生产入口分别形成正常提交和中断状态，再由当前候选接续；不是只改新库版本号。每类状态恢复一次，再独立重开三次：
+
+| 历史 producer | macOS | Windows |
+| --- | --- | --- |
+| 0.9.8 | PASS，8 份结果 / 6 次独立重开 | PASS，8 份结果 / 6 次独立重开 |
+| 0.9.9 | PASS，8 份结果 / 6 次独立重开 | PASS，8 份结果 / 6 次独立重开 |
+| 0.9.10 | PASS，8 份结果 / 6 次独立重开 | PASS，8 份结果 / 6 次独立重开 |
+| 0.9.11 | PASS，8 份结果 / 6 次独立重开 | PASS，8 份结果 / 6 次独立重开 |
+
+合计 **8 条链路、64 份实际结果、48 次独立重开**。复核旧 producer SHA、`cfgTest=false`、形成状态 proof、候选 SHA、每份原始 resume/reopen 输出、manifest / migration-state hash 和恢复材料保留标志。每份候选 archive 的完整生产文件清单/hash 与受测 Git tree 全等，明确包含 A–C 模块和本批 migration、proof、import_coordinator、exact_namespace、admission。这是双平台 Rust 生产历史矩阵，不扩称为原生 Swift 四版本 producer 矩阵。
+
+Public097 的同 SHA 原始证据包括：Swift 升级 8 项、配套回归 104 项全部通过且零跳过；Rust 升级 3 项、生产接续 4 个阶段、manifest 19 类场景通过。缺失源、旧收据、冻结备份、现有部分 A、unknown/stray WAL 和恢复材料保留均按原报告合同核对。
+
+最终 `validate.py` 还比对即时生产 artifact 与完整库 artifact 中的重复证据，从原始输出重建生产报告；校验两类负控的实际日志、退出码和恢复源码；验证当前全部 Rust src/examples、Cargo manifest、新负控脚本和 CI workflow 均逐字等于受测 Git blob。后续封存提交仅更新本文与总计划，不修改受测源码，不重跑文档无关的构建。A–D 在这一最终候选上完成收束。
+
+保留原报告范围标志（例如 `catalogActionsVerified=false`）；未执行的 opt-in/scale 不算通过。本轮不提供新的全量性能结论，也不等于安装/UI 或正式用户数据库验收。
 
 未访问正式用户数据库、安装、合并主线或发布；没有新全量性能结论。原有 Windows 报告及未跟踪资料保持，报告 SHA256 为 `63801116c53adee10cb0692cdad6553e6187906f7659ae0aea67b69d4f24ecef`。
