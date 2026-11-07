@@ -2,6 +2,8 @@
 
 基线`a7f16792407ac0ffb4e3231985c53df3329b6633`，受测产品为`4e43517d`，工作树`f97f/codex-token-dashboard`。本笔接续[剩余模块方案](2026-11-07-exact-next-decoupling-plan.md)，用户再次要求继续后，先复查迁移切换、暂存导入和路由的边界，再选一块实施。
 
+实施已完成：产品`05b23d54`归位准入函数及唯一身份状态，路由主文件净减少207行至2182行；双平台完整库、非test生产入口、Public097和四版本接续均通过，原始证据已核对，见[执行与验收记录](../maintenance/2026-11-07-route-admission-separation.md)。导入journal、协调器和Exact调用方保持原实现。
+
 ## 调查与选择
 
 优先归位路由的访问准入。`business_store_route.rs`把初始化、导入journal、Exact路径/所有权、维护和访问检查放在一起；准入检查可独立，且只有一个运行时物理身份状态。目标`business_store_route/admission.rs`，不增加服务层、连接池或第二套状态。
