@@ -9,6 +9,8 @@ struct ActivitySourceConfiguration: Equatable, Sendable {
     var geminiRoot: URL
     var opencodeRoot: URL
     var useDefaultGeminiRoots = true
+    // nil retains every standalone/Orca store; a custom parent is expanded by
+    // AgentSpeedCore with the same resolver used by the Token ledger.
     var antigravityRoot: URL? = nil
 
     static func make(codexEnabled: Bool, codexHome: URL?, preferences: [MultiClientUsagePreference],
@@ -72,6 +74,8 @@ struct ActivitySourceConfiguration: Equatable, Sendable {
         case .deepseek: root = deepseekRoot
         case .gemini: root = geminiRoot
         case .opencode: root = opencodeRoot
+        // Keep the persisted default-source identity stable when new default
+        // stores are added. This is an identity namespace, not the scan root list.
         case .antigravity: root = antigravityRoot ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".gemini")
         default: return nil
         }

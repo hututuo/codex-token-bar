@@ -154,7 +154,7 @@ export function MultiClientUsageSettings() {
       <input className="multi-client-path" aria-label={`${clientNames[preference.client]}日志路径`} defaultValue={preference.path} placeholder="自动发现；也可指定本地日志目录或文件"
         onBlur={e => { if (e.target.value !== preference.path) change(preference.client, { path: e.target.value }); }} />
       {preference.client === "claudeDesktop" && <p>仅支持本地 Code / Agent 会话；云端聊天未落地的用量无法读取。</p>}
-      {preference.client === "antigravity" && <p>自动读取 CLI、桌面和 IDE 的本地会话数据库；自选路径可填单个存储目录或 conversations 目录。</p>}
+      {preference.client === "antigravity" && <p>自动读取 CLI、桌面、IDE、ACP 及 macOS Orca 的本地会话数据库；自选路径可填父目录（如 .gemini 或 antigravity-chat）、单个存储目录或 conversations 目录。</p>}
     </fieldset>)}
     <button onClick={()=>setShowCustom(value=>!value)}>{showCustom ? "只显示已发现的客户端" : "手动接入其他日志目录"}</button>
     <ClaudeLocalQuotaPanel />

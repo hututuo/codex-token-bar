@@ -1702,13 +1702,14 @@ fn load_preferences(path: &Path) -> (Vec<MultiClientUsagePreference>, Vec<String
 }
 
 fn source_roots(client: &str, override_path: Option<&str>) -> Vec<PathBuf> {
+    if client == "antigravity" {
+        let selected = override_path.map(str::trim).filter(|path| !path.is_empty()).map(expand_path);
+        return antigravity::resolve_roots(&app_paths::home_dir(), selected.as_deref());
+    }
     if let Some(path) = override_path.map(str::trim).filter(|path| !path.is_empty()) {
         return vec![expand_path(path)];
     }
     let home = app_paths::home_dir();
-    if client == "antigravity" {
-        return ["antigravity-cli", "antigravity", "antigravity-ide"].map(|store| home.join(".gemini").join(store)).to_vec();
-    }
     if client == "gemini" {
         let base = std::env::var_os("GEMINI_CLI_HOME")
             .filter(|value| !value.is_empty())

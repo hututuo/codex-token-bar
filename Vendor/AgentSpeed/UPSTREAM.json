@@ -12,6 +12,10 @@
       "reason": "Token Bar local regression coverage for explicit stopped-state display metadata; not an upstream Agent Speed test.",
       "sha256": "32c79be91c782ef7661d246e661e653f5026c8822421fa220ad64fb942f7de78"
     },
+    "macos/Tests/AgentSpeedCoreTests/TranscriptLocationsTests.swift": {
+      "reason": "Token Bar isolated-home regression tests for standalone and Orca ACP discovery, custom parent selection, conversation-step deduplication, watch roots and live WAL completion; no real-home reads or network reporting.",
+      "sha256": "fcbc885da20ee254c19cd1f02fe1a4e1b0aab87176327e7effbbfb9bef5daa4d"
+    },
     "windows/src/AgentSpeed.Core/Reporting/ReportWebSocketSettings.cs": {
       "reason": "Token Bar local strict Draft-1 WebSocket capability/limit parser; upstream has no equivalent file, and HTTP remains the default.",
       "sha256": "23ecb1e23c9c47ae85d515233905c677a3fc6dbd49685fa664d7b036d200543f"
@@ -633,8 +637,8 @@
       "sha256": "df86b609eb9dcd1ba894c88cab70c810e76efc29a45eec2699f7f3c3878d9e6b"
     },
     "macos/Sources/AgentSpeedCore/LiveMonitor.swift": {
-      "reason": "Expose an opt-in realtime event mode for low-latency WebSocket reporting while preserving existing monitor defaults.",
-      "sha256": "f91da40287cc2f682618439e3447187549cc8723974af8c818f16829cd8cb9c6"
+      "reason": "Expose an opt-in realtime event mode for low-latency WebSocket reporting while preserving existing monitor defaults; expose the shared standalone/Orca Antigravity store resolver for Token Bar ledger discovery.",
+      "sha256": "dc6aba5393c8ee3609789246cdcb437c94ecf1e4ea723d360250e08ce0384a0a"
     },
     "macos/Sources/AgentSpeedCore/Models.swift": {
       "reason": "Carry source/model attribution, local stopped-state metadata and optional local-only Claude displayTitle in public snapshots; existing rate accounting and signed report fields remain unchanged.",
@@ -655,6 +659,10 @@
     "macos/Sources/AgentSpeedCore/Monitor/TrackedFile.swift": {
       "reason": "Retain read-trigger provenance across throttled database reads and deferred whole-file reads.",
       "sha256": "596d890e770874b3433d8ac8de60a017d523400bfbe184c9f9860a9b71d977f8"
+    },
+    "macos/Sources/AgentSpeedCore/Monitor/TranscriptLocations.swift": {
+      "reason": "Discover standalone ACP and macOS Orca Antigravity stores by default and expand explicitly selected parent directories; preserve direct store/conversations selection and backup exclusion without changing parsing or reporting consent.",
+      "sha256": "df1648c7c3ebed22ec6f6de10ce384ddabbf51851b78d7c51bdb075a667deaee"
     },
     "macos/Sources/AgentSpeedCore/Monitor/TranscriptSession.swift": {
       "reason": "Capture and merge local log/poll read observations through transcript, database, and whole-file reads; keep provider event timing distinct. Preserve shared positioned IO and source-read provenance; backport c668286 bounded quiet-file rediscovery (24h hot set and one sixth older files each round).",
@@ -703,6 +711,10 @@
     "macos/Sources/AgentSpeedCore/Reporting/ReportDiscovery.swift": {
       "reason": "Parse and validate the optional strict Draft-1 WebSocket discovery capability while retaining HTTP as the default transport.",
       "sha256": "8ee6f284e5dd0a85445a782ec4b66b32c21964738c8c454ee93a416cfc422c03"
+    },
+    "macos/Tests/AgentSpeedCoreTests/AntigravityTests.swift": {
+      "reason": "Update the expected default store inventory for standalone ACP and macOS Orca; retain existing parser, deduplication, backup and live database regressions.",
+      "sha256": "a24c57ea3ef306f1ca75b4b8296dfbfc1bc189ef0a18c144770a0c829e9e0492"
     },
     "macos/Tests/AgentSpeedCoreTests/EngineBehaviorTests.swift": {
       "reason": "Guard old-model response tails, current-model estimates, unknown models and per-source conservation",

@@ -11,6 +11,26 @@ use std::{
 
 const MAX_BLOB: usize = 1 << 20;
 const MAX_TOKENS: u64 = 10_000_000;
+const STORE_NAMES: [&str; 4] = ["antigravity-cli", "antigravity", "antigravity-ide", "antigravity-acp"];
+
+/// Resolve stores before discovery so the ledger sees both standalone and Orca
+/// conversations. Explicit selections replace defaults and may name a parent.
+pub(super) fn resolve_roots(home: &Path, selected: Option<&Path>) -> Vec<PathBuf> {
+    if let Some(root) = selected {
+        let name = root.file_name().and_then(|name| name.to_str()).unwrap_or("");
+        let mut roots = vec![root.to_path_buf()];
+        if name != "conversations" && !STORE_NAMES.contains(&name) && !name.ends_with("-backup") {
+            roots.extend(STORE_NAMES.map(|store| root.join(store)));
+        }
+        return roots;
+    }
+    let mut roots: Vec<_> = STORE_NAMES.map(|store| home.join(".gemini").join(store)).into();
+    if cfg!(target_os = "macos") {
+        let orca = home.join("Library/Application Support/orca/antigravity-chat");
+        roots.extend(["antigravity-acp", "antigravity-cli", "antigravity"].map(|store| orca.join(store)));
+    }
+    roots
+}
 
 pub(super) fn price_model(raw: &str) -> String {
     static RULES: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
@@ -501,6 +521,83 @@ mod tests {
         super::super::ensure_schema(&source, Path::new("antigravity-test.sqlite")).unwrap();
         source
     }
+    #[test]
+    fn resolves_acp_defaults_and_custom_parent_without_unrelated_stores() {
+        let home = Path::new("/fixture-home");
+        let roots = resolve_roots(home, None);
+        assert_eq!(roots.len(), if cfg!(target_os = "macos") { 7 } else { 4 });
+        assert!(roots.contains(&home.join(".gemini/antigravity-acp")));
+        if cfg!(target_os = "macos") {
+            assert!(roots.contains(&home.join("Library/Application Support/orca/antigravity-chat/antigravity-acp")));
+        }
+        for parent in [home.join(".gemini"), home.join("Library/Application Support/orca/antigravity-chat")] {
+            let selected = resolve_roots(home, Some(&parent));
+            assert_eq!(selected.len(), 5);
+            assert!(selected.iter().all(|path| path.starts_with(&parent)));
+            assert!(selected.contains(&parent.join("antigravity-acp")));
+            for name in STORE_NAMES {
+                let store = parent.join(name);
+                assert_eq!(resolve_roots(home, Some(&store)), vec![store.clone()]);
+                let folder = store.join("conversations");
+                assert_eq!(resolve_roots(home, Some(&folder)), vec![folder]);
+            }
+            // Exercise the application's real preference resolver as well.
+            assert_eq!(super::super::source_roots("antigravity", parent.to_str()), selected);
+        }
+        assert_eq!(super::super::source_roots("antigravity", Some("  ")),
+            resolve_roots(&crate::core::app_paths::home_dir(), None));
+    }
+
+    #[test]
+    fn standalone_and_orca_discovery_parse_and_ledger_deduplicate_steps() {
+        let directory = tempfile::tempdir().unwrap();
+        let home = directory.path();
+        let id = "11111111-2222-4333-8444-555555555555";
+        let standalone = home.join(".gemini/antigravity");
+        let orca = home.join("Library/Application Support/orca/antigravity-chat");
+        let acp = orca.join("antigravity-acp");
+        for store in [&standalone, &acp] {
+            fs::create_dir_all(store.join("conversations")).unwrap();
+        }
+        let file = standalone.join("conversations").join(format!("{id}.db"));
+        let writer = Connection::open(&file).unwrap();
+        writer.execute_batch("CREATE TABLE steps(idx INTEGER,step_type INTEGER,status INTEGER,metadata BLOB)").unwrap();
+        let metadata = [blob(1, uint(1, 1793000000)), blob(7, uint(1, 1793000003)),
+            blob(9, [uint(2, 100), uint(3, 20)].concat())].concat();
+        writer.execute("INSERT INTO steps VALUES(1,15,3,?1)", params![metadata]).unwrap();
+        drop(writer);
+        let copy = acp.join("conversations").join(format!("{id}.db"));
+        fs::copy(&file, &copy).unwrap();
+        let writer = Connection::open(&copy).unwrap();
+        writer.execute("INSERT INTO steps VALUES(2,15,3,?1)", params![metadata]).unwrap();
+        drop(writer);
+        let mut roots = resolve_roots(home, None);
+        if !cfg!(target_os = "macos") { roots.extend(resolve_roots(home, Some(&orca))); }
+        let mut files = Vec::new();
+        for root in roots {
+            let (found, truncated) = discover(&root).unwrap();
+            assert!(!truncated);
+            files.extend(found);
+        }
+        files.sort();
+        let mut expected = vec![file.clone(), copy.clone()]; expected.sort();
+        assert_eq!(files, expected);
+        for file in &files { assert_eq!(read(file).unwrap().1, 0); }
+        assert_eq!(read(&copy).unwrap().0.iter().map(|event| event.event_id.clone()).collect::<Vec<_>>(),
+            vec![format!("antigravity:antigravity:{id}:1"), format!("antigravity:antigravity:{id}:2")]);
+        for selected in [&orca, &acp, &acp.join("conversations")] {
+            let found = resolve_roots(home, Some(selected)).iter()
+                .flat_map(|root| discover(root).unwrap().0).collect::<Vec<_>>();
+            assert_eq!(found, vec![copy.clone()]);
+        }
+        let mut ledger = ledger();
+        for _ in 0..2 { for file in &files { assert!(scan(&mut ledger, file).unwrap().is_empty()); } }
+        let totals: (i64, i64, i64) = ledger.query_row(
+            "SELECT COUNT(*),SUM(input_tokens),SUM(output_tokens) FROM client_usage_events", [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+        assert_eq!(totals, (2, 200, 40));
+    }
+
     #[test]
     fn fixture_contract_discovery_ledger_dedupe_and_historical_totals() {
         let root = fixtures();

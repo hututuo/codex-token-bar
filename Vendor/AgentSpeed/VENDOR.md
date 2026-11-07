@@ -37,3 +37,9 @@
 - Swift and Windows parsers carry an optional `displayTitle` for local session rows. Explicit `agentName`, `title`/`customTitle` and `summary` metadata take priority, followed by the first meaningful line in that transcript's direct user text. Tool-result-only and system-tag-only records do not create labels; no synthetic names are added.
 - Candidate source strings are decoded only when at most 16 KiB, titles are capped at 120 Unicode scalar values, and long interrupt markers remain detectable without retaining their full text. Titles flow through local agent snapshots only; Agent Speed report bodies, usage accounting and the upstream schema are unchanged.
 - Later explicit metadata at the same priority can update a renamed task label. The first user-text fallback remains stable unless explicit metadata later arrives.
+
+## Local Antigravity store discovery (2026-11-07)
+
+- Default macOS discovery includes `~/.gemini/antigravity-acp` and Orca's isolated stores under `~/Library/Application Support/orca/antigravity-chat/{antigravity-acp,antigravity-cli,antigravity}` alongside the original standalone stores. It does not depend on the Token Bar process inheriting Orca's `GEMINI_HOME`.
+- A custom parent directory expands its known store children, including ACP; direct store and `conversations` selections remain supported. The ledger and live/reporting monitor share this resolver. Existing parser identities, duplicate suppression, backup exclusion and reporting consent are unchanged.
+- `TranscriptLocationsTests` is a local addition. It uses isolated SQLite databases to verify discovery, watch roots, conversation-step deduplication and a new Orca WAL completion. The pinned upstream revision and its original file hashes remain unchanged; patch/addition hashes are recorded separately.

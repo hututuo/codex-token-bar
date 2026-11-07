@@ -53,19 +53,22 @@ final class ActivityLiveHistoryTests: XCTestCase {
         }
         XCTAssertEqual(ActivityLiveConnections.runs([.init(x:0,y:1),.init(x:1,y:.nan),.init(x:2,y:3)]).count,2)
     }
-    @MainActor func testHomepageOldModelsAreGrayAndSavedOverridesWin() {
+    @MainActor func testHomepageModelsKeepSharedColorsAndSavedOverridesWin() {
         let suite = "ActivityLiveHistoryTests."+UUID().uuidString
         let defaults = UserDefaults(suiteName:suite)!
         defer { defaults.removePersistentDomain(forName:suite); SpeedColorOverrides.shared.replace(UserDefaults.standard.dictionary(forKey:SpeedDisplayPreferences.colorsKey) as? [String:String] ?? [:]) }
         let preferences = SpeedDisplayPreferences(defaults:defaults)
         SpeedColorOverrides.shared.replace([:])
-        XCTAssertEqual(ModelUsagePresentation.dashboardColorHex(for:"gpt-5.6-luna",latest:false),"#87919e")
-        XCTAssertEqual(ModelUsagePresentation.dashboardColorHex(for:"claude-sonnet-4-6",latest:false),"#87919e")
+        // The unified model palette also applies to historical models; refresh
+        // this older test's gray expectation without reverting that product rule.
+        for model in ["gpt-5.6-luna", "claude-sonnet-4-6", "gemini-4-argon"] {
+            XCTAssertEqual(ModelUsagePresentation.dashboardColorHex(for:model,latest:false), ModelUsagePresentation.colorHex(for:model))
+        }
         XCTAssertEqual(ModelUsagePresentation.dashboardColorHex(for:"gpt-6-astra",latest:true),ModelUsagePresentation.colorHex(for:"gpt-6-astra"))
         preferences.setColor("#123456",for:"gpt-5.6-luna")
         XCTAssertEqual(ModelUsagePresentation.dashboardColorHex(for:"codex|gpt-5.6-luna",latest:false),"#123456")
         XCTAssertEqual(SpeedDisplayPreferences(defaults:defaults).colors["gpt-5.6-luna"],"#123456")
         preferences.setColor(nil,for:"gpt-5.6-luna")
-        XCTAssertEqual(ModelUsagePresentation.dashboardColorHex(for:"gpt-5.6-luna",latest:false),"#87919e")
+        XCTAssertEqual(ModelUsagePresentation.dashboardColorHex(for:"gpt-5.6-luna",latest:false),ModelUsagePresentation.colorHex(for:"gpt-5.6-luna"))
     }
 }

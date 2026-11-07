@@ -19,11 +19,11 @@ enum AntigravityUsageSource {
         return raw
     }
 
-    static func roots(home: URL, path: String = "") -> [URL] {
-        let selected = path.trimmingCharacters(in: .whitespacesAndNewlines)
+    static func roots(home: URL, path: String? = nil) -> [URL] {
+        let selected = path?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let stores = selected.isEmpty
-            ? ["antigravity-cli", "antigravity", "antigravity-ide"].map { home.appendingPathComponent(".gemini/" + $0) }
-            : [URL(fileURLWithPath: (selected as NSString).expandingTildeInPath)]
+            ? LiveMonitor.defaultAntigravityStores(homeDirectory: home)
+            : LiveMonitor.antigravityStores(in: URL(fileURLWithPath: (selected as NSString).expandingTildeInPath))
         return stores.map { $0.lastPathComponent == "conversations" ? $0 : $0.appendingPathComponent("conversations") }
             .filter { !$0.deletingLastPathComponent().lastPathComponent.hasSuffix("-backup") }
     }
@@ -33,7 +33,7 @@ enum AntigravityUsageSource {
             && url.lastPathComponent.utf8.count == 39
     }
 
-    static func discover(home: URL, path: String = "") -> MultiClientUsageDiscovery.Result {
+    static func discover(home: URL, path: String? = nil) -> MultiClientUsageDiscovery.Result {
         var files: [URL] = [], visited = 0
         for root in roots(home: home, path: path) {
             guard let entries = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey], options: [.skipsSubdirectoryDescendants, .skipsHiddenFiles]) else { continue }

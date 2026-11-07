@@ -105,9 +105,18 @@ public final class LiveMonitor {
         TranscriptLocations.defaultOmpRoots[0]
     }
 
-    /// Antigravity's store folders, each containing `conversations` (a configured store replaces all three).
+    /// Antigravity's standalone and Orca store folders, each containing `conversations`.
     public nonisolated static var defaultAntigravityStores: [URL] {
         TranscriptLocations.defaultAntigravityStores
+    }
+
+    /// Shared with the embedding app's ledger discovery, including isolated test homes.
+    public nonisolated static func defaultAntigravityStores(homeDirectory: URL) -> [URL] {
+        TranscriptLocations.defaultAntigravityStores(homeDirectory: homeDirectory)
+    }
+
+    public nonisolated static func antigravityStores(in folder: URL) -> [URL] {
+        TranscriptLocations.antigravityStores(in: folder)
     }
 
     /// WorkBuddy's data folder (`~/.workbuddy`, China edition); its `projects` folder holds the sessions.

@@ -47,6 +47,10 @@ struct MultiClientUsageSettingsView: View {
                         }), supportsOpacity: false)
                     }.toggleStyle(.checkbox).font(.callout)
                     TextField("自动发现；也可指定本地日志目录或文件", text: binding(preference, \.path)).textFieldStyle(.roundedBorder)
+                    if preference.client == .antigravity {
+                        Text("自动读取 CLI、桌面、IDE、ACP 和 Orca 会话；自选路径支持 .gemini、antigravity-chat、单个存储或 conversations 目录。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     if preference.client == .claudeDesktop {
                         Text("仅支持本地 Code / Agent 会话；云端聊天未落地的用量无法读取。")
                             .font(.caption).foregroundStyle(.secondary)

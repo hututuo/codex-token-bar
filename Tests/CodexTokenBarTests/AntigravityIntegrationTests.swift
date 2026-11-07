@@ -13,6 +13,44 @@ final class AntigravityIntegrationTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         return root
     }
+    func testDefaultAndCustomParentsFindOrcaAndDeduplicateCopiedConversationSteps() async throws {
+        let home = try temporary(), id = "11111111-2222-4333-8444-555555555555"
+        let standalone = home.appendingPathComponent(".gemini/antigravity")
+        let orca = home.appendingPathComponent("Library/Application Support/orca/antigravity-chat")
+        let acp = orca.appendingPathComponent("antigravity-acp")
+        for store in [standalone, acp] {
+            try FileManager.default.createDirectory(at: store.appendingPathComponent("conversations"), withIntermediateDirectories: true)
+        }
+        let source = standalone.appendingPathComponent("conversations/" + id + ".db")
+        let writer = SQLiteDatabaseDriver(url: source)
+        try writer.execute("CREATE TABLE steps(idx INTEGER,step_type INTEGER,status INTEGER,metadata BLOB)")
+        // No provider response ID: exercise the conversation-ID + step-index fallback.
+        let metadata = Data([0x0a,0x06,0x08,0x80,0x9b,0xfb,0xd6,0x06, 0x3a,0x06,0x08,0x83,0x9b,0xfb,0xd6,0x06,
+                             0x4a,0x04,0x10,0x64,0x18,0x14])
+        try writer.execute("INSERT INTO steps VALUES(1,15,3,?)", bindings: [.blob(metadata)])
+        let copy = acp.appendingPathComponent("conversations/" + id + ".db")
+        try FileManager.default.copyItem(at: source, to: copy)
+        let orcaWriter = SQLiteDatabaseDriver(url: copy)
+        try orcaWriter.execute("INSERT INTO steps VALUES(2,15,3,?)", bindings: [.blob(metadata)])
+        let discovery = AntigravityUsageSource.discover(home: home)
+        XCTAssertEqual(Set(discovery.files.map { $0.standardizedFileURL }), [source.standardizedFileURL, copy.standardizedFileURL])
+        XCTAssertFalse(discovery.truncated)
+        for file in discovery.files { XCTAssertEqual(try AntigravityUsageSource.read(file).malformedRows, 0) }
+        XCTAssertEqual(AntigravityUsageSource.roots(home: home, path: nil).count, 7)
+        XCTAssertEqual(AntigravityUsageSource.roots(home: home, path: "  "), AntigravityUsageSource.roots(home: home))
+        for selected in [orca, acp, acp.appendingPathComponent("conversations")] {
+            XCTAssertEqual(AntigravityUsageSource.discover(home: home, path: selected.path).files.map { $0.standardizedFileURL }, [copy.standardizedFileURL])
+        }
+        XCTAssertEqual(AntigravityUsageSource.discover(home: home, path: home.appendingPathComponent(".gemini").path).files.map { $0.standardizedFileURL }, [source.standardizedFileURL])
+        let scanner = MultiClientUsageScanner(databaseURL: home.appendingPathComponent("ledger.sqlite"), home: home, environment: [:])
+        var preference = try XCTUnwrap(MultiClientUsagePreference.defaults.first { $0.client == .antigravity })
+        preference.enabled = true
+        let first = try await scanner.scan([preference]), second = try await scanner.scan([preference])
+        XCTAssertEqual(first.summaries, second.summaries)
+        XCTAssertEqual(first.summaries.reduce(0) { $0 + $1.requests }, 2)
+        XCTAssertEqual(first.summaries.reduce(Int64(0)) { $0 + $1.inputTokens }, 200)
+        XCTAssertEqual(first.summaries.reduce(Int64(0)) { $0 + $1.outputTokens }, 40)
+    }
     func testFixturesReachLedgerExactlyOnceAndPreservePricingAndForkRules() throws {
         let root = try temporary(), ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("ledger.sqlite"))
         let expected = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: fixtures.appendingPathComponent("parser-expected.json"))) as? [String: Any])
