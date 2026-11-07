@@ -75,5 +75,10 @@ name = "business-store-fixture"
 path = "examples/business-store-fixture.rs"
 required-features = ["business-store-fixture"]
 
+[[example]]
+name = "route-identity-fixture"
+path = "examples/route-identity-fixture.rs"
+required-features = ["business-store-fixture"]
+
 [dev-dependencies]
 tempfile = "=3.27.0"

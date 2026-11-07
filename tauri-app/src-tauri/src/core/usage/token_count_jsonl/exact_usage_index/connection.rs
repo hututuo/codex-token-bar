@@ -22,9 +22,9 @@ use super::contracts::{
     ORPHAN_REPAIR_REVISION_KEY, ORPHAN_REPAIR_REVISION, sqlite_sidecar_path,
 };
 use super::store_metadata::{metadata_i64, metadata_text, set_metadata};
-use super::{file_signature, IndexPreparationTrace, Schema11ValidatedStorage,
-    database_path, assess_index_migration, MigrationAssessment,
-    schema11_receipt_matches_current, schema11_receipt_metadata_matches};
+use super::migration::{Schema11ValidatedStorage, assess_index_migration,
+    MigrationAssessment, schema11_receipt_matches_current, schema11_receipt_metadata_matches};
+use super::{file_signature, IndexPreparationTrace, database_path};
 #[cfg(not(test))]
 use super::stage_pool;
 #[cfg(test)]

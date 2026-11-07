@@ -6,8 +6,8 @@ use super::store_metadata::{metadata_i64, metadata_text, set_metadata, table_exi
 use super::sources::{file_signature, file_signature_from_handle,
     lightweight_file_signature, record_source_observation};
 use super::ingest::hash_file_chunk;
-use super::{rollout_source, schema11_copy_candidate, schema11_migration_capacity,
-    schema11_sync_parent, RolloutReader, SourceHandle, EXACT_INDEX_CHUNK_SIZE};
+use super::migration::{schema11_copy_candidate, schema11_migration_capacity, schema11_sync_parent};
+use super::{rollout_source, RolloutReader, SourceHandle, EXACT_INDEX_CHUNK_SIZE};
 use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use std::{fs, path::{Path, PathBuf}, time::Duration as StdDuration};
 const REVISION: &str = "rollout-storage-v1";

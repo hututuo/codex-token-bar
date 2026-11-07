@@ -395,6 +395,18 @@ jobs:
         run: |
           . ./scripts/cloud/prepare-windows.ps1
           ./scripts/build_tauri_windows_release.selftest.ps1
+      - name: Prove valid physical A replacement is rejected in production
+        if: ${{ success() && !inputs.claude_usage_only }}
+        shell: bash
+        run: python scripts/check_route_identity_gate.py
+      - name: Preserve route identity control evidence
+        if: ${{ always() && !inputs.claude_usage_only }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: route-identity-control-${{ matrix.os }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/route-identity-control/
+          if-no-files-found: warn
+          retention-days: 14
       - name: Require the production fixture even when other regressions pass
         if: ${{ always() && !inputs.claude_usage_only }}
         shell: bash

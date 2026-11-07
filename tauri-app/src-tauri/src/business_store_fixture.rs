@@ -2,6 +2,9 @@
 //! Built only with `business-store-fixture`; all required path overrides must
 //! resolve inside the caller's disposable root. This code never changes env.
 
+mod route_identity;
+pub use route_identity::run as run_route_identity_fixture;
+
 use crate::core::{
     app_paths, business_store_connection::StoreConnection,
     business_store_container::StoreSpec, business_store_route as route, live_rate, modeltrace, quota_history,
