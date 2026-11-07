@@ -1,5 +1,41 @@
 //! Preserve a complete artifact when only the requested scan contract changes.
-use super::*;
+use super::connection::open_read_only_index;
+use super::contracts::{FileSignature, FullRebuildJob, EVENT_ENRICHMENT_REVISION,
+    STAGED_FULL_REBUILD_PARSER_REVISION};
+use super::store_metadata::column_exists_checked;
+use super::{staging_database_digest, staging_directory, validated_staged_full_rebuild,
+    STAGING_MANIFEST_SCHEMA_VERSION};
+use rusqlite::OptionalExtension;
+use sha2::{Digest, Sha256};
+use std::{path::{Path, PathBuf}, time::Duration as StdDuration};
+#[cfg(any(test, feature = "business-store-fixture"))]
+use super::connection::open_read_only_source;
+#[cfg(any(test, feature = "business-store-fixture"))]
+use super::{file_signature, stage_thread_metadata, ThreadMetadataStage};
+#[cfg(any(test, feature = "business-store-fixture"))]
+use std::fs;
+#[cfg(test)]
+use super::connection::Connection;
+#[cfg(test)]
+use uuid::Uuid;
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+use super::contracts::{ExactSyncMode, StagedFullRebuildError, EVENT_ENRICHMENT_REVISION_KEY,
+    PRE_COMPACTION_EVENT_ENRICHMENT_REVISION};
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+use super::store_metadata::{metadata_i64, metadata_text, set_metadata};
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+use super::{active_schema11_paths, active_schema11_paths_on, begin_or_resume_generation,
+    database_path, open_staging_connection, prepare_scan_temp_tables,
+    record_successful_migration_retention, reserve_staging_source,
+    schema11_paths_for_namespace, schema11_source_receipt_from_connection,
+    schema11_store_manifest, stage_or_reuse_full_rebuild, staging_database_path,
+    staging_database_paths, ExactUsageIndex, Schema11CandidateManifest,
+    Schema11CandidatePhase, StagedThreadMetadata, MIGRATION_RETENTION_KEY,
+    SCHEMA11_CANDIDATE_MANIFEST_VERSION};
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+use rusqlite::params;
+#[cfg(all(feature = "business-store-fixture", not(test)))]
+use time::{OffsetDateTime, UtcOffset};
 
 #[cfg(all(feature = "business-store-fixture", not(test)))]
 mod retention_fixture;
@@ -25,6 +61,9 @@ pub(super) fn candidate_path(index: &Path, job: &FullRebuildJob, generation: i64
 /// current source bytes, base checkpoint, counts, codec and seal. Success only
 /// permits retaining it and building a separate candidate; it never imports or
 /// publishes that artifact for the new request.
+/// Despite the predicate name, the existing production open may prepare the
+/// pool/restore a private image or admit a legacy namespace. Validation also
+/// reads source bytes. This belongs to the staging recovery owner, not reads.
 pub(super) fn valid_for_earlier_request(
     path: &Path,
     requested: &FullRebuildJob,

@@ -1,6 +1,16 @@
 //! A resumable marker-only repair for indexes built without response_item
 //! message support. Never changes numeric ledger fields or parser revisions.
-use super::*;
+use super::connection::ManagedIndexConnection;
+use super::contracts::DASHBOARD_REVISION_KEY;
+use super::store_metadata::{metadata_i64, set_metadata, table_exists_checked};
+use super::{canonical_codex_home, excerpt_warning, lightweight_file_signature,
+    refresh_dashboard_turn_candidates_for_session, resolve_file_within_codex_home,
+    rollout_source, ResolvedSessionFile};
+use crate::models::LocalDataWarning;
+use rusqlite::{params, TransactionBehavior};
+use std::{collections::HashMap, path::Path};
+#[cfg(test)]
+use super::connection::Connection;
 use super::super::session_parser::scan_message_links;
 
 const PENDING_SOURCES_SQL: &str = r#"

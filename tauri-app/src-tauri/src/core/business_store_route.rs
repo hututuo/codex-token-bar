@@ -473,6 +473,10 @@ struct PendingSnapshot {
     digest: String,
 }
 
+/// Historical name: this may REBUILD the app-owned frozen backup from a source
+/// with exactly the journal's recorded proof. The backup helper may preserve an
+/// invalid prior image and write a replacement. Keep this under import recovery,
+/// before journal/activation decisions; it is not a pure validation predicate.
 fn validate_pending_snapshot(container_path: &Path, store: &StoreSpec, snapshot: &PendingSnapshot) -> Result<(), String> {
     if snapshot.backup != backup_path(container_path, store, &snapshot.source, &snapshot.digest) {
         return Err(format!("未完成导入的绑定路径无效，保留全部旧账：{}", snapshot.backup.display()));
@@ -491,6 +495,8 @@ fn validate_pending_snapshot(container_path: &Path, store: &StoreSpec, snapshot:
     Err(format!("未完成导入的绑定快照无效，保留全部旧账：{}", snapshot.backup.display()))
 }
 
+/// Also performs each snapshot's allowed recovery via validate_pending_snapshot;
+/// callers must not treat batch validation as read-only or move it past activation.
 fn validate_pending_batch(batch: &PendingLegacyImport, path: &Path, store: &StoreSpec) -> Result<(), String> {
     if ![1, 2].contains(&batch.version) { return Err("未知的未完成导入版本，已保留旧账".into()); }
     if batch.version == 2 && batch.sources.len() != batch.snapshots.len() {

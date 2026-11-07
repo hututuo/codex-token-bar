@@ -4,10 +4,9 @@
 //! stage borrows the caller's transaction; only the metadata-only entrypoint
 //! starts and commits its own transaction on the supplied Exact connection.
 
-use super::{
-    external_state, file_signature, metadata_i64, metadata_text, set_metadata,
-    Connection, Transaction,
-};
+use super::{external_state, file_signature};
+use super::connection::{Connection, Transaction};
+use super::store_metadata::{metadata_i64, metadata_text, set_metadata};
 use crate::models::LocalDataWarning;
 use rusqlite::{params, TransactionBehavior};
 use sha2::{Digest, Sha256};

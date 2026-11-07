@@ -3,7 +3,9 @@
 //! Callers retain the original connection and transaction ownership. Keep SQL
 //! batches and their execution order intact, including conditional column upgrades.
 
-use super::{column_exists_checked, dashboard_buckets, ensure_source_observations, Connection};
+use super::{dashboard_buckets, ensure_source_observations};
+use super::connection::Connection;
+use super::store_metadata::column_exists_checked;
 
 pub(super) fn initialize_index_schema(connection: &Connection) -> Result<(), String> {
     ensure_source_observations(connection)?;

@@ -1,3 +1,52 @@
+mod connection;
+mod contracts;
+mod store_metadata;
+use connection::{
+    Connection, Transaction, ManagedIndexConnection, open_published_index_read_only,
+    existing_regular_index, open_index_connection_with_recovery, quick_check_staged,
+    quick_check_index, index_integrity_gate, optional_index_sidecar_signature,
+    invalidate_index_integrity_signature, open_index_connection, open_read_only_source,
+    open_read_only_index, existing_regular_legacy_file, reject_orphaned_index_rows,
+    verify_no_orphaned_index_rows,
+};
+#[cfg(not(test))]
+use connection::open_exact_business_store;
+#[cfg(test)]
+pub(super) use connection::{IntegrityGateEnterHook, IntegrityGateReleaseHook,
+    BeforeFinishIndexConnectionHook, integrity_receipt_path_for_testing};
+use contracts::{
+    INDEX_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION, ACCOUNTING_SCHEMA_VERSION,
+    GITHUB_BASE_SCHEMA_VERSION, LEGACY_SESSION_PARSER_REVISION,
+    LEGACY_STAGED_PARSER_REVISION, PAGINATED_V4_PARSER_REVISION,
+    PAGINATED_V4_STAGED_REVISION, PAGINATED_V5_PARSER_REVISION, PAGINATED_V5_STAGED_REVISION,
+    PRE_COMPACTION_SESSION_PARSER_REVISION, PRE_COMPACTION_STAGED_PARSER_REVISION,
+    EXACT_SESSION_PARSER_REVISION, FORK_REPLAY_BOUNDARY_REVISION,
+    EVENT_ENRICHMENT_REVISION_KEY, PRE_COMPACTION_EVENT_ENRICHMENT_REVISION,
+    EVENT_ENRICHMENT_REVISION, SESSION_CATALOG_SCHEMA_VERSION,
+    ATTRIBUTION_PROVENANCE_EPOCH_KEY, ATTRIBUTION_LEDGER_EPOCH_KEY,
+    ATTRIBUTION_LEDGER_INTEGRITY_KEY, ATTRIBUTION_UNSAFE_EPOCH_KEY,
+    ATTRIBUTION_UNSAFE_GENERATION_KEY, ATTRIBUTION_UNSAFE_ID_KEY,
+    ATTRIBUTION_CURRENT_SCAN_UNSAFE_KEY, ATTRIBUTION_CURRENT_SCAN_INCOMPLETE_KEY,
+    BUILDING_ATTRIBUTION_PROVENANCE_ROTATE_KEY, DASHBOARD_REVISION_KEY,
+    BUILDING_DASHBOARD_CHANGED_KEY, DASHBOARD_AGGREGATE_SCHEMA_VERSION_KEY,
+    DASHBOARD_AGGREGATE_EXACT_GENERATION_KEY, DASHBOARD_AGGREGATE_PUBLISHED_GENERATION_KEY,
+    DASHBOARD_AGGREGATE_SETTLED_THROUGH_KEY, DASHBOARD_AGGREGATE_PRICING_REVISION_KEY,
+    DASHBOARD_AGGREGATE_SCHEMA_VERSION, DASHBOARD_AGGREGATE_PRICING_REVISION,
+    ExactScanCompleteness, ExactScanDiagnostics, FileSignature, PhysicalFileStamp,
+    IndexedFileCheckpoint, FullRebuildJob, StagingSourceBase, EventEnrichmentCandidate,
+    StagedFullRebuild, StageSourceValidation, StageStoreSignature, StagedFullRebuildResult,
+    StagedFullRebuildError, StageManifest, canonicalize_legacy_fingerprint,
+    sqlite_sidecar_path, checked_i64, checked_optional_i64, SESSION_CATALOG_SCHEMA_COLUMNS,
+};
+pub(super) use contracts::{
+    ExactSyncMode, AttributionSafetyState, StartupIndexIdentity, DashboardAggregateIdentity,
+    ExactDashboardData, PublishedDashboardReadMetadata, PARSER_REPAIR_VERIFY_KEY,
+    STAGED_FULL_REBUILD_PARSER_REVISION, ORPHAN_REPAIR_REVISION_KEY, ORPHAN_REPAIR_REVISION,
+};
+use store_metadata::{
+    schema11_digest_value, schema11_finish_digest, schema11_query_digest, table_row_count,
+    table_exists_checked, metadata_text, metadata_i64, set_metadata, column_exists_checked,
+};
 use super::rollout_source::{self, RolloutReader, SourceHandle};
 pub(super) mod cycle_range;
 mod retention;
@@ -55,8 +104,6 @@ use super::{
 #[cfg(not(test))]
 use crate::core::app_paths;
 use crate::core::localtime;
-#[cfg(not(test))]
-use crate::core::business_store_connection::StoreConnection as BoundStoreConnection;
 use crate::core::time_series_timeline::{
     aligned_bin_starts, LONG_RECENT_INTERVAL_SECONDS, LONG_RECENT_POINT_COUNT,
 };
@@ -70,10 +117,8 @@ use crate::models::{
     TokenCacheBreakdown, TokenCacheUsage, TurnCacheUsage,
 };
 use fs2::available_space;
-#[cfg(not(test))]
-use crate::core::business_store_connection::{StoreConnection as Connection, StoreTransaction as Transaction};
 #[cfg(test)]
-use rusqlite::{backup::Backup, Connection, Transaction};
+use rusqlite::backup::Backup;
 use rusqlite::{params, OpenFlags, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -82,88 +127,17 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
-use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-#[cfg(test)]
-use std::sync::Barrier;
-use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration as StdDuration, Instant, SystemTime};
 use time::format_description::well_known::Rfc3339;
 use time::macros::format_description;
 use time::{Date, Duration, OffsetDateTime, UtcOffset};
 use uuid::Uuid;
-
-// v0.9.1 is the only forward-migration baseline for v0.9.2. Earlier and future
-// layouts are preserved read-only and rejected instead of being deleted.
-const INDEX_SCHEMA_VERSION: i64 = 11; // durable structural candidate contract
-const CURRENT_SCHEMA_VERSION: i64 = 14;
-const ACCOUNTING_SCHEMA_VERSION: i64 = 13;
-const GITHUB_BASE_SCHEMA_VERSION: i64 = 9;
-const INDEX_INTEGRITY_RECEIPT_VERSION: u32 = 2;
-const INDEX_INTEGRITY_RECEIPT_SUFFIX: &str = ".integrity-receipt.json";
-// Bump this whenever exact-session parsing changes event or checkpoint
-// semantics. The fork-boundary name remains for the main-index migration;
-// private staged databases bind the broader parser revision below.
-const LEGACY_SESSION_PARSER_REVISION: &str = "explicit-subagent-delayed-context-v3";
-const LEGACY_STAGED_PARSER_REVISION: &str = "components-v1-explicit-subagent-delayed-context-v3";
-const PAGINATED_V4_PARSER_REVISION: &str = "paginated-subagent-boundary-v4";
-const PAGINATED_V4_STAGED_REVISION: &str = "components-v1-paginated-subagent-boundary-v4";
-const PAGINATED_V5_PARSER_REVISION: &str = "paginated-owned-turn-v5";
-const PAGINATED_V5_STAGED_REVISION: &str = "components-v1-paginated-owned-turn-v5";
-const PRE_COMPACTION_SESSION_PARSER_REVISION: &str = "paginated-owned-turn-v6";
-const PRE_COMPACTION_STAGED_PARSER_REVISION: &str = "components-v1-paginated-owned-turn-v6";
-const EXACT_SESSION_PARSER_REVISION: &str = "paginated-owned-turn-v7-compaction-v1";
-// Compaction accounting does not change the ownership boundary rules. Keep
-// the boundary receipt on v6 while the broader parser revision advances.
-const FORK_REPLAY_BOUNDARY_REVISION: &str = PRE_COMPACTION_SESSION_PARSER_REVISION;
-pub(super) const PARSER_REPAIR_VERIFY_KEY: &str = "parser_repair_verify_pending";
-pub(super) const STAGED_FULL_REBUILD_PARSER_REVISION: &str = "components-v1-paginated-owned-turn-v7-compaction-v1";
-// This marker is independent from the parser/schema revisions because it
-// records completion of a one-time logical repair for legacy databases that
-// were written with foreign-key enforcement disabled. Keep it separate so a
-// normal index open can skip the expensive orphan scans after the repair has
-// been verified.
-pub(super) const ORPHAN_REPAIR_REVISION_KEY: &str = "orphan_repair_revision";
-pub(super) const ORPHAN_REPAIR_REVISION: &str = "events-fingerprints-chunks-v1";
-const EVENT_ENRICHMENT_REVISION_KEY: &str = "event_enrichment_revision";
-const PRE_COMPACTION_EVENT_ENRICHMENT_REVISION: &str = "model-reasoning-v1";
-const EVENT_ENRICHMENT_REVISION: &str = "model-reasoning-v2-compaction-v1";
-const SESSION_CATALOG_SCHEMA_VERSION: i64 = 2;
-const ATTRIBUTION_PROVENANCE_EPOCH_KEY: &str = "attribution_provenance_epoch";
-const ATTRIBUTION_LEDGER_EPOCH_KEY: &str = "attribution_ledger_epoch";
-const ATTRIBUTION_LEDGER_INTEGRITY_KEY: &str = "attribution_ledger_integrity_v1";
-const ATTRIBUTION_UNSAFE_EPOCH_KEY: &str = "attribution_unsafe_epoch";
-const ATTRIBUTION_UNSAFE_GENERATION_KEY: &str = "attribution_unsafe_generation";
-const ATTRIBUTION_UNSAFE_ID_KEY: &str = "attribution_unsafe_id";
-const ATTRIBUTION_CURRENT_SCAN_UNSAFE_KEY: &str = "attribution_current_scan_unsafe";
-const ATTRIBUTION_CURRENT_SCAN_INCOMPLETE_KEY: &str = "attribution_current_scan_incomplete";
-const BUILDING_ATTRIBUTION_PROVENANCE_ROTATE_KEY: &str = "building_attribution_provenance_rotate";
-// `revision` covers every durable index mutation, including refreshed thread
-// titles from state_5.sqlite. Dashboard numeric aggregates do not depend on
-// those titles, so keep a separate lineage that only advances when event or
-// attribution data changes. This prevents metadata churn from invalidating a
-// multi-hundred-thousand-event dashboard cache.
-const DASHBOARD_REVISION_KEY: &str = "dashboard_revision";
-const BUILDING_DASHBOARD_CHANGED_KEY: &str = "building_dashboard_changed";
-// Dashboard aggregates are disposable, derived data. Keep their version and
-// publication watermarks independent from the exact-event schema/parser so an
-// upgrade can rebuild them from SQLite without reopening JSONL bodies.
-const DASHBOARD_AGGREGATE_SCHEMA_VERSION_KEY: &str = "dashboard_aggregate_schema_version";
-const DASHBOARD_AGGREGATE_EXACT_GENERATION_KEY: &str = "dashboard_aggregate_exact_generation";
-const DASHBOARD_AGGREGATE_PUBLISHED_GENERATION_KEY: &str =
-    "dashboard_aggregate_published_generation";
-const DASHBOARD_AGGREGATE_SETTLED_THROUGH_KEY: &str = "dashboard_aggregate_settled_through";
-const DASHBOARD_AGGREGATE_PRICING_REVISION_KEY: &str = "dashboard_aggregate_pricing_revision";
-// Turn candidates are grouped by the originating user message. Cache rate is
-// request-weighted across every canonical usage event in that turn. Bump this
-// disposable projection version whenever that ranking contract changes so an
-// older snapshot-only ranking cannot survive an upgrade.
-const DASHBOARD_AGGREGATE_SCHEMA_VERSION: i64 = 7;
-const DASHBOARD_AGGREGATE_PRICING_REVISION: &str = "raw-token-v1";
 
 fn is_known_dashboard_pricing_revision(value: &str) -> bool {
     matches!(value, "raw-token-v0" | DASHBOARD_AGGREGATE_PRICING_REVISION)
@@ -261,32 +235,6 @@ pub(super) struct ExactUsageIndex {
     /// DDL and orphan rows, but the attribution ledger is only authoritative
     /// after `finalize_generation` has committed it.
     migration_pending: bool,
-}
-
-/// Selects which derived work the in-process exact owner is allowed to do.
-/// Both modes use the same durable generation/checkpoint scan; Summary only
-/// publishes exact events and lets a later Full owner consume the disposable
-/// dashboard work from SQLite.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum ExactSyncMode {
-    Summary,
-    Full,
-}
-
-impl ExactSyncMode {
-    fn builds_dashboard_derived_data(self) -> bool {
-        matches!(self, Self::Full)
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct AttributionSafetyState {
-    pub(super) provenance_epoch: String,
-    pub(super) generation: u64,
-    pub(super) unsafe_since_generation: Option<u64>,
-    pub(super) unsafe_id: Option<String>,
-    pub(super) current_scan_unsafe_cause_detected: bool,
-    pub(super) current_scan_incomplete: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -499,226 +447,6 @@ pub(super) fn index_upgrade_required(
 pub(super) fn rebuild_derived_storage_for_current_version(codex_home: &Path) -> Result<(), String> {
     let _ = codex_home;
     Err("自动删除式恢复入口已关闭；已保留上一份可信索引，等待候选库修复流程".into())
-}
-
-/// Read-only identity used to validate a persisted numeric startup envelope.
-/// This deliberately does not construct `ExactUsageIndex`: startup must not
-/// run schema migration, orphan repair, receipt publication, or quick_check
-/// before it can show a trusted last-good snapshot.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct StartupIndexIdentity {
-    pub(super) revision: u64,
-    pub(super) dashboard_revision: u64,
-    pub(super) published_generation: u64,
-    pub(super) attribution_safety: AttributionSafetyState,
-}
-
-/// Durable derived-aggregate lineage. These values already live in the exact
-/// index metadata; this DTO only lets cache and UI code compare the existing
-/// facts without introducing a second pending/owner state machine.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct DashboardAggregateIdentity {
-    pub(super) schema_version: Option<String>,
-    pub(super) pricing_revision: Option<String>,
-    pub(super) exact_generation: Option<u64>,
-    pub(super) published_generation: Option<u64>,
-    #[serde(default)]
-    pub(super) settled_through: Option<i64>,
-}
-
-#[derive(Default)]
-struct ExactScanCompleteness {
-    incomplete_source_scan: bool,
-    block_generation_publish: bool,
-}
-
-#[derive(Default)]
-struct ExactScanDiagnostics {
-    candidate_count: u64,
-    scanned_files: u64,
-    append_scan_bytes: u64,
-    metadata_validation_bytes: u64,
-    metadata_only_files: u64,
-    full_body_bytes: u64,
-    pending_tail_bytes: u64,
-    full_rebuild_files: u64,
-    source_drift: bool,
-    published_watermark: u64,
-}
-
-impl ExactScanCompleteness {
-    fn mark_incomplete(&mut self) {
-        self.incomplete_source_scan = true;
-    }
-
-    fn block_publish(&mut self) {
-        self.incomplete_source_scan = true;
-        self.block_generation_publish = true;
-    }
-}
-
-struct ManagedIndexConnection {
-    connection: Option<Connection>,
-    path: PathBuf,
-    receipt_eligible: bool,
-    tracks_integrity: bool,
-}
-
-#[cfg(test)]
-fn run_integrity_gate_enter_hook_for_testing(path: &Path) {
-    let Some(slot) = INTEGRITY_GATE_ENTER_HOOK.get() else {
-        return;
-    };
-    let hook = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(hook) = hook.as_ref() {
-        hook(path);
-    }
-}
-
-#[cfg(not(test))]
-fn run_integrity_gate_enter_hook_for_testing(_path: &Path) {}
-
-#[cfg(test)]
-fn run_integrity_gate_release_hook_for_testing(path: &Path) {
-    let Some(slot) = INTEGRITY_GATE_RELEASE_HOOK.get() else {
-        return;
-    };
-    let hook = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(hook) = hook.as_ref() {
-        hook(path);
-    }
-}
-
-#[cfg(not(test))]
-fn run_integrity_gate_release_hook_for_testing(_path: &Path) {}
-
-#[cfg(test)]
-fn run_before_finish_index_connection_hook_for_testing(path: &Path) {
-    let Some(slot) = BEFORE_FINISH_INDEX_CONNECTION_HOOK.get() else {
-        return;
-    };
-    let hook = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(hook) = hook.as_ref() {
-        hook(path);
-    }
-}
-
-#[cfg(not(test))]
-fn run_before_finish_index_connection_hook_for_testing(_path: &Path) {}
-
-impl ManagedIndexConnection {
-    fn from_registered(connection: Connection, path: PathBuf) -> Self {
-        Self {
-            connection: Some(connection),
-            path,
-            receipt_eligible: false,
-            tracks_integrity: true,
-        }
-    }
-
-    fn mark_receipt_eligible(&mut self) {
-        self.receipt_eligible = true;
-    }
-
-    fn mark_receipt_dirty(&mut self) {
-        self.receipt_eligible = false;
-    }
-}
-
-impl Deref for ManagedIndexConnection {
-    type Target = Connection;
-
-    fn deref(&self) -> &Self::Target {
-        self.connection
-            .as_ref()
-            .expect("managed exact index connection is available before drop")
-    }
-}
-
-impl DerefMut for ManagedIndexConnection {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.connection
-            .as_mut()
-            .expect("managed exact index connection is available before drop")
-    }
-}
-
-impl Drop for ManagedIndexConnection {
-    fn drop(&mut self) {
-        if !self.tracks_integrity {
-            drop(self.connection.take());
-            return;
-        }
-        let receipt = if self.receipt_eligible {
-            self.connection
-                .as_ref()
-                .and_then(|connection| receipt_metadata(connection, &self.path).ok())
-        } else {
-            None
-        };
-        drop(self.connection.take());
-
-        // Receipt I/O and the post-close storage signature must stay outside
-        // INDEX_INTEGRITY_STATES. The per-path gate serializes concurrent
-        // close-time receipts without coupling different index paths.
-        let gate = index_integrity_gate(&self.path);
-        let _gate_guard = gate.enter(&self.path);
-        let signature_after_close = index_storage_signature(&self.path).ok();
-        if let (Some(receipt), Some(signature)) = (receipt, signature_after_close) {
-            write_integrity_receipt_best_effort(&self.path, receipt, signature);
-        }
-        run_before_finish_index_connection_hook_for_testing(&self.path);
-        let states = index_integrity_states();
-        let mut states = states
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        finish_index_connection(&mut states, &self.path);
-        drop(states);
-        drop(_gate_guard);
-    }
-}
-
-pub(super) struct ExactDashboardData {
-    pub(super) summary: TokenUsageSummary,
-    pub(super) stats: DashboardStats,
-    pub(super) activity_days: Vec<ActivityDay>,
-    pub(super) recent_usage_24h: Vec<RecentUsagePoint>,
-    pub(super) recent_usage_7d: Vec<RecentUsagePoint>,
-    pub(super) recent_usage_30d: Vec<RecentUsagePoint>,
-    pub(super) cache_hit_ranking: Vec<CacheHitRankingItem>,
-    pub(super) cache_usage: TokenCacheUsage,
-    pub(super) settled_through: i64,
-    pub(super) published: Option<PublishedDashboardReadMetadata>,
-}
-
-pub(super) struct PublishedDashboardReadMetadata {
-    pub(super) revision: u64,
-    pub(super) aggregate: DashboardAggregateIdentity,
-    pub(super) attribution: AttributionSafetyState,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct FileSignature {
-    size: u64,
-    modified_ns: u128,
-    physical: Option<PhysicalFileStamp>,
-}
-
-// A change detector, never a ledger/source identity. Reading this uses only
-// filesystem metadata; unchanged JSONL bodies are neither opened for parsing
-// nor hashed. Old indexes acquire this optional baseline on their next sync.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct PhysicalFileStamp { volume: u64, file_id: u64, changed_ns: i128 }
-
-impl PhysicalFileStamp {
-    fn encode(self) -> String { format!("{}:{}:{}", self.volume, self.file_id, self.changed_ns) }
-    fn decode(value: &str) -> Option<Self> {
-        let mut parts = value.split(':');
-        let stamp = Self { volume: parts.next()?.parse().ok()?, file_id: parts.next()?.parse().ok()?,
-            changed_ns: parts.next()?.parse().ok()? };
-        if parts.next().is_some() { None } else { Some(stamp) }
-    }
 }
 
 /// Read-only metadata captured by the startup discovery pass.  The durable
@@ -1016,168 +744,6 @@ pub(super) fn read_cache_turn_requests(
         .map_err(|error| format!("无法解码缓存轮次请求明细：{error}"))
 }
 
-/// Runtime readers only consult the registered A namespace. Never enter the
-/// legacy import/registration route, even while another owner is publishing.
-/// Migration and staging callers continue to use their separate open path.
-fn open_published_index_read_only(path: &Path, timeout: StdDuration) -> Result<Option<Connection>, String> {
-    #[cfg(test)]
-    {
-        if !existing_regular_index(path)? { return Ok(None); }
-        sqlite::open_read_only(path, timeout).map(Some).map_err(|error| error.to_string())
-    }
-    #[cfg(not(test))]
-    {
-        let connection = crate::core::business_store_route::open_exact_registered_read_only(path, timeout)?;
-        let Some(connection) = connection else { return Ok(None); };
-        let has_objects = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM main.sqlite_master WHERE type IN ('table','index','view','trigger'))",
-            [], |row| row.get::<_, bool>(0),
-        ).map_err(|error| format!("无法只读检查精确 token 分区对象：{error}"))?;
-        Ok(has_objects.then_some(connection))
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct IndexStorageSignature {
-    database: FileSignature,
-    wal: Option<FileSignature>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct IndexIntegrityReceipt {
-    version: u32,
-    canonical_index_path: String,
-    database: ReceiptFileSignature,
-    wal: Option<ReceiptFileSignature>,
-    schema_version: i64,
-    parser_revision: String,
-    revision: i64,
-    published_generation: i64,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ReceiptFileSignature {
-    size: u64,
-    modified_ns: String,
-}
-
-#[derive(Clone, Debug)]
-struct ReceiptMetadata {
-    canonical_index_path: String,
-    schema_version: i64,
-    parser_revision: String,
-    revision: i64,
-    published_generation: i64,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct IndexIntegrityState {
-    active_connections: usize,
-}
-
-struct IntegrityGate {
-    in_flight: Mutex<bool>,
-    released: Condvar,
-}
-
-struct IntegrityGateGuard {
-    gate: Arc<IntegrityGate>,
-    path: PathBuf,
-    notify_release: bool,
-}
-
-static INDEX_INTEGRITY_GATES: OnceLock<Mutex<HashMap<PathBuf, Weak<IntegrityGate>>>> =
-    OnceLock::new();
-
-#[derive(Clone, Debug)]
-struct IndexedFileCheckpoint {
-    generation: i64,
-    size: u64,
-    resume_offset: u64,
-    parser_state: ExactSessionParserState,
-    audit_chunk_index: u64,
-}
-
-#[derive(Clone, Debug)]
-struct FullRebuildJob {
-    file: PathBuf,
-    path: String,
-    session_id: String,
-    source_id: i64,
-    base_generation: i64,
-    base_resume_offset: Option<u64>,
-    base_prefix_sha256: Option<[u8; 32]>,
-    signature: FileSignature,
-    event_enrichment: bool,
-    expected_published_prefix_sha256: Option<[u8; 32]>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct StagingSourceBase {
-    source_id: i64,
-    generation: i64,
-    resume_offset: Option<u64>,
-    prefix_sha256: Option<[u8; 32]>,
-}
-
-#[derive(Clone, Debug)]
-struct EventEnrichmentCandidate {
-    path: String,
-    session_id: String,
-    signature: FileSignature,
-    prefix_sha256: [u8; 32],
-}
-
-#[derive(Clone, Debug)]
-struct StagedFullRebuild {
-    job: FullRebuildJob,
-    committed_signature: FileSignature,
-    database_path: PathBuf,
-    artifact_id: String,
-    actual_bytes: u64,
-    prefix_sha256: [u8; 32],
-    resume_offset: u64,
-    parser_state: ExactSessionParserState,
-    event_count: u64,
-    source_validation: Option<StageSourceValidation>,
-}
-
-/// Short-lived proof from this owner, bound to the sealed stage and source.
-/// Never serialized; recovered stages must first perform a real EOF proof.
-#[derive(Clone, Debug)]
-struct StageSourceValidation {
-    source: FileSignature,
-    prefix_sha256: [u8; 32],
-    artifact_id: String,
-    stage: StageStoreSignature,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct StageStoreSignature {
-    size: u64,
-    modified_ns: u128,
-    digest: String,
-}
-
-struct StagedFullRebuildResult {
-    order: usize,
-    result: Result<StagedFullRebuild, StagedFullRebuildError>,
-    warnings: Vec<LocalDataWarning>,
-}
-
-enum StagedFullRebuildError {
-    IncompleteSource(String),
-    Fatal(String),
-}
-
-impl From<String> for StagedFullRebuildError {
-    fn from(error: String) -> Self {
-        Self::Fatal(error)
-    }
-}
-
 struct IndexedTurnCandidate {
     usage: TurnCacheUsage,
     file_path: PathBuf,
@@ -1251,12 +817,6 @@ type AfterPrefixScanHook = Box<dyn FnOnce(&Path)>;
 #[cfg(test)]
 type AfterFileCommitHook = Box<dyn FnOnce(&Path) -> Result<(), String>>;
 #[cfg(test)]
-pub(super) type IntegrityGateEnterHook = Box<dyn Fn(&Path) + Send + Sync>;
-#[cfg(test)]
-pub(super) type IntegrityGateReleaseHook = Box<dyn Fn(&Path) + Send + Sync>;
-#[cfg(test)]
-pub(super) type BeforeFinishIndexConnectionHook = Box<dyn Fn(&Path) + Send + Sync>;
-#[cfg(test)]
 struct BeforeStagingOpenHook {
     target: PathBuf,
     action: Box<dyn FnOnce(&Path) + Send>,
@@ -1264,16 +824,6 @@ struct BeforeStagingOpenHook {
 
 #[cfg(test)]
 static BEFORE_STAGING_OPEN_HOOK: OnceLock<Mutex<Option<BeforeStagingOpenHook>>> = OnceLock::new();
-#[cfg(test)]
-static INTEGRITY_GATE_ENTER_HOOK: OnceLock<Mutex<Option<IntegrityGateEnterHook>>> = OnceLock::new();
-#[cfg(test)]
-static INTEGRITY_GATE_RELEASE_HOOK: OnceLock<Mutex<Option<IntegrityGateReleaseHook>>> =
-    OnceLock::new();
-#[cfg(test)]
-static BEFORE_FINISH_INDEX_CONNECTION_HOOK: OnceLock<
-    Mutex<Option<BeforeFinishIndexConnectionHook>>,
-> = OnceLock::new();
-
 #[cfg(test)]
 thread_local! {
     static AFTER_PREFIX_SCAN_HOOK: RefCell<Option<AfterPrefixScanHook>> = RefCell::new(None);
@@ -1302,23 +852,11 @@ static STAGE_PEAK_WORKERS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(test)]
 static STAGE_DELAY_MILLISECONDS: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
-static QUICK_CHECK_COUNT: AtomicU64 = AtomicU64::new(0);
-#[cfg(test)]
-static FAIL_NEXT_QUICK_CHECK_QUERY: AtomicBool = AtomicBool::new(false);
-#[cfg(test)]
-static RECEIPT_WRITE_COUNT: AtomicU64 = AtomicU64::new(0);
-#[cfg(test)]
 static OPEN_MIGRATION_WORK_COUNT: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
 static OPEN_DDL_COUNT: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
 static OPEN_WRITE_TRANSACTION_COUNT: AtomicU64 = AtomicU64::new(0);
-#[cfg(test)]
-static QUICK_CHECK_BARRIER: OnceLock<Mutex<Option<(Arc<Barrier>, HashSet<PathBuf>)>>> =
-    OnceLock::new();
-static INDEX_INTEGRITY_STATES: OnceLock<Mutex<HashMap<PathBuf, IndexIntegrityState>>> =
-    OnceLock::new();
-
 fn assess_index_migration(
     connection: &Connection,
     existed_before: bool,
@@ -1597,19 +1135,6 @@ fn prepare_exact_store_for_home(home: &Path, path: &Path) -> Result<(), String> 
 }
 
 impl ExactUsageIndex {
-    pub(super) fn open_published(codex_home: &Path) -> Result<Self, String> {
-        let path = database_path(codex_home)?;
-        let connection = open_published_index_read_only(&path, StdDuration::from_secs(3))?
-            .ok_or("该来源没有已核实的已发布精确索引")?;
-        let assessment = assess_index_migration(&connection, true)?;
-        if !matches!(assessment, MigrationAssessment::Compatible) {
-            return Err(assessment.blocking_error().unwrap_or_else(|| "旧索引等待兼容补全，已保留原账".into()));
-        }
-        Ok(Self { connection: ManagedIndexConnection { connection: Some(connection), path,
-            receipt_eligible: false, tracks_integrity: false }, _operation_lock: None,
-            migration_pending: false, published_read_only: true })
-    }
-
     pub(super) fn published_summary(&self, now: OffsetDateTime) -> Result<TokenUsageSummarySnapshot, String> {
         let tx = self.connection.unchecked_transaction().map_err(|error| error.to_string())?;
         let aggregate = self.dashboard_aggregate_identity()?;
@@ -2316,28 +1841,6 @@ impl ExactUsageIndex {
     }
 
     #[cfg(test)]
-    pub(super) fn set_integrity_gate_enter_hook_for_testing(hook: Option<IntegrityGateEnterHook>) {
-        let slot = INTEGRITY_GATE_ENTER_HOOK.get_or_init(|| Mutex::new(None));
-        *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = hook;
-    }
-
-    #[cfg(test)]
-    pub(super) fn set_integrity_gate_release_hook_for_testing(
-        hook: Option<IntegrityGateReleaseHook>,
-    ) {
-        let slot = INTEGRITY_GATE_RELEASE_HOOK.get_or_init(|| Mutex::new(None));
-        *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = hook;
-    }
-
-    #[cfg(test)]
-    pub(super) fn set_before_finish_index_connection_hook_for_testing(
-        hook: Option<BeforeFinishIndexConnectionHook>,
-    ) {
-        let slot = BEFORE_FINISH_INDEX_CONNECTION_HOOK.get_or_init(|| Mutex::new(None));
-        *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = hook;
-    }
-
-    #[cfg(test)]
     pub(super) fn set_after_file_commit_hook_for_testing(
         hook: impl FnOnce(&Path) -> Result<(), String> + 'static,
     ) {
@@ -2415,28 +1918,6 @@ impl ExactUsageIndex {
     }
 
     #[cfg(test)]
-    pub(super) fn clear_integrity_signature_for_testing(codex_home: &Path) {
-        if let Ok(path) = database_path(codex_home) {
-            invalidate_index_integrity_signature(&path);
-        }
-    }
-
-    #[cfg(test)]
-    pub(super) fn active_integrity_connections_for_testing(path: &Path) -> usize {
-        index_integrity_states()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(path)
-            .map(|state| state.active_connections)
-            .unwrap_or(0)
-    }
-
-    #[cfg(test)]
-    pub(super) fn reset_quick_check_count_for_testing() {
-        QUICK_CHECK_COUNT.store(0, Ordering::SeqCst);
-    }
-
-    #[cfg(test)]
     pub(super) fn reset_preparation_work_for_testing() {
         PREPARATION_FACTS_COUNT.with(|value| value.set(0));
         AGGREGATE_REBUILD_COUNT.with(|value| value.set(0));
@@ -2445,26 +1926,6 @@ impl ExactUsageIndex {
     #[cfg(test)]
     pub(super) fn preparation_work_for_testing() -> (u64, u64) {
         (PREPARATION_FACTS_COUNT.with(Cell::get), AGGREGATE_REBUILD_COUNT.with(Cell::get))
-    }
-
-    #[cfg(test)]
-    pub(super) fn quick_check_count_for_testing() -> u64 {
-        QUICK_CHECK_COUNT.load(Ordering::SeqCst)
-    }
-
-    #[cfg(test)]
-    pub(super) fn fail_next_quick_check_query_for_testing() {
-        FAIL_NEXT_QUICK_CHECK_QUERY.store(true, Ordering::SeqCst);
-    }
-
-    #[cfg(test)]
-    pub(super) fn reset_receipt_write_count_for_testing() {
-        RECEIPT_WRITE_COUNT.store(0, Ordering::SeqCst);
-    }
-
-    #[cfg(test)]
-    pub(super) fn receipt_write_count_for_testing() -> u64 {
-        RECEIPT_WRITE_COUNT.load(Ordering::SeqCst)
     }
 
     #[cfg(test)]
@@ -2486,14 +1947,6 @@ impl ExactUsageIndex {
     #[cfg(test)]
     pub(super) fn mark_receipt_dirty_for_testing(&mut self) {
         self.connection.mark_receipt_dirty();
-    }
-
-    #[cfg(test)]
-    pub(super) fn set_quick_check_barrier_for_testing(
-        barrier: Option<(Arc<Barrier>, HashSet<PathBuf>)>,
-    ) {
-        let slot = QUICK_CHECK_BARRIER.get_or_init(|| Mutex::new(None));
-        *slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = barrier;
     }
 
     pub(super) fn sync(
@@ -5099,6 +4552,10 @@ impl ExactUsageIndex {
             .map_err(|error| format!("无法解码会话缓存候选：{error}"))
     }
 
+    /// Numeric ranking may enrich excerpts by calling verify_excerpt_source.
+    /// That verification can write physical proofs/binding availability in a
+    /// savepoint on this same snapshot. Published-read-only mode skips enrichment;
+    /// do not move it to an independent connection or label all reads as pure.
     fn turn_candidates(
         &self,
         codex_home: &Path,
@@ -5958,42 +5415,6 @@ impl ExactSessionEventSink for StagingEventSink<'_> {
         self.insert_event(event)?;
         Ok(true)
     }
-}
-
-struct StageManifest {
-    schema_version: i64,
-    staging_mode: Option<String>,
-    source_id: Option<i64>,
-    base_generation: Option<i64>,
-    base_resume_offset: Option<i64>,
-    base_prefix_sha256: Option<Vec<u8>>,
-    fingerprint_codec_version: Option<i64>,
-    path: String,
-    session_id: String,
-    migration_revision: String,
-    parser_revision: String,
-    target_building_generation: i64,
-    artifact_id: String,
-    actual_bytes: i64,
-    integrity: String,
-    size: i64,
-    modified_ns: String,
-    prefix_sha256: Vec<u8>,
-    resume_offset: i64,
-    previous_total_tokens: Option<i64>,
-    fork_replay_started_ns: Option<String>,
-    fork_replay_active: bool,
-    is_explicit_subagent_fork: bool,
-    last_skipped_fork_replay_token_ns: Option<String>,
-    current_model: Option<String>,
-    current_user_prompt_start: Option<i64>,
-    current_user_prompt_end: Option<i64>,
-    assistant_response_start: Option<i64>,
-    assistant_response_end: Option<i64>,
-    event_count: i64,
-    fingerprint_count: i64,
-    chunk_count: i64,
-    accounting_state: Option<String>,
 }
 
 #[cfg(test)]
@@ -11335,65 +10756,6 @@ fn visit_active_rollouts(
     Ok(())
 }
 
-fn existing_regular_index(path: &Path) -> Result<bool, String> {
-    #[cfg(not(test))]
-    if stage_pool::is_path(path) {
-        let pool=stage_pool::Pool::current()?;
-        return match pool.lookup(path)? {Some(job)=>Ok(pool.seal(&job)?.is_some()),None=>Ok(false)};
-    }
-    #[cfg(not(test))]
-    {
-        let physical_exists=existing_regular_legacy_file(path)?;
-        if !physical_exists && stage_pool::is_legacy_path(path) {
-            if let Some(present)=stage_pool::Pool::current()?.legacy_presence(path)? {return Ok(present)}
-        }
-        if physical_exists {
-            if crate::core::business_store_route::exact_store_exists(path)? {
-                return Ok(true);
-            }
-            if crate::core::business_store_route::exact_legacy_input_is_retired_unchanged(path)? {
-                return Ok(false);
-            }
-            return Ok(true);
-        }
-        if !crate::core::business_store_route::exact_store_exists(path)? {
-            return Ok(false);
-        }
-        // A job namespace can be registered before its first A-table write.
-        // If the process stopped while its TEMP producer was parsing, retry
-        // that known empty namespace instead of treating registration alone
-        // as a corrupt, permanently blocking stage.
-        let connection = open_exact_business_store(path)?;
-        return connection
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM main.sqlite_master WHERE type IN ('table','index','view','trigger'))",
-                [],
-                |row| row.get::<_, bool>(0),
-            )
-            .map_err(|error| format!("无法检查精确 token 暂存分区对象：{error}"));
-    }
-    #[cfg(test)]
-    {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => Err(format!(
-            "拒绝打开符号链接形式的精确 token 索引：{}",
-            path.display()
-        )),
-        Ok(metadata) if !metadata.is_file() => Err(format!(
-            "精确 token 索引路径不是普通文件：{}",
-            path.display()
-        )),
-        Ok(_) => Ok(true),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(format!(
-            "无法检查精确 token 索引路径 {}：{}",
-            path.display(),
-            error
-        )),
-    }
-    }
-}
-
 fn schema11_candidate_path(index_path: &Path) -> PathBuf {
     let mut value = index_path.as_os_str().to_os_string();
     value.push(SCHEMA11_CANDIDATE_SUFFIX);
@@ -11416,6 +10778,9 @@ fn schema11_manifest_path(index_path: &Path) -> PathBuf {
 // namespace. Preserve pre-hotfix receipts, including 0.9.8's derived migration
 // work. Canonical A is authoritative; unfinished derived work can be prepared
 // again without guessing whether a physical receipt belongs to A or an old DB.
+/// May register a verified legacy migration receipt in A before selecting paths.
+/// This is recovery/admission work, not pure path construction; only
+/// schema11_paths_for_namespace is a side-effect-free path formatter.
 fn active_schema11_paths(index_path: &Path) -> Result<(PathBuf, PathBuf, PathBuf), String> {
     #[cfg(not(test))]
     let isolated = {
@@ -11434,6 +10799,9 @@ fn active_schema11_paths(index_path: &Path) -> Result<(PathBuf, PathBuf, PathBuf
     Ok(schema11_paths_for_namespace(index_path, isolated))
 }
 
+/// Reuses the caller's bound handle for current ownership checks; a newly
+/// discovered legacy manifest still falls back to the effectful admission path.
+/// The _on suffix does not guarantee that this call is read-only.
 fn active_schema11_paths_on(connection: &Connection, index_path: &Path) -> Result<(PathBuf, PathBuf, PathBuf), String> {
     #[cfg(not(test))]
     {
@@ -11492,6 +10860,10 @@ pub(super) fn verify_legacy_migration_fixture(home: &Path, path: &Path) -> Resul
     Ok(paths != schema11_paths_for_namespace(path, false))
 }
 
+/// Historical name: production obtains the durable namespace seal and may
+/// CREATE that seal before returning its observation. Only test builds read
+/// physical file metadata. Keep this in migration orchestration, not a pure
+/// filesystem-signature helper or the published-reader path.
 fn schema11_file_stamp(path: &Path) -> Result<Schema11FileStamp, String> {
     #[cfg(not(test))]
     {
@@ -11722,92 +11094,6 @@ fn schema11_copy_candidate(index_path: &Path, candidate_path: &Path) -> Result<(
     drop(destination);
     schema11_sync_file(candidate_path)
     }
-}
-
-fn schema11_digest_value(hasher: &mut Sha256, value: rusqlite::types::ValueRef<'_>) {
-    match value {
-        rusqlite::types::ValueRef::Null => hasher.update([0]),
-        rusqlite::types::ValueRef::Integer(value) => {
-            hasher.update([1]);
-            hasher.update(value.to_le_bytes());
-        }
-        rusqlite::types::ValueRef::Real(value) => {
-            hasher.update([2]);
-            hasher.update(value.to_bits().to_le_bytes());
-        }
-        rusqlite::types::ValueRef::Text(value) => {
-            hasher.update([3]);
-            hasher.update((value.len() as u64).to_le_bytes());
-            hasher.update(value);
-        }
-        rusqlite::types::ValueRef::Blob(value) => {
-            hasher.update([4]);
-            hasher.update((value.len() as u64).to_le_bytes());
-            hasher.update(value);
-        }
-    }
-}
-
-fn schema11_finish_digest(hasher: Sha256) -> String {
-    hasher
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
-}
-
-fn schema11_query_digest(
-    connection: &Connection,
-    sql: &str,
-    parameters: impl rusqlite::Params,
-    context: &str,
-) -> Result<String, String> {
-    let mut statement = connection
-        .prepare(sql)
-        .map_err(|error| format!("无法准备 schema 11 {context}逐行对账：{error}"))?;
-    let column_count = statement.column_count();
-    let mut rows = statement
-        .query(parameters)
-        .map_err(|error| format!("无法读取 schema 11 {context}逐行对账：{error}"))?;
-    let mut hasher = Sha256::new();
-    hasher.update(b"codex-token-bar-schema11-row-digest-v1");
-    while let Some(row) = rows
-        .next()
-        .map_err(|error| format!("无法遍历 schema 11 {context}逐行对账：{error}"))?
-    {
-        hasher.update([0xff]);
-        for column in 0..column_count {
-            let value = row
-                .get_ref(column)
-                .map_err(|error| format!("无法解码 schema 11 {context}逐行对账：{error}"))?;
-            schema11_digest_value(&mut hasher, value);
-        }
-    }
-    Ok(schema11_finish_digest(hasher))
-}
-
-fn canonicalize_legacy_fingerprint(
-    value: rusqlite::types::ValueRef<'_>,
-) -> Result<Vec<u8>, String> {
-    let values = match value {
-        rusqlite::types::ValueRef::Blob(bytes) => {
-            if let Ok(values) = fingerprint_codec::decode(bytes) {
-                values
-            } else {
-                fingerprint_codec::decode_legacy_fixed_width(bytes)
-                    .map_err(|error| format!("旧精确 token BLOB 指纹无法转换：{error}"))?
-            }
-        }
-        rusqlite::types::ValueRef::Text(bytes) => {
-            let text = std::str::from_utf8(bytes)
-                .map_err(|error| format!("旧精确 token 文本指纹不是 UTF-8：{error}"))?;
-            fingerprint_codec::decode_legacy_text(text)
-                .map_err(|error| format!("旧精确 token 文本指纹无法转换：{error}"))?
-        }
-        _ => return Err("旧精确 token 指纹既不是 BLOB 也不是 TEXT".into()),
-    };
-    fingerprint_codec::encode(&values)
-        .map_err(|error| format!("旧精确 token 指纹无法编码为 schema 11：{error}"))
 }
 
 fn copy_schema11_fingerprints(
@@ -13141,750 +12427,6 @@ fn cleanup_successful_schema11_migration(index_path: &Path) -> Result<(), String
     record_successful_migration_retention(&connection, index_path)
 }
 
-fn open_index_connection_with_recovery(
-    path: &Path,
-    existed_before_hint: bool,
-    initialize_metadata: bool,
-    verified_candidate: Option<&Schema11ValidatedStorage>,
-) -> Result<(ManagedIndexConnection, bool), String> {
-    let gate = index_integrity_gate(path);
-    let _gate_guard = gate.enter(path);
-    // The caller's existence probe can become stale while another open is
-    // waiting on this path gate. Recheck under the per-path gate, never under
-    // INDEX_INTEGRITY_STATES, so a newly created database is treated as such.
-    let existed_before = existing_regular_index(path)?;
-    let _ = existed_before_hint;
-    if !existed_before {
-        let connection = open_index_connection(path, true, true)?;
-        return managed_index_connection(path, connection).map(|connection| (connection, false));
-    }
-
-    let state_has_active_connection = {
-        let states = index_integrity_states();
-        let states = states
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        states
-            .get(path)
-            .is_some_and(|state| state.active_connections > 0)
-    };
-    let signature_before_open = index_storage_signature(path).ok();
-    let receipt = signature_before_open.and_then(|signature| {
-        read_integrity_receipt(path)
-            .filter(|receipt| receipt_storage_matches(receipt, path, signature))
-    });
-
-    let candidate_proof_matches = verified_candidate.is_some_and(|verified| {
-        schema11_receipt_matches_current(path, &verified.receipt).unwrap_or(false)
-    });
-    match open_index_connection(path, false, initialize_metadata) {
-        Ok(connection) if state_has_active_connection => {
-            return managed_index_connection(path, connection)
-                .map(|connection| (connection, false));
-        }
-        Ok(connection) => {
-            let receipt_is_verified = receipt
-                .as_ref()
-                .is_some_and(|receipt| receipt_connection_metadata_matches(receipt, &connection));
-            // Connection-local pragmas (and our own journal-mode transition)
-            // cannot change logical facts. Reuse only the proof checked before
-            // that transition, with the same metadata after opening.
-            let candidate_metadata_matches = candidate_proof_matches
-                && verified_candidate.is_some_and(|verified| {
-                    schema11_receipt_metadata_matches(&connection, &verified.receipt).unwrap_or(false)
-                });
-            if receipt_is_verified || candidate_metadata_matches {
-                if candidate_metadata_matches {
-                    startup_trace::mark_performance("exact_prepare reuse=candidate_integrity_on_open");
-                }
-                return managed_index_connection(path, connection)
-                    .map(|connection| (connection, false));
-            }
-            match quick_check_index_result(&connection, Some(path)) {
-                Ok(None) => {
-                    return managed_index_connection(path, connection)
-                        .map(|connection| (connection, false));
-                }
-                Ok(Some(report)) => {
-                    drop(connection);
-                    return Err(format!(
-                        "精确 token 索引完整性检查报告损坏，已保留原索引并拒绝自动重建：{report}"
-                    ));
-                }
-                Err(error) => {
-                    drop(connection);
-                    return Err(format!(
-                        "精确 token 索引完整性检查暂时失败，已保留原索引并拒绝自动重建：{error}"
-                    ));
-                }
-            }
-        }
-        Err(error) => Err(format!(
-            "精确 token 索引打开失败，已保留原索引并拒绝自动重建：{error}"
-        )),
-    }
-}
-
-#[cfg(not(test))]
-fn quick_check_bound_staging_store(connection: &BoundStoreConnection) -> Result<(), String> {
-    const STAGING_TABLES: [&str; 4] = ["chunks", "events", "fingerprints", "manifest"];
-
-    let existing_tables = {
-        let mut statement = connection
-            .prepare(
-                "SELECT name FROM sqlite_master WHERE type='table' AND lower(substr(name,1,7)) <> 'sqlite_' ORDER BY name",
-            )
-            .map_err(|error| format!("无法读取精确 token 暂存表清单：{error}"))?;
-        let rows = statement
-            .query_map([], |row| row.get::<_, String>(0))
-            .map_err(|error| format!("无法读取精确 token 暂存表清单：{error}"))?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|error| format!("无法解码精确 token 暂存表清单：{error}"))?;
-        rows
-    };
-    let expected_tables = STAGING_TABLES
-        .iter()
-        .map(|table| (*table).to_owned())
-        .collect::<Vec<_>>();
-    if existing_tables != expected_tables {
-        return Err(format!(
-            "精确 token 暂存表清单不匹配：预期 {:?}，实际 {:?}",
-            expected_tables, existing_tables
-        ));
-    }
-
-    for table in STAGING_TABLES {
-        let sql = format!("PRAGMA quick_check('{table}')");
-        let mut statement = connection
-            .prepare(&sql)
-            .map_err(|error| format!("无法准备精确 token 暂存表 {table} quick_check：{error}"))?;
-        let reports = statement
-            .query_map([], |row| row.get::<_, String>(0))
-            .map_err(|error| format!("无法读取精确 token 暂存表 {table} quick_check：{error}"))?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|error| format!("无法解码精确 token 暂存表 {table} quick_check：{error}"))?;
-        if reports.len() != 1 || reports[0] != "ok" {
-            return Err(format!(
-                "SQLite quick_check({table}) 报告损坏：{}",
-                reports.join("; ")
-            ));
-        }
-    }
-    Ok(())
-}
-
-#[cfg(not(test))]
-fn quick_check_staged(connection: &Connection) -> Result<(), String> {
-    if connection.is_bound() {
-        quick_check_bound_staging_store(connection)
-    } else {
-        quick_check_index(connection, None)
-    }
-}
-
-#[cfg(test)]
-fn quick_check_staged(connection: &Connection) -> Result<(), String> {
-    // Test builds intentionally use raw rusqlite connections for legacy stage
-    // fixtures. Preserve their whole-file check path and its failure hooks.
-    quick_check_index(connection, None)
-}
-
-fn quick_check_index(connection: &Connection, path: Option<&Path>) -> Result<(), String> {
-    match quick_check_index_result(connection, path)? {
-        None => Ok(()),
-        Some(report) => Err(format!("SQLite quick_check 报告损坏：{report}")),
-    }
-}
-
-/// Returns `Ok(None)` for a clean database, `Ok(Some(report))` only when
-/// SQLite completed the check and explicitly reported structural corruption,
-/// and `Err` for a transient/query failure. Callers must never turn the latter
-/// into destructive recovery: an interrupted WAL/checkpoint, lock, or disk I/O
-/// failure is not proof that the published index is corrupt.
-fn quick_check_index_result(
-    connection: &Connection,
-    path: Option<&Path>,
-) -> Result<Option<String>, String> {
-    #[cfg(test)]
-    QUICK_CHECK_COUNT.fetch_add(1, Ordering::SeqCst);
-    #[cfg(not(test))]
-    let _ = path;
-    #[cfg(test)]
-    if let Some(path) = path {
-        let barrier = QUICK_CHECK_BARRIER
-            .get_or_init(|| Mutex::new(None))
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .as_ref()
-            .filter(|(_, paths)| paths.contains(path))
-            .map(|(barrier, _)| Arc::clone(barrier));
-        if let Some(barrier) = barrier {
-            barrier.wait();
-        }
-    }
-    #[cfg(test)]
-    if FAIL_NEXT_QUICK_CHECK_QUERY.swap(false, Ordering::SeqCst) {
-        return Err("injected transient quick_check query failure".into());
-    }
-    let preparation = IndexPreparationTrace::new("quick_check");
-    let result = connection
-        .query_row("PRAGMA quick_check(1)", [], |row| row.get::<_, String>(0))
-        .map_err(|error| format!("无法完成 SQLite quick_check：{error}"))?;
-    if result.eq_ignore_ascii_case("ok") {
-        preparation.finish();
-        Ok(None)
-    } else {
-        Ok(Some(result))
-    }
-}
-
-fn index_integrity_states() -> &'static Mutex<HashMap<PathBuf, IndexIntegrityState>> {
-    INDEX_INTEGRITY_STATES.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn index_integrity_gate(path: &Path) -> Arc<IntegrityGate> {
-    let gates = INDEX_INTEGRITY_GATES.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut gates = gates
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    gates.retain(|_, gate| gate.strong_count() > 0);
-    if let Some(gate) = gates.get(path).and_then(Weak::upgrade) {
-        return gate;
-    }
-    let gate = Arc::new(IntegrityGate {
-        in_flight: Mutex::new(false),
-        released: Condvar::new(),
-    });
-    gates.insert(path.to_path_buf(), Arc::downgrade(&gate));
-    gate
-}
-
-impl IntegrityGate {
-    fn enter(self: &Arc<Self>, path: &Path) -> IntegrityGateGuard {
-        self.enter_with_release_hook(path, true)
-    }
-
-    // A sync guard is released before the managed connection closes. It must
-    // not look like the close-time guard to diagnostics or tests; only the
-    // close-time guard publishes that probe.
-    fn enter_silent(self: &Arc<Self>, path: &Path) -> IntegrityGateGuard {
-        self.enter_with_release_hook(path, false)
-    }
-
-    fn enter_with_release_hook(
-        self: &Arc<Self>,
-        path: &Path,
-        notify_release: bool,
-    ) -> IntegrityGateGuard {
-        let mut in_flight = self
-            .in_flight
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        while *in_flight {
-            in_flight = self
-                .released
-                .wait(in_flight)
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-        }
-        *in_flight = true;
-        drop(in_flight);
-        run_integrity_gate_enter_hook_for_testing(path);
-        IntegrityGateGuard {
-            gate: Arc::clone(self),
-            path: path.to_path_buf(),
-            notify_release,
-        }
-    }
-}
-
-impl Drop for IntegrityGateGuard {
-    fn drop(&mut self) {
-        // The release probe runs before the gate becomes available to a
-        // waiter. This keeps the test-only observation deterministic: the
-        // close path must have already published its state decrement before
-        // any new open can acquire this path gate.
-        if self.notify_release {
-            run_integrity_gate_release_hook_for_testing(&self.path);
-        }
-        let mut in_flight = self
-            .gate
-            .in_flight
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *in_flight = false;
-        self.gate.released.notify_one();
-    }
-}
-
-fn index_storage_signature(path: &Path) -> Result<IndexStorageSignature, String> {
-    Ok(IndexStorageSignature {
-        database: file_signature(path)?,
-        wal: optional_index_sidecar_signature(&sqlite_sidecar_path(path, "-wal"))?,
-    })
-}
-
-fn integrity_receipt_path(path: &Path) -> PathBuf {
-    let mut receipt = path.as_os_str().to_os_string();
-    receipt.push(INDEX_INTEGRITY_RECEIPT_SUFFIX);
-    PathBuf::from(receipt)
-}
-
-#[cfg(test)]
-pub(super) fn integrity_receipt_path_for_testing(codex_home: &Path) -> Result<PathBuf, String> {
-    Ok(integrity_receipt_path(&database_path(codex_home)?))
-}
-
-fn receipt_file_signature(signature: FileSignature) -> ReceiptFileSignature {
-    ReceiptFileSignature {
-        size: signature.size,
-        modified_ns: signature.modified_ns.to_string(),
-    }
-}
-
-fn receipt_file_signature_matches(stored: &ReceiptFileSignature, current: FileSignature) -> bool {
-    stored.size == current.size
-        && stored.modified_ns.parse::<u128>().ok() == Some(current.modified_ns)
-}
-
-fn receipt_storage_matches(
-    receipt: &IndexIntegrityReceipt,
-    path: &Path,
-    signature: IndexStorageSignature,
-) -> bool {
-    receipt.version == INDEX_INTEGRITY_RECEIPT_VERSION
-        && canonical_index_path(path)
-            .ok()
-            .is_some_and(|canonical| receipt.canonical_index_path == canonical.to_string_lossy())
-        && receipt_file_signature_matches(&receipt.database, signature.database)
-        && match (&receipt.wal, signature.wal) {
-            (None, None) => true,
-            (Some(stored), Some(current)) => receipt_file_signature_matches(stored, current),
-            // SQLite may leave a zero-byte WAL sidecar behind, or recreate an
-            // empty sidecar with a new inode on the next read-only open.  An
-            // empty WAL has no database state to validate; treating it as
-            // absent keeps the integrity receipt reusable without running
-            // quick_check on every startup.
-            (Some(stored), None) => stored.size == 0,
-            (None, Some(current)) => current.size == 0,
-        }
-}
-
-fn receipt_connection_metadata_matches(
-    receipt: &IndexIntegrityReceipt,
-    connection: &Connection,
-) -> bool {
-    // The receipt was already matched against the pre-open signature. A
-    // connection open can create a WAL sidecar, so storage is deliberately
-    // checked before the open and metadata after it.
-    metadata_i64(connection, "schema_version")
-        .ok()
-        .flatten()
-        .is_some_and(|schema_version| schema_version == receipt.schema_version)
-        && metadata_i64(connection, "revision")
-            .ok()
-            .flatten()
-            .is_some_and(|revision| revision == receipt.revision)
-        && metadata_text(connection, "published_generation")
-            .ok()
-            .flatten()
-            .and_then(|generation| generation.parse::<i64>().ok())
-            .is_some_and(|generation| generation == receipt.published_generation)
-        && [EXACT_SESSION_PARSER_REVISION, PRE_COMPACTION_SESSION_PARSER_REVISION,
-            LEGACY_SESSION_PARSER_REVISION, LEGACY_STAGED_PARSER_REVISION,
-            PAGINATED_V4_PARSER_REVISION, PAGINATED_V4_STAGED_REVISION,
-            PAGINATED_V5_PARSER_REVISION, PAGINATED_V5_STAGED_REVISION]
-            .contains(&receipt.parser_revision.as_str())
-}
-
-fn receipt_metadata(connection: &Connection, path: &Path) -> Result<ReceiptMetadata, String> {
-    let schema_version = metadata_i64(connection, "schema_version")?
-        .ok_or_else(|| "精确 token 完整性收据缺少 schema 版本".to_string())?;
-    let revision = metadata_i64(connection, "revision")?
-        .ok_or_else(|| "精确 token 完整性收据缺少索引 revision".to_string())?;
-    let published_generation = metadata_i64(connection, "published_generation")?
-        .ok_or_else(|| "精确 token 完整性收据缺少已发布代次".to_string())?;
-    let canonical_index_path = canonical_index_path(path)?.to_string_lossy().into_owned();
-    Ok(ReceiptMetadata {
-        canonical_index_path,
-        schema_version,
-        parser_revision: EXACT_SESSION_PARSER_REVISION.into(),
-        revision,
-        published_generation,
-    })
-}
-
-fn read_integrity_receipt(path: &Path) -> Option<IndexIntegrityReceipt> {
-    let receipt_path = integrity_receipt_path(path);
-    let metadata = fs::symlink_metadata(&receipt_path).ok()?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return None;
-    }
-    let bytes = fs::read(receipt_path).ok()?;
-    serde_json::from_slice(&bytes).ok()
-}
-
-fn receipt_destination_is_safe(path: &Path) -> Result<(), String> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => Err(format!(
-            "拒绝覆盖符号链接形式的精确 token 完整性收据：{}",
-            path.display()
-        )),
-        Ok(metadata) if !metadata.is_file() => Err(format!(
-            "精确 token 完整性收据路径不是普通文件：{}",
-            path.display()
-        )),
-        Ok(_) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!(
-            "无法检查精确 token 完整性收据路径 {}：{}",
-            path.display(),
-            error
-        )),
-    }
-}
-
-fn write_integrity_receipt_best_effort(
-    path: &Path,
-    metadata: ReceiptMetadata,
-    signature: IndexStorageSignature,
-) {
-    let receipt_path = integrity_receipt_path(path);
-    if receipt_destination_is_safe(&receipt_path).is_err() {
-        return;
-    }
-    let receipt = IndexIntegrityReceipt {
-        version: INDEX_INTEGRITY_RECEIPT_VERSION,
-        canonical_index_path: metadata.canonical_index_path,
-        database: receipt_file_signature(signature.database),
-        wal: signature.wal.map(receipt_file_signature),
-        schema_version: metadata.schema_version,
-        parser_revision: metadata.parser_revision,
-        revision: metadata.revision,
-        published_generation: metadata.published_generation,
-    };
-    let Ok(bytes) = serde_json::to_vec(&receipt) else {
-        return;
-    };
-    if fs::read(&receipt_path).is_ok_and(|existing| existing == bytes) {
-        return;
-    }
-    #[cfg(test)]
-    RECEIPT_WRITE_COUNT.fetch_add(1, Ordering::SeqCst);
-    let _ = atomic_file::write_atomically(&receipt_path, &bytes);
-}
-
-fn canonical_index_path(path: &Path) -> Result<PathBuf, String> {
-    fs::canonicalize(path).map_err(|error| {
-        format!(
-            "无法确认精确 token 索引规范路径 {}：{}",
-            path.display(),
-            error
-        )
-    })
-}
-
-fn optional_index_sidecar_signature(path: &Path) -> Result<Option<FileSignature>, String> {
-    #[cfg(not(test))]
-    {
-        let _ = path;
-        return Ok(None);
-    }
-    #[cfg(test)]
-    {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => Err(format!(
-            "拒绝读取符号链接形式的精确 token 索引侧写文件：{}",
-            path.display()
-        )),
-        Ok(metadata) if !metadata.is_file() => Err(format!(
-            "精确 token 索引侧写路径不是普通文件：{}",
-            path.display()
-        )),
-        Ok(_) => {
-            let signature = file_signature(path)?;
-            Ok((signature.size > 0).then_some(signature))
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(format!(
-            "无法检查精确 token 索引侧写路径 {}：{}",
-            path.display(),
-            error
-        )),
-    }
-    }
-}
-
-fn managed_index_connection(
-    path: &Path,
-    connection: Connection,
-) -> Result<ManagedIndexConnection, String> {
-    let states = index_integrity_states();
-    let mut states = states
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    Ok(register_index_connection(&mut states, path, connection))
-}
-
-fn register_index_connection(
-    states: &mut HashMap<PathBuf, IndexIntegrityState>,
-    path: &Path,
-    connection: Connection,
-) -> ManagedIndexConnection {
-    let active_connections = states
-        .get(path)
-        .map(|state| state.active_connections)
-        .unwrap_or(0)
-        .saturating_add(1);
-    states.insert(
-        path.to_path_buf(),
-        IndexIntegrityState { active_connections },
-    );
-    ManagedIndexConnection::from_registered(connection, path.to_path_buf())
-}
-
-fn finish_index_connection(states: &mut HashMap<PathBuf, IndexIntegrityState>, path: &Path) {
-    let remaining_connections = states
-        .get(path)
-        .map(|state| state.active_connections.saturating_sub(1))
-        .unwrap_or(0);
-    if remaining_connections > 0 {
-        states.insert(
-            path.to_path_buf(),
-            IndexIntegrityState {
-                active_connections: remaining_connections,
-            },
-        );
-    } else {
-        states.remove(path);
-    }
-}
-
-fn invalidate_index_integrity_signature(path: &Path) {
-    let states = index_integrity_states();
-    let mut states = states
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    states.remove(path);
-}
-
-fn open_index_connection(
-    path: &Path,
-    create_if_missing: bool,
-    initialize_metadata: bool,
-) -> Result<Connection, String> {
-    #[cfg(not(test))]
-    let connection = open_exact_business_store(path)?;
-    #[cfg(test)]
-    let mut flags = OpenFlags::default();
-    #[cfg(test)]
-    if !create_if_missing {
-        flags.remove(OpenFlags::SQLITE_OPEN_CREATE);
-    }
-    #[cfg(test)]
-    let connection = Connection::open_with_flags(path, flags)
-        .map_err(|error| format!("无法打开精确 token 索引 {}：{}", path.display(), error))?;
-    connection
-        .busy_timeout(StdDuration::from_secs(30))
-        .map_err(|error| format!("无法设置精确 token 索引等待时间：{error}"))?;
-    let pragmas = if create_if_missing || initialize_metadata {
-        "PRAGMA journal_mode = WAL;\nPRAGMA synchronous = NORMAL;\nPRAGMA temp_store = FILE;\nPRAGMA cache_size = -16384;\nPRAGMA foreign_keys = ON;"
-    } else {
-        // A compatible reopen must not ask SQLite to change persistent
-        // journal state. The database was configured for WAL when it was
-        // created; these remaining pragmas are connection-local.
-        "PRAGMA synchronous = NORMAL;\nPRAGMA temp_store = FILE;\nPRAGMA cache_size = -16384;\nPRAGMA foreign_keys = ON;"
-    };
-    connection
-        .execute_batch(pragmas)
-        .map_err(|error| format!("无法初始化精确 token 索引连接：{error}"))?;
-    if create_if_missing || initialize_metadata {
-        #[cfg(test)]
-        OPEN_DDL_COUNT.fetch_add(1, Ordering::SeqCst);
-        connection
-            .execute_batch(
-                r#"
-                CREATE TABLE IF NOT EXISTS metadata (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                ) WITHOUT ROWID;
-                "#,
-            )
-            .map_err(|error| format!("无法初始化精确 token 索引元数据表：{error}"))?;
-    }
-    let foreign_keys_enabled = connection
-        .query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0))
-        .map_err(|error| format!("无法确认精确 token 索引外键约束：{error}"))?;
-    if foreign_keys_enabled != 1 {
-        return Err("精确 token 索引外键约束未启用".into());
-    }
-    Ok(connection)
-}
-
-#[cfg(not(test))]
-fn open_exact_business_store(path: &Path) -> Result<Connection, String> {
-    let legacy_sources = if existing_regular_legacy_file(path)? {
-        vec![path.to_path_buf()]
-    } else {
-        Vec::new()
-    };
-    crate::core::business_store_route::open_exact_store(path, &legacy_sources)
-}
-
-/// An externally owned live database must never enter the one-time legacy
-/// import route. Keep the same unbound, read-only source in every build mode.
-fn open_read_only_source(path: &Path, timeout: StdDuration) -> Result<Connection, String> {
-    let raw = sqlite::open_read_only(path, timeout).map_err(|error| error.to_string())?;
-    raw.pragma_update(None, "query_only", true).map_err(|error| error.to_string())?;
-    #[cfg(test)]
-    { Ok(raw) }
-    #[cfg(not(test))]
-    { Ok(Connection::unbound(raw)) }
-}
-
-fn open_read_only_index(path: &Path, timeout: StdDuration) -> Result<Connection, String> {
-    #[cfg(not(test))]
-    if stage_pool::is_path(path) {
-        let pool=stage_pool::Pool::current()?;
-        let job=pool.lookup(path)?.ok_or("读取的暂存job缺失")?;
-        return pool.restore(&job).map(Connection::unbound);
-    }
-    #[cfg(test)]
-    {
-        return sqlite::open_read_only(path, timeout).map_err(|error| error.to_string());
-    }
-    #[cfg(not(test))]
-    {
-        let connection = open_exact_business_store(path)?;
-        connection
-            .busy_timeout(timeout)
-            .map_err(|error| format!("无法设置精确 token 索引读取等待时间：{error}"))?;
-        Ok(connection)
-    }
-}
-
-fn existing_regular_legacy_file(path: &Path) -> Result<bool, String> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => Err(format!(
-            "拒绝导入符号链接形式的精确 token 索引：{}",
-            path.display()
-        )),
-        Ok(metadata) if !metadata.is_file() => Err(format!(
-            "精确 token 索引路径不是普通文件：{}",
-            path.display()
-        )),
-        Ok(_) => Ok(true),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(format!("无法检查旧精确 token 索引 {}：{error}", path.display())),
-    }
-}
-
-fn reject_orphaned_index_rows(connection: &Connection) -> Result<(), String> {
-    if orphaned_index_rows_exist(connection)? {
-        return Err(
-            "精确 token 索引发现孤儿行；已保留活动库、上一代统计和全部异常行，repair required"
-                .into(),
-        );
-    }
-    Ok(())
-}
-
-fn verify_no_orphaned_index_rows(connection: &mut Connection) -> Result<(), String> {
-    if metadata_text(connection, ORPHAN_REPAIR_REVISION_KEY)?.as_deref()
-        == Some(ORPHAN_REPAIR_REVISION)
-    {
-        return Ok(());
-    }
-
-    // Start read-first. A legacy database can be checked without reserving a
-    // writer slot. Orphaned rows are preserved as repair evidence: v0.9.2 no
-    // longer treats an inconsistent derived index as authority to delete any
-    // published or staged data. Only the clean verification marker is written.
-    let transaction = connection
-        .transaction_with_behavior(TransactionBehavior::Deferred)
-        .map_err(|error| format!("无法开始精确 token 孤儿行读取事务：{error}"))?;
-    reject_orphaned_index_rows(&transaction)?;
-    set_metadata(
-        &transaction,
-        ORPHAN_REPAIR_REVISION_KEY,
-        ORPHAN_REPAIR_REVISION,
-    )?;
-    transaction
-        .commit()
-        .map_err(|error| format!("无法提交精确 token 孤儿行修复标记：{error}"))
-}
-
-fn orphaned_index_rows_exist(connection: &Connection) -> Result<bool, String> {
-    // Schema 11 compatibility views intentionally hide child rows whose
-    // stable source is missing, so view-level anti-joins alone cannot detect
-    // physical orphans left by an older foreign_keys=OFF writer. Check the
-    // complete declared graph first; this is read-only and preserves every
-    // offending row for an explicit candidate repair.
-    let foreign_key_failure = connection
-        .query_row("PRAGMA foreign_key_check", [], |_| Ok(true))
-        .optional()
-        .map_err(|error| format!("无法检查精确 token 物理外键孤儿：{error}"))?
-        .unwrap_or(false);
-    if foreign_key_failure {
-        return Ok(true);
-    }
-    for (label, query) in [
-        (
-            "事件",
-            r#"
-            SELECT EXISTS(
-                SELECT 1
-                FROM events
-                WHERE NOT EXISTS (
-                    SELECT 1
-                    FROM files
-                    WHERE files.generation = events.file_generation
-                      AND files.path = events.file_path
-                )
-            )
-            "#,
-        ),
-        (
-            "去重状态",
-            r#"
-            SELECT EXISTS(
-                SELECT 1
-                FROM file_fingerprints
-                WHERE NOT EXISTS (
-                    SELECT 1
-                    FROM files
-                    WHERE files.generation = file_fingerprints.file_generation
-                      AND files.path = file_fingerprints.file_path
-                )
-            )
-            "#,
-        ),
-        (
-            "分块状态",
-            r#"
-            SELECT EXISTS(
-                SELECT 1
-                FROM file_chunks
-                WHERE NOT EXISTS (
-                    SELECT 1
-                    FROM files
-                    WHERE files.generation = file_chunks.file_generation
-                      AND files.path = file_chunks.file_path
-                )
-            )
-            "#,
-        ),
-    ] {
-        let exists = connection
-            .query_row(query, [], |row| row.get::<_, i64>(0))
-            .map_err(|error| format!("无法检查精确 token 孤儿{label}：{error}"))?
-            != 0;
-        if exists {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
 #[cfg(test)]
 pub(super) fn verify_no_orphaned_index_rows_for_testing(
     connection: &mut Connection,
@@ -14306,24 +12848,6 @@ fn maybe_fail_schema9_migration_for_testing(_stage: u8) -> Result<(), String> {
     Ok(())
 }
 
-fn table_row_count(connection: &Connection, table: &str) -> Result<i64, String> {
-    connection
-        .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
-            row.get(0)
-        })
-        .map_err(|error| format!("无法统计精确 token 表 {table}：{error}"))
-}
-
-fn table_exists_checked(connection: &Connection, table: &str) -> Result<bool, String> {
-    connection
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
-            [table],
-            |row| row.get::<_, bool>(0),
-        )
-        .map_err(|error| format!("无法检查精确 token 表 {table}：{error}"))
-}
-
 fn ensure_identity_migration_capacity(
     connection: &Connection,
     source_count: i64,
@@ -14620,25 +13144,6 @@ fn apply_accounting_migration(connection: &mut Connection,receipt: Option<String
     Ok(())
 }
 
-const SESSION_CATALOG_SCHEMA_COLUMNS: &[&str] = &[
-    "path",
-    "archived",
-    "thread_id",
-    "cwd",
-    "source",
-    "session_id",
-    "forked_from_id",
-    "parent_thread_id",
-    "size",
-    "modified_ns",
-    "created_ns",
-    "modified_at",
-    "created_at",
-    "first_line_bytes",
-    "first_line_sha256",
-    "last_seen_generation",
-];
-
 #[cfg(windows)]
 fn reject_session_catalog_reparse_point(
     path: &Path,
@@ -14725,12 +13230,6 @@ fn remove_staging_database_storage(path: &Path) -> Result<(), String> {
     }
     Ok(())
     }
-}
-
-fn sqlite_sidecar_path(path: &Path, suffix: &str) -> PathBuf {
-    let mut value = path.as_os_str().to_os_string();
-    value.push(suffix);
-    PathBuf::from(value)
 }
 
 // SQLite backup copies every table (including pending, retained evidence and
@@ -15003,19 +13502,6 @@ fn codex_home_identity(path: &Path) -> String {
         .into_owned()
 }
 
-impl FileSignature {
-    fn matches_stored(self, size: u64, modified_ns: &str) -> bool {
-        size == self.size && modified_ns.parse::<u128>().ok() == Some(self.modified_ns)
-    }
-
-    fn matches_physical(self, stored: Option<&str>) -> bool {
-        match self.physical {
-            Some(observed) => stored.and_then(PhysicalFileStamp::decode) == Some(observed),
-            None => true, // Only for platforms without a physical metadata API.
-        }
-    }
-}
-
 fn ensure_source_observations(connection: &Connection) -> Result<(), String> {
     let exists = connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_observations')",
@@ -15103,6 +13589,8 @@ fn complete_source_observations(db: &Connection) -> Result<HashMap<String, (u64,
     rows.collect::<Result<HashMap<_, _>, _>>().map_err(|error| error.to_string())
 }
 
+/// Opens the rollout abstraction and requests logical length; compressed input
+/// can require reader/length work. This is not the physical-only stat contract.
 fn file_signature(path: &Path) -> Result<FileSignature, String> {
     let handle = RolloutReader::open(path)
         .map_err(|error| format!("打开会话文件失败：{}（{}）", path.display(), error))?;
@@ -15288,26 +13776,6 @@ fn fresh_revision_seed() -> i64 {
         .unwrap_or_default()
         .as_nanos();
     i64::try_from(nanos.min(i64::MAX as u128)).unwrap_or(i64::MAX - 1)
-}
-
-fn metadata_text(connection: &Connection, key: &str) -> Result<Option<String>, String> {
-    connection
-        .query_row(
-            "SELECT value FROM metadata WHERE key = ?1",
-            params![key],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|error| format!("无法读取精确 token 索引元数据 {key}：{error}"))
-}
-
-fn metadata_i64(connection: &Connection, key: &str) -> Result<Option<i64>, String> {
-    let Some(value) = metadata_text(connection, key)? else {
-        return Ok(None);
-    };
-    value.parse::<i64>().map(Some).map_err(|_| {
-        format!("精确 token 索引元数据 {key} 已损坏：无法解析整数值 {value:?}，已拒绝按缺失值覆盖")
-    })
 }
 
 fn event_enrichment_source_count(connection: &Connection) -> Result<u64, String> {
@@ -15591,24 +14059,6 @@ fn opaque_attribution_source_id(session_id: &str) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn set_metadata(connection: &Connection, key: &str, value: &str) -> Result<(), String> {
-    connection
-        .execute(
-            "INSERT OR REPLACE INTO metadata(key, value) VALUES (?1, ?2)",
-            params![key, value],
-        )
-        .map(|_| ())
-        .map_err(|error| format!("无法写入精确 token 索引元数据 {key}：{error}"))
-}
-
-fn checked_i64(value: u64, label: &str) -> Result<i64, String> {
-    i64::try_from(value).map_err(|_| format!("{label}超出 SQLite 精确整数范围"))
-}
-
-fn checked_optional_i64(value: Option<u64>, label: &str) -> Result<Option<i64>, String> {
-    value.map(|value| checked_i64(value, label)).transpose()
-}
-
 fn source_range_from_columns(start: Option<i64>, end: Option<i64>) -> Option<SourceByteRange> {
     let start = u64::try_from(start?).ok()?;
     let end = u64::try_from(end?).ok()?;
@@ -15708,26 +14158,6 @@ fn longest_streak_days(days: &[ActivityDay]) -> u32 {
         }
     }
     best
-}
-
-fn column_exists_checked(
-    connection: &Connection,
-    table: &str,
-    column: &str,
-) -> Result<bool, String> {
-    let mut statement = connection
-        .prepare(&format!("PRAGMA table_info({table})"))
-        .map_err(|error| format!("无法读取 SQLite 表结构 {table}：{error}"))?;
-    let rows = statement
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(|error| format!("无法枚举 SQLite 表结构 {table}：{error}"))?;
-    for row in rows {
-        let name = row.map_err(|error| format!("无法读取 SQLite 字段 {table}：{error}"))?;
-        if name == column {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }
 
 fn relative_display_path(codex_home: &Path, path: &Path) -> String {

@@ -2,7 +2,26 @@
 //! Keep its checkpoint in bounded pending-generation transactions rather than
 //! paying for a separate durable SQLite staging database for every empty file.
 //! Existing sources (including truncated/relocated history) never use this lane.
-use super::*;
+use super::connection::Connection;
+use super::contracts::{ExactScanCompleteness, ExactScanDiagnostics, FileSignature, FullRebuildJob};
+use super::{ensure_active_build_generation, file_signature, file_signature_from_handle,
+    mark_dashboard_changed, record_source_observation, reserve_staging_source,
+    rollout_source, run_after_file_commit_hook_for_testing, scan_warning,
+    session_id_from_file, AccountingState, RolloutReader, SourceHandle};
+use crate::models::LocalDataWarning;
+use rusqlite::{params, TransactionBehavior};
+use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
+#[cfg(test)]
+use super::{begin_or_resume_generation, database_path, ExactUsageIndex};
+#[cfg(test)]
+use super::contracts::ExactSyncMode;
+#[cfg(test)]
+use std::{fs, sync::atomic::{AtomicU64, Ordering}};
+#[cfg(test)]
+use time::{OffsetDateTime, UtcOffset};
+#[cfg(test)]
+use uuid::Uuid;
 
 pub(super) const BATCH_SIZE: usize = 128;
 

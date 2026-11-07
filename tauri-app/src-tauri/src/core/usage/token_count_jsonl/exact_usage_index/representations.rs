@@ -1,5 +1,14 @@
 //! Additive storage metadata. Never rewrites events, counters or checkpoints.
-use super::*;
+use super::connection::{Connection, open_read_only_index, quick_check_index};
+use super::contracts::{checked_i64, FileSignature, ACCOUNTING_SCHEMA_VERSION,
+    CURRENT_SCHEMA_VERSION, EVENT_ENRICHMENT_REVISION, STAGED_FULL_REBUILD_PARSER_REVISION};
+use super::store_metadata::{metadata_i64, metadata_text, set_metadata, table_exists_checked};
+use super::{file_signature, file_signature_from_handle, hash_file_chunk,
+    lightweight_file_signature, nonnegative_u64, record_source_observation,
+    rollout_source, schema11_copy_candidate, schema11_migration_capacity,
+    schema11_sync_parent, RolloutReader, SourceHandle, EXACT_INDEX_CHUNK_SIZE};
+use rusqlite::{params, OptionalExtension, TransactionBehavior};
+use std::{fs, path::{Path, PathBuf}, time::Duration as StdDuration};
 const REVISION: &str = "rollout-storage-v1";
 
 // Excerpts are normally read inside the dashboard's WAL snapshot. A
@@ -165,6 +174,10 @@ pub(super) fn current_excerpt_observation(db: &Connection, path: &Path, signatur
 }
 
 // Metadata is sufficient for old numeric history, never for displaying old raw text.
+/// Verification may persist source_observations, promote representation proof,
+/// and restore raw-binding availability under an existing-handle savepoint.
+/// It neither opens a replacement DB nor commits the caller's outer snapshot.
+/// Published-read-only callers must not enter this write-capable branch.
 pub(super) fn verify_excerpt_source(db: &Connection, path: &Path) -> Result<bool,String> {
     if rollout_source::physical_path(path).map_err(|error| error.to_string())?
         .as_path().extension().is_some_and(|extension| extension == "zst") {

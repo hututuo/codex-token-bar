@@ -4,7 +4,9 @@
 //! certification, stage-consumption receipts and the single commit. This module
 //! only applies pending rows; it must keep using the parent's bound transaction.
 
-use super::{ledger, table_exists_checked, Transaction};
+use super::ledger;
+use super::connection::Transaction;
+use super::store_metadata::table_exists_checked;
 use rusqlite::{params, OptionalExtension};
 
 pub(super) fn publish_schema11_pending_generation(

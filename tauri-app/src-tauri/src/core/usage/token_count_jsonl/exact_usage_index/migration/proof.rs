@@ -2,14 +2,16 @@
 //!
 //! This module owns only read-only fact generation and comparison. Candidate
 //! files, manifests, phase persistence, switching and rollback remain in the
-//! parent state machine. Shared row-digest helpers remain parent-owned because
-//! ledger protection uses the same encoding.
+//! parent state machine. Shared row-digest helpers live in store_metadata so
+//! ledger protection uses the same encoding without depending on migration.
 
 use super::super::{
-    canonicalize_legacy_fingerprint, fingerprint_codec, ledger, metadata_i64,
-    metadata_text, schema11_digest_value, schema11_finish_digest,
-    schema11_query_digest, table_exists_checked, table_row_count, Connection,
-    IndexPreparationTrace, ATTRIBUTION_LEDGER_EPOCH_KEY,
+    fingerprint_codec, ledger, IndexPreparationTrace,
+};
+use super::super::connection::Connection;
+use super::super::store_metadata::{metadata_i64, metadata_text, schema11_digest_value,
+    schema11_finish_digest, schema11_query_digest, table_exists_checked, table_row_count};
+use super::super::contracts::{canonicalize_legacy_fingerprint, ATTRIBUTION_LEDGER_EPOCH_KEY,
     ATTRIBUTION_LEDGER_INTEGRITY_KEY, ATTRIBUTION_PROVENANCE_EPOCH_KEY,
     BUILDING_ATTRIBUTION_PROVENANCE_ROTATE_KEY, BUILDING_DASHBOARD_CHANGED_KEY,
     DASHBOARD_AGGREGATE_EXACT_GENERATION_KEY,
