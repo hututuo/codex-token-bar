@@ -6,6 +6,8 @@
 
 状态：只读调查与规划；本次没有修改产品代码、测试、工作流或数据库，也没有启动本地构建。
 
+本文的调查数字和行号绑定 `ba9b222ef5e1c2de5f4368f63dbb56d2912b3270`。用户确认后实施的批次 A 另见[执行记录](../maintenance/2026-11-07-exact-foundation-batch-a.md)，不改写下文原调查基线。批次 B–D 尚未实施。
+
 ## 结论先行
 
 当前待整理的两个主文件合计 **18,074 行**：Exact 主文件 15,892 行，业务库路由 2,182 行。路由文件中约 1,410 行是生产流程、约 772 行是内嵌测试；Exact 的主要业务测试在外部测试文件，主文件仍包含少量 `cfg(test)` 钩子和测试辅助。因此不能把 18,074 行都当成同等的生产复杂度。
@@ -19,11 +21,11 @@
 | 批次 | 现在的位置与规模 | 实际形成的边界 | 仍然存在的耦合 | 客观判断 |
 | --- | ---: | --- | --- | --- |
 | 结构初始化 | `exact_usage_index/schema.rs` 1,526 行；主文件移出约 1,520 行 | 建表、兼容视图、缺列补齐、重建视图和触发器有单一入口，SQL 顺序可集中复核 | 依赖 `Connection` 别名、`ensure_source_observations`、列检查和 dashboard bucket 安装；调用者仍控制事务和启动顺序 | **有边界价值，但不是独立 schema 子系统**。保留原函数体和顺序是正确的，不能再把它包装成泛化迁移服务 |
-| 会话目录 | `session_catalog.rs` 753 行；主文件净减约 711 行 | 自有目录类型、观察值、解析/发布事务和快照入口；目录增量重算逻辑能单独审查 | 共享 `reject_session_catalog_reparse_point`、列合同和 `ManagedIndexConnection`；旧库发现仍需父层入口 | **实质解耦**。它拥有一个稳定的投影合同，但不拥有全局锁、连接 Drop 或旧账恢复 |
-| 标题同步 | `thread_metadata.rs` 328 行；主文件净减约 311 行 | `stage`、借用调用者事务的 `apply`、独立 metadata-only 发布三种入口和阶段类型集中 | 依赖父层 metadata 辅助和 `external_state`；标题变化与数值 revision 的关系仍由调用者决定 | **实质解耦**。这是投影边界，不是独立数据源服务 |
-| 迁移证明 | `migration/proof.rs` 803 行，入口 8 行，合同测试 78 行；主文件净减约 776 行 | serde 事实、lineage、摘要生成和 `preserves` 比较集中，证明类型的可见性已收窄 | 仍依赖账本、目录列清单、父层摘要编码、多个 metadata 常量；切换、候选文件和事务仍在父层 | **有实质边界，但只隔离“证明”**。不能宣称迁移流程已解耦 |
-| 暂存发布 | `publication.rs` 401 行；主文件净减约 393 行 | pending generation 的 SQL 入口独立，函数接收调用者事务 | 只依赖父层 `Transaction`、`ledger` 和表检查；最终发布顺序、revision、消费回执仍由 `finalize_generation` 拥有 | **低收益的局部搬运**。文件边界有用，但没有形成新的状态所有权，不应再用同样粒度继续拆 |
-| 路由准入 | `business_store_route/admission.rs` 230 行；路由主文件净减约 218 行 | marker、ready/readable、物理文件身份和 `ACTIVE_CONTAINER_IDENTITY` 由一个模块拥有；私有状态没有复制 | 仍由父层 bootstrap、owner、根版本、journal 和收据流程调用；Exact 与 route 的桥接循环仍在 | **实质解耦**。准入检查有集中入口，但它不等于完整的业务库安全层 |
+| 会话目录 | `session_catalog.rs` 753 行；主文件净减 705 行 | 自有目录类型、观察值、解析/发布事务和快照入口；目录增量重算逻辑能单独审查 | 共享 `reject_session_catalog_reparse_point`、列合同和 `ManagedIndexConnection`；旧库发现仍需父层入口 | **实质解耦**。它拥有一个稳定的投影合同，但不拥有全局锁、连接 Drop 或旧账恢复 |
+| 标题同步 | `thread_metadata.rs` 328 行；主文件净减 304 行 | `stage`、借用调用者事务的 `apply`、独立 metadata-only 发布三种入口和阶段类型集中 | 依赖父层 metadata 辅助和 `external_state`；标题变化与数值 revision 的关系仍由调用者决定 | **实质解耦**。这是投影边界，不是独立数据源服务 |
+| 迁移证明 | `migration/proof.rs` 803 行，入口 8 行，合同测试 78 行；主文件净减 771 行 | serde 事实、lineage、摘要生成和 `preserves` 比较集中，证明类型的可见性已收窄 | 仍依赖账本、目录列清单、父层摘要编码、多个 metadata 常量；切换、候选文件和事务仍在父层 | **有实质边界，但只隔离“证明”**。不能宣称迁移流程已解耦 |
+| 暂存发布 | `publication.rs` 401 行；主文件净减 391 行 | pending generation 的 SQL 入口独立，函数接收调用者事务 | 只依赖父层 `Transaction`、`ledger` 和表检查；最终发布顺序、revision、消费回执仍由 `finalize_generation` 拥有 | **低收益的局部搬运**。文件边界有用，但没有形成新的状态所有权，不应再用同样粒度继续拆 |
+| 路由准入 | `business_store_route/admission.rs` 230 行；路由主文件净减 207 行 | marker、ready/readable、物理文件身份和 `ACTIVE_CONTAINER_IDENTITY` 由一个模块拥有；私有状态没有复制 | 仍由父层 bootstrap、owner、根版本、journal 和收据流程调用；Exact 与 route 的桥接循环仍在 | **实质解耦**。准入检查有集中入口，但它不等于完整的业务库安全层 |
 
 ### 这些拆分带来的实际收益与代价
 
