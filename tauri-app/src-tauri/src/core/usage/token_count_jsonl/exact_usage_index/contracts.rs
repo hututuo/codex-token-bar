@@ -397,3 +397,18 @@ pub(super) const SESSION_CATALOG_SCHEMA_COLUMNS: &[&str] = &[
     "first_line_sha256",
     "last_seen_generation",
 ];
+
+pub(super) const FIVE_MINUTE_INTERVAL_SECONDS: i64 = 5 * 60;
+pub(super) const AGGREGATE_BOUNDARY_GRACE_SECONDS: i64 = 15;
+
+pub(super) fn nonnegative_u64(value: i64) -> u64 {
+    u64::try_from(value).unwrap_or(0)
+}
+
+pub(super) fn saturating_u32(value: i64) -> u32 {
+    if value <= 0 {
+        0
+    } else {
+        u32::try_from(value).unwrap_or(u32::MAX)
+    }
+}

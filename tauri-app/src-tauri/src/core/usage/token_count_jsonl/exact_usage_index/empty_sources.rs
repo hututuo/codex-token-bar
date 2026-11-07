@@ -3,9 +3,10 @@
 //! paying for a separate durable SQLite staging database for every empty file.
 //! Existing sources (including truncated/relocated history) never use this lane.
 use super::connection::Connection;
+use super::projections::mark_dashboard_changed;
 use super::contracts::{ExactScanCompleteness, ExactScanDiagnostics, FileSignature, FullRebuildJob};
 use super::{ensure_active_build_generation, file_signature, file_signature_from_handle,
-    mark_dashboard_changed, record_source_observation, reserve_staging_source,
+    record_source_observation, reserve_staging_source,
     rollout_source, run_after_file_commit_hook_for_testing, scan_warning,
     session_id_from_file, AccountingState, RolloutReader, SourceHandle};
 use crate::models::LocalDataWarning;

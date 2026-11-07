@@ -2,9 +2,10 @@
 //! message support. Never changes numeric ledger fields or parser revisions.
 use super::connection::ManagedIndexConnection;
 use super::contracts::DASHBOARD_REVISION_KEY;
+use super::projections::refresh_dashboard_turn_candidates_for_session;
 use super::store_metadata::{metadata_i64, set_metadata, table_exists_checked};
 use super::{canonical_codex_home, excerpt_warning, lightweight_file_signature,
-    refresh_dashboard_turn_candidates_for_session, resolve_file_within_codex_home,
+    resolve_file_within_codex_home,
     rollout_source, ResolvedSessionFile};
 use crate::models::LocalDataWarning;
 use rusqlite::{params, TransactionBehavior};

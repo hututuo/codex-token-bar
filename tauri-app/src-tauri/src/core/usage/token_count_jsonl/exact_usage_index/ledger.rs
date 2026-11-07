@@ -2,6 +2,13 @@
 //! into pending rows before projections are built; publication and raw bindings
 //! commit together. Missing source text never authorizes removing consumption.
 use super::connection::{Connection, Transaction};
+use super::contracts::EventEnrichmentCandidate;
+use super::projections::mark_dashboard_changed;
+// Retain the existing qualified call inside the moved missing-source entrypoint.
+use super::{ensure_active_build_generation, ledger};
+#[cfg(not(test))]
+use super::{attach_stage_alias, detach_stage_alias};
+use rusqlite::TransactionBehavior;
 use super::contracts::{checked_i64, StagedFullRebuild, CURRENT_SCHEMA_VERSION,
     STAGED_FULL_REBUILD_PARSER_REVISION};
 use super::store_metadata::{column_exists_checked, metadata_i64, schema11_query_digest,
@@ -66,6 +73,9 @@ pub(super) fn snapshot_pending_import(
     pending_preservation::snapshot(db, source_id, target_generation)
 }
 
+/// Verification uses TEMP reconciliation objects on the supplied transaction.
+/// On failure the importing caller must roll back; this does not commit or
+/// authorize clearing pending history based on a separate snapshot.
 pub(super) fn verify_pending_import(
     db: &Connection,
     source_id: i64,
@@ -499,4 +509,185 @@ pub(super) fn protected_table_digests(db: &Connection) -> Result<std::collection
         result.insert(table,schema11_query_digest(db,&format!("SELECT * FROM {quoted} ORDER BY {order}"),[],"持久历史证据")?);
     }
     Ok(result)
+}
+
+/// A comparison with connection side effects: attaches/mounts the stage on the
+/// supplied handle, runs the original comparison, then detaches. Keep the
+/// original comparison-before-detach error priority; this is not a pure read.
+pub(super) fn staged_enrichment_matches_published_events(
+    connection: &Connection,
+    staged: &StagedFullRebuild,
+) -> Result<bool, String> {
+    #[cfg(not(test))]
+    attach_stage_alias(
+        connection,
+        "exact_enrichment_compare",
+        &staged.database_path,
+    )?;
+    #[cfg(test)]
+    {
+    let stage_path = staged.database_path.to_str().ok_or_else(|| {
+        format!(
+            "历史字段补全暂存路径不是有效 UTF-8：{}",
+            staged.database_path.display()
+        )
+    })?;
+    connection
+        .execute(
+            "ATTACH DATABASE ?1 AS exact_enrichment_compare",
+            params![stage_path],
+        )
+        .map_err(|error| format!("无法附加历史字段补全暂存：{error}"))?;
+    }
+    let comparison = connection
+        .query_row(
+            r#"
+            SELECT NOT EXISTS(
+                SELECT 1
+                FROM main.events published
+                JOIN main.published_files published_file
+                  ON published_file.generation = published.file_generation
+                 AND published_file.path = published.file_path
+                LEFT JOIN exact_enrichment_compare.events staged
+                  ON staged.ordinal = published.ordinal
+                WHERE published.file_path = ?1
+                  AND (
+                    staged.ordinal IS NULL
+                    OR staged.timestamp IS NOT published.timestamp
+                    OR staged.tokens IS NOT published.tokens
+                    OR staged.input_tokens IS NOT published.input_tokens
+                    OR staged.cached_input_tokens IS NOT published.cached_input_tokens
+                    OR staged.output_tokens IS NOT published.output_tokens
+                  )
+                UNION ALL
+                SELECT 1
+                FROM exact_enrichment_compare.events staged
+                LEFT JOIN main.events published
+                  ON published.file_path = ?1
+                 AND published.ordinal = staged.ordinal
+                 AND EXISTS (
+                     SELECT 1
+                     FROM main.published_files published_file
+                     WHERE published_file.generation = published.file_generation
+                       AND published_file.path = published.file_path
+                 )
+                WHERE published.ordinal IS NULL
+                LIMIT 1
+            )
+            "#,
+            params![&staged.job.path],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| format!("无法核对历史 model/reasoning 补全事件：{error}"));
+    #[cfg(not(test))]
+    let detach = detach_stage_alias(connection,"exact_enrichment_compare",&staged.database_path);
+    #[cfg(test)]
+    let detach = connection
+        .execute_batch("DETACH DATABASE exact_enrichment_compare")
+        .map_err(|error| format!("无法卸载历史字段补全暂存：{error}"));
+    match (comparison, detach) {
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Ok(matches), Ok(())) => Ok(matches),
+    }
+}
+
+/// Historical cleanup name: intentionally does not delete schema11 tombstones.
+/// Stable source identities and resumable reservations are durable evidence.
+pub(super) fn prune_published_tombstone_versions(connection: &Connection) -> Result<(), String> {
+    // Schema 11 has no historical file-version rows to prune. Keep published
+    // tombstone sources permanently so a later restore reuses the same stable
+    // source_id, and keep generation-0 reservations so durable staging
+    // manifests remain resumable. The parameter stays for the legacy call
+    // site while the compatibility layer is retired incrementally.
+    let _ = connection;
+    Ok(())
+}
+
+pub(super) fn discard_schema11_tombstone_pending_children(connection: &Connection) -> Result<(), String> {
+    connection
+        .execute_batch(
+            r#"
+            DELETE FROM pending_event_rows
+            WHERE source_id IN (SELECT source_id FROM pending_sources WHERE mode = 'tombstone');
+            DELETE FROM pending_fingerprints
+            WHERE source_id IN (SELECT source_id FROM pending_sources WHERE mode = 'tombstone');
+            DELETE FROM pending_chunks
+            WHERE source_id IN (SELECT source_id FROM pending_sources WHERE mode = 'tombstone');
+            DELETE FROM pending_enrichment
+            WHERE source_id IN (SELECT source_id FROM pending_sources WHERE mode = 'tombstone');
+            DELETE FROM pending_dashboard_source_totals
+            WHERE source_id IN (SELECT source_id FROM pending_sources WHERE mode = 'tombstone');
+            DELETE FROM pending_dashboard_source_5m
+            WHERE source_id IN (SELECT source_id FROM pending_sources WHERE mode = 'tombstone');
+            DELETE FROM pending_dashboard_turn_candidates
+            WHERE source_id IN (SELECT source_id FROM pending_sources WHERE mode = 'tombstone');
+            DELETE FROM pending_dashboard_turn_tombstones
+            WHERE source_id IN (SELECT source_id FROM pending_sources WHERE mode = 'tombstone');
+            "#,
+        )
+        .map_err(|error| format!("无法隔离 schema 11 单文件墓碑的暂存子行：{error}"))
+}
+
+/// Owns the existing single-source IMMEDIATE transaction. First retain complete
+/// pending history as unavailable; only an empty target may become a tombstone.
+/// Missing raw text never authorizes clearing previously recorded consumption.
+pub(super) fn record_missing_event_enrichment_source(
+    connection: &mut Connection,
+    generation: i64,
+    candidate: &EventEnrichmentCandidate,
+) -> Result<(), String> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| format!("无法开始已删除历史来源补全事务：{error}"))?;
+    ensure_active_build_generation(&transaction, generation)?;
+    let source_id: i64 = transaction.query_row(
+        "SELECT source_id FROM sources WHERE path=?1 AND session_id=?2",
+        params![&candidate.path, &candidate.session_id], |row| row.get(0))
+        .map_err(|error| format!("缺失原文的来源身份已变化；已保留待发布历史：{error}"))?;
+    if ledger::retain_pending_when_source_missing(&transaction, source_id, generation)? {
+        mark_dashboard_changed(&transaction)?;
+        transaction.commit()
+            .map_err(|error| format!("无法提交缺失原文的待发布历史保全：{error}"))?;
+        return Ok(());
+    }
+    let staged = transaction
+        .execute(
+            r#"
+            INSERT INTO pending_sources(
+                source_id, target_generation, mode, deleted, size, modified_ns,
+                prefix_sha256, append_ready, resume_offset, previous_total_tokens,
+                fork_replay_started_ns, fork_replay_active,
+                is_explicit_subagent_fork, last_skipped_fork_replay_token_ns,
+                current_model, current_user_prompt_start, current_user_prompt_end,
+                assistant_response_start, assistant_response_end, audit_chunk_index
+            )
+            SELECT source_id, ?1, 'tombstone', 1, 0, '0', X'', 0,
+                   NULL, NULL, NULL, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, 0
+            FROM sources WHERE path = ?2
+            ON CONFLICT(source_id) DO UPDATE SET
+                target_generation = excluded.target_generation,
+                mode = 'tombstone', deleted = 1, size = 0,
+                modified_ns = '0', prefix_sha256 = X'', append_ready = 0,
+                resume_offset = NULL, previous_total_tokens = NULL,
+                fork_replay_started_ns = NULL, fork_replay_active = 0,
+                is_explicit_subagent_fork = 0,
+                last_skipped_fork_replay_token_ns = NULL,
+                current_model = NULL, current_user_prompt_start = NULL,
+                current_user_prompt_end = NULL, assistant_response_start = NULL,
+                assistant_response_end = NULL, audit_chunk_index = 0
+            "#,
+            params![generation, &candidate.path],
+        )
+        .map_err(|error| format!("无法暂存已删除的历史 model/reasoning 来源：{error}"))?;
+    if staged != 1 {
+        return Err("历史 model/reasoning 来源已从稳定来源目录消失，已保留上一份可信数据".into());
+    }
+    // The target has no surviving pending history (checked above), and the
+    // schema trigger already handles this target's empty deletion intent.
+    // Never sweep other sources' pending children while processing one path.
+    mark_dashboard_changed(&transaction)?;
+    transaction
+        .commit()
+        .map_err(|error| format!("无法提交已删除的历史 model/reasoning 来源：{error}"))
 }

@@ -3,7 +3,8 @@
 use super::connection::Connection;
 use super::contracts::ATTRIBUTION_PROVENANCE_EPOCH_KEY;
 use super::store_metadata::{metadata_i64, metadata_text, set_metadata};
-use super::{fingerprint_codec, opaque_attribution_source_id};
+use super::fingerprint_codec;
+use super::projections::opaque_attribution_source_id;
 use rusqlite::{params, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;

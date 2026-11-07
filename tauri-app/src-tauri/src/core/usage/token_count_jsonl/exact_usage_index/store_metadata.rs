@@ -139,3 +139,41 @@ pub(super) fn column_exists_checked(
     }
     Ok(false)
 }
+
+pub(super) fn required_startup_metadata_text(connection: &Connection, key: &str) -> Result<String, String> {
+    metadata_text(connection, key)?
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("精确 token 启动缓存索引元数据 {key} 缺失"))
+}
+
+pub(super) fn required_startup_metadata_i64(connection: &Connection, key: &str) -> Result<i64, String> {
+    let raw = required_startup_metadata_text(connection, key)?;
+    raw.parse::<i64>()
+        .map_err(|_| format!("精确 token 启动缓存索引元数据 {key} 无效"))
+}
+
+pub(super) fn required_startup_metadata_u64(connection: &Connection, key: &str) -> Result<u64, String> {
+    let raw = required_startup_metadata_text(connection, key)?;
+    raw.parse::<u64>()
+        .map_err(|_| format!("精确 token 启动缓存索引元数据 {key} 无效"))
+}
+
+pub(super) fn optional_startup_metadata_u64(
+    connection: &Connection,
+    key: &str,
+) -> Result<Option<u64>, String> {
+    metadata_text(connection, key)?
+        .map(|raw| {
+            raw.parse::<u64>()
+                .map_err(|_| format!("精确 token 启动缓存索引元数据 {key} 无效"))
+        })
+        .transpose()
+}
+
+pub(super) fn startup_metadata_bool(connection: &Connection, key: &str) -> Result<bool, String> {
+    match metadata_text(connection, key)?.as_deref() {
+        None | Some("0") => Ok(false),
+        Some("1") => Ok(true),
+        Some(_) => Err(format!("精确 token 启动缓存索引元数据 {key} 无效")),
+    }
+}

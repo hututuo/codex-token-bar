@@ -1,10 +1,10 @@
 //! Additive storage metadata. Never rewrites events, counters or checkpoints.
 use super::connection::{Connection, open_read_only_index, quick_check_index};
-use super::contracts::{checked_i64, FileSignature, ACCOUNTING_SCHEMA_VERSION,
+use super::contracts::{checked_i64, nonnegative_u64, FileSignature, ACCOUNTING_SCHEMA_VERSION,
     CURRENT_SCHEMA_VERSION, EVENT_ENRICHMENT_REVISION, STAGED_FULL_REBUILD_PARSER_REVISION};
 use super::store_metadata::{metadata_i64, metadata_text, set_metadata, table_exists_checked};
 use super::{file_signature, file_signature_from_handle, hash_file_chunk,
-    lightweight_file_signature, nonnegative_u64, record_source_observation,
+    lightweight_file_signature, record_source_observation,
     rollout_source, schema11_copy_candidate, schema11_migration_capacity,
     schema11_sync_parent, RolloutReader, SourceHandle, EXACT_INDEX_CHUNK_SIZE};
 use rusqlite::{params, OptionalExtension, TransactionBehavior};
