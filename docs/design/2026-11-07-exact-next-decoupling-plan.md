@@ -4,7 +4,7 @@
 
 调查基线`fc5c51d6a68d2943adfcd58b50398a64c352cd92`，调查时产品为`ebcdf377`。上一批备份/proof/分区搬运/Exact连接扩展的状态见[已完成方案](2026-11-06-storage-decoupling-plan.md)和[最终执行报告](../maintenance/2026-11-07-storage-transfer-separation.md)。以下保留原调查基线的行号和方案边界。
 
-实施状态更新：用户随后要求继续，第一步结构初始化已在`b0f2b462`完成，双平台完整回归和Public097/四版本接续通过，详见[结构初始化执行记录](../maintenance/2026-11-07-exact-schema-separation.md)。第二步会话目录、第三步标题同步尚未实施；后续迁移/发布/路由仍为规划。
+实施状态更新：用户随后要求继续，第一步结构初始化已在`b0f2b462`完成，详见[结构初始化执行记录](../maintenance/2026-11-07-exact-schema-separation.md)；第二步会话目录已在`f23411cc`完成，详见[会话目录执行记录](../maintenance/2026-11-07-session-catalog-separation.md)。两步各自完成双平台完整回归和Public097/四版本接续验证。第三步标题同步尚未实施；后续迁移/发布/路由仍为规划。
 
 ## 建议先做什么
 
