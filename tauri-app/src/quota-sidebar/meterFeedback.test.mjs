@@ -20,7 +20,7 @@ test('quota reference marks and model strip use snapshot references and floating
   const {SidebarRailContent}=await load('/src/quota-sidebar/QuotaSidebarApp.tsx');
   const {floatingTodayModelUsageItems}=await load('/src/floating/floatingModelUsage.ts');
   const rows=[['gpt-6-astra',80],['gpt-5.6-sol',20]].map(([model,totalTokens])=>({model,breakdown:{totalTokens}}));
-  const data={snapshot:{fiveHourAvailability:'absent',fiveHourRemainingPercent:null,sevenDayAvailability:'measured',sevenDayRemainingPercent:.4,sevenDayExpectedRemainingPercent:expectedRemainingPercentByEvenPace({label:"7d",availability:"measured",resetsAtUnix:1_000+7*24*3600*.7},1_000),todayModelBreakdowns:rows},runningThreads:{total:0,status:'ready'}};
+  const data={snapshot:{fiveHourAvailability:'absent',fiveHourRemainingPercent:null,sevenDayAvailability:'measured',sevenDayRemainingPercent:.4,sevenDayExpectedRemainingPercent:expectedRemainingPercentByEvenPace({label:"7d",availability:"measured",resetsAtUnix:1_000+7*24*3600*.7},1_000),todayModelBreakdowns:rows},runningThreads:{total:0,status:'ready',groups:[],unassignedSubagents:[]}};
   const dom=new Window();try {
    dom.document.body.innerHTML=renderToStaticMarkup(React.createElement(SidebarRailContent,{data,state:{mode:'hover'},onOpen(){}}));
    assert.equal(dom.document.querySelectorAll('.qs-pace-mark').length,1);
@@ -32,8 +32,9 @@ test('quota reference marks and model strip use snapshot references and floating
    assert.equal(paceMark.closest('.qs-bar'),null,'pace guide stays outside the clipped quota fill');
    assert.ok(Math.abs(parseFloat(dom.document.querySelector('.integrated-full-pace').getAttribute('transform').slice(7))-252)<1e-8);
    const expected=floatingTodayModelUsageItems(rows,'gpt56Sol',{showPlaceholders:false});
-   const segments=[...dom.document.querySelectorAll('.qs-model-strip-vertical i')];
-   assert.deepEqual(segments.map(el=>Number(el.style.flexGrow)),expected.map(item=>item.share));
+   const segments=[...dom.document.querySelectorAll('.qs-model-strip-vertical path')];
+   assert.equal(segments.length,expected.length);
+   segments.forEach((el,index)=>assert.ok(Math.abs(parseFloat(el.style.strokeDasharray)-expected[index].share)<1e-10));
    assert.equal(dom.document.querySelectorAll('.qs-rate-trigger .qs-pace-tick').length,0);
   }finally{dom.close();}
  });

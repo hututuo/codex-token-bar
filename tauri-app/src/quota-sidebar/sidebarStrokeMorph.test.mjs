@@ -41,8 +41,14 @@ test("model usage keeps ordered colors and shares when horizontal becomes vertic
     assert.equal(strokes.length, 3);
     for (const s of strokes) { assert.ok(s.source.every(p => p.y === 102)); assert.ok(s.target.every(p => p.x === 8)); }
     assert.equal(strokes[1].color, "#a3d977"); assert.equal(strokes[2].color, "#df7055");
-    assert.equal(strokes[1].target.at(-1).y - strokes[1].target[0].y, 5);
+    assert.equal(strokes[1].target.at(-1).y - strokes[1].target[0].y, 6);
     assert.equal(strokes[1].target.at(-1).y, strokes[2].target[0].y);
+    assert.equal(strokes[1].target[0].y,250);
+    assert.equal(strokes[1].target.at(-1).y,256,"25% of the actual 24px static bar, without subtracting end caps");
+    assert.equal(strokes[1].source.at(-1).x,31,"25% of the actual 52px static strip");
+    assert.ok(strokes.every(s=>s.lineCap==='butt'),"internal edges cannot overpaint the neighboring model");
+    assert.deepEqual(strokes[1].sourceClip,[{x:20,y:102},{x:68,y:102}]);
+    assert.deepEqual(strokes[1].targetClip,[{x:8,y:252},{x:8,y:272}]);
   });
 });
 

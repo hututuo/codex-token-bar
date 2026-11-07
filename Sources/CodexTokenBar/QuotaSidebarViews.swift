@@ -236,7 +236,7 @@ struct QuotaSidebarRail: View {
 
     private var morphEnabled: Bool {
         !reduceMotion && !controller.isDragging && cacheWarning == nil && sidebarItems.contains {
-            switch $0 { case .speed, .tasks, .quota: true; default: false }
+            switch $0 { case .speed, .tasks, .models, .quota: true; default: false }
         }
     }
 
@@ -275,7 +275,7 @@ struct QuotaSidebarRail: View {
                     return ClientQuotaMorphColorSegment(id: item.id, start: start, end: edge, color: NSColor(item.color))
                 }
                 routes.append(ClientQuotaMorphRoute(id: item.id, ring: ring, track: track, half: 0, fraction: 1,
-                    color: .gray, segments: segments, shape: .strip))
+                    color: .gray, segments: segments, expandedTrackOpacity: 0.12, shape: .strip))
             } else if item == .speed {
                 var edge = 0.0
                 let segments = ModelRatePresentation.slices(liveRates).map { slice in
@@ -654,7 +654,7 @@ struct SidebarPulseButtonStyle: ButtonStyle {
     }
 }
 
-private struct SidebarModelShareStrip: View {
+struct SidebarModelShareStrip: View {
     let items: [FloatingTodayModelUsageItem]
     var vertical = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion

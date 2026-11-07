@@ -149,17 +149,21 @@ enum ClientQuotaMorphGeometry {
     /// Model usage already has a straight horizontal source. Match each color
     /// interval to the vertical destination through the same transient engine.
     private static func stripStrokes(_ route: ClientQuotaMorphRoute) -> [MatchedStrokeMorphRoute] {
-        let a = [CGPoint(x: route.ring.minX + 2, y: route.ring.midY), CGPoint(x: route.ring.maxX - 2, y: route.ring.midY)]
-        let b = [CGPoint(x: route.track.midX, y: route.track.minY + 2), CGPoint(x: route.track.midX, y: route.track.maxY - 2)]
+        // Shares divide the entire strip, just like the stationary HStack/VStack.
+        // Only its outside outline is rounded; interior color edges never overlap.
+        let a = [CGPoint(x: route.ring.minX, y: route.ring.midY), CGPoint(x: route.ring.maxX, y: route.ring.midY)]
+        let b = [CGPoint(x: route.track.midX, y: route.track.minY), CGPoint(x: route.track.midX, y: route.track.maxY)]
+        let aClip = [CGPoint(x: route.ring.minX + 2, y: route.ring.midY), CGPoint(x: route.ring.maxX - 2, y: route.ring.midY)]
+        let bClip = [CGPoint(x: route.track.midX, y: route.track.minY + 2), CGPoint(x: route.track.midX, y: route.track.maxY - 2)]
         var strokes = [MatchedStrokeMorphRoute(id: route.id + ":track", participantID: route.id,
-            expanded: .init(points: a, width: 4, opacity: route.expandedTrackOpacity),
-            collapsed: .init(points: b, width: 4, opacity: route.collapsedTrackOpacity), color: .white)]
+            expanded: .init(points: a, width: 4, opacity: route.expandedTrackOpacity, clipPoints: aClip),
+            collapsed: .init(points: b, width: 4, opacity: route.collapsedTrackOpacity, clipPoints: bClip), color: .white, lineCap: .butt)]
         for segment in route.segments {
             let start = min(1, max(0, segment.start)), end = min(1, max(start, segment.end))
             guard end > start else { continue }
             strokes.append(.init(id: route.id + ":" + segment.id, participantID: route.id,
-                expanded: .init(points: a, start: start, end: end, width: 4, opacity: 1),
-                collapsed: .init(points: b, start: start, end: end, width: 4, opacity: 1), color: segment.color))
+                expanded: .init(points: a, start: start, end: end, width: 4, opacity: 1, clipPoints: aClip),
+                collapsed: .init(points: b, start: start, end: end, width: 4, opacity: 1, clipPoints: bClip), color: segment.color, lineCap: .butt))
         }
         return strokes
     }

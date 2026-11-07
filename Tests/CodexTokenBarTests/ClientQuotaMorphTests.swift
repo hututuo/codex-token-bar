@@ -134,6 +134,15 @@ final class ClientQuotaMorphTests: XCTestCase {
         let astra = try XCTUnwrap(strokes.first { $0.id == "models:astra" })
         XCTAssertEqual(astra.collapsed.end - astra.collapsed.start, 0.25)
         XCTAssertEqual(astra.color, .green)
+        XCTAssertEqual(astra.lineCap, .butt, "Interior model boundaries must not overlap")
+        XCTAssertEqual(astra.expanded.points.first?.x, source.minX)
+        XCTAssertEqual(astra.expanded.points.last?.x, source.maxX)
+        XCTAssertEqual(astra.collapsed.points.first?.y, track.minY)
+        XCTAssertEqual(astra.collapsed.points.last?.y, track.maxY)
+        XCTAssertEqual(source.width * astra.expanded.end, 13, "The static horizontal strip allocates 13px to 25%")
+        XCTAssertEqual(track.height * astra.collapsed.end, 6, "The static vertical strip allocates 6px to 25%")
+        XCTAssertEqual(astra.expanded.clipPoints, [CGPoint(x: 20, y: 102), CGPoint(x: 68, y: 102)])
+        XCTAssertEqual(astra.collapsed.clipPoints, [CGPoint(x: 8, y: 252), CGPoint(x: 8, y: 272)])
     }
 
     func testCollapseShrinksWidthAndHeightTogetherAndKeepsEitherDockedEdge() {

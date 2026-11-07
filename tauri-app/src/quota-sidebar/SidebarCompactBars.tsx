@@ -3,6 +3,7 @@ import { clientBrand, quotaFill, type QuotaItem, type QuotaSelection } from "../
 import { modelRateGradient } from "../components/liveRate/modelRatePresentation";
 import type { ModelRateContribution } from "../types/live";
 import { SidebarTaskCells, type SidebarTaskMeterPresentation } from "./SidebarTaskMeter";
+import { SidebarModelShareStrip } from "./SidebarActivityStrokes";
 import { compactSidebarIDs, fixedSidebarRailLayout, quotaWindowsForClient, sidebarUsesCompactDot, sidebarHasCompactRepresentation } from "./sidebarLayoutPresentation";
 
 export function SidebarCompactBars({ items, quotas, selection, ratePercent, modelRates = [], models = [],
@@ -39,9 +40,7 @@ export function SidebarCompactBars({ items, quotas, selection, ratePercent, mode
           {expected[item.id] != null && <b className="qs-pace-mark" data-sidebar-pace-target={item.id}
             style={{ top: 2.5 + (layout.barHeight - 2.5) * (1 - Math.min(1, Math.max(0, expected[item.id]!))) }} />}
         </span>)}
-      {id === "models" && <div data-sidebar-item={id} data-sidebar-stroke-target={id} className="qs-model-strip qs-model-strip-vertical" style={{ height: layout.barHeight }} aria-label="今日模型 Token 占比">
-        {models.map(item => <i key={item.key} style={{ flexGrow: item.share, background: item.color }} />)}
-      </div>}
+      {id === "models" && <SidebarModelShareStrip models={models} title="今日模型 Token 占比" vertical height={layout.barHeight}/>}
     </Fragment>)}
   </div>;
 }

@@ -36,10 +36,18 @@ export function SidebarTaskRing({children,meter}:{children:ReactNode;meter:Sideb
       strokeDashoffset={-circumference*(index/10+.004)} transform="rotate(-90 24.5 24.5)"/>)}</svg>{children}</span>;
 }
 
-export function SidebarModelShareStrip({models,title}:{models:readonly {key:string;share:number;color:string}[];title:string}) {
+export function SidebarModelShareStrip({models,title,vertical=false,height}:{models:readonly {key:string;share:number;color:string}[];title:string;vertical?:boolean;height?:number}) {
   let offset=0;
   const segments=models.map(item=>{const start=offset;offset+=item.share;return {id:item.key,start,end:offset,color:item.color};});
-  return <div className="qs-model-strip" title={title} aria-label={title} data-sidebar-stroke-source=""
-    data-stroke-spec={JSON.stringify([{id:"models",shape:"strip",fraction:1,color:"#888",segments}])}>
-    {models.map(item=><i key={item.key} style={{flexGrow:item.share,background:item.color}}/>)}</div>;
+  // Both menu levels and the morph divide the full vector path. Flex child
+  // backgrounds round fractional CSS pixels independently at the handoff.
+  return <div className={`qs-model-strip${vertical?" qs-model-strip-vertical":""}`} style={height===undefined?undefined:{height}}
+    title={title} aria-label={title} data-sidebar-item={vertical?"models":undefined}
+    data-sidebar-stroke-target={vertical?"models":undefined} data-sidebar-stroke-source={vertical?undefined:""}
+    data-stroke-spec={vertical?undefined:JSON.stringify([{id:"models",shape:"strip",fraction:1,color:"#888",segments,trackColor:"#30362c",trackOpacity:1}])}>
+    <svg viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true">
+      {segments.map(segment=><path key={segment.id} d={vertical?"M .5 0 V 1":"M 0 .5 H 1"} fill="none"
+        stroke={segment.color} strokeWidth="1" strokeLinecap="butt" pathLength="1"
+        style={{strokeDasharray:`${segment.end-segment.start} 2`,strokeDashoffset:-segment.start}}/>)}
+    </svg></div>;
 }

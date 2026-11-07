@@ -13,6 +13,7 @@ export type SidebarStroke = {
   sourcePath?: StrokePoint[]; targetPath?: StrokePoint[];
   sourceRange?: [number, number]; targetRange?: [number, number];
   lineCap?: "round" | "butt";
+  sourceClip?: StrokePoint[]; targetClip?: StrokePoint[];
 };
 const clamp = (value: number) => Math.min(1, Math.max(0, value));
 export function squeezePoints(ring: StrokeRect, bar: StrokeRect, half: number, progress: number): StrokePoint[] {
@@ -68,12 +69,17 @@ export function sidebarStrokes(spec: SidebarStrokeSpec, source: StrokeRect, targ
   const barFraction = strip ? q : clamp((q * target.height - 4) / Math.max(1, target.height - 4));
   const parts = strip ? [0] : half === 0 ? [-2, 2] : [half];
   const strokes = parts.flatMap(part => {
-    const a = strip ? [{ x: source.x + 2, y: source.y + source.height / 2 }, { x: source.x + source.width - 2, y: source.y + source.height / 2 }] : squeezePoints(source, target, part, 0);
-    const b = strip ? [{ x: target.x + target.width / 2, y: target.y + 2 }, { x: target.x + target.width / 2, y: target.y + target.height - 2 }] : squeezePoints(source, target, part, 1);
+    const a = strip ? [{ x: source.x, y: source.y + source.height / 2 }, { x: source.x + source.width, y: source.y + source.height / 2 }] : squeezePoints(source, target, part, 0);
+    const b = strip ? [{ x: target.x + target.width / 2, y: target.y }, { x: target.x + target.width / 2, y: target.y + target.height }] : squeezePoints(source, target, part, 1);
+    const clip = strip ? {
+      lineCap: "butt" as const,
+      sourceClip: [{x:source.x+2,y:source.y+source.height/2},{x:source.x+source.width-2,y:source.y+source.height/2}],
+      targetClip: [{x:target.x+target.width/2,y:target.y+2},{x:target.x+target.width/2,y:target.y+target.height-2}],
+    } : {};
     const make = (id: string, color: string, range: [number, number], end: [number, number], opacity: number): SidebarStroke => ({
       id: `${spec.id}:${part}:${id}`, group: `${spec.id}:${id}`, source: trim(a, ...range), target: trim(b, ...end), color,
       sourcePath: a, targetPath: b, sourceRange: range, targetRange: end,
-      sourceWidth: spec.width ?? (strip ? 4 : 3), targetWidth: 4, opacity,
+      sourceWidth: spec.width ?? (strip ? 4 : 3), targetWidth: 4, opacity, ...clip,
     });
     const strokes = [make("track", spec.trackColor ?? "#ffffff", [0, 1], [0, 1], spec.trackOpacity ?? .12)];
     if (q <= 0) return strokes;
