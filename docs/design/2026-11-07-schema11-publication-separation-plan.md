@@ -2,6 +2,8 @@
 
 基线`f9203d2a1b6b46b44aec3def77f813251d4206fa`，产品为`a19fb52f`，工作树`f97f/codex-token-dashboard`。用户要求继续后，本笔接续[剩余模块方案](2026-11-07-exact-next-decoupling-plan.md)，仅整理已明确事务边界的pending发布实现。
 
+实施已完成：产品`4e43517d`提取发布函数，主文件净减少391行至15,892行。双平台完整库、生产入口、Public097和四版本接续均通过，原始证据已核对；见[执行与验收记录](../maintenance/2026-11-07-schema11-publication-separation.md)。没有改变最终事务的拥有者或执行顺序。
+
 ## 调查与决定
 
 将主文件`publish_schema11_pending_generation`的393行（含末尾空行）移入`exact_usage_index/publication.rs`。它接收调用者借用的`&Transaction`，先检查pending历史合同、唯一活动代次、混入代次及墓碑子行，再应用账本绑定、事件、来源、聚合与暂存清理。保留所有SQL、错误、执行顺序和原入口名；不另开事务或连接。
