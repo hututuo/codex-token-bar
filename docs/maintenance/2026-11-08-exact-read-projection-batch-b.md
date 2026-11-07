@@ -52,7 +52,24 @@
 
 ## 云端验收
 
-待本次固定源码的双平台完整 Rust 和非 test 生产场景运行完成后填写。此时静态核对已经通过，但不表示云端编译和运行验收已经通过。
+受测产品为 `87efea386eb245b1223d00678d3e12aabb5a6548`，[云端运行 42392755904](https://github.com/hututuo/codex-token-bar/actions/runs/42392755904)全部成功。于 2026-11-08（Asia/Shanghai）下载原始日志、生产报告和 CI 封存材料并复核，`final-validation.json` 为 PASS。
+
+| 证据范围 | 同一受测 SHA 的实际结果 |
+| --- | --- |
+| macOS 完整 Rust 库 | 1,798 通过、0 失败、14 项原有 opt-in ignored；全部测试身份/结果与批次 A 一致 |
+| Windows 完整 Rust 库 | 1,742 通过、0 失败、14 项原有 opt-in ignored；全部测试身份/结果与批次 A 一致 |
+| 本批重点保护 | 两端各 30 项实际执行并通过：TEMP/WAL 单快照、summary 时区/同代次变化/溢出与缓存、标题和数值缓存分离、聚合修复/显示水位无锁快路径、未知聚合版本拒绝、namespace 绑定、canonical 发布回滚、pending 175 unavailable 保全、摘录证明中断回滚与恢复、请求分页及归因排重 |
+| 累计显式核对用例 | 复用既有 80 项保护清单并并入本批 30 项，去重后两端各 97 项通过；这些是完整库中的实际测试，不是额外声称新增 97 个测试 |
+| 普通生产 / fixture 配置 | 两端编译通过；两端各 16 个非 test 生产场景通过，使用生产绑定连接 |
+| 备份清理负控 | 两端原实现通过、禁用清理失败、恢复后通过，退出码 0/101/0；源码恢复 hash、各阶段日志 hash 均匹配 |
+| Swift 完整库 | 2,361 通过、37 项原有跳过 |
+| 前端 / 云端脚本 / 发布脚本 | 分别 1,421 / 18 / 111 通过；发布脚本原有 1 项跳过，其余两组无跳过 |
+| Windows updater / packaging 检查 | 既有 CI job 和 native 步骤通过；没有安装或发布发行包 |
+| CI 封存与源码身份 | runId、sourceSha、expected job outcomes、checked-source、执行前后源码记录及受测 Git blob 与当前产品源码一致 |
+
+`validate.py` 复用原证据解析器，额外核对紧邻批次 A 的全部测试身份/结果、本批 30 项保护、受测 Git blob 与静态等价记录、生产程序原始输出与报告的一致性，以及即时保留和完整库 artifact 内两份生产证据的 hash 一致性。原始报告、日志、`native-validation.json` 和 `final-validation.json` 均保存在同一 scratch 证据目录。
+
+生产场景继续保留暂存恢复、缺失原文的 175 历史、恢复期已发布只读、并发 A 写入、namespace/owner 查找和旧输入保全等合同。`catalogActionsVerified=false` 仍然明确表示这些生产场景不验收会话删除功能；不据此延伸为完整 UI、安装或性能验收。
 
 首轮 `36a09f8ec3dc38abfaaddb1ead124feee139ca13` 的[云端运行 42392264209](https://github.com/hututuo/codex-token-bar/actions/runs/42392264209)在两端普通生产和单测编译中发现同一个遗漏：`source_range_from_columns` 被放入读模型，但根层暂存恢复与增量 checkpoint 读取仍调用它。此前域外检查覆盖了私有方法和其他源文件，漏掉了根文件内对这个自由函数的调用；字节等价也不能证明名称可解析。修正将其归入纯共享 `contracts.rs`，由根层和读模型显式导入，未把扫描层反向绑定到读模型，函数体保持原字节。补查所有移动声明的根层剩余调用，没有其他未导入的符号。两端失败日志保存在 `attempt1/`；失败轮不计验收，双端 native 完成后取消其剩余任务以释放分支队列。
 
