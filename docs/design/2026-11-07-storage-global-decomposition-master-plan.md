@@ -6,7 +6,7 @@
 
 状态：只读调查与规划；本次没有修改产品代码、测试、工作流或数据库，也没有启动本地构建。
 
-本文的调查数字和行号绑定 `ba9b222ef5e1c2de5f4368f63dbb56d2912b3270`。用户确认后，批次 A 已完成，见[执行记录](../maintenance/2026-11-07-exact-foundation-batch-a.md)；批次 B 已完成，见[读模型、投影与账本执行记录](../maintenance/2026-11-08-exact-read-projection-batch-b.md)，受测产品 `87efea386eb245b1223d00678d3e12aabb5a6548` 已通过双平台完整 Rust 与生产验证。不改写下文原调查基线；批次 C–D 尚未实施。
+本文的调查数字和行号绑定 `ba9b222ef5e1c2de5f4368f63dbb56d2912b3270`。用户确认后，批次 A 已完成，见[执行记录](../maintenance/2026-11-07-exact-foundation-batch-a.md)；批次 B 已完成，见[读模型、投影与账本执行记录](../maintenance/2026-11-08-exact-read-projection-batch-b.md)；批次 C 已完成，见[扫描、checkpoint、暂存与回填执行记录](../maintenance/2026-11-08-exact-ingest-batch-c.md)。C 受测产品 `a865072a1208a39d27261b0e0730869678bd6080` 已通过双平台完整 Rust、生产场景、备份负控及四版本双平台历史接续矩阵。不改写下文原调查基线；批次 D 尚未实施。
 
 ## 结论先行
 

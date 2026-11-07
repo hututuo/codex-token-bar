@@ -56,6 +56,34 @@
 
 ## 云端验收
 
-待固定源码的双平台完整 Rust、两端各 16 个非 test 生产场景、备份清理负控及 0.9.8–0.9.11 × macOS/Windows 历史接续矩阵完成后封存。静态核对通过不表示运行验收已经通过。
+受测产品为 `a865072a1208a39d27261b0e0730869678bd6080`，[云端运行 42395982717](https://github.com/hututuo/codex-token-bar/actions/runs/42395982717)全部成功。本批在这一份源码上完成整轮标准 CI 和历史矩阵；没有拼接不同候选的通过结果。原始产物于 2026-11-08（Asia/Shanghai）下载并复核，`native-validation.json`、`historical-validation.json`、`final-validation.json` 均为 PASS。
+
+| 证据范围 | 同一受测 SHA 的实际结果 |
+| --- | --- |
+| macOS 完整 Rust 库 | 1,798 通过、0 失败、14 项原有 opt-in ignored；全部测试身份与结果和批次 B 一致 |
+| Windows 完整 Rust 库 | 1,742 通过、0 失败、14 项原有 opt-in ignored；全部测试身份与结果和批次 B 一致 |
+| 本批重点保护用例 | 两端共同 40 项实际通过；macOS 另有 1 项原本 `cfg(unix)` 的悬空 plain 路径用例通过。覆盖活动追加、截断/重写/物理替换、未完成行跨 chunk、同代次断点接续、私有暂存中断恢复、旧 manifest、worker/ready-byte 上限、20,001 新空源、元数据复核、压缩终点、pending 175 保全 |
+| 累计显式保护清单 | 复用此前 80 项并合入本批清单，去重后 macOS 117 / Windows 116 项通过；均来自完整库实际日志，不声称新增这些测试 |
+| 普通生产 / fixture 配置 | 两端编译通过；各 16 个非 test 生产场景通过，使用生产连接绑定。包含一次 restore 后验证并挂载原快照的断言、pending/consumption 回滚和受回执约束的回收 |
+| 备份清理负控 | 两端原实现通过、禁用清理失败、恢复后通过；退出码 0/101/0，源码恢复 hash 与阶段日志 hash 匹配 |
+| Swift 完整库 | 2,361 通过、37 项原有跳过 |
+| 前端 / 云端脚本 / 发布脚本 | 1,421 / 18 / 111 通过；发布脚本原有 1 项跳过，前两组无跳过 |
+| Windows updater / packaging 检查 | 既有 CI job 与 native 步骤通过；没有安装或发布发行包 |
+| CI 封存 | sourceSha、runId、expected job outcomes、checked-source、库测试前后源码记录均匹配；本轮 `formed-upgrade` 为 success，scale 为原计划 skipped |
+
+历史矩阵不是只在新库上模拟版本号：每个固定旧 tag 的 Rust 生产入口先形成正常提交/中断两类状态，再由当前源码接续。候选程序在每类状态恢复一次，再独立重开三次；每条链路 8 份结果、6 次独立重开。
+
+| 历史 producer | macOS | Windows |
+| --- | --- | --- |
+| 0.9.8 | PASS，8 份结果 / 6 次重开 | PASS，8 份结果 / 6 次重开 |
+| 0.9.9 | PASS，8 份结果 / 6 次重开 | PASS，8 份结果 / 6 次重开 |
+| 0.9.10 | PASS，8 份结果 / 6 次重开 | PASS，8 份结果 / 6 次重开 |
+| 0.9.11 | PASS，8 份结果 / 6 次重开 | PASS，8 份结果 / 6 次重开 |
+
+总计 8 条链路、64 份结果、48 次独立重开。逐份复核旧 tag SHA、旧 producer 的 `cfgTest=false`/形成状态 proof、当前候选 SHA、原始 resume/reopen 输出、manifest 与 migration-state hash 和恢复材料保留标志。每份候选 archive 的全部生产文件清单/hash 与受测 Git tree 全等，明确包含本批 `ingest.rs`、`sources.rs` 及 A/B 模块。这是双平台 Rust 生产历史接续证据；不扩称为原生 Swift 四版本 producer 矩阵或用户实机旧库验收。
+
+`validate.py` 复用既有完整日志和生产报告解析器，补入上述本批清单、紧邻 B 全测试身份/结果比较、历史 archive 全清单、实际历史输出/重开证据和 CI 封存检查；同时把即时生产 artifact 与完整库 artifact 中的重复证据逐份比 hash，并从生产原始输出重建报告核对。当前 11 个产品文件逐字对应受测 Git blob。后续封存提交只更新本文与总计划，不修改产品源码。
+
+本轮保留原生产报告的范围标志，例如 `catalogActionsVerified=false`，不能把它解释成会话删除功能已完成验收。没有扩大测试白名单、跳过失败或改动工作流来获得通过结果。
 
 本批不运行 Public097 或全量性能矩阵，不宣称安装/UI 或正式用户数据验收。未访问正式数据库、安装、合并主线或发布。原有 Windows 报告与未跟踪材料保留，报告 SHA256 为 `63801116c53adee10cb0692cdad6553e6187906f7659ae0aea67b69d4f24ecef`。
