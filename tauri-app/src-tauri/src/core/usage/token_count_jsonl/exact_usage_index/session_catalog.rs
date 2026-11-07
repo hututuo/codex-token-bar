@@ -4,8 +4,8 @@
 //! caller retains its Home/build locks and fallback-to-published policy; this
 //! module retains the original read-before-write and atomic publication order.
 
-use super::{file_signature_from_handle, is_history_repair_workspace,
-    reject_session_catalog_reparse_point, rollout_source, IndexedSessionCatalogEntry,
+use super::sources::{file_signature_from_handle, is_history_repair_workspace};
+use super::{reject_session_catalog_reparse_point, rollout_source, IndexedSessionCatalogEntry,
     IndexedSessionCatalogSnapshot, IndexedSessionMetadata};
 use super::connection::{Connection, ManagedIndexConnection};
 use super::contracts::{checked_i64, SESSION_CATALOG_SCHEMA_COLUMNS, SESSION_CATALOG_SCHEMA_VERSION};

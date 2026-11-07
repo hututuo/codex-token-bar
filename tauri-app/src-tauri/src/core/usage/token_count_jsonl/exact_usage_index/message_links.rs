@@ -4,9 +4,9 @@ use super::connection::ManagedIndexConnection;
 use super::contracts::DASHBOARD_REVISION_KEY;
 use super::projections::refresh_dashboard_turn_candidates_for_session;
 use super::store_metadata::{metadata_i64, set_metadata, table_exists_checked};
-use super::{canonical_codex_home, excerpt_warning, lightweight_file_signature,
-    resolve_file_within_codex_home,
-    rollout_source, ResolvedSessionFile};
+use super::sources::{canonical_codex_home, lightweight_file_signature,
+    resolve_file_within_codex_home, ResolvedSessionFile};
+use super::{excerpt_warning, rollout_source};
 use crate::models::LocalDataWarning;
 use rusqlite::{params, TransactionBehavior};
 use std::{collections::HashMap, path::Path};

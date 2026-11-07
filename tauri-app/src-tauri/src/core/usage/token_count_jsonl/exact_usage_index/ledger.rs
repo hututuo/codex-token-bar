@@ -7,14 +7,15 @@ use super::projections::mark_dashboard_changed;
 // Retain the existing qualified call inside the moved missing-source entrypoint.
 use super::{ensure_active_build_generation, ledger};
 #[cfg(not(test))]
-use super::{attach_stage_alias, detach_stage_alias};
+use super::ingest::{attach_stage_alias, detach_stage_alias};
 use rusqlite::TransactionBehavior;
 use super::contracts::{checked_i64, StagedFullRebuild, CURRENT_SCHEMA_VERSION,
     STAGED_FULL_REBUILD_PARSER_REVISION};
 use super::store_metadata::{column_exists_checked, metadata_i64, schema11_query_digest,
     set_metadata, table_exists_checked};
-use super::{canonical, fingerprint_codec, file_signature, file_signature_from_handle,
-    hash_file_prefix, ExactTokenEvent, RolloutReader};
+use super::sources::{file_signature, file_signature_from_handle};
+use super::ingest::hash_file_prefix;
+use super::{canonical, fingerprint_codec, ExactTokenEvent, RolloutReader};
 use rusqlite::{params, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::io::{Read, Seek, SeekFrom};

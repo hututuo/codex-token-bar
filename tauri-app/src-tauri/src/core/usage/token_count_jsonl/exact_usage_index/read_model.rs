@@ -19,10 +19,10 @@ use super::contracts::{ExactDashboardData, PublishedDashboardReadMetadata,
     DASHBOARD_AGGREGATE_SCHEMA_VERSION_KEY, ATTRIBUTION_PROVENANCE_EPOCH_KEY,
     FIVE_MINUTE_INTERVAL_SECONDS, nonnegative_u64, saturating_u32, source_range_from_columns};
 use super::store_metadata::{metadata_i64, metadata_text};
-use super::{canonical_codex_home, database_path, excerpt_warning,
-    file_signature_from_handle, lightweight_file_signature, representations,
-    resolve_file_within_codex_home, run_after_dashboard_snapshot_hook_for_testing,
-    ResolvedSessionFile};
+use super::sources::{canonical_codex_home, file_signature_from_handle,
+    lightweight_file_signature, resolve_file_within_codex_home, ResolvedSessionFile};
+use super::{database_path, excerpt_warning, representations,
+    run_after_dashboard_snapshot_hook_for_testing};
 use super::super::{history_compression_enabled, SummaryFileContribution,
     TokenUsageSummary, TokenUsageSummarySnapshot};
 use super::super::rollout_source;

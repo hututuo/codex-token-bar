@@ -3,7 +3,8 @@
 //! Callers retain the original connection and transaction ownership. Keep SQL
 //! batches and their execution order intact, including conditional column upgrades.
 
-use super::{dashboard_buckets, ensure_source_observations};
+use super::dashboard_buckets;
+use super::sources::ensure_source_observations;
 use super::connection::Connection;
 use super::store_metadata::column_exists_checked;
 

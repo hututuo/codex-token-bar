@@ -3,7 +3,7 @@ use super::connection::open_read_only_index;
 use super::contracts::{FileSignature, FullRebuildJob, EVENT_ENRICHMENT_REVISION,
     STAGED_FULL_REBUILD_PARSER_REVISION};
 use super::store_metadata::column_exists_checked;
-use super::{staging_database_digest, staging_directory, validated_staged_full_rebuild,
+use super::ingest::{staging_database_digest, staging_directory, validated_staged_full_rebuild,
     STAGING_MANIFEST_SCHEMA_VERSION};
 use rusqlite::OptionalExtension;
 use sha2::{Digest, Sha256};
