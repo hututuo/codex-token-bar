@@ -23,7 +23,7 @@ use store_metadata::{
     required_startup_metadata_text, required_startup_metadata_i64,
     required_startup_metadata_u64, optional_startup_metadata_u64, startup_metadata_bool,
 };
-use contracts::{nonnegative_u64, saturating_u32};
+use contracts::{nonnegative_u64, saturating_u32, source_range_from_columns};
 // Preserve lexical paths inside moved bodies without new wrapper calls.
 use super::{accounting, update_precise_dashboard_progress};
 mod connection;

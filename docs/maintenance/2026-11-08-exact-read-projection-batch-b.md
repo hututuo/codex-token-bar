@@ -6,11 +6,11 @@
 
 | 文件 | 本批职责 | 行数 |
 | --- | --- | ---: |
-| `exact_usage_index/read_model.rs` | summary、dashboard 完整快照与统计/趋势/排行/摘录；已发布 turn 请求分页；仅此域使用的汇总与时间格式辅助 | 2,106 |
+| `exact_usage_index/read_model.rs` | summary、dashboard 完整快照与统计/趋势/排行/摘录；已发布 turn 请求分页；仅此域使用的汇总与时间格式辅助 | 2,100 |
 | `exact_usage_index/projections.rs` | 数值聚合身份、独立修复、显示水位、按文件/代次聚合维护、归因安全状态与投影 | 1,629 |
 | `exact_usage_index/ledger.rs` | 原有 pending 对账与保全；补入暂存与已发布事件核对、墓碑兼容入口、缺失 enrichment 来源保全入口 | 502 → 693 |
 | `exact_usage_index/store_metadata.rs` | 补入借用现有连接的启动 metadata 解码，不打开连接、不拥有事务 | 141 → 179 |
-| `exact_usage_index/contracts.rs` | 补入共享时间间隔和纯整数转换，不执行 I/O | 399 → 414 |
+| `exact_usage_index/contracts.rs` | 补入共享时间间隔、纯整数转换及摘录/扫描断点共用的 source range 解码，不执行 I/O | 399 → 421 |
 | `exact_usage_index.rs` | 保留状态、连接寿命、open/sync/finalize、扫描暂存与迁移编排 | 14,321 → 10,505 |
 
 已有 `ledger/pending_preservation.rs`、`ledger/missing_source.rs` 和 `canonical.rs` 继续保留专用边界。没有为了凑行数重复搬动；`ledger.rs` 集中对账和缺失源入口，canonical 仍通过原调用链参与最终发布。`message_links`、`empty_sources`、`representations`、`canonical` 改为直接导入各自实际使用的投影/合同 helper。
@@ -53,5 +53,7 @@
 ## 云端验收
 
 待本次固定源码的双平台完整 Rust 和非 test 生产场景运行完成后填写。此时静态核对已经通过，但不表示云端编译和运行验收已经通过。
+
+首轮 `36a09f8ec3dc38abfaaddb1ead124feee139ca13` 的[云端运行 42392264209](https://github.com/hututuo/codex-token-bar/actions/runs/42392264209)在两端普通生产和单测编译中发现同一个遗漏：`source_range_from_columns` 被放入读模型，但根层暂存恢复与增量 checkpoint 读取仍调用它。此前域外检查覆盖了私有方法和其他源文件，漏掉了根文件内对这个自由函数的调用；字节等价也不能证明名称可解析。修正将其归入纯共享 `contracts.rs`，由根层和读模型显式导入，未把扫描层反向绑定到读模型，函数体保持原字节。补查所有移动声明的根层剩余调用，没有其他未导入的符号。两端失败日志保存在 `attempt1/`；失败轮不计验收，双端 native 完成后取消其剩余任务以释放分支队列。
 
 按本批计划不单独重跑四版本历史矩阵或 Public097，不宣称性能、已安装应用或正式数据库实测。未访问正式数据库、安装、合并主线或发布。用户原 Windows 报告及未跟踪资料保持原状；原报告 SHA256 为 `63801116c53adee10cb0692cdad6553e6187906f7659ae0aea67b69d4f24ecef`。

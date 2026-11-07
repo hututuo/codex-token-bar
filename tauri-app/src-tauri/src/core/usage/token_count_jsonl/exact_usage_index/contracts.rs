@@ -7,7 +7,7 @@
 //! StageSourceValidation is an in-process proof and must never be serialized.
 
 use super::super::fingerprint_codec;
-use super::super::session_parser::ExactSessionParserState;
+use super::super::session_parser::{ExactSessionParserState, SourceByteRange};
 use super::super::TokenUsageSummary;
 use crate::models::{ActivityDay, CacheHitRankingItem, DashboardStats, LocalDataWarning,
     RecentUsagePoint, TokenCacheUsage};
@@ -397,6 +397,13 @@ pub(super) const SESSION_CATALOG_SCHEMA_COLUMNS: &[&str] = &[
     "first_line_sha256",
     "last_seen_generation",
 ];
+
+pub(super) fn source_range_from_columns(start: Option<i64>, end: Option<i64>) -> Option<SourceByteRange> {
+    let start = u64::try_from(start?).ok()?;
+    let end = u64::try_from(end?).ok()?;
+    (end >= start).then_some(SourceByteRange { start, end })
+}
+
 
 pub(super) const FIVE_MINUTE_INTERVAL_SECONDS: i64 = 5 * 60;
 pub(super) const AGGREGATE_BOUNDARY_GRACE_SECONDS: i64 = 15;

@@ -17,7 +17,7 @@ use super::connection::open_published_index_read_only;
 use super::contracts::{ExactDashboardData, PublishedDashboardReadMetadata,
     CURRENT_SCHEMA_VERSION, DASHBOARD_AGGREGATE_SCHEMA_VERSION,
     DASHBOARD_AGGREGATE_SCHEMA_VERSION_KEY, ATTRIBUTION_PROVENANCE_EPOCH_KEY,
-    FIVE_MINUTE_INTERVAL_SECONDS, nonnegative_u64, saturating_u32};
+    FIVE_MINUTE_INTERVAL_SECONDS, nonnegative_u64, saturating_u32, source_range_from_columns};
 use super::store_metadata::{metadata_i64, metadata_text};
 use super::{canonical_codex_home, database_path, excerpt_warning,
     file_signature_from_handle, lightweight_file_signature, representations,
@@ -26,7 +26,7 @@ use super::{canonical_codex_home, database_path, excerpt_warning,
 use super::super::{history_compression_enabled, SummaryFileContribution,
     TokenUsageSummary, TokenUsageSummarySnapshot};
 use super::super::rollout_source;
-use super::super::session_parser::{read_event_excerpt_batch, ExactEventSourceOffsets, SourceByteRange};
+use super::super::session_parser::{read_event_excerpt_batch, ExactEventSourceOffsets};
 use crate::core::{localtime, startup_trace};
 use crate::core::time_series_timeline::{aligned_bin_starts, LONG_RECENT_INTERVAL_SECONDS, LONG_RECENT_POINT_COUNT};
 use crate::models::{ActivityDay, CacheHitRankingItem, CacheRequestUsage, DashboardStats,
@@ -2014,12 +2014,6 @@ fn usage_series_from_five_minute(
 
 fn align_usage_bin(timestamp: i64, interval_seconds: i64) -> i64 {
     timestamp - (timestamp % interval_seconds)
-}
-
-fn source_range_from_columns(start: Option<i64>, end: Option<i64>) -> Option<SourceByteRange> {
-    let start = u64::try_from(start?).ok()?;
-    let end = u64::try_from(end?).ok()?;
-    (end >= start).then_some(SourceByteRange { start, end })
 }
 
 fn cache_hit_rate(input: i64, cached: i64) -> f64 {
