@@ -24,7 +24,7 @@ use super::contracts::{ExactSyncMode, StagedFullRebuildError, EVENT_ENRICHMENT_R
 #[cfg(all(feature = "business-store-fixture", not(test)))]
 use super::store_metadata::{metadata_i64, metadata_text, set_metadata};
 #[cfg(all(feature = "business-store-fixture", not(test)))]
-use super::{active_schema11_paths, active_schema11_paths_on, begin_or_resume_generation,
+use super::{stage_pool, active_schema11_paths, active_schema11_paths_on, begin_or_resume_generation,
     database_path, open_staging_connection, prepare_scan_temp_tables,
     record_successful_migration_retention, reserve_staging_source,
     schema11_paths_for_namespace, schema11_source_receipt_from_connection,
