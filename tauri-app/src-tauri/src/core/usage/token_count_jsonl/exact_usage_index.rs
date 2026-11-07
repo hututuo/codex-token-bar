@@ -6,8 +6,7 @@ use connection::{
     existing_regular_index, open_index_connection_with_recovery, quick_check_staged,
     quick_check_index, index_integrity_gate, optional_index_sidecar_signature,
     invalidate_index_integrity_signature, open_index_connection, open_read_only_source,
-    open_read_only_index, existing_regular_legacy_file, reject_orphaned_index_rows,
-    verify_no_orphaned_index_rows,
+    open_read_only_index, reject_orphaned_index_rows, verify_no_orphaned_index_rows,
 };
 #[cfg(not(test))]
 use connection::open_exact_business_store;
@@ -36,7 +35,7 @@ use contracts::{
     IndexedFileCheckpoint, FullRebuildJob, StagingSourceBase, EventEnrichmentCandidate,
     StagedFullRebuild, StageSourceValidation, StageStoreSignature, StagedFullRebuildResult,
     StagedFullRebuildError, StageManifest, canonicalize_legacy_fingerprint,
-    sqlite_sidecar_path, checked_i64, checked_optional_i64, SESSION_CATALOG_SCHEMA_COLUMNS,
+    sqlite_sidecar_path, checked_i64, checked_optional_i64,
 };
 pub(super) use contracts::{
     ExactSyncMode, AttributionSafetyState, StartupIndexIdentity, DashboardAggregateIdentity,
@@ -44,8 +43,8 @@ pub(super) use contracts::{
     STAGED_FULL_REBUILD_PARSER_REVISION, ORPHAN_REPAIR_REVISION_KEY, ORPHAN_REPAIR_REVISION,
 };
 use store_metadata::{
-    schema11_digest_value, schema11_finish_digest, schema11_query_digest, table_row_count,
-    table_exists_checked, metadata_text, metadata_i64, set_metadata, column_exists_checked,
+    table_row_count, table_exists_checked, metadata_text, metadata_i64, set_metadata,
+    column_exists_checked,
 };
 use super::rollout_source::{self, RolloutReader, SourceHandle};
 pub(super) mod cycle_range;
@@ -109,7 +108,7 @@ use crate::core::time_series_timeline::{
 };
 use crate::core::{
     app_operation_lock::AppOperationGuard, atomic_file, cross_process_lock::CrossProcessFileLock,
-    sqlite, startup_trace,
+    startup_trace,
 };
 use crate::models::{
     ActivityDay, CacheHitRankingItem, CacheRequestUsage, DashboardStats, LocalDataWarning,
@@ -119,14 +118,14 @@ use crate::models::{
 use fs2::available_space;
 #[cfg(test)]
 use rusqlite::backup::Backup;
-use rusqlite::{params, OpenFlags, OptionalExtension, TransactionBehavior};
+use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 #[cfg(test)]
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::atomic::AtomicBool;

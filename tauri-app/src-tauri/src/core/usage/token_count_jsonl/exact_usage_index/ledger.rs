@@ -1,10 +1,11 @@
 //! Published event_rows remain the sole numeric ledger. Full scans reconcile
 //! into pending rows before projections are built; publication and raw bindings
 //! commit together. Missing source text never authorizes removing consumption.
-use super::connection::Connection;
+use super::connection::{Connection, Transaction};
 use super::contracts::{checked_i64, StagedFullRebuild, CURRENT_SCHEMA_VERSION,
     STAGED_FULL_REBUILD_PARSER_REVISION};
-use super::store_metadata::{metadata_i64, schema11_query_digest, table_exists_checked};
+use super::store_metadata::{column_exists_checked, metadata_i64, schema11_query_digest,
+    set_metadata, table_exists_checked};
 use super::{canonical, fingerprint_codec, file_signature, file_signature_from_handle,
     hash_file_prefix, ExactTokenEvent, RolloutReader};
 use rusqlite::{params, OptionalExtension};
@@ -12,20 +13,10 @@ use sha2::{Digest, Sha256};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 #[cfg(test)]
-use super::connection::Transaction;
-#[cfg(test)]
-use super::contracts::{EventEnrichmentCandidate, FileSignature, EVENT_ENRICHMENT_REVISION};
-#[cfg(test)]
-use super::store_metadata::{column_exists_checked, set_metadata};
+use super::contracts::EVENT_ENRICHMENT_REVISION;
 #[cfg(test)]
 use super::{event_enrichment_pending_candidates, event_enrichment_receipt_count,
-    initialize_index_schema,
-    publish_schema11_pending_generation, record_missing_event_enrichment_source,
-    validate_building_generation_commit_scope};
-#[cfg(test)]
-use rusqlite::TransactionBehavior;
-#[cfg(test)]
-use std::{fs, path::PathBuf};
+    initialize_index_schema};
 use rusqlite::types::Value;
 
 #[cfg(all(feature = "business-store-fixture", not(test)))]
