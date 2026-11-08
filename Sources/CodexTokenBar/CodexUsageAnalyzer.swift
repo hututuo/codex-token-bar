@@ -611,9 +611,12 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         trace?.mark("jsonlFiles.end", metadata: ["count": String(sessionFiles.count)])
         onProgress?(PreciseIndexProgress(
             phase: .preparing,
-            message: "已发现 \(sessionFiles.count) 个会话文件，准备建立精确索引",
+            message: "已发现 \(sessionFiles.count) 个会话文件，正在打开并核对本地索引",
             completed: 0,
-            total: sessionFiles.count
+            // Discovery is not scanning. Opening/migrating the ledger and
+            // reading state metadata happen before the first file is scanned;
+            // their duration cannot be represented as a frozen 0/fileCount.
+            total: nil
         ))
         let historyIndex: CodexUsageHistoryIndex
         let initialAttributionState: CodexUsageHistoryIndex.AttributionState
@@ -662,6 +665,8 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                   publishedCertificate?.observedAt ?? discoveryStartedAt)
             : discoveryStartedAt
         trace?.mark("signature.begin")
+        onProgress?(PreciseIndexProgress(phase: .preparing,
+            message: "正在核对会话文件变化与已发布索引", completed: 0, total: nil))
         let sourceSignature = receiptMatchesPublishedIndex
             ? requestedReceipt!.signature
             : sessionTreeSignature(
@@ -760,6 +765,8 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             aggregateNow: aggregationNow
         )
         trace?.mark("threadMetadata.begin")
+        onProgress?(PreciseIndexProgress(phase: .preparing,
+            message: "正在读取会话目录与标题", completed: 0, total: nil))
         let stateRefresh = loadStateRefreshSnapshot()
         let metadata = stateRefresh.metadata
         trace?.mark("threadMetadata.end", metadata: ["plugins": String(metadata.plugins.count)])
@@ -838,6 +845,8 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 "indexedEvents": String(synchronization.indexedEvents),
                 "incrementalFiles": String(synchronization.incrementallyParsedFiles)
             ])
+            onProgress?(PreciseIndexProgress(phase: .publishing,
+                message: "正在读取已发布统计与图表", completed: 0, total: nil))
             for _ in 0..<(synchronization.changedFiles - synchronization.incrementallyParsedFiles) {
                 Self.sessionEventCache.recordFullSessionParseForTesting()
             }

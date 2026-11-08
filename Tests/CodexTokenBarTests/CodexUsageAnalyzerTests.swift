@@ -35,6 +35,32 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         try super.tearDownWithError()
     }
 
+    func testPreciseStartupAndWarmRefreshExposePreparationAndCompleteTheStream() async throws {
+        let home = try makeCodexHome()
+        let file = home.appendingPathComponent("sessions/progress.jsonl")
+        let usage = Usage(input: 100, cachedInput: 20, output: 20, reasoning: 0, total: 120)
+        let line = try tokenCountLine(timestamp: Date().addingTimeInterval(-600), total: usage, last: usage)
+        let original = Data((line + "\n").utf8)
+        try original.write(to: file)
+        for _ in 0..<2 {
+            let progress = PreciseIndexProgressProbe()
+            var snapshots: [DashboardSnapshot] = []
+            for try await snapshot in CodexDashboardSnapshotLoader().loadSnapshotPhases(
+                dataSource: dataSource(for: home), onProgress: { progress.append($0) }
+            ) { snapshots.append(snapshot) }
+            let final = try XCTUnwrap(snapshots.last)
+            XCTAssertEqual(final.stats.totalTokens, 120)
+            XCTAssertTrue(final.cacheUsage.attributionEventsComplete)
+            let preparation = progress.values.filter { $0.phase == .preparing }
+            XCTAssertTrue(preparation.contains { $0.message.contains("已发现 1 个会话文件") })
+            XCTAssertTrue(preparation.allSatisfy { $0.total == nil && $0.fraction == nil },
+                "Opening and metadata work cannot masquerade as 0/N scanned files")
+            XCTAssertEqual(progress.values.last?.phase, .complete)
+            XCTAssertEqual(progress.values.last?.fraction, 1)
+        }
+        XCTAssertEqual(try Data(contentsOf: file), original)
+    }
+
     func testRealParserByteProgressPreservesTheSameBoundedEventsAndCheckpoint() throws {
         let home = try makeCodexHome()
         let file = home.appendingPathComponent("sessions/byte-progress.jsonl")
@@ -7079,7 +7105,10 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertEqual(totals.count, 1)
         let total = try XCTUnwrap(totals.first)
         XCTAssertGreaterThan(total, 1, "migration denominator must include replay/ledger work")
-        XCTAssertTrue(progress.allSatisfy { $0.phase == .migrating })
+        XCTAssertTrue(progress.allSatisfy { $0.phase == .migrating || ($0.phase == .preparing && $0.total == nil) })
+        let firstMigration = try XCTUnwrap(progress.firstIndex { $0.phase == .migrating })
+        XCTAssertTrue(progress[firstMigration...].allSatisfy { $0.phase == .migrating },
+            "Routine preparation must not hide an unresolved migration")
         XCTAssertTrue(progress.allSatisfy { $0.completed <= total })
         XCTAssertTrue(
             progress.contains {

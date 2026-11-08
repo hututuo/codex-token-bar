@@ -168,6 +168,7 @@ jobs:
           CLAUDE_USAGE_ONLY: ${{ inputs.claude_usage_only || false }}
           SOURCE_SHA: ${{ needs.source.outputs.sha }}
           TOKENBAR_NODE_EXECUTION_REPORT: release-scripts.execution.json
+          TOKENBAR_DISCOVERY_RENDER_DIR: visual-previews
         run: |
           set -o pipefail
           mkdir -p visual-previews
@@ -179,6 +180,8 @@ jobs:
           fi
           python3 scripts/check_test_execution.py --kind swift --log swift-tests.log --source-sha "$SOURCE_SHA" \
             --allow-untracked-output 'visual-previews/*.png' \
+            --require testPreciseStartupAndWarmRefreshExposePreparationAndCompleteTheStream \
+            --require testEveryDiscoveryUsesTheCardWidthAndWrapsAtNarrowWidths \
             --require testLegacyOptionalColumnCombinationsStayReadableAndUnchanged \
             --require testLegacyMetadataAndDashboardAllKeepExistingFields \
             --require testDestructiveRetryRejectsMissingOrChangedHistoryAndKeepsThePublishedImage \

@@ -1216,6 +1216,24 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         openMode: OpenMode = .active,
         createsFileIfMissing: Bool = true
     ) throws {
+        let openingTrace = RefreshPerformanceProbe.begin("exactIndex.open")
+        var opened = false
+        var reportedMigration = false
+        defer { openingTrace?.end(opened ? "ready" : "failed") }
+        func reportOpening(_ detail: String, step: String) {
+            openingTrace?.mark(step)
+            // An unresolved legacy migration owns its progress/denominator.
+            // Routine opening diagnostics must not erase that durable state.
+            guard !reportedMigration else { return }
+            onProgress?(PreciseIndexProgress(phase: .preparing,
+                message: detail, completed: 0, total: nil))
+        }
+        func reportMigration(_ progress: PreciseIndexProgress) {
+            if reportedMigration, progress.phase == .preparing { return }
+            if progress.isMigrationRelated { reportedMigration = true }
+            onProgress?(progress)
+        }
+        reportOpening("正在检查本地索引与迁移状态", step: "assess.begin")
         let existedBeforeOpen = BusinessStoreFiles.exists(databaseURL, fileManager: fileManager)
         let gate = Self.operationGate(for: databaseURL)
         let migratedViaCandidate: Bool
@@ -1224,7 +1242,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 try Self.prepareSchema11CandidateIfNeeded(
                     databaseURL: databaseURL,
                     fileManager: fileManager,
-                    onProgress: onProgress
+                    onProgress: reportMigration
                 )
             }
         } else {
@@ -1239,7 +1257,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             enableWAL: true,
             fileManager: fileManager
         )
+        reportOpening("正在等待本地索引访问", step: "access.begin")
         try withExclusiveAccess {
+            reportOpening("正在核对本地索引版本与账本保护", step: "validate.begin")
             switch try Self.assessMigration(
                 databaseURL: databaseURL,
                 fileManager: fileManager
@@ -1268,10 +1288,13 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             // recovery can inspect the original bytes instead of silently
             // deleting the user's only published index.
             try driver.withConnection { try UsageHistoryRetention.validate(on: $0) }
-            try prepareSchema(onProgress: migratedViaCandidate ? nil : onProgress)
+            reportOpening("正在准备本地索引结构", step: "schema.begin")
+            try prepareSchema(onProgress: migratedViaCandidate ? nil : reportMigration)
             if openMode == .active {
+                reportOpening("正在核对历史保全与消费账本", step: "ledger.begin")
                 try driver.withConnection { try UsageHistoryRetention.install(on: $0) }
                 try driver.withConnection { try UsageEventLedger.install(on: $0) }
+                reportOpening("正在核对历史计费与来源格式", step: "accounting.begin")
                 try migrateAccounting()
                 try migrateRepresentations(backupRequired: existedBeforeOpen)
                 try driver.withConnection { connection in
@@ -1280,6 +1303,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                         try connection.execute("CREATE TABLE source_observations(source_id INTEGER PRIMARY KEY, size_bytes INTEGER NOT NULL, modified_at REAL NOT NULL, physical_stamp TEXT NOT NULL);")
                     }
                 }
+                reportOpening("正在核对重复来源与统计投影", step: "projection.begin")
                 try driver.withConnection { connection in
                     try connection.transaction { tx in
                         let pending = try tx.readRows("SELECT value FROM schema_meta WHERE key='canonical_projection_pending'") { $0.text(0) }.first != nil
@@ -1293,9 +1317,11 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                     }
                 }
                 // Accounting may have added optional evidence columns.
+                reportOpening("正在完成历史保全校验", step: "retention.begin")
                 try driver.withConnection { try UsageHistoryRetention.install(on: $0) }
             }
         }
+        opened = true
     }
 
     /// Builds schema 11 beside the active database. The source database is

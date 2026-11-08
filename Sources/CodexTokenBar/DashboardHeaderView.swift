@@ -441,7 +441,10 @@ struct HeaderView: View {
                     HStack(alignment: .firstTextBaseline, spacing: 12) {
                         Text("用量概览").font(.system(size: 27, weight: .semibold))
                         if isRefreshing || progressPresentation.showsProgress {
-                            Text("读取中").font(.system(size: 11)).foregroundStyle(.secondary)
+                            Text(snapshot.hasPreciseTokenUsage ? "更新中" : "读取中")
+                                .font(.system(size: 11)).foregroundStyle(.secondary)
+                                .help(snapshot.hasPreciseTokenUsage
+                                    ? "正在更新精确统计，当前保留上次可信结果" : "正在读取本地统计")
                         }
                     }
                     if showsClientScopePicker { ClientScopePicker(showsDiscovery: false, plainTabs: true) }

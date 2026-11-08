@@ -183,7 +183,7 @@ export function useDiscoveryAcknowledgements() {
 export function MultiClientDiscoveryNotice() {
   const {snapshot, save, busy} = useMultiClientUsage();
   const {seen, acknowledge} = useDiscoveryAcknowledgements();
-  return <>{(snapshot.detections ?? []).filter(d=>d.client!=="claudeCode" && !seen.has(d.client) && !snapshot.preferences.some(p=>p.client===d.client && p.enabled)).slice(0,1).map(d=><div className="multi-client-discovery" key={d.client}>
+  return <>{(snapshot.detections ?? []).filter(d=>d.client!=="claudeCode" && !seen.has(d.client) && !snapshot.preferences.some(p=>p.client===d.client && p.enabled)).map(d=><div className="multi-client-discovery" key={d.client}>
     <div><strong>发现 {clientNames[d.client as UsageClient] ?? d.client}</strong><small>仅读取本地数据，不产生任何网络请求。可随时关闭。</small></div>
     <button disabled={busy} onClick={async()=>{if (await save(snapshot.preferences.map(p=>p.client===d.client ? {...p,enabled:true,showSidebar:true,showQuota:p.client==="claudeCode" || p.client==="claudeDesktop"}:p))) acknowledge(d.client);}}>启用</button>
     <button onClick={()=>acknowledge(d.client)}>暂不启用</button>

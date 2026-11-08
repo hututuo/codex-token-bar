@@ -86,18 +86,62 @@ struct MultiClientUsageSettingsView: View {
 struct MultiClientDiscoveryNotice: View {
     @ObservedObject private var store = MultiClientUsageStore.shared
     var body: some View {
-        ForEach(Array(store.newDetections.filter { $0.client != .claudeCode }.prefix(1))) { detection in
-            HStack(spacing: 12) {
-                Image(systemName: "plus.circle.fill").foregroundStyle(.tint)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("发现 \(detection.client.displayName)").font(.callout.bold())
-                    Text("仅读取本地数据，不产生任何网络请求。可随时关闭。").font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button("启用") { store.enable(detection.client) }
-                Button("暂不启用") { store.acknowledge(detection.client) }
-            }.padding(.vertical, 5).help("只读取本地日志，不开启排行榜上报")
+        // Claude CLI has its own local-reading onboarding. All other pending
+        // discoveries stay visible; acknowledging one must not reveal a hidden queue.
+        let pending = store.newDetections.filter { $0.client != .claudeCode }
+        if !pending.isEmpty {
+            MultiClientDiscoveryRows(detections: pending,
+                enable: store.enable, acknowledge: store.acknowledge)
         }
+    }
+}
+
+struct MultiClientDiscoveryRows: View {
+    let detections: [DetectedUsageClient]
+    let enable: (UsageClient) -> Void
+    let acknowledge: (UsageClient) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(detections) { detection in
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 12) {
+                        description(detection)
+                        Spacer(minLength: 12)
+                        actions(detection)
+                    }
+                    VStack(alignment: .leading, spacing: 8) {
+                        description(detection)
+                        actions(detection)
+                    }
+                }
+                .padding(.vertical, 5)
+                .help("只读取本地日志，不开启排行榜上报")
+            }
+        }
+        .frame(maxWidth: 980, alignment: .leading)
+    }
+
+    private func description(_ detection: DetectedUsageClient) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "plus.circle.fill").foregroundStyle(.tint)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("发现 \(detection.client.displayName)").font(.callout.bold())
+                Text("仅读取本地数据，不产生任何网络请求。可随时关闭。")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func actions(_ detection: DetectedUsageClient) -> some View {
+        HStack(spacing: 8) {
+            Button("启用") { enable(detection.client) }
+                .accessibilityIdentifier("discovery-enable-" + detection.client.rawValue)
+            Button("暂不启用") { acknowledge(detection.client) }
+                .accessibilityIdentifier("discovery-dismiss-" + detection.client.rawValue)
+        }
+        .fixedSize()
     }
 }
 
