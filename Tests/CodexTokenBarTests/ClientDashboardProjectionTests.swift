@@ -280,6 +280,7 @@ final class ClientDashboardProjectionTests: XCTestCase {
         XCTAssertTrue(context.today.isEmpty)
         XCTAssertEqual(context.lifetime.first?.id, "claudeCode|claude-sonnet-4-6")
         XCTAssertEqual(context.sevenDay.first?.costUSD, 0.05)
-        XCTAssertEqual(context.groups(.lifetime).first?.title, "Claude 最新")
+        XCTAssertEqual(context.groups(.lifetime).first?.title, "Claude 其他")
+        XCTAssertEqual(context.groups(.lifetime).flatMap(\.items).count, 1)
     }
 }

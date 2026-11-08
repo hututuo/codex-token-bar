@@ -1770,7 +1770,9 @@ fn validate_agents(
             live_output_tps: agent.live_output_tps,
             live_total_tps: agent.live_total_tps,
             recent_speed: agent.recent_speed,
-            title: agent.title,
+            // The helper already extracts Claude's bounded first-user/custom
+            // title. Normalize presentation without rereading live transcripts.
+            title: agent.title.and_then(super::thread_activity::cleaned_thread_title),
             display_stopped: agent.display_stopped,
         });
     }

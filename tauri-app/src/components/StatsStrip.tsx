@@ -1,4 +1,4 @@
-import { clientCostGroups, type ClientCostPeriods } from "../multiClient/originalDashboardProjection";
+import { clientCostGroups, clientModelCostItems, type ClientCostPeriods } from "../multiClient/originalDashboardProjection";
 import { modelPresentationDetail } from "../domain/modelPresentationIdentity";
 import { ClientColorSettings, ModelColorEditor, type ColorEditTarget } from "./liveRate/ModelColorEditor";
 import { useSpeedPalette } from "./liveRate/useSpeedPalette";
@@ -18,12 +18,10 @@ import {
 } from "./statsStrip/savings";
 import { readStoredQuotaPriceModel } from "../settings/quotaPriceModel";
 import {
-  dashboardModelFamilyGroups,
   floatingModelUsageMoneyText,
   floatingModelUsageKnownCostUSD,
   floatingModelUsageValue,
   isReferenceOnlyModelUsage,
-  floatingTodayModelUsageItems,
   hasUnknownModelPrices,
 } from "../floating/floatingModelUsage";
 import { useQuotaCycleHistory } from "./statsStrip/useQuotaCycleHistory";
@@ -139,7 +137,7 @@ function StatsStripView({
     : expectedModelTokens <= 0 || modelCostRows.length > 0;
   const modelCostItems = useMemo(() => (
     selectedDay ? dayUsage.items : clientCosts ? clientCosts[modelCostScope] : modelCostDataAvailable && modelDetailAvailable
-      ? floatingTodayModelUsageItems(modelCostRows, priceModel, { mergeAutoReview: false })
+      ? clientModelCostItems([], modelCostRows, ['codex'], priceModel)
       : []
   ), [selectedDay, dayUsage.items, clientCosts, modelCostScope, modelCostDataAvailable, modelCostRows, modelDetailAvailable, priceModel, palette]);
   const modelCostTotal = floatingModelUsageKnownCostUSD(modelCostItems);
@@ -153,7 +151,7 @@ function StatsStripView({
     .filter((item) => item.referenceCostUSD !== null)
     .map((item) => `${item.label} 参考 ${floatingModelUsageMoneyText(item.referenceCostUSD ?? 0)}`)
     .join(" · ");
-  const modelFamilies = useMemo(()=>clientCosts || selectedDay ? clientCostGroups(modelCostItems) : dashboardModelFamilyGroups(modelCostItems),[clientCosts,selectedDay,modelCostItems]);
+  const modelFamilies = useMemo(()=>clientCostGroups(modelCostItems),[modelCostItems]);
 
   useEffect(() => {
     setPriceModel(readStoredQuotaPriceModel());
@@ -284,7 +282,7 @@ function StatsStripView({
                     const label = item.label.replace(/^GPT[- ]*/i, "");
                     const qualifiedLabel = label.match(/^(.*?)(（[^）]*）)$/);
                     const amount = item.tokens === 0 ? "—" : referenceOnly
-                      ? (item.referenceCostUSD === null ? "—" : floatingModelUsageMoneyText(item.referenceCostUSD))
+                      ? (item.referenceCostUSD === null ? "—" : (item.key==='unknown-models'?'参考 ':'')+floatingModelUsageMoneyText(item.referenceCostUSD))
                       : floatingModelUsageValue(item,"cost");
                     const detail = item.tokens === 0 ? "暂无本地记录"
                       : `${referenceOnly ? "参考 · " : ""}${formatTokens(item.tokens)} · ${floatingModelUsageValue(item,"share")}`;

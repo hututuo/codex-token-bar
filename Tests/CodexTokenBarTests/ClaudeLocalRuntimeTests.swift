@@ -172,7 +172,7 @@ final class ClaudeLocalRuntimeTests: XCTestCase {
         XCTAssertEqual(projected.running.groups.count, 1)
         XCTAssertEqual(projected.running.groups[0].subagents.count, 1)
         XCTAssertEqual(projected.running.freshness, .fresh)
-        XCTAssertEqual(projected.running.groups[0].mainThread.title, "Claude session")
+        XCTAssertTrue(projected.running.groups[0].mainThread.title?.hasPrefix("任务 · ") == true)
         XCTAssertTrue(projected.running.groups[0].mainThread.threadID.hasPrefix("claude:"))
         XCTAssertTrue(projected.running.groups[0].subagents[0].threadID.hasPrefix("claude:"))
         XCTAssertFalse(projected.running.groups[0].mainThread.threadID.contains("private"))

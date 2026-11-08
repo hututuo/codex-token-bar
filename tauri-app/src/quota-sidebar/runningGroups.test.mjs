@@ -4,6 +4,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Window } from "happy-dom";
 import { withSsrModules } from "../test/ssrHarness.mjs";
+import { readFile } from 'node:fs/promises';
 const member = (threadId, title, model, reasoningEffort) => ({ threadId, title, model, reasoningEffort });
 const now = Date.parse('2026-11-06T03:00:00Z');
 const agent = (client, id, parentId = null, extra = {}) => ({client,id,parentId,title:`${client}:${id}`,
@@ -15,6 +16,25 @@ const localRuntime = (extra = {}) => ({enabled:true,capturedAt:new Date(now).toI
   sourceAvailable:{claudeCode:true,claudeDesktop:true,antigravity:true},configurationIssue:null,
   mainAgents:[agent('claudeCode','parent',null,{model:'claude-opus-4-6'}),agent('antigravity','parent',null,{model:'gemini-4-argon'})],
   subagents:[agent('claudeCode','child','parent',{model:'claude-opus-4-6',phase:'tools'}),agent('antigravity','child','parent',{model:'gemini-4-argon'})],...extra});
+
+test('ten child tasks use 26px tree rows with full-title help and compact model metadata',async()=>withSsrModules(async load=>{
+ const {RunningTaskDetails}=await load('/src/quota-sidebar/RunningTaskDetails.tsx');
+ const title='James · windows_model_scroll_inventory_with_a_long_task_name';
+ const running=codexSummary();running.groups[0].subagents=Array.from({length:10},(_,i)=>member('child-'+i,title+i,'gpt-6-luna','max'));
+ const window=new Window();
+ try{
+  const style=window.document.createElement('style');style.textContent=await readFile(new URL('./QuotaSidebar.css',import.meta.url),'utf8');window.document.head.append(style);
+  window.document.body.innerHTML=renderToStaticMarkup(React.createElement(RunningTaskDetails,{running}));
+  const children=[...window.document.querySelectorAll('.qs-child-task')];assert.equal(children.length,10);
+  for(const child of children){
+   const css=window.getComputedStyle(child);assert.equal(css.height,'26px');assert.equal(css.display,'flex');
+   assert.match(child.title,/James.*windows_model_scroll_inventory.*Luna6.*max/);
+   assert.equal(child.querySelector('.qs-task-model').textContent,'Luna6');
+   assert.equal(child.querySelector('.qs-task-effort').textContent,'max');
+   assert.equal(window.getComputedStyle(child.querySelector('.qs-task-title')).whiteSpace,'nowrap');
+  }
+ }finally{window.close();}
+}));
 
 test('all clients use one set of task cards and totals; matching IDs cannot cross parent ownership', async () => {
   await withSsrModules(async load => {
@@ -37,7 +57,7 @@ test('all clients use one set of task cards and totals; matching IDs cannot cros
       assert.equal(window.document.querySelectorAll('.qs-task-group').length,3);
       assert.equal(window.document.querySelectorAll('.qs-task-group .qs-child-task').length,3);
       const gravity=window.document.querySelector('[data-task-source="antigravity"]');
-      assert.match(gravity.textContent,/未提供|未知/,'Unreported reasoning effort is not invented');
+      assert.match(gravity.querySelector('.qs-task-metadata').title,/未提供推理强度/,'Unreported reasoning effort is not invented');
       assert.match(gravity.querySelector('.qs-main-task').textContent,/生成中/);
       assert.ok(gravity.querySelector('.qs-task-metadata strong').getAttribute('style').includes(modelUsageColor('gemini-4-argon')));
       assert.match(window.document.querySelector('.qs-unassigned-tasks').textContent,/Desktop 无匹配父任务/);
@@ -85,7 +105,7 @@ test('partial and missing task data never render an overall idle state or a fabr
   });
 });
 
-test("task cards preserve each main task and its own children with explicit separate model/effort rows", async () => {
+test("compact task trees preserve parent ownership and place short model names beside effort", async () => {
   await withSsrModules(async load => {
     const { RunningDetails } = await load("/src/quota-sidebar/QuotaSidebarApp.tsx");
     const data = { runningThreads: { total: 5, mainThreads: 2, subagents: 3, status: "ready", detail: "",
@@ -98,13 +118,16 @@ test("task cards preserve each main task and its own children with explicit sepa
       window.document.body.innerHTML = renderToStaticMarkup(React.createElement(RunningDetails, { data }));
       const groups = [...window.document.querySelectorAll(".qs-task-group")];
       assert.equal(groups.length, 2);
-      assert.match(groups[0].textContent, /主任务.*完整主任务 A 标题.*子代理.*A 的分析子任务/);
+      assert.match(groups[0].textContent, /完整主任务 A 标题.*子代理.*A 的分析子任务/);
       assert.ok(!groups[0].textContent.includes("B 的实施"));
       assert.ok(!groups[1].textContent.includes("A 的分析"));
-      assert.equal(groups[0].querySelector(".qs-task-title").title, "完整主任务 A 标题");
-      assert.deepEqual([...groups[0].querySelectorAll(".qs-main-task .qs-task-metadata span")].map(node => node.textContent), ["模型", "推理强度"]);
-      assert.deepEqual([...groups[0].querySelectorAll(".qs-child-task .qs-task-metadata strong")].map(node => node.textContent), ["Luna5.6", "max"]);
-      assert.match(groups[1].querySelector(".qs-child-task").textContent, /模型未知.*推理强度.*未知/);
+      assert.match(groups[0].querySelector(".qs-task-title").title, /完整主任务 A 标题.*Astra6.*high/);
+      assert.equal(groups[0].querySelector('.qs-main-task .qs-task-model').textContent,'Astra6');
+      assert.equal(groups[0].querySelector('.qs-main-task .qs-task-effort').textContent,'high');
+      assert.equal(groups[0].querySelector('.qs-child-task .qs-task-model').textContent,'Luna5.6');
+      assert.equal(groups[0].querySelector('.qs-child-task .qs-task-effort').textContent,'max');
+      assert.equal(groups[1].querySelector('.qs-child-task .qs-task-effort').textContent,'—');
+      assert.doesNotMatch(groups[0].textContent,/gpt-6|gpt-5\.6|推理强度|模型 Astra/);
       const unassigned = window.document.querySelector(".qs-unassigned-tasks");
       assert.ok(unassigned.textContent.includes("未关联主任务")); assert.ok(unassigned.textContent.includes("未关联子任务"));
       assert.ok(groups.every(group => !group.textContent.includes("未关联子任务")));

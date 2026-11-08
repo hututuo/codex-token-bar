@@ -28,8 +28,9 @@ struct FloatingTodayModelUsageItem: Identifiable, Equatable, Sendable {
     /// Original model identifiers retained when presentation rows are combined.
     /// This is explanatory metadata, never an accounting or pricing input.
     var sourceModels: [String] = []
+    var isFallbackEstimate: Bool { id == "unknown-models" }
     var isReferenceOnly: Bool {
-        usesIndependentQuota || CodexAutoReviewPricingPolicy.isAutoReviewUsage(id.split(separator: "|").last.map(String.init))
+        isFallbackEstimate || usesIndependentQuota || CodexAutoReviewPricingPolicy.isAutoReviewUsage(id.split(separator: "|").last.map(String.init))
     }
 
     func valueText(for page: FloatingTodayModelUsagePage) -> String {
@@ -42,6 +43,7 @@ struct FloatingTodayModelUsageItem: Identifiable, Equatable, Sendable {
         case .cost:
             if isReferenceOnly {
                 let referenceCost = referenceCostUSD?.quotaEstimatorMoneyText ?? "—"
+                if isFallbackEstimate { return "参考 \(referenceCost)（按回退模型估算）" }
                 return "\(referenceCost)（不计入总计）"
             }
             guard let costUSD else { return "价格未知" }
@@ -306,7 +308,7 @@ enum FloatingTodayModelUsagePresentation {
     /// Include priced epochs even when another epoch makes a row incomplete.
     /// No priced usage is different from a measured zero-dollar subtotal.
     static func knownCostUSD(in items: [FloatingTodayModelUsageItem]) -> Double? {
-        let billable = items.filter { $0.tokens > 0 && !$0.isReferenceOnly }
+        let billable = items.filter { $0.tokens > 0 && (!$0.isReferenceOnly || $0.isFallbackEstimate && $0.knownPartialCostUSD != nil) }
         let knownCosts = billable.compactMap { $0.knownPartialCostUSD ?? $0.costUSD }
         if knownCosts.isEmpty && billable.contains(where: { $0.costUSD == nil }) {
             return nil
@@ -328,8 +330,8 @@ enum FloatingTodayModelUsagePresentation {
     }
 
     static func dashboardFamilyGroups(from items: [FloatingTodayModelUsageItem]) -> [DashboardFamilyGroup] {
-        [("6", "6 系列"), ("5.6", "5.6 系列"), ("other", "其他")].compactMap { id, title in
-            let rows = items.filter { $0.tokens > 0 && dashboardFamilyID(for: $0.id) == id }
+        [("6", "6 系列"), ("5.6", "5.6 系列"), ("other", "其他"), ("unknown-models", "参考")].compactMap { id, title in
+            let rows = items.filter { $0.tokens > 0 && ($0.isFallbackEstimate ? "unknown-models" : dashboardFamilyID(for: $0.id)) == id }
             return rows.isEmpty ? nil : DashboardFamilyGroup(id: id, title: title, items: rows)
         }
     }

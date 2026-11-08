@@ -91,6 +91,7 @@ struct TrackedSession {
     parent_thread_id: Option<String>,
     lifecycle_at: Option<SystemTime>,
     last_activity: SystemTime,
+    title: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -98,6 +99,7 @@ struct SessionMetadata {
     id: String,
     subagent: bool,
     parent_thread_id: Option<String>,
+    title: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -440,32 +442,37 @@ fn recent_database_session_records(
     } else {
         "''"
     };
-    let title = if columns.contains("name") {
-        "COALESCE(name, '')"
-    } else {
-        "''"
-    };
+    let title_columns = ["name", "title", "preview", "first_user_message", "agent_nickname", "agent_path", "agent_role", "thread_source"];
+    let title_fields = title_columns.iter().map(|column| if columns.contains(*column) {
+        format!("substr(COALESCE({column}, ''),1,4096)")
+    } else { "''".into() }).collect::<Vec<_>>().join(", ");
     let source = if columns.contains("source") {
         "COALESCE(source, '')"
     } else {
         "''"
     };
     let sql = format!(
-        "SELECT rollout_path, {session_id}, {model}, {reasoning_effort}, {title}, {source} FROM threads WHERE {archived} = 0 AND {updated} >= ?1"
+        "SELECT rollout_path, {session_id}, {model}, {reasoning_effort}, {source}, {title_fields} FROM threads WHERE {archived} = 0 AND {updated} >= ?1"
     );
     let mut statement = connection.prepare(&sql).ok()?;
     let records = statement
         .query_map([cutoff_ms], |row| {
             let model = row.get::<_, String>(2)?;
             let reasoning_effort = row.get::<_, String>(3)?;
-            let title = row.get::<_, String>(4)?;
-            let source = row.get::<_, String>(5)?;
+            let source = row.get::<_, String>(4)?;
+            let fields = (5..13).map(|index| row.get::<_, String>(index)).collect::<Result<Vec<_>, _>>()?;
+            let metadata = serde_json::json!({"source":serde_json::from_str::<Value>(&source).unwrap_or(Value::Null),
+                "agent_nickname":fields[4],"agent_path":fields[5],"agent_role":fields[6]});
+            let subagent = fields[7] == "subagent" || value_mentions_subagent(&metadata["source"]);
+            let named = fields[..2].iter().find_map(|s| cleaned_thread_title(s.clone()));
+            let detail = fields[2..4].iter().find_map(|s| cleaned_thread_title(s.clone()));
+            let title = named.or_else(|| if subagent { agent_title(&metadata).or(detail.clone()) } else { detail });
             Ok(DatabaseSessionRecord {
                 path: PathBuf::from(row.get::<_, String>(0)?),
                 session_id: row.get::<_, String>(1)?.trim().to_string(),
                 model: cleaned_database_value(model),
                 reasoning_effort: cleaned_database_value(reasoning_effort),
-                title: cleaned_thread_title(title),
+                title,
                 parent_thread_id: parent_thread_id_from_source(&source),
             })
         })
@@ -481,21 +488,56 @@ fn cleaned_database_value(value: String) -> Option<String> {
     (!cleaned.is_empty()).then(|| cleaned.to_string())
 }
 
-fn cleaned_thread_title(value: String) -> Option<String> {
-    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
-    if normalized.is_empty() {
-        return None;
+pub(crate) fn cleaned_thread_title(value: String) -> Option<String> {
+    let bounded=value.chars().take(4096).collect::<String>();
+    for line in bounded.lines() {
+        let normalized=line.trim().trim_start_matches('#').split_whitespace().collect::<Vec<_>>().join(" ");
+        if normalized.is_empty() {continue;}
+        return Some(if normalized.chars().count()>240 {normalized.chars().take(239).collect::<String>()+"…"}else{normalized});
     }
-    const MAX_TITLE_CHARACTERS: usize = 96;
-    if normalized.chars().count() <= MAX_TITLE_CHARACTERS {
-        return Some(normalized);
+    None
+}
+
+fn agent_title(metadata:&Value)->Option<String> {
+    let spawn=&metadata["source"]["subagent"]["thread_spawn"];
+    let value=|key:&str|metadata[key].as_str().and_then(|s|cleaned_thread_title(s.into()))
+        .or_else(||spawn[key].as_str().and_then(|s|cleaned_thread_title(s.into())));
+    let nickname=value("agent_nickname");
+    let task=value("agent_path").and_then(|s|s.split('/').filter(|s|!s.is_empty()).next_back().map(str::to_string)).filter(|s|s!="root");
+    let role=value("agent_role");
+    match (nickname,task.or(role)) {
+        (Some(name),Some(detail)) if name!=detail=>cleaned_thread_title(format!("{name} · {detail}")),
+        (Some(name),_)=>Some(name),(_,detail)=>detail,
     }
-    let mut shortened = normalized
-        .chars()
-        .take(MAX_TITLE_CHARACTERS.saturating_sub(1))
-        .collect::<String>();
-    shortened.push('…');
-    Some(shortened)
+}
+
+fn message_title(value:&Value,subagent:bool)->Option<String> {
+    let kind=value["type"].as_str()?;
+    let payload=&value["payload"];
+    let subtype=payload["type"].as_str();
+    let text=if kind=="event_msg" && (subtype==Some("user_message") || subagent && subtype==Some("agent_message")) {
+        payload["message"].as_str()?.to_string()
+    } else if kind=="response_item" && subtype==Some("message") && payload["role"].as_str()==Some("user") {
+        payload["content"].as_array()?.iter().filter_map(|c|c["text"].as_str()).collect::<Vec<_>>().join("\n")
+    } else {return None;};
+    if subagent {
+        let bounded=text.chars().take(4096).collect::<String>();
+        if let Some(line)=bounded.lines().find(|s|s.trim_start().to_ascii_lowercase().starts_with("task name:")) {
+            return cleaned_thread_title(line.trim_start()[10..].into());
+        }
+    }
+    if kind=="event_msg" && subtype==Some("agent_message") {return None;}
+    let title=cleaned_thread_title(text)?;
+    if title.starts_with('<') && !title.starts_with("<task>") || title.starts_with("AGENTS.md instructions") {return None;}
+    Some(title)
+}
+
+/// Only the complete records in the first 64 KiB are eligible for a title.
+fn rollout_title(file:&mut fs::File,subagent:bool)->Result<Option<String>,String> {
+    file.seek(SeekFrom::Start(0)).map_err(|e|e.to_string())?;
+    let mut prefix=Vec::new();file.take(MAX_LIFECYCLE_PREFIX_BYTES as u64).read_to_end(&mut prefix).map_err(|e|e.to_string())?;
+    let Some(end)=prefix.iter().rposition(|b|*b==b'\n') else{return Ok(None);};
+    Ok(prefix[..end].split(|b|*b==b'\n').filter_map(parse_json_object).find_map(|v|message_title(&v,subagent)))
 }
 
 fn parent_thread_id_from_source(source: &str) -> Option<String> {
@@ -529,7 +571,8 @@ fn running_thread_member(
 ) -> RunningThreadMember {
     RunningThreadMember {
         thread_id: session.session_id.clone(),
-        title: configuration.and_then(|value| value.title.clone()),
+        title: configuration.and_then(|value| value.title.clone()).or_else(||session.title.clone())
+            .or_else(||Some(format!("{} · {}",if session.subagent {"子代理"}else{"任务"},session.session_id.chars().take(8).collect::<String>()))),
         model: configuration.and_then(|value| value.model.clone()),
         reasoning_effort: configuration.and_then(|value| value.reasoning_effort.clone()),
     }
@@ -666,6 +709,7 @@ fn refresh_tracked_session(
     }
 
     if signature.size > previous.signature.size {
+        if previous.title.is_none() { previous.title=rollout_title(&mut file,previous.subagent)?; }
         let complete_offset = last_complete_line_offset(&mut file, signature.size)?;
         if complete_offset > previous.complete_offset {
             scan_complete_lines_forward(
@@ -705,6 +749,7 @@ fn cold_scan_open_file(
     let complete_offset = last_complete_line_offset(&mut file, signature.size)?;
     let metadata = read_session_metadata(&mut file, complete_offset)?
         .ok_or_else(|| format!("会话文件缺少 session_meta：{}", path.display()))?;
+    let title=if metadata.title.is_some() {metadata.title.clone()} else {rollout_title(&mut file,metadata.subagent)?};
     let lifecycle = latest_lifecycle_state(&mut file, complete_offset)?;
     let boundary_signature = boundary_signature(&mut file, complete_offset)?;
     validate_open_file_after_read(canonical_root, path, &file, signature)?;
@@ -719,6 +764,7 @@ fn cold_scan_open_file(
         parent_thread_id: metadata.parent_thread_id,
         lifecycle_at: lifecycle.and_then(|observation| observation.observed_at),
         last_activity: signature_modified_time(signature),
+        title,
     })
 }
 
@@ -792,6 +838,7 @@ fn read_session_metadata(
             id: id.to_string(),
             subagent: session_meta_is_subagent(&value),
             parent_thread_id: nested_parent_thread_id(payload),
+            title: agent_title(payload),
         });
         true
     })?;
@@ -1728,7 +1775,7 @@ mod tests {
         assert_eq!(counts.groups[0].main_thread.thread_id, "main-group");
         assert_eq!(
             counts.groups[0].main_thread.title.as_deref(),
-            Some("Main conversation title")
+            Some("Main conversation")
         );
         assert_eq!(
             counts.groups[0]
@@ -1740,6 +1787,47 @@ mod tests {
         );
         assert_eq!(counts.unassigned_subagents.len(), 1);
         assert_eq!(counts.unassigned_subagents[0].thread_id, "orphan-sub");
+    }
+
+    #[test]
+    fn running_task_titles_use_database_fallbacks_and_agent_metadata() {
+        let home=TestHome::new();let main=home.session();
+        fs::write(&main,format!("{}{}",meta("\"cli\""),event("task_started"))).unwrap();
+        let connection=rusqlite::Connection::open(home.root.join("state_5.sqlite")).unwrap();
+        connection.execute_batch("CREATE TABLE threads(id TEXT,rollout_path TEXT,name TEXT,title TEXT,preview TEXT,first_user_message TEXT,agent_path TEXT,agent_nickname TEXT,agent_role TEXT,thread_source TEXT,source TEXT,updated_at INTEGER,archived INTEGER)").unwrap();
+        let updated=SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() as i64;
+        let id=serde_json::from_str::<Value>(meta("\"cli\"").trim()).unwrap()["payload"]["id"].as_str().unwrap().to_string();
+        connection.execute("INSERT INTO threads(id,rollout_path,name,title,preview,first_user_message,updated_at,archived) VALUES(?1,?2,'  ','## Title fallback','Preview fallback','First user fallback',?3,0)",rusqlite::params![id,main.to_string_lossy(),updated]).unwrap();
+        let mut scanner=ThreadActivityScanner::default();
+        assert_eq!(scanner.scan(&home.root).unwrap().groups[0].main_thread.title.as_deref(),Some("Title fallback"));
+        connection.execute_batch("UPDATE threads SET title=NULL").unwrap();
+        assert_eq!(scanner.scan(&home.root).unwrap().groups[0].main_thread.title.as_deref(),Some("Preview fallback"));
+        connection.execute_batch("UPDATE threads SET preview=NULL").unwrap();
+        assert_eq!(scanner.scan(&home.root).unwrap().groups[0].main_thread.title.as_deref(),Some("First user fallback"));
+        connection.execute_batch("UPDATE threads SET name='Named task'").unwrap();
+        assert_eq!(scanner.scan(&home.root).unwrap().groups[0].main_thread.title.as_deref(),Some("Named task"));
+        let child=main.with_file_name("rollout-child-title.jsonl");
+        let payload=serde_json::json!({"id":"child-title","agent_path":"/root/windows_model_scroll_inventory","agent_nickname":"James","agent_role":"explorer","source":{"subagent":{"thread_spawn":{"parent_thread_id":id}}}});
+        fs::write(&child,format!("{}\n{}",serde_json::json!({"type":"session_meta","payload":payload}),event("task_started"))).unwrap();
+        connection.execute("INSERT INTO threads(id,rollout_path,updated_at,archived) VALUES('child-title',?1,?2,0)",rusqlite::params![child.to_string_lossy(),updated]).unwrap();
+        let result=scanner.scan(&home.root).unwrap();
+        assert_eq!(result.groups[0].subagents[0].title.as_deref(),Some("James · windows_model_scroll_inventory"));
+        assert!(result.unassigned_subagents.is_empty());
+        assert_eq!(agent_title(&serde_json::json!({"agent_nickname":"Rawls","agent_role":"worker"})).as_deref(),Some("Rawls · worker"));
+    }
+
+    #[test]
+    fn running_rollout_title_is_bounded_and_recovers_on_append() {
+        let home=TestHome::new();let file=home.session();
+        fs::write(&file,format!("{}{}",meta("\"cli\""),event("task_started"))).unwrap();
+        let mut scanner=ThreadActivityScanner::default();scanner.scan(&home.root).unwrap();
+        let mut append=fs::OpenOptions::new().append(true).open(&file).unwrap();
+        writeln!(append,"{}",serde_json::json!({"type":"event_msg","payload":{"type":"user_message","message":"# Build the dashboard\nMore context"}})).unwrap();
+        append.sync_all().unwrap();
+        assert_eq!(scanner.scan(&home.root).unwrap().groups[0].main_thread.title.as_deref(),Some("Build the dashboard"));
+        assert_eq!(message_title(&serde_json::json!({"type":"event_msg","payload":{"type":"agent_message","message":"Header\nTask name: inspect_cache\nMore"}}),true).as_deref(),Some("inspect_cache"));
+        fs::write(&file,format!("{}{}\n{}\n{}",meta("\"cli\""),"x".repeat(70_000),serde_json::json!({"type":"event_msg","payload":{"type":"user_message","message":"Beyond title budget"}}),event("task_started"))).unwrap();
+        assert_ne!(scanner.scan(&home.root).unwrap().groups[0].main_thread.title.as_deref(),Some("Beyond title budget"));
     }
 
     #[test]

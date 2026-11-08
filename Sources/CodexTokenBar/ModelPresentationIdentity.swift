@@ -18,11 +18,12 @@ struct ModelPresentationIdentity: Codable, Equatable, Sendable {
         let modifiers: [String: [String]]
         let routingLabels: [String: String]
         let sourceLabels: [String: String]
+        let billingAliases: [String: String]
     }
     private static let policy: Policy = {
         guard let url=AppResources.url(forResource:"model-presentation-policy",withExtension:"json"),
               let data=try? Data(contentsOf:url),let value=try? JSONDecoder().decode(Policy.self,from:data),value.schema==1 else {
-            return Policy(schema:1,unsafeScalarRanges:[[0,31],[127,159]],wrappers:[],missing:[""],ambiguous:[],modifiers:[:],routingLabels:[:],sourceLabels:[:])
+            return Policy(schema:1,unsafeScalarRanges:[[0,31],[127,159]],wrappers:[],missing:[""],ambiguous:[],modifiers:[:],routingLabels:[:],sourceLabels:[:],billingAliases:[:])
         }
         return value
     }()
@@ -63,6 +64,7 @@ struct ModelPresentationIdentity: Codable, Equatable, Sendable {
     static func resolve(_ raw: String?) -> Self {
         let original=(raw ?? "").trimmingCharacters(in:.whitespacesAndNewlines)
         var key=normalized(original)
+        key = billingIdentifier(key)
         if policy.missing.contains(key) { return .init(key:"unknown",label:"未报告模型",kind:"unreported") }
         if policy.ambiguous.contains(key) { return .init(key:"gpt-5.6-generic",label:"5.6（未分型）",kind:"ambiguous") }
         if let label=policy.routingLabels[key] { return .init(key:key,label:label,kind:"routing") }
@@ -73,6 +75,7 @@ struct ModelPresentationIdentity: Codable, Equatable, Sendable {
         }
         if let hit=known(key) { return hit }
         if let prefix=policy.wrappers.first(where:{key.hasPrefix($0)}) { key=String(key.dropFirst(prefix.count)) }
+        key = billingIdentifier(key)
         let rules=PriceBook.bundled.normalize
         for region in rules.bedrockRegions where key.hasPrefix(region+".") {
             let rest=String(key.dropFirst(region.count+1))
@@ -103,5 +106,12 @@ struct ModelPresentationIdentity: Codable, Equatable, Sendable {
         let identity=resolve(raw)
         if identity.kind=="invalid" { return "异常标识已隐藏；原始账目保留" }
         return raw.trimmingCharacters(in:.whitespacesAndNewlines)
+    }
+
+    /// Explicitly confirmed Antigravity route slots, shared with both ledgers.
+    /// This is the only display-policy input allowed to change a price lookup;
+    /// it never rewrites stored model IDs and does not perform fuzzy matching.
+    static func billingIdentifier(_ normalizedIdentifier: String) -> String {
+        policy.billingAliases[normalizedIdentifier] ?? normalizedIdentifier
     }
 }

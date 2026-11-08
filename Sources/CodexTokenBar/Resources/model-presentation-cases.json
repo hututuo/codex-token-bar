@@ -106,17 +106,17 @@
   {
     "raw": "gemini-3.8-flash-n",
     "expected": {
-      "key": "gemini-3.8-flash-n",
-      "label": "Flash3.8 · N",
-      "kind": "routing"
+      "key": "gemini-3.8-flash",
+      "label": "Flash3.8",
+      "kind": "known"
     }
   },
   {
     "raw": "gemini-3-flash-a",
     "expected": {
-      "key": "gemini-3-flash-a",
-      "label": "Flash3 · A",
-      "kind": "routing"
+      "key": "gemini-3-flash-preview",
+      "label": "Flash3",
+      "kind": "known"
     }
   },
   {

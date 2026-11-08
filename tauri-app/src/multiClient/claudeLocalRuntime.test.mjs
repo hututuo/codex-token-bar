@@ -21,7 +21,7 @@ test("local task titles remain associated with their own parent and escape marku
       assert.equal(window.document.querySelectorAll('.qs-task-group .qs-child-task').length,1);
       assert.equal(window.document.querySelector('.qs-task-group .qs-child-task .qs-task-title').textContent,'审核 <patch>');
       assert.deepEqual([...window.document.querySelectorAll('.qs-task-totals strong')].map(n=>n.textContent),['1','2']);
-      assert.match(window.document.querySelector('.qs-unassigned-tasks').textContent,/未命名子代理/);
+      assert.match(window.document.querySelector('.qs-unassigned-tasks').textContent,/子代理 · orphan/);
     } finally {window.close();}
   });
 });

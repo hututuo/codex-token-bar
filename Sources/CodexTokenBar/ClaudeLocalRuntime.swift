@@ -449,9 +449,11 @@ final class ClaudeLocalRuntime: ObservableObject {
         func member(_ agent: AgentStatus) -> RunningThreadMember {
             RunningThreadMember(
                 threadID: opaqueThreadID(agent.id),
-                title: cleaned(agent.displayTitle) ?? ((agent.source == .antigravity ? "Antigravity" : "Claude") + (agent.isSubagent ? " subagent" : " session")),
+                title: RunningTaskTitle.clean(agent.displayTitle) ?? RunningTaskTitle.fallback(id: opaqueThreadID(agent.id), subagent: agent.isSubagent),
                 model: cleaned(agent.model),
-                reasoningEffort: nil
+                reasoningEffort: nil,
+                client: agent.source.rawValue,
+                phase: agent.phase == .generating ? "generating" : agent.phase == .tools ? "tools" : nil
             )
         }
 
@@ -470,9 +472,10 @@ final class ClaudeLocalRuntime: ObservableObject {
             let model = allByID[parentID]?.model
             mainByID[parentID] = RunningThreadMember(
                 threadID: opaqueThreadID(parentID),
-                title: cleaned(allByID[parentID]?.displayTitle) ?? (allByID[parentID]?.source == .antigravity ? "Antigravity session" : "Claude session"),
+                title: RunningTaskTitle.clean(allByID[parentID]?.displayTitle) ?? RunningTaskTitle.fallback(id: opaqueThreadID(parentID), subagent: false),
                 model: cleaned(model),
-                reasoningEffort: nil
+                reasoningEffort: nil,
+                client: allByID[parentID]?.source.rawValue
             )
         }
         let groups = mainByID.keys.sorted().compactMap { parentID -> RunningThreadGroup? in

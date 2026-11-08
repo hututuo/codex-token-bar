@@ -244,7 +244,7 @@ export function floatingModelUsagePageItems(
 }
 
 export function isReferenceOnlyModelUsage(item: FloatingModelUsageItem): boolean {
-  return item.usesIndependentQuota || isAutoReviewUsage(item.key.split("|").at(-1));
+  return item.key === "unknown-models" || item.usesIndependentQuota || isAutoReviewUsage(item.key.split("|").at(-1));
 }
 
 export function floatingModelUsageValue(
@@ -261,6 +261,7 @@ export function floatingModelUsageValue(
     const referenceCost = item.referenceCostUSD === null
       ? "—"
       : floatingModelUsageMoneyText(item.referenceCostUSD);
+    if(item.key === "unknown-models")return `参考 ${referenceCost}（按回退模型估算）`;
     return `${referenceCost}（不计入总计）`;
   }
   if (item.costUSD !== null) return floatingModelUsageMoneyText(item.costUSD);
@@ -283,7 +284,7 @@ export function hasUnknownModelPrices(items: FloatingModelUsageItem[]): boolean 
 export function floatingModelUsageKnownCostUSD(
   items: FloatingModelUsageItem[],
 ): number | null {
-  const billable = items.filter((item) => item.tokens > 0 && !isReferenceOnlyModelUsage(item));
+  const billable = items.filter((item) => item.tokens > 0 && (!isReferenceOnlyModelUsage(item) || item.key === "unknown-models" && item.knownPartialCostUSD != null));
   const known = billable.filter((item) => item.costUSD !== null || item.knownPartialCostUSD != null);
   if (billable.some((item) => item.costUSD === null) && known.length === 0) {
     return null;

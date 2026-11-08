@@ -1072,11 +1072,7 @@ struct DashboardModelCostRow: View {
     private var items: [FloatingTodayModelUsageItem] {
         if let clientCosts { return clientCosts.items(scope) }
         guard selectedDataAvailable, hasModelDetail else { return [] }
-        return FloatingTodayModelUsagePresentation.items(
-            from: sourceRows,
-            fallbackModel: fallbackModel,
-            mergeAutoReview: false
-        )
+        return ClientModelCostPeriods.modelItems([], sourceRows, allowed: ["codex"], fallbackModel: fallbackModel)
     }
 
     private var expectedTokens: Int {
@@ -1134,7 +1130,7 @@ struct DashboardModelCostRow: View {
         let visibleReferenceCostSummary = visibleReferenceEntries.isEmpty
             ? nil
             : visibleReferenceEntries.joined(separator: " · ") + "（不计入合计）"
-        let modelFamilies = clientCosts?.groups(scope) ?? FloatingTodayModelUsagePresentation.dashboardFamilyGroups(from: visibleItems)
+        let modelFamilies = clientCosts?.groups(scope) ?? ClientModelCostPeriods(lifetime: visibleItems, today: visibleItems, sevenDay: visibleItems).groups(scope)
         let pendingItems = scope == .sevenDay ? FloatingTodayModelUsagePresentation.items(
             from: sevenDayPendingRows, fallbackModel: fallbackModel
         ) : []
@@ -1346,7 +1342,10 @@ struct DashboardModelCostChip: View {
 
     private var amount: String {
         guard item.tokens > 0 else { return "—" }
-        if item.isReferenceOnly { return item.referenceCostUSD?.quotaEstimatorMoneyText ?? "—" }
+        if item.isReferenceOnly {
+            let value = item.referenceCostUSD?.quotaEstimatorMoneyText ?? "—"
+            return item.isFallbackEstimate ? "参考 \(value)" : value
+        }
         return item.valueText(for: .cost)
     }
 

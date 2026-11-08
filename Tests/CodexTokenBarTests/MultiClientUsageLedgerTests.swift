@@ -3,11 +3,29 @@ import CryptoKit
 @testable import CodexTokenBar
 
 final class MultiClientUsageLedgerTests: XCTestCase {
+    func testConfirmedAntigravityAliasesAndLegacyOpusArePricedWithoutChangingRawRecords() throws {
+        let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("confirmed-routes.sqlite"))
+        for model in ["gemini-3-flash-a", "gemini-3-flash-preview", "gemini-3.8-flash-n", "gemini-3.8-flash", "claude-opus-5"] {
+            _ = try ledger.ingest([.init(client: .antigravity, eventID: model, sessionID: "s", model: model,
+                timestamp: Date(timeIntervalSince1970: 1_800_000_000), inputTokens: 100_000, outputTokens: 10_000,
+                cacheReadTokens: 20_000, cacheWriteTokens: 30_000)])
+        }
+        let before = try ledger.database.readRows("SELECT payload FROM client_usage_events ORDER BY event_id") { $0.text(0) }
+        let rows = try ledger.summaries()
+        let cost = Dictionary(uniqueKeysWithValues: rows.map { ($0.model, $0.apiCostUSD) })
+        XCTAssertEqual(rows.count, 5); XCTAssertEqual(rows.reduce(0) { $0 + $1.unpricedRequests }, 0)
+        XCTAssertEqual(cost["gemini-3-flash-a"], cost["gemini-3-flash-preview"])
+        XCTAssertEqual(cost["gemini-3.8-flash-n"], cost["gemini-3.8-flash"])
+        XCTAssertGreaterThan(try XCTUnwrap(rows.first { $0.model == "claude-opus-5" }?.apiCostUSD), 0)
+        XCTAssertEqual(before, try ledger.database.readRows("SELECT payload FROM client_usage_events ORDER BY event_id") { $0.text(0) })
+        XCTAssertEqual(rows.reduce(0) { $0 + $1.inputTokens }, 500_000)
+    }
     func testClaudeCacheLifetimeEnrichmentPricesSameRequestWithoutChangingOldUsage() throws {
         let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("ttl.sqlite"))
         let original = ClientUsageEvent(client: .claudeDesktop, eventID: "same-request", sessionID: "s", model: "claude-opus-5-5", timestamp: Date(timeIntervalSince1970: 1_793_000_000), inputTokens: 100, outputTokens: 10, cacheReadTokens: 20, cacheWriteTokens: 30)
         XCTAssertEqual(try ledger.ingest([original]), 1)
-        XCTAssertEqual(try ledger.summaries().first?.unpricedRequests, 1)
+        XCTAssertEqual(try ledger.summaries().first?.unpricedRequests, 0)
+        XCTAssertEqual(try ledger.summaries().first?.apiCostUSD, 0.000554)
         var enriched = original
         enriched.cacheWrite5mTokens = 10; enriched.cacheWrite1hTokens = 20
         XCTAssertEqual(try ledger.ingest([enriched]), 1)
@@ -21,7 +39,7 @@ final class MultiClientUsageLedgerTests: XCTestCase {
         XCTAssertEqual(try ledger.summaries().first?.apiCostUSD, summary.apiCostUSD)
     }
 
-    func testIncompleteOrContradictoryCacheLifetimeDoesNotInventAPriceOrLoseUsage() throws {
+    func testIncompleteOrContradictoryCacheLifetimeUsesStandardFiveMinutePriceWithoutLosingUsage() throws {
         let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("ttl-invalid.sqlite"))
         for (index, split) in [(Int64(10), Int64(10)), (Int64(-1), Int64(31))].enumerated() {
             var row = ClientUsageEvent(client: .claudeDesktop, eventID: "bad-\(index)", sessionID: "s", model: "claude-opus-5-5", timestamp: Date(), inputTokens: 100, outputTokens: 10, cacheReadTokens: 20, cacheWriteTokens: 30)
@@ -29,7 +47,7 @@ final class MultiClientUsageLedgerTests: XCTestCase {
             _ = try ledger.ingest([row])
         }
         let summary = try XCTUnwrap(try ledger.summaries().first)
-        XCTAssertNil(summary.apiCostUSD); XCTAssertEqual(summary.unpricedRequests, 2)
+        XCTAssertEqual(summary.apiCostUSD, 0.001108); XCTAssertEqual(summary.unpricedRequests, 0)
         XCTAssertEqual(summary.inputTokens, 200); XCTAssertEqual(summary.requests, 2)
     }
 
@@ -42,7 +60,7 @@ final class MultiClientUsageLedgerTests: XCTestCase {
         _ = try ledger.ingest([original]); _ = try ledger.ingest([incoming])
         let row = try XCTUnwrap(try ledger.summaries().first)
         XCTAssertEqual(row.cacheWriteTokens, 30); XCTAssertEqual(row.requests, 1)
-        XCTAssertEqual(row.unpricedRequests, 1); XCTAssertNil(row.apiCostUSD)
+        XCTAssertEqual(row.unpricedRequests, 0); XCTAssertEqual(row.apiCostUSD, 0.000554)
     }
 
     func testOldAndMalformedOptionalTTLMetadataDecodeWithoutDiscardingCounts() throws {
@@ -68,8 +86,8 @@ final class MultiClientUsageLedgerTests: XCTestCase {
         try ledger.database.execute("UPDATE client_usage_events SET payload=? WHERE event_id='oversized'", bindings: [.text(String(repeating: "x", count: 70_000))])
         let summary = try XCTUnwrap(try ledger.summaries().first)
         XCTAssertEqual(summary.requests, 4); XCTAssertEqual(summary.inputTokens, 400)
-        XCTAssertEqual(summary.outputTokens, 40); XCTAssertEqual(summary.unpricedRequests, 3)
-        XCTAssertEqual(try XCTUnwrap(summary.apiCostUSD), 0.000614, accuracy: 1e-10)
+        XCTAssertEqual(summary.outputTokens, 40); XCTAssertEqual(summary.unpricedRequests, 0)
+        XCTAssertEqual(try XCTUnwrap(summary.apiCostUSD), 0.002276, accuracy: 1e-10)
     }
 
     func testLegacyClaudeCheckpointEnrichesOnceAndDeletedSourceKeepsOldAccountedUsage() async throws {
@@ -86,7 +104,7 @@ final class MultiClientUsageLedgerTests: XCTestCase {
         let key = SHA256.hash(data: Data(file.standardizedFileURL.path.utf8)).map { String(format: "%02x", $0) }.joined()
         let rawIdentity = String(describing: attributes[.systemFileNumber] ?? "") + ":\(width):" + digest
         _ = try ledger.ingest([old], client: .claudeCode, sourceKey: key, checkpoint: .init(offset: Int64(bytes.count), size: Int64(bytes.count), modified: (attributes[.modificationDate] as! Date).timeIntervalSince1970, identity: rawIdentity))
-        XCTAssertEqual(try ledger.summaries().first?.unpricedRequests, 1)
+        XCTAssertEqual(try ledger.summaries().first?.unpricedRequests, 0)
         var preference = MultiClientUsagePreference.defaults.first { $0.client == .claudeCode }!
         preference.enabled = true; preference.path = file.path
         let scanner = MultiClientUsageScanner(databaseURL: database, home: root, environment: [:])
@@ -320,8 +338,8 @@ final class MultiClientUsageLedgerTests: XCTestCase {
         XCTAssertNil(unknown.apiCostUSD)
         XCTAssertEqual(unknown.unpricedRequests, 1)
         let lifetime = try XCTUnwrap(summaries.first { $0.model == "claude-opus-5-5" })
-        XCTAssertNil(lifetime.apiCostUSD)
-        XCTAssertEqual(lifetime.unpricedRequests, 1)
+        XCTAssertEqual(lifetime.apiCostUSD, 0.000401)
+        XCTAssertEqual(lifetime.unpricedRequests, 0)
         let timeDependent = try XCTUnwrap(summaries.first { $0.model == "deepseek-reasoner" })
         XCTAssertEqual(try XCTUnwrap(timeDependent.apiCostUSD), 0.000017, accuracy: 0.000000001)
         XCTAssertEqual(timeDependent.unpricedRequests, 0)

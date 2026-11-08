@@ -9,19 +9,43 @@ const dashboard=()=>({generatedAt:new Date(stamp*1000).toISOString(),stats:{...s
 const row={client:'claudeCode',model:'claude-sonnet-4-6',inputTokens:1000,outputTokens:200,cacheReadTokens:800,cacheWriteTokens:0,reasoningTokens:0,requests:2,lastSeen:new Date(stamp*1000).toISOString(),apiCostUSD:0.03,unpricedRequests:0,cacheReadComplete:true};
 const bucket={client:'claudeCode',startUnix:stamp-3600,inputTokens:1000,outputTokens:200,cacheReadTokens:800,cacheWriteTokens:0,reasoningTokens:0,requests:2};
 const snapshot=()=>({preferences:[],summaries:[row],todaySummaries:[],sevenDaySummaries:[row],dailyBuckets:[bucket],trendBuckets:[bucket],updatedAt:new Date(stamp*1000).toISOString()});
-test('display grouping conserves tokens and priced contributions without merging unknown routes or clients',async()=>withSsrModules(async load=>{
+test('all unclassified identities share a last reference slot in every period and never rewrite totals',async()=>withSsrModules(async load=>{
+ const {clientModelCostItems,clientCostGroups,clientCostPeriods}=await load('/src/multiClient/originalDashboardProjection.ts');
+ const {officialAPICostUSD}=await load('/src/settings/quotaPriceModel.ts');
+ const {hasUnknownModelPrices,floatingModelUsageKnownCostUSD}=await load('/src/floating/floatingModelUsage.ts');
+ const {StatsStrip}=await load('/src/components/StatsStrip.tsx');
+ const models=['unknown','<unknown>','null','<synthetic>','gemini-pro-default','auto','openrouter/auto','future-model'];
+ const rows=models.map((model,i)=>({...row,client:i%2?'claudeCode':'antigravity',model,inputTokens:100,outputTokens:20,cacheReadTokens:50,requests:1,apiCostUSD:i===7?.25:null,unpricedRequests:i===7?0:1}));
+ const original=[{model:null,breakdown:{inputTokens:100,cachedInputTokens:50,outputTokens:20,totalTokens:120,calls:1}}];
+ const before=structuredClone({rows,original});
+ const items=clientModelCostItems(rows,original,['codex','antigravity','claudeCode']);
+ assert.equal(items.length,1);assert.equal(items[0].key,'unknown-models');assert.equal(items[0].tokens,1080);assert.equal(items[0].share,1);
+ assert.equal(items[0].sourceModels.length,9);assert.equal(items[0].costUSD,null);
+ assert.ok(Math.abs(items[0].referenceCostUSD-officialAPICostUSD(100,50,20,'gpt56Sol')*9)<1e-12);
+ assert.equal(hasUnknownModelPrices(items),false);assert.equal(floatingModelUsageKnownCostUSD(items),.25);
+ assert.equal(clientCostGroups(items).at(-1).id,'unknown-models');
+ assert.equal(clientModelCostItems(rows,original,['antigravity'])[0].tokens,480);
+ assert.deepEqual({rows,original},before);
+ const base=dashboard();base.stats.modelBreakdowns=original;base.usageSummary={todayModelBreakdowns:original};
+ base.recentUsage24h=[{startUnix:stamp-1,tokens:120,modelBreakdowns:original}];
+ const periods=clientCostPeriods(base,{...snapshot(),summaries:rows,todaySummaries:rows,sevenDaySummaries:rows},['codex','claudeCode','antigravity'],stamp);
+ for(const scope of ['lifetime','today','sevenDay']){assert.equal(periods[scope].length,1);assert.equal(periods[scope][0].tokens,1080);}
+ const html=renderToStaticMarkup(React.createElement(StatsStrip,{stats:{...stats,totalTokens:1080},planLabel:'',clientCosts:periods}));
+ assert.match(html,/未知模型/);assert.match(html,/参考/);assert.doesNotMatch(html,/价格未知|部分模型价格未知|暂无记录|Fable5.1/);
+}));
+test('display grouping conserves tokens and priced contributions while merging confirmed route slots',async()=>withSsrModules(async load=>{
  const {clientModelCostItems}=await load('/src/multiClient/originalDashboardProjection.ts');
  const make=(client,model,inputTokens,outputTokens,apiCostUSD,unpricedRequests=0)=>({...row,client,model,inputTokens,outputTokens,apiCostUSD,unpricedRequests});
  const rows=[make('antigravity','gemini-4-argon',100,20,0.3),make('antigravity','gemini-4-argon-high',200,30,0.7),
   make('antigravity','gemini-3.8-flash',10,5,0.1),make('antigravity','gemini-3.8-flash-high',20,5,0.2,1),
   make('antigravity','gemini-3.8-flash-n',50,5,null,2),make('gemini','gemini-4-argon',70,5,0.4)];
  const before=structuredClone(rows),items=clientModelCostItems(rows,[],['antigravity','gemini']);
- assert.equal(items.length,4);assert.equal(items.reduce((n,x)=>n+x.tokens,0),rows.reduce((n,x)=>n+x.inputTokens+x.outputTokens,0));
+ assert.equal(items.length,3);assert.equal(items.reduce((n,x)=>n+x.tokens,0),rows.reduce((n,x)=>n+x.inputTokens+x.outputTokens,0));
  assert.ok(Math.abs(items.reduce((n,x)=>n+(x.costUSD??x.knownPartialCostUSD??0),0)-1.7)<1e-12);
  const argon=items.find(x=>x.key==='antigravity|gemini-4-argon');assert.equal(argon.costUSD,1);assert.equal(argon.tokens,350);
  assert.deepEqual(argon.sourceModels,['gemini-4-argon','gemini-4-argon-high']);
  const flash=items.find(x=>x.key==='antigravity|gemini-3.8-flash');assert.equal(flash.costUSD,null);assert.ok(Math.abs(flash.knownPartialCostUSD-.3)<1e-12);
- assert.equal(items.find(x=>x.key.endsWith('-n')).costUSD,null);assert.deepEqual(rows,before);
+ assert.equal(items.some(x=>x.key.endsWith('-n')),false);assert.equal(flash.tokens,95);assert.deepEqual(rows,before);
 }));
 test('API connection shows a neutral notice without subscription bars or reset tools',async()=>withSsrModules(async load=>{
  const {quotaItems}=await load('/src/multiClient/integratedClientModel.ts');
@@ -73,7 +97,7 @@ test('client fee scopes retain the original six metrics and model chips',async()
  const {StatsStrip}=await load('/src/components/StatsStrip.tsx');const {clientCostPeriods}=await load('/src/multiClient/originalDashboardProjection.ts');const periods=clientCostPeriods(dashboard(),snapshot(),['claudeCode'],stamp);
  assert.equal(periods.today.length,0);assert.equal(periods.sevenDay[0].key,'claudeCode|claude-sonnet-4-6');
  const html=renderToStaticMarkup(React.createElement(StatsStrip,{stats:{...stats,totalTokens:1200},planLabel:'',clientCosts:periods}));
- assert.equal((html.match(/class="stats-cell/g)??[]).length,6);assert.match(html,/stats-model-cost-primary-card/);assert.match(html,/近7天/);assert.match(html,/Sonnet4.6/);assert.doesNotMatch(html,/<table|integrated-stats|选择周期|累计净薅到/);
+ assert.equal((html.match(/class="stats-cell/g)??[]).length,6);assert.match(html,/stats-model-cost-secondary-chip/);assert.match(html,/近7天/);assert.match(html,/Sonnet4.6/);assert.doesNotMatch(html,/<table|integrated-stats|选择周期|累计净薅到/);
 }));
 test('client model cost groups lead with GPT-6, combine the latest Claude families, then show legacy groups',async()=>withSsrModules(async load=>{
  const {clientCostGroups}=await load('/src/multiClient/originalDashboardProjection.ts');
@@ -94,15 +118,13 @@ test('client model cost groups lead with GPT-6, combine the latest Claude famili
   {id:'claude:other',label:'Claude 其他'},
  ]);
  assert.deepEqual(groups[1].items.map(item=>item.key),[
-  'claudeCode|fable-5-1','claudeDesktop|opus-5-5','claudeCode|sonnet-5-5','claudeCode|claude-haiku-5-5',
+  'claudeCode|fable-5-1','claudeDesktop|opus-5-5','claudeCode|sonnet-5-5',
  ]);
  const displayRows=groups.flatMap(group=>group.items);
  const recordedDisplayRows=recordedRows.map(row=>({...row,key:row.key.startsWith('codex|')?row.key.slice(6):row.key})).sort((a,b)=>a.key.localeCompare(b.key));
  assert.deepEqual(displayRows.filter(row=>row.tokens>0).sort((a,b)=>a.key.localeCompare(b.key)),recordedDisplayRows,
   'display grouping preserves every recorded row');
- assert.deepEqual(displayRows.filter(row=>row.tokens===0).map(({key,label})=>({key,label})),[
-  {key:'claudeCode|claude-haiku-5-5',label:'Haiku5.5'},
- ],'current catalog placeholders are clearly named and remain zero-token display rows');
+ assert.deepEqual(displayRows.filter(row=>row.tokens===0),[],'cost tables show recorded usage only');
 }));
 test('client quota reuses original quota bars without the Codex attribution owner',async()=>withSsrModules(async load=>{
  const {QuotaStrip}=await load('/src/components/QuotaStrip.tsx');const html=renderToStaticMarkup(React.createElement(QuotaStrip,{clientItems:[{id:'claudeCode:5h',client:'claudeCode',window:'5h',remaining:62,resetsAt:null,status:'',source:'模拟'}]}));

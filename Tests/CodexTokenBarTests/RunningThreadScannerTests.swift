@@ -2,6 +2,50 @@ import XCTest
 @testable import CodexTokenBar
 
 final class RunningThreadScannerTests: XCTestCase {
+    func testRunningTitlesUseSchemaFallbacksAndAgentMetadataWithoutChangingOwnership() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.home) }
+        let database = SQLiteDatabaseDriver(url: fixture.source.stateDatabase)
+        try database.execute("CREATE TABLE threads(id TEXT, rollout_path TEXT, name TEXT, title TEXT, preview TEXT, first_user_message TEXT, agent_path TEXT, agent_nickname TEXT, agent_role TEXT, thread_source TEXT, source TEXT, updated_at INTEGER, archived INTEGER)")
+        for (index, expected) in ["Named task", "Title fallback", "Preview fallback", "First user fallback"].enumerated() {
+            let id = "title-\(index)", file = fixture.sessions.appendingPathComponent("title-\(index).jsonl")
+            try writeSession(to: file, id: id, metadata: "\"source\":\"cli\"", events: [event("task_started", turnID: id)])
+            var fields = Array(repeating: "  ", count: 4)
+            fields[index] = "## \(expected)\nnot the title"
+            try database.execute("INSERT INTO threads(id,rollout_path,name,title,preview,first_user_message,updated_at,archived) VALUES(?,?,?,?,?,?,?,0)", bindings: [.text(id),.text(file.path)] + fields.map(SQLiteBinding.text) + [.int64(Int64(fixture.now.timeIntervalSince1970))])
+        }
+        let child = fixture.sessions.appendingPathComponent("child.jsonl")
+        try writeSession(to: child, id: "child", metadata: "\"source\":{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"title-0\"}}}", events: [event("task_started", turnID: "child")])
+        try database.execute("INSERT INTO threads(id,rollout_path,agent_path,agent_nickname,agent_role,thread_source,source,updated_at,archived) VALUES('child',?,'/root/windows_model_scroll_inventory','James','explorer','subagent',?, ?,0)", bindings: [.text(child.path),.text("{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"title-0\"}}}"),.int64(Int64(fixture.now.timeIntervalSince1970))])
+        let result = try XCTUnwrap(scan(fixture))
+        XCTAssertEqual(result.summary.main, 4); XCTAssertEqual(result.summary.subagents, 1)
+        let groups = Dictionary(uniqueKeysWithValues: result.summary.groups.map { ($0.mainThread.threadID,$0) })
+        for (index, expected) in ["Named task", "Title fallback", "Preview fallback", "First user fallback"].enumerated() {
+            XCTAssertEqual(groups["title-\(index)"]?.mainThread.title, expected)
+        }
+        XCTAssertEqual(groups["title-0"]?.subagents.first?.title, "James · windows_model_scroll_inventory")
+        XCTAssertTrue(result.summary.unassignedSubagents.isEmpty)
+    }
+
+    func testRunningRolloutTitlesAreBoundedCachedAndCanArriveOnAppend() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.home) }
+        let main = fixture.sessions.appendingPathComponent("main.jsonl")
+        try writeSession(to: main, id: "main-title", metadata: "\"source\":\"cli\"", events: [event("task_started", turnID: "main")])
+        let before = try XCTUnwrap(scan(fixture))
+        try append("{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"# Build the dashboard\\nExtra context\"}}\n", to: main)
+        let after = try XCTUnwrap(scan(fixture, previousStates: before.states))
+        XCTAssertEqual(after.summary.groups.first?.mainThread.title, "Build the dashboard")
+        XCTAssertNotEqual(before.summary.summaryRevision, after.summary.summaryRevision)
+        XCTAssertEqual(try XCTUnwrap(scan(fixture, previousStates: after.states)).summary.summaryRevision, after.summary.summaryRevision)
+        let child = fixture.sessions.appendingPathComponent("child.jsonl")
+        try writeSession(to: child, id: "child-meta", metadata: "\"thread_source\":\"subagent\",\"agent_nickname\":\"Rawls\",\"agent_role\":\"worker\"", events: [event("task_started", turnID: "child")])
+        XCTAssertEqual(try XCTUnwrap(scan(fixture)).summary.unassignedSubagents.first?.title, "Rawls · worker")
+        let bounded = fixture.sessions.appendingPathComponent("bounded.jsonl")
+        try writeSession(to: bounded, id: "bounded-title", metadata: "\"source\":\"cli\"", events: [String(repeating: "x",count:70_000), "{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"Beyond title read budget\"}}",event("task_started",turnID:"bounded")])
+        XCTAssertFalse(try XCTUnwrap(scan(fixture)).summary.groups.contains { $0.mainThread.title == "Beyond title read budget" })
+        XCTAssertEqual(RunningTaskTitle.message(["type":"event_msg","payload":["type":"agent_message","message":"Header\nTask name: inspect_cache\nMore"]], subagent:true), "inspect_cache")
+    }
     func testCountsMainAndSubagentWithoutTreatingForkMetadataAsSubagent() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.home) }
@@ -504,7 +548,7 @@ final class RunningThreadScannerTests: XCTestCase {
 
         XCTAssertEqual(summary.groups.count, 1)
         XCTAssertEqual(summary.groups[0].mainThread.threadID, "group-main")
-        XCTAssertEqual(summary.groups[0].mainThread.title, "Main conversation title")
+        XCTAssertEqual(summary.groups[0].mainThread.title, "Main conversation")
         XCTAssertEqual(
             Set(summary.groups[0].subagents.map(\.threadID)),
             Set(["group-direct", "group-nested"])

@@ -194,6 +194,12 @@ jobs:
             --require testRetainedCatalogSeesExternalRenameDropAndDoesNotAdmitForeignObjects \
             --require testRetainedCatalogDoesNotPublishUncommittedDDLOrRollbackNames \
             --require testModelPresentationMatchesSharedCrossPlatformCases \
+            --require testConfirmedAntigravityAliasesAndLegacyOpusArePricedWithoutChangingRawRecords \
+            --require testDashboardCombinesEveryUnknownSourceIntoOneReferenceWithoutChangingKnownFees \
+            --require testCostGroupsNeverInventZeroUsageCatalogCards \
+            --require testRunningTitlesUseSchemaFallbacksAndAgentMetadataWithoutChangingOwnership \
+            --require testRunningRolloutTitlesAreBoundedCachedAndCanArriveOnAppend \
+            --require testCompactTaskHierarchyKeepsTenChildrenReadableWithinOnePanel \
             --require testDisplayGroupingConservesRawTokensAndAlreadyPricedContributions \
             --require testContentGrowthAndShrinkUpdateScrollExtentAtDefaultAndCustomScales \
             --require testHeatmapFlatteningMatchesCellGridAtNativeAndRetinaScale \
@@ -350,6 +356,10 @@ jobs:
               --allow-untracked-output runtime-recovery-production.json \
               --allow-untracked-output runtime-recovery-production.validation.json \
               --require failed_partial_backup_is_never_published \
+              --require confirmed_antigravity_route_prices_match_canonical_models_and_legacy_opus_prices \
+              --require claude_cache_write_lifetimes_prefer_valid_split_and_default_to_five_minutes \
+              --require running_task_titles_use_database_fallbacks_and_agent_metadata \
+              --require running_rollout_title_is_bounded_and_recovers_on_append \
               --require concurrent_matching_backup_is_reused_without_overwriting_or_leaking_temporary \
               --require concurrent_different_backup_is_preserved_and_never_accepted_as_expected_snapshot \
               --require backup_rejects_source_alias_before_building_and_preserves_source \

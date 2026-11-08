@@ -1057,66 +1057,84 @@ struct QuotaSidebarDetailView: View {
     }
 
     private func taskGroup(_ group: RunningThreadGroup) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                taskBadge("主任务", color: SidebarPalette.amber)
-                Spacer()
-                Text("\(group.subagents.count) 个子代理").font(.system(size: 9)).foregroundStyle(.gray)
-            }
-            taskIdentity(group.mainThread, titleSize: 13)
-            if !group.subagents.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(group.subagents) { member in
-                        childTask(member)
-                    }
-                }
-                .padding(.leading, 12)
-                .overlay(alignment: .leading) {
-                    Rectangle().fill(SidebarPalette.purple.opacity(0.25)).frame(width: 1)
-                }
-            }
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(.white.opacity(0.06), lineWidth: 1))
-        .accessibilityElement(children: .contain)
+        SidebarRunningTaskGroup(group: group, showClient: taskClients.count > 1)
     }
 
     private func childTask(_ member: RunningThreadMember) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 7) {
-                Image(systemName: "arrow.turn.down.right").font(.system(size: 9)).foregroundStyle(SidebarPalette.purple)
-                taskBadge("子代理", color: SidebarPalette.purple)
+        SidebarRunningChildRow(member: member)
+    }
+}
+
+enum SidebarTaskPresentation {
+    static func title(_ member: RunningThreadMember, child: Bool = false) -> String {
+        RunningTaskTitle.clean(member.title) ?? RunningTaskTitle.fallback(id: member.threadID, subagent: child)
+    }
+    static func phase(_ member: RunningThreadMember) -> String? {
+        member.phase == "generating" ? "生成中" : member.phase == "tools" ? "工具" : nil
+    }
+    static func detail(_ member: RunningThreadMember, child: Bool = false) -> String {
+        [title(member, child: child), ModelUsagePresentation.label(for: member.model),
+         member.reasoningEffort ?? "未提供推理强度", phase(member), member.client.map(ClientDisplayScope.title)]
+            .compactMap { $0 }.joined(separator: " · ")
+    }
+}
+
+struct SidebarTaskMetadata: View {
+    let member: RunningThreadMember
+    var body: some View {
+        HStack(spacing: 4) {
+            Circle().fill(ModelUsagePresentation.color(for: member.model)).frame(width: 5, height: 5)
+            Text(ModelUsagePresentation.label(for: member.model)).font(.system(size: 10, weight: .medium))
+                .lineLimit(1).truncationMode(.middle).frame(maxWidth: 90, alignment: .leading)
+            Text(member.reasoningEffort ?? SidebarTaskPresentation.phase(member) ?? "—")
+                .font(.system(size: 8.5, weight: .medium)).padding(.horizontal, 4).padding(.vertical, 1)
+                .background(.white.opacity(0.07), in: Capsule()).fixedSize()
+        }.foregroundStyle(.white.opacity(0.7))
+            .help(SidebarTaskPresentation.detail(member))
+    }
+}
+
+struct SidebarRunningChildRow: View {
+    let member: RunningThreadMember
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "arrow.turn.down.right").font(.system(size: 8)).foregroundStyle(SidebarPalette.purple)
+            Text(SidebarTaskPresentation.title(member, child: true))
+                .font(.system(size: 10.5, weight: .medium)).foregroundStyle(.white.opacity(0.85))
+                .lineLimit(1).truncationMode(.tail).frame(maxWidth: .infinity, alignment: .leading)
+            SidebarTaskMetadata(member: member).fixedSize(horizontal: true, vertical: false)
+        }.frame(height: 26).padding(.horizontal, 2)
+            .help(SidebarTaskPresentation.detail(member, child: true))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("子代理 · " + SidebarTaskPresentation.detail(member, child: true))
+    }
+}
+
+struct SidebarRunningTaskGroup: View {
+    let group: RunningThreadGroup
+    var showClient = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(SidebarTaskPresentation.title(group.mainThread))
+                .font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.92))
+                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                .help(SidebarTaskPresentation.detail(group.mainThread))
+            HStack(spacing: 5) {
+                SidebarTaskMetadata(member: group.mainThread)
+                Spacer(minLength: 3)
+                if showClient { Text(ClientDisplayScope.title(group.mainThread.client ?? "codex")).lineLimit(1) }
+                if !group.subagents.isEmpty { Text("\(group.subagents.count) 子代理").fixedSize() }
+            }.font(.system(size: 9)).foregroundStyle(.gray)
+            if !group.subagents.isEmpty {
+                VStack(spacing: 0) {
+                    ForEach(group.subagents) { SidebarRunningChildRow(member: $0) }
+                }.padding(.leading, 5)
+                    .overlay(alignment: .leading) { Rectangle().fill(SidebarPalette.purple.opacity(0.25)).frame(width: 1) }
             }
-            taskIdentity(member, titleSize: 11)
-        }.padding(6).frame(maxWidth: .infinity, alignment: .leading)
-            .background(SidebarPalette.purple.opacity(0.04), in: RoundedRectangle(cornerRadius: 9))
+        }.padding(9).frame(maxWidth: .infinity, alignment: .leading)
+            .background(.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(.white.opacity(0.06), lineWidth: 1))
             .accessibilityElement(children: .contain)
-    }
-
-    private func taskBadge(_ title: String, color: Color) -> some View {
-        Text(title).font(.system(size: 9, weight: .semibold)).foregroundStyle(color)
-            .padding(.horizontal, 6).padding(.vertical, 3)
-            .background(color.opacity(0.1), in: Capsule())
-    }
-
-    private func taskIdentity(_ member: RunningThreadMember, titleSize: CGFloat) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text(member.title ?? "未命名任务")
-                .font(.system(size: titleSize, weight: .medium))
-                .lineLimit(3).fixedSize(horizontal: false, vertical: true)
-                .help(member.title ?? "未命名任务")
-            HStack(alignment: .firstTextBaseline, spacing: 7) {
-                Text("模型").foregroundStyle(.gray).frame(width: 28, alignment: .leading)
-                Text(member.model ?? "未知").foregroundStyle(.white.opacity(0.75))
-                    .fixedSize(horizontal: false, vertical: true)
-            }.font(.system(size: 9))
-            HStack(alignment: .firstTextBaseline, spacing: 7) {
-                Text("推理").foregroundStyle(.gray).frame(width: 28, alignment: .leading)
-                Text(member.reasoningEffort ?? "未提供").foregroundStyle(.white.opacity(0.65))
-            }.font(.system(size: 9))
-        }
     }
 }
 

@@ -143,28 +143,15 @@ struct ClientModelCostPeriods: Equatable, Sendable {
         switch scope { case .lifetime: lifetime; case .today: today; case .sevenDay: sevenDay }
     }
     func groups(_ scope: DashboardModelCostScope) -> [FloatingTodayModelUsagePresentation.DashboardFamilyGroup] {
-        let values = items(scope)
+        let allValues = items(scope).filter { $0.tokens > 0 }
+        let values = allValues.filter { !$0.isFallbackEstimate }
         let original = values.filter { $0.id.hasPrefix("codex|") }.map { item in
             FloatingTodayModelUsageItem(id: String(item.id.dropFirst(6)), label: item.label,
                 tokens: item.tokens, share: item.share, costUSD: item.costUSD, usesIndependentQuota: item.usesIndependentQuota,
                 referenceCostUSD: item.referenceCostUSD, color: item.color, knownPartialCostUSD: item.knownPartialCostUSD)
         }
         let codexGroups = FloatingTodayModelUsagePresentation.dashboardFamilyGroups(from: original)
-        var claudeRows = values.filter { $0.id.hasPrefix("claudeCode|") || $0.id.hasPrefix("claudeDesktop|") }
-        if let first = claudeRows.first {
-            let client = String(first.id.split(separator: "|")[0])
-            for family in ClaudeModelPresentation.families {
-                guard let model = ClaudeModelPresentation.newestCatalogModelsByFamily[family],
-                      !claudeRows.contains(where: { row in
-                          guard let identity = ClaudeModelPresentation.identity(row.id), identity.family == family else { return false }
-                          return ClaudeModelPresentation.compare(identity.version, model.version) >= 0
-                      }) else { continue }
-                // Display-only availability; never appended to stored usage or cost totals.
-                claudeRows.append(.init(id: client + "|" + model.id, label: ModelUsagePresentation.label(for: model.id),
-                    tokens: 0, share: 0, costUSD: 0, usesIndependentQuota: false, referenceCostUSD: nil,
-                    color: ModelUsagePresentation.color(for: model.id)))
-            }
-        }
+        let claudeRows = values.filter { $0.id.hasPrefix("claudeCode|") || $0.id.hasPrefix("claudeDesktop|") }
         let claudeGroups = ClaudeModelPresentation.groups(claudeRows, client: "claude")
         let others = Dictionary(grouping: values.filter {
             !$0.id.hasPrefix("codex|") && !$0.id.hasPrefix("claudeCode|") && !$0.id.hasPrefix("claudeDesktop|")
@@ -174,7 +161,8 @@ struct ClientModelCostPeriods: Equatable, Sendable {
             + codexGroups.filter { $0.id != "6" }
             + claudeGroups.filter { !$0.id.hasSuffix(":latest") }
             + others.sorted { $0.key < $1.key }.map { .init(id: $0.key, title: ClientDisplayScope.title($0.key), items: $0.value) }
-        return groups
+        let unknown = allValues.filter(\.isFallbackEstimate)
+        return groups + (unknown.isEmpty ? [] : [.init(id: "unknown-models", title: "参考", items: unknown)])
     }
     static func make(codex: DashboardSnapshot, todayCodex: [ModelTokenBreakdown],
                      rows: [ClientUsageSummary], today: [ClientUsageSummary], sevenDay: [ClientUsageSummary],
@@ -193,18 +181,46 @@ struct ClientModelCostPeriods: Equatable, Sendable {
         return Self(lifetime: modelItems(rows, codex.cacheUsage.modelBreakdowns, allowed: allowed), today: modelItems(today, resolvedToday, allowed: allowed), sevenDay: modelItems(sevenDay, recentCodex, allowed: allowed), codexPendingScopes: pending)
     }
 
-    static func modelItems(_ external: [ClientUsageSummary], _ original: [ModelTokenBreakdown], allowed: Set<String>) -> [FloatingTodayModelUsageItem] {
+    /// Cost-table presentation only: unknown identities share one reference
+    /// slot across clients. Raw ledger keys and exact known fees stay intact.
+    static func modelItems(_ external: [ClientUsageSummary], _ original: [ModelTokenBreakdown], allowed: Set<String>, fallbackModel: OfficialAPIPriceModel = .gpt56Sol) -> [FloatingTodayModelUsageItem] {
             var result: [FloatingTodayModelUsageItem] = []
+            var unknownTokens = 0
+            var unknownReference = 0.0
+            var unknownKnownCosts: [Double] = []
+            var unknownSources: [String] = []
+            func isUnknown(_ model: String?) -> Bool {
+                if CodexAutoReviewPricingPolicy.isAutoReviewUsage(model)
+                    || OfficialAPIPriceModel.independentQuotaModelName(from: model) != nil { return false }
+                return !["known", "source"].contains(ModelPresentationIdentity.resolve(model).kind)
+            }
             if allowed.contains("codex") {
-                result = FloatingTodayModelUsagePresentation.items(from: original, fallbackModel: .gpt56Sol, mergeAutoReview: false).map {
+                let unknown = original.filter { isUnknown($0.model) && $0.breakdown.totalTokens > 0 }
+                for row in unknown {
+                    unknownTokens += row.breakdown.totalTokens
+                    unknownReference += fallbackModel.currentPriceRates.costUSD(for: row.breakdown)
+                    unknownSources.append("Codex · " + ModelPresentationIdentity.detail(row.model ?? "unknown"))
+                }
+                unknownKnownCosts += FloatingTodayModelUsagePresentation.items(from: unknown, fallbackModel: fallbackModel, mergeAutoReview: false)
+                    .compactMap { $0.costUSD ?? $0.knownPartialCostUSD }
+                result = FloatingTodayModelUsagePresentation.items(from: original.filter { !isUnknown($0.model) }, fallbackModel: fallbackModel, mergeAutoReview: false).map {
                     .init(id: "codex|" + $0.id, label: $0.label, tokens: $0.tokens, share: $0.share, costUSD: $0.costUSD,
                           usesIndependentQuota: $0.usesIndependentQuota, referenceCostUSD: $0.referenceCostUSD, color: $0.color, knownPartialCostUSD: $0.knownPartialCostUSD)
                 }
             }
-            // Price each raw source row before display grouping. Unknown price
-            // contributions remain unknown; never reprice a merged token sum.
             let selected=external.filter { allowed.contains($0.client.rawValue) }
-            let groups=Dictionary(grouping:selected) { $0.client.rawValue+"|"+ModelPresentationIdentity.resolve($0.model).key }
+            for row in selected where isUnknown(row.model) && row.inputTokens + row.outputTokens > 0 {
+                unknownTokens += Int(row.inputTokens + row.outputTokens)
+                let breakdown = TokenCacheBreakdown(inputTokens: Int(row.inputTokens), cachedInputTokens: Int(row.cacheReadTokens ?? 0),
+                    outputTokens: Int(row.outputTokens), reasoningOutputTokens: Int(row.reasoningTokens ?? 0),
+                    totalTokens: Int(row.inputTokens + row.outputTokens), calls: row.requests)
+                unknownReference += fallbackModel.currentPriceRates.costUSD(for: breakdown)
+                unknownSources.append(row.client.displayName + " · " + ModelPresentationIdentity.detail(row.model))
+                if row.unpricedRequests == 0 || row.requests > row.unpricedRequests, let cost = row.apiCostUSD { unknownKnownCosts.append(cost) }
+            }
+            // Known rows sum their already-priced contributions, including
+            // date/tier/cache-write rates; never reprice their merged Tokens.
+            let groups=Dictionary(grouping:selected.filter { !isUnknown($0.model) }) { $0.client.rawValue+"|"+ModelPresentationIdentity.resolve($0.model).key }
             result += groups.keys.sorted().compactMap { key in
                 guard let rows=groups[key],let first=rows.first else { return nil }
                 let identity=ModelPresentationIdentity.resolve(first.model)
@@ -216,6 +232,12 @@ struct ClientModelCostPeriods: Equatable, Sendable {
                     costUSD:complete ? subtotal:nil,usesIndependentQuota:false,referenceCostUSD:nil,
                     color:ModelUsagePresentation.color(for:identity.key),knownPartialCostUSD:complete ? nil:subtotal,
                     sourceModels:Array(Set(rows.map(\.model))).sorted())
+            }
+            if unknownTokens > 0 {
+                result.append(.init(id: "unknown-models", label: "未知模型", tokens: unknownTokens, share: 0,
+                    costUSD: nil, usesIndependentQuota: false, referenceCostUSD: unknownReference, color: .gray,
+                    knownPartialCostUSD: unknownKnownCosts.isEmpty ? nil : unknownKnownCosts.reduce(0,+),
+                    sourceModels: Array(Set(unknownSources)).sorted()))
             }
             let total = max(1, result.reduce(0) { $0 + $1.tokens })
             return result.filter { $0.tokens > 0 }.map { .init(id: $0.id, label: $0.label, tokens: $0.tokens, share: Double($0.tokens) / Double(total), costUSD: $0.costUSD, usesIndependentQuota: $0.usesIndependentQuota, referenceCostUSD: $0.referenceCostUSD, color: $0.color, knownPartialCostUSD: $0.knownPartialCostUSD,sourceModels:$0.sourceModels) }

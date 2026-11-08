@@ -3976,6 +3976,7 @@ fn api_cost_micro_usd_at(
     timestamp: Option<f64>,
 ) -> Option<i64> {
     let identifier = raw_model.rsplit('/').next()?.trim().to_ascii_lowercase();
+    let identifier = super::model_presentation::billing_identifier(&identifier).to_string();
     if identifier.is_empty() {
         return None;
     }
@@ -4019,20 +4020,11 @@ fn api_cost_micro_usd_at(
     {
         return None;
     }
-    let (cache_write_5m, cache_write_1h) = if cache_write == 0 {
-        (0, 0)
-    } else if rates.cache_write == rates.cache_write_1h {
-        (cache_write, 0)
-    } else {
-        let (cache_write_5m, cache_write_1h) = cache_write_ttl_pair?;
-        if cache_write_5m < 0
-            || cache_write_1h < 0
-            || cache_write_5m.checked_add(cache_write_1h) != Some(cache_write)
-        {
-            return None;
-        }
-        (cache_write_5m, cache_write_1h)
-    };
+    // Missing/invalid legacy TTL metadata uses standard 5m pricing. The raw
+    // record stays unchanged; a later valid split can still enrich its price.
+    let (cache_write_5m, cache_write_1h) = cache_write_ttl_pair
+        .filter(|(five, hour)| *five >= 0 && *hour >= 0 && five.checked_add(*hour) == Some(cache_write))
+        .unwrap_or((cache_write, 0));
     let uncached_input = input - cache_read - cache_write;
     const MAX_CLASS_TOKENS: i64 = 100_000_000;
     if [
@@ -5217,7 +5209,7 @@ mod tests {
     }
 
     #[test]
-    fn malformed_claude_cache_ttl_split_keeps_usage_but_stays_unpriced() {
+    fn malformed_claude_cache_ttl_split_keeps_usage_and_uses_standard_five_minute_rate() {
         let temporary = TempDir::new("claude-cache-ttl-malformed");
         let database = temporary.path().join("multi-client-usage.sqlite");
         let bytes = br#"{"sessionId":"s","entrypoint":"cli","type":"assistant","timestamp":"2026-10-20T10:02:04.000Z","message":{"id":"e","model":"claude-opus-5-5","usage":{"input_tokens":0,"cache_creation_input_tokens":100000,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":"60000","ephemeral_1h_input_tokens":40000},"output_tokens":0}}}"#;
@@ -5244,8 +5236,8 @@ mod tests {
                 model: "claude-opus-5-5".into(),
             })
             .unwrap();
-        assert_eq!(tally.known_cost_micro_usd, None);
-        assert_eq!(tally.unpriced_requests, 1);
+        assert_eq!(tally.known_cost_micro_usd, Some(500_000));
+        assert_eq!(tally.unpriced_requests, 0);
     }
 
     #[test]
@@ -6906,7 +6898,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_cache_write_lifetimes_require_a_complete_validated_split_when_rates_differ() {
+    fn claude_cache_write_lifetimes_prefer_valid_split_and_default_to_five_minutes() {
         assert_eq!(
             api_cost_micro_usd_at(
                 "claude-opus-5-5",
@@ -6929,8 +6921,8 @@ mod tests {
                 None,
                 None,
             ),
-            None,
-            "missing TTL metadata never assumes the 5m rate"
+            Some(500_000),
+            "legacy TTL metadata defaults to the standard 5m rate"
         );
         assert_eq!(
             api_cost_micro_usd_at(
@@ -6942,8 +6934,8 @@ mod tests {
                 Some((60_000, 39_999)),
                 None,
             ),
-            None,
-            "the pair must add up to the recorded cache write total"
+            Some(500_000),
+            "an inconsistent pair falls back without inventing a valid split"
         );
         assert_eq!(
             api_cost_micro_usd_at("claude-opus-5-5", 0, 0, Some(0), Some(0), None, None,),
@@ -7037,10 +7029,10 @@ mod tests {
             model: "claude-opus-5-5".into(),
         };
         let opus_tally = totals.get(&opus_key).unwrap();
-        assert_eq!(opus_tally.known_cost_micro_usd, Some(400));
+        assert_eq!(opus_tally.known_cost_micro_usd, Some(1_500_400));
         assert_eq!(
-            opus_tally.unpriced_requests, 3,
-            "BLOB, malformed, and oversized TTL payloads affect only their own fees"
+            opus_tally.unpriced_requests, 0,
+            "BLOB, malformed, and oversized TTL payloads use 5m without changing numeric rows"
         );
         let gpt_tally = totals
             .get(&MultiClientPriceModelKey {
@@ -7059,8 +7051,8 @@ mod tests {
         assert_eq!(opus_summary.requests, 4);
         assert_eq!(opus_summary.input_tokens, 300_100);
         assert_eq!(opus_summary.cache_write_tokens, Some(300_000));
-        assert_eq!(opus_summary.unpriced_requests, 3);
-        assert_eq!(opus_summary.api_cost_usd, Some(0.0004));
+        assert_eq!(opus_summary.unpriced_requests, 0);
+        assert_eq!(opus_summary.api_cost_usd, Some(1.5004));
     }
 
     #[test]
@@ -7082,7 +7074,7 @@ mod tests {
         );
         assert_eq!(
             api_cost_micro_usd("claude-opus-5-5", 100, 0, Some(0), Some(1)),
-            None
+            Some(401)
         );
         assert_eq!(
             api_cost_micro_usd("gpt-6.1-sol", 100_000_001, 0, Some(0), Some(0)),
@@ -7126,6 +7118,18 @@ mod tests {
         assert_eq!(overflow.known_cost_micro_usd, None);
         overflow.add(Some(1));
         assert_eq!(overflow.known_cost_micro_usd, None);
+    }
+
+    #[test]
+    fn confirmed_antigravity_route_prices_match_canonical_models_and_legacy_opus_prices() {
+        for (route,canonical) in [("gemini-3-flash-a","gemini-3-flash-preview"),("gemini-3.8-flash-n","gemini-3.8-flash")] {
+            let price=api_cost_micro_usd(route,100_000,10_000,Some(20_000),Some(30_000));
+            assert!(price.is_some());
+            assert_eq!(price,api_cost_micro_usd(canonical,100_000,10_000,Some(20_000),Some(30_000)));
+        }
+        assert!(api_cost_micro_usd("claude-opus-5",100_000,10_000,Some(20_000),Some(30_000)).is_some());
+        assert_eq!(api_cost_micro_usd("gemini-3.8-flash-x",100_000,10_000,Some(0),Some(0)),None);
+        assert_eq!(api_cost_micro_usd("gemini-pro-default",100_000,10_000,Some(0),Some(0)),None);
     }
 
     #[test]

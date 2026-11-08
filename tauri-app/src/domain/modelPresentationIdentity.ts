@@ -27,6 +27,7 @@ for(const model of prices.models as {id:string;name:string;aliases?:string[]}[])
 }
 export function modelPresentationIdentity(raw:string|null|undefined):ModelPresentationIdentity {
  const original=(raw??"").trim();let key=normalize(original);
+ key=(policy.billingAliases as Record<string,string>)[key]??key;
  if(policy.missing.includes(key))return {key:"unknown",label:"未报告模型",kind:"unreported"};
  if(policy.ambiguous.includes(key))return {key:"gpt-5.6-generic",label:"5.6（未分型）",kind:"ambiguous"};
  const routing=(policy.routingLabels as Record<string,string>)[key];if(routing)return {key,label:routing,kind:"routing"};
@@ -37,6 +38,7 @@ export function modelPresentationIdentity(raw:string|null|undefined):ModelPresen
  }
  let hit=known(key);if(hit)return hit;
  const prefix=policy.wrappers.find(p=>key.startsWith(p));if(prefix)key=key.slice(prefix.length);
+ key=(policy.billingAliases as Record<string,string>)[key]??key;
  for(const region of prices.normalize.bedrockRegions)if(key.startsWith(region+".")){
   const rest=key.slice(region.length+1);if(prices.normalize.bedrockVendors.some(v=>rest.startsWith(v+".")))key=rest;break;
  }

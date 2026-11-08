@@ -102,6 +102,7 @@ enum RunningThreadScanner {
         let id: String
         let isSubagent: Bool
         let parentThreadID: String?
+        let title: String?
     }
 
     private struct LifecycleEvent {
@@ -372,9 +373,8 @@ enum RunningThreadScanner {
                     let reasoningEffortExpression = columns.contains("reasoning_effort")
                         ? "COALESCE(reasoning_effort, '')"
                         : "''"
-                    let titleExpression = columns.contains("name")
-                        ? "COALESCE(name, '')"
-                        : "''"
+                    let titleColumns = ["name", "title", "preview", "first_user_message", "agent_nickname", "agent_path", "agent_role", "thread_source"]
+                    let titleExpressions = titleColumns.map { columns.contains($0) ? "substr(COALESCE(\($0), ''),1,4096)" : "''" }
                     let sourceExpression = columns.contains("source")
                         ? "COALESCE(source, '')"
                         : "''"
@@ -398,21 +398,30 @@ enum RunningThreadScanner {
                                \(sessionIDExpression),
                                \(modelExpression),
                                \(reasoningEffortExpression),
-                               \(titleExpression),
-                               \(sourceExpression)
+                               \(sourceExpression),
+                               \(titleExpressions.joined(separator: ", "))
                         FROM threads
                         WHERE \(archivedExpression) = 0
                           AND \(updatedExpression) >= ?
                         """,
                         bindings: [.int64(Int64(cutoff.timeIntervalSince1970 * 1000))]
                     ) { statement in
-                        DatabaseCandidateRow(
+                        let source = statement.text(4)
+                        let named = (5...6).compactMap { RunningTaskTitle.clean(statement.text(Int32($0))) }.first
+                        let detail = (7...8).compactMap { RunningTaskTitle.clean(statement.text(Int32($0))) }.first
+                        var metadata: [String: Any] = [:]
+                        for (offset, key) in ["agent_nickname", "agent_path", "agent_role"].enumerated() {
+                            metadata[key] = statement.text(Int32(offset + 9))
+                        }
+                        if let source, let data = source.data(using: .utf8) { metadata["source"] = try? JSONSerialization.jsonObject(with: data) }
+                        let subagent = statement.text(12) == "subagent" || sourceContainsSubagentNode(metadata["source"])
+                        return DatabaseCandidateRow(
                             path: statement.text(0) ?? "",
                             sessionID: statement.text(1) ?? "",
                             model: cleanedDatabaseValue(statement.text(2)),
                             reasoningEffort: cleanedDatabaseValue(statement.text(3)),
-                            title: cleanedThreadTitle(statement.text(4)),
-                            parentThreadID: parentThreadIDFromSource(statement.text(5))
+                            title: named ?? (subagent ? RunningTaskTitle.agent(metadata) ?? detail : detail),
+                            parentThreadID: parentThreadIDFromSource(source)
                         )
                     }
                     let paths = Set(rows.map(\.path).filter { !$0.isEmpty })
@@ -478,17 +487,6 @@ enum RunningThreadScanner {
         guard let value else { return nil }
         let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return cleaned.isEmpty ? nil : cleaned
-    }
-
-    private static func cleanedThreadTitle(_ value: String?) -> String? {
-        guard let value else { return nil }
-        let normalized = value
-            .split(whereSeparator: \.isWhitespace)
-            .joined(separator: " ")
-        guard !normalized.isEmpty else { return nil }
-        let maximumCharacters = 96
-        guard normalized.count > maximumCharacters else { return normalized }
-        return String(normalized.prefix(maximumCharacters - 1)) + "…"
     }
 
     private static func parentThreadIDFromSource(_ source: String?) -> String? {
@@ -631,6 +629,7 @@ enum RunningThreadScanner {
            ),
            state.boundarySignature == currentBoundarySignature {
             if state.offset < fingerprint.size {
+                if state.title == nil { state.title = try? rolloutTitle(file: file, subagent: state.isSubagent) }
                 let parsed = try parseForward(
                     file: file,
                     from: state.offset,
@@ -671,7 +670,8 @@ enum RunningThreadScanner {
             parentThreadID: metadata.parentThreadID,
             lifecycle: lifecycle?.lifecycle ?? .unknown,
             lifecycleAt: lifecycle?.timestamp,
-            modifiedAt: fingerprint.modifiedAt
+            modifiedAt: fingerprint.modifiedAt,
+            title: metadata.title ?? (try? rolloutTitle(file: file, subagent: metadata.isSubagent))
         )
     }
 
@@ -726,8 +726,23 @@ enum RunningThreadScanner {
             id: id,
             isSubagent: isSubagentMarker(threadSource)
                 || sourceContainsSubagentNode(payload["source"]),
-            parentThreadID: parentThreadID(in: payload)
+            parentThreadID: parentThreadID(in: payload),
+            title: RunningTaskTitle.agent(payload)
         )
+    }
+
+    /// At most 64 KiB, only complete JSONL records; cached with the verified
+    /// file state. Missing titles never trigger a full transcript scan.
+    private static func rolloutTitle(file: URL, subagent: Bool) throws -> String? {
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        let prefix = handle.readData(ofLength: maximumLifecyclePrefixBytes)
+        guard let end = prefix.lastIndex(of: 10) else { return nil }
+        for line in prefix[..<end].split(separator: 10) {
+            guard let object = jsonObject(Data(line)) else { continue }
+            if let title = RunningTaskTitle.message(object, subagent: subagent) { return title }
+        }
+        return nil
     }
 
     private static func lastCompleteLineEnd(file: URL, size: UInt64) throws -> UInt64 {
@@ -1231,7 +1246,7 @@ enum RunningThreadScanner {
     ) -> RunningThreadMember {
         RunningThreadMember(
             threadID: state.sessionID,
-            title: configuration?.title,
+            title: configuration?.title ?? state.title ?? RunningTaskTitle.fallback(id: state.sessionID, subagent: state.isSubagent),
             model: configuration?.model,
             reasoningEffort: configuration?.reasoningEffort
         )
@@ -1315,6 +1330,7 @@ enum RunningThreadScanner {
                 configuration?.title,
                 configuration?.parentThreadID,
                 state.parentThreadID,
+                state.title,
             ] {
                 hash ^= 0xff
                 hash &*= 1_099_511_628_211

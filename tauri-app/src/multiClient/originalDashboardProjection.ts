@@ -1,11 +1,12 @@
-import { claudeModelIdentity, claudeModelGroups, claudeNewestCatalogModelsByFamily } from "../components/claudeModelPresentation";
+import { claudeModelGroups } from "../components/claudeModelPresentation";
 import type { DashboardSnapshot, RecentUsagePoint, ModelTokenBreakdown } from '../types/dashboard';
 import type { Snapshot, Summary } from './MultiClientUsage';
 import { projectClientDays } from './integratedClientModel';
 import { clientNames } from './MultiClientUsage';
 import { floatingTodayModelUsageItems, type FloatingModelUsageItem, dashboardModelFamilyGroups } from '../floating/floatingModelUsage';
-import { modelUsageColor, modelUsageLabel } from '../components/modelUsagePresentation';
-import { modelPresentationIdentity } from '../domain/modelPresentationIdentity';
+import { modelUsageColor } from '../components/modelUsagePresentation';
+import { modelPresentationIdentity, modelPresentationDetail } from '../domain/modelPresentationIdentity';
+import { officialAPICostUSD, independentQuotaModelName, isAutoReviewUsage, type OfficialAPIPriceModel } from '../settings/quotaPriceModel';
 
 export interface ClientCostPeriods {
   lifetime: FloatingModelUsageItem[];
@@ -13,17 +14,11 @@ export interface ClientCostPeriods {
   sevenDay: FloatingModelUsageItem[];
   codexPendingScopes?: ("today"|"sevenDay")[];
 }
-export function clientCostGroups(items: FloatingModelUsageItem[]) {
+export function clientCostGroups(allItems: FloatingModelUsageItem[]) {
+  const items=allItems.filter(x=>x.tokens>0 && x.key!=="unknown-models");
   const codex = items.filter(x => x.key.startsWith('codex|')).map(x => ({...x,key:x.key.slice(6)}));
   const codexGroups = dashboardModelFamilyGroups(codex);
   const claudeRows=items.filter(x=>/^claude(?:Code|Desktop)\|/.test(x.key));
-  if(claudeRows.length){
-    const client=claudeRows[0].key.split("|")[0];
-    for(const [family,model] of Object.entries(claudeNewestCatalogModelsByFamily)){
-      if(!model || claudeRows.some(row=>{const id=claudeModelIdentity(row.key);return id?.family===family && (id.version[0]>model.version[0] || (id.version[0]===model.version[0]&&(id.version[1]??0)>=(model.version[1]??0)));}))continue;
-      claudeRows.push({key:client+"|"+model.id,label:modelUsageLabel(model.id),tokens:0,share:0,costUSD:0,usesIndependentQuota:false,referenceCostUSD:null,color:modelUsageColor(model.id)});
-    }
-  }
   const claudeGroups = claudeModelGroups(claudeRows,"claude");
   const groups: {id:string;label:string;items:FloatingModelUsageItem[]}[] = [
     ...codexGroups.filter(g=>g.id==="6"), ...claudeGroups.filter(g=>g.id.endsWith(":latest")),
@@ -32,15 +27,40 @@ export function clientCostGroups(items: FloatingModelUsageItem[]) {
   for (const client of [...new Set(items.filter(x=>!/^codex\||^claude(?:Code|Desktop)\|/.test(x.key)).map(x=>x.key.split('|')[0]))].sort()) {
     groups.push({id:client,label:clientNames[client as keyof typeof clientNames] ?? client,items:items.filter(x=>x.key.startsWith(client+'|'))});
   }
+  const unknown=allItems.filter(x=>x.tokens>0 && x.key==="unknown-models");
+  if(unknown.length)groups.push({id:"unknown-models",label:"参考",items:unknown});
   return groups;
 }
-export function clientModelCostItems(rows:Summary[], original:ModelTokenBreakdown[], allowed:readonly string[]):FloatingModelUsageItem[] {
-    const items:FloatingModelUsageItem[] = allowed.includes('codex') ? floatingTodayModelUsageItems(original,'gpt56Sol',{showPlaceholders:false,mergeAutoReview:false}).map(x=>({...x,key:'codex|'+x.key})) : [];
+export function clientModelCostItems(rows:Summary[], original:ModelTokenBreakdown[], allowed:readonly string[], fallbackModel:OfficialAPIPriceModel='gpt56Sol'):FloatingModelUsageItem[] {
+    const unknownModel=(model:string|null|undefined)=> !isAutoReviewUsage(model) && independentQuotaModelName(model)===null
+      && !['known','source'].includes(modelPresentationIdentity(model).kind);
+    const selected=rows.filter(x=>allowed.includes(x.client));
+    const unknownOriginal=allowed.includes('codex')?original.filter(x=>unknownModel(x.model)&&x.breakdown.totalTokens>0):[];
+    const items:FloatingModelUsageItem[] = allowed.includes('codex') ? floatingTodayModelUsageItems(original.filter(x=>!unknownModel(x.model)),fallbackModel,{showPlaceholders:false,mergeAutoReview:false}).map(x=>({...x,key:'codex|'+x.key})) : [];
+    let unknownTokens=0,unknownReference=0;
+    const unknownSources:string[]=[],knownCosts:number[]=[];
+    for(const row of unknownOriginal){
+      unknownTokens+=row.breakdown.totalTokens;
+      unknownReference+=officialAPICostUSD(row.breakdown.inputTokens,row.breakdown.cachedInputTokens??0,row.breakdown.outputTokens,fallbackModel);
+      unknownSources.push('Codex · '+modelPresentationDetail(row.model??'unknown'));
+    }
+    for(const item of floatingTodayModelUsageItems(unknownOriginal,fallbackModel,{mergeAutoReview:false})){
+      const cost=item.costUSD??item.knownPartialCostUSD;if(cost!=null)knownCosts.push(cost);
+    }
+    for(const row of selected.filter(x=>unknownModel(x.model)&&x.inputTokens+x.outputTokens>0)){
+      unknownTokens+=row.inputTokens+row.outputTokens;
+      unknownReference+=officialAPICostUSD(row.inputTokens,row.cacheReadTokens??0,row.outputTokens,fallbackModel);
+      unknownSources.push(clientNames[row.client]+' · '+modelPresentationDetail(row.model));
+      if(((row.unpricedRequests??0)===0||row.requests>(row.unpricedRequests??0))&&row.apiCostUSD!=null)knownCosts.push(row.apiCostUSD);
+    }
     const groups=new Map<string,Summary[]>();
-    for(const row of rows.filter(x=>allowed.includes(x.client))){
+    for(const row of selected.filter(x=>!unknownModel(x.model))){
       const key=row.client+'|'+modelPresentationIdentity(row.model).key;
       const group=groups.get(key)??[];group.push(row);groups.set(key,group);
     }
+    if(unknownTokens>0)items.push({key:'unknown-models',label:'未知模型',tokens:unknownTokens,share:0,costUSD:null,
+      knownPartialCostUSD:knownCosts.length?knownCosts.reduce((a,b)=>a+b,0):null,referenceCostUSD:unknownReference,
+      usesIndependentQuota:false,color:modelUsageColor('unknown'),sourceModels:[...new Set(unknownSources)].sort()});
     // Sum already-priced raw contributions. Never price the merged token sum.
     for(const key of [...groups.keys()].sort()){
       const group=groups.get(key)!,identity=modelPresentationIdentity(group[0].model);

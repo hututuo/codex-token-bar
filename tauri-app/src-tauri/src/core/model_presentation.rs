@@ -11,6 +11,7 @@ struct Policy {
     unsafe_scalar_ranges:Vec<[u32;2]>,
     wrappers:Vec<String>,missing:Vec<String>,ambiguous:Vec<String>,
     modifiers:BTreeMap<String,Vec<String>>,routing_labels:BTreeMap<String,String>,source_labels:BTreeMap<String,String>,
+    billing_aliases:BTreeMap<String,String>,
 }
 #[derive(Deserialize)]
 struct Names { names:BTreeMap<String,String> }
@@ -68,12 +69,14 @@ fn known(value:&str,suffix:&str,c:&Catalog)->Option<ModelPresentationIdentity> {
 }
 pub fn resolve(raw:&str)->ModelPresentationIdentity {
     let c=catalog();let p=&c.policy;let original=raw.trim();let mut key=normalized(original);
+    key=billing_identifier(&key).to_string();
     if p.missing.contains(&key) {return identity("unknown","未报告模型","unreported");}
     if p.ambiguous.contains(&key) {return identity("gpt-5.6-generic","5.6（未分型）","ambiguous");}
     if let Some(label)=p.routing_labels.get(&key) {return identity(&key,label,"routing");}
     if let Some(label)=p.source_labels.get(&key) {return identity(&key,label,"source");}
     if let Some(hit)=known(&key,"",c) {return hit;}
     if let Some(prefix)=p.wrappers.iter().find(|prefix|key.starts_with(prefix.as_str())) {key=key[prefix.len()..].into();}
+    key=billing_identifier(&key).to_string();
     for region in &c.prices.normalize.bedrock_regions {
         if let Some(rest)=key.strip_prefix(&(region.clone()+".")) {
             if c.prices.normalize.bedrock_vendors.iter().any(|v|rest.starts_with(&(v.clone()+"."))) {key=rest.into();}break;
@@ -101,6 +104,11 @@ pub fn resolve(raw:&str)->ModelPresentationIdentity {
         p.unsafe_scalar_ranges.iter().any(|[lo,hi]|*lo<=value&&value<=*hi) || matches!(ch,'{'|'}')
     });
     identity(original,if invalid {"异常模型标识"} else {original},if invalid {"invalid"} else {"unknown"})
+}
+
+/// Only explicitly confirmed route slots affect billing. Raw IDs stay intact.
+pub(crate) fn billing_identifier(identifier:&str)->&str {
+    catalog().policy.billing_aliases.get(identifier).map(String::as_str).unwrap_or(identifier)
 }
 
 #[cfg(test)]

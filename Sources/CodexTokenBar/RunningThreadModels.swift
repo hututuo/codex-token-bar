@@ -34,17 +34,23 @@ struct RunningThreadMember: Equatable, Hashable, Sendable, Identifiable {
     let title: String?
     let model: String?
     let reasoningEffort: String?
+    let client: String?
+    let phase: String?
 
     init(
         threadID: String,
         title: String?,
         model: String?,
-        reasoningEffort: String?
+        reasoningEffort: String?,
+        client: String? = nil,
+        phase: String? = nil
     ) {
         self.threadID = threadID
         self.title = Self.cleaned(title)
         self.model = Self.cleaned(model)
         self.reasoningEffort = Self.cleaned(reasoningEffort)
+        self.client = client
+        self.phase = phase
     }
 
     var id: String { threadID }
@@ -240,6 +246,7 @@ struct RunningThreadFileState: Equatable, Sendable {
     var lifecycle: RunningThreadLifecycle
     var lifecycleAt: Date?
     var modifiedAt: Date
+    var title: String? = nil
 }
 
 struct RunningThreadScanResult: Equatable, Sendable {

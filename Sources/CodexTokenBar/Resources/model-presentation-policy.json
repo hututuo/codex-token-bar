@@ -8,9 +8,11 @@
     "claude-": ["-thinking", "-minimal", "-low", "-medium", "-high", "-xhigh", "-max", "-none", "-off"],
     "gemini-": ["-low", "-medium", "-high", "-tiered"]
   },
+  "billingAliases": {
+    "gemini-3-flash-a": "gemini-3-flash-preview",
+    "gemini-3.8-flash-n": "gemini-3.8-flash"
+  },
   "routingLabels": {
-    "gemini-3-flash-a": "Flash3 · A",
-    "gemini-3.8-flash-n": "Flash3.8 · N",
     "gemini-pro-default": "Gemini Pro · 自动"
   },
   "sourceLabels": {

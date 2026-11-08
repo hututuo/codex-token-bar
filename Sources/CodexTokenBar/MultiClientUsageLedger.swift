@@ -596,6 +596,7 @@ final class MultiClientUsageLedger: @unchecked Sendable {
         var identifier = rawModel.split(separator: "/", omittingEmptySubsequences: false).last.map(String.init)?
             .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
         guard !identifier.isEmpty else { return nil }
+        identifier = ModelPresentationIdentity.billingIdentifier(identifier)
 
         var explicitFast = false
         var entry = exactBundledPriceEntries[identifier]
@@ -626,9 +627,12 @@ final class MultiClientUsageLedger: @unchecked Sendable {
            five >= 0, hour >= 0, five <= cacheWrite, hour <= cacheWrite - five,
            five + hour == cacheWrite {
             oneHourWrite = hour
-        } else if cacheWrite == 0 || rates.cacheWrite == rates.cacheWrite1h {
+        } else {
+            // Legacy sources recorded the total without a valid TTL split.
+            // Apply the standard 5m write rate; retain the raw payload so a
+            // later valid 1h split can enrich and reprice the same event.
             oneHourWrite = 0
-        } else { return nil }
+        }
         let uncachedInput = input - cacheRead - cacheWrite
         let maxClass = ResponseCost.maxClassTokens
         guard uncachedInput <= maxClass, cacheRead <= maxClass, cacheWrite <= maxClass, output <= maxClass else { return nil }
