@@ -194,6 +194,12 @@ final class SharedAccountUsageSafetyDatabase: @unchecked Sendable {
             markUnhealthy()
             return body()
         }
+        // Retained physical handles already avoid reparsing the catalog. Do
+        // not take their process mutex around the whole attribution callback:
+        // load/mutate acquire the recovery gate FIRST, then the driver mutex.
+        // Taking those locks in reverse order here could block a parallel
+        // safety read until its recovery timeout and falsely mark it unhealthy.
+        if driver.reusesPhysicalConnection { return body() }
         do { return try driver.withOperationConnection(body) }
         catch {
             markUnhealthy()

@@ -109,6 +109,25 @@ final class SQLiteRetainedPhysicalConnectionTests: XCTestCase {
         XCTAssertEqual(try driver.readRows("SELECT COUNT(*),SUM(value) FROM facts"){[$0.int(0)!,$0.int(1)!]},[[17,153]])
         XCTAssertEqual(driver.physicalOpenCount,1)
     }
+
+    func testSafetyOperationNeverHoldsPhysicalMutexBeforeRecoveryGate() throws {
+        let root=try directory()
+        let safety=SharedAccountUsageSafetyDatabase(url:root.appendingPathComponent("safety.sqlite"))
+        let data=Data("{}".utf8)
+        XCTAssertTrue(safety.store(data,as:.preciseContinuity))
+        let finished=DispatchSemaphore(value:0),failures=Failures()
+        safety.withOperationConnection {
+            DispatchQueue.global(qos:.utility).async {
+                if safety.load(.preciseContinuity) != data { failures.add() }
+                finished.signal()
+            }
+            XCTAssertEqual(finished.wait(timeout:.now()+1),.success,
+                "An outer attribution scope must not hold the driver while another read owns the recovery gate")
+            XCTAssertEqual(safety.load(.preciseContinuity),data)
+        }
+        XCTAssertEqual(failures.count,0)
+        XCTAssertTrue(safety.persistenceHealthy)
+    }
 }
 
 private final class Failures:@unchecked Sendable {

@@ -669,6 +669,7 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
     // Every operation below still checks the route, A identity and owner state
     // and installs a fresh logical binding. External WAL readers cannot opt in.
     private let retainsPhysicalConnection: Bool
+    var reusesPhysicalConnection: Bool { retainsPhysicalConnection }
     private let physicalConnectionLock = NSRecursiveLock()
     private var retainedPhysicalConnection: (database: OpaquePointer, identity: String)?
     private var physicalConnectionDepth = 0

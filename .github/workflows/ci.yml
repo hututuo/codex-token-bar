@@ -191,6 +191,7 @@ jobs:
             --require testRetainedHandleRejectsValidPhysicalAReplacementAndBlockedAdmission \
             --require testRetainedPhysicalConnectionSerializesConcurrentTransactions \
             --require testAdjacentReadsReuseHandleWithoutCreatingAnExtraSnapshot \
+            --require testSafetyOperationNeverHoldsPhysicalMutexBeforeRecoveryGate \
             --require testDiagnosticsCollectionLeavesDatabaseAndSourceTreeUnchanged \
             --require testDiagnosticsIgnoresHeldSQLiteExclusiveLock \
             --require testDiagnosticsAllowsDarwinTemporaryAliasButNotUserDirectoryLinks \
