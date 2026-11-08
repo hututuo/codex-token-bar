@@ -36,7 +36,7 @@ test("short names retain versions, service tiers and unknown model identities", 
   assert.equal(modelUsageLabel("codex-auto-review@5.4"), "Auto Review（5.4）");
 });
 
-test("multi-client cost projections shorten labels without changing keys, amounts or unpriced state", async () => {
+test("multi-client costs retain known amounts and collect unrecognized identities in a reference slot", async () => {
   await withSsrModules(async load => {
     const { clientModelCostItems } = await load("/src/multiClient/originalDashboardProjection.ts");
     const source = [
@@ -46,8 +46,10 @@ test("multi-client cost projections shorten labels without changing keys, amount
     const before = structuredClone(source);
     const items = clientModelCostItems(source, [], ["antigravity", "deepseek"]);
     assert.deepEqual(items.map(item => [item.key, item.label, item.tokens, item.costUSD]), [
-      ["antigravity|gemini-4-argon", "Argon4", 120, 0.123], ["deepseek|deepseek-pro", "deepseek-pro", 130, null],
+      ["antigravity|gemini-4-argon", "Argon4", 120, 0.123], ["unknown-models", "未知模型", 130, null],
     ]);
+    assert.ok(items[1].referenceCostUSD>0);assert.equal(items[1].knownPartialCostUSD,null);
+    assert.ok(items[1].sourceModels.some(s=>s.includes('deepseek-pro')));
     assert.deepEqual(source, before);
   });
 });

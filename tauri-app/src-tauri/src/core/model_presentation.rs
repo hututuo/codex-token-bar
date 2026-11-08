@@ -1,4 +1,5 @@
-//! Display identity only: raw ledger IDs and historical prices stay authoritative.
+//! Display identity plus explicitly confirmed billing aliases. Only
+//! `billing_identifier` is used by pricing; raw ledger IDs stay authoritative.
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};

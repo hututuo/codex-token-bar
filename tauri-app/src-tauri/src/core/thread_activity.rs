@@ -709,7 +709,9 @@ fn refresh_tracked_session(
     }
 
     if signature.size > previous.signature.size {
-        if previous.title.is_none() { previous.title=rollout_title(&mut file,previous.subagent)?; }
+        if previous.title.is_none() && previous.signature.size < MAX_LIFECYCLE_PREFIX_BYTES as u64 {
+            previous.title=rollout_title(&mut file,previous.subagent).ok().flatten();
+        }
         let complete_offset = last_complete_line_offset(&mut file, signature.size)?;
         if complete_offset > previous.complete_offset {
             scan_complete_lines_forward(
@@ -749,8 +751,10 @@ fn cold_scan_open_file(
     let complete_offset = last_complete_line_offset(&mut file, signature.size)?;
     let metadata = read_session_metadata(&mut file, complete_offset)?
         .ok_or_else(|| format!("会话文件缺少 session_meta：{}", path.display()))?;
-    let title=if metadata.title.is_some() {metadata.title.clone()} else {rollout_title(&mut file,metadata.subagent)?};
     let lifecycle = latest_lifecycle_state(&mut file, complete_offset)?;
+    let title=if metadata.title.is_some() {metadata.title.clone()}
+        else if lifecycle.is_some_and(|value|value.running) {rollout_title(&mut file,metadata.subagent).ok().flatten()}
+        else {None};
     let boundary_signature = boundary_signature(&mut file, complete_offset)?;
     validate_open_file_after_read(canonical_root, path, &file, signature)?;
     Ok(TrackedSession {

@@ -34,5 +34,5 @@ test('Antigravity participates in all and standalone scopes, activity history, c
  assert.equal(dashboardModelUsageColor(model,false),modelUsageColor(model));
  const html=renderToStaticMarkup(React.createElement(RunningTaskDetails,{running:localTaskSummary([main],[child])}));
  assert.match(html,/data-task-source="antigravity"/);assert.match(html,/qs-child-task/);assert.doesNotMatch(html,/Claude/);
- assert.match(html,/生成中/);assert.match(html,/工具执行中/);
+ assert.match(html,/生成中/);assert.match(html,/qs-task-effort">工具</);
 }));

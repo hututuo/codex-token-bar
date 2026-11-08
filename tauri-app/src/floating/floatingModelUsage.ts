@@ -26,6 +26,7 @@ export interface FloatingModelUsageItem {
   costUSD: number | null;
   knownPartialCostUSD?: number | null;
   sourceModels?: string[];
+  referenceModelLabel?: string;
   usesIndependentQuota: boolean;
   referenceCostUSD: number | null;
   color: string;
@@ -261,7 +262,7 @@ export function floatingModelUsageValue(
     const referenceCost = item.referenceCostUSD === null
       ? "—"
       : floatingModelUsageMoneyText(item.referenceCostUSD);
-    if(item.key === "unknown-models")return `参考 ${referenceCost}（按回退模型估算）`;
+    if(item.key === "unknown-models")return `参考 ${referenceCost}（按 ${item.referenceModelLabel??'回退模型'} 估算，不计入已知费用）`;
     return `${referenceCost}（不计入总计）`;
   }
   if (item.costUSD !== null) return floatingModelUsageMoneyText(item.costUSD);
@@ -286,6 +287,7 @@ export function floatingModelUsageKnownCostUSD(
 ): number | null {
   const billable = items.filter((item) => item.tokens > 0 && (!isReferenceOnlyModelUsage(item) || item.key === "unknown-models" && item.knownPartialCostUSD != null));
   const known = billable.filter((item) => item.costUSD !== null || item.knownPartialCostUSD != null);
+  if(known.length===0 && items.some(item=>item.key==='unknown-models'&&item.tokens>0))return null;
   if (billable.some((item) => item.costUSD === null) && known.length === 0) {
     return null;
   }

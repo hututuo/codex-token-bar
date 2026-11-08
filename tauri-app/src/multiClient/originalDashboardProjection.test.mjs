@@ -25,6 +25,7 @@ test('all unclassified identities share a last reference slot in every period an
  assert.equal(hasUnknownModelPrices(items),false);assert.equal(floatingModelUsageKnownCostUSD(items),.25);
  assert.equal(clientCostGroups(items).at(-1).id,'unknown-models');
  assert.equal(clientModelCostItems(rows,original,['antigravity'])[0].tokens,480);
+ assert.equal(floatingModelUsageKnownCostUSD(clientModelCostItems(rows,original,['antigravity'])),null);
  assert.deepEqual({rows,original},before);
  const base=dashboard();base.stats.modelBreakdowns=original;base.usageSummary={todayModelBreakdowns:original};
  base.recentUsage24h=[{startUnix:stamp-1,tokens:120,modelBreakdowns:original}];

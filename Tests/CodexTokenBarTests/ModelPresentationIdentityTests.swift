@@ -67,6 +67,7 @@ final class ModelPresentationIdentityTests: XCTestCase {
         }
         let scoped = ClientModelCostPeriods.modelItems(rows, [raw], allowed: ["antigravity"])
         XCTAssertEqual(scoped.first?.tokens, 480, "Source selection still bounds the combined reference")
+        XCTAssertNil(FloatingTodayModelUsagePresentation.knownCostUSD(in: scoped), "An estimate is not a measured zero-dollar bill")
     }
 
     func testCostGroupsNeverInventZeroUsageCatalogCards() {

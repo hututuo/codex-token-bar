@@ -6,7 +6,7 @@ import { clientNames } from './MultiClientUsage';
 import { floatingTodayModelUsageItems, type FloatingModelUsageItem, dashboardModelFamilyGroups } from '../floating/floatingModelUsage';
 import { modelUsageColor } from '../components/modelUsagePresentation';
 import { modelPresentationIdentity, modelPresentationDetail } from '../domain/modelPresentationIdentity';
-import { officialAPICostUSD, independentQuotaModelName, isAutoReviewUsage, type OfficialAPIPriceModel } from '../settings/quotaPriceModel';
+import { officialAPICostUSD, independentQuotaModelName, isAutoReviewUsage, priceModelTitle, type OfficialAPIPriceModel } from '../settings/quotaPriceModel';
 
 export interface ClientCostPeriods {
   lifetime: FloatingModelUsageItem[];
@@ -58,9 +58,6 @@ export function clientModelCostItems(rows:Summary[], original:ModelTokenBreakdow
       const key=row.client+'|'+modelPresentationIdentity(row.model).key;
       const group=groups.get(key)??[];group.push(row);groups.set(key,group);
     }
-    if(unknownTokens>0)items.push({key:'unknown-models',label:'未知模型',tokens:unknownTokens,share:0,costUSD:null,
-      knownPartialCostUSD:knownCosts.length?knownCosts.reduce((a,b)=>a+b,0):null,referenceCostUSD:unknownReference,
-      usesIndependentQuota:false,color:modelUsageColor('unknown'),sourceModels:[...new Set(unknownSources)].sort()});
     // Sum already-priced raw contributions. Never price the merged token sum.
     for(const key of [...groups.keys()].sort()){
       const group=groups.get(key)!,identity=modelPresentationIdentity(group[0].model);
@@ -72,6 +69,9 @@ export function clientModelCostItems(rows:Summary[], original:ModelTokenBreakdow
         usesIndependentQuota:false,referenceCostUSD:null,color:modelUsageColor(identity.key),
         sourceModels:[...new Set(group.map(r=>r.model))].sort()});
     }
+    if(unknownTokens>0)items.push({key:'unknown-models',label:'未知模型',tokens:unknownTokens,share:0,costUSD:null,
+      knownPartialCostUSD:knownCosts.length?knownCosts.reduce((a,b)=>a+b,0):null,referenceCostUSD:unknownReference,
+      usesIndependentQuota:false,color:modelUsageColor('unknown'),sourceModels:[...new Set(unknownSources)].sort(),referenceModelLabel:priceModelTitle(fallbackModel)});
     const total=Math.max(1,items.reduce((n,x)=>n+x.tokens,0));return items.filter(x=>x.tokens>0).map(x=>({...x,share:x.tokens/total}));
 }
 export function clientCostPeriods(codex: DashboardSnapshot, snapshot: Snapshot, allowed: string[], now=Date.now()/1000):ClientCostPeriods {

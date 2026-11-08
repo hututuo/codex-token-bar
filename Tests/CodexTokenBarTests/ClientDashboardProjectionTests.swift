@@ -46,7 +46,8 @@ final class ClientDashboardProjectionTests: XCTestCase {
         XCTAssertTrue(pending.today.isEmpty)
         XCTAssertTrue(pending.sevenDay.isEmpty)
         XCTAssertEqual(pending.codexPendingScopes, [.today, .sevenDay])
-        XCTAssertEqual(pending.lifetime.first?.id, "codex|lifetime-only")
+        XCTAssertEqual(pending.lifetime.first?.id, "unknown-models")
+        XCTAssertTrue(pending.lifetime.first?.sourceModels.contains(where: { $0.contains("lifetime-only") }) == true)
     }
     func testDashboardAutoReviewStaysSeparateWithoutChangingFacts() {
         let original = ["gpt-5.6-luna", "codex-auto-review@luna", "gpt-6-luna"].map {

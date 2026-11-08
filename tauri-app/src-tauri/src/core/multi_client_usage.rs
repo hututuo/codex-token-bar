@@ -7123,9 +7123,9 @@ mod tests {
     #[test]
     fn confirmed_antigravity_route_prices_match_canonical_models_and_legacy_opus_prices() {
         for (route,canonical) in [("gemini-3-flash-a","gemini-3-flash-preview"),("gemini-3.8-flash-n","gemini-3.8-flash")] {
-            let price=api_cost_micro_usd(route,100_000,10_000,Some(20_000),Some(30_000));
+            let price=api_cost_micro_usd_at(route,100_000,10_000,Some(20_000),Some(30_000),None,Some(1_793_000_000.0));
             assert!(price.is_some());
-            assert_eq!(price,api_cost_micro_usd(canonical,100_000,10_000,Some(20_000),Some(30_000)));
+            assert_eq!(price,api_cost_micro_usd_at(canonical,100_000,10_000,Some(20_000),Some(30_000),None,Some(1_793_000_000.0)));
         }
         assert!(api_cost_micro_usd("claude-opus-5",100_000,10_000,Some(20_000),Some(30_000)).is_some());
         assert_eq!(api_cost_micro_usd("gemini-3.8-flash-x",100_000,10_000,Some(0),Some(0)),None);

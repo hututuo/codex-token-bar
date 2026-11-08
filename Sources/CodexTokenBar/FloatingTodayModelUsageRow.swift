@@ -28,6 +28,7 @@ struct FloatingTodayModelUsageItem: Identifiable, Equatable, Sendable {
     /// Original model identifiers retained when presentation rows are combined.
     /// This is explanatory metadata, never an accounting or pricing input.
     var sourceModels: [String] = []
+    var referenceModelLabel: String? = nil
     var isFallbackEstimate: Bool { id == "unknown-models" }
     var isReferenceOnly: Bool {
         isFallbackEstimate || usesIndependentQuota || CodexAutoReviewPricingPolicy.isAutoReviewUsage(id.split(separator: "|").last.map(String.init))
@@ -43,7 +44,7 @@ struct FloatingTodayModelUsageItem: Identifiable, Equatable, Sendable {
         case .cost:
             if isReferenceOnly {
                 let referenceCost = referenceCostUSD?.quotaEstimatorMoneyText ?? "—"
-                if isFallbackEstimate { return "参考 \(referenceCost)（按回退模型估算）" }
+                if isFallbackEstimate { return "参考 \(referenceCost)（按 \(referenceModelLabel ?? "回退模型") 估算，不计入已知费用）" }
                 return "\(referenceCost)（不计入总计）"
             }
             guard let costUSD else { return "价格未知" }
@@ -310,6 +311,7 @@ enum FloatingTodayModelUsagePresentation {
     static func knownCostUSD(in items: [FloatingTodayModelUsageItem]) -> Double? {
         let billable = items.filter { $0.tokens > 0 && (!$0.isReferenceOnly || $0.isFallbackEstimate && $0.knownPartialCostUSD != nil) }
         let knownCosts = billable.compactMap { $0.knownPartialCostUSD ?? $0.costUSD }
+        if knownCosts.isEmpty && items.contains(where: { $0.isFallbackEstimate && $0.tokens > 0 }) { return nil }
         if knownCosts.isEmpty && billable.contains(where: { $0.costUSD == nil }) {
             return nil
         }

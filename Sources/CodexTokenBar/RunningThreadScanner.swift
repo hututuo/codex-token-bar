@@ -629,7 +629,9 @@ enum RunningThreadScanner {
            ),
            state.boundarySignature == currentBoundarySignature {
             if state.offset < fingerprint.size {
-                if state.title == nil { state.title = try? rolloutTitle(file: file, subagent: state.isSubagent) }
+                if state.title == nil, state.observedSize < UInt64(maximumLifecyclePrefixBytes) {
+                    state.title = try? rolloutTitle(file: file, subagent: state.isSubagent)
+                }
                 let parsed = try parseForward(
                     file: file,
                     from: state.offset,
@@ -671,7 +673,7 @@ enum RunningThreadScanner {
             lifecycle: lifecycle?.lifecycle ?? .unknown,
             lifecycleAt: lifecycle?.timestamp,
             modifiedAt: fingerprint.modifiedAt,
-            title: metadata.title ?? (try? rolloutTitle(file: file, subagent: metadata.isSubagent))
+            title: metadata.title ?? (lifecycle?.lifecycle == .running ? (try? rolloutTitle(file: file, subagent: metadata.isSubagent)) : nil)
         )
     }
 

@@ -1,9 +1,10 @@
 import Foundation
 import AgentSpeedCore
 
-/// Presentation identity only. Never rewrites persisted model IDs, price keys,
-/// dated price periods or events. In particular, a price-book alias is NOT by
-/// itself proof that two model versions are the same model.
+/// `resolve` is a presentation identity and never rewrites persisted IDs,
+/// periods or events. `billingIdentifier` separately exposes only explicitly
+/// confirmed route aliases; general display normalization cannot price a row.
+/// A price-book alias alone is not proof that two versions are the same model.
 struct ModelPresentationIdentity: Codable, Equatable, Sendable {
     let key: String
     let label: String

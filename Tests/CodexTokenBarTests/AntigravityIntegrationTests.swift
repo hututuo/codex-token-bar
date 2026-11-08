@@ -153,7 +153,7 @@ final class AntigravityIntegrationTests: XCTestCase {
         let summaries = try ledger.summaries()
         let base = try XCTUnwrap(summaries.first { $0.model == "gemini-4-argon" }?.apiCostUSD)
         XCTAssertEqual(summaries.first { $0.model == "gemini-4-argon-high" }?.apiCostUSD, base)
-        XCTAssertNil(summaries.first { $0.model == "gemini-3.8-flash-n" }?.apiCostUSD)
+        XCTAssertEqual(summaries.first { $0.model == "gemini-3.8-flash-n" }?.apiCostUSD, 0.000153)
     }
 
     @MainActor func testAntigravityTasksRatesAndModelColorsUseSharedPresentation() throws {
@@ -175,7 +175,9 @@ final class AntigravityIntegrationTests: XCTestCase {
         let running = ClientLocalRuntimePresentation.antigravityRunning(snapshot, now: now)
         XCTAssertEqual(running.main, 1); XCTAssertEqual(running.subagents, 1)
         XCTAssertEqual(running.groups.first?.subagents.count, 1)
-        XCTAssertEqual(running.groups.first?.mainThread.title, "Antigravity session")
+        XCTAssertTrue(running.groups.first?.mainThread.title?.hasPrefix("任务 · ") == true)
+        XCTAssertEqual(running.groups.first?.mainThread.client, "antigravity")
+        XCTAssertEqual(running.groups.first?.subagents.first?.phase, "tools")
         let merged = ClientLocalRuntimePresentation.running(codex: .unavailable, claude: .unavailable, allowed: ["antigravity"], antigravity: running)
         XCTAssertEqual(merged.main, 1); XCTAssertEqual(merged.subagents, 1)
         let meter = SidebarTaskMeterPresentation(summary: merged)

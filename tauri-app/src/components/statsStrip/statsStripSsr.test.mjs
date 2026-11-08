@@ -130,7 +130,7 @@ test("six lifetime metrics remain visible; legacy reset-minus-seven-day input ca
   });
 });
 
-test("observed cycle models preserve unknown prices, independent review, Tokens and separate boundary usage",async()=>{
+test("observed cycle models isolate unknown references and preserve independent review and boundary usage",async()=>{
   await withDom(async({window,container,root,StatsStrip})=>{
     const calls=[];
     window.__TAURI_INTERNALS__={invoke:async(command,args)=>{
@@ -143,9 +143,11 @@ test("observed cycle models preserve unknown prices, independent review, Tokens 
     assert.match(container.querySelector('.quota-calendar-selection').title,/开始记录/);
     assert.equal(container.querySelector('.stats-model-cost-header .quota-calendar-disclosure').textContent,"历史周期");
     assert.equal(container.querySelector('.quota-cycle-calendar'),null);
-    assert.match(container.textContent,/Auto Review（Luna）/);assert.match(container.textContent,/Luna/);assert.match(container.textContent,/5.6-NewLane/);
+    assert.match(container.textContent,/Auto Review（Luna）/);assert.match(container.textContent,/Luna/);assert.match(container.textContent,/未知模型/);
+    assert.ok([...container.querySelectorAll('[title]')].some(n=>n.title.includes('GPT-5.6-NewLane')));
     assert.doesNotMatch(container.textContent,/GPT-5.6-NewLane/);
-    assert.match(container.textContent,/价格未知/);assert.match(container.textContent,/已知价格小计[^$]*\$0\.20/);
+    assert.doesNotMatch(container.textContent,/价格未知/);assert.match(container.textContent,/已观测部分[^$]*\$0\.20/);
+    assert.match(container.textContent,/参考 \$4\.00/);
     assert.equal(container.querySelector(".stats-quota-boundary-detail"),null);
     assert.ok(calls.every(([,args])=>args.expectedScope==="account-a|pro|codex" && args.sourceToken.canonicalHomeKey==="home-a"));
     await React.act(async()=>{container.querySelector('.quota-calendar-disclosure').click();await settle();});
@@ -224,7 +226,7 @@ test("StatsStrip does not render an anonymous canvas fallback before native cycl
   });
 });
 
-test("StatsStrip confines an anonymous model warning to its row without inventing a zero subtotal", async () => {
+test("StatsStrip shows an anonymous reference without inventing a zero known subtotal", async () => {
   await withDom(async ({ window, container, root, StatsStrip }) => {
     mockCycleRows(window, [breakdown(null)]);
     await React.act(async () => {
@@ -235,9 +237,9 @@ test("StatsStrip confines an anonymous model warning to its row without inventin
     });
     assert.match(container.textContent, /未知模型/);
     assert.match(container.textContent, /100\.0万/);
-    assert.match(container.textContent, /价格未知/);
+    assert.doesNotMatch(container.textContent, /价格未知/);assert.match(container.textContent,/参考 \$4\.00/);
     assert.equal(container.querySelector(".stats-model-cost-empty"), null);
-    assert.equal(container.querySelector(".stats-model-cost-total").textContent, "已知价格小计 —");
+    assert.equal(container.querySelector(".stats-model-cost-total").textContent, "已观测部分 —");
     assert.equal(container.querySelectorAll(".stats-model-cost-primary-card").length, 0);
   });
 });
@@ -253,10 +255,10 @@ test("one anonymous model cannot hide the known cycle prices or total", async ()
         await settle();
       });
       assert.equal(container.querySelector(".stats-model-cost-empty"), null);
-      assert.equal(container.querySelector(".stats-model-cost-total").textContent, "已知价格小计 API $10.0");
+      assert.equal(container.querySelector(".stats-model-cost-total").textContent, "已观测部分 API $10.0");
       const astra = [...container.querySelectorAll(".stats-model-cost-primary-card")].find(card => card.querySelector("em").textContent === "Astra6");
       assert.equal(astra.querySelector("b").textContent, "$10.0");
-      assert.match(container.textContent, /价格未知/);
+      assert.doesNotMatch(container.textContent, /价格未知/);assert.match(container.textContent,/未知模型.*参考/);
       assert.doesNotMatch(container.textContent, /模型身份待补全|本期模型明细待读取/);
     });
   }

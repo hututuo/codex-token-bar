@@ -237,10 +237,10 @@ struct ClientModelCostPeriods: Equatable, Sendable {
                 result.append(.init(id: "unknown-models", label: "未知模型", tokens: unknownTokens, share: 0,
                     costUSD: nil, usesIndependentQuota: false, referenceCostUSD: unknownReference, color: .gray,
                     knownPartialCostUSD: unknownKnownCosts.isEmpty ? nil : unknownKnownCosts.reduce(0,+),
-                    sourceModels: Array(Set(unknownSources)).sorted()))
+                    sourceModels: Array(Set(unknownSources)).sorted(), referenceModelLabel: fallbackModel.title))
             }
             let total = max(1, result.reduce(0) { $0 + $1.tokens })
-            return result.filter { $0.tokens > 0 }.map { .init(id: $0.id, label: $0.label, tokens: $0.tokens, share: Double($0.tokens) / Double(total), costUSD: $0.costUSD, usesIndependentQuota: $0.usesIndependentQuota, referenceCostUSD: $0.referenceCostUSD, color: $0.color, knownPartialCostUSD: $0.knownPartialCostUSD,sourceModels:$0.sourceModels) }
+            return result.filter { $0.tokens > 0 }.map { .init(id: $0.id, label: $0.label, tokens: $0.tokens, share: Double($0.tokens) / Double(total), costUSD: $0.costUSD, usesIndependentQuota: $0.usesIndependentQuota, referenceCostUSD: $0.referenceCostUSD, color: $0.color, knownPartialCostUSD: $0.knownPartialCostUSD,sourceModels:$0.sourceModels,referenceModelLabel:$0.referenceModelLabel) }
     }
 }
 
