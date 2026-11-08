@@ -13,6 +13,7 @@ export interface ClientPreference {
   client: UsageClient; enabled: boolean; showSidebar: boolean; showQuota?: boolean; showMenuBar: boolean; color: string; order: number; style: string; path: string;
 }
 export interface Summary {
+  presentation?: {key:string;label:string;kind:string}|null;
   client: UsageClient; model: string; inputTokens: number; outputTokens: number; cacheReadTokens: number | null;
   cacheWriteTokens: number | null; reasoningTokens: number | null; requests: number; lastSeen: string; incompleteFields?: boolean; apiCostUSD?:number|null; unpricedRequests?:number; cacheReadComplete?:boolean;
 }

@@ -300,6 +300,9 @@ pub struct MultiClientUsagePreference {
 pub struct MultiClientUsageSummary {
     pub client: String,
     pub model: String,
+    /// Display-only projection; raw model and price totals stay untouched.
+    #[serde(default)]
+    pub presentation: Option<super::model_presentation::ModelPresentationIdentity>,
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cache_read_tokens: Option<u64>,
@@ -4112,6 +4115,7 @@ fn read_summary_rows_range_with_prices(
         });
         Ok(MultiClientUsageSummary {
             client,
+            presentation: Some(super::model_presentation::resolve(&model)),
             model,
             input_tokens: row.get::<_, i64>(2)?.max(0) as u64,
             output_tokens: row.get::<_, i64>(3)?.max(0) as u64,
@@ -7458,6 +7462,7 @@ mod tests {
         let summary = MultiClientUsageSummary {
             client: "claudeCode".into(),
             model: "model-a".into(),
+            presentation: None,
             input_tokens: 100,
             output_tokens: 9,
             cache_read_tokens: Some(40),

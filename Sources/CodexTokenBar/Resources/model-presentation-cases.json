@@ -1,0 +1,298 @@
+[
+  {
+    "raw": "",
+    "expected": {
+      "key": "unknown",
+      "label": "未报告模型",
+      "kind": "unreported"
+    }
+  },
+  {
+    "raw": "unknown",
+    "expected": {
+      "key": "unknown",
+      "label": "未报告模型",
+      "kind": "unreported"
+    }
+  },
+  {
+    "raw": "<synthetic>",
+    "expected": {
+      "key": "unknown",
+      "label": "未报告模型",
+      "kind": "unreported"
+    }
+  },
+  {
+    "raw": "gpt-5.6",
+    "expected": {
+      "key": "gpt-5.6-generic",
+      "label": "5.6（未分型）",
+      "kind": "ambiguous"
+    }
+  },
+  {
+    "raw": "gemini-4-argon",
+    "expected": {
+      "key": "gemini-4-argon",
+      "label": "Argon4",
+      "kind": "known"
+    }
+  },
+  {
+    "raw": " Gemini_4_ARGON ",
+    "expected": {
+      "key": "gemini-4-argon",
+      "label": "Argon4",
+      "kind": "known"
+    }
+  },
+  {
+    "raw": "gemini-4-argon-high",
+    "expected": {
+      "key": "gemini-4-argon",
+      "label": "Argon4",
+      "kind": "known"
+    }
+  },
+  {
+    "raw": "Gemini 4 Argon (High)",
+    "expected": {
+      "key": "gemini-4-argon",
+      "label": "Argon4",
+      "kind": "known"
+    }
+  },
+  {
+    "raw": "models/gemini-4-argon",
+    "expected": {
+      "key": "gemini-4-argon",
+      "label": "Argon4",
+      "kind": "known"
+    }
+  },
+  {
+    "raw": "publishers/google/models/gemini-4-argon-high",
+    "expected": {
+      "key": "gemini-4-argon",
+      "label": "Argon4",
+      "kind": "known"
+    }
+  },
+  {
+    "raw": "gemini-3.8-flash-high",
+    "expected": {
+      "key": "gemini-3.8-flash",
+      "label": "Flash3.8",
+      "kind": "known"
+    }
+  },
+  {
+    "raw": "gemini-3.8-flash-n",
+    "expected": {
+      "key": "gemini-3.8-flash-n",
+      "label": "Flash3.8 · N",
+      "kind": "routing"
+    }
+  },
+  {
+    "raw": "gemini-3-flash-a",
+    "expected": {
+      "key": "gemini-3-flash-a",
+      "label": "Flash3 · A",
+      "kind": "routing"
+    }
+  },
+  {
+    "raw": "gemini-pro-default",
+    "expected": {
+      "key": "gemini-pro-default",
+      "label": "Gemini Pro · 自动",
+      "kind": "routing"
+    }
+  },
+  {
+    "raw": "claude-opus-5-5-high",
+    "expected": {
+      "key": "claude-opus-5-5",
+      "label": "Opus5.5",
+      "kind": "known"
+    }
+  },
+  {
+    "raw": "claude-opus-5-5-low",
+    "expected": {
+      "key": "claude-opus-5-5",
+      "label": "Opus5.5",
+      "kind": "known"
+    }
+  },
+  {
+    "raw": "claude-opus-4-6-thinking",
+    "expected": {
+      "key": "claude-opus-4-6",
+      "label": "Opus4.6",
+      "kind": "known"
+    }
+  },
+  {
+    "raw": "claude-opus-5.5",
+    "expected": {
+      "key": "claude-opus-5-5",
+      "label": "Opus5.5",
+      "kind": "known"
+    }
+  },
+  {
+    "raw": "anthropic/claude-opus-5.5-fast",
+    "expected": {
+      "key": "claude-opus-5-5-fast",
+      "label": "Opus5.5 Fast",
+      "kind": "known"
+    }
+  },
+  {
+    "raw": "claude-opus-5-5:free",
+    "expected": {
+      "key": "claude-opus-5-5:free",
+      "label": "Opus5.5 Free",
+      "kind": "known"
+    }
+  },
+  {
+    "raw": "us.anthropic.claude-opus-4-6-v1:0",
+    "expected": {
+      "key": "claude-opus-4-6",
+      "label": "Opus4.6",
+      "kind": "known"
+    }
+  },
+  {
+    "raw": "claude-opus-5",
+    "expected": {
+      "key": "claude-opus-5",
+      "label": "Opus5",
+      "kind": "known"
+    }
+  },
+  {
+    "raw": "deepseek-v4-flash",
+    "expected": {
+      "key": "deepseek-v4-flash",
+      "label": "DS4 Flash",
+      "kind": "source"
+    }
+  },
+  {
+    "raw": "deepseek-v4.1-flash",
+    "expected": {
+      "key": "deepseek-v4.1-flash",
+      "label": "DS4.1 Flash",
+      "kind": "source"
+    }
+  },
+  {
+    "raw": "gpt-6.1-sol",
+    "expected": {
+      "key": "gpt-6.1-sol",
+      "label": "Sol6.1",
+      "kind": "known"
+    }
+  },
+  {
+    "raw": "custom/gpt-6.1-sol",
+    "expected": {
+      "key": "custom/gpt-6.1-sol",
+      "label": "custom/gpt-6.1-sol",
+      "kind": "unknown"
+    }
+  },
+  {
+    "raw": "gpt-6.1-sol-preview",
+    "expected": {
+      "key": "gpt-6.1-sol-preview",
+      "label": "gpt-6.1-sol-preview",
+      "kind": "unknown"
+    }
+  },
+  {
+    "raw": "claude-opus-5-5-20990101",
+    "expected": {
+      "key": "claude-opus-5-5-20990101",
+      "label": "claude-opus-5-5-20990101",
+      "kind": "unknown"
+    }
+  },
+  {
+    "raw": "claude-opus-5-5-unknown",
+    "expected": {
+      "key": "claude-opus-5-5-unknown",
+      "label": "claude-opus-5-5-unknown",
+      "kind": "unknown"
+    }
+  },
+  {
+    "raw": "gemini-3.8-flash-x",
+    "expected": {
+      "key": "gemini-3.8-flash-x",
+      "label": "gemini-3.8-flash-x",
+      "kind": "unknown"
+    }
+  },
+  {
+    "raw": "router/auto",
+    "expected": {
+      "key": "router/auto",
+      "label": "router/auto",
+      "kind": "unknown"
+    }
+  },
+  {
+    "raw": "MysteryModel",
+    "expected": {
+      "key": "MysteryModel",
+      "label": "MysteryModel",
+      "kind": "unknown"
+    }
+  },
+  {
+    "raw": "mysterymodel",
+    "expected": {
+      "key": "mysterymodel",
+      "label": "mysterymodel",
+      "kind": "unknown"
+    }
+  },
+  {
+    "raw": "error-model",
+    "expected": {
+      "key": "error-model",
+      "label": "error-model",
+      "kind": "unknown"
+    }
+  },
+  {
+    "raw": "{\"error\":\"failed\"}",
+    "expected": {
+      "key": "{\"error\":\"failed\"}",
+      "label": "异常模型标识",
+      "kind": "invalid"
+    }
+  },
+  {
+    "raw": "bad‮model",
+    "expected": {
+      "key": "bad‮model",
+      "label": "异常模型标识",
+      "kind": "invalid"
+    }
+  },
+  {
+    "raw": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "expected": {
+      "key": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "label": "异常模型标识",
+      "kind": "invalid"
+    }
+  }
+]

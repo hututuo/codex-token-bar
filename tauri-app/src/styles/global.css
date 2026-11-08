@@ -12964,6 +12964,12 @@ details.session-management-banner {
 @media(max-width:650px){.rig-content{gap:10px}.rig-demo{width:180px}.rig-instructions p{font-size:11px}}
 
 .stats-model-cost-group-label{min-width:0;white-space:nowrap}
+.stats-model-cost-primary-card .model-cost-name,
+.stats-model-cost-secondary-chip .model-cost-name {
+  white-space:normal;overflow-wrap:anywhere;overflow:visible;text-overflow:clip;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+}
+.stats-model-cost-primary-card,.stats-model-cost-secondary-chip { min-height:36px;height:auto; }
 
 @keyframes rig-press{0%,19%,24%,76%,81%,100%{transform:scale(1)}21%,78%{transform:scale(.78)}}
 .recent-interaction-guide summary{transition:transform .12s,opacity .12s}.recent-interaction-guide summary:active{transform:translateY(1px) scale(.99);opacity:.7}

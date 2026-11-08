@@ -18,6 +18,11 @@ final class TrackedFile {
     private static func projectState(_ parser: inout TranscriptParser) -> AgentState {
         parser.state
     }
+    /// Same short borrow for the optional Antigravity capability projection.
+    var isUnsupported: Bool { Self.projectUnsupported(&parser) }
+    private static func projectUnsupported(_ parser: inout TranscriptParser) -> Bool {
+        parser.isUnsupported
+    }
     /// For an Antigravity database, the `.db` with its `-wal` folded in (`FileStat.databaseStat`).
     var lastStat: FileStat
     /// A whole-file read of this file runs off the session queue (METRICS 5.3).

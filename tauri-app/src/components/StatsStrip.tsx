@@ -1,4 +1,5 @@
 import { clientCostGroups, type ClientCostPeriods } from "../multiClient/originalDashboardProjection";
+import { modelPresentationDetail } from "../domain/modelPresentationIdentity";
 import { ClientColorSettings, ModelColorEditor, type ColorEditTarget } from "./liveRate/ModelColorEditor";
 import { useSpeedPalette } from "./liveRate/useSpeedPalette";
 import { dashboardModelUsageColor, floatingModelUsageKey } from "./modelUsagePresentation";
@@ -152,7 +153,7 @@ function StatsStripView({
     .filter((item) => item.referenceCostUSD !== null)
     .map((item) => `${item.label} 参考 ${floatingModelUsageMoneyText(item.referenceCostUSD ?? 0)}`)
     .join(" · ");
-  const modelFamilies = clientCosts || selectedDay ? clientCostGroups(modelCostItems) : dashboardModelFamilyGroups(modelCostItems);
+  const modelFamilies = useMemo(()=>clientCosts || selectedDay ? clientCostGroups(modelCostItems) : dashboardModelFamilyGroups(modelCostItems),[clientCosts,selectedDay,modelCostItems]);
 
   useEffect(() => {
     setPriceModel(readStoredQuotaPriceModel());
@@ -290,7 +291,7 @@ function StatsStripView({
                     const description = item.tokens === 0 ? `${item.label} · 暂无本地记录`
                       : `${item.label} · ${floatingModelUsageValue(item,"cost")} · ${detail}`;
                     return <span className={(group.id === "6" || group.id.endsWith(":latest")) ? "stats-model-cost-primary-card" : "stats-model-cost-secondary-chip"} key={item.key} style={{"--model-color":color} as CSSProperties}
-                    aria-label={description} title={`${description} · 双击修改该模型颜色`}
+                    aria-label={description} title={`${description}${item.sourceModels?.length?' · 原始标识：'+item.sourceModels.map(modelPresentationDetail).join('、'):''} · 双击修改该模型颜色`}
                     role="button" tabIndex={0}
                     onDoubleClick={event => setEditingColor({ model: floatingModelUsageKey(item.key.split("|").at(-1)), x: event.clientX, y: event.clientY, grayDefault: !(group.id === "6" || group.id.endsWith(":latest")) })}
                     onKeyDown={event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); setEditingColor({ model: floatingModelUsageKey(item.key.split("|").at(-1)), x: rect.left, y: rect.bottom, grayDefault: !(group.id === "6" || group.id.endsWith(":latest")) }); } }}>

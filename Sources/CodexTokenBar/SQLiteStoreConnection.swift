@@ -259,13 +259,37 @@ extension SQLiteDatabaseConnection {
         let state = try readRows("SELECT state FROM main.tb_stores WHERE store_id=?", bindings: [.text(store.id)]) { $0.text(0) }.first ?? nil
         guard state == "ready" || state == "sealed" || state == "staging" else { throw BusinessStoreError.invalidStore }
 
-        let objects = try readRows(
+        // The owner above is ALWAYS read, including a cache hit. SQLite's main
+        // schema cookie invalidates object names after committed DDL; data rows,
+        // owner state, admission and file identity are never memoized. Restrict
+        // reuse to the retained physical safety-store handle. Ordinary callers,
+        // migrations, external WAL readers and operation snapshots are unchanged.
+        let version = reusesStoreCatalog
+            ? try readRows("PRAGMA main.schema_version") { $0.int64(0) }.first ?? nil : nil
+        let names: Set<String>
+        if let version, let saved = storeCatalogSnapshot,
+           saved.store == store, saved.schemaVersion == version {
+            names = saved.names
+        } else {
+            let objects = try readRows(
             "SELECT name FROM main.sqlite_master WHERE substr(name,1,?)=?",
             bindings: [.int(store.prefix.count), .text(store.prefix)]
-        ) { $0.text(0) ?? "" }
+            ) { $0.text(0) ?? "" }
+            #if DEBUG
+            storeCatalogReadCount += 1
+            #endif
+            names = Set(objects.map { String($0.dropFirst(store.prefix.count)).lowercased() })
+            storeCatalogSnapshot = nil
+            if let version {
+                let after = try readRows("PRAGMA main.schema_version") { $0.int64(0) }.first ?? nil
+                if after == version {
+                    storeCatalogSnapshot = .init(store: store, schemaVersion: version, names: names)
+                }
+            }
+        }
         let binding = SQLiteStoreBinding(
             store: store,
-            names: Set(objects.map { String($0.dropFirst(store.prefix.count)).lowercased() })
+            names: names
         )
         let context = Unmanaged.passRetained(binding).toOpaque()
         let status = sqlite3_create_function_v2(
@@ -311,4 +335,12 @@ extension SQLiteDatabaseConnection {
         businessBinding = binding
         if state == "sealed" { try execute("PRAGMA query_only=ON") }
     }
+}
+
+/// This value never outlives its physical SQLite handle. A reused connection
+/// still creates a new binding and checks the current owner on every operation.
+struct SQLiteStoreCatalogSnapshot {
+    let store: BusinessSQLiteStore
+    let schemaVersion: Int64
+    let names: Set<String>
 }

@@ -25,6 +25,7 @@ export interface FloatingModelUsageItem {
   share: number;
   costUSD: number | null;
   knownPartialCostUSD?: number | null;
+  sourceModels?: string[];
   usesIndependentQuota: boolean;
   referenceCostUSD: number | null;
   color: string;

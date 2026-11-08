@@ -100,22 +100,10 @@ extension EnvironmentValues {
     }
 }
 
-private struct InterfaceScaledContentSizeKey: PreferenceKey {
-    static let defaultValue = CGSize.zero
-
-    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
-        let next = nextValue()
-        if next.width > 0 || next.height > 0 {
-            value = next
-        }
-    }
-}
-
 struct InterfaceScaledContainer<Content: View>: View {
     let scale: CGFloat
     let visualWidth: CGFloat
     private let content: Content
-    @State private var contentSize = CGSize.zero
 
     init(scale: CGFloat, visualWidth: CGFloat, @ViewBuilder content: () -> Content) {
         self.scale = scale
@@ -128,27 +116,36 @@ struct InterfaceScaledContainer<Content: View>: View {
     }
 
     var body: some View {
-        content
-            .environment(\.interfaceScale, safeScale)
-            .frame(width: visualWidth / safeScale, alignment: .top)
-            .fixedSize(horizontal: false, vertical: true)
-            .background(
-                GeometryReader { proxy in
-                    Color.clear.preference(key: InterfaceScaledContentSizeKey.self, value: proxy.size)
-                }
-            )
-            .scaleEffect(safeScale, anchor: .top)
-            .frame(
-                width: visualWidth,
-                height: max(1, contentSize.height * safeScale),
-                alignment: .top
-            )
-            .onPreferenceChange(InterfaceScaledContentSizeKey.self) { newSize in
-                guard abs(newSize.width - contentSize.width) > 0.5
-                    || abs(newSize.height - contentSize.height) > 0.5
-                else { return }
-                contentSize = newSize
+        if safeScale == 1 {
+            // A native scroll viewport already measures its lazy content. Do
+            // not feed that changing estimate back through @State and another
+            // fixed height on every scroll/layout pass.
+            content.environment(\.interfaceScale, safeScale)
+                .frame(width: visualWidth, alignment: .top)
+        } else {
+            InterfaceScaledLayout(scale: safeScale, visualWidth: visualWidth) {
+                content.environment(\.interfaceScale, safeScale)
+                    .scaleEffect(safeScale, anchor: .topLeading)
             }
+        }
+    }
+}
+
+/// Synchronous layout converts logical height to visual height in the same
+/// layout pass. No GeometryReader/preference/state feedback loop, and no cached
+/// content extent that could clip a model expansion or a changed client scope.
+private struct InterfaceScaledLayout: Layout {
+    let scale: CGFloat
+    let visualWidth: CGFloat
+    private var logicalProposal: ProposedViewSize {
+        .init(width: visualWidth / scale, height: nil)
+    }
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let logical = subviews.first?.sizeThatFits(logicalProposal) ?? .zero
+        return .init(width: visualWidth, height: max(1, logical.height * scale))
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, anchor: .topLeading, proposal: logicalProposal)
     }
 }
 

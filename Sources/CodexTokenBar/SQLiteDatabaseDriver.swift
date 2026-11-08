@@ -671,10 +671,11 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
     private let retainsPhysicalConnection: Bool
     var reusesPhysicalConnection: Bool { retainsPhysicalConnection }
     private let physicalConnectionLock = NSRecursiveLock()
-    private var retainedPhysicalConnection: (database: OpaquePointer, identity: String)?
+    private var retainedPhysicalConnection: (database: OpaquePointer, identity: String, catalog: SQLiteStoreCatalogSnapshot?)?
     private var physicalConnectionDepth = 0
     #if DEBUG
     private(set) var physicalOpenCount = 0
+    private(set) var physicalCatalogReadCount = 0
     #endif
     var backingURL: URL { businessStore?.containerURL ?? url }
 
@@ -886,9 +887,10 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
         let retain = retainsPhysicalConnection && physicalConnectionDepth == 0
         let identity = retain ? try operationFileIdentity() : nil
         var database: OpaquePointer?
+        var catalog: SQLiteStoreCatalogSnapshot?
         if retain, let existing = retainedPhysicalConnection {
             retainedPhysicalConnection = nil
-            if existing.identity == identity { database = existing.database }
+            if existing.identity == identity { database = existing.database; catalog = existing.catalog }
             else { sqlite3_close_v2(existing.database) }
         }
         var status = SQLITE_OK
@@ -919,7 +921,7 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
             if retain { physicalConnectionDepth -= 1 }
             if retain, completed, sqlite3_get_autocommit(database) != 0,
                sqlite3_next_stmt(database, nil) == nil, let identity {
-                retainedPhysicalConnection = (database, identity)
+                retainedPhysicalConnection = (database, identity, catalog)
             } else {
                 // An abandoned transaction or escaping statement must retain
                 // close_v2 rollback/lifetime semantics, including on errors.
@@ -931,6 +933,14 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
         sqlite3_busy_timeout(database, busyTimeoutMilliseconds)
 
         let connection = SQLiteDatabaseConnection(database: database, path: openURL.path)
+        connection.reusesStoreCatalog = retain
+        connection.storeCatalogSnapshot = catalog
+        defer {
+            catalog = connection.storeCatalogSnapshot
+            #if DEBUG
+            if retain { physicalCatalogReadCount += connection.storeCatalogReadCount }
+            #endif
+        }
         if retain {
             // query_only belongs to one binding (sealed owner), not the next.
             // The fresh binding below independently restores the owner's mode.
@@ -1156,6 +1166,12 @@ final class SQLiteDatabaseConnection: DatabaseAccessing {
     private let path: String?
     var rawDatabase: OpaquePointer? { database }
     var businessBinding: SQLiteStoreBinding?
+    // Per-physical-handle schema metadata only. Never owner/admission or rows.
+    var reusesStoreCatalog = false
+    var storeCatalogSnapshot: SQLiteStoreCatalogSnapshot?
+    #if DEBUG
+    var storeCatalogReadCount = 0
+    #endif
     private var reusedStatements: [String: OpaquePointer]?
     private var reusedStatementBytes = 0
 

@@ -658,7 +658,7 @@
     },
     "macos/Sources/AgentSpeedCore/Monitor/TrackedFile.swift": {
       "reason": "Retain read-trigger provenance across throttled database reads and deferred whole-file reads. Project AgentState through an inout borrow of the stored parser to avoid copying all parser payloads on the serial monitor queue.",
-      "sha256": "0a8299ab856229f99cecd9b15f9b342aa3afc0f6d4f2daf237ff8fa9caa26996"
+      "sha256": "1835cd0f6216b1bbcad89e33ab17879d26efb57e89edd59fa48772f863f3ab12"
     },
     "macos/Sources/AgentSpeedCore/Monitor/TranscriptLocations.swift": {
       "reason": "Discover standalone ACP and macOS Orca Antigravity stores by default and expand explicitly selected parent directories; preserve direct store/conversations selection and backup exclusion without changing parsing or reporting consent.",
@@ -666,7 +666,7 @@
     },
     "macos/Sources/AgentSpeedCore/Monitor/TranscriptSession.swift": {
       "reason": "Capture and merge local log/poll read observations through transcript, database, and whole-file reads; keep provider event timing distinct. Preserve shared positioned IO and source-read provenance; backport c668286 bounded quiet-file rediscovery (24h hot set and one sixth older files each round). Use the fresh TrackedFile state projection without copying its full parser for snapshot counts and warnings.",
-      "sha256": "bd1f4e25d7f9a17da8bf1e701055d6f3fe758feecf8601070ed61abc23f31a35"
+      "sha256": "c7a03f6d35190c2ea4b98bf946c1d737a3e5f14fc16d04fe9252e770bef9a988"
     },
     "macos/Sources/AgentSpeedCore/Parsing/ClaudeLine.swift": {
       "reason": "Recognize explicit Claude API/stream errors as local display-stop metadata and backport upstream b89d983 toolEndsTurn extraction. Extract bounded local-only Claude task labels from agentName, title/customTitle, summary or first direct user text; do not retain full text or change token accounting.",
@@ -730,7 +730,7 @@
     },
     "macos/Tests/AgentSpeedCoreTests/ParserBehaviorTests.swift": {
       "reason": "Add local regression coverage for bounded Claude display titles, metadata precedence and rename updates, property ordering, stable fallback, per-subagent labels, Unicode/control cleanup, interrupt handling and oversized text. Verify every parser family retains live state and independent value copies after direct state projection, including TrackedFile reads, mutation and reset.",
-      "sha256": "1966e5b419f94351794a26b3384a6a4663d7a6ecbdb4ade653d714e883bc1f0f"
+      "sha256": "b84ce09770a99ed6f3c7f75250ee4d3c57d331d7d49f2a2957764731ea07ec03"
     },
     "macos/Tests/AgentSpeedCoreTests/ProtobufTests.swift": {
       "reason": "Break the repeated-scalar protobuf fixture into typed byte-array appends for Swift 6 compiler compatibility; emitted fixture bytes and assertions are unchanged.",

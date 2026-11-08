@@ -46,6 +46,49 @@ final class SQLiteRetainedPhysicalConnectionTests: XCTestCase {
         XCTAssertEqual(try container.driver.readRows("SELECT value FROM \"\(store.prefix)facts\" ORDER BY value"){$0.int(0)!},[1,3])
     }
 
+    func testRetainedCatalogAvoidsRescanningUnchangedSchemaWithoutCachingRows() throws {
+        let (_,_,driver)=try bound()
+        let writer=SQLiteDatabaseDriver(url:driver.url,createsFileIfMissing:false)
+        for value in 2...25 {
+            try writer.execute("INSERT INTO facts VALUES(?)",bindings:[.int(value)])
+            XCTAssertEqual(try driver.readRows("SELECT COUNT(*) FROM facts"){$0.int(0)!},[value])
+        }
+        XCTAssertEqual(driver.physicalCatalogReadCount,1,
+            "Data-only commits must not enumerate the whole physical schema for each safety read")
+        try writer.execute("CREATE TABLE later(value INTEGER);INSERT INTO later VALUES(31)")
+        XCTAssertEqual(try driver.readRows("SELECT value FROM later"){$0.int(0)!},[31])
+        XCTAssertEqual(driver.physicalCatalogReadCount,2,"External DDL must invalidate the namespace names")
+    }
+
+    func testRetainedCatalogSeesExternalRenameDropAndDoesNotAdmitForeignObjects() throws {
+        let (container,_,driver)=try bound()
+        let writer=SQLiteDatabaseDriver(url:driver.url,createsFileIfMissing:false)
+        XCTAssertEqual(try driver.readRows("SELECT value FROM facts"){$0.int(0)!},[1])
+        try container.driver.execute("CREATE TABLE unrelated_secret(value INTEGER);INSERT INTO unrelated_secret VALUES(99)")
+        XCTAssertThrowsError(try driver.readRows("SELECT value FROM unrelated_secret"){$0.int(0)!})
+        try writer.execute("ALTER TABLE facts RENAME TO renamed")
+        XCTAssertEqual(try driver.readRows("SELECT value FROM renamed"){$0.int(0)!},[1])
+        XCTAssertThrowsError(try driver.readRows("SELECT value FROM facts"){$0.int(0)!})
+        try writer.execute("DROP TABLE renamed;CREATE TABLE facts(value INTEGER);INSERT INTO facts VALUES(2)")
+        XCTAssertEqual(try driver.readRows("SELECT value FROM facts"){$0.int(0)!},[2])
+    }
+
+    func testRetainedCatalogDoesNotPublishUncommittedDDLOrRollbackNames() throws {
+        let (_,_,driver)=try bound()
+        XCTAssertEqual(try driver.readRows("SELECT value FROM facts"){$0.int(0)!},[1])
+        let writer=SQLiteDatabaseDriver(url:driver.url,createsFileIfMissing:false)
+        enum Stop:Error {case now}
+        XCTAssertThrowsError(try writer.transaction { c in
+            try c.execute("CREATE TABLE transient(value INTEGER)")
+            throw Stop.now
+        })
+        XCTAssertEqual(try driver.readRows("SELECT value FROM facts"){$0.int(0)!},[1])
+        XCTAssertEqual(driver.physicalCatalogReadCount,1,"A rolled-back schema must not invalidate the committed catalog")
+        XCTAssertThrowsError(try driver.readRows("SELECT value FROM transient"){$0.int(0)!})
+        try writer.execute("CREATE TABLE committed(value INTEGER);INSERT INTO committed VALUES(7)")
+        XCTAssertEqual(try driver.readRows("SELECT value FROM committed"){$0.int(0)!},[7])
+    }
+
     func testRetainedHandlePreservesRollbackAndIndependentCommits() throws {
         let (_,_,driver)=try bound()
         enum Stop:Error {case now}

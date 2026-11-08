@@ -25,6 +25,9 @@ struct FloatingTodayModelUsageItem: Identifiable, Equatable, Sendable {
     /// Known dated contributions when the complete row cannot be priced.
     /// `costUSD` stays nil so this subtotal never implies a complete price.
     var knownPartialCostUSD: Double? = nil
+    /// Original model identifiers retained when presentation rows are combined.
+    /// This is explanatory metadata, never an accounting or pricing input.
+    var sourceModels: [String] = []
     var isReferenceOnly: Bool {
         usesIndependentQuota || CodexAutoReviewPricingPolicy.isAutoReviewUsage(id.split(separator: "|").last.map(String.init))
     }

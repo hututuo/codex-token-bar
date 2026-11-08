@@ -5,6 +5,7 @@ import { projectClientDays } from './integratedClientModel';
 import { clientNames } from './MultiClientUsage';
 import { floatingTodayModelUsageItems, type FloatingModelUsageItem, dashboardModelFamilyGroups } from '../floating/floatingModelUsage';
 import { modelUsageColor, modelUsageLabel } from '../components/modelUsagePresentation';
+import { modelPresentationIdentity } from '../domain/modelPresentationIdentity';
 
 export interface ClientCostPeriods {
   lifetime: FloatingModelUsageItem[];
@@ -35,11 +36,22 @@ export function clientCostGroups(items: FloatingModelUsageItem[]) {
 }
 export function clientModelCostItems(rows:Summary[], original:ModelTokenBreakdown[], allowed:readonly string[]):FloatingModelUsageItem[] {
     const items:FloatingModelUsageItem[] = allowed.includes('codex') ? floatingTodayModelUsageItems(original,'gpt56Sol',{showPlaceholders:false,mergeAutoReview:false}).map(x=>({...x,key:'codex|'+x.key})) : [];
-    for(const row of rows.filter(x=>allowed.includes(x.client))) items.push({key:row.client+'|'+row.model,
-      label:modelUsageLabel(row.model),tokens:row.inputTokens+row.outputTokens,share:0,
-      costUSD:(row.unpricedRequests??0)>0?null:row.apiCostUSD??null,
-      knownPartialCostUSD:(row.unpricedRequests??0)>0 && row.requests>(row.unpricedRequests??0)?row.apiCostUSD??null:null,
-      usesIndependentQuota:false,referenceCostUSD:null,color:modelUsageColor(row.model)});
+    const groups=new Map<string,Summary[]>();
+    for(const row of rows.filter(x=>allowed.includes(x.client))){
+      const key=row.client+'|'+modelPresentationIdentity(row.model).key;
+      const group=groups.get(key)??[];group.push(row);groups.set(key,group);
+    }
+    // Sum already-priced raw contributions. Never price the merged token sum.
+    for(const key of [...groups.keys()].sort()){
+      const group=groups.get(key)!,identity=modelPresentationIdentity(group[0].model);
+      const known=group.flatMap(r=>r.apiCostUSD==null || ((r.unpricedRequests??0)>0&&r.requests<=(r.unpricedRequests??0))?[]:[r.apiCostUSD]);
+      const complete=group.every(r=>(r.unpricedRequests??0)===0&&r.apiCostUSD!=null);
+      const subtotal=known.length?known.reduce((a,b)=>a+b,0):null;
+      items.push({key,label:identity.label,tokens:group.reduce((n,r)=>n+r.inputTokens+r.outputTokens,0),share:0,
+        costUSD:complete?subtotal:null,knownPartialCostUSD:complete?null:subtotal,
+        usesIndependentQuota:false,referenceCostUSD:null,color:modelUsageColor(identity.key),
+        sourceModels:[...new Set(group.map(r=>r.model))].sort()});
+    }
     const total=Math.max(1,items.reduce((n,x)=>n+x.tokens,0));return items.filter(x=>x.tokens>0).map(x=>({...x,share:x.tokens/total}));
 }
 export function clientCostPeriods(codex: DashboardSnapshot, snapshot: Snapshot, allowed: string[], now=Date.now()/1000):ClientCostPeriods {

@@ -832,8 +832,11 @@ struct StatStrip: View, @preconcurrency Equatable {
     }
 
     var body: some View {
-        let savingsPresentation = self.savingsPresentation
-        let sevenDayModelData = self.sevenDayModelData
+        // Mixed-client cost periods were already priced on the utility worker.
+        // Do not also derive the unused Codex-only historical estimates here.
+        let savingsPresentation = clientCosts == nil ? self.savingsPresentation : SubscriptionSavingsPresentation(estimate:nil)
+        let sevenDayModelData = clientCosts == nil ? self.sevenDayModelData : DashboardSevenDayModelData(
+            cacheUsage:.empty,quotaSnapshot:nil,now:snapshot.generatedAt,dataAvailable:false)
         let todayTokens = self.todayTokens
 
         VStack(spacing: 2) {
@@ -1348,8 +1351,9 @@ private struct DashboardModelCostChip: View {
     }
 
     private var description: String {
-        item.tokens == 0 ? "\(item.label) · 暂无本地记录"
+        let summary = item.tokens == 0 ? "\(item.label) · 暂无本地记录"
             : "\(item.label)，费用 \(item.valueText(for: .cost))，用量 \(item.tokens.abbreviatedTokens)，占比 \(item.valueText(for: .share))"
+        return item.sourceModels.isEmpty ? summary : summary+"\n原始标识："+item.sourceModels.map(ModelPresentationIdentity.detail).joined(separator:"、")
     }
 
     var body: some View {
@@ -1357,7 +1361,8 @@ private struct DashboardModelCostChip: View {
             Circle().fill(color).frame(width: 6, height: 6)
             Text(item.label.replacingOccurrences(of: #"(?i)^GPT[- ]*"#, with: "", options: .regularExpression))
                 .font(.system(size: 10.5, weight: .semibold))
-                .foregroundStyle(.secondary).truncationMode(.middle)
+                .foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal:false,vertical:true)
+                .layoutPriority(1)
             Spacer(minLength: 3)
             Text(item.tokens == 0 ? "暂无记录" : item.tokens.abbreviatedTokens)
                 .font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary)
@@ -1372,7 +1377,7 @@ private struct DashboardModelCostChip: View {
         }
         .lineLimit(1)
         .padding(.horizontal, 8)
-        .frame(maxWidth: .infinity).frame(height: 30)
+        .frame(maxWidth: .infinity).frame(minHeight: 36)
         .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
             .fill(color.opacity(0.075)))
         .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous)

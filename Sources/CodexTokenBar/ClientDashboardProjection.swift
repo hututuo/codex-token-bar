@@ -201,15 +201,24 @@ struct ClientModelCostPeriods: Equatable, Sendable {
                           usesIndependentQuota: $0.usesIndependentQuota, referenceCostUSD: $0.referenceCostUSD, color: $0.color, knownPartialCostUSD: $0.knownPartialCostUSD)
                 }
             }
-            result += external.filter { allowed.contains($0.client.rawValue) }.map { row in
-                .init(id: row.client.rawValue + "|" + row.model, label: ModelUsagePresentation.label(for: row.model),
-                    tokens: Int(row.inputTokens + row.outputTokens), share: 0,
-                    costUSD: row.unpricedRequests == 0 ? row.apiCostUSD : nil,
-                    usesIndependentQuota: false, referenceCostUSD: nil, color: ModelUsagePresentation.color(for: row.model),
-                    knownPartialCostUSD: row.unpricedRequests > 0 ? row.apiCostUSD : nil)
+            // Price each raw source row before display grouping. Unknown price
+            // contributions remain unknown; never reprice a merged token sum.
+            let selected=external.filter { allowed.contains($0.client.rawValue) }
+            let groups=Dictionary(grouping:selected) { $0.client.rawValue+"|"+ModelPresentationIdentity.resolve($0.model).key }
+            result += groups.keys.sorted().compactMap { key in
+                guard let rows=groups[key],let first=rows.first else { return nil }
+                let identity=ModelPresentationIdentity.resolve(first.model)
+                let tokens=rows.reduce(0) { $0+Int($1.inputTokens+$1.outputTokens) }
+                let complete=rows.allSatisfy { $0.unpricedRequests==0 && $0.apiCostUSD != nil }
+                let known=rows.filter { $0.unpricedRequests==0 || $0.requests>$0.unpricedRequests }.compactMap(\.apiCostUSD)
+                let subtotal=known.isEmpty ? nil:known.reduce(0,+)
+                return .init(id:key,label:identity.label,tokens:tokens,share:0,
+                    costUSD:complete ? subtotal:nil,usesIndependentQuota:false,referenceCostUSD:nil,
+                    color:ModelUsagePresentation.color(for:identity.key),knownPartialCostUSD:complete ? nil:subtotal,
+                    sourceModels:Array(Set(rows.map(\.model))).sorted())
             }
             let total = max(1, result.reduce(0) { $0 + $1.tokens })
-            return result.filter { $0.tokens > 0 }.map { .init(id: $0.id, label: $0.label, tokens: $0.tokens, share: Double($0.tokens) / Double(total), costUSD: $0.costUSD, usesIndependentQuota: $0.usesIndependentQuota, referenceCostUSD: $0.referenceCostUSD, color: $0.color, knownPartialCostUSD: $0.knownPartialCostUSD) }
+            return result.filter { $0.tokens > 0 }.map { .init(id: $0.id, label: $0.label, tokens: $0.tokens, share: Double($0.tokens) / Double(total), costUSD: $0.costUSD, usesIndependentQuota: $0.usesIndependentQuota, referenceCostUSD: $0.referenceCostUSD, color: $0.color, knownPartialCostUSD: $0.knownPartialCostUSD,sourceModels:$0.sourceModels) }
     }
 }
 

@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "wrappers": ["publishers/google/models/", "models/", "openai/", "anthropic/", "google/", "openrouter/"],
+  "missing": ["", "unknown", "<unknown>", "null", "undefined", "<synthetic>"],
+  "ambiguous": ["gpt-5.6", "gpt5.6", "gpt56"],
+  "modifiers": {
+    "claude-": ["-thinking", "-minimal", "-low", "-medium", "-high", "-xhigh", "-max", "-none", "-off"],
+    "gemini-": ["-low", "-medium", "-high", "-tiered"]
+  },
+  "routingLabels": {
+    "gemini-3-flash-a": "Flash3 · A",
+    "gemini-3.8-flash-n": "Flash3.8 · N",
+    "gemini-pro-default": "Gemini Pro · 自动"
+  },
+  "sourceLabels": {
+    "deepseek-v4-flash": "DS4 Flash",
+    "deepseek-v4.1-flash": "DS4.1 Flash"
+  }
+}

@@ -15,6 +15,7 @@ pub mod live_rate;
 pub mod localtime;
 pub mod multi_client_product;
 pub mod multi_client_usage;
+pub(crate) mod model_presentation;
 pub mod provider_repair;
 pub(crate) mod process_tail;
 pub mod quota;

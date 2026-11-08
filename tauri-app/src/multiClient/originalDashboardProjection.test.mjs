@@ -9,6 +9,20 @@ const dashboard=()=>({generatedAt:new Date(stamp*1000).toISOString(),stats:{...s
 const row={client:'claudeCode',model:'claude-sonnet-4-6',inputTokens:1000,outputTokens:200,cacheReadTokens:800,cacheWriteTokens:0,reasoningTokens:0,requests:2,lastSeen:new Date(stamp*1000).toISOString(),apiCostUSD:0.03,unpricedRequests:0,cacheReadComplete:true};
 const bucket={client:'claudeCode',startUnix:stamp-3600,inputTokens:1000,outputTokens:200,cacheReadTokens:800,cacheWriteTokens:0,reasoningTokens:0,requests:2};
 const snapshot=()=>({preferences:[],summaries:[row],todaySummaries:[],sevenDaySummaries:[row],dailyBuckets:[bucket],trendBuckets:[bucket],updatedAt:new Date(stamp*1000).toISOString()});
+test('display grouping conserves tokens and priced contributions without merging unknown routes or clients',async()=>withSsrModules(async load=>{
+ const {clientModelCostItems}=await load('/src/multiClient/originalDashboardProjection.ts');
+ const make=(client,model,inputTokens,outputTokens,apiCostUSD,unpricedRequests=0)=>({...row,client,model,inputTokens,outputTokens,apiCostUSD,unpricedRequests});
+ const rows=[make('antigravity','gemini-4-argon',100,20,0.3),make('antigravity','gemini-4-argon-high',200,30,0.7),
+  make('antigravity','gemini-3.8-flash',10,5,0.1),make('antigravity','gemini-3.8-flash-high',20,5,0.2,1),
+  make('antigravity','gemini-3.8-flash-n',50,5,null,2),make('gemini','gemini-4-argon',70,5,0.4)];
+ const before=structuredClone(rows),items=clientModelCostItems(rows,[],['antigravity','gemini']);
+ assert.equal(items.length,4);assert.equal(items.reduce((n,x)=>n+x.tokens,0),rows.reduce((n,x)=>n+x.inputTokens+x.outputTokens,0));
+ assert.ok(Math.abs(items.reduce((n,x)=>n+(x.costUSD??x.knownPartialCostUSD??0),0)-1.7)<1e-12);
+ const argon=items.find(x=>x.key==='antigravity|gemini-4-argon');assert.equal(argon.costUSD,1);assert.equal(argon.tokens,350);
+ assert.deepEqual(argon.sourceModels,['gemini-4-argon','gemini-4-argon-high']);
+ const flash=items.find(x=>x.key==='antigravity|gemini-3.8-flash');assert.equal(flash.costUSD,null);assert.ok(Math.abs(flash.knownPartialCostUSD-.3)<1e-12);
+ assert.equal(items.find(x=>x.key.endsWith('-n')).costUSD,null);assert.deepEqual(rows,before);
+}));
 test('API connection shows a neutral notice without subscription bars or reset tools',async()=>withSsrModules(async load=>{
  const {quotaItems}=await load('/src/multiClient/integratedClientModel.ts');
  const {QuotaStrip}=await load('/src/components/QuotaStrip.tsx');

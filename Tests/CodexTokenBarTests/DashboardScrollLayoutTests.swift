@@ -58,12 +58,17 @@ final class DashboardScrollLayoutTests: XCTestCase {
             settle()
             let scroll = try XCTUnwrap(findScroll(host))
             let document = try XCTUnwrap(scroll.documentView)
-            for height: CGFloat in [900, 1600, 700] {
+            for height: CGFloat in [900, 1600, 700, 2400, 900] {
                 content.height = height
                 settle()
                 XCTAssertEqual(document.frame.height, height * scale, accuracy: 2,
                     "Scroll extent must follow dynamic content at scale \(scale)")
                 XCTAssertLessThanOrEqual(document.frame.width, 801)
+                scroll.contentView.scroll(to: .init(x:0,y:max(0,document.frame.height-600)))
+                scroll.reflectScrolledClipView(scroll.contentView)
+                settle()
+                XCTAssertEqual(document.frame.height, height * scale, accuracy:2,
+                    "Scrolling must not feed a viewport measurement back into the content extent")
             }
         }
     }

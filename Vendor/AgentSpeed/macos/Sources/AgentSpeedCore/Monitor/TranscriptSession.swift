@@ -738,7 +738,7 @@ final class TranscriptSession {
         var sources: [SourceKind] = []
         if opencode?.status == .unsupported { sources.append(.opencode) }
         if zcode?.status == .unsupported { sources.append(.zcode) }
-        if enabledSources.contains(.antigravity), files.values.contains(where: { $0.family.isDatabase && $0.parser.isUnsupported }) {
+        if enabledSources.contains(.antigravity), files.values.contains(where: { $0.family.isDatabase && $0.isUnsupported }) {
             sources.append(.antigravity)
         }
         return sources

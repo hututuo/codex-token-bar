@@ -190,6 +190,12 @@ jobs:
             --require testRetainedHandleDoesNotKeepReadingAReplacedPhysicalFile \
             --require testRetainedHandleRejectsValidPhysicalAReplacementAndBlockedAdmission \
             --require testRetainedPhysicalConnectionSerializesConcurrentTransactions \
+            --require testRetainedCatalogAvoidsRescanningUnchangedSchemaWithoutCachingRows \
+            --require testRetainedCatalogSeesExternalRenameDropAndDoesNotAdmitForeignObjects \
+            --require testRetainedCatalogDoesNotPublishUncommittedDDLOrRollbackNames \
+            --require testModelPresentationMatchesSharedCrossPlatformCases \
+            --require testDisplayGroupingConservesRawTokensAndAlreadyPricedContributions \
+            --require testContentGrowthAndShrinkUpdateScrollExtentAtDefaultAndCustomScales \
             --require testAdjacentReadsReuseHandleWithoutCreatingAnExtraSnapshot \
             --require testSafetyOperationNeverHoldsPhysicalMutexBeforeRecoveryGate \
             --require testDiagnosticsCollectionLeavesDatabaseAndSourceTreeUnchanged \
