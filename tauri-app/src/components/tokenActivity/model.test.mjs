@@ -89,7 +89,7 @@ test("hoverSummary describes the nearby heatmap day without changing range total
   assert.equal(hoverSummary(day, "model"), "2026-06-20 · 12.3万 tokens · Sol5.6 90% · Luna5.6 10%");
   assert.equal(
     hoverSummary(day, "modelCost", "gpt56Sol"),
-    "2026-06-20 · 模型费用 $0.00 · Sol $0.00 · Luna $0.00",
+    "2026-06-20 · 模型费用 $0.00 · Sol5.6 $0.00 · Luna5.6 $0.00",
   );
 });
 

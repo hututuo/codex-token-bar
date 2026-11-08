@@ -85,7 +85,9 @@ test("Bench detail keeps every healthy bound lane accessible beyond the compact 
   await withSsrModules(async load => {
     const { CrowdRadarDetail } = await load("/src/components/CodexRadarStrip.tsx");
     const html = render(CrowdRadarDetail, { snapshot: complete, status: "已读取" });
-    for (const pair of binding.model_efforts) assert.ok(html.includes(`${pair.model} ${pair.effort}`), `${pair.model}/${pair.effort}`);
+    const names = {"gpt-6.1-sol": "Sol6.1", "gpt-6-astra": "Astra6", "gpt-6-sol": "Sol6",
+      "gpt-6-luna": "Luna6", "gpt-5.6-sol": "Sol5.6", "gpt-5.6-luna": "Luna5.6"};
+    for (const pair of binding.model_efforts) assert.ok(html.includes(`${names[pair.model] ?? pair.model} ${pair.effort}`), `${pair.model}/${pair.effort}`);
     assert.equal((html.match(/<td>113\.67<\/td>/g) ?? []).length, binding.model_efforts.length);
     assert.doesNotMatch(html, /读取失败/);
   });
@@ -116,7 +118,7 @@ test("partial Bench refresh distinguishes retained scores from failed lanes and 
     const html = render(CrowdRadarDetail, { snapshot: merged, status: "部分来源失败" });
     assert.match(html, /读取失败 · 上次数据（不参与当前排名）/);
     assert.match(html, /<td>113\.67<\/td>/);
-    assert.match(html, /gpt-6\.1-sol low/);
+    assert.match(html, /Sol6\.1 low/);
     assert.match(html, /<td>读取失败<\/td>/);
     assert.doesNotMatch(html, /undefined|NaN/);
     const sidebar = render(RadarDetails, { radar: sidebarRadarSnapshot(null, merged), initialRanking: "crowd" });

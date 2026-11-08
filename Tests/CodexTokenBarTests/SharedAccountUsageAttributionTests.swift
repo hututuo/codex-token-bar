@@ -124,7 +124,7 @@ final class SharedAccountUsageAttributionTests: XCTestCase {
         XCTAssertEqual(result.fallbackModelCalls, 0)
         XCTAssertEqual(
             SharedAccountUsageAttributionPresentation(result: result).modelLine,
-            "自动：Sol/Terra"
+            "自动：Sol5.6/Terra5.6"
         )
     }
 

@@ -28,7 +28,7 @@ final class CodexRadarBenchTests: XCTestCase {
         let solLabels = ["gpt-6.1-sol", "gpt-6-sol"].map { name in
             CodexCrowdRadarModel(model: name, effort: "high", graded: 0, passed: 0, passRate: 0, cells: 0, radarBench: result).label
         }
-        XCTAssertEqual(solLabels, ["gpt-6.1-sol high", "gpt-6-sol high"])
+        XCTAssertEqual(solLabels, ["Sol6.1 high", "Sol6 high"])
         XCTAssertNotEqual(solLabels[0], solLabels[1])
     }
 
