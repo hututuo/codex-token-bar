@@ -1,6 +1,6 @@
 # build 993 首页进度与多客户端发现栏调查
 
-状态：已完成现场采集、显示问题定位及源码修正，第二轮完整云端验证/打包运行中；本机服务恢复后仍需耗时复现与最终安装验收。本文不是验收通过记录。基线为 `db4e6e42`，安装产品为 `9762f754` / 0.9.11 build 993。
+状态：最终源码完整云端 CI、macOS/Windows 打包及所有下载校验已通过；本机安装尝试被系统进程/启动服务异常阻止，尚未替换，恢复后仍需耗时复现与最终安装验收。本文不代表本机修复安装已完成。基线为 `db4e6e42`，安装产品仍为 `9762f754` / 0.9.11 build 993。
 
 ## 已确认的事实
 
@@ -46,6 +46,29 @@ CI 已将两项新 Swift 用例列为必须实际执行，并收集原生预览�
 
 第二轮 Swift 2,386 通过、38 原有跳过、零失败，两项新增必跑回归通过，前端 1,438 通过。但收尾静态复审发现：普通打开提示也会进入 `loadCompactSummary`，而该路径只为迁移/回填发送终止提示，普通准备提示可能在轻量成功后遗留。因此进一步限定 compact 路径不转发 `.preparing`（保留其原有迁移、回填与完成提示），并在实际冷/暖 loader 测试后增加 compact 成功无准备提示残留的断言。该修正需要第三轮最终 SHA 验证，不能沿用第二轮通过状态安装。
 
+### 最终 SHA 的独立门禁结果
+
+最终源码 `ee1746bfc7c99d5d165440380e702838c9676e2e` 已推送任务分支。[完整 CI 42450845402](https://github.com/hututuo/codex-token-bar/actions/runs/42450845402) 为 success；原始日志、源码前后封印、测试身份、必跑用例、生产报告和负控已经本地重新解析验证，汇总为 `scratch/dashboard-fixes-20261108/cloud-ee1746bf/native-validation.json`。
+
+| 项目 | 最终 SHA 实际结果 |
+| --- | --- |
+| Swift XCTest | 2,386 通过 / 38 原有跳过 / 0 失败 |
+| AgentSpeed Swift Testing | 674 项 / 79 suites 通过 |
+| macOS Rust | 1,811 通过 / 14 ignored / 0 失败 |
+| Windows Rust | 1,755 通过 / 14 ignored / 0 失败 |
+| 前端 | 1,438 通过 / 0 跳过 / 0 失败 |
+| Cloud / release scripts | 18 通过；111 通过 / 1 原有跳过 |
+| 生产场景 | 两端各 16 个，通过且原始输出与报告一致 |
+| 备份负控 | 两端正常/关闭保护/恢复保护为 0/101/0，关闭时确实因回收保护缺失失败 |
+| 物理 A 替换负控 | 两端正常/关闭保护/恢复保护为 0/1/0，六个入口保持保护，源码恢复 hash 一致 |
+| 新增真实 loader 和原生布局 | 均实际执行并通过；compact 防残留断言也包含在最终用例内 |
+
+最终原生预览 `visual-previews/discovery-{360,872,1404}-{1,3}.png` 六份已生成；人工复看窄/宽三项图，内容和按钮完整，1404pt 容器内发现栏居中且宽度为 980pt。此为云端生产 View 渲染证据，与本机最终窗口验收分开。
+
+[最终打包 42450846688](https://github.com/hututuo/codex-token-bar/actions/runs/42450846688) 的 macOS job success。App ZIP SHA-256 `fd284607392929ebf36e0d517a292b726a889c21b9c8cbcb85ed902bcb39333b`，可执行文件 SHA-256 `587c09ee14f7453a8953b5b4997b031129f13e60695cc732273c14c9e30962f8`。版本 0.9.11/build 994/arm64，`codesign --verify --deep --strict` 通过，指定签名要求、bundle ID、Sparkle feed/key 与已安装版一致。按既有策略为 ad-hoc，未 Apple 公证。已解压候选位于同一证据目录的 `unpacked/Codex Token Bar.app`，尚未替换本机。
+
+最终整个打包 workflow 已为 success；Windows x64/arm64 安装包也已下载并通过 manifest/资产 hash 校验。macOS DMG 经 `hdiutil verify` 完整性检查通过。`validate_cloud.py` 重读全部最终原始证据后返回 PASS，`final-validation.json` SHA-256 为 `c1e4309c89a0bdfb0ebc3b99e086a404b1817df0eaaf5b3bcd0f4e069b98b14b`。旧轮次材料不参与最终成功判定。
+
 ## 当前阻塞与安装状态
 
 为测量原版真实启动耗时，在保留现场后正常退出 build 993，准备使用既有环境开关启用诊断。此时 macOS 图形服务发生重启（新 WindowServer / loginwindow 约从 12:37 起运行），本机用户服务查询不可用：`id -un` 仅返回 UID 501，Directory Service 返回 `eServerError`，`launchctl print gui/501` 返回 `141: Reentrancy avoided`。启动服务返回 `-10827 / kLSNoExecutableErr`；直接启动也未成功，尚未产生新的诊断 trace。没有证据将系统服务异常归因于产品代码。
@@ -53,6 +76,10 @@ CI 已将两项新 Swift 用例列为必须实际执行，并收集原生预览�
 同时普通 `gh` 无法连接 GitHub，`curl https://api.github.com` 返回 `Could not resolve host`。改用 Go DNS 后又因系统证书服务不可用返回 `OSStatus -26276`。后续交叉检查发现 Node 的标准 HTTPS（保持证书校验）仍可访问 GitHub API；可以通过该路径继续云端流程。未修改网络/用户服务配置，也未绕过项目云端规则运行本地测试。本机启动仍被系统服务故障阻塞。
 
 安装目录仍完整保留 build 993，可执行文件 SHA-256 复核为 `c785588982bac565ebe6d4c0db2dd1d9743792f60c2f4248f699da9d59a8435d`，签名检查通过。诊断重启未成功后，约 13:00 观察到新的 App 进程 PID 16493，未携带本轮 probe 日志；没有证据说明由哪个启动者恢复。再次采样没有捕获 Exact 索引耗时栈。当前工具仍不能访问该 GUI 会话或启动系统辅助功能进程，不能声称第二次窗口或耗时验收完成。未替换为本轮尚未验证的新代码。此前 build 992 回滚副本仍保留在上次安装记录所指目录。
+
+全部云端门禁通过后，14:03 执行本轮安装脚本。App/签名/hash/版本预检查通过，AppleScript 退出请求返回后，`pgrep` 返回退出码 3：`sysmon request failed with error: sysmond service not found; pgrep: Cannot get process list`，安装脚本在任何目录移动之前停止。`ps` 仍能看到 PID 16493，安装版本仍为 993、可执行文件 hash 未变。随后 `open` 仍返回 `-10827`。这不是签名或云端构建失败，不能通过强制覆盖正在运行的文件来宣称完成安装。脚本补充了当前用户解析和进程服务的先行检查，服务恢复后才会退出旧 App、建立唯一 build 993 回滚目录并替换。
+
+本轮没有删除用户数据库、会话或旧 App，也没有生成新的正式回滚目录（安装尚未到该阶段）。用户已授权安装，当前缺的是可工作的本机桌面/工具连接，而非再次授权。
 
 ## 恢复后的完整收尾
 
