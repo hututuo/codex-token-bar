@@ -84,6 +84,14 @@ final class DiagnosticBundleTests: XCTestCase {
         XCTAssertEqual(mkfifo(fifo.path,0o600),0)
         let at=Date();XCTAssertThrowsError(try DiagnosticFiles.read(fifo));XCTAssertLessThan(Date().timeIntervalSince(at),1)
     }
+    func testDiagnosticsAllowsDarwinTemporaryAliasButNotUserDirectoryLinks() throws {
+        let root=try fixture(),file=root.appendingPathComponent("probe")
+        try DiagnosticFiles.create(file,data:Data("safe".utf8))
+        XCTAssertEqual(try DiagnosticFiles.read(file),Data("safe".utf8))
+        let link=root.appendingPathComponent("directory-link")
+        try FileManager.default.createSymbolicLink(at:link,withDestinationURL:root)
+        XCTAssertThrowsError(try DiagnosticFiles.read(link.appendingPathComponent("probe")))
+    }
     func testDiagnosticsTimeoutProducesPartialEvidenceWithoutHanging() throws {
         var at=Date()
         XCTAssertEqual(DiagnosticCLI.run(executable:URL(fileURLWithPath:"/bin/sleep"),arguments:["5"],timeout:0.08),"timeout")

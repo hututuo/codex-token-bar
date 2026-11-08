@@ -3,10 +3,29 @@ import Darwin
 
 enum DiagnosticFiles {
     static let maximumFileBytes = 512 * 1024
+    /// Foundation deliberately preserves Darwin's /var and /tmp spellings even
+    /// after resolvingSymlinksInPath. Admit only these root-owned OS aliases;
+    /// every user-controlled component is still opened with O_NOFOLLOW.
+    private static func components(_ url:URL) throws -> [String] {
+        var parts=url.pathComponents.filter{$0 != "/"}
+        guard !parts.contains(".."),!parts.contains(".") else{throw Failure.io}
+        if let first=parts.first,["var","tmp"].contains(first) {
+            let alias="/"+first
+            var info=stat()
+            guard lstat(alias,&info)==0,info.st_uid==0,info.st_mode&S_IFMT==S_IFLNK else{throw Failure.io}
+            var bytes=[CChar](repeating:0,count:128)
+            let length=readlink(alias,&bytes,bytes.count)
+            guard length>0,length<bytes.count else{throw Failure.io}
+            let target=String(bytes:bytes.prefix(length).map{UInt8(bitPattern:$0)},encoding:.utf8)
+            guard target=="private/"+first || target=="/private/"+first else{throw Failure.io}
+            parts.insert("private",at:0)
+        }
+        return parts
+    }
     /// Open every path component without following links, then operate on the
     /// pinned descriptor. A FIFO/device/symlink cannot turn export into a read.
     static func open(_ url: URL, flags: Int32) throws -> Int32 {
-        let parts = url.standardizedFileURL.pathComponents.filter { $0 != "/" }
+        let parts = try components(url)
         var parent = Darwin.open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC)
         guard parent >= 0 else { throw Failure.io }
         defer { Darwin.close(parent) }
@@ -39,11 +58,12 @@ enum DiagnosticFiles {
         try handle.write(contentsOf: data)
     }
     static func safeDirectory(_ url: URL) -> Bool {
-        var current = URL(fileURLWithPath: "/", isDirectory: true)
-        for part in url.standardizedFileURL.pathComponents where part != "/" {
-            current.appendPathComponent(part)
+        guard let parts=try? components(url) else{return false}
+        var current = ""
+        for part in parts {
+            current += "/" + part
             var info = stat()
-            guard lstat(current.path, &info) == 0, info.st_mode & S_IFMT == S_IFDIR else { return false }
+            guard lstat(current, &info) == 0, info.st_mode & S_IFMT == S_IFDIR else { return false }
         }
         return true
     }

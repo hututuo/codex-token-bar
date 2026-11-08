@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, readdir, stat, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import nodeTest from "node:test";
@@ -161,6 +161,15 @@ test("install.sh verifies the pinned checksum and keeps quarantine by default", 
     assert.match(stdout, /Checksum verified: [a-f0-9]{64}/);
     assert.match(stdout, /keeps macOS quarantine metadata/);
     assert.match(stdout, /CODEX_TOKEN_BAR_REMOVE_QUARANTINE=1/);
+    const receiptRoot=fixture.env.CODEX_TOKEN_BAR_DIAGNOSTIC_DIR;
+    const receipts=await readdir(receiptRoot);
+    assert.equal(receipts.length,1);
+    const receipt=path.join(receiptRoot,receipts[0]);
+    assert.equal((await stat(receipt)).mode&0o777,0o600);
+    const rows=(await readFile(receipt,"utf8")).trim().split("\n").map(JSON.parse);
+    assert.deepEqual(rows.map(row=>row.phase),["started","downloading","verifying","replacing","completed"]);
+    assert.ok(rows.every(row=>!JSON.stringify(row).includes(fixture.root)));
+    assert.ok(rows.every(row=>row.phase!=="confirmed"));
 
     assert.equal(
       await fileExists(path.join(fixture.installDir, "Codex Token Bar.app", "Contents", "Info.plist")),

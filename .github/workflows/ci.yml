@@ -186,6 +186,7 @@ jobs:
             --require testDiagnosticsBundleAllowlistRemovesSecretsAndPaths \
             --require testDiagnosticsCollectionLeavesDatabaseAndSourceTreeUnchanged \
             --require testDiagnosticsIgnoresHeldSQLiteExclusiveLock \
+            --require testDiagnosticsAllowsDarwinTemporaryAliasButNotUserDirectoryLinks \
             --require testDiagnosticsJournalPreservesPreviousFailedLaunch \
             --require testDiagnosticsTimeoutProducesPartialEvidenceWithoutHanging \
             --require testInstallationConfirmationRequiresMatchingTargetBuildAndLocation \

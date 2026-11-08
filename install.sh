@@ -23,9 +23,13 @@ diagnostic_install_init() {
   [[ "$DIAGNOSTIC_ATTEMPT" =~ ^[0-9a-f-]{36}$ ]] || return 0
   (umask 077; mkdir -p "$root") || return 0
   local destination="$root/install-$DIAGNOSTIC_ATTEMPT.jsonl"
+  local diagnostic_mask
+  diagnostic_mask="$(umask)"
+  umask 077
   set -C
   if exec 8>"$destination"; then DIAGNOSTIC_ACTIVE=1; fi
   set +C
+  umask "$diagnostic_mask"
 }
 diagnostic_install_event() {
   [[ "$DIAGNOSTIC_ACTIVE" == 1 ]] || return 0
