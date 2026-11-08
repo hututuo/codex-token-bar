@@ -86,7 +86,7 @@ test("hoverSummary describes the nearby heatmap day without changing range total
   assert.equal(hoverSummary(day, "daily"), "2026-06-20 · 12.3万 tokens · 7 calls");
   assert.equal(hoverSummary(day, "cache"), "2026-06-20 · 命中率 92% · 7 calls");
   assert.equal(hoverSummary(day, "quota"), "2026-06-20 · 7d 64% · 5h 81%");
-  assert.equal(hoverSummary(day, "model"), "2026-06-20 · 12.3万 tokens · Sol 90% · Luna 10%");
+  assert.equal(hoverSummary(day, "model"), "2026-06-20 · 12.3万 tokens · Sol5.6 90% · Luna5.6 10%");
   assert.equal(
     hoverSummary(day, "modelCost", "gpt56Sol"),
     "2026-06-20 · 模型费用 $0.00 · Sol $0.00 · Luna $0.00",
@@ -129,12 +129,12 @@ test("model cost heatmap prices cache-aware model rows and excludes Spark", () =
   assert.equal(prepared[0].intensity, 1);
   assert.equal(
     hoverSummary(day, "modelCost", "gpt56Sol"),
-    "2026-06-20 · 模型费用 $5.75 · Sol $5.75 · Spark $1.93（不计入总计）",
+    "2026-06-20 · 模型费用 $5.75 · Sol5.6 $5.75 · Spark $1.93（不计入总计）",
   );
   assert.match(modelCostCellBackground(day, 1, "gpt56Sol"), /linear-gradient/);
 
   const range = summarizeRange([day], day.date, day.date, "modelCost", "gpt56Sol");
-  assert.equal(range.value, "模型费用 $5.75 · Sol $5.75 · Spark $1.93（不计入总计）");
+  assert.equal(range.value, "模型费用 $5.75 · Sol5.6 $5.75 · Spark $1.93（不计入总计）");
 });
 
 test("model cost heatmap marks active days without model projection unavailable", () => {

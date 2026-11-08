@@ -1,5 +1,5 @@
 import { modelUsageLabel as shortModelName } from "../components/modelUsagePresentation";
-import { catalogModelLabel } from "../components/modelDisplayNames";
+import { catalogModelLabel } from "../domain/modelDisplayNames";
 import { useDocumentVisible } from "../components/useDocumentVisible";
 import { modelUsageColor } from "../components/modelUsagePresentation";
 import { invoke } from "@tauri-apps/api/core";

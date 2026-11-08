@@ -126,7 +126,7 @@ final class TokenActivitySectionTests: XCTestCase {
         let summary = try XCTUnwrap(prepared.summaries.first)
         XCTAssertTrue(summary.isModelShare)
         XCTAssertEqual(summary.modelBreakdowns.first?.model, "gpt-5.6-sol")
-        XCTAssertEqual(ModelUsagePresentation.compactText(from: summary.modelBreakdowns), "Sol 100%")
+        XCTAssertEqual(ModelUsagePresentation.compactText(from: summary.modelBreakdowns), "Sol5.6 100%")
     }
 
     @MainActor

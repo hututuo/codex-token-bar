@@ -637,7 +637,7 @@ final class ModelUsagePresentationTests: XCTestCase {
 
         XCTAssertEqual(prepared.modelBreakdowns.count, 1)
         XCTAssertEqual(prepared.modelBreakdowns[0].first?.model, "gpt-5.6-sol")
-        XCTAssertEqual(ModelUsagePresentation.compactText(from: prepared.modelBreakdowns[0]), "Sol 100%")
+        XCTAssertEqual(ModelUsagePresentation.compactText(from: prepared.modelBreakdowns[0]), "Sol5.6 100%")
     }
 
     private func row(_ model: String?, tokens: Int, calls: Int) -> ModelTokenBreakdown {

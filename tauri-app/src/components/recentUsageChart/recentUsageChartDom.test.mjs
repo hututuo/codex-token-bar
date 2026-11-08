@@ -839,8 +839,8 @@ test("24h hover and fixed selection preview expose model shares without persiste
           bubbles: true, clientX: 0, clientY: 80, pointerId: 1,
         })));
         const hover = container.querySelector(".chart-hover-bubble");
-        assert.match(hover?.textContent ?? "", /Sol 75%/);
-        assert.match(hover?.textContent ?? "", /Luna 25%/);
+        assert.match(hover?.textContent ?? "", /Sol5.6 75%/);
+        assert.match(hover?.textContent ?? "", /Luna5.6 25%/);
         assert.equal(hover?.querySelectorAll(":scope > .chart-hover-row").length, 5);
         assert.equal(hover?.querySelector(".chart-hover-row--cache")?.textContent?.trim(), "缓存命中 0% · 命中 0");
 
@@ -853,8 +853,8 @@ test("24h hover and fixed selection preview expose model shares without persiste
         const selection = container.querySelector(".chart-selection-summary-bubble");
         assert.ok(selection);
         assert.match(selection.textContent, /金额 \$/);
-        assert.match(selection.textContent, /Sol 50%/);
-        assert.match(selection.textContent, /Luna 50%/);
+        assert.match(selection.textContent, /Sol5.6 50%/);
+        assert.match(selection.textContent, /Luna5.6 50%/);
       } finally {
         await React.act(async () => root.unmount());
       }

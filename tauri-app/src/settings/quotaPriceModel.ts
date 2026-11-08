@@ -1,4 +1,4 @@
-import { catalogModelLabel } from "../components/modelDisplayNames.ts";
+import { catalogModelLabel } from "../domain/modelDisplayNames.ts";
 import {
   standardAPIPriceQuote,
   currentStandardAPIPriceQuote,

@@ -87,7 +87,7 @@ test('client model cost groups lead with GPT-6, combine the latest Claude famili
  assert.deepEqual(displayRows.filter(row=>row.tokens>0).sort((a,b)=>a.key.localeCompare(b.key)),recordedDisplayRows,
   'display grouping preserves every recorded row');
  assert.deepEqual(displayRows.filter(row=>row.tokens===0).map(({key,label})=>({key,label})),[
-  {key:'claudeCode|claude-haiku-5-5',label:'Haiku 5.5'},
+  {key:'claudeCode|claude-haiku-5-5',label:'Haiku5.5'},
  ],'current catalog placeholders are clearly named and remain zero-token display rows');
 }));
 test('client quota reuses original quota bars without the Codex attribution owner',async()=>withSsrModules(async load=>{

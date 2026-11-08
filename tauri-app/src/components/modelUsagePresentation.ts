@@ -1,5 +1,5 @@
 import { claudeModelIdentity } from "./claudeModelPresentation.ts";
-import { catalogModelLabel } from "./modelDisplayNames.ts";
+import { catalogModelLabel } from "../domain/modelDisplayNames.ts";
 import { readSpeedColors, CLIENT_COLORS, CLIENT_TITLES } from "./liveRate/speedDisplay.ts";
 import { detectedOfficialAPIPriceModel } from "../settings/quotaPriceModel.ts";
 

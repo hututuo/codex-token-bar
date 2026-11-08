@@ -21,6 +21,9 @@ test('sidebar detection loads in place without starting a probe; manual actions 
    await React.act(async()=>root.render(React.createElement(ModelTraceContent,{sourceToken:source,compact:true})));
    assert.equal(dom.document.querySelector('dialog'),null);
    assert.match(dom.document.body.textContent,/Astra6/);
+   const modelOption=dom.document.querySelector('select option[value="gpt-6.1-sol"]');
+   assert.equal(modelOption.textContent,'Sol6.1');
+   assert.equal(modelOption.value,'gpt-6.1-sol');
    assert.equal(dom.document.querySelector('[aria-label="选择检测记录"]').value,'run1');
    assert.equal(calls.filter(x=>x.command==='read_modeltrace_snapshot').length,1);
    assert.equal(calls.some(x=>x.command==='start_modeltrace'),false);

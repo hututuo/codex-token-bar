@@ -1,4 +1,5 @@
 import { diagnosticJournal } from "../diagnostics/diagnosticJournal.ts";
+import { catalogModelLabel } from "../domain/modelDisplayNames.ts";
 import { compactRadarModelName } from "../domain/codexRadar/model.ts";
 import { isTauriRuntimeAvailable } from "../platform/runtime.ts";
 import { parseRadarBenchBinding, parseRadarBenchSummary, type RadarBenchBinding, type RadarBenchStatistics,
@@ -382,6 +383,8 @@ export function rankedCodexCrowdRadarModels(
 function compareASCII(a: string, b: string): number { return a < b ? -1 : a > b ? 1 : 0; }
 
 export function crowdRadarModelLabel(row: CodexCrowdRadarModel): string {
+  const catalogLabel = catalogModelLabel(row.model);
+  if (catalogLabel) return `${catalogLabel} ${row.effort}`.trim();
   if (row.benchScore !== undefined) return `${row.model} ${row.effort}`;
   const family = row.model.match(/(?:^|-)\s*(astra|sol|terra|luna)(?:$|-)/i)?.[1] ?? row.model;
   return compactRadarModelName(`${family} ${row.effort}`.trim());

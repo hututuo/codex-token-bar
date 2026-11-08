@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import prices from "../../../Vendor/AgentSpeed/spec/assets/prices.json" with { type: "json" };
-import { modelDisplayNames } from "./modelDisplayNames.ts";
+import { modelDisplayNames } from "../domain/modelDisplayNames.ts";
 import { modelUsageLabel, modelUsageKey } from "./modelUsagePresentation.ts";
 import { withSsrModules } from "../test/ssrHarness.mjs";
 

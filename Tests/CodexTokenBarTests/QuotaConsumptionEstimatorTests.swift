@@ -2275,7 +2275,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         )
         XCTAssertEqual(
             unknown.pricingModelText(fallbackModel: .gpt56Luna),
-            "自动 · Sol · 未知价格模型 future-model 2 次调用未计入 API 等值"
+            "自动 · Sol5.6 · 未知价格模型 future-model 2 次调用未计入 API 等值"
         )
     }
 

@@ -501,8 +501,8 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
         case .gpt55: "GPT-5.5"
         case .gpt56Terra: "GPT-5.6 Terra"
         case .gpt56Luna: "GPT-5.6 Luna"
-        case .gpt53Codex: "GPT-5.3 Codex"
-        case .gpt52Codex: "GPT-5.2 Codex"
+        case .gpt53Codex: "gpt-5.3-codex"
+        case .gpt52Codex: "gpt-5.2-codex"
         case .gpt54Legacy: "GPT-5.4"
         case .gpt54MiniLegacy: "GPT-5.4 Mini"
         }

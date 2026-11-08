@@ -106,7 +106,7 @@ final class CodexCrowdRadarTests: XCTestCase {
         )
         XCTAssertEqual(
             CodexCrowdRadarModel(model: "grok-4.6", effort: "xhigh", graded: 59, passed: 38, passRate: 38.0 / 59.0, cells: 59).label,
-            "G4.6 XH"
+            "Grok4.6 xhigh"
         )
     }
 

@@ -321,7 +321,7 @@ final class FloatingPanelContentVisibilityTests: XCTestCase {
             expectedCount: 3
         )
 
-        XCTAssertEqual(rows.map(\.title), ["Sol · ultra", "配置同步中"])
+        XCTAssertEqual(rows.map(\.title), ["Sol5.6 · ultra", "配置同步中"])
         XCTAssertEqual(rows.map(\.count), [2, 1])
     }
 

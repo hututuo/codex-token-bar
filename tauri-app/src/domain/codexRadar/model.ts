@@ -1,4 +1,4 @@
-import { catalogModelLabelWithEffort } from "../../components/modelDisplayNames.ts";
+import { catalogModelLabelWithEffort } from "../modelDisplayNames.ts";
 
 export interface CodexRadarSnapshot {
   schemaVersion: string;

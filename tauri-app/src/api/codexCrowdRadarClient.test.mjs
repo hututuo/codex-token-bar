@@ -57,8 +57,8 @@ test("crowd radar compacts DeepSeek variants for floating and detail labels", ()
   assert.equal(crowdRadarModelLabel({ model: "DeepSeek R1", effort: "medium" }), "DS R1 medium");
   assert.equal(crowdRadarModelLabel({ model: "DSH V4 Flash", effort: "max" }), "DSH F max");
   assert.equal(crowdRadarModelLabel({ model: "DSH-V4-Pro", effort: "high" }), "DSH P high");
-  assert.equal(crowdRadarModelLabel({ model: "grok-4.6", effort: "xhigh" }), "G4.6 XH");
-  assert.equal(crowdRadarModelLabel({ model: "k3", effort: "high" }), "K3 H");
+  assert.equal(crowdRadarModelLabel({ model: "grok-4.6", effort: "xhigh" }), "Grok4.6 xhigh");
+  assert.equal(crowdRadarModelLabel({ model: "k3", effort: "high" }), "Kimi3 high");
   assert.equal(crowdRadarModelLabel({ model: "glm-5.3", effort: "max" }), "GLM5.3 max");
 });
 

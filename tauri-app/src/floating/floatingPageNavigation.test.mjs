@@ -41,8 +41,8 @@ test("floating model row switches share and cost without starting panel drag", a
         assert.ok(previous);
         assert.ok(container.querySelector(".floating-page-content"));
         assert.ok(container.querySelector(".floating-page-switch-frame"));
-        assert.match(container.textContent, /Sol50%/);
-        assert.doesNotMatch(container.textContent, /Sol\$3\.25/);
+        assert.match(container.textContent, /Sol5\.650%/);
+        assert.doesNotMatch(container.textContent, /Sol5\.6\$3\.25/);
         assert.match(container.querySelector(".floating-model-usage")?.getAttribute("aria-label") ?? "", /占比/);
         assert.doesNotMatch(container.textContent, /费用/);
         const moreModels = container.querySelector(".floating-model-usage-more");
@@ -56,15 +56,15 @@ test("floating model row switches share and cost without starting panel drag", a
         assert.equal(dragStarts, 0);
         await React.act(async () => next.click());
         assert.equal(pageNavigations, 1);
-        assert.match(container.textContent, /Sol\$2\.20/);
-        assert.match(container.textContent, /Luna\$0\.32/);
-        assert.doesNotMatch(container.textContent, /Sol50%/);
+        assert.match(container.textContent, /Sol5\.6\$2\.20/);
+        assert.match(container.textContent, /Luna5\.6\$0\.32/);
+        assert.doesNotMatch(container.textContent, /Sol5\.650%/);
         assert.match(container.querySelector(".floating-model-usage")?.getAttribute("aria-label") ?? "", /费用/);
         assert.doesNotMatch(container.textContent, /费用/);
 
         await React.act(async () => previous.click());
         assert.equal(pageNavigations, 2);
-        assert.match(container.textContent, /Sol50%/);
+        assert.match(container.textContent, /Sol5\.650%/);
         assert.match(container.querySelector(".floating-model-usage")?.getAttribute("aria-label") ?? "", /占比/);
 
         await React.act(async () => root.render(React.createElement(FloatingPanelSurface, {
@@ -87,7 +87,7 @@ test("floating model row switches share and cost without starting panel drag", a
         assert.equal(hiddenNext.classList.contains("is-glyph-hidden"), true);
         await React.act(async () => hiddenNext.click());
         assert.equal(pageNavigations, 3);
-        assert.match(container.textContent, /Sol\$2\.20/);
+        assert.match(container.textContent, /Sol5\.6\$2\.20/);
       } finally {
         await React.act(async () => root.unmount());
       }

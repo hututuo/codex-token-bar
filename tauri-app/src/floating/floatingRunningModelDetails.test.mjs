@@ -67,7 +67,7 @@ test("running model card renders parent-grouped models, effort, and title toolti
     assert.deepEqual(runningThreadModelDisplayRows([
       { model: "gpt-5.6-sol", reasoningEffort: "ultra", count: 2 },
     ], 3).map((row) => [row.title, row.count]), [
-      ["Sol · ultra", 2],
+      ["Sol5.6 · ultra", 2],
       ["配置同步中", 1],
     ]);
 
@@ -93,8 +93,8 @@ test("running model card renders parent-grouped models, effort, and title toolti
       { onClose: () => {}, summary: runningSummaryFixture() },
     ));
     assert.match(html, /运行模型详情/);
-    assert.match(html, /Sol · ultra/);
-    assert.match(html, /Luna · max/);
+    assert.match(html, /Sol5.6 · ultra/);
+    assert.match(html, /Luna5.6 · max/);
     assert.match(html, /第二个主会话/);
     assert.match(html, /role="tooltip"/);
     assert.match(html, /未关联/);

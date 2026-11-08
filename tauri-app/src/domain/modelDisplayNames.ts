@@ -1,7 +1,7 @@
 import catalog from "../../../Sources/CodexTokenBar/Resources/model-display-names.json" with { type: "json" };
 import prices from "../../../Vendor/AgentSpeed/spec/assets/prices.json" with { type: "json" };
 
-/** Display text only: never use labels as accounting, grouping or pricing keys. */
+/** Shared presentation metadata with no UI or API imports. Never use labels as accounting, grouping or pricing keys. */
 export const modelDisplayNames: Readonly<Record<string, string>> = Object.freeze(catalog.names);
 const normalized = (value: string) => value.trim().toLowerCase().replaceAll("_", "-");
 const untyped = new Set(["gpt-5.6", "gpt5.6", "gpt56"]);

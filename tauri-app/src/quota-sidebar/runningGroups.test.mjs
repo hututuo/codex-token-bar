@@ -103,7 +103,7 @@ test("task cards preserve each main task and its own children with explicit sepa
       assert.ok(!groups[1].textContent.includes("A 的分析"));
       assert.equal(groups[0].querySelector(".qs-task-title").title, "完整主任务 A 标题");
       assert.deepEqual([...groups[0].querySelectorAll(".qs-main-task .qs-task-metadata span")].map(node => node.textContent), ["模型", "推理强度"]);
-      assert.deepEqual([...groups[0].querySelectorAll(".qs-child-task .qs-task-metadata strong")].map(node => node.textContent), ["gpt-5.6-luna", "max"]);
+      assert.deepEqual([...groups[0].querySelectorAll(".qs-child-task .qs-task-metadata strong")].map(node => node.textContent), ["Luna5.6", "max"]);
       assert.match(groups[1].querySelector(".qs-child-task").textContent, /模型未知.*推理强度.*未知/);
       const unassigned = window.document.querySelector(".qs-unassigned-tasks");
       assert.ok(unassigned.textContent.includes("未关联主任务")); assert.ok(unassigned.textContent.includes("未关联子任务"));

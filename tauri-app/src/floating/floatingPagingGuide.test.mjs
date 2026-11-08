@@ -159,8 +159,8 @@ test("running-model guide points at the main/sub trigger and shows the right-sid
     assert.match(html, /悬停主线程可查看会话标题/);
     assert.match(html, /floating-running-model-guide-target/);
     assert.match(html, /floating-running-model-details--guide/);
-    assert.match(html, /Sol · ultra/);
-    assert.match(html, /Luna · max/);
+    assert.match(html, /Sol5.6 · ultra/);
+    assert.match(html, /Luna5.6 · max/);
   });
 });
 
