@@ -24,6 +24,7 @@ pub mod session_enhancements;
 pub(crate) mod shared_source_io;
 pub mod sqlite;
 pub mod startup_trace;
+pub(crate) mod diagnostics;
 pub mod thread_delete;
 pub mod thread_activity;
 pub(crate) mod time_series_timeline;

@@ -9,6 +9,7 @@ let package = Package(
     ],
     products: [
         .executable(name: "CodexTokenBar", targets: ["CodexTokenBar"]),
+        .executable(name: "TokenBarDiagnostics", targets: ["TokenBarDiagnostics"]),
         .executable(name: "TokenBarClaudeLocal", targets: ["TokenBarClaudeLocal"])
     ],
     dependencies: [
@@ -16,6 +17,9 @@ let package = Package(
         .package(url: "https://github.com/sparkle-project/Sparkle.git", from: "2.9.0")
     ],
     targets: [
+        .target(name: "TokenBarDiagnosticsCore", path: "Sources/TokenBarDiagnosticsCore"),
+        .executableTarget(name: "TokenBarDiagnostics", dependencies: ["TokenBarDiagnosticsCore"], path: "Sources/TokenBarDiagnostics"),
+        .testTarget(name: "TokenBarDiagnosticsCoreTests", dependencies: ["TokenBarDiagnosticsCore"], path: "Tests/TokenBarDiagnosticsCoreTests"),
         .target(
             name: "CZstd",
             path: "Sources/CZstd",
@@ -39,6 +43,7 @@ let package = Package(
         .executableTarget(
             name: "CodexTokenBar",
             dependencies: [
+                "TokenBarDiagnosticsCore",
                 "TiktokenSwift",
                 "CZstd",
                 "AgentSpeedCore",

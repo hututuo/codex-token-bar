@@ -255,6 +255,10 @@ finder_background_is_persisted() {
 }
 
 ditto "$APP_DIR" "$DMG_STAGING/$APP_NAME.app"
+mkdir -p "$DMG_STAGING/Diagnostics"
+cp "$APP_DIR/Contents/MacOS/TokenBarDiagnostics" "$DMG_STAGING/Diagnostics/TokenBarDiagnostics"
+cp "$ROOT_DIR/scripts/diagnostics/Export-Diagnostics.command" "$DMG_STAGING/Diagnostics/Export-Diagnostics.command"
+chmod +x "$DMG_STAGING/Diagnostics/Export-Diagnostics.command" "$DMG_STAGING/Diagnostics/TokenBarDiagnostics"
 ln -s /Applications "$DMG_STAGING/Applications"
 mkdir -p "$DMG_STAGING/.background"
 

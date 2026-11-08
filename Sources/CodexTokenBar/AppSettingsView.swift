@@ -1012,6 +1012,9 @@ struct AppSettingsView: View {
 
     private var alertsAndUpdateSettings: some View {
         Group {
+            settingsSection(title: "升级与运行诊断", subtitle: "导出脱敏诊断包，不包含密钥、对话或原始路径") {
+                DiagnosticsExportButton()
+            }
             settingsSection(title: "未读提醒", subtitle: "任务完成后在悬浮窗上显示柔和反馈") {
                 settingsPicker("未读提醒", systemImage: "bell.badge", selection: $unreadEffect, options: FloatingPanelUnreadEffect.allCases.map { ($0.rawValue, $0.label) })
             }

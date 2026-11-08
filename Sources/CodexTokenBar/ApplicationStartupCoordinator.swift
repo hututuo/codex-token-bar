@@ -46,6 +46,7 @@ final class ApplicationStartupCoordinator: ObservableObject {
                 self.activateOnce()
                 if self.productionLifecycle { Self.blocksBusinessServices = false }
                 self.phase = .ready
+                DiagnosticRuntime.record(.startup, .ready)
                 self.retryTimer?.cancel(); self.retryTimer = nil; self.retryAttempt = 0
             } catch let deferred as PublishedBusinessAdmission.Deferred where BusinessSQLiteRoutes.hasPublishedAdmission {
                 // The backend installed per-owner capabilities before returning
@@ -53,9 +54,11 @@ final class ApplicationStartupCoordinator: ObservableObject {
                 if self.productionLifecycle { Self.blocksBusinessServices = false }
                 self.activateOnce()
                 self.phase = .readyWithPendingRecovery(deferred.localizedDescription)
+                DiagnosticRuntime.record(.startup, .waiting)
                 self.scheduleRetry(for: deferred)
             } catch {
                 self.phase = .failed(error.localizedDescription)
+                DiagnosticRuntime.record(.startup, .failed, ["code":Int64((error as NSError).code)])
                 self.scheduleRetry(for: error)
             }
         }
@@ -102,6 +105,7 @@ final class ApplicationStartupCoordinator: ObservableObject {
         guard value.stage != progress.stage || value.completed == value.total
                 || now.timeIntervalSince(progressAt) >= 0.15 else { return }
         progressAt = now; progress = value
+        DiagnosticRuntime.record(.uiProgress, .progress, ["completed":Int64(value.completed), "total":Int64(value.total)])
     }
 }
 
@@ -113,6 +117,7 @@ struct PublishedRecoveryNotice: View {
                 Label(notice, systemImage: "exclamationmark.circle")
                     .font(.caption).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                 Button("重试恢复") { startup.retry() }.disabled(startup.phase == .preparing)
+                DiagnosticsExportButton()
             }
             .padding(.horizontal, 16).padding(.vertical, 9)
             .background(Color.orange.opacity(0.10))
@@ -151,6 +156,7 @@ struct ApplicationStartupView: View {
                 Text("首次升级可能需要几分钟。迁移在后台执行，完成校验后自动进入主页；原始账本和备份都会保留。")
                     .foregroundStyle(.secondary)
             }
+            DiagnosticsExportButton()
         }
         .padding(30).frame(maxWidth: 560, alignment: .leading)
         .frame(maxWidth: .infinity, maxHeight: .infinity)

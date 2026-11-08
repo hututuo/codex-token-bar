@@ -38,6 +38,7 @@ final class DiagnosticLogHistory: ObservableObject {
             current.removeValue(forKey: key)
         }
         guard !logs.isEmpty else { return }
+        DiagnosticRuntime.record(.frontend, .failed)
         current[key] = DiagnosticLogEntry(source: key, summary: summary, detail: logs, sourceContext: sourceContext, firstAt: at, lastAt: at, count: 1)
     }
     var currentText: String {
@@ -89,6 +90,7 @@ struct DiagnosticNotice: View {
                 HStack {
                     Text("运行日志").font(.headline)
                     Spacer()
+                    DiagnosticsExportButton()
                     Button(copied ? "已复制全部日志" : "一键复制全部日志") {
                         NSPasteboard.general.clearContents()
                         copied = NSPasteboard.general.setString(history.report + supplement, forType: .string)

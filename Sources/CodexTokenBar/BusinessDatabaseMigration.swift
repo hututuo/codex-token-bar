@@ -89,6 +89,7 @@ final class BusinessDatabaseMigration {
     @MainActor private static var lifetimeLock: CodexCrossProcessFileLock?
 
     @MainActor static func startProduction(onProgress: @escaping @Sendable (Progress) -> Void = { _ in }) async throws {
+        DiagnosticRuntime.record(.migration, .started)
         let configuration = try Configuration.production()
         // Previous releases do not know the new migration lock. Reject their
         // live writers as well; never kill/restart a running application.
@@ -108,12 +109,15 @@ final class BusinessDatabaseMigration {
             defer { diagnostics?.close() }
             do {
                 try migrate(configuration, onProgress: { progress in
+                    DiagnosticRuntime.migration(progress)
                     diagnostics?.record(RecoveryDiagnostics.Phase(rawValue: progress.stage.rawValue) ?? .preparing,
                         completed: progress.completed, total: progress.total)
                     onProgress(progress)
                 })
+                DiagnosticRuntime.record(.migration, .ready)
             }
             catch {
+                DiagnosticRuntime.record(.migration, .failed, ["code":Int64((error as NSError).code)])
                 diagnostics?.record(.failure, code: (error as? SQLiteDatabaseError)?.code)
                 if BusinessSQLiteRoutes.hasPublishedAdmission {
                     throw PublishedBusinessAdmission.Deferred(message: error.localizedDescription,

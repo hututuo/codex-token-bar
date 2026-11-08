@@ -822,6 +822,7 @@ impl UpdateOps<Update> for TauriUpdateOps {
 
     fn check(&self) -> BoxFuture<'_, Result<Option<CheckedUpdate<Update>>, String>> {
         Box::pin(async move {
+            crate::core::diagnostics::record(crate::core::diagnostics::Area::Updater,crate::core::diagnostics::Phase::Checking,&[]);
             let builder = self.app.updater_builder();
             #[cfg(windows)]
             let builder = {
@@ -831,7 +832,12 @@ impl UpdateOps<Update> for TauriUpdateOps {
             let update = builder.build().map_err(|error| error.to_string())?
                 .check()
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| {
+                    crate::core::diagnostics::record(crate::core::diagnostics::Area::Updater,crate::core::diagnostics::Phase::Failed,&[]);
+                    error.to_string()
+                })?;
+            crate::core::diagnostics::record(crate::core::diagnostics::Area::Updater,
+                if update.is_some(){crate::core::diagnostics::Phase::Available}else{crate::core::diagnostics::Phase::Completed},&[]);
             Ok(update.map(|artifact| CheckedUpdate {
                 version: artifact.version.clone(),
                 body: artifact.body.clone().unwrap_or_default(),
@@ -867,6 +873,7 @@ impl UpdateOps<Update> for TauriUpdateOps {
 
     fn install(&self, artifact: Update) -> BoxFuture<'_, Result<(), String>> {
         Box::pin(async move {
+            crate::core::diagnostics::record(crate::core::diagnostics::Area::Updater,crate::core::diagnostics::Phase::Downloading,&[]);
             let progress_app = self.app.clone();
             #[cfg(windows)]
             let directory = run_update_disk_io(super::update_install::registered_install_directory).await?;
@@ -889,7 +896,11 @@ impl UpdateOps<Update> for TauriUpdateOps {
                     },
                 )
                 .await
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| {
+                    crate::core::diagnostics::record(crate::core::diagnostics::Area::Updater,crate::core::diagnostics::Phase::Failed,&[]);
+                    error.to_string()
+                })?;
+            crate::core::diagnostics::record(crate::core::diagnostics::Area::Updater,crate::core::diagnostics::Phase::Downloaded,&[]);
             #[cfg(windows)]
             {
                 let path = state_path(&self.app)?.with_file_name("update-install-attempt.json");
@@ -914,6 +925,8 @@ impl UpdateOps<Update> for TauriUpdateOps {
                         Err(error) => format!("{message}；安装结果记录失败：{error}"),
                     });
                 }
+                crate::core::diagnostics::record(crate::core::diagnostics::Area::Updater,crate::core::diagnostics::Phase::Launched,&[]);
+                crate::core::diagnostics::flush();
             }
             #[cfg(not(windows))]
             artifact.install(&bytes).map_err(|error| error.to_string())?;

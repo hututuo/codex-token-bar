@@ -1,10 +1,12 @@
 import Sparkle
 import SwiftUI
+import TokenBarDiagnosticsCore
 
 @main
 @MainActor
 enum CodexTokenBarEntry {
     static func main() {
+        if let code = DiagnosticCLI.runIfRequested() { exit(code) }
         if CommandLine.arguments.contains("--verify-bundled-resources") {
             do {
                 try AppResources.verifyPackagedResources()
@@ -15,6 +17,7 @@ enum CodexTokenBarEntry {
                 exit(1)
             }
         }
+        DiagnosticRuntime.record(.startup, .started, ["pid":Int64(ProcessInfo.processInfo.processIdentifier)])
         CodexTokenBarApp.main()
     }
 }
@@ -44,6 +47,9 @@ struct CodexTokenBarApp: App {
         .defaultSize(width: 1240, height: 1000)
         .commands {
             DashboardWindowCommands()
+            CommandGroup(after: .help) {
+                Button("导出升级与运行诊断包…") { DiagnosticsExportController.shared.chooseAndExport() }
+            }
             CommandGroup(after: .appInfo) {
                 if let runtime = startup.runtime { ReadyApplicationMenu(runtime: runtime) }
             }
@@ -67,7 +73,7 @@ final class CodexReadyApplicationRuntime {
     init() {
         let updaterController = SPUStandardUpdaterController(
             startingUpdater: true,
-            updaterDelegate: nil,
+            updaterDelegate: UpdaterDiagnostics.shared,
             userDriverDelegate: nil
         )
         ActivitySpeedHistoryController.shared.start()

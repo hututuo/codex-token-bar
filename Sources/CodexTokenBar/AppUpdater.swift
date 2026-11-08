@@ -10,6 +10,7 @@ struct CheckForUpdatesMenuItem: View {
 
     var body: some View {
         Button("检查更新…") {
+            DiagnosticRuntime.record(.updater, .checking)
             updater.checkForUpdates()
         }
     }

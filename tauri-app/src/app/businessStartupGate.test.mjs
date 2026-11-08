@@ -106,6 +106,10 @@ async function withGate(surface, response, callback) {
  w.__TAURI_INTERNALS__={metadata:{currentWindow:{label:surface},currentWebview:{label:surface}},transformCallback(callback){callbacks.set(++callbackId,callback);return callbackId;},invoke:async(command,args)=>{
   if(command==='plugin:event|listen'){assert.equal(args.event,"business-startup-state-changed");listener=callbacks.get(args.handler);return 1;}
   if(command==='plugin:event|unlisten')return;
+  if(command==='record_diagnostic_progress') {
+    assert.deepEqual(Object.keys(args).sort(),["completed","failed","finished","total"]);
+    assert.equal(typeof args.completed,"number");return;
+  }
   calls.push(command);
   if(command==='show_dashboard_window')return;
   if(command==='retry_business_startup' && surface !== 'main')throw new Error(`retry_business_startup is not available from the ${surface} window`);

@@ -207,6 +207,12 @@ function Build-Target {
     )
 
     Write-Host "==> Building Windows $Label ($RustTarget)"
+    Invoke-Checked "rustup diagnostic target $RustTarget" { rustup target add $RustTarget }
+    Invoke-Checked "standalone diagnostics $RustTarget" {
+        cargo build --locked --release --manifest-path (Join-Path $TauriDir 'src-tauri\Cargo.toml') --target $RustTarget --bin tokenbar-diagnostics
+    }
+    $DiagnosticExecutable = Join-Path $TauriDir ("src-tauri\target\{0}\release\tokenbar-diagnostics.exe" -f $RustTarget)
+    if (-not (Test-Path -LiteralPath $DiagnosticExecutable)) { throw 'Standalone diagnostic helper was not built.' }
     $DotnetRuntime = if ($Label -eq "arm64") { "win-arm64" } else { "win-x64" }
     $ReporterOutput = Join-Path $ReporterArtifactsRoot $DotnetRuntime
     # Preserve each MSBuild property as one argv token for native dotnet and the PS5.1 fixture.
@@ -242,6 +248,9 @@ function Build-Target {
     $Resources[$ReporterNotice] = "AgentSpeedReporter/NOTICE.txt"
     $Resources[$ReporterVendorNotice] = "AgentSpeedReporter/VENDOR.md"
     $Resources[$ClaudeLocalExecutable] = "ClaudeLocalReader/ClaudeLocalReader.exe"
+    $Resources[$DiagnosticExecutable] = "Diagnostics/tokenbar-diagnostics.exe"
+    $Resources[(Join-Path $PSScriptRoot 'diagnostics\Export-Diagnostics.ps1')] = "Diagnostics/Export-Diagnostics.ps1"
+    $Resources[(Join-Path $PSScriptRoot 'diagnostics\Export-Diagnostics.cmd')] = "Diagnostics/Export-Diagnostics.cmd"
     # Microsoft runtime notices are present in self-contained publish output
     # on supported SDKs. Include them when emitted and keep them separate from
     # the upstream Agent Speed MIT license.

@@ -294,6 +294,9 @@ impl IndexPreparationTrace {
     }
 
     fn record(&self, status: &str) {
+        crate::core::diagnostics::record(crate::core::diagnostics::Area::Index,
+            if status=="ok"{crate::core::diagnostics::Phase::Completed}else{crate::core::diagnostics::Phase::Failed},
+            &[("elapsed_ms",self.started.elapsed().as_millis().min(i64::MAX as u128) as i64)]);
         startup_trace::mark_performance(format!(
             "exact_prepare stage={} elapsed_ms={} status={status}",
             self.stage, self.started.elapsed().as_millis(),
@@ -2583,6 +2586,8 @@ fn finalize_generation(
     transaction
         .commit()
         .map_err(|error| format!("无法原子发布完整精确 token 代次：{error}"))?;
+    crate::core::diagnostics::record(crate::core::diagnostics::Area::Storage,crate::core::diagnostics::Phase::Completed,
+        &[("published_generation",generation as i64),("schema_version",INDEX_SCHEMA_VERSION)]);
     Ok(u64::try_from(revision).unwrap_or(0))
 }
 

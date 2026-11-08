@@ -136,6 +136,10 @@ mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$FRAMEWORKS_DIR"
 cp "$BUILD_DIR/$PRODUCT_NAME" "$MACOS_DIR/$PRODUCT_NAME"
 # The local-only statusline executable is intentionally independent of the UI.
 cp "$BUILD_DIR/TokenBarClaudeLocal" "$MACOS_DIR/TokenBarClaudeLocal"
+cp "$BUILD_DIR/TokenBarDiagnostics" "$MACOS_DIR/TokenBarDiagnostics"
+chmod +x "$MACOS_DIR/TokenBarDiagnostics"
+cp "$ROOT_DIR/scripts/diagnostics/Export-Diagnostics.command" "$RESOURCES_DIR/Export-Diagnostics.command"
+chmod +x "$RESOURCES_DIR/Export-Diagnostics.command"
 chmod +x "$MACOS_DIR/TokenBarClaudeLocal"
 cp -R "$BUILD_DIR/CodexTokenBar_CodexTokenBar.bundle" "$RESOURCES_DIR/"
 chmod +x "$MACOS_DIR/$PRODUCT_NAME"
@@ -178,6 +182,7 @@ if [[ -d "$FRAMEWORKS_DIR/Sparkle.framework" ]]; then
 fi
 
 sign_target "$MACOS_DIR/TokenBarClaudeLocal"
+sign_target "$MACOS_DIR/TokenBarDiagnostics"
 sign_target "$APP_DIR" app
 codesign --verify --deep --strict --verbose=2 "$APP_DIR" >/dev/null
 

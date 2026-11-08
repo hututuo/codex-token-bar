@@ -1219,8 +1219,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let openingTrace = RefreshPerformanceProbe.begin("exactIndex.open")
         var opened = false
         var reportedMigration = false
-        defer { openingTrace?.end(opened ? "ready" : "failed") }
+        defer {
+            openingTrace?.end(opened ? "ready" : "failed")
+            DiagnosticRuntime.record(.index, opened ? .ready : .failed)
+        }
         func reportOpening(_ detail: String, step: String) {
+            DiagnosticRuntime.record(.index, .progress)
             openingTrace?.mark(step)
             // An unresolved legacy migration owns its progress/denominator.
             // Routine opening diagnostics must not erase that durable state.
@@ -2027,6 +2031,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         try encoder.encode(manifest).write(to: url, options: [.atomic])
         try synchronizeFile(at: url)
         try synchronizeDirectory(at: url.deletingLastPathComponent())
+        DiagnosticRuntime.migrationPhase(manifest.phase.rawValue)
     }
 
     private static func candidateMigrationManifestURL(for databaseURL: URL) -> URL {
@@ -3734,6 +3739,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             onProgress?(1, 1, .publishing)
         }
 
+        DiagnosticRuntime.record(.storage, .completed, ["published_generation":finalSynchronization.state.generation,
+            "schema_version":14, "pending":Int64(finalSynchronization.eventEnrichmentPendingCount),
+            "completed":Int64(changedFiles + unchangedFiles)])
         return SynchronizationResult(
             changedFiles: changedFiles,
             unchangedFiles: unchangedFiles,

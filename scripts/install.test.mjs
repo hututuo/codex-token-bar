@@ -126,6 +126,7 @@ async function makeFixture({ tamperAsset = false, dropChecksumManifest = false, 
       CURL_STUB_LOG: path.join(stubRoot, "curl.log"),
       XATTR_STUB_LOG: path.join(stubRoot, "xattr.log"),
       CODEX_TOKEN_BAR_INSTALL_DIR: installDir,
+      CODEX_TOKEN_BAR_DIAGNOSTIC_DIR: path.join(root, "diagnostic-installations"),
       CODEX_TOKEN_BAR_NO_OPEN: "1",
     },
   };

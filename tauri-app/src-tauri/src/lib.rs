@@ -10,14 +10,21 @@ use tauri::Manager as _;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    if let Some(code)=core::diagnostics::cli(){std::process::exit(code);}
     // 必须最先执行：此刻进程还是单线程，time crate 才允许读取本地时区
     // 偏移；一旦任何线程被创建，读取必然失败并回退 UTC。
     core::localtime::cache_local_offset_at_startup();
+    core::diagnostics::record(core::diagnostics::Area::Startup,core::diagnostics::Phase::Started,&[("pid",i64::from(std::process::id()))]);
     let launch_mode = platform::StartupLaunchMode::from_args(std::env::args_os());
     match platform::prepare_single_instance(launch_mode) {
         platform::SingleInstanceLaunchOutcome::ContinueAsPrimary => {}
-        platform::SingleInstanceLaunchOutcome::SecondaryExit => return,
+        platform::SingleInstanceLaunchOutcome::SecondaryExit => {
+            core::diagnostics::record(core::diagnostics::Area::Startup,core::diagnostics::Phase::Cancelled,&[]);
+            core::diagnostics::flush();return;
+        },
         platform::SingleInstanceLaunchOutcome::FatalFailure(error) => {
+            core::diagnostics::record(core::diagnostics::Area::Startup,core::diagnostics::Phase::Failed,&[]);
+            core::diagnostics::flush();
             platform::report_startup_failure(&error);
             return;
         }
@@ -179,6 +186,8 @@ pub fn run() {
             commands::agent_speed_reporting::dismiss_agent_speed_invitation,
             commands::settings::save_setup_guide_completed,
             commands::startup::record_performance_event,
+            commands::diagnostics::export_diagnostics,
+            commands::diagnostics::record_diagnostic_progress,
             commands::dashboard::read_platform_capabilities,
             commands::dashboard::read_account_quota,
             commands::dashboard::read_account_reset_credits,
@@ -296,6 +305,8 @@ pub fn run() {
     let run_result = app_result.map(|app| {
         app.run(|app, event| {
             if matches!(event, tauri::RunEvent::Exit) {
+                core::diagnostics::record(core::diagnostics::Area::Shutdown,core::diagnostics::Phase::Completed,&[]);
+                core::diagnostics::flush();
                 core::quota::shutdown_quota_service();
                 app.state::<core::agent_speed_reporting::AgentSpeedReportingRegistry>()
                     .shutdown_now();
@@ -319,6 +330,8 @@ pub fn run() {
         });
     });
     if let Err(error) = run_result {
+        core::diagnostics::record(core::diagnostics::Area::Startup,core::diagnostics::Phase::Failed,&[]);
+        core::diagnostics::flush();
         platform::report_startup_failure(&format!(
             "Codex Token Bar 运行时启动失败：{error}\n\n请检查 WebView2 Runtime、显卡驱动和应用数据目录权限。"
         ));

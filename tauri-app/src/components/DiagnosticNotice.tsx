@@ -1,4 +1,5 @@
 import { diagnosticEnvironmentText } from "../diagnostics/reportContext";
+import { DiagnosticsExportButton } from "./DiagnosticsExportButton";
 import { createPortal } from "react-dom";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { diagnosticJournal, diagnosticEntryText, diagnosticReport } from "../diagnostics/diagnosticJournal";
@@ -31,6 +32,7 @@ export function DiagnosticNotice({ summary, logs, buttonOnly = false }: { summar
         }}>一键复制全部日志</button>
       </div>
       <pre style={{ whiteSpace: "pre-wrap", fontSize: 11 }}>{diagnosticEnvironmentText()}</pre>
+      <DiagnosticsExportButton/>
       <strong>当前问题（{state.current.length}）</strong>
       <textarea aria-label="当前问题日志" readOnly value={currentText + (extra ? `\n\n当前页面补充诊断：\n${extra}` : "")} style={areaStyle} />
       <strong>历史记录（{state.history.length}）</strong>

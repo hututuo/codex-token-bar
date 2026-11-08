@@ -10,6 +10,7 @@ pub(crate) mod provider_repair;
 pub(crate) mod session_management;
 pub(crate) mod settings;
 pub(crate) mod startup;
+pub(crate) mod diagnostics;
 pub(crate) mod surface;
 pub(crate) mod thread_delete;
 pub(crate) mod thread_activity;

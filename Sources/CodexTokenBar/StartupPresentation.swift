@@ -35,6 +35,11 @@ final class DashboardReopenCoordinator {
 final class CodexTokenBarApplicationDelegate: NSObject, NSApplicationDelegate {
     private var isTerminating = false
 
+    func applicationWillTerminate(_ notification: Notification) {
+        DiagnosticRuntime.record(.shutdown, .completed)
+        _ = DiagnosticRuntime.journal.flush(timeout:0.5)
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         // No service singleton may be constructed while the ledger gate is
         // pending. SQLite transactions/backups make an interrupted upgrade

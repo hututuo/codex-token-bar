@@ -30,16 +30,20 @@ fn load(path: &Path) -> Result<Option<InstallAttempt>, String> {
 
 pub(super) fn begin_attempt(path: &Path, source: &str, target: &str, directory: &Path) -> Result<(), String> {
     let _receipt = RECEIPT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    save(path, &InstallAttempt {
+    let result=save(path, &InstallAttempt {
         source_version: source.into(), target_version: target.into(),
         directory: directory.into(),
         started_at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default().as_secs(),
         status: "pending".into(), detail: None,
-    })
+    });
+    crate::core::diagnostics::record(crate::core::diagnostics::Area::Updater,
+        if result.is_ok(){crate::core::diagnostics::Phase::Preparing}else{crate::core::diagnostics::Phase::Failed},&[]);
+    result
 }
 
 pub(super) fn fail_attempt(path: &Path, error: &str) -> Result<(), String> {
+    crate::core::diagnostics::record(crate::core::diagnostics::Area::Updater,crate::core::diagnostics::Phase::Failed,&[]);
     let _receipt = RECEIPT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(mut attempt) = load(path)? {
         attempt.status = "launchFailed".into();
@@ -62,6 +66,7 @@ pub(super) fn reconcile_attempt(path: &Path, version: &str) -> Result<Option<Str
     let directory = std::fs::canonicalize(executable.parent().ok_or("无法定位正在运行的程序目录")?)
         .map_err(|e| e.to_string())?;
     if has_completed(&attempt, version, &directory) {
+        crate::core::diagnostics::record(crate::core::diagnostics::Area::Updater,crate::core::diagnostics::Phase::Confirmed,&[]);
         attempt.status = "confirmed".into();
         attempt.detail = None;
         save(path, &attempt)?;

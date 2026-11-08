@@ -1,4 +1,5 @@
 import { setDiagnosticSource } from "../diagnostics/reportContext";
+import { recordDiagnosticProgress } from "../diagnostics/supportDiagnostics";
 import {
   startTransition,
   useCallback,
@@ -184,6 +185,7 @@ export function useDashboardData(options: UseDashboardDataOptions = {}) {
     if (samePreciseDashboardProgress(preciseProgressRef.current, next)) return;
     preciseProgressRef.current = next;
     setPreciseProgress(next);
+    recordDiagnosticProgress(next);
   }, []);
   const [preciseIndexUpgradeRequired, setPreciseIndexUpgradeRequired] = useState<PreciseIndexUpgradeState | null>(null);
   const preciseIndexUpgradeBlockedRef = useRef(false);

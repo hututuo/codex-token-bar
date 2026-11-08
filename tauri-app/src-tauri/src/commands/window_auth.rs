@@ -165,7 +165,7 @@ pub(crate) fn allows_window_label(command: &str, label: &str) -> bool {
     // Every App entry mounts the shared startup gate, including detail and
     // guide windows. Keep its status/navigation separate from business access;
     // retry_business_startup remains a main-window-only mutation.
-    if matches!(command, "read_business_startup_state" | "record_startup_event" | "show_dashboard_window") {
+    if matches!(command, "read_business_startup_state" | "record_startup_event" | "show_dashboard_window" | "export_diagnostics" | "record_diagnostic_progress") {
         return matches!(label, MAIN_WINDOW_LABEL | FLOATING_WINDOW_LABEL | STATUS_WINDOW_LABEL
             | "quota-sidebar" | "quota-sidebar-detail" | "floating-guide-card" | "floating-guide-cursor");
     }

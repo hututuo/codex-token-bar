@@ -52,7 +52,10 @@ fn schedule_business_startup(
                 let diagnostics=crate::core::business_store_route::container_path().ok()
                     .and_then(|path|path.parent().map(|root|RecoveryDiagnostics::start(&root.join("recovery-diagnostics").join("v1"))));
                 if let Some(log)=&diagnostics {log.record(Phase::Preparing,0,0,retry_count,None);}
+                crate::core::diagnostics::record(crate::core::diagnostics::Area::Migration,crate::core::diagnostics::Phase::Preparing,&[("retry",retry_count as i64)]);
                 let result=crate::core::business_store_route::bootstrap();
+                crate::core::diagnostics::record(crate::core::diagnostics::Area::Migration,
+                    if result.is_ok(){crate::core::diagnostics::Phase::Ready}else{crate::core::diagnostics::Phase::Failed},&[("retry",retry_count as i64)]);
                 if let Some(log)=&diagnostics {
                     log.record(if result.is_ok(){Phase::Ready}else{Phase::Failure},0,0,retry_count,None);
                     log.close();
@@ -66,6 +69,7 @@ fn schedule_business_startup(
         let snapshot = coordinator.finish_with_published_reads(result, published);
         match snapshot.phase {
             business_startup::BusinessStartupPhase::Ready => {
+                crate::core::diagnostics::record(crate::core::diagnostics::Area::Startup,crate::core::diagnostics::Phase::Ready,&[]);
                 startup_trace::mark("business store bootstrap ready");
                 crate::core::usage::token_count_jsonl::start_stage_maintenance();
                 super::multi_client_usage::initialize_background_refresh(app.clone());
@@ -75,6 +79,7 @@ fn schedule_business_startup(
                     .initialize(app.clone());
             }
             business_startup::BusinessStartupPhase::Error | business_startup::BusinessStartupPhase::ReadyWithPendingRecovery => {
+                crate::core::diagnostics::record(crate::core::diagnostics::Area::Startup,crate::core::diagnostics::Phase::Waiting,&[]);
                 let message = snapshot.message.as_deref().unwrap_or("unknown error");
                 startup_trace::mark(&format!("business store bootstrap failed: {message}"));
                 eprintln!("Codex Token Bar: business store bootstrap failed: {message}");

@@ -626,7 +626,15 @@ pub(super) fn schema11_store_manifest(
     let bytes = serde_json::to_vec_pretty(manifest)
         .map_err(|error| format!("无法编码 schema 11 候选迁移清单：{error}"))?;
     atomic_file::write_atomically(manifest_path, &bytes)
-        .map_err(|error| format!("无法耐久写入 schema 11 候选迁移清单：{error}"))
+        .map_err(|error| format!("无法耐久写入 schema 11 候选迁移清单：{error}"))?;
+    use crate::core::diagnostics::{self,Area,Phase};
+    diagnostics::record(Area::Migration,match manifest.phase {
+        Schema11CandidatePhase::Prepared=>Phase::Preparing,Schema11CandidatePhase::Copied=>Phase::Copied,
+        Schema11CandidatePhase::Migrated=>Phase::Migrated,Schema11CandidatePhase::Validated=>Phase::Validated,
+        Schema11CandidatePhase::Switching=>Phase::Switching,Schema11CandidatePhase::Switched=>Phase::Switched,
+        Schema11CandidatePhase::Retained=>Phase::Retained,
+    },&[]);
+    Ok(())
 }
 
 pub(super) fn schema11_load_manifest(manifest_path: &Path) -> Result<Schema11CandidateManifest, String> {

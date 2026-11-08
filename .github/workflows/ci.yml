@@ -183,6 +183,11 @@ jobs:
             --require testPreciseStartupAndWarmRefreshExposePreparationAndCompleteTheStream \
             --require testEveryDiscoveryUsesTheCardWidthAndWrapsAtNarrowWidths \
             --require testCompactQuotaDotPixelsStayInsideTrackAndMatchMorphEndpoint \
+            --require testDiagnosticsBundleAllowlistRemovesSecretsAndPaths \
+            --require testDiagnosticsCollectionLeavesDatabaseAndSourceTreeUnchanged \
+            --require testDiagnosticsJournalPreservesPreviousFailedLaunch \
+            --require testDiagnosticsTimeoutProducesPartialEvidenceWithoutHanging \
+            --require testInstallationConfirmationRequiresMatchingTargetBuildAndLocation \
             --require testTaskRailRenderedCapsAndSeparatorsMatchMorphForEmptyPartialFullAndStale \
             --require testTaskCapMasksSurviveImmediateReversalAndReleaseParticipants \
             --require testLegacyOptionalColumnCombinationsStayReadableAndUnchanged \
@@ -380,6 +385,10 @@ jobs:
               --require foreign_dependencies_resembling_sqlite_internals_invalidate_proof \
               --require disk_failure_and_full_queue_return_status_without_panicking \
               --require diagnostics_modes_never_change_managed_legacy_import_or_later_target_rows \
+              --require diagnostic_allowlist_drops_secret_baits_and_paths \
+              --require diagnostic_collection_never_opens_or_changes_business_database \
+              --require diagnostic_restart_retains_prior_failed_session \
+              --require diagnostic_timeout_is_bounded_and_partial_zip_is_valid \
               --require panic_guard_notifies_an_already_waiting_cold_reader -- \
               cargo test --locked --manifest-path tauri-app/src-tauri/Cargo.toml --lib -- --test-threads=1
           fi

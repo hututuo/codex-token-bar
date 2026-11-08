@@ -253,6 +253,7 @@ pub(crate) fn precise_dashboard_progress(codex_home: &Path) -> PreciseDashboardP
 }
 
 pub(crate) fn begin_precise_dashboard_progress(codex_home: &Path) {
+    crate::core::diagnostics::record(crate::core::diagnostics::Area::Refresh,crate::core::diagnostics::Phase::Started,&[]);
     let now = precise_progress_now();
     let key = precise_progress_key(codex_home);
     ACTIVE_PRECISE_PROGRESS_KEY.with(|slot| {
@@ -313,6 +314,10 @@ fn update_precise_dashboard_progress_for_key(
         },
         },
     );
+    drop(states);
+    crate::core::diagnostics::record(crate::core::diagnostics::Area::BackendProgress,
+        match phase{"failed"=>crate::core::diagnostics::Phase::Failed,"complete"=>crate::core::diagnostics::Phase::Completed,_=>crate::core::diagnostics::Phase::Progress},
+        &[("completed",completed.min(i64::MAX as u64) as i64),("total",total.unwrap_or(0).min(i64::MAX as u64) as i64)]);
 }
 
 /// Informational decoded-byte activity only. Shared throttling and a generation
@@ -360,6 +365,8 @@ pub(crate) fn finish_precise_dashboard_progress(
     succeeded: bool,
     message: impl Into<String>,
 ) {
+    crate::core::diagnostics::record(crate::core::diagnostics::Area::Refresh,
+        if succeeded{crate::core::diagnostics::Phase::Ready}else{crate::core::diagnostics::Phase::Failed},&[]);
     let key = active_or_current_progress_key(codex_home);
     let current = PRECISE_INDEX_PROGRESS
         .get_or_init(|| Mutex::new(HashMap::new()))

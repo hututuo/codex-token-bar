@@ -726,6 +726,7 @@ final class CodexUsageStore: ObservableObject {
         isCompactSummaryPending = false
         refreshGeneration += 1
         let generation = refreshGeneration
+        DiagnosticRuntime.record(.refresh, .started, ["generation":Int64(generation)])
         let bindingGeneration = sourceBindingGeneration
         activeRefreshSourceID = sourceID
         isPreparingUsageCache = needsCacheInitialization && !activeRefreshCompactOnly
@@ -828,6 +829,7 @@ final class CodexUsageStore: ObservableObject {
                             summary = try? await progressLoader.loadCompactSummary(
                                 dataSource: source
                             ) { [weak self] progress in
+                                DiagnosticRuntime.progress(progress, backend:true, generation:generation)
                                 Task { @MainActor [weak self] in
                                     guard let self,
                                           self.isCurrentRefresh(
@@ -839,6 +841,7 @@ final class CodexUsageStore: ObservableObject {
                                         from: self.preciseIndexProgress
                                     )
                                     self.preciseIndexProgress = resolved
+                                    DiagnosticRuntime.progress(resolved, backend:false, generation:generation)
                                     if resolved.isActive {
                                         self.status = resolved.message
                                     }
@@ -910,6 +913,7 @@ final class CodexUsageStore: ObservableObject {
                                 dataSource: source,
                                 reusing: promotedSynchronizationReceipt
                             ) { [weak self] progress in
+                                DiagnosticRuntime.progress(progress, backend:true, generation:generation)
                                 Task { @MainActor [weak self] in
                                     guard let self,
                                           self.isCurrentRefresh(
@@ -918,6 +922,7 @@ final class CodexUsageStore: ObservableObject {
                                               sourceID: sourceID
                                           ) else { return }
                                     self.preciseIndexProgress = progress
+                                    DiagnosticRuntime.progress(progress, backend:false, generation:generation)
                                     if progress.isActive {
                                         self.status = progress.message
                                     }
@@ -925,6 +930,7 @@ final class CodexUsageStore: ObservableObject {
                             }
                         } else if let progressLoader = self.snapshotLoader as? any DashboardSnapshotProgressLoading {
                             precisePhases = progressLoader.loadSnapshotPhases(dataSource: source) { [weak self] progress in
+                                DiagnosticRuntime.progress(progress, backend:true, generation:generation)
                                 Task { @MainActor [weak self] in
                                     guard let self,
                                           self.isCurrentRefresh(
@@ -936,6 +942,7 @@ final class CodexUsageStore: ObservableObject {
                                         from: self.preciseIndexProgress
                                     )
                                     self.preciseIndexProgress = resolved
+                                    DiagnosticRuntime.progress(resolved, backend:false, generation:generation)
                                     if resolved.isActive {
                                         self.status = resolved.message
                                     }
@@ -982,6 +989,7 @@ final class CodexUsageStore: ObservableObject {
                                         "calls": String(loaded.stats.totalCalls),
                                         "threads": String(loaded.stats.totalThreads)
                                     ])
+                                    DiagnosticRuntime.record(.refresh, .completed, ["generation":Int64(generation), "numeric_ready":1, "detail_ready":1])
                                 } else {
                                     // The exact numeric phase is a successful,
                                     // durable refresh boundary. Detail/excerpt
@@ -1026,6 +1034,7 @@ final class CodexUsageStore: ObservableObject {
                                 trace?.mark("preciseSnapshot.metadataOnly", metadata: [
                                     "threads": String(loaded.stats.totalThreads)
                                 ])
+                                DiagnosticRuntime.record(.refresh, .progress, ["generation":Int64(generation), "numeric_ready":1, "detail_ready":0])
                             }
                         }
                         if !sawFinalPrecisePhase {
@@ -1043,6 +1052,8 @@ final class CodexUsageStore: ObservableObject {
                 completedWithoutError = true
                 self.lastCheckedAt = Date()
                 trace?.end("ok")
+                DiagnosticRuntime.record(.refresh, .ready, ["generation":Int64(generation)])
+                DiagnosticRuntime.confirmInstallation()
             } catch {
                 guard self.isCurrentRefresh(
                     generation: generation,
@@ -1053,6 +1064,7 @@ final class CodexUsageStore: ObservableObject {
                     return
                 }
                 DiagnosticLogHistory.shared.record(summary: sawNumericPrecisePhase ? "会话明细读取失败" : "用量读取失败", logs: DiagnosticErrorDetails.text(error), source: "usage")
+                DiagnosticRuntime.record(.refresh, .failed, ["generation":Int64(generation), "code":Int64((error as NSError).code)])
                 if let upgrade = Self.indexUpgradeRequiredError(from: error) {
                     self.indexUpgradeRequired = upgrade
                     self.isDetailHydrating = false

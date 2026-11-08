@@ -2,6 +2,7 @@ import type { QuotaSnapshot } from "../../types/quota";
 import { setChartGuideHidden } from "../recentUsageChart/guidePreferences";
 import { ClientQuotaSettings } from "../../multiClient/IntegratedClients";
 import { MultiClientUsageSettings } from "../../multiClient/MultiClientUsage";
+import { DiagnosticsExportButton } from "../DiagnosticsExportButton";
 import {
   useEffect,
   useMemo,
@@ -2295,6 +2296,7 @@ function AlertAndUpdateSettings({
         </div>
       </SettingsGroup>
       <SettingsGroup title="应用更新" description="手动检查当前平台可用的新版本。">
+        <DiagnosticsExportButton/>
         <SettingRow title="版本更新" description={appUpdateState.message || "保持应用与兼容修复处于最新状态。"}>
           <button className="app-settings-action" disabled={updateBusy} onClick={() => void onCheckForUpdate()} type="button">
             {updateButtonLabel}

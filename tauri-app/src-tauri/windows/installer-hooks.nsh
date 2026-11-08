@@ -3,6 +3,27 @@ AllowSkipFiles off
 !include "Win\COM.nsh"
 !include "FileFunc.nsh"
 
+Var TokenBarDiagnosticFile
+Var TokenBarDiagnosticSession
+Var TokenBarDiagnosticSequence
+; Fixed-schema receipts only. No install path, account, command line or text.
+!macro TokenBarDiagnostic phase
+  Push $0
+  Push $1
+  ${If} $TokenBarDiagnosticFile != ""
+    IntOp $TokenBarDiagnosticSequence $TokenBarDiagnosticSequence + 1
+    System::Call 'kernel32::GetSystemTimeAsFileTime(*l.r0)'
+    System::Int64Op $0 - 116444736000000000
+    Pop $1
+    System::Int64Op $1 / 10000
+    Pop $1
+    FileWrite $TokenBarDiagnosticFile '{$\"schema$\":1,$\"session$\":$\"$TokenBarDiagnosticSession$\",$\"sequence$\":$TokenBarDiagnosticSequence,$\"at$\":$1,$\"area$\":$\"installer$\",$\"phase$\":$\"${phase}$\",$\"version$\":$\"${VERSION}$\",$\"build$\":$\"unknown$\",$\"metrics$\":{}}$\r$\n'
+    ClearErrors
+  ${EndIf}
+  Pop $1
+  Pop $0
+!macroend
+
 ; Keep existing user launchers byte-for-byte, including proxy scripts, arguments,
 ; icons and working directories. Back up before upstream shortcut handling.
 !macro TokenBarSaveShortcut path name
@@ -63,6 +84,19 @@ AllowSkipFiles off
 !macroend
 
 !macro NSIS_HOOK_PREINSTALL
+  StrCpy $TokenBarDiagnosticFile ""
+  StrCpy $TokenBarDiagnosticSequence 0
+  System::Call 'ole32::CoCreateGuid(g .r0)i.r1'
+  ${If} $1 = 0
+    StrCpy $TokenBarDiagnosticSession $0
+    CreateDirectory "$LOCALAPPDATA\CodexTokenBar\diagnostics\v1\installations"
+    FileOpen $TokenBarDiagnosticFile "$LOCALAPPDATA\CodexTokenBar\diagnostics\v1\installations\install-$TokenBarDiagnosticSession.jsonl" w
+    ${If} ${Errors}
+      StrCpy $TokenBarDiagnosticFile ""
+    ${EndIf}
+    ClearErrors
+  ${EndIf}
+  !insertmacro TokenBarDiagnostic started
   SetOverwrite on
   InitPluginsDir
   !if "${STARTMENUFOLDER}" != ""
@@ -74,6 +108,12 @@ AllowSkipFiles off
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL
+  !insertmacro TokenBarDiagnostic completed
+  ${If} $TokenBarDiagnosticFile != ""
+    FileClose $TokenBarDiagnosticFile
+    StrCpy $TokenBarDiagnosticFile ""
+  ${EndIf}
+  ClearErrors
   !if "${STARTMENUFOLDER}" != ""
     !insertmacro TokenBarRestoreShortcut "$SMPROGRAMS\$AppStartMenuFolder\${PRODUCTNAME}.lnk" "startmenu"
   !else
