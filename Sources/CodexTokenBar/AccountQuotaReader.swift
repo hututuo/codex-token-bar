@@ -1406,6 +1406,10 @@ enum AccountQuotaReader {
         }
         switch result {
         case .success(let snapshot):
+            if snapshot.connectionMode == .api {
+                return .success(AccountQuotaResetCreditSnapshot(availableCount: 0, credits: [],
+                    status: snapshot.resetCreditStatus, updatedAt: Date()))
+            }
             guard let count = snapshot.resetCreditsAvailableCount else {
                 return .failure(.resetCreditFailure(underlying: AccountQuotaDiagnostic(
                     source: .resetCredit, category: .parseFailure, severity: .warning,

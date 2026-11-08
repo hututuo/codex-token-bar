@@ -18,6 +18,93 @@ const cycle = (id, extra={}) => ({id,startLowerUnix:null,startUpperUnix:null,end
   expectedResetUnix:1788825600,current:true,expired:false,earlyEnd:false,pendingReset:false,incomplete:true,...extra});
 const settle = async () => { for(let i=0;i<6;i++) await new Promise(resolve=>setTimeout(resolve,0)); };
 
+const dayResult = (cost, issues = [], availableClients = ["codex", "antigravity"]) => ({
+  codexRows: [],
+  clientRows: cost === null ? [] : [{client:"antigravity",model:"gemini-4-argon",inputTokens:100,
+    outputTokens:20,cacheReadTokens:0,cacheWriteTokens:0,requests:1,apiCostUSD:cost,unpricedRequests:0}],
+  issues, availableClients,
+});
+
+async function openHistoricalDay(container, day = 15) {
+  await React.act(async () => {container.querySelector('.model-day-controls button').click(); await settle();});
+  await React.act(async () => {container.querySelector('[aria-label="单日日历上个月"]').click(); await settle();});
+  const date = new Date(); date.setDate(1); date.setMonth(date.getMonth() - 1);
+  const key = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${day}`;
+  await React.act(async () => {container.querySelector(`[aria-label="${key}的模型金额"]`).click(); await settle();});
+  return key;
+}
+
+test("single-day UI fences delayed dates, Home and clients while retaining a same-day refresh", async () => {
+  await withDom(async ({window,container,root,StatsStrip}) => {
+    const reads = [];
+    window.__TAURI_INTERNALS__ = {invoke: (command,args) => {
+      assert.equal(command,"read_model_day_usage");
+      return new Promise(resolve => reads.push({args,resolve}));
+    }};
+    let sourceToken = source, dayClients = ["codex","antigravity"];
+    const render = (dayRefreshKey = "1") => root.render(React.createElement(StatsStrip,{
+      stats,planLabel:"",clientCosts:{lifetime:[],today:[],sevenDay:[]},sourceToken:{...sourceToken},dayClients,dayRefreshKey,
+    }));
+    await React.act(async () => {render(); await settle();});
+    const firstDay = await openHistoricalDay(container);
+    assert.equal(reads.length,1);
+    const bounds = reads[0].args;
+    assert.equal(new Date(bounds.startUnix*1000).getDate(),15);
+    assert.equal(new Date(bounds.endUnix*1000).getDate(),16);
+    assert.equal(new Date(bounds.startUnix*1000).getHours(),0);
+    await React.act(async () => {container.querySelector(`[aria-label="${firstDay.slice(0,-2)}16的模型金额"]`).click(); await settle();});
+    assert.equal(reads.length,2);
+    await React.act(async () => {reads[1].resolve(dayResult(1.23)); await settle();});
+    assert.match(container.querySelector('.stats-model-cost-total').textContent,/\$1\.23/);
+    await React.act(async () => {reads[0].resolve(dayResult(9.99)); await settle();});
+    assert.doesNotMatch(container.textContent,/\$9\.99/);
+    dayClients = ["antigravity","codex"];
+    await React.act(async () => {render(); await settle();});
+    assert.equal(reads.length,2,"equivalent source and selected clients do not restart a read");
+    await React.act(async () => {render("2"); await settle();});
+    assert.match(container.querySelector('.stats-model-cost-total').textContent,/\$1\.23/);
+    assert.match(container.textContent,/显示上次可信结果/);
+    sourceToken = {...source,canonicalHomeKey:"home-b",transitionGeneration:2};
+    await React.act(async () => {render("2"); await settle();});
+    assert.equal(container.querySelector('.stats-model-cost-total'),null);
+    await React.act(async () => {reads[2].resolve(dayResult(8.88)); reads[3].resolve(dayResult(3.45)); await settle();});
+    assert.doesNotMatch(container.textContent,/\$8\.88/);
+    assert.match(container.querySelector('.stats-model-cost-total').textContent,/\$3\.45/);
+    dayClients = ["antigravity"];
+    await React.act(async () => {render("2"); await settle();});
+    assert.equal(container.querySelector('.stats-model-cost-total'),null);
+    assert.deepEqual(reads[4].args.clients,["antigravity"]);
+    await React.act(async () => {reads[4].resolve(dayResult(4.56,[],["antigravity"])); await settle();});
+    assert.match(container.querySelector('.stats-model-cost-total').textContent,/\$4\.56/);
+    await React.act(async () => {container.querySelectorAll('.model-day-controls button')[1].click(); await settle();});
+    assert.ok(container.querySelector('[aria-label="模型费用范围"]'));
+    assert.equal(container.querySelector('.model-day-calendar'),null);
+  });
+});
+
+test("single-day UI distinguishes known partial amounts, unavailable sources and a recorded empty day", async () => {
+  await withDom(async ({window,container,root,StatsStrip}) => {
+    let result = dayResult(1.23,["Codex 单日记录暂不可读"],["antigravity"]);
+    window.__TAURI_INTERNALS__ = {invoke: async () => result};
+    const render = dayRefreshKey => root.render(React.createElement(StatsStrip,{
+      stats,planLabel:"",clientCosts:{lifetime:[],today:[],sevenDay:[]},dayClients:["codex","antigravity"],dayRefreshKey,
+    }));
+    await React.act(async () => {render("1"); await settle();});
+    await openHistoricalDay(container);
+    assert.match(container.querySelector('.stats-model-cost-total').textContent,/已知价格小计.*\$1\.23/);
+    assert.match(container.textContent,/Codex 单日记录暂不可读/);
+    result = dayResult(null,["来源暂不可读"],[]);
+    await React.act(async () => {render("2"); await settle();});
+    assert.equal(container.querySelector('.stats-model-cost-total'),null);
+    assert.match(container.textContent,/单日金额暂不可用/);
+    assert.doesNotMatch(container.querySelector('.stats-model-cost-row').textContent,/\$0\.00/);
+    result = dayResult(null);
+    await React.act(async () => {render("3"); await settle();});
+    assert.match(container.textContent,/该日暂无已记录用量 · \$0\.00/);
+    assert.doesNotMatch(container.textContent,/来源暂不可读/);
+  });
+});
+
 async function withDom(run) {
   const window = new Window(); const restore=installDomGlobals(window);
   globalThis.IS_REACT_ACT_ENVIRONMENT=true;

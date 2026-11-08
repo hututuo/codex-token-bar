@@ -5,6 +5,7 @@ use time::OffsetDateTime;
 
 pub(super) fn placeholder_quota() -> QuotaSnapshot {
     QuotaSnapshot {
+        connection_mode: None,
         reserve_windows: Vec::new(),
         five_hour: QuotaLimit {
             label: "5h".into(),
@@ -126,6 +127,7 @@ pub(super) fn parse_rate_limits_with_plan(result: &Value) -> Result<ParsedRateLi
         plan_label: parse_plan_label(result),
         limit_id: selected_card.map(|card| card.id.clone()).unwrap_or_default(),
         quota: QuotaSnapshot {
+            connection_mode: Some("subscription".into()),
             pace_label: pace_label(&seven_day),
             five_hour,
             seven_day,

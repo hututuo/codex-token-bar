@@ -1,8 +1,24 @@
-import AgentSpeedCore
+@testable import AgentSpeedCore
 import XCTest
 @testable import CodexTokenBar
 
 final class ActivitySourceConfigurationTests: XCTestCase {
+    func testAntigravityMonitorAndLedgerShareDefaultAndCustomParents() throws {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        var preference = try XCTUnwrap(MultiClientUsagePreference.defaults.first { $0.client == .antigravity })
+        preference.enabled = true
+        for path in ["", home.appendingPathComponent(".gemini").path,
+                     home.appendingPathComponent("Library/Application Support/orca/antigravity-chat").path] {
+            preference.path = path
+            let config = ActivitySourceConfiguration.make(codexEnabled: false, codexHome: nil,
+                preferences: [preference], home: home, environment: [:])
+            XCTAssertEqual(config.sources, [.antigravity])
+            XCTAssertEqual(config.monitorConfiguration.resolvedRoots(for: .antigravity),
+                AntigravityUsageSource.roots(home: home, path: path).map(\.path))
+            if path.isEmpty { XCTAssertNil(config.antigravityRoot) }
+            XCTAssertNotNil(config.identity(for: .antigravity))
+        }
+    }
     func testEnabledClientRootsDoNotImplicitlyEnableClaudeOrOtherClients() {
         let home = URL(fileURLWithPath: "/tmp/tokenbar-fixture-home")
         var prefs = MultiClientUsagePreference.defaults

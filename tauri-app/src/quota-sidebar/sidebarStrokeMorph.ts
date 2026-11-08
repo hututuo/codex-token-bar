@@ -1,7 +1,8 @@
 import { sidebarStrokes, strokePath, type SidebarStrokeSpec } from "./sidebarStrokeGeometry";
 
-type StrokePresentation = { d: string; width: string; dash?: string; offset?: string; opacity?: string };
+type StrokePresentation = { d: string; width: string; dash?: string; offset?: string; opacity?: string; clipD?: string };
 const namespace = "http://www.w3.org/2000/svg";
+let clipSequence = 0;
 
 /** One bounded compositor animation. Original strokes remain mounted and are
  * restored in the same task that removes the overlay. No display-tick JS. */
@@ -25,7 +26,7 @@ export function animateSidebarStrokes(root: HTMLElement, expanded: boolean, prev
     originals.forEach((visibility, node) => { (node as HTMLElement | SVGElement).style.visibility = visibility; });
     layer.remove(); guideLayer.remove(); animations.forEach(animation => animation.cancel());
   };
-  const paths: { id: string; node: SVGPathElement }[] = [], groups = new Map<string, SVGGElement>();
+  const paths: { id: string; node: SVGPathElement; clip?: SVGPathElement }[] = [], groups = new Map<string, SVGGElement>();
   const hide = (node: Element) => {
     const style = (node as HTMLElement | SVGElement).style;
     if (!originals.has(node)) originals.set(node, style.visibility);
@@ -60,7 +61,7 @@ export function animateSidebarStrokes(root: HTMLElement, expanded: boolean, prev
           const width = expanded ? stroke.sourceWidth : stroke.targetWidth;
           path.setAttribute("d", strokePath(points)); path.setAttribute("fill", "none");
           path.setAttribute("stroke", stroke.color); path.setAttribute("stroke-width", String(width));
-          path.setAttribute("stroke-linecap", "round"); path.setAttribute("stroke-linejoin", "round");
+          path.setAttribute("stroke-linecap", stroke.lineCap ?? "round"); path.setAttribute("stroke-linejoin", "round");
           // Keep the whole arc as an affine ellipse. Animate the actual fill
           // interval along it instead of bending a separately trimmed path.
           path.setAttribute("pathLength", "1");
@@ -70,7 +71,23 @@ export function animateSidebarStrokes(root: HTMLElement, expanded: boolean, prev
             group = doc.createElementNS(namespace, "g"); group.setAttribute("opacity", String(stroke.opacity));
             (stroke.foreground ? guideLayer : layer).append(group); groups.set(stroke.group, group);
           }
-          group.append(path); paths.push({ id: stroke.id, node: path });
+          let clip: SVGPathElement | undefined;
+          if (stroke.sourceClip && stroke.targetClip) {
+            const mask = doc.createElementNS(namespace, "mask"), id = `qs-strip-clip-${++clipSequence}`;
+            mask.id = id; mask.setAttribute("maskUnits", "userSpaceOnUse"); mask.setAttribute("maskContentUnits", "userSpaceOnUse");
+            const allPoints = [...stroke.sourceClip, ...stroke.targetClip], xs = allPoints.map(p=>p.x), ys = allPoints.map(p=>p.y);
+            mask.setAttribute("x", String(Math.min(...xs)-4)); mask.setAttribute("y", String(Math.min(...ys)-4));
+            mask.setAttribute("width", String(Math.max(...xs)-Math.min(...xs)+8)); mask.setAttribute("height", String(Math.max(...ys)-Math.min(...ys)+8));
+            const fromClip = expanded ? stroke.targetClip : stroke.sourceClip, toClip = expanded ? stroke.sourceClip : stroke.targetClip;
+            clip = doc.createElementNS(namespace, "path"); clip.setAttribute("d", strokePath(toClip));
+            clip.setAttribute("fill", "none"); clip.setAttribute("stroke", "white"); clip.setAttribute("stroke-width", String(width)); clip.setAttribute("stroke-linecap", "round");
+            mask.append(clip); layer.append(mask); path.setAttribute("mask", `url(#${id})`);
+            animations.push(clip.animate([
+              {d: previous.get(stroke.id)?.clipD ?? `path("${strokePath(fromClip)}")`, strokeWidth:from.width},
+              {d:`path("${strokePath(toClip)}")`, strokeWidth:String(width)},
+            ], {duration:440, easing:expanded ? "cubic-bezier(.2,.8,.2,1)" : "cubic-bezier(.333333,1,.666667,1)", fill:"forwards"}));
+          }
+          group.append(path); paths.push({ id: stroke.id, node: path, clip });
           animations.push(path.animate([
             { d: from.d, strokeWidth: from.width, strokeDasharray: from.dash ?? rangeStyle(fromRange).dash, strokeDashoffset: from.offset ?? rangeStyle(fromRange).offset, opacity: from.opacity ?? rangeStyle(fromRange).opacity },
             { d: `path("${strokePath(points)}")`, strokeWidth: String(width), strokeDasharray: endStyle.dash, strokeDashoffset: endStyle.offset, opacity: endStyle.opacity },
@@ -88,9 +105,10 @@ export function animateSidebarStrokes(root: HTMLElement, expanded: boolean, prev
   void Promise.all(animations.map(animation => animation.finished.catch(() => {}))).then(restore);
   return () => {
     if (removed) return empty();
-    const presentation = new Map(paths.map(({ id, node }) => {
+    const presentation = new Map(paths.map(({ id, node, clip }) => {
       const style = win.getComputedStyle(node);
-      return [id, { d: style.d || `path("${node.getAttribute("d")}")`, width: style.strokeWidth, dash: style.strokeDasharray, offset: style.strokeDashoffset, opacity: style.opacity }];
+      return [id, { d: style.d || `path("${node.getAttribute("d")}")`, width: style.strokeWidth, dash: style.strokeDasharray, offset: style.strokeDashoffset, opacity: style.opacity,
+        clipD:clip ? win.getComputedStyle(clip).d || `path("${clip.getAttribute("d")}")` : undefined }];
     }));
     restore(); return presentation;
   };

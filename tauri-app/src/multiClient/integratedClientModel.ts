@@ -10,6 +10,7 @@ export const clientBrand: Record<string, string> = {
   gemini: "#4796E4",
   deepseek: "#4D6BFE",
   opencode: "#B7B1B1",
+  antigravity: "#4285F4",
 };
 // Match the existing Windows sidebar's 49px rate/task rings.
 export const clientSidebarMetrics = { ringSize: 49, capWidth: 4, capHeight: 2, capGap: 0 } as const;
@@ -72,22 +73,32 @@ export function quotaItems(
       status: remaining === null ? "不可用" : "",
     });
   }
-  if (
-    codex?.fiveHour &&
-    ((codex.fiveHour.availability === "measured" &&
-      codex.fiveHour.remainingPercent !== null &&
-      Number.isFinite(codex.fiveHour.remainingPercent)) ||
-      (includeFive && codex.fiveHour.availability !== "absent"))
-  )
-    add("5h", "5h", codex.fiveHour);
-  add("7d", "7d", codex?.sevenDay);
-  codex?.reserveWindows?.forEach((w) =>
-    add(w.label, quotaWindowShortLabel(w.label), w),
-  );
+  if (codex?.connectionMode === "api") {
+    items.push({id:"codex:api",client:"codex",window:"API",remaining:null,resetsAt:null,
+      source:"API 接入",status:"订阅额度不适用"});
+  } else {
+    if (
+      codex?.fiveHour &&
+      ((codex.fiveHour.availability === "measured" &&
+        codex.fiveHour.remainingPercent !== null &&
+        Number.isFinite(codex.fiveHour.remainingPercent)) ||
+        (includeFive && codex.fiveHour.availability !== "absent"))
+    )
+      add("5h", "5h", codex.fiveHour);
+    add("7d", "7d", codex?.sevenDay);
+    codex?.reserveWindows?.forEach((w) =>
+      add(w.label, quotaWindowShortLabel(w.label), w),
+    );
+  }
   for (const reading of [claude, claudeDesktop]) {
-   if (!reading || !includeClaude || reading.state !== "available") continue;
+   if (!reading || !includeClaude) continue;
    const client=reading.client ?? "claudeCode";
    if(client!=="claudeCode" && client!=="claudeDesktop") continue;
+   if(reading.state === "api") {
+     items.push({id:client+":api",client,window:"API",remaining:null,resetsAt:null,source:"API 接入",status:"订阅额度不适用"});
+     continue;
+   }
+   if(reading.state !== "available") continue;
     ["5h", "7d"].forEach((label) => {
       const w = reading.windows.find((w) => w.label === label),
         u = w?.usedPercent;

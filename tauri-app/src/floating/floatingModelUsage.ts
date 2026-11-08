@@ -24,6 +24,7 @@ export interface FloatingModelUsageItem {
   tokens: number;
   share: number;
   costUSD: number | null;
+  knownPartialCostUSD?: number | null;
   usesIndependentQuota: boolean;
   referenceCostUSD: number | null;
   color: string;
@@ -261,7 +262,10 @@ export function floatingModelUsageValue(
       : floatingModelUsageMoneyText(item.referenceCostUSD);
     return `${referenceCost}（不计入总计）`;
   }
-  return item.costUSD === null ? "价格未知" : floatingModelUsageMoneyText(item.costUSD);
+  if (item.costUSD !== null) return floatingModelUsageMoneyText(item.costUSD);
+  return item.knownPartialCostUSD != null
+    ? `${floatingModelUsageMoneyText(item.knownPartialCostUSD)} + 未定价`
+    : "价格未知";
 }
 
 export function hasUnknownModelPrices(items: FloatingModelUsageItem[]): boolean {
@@ -279,11 +283,11 @@ export function floatingModelUsageKnownCostUSD(
   items: FloatingModelUsageItem[],
 ): number | null {
   const billable = items.filter((item) => item.tokens > 0 && !isReferenceOnlyModelUsage(item));
-  const known = billable.filter((item) => item.costUSD !== null);
+  const known = billable.filter((item) => item.costUSD !== null || item.knownPartialCostUSD != null);
   if (billable.some((item) => item.costUSD === null) && known.length === 0) {
     return null;
   }
-  return known.reduce((sum, item) => sum + (item.costUSD ?? 0), 0);
+  return known.reduce((sum, item) => sum + (item.costUSD ?? item.knownPartialCostUSD ?? 0), 0);
 }
 
 export function floatingModelUsageAccessibilityText(

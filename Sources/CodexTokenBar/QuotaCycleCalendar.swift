@@ -4,6 +4,7 @@ struct QuotaCycleCalendar: View {
     let cycles: [QuotaActualCycle]
     let selectedID: String?
     let select: (String?) -> Void
+    var daySelection: Binding<Date?>? = nil
     @State private var month = Date()
     private let colors: [Color] = [.blue, .purple, .teal, .orange, .pink]
     private var calendar: Calendar { var value = Calendar.current; value.firstWeekday = 2; return value }
@@ -43,12 +44,22 @@ struct QuotaCycleCalendar: View {
         VStack(spacing: 4) {
             HStack {
                 Button { month = calendar.date(byAdding: .month, value: -1, to: first) ?? first } label: { Image(systemName: "chevron.left") }
-                    .accessibilityLabel("上个月")
+                    .accessibilityLabel(daySelection == nil ? "上个月" : "单日日历上个月")
                 Text(first.formatted(.dateTime.year().month(.wide))).font(.system(size: 12, weight: .semibold))
                 Button { month = calendar.date(byAdding: .month, value: 1, to: first) ?? first } label: { Image(systemName: "chevron.right") }
-                    .accessibilityLabel("下个月")
+                    .disabled(daySelection != nil && calendar.isDate(first, equalTo: Date(), toGranularity: .month))
+                    .accessibilityLabel(daySelection == nil ? "下个月" : "单日日历下个月")
                 Spacer()
-                Button("回到本期") { month = Date(); select(nil) }
+                if let daySelection {
+                    DatePicker("跳转日期", selection: Binding(
+                        get: { daySelection.wrappedValue ?? Date() },
+                        set: { daySelection.wrappedValue = calendar.startOfDay(for: $0); month = $0 }),
+                        in: ...Date(), displayedComponents: [.date])
+                        .datePickerStyle(.field).font(.system(size: 11)).fixedSize()
+                    Button("今天") { month = Date(); daySelection.wrappedValue = calendar.startOfDay(for: Date()) }
+                } else {
+                    Button("回到本期") { month = Date(); select(nil) }
+                }
             }.buttonStyle(.borderless)
             HStack(spacing: 0) {
                 ForEach(["一", "二", "三", "四", "五", "六", "日"], id: \.self) { Text($0).frame(maxWidth: .infinity).foregroundStyle(.secondary) }
@@ -73,19 +84,38 @@ struct QuotaCycleCalendar: View {
                         HStack(spacing: 0) {
                             ForEach(0..<7, id: \.self) { column in
                                 let date = day(week * 7 - offset + column)
-                                Text("\(calendar.component(.day, from: date))")
-                                    .frame(maxWidth: .infinity)
+                                if let daySelection {
+                                    let active = daySelection.wrappedValue.map { calendar.isDate(date, inSameDayAs: $0) } ?? false
+                                    Button { daySelection.wrappedValue = date } label: {
+                                        Text("\(calendar.component(.day, from: date))")
+                                            .frame(maxWidth: .infinity, minHeight: 26)
+                                            .foregroundStyle(active ? AppTheme.accentBlue : .primary)
+                                            .background(active ? AppTheme.selectedControlBackground : .clear, in: RoundedRectangle(cornerRadius: 4))
+                                            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(active ? AppTheme.accentBlue : .clear))
+                                    }
+                                    .buttonStyle(.plain)
                                     .opacity(calendar.isDate(date, equalTo: first, toGranularity: .month) ? 1 : 0.3)
+                                    .disabled(date > calendar.startOfDay(for: Date()))
+                                    .accessibilityLabel(ModelCostDay(date).label + "的模型金额")
+                                    .accessibilityAddTraits(active ? .isSelected : [])
+                                } else {
+                                    Text("\(calendar.component(.day, from: date))")
+                                        .frame(maxWidth: .infinity)
+                                        .opacity(calendar.isDate(date, equalTo: first, toGranularity: .month) ? 1 : 0.3)
+                                }
                             }
-                        }.allowsHitTesting(false)
+                        }.allowsHitTesting(daySelection != nil)
                     }.frame(height: 26)
                 }.frame(height: 26)
             }
-            if cycles.isEmpty { Text("暂无周期记录").foregroundStyle(.secondary) }
+            if daySelection == nil, cycles.isEmpty { Text("暂无周期记录").foregroundStyle(.secondary) }
         }
         .font(.system(size: 10)).padding(8)
         .background(.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.primary.opacity(0.1)))
-        .padding(.horizontal, 12)
+        .padding(.horizontal, daySelection == nil ? 12 : 0)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(daySelection == nil ? "周期日历" : "单日金额日历")
+        .onAppear { if let selected = daySelection?.wrappedValue { month = selected } }
     }
 }

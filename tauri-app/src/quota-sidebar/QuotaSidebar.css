@@ -129,10 +129,11 @@ html.quota-sidebar-fixed-canvas,html.quota-sidebar-fixed-canvas body,html.quota-
 .qs-pace-mark{position:absolute;left:0;width:100%;height:1.5px;background:white;transform:translateY(50%);pointer-events:none;transition:bottom .34s cubic-bezier(.2,.8,.2,1)}
 .qs-pace-tick{stroke:white;stroke-width:1.5;stroke-linecap:round;pointer-events:none;transition:transform .34s cubic-bezier(.2,.8,.2,1)}
 .qs-model-strip{display:flex;width:58px;height:4px;overflow:hidden;border-radius:4px;background:#30362c;flex-shrink:0}
-.qs-model-strip i{display:block;flex-basis:0;min-width:0;transition:flex-grow .34s cubic-bezier(.2,.8,.2,1)}
+.qs-model-strip>svg{display:block;width:100%;height:100%}
+.qs-model-strip path{transition:stroke-dasharray .34s cubic-bezier(.2,.8,.2,1),stroke-dashoffset .34s cubic-bezier(.2,.8,.2,1)}
 .qs-model-strip-vertical{flex-direction:column;width:4px;height:42px}
 :is(.qs-summary,.qs-module-stack,.qs-linked-item)>.qs-model-trigger{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;width:80px;min-height:30px;padding:3px 0;border:0;color:#9ca998;font-size:9px;flex-shrink:0}
-@media(prefers-reduced-motion:reduce){.qs-pace-mark,.qs-pace-tick,.qs-model-strip i{transition:none}}
+@media(prefers-reduced-motion:reduce){.qs-pace-mark,.qs-pace-tick,.qs-model-strip path{transition:none}}
 
 /* Dense detail cards keep a readable type scale and spend space on data. */
 .qs-detail>header{min-height:44px}.qs-detail>nav{margin-top:9px;margin-bottom:11px}
@@ -146,6 +147,7 @@ html.quota-sidebar-fixed-canvas,html.quota-sidebar-fixed-canvas body,html.quota-
 .qs-model-usage{margin-top:13px}.qs-model-row+.qs-model-row{margin-top:8px}.qs-section-heading{margin-bottom:8px}
 .qs-task-metadata{flex-direction:row;flex-wrap:wrap;gap:6px 14px}.qs-task-metadata>div{grid-template-columns:auto auto;gap:6px}
 .qs-task-group{padding:11px;margin-bottom:8px}.qs-task-title{margin:6px 0}.qs-child-tasks{margin-top:10px}.qs-child-task+.qs-child-task{padding-top:9px}.qs-child-task{padding-bottom:9px}
+.qs-task-badges{display:flex;align-items:center;flex-wrap:wrap;gap:6px}.qs-task-source{font-size:10px;color:#9daf91}
 
 .qs-extra-metrics{margin-top:8px}
 
@@ -290,6 +292,10 @@ html.quota-sidebar-fixed-canvas,html.quota-sidebar-fixed-canvas body,html.quota-
 
 /* Keep task digits independent of the matched outline during transitions. */
 .qs-task-ring{position:relative;border:0}.qs-task-stroke{position:absolute;inset:0;border:2px solid #efc07780;border-radius:50%;pointer-events:none}
+.qs-task-ring svg.qs-task-stroke{width:49px;height:49px;border:0;overflow:visible}
+.qs-bar.qs-task-state-bar{position:relative;background:transparent;border-radius:0}
+.qs-bar.qs-task-state-bar>i{position:absolute;left:0;width:100%;border-radius:0;transform:translateY(-.3px);transition:background-color .22s ease-out}
+@media(prefers-reduced-motion:reduce){.qs-bar.qs-task-state-bar>i{transition:none}}
 
 /* Forecast is an outer overlay, above the opaque client cap and unclipped. */
 .integrated-quota-track>.qs-pace-mark{left:-.5px;width:5px;z-index:3;transform:translateY(-50%);transition:top .34s cubic-bezier(.2,.8,.2,1)}

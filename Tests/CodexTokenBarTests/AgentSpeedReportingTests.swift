@@ -1,4 +1,4 @@
-import AgentSpeedCore
+@testable import AgentSpeedCore
 import Foundation
 import XCTest
 @testable import CodexTokenBar
@@ -157,6 +157,16 @@ final class AgentSpeedReportingTests: XCTestCase {
         controller.configureLocalPreferences(preferences)
         XCTAssertEqual(controller.reportingConfiguration.codexRoot?.path, home.appendingPathComponent("sessions").path)
         XCTAssertEqual(controller.reportingConfiguration.dshRoot?.path, "/tmp/explicit-dsh-sessions")
+        let localHome = FileManager.default.homeDirectoryForCurrentUser
+        XCTAssertNil(controller.reportingConfiguration.antigravityRoot)
+        XCTAssertTrue(controller.reportingConfiguration.enabledSources.contains(.antigravity))
+        XCTAssertEqual(controller.reportingConfiguration.resolvedRoots(for: .antigravity),
+            AntigravityUsageSource.roots(home: localHome).map(\.path))
+        let antigravityIndex = try XCTUnwrap(preferences.firstIndex { $0.client == .antigravity })
+        preferences[antigravityIndex].path = "/tmp/orca/antigravity-chat"
+        controller.configureLocalPreferences(preferences)
+        XCTAssertEqual(controller.reportingConfiguration.resolvedRoots(for: .antigravity),
+            AntigravityUsageSource.roots(home: localHome, path: preferences[antigravityIndex].path).map(\.path))
         XCTAssertFalse(controller.reportingConfiguration.enabledSources.contains(.claudeCode))
         XCTAssertFalse(controller.reportingConfiguration.enabledSources.contains(.claudeDesktop))
         controller.configureCodexHome(nil)

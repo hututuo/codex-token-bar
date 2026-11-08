@@ -41,6 +41,14 @@ final class PersistentQuotaService: @unchecked Sendable {
             do {
                 try Task.checkCancellation()
                 guard !stopped, !sessionLock.withLock({ stopRequested }) else { throw CancellationError() }
+                if CodexConnectionMode.read(dataSource: dataSource) == .api {
+                    try closeSession()
+                    cached = nil
+                    scope = nil
+                    retryAt = 0
+                    failures = 0
+                    return .success(.apiConnection)
+                }
                 let binary = try locate()
                 let currentScope = Self.scope(binary: binary, dataSource: dataSource)
                 if scope != currentScope {
@@ -65,12 +73,14 @@ final class PersistentQuotaService: @unchecked Sendable {
                     try write(["method": "initialized"])
                 }
                 let result = try rpc("account/rateLimits/read")
-                guard currentScope == Self.scope(binary: binary, dataSource: dataSource) else {
+                guard currentScope == Self.scope(binary: binary, dataSource: dataSource),
+                      CodexConnectionMode.read(dataSource: dataSource) != .api else {
                     try closeSession()
                     cached = nil
                     throw DirectQuotaError.identityChanged
                 }
                 var snapshot = AccountQuotaReader.parse(result, accountName: AccountQuotaReader.readLocalAccountName(dataSource: dataSource))
+                snapshot.connectionMode = .subscription
                 snapshot.historyIdentity = AccountQuotaReader.readHistoryIdentity(
                     dataSource: dataSource, planType: snapshot.planType, limitID: snapshot.selectedLimitID
                 )
@@ -93,6 +103,19 @@ final class PersistentQuotaService: @unchecked Sendable {
                 }
                 return .failure(error)
             }
+        }
+    }
+
+    func suspendConnection(dataSource: CodexDataSource?) {
+        lock.withLock {
+            guard CodexConnectionMode.read(dataSource: dataSource) == .api else { return }
+            let home = dataSource?.codexHome ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".codex")
+            guard scope?.contains(home.standardizedFileURL.resolvingSymlinksInPath().path) == true else { return }
+            try? closeSession()
+            cached = nil
+            scope = nil
+            retryAt = 0
+            failures = 0
         }
     }
 

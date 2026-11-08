@@ -2,6 +2,24 @@ import XCTest
 @testable import CodexTokenBar
 
 final class QuotaCycleLedgerReadTests: XCTestCase {
+    func testDayReadUsesCommittedEventsWithoutQuotaIdentityAndKeepsMissingUsageLocal() throws {
+        try fixture { index, driver in
+            let before = try driver.readRows("SELECT COUNT(*) FROM events") { $0.int(0) }.first
+            let day = try index.dayExactUsage(from: Date(timeIntervalSince1970: 100.5), before: Date(timeIntervalSince1970: 101))
+            XCTAssertEqual(day.events.reduce(0) { $0 + $1.breakdown.totalTokens }, 220)
+            XCTAssertFalse(day.hasMissingCompaction)
+            try driver.execute("INSERT INTO events(source_id,source_offset,timestamp,tokens,input_tokens,cached_input_tokens,output_tokens,reasoning_output_tokens,accounting_kind) VALUES(1,9,100.7,0,0,0,0,0,4)")
+            let partial = try index.dayExactUsage(from: Date(timeIntervalSince1970: 100.5), before: Date(timeIntervalSince1970: 101))
+            XCTAssertTrue(partial.hasMissingCompaction)
+            XCTAssertEqual(partial.events.reduce(0) { $0 + $1.breakdown.totalTokens }, 220)
+            let adjacent = try index.dayExactUsage(from: Date(timeIntervalSince1970: 101), before: Date(timeIntervalSince1970: 102))
+            XCTAssertFalse(adjacent.hasMissingCompaction)
+            XCTAssertEqual(adjacent.events.reduce(0) { $0 + $1.breakdown.totalTokens }, 330)
+            XCTAssertEqual(try driver.readRows("SELECT COUNT(*) FROM events") { $0.int(0) }.first, before.map { ($0 ?? 0) + 1 })
+            try driver.execute("UPDATE schema_meta SET value='1' WHERE key='attribution_current_scan_unsafe_cause'")
+            XCTAssertThrowsError(try index.dayExactUsage(from: Date(timeIntervalSince1970: 99), before: Date(timeIntervalSince1970: 102)))
+        }
+    }
     private func fixture(_ body: (CodexUsageHistoryIndex, SQLiteDatabaseDriver) throws -> Void) throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

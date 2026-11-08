@@ -1193,7 +1193,9 @@ struct DashboardView: View {
                 isRefreshing: store.isRefreshing,
                 preciseTimeSeriesFresh: store.preciseTimeSeriesFresh,
                 cacheStatus: store.status,
-                clientCosts: costs
+                clientCosts: costs,
+                dayClients: allowedClients,
+                dayRefreshKey: "\(store.snapshot.generatedAt.timeIntervalSince1970)|\(clients.updatedAt?.timeIntervalSince1970 ?? 0)"
             )
             // LiveRateMonitor publishes independently of historical usage. The
             // equatable boundary keeps those one-second rate ticks from

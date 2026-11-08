@@ -287,6 +287,7 @@ enum AccountQuotaPaceDetailText {
 }
 
 struct AccountQuotaSnapshot: Equatable, Sendable {
+    var connectionMode: CodexConnectionMode = .unknown
     var fiveHour: AccountQuotaWindow?
     var sevenDay: AccountQuotaWindow?
     var fiveHourAvailability: AccountQuotaWindowAvailability? = nil
@@ -306,6 +307,16 @@ struct AccountQuotaSnapshot: Equatable, Sendable {
     var historyIdentity: QuotaHistoryIdentity?
 
     static let empty = AccountQuotaSnapshot()
+    static var apiConnection: AccountQuotaSnapshot {
+        var value = AccountQuotaSnapshot()
+        value.connectionMode = .api
+        value.planType = "API"
+        value.fiveHourAvailability = .absent
+        value.sevenDayAvailability = .absent
+        value.status = "API 接入 · 订阅额度不适用"
+        value.resetCreditStatus = "API 接入 · 重置卡不适用"
+        return value
+    }
 
     var resolvedFiveHourAvailability: AccountQuotaWindowAvailability {
         if fiveHour != nil { return .measured }

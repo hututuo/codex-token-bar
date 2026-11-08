@@ -1,0 +1,174 @@
+[
+  {
+    "name": "no evidence",
+    "config": "",
+    "auth": {},
+    "expected": "unknown"
+  },
+  {
+    "name": "official subscription",
+    "config": "",
+    "auth": {
+      "tokens": {
+        "access_token": "fixture-session"
+      }
+    },
+    "expected": "subscription"
+  },
+  {
+    "name": "explicit API auth beats stale login",
+    "config": "",
+    "auth": {
+      "auth_mode": "apikey",
+      "tokens": {
+        "access_token": "fixture-session"
+      }
+    },
+    "expected": "api"
+  },
+  {
+    "name": "API key",
+    "config": "",
+    "auth": {
+      "OPENAI_API_KEY": "fixture-key"
+    },
+    "expected": "api"
+  },
+  {
+    "name": "explicit subscription ignores stale key",
+    "config": "",
+    "auth": {
+      "auth_mode": "chatgpt",
+      "OPENAI_API_KEY": "fixture-key"
+    },
+    "expected": "subscription"
+  },
+  {
+    "name": "custom provider beats stale subscription",
+    "config": "model_provider = \"relay\"\n[model_providers.relay]\nrequires_openai_auth = true",
+    "auth": {
+      "auth_mode": "chatgpt"
+    },
+    "expected": "api"
+  },
+  {
+    "name": "active profile API",
+    "config": "profile = \"work\"\n[profiles.work]\nmodel_provider = \"relay\"",
+    "auth": {
+      "auth_mode": "chatgpt"
+    },
+    "expected": "api"
+  },
+  {
+    "name": "active profile official overrides root",
+    "config": "model_provider = \"relay\"\nprofile = \"official\"\n[profiles.official]\nmodel_provider = \"openai\"",
+    "auth": {
+      "auth_mode": "chatgpt"
+    },
+    "expected": "subscription"
+  },
+  {
+    "name": "unused provider does not change subscription",
+    "config": "[model_providers.relay]\nbase_url = \"https://relay.invalid/v1\"\n[profiles.unused]\nmodel_provider = \"relay\"",
+    "auth": {
+      "auth_mode": "chatgpt"
+    },
+    "expected": "subscription"
+  },
+  {
+    "name": "openai custom endpoint",
+    "config": "[model_providers.openai]\nbase_url = \"https://relay.invalid/v1\"",
+    "auth": {
+      "auth_mode": "chatgpt"
+    },
+    "expected": "api"
+  },
+  {
+    "name": "openai API credential config",
+    "config": "[model_providers.openai]\nrequires_openai_auth = false",
+    "auth": {
+      "auth_mode": "chatgpt"
+    },
+    "expected": "api"
+  },
+  {
+    "name": "forced api",
+    "config": "forced_login_method = \"api\"",
+    "auth": {
+      "auth_mode": "chatgpt"
+    },
+    "expected": "api"
+  },
+  {
+    "name": "comments and quoted profile",
+    "config": "profile = \"work.prod\" # use profile\n[profiles.\"work.prod\"]\nmodel_provider = 'relay' # api",
+    "auth": {
+      "auth_mode": "chatgpt"
+    },
+    "expected": "api"
+  },
+  {
+    "name": "inline provider",
+    "config": "model_providers = { openai = { base_url = \"https://relay.invalid/v1#path\" } }",
+    "auth": {
+      "auth_mode": "chatgpt"
+    },
+    "expected": "api"
+  },
+  {
+    "name": "dotted config",
+    "config": "profiles.work.model_provider = \"relay\"\nprofile = \"work\"",
+    "auth": {
+      "auth_mode": "chatgpt"
+    },
+    "expected": "api"
+  },
+  {
+    "name": "multiline instructions are not config",
+    "config": "instructions = \"\"\"\nmodel_provider = \"relay\"\n\"\"\"\nmodel_provider = \"openai\"",
+    "auth": {
+      "auth_mode": "chatgpt"
+    },
+    "expected": "subscription"
+  },
+  {
+    "name": "unreadable config",
+    "config": null,
+    "auth": {
+      "auth_mode": "chatgpt"
+    },
+    "expected": "unknown"
+  },
+  {
+    "name": "invalid provider scalar",
+    "config": "model_provider = 4",
+    "auth": {
+      "auth_mode": "chatgpt"
+    },
+    "expected": "unknown"
+  },
+  {
+    "name": "quoted boolean is invalid",
+    "config": "[model_providers.openai]\nrequires_openai_auth = \"false\"",
+    "auth": {
+      "auth_mode": "chatgpt"
+    },
+    "expected": "unknown"
+  },
+  {
+    "name": "profile with unrelated numeric and array settings",
+    "config": "profile = \"work\"\n[profiles.work]\nmodel_provider = \"relay\"\nmodel_context_window = 1000000\nfeatures = [\"a\", \"b\"]",
+    "auth": {
+      "auth_mode": "chatgpt"
+    },
+    "expected": "api"
+  },
+  {
+    "name": "inline provider with unrelated integer",
+    "config": "model_providers = { openai = { request_max_retries = 4, base_url = \"https://relay.invalid\" } }",
+    "auth": {
+      "auth_mode": "chatgpt"
+    },
+    "expected": "api"
+  }
+]

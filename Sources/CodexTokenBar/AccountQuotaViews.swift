@@ -169,6 +169,11 @@ struct AccountQuotaStrip: View {
         VStack(alignment: .leading, spacing: clientItems == nil ? 5 : 10) {
             if let clientItems {
                 clientRows(clientItems)
+            } else if snapshot.connectionMode == .api {
+                HStack(spacing: 12) {
+                    clientLabel("codex", subtitle: "API 接入")
+                    Text("订阅额度不适用").font(.system(size: 11)).foregroundStyle(.secondary)
+                }
             } else {
                 HStack(spacing: AccountQuotaStripLayout.itemSpacing) {
                     clientLabel("codex", subtitle: snapshot.isAvailable ? "当前账户" : presentation.accountLabel.subtitle)
@@ -249,6 +254,7 @@ struct AccountQuotaStrip: View {
     }
 
     private func planLabel(for client: String) -> String {
+        if clientItems?.contains(where: { $0.client == client && $0.id.hasSuffix(":api") }) == true { return "API" }
         let raw = client == "codex" ? snapshot.planType : clientPlanLabels[client]
         let value = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return value.isEmpty ? "套餐未知" : value.uppercased()
@@ -267,17 +273,21 @@ struct AccountQuotaStrip: View {
                     .padding(.top, 3)
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 120), spacing: 12), count: min(client == "codex" ? 2 : 3, max(1, windows.count))), alignment: .leading, spacing: 10) {
                     ForEach(windows) { item in
-                        AccountQuotaSegment(
-                            window: AccountQuotaWindow(label: item.window,
-                                usedPercent: Int((100 - (item.remaining ?? 100)).rounded()), resetsAt: item.resetsAt),
-                            accent: AppTheme.quotaRemainingColor(percent: item.remaining ?? 0),
-                            isStale: item.status.contains("旧") || (client == "codex" && snapshot.staleDataDisplayed),
-                            unavailable: item.remaining == nil,
-                            unavailableText: item.status.isEmpty ? "不可用" : item.status)
-                            .help([item.source, item.status].filter { !$0.isEmpty }.joined(separator: " · "))
+                        if item.id.hasSuffix(":api") {
+                            Text(item.status).font(.system(size: 11)).foregroundStyle(.secondary)
+                        } else {
+                            AccountQuotaSegment(
+                                window: AccountQuotaWindow(label: item.window,
+                                    usedPercent: Int((100 - (item.remaining ?? 100)).rounded()), resetsAt: item.resetsAt),
+                                accent: AppTheme.quotaRemainingColor(percent: item.remaining ?? 0),
+                                isStale: item.status.contains("旧") || (client == "codex" && snapshot.staleDataDisplayed),
+                                unavailable: item.remaining == nil,
+                                unavailableText: item.status.isEmpty ? "不可用" : item.status)
+                                .help([item.source, item.status].filter { !$0.isEmpty }.joined(separator: " · "))
+                        }
                     }
                 }.frame(maxWidth: .infinity)
-                if client == "codex" {
+                if client == "codex" && snapshot.connectionMode != .api {
                     HStack(spacing: AccountQuotaStripLayout.itemSpacing) {
                         resetCredits
                         AccountQuotaPaceInsight(snapshot: snapshot)

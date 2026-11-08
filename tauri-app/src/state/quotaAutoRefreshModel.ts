@@ -20,6 +20,8 @@ export function makeQuotaAutoRefreshPlan({
     return { active: false, intervalMs: null };
   }
 
+  // Native API-mode reads only recheck local connection facts and return an
+  // inapplicable snapshot. Keep this tick to discover a switch to subscription.
   return {
     active: true,
     intervalMs: sanitizeQuotaRefreshIntervalMs(intervalMs),

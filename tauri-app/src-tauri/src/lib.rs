@@ -206,6 +206,7 @@ pub fn run() {
             commands::claude_local_runtime::save_activity_speed_mode,
             commands::dashboard::read_quota_cycles,
             commands::dashboard::read_quota_cycle_usage,
+            commands::dashboard::read_model_day_usage,
             commands::codex_instances::list_codex_instances,
             commands::codex_instances::create_codex_instance,
             commands::codex_instances::import_codex_instance,

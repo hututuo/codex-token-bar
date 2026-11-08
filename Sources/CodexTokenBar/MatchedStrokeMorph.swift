@@ -10,6 +10,8 @@ struct MatchedStrokeMorphEndpoint {
     var end: CGFloat = 1
     var width: CGFloat = 3
     var opacity: Float = 1
+    /// Optional round-ended outline clipping a full-length segmented strip.
+    var clipPoints: [CGPoint]? = nil
 }
 
 struct MatchedStrokeMorphRoute {
@@ -19,6 +21,7 @@ struct MatchedStrokeMorphRoute {
     let collapsed: MatchedStrokeMorphEndpoint
     let color: NSColor
     var opacityGroup: String? = nil
+    var lineCap: CAShapeLayerLineCap = .round
 }
 
 struct MatchedStrokeMorphTiming {
@@ -202,10 +205,14 @@ private struct MatchedStrokeMorphHost: NSViewRepresentable {
             if let p = shape.presentation(), let points = MatchedStrokeMorphGeometry.vertices(p.path) {
                 let groupOpacity = shapeGroups[id].flatMap { opacityGroups[$0]?.presentation()?.opacity ?? startingStates[id]?.opacity } ?? 1
                 result[id] = MatchedStrokeMorphEndpoint(points: points, start: p.strokeStart, end: p.strokeEnd, width: p.lineWidth, opacity: p.opacity * groupOpacity)
+                result[id]?.clipPoints = (shape.mask as? CAShapeLayer).flatMap { mask in
+                    MatchedStrokeMorphGeometry.vertices(mask.presentation()?.path ?? mask.path)
+                }
             } else if shape.animation(forKey: "matched-stroke") != nil, let source = startingStates[id] {
                 result[id] = source
             } else if let points = MatchedStrokeMorphGeometry.vertices(shape.path) {
                 result[id] = MatchedStrokeMorphEndpoint(points: points, start: shape.strokeStart, end: shape.strokeEnd, width: shape.lineWidth, opacity: shape.opacity)
+                result[id]?.clipPoints = (shape.mask as? CAShapeLayer).flatMap { MatchedStrokeMorphGeometry.vertices($0.path) }
             }
         }
         CATransaction.begin(); CATransaction.setDisableActions(true)
@@ -216,7 +223,11 @@ private struct MatchedStrokeMorphHost: NSViewRepresentable {
                 endpoint.width.isFinite && endpoint.width > 0 && endpoint.opacity.isFinite && (0...1).contains(endpoint.opacity)
                     && endpoint.start.isFinite && endpoint.end.isFinite && (0...1).contains(endpoint.start) && (endpoint.start...1).contains(endpoint.end)
             }
-            return a.count >= 2 && a.count == b.count && valid(route.expanded) && valid(route.collapsed)
+            let clips = [route.expanded.clipPoints, route.collapsed.clipPoints]
+            let validClips = clips.allSatisfy { $0 == nil } || (clips.allSatisfy { points in
+                points.map { $0.count >= 2 && $0.allSatisfy { $0.x.isFinite && $0.y.isFinite } } ?? false
+            } && clips[0]?.count == clips[1]?.count)
+            return validClips && a.count >= 2 && a.count == b.count && valid(route.expanded) && valid(route.collapsed)
                 && (a + b).allSatisfy { $0.x.isFinite && $0.y.isFinite }
         }
         guard let layer, !routes.isEmpty else { CATransaction.commit(); return }
@@ -230,7 +241,7 @@ private struct MatchedStrokeMorphHost: NSViewRepresentable {
             let style = (snapshot.start, snapshot.end, snapshot.width, snapshot.opacity)
             startingStates[route.id] = snapshot
             let shape = CAShapeLayer()
-            shape.fillColor = nil; shape.strokeColor = route.color.cgColor; shape.lineCap = .round; shape.lineJoin = .round
+            shape.fillColor = nil; shape.strokeColor = route.color.cgColor; shape.lineCap = route.lineCap; shape.lineJoin = .round
             shape.path = MatchedStrokeMorphGeometry.path(to.points)
             shape.strokeStart = to.start; shape.strokeEnd = to.end; shape.lineWidth = to.width; shape.opacity = to.opacity
             // Closing is exactly the same cubic as the frame clock. Let CA
@@ -265,6 +276,23 @@ private struct MatchedStrokeMorphHost: NSViewRepresentable {
             group.animations = [path, values("strokeStart", style.0, to.start), values("strokeEnd", style.1, to.end),
                                 values("lineWidth", style.2, to.width)]
             group.duration = duration
+            if let endClip = to.clipPoints, let startClip = snapshot.clipPoints ?? from.clipPoints {
+                let mask = CAShapeLayer()
+                mask.fillColor = nil; mask.strokeColor = NSColor.white.cgColor; mask.lineCap = .round
+                mask.path = MatchedStrokeMorphGeometry.path(endClip); mask.lineWidth = to.width
+                shape.mask = mask
+                let clipPath = path.copy() as! CAPropertyAnimation
+                if let animation = clipPath as? CAKeyframeAnimation {
+                    animation.values = (0...16).map { i in MatchedStrokeMorphGeometry.interpolate(startClip, endClip, progress: MatchedStrokeMorphTiming.progress(Double(i) / 16, expanding: true)) }
+                } else if let animation = clipPath as? CABasicAnimation {
+                    animation.fromValue = MatchedStrokeMorphGeometry.path(startClip)
+                    animation.toValue = MatchedStrokeMorphGeometry.path(endClip)
+                }
+                let clipGroup = CAAnimationGroup()
+                clipGroup.animations = [clipPath, values("lineWidth", style.2, to.width)]
+                clipGroup.duration = duration
+                mask.add(clipGroup, forKey: "matched-clip")
+            }
             if let key = route.opacityGroup {
                 let container: CALayer
                 if let existing = opacityGroups[key] { container = existing }

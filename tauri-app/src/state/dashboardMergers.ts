@@ -772,17 +772,18 @@ export function mergeQuota(state: DashboardAppState, quota: AccountQuotaBundle):
           account: quota.account,
           quota: {
             ...quota.quota,
-            resetCredit: state.dashboard.quota.resetCredit,
+            resetCredit: quota.quota.connectionMode === "api" ? quota.quota.resetCredit : state.dashboard.quota.resetCredit,
           },
           activityDays: mergeActivityQuotaHistory(state.dashboard.activityDays, quota.quotaHistoryDaily),
           recentUsage24h: mergeQuotaHistory(state.dashboard.recentUsage24h, quota.quotaHistory24h),
           recentUsage7d: mergeQuotaHistory(state.dashboard.recentUsage7d, quota.quotaHistory7d),
           recentUsage30d: mergeQuotaHistory(state.dashboard.recentUsage30d, quota.quotaHistory30d),
-          warnings: replaceAccountQuotaWarnings(state.dashboard.warnings, quota.warnings),
-          diagnostics: replaceAccountQuotaDiagnostics(
+          warnings: replaceResetCreditWarnings(replaceAccountQuotaWarnings(state.dashboard.warnings, quota.warnings),
+            quota.quota.connectionMode === "api" ? [] : state.dashboard.warnings),
+          diagnostics: replaceResetCreditDiagnostics(replaceAccountQuotaDiagnostics(
             state.dashboard.diagnostics ?? [],
             quota.diagnostics ?? [],
-          ),
+          ), quota.quota.connectionMode === "api" ? [] : state.dashboard.diagnostics ?? []),
         };
   return {
     ...state,
@@ -794,7 +795,7 @@ export function mergeResetCredits(
   state: DashboardAppState,
   reset: ResetCreditBundle,
 ): DashboardAppState {
-  if (state.dashboard === null) {
+  if (state.dashboard === null || state.dashboard.quota.connectionMode === "api") {
     return state;
   }
   const previous = state.dashboard.quota.resetCredit;

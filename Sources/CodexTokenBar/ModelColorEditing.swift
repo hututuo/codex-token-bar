@@ -54,7 +54,7 @@ struct ClientColorSettings: View {
             .popover(isPresented: $showing) {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("客户端颜色").font(.headline)
-                    ForEach(["client:codex", "client:claudeCode", "client:deepseek"], id: \.self) { key in
+                    ForEach(["client:codex"] + UsageClient.allCases.map { "client:" + $0.rawValue }, id: \.self) { key in
                         SpeedColorSwatch(key: key, preferences: preferences)
                     }
                 }.padding(16)

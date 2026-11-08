@@ -190,7 +190,10 @@ struct ClientModelCostPeriods: Equatable, Sendable {
             if resolvedToday.isEmpty && codex.dailyUsage.contains(where: { $0.date >= todayStart && $0.date <= now && $0.tokens > 0 }) { pending.insert(.today) }
             if recentCodex.isEmpty && codex.recentBins.contains(where: { $0.start >= cutoff && $0.start <= now && $0.tokens > 0 }) { pending.insert(.sevenDay) }
         }
-        func items(_ external: [ClientUsageSummary], _ original: [ModelTokenBreakdown]) -> [FloatingTodayModelUsageItem] {
+        return Self(lifetime: modelItems(rows, codex.cacheUsage.modelBreakdowns, allowed: allowed), today: modelItems(today, resolvedToday, allowed: allowed), sevenDay: modelItems(sevenDay, recentCodex, allowed: allowed), codexPendingScopes: pending)
+    }
+
+    static func modelItems(_ external: [ClientUsageSummary], _ original: [ModelTokenBreakdown], allowed: Set<String>) -> [FloatingTodayModelUsageItem] {
             var result: [FloatingTodayModelUsageItem] = []
             if allowed.contains("codex") {
                 result = FloatingTodayModelUsagePresentation.items(from: original, fallbackModel: .gpt56Sol, mergeAutoReview: false).map {
@@ -207,8 +210,6 @@ struct ClientModelCostPeriods: Equatable, Sendable {
             }
             let total = max(1, result.reduce(0) { $0 + $1.tokens })
             return result.filter { $0.tokens > 0 }.map { .init(id: $0.id, label: $0.label, tokens: $0.tokens, share: Double($0.tokens) / Double(total), costUSD: $0.costUSD, usesIndependentQuota: $0.usesIndependentQuota, referenceCostUSD: $0.referenceCostUSD, color: $0.color, knownPartialCostUSD: $0.knownPartialCostUSD) }
-        }
-        return Self(lifetime: items(rows, codex.cacheUsage.modelBreakdowns), today: items(today, resolvedToday), sevenDay: items(sevenDay, recentCodex), codexPendingScopes: pending)
     }
 }
 

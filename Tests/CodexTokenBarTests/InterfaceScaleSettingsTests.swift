@@ -144,8 +144,12 @@ final class InterfaceScaleSettingsTests: XCTestCase {
         // The model-cost row is intentionally allowed to grow at 130% scale
         // (option B): it must remain readable rather than clipping its model
         // cards. Keep a generous upper guard against an accidental runaway
-        // layout while preserving the agreed larger-height contract.
-        XCTAssertLessThanOrEqual(fittingHeight, 180, "Stat strip should remain bounded at 130% scale.")
+        // layout while preserving the agreed larger-height contract. The later
+        // single-day calendar adds one collapsed toolbar row (24 logical points,
+        // including its spacing); the expanded calendar is not part of this bound.
+        let collapsedCalendarToolbarBudget: CGFloat = 24 * 1.30
+        XCTAssertLessThanOrEqual(fittingHeight, 180 + collapsedCalendarToolbarBudget,
+            "Stat strip and collapsed calendar toolbar should remain bounded at 130% scale.")
         XCTAssertGreaterThanOrEqual(fittingHeight, 120, "Stat strip should reserve readable space for the model-cost row.")
     }
 }

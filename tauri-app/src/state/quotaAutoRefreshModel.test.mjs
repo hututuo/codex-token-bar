@@ -74,3 +74,13 @@ test("quota auto refresh plan remains active while unrelated precise loading is 
     );
   });
 });
+
+test("API connection retains the local mode check so subscription switching can recover", () => {
+  return withSsrModules(async (load) => {
+    const { makeQuotaAutoRefreshPlan } = await load("/src/state/quotaAutoRefreshModel.ts");
+    assert.deepEqual(
+      makeQuotaAutoRefreshPlan({ dashboardReady: true, fastSnapshotLoaded: true, intervalMs: 60_000, connectionMode: "api" }),
+      { active: true, intervalMs: 60_000 },
+    );
+  });
+});

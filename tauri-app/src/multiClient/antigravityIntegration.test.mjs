@@ -1,0 +1,38 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import React from 'react';
+import {renderToStaticMarkup} from 'react-dom/server';
+import {withSsrModules} from '../test/ssrHarness.mjs';
+
+test('Antigravity participates in all and standalone scopes, activity history, cost projection and tasks',async()=>withSsrModules(async load=>{
+ const {defaultClientPreferences}=await load('/src/multiClient/MultiClientUsage.tsx');
+ const {scopeClients}=await load('/src/multiClient/integratedClientModel.ts');
+ const {selectedActivityRates}=await load('/src/multiClient/activitySpeedMode.tsx');
+ const {ActivityLiveHistory}=await load('/src/multiClient/activityLiveHistory.ts');
+ const {sidebarTaskMeterForSources}=await load('/src/quota-sidebar/SidebarTaskMeter.tsx');
+ const {RunningTaskDetails}=await load('/src/quota-sidebar/RunningTaskDetails.tsx');
+ const {localTaskSummary}=await load('/src/quota-sidebar/runningTaskPresentation.ts');
+ const {modelUsageColor,dashboardModelUsageColor}=await load('/src/components/modelUsagePresentation.ts');
+ const {clientCostPeriods,projectOriginalDashboard}=await load('/src/multiClient/originalDashboardProjection.ts');
+ const registered=defaultClientPreferences.map(p=>p.client),all=scopeClients('all',registered);
+ assert.ok(all.includes('antigravity'));assert.deepEqual(scopeClients('antigravity',registered),['antigravity']);
+ const model='gemini-4-argon',rates=[{client:'antigravity',model,outputTps:35}];
+ const now=Date.now()/1000,dashboard={generatedAt:new Date().toISOString(),stats:{totalTokens:0,totalCalls:0,modelBreakdowns:[]},activityDays:[],recentUsage24h:[],recentUsage7d:[],recentUsage30d:[],cacheUsage:{sessions:[],turns:[]},warnings:[]};
+ const row={client:'antigravity',model,inputTokens:140,outputTokens:20,cacheReadTokens:40,cacheWriteTokens:0,requests:1,apiCostUSD:.000404,unpricedRequests:0};
+ const snapshot={preferences:defaultClientPreferences,summaries:[row],todaySummaries:[row],sevenDaySummaries:[row],updatedAt:new Date().toISOString()};
+ assert.equal(projectOriginalDashboard(dashboard,snapshot,['antigravity']).stats.totalTokens,160);
+ for(const scope of ['lifetime','today','sevenDay'])assert.equal(clientCostPeriods(dashboard,snapshot,['antigravity'],now)[scope][0].costUSD,.000404);
+ for(const mode of ['bar','agentSpeed'])assert.deepEqual(selectedActivityRates([],rates,all,mode),[{model,tokensPerSecond:35}]);
+ assert.deepEqual(selectedActivityRates([],rates,['codex'],'bar'),[]);
+ const history=new ActivityLiveHistory();history.record(100,{antigravity:true},rates);history.record(101,{antigravity:true},[]);
+ assert.deepEqual(history.snapshot(101,['antigravity'])[0].points.map(p=>p.rate),[35,0]);
+ const main={id:'parent',client:'antigravity',parentId:null,phase:'generating',model,lastActivity:new Date().toISOString()};
+ const child={...main,id:'child',parentId:'parent',phase:'tools'};
+ const combined=sidebarTaskMeterForSources({status:'unavailable'},false,true,[main],[child]);
+ assert.equal(combined.main,1);assert.equal(combined.subagents,1);
+ assert.deepEqual(combined.meter.colors.slice(0,2),[modelUsageColor(model),modelUsageColor(model)]);
+ assert.equal(dashboardModelUsageColor(model,false),modelUsageColor(model));
+ const html=renderToStaticMarkup(React.createElement(RunningTaskDetails,{running:localTaskSummary([main],[child])}));
+ assert.match(html,/data-task-source="antigravity"/);assert.match(html,/qs-child-task/);assert.doesNotMatch(html,/Claude/);
+ assert.match(html,/生成中/);assert.match(html,/工具执行中/);
+}));

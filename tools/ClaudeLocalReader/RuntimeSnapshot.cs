@@ -65,7 +65,7 @@ internal sealed record ResponseEventInput(long Sequence, ResponseSummary Respons
 internal static class RuntimeSnapshotMapper
 {
     private static readonly SourceKind[] ClaudeSources = [SourceKind.ClaudeCode, SourceKind.ClaudeDesktop];
-    private static readonly SourceKind[] RuntimeSources = [SourceKind.Codex, SourceKind.ClaudeCode, SourceKind.ClaudeDesktop, SourceKind.DeepSeek, SourceKind.Gemini, SourceKind.OpenCode];
+    private static readonly SourceKind[] RuntimeSources = [SourceKind.Codex, SourceKind.ClaudeCode, SourceKind.ClaudeDesktop, SourceKind.DeepSeek, SourceKind.Gemini, SourceKind.OpenCode, SourceKind.Antigravity];
     private const int MaximumResponseEvents = 32;
 
     public static RuntimeSnapshot Map(
@@ -187,6 +187,7 @@ internal static class RuntimeSnapshotMapper
         SourceKind.DeepSeek => "deepseek",
         SourceKind.Gemini => "gemini",
         SourceKind.OpenCode => "opencode",
+        SourceKind.Antigravity => "antigravity",
         SourceKind.ClaudeCode => "claudeCode",
         SourceKind.ClaudeDesktop => "claudeDesktop",
         _ => throw new ArgumentOutOfRangeException(nameof(source)),

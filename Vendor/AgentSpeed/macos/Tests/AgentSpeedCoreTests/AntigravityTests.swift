@@ -201,7 +201,8 @@ struct AntigravityTests {
             #expect(roots.allSatisfy { !MonitorConfiguration.isReadable(root: $0, family: .antigravity) }, "\(backup)")
             #expect(!LiveMonitor.isReadableAntigravityStore(URL(fileURLWithPath: backup)))
         }
-        #expect(TranscriptLocations.defaultAntigravityStores.map(\.lastPathComponent) == ["antigravity-cli", "antigravity", "antigravity-ide"])
+        #expect(TranscriptLocations.defaultAntigravityStores.map(\.lastPathComponent) ==
+            ["antigravity-cli", "antigravity", "antigravity-ide", "antigravity-acp", "antigravity-acp", "antigravity-cli", "antigravity"])
     }
 
     @Test func backupStoreIsNeverReadByTheSession() throws {

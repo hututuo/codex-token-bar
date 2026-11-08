@@ -1,4 +1,5 @@
 import Foundation
+import AgentSpeedCore
 
 /// One display projection for both sidebar levels. Source accounting and
 /// measured request intervals remain separate from the activity animation.
@@ -13,9 +14,10 @@ enum ClientLocalRuntimePresentation {
         return sums.keys.sorted().map { .init(model: $0, tokensPerSecond: sums[$0]!) }
     }
 
-    static func running(codex: RunningThreadSummary, claude: RunningThreadSummary, allowed: Set<String>) -> RunningThreadSummary {
+    static func running(codex: RunningThreadSummary, claude: RunningThreadSummary, allowed: Set<String>, antigravity: RunningThreadSummary = .unavailable) -> RunningThreadSummary {
         let selected = (allowed.contains("codex") ? [codex] : [])
             + (allowed.contains("claudeCode") || allowed.contains("claudeDesktop") ? [claude] : [])
+            + (allowed.contains("antigravity") ? [antigravity] : [])
         let fresh = selected.filter { $0.freshness == .fresh }
         // Only aggregate current observations when any are available. A missing
         // reader neither invalidates another reader nor contributes a fake zero.
@@ -37,15 +39,30 @@ enum ClientLocalRuntimePresentation {
             freshness: fresh.isEmpty ? .stale : .fresh)
     }
 
+    @MainActor static func antigravityRunning(_ snapshot: SpeedSnapshot, now: Date = Date()) -> RunningThreadSummary {
+        guard let status = snapshot.sources.first(where: { $0.kind == .antigravity && $0.enabled }), status.available else { return .unavailable }
+        if case .starting = snapshot.state { return .loading }
+        guard snapshot.state == .running, abs(now.timeIntervalSince(snapshot.timestamp)) <= 3 else { return .unavailable }
+        let agents = snapshot.agents.filter { $0.source == .antigravity }
+        let active = agents.filter {
+            let age = now.timeIntervalSince($0.lastActivity)
+            return !$0.localDisplayStopped && ($0.phase == .generating || $0.phase == .tools) && age >= -5 && age <= 300
+        }
+        return ClaudeLocalRuntime.runningSummary(agents: agents, activeAgents: active, sourceAvailable: true, state: snapshot.state)
+    }
+
     /// Supplementary source status for task details, independent of the current
     /// task count from readers that have a fresh observation.
     static func taskSourceIssue(codex: RunningThreadSummary, claude: RunningThreadSummary,
-                                allowed: Set<String>) -> String? {
+                                allowed: Set<String>, antigravity: RunningThreadSummary = .unavailable) -> String? {
         if allowed.contains("codex"), codex.freshness != .fresh {
             return codex.freshness == .stale ? "Codex 上次数据" : codex.freshness == .loading ? "Codex 读取中" : "Codex 暂无任务数据"
         }
         if allowed.contains("claudeCode") || allowed.contains("claudeDesktop"), claude.freshness != .fresh {
             return claude.freshness == .stale ? "Claude 上次数据" : claude.freshness == .loading ? "Claude 读取中" : "Claude 暂无任务数据"
+        }
+        if allowed.contains("antigravity"), antigravity.freshness != .fresh {
+            return antigravity.freshness == .loading ? "Antigravity 读取中" : "Antigravity 暂无任务数据"
         }
         return nil
     }

@@ -427,7 +427,7 @@ final class ClaudeLocalRuntime: ObservableObject {
         return age.isFinite && age >= -5 && age <= activeStatusFreshness
     }
 
-    private static func runningSummary(
+    static func runningSummary(
         agents: [AgentStatus],
         activeAgents: [AgentStatus],
         sourceAvailable: Bool,
@@ -449,7 +449,7 @@ final class ClaudeLocalRuntime: ObservableObject {
         func member(_ agent: AgentStatus) -> RunningThreadMember {
             RunningThreadMember(
                 threadID: opaqueThreadID(agent.id),
-                title: cleaned(agent.displayTitle) ?? (agent.isSubagent ? "Claude subagent" : "Claude session"),
+                title: cleaned(agent.displayTitle) ?? ((agent.source == .antigravity ? "Antigravity" : "Claude") + (agent.isSubagent ? " subagent" : " session")),
                 model: cleaned(agent.model),
                 reasoningEffort: nil
             )
@@ -470,7 +470,7 @@ final class ClaudeLocalRuntime: ObservableObject {
             let model = allByID[parentID]?.model
             mainByID[parentID] = RunningThreadMember(
                 threadID: opaqueThreadID(parentID),
-                title: cleaned(allByID[parentID]?.displayTitle) ?? "Claude session",
+                title: cleaned(allByID[parentID]?.displayTitle) ?? (allByID[parentID]?.source == .antigravity ? "Antigravity session" : "Claude session"),
                 model: cleaned(model),
                 reasoningEffort: nil
             )

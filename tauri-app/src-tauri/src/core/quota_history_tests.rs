@@ -2835,6 +2835,7 @@ pub(super) fn bundle_with_plan(
             plan_label: plan_label.into(),
         },
         quota: QuotaSnapshot {
+            connection_mode: None,
             reserve_windows: Vec::new(),
             five_hour: QuotaLimit {
                 label: "5h".into(),

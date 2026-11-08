@@ -45,6 +45,7 @@ extension UsageClient {
         case .deepseek: "DeepSeek / DSH"
         case .gemini: "Gemini CLI"
         case .opencode: "OpenCode"
+        case .antigravity: "Antigravity"
         }
     }
 }
@@ -88,7 +89,11 @@ actor MultiClientUsageScanner {
         var entries: [(UsageClient, URL)] = []
         for preference in enabled {
             let files: [URL]
-            if preference.path.isEmpty {
+            if preference.client == .antigravity {
+                let discovery = AntigravityUsageSource.discover(home: home, path: preference.path)
+                files = discovery.files
+                if discovery.truncated { diagnostics.append("Antigravity：发现达到读取上限，请缩小目录范围；当前不是完整历史") }
+            } else if preference.path.isEmpty {
                 let discovery = MultiClientUsageDiscovery.discover(client: preference.client, home: home, environment: environment)
                 files = discovery.files
                 if discovery.truncated { diagnostics.append("\(preference.client.displayName)：自动发现达到安全上限，请分目录读取；当前不是完整历史") }
@@ -199,6 +204,9 @@ actor MultiClientUsageScanner {
         let isDatabase = ["db", "sqlite"].contains(url.pathExtension.lowercased())
         if isDatabase, let wal = try? FileManager.default.attributesOfItem(atPath: url.path + "-wal") {
             modified = max(modified, (wal[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0)
+            if client == .antigravity {
+                identity += ":wal:\(wal[.systemFileNumber] ?? ""):\(wal[.size] ?? ""):\((wal[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0)"
+            }
         }
         // Hash a fixed prefix already covered by the checkpoint. Appending to a short
         // file must not change the comparison width; a rewritten prefix resets the scan.
@@ -216,7 +224,13 @@ actor MultiClientUsageScanner {
         let offset: Int64
         var checkpointIdentity = identity
         var checkpointModified = modified
-        if isDatabase {
+        if isDatabase && client == .antigravity {
+            guard AntigravityUsageSource.isConversation(url) else { return }
+            let read = try AntigravityUsageSource.read(url)
+            events = read.events
+            offset = size
+            if read.malformedRows > 0 { scanNotices.append("Antigravity：部分记录字段无效，已保留可识别用量和旧账") }
+        } else if isDatabase {
             guard client == .opencode else { return }
             let prefix = identity + "|"
             let continuation = saved.flatMap { saved -> OpenCodeDatabaseCursor? in

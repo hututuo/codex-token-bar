@@ -9,6 +9,39 @@ const dashboard=()=>({generatedAt:new Date(stamp*1000).toISOString(),stats:{...s
 const row={client:'claudeCode',model:'claude-sonnet-4-6',inputTokens:1000,outputTokens:200,cacheReadTokens:800,cacheWriteTokens:0,reasoningTokens:0,requests:2,lastSeen:new Date(stamp*1000).toISOString(),apiCostUSD:0.03,unpricedRequests:0,cacheReadComplete:true};
 const bucket={client:'claudeCode',startUnix:stamp-3600,inputTokens:1000,outputTokens:200,cacheReadTokens:800,cacheWriteTokens:0,reasoningTokens:0,requests:2};
 const snapshot=()=>({preferences:[],summaries:[row],todaySummaries:[],sevenDaySummaries:[row],dailyBuckets:[bucket],trendBuckets:[bucket],updatedAt:new Date(stamp*1000).toISOString()});
+test('API connection shows a neutral notice without subscription bars or reset tools',async()=>withSsrModules(async load=>{
+ const {quotaItems}=await load('/src/multiClient/integratedClientModel.ts');
+ const {QuotaStrip}=await load('/src/components/QuotaStrip.tsx');
+ const quota={connectionMode:'api'};
+ const items=quotaItems(quota,{state:'notConnected',windows:[]},false,true);
+ assert.deepEqual(items.map(item=>item.id),['codex:api']);
+ const {claudeQuotaFromLocalCache}=await load('/src/multiClient/multiClientProduct.ts');
+ const claude=claudeQuotaFromLocalCache({state:'api',fiveHour:{usedPercent:90,resetsAt:null}});
+ assert.deepEqual(claude.windows,[]);
+ const combined=quotaItems(quota,claude,true);
+ assert.deepEqual(combined.map(item=>item.id),['codex:api','claudeCode:api']);
+ for(const clientItems of [undefined,items]){
+  const html=renderToStaticMarkup(React.createElement(QuotaStrip,{snapshot:quota,clientItems}));
+  assert.match(html,/API/);assert.match(html,/订阅额度不适用/);
+  assert.doesNotMatch(html,/quota-bar|重置卡|自动重试|不可用/);
+ }
+}));
+test('mixed prices preserve the known subtotal in every client cost period and rendered values',async()=>withSsrModules(async load=>{
+ const {clientCostPeriods}=await load('/src/multiClient/originalDashboardProjection.ts');
+ const {floatingModelUsageKnownCostUSD,floatingModelUsageValue,hasUnknownModelPrices}=await load('/src/floating/floatingModelUsage.ts');
+ const mixed={...row,apiCostUSD:0.37,unpricedRequests:1};
+ const source={...snapshot(),summaries:[mixed],todaySummaries:[mixed],sevenDaySummaries:[mixed]};
+ for(const scope of ['lifetime','today','sevenDay']){
+  const items=clientCostPeriods(dashboard(),source,['claudeCode'],stamp)[scope];
+  assert.equal(items[0].tokens,1200);assert.equal(items[0].costUSD,null);
+  assert.equal(floatingModelUsageKnownCostUSD(items),0.37);assert.equal(hasUnknownModelPrices(items),true);
+  assert.match(floatingModelUsageValue(items[0],'cost'),/0\.37.*未定价/);
+ }
+ const unknown={...mixed,apiCostUSD:0,unpricedRequests:2};
+ const items=clientCostPeriods(dashboard(),{...source,summaries:[unknown]},['claudeCode'],stamp).lifetime;
+ assert.equal(floatingModelUsageKnownCostUSD(items),null);
+ assert.equal(floatingModelUsageValue(items[0],'cost'),'价格未知');
+}));
 test('Codex-only uses the original snapshot object',async()=>withSsrModules(async load=>{
  const {projectOriginalDashboard}=await load('/src/multiClient/originalDashboardProjection.ts');const original=dashboard();assert.equal(projectOriginalDashboard(original,snapshot(),['codex']),original);
 }));

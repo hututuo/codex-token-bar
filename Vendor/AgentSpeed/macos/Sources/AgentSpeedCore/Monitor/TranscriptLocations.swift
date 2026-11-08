@@ -87,11 +87,29 @@ enum TranscriptLocations {
         return roots.filter { seen.insert(TranscriptDiscovery.normalizedRoot($0.standardizedFileURL.path)).inserted }
     }
 
-    /// Antigravity's store folders (METRICS 2, 4.8): CLI, desktop app and IDE extensions, IDE 2.x. No environment
-    /// variable moves them.
+    private static let antigravityStoreNames = ["antigravity-cli", "antigravity", "antigravity-ide", "antigravity-acp"]
+
+    /// Include Orca's isolated GEMINI_HOME without depending on the embedding app's environment.
     static var defaultAntigravityStores: [URL] {
-        let gemini = home.appendingPathComponent(".gemini", isDirectory: true)
-        return ["antigravity-cli", "antigravity", "antigravity-ide"].map { gemini.appendingPathComponent($0, isDirectory: true) }
+        defaultAntigravityStores(homeDirectory: home)
+    }
+
+    static func defaultAntigravityStores(homeDirectory: URL) -> [URL] {
+        let gemini = homeDirectory.appendingPathComponent(".gemini", isDirectory: true)
+        let orca = homeDirectory.appendingPathComponent("Library/Application Support/orca/antigravity-chat", isDirectory: true)
+        return antigravityStoreNames.map { gemini.appendingPathComponent($0, isDirectory: true) }
+            + ["antigravity-acp", "antigravity-cli", "antigravity"].map { orca.appendingPathComponent($0, isDirectory: true) }
+    }
+
+    /// A selected store/conversations folder stays direct. A parent also includes
+    /// its known children, even before they exist, so later sessions are discovered.
+    static func antigravityStores(in folder: URL) -> [URL] {
+        let folder = folder.standardizedFileURL
+        let name = folder.lastPathComponent
+        if name == "conversations" || antigravityStoreNames.contains(name) || name.hasSuffix("-backup") {
+            return [folder]
+        }
+        return [folder] + antigravityStoreNames.map { folder.appendingPathComponent($0, isDirectory: true) }
     }
 
     /// The `conversations` folder of a store; a folder that is itself called `conversations` is used directly.
@@ -207,7 +225,13 @@ extension MonitorConfiguration {
             default: urls
             }
         }
-        let urls = configuredRoot(for: family).map { [$0] } ?? automatic ?? TranscriptLocations.defaultRoots(for: family)
+        let configured: [URL]?
+        if family == .antigravity, let antigravityRoot {
+            configured = TranscriptLocations.antigravityStores(in: antigravityRoot).map(TranscriptLocations.antigravityConversations)
+        } else {
+            configured = configuredRoot(for: family).map { [$0] }
+        }
+        let urls = configured ?? automatic ?? TranscriptLocations.defaultRoots(for: family)
         var roots: [String] = []
         for url in urls {
             let root = TranscriptDiscovery.normalizedRoot(url.path)

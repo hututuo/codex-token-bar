@@ -41,6 +41,7 @@ final class SharedAgentSpeedMonitorPool {
                    configuration.geminiRoot ?? LiveMonitor.defaultGeminiRoots[0],
                    configuration.opencodeRoot ?? LiveMonitor.defaultOpencodeRoot]
             .map { $0.standardizedFileURL.resolvingSymlinksInPath().path }.joined(separator: "\u{0}") + (configuration.geminiRoot == nil ? "\u{0}automatic-gemini-roots" : "")
+            + "\u{0}" + (configuration.antigravityRoot?.standardizedFileURL.resolvingSymlinksInPath().path ?? "automatic-antigravity-roots")
         let entry: Entry
         if let saved = entries[key] { entry = saved }
         else {

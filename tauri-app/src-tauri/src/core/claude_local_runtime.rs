@@ -8,15 +8,16 @@ use std::{
 };
 
 const CLAUDE_CLIENTS: [&str; 2] = ["claudeCode", "claudeDesktop"];
-const RUNTIME_CLIENTS: [&str; 6] = [
+const RUNTIME_CLIENTS: [&str; 7] = [
     "codex",
     "claudeCode",
     "claudeDesktop",
     "deepseek",
     "gemini",
     "opencode",
+    "antigravity",
 ];
-const OTHER_CLIENTS: [&str; 3] = ["deepseek", "gemini", "opencode"];
+const OTHER_CLIENTS: [&str; 4] = ["deepseek", "gemini", "opencode", "antigravity"];
 const MAX_RUNTIME_LINE_BYTES: usize = 256 * 1024;
 const MAX_SOURCE_READ_LINE_BYTES: usize = 4096;
 const MAX_SOURCE_READ_BYTES: usize = 4 * 1024 * 1024;
@@ -153,6 +154,7 @@ struct RegistryState {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct RuntimeConfigKey {
+    default_antigravity_roots: bool,
     claude_root: Option<String>,
     codex_root: Option<String>,
     enabled_clients: Vec<String>,
@@ -161,6 +163,7 @@ struct RuntimeConfigKey {
 
 #[derive(Clone, Debug)]
 struct RuntimeRoots {
+    default_antigravity_roots: bool,
     claude_root: Option<std::path::PathBuf>,
     codex_root: Option<std::path::PathBuf>,
     other_roots: BTreeMap<String, std::path::PathBuf>,
@@ -618,7 +621,9 @@ fn runtime_configuration(
         enabled_clients.push("codex".into());
     }
     enabled_clients.sort();
+    let default_antigravity_roots = preferences.iter().any(|p| p.client == "antigravity" && p.path.trim().is_empty());
     let key = RuntimeConfigKey {
+        default_antigravity_roots,
         claude_root: claude_root.as_deref().map(normalized_path_key),
         codex_root: codex_root.as_deref().map(normalized_path_key),
         enabled_clients: enabled_clients.clone(),
@@ -630,6 +635,7 @@ fn runtime_configuration(
     Ok(Some((
         key,
         RuntimeRoots {
+            default_antigravity_roots,
             claude_root,
             codex_root,
             other_roots,
@@ -659,6 +665,7 @@ fn other_client_root(client: &str, path: &str) -> Result<std::path::PathBuf, &'s
                     .unwrap_or_else(|| home.join(".local").join("share"))
                     .join("opencode")
             }),
+            "antigravity" => home.join(".gemini"),
             _ => return Err("unsupported_local_source"),
         }
     } else if path.trim() == "~" {
@@ -684,7 +691,7 @@ fn other_client_root(client: &str, path: &str) -> Result<std::path::PathBuf, &'s
 pub(crate) fn selected_reporting_local_roots() -> Result<BTreeMap<String, String>, &'static str> {
     read_enabled_claude_preferences()?
         .iter()
-        .filter(|p| OTHER_CLIENTS.contains(&p.client.as_str()))
+        .filter(|p| ["deepseek", "gemini", "opencode"].contains(&p.client.as_str()))
         .map(|p| {
             let root = other_client_root(&p.client, &p.path)?
                 .to_string_lossy()
@@ -894,10 +901,12 @@ fn start_worker(
         command.arg("--codex-root").arg(root);
     }
     for (client, root) in roots.other_roots {
+        if client == "antigravity" && roots.default_antigravity_roots { continue; }
         let flag = match client.as_str() {
             "deepseek" => "--dsh-root",
             "gemini" => "--gemini-root",
             "opencode" => "--opencode-root",
+            "antigravity" => "--antigravity-root",
             _ => return Err(()),
         };
         command.arg(flag).arg(root);
@@ -1036,6 +1045,15 @@ fn runtime_source_read_roots(roots: &RuntimeRoots, key: &RuntimeConfigKey) -> Ve
     let mut allowed = Vec::new();
     for client in &key.enabled_clients {
         match client.as_str() {
+            "antigravity" => {
+                if let Some(root) = roots.other_roots.get(client) {
+                    if roots.default_antigravity_roots {
+                        allowed.extend(["antigravity-cli", "antigravity", "antigravity-ide"].map(|store| root.join(store).join("conversations")));
+                    } else {
+                        allowed.push(if root.file_name().is_some_and(|n| n == "conversations") { root.clone() } else { root.join("conversations") });
+                    }
+                }
+            }
             "codex" => {
                 if let Some(root) = roots.codex_root.as_ref() {
                     allowed.push(root.clone());
@@ -2201,11 +2219,36 @@ mod tests {
     }
 
     #[test]
+    fn antigravity_selection_covers_three_default_stores_and_isolates_custom_root() {
+        let automatic = [EnabledClaudePreference { client:"antigravity".into(),path:String::new() }];
+        let (key, roots) = runtime_configuration(&automatic, None).unwrap().unwrap();
+        assert!(key.default_antigravity_roots);
+        assert_eq!(key.enabled_clients, vec!["antigravity"]);
+        let allowed = runtime_source_read_roots(&roots, &key);
+        assert_eq!(allowed.len(), 3);
+        for store in ["antigravity-cli", "antigravity", "antigravity-ide"] {
+            assert!(allowed.iter().any(|root| root.ends_with(Path::new(store).join("conversations"))));
+        }
+        let custom_root = std::env::temp_dir().join("tokenbar-antigravity-selected");
+        let custom = [EnabledClaudePreference { client:"antigravity".into(),path:custom_root.to_string_lossy().into_owned() }];
+        let (custom_key, custom_roots) = runtime_configuration(&custom, None).unwrap().unwrap();
+        assert!(!custom_key.default_antigravity_roots);
+        assert_ne!(key,custom_key);
+        assert_eq!(runtime_source_read_roots(&custom_roots,&custom_key),vec![custom_root.join("conversations")]);
+        let fixture = fresh_fixture().replace("claudeCode", "antigravity")
+            .replace("\"sourceAvailable\":{", "\"sourceAvailable\":{\"claudeCode\":false,");
+        let parsed = parse_runtime_snapshot(fixture.as_bytes(), &["antigravity".into()]).unwrap();
+        assert_eq!(parsed.main_agents.len(), 1);
+        assert_eq!(parsed.model_rates[0].client, "antigravity");
+    }
+
+    #[test]
     fn disabling_saved_sources_clears_runtime_retry_state() {
         let registry = ClaudeLocalRuntimeRegistry::default();
         {
             let mut state = registry.lock_state();
             state.failed_config = Some(RuntimeConfigKey {
+                default_antigravity_roots: false,
                 claude_root: Some("c:\\users\\example\\.claude\\projects".into()),
                 codex_root: None,
                 other_roots: BTreeMap::new(),
@@ -2226,6 +2269,7 @@ mod tests {
         {
             let mut state = registry.lock_state();
             state.failed_config = Some(RuntimeConfigKey {
+                default_antigravity_roots: false,
                 claude_root: Some("c:\\users\\example\\.claude\\projects".into()),
                 codex_root: None,
                 other_roots: BTreeMap::new(),

@@ -1,5 +1,25 @@
 //! Published SQLite-only period summaries; never starts the JSONL owner.
-use super::*;
+//! The legacy open below can enter pool restoration or namespace admission;
+//! these entrypoints are not pure read-only admission helpers. Once opened,
+//! ranges and missing-compaction checks share the original deferred snapshot.
+use super::connection::{open_read_only_index, Connection};
+use super::contracts::{
+    nonnegative_u64, saturating_u32, CURRENT_SCHEMA_VERSION, INDEX_SCHEMA_VERSION,
+    PARSER_REPAIR_VERIFY_KEY,
+};
+use super::projections::startup_attribution_safety_state;
+use super::store_metadata::{metadata_i64, metadata_text, table_exists_checked};
+use super::database_path;
+use crate::models::{ModelTokenBreakdown, TokenCacheBreakdown};
+use rusqlite::{params, OptionalExtension};
+use std::{collections::HashMap, fs, path::Path, time::Duration as StdDuration};
+#[cfg(test)]
+use super::contracts::{
+    ATTRIBUTION_CURRENT_SCAN_INCOMPLETE_KEY, ATTRIBUTION_CURRENT_SCAN_UNSAFE_KEY,
+    ATTRIBUTION_PROVENANCE_EPOCH_KEY, ATTRIBUTION_UNSAFE_EPOCH_KEY,
+};
+#[cfg(test)]
+use super::store_metadata::set_metadata;
 
 use crate::core::quota_history::cycles::ConsumptionEvidence;
 
@@ -217,6 +237,15 @@ pub(crate) fn read(
     codex_home: &Path,
     ranges: &[(f64, f64)],
 ) -> Result<Vec<Vec<ModelTokenBreakdown>>, String> {
+    read_ranges(codex_home, ranges, false).map(|result| result.0)
+}
+
+pub(crate) fn read_day(codex_home: &Path, start: f64, end: f64) -> Result<(Vec<ModelTokenBreakdown>, bool), String> {
+    let (mut rows, missing) = read_ranges(codex_home, &[(start, end)], true)?;
+    Ok((rows.pop().unwrap_or_default(), missing))
+}
+
+fn read_ranges(codex_home: &Path, ranges: &[(f64, f64)], check_missing: bool) -> Result<(Vec<Vec<ModelTokenBreakdown>>, bool), String> {
     let path = database_path(codex_home)?;
     let connection = open_read_only_index(&path, StdDuration::from_secs(3))
         .map_err(|e| format!("周期明细索引待读取：{e}"))?;
@@ -250,13 +279,17 @@ pub(crate) fn read(
     if revision.as_deref() != Some("2") {
         return Err("周期明细等待 canonical 事件账本".into());
     }
-    ranges
+    let rows = ranges
         .iter()
         .map(|&(start, end)| query(&connection, start, end))
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut missing = false;
+    if check_missing {
+        for &(start, end) in ranges { missing |= range_has_unreported_compaction(&connection, start, end).map_err(|e| e.to_string())?; }
+    }
+    Ok((rows, missing))
 }
 
-#[cfg(test)]
 fn range_has_unreported_compaction(
     connection: &Connection,
     start: f64,
@@ -355,6 +388,20 @@ fn query(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn local_day_query_excludes_the_next_midnight_and_keeps_dated_models() {
+        let c=Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE published_events(timestamp INTEGER,model TEXT,input_tokens INTEGER,cached_input_tokens INTEGER,output_tokens INTEGER,tokens INTEGER);").unwrap();
+        let start=1793808000_i64; // Asia/Shanghai midnight.
+        let end=start+86400;
+        for (at,tokens) in [(start-1,1),(start,10),(end-1,20),(end,40)] {
+            c.execute("INSERT INTO published_events VALUES(?1,'gpt-6.1-sol',?2,0,0,?2)",params![at,tokens]).unwrap();
+        }
+        let first=query(&c,start as f64,end as f64).unwrap();
+        assert_eq!(first.iter().map(|row|row.breakdown.total_tokens).sum::<u64>(),30);
+        assert!(first.iter().all(|row|row.event_start_unix.is_some_and(|at|at>=start&&at<end)));
+        assert_eq!(query(&c,end as f64,(end+86400) as f64).unwrap()[0].breakdown.total_tokens,40);
+    }
     #[test]
     fn exact_fractional_ranges_aggregate_canonical_events_once() {
         let c = Connection::open_in_memory().unwrap();

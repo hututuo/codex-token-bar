@@ -32,7 +32,7 @@ struct QuotaSidebarModuleSettingsView: View {
     private var supportsCodex: Bool { quotaItemsOverride?.contains { $0.client == "codex" } ?? allowedClients.contains("codex") }
     private var items: [QuotaSidebarItem] {
         controller.sidebarLayout.arranged(availableQuotaClients: quotas.map(\.client))
-            .filter { (supportsCodex || $0 != .tps) && (supportsCodex || !allowedClients.isDisjoint(with: ["claudeCode", "claudeDesktop"]) || !$0.requiresCodexLiveData) }
+            .filter { (supportsCodex || $0 != .tps) && (supportsCodex || !allowedClients.isDisjoint(with: ["claudeCode", "claudeDesktop", "antigravity"]) || !$0.requiresCodexLiveData) }
     }
     private var allowedClients: Set<String> { ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs) }
     private var selectedRates: [ModelRateContribution] { ClientLocalRuntimePresentation.rates(codex: monitor.totalSnapshot.modelRates, claude: runtime.projection(allowed: allowedClients).modelRates, allowed: allowedClients, mode: .normalized(speedModeRaw), upstreamCodex: AgentSpeedDisplayRuntime.modelRates(snapshot: upstreamActivity.snapshot, source: .codex, now: Date()), others: upstreamActivity.externalModelRates(allowed: allowedClients)) }
@@ -150,6 +150,7 @@ struct QuotaSidebarModuleSettingsView: View {
 /// Read-only companion of the real expanded sidebar, mounted only while its
 /// settings are open. It reuses the compact renderer and the same preferences.
 struct QuotaSidebarSettingsRailPreview: View {
+    @ObservedObject private var palette = SpeedDisplayPreferences.shared
     @ObservedObject var controller: QuotaSidebarController
     @ObservedObject var store: CodexUsageStore
     @ObservedObject var quota: AccountQuotaStore
@@ -175,26 +176,29 @@ struct QuotaSidebarSettingsRailPreview: View {
     }
     private var items: [QuotaSidebarItem] {
         controller.sidebarLayout.arranged(availableQuotaClients: quotas.map(\.client)).filter {
-            controller.sidebarLayout.isVisible($0, in: .compact) && ((scope == "all" || scope == "codex" || scope == "claudeCode" || scope == "claudeDesktop") || !$0.requiresCodexLiveData)
+            controller.sidebarLayout.isVisible($0, in: .compact) && ((scope == "all" || scope == "codex" || scope == "claudeCode" || scope == "claudeDesktop" || scope == "antigravity") || !$0.requiresCodexLiveData)
         }
     }
     private var allowedClients: Set<String> { ClientDisplayScope.clients(scope, available: clients.displayClientIDs) }
     private var selectedRates: [ModelRateContribution] { ClientLocalRuntimePresentation.rates(codex: monitor.totalSnapshot.modelRates, claude: runtime.projection(allowed: allowedClients).modelRates, allowed: allowedClients, mode: .normalized(speedModeRaw), upstreamCodex: AgentSpeedDisplayRuntime.modelRates(snapshot: upstreamActivity.snapshot, source: .codex, now: Date()), others: upstreamActivity.externalModelRates(allowed: allowedClients)) }
     private var selectedModels: [ModelTokenBreakdown] { ClientLocalRuntimePresentation.models(codex: store.todayModelBreakdowns, clients: clients.todaySummaries, allowed: allowedClients) }
-    private var selectedRunning: RunningThreadSummary { ClientLocalRuntimePresentation.running(codex: tasks.runningThreadSummary, claude: runtime.projection(allowed: allowedClients).running, allowed: allowedClients) }
+    private var selectedRunning: RunningThreadSummary { ClientLocalRuntimePresentation.running(codex: tasks.runningThreadSummary, claude: runtime.projection(allowed: allowedClients).running, allowed: allowedClients, antigravity: upstreamActivity.antigravityTasks(allowed: allowedClients)) }
     var body: some View {
         let layout = ClientRailLayout.fixed(trackCount: QuotaSidebarContentOrder.compactIDs(items: items, quotas: quotas).count, dotCount: items.filter(\.usesCompactDot).count, availableHeight: controller.availableRailHeight)
         ScrollView(.vertical) {
             QuotaSidebarCompactBars(items: items, quotas: quotas, layout: layout,
-                rateFraction: QuotaSidebarRatePresentation.fraction(rate: selectedRates.reduce(0) { $0 + $1.tokensPerSecond }, fullScale: fullScale, available: (allowedClients.contains("codex") && monitor.monitoringEnabled && monitor.dataSource != nil) || runtime.projection(allowed: allowedClients).sourceAvailable),
+                rateFraction: QuotaSidebarRatePresentation.fraction(rate: selectedRates.reduce(0) { $0 + $1.tokensPerSecond }, fullScale: fullScale, available: (allowedClients.contains("codex") && monitor.monitoringEnabled && monitor.dataSource != nil) || runtime.projection(allowed: allowedClients).sourceAvailable || upstreamActivity.hasCoverage(allowed: allowedClients)),
                 modelRates: selectedRates, shares: shares,
-                taskStateLabel: "任务状态：\(selectedRunning.total) 个运行任务，非进度百分比", highlightedItem: controller.settingsHighlightedItem, colors: selection.colors)
+                taskSummary: selectedRunning, highlightedItem: controller.settingsHighlightedItem, colors: selection.colors)
                 .frame(minHeight: layout.height)
         }.scrollIndicators(.hidden).frame(width: 16)
             .background(Color(red: 0.035, green: 0.045, blue: 0.038), in: Capsule())
             .help("一级菜单实时预览；修改显示与顺序可立即查看")
             .onChange(of: selectedModels, initial: true) { _, rows in
                 shares = FloatingTodayModelUsagePresentation.items(from: rows, fallbackModel: .gpt56Sol, mergeAutoReview: true).filter { $0.share > 0 }
+            }
+            .onChange(of: palette.colors) { _, _ in
+                shares = FloatingTodayModelUsagePresentation.items(from: selectedModels, fallbackModel: .gpt56Sol, mergeAutoReview: true).filter { $0.share > 0 }
             }
     }
 }

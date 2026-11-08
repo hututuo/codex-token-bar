@@ -111,7 +111,7 @@ struct QuotaSidebarCompactBars: View {
     var rateFraction: Double? = nil
     var modelRates: [ModelRateContribution]? = nil
     var shares: [FloatingTodayModelUsageItem] = []
-    var taskStateLabel = "任务状态，非进度百分比"
+    var taskSummary: RunningThreadSummary = .unavailable
     var highlightedItem: QuotaSidebarItem? = nil
     var colors: [String: String] = [:]
     var usesMorphAnchors = false
@@ -128,8 +128,10 @@ struct QuotaSidebarCompactBars: View {
                         }.help("全会话实时速率（估算）")
                     case .tasks:
                         compactStroke(id: "tasks") {
-                            Capsule().fill(SidebarPalette.amber.opacity(0.5)).frame(width: 4, height: layout.barHeight)
-                        }.help(taskStateLabel).accessibilityLabel(taskStateLabel)
+                            SidebarTaskMeter(presentation: SidebarTaskMeterPresentation(summary: taskSummary))
+                                .frame(width: 4, height: layout.barHeight)
+                        }.help(SidebarTaskMeterPresentation(summary: taskSummary).label)
+                            .accessibilityLabel(SidebarTaskMeterPresentation(summary: taskSummary).label)
                     case let .quota(client):
                         ForEach(QuotaSidebarContentOrder.quotaWindows(quotas, client: client)) { quota in
                             if usesMorphAnchors {
@@ -199,7 +201,7 @@ struct QuotaSidebarRail: View {
     private var taskClients: Set<String> { allowedClients.filter { id in
         id == "codex" || clients.preferences.contains { $0.client.rawValue == id && $0.enabled }
     } }
-    private var runningSummary: RunningThreadSummary { ClientLocalRuntimePresentation.running(codex: tasks.runningThreadSummary, claude: localLive.running, allowed: taskClients) }
+    private var runningSummary: RunningThreadSummary { ClientLocalRuntimePresentation.running(codex: tasks.runningThreadSummary, claude: localLive.running, allowed: taskClients, antigravity: upstreamActivity.antigravityTasks(allowed: taskClients)) }
     private var selectedModelRows: [ModelTokenBreakdown] { ClientLocalRuntimePresentation.models(codex: store.todayModelBreakdowns, clients: clients.todaySummaries, allowed: allowedClients) }
     private var availableQuotaItems: [ClientQuotaItem] {
         if let quotaItemsOverride { return quotaItemsOverride }
@@ -214,7 +216,7 @@ struct QuotaSidebarRail: View {
     private var bodySpeedDeadlineKey: String { (monitor.sidebarBodyMedianSource ?? "") + monitor.latestModelSpeeds30m.map { "\($0.model):\($0.lastMeasuredAt ?? 0):\($0.tokensPerSecond)" }.joined(separator: "|") }
     private var sidebarItems: [QuotaSidebarItem] {
         controller.sidebarLayout.arranged(availableQuotaClients: availableQuotaItems.map(\.client))
-            .filter { ((supportsCodex && !recentBodySpeeds.isEmpty) || $0 != .tps) && (supportsCodex || localLive.enabled || !$0.requiresCodexLiveData) }
+            .filter { ((supportsCodex && !recentBodySpeeds.isEmpty) || $0 != .tps) && (supportsCodex || localLive.enabled || allowedClients.contains("antigravity") || !$0.requiresCodexLiveData) }
     }
     private var compactItems: [QuotaSidebarItem] { sidebarItems.filter { controller.sidebarLayout.isVisible($0, in: .compact) } }
     private var expandedItems: [QuotaSidebarItem] { sidebarItems.filter { controller.sidebarLayout.isVisible($0, in: .expanded) } }
@@ -234,7 +236,7 @@ struct QuotaSidebarRail: View {
 
     private var morphEnabled: Bool {
         !reduceMotion && !controller.isDragging && cacheWarning == nil && sidebarItems.contains {
-            switch $0 { case .speed, .tasks, .quota: true; default: false }
+            switch $0 { case .speed, .tasks, .models, .quota: true; default: false }
         }
     }
 
@@ -273,7 +275,7 @@ struct QuotaSidebarRail: View {
                     return ClientQuotaMorphColorSegment(id: item.id, start: start, end: edge, color: NSColor(item.color))
                 }
                 routes.append(ClientQuotaMorphRoute(id: item.id, ring: ring, track: track, half: 0, fraction: 1,
-                    color: .gray, segments: segments, shape: .strip))
+                    color: .gray, segments: segments, expandedTrackOpacity: 0.12, shape: .strip))
             } else if item == .speed {
                 var edge = 0.0
                 let segments = ModelRatePresentation.slices(liveRates).map { slice in
@@ -284,7 +286,8 @@ struct QuotaSidebarRail: View {
                     fraction: rateFraction, color: NSColor(ModelUsagePresentation.color(for: "unknown")), segments: segments))
             } else {
                 routes.append(ClientQuotaMorphRoute(id: item.id, ring: ring, track: track, half: 0, fraction: 1,
-                    color: NSColor(SidebarPalette.amber), expandedTrackOpacity: 0, collapsedTrackOpacity: 0, fillOpacity: 0.5))
+                    color: .gray, segments: SidebarTaskMeterPresentation(summary: runningSummary).morphSegments,
+                    expandedTrackOpacity: 0, collapsedTrackOpacity: 0, shape: .taskCells))
             }
         }
         return routes
@@ -375,7 +378,7 @@ struct QuotaSidebarRail: View {
                     ScrollView(.vertical) {
                         QuotaSidebarCompactBars(items: compactItems, quotas: quotaItems, layout: layout,
                             rateFraction: Double(rateFraction),
-                            modelRates: barRates, shares: shares, taskStateLabel: "任务状态：" + runningText + "，非进度百分比", colors: quotaSelection.colors,
+                            modelRates: barRates, shares: shares, taskSummary: runningSummary, colors: quotaSelection.colors,
                             usesMorphAnchors: true)
                             .frame(minHeight: geometry.size.height)
                     }.scrollIndicators(.hidden)
@@ -416,6 +419,10 @@ struct QuotaSidebarRail: View {
         .onChange(of: recentBodySpeeds.map(\.model)) { _, _ in updateCompactLayout() }
         .onChange(of: selectedModelRows, initial: true) { _, rows in
             shares = FloatingTodayModelUsagePresentation.items(from: rows,
+                fallbackModel: .gpt56Sol, mergeAutoReview: false).filter { $0.share > 0 }
+        }
+        .onChange(of: speedPalette.colors) { _, _ in
+            shares = FloatingTodayModelUsagePresentation.items(from: selectedModelRows,
                 fallbackModel: .gpt56Sol, mergeAutoReview: false).filter { $0.share > 0 }
         }
         .onChange(of: quotaItems, initial: true) { _, _ in updateCompactLayout() }
@@ -478,7 +485,7 @@ struct QuotaSidebarRail: View {
                 VStack(spacing: 5) {
                     ZStack {
                         MatchedStrokeMorphParticipant(ids: ["tasks"], size: CGSize(width: ClientSidebarMetrics.ringSize, height: ClientSidebarMetrics.ringSize)) {
-                            Circle().stroke(SidebarPalette.amber.opacity(0.5), lineWidth: 3)
+                            SidebarTaskMeter(presentation: SidebarTaskMeterPresentation(summary: runningSummary), ring: true)
                         }.anchorPreference(key: ClientQuotaMorphAnchors.self, value: .bounds) { ["ring:tasks": $0] }
                         Text(runningSummary.freshness == .fresh ? "\(runningSummary.total)" : "—").font(.system(size: 18, weight: .medium, design: .rounded)).foregroundStyle(SidebarPalette.amber)
                     }.frame(width: ClientSidebarMetrics.ringSize, height: ClientSidebarMetrics.ringSize)
@@ -492,7 +499,7 @@ struct QuotaSidebarRail: View {
                 .contentShape(Rectangle())
             }.buttonStyle(SidebarPulseButtonStyle())
                 .accessibilityLabel("查看任务，\(runningText)")
-                .help("合计已读到的本地主任务与子 Agent；各客户端读取状态见任务详情")
+                .help(SidebarTaskMeterPresentation(summary: runningSummary).label)
                 .accessibilityIdentifier("quota-sidebar-tasks")
                 .accessibilityAddTraits(.isButton)
                 .accessibilityAction { controller.select(.tasks) }
@@ -647,7 +654,7 @@ struct SidebarPulseButtonStyle: ButtonStyle {
     }
 }
 
-private struct SidebarModelShareStrip: View {
+struct SidebarModelShareStrip: View {
     let items: [FloatingTodayModelUsageItem]
     var vertical = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -695,7 +702,8 @@ struct QuotaSidebarDetailView: View {
     }
     private var selectedRunning: RunningThreadSummary {
         ClientLocalRuntimePresentation.running(codex: tasks.runningThreadSummary,
-            claude: claudeRuntime.projection(allowed: taskClients).running, allowed: taskClients)
+            claude: claudeRuntime.projection(allowed: taskClients).running, allowed: taskClients,
+            antigravity: upstreamActivity.antigravityTasks(allowed: taskClients))
     }
     var body: some View {
         // Capture one projection for every quota, usage and running field in
@@ -994,7 +1002,8 @@ struct QuotaSidebarDetailView: View {
         VStack(alignment: .leading, spacing: 14) {
             sectionTitle("运行中的任务", subtitle: "主任务与子代理")
             if let issue = ClientLocalRuntimePresentation.taskSourceIssue(codex: tasks.runningThreadSummary,
-                claude: claudeRuntime.projection(allowed: taskClients).running, allowed: taskClients) {
+                claude: claudeRuntime.projection(allowed: taskClients).running, allowed: taskClients,
+                antigravity: upstreamActivity.antigravityTasks(allowed: taskClients)) {
                 Text("来源状态：\(issue)；合计仅包含已读到的任务")
                     .font(.system(size: 10)).foregroundStyle(.white.opacity(0.7))
             }

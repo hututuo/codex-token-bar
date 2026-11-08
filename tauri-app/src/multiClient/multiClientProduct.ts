@@ -26,6 +26,7 @@ export function claudeQuotaFromLocalCache(value: {
   state:string;capturedAt?:string|null;fiveHour?:{usedPercent:number;resetsAt:string|null}|null;
   sevenDay?:{usedPercent:number;resetsAt:string|null}|null;
 }, client: "claudeCode" | "claudeDesktop" = "claudeCode"):ClientQuotaReading {
+  if(client === "claudeCode" && value.state === "api") return {client,state:"api",source:"local-config",windows:[],notice:"API 接入 · 订阅额度不适用"};
   const windows:ClientQuotaReading["windows"]=[];
   if(value.state === "available") for(const [label,window] of [["5h",value.fiveHour],["7d",value.sevenDay]] as const) {
     if(window && Number.isFinite(window.usedPercent) && window.usedPercent>=0 && window.usedPercent<=100)

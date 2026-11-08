@@ -3159,6 +3159,7 @@ fn no_token_events_error(warnings: &[LocalDataWarning]) -> String {
 
 fn placeholder_quota() -> QuotaSnapshot {
     QuotaSnapshot {
+        connection_mode: None,
         reserve_windows: Vec::new(),
         five_hour: QuotaLimit {
             label: "5h".into(),
@@ -4724,6 +4725,10 @@ pub(crate) fn dashboard_scan_signature_count_for_testing() -> usize {
 /// Read existing published aggregates only; period navigation never scans logs.
 pub(crate) fn quota_cycle_model_ranges(codex_home: &Path, ranges: &[(f64, f64)]) -> Result<Vec<Vec<ModelTokenBreakdown>>, String> {
     exact_usage_index::cycle_range::read(codex_home, ranges)
+}
+
+pub(crate) fn day_model_usage(codex_home: &Path, start: f64, end: f64) -> Result<(Vec<ModelTokenBreakdown>, bool), String> {
+    exact_usage_index::cycle_range::read_day(codex_home, start, end)
 }
 
 pub(crate) fn quota_cycle_consumption_evidence(codex_home: &Path, ranges: &[(f64, f64)]) -> Vec<crate::core::quota_history::cycles::ConsumptionEvidence> {

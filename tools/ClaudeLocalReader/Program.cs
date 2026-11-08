@@ -75,7 +75,8 @@ internal static class Program
         var configuration = new MonitorConfiguration(enabled, CodexRoot: codexRoot, ClaudeRoot: claudeRoot,
             DshRoot: options.OtherRoots.GetValueOrDefault(SourceKind.DeepSeek),
             OpenCodeRoot: options.OtherRoots.GetValueOrDefault(SourceKind.OpenCode),
-            GeminiRoot: options.OtherRoots.GetValueOrDefault(SourceKind.Gemini));
+            GeminiRoot: options.OtherRoots.GetValueOrDefault(SourceKind.Gemini),
+            AntigravityRoot: options.OtherRoots.GetValueOrDefault(SourceKind.Antigravity));
         var hub = new SpeedHub(context: null);
         var processSalt = RandomNumberGenerator.GetBytes(32);
         var latest = new SnapshotCell();
@@ -232,10 +233,11 @@ internal static class Program
                     }
 
                     break;
-                case "--dsh-root" or "--gemini-root" or "--opencode-root" when index + 1 < args.Length:
+                case "--dsh-root" or "--gemini-root" or "--opencode-root" or "--antigravity-root" when index + 1 < args.Length:
                     var rootSource = args[index] switch {
                         "--dsh-root" => SourceKind.DeepSeek,
                         "--gemini-root" => SourceKind.Gemini,
+                        "--antigravity-root" => SourceKind.Antigravity,
                         _ => SourceKind.OpenCode,
                     };
                     if (!otherRoots.TryAdd(rootSource, args[++index]) || string.IsNullOrWhiteSpace(args[index]))
@@ -249,6 +251,7 @@ internal static class Program
                         "deepseek" => SourceKind.DeepSeek,
                         "gemini" => SourceKind.Gemini,
                         "opencode" => SourceKind.OpenCode,
+                        "antigravity" => SourceKind.Antigravity,
                         "claudeCode" => SourceKind.ClaudeCode,
                         "claudeDesktop" => SourceKind.ClaudeDesktop,
                         _ => throw new ArgumentException("Only supported local sources are allowed."),
@@ -536,6 +539,21 @@ internal static class Program
             "same-name model rates stay isolated by source");
 
         var defaultArguments = ParseArguments([]);
+        var gravityArguments = ParseArguments(["--source", "antigravity", "--antigravity-root", "C:\\Users\\Test\\.gemini\\antigravity\\conversations"]);
+        Require(gravityArguments.Sources.SetEquals([SourceKind.Antigravity])
+            && gravityArguments.OtherRoots.ContainsKey(SourceKind.Antigravity), "explicit Antigravity source and root");
+        var gravityBase = CreateSampleSnapshot();
+        var gravitySnapshot = gravityBase with {
+            Sources = gravityBase.Sources.Where(s => s.Kind == SourceKind.ClaudeCode).Select(s => s with { Kind = SourceKind.Antigravity }).ToArray(),
+            Agents = gravityBase.Agents.Where(a => a.Source == SourceKind.ClaudeCode).Select(a => a with { Source = SourceKind.Antigravity }).ToArray(),
+            LiveModels = [new SourceModelRate(SourceKind.Antigravity, "gemini-4-argon", new Rate(25, 30))],
+        };
+        var gravity = RuntimeSnapshotMapper.Map(gravitySnapshot, new byte[32], new HashSet<SourceKind> {SourceKind.Antigravity});
+        Require(gravity.SourceAvailable["antigravity"] && gravity.ModelRates.Single().OutputTps == 25,
+            "Antigravity local rates keep the model and source");
+        Require(gravity.MainAgents.Count == 1 && gravity.Subagents.Count == 1
+            && gravity.Subagents.Single().ParentId == gravity.MainAgents.Single().Id,
+            "Antigravity task roles and parent survive local IPC redaction");
         Require(defaultArguments.Sources.Count == 2
             && defaultArguments.Sources.Contains(SourceKind.ClaudeCode)
             && defaultArguments.Sources.Contains(SourceKind.ClaudeDesktop), "default source set stays Claude-only");

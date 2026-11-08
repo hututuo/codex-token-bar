@@ -72,6 +72,7 @@ enum ClientQuotaMorphGeometry {
 
     static func strokes(_ routes: [ClientQuotaMorphRoute]) -> [MatchedStrokeMorphRoute] {
         let strokes = routes.flatMap { route -> [MatchedStrokeMorphRoute] in
+            if route.shape == .taskCells { return taskCellStrokes(route) }
             if route.shape == .strip { return stripStrokes(route) }
             return parts(half: route.half, fraction: route.fraction).flatMap { part -> [MatchedStrokeMorphRoute] in
                 let expandedPoints = points(ring: route.ring, track: route.track, half: part.half, progress: 0)
@@ -124,27 +125,52 @@ enum ClientQuotaMorphGeometry {
         return strokes + markers + guides
     }
 
+    private static func taskCellStrokes(_ route: ClientQuotaMorphRoute) -> [MatchedStrokeMorphRoute] {
+        route.segments.map { cell in
+            let expanded = (0...segments).map { index -> CGPoint in
+                let t = Double(index) / Double(segments)
+                let value = cell.start + 0.004 + (cell.end - cell.start - 0.008) * t
+                let angle = -Double.pi / 2 + value * 2 * Double.pi
+                return CGPoint(x: route.ring.midX + route.ring.width / 2 * cos(angle),
+                               y: route.ring.midY + route.ring.height / 2 * sin(angle))
+            }
+            let collapsed = (0...segments).map { index -> CGPoint in
+                let t = Double(index) / Double(segments)
+                let bottom = route.track.maxY - route.track.height * cell.start - SidebarTaskMeterPresentation.separator / 2
+                let top = route.track.maxY - route.track.height * cell.end + SidebarTaskMeterPresentation.separator / 2
+                return CGPoint(x: route.track.midX, y: bottom + (top - bottom) * t)
+            }
+            return .init(id: route.id + ":" + cell.id, participantID: route.id,
+                expanded: .init(points: expanded, width: 3), collapsed: .init(points: collapsed, width: 4),
+                color: cell.color, lineCap: .butt)
+        }
+    }
+
     /// Model usage already has a straight horizontal source. Match each color
     /// interval to the vertical destination through the same transient engine.
     private static func stripStrokes(_ route: ClientQuotaMorphRoute) -> [MatchedStrokeMorphRoute] {
-        let a = [CGPoint(x: route.ring.minX + 2, y: route.ring.midY), CGPoint(x: route.ring.maxX - 2, y: route.ring.midY)]
-        let b = [CGPoint(x: route.track.midX, y: route.track.minY + 2), CGPoint(x: route.track.midX, y: route.track.maxY - 2)]
+        // Shares divide the entire strip, just like the stationary HStack/VStack.
+        // Only its outside outline is rounded; interior color edges never overlap.
+        let a = [CGPoint(x: route.ring.minX, y: route.ring.midY), CGPoint(x: route.ring.maxX, y: route.ring.midY)]
+        let b = [CGPoint(x: route.track.midX, y: route.track.minY), CGPoint(x: route.track.midX, y: route.track.maxY)]
+        let aClip = [CGPoint(x: route.ring.minX + 2, y: route.ring.midY), CGPoint(x: route.ring.maxX - 2, y: route.ring.midY)]
+        let bClip = [CGPoint(x: route.track.midX, y: route.track.minY + 2), CGPoint(x: route.track.midX, y: route.track.maxY - 2)]
         var strokes = [MatchedStrokeMorphRoute(id: route.id + ":track", participantID: route.id,
-            expanded: .init(points: a, width: 4, opacity: route.expandedTrackOpacity),
-            collapsed: .init(points: b, width: 4, opacity: route.collapsedTrackOpacity), color: .white)]
+            expanded: .init(points: a, width: 4, opacity: route.expandedTrackOpacity, clipPoints: aClip),
+            collapsed: .init(points: b, width: 4, opacity: route.collapsedTrackOpacity, clipPoints: bClip), color: .white, lineCap: .butt)]
         for segment in route.segments {
             let start = min(1, max(0, segment.start)), end = min(1, max(start, segment.end))
             guard end > start else { continue }
             strokes.append(.init(id: route.id + ":" + segment.id, participantID: route.id,
-                expanded: .init(points: a, start: start, end: end, width: 4, opacity: 1),
-                collapsed: .init(points: b, start: start, end: end, width: 4, opacity: 1), color: segment.color))
+                expanded: .init(points: a, start: start, end: end, width: 4, opacity: 1, clipPoints: aClip),
+                collapsed: .init(points: b, start: start, end: end, width: 4, opacity: 1, clipPoints: bClip), color: segment.color, lineCap: .butt))
         }
         return strokes
     }
 
 }
 
-enum ClientQuotaMorphShape { case ring, strip }
+enum ClientQuotaMorphShape { case ring, strip, taskCells }
 
 struct ClientQuotaMorphRoute {
     let id: String

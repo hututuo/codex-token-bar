@@ -26,6 +26,7 @@ private struct ClientPriceKey: Hashable {
 private struct ClientSummaryCacheKey: Hashable {
     let revision: Int64
     let since: Date?
+    let before: Date?
 }
 
 private struct ClientSummaryReadResult {
@@ -105,14 +106,15 @@ final class MultiClientUsageLedger: @unchecked Sendable {
         return entries
     }()
 
-    init(url: URL) throws {
+    init(url: URL, readOnly: Bool = false) throws {
         self.url = url
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
+        if !readOnly { try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true,
                                                attributes: [.posixPermissions: 0o700])
+        }
         // Validate an existing file without enabling WAL or touching its header.
         // A newer client may own this file; refusing it must be read-only.
         let existing = FileManager.default.fileExists(atPath: url.path)
-        let probe = SQLiteDatabaseDriver(url: url, readOnly: existing, createsFileIfMissing: !existing)
+        let probe = SQLiteDatabaseDriver(url: url, readOnly: existing || readOnly, createsFileIfMissing: !existing && !readOnly)
         let version = try probe.readRows("PRAGMA user_version") { $0.int(0) ?? 0 }.first ?? 0
         guard version <= Self.schemaVersion else { throw LedgerError.newerSchema(version) }
         guard version >= 0 else { throw LedgerError.incompatibleSchema }
@@ -126,6 +128,11 @@ final class MultiClientUsageLedger: @unchecked Sendable {
                 let actual = try probe.readRows("PRAGMA table_info(\(table))") { $0.text(1) ?? "" }
                 guard fields.isSubset(of: Set(actual)) else { throw LedgerError.incompatibleSchema }
             }
+        }
+        if readOnly {
+            guard version == Self.schemaVersion else { throw LedgerError.incompatibleSchema }
+            database = probe
+            return
         }
         database = SQLiteDatabaseDriver(url: url, enableWAL: true)
         if version < Self.schemaVersion {
@@ -198,7 +205,9 @@ final class MultiClientUsageLedger: @unchecked Sendable {
                 var payload = originalPayload
                 let key: [SQLiteBinding] = [.text(event.client.rawValue), .text(event.eventID)]
                 let previous = try connection.readRows("SELECT payload FROM client_usage_events WHERE client=? AND event_id=?", bindings: key) { $0.text(0) }.first ?? nil
-                if let previous, let old = try? Self.decode(previous), old.sessionID == event.sessionID {
+                if let previous, let old = try? Self.decode(previous), old.sessionID == event.sessionID || event.client == .antigravity {
+                    // A response copied into another store/fork keeps its first ledger owner.
+                    if event.client == .antigravity { event.sessionID = old.sessionID }
                     event = old.mergingUpdate(event)
                     payload = String(decoding: try encoder.encode(event), as: UTF8.self)
                 }
@@ -456,27 +465,28 @@ final class MultiClientUsageLedger: @unchecked Sendable {
         }.compactMap { $0 }
     }
 
-    func summaries(since: Date? = nil) throws -> [ClientUsageSummary] {
+    func summaries(since: Date? = nil, before: Date? = nil) throws -> [ClientUsageSummary] {
         try database.withConnection { connection in
             let result = try connection.readTransaction { snapshot -> ClientSummaryReadResult in
                 let revision = try snapshot.readRows("SELECT COALESCE(MAX(revision),0) FROM client_usage_revisions") {
                     $0.int64(0) ?? 0
                 }.first ?? 0
-                let summaryKey = ClientSummaryCacheKey(revision: revision, since: since)
+                let summaryKey = ClientSummaryCacheKey(revision: revision, since: since, before: before)
                 if let cached = cachedSummaries(for: summaryKey) {
                     return ClientSummaryReadResult(summaries: cached, pendingPriceCache: nil, pendingSummaryCache: nil)
                 }
                 let (priceTallies, computedForRevision) = try pricingTotals(
                     in: snapshot,
                     since: since,
-                    revision: since == nil ? revision : nil
+                    before: before,
+                    revision: since == nil && before == nil ? revision : nil
                 )
                 let summaries = try snapshot.readRows("""
                 SELECT client,model,SUM(input_tokens),SUM(output_tokens),SUM(cache_read_tokens),SUM(cache_write_tokens),
                 SUM(reasoning_tokens),COUNT(*),MAX(timestamp),SUM(cache_read_tokens IS NULL OR cache_write_tokens IS NULL OR reasoning_tokens IS NULL),
                 SUM(cache_read_tokens IS NULL)=0
-                FROM client_usage_events WHERE timestamp >= ? GROUP BY client,model ORDER BY MAX(timestamp) DESC
-                """, bindings: [.date(since ?? Date(timeIntervalSince1970: 0))]) { row in
+                FROM client_usage_events WHERE timestamp >= ? AND timestamp < ? GROUP BY client,model ORDER BY MAX(timestamp) DESC
+                """, bindings: [.date(since ?? Date(timeIntervalSince1970: 0)), .double(before?.timeIntervalSince1970 ?? .greatestFiniteMagnitude)]) { row in
                     guard let client = UsageClient(rawValue: row.text(0) ?? "") else { return nil as ClientUsageSummary? }
                     let model = row.text(1) ?? "unknown"
                     let tally = priceTallies[ClientPriceKey(client: client.rawValue, model: model)]
@@ -536,6 +546,7 @@ final class MultiClientUsageLedger: @unchecked Sendable {
     private func pricingTotals(
         in connection: SQLiteDatabaseConnection,
         since: Date?,
+        before: Date? = nil,
         revision: Int64?
     ) throws -> ([ClientPriceKey: ClientPriceTally], Bool) {
         if let revision {
@@ -550,13 +561,13 @@ final class MultiClientUsageLedger: @unchecked Sendable {
         SELECT client,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,timestamp,
                CASE WHEN typeof(payload)='text' AND length(CAST(payload AS BLOB))<=65536 THEN CASE WHEN json_valid(payload) THEN CASE WHEN json_type(payload,'$.cacheWrite5mTokens')='integer' THEN json_extract(payload,'$.cacheWrite5mTokens') END END END,
                CASE WHEN typeof(payload)='text' AND length(CAST(payload AS BLOB))<=65536 THEN CASE WHEN json_valid(payload) THEN CASE WHEN json_type(payload,'$.cacheWrite1hTokens')='integer' THEN json_extract(payload,'$.cacheWrite1hTokens') END END END
-        FROM client_usage_events WHERE timestamp >= ?
-        """, bindings: [.date(since ?? Date(timeIntervalSince1970: 0))]) { row in
+        FROM client_usage_events WHERE timestamp >= ? AND timestamp < ?
+        """, bindings: [.date(since ?? Date(timeIntervalSince1970: 0)), .double(before?.timeIntervalSince1970 ?? .greatestFiniteMagnitude)]) { row in
             guard let client = UsageClient(rawValue: row.text(0) ?? "") else { return }
             let model = row.text(1) ?? "unknown"
             let key = ClientPriceKey(client: client.rawValue, model: model)
             let cost = Self.apiCostMicroUSD(
-                model: model,
+                model: client == .antigravity ? AntigravityUsageSource.priceModel(for: model) : model,
                 input: row.int64(2) ?? 0,
                 output: row.int64(3) ?? 0,
                 cacheRead: row.int64(4),

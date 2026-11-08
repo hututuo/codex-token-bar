@@ -2,30 +2,41 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { Window } from "happy-dom";
 import { withSsrModules } from "../test/ssrHarness.mjs";
 
 test("local task titles remain associated with their own parent and escape markup", async () => {
   await withSsrModules(async load => {
-    const { ClaudeLocalTaskList } = await load("/src/multiClient/ClaudeLocalRuntime.tsx");
+    const { RunningTaskDetails } = await load("/src/quota-sidebar/RunningTaskDetails.tsx");
+    const { localTaskSummary } = await load("/src/quota-sidebar/runningTaskPresentation.ts");
     const base={client:'claudeCode',model:'claude-sonnet',phase:'tools',lastActivity:new Date().toISOString(),liveOutputTps:0,liveTotalTps:0,recentSpeed:null};
-    const html=renderToStaticMarkup(React.createElement(ClaudeLocalTaskList,{
-      mainAgents:[{...base,id:'main',parentId:null,title:'主任务'}],
-      subagents:[{...base,id:'child',parentId:'main',title:'审核 <patch>'},{...base,id:'orphan',parentId:null,title:null}],
-    }));
+    const running=localTaskSummary([{...base,id:'main',parentId:null,title:'主任务'}],
+      [{...base,id:'child',parentId:'main',title:'审核 <patch>'},{...base,id:'orphan',parentId:null,title:null}]);
+    const html=renderToStaticMarkup(React.createElement(RunningTaskDetails,{running}));
     assert.match(html,/主任务/); assert.match(html,/审核 &lt;patch&gt;/);
-    assert.doesNotMatch(html,/<patch>/); assert.match(html,/Claude 子 Agent/);
-    assert.equal((html.match(/审核 &lt;patch&gt;/g)??[]).length,1);
-    assert.match(html,/1 主任务 · 2 子 Agent/);
+    assert.doesNotMatch(html,/<patch>/); assert.match(html,/Claude Code/);
+    const window=new Window();
+    try {
+      window.document.body.innerHTML=html;
+      assert.equal(window.document.querySelectorAll('.qs-task-group .qs-child-task').length,1);
+      assert.equal(window.document.querySelector('.qs-task-group .qs-child-task .qs-task-title').textContent,'审核 <patch>');
+      assert.deepEqual([...window.document.querySelectorAll('.qs-task-totals strong')].map(n=>n.textContent),['1','2']);
+      assert.match(window.document.querySelector('.qs-unassigned-tasks').textContent,/未命名子代理/);
+    } finally {window.close();}
   });
 });
 
 test("missing Claude task records are described in details without fabricating zero tasks", async () => {
   await withSsrModules(async load => {
-    const { ClaudeLocalTasks } = await load("/src/multiClient/ClaudeLocalRuntime.tsx");
-    const html = renderToStaticMarkup(React.createElement(ClaudeLocalTasks, {allowed:["codex", "claudeCode"]}));
-    assert.match(html, /Claude · 暂无任务数据/);
-    assert.match(html, /未计入任务合计/);
-    assert.doesNotMatch(html, /0 主任务|0 子 Agent/);
+    const { RunningTaskDetails } = await load("/src/quota-sidebar/RunningTaskDetails.tsx");
+    const { combinedRunningTasks } = await load("/src/quota-sidebar/runningTaskPresentation.ts");
+    const running=combinedRunningTasks({status:'unavailable'},
+      {enabled:true,capturedAt:null,configuredClients:['claudeCode'],sourceAvailable:{},mainAgents:[],subagents:[]},['claudeCode']);
+    const html = renderToStaticMarkup(React.createElement(RunningTaskDetails, {running}));
+    assert.match(html, /Claude Code · 暂无任务数据/);
+    assert.match(html, /合计仅包含已读到的任务/);
+    assert.doesNotMatch(html, /<strong>0<\/strong>/);
+    assert.match(html, /<strong>未知<\/strong>/);
   });
 });
 
@@ -63,6 +74,7 @@ test("compact sidebar omits generic placeholders and keeps the real bars and quo
     const { compactSidebarIDs, fixedSidebarRailLayout, sidebarUsesCompactDot } = await load("/src/quota-sidebar/sidebarLayoutPresentation.ts");
     const { clientBrand, defaultQuotaSelection } = await load("/src/multiClient/integratedClientModel.ts");
     const { SidebarCompactBars } = await load("/src/quota-sidebar/SidebarCompactBars.tsx");
+    const { sidebarTaskMeter } = await load("/src/quota-sidebar/SidebarTaskMeter.tsx");
     const items = ["modeltrace", "speed", "tps", "quota:claudeCode", "models", "tasks", "radar", "credits", "clientUsage"];
     const quotas = [
       { id: "claudeCode:7d", client: "claudeCode", window: "7d", remaining: 80 },
@@ -75,7 +87,7 @@ test("compact sidebar omits generic placeholders and keeps the real bars and quo
     const html = renderToStaticMarkup(React.createElement(SidebarCompactBars, {
       items, quotas, selection: defaultQuotaSelection, ratePercent: 50,
       models: [{ key: "claude-sonnet", share: 1, color: "#c08b28" }],
-      taskStatus: "ready", taskLabel: "运行任务：2 个，数据最新",
+      taskMeter: sidebarTaskMeter(1, 1, "ready", [{model:"claude-sonnet",count:2}]),
     }));
     for (const id of ["speed", "models", "tasks"]) assert.match(html, new RegExp(`data-sidebar-item="${id}"`));
     assert.deepEqual([...html.matchAll(/data-quota-marker-start="([^"]+)"/g)].map(match => match[1]), ["claudeCode:5h", "claudeCode:7d"]);

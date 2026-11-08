@@ -3,6 +3,32 @@ import XCTest
 @testable import CodexTokenBar
 
 final class PersistentQuotaServiceTests: XCTestCase {
+    func testApiProviderSkipsProcessAndCachedQuotaThenSubscriptionReopens() throws {
+        let clock = PersistentQuotaTestClock(now: 100)
+        let homes = try PersistentQuotaTemporaryHomes()
+        let home = try homes.makeHome()
+        let source = CodexDataSource(codexHome: home, origin: .userSelected)
+        let config = home.appendingPathComponent("config.toml")
+        let transport = PersistentQuotaScriptedTransport(clock: clock, scripts: [
+            PersistentQuotaSessionScript(reads: [.result(quotaResult(usedPercent: 21, resetCreditCount: 3))]),
+            PersistentQuotaSessionScript(reads: [.result(quotaResult(usedPercent: 38, resetCreditCount: 1))])
+        ])
+        let service = makeService(transport: transport, clock: clock)
+        defer { service.shutdown() }
+        try "model_provider = \"relay\"".write(to: config, atomically: true, encoding: .utf8)
+        for _ in 0..<3 { XCTAssertEqual(try service.read(dataSource: source).get(), .apiConnection) }
+        XCTAssertEqual(transport.startCount, 0)
+        try "".write(to: config, atomically: true, encoding: .utf8)
+        XCTAssertEqual(try service.read(dataSource: source).get().fiveHour?.usedPercent, 21)
+        try "model_provider = \"relay\"".write(to: config, atomically: true, encoding: .utf8)
+        XCTAssertEqual(try service.read(dataSource: source).get(), .apiConnection)
+        XCTAssertEqual(transport.sessions[0].shutdownCount, 1)
+        try "".write(to: config, atomically: true, encoding: .utf8)
+        XCTAssertEqual(try service.read(dataSource: source).get().fiveHour?.usedPercent, 38)
+        XCTAssertEqual(transport.startCount, 2)
+        XCTAssertEqual(transport.rateLimitReadCount, 2)
+    }
+
     func testQuotaAndCardsShareCachedSnapshotAndInitializedProcessPastCacheExpiry() throws {
         let clock = PersistentQuotaTestClock(now: 100)
         let homes = try PersistentQuotaTemporaryHomes()

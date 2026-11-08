@@ -66,7 +66,11 @@ struct ClaudeLocalQuota: Equatable, Sendable {
         let five = window("fh"), seven = window("sd")
         return .init(state: five == nil && seven == nil ? "missing" : "available", capturedAt: captured, fiveHour: five, sevenDay: seven)
     }
-    static func read(home: URL = FileManager.default.homeDirectoryForCurrentUser, now: Date = Date()) -> Self {
+    static func read(home: URL = FileManager.default.homeDirectoryForCurrentUser, now: Date = Date(),
+                     environment: [String: String] = ProcessInfo.processInfo.environment) -> Self {
+        if usesAPI(home: home, environment: environment) {
+            return Self(state: "api", capturedAt: nil, fiveHour: nil, sevenDay: nil)
+        }
         let candidates = [home.appendingPathComponent("Library/Application Support/CodexTokenBar/claude-local-statusline/latest.json"),
                           home.appendingPathComponent(".claude-monitor/statusline/latest.json")]
         for url in candidates {
@@ -88,6 +92,26 @@ struct ClaudeLocalQuota: Equatable, Sendable {
             return decode(data, now: now)
         }
         return .missing
+    }
+
+    static func usesAPI(home: URL, environment: [String: String]) -> Bool {
+        let directory = environment["CLAUDE_CONFIG_DIR"].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
+            ?? home.appendingPathComponent(".claude")
+        var env = environment
+        if let handle = try? FileHandle(forReadingFrom: directory.appendingPathComponent("settings.json")) {
+            defer { try? handle.close() }
+            if let bytes = try? handle.read(upToCount: 65_537), bytes.count <= 65_536,
+               let settings = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any] {
+                if let helper = settings["apiKeyHelper"] as? String, !helper.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return true }
+                if let configured = settings["env"] as? [String: String] { env.merge(configured) { _, value in value } }
+            }
+        }
+        if ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"].contains(where: {
+            !(env[$0] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }) { return true }
+        return ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"].contains {
+            ["1", "true"].contains((env[$0] ?? "").lowercased())
+        }
     }
 
     static func decode(_ data: Data, now: Date) -> Self {

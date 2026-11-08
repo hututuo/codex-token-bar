@@ -18,6 +18,10 @@ const SNAPSHOT_TTL: Duration = Duration::from_secs(5);
 const MAX_LINE_BYTES: usize = 4 * 1024 * 1024;
 
 pub(super) fn read(home: &Path, timeout: Duration) -> Result<Value, String> {
+    if super::connection_mode::read(home) == super::connection_mode::ConnectionMode::Api {
+        suspend(home);
+        return Err("API 接入 · 订阅额度不适用".into());
+    }
     if STOPPING.load(Ordering::Acquire) {
         return Err("额度服务已关闭".into());
     }
@@ -39,7 +43,8 @@ pub(super) fn read(home: &Path, timeout: Duration) -> Result<Value, String> {
             &STOPPING,
         )
         .and_then(|value| {
-            if context != self::context(&binary, home) {
+            if context != self::context(&binary, home)
+                || super::connection_mode::read(home) == super::connection_mode::ConnectionMode::Api {
                 service.session = None;
                 service.cached = None;
                 Err("本地登录或数据源已切换，本次额度结果已丢弃".into())
@@ -47,6 +52,20 @@ pub(super) fn read(home: &Path, timeout: Duration) -> Result<Value, String> {
                 Ok(value)
             }
         })
+}
+
+pub(super) fn suspend(home: &Path) {
+    if let Some(service) = SERVICE.get() {
+        if let Ok(mut service) = service.try_lock() {
+            let canonical = home.canonicalize().unwrap_or_else(|_| home.to_path_buf());
+            if service.context.first() == Some(&canonical.display().to_string()) {
+                service.session = None;
+                service.cached = None;
+                service.retry_at = None;
+                service.failures = 0;
+            }
+        }
+    }
 }
 
 pub(super) fn shutdown() {

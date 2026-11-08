@@ -87,6 +87,8 @@ final class AccountQuotaStore: ObservableObject {
     private let timerScheduler: any AccountQuotaTimerScheduling
     private let retryScheduler: any AccountQuotaRetryScheduling
     private let userDefaults: UserDefaults
+    private let connectionModeReader: @Sendable (CodexDataSource?) -> CodexConnectionMode
+    private var currentConnectionMode: CodexConnectionMode = .unknown
     nonisolated(unsafe) private var cadenceObserver: NSObjectProtocol?
     private var lastQuotaAccountIdentity: String?
 
@@ -125,13 +127,21 @@ final class AccountQuotaStore: ObservableObject {
         timerScheduler: any AccountQuotaTimerScheduling = FoundationAccountQuotaTimerScheduler(),
         retryScheduler: any AccountQuotaRetryScheduling = DefaultAccountQuotaRetryScheduler(),
         userDefaults: UserDefaults = .standard,
-        observesUserDefaults: Bool = true
+        observesUserDefaults: Bool = true,
+        connectionModeReader: (@Sendable (CodexDataSource?) -> CodexConnectionMode)? = nil
     ) {
         self.quotaReader = quotaReader
         self.resetCreditReader = resetCreditReader
         self.timerScheduler = timerScheduler
         self.retryScheduler = retryScheduler
         self.userDefaults = userDefaults
+        if let connectionModeReader {
+            self.connectionModeReader = connectionModeReader
+        } else if quotaReader is LiveAccountQuotaReader {
+            self.connectionModeReader = { CodexConnectionMode.read(dataSource: $0) }
+        } else {
+            self.connectionModeReader = { _ in .unknown }
+        }
         self.automaticRefreshInterval = Self.normalizedAutomaticRefreshInterval(
             automaticRefreshInterval ?? AccountQuotaRefreshCadence.storedValue(in: userDefaults).seconds
         )
@@ -223,6 +233,7 @@ final class AccountQuotaStore: ObservableObject {
     }
 
     func refresh(force: Bool = true) {
+        guard prepareConnection() else { return }
         if quotaReader is LiveAccountQuotaReader {
             let identity = quotaSourceID(for: currentDataSource)
             if let previous = lastQuotaAccountIdentity, previous != identity {
@@ -246,6 +257,7 @@ final class AccountQuotaStore: ObservableObject {
     }
 
     private func refreshQuota(force: Bool) {
+        guard prepareConnection() else { return }
         let effectiveDataSource = currentDataSource
         let sourceID = quotaSourceID(for: effectiveDataSource)
         let recentSuccessAge = lastSuccessfulRefreshCompletedAt.map { Date().timeIntervalSince($0) }
@@ -421,6 +433,7 @@ final class AccountQuotaStore: ObservableObject {
     }
 
     private func refreshResetCredits() {
+        guard prepareConnection() else { return }
         guard let resetCreditReader else { return }
         let effectiveDataSource = currentDataSource
         let sourceID = quotaSourceID(for: effectiveDataSource)
@@ -504,6 +517,7 @@ final class AccountQuotaStore: ObservableObject {
         _ quota: AccountQuotaSnapshot,
         withResetStateFrom current: AccountQuotaSnapshot
     ) -> AccountQuotaSnapshot {
+        if quota.connectionMode == .api { return .apiConnection }
         let carriesEmbeddedReset = hasResetCreditPayload(quota)
         var merged = quota
         let quotaDiagnostics = quota.diagnostics.filter { $0.source != .resetCredit }
@@ -695,6 +709,35 @@ final class AccountQuotaStore: ObservableObject {
     private func quotaSourceID(for dataSource: CodexDataSource?) -> String {
         let source = dataSource?.stableIdentityKey ?? "automatic"
         guard quotaReader is LiveAccountQuotaReader else { return source }
-        return source + ":" + ((try? CurrentCodexCredentialReader.currentCredential(home: dataSource?.codexHome).id) ?? "unavailable")
+        let config = CodexConnectionMode.configurationIdentity(dataSource: dataSource)
+        if CodexConnectionMode.read(dataSource: dataSource) == .api { return source + ":api:" + config }
+        return source + ":" + config + ":" + ((try? CurrentCodexCredentialReader.currentCredential(home: dataSource?.codexHome).id) ?? "unavailable")
+    }
+
+    /// The timer keeps checking local configuration so switching back to a
+    /// subscription recovers automatically. API mode never reaches a reader.
+    private func prepareConnection() -> Bool {
+        let mode = connectionModeReader(currentDataSource)
+        if mode != currentConnectionMode || (mode == .api && snapshot.connectionMode != .api) {
+            currentConnectionMode = mode
+            cancelQuotaRefresh(restoreStatus: false)
+            cancelResetCreditRefresh(restoreStatus: false)
+            cancelQuotaRetry(resetBackoff: true)
+            cancelResetCreditRetry(resetBackoff: true)
+            cancelQuotaFailureNotice(resetTracking: true)
+            historyStore?.clearIdentity()
+            sourceBindingGeneration += 1
+            sourceIdentityGeneration += 1
+            lastSuccessfulRefreshCompletedAt = nil
+            snapshotSourceID = nil
+            resetCreditSnapshotSourceID = nil
+            snapshot = mode == .api ? .apiConnection : .empty
+            if let home = currentDataSourcePath { QuotaPeriodBoundaryContext.shared.set(resetAt: nil, home: home) }
+            if mode == .api, quotaReader is LiveAccountQuotaReader {
+                let source = currentDataSource
+                Task.detached(priority: .utility) { PersistentQuotaService.shared.suspendConnection(dataSource: source) }
+            }
+        }
+        return mode != .api
     }
 }

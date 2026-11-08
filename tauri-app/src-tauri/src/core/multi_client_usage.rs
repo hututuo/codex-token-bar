@@ -20,6 +20,9 @@ use std::time::{Duration, Instant};
 use time::format_description::well_known::Rfc3339;
 use time::{Date, Duration as CalendarDuration, OffsetDateTime};
 
+#[path = "antigravity_usage.rs"]
+mod antigravity;
+
 const SCHEMA_VERSION: i64 = 2;
 const MAX_SCAN_DEPTH: usize = 6;
 const MAX_SCANNED_ENTRIES: usize = 200_000;
@@ -267,12 +270,13 @@ impl MultiClientScopedSummaryCache {
     }
 }
 
-const CLIENTS: [&str; 5] = [
+const CLIENTS: [&str; 6] = [
     "claudeCode",
     "claudeDesktop",
     "deepseek",
     "gemini",
     "opencode",
+    "antigravity",
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -523,7 +527,7 @@ struct OpenCodeDatabaseContinuation {
 }
 
 pub fn default_preferences() -> Vec<MultiClientUsagePreference> {
-    let colors = ["#D97757", "#D97757", "#4D6BFE", "#4796E4", "#B7B1B1"];
+    let colors = ["#D97757", "#D97757", "#4D6BFE", "#4796E4", "#B7B1B1", "#4285F4"];
     CLIENTS
         .iter()
         .enumerate()
@@ -577,6 +581,7 @@ pub fn configured_menu_bar_usage_lines(
                 "deepseek" => "DeepSeek",
                 "gemini" => "Gemini",
                 "opencode" => "OpenCode",
+                "antigravity" => "Antigravity",
                 _ => preference.client.as_str(),
             };
             Some(format!("{label}: {input} in · {output} out"))
@@ -591,6 +596,36 @@ pub fn read_multi_client_usage_snapshot() -> Result<MultiClientUsageSnapshot, St
     let database_path = app_paths::multi_client_usage_database_path()
         .ok_or_else(|| "无法定位多客户端用量数据库目录".to_string())?;
     read_multi_client_usage_snapshot_at(&settings_path, &database_path)
+}
+
+pub(crate) fn validate_day_range(start: i64, end: i64, clients: &[String]) -> Result<(), String> {
+    if start < 0 || end <= start || end - start > 27 * 3600 || clients.is_empty()
+        || clients.len() > CLIENTS.len() + 1
+        || clients.iter().any(|client| client != "codex" && !CLIENTS.contains(&client.as_str())) {
+        return Err("无效的单日范围或客户端".into());
+    }
+    Ok(())
+}
+
+/// Read-only, bounded by the selected local day. No discovery, migrations or quota calls.
+pub(crate) fn read_day_summaries(start: i64, end: i64, clients: &[String]) -> Result<Vec<MultiClientUsageSummary>, String> {
+    validate_day_range(start, end, clients)?;
+    let path = app_paths::multi_client_usage_database_path().ok_or("无法定位多客户端用量账本")?;
+    if !path.exists() { return Err("尚无本地用量账本，单日金额待读取".into()); }
+    let connection = open_read_only(&path).map_err(|e| e.to_string())?;
+    if read_schema_version(&connection).map_err(|e| e.to_string())? != SCHEMA_VERSION {
+        return Err("多客户端账本版本尚不可读".into());
+    }
+    read_day_summaries_on(&connection, start, end, clients)
+}
+
+fn read_day_summaries_on(connection: &Connection, start: i64, end: i64, clients: &[String]) -> Result<Vec<MultiClientUsageSummary>, String> {
+    validate_day_range(start, end, clients)?;
+    let transaction = connection.unchecked_transaction().map_err(|e| e.to_string())?;
+    let prices = read_range_api_price_aggregates(&transaction, start, Some(end))?;
+    let rows = read_summary_rows_range_with_prices(&transaction, Some(&prices), Some(start), Some(end)).map_err(|e| e.to_string())?;
+    transaction.commit().map_err(|e| e.to_string())?;
+    Ok(rows.into_iter().filter(|row| clients.contains(&row.client)).collect())
 }
 
 /// Reads one client's bounded cache-ranking rows and complete session aggregates from the
@@ -1134,7 +1169,9 @@ fn refresh_multi_client_usage_at(
                     .is_some_and(|extension| {
                         matches!(extension.to_ascii_lowercase().as_str(), "db" | "sqlite")
                     });
-            let result = if is_database {
+            let result = if client == "antigravity" {
+                antigravity::scan(&mut connection, path).map(|notices| diagnostics.extend(notices))
+            } else if is_database {
                 scan_opencode(&mut connection, path).map(|notices| {
                     diagnostics.extend(
                         notices
@@ -1195,6 +1232,9 @@ fn refresh_multi_client_usage_at(
 }
 
 pub fn read_claude_local_quota() -> ClaudeLocalQuotaSnapshot {
+    let home = app_paths::home_dir();
+    let environment = std::env::vars_os().filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?))).collect();
+    if claude_uses_api(&home, &environment) { return claude_quota_state("api"); }
     let now = Instant::now();
     let cache = CLAUDE_LOCAL_QUOTA_PROBE_CACHE.get_or_init(Default::default);
     let mut cache = cache
@@ -1225,6 +1265,28 @@ pub fn read_claude_local_quota() -> ClaudeLocalQuotaSnapshot {
         };
         read_claude_local_quota_at(&path, OffsetDateTime::now_utc().unix_timestamp() as f64)
     })
+}
+
+fn claude_uses_api(home: &Path, environment: &std::collections::HashMap<String, String>) -> bool {
+    let directory = environment.get("CLAUDE_CONFIG_DIR").filter(|s| !s.is_empty()).map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".claude"));
+    let mut env = environment.clone();
+    let settings = fs::File::open(directory.join("settings.json")).ok().and_then(|file| {
+        let mut bytes = vec![];
+        file.take(65_537).read_to_end(&mut bytes).ok()?;
+        if bytes.len() > 65_536 { return None; }
+        serde_json::from_slice::<Value>(&bytes).ok()
+    });
+    if let Some(settings) = settings {
+        if settings.get("apiKeyHelper").and_then(Value::as_str).is_some_and(|s| !s.trim().is_empty()) { return true; }
+        if let Some(configured) = settings.get("env").and_then(Value::as_object) {
+            for (key, value) in configured { if let Some(value) = value.as_str() { env.insert(key.clone(), value.into()); } }
+        }
+    }
+    ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"].iter()
+        .any(|key| env.get(*key).is_some_and(|s| !s.trim().is_empty()))
+        || ["CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"].iter()
+            .any(|key| env.get(*key).is_some_and(|s| matches!(s.to_lowercase().as_str(), "1" | "true")))
 }
 
 /// Reads only Claude Desktop's bounded local plan-usage history file. This remains separate
@@ -1640,6 +1702,10 @@ fn load_preferences(path: &Path) -> (Vec<MultiClientUsagePreference>, Vec<String
 }
 
 fn source_roots(client: &str, override_path: Option<&str>) -> Vec<PathBuf> {
+    if client == "antigravity" {
+        let selected = override_path.map(str::trim).filter(|path| !path.is_empty()).map(expand_path);
+        return antigravity::resolve_roots(&app_paths::home_dir(), selected.as_deref());
+    }
     if let Some(path) = override_path.map(str::trim).filter(|path| !path.is_empty()) {
         return vec![expand_path(path)];
     }
@@ -1697,6 +1763,7 @@ fn expand_path(path: &str) -> PathBuf {
 }
 
 fn enumerate_source_files(client: &str, root: &Path) -> Result<(Vec<PathBuf>, bool), String> {
+    if client == "antigravity" { return antigravity::discover(root); }
     if !root.exists() {
         return Ok((Vec::new(), false));
     }
@@ -3356,7 +3423,8 @@ fn upsert_event(transaction: &Transaction<'_>, event: &UsageEvent) -> rusqlite::
     let mut update_is_newer = true;
     if let Some(previous) = previous_payload.as_deref() {
         if let Ok(previous) = serde_json::from_str::<ClientUsageEventPayload>(previous) {
-            if previous.session_id == event.session_id {
+            if previous.session_id == event.session_id || event.client == "antigravity" {
+                if event.client == "antigravity" { projected.session_id = previous.session_id.clone(); }
                 projected.input_tokens = projected.input_tokens.max(previous.input_tokens);
                 projected.output_tokens = projected.output_tokens.max(previous.output_tokens);
                 projected.cache_read_tokens =
@@ -3373,7 +3441,9 @@ fn upsert_event(transaction: &Transaction<'_>, event: &UsageEvent) -> rusqlite::
                 update_is_newer = event.timestamp_ms as f64 >= previous.timestamp;
                 projected.reasoning_tokens =
                     max_option(projected.reasoning_tokens, previous.reasoning_tokens);
-                if previous.timestamp >= projected_timestamp_ms && previous.model != "unknown" {
+                if (previous.timestamp > projected_timestamp_ms
+                    || (previous.timestamp == projected_timestamp_ms && (event.client != "antigravity" || event.model == "unknown")))
+                    && previous.model != "unknown" {
                     projected.model = previous.model;
                 }
                 projected_timestamp_ms = projected_timestamp_ms.max(previous.timestamp);
@@ -4008,12 +4078,20 @@ fn read_summary_rows_since_with_prices(
     price_totals: Option<&HashMap<MultiClientPriceModelKey, MultiClientPriceTally>>,
     since_unix: Option<i64>,
 ) -> rusqlite::Result<Vec<MultiClientUsageSummary>> {
+    read_summary_rows_range_with_prices(connection, price_totals, since_unix, None)
+}
+
+fn read_summary_rows_range_with_prices(
+    connection: &Connection,
+    price_totals: Option<&HashMap<MultiClientPriceModelKey, MultiClientPriceTally>>,
+    since_unix: Option<i64>, before_unix: Option<i64>,
+) -> rusqlite::Result<Vec<MultiClientUsageSummary>> {
     let query = if since_unix.is_some() {
         "SELECT client, model, SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), \
          SUM(cache_write_tokens), SUM(reasoning_tokens), COUNT(*), MAX(timestamp), \
          SUM(cache_read_tokens IS NULL OR cache_write_tokens IS NULL OR reasoning_tokens IS NULL), \
          SUM(cache_read_tokens IS NULL)=0 \
-         FROM client_usage_events WHERE timestamp >= ?1 GROUP BY client, model ORDER BY client, model"
+         FROM client_usage_events WHERE timestamp >= ?1 AND timestamp < ?2 GROUP BY client, model ORDER BY client, model"
     } else {
         "SELECT client, model, SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), \
          SUM(cache_write_tokens), SUM(reasoning_tokens), COUNT(*), MAX(timestamp), \
@@ -4058,7 +4136,7 @@ fn read_summary_rows_since_with_prices(
         })
     };
     let rows = if let Some(cutoff) = since_unix {
-        statement.query_map([cutoff as f64], read_row)?
+        statement.query_map(params![cutoff as f64, before_unix.map_or(f64::MAX, |v| v as f64)], read_row)?
     } else {
         statement.query_map([], read_row)?
     };
@@ -4069,15 +4147,21 @@ fn read_scoped_api_price_aggregates(
     connection: &Connection,
     cutoff_unix: i64,
 ) -> Result<HashMap<MultiClientPriceModelKey, MultiClientPriceTally>, String> {
+    read_range_api_price_aggregates(connection, cutoff_unix, None)
+}
+
+fn read_range_api_price_aggregates(
+    connection: &Connection, cutoff_unix: i64, before_unix: Option<i64>,
+) -> Result<HashMap<MultiClientPriceModelKey, MultiClientPriceTally>, String> {
     let mut totals = HashMap::<MultiClientPriceModelKey, MultiClientPriceTally>::new();
     let mut statement = connection
         .prepare(
             "SELECT client,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,timestamp,payload \
-             FROM client_usage_events WHERE timestamp >= ?1",
+             FROM client_usage_events WHERE timestamp >= ?1 AND timestamp < ?2",
         )
         .map_err(|error| error.to_string())?;
     let rows = statement
-        .query_map([cutoff_unix as f64], |row| {
+        .query_map(params![cutoff_unix as f64, before_unix.map_or(f64::MAX, |v| v as f64)], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
@@ -4101,6 +4185,7 @@ fn read_scoped_api_price_aggregates(
             timestamp,
             cache_write_ttl_pair,
         ) = row.map_err(|error| error.to_string())?;
+        let pricing_model = if client == "antigravity" { antigravity::price_model(&model) } else { model.clone() };
         totals
             .entry(MultiClientPriceModelKey {
                 client,
@@ -4108,7 +4193,7 @@ fn read_scoped_api_price_aggregates(
             })
             .or_default()
             .add(api_cost_micro_usd_at(
-                &model,
+                &pricing_model,
                 input,
                 output,
                 cache_read,
@@ -4213,12 +4298,13 @@ fn read_cached_api_price_aggregates(
             timestamp,
             cache_write_ttl_pair,
         ) = row.map_err(|error| error.to_string())?;
+        let pricing_model = if client == "antigravity" { antigravity::price_model(&model) } else { model.clone() };
         let key = MultiClientPriceModelKey {
             client,
             model: model.clone(),
         };
         totals.entry(key).or_default().add(api_cost_micro_usd_at(
-            &model,
+            &pricing_model,
             input,
             output,
             cache_read,
@@ -4550,6 +4636,55 @@ fn format_timestamp_seconds(timestamp_seconds: f64) -> Option<String> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn day_cost_query_uses_both_bounds_and_prices_each_record_without_writes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("day.sqlite");
+        let mut connection = rusqlite::Connection::open(&path).unwrap();
+        super::ensure_schema(&connection, &path).unwrap();
+        let start = 1_793_836_800_i64; // 2026-11-05 UTC; UI supplies local midnight boundaries.
+        let end = start + 86400;
+        let make = |id: &str, at: i64, client: &str, cache: Option<u64>| super::UsageEvent {
+            client: client.into(), session_id: "s".into(), event_id: id.into(), model: "gemini-4-argon".into(),
+            timestamp_ms: at, input_tokens: 140, output_tokens: 20, cache_read_tokens: cache,
+            cache_write_tokens: Some(0), quality: "recorded".into(), ..Default::default()
+        };
+        let events = vec![make("before",start*1000-1,"antigravity",Some(40)),make("start",start*1000,"antigravity",Some(40)),
+            make("last",end*1000-1,"antigravity",Some(40)),make("end",end*1000,"antigravity",Some(40)),
+            make("unknown",start*1000,"antigravity",None),make("claude",start*1000,"claudeCode",Some(40))];
+        super::persist_source_update(&mut connection,"antigravity","fixture",0,0,0,"fixture",events).unwrap();
+        let revision:i64 = connection.query_row("SELECT COUNT(*) FROM client_usage_revisions",[],|r|r.get(0)).unwrap();
+        let read_only=super::open_read_only(&path).unwrap();
+        let clients=vec!["antigravity".into()];
+        let rows=super::read_day_summaries_on(&read_only,start,end,&clients).unwrap();
+        assert_eq!(rows.len(),1);assert_eq!(rows[0].requests,3);assert_eq!(rows[0].input_tokens,420);
+        assert_eq!(rows[0].unpriced_requests,1);
+        let unit=super::api_cost_micro_usd_at("gemini-4-argon",140,20,Some(40),Some(0),None,Some(start as f64)).unwrap();
+        assert_eq!(rows[0].api_cost_usd,Some(unit as f64*2.0/1_000_000.0));
+        assert_eq!(super::read_day_summaries_on(&read_only,start,start+1,&clients).unwrap()[0].requests,2);
+        assert_eq!(super::read_day_summaries_on(&read_only,end,end+86400,&clients).unwrap()[0].requests,1);
+        assert!(super::read_day_summaries_on(&read_only,end+86400,end+172800,&clients).unwrap().is_empty());
+        assert_eq!(connection.query_row("SELECT COUNT(*) FROM client_usage_revisions",[],|r|r.get::<_,i64>(0)).unwrap(),revision);
+        assert!(super::validate_day_range(start,start+23*3600,&clients).is_ok());
+        assert!(super::validate_day_range(start,start+25*3600,&clients).is_ok());
+        assert!(super::validate_day_range(start,start+28*3600,&clients).is_err());
+        assert!(super::validate_day_range(start,end,&["invalid".into()]).is_err());
+    }
+
+    #[test]
+    fn claude_api_config_changes_do_not_reuse_subscription_mode() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path();
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        let config = home.join(".claude/settings.json");
+        std::fs::write(&config, r#"{"env":{"ANTHROPIC_BASE_URL":"https://relay.invalid"}}"#).unwrap();
+        assert!(super::claude_uses_api(home, &Default::default()));
+        std::fs::write(&config, "{}").unwrap();
+        assert!(!super::claude_uses_api(home, &Default::default()));
+        assert!(super::claude_uses_api(home, &[("CLAUDE_CODE_USE_BEDROCK".into(), "1".into())].into()));
+        assert!(!super::claude_uses_api(home, &[("CLAUDE_CODE_USE_BEDROCK".into(), "0".into())].into()));
+    }
+
+    #[test]
     fn shared_usage_initialization_preserves_busy_code_for_retry() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("shared.sqlite");
@@ -4701,7 +4836,7 @@ mod tests {
             .iter()
             .all(|preference| !preference.enabled));
         assert!(database.exists() == false);
-        assert_eq!(snapshot.quotas.len(), 5);
+        assert_eq!(snapshot.quotas.len(), 6);
     }
 
     #[test]

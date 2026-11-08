@@ -4,6 +4,25 @@ import test from "node:test";
 import { withSsrModules } from "../test/ssrHarness.mjs";
 import { LONG_RECENT_POINT_COUNT } from "../timeSeriesTimeline.ts";
 
+test("API quota transition clears subscription credits and rejects a late reset result", async () => {
+ await withSsrModules(async load => {
+  const {mergeQuota,mergeResetCredits}=await load('/src/state/dashboardMergers.ts');
+  const {initialDashboardState}=await load('/src/state/dashboardDefaults.ts');
+  const {emptyAccountQuotaBundle}=await load('/src/api/fallback/quotaFallback.ts');
+  const api=emptyAccountQuotaBundle();api.quota.connectionMode='api';api.quota.resetCredit.status='API 接入 · 重置卡不适用';
+  const state={...initialDashboardState,dashboard:{...initialDashboardState.dashboard,quota:{...api.quota,connectionMode:'subscription',resetCredit:{availableCount:3,status:'ready',credits:[]}}}};
+  state.dashboard.diagnostics=[{source:'reset_credit',message:'old failure'}];
+  state.dashboard.warnings=[{source:'reset_credit',message:'old failure'}];
+  const merged=mergeQuota(state,api);
+  assert.equal(merged.dashboard.quota.resetCredit.availableCount,0);
+  assert.equal(merged.dashboard.quota.connectionMode,'api');
+  assert.deepEqual(merged.dashboard.diagnostics,[]);assert.deepEqual(merged.dashboard.warnings,[]);
+  const late={updatedAt:'2026-11-05T00:00:00Z',successful:true,resetCredit:{availableCount:8,status:'late',credits:[]},warnings:[],diagnostics:[]};
+  assert.equal(mergeResetCredits(merged,late),merged);
+  assert.equal(merged.dashboard.stats,state.dashboard.stats);
+ });
+});
+
 test("a newer light summary cannot prevent the first completed full canvas from publishing", async () => {
   await withSsrModules(async (load) => {
     const { mergeUsageSummary, mergePreciseDashboard } = await load("/src/state/dashboardMergers.ts");
