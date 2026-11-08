@@ -1,6 +1,6 @@
 # build 993 首页进度与多客户端发现栏调查
 
-状态：最终源码完整云端 CI、macOS/Windows 打包及所有下载校验已通过；本机安装尝试被系统进程/启动服务异常阻止，尚未替换，恢复后仍需耗时复现与最终安装验收。本文不代表本机修复安装已完成。基线为 `db4e6e42`，安装产品仍为 `9762f754` / 0.9.11 build 993。
+状态：最终源码完整云端 CI、macOS/Windows 打包及所有下载校验已通过；2026-11-08 14:32 已替换本机为 0.9.11 / build 994（产品 `ee1746bf`），保留完整 build 993 回滚副本。本机首轮精确刷新完成、加载状态收口、发现栏宽度与多项展示均已实际核验。原 build 993 那次长时间准备没有重现，其具体耗时根因仍未证明。
 
 ## 已确认的事实
 
@@ -36,13 +36,13 @@
 3. 前端实际发现组件交互：已启用、已忽略和 Claude CLI 正确过滤；多个其余项同时显示，忽略中间项和启用最后项不会改变其它项。
 4. 既有未完成迁移用例保留原分母、计数和不假完成断言，并要求迁移开始后不能退回普通准备提示。
 
-CI 已将两项新 Swift 用例列为必须实际执行，并收集原生预览。遵守用户要求，没有本机编译或测试。统计加载状态机本身未做推测性改写，仍需云端完整回归及本机诊断。
+CI 已将两项新 Swift 用例列为必须实际执行，并收集原生预览。遵守用户要求，没有本机编译或测试。统计加载状态机本身未做推测性改写；最终云端回归及本机实测结果单列如下。
 
 首轮源码 `319f30df646c87d2dbe2616802aaf30d93306b9a`：前端 1,438/1,438、cloud scripts 18/18 通过，零跳过；新实际首次/再次读取用例通过。Swift 2,424 项执行、38 跳过，只有新原生布局测试失败（6 组×3 尺寸断言共 18 次），原生截图已生成并确认三个宽度全部展示三项、宽窗口居中且最大 980pt、窄窗口按钮换行。失败来自测试 PreferenceKey 回调未写入测量值，全为 0。
 
 `e85c24f6a8e48e31b26281afefb483aed18e93ae` 仅将测试测量改为真实背景 NSView 的转换后 bounds，未修改产品，也未移除宽度/居中/高度断言。首轮 CI `42448637787`、打包 `42448678525` 的原始失败材料保留在 `scratch/dashboard-fixes-20261108/cloud-319f30df/`；剩余旧任务停止，避免阻塞新 SHA。
 
-当前完整 CI：[42449658329](https://github.com/hututuo/codex-token-bar/actions/runs/42449658329)；同 SHA build 994 云端打包：[42449678755](https://github.com/hututuo/codex-token-bar/actions/runs/42449678755)。产品改动没有 Rust 或数据库 SQL/事务变化；本轮完整门禁仍包含双平台 Rust、各 16 生产场景及两类负控，不重跑未改动的四版本 Rust 历史矩阵。
+第二轮 CI：[42449658329](https://github.com/hututuo/codex-token-bar/actions/runs/42449658329)；同 SHA 候选打包：[42449678755](https://github.com/hututuo/codex-token-bar/actions/runs/42449678755)。这轮未用于安装。产品改动没有 Rust 或数据库 SQL/事务变化；本轮完整门禁仍包含双平台 Rust、各 16 生产场景及两类负控，不重跑未改动的四版本 Rust 历史矩阵。
 
 第二轮 Swift 2,386 通过、38 原有跳过、零失败，两项新增必跑回归通过，前端 1,438 通过。但收尾静态复审发现：普通打开提示也会进入 `loadCompactSummary`，而该路径只为迁移/回填发送终止提示，普通准备提示可能在轻量成功后遗留。因此进一步限定 compact 路径不转发 `.preparing`（保留其原有迁移、回填与完成提示），并在实际冷/暖 loader 测试后增加 compact 成功无准备提示残留的断言。该修正需要第三轮最终 SHA 验证，不能沿用第二轮通过状态安装。
 
@@ -65,28 +65,43 @@ CI 已将两项新 Swift 用例列为必须实际执行，并收集原生预览�
 
 最终原生预览 `visual-previews/discovery-{360,872,1404}-{1,3}.png` 六份已生成；人工复看窄/宽三项图，内容和按钮完整，1404pt 容器内发现栏居中且宽度为 980pt。此为云端生产 View 渲染证据，与本机最终窗口验收分开。
 
-[最终打包 42450846688](https://github.com/hututuo/codex-token-bar/actions/runs/42450846688) 的 macOS job success。App ZIP SHA-256 `fd284607392929ebf36e0d517a292b726a889c21b9c8cbcb85ed902bcb39333b`，可执行文件 SHA-256 `587c09ee14f7453a8953b5b4997b031129f13e60695cc732273c14c9e30962f8`。版本 0.9.11/build 994/arm64，`codesign --verify --deep --strict` 通过，指定签名要求、bundle ID、Sparkle feed/key 与已安装版一致。按既有策略为 ad-hoc，未 Apple 公证。已解压候选位于同一证据目录的 `unpacked/Codex Token Bar.app`，尚未替换本机。
+[最终打包 42450846688](https://github.com/hututuo/codex-token-bar/actions/runs/42450846688) 的 macOS job success。App ZIP SHA-256 `fd284607392929ebf36e0d517a292b726a889c21b9c8cbcb85ed902bcb39333b`，可执行文件 SHA-256 `587c09ee14f7453a8953b5b4997b031129f13e60695cc732273c14c9e30962f8`。版本 0.9.11/build 994/arm64，`codesign --verify --deep --strict` 通过，指定签名要求、bundle ID、Sparkle feed/key 与前版一致。按既有策略为 ad-hoc，未 Apple 公证。已解压候选位于同一证据目录的 `unpacked/Codex Token Bar.app`，14:32 已将相同产物安装到本机。
 
 最终整个打包 workflow 已为 success；Windows x64/arm64 安装包也已下载并通过 manifest/资产 hash 校验。macOS DMG 经 `hdiutil verify` 完整性检查通过。`validate_cloud.py` 重读全部最终原始证据后返回 PASS，`final-validation.json` SHA-256 为 `c1e4309c89a0bdfb0ebc3b99e086a404b1817df0eaaf5b3bcd0f4e069b98b14b`。旧轮次材料不参与最终成功判定。
 
-## 当前阻塞与安装状态
+## 首次安装受阻记录（已恢复，原始证据保留）
 
 为测量原版真实启动耗时，在保留现场后正常退出 build 993，准备使用既有环境开关启用诊断。此时 macOS 图形服务发生重启（新 WindowServer / loginwindow 约从 12:37 起运行），本机用户服务查询不可用：`id -un` 仅返回 UID 501，Directory Service 返回 `eServerError`，`launchctl print gui/501` 返回 `141: Reentrancy avoided`。启动服务返回 `-10827 / kLSNoExecutableErr`；直接启动也未成功，尚未产生新的诊断 trace。没有证据将系统服务异常归因于产品代码。
 
-同时普通 `gh` 无法连接 GitHub，`curl https://api.github.com` 返回 `Could not resolve host`。改用 Go DNS 后又因系统证书服务不可用返回 `OSStatus -26276`。后续交叉检查发现 Node 的标准 HTTPS（保持证书校验）仍可访问 GitHub API；可以通过该路径继续云端流程。未修改网络/用户服务配置，也未绕过项目云端规则运行本地测试。本机启动仍被系统服务故障阻塞。
+当时普通 `gh` 无法连接 GitHub，`curl https://api.github.com` 返回 `Could not resolve host`。改用 Go DNS 后又因系统证书服务不可用返回 `OSStatus -26276`。后续交叉检查发现 Node 的标准 HTTPS（保持证书校验）仍可访问 GitHub API，通过该路径完成云端流程。未修改网络/用户服务配置，也未绕过项目云端规则运行本地测试。本机启动在该次尝试中仍被系统服务故障阻塞。
 
-安装目录仍完整保留 build 993，可执行文件 SHA-256 复核为 `c785588982bac565ebe6d4c0db2dd1d9743792f60c2f4248f699da9d59a8435d`，签名检查通过。诊断重启未成功后，约 13:00 观察到新的 App 进程 PID 16493，未携带本轮 probe 日志；没有证据说明由哪个启动者恢复。再次采样没有捕获 Exact 索引耗时栈。当前工具仍不能访问该 GUI 会话或启动系统辅助功能进程，不能声称第二次窗口或耗时验收完成。未替换为本轮尚未验证的新代码。此前 build 992 回滚副本仍保留在上次安装记录所指目录。
+受阻时安装目录完整保留 build 993，可执行文件 SHA-256 复核为 `c785588982bac565ebe6d4c0db2dd1d9743792f60c2f4248f699da9d59a8435d`，签名检查通过。诊断重启未成功后，约 13:00 观察到新的 App 进程 PID 16493，未携带本轮 probe 日志；没有证据说明由哪个启动者恢复。再次采样没有捕获 Exact 索引耗时栈。当时工具不能访问该 GUI 会话或启动系统辅助功能进程，因此没有把该次重开当作窗口或耗时验收。此前 build 992 回滚副本仍保留在上次安装记录所指目录。
 
 全部云端门禁通过后，14:03 执行本轮安装脚本。App/签名/hash/版本预检查通过，AppleScript 退出请求返回后，`pgrep` 返回退出码 3：`sysmon request failed with error: sysmond service not found; pgrep: Cannot get process list`，安装脚本在任何目录移动之前停止。`ps` 仍能看到 PID 16493，安装版本仍为 993、可执行文件 hash 未变。随后 `open` 仍返回 `-10827`。这不是签名或云端构建失败，不能通过强制覆盖正在运行的文件来宣称完成安装。脚本补充了当前用户解析和进程服务的先行检查，服务恢复后才会退出旧 App、建立唯一 build 993 回滚目录并替换。
 
-本轮没有删除用户数据库、会话或旧 App，也没有生成新的正式回滚目录（安装尚未到该阶段）。用户已授权安装，当前缺的是可工作的本机桌面/工具连接，而非再次授权。
+受阻的安装尝试没有删除用户数据库、会话或旧 App，也没有生成新的正式回滚目录（尚未到该阶段）。原 `installation-blocker.json` 保留为历史记录；恢复后的实际安装记录如下。
 
-## 恢复后的完整收尾
+## 本机替换与实测完成
 
-1. 桌面登录/系统服务恢复后，先启动现有 build 993，启用 `CODEX_TOKEN_BAR_REFRESH_PROBE=1`，日志限定在本轮 scratch；采集准备阶段对应的真实调用栈和时长。若原版无法给出足够细分，使用已通过云端验证的新候选分段诊断，不能仅凭显示修正宣称耗时根因已解决。
-2. 如发现真实热点，按证据做最小修复并加相应回归；不清空历史、不放松保护或用计时器伪造完成。
-3. 推送任务分支，在最终 SHA 上执行完整云端 Swift/前端/双端 Rust、生产场景及既有负控；检查新增用例实际执行、预览 PNG 与原始报告。涉及历史/数据库行为变化时补相应历史兼容矩阵。
-4. 云端 `prepare-release.yml` 使用同一最终 SHA、递增 build（预定 994，执行前复核）、既有 AgentSpeed reviewed pin 与理由。校验产物 manifest/hash/签名/版本。
-5. 保留唯一命名的 build 993 回滚副本，替换 `/Applications/Codex Token Bar.app`，重启并实测准备→扫描/读取→完成以及发现栏实际宽度/多项显示。只有此后才能宣告本轮完成。
+2026-11-08 14:32:20（Asia/Shanghai），系统用户/进程服务恢复后，安装脚本正常退出 PID 16493，完整保留旧 bundle，再将已校验的云端 build 994 安装到 `/Applications/Codex Token Bar.app`。安装后全 bundle 文件清单与候选一致，严格签名检查通过，可执行文件 hash 与上述云端产物一致。新进程 PID 64464 从正式安装路径启动；14:34:34 仍为同一 PID，运行 2 分 14 秒。
+
+build 993 唯一回滚位置为本工作树的 `scratch/dashboard-fixes-20261108/local-install-994-8eeu5dnv/rollback-build993/Codex Token Bar.app`。备份全文件清单通过；复核旧可执行文件 hash 仍为 `c785588982bac565ebe6d4c0db2dd1d9743792f60c2f4248f699da9d59a8435d`。未覆盖已有 build 992 或其他回滚副本。
+
+此次使用已打包 App 的既有诊断环境开关记录真实启动后的首轮刷新，没有本机重编译或运行测试。日志 `refresh-performance.log` 明确记录：
+
+| 实际阶段 | 时间口径 |
+| --- | --- |
+| 发现来源 | 4,316 个文件，约 0.83 秒 |
+| 打开与校验索引 | 约 3.27 秒（`exactIndex.open`） |
+| 权威增量同步 | 约 4.17 秒，3 个文件增量解析、4,313 个不变 |
+| 数值发布 | 从整轮刷新开始约 16.73 秒 |
+| 摘录补齐 | 约 1.06 秒，位于数值发布之后 |
+| 完整刷新收口 | 14:32:25.321 → 14:32:43.620，共约 18.30 秒；从启动请求到收口约 23 秒 |
+
+这些阶段存在包含关系，不将各行当作相互独立的耗时相加；本次是已有账本的增量刷新，不是冷历史全量回填性能。它证明本次能正常收口，没有重现原版长时间准备；不能反推原版那次等待的具体原因。
+
+主窗口辅助功能查询成功，窗口可见、尺寸 1512×897。实机截图 `dashboard-startup.png` 确认「读取中／刷新中」消失，显示「数据更新于 14:32:30 · 图表至 14:30」；DeepSeek / DSH 与 Antigravity 同时展示，左右边界与上下卡片对齐，两个独立启用/忽略按钮均可见。未点击启用按钮或改变客户端采集偏好。检查诊断报告未发现此次启动后的新崩溃。
+
+安装、启动、截图与日志均位于 `scratch/dashboard-fixes-20261108/local-install-994-8eeu5dnv/`，分别为 `installation.json`、`runtime-verification.json`、`dashboard-startup.png` 和 `refresh-performance.log`；云端证据目录的 `installation-pointer.json` 指向这次安装。诊断开关仅属于本次进程，普通下一次启动不会持久开启。收官只更新报告，已验证/安装产品源码仍为 `ee1746bf`。
 
 用户已授权本轮修复、云端执行和本机替换；恢复后不需要再次询问安装许可。未授权也未执行 main 合并、Release/tag/appcast 发布或数据库清理。
