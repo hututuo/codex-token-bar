@@ -64,21 +64,40 @@ struct SidebarTaskMeter: View {
 
     var body: some View {
         GeometryReader { proxy in
-            ZStack {
-                ForEach(0..<SidebarTaskMeterPresentation.capacity, id: \.self) { index in
-                    if ring {
+            if ring {
+                ZStack {
+                    ForEach(0..<SidebarTaskMeterPresentation.capacity, id: \.self) { index in
                         Circle().trim(from: Double(index) / 10 + 0.004, to: Double(index + 1) / 10 - 0.004)
                             .stroke(presentation.color(at: index), style: StrokeStyle(lineWidth: 3, lineCap: .butt))
                             .rotationEffect(.degrees(-90))
-                    } else {
-                        Rectangle().fill(presentation.color(at: index))
-                            .frame(height: max(0, proxy.size.height / 10 - SidebarTaskMeterPresentation.separator))
-                            .position(x: proxy.size.width / 2, y: proxy.size.height * (1 - (Double(index) + 0.5) / 10))
                     }
                 }
+            } else {
+                ZStack {
+                    ForEach(0..<SidebarTaskMeterPresentation.capacity, id: \.self) { index in
+                        let cell = SidebarTaskMeterGeometry.cell(start: Double(index) / 10,
+                            end: Double(index + 1) / 10, in: CGRect(origin: .zero, size: proxy.size))
+                        Rectangle().fill(presentation.color(at: index))
+                            .frame(width: cell.width, height: cell.height)
+                            .position(x: cell.midX, y: cell.midY)
+                    }
+                }
+                .frame(width: proxy.size.width, height: proxy.size.height)
+                .clipShape(Capsule())
             }
         }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: presentation)
         .accessibilityHidden(true)
+    }
+}
+
+enum SidebarTaskMeterGeometry {
+    /// Internal separators stay flat and 0.6pt wide. Only the two outside
+    /// edges extend to the full capsule bounds; no gap cuts off either cap.
+    static func cell(start: Double, end: Double, in track: CGRect) -> CGRect {
+        let halfGap = SidebarTaskMeterPresentation.separator / 2
+        let bottom = track.maxY - track.height * start - (start == 0 ? 0 : halfGap)
+        let top = track.maxY - track.height * end + (end == 1 ? 0 : halfGap)
+        return CGRect(x: track.minX, y: top, width: track.width, height: max(0, bottom - top))
     }
 }

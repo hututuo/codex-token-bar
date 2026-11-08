@@ -104,11 +104,11 @@ enum ClientQuotaMorphGeometry {
         }
         let markers: [MatchedStrokeMorphRoute] = routes.compactMap { route in
             guard let marker = route.marker, let color = route.markerColor else { return nil }
-            let end = CGPoint(x: route.track.midX, y: route.track.minY + 2.5)
+            let end = CGPoint(x: route.track.midX, y: route.track.minY + ClientSidebarMetrics.compactMarkerCenterY)
             func dot(_ point: CGPoint) -> [CGPoint] { [point, CGPoint(x: point.x + 0.001, y: point.y)] }
             return .init(id: "marker:" + route.id, participantID: "marker:" + route.id,
                 expanded: .init(points: dot(CGPoint(x: marker.midX, y: marker.midY)), width: 5, opacity: 1),
-                collapsed: .init(points: dot(end), width: 5, opacity: 1), color: color)
+                collapsed: .init(points: dot(end), width: ClientSidebarMetrics.compactMarkerDiameter, opacity: 1), color: color)
         }
         let guides: [MatchedStrokeMorphRoute] = routes.compactMap { route in
             guard let value = route.expected, value.isFinite else { return nil }
@@ -134,14 +134,23 @@ enum ClientQuotaMorphGeometry {
                 return CGPoint(x: route.ring.midX + route.ring.width / 2 * cos(angle),
                                y: route.ring.midY + route.ring.height / 2 * sin(angle))
             }
+            let bounds = SidebarTaskMeterGeometry.cell(start: cell.start, end: cell.end, in: route.track)
             let collapsed = (0...segments).map { index -> CGPoint in
                 let t = Double(index) / Double(segments)
-                let bottom = route.track.maxY - route.track.height * cell.start - SidebarTaskMeterPresentation.separator / 2
-                let top = route.track.maxY - route.track.height * cell.end + SidebarTaskMeterPresentation.separator / 2
-                return CGPoint(x: route.track.midX, y: bottom + (top - bottom) * t)
+                return CGPoint(x: bounds.midX, y: bounds.maxY - bounds.height * t)
+            }
+            // Round only the outside end of the first/last cell. The painted
+            // path keeps butt ends so the nine internal separators never close.
+            let isEnd = cell.start == 0 || cell.end == 1
+            let clip = (0...segments).map { index -> CGPoint in
+                let radius = route.track.width / 2
+                let bottom = bounds.maxY - (cell.start == 0 ? radius : 0)
+                let top = bounds.minY + (cell.end == 1 ? radius : 0)
+                return CGPoint(x: bounds.midX, y: bottom + (top - bottom) * Double(index) / Double(segments))
             }
             return .init(id: route.id + ":" + cell.id, participantID: route.id,
-                expanded: .init(points: expanded, width: 3), collapsed: .init(points: collapsed, width: 4),
+                expanded: .init(points: expanded, width: 3, clipPoints: isEnd ? expanded : nil),
+                collapsed: .init(points: collapsed, width: 4, clipPoints: isEnd ? clip : nil),
                 color: cell.color, lineCap: .butt)
         }
     }

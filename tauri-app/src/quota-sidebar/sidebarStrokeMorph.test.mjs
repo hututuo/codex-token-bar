@@ -3,6 +3,38 @@ import test from "node:test";
 import { Window } from "happy-dom";
 import { withSsrModules } from "../test/ssrHarness.mjs";
 
+test("task end-cap masks survive SVG reversal without rounding internal separators", async () => {
+  const w = new Window();
+  try {
+    await withSsrModules(async load => {
+      const { animateSidebarStrokes } = await load("/src/quota-sidebar/sidebarStrokeMorph.ts");
+      Object.defineProperty(w, "CSS", { configurable:true,value:{supports:()=>true} });
+      const root = w.document.createElement("div"); w.document.body.append(root);
+      root.innerHTML='<svg data-sidebar-stroke-source></svg><span data-sidebar-stroke-target="tasks"></span>';
+      const source=root.children[0],target=root.children[1];
+      source.dataset.strokeSpec=JSON.stringify([{id:"tasks",shape:"taskCells",fraction:1,color:"#888",
+        segments:Array.from({length:10},(_,i)=>({id:`cell-${i}`,start:i/10,end:(i+1)/10,color:i<4?"#a3d977":"#333"}))}]);
+      root.getBoundingClientRect=()=>({x:0,y:0});
+      source.getBoundingClientRect=()=>({x:20,y:20,width:46,height:46});
+      target.getBoundingClientRect=()=>({x:6,y:100,width:4,height:46});
+      const pending=[];
+      w.SVGElement.prototype.animate=function(){return {finished:new Promise(resolve=>pending.push(resolve)),cancel(){}};};
+      const cancel=animateSidebarStrokes(root,false);
+      assert.equal(root.querySelectorAll(".qs-stroke-morph g>path").length,10);
+      assert.equal(root.querySelectorAll(".qs-stroke-morph mask").length,2);
+      assert.ok([...root.querySelectorAll(".qs-stroke-morph g>path")].every(path=>path.getAttribute("stroke-linecap")==="butt"));
+      assert.ok([...root.querySelectorAll(".qs-stroke-morph mask>path")].every(path=>path.getAttribute("stroke-linecap")==="round"));
+      const snapshot=cancel();
+      assert.equal([...snapshot.values()].filter(value=>value.clipD).length,2);
+      const finish=animateSidebarStrokes(root,true,snapshot);
+      assert.equal(root.querySelectorAll(".qs-stroke-morph mask").length,2);
+      pending.forEach(resolve=>resolve());for(let i=0;i<5;i++)await Promise.resolve();
+      assert.equal(source.style.visibility,"");assert.equal(target.style.visibility,"");
+      assert.equal(root.querySelector(".qs-stroke-morph"),null);assert.equal(finish().size,0);
+    });
+  } finally { w.close(); }
+});
+
 test("whole rings squeeze monotonically and both sides merge into one full bar", async () => {
   await withSsrModules(async load => {
     const { squeezePoints, sidebarStrokes } = await load("/src/quota-sidebar/sidebarStrokeGeometry.ts");

@@ -182,6 +182,9 @@ jobs:
             --allow-untracked-output 'visual-previews/*.png' \
             --require testPreciseStartupAndWarmRefreshExposePreparationAndCompleteTheStream \
             --require testEveryDiscoveryUsesTheCardWidthAndWrapsAtNarrowWidths \
+            --require testCompactQuotaDotPixelsStayInsideTrackAndMatchMorphEndpoint \
+            --require testTaskRailRenderedCapsAndSeparatorsMatchMorphForEmptyPartialFullAndStale \
+            --require testTaskCapMasksSurviveImmediateReversalAndReleaseParticipants \
             --require testLegacyOptionalColumnCombinationsStayReadableAndUnchanged \
             --require testLegacyMetadataAndDashboardAllKeepExistingFields \
             --require testDestructiveRetryRejectsMissingOrChangedHistoryAndKeepsThePublishedImage \

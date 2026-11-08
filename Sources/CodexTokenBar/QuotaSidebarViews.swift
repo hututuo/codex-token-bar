@@ -48,20 +48,21 @@ private struct SidebarValueBar: View {
     }
 }
 
-/// A brighter client dot overlaps the top of the original continuous track.
+/// A smaller client dot stays inside the continuous track's top semicircle.
 struct ClientQuotaRailTrack: View {
     let item: ClientQuotaItem
     let height: Double
     let fillHex: String
     var body: some View {
         ZStack(alignment: .top) {
-            MatchedStrokeMorphParticipant(ids: [item.id], size: CGSize(width: ClientSidebarMetrics.trackWidth, height: height - 2.5)) {
+            MatchedStrokeMorphParticipant(ids: [item.id], size: CGSize(width: ClientSidebarMetrics.trackWidth, height: height - ClientSidebarMetrics.trackTopInset)) {
                 SidebarValueBar(fraction: item.remaining.map { $0 / 100 },
                     color: Color(nsColor: NSColor(clientHex: fillHex)), vertical: true)
-            }.padding(.top, 2.5)
-            MatchedStrokeMorphParticipant(ids: ["marker:" + item.id], size: CGSize(width: 5, height: 5)) {
-                Circle().fill(Color(nsColor: NSColor(clientHex: item.brand))).frame(width: 5, height: 5)
-            }.allowsHitTesting(false)
+            }.padding(.top, ClientSidebarMetrics.trackTopInset)
+            MatchedStrokeMorphParticipant(ids: ["marker:" + item.id], size: CGSize(width: ClientSidebarMetrics.compactMarkerDiameter, height: ClientSidebarMetrics.compactMarkerDiameter)) {
+                Circle().fill(Color(nsColor: NSColor(clientHex: item.brand)))
+            }.padding(.top, ClientSidebarMetrics.compactMarkerCenterY - ClientSidebarMetrics.compactMarkerDiameter / 2)
+                .allowsHitTesting(false)
             if let expected = item.expected {
                 MatchedStrokeMorphParticipant(ids: ["pace:" + item.id], size: CGSize(width: ClientSidebarMetrics.markerDiameter, height: 1.5)) {
                     Rectangle().fill(.white)

@@ -46,13 +46,23 @@ test('marker animation restores all original dots after finish and reversal',asy
   const {animateQuotaMarkers}=await load('/src/quota-sidebar/useQuotaMarkerMorph.ts');
   const root=w.document.createElement('div');w.document.body.append(root);
   root.innerHTML='<i data-quota-marker-start="codex:7d" style="background:#123456"></i><i data-quota-marker-end="codex:7d"></i>';
-  const start=root.children[0],end=root.children[1];let finished;
-  w.HTMLElement.prototype.animate=function(){return {finished:new Promise(resolve=>finished=resolve),cancel(){}};};
+  const start=root.children[0],end=root.children[1];let finished;const frames=[];
+  start.getBoundingClientRect=()=>({x:6.5,y:13,width:3,height:3});
+  end.getBoundingClientRect=()=>({x:32,y:30,width:5,height:5});
+  w.HTMLElement.prototype.animate=function(keyframes){frames.push(keyframes);return {finished:new Promise(resolve=>finished=resolve),cancel(){}};};
   const cancel=animateQuotaMarkers(root,true);
   assert.equal(start.style.visibility,'hidden');assert.equal(end.style.visibility,'hidden');
   assert.equal(root.querySelectorAll('.qs-quota-marker-morph i').length,1);
+  const dot=root.querySelector('.qs-quota-marker-morph i');
+  assert.equal(dot.style.width,'3px');
+  assert.equal(frames[0][1].transform,`translate(26.5px,18px) scale(${5/3})`);
+  dot.getBoundingClientRect=()=>({x:20,y:21,width:4,height:4});
   const position=cancel();assert.equal(position.size,1);assert.equal(root.querySelector('.qs-quota-marker-morph'),null);assert.equal(start.style.visibility,'');
-  const cancelFinished=animateQuotaMarkers(root,false);finished();await Promise.resolve();await Promise.resolve();await Promise.resolve();
+  assert.deepEqual(position.get('codex:7d'),{x:22,y:23,diameter:4});
+  const cancelFinished=animateQuotaMarkers(root,false,position);
+  assert.equal(root.querySelector('.qs-quota-marker-morph i').style.width,'4px','reversal resumes the actual intermediate diameter');
+  assert.equal(frames[1][1].transform,'translate(-14px,-8.5px) scale(0.75)');
+  finished();await Promise.resolve();await Promise.resolve();await Promise.resolve();
   assert.equal(end.style.visibility,'');assert.equal(cancelFinished().size,0,'finished animations must not seed zero positions into the next transition');
  });}finally{Object.assign(globalThis,saved);w.close();}
 });

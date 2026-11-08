@@ -60,5 +60,6 @@ export function taskMeterSegments(meter: SidebarTaskMeterPresentation) {
 export function SidebarTaskCells({ meter }: { meter: SidebarTaskMeterPresentation }) {
   return <>{meter.cells.map((model,index)=><i key={index} aria-hidden="true" data-task-cell={index}
     data-model={model ?? undefined} data-occupied={model!==null}
-    style={{bottom:`${index*10}%`,height:"calc(10% - 0.6px)",background:meter.colors[index]}}/>)}</>;
+    style={{bottom:index===0?0:`calc(${index*10}% + 0.3px)`,
+      height:`calc(10% - ${index===0||index===9?0.3:0.6}px)`,background:meter.colors[index]}}/>)}</>;
 }

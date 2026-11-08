@@ -45,8 +45,15 @@ final class SidebarTaskMeterTests: XCTestCase {
             XCTAssertEqual(stroke.color, NSColor(meter.color(at: index)))
             XCTAssertEqual(stroke.expanded.points.count, stroke.collapsed.points.count)
             let bottom = try XCTUnwrap(stroke.collapsed.points.first).y, top = try XCTUnwrap(stroke.collapsed.points.last).y
-            XCTAssertEqual(bottom - top, 4, accuracy: 0.0001)
+            XCTAssertEqual(bottom - top, index == 0 || index == 9 ? 4.3 : 4, accuracy: 0.0001)
             if index > 0 { XCTAssertEqual(try XCTUnwrap(strokes[index - 1].collapsed.points.last).y - bottom, 0.6, accuracy: 0.0001) }
+            if index == 0 || index == 9 {
+                let clip = try XCTUnwrap(stroke.collapsed.clipPoints)
+                XCTAssertEqual(clip.count, stroke.expanded.clipPoints?.count)
+                XCTAssertEqual(index == 0 ? clip.first!.y + 2 : clip.last!.y - 2, index == 0 ? 146 : 100, accuracy: 0.0001)
+            } else { XCTAssertNil(stroke.collapsed.clipPoints) }
         }
+        XCTAssertEqual(strokes.first?.collapsed.points.first?.y, 146)
+        XCTAssertEqual(strokes.last?.collapsed.points.last?.y, 100)
     }
 }

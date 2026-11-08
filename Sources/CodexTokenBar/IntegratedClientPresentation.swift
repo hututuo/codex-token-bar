@@ -137,6 +137,11 @@ enum ClientSidebarMetrics {
     static let ringStroke = 3.0
     static let trackWidth = 4.0
     static let markerDiameter = 5.0
+    // The expanded ring keeps its 5pt brand dot. The compact dot sits inside
+    // the 4pt track's top semicircle with a 0.5pt inset on every side.
+    static let compactMarkerDiameter = 3.0
+    static let trackTopInset = 2.5
+    static let compactMarkerCenterY = trackTopInset + trackWidth / 2
     static let capGap = 0.0
     static func trackHeight(_ total: Double) -> Double { max(2, total) }
 }

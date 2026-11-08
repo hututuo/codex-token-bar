@@ -52,18 +52,28 @@ function trim(points: StrokePoint[], lower: number, upper: number): StrokePoint[
 export function sidebarStrokes(spec: SidebarStrokeSpec, source: StrokeRect, target: StrokeRect): SidebarStroke[] {
   if (![source, target].every(r => r.width > 0 && r.height > 0 && Object.values(r).every(Number.isFinite))) return [];
   if (spec.shape === "taskCells") {
-    return (spec.segments ?? []).map(cell=>({
-      id:`${spec.id}:${cell.id}`,group:`${spec.id}:${cell.id}`,color:cell.color,
-      sourceWidth:3,targetWidth:4,opacity:1,lineCap:"butt",
-      source:Array.from({length:33},(_,index)=>{
+    return (spec.segments ?? []).map(cell=>{
+      const sourcePoints=Array.from({length:33},(_,index)=>{
         const value=cell.start+.004+(cell.end-cell.start-.008)*index/32,angle=-Math.PI/2+value*2*Math.PI;
         return {x:source.x+source.width/2+source.width/2*Math.cos(angle),y:source.y+source.height/2+source.height/2*Math.sin(angle)};
-      }),
+      });
+      const bottom=target.y+target.height-target.height*cell.start-(cell.start===0?0:.3);
+      const top=target.y+target.height-target.height*cell.end+(cell.end===1?0:.3);
+      const isEnd=cell.start===0||cell.end===1;
+      const clipBottom=bottom-(cell.start===0?target.width/2:0),clipTop=top+(cell.end===1?target.width/2:0);
+      return {
+      id:`${spec.id}:${cell.id}`,group:`${spec.id}:${cell.id}`,color:cell.color,
+      sourceWidth:3,targetWidth:4,opacity:1,lineCap:"butt" as const,
+      source:sourcePoints,
       target:Array.from({length:33},(_,index)=>{
-        const bottom=target.y+target.height-target.height*cell.start-.3,top=target.y+target.height-target.height*cell.end+.3;
         return {x:target.x+target.width/2,y:bottom+(top-bottom)*index/32};
       }),
-    }));
+      // A round mask changes only the two outside caps; painted butt ends keep
+      // the nine internal separators identical to the stationary task meter.
+      ...(isEnd?{sourceClip:sourcePoints,targetClip:Array.from({length:33},(_,index)=>({
+        x:target.x+target.width/2,y:clipBottom+(clipTop-clipBottom)*index/32,
+      }))}:{}),
+    };});
   }
   const q = clamp(spec.fraction ?? 0), strip = spec.shape === "strip", half = spec.half ?? 0;
   const barFraction = strip ? q : clamp((q * target.height - 4) / Math.max(1, target.height - 4));
