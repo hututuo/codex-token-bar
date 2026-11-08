@@ -138,7 +138,7 @@ struct BodySpeedTrendContent: View, Equatable {
                     Button { selectedModel = model; selectedTime = nil } label: {
                         HStack(spacing: 4) {
                             Circle().fill(ModelUsagePresentation.color(for: model)).frame(width: 6, height: 6)
-                            Text(model.replacingOccurrences(of: "gpt-", with: "")).lineLimit(1).font(.system(size: 10))
+                            Text(ModelUsagePresentation.label(for: model)).help(model).lineLimit(1).font(.system(size: 10))
                         }.padding(.horizontal, 7).padding(.vertical, 4)
                             .foregroundStyle(projection.focusModel == model ? ink : ink.opacity(0.55))
                             .background(RoundedRectangle(cornerRadius: 5).fill(projection.focusModel == model ? ink.opacity(0.12) : .clear))
@@ -202,7 +202,7 @@ struct BodySpeedTrendContent: View, Equatable {
                     Text("该时段没有足够分布采样").font(.system(size: 10)).foregroundStyle(ink.opacity(0.75))
                 } else {
                     ForEach(selected) { point in
-                        Text("\(Date(timeIntervalSince1970: Double(point.bucketStart)).formatted(.dateTime.month().day().hour().minute())) · \(point.model) · 中位数 \(point.median!, specifier: "%.1f") TPS · P25–P75 \(point.lowerQuartile!, specifier: "%.1f")–\(point.upperQuartile!, specifier: "%.1f") · \(point.bucketCount!)桶 / \(point.sampleCount)段 · 加权均速 \(point.tokensPerSecond, specifier: "%.1f") TPS")
+                        Text("\(Date(timeIntervalSince1970: Double(point.bucketStart)).formatted(.dateTime.month().day().hour().minute())) · \(ModelUsagePresentation.label(for: point.model)) · 中位数 \(point.median!, specifier: "%.1f") TPS · P25–P75 \(point.lowerQuartile!, specifier: "%.1f")–\(point.upperQuartile!, specifier: "%.1f") · \(point.bucketCount!)桶 / \(point.sampleCount)段 · 加权均速 \(point.tokensPerSecond, specifier: "%.1f") TPS")
                             .font(.system(size: 10)).monospacedDigit().foregroundStyle(ink.opacity(0.9)).fixedSize(horizontal: false, vertical: true)
                     }
                 }

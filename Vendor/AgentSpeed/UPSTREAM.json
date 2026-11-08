@@ -701,8 +701,8 @@
       "sha256": "337b87c0f66b46c618a8e24647e2cec3d59097ec67893ad26f58b606f3be9dd5"
     },
     "macos/Sources/AgentSpeedCore/Pricing/BundledPriceAssets.swift": {
-      "reason": "Add the locally verified GPT-6.1 Terra price schedule, threshold tiers, fast pricing, and matching model alias to the bundled Agent Speed price asset.",
-      "sha256": "1505363f17f6189bcabf07417b534eeba3d591bc339151a260edd1ad6e343ddd"
+      "reason": "Price assets only from reviewed upstream f32bc2945bce5dcfc94d6befb28dcb2e0abc9532: version 4 adds five Kimi/MiMo entries and documented Kimi aliases. Existing model prices, tiers and periods, including the GPT-6.1 Terra fix, are unchanged. SDK code remains pinned.",
+      "sha256": "8b8582e509dcebdcd7719ec9e6a9684ea99e6737bbe54fc0ca8492677d47dd87"
     },
     "macos/Sources/AgentSpeedCore/Reporting/ReportBody.swift": {
       "reason": "Token Bar report client.app identity; signing protocol unchanged",
@@ -749,8 +749,8 @@
       "sha256": "eb0d7c5974d03aa3960f217f7284912c84b2e076e03738eca92276b4ce0d17e8"
     },
     "spec/assets/prices.json": {
-      "reason": "Add the locally verified GPT-6.1 Terra base/tier/fast prices and model alias to the shared price reference fixture.",
-      "sha256": "1060875e14917526c9c2adb6d90ece4f2dbfe060de77fe669f92c27c618d5f6d"
+      "reason": "Exact version-4 price asset from reviewed upstream f32bc2945bce5dcfc94d6befb28dcb2e0abc9532. Adds five Kimi/MiMo entries and documented Kimi aliases; preserves all existing prices/tiers/periods, including GPT-6.1 Terra. No SDK update.",
+      "sha256": "f2d33664761c394070adc8c93ce9d5e83b201c87acb4ec1dbad3b8f982d56eb5"
     },
     "windows/src/AgentSpeed.Core/AgentSpeed.Core.csproj": {
       "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",

@@ -26,7 +26,7 @@ struct ClientCacheRequestDetailView: View {
                         VStack(alignment: .leading, spacing: 3) {
                             HStack {
                                 Text(request.timestamp, format: .dateTime.month().day().hour().minute().second())
-                                Text(request.model)
+                                Text(ModelUsagePresentation.label(for: request.model)).help(request.model)
                                 Spacer()
                                 Text(request.cacheHitRate.map { String(format: "%.1f%%", $0 * 100) } ?? "缓存未知").bold()
                             }

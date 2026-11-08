@@ -81,7 +81,7 @@ struct CacheTurnRequestDetailView: View {
                 Text(request.timestamp, format: .dateTime.month().day().hour().minute().second())
                     .font(.system(size: 11, weight: .medium, design: .monospaced))
                 HStack(spacing: 6) {
-                    Text(request.model ?? "未知模型")
+                    Text(ModelUsagePresentation.label(for: request.model)).help(request.model ?? "未知模型")
                         .foregroundStyle(ModelUsagePresentation.color(for: request.model))
                     if request.isZeroHit { Text("零命中").foregroundStyle(.red) }
                     else if request.isLowHit { Text("低命中").foregroundStyle(.orange) }

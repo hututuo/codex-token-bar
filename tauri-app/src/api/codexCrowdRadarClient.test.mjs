@@ -31,7 +31,7 @@ test("crowd radar picks the highest pass rate and formats model family", () => {
   const leaders = rankedCodexCrowdRadarModels(snapshot, 3);
   assert.deepEqual(leaders.map((row) => row.model), ["gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6-sol"]);
   assert.equal(best?.model, "gpt-5.6-terra");
-  assert.equal(crowdRadarModelLabel(best), "Terra ultra");
+  assert.equal(crowdRadarModelLabel(best), "Terra5.6 ultra");
   assert.equal((best.passRate * 150).toFixed(1), "119.3");
 });
 
@@ -44,7 +44,7 @@ test("crowd radar maps Astra and uses it before the existing GPT-5.6 lanes on ti
   ];
   const snapshot = { models: rows, recentModels: [], realtimeAvailable: true };
 
-  assert.equal(crowdRadarModelLabel(rows[1]), "Astra high");
+  assert.equal(crowdRadarModelLabel(rows[1]), "Astra6 high");
   assert.deepEqual(
     rankedCodexCrowdRadarModels(snapshot).map((row) => row.model),
     ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],

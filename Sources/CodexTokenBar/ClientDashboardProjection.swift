@@ -160,7 +160,7 @@ struct ClientModelCostPeriods: Equatable, Sendable {
                           return ClaudeModelPresentation.compare(identity.version, model.version) >= 0
                       }) else { continue }
                 // Display-only availability; never appended to stored usage or cost totals.
-                claudeRows.append(.init(id: client + "|" + model.id, label: ClaudeModelPresentation.identity(model.id)!.label,
+                claudeRows.append(.init(id: client + "|" + model.id, label: ModelUsagePresentation.label(for: model.id),
                     tokens: 0, share: 0, costUSD: 0, usesIndependentQuota: false, referenceCostUSD: nil,
                     color: ModelUsagePresentation.color(for: model.id)))
             }
@@ -202,7 +202,7 @@ struct ClientModelCostPeriods: Equatable, Sendable {
                 }
             }
             result += external.filter { allowed.contains($0.client.rawValue) }.map { row in
-                .init(id: row.client.rawValue + "|" + row.model, label: ClaudeModelPresentation.identity(row.model)?.label ?? row.model.replacingOccurrences(of: "-", with: " "),
+                .init(id: row.client.rawValue + "|" + row.model, label: ModelUsagePresentation.label(for: row.model),
                     tokens: Int(row.inputTokens + row.outputTokens), share: 0,
                     costUSD: row.unpricedRequests == 0 ? row.apiCostUSD : nil,
                     usesIndependentQuota: false, referenceCostUSD: nil, color: ModelUsagePresentation.color(for: row.model),

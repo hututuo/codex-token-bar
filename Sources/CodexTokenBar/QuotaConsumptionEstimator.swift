@@ -491,7 +491,7 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
     var id: String { rawValue }
 
     var title: String {
-        switch self {
+        let fullName = switch self {
         case .gpt6Astra: "GPT-6 Astra"
         case .gpt61Sol: "GPT-6.1 Sol"
         case .gpt61Terra: "GPT-6.1 Terra"
@@ -506,6 +506,7 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
         case .gpt54Legacy: "GPT-5.4"
         case .gpt54MiniLegacy: "GPT-5.4 Mini"
         }
+        return ModelDisplayNames.catalogLabel(for: fullName) ?? fullName
     }
 
     var currentPriceRates: APIPriceRates {

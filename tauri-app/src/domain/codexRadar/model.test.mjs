@@ -82,12 +82,12 @@ test("compact Radar presentation localizes actions and keeps model reasoning eff
   for (const rawAction of ["Use Windows", "use_window", "use-window", "use windows", "use_remaining_tokens"]) {
     assert.equal(radarActionDisplayText(rawAction), "速登窗口");
   }
-  assert.equal(compactRadarModelName("GPT-6 Astra max"), "Astra max");
-  assert.equal(compactRadarModelName("GPT-5.6 Sol max"), "Sol max");
-  assert.equal(compactRadarModelName("GPT-5.6 Luna max"), "Luna max");
-  assert.equal(compactRadarModelName("GPT-5.6 Terra max"), "Terra max");
-  assert.equal(compactRadarModelName("GPT-5.6 Terra ultra"), "Terra ultra");
-  assert.equal(compactRadarModelName("GPT-5.6 Sol xhigh"), "Sol xhigh");
+  assert.equal(compactRadarModelName("GPT-6 Astra max"), "Astra6 max");
+  assert.equal(compactRadarModelName("GPT-5.6 Sol max"), "Sol5.6 max");
+  assert.equal(compactRadarModelName("GPT-5.6 Luna max"), "Luna5.6 max");
+  assert.equal(compactRadarModelName("GPT-5.6 Terra max"), "Terra5.6 max");
+  assert.equal(compactRadarModelName("GPT-5.6 Terra ultra"), "Terra5.6 ultra");
+  assert.equal(compactRadarModelName("GPT-5.6 Sol xhigh"), "Sol5.6 xhigh");
   assert.equal(compactRadarModelName("DeepSeek V4 Flash max"), "DS F max");
   assert.equal(compactRadarModelName("DeepSeek V4 Flash high"), "DS F high");
   assert.equal(compactRadarModelName("DeepSeek V4 Pro max"), "DS P max");
@@ -95,8 +95,8 @@ test("compact Radar presentation localizes actions and keeps model reasoning eff
   assert.equal(compactRadarModelName("DSH F max"), "DSH F max");
   assert.equal(compactRadarModelName("DSH-V4-Pro high"), "DSH P high");
   assert.equal(compactRadarModelName("DSH R1 medium"), "DSH R1 medium");
-  assert.equal(compactRadarModelName("grok-4.6 xhigh"), "G4.6 XH");
-  assert.equal(compactRadarModelName("k3 high"), "K3 H");
+  assert.equal(compactRadarModelName("grok-4.6 xhigh"), "Grok4.6 xhigh");
+  assert.equal(compactRadarModelName("k3 high"), "Kimi3 high");
   assert.equal(compactRadarModelName("glm-5.3 max"), "GLM5.3 max");
 });
 
@@ -191,7 +191,7 @@ test("current Sol max score outranks older Terra and keeps its effort in the com
   const primary = primaryModelRow(current);
   assert.equal(primary.point.score, 150);
   assert.equal(primary.point.model, "gpt-5.6-sol");
-  assert.equal(compactRadarModelName(primary.label), "Sol max");
+  assert.equal(compactRadarModelName(primary.label), "Sol5.6 max");
 });
 
 test("primaryModelRow chooses the strongest score and cheaper equal-score model", () => {

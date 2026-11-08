@@ -1,3 +1,4 @@
+import { modelUsageLabel as shortModelName } from "../components/modelUsagePresentation";
 import { useClientScope, clientTitle, amount } from "./useClientScope";
 import { MultiClientDiscoveryNotice } from "./MultiClientUsage";
 import { clientBrand } from "./integratedClientModel";
@@ -19,7 +20,7 @@ export function ScopedSidebarUsage() {
       {rows.map((row) => (
         <div key={`${row.client}:${row.model}`}>
           <span>
-            {clientTitle(row.client)} · {row.model}
+            {clientTitle(row.client)} · <span title={row.model}>{shortModelName(row.model)}</span>
           </span>
           <strong>{amount(row.inputTokens + row.outputTokens)}</strong>
         </div>

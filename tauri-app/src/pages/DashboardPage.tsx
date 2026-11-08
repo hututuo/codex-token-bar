@@ -313,6 +313,7 @@ export function DashboardPage({
       <section className="dashboard">
         <AgentSpeedReportingDashboardStatus errorsOnly onOpenSettings={() => openSettings("speedReporting")} />
         <DashboardHeader
+          discoveryNotice={<MultiClientDiscoveryNotice />}
           includesCodex={clientScope.allowed.includes("codex")}
           scopeControl={<ClientScopeSelector showsDiscovery={false}/>}
           reportingStatus={<AgentSpeedReportingDashboardStatus compact onOpenSettings={() => openSettings("speedReporting")}/>}
@@ -353,8 +354,6 @@ export function DashboardPage({
           threadDeleteBridgeStatus={threadDeleteBridgeStatus}
           runningThreads={runningThreads}
         />
-
-        <MultiClientDiscoveryNotice />
 
         {preciseIndexUpgradeRequired ? (
           <section aria-live="assertive" className="index-upgrade-warning" role="alert">

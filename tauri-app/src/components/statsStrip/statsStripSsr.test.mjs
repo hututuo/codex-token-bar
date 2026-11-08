@@ -254,7 +254,7 @@ test("one anonymous model cannot hide the known cycle prices or total", async ()
       });
       assert.equal(container.querySelector(".stats-model-cost-empty"), null);
       assert.equal(container.querySelector(".stats-model-cost-total").textContent, "已知价格小计 API $10.0");
-      const astra = [...container.querySelectorAll(".stats-model-cost-primary-card")].find(card => card.querySelector("em").textContent === "Astra");
+      const astra = [...container.querySelectorAll(".stats-model-cost-primary-card")].find(card => card.querySelector("em").textContent === "Astra6");
       assert.equal(astra.querySelector("b").textContent, "$10.0");
       assert.match(container.textContent, /价格未知/);
       assert.doesNotMatch(container.textContent, /模型身份待补全|本期模型明细待读取/);

@@ -111,6 +111,7 @@ enum CodexRadarPresentationText {
     }
 
     static func compactModelName(_ rawValue: String) -> String {
+        if let label = ModelDisplayNames.catalogLabelWithEffort(for: rawValue) { return label }
         let familyNames = ["Astra", "Sol", "Luna", "Terra"]
         let tokens = rawValue.components(separatedBy: CharacterSet.alphanumerics.inverted)
         let effortNames = ["ultra", "max", "xhigh", "high", "medium", "low", "minimal"]

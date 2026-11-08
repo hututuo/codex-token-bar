@@ -8,12 +8,12 @@ final class CodexRadarModelsTests: XCTestCase {
         for rawValue in ["Use Windows", "use_window", "use-window", "use windows", "use_remaining_tokens"] {
             XCTAssertEqual(CodexRadarPresentationText.action(rawValue), "速登窗口")
         }
-        XCTAssertEqual(CodexRadarPresentationText.compactModelName("GPT-6 Astra max"), "Astra max")
-        XCTAssertEqual(CodexRadarPresentationText.compactModelName("GPT-5.6 Sol max"), "Sol max")
-        XCTAssertEqual(CodexRadarPresentationText.compactModelName("GPT-5.6 Luna max"), "Luna max")
-        XCTAssertEqual(CodexRadarPresentationText.compactModelName("GPT-5.6 Terra max"), "Terra max")
-        XCTAssertEqual(CodexRadarPresentationText.compactModelName("GPT-5.6 Sol xhigh"), "Sol xhigh")
-        XCTAssertEqual(CodexRadarPresentationText.compactModelName("GPT-5.6 Sol ultra"), "Sol ultra")
+        XCTAssertEqual(CodexRadarPresentationText.compactModelName("GPT-6 Astra max"), "Astra6 max")
+        XCTAssertEqual(CodexRadarPresentationText.compactModelName("GPT-5.6 Sol max"), "Sol5.6 max")
+        XCTAssertEqual(CodexRadarPresentationText.compactModelName("GPT-5.6 Luna max"), "Luna5.6 max")
+        XCTAssertEqual(CodexRadarPresentationText.compactModelName("GPT-5.6 Terra max"), "Terra5.6 max")
+        XCTAssertEqual(CodexRadarPresentationText.compactModelName("GPT-5.6 Sol xhigh"), "Sol5.6 xhigh")
+        XCTAssertEqual(CodexRadarPresentationText.compactModelName("GPT-5.6 Sol ultra"), "Sol5.6 ultra")
         XCTAssertEqual(CodexRadarPresentationText.compactModelName("DeepSeek V4 Flash max"), "DS F max")
         XCTAssertEqual(CodexRadarPresentationText.compactModelName("DeepSeek V4 Flash high"), "DS F high")
         XCTAssertEqual(CodexRadarPresentationText.compactModelName("DeepSeek V4 Pro max"), "DS P max")
@@ -21,8 +21,8 @@ final class CodexRadarModelsTests: XCTestCase {
         XCTAssertEqual(CodexRadarPresentationText.compactModelName("DSH F max"), "DSH F max")
         XCTAssertEqual(CodexRadarPresentationText.compactModelName("DSH-V4-Pro high"), "DSH P high")
         XCTAssertEqual(CodexRadarPresentationText.compactModelName("DSH R1 medium"), "DSH R1 medium")
-        XCTAssertEqual(CodexRadarPresentationText.compactModelName("grok-4.6 xhigh"), "G4.6 XH")
-        XCTAssertEqual(CodexRadarPresentationText.compactModelName("k3 high"), "K3 H")
+        XCTAssertEqual(CodexRadarPresentationText.compactModelName("grok-4.6 xhigh"), "Grok4.6 xhigh")
+        XCTAssertEqual(CodexRadarPresentationText.compactModelName("k3 high"), "Kimi3 high")
         XCTAssertEqual(CodexRadarPresentationText.compactModelName("glm-5.3 max"), "GLM5.3 max")
     }
 
@@ -96,7 +96,7 @@ final class CodexRadarModelsTests: XCTestCase {
 
         XCTAssertEqual(modelIQ.primaryModelRow.point.score, 150)
         XCTAssertEqual(modelIQ.primaryModelRow.point.model, "gpt-5.6-sol")
-        XCTAssertEqual(CodexRadarPresentationText.compactModelName(modelIQ.primaryModelRow.label), "Sol max")
+        XCTAssertEqual(CodexRadarPresentationText.compactModelName(modelIQ.primaryModelRow.label), "Sol5.6 max")
     }
 
     func testDecodesCurrentStatusPredictionIQAndQuotaRows() throws {

@@ -1134,7 +1134,6 @@ struct DashboardView: View {
 
 
             AgentSpeedReportingDashboardStatus(errorsOnly: true)
-            MultiClientDiscoveryNotice()
 
             if allowedClients.contains("codex"), !store.snapshot.cacheUsage.unreportedCompactionDates.isEmpty {
                 Label("有压缩用量未报告 · Token、金额为已记录小计", systemImage:"exclamationmark.circle")

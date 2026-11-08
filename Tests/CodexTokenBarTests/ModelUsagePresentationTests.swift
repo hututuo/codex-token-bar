@@ -25,7 +25,7 @@ final class ModelUsagePresentationTests: XCTestCase {
             row("gpt-6-sol", tokens: 100, calls: 1),
         ])
         XCTAssertEqual(slices.map(\.id), ["gpt-6.1-sol", "gpt-6-sol"])
-        XCTAssertEqual(slices.map(\.label), ["GPT-6.1 Sol", "GPT-6 Sol"])
+        XCTAssertEqual(slices.map(\.label), ["Sol6.1", "Sol6"])
         XCTAssertEqual(slices.map(\.tokens), [500, 100])
         XCTAssertEqual(ModelUsagePresentation.key(for: "gpt61sol"), "gpt-6.1-sol")
         XCTAssertEqual(ModelUsagePresentation.key(for: "gpt-6.1-sol-preview"), "gpt-6.1-sol-preview")
@@ -40,11 +40,11 @@ final class ModelUsagePresentationTests: XCTestCase {
 
         let slices = ModelUsagePresentation.slices(from: rows)
 
-        XCTAssertEqual(slices.map(\.label), ["Sol", "Luna"])
+        XCTAssertEqual(slices.map(\.label), ["Sol5.6", "Luna5.6"])
         XCTAssertEqual(slices.map(\.tokens), [700, 300])
         XCTAssertEqual(slices[0].share, 0.7, accuracy: 0.0001)
         XCTAssertEqual(slices[1].share, 0.3, accuracy: 0.0001)
-        XCTAssertEqual(ModelUsagePresentation.compactText(from: rows), "Sol 70% · Luna 30%")
+        XCTAssertEqual(ModelUsagePresentation.compactText(from: rows), "Sol5.6 70% · Luna5.6 30%")
     }
 
     func testUnknownModelsKeepStableSeparatePresentation() {
@@ -78,11 +78,11 @@ final class ModelUsagePresentationTests: XCTestCase {
     }
 
     func testFloatingModelLabelsUseCompactModelNames() {
-        XCTAssertEqual(ModelUsagePresentation.label(for: "gpt-6-astra"), "Astra")
-        XCTAssertEqual(ModelUsagePresentation.label(for: "gpt_6_astra"), "Astra")
-        XCTAssertEqual(ModelUsagePresentation.label(for: "gpt-5.2-codex"), "5.2")
+        XCTAssertEqual(ModelUsagePresentation.label(for: "gpt-6-astra"), "Astra6")
+        XCTAssertEqual(ModelUsagePresentation.label(for: "gpt_6_astra"), "Astra6")
+        XCTAssertEqual(ModelUsagePresentation.label(for: "gpt-5.2-codex"), "Codex5.2")
         XCTAssertEqual(ModelUsagePresentation.label(for: "gpt-5.4"), "5.4")
-        XCTAssertEqual(ModelUsagePresentation.label(for: "gpt-5.4-mini"), "5.4 m")
+        XCTAssertEqual(ModelUsagePresentation.label(for: "gpt-5.4-mini"), "5.4 Mini")
     }
 
     func testAutoReviewRemainsSeparateFromRealGPT54AndGPT53() {
@@ -94,7 +94,7 @@ final class ModelUsagePresentationTests: XCTestCase {
 
         let slices = ModelUsagePresentation.slices(from: rows)
 
-        XCTAssertEqual(slices.map(\.label), ["Auto Review（Luna）", "5.3", "5.4"])
+        XCTAssertEqual(slices.map(\.label), ["Auto Review（Luna）", "Codex5.3", "5.4"])
         XCTAssertEqual(slices.map(\.tokens), [600, 300, 100])
     }
 
@@ -143,7 +143,7 @@ final class ModelUsagePresentationTests: XCTestCase {
 
         XCTAssertEqual(
             ModelUsagePresentation.slices(from: rows).map(\.label),
-            ["Sol", "Auto Review（Luna）"]
+            ["Sol5.6", "Auto Review（Luna）"]
         )
         XCTAssertEqual(
             ModelUsagePresentation.slices(from: rows).map(\.tokens),
@@ -172,7 +172,7 @@ final class ModelUsagePresentationTests: XCTestCase {
             fallbackModel: .gpt56Sol
         )
 
-        XCTAssertEqual(dashboardItems.map(\.label), ["Luna", "Auto Review（Luna）"])
+        XCTAssertEqual(dashboardItems.map(\.label), ["Luna5.6", "Auto Review（Luna）"])
         XCTAssertEqual(dashboardItems.map(\.tokens), [500_000, 300_000])
 
         let floatingItems = FloatingTodayModelUsagePresentation.items(
@@ -181,7 +181,7 @@ final class ModelUsagePresentationTests: XCTestCase {
             mergeAutoReview: true
         )
 
-        XCTAssertEqual(floatingItems.map(\.label), ["Luna"])
+        XCTAssertEqual(floatingItems.map(\.label), ["Luna5.6"])
         XCTAssertEqual(floatingItems.first?.tokens, 800_000)
         XCTAssertEqual(floatingItems.first?.costUSD ?? -1, 0.10, accuracy: 0.0001)
     }
@@ -335,7 +335,7 @@ final class ModelUsagePresentationTests: XCTestCase {
             from: rows,
             fallbackModel: .gpt56Luna
         )
-        let sol = try XCTUnwrap(items.first { $0.label == "Sol" })
+        let sol = try XCTUnwrap(items.first { $0.label == "Sol5.6" })
         let spark = try XCTUnwrap(items.first { $0.label == "Spark" })
 
         XCTAssertEqual(sol.costUSD ?? -1, 3.12, accuracy: 0.0001)
@@ -413,7 +413,7 @@ final class ModelUsagePresentationTests: XCTestCase {
             ).first
         )
 
-        XCTAssertEqual(item.label, "Astra")
+        XCTAssertEqual(item.label, "Astra6")
         XCTAssertEqual(item.costUSD ?? -1, 10.5, accuracy: 0.0001)
         XCTAssertEqual(item.valueText(for: .cost), "$10.5")
         XCTAssertFalse(item.usesIndependentQuota)
@@ -426,7 +426,7 @@ final class ModelUsagePresentationTests: XCTestCase {
                 fallbackModel: .gpt56Sol,
                 showPlaceholders: true
             ).map(\.label),
-            ["Astra", "Sol", "Terra", "Luna"]
+            ["Astra6", "Sol5.6", "Terra5.6", "Luna5.6"]
         )
 
         let oneUsedModel = FloatingTodayModelUsagePresentation.items(
@@ -443,7 +443,7 @@ final class ModelUsagePresentationTests: XCTestCase {
             showPlaceholders: true
         )
         XCTAssertEqual(oneUsedModel.count, 4)
-        XCTAssertEqual(oneUsedModel.map(\.label), ["5.4", "Astra", "Sol", "Terra"])
+        XCTAssertEqual(oneUsedModel.map(\.label), ["5.4", "Astra6", "Sol5.6", "Terra5.6"])
 
         let rows = [
             rowWithBreakdown(
@@ -468,7 +468,7 @@ final class ModelUsagePresentationTests: XCTestCase {
             showPlaceholders: true
         )
 
-        XCTAssertEqual(items.map(\.label), ["Sol", "Luna", "Astra", "Terra"])
+        XCTAssertEqual(items.map(\.label), ["Sol5.6", "Luna5.6", "Astra6", "Terra5.6"])
         XCTAssertEqual(items.map(\.tokens), [2_000_000, 2_000_000, 0, 0])
         XCTAssertEqual(items.map { $0.valueText(for: .share) }, ["50%", "50%", "0%", "0%"])
         XCTAssertEqual(
@@ -493,7 +493,7 @@ final class ModelUsagePresentationTests: XCTestCase {
             fallbackModel: .gpt56Sol
         )
 
-        XCTAssertEqual(items.map(\.label), ["Sol", "Luna", "Astra", "Terra"])
+        XCTAssertEqual(items.map(\.label), ["Sol5.6", "Luna5.6", "Astra6", "Terra5.6"])
         XCTAssertEqual(items.map { $0.valueText(for: .cost) }, ["$4.00", "$1.20", "$1.00", "$1.00"])
     }
 

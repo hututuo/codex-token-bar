@@ -19,10 +19,10 @@ test("model usage presentation combines aliases and reports token shares", () =>
   const slices = modelUsageSlices(rows);
 
   assert.deepEqual(slices.map(({ label, tokens }) => ({ label, tokens })), [
-    { label: "Sol", tokens: 700 },
-    { label: "Luna", tokens: 300 },
+    { label: "Sol5.6", tokens: 700 },
+    { label: "Luna5.6", tokens: 300 },
   ]);
-  assert.equal(modelUsageCompactText(rows), "Sol 70% · Luna 30%");
+  assert.equal(modelUsageCompactText(rows), "Sol5.6 70% · Luna5.6 30%");
   assert.equal(dominantModelColor(rows), "#8b83c5");
 });
 
@@ -42,11 +42,11 @@ test("bare GPT-5.6 remains an untyped model instead of becoming Sol", () => {
 });
 
 test("floating model labels use compact model names", () => {
-  assert.equal(modelUsageLabel("gpt-6-astra"), "Astra");
-  assert.equal(modelUsageLabel("gpt_6_astra"), "Astra");
+  assert.equal(modelUsageLabel("gpt-6-astra"), "Astra6");
+  assert.equal(modelUsageLabel("gpt_6_astra"), "Astra6");
   assert.equal(modelUsageLabel("gpt-5.2-codex"), "5.2");
   assert.equal(modelUsageLabel("gpt-5.4"), "5.4");
-  assert.equal(modelUsageLabel("gpt-5.4-mini"), "5.4 m");
+  assert.equal(modelUsageLabel("gpt-5.4-mini"), "5.4 Mini");
 });
 
 test("dashboard keeps auto review distinct from normal model usage", () => {
@@ -58,7 +58,7 @@ test("dashboard keeps auto review distinct from normal model usage", () => {
 
   assert.deepEqual(slices.map(({ label, tokens }) => ({ label, tokens })), [
     { label: "Auto Review（Luna）", tokens: 600 },
-    { label: "5.3", tokens: 300 },
+    { label: "Codex5.3", tokens: 300 },
     { label: "5.4", tokens: 100 },
   ]);
 });
@@ -88,7 +88,7 @@ test("explicit supported model aliases share a dashboard item", () => {
     row("gpt5.6-sol", 30, 1), row("gpt-5.6-sol", 20, 1),
   ]);
   assert.deepEqual(slices.map(({ label, tokens }) => ({ label, tokens })), [
-    { label: "Luna", tokens: 150 }, { label: "Sol", tokens: 50 },
+    { label: "Luna5.6", tokens: 150 }, { label: "Sol5.6", tokens: 50 },
   ]);
 });
 
@@ -105,8 +105,8 @@ test("GPT-6.1 Sol aliases display separately from previous Sol and future varian
     row("gpt-6.1-sol", 300, 1), row("GPT_6.1_SOL", 200, 1), row("gpt-6-sol", 100, 1),
   ]);
   assert.deepEqual(slices.map(({ key, label, tokens }) => ({ key, label, tokens })), [
-    { key: "gpt-6.1-sol", label: "GPT-6.1 Sol", tokens: 500 },
-    { key: "gpt-6-sol", label: "GPT-6 Sol", tokens: 100 },
+    { key: "gpt-6.1-sol", label: "Sol6.1", tokens: 500 },
+    { key: "gpt-6-sol", label: "Sol6", tokens: 100 },
   ]);
   assert.equal(modelUsageKey("gpt61sol"), "gpt-6.1-sol");
   assert.equal(modelUsageKey("gpt-6.1-sol-preview"), "gpt-6.1-sol-preview");

@@ -19,6 +19,7 @@ import type { DashboardLineageScalar } from "../types/usage";
 interface DashboardHeaderProps {
   includesCodex?: boolean;
   scopeControl?: ReactNode;
+  discoveryNotice?: ReactNode;
   reportingStatus?: ReactNode;
   account: AccountInfo;
   autostartStatus: AutostartStatus;
@@ -105,7 +106,7 @@ function generationIsAhead(
 }
 
 export function DashboardHeader({
-  includesCodex = true, scopeControl, reportingStatus,
+  includesCodex = true, scopeControl, discoveryNotice, reportingStatus,
   account,
   autostartStatus,
   codexHome,
@@ -336,6 +337,7 @@ export function DashboardHeader({
           </div>
         </div>
       </div>
+      {discoveryNotice}
       {includesCodex && <section className="dash-head dash-head--scoped" aria-label="Codex 专属工具">
         <div className="dashboard-codex-context">
           <div className="dashboard-codex-heading"><strong>Codex</strong><span>专属工具</span><small title={runningThreads.detail}>任务 · {runningThreadHeaderText(runningThreads)}</small></div>

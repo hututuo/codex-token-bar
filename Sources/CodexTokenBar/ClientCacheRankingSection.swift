@@ -47,7 +47,7 @@ struct ClientCacheRankingSection: View {
                             VStack(alignment: .leading, spacing: 3) {
                                 HStack {
                                     Text(request.timestamp, format: .dateTime.month().day().hour().minute().second())
-                                    Text(request.model).foregroundStyle(ModelUsagePresentation.color(for: request.model))
+                                    Text(ModelUsagePresentation.label(for: request.model)).help(request.model).foregroundStyle(ModelUsagePresentation.color(for: request.model))
                                     Spacer(); Text(rate(request.cacheHitRate)).bold()
                                 }
                                 Text("会话 \(request.sessionID) · 请求 \(request.eventID)").textSelection(.enabled).foregroundStyle(.secondary)

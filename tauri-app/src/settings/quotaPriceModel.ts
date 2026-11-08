@@ -1,3 +1,4 @@
+import { catalogModelLabel } from "../components/modelDisplayNames.ts";
 import {
   standardAPIPriceQuote,
   currentStandardAPIPriceQuote,
@@ -105,14 +106,14 @@ export const QUOTA_PRICE_MODEL_OPTIONS: ReadonlyArray<{
   value: OfficialAPIPriceModel;
   label: string;
 }> = [
-  { value: "gpt6Astra", label: "GPT-6 Astra" },
-  { value: "gpt61Sol", label: "GPT-6.1 Sol" },
-  { value: "gpt61Terra", label: "GPT-6.1 Terra" },
-  { value: "gpt6Sol", label: "GPT-6 Sol" },
-  { value: "gpt6Luna", label: "GPT-6 Luna" },
-  { value: "gpt56Sol", label: "GPT-5.6 Sol" },
-  { value: "gpt56Terra", label: "GPT-5.6 Terra" },
-  { value: "gpt56Luna", label: "GPT-5.6 Luna" },
+  { value: "gpt6Astra", label: catalogModelLabel("gpt-6-astra") ?? "gpt-6-astra" },
+  { value: "gpt61Sol", label: catalogModelLabel("gpt-6.1-sol") ?? "gpt-6.1-sol" },
+  { value: "gpt61Terra", label: catalogModelLabel("gpt-6.1-terra") ?? "gpt-6.1-terra" },
+  { value: "gpt6Sol", label: catalogModelLabel("gpt-6-sol") ?? "gpt-6-sol" },
+  { value: "gpt6Luna", label: catalogModelLabel("gpt-6-luna") ?? "gpt-6-luna" },
+  { value: "gpt56Sol", label: catalogModelLabel("gpt-5.6-sol") ?? "gpt-5.6-sol" },
+  { value: "gpt56Terra", label: catalogModelLabel("gpt-5.6-terra") ?? "gpt-5.6-terra" },
+  { value: "gpt56Luna", label: catalogModelLabel("gpt-5.6-luna") ?? "gpt-5.6-luna" },
 ];
 
 // Standard short-context prices published by OpenAI. Long-context, cache-write,

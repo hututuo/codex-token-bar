@@ -56,8 +56,8 @@ final class CodexCrowdRadarTests: XCTestCase {
                 CodexCrowdRadarModel(model: "gpt-5.6-terra", effort: "ultra", graded: 45, passed: 36, passRate: 0.795, cells: 45)
             ]
         )
-        XCTAssertEqual(snapshot.rankedModels.map(\.label), ["Terra ultra", "Luna high", "Sol max"])
-        XCTAssertEqual(snapshot.bestModel?.label, "Terra ultra")
+        XCTAssertEqual(snapshot.rankedModels.map(\.label), ["Terra5.6 ultra", "Luna5.6 high", "Sol5.6 max"])
+        XCTAssertEqual(snapshot.bestModel?.label, "Terra5.6 ultra")
         XCTAssertEqual(snapshot.bestModel?.iq ?? 0, 119.25, accuracy: 0.001)
     }
 
@@ -78,7 +78,7 @@ final class CodexCrowdRadarTests: XCTestCase {
             models: models
         )
 
-        XCTAssertEqual(models[1].label, "Astra high")
+        XCTAssertEqual(models[1].label, "Astra6 high")
         XCTAssertEqual(snapshot.rankedModels.map(\.model), [
             "gpt-6-astra",
             "gpt-5.6-sol",

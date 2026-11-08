@@ -179,6 +179,8 @@ enum ModelUsagePresentation {
 
     static func label(for model: String?) -> String {
         if let model, model.hasPrefix("client:") { return SpeedColorOverrides.clientTitle(model) }
+        if let label = ModelDisplayNames.catalogLabel(for: model ?? "")
+            ?? ModelDisplayNames.catalogLabel(for: key(for: model)) { return label }
         switch key(for: model) {
         case "gpt-6-astra": return "Astra"
         case "gpt-6.1-sol": return "GPT-6.1 Sol"

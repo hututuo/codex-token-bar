@@ -172,7 +172,11 @@ enum ClientReferencePrice {
         case .free: return "免费模型"
         case let .priced(index, fast):
             guard let prices = table.models[index].pricing(endMs: Int64(date.timeIntervalSince1970 * 1_000), fast: fast)?.prices else { return "未计价" }
-            return String(format: "$%.2f / $%.2f", Double(prices.input) / 1_000_000, Double(prices.output) / 1_000_000)
+            func rate(_ value: Int64) -> String {
+                String(format: "%.6f", Double(value) / 1_000_000)
+                    .replacingOccurrences(of: #"(\.\d{2,}?)0+$"#, with: "$1", options: .regularExpression)
+            }
+            return "$\(rate(prices.input)) / $\(rate(prices.output))"
         case .unknown: return "未计价"
         }
     }

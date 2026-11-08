@@ -1,3 +1,4 @@
+import { modelUsageLabel as shortModelName } from "../modelUsagePresentation";
 import { useEffect, useRef, useState } from "react";
 import { readCacheTurnRequests } from "../../api/dashboardClient";
 import type { CacheRequestUsage, TurnCacheUsage } from "../../types/usage";
@@ -92,7 +93,7 @@ export function CacheTurnRequestsDialog({ turn, sourceToken, onClose, loadReques
             const zero = usage.inputTokens > 0 && usage.cachedInputTokens === 0;
             const low = usage.inputTokens >= 20_000 && cacheHitRate(usage) < 0.3;
             return <tr key={row.id}>
-              <td><time dateTime={row.timestamp}>{timeFormat.format(new Date(row.timestamp))}</time><small><span style={{ color: modelUsageColor(row.model) }}>{row.model ?? "未知模型"}</span>{zero ? <b className="cache-request-zero">零命中</b> : low ? <b className="cache-request-low">低命中</b> : null}</small></td>
+              <td><time dateTime={row.timestamp}>{timeFormat.format(new Date(row.timestamp))}</time><small><span style={{ color: modelUsageColor(row.model) }}>{shortModelName(row.model)}</span>{zero ? <b className="cache-request-zero">零命中</b> : low ? <b className="cache-request-low">低命中</b> : null}</small></td>
               <td>{numbers.format(usage.inputTokens)}</td><td>{numbers.format(usage.cachedInputTokens)}</td>
               <td>{numbers.format(uncachedInputTokens(usage))}</td><td>{numbers.format(usage.outputTokens)}</td>
               <td>{numbers.format(usage.totalTokens)}</td><td>{usage.inputTokens > 0 ? `${(cacheHitRate(usage) * 100).toFixed(2)}%` : "—"}</td>

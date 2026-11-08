@@ -4,7 +4,7 @@ import type { Snapshot, Summary } from './MultiClientUsage';
 import { projectClientDays } from './integratedClientModel';
 import { clientNames } from './MultiClientUsage';
 import { floatingTodayModelUsageItems, type FloatingModelUsageItem, dashboardModelFamilyGroups } from '../floating/floatingModelUsage';
-import { modelUsageColor } from '../components/modelUsagePresentation';
+import { modelUsageColor, modelUsageLabel } from '../components/modelUsagePresentation';
 
 export interface ClientCostPeriods {
   lifetime: FloatingModelUsageItem[];
@@ -20,7 +20,7 @@ export function clientCostGroups(items: FloatingModelUsageItem[]) {
     const client=claudeRows[0].key.split("|")[0];
     for(const [family,model] of Object.entries(claudeNewestCatalogModelsByFamily)){
       if(!model || claudeRows.some(row=>{const id=claudeModelIdentity(row.key);return id?.family===family && (id.version[0]>model.version[0] || (id.version[0]===model.version[0]&&(id.version[1]??0)>=(model.version[1]??0)));}))continue;
-      claudeRows.push({key:client+"|"+model.id,label:claudeModelIdentity(model.id)!.label,tokens:0,share:0,costUSD:0,usesIndependentQuota:false,referenceCostUSD:null,color:modelUsageColor(model.id)});
+      claudeRows.push({key:client+"|"+model.id,label:modelUsageLabel(model.id),tokens:0,share:0,costUSD:0,usesIndependentQuota:false,referenceCostUSD:null,color:modelUsageColor(model.id)});
     }
   }
   const claudeGroups = claudeModelGroups(claudeRows,"claude");
@@ -36,7 +36,7 @@ export function clientCostGroups(items: FloatingModelUsageItem[]) {
 export function clientModelCostItems(rows:Summary[], original:ModelTokenBreakdown[], allowed:readonly string[]):FloatingModelUsageItem[] {
     const items:FloatingModelUsageItem[] = allowed.includes('codex') ? floatingTodayModelUsageItems(original,'gpt56Sol',{showPlaceholders:false,mergeAutoReview:false}).map(x=>({...x,key:'codex|'+x.key})) : [];
     for(const row of rows.filter(x=>allowed.includes(x.client))) items.push({key:row.client+'|'+row.model,
-      label:claudeModelIdentity(row.model)?.label ?? row.model.replaceAll('-',' '),tokens:row.inputTokens+row.outputTokens,share:0,
+      label:modelUsageLabel(row.model),tokens:row.inputTokens+row.outputTokens,share:0,
       costUSD:(row.unpricedRequests??0)>0?null:row.apiCostUSD??null,
       knownPartialCostUSD:(row.unpricedRequests??0)>0 && row.requests>(row.unpricedRequests??0)?row.apiCostUSD??null:null,
       usesIndependentQuota:false,referenceCostUSD:null,color:modelUsageColor(row.model)});

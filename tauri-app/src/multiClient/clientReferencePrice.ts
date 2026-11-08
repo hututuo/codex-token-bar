@@ -42,5 +42,7 @@ export function referencePrice(raw: string, at: Date = new Date()): string {
   }
   if (!prices || typeof prices.input !== "number" || typeof prices.output !== "number"
     || !Number.isFinite(prices.input) || !Number.isFinite(prices.output)) return "未计价";
-  return `$${prices.input.toFixed(2)} / $${prices.output.toFixed(2)}`;
+  // Preserve fractional-cent list rates (for example MiMo's $0.435 / MTok).
+  const rate = (value: number) => value.toFixed(6).replace(/(\.\d{2,}?)0+$/, "$1");
+  return `$${rate(prices.input)} / $${rate(prices.output)}`;
 }

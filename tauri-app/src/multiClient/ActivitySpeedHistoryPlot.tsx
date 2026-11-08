@@ -1,3 +1,4 @@
+import { modelUsageLabel as shortModelName } from "../components/modelUsagePresentation";
 import {memo,useId,useMemo,useState} from "react";
 import {activityChartPoints,type ActivityTrendPoint} from "./activitySpeedChart";
 import {modelUsageColor} from "../components/modelUsagePresentation";
@@ -25,7 +26,7 @@ export const ActivitySpeedHistoryPlot=memo(function ActivitySpeedHistoryPlot({ro
     let previous:number|undefined;
     const path=points.map(p=>{const command=previous===p.segment?"L":"M";previous=p.segment;return `${command}${x(p.bucketStart)},${y(p.value)}`;}).join(" ");
     const color=modelUsageColor(row.dimensions.model);
-    return <g key={key} data-activity-model={row.dimensions.model}><path d={path} fill="none" stroke={color} strokeWidth="1.4"/>{points.filter((p,index)=>markAllPoints||(points[index-1]?.segment!==p.segment&&points[index+1]?.segment!==p.segment)).map(p=><circle key={p.bucketStart} cx={x(p.bucketStart)} cy={y(p.value)} r="1.35" fill={color}><title>{`${new Date(p.bucketStart*1000).toLocaleString("zh-CN")} · ${row.dimensions.model} · ${activityRateText(p.value,unit)} ${unit}`}</title></circle>)}</g>;
+    return <g key={key} data-activity-model={row.dimensions.model}><path d={path} fill="none" stroke={color} strokeWidth="1.4"/>{points.filter((p,index)=>markAllPoints||(points[index-1]?.segment!==p.segment&&points[index+1]?.segment!==p.segment)).map(p=><circle key={p.bucketStart} cx={x(p.bucketStart)} cy={y(p.value)} r="1.35" fill={color}><title>{`${new Date(p.bucketStart*1000).toLocaleString("zh-CN")} · ${shortModelName(row.dimensions.model)} · ${activityRateText(p.value,unit)} ${unit}`}</title></circle>)}</g>;
   }),[prepared,start,windowSeconds,maximum,unit,palette,markAllPoints]);
   const selected=selectedBucket===null?[]:prepared.flatMap(s=>s.points.filter(p=>p.bucketStart===selectedBucket).map(p=>({row:s.row,...p})));
   const time=(stamp:number)=>new Date(stamp*1000).toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit",hour12:false});
@@ -41,8 +42,8 @@ export const ActivitySpeedHistoryPlot=memo(function ActivitySpeedHistoryPlot({ro
       {!prepared.some(s=>s.points.length)&&<text x="410" y="90" textAnchor="middle" fill="currentColor" opacity=".6" fontSize="11">暂无 Agent Speed 活动速率记录</text>}
       <g clipPath={`url(#${clipId})`}>{curves}{selectedBucket!==null&&selected.length>0&&<line x1={x(selectedBucket)} x2={x(selectedBucket)} y1={top} y2={bottom} stroke="currentColor" opacity=".4" strokeDasharray="3 3"/>}</g>
     </svg>
-    <div className="activity-history-legend">{[...new Set(prepared.map(({row})=>row.dimensions.model))].sort().map(model=><span key={model} style={{color:modelUsageColor(model)}}><i/>{model.replace(/^gpt-/,"")}</span>)}</div>
-    <div style={{minHeight:22,fontSize:10,fontVariantNumeric:"tabular-nums"}} aria-live="polite">{selectedBucket===null?"悬停查看每30秒平均速率":selected.length?selected.map(p=><span key={JSON.stringify(p.row.dimensions)} style={{display:"block",color:modelUsageColor(p.row.dimensions.model)}}>{new Date(p.bucketStart*1000).toLocaleTimeString("zh-CN",{hour12:false})} · {p.row.dimensions.model.replace(/^gpt-/,"")} · {activityRateText(p.value,unit)} {unit}</span>):"该时段没有活动采样"}</div>
+    <div className="activity-history-legend">{[...new Set(prepared.map(({row})=>row.dimensions.model))].sort().map(model=><span key={model} style={{color:modelUsageColor(model)}}><i/>{shortModelName(model)}</span>)}</div>
+    <div style={{minHeight:22,fontSize:10,fontVariantNumeric:"tabular-nums"}} aria-live="polite">{selectedBucket===null?"悬停查看每30秒平均速率":selected.length?selected.map(p=><span key={JSON.stringify(p.row.dimensions)} style={{display:"block",color:modelUsageColor(p.row.dimensions.model)}}>{new Date(p.bucketStart*1000).toLocaleTimeString("zh-CN",{hour12:false})} · {shortModelName(p.row.dimensions.model)} · {activityRateText(p.value,unit)} {unit}</span>):"该时段没有活动采样"}</div>
     {prepared.some(s=>s.missingPrice)&&<small>部分模型缺少输出单价，未换算该模型。</small>}
   </div>;
 });

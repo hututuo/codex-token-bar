@@ -1,8 +1,8 @@
 {
   "_comment": "API list prices for API-equivalent costs (METRICS 9). USD per million tokens. Edit by hand: raise version by one, set updated and each changed entry's checked date, add tests for new id forms, run python3 spec/tools/prices.py. Apps sync this file from main daily (spec/NETWORK.md).",
   "schema": 1,
-  "version": 3,
-  "updated": "2026-10-28",
+  "version": 4,
+  "updated": "2026-11-06",
   "currency": "USD",
   "unit": "perMillionTokens",
   "providers": {
@@ -53,6 +53,10 @@
     "opencode": {
       "name": "OpenCode Zen",
       "url": "https://opencode.ai/docs/zen"
+    },
+    "xiaomi": {
+      "name": "Xiaomi MiMo",
+      "url": "https://mimo.mi.com/docs/price/pay-as-you-go"
     }
   },
   "normalize": {
@@ -649,46 +653,6 @@
       "note": "Cache writes (30-minute lifetime) cost 1.25x input; 12-hour writes (2.5x) are not separated in logs and are priced as 30-minute writes."
     },
     {
-      "id": "gpt-6.1-terra",
-      "provider": "openai",
-      "name": "GPT-6.1 Terra",
-      "status": "current",
-      "prices": {
-        "input": 1.0,
-        "cachedInput": 0.05,
-        "cacheWrite": 1.25,
-        "output": 5.0
-      },
-      "tiers": [
-        {
-          "above": 272000,
-          "input": 2.0,
-          "cachedInput": 0.1,
-          "cacheWrite": 2.5,
-          "output": 7.5
-        }
-      ],
-      "fast": {
-        "prices": {
-          "input": 2.0,
-          "cachedInput": 0.1,
-          "cacheWrite": 2.5,
-          "output": 10.0
-        },
-        "tiers": [
-          {
-            "above": 272000,
-            "input": 4.0,
-            "cachedInput": 0.2,
-            "cacheWrite": 5.0,
-            "output": 15.0
-          }
-        ]
-      },
-      "source": "https://developers.openai.com/api/docs/pricing",
-      "checked": "2026-10-28"
-    },
-    {
       "id": "gpt-6.1-sol",
       "provider": "openai",
       "name": "GPT-6.1 Sol",
@@ -727,6 +691,47 @@
       },
       "source": "https://developers.openai.com/api/docs/pricing",
       "checked": "2026-10-22"
+    },
+    {
+      "id": "gpt-6.1-terra",
+      "provider": "openai",
+      "name": "GPT-6.1 Terra",
+      "status": "current",
+      "prices": {
+        "input": 1,
+        "cachedInput": 0.05,
+        "cacheWrite": 1.25,
+        "output": 5
+      },
+      "tiers": [
+        {
+          "above": 272000,
+          "input": 2,
+          "cachedInput": 0.1,
+          "cacheWrite": 2.5,
+          "output": 7.5
+        }
+      ],
+      "fast": {
+        "prices": {
+          "input": 2,
+          "cachedInput": 0.1,
+          "cacheWrite": 2.5,
+          "output": 10
+        },
+        "tiers": [
+          {
+            "above": 272000,
+            "input": 4,
+            "cachedInput": 0.2,
+            "cacheWrite": 5,
+            "output": 15
+          }
+        ]
+      },
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-10-28",
+      "note": "Cache writes (30-minute lifetime) cost 1.25x input; 12-hour writes (2.5x) are not separated in logs and are priced as 30-minute writes."
     },
     {
       "id": "gpt-6-sol",
@@ -3195,6 +3200,44 @@
       "checked": "2026-10-22"
     },
     {
+      "id": "kimi-k3.1-pro",
+      "provider": "moonshot",
+      "name": "Kimi K3.1 Pro",
+      "status": "current",
+      "prices": {
+        "input": 2,
+        "cachedInput": 0.2,
+        "cacheWrite": 2,
+        "cacheWrite1h": 4,
+        "output": 10
+      },
+      "aliases": [
+        "k3.1-pro"
+      ],
+      "source": "https://www.kimi.ai/zh-hans/resources/kimi-k3-1-pro-pricing",
+      "checked": "2026-11-06",
+      "note": "Kimi Code calls it k3.1-pro (https://www.kimi.com/code/docs/en/kimi-code/models.html)."
+    },
+    {
+      "id": "kimi-k3.1-pro-highspeed",
+      "provider": "moonshot",
+      "name": "Kimi K3.1 Pro HighSpeed",
+      "status": "current",
+      "prices": {
+        "input": 4,
+        "cachedInput": 0.2,
+        "cacheWrite": 4,
+        "cacheWrite1h": 8,
+        "output": 20
+      },
+      "aliases": [
+        "k3.1-pro-highspeed"
+      ],
+      "source": "https://www.kimi.ai/zh-hans/resources/kimi-k3-1-pro-pricing",
+      "checked": "2026-11-06",
+      "note": "Kimi Code calls it k3.1-pro-highspeed (https://www.kimi.com/code/docs/en/kimi-code/models.html)."
+    },
+    {
       "id": "kimi-k3",
       "provider": "moonshot",
       "name": "Kimi K3",
@@ -3207,7 +3250,12 @@
         "output": 15
       },
       "source": "https://platform.kimi.ai/docs/pricing/chat",
-      "checked": "2026-10-22"
+      "checked": "2026-11-06",
+      "aliases": [
+        "k3",
+        "k3-256k"
+      ],
+      "note": "Kimi Code calls it k3, and k3-256k for its 256K context variant at the same prices (https://www.kimi.com/code/docs/en/kimi-code/models.html)."
     },
     {
       "id": "kimi-k2.7-code",
@@ -3233,7 +3281,11 @@
         "output": 8
       },
       "source": "https://platform.kimi.ai/docs/pricing/chat",
-      "checked": "2026-10-22"
+      "checked": "2026-11-06",
+      "aliases": [
+        "kimi-for-coding-highspeed"
+      ],
+      "note": "Kimi Code calls it kimi-for-coding-highspeed (https://www.kimi.com/code/docs/en/kimi-code/models.html)."
     },
     {
       "id": "kimi-k2.6",
@@ -4283,6 +4335,51 @@
       "note": "Tencent Cloud TokenHub list price; API id hy3."
     },
     {
+      "id": "mimo-v2.6-pro",
+      "provider": "xiaomi",
+      "name": "MiMo-V2.6-Pro",
+      "status": "current",
+      "prices": {
+        "input": 0.435,
+        "cachedInput": 0.0036,
+        "cacheWrite": 0,
+        "output": 0.87
+      },
+      "source": "https://mimo.mi.com/docs/price/pay-as-you-go",
+      "checked": "2026-10-28",
+      "note": "Overseas pay-as-you-go prices in USD (mainland China bills ¥3 / ¥0.025 / ¥6 in CNY); cache writes are free for a limited time with no end date published; Batch API at half price is not modeled."
+    },
+    {
+      "id": "mimo-v2.6-flash",
+      "provider": "xiaomi",
+      "name": "MiMo-V2.6-Flash",
+      "status": "current",
+      "prices": {
+        "input": 0.14,
+        "cachedInput": 0.0028,
+        "cacheWrite": 0,
+        "output": 0.28
+      },
+      "source": "https://mimo.mi.com/docs/price/pay-as-you-go",
+      "checked": "2026-10-28",
+      "note": "Overseas pay-as-you-go prices in USD (mainland China bills ¥1 / ¥0.02 / ¥2 in CNY); cache writes are free for a limited time with no end date published; Batch API at half price is not modeled."
+    },
+    {
+      "id": "mimo-v2.6-pro-ultraspeed",
+      "provider": "xiaomi",
+      "name": "MiMo-V2.6-Pro-UltraSpeed",
+      "status": "current",
+      "prices": {
+        "input": 4.35,
+        "cachedInput": 0.036,
+        "cacheWrite": 0,
+        "output": 8.7
+      },
+      "source": "https://mimo.mi.com/docs/price/pay-as-you-go",
+      "checked": "2026-10-28",
+      "note": "Overseas pay-as-you-go prices in USD (mainland China bills ¥30 / ¥0.25 / ¥60 in CNY); cache writes are free for a limited time with no end date published; Batch API at half price is not modeled."
+    },
+    {
       "id": "big-pickle",
       "provider": "opencode",
       "name": "Big Pickle (OpenCode Zen)",
@@ -4397,12 +4494,24 @@
       "expect": "gpt-5.6-sol"
     },
     {
+      "model": "gpt-6.1-sol",
+      "expect": "gpt-6.1-sol"
+    },
+    {
       "model": "gpt-6.1-terra",
       "expect": "gpt-6.1-terra"
     },
     {
-      "model": "gpt-6.1-sol",
-      "expect": "gpt-6.1-sol"
+      "model": "openai/gpt-6.1-terra",
+      "expect": "gpt-6.1-terra"
+    },
+    {
+      "model": "gpt-6.1-terra-fast",
+      "expect": "gpt-6.1-terra fast"
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "expect": "gpt-5.6-terra"
     },
     {
       "model": "claude-fable-5",
@@ -4703,6 +4812,73 @@
     {
       "model": "gemini 4 argon",
       "expect": "gemini-4-argon"
+    },
+    {
+      "model": "mimo-v2.6-pro",
+      "provider": "custom",
+      "expect": "mimo-v2.6-pro"
+    },
+    {
+      "model": "MiMo-V2.6-Pro",
+      "expect": "mimo-v2.6-pro"
+    },
+    {
+      "model": "xiaomi/mimo-v2.6-pro",
+      "expect": "mimo-v2.6-pro"
+    },
+    {
+      "model": "mimo-v2.6-flash",
+      "expect": "mimo-v2.6-flash"
+    },
+    {
+      "model": "mimo-v2.6-pro-ultraspeed",
+      "expect": "mimo-v2.6-pro-ultraspeed"
+    },
+    {
+      "model": "mimo-v2.5-pro",
+      "expect": "unknown"
+    },
+    {
+      "model": "kimi-k3.1-pro",
+      "expect": "kimi-k3.1-pro"
+    },
+    {
+      "model": "k3.1-pro",
+      "expect": "kimi-k3.1-pro"
+    },
+    {
+      "model": "kimi-k3.1-pro-highspeed",
+      "expect": "kimi-k3.1-pro-highspeed"
+    },
+    {
+      "model": "k3.1-pro-highspeed",
+      "expect": "kimi-k3.1-pro-highspeed"
+    },
+    {
+      "model": "k3",
+      "expect": "kimi-k3"
+    },
+    {
+      "model": "k3-256k",
+      "expect": "kimi-k3"
+    },
+    {
+      "model": "kimi-for-coding-highspeed",
+      "expect": "kimi-k2.7-code-highspeed"
+    },
+    {
+      "model": "kimi-for-coding",
+      "expect": "unknown"
+    },
+    {
+      "model": "k3.1-pro",
+      "provider": "openai",
+      "expect": "kimi-k3.1-pro"
+    },
+    {
+      "model": "moonshotai/k3.1-pro-highspeed",
+      "provider": "openai",
+      "expect": "kimi-k3.1-pro-highspeed"
     }
   ]
 }

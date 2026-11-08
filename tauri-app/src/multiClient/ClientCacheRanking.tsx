@@ -1,3 +1,4 @@
+import { modelUsageLabel as shortModelName } from "../components/modelUsagePresentation";
 import { useEffect, useState } from "react";
 import { callCommandStrict } from "../api/command";
 import { isTauriRuntimeAvailable } from "../platform/runtime";
@@ -31,7 +32,7 @@ export function ClientCacheRanking({client, sessionID, detailsOnly = false, onCl
       <p className="muted">请求级记录；当前账本未保留可靠的整轮边界，因此不冒充单轮排行。</p>
       {sessionID&&<p className="muted">会话 {sessionID} · 本批已加载 {data.requests.filter(row=>row.sessionID===sessionID).length} 条请求{data.hasMoreRequests?"；可继续加载客户端记录":""}</p>}
       {issue&&<p role="status">{issue}</p>}
-      <div style={{overflowY:"auto",minHeight:0}}>{data.requests.filter(row=>!sessionID || row.sessionID===sessionID).map(row=><div key={row.eventID} style={{paddingBlock:10,borderBottom:"1px solid var(--line)"}}><div>{new Date(row.timestamp*1000).toLocaleString()} · {row.model} · <strong>{rate(row.cacheHitRate)}</strong></div><small className="muted">会话 {row.sessionID} · 请求 {row.eventID}</small><div>输入 {formatTokens(row.inputTokens)} · 缓存读 {row.cacheReadTokens===null?"未知":formatTokens(row.cacheReadTokens)} · 缓存写 {row.cacheWriteTokens===null?"未知":formatTokens(row.cacheWriteTokens)} · 输出 {formatTokens(row.outputTokens)}</div></div>)}</div>
+      <div style={{overflowY:"auto",minHeight:0}}>{data.requests.filter(row=>!sessionID || row.sessionID===sessionID).map(row=><div key={row.eventID} style={{paddingBlock:10,borderBottom:"1px solid var(--line)"}}><div>{new Date(row.timestamp*1000).toLocaleString()} · <span title={row.model}>{shortModelName(row.model)}</span> · <strong>{rate(row.cacheHitRate)}</strong></div><small className="muted">会话 {row.sessionID} · 请求 {row.eventID}</small><div>输入 {formatTokens(row.inputTokens)} · 缓存读 {row.cacheReadTokens===null?"未知":formatTokens(row.cacheReadTokens)} · 缓存写 {row.cacheWriteTokens===null?"未知":formatTokens(row.cacheWriteTokens)} · 输出 {formatTokens(row.outputTokens)}</div></div>)}</div>
       {data.hasMoreRequests&&<p>已加载 {data.requests.length} / {data.matchingRequestCount} 条。{limit<5000&&<button type="button" onClick={()=>setLimit(Math.min(5000,limit+500))}>加载更多</button>}</p>}
     </section></div>}
   </>;

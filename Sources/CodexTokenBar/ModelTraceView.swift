@@ -19,7 +19,7 @@ struct ModelTraceView: View {
                 Button("刷新") { controller.refresh() }.disabled(controller.busy)
             }
             VStack(alignment: .leading, spacing: 8) {
-                Picker("请求模型", selection: $model) { ForEach(ModelTrace.models, id: \.self) { Text($0).tag($0) } }
+                Picker("请求模型", selection: $model) { ForEach(ModelTrace.models, id: \.self) { Text(ModelUsagePresentation.label(for: $0)).help($0).tag($0) } }
                     .frame(maxWidth: compact ? .infinity : 300).disabled(controller.busy)
                 HStack(spacing: 12) {
                     Text("light · low").font(.caption).foregroundStyle(.secondary)
@@ -51,7 +51,7 @@ struct ModelTraceView: View {
                                 Button { selection = run.id } label: {
                                     VStack(alignment: .leading, spacing: 3) {
                                         HStack { Text(Date(timeIntervalSince1970: Double(run.startedAt)), format: .dateTime.month().day().hour().minute()); Spacer(); Text(status(run)) }
-                                        Text(run.model).fontWeight(.medium)
+                                        Text(ModelUsagePresentation.label(for: run.model)).help(run.model).fontWeight(.medium)
                                         if let prediction = run.attribution?.prediction { Text("更接近 \(resultLabel(prediction))").foregroundStyle(.secondary) }
                                     }.font(.system(size: 10)).frame(maxWidth: .infinity, alignment: .leading).padding(8)
                                         .background(selected?.id == run.id ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8))
@@ -99,7 +99,7 @@ struct ModelTraceView: View {
                 }.frame(maxWidth: .infinity, alignment: .leading)
     }
     private func resultLabel(_ model: String, name: String? = nil) -> String {
-        let label = name ?? model
+        let label = ModelDisplayNames.catalogLabel(for: model) ?? name ?? model
         return model == "gpt-6-astra" ? "\(label)（包括 6.1 Sol）" : label
     }
     private func status(_ run: ModelTrace.Run) -> String {

@@ -1,3 +1,4 @@
+import { modelUsageLabel as shortModelName } from "../components/modelUsagePresentation";
 import { useEffect, useState } from "react";
 import type { SidebarRadar } from "./radarModel";
 
@@ -44,7 +45,7 @@ function RecommendationPages({ rows, visible, onOpen }: {
   >{rows.slice(index * PAGE_SIZE, (index + 1) * PAGE_SIZE).map(row => <span
     className="qs-recommendation-row" key={row.rank}
     title={`第 ${row.rank} 名 · ${row.model} ${row.effort} · IQ ${row.iq.toFixed(1)}`}
-  ><b>{row.rank}</b><span>{row.model.replace(/^gpt-[\d.]+-/, "")} {row.effort}</span></span>)}</span>;
+  ><b>{row.rank}</b><span>{shortModelName(row.model)} {row.effort}</span></span>)}</span>;
 
   return <button className="qs-recommendations" onClick={onOpen}
     aria-label={`众测推荐${pageCount > 1 ? `，第 ${frame.index + 1}/${pageCount} 页` : ""}，点击查看完整排行榜`}

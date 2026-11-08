@@ -1,3 +1,4 @@
+import { modelUsageLabel as shortModelName } from "../components/modelUsagePresentation";
 import type { DashboardSnapshot } from "../types/dashboard";
 import { claudeQuotaFromLocalCache, clientIsAvailable, codexQuotaProvider, projectClientChart, unavailableQuota, type ClientDetection, type ClientQuotaReading, type ClientTrendBucket, type ClientChartPoint } from "./multiClientProduct";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
@@ -168,7 +169,7 @@ export function MultiClientUsageTable({ snapshot }: { snapshot: Snapshot }) {
   return <div className="multi-client-table-wrap"><table className="multi-client-table"><thead><tr>
     <th>客户端 / 模型</th><th>输入</th><th>输出</th><th>缓存读取</th><th>缓存写入</th><th>思考¹</th><th>请求</th>
   </tr></thead><tbody>{snapshot.preferences.flatMap(preference => snapshot.summaries.filter(row => row.client === preference.client).map(row => <tr key={`${row.client}:${row.model}`}>
-    <td><span style={{ color: preference.color }}>{clientNames[row.client]}</span><small>{row.model}</small></td>
+    <td><span style={{ color: preference.color }}>{clientNames[row.client]}</span><small title={row.model}>{shortModelName(row.model)}</small></td>
     <td>{tokenAmount(row.inputTokens)}</td><td>{tokenAmount(row.outputTokens)}</td><td>{tokenAmount(row.cacheReadTokens)}</td>
     <td>{tokenAmount(row.cacheWriteTokens)}</td><td>{tokenAmount(row.reasoningTokens)}</td><td>{row.requests}</td>
   </tr>))}</tbody></table></div>;

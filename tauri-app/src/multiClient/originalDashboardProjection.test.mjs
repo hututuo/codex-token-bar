@@ -59,7 +59,7 @@ test('client fee scopes retain the original six metrics and model chips',async()
  const {StatsStrip}=await load('/src/components/StatsStrip.tsx');const {clientCostPeriods}=await load('/src/multiClient/originalDashboardProjection.ts');const periods=clientCostPeriods(dashboard(),snapshot(),['claudeCode'],stamp);
  assert.equal(periods.today.length,0);assert.equal(periods.sevenDay[0].key,'claudeCode|claude-sonnet-4-6');
  const html=renderToStaticMarkup(React.createElement(StatsStrip,{stats:{...stats,totalTokens:1200},planLabel:'',clientCosts:periods}));
- assert.equal((html.match(/class="stats-cell/g)??[]).length,6);assert.match(html,/stats-model-cost-primary-card/);assert.match(html,/近7天/);assert.match(html,/Sonnet 4.6/);assert.doesNotMatch(html,/<table|integrated-stats|选择周期|累计净薅到/);
+ assert.equal((html.match(/class="stats-cell/g)??[]).length,6);assert.match(html,/stats-model-cost-primary-card/);assert.match(html,/近7天/);assert.match(html,/Sonnet4.6/);assert.doesNotMatch(html,/<table|integrated-stats|选择周期|累计净薅到/);
 }));
 test('client model cost groups lead with GPT-6, combine the latest Claude families, then show legacy groups',async()=>withSsrModules(async load=>{
  const {clientCostGroups}=await load('/src/multiClient/originalDashboardProjection.ts');

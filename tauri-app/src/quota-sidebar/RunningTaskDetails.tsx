@@ -1,3 +1,4 @@
+import { modelUsageLabel as shortModelName } from "../components/modelUsagePresentation";
 import { modelUsageColor } from "../components/modelUsagePresentation";
 import { useSpeedPalette } from "../components/liveRate/useSpeedPalette";
 import { taskClientLabel, type TaskDetailMember, type TaskDetailSummary } from "./runningTaskPresentation";
@@ -52,7 +53,7 @@ function TaskMember({ member, fallbackTitle }: { member: TaskDetailMember; fallb
   return <>
     <h4 className="qs-task-title" title={member.title || fallbackTitle}>{member.title || fallbackTitle}</h4>
     <div className="qs-task-metadata">
-      <div><span>模型</span><strong style={{color: modelUsageColor(member.model ?? "unknown")}}>{member.model || "模型未知"}</strong></div>
+      <div><span>模型</span><strong style={{color: modelUsageColor(member.model ?? "unknown")}}>{shortModelName(member.model)}</strong></div>
       <div><span>推理强度</span><strong>{member.reasoningEffort || "未知"}</strong></div>
       {phase && <div><span>状态</span><strong>{phase}</strong></div>}
     </div>

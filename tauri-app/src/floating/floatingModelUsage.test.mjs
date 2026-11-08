@@ -22,8 +22,8 @@ test("today model usage combines aliases and computes cache-aware per-model pric
   ];
   const items = floatingTodayModelUsageItems(rows, "gpt56Terra");
   assert.deepEqual(items.map(({ label, tokens }) => ({ label, tokens })), [
-    { label: "Sol", tokens: 1_200_000 },
-    { label: "Luna", tokens: 1_000_000 },
+    { label: "Sol5.6", tokens: 1_200_000 },
+    { label: "Luna5.6", tokens: 1_000_000 },
   ]);
   assert.equal(floatingModelUsageValue(items[0], "cost"), "$4.60");
   assert.equal(floatingModelUsageValue(items[1], "cost"), "$0.20");
@@ -37,8 +37,8 @@ test("Astra is shown and priced from the same shared model rows", () => {
   ], "gpt56Sol");
 
   assert.deepEqual(items.map(({ label, tokens }) => ({ label, tokens })), [
-    { label: "Astra", tokens: 1_100_000 },
-    { label: "Sol", tokens: 1_000_000 },
+    { label: "Astra6", tokens: 1_100_000 },
+    { label: "Sol5.6", tokens: 1_000_000 },
   ]);
   assert.equal(floatingModelUsageValue(items[0], "cost"), "$10.5");
 });
@@ -48,7 +48,7 @@ test("Spark stays visible in share and shows its reference price in cost", () =>
     row("gpt-5.3-codex-spark", 800, 0, 200, 1_000, 1),
     row("codex-auto-review", 800, 0, 200, 1_000, 1),
   ], "gpt56Sol");
-  assert.deepEqual(items.map((item) => item.label), ["Luna", "Spark"]);
+  assert.deepEqual(items.map((item) => item.label), ["Luna5.6", "Spark"]);
   const spark = items.find((item) => item.label === "Spark");
   assert.ok(spark);
   assert.equal(floatingModelUsageValue(spark, "cost"), "$0.00（不计入总计）");
@@ -67,10 +67,10 @@ test("today model usage keeps the compact four-model set and shares one cost ord
   const items = floatingTodayModelUsageItems(rows, "gpt56Sol", { showPlaceholders: true });
 
   assert.deepEqual(items.map(({ label, tokens }) => ({ label, tokens })), [
-    { label: "Sol", tokens: 2_000_000 },
-    { label: "Luna", tokens: 2_000_000 },
-    { label: "Astra", tokens: 0 },
-    { label: "Terra", tokens: 0 },
+    { label: "Sol5.6", tokens: 2_000_000 },
+    { label: "Luna5.6", tokens: 2_000_000 },
+    { label: "Astra6", tokens: 0 },
+    { label: "Terra5.6", tokens: 0 },
   ]);
   assert.deepEqual(items.map((item) => Math.round(item.share * 100)), [50, 50, 0, 0]);
   assert.deepEqual(
@@ -84,7 +84,7 @@ test("one used model receives only enough zero placeholders to reach four", () =
     row("gpt-5.4", 1_000, 0, 0, 1_000, 1),
   ], "gpt56Sol", { showPlaceholders: true });
 
-  assert.deepEqual(items.map((item) => item.label), ["5.4", "Astra", "Sol", "Terra"]);
+  assert.deepEqual(items.map((item) => item.label), ["5.4", "Astra6", "Sol5.6", "Terra5.6"]);
   assert.equal(items.length, 4);
 });
 
@@ -104,7 +104,7 @@ test("used Astra Sol Terra Luna rows sort by amount with the default order as th
     row("gpt-5.6-luna", 0, 0, 1_000_000, 1_000_000, 1),
   ], "gpt56Sol");
 
-  assert.deepEqual(items.map((item) => item.label), ["Sol", "Luna", "Astra", "Terra"]);
+  assert.deepEqual(items.map((item) => item.label), ["Sol5.6", "Luna5.6", "Astra6", "Terra5.6"]);
   assert.deepEqual(items.map((item) => floatingModelUsageValue(item, "cost")), ["$4.00", "$1.20", "$1.00", "$1.00"]);
 });
 
@@ -117,7 +117,7 @@ test("today model usage merges Sol aliases across the price cutover and sums bot
   ], "gpt56Sol");
 
   assert.equal(items.length, 1);
-  assert.equal(items[0].label, "Sol");
+  assert.equal(items[0].label, "Sol5.6");
   assert.equal(items[0].tokens, 2_000_000);
   assert.equal(floatingModelUsageValue(items[0], "cost"), "$9.00");
 });
@@ -193,7 +193,7 @@ test("share merging retains tokens while fees exclude review and detail retains 
   const floating = floatingTodayModelUsageItems(rows, "gpt56Sol");
   const dashboard = floatingTodayModelUsageItems(rows, "gpt56Sol", { mergeAutoReview: false });
   assert.deepEqual(floating.map((item) => [item.label, item.tokens, item.costUSD]), [
-    ["5.4", 2_000_000, 2.5], ["Luna", 2_000_000, 0.2],
+    ["5.4", 2_000_000, 2.5], ["Luna5.6", 2_000_000, 0.2],
   ]);
   assert.equal(dashboard.length, 4);
   assert.ok(dashboard.some((item) => item.label === "Auto Review（Luna）" && item.tokens === 1_000_000));

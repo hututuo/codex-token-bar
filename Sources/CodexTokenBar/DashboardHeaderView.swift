@@ -455,6 +455,9 @@ struct HeaderView: View {
             }
             .padding(.bottom, 13)
             .overlay(alignment: .bottom) { Rectangle().fill(AppTheme.border).frame(height: 1) }
+            // Discovery belongs to client selection, before account/quota tools.
+            // Keep the full header width; the scope picker shares a row with global tools.
+            if showsClientScopePicker && presentationMode.showsActions { MultiClientDiscoveryNotice() }
             if includesCodex { codexTools }
             AccountQuotaStrip(snapshot: quotaSnapshot, showingResetCreditDetails: $showingResetCreditDetails,
                 clientItems: clientQuotaItems, clientPlanLabels: clientPlanLabels)

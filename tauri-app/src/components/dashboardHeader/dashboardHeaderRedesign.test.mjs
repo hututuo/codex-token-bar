@@ -9,6 +9,7 @@ test("overview title, client scope, and report status share the top row", async 
   const { DashboardHeader } = await load("/src/components/DashboardHeader.tsx");
   const props = {
     scopeControl: React.createElement("nav", { "aria-label": "统计客户端范围" }, "Codex / Claude CLI / 汇总"),
+    discoveryNotice: React.createElement("aside", { "aria-label": "发现的客户端" }, "DeepSeek / Antigravity"),
     reportingStatus: React.createElement("button", { className: "speed-report-header-status" }, "正在上报"),
     account: { displayName: "Local User", planLabel: "PRO" },
     customAccountDisplayName: "Private Alias",
@@ -37,6 +38,9 @@ test("overview title, client scope, and report status share the top row", async 
   window.document.body.innerHTML = html;
   const { document } = window;
   const top = document.querySelector(".dashboard-header-top");
+  const discovery = document.querySelector('[aria-label="发现的客户端"]');
+  assert.equal(top.nextElementSibling, discovery, "Discovery sits directly below client scope, outside the narrow scope column");
+  assert.equal(discovery.nextElementSibling.getAttribute("aria-label"), "Codex 专属工具");
   const scopeSlot = document.querySelector(".dashboard-scope-slot");
   const title = document.querySelector("h1.dashboard-overview-title");
   const scopeControl = document.querySelector('[aria-label="统计客户端范围"]');
@@ -67,5 +71,6 @@ test("overview title, client scope, and report status share the top row", async 
   const claudeOnly = renderToStaticMarkup(React.createElement(DashboardHeader, {...props, includesCodex:false}));
   assert.doesNotMatch(claudeOnly, /Codex 专属工具|会话管理|会话增强|自动续跑|更改 Codex 数据目录/);
   assert.match(claudeOnly, /全局工具|立即刷新/);
+  assert.match(claudeOnly, /DeepSeek \/ Antigravity/);
   window.close();
 }));

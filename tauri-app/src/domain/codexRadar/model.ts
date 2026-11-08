@@ -1,3 +1,5 @@
+import { catalogModelLabelWithEffort } from "../../components/modelDisplayNames.ts";
+
 export interface CodexRadarSnapshot {
   schemaVersion: string;
   service: string;
@@ -825,6 +827,8 @@ function normalizeRadarActionKey(action: string | null | undefined): string {
 }
 
 export function compactRadarModelName(label: string): string {
+  const catalogLabel = catalogModelLabelWithEffort(label);
+  if (catalogLabel) return catalogLabel;
   const normalized = label.trim();
   const tokens = normalized.match(/[A-Za-z0-9]+/g) ?? [];
   const isDeepSeek = tokens.some((token) => token.toLowerCase() === "deepseek");

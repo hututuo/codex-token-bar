@@ -1,3 +1,4 @@
+import { modelUsageLabel as shortModelName } from "../modelUsagePresentation";
 import { useSpeedPalette } from "./useSpeedPalette";
 import { useDocumentVisible } from "../useDocumentVisible";
 import { invoke } from "@tauri-apps/api/core";
@@ -88,7 +89,7 @@ function BodySpeedTrendView({ sourceToken, revision, compact, preferredModel, qu
     const caption = `${days === 1 ? "30分钟" : days === 7 ? "2小时" : "6小时"}分布 · P25–P75 / 中位数 · TPS`;
     return <section className={`body-speed-trend ${compact ? `bst-${compact}` : ""}`} aria-label="模型速度分布">
         <header><strong>速度分布</strong><span>{caption}</span><div>{[86400,604800,2592000].map(value => <button key={value} aria-pressed={windowSeconds === value} onClick={() => setWindowSeconds(value)}>{value === 86400 ? "24小时" : value === 604800 ? "7天" : "30天"}</button>)}</div></header>
-        <div className="bst-models"><button aria-pressed={focus == null} onClick={() => setSelectedModel("*")}>全部</button>{models.map(model => <button key={model} aria-pressed={focus === model} onClick={() => setSelectedModel(model)}><i style={{background:modelUsageColor(model)}}/>{model.replace(/^gpt-/, "")}</button>)}</div>
+        <div className="bst-models"><button aria-pressed={focus == null} onClick={() => setSelectedModel("*")}>全部</button>{models.map(model => <button key={model} aria-pressed={focus === model} onClick={() => setSelectedModel(model)}><i style={{background:modelUsageColor(model)}}/>{shortModelName(model)}</button>)}</div>
         <SpeedDistributionPlot points={plot.rows} minimum={plot.minimum} maximum={plot.maximum} asOf={asOf} windowSeconds={windowSeconds} days={days} resets={visibleResets} clipId={id}/>
         {focus && plot.last && <div className="bst-summary"><strong>最近区间中位数 {plot.last.median!.toFixed(1)} TPS{plot.last.isPartial ? " · 区间未满" : ""}</strong></div>}
         <p className="bst-explanation">色带为五分钟均速的中间50%，横线为中位数；悬停或点击查看数值。空档留空。</p>
@@ -137,6 +138,6 @@ export function SpeedDistributionPlot({points,minimum,maximum,asOf,windowSeconds
     </>;
 }
 export function distributionLabel(p:SpeedTrendPoint) {
-    return `${new Date(p.bucketStart*1000).toLocaleString("zh-CN")}–${new Date(p.bucketEnd!*1000).toLocaleTimeString("zh-CN")} · ${p.model} · 中位数 ${p.median!.toFixed(1)} TPS · P25–P75 ${p.lowerQuartile!.toFixed(1)}–${p.upperQuartile!.toFixed(1)} · ${p.bucketCount}桶 / ${p.sampleCount}段 · 加权均速 ${p.tokensPerSecond.toFixed(1)} TPS${p.isPartial ? " · 区间未满" : ""}`;
+    return `${new Date(p.bucketStart*1000).toLocaleString("zh-CN")}–${new Date(p.bucketEnd!*1000).toLocaleTimeString("zh-CN")} · ${shortModelName(p.model)} · 中位数 ${p.median!.toFixed(1)} TPS · P25–P75 ${p.lowerQuartile!.toFixed(1)}–${p.upperQuartile!.toFixed(1)} · ${p.bucketCount}桶 / ${p.sampleCount}段 · 加权均速 ${p.tokensPerSecond.toFixed(1)} TPS${p.isPartial ? " · 区间未满" : ""}`;
 }
 export const BodySpeedTrend=memo(BodySpeedTrendView,(a,b)=>a.revision===b.revision && a.compact===b.compact && a.preferredModel===b.preferredModel && a.quotaUpdatedAt===b.quotaUpdatedAt && a.quotaIdentity?.scopeKey===b.quotaIdentity?.scopeKey && a.quotaIdentity?.plan===b.quotaIdentity?.plan && a.quotaIdentity?.limit===b.quotaIdentity?.limit && a.sourceToken?.canonicalHomeKey===b.sourceToken?.canonicalHomeKey && a.sourceToken?.physicalHomeKey===b.sourceToken?.physicalHomeKey && a.sourceToken?.transitionGeneration===b.sourceToken?.transitionGeneration);

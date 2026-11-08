@@ -1,4 +1,5 @@
 import { claudeModelIdentity } from "./claudeModelPresentation.ts";
+import { catalogModelLabel } from "./modelDisplayNames.ts";
 import { readSpeedColors, CLIENT_COLORS, CLIENT_TITLES } from "./liveRate/speedDisplay.ts";
 import { detectedOfficialAPIPriceModel } from "../settings/quotaPriceModel.ts";
 
@@ -132,6 +133,8 @@ export function floatingModelUsageKey(model: string | null | undefined, eventSta
 
 export function modelUsageLabel(model: string | null | undefined): string {
   if (model?.startsWith("client:")) return CLIENT_TITLES[model] ?? model.slice(7);
+  const catalogLabel = catalogModelLabel(model ?? "") ?? catalogModelLabel(modelUsageKey(model));
+  if (catalogLabel) return catalogLabel;
   switch (modelUsageKey(model)) {
     case "gpt-6-astra": return "Astra";
     case "gpt-6.1-sol": return "GPT-6.1 Sol";

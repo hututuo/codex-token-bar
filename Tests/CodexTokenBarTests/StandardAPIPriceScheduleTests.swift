@@ -177,7 +177,7 @@ final class StandardAPIPriceScheduleTests: XCTestCase {
             XCTAssertEqual(StandardAPIPriceSchedule.currentQuote(for: alias)?.rates, expected)
         }
         XCTAssertEqual(OfficialAPIPriceModel.storedValue(for: "gpt61Sol"), .gpt61Sol)
-        XCTAssertEqual(OfficialAPIPriceModel.gpt61Sol.title, "GPT-6.1 Sol")
+        XCTAssertEqual(OfficialAPIPriceModel.gpt61Sol.title, "Sol6.1")
         XCTAssertNil(OfficialAPIPriceModel.detected(from: "gpt-6.1-sol-preview"))
         XCTAssertNil(StandardAPIPriceSchedule.currentQuote(for: "gpt-6.1"))
         XCTAssertNil(StandardAPIPriceSchedule.quote(for: "gpt-6.1-sol", at: nil))
