@@ -74,6 +74,28 @@ final class SQLiteOperationConnectionTests: XCTestCase {
             XCTAssertEqual(try driver.readRows("SELECT COUNT(*) FROM sqlite_temp_master WHERE name='operation_probe'") { $0.int(0)! }, [1])
         }
     }
+
+    func testAdjacentReadsReuseHandleWithoutCreatingAnExtraSnapshot() throws {
+        let (url,driver)=try database()
+        try driver.execute("PRAGMA journal_mode=WAL; CREATE TABLE proof(value INTEGER); INSERT INTO proof VALUES(1)")
+        let writer=SQLiteDatabaseDriver(url:url)
+        try driver.withOperationConnection {
+            XCTAssertEqual(try driver.readRows("SELECT value FROM proof ORDER BY value"){$0.int(0)!},[1])
+            try writer.execute("INSERT INTO proof VALUES(2)")
+            XCTAssertEqual(try driver.readRows("SELECT value FROM proof ORDER BY value"){$0.int(0)!},[1,2])
+            try driver.withConnection { connection in
+                try connection.readTransaction { _ in
+                    XCTAssertEqual(try driver.readRows("SELECT COUNT(*) FROM proof"){$0.int(0)!},[2])
+                    try writer.execute("INSERT INTO proof VALUES(3)")
+                    try driver.withOperationConnection {
+                        XCTAssertEqual(try driver.readRows("SELECT COUNT(*) FROM proof"){$0.int(0)!},[2],
+                            "A surrounding deferred snapshot must remain the same snapshot")
+                    }
+                }
+            }
+            XCTAssertEqual(try driver.readRows("SELECT COUNT(*) FROM proof"){$0.int(0)!},[3])
+        }
+    }
 }
 
 private final class LockedConnectionProbe: @unchecked Sendable {

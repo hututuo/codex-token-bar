@@ -858,41 +858,46 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 Self.sessionEventCache.recordIncrementalSessionParseForTesting()
             }
 
-            if let attributionStart = aggregation.attributionCoverageStart,
-               let attributionEnd = aggregation.attributionCoverageEnd {
-                durableAttributionEvents = try historyIndex.attributionSourceBuckets(
-                    provenanceEpoch: synchronization.provenanceEpoch,
-                    from: attributionStart,
-                    before: attributionEnd,
-                    minuteBucketStarts: signature.minuteBoundaryBuckets ?? []
-                )
-                trace?.mark("attributionLedger.loaded", metadata: [
-                    "count": String(durableAttributionEvents.count),
-                    "from": String(Int64(attributionStart.timeIntervalSince1970)),
-                    "before": String(Int64(attributionEnd.timeIntervalSince1970)),
-                    "epoch": synchronization.provenanceEpoch
-                ])
-            } else {
-                durableAttributionEvents = []
-                trace?.mark("attributionLedger.emptyRange")
-            }
+            let publishedRows = try historyIndex.withAggregateReadConnection {
+                let attributionEvents: [TokenCacheAttributionEvent]
+                if let attributionStart = aggregation.attributionCoverageStart,
+                   let attributionEnd = aggregation.attributionCoverageEnd {
+                    attributionEvents = try historyIndex.attributionSourceBuckets(
+                        provenanceEpoch: synchronization.provenanceEpoch,
+                        from: attributionStart,
+                        before: attributionEnd,
+                        minuteBucketStarts: signature.minuteBoundaryBuckets ?? []
+                    )
+                    trace?.mark("attributionLedger.loaded", metadata: [
+                        "count": String(attributionEvents.count),
+                        "from": String(Int64(attributionStart.timeIntervalSince1970)),
+                        "before": String(Int64(attributionEnd.timeIntervalSince1970)),
+                        "epoch": synchronization.provenanceEpoch
+                    ])
+                } else {
+                    attributionEvents = []
+                    trace?.mark("attributionLedger.emptyRange")
+                }
 
-            let aggregateReadStart = aggregation.aggregateReadStart
-                ?? aggregationNow
-            try historyIndex.forEachAggregatedUsageRow(from: aggregateReadStart) { row in
-                aggregation.consumeAggregate(row)
+                let aggregateReadStart = aggregation.aggregateReadStart
+                    ?? aggregationNow
+                try historyIndex.forEachAggregatedUsageRow(from: aggregateReadStart) { row in
+                    aggregation.consumeAggregate(row)
+                }
+                try historyIndex.forEachAggregatedSessionRow { row in
+                    aggregation.consumeSessionAggregate(row)
+                }
+                if let rankingActiveSince {
+                    try historyIndex.forEachAggregatedSessionRow(activeSince: rankingActiveSince) { activeRankingRows.append($0) }
+                }
+                for turn in try historyIndex.boundedTurnCandidates(activeSince: rankingActiveSince) {
+                    aggregation.considerTurnCandidate(turn)
+                }
+                return (attributionEvents, try historyIndex.aggregatedSessionCount(), try historyIndex.firstAggregatedEventAt())
             }
-            try historyIndex.forEachAggregatedSessionRow { row in
-                aggregation.consumeSessionAggregate(row)
-            }
-            if let rankingActiveSince {
-                try historyIndex.forEachAggregatedSessionRow(activeSince: rankingActiveSince) { activeRankingRows.append($0) }
-            }
-            for turn in try historyIndex.boundedTurnCandidates(activeSince: rankingActiveSince) {
-                aggregation.considerTurnCandidate(turn)
-            }
-            exactSessionCount = try historyIndex.aggregatedSessionCount()
-            firstAggregatedEventAt = try historyIndex.firstAggregatedEventAt()
+            durableAttributionEvents = publishedRows.0
+            exactSessionCount = publishedRows.1
+            firstAggregatedEventAt = publishedRows.2
         } catch {
             throw CodexUsageHistoryIndexError(operation: "同步或查询", underlying: error)
         }

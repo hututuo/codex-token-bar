@@ -2376,6 +2376,17 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         }
     }
 
+    /// Reuse the bound handle for adjacent aggregate reads only. This does not
+    /// acquire the writer gate or start a transaction: each normal read keeps
+    /// its existing snapshot semantics, and a published-reader caller retains
+    /// its existing deferred snapshot. No await or excerpt hydration belongs
+    /// in this synchronous scope. Route/physical identity checks still run at
+    /// each nested access through SQLiteDatabaseDriver.
+    func withAggregateReadConnection<T>(_ body: () throws -> T) throws -> T {
+        guard BusinessSQLiteRoutes.store(for: driver.url) != nil else { return try body() }
+        return try driver.withOperationConnection(body)
+    }
+
     static func performStorageMaintenanceIfDue(
         databaseURL: URL,
         now: Date = Date(),

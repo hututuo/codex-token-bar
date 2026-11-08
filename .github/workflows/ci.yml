@@ -190,6 +190,7 @@ jobs:
             --require testRetainedHandleDoesNotKeepReadingAReplacedPhysicalFile \
             --require testRetainedHandleRejectsValidPhysicalAReplacementAndBlockedAdmission \
             --require testRetainedPhysicalConnectionSerializesConcurrentTransactions \
+            --require testAdjacentReadsReuseHandleWithoutCreatingAnExtraSnapshot \
             --require testDiagnosticsCollectionLeavesDatabaseAndSourceTreeUnchanged \
             --require testDiagnosticsIgnoresHeldSQLiteExclusiveLock \
             --require testDiagnosticsAllowsDarwinTemporaryAliasButNotUserDirectoryLinks \
