@@ -327,7 +327,7 @@ final class DashboardHeaderPresentationTests: XCTestCase {
         let rowEnd = try XCTUnwrap(source.range(of: "private struct DashboardModelCostScopePicker",
             range: rowStart.upperBound..<source.endIndex))
         let rowSource = String(source[rowStart.lowerBound..<rowEnd.lowerBound])
-        let chipStart = try XCTUnwrap(source.range(of: "private struct DashboardModelCostChip"))
+        let chipStart = try XCTUnwrap(source.range(of: "struct DashboardModelCostChip"))
         let chipEnd = try XCTUnwrap(source.range(of: "struct StatCell",
             range: chipStart.upperBound..<source.endIndex))
         let chipSource = String(source[chipStart.lowerBound..<chipEnd.lowerBound])

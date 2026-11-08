@@ -38,7 +38,7 @@ struct TokenHeatmap: View {
     @State private var rangeStartIndex: Int?
     @State private var rangeEndIndex: Int?
     @State private var preparedData: HeatmapPreparedData
-    @State private var cellFills: [HeatmapCellPaint] = []
+    @State private var cellFills: [AnyShapeStyle] = []
     @State private var cellRevision = UUID()
 
     private let rows = 7
@@ -315,12 +315,12 @@ struct TokenHeatmap: View {
     private func fillStyle(
         for summary: HeatmapUsageSummary,
         preparedData: HeatmapPreparedData
-    ) -> HeatmapCellPaint {
+    ) -> AnyShapeStyle {
         guard summary.isModelCost else {
-            return .color(color(for: summary, maxTokens: preparedData.maxTokens))
+            return AnyShapeStyle(color(for: summary, maxTokens: preparedData.maxTokens))
         }
         guard summary.modelCostUSD != nil else {
-            return .color(AppTheme.emptyCell)
+            return AnyShapeStyle(AppTheme.emptyCell)
         }
         let items = FloatingTodayModelUsagePresentation.items(
             from: summary.modelBreakdowns,
@@ -329,12 +329,12 @@ struct TokenHeatmap: View {
         let paid = items.filter { ($0.costUSD ?? 0) > 0 }
         guard !paid.isEmpty else {
             if let independent = items.first(where: \.usesIndependentQuota) {
-                return .color(independent.color.opacity(summary.tokens > 0 ? 0.46 : 0))
+                return AnyShapeStyle(independent.color.opacity(summary.tokens > 0 ? 0.46 : 0))
             }
-            return .color(AppTheme.emptyCell)
+            return AnyShapeStyle(AppTheme.emptyCell)
         }
         let total = paid.reduce(0) { $0 + ($1.costUSD ?? 0) }
-        guard total > 0 else { return .color(AppTheme.emptyCell) }
+        guard total > 0 else { return AnyShapeStyle(AppTheme.emptyCell) }
         let intensity = min(1, total / max(preparedData.maxModelCostUSD, 0.000_001))
         let opacity = 0.30 + intensity * 0.70
         var cursor = 0.0
@@ -346,7 +346,13 @@ struct TokenHeatmap: View {
             stops.append(Gradient.Stop(color: color, location: next))
             cursor = next
         }
-        return .gradient(Gradient(stops: stops))
+        return AnyShapeStyle(
+            LinearGradient(
+                gradient: Gradient(stops: stops),
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+        )
     }
 
     private func refreshPreparedData() {
@@ -503,31 +509,13 @@ struct TokenHeatmap: View {
 
 }
 
-/// Paint only: model/price preparation and the separate hover/click view remain
-/// authoritative. One drawing surface avoids hundreds of layout and responder
-/// nodes being revisited while their parent scrolls.
-enum HeatmapCellPaint {
-    case color(Color)
-    case gradient(Gradient)
-    var shapeStyle: AnyShapeStyle {
-        switch self {
-        case .color(let color): AnyShapeStyle(color)
-        case .gradient(let gradient): AnyShapeStyle(LinearGradient(gradient: gradient, startPoint: .leading, endPoint: .trailing))
-        }
-    }
-    func shading(in rect: CGRect) -> GraphicsContext.Shading {
-        switch self {
-        case .color(let color): .color(color)
-        case .gradient(let gradient): .linearGradient(gradient,
-            startPoint: CGPoint(x: rect.minX, y: rect.midY), endPoint: CGPoint(x: rect.maxX, y: rect.midY))
-        }
-    }
-}
-
+/// Paint only: retain SwiftUI's original pixel rounding and gradient rendering.
+/// Flatten the decorative grid for scrolling; its separate tracking view owns
+/// hover/click selection, so individual color cells need no hit-test paths.
 struct HeatmapCells: View, Equatable {
     let revision: UUID
     let columns: [[Int]]
-    let fills: [HeatmapCellPaint]
+    let fills: [AnyShapeStyle]
     let cellSize: CGFloat
     let gap: CGFloat
     let rows: Int
@@ -535,19 +523,19 @@ struct HeatmapCells: View, Equatable {
         lhs.revision == rhs.revision && lhs.cellSize == rhs.cellSize && lhs.gap == rhs.gap && lhs.rows == rhs.rows
     }
     var body: some View {
-        Canvas { context, _ in
-            for column in columns.indices {
-                for row in 0..<rows {
-                    guard let index = columns[column][safe: row], let fill = fills[safe: index] else { continue }
-                    let rect = CGRect(x: CGFloat(column) * (cellSize + gap), y: CGFloat(row) * (cellSize + gap),
-                                      width: cellSize, height: cellSize)
-                    context.fill(RoundedRectangle(cornerRadius: 4, style: .continuous).path(in: rect),
-                                 with: fill.shading(in: rect))
+        HStack(alignment: .top, spacing: gap) {
+            ForEach(columns.indices, id: \.self) { column in
+                VStack(spacing: gap) {
+                    ForEach(0..<rows, id: \.self) { row in
+                        let index = columns[column][safe: row]
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .fill(index.flatMap { fills[safe: $0] } ?? AnyShapeStyle(Color.clear))
+                            .frame(width: cellSize, height: cellSize)
+                    }
                 }
             }
         }
-        .frame(width: CGFloat(columns.count) * cellSize + CGFloat(max(0, columns.count - 1)) * gap,
-               height: CGFloat(rows) * cellSize + CGFloat(max(0, rows - 1)) * gap)
+        .drawingGroup(opaque: false, colorMode: .nonLinear)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
     }

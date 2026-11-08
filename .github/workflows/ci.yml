@@ -196,7 +196,7 @@ jobs:
             --require testModelPresentationMatchesSharedCrossPlatformCases \
             --require testDisplayGroupingConservesRawTokensAndAlreadyPricedContributions \
             --require testContentGrowthAndShrinkUpdateScrollExtentAtDefaultAndCustomScales \
-            --require testHeatmapCanvasMatchesCellGridAtNativeAndRetinaScale \
+            --require testHeatmapFlatteningMatchesCellGridAtNativeAndRetinaScale \
             --require testLongModelIdentitiesKeepCompactCostCardExtent \
             --require testAdjacentReadsReuseHandleWithoutCreatingAnExtraSnapshot \
             --require testSafetyOperationNeverHoldsPhysicalMutexBeforeRecoveryGate \

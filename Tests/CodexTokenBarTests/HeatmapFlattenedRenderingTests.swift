@@ -3,14 +3,15 @@ import SwiftUI
 import XCTest
 @testable import CodexTokenBar
 
-final class HeatmapCanvasRenderingTests: XCTestCase {
+final class HeatmapFlattenedRenderingTests: XCTestCase {
     @MainActor
-    func testHeatmapCanvasMatchesCellGridAtNativeAndRetinaScale() throws {
+    func testHeatmapFlatteningMatchesCellGridAtNativeAndRetinaScale() throws {
         let gradient = Gradient(stops: [.init(color: .red.opacity(0.8), location: 0),
             .init(color: .red.opacity(0.8), location: 0.35), .init(color: .blue.opacity(0.8), location: 0.35),
             .init(color: .blue.opacity(0.8), location: 1)])
-        let fills: [HeatmapCellPaint] = [.color(.red), .color(.green.opacity(0.4)), .gradient(gradient),
-            .color(.clear), .color(.blue), .gradient(gradient), .color(.orange), .color(.purple)]
+        let gradientFill = AnyShapeStyle(LinearGradient(gradient: gradient, startPoint: .leading, endPoint: .trailing))
+        let fills: [AnyShapeStyle] = [AnyShapeStyle(Color.red), AnyShapeStyle(Color.green.opacity(0.4)), gradientFill,
+            AnyShapeStyle(Color.clear), AnyShapeStyle(Color.blue), gradientFill, AnyShapeStyle(Color.orange), AnyShapeStyle(Color.purple)]
         let columns = [Array(0..<7), [7]]
         for size: CGFloat in [10, 14.5] {
             let reference = HStack(alignment: .top, spacing: 4) {
@@ -18,7 +19,7 @@ final class HeatmapCanvasRenderingTests: XCTestCase {
                     VStack(spacing: 4) {
                         ForEach(0..<7, id: \.self) { row in
                             RoundedRectangle(cornerRadius: 4, style: .continuous)
-                                .fill(columns[column][safe: row].flatMap { fills[safe: $0] }?.shapeStyle ?? AnyShapeStyle(Color.clear))
+                                .fill(columns[column][safe: row].flatMap { fills[safe: $0] } ?? AnyShapeStyle(Color.clear))
                                 .frame(width: size, height: size)
                         }
                     }
