@@ -503,7 +503,16 @@ struct SessionManagementView: View {
     }
 
     private var threadList: some View {
-        VStack(spacing: 0) {
+        // One filtering/sorting pass supplies the count, visible rows and pager.
+        // This is a render-local value, not a cached mutation/deletion decision.
+        let matching = store.matchingThreads
+        let visible = SessionManagementPresentation.visibleThreads(
+            matching, limit: store.visibleLimit, selectedThreadID: store.selectedThreadID
+        )
+        let hiddenCount = max(0, matching.count - min(store.visibleLimit, matching.count))
+        let outsideCount = store.checkedThreadIDs.isEmpty ? 0
+            : store.checkedThreadIDs.subtracting(Set(matching.map(\.id))).count
+        return VStack(spacing: 0) {
             VStack(spacing: 9) {
                 HStack(spacing: 8) {
                     TextField("搜索标题、正文首条、目录、ID 或 Codex 深链接", text: $store.query)
@@ -520,21 +529,21 @@ struct SessionManagementView: View {
                 threadFilters
 
                 HStack(spacing: 8) {
-                    Text("\(store.matchingThreads.count) 个结果")
+                    Text("\(matching.count) 个结果")
                         .font(.system(size: 10.5, weight: .medium))
                         .foregroundStyle(.secondary)
                     if !store.checkedThreadIDs.isEmpty {
                         Text(
                             "已选 \(store.checkedThreadIDs.count) 个 · \(formatBytes(store.checkedBytes))"
-                                + (store.checkedOutsideCurrentResultsCount > 0
-                                    ? " · \(store.checkedOutsideCurrentResultsCount) 个不在当前结果"
+                                + (outsideCount > 0
+                                    ? " · \(outsideCount) 个不在当前结果"
                                     : "")
                         )
                             .font(.system(size: 10.5, weight: .semibold))
                             .foregroundStyle(AppTheme.accentBlue)
                     }
                     Spacer()
-                    if !store.visibleThreads.isEmpty {
+                    if !visible.isEmpty {
                         Button("选择当前显示", action: store.toggleAllVisibleChecked)
                             .buttonStyle(.plain)
                             .font(.system(size: 10.5))
@@ -576,28 +585,28 @@ struct SessionManagementView: View {
                 .fill(AppTheme.border)
                 .frame(height: 1)
 
-            if store.visibleThreads.isEmpty {
+            if visible.isEmpty {
                 emptyThreadList
             } else {
                 ScrollView {
                     LazyVStack(spacing: 5) {
-                        ForEach(store.visibleThreads) { thread in
+                        ForEach(visible) { thread in
                             sessionRow(thread)
                         }
 
-                        if store.hiddenThreadCount > 0 {
+                        if hiddenCount > 0 {
                             Button {
                                 store.showMore()
                             } label: {
                                 Label(
-                                    "继续显示 \(min(SessionManagementPresentation.visiblePageSize, store.hiddenThreadCount)) 个（剩余 \(store.hiddenThreadCount)）",
+                                    "继续显示 \(min(SessionManagementPresentation.visiblePageSize, hiddenCount)) 个（剩余 \(hiddenCount)）",
                                     systemImage: "chevron.down"
                                 )
                                 .frame(maxWidth: .infinity)
                             }
                             .buttonStyle(.bordered)
                             .padding(.top, 6)
-                        } else if store.matchingThreads.count
+                        } else if matching.count
                             > SessionManagementPresentation.visiblePageSize {
                             Button("收起到前 100 个", action: store.collapseVisible)
                                 .buttonStyle(.plain)

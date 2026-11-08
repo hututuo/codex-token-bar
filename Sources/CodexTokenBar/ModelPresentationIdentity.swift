@@ -11,6 +11,7 @@ struct ModelPresentationIdentity: Codable, Equatable, Sendable {
 
     private struct Policy: Decodable, Sendable {
         let schema: Int
+        let unsafeScalarRanges: [[UInt32]]
         let wrappers: [String]
         let missing: [String]
         let ambiguous: [String]
@@ -21,7 +22,7 @@ struct ModelPresentationIdentity: Codable, Equatable, Sendable {
     private static let policy: Policy = {
         guard let url=AppResources.url(forResource:"model-presentation-policy",withExtension:"json"),
               let data=try? Data(contentsOf:url),let value=try? JSONDecoder().decode(Policy.self,from:data),value.schema==1 else {
-            return Policy(schema:1,wrappers:[],missing:[""],ambiguous:[],modifiers:[:],routingLabels:[:],sourceLabels:[:])
+            return Policy(schema:1,unsafeScalarRanges:[[0,31],[127,159]],wrappers:[],missing:[""],ambiguous:[],modifiers:[:],routingLabels:[:],sourceLabels:[:])
         }
         return value
     }()
@@ -90,8 +91,10 @@ struct ModelPresentationIdentity: Codable, Equatable, Sendable {
         if let hit=known(key,suffix) { return hit }
         // Unknown routes/snapshots never inherit the identity or price of the
         // nearest known name. Keep distinct raw keys even when text is unsafe.
-        let invalid=original.count>160 || original.unicodeScalars.contains {
-            $0.properties.generalCategory == .control || $0.properties.generalCategory == .format
+        // Pin control/format ranges and count Unicode scalars across all three
+        // implementations; platform Unicode versions and graphemes can differ.
+        let invalid=original.unicodeScalars.count>160 || original.unicodeScalars.contains { scalar in
+            policy.unsafeScalarRanges.contains { $0[0] <= scalar.value && scalar.value <= $0[1] }
         } || original.contains("{") || original.contains("}")
         return .init(key:original,label:invalid ? "异常模型标识":original,kind:invalid ? "invalid":"unknown")
     }

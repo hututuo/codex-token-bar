@@ -8,6 +8,7 @@ pub struct ModelPresentationIdentity { pub key:String, pub label:String, pub kin
 #[derive(Deserialize)]
 #[serde(rename_all="camelCase")]
 struct Policy {
+    unsafe_scalar_ranges:Vec<[u32;2]>,
     wrappers:Vec<String>,missing:Vec<String>,ambiguous:Vec<String>,
     modifiers:BTreeMap<String,Vec<String>>,routing_labels:BTreeMap<String,String>,source_labels:BTreeMap<String,String>,
 }
@@ -95,7 +96,10 @@ pub fn resolve(raw:&str)->ModelPresentationIdentity {
     if key.starts_with("claude-") {key=key.replace('.',"-");}
     if let Some(hit)=known(&key,&suffix,c) {return hit;}
     // Match the shared invalid-label contract, including directional controls.
-    let invalid=original.chars().count()>160 || original.chars().any(|ch|ch.is_control()||matches!(ch,'\u{00ad}'|'\u{061c}'|'\u{06dd}'|'\u{070f}'|'\u{0890}'..='\u{0891}'|'\u{08e2}'|'\u{180e}'|'\u{200b}'..='\u{200f}'|'\u{202a}'..='\u{202e}'|'\u{2060}'..='\u{2064}'|'\u{2066}'..='\u{206f}'|'\u{feff}'|'\u{fff9}'..='\u{fffb}'|'{'|'}'));
+    let invalid=original.chars().count()>160 || original.chars().any(|ch| {
+        let value=ch as u32;
+        p.unsafe_scalar_ranges.iter().any(|[lo,hi]|*lo<=value&&value<=*hi) || matches!(ch,'{'|'}')
+    });
     identity(original,if invalid {"异常模型标识"} else {original},if invalid {"invalid"} else {"unknown"})
 }
 

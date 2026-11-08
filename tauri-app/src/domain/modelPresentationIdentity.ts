@@ -49,7 +49,11 @@ export function modelPresentationIdentity(raw:string|null|undefined):ModelPresen
  key=stripModifiers(key);hit=known(key,suffix);if(hit)return hit;
  if(key.startsWith("claude-"))key=key.replaceAll(".","-");
  hit=known(key,suffix);if(hit)return hit;
- const invalid=[...original].length>160||/[\p{Cc}\p{Cf}{}]/u.test(original);
+ const scalars=[...original];
+ const invalid=scalars.length>160||scalars.some(ch=>{
+  const value=ch.codePointAt(0)!;
+  return policy.unsafeScalarRanges.some(([lo,hi])=>lo<=value&&value<=hi);
+ })||/[{}]/u.test(original);
  return {key:original,label:invalid?"异常模型标识":original,kind:invalid?"invalid":"unknown"};
 }
 export function modelPresentationDetail(raw:string):string {
