@@ -9,6 +9,15 @@ final class TrackedFile {
     let fileID: FileID
     var reader: TranscriptReader
     var parser: TranscriptParser
+    /// The monitor queue owns this object. Borrow the stored parser through
+    /// its modify accessor instead of copying every family's parser payload
+    /// out of the class merely to read the small AgentState projection.
+    /// The inout helper does not mutate, cache, or retain the parser.
+    var state: AgentState { Self.projectState(&parser) }
+
+    private static func projectState(_ parser: inout TranscriptParser) -> AgentState {
+        parser.state
+    }
     /// For an Antigravity database, the `.db` with its `-wal` folded in (`FileStat.databaseStat`).
     var lastStat: FileStat
     /// A whole-file read of this file runs off the session queue (METRICS 5.3).

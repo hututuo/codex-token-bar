@@ -16,6 +16,20 @@ struct ParserBehaviorTests {
         #expect(family.sources.contains(parser.state.source))
     }
 
+    @Test(arguments: TranscriptFamily.allCases)
+    func trackedStateProjectionObservesMutationsAndResetWithoutChangingParser(_ family: TranscriptFamily) {
+        let stat=FileStat(identity:.init(device:1,inode:17),size:0,modifiedNs:0,isRegularFile:true)
+        let file=TrackedFile(path:"/fixture/session",family:family,root:"/fixture",fileID:17,stat:stat,start:.beginning)
+        let original=file.parser
+        for _ in 0..<20 { #expect(file.state == original.state) }
+        file.parser.noteMalformedLine()
+        #expect(file.state == file.parser.state)
+        #expect(file.state.malformedLines == original.state.malformedLines+1)
+        #expect(original.state.malformedLines == 0)
+        file.resetParser()
+        #expect(file.state == original.state)
+    }
+
     static func run(_ family: TranscriptFamily, _ lines: [String], path: String = "/tmp/agent.jsonl", deduper: inout Deduper, fileID: FileID = 0) -> (TranscriptParser, [ResponseUpsert]) {
         var parser = TranscriptParser(family: family, agentId: path, fileID: fileID)
         var upserts: [ResponseUpsert] = []

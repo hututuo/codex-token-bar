@@ -569,7 +569,7 @@ final class TranscriptSession {
             return false
         }
         if file.family.isDatabase { return readDatabase(file, live: live, readContext: readContext) }
-        let previousState = file.parser.state
+        let previousState = file.state
         var readObservation: SourceReadObservation?
         var upserts: [ResponseUpsert] = []
         let metadataBoundary = SourceReadBoundary.now()
@@ -603,7 +603,7 @@ final class TranscriptSession {
             return true
         }
         finishRead(of: file, result: result)
-        if live, file.parser.state != previousState { recordReadObservation(readObservation) }
+        if live, file.state != previousState { recordReadObservation(readObservation) }
         if live, metadataChanged { recordReadObservation(readObservation) }
         return metadataChanged || result.bytesRead > 0 || result.didReset
     }
@@ -625,7 +625,7 @@ final class TranscriptSession {
         file.pendingReadContext = nil
         file.isDirty = false
         file.lastReadNs = now
-        let previousState = file.parser.state
+        let previousState = file.state
         let (batch, result) = file.reader.readDatabase()
         let readObservation = live ? result.readBoundary.map { actualReadContext.observation(at: $0) } : nil
         if result.failed, file.family.stat(file.path) == nil {
@@ -638,7 +638,7 @@ final class TranscriptSession {
         let project = projectName(of: file)
         for upsert in upserts { deliver(upsert, project: project, live: live, observation: readObservation) }
         finishRead(of: file, result: result)
-        if live, file.parser.state != previousState { recordReadObservation(readObservation) }
+        if live, file.state != previousState { recordReadObservation(readObservation) }
         return result.bytesRead > 0 || result.didReset
     }
 
@@ -655,14 +655,14 @@ final class TranscriptSession {
             return true
         }
         let readObservation = result.read.readBoundary.map { result.readContext.observation(at: $0) }
-        let previousState = file.parser.state
+        let previousState = file.state
         if result.read.didReset { file.resetParser() }
         var upserts: [ResponseUpsert] = []
         file.parser.consume(result.lines, deduper: &deduper) { upserts.append($0) }
         let project = projectName(of: file)
         for upsert in upserts { deliver(upsert, project: project, live: true, observation: readObservation) }
         finishRead(of: file, result: result.read)
-        if file.parser.state != previousState { recordReadObservation(readObservation) }
+        if file.state != previousState { recordReadObservation(readObservation) }
         if file.wholeReadAgain {
             file.wholeReadAgain = false
             let readContext = file.pendingWholeReadContext ?? result.readContext
@@ -723,7 +723,7 @@ final class TranscriptSession {
     var responses: [ResponseRecord] { engine.storedResponses }
 
     var malformedLines: Int {
-        files.values.reduce(removedMalformedLines) { $0 + $1.parser.state.malformedLines } + (opencode?.malformedRows ?? 0)
+        files.values.reduce(removedMalformedLines) { $0 + $1.state.malformedLines } + (opencode?.malformedRows ?? 0)
     }
 
     var unreadableFileCount: Int { unreadablePaths.count + (opencode?.status == .unreadable ? 1 : 0) + (zcode?.status == .unreadable ? 1 : 0) }
@@ -748,7 +748,7 @@ final class TranscriptSession {
     func sessionCounts(todayStartMs: Int64) -> [SourceKind: Int] {
         var counts: [SourceKind: Int] = [:]
         for file in files.values {
-            let state = file.parser.state
+            let state = file.state
             guard let last = state.lastLineMs, last >= todayStartMs, enabledSources.contains(state.source) else { continue }
             if (file.family.isWorkBuddy || file.family == .kimi || file.family == .grokBuild), state.isSubagent { continue }
             counts[state.source, default: 0] += 1
@@ -775,7 +775,7 @@ final class TranscriptSession {
     }
 
     private func syncAgent(_ file: TrackedFile) {
-        let state = file.parser.state
+        let state = file.state
         if state.lastLineMs != nil, enabledSources.contains(state.source) {
             let member = AgentParents.Member(id: file.path, family: file.family, thread: state.thread)
             if parentMembers.updateValue(member, forKey: file.path) != member { parentLinksAreStale = true }
@@ -791,7 +791,7 @@ final class TranscriptSession {
     }
 
     private func projectName(of file: TrackedFile) -> String {
-        file.parser.state.project ?? EngineAgent.fallbackProject(for: file.path)
+        file.state.project ?? EngineAgent.fallbackProject(for: file.path)
     }
 
     // MARK: - OpenCode
@@ -862,7 +862,7 @@ final class TranscriptSession {
 
     private func untrack(_ path: String) {
         guard let file = files.removeValue(forKey: path) else { return }
-        removedMalformedLines += file.parser.state.malformedLines
+        removedMalformedLines += file.state.malformedLines
         unreadablePaths.remove(path)
         removeAgent(path)
     }

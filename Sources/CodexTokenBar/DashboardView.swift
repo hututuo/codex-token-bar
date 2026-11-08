@@ -127,10 +127,12 @@ struct DashboardView: View {
     @State private var clientCacheProjection = ClientCacheRankingProjection.empty
     @State private var clientCacheIssue: String?
     private var cacheClients: Set<UsageClient> {
-        Set(clients.summaries.filter { allowedClients.contains($0.client.rawValue) && $0.requests > 0 }.map(\.client))
+        let allowed = allowedClients
+        return Set(clients.summaries.filter { allowed.contains($0.client.rawValue) && $0.requests > 0 }.map(\.client))
     }
     private var extraCacheSessions: [ClientCacheRankingSession] {
-        clientCacheProjection.sessions.filter { cacheClients.contains($0.client) }
+        let selected = cacheClients
+        return clientCacheProjection.sessions.filter { selected.contains($0.client) }
     }
     @State private var showingSharedAccountAttributionDetails = false
     @State private var showingInterfaceScaleMenu = false

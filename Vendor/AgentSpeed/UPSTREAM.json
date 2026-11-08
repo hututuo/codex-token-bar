@@ -657,16 +657,16 @@
       "sha256": "f38ef496a53582ef197cbf3f13b57aa89dd2458d72328f20fbcd303fc015f66e"
     },
     "macos/Sources/AgentSpeedCore/Monitor/TrackedFile.swift": {
-      "reason": "Retain read-trigger provenance across throttled database reads and deferred whole-file reads.",
-      "sha256": "596d890e770874b3433d8ac8de60a017d523400bfbe184c9f9860a9b71d977f8"
+      "reason": "Retain read-trigger provenance across throttled database reads and deferred whole-file reads. Project AgentState through an inout borrow of the stored parser to avoid copying all parser payloads on the serial monitor queue.",
+      "sha256": "0a8299ab856229f99cecd9b15f9b342aa3afc0f6d4f2daf237ff8fa9caa26996"
     },
     "macos/Sources/AgentSpeedCore/Monitor/TranscriptLocations.swift": {
       "reason": "Discover standalone ACP and macOS Orca Antigravity stores by default and expand explicitly selected parent directories; preserve direct store/conversations selection and backup exclusion without changing parsing or reporting consent.",
       "sha256": "df1648c7c3ebed22ec6f6de10ce384ddabbf51851b78d7c51bdb075a667deaee"
     },
     "macos/Sources/AgentSpeedCore/Monitor/TranscriptSession.swift": {
-      "reason": "Capture and merge local log/poll read observations through transcript, database, and whole-file reads; keep provider event timing distinct. Preserve shared positioned IO and source-read provenance; backport c668286 bounded quiet-file rediscovery (24h hot set and one sixth older files each round).",
-      "sha256": "14af873358a9b0141443b2c35994e9f834b81490237dd88374556f02ca3d35d9"
+      "reason": "Capture and merge local log/poll read observations through transcript, database, and whole-file reads; keep provider event timing distinct. Preserve shared positioned IO and source-read provenance; backport c668286 bounded quiet-file rediscovery (24h hot set and one sixth older files each round). Use the fresh TrackedFile state projection without copying its full parser for snapshot counts and warnings.",
+      "sha256": "bd1f4e25d7f9a17da8bf1e701055d6f3fe758feecf8601070ed61abc23f31a35"
     },
     "macos/Sources/AgentSpeedCore/Parsing/ClaudeLine.swift": {
       "reason": "Recognize explicit Claude API/stream errors as local display-stop metadata and backport upstream b89d983 toolEndsTurn extraction. Extract bounded local-only Claude task labels from agentName, title/customTitle, summary or first direct user text; do not retain full text or change token accounting.",
@@ -729,8 +729,8 @@
       "sha256": "2dccb1b1319ccdf24fe8392bdd998c21f8a71197f0c54abab2d9c2852d72bcc0"
     },
     "macos/Tests/AgentSpeedCoreTests/ParserBehaviorTests.swift": {
-      "reason": "Add local regression coverage for bounded Claude display titles, metadata precedence and rename updates, property ordering, stable fallback, per-subagent labels, Unicode/control cleanup, interrupt handling and oversized text. Verify every parser family retains live state and independent value copies after direct state projection.",
-      "sha256": "214f3a4c6af9dd0252576deb7ab19411c7cd3e5ba3b5cf697cc77de1112aaf5c"
+      "reason": "Add local regression coverage for bounded Claude display titles, metadata precedence and rename updates, property ordering, stable fallback, per-subagent labels, Unicode/control cleanup, interrupt handling and oversized text. Verify every parser family retains live state and independent value copies after direct state projection, including TrackedFile reads, mutation and reset.",
+      "sha256": "1966e5b419f94351794a26b3384a6a4663d7a6ecbdb4ade653d714e883bc1f0f"
     },
     "macos/Tests/AgentSpeedCoreTests/ProtobufTests.swift": {
       "reason": "Break the repeated-scalar protobuf fixture into typed byte-array appends for Swift 6 compiler compatibility; emitted fixture bytes and assertions are unchanged.",

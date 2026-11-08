@@ -48,3 +48,4 @@
 
 - Swift `TranscriptParser.state` selects its one initialized family directly. The former nil-coalescing autoclosure chain repeatedly copied the aggregate parser during snapshot counts/warnings. Value semantics, parser state, errors, usage and reporting remain unchanged. Regression coverage exercises every family and independent copied state.
 - Windows uses reference-based parser instances with direct state properties, so this Swift-specific aggregate-copy optimization is not applied there. The upstream pin and original hashes stay unchanged; only local patch hashes are updated.
+- Installed resampling showed the outer `TrackedFile.parser` getter still copied the large value. Monitor state reads now use an exclusive inout projection of that stored value and return only AgentState; no parser mutation, caching or reference-semantics change. All families are tested across repeated reads, mutations and reset.
