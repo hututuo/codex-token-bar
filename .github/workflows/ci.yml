@@ -198,6 +198,8 @@ jobs:
             --require testContentGrowthAndShrinkUpdateScrollExtentAtDefaultAndCustomScales \
             --require testHeatmapFlatteningMatchesCellGridAtNativeAndRetinaScale \
             --require testLongModelIdentitiesKeepCompactCostCardExtent \
+            --require testProductionChartKeepsSecondClickAndSummaryButtonsReachable \
+            --require testProductionSummaryCardReceivesRealDetailAndCloseClicks \
             --require testAdjacentReadsReuseHandleWithoutCreatingAnExtraSnapshot \
             --require testSafetyOperationNeverHoldsPhysicalMutexBeforeRecoveryGate \
             --require testDiagnosticsCollectionLeavesDatabaseAndSourceTreeUnchanged \

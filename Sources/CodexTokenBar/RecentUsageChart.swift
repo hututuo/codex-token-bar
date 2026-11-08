@@ -1905,149 +1905,157 @@ struct RecentUsageChart: View {
         let renderPlot = renderFrame.renderPlot
 
         ZStack(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [AppTheme.accentBlue.opacity(0.10), Color.clear],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-                .frame(width: renderPlot.width, height: renderPlot.height)
-                .offset(x: renderPlot.minX, y: renderPlot.minY)
-
-            if let consumptionSelection {
-                let lowerX = plot.minX + CGFloat(consumptionSelection.startIndex) * step
-                let upperX = plot.minX + CGFloat(consumptionSelection.endIndex) * step
-                Rectangle()
-                    .fill(AppTheme.accentBlue.opacity(0.10))
-                    .frame(width: max(abs(upperX - lowerX), 2), height: plot.height)
-                    .position(x: (lowerX + upperX) / 2, y: plot.midY)
-
-                Path { path in
-                    path.move(to: CGPoint(x: lowerX, y: plot.minY))
-                    path.addLine(to: CGPoint(x: lowerX, y: plot.maxY))
-                    path.move(to: CGPoint(x: upperX, y: plot.minY))
-                    path.addLine(to: CGPoint(x: upperX, y: plot.maxY))
-                }
-                .stroke(AppTheme.accentBlue.opacity(0.55), style: StrokeStyle(lineWidth: 1.2, dash: [4, 5]))
-
-            }
-
-            ForEach(0..<4, id: \.self) { line in
-                let y = plot.minY + CGFloat(line) * plot.height / 3
-                Path { path in
-                    path.move(to: CGPoint(x: renderPlot.minX, y: y))
-                    path.addLine(to: CGPoint(x: renderPlot.maxX, y: y))
-                }
-                .stroke(AppTheme.grid, style: StrokeStyle(lineWidth: 1, dash: [4, 8]))
-            }
-
-            if showTokens {
-                renderFrame.tokenArea
+            // These paths only paint. HoverTrackingArea below owns the entire
+            // plot's input region. Do not tessellate every stroked curve again
+            // for AppKit's hit/window-drag region while the page scrolls.
+            ZStack(alignment: .topLeading) {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(
                         LinearGradient(
-                            colors: [AppTheme.accentBlue.opacity(0.22), AppTheme.accentBlue.opacity(0.055), Color.clear],
+                            colors: [AppTheme.accentBlue.opacity(0.10), Color.clear],
                             startPoint: .top,
                             endPoint: .bottom
                         )
                     )
-                renderFrame.tokenLine
-                    .stroke(AppTheme.accentBlue, style: StrokeStyle(lineWidth: Self.dataLineWidth, lineCap: .round, lineJoin: .round))
+                    .frame(width: renderPlot.width, height: renderPlot.height)
+                    .offset(x: renderPlot.minX, y: renderPlot.minY)
 
-            }
+                if let consumptionSelection {
+                    let lowerX = plot.minX + CGFloat(consumptionSelection.startIndex) * step
+                    let upperX = plot.minX + CGFloat(consumptionSelection.endIndex) * step
+                    Rectangle()
+                        .fill(AppTheme.accentBlue.opacity(0.10))
+                        .frame(width: max(abs(upperX - lowerX), 2), height: plot.height)
+                        .position(x: (lowerX + upperX) / 2, y: plot.midY)
 
-            if showCalls {
-                renderFrame.callLine
-                    .stroke(AppTheme.accentOrange, style: StrokeStyle(lineWidth: Self.dataLineWidth, lineCap: .round, lineJoin: .round))
-            }
-
-            if showCacheHitRate && preparedData.hasCacheCalls {
-                renderFrame.cachePoints
-                    .fill(AppTheme.accentCyan)
-            }
-
-            if showCost && plotData.costPoints.contains(where: { $0 != nil }) {
-                renderFrame.costPoints
-                .fill(AppTheme.chartCost)
-            }
-
-            if showFiveHourQuota && quotaSeriesVisibility.drawsFiveHour {
-                renderFrame.fiveHourQuotaLine
-                    .stroke(.purple.opacity(0.92), style: StrokeStyle(lineWidth: Self.dataLineWidth, lineCap: .round, lineJoin: .round, dash: [3, 6]))
-            }
-
-            if showSevenDayQuota && quotaSeriesVisibility.drawsSevenDay {
-                renderFrame.sevenDayQuotaLine
-                    .stroke(.green.opacity(0.88), style: StrokeStyle(lineWidth: Self.dataLineWidth, lineCap: .round, lineJoin: .round, dash: [7, 5]))
-            }
-
-            if let activeIndex {
-                let tokenPoint = plotData.tokenPoint(at: activeIndex)
-                let callPoint = plotData.callPoint(at: activeIndex)
-                let cachePoint = plotData.cachePoint(at: activeIndex)
-                let costPoint = plotData.costPoint(at: activeIndex)
-                let fiveHourPoint = plotData.fiveHourQuotaPoint(at: activeIndex)
-                let sevenDayPoint = plotData.sevenDayQuotaPoint(at: activeIndex)
-
-                if let tokenPoint {
                     Path { path in
-                        path.move(to: CGPoint(x: tokenPoint.x, y: plot.minY))
-                        path.addLine(to: CGPoint(x: tokenPoint.x, y: plot.maxY))
+                        path.move(to: CGPoint(x: lowerX, y: plot.minY))
+                        path.addLine(to: CGPoint(x: lowerX, y: plot.maxY))
+                        path.move(to: CGPoint(x: upperX, y: plot.minY))
+                        path.addLine(to: CGPoint(x: upperX, y: plot.maxY))
                     }
-                    .stroke(AppTheme.accentBlue.opacity(0.28), style: StrokeStyle(lineWidth: 1, dash: [3, 5]))
+                    .stroke(AppTheme.accentBlue.opacity(0.55), style: StrokeStyle(lineWidth: 1.2, dash: [4, 5]))
+
                 }
 
-                if showTokens, let tokenPoint {
-                    Circle()
-                        .fill(AppTheme.pageBackground)
-                        .frame(width: 9, height: 9)
-                        .overlay(Circle().stroke(AppTheme.accentBlue, lineWidth: Self.hoverRingLineWidth))
-                        .position(tokenPoint)
+                ForEach(0..<4, id: \.self) { line in
+                    let y = plot.minY + CGFloat(line) * plot.height / 3
+                    Path { path in
+                        path.move(to: CGPoint(x: renderPlot.minX, y: y))
+                        path.addLine(to: CGPoint(x: renderPlot.maxX, y: y))
+                    }
+                    .stroke(AppTheme.grid, style: StrokeStyle(lineWidth: 1, dash: [4, 8]))
                 }
 
-                if showCalls, let callPoint {
-                    Circle()
-                        .fill(AppTheme.pageBackground)
-                        .frame(width: 8, height: 8)
-                        .overlay(Circle().stroke(AppTheme.accentOrange, lineWidth: Self.hoverRingLineWidth))
-                        .position(callPoint)
+                if showTokens {
+                    renderFrame.tokenArea
+                        .fill(
+                            LinearGradient(
+                                colors: [AppTheme.accentBlue.opacity(0.22), AppTheme.accentBlue.opacity(0.055), Color.clear],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                    renderFrame.tokenLine
+                        .stroke(AppTheme.accentBlue, style: StrokeStyle(lineWidth: Self.dataLineWidth, lineCap: .round, lineJoin: .round))
+
                 }
 
-                if showCacheHitRate,
-                   preparedData.cacheBreakdowns[safe: activeIndex]?.calls ?? 0 > 0,
-                   let cachePoint {
-                    Circle()
-                        .fill(AppTheme.pageBackground)
-                        .frame(width: 8, height: 8)
-                        .overlay(Circle().stroke(AppTheme.accentCyan, lineWidth: Self.hoverRingLineWidth))
-                        .position(cachePoint)
+                if showCalls {
+                    renderFrame.callLine
+                        .stroke(AppTheme.accentOrange, style: StrokeStyle(lineWidth: Self.dataLineWidth, lineCap: .round, lineJoin: .round))
                 }
 
-                if showCost, let costPoint {
-                    Circle()
-                        .fill(AppTheme.pageBackground)
-                        .frame(width: 8, height: 8)
-                        .overlay(Circle().stroke(AppTheme.chartCost, lineWidth: Self.hoverRingLineWidth))
-                        .position(costPoint)
+                if showCacheHitRate && preparedData.hasCacheCalls {
+                    renderFrame.cachePoints
+                        .fill(AppTheme.accentCyan)
                 }
 
-                if showFiveHourQuota, quotaSeriesVisibility.drawsFiveHour, let fiveHourPoint {
-                    Circle()
-                        .fill(AppTheme.pageBackground)
-                        .frame(width: 7, height: 7)
-                        .overlay(Circle().stroke(.purple, lineWidth: Self.hoverRingLineWidth))
-                        .position(fiveHourPoint)
+                if showCost && plotData.costPoints.contains(where: { $0 != nil }) {
+                    renderFrame.costPoints
+                    .fill(AppTheme.chartCost)
                 }
 
-                if showSevenDayQuota, quotaSeriesVisibility.drawsSevenDay, let sevenDayPoint {
-                    Circle()
-                        .fill(AppTheme.pageBackground)
-                        .frame(width: 7, height: 7)
-                        .overlay(Circle().stroke(.green, lineWidth: Self.hoverRingLineWidth))
-                        .position(sevenDayPoint)
+                if showFiveHourQuota && quotaSeriesVisibility.drawsFiveHour {
+                    renderFrame.fiveHourQuotaLine
+                        .stroke(.purple.opacity(0.92), style: StrokeStyle(lineWidth: Self.dataLineWidth, lineCap: .round, lineJoin: .round, dash: [3, 6]))
                 }
+
+                if showSevenDayQuota && quotaSeriesVisibility.drawsSevenDay {
+                    renderFrame.sevenDayQuotaLine
+                        .stroke(.green.opacity(0.88), style: StrokeStyle(lineWidth: Self.dataLineWidth, lineCap: .round, lineJoin: .round, dash: [7, 5]))
+                }
+
+                if let activeIndex {
+                    let tokenPoint = plotData.tokenPoint(at: activeIndex)
+                    let callPoint = plotData.callPoint(at: activeIndex)
+                    let cachePoint = plotData.cachePoint(at: activeIndex)
+                    let costPoint = plotData.costPoint(at: activeIndex)
+                    let fiveHourPoint = plotData.fiveHourQuotaPoint(at: activeIndex)
+                    let sevenDayPoint = plotData.sevenDayQuotaPoint(at: activeIndex)
+
+                    if let tokenPoint {
+                        Path { path in
+                            path.move(to: CGPoint(x: tokenPoint.x, y: plot.minY))
+                            path.addLine(to: CGPoint(x: tokenPoint.x, y: plot.maxY))
+                        }
+                        .stroke(AppTheme.accentBlue.opacity(0.28), style: StrokeStyle(lineWidth: 1, dash: [3, 5]))
+                    }
+
+                    if showTokens, let tokenPoint {
+                        Circle()
+                            .fill(AppTheme.pageBackground)
+                            .frame(width: 9, height: 9)
+                            .overlay(Circle().stroke(AppTheme.accentBlue, lineWidth: Self.hoverRingLineWidth))
+                            .position(tokenPoint)
+                    }
+
+                    if showCalls, let callPoint {
+                        Circle()
+                            .fill(AppTheme.pageBackground)
+                            .frame(width: 8, height: 8)
+                            .overlay(Circle().stroke(AppTheme.accentOrange, lineWidth: Self.hoverRingLineWidth))
+                            .position(callPoint)
+                    }
+
+                    if showCacheHitRate,
+                       preparedData.cacheBreakdowns[safe: activeIndex]?.calls ?? 0 > 0,
+                       let cachePoint {
+                        Circle()
+                            .fill(AppTheme.pageBackground)
+                            .frame(width: 8, height: 8)
+                            .overlay(Circle().stroke(AppTheme.accentCyan, lineWidth: Self.hoverRingLineWidth))
+                            .position(cachePoint)
+                    }
+
+                    if showCost, let costPoint {
+                        Circle()
+                            .fill(AppTheme.pageBackground)
+                            .frame(width: 8, height: 8)
+                            .overlay(Circle().stroke(AppTheme.chartCost, lineWidth: Self.hoverRingLineWidth))
+                            .position(costPoint)
+                    }
+
+                    if showFiveHourQuota, quotaSeriesVisibility.drawsFiveHour, let fiveHourPoint {
+                        Circle()
+                            .fill(AppTheme.pageBackground)
+                            .frame(width: 7, height: 7)
+                            .overlay(Circle().stroke(.purple, lineWidth: Self.hoverRingLineWidth))
+                            .position(fiveHourPoint)
+                    }
+
+                    if showSevenDayQuota, quotaSeriesVisibility.drawsSevenDay, let sevenDayPoint {
+                        Circle()
+                            .fill(AppTheme.pageBackground)
+                            .frame(width: 7, height: 7)
+                            .overlay(Circle().stroke(.green, lineWidth: Self.hoverRingLineWidth))
+                            .position(sevenDayPoint)
+                    }
+                }
+
             }
+            .frame(width: width, height: height, alignment: .topLeading)
+            .allowsHitTesting(false)
 
             HoverTrackingArea(
                 onMove: { location in
