@@ -128,6 +128,7 @@ macOS uses Sparkle; Windows has a separate Tauri update channel. Checks run ever
 - **Privacy:** the app does not upload prompts, output, session logs, or account quota. Account queries and external Radar feeds require networking; feed references and local statistics are labeled separately.
 - **Missing 5h / Reserve:** only windows returned for the account are shown.
 - **Quota unavailable:** confirm Codex is signed in and can access the account, then report the platform, version, and application diagnostics.
+- **Update or startup stuck:** export a redacted diagnostic bundle from Help/Settings or the startup failure screen. A standalone helper works without the main UI. [Export instructions and privacy boundaries](docs/diagnostics.md).
 - **Deleted sessions:** already-indexed usage remains. Usage never read before its source was lost cannot be reconstructed from nothing.
 - **Follow-up timing advice:** the old advice, cache-interval chart, and additional scanner remain isolated and inactive. Cache accounting, alerts, and the cost ledger remain available. [Historical design](docs/design/cache-retention-dynamic-p95-drop.md).
 
