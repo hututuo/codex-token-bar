@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import os
 from pathlib import Path
 import shutil
@@ -72,6 +73,22 @@ def pinned_revision(repository: Path, release: str) -> str:
     return actual
 
 
+def probe_for_quota_shape(source: str, quota_source: str) -> str:
+    """Adapt only the synthetic initializer to the archived public model shape.
+
+    Old producers have no connection mode. New candidates default this optional
+    presentation field to None; never edit the archived production model.
+    """
+    if not re.search(r"\bpub\s+connection_mode\s*:", quota_source):
+        return source
+    if not re.search(r"\bpub\s+connection_mode\s*:\s*Option\s*<\s*String\s*>", quota_source):
+        raise ValueError("Unsupported archived QuotaSnapshot connection_mode shape")
+    marker = "quota: crate::models::QuotaSnapshot {\n"
+    if source.count(marker) != 1 or "connection_mode:" in source:
+        raise ValueError("Expected one unadapted historical quota fixture initializer")
+    return source.replace(marker, marker + "            connection_mode: None,\n")
+
+
 def inject(repository: Path, revision: str, destination: Path) -> dict:
     if destination.exists():
         raise ValueError("Refusing to overwrite a source archive")
@@ -82,7 +99,10 @@ def inject(repository: Path, revision: str, destination: Path) -> dict:
         stream.write('\n#[cfg(feature = "business-store-fixture")]\npub mod formed_release_probe;\n')
     with (native / "Cargo.toml").open("a", encoding="utf-8") as stream:
         stream.write('\n[[example]]\nname = "formed-release-probe"\npath = "examples/formed-release-probe.rs"\nrequired-features = ["business-store-fixture"]\n')
-    shutil.copyfile(source, native / "src/formed_release_probe.rs")
+    injected_probe = native / "src/formed_release_probe.rs"
+    injected_probe.write_text(probe_for_quota_shape(
+        source.read_text(encoding="utf-8"),
+        (native / "src/models/quota.rs").read_text(encoding="utf-8")), encoding="utf-8")
     (native / "examples/formed-release-probe.rs").write_text(EXAMPLE, encoding="utf-8")
     # Tauri's production configuration embeds frontendDist at compile time.
     # Use the candidate's already-built assets; this probe never renders them.
@@ -101,7 +121,8 @@ def inject(repository: Path, revision: str, destination: Path) -> dict:
         if expected != actual:
             raise ValueError(f"Production source changed in archive: {relative}")
         manifest[relative] = expected
-    return {"sourceSha": revision, "probeSha256": digest(source), "injection": list(INJECTION),
+    return {"sourceSha": revision, "probeSha256": digest(injected_probe),
+            "probeTemplateSha256": digest(source), "injection": list(INJECTION),
             "productionFilesUnchanged": manifest, "cfgTest": False}
 
 

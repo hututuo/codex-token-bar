@@ -1,3 +1,4 @@
+import { runningThreadFixture } from "../../test/runningThreadFixture.mjs";
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import React from 'react';
@@ -58,7 +59,7 @@ test('actual sidebar shows latest qualified body reading alongside median distri
   const now=Date.now()/1000;
   const win=new Window();
   try{
-   win.document.body.innerHTML=renderToStaticMarkup(React.createElement(SidebarRailContent,{data:{snapshot:{latestModelSpeeds30m:[summary('gpt-6.1-sol',now-10,72)],sevenDayAvailability:'unavailable'},runningThreads:{total:2,status:'ready'}},state:{mode:'hover'},onOpen(){}}));
+   win.document.body.innerHTML=renderToStaticMarkup(React.createElement(SidebarRailContent,{data:{snapshot:{latestModelSpeeds30m:[summary('gpt-6.1-sol',now-10,72)],sevenDayAvailability:'unavailable'},runningThreads: runningThreadFixture({total:2,status:'ready'})},state:{mode:'hover'},onOpen(){}}));
    const panel=win.document.querySelector('.qs-median-speeds');
    assert.ok(panel);
    assert.match(panel.textContent,/正文 TPS/);
@@ -104,7 +105,7 @@ test('actual sidebar latest numbers stay distinct from source-scoped median buck
    const container=win.document.createElement('div');win.document.body.append(container);
    root=createRoot(container);
    await React.act(async()=>root.render(React.createElement(SidebarRailContent,{
-    data:{sourceToken,snapshot:{latestModelSpeeds30m:[summary('gpt-6.1-sol',Date.now()/1000,56),summary('gpt-6-luna',Date.now()/1000,160),summary('legacy-live-only',Date.now()/1000-1801,999)],sevenDayAvailability:'unavailable'},runningThreads:{total:0,status:'ready'}},
+    data:{sourceToken,snapshot:{latestModelSpeeds30m:[summary('gpt-6.1-sol',Date.now()/1000,56),summary('gpt-6-luna',Date.now()/1000,160),summary('legacy-live-only',Date.now()/1000-1801,999)],sevenDayAvailability:'unavailable'},runningThreads: runningThreadFixture({total:0,status:'ready'})},
     state:{mode:'hover'},onOpen(){}
    })));
    await React.act(async()=>{await new Promise(resolve=>setTimeout(resolve,250));});

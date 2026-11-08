@@ -1,3 +1,4 @@
+import { runningThreadFixture } from "../test/runningThreadFixture.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import React from "react";
@@ -19,7 +20,7 @@ function data(rows) {
       todayTokensLabel: "200万", totalTokensLabel: "300万", requestsLabel: "2",
       liveRateAvailable: false, quotaDataStale: false, trendLabel: "用量趋势",
     },
-    runningThreads: { total: 0, mainThreads: 0, subagents: 0, status: "ready" },
+    runningThreads: runningThreadFixture({ total: 0, mainThreads: 0, subagents: 0, status: "ready" }),
   };
 }
 

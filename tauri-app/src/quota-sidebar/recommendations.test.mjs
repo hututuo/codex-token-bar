@@ -1,3 +1,4 @@
+import { runningThreadFixture } from "../test/runningThreadFixture.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import React from "react";
@@ -26,7 +27,7 @@ test("paired quota labels retain reset tooltips and absent 5h stays absent", asy
     const seven = new Date(2026, 9, 2, 8, 5);
     const data = {
       snapshot: { todayModelBreakdowns: [], fiveHourAvailability: "measured", fiveHourRemainingPercent: 0.6, sevenDayAvailability: "measured", sevenDayRemainingPercent: 0.4 },
-      runningThreads: { total: 0, status: "ready" },
+      runningThreads: runningThreadFixture({ total: 0, status: "ready" }),
       quota: { quota: { fiveHour: { resetsAt: five.toISOString() }, sevenDay: { resetsAt: "ignored", resetsAtUnix: seven.getTime() / 1000 } } },
     };
     const dom = new Window();

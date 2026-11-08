@@ -1,3 +1,4 @@
+import { runningThreadFixture } from "../test/runningThreadFixture.mjs";
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import React from 'react';
@@ -8,7 +9,7 @@ import {withSsrModules} from '../test/ssrHarness.mjs';
 test('both positioning layers persist; an initially hidden summary has no mounted controls', async () => {
   await withSsrModules(async load => {
     const {SidebarRailContent}=await load('/src/quota-sidebar/QuotaSidebarApp.tsx');
-    const data={snapshot:{fiveHourAvailability:'absent',fiveHourRemainingPercent:null,sevenDayAvailability:'measured',sevenDayRemainingPercent:.42},runningThreads:{total:4,status:'ready'}};
+    const data={snapshot:{fiveHourAvailability:'absent',fiveHourRemainingPercent:null,sevenDayAvailability:'measured',sevenDayRemainingPercent:.42},runningThreads: runningThreadFixture({total:4,status:'ready'})};
     const dom=new Window();
     try {
       for(const mode of ['rest','hover','detail','rest']) {
@@ -29,7 +30,7 @@ test('both positioning layers persist; an initially hidden summary has no mounte
 test('only sidebar settings expose compact and expanded content at once',async()=>{
  await withSsrModules(async load=>{
   const{SidebarRailContent}=await load('/src/quota-sidebar/QuotaSidebarApp.tsx');
-  const data={snapshot:{fiveHourAvailability:'absent',fiveHourRemainingPercent:null,sevenDayAvailability:'measured',sevenDayRemainingPercent:.72},runningThreads:{total:3,status:'ready'}};
+  const data={snapshot:{fiveHourAvailability:'absent',fiveHourRemainingPercent:null,sevenDayAvailability:'measured',sevenDayRemainingPercent:.72},runningThreads: runningThreadFixture({total:3,status:'ready'})};
   const dom=new Window();
   try{
    for(const tab of ['settings','quota']){

@@ -49,3 +49,11 @@ AgentSpeed 继续固定 `a94a67fcc78e5d8eea5f82d8d5e737bccf994e2c`，donor 的�
 ## 最终结果
 
 待合并后云端执行和本机安装完成后补充 SHA、run、测试、签名、回滚路径和启动证据。
+
+### 首轮云端反馈（保留失败，不作为安装验收）
+
+合并提交 `d4f41ec43e695db15d6da9dea68e8efcd1be4f44` 的完整 CI `42442655690` 中，macOS 16 个生产场景已通过，前端 1,421 通过/16 失败。失败均是旧侧栏测试仅提供 total/status，缺少既有 RunningThreadSummary 合同的 groups/unassignedSubagents；新统一任务投影对数组调用 map。补测试 fixture 的完整默认形状和已知计数，保留全部原断言，不给产品增加掩盖非法载荷的默认分支。
+
+四版本矩阵另在候选注入的 `formed_release_probe.rs` 报 E0063：该独立历史模板没有新增的 connection_mode。普通生产 fixture 的 8 处构造已对齐，但此前构造扫描只涵盖 src，遗漏脚本注入模板。本次按被归档版本的公开 QuotaSnapshot 字段形状，仅给当前候选的合成初始化插入 None；旧 producer 原样，所有归档产品源文件仍逐字核验。新增正反例保证未知字段类型、重复适配/重复初始化不会静默通过；Python 门禁 14 项通过。
+
+首轮原始前端日志和历史 candidate-build/report 保存在 scratch 的 attempt1；不改旧日志，不拼接这轮通过结果用于新 SHA。后续修正仅测试夹具/历史注入脚本，产品代码不变。

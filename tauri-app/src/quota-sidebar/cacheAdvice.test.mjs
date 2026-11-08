@@ -1,3 +1,4 @@
+import { runningThreadFixture } from "../test/runningThreadFixture.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import React from "react";
@@ -55,7 +56,7 @@ test("live sidebar alerts expand, show titles, open details and share dismissal 
         [state, dispatch] = React.useReducer(sidebarReducer, initialSidebarState);
         const { warning } = useCacheUsageAdvice(advice, available);
         useSidebarCacheAdvice(warning, dispatch, dragging);
-        const data = { snapshot: { cacheAdvice: advice, liveRateAvailable: available, todayModelBreakdowns: [], fiveHourAvailability: "absent", sevenDayAvailability: "unavailable", sevenDayRemainingPercent: null }, runningThreads: { status: "ready", total: 0 }, quota: { quota: {} } };
+        const data = { snapshot: { cacheAdvice: advice, liveRateAvailable: available, todayModelBreakdowns: [], fiveHourAvailability: "absent", sevenDayAvailability: "unavailable", sevenDayRemainingPercent: null }, runningThreads: runningThreadFixture({ status: "ready", total: 0 }), quota: { quota: {} } };
         return React.createElement(React.Fragment, null,
           React.createElement(SidebarRailContent, { data, state, onDismissReminder: () => dispatch({ type: "dismiss" }), onOpen: (tab, section) => dispatch({ type: "open", tab, section }) }),
           React.createElement(CacheUsageNotice, { advice }));

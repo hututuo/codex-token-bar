@@ -1,3 +1,4 @@
+import { runningThreadFixture } from "../test/runningThreadFixture.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import React from "react";
@@ -12,7 +13,7 @@ function fixture(availability, percent) {
     snapshot: { fiveHourAvailability: availability, fiveHourRemainingPercent: percent,
       sevenDayAvailability: "measured", sevenDayRemainingPercent: 0.73,
       unreadSummary: { source: "pending", label: "", detail: "" } },
-    runningThreads: { total: 2, status: "ready" } };
+    runningThreads: runningThreadFixture({ total: 2, status: "ready" }) };
 }
 
 test("Reserve rings and detail preserve ordinary navigation and remain reachable in the native clip", async () => {

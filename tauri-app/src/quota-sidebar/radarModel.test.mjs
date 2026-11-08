@@ -1,3 +1,4 @@
+import { runningThreadFixture } from "../test/runningThreadFixture.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import React from "react";
@@ -55,7 +56,7 @@ test("radar details show true numbered rows and distinct window/action/IQ/rankin
     assert.equal((html.match(/class="qs-rank-number"/g) || []).length, 1);
     assert.ok(!html.includes('class="qs-rank-number">3'));
     for (const mode of ["rest", "hover"]) {
-      const rail = renderToStaticMarkup(React.createElement(SidebarRailContent, { data: { snapshot: { fiveHourAvailability: "absent", fiveHourRemainingPercent: null, sevenDayAvailability: "measured", sevenDayRemainingPercent: 0.70 }, runningThreads: { total: 1, status: "ready" } }, radar, state: { mode }, onOpen() {} }));
+      const rail = renderToStaticMarkup(React.createElement(SidebarRailContent, { data: { snapshot: { fiveHourAvailability: "absent", fiveHourRemainingPercent: null, sevenDayAvailability: "measured", sevenDayRemainingPercent: 0.70 }, runningThreads: runningThreadFixture({ total: 1, status: "ready" }) }, radar, state: { mode }, onOpen() {} }));
       assert.ok(rail.includes('class="qs-radar-edge" data-active="true"'));
       assert.ok(!rail.includes("qs-radar-trigger")); assert.ok(!rail.includes("qs-radar-mark"));
     }

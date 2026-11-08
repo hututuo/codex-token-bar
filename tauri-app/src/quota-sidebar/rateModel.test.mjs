@@ -1,3 +1,4 @@
+import { runningThreadFixture } from "../test/runningThreadFixture.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import React from "react";
@@ -24,7 +25,7 @@ test("actual rest markup uses speed rather than agent count; scale updates chang
   await withSsrModules(async load => {
     const { SidebarRailContent } = await load("/src/quota-sidebar/QuotaSidebarApp.tsx");
     const render = (rate, total, fullScale = 200, enabled = true) => renderToStaticMarkup(React.createElement(SidebarRailContent, {
-      data: { snapshot: { ...snapshot(rate), fiveHourAvailability: "absent", fiveHourRemainingPercent: null, sevenDayAvailability: "measured", sevenDayRemainingPercent: 0.70 }, runningThreads: { total, status: "ready" } },
+      data: { snapshot: { ...snapshot(rate), fiveHourAvailability: "absent", fiveHourRemainingPercent: null, sevenDayAvailability: "measured", sevenDayRemainingPercent: 0.70 }, runningThreads: runningThreadFixture({ total, status: "ready" }) },
       state: { mode: "rest" }, rateFullScale: fullScale, liveRateEnabled: enabled, onOpen() {},
     })).match(/class="qs-bar qs-rate-bar"[\s\S]*?<\/span>/)[0];
     assert.equal(render(100, 0), render(100, 15));

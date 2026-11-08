@@ -1,3 +1,4 @@
+import { runningThreadFixture } from "../test/runningThreadFixture.mjs";
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import React from 'react';
@@ -22,7 +23,7 @@ test('radar tabs select independent official and crowd rankings',async()=>{
    assert.match(window.document.body.textContent,/crowd-model/);assert.ok(!window.document.body.textContent.includes('official-model'));
    const calls=[];
    const expires=Math.floor(Date.now()/1000)+3600;
-   const data={snapshot:{todayModelBreakdowns:[],sevenDayAvailability:'measured',sevenDayRemainingPercent:.5,fiveHourAvailability:'absent'},runningThreads:{total:2,status:'ready'},quota:{quota:{resetCredit:{updatedAt:'known',availableCount:3,credits:[{cardId:'one',status:'可用',expiresAtUnix:expires,redeemedAt:''}]}}}};
+   const data={snapshot:{todayModelBreakdowns:[],sevenDayAvailability:'measured',sevenDayRemainingPercent:.5,fiveHourAvailability:'absent'},runningThreads: runningThreadFixture({total:2,status:'ready'}),quota:{quota:{resetCredit:{updatedAt:'known',availableCount:3,credits:[{cardId:'one',status:'可用',expiresAtUnix:expires,redeemedAt:''}]}}}};
    await React.act(async()=>root.render(React.createElement(SidebarRailContent,{data,radar,state:{mode:'hover'},onOpen:(...args)=>calls.push(args)})));
    for(const selector of ['.qs-rate-trigger','.qs-model-trigger','.qs-running-trigger','.qs-reset-count','.qs-recommendations']) await React.act(async()=>window.document.querySelector(selector).click());
    assert.deepEqual(calls,[['quota','speeds'],['quota','models'],['running','top'],['credits','top'],['radar','ranking']]);
@@ -38,7 +39,7 @@ test('quota pace stays with percentage and each reset card includes its own date
   const {emptyAccountQuotaBundle}=await load('/src/api/fallback/quotaFallback.ts');
   const quota=emptyAccountQuotaBundle();
   quota.quota.resetCredit={availableCount:2,updatedAt:'2026-09-10T00:00:00Z',status:'可用',credits:[1,2].map(n=>({cardId:String(n),status:'可用',issuedAt:`2026-09-0${n}T00:00:00Z`,expiresAt:`2026-10-0${n}T00:00:00Z`,redeemedAt:''}))};
-  const data={quota,snapshot:{trendLabel:'先省着用',todayModelBreakdowns:[],unreadSummary:{source:'local',label:''},fiveHourAvailability:'absent',sevenDayAvailability:'measured',sevenDayRemainingPercent:.4},runningThreads:{status:'ready',total:0}};
+  const data={quota,snapshot:{trendLabel:'先省着用',todayModelBreakdowns:[],unreadSummary:{source:'local',label:''},fiveHourAvailability:'absent',sevenDayAvailability:'measured',sevenDayRemainingPercent:.4},runningThreads: runningThreadFixture({status:'ready',total:0})};
   const html=renderToStaticMarkup(React.createElement(QuotaDetails,{data}));
   assert.ok(html.indexOf('先省着用')<html.indexOf('Token 用量'));
   assert.ok(!html.includes('class="qs-reset-card"'));

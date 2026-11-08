@@ -1,3 +1,4 @@
+import { runningThreadFixture } from "../test/runningThreadFixture.mjs";
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import React from 'react';
@@ -10,7 +11,7 @@ test('detail composition counts cached input once and keeps every model accessib
   const {QuotaDetails}=await load('/src/quota-sidebar/QuotaSidebarApp.tsx');
   const {emptyAccountQuotaBundle}=await load('/src/api/fallback/quotaFallback.ts');
   const rows=['gpt-6-astra','gpt-5.6-sol','gpt-5.6-terra','gpt-5.6-luna','gpt-5.5'].map(model=>({model,breakdown:{inputTokens:80,cachedInputTokens:60,outputTokens:20,totalTokens:100,calls:1}}));
-  const data={quota:emptyAccountQuotaBundle(),snapshot:{todayModelBreakdowns:rows,unreadSummary:{source:'local',label:'无未读'}},runningThreads:{status:'ready',total:0}};
+  const data={quota:emptyAccountQuotaBundle(),snapshot:{todayModelBreakdowns:rows,unreadSummary:{source:'local',label:'无未读'}},runningThreads: runningThreadFixture({status:'ready',total:0})};
   const window=new Window();
   try{
    window.document.body.innerHTML=renderToStaticMarkup(React.createElement(QuotaDetails,{data}));

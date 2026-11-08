@@ -113,6 +113,19 @@ print("TOKENBAR_FORMED_REPORT " + json.dumps(report, separators=(",", ":")))
         with tempfile.TemporaryDirectory() as root:
             with self.assertRaises(ValueError): probe.inject(Path('.'), '0'*40, Path(root))
 
+    def test_probe_adapts_only_optional_connection_mode_to_each_archived_model(self):
+        template = (scripts / 'fixtures/formed_release_probe.rs').read_text()
+        old = 'pub struct QuotaSnapshot { pub five_hour: QuotaLimit, }'
+        current = 'pub struct QuotaSnapshot { pub connection_mode: Option<String>, pub five_hour: QuotaLimit, }'
+        self.assertEqual(probe.probe_for_quota_shape(template, old), template)
+        adapted = probe.probe_for_quota_shape(template, current)
+        self.assertEqual(adapted.count('connection_mode: None,'), 1)
+        self.assertEqual(adapted.replace('            connection_mode: None,\n', ''), template)
+        for source, model in ((adapted, current), (template + template, current),
+                              (template, current.replace('Option<String>', 'String'))):
+            with self.subTest(model=model), self.assertRaises(ValueError):
+                probe.probe_for_quota_shape(source, model)
+
     def test_injection_is_additive_and_production_paths_are_explicit(self):
         self.assertEqual(len(probe.OVERRIDES), 5)
         source=(scripts/'fixtures/formed_release_probe.rs').read_text()

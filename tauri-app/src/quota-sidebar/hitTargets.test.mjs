@@ -1,3 +1,4 @@
+import { runningThreadFixture } from "../test/runningThreadFixture.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
@@ -9,7 +10,7 @@ import { withSsrModules } from "../test/ssrHarness.mjs";
 const data = {
   snapshot: { fiveHourAvailability: "absent", fiveHourRemainingPercent: null,
     sevenDayAvailability: "measured", sevenDayRemainingPercent: 0.70, quotaDataStale: true },
-  runningThreads: { total: 2, status: "ready" },
+  runningThreads: runningThreadFixture({ total: 2, status: "ready" }),
 };
 test("primary rows retain large targets while the centered summary scrolls within its native clip", async () => {
   await withSsrModules(async load => {

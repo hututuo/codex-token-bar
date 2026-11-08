@@ -1,3 +1,4 @@
+import { runningThreadFixture } from "../test/runningThreadFixture.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import React from "react";
@@ -86,7 +87,7 @@ test("real rail reopens with current rate, quota presence and agent count withou
         snapshot: { liveRateAvailable: true, tokensPerSecond: rate, todayModelBreakdowns: [],
           fiveHourAvailability: five ? "measured" : "absent", fiveHourRemainingPercent: five ? 0.6 : null,
           sevenDayAvailability: "measured", sevenDayRemainingPercent: 0.4 },
-        runningThreads: { total, mainThreads: 1, subagents: total - 1, status: "ready" },
+        runningThreads: runningThreadFixture({ total, mainThreads: 1, subagents: total - 1, status: "ready" }),
       }, state: { mode, pinned: false, tab: "quota" }, onOpen: (...args) => calls.push(args),
     })));
     await render("hover", 10, 2);

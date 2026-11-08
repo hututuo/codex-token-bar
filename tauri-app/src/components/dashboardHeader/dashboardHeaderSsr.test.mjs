@@ -1,3 +1,4 @@
+import { runningThreadFixture } from "../../test/runningThreadFixture.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import React from "react";
@@ -184,7 +185,7 @@ function headerProps(overrides = {}) {
       debugPort: null,
       message: "等待 Codex 调试连接（需以调试模式启动 Codex）",
     },
-    runningThreads: {
+    runningThreads: runningThreadFixture({
       total: 5,
       mainThreads: 2,
       subagents: 3,
@@ -192,7 +193,7 @@ function headerProps(overrides = {}) {
       updatedAt: 1,
       detail: "test",
       livenessLeaseHours: 24,
-    },
+    }),
     ...overrides,
   };
 }
