@@ -508,22 +508,8 @@ export function modelAwareAPICostUSDAt(
 }
 
 export function priceModelTitle(model: DetectedOfficialAPIPriceModel): string {
-  if (model === "gpt55") return "GPT-5.5";
-  switch (normalizeOfficialAPIPriceModel(model) ?? "gpt56Sol") {
-    case "gpt6Astra": return "GPT-6 Astra";
-    case "gpt61Sol": return "GPT-6.1 Sol";
-    case "gpt61Terra": return "GPT-6.1 Terra";
-    case "gpt6Sol": return "GPT-6 Sol";
-    case "gpt6Luna": return "GPT-6 Luna";
-    case "gpt56Sol": return "GPT-5.6 Sol";
-    case "gpt56Terra": return "GPT-5.6 Terra";
-    case "gpt56Luna": return "GPT-5.6 Luna";
-    case "gpt53Codex": return "GPT-5.3 Codex";
-    case "gpt52Codex": return "GPT-5.2 Codex";
-    case "gpt54Legacy": return "GPT-5.4";
-    case "gpt54MiniLegacy": return "GPT-5.4 Mini";
-  }
-  return "GPT-5.6 Sol";
+  const key = MODEL_STANDARD_KEYS[model] ?? MODEL_STANDARD_KEYS.gpt56Sol;
+  return catalogModelLabel(key) ?? key;
 }
 
 /** Canonical model names on the separate Spark quota. */

@@ -328,7 +328,7 @@ enum ModelAwareAPIPriceEstimator {
 
     private static func historicalQuote(model: String?, at date: Date?, fallbackModel: OfficialAPIPriceModel) -> StandardAPIPriceQuote? {
         let detected = OfficialAPIPriceModel.detected(from: model, at: date) ?? fallbackModel
-        return StandardAPIPriceSchedule.quote(for: detected.title, at: date)
+        return StandardAPIPriceSchedule.quote(for: detected.canonicalModelID, at: date)
     }
 
     private static func estimate(
@@ -491,27 +491,12 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
     var id: String { rawValue }
 
     var title: String {
-        let fullName = switch self {
-        case .gpt6Astra: "GPT-6 Astra"
-        case .gpt61Sol: "GPT-6.1 Sol"
-        case .gpt61Terra: "GPT-6.1 Terra"
-        case .gpt6Sol: "GPT-6 Sol"
-        case .gpt6Luna: "GPT-6 Luna"
-        case .gpt56Sol: "GPT-5.6 Sol"
-        case .gpt55: "GPT-5.5"
-        case .gpt56Terra: "GPT-5.6 Terra"
-        case .gpt56Luna: "GPT-5.6 Luna"
-        case .gpt53Codex: "gpt-5.3-codex"
-        case .gpt52Codex: "gpt-5.2-codex"
-        case .gpt54Legacy: "GPT-5.4"
-        case .gpt54MiniLegacy: "GPT-5.4 Mini"
-        }
-        return ModelDisplayNames.catalogLabel(for: fullName) ?? fullName
+        ModelDisplayNames.catalogLabel(for: canonicalModelID) ?? canonicalModelID
     }
 
-    var currentPriceRates: APIPriceRates {
-        // Current values share Agent Speed's pinned asset; historical event
-        // quotes and the Radar vintage remain separate, immutable projections.
+    /// Accounting contract, independent of localized/short presentation titles.
+    /// Both dated quotes and current prices must use this stable model ID.
+    var canonicalModelID: String {
         let key: String
         switch self {
         case .gpt6Astra: key = "gpt-6-astra"
@@ -528,6 +513,13 @@ enum OfficialAPIPriceModel: String, CaseIterable, Codable, Hashable, Identifiabl
         case .gpt54Legacy: key = "gpt-5.4"
         case .gpt54MiniLegacy: key = "gpt-5.4-mini"
         }
+        return key
+    }
+
+    var currentPriceRates: APIPriceRates {
+        // Current values share Agent Speed's pinned asset; historical event
+        // quotes and the Radar vintage remain separate, immutable projections.
+        let key = canonicalModelID
         guard let quote = StandardAPIPriceSchedule.currentQuote(for: key) else {
             preconditionFailure("Missing admitted current price: \(key)")
         }

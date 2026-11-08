@@ -329,21 +329,7 @@ struct QuotaSelectionAttributionPresentation: Equatable {
 
 extension OfficialAPIPriceModel {
     var quotaEstimateShortTitle: String {
-        switch self {
-        case .gpt6Astra: "Astra"
-        case .gpt61Sol: "GPT-6.1 Sol"
-        case .gpt61Terra: "GPT-6.1 Terra"
-        case .gpt6Sol: "GPT-6 Sol"
-        case .gpt6Luna: "GPT-6 Luna"
-        case .gpt56Sol: "Sol"
-        case .gpt55: "5.5"
-        case .gpt56Terra: "Terra"
-        case .gpt56Luna: "Luna"
-        case .gpt53Codex: "5.3 Codex"
-        case .gpt52Codex: "5.2 Codex"
-        case .gpt54Legacy: "5.4"
-        case .gpt54MiniLegacy: "5.4 Mini"
-        }
+        title
     }
 }
 

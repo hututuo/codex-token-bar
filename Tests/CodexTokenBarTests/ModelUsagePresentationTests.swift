@@ -562,7 +562,7 @@ final class ModelUsagePresentationTests: XCTestCase {
         XCTAssertEqual(items.count, 5)
         XCTAssertEqual(
             FloatingTodayModelUsagePresentation.overflowDetailText(items: items),
-            "更多模型\n5.3 · 1 tokens · 占比 <0.1% · $0.00"
+            "更多模型\nCodex5.3 · 1 tokens · 占比 <0.1% · $0.00"
         )
         XCTAssertNil(
             FloatingTodayModelUsagePresentation.overflowDetailText(

@@ -734,7 +734,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(result.localSharePercent), 7.0, accuracy: 0.0001)
         XCTAssertEqual(result.detectedModels, [.gpt56Sol, .gpt56Terra])
         XCTAssertEqual(result.fallbackModelCalls, 0)
-        XCTAssertEqual(result.pricingModelText, "自动 · Sol/Terra")
+        XCTAssertEqual(result.pricingModelText, "自动 · Sol5.6/Terra5.6")
     }
 
     func testSelectionAttributionBlocksExactConclusionWhenNamedModelPriceIsUnknown() {
@@ -2264,7 +2264,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         )
         XCTAssertEqual(
             estimate.pricingModelText(fallbackModel: .gpt56Luna),
-            "自动 · Sol/Terra"
+            "自动 · Sol5.6/Terra5.6"
         )
         let unknown = ModelAwareAPIPriceEstimate(
             costUSD: 7,

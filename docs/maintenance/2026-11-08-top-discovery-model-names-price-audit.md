@@ -35,3 +35,5 @@
 构建和测试全部走 GitHub Actions；通过后使用云端候选替换本机 App，保留独立 build 994 回滚副本。本轮不发布 main、tag、Release 或 appcast。
 
 第一轮 `7967db22` 的前端全量检查拦下了一个依赖边界错误：共享命名元数据放在 `components/`，使 Radar domain 反向依赖组件层。修正为无 UI/API 依赖的 `domain/modelDisplayNames.ts`，未放宽架构门禁。众测排名原先先删版本再生成标签，现优先按原始 ID 查共享名称；没有改排名、分数或身份。其余失败为仍断言旧文字的展示用例，逐项更新为短名，保留金额/事件/操作断言。新增的全目录、未知型号与金额/ID 不变三项前端用例第一轮已实际通过。旧候选打包已取消，不用于安装。
+
+第一轮 Swift 完整测试进一步发现两处真实的旧职责纠缠：`ModelAwareAPIPriceEstimator.historicalQuote` 与 `AutoReviewReferencePricing` 把 `OfficialAPIPriceModel.title` 作为历史价查询输入。此次标题缩短使查询失配，原有历史费用/回顾参考价/区间归因测试正确阻断候选。修正为显式 `canonicalModelID`，从原 current-price 映射提取同一组固定 ID，供现价和历史价共同使用；`title` 只负责短名。新增遍历全部 13 个 Codex 价模的实际 dated estimator 断言，预期金额为固定独立数值，且回退/未计价必须为零。没有将短名加进价格别名，也没有放宽价格未知保护。`d0173e05` 的排队验证和打包同时取消，最终必须在此修正后的新 SHA 验证。

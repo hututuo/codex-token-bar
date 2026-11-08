@@ -19,7 +19,7 @@ enum AutoReviewReferencePricing {
                     ?? OfficialAPIPriceModel.detected(from: period.model, at: period.start) else { return nil }
             let rates: APIPriceRates
             if let date = period.start {
-                guard let quote = StandardAPIPriceSchedule.quote(for: model.title, at: date) else { return nil }
+                guard let quote = StandardAPIPriceSchedule.quote(for: model.canonicalModelID, at: date) else { return nil }
                 rates = quote.rates
             } else { rates = model.currentPriceRates }
             total += rates.costUSD(for: period.breakdown)
