@@ -1377,7 +1377,7 @@ private struct DashboardModelCostChip: View {
         }
         .lineLimit(1)
         .padding(.horizontal, 8)
-        .frame(maxWidth: .infinity).frame(minHeight: 36)
+        .frame(maxWidth: .infinity).frame(minHeight: 30)
         .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
             .fill(color.opacity(0.075)))
         .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous)

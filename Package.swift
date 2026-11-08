@@ -51,7 +51,7 @@ let package = Package(
                 .product(name: "Sparkle", package: "Sparkle")
             ],
             path: "Sources/CodexTokenBar",
-            resources: [.copy("Resources/o200k_base.tiktoken"), .copy("Resources/activity-speed-schema.sql"), .copy("Resources/codex-ledger-schema.sql"), .copy("Resources/standard-api-price-history.json"), .copy("Resources/model-display-names.json"), .copy("Resources/ModelTrace"), .copy("Resources/SpeedLeaderboard")]
+            resources: [.copy("Resources/o200k_base.tiktoken"), .copy("Resources/activity-speed-schema.sql"), .copy("Resources/codex-ledger-schema.sql"), .copy("Resources/standard-api-price-history.json"), .copy("Resources/model-display-names.json"), .copy("Resources/model-presentation-policy.json"), .copy("Resources/model-presentation-cases.json"), .copy("Resources/ModelTrace"), .copy("Resources/SpeedLeaderboard")]
         ),
         .testTarget(
             name: "AgentSpeedCoreTests",

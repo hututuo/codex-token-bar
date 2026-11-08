@@ -12969,7 +12969,7 @@ details.session-management-banner {
   white-space:normal;overflow-wrap:anywhere;overflow:visible;text-overflow:clip;
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
 }
-.stats-model-cost-primary-card,.stats-model-cost-secondary-chip { min-height:36px;height:auto; }
+.stats-model-cost-primary-card,.stats-model-cost-secondary-chip { min-height:30px;height:auto; }
 
 @keyframes rig-press{0%,19%,24%,76%,81%,100%{transform:scale(1)}21%,78%{transform:scale(.78)}}
 .recent-interaction-guide summary{transition:transform .12s,opacity .12s}.recent-interaction-guide summary:active{transform:translateY(1px) scale(.99);opacity:.7}

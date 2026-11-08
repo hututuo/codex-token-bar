@@ -31,6 +31,7 @@ enum AppResources {
         let paths = [
             "codex-ledger-schema.sql", "activity-speed-schema.sql",
             "standard-api-price-history.json", "model-display-names.json", "o200k_base.tiktoken",
+            "model-presentation-policy.json",
             "ModelTrace/fingerprint-core.js", "ModelTrace/unified_bank.json",
             "ModelTrace/scoring-fixtures.json", "SpeedLeaderboard/leaderboard.mp4",
             "SpeedLeaderboard/poster.jpg"
