@@ -10726,6 +10726,9 @@ fn v22_startup_accepts_stale_last_good_after_monotonic_index_advance_without_ope
     let _cache_env = AggregateCacheEnvGuard::new(cache_path.clone());
     let session_dir = root.join("sessions");
     fs::create_dir_all(&session_dir).unwrap();
+    // The case changes only index generation, not the five-minute aggregate
+    // boundary. Wall time can cross that boundary on a slow hosted runner.
+    let clock = DashboardTestClock::at(&root, "2026-06-18T12:02:00Z");
     write_lines(
         &session_dir.join("rollout-019ev19-monotonic-startup.jsonl"),
         &[
@@ -10770,6 +10773,11 @@ fn v22_startup_accepts_stale_last_good_after_monotonic_index_advance_without_ope
     assert!(!stale.precise_recent_usage_fresh);
     assert_eq!(ExactUsageIndex::quick_check_count_for_testing(), 0);
     assert_eq!(fs::read(receipt).unwrap(), receipt_before);
+    // Advancing the time boundary is a separate invalidation and must still
+    // reject the old cache without opening or repairing the exact index.
+    clock.set("2026-06-18T12:12:00Z");
+    assert!(cached_dashboard_snapshot_for_startup(&root).is_none());
+    assert_eq!(ExactUsageIndex::quick_check_count_for_testing(), 0);
     fs::remove_dir_all(root).unwrap();
 }
 
