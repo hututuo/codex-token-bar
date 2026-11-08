@@ -105,9 +105,15 @@ final class SidebarRailGeometryTests: XCTestCase {
                 }
             }
             // Compare the actual compositor handoff away from antialiased edges.
-            for y in 34..<398 where (y - 32) % 37 > 3 {
+            for y in 34..<398 {
+                let position = (Double(y) + 0.5) / Double(scale) - padding
+                let cellHeight = 46.0 / 10
+                let distanceToSeparator = abs(position - (position / cellHeight).rounded() * cellHeight)
+                // At 8x each cell is 36.8px, not 37px. Exclude only the actual
+                // 0.6pt separator plus one antialiasing pixel on either edge.
+                guard distanceToSeparator > 0.3 + 1.0 / Double(scale) else { continue }
                 let a = try color(image, 48, y), b = try color(animated, 48, y)
-                XCTAssertEqual(a.alphaComponent, b.alphaComponent, accuracy: 0.08)
+                XCTAssertEqual(a.alphaComponent, b.alphaComponent, accuracy: 0.08, "total=\(total), y=\(y)")
                 if min(a.alphaComponent, b.alphaComponent) > 0.9 {
                     XCTAssertEqual(a.greenComponent, b.greenComponent, accuracy: 0.08)
                 }
