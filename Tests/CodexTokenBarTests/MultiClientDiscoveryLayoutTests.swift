@@ -3,9 +3,11 @@ import SwiftUI
 import XCTest
 @testable import CodexTokenBar
 
-private struct DiscoveryBoundsKey: PreferenceKey {
-    static let defaultValue = CGRect.zero
-    static func reduce(value: inout CGRect, nextValue: () -> CGRect) { value = nextValue() }
+private final class DiscoveryBoundsView: NSView {}
+
+private struct DiscoveryBoundsProbe: NSViewRepresentable {
+    func makeNSView(context: Context) -> DiscoveryBoundsView { DiscoveryBoundsView() }
+    func updateNSView(_ nsView: DiscoveryBoundsView, context: Context) {}
 }
 
 final class MultiClientDiscoveryLayoutTests: XCTestCase {
@@ -19,15 +21,10 @@ final class MultiClientDiscoveryLayoutTests: XCTestCase {
         for width: CGFloat in [360, 872, 1404] {
             var heights: [CGFloat] = []
             for rows in [Array(detections.prefix(1)), detections] {
-                var bounds = CGRect.zero
                 let view = MultiClientDiscoveryRows(detections: rows,
                     enable: { enabled.append($0) }, acknowledge: { dismissed.append($0) })
-                    .background(GeometryReader { geometry in
-                        Color.clear.preference(key: DiscoveryBoundsKey.self, value: geometry.frame(in: .named("fixture")))
-                    })
-                    .onPreferenceChange(DiscoveryBoundsKey.self) { bounds = $0 }
+                    .background(DiscoveryBoundsProbe())
                     .frame(width: width, height: 440, alignment: .top)
-                    .coordinateSpace(name: "fixture")
                     .background(AppTheme.pageBackground)
                 let host = NSHostingView(rootView: view)
                 let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: width, height: 440),
@@ -38,6 +35,12 @@ final class MultiClientDiscoveryLayoutTests: XCTestCase {
                 defer { window.close() }
                 RunLoop.main.run(until: Date().addingTimeInterval(0.15))
                 host.layoutSubtreeIfNeeded()
+                func findProbe(_ view: NSView) -> DiscoveryBoundsView? {
+                    if let probe = view as? DiscoveryBoundsView { return probe }
+                    return view.subviews.lazy.compactMap(findProbe).first
+                }
+                let probe = try XCTUnwrap(findProbe(host))
+                let bounds = host.convert(probe.bounds, from: probe)
                 XCTAssertEqual(bounds.width, min(980, width), accuracy: 1)
                 XCTAssertEqual(bounds.midX, width / 2, accuracy: 1)
                 XCTAssertGreaterThan(bounds.height, 20)
