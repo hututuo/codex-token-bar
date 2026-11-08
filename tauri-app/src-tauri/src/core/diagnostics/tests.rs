@@ -16,6 +16,25 @@ fn diagnostic_allowlist_drops_secret_baits_and_paths() {
     assert!(!text.contains("SECRET")&&!text.contains("private"));
 }
 #[test]
+fn diagnostic_old_updater_receipt_survives_missing_installer_journal() {
+    let root=tempfile::tempdir().unwrap();let c=Configuration::for_home(root.path().canonicalize().unwrap());
+    fs::create_dir_all(&c.support).unwrap();
+    let path=c.support.join("update-install-attempt.json");
+    let bytes=serde_json::to_vec(&json!({"status":"launchFailed","source_version":"0.9.10","target_version":"0.9.11",
+        "started_at":123,"directory":"C:\\private\\SECRET","detail":"Bearer SECRET PRIVATE CHAT"})).unwrap();
+    fs::write(&path,&bytes).unwrap();
+    assert!(!c.journal.exists());
+    let result=collect::collect("installation",&c);
+    assert_eq!(result["status"],"ok");
+    assert_eq!(result["updaterReceipts"][0]["status"],"launchFailed");
+    assert_eq!(result["updaterReceipts"][0]["targetVersion"],"0.9.11");
+    let mut probes=BTreeMap::new();probes.insert("installation".into(),result);
+    let archive=collect::archive(&probes).unwrap();let text=String::from_utf8_lossy(&archive);
+    assert!(text.contains("launchFailed"));
+    for secret in ["SECRET","PRIVATE CHAT","private"]{assert!(!text.contains(secret));}
+    assert_eq!(fs::read(path).unwrap(),bytes);assert!(!c.journal.exists());
+}
+#[test]
 fn diagnostic_collection_never_opens_or_changes_business_database() {
     let root=tempfile::tempdir().unwrap();let c=Configuration::for_home(root.path().canonicalize().unwrap());
     fs::create_dir_all(&c.support).unwrap();let db=c.support.join("codex-ledger.sqlite");

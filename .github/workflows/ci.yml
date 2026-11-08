@@ -388,6 +388,7 @@ jobs:
               --require disk_failure_and_full_queue_return_status_without_panicking \
               --require diagnostics_modes_never_change_managed_legacy_import_or_later_target_rows \
               --require diagnostic_allowlist_drops_secret_baits_and_paths \
+              --require diagnostic_old_updater_receipt_survives_missing_installer_journal \
               --require diagnostic_collection_never_opens_or_changes_business_database \
               --require diagnostic_collector_ignores_exclusive_sqlite_lock \
               --require diagnostic_restart_retains_prior_failed_session \

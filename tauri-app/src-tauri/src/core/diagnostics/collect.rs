@@ -28,7 +28,13 @@ pub(super) fn collect(probe:&str,c:&Configuration)->Value {
             "freeBytes":fs2::available_space(&c.home).ok()}),
         "events"|"installation"=>{
             let root=if probe=="events"{c.journal.clone()}else{c.journal.join("installations")};
-            let Ok(paths)=files::list(&root) else{return json!({"status":"unavailable"})};
+            // The updater receipt predates the NSIS diagnostics directory. A missing
+            // directory must not hide a pending/failed update from an older installer.
+            let paths=match files::list(&root) {
+                Ok(paths)=>paths,
+                Err(_) if probe=="installation"=>Vec::new(),
+                Err(_)=>return json!({"status":"unavailable"}),
+            };
             let mut events=Vec::new();let mut rejected=0;let mut omitted=paths.len().saturating_sub(128);
             for path in paths.into_iter().take(128) {
                 let name=path.file_name().unwrap_or_default().to_string_lossy();
@@ -53,6 +59,9 @@ pub(super) fn collect(probe:&str,c:&Configuration)->Value {
                                 "targetVersion":version(value["target_version"].as_str().unwrap_or("")),"startedAt":value["started_at"].as_u64()}));
                         }
                     }
+                }
+                if receipts.is_empty() && output["events"].as_array().is_none_or(|rows|rows.is_empty()) {
+                    output["status"]=json!("unavailable");
                 }
                 output["updaterReceipts"]=json!(receipts);
             }

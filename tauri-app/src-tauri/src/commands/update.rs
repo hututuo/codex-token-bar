@@ -827,7 +827,17 @@ impl UpdateOps<Update> for TauriUpdateOps {
             #[cfg(windows)]
             let builder = {
                 let directory = run_update_disk_io(super::update_install::registered_install_directory).await?;
+                let app = self.app.clone();
                 builder.installer_arg(super::update_install::destination_argument(&directory))
+                    .on_before_exit(move || {
+                        // The updater exits inside install() after successful ShellExecuteW.
+                        // This callback cannot run on launch failure. Replacing the default
+                        // callback must preserve its cleanup_before_exit action exactly.
+                        crate::core::diagnostics::record(crate::core::diagnostics::Area::Updater,
+                            crate::core::diagnostics::Phase::Launched, &[]);
+                        crate::core::diagnostics::flush();
+                        app.cleanup_before_exit();
+                    })
             };
             let update = builder.build().map_err(|error| error.to_string())?
                 .check()
@@ -925,8 +935,6 @@ impl UpdateOps<Update> for TauriUpdateOps {
                         Err(error) => format!("{message}；安装结果记录失败：{error}"),
                     });
                 }
-                crate::core::diagnostics::record(crate::core::diagnostics::Area::Updater,crate::core::diagnostics::Phase::Launched,&[]);
-                crate::core::diagnostics::flush();
             }
             #[cfg(not(windows))]
             artifact.install(&bytes).map_err(|error| error.to_string())?;

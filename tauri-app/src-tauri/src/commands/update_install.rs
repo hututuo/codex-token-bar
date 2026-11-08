@@ -66,10 +66,10 @@ pub(super) fn reconcile_attempt(path: &Path, version: &str) -> Result<Option<Str
     let directory = std::fs::canonicalize(executable.parent().ok_or("无法定位正在运行的程序目录")?)
         .map_err(|e| e.to_string())?;
     if has_completed(&attempt, version, &directory) {
-        crate::core::diagnostics::record(crate::core::diagnostics::Area::Updater,crate::core::diagnostics::Phase::Confirmed,&[]);
         attempt.status = "confirmed".into();
         attempt.detail = None;
         save(path, &attempt)?;
+        crate::core::diagnostics::record(crate::core::diagnostics::Area::Updater,crate::core::diagnostics::Phase::Confirmed,&[]);
         return Ok(Some(format!("已完成 {} 更新", attempt.target_version)));
     }
     // A concurrently running installer may still complete; never call this failed.

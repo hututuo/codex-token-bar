@@ -14,6 +14,18 @@ DIAGNOSTIC_BUILD=unknown
 diagnostic_install_init() {
   local root="${CODEX_TOKEN_BAR_DIAGNOSTIC_DIR:-$HOME/Library/Application Support/CodexTokenBar/diagnostics/v1/installations}"
   [[ "$root" == /* ]] || return 0
+  # Darwin's system /var and /tmp aliases are not user directory links.
+  # Admit only the exact root-owned OS mapping; reject all links below it.
+  case "$root" in
+    /var|/var/*|/tmp|/tmp/*)
+      local first="${root#/}" alias_target
+      first="${first%%/*}"
+      [[ -L "/$first" && "$(/usr/bin/stat -f '%u' "/$first")" == 0 ]] || return 0
+      alias_target="$(/usr/bin/readlink "/$first")"
+      [[ "$alias_target" == "private/$first" || "$alias_target" == "/private/$first" ]] || return 0
+      root="/private$root"
+      ;;
+  esac
   local parent="$root"
   while [[ "$parent" != / ]]; do
     [[ ! -L "$parent" ]] || return 0

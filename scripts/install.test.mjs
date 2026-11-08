@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, chmod, mkdir, mkdtemp, readFile, readdir, stat, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, readdir, stat, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import nodeTest from "node:test";
@@ -198,6 +198,17 @@ test("install.sh removes quarantine only on explicit opt-in", async () => {
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
+});
+
+test("install receipts refuse user directory links without preventing installation", async () => {
+  const fixture=await makeFixture();
+  try {
+    const target=path.join(fixture.root,"private-target"),link=path.join(fixture.root,"user-link");
+    await mkdir(target);await symlink(target,link);
+    await runInstall(fixture,{CODEX_TOKEN_BAR_DIAGNOSTIC_DIR:path.join(link,"receipts")});
+    assert.deepEqual(await readdir(target),[]);
+    assert.equal(await fileExists(path.join(fixture.installDir,"Codex Token Bar.app","Contents","Info.plist")),true);
+  } finally { await rm(fixture.root,{recursive:true,force:true}); }
 });
 
 test("install.sh refuses a tampered download and installs nothing", async () => {

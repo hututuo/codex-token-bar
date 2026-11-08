@@ -1,9 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import {readFile} from "node:fs/promises";
 import React,{act} from "react";
 import {createRoot} from "react-dom/client";
 import {Window} from "happy-dom";
 import {withSsrModules} from "../test/ssrHarness.mjs";
+
+test("Windows installer launch diagnostics run before updater exit and retain Tauri cleanup",async()=>{
+ const source=await readFile(new URL("../../src-tauri/src/commands/update.rs",import.meta.url),"utf8");
+ const updater=await readFile(new URL("../../src-tauri/vendor/tauri-plugin-updater/src/updater.rs",import.meta.url),"utf8");
+ const start=source.indexOf("fn check(&self) -> BoxFuture<'_, Result<Option<CheckedUpdate<Update>>");
+ assert.ok(start>=0);
+ const check=source.slice(start,source.indexOf("fn notify(&self, version: &str)",start));
+ assert.match(check,/\.on_before_exit\(move \|\| \{[\s\S]*?Phase::Launched[\s\S]*?diagnostics::flush\(\);\s*app\.cleanup_before_exit\(\);/);
+ assert.equal((source.match(/Phase::Launched/g)||[]).length,1,"no unreachable post-install launch record");
+ assert.match(updater,/windows_launch::after_launch\(launch_result as isize,[\s\S]*?on_before_exit\(\);[\s\S]*?std::process::exit\(0\)/);
+});
 
 test("diagnostic export works without a ready business owner and failure does not leak native errors",async()=>{
  const w=new Window(),prior={window:globalThis.window,document:globalThis.document,IS_REACT_ACT_ENVIRONMENT:globalThis.IS_REACT_ACT_ENVIRONMENT};
