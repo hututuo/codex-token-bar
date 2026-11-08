@@ -250,6 +250,10 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
             guard let historyIndex = try usageHistoryIndex(
                 for: sessionFiles,
                 onProgress: { progress in
+                    // Routine compact work intentionally has no file-progress
+                    // lifecycle. Forward only its established migration stream;
+                    // an opening hint would otherwise survive a silent success.
+                    guard progress.phase != .preparing else { return }
                     if progress.phase == .migrating {
                         structureMigrationReported = true
                     }

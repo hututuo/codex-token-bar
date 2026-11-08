@@ -58,6 +58,12 @@ final class CodexUsageAnalyzerTests: XCTestCase {
             XCTAssertEqual(progress.values.last?.phase, .complete)
             XCTAssertEqual(progress.values.last?.fraction, 1)
         }
+        let compactProgress = PreciseIndexProgressProbe()
+        let compact = try CodexUsageAnalyzer(dataSource: dataSource(for: home))
+            .loadCompactSummary(onProgress: { compactProgress.append($0) })
+        XCTAssertEqual(compact?.totalTokens, 120)
+        XCTAssertFalse(compactProgress.values.contains { $0.phase == .preparing },
+            "A silent compact success must not leave an active opening hint")
         XCTAssertEqual(try Data(contentsOf: file), original)
     }
 
