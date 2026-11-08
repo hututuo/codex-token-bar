@@ -4,6 +4,18 @@ import Testing
 
 @Suite("Parser behavior")
 struct ParserBehaviorTests {
+    @Test(arguments: TranscriptFamily.allCases)
+    func stateProjectionSelectsTheLiveFamilyAndKeepsIndependentValueCopies(_ family: TranscriptFamily) {
+        var parser=TranscriptParser(family:family,agentId:"/fixture/session",fileID:17)
+        let original=parser
+        let before=parser.state
+        parser.noteMalformedLine()
+        #expect(parser.state.source == before.source)
+        #expect(parser.state.malformedLines == before.malformedLines + 1)
+        #expect(original.state.malformedLines == before.malformedLines)
+        #expect(family.sources.contains(parser.state.source))
+    }
+
     static func run(_ family: TranscriptFamily, _ lines: [String], path: String = "/tmp/agent.jsonl", deduper: inout Deduper, fileID: FileID = 0) -> (TranscriptParser, [ResponseUpsert]) {
         var parser = TranscriptParser(family: family, agentId: path, fileID: fileID)
         var upserts: [ResponseUpsert] = []

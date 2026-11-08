@@ -184,6 +184,12 @@ jobs:
             --require testEveryDiscoveryUsesTheCardWidthAndWrapsAtNarrowWidths \
             --require testCompactQuotaDotPixelsStayInsideTrackAndMatchMorphEndpoint \
             --require testDiagnosticsBundleAllowlistRemovesSecretsAndPaths \
+            --require testRetainedPhysicalHandleKeepsFreshRowsAndNamespaceWithoutRepeatedOpens \
+            --require testRetainedHandleRechecksSealedOwnerAndRouteOnEveryOperation \
+            --require testRetainedHandlePreservesRollbackAndIndependentCommits \
+            --require testRetainedHandleDoesNotKeepReadingAReplacedPhysicalFile \
+            --require testRetainedHandleRejectsValidPhysicalAReplacementAndBlockedAdmission \
+            --require testRetainedPhysicalConnectionSerializesConcurrentTransactions \
             --require testDiagnosticsCollectionLeavesDatabaseAndSourceTreeUnchanged \
             --require testDiagnosticsIgnoresHeldSQLiteExclusiveLock \
             --require testDiagnosticsAllowsDarwinTemporaryAliasButNotUserDirectoryLinks \

@@ -43,3 +43,8 @@
 - Default macOS discovery includes `~/.gemini/antigravity-acp` and Orca's isolated stores under `~/Library/Application Support/orca/antigravity-chat/{antigravity-acp,antigravity-cli,antigravity}` alongside the original standalone stores. It does not depend on the Token Bar process inheriting Orca's `GEMINI_HOME`.
 - A custom parent directory expands its known store children, including ACP; direct store and `conversations` selections remain supported. The ledger and live/reporting monitor share this resolver. Existing parser identities, duplicate suppression, backup exclusion and reporting consent are unchanged.
 - `TranscriptLocationsTests` is a local addition. It uses isolated SQLite databases to verify discovery, watch roots, conversation-step deduplication and a new Orca WAL completion. The pinned upstream revision and its original file hashes remain unchanged; patch/addition hashes are recorded separately.
+
+## Local snapshot projection performance (2026-11-09)
+
+- Swift `TranscriptParser.state` selects its one initialized family directly. The former nil-coalescing autoclosure chain repeatedly copied the aggregate parser during snapshot counts/warnings. Value semantics, parser state, errors, usage and reporting remain unchanged. Regression coverage exercises every family and independent copied state.
+- Windows uses reference-based parser instances with direct state properties, so this Swift-specific aggregate-copy optimization is not applied there. The upstream pin and original hashes stay unchanged; only local patch hashes are updated.

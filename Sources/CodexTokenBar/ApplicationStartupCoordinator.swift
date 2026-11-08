@@ -23,7 +23,15 @@ final class ApplicationStartupCoordinator: ObservableObject {
     static private(set) var blocksBusinessServices = false
 
     init(prepare: @escaping Prepare = { callback in
-        try await BusinessDatabaseMigration.startProduction(onProgress: callback)
+        do {
+            try await BusinessDatabaseMigration.startProduction(onProgress: callback)
+        } catch {
+            if BusinessSQLiteRoutes.hasPublishedAdmission {
+                await SharedAccountUsageSafetyDatabase.prepareProductionConnection()
+            }
+            throw error
+        }
+        await SharedAccountUsageSafetyDatabase.prepareProductionConnection()
     }, activate: @escaping @MainActor () -> CodexReadyApplicationRuntime? = { CodexReadyApplicationRuntime() },
          productionLifecycle: Bool = true,
          retryDelay: @escaping @Sendable (Int) -> TimeInterval? = LocalRecoveryRetryPolicy.delay) {

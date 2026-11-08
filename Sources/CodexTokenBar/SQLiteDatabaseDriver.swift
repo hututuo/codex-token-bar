@@ -664,6 +664,17 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
     private let fileManager: FileManager
     private let consistency: SQLiteConnectionConsistency
     private let businessStore: BusinessSQLiteStore?
+    // Opt-in for the small, fixed-schema safety store. Reuse SQLite's parsed
+    // physical schema, never an admission decision, transaction or namespace.
+    // Every operation below still checks the route, A identity and owner state
+    // and installs a fresh logical binding. External WAL readers cannot opt in.
+    private let retainsPhysicalConnection: Bool
+    private let physicalConnectionLock = NSRecursiveLock()
+    private var retainedPhysicalConnection: (database: OpaquePointer, identity: String)?
+    private var physicalConnectionDepth = 0
+    #if DEBUG
+    private(set) var physicalOpenCount = 0
+    #endif
     var backingURL: URL { businessStore?.containerURL ?? url }
 
     init(
@@ -674,7 +685,8 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
         enableWAL: Bool = false,
         fileManager: FileManager = .default,
         consistency: SQLiteConnectionConsistency = .ordinary,
-        bypassBusinessRoutes: Bool = false
+        bypassBusinessRoutes: Bool = false,
+        retainsPhysicalConnection: Bool = false
     ) {
         self.url = url
         self.businessStore = bypassBusinessRoutes ? nil : BusinessSQLiteRoutes.store(for: url)
@@ -684,6 +696,14 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
         self.enableWAL = enableWAL
         self.fileManager = fileManager
         self.consistency = consistency
+        self.retainsPhysicalConnection = retainsPhysicalConnection && !createsFileIfMissing && consistency == .ordinary
+    }
+
+    deinit { discardRetainedPhysicalConnection() }
+
+    private func discardRetainedPhysicalConnection() {
+        if let retainedPhysicalConnection { sqlite3_close_v2(retainedPhysicalConnection.database) }
+        retainedPhysicalConnection = nil
     }
 
     func readRows<T>(
@@ -753,6 +773,17 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
     }
 
     func withConnection<T>(_ body: (SQLiteDatabaseConnection) throws -> T) throws -> T {
+        guard retainsPhysicalConnection else { return try withCheckedConnection(body) }
+        physicalConnectionLock.lock()
+        defer { physicalConnectionLock.unlock() }
+        do { return try withCheckedConnection(body) }
+        catch {
+            if physicalConnectionDepth == 0 { discardRetainedPhysicalConnection() }
+            throw error
+        }
+    }
+
+    private func withCheckedConnection<T>(_ body: (SQLiteDatabaseConnection) throws -> T) throws -> T {
         if let businessStore { try BusinessSQLiteRoutes.requireAccess(to: businessStore, readOnly: readOnly) }
         if let scoped = Thread.current.threadDictionary[operationConnectionKey] as? OperationConnection {
             if let businessStore {
@@ -849,8 +880,23 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
             flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
         }
 
+        // Unscoped nested operations keep their previous independent-connection
+        // semantics. Only withOperationConnection deliberately shares a handle.
+        let retain = retainsPhysicalConnection && physicalConnectionDepth == 0
+        let identity = retain ? try operationFileIdentity() : nil
         var database: OpaquePointer?
-        let status = sqlite3_open_v2(openURL.path, &database, flags | SQLITE_OPEN_URI, nil)
+        if retain, let existing = retainedPhysicalConnection {
+            retainedPhysicalConnection = nil
+            if existing.identity == identity { database = existing.database }
+            else { sqlite3_close_v2(existing.database) }
+        }
+        var status = SQLITE_OK
+        if database == nil {
+            status = sqlite3_open_v2(openURL.path, &database, flags | SQLITE_OPEN_URI, nil)
+            #if DEBUG
+            if retain { physicalOpenCount += 1 }
+            #endif
+        }
         guard status == SQLITE_OK, let database else {
             let message = database.map { Self.message(from: $0) } ?? "Unable to open database"
             let errorCode = database.map { Self.extendedErrorCode(from: $0, fallback: status) } ?? status
@@ -866,12 +912,29 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
                 systemErrno: systemErrno
             )
         }
-        defer { sqlite3_close_v2(database) }
+        if retain { physicalConnectionDepth += 1 }
+        var completed = false
+        defer {
+            if retain { physicalConnectionDepth -= 1 }
+            if retain, completed, sqlite3_get_autocommit(database) != 0,
+               sqlite3_next_stmt(database, nil) == nil, let identity {
+                retainedPhysicalConnection = (database, identity)
+            } else {
+                // An abandoned transaction or escaping statement must retain
+                // close_v2 rollback/lifetime semantics, including on errors.
+                sqlite3_close_v2(database)
+            }
+        }
 
         sqlite3_extended_result_codes(database, 1)
         sqlite3_busy_timeout(database, busyTimeoutMilliseconds)
 
         let connection = SQLiteDatabaseConnection(database: database, path: openURL.path)
+        if retain {
+            // query_only belongs to one binding (sealed owner), not the next.
+            // The fresh binding below independently restores the owner's mode.
+            try connection.execute("PRAGMA query_only=OFF")
+        }
         if let businessStore {
             // Changing temp_store deletes all TEMP schema objects. Configure
             // it before installing the logical catalog, never afterwards.
@@ -882,7 +945,9 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
             try connection.execute("PRAGMA journal_mode=WAL;")
             try connection.execute("PRAGMA synchronous=NORMAL;")
         }
-        return try body(connection)
+        let result = try body(connection)
+        completed = true
+        return result
     }
 
     fileprivate static func message(from database: OpaquePointer?) -> String {

@@ -149,7 +149,20 @@ struct TranscriptParser: Sendable {
     }
 
     var state: AgentState {
-        codex?.state ?? claude?.state ?? dsh?.state ?? gemini?.state ?? omp?.state ?? workbuddy?.state ?? kimi?.state ?? grokBuild?.state ?? antigravity!.state
+        // Exactly one parser is initialized. A chain of ?? autoclosures copies
+        // this large aggregate for every fallback during each snapshot scan.
+        // Select the same initialized parser directly; retain value semantics.
+        switch family {
+        case .codex: codex!.state
+        case .claude: claude!.state
+        case .dsh: dsh!.state
+        case .gemini: gemini!.state
+        case .omp: omp!.state
+        case .workbuddy, .workbuddyAi: workbuddy!.state
+        case .kimi: kimi!.state
+        case .grokBuild: grokBuild!.state
+        case .antigravity: antigravity!.state
+        }
     }
 
     /// An Antigravity database without the expected tables (`unsupportedFormat`).

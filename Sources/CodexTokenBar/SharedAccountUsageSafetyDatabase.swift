@@ -10,6 +10,15 @@ final class SharedAccountUsageSafetyDatabase: @unchecked Sendable {
     static let shared = SharedAccountUsageSafetyDatabase(
         claimsObserverOwnership: true
     )
+    /// Called only after production routing is installed, before UI activation.
+    /// Initialize and parse the large physical catalog on a utility worker.
+    /// The payload is deliberately discarded: UI reads still observe current
+    /// committed state under the same recovery and cross-process gates.
+    static func prepareProductionConnection() async {
+        await Task.detached(priority: .utility) {
+            _ = shared.load(.preciseContinuity)
+        }.value
+    }
     let processInstanceID = UUID()
     static let didChangeNotification = Notification.Name(
         "com.codextokenbar.shared-account-safety-did-change"
@@ -157,7 +166,8 @@ final class SharedAccountUsageSafetyDatabase: @unchecked Sendable {
                 url: databaseURL,
                 createsFileIfMissing: false,
                 busyTimeoutMilliseconds: 5_000,
-                fileManager: fileManager
+                fileManager: fileManager,
+                retainsPhysicalConnection: true
             )
             if claimsObserverOwnership {
                 resolvedObserverOwnerLock = try? CodexCrossProcessFileLock(

@@ -700,6 +700,10 @@
       "reason": "Add local display-stop and optional local-only Claude displayTitle metadata to parser state, including same-priority explicit rename updates while preserving the first user-text fallback.",
       "sha256": "337b87c0f66b46c618a8e24647e2cec3d59097ec67893ad26f58b606f3be9dd5"
     },
+    "macos/Sources/AgentSpeedCore/Parsing/TranscriptParser.swift": {
+      "reason": "Select the one initialized parser directly when projecting AgentState; avoid nil-coalescing autoclosure copies of the aggregate in each live snapshot without changing value semantics or accounting.",
+      "sha256": "e43872576849c108bb42b45d43a256f1a6a6cd627f18131e0f007b6943fbd6b5"
+    },
     "macos/Sources/AgentSpeedCore/Pricing/BundledPriceAssets.swift": {
       "reason": "Price assets only from reviewed upstream f32bc2945bce5dcfc94d6befb28dcb2e0abc9532: version 4 adds five Kimi/MiMo entries and documented Kimi aliases. Existing model prices, tiers and periods, including the GPT-6.1 Terra fix, are unchanged. SDK code remains pinned.",
       "sha256": "8b8582e509dcebdcd7719ec9e6a9684ea99e6737bbe54fc0ca8492677d47dd87"
@@ -725,8 +729,8 @@
       "sha256": "2dccb1b1319ccdf24fe8392bdd998c21f8a71197f0c54abab2d9c2852d72bcc0"
     },
     "macos/Tests/AgentSpeedCoreTests/ParserBehaviorTests.swift": {
-      "reason": "Add local regression coverage for bounded Claude display titles, metadata precedence and rename updates, property ordering, stable fallback, per-subagent labels, Unicode/control cleanup, interrupt handling and oversized text.",
-      "sha256": "6fa28e1e924ee607a4aa18e599ad772ec28da649c436ab2c22867c95db2d653b"
+      "reason": "Add local regression coverage for bounded Claude display titles, metadata precedence and rename updates, property ordering, stable fallback, per-subagent labels, Unicode/control cleanup, interrupt handling and oversized text. Verify every parser family retains live state and independent value copies after direct state projection.",
+      "sha256": "214f3a4c6af9dd0252576deb7ab19411c7cd3e5ba3b5cf697cc77de1112aaf5c"
     },
     "macos/Tests/AgentSpeedCoreTests/ProtobufTests.swift": {
       "reason": "Break the repeated-scalar protobuf fixture into typed byte-array appends for Swift 6 compiler compatibility; emitted fixture bytes and assertions are unchanged.",
