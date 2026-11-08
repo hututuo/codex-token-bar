@@ -60,6 +60,23 @@ fn diagnostic_collector_ignores_exclusive_sqlite_lock() {
     connection.execute_batch("ROLLBACK").unwrap();
 }
 #[test]
+fn diagnostic_progress_timestamp_retains_observation_time_after_queue_delay() {
+    let root=tempfile::tempdir().unwrap();let c=Configuration::for_home(root.path().canonicalize().unwrap());
+    let mut journal=journal::Journal::new(c.journal.clone());
+    let observed=now_ms().saturating_sub(60_000);
+    journal.record_at(Area::BackendProgress,Phase::Completed,&[("completed",10)],observed);
+    journal.record_at(Area::UiProgress,Phase::Completed,&[("completed",10)],observed+100);
+    drop(journal);
+    let result=collect::collect("events",&c);
+    assert_eq!(result["events"][0]["at"],observed);
+    assert_eq!(result["events"][1]["at"],observed+100);
+    let mut probes=BTreeMap::new();probes.insert("events".into(),result);
+    let bytes=collect::archive(&probes).unwrap();let mut zip=zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+    let mut summary=String::new();zip.by_name("SUMMARY.md").unwrap().read_to_string(&mut summary).unwrap();
+    assert!(summary.contains(&format!("Last backend progress (Unix ms): {observed}")));
+    assert!(summary.contains(&format!("Last UI progress (Unix ms): {}",observed+100)));
+}
+#[test]
 fn diagnostic_restart_retains_prior_failed_session() {
     let root=tempfile::tempdir().unwrap();let path=root.path().canonicalize().unwrap().join("journal");
     let mut a=journal::Journal::new(path.clone());a.record(Area::Startup,Phase::Started,&[]);a.record(Area::Migration,Phase::Failed,&[("code",5)]);
