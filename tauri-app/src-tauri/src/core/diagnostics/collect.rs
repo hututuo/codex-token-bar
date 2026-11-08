@@ -24,7 +24,7 @@ pub(super) fn collect(probe:&str,c:&Configuration)->Value {
     match probe {
         "environment"=>json!({"status":"ok","platform":if cfg!(windows){"windows"}else if cfg!(target_os="macos"){"macos"}else{"linux"},
             "architecture":std::env::consts::ARCH,"version":version(env!("CARGO_PKG_VERSION")),
-            "processorCount":std::thread::available_parallelism().map(|n|n.get()).unwrap_or(0),
+            "processorCount":std::thread::available_parallelism().map(|n|n.get()).unwrap_or(0),"processCount":process_count(),
             "freeBytes":fs2::available_space(&c.home).ok()}),
         "events"|"installation"=>{
             let root=if probe=="events"{c.journal.clone()}else{c.journal.join("installations")};
@@ -120,6 +120,21 @@ pub(super) fn collect(probe:&str,c:&Configuration)->Value {
         _=>json!({"status":"unavailable"})
     }
 }
+fn process_count()->Option<u64>{
+    #[cfg(windows)] {
+        use windows_sys::Win32::{Foundation::{CloseHandle,INVALID_HANDLE_VALUE},System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot,Process32FirstW,Process32NextW,PROCESSENTRY32W,TH32CS_SNAPPROCESS}};
+        let handle=unsafe{CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS,0)};if handle==INVALID_HANDLE_VALUE{return None}
+        let mut entry:PROCESSENTRY32W=unsafe{std::mem::zeroed()};entry.dwSize=std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut found=unsafe{Process32FirstW(handle,&mut entry)};let mut count=0;
+        while found!=0 {
+            let length=entry.szExeFile.iter().position(|x|*x==0).unwrap_or(entry.szExeFile.len());
+            if String::from_utf16_lossy(&entry.szExeFile[..length]).eq_ignore_ascii_case("codex-token-bar.exe"){count+=1;}
+            found=unsafe{Process32NextW(handle,&mut entry)};
+        }
+        unsafe{CloseHandle(handle)};Some(count)
+    }
+    #[cfg(not(windows))]{None}
+}
 pub(super) fn archive(probes:&BTreeMap<String,Value>)->Result<Vec<u8>,()> {
     let probes:BTreeMap<String,Value>=probes.iter().map(|(k,v)|(k.clone(),super::privacy::project(v,0))).collect();
     use zip::{ZipWriter,write::SimpleFileOptions,CompressionMethod};
@@ -141,6 +156,10 @@ pub(super) fn archive(probes:&BTreeMap<String,Value>)->Result<Vec<u8>,()> {
     let statuses=PROBES.iter().map(|name|format!("- {name}: {}",probes.get(*name).and_then(|v|v["status"].as_str()).unwrap_or("unavailable"))).collect::<Vec<_>>().join("\n");
     let summary=format!("# Codex Token Bar 诊断包 / Diagnostic bundle\n\nFormat: tokenbar-diagnostics-v1\n\n{statuses}\n\n后端最后推进 / Last backend progress (Unix ms): {}\nUI 最后收到进度 / Last UI progress (Unix ms): {}\n\n0/unavailable 表示证据缺失，不代表正常、空账或数据丢失。\nlaunched 仅代表安装器启动，confirmed 才是目标版本运行确认。\n没有终止记录不等于已经证明崩溃。\n\nOnly fixed-schema events and approved numeric metadata are included.\nNo credentials, conversations, raw paths, database contents, environment or memory dumps.\nNo business database opens, recovery, migration, checkpoints, repairs or network requests.\nTimeout/unavailable probes are incomplete, not a clean bill of health.\n",last("backendProgress"),last("uiProgress"));
     archive.start_file("SUMMARY.md",options).map_err(|_|())?;archive.write_all(summary.as_bytes()).map_err(|_|())?;filenames.push("SUMMARY.md".into());
+    let mut latest=BTreeMap::new();
+    if let Some(rows)=events{for row in rows{if let Some(area)=row["area"].as_str(){latest.insert(area.to_string(),row.clone());}}}
+    archive.start_file("state/latest-observations.json",options).map_err(|_|())?;
+    archive.write_all(&serde_json::to_vec_pretty(&latest).map_err(|_|())?).map_err(|_|())?;filenames.push("state/latest-observations.json".into());
     archive.start_file("manifest.json",options).map_err(|_|())?;
     archive.write_all(&serde_json::to_vec(&json!({"schema":1,"privacy":"allowlist-only","databaseOpened":false,"files":filenames})).map_err(|_|())?).map_err(|_|())?;
     Ok(archive.finish().map_err(|_|())?.into_inner())
@@ -164,11 +183,18 @@ pub(crate) fn export(output:&Path,c:&Configuration,executable:&Path,timeout:Dura
     }
     files::create(output,&archive(&results)?)
 }
+pub(crate) fn export_in_child(output:&Path,c:&Configuration,executable:&Path)->Result<(),()> {
+    let mut command=Command::new(executable);
+    command.arg("--export-diagnostics").arg("--output").arg(output).arg("--diagnostics-home").arg(&c.home);
+    command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    #[cfg(windows)] {use std::os::windows::process::CommandExt;command.creation_flags(0x0800_0000);}
+    if bounded_child(command,Duration::from_secs(28))=="ok"{Ok(())}else{Err(())}
+}
 pub(super) fn bounded_child(mut command:Command,timeout:Duration)->&'static str {
     let Ok(mut child)=command.spawn() else{return "unavailable"};let start=Instant::now();
     loop {
         match child.try_wait(){Ok(Some(status))=>return if status.success(){"ok"}else{"failed"},Err(_)=>{let _=child.kill();return "failed"},_=>{}}
-        if start.elapsed()>=timeout.min(Duration::from_secs(10)){let _=child.kill();return "timeout"}
+        if start.elapsed()>=timeout.min(Duration::from_secs(35)){let _=child.kill();return "timeout"}
         std::thread::sleep(Duration::from_millis(20));
     }
 }

@@ -31,6 +31,16 @@ fn diagnostic_collection_never_opens_or_changes_business_database() {
     assert_eq!(fs::read_dir(&c.support).unwrap().count(),1);
 }
 #[test]
+fn diagnostic_collector_ignores_exclusive_sqlite_lock() {
+    let root=tempfile::tempdir().unwrap();let c=Configuration::for_home(root.path().canonicalize().unwrap());fs::create_dir_all(&c.support).unwrap();
+    let path=c.support.join("codex-ledger.sqlite");let connection=rusqlite::Connection::open(&path).unwrap();
+    connection.execute_batch("CREATE TABLE secret(body TEXT);INSERT INTO secret VALUES('PRIVATE CHAT');BEGIN EXCLUSIVE;").unwrap();
+    let before=fs::read(&path).unwrap();let names:Vec<_>=fs::read_dir(&c.support).unwrap().map(|e|e.unwrap().file_name()).collect();let at=Instant::now();
+    assert_eq!(collect::collect("storage",&c)["databaseQueriesPerformed"],false);assert!(at.elapsed()<Duration::from_secs(1));
+    assert_eq!(fs::read(&path).unwrap(),before);assert_eq!(fs::read_dir(&c.support).unwrap().count(),names.len());
+    connection.execute_batch("ROLLBACK").unwrap();
+}
+#[test]
 fn diagnostic_restart_retains_prior_failed_session() {
     let root=tempfile::tempdir().unwrap();let path=root.path().canonicalize().unwrap().join("journal");
     let mut a=journal::Journal::new(path.clone());a.record(Area::Startup,Phase::Started,&[]);a.record(Area::Migration,Phase::Failed,&[("code",5)]);

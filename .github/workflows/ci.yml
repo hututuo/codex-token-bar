@@ -185,6 +185,7 @@ jobs:
             --require testCompactQuotaDotPixelsStayInsideTrackAndMatchMorphEndpoint \
             --require testDiagnosticsBundleAllowlistRemovesSecretsAndPaths \
             --require testDiagnosticsCollectionLeavesDatabaseAndSourceTreeUnchanged \
+            --require testDiagnosticsIgnoresHeldSQLiteExclusiveLock \
             --require testDiagnosticsJournalPreservesPreviousFailedLaunch \
             --require testDiagnosticsTimeoutProducesPartialEvidenceWithoutHanging \
             --require testInstallationConfirmationRequiresMatchingTargetBuildAndLocation \
@@ -387,6 +388,7 @@ jobs:
               --require diagnostics_modes_never_change_managed_legacy_import_or_later_target_rows \
               --require diagnostic_allowlist_drops_secret_baits_and_paths \
               --require diagnostic_collection_never_opens_or_changes_business_database \
+              --require diagnostic_collector_ignores_exclusive_sqlite_lock \
               --require diagnostic_restart_retains_prior_failed_session \
               --require diagnostic_timeout_is_bounded_and_partial_zip_is_valid \
               --require panic_guard_notifies_an_already_waiting_cold_reader -- \

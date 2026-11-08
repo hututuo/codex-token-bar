@@ -1,6 +1,6 @@
 use super::{run_blocking_command,window_auth::require_window_label};
 use crate::core::diagnostics::{self,Area,Phase,Configuration};
-use std::{sync::atomic::{AtomicBool,Ordering},time::Duration};
+use std::sync::atomic::{AtomicBool,Ordering};
 static EXPORTING:AtomicBool=AtomicBool::new(false);
 
 #[tauri::command]
@@ -16,7 +16,7 @@ pub async fn export_diagnostics(window:tauri::WebviewWindow)->Result<String,Stri
         let output=folder.join(format!("TokenBar-Diagnostics-{}.zip",uuid::Uuid::new_v4()));
         let exe=std::env::current_exe().map_err(|_|"无法定位独立采集入口")?;
         // The command never waits for the startup gate or a business lease.
-        diagnostics::export(&output,&configuration,&exe,Duration::from_secs(3))
+        diagnostics::export_in_child(&output,&configuration,&exe)
             .map_err(|_|"导出失败，请使用独立诊断工具并选择可写的新文件位置".to_string())?;
         Ok(output.to_string_lossy().into_owned())
     }).await

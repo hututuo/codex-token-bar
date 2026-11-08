@@ -32,11 +32,13 @@ public enum DiagnosticCollector {
             }
             if let app = c.application {
                 info["applicationPresent"] = FileManager.default.fileExists(atPath: app.path)
+                info["quarantinePresent"] = getxattr(app.path,"com.apple.quarantine",nil,0,0,XATTR_NOFOLLOW)>=0
                 if let data = try? DiagnosticFiles.read(app.appendingPathComponent("Contents/Info.plist")),
                    let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String:Any] {
                     info["version"] = DiagnosticEvent.version(plist["CFBundleShortVersionString"] as? String ?? "")
                     info["build"] = DiagnosticEvent.version(plist["CFBundleVersion"] as? String ?? "")
                     info["expectedBundleIdentity"] = plist["CFBundleIdentifier"] as? String == "local.codex.token-bar"
+                    info["updateKeyPresent"] = !(plist["SUPublicEDKey"] as? String ?? "").isEmpty
                 }
             }
             return info
@@ -141,6 +143,11 @@ public enum DiagnosticCollector {
                 if let build=header["build_version"] as? String{row["build"]=DiagnosticEvent.version(build)}
                 if let v=header["app_version"] as? String{row["version"]=DiagnosticEvent.version(v)}
                 if let type=header["bug_type"] as? String,let n=Int(type){row["bugType"]=n}
+                if let split=bytes.firstIndex(of:10),let body=try? JSONSerialization.jsonObject(with:Data(bytes.suffix(from:bytes.index(after:split)))) as? [String:Any],
+                   let exception=body["exception"] as? [String:Any] {
+                    if let type=exception["type"] as? String,["EXC_BAD_ACCESS","EXC_CRASH","EXC_RESOURCE","EXC_GUARD","EXC_BREAKPOINT","EXC_BAD_INSTRUCTION"].contains(type){row["exceptionType"]=type}
+                    if let signal=exception["signal"] as? String,["SIGABRT","SIGSEGV","SIGBUS","SIGILL","SIGTRAP","SIGKILL","SIGTERM"].contains(signal){row["signal"]=signal}
+                }
                 rows.append(row)
             }
             return ["status":"ok","reports":rows,"stacksAndMemoryExcluded":true]
@@ -174,6 +181,11 @@ public enum DiagnosticCollector {
         后端最后推进 / Last backend progress (Unix ms): \(backend?["at"] as? Int64 ?? 0)
         UI 最后收到进度 / Last UI progress (Unix ms): \(ui?["at"] as? Int64 ?? 0)
 
+        index stage_code: 1=assessment, 2=access, 3=validation, 4=schema,
+        5=ledger, 6=accounting, 7=projection, 8=retention;
+        101=process lock, 102=file lock, 103=candidate, 104=compatibility,
+        105=integrity, 106=schema/provenance, 107=accounting, 108=finalize open.
+
         0 或 unavailable 表示没有可用证据，不代表正常、空账或数据丢失。
         安装器 launched 只表示已启动；confirmed 才表示目标版本运行确认。
         没有终止记录仅表示上次运行未确认正常退出，不能据此断言崩溃。
@@ -186,6 +198,9 @@ public enum DiagnosticCollector {
         Older releases may not have recorded the missing events. Retention is bounded.
         """
         entries.append(("SUMMARY.md", Data(summary.utf8)))
+        var latest:[String:[String:Any]]=[:]
+        for row in rows {if let area=row["area"] as? String {latest[area]=row}}
+        entries.append(("state/latest-observations.json",try JSONSerialization.data(withJSONObject:latest,options:[.sortedKeys,.prettyPrinted])))
         entries.append(("manifest.json", try JSONSerialization.data(withJSONObject: ["schema":1,
             "privacy":"allowlist-only", "databaseOpened":false, "files":entries.map(\.0)], options: [.sortedKeys])))
         return try DiagnosticZIP.encode(entries)

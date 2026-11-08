@@ -1224,7 +1224,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             DiagnosticRuntime.record(.index, opened ? .ready : .failed)
         }
         func reportOpening(_ detail: String, step: String) {
-            DiagnosticRuntime.record(.index, .progress)
+            DiagnosticRuntime.indexStep(step)
             openingTrace?.mark(step)
             // An unresolved legacy migration owns its progress/denominator.
             // Routine opening diagnostics must not erase that durable state.

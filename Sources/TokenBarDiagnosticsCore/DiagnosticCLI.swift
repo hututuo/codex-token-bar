@@ -76,6 +76,11 @@ public enum DiagnosticCLI {
     public static func executableURL() -> URL {
         Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])
     }
+    public static func exportInChild(to output: URL, configuration: DiagnosticConfiguration, executable: URL) -> Bool {
+        var args=["--export-diagnostics","--output",output.path,"--diagnostics-home",configuration.home.path]
+        if let app=configuration.application{args += ["--diagnostics-app",app.path]}
+        return run(executable:executable,arguments:args,timeout:30)=="ok"
+    }
     public static func installedApplication() -> URL? {
         let own = executableURL().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         if own.pathExtension == "app" { return own }
@@ -87,7 +92,7 @@ public enum DiagnosticCLI {
         process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
         process.standardInput = FileHandle.nullDevice
         do { try process.run() } catch { return "unavailable" }
-        let deadline = ProcessInfo.processInfo.systemUptime + min(10, max(0.05, timeout))
+        let deadline = ProcessInfo.processInfo.systemUptime + min(35, max(0.05, timeout))
         while process.isRunning && ProcessInfo.processInfo.systemUptime < deadline { Thread.sleep(forTimeInterval:0.02) }
         if process.isRunning {
             // This PID is the child we just launched; never kill the main app.

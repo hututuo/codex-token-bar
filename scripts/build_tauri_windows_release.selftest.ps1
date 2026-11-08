@@ -39,7 +39,17 @@ function global:node {
     }
     $global:LASTEXITCODE = 0
 }
-function global:cargo { $global:LASTEXITCODE = 0 }
+function global:cargo {
+    if ($args -contains 'tokenbar-diagnostics') {
+        Assert-True ($args -contains '--locked' -and $args -contains '--release') 'Diagnostic helper must use the locked release build'
+        $TargetIndex = [Array]::IndexOf(@($args), '--target')
+        Assert-True ($TargetIndex -ge 0) 'Diagnostic helper target architecture is missing'
+        $Output = Join-Path $global:ReleaseSelfTestRoot ("tauri-app\src-tauri\target\{0}\release" -f $args[$TargetIndex + 1])
+        New-Item -ItemType Directory -Force -Path $Output | Out-Null
+        [IO.File]::WriteAllText((Join-Path $Output 'tokenbar-diagnostics.exe'), 'fixture-independent-diagnostics')
+    }
+    $global:LASTEXITCODE = 0
+}
 function global:dotnet {
     $Arguments = @($args)
     $global:ReleaseSelfTestDotnetCalls.Add($Arguments) | Out-Null
@@ -62,6 +72,7 @@ function global:dotnet {
     $global:LASTEXITCODE = 0
 }
 function global:rustup { $global:LASTEXITCODE = 0 }
+function global:python { $global:LASTEXITCODE = 0 }
 function global:rustc {
     $global:LASTEXITCODE = 0
     if ($args -contains "sysroot") { return (Join-Path $global:ReleaseSelfTestRoot "fake-sysroot") }

@@ -213,6 +213,11 @@ function Build-Target {
     }
     $DiagnosticExecutable = Join-Path $TauriDir ("src-tauri\target\{0}\release\tokenbar-diagnostics.exe" -f $RustTarget)
     if (-not (Test-Path -LiteralPath $DiagnosticExecutable)) { throw 'Standalone diagnostic helper was not built.' }
+    if ($Label -eq 'x64') {
+        Invoke-Checked 'standalone diagnostic production smoke' {
+            python (Join-Path $PSScriptRoot 'check_diagnostic_bundle.py') --helper $DiagnosticExecutable --platform windows
+        }
+    }
     $DotnetRuntime = if ($Label -eq "arm64") { "win-arm64" } else { "win-x64" }
     $ReporterOutput = Join-Path $ReporterArtifactsRoot $DotnetRuntime
     # Preserve each MSBuild property as one argv token for native dotnet and the PS5.1 fixture.

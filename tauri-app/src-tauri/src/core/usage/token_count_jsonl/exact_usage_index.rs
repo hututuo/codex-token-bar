@@ -290,13 +290,22 @@ struct IndexPreparationTrace {
 
 impl IndexPreparationTrace {
     fn new(stage: &'static str) -> Self {
-        Self { stage, started: Instant::now(), complete: false }
+        let value=Self { stage, started: Instant::now(), complete: false };
+        value.observe_start();value
+    }
+
+    fn diagnostic_stage(&self)->i64 {
+        ["in_process_lock","file_lock","candidate_prepare","compatibility_probe","open_integrity","schema_and_provenance","accounting_migration","finalize_open"]
+            .iter().position(|s|*s==self.stage).map(|n|n as i64+101).unwrap_or(0)
+    }
+    fn observe_start(&self){
+        crate::core::diagnostics::record(crate::core::diagnostics::Area::Index,crate::core::diagnostics::Phase::Started,&[("stage_code",self.diagnostic_stage())]);
     }
 
     fn record(&self, status: &str) {
         crate::core::diagnostics::record(crate::core::diagnostics::Area::Index,
             if status=="ok"{crate::core::diagnostics::Phase::Completed}else{crate::core::diagnostics::Phase::Failed},
-            &[("elapsed_ms",self.started.elapsed().as_millis().min(i64::MAX as u128) as i64)]);
+            &[("elapsed_ms",self.started.elapsed().as_millis().min(i64::MAX as u128) as i64),("stage_code",self.diagnostic_stage())]);
         startup_trace::mark_performance(format!(
             "exact_prepare stage={} elapsed_ms={} status={status}",
             self.stage, self.started.elapsed().as_millis(),
@@ -307,6 +316,7 @@ impl IndexPreparationTrace {
         self.record("ok");
         self.stage = stage;
         self.started = Instant::now();
+        self.observe_start();
     }
 
     fn finish(mut self) {

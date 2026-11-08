@@ -6,6 +6,11 @@ AllowSkipFiles off
 Var TokenBarDiagnosticFile
 Var TokenBarDiagnosticSession
 Var TokenBarDiagnosticSequence
+!ifdef VERSION
+  !define TOKENBAR_DIAGNOSTIC_VERSION "${VERSION}"
+!else
+  !define TOKENBAR_DIAGNOSTIC_VERSION "unknown"
+!endif
 ; Fixed-schema receipts only. No install path, account, command line or text.
 !macro TokenBarDiagnostic phase
   Push $0
@@ -17,7 +22,7 @@ Var TokenBarDiagnosticSequence
     Pop $1
     System::Int64Op $1 / 10000
     Pop $1
-    FileWrite $TokenBarDiagnosticFile '{$\"schema$\":1,$\"session$\":$\"$TokenBarDiagnosticSession$\",$\"sequence$\":$TokenBarDiagnosticSequence,$\"at$\":$1,$\"area$\":$\"installer$\",$\"phase$\":$\"${phase}$\",$\"version$\":$\"${VERSION}$\",$\"build$\":$\"unknown$\",$\"metrics$\":{}}$\r$\n'
+    FileWrite $TokenBarDiagnosticFile '{$\"schema$\":1,$\"session$\":$\"$TokenBarDiagnosticSession$\",$\"sequence$\":$TokenBarDiagnosticSequence,$\"at$\":$1,$\"area$\":$\"installer$\",$\"phase$\":$\"${phase}$\",$\"version$\":$\"${TOKENBAR_DIAGNOSTIC_VERSION}$\",$\"build$\":$\"unknown$\",$\"metrics$\":{}}$\r$\n'
     ClearErrors
   ${EndIf}
   Pop $1

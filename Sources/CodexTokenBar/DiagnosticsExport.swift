@@ -31,6 +31,10 @@ enum DiagnosticRuntime {
             ["completed":Int64(value.completed),"total":Int64(value.total)])
     }
     static func migrationPhase(_ value: String) { record(.migration, DiagnosticPhase(rawValue:value) ?? .progress) }
+    static func indexStep(_ value:String) {
+        let steps=["assess.begin","access.begin","validate.begin","schema.begin","ledger.begin","accounting.begin","projection.begin","retention.begin"]
+        record(.index,.started,["stage_code":Int64((steps.firstIndex(of:value) ?? -1)+1)])
+    }
 }
 
 @MainActor
@@ -51,8 +55,7 @@ final class DiagnosticsExportController: ObservableObject {
             let configuration = DiagnosticConfiguration.production
             Task {
                 let success = await Task.detached(priority:.utility) {
-                    do { try DiagnosticCLI.export(to: destination, configuration:configuration, executable:helper); return true }
-                    catch { return false }
+                    DiagnosticCLI.exportInChild(to:destination,configuration:configuration,executable:helper)
                 }.value
                 self.exporting = false
                 self.result = success ? "诊断包已保存，可查看后发送给支持人员。" : "导出失败，请选择可写的新文件位置。"

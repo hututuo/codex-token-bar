@@ -5,7 +5,7 @@ mod collect;
 mod files;
 mod privacy;
 pub(crate) use journal::{record, flush};
-pub(crate) use collect::{cli, export, Configuration};
+pub(crate) use collect::{cli, export_in_child, Configuration};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 

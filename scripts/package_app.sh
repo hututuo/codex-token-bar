@@ -189,6 +189,7 @@ codesign --verify --deep --strict --verbose=2 "$APP_DIR" >/dev/null
 # Exercise the signed executable's real resource lookup outside the checkout.
 # This mode exits before creating App/runtime owners or touching user data.
 (cd /private/tmp && "$MACOS_DIR/$PRODUCT_NAME" --verify-bundled-resources)
+python3 "$ROOT_DIR/scripts/check_diagnostic_bundle.py" --helper "$MACOS_DIR/TokenBarDiagnostics" --platform macos
 
 echo "$APP_DIR"
 

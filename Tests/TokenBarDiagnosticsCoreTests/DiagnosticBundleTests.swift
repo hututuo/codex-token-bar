@@ -1,6 +1,7 @@
 import Foundation
 import Darwin
 import XCTest
+import SQLite3
 @testable import TokenBarDiagnosticsCore
 
 final class DiagnosticBundleTests: XCTestCase {
@@ -42,6 +43,22 @@ final class DiagnosticBundleTests: XCTestCase {
         XCTAssertFalse(String(decoding:archive,as:UTF8.self).contains(root.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath:c.journal.path))
         XCTAssertEqual(probes["storage"]?["databaseQueriesPerformed"] as? Bool,false)
+    }
+    func testDiagnosticsIgnoresHeldSQLiteExclusiveLock() throws {
+        let root=try fixture(),c=DiagnosticConfiguration(home:root)
+        try FileManager.default.createDirectory(at:c.support,withIntermediateDirectories:true)
+        let path=c.support.appendingPathComponent("codex-ledger.sqlite")
+        var connection:OpaquePointer?
+        XCTAssertEqual(sqlite3_open(path.path,&connection),SQLITE_OK)
+        defer{sqlite3_close(connection)}
+        XCTAssertEqual(sqlite3_exec(connection,"CREATE TABLE secret(body TEXT);INSERT INTO secret VALUES('PRIVATE CHAT');BEGIN EXCLUSIVE;",nil,nil,nil),SQLITE_OK)
+        defer{sqlite3_exec(connection,"ROLLBACK",nil,nil,nil)}
+        let before=try Data(contentsOf:path), names=try FileManager.default.subpathsOfDirectory(atPath:root.path).sorted(),at=Date()
+        let state=DiagnosticCollector.collect(.storage,configuration:c)
+        XCTAssertEqual(state["databaseQueriesPerformed"] as? Bool,false)
+        XCTAssertLessThan(Date().timeIntervalSince(at),1)
+        XCTAssertEqual(try Data(contentsOf:path),before)
+        XCTAssertEqual(try FileManager.default.subpathsOfDirectory(atPath:root.path).sorted(),names)
     }
     func testDiagnosticsJournalPreservesPreviousFailedLaunch() throws {
         let root=try fixture().appendingPathComponent("diagnostics")
