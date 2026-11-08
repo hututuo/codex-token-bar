@@ -1340,7 +1340,7 @@ private struct DashboardModelCostScopePicker: View {
     }
 }
 
-private struct DashboardModelCostChip: View {
+struct DashboardModelCostChip: View {
     let item: FloatingTodayModelUsageItem
     let color: Color
 
@@ -1357,31 +1357,40 @@ private struct DashboardModelCostChip: View {
     }
 
     var body: some View {
-        HStack(spacing: 5) {
-            Circle().fill(color).frame(width: 6, height: 6)
-            Text(item.label.replacingOccurrences(of: #"(?i)^GPT[- ]*"#, with: "", options: .regularExpression))
-                .font(.system(size: 10.5, weight: .semibold))
-                .foregroundStyle(.secondary).lineLimit(2).fixedSize(horizontal:false,vertical:true)
-                .layoutPriority(1)
-            Spacer(minLength: 3)
-            Text(item.tokens == 0 ? "暂无记录" : item.tokens.abbreviatedTokens)
-                .font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary)
-                .monospacedDigit().fixedSize()
-            if item.tokens > 0 {
-                Text(item.valueText(for: .share))
+        // Keep the full identity and amount together; tokens/share use their
+        // own line instead of squeezing version suffixes into a narrow sliver.
+        VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 5) {
+                Circle().fill(color).frame(width: 6, height: 6)
+                Text(item.label.replacingOccurrences(of: #"(?i)^GPT[- ]*"#, with: "", options: .regularExpression))
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(.secondary).truncationMode(.middle)
+                    .layoutPriority(1)
+                Spacer(minLength: 3)
+                Text(amount).font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(.primary).monospacedDigit().fixedSize()
+            }
+            HStack(spacing: 5) {
+                Text(item.tokens == 0 ? "暂无记录" : item.tokens.abbreviatedTokens)
                     .font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary)
                     .monospacedDigit().fixedSize()
+                Spacer(minLength: 3)
+                if item.tokens > 0 {
+                    Text(item.valueText(for: .share))
+                        .font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary)
+                        .monospacedDigit().fixedSize()
+                }
             }
-            Text(amount).font(.system(size: 10.5, weight: .semibold))
-                .foregroundStyle(.primary).monospacedDigit().fixedSize()
+            .padding(.leading, 11)
         }
         .lineLimit(1)
         .padding(.horizontal, 8)
+        .padding(.vertical, 2)
         .frame(maxWidth: .infinity).frame(minHeight: 30)
         .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
             .fill(color.opacity(0.075)))
         .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous)
-            .stroke(color.opacity(0.16), lineWidth: 1))
+            .stroke(color.opacity(0.16), lineWidth: 1).allowsHitTesting(false))
         .help(description)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(description)
