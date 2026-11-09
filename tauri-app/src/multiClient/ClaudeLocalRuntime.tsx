@@ -9,6 +9,7 @@ import {ActivityLiveHistory} from "./activityLiveHistory";
 import {ActivityModelRateSmoother,claudeBarAgentActive} from "./activityRateSmoothing";
 import {ActivityRateUnitControl,useActivityRatePreferences} from "../components/liveRate/ActivityRateUnits";
 import { normalizedModelRates } from "../components/liveRate/modelRatePresentation";
+import { SnapshotEpoch } from "./snapshotEpoch";
 
 export interface ClaudeRuntimeAgent {
   id: string; client: string; parentId: string | null; phase: string; model: string | null;
@@ -25,6 +26,8 @@ export interface ClaudeRuntimeSnapshot {
 }
 const empty: ClaudeRuntimeSnapshot = { enabled: false, capturedAt: null, sourceAvailable: {}, liveOutputTps: 0, liveTotalTps: 0, estimatedShare: 0, modelRates: [], mainAgents: [], subagents: [], latestResponse: null, configurationIssue: null };
 let cached = empty, pending = false, timer: ReturnType<typeof setTimeout> | undefined;
+const observationEpoch = new SnapshotEpoch();
+let cachedSourceKey: string | undefined;
 const listeners = new Set<() => void>();
 const activityLiveHistory = new ActivityLiveHistory();
 const barActivityLiveHistory = new ActivityLiveHistory();
@@ -46,12 +49,15 @@ export function scopedClaudeEstimateShare(value: number, enabledSources: readonl
 async function poll() {
   if (pending || !listeners.size) return;
   pending = true;
+  const ticket = observationEpoch.capture(), sourceKey = barSourceSelectionKey;
   try {
     const next = await callCommandStrict<ClaudeRuntimeSnapshot>("read_claude_local_runtime_snapshot");
+    if (!observationEpoch.accepts(ticket) || !listeners.size) return;
     // Native command strips all unknown fields and verifies its local helper.
     // A stopped/expired reader cannot leave old activity visible indefinitely.
     const fresh = next.capturedAt && Math.abs(Date.now() - Date.parse(next.capturedAt)) <= 10000;
     cached = next.enabled && fresh ? next : { ...empty, enabled: next.enabled, configurationIssue: next.configurationIssue };
+    cachedSourceKey = sourceKey;
     barModelRates = cached.modelRates.filter(row => !["claudeCode","claudeDesktop"].includes(row.client));
     for (const client of ["claudeCode","claudeDesktop"]) {
       let smoother = claudeBarSmoothers.get(client);
@@ -77,7 +83,7 @@ async function poll() {
     }
     for (const [id, row] of recent) if (Date.parse(row.endedAt) < Date.now() - 1800000) recent.delete(id);
     while (recent.size > 1000) recent.delete(recent.keys().next().value!);
-  } catch { cached = { ...empty, configurationIssue: "本地 Claude 读取器暂不可用" }; barModelRates=[]; claudeBarSmoothers.clear(); }
+  } catch { if (observationEpoch.accepts(ticket)) { cached = { ...empty, configurationIssue: "本地 Claude 读取器暂不可用" }; barModelRates=[]; claudeBarSmoothers.clear(); } }
   finally {
     pending = false;
     listeners.forEach(listener => listener());
@@ -87,23 +93,28 @@ async function poll() {
 function subscribe(listener: () => void) {
   listeners.add(listener);
   if (listeners.size === 1 && isTauriRuntimeAvailable()) void poll();
-  return () => { listeners.delete(listener); if (!listeners.size) clearTimeout(timer); };
+  return () => { listeners.delete(listener); if (!listeners.size) { clearTimeout(timer); observationEpoch.invalidate(); } };
 }
 export function useClaudeLocalRuntime(allowed: readonly string[], monitoringEnabled = true, includeAgentSpeedCodex = false) {
   const { snapshot } = useMultiClientUsage();
   const mode = useActivitySpeedMode();
   const enabled = monitoringEnabled && (includeAgentSpeedCodex || mode === "agentSpeed" || snapshot.preferences.some(p => p.enabled && ["claudeCode", "claudeDesktop", "deepseek", "gemini", "opencode", "antigravity"].includes(p.client)));
   const subscribeWhenEnabled = useCallback((listener: () => void) => enabled ? subscribe(listener) : () => {}, [enabled]);
-  const value = useSyncExternalStore(subscribeWhenEnabled, () => cached, () => empty);
+  const observed = useSyncExternalStore(subscribeWhenEnabled, () => cached, () => empty);
+  const sourceSelectionKey = JSON.stringify(snapshot.preferences.map(p=>[p.client,p.enabled,p.path]));
+  const value = cachedSourceKey === sourceSelectionKey ? observed : empty;
   const selected = new Set(allowed.filter(c => ["claudeCode", "claudeDesktop", "deepseek", "gemini", "opencode", "antigravity"].includes(c) || (c === "codex" && (includeAgentSpeedCodex || mode === "agentSpeed"))));
   const active = (agent: ClaudeRuntimeAgent) => selected.has(agent.client) && !agent.displayStopped && ["generating", "tools"].includes(agent.phase)
     && Date.parse(agent.lastActivity) >= Date.now() - 300000 && Date.parse(agent.lastActivity) <= Date.now() + 5000;
-  const sourceSelectionKey = JSON.stringify(snapshot.preferences.map(p=>[p.client,p.enabled,p.path]));
   useEffect(()=>{
     activityLiveHistory.selectSource(sourceSelectionKey);
     claudeBarActivityLiveHistory.selectSource(sourceSelectionKey);
     if (barSourceSelectionKey !== sourceSelectionKey) {
-      barSourceSelectionKey=sourceSelectionKey; claudeBarSmoothers.clear(); barModelRates=[];
+      observationEpoch.select(sourceSelectionKey);
+      barSourceSelectionKey=sourceSelectionKey; cached=empty;cachedSourceKey=undefined;
+      claudeBarSmoothers.clear(); barModelRates=[];recent.clear();
+      listeners.forEach(listener=>listener());
+      if(listeners.size)void poll();
     }
   },[sourceSelectionKey]);
   const enabledSources = snapshot.preferences.filter(p => p.enabled);
@@ -114,7 +125,7 @@ export function useClaudeLocalRuntime(allowed: readonly string[], monitoringEnab
     // Upstream's fraction is aggregate-only. Do not apply another client's
     // calibration to a filtered client view.
     estimatedShareForSelection,
-    modelRates: enabled ? (mode === "bar" ? barModelRates : value.modelRates).filter(r => selected.has(r.client)) : [],
+    modelRates: enabled && value !== empty ? (mode === "bar" ? barModelRates : value.modelRates).filter(r => selected.has(r.client)) : [],
     mainAgents: enabled ? value.mainAgents.filter(a => ["claudeCode", "claudeDesktop", "antigravity"].includes(a.client) && active(a)) : [], subagents: enabled ? value.subagents.filter(a => ["claudeCode", "claudeDesktop", "antigravity"].includes(a.client) && active(a)) : [],
     rows: enabled ? [...recent.values()].filter(r => selected.has(r.client)).sort((a,b) => Date.parse(b.endedAt) - Date.parse(a.endedAt)) : [],
   };

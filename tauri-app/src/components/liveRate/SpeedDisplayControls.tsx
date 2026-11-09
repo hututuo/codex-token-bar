@@ -1,5 +1,6 @@
 import { useActivitySpeedMode, saveActivitySpeedMode } from "../../multiClient/activitySpeedMode";
 import { activityRateSources, liveModelRateSnapshot } from "./modelRatePresentation";
+import { SnapshotEpoch } from "../../multiClient/snapshotEpoch";
 import { useClaudeLocalRuntime } from "../../multiClient/ClaudeLocalRuntime";
 import { useClientScope } from "../../multiClient/useClientScope";
 import { localAgentSpeedHistory } from "./speedDisplayHistory";
@@ -12,24 +13,29 @@ import { SPEED_PREFERENCES_EVENT, invalidateSpeedColors, readSpeedColors,
   type SpeedColorGrouping, type SpeedDisplayMode, type SpeedDisplayPreferences } from "./speedDisplay";
 
 let current: SpeedDisplayPreferences = { mode: "activity", grouping: "model" };
-let initialized = false;
+let cleanupPreferences: (()=>void) | undefined;
+const preferencesEpoch = new SnapshotEpoch();
 const subscribers = new Set<() => void>();
 const notify = () => { for (const callback of subscribers) callback(); };
 function apply(value: SpeedDisplayPreferences) {
+  preferencesEpoch.invalidate();
   current = { mode: value.mode === "agentSpeed" ? "agentSpeed" : "activity", grouping: value.grouping === "client" ? "client" : "model" };
   notify();
 }
 function initialize() {
-  if (initialized || typeof window === "undefined") return;
-  initialized = true;
-  window.addEventListener("storage", () => { invalidateSpeedColors(); notify(); });
+  if (cleanupPreferences || typeof window === "undefined") return;
+  const storage=()=>{invalidateSpeedColors();notify();};
+  let disposed=false,unlisten:(()=>void)|undefined;
+  window.addEventListener("storage", storage);
   window.addEventListener(SPEED_PREFERENCES_EVENT, notify);
+  cleanupPreferences=()=>{disposed=true;preferencesEpoch.invalidate();unlisten?.();window.removeEventListener("storage",storage);window.removeEventListener(SPEED_PREFERENCES_EVENT,notify);cleanupPreferences=undefined;};
   if (isTauriRuntimeAvailable()) {
-    void listen<SpeedDisplayPreferences>(SPEED_PREFERENCES_EVENT, event => apply(event.payload));
-    void callCommandStrict<SpeedDisplayPreferences>("read_speed_display_preferences").then(apply).catch(() => {});
+    const ticket=preferencesEpoch.capture();
+    void listen<SpeedDisplayPreferences>(SPEED_PREFERENCES_EVENT, event => {if(!disposed)apply(event.payload);}).then(stop=>{if(disposed)stop();else unlisten=stop;}).catch(()=>{});
+    void callCommandStrict<SpeedDisplayPreferences>("read_speed_display_preferences").then(value=>{if(!disposed&&preferencesEpoch.accepts(ticket))apply(value);}).catch(() => {});
   }
 }
-function subscribe(callback: () => void) { initialize(); subscribers.add(callback); return () => { subscribers.delete(callback); }; }
+function subscribe(callback: () => void) { subscribers.add(callback);initialize(); return () => { subscribers.delete(callback);if(!subscribers.size)cleanupPreferences?.(); }; }
 export function useSpeedDisplayPreferences() {
   const preferences = useSyncExternalStore(subscribe, () => current, () => current);
   const activityMode = useActivitySpeedMode();
