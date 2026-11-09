@@ -385,7 +385,7 @@ try {
     Push-Location $TauriDir
     try {
         if (-not $SkipNpmCi) {
-            Invoke-Checked "npm ci" { npm ci }
+            Invoke-Checked "npm ci" { npm ci --registry=https://registry.npmjs.org --replace-registry-host=registry.npmmirror.com }
         }
         Invoke-Checked "npm run build" { npm run build }
     } finally {

@@ -111,7 +111,7 @@ jobs:
           node-version: '24'
           cache: npm
           cache-dependency-path: tauri-app/package-lock.json
-      - run: npm ci --registry=https://registry.npmjs.org
+      - run: npm ci --registry=https://registry.npmjs.org --replace-registry-host=registry.npmmirror.com
         working-directory: tauri-app
       - run: node scripts/cloud/run-node-tests.mjs tauri-app/src --no-skips
         env:
@@ -245,7 +245,7 @@ jobs:
             --require testBufferedRecordsFlushAtCloseAndContainOnlyStructuredDiagnostics \
             --require testRecoveryLogAllowsOnlyFixedMetadataFields \
             --require testDisabledUnavailableAndWriteFailedDiagnosticsPreserveActualMigrationAndNewAccounting -- swift test
-          npm ci --prefix tauri-app --registry=https://registry.npmjs.org
+          npm ci --prefix tauri-app --registry=https://registry.npmjs.org --replace-registry-host=registry.npmmirror.com
           node scripts/cloud/run-node-tests.mjs scripts 2>&1 | tee release-script-tests.log
       - name: Preserve hosted crash diagnostics on failure
         if: failure()
@@ -329,7 +329,7 @@ jobs:
           rustc -vV
           if [[ "$RUNNER_OS" == macOS ]]; then sw_vers; xcodebuild -version; fi
           cd tauri-app
-          npm ci --registry=https://registry.npmjs.org
+          npm ci --registry=https://registry.npmjs.org --replace-registry-host=registry.npmmirror.com
           npm run build
       - name: Check production native configuration
         if: ${{ !inputs.claude_usage_only }}

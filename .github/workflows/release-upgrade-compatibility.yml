@@ -192,7 +192,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           foreach ($source in @('tokenbar-v097-source', 'tokenbar-v093-source', 'tokenbar-v097-candidate')) {
             Push-Location "$env:RUNNER_TEMP/$source/tauri-app"
-            npm ci --registry=https://registry.npmjs.org
+            # Public producer lockfiles retain their exact bytes/versions/hashes;
+            # only the broken mirror's transport host is redirected by npm.
+            npm ci --registry=https://registry.npmjs.org --replace-registry-host=registry.npmmirror.com
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             npm run build
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
