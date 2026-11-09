@@ -2173,7 +2173,7 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertFalse(componentSource.contains("RecentChartQuotaEstimateModelSelector"))
         XCTAssertTrue(componentSource.contains("RecentChartQuotaEstimateOverlay"))
         XCTAssertTrue(componentSource.contains("selection.fullCurrentAPIPriceEstimate.costUSD.quotaEstimatorMoneyText"))
-        let chartStart = try XCTUnwrap(dashboardSource.range(of: "            RecentUsageChart(")).lowerBound
+        let chartStart = try XCTUnwrap(dashboardSource.range(of: "            DashboardRecentUsageChart(")).lowerBound
         let nextSection = try XCTUnwrap(
             dashboardSource.range(of: "            CacheHitRankingSection", range: chartStart..<dashboardSource.endIndex)
         ).lowerBound
@@ -2181,6 +2181,9 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
             dashboardSource[chartStart..<nextSection].contains(".equatable()"),
             "The chart owns interactive visibility state and must not sit behind an external EquatableView"
         )
+        let clientScopeSource = try String(contentsOfFile: "Sources/CodexTokenBar/DashboardRecentUsageChart.swift", encoding: .utf8)
+        XCTAssertTrue(clientScopeSource.contains("RecentUsageChart("))
+        XCTAssertFalse(clientScopeSource.contains(".equatable()"), "Client switching must retain the chart's interactive state boundary")
     }
 
     func testEstimateSummaryLivesBelowPlotInsteadOfInsideTheHitLayer() throws {

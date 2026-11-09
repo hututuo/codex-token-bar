@@ -13,18 +13,37 @@ final class HeatmapFlattenedRenderingTests: XCTestCase {
         let fills = (0..<365).map { AnyShapeStyle(colors[$0 % 3]) }
         for size: CGFloat in [10, 14.5, 15.125] {
             let view = HeatmapCells(revision: UUID(), columns: columns, fills: fills, cellSize: size, gap: 4, rows: 7)
+            let reference = HStack(alignment: .top, spacing: 4) {
+                ForEach(columns.indices, id: \.self) { column in
+                    VStack(spacing: 4) {
+                        ForEach(0..<7, id: \.self) { row in
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                .fill(columns[column][safe: row].flatMap { fills[safe: $0] } ?? AnyShapeStyle(Color.clear))
+                                .frame(width: size, height: size)
+                        }
+                    }
+                }
+            }
             let host = NSHostingView(rootView: view)
-            XCTAssertEqual(host.fittingSize.width, 53 * size + 52 * 4, accuracy: 0.01)
-            XCTAssertEqual(host.fittingSize.height, 7 * size + 6 * 4, accuracy: 0.01)
+            let referenceHost = NSHostingView(rootView: reference)
+            // AppKit rounds hosting extents to device pixels. Compare the
+            // original production layout, not unrounded arithmetic.
+            XCTAssertEqual(host.fittingSize, referenceHost.fittingSize)
             let renderer = ImageRenderer(content: view); renderer.scale = 2
             let image = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
+            let referenceRenderer = ImageRenderer(content: reference); referenceRenderer.scale = 2
+            let expectedImage = NSBitmapImageRep(cgImage: try XCTUnwrap(referenceRenderer.cgImage))
+            XCTAssertEqual(image.pixelsWide, expectedImage.pixelsWide)
+            XCTAssertEqual(image.pixelsHigh, expectedImage.pixelsHigh)
             for index in 0..<371 {
                 let x = Int((CGFloat(index / 7) * (size + 4) + size / 2) * 2)
                 let y = Int((CGFloat(index % 7) * (size + 4) + size / 2) * 2)
                 let pixel = try XCTUnwrap(image.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB))
                 XCTAssertEqual(pixel.alphaComponent, index < 365 ? 1 : 0, accuracy: 0.01)
                 if index < 365 {
-                    let expected = try XCTUnwrap(NSColor(colors[index % 3]).usingColorSpace(.deviceRGB))
+                    // Compare rendered pixels in the same color pipeline;
+                    // dynamic SwiftUI colors differ from NSColor resolution.
+                    let expected = try XCTUnwrap(expectedImage.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB))
                     XCTAssertEqual(pixel.redComponent, expected.redComponent, accuracy: 0.02)
                     XCTAssertEqual(pixel.greenComponent, expected.greenComponent, accuracy: 0.02)
                     XCTAssertEqual(pixel.blueComponent, expected.blueComponent, accuracy: 0.02)

@@ -19,6 +19,8 @@
 
 ## build 1005 实机基线
 
+首个候选 `1f4385ea` 前端完整测试通过；Swift 构建成功，但新增全年网格测试直接比较未取整尺寸及 `NSColor` 动态颜色，和实际 SwiftUI 像素管线不一致，另一个旧源码约束仍只查根文件中的旧 chart 调用。修正测试为与原始 HStack/VStack 实际渲染比较，并让交互边界断言同时覆盖新的图表包装层；没有放宽既有逐像素等价门禁，没有改生产实现规避失败。失败候选未安装。
+
 `scratch/chart-scroll-sidebar-20261109/` 保留输入驱动、采样、表导出和分析。真实 CGEvent wheel 每次 14px，约 60Hz，六秒下/上交替，实际滚动位移由 AX 位置核实；主进程绑定 build 1005 与 executable SHA。没有本机重编译。
 
 Time Profiler 完整保存成功，CPU 表覆盖 0.356–17.241 秒，对比窗口第 3–16 秒：主线程 CPU sample weight 8931ms，布局 3732ms、AttributeGraph 2764ms、命中路径 767ms、文本 761ms。分类为包含关系，不能相加，也不是帧率；该窗口无 storage 栈样本。普通 sample 的第一次捕获前几秒与 OCR 有短暂重叠，不作为严格速度结论依据。
