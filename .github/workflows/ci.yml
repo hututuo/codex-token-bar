@@ -199,6 +199,10 @@ jobs:
             --require testCostGroupsNeverInventZeroUsageCatalogCards \
             --require testSharedCostOrderPreservesEverySourceAndAmountAcrossPeriods \
             --require testShortPeriodFillsFourSlotsAndUnknownNameFitsSingleRow \
+            --require testYearHeatmapLayoutKeepsAllCellsAndExactExtent \
+            --require testSidebarTodayReusesDashboardLedgerCostsWithoutRepricingCacheWrites \
+            --require testChartClientSelectionIsIndependentAndUnavailableChoiceFollowsPage \
+            --require testChartClientProjectionKeepsTokenSourcesSeparateAcrossAllRanges \
             --require testProductionRailTracksTPSModelGrowthAndDisappearance \
             --require testRunningTitlesUseSchemaFallbacksAndAgentMetadataWithoutChangingOwnership \
             --require testRunningRolloutTitlesAreBoundedCachedAndCanArriveOnAppend \

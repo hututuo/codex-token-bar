@@ -1,4 +1,8 @@
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
+import { clientTitle } from "../../multiClient/useClientScope";
+import { useSharedChoice } from "../../multiClient/useSharedChoice";
+import { projectOriginalDashboard } from "../../multiClient/originalDashboardProjection";
+import { RECENT_CHART_CLIENT_KEY, recentChartAvailableClients, resolvedRecentChartClients } from "../../multiClient/recentChartClientScope";
 import type { Snapshot } from "../../multiClient/MultiClientUsage";
 import { ClientCacheRanking } from "../../multiClient/ClientCacheRanking";
 import { useAggregateClientCacheRows } from "../../multiClient/aggregateCacheRanking";
@@ -29,6 +33,18 @@ function DashboardAnalyticsSectionView({ dashboard, originalCodex, clients, allo
   // Keep originalCodex only for provider-specific quota/cost provenance.
   const source = dashboard;
   const codex = originalCodex ?? dashboard;
+  const [chartSelection, setChartSelection] = useSharedChoice(RECENT_CHART_CLIENT_KEY, "recent-chart-client-scope-changed", "dashboard");
+  const available = useMemo(() => recentChartAvailableClients(clients), [clients]);
+  const chartClients = useMemo(() => resolvedRecentChartClients(chartSelection, scope, available), [chartSelection, scope, available]);
+  const chartKey = [...chartClients].sort().join(",");
+  const pageKey = [...scope].sort().join(",");
+  // The page has already projected this scope. Reuse it until the user explicitly
+  // picks a different chart client; don't rebuild buckets on unrelated renders.
+  const chart = useMemo(() => chartKey === pageKey || !clients ? source : projectOriginalDashboard(codex, clients, chartClients),
+    [source, codex, clients, chartKey, pageKey]);
+  const chartIncludesCodex = chartClients.includes("codex");
+  const chartAggregate = chartClients.length !== 1 || !chartIncludesCodex;
+  const effectiveSelection = ["dashboard", "all", "codex", ...available].includes(chartSelection) ? chartSelection : "dashboard";
   const localRanking = useAggregateClientCacheRows(clients, scope);
   const [localDetail, setLocalDetail] = useState<{client: string; sessionID: string} | null>(null);
   const scopeKey = scope.join(",");
@@ -40,19 +56,25 @@ function DashboardAnalyticsSectionView({ dashboard, originalCodex, clients, allo
       modelCostDataAvailable={modelCostProjectionAvailable(source.activityDays, source.preciseRecentUsageFresh)}
     />
     <RecentUsageChart
-      unreportedCompactionUnix={includesCodex ? codex.stats.unreportedCompactionUnix : undefined}
-      pricingAvailable={includesCodex}
-      quotaCostSeries={aggregate && includesCodex ? codex : undefined}
-      fiveHourQuotaPresent={includesCodex && codex.quota.fiveHour.availability !== "absent"}
-      fiveHourResetAtUnix={includesCodex ? codex.quota.fiveHour.resetsAtUnix : null}
-      recentUsage24h={source.recentUsage24h}
-      recentUsage7d={source.recentUsage7d}
-      recentUsage30d={source.recentUsage30d}
-      sevenDayQuotaPresent={includesCodex && codex.quota.sevenDay.availability !== "absent"}
-      sevenDayResetAtUnix={includesCodex ? codex.quota.sevenDay.resetsAtUnix : null}
-      sharedAccountAttribution={includesCodex ? sharedAccountAttribution : null}
+      key={chartKey + "|" + JSON.stringify(sourceToken)}
+      sourceControl={clients && <select aria-label="图表客户端" className="recent-chart-client" value={effectiveSelection} onChange={e => setChartSelection(e.target.value)}>
+        <option value="dashboard">跟随主页 · {scope.length === 1 ? clientTitle(scope[0]) : "汇总"}</option>
+        <option value="all">汇总</option><option value="codex">Codex</option>
+        {available.map(id => <option key={id} value={id}>{clientTitle(id)}</option>)}
+      </select>}
+      unreportedCompactionUnix={chartIncludesCodex ? codex.stats.unreportedCompactionUnix : undefined}
+      pricingAvailable={chartIncludesCodex}
+      quotaCostSeries={chartAggregate && chartIncludesCodex ? codex : undefined}
+      fiveHourQuotaPresent={chartIncludesCodex && codex.quota.fiveHour.availability !== "absent"}
+      fiveHourResetAtUnix={chartIncludesCodex ? codex.quota.fiveHour.resetsAtUnix : null}
+      recentUsage24h={chart.recentUsage24h}
+      recentUsage7d={chart.recentUsage7d}
+      recentUsage30d={chart.recentUsage30d}
+      sevenDayQuotaPresent={chartIncludesCodex && codex.quota.sevenDay.availability !== "absent"}
+      sevenDayResetAtUnix={chartIncludesCodex ? codex.quota.sevenDay.resetsAtUnix : null}
+      sharedAccountAttribution={chartIncludesCodex ? sharedAccountAttribution : null}
     />
-    {aggregate && includesCodex && <p className="analytics-source-note">Token、调用和命中率为汇总；额度、逐桶金额及额度反推保留 Codex 来源。其他客户端尚无逐桶模型金额，不按 Codex 单价估填。</p>}
+    {chartAggregate && chartIncludesCodex && <p className="analytics-source-note">Token、调用和命中率为汇总；额度、逐桶金额及额度反推保留 Codex 来源。其他客户端尚无逐桶模型金额，不按 Codex 单价估填。</p>}
     {localRanking.issue && <p role="status">{localRanking.issue}</p>}
     <CacheHitRanking key={scope.join(",") + JSON.stringify(sourceToken)}
       sourceToken={includesCodex ? sourceToken : null} cacheUsage={source.cacheUsage}

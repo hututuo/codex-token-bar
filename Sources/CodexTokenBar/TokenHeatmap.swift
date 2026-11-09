@@ -523,21 +523,41 @@ struct HeatmapCells: View, Equatable {
         lhs.revision == rhs.revision && lhs.cellSize == rhs.cellSize && lhs.gap == rhs.gap && lhs.rows == rhs.rows
     }
     var body: some View {
-        HStack(alignment: .top, spacing: gap) {
-            ForEach(columns.indices, id: \.self) { column in
-                VStack(spacing: gap) {
-                    ForEach(0..<rows, id: \.self) { row in
-                        let index = columns[column][safe: row]
-                        RoundedRectangle(cornerRadius: 4, style: .continuous)
-                            .fill(index.flatMap { fills[safe: $0] } ?? AnyShapeStyle(Color.clear))
-                            .frame(width: cellSize, height: cellSize)
-                    }
-                }
+        HeatmapCellLayout(columns: columns.count, rows: rows, cellSize: cellSize, gap: gap) {
+            ForEach(0..<(columns.count * rows), id: \.self) { slot in
+                let index = columns[slot / rows][safe: slot % rows]
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(index.flatMap { fills[safe: $0] } ?? AnyShapeStyle(Color.clear))
             }
         }
         .drawingGroup(opaque: false, colorMode: .nonLinear)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
+    }
+}
+
+/// The calendar already knows every square's dimensions. Position the same
+/// SwiftUI shapes directly instead of measuring 53 column stacks and hundreds
+/// of fixed-frame children on each scroll layout. No height cache or drawing
+/// replacement: sizing/gradients, hover coordinates and pixel rounding stay native.
+struct HeatmapCellLayout: Layout {
+    let columns: Int
+    let rows: Int
+    let cellSize: CGFloat
+    let gap: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        CGSize(width: CGFloat(columns) * cellSize + CGFloat(max(0, columns - 1)) * gap,
+               height: columns == 0 ? 0 : CGFloat(rows) * cellSize + CGFloat(max(0, rows - 1)) * gap)
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard rows > 0 else { return }
+        let step = cellSize + gap
+        for (slot, view) in subviews.enumerated() {
+            view.place(at: CGPoint(x: bounds.minX + CGFloat(slot / rows) * step,
+                                   y: bounds.minY + CGFloat(slot % rows) * step), anchor: .topLeading,
+                       proposal: ProposedViewSize(width: cellSize, height: cellSize))
+        }
     }
 }
 

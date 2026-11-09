@@ -1413,6 +1413,9 @@ struct DashboardModelCostChip: View {
             .fill(color.opacity(0.075)))
         .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous)
             .stroke(color.opacity(0.16), lineWidth: 1).allowsHitTesting(false))
+        // One tooltip/double-click target, without deriving a hit region from
+        // every glyph and decorative shape while scrolling.
+        .contentShape(Rectangle())
         .help(description)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(description)

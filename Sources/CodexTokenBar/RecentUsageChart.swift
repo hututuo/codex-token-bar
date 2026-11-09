@@ -1337,6 +1337,7 @@ enum RecentChartViewportGeometry {
 }
 
 struct RecentUsageChart: View {
+    let clientSelector: RecentChartClientSelector?
     let pricingAvailable: Bool
     let quotaCostSource: RecentChartQuotaCostSource?
     let settledThrough: Date?
@@ -1401,8 +1402,10 @@ struct RecentUsageChart: View {
         pricingAvailable: Bool = true,
         quotaCostSource: RecentChartQuotaCostSource? = nil,
         settledThrough: Date? = nil,
-        unreportedCompactionDates: [Date] = []
+        unreportedCompactionDates: [Date] = [],
+        clientSelector: RecentChartClientSelector? = nil
     ) {
+        self.clientSelector = clientSelector
         self.pricingAvailable = pricingAvailable
         self.quotaCostSource = quotaCostSource
         self.unreportedCompactionDates = unreportedCompactionDates
@@ -1533,6 +1536,7 @@ struct RecentUsageChart: View {
 
             VStack(alignment: .trailing, spacing: 7) {
                 HStack(spacing: 8) {
+                    if let clientSelector { clientSelector }
                     RecentChartRangeSelector(selection: selectedRangeBinding)
                 }
 

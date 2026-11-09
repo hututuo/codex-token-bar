@@ -160,6 +160,62 @@ function point(startUnix, tokens) {
   };
 }
 
+test("homepage chart switches clients in all three ranges without changing page analytics", async () => {
+  const dom = new Window({ url: "http://localhost/" });
+  const restore = installDomGlobals(dom);
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  try {
+    const React = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    await withSsrModules(async load => {
+      const { emptyDashboardSnapshot } = await load("/src/api/fallback/dashboardFallback.ts");
+      const { DashboardAnalyticsSection } = await load("/src/pages/dashboard/DashboardAnalyticsSection.tsx");
+      const now = Math.floor(Date.now() / 300_000) * 300;
+      const codex = emptyDashboardSnapshot();
+      codex.generatedAt = new Date(now * 1000).toISOString();
+      codex.recentUsage24h = [point(now, 100)];
+      codex.recentUsage7d = [point(now, 100)];
+      codex.recentUsage30d = [point(now, 100)];
+      const clients = { preferences: [{client:"claudeCode",enabled:true},{client:"antigravity",enabled:true}],
+        summaries: [], todaySummaries: [], sevenDaySummaries: [], dailyBuckets: [], diagnostics: [], updatedAt:codex.generatedAt,
+        trendBuckets: [{client:"claudeCode",startUnix:now,inputTokens:200,outputTokens:0,cacheReadTokens:null,requests:2},
+          {client:"antigravity",startUnix:now,inputTokens:300,outputTokens:0,cacheReadTokens:null,requests:3}] };
+      const container = dom.document.createElement("div"); dom.document.body.append(container);
+      const root = createRoot(container);
+      const render = () => React.createElement(DashboardAnalyticsSection, { dashboard:codex, originalCodex:codex, clients,
+        allowed:["codex"], sharedAccountAttribution:null });
+      try {
+        await React.act(async () => root.render(render()));
+        const heatmap = container.querySelector(".activity-section").textContent;
+        const ranking = container.querySelector(".ranking-section").textContent;
+        for (const range of ["24h", "7d", "30d"]) {
+          await React.act(async () => [...container.querySelectorAll(".recent-range-tabs button")].find(b => b.textContent === range).click());
+          for (const [client, tokens] of [["claudeCode",200],["antigravity",300],["all",600],["codex",100]]) {
+            await React.act(async () => {
+              const select=container.querySelector('select[aria-label="图表客户端"]');
+              select.value=client;select.dispatchEvent(new dom.Event("change",{bubbles:true}));
+            });
+            assert.equal(container.querySelector(".recent-range-tabs [aria-pressed=true]").textContent,range);
+            assert.match(container.querySelector("svg.usage-chart title").textContent,new RegExp(String(tokens)));
+            assert.equal(container.querySelector(".client-analytics").dataset.client,"codex");
+            assert.equal(container.querySelector(".activity-section").textContent,heatmap);
+            assert.equal(container.querySelector(".ranking-section").textContent,ranking);
+            const legend=container.querySelector(".chart-legend").textContent;
+            if (client==="all") assert.match(legend,/金额 · Codex/);
+            if (client==="claudeCode"||client==="antigravity") assert.match(legend,/金额—/);
+          }
+        }
+        await React.act(async () => {
+          dom.localStorage.setItem("recentChartClientScope.v1","removed-client");
+          dom.dispatchEvent(new dom.Event("recentChartClientScope.v1"));
+        });
+        assert.equal(container.querySelector('select[aria-label="图表客户端"]').value,"dashboard");
+        assert.match(container.querySelector("svg.usage-chart title").textContent,/100/);
+      } finally { await React.act(async () => root.unmount()); }
+    });
+  } finally { restore();dom.close(); }
+});
+
 function installDomGlobals(dom) {
   const previous = new Map();
   for (const [key, value] of Object.entries({

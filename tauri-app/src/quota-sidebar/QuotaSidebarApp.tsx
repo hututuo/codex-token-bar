@@ -7,7 +7,8 @@ import { SpeedDisplayControls, useSpeedDisplayPreferences } from "../components/
 import { useActivitySpeedMode, selectedActivityRates } from "../multiClient/activitySpeedMode";
 import { ClientActivitySpeedPanel, useClaudeLocalRuntime } from "../multiClient/ClaudeLocalRuntime";
 import { useMultiClientUsage } from "../multiClient/MultiClientUsage";
-import { ClientQuotaSettings, ClientQuotaDetailRings, PairedQuotaRing, ScopedSidebarUsage, ClientSidebarUsageRows, clientTitle, useClientQuotaItems, useClientScope, useClientQuotaSelection } from "../multiClient/IntegratedClients";
+import { ClientQuotaSettings, ClientQuotaDetailRings, PairedQuotaRing, ClientSidebarUsageRows, clientTitle, useClientQuotaItems, useClientScope, useClientQuotaSelection } from "../multiClient/IntegratedClients";
+import { clientCostGroups, clientModelCostItems } from "../multiClient/originalDashboardProjection";
 import { quotaRingGroups } from "../multiClient/integratedClientModel";
 import { modelUsageColor } from "../components/modelUsagePresentation";
 import { useSidebarLayout } from "./useSidebarLayout";
@@ -538,8 +539,20 @@ export function QuotaDetails({ data, onOpenRunning }: { data: SidebarData; onOpe
   const { quota, snapshot, runningThreads } = data;
   const scopedQuota = scopeQuota(data);
   const { items: detailQuotaItems } = useClientQuotaItems(scopedQuota);
-  const { codexOnly, allowed } = useClientScope();
-  const models = floatingTodayModelUsageItems(snapshot.todayModelBreakdowns, "gpt56Sol", { showPlaceholders: false, mergeAutoReview: false }).filter(item => item.share > 0);
+  const { codexOnly, allowed, snapshot: clients } = useClientScope();
+  const includesCodex = allowed.includes("codex");
+  // Reuse the dashboard's already-priced client contributions and unknown
+  // reference group. Never turn external rows into Codex-priced breakdowns.
+  const externalToday = useMemo(() => (clients.todaySummaries ?? []).filter(row => allowed.includes(row.client)), [clients.todaySummaries, allowed]);
+  const models = useMemo(() => clientCostGroups(clientModelCostItems(externalToday, snapshot.todayModelBreakdowns ?? [], allowed)).flatMap(group => group.items),
+    [externalToday, snapshot.todayModelBreakdowns, allowed]);
+  const externalTotal = clients.summaries.filter(row => allowed.includes(row.client)).reduce((n, row) => n + row.inputTokens + row.outputTokens, 0);
+  const codexRows = includesCodex ? snapshot.todayModelBreakdowns ?? [] : [];
+  const todayTokens = (includesCodex ? snapshot.todayTokensValue ?? codexRows.reduce((n, row) => n + row.breakdown.totalTokens, 0) : 0)
+    + externalToday.reduce((n, row) => n + row.inputTokens + row.outputTokens, 0);
+  const todayRequests = (includesCodex ? snapshot.todayRequestsValue ?? codexRows.reduce((n, row) => n + row.breakdown.calls, 0) : 0)
+    + externalToday.reduce((n, row) => n + row.requests, 0);
+  const totalTokens = includesCodex && snapshot.totalTokensValue == null ? null : (includesCodex ? snapshot.totalTokensValue! : 0) + externalTotal;
   const modelCostUSD = floatingModelUsageKnownCostUSD(models);
   const modelPricesIncomplete = hasUnknownModelPrices(models);
   const modelCostLabel = modelPricesIncomplete ? "今日 API 等值 · 已知小计" : "今日 API 等值";
@@ -549,15 +562,16 @@ export function QuotaDetails({ data, onOpenRunning }: { data: SidebarData; onOpe
     snapshot.sevenDayExpectedRemainingPercent, snapshot.quotaDataStale,
   );
   const sevenDayReference = expectedSeven === null ? null : expectedSeven * 100;
-  const tokenParts = (snapshot.todayModelBreakdowns ?? []).reduce((sum, row) => ({
+  const tokenParts = codexRows.reduce((sum, row) => ({
     input: sum.input + row.breakdown.inputTokens,
     cached: sum.cached + row.breakdown.cachedInputTokens,
     output: sum.output + row.breakdown.outputTokens,
-  }), { input: 0, cached: 0, output: 0 });
-  const breakdownKnown = (snapshot.todayModelBreakdowns?.length ?? 0) > 0 && Object.values(tokenParts).every(Number.isFinite);
+  }), externalToday.reduce((sum, row) => ({ input: sum.input + row.inputTokens, cached: sum.cached + (row.cacheReadTokens ?? 0), output: sum.output + row.outputTokens }), { input: 0, cached: 0, output: 0 }));
+  const breakdownKnown = (codexRows.length + externalToday.length) > 0 && Object.values(tokenParts).every(Number.isFinite);
+  const cacheKnown = breakdownKnown && externalToday.every(row => row.cacheReadComplete && row.cacheReadTokens !== null);
   const inputParts = [
-    { label: "未缓存输入", value: Math.max(0, tokenParts.input - tokenParts.cached), color: "#78b7ff" },
-    { label: "缓存输入", value: tokenParts.cached, color: "#b4acff" },
+    { label: cacheKnown ? "未缓存输入" : "输入（缓存未知）", value: cacheKnown ? Math.max(0, tokenParts.input - tokenParts.cached) : tokenParts.input, color: "#78b7ff" },
+    { label: "缓存输入", value: cacheKnown ? tokenParts.cached : 0, color: "#b4acff" },
     { label: "输出", value: tokenParts.output, color: "#b6ef75" },
   ];
   const unread = snapshot.unreadSummary;
@@ -567,29 +581,28 @@ export function QuotaDetails({ data, onOpenRunning }: { data: SidebarData; onOpe
     {snapshot.quotaDataStale && <p className="qs-warning">额度已过期 · 显示上次成功读取的结果</p>}
     <div className="qs-quota-group" id="qs-section-top"><ClientQuotaDetailRings items={detailQuotaItems} expected={{"codex:5h":sidebarExpectedFraction(quotaPercent(scopedQuota.fiveHour.availability,scopedQuota.fiveHour.remainingPercent),snapshot.fiveHourExpectedRemainingPercent,snapshot.quotaDataStale),"codex:7d":expectedSeven}}/></div>
     {codexOnly && sevenDayReference !== null && <p className="qs-pace-line"><span>{snapshot.trendLabel}</span><span>均匀使用参考 · 余量应为 {quotaText(sevenDayReference)}</span></p>}
-    {codexOnly ? <>
     <section className="qs-usage" id="qs-section-usage"><div className="qs-section-heading"><h3>Token 用量</h3><span>今日 / 累计</span></div>
       <div className="qs-metrics">
-        <Metric label="今日 Tokens" value={snapshot.todayTokensLabel} />
-        <Metric label="累计 Tokens" value={snapshot.totalTokensLabel} />
-        <Metric label="今日请求" value={snapshot.requestsLabel} />
-        <Metric label="实时速率 · 估算" value={snapshot.liveRateStatusLabel || (snapshot.liveRateAvailable ? `${snapshot.tokensPerSecond.toFixed(1)} t/s` : "不可用")} />
-        <Metric label="今日缓存命中 · 按输入" value={breakdownKnown && tokenParts.input > 0 ? `${(tokenParts.cached / tokenParts.input * 100).toFixed(1)}%` : "—"} />
+        <Metric label="今日 Tokens" value={codexOnly ? snapshot.todayTokensLabel : formatTokens(todayTokens)} />
+        <Metric label="累计 Tokens" value={codexOnly ? snapshot.totalTokensLabel : totalTokens === null ? "待读取" : formatTokens(totalTokens)} />
+        <Metric label="今日请求" value={codexOnly ? snapshot.requestsLabel : String(todayRequests)} />
+        <Metric label={codexOnly ? "实时速率 · 估算" : "实时速率 · Codex"} value={includesCodex ? snapshot.liveRateStatusLabel || (snapshot.liveRateAvailable ? `${snapshot.tokensPerSecond.toFixed(1)} t/s` : "不可用") : "—"} />
+        <Metric label="今日缓存命中 · 按输入" value={cacheKnown && tokenParts.input > 0 ? `${(tokenParts.cached / tokenParts.input * 100).toFixed(1)}%` : "—"} />
         <Metric label={modelCostLabel} value={modelCostText} />
       </div>
     </section>
     <section className="qs-model-usage" id="qs-section-models"><div className="qs-section-heading"><h3>今日模型用量</h3><span>今日占比 · 全部模型为分母</span></div>
       {models.length === 0 ? <p className="qs-empty">暂无可信的今日模型用量</p> : models.map(model => <div className="qs-model-row" key={model.key}>
-        <div><strong title={model.key}>{model.label}</strong><span>{formatTokens(model.tokens)} <small>{(model.share * 100).toFixed(1)}%</small></span></div>
+        <div><strong title={[model.key, ...(model.sourceModels ?? [])].join(" · ")}>{model.label}</strong><span>{formatTokens(model.tokens)} <small>{(model.share * 100).toFixed(1)}%</small></span></div>
         <div className="qs-model-cost">API 等值 {floatingModelUsageValue(model, "cost")}</div>
         <progress max={100} value={model.share * 100} style={{ "--qs-accent": model.color } as CSSProperties} />
       </div>)}
     </section>
-    <SidebarTrend points={data.trend ?? []} />
+    {includesCodex && <SidebarTrend points={data.trend ?? []} tokenLabel={codexOnly ? "Token" : "Codex Token"} />}
     <section className="qs-token-composition">
       <div className="qs-section-heading"><h3>今日 Token 构成</h3><span>缓存包含在输入内</span></div>
       <div className="qs-composition-chart" role="img" aria-label="今日输入、缓存和输出占比">{breakdownKnown && inputParts.map(part => <i key={part.label} style={{ flexGrow: part.value, background: part.color }} />)}</div>
-      <div className="qs-token-legend">{inputParts.map(part => <div key={part.label}><span><i style={{background:part.color}} />{part.label}</span><strong>{breakdownKnown ? formatTokens(part.value) : "—"}</strong></div>)}</div>
+      <div className="qs-token-legend">{inputParts.map(part => <div key={part.label}><span><i style={{background:part.color}} />{part.label}</span><strong>{breakdownKnown && (cacheKnown || part.label !== "缓存输入") ? formatTokens(part.value) : "—"}</strong></div>)}</div>
 
     </section>
     <button className="qs-activity" onClick={onOpenRunning} type="button" aria-label="查看运行主会话和子代理">
@@ -597,7 +610,6 @@ export function QuotaDetails({ data, onOpenRunning }: { data: SidebarData; onOpe
       <div><span className="qs-unread">{unreadLabel}</span><span>{runningThreads.status === "ready" ? "查看会话 →" : runningThreads.status === "stale" ? "运行快照已过期 →" : "运行状态未知 →"}</span></div>
     </button>
     {unread.detail && !unread.source.includes("pending") && <details className="qs-diagnostic"><summary>未读状态说明</summary><p>{unread.detail}</p></details>}
-  </> : <><ScopedSidebarUsage />{allowed.includes("codex") && <SidebarTrend points={data.trend ?? []} tokenLabel="Codex Token" />}</>}
   </>;
 }
 function Metric({ label, value }: { label: string; value: string }) {

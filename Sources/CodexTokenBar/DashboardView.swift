@@ -1249,30 +1249,12 @@ struct DashboardView: View {
                 selectedMode: $store.selectedMode,
                 tokensOnly: !allowedClients.contains("codex")
             )
-            RecentUsageChart(
-                bins: display.recentBins, hourlyBins: display.hourlyUsage,
-                cacheRecentBins: display.cacheUsage.recentBins, cacheHourlyBins: display.cacheUsage.hourly,
-                attributionEvents: allowedClients.contains("codex") ? store.snapshot.cacheUsage.attributionEvents : [],
-                attributionEventsComplete: allowedClients.contains("codex") && store.snapshot.cacheUsage.attributionEventsComplete,
-                quotaRecentBins: allowedClients.contains("codex") ? quotaHistoryStore.snapshot.recentBins : [],
-                quotaHourlyBins: allowedClients.contains("codex") ? quotaHistoryStore.snapshot.hourlyBins : [],
-                currentFiveHourQuotaPresent: allowedClients.contains("codex") && quotaStore.snapshot.fiveHour != nil,
-                currentSevenDayQuotaPresent: allowedClients.contains("codex") && quotaStore.snapshot.sevenDay != nil,
-                sharedAccountAttributionContext: allowedClients.contains("codex") && sharedAccountAttributionEnabled
-                    ? sharedAccountAttributionResult.map(QuotaSelectionAttributionContext.init(result:)) : nil,
-                pricingAvailable: allowedClients.contains("codex"),
-                quotaCostSource: !codexOnly && allowedClients.contains("codex") ? .init(
-                    bins: store.snapshot.recentBins, hourlyBins: store.snapshot.hourlyUsage,
-                    cacheRecentBins: store.snapshot.cacheUsage.recentBins, cacheHourlyBins: store.snapshot.cacheUsage.hourly,
-                    attributionEvents: store.snapshot.cacheUsage.attributionEvents,
-                    settledThrough: store.snapshot.settledThrough ?? store.snapshot.preciseTimeSeriesGeneratedAt) : nil,
-                settledThrough: store.snapshot.settledThrough ?? store.snapshot.preciseTimeSeriesGeneratedAt,
-                unreportedCompactionDates: allowedClients.contains("codex") ? store.snapshot.cacheUsage.unreportedCompactionDates : []
+            DashboardRecentUsageChart(
+                codex: store.snapshot, page: display, pageClients: allowedClients,
+                quota: quotaStore.snapshot, quotaHistory: quotaHistoryStore.snapshot,
+                attribution: sharedAccountAttributionEnabled
+                    ? sharedAccountAttributionResult.map(QuotaSelectionAttributionContext.init(result:)) : nil
             ).id("recent-usage-chart")
-            if !codexOnly && allowedClients.contains("codex") {
-                Text("Token、调用和命中率为汇总；额度、逐桶金额及额度反推保留 Codex 来源。其他客户端尚无逐桶模型金额，不按 Codex 单价估填。")
-                    .font(.system(size: 11)).foregroundStyle(.secondary).frame(maxWidth: 980, alignment: .leading)
-            }
             if let clientCacheIssue { Text(clientCacheIssue).font(.caption).foregroundStyle(AppTheme.accentAmber) }
             CacheHitRankingSection(
                 cacheUsage: display.cacheUsage, cacheUsageRevision: display.generatedAt,

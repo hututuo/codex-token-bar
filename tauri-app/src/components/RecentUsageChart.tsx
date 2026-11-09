@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type ReactNode,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import type { RecentUsagePoint } from "../types/dashboard";
@@ -62,6 +63,7 @@ import { modelUsageSlices } from "./modelUsagePresentation.ts";
 
 const NO_UNREPORTED_COMPACTIONS: readonly number[] = [];
 interface RecentUsageChartProps {
+  sourceControl?: ReactNode;
   unreportedCompactionUnix?: readonly number[];
   pricingAvailable?: boolean;
   quotaCostSeries?: { recentUsage24h: RecentUsagePoint[]; recentUsage7d: RecentUsagePoint[]; recentUsage30d: RecentUsagePoint[] };
@@ -107,6 +109,7 @@ function useChartBubbleWidth(fallbackWidth: number) {
 }
 
 export function RecentUsageChart({
+  sourceControl,
   unreportedCompactionUnix = NO_UNREPORTED_COMPACTIONS,
   pricingAvailable = true,
   quotaCostSeries,
@@ -576,6 +579,7 @@ export function RecentUsageChart({
             <span>{data.subtitle}</span>
           </div>
           <div className="recent-range-tabs" aria-label="曲线范围">
+          {sourceControl}
           {RANGE_OPTIONS.map((option) => (
             <button
               aria-pressed={range === option}

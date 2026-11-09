@@ -66,6 +66,34 @@ final class ClientModelCostPreparationTests: XCTestCase {
         await cache.waitForPendingComputation()
         XCTAssertTrue(value(cache, allowed: ["codex"]).lifetime.isEmpty)
     }
+
+    func testSidebarTodayReusesDashboardLedgerCostsWithoutRepricingCacheWrites() async throws {
+        // This deliberately differs from generic token-based pricing: the
+        // ledger already resolved historical cache-write duration and tier.
+        let known = ClientUsageSummary(client: .claudeCode, model: "claude-opus-5", inputTokens: 1_000_000,
+            outputTokens: 20, cacheReadTokens: 0, cacheWriteTokens: 800_000, reasoningTokens: nil,
+            requests: 200, lastSeen: now, incompleteFields: false, apiCostUSD: 24.37, cacheReadComplete: true)
+        let unknown = ClientUsageSummary(client: .antigravity, model: "gemini-pro-default", inputTokens: 90,
+            outputTokens: 10, cacheReadTokens: nil, cacheWriteTokens: nil, reasoningTokens: nil,
+            requests: 1, lastSeen: now, incompleteFields: true, apiCostUSD: nil, cacheReadComplete: false)
+        let cache = ClientModelCostPeriodsCache()
+        func read(_ allowed: Set<String>) -> ClientModelCostPeriods {
+            cache.value(codex: .empty, todayCodex: [], rows: [known, unknown], today: [known, unknown],
+                sevenDay: [known, unknown], clientsUpdatedAt: now, allowed: allowed, now: now)
+        }
+        let allowed: Set<String> = ["claudeCode", "antigravity"]
+        _ = read(allowed)
+        await cache.waitForPendingComputation()
+        let actual = read(allowed).groups(.today).flatMap(\.items)
+        XCTAssertEqual(actual, ClientModelCostPeriods.make(codex: .empty, todayCodex: [], rows: [known, unknown],
+            today: [known, unknown], sevenDay: [known, unknown], allowed: allowed, now: now).groups(.today).flatMap(\.items))
+        XCTAssertEqual(try XCTUnwrap(actual.first { $0.label == "Opus5" }?.costUSD), 24.37, accuracy: 0.000001)
+        XCTAssertEqual(actual.reduce(0) { $0 + $1.tokens }, 1_000_120)
+        XCTAssertEqual(actual.last?.id, "unknown-models")
+        XCTAssertTrue(actual.last?.isFallbackEstimate == true)
+        XCTAssertEqual(try XCTUnwrap(FloatingTodayModelUsagePresentation.knownCostUSD(in: actual)), 24.37, accuracy: 0.000001)
+        XCTAssertTrue(read(["codex"]).today.isEmpty, "Do not show another client's cached fees during a scope switch")
+    }
 }
 
 private final class CostWorkerProbe: @unchecked Sendable {

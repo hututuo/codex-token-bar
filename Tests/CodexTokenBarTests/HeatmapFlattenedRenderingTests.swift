@@ -5,6 +5,35 @@ import XCTest
 
 final class HeatmapFlattenedRenderingTests: XCTestCase {
     @MainActor
+    func testYearHeatmapLayoutKeepsAllCellsAndExactExtent() throws {
+        // The largest production grid, including the last partial column.
+        // A layout shortcut must not collapse, transpose or drop calendar cells.
+        let columns = (0..<53).map { column in Array((column * 7)..<min(365, (column + 1) * 7)) }
+        let colors: [Color] = [.red, .green, .blue]
+        let fills = (0..<365).map { AnyShapeStyle(colors[$0 % 3]) }
+        for size: CGFloat in [10, 14.5, 15.125] {
+            let view = HeatmapCells(revision: UUID(), columns: columns, fills: fills, cellSize: size, gap: 4, rows: 7)
+            let host = NSHostingView(rootView: view)
+            XCTAssertEqual(host.fittingSize.width, 53 * size + 52 * 4, accuracy: 0.01)
+            XCTAssertEqual(host.fittingSize.height, 7 * size + 6 * 4, accuracy: 0.01)
+            let renderer = ImageRenderer(content: view); renderer.scale = 2
+            let image = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
+            for index in 0..<371 {
+                let x = Int((CGFloat(index / 7) * (size + 4) + size / 2) * 2)
+                let y = Int((CGFloat(index % 7) * (size + 4) + size / 2) * 2)
+                let pixel = try XCTUnwrap(image.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB))
+                XCTAssertEqual(pixel.alphaComponent, index < 365 ? 1 : 0, accuracy: 0.01)
+                if index < 365 {
+                    let expected = try XCTUnwrap(NSColor(colors[index % 3]).usingColorSpace(.deviceRGB))
+                    XCTAssertEqual(pixel.redComponent, expected.redComponent, accuracy: 0.02)
+                    XCTAssertEqual(pixel.greenComponent, expected.greenComponent, accuracy: 0.02)
+                    XCTAssertEqual(pixel.blueComponent, expected.blueComponent, accuracy: 0.02)
+                }
+            }
+        }
+    }
+
+    @MainActor
     func testHeatmapFlatteningMatchesCellGridAtNativeAndRetinaScale() throws {
         let gradient = Gradient(stops: [.init(color: .red.opacity(0.8), location: 0),
             .init(color: .red.opacity(0.8), location: 0.35), .init(color: .blue.opacity(0.8), location: 0.35),

@@ -686,6 +686,7 @@ struct QuotaSidebarDetailView: View {
     @ObservedObject private var upstreamActivity = AgentSpeedDisplayRuntime.shared
     @AppStorage(ActivitySpeedDisplayMode.key) private var speedModeRaw = ActivitySpeedDisplayMode.bar.rawValue
     @State private var clientProjectionCache = ClientDashboardProjectionCache()
+    @StateObject private var modelCostCache = ClientModelCostPeriodsCache()
     @AppStorage(ClientDisplayScope.sidebarKey) private var clientScope = "all"
 
     @ObservedObject var controller: QuotaSidebarController
@@ -828,7 +829,15 @@ struct QuotaSidebarDetailView: View {
     @ViewBuilder
     private func overview(_ snapshot: TokenDisplaySnapshot) -> some View {
         let allowed = ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs)
-        if allowed == ["codex"] { codexOverview(snapshot) }
+        // Keep the same pricing and indexed-today fallback as the dashboard.
+        // Converting external ledger rows to TokenCacheBreakdown would discard
+        // their already-priced cache-write/tier/date contributions.
+        let costs = modelCostCache.value(codex: store.snapshot, todayCodex: store.todayModelBreakdowns,
+            rows: clients.summaries, today: clients.todaySummaries, sevenDay: clients.sevenDaySummaries,
+            clientsUpdatedAt: clients.updatedAt, allowed: allowed)
+        let models = costs.groups(.today).flatMap(\.items)
+        let pending = costs.isPreparing || costs.codexPendingScopes.contains(.today)
+        if allowed == ["codex"] { codexOverview(snapshot, models: models, modelPending: pending) }
         else {
             let display = clientProjectionCache.value(codex: store.snapshot, clients: clients, allowed: allowed)
             let today = clients.todaySummaries.filter { allowed.contains($0.client.rawValue) }
@@ -838,16 +847,16 @@ struct QuotaSidebarDetailView: View {
             let scoped = TokenDisplaySnapshot(title: ClientDisplayScope.title(clientScope), status: "本地统计",
                 rate: allowed.contains("codex") ? snapshot.rate : 0,
                 consumedTokens: display.stats.totalTokens,
-                todayTokens: todayRows.map(\.breakdown).combined.totalTokens,
-                todayRequests: todayRows.map(\.breakdown).combined.calls, todayModelBreakdowns: todayRows,
+                todayTokens: (allowed.contains("codex") ? snapshot.todayTokens : 0) + today.reduce(0) { $0 + Int($1.inputTokens + $1.outputTokens) },
+                todayRequests: (allowed.contains("codex") ? snapshot.todayRequests : 0) + today.reduce(0) { $0 + $1.requests }, todayModelBreakdowns: todayRows,
                 quota: snapshot.quota, updatedAt: display.generatedAt)
-            codexOverview(scoped, projected: display)
+            codexOverview(scoped, models: models, modelPending: pending, projected: display,
+                cacheKnown: today.allSatisfy { $0.cacheReadComplete && $0.cacheReadTokens != nil })
         }
     }
 
-    private func codexOverview(_ snapshot: TokenDisplaySnapshot, projected: DashboardSnapshot? = nil) -> some View {
+    private func codexOverview(_ snapshot: TokenDisplaySnapshot, models: [FloatingTodayModelUsageItem], modelPending: Bool, projected: DashboardSnapshot? = nil, cacheKnown: Bool = true) -> some View {
         let total = snapshot.todayModelBreakdowns.map(\.breakdown).combined
-        let models = FloatingTodayModelUsagePresentation.items(from: snapshot.todayModelBreakdowns, fallbackModel: .gpt56Sol, mergeAutoReview: false).filter { $0.share > 0 }
         let cost = FloatingTodayModelUsagePresentation.knownCostUSD(in: models)
         let costLabel = models.contains { !$0.isReferenceOnly && $0.costUSD == nil } ? "今日 API 等值 · 已知小计" : "今日 API 等值"
 
@@ -863,28 +872,28 @@ struct QuotaSidebarDetailView: View {
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 3), alignment: .leading, spacing: 7) {
                     metric("今日 Tokens", snapshot.todayTokensText, color: SidebarPalette.green)
                     metric("累计 Tokens", snapshot.consumedTokensText, color: .white)
-                    metric("今日缓存命中", total.inputTokens > 0 ? String(format: "%.1f%%", Double(total.cachedInputTokens) / Double(total.inputTokens) * 100) : "—", color: SidebarPalette.purple)
-                    metric(costLabel, models.isEmpty ? "—" : (cost?.quotaEstimatorMoneyText ?? "—"), color: SidebarPalette.green)
+                    metric("今日缓存命中", cacheKnown && total.inputTokens > 0 ? String(format: "%.1f%%", Double(total.cachedInputTokens) / Double(total.inputTokens) * 100) : "—", color: SidebarPalette.purple)
+                    metric(costLabel, models.isEmpty ? (modelPending ? "读取中" : "—") : (cost?.quotaEstimatorMoneyText ?? "—"), color: SidebarPalette.green)
                     metric("今日请求", snapshot.todayRequestsText, color: .white)
-                    metric("实时 Tokens / 秒", LiveRateSnapshot.rateDisplayText(snapshot.rate), color: SidebarPalette.amber)
+                    metric(allowedClients == ["codex"] ? "实时 Tokens / 秒" : "实时 TPS · Codex", allowedClients.contains("codex") ? LiveRateSnapshot.rateDisplayText(snapshot.rate) : "—", color: SidebarPalette.amber)
                 }
                 if let diagnostic = snapshot.metadataOnlyStatusText {
                     Text(diagnostic).font(.system(size: 9)).foregroundStyle(.orange).lineLimit(1).help(diagnostic)
                 }
                 Text("实时：\(snapshot.status)").font(.system(size: 9)).foregroundStyle(.gray).lineLimit(1).help(snapshot.status)
             }
-            modelUsage(snapshot).id("models")
+            modelUsage(models, pending: modelPending).id("models")
             SidebarTrendView(data: SidebarTrendData(codexBins: store.snapshot.recentBins,
                 projectedBins: projected?.recentBins, quota: history.snapshot.recentBins, clients: allowedClients))
-            tokenComposition(snapshot)
+            tokenComposition(snapshot, cacheKnown: cacheKnown)
         }.padding(.bottom, 2)
     }
 
-    private func tokenComposition(_ snapshot: TokenDisplaySnapshot) -> some View {
+    private func tokenComposition(_ snapshot: TokenDisplaySnapshot, cacheKnown: Bool) -> some View {
         let total = snapshot.todayModelBreakdowns.map(\.breakdown).combined
         let parts: [(String, Int, Color)] = [
-            ("未缓存输入", max(0, total.inputTokens - total.cachedInputTokens), .init(red: 0.47, green: 0.72, blue: 1)),
-            ("缓存输入", total.cachedInputTokens, SidebarPalette.purple),
+            (cacheKnown ? "未缓存输入" : "输入（缓存未知）", cacheKnown ? max(0, total.inputTokens - total.cachedInputTokens) : total.inputTokens, .init(red: 0.47, green: 0.72, blue: 1)),
+            ("缓存输入", cacheKnown ? total.cachedInputTokens : 0, SidebarPalette.purple),
             ("输出", total.outputTokens, SidebarPalette.green)
         ]
         let denominator = max(1, parts.reduce(0) { $0 + $1.1 })
@@ -902,7 +911,7 @@ struct QuotaSidebarDetailView: View {
                 ForEach(parts.indices, id: \.self) { index in
                     VStack(alignment: .leading, spacing: 3) {
                         Text(parts[index].0).font(.system(size: 9)).foregroundStyle(parts[index].2)
-                        Text(snapshot.todayModelBreakdowns.isEmpty ? "—" : parts[index].1.abbreviatedTokens)
+                        Text(snapshot.todayModelBreakdowns.isEmpty || (!cacheKnown && index == 1) ? "—" : parts[index].1.abbreviatedTokens)
                             .font(.system(size: 13, weight: .medium)).monospacedDigit()
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -937,19 +946,20 @@ struct QuotaSidebarDetailView: View {
         }
     }
 
-    private func modelUsage(_ snapshot: TokenDisplaySnapshot) -> some View {
-        let items = Array(FloatingTodayModelUsagePresentation.items(from: snapshot.todayModelBreakdowns, fallbackModel: .gpt56Sol, mergeAutoReview: false).filter { $0.share > 0 })
+    private func modelUsage(_ items: [FloatingTodayModelUsageItem], pending: Bool) -> some View {
         return VStack(alignment: .leading, spacing: 6) {
             sectionTitle("今日模型用量", subtitle: "Token 占比 · API 等值")
             if items.isEmpty {
-                Text("尚无可信的今日模型明细").font(.system(size: 11)).foregroundStyle(.gray)
+                Text(pending ? "今日模型费用读取中" : "尚无可信的今日模型明细").font(.system(size: 11)).foregroundStyle(.gray)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 12)
             } else {
                 ForEach(items) { item in
                     VStack(spacing: 2) {
                         HStack(spacing: 6) {
                             Circle().fill(item.color).frame(width: 5, height: 5)
-                            Text(item.label).font(.system(size: 10, weight: .medium)).lineLimit(1).help(item.label)
+                            Text(item.label).font(.system(size: 10, weight: .medium)).lineLimit(1)
+                                .help(item.label + (item.id.contains("|") ? " · " + ClientDisplayScope.title(String(item.id.split(separator: "|")[0])) : "")
+                                    + (item.sourceModels.isEmpty ? "" : "\n" + item.sourceModels.joined(separator: "、")))
                             Spacer(minLength: 0)
                             Text(item.tokens.abbreviatedTokens).foregroundStyle(.white.opacity(0.8))
                             Text(String(format: "%.1f%%", item.share * 100)).foregroundStyle(.gray).frame(width: 42, alignment: .trailing)
