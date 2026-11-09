@@ -2,7 +2,7 @@
 
 基线：`109350b6310d6d544f89719396f434b89dd55c32`，工作树 `f97f`，分支 `codex/storage-responsibility-split-20261106`。
 
-产品候选：`ba88596d86cbbba28b4b5b2c524b3000aeda6a57`，版本 `0.9.11 / build1008`。L1–L7 源码与功能域扫描已完成，同SHA的完整CI、Public097、双端打包和8项formed历史矩阵全部通过；下载产物与原始执行证据已核验归档。状态为 **PASS_SOURCE_CLOUD_AND_CANDIDATE；INSTALL / GUI NOT_RUN**。本机没有运行构建/测试套件，现已停在安装前，由 Argon 安排用户实机测试。既有脏文件、scratch、A–D 存储合同保留。
+产品源码：`ba88596d86cbbba28b4b5b2c524b3000aeda6a57`，版本 `0.9.11 / build1008`。L1–L7 已实施并完成功能入口扫描，同SHA的完整CI、Public097、双端打包和8项formed历史矩阵全部通过；下载产物与原始执行证据已核验归档。build1008 已安装并完成启动、首刷与安装确认，macOS GUI 已测试。当前总记录为 **GUI_TESTED_WITH_FINDINGS；installed=true、guiTested=true**：侧栏速率详情与可见多客户端图表通过所列检查，但框选气泡的辅助功能容器摘要仍读 Codex 模型归因，尚未完成全部入口闭环，不能宣称所有验收项通过。本机没有运行构建/测试套件；既有脏文件、scratch、A–D 存储合同保留。
 
 ## L1：实时速率
 
@@ -16,7 +16,7 @@
 | 正文完成样本 | 既有 Body TPS 投影 | 正文 TPS 历史，不加入实时 total |
 | 近三分钟观察序列 | 既有活动历史 | 活动折线图，不以窗口均值替代实时条 |
 
-检查：新增双端 `Tests/SharedFixtures/live-model-rates.json`、生产圆圈/模型条组件回归、非法值/停用/切源/来源身份/配色检查。`93d46fea` 云端前端通过，Swift 新行视图类型推导超时；`fe38279c` 拆成明确的名称/轨道/行组件。修订的 Public097 `42680101699` 与完整 CI `42680102143` 均通过；最终集成候选重新执行全套门禁，见文末。GUI NOT_RUN。
+检查：新增双端 `Tests/SharedFixtures/live-model-rates.json`、生产圆圈/模型条组件回归、非法值/停用/切源/来源身份/配色检查。`93d46fea` 云端前端通过，Swift 新行视图类型推导超时；`fe38279c` 拆成明确的名称/轨道/行组件。修订的 Public097 `42680101699` 与完整 CI `42680102143` 均通过；最终集成候选重新执行全套门禁，见文末。macOS 实机已完成二级圆圈打开三级、两种模式×两种配色、收起重开；同时活跃的多模型/多客户端组合仍以共享fixture为证，不伪造实机流量。
 
 ## L2：趋势桶与多客户端用量摘要
 
@@ -96,21 +96,38 @@
 | 功能域 owner 矩阵 | `e263c3b4` |
 | 集成回归修正：原始身份、残差分母、TS narrowing、测试环境 listener | `ba88596d` |
 
-产品候选固定为 `ba88596d`，后续证据文档提交不改变包的源码身份。已安装应用仍是 `0.9.11 / build1007`；本轮没有安装、启动候选、替换应用或操作GUI。没有创建公开 tag/Release、更新 appcast 或改动 vendor。源码回退可按功能提交 review/revert；实机回退仍使用既有已验证应用备份，不能删除或覆盖历史备份。
+产品源码固定为 `ba88596d`，后续证据文档提交不改变包的源码身份。已安装应用为 `0.9.11 / build1008`；build1007 的备份和被替换原件均保留于本批独立安装目录。没有创建公开 tag/Release、更新 appcast 或改动 vendor。源码回退可按功能提交 review/revert；实机回退可使用已验证的 build1007 备份，不能删除或覆盖历史备份。本次收尾仅更新验证文档和仓库外证据，不修改产品源码。
 
-## 待 Argon 安排的实机验收（NOT_RUN）
+## 已安装运行态与 macOS 实机验收
 
-这是用户明确要求的安装前停止线。Argon 先询问用户是否在场、是否亲自测试；本线程不因等待云端或用户尚未主动回复而开始安装。
+原安装前停止线已进入后续安装/实机阶段；本节替换此前的 NOT_RUN 计划。此次用户明确授权使用 JXA、Accessibility action、CGEvent、screencapture 操作非激活 NSPanel，并要求提交验证文档。没有以工具限制为由更换程序、修改存储或启动本机构建。
 
-1. 安装前建立唯一新目录备份 build1007，核对旧应用版本/可执行 hash 与备份一致，再按用户安排替换候选；记录实际进程路径、build1008、首刷与安装确认分别完成的证据。现有 build1006/1007 回滚材料保持原样。
-2. 从二级速率圆圈打开三级：首屏应直接看到颜色、模型名、速度条、tok/s。同一时点/同一快照下总值守恒；Bar/AgentSpeed、模型/客户端配色、自定义色、展开收起、零速率与失效状态都应一致。正文TPS与三分钟趋势仍有独立标题和口径。
-3. 图表切“汇总”及各有记录客户端，检查24h/7d/30d步长为5m/1h/6h；hover、单桶、正反向固定选区展示所有有贡献的客户端模型。选取同一时间范围比较模型合计、Token、调用、已知费用；unknown残差、未计价与缓存缺失要保留。Codex quota只覆盖自己的provider。
-4. 确认Argon4最新主力分组、Antigravity Thinking模型的Gemini分组、费用四列30pt布局和同scope主页/侧栏主子任务计数。无实机记录的客户端继续以fixture证据说明，不能补造数据。
-5. 检查两次点击固定选区、关闭气泡、滚动保持位置、切源清空旧选区及隐藏详情后的行为。完整滚动性能A/B和实体Windows GUI需独立安排；本轮不声称已验收。
+证据子目录为 `local-install-1008-jMzbnP3E/`，相对下文归档根目录。`installation.json`、`runtime-validation.json` 与 `gui-validation.json` 分别记录安装、启动完成、界面检查，不相互替代。已有34组图表/主页截图与AX文本，本次新增8张侧栏PNG；原图、文本、诊断ZIP及操作记录的大小/SHA256统一保存在 `gui-validation.json`。前34张由既有截图工具输出，文件名虽为 `.png`，实际编码为JPEG；按字节格式登记并保留原件，未重新编码冒充原始证据。截图只留本机，仓库仅提交脱敏结论与索引。
+
+| 检查 | 实测证据与结论 |
+| --- | --- |
+| 安装身份与回退 | `/Applications/Codex Token Bar.app` 为0.9.11/build1008；运行PID73933映射到该路径，可执行hash为 `baad6e73…b9fdce`。`backup-build1007/Codex Token Bar.app` 与被替换原件均保留；备份可执行hash复核为 `22dd9f96…da2f` |
+| 首刷与安装确认 | 同一安装attempt的launched、startup ready、后端completed、UI completed、refresh ready、confirmed均存在。首刷从launch到ready为31.277秒；4385文件完成、pending0、schema14、generation27356；不是滚动性能指标 |
+| 诊断新事件保留 | `post-refresh-diagnostics.zip`保留最新6000事件、遗漏计数21999，包含当前session及startup/refresh/confirmed；已检查固定字段与脱敏，未查询业务数据库 |
+| 二级圆圈→三级详情 | 当前窗口几何定位 `CodexTokenBarQuotaSidebar`，AXPress `quota-sidebar-rate` 打开 `CodexTokenBarQuotaSidebarDetail`；首屏可见色点、Astra6、Codex、速度条、tok/s，正文TPS仍独立 |
+| Bar/按模型与按客户端 | `sidebar-rate-tiers-same-frame.png`同屏圆圈/总值/模型行均12.4 tok/s；`sidebar-client-colors.png`均34.0 tok/s，圆圈、色点和条同时换为客户端色 |
+| Agent Speed/两种配色 | `sidebar-agent-speed-client-settled.png`三处均13.8 tok/s；`sidebar-agent-speed-model.png`三处均18.1 tok/s，模型身份仍为Astra6/Codex。没有更改已有上报授权/设置 |
+| 收起与重新打开 | 详情消失后再次悬停展开、AXPress打开；`sidebar-rate-reopened.png`三处均22.6 tok/s。最终恢复“活动估算/按模型”，侧栏回到16pt收起态，详情窗口不再显示；原PID仍存活 |
+| 三周期与来源 | 既有截图/AX记录覆盖汇总、Codex、Antigravity、Claude Desktop的24h/7d/30d，以及Claude CLI空记录视图；粒度文字固定5分钟/1小时/6小时。切源清除旧选区，单点、正向/反向固定选区与关闭气泡有留档 |
+| 可见框选模型与金额 | 汇总24h同时显示Argon4/Antigravity、Astra6/Codex、Opus5.5/Claude Desktop；7d/30d继续保留跨渠道同名Opus、更多模型和未报告模型。浮动气泡与下方摘要的显示值一致；精确Token/费用守恒仍由共享fixture和生产回归证明 |
+| 费用与任务 | 今日、近7天、累计费用界面已有记录；Argon4与Antigravity分组按现有实机数据核验。主页和侧栏均观察到主1/子0；不是同帧的跨窗口计数证明，不据此替代生命周期fixture |
+
+截图中的速率是采样时刻的数值，不是固定性能基准。第一张 `sidebar-agent-speed-client.png` 恰逢二级数字过渡动画，保留原图并用后续稳定同屏图核对；AX逐控件读取也不是原子快照，不能将一次遍历中不同采样时刻的数字作为守恒依据。
+
+### 实机发现与尚未覆盖范围
+
+**OPEN — 图表框选容器的辅助功能摘要仍为Codex口径。** `chart-aggregate-24h-fixed.txt`的容器摘要报“模型占比 Astra6 100%”，但同一容器的可见子列表实际为Argon4 49%（Antigravity）、Astra6 40%（Codex）、Opus5.5 11%（Claude Desktop）；7d/30d亦能复现摘要/列表分歧。源码 `ChartSelectionSummaryBubble.accessibilitySummary` 仍调用 `selection.fullAttributionEvents`，没有使用已接入可见列表的 `usage` 模型集合。这个问题影响辅助技术读取容器摘要；本轮仅登记，不修改源码或把旧云端门禁标成修复证明。下一源码候选需要收束该入口，添加同一汇总选区的AX摘要/可见模型一致性回归，再完成云端门禁。
+
+以下仍为NOT_RUN或fixture-only：Windows实体GUI；同时有多个客户端/多个模型实时生成时的侧栏现场测试；自定义色编辑、停用/过期/零速率现场矩阵；本机没有记录的Gemini CLI及Antigravity Thinking模型组合；完整滚动性能A/B；Finder安装器外观和完整权限保留矩阵。`guiTested=true`只表示已执行上述macOS检查，`allAcceptanceCriteriaPassed=false`明确保留这些边界及AX发现。
 
 ## 云端与安装包证据
 
-归档根目录：`/Users/huyiyang/Library/Application Support/CodexTokenBar-Maintenance/2026-11-10-functional-consolidation/ba88596d/`。每个run独立目录，保留原ZIP、GitHub artifact摘要、解压文件及下载回执；本地核验只读取云端产物，不执行构建、测试套件或候选应用。
+归档根目录：`/Users/huyiyang/Library/Application Support/CodexTokenBar-Maintenance/2026-11-10-functional-consolidation/ba88596d/`。每个run独立目录，保留原ZIP、GitHub artifact摘要、解压文件及下载回执；构件核验阶段只读取云端产物。后续安装与GUI证据另存上述安装子目录；本机始终没有执行构建或测试套件。
 
 | 门禁 | Run | 结果 |
 | --- | --- | --- |
@@ -137,13 +154,13 @@ Public097的真实旧tag为 `0219554ce444b0013987da7b82e3c2e891f4afdb`：Swift�
 
 formed矩阵8份报告、每份237个候选生产文件blob身份已复核；每个版本/平台都覆盖committed/interrupted恢复后各3次独立重启，64条阶段报告通过官方 `parse_report`，恢复材料manifest与迁移状态hash不变。注意interrupted旧producer在B形成前退出，其 `formedB=false` / `oldBPreserved=false` 是原测试合同；committed必须为true，不可把前者误报为旧B丢失。详见 `verified-formed.json` 和原始 `*-formed-state.json`。
 
-本轮云端视觉预览已归档，离线查看模型名称卡片、紧凑主子任务层级和侧栏速度布局；新实时模型条另有Swift实际布局测量与React生产组件断言。这里不等于已安装GUI交互、用户实时数据或完整截图验收。
+本轮云端视觉预览已归档，离线查看模型名称卡片、紧凑主子任务层级和侧栏速度布局；新实时模型条另有Swift实际布局测量与React生产组件断言。云端证据与上文后续已安装GUI证据分开记录，后者也不代表所有客户端/状态矩阵均实测。
 
 打包预检沿用 `release-macos-app` 的完整性、签名、更新配置和依赖边界检查。没有新增依赖、改动lockfile/权限或重新实现更新器；npm官方registry替换参数保持原样。`agent_speed_vendor.py check`通过，Vendor与本轮基线无差异。打包使用已审阅pin `a94a67fcc78e5d8eea5f82d8d5e737bccf994e2c`，并明确记录保留原因；观察到的上游HEAD `6a4d110480d133360e3be8a2e7944ac2b6511e87` 未在本轮集成，不能将pin豁免描述成已追平上游。
 
-候选仅用于安排后续验收：ad-hoc签名、未公证、无更新签名、未公开发布。Finder安装器外观与实机权限保留测试均留到用户安排后进行。
+此包为内部验收候选：ad-hoc签名、未公证、无更新签名、未公开发布。macOS安装运行与所列GUI已验证，Finder安装器外观与完整权限保留矩阵仍未执行。
 
-macOS包已在 `staged-macos/Codex Token Bar.app` 独立解压核验：`CFBundleShortVersionString=0.9.11`、`CFBundleVersion=1008`、`lipo=arm64`；`codesign --verify --deep --strict`、diagnostics helper签名、`hdiutil verify`通过；designated requirement、Sparkle feed和公钥与现装build1007一致。模型/图表/分组/价格共6份资源与候选源码逐字节相等。Gatekeeper的未公证拒绝符合ad-hoc候选属性，不标成公证通过。没有运行候选可执行文件。
+macOS包在安装前于 `staged-macos/Codex Token Bar.app` 独立解压核验：`CFBundleShortVersionString=0.9.11`、`CFBundleVersion=1008`、`lipo=arm64`；`codesign --verify --deep --strict`、diagnostics helper签名、`hdiutil verify`通过；designated requirement、Sparkle feed和公钥与当时的build1007一致。模型/图表/分组/价格共6份资源与候选源码逐字节相等。Gatekeeper的未公证拒绝符合ad-hoc候选属性，不标成公证通过。`app-validation.json`保留安装前的时间点状态；后续安装运行状态以 `final-validation.json` 和安装子目录记录为准。
 
 | macOS产物 | bytes | SHA256 |
 | --- | ---: | --- |
@@ -151,7 +168,7 @@ macOS包已在 `staged-macos/Codex Token Bar.app` 独立解压核验：`CFBundle
 | `CodexTokenBar-v0.9.11-macos-arm64.dmg` | 29791319 | `a4c5480000b5231f43e2203a126c62c19f6ece548af17cf6fdb89ca58315e777` |
 | app内 `CodexTokenBar` | — | `baad6e73a97de1760234bed5e4f011f57ba1ad7879ae25d1ea1ffbbf8db9fdce` |
 
-兼容名 `CodexTokenBar.app.zip` 与版本化ZIP完全同hash。已安装build1007可执行hash仍为 `22dd9f96b4b22bda281c63774a68041181420aab673737572f6549d57972da2f`。
+兼容名 `CodexTokenBar.app.zip` 与版本化ZIP完全同hash。已安装build1008可执行hash与上表候选一致；保留的build1007备份hash为 `22dd9f96b4b22bda281c63774a68041181420aab673737572f6549d57972da2f`。
 
 | Windows产物 | bytes | SHA256 |
 | --- | ---: | --- |
@@ -162,10 +179,12 @@ Windows两个架构均在真实Windows runner构建，`build-manifest.json`的�
 
 归档入口：
 
-- `final-validation.json`：源码/云端/构件总门禁、文档HEAD、现装build1007与保护文件hash，以及安装/GUI未执行边界。
+- `final-validation.json`：源码/云端/构件总门禁、文档HEAD、现装build1008与保护文件hash；installed/guiTested均true，GUI_TESTED_WITH_FINDINGS及未执行边界明确登记。
+- `local-install-1008-jMzbnP3E/gui-validation.json`：34组原GUI记录、8张新增侧栏截图及原始证据hash清单；侧栏通过项、图表AX问题和NOT_RUN项。
+- `local-install-1008-jMzbnP3E/installation.json`、`runtime-validation.json`：build1007备份位置、build1008身份、实际进程、首刷、安装确认与最新诊断包。
 - `verified-checks.json`、`verified-public097.json`、`verified-formed.json`：原始执行证据的只读复验结果。
 - `app-validation.json`、`app-verification.log`：双lane构件、macOS签名、资源、公钥/feed、版本架构和hash。
 - `checks-42692564247/`、`public097-42692564607/`、`formed-42693285673/`、`installers-42693284176/`：各run的workflow/jobs、GitHub artifact元数据、原ZIP、解压文件和下载回执。
 - `collect_artifacts.py`、`verify_evidence.py`、`verify_packages.py`：本批固定SHA的下载/只读复验脚本；不是安装器，不执行候选程序或测试套件。不能套到其他SHA冒充验证。
 
-本轮到此交付给Argon：请先询问用户是否在场、是否希望亲自实机测试，再安排安装和上述验收。没有覆盖 `/Applications/Codex Token Bar.app`，没有启动候选或抢占GUI，也没有公开发布。
+本轮收尾交付给Argon：build1008安装运行与授权范围内的macOS实机检查已有可复查证据，侧栏三级模型速度条验证完成；图表辅助功能摘要发现已登记为OPEN，不能将本报告视为所有入口收束完毕或公开发布批准。最终恢复用户原速度设置并收起侧栏，既有dirty/untracked文件和历史回滚材料保持原样。本次仅提交维护文档，不重新编译、不替换已验证产品SHA、不发布新版本。
