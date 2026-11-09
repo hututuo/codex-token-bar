@@ -41,8 +41,8 @@ final class RecentChartClientScopeTests: XCTestCase {
         let codex = DashboardSnapshot(stats: .init(totalTokens: 1_000, peakDayTokens: 1_000, peakThreadTokens: 1_000,
             currentStreakDays: 1, longestStreakDays: 1, totalCalls: 1, totalThreads: 1, mostUsedReasoning: "", skillsExplored: 0, totalSkillsUsed: 0),
             dailyUsage: [], recentBins: bins, hourlyUsage: bins, pluginUsage: [],
-            cacheUsage: .init(total: breakdown, hourly: cache, recentBins: cache, sessions: [], turns: []), generatedAt: now)
-        let external = UsageClient.allCases.enumerated().map { index, client in
+            cacheUsage: .init(total: breakdown, daily: [], hourly: cache, recentBins: cache, sessions: [], turns: []), generatedAt: now)
+        let external: [ClientTrendBucket] = UsageClient.allCases.enumerated().map { index, client in
             ClientTrendBucket(client: client, startUnix: Int64(now.timeIntervalSince1970), inputTokens: Int64((index+1)*2_000),
                 outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: nil, requests: index+1,
                 apiCostMicroUSD: Int64((index+1)*100_000), unpricedRequests: 0)
@@ -61,8 +61,10 @@ final class RecentChartClientScopeTests: XCTestCase {
                     attributionEvents: [], quotaRecentBins: [], quotaHourlyBins: []), priceModel: .gpt56Sol)
             XCTAssertEqual(prepared.data.tokenTotal, 1_000 + external.reduce(0) { $0+Int($1.tokens) })
             XCTAssertEqual(prepared.data.callTotal, 1 + external.reduce(0) { $0+$1.requests })
-            XCTAssertEqual(prepared.bucketCostsUSD.reduce(0,+)-baseline.bucketCostsUSD.reduce(0,+),
-                Double(external.compactMap(\.apiCostMicroUSD).reduce(0,+))/1_000_000, accuracy: 0.000001)
+            let totalCost = prepared.bucketCostsUSD.reduce(0.0, +)
+            let baselineCost = baseline.bucketCostsUSD.reduce(0.0, +)
+            let externalMicroUSD: Int64 = external.compactMap(\.apiCostMicroUSD).reduce(0, +)
+            XCTAssertEqual(totalCost - baselineCost, Double(externalMicroUSD) / 1_000_000, accuracy: 0.000001)
             XCTAssertEqual(prepared.quotaData?.tokenTotal, 1_000, "External costs must never inflate the Codex quota numerator")
             let window = prepared.data.visibleWindowSummary(for: nil)
             let plot = RecentChartPlotData(bins: prepared.data.bins, prepared: prepared.data,
