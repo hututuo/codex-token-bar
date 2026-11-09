@@ -12,24 +12,39 @@ struct LiveModelRateBars: View {
             }
             Text(snapshot.mode.title + " · " + snapshot.status).font(.system(size: 10)).foregroundStyle(.secondary)
             ForEach(snapshot.rows) { row in
-                HStack(spacing: 7) {
-                    Circle().fill(row.color).frame(width: 7, height: 7)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(row.label).lineLimit(1)
-                        Text(row.clientLabel).font(.system(size: 9)).foregroundStyle(.secondary)
-                    }.frame(width: 104, alignment: .leading)
-                    GeometryReader { proxy in
-                        Capsule().fill(row.color.opacity(0.14))
-                        Capsule().fill(row.color).frame(width: proxy.size.width * row.barFraction)
-                    }.frame(height: 6)
-                    Text(row.valueText + " tok/s").monospacedDigit().frame(width: 88, alignment: .trailing)
-                }.font(.system(size: 11)).frame(minHeight: 28)
-                    .help(row.clientLabel + " · " + row.rawModels.joined(separator: ", ") + " · " + row.valueText + " tok/s")
-                    .accessibilityElement(children: .combine)
+                LiveModelRateBarRow(row: row)
             }
             if snapshot.rows.isEmpty { Text(snapshot.status).font(.caption).foregroundStyle(.secondary) }
             else { Text("条长按当前最快模型缩放；颜色与侧栏圆圈一致").font(.system(size: 9)).foregroundStyle(.secondary) }
         }.accessibilityIdentifier("live-model-rate-bars")
+    }
+}
+
+private struct LiveModelRateBarRow: View {
+    let row: LiveModelRateRow
+    private var detail: String { [row.clientLabel, row.rawModels.joined(separator: ", "), row.valueText + " tok/s"].joined(separator: " · ") }
+    private var name: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(row.label).lineLimit(1)
+            Text(row.clientLabel).font(.system(size: 9)).foregroundStyle(.secondary)
+        }.frame(width: 104, alignment: .leading)
+    }
+    private var track: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule().fill(row.color.opacity(0.14))
+                Capsule().fill(row.color).frame(width: proxy.size.width * CGFloat(row.barFraction))
+            }
+        }.frame(height: 6)
+    }
+    var body: some View {
+        HStack(spacing: 7) {
+            Circle().fill(row.color).frame(width: 7, height: 7)
+            name
+            track
+            Text(row.valueText + " tok/s").monospacedDigit().frame(width: 88, alignment: .trailing)
+        }.font(.system(size: 11)).frame(minHeight: 28)
+            .help(detail).accessibilityElement(children: .combine)
     }
 }
 
