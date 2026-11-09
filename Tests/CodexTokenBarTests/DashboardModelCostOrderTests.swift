@@ -34,16 +34,25 @@ final class DashboardModelCostOrderTests: XCTestCase {
         XCTAssertFalse(DashboardModelCostOrder.groups([item("codex|gpt-6-sol")]).contains { $0.id == "latest" })
     }
     @MainActor
-    func testShortPeriodFillsTwoSlotsAndUnknownNameFitsSingleRow() throws {
+    func testShortPeriodFillsFourSlotsAndUnknownNameFitsSingleRow() throws {
         let unknown = item("unknown-models", tokens: 13_662_755)
-        XCTAssertEqual(DashboardModelCostGrid(items: [unknown], fillFirstRow: true).slotCount, 2)
-        XCTAssertEqual(DashboardModelCostGrid(items: [], fillFirstRow: true).slotCount, 2)
+        XCTAssertEqual(DashboardModelCostGrid(items: [unknown], fillFirstRow: true).slotCount, 4)
+        XCTAssertEqual(DashboardModelCostGrid(items: [], fillFirstRow: true).slotCount, 4)
         XCTAssertEqual(DashboardModelCostGrid(items: [unknown], fillFirstRow: false).slotCount, 1)
+        let latest = DashboardModelCostOrder.policy.groups[0].models.map { item($0, tokens: 55_714_167) }
+        // Measure the production grid, not just its slot policy: a two-column
+        // regression doubles the height and must fail even with passing counts.
+        for rows in [[], [unknown], Array(latest.prefix(2)), Array(latest.prefix(3)), Array(latest.prefix(4)), latest] {
+            let host = NSHostingView(rootView: DashboardModelCostGrid(items: rows, fillFirstRow: true).frame(width: 840))
+            XCTAssertEqual(host.fittingSize.width, 840, accuracy: 0.5)
+            XCTAssertEqual(host.fittingSize.height, rows.count > 4 ? 67 : 30, accuracy: 0.5)
+        }
         let view = VStack(spacing: 10) {
+            DashboardModelCostGrid(items: latest, fillFirstRow: true, latest: true)
             DashboardModelCostGrid(items: [unknown], fillFirstRow: true)
             DashboardModelCostGrid(items: [item("codex|gpt-6-astra")], fillFirstRow: true)
-        }.frame(width: 620).padding(12).background(Color.white)
-        for width: CGFloat in [300, 360, 440] {
+        }.frame(width: 840).padding(12).background(Color.white)
+        for width: CGFloat in [204, 220, 300] {
             let host = NSHostingView(rootView: DashboardModelCostChip(item: unknown, color: .gray).frame(width: width))
             XCTAssertEqual(host.fittingSize.height, 30, accuracy: 0.5)
             XCTAssertEqual(host.fittingSize.width, width, accuracy: 0.5)

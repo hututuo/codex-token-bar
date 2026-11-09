@@ -1336,15 +1336,16 @@ private struct DashboardModelCostScopePicker: View {
     }
 }
 
-/// Two roomy columns keep each 30pt row readable. Empty slots are display-only
+/// Preserve the original adaptive 204pt chips (four at normal dashboard width).
+/// Empty slots are display-only
 /// and never enter totals, shares, pricing or the persisted model inventory.
 struct DashboardModelCostGrid: View {
     let items: [FloatingTodayModelUsageItem]
     var fillFirstRow = false
     var latest = false
-    var slotCount: Int { fillFirstRow ? max(2, items.count) : items.count }
+    var slotCount: Int { fillFirstRow ? max(4, items.count) : items.count }
     var body: some View {
-        LazyVGrid(columns: [GridItem(.flexible(minimum: 0)), GridItem(.flexible(minimum: 0))], spacing: 7) {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 204), spacing: 7)], spacing: 7) {
             ForEach(0..<slotCount, id: \.self) { index in
                 if index < items.count {
                     let item = items[index]

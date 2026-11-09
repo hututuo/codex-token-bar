@@ -198,7 +198,7 @@ jobs:
             --require testDashboardCombinesEveryUnknownSourceIntoOneReferenceWithoutChangingKnownFees \
             --require testCostGroupsNeverInventZeroUsageCatalogCards \
             --require testSharedCostOrderPreservesEverySourceAndAmountAcrossPeriods \
-            --require testShortPeriodFillsTwoSlotsAndUnknownNameFitsSingleRow \
+            --require testShortPeriodFillsFourSlotsAndUnknownNameFitsSingleRow \
             --require testProductionRailTracksTPSModelGrowthAndDisappearance \
             --require testRunningTitlesUseSchemaFallbacksAndAgentMetadataWithoutChangingOwnership \
             --require testRunningRolloutTitlesAreBoundedCachedAndCanArriveOnAppend \

@@ -281,7 +281,7 @@ test("one anonymous model cannot hide the known cycle prices or total", async ()
   }
 });
 
-test("today and seven-day one-model groups fill a two-slot row without fake accounting", async () => {
+test("today and seven-day one-model groups fill the original four-slot row without fake accounting", async () => {
   await withDom(async ({window,container,root,StatsStrip}) => {
     const style=window.document.createElement('style');style.textContent=await readFile(new URL('../../styles/global.css',import.meta.url),'utf8');window.document.head.append(style);
     const unknown={key:'unknown-models',label:'未知模型',tokens:13662755,share:1,costUSD:null,referenceCostUSD:18.9,usesIndependentQuota:false,color:'#888888',sourceModels:['unknown','gemini-pro-default']};
@@ -290,11 +290,11 @@ test("today and seven-day one-model groups fill a two-slot row without fake acco
     for(const index of [0,1]){
       await React.act(async()=>{tabs[index].click();await settle();});
       assert.equal(container.querySelectorAll('.stats-model-cost-secondary-chip').length,1);
-      assert.equal(container.querySelectorAll('.stats-model-cost-placeholder').length,1);
+      assert.equal(container.querySelectorAll('.stats-model-cost-placeholder').length,3);
       const card=container.querySelector('.stats-model-cost-secondary-chip');
       assert.equal(card.querySelector('em').textContent,'未知模型');
       assert.match(card.title,/gemini-pro-default/);
-      assert.equal(window.getComputedStyle(card.parentElement).gridTemplateColumns,'repeat(2, minmax(0, 1fr))');
+      assert.equal(window.getComputedStyle(card.parentElement).gridTemplateColumns,'repeat(auto-fill, minmax(204px, 1fr))');
       assert.equal(window.getComputedStyle(card).height,'30px');
       assert.doesNotMatch(container.querySelector('.stats-model-cost-total').textContent,/\$0/);
     }

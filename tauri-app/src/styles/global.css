@@ -2529,7 +2529,7 @@ button.quota-side-card:hover {
 .stats-model-cost-primary-grid,
 .stats-model-cost-secondary-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(204px, 1fr));
   gap: 7px;
   min-width: 0;
 }

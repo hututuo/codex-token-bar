@@ -270,7 +270,7 @@ function StatsStripView({
             </span>
           ) : modelCostItems.length === 0 ? (
             fillFirstModelRow && !clientCosts?.codexPendingScopes?.includes(modelCostScope as "today"|"sevenDay") ? <div className="stats-model-cost-secondary-grid" aria-label="暂无模型用量">
-              <span className="stats-model-cost-placeholder">暂无模型用量</span><span className="stats-model-cost-placeholder">暂无模型用量</span>
+              {Array.from({length:4},(_,index)=><span className="stats-model-cost-placeholder" key={index}>暂无模型用量</span>)}
             </div> : <span className="stats-model-cost-empty">
               {clientCosts?.codexPendingScopes?.includes(modelCostScope as "today"|"sevenDay") ? "Codex 模型明细同步中" : modelCostScope === "sevenDay" ? `${periodLabel}暂无模型用量` : modelCostScope === "today" ? "今日暂无模型用量" : "暂无逐模型历史"}
             </span>
@@ -299,7 +299,7 @@ function StatsStripView({
                     <i style={{backgroundColor:color}}/><em><span className="model-cost-name">{qualifiedLabel ? qualifiedLabel[1] : label}</span>{qualifiedLabel && <span className="model-cost-name-suffix">{qualifiedLabel[2]}</span>}</em><small className="model-cost-tokens">{item.tokens === 0 ? "暂无记录" : formatTokens(item.tokens)}</small>{item.tokens > 0 && <small className="model-cost-share">{floatingModelUsageValue(item,"share")}</small>}<b>{amount}</b>
                   </span>;
                   })}
-                  {fillFirstModelRow && group.items.length === 1 && <span className="stats-model-cost-placeholder">暂无其他模型用量</span>}
+                  {fillFirstModelRow && Array.from({length:Math.max(0,4-group.items.length)},(_,index)=><span className="stats-model-cost-placeholder" key={"empty-"+index}>暂无其他模型用量</span>)}
                 </div>
               </div>)}
             </div>
