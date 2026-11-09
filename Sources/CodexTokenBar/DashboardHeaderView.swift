@@ -1267,7 +1267,7 @@ struct DashboardModelCostRow: View {
                             .font(.system(size: 10, weight: .bold)).foregroundStyle(.secondary)
                             .frame(width: 78, alignment: .leading)
                         DashboardModelCostGrid(items: group.items, fillFirstRow: scope != .lifetime && dayLabel == nil,
-                            latest: group.id == "latest" || group.id == "fable")
+                            latest: group.id == "latest")
                     }
                 }
             }

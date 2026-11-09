@@ -13,4 +13,6 @@ test('shared cost order preserves all client rows and fees regardless of input o
  }
  assert.deepEqual(orderedCostGroups([{...rows[0],key:'claudeCode|claude-fable-5-1',tokens:0}]),[]);
  assert.equal(orderedCostGroups([{...rows[0],key:'codex|gpt-6-sol'}])[0].id,'gpt');
+ assert.equal(orderedCostGroups([{...rows[0],key:'claudeCode|claude-fable-5-1'}])[0].id,'latest');
+ assert.equal(orderedCostGroups([{...rows[0],key:'claudeCode|claude-fable-5'}])[0].id,'claude');
 }));

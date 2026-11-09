@@ -14,10 +14,12 @@ final class DashboardHeaderRedesignTests: XCTestCase {
         let rows=ids.map { FloatingTodayModelUsageItem(id:$0,label:$0,tokens:100,share:0.2,costUSD:1,usesIndependentQuota:false,referenceCostUSD:nil,color:.blue) }
         let context=ClientModelCostPeriods(lifetime:rows,today:[],sevenDay:[])
         let groups=context.groups(.lifetime)
-        XCTAssertEqual(Array(groups.prefix(2)).map(\.id),["6","claude:latest"])
-        XCTAssertEqual(Set(groups[1].items.filter { $0.tokens > 0 }.map(\.id)),Set([ids[3],ids[4]]))
-        XCTAssertFalse(groups[1].items.contains{$0.id==ids[2]},"A legacy CLI model cannot outrank a newer Desktop version of the same family")
-        XCTAssertEqual(groups.flatMap(\.items).filter { $0.tokens > 0 }.map(\.id).sorted(),ids.map { $0.hasPrefix("codex|") ? String($0.dropFirst(6)) : $0 }.sorted())
+        XCTAssertEqual(groups.map(\.id),["latest","gpt","claude"])
+        XCTAssertEqual(groups[0].items.map(\.id),[ids[3],ids[4],ids[1]])
+        XCTAssertFalse(groups[0].items.contains{$0.id==ids[2]},"A legacy CLI model cannot outrank a newer Desktop version of the same family")
+        XCTAssertEqual(groups.flatMap(\.items).map(\.id).sorted(),ids.sorted())
+        XCTAssertEqual(groups.flatMap(\.items).reduce(0) { $0 + $1.tokens }, 500)
+        XCTAssertEqual(groups.flatMap(\.items).compactMap(\.costUSD).reduce(0,+), 5)
     }
     func testUnlabelledCompactPlaceholdersHaveNoRepresentationOrHeight() {
         let omitted:[QuotaSidebarItem]=[.modeltrace,.tps,.radar,.credits,.clientUsage]

@@ -25,7 +25,12 @@ final class DashboardModelCostOrderTests: XCTestCase {
             XCTAssertEqual(groups.map { $0.items.map(\.id) }, fixture.groups.map(\.keys))
             XCTAssertEqual(groups.flatMap(\.items).sorted { $0.id < $1.id }, rows.sorted { $0.id < $1.id })
         }
-        XCTAssertFalse(DashboardModelCostOrder.groups([item("claudeCode|claude-fable-5-1", tokens: 0)]).contains { $0.id == "fable" })
+        XCTAssertTrue(DashboardModelCostOrder.groups([item("claudeCode|claude-fable-5-1", tokens: 0)]).isEmpty)
+        XCTAssertEqual(DashboardModelCostOrder.policy.groups.first?.models, [
+            "claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5",
+            "gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna"
+        ])
+        XCTAssertFalse(DashboardModelCostOrder.policy.groups.contains { $0.id == "fable" })
         XCTAssertFalse(DashboardModelCostOrder.groups([item("codex|gpt-6-sol")]).contains { $0.id == "latest" })
     }
     @MainActor
