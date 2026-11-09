@@ -3,6 +3,29 @@ import CryptoKit
 @testable import CodexTokenBar
 
 final class MultiClientUsageLedgerTests: XCTestCase {
+    func testTrendModelsAndPricesStaySeparateWithinOneClientAndBucket() throws {
+        let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("model-trend.sqlite"))
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let models = ["claude-opus-5", "claude-sonnet-5", "unknown"]
+        _ = try ledger.ingest(models.enumerated().map { index, model in
+            ClientUsageEvent(client: .claudeCode, eventID: "m\(index)", sessionID: "s", model: model,
+                timestamp: now, inputTokens: 100_000, outputTokens: 100,
+                cacheReadTokens: index == 2 ? nil : 1000, cacheWriteTokens: 10_000)
+        })
+        let before = try ledger.database.readRows("SELECT payload FROM client_usage_events ORDER BY event_id") { $0.text(0) }
+        let rows = try ledger.trendBuckets(now: now), summaries = try ledger.summaries()
+        XCTAssertEqual(rows.count, 3)
+        XCTAssertEqual(Set(rows.compactMap(\.model)), Set(models))
+        XCTAssertEqual(rows.reduce(0) { $0 + $1.requests }, 3)
+        for row in rows {
+            let summary = try XCTUnwrap(summaries.first { $0.model == row.model })
+            XCTAssertEqual(row.inputTokens, summary.inputTokens)
+            XCTAssertEqual(row.unpricedRequests, summary.unpricedRequests)
+            XCTAssertEqual(row.apiCostMicroUSD.map { Double($0) / 1_000_000 }, summary.apiCostUSD)
+            XCTAssertEqual(row.cacheReadComplete, row.model != "unknown")
+        }
+        XCTAssertEqual(before, try ledger.database.readRows("SELECT payload FROM client_usage_events ORDER BY event_id") { $0.text(0) })
+    }
     func testConfirmedAntigravityAliasesAndLegacyOpusArePricedWithoutChangingRawRecords() throws {
         let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("confirmed-routes.sqlite"))
         for model in ["gemini-3-flash-a", "gemini-3-flash-preview", "gemini-3.8-flash-n", "gemini-3.8-flash", "claude-opus-5"] {

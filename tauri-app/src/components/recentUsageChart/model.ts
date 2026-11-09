@@ -309,7 +309,7 @@ export function recentChartScrollLayout(
 ): RecentChartScrollLayout {
   const safeViewportWidth = Number.isFinite(viewportWidth) && viewportWidth > 0 ? viewportWidth : 980;
   const intervalCount = Math.max(0, pointCount - 1);
-  const defaultBucketSeconds = range === "24h" ? 5 * 60 : range === "7d" ? 60 * 60 : 6 * 60 * 60;
+  const defaultBucketSeconds = RANGE_CONFIG[range].bucketSeconds;
   const safeBucketSeconds = Number.isFinite(bucketSeconds) && bucketSeconds > 0 ? bucketSeconds : defaultBucketSeconds;
   const viewportDurationSeconds = RECENT_CHART_WINDOW_SECONDS[range];
   const contentDurationSeconds = Math.max(intervalCount * safeBucketSeconds, viewportDurationSeconds);
@@ -429,14 +429,9 @@ export function prepareRecentChartData(
   range: RecentChartRange,
   series: RecentUsageChartSeries,
 ): PreparedRecentChartData {
-  // The fine series retains 30 days. Widen the viewport without dropping
-  // intra-hour quota lows. Older short caches keep their hourly coverage.
-  const fine = series.recentUsage24h;
-  const hourly = series.recentUsage7d;
-  const useFine = range === "7d" && fine.length > 0 && (hourly.length === 0
-    || (fine[0].startUnix < hourly[0].startUnix + 3600 && fine[fine.length - 1].startUnix >= hourly[hourly.length - 1].startUnix));
-  const config = useFine ? { ...RANGE_CONFIG[range], subtitle: RANGE_CONFIG["24h"].subtitle, bucketSeconds: 300 } : RANGE_CONFIG[range];
-  const points = pointsForRange(useFine ? "24h" : range, series);
+  // Client scope and retained fine coverage never change display granularity.
+  const config = RANGE_CONFIG[range];
+  const points = pointsForRange(range, series);
   const tokenTotal = points.reduce((total, point) => total + point.tokens, 0);
   const callTotal = points.reduce((total, point) => total + point.calls, 0);
   const inputWeightedCacheHit = weightedCacheHitRate(points);
@@ -476,6 +471,30 @@ export function quotaEstimateWindowVisibility(
     fiveHour: data.hasFiveHourQuota,
     sevenDay: data.hasSevenDayQuota,
   };
+}
+
+/** Fine samples belong to the quota provider, never to the displayed range. */
+export function prepareQuotaEvidenceData(range: RecentChartRange, series: RecentUsageChartSeries): PreparedRecentChartData {
+  const fine=series.recentUsage24h,coarse=series.recentUsage7d;
+  const covered=range==="7d"&&fine.length>0&&(coarse.length===0
+    ||(fine[0].startUnix<coarse[0].startUnix+3600&&fine[fine.length-1].startUnix>=coarse[coarse.length-1].startUnix));
+  return prepareRecentChartData(covered?"24h":range,series);
+}
+
+/** Map display anchors to provider evidence by time. Public indices remain
+ * display indices for hover, pinned selection and source-change handling. */
+export function chartQuotaConsumptionSelection(display: PreparedRecentChartData, provider: PreparedRecentChartData,
+  startIndex: number, endIndex: number, priceModel: OfficialAPIPriceModel,
+  boundaries: Parameters<typeof quotaConsumptionSelection>[4] = {}): QuotaConsumptionSelection | null {
+  const lower=Math.max(0,Math.min(startIndex,endIndex)),upper=Math.min(display.points.length-1,Math.max(startIndex,endIndex));
+  if(lower>upper)return null;
+  const start=display.points[lower].startUnix,end=display.points[upper].startUnix+display.bucketSeconds;
+  const from=provider.points.findIndex(point=>point.startUnix>=start);
+  let through=provider.points.length-1;
+  while(through>=0&&provider.points[through].startUnix>=end)through--;
+  if(from<0||through<from)return null;
+  const selection=quotaConsumptionSelection(provider,from,through,priceModel,boundaries);
+  return selection?{...selection,startIndex:lower,endIndex:upper,bucketCount:upper-lower+1,startUnix:start,endUnix:end}:null;
 }
 
 export function plotChartPoints(
@@ -565,6 +584,10 @@ export function recentChartBucketCosts(
   points: RecentUsagePoint[],
   priceModel: OfficialAPIPriceModel,
 ): number[] {
+  return recentChartBucketEstimates(points,priceModel).map(estimate=>Number.isFinite(estimate.costUSD)?Math.max(estimate.costUSD,0):0);
+}
+
+export function recentChartBucketEstimates(points: readonly RecentUsagePoint[], priceModel: OfficialAPIPriceModel): ModelAwareAPICostEstimate[] {
   return points.map((point) => {
     const fallback = {
       inputTokens: finiteNonnegative(point.inputTokens),
@@ -572,12 +595,11 @@ export function recentChartBucketCosts(
       outputTokens: finiteNonnegative(point.outputTokens),
       calls: finiteNonnegative(point.calls),
     };
-    const estimate = modelAwareAPICostUSD(
+    return modelAwareAPICostUSD(
       modelRowsForPoints([point]),
       fallback,
       priceModel,
     );
-    return Number.isFinite(estimate.costUSD) ? Math.max(estimate.costUSD, 0) : 0;
   });
 }
 
@@ -1092,13 +1114,28 @@ function pointsForRange(range: RecentChartRange, series: RecentUsageChartSeries)
       points = series.recentUsage24h;
       break;
     case "7d":
-      points = series.recentUsage7d;
+      points = series.recentUsage7d.length ? series.recentUsage7d : rebinUsagePoints(series.recentUsage24h, RANGE_CONFIG[range].bucketSeconds);
       break;
     case "30d":
-      points = series.recentUsage30d;
+      points = series.recentUsage30d.length ? series.recentUsage30d
+        : rebinUsagePoints(series.recentUsage7d.length ? series.recentUsage7d : series.recentUsage24h,RANGE_CONFIG[range].bucketSeconds);
       break;
   }
   return points.map(normalizeRecentUsagePoint);
+}
+
+function rebinUsagePoints(points: RecentUsagePoint[], seconds: number): RecentUsagePoint[] {
+  const groups = new Map<number,RecentUsagePoint[]>();
+  for(const point of points){const key=Math.floor(point.startUnix/seconds)*seconds;const rows=groups.get(key)??[];rows.push(point);groups.set(key,rows);}
+  return [...groups].sort(([a],[b])=>a-b).map(([startUnix,rows])=>{
+    const sum=(key:"tokens"|"calls"|"inputTokens"|"cachedInputTokens"|"outputTokens")=>rows.reduce((n,row)=>n+row[key],0);
+    const last=rows[rows.length-1],input=sum("inputTokens"),cached=sum("cachedInputTokens");
+    return {...last,startUnix,label:new Date(startUnix*1000).toISOString(),tokens:sum("tokens"),calls:sum("calls"),
+      inputTokens:input,cachedInputTokens:cached,outputTokens:sum("outputTokens"),
+      cacheHitRate:rows.some(row=>row.inputTokens>0&&row.cacheHitRate===null)||input<=0?null:cached/input,
+      modelBreakdowns:rows.flatMap(row=>(row.modelBreakdowns??[]).map(model=>({...model,eventStartUnix:model.eventStartUnix??row.startUnix}))),
+      minuteModelBreakdowns:rows.flatMap(row=>row.minuteModelBreakdowns??[])};
+  });
 }
 
 function normalizeRecentUsagePoint(point: RecentUsagePoint): RecentUsagePoint {

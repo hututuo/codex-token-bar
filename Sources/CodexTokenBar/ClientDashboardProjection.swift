@@ -85,7 +85,7 @@ enum ClientDashboardProjection {
             if includeCodex { for row in codexValues { values[bucketKey(row.start, width: width), default: []].append(row.breakdown) } }
             for row in source {
                 let key = bucketKey(Date(timeIntervalSince1970: Double(row.startUnix)), width: width)
-                guard completeClients.contains(row.client.rawValue), let cached = row.cacheReadTokens else { if row.inputTokens > 0 { unknown.insert(key) }; continue }
+                guard row.cacheReadComplete ?? completeClients.contains(row.client.rawValue), let cached = row.cacheReadTokens else { if row.inputTokens > 0 { unknown.insert(key) }; continue }
                 values[key, default: []].append(.init(inputTokens: Int(row.inputTokens), cachedInputTokens: Int(cached), outputTokens: Int(row.outputTokens), reasoningOutputTokens: Int(row.reasoningTokens ?? 0), totalTokens: Int(row.tokens), calls: row.requests))
             }
             return values.filter { !unknown.contains($0.key) }.map { TokenCacheBucket(start: Date(timeIntervalSince1970: Double($0.key)), breakdown: $0.value.combined) }.sorted { $0.start < $1.start }

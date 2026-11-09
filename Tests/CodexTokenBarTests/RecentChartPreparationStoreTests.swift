@@ -100,6 +100,14 @@ final class RecentChartPreparationStoreTests: XCTestCase {
                 // quota value. Preserve that gap rather than inventing one.
                 XCTAssertFalse(snapshot.data.hasFiveHourQuota)
                 XCTAssertFalse(snapshot.data.hasSevenDayQuota)
+            } else if range == .sevenDays {
+                XCTAssertEqual(snapshot.data.bucketInterval, 3600)
+                XCTAssertEqual(snapshot.data.bins, input.hourlyBins)
+                let evidence = try XCTUnwrap(snapshot.quotaEvidence)
+                XCTAssertEqual(evidence.bucketInterval, 300)
+                XCTAssertEqual(evidence.bins, input.bins)
+                XCTAssertEqual(evidence.fiveHourQuotaObservations, fiveHourObservations)
+                XCTAssertEqual(evidence.sevenDayQuotaObservations, sevenDayObservations)
             } else {
                 XCTAssertEqual(snapshot.data.bins, input.bins, range.rawValue)
                 XCTAssertEqual(snapshot.data.fiveHourQuotaObservations, fiveHourObservations, range.rawValue)

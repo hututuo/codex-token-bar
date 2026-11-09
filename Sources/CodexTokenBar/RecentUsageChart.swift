@@ -1500,6 +1500,7 @@ struct RecentUsageChart: View {
 
     private var visibleWindowCostUSD: Double {
         let summary = visibleWindowSummary
+        if let usage = cachedPricingSnapshot?.usageSummary(from: summary.startIndex, through: summary.endIndex) { return usage.knownCostUSD }
         guard summary.endIndex >= summary.startIndex else { return 0 }
         return (summary.startIndex...summary.endIndex).reduce(0) { total, index in
             total + (cachedBucketCostsUSD[safe: index] ?? 0)
@@ -1516,13 +1517,7 @@ struct RecentUsageChart: View {
         return (start...end).contains { (cachedPricingSnapshot?.unpricedBucketRequests[safe: $0] ?? 0) > 0 }
     }
     private func recordedCostText(from start: Int, through end: Int) -> String? {
-        guard externalCostBuckets != nil, end >= start else { return nil }
-        let indices = start...end
-        let partial = hasUnpricedCost(from: start, through: end)
-        let hasKnown = indices.contains { cachedPricingSnapshot?.bucketHasKnownCost[safe: $0] == true }
-        guard hasKnown || !partial else { return "金额未报告" }
-        let amount = indices.reduce(0.0) { $0 + (cachedBucketCostsUSD[safe: $1] ?? 0) }
-        return (partial ? "已知金额 " : "金额 ") + amount.quotaEstimatorMoneyText
+        cachedPricingSnapshot?.usageSummary(from: start, through: end)?.costText
     }
 
     private var preparationInput: RecentChartPreparationInput {
@@ -1577,7 +1572,7 @@ struct RecentUsageChart: View {
                     // These are summary values, not line visibility indicators.
                     ChartLegend(color: .blue, label: "Token", value: visibleWindowSummary.tokenTotal.abbreviatedTokens)
                     ChartLegend(color: .orange, label: "调用", value: "\(visibleWindowSummary.callTotal)")
-                    ChartLegend(color: AppTheme.accentCyan, label: "命中率", value: visibleWindowSummary.recentCacheBreakdown.cacheHitRate.percentString)
+                    ChartLegend(color: AppTheme.accentCyan, label: "命中率", value: cachedPricingSnapshot?.usageSummary(from: visibleWindowSummary.startIndex, through: visibleWindowSummary.endIndex)?.cacheText ?? "—")
                     ChartLegend(color: AppTheme.chartCost, label: displayCostLabel, value: pricingAvailable && recordedCostText(from: visibleWindowSummary.startIndex, through: visibleWindowSummary.endIndex) != "金额未报告" ? visibleWindowCostUSD.quotaEstimatorMoneyText : "—")
                     if quotaSeriesVisibility.showsFiveHour {
                         ChartLegend(color: .purple, label: "5h", value: Self.percentText(visibleWindowSummary.latestFiveHourRemaining))
@@ -2174,12 +2169,13 @@ struct RecentUsageChart: View {
                     if let selection = consumptionSelection {
                         ChartSelectionSummaryBubble(
                             selection: selection,
-                            clientLabel: quotaCostSource == nil ? nil : "Codex",
+                            clientLabel: nil,
                             onClose: dismissTopPreview,
                             showsCost: pricingAvailable,
                             showsFiveHourQuota: quotaEstimateVisibility.showsFiveHour,
                             showsSevenDayQuota: quotaEstimateVisibility.showsSevenDay,
-                            recordedCostText: includesCodexCost ? nil : recordedCostText(from: selection.startIndex, through: selection.endIndex)
+                            recordedCostText: recordedCostText(from: selection.startIndex, through: selection.endIndex),
+                            usage: cachedPricingSnapshot?.usageSummary(from: selection.startIndex, through: selection.endIndex)
                         )
                     }
                 } else {
@@ -2198,7 +2194,8 @@ struct RecentUsageChart: View {
                         isHovering: true,
                         onClose: dismissTopPreview,
                         showsCost: pricingAvailable,
-                        recordedCostText: recordedCostText(from: activeIndex, through: activeIndex)
+                        recordedCostText: recordedCostText(from: activeIndex, through: activeIndex),
+                        usage: cachedPricingSnapshot?.usageSummary(from: activeIndex, through: activeIndex)
                     )
                 }
             }
@@ -2273,10 +2270,11 @@ struct RecentUsageChart: View {
         attribution: QuotaSelectionAttributionResult?
     ) -> some View {
         if previewVisibility.showsSelectionSummary, let consumptionSelection {
-            if let text = recordedCostText(from: consumptionSelection.startIndex, through: consumptionSelection.endIndex) {
-                Text((includesCodexCost ? "所选客户端 · " : "所选区间 · ") + text)
-                    .font(.system(size: 12, weight: .semibold)).foregroundStyle(AppTheme.chartCost)
-            }
+            ChartSelectionSummaryBubble(selection: consumptionSelection,
+                onClose: dismissSelectionSummary, showsCost: pricingAvailable,
+                showsFiveHourQuota: false, showsSevenDayQuota: false,
+                recordedCostText: recordedCostText(from: consumptionSelection.startIndex, through: consumptionSelection.endIndex),
+                usage: cachedPricingSnapshot?.usageSummary(from: consumptionSelection.startIndex, through: consumptionSelection.endIndex))
             if includesCodexCost {
             RecentChartQuotaEstimateOverlay(
                 selection: consumptionSelection,
@@ -2292,11 +2290,6 @@ struct RecentUsageChart: View {
                 onRevealPreview: { previewVisibility.revealTopPreview() }
             )
             .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                ChartSelectionSummaryBubble(selection: consumptionSelection,
-                    onClose: dismissSelectionSummary, showsCost: pricingAvailable,
-                    showsFiveHourQuota: false, showsSevenDayQuota: false,
-                    recordedCostText: recordedCostText(from: consumptionSelection.startIndex, through: consumptionSelection.endIndex))
             }
         } else if let consumptionSelectionInvalidationMessage {
             RecentChartSelectionInvalidationBanner(
@@ -2470,16 +2463,20 @@ struct RecentUsageChart: View {
         for prepared: RecentChartPreparedData,
         priceModel: OfficialAPIPriceModel
     ) -> [Double] {
+        bucketPriceEstimates(for: prepared, priceModel: priceModel).map { $0.costUSD.isFinite ? max($0.costUSD, 0) : 0 }
+    }
+
+    nonisolated static func bucketPriceEstimates(for prepared: RecentChartPreparedData,
+                                               priceModel: OfficialAPIPriceModel) -> [ModelAwareAPIPriceEstimate] {
         prepared.bins.indices.map { index in
             let fallbackBreakdown = prepared.cacheBreakdowns[safe: index] ?? .empty
-            let estimate = ModelAwareAPIPriceEstimator.estimate(
+            return ModelAwareAPIPriceEstimator.estimate(
                 modelBreakdowns: prepared.modelBreakdowns[safe: index] ?? [],
                 fallbackBreakdown: fallbackBreakdown,
                 fallbackModel: priceModel,
                 standardAPI: true,
                 rates: { $0.currentPriceRates }
             )
-            return estimate.costUSD.isFinite ? max(estimate.costUSD, 0) : 0
         }
     }
 

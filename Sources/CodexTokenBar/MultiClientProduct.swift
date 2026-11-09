@@ -51,6 +51,10 @@ struct ClientTrendBucket: Equatable, Sendable {
     // Nil with requests means no known price, never a fabricated zero.
     var apiCostMicroUSD: Int64? = nil
     var unpricedRequests: Int = 0
+    /// Raw ledger identity; nil decodes an older client-only aggregate.
+    var model: String? = nil
+    var cacheReadComplete: Bool? = nil
+    var cacheWriteComplete: Bool? = nil
     var tokens: Int64 { inputTokens + outputTokens }
 }
 

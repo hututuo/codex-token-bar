@@ -1,5 +1,6 @@
 import { RecentChartInteractionGuide } from "./recentUsageChart/InteractionGuide";
-import {recordedChartCosts} from "./recentUsageChart/recordedCosts";
+import {buildChartUsageSnapshot,chartUsageSummary,type ChartUsageSummary} from "./recentUsageChart/usageSnapshot";
+import {ChartModelUsageList} from "./recentUsageChart/ChartModelUsageList";
 import type {ClientTrendBucket} from "../multiClient/multiClientProduct";
 import { EMPTY_QUOTA_SELECTION, clickQuotaSelectionAnchor, quotaSelectionIndices,
   type QuotaSelectionAnchors } from "./recentUsageChart/selectionAnchors";
@@ -29,9 +30,9 @@ import {
   percentText,
   plotChartPoints,
   prepareRecentChartData,
-  recentChartBucketCosts,
+  prepareQuotaEvidenceData,
   recentChartFixedScaleMap,
-  quotaConsumptionSelection,
+  chartQuotaConsumptionSelection,
   quotaComparisonScopeText,
   quotaSelectionAttribution,
   quotaSelectionDurationText,
@@ -61,7 +62,6 @@ import {
   type SeriesVisibility,
 } from "./recentUsageChart/model";
 import type { SharedAccountAttributionResult } from "./sharedAccountAttribution/model";
-import { modelUsageSlices } from "./modelUsagePresentation.ts";
 
 const NO_UNREPORTED_COMPACTIONS: readonly number[] = [];
 interface RecentUsageChartProps {
@@ -162,11 +162,15 @@ export function RecentUsageChart({
   // Keep the quota provider's numeric basis separate from aggregate usage.
   // Claude input must never be charged using a Codex price or quota window.
   const quotaData = useMemo(() => {
+    if (!includesCodexCost) return {...data,points:alignProviderPoints(data.points,[])};
     if (!quotaCostSeries) return data;
     const original = data.bucketSeconds === 300 ? quotaCostSeries.recentUsage24h
       : data.bucketSeconds === 3600 ? quotaCostSeries.recentUsage7d : quotaCostSeries.recentUsage30d;
     return {...data, points: alignProviderPoints(data.points, original)};
-  }, [data, quotaCostSeries]);
+  }, [data, quotaCostSeries, includesCodexCost]);
+  const quotaEvidence=useMemo(()=>includesCodexCost?prepareQuotaEvidenceData(range,
+    quotaCostSeries??{recentUsage24h,recentUsage7d,recentUsage30d}):quotaData,
+    [range,quotaCostSeries,recentUsage24h,recentUsage7d,recentUsage30d,includesCodexCost,quotaData]);
   const quotaSelectionState = useMemo(() => quotaSelectionIndices(selectionAnchors, data), [selectionAnchors, data]);
   useEffect(() => {
     if (selectionAnchors.startUnix !== null && quotaSelectionState.startIndex === null) {
@@ -175,13 +179,6 @@ export function RecentUsageChart({
       setSelectionNotice("所选时间段已不在当前数据范围，请重新选择。");
     }
   }, [selectionAnchors, quotaSelectionState.startIndex]);
-  const bucketCostCache = useMemo(
-    () => new Map<RecentUsagePoint[], number[]>(),
-    [preparedDataCache, quotaModel, quotaCostSeries],
-  );
-  const costSource = data.bucketSeconds === 300
-    ? recentUsage24h
-    : data.range === "7d" ? recentUsage7d : recentUsage30d;
   const chartGeometry = recentChartGeometry(data.range);
   const { canvasHeight, plotTop, plotHeight, timeMarkerGap } = chartGeometry;
   const scrollLayout = recentChartScrollLayout(data.range, data.points.length, data.bucketSeconds, chartViewportWidth);
@@ -197,29 +194,16 @@ export function RecentUsageChart({
     () => recentChartVisibleWindowSummary(data, chartWidth, chartScrollLeft, chartViewportWidth),
     [data, chartWidth, chartScrollLeft, chartViewportWidth],
   );
-  const providerBucketCostsUSD = useMemo(
-    () => {
-      let costs = bucketCostCache.get(costSource);
-      if (!costs) {
-        costs = recentChartBucketCosts(quotaData.points, quotaModel);
-        bucketCostCache.set(costSource, costs);
-      }
-      return costs;
-    },
-    [quotaData.points, costSource, quotaModel, bucketCostCache],
-  );
-  const recordedCosts = useMemo(() => recordedChartCosts(data.points,data.bucketSeconds,externalCostBuckets,providerBucketCostsUSD,includesCodexCost),
-    [data.points,data.bucketSeconds,externalCostBuckets,providerBucketCostsUSD,includesCodexCost]);
-  const bucketCostsUSD = useMemo(() => externalCostBuckets ? recordedCosts.map(x=>x.cost) : providerBucketCostsUSD,
-    [externalCostBuckets,recordedCosts,providerBucketCostsUSD]);
+  const usageSnapshot=useMemo(()=>buildChartUsageSnapshot(data,quotaData.points,externalCostBuckets,includesCodexCost,quotaModel),
+    [data,quotaData.points,externalCostBuckets,includesCodexCost,quotaModel]);
+  const bucketCostsUSD=usageSnapshot.bucketCostsUSD;
+  const visibleUsage=chartUsageSummary(usageSnapshot.buckets,visibleWindowSummary.startIndex,visibleWindowSummary.endIndex);
   function recordedCostText(start:number,end:number):string|undefined {
-    if(!externalCostBuckets)return undefined;
-    const selected=recordedCosts.slice(start,end+1),unknown=selected.some(x=>x.unknown>0);
-    if(unknown&&!selected.some(x=>x.known))return '金额未报告';
-    return `${unknown?'已知金额':'金额'} ${moneyText(selected.reduce((sum,x)=>sum+x.cost,0))}`;
+    const usage=chartUsageSummary(usageSnapshot.buckets,start,end);
+    if(!usage)return undefined;
+    return usage.unpricedRequests>0&&!usage.hasKnownCost?'金额未报告':`${usage.unpricedRequests>0?'已知金额':'金额'} ${moneyText(usage.knownCostUSD)}`;
   }
-  const windowUnpriced = externalCostBuckets && recordedCosts.slice(visibleWindowSummary.startIndex,visibleWindowSummary.endIndex+1).some(x=>x.unknown>0);
-  const displayCostLabel = externalCostBuckets ? windowUnpriced?'已知金额':'金额' : quotaCostSeries?'金额 · Codex':'金额';
+  const displayCostLabel = (visibleUsage?.unpricedRequests??0)>0?'已知金额':'金额';
   const visibleWindowCostUSD = useMemo(() => {
     if (visibleWindowSummary.endIndex < visibleWindowSummary.startIndex) return 0;
     return bucketCostsUSD
@@ -296,13 +280,14 @@ export function RecentUsageChart({
   );
   const consumptionSelection = useMemo(() => (
     quotaSelectionState.startIndex !== null && quotaEndIndex !== null
-      ? quotaConsumptionSelection(quotaData, quotaSelectionState.startIndex, quotaEndIndex, quotaModel, {
+      ? chartQuotaConsumptionSelection(data,quotaEvidence, quotaSelectionState.startIndex, quotaEndIndex, quotaModel, {
         unreportedCompactionUnix,
         fiveHour: { resetAtUnix: fiveHourResetAtUnix, periodSeconds: 5 * 60 * 60 },
         sevenDay: { resetAtUnix: sevenDayResetAtUnix, periodSeconds: 7 * 24 * 60 * 60 },
       })
       : null
-  ), [quotaData, quotaSelectionState.startIndex, quotaEndIndex, quotaModel, fiveHourResetAtUnix, sevenDayResetAtUnix, unreportedCompactionUnix]);
+  ), [data,quotaEvidence, quotaSelectionState.startIndex, quotaEndIndex, quotaModel, fiveHourResetAtUnix, sevenDayResetAtUnix, unreportedCompactionUnix]);
+  const selectedUsage=consumptionSelection?chartUsageSummary(usageSnapshot.buckets,consumptionSelection.startIndex,consumptionSelection.endIndex):null;
   const selectionAttribution = useMemo(() => fixedSelectionEndIndex !== null
     && consumptionSelection !== null
     ? quotaSelectionAttribution(consumptionSelection, sharedAccountAttribution)
@@ -614,7 +599,7 @@ export function RecentUsageChart({
           <div className="chart-legend">
             <LegendDot className="legend-dot--token" label="Token" value={formatTokens(visibleWindowSummary.tokenTotal)} />
             <LegendDot className="legend-dot--calls" label="调用" value={`${visibleWindowSummary.callTotal}`} />
-            <LegendDot className="legend-dot--hit" label="命中率" value={percentText(visibleWindowSummary.cacheHitRate)} />
+            <LegendDot className="legend-dot--hit" label="命中率" value={percentText(visibleUsage?.cacheHitRate??null)} />
             <LegendDot className="legend-dot--cost" label={displayCostLabel} value={pricingAvailable && recordedCostText(visibleWindowSummary.startIndex,visibleWindowSummary.endIndex)!=='金额未报告' ? moneyText(visibleWindowCostUSD) : "—"} />
             {fiveHourQuotaPresent ? <LegendDot className="legend-dot--five" label="5h" value={percentText(visibleWindowSummary.latestFiveHourRemaining)} /> : null}
             {sevenDayQuotaPresent ? <LegendDot className="legend-dot--seven" label="7d" value={percentText(visibleWindowSummary.latestSevenDayRemaining)} /> : null}
@@ -784,13 +769,13 @@ export function RecentUsageChart({
           ) : null}
           {!previewDismissed && fixedSelectionEndIndex !== null && consumptionSelection ? (
             <SelectionSummaryBubble
-              clientLabel={quotaCostSeries ? "Codex" : undefined}
+              usage={selectedUsage}
               showsFiveHourQuota={quotaEstimateVisibility.fiveHour}
               showsSevenDayQuota={quotaEstimateVisibility.sevenDay}
               pricingAvailable={pricingAvailable}
               onClose={() => setPreviewDismissed(true)}
               selection={consumptionSelection}
-              recordedCostText={!includesCodexCost ? recordedCostText(consumptionSelection.startIndex,consumptionSelection.endIndex) : undefined}
+              recordedCostText={recordedCostText(consumptionSelection.startIndex,consumptionSelection.endIndex)}
               viewportWidth={chartViewportWidth}
               x={(visiblePlotPoint(
                 plotData.tokenPoints,
@@ -800,6 +785,7 @@ export function RecentUsageChart({
             />
           ) : !previewDismissed && activePoint && activeTokenPoint ? (
             <HoverBubble
+              usage={activeIndex===null?null:usageSnapshot.buckets[activeIndex]}
               pricingAvailable={pricingAvailable}
               bucketSeconds={data.bucketSeconds}
               cacheVisible={visibility.cacheHitRate}
@@ -838,7 +824,11 @@ export function RecentUsageChart({
         </div>
       </div>
       </section>
-      {consumptionSelection && externalCostBuckets && <p className="analytics-source-note">所选客户端 · {recordedCostText(consumptionSelection.startIndex,consumptionSelection.endIndex)}</p>}
+      {consumptionSelection && selectedUsage && <section className="chart-usage-selection-summary" aria-label="所选客户端用量">
+        <strong>所选区间 · {formatTokens(selectedUsage.totalTokens)} Token · {selectedUsage.calls} 次请求</strong>
+        <span>{recordedCostText(consumptionSelection.startIndex,consumptionSelection.endIndex)} · 缓存命中 {percentText(selectedUsage.cacheHitRate)}</span>
+        <ChartModelUsageList summary={selectedUsage}/>
+      </section>}
       {consumptionSelection && includesCodexCost ? (
         <RecentChartQuotaEstimateOverlay
           clientLabel={quotaCostSeries ? "Codex" : undefined}
@@ -941,6 +931,7 @@ function HoverRing({ className, point, radius }: { className: string; point: { x
 }
 
 function HoverBubble({
+  usage,
   recordedCostText,
   pricingAvailable = true,
   bucketSeconds,
@@ -953,6 +944,7 @@ function HoverBubble({
   viewportWidth,
   x,
 }: {
+  usage?: ChartUsageSummary|null;
   recordedCostText?: string;
   pricingAvailable?: boolean;
   bucketSeconds: number;
@@ -988,7 +980,7 @@ function HoverBubble({
           缓存命中 {percentText(point.cacheHitRate)} · 命中 {formatTokens(point.cachedInputTokens)}
         </em>
       ) : null}
-      <ModelUsageInline rows={point.modelBreakdowns} eventStartUnix={point.startUnix} />
+      {usage&&<ChartModelUsageList summary={usage}/>}
       {quotaParts.length > 0 ? <span className="chart-hover-row">额度 {quotaParts.join(" · ")}</span> : null}
       <em className="chart-hover-row chart-hover-row--action">点击起点/终点可估算额度</em>
     </div>
@@ -996,6 +988,7 @@ function HoverBubble({
 }
 
 function SelectionSummaryBubble({
+  usage,
   recordedCostText,
   clientLabel,
   showsFiveHourQuota,
@@ -1006,6 +999,7 @@ function SelectionSummaryBubble({
   viewportWidth,
   x,
 }: {
+  usage?: ChartUsageSummary|null;
   recordedCostText?: string;
   clientLabel?: string;
   showsFiveHourQuota: boolean;
@@ -1018,7 +1012,8 @@ function SelectionSummaryBubble({
 }) {
   const [bubbleRef, bubbleWidth] = useChartBubbleWidth(CHART_HOVER_BUBBLE_FALLBACK_WIDTH);
   const left = recentChartHoverBubbleCenter(x, viewportWidth, bubbleWidth);
-  const average = selection.calls > 0 ? Math.round(selection.totalTokens / selection.calls) : 0;
+  const display=usage??selection;
+  const average = display.calls > 0 ? Math.round(display.totalTokens / display.calls) : 0;
   return (
     <div ref={bubbleRef} className="chart-hover-bubble chart-selection-summary-bubble" style={{ left: `${left}px` }}>
       <div className="chart-hover-heading">
@@ -1026,15 +1021,15 @@ function SelectionSummaryBubble({
         <span>{timeRange(selection.startUnix, selection.endUnix - selection.startUnix)}</span>
         <PreviewCloseButton ariaLabel="关闭选中区间预览" onClose={onClose} />
       </div>
-      <b>{formatTokens(selection.totalTokens)}</b>
-      <span className="chart-hover-row">请求 {selection.calls} 次 · avg {formatTokens(average)}</span>
+      <b>{formatTokens(display.totalTokens)}</b>
+      <span className="chart-hover-row">请求 {display.calls} 次 · avg {formatTokens(average)}</span>
       <span className="chart-hover-row chart-hover-row--cost">{recordedCostText ?? `${selection.unpricedModels.length > 0 ? "已知价格小计" : "金额"} ${pricingAvailable ? moneyText(selection.selectedCostUSD) : "未接入"}`}</span>
-      {selection.calls > 0 ? (
+      {display.calls > 0 ? (
         <em className="chart-hover-row chart-hover-row--cache">
-          缓存命中 {percentText(selection.cacheHitRate)} · 命中 {formatTokens(selection.cachedInputTokens)}
+          缓存命中 {percentText(display.cacheHitRate)} · 命中 {formatTokens(display.cachedInputTokens)}
         </em>
       ) : null}
-      <ModelUsageInline rows={selection.modelBreakdowns} />
+      {usage&&<ChartModelUsageList summary={usage}/>}
       <span className="chart-hover-row">{quotaSelectionDurationText(selection)}</span>
       {pricingAvailable ? <QuotaComparisonRows selection={selection} showsFiveHourQuota={showsFiveHourQuota} showsSevenDayQuota={showsSevenDayQuota} /> : null}
     </div>
@@ -1054,33 +1049,6 @@ function PreviewCloseButton({ ariaLabel, onClose }: { ariaLabel: string; onClose
     >
       ×
     </button>
-  );
-}
-
-function ModelUsageInline({
-  rows,
-  eventStartUnix,
-}: {
-  rows: RecentUsagePoint["modelBreakdowns"] | QuotaConsumptionSelection["modelBreakdowns"];
-  eventStartUnix?: number;
-}) {
-  const timedRows = rows?.map((row) => (
-    row.eventStartUnix === undefined && eventStartUnix !== undefined
-      ? { ...row, eventStartUnix }
-      : row
-  ));
-  const slices = modelUsageSlices(timedRows);
-  if (slices.length === 0) return null;
-  return (
-    <div className="model-usage-inline chart-hover-row" aria-label={`模型占比 ${slices.map((slice) => `${slice.label} ${Math.round(slice.share * 100)}%`).join("，")}`}>
-      {slices.slice(0, 3).map((slice) => (
-        <span key={slice.key}>
-          <i style={{ backgroundColor: slice.color }} />
-          {slice.label} {Math.round(slice.share * 100)}%
-        </span>
-      ))}
-      {slices.length > 3 ? <span>+{slices.length - 3}</span> : null}
-    </div>
   );
 }
 

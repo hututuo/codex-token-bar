@@ -4,6 +4,42 @@ import test from "node:test";
 import { Window } from "happy-dom";
 
 import { withSsrModules } from "../../test/ssrHarness.mjs";
+import {usageFixture,chartFixtureSources} from "./usageSnapshotFixture.mjs";
+
+test("real aggregate chart header hover and fixed selections expose all client models in 24h 7d and 30d",async()=>{
+  const window=new Window({url:"http://localhost/"}),restore=installDomGlobals(window);
+  globalThis.IS_REACT_ACT_ENVIRONMENT=true;
+  try{
+    const React=await import("react"),{createRoot}=await import("react-dom/client");
+    await withSsrModules(async load=>{
+      const {RecentUsageChart}=await load("/src/components/RecentUsageChart.tsx");
+      const {projectOriginalDashboard}=await load("/src/multiClient/originalDashboardProjection.ts");
+      const {codex,clients}=await chartFixtureSources(load);
+      const aggregate=projectOriginalDashboard(codex,clients,["codex","claudeCode","antigravity","gemini"]);
+      for(const range of Object.keys(usageFixture.ranges)){
+        window.localStorage.setItem("recentChartRange",range);
+        const container=window.document.createElement("div");window.document.body.append(container);const root=createRoot(container);
+        try{
+          await React.act(async()=>root.render(React.createElement(RecentUsageChart,{...aggregate,quotaCostSeries:codex,externalCostBuckets:clients.trendBuckets,includesCodexCost:true})));
+          const chart=container.querySelector("svg.usage-chart");
+          chart.getBoundingClientRect=()=>({bottom:278,height:278,left:0,right:980,top:0,width:980,x:0,y:0,toJSON:()=>({})});
+          await React.act(async()=>chart.dispatchEvent(new window.PointerEvent("pointermove",{bubbles:true,clientX:0,clientY:100,pointerId:1})));
+          const hover=container.querySelector(".chart-hover-bubble");assert.ok(hover,range+" hover");
+          assert.ok(hover.querySelector('[data-client="codex"]'),range+" first hover retains Codex identity");
+          for(const clientX of [0,980])await React.act(async()=>chart.dispatchEvent(new window.PointerEvent("pointerdown",{bubbles:true,cancelable:true,clientX,clientY:100,pointerId:1})));
+          for(const selector of [".chart-selection-summary-bubble",".chart-usage-selection-summary"]){
+            const selection=container.querySelector(selector);assert.ok(selection,range+selector);
+            const models=[...selection.querySelectorAll(".chart-model-usage-list [data-client]")].map(row=>row.dataset.client+"|"+row.dataset.model).sort();
+            assert.deepEqual(models,[...usageFixture.expected.models].sort(),range+selector);
+            assert.match(selection.textContent,/680/);assert.match(selection.textContent,/6 次/);
+            assert.match(selection.textContent,/已知金额/);assert.match(selection.textContent,/缓存命中 —/);
+          }
+          assert.match(container.querySelector(".chart-legend")?.textContent??container.textContent,/680/);
+        }finally{await React.act(async()=>root.unmount());container.remove();}
+      }
+    });
+  }finally{delete globalThis.IS_REACT_ACT_ENVIRONMENT;restore();window.close();}
+});
 
 test("quota estimate keeps historical 5h beside 7d after the current 5h window disappears", async () => {
   const window = new Window({ url: "http://localhost/" });

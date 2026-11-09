@@ -351,6 +351,12 @@ pub struct MultiClientUsageTrendBucket {
     pub api_cost_micro_usd: Option<i64>,
     #[serde(default)]
     pub unpriced_requests: u64,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub cache_read_complete: Option<bool>,
+    #[serde(default)]
+    pub cache_write_complete: Option<bool>,
 }
 
 /// One bounded numeric request row from the existing multi-client usage ledger.
@@ -4496,7 +4502,7 @@ fn read_trend_buckets(
     let start_unix = now_unix.saturating_sub(WINDOW_SECONDS);
     // The production caller holds its existing aggregate read transaction.
     // Use the summary's per-request price engine, never price grouped tokens.
-    let mut prices = HashMap::<(String, i64), MultiClientPriceTally>::new();
+    let mut prices = HashMap::<(String, String, i64), MultiClientPriceTally>::new();
     let mut price_query = connection.prepare(
         "SELECT client,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,timestamp,payload \
          FROM client_usage_events WHERE client <> 'codex' AND timestamp >= ?1 AND timestamp <= ?2",
@@ -4506,25 +4512,27 @@ fn read_trend_buckets(
         let client: String = row.get(0)?;
         let model: String = row.get(1)?;
         let timestamp: f64 = row.get(6)?;
-        let pricing_model = if client == "antigravity" { antigravity::price_model(&model) } else { model };
-        prices.entry((client, (timestamp / 300.0).floor() as i64 * 300)).or_default().add(
+        let pricing_model = if client == "antigravity" { antigravity::price_model(&model) } else { model.clone() };
+        prices.entry((client, model, (timestamp / 300.0).floor() as i64 * 300)).or_default().add(
             api_cost_micro_usd_at(&pricing_model, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?,
                 cache_write_ttl_pair_from_sql_value(row.get_ref(7)?), Some(timestamp)));
     }
     let mut statement = connection.prepare(
         "SELECT client, CAST(timestamp / 300 AS INTEGER) * 300 AS start_unix, \
          SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), \
-         SUM(cache_write_tokens), SUM(reasoning_tokens), COUNT(*) \
+         SUM(cache_write_tokens), SUM(reasoning_tokens), COUNT(*), model, \
+         COUNT(cache_read_tokens) = COUNT(*), COUNT(cache_write_tokens) = COUNT(*) \
          FROM client_usage_events \
          WHERE client <> 'codex' AND timestamp >= ?1 AND timestamp <= ?2 \
-         GROUP BY client, CAST(timestamp / 300 AS INTEGER) \
-         ORDER BY client, start_unix",
+         GROUP BY client, model, CAST(timestamp / 300 AS INTEGER) \
+         ORDER BY client, start_unix, model",
     )?;
     let rows = statement.query_map(params![start_unix, now_unix], |row| {
         let client: String = row.get(0)?;
         let start_unix: i64 = row.get(1)?;
         let requests = row.get::<_, i64>(7)?.max(0) as u64;
-        let tally = prices.get(&(client.clone(), start_unix));
+        let model: String = row.get(8)?;
+        let tally = prices.get(&(client.clone(), model.clone(), start_unix));
         let cost = tally.filter(|t| !t.overflowed).and_then(|t| t.known_cost_micro_usd)
             .and_then(|value| i64::try_from(value).ok());
         Ok(MultiClientUsageTrendBucket {
@@ -4544,6 +4552,9 @@ fn read_trend_buckets(
             requests,
             api_cost_micro_usd: cost,
             unpriced_requests: if cost.is_some() { tally.map_or(requests, |t| t.unpriced_requests) } else { requests },
+            model: Some(model),
+            cache_read_complete: Some(row.get(9)?),
+            cache_write_complete: Some(row.get(10)?),
         })
     })?;
     rows.collect()
@@ -4615,6 +4626,9 @@ fn read_daily_buckets(
                 requests: 0,
                 api_cost_micro_usd: None,
                 unpriced_requests: 0,
+                model: None,
+                cache_read_complete: None,
+                cache_write_complete: None,
             });
         bucket.input_tokens = bucket.input_tokens.saturating_add(input.max(0) as u64);
         bucket.output_tokens = bucket.output_tokens.saturating_add(output.max(0) as u64);
@@ -6635,6 +6649,37 @@ mod tests {
         }
         let count:i64=connection.query_row("SELECT COUNT(*) FROM client_usage_events",[],|r|r.get(0)).unwrap();
         assert_eq!(count,6);
+    }
+
+    #[test]
+    fn trend_model_identity_survives_same_client_bucket_and_legacy_ipc() {
+        let temporary = TempDir::new("trend-models");
+        let database = temporary.path().join("multi-client-usage.sqlite");
+        let connection = open_database(&database).unwrap();
+        ensure_schema(&connection, &database).unwrap();
+        let now = 1_800_000_000_i64;
+        for (index, model) in ["claude-opus-5", "claude-sonnet-5", "unknown"].iter().enumerate() {
+            insert_trend_event(&connection, "claudeCode", model, now as f64, 100_000, 100,
+                if index == 2 { None } else { Some(1_000) }, Some(10_000), None);
+            connection.execute("UPDATE client_usage_events SET model=?1 WHERE event_id=?1", params![model]).unwrap();
+        }
+        let before: i64 = connection.query_row("SELECT COUNT(*) FROM client_usage_events", [], |row| row.get(0)).unwrap();
+        let rows = read_trend_buckets(&connection, now).unwrap();
+        let prices = read_scoped_api_price_aggregates(&connection, now).unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows.iter().map(|row| row.requests).sum::<u64>(), 3);
+        for row in &rows {
+            let model = row.model.as_deref().unwrap();
+            let tally = prices.iter().find(|(key, _)| key.client == row.client && key.model == model).unwrap().1;
+            assert_eq!(row.unpriced_requests, tally.unpriced_requests);
+            assert_eq!(row.api_cost_micro_usd.map(|value| value as u128), tally.known_cost_micro_usd);
+            assert_eq!(row.cache_read_complete, Some(model != "unknown"));
+        }
+        assert_eq!(before, connection.query_row("SELECT COUNT(*) FROM client_usage_events", [], |row| row.get::<_, i64>(0)).unwrap());
+        let mut old = serde_json::to_value(&rows[0]).unwrap();
+        for key in ["model", "cacheReadComplete", "cacheWriteComplete"] { old.as_object_mut().unwrap().remove(key); }
+        let decoded: MultiClientUsageTrendBucket = serde_json::from_value(old).unwrap();
+        assert!(decoded.model.is_none() && decoded.cache_read_complete.is_none() && decoded.cache_write_complete.is_none());
     }
 
     #[test]

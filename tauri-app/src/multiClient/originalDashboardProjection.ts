@@ -122,7 +122,7 @@ export function projectOriginalDashboard(codex:DashboardSnapshot, snapshot:Snaps
       point.fiveHourCycleId=x.fiveHourCycleId; point.sevenDayCycleId=x.sevenDayCycleId;
       point.modelBreakdowns=[...(point.modelBreakdowns??[]),...(x.modelBreakdowns??[])];
     });
-    trend.forEach(x=>add(x.startUnix,x.inputTokens+x.outputTokens,x.requests,x.inputTokens,x.cacheReadTokens??0,x.outputTokens,complete.has(x.client)&&x.cacheReadTokens!==null));
+    trend.forEach(x=>add(x.startUnix,x.inputTokens+x.outputTokens,x.requests,x.inputTokens,x.cacheReadTokens??0,x.outputTokens,(x.cacheReadComplete??complete.has(x.client))&&x.cacheReadTokens!=null));
     if(!sums.size)return [];
     const now=Math.max(Date.parse(codex.generatedAt)/1000,Date.parse(snapshot.updatedAt??codex.generatedAt)/1000);
     const last=Math.floor(now/width)*width, first=Math.max(Math.min(...sums.keys()),last-30*86400);

@@ -11,15 +11,9 @@ extension RecentUsageChart {
         quotaRecentBins: [QuotaHistoryRecentBucket],
         quotaHourlyBins: [QuotaHistoryRecentBucket]
     ) -> RecentChartPreparedData {
-        // Keep intra-hour quota lows when the retained fine series covers the
-        // hourly history. Short legacy caches retain their available coverage.
-        let retainedHourly = Array(hourlyBins.suffix(30 * 24))
-        let fineCoversHistory = recentBins.first.map { first in
-            guard let coarseFirst = retainedHourly.first, let coarseLast = retainedHourly.last,
-                  let fineLast = recentBins.last else { return true }
-            return first.start < coarseFirst.start.addingTimeInterval(3600) && fineLast.start >= coarseLast.start
-        } ?? false
-        let dataRange: RecentChartRange = range == .sevenDays && fineCoversHistory ? .twentyFourHours : range
+        // Display granularity is a range contract, independent of client scope
+        // and history coverage. Fine quota evidence is prepared separately.
+        let dataRange = range
         let bins = usageBins(for: dataRange, recentBins: recentBins, hourlyBins: hourlyBins)
         let cacheBreakdowns = cacheBreakdowns(
             for: dataRange,
@@ -97,10 +91,13 @@ extension RecentUsageChart {
         case .twentyFourHours:
             return recentBins
         case .sevenDays:
-            return Array(hourlyBins.suffix(30 * 24))
+            if !hourlyBins.isEmpty { return Array(hourlyBins.suffix(30 * 24)) }
+            guard let first = recentBins.first, let last = recentBins.last else { return [] }
+            let count = min(30 * 24, Int(floor(last.start.timeIntervalSince1970 / 3600) - floor(first.start.timeIntervalSince1970 / 3600)) + 1)
+            return aggregateUsage(recentBins, interval: range.bucketInterval, pointCount: count)
         case .thirtyDays:
             return aggregateUsage(
-                hourlyBins,
+                hourlyBins.isEmpty ? recentBins : hourlyBins,
                 interval: RecentChartRange.thirtyDays.bucketInterval,
                 pointCount: 30 * 4
             )
@@ -139,10 +136,10 @@ extension RecentUsageChart {
             let cacheByBin = cacheMap(cacheRecentBins, interval: 5 * 60)
             return bins.map { bin in cacheByBin[timeBinKey(bin.start, interval: 5 * 60)] ?? .empty }
         case .sevenDays:
-            let cacheByHour = cacheMap(cacheHourlyBins, interval: 60 * 60)
+            let cacheByHour = cacheMap(cacheHourlyBins.isEmpty ? cacheRecentBins : cacheHourlyBins, interval: 60 * 60)
             return bins.map { bin in cacheByHour[timeBinKey(bin.start, interval: 60 * 60)] ?? .empty }
         case .thirtyDays:
-            let cacheByHour = cacheMap(cacheHourlyBins, interval: 60 * 60)
+            let cacheByHour = cacheMap(cacheHourlyBins.isEmpty ? cacheRecentBins : cacheHourlyBins, interval: 60 * 60)
             return bins.map { bin in
                 (0..<6).map { offset in
                     let date = bin.start.addingTimeInterval(Double(offset) * 60 * 60)

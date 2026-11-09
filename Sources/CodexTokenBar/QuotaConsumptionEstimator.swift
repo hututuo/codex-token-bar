@@ -807,11 +807,11 @@ enum QuotaConsumptionEstimator {
 }
 
 struct QuotaConsumptionSelection: Equatable {
-    let startIndex: Int
-    let endIndex: Int
-    let bucketCount: Int
-    let startDate: Date
-    let endDate: Date
+    var startIndex: Int
+    var endIndex: Int
+    var bucketCount: Int
+    var startDate: Date
+    var endDate: Date
     let priceCard: QuotaConsumptionPriceCard
     let breakdown: TokenCacheBreakdown
     let fiveHour: QuotaConsumptionEstimate
@@ -924,8 +924,8 @@ struct RecentChartConsumptionSelectionState: Equatable {
         }
     }
 
-    /// Hover, second-click pin and refresh must price the same provider series.
-    /// Displayed bins may contain other clients' usage in aggregate mode.
+    /// Selection anchors belong to the displayed bins; quota evidence has its
+    /// own resolution and is joined by time, never by an assumed shared index.
     func selection(displayedData: RecentChartPreparedData, quotaData: RecentChartPreparedData?,
                    hoveredIndex: Int? = nil, priceCard: QuotaConsumptionPriceCard,
                    attributionEvents: [TokenCacheAttributionEvent] = [],
@@ -934,9 +934,18 @@ struct RecentChartConsumptionSelectionState: Equatable {
         let validHover = hoveredIndex.flatMap { displayedData.bins.indices.contains($0) ? $0 : nil }
         let endIndex = activeEndIndex(hoveredIndex: validHover, fallbackEndIndex: displayedData.bins.count - 1)
             ?? displayedData.bins.count - 1
-        return (quotaData ?? displayedData).quotaConsumptionSelection(startIndex: startIndex, endIndex: endIndex,
-            priceCard: priceCard, attributionEvents: attributionEvents,
-            unreportedCompactionDates: unreportedCompactionDates)
+        let lower = max(0, min(startIndex, endIndex)), upper = min(displayedData.bins.count - 1, max(startIndex, endIndex))
+        guard lower <= upper else { return nil }
+        let provider = quotaData ?? displayedData
+        let start = displayedData.bins[lower].start
+        let end = displayedData.bins[upper].start.addingTimeInterval(displayedData.bucketInterval)
+        guard let providerStart = provider.bins.firstIndex(where: { $0.start >= start }),
+              let providerEnd = provider.bins.lastIndex(where: { $0.start < end }), providerStart <= providerEnd,
+              var selection = provider.quotaConsumptionSelection(startIndex: providerStart, endIndex: providerEnd,
+                priceCard: priceCard, attributionEvents: attributionEvents, unreportedCompactionDates: unreportedCompactionDates) else { return nil }
+        selection.startIndex = lower; selection.endIndex = upper; selection.bucketCount = upper - lower + 1
+        selection.startDate = start; selection.endDate = end
+        return selection
     }
 
     func activeEndIndex(hoveredIndex: Int?, fallbackEndIndex: Int) -> Int? {

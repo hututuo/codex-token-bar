@@ -1435,12 +1435,16 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         let quota = bins.enumerated().map { index, bin in
             QuotaHistoryRecentBucket(start: bin.start, fiveHourRemainingPercent: nil, sevenDayRemainingPercent: index == 5 ? 7 : 17)
         }
-        let prepared = RecentUsageChart.prepare(range: .sevenDays, recentBins: bins,
+        let input = RecentChartPreparationInput(bins: bins,
             hourlyBins: [BinUsage(start: start, tokens: 1200, calls: 12)], cacheRecentBins: [], cacheHourlyBins: [],
-            quotaRecentBins: quota, quotaHourlyBins: [QuotaHistoryRecentBucket(start: start, fiveHourRemainingPercent: nil, sevenDayRemainingPercent: 17)])
-        XCTAssertEqual(prepared.bucketInterval, 300)
-        XCTAssertEqual(prepared.sevenDayRemainingPercents.compactMap { $0 }.min(), 7)
-        XCTAssertEqual(prepared.sevenDayRemainingPercents[5], 7)
+            attributionEvents: [], quotaRecentBins: quota,
+            quotaHourlyBins: [QuotaHistoryRecentBucket(start: start, fiveHourRemainingPercent: nil, sevenDayRemainingPercent: 17)])
+        let snapshot = RecentChartPreparedSnapshot.build(range: .sevenDays, input: input, priceModel: .gpt56Sol)
+        let prepared = snapshot.data
+        XCTAssertEqual(prepared.bucketInterval, 3600)
+        XCTAssertEqual(snapshot.quotaEvidence?.bucketInterval, 300)
+        XCTAssertEqual(snapshot.quotaEvidence?.sevenDayRemainingPercents.compactMap { $0 }.min(), 7)
+        XCTAssertEqual(snapshot.quotaEvidence?.sevenDayRemainingPercents[5], 7)
         XCTAssertEqual(prepared.tokenTotal, 1200)
         XCTAssertEqual(prepared.callTotal, 12)
     }

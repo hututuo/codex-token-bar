@@ -4,6 +4,7 @@ export interface ClientTrendBucket {
   client: string; startUnix: number; inputTokens: number; outputTokens: number;
   cacheReadTokens?: number | null; cacheWriteTokens?: number | null; reasoningTokens?: number | null; requests: number;
   apiCostMicroUSD?: number | null; unpricedRequests?: number;
+  model?: string | null; cacheReadComplete?: boolean | null; cacheWriteComplete?: boolean | null;
 }
 export interface ClientQuotaReading {
   client: string; state: string; source: string;

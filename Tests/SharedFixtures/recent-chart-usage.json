@@ -1,0 +1,16 @@
+{
+  "version":1,
+  "now":1800036300,
+  "ranges":{"24h":300,"7d":3600,"30d":21600},
+  "codex":[
+    {"model":"gpt-6-astra","startUnix":1800014400,"inputTokens":100,"cacheReadTokens":60,"outputTokens":20,"requests":1},
+    {"model":"gpt-6.1-sol","startUnix":1800018000,"inputTokens":200,"cacheReadTokens":120,"outputTokens":40,"requests":2}
+  ],
+  "external":[
+    {"client":"claudeCode","model":"claude-sonnet-4-6","startUnix":1800014700,"inputTokens":120,"cacheReadTokens":100,"cacheReadComplete":true,"cacheWriteTokens":0,"cacheWriteComplete":true,"outputTokens":30,"requests":1,"apiCostMicroUSD":1250000,"unpricedRequests":0},
+    {"client":"antigravity","model":"claude-sonnet-4-6","startUnix":1800014700,"inputTokens":80,"cacheReadTokens":70,"cacheReadComplete":true,"cacheWriteTokens":0,"cacheWriteComplete":true,"outputTokens":20,"requests":1,"apiCostMicroUSD":750000,"unpricedRequests":0},
+    {"client":"gemini","model":"gemini-4-argon","startUnix":1800036000,"inputTokens":60,"cacheReadTokens":null,"cacheReadComplete":false,"cacheWriteTokens":null,"cacheWriteComplete":false,"outputTokens":10,"requests":1,"apiCostMicroUSD":null,"unpricedRequests":1}
+  ],
+  "expected":{"tokens":680,"calls":6,"input":560,"cached":350,"knownExternalUSD":2,"unpriced":1,
+    "models":["antigravity|claude-sonnet-4-6","claudeCode|claude-sonnet-4-6","codex|gpt-6-astra","codex|gpt-6.1-sol","gemini|gemini-4-argon"]}
+}

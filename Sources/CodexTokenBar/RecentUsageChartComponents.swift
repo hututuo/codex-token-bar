@@ -952,6 +952,7 @@ struct ChartHoverBubble: View {
     let onClose: () -> Void
     let showsCost: Bool
     var recordedCostText: String?
+    var usage: ChartUsageSummary?
 
     init(
         bin: BinUsage,
@@ -964,7 +965,8 @@ struct ChartHoverBubble: View {
         isHovering: Bool,
         onClose: @escaping () -> Void = {},
         showsCost: Bool = true,
-        recordedCostText: String? = nil
+        recordedCostText: String? = nil,
+        usage: ChartUsageSummary? = nil
     ) {
         self.bin = bin
         self.cacheBreakdown = cacheBreakdown
@@ -977,6 +979,7 @@ struct ChartHoverBubble: View {
         self.onClose = onClose
         self.showsCost = showsCost
         self.recordedCostText = recordedCostText
+        self.usage = usage
     }
 
     var body: some View {
@@ -1012,10 +1015,11 @@ struct ChartHoverBubble: View {
             Text(recordedCostText ?? (showsCost ? "金额 \(costUSD.quotaEstimatorMoneyText)" : "金额未接入"))
                 .font(.system(size: 10))
                 .foregroundStyle(.pink)
-            Text("缓存命中 \(displayCacheBreakdown.cacheHitRate.percentString) · 命中 \(displayCacheBreakdown.cachedInputTokens.abbreviatedTokens)")
+            Text("缓存命中 \(usage?.cacheText ?? displayCacheBreakdown.cacheHitRate.percentString) · 命中 \((usage?.breakdown.cachedInputTokens ?? displayCacheBreakdown.cachedInputTokens).abbreviatedTokens)")
                 .font(.system(size: 10))
                 .foregroundStyle(AppTheme.accentCyan)
-            ModelUsageInlineSummary(rows: modelBreakdowns, emptyPlaceholder: "模型 0%")
+            if let usage { ChartModelUsageList(summary: usage) }
+            else { ModelUsageInlineSummary(rows: modelBreakdowns, emptyPlaceholder: "模型 0%") }
             Text("额度 5h \(percentText(fiveHourRemaining)) · 7d \(percentText(sevenDayRemaining))")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
@@ -1110,6 +1114,8 @@ struct ChartSelectionSummaryBubble: View {
     let showsFiveHourQuota: Bool
     let showsSevenDayQuota: Bool
     var recordedCostText: String?
+    var usage: ChartUsageSummary?
+    private var displayedBreakdown: TokenCacheBreakdown { usage?.breakdown ?? selection.breakdown }
 
     init(
         selection: QuotaConsumptionSelection,
@@ -1118,7 +1124,8 @@ struct ChartSelectionSummaryBubble: View {
         showsCost: Bool = true,
         showsFiveHourQuota: Bool = true,
         showsSevenDayQuota: Bool = true,
-        recordedCostText: String? = nil
+        recordedCostText: String? = nil,
+        usage: ChartUsageSummary? = nil
     ) {
         self.selection = selection
         self.clientLabel = clientLabel
@@ -1127,6 +1134,7 @@ struct ChartSelectionSummaryBubble: View {
         self.showsFiveHourQuota = showsFiveHourQuota
         self.showsSevenDayQuota = showsSevenDayQuota
         self.recordedCostText = recordedCostText
+        self.usage = usage
     }
 
     var body: some View {
@@ -1152,22 +1160,23 @@ struct ChartSelectionSummaryBubble: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("关闭选中区间预览")
             }
-            Text(selection.breakdown.totalTokens.abbreviatedTokens)
+            Text(displayedBreakdown.totalTokens.abbreviatedTokens)
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(AppTheme.accentBlue)
-            Text("请求 \(selection.breakdown.calls) 次 · avg \(average.abbreviatedTokens)")
+            Text("请求 \(displayedBreakdown.calls) 次 · avg \(average.abbreviatedTokens)")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
             Text(recordedCostText ?? (showsCost ? "金额 \(selection.fullCurrentAPIPriceEstimate.costUSD.quotaEstimatorMoneyText)" : "金额未接入"))
                 .font(.system(size: 10))
                 .foregroundStyle(.pink)
-            Text("缓存命中 \(selection.breakdown.cacheHitRate.percentString) · 命中 \(selection.breakdown.cachedInputTokens.abbreviatedTokens)")
+            Text("缓存命中 \(usage?.cacheText ?? displayedBreakdown.cacheHitRate.percentString) · 命中 \(displayedBreakdown.cachedInputTokens.abbreviatedTokens)")
                 .font(.system(size: 10))
                 .foregroundStyle(AppTheme.accentCyan)
-            ModelUsageInlineSummary(
+            if let usage { ChartModelUsageList(summary: usage) }
+            else { ModelUsageInlineSummary(
                 rows: ModelUsagePresentation.rows(from: selection.fullAttributionEvents),
                 emptyPlaceholder: "模型 0%"
-            )
+            ) }
             Text("持续 \(durationText)")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
@@ -1192,18 +1201,18 @@ struct ChartSelectionSummaryBubble: View {
     }
 
     private var average: Int {
-        selection.breakdown.calls > 0
-            ? selection.breakdown.totalTokens / selection.breakdown.calls
+        displayedBreakdown.calls > 0
+            ? displayedBreakdown.totalTokens / displayedBreakdown.calls
             : 0
     }
 
     private var accessibilitySummary: String {
         var parts = [
             timeRange,
-            "\(selection.breakdown.totalTokens.abbreviatedTokens) token",
-            "\(selection.breakdown.calls) 次请求",
-            "金额 \(selection.fullCurrentAPIPriceEstimate.costUSD.quotaEstimatorMoneyText)",
-            "缓存命中率 \(selection.breakdown.cacheHitRate.percentString)"
+            "\(displayedBreakdown.totalTokens.abbreviatedTokens) token",
+            "\(displayedBreakdown.calls) 次请求",
+            usage?.costText ?? "金额 \(selection.fullCurrentAPIPriceEstimate.costUSD.quotaEstimatorMoneyText)",
+            "缓存命中率 \(usage?.cacheText ?? displayedBreakdown.cacheHitRate.percentString)"
         ]
         if let models = ModelUsagePresentation.compactText(
             from: ModelUsagePresentation.rows(from: selection.fullAttributionEvents)

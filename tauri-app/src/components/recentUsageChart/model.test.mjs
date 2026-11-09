@@ -1346,16 +1346,21 @@ test("RecentUsageChart exposes click-to-estimate quota UI", async () => {
   }
 });
 
-test("7d preserves the same five-minute low and token totals as 24h", () => {
+test("7d uses hourly display buckets and preserves five-minute lows in its quota provider", async () => {
+  const {prepareQuotaEvidenceData,chartQuotaConsumptionSelection}=await import("./model.ts");
   const fine = Array.from({length:12}, (_, i) => point(i*300, {tokens:100,calls:1,sevenDayRemainingPercent:i===5 ? .07 : .17}));
   const series = {recentUsage24h:fine,recentUsage7d:[point(0,{tokens:1200,calls:12,sevenDayRemainingPercent:.17})],recentUsage30d:[]};
   const day = prepareRecentChartData("24h",series);
   const week = prepareRecentChartData("7d",series);
-  assert.equal(week.bucketSeconds,300);
-  assert.equal(Math.min(...week.points.map(p=>p.sevenDayRemainingPercent)),.07);
-  assert.deepEqual(week.points,day.points);
+  assert.equal(week.bucketSeconds,3600);
+  const provider=prepareQuotaEvidenceData("7d",series);
+  assert.equal(provider.bucketSeconds,300);
+  assert.equal(Math.min(...provider.points.map(p=>p.sevenDayRemainingPercent)),.07);
+  assert.deepEqual(provider.points,day.points);
   assert.equal(week.tokenTotal,1200);
   assert.equal(week.callTotal,12);
+  const selected=chartQuotaConsumptionSelection(week,provider,0,0,"gpt56Sol");
+  assert.equal(selected.startUnix,0);assert.equal(selected.endUnix,3600);assert.equal(selected.bucketCount,1);
 });
 
 test("short legacy fine cache retains the longer hourly history", () => {

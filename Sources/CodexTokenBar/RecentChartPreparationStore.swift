@@ -6,16 +6,18 @@ struct RecentChartPreparedSnapshot: Sendable {
     let bucketCostsUSD: [Double]
     let priceModel: OfficialAPIPriceModel
     var quotaData: RecentChartPreparedData? = nil
+    var quotaEvidence: RecentChartPreparedData? = nil
     var costAttributionEvents: [TokenCacheAttributionEvent] = []
     var unreportedCompactionDates: [Date] = []
     var unpricedBucketRequests: [Int] = []
     var bucketHasKnownCost: [Bool] = []
+    var usageBuckets: [ChartUsageSummary] = []
 
     func consumptionSelection(
         state: RecentChartConsumptionSelectionState,
         hoveredIndex: Int? = nil
     ) -> QuotaConsumptionSelection? {
-        state.selection(displayedData: data, quotaData: quotaData,
+        state.selection(displayedData: data, quotaData: quotaEvidence ?? quotaData,
             hoveredIndex: hoveredIndex, priceCard: .officialAPI(priceModel),
             attributionEvents: costAttributionEvents, unreportedCompactionDates: unreportedCompactionDates)
     }
@@ -57,12 +59,31 @@ struct RecentChartPreparedSnapshot: Sendable {
                 cacheRecentBins: source.cacheRecentBins, cacheHourlyBins: source.cacheHourlyBins,
                 attributionEvents: costEvents,
                 quotaRecentBins: input.quotaRecentBins, quotaHourlyBins: input.quotaHourlyBins)
+        } else if !input.includesCodexCost {
+            quotaData = RecentUsageChart.prepare(range: range,
+                recentBins: input.bins.map { .init(start: $0.start, tokens: 0, calls: 0) },
+                hourlyBins: input.hourlyBins.map { .init(start: $0.start, tokens: 0, calls: 0) },
+                cacheRecentBins: [], cacheHourlyBins: [], quotaRecentBins: [], quotaHourlyBins: [])
         } else { quotaData = nil }
-        var costs = input.includesCodexCost
-            ? RecentUsageChart.bucketCosts(for: quotaData ?? data, priceModel: priceModel)
-            : Array(repeating: 0.0, count: data.bins.count)
-        var unknown = Array(repeating: 0, count: data.bins.count)
-        var known = Array(repeating: input.includesCodexCost, count: data.bins.count)
+        // Preserve intra-hour lows and minute attribution in the provider's
+        // own snapshot. This never changes the displayed seven-day bucket size.
+        var quotaEvidence: RecentChartPreparedData?
+        let source = input.quotaCostSource
+        let fine = source?.bins ?? input.bins
+        let coarse = source?.hourlyBins ?? input.hourlyBins
+        if input.includesCodexCost, range == .sevenDays, let first = fine.first, let last = fine.last,
+           first.start < (coarse.suffix(30 * 24).first?.start ?? first.start).addingTimeInterval(3600),
+           last.start >= (coarse.last?.start ?? last.start) {
+            quotaEvidence = RecentUsageChart.prepare(range: .twentyFourHours, recentBins: fine, hourlyBins: coarse,
+                cacheRecentBins: source?.cacheRecentBins ?? input.cacheRecentBins,
+                cacheHourlyBins: source?.cacheHourlyBins ?? input.cacheHourlyBins,
+                attributionEvents: costEvents, quotaRecentBins: input.quotaRecentBins, quotaHourlyBins: input.quotaHourlyBins)
+        }
+        let provider = quotaData ?? data
+        let estimates = input.includesCodexCost ? RecentUsageChart.bucketPriceEstimates(for: provider, priceModel: priceModel) : []
+        var costs = data.bins.indices.map { index in estimates[safe: index].map { $0.costUSD.isFinite ? max($0.costUSD, 0) : 0 } ?? 0 }
+        var unknown = data.bins.indices.map { estimates[safe: $0]?.unpricedCalls ?? 0 }
+        var known = data.bins.indices.map { index in input.includesCodexCost && (provider.bins[safe: index]?.calls ?? 0) > (estimates[safe: index]?.unpricedCalls ?? 0) }
         if let external = input.externalCostBuckets {
             // Feed already-priced contributions into the existing Codex scale,
             // path and hover pipeline. Quota data stays provider-specific.
@@ -83,16 +104,18 @@ struct RecentChartPreparedSnapshot: Sendable {
             for index in data.bins.indices {
                 let value = sums[Int64(floor(data.bins[index].start.timeIntervalSince1970 / interval))]
                 costs[index] += value?.cost ?? 0
-                unknown[index] = value?.unknown ?? 0
+                unknown[index] += value?.unknown ?? 0
                 known[index] = known[index] || (value?.known ?? false)
             }
         }
+        let usage = usageBuckets(display: data, codex: input.includesCodexCost ? quotaData ?? data : nil,
+            external: input.externalCostBuckets ?? [], costs: costs, known: known, unknown: unknown, priceModel: priceModel)
         return Self(data: data,
             bucketCostsUSD: costs,
             priceModel: priceModel,
-            quotaData: quotaData, costAttributionEvents: costEvents,
+            quotaData: quotaData, quotaEvidence: quotaEvidence, costAttributionEvents: costEvents,
             unreportedCompactionDates: input.unreportedCompactionDates,
-            unpricedBucketRequests: unknown, bucketHasKnownCost: known)
+            unpricedBucketRequests: unknown, bucketHasKnownCost: known, usageBuckets: usage)
     }
 }
 
