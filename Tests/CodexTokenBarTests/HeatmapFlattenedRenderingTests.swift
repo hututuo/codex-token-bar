@@ -50,11 +50,12 @@ final class HeatmapFlattenedRenderingTests: XCTestCase {
 
     @MainActor
     func testLongModelIdentitiesKeepCompactCostCardExtent() throws {
-        let labels = ["Flash3.8 · N", "Gemini Pro · 自动", "Auto Review (Luna)", "Argon4"]
+        let labels = ["Astra6", "Sol5.6", "Opus5", "Flash3.8", "未知模型", "Auto Review (Luna)"]
         let items = labels.enumerated().map { offset, label in
-            FloatingTodayModelUsageItem(id: "row\(offset)", label: label, tokens: 55_714_167,
-                share: 0.001, costUSD: offset == 3 ? 204.23 : nil, usesIndependentQuota: false,
-                referenceCostUSD: nil, color: .blue)
+            FloatingTodayModelUsageItem(id: offset == 4 ? "unknown-models" : "row\(offset)", label: label, tokens: 55_714_167,
+                share: 0.001, costUSD: offset == 4 ? nil : 204.23, usesIndependentQuota: false,
+                referenceCostUSD: offset == 4 ? 18.9 : nil, color: .blue,
+                sourceModels: offset == 4 ? ["gemini-pro-default", "unknown"] : [])
         }
         let grid = VStack(spacing: 6) {
             ForEach(items) { DashboardModelCostChip(item: $0, color: .blue).frame(width: 208) }
@@ -62,7 +63,14 @@ final class HeatmapFlattenedRenderingTests: XCTestCase {
         let host = NSHostingView(rootView: grid)
         let size = host.fittingSize
         XCTAssertEqual(size.width, 208, accuracy: 1)
-        XCTAssertLessThanOrEqual(size.height, 4 * 32 + 3 * 6)
+        XCTAssertEqual(size.height, CGFloat(items.count * 30 + (items.count - 1) * 6), accuracy: 0.5)
+        for width: CGFloat in [204, 208, 280] {
+            for item in items {
+                let row = NSHostingView(rootView: DashboardModelCostChip(item: item, color: .blue).frame(width: width))
+                XCTAssertEqual(row.fittingSize.height, 30, accuracy: 0.5)
+                XCTAssertEqual(row.fittingSize.width, width, accuracy: 0.5)
+            }
+        }
         if let output = ProcessInfo.processInfo.environment["CODEX_CYCLE_LAYOUT_OUTPUT"] {
             let renderer = ImageRenderer(content: grid.environment(\.colorScheme, .dark))
             renderer.scale = 2

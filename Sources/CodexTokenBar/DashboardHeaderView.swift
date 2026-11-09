@@ -1356,36 +1356,29 @@ struct DashboardModelCostChip: View {
     }
 
     var body: some View {
-        // Keep the full identity and amount together; tokens/share use their
-        // own line instead of squeezing version suffixes into a narrow sliver.
-        VStack(alignment: .leading, spacing: 1) {
-            HStack(spacing: 5) {
-                Circle().fill(color).frame(width: 6, height: 6)
-                Text(item.label.replacingOccurrences(of: #"(?i)^GPT[- ]*"#, with: "", options: .regularExpression))
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(.secondary).truncationMode(.middle)
-                    .layoutPriority(1)
-                Spacer(minLength: 3)
-                Text(amount).font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(.primary).monospacedDigit().fixedSize()
-            }
-            HStack(spacing: 5) {
-                Text(item.tokens == 0 ? "暂无记录" : item.tokens.abbreviatedTokens)
+        // Short display names share one compact row; full source identities
+        // and reference-price details remain available in the tooltip.
+        HStack(spacing: 5) {
+            Circle().fill(color).frame(width: 6, height: 6)
+            Text(item.label.replacingOccurrences(of: #"(?i)^GPT[- ]*"#, with: "", options: .regularExpression))
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(.secondary).truncationMode(.middle)
+                .lineLimit(1)
+            Spacer(minLength: 3)
+            Text(item.tokens == 0 ? "暂无记录" : item.tokens.abbreviatedTokens)
+                .font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary)
+                .monospacedDigit().fixedSize()
+            if item.tokens > 0 {
+                Text(item.valueText(for: .share))
                     .font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary)
                     .monospacedDigit().fixedSize()
-                Spacer(minLength: 3)
-                if item.tokens > 0 {
-                    Text(item.valueText(for: .share))
-                        .font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary)
-                        .monospacedDigit().fixedSize()
-                }
             }
-            .padding(.leading, 11)
+            Text(amount).font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(.primary).monospacedDigit().fixedSize()
         }
         .lineLimit(1)
         .padding(.horizontal, 8)
-        .padding(.vertical, 2)
-        .frame(maxWidth: .infinity).frame(minHeight: 30)
+        .frame(maxWidth: .infinity).frame(height: 30)
         .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
             .fill(color.opacity(0.075)))
         .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous)

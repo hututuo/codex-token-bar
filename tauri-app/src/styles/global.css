@@ -12968,15 +12968,6 @@ details.session-management-banner {
 .stats-model-cost-secondary-chip .model-cost-name {
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
-.stats-model-cost-primary-card,.stats-model-cost-secondary-chip {
-  grid-template-columns:6px minmax(0,1fr) auto;grid-template-rows:auto auto;
-  row-gap:1px;min-height:30px;height:auto;padding:2px 8px;
-}
-.stats-model-cost-primary-card i,.stats-model-cost-secondary-chip i { grid-column:1;grid-row:1; }
-.stats-model-cost-primary-card em,.stats-model-cost-secondary-chip em { grid-column:2;grid-row:1; }
-.stats-model-cost-primary-card b,.stats-model-cost-secondary-chip b { grid-column:3;grid-row:1; }
-.stats-model-cost-primary-card .model-cost-tokens,.stats-model-cost-secondary-chip .model-cost-tokens { grid-column:2;grid-row:2; }
-.stats-model-cost-primary-card .model-cost-share,.stats-model-cost-secondary-chip .model-cost-share { grid-column:3;grid-row:2;justify-self:end; }
 
 @keyframes rig-press{0%,19%,24%,76%,81%,100%{transform:scale(1)}21%,78%{transform:scale(.78)}}
 .recent-interaction-guide summary{transition:transform .12s,opacity .12s}.recent-interaction-guide summary:active{transform:translateY(1px) scale(.99);opacity:.7}

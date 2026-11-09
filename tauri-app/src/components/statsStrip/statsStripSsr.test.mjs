@@ -3,6 +3,7 @@ import test from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Window } from "happy-dom";
+import { readFile } from "node:fs/promises";
 import { withSsrModules } from "../../test/ssrHarness.mjs";
 
 const breakdown = (model, tokens = 1_000_000) => ({ model, eventStartUnix: Date.parse("2026-08-30T00:00:00Z") / 1000,
@@ -247,6 +248,9 @@ test("StatsStrip shows an anonymous reference without inventing a zero known sub
 test("one anonymous model cannot hide the known cycle prices or total", async () => {
   for (const model of [null, "  ", "future-model"]) {
     await withDom(async ({ window, container, root, StatsStrip }) => {
+      const style=window.document.createElement("style");
+      style.textContent=await readFile(new URL("../../styles/global.css",import.meta.url),"utf8");
+      window.document.head.append(style);
       mockCycleRows(window, [breakdown("gpt-6-astra"), breakdown(model)]);
       await React.act(async () => {
         root.render(React.createElement(StatsStrip, {
@@ -258,6 +262,17 @@ test("one anonymous model cannot hide the known cycle prices or total", async ()
       assert.equal(container.querySelector(".stats-model-cost-total").textContent, "已观测部分 API $10.0");
       const astra = [...container.querySelectorAll(".stats-model-cost-primary-card")].find(card => card.querySelector("em").textContent === "Astra6");
       assert.equal(astra.querySelector("b").textContent, "$10.0");
+      for(const card of container.querySelectorAll(".stats-model-cost-primary-card,.stats-model-cost-secondary-chip")) {
+        const computed=window.getComputedStyle(card);
+        assert.equal(computed.height,"30px");
+        assert.equal(computed.paddingTop,"0px");
+        assert.equal(computed.paddingBottom,"0px");
+        assert.equal(computed.gridTemplateColumns,"auto minmax(0, 1fr) auto auto auto");
+        assert.notEqual(computed.gridTemplateRows,"auto auto");
+        assert.equal(window.getComputedStyle(card.querySelector("b")).gridColumn,"5");
+        for(const element of card.children)assert.notEqual(window.getComputedStyle(element).gridRow,"2");
+        assert.ok(card.title.includes("双击修改该模型颜色"));
+      }
       assert.doesNotMatch(container.textContent, /价格未知/);assert.match(container.textContent,/未知模型.*参考/);
       assert.doesNotMatch(container.textContent, /模型身份待补全|本期模型明细待读取/);
     });
