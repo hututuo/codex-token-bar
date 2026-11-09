@@ -1345,6 +1345,10 @@ mod tests {
         writer.set_modified(SystemTime::now() - Duration::from_secs(3_600)).unwrap();
         assert_eq!(scanner.scan_with_writer(&home.root, &mut |_| panic!("idle handles never revive completion")).unwrap().total(), 0);
         writer.write_all(event("task_started").as_bytes()).unwrap();
+        // Windows can defer last-write timestamps until the write handle closes;
+        // pin the fresh-file branch explicitly, separate from the silent-writer case.
+        writer.set_modified(SystemTime::now()).unwrap();
+        drop(writer);
         assert_eq!(scanner.scan_with_writer(&home.root, &mut |_| panic!("fresh work needs no process probe")).unwrap().main_threads, 1);
     }
 
