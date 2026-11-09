@@ -137,6 +137,16 @@ final class ClaudeStatuslineMetricsTests: XCTestCase {
         XCTAssertEqual(rates, [.init(model: "claude", tokensPerSecond: 40)])
     }
 
+    func testTaskScopeExcludesDisabledHistoryAcrossDashboardRailDetailAndPreview() {
+        var preferences = MultiClientUsagePreference.defaults
+        preferences[preferences.firstIndex { $0.client == .claudeCode }!].enabled = true
+        let allowed: Set<String> = ["codex", "claudeCode", "claudeDesktop", "antigravity"]
+        XCTAssertEqual(ClientLocalRuntimePresentation.taskClients(allowed: allowed, preferences: preferences), ["codex", "claudeCode"])
+        XCTAssertEqual(ClientLocalRuntimePresentation.taskClients(allowed: ["antigravity"], preferences: preferences), [])
+        preferences[preferences.firstIndex { $0.client == .antigravity }!].enabled = true
+        XCTAssertEqual(ClientLocalRuntimePresentation.taskClients(allowed: ["antigravity"], preferences: preferences), ["antigravity"])
+    }
+
     func testNewLocalCaptureDoesNotFallBackToAnotherOlderAccountCache() throws {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: home) }

@@ -191,10 +191,9 @@ struct QuotaSidebarRail: View {
             allowed: allowedClients, mode: .normalized(speedModeRaw), grouping: speedPalette.grouping)
     }
     private var barRates: [ModelRateContribution] { liveRateSnapshot.colorRates }
-    private var taskClients: Set<String> { allowedClients.filter { id in
-        id == "codex" || clients.preferences.contains { $0.client.rawValue == id && $0.enabled }
-    } }
-    private var runningSummary: RunningThreadSummary { ClientLocalRuntimePresentation.running(codex: tasks.runningThreadSummary, claude: localLive.running, allowed: taskClients, antigravity: upstreamActivity.antigravityTasks(allowed: taskClients)) }
+    private var taskClients: Set<String> { ClientLocalRuntimePresentation.taskClients(allowed: allowedClients, preferences: clients.preferences) }
+    private var runningSummary: RunningThreadSummary { ClientLocalRuntimePresentation.observedRunning(codex: tasks.runningThreadSummary,
+        claude: claudeRuntime, upstream: upstreamActivity, allowed: allowedClients, preferences: clients.preferences) }
     private var selectedModelRows: [ModelTokenBreakdown] { ClientLocalRuntimePresentation.models(codex: store.todayModelBreakdowns, clients: clients.todaySummaries, allowed: allowedClients) }
     private var availableQuotaItems: [ClientQuotaItem] {
         if let quotaItemsOverride { return quotaItemsOverride }
@@ -694,14 +693,11 @@ struct QuotaSidebarDetailView: View {
 
     private var allowedClients: Set<String> { ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs) }
     private var taskClients: Set<String> {
-        allowedClients.filter { id in
-            id == "codex" || clients.preferences.contains { $0.client.rawValue == id && $0.enabled }
-        }
+        ClientLocalRuntimePresentation.taskClients(allowed: allowedClients, preferences: clients.preferences)
     }
     private var selectedRunning: RunningThreadSummary {
-        ClientLocalRuntimePresentation.running(codex: tasks.runningThreadSummary,
-            claude: claudeRuntime.projection(allowed: taskClients).running, allowed: taskClients,
-            antigravity: upstreamActivity.antigravityTasks(allowed: taskClients))
+        ClientLocalRuntimePresentation.observedRunning(codex: tasks.runningThreadSummary,
+            claude: claudeRuntime, upstream: upstreamActivity, allowed: allowedClients, preferences: clients.preferences)
     }
     var body: some View {
         // Capture one projection for every quota, usage and running field in

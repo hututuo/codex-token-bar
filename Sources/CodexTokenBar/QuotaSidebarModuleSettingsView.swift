@@ -189,7 +189,8 @@ struct QuotaSidebarSettingsRailPreview: View {
             allowed: allowedClients, mode: .normalized(speedModeRaw), grouping: palette.grouping)
     }
     private var selectedModels: [ModelTokenBreakdown] { ClientLocalRuntimePresentation.models(codex: store.todayModelBreakdowns, clients: clients.todaySummaries, allowed: allowedClients) }
-    private var selectedRunning: RunningThreadSummary { ClientLocalRuntimePresentation.running(codex: tasks.runningThreadSummary, claude: runtime.projection(allowed: allowedClients).running, allowed: allowedClients, antigravity: upstreamActivity.antigravityTasks(allowed: allowedClients)) }
+    private var selectedRunning: RunningThreadSummary { ClientLocalRuntimePresentation.observedRunning(codex: tasks.runningThreadSummary,
+        claude: runtime, upstream: upstreamActivity, allowed: allowedClients, preferences: clients.preferences) }
     var body: some View {
         let layout = ClientRailLayout.fixed(trackCount: QuotaSidebarContentOrder.compactIDs(items: items, quotas: quotas).count, dotCount: items.filter(\.usesCompactDot).count, availableHeight: controller.availableRailHeight)
         ScrollView(.vertical) {

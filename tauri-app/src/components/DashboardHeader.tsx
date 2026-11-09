@@ -17,6 +17,7 @@ import type { AppSettingsCategory } from "./settings/AppSettingsDialog";
 import type { DashboardLineageScalar } from "../types/usage";
 
 interface DashboardHeaderProps {
+  runningTaskIndicator?: ReactNode;
   includesCodex?: boolean;
   scopeControl?: ReactNode;
   discoveryNotice?: ReactNode;
@@ -106,7 +107,7 @@ function generationIsAhead(
 }
 
 export function DashboardHeader({
-  includesCodex = true, scopeControl, discoveryNotice, reportingStatus,
+  includesCodex = true, scopeControl, discoveryNotice, reportingStatus, runningTaskIndicator,
   account,
   autostartStatus,
   codexHome,
@@ -247,7 +248,7 @@ export function DashboardHeader({
           {scopeControl}
         </div>
         <div className="dashboard-global-tools" role="group" aria-label="全局工具">
-          <div className="dashboard-global-meta"><span>全局工具</span><div className="dashboard-global-status">{reportingStatus}{includesCodex && (<span className={`dash-head__freshness${freshnessStage ? ` is-${freshnessStage}` : ""}`}>
+          <div className="dashboard-global-meta"><span>全局工具</span>{runningTaskIndicator}<div className="dashboard-global-status">{reportingStatus}{includesCodex && (<span className={`dash-head__freshness${freshnessStage ? ` is-${freshnessStage}` : ""}`}>
             <small>{activeProgress?.phaseLabel ?? (fullPrecisionPending ? "等待精确统计" : "精确统计")}</small>
             <strong>
               <i aria-hidden="true" className="precise-progress-dot" />

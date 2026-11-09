@@ -1,4 +1,5 @@
 import { MultiClientDiscoveryNotice } from "../multiClient/MultiClientUsage";
+import { RunningTaskIndicator } from "../multiClient/RunningTaskIndicator";
 import { projectOriginalDashboard, clientCostPeriods } from "../multiClient/originalDashboardProjection";
 import { ClientScopeSelector, useClientScope, useClientQuotaItems } from "../multiClient/IntegratedClients";
 import { DiagnosticNotice } from "../components/DiagnosticNotice";
@@ -313,6 +314,7 @@ export function DashboardPage({
       <section className="dashboard">
         <AgentSpeedReportingDashboardStatus errorsOnly onOpenSettings={() => openSettings("speedReporting")} />
         <DashboardHeader
+          runningTaskIndicator={<RunningTaskIndicator codex={runningThreads} allowed={clientScope.allowed}/>}
           discoveryNotice={<MultiClientDiscoveryNotice />}
           includesCodex={clientScope.allowed.includes("codex")}
           scopeControl={<ClientScopeSelector showsDiscovery={false}/>}

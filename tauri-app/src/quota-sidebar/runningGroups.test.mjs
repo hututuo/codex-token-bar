@@ -74,6 +74,7 @@ test('all clients use one set of task cards and totals; matching IDs cannot cros
 test('task projection excludes each unavailable, disabled, stopped and expired source without hiding known tasks',async()=>{
   await withSsrModules(async load=>{
     const {combinedRunningTasks}=await load('/src/quota-sidebar/runningTaskPresentation.ts');
+    const {RunningTaskSummaryIndicator}=await load('/src/multiClient/RunningTaskIndicator.tsx');
     const runtime=localRuntime({configuredClients:['claudeCode','antigravity'],sourceAvailable:{claudeCode:true,antigravity:false}});
     runtime.mainAgents.push(agent('claudeCode','stopped',null,{displayStopped:true}),
       agent('claudeCode','old',null,{lastActivity:new Date(now-300001).toISOString()}),
@@ -81,6 +82,9 @@ test('task projection excludes each unavailable, disabled, stopped and expired s
       agent('claudeDesktop','disabled'));
     const current=combinedRunningTasks(codexSummary({status:'stale',mainThreads:100,subagents:200}),runtime,['codex','claudeCode','claudeDesktop','antigravity'],now);
     assert.equal(current.status,'ready');assert.equal(current.total,2);assert.equal(current.groups.length,1);
+    const header=renderToStaticMarkup(React.createElement(RunningTaskSummaryIndicator,{summary:current}));
+    assert.match(header,/所选客户端/);assert.match(header,/主 1/);assert.match(header,/子 1/);
+    assert.doesNotMatch(header,/主 100|子 200/);
     assert.equal(current.groups[0].mainThread.client,'claudeCode');
     assert.equal(current.sourceIssues.length,2);assert.match(current.sourceIssues.join(' '),/Codex.*Antigravity/);
     assert.doesNotMatch(JSON.stringify(current.groups),/stopped|disabled|future|idle|:old/);

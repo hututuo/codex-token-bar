@@ -326,6 +326,7 @@ struct HeaderView: View {
     var clientPlanLabels: [String: String] = [:]
     var showsClientScopePicker = false
     var includesCodex = true
+    var taskClients: Set<String>? = nil
     let status: String
     let dataSourceLabel: String
     let dataSourceOrigin: String
@@ -474,6 +475,7 @@ struct HeaderView: View {
         VStack(alignment: .trailing, spacing: 8) {
             HStack(spacing: 12) {
                 Text("全局工具").font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
+                if let taskClients { ScopedRunningThreadIndicator(codex: runningThreadSummary, allowed: taskClients) }
                 AgentSpeedReportingDashboardStatus(compact: true, unframed: true)
             }
             if includesCodex { preciseStatus.frame(maxWidth: .infinity, alignment: .trailing) }
@@ -598,6 +600,23 @@ struct HeaderView: View {
         DispatchQueue.main.async {
             markAllReadController.complete()
         }
+    }
+}
+
+/// Observe local runtime only in the small indicator, not the whole dashboard.
+struct ScopedRunningThreadIndicator: View {
+    let codex: RunningThreadSummary
+    let allowed: Set<String>
+    @ObservedObject private var clients = MultiClientUsageStore.shared
+    @ObservedObject private var claude = ClaudeLocalRuntime.shared
+    @ObservedObject private var upstream = AgentSpeedDisplayRuntime.shared
+    var body: some View {
+        let summary = ClientLocalRuntimePresentation.observedRunning(codex: codex, claude: claude,
+            upstream: upstream, allowed: allowed, preferences: clients.preferences)
+        let presentation = RunningThreadPresentation(summary: summary)
+        Label("所选客户端 · " + presentation.displayText, systemImage: "terminal")
+            .font(.system(size: 10)).foregroundStyle(summary.freshness == .stale ? .orange : .secondary)
+            .help(presentation.accessibilityText).accessibilityIdentifier("scoped-running-tasks")
     }
 }
 

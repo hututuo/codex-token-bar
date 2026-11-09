@@ -4,6 +4,18 @@ import AgentSpeedCore
 /// One display projection for both sidebar levels. Source accounting and
 /// measured request intervals remain separate from the activity animation.
 enum ClientLocalRuntimePresentation {
+    static func taskClients(allowed: Set<String>, preferences: [MultiClientUsagePreference]) -> Set<String> {
+        allowed.filter { id in id == "codex" || preferences.contains { $0.client.rawValue == id && $0.enabled } }
+    }
+
+    @MainActor static func observedRunning(codex: RunningThreadSummary, claude: ClaudeLocalRuntime,
+                                          upstream: AgentSpeedDisplayRuntime, allowed: Set<String>,
+                                          preferences: [MultiClientUsagePreference]) -> RunningThreadSummary {
+        let selected = taskClients(allowed: allowed, preferences: preferences)
+        return running(codex: codex, claude: claude.projection(allowed: selected).running,
+            allowed: selected, antigravity: upstream.antigravityTasks(allowed: selected))
+    }
+
     /// Thin reader adapter shared by every sidebar speed surface. In particular,
     /// Claude is selected here once, never added again via the upstream reader.
     @MainActor static func liveRate(monitor: LiveRateMonitor, claude: ClaudeLocalRuntime,
