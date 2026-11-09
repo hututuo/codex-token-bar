@@ -1,4 +1,5 @@
 import type { ModelRateContribution } from "../../types/live";
+import policy from "../../../../Sources/CodexTokenBar/Resources/model-presentation-policy.json" with {type:"json"};
 
 export type SpeedDisplayMode = "activity" | "agentSpeed";
 export type SpeedColorGrouping = "model" | "client";
@@ -43,14 +44,8 @@ export function projectSpeedDisplay<T extends { tokensPerSecond: number; modelRa
 
 export const SPEED_COLORS_KEY = "speedDisplay.customColors.v1";
 export const SPEED_PREFERENCES_EVENT = "speed-display-preferences-changed";
-export const CLIENT_TITLES: Record<string, string> = {
-  "client:codex": "Codex", "client:claudeCode": "Claude CLI", "client:claudeDesktop": "Claude Desktop", "client:deepseek": "DSH",
-  "client:gemini": "Gemini CLI", "client:opencode": "OpenCode", "client:antigravity": "Antigravity",
-};
-export const CLIENT_COLORS: Record<string, string> = {
-  "client:codex": "#72d6a2", "client:claudeCode": "#e99663", "client:claudeDesktop": "#e99663", "client:deepseek": "#568dff",
-  "client:gemini": "#4796E4", "client:opencode": "#B7B1B1", "client:antigravity": "#4285F4",
-};
+export const CLIENT_TITLES: Record<string, string> = policy.clientTitles;
+export const CLIENT_COLORS: Record<string, string> = policy.clientColors;
 export function validSpeedColor(value: unknown): value is string { return typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value); }
 let cachedColors: Record<string, string> = {};
 let cacheReady = false;

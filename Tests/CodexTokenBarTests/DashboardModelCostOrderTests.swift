@@ -4,6 +4,20 @@ import XCTest
 @testable import CodexTokenBar
 
 final class DashboardModelCostOrderTests: XCTestCase {
+    func testChannelThinkingAliasesShareDisplayColorWithoutChangingBillingIdentity() {
+        for family in ["Opus", "Sonnet"] {
+            let raw = "Claude \(family) 4.6 (Thinking)"
+            let canonical = "claude-\(family.lowercased())-4-6"
+            XCTAssertEqual(ModelUsagePresentation.key(for: raw), canonical)
+            XCTAssertEqual(ModelUsagePresentation.label(for: raw), ModelPresentationIdentity.resolve(raw).label)
+            XCTAssertEqual(ModelUsagePresentation.colorHex(for: raw), ModelUsagePresentation.colorHex(for: canonical))
+            XCTAssertEqual(DashboardModelCostOrder.groupID(item("antigravity|" + raw)), "recent")
+            XCTAssertEqual(DashboardModelCostOrder.groupID(item("claudeCode|" + raw)), "claude")
+            XCTAssertEqual(ModelPresentationIdentity.billingIdentifier(raw.lowercased()), raw.lowercased())
+        }
+        for (key, color) in ModelPresentationIdentity.colors { XCTAssertEqual(ModelUsagePresentation.colorHex(for: key), color) }
+        for (key, color) in ModelPresentationIdentity.clientColors { XCTAssertEqual(ModelUsagePresentation.colorHex(for: key), color) }
+    }
     struct Fixture: Decodable {
         struct Group: Decodable { let id: String; let keys: [String] }
         let input: [String]; let groups: [Group]

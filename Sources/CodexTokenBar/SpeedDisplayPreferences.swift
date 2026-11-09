@@ -71,27 +71,10 @@ final class SpeedColorOverrides: @unchecked Sendable {
         return colors[key].flatMap { Self.valid($0) ? $0 : nil }
     }
     static func clientTitle(_ key: String) -> String {
-        switch key {
-        case "client:codex": "Codex"
-        case "client:claudeCode": "Claude CLI"
-        case "client:claudeDesktop": "Claude Desktop"
-        case "client:deepseek": "DSH"
-        case "client:gemini": "Gemini CLI"
-        case "client:opencode": "OpenCode"
-        case "client:antigravity": "Antigravity"
-        default: String(key.dropFirst("client:".count))
-        }
+        ModelPresentationIdentity.clientTitles[key] ?? String(key.dropFirst("client:".count))
     }
     static func clientColor(_ key: String) -> String {
-        switch key {
-        case "client:codex": "#72d6a2"
-        case "client:claudeCode", "client:claudeDesktop": "#e99663"
-        case "client:deepseek": "#568dff"
-        case "client:gemini": "#4796E4"
-        case "client:opencode": "#B7B1B1"
-        case "client:antigravity": "#4285F4"
-        default: "#a694e8"
-        }
+        ModelPresentationIdentity.clientColors[key] ?? "#a694e8"
     }
 }
 

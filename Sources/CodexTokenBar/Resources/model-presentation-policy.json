@@ -1,7 +1,17 @@
 {
   "schema": 1,
+  "colors": {
+    "claude-fable":"#99623f","claude-opus":"#c35b96","claude-sonnet":"#c08b28","claude-haiku":"#269c92",
+    "gpt-6-astra":"#a3d977","gpt-6.1-sol":"#df7055","gpt-6.1-terra":"#a773e8","gpt-6-sol":"#d6ac5b","gpt-6-luna":"#63a6eb",
+    "gpt-5.6-sol":"#8b83c5","gpt-5.6-terra":"#9b75bd","gpt-5.6-luna":"#7595bd","gpt-5.5":"#a87629",
+    "gpt-5.6-generic":"#7a879e","gpt-5.4":"#f28f14","gpt-5.4-mini":"#2eb35c",
+    "gpt-5.3-codex":"#db4575","gpt-5.3-codex-spark":"#f5b022","gpt-5.2-codex":"#3d7fe0","unknown":"#7a879e"
+  },
+  "clientTitles":{"client:codex":"Codex","client:claudeCode":"Claude CLI","client:claudeDesktop":"Claude Desktop","client:deepseek":"DSH","client:gemini":"Gemini CLI","client:opencode":"OpenCode","client:antigravity":"Antigravity"},
+  "clientColors":{"client:codex":"#72d6a2","client:claudeCode":"#e99663","client:claudeDesktop":"#e99663","client:deepseek":"#568dff","client:gemini":"#4796E4","client:opencode":"#B7B1B1","client:antigravity":"#4285F4"},
   "unsafeScalarRanges": [[0,31],[127,159],[173,173],[1536,1541],[1564,1564],[1757,1757],[1807,1807],[2192,2193],[2274,2274],[6158,6158],[8203,8207],[8234,8238],[8288,8292],[8294,8303],[65279,65279],[65529,65531],[69821,69821],[69837,69837],[78896,78911],[113824,113827],[119155,119162],[917505,917505],[917536,917631]],
   "wrappers": ["publishers/google/models/", "models/", "openai/", "anthropic/", "google/", "openrouter/"],
+  "displayAliases":{"claude opus 4.6 (thinking)":"claude-opus-4-6","claude sonnet 4.6 (thinking)":"claude-sonnet-4-6"},
   "missing": ["", "unknown", "<unknown>", "null", "undefined", "<synthetic>"],
   "ambiguous": ["gpt-5.6", "gpt5.6", "gpt56"],
   "modifiers": {

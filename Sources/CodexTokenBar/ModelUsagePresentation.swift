@@ -174,11 +174,15 @@ enum ModelUsagePresentation {
         // Keep this list explicit.  In particular, `gpt-5.6`, `gpt5.6` and
         // `gpt56` intentionally fall through so their original spelling is
         // visible instead of being guessed as Sol.
-        return knownModelAliases[normalized] ?? source
+        if let explicit = knownModelAliases[normalized] { return explicit }
+        let identity = ModelPresentationIdentity.resolve(source)
+        return identity.kind == "known" || identity.kind == "source" ? identity.key : source
     }
 
     static func label(for model: String?) -> String {
         if let model, model.hasPrefix("client:") { return SpeedColorOverrides.clientTitle(model) }
+        let identity = ModelPresentationIdentity.resolve(model)
+        if ["known", "source", "routing", "invalid"].contains(identity.kind) { return identity.label }
         if let label = ModelDisplayNames.catalogLabel(for: model ?? "")
             ?? ModelDisplayNames.catalogLabel(for: key(for: model)) { return label }
         switch key(for: model) {
@@ -334,13 +338,7 @@ enum ModelUsagePresentation {
         if key.hasPrefix(autoReviewDisplayPrefix) {
             return colorHex(for: displayTargetKey(for: String(key.dropFirst(autoReviewDisplayPrefix.count))))
         }
-        let fixed = [
-            "claude-fable": "#99623f", "claude-opus": "#c35b96", "claude-sonnet": "#c08b28", "claude-haiku": "#269c92",
-            "gpt-6-astra": "#a3d977", "gpt-6.1-sol": "#df7055", "gpt-6.1-terra": "#a773e8", "gpt-6-sol": "#d6ac5b", "gpt-6-luna": "#63a6eb",
-            "gpt-5.6-sol": "#8b83c5", "gpt-5.6-terra": "#9b75bd", "gpt-5.6-luna": "#7595bd", "gpt-5.5": "#a87629",
-            "gpt-5.6-generic": "#7a879e", "gpt-5.4": "#f28f14", "gpt-5.4-mini": "#2eb35c",
-            "gpt-5.3-codex": "#db4575", "gpt-5.3-codex-spark": "#f5b022", "gpt-5.2-codex": "#3d7fe0", "unknown": "#7a879e",
-        ]
+        let fixed = ModelPresentationIdentity.colors
         if let hex = fixed[key] { return hex }
         // Resolve presentation color only; never merge model versions or
         // provider IDs in the ledger/pricing dimensions.

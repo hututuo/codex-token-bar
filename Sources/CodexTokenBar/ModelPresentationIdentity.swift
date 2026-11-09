@@ -20,6 +20,10 @@ struct ModelPresentationIdentity: Codable, Equatable, Sendable {
         let routingLabels: [String: String]
         let sourceLabels: [String: String]
         let billingAliases: [String: String]
+        var displayAliases: [String: String] = [:]
+        var colors: [String: String] = [:]
+        var clientTitles: [String: String] = [:]
+        var clientColors: [String: String] = [:]
     }
     private static let policy: Policy = {
         guard let url=AppResources.url(forResource:"model-presentation-policy",withExtension:"json"),
@@ -28,6 +32,9 @@ struct ModelPresentationIdentity: Codable, Equatable, Sendable {
         }
         return value
     }()
+    static var colors: [String: String] { policy.colors }
+    static var clientTitles: [String: String] { policy.clientTitles }
+    static var clientColors: [String: String] { policy.clientColors }
     private static func normalized(_ raw: String) -> String {
         raw.trimmingCharacters(in:.whitespacesAndNewlines).lowercased().replacingOccurrences(of:"_",with:"-")
     }
@@ -66,6 +73,7 @@ struct ModelPresentationIdentity: Codable, Equatable, Sendable {
         let original=(raw ?? "").trimmingCharacters(in:.whitespacesAndNewlines)
         var key=normalized(original)
         key = billingIdentifier(key)
+        key = policy.displayAliases[key] ?? key
         if policy.missing.contains(key) { return .init(key:"unknown",label:"未报告模型",kind:"unreported") }
         if policy.ambiguous.contains(key) { return .init(key:"gpt-5.6-generic",label:"5.6（未分型）",kind:"ambiguous") }
         if let label=policy.routingLabels[key] { return .init(key:key,label:label,kind:"routing") }

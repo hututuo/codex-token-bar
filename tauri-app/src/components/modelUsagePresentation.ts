@@ -2,6 +2,8 @@ import { claudeModelIdentity } from "./claudeModelPresentation.ts";
 import { catalogModelLabel } from "../domain/modelDisplayNames.ts";
 import { readSpeedColors, CLIENT_COLORS, CLIENT_TITLES } from "./liveRate/speedDisplay.ts";
 import { detectedOfficialAPIPriceModel } from "../settings/quotaPriceModel.ts";
+import { modelPresentationIdentity } from "../domain/modelPresentationIdentity.ts";
+import policy from "../../../Sources/CodexTokenBar/Resources/model-presentation-policy.json" with {type:"json"};
 
 export interface ModelUsageRowLike {
   model: string | null;
@@ -24,28 +26,7 @@ export interface ModelUsageSlice {
   color: string;
 }
 
-const FIXED_COLORS: Record<string, string> = {
-  "claude-fable": "#99623f",
-  "claude-opus": "#c35b96",
-  "claude-sonnet": "#c08b28",
-  "claude-haiku": "#269c92",
-  "gpt-6-astra": "#a3d977",
-  "gpt-6.1-sol": "#df7055",
-  "gpt-6.1-terra": "#a773e8",
-  "gpt-6-sol": "#d6ac5b",
-  "gpt-6-luna": "#63a6eb",
-  "gpt-5.6-sol": "#8b83c5",
-  "gpt-5.6-terra": "#9b75bd",
-  "gpt-5.6-luna": "#7595bd",
-  "gpt-5.6-generic": "#7a879e",
-  "gpt-5.5": "#a87629",
-  "gpt-5.4": "#f28f14",
-  "gpt-5.4-mini": "#2eb35c",
-  "gpt-5.3-codex": "#db4575",
-  "gpt-5.3-codex-spark": "#f5b022",
-  "gpt-5.2-codex": "#3d7fe0",
-  unknown: "#7a879e",
-};
+const FIXED_COLORS: Record<string, string> = policy.colors;
 
 
 export function modelUsageSlices(rows: ModelUsageRowLike[] | null | undefined): ModelUsageSlice[] {
@@ -120,7 +101,8 @@ export function modelUsageKey(model: string | null | undefined, eventStartUnix?:
     case "gpt54Legacy": return "gpt-5.4";
     case "gpt54MiniLegacy": return "gpt-5.4-mini";
   }
-  return original;
+  const identity=modelPresentationIdentity(original);
+  return identity.kind==="known"||identity.kind==="source"?identity.key:original;
 }
 
 /** The compact surface groups Review with its dated underlying model only. */
@@ -133,6 +115,8 @@ export function floatingModelUsageKey(model: string | null | undefined, eventSta
 
 export function modelUsageLabel(model: string | null | undefined): string {
   if (model?.startsWith("client:")) return CLIENT_TITLES[model] ?? model.slice(7);
+  const identity=modelPresentationIdentity(model);
+  if(["known","source","routing","invalid"].includes(identity.kind))return identity.label;
   const catalogLabel = catalogModelLabel(model ?? "") ?? catalogModelLabel(modelUsageKey(model));
   if (catalogLabel) return catalogLabel;
   switch (modelUsageKey(model)) {

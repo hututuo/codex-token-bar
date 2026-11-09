@@ -1,4 +1,6 @@
 [
+  {"raw":"Claude Opus 4.6 (Thinking)","expected":{"key":"claude-opus-4-6","label":"Opus4.6","kind":"known"}},
+  {"raw":"Claude Sonnet 4.6 (Thinking)","expected":{"key":"claude-sonnet-4-6","label":"Sonnet4.6","kind":"known"}},
   {
     "raw": "before𑂽after",
     "expected": {

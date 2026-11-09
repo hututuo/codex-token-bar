@@ -13,6 +13,7 @@ struct Policy {
     wrappers:Vec<String>,missing:Vec<String>,ambiguous:Vec<String>,
     modifiers:BTreeMap<String,Vec<String>>,routing_labels:BTreeMap<String,String>,source_labels:BTreeMap<String,String>,
     billing_aliases:BTreeMap<String,String>,
+    #[serde(default)] display_aliases:BTreeMap<String,String>,
 }
 #[derive(Deserialize)]
 struct Names { names:BTreeMap<String,String> }
@@ -71,6 +72,7 @@ fn known(value:&str,suffix:&str,c:&Catalog)->Option<ModelPresentationIdentity> {
 pub fn resolve(raw:&str)->ModelPresentationIdentity {
     let c=catalog();let p=&c.policy;let original=raw.trim();let mut key=normalized(original);
     key=billing_identifier(&key).to_string();
+    key=p.display_aliases.get(&key).cloned().unwrap_or(key);
     if p.missing.contains(&key) {return identity("unknown","未报告模型","unreported");}
     if p.ambiguous.contains(&key) {return identity("gpt-5.6-generic","5.6（未分型）","ambiguous");}
     if let Some(label)=p.routing_labels.get(&key) {return identity(&key,label,"routing");}

@@ -28,6 +28,7 @@ for(const model of prices.models as {id:string;name:string;aliases?:string[]}[])
 export function modelPresentationIdentity(raw:string|null|undefined):ModelPresentationIdentity {
  const original=(raw??"").trim();let key=normalize(original);
  key=(policy.billingAliases as Record<string,string>)[key]??key;
+ key=(policy.displayAliases as Record<string,string>)[key]??key;
  if(policy.missing.includes(key))return {key:"unknown",label:"未报告模型",kind:"unreported"};
  if(policy.ambiguous.includes(key))return {key:"gpt-5.6-generic",label:"5.6（未分型）",kind:"ambiguous"};
  const routing=(policy.routingLabels as Record<string,string>)[key];if(routing)return {key,label:routing,kind:"routing"};
