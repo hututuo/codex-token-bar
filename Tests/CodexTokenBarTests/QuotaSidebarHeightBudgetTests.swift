@@ -111,7 +111,8 @@ final class QuotaSidebarHeightBudgetTests: XCTestCase {
             while Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.02)) }
         }
         func snapshot(_ name: String, detail: Bool = false) throws {
-            guard let folder = ProcessInfo.processInfo.environment["CODEX_SIDEBAR_HEIGHT_PREVIEW"] else { return }
+            guard let folder = ProcessInfo.processInfo.environment["CODEX_SIDEBAR_HEIGHT_PREVIEW"]
+                ?? ProcessInfo.processInfo.environment["CODEX_CYCLE_LAYOUT_OUTPUT"] else { return }
             let view = try XCTUnwrap(detail ? controller.detailPanel?.contentView : controller.railPanel?.contentView)
             view.layoutSubtreeIfNeeded()
             let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
@@ -163,6 +164,44 @@ final class QuotaSidebarHeightBudgetTests: XCTestCase {
         controller.setModuleVisible(.speeds, visible: true); settle()
         XCTAssertGreaterThan(try XCTUnwrap(controller.railPanel).frame.height, minimal + 80)
         XCTAssertTrue(QuotaSidebarController(settings: defaults).isModuleVisible(.speeds))
+
+        // No recent sample used to remove the settings hover target entirely.
+        // Exercise the real rail, its measured native frame and painted locator.
+        seed(0)
+        for item in QuotaSidebarItem.defaults { controller.setSidebarItemVisible(item, visible: false) }
+        controller.setSidebarItemVisible(.tps, in: .expanded, visible: true)
+        controller.select(.overview); settle()
+        XCTAssertEqual(try XCTUnwrap(controller.railPanel).frame.height, minimal, accuracy: 1)
+        controller.select(.settings); controller.highlightSidebarItem(nil); settle()
+        let locatorHeight = try XCTUnwrap(controller.railPanel).frame.height
+        XCTAssertGreaterThan(locatorHeight, minimal + 20, "An empty TPS settings target has a real nonzero frame")
+        func greenPixels() throws -> Int {
+            let view = try XCTUnwrap(controller.railPanel?.contentView)
+            let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            var count = 0
+            for y in 0..<bitmap.pixelsHigh {
+                for x in 0..<bitmap.pixelsWide {
+                    guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB) else { continue }
+                    if color.greenComponent > 0.25 && color.greenComponent > color.redComponent * 1.15 && color.greenComponent > color.blueComponent * 1.3 { count += 1 }
+                }
+            }
+            return count
+        }
+        let beforeHighlight = try greenPixels()
+        controller.highlightSidebarItem(.tps); settle()
+        XCTAssertEqual(controller.settingsHighlightedItem, .tps)
+        XCTAssertEqual(try XCTUnwrap(controller.railPanel).frame.height, locatorHeight, accuracy: 1)
+        XCTAssertGreaterThan(try greenPixels(), beforeHighlight + 20, "The empty TPS target must paint a visible locator outline")
+        try snapshot("native-tps-settings-empty-locator.png")
+        controller.setSidebarItemVisible(.tps, in: .expanded, visible: false); settle()
+        XCTAssertEqual(try XCTUnwrap(controller.railPanel).frame.height, minimal, accuracy: 1, "Settings must respect explicitly hidden TPS")
+        controller.setSidebarItemVisible(.tps, in: .expanded, visible: true); settle()
+        XCTAssertEqual(try XCTUnwrap(controller.railPanel).frame.height, locatorHeight, accuracy: 1)
+        controller.select(.overview); settle()
+        XCTAssertEqual(try XCTUnwrap(controller.railPanel).frame.height, minimal, accuracy: 1, "Leaving settings retires the empty locator")
+        XCTAssertTrue(monitor.latestModelSpeeds30m.isEmpty, "The locator must not synthesize speed readings")
+        XCTAssertFalse(QuotaSidebarItem.tps.hasCompactRepresentation, "No TPS dot is added to the first-level rail")
         print("SIDEBAR_MEASURED_HEIGHTS \(first),\(second),\(third)")
     }
 

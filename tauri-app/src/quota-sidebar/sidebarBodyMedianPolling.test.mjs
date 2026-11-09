@@ -14,7 +14,9 @@ test('mini median only polls when visible, fences late source replies, and repor
  try{const {createRoot}=await import('react-dom/client');root=createRoot(dom.document.body);
  await withSsrModules(async load=>{const {SidebarBodyMedian}=await load('/src/quota-sidebar/SidebarBodyMedianCard.tsx');
  let source={canonicalHomeKey:'A',physicalHomeKey:'A',transitionGeneration:1};
- const render=active=>React.act(async()=>root.render(React.createElement(SidebarBodyMedian,{active,sourceToken:{...source},latest:[{model:"NEW",tokensPerSecond:72}],onOpen(){}})));
+ const render=(active,latest=[{model:"NEW",tokensPerSecond:72}])=>React.act(async()=>root.render(React.createElement(SidebarBodyMedian,{active,sourceToken:{...source},latest,onOpen(){}})));
+ await render(true,[]);await React.act(async()=>fire(150));assert.equal(reads,0);assert.equal(timers.size,0);
+ assert.match(dom.document.body.textContent,/等待采样/,'empty settings locator stays honest without history IO');
  await render(false);await React.act(async()=>fire(150));assert.equal(reads,0);
  await render(true);await React.act(async()=>fire(150));assert.equal(reads,1);
  for(let i=0;i<10;i++)await render(true);assert.equal(timers.size,0);assert.equal(reads,1);
@@ -32,6 +34,8 @@ test('mini median only polls when visible, fences late source replies, and repor
  assert.match(latestCard.title,/最新 72\.0 TPS/);
  assert.equal(latestCard.querySelector('.qs-median-time').textContent,'中位 —');
  assert.doesNotMatch(dom.document.body.textContent,/中位 30/);
+ await render(true,[]);assert.equal(timers.size,0,'expiring the last reading cancels history polling');
+ assert.equal(dom.document.querySelector('.qs-median-model'),null);
  await render(false);assert.equal(timers.size,0);
  });
  }finally{if(root)await React.act(async()=>root.unmount());for(const[k,desc]of previous)desc?Object.defineProperty(globalThis,k,desc):delete globalThis[k];dom.close();}

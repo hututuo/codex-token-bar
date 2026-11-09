@@ -370,7 +370,10 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
   const taskMeter = sidebarTaskMeter(mainCount, subCount, taskStatus, [...taskSummary.mainModels, ...taskSummary.subagentModels]);
   const taskTotal = mainCount + subCount;
   const recentBodySpeeds=useRecentBodySpeeds(data.snapshot.latestModelSpeeds30m??[]);
-  const layoutItems = visibleSidebarItems(layout, quotaItems, scopeHasCodex || hasClaude).filter(id=>(scopeHasCodex&&recentBodySpeeds.length>0)||id!=="tps");
+  // Keep the honest “等待采样” target while editing, so the TPS setting can
+  // highlight its real location. Ordinary empty rails still omit the module.
+  const settingsPreview = state.mode === "detail" && state.tab === "settings";
+  const layoutItems = visibleSidebarItems(layout, quotaItems, scopeHasCodex || hasClaude).filter(id=>(scopeHasCodex&&(recentBodySpeeds.length>0||settingsPreview))||id!=="tps");
   const compactItems = visibleSidebarItems(layout, quotaItems, scopeHasCodex || hasClaude, "compact").filter(id=>scopeHasCodex||id!=="tps");
   const clientRates = [...new Set(allowedClients)].map(client=>({model:"client:"+client,tokensPerSecond:
     client==="codex" && speedMode==="bar" ? data.snapshot.tokensPerSecond : local.modelRates.filter(r=>r.client===client).reduce((n,r)=>n+r.outputTps,0)})).filter(r=>r.tokensPerSecond>0);

@@ -216,8 +216,10 @@ struct QuotaSidebarRail: View {
     private var recentBodySpeeds: [ModelSpeedSummary] { RecentBodySpeed.readings(monitor.latestModelSpeeds30m, now: bodySpeedNow) }
     private var bodySpeedDeadlineKey: String { (monitor.sidebarBodyMedianSource ?? "") + monitor.latestModelSpeeds30m.map { "\($0.model):\($0.lastMeasuredAt ?? 0):\($0.tokensPerSecond)" }.joined(separator: "|") }
     private var sidebarItems: [QuotaSidebarItem] {
+        // Settings needs a real expanded target even before the first sample.
+        // The empty TPS view says “等待采样”; it is still hidden during normal use.
         controller.sidebarLayout.arranged(availableQuotaClients: availableQuotaItems.map(\.client))
-            .filter { ((supportsCodex && !recentBodySpeeds.isEmpty) || $0 != .tps) && (supportsCodex || localLive.enabled || allowedClients.contains("antigravity") || !$0.requiresCodexLiveData) }
+            .filter { ((supportsCodex && (!recentBodySpeeds.isEmpty || controller.interaction.detail == .settings)) || $0 != .tps) && (supportsCodex || localLive.enabled || allowedClients.contains("antigravity") || !$0.requiresCodexLiveData) }
     }
     private var compactItems: [QuotaSidebarItem] { sidebarItems.filter { controller.sidebarLayout.isVisible($0, in: .compact) } }
     private var expandedItems: [QuotaSidebarItem] { sidebarItems.filter { controller.sidebarLayout.isVisible($0, in: .expanded) } }

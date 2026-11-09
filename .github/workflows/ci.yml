@@ -199,6 +199,7 @@ jobs:
             --require testCostGroupsNeverInventZeroUsageCatalogCards \
             --require testSharedCostOrderPreservesEverySourceAndAmountAcrossPeriods \
             --require testShortPeriodFillsTwoSlotsAndUnknownNameFitsSingleRow \
+            --require testProductionRailTracksTPSModelGrowthAndDisappearance \
             --require testRunningTitlesUseSchemaFallbacksAndAgentMetadataWithoutChangingOwnership \
             --require testRunningRolloutTitlesAreBoundedCachedAndCanArriveOnAppend \
             --require testCompactTaskHierarchyKeepsTenChildrenReadableWithinOnePanel \

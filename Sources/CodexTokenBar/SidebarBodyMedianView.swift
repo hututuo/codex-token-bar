@@ -12,7 +12,8 @@ struct QuotaSidebarBodySpeedReadings: View {
     @State private var snapshot: SidebarBodyMedian?
     @State private var error: String?
     private var source: String? { monitor.sidebarBodyMedianSource }
-    private var request: String? { active && exposed ? source : nil }
+    // An empty settings locator is presentation only, not a reason to poll history.
+    private var request: String? { active && exposed && !latest.isEmpty ? source : nil }
 
     private var displayedSnapshot: SidebarBodyMedian? {
         #if DEBUG

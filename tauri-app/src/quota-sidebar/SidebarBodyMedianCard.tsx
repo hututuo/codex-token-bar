@@ -12,9 +12,11 @@ interface Props { latest?:ModelSpeedSummary[]; sourceToken?: CodexHomeSourceToke
  * fence all late responses; high-frequency live snapshots do not restart it. */
 export function SidebarBodyMedian({latest=[],sourceToken,active,onOpen}:Props) {
   const visible=useDocumentVisible(),key=JSON.stringify(sourceToken??null);
+  const hasReadings=latest.length>0;
   const [result,setResult]=useState<{key:string;snapshot:MedianSnapshot|null;error:string|null}|null>(null);
   useEffect(()=>{
-    if(!sourceToken||!active||!visible)return;
+    // The settings-only empty locator must never start a history read or timer.
+    if(!sourceToken||!active||!visible||!hasReadings)return;
     let disposed=false;let timer:ReturnType<typeof window.setTimeout>|undefined;
     const read=async()=>{
       try {
@@ -26,7 +28,7 @@ export function SidebarBodyMedian({latest=[],sourceToken,active,onOpen}:Props) {
     // Avoid reads for accidental pointer passes; never perform IO on each frame.
     timer=window.setTimeout(()=>void read(),150);
     return()=>{disposed=true;if(timer!==undefined)window.clearTimeout(timer);};
-  },[key,active,visible]);
+  },[key,active,visible,hasReadings]);
   return <SidebarBodyMedianContent latest={latest} snapshot={result?.key===key?result.snapshot:null} error={result?.key===key?result.error:null} onOpen={onOpen}/>;
 }
 const description=(series:MedianSeries,end:number)=>series.model+" · "+series.slots.map((p,i)=>
