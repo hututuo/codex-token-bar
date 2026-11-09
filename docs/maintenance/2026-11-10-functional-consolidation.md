@@ -158,7 +158,7 @@ macOS包已在 `staged-macos/Codex Token Bar.app` 独立解压核验：`CFBundle
 | `CodexTokenBar-v0.9.11-windows-x64-setup.exe` | 69562261 | `e52fefd0bfb3359cccd9f5d9827d9f489b69d29b658f2c4456f1a74f9ad880dc` |
 | `CodexTokenBar-v0.9.11-windows-arm64-setup.exe` | 63615589 | `290488fc621fbc7cedcb7903b42910743b11fffaa08830f4c4a6f232f7032b46` |
 
-Windows两个架构均在真实Windows runner构建，`build-manifest.json`的版本、平台、大小、SHA256与外层candidate manifest及下载字节一致；本机未运行安装器。两条lane均通过仓库 `scripts/cloud/manifest.py verify` 的精确sourceSHA/runID/lane/asset集合检查。所有25个GitHub artifact ZIP的digest、size和安全解压路径已验证。
+Windows两个架构均在真实Windows runner构建，`build-manifest.json`的版本、平台、大小、SHA256与外层candidate manifest及下载字节一致；本机未运行安装器。两条lane均通过仓库 `scripts/cloud/manifest.py verify` 的精确sourceSHA/runID/lane/asset集合检查。全部27个GitHub artifact ZIP（完整CI13、Public097 2、formed 8、打包4）的digest、size和安全解压路径已验证。
 
 归档入口：
 
