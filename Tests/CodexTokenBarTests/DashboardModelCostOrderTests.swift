@@ -8,7 +8,8 @@ final class DashboardModelCostOrderTests: XCTestCase {
         for family in ["Opus", "Sonnet"] {
             let raw = "Claude \(family) 4.6 (Thinking)"
             let canonical = "claude-\(family.lowercased())-4-6"
-            XCTAssertEqual(ModelUsagePresentation.key(for: raw), canonical)
+            XCTAssertEqual(ModelUsagePresentation.key(for: raw), raw, "Ledger grouping keys retain source identity")
+            XCTAssertEqual(ModelPresentationIdentity.resolve(raw).key, canonical)
             XCTAssertEqual(ModelUsagePresentation.label(for: raw), ModelPresentationIdentity.resolve(raw).label)
             XCTAssertEqual(ModelUsagePresentation.colorHex(for: raw), ModelUsagePresentation.colorHex(for: canonical))
             XCTAssertEqual(DashboardModelCostOrder.groupID(item("antigravity|" + raw)), "recent")

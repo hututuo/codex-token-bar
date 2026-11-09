@@ -79,6 +79,17 @@ extension RecentChartPreparedSnapshot {
                     unpricedRequests: price.unpricedCalls)
             }
             var cacheComplete = codex == nil || original.calls >= (codex?.bins[safe: index]?.calls ?? 0)
+            let attributed = models.map(\.breakdown).combined
+            let missingTokens = max(0, (codex?.bins[safe: index]?.tokens ?? 0) - attributed.totalTokens)
+            if missingTokens > 0 {
+                let residual = TokenCacheBreakdown(inputTokens: max(0, original.inputTokens - attributed.inputTokens),
+                    cachedInputTokens: max(0, original.cachedInputTokens - attributed.cachedInputTokens),
+                    outputTokens: max(0, original.outputTokens - attributed.outputTokens),
+                    reasoningOutputTokens: max(0, original.reasoningOutputTokens - attributed.reasoningOutputTokens),
+                    totalTokens: missingTokens, calls: max(0, original.calls - attributed.calls))
+                models.append(.init(client: "codex", model: "unknown", sourceModels: ["unknown"], breakdown: residual,
+                    cacheWriteTokens: nil, knownCostUSD: nil, unpricedRequests: 0))
+            }
             for row in others {
                 let part = TokenCacheBreakdown(inputTokens: Int(row.inputTokens), cachedInputTokens: Int(row.cacheReadTokens ?? 0),
                     outputTokens: Int(row.outputTokens), reasoningOutputTokens: Int(row.reasoningTokens ?? 0),
@@ -96,7 +107,8 @@ extension RecentChartPreparedSnapshot {
                 outputTokens: combined.outputTokens, reasoningOutputTokens: combined.reasoningOutputTokens,
                 totalTokens: bin.tokens, calls: bin.calls)
             return ChartUsageSummary(breakdown: breakdown, models: ChartModelUsage.combined(models), cacheReadComplete: cacheComplete,
-                modelComplete: models.reduce(0) { $0 + $1.breakdown.totalTokens } == bin.tokens,
+                modelComplete: missingTokens == 0 && others.allSatisfy { $0.model != nil }
+                    && models.reduce(0) { $0 + $1.breakdown.totalTokens } == bin.tokens,
                 knownCostUSD: costs[safe: index] ?? 0, hasKnownCost: known[safe: index] ?? false,
                 unpricedRequests: unknown[safe: index] ?? 0)
         }

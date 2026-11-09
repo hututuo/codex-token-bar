@@ -196,11 +196,11 @@ export function RecentUsageChart({
   );
   const usageCache=useMemo(()=>new Map<RecentChartRange,ReturnType<typeof buildChartUsageSnapshot>>(),
     [preparedDataCache,quotaCostSeries,externalCostBuckets,includesCodexCost,quotaModel]);
-  let usageSnapshot=usageCache.get(range);
-  if(!usageSnapshot){
-    usageSnapshot=buildChartUsageSnapshot(data,quotaData.points,externalCostBuckets,includesCodexCost,quotaModel);
-    usageCache.set(range,usageSnapshot);
-  }
+  const usageSnapshot=(()=>{
+    const cached=usageCache.get(range);if(cached)return cached;
+    const prepared=buildChartUsageSnapshot(data,quotaData.points,externalCostBuckets,includesCodexCost,quotaModel);
+    usageCache.set(range,prepared);return prepared;
+  })();
   const bucketCostsUSD=usageSnapshot.bucketCostsUSD;
   const visibleUsage=chartUsageSummary(usageSnapshot.buckets,visibleWindowSummary.startIndex,visibleWindowSummary.endIndex);
   function recordedCostText(start:number,end:number):string|undefined {

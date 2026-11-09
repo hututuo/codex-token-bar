@@ -1,6 +1,12 @@
 import type { ModelRateContribution } from "../../types/live";
 import { floatingModelUsageKey, modelUsageColor, modelUsageKey, modelUsageLabel } from "../modelUsagePresentation.ts";
 import type { SpeedColorGrouping } from "./speedDisplay.ts";
+import { modelPresentationIdentity } from "../../domain/modelPresentationIdentity.ts";
+
+function rateModelKey(raw: string): string {
+  const key=floatingModelUsageKey(raw),identity=modelPresentationIdentity(key);
+  return identity.kind==="known"||identity.kind==="source"?identity.key:key;
+}
 
 export interface ModelRateSource {
   client: string; sourceKey: string; observedAt: number; available: boolean;
@@ -21,7 +27,7 @@ export function normalizedModelRates(rates: readonly ModelRateContribution[], to
   const sums = new Map<string, number>();
   for (const row of rates) {
     if (!Number.isFinite(row.tokensPerSecond) || row.tokensPerSecond <= 1e-9) continue;
-    const key = floatingModelUsageKey(row.model);
+    const key = rateModelKey(row.model);
     sums.set(key, (sums.get(key) ?? 0) + row.tokensPerSecond);
   }
   const known = [...sums.values()].reduce((a, b) => a + b, 0), target = total ?? known;
@@ -39,7 +45,7 @@ export function liveModelRateSnapshot(sources: ModelRateSource[], enabled: boole
   let rows: LiveModelRateRow[] = sources.filter(source => enabled && source.available).flatMap(source =>
     normalizedModelRates(source.rates, source.total).map(rate => ({
       id: source.client + ":" + rate.model, client: source.client, model: rate.model,
-      rawModels: [...new Set(source.rates.filter(row => floatingModelUsageKey(row.model) === rate.model).map(row => row.model))].sort(),
+      rawModels: [...new Set(source.rates.filter(row => rateModelKey(row.model) === rate.model).map(row => row.model))].sort(),
       colorKey: grouping === "client" ? "client:" + source.client : rate.model,
       label: modelUsageLabel(rate.model), clientLabel: modelUsageLabel("client:" + source.client),
       tokensPerSecond: rate.tokensPerSecond, share: 0, barFraction: 0,

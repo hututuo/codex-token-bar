@@ -32,7 +32,8 @@ test('both platform palette registries agree, including unknown UTF8 models',asy
 test('human Thinking model labels use the shared identity and palette without losing source',()=>{
  for(const family of ['Opus','Sonnet']){
   const raw=`Claude ${family} 4.6 (Thinking)`,canonical=`claude-${family.toLowerCase()}-4-6`;
-  assert.equal(modelUsageKey(raw),canonical);
+  assert.equal(modelUsageKey(raw),raw);
+  assert.equal(modelPresentationIdentity(raw).key,canonical);
   assert.equal(modelUsageLabel(raw),modelPresentationIdentity(raw).label);
   assert.equal(modelUsageColor(raw),modelUsageColor(canonical));
  }

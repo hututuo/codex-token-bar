@@ -60,6 +60,12 @@ export function buildChartUsageSnapshot(data: PreparedRecentChartData, provider:
     });
     let inputTokens=codex?.inputTokens??0,cachedInputTokens=codex?.cachedInputTokens??0,outputTokens=codex?.outputTokens??0;
     let cacheReadComplete=!codex || codex.inputTokens<=0 || codex.cacheHitRate!==null;
+    const attributed=(key:"totalTokens"|"inputTokens"|"cachedInputTokens"|"outputTokens"|"calls")=>models.reduce((n,row)=>n+row[key],0);
+    const missingTokens=Math.max(0,(codex?.tokens??0)-attributed("totalTokens"));
+    if(missingTokens>0)models.push({id:"codex|unknown",client:"codex",model:"unknown",sourceModels:["unknown"],totalTokens:missingTokens,
+      inputTokens:Math.max(0,inputTokens-attributed("inputTokens")),cachedInputTokens:Math.max(0,cachedInputTokens-attributed("cachedInputTokens")),
+      outputTokens:Math.max(0,outputTokens-attributed("outputTokens")),calls:Math.max(0,(codex?.calls??0)-attributed("calls")),
+      cacheWriteTokens:null,knownCostUSD:null,unpricedRequests:0});
     for (const row of others) {
       const model=modelPresentationIdentity(row.model).key;
       inputTokens+=row.inputTokens;cachedInputTokens+=row.cacheReadTokens??0;outputTokens+=row.outputTokens;
@@ -72,7 +78,7 @@ export function buildChartUsageSnapshot(data: PreparedRecentChartData, provider:
     }
     return {totalTokens:point.tokens,calls:point.calls,inputTokens,cachedInputTokens,outputTokens,
       cacheReadComplete,cacheHitRate:cacheReadComplete&&inputTokens>0?cachedInputTokens/inputTokens:null,
-      modelComplete:models.reduce((n,row)=>n+row.totalTokens,0)===point.tokens,models:combineChartModels(models),
+      modelComplete:missingTokens===0&&others.every(row=>row.model!=null)&&models.reduce((n,row)=>n+row.totalTokens,0)===point.tokens,models:combineChartModels(models),
       knownCostUSD:recorded[index].cost,
       hasKnownCost:(codex?.calls??0)>(estimates[index]?.unpricedCalls??0)||others.some(row=>row.apiCostMicroUSD!=null),
       unpricedRequests:recorded[index].unknown+(estimates[index]?.unpricedCalls??0)};

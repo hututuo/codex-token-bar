@@ -56,12 +56,17 @@ struct LiveModelRateSnapshot {
 }
 
 enum ModelRatePresentation {
+    static func modelKey(_ raw: String) -> String {
+        let key = ModelUsagePresentation.autoReviewUnderlyingModelKey(for: raw) ?? ModelUsagePresentation.key(for: raw)
+        let identity = ModelPresentationIdentity.resolve(key)
+        return identity.kind == "known" || identity.kind == "source" ? identity.key : key
+    }
     /// The numeric normalization used by the ring, legend and activity history.
     /// A reader's reported total is authoritative; missing attribution is unknown.
     static func normalized(_ rates: [ModelRateContribution], total: Double? = nil) -> [ModelRateContribution] {
         var sums: [String: Double] = [:]
         for row in rates where row.tokensPerSecond.isFinite && row.tokensPerSecond > 1e-9 {
-            let key = ModelUsagePresentation.autoReviewUnderlyingModelKey(for: row.model) ?? ModelUsagePresentation.key(for: row.model)
+            let key = modelKey(row.model)
             sums[key, default: 0] += row.tokensPerSecond
         }
         let known = sums.values.reduce(0, +)
@@ -78,7 +83,7 @@ enum ModelRatePresentation {
         for source in sources.sorted(by: { $0.client < $1.client }) where enabled && source.available {
             for rate in normalized(source.rates, total: source.total) {
                 let raw = source.rates.filter {
-                    (ModelUsagePresentation.autoReviewUnderlyingModelKey(for: $0.model) ?? ModelUsagePresentation.key(for: $0.model)) == rate.model
+                    modelKey($0.model) == rate.model
                 }.map(\.model)
                 rows.append(.init(client: source.client, model: rate.model, rawModels: Array(Set(raw)).sorted(),
                     colorKey: grouping == .client ? "client:" + source.client : rate.model,

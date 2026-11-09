@@ -11,7 +11,8 @@ test("real runtime hook rejects replies from a changed source and releases the l
  for(const key of keys)Object.defineProperty(globalThis,key,{configurable:true,writable:true,value:key==="IS_REACT_ACT_ENVIRONMENT"?true:dom[key]});
  const oldSet=globalThis.setTimeout,oldClear=globalThis.clearTimeout,timers=new Map();let serial=0;
  globalThis.setTimeout=(fn,ms)=>{const id=++serial;timers.set(id,{fn,ms});return id;};globalThis.clearTimeout=id=>timers.delete(id);
- let path="A",pending=[],model="",refresh;const preference=()=>({client:"claudeCode",enabled:true,path});
+ let path="A",pending=[],model="";const preference=()=>({client:"claudeCode",enabled:true,path});
+ dom.__TAURI_EVENT_PLUGIN_INTERNALS__={unregisterListener(){}};
  dom.__TAURI_INTERNALS__={invoke:async command=>{
   if(command==="refresh_multi_client_usage")return {preferences:[preference()],summaries:[],diagnostics:[],updatedAt:new Date().toISOString()};
   if(command==="read_claude_local_runtime_snapshot")return new Promise(resolve=>pending.push(resolve));

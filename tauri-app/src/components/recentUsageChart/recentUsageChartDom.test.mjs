@@ -919,8 +919,11 @@ test("24h hover and fixed selection preview expose model shares without persiste
         const selection = container.querySelector(".chart-selection-summary-bubble");
         assert.ok(selection);
         assert.match(selection.textContent, /金额 \$/);
-        assert.match(selection.textContent, /Sol5.6 50%/);
-        assert.match(selection.textContent, /Luna5.6 50%/);
+        assert.match(selection.textContent, /Sol5.6 33%/);
+        assert.match(selection.textContent, /Luna5.6 33%/);
+        assert.match(selection.textContent, /未报告模型 33%/);
+        assert.match(selection.textContent, /部分用量未报告模型/);
+        assert.equal(selection.querySelectorAll('[data-client="codex"]').length,3,"unattributed output is retained in the same denominator");
       } finally {
         await React.act(async () => root.unmount());
       }

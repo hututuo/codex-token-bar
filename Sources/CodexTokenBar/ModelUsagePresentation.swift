@@ -174,17 +174,15 @@ enum ModelUsagePresentation {
         // Keep this list explicit.  In particular, `gpt-5.6`, `gpt5.6` and
         // `gpt56` intentionally fall through so their original spelling is
         // visible instead of being guessed as Sol.
-        if let explicit = knownModelAliases[normalized] { return explicit }
-        let identity = ModelPresentationIdentity.resolve(source)
-        return identity.kind == "known" || identity.kind == "source" ? identity.key : source
+        return knownModelAliases[normalized] ?? source
     }
 
     static func label(for model: String?) -> String {
         if let model, model.hasPrefix("client:") { return SpeedColorOverrides.clientTitle(model) }
-        let identity = ModelPresentationIdentity.resolve(model)
-        if ["known", "source", "routing", "invalid"].contains(identity.kind) { return identity.label }
         if let label = ModelDisplayNames.catalogLabel(for: model ?? "")
             ?? ModelDisplayNames.catalogLabel(for: key(for: model)) { return label }
+        let identity = ModelPresentationIdentity.resolve(model)
+        if ["known", "source", "routing", "invalid"].contains(identity.kind) { return identity.label }
         switch key(for: model) {
         case "gpt-6-astra": return "Astra"
         case "gpt-6.1-sol": return "GPT-6.1 Sol"
@@ -330,10 +328,13 @@ enum ModelUsagePresentation {
     }
 
     static func colorHex(for model: String?) -> String {
-        let overrideKey = key(for: model)
+        let rawKey = key(for: model)
+        let identity = ModelPresentationIdentity.resolve(rawKey)
+        let overrideKey = identity.kind == "known" || identity.kind == "source" ? identity.key : rawKey
+        if let custom = SpeedColorOverrides.shared.color(for: rawKey) { return custom }
         if let custom = SpeedColorOverrides.shared.color(for: overrideKey) { return custom }
         if overrideKey.hasPrefix("client:") { return SpeedColorOverrides.clientColor(overrideKey) }
-        let key = self.key(for: model)
+        let key = overrideKey
         if key == "codex-auto-review" { return colorHex(for: "gpt-5.6-luna") }
         if key.hasPrefix(autoReviewDisplayPrefix) {
             return colorHex(for: displayTargetKey(for: String(key.dropFirst(autoReviewDisplayPrefix.count))))

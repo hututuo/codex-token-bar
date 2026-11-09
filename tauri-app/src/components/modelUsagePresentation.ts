@@ -101,8 +101,7 @@ export function modelUsageKey(model: string | null | undefined, eventStartUnix?:
     case "gpt54Legacy": return "gpt-5.4";
     case "gpt54MiniLegacy": return "gpt-5.4-mini";
   }
-  const identity=modelPresentationIdentity(original);
-  return identity.kind==="known"||identity.kind==="source"?identity.key:original;
+  return original;
 }
 
 /** The compact surface groups Review with its dated underlying model only. */
@@ -115,10 +114,10 @@ export function floatingModelUsageKey(model: string | null | undefined, eventSta
 
 export function modelUsageLabel(model: string | null | undefined): string {
   if (model?.startsWith("client:")) return CLIENT_TITLES[model] ?? model.slice(7);
-  const identity=modelPresentationIdentity(model);
-  if(["known","source","routing","invalid"].includes(identity.kind))return identity.label;
   const catalogLabel = catalogModelLabel(model ?? "") ?? catalogModelLabel(modelUsageKey(model));
   if (catalogLabel) return catalogLabel;
+  const identity=modelPresentationIdentity(model);
+  if(["known","source","routing","invalid"].includes(identity.kind))return identity.label;
   switch (modelUsageKey(model)) {
     case "gpt-6-astra": return "Astra";
     case "gpt-6.1-sol": return "GPT-6.1 Sol";
@@ -143,8 +142,9 @@ export function modelUsageLabel(model: string | null | undefined): string {
 }
 
 export function modelUsageColor(keyOrModel: string | null | undefined): string {
-  const key = floatingModelUsageKey(keyOrModel);
-  const custom = readSpeedColors()[key];
+  const rawKey = floatingModelUsageKey(keyOrModel),identity=modelPresentationIdentity(rawKey);
+  const key = identity.kind==="known"||identity.kind==="source"?identity.key:rawKey;
+  const custom = readSpeedColors()[rawKey]??readSpeedColors()[key];
   if (custom) return custom;
   if (key.startsWith("client:")) return CLIENT_COLORS[key] ?? "#a694e8";
   const fixed = FIXED_COLORS[key];
