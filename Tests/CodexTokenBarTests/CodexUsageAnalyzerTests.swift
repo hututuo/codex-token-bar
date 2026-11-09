@@ -1342,7 +1342,10 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let sessionFile = codexHome
             .appendingPathComponent("sessions", isDirectory: true)
             .appendingPathComponent("2026-08-13-\(sessionID).jsonl")
-        let now = Date()
+        // Append order is the concurrency signal, not wall-clock recency.
+        // Keep both batches behind the settled chart boundary, including when
+        // the test starts just before midnight or a five-minute rollover.
+        let now = Date().addingTimeInterval(-3_600)
         try [
             messageLine(
                 timestamp: now.addingTimeInterval(-30),
@@ -1441,8 +1444,23 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         XCTAssertTrue(secondFinished.cacheUsage.attributionEventsComplete)
         XCTAssertEqual(secondFinished.stats.totalTokens, 205)
         let fast = try secondAnalyzer.loadFastSnapshotResult()
-        XCTAssertEqual(fast.freshness, .current)
+        let observedAt = try XCTUnwrap(secondFinished.observedThrough)
+        let checkedAt = Date()
+        let sameTimeBucket = Calendar.current.isDate(observedAt, inSameDayAs: checkedAt)
+            && UsageRefreshCadencePolicy.latestEligibleBoundary(now: observedAt)
+                == UsageRefreshCadencePolicy.latestEligibleBoundary(now: checkedAt)
+        if sameTimeBucket {
+            XCTAssertEqual(fast.freshness, .current)
+        } else {
+            // An unchanged generation legitimately becomes stale at a calendar
+            // or settled-bucket boundary. It must still retain the new owner's
+            // exact totals and generation, never revert to the old owner.
+            XCTAssertTrue(fast.freshness == .current || fast.freshness == .staleCompatible)
+        }
         XCTAssertEqual(fast.snapshot.stats.totalTokens, 205)
+        XCTAssertEqual(fast.snapshot.exactGeneration, secondFinished.exactGeneration)
+        XCTAssertEqual(fast.snapshot.cacheUsage.attributionEventsComplete, fast.freshness == .current,
+            "A stale persisted projection must request detail hydration again")
         XCTAssertEqual(firstNumeric.values.first?.stats.totalTokens, 130)
     }
 

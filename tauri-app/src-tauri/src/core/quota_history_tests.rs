@@ -2507,17 +2507,27 @@ fn daily_history_groups_quota_samples_by_local_day() {
     let path = temp_db_path("daily");
     let database = QuotaHistoryDatabase { path: path.clone() };
     let reset = now_unix() + 3_600.0;
-    let first_at = now_unix() - 120.0;
+    // Two relative-to-now samples can straddle midnight. Pin both samples
+    // to the previous local day's noon while retaining the real database path.
+    let local_offset = crate::core::localtime::local_offset();
+    let day = OffsetDateTime::now_utc()
+        .to_offset(local_offset)
+        .date()
+        .previous_day()
+        .unwrap();
+    let first_at = day
+        .with_hms(12, 0, 0)
+        .unwrap()
+        .assume_offset(local_offset)
+        .unix_timestamp() as f64;
 
     let first = bundle("tester", 0.20, reset as i64, 0.40, (reset + 500_000.0) as i64);
     let second = bundle("tester", 0.30, reset as i64, 0.50, (reset + 500_000.0) as i64);
     assert!(record_at(&database, &first, first_at).unwrap());
     assert!(record_at(&database, &second, first_at + 60.0).unwrap());
 
-    let local_offset = crate::core::localtime::local_offset();
-    let today = format_date(OffsetDateTime::now_utc().to_offset(local_offset).date());
-    let history = database.daily_history(1).unwrap();
-    let quota = history.get(&today).unwrap();
+    let history = database.daily_history(3).unwrap();
+    let quota = history.get(&format_date(day)).unwrap();
 
     assert_eq!(quota.five_hour_remaining_percent, Some(0.75));
     assert_eq!(quota.seven_day_remaining_percent, Some(0.55));
