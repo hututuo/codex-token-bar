@@ -41,3 +41,44 @@
 - L5：scope、IPC、异步回复、刷新和设置生命周期。
 - L6：诊断事件裁剪、当前启动证据和升级回执。
 - L7：剩余服务 owner 矩阵；只收束有实际重复决策证据的模块。
+
+## L3：模型身份、渠道、名称与颜色
+
+扫描：`ModelPresentationIdentity` / TS domain / Rust model_presentation 已共用严格身份 policy/cases，费用主页与侧栏已共用 `ClientModelCostPeriods` / `clientModelCostItems`，外部费用保留已核算逐请求价格。保留日期/TTL/长上下文计价，不合并账本身份。发现 Swift/TS 固定模型色、客户端色和客户端标题仍各维护一份；`ModelUsagePresentation` 的 key/label 与严格 identity 断开，导致完整 Thinking 人类名称不能稳定复用费用名/颜色。
+
+收束：固定色/客户端色/标题进入既有 `model-presentation-policy.json`，无需新增独立资源加载器；Swift/TS presentation 通过严格 identity 识别已知模型，旧 Auto Review 日期/独立配额适配保留。完整 Opus/Sonnet 4.6 Thinking 名称用显式 displayAliases，Swift/TS/Rust 同一 cases 证明；不改 billingAliases。Antigravity sourceGroups 仍在 Gemini · Antigravity，Argon4 例外仍在最新主力。新增全注册表颜色与跨渠道别名/计价隔离测试。
+
+## L4：运行态与父子归属
+
+扫描：两端 Codex 生命周期 scanner 已维护 terminal 优先、24h 发现/5m 文件推进/长静默真实 writer，来源专属扫描不重复实现。Swift `ClientLocalRuntimePresentation.running` 和 TS `combinedRunningTasks` 已有 fresh/stale 聚合与来源命名空间；主页旧计数明确放在 Codex 专属工具，不能直接换成汇总后还标 Codex。Swift 一级设置预览漏了 enabled 客户端过滤。
+
+收束：Swift `taskClients/observedRunning` 统一选择和 reader 适配，二级/三级/预览共用；主页全局区新增独立观察的小型 indicator，共用该投影，避免每次实时变化重建整页。TS 新 indicator 直接消费 `combinedRunningTasks`，复用相同计数、来源质量和父子卡片合同。Codex 专属计数保留明确范围。回归补 disabled 有历史来源与 header/详情同投影；原 lifecycle、普通 fork、terminal、真实 writer 负控完整保留。
+
+## L5：设置与来源生命周期
+
+扫描：Swift 配置切换会清理本地 snapshot/smoother，图表准备有 request fence；TS `useSharedChoice` 已处理存储/窗口广播和卸载，不重新包装。实际缺口是 `ClaudeLocalRuntime.poll` 未关联配置代次、最后订阅销毁后晚到回复仍可能发布；speed preferences 初始异步读取可覆盖之后的新设置，原全局事件订阅没有随消费者释放。
+
+收束：两处使用 `SnapshotEpoch` 判定回复是否仍属于同一来源/订阅生命期。切源立即隐藏旧 snapshot、清理速率/历史/response 缓存，迟到回复不重新注入；同源重绘不额外读取。最后订阅释放后撤销 listener/timer；preferences 的初始读取不得覆盖新事件。增加真实 runtime hook 的悬挂回复/切源/卸载回归。
+
+## L6：诊断与升级证据
+
+扫描：Swift/Rust events collector 都先读按 UUID 名称排序的前128文件，再按到达顺序取6000行，最后排序，直接解释旧诊断包漏新启动。固定 event schema/脱敏、只读安全文件打开、probe 子进程3秒预算、升级 launched/confirmed 绑定已有单一owner，继续保留。
+
+收束：在已有最大2048目录项/每文件512KiB及子进程超时边界内，先筛允许文件并逐条验证事件；每个文件后按 at/session/sequence 保留最新6000条，输出仍为升序。Swift/Rust 同规则，unrelated 文件不占前128名额。新增7001事件+130无关文件反例：最新build/startup必须出现、omitted准确、原文件不改。不打开数据库、不改变确认回执语义。
+
+## L7：剩余区域 owner 与保留边界
+
+| 功能域 | 权威 owner / 消费入口 | 扫描结论与处理 |
+| --- | --- | --- |
+| 费用/参考价 | `StandardAPIPriceSchedule`、B ledger per-event pricing；`ClientModelCostPeriods/clientModelCostItems` | 已收束已知费用；参考价和 quota provider 为不同合同，保留 |
+| 图表准备/交互 | `RecentChartPreparationStore` / bounded React prepared+usage cache | L2收束；追加共享 `recent-chart-policy.json` 与包资源测试，3range复用，旧scope无效化 |
+| client scope/来源 | `ClientDisplayScope`、`useClientScope/useSharedChoice`；reader配置与source token | 页面/图表/侧栏显式独立选择是产品合同；L5只修真实晚到回复缺口 |
+| 活动速度/正文TPS | `ActivitySpeedHistoryController` / local history；BodySpeed stores / stream reader | 实时、完成正文、窗口均值不同量；L1统一实时展示，保留历史生命周期 |
+| Codex任务 | `RunningThreadScanner/RunningThreadLiveness`；Rust thread_activity/liveness | 不复制扫描；L4统一已有来源投影；不改24h/5m/terminal规则 |
+| ModelTrace/榜单/上报 | `ModelTraceController/Probe` 与 commands/modeltrace；reporting controller/commands | 手动探测与显式上报分属权限owner；不因显示开启上报，不合并授权 |
+| quota/API模式 | `AccountQuotaStore`、client quota providers；connection_mode 与前端quota合同 | 真实额度与API费用不同，未发现本轮需要合并的授权/计价入口 |
+| 诊断/更新 | diagnostics fixed schema/collector、Sparkle/NSIS/install receipts | L6修最新事件保留，原只读/脱敏/超时/确认负控继续 |
+| A/B库与备份恢复 | A Exact/route A–D owner；B multi-client ledger | 只扩B只读趋势维度，SQL schema、迁移、发布、连接/Drop、stage生命周期不动；最终追加历史formed矩阵 |
+| Vendor/共享规范 | UPSTREAM pin + patch hashes；Resources policy/cases/price history | 不改vendor；沿用打包资源复制与云端完整性检查 |
+
+全仓功能域扫描以入口/权威决策/消费端为单位，不以1162个源文件逐行无问题或“大文件拆短”为完成声明。现有分层正确的 provider/parser/存储边界保留；性能A/B与实体Windows GUI未执行，不能用本轮源码/云端结果替代。
