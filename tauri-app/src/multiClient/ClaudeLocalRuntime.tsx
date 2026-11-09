@@ -8,6 +8,7 @@ import {ActivitySpeedLivePlot} from "./ActivitySpeedLivePlot";
 import {ActivityLiveHistory} from "./activityLiveHistory";
 import {ActivityModelRateSmoother,claudeBarAgentActive} from "./activityRateSmoothing";
 import {ActivityRateUnitControl,useActivityRatePreferences} from "../components/liveRate/ActivityRateUnits";
+import { normalizedModelRates } from "../components/liveRate/modelRatePresentation";
 
 export interface ClaudeRuntimeAgent {
   id: string; client: string; parentId: string | null; phase: string; model: string | null;
@@ -127,11 +128,7 @@ export function ClientActivitySpeedPanel({ allowed, sourceToken = null, compact 
   useEffect(()=>{
     if(!monitoringEnabled){barActivityLiveHistory.clear();return;}
     if(mode!=="bar"||!allowed.includes("codex"))return;
-    const finite=codexRates.filter(rate=>Number.isFinite(rate.tokensPerSecond)&&rate.tokensPerSecond>0);
-    const known=finite.reduce((n,r)=>n+r.tokensPerSecond,0),total=Number.isFinite(codexOutputRate)?Math.max(0,codexOutputRate!):known;
-    const scale=known>total?total/known:1;
-    const rates=finite.map(r=>({client:"codex",model:r.model,outputTps:r.tokensPerSecond*scale}));
-    if(total>known)rates.push({client:"codex",model:"unknown",outputTps:total-known});
+    const rates=normalizedModelRates(codexRates,codexOutputRate).map(r=>({client:"codex",model:r.model,outputTps:r.tokensPerSecond}));
     barActivityLiveHistory.record(Date.now()/1000,{codex:codexAvailable},rates);
   },[monitoringEnabled,mode,codexRates,codexOutputRate,codexAvailable,sourceKey]);
   const rows=mode==="bar"?[...barActivityLiveHistory.snapshot(Date.now()/1000,allowed),...runtime.activitySeries.filter(row=>row.client!=="codex")]:runtime.activitySeries;

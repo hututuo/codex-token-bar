@@ -1,4 +1,5 @@
-import { useActivitySpeedMode, saveActivitySpeedMode, selectedActivityRates } from "../../multiClient/activitySpeedMode";
+import { useActivitySpeedMode, saveActivitySpeedMode } from "../../multiClient/activitySpeedMode";
+import { activityRateSources, liveModelRateSnapshot } from "./modelRatePresentation";
 import { useClaudeLocalRuntime } from "../../multiClient/ClaudeLocalRuntime";
 import { useClientScope } from "../../multiClient/useClientScope";
 import { localAgentSpeedHistory } from "./speedDisplayHistory";
@@ -48,21 +49,28 @@ export function useSpeedDisplayPreferences() {
   return { ...preferences, mode: activityMode === "agentSpeed" ? "agentSpeed" as const : "activity" as const, colors, save };
 }
 
-export function useSpeedDisplaySnapshot<T extends { tokensPerSecond: number; modelRates?: ModelRateContribution[] }>(base: T, enabled: boolean) {
+export function useLiveModelRateSnapshot(base: { tokensPerSecond: number; modelRates?: ModelRateContribution[]; liveRateAvailable?: boolean },
+  enabled: boolean, allowed: readonly string[], sourceKey = "") {
   const preferences = useSpeedDisplayPreferences();
-  const { allowed } = useClientScope();
   const local = useClaudeLocalRuntime(allowed, enabled);
-  const rates = selectedActivityRates(base.modelRates ?? [], local.modelRates, allowed,
-    preferences.mode === "agentSpeed" ? "agentSpeed" : "bar", base.tokensPerSecond);
-  const clients = new Map<string, number>();
-  if (preferences.mode === "activity" && allowed.includes("codex") && base.tokensPerSecond > 0)
-    clients.set("codex", base.tokensPerSecond);
-  for (const row of local.modelRates) if (allowed.includes(row.client) && (row.client !== "codex" || preferences.mode === "agentSpeed"))
-    clients.set(row.client, (clients.get(row.client) ?? 0) + row.outputTps);
-  const value = { ...base, modelRates: enabled ? rates : [], tokensPerSecond: enabled ? rates.reduce((n,r)=>n+r.tokensPerSecond,0) : 0,
-    colorRates: preferences.grouping === "client" ? [...clients].map(([client,tokensPerSecond])=>({model:"client:"+client,tokensPerSecond})) : rates,
-    speedDisplayMode: preferences.mode, speedDisplayStatus: "本地活动 · 停止或超时归零" };
-  useEffect(() => { if (enabled && preferences.mode === "agentSpeed") localAgentSpeedHistory.record(Date.now()/1000, rates); }, [local, enabled, preferences.mode]);
+  const observedAt = Date.parse(local.capturedAt ?? ""), age = Date.now() - observedAt;
+  const fresh = Number.isFinite(age) && age >= -2000 && age <= 3000;
+  const mode = preferences.mode === "agentSpeed" ? "agentSpeed" : "bar";
+  const sources = activityRateSources(base.modelRates ?? [], local.modelRates, allowed, mode, base.tokensPerSecond, {
+    sourceKey: sourceKey + "|" + local.sourceSelectionKey, observedAt: Number.isFinite(observedAt) ? observedAt / 1000 : 0,
+    codexAvailable: base.liveRateAvailable !== false,
+    upstreamAvailable: Object.fromEntries(allowed.map(client => [client, fresh && local.sourceAvailable[client] === true])),
+  });
+  return liveModelRateSnapshot(sources, enabled, mode, preferences.grouping);
+}
+
+export function useSpeedDisplaySnapshot<T extends { tokensPerSecond: number; modelRates?: ModelRateContribution[]; liveRateAvailable?: boolean }>(base: T, enabled: boolean, sourceKey = "") {
+  const { allowed } = useClientScope();
+  const liveRates = useLiveModelRateSnapshot(base, enabled, allowed, sourceKey);
+  const value = { ...base, modelRates: liveRates.modelRates, tokensPerSecond: liveRates.total,
+    colorRates: liveRates.colorRates, liveRateAvailable: liveRates.available, liveRates,
+    speedDisplayMode: liveRates.mode === "agentSpeed" ? "agentSpeed" as const : "activity" as const, speedDisplayStatus: liveRates.status };
+  useEffect(() => { if (liveRates.enabled && liveRates.mode === "agentSpeed") localAgentSpeedHistory.record(Date.now()/1000, liveRates.modelRates); }, [liveRates]);
   return value;
 }
 

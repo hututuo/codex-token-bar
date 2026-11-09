@@ -13089,6 +13089,15 @@ details.session-management-banner {
 .activity-live-inspection{min-height:22px;color:var(--muted);font-size:10px;display:flex;gap:12px;flex-wrap:wrap;font-variant-numeric:tabular-nums}
 .activity-live-inspection b{color:var(--text);font-weight:var(--weight-medium);}
 .activity-live-controls{display:flex;justify-content:space-between;align-items:center;gap:8px;color:var(--muted);font-size:10px;margin-bottom:10px}
+.live-model-rate-bars{display:flex;flex-direction:column;gap:8px;margin-bottom:12px;font-size:11px}
+.live-model-rate-bars>header{display:flex;justify-content:space-between;gap:8px;font-size:13px;font-variant-numeric:tabular-nums}
+.live-model-rate-bars>small{font-size:10px;opacity:.65}
+.live-model-rate-row{display:grid;grid-template-columns:7px 104px minmax(30px,1fr) 88px;align-items:center;gap:7px;min-height:28px}
+.live-model-rate-dot{width:7px;height:7px;border-radius:50%}
+.live-model-rate-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.live-model-rate-name>small{display:block;font-size:9px;opacity:.65}
+.live-model-rate-track,.live-model-rate-track>i{display:block;height:6px;border-radius:3px}
+.live-model-rate-value{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .activity-live-chart.is-compact{color:#e3e8e6;padding:4px 0;--muted:#a0aaa4;--text:#e3e8e6}
 .activity-live-chart.is-compact .activity-live-heading{justify-content:space-between;gap:2px;margin-bottom:2px;font-size:8px}
 .activity-live-chart.is-compact .activity-live-heading strong{font-size:10px}

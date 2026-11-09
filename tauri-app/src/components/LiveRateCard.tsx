@@ -1,4 +1,3 @@
-import { selectedActivityRates, useActivitySpeedMode } from "../multiClient/activitySpeedMode";
 import { useClaudeLocalRuntime } from "../multiClient/ClaudeLocalRuntime";
 import type { QuotaAttributionIdentity } from "../types/quota";
 import { CacheUsageNotice } from "./cacheReminder/CacheUsageNotice";
@@ -36,7 +35,7 @@ interface LiveRateCardProps {
   usageCacheInitializing?: boolean;
 }
 
-import { SpeedDisplayControls, useSpeedDisplayPreferences } from "./liveRate/SpeedDisplayControls";
+import { SpeedDisplayControls, useLiveModelRateSnapshot } from "./liveRate/SpeedDisplayControls";
 
 export function LiveRateCard({
   includesCodex = true, localClients = [],
@@ -63,12 +62,10 @@ export function LiveRateCard({
   usageCacheInitializing = false,
 }: LiveRateCardProps) {
   const snapshot = rawSpeedSnapshot;
-  const palette = useSpeedDisplayPreferences();
   const allowed=[...new Set([...(includesCodex?["codex"]:[]),...localClients])];
-  const mode=useActivitySpeedMode();
   const local=useClaudeLocalRuntime(allowed,liveRateEnabled);
-  const activityRates=selectedActivityRates(snapshot.modelRates??[],local.modelRates,allowed,mode,snapshot.tokensPerSecond);
-  const activitySnapshot={...snapshot,colorRates:palette.grouping === "client" ? allowed.map(client=>({model:"client:"+client,tokensPerSecond:client==="codex"&&mode==="bar"?snapshot.tokensPerSecond:local.modelRates.filter(r=>r.client===client).reduce((n,r)=>n+r.outputTps,0)})) : activityRates,modelRates:activityRates,tokensPerSecond:activityRates.reduce((n,r)=>n+r.tokensPerSecond,0)};
+  const liveRates = useLiveModelRateSnapshot(snapshot, liveRateEnabled, allowed, JSON.stringify(sourceToken));
+  const activitySnapshot={...snapshot,colorRates:liveRates.colorRates,modelRates:liveRates.modelRates,tokensPerSecond:liveRates.total};
   const notice = liveRateNotice(snapshot, {
     liveRateEnabled,
     refreshing,

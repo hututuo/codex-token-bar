@@ -83,6 +83,7 @@ final class ClaudeLocalRuntime: ObservableObject {
     private var eventListener: UUID?
     private var configuredSources: Set<SourceKind> = []
     private var activitySourceIdentity: String?
+    var displaySourceIdentity: String { activitySourceIdentity ?? "unavailable" }
     private var monitoringEnabled = false
     private var configurationIssue: String?
     private var latestCoreSnapshot = SpeedSnapshot.empty

@@ -1,7 +1,7 @@
 import type { CSSProperties } from "react";
 import type { LiveRateSnapshot } from "../../types/dashboard";
 import type { ModelRateContribution } from "../../types/live";
-import { modelRateGradient } from "./modelRatePresentation.ts";
+import { modelRateGradient, modelRateValueText } from "./modelRatePresentation.ts";
 
 import { DEFAULT_TOKEN_RATE_FULL_SCALE } from "../../settings/tokenRateScale.ts";
 export { DEFAULT_TOKEN_RATE_FULL_SCALE } from "../../settings/tokenRateScale.ts";
@@ -40,10 +40,7 @@ export function displayRawRate(raw: number, scope: RateDisplayScope): number {
 }
 
 export function formatLiveRateValue(value: number): string {
-  if (!Number.isFinite(value) || value < ZERO_THRESHOLD) {
-    return "0.0";
-  }
-  return value.toFixed(1);
+  return modelRateValueText(value);
 }
 
 export function smoothLiveRateValue(previous: number, raw: number): number {

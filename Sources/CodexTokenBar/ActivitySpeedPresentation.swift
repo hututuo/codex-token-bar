@@ -21,6 +21,9 @@ final class AgentSpeedDisplayRuntime: ObservableObject {
     private var monitor: (any AgentSpeedReportingMonitor)?
     private var configuration: ActivitySourceConfiguration?
     private var sourceIdentities: [SourceKind: String] = [:]
+    func displaySourceIdentity(client: String) -> String {
+        ActivitySourceConfiguration.source(for: client).flatMap { sourceIdentities[$0] } ?? "unavailable"
+    }
     private var home: URL?
     private var codexSourceReady = false
     private var preferences: [MultiClientUsagePreference] = []

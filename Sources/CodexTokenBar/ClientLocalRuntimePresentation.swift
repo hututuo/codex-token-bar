@@ -4,14 +4,39 @@ import AgentSpeedCore
 /// One display projection for both sidebar levels. Source accounting and
 /// measured request intervals remain separate from the activity animation.
 enum ClientLocalRuntimePresentation {
+    /// Thin reader adapter shared by every sidebar speed surface. In particular,
+    /// Claude is selected here once, never added again via the upstream reader.
+    @MainActor static func liveRate(monitor: LiveRateMonitor, claude: ClaudeLocalRuntime,
+                                   upstream: AgentSpeedDisplayRuntime, allowed: Set<String>,
+                                   mode: ActivitySpeedDisplayMode, grouping: SpeedColorGrouping,
+                                   now: Date = Date()) -> LiveModelRateSnapshot {
+        let sources: [ModelRateSource] = allowed.sorted().map { client in
+            if client == "codex", mode == .bar {
+                let value = monitor.totalSnapshot
+                return .init(client: client, sourceKey: String(monitor.sourceBindingGeneration),
+                    observedAt: value.updatedAt.timeIntervalSince1970,
+                    available: monitor.monitoringEnabled && monitor.dataSource != nil,
+                    rates: value.modelRates, total: value.rollingTokensPerSecond)
+            }
+            if client == "claudeCode" || client == "claudeDesktop" {
+                let value = claude.projection(allowed: [client])
+                return .init(client: client, sourceKey: claude.displaySourceIdentity, observedAt: value.timestamp.timeIntervalSince1970,
+                    available: value.enabled && value.sourceAvailable && abs(now.timeIntervalSince(value.timestamp)) <= 3,
+                    rates: claude.displayModelRates(allowed: [client], mode: mode))
+            }
+            return .init(client: client, sourceKey: upstream.displaySourceIdentity(client: client), observedAt: upstream.snapshot.timestamp.timeIntervalSince1970,
+                available: upstream.hasCoverage(allowed: [client]) && upstream.snapshot.state == .running
+                    && abs(now.timeIntervalSince(upstream.snapshot.timestamp)) <= 3,
+                rates: ActivitySourceConfiguration.source(for: client).map {
+                    AgentSpeedDisplayRuntime.modelRates(snapshot: upstream.snapshot, source: $0, now: now)
+                } ?? [])
+        }
+        return ModelRatePresentation.snapshot(sources: sources, enabled: monitor.monitoringEnabled, mode: mode, grouping: grouping)
+    }
+
     static func rates(codex: [ModelRateContribution], claude: [ModelRateContribution], allowed: Set<String>, mode: ActivitySpeedDisplayMode = .bar, upstreamCodex: [ModelRateContribution] = [], others: [ModelRateContribution] = []) -> [ModelRateContribution] {
         let codexRates = mode == .agentSpeed ? upstreamCodex : codex
-        var sums: [String: Double] = [:]
-        for row in (allowed.contains("codex") ? codexRates : []) + claude + others where row.tokensPerSecond.isFinite && row.tokensPerSecond > 0 {
-            let key = ModelUsagePresentation.autoReviewUnderlyingModelKey(for: row.model) ?? ModelUsagePresentation.key(for: row.model)
-            sums[key, default: 0] += row.tokensPerSecond
-        }
-        return sums.keys.sorted().map { .init(model: $0, tokensPerSecond: sums[$0]!) }
+        return ModelRatePresentation.normalized((allowed.contains("codex") ? codexRates : []) + claude + others)
     }
 
     static func running(codex: RunningThreadSummary, claude: RunningThreadSummary, allowed: Set<String>, antigravity: RunningThreadSummary = .unavailable) -> RunningThreadSummary {

@@ -118,18 +118,12 @@ private struct LiveRateInstrumentReader: View {
     @AppStorage(ActivitySpeedDisplayMode.key) private var modeRaw = ActivitySpeedDisplayMode.bar.rawValue
     private var activity: LiveRateSnapshot {
         var value = monitor.totalSnapshot
-        value.modelRates = ClientLocalRuntimePresentation.rates(codex: value.modelRates,
-            claude: local.displayModelRates(allowed: allowedClients, mode: .normalized(modeRaw)), allowed: allowedClients,
-            mode: .normalized(modeRaw), upstreamCodex: AgentSpeedDisplayRuntime.modelRates(snapshot: upstream.snapshot, source: .codex, now: Date()), others: upstream.externalModelRates(allowed: allowedClients))
-        value.rollingTokensPerSecond = value.modelRates.reduce(0) { $0 + $1.tokensPerSecond }
-        if speedPalette.grouping == .client {
-            value.colorRates = allowedClients.sorted().compactMap { client in
-                let rates = client == "codex" ? (modeRaw == "agentSpeed" ? AgentSpeedDisplayRuntime.modelRates(snapshot: upstream.snapshot, source: .codex, now: Date()) : monitor.totalSnapshot.modelRates)
-                    : (client == "claudeCode" || client == "claudeDesktop" ? local.displayModelRates(allowed: [client], mode: .normalized(modeRaw)) : upstream.externalModelRates(allowed: [client]))
-                let total = rates.reduce(0) { $0 + $1.tokensPerSecond }
-                return total > 0 ? .init(model: "client:" + client, tokensPerSecond: total) : nil
-            }
-        }
+        let display = ClientLocalRuntimePresentation.liveRate(monitor: monitor, claude: local, upstream: upstream,
+            allowed: allowedClients, mode: .normalized(modeRaw), grouping: speedPalette.grouping)
+        value.modelRates = display.modelRates
+        value.rollingTokensPerSecond = display.total
+        value.colorRates = display.colorRates
+        value.status = display.status
         return value
     }
     var body: some View {

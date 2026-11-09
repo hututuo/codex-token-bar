@@ -3,8 +3,8 @@ import { SidebarActivityRing as Ring, SidebarTaskRing, SidebarModelShareStrip } 
 import { useQuotaMarkerMorph } from "./useQuotaMarkerMorph";
 import { useRecentBodySpeeds } from "./useRecentBodySpeeds";
 import { ClientScopeBoundary } from "../multiClient/useClientScope";
-import { SpeedDisplayControls, useSpeedDisplayPreferences } from "../components/liveRate/SpeedDisplayControls";
-import { useActivitySpeedMode, selectedActivityRates } from "../multiClient/activitySpeedMode";
+import { SpeedDisplayControls, useSpeedDisplayPreferences, useLiveModelRateSnapshot } from "../components/liveRate/SpeedDisplayControls";
+import { LiveModelRateBars } from "../components/liveRate/LiveModelRateBars";
 import { ClientActivitySpeedPanel, useClaudeLocalRuntime } from "../multiClient/ClaudeLocalRuntime";
 import { useMultiClientUsage } from "../multiClient/MultiClientUsage";
 import { ClientQuotaSettings, ClientQuotaDetailRings, PairedQuotaRing, ClientSidebarUsageRows, clientTitle, useClientQuotaItems, useClientScope, useClientQuotaSelection } from "../multiClient/IntegratedClients";
@@ -49,9 +49,7 @@ import { sidebarRadarSnapshot, sidebarRadarAtTime, sidebarRadarCompact, sidebarR
 import { sidebarLocalTime, sidebarMetricValue } from "./detailsModel";
 import { formatTokens } from "../utils/format";
 import { isSidebarDragTarget, createSidebarDragSession } from "./drag";
-import { modelRateGradient } from "../components/liveRate/modelRatePresentation";
 import { DEFAULT_TOKEN_RATE_FULL_SCALE, sanitizeRateFullScale, formatLiveRateValue } from "../components/liveRate/rateDisplay";
-import { sidebarRatePercent } from "./rateModel";
 import { createSidebarPublisher, sidebarVisualPercent } from "./presentation";
 import { createSidebarNativeCoordinator } from "./nativeCoordinator";
 import { monitorSidebarPresence, monitorSidebarReminder, type SidebarPointerState } from "./presence";
@@ -70,16 +68,16 @@ import { prepareResetCreditsForDisplay } from "../components/quota/resetCredits"
 import type { SidebarSection } from "./model";
 import { SidebarTrend, buildSidebarTrend, type TrendPoint } from "./SidebarTrend";
 
-type SidebarData = Pick<CompactPanelData, "snapshot" | "runningThreads"> & {
+type SidebarData = Pick<CompactPanelData, "snapshot" | "runningThreads" | "liveRates"> & {
   trend?: TrendPoint[];
   sourceToken?: CodexHomeSourceToken | null;
   quota: Pick<CompactPanelData["quota"], "updatedAt" | "account" | "quota" | "attributionIdentity">;
 };
 function sidebarData(data: CompactPanelData): SidebarData {
-  return { snapshot: data.rawSnapshot, runningThreads: data.runningThreads,
+  return { snapshot: data.rawSnapshot, runningThreads: data.runningThreads, liveRates: data.liveRates,
     quota: { attributionIdentity: data.quota.attributionIdentity, updatedAt: data.quota.updatedAt, account: data.quota.account, quota: data.quota.quota } };
 }
-interface Presentation { data: SidebarData; radar: SidebarRadar; state: SidebarState; side: "left" | "right"; error: string | null }
+interface Presentation { data: SidebarData; radar: SidebarRadar; state: SidebarState; side: "left" | "right"; error: string | null; rateFullScale?: number }
 const railLabel = "quota-sidebar";
 const detailLabel = "quota-sidebar-detail";
 
@@ -133,7 +131,7 @@ function RailSurface() {
   }, [display.quotaSidebarEnabled]);
   const radarBase = useMemo(() => sidebarRadarSnapshot(officialRadar, crowdRadar), [officialRadar, crowdRadar]);
   const radar = useMemo(() => sidebarRadarAtTime(radarBase, officialRadar, Math.max(radarNow, Date.now())), [radarBase, officialRadar, radarNow]);
-  const compactData = useMemo(() => ({ ...sidebarData(data), trend, sourceToken }), [data.snapshot, data.runningThreads, data.quota.updatedAt, data.quota.account, data.quota.quota, trend, sourceToken]);
+  const compactData = useMemo(() => ({ ...sidebarData(data), trend, sourceToken }), [data.rawSnapshot, data.liveRates, data.runningThreads, data.quota.updatedAt, data.quota.account, data.quota.quota, trend, sourceToken]);
   const showsFiveHour = hasFiveHourQuota(data.snapshot.fiveHourAvailability, data.snapshot.fiveHourRemainingPercent);
   const { items: selectedQuotaItems, catalog: selectedQuotaCatalog } = useClientQuotaItems(data.quota.quota);
   const currentScope = useClientScope();
@@ -240,7 +238,7 @@ function RailSurface() {
     event.preventDefault(); cancelLeave();
     if (dragSession.current?.start()) setDragging(true);
   };
-  const presentation = useMemo<Presentation>(() => ({ data: compactData, radar, state, side: display.quotaSidebarSide, error }), [compactData, radar, state, display.quotaSidebarSide, error]);
+  const presentation = useMemo<Presentation>(() => ({ data: compactData, radar, state, side: display.quotaSidebarSide, error, rateFullScale }), [compactData, radar, state, display.quotaSidebarSide, error, rateFullScale]);
   const publisher = useRef<ReturnType<typeof createSidebarPublisher<Presentation>> | null>(null);
   if (!publisher.current) publisher.current = createSidebarPublisher(value => { void emitTo(detailLabel, "quota-sidebar-presentation", value).catch(() => {}); });
   useEffect(() => {
@@ -362,10 +360,10 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
   const local = useClaudeLocalRuntime(allowedClients, liveRateEnabled);
   const localUsage = useMultiClientUsage();
   const hasClaude = allowedClients.some(c => ["claudeCode", "claudeDesktop", "antigravity"].includes(c));
-  const speedMode = useActivitySpeedMode();
   const palette = useSpeedDisplayPreferences();
-  const rates = selectedActivityRates(data.snapshot.modelRates??[],local.modelRates,allowedClients,speedMode,data.snapshot.tokensPerSecond);
-  const totalRate = rates.reduce((n,r)=>n+r.tokensPerSecond,0);
+  const fallbackRates = useLiveModelRateSnapshot(data.snapshot, !data.liveRates && liveRateEnabled, allowedClients, JSON.stringify(data.sourceToken));
+  const speed = data.liveRates ?? fallbackRates;
+  const totalRate = speed.total;
   const taskSummary = combinedRunningTasks(data.runningThreads, local, allowedClients);
   const taskStatus = taskSummary.status, mainCount = taskSummary.mainThreads ?? 0, subCount = taskSummary.subagents ?? 0;
   const taskMeter = sidebarTaskMeter(mainCount, subCount, taskStatus, [...taskSummary.mainModels, ...taskSummary.subagentModels]);
@@ -376,11 +374,8 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
   const settingsPreview = state.mode === "detail" && state.tab === "settings";
   const layoutItems = visibleSidebarItems(layout, quotaItems, scopeHasCodex || hasClaude).filter(id=>(scopeHasCodex&&(recentBodySpeeds.length>0||settingsPreview))||id!=="tps");
   const compactItems = visibleSidebarItems(layout, quotaItems, scopeHasCodex || hasClaude, "compact").filter(id=>scopeHasCodex||id!=="tps");
-  const clientRates = [...new Set(allowedClients)].map(client=>({model:"client:"+client,tokensPerSecond:
-    client==="codex" && speedMode==="bar" ? data.snapshot.tokensPerSecond : local.modelRates.filter(r=>r.client===client).reduce((n,r)=>n+r.outputTps,0)})).filter(r=>r.tokensPerSecond>0);
-  const barRates = palette.grouping === "client" ? clientRates : rates;
-  const activityCovered = (scopeHasCodex && (speedMode==="bar" ? data.snapshot.liveRateAvailable === true : local.sourceAvailable.codex)) || allowedClients.some(c=>c!=="codex"&&local.sourceAvailable[c]);
-  const ratePercent = liveRateEnabled && activityCovered ? Math.min(100,Math.max(0,totalRate/sanitizeRateFullScale(rateFullScale)*100)) : null;
+  const barRates = speed.colorRates;
+  const ratePercent = speed.available ? Math.min(100,Math.max(0,totalRate/sanitizeRateFullScale(rateFullScale)*100)) : null;
   const { warning: cacheWarning, dismiss: dismissCacheWarning } = useCacheUsageAdvice(data.snapshot.cacheAdvice, liveRateEnabled && data.snapshot.liveRateAvailable === true);
   const rateLabel = !liveRateEnabled ? "实时速率已关闭" : ratePercent === null ? "实时速率不可用" : `实时速率 ${formatLiveRateValue(totalRate)} t/s · 量程 ${sanitizeRateFullScale(rateFullScale)} t/s`;
   const scopedQuota = scopeQuota(data);
@@ -506,7 +501,7 @@ function DetailSurface() {
   const settingsItems = visibleSidebarItems(sidebar.layout, settingsQuotas, clientScope.allowed.includes("codex"), "compact");
   const action = (action: SidebarAction) => void emitTo(railLabel, "quota-sidebar-action", action.type === "open" ? { ...action, section: action.section || "top" } : action);
   return <main key={value?.state.mode === "detail" ? "open" : "closed"} className={`qs-detail qs-${value?.side ?? "right"}`} onPointerEnter={() => void emitTo(railLabel, "quota-sidebar-union-hover", true)} onPointerLeave={() => void emitTo(railLabel, "quota-sidebar-union-hover", false)}>
-    {value === null ? <p className="qs-muted">正在读取侧栏快照…</p> : <>
+    {value === null ? <p className="qs-muted">正在读取侧栏快照…</p> : value.state.mode !== "detail" ? null : <>
       <header><div><strong>{clientTitle(clientScope.raw)}</strong><span className="qs-plan">{clientScope.allowed.includes("codex") ? "Codex · " + (value.data.quota.account.planLabel || "套餐未知") : "本地额度"}</span><small className="qs-account">{clientScope.allowed.includes("codex") ? value.data.quota.account.displayName || "账户待读取" : "本地缓存 · 未绑定账号"}</small><small className="qs-update" title={value.data.quota.updatedAt}>{clientScope.allowed.includes("codex") ? "Codex 更新 " + sidebarLocalTime(value.data.quota.updatedAt, null, true) : "未开启联网额度"}</small></div><div className="qs-actions"><button aria-label="打开主界面" title="打开主界面" onClick={() => void desktopPlatform.showDashboardWindow()}>主界面 ↗</button><button className="qs-pin" aria-label={value.state.pinned ? "取消固定详情" : "固定详情"} title={value.state.pinned ? "取消固定详情" : "固定详情"} aria-pressed={value.state.pinned} onClick={() => action({ type: "pin" })}><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill={value.state.pinned ? "currentColor" : "none"} stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M9 3h6l-1 7 4 4v2H6v-2l4-4-1-7Z"/><path d="M12 16v6"/></svg></button><button aria-label="关闭详情" onClick={() => action({ type: "close" })}>×</button></div></header>
       <nav><button aria-selected={value.state.tab === "quota" && value.state.section !== "speeds"} onClick={() => action({ type: "open", tab: "quota" })}>额度概览</button><button aria-selected={value.state.tab === "quota" && value.state.section === "speeds"} onClick={() => action({ type: "open", tab: "quota", section: "speeds" })}>测速</button><button aria-selected={value.state.tab === "running"} onClick={() => action({ type: "open", tab: "running" })}>任务</button><button aria-selected={value.state.tab === "radar"} onClick={() => action({ type: "open", tab: "radar" })}>雷达</button><button aria-selected={value.state.tab === "credits"} onClick={() => action({ type: "open", tab: "credits" })}>重置卡</button><button aria-selected={value.state.tab === "modeltrace"} onClick={() => action({ type: "open", tab: "modeltrace" })}>模型检测</button><button className="qs-settings-tab" aria-label="侧栏设置" title="侧栏设置" aria-selected={value.state.tab === "settings"} onClick={() => action({ type: "open", tab: "settings" })}><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M4 6h16M4 12h16M4 18h16M8 3v6M16 9v6M10 15v6"/></svg></button></nav>
       {sidebar.error && <p className="qs-warning" role="alert">{sidebar.error} <button disabled={sidebar.pending} onClick={sidebar.retry}>重试读取</button></p>}
@@ -514,10 +509,15 @@ function DetailSurface() {
         hasCodex={clientScope.allowed.some(c => ["codex", "claudeCode", "claudeDesktop", "antigravity"].includes(c))} disabled={!sidebar.ready || sidebar.pending}
         onLayout={next => void sidebar.save(next)} onSelection={saveQuotaSelection} onHighlight={highlightSetting} onDragState={settingsDrag}
         compactPreview={<SidebarSettingsCompactPreview items={settingsItems} quotas={settingsQuotas} selection={settingsSelection}
-          ratePercent={sidebarRatePercent(value.data.snapshot, true, DEFAULT_TOKEN_RATE_FULL_SCALE)}
-          modelRates={value.data.snapshot.modelRates} models={floatingTodayModelUsageItems(value.data.snapshot.todayModelBreakdowns, "gpt56Sol", { showPlaceholders: false, mergeAutoReview: false }).filter(item => item.share > 0)}
+          ratePercent={value.data.liveRates?.available ? Math.min(100, value.data.liveRates.total / sanitizeRateFullScale(value.rateFullScale ?? DEFAULT_TOKEN_RATE_FULL_SCALE) * 100) : null}
+          modelRates={value.data.liveRates?.colorRates} models={floatingTodayModelUsageItems(value.data.snapshot.todayModelBreakdowns, "gpt56Sol", { showPlaceholders: false, mergeAutoReview: false }).filter(item => item.share > 0)}
           running={value.data.runningThreads} preview/>}
-        speedSettings={<SpeedDisplayControls/>} colorSettings={<ClientQuotaSettings codex={value.data.quota.quota} colorsOnly/>}/> : value.state.tab === "modeltrace" ? value.state.mode !== "detail" ? null : value.data.sourceToken ? <ModelTraceContent key={JSON.stringify(value.data.sourceToken)} sourceToken={value.data.sourceToken} compact/> : <p className="qs-muted">正在读取数据源…</p> : value.state.tab === "quota" && (value.state.section === "speeds" || value.state.section === "activity-speed") ? <>{clientScope.allowed.includes("codex") && <><strong>Codex · 正文 TPS</strong><ObservedSpeedDetails quotaIdentity={value.data.quota.attributionIdentity} quotaUpdatedAt={value.data.quota.updatedAt} data={value.data.snapshot} sourceToken={value.data.sourceToken} surface="sidebar" /></>}<div id="qs-section-activity-speed"><ClientActivitySpeedPanel sourceToken={value.data.sourceToken} allowed={clientScope.allowed} codexRates={value.data.snapshot.modelRates} codexOutputRate={value.data.snapshot.tokensPerSecond} codexAvailable={value.data.snapshot.liveRateAvailable===true}/></div></> : value.state.tab === "quota" ? <QuotaDetails data={value.data} onOpenRunning={() => action({ type: "open", tab: "running" })} /> : value.state.tab === "credits" ? <ResetCreditDetails data={value.data} /> : value.state.tab === "running" ? <RunningDetails data={value.data} allowed={clientScope.allowed}/> : <RadarDetails key={value.state.section || "official"} radar={value.radar} initialRanking={value.state.section === "ranking" ? "crowd" : "official"} />}</div>
+        speedSettings={<SpeedDisplayControls/>} colorSettings={<ClientQuotaSettings codex={value.data.quota.quota} colorsOnly/>}/> : value.state.tab === "modeltrace" ? value.data.sourceToken ? <ModelTraceContent key={JSON.stringify(value.data.sourceToken)} sourceToken={value.data.sourceToken} compact/> : <p className="qs-muted">正在读取数据源…</p> : value.state.tab === "quota" && (value.state.section === "speeds" || value.state.section === "activity-speed") ? <>
+          {value.data.liveRates && <LiveModelRateBars snapshot={value.data.liveRates}/>}
+          <SpeedDisplayControls/>
+          {clientScope.allowed.includes("codex") && <><strong>Codex · 正文 TPS</strong><ObservedSpeedDetails quotaIdentity={value.data.quota.attributionIdentity} quotaUpdatedAt={value.data.quota.updatedAt} data={value.data.snapshot} sourceToken={value.data.sourceToken} surface="sidebar" /></>}
+          <div id="qs-section-activity-speed"><ClientActivitySpeedPanel sourceToken={value.data.sourceToken} allowed={clientScope.allowed} monitoringEnabled={value.data.liveRates?.enabled ?? false} codexRates={value.data.snapshot.modelRates} codexOutputRate={value.data.snapshot.tokensPerSecond} codexAvailable={value.data.snapshot.liveRateAvailable===true}/></div>
+        </> : value.state.tab === "quota" ? <QuotaDetails data={value.data} onOpenRunning={() => action({ type: "open", tab: "running" })} /> : value.state.tab === "credits" ? <ResetCreditDetails data={value.data} /> : value.state.tab === "running" ? <RunningDetails data={value.data} allowed={clientScope.allowed}/> : <RadarDetails key={value.state.section || "official"} radar={value.radar} initialRanking={value.state.section === "ranking" ? "crowd" : "official"} />}</div>
       <footer><span>额度 · 用量 · 会话</span><span>{value.state.pinned ? "已固定 · 点击 × 收起" : "移出后收起 · 点击固定"}</span></footer>
       {value.error && <details className="qs-diagnostic"><summary>窗口状态说明</summary><p>{value.error}</p></details>}
     </>}

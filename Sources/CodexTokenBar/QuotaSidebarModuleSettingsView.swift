@@ -11,6 +11,7 @@ struct QuotaSidebarModuleSettingsView: View {
     @ObservedObject private var clients = MultiClientUsageStore.shared
     @ObservedObject private var runtime = ClaudeLocalRuntime.shared
     @ObservedObject private var upstreamActivity = AgentSpeedDisplayRuntime.shared
+    @ObservedObject private var palette = SpeedDisplayPreferences.shared
     @AppStorage(ActivitySpeedDisplayMode.key) private var speedModeRaw = ActivitySpeedDisplayMode.bar.rawValue
     @AppStorage(ClientQuotaSelection.key) private var selectionRaw = ""
     @AppStorage(ClientDisplayScope.sidebarKey) private var clientScope = "all"
@@ -35,7 +36,10 @@ struct QuotaSidebarModuleSettingsView: View {
             .filter { (supportsCodex || $0 != .tps) && (supportsCodex || !allowedClients.isDisjoint(with: ["claudeCode", "claudeDesktop", "antigravity"]) || !$0.requiresCodexLiveData) }
     }
     private var allowedClients: Set<String> { ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs) }
-    private var selectedRates: [ModelRateContribution] { ClientLocalRuntimePresentation.rates(codex: monitor.totalSnapshot.modelRates, claude: runtime.projection(allowed: allowedClients).modelRates, allowed: allowedClients, mode: .normalized(speedModeRaw), upstreamCodex: AgentSpeedDisplayRuntime.modelRates(snapshot: upstreamActivity.snapshot, source: .codex, now: Date()), others: upstreamActivity.externalModelRates(allowed: allowedClients)) }
+    private var liveRateSnapshot: LiveModelRateSnapshot {
+        ClientLocalRuntimePresentation.liveRate(monitor: monitor, claude: runtime, upstream: upstreamActivity,
+            allowed: allowedClients, mode: .normalized(speedModeRaw), grouping: palette.grouping)
+    }
     private var previewItems: [QuotaSidebarItem] {
         items.filter { item in
             guard controller.sidebarLayout.isVisible(item, in: .compact) else { return false }
@@ -119,9 +123,9 @@ struct QuotaSidebarModuleSettingsView: View {
             if count > 0 {
                 ScrollView(.vertical) {
                     QuotaSidebarCompactBars(items: previewItems, quotas: previewQuotas, layout: layout,
-                        rateFraction: QuotaSidebarRatePresentation.fraction(rate: selectedRates.reduce(0) { $0 + $1.tokensPerSecond },
-                            fullScale: fullScale, available: (allowedClients.contains("codex") && monitor.monitoringEnabled && monitor.dataSource != nil) || runtime.projection(allowed: allowedClients).sourceAvailable),
-                        modelRates: selectedRates, shares: shares, colors: selection.colors)
+                        rateFraction: QuotaSidebarRatePresentation.fraction(rate: liveRateSnapshot.total,
+                            fullScale: fullScale, available: liveRateSnapshot.available),
+                        modelRates: liveRateSnapshot.colorRates, shares: shares, colors: selection.colors)
                 }.scrollIndicators(.hidden).frame(width: 16, height: min(layout.height, 330))
                     .background(Color.black, in: Capsule())
             }
@@ -180,15 +184,18 @@ struct QuotaSidebarSettingsRailPreview: View {
         }
     }
     private var allowedClients: Set<String> { ClientDisplayScope.clients(scope, available: clients.displayClientIDs) }
-    private var selectedRates: [ModelRateContribution] { ClientLocalRuntimePresentation.rates(codex: monitor.totalSnapshot.modelRates, claude: runtime.projection(allowed: allowedClients).modelRates, allowed: allowedClients, mode: .normalized(speedModeRaw), upstreamCodex: AgentSpeedDisplayRuntime.modelRates(snapshot: upstreamActivity.snapshot, source: .codex, now: Date()), others: upstreamActivity.externalModelRates(allowed: allowedClients)) }
+    private var liveRateSnapshot: LiveModelRateSnapshot {
+        ClientLocalRuntimePresentation.liveRate(monitor: monitor, claude: runtime, upstream: upstreamActivity,
+            allowed: allowedClients, mode: .normalized(speedModeRaw), grouping: palette.grouping)
+    }
     private var selectedModels: [ModelTokenBreakdown] { ClientLocalRuntimePresentation.models(codex: store.todayModelBreakdowns, clients: clients.todaySummaries, allowed: allowedClients) }
     private var selectedRunning: RunningThreadSummary { ClientLocalRuntimePresentation.running(codex: tasks.runningThreadSummary, claude: runtime.projection(allowed: allowedClients).running, allowed: allowedClients, antigravity: upstreamActivity.antigravityTasks(allowed: allowedClients)) }
     var body: some View {
         let layout = ClientRailLayout.fixed(trackCount: QuotaSidebarContentOrder.compactIDs(items: items, quotas: quotas).count, dotCount: items.filter(\.usesCompactDot).count, availableHeight: controller.availableRailHeight)
         ScrollView(.vertical) {
             QuotaSidebarCompactBars(items: items, quotas: quotas, layout: layout,
-                rateFraction: QuotaSidebarRatePresentation.fraction(rate: selectedRates.reduce(0) { $0 + $1.tokensPerSecond }, fullScale: fullScale, available: (allowedClients.contains("codex") && monitor.monitoringEnabled && monitor.dataSource != nil) || runtime.projection(allowed: allowedClients).sourceAvailable || upstreamActivity.hasCoverage(allowed: allowedClients)),
-                modelRates: selectedRates, shares: shares,
+                rateFraction: QuotaSidebarRatePresentation.fraction(rate: liveRateSnapshot.total, fullScale: fullScale, available: liveRateSnapshot.available),
+                modelRates: liveRateSnapshot.colorRates, shares: shares,
                 taskSummary: selectedRunning, highlightedItem: controller.settingsHighlightedItem, colors: selection.colors)
                 .frame(minHeight: layout.height)
         }.scrollIndicators(.hidden).frame(width: 16)

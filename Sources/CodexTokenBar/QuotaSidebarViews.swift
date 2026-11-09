@@ -185,20 +185,12 @@ struct QuotaSidebarRail: View {
     private var supportsCodex: Bool { clientScope == "codex" || clientScope == "all" }
     private var allowedClients: Set<String> { ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs) }
     private var localLive: ClaudeLocalRuntimeSnapshot { claudeRuntime.projection(allowed: allowedClients) }
-    private var liveRates: [ModelRateContribution] { ClientLocalRuntimePresentation.rates(codex: monitor.totalSnapshot.modelRates, claude: claudeRuntime.displayModelRates(allowed: allowedClients, mode: .normalized(speedModeRaw)), allowed: allowedClients, mode: .normalized(speedModeRaw), upstreamCodex: AgentSpeedDisplayRuntime.modelRates(snapshot: upstreamActivity.snapshot, source: .codex, now: Date()), others: upstreamActivity.externalModelRates(allowed: allowedClients)) }
     @ObservedObject private var speedPalette = SpeedDisplayPreferences.shared
-    private var barRates: [ModelRateContribution] {
-        guard speedPalette.grouping == .client else { return liveRates }
-        return allowedClients.sorted().compactMap { client in
-            let rates: [ModelRateContribution]
-            if client == "codex" { rates = speedModeRaw == "agentSpeed" ? AgentSpeedDisplayRuntime.modelRates(snapshot: upstreamActivity.snapshot, source: .codex, now: Date()) : monitor.totalSnapshot.modelRates }
-            else if client == "claudeCode" || client == "claudeDesktop" { rates = claudeRuntime.displayModelRates(allowed: [client], mode: .normalized(speedModeRaw)) }
-            else { rates = upstreamActivity.externalModelRates(allowed: [client]) }
-            let total = rates.reduce(0) { $0 + $1.tokensPerSecond }
-            return total > 0 ? .init(model: "client:" + client, tokensPerSecond: total) : nil
-        }
+    private var liveRateSnapshot: LiveModelRateSnapshot {
+        ClientLocalRuntimePresentation.liveRate(monitor: monitor, claude: claudeRuntime, upstream: upstreamActivity,
+            allowed: allowedClients, mode: .normalized(speedModeRaw), grouping: speedPalette.grouping)
     }
-    private var liveRate: Double { liveRates.reduce(0) { $0 + $1.tokensPerSecond } }
+    private var barRates: [ModelRateContribution] { liveRateSnapshot.colorRates }
     private var taskClients: Set<String> { allowedClients.filter { id in
         id == "codex" || clients.preferences.contains { $0.client.rawValue == id && $0.enabled }
     } }
@@ -281,7 +273,7 @@ struct QuotaSidebarRail: View {
                     color: .gray, segments: segments, expandedTrackOpacity: 0.12, shape: .strip))
             } else if item == .speed {
                 var edge = 0.0
-                let segments = ModelRatePresentation.slices(liveRates).map { slice in
+                let segments = ModelRatePresentation.slices(barRates).map { slice in
                     let start = edge; edge += slice.share
                     return ClientQuotaMorphColorSegment(id: "model:" + slice.model, start: start, end: edge, color: NSColor(slice.color))
                 }
@@ -624,14 +616,15 @@ struct QuotaSidebarRail: View {
     }
 
     private var rateFraction: CGFloat {
-        CGFloat(QuotaSidebarRatePresentation.fraction(rate: liveRate,
-            fullScale: fullScale, available: (supportsCodex && monitor.monitoringEnabled && monitor.dataSource != nil) || localLive.sourceAvailable))
+        let value = liveRateSnapshot
+        return CGFloat(QuotaSidebarRatePresentation.fraction(rate: value.total, fullScale: fullScale, available: value.available))
     }
 
     private var rateText: String {
-        guard monitor.monitoringEnabled || localLive.enabled else { return "已关闭" }
-        guard (supportsCodex && monitor.dataSource != nil) || localLive.sourceAvailable else { return "待读取" }
-        return "\(LiveRateSnapshot.rateDisplayText(liveRate)) tok/s"
+        let value = liveRateSnapshot
+        guard value.enabled else { return "已关闭" }
+        guard value.available else { return "待读取" }
+        return value.valueText + " tok/s"
     }
 
     private var runningText: String {
@@ -684,6 +677,7 @@ struct QuotaSidebarDetailView: View {
     @ObservedObject private var clients = MultiClientUsageStore.shared
     @ObservedObject private var claudeRuntime = ClaudeLocalRuntime.shared
     @ObservedObject private var upstreamActivity = AgentSpeedDisplayRuntime.shared
+    @ObservedObject private var speedPalette = SpeedDisplayPreferences.shared
     @AppStorage(ActivitySpeedDisplayMode.key) private var speedModeRaw = ActivitySpeedDisplayMode.bar.rawValue
     @State private var clientProjectionCache = ClientDashboardProjectionCache()
     @StateObject private var modelCostCache = ClientModelCostPeriodsCache()
@@ -739,16 +733,19 @@ struct QuotaSidebarDetailView: View {
                     QuotaSidebarModuleSettingsView(controller: controller, quotaSnapshot: quota.snapshot, monitor: monitor, modelShares: snapshot.todayModelBreakdowns, quotaItemsOverride: quotaItemsOverride).id("top")
                 }
                 else if controller.interaction.detail == .speeds {
+                    LiveModelRateBars(snapshot: ClientLocalRuntimePresentation.liveRate(monitor: monitor,
+                        claude: claudeRuntime, upstream: upstreamActivity, allowed: allowedClients,
+                        mode: .normalized(speedModeRaw), grouping: speedPalette.grouping)).id("top")
+                    SpeedDisplayControls()
+                    Divider().overlay(.white.opacity(0.12))
                     if clientScope == "codex" || clientScope == "all" {
-                    if clientScope == "all" { Text("Codex · 正文 TPS").font(.caption).foregroundStyle(.secondary) }
-                    Text("Codex · 正文 TPS").font(.caption.weight(.semibold)).id("top")
+                    Text("Codex · 正文 TPS").font(.caption.weight(.semibold))
                     Divider().overlay(.white.opacity(0.12))
                     ObservedSpeedSidebarView(monitor: monitor, quotaHistory: history.snapshot, onOpenDetails: {
                         BodySpeedHistoryWindowController.shared.present(monitor: monitor,
                             screen: controller.detailPanel?.screen ?? controller.railPanel?.screen)
                     })
                     }
-                    SpeedDisplayControls()
                     ActivitySpeedSummaryView(allowed: allowedClients).id("activity-speed-curve")
                 }
                 else if controller.interaction.detail == .modeltrace {

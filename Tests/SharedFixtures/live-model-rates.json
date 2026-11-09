@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "sources": [
+    {"client":"codex","sourceKey":"home-a:7","observedAt":1000,"available":true,"total":50,"rates":[{"model":"gpt6astra","tokensPerSecond":10},{"model":"gpt-6-astra","tokensPerSecond":30}]},
+    {"client":"claudeCode","sourceKey":"claude-a","observedAt":1000,"available":true,"rates":[{"model":"claude-sonnet-4-6","tokensPerSecond":30}]},
+    {"client":"antigravity","sourceKey":"ag-a","observedAt":1000,"available":true,"rates":[{"model":"claude-sonnet-4-6","tokensPerSecond":20}]},
+    {"client":"gemini","sourceKey":"gemini-old","observedAt":900,"available":false,"rates":[{"model":"gemini-4-argon","tokensPerSecond":500}]}
+  ],
+  "total":100,
+  "modelOrder":["antigravity:claude-sonnet-4-6","claudeCode:claude-sonnet-4-6","codex:gpt-6-astra","codex:unknown"],
+  "clientOrder":["antigravity:claude-sonnet-4-6","claudeCode:claude-sonnet-4-6","codex:gpt-6-astra","codex:unknown"],
+  "rates":[20,30,40,10],
+  "modelSlices":[{"model":"claude-sonnet-4-6","tokensPerSecond":50},{"model":"gpt-6-astra","tokensPerSecond":40},{"model":"unknown","tokensPerSecond":10}],
+  "clientSlices":[{"model":"client:antigravity","tokensPerSecond":20},{"model":"client:claudeCode","tokensPerSecond":30},{"model":"client:codex","tokensPerSecond":50}]
+}

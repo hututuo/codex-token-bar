@@ -1,4 +1,4 @@
-import { floatingModelUsageKey } from "../components/modelUsagePresentation";
+import { activityRateSources, liveModelRateSnapshot } from "../components/liveRate/modelRatePresentation";
 import { useSyncExternalStore, useState } from "react";
 import { callCommandStrict } from "../api/command";
 import { desktopPlatform } from "../platform/desktop";
@@ -62,16 +62,5 @@ export function ActivitySpeedModePicker() {
 }
 export interface ActivityModelRate { model: string; tokensPerSecond: number }
 export function selectedActivityRates(codex: readonly ActivityModelRate[], upstream: readonly {client:string;model:string;outputTps:number}[], allowed: readonly string[], mode: ActivitySpeedMode, codexOutputRate?: number): ActivityModelRate[] {
-  const sums = new Map<string,number>();
-  const add=(model:string,rate:number)=>{ if (Number.isFinite(rate)&&rate>1e-9) { const key=floatingModelUsageKey(model.trim()||"unknown"); sums.set(key,(sums.get(key)??0)+rate); } };
-  if (mode==="bar" && allowed.includes("codex")) {
-    const valid=codex.filter(row=>Number.isFinite(row.tokensPerSecond)&&row.tokensPerSecond>0);
-    const known=valid.reduce((sum,row)=>sum+row.tokensPerSecond,0);
-    const total=codexOutputRate===undefined ? known : Number.isFinite(codexOutputRate) ? Math.max(0,codexOutputRate) : 0;
-    const scale=known>total ? total/known : 1;
-    for(const row of valid)add(row.model,row.tokensPerSecond*scale);
-    if(total>known)add("unknown",total-known);
-  }
-  for (const row of upstream) if (allowed.includes(row.client) && (row.client!=="codex" || mode==="agentSpeed")) add(row.model,row.outputTps);
-  return [...sums].sort(([a],[b])=>a.localeCompare(b)).map(([model,tokensPerSecond])=>({model,tokensPerSecond}));
+  return liveModelRateSnapshot(activityRateSources(codex, upstream, allowed, mode, codexOutputRate), true, mode, "model").modelRates;
 }
