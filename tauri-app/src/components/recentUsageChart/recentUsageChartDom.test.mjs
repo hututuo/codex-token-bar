@@ -725,6 +725,33 @@ test("long retained history switches ranges at the latest edge and selects visib
   }
 });
 
+test("client chart startup waits for a positive partial scroll width before selecting its scale window", async () => {
+  const window = new Window({url:"http://localhost/"});
+  const restoreGlobals=installDomGlobals(window);globalThis.IS_REACT_ACT_ENVIRONMENT=true;
+  let ready=false;
+  Object.defineProperties(window.HTMLElement.prototype,{
+    clientWidth:{configurable:true,get(){return 980;}},
+    scrollWidth:{configurable:true,get(){return ready ? Number.parseFloat(this.firstElementChild?.style?.getPropertyValue("--recent-chart-content-width"))||980 : 1200;}}
+  });
+  try {
+    const React=await import("react"),{createRoot}=await import("react-dom/client");
+    await withSsrModules(async load=>{
+      const {RecentUsageChart}=await load("/src/components/RecentUsageChart.tsx");
+      const container=window.document.createElement("div");window.document.body.append(container);const root=createRoot(container);
+      const fine=Array.from({length:600},(_,i)=>point(1_800_000_000+i*300,.8,.9));
+      try {
+        await React.act(async()=>root.render(React.createElement(RecentUsageChart,{recentUsage24h:fine,recentUsage7d:[],recentUsage30d:[]})));
+        const scroll=container.querySelector('.recent-chart-scroll');
+        assert.equal(scroll.scrollLeft,0,'A partial 220px overflow must not be treated as the final latest edge');
+        ready=true;
+        await React.act(async()=>await new Promise(resolve=>setTimeout(resolve,100)));
+        assert.ok(scroll.scrollWidth>1200);
+        assert.equal(scroll.scrollLeft,scroll.scrollWidth-980);
+      } finally {await React.act(async()=>root.unmount());}
+    });
+  } finally {delete globalThis.IS_REACT_ACT_ENVIRONMENT;restoreGlobals();window.close();}
+});
+
 test("all range tabs render the 278px SVG canvas", async () => {
   const window = new Window({ url: "http://localhost/" });
   const restoreGlobals = installDomGlobals(window);

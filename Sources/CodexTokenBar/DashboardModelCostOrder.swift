@@ -4,7 +4,8 @@ import Foundation
 /// and already-computed amounts; sorting never reprices or merges a ledger.
 enum DashboardModelCostOrder {
     struct Group: Decodable { let id: String; let title: String; let models: [String]; let patterns: [String] }
-    struct Policy: Decodable { let schema: Int; let groups: [Group]; let familyPriority: [String]; let clientPriority: [String] }
+    struct SourceGroup: Decodable { let clients: [String]; let patterns: [String]; let exceptModels: [String]; let group: String }
+    struct Policy: Decodable { let schema: Int; let groups: [Group]; let familyPriority: [String]; let clientPriority: [String]; var sourceGroups: [SourceGroup] = [] }
     static let policy: Policy = {
         guard let url = AppResources.url(forResource: "model-cost-order", withExtension: "json"),
               let data = try? Data(contentsOf: url), let value = try? JSONDecoder().decode(Policy.self, from: data), value.schema == 1 else {
@@ -23,6 +24,11 @@ enum DashboardModelCostOrder {
         if item.isFallbackEstimate { return "unknown-models" }
         if item.isReferenceOnly { return "other" }
         let key = identity(item.id)
+        let client = item.id.contains("|") ? String(item.id.split(separator: "|")[0]) : ""
+        if let rule = policy.sourceGroups.first(where: { $0.clients.contains(client)
+            && !$0.exceptModels.contains(key) && $0.patterns.contains(where: { key.range(of: $0, options: .regularExpression) != nil }) }) {
+            return rule.group
+        }
         return policy.groups.first(where: { $0.models.contains(key) || $0.patterns.contains(where: {
             key.range(of: $0, options: .regularExpression) != nil
         }) })?.id ?? "other"

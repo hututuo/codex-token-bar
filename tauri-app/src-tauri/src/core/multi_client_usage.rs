@@ -347,6 +347,10 @@ pub struct MultiClientUsageTrendBucket {
     pub cache_write_tokens: Option<u64>,
     pub reasoning_tokens: Option<u64>,
     pub requests: u64,
+    #[serde(default, rename = "apiCostMicroUSD")]
+    pub api_cost_micro_usd: Option<i64>,
+    #[serde(default)]
+    pub unpriced_requests: u64,
 }
 
 /// One bounded numeric request row from the existing multi-client usage ledger.
@@ -4490,6 +4494,23 @@ fn read_trend_buckets(
 ) -> rusqlite::Result<Vec<MultiClientUsageTrendBucket>> {
     const WINDOW_SECONDS: i64 = 30 * 24 * 60 * 60;
     let start_unix = now_unix.saturating_sub(WINDOW_SECONDS);
+    // The production caller holds its existing aggregate read transaction.
+    // Use the summary's per-request price engine, never price grouped tokens.
+    let mut prices = HashMap::<(String, i64), MultiClientPriceTally>::new();
+    let mut price_query = connection.prepare(
+        "SELECT client,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,timestamp,payload \
+         FROM client_usage_events WHERE client <> 'codex' AND timestamp >= ?1 AND timestamp <= ?2",
+    )?;
+    let mut priced_rows = price_query.query(params![start_unix, now_unix])?;
+    while let Some(row) = priced_rows.next()? {
+        let client: String = row.get(0)?;
+        let model: String = row.get(1)?;
+        let timestamp: f64 = row.get(6)?;
+        let pricing_model = if client == "antigravity" { antigravity::price_model(&model) } else { model };
+        prices.entry((client, (timestamp / 300.0).floor() as i64 * 300)).or_default().add(
+            api_cost_micro_usd_at(&pricing_model, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?,
+                cache_write_ttl_pair_from_sql_value(row.get_ref(7)?), Some(timestamp)));
+    }
     let mut statement = connection.prepare(
         "SELECT client, CAST(timestamp / 300 AS INTEGER) * 300 AS start_unix, \
          SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), \
@@ -4500,9 +4521,15 @@ fn read_trend_buckets(
          ORDER BY client, start_unix",
     )?;
     let rows = statement.query_map(params![start_unix, now_unix], |row| {
+        let client: String = row.get(0)?;
+        let start_unix: i64 = row.get(1)?;
+        let requests = row.get::<_, i64>(7)?.max(0) as u64;
+        let tally = prices.get(&(client.clone(), start_unix));
+        let cost = tally.filter(|t| !t.overflowed).and_then(|t| t.known_cost_micro_usd)
+            .and_then(|value| i64::try_from(value).ok());
         Ok(MultiClientUsageTrendBucket {
-            client: row.get(0)?,
-            start_unix: row.get(1)?,
+            client,
+            start_unix,
             input_tokens: row.get::<_, i64>(2)?.max(0) as u64,
             output_tokens: row.get::<_, i64>(3)?.max(0) as u64,
             cache_read_tokens: row
@@ -4514,7 +4541,9 @@ fn read_trend_buckets(
             reasoning_tokens: row
                 .get::<_, Option<i64>>(6)?
                 .map(|value| value.max(0) as u64),
-            requests: row.get::<_, i64>(7)?.max(0) as u64,
+            requests,
+            api_cost_micro_usd: cost,
+            unpriced_requests: if cost.is_some() { tally.map_or(requests, |t| t.unpriced_requests) } else { requests },
         })
     })?;
     rows.collect()
@@ -4584,6 +4613,8 @@ fn read_daily_buckets(
                 cache_write_tokens: None,
                 reasoning_tokens: None,
                 requests: 0,
+                api_cost_micro_usd: None,
+                unpriced_requests: 0,
             });
         bucket.input_tokens = bucket.input_tokens.saturating_add(input.max(0) as u64);
         bucket.output_tokens = bucket.output_tokens.saturating_add(output.max(0) as u64);
@@ -6574,6 +6605,36 @@ mod tests {
             .unwrap();
         assert_eq!(latest.start_unix, now - 300);
         assert_eq!(latest.input_tokens, 8);
+    }
+
+    #[test]
+    fn trend_prices_reuse_request_pricing_and_keep_unknown_requests_explicit() {
+        let temporary = TempDir::new("trend-prices");
+        let database = temporary.path().join("multi-client-usage.sqlite");
+        let connection = open_database(&database).unwrap();
+        ensure_schema(&connection, &database).unwrap();
+        let now = 1_800_000_600_i64;
+        for (client, model) in [("claudeCode", "claude-opus-5"), ("antigravity", "gemini-4-argon"), ("gemini", "unknown")] {
+            for (offset, input) in [(0, 100_000), (300, 300_000)] {
+                let id = format!("{client}-{offset}");
+                insert_trend_event(&connection, client, &id, (now-offset) as f64, input, 100, Some(1_000), Some(10_000), None);
+                connection.execute("UPDATE client_usage_events SET model=?1,payload=?2 WHERE client=?3 AND event_id=?4",
+                    params![model, if offset==0 {"{}"} else {r#"{"cacheWrite5mTokens":0,"cacheWrite1hTokens":10000}"#},client,id]).unwrap();
+            }
+        }
+        let buckets = read_trend_buckets(&connection, now).unwrap();
+        let prices = read_scoped_api_price_aggregates(&connection, now-300).unwrap();
+        assert_eq!(buckets.iter().map(|b| b.requests).sum::<u64>(), 6);
+        assert_eq!(buckets.iter().map(|b| b.input_tokens+b.output_tokens).sum::<u64>(), 1_200_600);
+        for (key, tally) in prices {
+            let rows: Vec<_> = buckets.iter().filter(|b| b.client==key.client).collect();
+            if tally.has_known_request {
+                assert_eq!(rows.iter().filter_map(|b| b.api_cost_micro_usd).map(|v|v as u128).sum::<u128>(), tally.known_cost_micro_usd.unwrap());
+                assert!(rows.iter().all(|b|b.unpriced_requests==0));
+            } else { assert!(rows.iter().all(|b|b.api_cost_micro_usd.is_none() && b.unpriced_requests==b.requests)); }
+        }
+        let count:i64=connection.query_row("SELECT COUNT(*) FROM client_usage_events",[],|r|r.get(0)).unwrap();
+        assert_eq!(count,6);
     }
 
     #[test]

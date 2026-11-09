@@ -45,6 +45,7 @@ struct DashboardRecentUsageChart: View {
         let allowed = RecentChartClientScope.resolved(selection, page: pageClients, available: available)
         let includesCodex = allowed.contains("codex")
         let codexOnly = allowed == ["codex"]
+        let externalCosts = clients.trendBuckets.filter { allowed.contains($0.client.rawValue) }
         let display = allowed == pageClients ? page : projection.value(codex: codex, clients: clients, allowed: allowed)
         let effectiveSelection = (["dashboard", "all", "codex"] + available).contains(selection) ? selection : RecentChartClientScope.followDashboard
         VStack(alignment: .leading, spacing: 8) {
@@ -58,7 +59,7 @@ struct DashboardRecentUsageChart: View {
                 currentFiveHourQuotaPresent: includesCodex && quota.fiveHour != nil,
                 currentSevenDayQuotaPresent: includesCodex && quota.sevenDay != nil,
                 sharedAccountAttributionContext: includesCodex ? attribution : nil,
-                pricingAvailable: includesCodex,
+                pricingAvailable: includesCodex || externalCosts.contains { $0.apiCostMicroUSD != nil },
                 quotaCostSource: !codexOnly && includesCodex ? .init(
                     bins: codex.recentBins, hourlyBins: codex.hourlyUsage,
                     cacheRecentBins: codex.cacheUsage.recentBins, cacheHourlyBins: codex.cacheUsage.hourly,
@@ -67,13 +68,15 @@ struct DashboardRecentUsageChart: View {
                 settledThrough: codex.settledThrough ?? codex.preciseTimeSeriesGeneratedAt,
                 unreportedCompactionDates: includesCodex ? codex.cacheUsage.unreportedCompactionDates : [],
                 clientSelector: RecentChartClientSelector(selection: Binding(get: { effectiveSelection }, set: { selection = $0 }), clients: available,
-                    pageTitle: ClientDisplayScope.title(pageClients.count == 1 ? pageClients.first! : "all"))
+                    pageTitle: ClientDisplayScope.title(pageClients.count == 1 ? pageClients.first! : "all")),
+                externalCostBuckets: codexOnly ? nil : externalCosts,
+                includesCodexCost: includesCodex
             )
             // A prepared result/selection from another source must not survive
             // a client switch, even when both clients have identical timestamps.
             .id(allowed.sorted().joined(separator: ",") + "|" + (codex.homeIdentity ?? ""))
             if !codexOnly && includesCodex {
-                Text("Token、调用和命中率为汇总；额度、逐桶金额及额度反推保留 Codex 来源。其他客户端尚无逐桶模型金额，不按 Codex 单价估填。")
+                Text("Token、调用与金额汇总所选客户端，命中率按输入加权；额度和额度反推仅对应 Codex 账户。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
             }
         }.frame(maxWidth: 980, alignment: .leading)

@@ -27,7 +27,7 @@ final class DashboardModelCostOrderTests: XCTestCase {
         }
         XCTAssertTrue(DashboardModelCostOrder.groups([item("claudeCode|claude-fable-5-1", tokens: 0)]).isEmpty)
         XCTAssertEqual(DashboardModelCostOrder.policy.groups.first?.models, [
-            "claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5",
+            "gemini-4-argon", "claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5",
             "gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna"
         ])
         XCTAssertFalse(DashboardModelCostOrder.policy.groups.contains { $0.id == "fable" })
@@ -39,7 +39,7 @@ final class DashboardModelCostOrderTests: XCTestCase {
         XCTAssertEqual(DashboardModelCostGrid(items: [unknown], fillFirstRow: true).slotCount, 4)
         XCTAssertEqual(DashboardModelCostGrid(items: [], fillFirstRow: true).slotCount, 4)
         XCTAssertEqual(DashboardModelCostGrid(items: [unknown], fillFirstRow: false).slotCount, 1)
-        let latest = DashboardModelCostOrder.policy.groups[0].models.map { item($0, tokens: 55_714_167) }
+        let latest = Array(DashboardModelCostOrder.policy.groups[0].models.prefix(8)).map { item($0, tokens: 55_714_167) }
         // Measure the production grid, not just its slot policy: a two-column
         // regression doubles the height and must fail even with passing counts.
         for rows in [[], [unknown], Array(latest.prefix(2)), Array(latest.prefix(3)), Array(latest.prefix(4)), latest] {

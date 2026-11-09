@@ -13,6 +13,10 @@ export function costModelGroup(item:FloatingModelUsageItem):string {
  if(item.key==='unknown-models')return 'unknown-models';
  if(isReferenceOnlyModelUsage(item))return 'other';
  const key=costModelIdentity(item.key);
+ const client=item.key.includes('|')?item.key.split('|')[0]:'';
+ const source=policy.sourceGroups.find(rule=>rule.clients.includes(client)
+   && !(rule.exceptModels as readonly string[]).includes(key) && rule.patterns.some(pattern=>new RegExp(pattern).test(key)));
+ if(source)return source.group;
  return policy.groups.find(g=>(g.models as readonly string[]).includes(key)||g.patterns.some(p=>new RegExp(p).test(key)))?.id??'other';
 }
 const index=(values:readonly string[],value:string)=>{const i=values.indexOf(value);return i<0?Number.MAX_SAFE_INTEGER:i;};

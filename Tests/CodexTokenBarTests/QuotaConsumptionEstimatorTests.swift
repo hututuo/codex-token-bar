@@ -2024,6 +2024,29 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
     }
 
     @MainActor
+    func testChartStartupWaitsForPositivePartialDocumentExtentBeforeScaling() throws {
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 100, height: 40))
+        let document = NSView(frame: NSRect(x: 0, y: 0, width: 180, height: 40))
+        scroll.documentView = document
+        let observer = RecentChartScrollOffsetObserver()
+        var offsets: [CGFloat] = []
+        observer.onOffsetChange = { offsets.append($0) }
+        observer.attach(to: scroll, showsPersistentHorizontalScroller: true, initialContentOffset: 400)
+        runMainLoop(for: 0.12)
+        XCTAssertTrue(offsets.isEmpty, "A positive partial width must not publish an old historical window")
+        document.setFrameSize(NSSize(width: 500, height: 40))
+        runMainLoop(for: 0.4)
+        XCTAssertEqual(scroll.contentView.bounds.origin.x, 400, accuracy: 0.5)
+        XCTAssertEqual(try XCTUnwrap(offsets.last), 400, accuracy: 0.5)
+        NotificationCenter.default.post(name: NSScrollView.willStartLiveScrollNotification, object: scroll)
+        scroll.contentView.setBoundsOrigin(NSPoint(x: 150, y: 0))
+        scroll.reflectScrolledClipView(scroll.contentView)
+        runMainLoop(for: 0.4)
+        XCTAssertEqual(scroll.contentView.bounds.origin.x, 150, accuracy: 0.5, "A later deliberate historical scroll must remain respected")
+        observer.detach()
+    }
+
+    @MainActor
     func testHostedChartInteractionLayerReceivesRealClicksBeforeAndAfterScrolling() throws {
         var clickLocations: [CGPoint] = []
         var selectionState = RecentChartConsumptionSelectionState()
@@ -2145,7 +2168,8 @@ final class QuotaConsumptionEstimatorTests: XCTestCase {
         XCTAssertTrue(source.contains("private func lineVisibilityBinding("))
         XCTAssertTrue(source.contains("RecentChartSeriesVisibilityStore"))
         XCTAssertTrue(source.contains("title: \"金额\""))
-        XCTAssertTrue(source.contains("ChartLegend(color: AppTheme.chartCost, label: quotaCostSource == nil ? \"金额\" : \"金额 · Codex\""))
+        XCTAssertTrue(source.contains("ChartLegend(color: AppTheme.chartCost, label: displayCostLabel"))
+        XCTAssertTrue(source.contains("return quotaCostSource == nil ? \"金额\" : \"金额 · Codex\""))
         XCTAssertTrue(source.contains("// These are summary values, not line visibility indicators."))
         XCTAssertFalse(source.contains("if showTokens {\n                        ChartLegend"))
         XCTAssertFalse(source.contains("if showCalls {\n                        ChartLegend"))

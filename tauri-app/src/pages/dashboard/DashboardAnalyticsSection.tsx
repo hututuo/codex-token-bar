@@ -44,6 +44,8 @@ function DashboardAnalyticsSectionView({ dashboard, originalCodex, clients, allo
     [source, codex, clients, chartKey, pageKey]);
   const chartIncludesCodex = chartClients.includes("codex");
   const chartAggregate = chartClients.length !== 1 || !chartIncludesCodex;
+  const trendBuckets = clients?.trendBuckets;
+  const externalCosts = useMemo(() => trendBuckets?.filter(row=>chartClients.includes(row.client)) ?? [], [trendBuckets,chartKey]);
   const effectiveSelection = ["dashboard", "all", "codex", ...available].includes(chartSelection) ? chartSelection : "dashboard";
   const localRanking = useAggregateClientCacheRows(clients, scope);
   const [localDetail, setLocalDetail] = useState<{client: string; sessionID: string} | null>(null);
@@ -63,7 +65,9 @@ function DashboardAnalyticsSectionView({ dashboard, originalCodex, clients, allo
         {available.map(id => <option key={id} value={id}>{clientTitle(id)}</option>)}
       </select>}
       unreportedCompactionUnix={chartIncludesCodex ? codex.stats.unreportedCompactionUnix : undefined}
-      pricingAvailable={chartIncludesCodex}
+      pricingAvailable={chartIncludesCodex || externalCosts.some(row=>row.apiCostMicroUSD!=null)}
+      externalCostBuckets={chartAggregate ? externalCosts : undefined}
+      includesCodexCost={chartIncludesCodex}
       quotaCostSeries={chartAggregate && chartIncludesCodex ? codex : undefined}
       fiveHourQuotaPresent={chartIncludesCodex && codex.quota.fiveHour.availability !== "absent"}
       fiveHourResetAtUnix={chartIncludesCodex ? codex.quota.fiveHour.resetsAtUnix : null}
@@ -74,7 +78,7 @@ function DashboardAnalyticsSectionView({ dashboard, originalCodex, clients, allo
       sevenDayResetAtUnix={chartIncludesCodex ? codex.quota.sevenDay.resetsAtUnix : null}
       sharedAccountAttribution={chartIncludesCodex ? sharedAccountAttribution : null}
     />
-    {chartAggregate && chartIncludesCodex && <p className="analytics-source-note">Token、调用和命中率为汇总；额度、逐桶金额及额度反推保留 Codex 来源。其他客户端尚无逐桶模型金额，不按 Codex 单价估填。</p>}
+    {chartAggregate && chartIncludesCodex && <p className="analytics-source-note">Token、调用与金额汇总所选客户端，命中率按输入加权；额度和额度反推仅对应 Codex 账户。</p>}
     {localRanking.issue && <p role="status">{localRanking.issue}</p>}
     <CacheHitRanking key={scope.join(",") + JSON.stringify(sourceToken)}
       sourceToken={includesCodex ? sourceToken : null} cacheUsage={source.cacheUsage}

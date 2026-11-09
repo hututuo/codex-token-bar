@@ -47,6 +47,10 @@ struct ClientTrendBucket: Equatable, Sendable {
     let cacheWriteTokens: Int64?
     let reasoningTokens: Int64?
     let requests: Int
+    // Already priced per request by the ledger (date/tier/cache TTL retained).
+    // Nil with requests means no known price, never a fabricated zero.
+    var apiCostMicroUSD: Int64? = nil
+    var unpricedRequests: Int = 0
     var tokens: Int64 { inputTokens + outputTokens }
 }
 

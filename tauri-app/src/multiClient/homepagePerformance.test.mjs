@@ -136,7 +136,7 @@ test("scoped analytics consumes the prepared aggregate without projecting source
         allowed: ["codex", "claudeCode"], clientScoped: true,
         sharedAccountAttribution: null,
       }));
-      assert.equal(sourceBucketReads, 0, "the parent has already prepared this complete aggregate");
+      assert.equal(sourceBucketReads, 1, "read external ledger prices once; don't reproject the parent-prepared Token buckets");
       const output = dom.document.createElement("div");
       output.innerHTML = markup;
       assert.equal(output.querySelectorAll(".client-analytics").length, 1);
@@ -144,7 +144,7 @@ test("scoped analytics consumes the prepared aggregate without projecting source
       assert.equal(output.querySelectorAll(".ranking-section").length, 1);
       assert.match(output.querySelector("svg.usage-chart title").textContent, /5\.4万/,
         "analytics must display the supplied aggregate instead of a fresh empty projection");
-      assert.match(output.textContent, /逐桶金额及额度反推保留 Codex 来源/);
+      assert.match(output.textContent, /额度和额度反推仅对应 Codex 账户/);
     });
   } finally {
     restore();
@@ -178,8 +178,8 @@ test("homepage chart switches clients in all three ranges without changing page 
       codex.recentUsage30d = [point(now, 100)];
       const clients = { preferences: [{client:"claudeCode",enabled:true},{client:"antigravity",enabled:true}],
         summaries: [], todaySummaries: [], sevenDaySummaries: [], dailyBuckets: [], diagnostics: [], updatedAt:codex.generatedAt,
-        trendBuckets: [{client:"claudeCode",startUnix:now,inputTokens:200,outputTokens:0,cacheReadTokens:null,requests:2},
-          {client:"antigravity",startUnix:now,inputTokens:300,outputTokens:0,cacheReadTokens:null,requests:3}] };
+        trendBuckets: [{client:"claudeCode",startUnix:now,inputTokens:200,outputTokens:0,cacheReadTokens:null,requests:2,apiCostMicroUSD:100_000,unpricedRequests:0},
+          {client:"antigravity",startUnix:now,inputTokens:300,outputTokens:0,cacheReadTokens:null,requests:3,apiCostMicroUSD:200_000,unpricedRequests:0}] };
       const container = dom.document.createElement("div"); dom.document.body.append(container);
       const root = createRoot(container);
       const render = () => React.createElement(DashboardAnalyticsSection, { dashboard:codex, originalCodex:codex, clients,
@@ -201,8 +201,9 @@ test("homepage chart switches clients in all three ranges without changing page 
             assert.equal(container.querySelector(".activity-section").textContent,heatmap);
             assert.equal(container.querySelector(".ranking-section").textContent,ranking);
             const legend=container.querySelector(".chart-legend").textContent;
-            if (client==="all") assert.match(legend,/金额 · Codex/);
-            if (client==="claudeCode"||client==="antigravity") assert.match(legend,/金额—/);
+            if (client==="all") assert.match(legend,/金额\$0\.30/);
+            if (client==="claudeCode") assert.match(legend,/金额\$0\.10/);
+            if (client==="antigravity") assert.match(legend,/金额\$0\.20/);
           }
         }
         await React.act(async () => {

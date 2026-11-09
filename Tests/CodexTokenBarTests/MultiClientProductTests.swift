@@ -68,6 +68,40 @@ final class MultiClientProductTests: XCTestCase {
         XCTAssertTrue(rows.allSatisfy { $0.cacheWriteTokens == nil })
         XCTAssertEqual(try ledger.summaries().first?.requests, 4, "trend window never prunes raw history")
     }
+
+    func testTrendPricesReusePerRequestLedgerPricingAndPreserveUnknowns() throws {
+        let root = try temporary(), ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("usage.sqlite"))
+        let now = Date(timeIntervalSince1970: 1_800_000_600)
+        let clients: [UsageClient] = [.claudeCode, .claudeDesktop, .antigravity, .gemini]
+        let models = ["claude-opus-5", "claude-opus-5-5", "gemini-4-argon", "unknown"]
+        var events: [ClientUsageEvent] = []
+        for index in clients.indices {
+            for offset in [0, 1] {
+                var event = ClientUsageEvent(client: clients[index], eventID: "\(index)-\(offset)", sessionID: "s",
+                    model: models[index], timestamp: now.addingTimeInterval(Double(-300 * offset)),
+                    inputTokens: offset == 0 ? 100_000 : 300_000, outputTokens: 100,
+                    cacheReadTokens: 1_000, cacheWriteTokens: 10_000, reasoningTokens: nil)
+                if offset == 1 { event.cacheWrite5mTokens = 0; event.cacheWrite1hTokens = 10_000 }
+                events.append(event)
+            }
+        }
+        _ = try ledger.ingest(events)
+        let before = try ledger.summaries()
+        let buckets = try ledger.trendBuckets(now: now)
+        XCTAssertEqual(buckets.reduce(0) { $0 + $1.tokens }, events.reduce(0) { $0 + $1.inputTokens + $1.outputTokens })
+        XCTAssertEqual(buckets.reduce(0) { $0 + $1.requests }, events.count)
+        for client in clients {
+            let summary = try XCTUnwrap(before.first { $0.client == client })
+            let values = buckets.filter { $0.client == client }
+            if let cost = summary.apiCostUSD {
+                XCTAssertEqual(Double(values.compactMap(\.apiCostMicroUSD).reduce(0, +)) / 1_000_000, cost, accuracy: 0.000001)
+                XCTAssertTrue(values.allSatisfy { $0.unpricedRequests == 0 })
+            } else {
+                XCTAssertTrue(values.allSatisfy { $0.apiCostMicroUSD == nil && $0.unpricedRequests == $0.requests })
+            }
+        }
+        XCTAssertEqual(try ledger.summaries(), before, "Chart reads must leave raw usage and summary pricing unchanged")
+    }
     func testCombinedChartConservesTotalsAcross24h7dAnd30d() {
         let now = Date(timeIntervalSince1970: 1800000000)
         let codex = [BinUsage(start: now.addingTimeInterval(-3600), tokens: 110, calls: 1)]

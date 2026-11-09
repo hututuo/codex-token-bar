@@ -951,6 +951,7 @@ struct ChartHoverBubble: View {
     let isHovering: Bool
     let onClose: () -> Void
     let showsCost: Bool
+    var recordedCostText: String?
 
     init(
         bin: BinUsage,
@@ -962,7 +963,8 @@ struct ChartHoverBubble: View {
         bucketInterval: TimeInterval,
         isHovering: Bool,
         onClose: @escaping () -> Void = {},
-        showsCost: Bool = true
+        showsCost: Bool = true,
+        recordedCostText: String? = nil
     ) {
         self.bin = bin
         self.cacheBreakdown = cacheBreakdown
@@ -974,6 +976,7 @@ struct ChartHoverBubble: View {
         self.isHovering = isHovering
         self.onClose = onClose
         self.showsCost = showsCost
+        self.recordedCostText = recordedCostText
     }
 
     var body: some View {
@@ -1006,7 +1009,7 @@ struct ChartHoverBubble: View {
             Text("请求 \(bin.calls) 次 · avg \(average.abbreviatedTokens)")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
-            Text(showsCost ? "金额 \(costUSD.quotaEstimatorMoneyText)" : "金额未接入")
+            Text(recordedCostText ?? (showsCost ? "金额 \(costUSD.quotaEstimatorMoneyText)" : "金额未接入"))
                 .font(.system(size: 10))
                 .foregroundStyle(.pink)
             Text("缓存命中 \(displayCacheBreakdown.cacheHitRate.percentString) · 命中 \(displayCacheBreakdown.cachedInputTokens.abbreviatedTokens)")
@@ -1106,6 +1109,7 @@ struct ChartSelectionSummaryBubble: View {
     let showsCost: Bool
     let showsFiveHourQuota: Bool
     let showsSevenDayQuota: Bool
+    var recordedCostText: String?
 
     init(
         selection: QuotaConsumptionSelection,
@@ -1113,7 +1117,8 @@ struct ChartSelectionSummaryBubble: View {
         onClose: @escaping () -> Void = {},
         showsCost: Bool = true,
         showsFiveHourQuota: Bool = true,
-        showsSevenDayQuota: Bool = true
+        showsSevenDayQuota: Bool = true,
+        recordedCostText: String? = nil
     ) {
         self.selection = selection
         self.clientLabel = clientLabel
@@ -1121,6 +1126,7 @@ struct ChartSelectionSummaryBubble: View {
         self.showsCost = showsCost
         self.showsFiveHourQuota = showsFiveHourQuota
         self.showsSevenDayQuota = showsSevenDayQuota
+        self.recordedCostText = recordedCostText
     }
 
     var body: some View {
@@ -1152,7 +1158,7 @@ struct ChartSelectionSummaryBubble: View {
             Text("请求 \(selection.breakdown.calls) 次 · avg \(average.abbreviatedTokens)")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
-            Text(showsCost ? "金额 \(selection.fullCurrentAPIPriceEstimate.costUSD.quotaEstimatorMoneyText)" : "金额未接入")
+            Text(recordedCostText ?? (showsCost ? "金额 \(selection.fullCurrentAPIPriceEstimate.costUSD.quotaEstimatorMoneyText)" : "金额未接入"))
                 .font(.system(size: 10))
                 .foregroundStyle(.pink)
             Text("缓存命中 \(selection.breakdown.cacheHitRate.percentString) · 命中 \(selection.breakdown.cachedInputTokens.abbreviatedTokens)")

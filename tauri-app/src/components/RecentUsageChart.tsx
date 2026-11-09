@@ -1,4 +1,6 @@
 import { RecentChartInteractionGuide } from "./recentUsageChart/InteractionGuide";
+import {recordedChartCosts} from "./recentUsageChart/recordedCosts";
+import type {ClientTrendBucket} from "../multiClient/multiClientProduct";
 import { EMPTY_QUOTA_SELECTION, clickQuotaSelectionAnchor, quotaSelectionIndices,
   type QuotaSelectionAnchors } from "./recentUsageChart/selectionAnchors";
 import {
@@ -63,6 +65,8 @@ import { modelUsageSlices } from "./modelUsagePresentation.ts";
 
 const NO_UNREPORTED_COMPACTIONS: readonly number[] = [];
 interface RecentUsageChartProps {
+  externalCostBuckets?: ClientTrendBucket[];
+  includesCodexCost?: boolean;
   sourceControl?: ReactNode;
   unreportedCompactionUnix?: readonly number[];
   pricingAvailable?: boolean;
@@ -109,6 +113,8 @@ function useChartBubbleWidth(fallbackWidth: number) {
 }
 
 export function RecentUsageChart({
+  externalCostBuckets,
+  includesCodexCost = true,
   sourceControl,
   unreportedCompactionUnix = NO_UNREPORTED_COMPACTIONS,
   pricingAvailable = true,
@@ -191,7 +197,7 @@ export function RecentUsageChart({
     () => recentChartVisibleWindowSummary(data, chartWidth, chartScrollLeft, chartViewportWidth),
     [data, chartWidth, chartScrollLeft, chartViewportWidth],
   );
-  const bucketCostsUSD = useMemo(
+  const providerBucketCostsUSD = useMemo(
     () => {
       let costs = bucketCostCache.get(costSource);
       if (!costs) {
@@ -202,6 +208,18 @@ export function RecentUsageChart({
     },
     [quotaData.points, costSource, quotaModel, bucketCostCache],
   );
+  const recordedCosts = useMemo(() => recordedChartCosts(data.points,data.bucketSeconds,externalCostBuckets,providerBucketCostsUSD,includesCodexCost),
+    [data.points,data.bucketSeconds,externalCostBuckets,providerBucketCostsUSD,includesCodexCost]);
+  const bucketCostsUSD = useMemo(() => externalCostBuckets ? recordedCosts.map(x=>x.cost) : providerBucketCostsUSD,
+    [externalCostBuckets,recordedCosts,providerBucketCostsUSD]);
+  function recordedCostText(start:number,end:number):string|undefined {
+    if(!externalCostBuckets)return undefined;
+    const selected=recordedCosts.slice(start,end+1),unknown=selected.some(x=>x.unknown>0);
+    if(unknown&&!selected.some(x=>x.known))return '金额未报告';
+    return `${unknown?'已知金额':'金额'} ${moneyText(selected.reduce((sum,x)=>sum+x.cost,0))}`;
+  }
+  const windowUnpriced = externalCostBuckets && recordedCosts.slice(visibleWindowSummary.startIndex,visibleWindowSummary.endIndex+1).some(x=>x.unknown>0);
+  const displayCostLabel = externalCostBuckets ? windowUnpriced?'已知金额':'金额' : quotaCostSeries?'金额 · Codex':'金额';
   const visibleWindowCostUSD = useMemo(() => {
     if (visibleWindowSummary.endIndex < visibleWindowSummary.startIndex) return 0;
     return bucketCostsUSD
@@ -339,7 +357,7 @@ export function RecentUsageChart({
       // A positive requested offset is not actionable until the DOM exposes
       // a real horizontal overflow range.  Returning false keeps the frame
       // retry/ResizeObserver path alive without publishing a bogus zero.
-      if (requestedOffset > 0.5 && maxOffset <= 0.5) {
+      if (maxOffset + 0.5 < requestedOffset) {
         return false;
       }
 
@@ -597,7 +615,7 @@ export function RecentUsageChart({
             <LegendDot className="legend-dot--token" label="Token" value={formatTokens(visibleWindowSummary.tokenTotal)} />
             <LegendDot className="legend-dot--calls" label="调用" value={`${visibleWindowSummary.callTotal}`} />
             <LegendDot className="legend-dot--hit" label="命中率" value={percentText(visibleWindowSummary.cacheHitRate)} />
-            <LegendDot className="legend-dot--cost" label={quotaCostSeries ? "金额 · Codex" : "金额"} value={pricingAvailable ? moneyText(visibleWindowCostUSD) : "—"} />
+            <LegendDot className="legend-dot--cost" label={displayCostLabel} value={pricingAvailable && recordedCostText(visibleWindowSummary.startIndex,visibleWindowSummary.endIndex)!=='金额未报告' ? moneyText(visibleWindowCostUSD) : "—"} />
             {fiveHourQuotaPresent ? <LegendDot className="legend-dot--five" label="5h" value={percentText(visibleWindowSummary.latestFiveHourRemaining)} /> : null}
             {sevenDayQuotaPresent ? <LegendDot className="legend-dot--seven" label="7d" value={percentText(visibleWindowSummary.latestSevenDayRemaining)} /> : null}
           </div>
@@ -610,7 +628,7 @@ export function RecentUsageChart({
               label="命中率"
               onClick={() => updateVisibility("cacheHitRate")}
             />
-            <LineToggle active={visibility.cost} className="toggle-cost" label={quotaCostSeries ? "金额 · Codex" : "金额"} onClick={() => { if (pricingAvailable) updateVisibility("cost"); }} />
+            <LineToggle active={visibility.cost} className="toggle-cost" label={displayCostLabel} onClick={() => { if (pricingAvailable) updateVisibility("cost"); }} />
             {fiveHourQuotaPresent ? <LineToggle active={visibility.fiveHourQuota} className="toggle-five" label="5h" onClick={() => updateVisibility("fiveHourQuota")} /> : null}
             {sevenDayQuotaPresent ? <LineToggle active={visibility.sevenDayQuota} className="toggle-seven" label="7d" onClick={() => updateVisibility("sevenDayQuota")} /> : null}
           </div>
@@ -772,6 +790,7 @@ export function RecentUsageChart({
               pricingAvailable={pricingAvailable}
               onClose={() => setPreviewDismissed(true)}
               selection={consumptionSelection}
+              recordedCostText={!includesCodexCost ? recordedCostText(consumptionSelection.startIndex,consumptionSelection.endIndex) : undefined}
               viewportWidth={chartViewportWidth}
               x={(visiblePlotPoint(
                 plotData.tokenPoints,
@@ -785,6 +804,7 @@ export function RecentUsageChart({
               bucketSeconds={data.bucketSeconds}
               cacheVisible={visibility.cacheHitRate}
               costUSD={activeIndex === null ? 0 : plotData.bucketCostsUSD[activeIndex] ?? 0}
+              recordedCostText={activeIndex===null?undefined:recordedCostText(activeIndex,activeIndex)}
               fiveHourRemaining={fiveHourQuotaPresent ? activePoint.fiveHourRemainingPercent : null}
               onClose={() => setPreviewDismissed(true)}
               point={activePoint}
@@ -818,7 +838,8 @@ export function RecentUsageChart({
         </div>
       </div>
       </section>
-      {consumptionSelection ? (
+      {consumptionSelection && externalCostBuckets && <p className="analytics-source-note">所选客户端 · {recordedCostText(consumptionSelection.startIndex,consumptionSelection.endIndex)}</p>}
+      {consumptionSelection && includesCodexCost ? (
         <RecentChartQuotaEstimateOverlay
           clientLabel={quotaCostSeries ? "Codex" : undefined}
           currentFiveHourQuotaPresent={fiveHourQuotaPresent}
@@ -920,6 +941,7 @@ function HoverRing({ className, point, radius }: { className: string; point: { x
 }
 
 function HoverBubble({
+  recordedCostText,
   pricingAvailable = true,
   bucketSeconds,
   cacheVisible,
@@ -931,6 +953,7 @@ function HoverBubble({
   viewportWidth,
   x,
 }: {
+  recordedCostText?: string;
   pricingAvailable?: boolean;
   bucketSeconds: number;
   cacheVisible: boolean;
@@ -959,7 +982,7 @@ function HoverBubble({
       </div>
       <b>{formatTokens(point.tokens)}</b>
       <span className="chart-hover-row">请求 {point.calls} 次 · avg {formatTokens(average)}</span>
-      <span className="chart-hover-row chart-hover-row--cost">金额 {pricingAvailable ? moneyText(costUSD) : "未接入"}</span>
+      <span className="chart-hover-row chart-hover-row--cost">{recordedCostText ?? `金额 ${pricingAvailable ? moneyText(costUSD) : "未接入"}`}</span>
       {cacheVisible && point.calls > 0 && point.cacheHitRate !== null ? (
         <em className="chart-hover-row chart-hover-row--cache">
           缓存命中 {percentText(point.cacheHitRate)} · 命中 {formatTokens(point.cachedInputTokens)}
@@ -973,6 +996,7 @@ function HoverBubble({
 }
 
 function SelectionSummaryBubble({
+  recordedCostText,
   clientLabel,
   showsFiveHourQuota,
   showsSevenDayQuota,
@@ -982,6 +1006,7 @@ function SelectionSummaryBubble({
   viewportWidth,
   x,
 }: {
+  recordedCostText?: string;
   clientLabel?: string;
   showsFiveHourQuota: boolean;
   showsSevenDayQuota: boolean;
@@ -1003,7 +1028,7 @@ function SelectionSummaryBubble({
       </div>
       <b>{formatTokens(selection.totalTokens)}</b>
       <span className="chart-hover-row">请求 {selection.calls} 次 · avg {formatTokens(average)}</span>
-      <span className="chart-hover-row chart-hover-row--cost">{selection.unpricedModels.length > 0 ? "已知价格小计" : "金额"} {pricingAvailable ? moneyText(selection.selectedCostUSD) : "未接入"}</span>
+      <span className="chart-hover-row chart-hover-row--cost">{recordedCostText ?? `${selection.unpricedModels.length > 0 ? "已知价格小计" : "金额"} ${pricingAvailable ? moneyText(selection.selectedCostUSD) : "未接入"}`}</span>
       {selection.calls > 0 ? (
         <em className="chart-hover-row chart-hover-row--cache">
           缓存命中 {percentText(selection.cacheHitRate)} · 命中 {formatTokens(selection.cachedInputTokens)}

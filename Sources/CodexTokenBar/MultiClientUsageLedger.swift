@@ -430,17 +430,31 @@ final class MultiClientUsageLedger: @unchecked Sendable {
 
     func trendBuckets(now: Date = Date()) throws -> [ClientTrendBucket] {
         let start = now.timeIntervalSince1970 - 30 * 86400
-        return try database.readRows("""
+        return try database.withConnection { connection in
+        try connection.readTransaction { snapshot in
+        var prices: [String: [Int64: ClientPriceTally]] = [:]
+        try forEachPricedEvent(in: snapshot, since: Date(timeIntervalSince1970: start),
+            before: Date(timeIntervalSince1970: now.timeIntervalSince1970.nextUp)) { client, _, timestamp, cost in
+            let bucket = Int64(floor(timestamp / 300)) * 300
+            var tally = prices[client.rawValue]?[bucket] ?? ClientPriceTally(knownCostMicroUSD: nil)
+            tally.add(cost); prices[client.rawValue, default: [:]][bucket] = tally
+        }
+        return try snapshot.readRows("""
         SELECT client,CAST(timestamp/300 AS INTEGER)*300,SUM(input_tokens),SUM(output_tokens),
         SUM(cache_read_tokens),SUM(cache_write_tokens),SUM(reasoning_tokens),COUNT(*)
         FROM client_usage_events WHERE timestamp >= ? AND timestamp <= ?
         GROUP BY client,CAST(timestamp/300 AS INTEGER) ORDER BY 2,1
         """, bindings: [.double(start), .date(now)]) { row in
             guard let client = UsageClient(rawValue: row.text(0) ?? "") else { return nil as ClientTrendBucket? }
+            let price = prices[client.rawValue]?[row.int64(1) ?? 0]
             return ClientTrendBucket(client: client, startUnix: row.int64(1) ?? 0, inputTokens: row.int64(2) ?? 0,
                 outputTokens: row.int64(3) ?? 0, cacheReadTokens: row.int64(4), cacheWriteTokens: row.int64(5),
-                reasoningTokens: row.int64(6), requests: row.int(7) ?? 0)
+                reasoningTokens: row.int64(6), requests: row.int(7) ?? 0,
+                apiCostMicroUSD: price?.overflowed == false ? price?.knownCostMicroUSD : nil,
+                unpricedRequests: price?.overflowed == true ? (row.int(7) ?? 0) : price?.unpricedRequests ?? (row.int(7) ?? 0))
         }.compactMap { $0 }
+        }
+        }
     }
 
     /// Daily event totals for the last 365 local calendar dates. SQLite's
@@ -557,6 +571,18 @@ final class MultiClientUsageLedger: @unchecked Sendable {
         }
 
         var totals: [ClientPriceKey: ClientPriceTally] = [:]
+        try forEachPricedEvent(in: connection, since: since, before: before) { client, model, _, cost in
+            let key = ClientPriceKey(client: client.rawValue, model: model)
+            var tally = totals[key] ?? ClientPriceTally(knownCostMicroUSD: nil)
+            tally.add(cost); totals[key] = tally
+        }
+        return (totals, revision != nil)
+    }
+
+    /// Shared pricing input for summaries and time buckets. Never reprice an
+    /// aggregated token count: request tiers, dates and cache TTL stay intact.
+    private func forEachPricedEvent(in connection: SQLiteDatabaseConnection, since: Date?, before: Date?,
+        consume: (UsageClient, String, Double, Int64?) -> Void) throws {
         try connection.forEachRow("""
         SELECT client,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,timestamp,
                CASE WHEN typeof(payload)='text' AND length(CAST(payload AS BLOB))<=65536 THEN CASE WHEN json_valid(payload) THEN CASE WHEN json_type(payload,'$.cacheWrite5mTokens')='integer' THEN json_extract(payload,'$.cacheWrite5mTokens') END END END,
@@ -565,7 +591,6 @@ final class MultiClientUsageLedger: @unchecked Sendable {
         """, bindings: [.date(since ?? Date(timeIntervalSince1970: 0)), .double(before?.timeIntervalSince1970 ?? .greatestFiniteMagnitude)]) { row in
             guard let client = UsageClient(rawValue: row.text(0) ?? "") else { return }
             let model = row.text(1) ?? "unknown"
-            let key = ClientPriceKey(client: client.rawValue, model: model)
             let cost = Self.apiCostMicroUSD(
                 model: client == .antigravity ? AntigravityUsageSource.priceModel(for: model) : model,
                 input: row.int64(2) ?? 0,
@@ -576,11 +601,8 @@ final class MultiClientUsageLedger: @unchecked Sendable {
                 cacheWrite5m: row.int64(7),
                 cacheWrite1h: row.int64(8)
             )
-            var tally = totals[key] ?? ClientPriceTally(knownCostMicroUSD: nil)
-            tally.add(cost)
-            totals[key] = tally
+            consume(client, model, row.double(6) ?? 0, cost)
         }
-        return (totals, revision != nil)
     }
 
     private static func apiCostMicroUSD(
