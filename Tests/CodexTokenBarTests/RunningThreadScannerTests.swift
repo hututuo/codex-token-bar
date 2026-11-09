@@ -1,7 +1,89 @@
 import XCTest
+import Darwin
 @testable import CodexTokenBar
 
 final class RunningThreadScannerTests: XCTestCase {
+    func testOrphanStartNeedsCurrentWriterWhileTerminalAlwaysWins() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.home) }
+        let file = fixture.sessions.appendingPathComponent("orphan.jsonl")
+        try writeSession(to: file, id: "orphan", metadata: "\"source\":\"exec\"",
+            events: [event("task_started", turnID: "orphan")])
+        try FileManager.default.setAttributes([.modificationDate: fixture.now.addingTimeInterval(-3_600)], ofItemAtPath: file.path)
+        let cold = try XCTUnwrap(RunningThreadScanner.scan(dataSource: fixture.source,
+            previousStates: [:], now: fixture.now, writerProbe: { _ in false }))
+        XCTAssertEqual(cold.summary.total, 0)
+        XCTAssertEqual(cold.states[file.path]?.lifecycle, .running, "Filtering must not corrupt the cached lifecycle")
+        let live = try XCTUnwrap(RunningThreadScanner.scan(dataSource: fixture.source,
+            previousStates: cold.states, now: fixture.now, writerProbe: { _ in true }))
+        XCTAssertEqual(live.summary.main, 1, "A genuinely silent tool keeps its live rollout writer")
+        XCTAssertNotEqual(live.summary.summaryRevision, cold.summary.summaryRevision)
+        try append(event("task_complete", turnID: "orphan") + "\n", to: file)
+        try FileManager.default.setAttributes([.modificationDate: fixture.now.addingTimeInterval(-3_600)], ofItemAtPath: file.path)
+        let completed = try XCTUnwrap(RunningThreadScanner.scan(dataSource: fixture.source,
+            previousStates: live.states, now: fixture.now, writerProbe: { _ in
+                XCTFail("Completed sessions must not be revived by a held lock or writer"); return true
+            }))
+        XCTAssertEqual(completed.summary.total, 0)
+        try append(event("task_started", turnID: "resumed") + "\n", to: file)
+        let resumed = try XCTUnwrap(RunningThreadScanner.scan(dataSource: fixture.source,
+            previousStates: completed.states, now: Date(), writerProbe: { _ in
+                XCTFail("Freshly advancing work needs no process scan"); return false
+            }))
+        XCTAssertEqual(resumed.summary.main, 1)
+    }
+
+    func testWriterProbeFailureDoesNotPublishFreshZero() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.home) }
+        let file = fixture.sessions.appendingPathComponent("silent.jsonl")
+        try writeSession(to: file, id: "silent", metadata: "\"source\":\"exec\"", events: [event("task_started", turnID: "silent")])
+        try FileManager.default.setAttributes([.modificationDate: fixture.now.addingTimeInterval(-3_600)], ofItemAtPath: file.path)
+        XCTAssertNil(RunningThreadScanner.scan(dataSource: fixture.source, previousStates: [:], now: fixture.now,
+            writerProbe: { _ in throw NSError(domain: "fixture", code: 1) }))
+    }
+
+    func testDatabaseSubagentIdentityWinsOverLegacyRolloutAndDoesNotReclassifyForks() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.home) }
+        let database = SQLiteDatabaseDriver(url: fixture.source.stateDatabase)
+        try database.execute("CREATE TABLE threads(id TEXT, rollout_path TEXT, thread_source TEXT, source TEXT, updated_at INTEGER, archived INTEGER)")
+        for id in ["parent", "child", "fork"] {
+            let file = fixture.sessions.appendingPathComponent("\(id).jsonl")
+            try writeSession(to: file, id: id, metadata: "\"source\":\"cli\",\"forked_from_id\":\"parent\"", events: [event("task_started", turnID: id)])
+            let source = id == "child" ? "{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"parent\"}}}" : "{\"forked_from_id\":\"parent\"}"
+            try database.execute("INSERT INTO threads VALUES(?,?,?,?,?,0)", bindings: [.text(id), .text(file.path),
+                .text(id == "child" ? "subagent" : "user"), .text(source), .int64(Int64(fixture.now.timeIntervalSince1970))])
+        }
+        let result = try XCTUnwrap(scan(fixture))
+        XCTAssertEqual(result.summary.main, 2)
+        XCTAssertEqual(result.summary.subagents, 1)
+        XCTAssertEqual(result.summary.groups.first { $0.mainThread.threadID == "parent" }?.subagents.map(\.threadID), ["child"])
+        XCTAssertTrue(result.summary.unassignedSubagents.isEmpty)
+    }
+
+    func testWriterEvidenceRequiresRolloutWriteHandleNotReadHandleOrLock() throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.home) }
+        let file = fixture.sessions.appendingPathComponent("handles.jsonl")
+        try Data("fixture\n".utf8).write(to: file)
+        let reader = try FileHandle(forReadingFrom: file)
+        defer { try? reader.close() }
+        let lockFile = fixture.home.appendingPathComponent("thread.lock")
+        try Data().write(to: lockFile)
+        let lock = try FileHandle(forWritingTo: lockFile)
+        defer { try? lock.close() }
+        func observed() throws -> Bool {
+            try RunningThreadLiveness.Snapshot(files: RunningThreadLiveness.writeHandles(processID: getpid())).contains(file)
+        }
+        XCTAssertFalse(try observed())
+        let writer = try FileHandle(forWritingTo: file)
+        XCTAssertTrue(try observed())
+        try writer.close()
+        XCTAssertFalse(try observed())
+        XCTAssertEqual(try Data(contentsOf: file), Data("fixture\n".utf8))
+    }
+
     func testRunningTitlesUseSchemaFallbacksAndAgentMetadataWithoutChangingOwnership() throws {
         let fixture = try makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.home) }

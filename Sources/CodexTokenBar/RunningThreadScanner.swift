@@ -2,6 +2,9 @@ import Foundation
 
 enum RunningThreadScanner {
     static let defaultLivenessLease: TimeInterval = 24 * 60 * 60
+    /// Candidate discovery remains broad. A silent unmatched start additionally
+    /// needs a live writer, so an exited exec cannot remain active for a day.
+    static let activeFileLease: TimeInterval = 5 * 60
 
     private static let readChunkSize = 256 * 1024
     private static let maximumLifecycleLineBytes = 2 * 1024 * 1024
@@ -19,6 +22,7 @@ enum RunningThreadScanner {
         let reasoningEffort: String?
         let title: String?
         let parentThreadID: String?
+        let isSubagent: Bool
     }
 
     private struct SessionModelKey: Hashable {
@@ -43,6 +47,7 @@ enum RunningThreadScanner {
         let reasoningEffort: String?
         let title: String?
         let parentThreadID: String?
+        let isSubagent: Bool
     }
 
     private final class DatabaseCandidateCache: @unchecked Sendable {
@@ -127,7 +132,8 @@ enum RunningThreadScanner {
         previousStates: [String: RunningThreadFileState],
         now: Date,
         livenessLease: TimeInterval = defaultLivenessLease,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        writerProbe: ((URL) throws -> Bool)? = nil
     ) -> RunningThreadScanResult? {
         let safeLease = livenessLease.isFinite && livenessLease > 0
             ? livenessLease
@@ -200,13 +206,19 @@ enum RunningThreadScanner {
                 configurationsBySessionID: candidates.configurationsBySessionID
             )
 
+            var writers: RunningThreadLiveness.Snapshot?
             return RunningThreadScanResult(
                 states: states,
-                summary: summary(
+                summary: try summary(
                     states: states,
                     configurationsBySessionID: candidates.configurationsBySessionID,
                     cutoff: cutoff,
-                    now: now
+                    now: now,
+                    writerProbe: { path in
+                        if let writerProbe { return try writerProbe(path) }
+                        if writers == nil { writers = try RunningThreadLiveness.snapshot() }
+                        return try writers!.contains(path)
+                    }
                 )
             )
         } catch {
@@ -414,14 +426,15 @@ enum RunningThreadScanner {
                             metadata[key] = statement.text(Int32(offset + 9))
                         }
                         if let source, let data = source.data(using: .utf8) { metadata["source"] = try? JSONSerialization.jsonObject(with: data) }
-                        let subagent = statement.text(12) == "subagent" || sourceContainsSubagentNode(metadata["source"])
+                        let subagent = isSubagentMarker(statement.text(12) ?? "") || sourceContainsSubagentNode(metadata["source"])
                         return DatabaseCandidateRow(
                             path: statement.text(0) ?? "",
                             sessionID: statement.text(1) ?? "",
                             model: cleanedDatabaseValue(statement.text(2)),
                             reasoningEffort: cleanedDatabaseValue(statement.text(3)),
                             title: named ?? (subagent ? RunningTaskTitle.agent(metadata) ?? detail : detail),
-                            parentThreadID: parentThreadIDFromSource(source)
+                            parentThreadID: parentThreadIDFromSource(source),
+                            isSubagent: subagent
                         )
                     }
                     let paths = Set(rows.map(\.path).filter { !$0.isEmpty })
@@ -434,7 +447,8 @@ enum RunningThreadScanner {
                                     model: row.model,
                                     reasoningEffort: row.reasoningEffort,
                                     title: row.title,
-                                    parentThreadID: row.parentThreadID
+                                    parentThreadID: row.parentThreadID,
+                                    isSubagent: row.isSubagent
                                 )
                             )
                         },
@@ -1152,17 +1166,36 @@ enum RunningThreadScanner {
         states: [String: RunningThreadFileState],
         configurationsBySessionID: [String: SessionModelConfiguration],
         cutoff: Date,
-        now: Date
-    ) -> RunningThreadSummary {
+        now: Date,
+        writerProbe: (URL) throws -> Bool
+    ) throws -> RunningThreadSummary {
         var preferredBySessionID: [String: RunningThreadFileState] = [:]
-        for state in states.values where state.modifiedAt >= cutoff && !state.sessionID.isEmpty {
+        var preferredPaths: [String: String] = [:]
+        for (path, state) in states where state.modifiedAt >= cutoff && !state.sessionID.isEmpty {
             guard let current = preferredBySessionID[state.sessionID] else {
                 preferredBySessionID[state.sessionID] = state
+                preferredPaths[state.sessionID] = path
                 continue
             }
             if stateIsNewer(state, than: current) {
                 preferredBySessionID[state.sessionID] = state
+                preferredPaths[state.sessionID] = path
             }
+        }
+
+        // Adjust only the display projection. The cached lifecycle stays intact
+        // so a resumed writer or later append can become active without a new
+        // task_started record. Terminal events always win over a loaded handle.
+        for id in Array(preferredBySessionID.keys) {
+            guard var state = preferredBySessionID[id] else { continue }
+            state.isSubagent = state.isSubagent || configurationsBySessionID[id]?.isSubagent == true
+            if state.lifecycle == .running,
+               now.timeIntervalSince(state.modifiedAt) > activeFileLease,
+               let path = preferredPaths[id],
+               try !writerProbe(URL(fileURLWithPath: path, isDirectory: false)) {
+                state.lifecycle = .unknown
+            }
+            preferredBySessionID[id] = state
         }
 
         var main = 0

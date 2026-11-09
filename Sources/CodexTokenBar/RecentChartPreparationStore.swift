@@ -67,10 +67,19 @@ struct RecentChartPreparedSnapshot: Sendable {
             // Feed already-priced contributions into the existing Codex scale,
             // path and hover pipeline. Quota data stays provider-specific.
             let interval = data.bucketInterval
-            let sums = Dictionary(grouping: external, by: { Int64(floor(Double($0.startUnix) / interval)) })
-                .mapValues { rows in (cost: rows.reduce(0.0) { $0 + Double($1.apiCostMicroUSD ?? 0) / 1_000_000 },
-                    unknown: rows.reduce(0) { $0 + ($1.apiCostMicroUSD == nil ? $1.requests : $1.unpricedRequests) },
-                    known: rows.contains { $0.apiCostMicroUSD != nil }) }
+            let grouped: [Int64: [ClientTrendBucket]] = Dictionary(grouping: external) { bucket in
+                Int64(floor(Double(bucket.startUnix) / interval))
+            }
+            var sums: [Int64: (cost: Double, unknown: Int, known: Bool)] = [:]
+            for (key, rows) in grouped {
+                let cost = rows.reduce(0.0) { partial, row in
+                    partial + Double(row.apiCostMicroUSD ?? 0) / 1_000_000
+                }
+                let unknown = rows.reduce(0) { partial, row in
+                    partial + (row.apiCostMicroUSD == nil ? row.requests : row.unpricedRequests)
+                }
+                sums[key] = (cost: cost, unknown: unknown, known: rows.contains { $0.apiCostMicroUSD != nil })
+            }
             for index in data.bins.indices {
                 let value = sums[Int64(floor(data.bins[index].start.timeIntervalSince1970 / interval))]
                 costs[index] += value?.cost ?? 0

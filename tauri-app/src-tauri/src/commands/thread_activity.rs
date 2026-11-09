@@ -193,7 +193,7 @@ fn ready_summary(counts: RunningThreadCounts) -> RunningThreadSummary {
             .collect(),
         status: "ready".into(),
         updated_at: Some(unix_ms_now()),
-        detail: "按每个会话最新生命周期统计；24 小时仅用于淘汰无新文件活动的孤儿运行态".into(),
+        detail: "按最新生命周期统计；超过 5 分钟无文件进展时还需当前写入句柄，空闲持锁不代表运行".into(),
         liveness_lease_hours: LIVENESS_LEASE_HOURS,
     }
 }

@@ -7,7 +7,10 @@ use std::time::{Duration, SystemTime};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
+mod liveness;
+
 const LIFECYCLE_LEASE: Duration = Duration::from_secs(24 * 60 * 60);
+const ACTIVE_FILE_LEASE: Duration = Duration::from_secs(5 * 60);
 const REVERSE_CHUNK_BYTES: usize = 64 * 1024;
 const FORWARD_CHUNK_BYTES: usize = 64 * 1024;
 const MAX_JSONL_LINE_BYTES: usize = 2 * 1024 * 1024;
@@ -64,6 +67,7 @@ struct DatabaseSessionRecord {
     reasoning_effort: Option<String>,
     title: Option<String>,
     parent_thread_id: Option<String>,
+    subagent: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -72,6 +76,7 @@ struct SessionModelConfiguration {
     reasoning_effort: Option<String>,
     title: Option<String>,
     parent_thread_id: Option<String>,
+    subagent: bool,
 }
 
 #[derive(Default)]
@@ -130,6 +135,15 @@ impl FileSignature {
 
 impl ThreadActivityScanner {
     pub fn scan(&mut self, codex_home: &Path) -> Result<RunningThreadCounts, String> {
+        let mut writers = liveness::WriterProbe::default();
+        self.scan_with_writer(codex_home, &mut |path| writers.has_writer(path))
+    }
+
+    fn scan_with_writer(
+        &mut self,
+        codex_home: &Path,
+        writer_probe: &mut dyn FnMut(&Path) -> Result<bool, String>,
+    ) -> Result<RunningThreadCounts, String> {
         let canonical_root = fs::canonicalize(codex_home).map_err(|error| {
             format!(
                 "无法确认当前 Codex Home 的真实路径：{}（{error}）",
@@ -193,18 +207,31 @@ impl ThreadActivityScanner {
             self.tracked.insert(path, next);
         }
 
-        let mut preferred_by_id = HashMap::<&str, &TrackedSession>::new();
-        for session in self.tracked.values() {
-            if session.last_activity < cutoff || session.session_id.is_empty() {
-                continue;
-            }
-            let should_replace = preferred_by_id
-                .get(session.session_id.as_str())
-                .map_or(true, |current| session_is_newer(session, current));
-            if should_replace {
-                preferred_by_id.insert(session.session_id.as_str(), session);
+        let mut preferred_paths = HashMap::<&str, (&PathBuf, &TrackedSession)>::new();
+        for (path, session) in &self.tracked {
+            if session.last_activity < cutoff || session.session_id.is_empty() { continue; }
+            if preferred_paths.get(session.session_id.as_str())
+                .map_or(true, |(_, current)| session_is_newer(session, current)) {
+                preferred_paths.insert(&session.session_id, (path, session));
             }
         }
+        let mut projected = HashMap::new();
+        for (id, (path, original)) in preferred_paths {
+            let mut session = original.clone();
+            session.subagent |= candidates.configurations_by_session_id
+                .get(&session.session_id).is_some_and(|value| value.subagent);
+            // Keep the cached lifecycle intact: resumed writes may become active
+            // without another start record. A terminal event always wins, even
+            // if app-server keeps the rollout or writer lock open while idle.
+            if session.running && session.last_activity >= cutoff
+                && now.duration_since(session.last_activity).unwrap_or_default() > ACTIVE_FILE_LEASE
+                && !writer_probe(path)? {
+                session.running = false;
+            }
+            projected.insert(id, session);
+        }
+        let preferred_by_id = projected.iter().map(|(id, session)| (*id, session))
+            .collect::<HashMap<_, _>>();
 
         let mut counts = RunningThreadCounts::default();
         let mut main_models = HashMap::<(Option<String>, Option<String>), u32>::new();
@@ -305,6 +332,7 @@ fn collect_recent_session_files(
                             reasoning_effort: record.reasoning_effort,
                             title: record.title,
                             parent_thread_id: record.parent_thread_id,
+                            subagent: record.subagent,
                         },
                     );
                 }
@@ -463,7 +491,7 @@ fn recent_database_session_records(
             let fields = (5..13).map(|index| row.get::<_, String>(index)).collect::<Result<Vec<_>, _>>()?;
             let metadata = serde_json::json!({"source":serde_json::from_str::<Value>(&source).unwrap_or(Value::Null),
                 "agent_nickname":fields[4],"agent_path":fields[5],"agent_role":fields[6]});
-            let subagent = fields[7] == "subagent" || value_mentions_subagent(&metadata["source"]);
+            let subagent = fields[7].trim().eq_ignore_ascii_case("subagent") || value_mentions_subagent(&metadata["source"]);
             let named = fields[..2].iter().find_map(|s| cleaned_thread_title(s.clone()));
             let detail = fields[2..4].iter().find_map(|s| cleaned_thread_title(s.clone()));
             let title = named.or_else(|| if subagent { agent_title(&metadata).or(detail.clone()) } else { detail });
@@ -474,6 +502,7 @@ fn recent_database_session_records(
                 reasoning_effort: cleaned_database_value(reasoning_effort),
                 title,
                 parent_thread_id: parent_thread_id_from_source(&source),
+                subagent,
             })
         })
         .ok()?
@@ -1294,6 +1323,49 @@ mod tests {
 
     fn event(kind: &str) -> String {
         format!("{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"{kind}\"}}}}\n")
+    }
+
+    #[test]
+    fn orphan_start_needs_current_writer_while_terminal_always_wins() {
+        let home = TestHome::new();
+        fs::write(home.session(), format!("{}{}", meta("\"exec\""), event("task_started"))).unwrap();
+        let file = fs::OpenOptions::new().write(true).open(home.session()).unwrap();
+        file.set_modified(SystemTime::now() - Duration::from_secs(3_600)).unwrap();
+        drop(file);
+        let mut scanner = ThreadActivityScanner::default();
+        assert_eq!(scanner.scan_with_writer(&home.root, &mut |_| Ok(false)).unwrap().total(), 0);
+        assert!(scanner.tracked.values().next().unwrap().running,
+            "Display filtering must preserve the cached lifecycle for resumed writes");
+        assert_eq!(scanner.scan_with_writer(&home.root, &mut |_| Ok(true)).unwrap().main_threads, 1,
+            "A silent tool retains a current rollout writer");
+        assert!(scanner.scan_with_writer(&home.root, &mut |_| Err("permission denied".into())).is_err(),
+            "A failed observation cannot publish a fresh zero");
+        let mut writer = fs::OpenOptions::new().append(true).open(home.session()).unwrap();
+        writer.write_all(event("task_complete").as_bytes()).unwrap();
+        writer.set_modified(SystemTime::now() - Duration::from_secs(3_600)).unwrap();
+        assert_eq!(scanner.scan_with_writer(&home.root, &mut |_| panic!("idle handles never revive completion")).unwrap().total(), 0);
+        writer.write_all(event("task_started").as_bytes()).unwrap();
+        assert_eq!(scanner.scan_with_writer(&home.root, &mut |_| panic!("fresh work needs no process probe")).unwrap().main_threads, 1);
+    }
+
+    #[test]
+    fn database_subagent_identity_wins_over_legacy_rollout_without_reclassifying_forks() {
+        let home = TestHome::new();
+        let database = rusqlite::Connection::open(home.root.join("state_5.sqlite")).unwrap();
+        database.execute_batch("CREATE TABLE threads(id TEXT,rollout_path TEXT,thread_source TEXT,source TEXT,updated_at INTEGER,archived INTEGER)").unwrap();
+        for id in ["parent", "child", "fork"] {
+            let path = home.session().with_file_name(format!("{id}.jsonl"));
+            fs::write(&path, format!("{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\",\"source\":\"cli\",\"forked_from_id\":\"parent\"}}}}\n{}", event("task_started"))).unwrap();
+            let source = if id == "child" { r#"{"subagent":{"thread_spawn":{"parent_thread_id":"parent"}}}"# } else { r#"{"forked_from_id":"parent"}"# };
+            database.execute("INSERT INTO threads VALUES(?1,?2,?3,?4,?5,0)", rusqlite::params![
+                id, path.to_string_lossy(), if id == "child" { "subagent" } else { "user" }, source,
+                SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs() as i64]).unwrap();
+        }
+        let result = ThreadActivityScanner::default().scan(&home.root).unwrap();
+        assert_eq!(result.main_threads, 2);
+        assert_eq!(result.subagents, 1);
+        assert_eq!(result.groups.iter().find(|group| group.main_thread.thread_id == "parent").unwrap().subagents[0].thread_id, "child");
+        assert!(result.unassigned_subagents.is_empty());
     }
 
     #[test]

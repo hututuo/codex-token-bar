@@ -101,7 +101,9 @@ test("aggregate dashboard renders one combined analytics block and preserves pro
       assert.ok(section.querySelector('.toggle-five'));
       assert.ok(section.querySelector('.toggle-seven'));
       assert.equal(section.querySelector('.toggle-cost').getAttribute('aria-pressed'),'true');
-      assert.match(section.querySelector('.toggle-cost').textContent,/Codex/);
+      assert.match(section.querySelector('.toggle-cost').textContent,/已知金额/);
+      assert.doesNotMatch(section.querySelector('.toggle-cost').textContent,/Codex/,
+        'aggregate cost belongs to all selected clients; missing ledger prices stay explicit');
       assert.match(section.textContent,/fixture-codex-session|查看完整排行/);
       assert.ok(section.querySelector('[aria-label="缓存命中排行控制"]'));
       assert.equal(dom.document.querySelector('[data-client="opencode"]'),null,"detected empty clients add no placeholder blocks");
