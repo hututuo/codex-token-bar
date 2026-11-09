@@ -143,26 +143,7 @@ struct ClientModelCostPeriods: Equatable, Sendable {
         switch scope { case .lifetime: lifetime; case .today: today; case .sevenDay: sevenDay }
     }
     func groups(_ scope: DashboardModelCostScope) -> [FloatingTodayModelUsagePresentation.DashboardFamilyGroup] {
-        let allValues = items(scope).filter { $0.tokens > 0 }
-        let values = allValues.filter { !$0.isFallbackEstimate }
-        let original = values.filter { $0.id.hasPrefix("codex|") }.map { item in
-            FloatingTodayModelUsageItem(id: String(item.id.dropFirst(6)), label: item.label,
-                tokens: item.tokens, share: item.share, costUSD: item.costUSD, usesIndependentQuota: item.usesIndependentQuota,
-                referenceCostUSD: item.referenceCostUSD, color: item.color, knownPartialCostUSD: item.knownPartialCostUSD)
-        }
-        let codexGroups = FloatingTodayModelUsagePresentation.dashboardFamilyGroups(from: original)
-        let claudeRows = values.filter { $0.id.hasPrefix("claudeCode|") || $0.id.hasPrefix("claudeDesktop|") }
-        let claudeGroups = ClaudeModelPresentation.groups(claudeRows, client: "claude")
-        let others = Dictionary(grouping: values.filter {
-            !$0.id.hasPrefix("codex|") && !$0.id.hasPrefix("claudeCode|") && !$0.id.hasPrefix("claudeDesktop|")
-        }, by: { String($0.id.split(separator: "|", maxSplits: 1).first ?? "") })
-        let groups = codexGroups.filter { $0.id == "6" }
-            + claudeGroups.filter { $0.id.hasSuffix(":latest") }
-            + codexGroups.filter { $0.id != "6" }
-            + claudeGroups.filter { !$0.id.hasSuffix(":latest") }
-            + others.sorted { $0.key < $1.key }.map { .init(id: $0.key, title: ClientDisplayScope.title($0.key), items: $0.value) }
-        let unknown = allValues.filter(\.isFallbackEstimate)
-        return groups + (unknown.isEmpty ? [] : [.init(id: "unknown-models", title: "参考", items: unknown)])
+        DashboardModelCostOrder.groups(items(scope))
     }
     static func make(codex: DashboardSnapshot, todayCodex: [ModelTokenBreakdown],
                      rows: [ClientUsageSummary], today: [ClientUsageSummary], sevenDay: [ClientUsageSummary],

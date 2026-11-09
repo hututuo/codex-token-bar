@@ -58,13 +58,13 @@ final class HeatmapFlattenedRenderingTests: XCTestCase {
                 sourceModels: offset == 4 ? ["gemini-pro-default", "unknown"] : [])
         }
         let grid = VStack(spacing: 6) {
-            ForEach(items) { DashboardModelCostChip(item: $0, color: .blue).frame(width: 208) }
+            ForEach(items) { DashboardModelCostChip(item: $0, color: .blue).frame(width: 360) }
         }
         let host = NSHostingView(rootView: grid)
         let size = host.fittingSize
-        XCTAssertEqual(size.width, 208, accuracy: 1)
+        XCTAssertEqual(size.width, 360, accuracy: 1)
         XCTAssertEqual(size.height, CGFloat(items.count * 30 + (items.count - 1) * 6), accuracy: 0.5)
-        for width: CGFloat in [204, 208, 280] {
+        for width: CGFloat in [300, 360, 440] {
             for item in items {
                 let row = NSHostingView(rootView: DashboardModelCostChip(item: item, color: .blue).frame(width: width))
                 XCTAssertEqual(row.fittingSize.height, 30, accuracy: 0.5)

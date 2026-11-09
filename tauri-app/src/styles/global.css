@@ -2529,7 +2529,7 @@ button.quota-side-card:hover {
 .stats-model-cost-primary-grid,
 .stats-model-cost-secondary-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(204px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 7px;
   min-width: 0;
 }
@@ -2561,18 +2561,18 @@ button.quota-side-card:hover {
 
 .stats-model-cost-primary-card em,
 .stats-model-cost-secondary-chip em {
-  min-width: 0;
-  overflow: hidden;
+  min-width: max-content;
+  overflow: visible;
   color: var(--muted);
   font-style: normal;
   font-weight: var(--weight-semibold);
-  text-overflow: ellipsis;
+  text-overflow: clip;
 }
 
 /* Keep a model qualifier visible even when its longer name is truncated. */
 .stats-model-cost-primary-card em,
 .stats-model-cost-secondary-chip em { display:flex; align-items:center; }
-.model-cost-name { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.model-cost-name { flex:none; white-space:nowrap; }
 .model-cost-name-suffix { flex:none; }
 
 .stats-model-cost-primary-card b,
@@ -12966,8 +12966,9 @@ details.session-management-banner {
 .stats-model-cost-group-label{min-width:0;white-space:nowrap}
 .stats-model-cost-primary-card .model-cost-name,
 .stats-model-cost-secondary-chip .model-cost-name {
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  white-space:nowrap;overflow:visible;text-overflow:clip;
 }
+.stats-model-cost-placeholder{display:flex;align-items:center;justify-content:center;min-width:0;height:30px;box-sizing:border-box;border:1px dashed var(--line);border-radius:6px;background:color-mix(in srgb,var(--muted) 4%,transparent);color:var(--muted);font-size:10px;white-space:nowrap}
 
 @keyframes rig-press{0%,19%,24%,76%,81%,100%{transform:scale(1)}21%,78%{transform:scale(.78)}}
 .recent-interaction-guide summary{transition:transform .12s,opacity .12s}.recent-interaction-guide summary:active{transform:translateY(1px) scale(.99);opacity:.7}

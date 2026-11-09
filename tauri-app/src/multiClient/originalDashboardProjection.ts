@@ -1,9 +1,9 @@
-import { claudeModelGroups } from "../components/claudeModelPresentation";
+import { orderedCostGroups } from "../domain/modelCostOrder";
 import type { DashboardSnapshot, RecentUsagePoint, ModelTokenBreakdown } from '../types/dashboard';
 import type { Snapshot, Summary } from './MultiClientUsage';
 import { projectClientDays } from './integratedClientModel';
 import { clientNames } from './MultiClientUsage';
-import { floatingTodayModelUsageItems, type FloatingModelUsageItem, dashboardModelFamilyGroups } from '../floating/floatingModelUsage';
+import { floatingTodayModelUsageItems, type FloatingModelUsageItem } from '../floating/floatingModelUsage';
 import { modelUsageColor } from '../components/modelUsagePresentation';
 import { modelPresentationIdentity, modelPresentationDetail } from '../domain/modelPresentationIdentity';
 import { officialAPICostUSD, independentQuotaModelName, isAutoReviewUsage, priceModelTitle, type OfficialAPIPriceModel } from '../settings/quotaPriceModel';
@@ -15,21 +15,7 @@ export interface ClientCostPeriods {
   codexPendingScopes?: ("today"|"sevenDay")[];
 }
 export function clientCostGroups(allItems: FloatingModelUsageItem[]) {
-  const items=allItems.filter(x=>x.tokens>0 && x.key!=="unknown-models");
-  const codex = items.filter(x => x.key.startsWith('codex|')).map(x => ({...x,key:x.key.slice(6)}));
-  const codexGroups = dashboardModelFamilyGroups(codex);
-  const claudeRows=items.filter(x=>/^claude(?:Code|Desktop)\|/.test(x.key));
-  const claudeGroups = claudeModelGroups(claudeRows,"claude");
-  const groups: {id:string;label:string;items:FloatingModelUsageItem[]}[] = [
-    ...codexGroups.filter(g=>g.id==="6"), ...claudeGroups.filter(g=>g.id.endsWith(":latest")),
-    ...codexGroups.filter(g=>g.id!=="6"), ...claudeGroups.filter(g=>!g.id.endsWith(":latest")),
-  ];
-  for (const client of [...new Set(items.filter(x=>!/^codex\||^claude(?:Code|Desktop)\|/.test(x.key)).map(x=>x.key.split('|')[0]))].sort()) {
-    groups.push({id:client,label:clientNames[client as keyof typeof clientNames] ?? client,items:items.filter(x=>x.key.startsWith(client+'|'))});
-  }
-  const unknown=allItems.filter(x=>x.tokens>0 && x.key==="unknown-models");
-  if(unknown.length)groups.push({id:"unknown-models",label:"参考",items:unknown});
-  return groups;
+  return orderedCostGroups(allItems);
 }
 export function clientModelCostItems(rows:Summary[], original:ModelTokenBreakdown[], allowed:readonly string[], fallbackModel:OfficialAPIPriceModel='gpt56Sol'):FloatingModelUsageItem[] {
     const unknownModel=(model:string|null|undefined)=> !isAutoReviewUsage(model) && independentQuotaModelName(model)===null

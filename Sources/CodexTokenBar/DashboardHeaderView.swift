@@ -1252,22 +1252,22 @@ struct DashboardModelCostRow: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else if visibleItems.isEmpty {
-                Text(pendingItems.isEmpty ? emptyDetailText : "已确认范围暂无用量")
+                if scope != .lifetime, dayLabel == nil, clientCosts?.isPreparing != true,
+                   clientCosts?.codexPendingScopes.contains(scope) != true {
+                    DashboardModelCostGrid(items: [], fillFirstRow: true)
+                } else { Text(pendingItems.isEmpty ? emptyDetailText : "已确认范围暂无用量")
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                }
             } else {
                 ForEach(modelFamilies) { group in
                     HStack(alignment: .top, spacing: 10) {
-                        Text(group.id == "6" ? "GPT" : group.title)
+                        Text(group.title)
                             .font(.system(size: 10, weight: .bold)).foregroundStyle(.secondary)
                             .frame(width: 78, alignment: .leading)
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 204), spacing: 7)], alignment: .leading, spacing: 7) {
-                            ForEach(group.items) { item in
-                                DashboardModelCostChip(item: item, color: ModelUsagePresentation.dashboardColor(for: item.id, latest: group.id == "6" || group.id.hasSuffix(":latest")))
-                                    .modifier(ModelColorEditModifier(model: ModelUsagePresentation.autoReviewUnderlyingModelKey(for: item.id) ?? String(item.id.split(separator: "|", maxSplits: 1).last ?? Substring(item.id)), enabled: true, grayDefault: !(group.id == "6" || group.id.hasSuffix(":latest"))))
-                            }
-                        }.frame(maxWidth: .infinity, alignment: .leading)
+                        DashboardModelCostGrid(items: group.items, fillFirstRow: scope != .lifetime && dayLabel == nil,
+                            latest: group.id == "latest" || group.id == "fable")
                     }
                 }
             }
@@ -1336,6 +1336,33 @@ private struct DashboardModelCostScopePicker: View {
     }
 }
 
+/// Two roomy columns keep each 30pt row readable. Empty slots are display-only
+/// and never enter totals, shares, pricing or the persisted model inventory.
+struct DashboardModelCostGrid: View {
+    let items: [FloatingTodayModelUsageItem]
+    var fillFirstRow = false
+    var latest = false
+    var slotCount: Int { fillFirstRow ? max(2, items.count) : items.count }
+    var body: some View {
+        LazyVGrid(columns: [GridItem(.flexible(minimum: 0)), GridItem(.flexible(minimum: 0))], spacing: 7) {
+            ForEach(0..<slotCount, id: \.self) { index in
+                if index < items.count {
+                    let item = items[index]
+                    DashboardModelCostChip(item: item, color: ModelUsagePresentation.dashboardColor(for: item.id, latest: latest))
+                        .modifier(ModelColorEditModifier(model: ModelUsagePresentation.autoReviewUnderlyingModelKey(for: item.id)
+                            ?? String(item.id.split(separator: "|").last ?? Substring(item.id)), enabled: true, grayDefault: !latest))
+                } else {
+                    Text(items.isEmpty ? "暂无模型用量" : "暂无其他模型用量")
+                        .font(.system(size: 10)).foregroundStyle(.tertiary)
+                        .frame(maxWidth: .infinity).frame(height: 30)
+                        .background(RoundedRectangle(cornerRadius: 6).fill(Color.secondary.opacity(0.04)))
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.12), style: StrokeStyle(lineWidth: 1, dash: [3, 3])))
+                }
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 struct DashboardModelCostChip: View {
     let item: FloatingTodayModelUsageItem
     let color: Color
@@ -1352,7 +1379,9 @@ struct DashboardModelCostChip: View {
     private var description: String {
         let summary = item.tokens == 0 ? "\(item.label) · 暂无本地记录"
             : "\(item.label)，费用 \(item.valueText(for: .cost))，用量 \(item.tokens.abbreviatedTokens)，占比 \(item.valueText(for: .share))"
-        return item.sourceModels.isEmpty ? summary : summary+"\n原始标识："+item.sourceModels.map(ModelPresentationIdentity.detail).joined(separator:"、")
+        let client = item.id.contains("|") ? ClientDisplayScope.title(String(item.id.split(separator: "|").first ?? "")) : ""
+        let provenance = client.isEmpty ? summary : summary + "\n来源：" + client
+        return item.sourceModels.isEmpty ? provenance : provenance+"\n原始标识："+item.sourceModels.map(ModelPresentationIdentity.detail).joined(separator:"、")
     }
 
     var body: some View {
@@ -1362,12 +1391,12 @@ struct DashboardModelCostChip: View {
             Circle().fill(color).frame(width: 6, height: 6)
             Text(item.label.replacingOccurrences(of: #"(?i)^GPT[- ]*"#, with: "", options: .regularExpression))
                 .font(.system(size: 10.5, weight: .semibold))
-                .foregroundStyle(.secondary).truncationMode(.middle)
-                .lineLimit(1)
+                .foregroundStyle(.secondary)
+                .lineLimit(1).fixedSize(horizontal: true, vertical: false).layoutPriority(2)
             Spacer(minLength: 3)
             Text(item.tokens == 0 ? "暂无记录" : item.tokens.abbreviatedTokens)
                 .font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary)
-                .monospacedDigit().fixedSize()
+                .monospacedDigit().minimumScaleFactor(0.75)
             if item.tokens > 0 {
                 Text(item.valueText(for: .share))
                     .font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary)

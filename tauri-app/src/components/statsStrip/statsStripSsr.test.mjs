@@ -272,11 +272,36 @@ test("one anonymous model cannot hide the known cycle prices or total", async ()
         assert.equal(window.getComputedStyle(card.querySelector("b")).gridColumn,"5");
         for(const element of card.children)assert.notEqual(window.getComputedStyle(element).gridRow,"2");
         assert.ok(card.title.includes("双击修改该模型颜色"));
+        assert.equal(window.getComputedStyle(card.querySelector("em")).textOverflow,"clip");
+        assert.equal(window.getComputedStyle(card.querySelector("em")).minWidth,"max-content");
       }
       assert.doesNotMatch(container.textContent, /价格未知/);assert.match(container.textContent,/未知模型.*参考/);
       assert.doesNotMatch(container.textContent, /模型身份待补全|本期模型明细待读取/);
     });
   }
+});
+
+test("today and seven-day one-model groups fill a two-slot row without fake accounting", async () => {
+  await withDom(async ({window,container,root,StatsStrip}) => {
+    const style=window.document.createElement('style');style.textContent=await readFile(new URL('../../styles/global.css',import.meta.url),'utf8');window.document.head.append(style);
+    const unknown={key:'unknown-models',label:'未知模型',tokens:13662755,share:1,costUSD:null,referenceCostUSD:18.9,usesIndependentQuota:false,color:'#888888',sourceModels:['unknown','gemini-pro-default']};
+    await React.act(async()=>{root.render(React.createElement(StatsStrip,{stats,planLabel:'',clientCosts:{lifetime:[unknown],sevenDay:[unknown],today:[unknown]}}));await settle();});
+    const tabs=container.querySelector('[aria-label="模型费用范围"]').querySelectorAll('button');
+    for(const index of [0,1]){
+      await React.act(async()=>{tabs[index].click();await settle();});
+      assert.equal(container.querySelectorAll('.stats-model-cost-secondary-chip').length,1);
+      assert.equal(container.querySelectorAll('.stats-model-cost-placeholder').length,1);
+      const card=container.querySelector('.stats-model-cost-secondary-chip');
+      assert.equal(card.querySelector('em').textContent,'未知模型');
+      assert.match(card.title,/gemini-pro-default/);
+      assert.equal(window.getComputedStyle(card.parentElement).gridTemplateColumns,'repeat(2, minmax(0, 1fr))');
+      assert.equal(window.getComputedStyle(card).height,'30px');
+      assert.doesNotMatch(container.querySelector('.stats-model-cost-total').textContent,/\$0/);
+    }
+    await React.act(async()=>{tabs[2].click();await settle();});
+    assert.equal(container.querySelectorAll('.stats-model-cost-placeholder').length,0);
+    assert.equal(container.querySelectorAll('.stats-model-cost-secondary-chip').length,1);
+  });
 });
 
 test("unknown boundary model retains its Tokens without a default-model price", async () => {

@@ -197,6 +197,8 @@ jobs:
             --require testConfirmedAntigravityAliasesAndLegacyOpusArePricedWithoutChangingRawRecords \
             --require testDashboardCombinesEveryUnknownSourceIntoOneReferenceWithoutChangingKnownFees \
             --require testCostGroupsNeverInventZeroUsageCatalogCards \
+            --require testSharedCostOrderPreservesEverySourceAndAmountAcrossPeriods \
+            --require testShortPeriodFillsTwoSlotsAndUnknownNameFitsSingleRow \
             --require testRunningTitlesUseSchemaFallbacksAndAgentMetadataWithoutChangingOwnership \
             --require testRunningRolloutTitlesAreBoundedCachedAndCanArriveOnAppend \
             --require testCompactTaskHierarchyKeepsTenChildrenReadableWithinOnePanel \

@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "note": "Display order only. Never changes model identity, source, pricing or ledger values. Missing models are not fabricated.",
+  "groups": [
+    {"id":"fable","title":"Fable","models":[],"patterns":["^claude-fable-"]},
+    {"id":"latest","title":"最新主力","models":["claude-opus-5-5","claude-sonnet-5-5","claude-haiku-5-5","gpt-6-astra","gpt-6.1-sol","gpt-6.1-terra","gpt-6-luna"],"patterns":[]},
+    {"id":"recent","title":"Gemini · Claude","models":["gemini-4-argon","gemini-3.8-flash","claude-opus-5","claude-sonnet-5"],"patterns":[]},
+    {"id":"gpt","title":"GPT 其他","models":[],"patterns":["^gpt-","^o[134](?:-|$)","^chat-latest$","^codex-mini-"]},
+    {"id":"claude","title":"Claude 其他","models":[],"patterns":["^claude-"]},
+    {"id":"other","title":"其他","models":[],"patterns":[]},
+    {"id":"unknown-models","title":"未知模型","models":[],"patterns":[]}
+  ],
+  "familyPriority":["astra","sol","terra","luna","cyber","opus","sonnet","haiku","argon","pro","flash","mini","nano"],
+  "clientPriority":["codex","claudeDesktop","claudeCode","antigravity","gemini","deepseek"]
+}
