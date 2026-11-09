@@ -3,6 +3,29 @@ use serde_json::json;
 use std::{collections::BTreeMap,fs,io::{Cursor,Read},process::Command,time::{Duration,Instant}};
 
 #[test]
+fn diagnostic_export_keeps_latest_session_after_event_cap_and_unrelated_files() {
+    let root=tempfile::tempdir().unwrap();let c=Configuration::for_home(root.path().canonicalize().unwrap());
+    fs::create_dir_all(&c.journal).unwrap();
+    for segment in 0..7 {
+        let mut bytes=Vec::new();
+        for index in 0..1000 {
+            let at=segment*1000+index;
+            let mut event=Event::new("11111111-1111-1111-1111-111111111111",at,Area::Refresh,Phase::Progress,&[]);
+            event.at=at;bytes.extend(serde_json::to_vec(&event).unwrap());bytes.push(b'\n');
+        }
+        fs::write(c.journal.join(format!("events-a-{segment}.jsonl")),bytes).unwrap();
+    }
+    for index in 0..130 {fs::write(c.journal.join(format!("a-unused-{index}")),b"").unwrap();}
+    let mut latest=Event::new("ffffffff-ffff-ffff-ffff-ffffffffffff",1,Area::Startup,Phase::Ready,&[]);
+    latest.at=10_000;latest.build="1008".into();
+    let path=c.journal.join("events-z-latest.jsonl");let bytes=serde_json::to_vec(&latest).unwrap();fs::write(&path,&bytes).unwrap();
+    let result=collect::collect("events",&c);
+    assert_eq!(result["events"].as_array().unwrap().len(),6000);assert_eq!(result["omitted"],1001);
+    assert_eq!(result["events"][5999]["at"],10_000);assert_eq!(result["events"][5999]["build"],"1008");
+    assert_eq!(fs::read(path).unwrap(),bytes);
+}
+
+#[test]
 fn diagnostic_allowlist_drops_secret_baits_and_paths() {
     let raw=json!({"schema":1,"session":uuid::Uuid::new_v4().to_string(),"sequence":1,"at":1,"area":"refresh","phase":"failed",
         "version":"Bearer SECRET","build":"C:\\private\\project","metrics":{"code":5,"password":42},"conversation":"PRIVATE CHAT","attempt":"SECRET"});

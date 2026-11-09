@@ -35,17 +35,19 @@ pub(super) fn collect(probe:&str,c:&Configuration)->Value {
                 Err(_) if probe=="installation"=>Vec::new(),
                 Err(_)=>return json!({"status":"unavailable"}),
             };
-            let mut events=Vec::new();let mut rejected=0;let mut omitted=paths.len().saturating_sub(128);
-            for path in paths.into_iter().take(128) {
+            let mut events:Vec<Event>=Vec::new();let mut rejected=0;let mut omitted=0;
+            // UUID names do not encode chronology. files::list and read retain
+            // their safety/size bounds; clipping happens after sanitization.
+            for path in paths {
                 let name=path.file_name().unwrap_or_default().to_string_lossy();
                 if !(name.starts_with("events-")||name.starts_with("failure-")||name.starts_with("install-")){continue}
                 let Ok(data)=files::read(&path,512*1024) else{rejected+=1;continue};
                 for line in data.split(|b|*b==b'\n').filter(|s|!s.is_empty()) {
-                    if events.len()>=6000{omitted+=1;continue}
                     if let Some(event)=Event::sanitized(line){events.push(event)}else{rejected+=1}
                 }
+                events.sort_by(|a,b|(a.at,&a.session,a.sequence).cmp(&(b.at,&b.session,b.sequence)));
+                if events.len()>6000 {let count=events.len()-6000;omitted+=count;events.drain(..count);}
             }
-            events.sort_by_key(|e|e.at);
             let mut output=json!({"status":"ok","events":events,"rejected":rejected,"omitted":omitted});
             if probe=="installation" {
                 // Existing updater receipts are projected, never copied verbatim.

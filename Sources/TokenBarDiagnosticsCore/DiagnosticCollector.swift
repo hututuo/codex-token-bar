@@ -43,19 +43,24 @@ public enum DiagnosticCollector {
             }
             return info
         case .events:
-            var rows: [[String:Any]] = [], rejected = 0, omitted = 0
+            var events: [DiagnosticEvent] = [], rejected = 0, omitted = 0
             guard let files = try? DiagnosticFiles.files(c.journal, prefix: "", suffix: "") else { return ["status":"unavailable"] }
-            for file in files.prefix(128) where file.lastPathComponent.hasPrefix("events-") || file.lastPathComponent.hasPrefix("failure-") {
+            // UUID filenames are not chronology. Scan the bounded directory
+            // and retain the newest sanitized events, regardless of file order.
+            for file in files where file.lastPathComponent.hasPrefix("events-") || file.lastPathComponent.hasPrefix("failure-") {
                 guard let bytes = try? DiagnosticFiles.read(file) else { rejected += 1; continue }
                 for line in bytes.split(separator: 10) {
-                    guard rows.count < 6000 else { omitted += 1; continue }
-                    guard let event = DiagnosticEvent.sanitized(Data(line)), let encoded = try? JSONEncoder().encode(event),
-                          let json = try? JSONSerialization.jsonObject(with: encoded) as? [String:Any] else { rejected += 1; continue }
-                    rows.append(json)
+                    guard let event = DiagnosticEvent.sanitized(Data(line)) else { rejected += 1; continue }
+                    events.append(event)
                 }
+                events.sort { ($0.at, $0.session, $0.sequence) < ($1.at, $1.session, $1.sequence) }
+                if events.count > 6000 { omitted += events.count - 6000; events.removeFirst(events.count - 6000) }
             }
-            rows.sort { ($0["at"] as? Int64 ?? 0) < ($1["at"] as? Int64 ?? 0) }
-            return ["status":"ok", "events":rows, "rejected":rejected, "omitted":omitted + max(0, files.count - 128)]
+            let rows: [[String:Any]] = events.compactMap { event in
+                guard let encoded = try? JSONEncoder().encode(event) else { return nil }
+                return try? JSONSerialization.jsonObject(with: encoded) as? [String:Any]
+            }
+            return ["status":"ok", "events":rows, "rejected":rejected, "omitted":omitted]
         case .recovery:
             let roots = [c.support.appendingPathComponent("recovery-diagnostics/v1"),
                 c.home.appendingPathComponent("Library/Application Support/CodexTokenBarTauri/recovery-diagnostics/v1")]

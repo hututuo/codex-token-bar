@@ -5,6 +5,34 @@ import SQLite3
 @testable import TokenBarDiagnosticsCore
 
 final class DiagnosticBundleTests: XCTestCase {
+    func testBoundedExportRetainsLatestSessionRegardlessOfUUIDFileOrder() throws {
+        let root = try fixture(), configuration = DiagnosticConfiguration(home: root)
+        try FileManager.default.createDirectory(at: configuration.journal, withIntermediateDirectories: true)
+        let session = "11111111-1111-1111-1111-111111111111"
+        for segment in 0..<7 {
+            var bytes = Data()
+            for index in 0..<1000 {
+                let at = Int64(segment * 1000 + index)
+                bytes.append(try JSONEncoder().encode(DiagnosticEvent(session: session, sequence: at, area: .refresh,
+                    phase: .progress, version: "0.9.11", build: "1007", at: at)))
+                bytes.append(10)
+            }
+            try bytes.write(to: configuration.journal.appendingPathComponent("events-a-\(segment).jsonl"))
+        }
+        // More than 128 unrelated entries cannot hide the real latest session.
+        for index in 0..<130 { try Data().write(to: configuration.journal.appendingPathComponent("a-unused-\(index)")) }
+        let latest = DiagnosticEvent(session: "ffffffff-ffff-ffff-ffff-ffffffffffff", sequence: 1, area: .startup,
+            phase: .ready, version: "0.9.11", build: "1008", at: 10_000)
+        let latestBytes = try JSONEncoder().encode(latest)
+        let latestURL = configuration.journal.appendingPathComponent("events-z-latest.jsonl")
+        try latestBytes.write(to: latestURL)
+        let result = DiagnosticCollector.collect(.events, configuration: configuration)
+        let rows = try XCTUnwrap(result["events"] as? [[String:Any]])
+        XCTAssertEqual(rows.count, 6000); XCTAssertEqual(result["omitted"] as? Int, 1001)
+        XCTAssertEqual(rows.last?["at"] as? Int64, 10_000)
+        XCTAssertEqual(rows.last?["build"] as? String, "1008")
+        XCTAssertEqual(try Data(contentsOf: latestURL), latestBytes)
+    }
     private func fixture() throws -> URL {
         let root=FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("diagnostics-tests-\(UUID())")
         try FileManager.default.createDirectory(at:root,withIntermediateDirectories:false)
