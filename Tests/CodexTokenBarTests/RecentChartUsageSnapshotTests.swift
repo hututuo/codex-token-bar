@@ -36,6 +36,7 @@ final class RecentChartUsageSnapshotTests: XCTestCase {
     }
     @MainActor func testAllRangesScopesAndEverySummaryUseTheSameClientModelBuckets() throws {
         let fixture = try fixture(), now = Date(timeIntervalSince1970: fixture.now)
+        XCTAssertNotNil(RecentChartPolicy.bundled, "The shared range policy must be in the Swift resource bundle")
         func cache(_ width: Double) -> [TokenCacheBucket] {
             Dictionary(grouping: fixture.codex) { floor(Double($0.startUnix) / width) * width }
                 .map { .init(start: Date(timeIntervalSince1970: $0.key), breakdown: $0.value.map(\.breakdown).combined) }

@@ -1,6 +1,16 @@
 import AppKit
 import SwiftUI
 
+enum RecentChartPolicy {
+    struct Range: Decodable { let bucketSeconds: Double; let windowSeconds: Double }
+    struct Policy: Decodable { let schema: Int; let ranges: [String: Range] }
+    static let bundled: Policy? = {
+        guard let url = AppResources.url(forResource: "recent-chart-policy", withExtension: "json"),
+              let data = try? Data(contentsOf: url), let value = try? JSONDecoder().decode(Policy.self, from: data), value.schema == 1 else { return nil }
+        return value
+    }()
+}
+
 enum RecentChartRange: String, CaseIterable, Identifiable, Sendable {
     case twentyFourHours = "24h"
     case sevenDays = "7d"
@@ -33,10 +43,11 @@ enum RecentChartRange: String, CaseIterable, Identifiable, Sendable {
     }
 
     var bucketInterval: TimeInterval {
+        if let value = RecentChartPolicy.bundled?.ranges[rawValue]?.bucketSeconds, value > 0 { return value }
         switch self {
-        case .twentyFourHours: 5 * 60
-        case .sevenDays: 60 * 60
-        case .thirtyDays: 6 * 60 * 60
+        case .twentyFourHours: return 5 * 60
+        case .sevenDays: return 60 * 60
+        case .thirtyDays: return 6 * 60 * 60
         }
     }
 
@@ -122,6 +133,7 @@ enum RecentChartScrollMetrics {
     }
 
     static func windowDuration(for range: RecentChartRange) -> TimeInterval {
+        if let value = RecentChartPolicy.bundled?.ranges[range.rawValue]?.windowSeconds, value > 0 { return value }
         switch range {
         case .twentyFourHours:
             return 24 * 60 * 60

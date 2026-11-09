@@ -32,7 +32,7 @@ test("real aggregate chart header hover and fixed selections expose all client m
             const models=[...selection.querySelectorAll(".chart-model-usage-list [data-client]")].map(row=>row.dataset.client+"|"+row.dataset.model).sort();
             assert.deepEqual(models,[...usageFixture.expected.models].sort(),range+selector);
             assert.match(selection.textContent,/680/);assert.match(selection.textContent,/6 次/);
-            assert.match(selection.textContent,/已知金额/);assert.match(selection.textContent,/缓存命中 —/);
+            assert.match(selection.textContent,/已知金额/);assert.match(selection.textContent,/缓存命中 --/);
           }
           assert.match(container.querySelector(".chart-legend")?.textContent??container.textContent,/680/);
         }finally{await React.act(async()=>root.unmount());container.remove();}
@@ -723,13 +723,16 @@ test("long retained history switches ranges at the latest edge and selects visib
         await React.act(async () => root.render(React.createElement(RecentUsageChart, props)));
         const finePricingReads = pricingReads;
         assert.ok(finePricingReads > 0);
-        for (const index of [1, 0, 1]) {
+        let warmedReads;
+        for (const [iteration,index] of [1, 0, 1].entries()) {
           await React.act(async () => container.querySelectorAll(".recent-range-tabs button")[index].click());
           const scroll = container.querySelector(".recent-chart-scroll");
           assert.equal(scroll.scrollLeft, scroll.scrollWidth - 980);
           assert.equal(container.querySelectorAll(".recent-range-tabs button")[index].getAttribute("aria-pressed"), "true");
+          if(iteration===0){assert.ok(pricingReads>finePricingReads,"1h display prepares a distinct price snapshot");warmedReads=pricingReads;}
+          else assert.equal(pricingReads,warmedReads,"revisiting either range reuses its prepared prices");
         }
-        assert.equal(pricingReads, finePricingReads, "24h and fine 7d reuse pricing without traversing model rows again");
+        assert.equal(pricingReads, warmedReads, "range caching avoids repeated model traversal");
         const scroll = container.querySelector(".recent-chart-scroll");
         const svg = container.querySelector("svg.usage-chart");
         svg.getBoundingClientRect = () => ({ left: -scroll.scrollLeft, top: 0, width: scroll.scrollWidth, height: 278 });
@@ -747,7 +750,7 @@ test("long retained history switches ranges at the latest edge and selects visib
         assert.equal(container.querySelector(".chart-selection-layer"), null);
         const readsAfterThirtyDays = pricingReads;
         await React.act(async () => container.querySelectorAll(".recent-range-tabs button")[1].click());
-        assert.equal(pricingReads, readsAfterThirtyDays, "returning from 30d reuses the fine snapshot");
+        assert.equal(pricingReads, readsAfterThirtyDays, "returning from 30d reuses the hourly snapshot");
         await React.act(async () => root.render(React.createElement(RecentUsageChart, { ...props, recentUsage24h: [...fine] })));
         assert.ok(pricingReads > readsAfterThirtyDays, "a new dashboard snapshot invalidates cached prices");
       } finally {

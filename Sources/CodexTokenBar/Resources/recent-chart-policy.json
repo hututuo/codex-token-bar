@@ -1,0 +1,8 @@
+{
+  "schema":1,
+  "ranges":{
+    "24h":{"bucketSeconds":300,"windowSeconds":86400},
+    "7d":{"bucketSeconds":3600,"windowSeconds":604800},
+    "30d":{"bucketSeconds":21600,"windowSeconds":2592000}
+  }
+}

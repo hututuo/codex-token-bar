@@ -1,4 +1,5 @@
 import type { RecentUsagePoint } from "../../types/dashboard";
+import chartPolicy from "../../../../Sources/CodexTokenBar/Resources/recent-chart-policy.json" with {type:"json"};
 import {
   modelAwareAPICostUSD,
   type ModelAwareAPICostEstimate,
@@ -96,9 +97,9 @@ export interface RecentUsageChartSeries {
 export const RECENT_CHART_24H_VIEWPORT_SECONDS = 24 * 60 * 60;
 
 const RECENT_CHART_WINDOW_SECONDS: Record<RecentChartRange, number> = {
-  "24h": 24 * 60 * 60,
-  "7d": 7 * 24 * 60 * 60,
-  "30d": 30 * 24 * 60 * 60,
+  "24h": chartPolicy.ranges["24h"].windowSeconds,
+  "7d": chartPolicy.ranges["7d"].windowSeconds,
+  "30d": chartPolicy.ranges["30d"].windowSeconds,
 };
 
 export interface SeriesVisibility {
@@ -278,17 +279,17 @@ const RANGE_CONFIG: Record<RecentChartRange, { title: string; subtitle: string; 
   "24h": {
     title: "最近 24 小时",
     subtitle: "5 分钟粒度 · 5 分钟自动刷新",
-    bucketSeconds: 5 * 60,
+    bucketSeconds: chartPolicy.ranges["24h"].bucketSeconds,
   },
   "7d": {
     title: "最近 7 天",
     subtitle: "1 小时粒度 · 5 分钟自动刷新",
-    bucketSeconds: 60 * 60,
+    bucketSeconds: chartPolicy.ranges["7d"].bucketSeconds,
   },
   "30d": {
     title: "最近 30 天",
     subtitle: "6 小时粒度 · 5 分钟自动刷新",
-    bucketSeconds: 6 * 60 * 60,
+    bucketSeconds: chartPolicy.ranges["30d"].bucketSeconds,
   },
 };
 

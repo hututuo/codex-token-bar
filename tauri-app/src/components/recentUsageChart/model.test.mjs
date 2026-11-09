@@ -1301,7 +1301,7 @@ test("recent chart horizontal viewport keeps overlay outside the clipped scroll 
   assert.equal(source.includes("chart-time-marker--"), true);
   assert.equal(source.includes("chart-day-separator"), true);
   assert.equal(source.includes("x={activeTokenPoint.x - chartScrollLeft}"), true);
-  assert.equal(source.includes("recentChartBucketCosts(quotaData.points, quotaModel)"), true);
+  assert.equal(source.includes("buildChartUsageSnapshot(data,quotaData.points,externalCostBuckets,includesCodexCost,quotaModel)"), true);
   assert.equal(source.includes("window.requestAnimationFrame"), true);
   assert.equal(source.includes("visibleWindowSummary.startIndex"), true);
   assert.equal(source.includes("visibleWindowSummary.endIndex"), true);
@@ -1335,7 +1335,7 @@ test("RecentUsageChart exposes click-to-estimate quota UI", async () => {
     "recentChartScrollLayout(data.range, data.points.length, data.bucketSeconds, chartViewportWidth)",
     "recent-chart-scroll-content",
     "recent-chart-overlay-layer",
-    "quotaConsumptionSelection",
+    "chartQuotaConsumptionSelection",
     "clickQuotaSelection",
     "RecentChartQuotaEstimateOverlay",
     "反推总额度",

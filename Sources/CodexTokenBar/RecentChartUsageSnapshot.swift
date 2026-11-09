@@ -113,7 +113,7 @@ struct ChartModelUsageList: View {
                 ForEach(summary.models) { row in
                     HStack(spacing: 5) {
                         Circle().fill(ModelUsagePresentation.color(for: row.model)).frame(width: 6, height: 6)
-                        Text(row.label)
+                        Text(row.label + " " + String(summary.breakdown.totalTokens > 0 ? Int((Double(row.breakdown.totalTokens) / Double(summary.breakdown.totalTokens) * 100).rounded()) : 0) + "%")
                         Text(row.clientLabel).foregroundStyle(.secondary)
                         Spacer(minLength: 8)
                         Text(row.breakdown.totalTokens.abbreviatedTokens).monospacedDigit()
