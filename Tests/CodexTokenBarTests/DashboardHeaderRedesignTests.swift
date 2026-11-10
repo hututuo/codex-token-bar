@@ -14,8 +14,10 @@ final class DashboardHeaderRedesignTests: XCTestCase {
         let rows=ids.map { FloatingTodayModelUsageItem(id:$0,label:$0,tokens:100,share:0.2,costUSD:1,usesIndependentQuota:false,referenceCostUSD:nil,color:.blue) }
         let context=ClientModelCostPeriods(lifetime:rows,today:[],sevenDay:[])
         let groups=context.groups(.lifetime)
-        XCTAssertEqual(groups.map(\.id),["latest","gpt","claude"])
-        XCTAssertEqual(groups[0].items.map(\.id),[ids[3],ids[4],ids[1]])
+        XCTAssertEqual(groups.map(\.id),["client:codex","client:claudeDesktop","client:claudeCode","other:claudeCode"])
+        XCTAssertEqual(groups[0].items.map(\.id),[ids[1],ids[0]])
+        XCTAssertTrue(groups.filter { !$0.isSecondary }.allSatisfy { $0.items.count <= 4 })
+        XCTAssertEqual(groups.last?.items.map(\.id),[ids[2]])
         XCTAssertFalse(groups[0].items.contains{$0.id==ids[2]},"A legacy CLI model cannot outrank a newer Desktop version of the same family")
         XCTAssertEqual(groups.flatMap(\.items).map(\.id).sorted(),ids.sorted())
         XCTAssertEqual(groups.flatMap(\.items).reduce(0) { $0 + $1.tokens }, 500)

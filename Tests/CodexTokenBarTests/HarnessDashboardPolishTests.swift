@@ -14,9 +14,9 @@ final class HarnessDashboardPolishTests: XCTestCase {
         }
         XCTAssertEqual(ClaudeModelPresentation.identity("claude-opus-20261001")?.version,[])
         XCTAssertNil(ClaudeModelPresentation.identity("unrelated-model"))
-        let ids=["claudeCode|claude-opus-4-6","claudeCode|claude-opus-5-5","claudeCode|sonnet-5-5","claudeCode|fable5.1","claudeCode|custom"]
+        let ids=["claudeCode|claude-opus-4-6","claudeCode|claude-opus-5-5","claudeCode|sonnet-5-5","claudeCode|fable5.1","claudeCode|custom","claudeCode|fable5.2"]
         let groups=ClaudeModelPresentation.groups(ids.map(item),client:"claudeCode")
-        XCTAssertEqual(groups.first?.items.map(\.id),[ids[3],ids[1],ids[2]])
+        XCTAssertEqual(groups.first?.items.map(\.id),[ids[5],ids[1],ids[2]])
         XCTAssertEqual(groups.flatMap(\.items).map(\.id).sorted(),ids.sorted(),"No source row may disappear")
     }
     func testFloatingFilteringIsPresentationOnly() {
