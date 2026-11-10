@@ -1,7 +1,7 @@
 # Claude / Antigravity 离线额度来源与统一投影
 
 日期：2026-11-10，Asia/Shanghai。基线 HEAD：`c295a3e59dbcbeea26be3d908634c12b60308e76`。
-本批为源码修改；尚未构建、打包、安装或实机 GUI 验收。用户要求不发送网络请求，因此没有推送、查询或触发云端工作流。
+下文记录首次源码阶段的调查和检查。当时按用户要求没有联网或触发 CI。后续用户明确要求“替换”，因此在保持额度读取离线的前提下进行云端构建与本机安装；最新进度与证据见 [build 1010 安装记录](2026-11-10-build1010-installation.md)。
 
 ## 定位：Claude 持续运行，旧文件却不再更新
 
@@ -49,7 +49,7 @@ Antigravity 优先读取存在的 Tools 当前所选账号缓存；没有 Tools 
 
 存储职责 A–D、原始 Token/计价账本、迁移、认证配置、网络设置均未改动；没有写入 provider 缓存或用户业务数据库。
 
-## 检查与未执行边界
+## 首次源码阶段检查与未执行边界
 
 - 新增共享 `fixtures/local-quota-caches.json`：20 个合成案例，涵盖 zstd/identity、完整性损坏、错误来源、真实 0、20 分钟边界、未来时间、无效/缺失字段、已过 reset、账号不匹配、禁用、禁止访问、protobuf 默认零值及未知采样时间。包含假凭据标记以检查投影不泄漏；不含真实用户记录。
 - 新增 Swift `OfflineClientQuotaTests`、Rust `offline_quota_cache_tests`、Tauri `offlineQuotaProjection.test.mjs`；更新原消费者、独立刷新失败与 API 模式回归，覆盖 Antigravity 接线。上述完整测试套件 **NOT_RUN**。
@@ -58,4 +58,4 @@ Antigravity 优先读取存在的 Tools 当前所选账号缓存；没有 Tools 
 - **PASS**：`git diff --check`；受保护文件 `AGENTS.md`、`HANDOFF.md`、`2026-10-03-windows-incomplete-scan-report.md` 的 SHA256 与接手基线一致；原有其他 dirty/untracked 材料保留。
 - **NOT_RUN**：原生构建/测试、完整前端测试、云端门禁、候选包、安装、GUI 验收。遵循本轮不联网和项目云端构建规则，没有在本机替代重编译；也没有使用旧测试二进制证明新代码。
 
-后续需在允许 CI 联网后完成编译与三大云端门禁；实机替换或 GUI 验收前仍按用户在场规则安排。当前 `/Applications/Codex Token Bar.app` 未因本批修改而替换。
+上述 NOT_RUN 是首次源码阶段的状态；后续云端门禁和安装结果单独记录，不将云端渲染测试或进程启动当作完整 GUI 验收。

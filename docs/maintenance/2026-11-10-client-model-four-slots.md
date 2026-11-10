@@ -1,6 +1,6 @@
 # 按客户端排列模型费用，每行四项
 
-2026-11-10。基线 `c295a3e59dbcbeea26be3d908634c12b60308e76`；本批是在前一批离线额度改动之上继续修改工作树。用户已批准“按客户端、每组四个、有用量自动补位、其他也按客户端分组”的方案。没有联网、推送、构建、安装或 GUI 操作。
+2026-11-10。基线 `c295a3e59dbcbeea26be3d908634c12b60308e76`；本批是在前一批离线额度改动之上继续修改工作树。用户已批准“按客户端、每组四个、有用量自动补位、其他也按客户端分组”的方案。下文的 NOT_RUN 记录首次离线源码阶段；用户随后要求“替换”，最新云端门禁及安装证据见 [build 1010 安装记录](2026-11-10-build1010-installation.md)。
 
 ## 定位与扫描
 
@@ -47,7 +47,7 @@ Swift 的主生产入口为 `DashboardModelCostOrder.groups`；TS 为 `orderedCo
 
 `standard-api-price-history.json` 是 Codex/OpenAI 额度反推的专属表，不向它加入无法被 Claude 计价消费的孤立条目。Claude Fable 的标准、Fast 与写缓存 TTL 由 PriceBook 和既有多客户端逐请求计价入口处理。
 
-## 检查结果与边界
+## 首次源码阶段检查结果与边界
 
 - PASS：直接用 Node 内置 TypeScript 支持加载实际 `orderedCostGroups` 及其生产依赖，跑共享全集与 7 个专项场景，三种输入排列共 24 次；验证主力优先、同周期补位、旧模型下沉、第五项保留、来源隔离、空周期与 Token/金额守恒。
 - PASS：Fable5.2 的 canonical/name/Bedrock alias 三种短名映射与最新 Fable 目录选择。
@@ -55,6 +55,6 @@ Swift 的主生产入口为 `DashboardModelCostOrder.groups`；TS 为 `orderedCo
 - PASS：价格表 v5 schema、103 个解析例、价格/货币 fixtures；Swift 内嵌 JSON 与共享 JSON 完全一致；vendor 全部 hash/provenance 检查。
 - PASS：修改 Swift 文件和测试的语法解析、Rust 计价测试所在文件语法解析、JS 测试语法检查、`git diff --check`。
 - NOT_RUN：完整 Swift/Rust 类型检查、原生编译与测试；React/TSX 类型检查、组件 DOM 测试、云端三大门禁、打包和 GUI。没有本地前端依赖，因此不下载依赖或绕过云端构建约定。新增共享回归与“另 1 项”展开交互测试已落盘，等待云端执行。
-- 保护文件 hash 与接手基线一致；前一批离线额度补丁和原有 dirty/untracked 材料保留。当前安装应用未替换。
+- 保护文件 hash 与接手基线一致；前一批离线额度补丁和原有 dirty/untracked 材料保留。首次离线检查时未替换安装应用；后续安装结果见上方链接。
 
-下一验收应比较四列布局的常用/最窄窗口、各客户端实际模型、今日/7d/累计切换、Other 展开前后合计一致，以及 Fable 首次真实用量出现后的自动补位。安装/GUI 前仍遵守用户在场询问规则。
+完整 GUI 验收仍应比较四列布局的常用/最窄窗口、各客户端实际模型、今日/7d/累计切换、Other 展开前后合计一致，以及 Fable 首次真实用量出现后的自动补位。用户的“替换”授权涵盖本次安装与重新启动；完整交互式 GUI 测试继续遵守用户在场规则。
