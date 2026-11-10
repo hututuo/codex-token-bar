@@ -5,7 +5,7 @@ import React from "react";
 import {renderToStaticMarkup} from "react-dom/server";
 import {withSsrModules} from "../test/ssrHarness.mjs";
 
-const fixture=JSON.parse(await readFile(new URL("../../../../fixtures/local-quota-caches.json",import.meta.url),"utf8"));
+const fixture=JSON.parse(await readFile(new URL("../../../fixtures/local-quota-caches.json",import.meta.url),"utf8"));
 
 test("shared offline quotas retain Antigravity model pools and Claude resets across scopes",async()=>withSsrModules(async load=>{
   const {quotaItems,orderedQuotaItems,defaultQuotaSelection}=await load("/src/multiClient/integratedClientModel.ts");

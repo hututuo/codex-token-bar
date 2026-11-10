@@ -19,7 +19,7 @@ export function codexQuotaProvider(quota?: QuotaSnapshot): ClientQuotaProvider {
     return { client: "codex", state: windows.length ? "available" : "unavailable", source: "codex-existing", windows, notice: "沿用 Codex 现有额度刷新，不额外请求" };
   } };
 }
-export const claudeQuotaSetup = "可手动配置本地 statusLine 命令（TokenBarClaudeLocal / ClaudeLocalReader），也兼容已有 claude-monitor 缓存。本软件不会安装工具、修改 Claude 配置或联网。";
+export const claudeQuotaSetup = "可手动配置本地 statusLine 命令（TokenBarClaudeLocal / ClaudeLocalReader），也兼容已有 claude-monitor --statusline 缓存。本软件不会安装工具、修改 Claude 配置或联网。";
 export function unavailableQuota(client: string): ClientQuotaReading {
   if (client === "antigravity") return {client,state:"notConnected",source:"local-antigravity-state",windows:[],notice:"未读到可用的 Antigravity 本地额度缓存。只读已有文件，不启动客户端、不发网络请求。"};
   return {client, state:"notConnected", source:client === "claudeCode" ? "local-statusline" : client === "claudeDesktop" ? "local-desktop-history" : "unsupported", windows:[], notice:client === "claudeCode" ? claudeQuotaSetup : client === "claudeDesktop" ? "未读到可用的 Desktop 本地额度历史。仅读取 plan-usage-history.json，不发网络请求。" : "尚无本地额度提供者；Token 用量仍可读取。联网额度保持关闭。"};

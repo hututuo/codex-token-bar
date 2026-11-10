@@ -12979,7 +12979,7 @@ details.session-management-banner {
 
 .stats-model-cost-group-label{min-width:0;white-space:normal;display:flex;flex-direction:column;gap:3px}
 .stats-model-cost-expand{align-self:flex-start;padding:0;border:0;background:transparent;color:var(--accent);font-size:9px;cursor:pointer}
-.stats-model-cost-other-heading{color:var(--muted);font-size:10px;font-weight:600;padding-top:2px}
+.stats-model-cost-other-heading{color:var(--muted);font-size:10px;font-weight:var(--weight-semibold);padding-top:2px}
 .stats-model-cost-primary-card .model-cost-name,
 .stats-model-cost-secondary-chip .model-cost-name {
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;

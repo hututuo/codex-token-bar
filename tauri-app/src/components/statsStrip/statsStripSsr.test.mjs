@@ -273,7 +273,7 @@ test("one anonymous model cannot hide the known cycle prices or total", async ()
         for(const element of card.children)assert.notEqual(window.getComputedStyle(element).gridRow,"2");
         assert.ok(card.title.includes("双击修改该模型颜色"));
         assert.equal(window.getComputedStyle(card.querySelector("em")).textOverflow,"clip");
-        assert.equal(window.getComputedStyle(card.querySelector("em")).minWidth,"0px");
+        assert.equal(parseFloat(window.getComputedStyle(card.querySelector("em")).minWidth),0);
       }
       assert.doesNotMatch(container.textContent, /价格未知/);assert.match(container.textContent,/未知模型.*参考/);
       assert.doesNotMatch(container.textContent, /模型身份待补全|本期模型明细待读取/);

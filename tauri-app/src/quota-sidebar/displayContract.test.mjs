@@ -92,7 +92,7 @@ test("real account quota IPC -> useCompactPanelData -> rail and detail preserve 
         const bothWindows = { ...latest, snapshot: { ...latest.snapshot, fiveHourExpectedRemainingPercent: 50 }, quota: { ...latest.quota, quota: { ...latest.quota.quota, fiveHour: { ...latest.quota.quota.fiveHour, availability: "measured", remainingPercent: .4 } } } };
         const bothMarkup = renderToStaticMarkup(React.createElement(QuotaDetails, { data: bothWindows }));
         inspection.innerHTML = bothMarkup;
-        assert.ok(Math.abs(parseFloat(inspection.querySelector('[data-quota-id="codex:5h"]').getAttribute('transform').slice(7)) - 180) < 1e-8);
+        assert.ok(Math.abs(parseFloat(inspection.querySelector('.integrated-full-pace[data-quota-id="codex:5h"]').getAttribute('transform').slice(7)) - 180) < 1e-8);
         assert.equal((bothMarkup.match(/class="integrated-full-pace"/g) || []).length, 2);
         assert.equal(window.document.querySelector('.integrated-paired-ring strong').textContent, "19%");
         assert.ok(renderToStaticMarkup(React.createElement(QuotaDetails, { data: latest })).includes("19%"));

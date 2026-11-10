@@ -12,9 +12,9 @@ test('Claude latest family rows have colors and retain every distinct accounting
  assert.deepEqual(claudeModelIdentity('claude-3-5-haiku-20241022').version,[3,5]);
  assert.deepEqual(claudeModelIdentity('claude-opus-20261001').version,[]);
  assert.equal(claudeModelIdentity('claudeCode|fable5.1').label,'Fable 5.1');
- const keys=['claudeCode|opus-4-6','claudeCode|opus-5-5','claudeCode|sonnet-5-5','claudeCode|fable5.1','claudeCode|custom'];
+ const keys=['claudeCode|opus-4-6','claudeCode|opus-5-5','claudeCode|sonnet-5-5','claudeCode|fable5.1','claudeCode|custom','claudeCode|fable5.2'];
  const groups=claudeModelGroups(keys.map(key=>({key})),'claudeCode');
- assert.deepEqual(groups[0].items.map(x=>x.key),[keys[3],keys[1],keys[2]]);
+ assert.deepEqual(groups[0].items.map(x=>x.key),[keys[5],keys[1],keys[2]]);
  assert.deepEqual(groups.flatMap(x=>x.items).map(x=>x.key).sort(),[...keys].sort());
  assert.equal(new Set(['opus-5-5','sonnet-5-5','haiku-4-5','fable5.1'].map(modelUsageColor)).size,4);
 }));

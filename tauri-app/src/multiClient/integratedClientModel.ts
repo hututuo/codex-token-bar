@@ -18,7 +18,9 @@ export function quotaFill(item: Pick<QuotaItem, "window">): string {
   return item.window === "5h" ? "#B6EF75" : item.window === "7d" ? "#B4ACFF" : "#78B7FF";
 }
 export function quotaWindowTitle(window: string): string {
-  return window === "5h" ? "5小时" : window === "7d" ? "7天" : window;
+  return window === "5h" ? "5小时" : window === "7d" ? "7天"
+    : window === "储备5h" || window === "Reserve 5h" ? "Luna 储备 · 5小时"
+    : window === "储备7d" || window === "Reserve 7d" ? "Luna 储备 · 7天" : window;
 }
 export function quotaTrackHeight(total: number): number {
   return Math.max(2, total);

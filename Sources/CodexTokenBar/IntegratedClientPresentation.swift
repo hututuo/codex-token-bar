@@ -42,7 +42,15 @@ struct ClientQuotaItem: Identifiable, Equatable {
     var brand: String { ClientBrand.hex(client) }
     var fill: String { window == "5h" ? "#B6EF75" : window == "7d" ? "#B4ACFF" : "#78B7FF" }
     var shortClientTitle: String { ClientDisplayScope.title(client) }
-    var windowTitle: String { window == "5h" ? "5小时" : window == "7d" ? "7天" : window }
+    var windowTitle: String {
+        switch window {
+        case "5h": "5小时"
+        case "7d": "7天"
+        case "储备5h", "Reserve 5h": "Luna 储备 · 5小时"
+        case "储备7d", "Reserve 7d": "Luna 储备 · 7天"
+        default: window
+        }
+    }
     var compactValue: String { remaining.map { String(format: "%.0f", $0) } ?? "—" }
     var value: String { remaining.map { String(format: "%.0f%%", $0) } ?? "—" }
     var title: String { ClientDisplayScope.title(client) + " · " + window }

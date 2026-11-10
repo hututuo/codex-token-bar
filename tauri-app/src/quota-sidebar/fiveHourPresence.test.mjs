@@ -67,7 +67,7 @@ test("missing 5h is absent in bars, rings and detail; measured zero remains pres
       assert.equal((hover.match(/class="qs-ring"/g) || []).length, 1);
       assert.equal((hover.match(/class="integrated-paired-ring"/g) || []).length, 1);
       const detail = renderToStaticMarkup(React.createElement(QuotaDetails, { data }));
-      assert.equal(detail.includes("5 小时额度"), windowPresent); assert.ok(detail.includes("7 天额度"));
+      assert.equal(detail.includes("5小时额度"), windowPresent); assert.ok(detail.includes("7天额度"));
     }
     assert.equal(hasFiveHourQuota("measured", NaN), false);
     assert.equal(hasFiveHourQuota("measured", Infinity), false);
