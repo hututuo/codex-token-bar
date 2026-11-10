@@ -1,18 +1,21 @@
 {
-  "schema": 1,
-  "note": "Display order only. Never changes model identity, source, pricing or ledger values. Missing models are not fabricated.",
-  "groups": [
-    {"id":"latest","title":"最新主力","models":["gemini-4-argon","claude-fable-5-1","claude-opus-5-5","claude-sonnet-5-5","claude-haiku-5-5","gpt-6-astra","gpt-6.1-sol","gpt-6.1-terra","gpt-6-luna"],"patterns":[]},
-    {"id":"recent","title":"Gemini · Antigravity","models":["gemini-3.8-flash","claude-opus-5-5","claude-sonnet-5-5","claude-haiku-5-5","claude-opus-5","claude-sonnet-5"],"patterns":[]},
-    {"id":"gpt","title":"GPT 其他","models":[],"patterns":["^gpt-","^o[134](?:-|$)","^chat-latest$","^codex-mini-"]},
-    {"id":"claude","title":"Claude 其他","models":[],"patterns":["^claude-"]},
-    {"id":"other","title":"其他","models":[],"patterns":[]},
-    {"id":"unknown-models","title":"未知模型","models":[],"patterns":[]}
+  "schema": 2,
+  "note": "Display only. Use positive usage in the selected period; never borrow lifetime usage, invent rows, reprice, or drop overflow. Preferred active models first, then eligible models by period tokens, newer version and stable ID.",
+  "columns": 4,
+  "otherVisibleLimit": 4,
+  "clients": [
+    {"id":"codex","title":"Codex","preferred":["gpt-6-astra","gpt-6.1-sol","gpt-6.1-terra","gpt-6-luna"]},
+    {"id":"claudeDesktop","title":"Claude Desktop","preferred":["claude-fable-5-2","claude-opus-5-5","claude-sonnet-5-5","claude-haiku-5-5"]},
+    {"id":"claudeCode","title":"Claude CLI","preferred":["claude-fable-5-2","claude-opus-5-5","claude-sonnet-5-5","claude-haiku-5-5"]},
+    {"id":"antigravity","title":"Antigravity","preferred":["gemini-4-argon","gemini-3.8-flash","claude-opus-5-5","claude-sonnet-5-5"]},
+    {"id":"gemini","title":"Gemini CLI","preferred":["gemini-4-argon","gemini-3.8-flash","gemini-3.7-flash"]},
+    {"id":"deepseek","title":"DSH","preferred":["deepseek-v4.1-flash","deepseek-v4-flash"]},
+    {"id":"opencode","title":"OpenCode","preferred":[]}
   ],
-  "sourceGroups": [
-    {"clients":["antigravity"],"patterns":[".*"],"exceptModels":["gemini-4-argon"],"group":"recent"},
-    {"clients":["codex","gemini","deepseek","opencode"],"patterns":["^claude-(opus|sonnet|haiku)-5-5$"],"exceptModels":[],"group":"recent"}
+  "generations": [
+    {"prefix":"gpt-","pattern":"^gpt-([0-9]+)(?:\\.([0-9]+))?(?:-|$)","minimum":[5,6]},
+    {"prefix":"claude-","pattern":"^claude-(?:fable|opus|sonnet|haiku|mythos)-([0-9]+)(?:[.\\-]([0-9]+))?(?:-|$)","minimum":[5,0]},
+    {"prefix":"gemini-","pattern":"^gemini-([0-9]+)(?:\\.([0-9]+))?(?:-|$)","minimum":[3,7]}
   ],
-  "familyPriority":["astra","sol","terra","luna","cyber","opus","sonnet","haiku","argon","pro","flash","mini","nano"],
-  "clientPriority":["codex","claudeDesktop","claudeCode","antigravity","gemini","deepseek"]
+  "otherPatterns": ["^o[0-9](?:-|$)","^chat-latest$","^codex-mini-"]
 }

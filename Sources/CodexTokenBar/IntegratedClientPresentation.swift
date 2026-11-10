@@ -57,7 +57,7 @@ struct ClientQuotaSelection: Codable, Equatable {
     var colors: [String: String] = [:]
     var pairAcrossClients = false
     func includes(_ item: ClientQuotaItem) -> Bool {
-        !hidden.contains(item.id) && (item.client == "codex" || item.client == "claudeCode" || item.client == "claudeDesktop" || enabled.contains(item.id))
+        !hidden.contains(item.id)
     }
     func arranged(_ items: [ClientQuotaItem]) -> [ClientQuotaItem] {
         items.sorted {
@@ -73,10 +73,10 @@ struct ClientQuotaSelection: Codable, Equatable {
 }
 
 enum ClientQuotaProjection {
-    static func items(codex: AccountQuotaSnapshot, claude: ClientQuotaReading, claudeDesktop: ClientQuotaReading? = nil, includeClaude: Bool, includeFiveHour: Bool = false, preview: Bool = false) -> [ClientQuotaItem] {
+    static func items(codex: AccountQuotaSnapshot, localReadings: [ClientQuotaReading], includeFiveHour: Bool = false, preview: Bool = false) -> [ClientQuotaItem] {
         // Explicit display-only fixture. Callers gate this to the isolated DEBUG preview;
         // never put simulated observations into AccountQuotaStore or quota history.
-        if preview { return previewItems(includeClaude: includeClaude) }
+        if preview { return previewItems(includeClaude: localReadings.contains { $0.client.hasPrefix("claude") }) }
         var items: [ClientQuotaItem] = []
         func add(_ id: String, _ label: String, _ window: AccountQuotaWindow?) {
             let data = QuotaSidebarQuotaPresentation.make(window: window, snapshot: codex)
@@ -95,23 +95,30 @@ enum ClientQuotaProjection {
             add("7d", "7d", codex.sevenDay)
             for window in codex.reserveWindows { add(window.label, window.compactDisplayLabel, window) }
         }
-        for reading in [claude, claudeDesktop].compactMap({ $0 }) where includeClaude {
-            guard reading.client == "claudeCode" || reading.client == "claudeDesktop" else { continue }
+        for reading in localReadings {
+            guard UsageClient(rawValue: reading.client) != nil, reading.source != "unsupported" else { continue }
             if reading.state == "api" {
                 items.append(ClientQuotaItem(id: reading.client + ":api", client: reading.client, window: "API", remaining: nil,
                     resetsAt: nil, source: "API 接入", status: "订阅额度不适用"))
                 continue
             }
+            let sampled = reading.capturedAt.map { " · 采样于 " + $0.formatted(date: .abbreviated, time: .shortened) } ?? ""
+            if ["stale", "cached"].contains(reading.state) {
+                items.append(ClientQuotaItem(id: reading.client + ":cache", client: reading.client, window: "本地缓存", remaining: nil,
+                    resetsAt: nil, source: reading.notice + sampled,
+                    status: reading.state == "stale" ? "额度采样已过期" : "采样时间未知"))
+                continue
+            }
             guard reading.state == "available" else { continue }
-            for label in ["5h", "7d"] {
-                guard let window = reading.windows.first(where: { $0.label == label }) else { continue }
+            var seen = Set<String>()
+            for window in reading.windows {
+                let id = window.id ?? window.label
+                guard seen.insert(id).inserted else { continue }
                 let used = window.usedPercent
                 guard used.isFinite, (0...100).contains(used) else { continue }
-                let source = reading.client == "claudeDesktop" ? "Desktop 本地历史 · 重置时间未知" : "CLI 本地缓存 · 未绑定账号"
-                let sampled = reading.capturedAt.map { " · 采样于 " + $0.formatted(date: .abbreviated, time: .shortened) } ?? ""
-                items.append(ClientQuotaItem(id: reading.client + ":" + label, client: reading.client, window: label,
+                items.append(ClientQuotaItem(id: reading.client + ":" + id, client: reading.client, window: window.label,
                     remaining: 100 - used, resetsAt: window.resetsAt,
-                    source: source + sampled, status: ""))
+                    source: reading.notice + sampled, status: ""))
             }
         }
         return items

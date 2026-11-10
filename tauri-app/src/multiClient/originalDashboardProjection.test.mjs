@@ -52,12 +52,12 @@ test('API connection shows a neutral notice without subscription bars or reset t
  const {quotaItems}=await load('/src/multiClient/integratedClientModel.ts');
  const {QuotaStrip}=await load('/src/components/QuotaStrip.tsx');
  const quota={connectionMode:'api'};
- const items=quotaItems(quota,{state:'notConnected',windows:[]},false,true);
+ const items=quotaItems(quota,[],true);
  assert.deepEqual(items.map(item=>item.id),['codex:api']);
  const {claudeQuotaFromLocalCache}=await load('/src/multiClient/multiClientProduct.ts');
  const claude=claudeQuotaFromLocalCache({state:'api',fiveHour:{usedPercent:90,resetsAt:null}});
  assert.deepEqual(claude.windows,[]);
- const combined=quotaItems(quota,claude,true);
+ const combined=quotaItems(quota,[claude]);
  assert.deepEqual(combined.map(item=>item.id),['codex:api','claudeCode:api']);
  for(const clientItems of [undefined,items]){
   const html=renderToStaticMarkup(React.createElement(QuotaStrip,{snapshot:quota,clientItems}));
@@ -100,7 +100,7 @@ test('client fee scopes retain the original six metrics and model chips',async()
  const html=renderToStaticMarkup(React.createElement(StatsStrip,{stats:{...stats,totalTokens:1200},planLabel:'',clientCosts:periods}));
  assert.equal((html.match(/class="stats-cell/g)??[]).length,6);assert.match(html,/stats-model-cost-secondary-chip/);assert.match(html,/近7天/);assert.match(html,/Sonnet4.6/);assert.doesNotMatch(html,/<table|integrated-stats|选择周期|累计净薅到/);
 }));
-test('client model cost groups include latest Fable with Claude 5.5 and GPT 6 then legacy groups',async()=>withSsrModules(async load=>{
+test('client model cost groups keep source headings and put legacy rows under that client Other',async()=>withSsrModules(async load=>{
  const {clientCostGroups}=await load('/src/multiClient/originalDashboardProjection.ts');
  const item=(key,label)=>({key,label,tokens:100,share:1/8,costUSD:0.01,usesIndependentQuota:false,referenceCostUSD:null,color:'#123456'});
  const recordedRows=[
@@ -113,12 +113,13 @@ test('client model cost groups include latest Fable with Claude 5.5 and GPT 6 th
  ];
  const groups=clientCostGroups(recordedRows);
  assert.deepEqual(groups.map(({id,label})=>({id,label})),[
-  {id:'latest',label:'最新主力'},
-  {id:'gpt',label:'GPT 其他'},
-  {id:'claude',label:'Claude 其他'},
+  {id:'client:codex',label:'Codex'},
+  {id:'client:claudeDesktop',label:'Claude Desktop'},
+  {id:'client:claudeCode',label:'Claude CLI'},
+  {id:'other:claudeCode',label:'Claude CLI'},
  ]);
  assert.deepEqual(groups[0].items.map(item=>item.key),[
-  'claudeCode|fable-5-1','claudeDesktop|opus-5-5','claudeCode|sonnet-5-5','codex|gpt-6-astra',
+  'codex|gpt-6-astra','codex|gpt-5.6-sol',
  ]);
  const displayRows=groups.flatMap(group=>group.items);
  const recordedDisplayRows=[...recordedRows].sort((a,b)=>a.key.localeCompare(b.key));

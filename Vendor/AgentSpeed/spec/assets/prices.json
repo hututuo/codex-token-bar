@@ -1,8 +1,8 @@
 {
   "_comment": "API list prices for API-equivalent costs (METRICS 9). USD per million tokens. Edit by hand: raise version by one, set updated and each changed entry's checked date, add tests for new id forms, run python3 spec/tools/prices.py. Apps sync this file from main daily (spec/NETWORK.md).",
   "schema": 1,
-  "version": 4,
-  "updated": "2026-11-06",
+  "version": 5,
+  "updated": "2026-11-10",
   "currency": "USD",
   "unit": "perMillionTokens",
   "providers": {
@@ -319,6 +319,32 @@
       ],
       "source": "https://platform.claude.com/docs/en/about-claude/pricing",
       "checked": "2026-10-22"
+    },
+    {
+      "id": "claude-fable-5-2",
+      "provider": "anthropic",
+      "name": "Claude Fable 5.2",
+      "status": "current",
+      "prices": {
+        "input": 8,
+        "cachedInput": 0.2,
+        "cacheWrite": 10,
+        "cacheWrite1h": 16,
+        "output": 40
+      },
+      "fast": {
+        "prices": {
+          "input": 16,
+          "cachedInput": 0.4,
+          "cacheWrite": 20,
+          "cacheWrite1h": 32,
+          "output": 80
+        }
+      },
+      "aliases": ["anthropic.claude-fable-5-2"],
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "checked": "2026-11-10",
+      "note": "Released 2026-11-09. Official standard and fast API rates; fast cache rates use the documented stacking of prompt-cache multipliers. Preserve Fable 5.1 prices; high effort does not imply fast mode."
     },
     {
       "id": "claude-fable-5-1",
@@ -4477,6 +4503,10 @@
     }
   ],
   "tests": [
+    {"model":"claude-fable-5-2","expect":"claude-fable-5-2"},
+    {"model":"anthropic.claude-fable-5-2","expect":"claude-fable-5-2"},
+    {"model":"claude-fable-5-2-fast","expect":"claude-fable-5-2 fast"},
+    {"model":"claude-fable-5-2-20261109","expect":"claude-fable-5-2"},
     {
       "model": "claude-opus-5-5",
       "expect": "claude-opus-5-5"

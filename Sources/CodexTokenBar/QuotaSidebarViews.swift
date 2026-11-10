@@ -198,8 +198,7 @@ struct QuotaSidebarRail: View {
     private var availableQuotaItems: [ClientQuotaItem] {
         if let quotaItemsOverride { return quotaItemsOverride }
         let allowed = ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs)
-        return ClientQuotaProjection.items(codex: quota.snapshot, claude: clients.quotaReading(.claudeCode), claudeDesktop: clients.quotaReading(.claudeDesktop),
-            includeClaude: clients.availablePreferences.contains { $0.client == .claudeCode || $0.client == .claudeDesktop },
+        return ClientQuotaProjection.items(codex: quota.snapshot, localReadings: clients.localQuotaReadings,
             includeFiveHour: quotaSelection.enabled.contains("codex:5h"), preview: ClientPreviewMode.simulated)
             .filter { allowed.contains($0.client) }
     }
@@ -815,8 +814,7 @@ struct QuotaSidebarDetailView: View {
     private func detailQuotaItems(_ quota: AccountQuotaSnapshot) -> [ClientQuotaItem] {
         let allowed = ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs)
         if let quotaItemsOverride { return quotaItemsOverride.filter { allowed.contains($0.client) } }
-        return ClientQuotaProjection.items(codex: quota, claude: clients.quotaReading(.claudeCode), claudeDesktop: clients.quotaReading(.claudeDesktop),
-            includeClaude: allowed.contains("claudeCode") || allowed.contains("claudeDesktop"), preview: ClientPreviewMode.simulated)
+        return ClientQuotaProjection.items(codex: quota, localReadings: clients.localQuotaReadings, preview: ClientPreviewMode.simulated)
             .filter { allowed.contains($0.client) }
     }
 

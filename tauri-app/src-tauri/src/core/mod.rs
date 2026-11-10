@@ -14,6 +14,11 @@ pub mod desktop_stream;
 pub mod live_rate;
 pub mod localtime;
 pub mod multi_client_product;
+pub mod local_quota_cache;
+pub mod claude_desktop_http_cache;
+pub mod antigravity_local_quota;
+#[cfg(test)]
+mod offline_quota_cache_tests;
 pub mod multi_client_usage;
 pub(crate) mod model_presentation;
 pub mod provider_repair;

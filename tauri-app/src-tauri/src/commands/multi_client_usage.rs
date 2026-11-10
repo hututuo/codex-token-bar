@@ -133,3 +133,8 @@ pub(crate) async fn read_claude_local_quota() -> Result<ClaudeLocalQuotaSnapshot
 pub(crate) async fn read_claude_desktop_quota() -> Result<ClaudeLocalQuotaSnapshot, String> {
     run_blocking_command(|| Ok(multi_client_usage::read_claude_desktop_quota())).await
 }
+
+#[tauri::command]
+pub(crate) async fn read_local_client_quotas() -> Result<Vec<crate::core::multi_client_product::QuotaProviderSnapshot>, String> {
+    run_blocking_command(|| Ok(multi_client_usage::read_local_client_quotas())).await
+}

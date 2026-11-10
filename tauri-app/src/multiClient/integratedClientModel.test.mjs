@@ -8,11 +8,11 @@ test("Desktop quota keeps separate client windows and never substitutes CLI in D
   const {quotaItems,orderedQuotaItems,defaultQuotaSelection}=await load("/src/multiClient/integratedClientModel.ts");
   const cli={client:"claudeCode",state:"available",windows:[{label:"5h",usedPercent:25,resetsAt:null}]};
   const desktop={client:"claudeDesktop",state:"available",capturedAt:"2026-11-04T02:14:00Z",windows:[{label:"5h",usedPercent:13,resetsAt:null},{label:"7d",usedPercent:29,resetsAt:null}]};
-  const rows=quotaItems(undefined,cli,true,false,desktop);
+  const rows=quotaItems(undefined,[cli,desktop]);
   const visible=orderedQuotaItems(rows,defaultQuotaSelection,["claudeDesktop"]);
   assert.deepEqual(visible.map(r=>r.id),["claudeDesktop:5h","claudeDesktop:7d"]);
   assert.deepEqual(visible.map(r=>r.remaining),[87,71]);assert.ok(visible.every(r=>r.resetsAt===null && r.source.includes("采样于")));
-  assert.deepEqual(orderedQuotaItems(quotaItems(undefined,cli,true),defaultQuotaSelection,["claudeDesktop"]),[]);
+  assert.deepEqual(orderedQuotaItems(quotaItems(undefined,[cli]),defaultQuotaSelection,["claudeDesktop"]),[]);
  }));
 test("retained source does not display Codex during loading", async () =>
   withSsrModules(async (load) => {
@@ -36,8 +36,7 @@ test("quota adapters convert Codex fractions once, preserve Claude percent and u
         fiveHour: { availability: "measured", remainingPercent: 0 },
         sevenDay: { availability: "measured", remainingPercent: 0.92 },
       },
-      { state: "notConnected", windows: [] },
-      true,
+      [{ state: "notConnected", windows: [] }],
     );
     assert.deepEqual(
       items.map((i) => i.remaining),
@@ -62,10 +61,10 @@ test("Claude quota only shows measured usable windows, including zero remaining"
   withSsrModules(async (load) => {
     const { quotaItems } = await load("/src/multiClient/integratedClientModel.ts");
     for (const state of ["missing", "notConnected", "stale", "invalid", "unavailable"])
-      assert.equal(quotaItems(undefined, {state, windows:[{label:"5h", usedPercent:20}]}, true).filter(i => i.client === "claudeCode").length, 0);
-    const items=quotaItems(undefined, {state:"available", windows:[{label:"5h",usedPercent:100}]}, true);
+      assert.ok(quotaItems(undefined, [{state, windows:[{label:"5h", usedPercent:20}]}]).filter(i => i.client === "claudeCode").every(i=>i.remaining===null));
+    const items=quotaItems(undefined, [{state:"available", windows:[{label:"5h",usedPercent:100}]}]);
     assert.deepEqual(items.filter(i=>i.client === "claudeCode").map(i=>[i.id,i.remaining]), [["claudeCode:5h",0]]);
-    const invalid=quotaItems(undefined, {state:"available",windows:[{label:"5h",usedPercent:NaN},{label:"7d",usedPercent:0}]}, true);
+    const invalid=quotaItems(undefined, [{state:"available",windows:[{label:"5h",usedPercent:NaN},{label:"7d",usedPercent:0}]}]);
     assert.deepEqual(invalid.filter(i=>i.client === "claudeCode").map(i=>i.remaining), [100]);
   }));
 test("left and right are distinct half arcs, never two upper semicircles", async () =>

@@ -25,8 +25,7 @@ struct QuotaSidebarModuleSettingsView: View {
     private var selection: ClientQuotaSelection { .decode(selectionRaw) }
     private var quotas: [ClientQuotaItem] {
         if let quotaItemsOverride { return quotaItemsOverride }
-        return ClientQuotaProjection.items(codex: quotaSnapshot, claude: clients.quotaReading(.claudeCode), claudeDesktop: clients.quotaReading(.claudeDesktop),
-            includeClaude: clients.availablePreferences.contains { $0.client == .claudeCode || $0.client == .claudeDesktop },
+        return ClientQuotaProjection.items(codex: quotaSnapshot, localReadings: clients.localQuotaReadings,
             includeFiveHour: selection.enabled.contains("codex:5h"), preview: ClientPreviewMode.simulated)
             .filter { scopeIncludes($0.client) }
     }
@@ -173,8 +172,7 @@ struct QuotaSidebarSettingsRailPreview: View {
     private var quotas: [ClientQuotaItem] {
         if let quotaItemsOverride { return quotaItemsOverride.filter(selection.includes) }
         let allowed = ClientDisplayScope.clients(scope, available: clients.displayClientIDs)
-        return ClientQuotaProjection.items(codex: quota.snapshot, claude: clients.quotaReading(.claudeCode), claudeDesktop: clients.quotaReading(.claudeDesktop),
-            includeClaude: clients.availablePreferences.contains { $0.client == .claudeCode || $0.client == .claudeDesktop },
+        return ClientQuotaProjection.items(codex: quota.snapshot, localReadings: clients.localQuotaReadings,
             includeFiveHour: selection.enabled.contains("codex:5h"), preview: ClientPreviewMode.simulated)
             .filter { (allowed.contains($0.client)) && selection.includes($0) }
     }

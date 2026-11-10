@@ -155,7 +155,15 @@ struct ClientQuotaReadingView: View {
                     Text("\(window.label) 剩余 \(Int((100 - window.usedPercent).rounded()))%").font(compact ? .system(size: 9) : .callout)
                 }
             } else {
-                Text(reading.state == "stale" ? "额度采样已过期" : reading.state == "notConnected" ? "额度未接入" : "额度不可用").font(compact ? .system(size: 9) : .callout)
+                Text(reading.state == "stale" ? "额度采样已过期" : reading.state == "cached" ? "采样时间未知" : reading.state == "notConnected" ? "额度未接入" : "额度不可用").font(compact ? .system(size: 9) : .callout)
+                if !compact && ["stale", "cached"].contains(reading.state) && !reading.windows.isEmpty {
+                    DisclosureGroup("查看历史缓存（非当前余额）") {
+                        ForEach(reading.windows, id: \.label) { window in
+                            Text("\(window.label) · 上次剩余 \(Int((100 - window.usedPercent).rounded()))%")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
             }
             if !compact {
                 if let captured = reading.capturedAt {

@@ -5,7 +5,6 @@ import {
   useMultiClientUsage,
   type UsageClient,
 } from "./MultiClientUsage";
-import { unavailableQuota } from "./multiClientProduct";
 import {
   scopeKey,
   scopeClients,
@@ -48,7 +47,7 @@ export function useClientScope() {
       .filter(
         (p) =>
           p.enabled || snapshot.summaries.some((s) => s.client === p.client) ||
-          snapshot.quotas?.some(q => q.client === p.client && q.state === "available" && q.windows.length > 0),
+          snapshot.quotas?.some(q => q.client === p.client && (q.windows.length > 0 || q.capturedAt)),
       )
       .map((p) => p.client), [snapshot.preferences, snapshot.summaries, snapshot.quotas]);
   const allowed = useMemo(() => scopeClients(raw, available), [raw, available]);
@@ -73,36 +72,18 @@ export function useClientQuotaSelection() {
 export function useClientQuotaItems(codex?: QuotaSnapshot) {
   const { allowed, snapshot } = useClientScope(),
     { selection } = useClientQuotaSelection();
-  const claude =
-    snapshot.quotas?.find((q) => q.client === "claudeCode") ??
-    unavailableQuota("claudeCode");
-  const desktop = snapshot.quotas?.find(q=>q.client==="claudeDesktop") ?? unavailableQuota("claudeDesktop");
-  const includeClaude =
-    snapshot.preferences.some(
-      (p) =>
-        (p.client === "claudeCode" || p.client === "claudeDesktop") &&
-        (p.enabled || snapshot.detections?.some((d) => d.client === p.client)),
-    ) || selection.enabled.some((id) => id.startsWith("claudeCode:") || id.startsWith("claudeDesktop:")) || claude.state === "available" || desktop.state === "available";
+  const localReadings=(snapshot.quotas??[]).filter(q=>q.source!=="unsupported" && (
+    q.windows.length>0 || q.capturedAt || snapshot.preferences.some(p=>p.client===q.client && p.enabled)
+    || snapshot.detections?.some(d=>d.client===q.client)));
+  const catalog=quotaItems(codex,localReadings,selection.enabled.includes("codex:5h"));
   return {
     items: orderedQuotaItems(
-      quotaItems(
-        codex,
-        claude,
-        includeClaude,
-        selection.enabled.includes("codex:5h"),
-        desktop,
-      ),
+      catalog,
       selection,
       allowed,
     ),
     catalog: orderedQuotaItems(
-      quotaItems(
-        codex,
-        claude,
-        includeClaude,
-        selection.enabled.includes("codex:5h"),
-        desktop,
-      ),
+      catalog,
       selection,
       allowed,
       true,

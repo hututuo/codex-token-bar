@@ -24,7 +24,7 @@ final class ClaudeModelPresentationTests: XCTestCase {
 
     func testBundledCatalogProvidesCurrentLatestModelFloors() {
         let expected = [
-            "fable": ("claude-fable-5-1", [5, 1]),
+            "fable": ("claude-fable-5-2", [5, 2]),
             "opus": ("claude-opus-5-5", [5, 5]),
             "sonnet": ("claude-sonnet-5-5", [5, 5]),
             "haiku": ("claude-haiku-5-5", [5, 5]),
@@ -61,7 +61,7 @@ final class ClaudeModelPresentationTests: XCTestCase {
         let groups = ClaudeModelPresentation.groups(items, client: "claude")
 
         XCTAssertEqual(groups.first(where: { $0.id == "claude:latest" })?.items.map(\.id), [
-            "claudeDesktop|fable-5-1", "claudeDesktop|opus-6-1", "claudeCode|haiku-6",
+            "claudeDesktop|opus-6-1", "claudeCode|haiku-6",
         ])
         XCTAssertEqual(groups.flatMap(\.items).sorted { $0.id < $1.id }, items.sorted { $0.id < $1.id })
     }

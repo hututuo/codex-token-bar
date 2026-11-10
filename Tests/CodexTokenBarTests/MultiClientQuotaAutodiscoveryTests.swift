@@ -21,7 +21,7 @@ final class MultiClientQuotaAutodiscoveryTests: XCTestCase {
         let store = MultiClientUsageStore(defaults: defaults, databaseURL: databaseURL, quotaReader: { .missing }, desktopQuotaReader: {
             calls.increment(); return available
         })
-        store.refreshClaudeQuotaCache(); store.refreshClaudeQuotaCache(); store.refresh()
+        store.refreshLocalQuotaCaches(); store.refreshLocalQuotaCaches(); store.refresh()
         for _ in 0..<100 where store.claudeDesktopQuota.state != "available" || store.refreshing { try await Task.sleep(for: .milliseconds(10)) }
         XCTAssertEqual(store.claudeQuota.state, "missing")
         XCTAssertEqual(store.quotaReading(.claudeDesktop).windows.first?.usedPercent, 13)
@@ -60,8 +60,8 @@ final class MultiClientQuotaAutodiscoveryTests: XCTestCase {
         XCTAssertFalse(store.preferences.contains { $0.enabled })
         XCTAssertFalse(store.displayClientIDs.contains(UsageClient.claudeCode.rawValue))
         XCTAssertFalse(store.availablePreferences.contains { $0.client == .claudeCode })
-        store.refreshClaudeQuotaCache()
-        store.refreshClaudeQuotaCache()
+        store.refreshLocalQuotaCaches()
+        store.refreshLocalQuotaCaches()
         store.refresh()
         for _ in 0..<100 where store.claudeQuota.state != "available" || store.refreshing {
             try await Task.sleep(for: .milliseconds(10))
@@ -89,7 +89,7 @@ final class MultiClientQuotaAutodiscoveryTests: XCTestCase {
         defaults.set(try JSONEncoder().encode([preference]), forKey: MultiClientUsageStore.preferencesKey)
         let store = MultiClientUsageStore(defaults: defaults, databaseURL: root.appendingPathComponent("usage.sqlite"), quotaReader: { .missing }, desktopQuotaReader: { .missing })
 
-        store.refreshClaudeQuotaCache()
+        store.refreshLocalQuotaCaches()
         store.refresh()
         for _ in 0..<100 where store.total(.claudeCode) == 0 || store.refreshing {
             try await Task.sleep(for: .milliseconds(10))

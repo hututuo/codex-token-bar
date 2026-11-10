@@ -21,7 +21,7 @@ export function ClientQuotaSettings({ codex, colorsOnly = false }: { codex?: Quo
     {catalog.map(i => <div className="integrated-quota-option" key={i.id}>
       <i style={{ background: clientBrand[i.client] }}/>
       <label>{!colorsOnly && <input type="checkbox"
-        checked={!selection.hidden.includes(i.id) && (i.client === "codex" || i.client === "claudeCode" || selection.enabled.includes(i.id))}
+        checked={!selection.hidden.includes(i.id)}
         onChange={event => save({ ...selection,
           hidden: event.target.checked ? selection.hidden.filter(id => id !== i.id) : [...new Set([...selection.hidden, i.id])],
           enabled: event.target.checked ? [...new Set([...selection.enabled, i.id])] : selection.enabled.filter(id => id !== i.id),

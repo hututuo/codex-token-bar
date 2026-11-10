@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "cases": [
+    {
+      "name": "preferred-four-survive-large-older-usage",
+      "rows": [{"key":"codex|gpt-5.5","tokens":10000000},{"key":"codex|gpt-6-sol","tokens":5000},{"key":"codex|gpt-5.6-sol","tokens":10000},{"key":"codex|gpt-6-luna","tokens":1},{"key":"codex|gpt-6.1-terra","tokens":2},{"key":"codex|gpt-6.1-sol","tokens":3},{"key":"codex|gpt-6-astra","tokens":4}],
+      "groups": [{"id":"client:codex","keys":["codex|gpt-6-astra","codex|gpt-6.1-sol","codex|gpt-6.1-terra","codex|gpt-6-luna"]},{"id":"other:codex","keys":["codex|gpt-5.6-sol","codex|gpt-6-sol","codex|gpt-5.5"]}]
+    },
+    {
+      "name": "positive-period-usage-fills-a-missing-slot",
+      "rows": [{"key":"codex|gpt-6-astra","tokens":100},{"key":"codex|gpt-6.1-sol","tokens":50},{"key":"codex|gpt-6-luna","tokens":30},{"key":"codex|gpt-6.1-terra","tokens":0},{"key":"codex|gpt-6-sol","tokens":200},{"key":"codex|gpt-5.6-terra","tokens":10},{"key":"codex|gpt-5.4","tokens":1000000}],
+      "groups": [{"id":"client:codex","keys":["codex|gpt-6-astra","codex|gpt-6.1-sol","codex|gpt-6-luna","codex|gpt-6-sol"]},{"id":"other:codex","keys":["codex|gpt-5.6-terra","codex|gpt-5.4"]}]
+    },
+    {
+      "name": "fifth-claude-model-goes-to-other",
+      "rows": [{"key":"claudeDesktop|claude-fable-5-1","tokens":1000000},{"key":"claudeDesktop|claude-fable-5-2","tokens":1},{"key":"claudeDesktop|claude-opus-5-5","tokens":2},{"key":"claudeDesktop|claude-sonnet-5-5","tokens":3},{"key":"claudeDesktop|claude-haiku-5-5","tokens":4}],
+      "groups": [{"id":"client:claudeDesktop","keys":["claudeDesktop|claude-fable-5-2","claudeDesktop|claude-opus-5-5","claudeDesktop|claude-sonnet-5-5","claudeDesktop|claude-haiku-5-5"]},{"id":"other:claudeDesktop","keys":["claudeDesktop|claude-fable-5-1"]}]
+    },
+    {
+      "name": "old-generations-never-create-primary-rows",
+      "rows": [{"key":"codex|gpt-5.5","tokens":100},{"key":"claudeCode|claude-opus-4-8","tokens":90},{"key":"claudeCode|claude-opus-4-6","tokens":80},{"key":"antigravity|gemini-3-flash-a","tokens":70},{"key":"antigravity|claude-opus-4-6-thinking","tokens":60}],
+      "groups": [{"id":"other:codex","keys":["codex|gpt-5.5"]},{"id":"other:claudeCode","keys":["claudeCode|claude-opus-4-8","claudeCode|claude-opus-4-6"]},{"id":"other:antigravity","keys":["antigravity|gemini-3-flash-a","antigravity|claude-opus-4-6-thinking"]}]
+    },
+    {
+      "name": "other-fold-keeps-all-five-records",
+      "rows": [{"key":"codex|gpt-5.5","tokens":100},{"key":"codex|gpt-5.4","tokens":90},{"key":"codex|gpt-5.3-codex","tokens":80},{"key":"codex|gpt-5.2-codex","tokens":70},{"key":"codex|gpt-4o","tokens":60}],
+      "groups": [{"id":"other:codex","keys":["codex|gpt-5.5","codex|gpt-5.4","codex|gpt-5.3-codex","codex|gpt-5.2-codex","codex|gpt-4o"]}]
+    },
+    {
+      "name": "same-model-keeps-each-client",
+      "rows": [{"key":"antigravity|claude-opus-5-5","tokens":40},{"key":"claudeCode|claude-opus-5-5","tokens":50},{"key":"claudeDesktop|claude-opus-5-5","tokens":60}],
+      "groups": [{"id":"client:claudeDesktop","keys":["claudeDesktop|claude-opus-5-5"]},{"id":"client:claudeCode","keys":["claudeCode|claude-opus-5-5"]},{"id":"client:antigravity","keys":["antigravity|claude-opus-5-5"]}]
+    },
+    {"name":"empty-period-does-not-invent-models","rows":[{"key":"claudeDesktop|claude-fable-5-2","tokens":0}],"groups":[]}
+  ]
+}

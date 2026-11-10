@@ -32,7 +32,7 @@ final class ModelDisplayNamesTests: XCTestCase {
 
     func testEveryPriceEntryAndUnambiguousAliasHasAShortName() {
         let models = PriceBook.bundled.models
-        XCTAssertEqual(models.count, 199)
+        XCTAssertEqual(models.count, 200)
         XCTAssertEqual(Set(ModelDisplayNames.names.keys), Set(models.map(\.id)))
         XCTAssertEqual(Set(ModelDisplayNames.names.values).count, models.count,
             "Different price entries must remain distinguishable")

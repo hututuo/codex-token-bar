@@ -705,8 +705,8 @@
       "sha256": "e43872576849c108bb42b45d43a256f1a6a6cd627f18131e0f007b6943fbd6b5"
     },
     "macos/Sources/AgentSpeedCore/Pricing/BundledPriceAssets.swift": {
-      "reason": "Price assets only from reviewed upstream f32bc2945bce5dcfc94d6befb28dcb2e0abc9532: version 4 adds five Kimi/MiMo entries and documented Kimi aliases. Existing model prices, tiers and periods, including the GPT-6.1 Terra fix, are unchanged. SDK code remains pinned.",
-      "sha256": "8b8582e509dcebdcd7719ec9e6a9684ea99e6737bbe54fc0ca8492677d47dd87"
+      "reason": "Price assets only from reviewed upstream f32bc2945bce5dcfc94d6befb28dcb2e0abc9532: version 4 adds five Kimi/MiMo entries and documented Kimi aliases. Existing model prices, tiers and periods, including the GPT-6.1 Terra fix, are unchanged. SDK code remains pinned. Local v5 adds Fable 5.2 standard/fast rates and its documented alias from official Claude pricing evidence reviewed 2026-11-10; preserves all 199 prior entries, tiers and periods. SDK and upstream pin remain unchanged.",
+      "sha256": "ff9f9de9d14c7d369a2b555475cda3e8ca339fe5c18ca5293bb9a86a1a1f3776"
     },
     "macos/Sources/AgentSpeedCore/Reporting/ReportBody.swift": {
       "reason": "Token Bar report client.app identity; signing protocol unchanged",
@@ -753,8 +753,8 @@
       "sha256": "eb0d7c5974d03aa3960f217f7284912c84b2e076e03738eca92276b4ce0d17e8"
     },
     "spec/assets/prices.json": {
-      "reason": "Exact version-4 price asset from reviewed upstream f32bc2945bce5dcfc94d6befb28dcb2e0abc9532. Adds five Kimi/MiMo entries and documented Kimi aliases; preserves all existing prices/tiers/periods, including GPT-6.1 Terra. No SDK update.",
-      "sha256": "f2d33664761c394070adc8c93ce9d5e83b201c87acb4ec1dbad3b8f982d56eb5"
+      "reason": "Exact version-4 price asset from reviewed upstream f32bc2945bce5dcfc94d6befb28dcb2e0abc9532. Adds five Kimi/MiMo entries and documented Kimi aliases; preserves all existing prices/tiers/periods, including GPT-6.1 Terra. No SDK update. Local v5 adds Fable 5.2 standard/fast rates and its documented alias from official Claude pricing evidence reviewed 2026-11-10; preserves all 199 prior entries, tiers and periods. SDK and upstream pin remain unchanged.",
+      "sha256": "d4c57d4995ac222076c5f3a8594fbaaf275004341bcfa50ef4691e2f0568f5ab"
     },
     "windows/src/AgentSpeed.Core/AgentSpeed.Core.csproj": {
       "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",

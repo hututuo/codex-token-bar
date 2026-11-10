@@ -12,8 +12,8 @@ final class DashboardModelCostOrderTests: XCTestCase {
             XCTAssertEqual(ModelPresentationIdentity.resolve(raw).key, canonical)
             XCTAssertEqual(ModelUsagePresentation.label(for: raw), ModelPresentationIdentity.resolve(raw).label)
             XCTAssertEqual(ModelUsagePresentation.colorHex(for: raw), ModelUsagePresentation.colorHex(for: canonical))
-            XCTAssertEqual(DashboardModelCostOrder.groupID(item("antigravity|" + raw)), "recent")
-            XCTAssertEqual(DashboardModelCostOrder.groupID(item("claudeCode|" + raw)), "claude")
+            XCTAssertEqual(DashboardModelCostOrder.groups([item("antigravity|" + raw)]).first?.id, "other:antigravity")
+            XCTAssertEqual(DashboardModelCostOrder.groups([item("claudeCode|" + raw)]).first?.id, "other:claudeCode")
             XCTAssertEqual(ModelPresentationIdentity.billingIdentifier(raw.lowercased()), raw.lowercased())
         }
         for (key, color) in ModelPresentationIdentity.colors { XCTAssertEqual(ModelUsagePresentation.colorHex(for: key), color) }
@@ -41,12 +41,9 @@ final class DashboardModelCostOrderTests: XCTestCase {
             XCTAssertEqual(groups.flatMap(\.items).sorted { $0.id < $1.id }, rows.sorted { $0.id < $1.id })
         }
         XCTAssertTrue(DashboardModelCostOrder.groups([item("claudeCode|claude-fable-5-1", tokens: 0)]).isEmpty)
-        XCTAssertEqual(DashboardModelCostOrder.policy.groups.first?.models, [
-            "gemini-4-argon", "claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5",
-            "gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna"
-        ])
-        XCTAssertFalse(DashboardModelCostOrder.policy.groups.contains { $0.id == "fable" })
-        XCTAssertFalse(DashboardModelCostOrder.groups([item("codex|gpt-6-sol")]).contains { $0.id == "latest" })
+        XCTAssertEqual(DashboardModelCostOrder.policy.clients.first?.preferred, ["gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna"])
+        XCTAssertTrue(periods.groups(.lifetime).filter { !$0.isSecondary }.allSatisfy { $0.items.count <= 4 })
+        XCTAssertEqual(DashboardModelCostOrder.groups([item("codex|gpt-6-sol")]).first?.id, "client:codex")
     }
     @MainActor
     func testShortPeriodFillsFourSlotsAndUnknownNameFitsSingleRow() throws {
@@ -54,7 +51,7 @@ final class DashboardModelCostOrderTests: XCTestCase {
         XCTAssertEqual(DashboardModelCostGrid(items: [unknown], fillFirstRow: true).slotCount, 4)
         XCTAssertEqual(DashboardModelCostGrid(items: [], fillFirstRow: true).slotCount, 4)
         XCTAssertEqual(DashboardModelCostGrid(items: [unknown], fillFirstRow: false).slotCount, 1)
-        let latest = Array(DashboardModelCostOrder.policy.groups[0].models.prefix(8)).map { item($0, tokens: 55_714_167) }
+        let latest = ["gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna", "gpt-6-sol", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].map { item($0, tokens: 55_714_167) }
         // Measure the production grid, not just its slot policy: a two-column
         // regression doubles the height and must fail even with passing counts.
         for rows in [[], [unknown], Array(latest.prefix(2)), Array(latest.prefix(3)), Array(latest.prefix(4)), latest] {
@@ -77,5 +74,31 @@ final class DashboardModelCostOrderTests: XCTestCase {
             let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
             try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: output).appendingPathComponent("model-order-full-row.png"))
         }
+    }
+
+    func testClientFourSlotSharedCasesAndPeriodIsolation() throws {
+        struct Cases: Decodable {
+            struct Case: Decodable {
+                struct Row: Decodable { let key: String; let tokens: Int }
+                let name: String; let rows: [Row]; let groups: [Fixture.Group]
+            }
+            let cases: [Case]
+        }
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let fixture = try JSONDecoder().decode(Cases.self, from: Data(contentsOf: root.appendingPathComponent("SharedFixtures/client-model-four-slots.json")))
+        for sample in fixture.cases {
+            let rows = sample.rows.map { item($0.key, tokens: $0.tokens) }
+            for input in [rows, Array(rows.reversed())] {
+                let groups = DashboardModelCostOrder.groups(input)
+                XCTAssertEqual(groups.map(\.id), sample.groups.map(\.id), sample.name)
+                XCTAssertEqual(groups.map { $0.items.map(\.id) }, sample.groups.map(\.keys), sample.name)
+                XCTAssertEqual(groups.flatMap(\.items).reduce(0) { $0 + $1.tokens }, rows.reduce(0) { $0 + $1.tokens })
+                XCTAssertTrue(groups.filter { !$0.isSecondary }.allSatisfy { $0.items.count <= 4 })
+                for group in groups where group.isSecondary { XCTAssertEqual(group.visibleLimit, 4) }
+            }
+        }
+        let periods = ClientModelCostPeriods(lifetime: [item("codex|gpt-6-astra"), item("codex|gpt-6.1-sol")], today: [], sevenDay: [item("codex|gpt-6-luna")])
+        XCTAssertTrue(periods.groups(.today).isEmpty)
+        XCTAssertEqual(periods.groups(.sevenDay).flatMap(\.items).map(\.id), ["codex|gpt-6-luna"])
     }
 }

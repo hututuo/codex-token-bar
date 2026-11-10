@@ -17,7 +17,7 @@ test('Claude version parser handles 5.5, provider prefixes, and dated IDs',async
 test('bundled catalog exposes the current latest Claude model ID per family',async()=>withSsrModules(async load=>{
  const {claudeNewestCatalogModelsByFamily:models}=await load('/src/components/claudeModelPresentation.ts');
  assert.deepEqual(Object.fromEntries(Object.entries(models).map(([family,model])=>[family,model.id])),{
-  fable:'claude-fable-5-1',opus:'claude-opus-5-5',sonnet:'claude-sonnet-5-5',haiku:'claude-haiku-5-5',
+  fable:'claude-fable-5-2',opus:'claude-opus-5-5',sonnet:'claude-sonnet-5-5',haiku:'claude-haiku-5-5',
  });
 }));
 
@@ -36,7 +36,7 @@ test('a locally observed version above the catalog floor wins and all source row
  const items=['claudeCode|opus-5-5','claudeDesktop|opus-6-1','claudeCode|haiku-6','claudeDesktop|fable-5-1','claudeCode|custom-model'].map(key=>({key}));
  const groups=claudeModelGroups(items,'claude');
  assert.deepEqual(groups.find(group=>group.id==='claude:latest')?.items.map(item=>item.key),[
-  'claudeDesktop|fable-5-1','claudeDesktop|opus-6-1','claudeCode|haiku-6',
+  'claudeDesktop|opus-6-1','claudeCode|haiku-6',
  ]);
  assert.deepEqual(groups.flatMap(group=>group.items).map(item=>item.key).sort(),items.map(item=>item.key).sort());
 }));

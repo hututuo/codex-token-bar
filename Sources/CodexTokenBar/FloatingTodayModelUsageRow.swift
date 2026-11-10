@@ -322,6 +322,8 @@ enum FloatingTodayModelUsagePresentation {
         let id: String
         let title: String
         let items: [FloatingTodayModelUsageItem]
+        var isSecondary = false
+        var visibleLimit: Int? = nil
     }
 
     static func dashboardFamilyID(for model: String) -> String {

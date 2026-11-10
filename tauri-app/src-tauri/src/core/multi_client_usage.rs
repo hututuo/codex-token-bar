@@ -428,6 +428,8 @@ pub struct ClaudeLocalQuotaWindow {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClaudeLocalQuotaSnapshot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     pub state: String,
     pub captured_at: Option<String>,
     pub five_hour: Option<ClaudeLocalQuotaWindow>,
@@ -941,10 +943,8 @@ fn read_multi_client_usage_snapshot_at(
     settings_path: &Path,
     database_path: &Path,
 ) -> Result<MultiClientUsageSnapshot, String> {
-    // Probe the app-owned cache before touching transcript aggregates. This path is bounded to
-    // one small JSON file and never depends on transcript opt-in or monitoring settings.
-    let local_claude_quota = read_claude_local_quota();
-    let local_claude_desktop_quota = read_claude_desktop_quota();
+    // Bounded local-cache probes stay independent of transcript opt-in and ledger availability.
+    let local_quotas = read_local_client_quotas();
     let (preferences, mut diagnostics) = load_preferences(settings_path);
     let (summaries, today_summaries, seven_day_summaries, updated_at, trend_buckets, daily_buckets) =
         if database_path.exists() {
@@ -1001,8 +1001,7 @@ fn read_multi_client_usage_snapshot_at(
         updated_at,
         trend_buckets,
         daily_buckets,
-        local_claude_quota,
-        local_claude_desktop_quota,
+        local_quotas,
     ))
 }
 
@@ -1015,8 +1014,7 @@ fn make_snapshot(
     updated_at: Option<String>,
     trend_buckets: Vec<MultiClientUsageTrendBucket>,
     daily_buckets: Vec<MultiClientUsageTrendBucket>,
-    local_claude_quota: ClaudeLocalQuotaSnapshot,
-    local_claude_desktop_quota: ClaudeLocalQuotaSnapshot,
+    local_quotas: Vec<QuotaProviderSnapshot>,
 ) -> MultiClientUsageSnapshot {
     MultiClientUsageSnapshot {
         preferences,
@@ -1026,10 +1024,7 @@ fn make_snapshot(
         detections: multi_client_product::detect_clients_cached(),
         trend_buckets,
         daily_buckets,
-        quotas: multi_client_product::quota_provider_snapshots(
-            &local_claude_quota,
-            &local_claude_desktop_quota,
-        ),
+        quotas: local_quotas,
         diagnostics,
         updated_at,
     }
@@ -1039,10 +1034,9 @@ fn refresh_multi_client_usage_at(
     settings_path: &Path,
     database_path: &Path,
 ) -> Result<MultiClientUsageSnapshot, String> {
-    // Always read Claude's local quota cache independently of transcript readers. The reader
-    // has fixed path and byte limits, and does not launch Claude or use credentials/network.
-    let local_claude_quota = read_claude_local_quota();
-    let local_claude_desktop_quota = read_claude_desktop_quota();
+    // Provider cache readers have fixed paths/byte limits and never launch a client or use
+    // credentials/network. Transcript failures must not suppress independently readable quota.
+    let local_quotas = read_local_client_quotas();
     let (preferences, mut diagnostics) = load_preferences(settings_path);
     let enabled = preferences
         .iter()
@@ -1059,8 +1053,7 @@ fn refresh_multi_client_usage_at(
             None,
             Vec::new(),
             Vec::new(),
-            local_claude_quota,
-            local_claude_desktop_quota,
+            local_quotas,
         ));
     }
     // Disabling all readers stops scanning but leaves the independent ledger intact.
@@ -1086,8 +1079,7 @@ fn refresh_multi_client_usage_at(
             aggregates.updated_at,
             aggregates.arrays.trend_buckets,
             aggregates.arrays.daily_buckets,
-            local_claude_quota,
-            local_claude_desktop_quota,
+            local_quotas,
         ));
     }
     if let Some(parent) = database_path.parent() {
@@ -1239,9 +1231,13 @@ fn refresh_multi_client_usage_at(
         aggregates.updated_at,
         aggregates.arrays.trend_buckets,
         aggregates.arrays.daily_buckets,
-        local_claude_quota,
-        local_claude_desktop_quota,
+        local_quotas,
     ))
+}
+
+/// Callable even when transcript discovery or ledger refresh fails.
+pub fn read_local_client_quotas() -> Vec<QuotaProviderSnapshot> {
+    multi_client_product::quota_provider_snapshots(&read_claude_local_quota(), &read_claude_desktop_quota(), &super::antigravity_local_quota::read_cached())
 }
 
 pub fn read_claude_local_quota() -> ClaudeLocalQuotaSnapshot {
@@ -1313,7 +1309,9 @@ pub fn read_claude_desktop_quota() -> ClaudeLocalQuotaSnapshot {
     cached_claude_desktop_quota_read(&mut cache, now, || {
         let path = claude_desktop_history_path(&app_paths::home_dir());
         let now_epoch = OffsetDateTime::now_utc().unix_timestamp_nanos() as f64 / 1_000_000_000.0;
-        read_claude_desktop_quota_at(&path, now_epoch)
+        let history = read_claude_desktop_quota_at(&path, now_epoch);
+        let http = path.parent().and_then(|root| super::claude_desktop_http_cache::read(&root.join("Cache/Cache_Data"), now_epoch));
+        super::claude_desktop_http_cache::select(history, http)
     })
 }
 
@@ -1442,6 +1440,7 @@ fn parse_claude_desktop_usage_history(bytes: &[u8], now_epoch: f64) -> ClaudeLoc
     };
     if now_ms - timestamp_ms > CLAUDE_DESKTOP_HISTORY_MAX_AGE_SECONDS * 1_000.0 {
         return ClaudeLocalQuotaSnapshot {
+            source: None,
             state: "stale".into(),
             captured_at: Some(captured_at),
             five_hour: None,
@@ -1469,6 +1468,7 @@ fn parse_claude_desktop_usage_history(bytes: &[u8], now_epoch: f64) -> ClaudeLoc
     let five_hour = percent("fh");
     let seven_day = percent("sd");
     ClaudeLocalQuotaSnapshot {
+        source: None,
         state: if five_hour.is_some() || seven_day.is_some() {
             "available"
         } else {
@@ -1522,6 +1522,7 @@ fn read_claude_local_quota_at(path: &Path, now_epoch: f64) -> ClaudeLocalQuotaSn
     }
     if now_epoch - captured_epoch > 600.0 {
         return ClaudeLocalQuotaSnapshot {
+            source: None,
             state: "stale".into(),
             captured_at: epoch_seconds_iso(captured_epoch),
             five_hour: None,
@@ -1530,6 +1531,7 @@ fn read_claude_local_quota_at(path: &Path, now_epoch: f64) -> ClaudeLocalQuotaSn
     }
     let Some(rate_limits) = value.get("rate_limits").and_then(Value::as_object) else {
         return ClaudeLocalQuotaSnapshot {
+            source: None,
             state: "missing".into(),
             captured_at: epoch_seconds_iso(captured_epoch),
             five_hour: None,
@@ -1545,6 +1547,7 @@ fn read_claude_local_quota_at(path: &Path, now_epoch: f64) -> ClaudeLocalQuotaSn
         Err(()) => return claude_quota_state("invalid"),
     };
     ClaudeLocalQuotaSnapshot {
+        source: None,
         state: if five_hour.is_some() || seven_day.is_some() {
             "available"
         } else {
@@ -1559,6 +1562,7 @@ fn read_claude_local_quota_at(path: &Path, now_epoch: f64) -> ClaudeLocalQuotaSn
 
 fn claude_quota_state(state: &str) -> ClaudeLocalQuotaSnapshot {
     ClaudeLocalQuotaSnapshot {
+        source: None,
         state: state.into(),
         captured_at: None,
         five_hour: None,
@@ -4883,6 +4887,7 @@ mod tests {
     #[test]
     fn local_claude_quota_is_projected_without_transcript_opt_in() {
         let available = ClaudeLocalQuotaSnapshot {
+            source: None,
             state: "available".into(),
             captured_at: Some("2026-10-25T00:00:00Z".into()),
             five_hour: Some(ClaudeLocalQuotaWindow {
@@ -4892,6 +4897,7 @@ mod tests {
             seven_day: None,
         };
         let desktop = ClaudeLocalQuotaSnapshot {
+            source: None,
             state: "available".into(),
             captured_at: Some("2026-10-25T00:01:00Z".into()),
             five_hour: Some(ClaudeLocalQuotaWindow {
@@ -4909,8 +4915,7 @@ mod tests {
             None,
             Vec::new(),
             Vec::new(),
-            available,
-            desktop,
+            multi_client_product::quota_provider_snapshots(&available, &desktop, &crate::core::antigravity_local_quota::empty("notConnected", "local-antigravity-state")),
         );
 
         assert!(snapshot
@@ -4943,6 +4948,7 @@ mod tests {
         let mut cache = ClaudeLocalQuotaProbeCache::default();
         let mut probes = 0;
         let fresh = ClaudeLocalQuotaSnapshot {
+            source: None,
             state: "available".into(),
             captured_at: Some("2026-10-25T00:00:00Z".into()),
             five_hour: None,
@@ -6042,6 +6048,7 @@ mod tests {
         let mut cache = ClaudeDesktopQuotaProbeCache::default();
         let mut probes = 0;
         let sample = ClaudeLocalQuotaSnapshot {
+            source: None,
             state: "available".into(),
             captured_at: Some("2026-11-04T00:00:00Z".into()),
             five_hour: None,
@@ -7236,6 +7243,15 @@ mod tests {
         assert!(api_cost_micro_usd("claude-opus-5",100_000,10_000,Some(20_000),Some(30_000)).is_some());
         assert_eq!(api_cost_micro_usd("gemini-3.8-flash-x",100_000,10_000,Some(0),Some(0)),None);
         assert_eq!(api_cost_micro_usd("gemini-pro-default",100_000,10_000,Some(0),Some(0)),None);
+    }
+
+    #[test]
+    fn fable52_standard_fast_and_cache_lifetimes_preserve_fable51_prices() {
+        for (model, expected) in [("claude-fable-5-2", 12_240_000), ("anthropic.claude-fable-5-2", 12_240_000),
+            ("claude-fable-5-2-fast", 24_480_000), ("claude-fable-5-1", 15_300_000)] {
+            assert_eq!(api_cost_micro_usd_at(model, 1_000_000, 100_000, Some(200_000), Some(300_000),
+                Some((100_000, 200_000)), Some(1_794_312_000.0)), Some(expected), "{model}");
+        }
     }
 
     #[test]

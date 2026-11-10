@@ -14,6 +14,8 @@
 
 ## Reuse and upstream synchronization
 
+- Local price-only update (2026-11-10): bundled table v5 adds `claude-fable-5-2`, its documented Bedrock alias and explicit `-fast` prices from the official Claude pages reviewed earlier that day. Standard USD/MTok: input 8, cache read 0.20, 5m/1h writes 10/16, output 40; fast prices are twice those values. All 199 pre-existing model entries, periods and tiers are unchanged. Swift's generated asset and the C#/Rust shared JSON consume the same 200-entry table. This is a reviewed local pricing patch, not an upstream SDK update; the pinned commit and original file hashes remain unchanged. No network sync or reporting is enabled.
+
 - Reuse public AgentSpeedCore APIs for local monitoring, source parsing, calibration, execution phases/parents, bundled pricing arithmetic, and report protocol. Keep Token Bar adapters outside the vendor tree.
 - `UPSTREAM.json` pins every copied upstream file and the individually reviewed local adaptations. `python3 scripts/agent_speed_vendor.py check` verifies this offline; `check --remote` checks GitHub HEAD explicitly during release preparation.
 - Before a release, review upstream changes and synchronize both Swift and C# sources/specs/tests as one revision. Preserve the local Claude no-network/no-report policy, original ledgers, client identity adaptations, event-model metadata and isolated test roots.

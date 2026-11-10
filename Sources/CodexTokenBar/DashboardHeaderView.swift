@@ -1271,23 +1271,18 @@ struct DashboardModelCostRow: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else if visibleItems.isEmpty {
-                if scope != .lifetime, dayLabel == nil, clientCosts?.isPreparing != true,
-                   clientCosts?.codexPendingScopes.contains(scope) != true {
-                    DashboardModelCostGrid(items: [], fillFirstRow: true)
-                } else { Text(pendingItems.isEmpty ? emptyDetailText : "已确认范围暂无用量")
+                Text(pendingItems.isEmpty ? emptyDetailText : "已确认范围暂无用量")
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                }
             } else {
                 ForEach(modelFamilies) { group in
-                    HStack(alignment: .top, spacing: 10) {
-                        Text(group.title)
-                            .font(.system(size: 10, weight: .bold)).foregroundStyle(.secondary)
-                            .frame(width: 78, alignment: .leading)
-                        DashboardModelCostGrid(items: group.items, fillFirstRow: scope != .lifetime && dayLabel == nil,
-                            latest: group.id == "latest")
+                    if group.id == modelFamilies.first(where: \.isSecondary)?.id {
+                        Text("其他").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 2)
                     }
+                    DashboardClientModelCostGroup(group: group)
+                        .id("\(scope.rawValue)|\(dayLabel ?? "")|\(group.id)")
                 }
             }
             if scope == .lifetime {
@@ -1308,6 +1303,26 @@ struct DashboardModelCostRow: View {
         .padding(.horizontal, 8)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(dayLabel ?? (scope == .sevenDay ? periodLabel : scope.rawValue))模型费用")
+    }
+}
+
+struct DashboardClientModelCostGroup: View {
+    let group: FloatingTodayModelUsagePresentation.DashboardFamilyGroup
+    @State private var expanded = false
+    private var limit: Int { group.visibleLimit ?? group.items.count }
+    private var hiddenCount: Int { max(0, group.items.count - limit) }
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(group.title).font(.system(size: 10, weight: .bold)).foregroundStyle(.secondary)
+                if hiddenCount > 0 {
+                    Button(expanded ? "收起" : "另\(hiddenCount)项") { expanded.toggle() }
+                        .buttonStyle(.plain).font(.system(size: 9)).foregroundStyle(AppTheme.accentBlue)
+                        .accessibilityLabel(expanded ? "收起\(group.title)其他模型" : "展开\(group.title)其余\(hiddenCount)个模型")
+                }
+            }.frame(width: 88, alignment: .leading).padding(.top, hiddenCount > 0 ? 2 : 8)
+            DashboardModelCostGrid(items: expanded ? group.items : Array(group.items.prefix(limit)), latest: !group.isSecondary)
+        }
     }
 }
 
@@ -1364,7 +1379,7 @@ struct DashboardModelCostGrid: View {
     var latest = false
     var slotCount: Int { fillFirstRow ? max(4, items.count) : items.count }
     var body: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 204), spacing: 7)], spacing: 7) {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 0), spacing: 7), count: DashboardModelCostOrder.policy.columns), spacing: 7) {
             ForEach(0..<slotCount, id: \.self) { index in
                 if index < items.count {
                     let item = items[index]
@@ -1407,23 +1422,9 @@ struct DashboardModelCostChip: View {
     var body: some View {
         // Short display names share one compact row; full source identities
         // and reference-price details remain available in the tooltip.
-        HStack(spacing: 5) {
-            Circle().fill(color).frame(width: 6, height: 6)
-            Text(item.label.replacingOccurrences(of: #"(?i)^GPT[- ]*"#, with: "", options: .regularExpression))
-                .font(.system(size: 10.5, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .lineLimit(1).fixedSize(horizontal: true, vertical: false).layoutPriority(2)
-            Spacer(minLength: 3)
-            Text(item.tokens == 0 ? "暂无记录" : item.tokens.abbreviatedTokens)
-                .font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary)
-                .monospacedDigit().minimumScaleFactor(0.75)
-            if item.tokens > 0 {
-                Text(item.valueText(for: .share))
-                    .font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary)
-                    .monospacedDigit().fixedSize()
-            }
-            Text(amount).font(.system(size: 10.5, weight: .semibold))
-                .foregroundStyle(.primary).monospacedDigit().fixedSize()
+        ViewThatFits(in: .horizontal) {
+            content(showMetrics: true)
+            content(showMetrics: false)
         }
         .lineLimit(1)
         .padding(.horizontal, 8)
@@ -1432,12 +1433,33 @@ struct DashboardModelCostChip: View {
             .fill(color.opacity(0.075)))
         .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous)
             .stroke(color.opacity(0.16), lineWidth: 1).allowsHitTesting(false))
-        // One tooltip/double-click target, without deriving a hit region from
-        // every glyph and decorative shape while scrolling.
         .contentShape(Rectangle())
         .help(description)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(description)
+    }
+
+    private func content(showMetrics: Bool) -> some View {
+        HStack(spacing: 5) {
+            Circle().fill(color).frame(width: 6, height: 6)
+            Text(item.label.replacingOccurrences(of: #"(?i)^GPT[- ]*"#, with: "", options: .regularExpression))
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1).minimumScaleFactor(0.75).layoutPriority(2)
+            Spacer(minLength: 3)
+            if showMetrics {
+                Text(item.tokens == 0 ? "暂无记录" : item.tokens.abbreviatedTokens)
+                    .font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary)
+                    .monospacedDigit().fixedSize()
+                if item.tokens > 0 {
+                    Text(item.valueText(for: .share))
+                        .font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary)
+                        .monospacedDigit().fixedSize()
+                }
+            }
+            Text(amount).font(.system(size: 10.5, weight: .semibold))
+                .foregroundStyle(.primary).monospacedDigit().fixedSize()
+        }
     }
 }
 

@@ -33,7 +33,7 @@ test("Claude quota panel remains unavailable without a captured local provider w
     const { ClaudeLocalQuotaPanel, MultiClientUsageSettings } = await load("/src/multiClient/MultiClientUsage.tsx");
     assert.match(renderToStaticMarkup(React.createElement(ClaudeLocalQuotaPanel)), /额度未接入/);
     const settings = renderToStaticMarkup(React.createElement(MultiClientUsageSettings));
-    assert.match(settings, /不读取凭据、不联网/); assert.doesNotMatch(settings, /api\.anthropic\.com/);
+    assert.match(settings, /不使用登录凭据、不联网/); assert.doesNotMatch(settings, /api\.anthropic\.com/);
   });
 });
 
@@ -44,9 +44,12 @@ test("local Claude quota is still visible when transcript storage fails",async()
   w.__TAURI_INTERNALS__={invoke:async command=>{
     calls.push(command);
     if(command==='refresh_multi_client_usage')throw new Error('fixture usage storage unavailable');
-    if(command==='read_claude_desktop_quota')return {state:'available',capturedAt:'2026-11-04T02:14:00Z',fiveHour:{usedPercent:13,resetsAt:null},sevenDay:{usedPercent:29,resetsAt:null}};
-    assert.equal(command,'read_claude_local_quota');
-    return {state:'available',fiveHour:{usedPercent:25,resetsAt:'2026-10-28T20:00:00Z'},sevenDay:null};
+    assert.equal(command,'read_local_client_quotas');
+    return [
+      {client:'claudeCode',source:'local-statusline',state:'available',windows:[{label:'5h',usedPercent:25,resetsAt:'2026-10-28T20:00:00Z'}]},
+      {client:'claudeDesktop',source:'local-desktop-http-cache',state:'available',capturedAt:'2026-11-04T02:14:00Z',windows:[{label:'5h',usedPercent:13,resetsAt:null}]},
+      {client:'antigravity',source:'local-antigravity-tools',state:'available',windows:[{id:'gemini-4-argon',label:'Argon 4',usedPercent:60,resetsAt:null}]},
+    ];
   }};
   try {
     await withSsrModules(async load=>{
@@ -54,10 +57,11 @@ test("local Claude quota is still visible when transcript storage fails",async()
       function Readout(){const {snapshot}=useMultiClientUsage();return React.createElement('div',null,JSON.stringify(snapshot.quotas??[]));}
       const host=w.document.createElement('div');w.document.body.append(host);root=createRoot(host);
       await act(async()=>root.render(React.createElement(Readout)));
-      assert.deepEqual(calls,['refresh_multi_client_usage','read_claude_local_quota','read_claude_desktop_quota']);
+      assert.deepEqual(calls,['refresh_multi_client_usage','read_local_client_quotas']);
       assert.match(host.textContent,/claudeCode/);assert.match(host.textContent,/"usedPercent":25/);
       assert.match(host.textContent,/claudeDesktop/);assert.match(host.textContent,/"usedPercent":13/);
       assert.match(host.textContent,/"resetsAt":null/);
+      assert.match(host.textContent,/antigravity/);assert.match(host.textContent,/"usedPercent":60/);
     });
   } finally {if(root)await act(async()=>root.unmount());Object.assign(globalThis,prior);await w.happyDOM.abort();}
 });

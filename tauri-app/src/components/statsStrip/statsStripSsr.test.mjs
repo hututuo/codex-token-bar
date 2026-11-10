@@ -273,7 +273,7 @@ test("one anonymous model cannot hide the known cycle prices or total", async ()
         for(const element of card.children)assert.notEqual(window.getComputedStyle(element).gridRow,"2");
         assert.ok(card.title.includes("双击修改该模型颜色"));
         assert.equal(window.getComputedStyle(card.querySelector("em")).textOverflow,"clip");
-        assert.equal(window.getComputedStyle(card.querySelector("em")).minWidth,"max-content");
+        assert.equal(window.getComputedStyle(card.querySelector("em")).minWidth,"0px");
       }
       assert.doesNotMatch(container.textContent, /价格未知/);assert.match(container.textContent,/未知模型.*参考/);
       assert.doesNotMatch(container.textContent, /模型身份待补全|本期模型明细待读取/);
@@ -290,11 +290,11 @@ test("today and seven-day one-model groups fill the original four-slot row witho
     for(const index of [0,1]){
       await React.act(async()=>{tabs[index].click();await settle();});
       assert.equal(container.querySelectorAll('.stats-model-cost-secondary-chip').length,1);
-      assert.equal(container.querySelectorAll('.stats-model-cost-placeholder').length,3);
+      assert.equal(container.querySelectorAll('.stats-model-cost-placeholder').length,0);
       const card=container.querySelector('.stats-model-cost-secondary-chip');
       assert.equal(card.querySelector('em').textContent,'未知模型');
       assert.match(card.title,/gemini-pro-default/);
-      assert.equal(window.getComputedStyle(card.parentElement).gridTemplateColumns,'repeat(auto-fill, minmax(204px, 1fr))');
+      assert.equal(window.getComputedStyle(card.parentElement).gridTemplateColumns,'repeat(4, minmax(0, 1fr))');
       assert.equal(window.getComputedStyle(card).height,'30px');
       assert.doesNotMatch(container.querySelector('.stats-model-cost-total').textContent,/\$0/);
     }

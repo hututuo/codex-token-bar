@@ -1,0 +1,355 @@
+{
+  "schemaVersion": 1,
+  "description": "Synthetic offline quota records; no real account identifiers or credentials.",
+  "claude": [
+    {
+      "name": "zstd",
+      "now": 1800000000,
+      "entryBase64": "MFxypxtt+/wFAAAAUgAAAAAAAAAAAAAAMS8wL2h0dHBzOi8vY2xhdWRlLmFpL2FwaS9vcmdhbml6YXRpb25zLzAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMS91c2FnZSi1L/0gje0CAHIFFBuAuTnosa3FlKbzAgqp2Y4oCxGxT+b1gw2ZMwIN4UywFM7Qjlzy+TQu/Dd+/HGdBRJKRwN1ZfS69jZfJj4HoA9E1y00oauYQScKgmi56MFMAwDgIAAvSuZwBthBDZdFb/r0AQAAABaUcgIAAAAAAAAAAGZpeHR1cmUASFRUUC8xLjEgMjAwAGRhdGU6RnJpLCAxNSBKYW4gMjAyNyAwNzo1OTozMCBHTVQAY29udGVudC10eXBlOmFwcGxpY2F0aW9uL2pzb24AY29udGVudC1lbmNvZGluZzp6c3RkAACFuTMdDAPH3VVyhm7ckYsUjDXcfTD3o6OI8e5W2fZz49hBDZdFb/r0AwAAAIIm7dptAAAAAAAAAA==",
+      "expectedState": "available",
+      "five": 30,
+      "seven": 90
+    },
+    {
+      "name": "identity",
+      "now": 1800000000,
+      "entryBase64": "MFxypxtt+/wFAAAAUgAAAAAAAAAAAAAAMS8wL2h0dHBzOi8vY2xhdWRlLmFpL2FwaS9vcmdhbml6YXRpb25zLzAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMS91c2FnZXsiZml2ZV9ob3VyIjp7InV0aWxpemF0aW9uIjozMCwicmVzZXRzX2F0IjoiMjAyNy0wMS0xNVQwOTowMDowMC4wMDBaIn0sInNldmVuX2RheSI6eyJ1dGlsaXphdGlvbiI6OTAsInJlc2V0c19hdCI6IjIwMjctMDEtMTZUMDg6MDA6MDAuMDAwWiJ9fdhBDZdFb/r0AQAAAJxZRpIAAAAAAAAAAGZpeHR1cmUASFRUUC8xLjEgMjAwAGRhdGU6RnJpLCAxNSBKYW4gMjAyNyAwNzo1OTozMCBHTVQAY29udGVudC10eXBlOmFwcGxpY2F0aW9uL2pzb24AY29udGVudC1lbmNvZGluZzppZGVudGl0eQAAhbkzHQwDx91VcoZu3JGLFIw13H0w96OjiPHuVtn2c+PYQQ2XRW/69AMAAADCaLd8cQAAAAAAAAA=",
+      "expectedState": "available",
+      "five": 30,
+      "seven": 90
+    },
+    {
+      "name": "zero",
+      "now": 1800000000,
+      "entryBase64": "MFxypxtt+/wFAAAAUgAAAAAAAAAAAAAAMS8wL2h0dHBzOi8vY2xhdWRlLmFpL2FwaS9vcmdhbml6YXRpb25zLzAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMS91c2FnZSi1L/0gSEECAHsiZml2ZV9ob3VyIjp7InV0aWxpemF0aW9uIjoxMDAsInJlc2V0c19hdCI6IjIwMjctMDEtMTVUMDk6MDA6MDAuMDAwWiJ9fdhBDZdFb/r0AQAAADtldZQAAAAAAAAAAGZpeHR1cmUASFRUUC8xLjEgMjAwAGRhdGU6RnJpLCAxNSBKYW4gMjAyNyAwNzo1OTozMCBHTVQAY29udGVudC10eXBlOmFwcGxpY2F0aW9uL2pzb24AY29udGVudC1lbmNvZGluZzp6c3RkAACFuTMdDAPH3VVyhm7ckYsUjDXcfTD3o6OI8e5W2fZz49hBDZdFb/r0AwAAAIIm7dptAAAAAAAAAA==",
+      "expectedState": "available",
+      "five": 100,
+      "seven": null
+    },
+    {
+      "name": "expired",
+      "now": 1800000000,
+      "entryBase64": "MFxypxtt+/wFAAAAUgAAAAAAAAAAAAAAMS8wL2h0dHBzOi8vY2xhdWRlLmFpL2FwaS9vcmdhbml6YXRpb25zLzAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMS91c2FnZSi1L/0gje0CAHIFFBuAuTnosa3FlKbzAgqp2Y4oCxGxT+b1gw2ZMwIN4UywFM7Qjlzy+TQu/Dd+/HGdBRJKRwN1ZfS69jZfJj4HoA9E1y00oauYQScKgmi56MFMAwDgIAAvSuZwBthBDZdFb/r0AQAAABaUcgIAAAAAAAAAAGZpeHR1cmUASFRUUC8xLjEgMjAwAGRhdGU6RnJpLCAxNSBKYW4gMjAyNyAwNzozOTo1OSBHTVQAY29udGVudC10eXBlOmFwcGxpY2F0aW9uL2pzb24AY29udGVudC1lbmNvZGluZzp6c3RkAACFuTMdDAPH3VVyhm7ckYsUjDXcfTD3o6OI8e5W2fZz49hBDZdFb/r0AwAAABFVg6RtAAAAAAAAAA==",
+      "expectedState": "stale",
+      "five": null,
+      "seven": null
+    },
+    {
+      "name": "boundary",
+      "now": 1800000000,
+      "entryBase64": "MFxypxtt+/wFAAAAUgAAAAAAAAAAAAAAMS8wL2h0dHBzOi8vY2xhdWRlLmFpL2FwaS9vcmdhbml6YXRpb25zLzAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMS91c2FnZSi1L/0gje0CAHIFFBuAuTnosa3FlKbzAgqp2Y4oCxGxT+b1gw2ZMwIN4UywFM7Qjlzy+TQu/Dd+/HGdBRJKRwN1ZfS69jZfJj4HoA9E1y00oauYQScKgmi56MFMAwDgIAAvSuZwBthBDZdFb/r0AQAAABaUcgIAAAAAAAAAAGZpeHR1cmUASFRUUC8xLjEgMjAwAGRhdGU6RnJpLCAxNSBKYW4gMjAyNyAwNzo0MDowMCBHTVQAY29udGVudC10eXBlOmFwcGxpY2F0aW9uL2pzb24AY29udGVudC1lbmNvZGluZzp6c3RkAACFuTMdDAPH3VVyhm7ckYsUjDXcfTD3o6OI8e5W2fZz49hBDZdFb/r0AwAAALkpyAhtAAAAAAAAAA==",
+      "expectedState": "available",
+      "five": 30,
+      "seven": 90
+    },
+    {
+      "name": "future",
+      "now": 1800000000,
+      "entryBase64": "MFxypxtt+/wFAAAAUgAAAAAAAAAAAAAAMS8wL2h0dHBzOi8vY2xhdWRlLmFpL2FwaS9vcmdhbml6YXRpb25zLzAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMS91c2FnZSi1L/0gje0CAHIFFBuAuTnosa3FlKbzAgqp2Y4oCxGxT+b1gw2ZMwIN4UywFM7Qjlzy+TQu/Dd+/HGdBRJKRwN1ZfS69jZfJj4HoA9E1y00oauYQScKgmi56MFMAwDgIAAvSuZwBthBDZdFb/r0AQAAABaUcgIAAAAAAAAAAGZpeHR1cmUASFRUUC8xLjEgMjAwAGRhdGU6RnJpLCAxNSBKYW4gMjAyNyAwODowMTowMSBHTVQAY29udGVudC10eXBlOmFwcGxpY2F0aW9uL2pzb24AY29udGVudC1lbmNvZGluZzp6c3RkAACFuTMdDAPH3VVyhm7ckYsUjDXcfTD3o6OI8e5W2fZz49hBDZdFb/r0AwAAAI9TIqZtAAAAAAAAAA==",
+      "expectedState": null,
+      "five": null,
+      "seven": null
+    },
+    {
+      "name": "corrupt",
+      "now": 1800000000,
+      "entryBase64": "MFxypxtt+/wFAAAAUgAAAAAAAAAAAAAAMS8wL2h0dHBzOi8vY2xhdWRlLmFpL2FwaS9vcmdhbml6YXRpb25zLzAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMS91c2FnZSi1L/0gjO0CAHIFFBuAuTnosa3FlKbzAgqp2Y4oCxGxT+b1gw2ZMwIN4UywFM7Qjlzy+TQu/Dd+/HGdBRJKRwN1ZfS69jZfJj4HoA9E1y00oauYQScKgmi56MFMAwDgIAAvSuZwBthBDZdFb/r0AQAAABaUcgIAAAAAAAAAAGZpeHR1cmUASFRUUC8xLjEgMjAwAGRhdGU6RnJpLCAxNSBKYW4gMjAyNyAwNzo1OTozMCBHTVQAY29udGVudC10eXBlOmFwcGxpY2F0aW9uL2pzb24AY29udGVudC1lbmNvZGluZzp6c3RkAACFuTMdDAPH3VVyhm7ckYsUjDXcfTD3o6OI8e5W2fZz49hBDZdFb/r0AwAAAIIm7dptAAAAAAAAAA==",
+      "expectedState": null,
+      "five": null,
+      "seven": null
+    },
+    {
+      "name": "wrong-origin",
+      "now": 1800000000,
+      "entryBase64": "MFxypxtt+/wFAAAAVgAAAAAAAAAAAAAAMS8wL2h0dHBzOi8vb3RoZXIuZXhhbXBsZS9hcGkvb3JnYW5pemF0aW9ucy8wMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDEvdXNhZ2UotS/9II3tAgByBRQbgLk56LGtxZSm8wIKqdmOKAsRsU/m9YMNmTMCDeFMsBTO0I5c8vk0Lvw3fvxxnQUSSkcDdWX0uvY2XyY+B6APRNctNKGrmEEnCoJouejBTAMA4CAAL0rmcAbYQQ2XRW/69AEAAAAWlHICAAAAAAAAAABmaXh0dXJlAEhUVFAvMS4xIDIwMABkYXRlOkZyaSwgMTUgSmFuIDIwMjcgMDc6NTk6MzAgR01UAGNvbnRlbnQtdHlwZTphcHBsaWNhdGlvbi9qc29uAGNvbnRlbnQtZW5jb2Rpbmc6enN0ZAAAJvnIv+g+wGn+ha+DBWsjkzqvWWCrrhpPTeKGef9BU2bYQQ2XRW/69AMAAACCJu3abQAAAAAAAAA=",
+      "expectedState": null,
+      "five": null,
+      "seven": null
+    },
+    {
+      "name": "unsupported-encoding",
+      "now": 1800000000,
+      "entryBase64": "MFxypxtt+/wFAAAAUgAAAAAAAAAAAAAAMS8wL2h0dHBzOi8vY2xhdWRlLmFpL2FwaS9vcmdhbml6YXRpb25zLzAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMS91c2FnZXsiZml2ZV9ob3VyIjp7InV0aWxpemF0aW9uIjozMCwicmVzZXRzX2F0IjoiMjAyNy0wMS0xNVQwOTowMDowMC4wMDBaIn0sInNldmVuX2RheSI6eyJ1dGlsaXphdGlvbiI6OTAsInJlc2V0c19hdCI6IjIwMjctMDEtMTZUMDg6MDA6MDAuMDAwWiJ9fdhBDZdFb/r0AQAAAJxZRpIAAAAAAAAAAGZpeHR1cmUASFRUUC8xLjEgMjAwAGRhdGU6RnJpLCAxNSBKYW4gMjAyNyAwNzo1OTozMCBHTVQAY29udGVudC10eXBlOmFwcGxpY2F0aW9uL2pzb24AY29udGVudC1lbmNvZGluZzpicgAAhbkzHQwDx91VcoZu3JGLFIw13H0w96OjiPHuVtn2c+PYQQ2XRW/69AMAAACE8F9mawAAAAAAAAA=",
+      "expectedState": "invalid",
+      "five": null,
+      "seven": null
+    },
+    {
+      "name": "partial",
+      "now": 1800000000,
+      "entryBase64": "MFxypxtt+/wFAAAAUgAAAAAAAAAAAAAAMS8wL2h0dHBzOi8vY2xhdWRlLmFpL2FwaS9vcmdhbml6YXRpb25zLzAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMS91c2FnZSi1L/0gj8UCAGIFExmAqTqwwUbx4SJCQFWNY2ZMYKzNX4GDGR0Bx48iGZDKl83kcOE/4McfBycETDEvgvNj9CbUNlsyk3Rs0WrppoUmdJ0NNHMLgfLpwUYCAJMocVrmcAbYQQ2XRW/69AEAAACXEblcAAAAAAAAAABmaXh0dXJlAEhUVFAvMS4xIDIwMABkYXRlOkZyaSwgMTUgSmFuIDIwMjcgMDc6NTk6MzAgR01UAGNvbnRlbnQtdHlwZTphcHBsaWNhdGlvbi9qc29uAGNvbnRlbnQtZW5jb2Rpbmc6enN0ZAAAhbkzHQwDx91VcoZu3JGLFIw13H0w96OjiPHuVtn2c+PYQQ2XRW/69AMAAACCJu3abQAAAAAAAAA=",
+      "expectedState": "available",
+      "five": null,
+      "seven": 20
+    },
+    {
+      "name": "reset-expired",
+      "now": 1800000000,
+      "entryBase64": "MFxypxtt+/wFAAAAUgAAAAAAAAAAAAAAMS8wL2h0dHBzOi8vY2xhdWRlLmFpL2FwaS9vcmdhbml6YXRpb25zLzAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMS91c2FnZSi1L/0gRzkCAHsiZml2ZV9ob3VyIjp7InV0aWxpemF0aW9uIjoyMCwicmVzZXRzX2F0IjoiMjAyNy0wMS0xNVQwNzo1OTo1OS4wMDBaIn192EENl0Vv+vQBAAAAuLvv7AAAAAAAAAAAZml4dHVyZQBIVFRQLzEuMSAyMDAAZGF0ZTpGcmksIDE1IEphbiAyMDI3IDA3OjU5OjMwIEdNVABjb250ZW50LXR5cGU6YXBwbGljYXRpb24vanNvbgBjb250ZW50LWVuY29kaW5nOnpzdGQAAIW5Mx0MA8fdVXKGbtyRixSMNdx9MPejo4jx7lbZ9nPj2EENl0Vv+vQDAAAAgibt2m0AAAAAAAAA",
+      "expectedState": "stale",
+      "five": null,
+      "seven": null
+    }
+  ],
+  "antigravityTools": [
+    {
+      "name": "fresh",
+      "data": {
+        "id": "selected-fixture",
+        "token": {
+          "access_token": "DO-NOT-PROJECT-THIS-FIXTURE"
+        },
+        "quota": {
+          "last_updated": 1799999970,
+          "models": [
+            {
+              "name": "gemini-4-argon",
+              "display_name": "Argon 4",
+              "percentage": 70,
+              "reset_time": "2027-01-15T09:00:00.000Z"
+            },
+            {
+              "name": "claude-opus-5-5",
+              "display_name": "Opus 5.5",
+              "percentage": 0,
+              "reset_time": "2027-01-15T09:00:00.000Z"
+            }
+          ]
+        }
+      },
+      "selectedID": "selected-fixture",
+      "now": 1800000000,
+      "expectedState": "available",
+      "used": [
+        30,
+        100
+      ]
+    },
+    {
+      "name": "old",
+      "data": {
+        "id": "selected-fixture",
+        "token": {
+          "access_token": "DO-NOT-PROJECT-THIS-FIXTURE"
+        },
+        "quota": {
+          "last_updated": 1799999970,
+          "models": [
+            {
+              "name": "gemini-4-argon",
+              "display_name": "Argon 4",
+              "percentage": 70,
+              "reset_time": "2027-01-15T09:00:00.000Z"
+            },
+            {
+              "name": "claude-opus-5-5",
+              "display_name": "Opus 5.5",
+              "percentage": 0,
+              "reset_time": "2027-01-15T09:00:00.000Z"
+            }
+          ]
+        }
+      },
+      "selectedID": "selected-fixture",
+      "now": 1800001800,
+      "expectedState": "stale",
+      "used": [
+        30,
+        100
+      ]
+    },
+    {
+      "name": "wrong-account",
+      "data": {
+        "id": "selected-fixture",
+        "token": {
+          "access_token": "DO-NOT-PROJECT-THIS-FIXTURE"
+        },
+        "quota": {
+          "last_updated": 1799999970,
+          "models": [
+            {
+              "name": "gemini-4-argon",
+              "display_name": "Argon 4",
+              "percentage": 70,
+              "reset_time": "2027-01-15T09:00:00.000Z"
+            },
+            {
+              "name": "claude-opus-5-5",
+              "display_name": "Opus 5.5",
+              "percentage": 0,
+              "reset_time": "2027-01-15T09:00:00.000Z"
+            }
+          ]
+        }
+      },
+      "selectedID": "different-account",
+      "now": 1800000000,
+      "expectedState": "unavailable",
+      "used": []
+    },
+    {
+      "name": "disabled",
+      "data": {
+        "id": "selected-fixture",
+        "token": {
+          "access_token": "DO-NOT-PROJECT-THIS-FIXTURE"
+        },
+        "quota": {
+          "last_updated": 1799999970,
+          "models": [
+            {
+              "name": "gemini-4-argon",
+              "display_name": "Argon 4",
+              "percentage": 70,
+              "reset_time": "2027-01-15T09:00:00.000Z"
+            },
+            {
+              "name": "claude-opus-5-5",
+              "display_name": "Opus 5.5",
+              "percentage": 0,
+              "reset_time": "2027-01-15T09:00:00.000Z"
+            }
+          ]
+        },
+        "disabled": true
+      },
+      "selectedID": "selected-fixture",
+      "now": 1800000000,
+      "expectedState": "unavailable",
+      "used": []
+    },
+    {
+      "name": "forbidden",
+      "data": {
+        "id": "selected-fixture",
+        "token": {
+          "access_token": "DO-NOT-PROJECT-THIS-FIXTURE"
+        },
+        "quota": {
+          "last_updated": 1799999970,
+          "models": [
+            {
+              "name": "gemini-4-argon",
+              "display_name": "Argon 4",
+              "percentage": 70,
+              "reset_time": "2027-01-15T09:00:00.000Z"
+            },
+            {
+              "name": "claude-opus-5-5",
+              "display_name": "Opus 5.5",
+              "percentage": 0,
+              "reset_time": "2027-01-15T09:00:00.000Z"
+            }
+          ],
+          "is_forbidden": true
+        }
+      },
+      "selectedID": "selected-fixture",
+      "now": 1800000000,
+      "expectedState": "unavailable",
+      "used": []
+    },
+    {
+      "name": "future",
+      "data": {
+        "id": "selected-fixture",
+        "token": {
+          "access_token": "DO-NOT-PROJECT-THIS-FIXTURE"
+        },
+        "quota": {
+          "last_updated": 1800000061,
+          "models": [
+            {
+              "name": "gemini-4-argon",
+              "display_name": "Argon 4",
+              "percentage": 70,
+              "reset_time": "2027-01-15T09:00:00.000Z"
+            },
+            {
+              "name": "claude-opus-5-5",
+              "display_name": "Opus 5.5",
+              "percentage": 0,
+              "reset_time": "2027-01-15T09:00:00.000Z"
+            }
+          ]
+        }
+      },
+      "selectedID": "selected-fixture",
+      "now": 1800000000,
+      "expectedState": "unavailable",
+      "used": []
+    }
+  ],
+  "antigravityState": [
+    {
+      "name": "unknown-sample-time",
+      "data": "CmQKCnVzZXJTdGF0dXMSVgpUaWdJNkNoMEtCMEZ5WjI5dUlEUVNBd2o4QjNvTkRRQUFRRDhTQmdpUXdLZmFCZ29aQ2doUGNIVnpJRFV1TlJJRENJSUllZ2dTQmdpUXdLZmFCZz09",
+      "now": 1800000000,
+      "expectedState": "cached",
+      "used": [
+        25,
+        100
+      ]
+    },
+    {
+      "name": "expired-reset",
+      "data": "CmQKCnVzZXJTdGF0dXMSVgpUaWdJNkNoMEtCMEZ5WjI5dUlEUVNBd2o4QjNvTkRRQUFRRDhTQmdpUXdLZmFCZ29aQ2doUGNIVnpJRFV1TlJJRENJSUllZ2dTQmdpUXdLZmFCZz09",
+      "now": 1800003601,
+      "expectedState": "stale",
+      "used": [
+        25,
+        100
+      ]
+    },
+    {
+      "name": "corrupt",
+      "data": "AA==",
+      "now": 1800000000,
+      "expectedState": "unavailable",
+      "used": []
+    }
+  ],
+  "readings": [
+    {
+      "client": "antigravity",
+      "state": "available",
+      "source": "local-antigravity-tools",
+      "windows": [
+        {
+          "id": "gemini-4-argon",
+          "label": "Argon 4",
+          "usedPercent": 30,
+          "resetsAt": "2027-01-15T09:00:00.000Z"
+        },
+        {
+          "id": "claude-opus-5-5",
+          "label": "Opus 5.5",
+          "usedPercent": 100,
+          "resetsAt": "2027-01-15T09:00:00.000Z"
+        }
+      ],
+      "notice": "离线模型额度",
+      "capturedAt": "2027-01-15T07:59:30.000Z"
+    },
+    {
+      "client": "claudeDesktop",
+      "state": "available",
+      "source": "local-desktop-http-cache",
+      "windows": [
+        {
+          "label": "5h",
+          "usedPercent": 30,
+          "resetsAt": "2027-01-15T09:00:00.000Z"
+        },
+        {
+          "label": "7d",
+          "usedPercent": 90,
+          "resetsAt": "2027-01-15T09:00:00.000Z"
+        }
+      ],
+      "notice": "本地 HTTP 缓存",
+      "capturedAt": "2027-01-15T07:59:30.000Z"
+    }
+  ]
+}

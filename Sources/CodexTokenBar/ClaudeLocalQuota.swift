@@ -12,9 +12,22 @@ struct ClaudeLocalQuota: Equatable, Sendable {
     let capturedAt: Date?
     let fiveHour: Window?
     let sevenDay: Window?
+    var source: String? = nil
     static let missing = Self(state: "missing", capturedAt: nil, fiveHour: nil, sevenDay: nil)
     static let desktopHistoryMaximumBytes = 4 * 1_024 * 1_024
     static let desktopHistoryFreshness: TimeInterval = 20 * 60
+
+    static func readDesktop(home: URL = FileManager.default.homeDirectoryForCurrentUser, now: Date = Date()) -> Self {
+        let history = readDesktopHistory(home: home, now: now)
+        let cache = ClaudeDesktopHTTPCache.read(directory: home.appendingPathComponent("Library/Application Support/Claude/Cache/Cache_Data"), now: now)
+        return desktopObservation(history: history, cache: cache)
+    }
+
+    /// Select one complete observation. Never fill one account's missing window from another.
+    static func desktopObservation(history: Self, cache: Self?) -> Self {
+        guard let cache else { return history }
+        return (history.capturedAt ?? .distantPast) > (cache.capturedAt ?? .distantPast) ? history : cache
+    }
 
     /// Separate from CLI captures: neither source proves which account the other uses.
     static func readDesktopHistory(home: URL = FileManager.default.homeDirectoryForCurrentUser, now: Date = Date()) -> Self {

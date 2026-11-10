@@ -42,10 +42,8 @@ export interface QuotaItem {
 }
 export function quotaItems(
   codex: QuotaSnapshot | undefined,
-  claude: ClientQuotaReading,
-  includeClaude: boolean,
+  localReadings: ClientQuotaReading[],
   includeFive = false,
-  claudeDesktop?: ClientQuotaReading,
 ): QuotaItem[] {
   const items: QuotaItem[] = [];
   function add(
@@ -90,26 +88,34 @@ export function quotaItems(
       add(w.label, quotaWindowShortLabel(w.label), w),
     );
   }
-  for (const reading of [claude, claudeDesktop]) {
-   if (!reading || !includeClaude) continue;
+  for (const reading of localReadings) {
+   if (!reading || reading.source === "unsupported") continue;
    const client=reading.client ?? "claudeCode";
-   if(client!=="claudeCode" && client!=="claudeDesktop") continue;
+   if(client==="codex" || !Object.hasOwn(clientBrand,client)) continue;
    if(reading.state === "api") {
      items.push({id:client+":api",client,window:"API",remaining:null,resetsAt:null,source:"API 接入",status:"订阅额度不适用"});
      continue;
    }
+   const sampled=reading.capturedAt && Number.isFinite(Date.parse(reading.capturedAt))?` · 采样于 ${new Date(reading.capturedAt).toLocaleString()}`:"";
+   if(reading.state === "stale" || reading.state === "cached") {
+     items.push({id:client+":cache",client,window:"本地缓存",remaining:null,resetsAt:null,
+       source:reading.notice+sampled,status:reading.state === "stale"?"额度采样已过期":"采样时间未知"});
+     continue;
+   }
    if(reading.state !== "available") continue;
-    ["5h", "7d"].forEach((label) => {
-      const w = reading.windows.find((w) => w.label === label),
-        u = w?.usedPercent;
+    const seen=new Set<string>();
+    reading.windows.forEach((w) => {
+      const id=w.id??w.label,u=w.usedPercent;
+      if(seen.has(id)) return;
+      seen.add(id);
       if (typeof u !== "number" || !Number.isFinite(u) || u < 0 || u > 100) return;
       items.push({
-        id: `${client}:${label}`,
+        id: `${client}:${id}`,
         client,
-        window: label,
+        window: w.label,
         remaining: 100 - u,
         resetsAt: w?.resetsAt ?? null,
-        source: (client==="claudeDesktop" ? "Desktop 本地历史 · 重置时间未知" : "CLI 本地缓存 · 未绑定账号")+(reading.capturedAt && Number.isFinite(Date.parse(reading.capturedAt))?` · 采样于 ${new Date(reading.capturedAt).toLocaleString()}`:""),
+        source: (reading.notice??"")+sampled,
         status: "",
       });
     });
@@ -169,11 +175,7 @@ export function orderedQuotaItems(
       (i) =>
         all ||
         (allowed.includes(i.client) &&
-          !s.hidden.includes(i.id) &&
-          (i.client === "codex" ||
-            i.client === "claudeCode" ||
-            i.client === "claudeDesktop" ||
-            s.enabled.includes(i.id))),
+          !s.hidden.includes(i.id)),
     )
     .sort((a, b) => {
       const rank = (i: QuotaItem) => {

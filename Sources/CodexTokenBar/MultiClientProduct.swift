@@ -59,7 +59,7 @@ struct ClientTrendBucket: Equatable, Sendable {
 }
 
 struct ClientQuotaReading: Equatable, Sendable {
-    struct Window: Equatable, Sendable { let label: String; let usedPercent: Double; let resetsAt: Date? }
+    struct Window: Equatable, Sendable { let label: String; let usedPercent: Double; let resetsAt: Date?; var id: String? = nil }
     let client: String
     let state: String
     let source: String
@@ -90,6 +90,7 @@ struct ClaudeCapturedQuotaProvider: ClientQuotaProvider {
     static let setup = "可手动将本地 TokenBarClaudeLocal 配置为 Claude Code statusLine 命令；也兼容已有 claude-monitor --statusline 缓存。本软件不修改 Claude 配置、不读凭据、不联网。"
     func reading() -> ClientQuotaReading {
         let desktop = client == .claudeDesktop
+        let httpCache = desktop && snapshot.source == "local-desktop-http-cache"
         if !desktop && snapshot.state == "api" {
             return ClientQuotaReading(client: client.rawValue, state: "api", source: "local-config", windows: [],
                 notice: "API 接入 · 订阅额度不适用")
@@ -99,13 +100,16 @@ struct ClaudeCapturedQuotaProvider: ClientQuotaProvider {
         }
         let state = snapshot.state == "available" && !windows.isEmpty ? "available" : snapshot.state == "stale" && desktop ? "stale" : snapshot.state == "missing" ? "notConnected" : "unavailable"
         let notice: String
-        if desktop {
+        if httpCache {
+            notice = state == "available" ? "Desktop 本地 HTTP 缓存；保留官方重置时间，未验证当前账号。不发送网络请求。"
+                : "Desktop 本地 HTTP 缓存已过期或不可用；不会唤醒客户端或请求刷新。"
+        } else if desktop {
             notice = state == "available" ? "Desktop 本地历史采样；未验证当前账号。文件不含重置时间，不与 CLI 额度合并。"
-                : state == "stale" ? "Desktop 本地采样超过 20 分钟，已过期。官方后台轮询可能暂停；本软件不会唤醒轮询或发网络请求。"
+                : state == "stale" ? "Desktop 历史文件中的采样超过 20 分钟；这不表示应用已关闭或额度已用尽。本软件不会唤醒客户端或发网络请求。"
                 : "未读到可用的 Desktop 本地额度历史。仅读取 plan-usage-history.json，不发网络请求。"
         } else { notice = windows.isEmpty ? Self.setup : "最近 Claude 进程，未绑定账号；缓存有效期 10 分钟。" }
         return ClientQuotaReading(client: client.rawValue, state: state,
-                                  source: desktop ? "local-desktop-history" : "local-statusline",
+                                  source: snapshot.source ?? (desktop ? "local-desktop-history" : "local-statusline"),
                                   windows: state == "available" ? windows : [], notice: notice, capturedAt: snapshot.capturedAt)
     }
 }

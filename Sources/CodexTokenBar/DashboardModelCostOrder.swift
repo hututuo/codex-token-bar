@@ -1,61 +1,80 @@
 import Foundation
 
-/// One shared presentation policy for all periods. Rows retain their source IDs
-/// and already-computed amounts; sorting never reprices or merges a ledger.
+/// Shared client/period policy. Every row and price survives below the four-slot fold.
 enum DashboardModelCostOrder {
-    struct Group: Decodable { let id: String; let title: String; let models: [String]; let patterns: [String] }
-    struct SourceGroup: Decodable { let clients: [String]; let patterns: [String]; let exceptModels: [String]; let group: String }
-    struct Policy: Decodable { let schema: Int; let groups: [Group]; let familyPriority: [String]; let clientPriority: [String]; var sourceGroups: [SourceGroup] = [] }
+    struct Client: Decodable { let id: String; let title: String; let preferred: [String] }
+    struct Generation: Decodable { let prefix: String; let pattern: String; let minimum: [Int] }
+    struct Policy: Decodable {
+        let schema: Int; let columns: Int; let otherVisibleLimit: Int
+        let clients: [Client]; let generations: [Generation]; let otherPatterns: [String]
+    }
     static let policy: Policy = {
         guard let url = AppResources.url(forResource: "model-cost-order", withExtension: "json"),
-              let data = try? Data(contentsOf: url), let value = try? JSONDecoder().decode(Policy.self, from: data), value.schema == 1 else {
-            return Policy(schema: 1, groups: [Group(id: "other", title: "其他", models: [], patterns: []),
-                Group(id: "unknown-models", title: "未知模型", models: [], patterns: [])], familyPriority: [], clientPriority: [])
+              let data = try? Data(contentsOf: url), let value = try? JSONDecoder().decode(Policy.self, from: data),
+              value.schema == 2, value.columns == 4, value.otherVisibleLimit == 4 else {
+            return Policy(schema: 2, columns: 4, otherVisibleLimit: 4, clients: [], generations: [], otherPatterns: [])
         }
         return value
     }()
+
     static func identity(_ id: String) -> String {
         var raw = id.split(separator: "|").last.map(String.init) ?? id
         if ClaudeModelPresentation.identity(raw) != nil, !raw.hasPrefix("claude-") { raw = "claude-" + raw }
-        let resolved = ModelPresentationIdentity.resolve(raw).key
-        return resolved.replacingOccurrences(of: #"(?:-fast)?(?::free)?$"#, with: "", options: .regularExpression)
+        return ModelPresentationIdentity.resolve(raw).key
+            .replacingOccurrences(of: #"(?:-fast)?(?::free)?$"#, with: "", options: .regularExpression)
     }
-    static func groupID(_ item: FloatingTodayModelUsageItem) -> String {
-        if item.isFallbackEstimate { return "unknown-models" }
-        if item.isReferenceOnly { return "other" }
+    static func client(_ id: String) -> String {
+        id.contains("|") ? String(id.split(separator: "|")[0]) : "codex"
+    }
+    static func isFeaturedCandidate(_ item: FloatingTodayModelUsageItem) -> Bool {
+        guard !item.isReferenceOnly else { return false }
         let key = identity(item.id)
-        let client = item.id.contains("|") ? String(item.id.split(separator: "|")[0]) : ""
-        if let rule = policy.sourceGroups.first(where: { $0.clients.contains(client)
-            && !$0.exceptModels.contains(key) && $0.patterns.contains(where: { key.range(of: $0, options: .regularExpression) != nil }) }) {
-            return rule.group
-        }
-        return policy.groups.first(where: { $0.models.contains(key) || $0.patterns.contains(where: {
-            key.range(of: $0, options: .regularExpression) != nil
-        }) })?.id ?? "other"
+        guard ["known", "source"].contains(ModelPresentationIdentity.resolve(key).kind),
+              !policy.otherPatterns.contains(where: { key.range(of: $0, options: .regularExpression) != nil }) else { return false }
+        guard let generation = policy.generations.first(where: { key.hasPrefix($0.prefix) }) else { return true }
+        guard let expression = try? NSRegularExpression(pattern: generation.pattern),
+              let match = expression.firstMatch(in: key, range: NSRange(key.startIndex..., in: key)) else { return false }
+        let version = (1...2).map { index in Range(match.range(at: index), in: key).flatMap { Int(key[$0]) } ?? 0 }
+        return ClaudeModelPresentation.compare(version, generation.minimum) >= 0
     }
+
     static func groups(_ items: [FloatingTodayModelUsageItem]) -> [FloatingTodayModelUsagePresentation.DashboardFamilyGroup] {
-        let grouped = Dictionary(grouping: items.filter { $0.tokens > 0 }, by: groupID)
-        return policy.groups.compactMap { group in
-            guard let rows = grouped[group.id], !rows.isEmpty else { return nil }
-            return .init(id: group.id, title: group.title, items: rows.sorted { before($0, $1, group: group) })
+        let active = items.filter { $0.tokens > 0 }
+        let grouped = Dictionary(grouping: active.filter { !$0.isFallbackEstimate }, by: { client($0.id) })
+        let clientIDs = policy.clients.map(\.id) + grouped.keys.filter { id in !policy.clients.contains { $0.id == id } }.sorted()
+        var primary: [FloatingTodayModelUsagePresentation.DashboardFamilyGroup] = [], other: [FloatingTodayModelUsagePresentation.DashboardFamilyGroup] = []
+        for id in clientIDs {
+            guard let rows = grouped[id], !rows.isEmpty else { continue }
+            let rule = policy.clients.first { $0.id == id }
+            let preferred = rule?.preferred ?? []
+            let candidates = rows.filter(isFeaturedCandidate).sorted { before($0, $1, preferred: preferred) }
+            let top = Array(candidates.prefix(policy.columns))
+            let selected = Set(top.map(\.id))
+            let remaining = rows.filter { !selected.contains($0.id) }.sorted {
+                let a = isFeaturedCandidate($0), b = isFeaturedCandidate($1)
+                if a != b { return a }
+                return before($0, $1, preferred: preferred)
+            }
+            let title = rule?.title ?? ClientDisplayScope.title(id)
+            if !top.isEmpty { primary.append(.init(id: "client:" + id, title: title, items: top)) }
+            if !remaining.isEmpty {
+                other.append(.init(id: "other:" + id, title: title, items: remaining, isSecondary: true, visibleLimit: policy.otherVisibleLimit))
+            }
         }
+        let unknown = active.filter(\.isFallbackEstimate)
+        if !unknown.isEmpty { other.append(.init(id: "unknown-models", title: "未知模型", items: unknown, isSecondary: true)) }
+        return primary + other
     }
-    private static func version(_ value: String) -> [Int] {
-        // Dates/snapshot suffixes are not model generations.
-        value.split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) }.filter { $0 < 1000 }
-    }
-    private static func before(_ a: FloatingTodayModelUsageItem, _ b: FloatingTodayModelUsageItem, group: Group) -> Bool {
-        let ak = identity(a.id), bk = identity(b.id)
-        let ar = group.models.firstIndex(of: ak) ?? Int.max, br = group.models.firstIndex(of: bk) ?? Int.max
+
+    private static func before(_ a: FloatingTodayModelUsageItem, _ b: FloatingTodayModelUsageItem, preferred: [String]) -> Bool {
+        let ar = preferred.firstIndex(of: identity(a.id)) ?? Int.max
+        let br = preferred.firstIndex(of: identity(b.id)) ?? Int.max
         if ar != br { return ar < br }
         if a.isReferenceOnly != b.isReferenceOnly { return !a.isReferenceOnly }
-        let order = ClaudeModelPresentation.compare(version(ak), version(bk))
-        if order != 0 { return order > 0 }
-        func family(_ value: String) -> Int { policy.familyPriority.firstIndex(where: { value.contains($0) }) ?? Int.max }
-        if family(ak) != family(bk) { return family(ak) < family(bk) }
-        if ak != bk { return ak < bk }
-        func client(_ value: String) -> Int { policy.clientPriority.firstIndex(of: String(value.split(separator: "|").first ?? "")) ?? Int.max }
-        if client(a.id) != client(b.id) { return client(a.id) < client(b.id) }
+        if a.tokens != b.tokens { return a.tokens > b.tokens }
+        func version(_ id: String) -> [Int] { identity(id).split(whereSeparator: { !$0.isNumber }).compactMap { Int($0) }.filter { $0 < 1000 } }
+        let generation = ClaudeModelPresentation.compare(version(a.id), version(b.id))
+        if generation != 0 { return generation > 0 }
         return a.id < b.id
     }
 }

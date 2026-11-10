@@ -34,6 +34,8 @@ pub struct ProductDetection {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QuotaProviderWindow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub label: String,
     pub used_percent: Option<f64>,
     pub resets_at: Option<String>,
@@ -91,17 +93,20 @@ pub fn detect_clients_cached() -> Vec<ProductDetection> {
 pub fn quota_provider_snapshots(
     claude_cli: &ClaudeLocalQuotaSnapshot,
     claude_desktop: &ClaudeLocalQuotaSnapshot,
+    antigravity: &QuotaProviderSnapshot,
 ) -> Vec<QuotaProviderSnapshot> {
     let (state, windows, notice) = match claude_cli.state.as_str() {
         "available" => (
             "available",
             vec![
                 claude_cli.five_hour.as_ref().map(|window| QuotaProviderWindow {
+                    id: None,
                     label: "5h".into(),
                     used_percent: Some(window.used_percent),
                     resets_at: window.resets_at.clone(),
                 }),
                 claude_cli.seven_day.as_ref().map(|window| QuotaProviderWindow {
+                    id: None,
                     label: "7d".into(),
                     used_percent: Some(window.used_percent),
                     resets_at: window.resets_at.clone(),
@@ -135,11 +140,11 @@ pub fn quota_provider_snapshots(
             if *client == "claudeCode" {
                 QuotaProviderSnapshot {
                     client: (*client).into(),
-                    state: state.into(),
-                    source: "local-statusline".into(),
+                    state: if claude_cli.state == "api" { "api" } else { state }.into(),
+                    source: if claude_cli.state == "api" { "local-config" } else { "local-statusline" }.into(),
                     captured_at: claude_cli.captured_at.clone(),
                     windows: windows.clone(),
-                    notice: notice.into(),
+                    notice: if claude_cli.state == "api" { "API 接入 · 订阅额度不适用" } else { notice }.into(),
                 }
             } else if *client == "claudeDesktop" {
                 let windows = claude_desktop_windows(claude_desktop);
@@ -152,11 +157,13 @@ pub fn quota_provider_snapshots(
                 QuotaProviderSnapshot {
                     client: (*client).into(),
                     state: desktop_state.into(),
-                    source: "local-desktop-history".into(),
+                    source: claude_desktop.source.clone().unwrap_or_else(|| "local-desktop-history".into()),
                     captured_at: claude_desktop.captured_at.clone(),
                     windows,
                     notice: claude_desktop_notice(claude_desktop),
                 }
+            } else if *client == "antigravity" {
+                antigravity.clone()
             } else {
                 QuotaProviderSnapshot {
                     client: (*client).into(),
@@ -180,17 +187,19 @@ fn claude_desktop_windows(snapshot: &ClaudeLocalQuotaSnapshot) -> Vec<QuotaProvi
             .five_hour
             .as_ref()
             .map(|window| QuotaProviderWindow {
+                id: None,
                 label: "5h".into(),
                 used_percent: Some(window.used_percent),
-                resets_at: None,
+                resets_at: if snapshot.source.as_deref() == Some("local-desktop-http-cache") { window.resets_at.clone() } else { None },
             }),
         snapshot
             .seven_day
             .as_ref()
             .map(|window| QuotaProviderWindow {
+                id: None,
                 label: "7d".into(),
                 used_percent: Some(window.used_percent),
-                resets_at: None,
+                resets_at: if snapshot.source.as_deref() == Some("local-desktop-http-cache") { window.resets_at.clone() } else { None },
             }),
     ]
     .into_iter()
@@ -199,9 +208,13 @@ fn claude_desktop_windows(snapshot: &ClaudeLocalQuotaSnapshot) -> Vec<QuotaProvi
 }
 
 fn claude_desktop_notice(snapshot: &ClaudeLocalQuotaSnapshot) -> String {
+    if snapshot.source.as_deref() == Some("local-desktop-http-cache") {
+        return if snapshot.state == "available" { "Desktop 本地 HTTP 缓存；保留官方重置时间，未验证当前账号。不发送网络请求。" }
+            else { "Desktop 本地 HTTP 缓存已过期或不可用；不会唤醒客户端或请求刷新。" }.into();
+    }
     match snapshot.state.as_str() {
         "available" => "Claude Desktop plan-usage-history.json 本地历史采样；未验证当前账号。文件不含重置时间，不与 CLI 额度合并。".into(),
-        "stale" => "Claude Desktop plan-usage-history.json 本地历史采样已超过 20 分钟；可能因应用暂停而陈旧。此状态不会唤醒应用，也不会发起网络请求。".into(),
+        "stale" => "Claude Desktop plan-usage-history.json 历史采样已超过 20 分钟；这不表示应用已关闭或额度已用尽。此状态不会唤醒应用，也不会发起网络请求。".into(),
         "missing" => "未发现 Claude Desktop 本地套餐使用历史（plan-usage-history.json）；来源仅为本地文件，未验证当前账号。".into(),
         _ => "Claude Desktop 本地套餐使用历史（plan-usage-history.json）无效或暂不可用；未验证当前账号。".into(),
     }
@@ -506,6 +519,7 @@ mod tests {
     #[test]
     fn quota_projection_is_local_and_reports_manual_statusline_setup() {
         let available = ClaudeLocalQuotaSnapshot {
+            source: None,
             state: "available".into(),
             captured_at: Some("2026-10-25T00:00:00Z".into()),
             five_hour: Some(ClaudeLocalQuotaWindow {
@@ -515,12 +529,13 @@ mod tests {
             seven_day: None,
         };
         let desktop_missing = ClaudeLocalQuotaSnapshot {
+            source: None,
             state: "missing".into(),
             captured_at: None,
             five_hour: None,
             seven_day: None,
         };
-        let snapshots = quota_provider_snapshots(&available, &desktop_missing);
+        let snapshots = quota_provider_snapshots(&available, &desktop_missing, &super::super::antigravity_local_quota::empty("notConnected", "local-antigravity-state"));
         assert_eq!(snapshots.len(), QUOTA_CLIENTS.len());
         assert!(snapshots.iter().all(|snapshot| snapshot.client != "codex"));
         assert_eq!(snapshots[0].state, "available");
@@ -533,12 +548,13 @@ mod tests {
         assert!(snapshots[1].windows.is_empty());
 
         let missing = ClaudeLocalQuotaSnapshot {
+            source: None,
             state: "missing".into(),
             captured_at: None,
             five_hour: None,
             seven_day: None,
         };
-        let disconnected = quota_provider_snapshots(&missing, &desktop_missing);
+        let disconnected = quota_provider_snapshots(&missing, &desktop_missing, &super::super::antigravity_local_quota::empty("notConnected", "local-antigravity-state"));
         assert_eq!(disconnected[0].state, "notConnected");
         assert!(disconnected[0]
             .notice
@@ -549,6 +565,7 @@ mod tests {
     #[test]
     fn desktop_quota_projection_is_separate_and_never_invents_reset_times() {
         let cli = ClaudeLocalQuotaSnapshot {
+            source: None,
             state: "available".into(),
             captured_at: Some("2026-11-04T00:00:00Z".into()),
             five_hour: Some(ClaudeLocalQuotaWindow {
@@ -558,6 +575,7 @@ mod tests {
             seven_day: None,
         };
         let desktop = ClaudeLocalQuotaSnapshot {
+            source: None,
             state: "available".into(),
             captured_at: Some("2026-11-04T00:01:00Z".into()),
             five_hour: Some(ClaudeLocalQuotaWindow {
@@ -570,7 +588,7 @@ mod tests {
             }),
         };
 
-        let snapshots = quota_provider_snapshots(&cli, &desktop);
+        let snapshots = quota_provider_snapshots(&cli, &desktop, &super::super::antigravity_local_quota::empty("notConnected", "local-antigravity-state"));
         assert_eq!(snapshots[0].source, "local-statusline");
         assert_eq!(
             snapshots[0].windows[0].resets_at.as_deref(),
@@ -587,12 +605,13 @@ mod tests {
         assert!(snapshots[1].notice.contains("不与 CLI 额度合并"));
 
         let stale = ClaudeLocalQuotaSnapshot {
+            source: None,
             state: "stale".into(),
             captured_at: desktop.captured_at.clone(),
             five_hour: None,
             seven_day: None,
         };
-        let stale_projection = quota_provider_snapshots(&cli, &stale);
+        let stale_projection = quota_provider_snapshots(&cli, &stale, &super::super::antigravity_local_quota::empty("notConnected", "local-antigravity-state"));
         assert_eq!(stale_projection[1].state, "stale");
         assert!(stale_projection[1].windows.is_empty());
         assert!(stale_projection[1].captured_at.is_some());

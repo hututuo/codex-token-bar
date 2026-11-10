@@ -405,6 +405,23 @@ final class MultiClientUsageLedgerTests: XCTestCase {
         }
     }
 
+    func testFable52StandardFastAndCacheLifetimesKeepFable51Rates() throws {
+        let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("fable52-prices.sqlite"))
+        let cases = [("claude-fable-5-2", 12.24), ("anthropic.claude-fable-5-2", 12.24),
+                     ("claude-fable-5-2-fast", 24.48), ("claude-fable-5-1", 15.30)]
+        for (model, _) in cases {
+            _ = try ledger.ingest([ClientUsageEvent(client: .claudeDesktop, eventID: model, sessionID: "fixture", model: model,
+                timestamp: Date(timeIntervalSince1970: 1_794_312_000), inputTokens: 1_000_000, outputTokens: 100_000,
+                cacheReadTokens: 200_000, cacheWriteTokens: 300_000, cacheWrite5mTokens: 100_000, cacheWrite1hTokens: 200_000)])
+        }
+        let rows = try ledger.summaries()
+        for (model, amount) in cases {
+            let row = try XCTUnwrap(rows.first { $0.model == model })
+            XCTAssertEqual(try XCTUnwrap(row.apiCostUSD), amount, accuracy: 0.000001, model)
+            XCTAssertEqual(row.unpricedRequests, 0)
+        }
+    }
+
     func testPriceAggregateCacheInvalidatesWhenLedgerRevisionChanges() throws {
         let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("usage.sqlite"))
         func request(_ id: String) -> ClientUsageEvent {

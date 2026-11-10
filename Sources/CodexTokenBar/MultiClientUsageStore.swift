@@ -327,10 +327,12 @@ final class MultiClientUsageStore: ObservableObject {
     @Published private(set) var updatedAt: Date?
     @Published private(set) var claudeQuota = ClaudeLocalQuota.missing
     @Published private(set) var claudeDesktopQuota = ClaudeLocalQuota.missing
+    @Published private(set) var antigravityQuota = AntigravityLocalQuota.empty()
     private let defaults: UserDefaults
     private let scanner: MultiClientUsageScanner
     private let quotaReader: @Sendable () -> ClaudeLocalQuota
     private let desktopQuotaReader: @Sendable () -> ClaudeLocalQuota
+    private let antigravityQuotaReader: @Sendable () -> ClientQuotaReading
     private var loop: Task<Void, Never>?
     private var quotaLoop: Task<Void, Never>?
     private var refreshTask: Task<Void, Never>?
@@ -342,10 +344,12 @@ final class MultiClientUsageStore: ObservableObject {
 
     init(defaults: UserDefaults = .standard, databaseURL: URL = MultiClientUsageStore.defaultDatabaseURL,
          quotaReader: @escaping @Sendable () -> ClaudeLocalQuota = { ClaudeLocalQuota.read() },
-         desktopQuotaReader: @escaping @Sendable () -> ClaudeLocalQuota = { ClaudeLocalQuota.readDesktopHistory() }) {
+         desktopQuotaReader: @escaping @Sendable () -> ClaudeLocalQuota = { ClaudeLocalQuota.readDesktop() },
+         antigravityQuotaReader: @escaping @Sendable () -> ClientQuotaReading = { AntigravityLocalQuota.read() }) {
         self.defaults = defaults
         self.quotaReader = quotaReader
         self.desktopQuotaReader = desktopQuotaReader
+        self.antigravityQuotaReader = antigravityQuotaReader
         let decoded = defaults.data(forKey: Self.preferencesKey).flatMap { try? JSONDecoder().decode([MultiClientUsagePreference].self, from: $0) } ?? []
         preferences = MultiClientUsagePreference.normalized(decoded)
         scanner = MultiClientUsageScanner(databaseURL: databaseURL)
@@ -357,12 +361,12 @@ final class MultiClientUsageStore: ObservableObject {
             .receive(on: DispatchQueue.main).sink { [weak self] _ in self?.syncLocalRuntime() }
         // Quota is an independent local-cache feature. Probe at startup and every minute even
         // when transcript collection and Claude speed monitoring are both disabled.
-        refreshClaudeQuotaCache()
+        refreshLocalQuotaCaches()
         quotaLoop = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
                 guard !Task.isCancelled else { return }
-                self?.refreshClaudeQuotaCache()
+                self?.refreshLocalQuotaCaches()
             }
         }
         syncLocalRuntime()
@@ -423,7 +427,7 @@ final class MultiClientUsageStore: ObservableObject {
             if self?.generation != generation { self?.refresh() }
         }
     }
-    func refreshClaudeQuotaCache() {
+    func refreshLocalQuotaCaches() {
         let uptime = ProcessInfo.processInfo.systemUptime
         guard lastQuotaProbeUptime.map({ uptime - $0 >= 60 }) ?? true else { return }
         guard !quotaProbeInFlight else { return }
@@ -431,32 +435,37 @@ final class MultiClientUsageStore: ObservableObject {
         lastQuotaProbeUptime = uptime
         let reader = quotaReader
         let desktopReader = desktopQuotaReader
+        let antigravityReader = antigravityQuotaReader
         Task { [weak self] in
-            let (reading, desktop) = await Task.detached(priority: .utility) { (reader(), desktopReader()) }.value
+            let (reading, desktop, antigravity) = await Task.detached(priority: .utility) { (reader(), desktopReader(), antigravityReader()) }.value
             guard let self else { return }
-            if self.claudeQuota != reading || self.claudeDesktopQuota != desktop {
+            if self.claudeQuota != reading || self.claudeDesktopQuota != desktop || self.antigravityQuota != antigravity {
                 self.claudeQuota = reading
                 self.claudeDesktopQuota = desktop
+                self.antigravityQuota = antigravity
                 self.syncMenuItems()
             }
             self.quotaProbeInFlight = false
         }
     }
-    private func hasUsableClaudeQuota(_ client: UsageClient) -> Bool {
-        let value = client == .claudeCode ? claudeQuota : client == .claudeDesktop ? claudeDesktopQuota : .missing
-        return value.state == "available" && (value.fiveHour != nil || value.sevenDay != nil)
+    private func hasLocalQuota(_ client: UsageClient) -> Bool {
+        let value = quotaReading(client)
+        return !value.windows.isEmpty || value.capturedAt != nil
+    }
+    var localQuotaReadings: [ClientQuotaReading] {
+        availablePreferences.map { quotaReading($0.client) }.filter { $0.source != "unsupported" }
     }
     var displayClientIDs: [String] {
         preferences.filter { value in
             value.enabled || summaries.contains { $0.client == value.client }
-                || hasUsableClaudeQuota(value.client)
+                || hasLocalQuota(value.client)
         }.map { $0.client.rawValue }
     }
     var availablePreferences: [MultiClientUsagePreference] {
         preferences.filter { value in
             value.enabled || !value.path.isEmpty || detections.contains { $0.client == value.client }
                 || summaries.contains { $0.client == value.client }
-                || hasUsableClaudeQuota(value.client)
+                || hasLocalQuota(value.client)
         }
     }
     var newDetections: [DetectedUsageClient] {
@@ -468,13 +477,14 @@ final class MultiClientUsageStore: ObservableObject {
     }
     func enable(_ client: UsageClient) {
         guard var value = preferences.first(where: { $0.client == client }) else { return }
-        value.enabled = true; value.showSidebar = true; value.showQuota = client == .claudeCode || client == .claudeDesktop
+        value.enabled = true; value.showSidebar = true; value.showQuota = quotaReading(client).source != "unsupported"
         acknowledge(client); update(value)
     }
     func quotaReading(_ client: UsageClient) -> ClientQuotaReading {
         switch client {
         case .claudeCode: ClaudeCapturedQuotaProvider(snapshot: claudeQuota).reading()
         case .claudeDesktop: ClaudeCapturedQuotaProvider(snapshot: claudeDesktopQuota, client: .claudeDesktop).reading()
+        case .antigravity: antigravityQuota
         default: UnavailableClientQuotaProvider(client: client).reading()
         }
     }

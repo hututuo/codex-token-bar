@@ -16,7 +16,7 @@ final class CodexConnectionModeTests: XCTestCase {
     func testApiProjectionHasNoSubscriptionWindowOrResetCredits() {
         let value = AccountQuotaSnapshot.apiConnection
         let missing = ClientQuotaReading(client: "claudeCode", state: "missing", source: "local", windows: [], notice: "")
-        let items = ClientQuotaProjection.items(codex: value, claude: missing, includeClaude: false, includeFiveHour: true)
+        let items = ClientQuotaProjection.items(codex: value, localReadings: [], includeFiveHour: true)
         XCTAssertEqual(items.map(\.id), ["codex:api"])
         XCTAssertNil(items.first?.remaining)
         XCTAssertFalse(value.isAvailable)

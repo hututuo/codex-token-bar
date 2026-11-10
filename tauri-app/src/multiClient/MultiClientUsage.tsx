@@ -1,6 +1,6 @@
 import { modelUsageLabel as shortModelName } from "../components/modelUsagePresentation";
 import type { DashboardSnapshot } from "../types/dashboard";
-import { claudeQuotaFromLocalCache, clientIsAvailable, codexQuotaProvider, projectClientChart, unavailableQuota, type ClientDetection, type ClientQuotaReading, type ClientTrendBucket, type ClientChartPoint } from "./multiClientProduct";
+import { clientIsAvailable, codexQuotaProvider, projectClientChart, unavailableQuota, type ClientDetection, type ClientQuotaReading, type ClientTrendBucket, type ClientChartPoint } from "./multiClientProduct";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { callCommandStrict } from "../api/command";
 import { isTauriRuntimeAvailable } from "../platform/runtime";
@@ -46,13 +46,12 @@ async function refreshShared() {
       cacheError = String(error);
       // A transcript/index error must not hide an independently readable local
       // quota cache. Keep all last-good usage rows; update only this reading.
-      const readings=await Promise.all((["claudeCode","claudeDesktop"] as const).map(async client=>{
-        try {
-          const local=await callCommandStrict<Parameters<typeof claudeQuotaFromLocalCache>[0]>(client==="claudeCode"?"read_claude_local_quota":"read_claude_desktop_quota");
-          return claudeQuotaFromLocalCache(local,client);
-        } catch { return unavailableQuota(client); }
-      }));
-      cached={...cached,quotas:[...(cached.quotas??[]).filter(q=>q.client!=="claudeCode" && q.client!=="claudeDesktop"),...readings]};
+      try {
+        const readings=await callCommandStrict<ClientQuotaReading[]>("read_local_client_quotas");
+        cached={...cached,quotas:readings};
+      } catch {
+        cached={...cached,quotas:["claudeCode","claudeDesktop","antigravity"].map(unavailableQuota)};
+      }
     }
     finally { pending = null; emit(); }
   })();
@@ -160,7 +159,7 @@ export function MultiClientUsageSettings() {
     </fieldset>)}
     <button onClick={()=>setShowCustom(value=>!value)}>{showCustom ? "只显示已发现的客户端" : "手动接入其他日志目录"}</button>
     <ClaudeLocalQuotaPanel />
-    <p>Claude 额度只读已有状态栏缓存，不安装钩子、不读取凭据、不联网。没有有效记录时不推算剩余百分比。Codex 额度显示继续使用原有侧栏和状态栏设置。</p>
+    <p>Claude 与 Antigravity 额度只读已有本地缓存，不安装钩子、不使用登录凭据、不联网。过期或采样时间未知的记录不会显示为当前余额。Codex 额度沿用原有观测。</p>
     {error && <p role="alert">{error}</p>}
     {snapshot.diagnostics.map((line, index) => <p className="multi-client-note" key={index}>{line}</p>)}
   </section>;
@@ -187,13 +186,14 @@ export function MultiClientDiscoveryNotice() {
   const {seen, acknowledge} = useDiscoveryAcknowledgements();
   return <>{(snapshot.detections ?? []).filter(d=>d.client!=="claudeCode" && !seen.has(d.client) && !snapshot.preferences.some(p=>p.client===d.client && p.enabled)).map(d=><div className="multi-client-discovery" key={d.client}>
     <div><strong>发现 {clientNames[d.client as UsageClient] ?? d.client}</strong><small>仅读取本地数据，不产生任何网络请求。可随时关闭。</small></div>
-    <button disabled={busy} onClick={async()=>{if (await save(snapshot.preferences.map(p=>p.client===d.client ? {...p,enabled:true,showSidebar:true,showQuota:p.client==="claudeCode" || p.client==="claudeDesktop"}:p))) acknowledge(d.client);}}>启用</button>
+    <button disabled={busy} onClick={async()=>{if (await save(snapshot.preferences.map(p=>p.client===d.client ? {...p,enabled:true,showSidebar:true,showQuota:unavailableQuota(p.client).source!=="unsupported"}:p))) acknowledge(d.client);}}>启用</button>
     <button onClick={()=>acknowledge(d.client)}>暂不启用</button>
   </div>)}</>;
 }
 export function ClientQuotaPanel({reading, compact=false}: {reading:ClientQuotaReading;compact?:boolean}) {
   return <div className={compact ? "multi-client-quota-inline" : "multi-client-quota"} title={reading.notice}>
-    {reading.state === "available" ? reading.windows.map(w=><span key={w.label}>{w.label} 剩余 {(100-w.usedPercent).toFixed(0)}%</span>) : <span>{reading.state === "stale" ? "额度采样已过期" : reading.state === "notConnected" ? "额度未接入" : "额度不可用"}</span>}
+    {reading.state === "available" ? reading.windows.map(w=><span key={w.id??w.label}>{w.label} 剩余 {(100-w.usedPercent).toFixed(0)}%</span>) : <span>{reading.state === "stale" ? "额度采样已过期" : reading.state === "cached" ? "采样时间未知" : reading.state === "notConnected" ? "额度未接入" : "额度不可用"}</span>}
+    {!compact && ["stale","cached"].includes(reading.state) && reading.windows.length>0 && <details><summary>查看历史缓存（非当前余额）</summary>{reading.windows.map(w=><div key={w.id??w.label}>{w.label} · 上次剩余 {(100-w.usedPercent).toFixed(0)}%</div>)}</details>}
     {!compact && <>{reading.capturedAt && Number.isFinite(Date.parse(reading.capturedAt)) && <small>采样于 {new Date(reading.capturedAt).toLocaleString()}</small>}<small>{reading.notice}</small></>}
   </div>;
 }

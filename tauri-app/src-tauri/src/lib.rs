@@ -209,6 +209,7 @@ pub fn run() {
             commands::multi_client_usage::refresh_multi_client_usage,
             commands::multi_client_usage::read_claude_local_quota,
             commands::multi_client_usage::read_claude_desktop_quota,
+            commands::multi_client_usage::read_local_client_quotas,
             commands::claude_local_runtime::read_claude_local_runtime_snapshot,
             commands::claude_local_runtime::read_activity_speed_history,
             commands::claude_local_runtime::read_activity_speed_mode,

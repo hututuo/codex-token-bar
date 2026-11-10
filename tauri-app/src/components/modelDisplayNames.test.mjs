@@ -6,7 +6,7 @@ import { modelUsageLabel, modelUsageKey } from "./modelUsagePresentation.ts";
 import { withSsrModules } from "../test/ssrHarness.mjs";
 
 test("every price entry and unambiguous alias has a distinct short name", () => {
-  assert.equal(prices.models.length, 199);
+  assert.equal(prices.models.length, 200);
   assert.deepEqual(new Set(Object.keys(modelDisplayNames)), new Set(prices.models.map(model => model.id)));
   assert.equal(new Set(Object.values(modelDisplayNames)).size, prices.models.length);
   for (const model of prices.models) {

@@ -1086,7 +1086,7 @@ struct DashboardView: View {
             HeaderView(
                 snapshot: store.snapshot,
                 quotaSnapshot: quotaStore.snapshot,
-                clientQuotaItems: codexOnly && !ClientPreviewMode.simulated ? nil : ClientQuotaProjection.items(codex: quotaStore.snapshot, claude: clients.quotaReading(.claudeCode), claudeDesktop: clients.quotaReading(.claudeDesktop), includeClaude: allowedClients.contains("claudeCode") || allowedClients.contains("claudeDesktop"), preview: ClientPreviewMode.simulated).filter { allowedClients.contains($0.client) },
+                clientQuotaItems: codexOnly && !ClientPreviewMode.simulated ? nil : ClientQuotaProjection.items(codex: quotaStore.snapshot, localReadings: clients.localQuotaReadings, preview: ClientPreviewMode.simulated).filter { allowedClients.contains($0.client) },
                 showsClientScopePicker: true,
                 includesCodex: clientScope == "codex" || clientScope == "all",
                 taskClients: allowedClients,
