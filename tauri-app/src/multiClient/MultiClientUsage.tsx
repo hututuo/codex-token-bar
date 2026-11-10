@@ -1,6 +1,6 @@
 import { modelUsageLabel as shortModelName } from "../components/modelUsagePresentation";
 import type { DashboardSnapshot } from "../types/dashboard";
-import { clientIsAvailable, codexQuotaProvider, projectClientChart, unavailableQuota, type ClientDetection, type ClientQuotaReading, type ClientTrendBucket, type ClientChartPoint } from "./multiClientProduct";
+import { clientIsAvailable, clientQuotaStatusText, codexQuotaProvider, projectClientChart, unavailableQuota, type ClientDetection, type ClientQuotaReading, type ClientTrendBucket, type ClientChartPoint } from "./multiClientProduct";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { callCommandStrict } from "../api/command";
 import { isTauriRuntimeAvailable } from "../platform/runtime";
@@ -192,7 +192,7 @@ export function MultiClientDiscoveryNotice() {
 }
 export function ClientQuotaPanel({reading, compact=false}: {reading:ClientQuotaReading;compact?:boolean}) {
   return <div className={compact ? "multi-client-quota-inline" : "multi-client-quota"} title={reading.notice}>
-    {reading.state === "available" ? reading.windows.map(w=><span key={w.id??w.label}>{w.label} 剩余 {(100-w.usedPercent).toFixed(0)}%</span>) : <span>{reading.state === "stale" ? "额度采样已过期" : reading.state === "cached" ? "采样时间未知" : reading.state === "notConnected" ? "额度未接入" : "额度不可用"}</span>}
+    {reading.state === "available" ? reading.windows.map(w=><span key={w.id??w.label}>{w.label} 剩余 {(100-w.usedPercent).toFixed(0)}%</span>) : <span>{clientQuotaStatusText(reading.state)}</span>}
     {!compact && ["stale","cached"].includes(reading.state) && reading.windows.length>0 && <details><summary>查看历史缓存（非当前余额）</summary>{reading.windows.map(w=><div key={w.id??w.label}>{w.label} · 上次剩余 {(100-w.usedPercent).toFixed(0)}%</div>)}</details>}
     {!compact && <>{reading.capturedAt && Number.isFinite(Date.parse(reading.capturedAt)) && <small>采样于 {new Date(reading.capturedAt).toLocaleString()}</small>}<small>{reading.notice}</small></>}
   </div>;

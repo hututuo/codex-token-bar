@@ -1,4 +1,5 @@
 import type { QuotaSnapshot } from "../types/quota";
+import quotaPresentation from "../../../Sources/CodexTokenBar/Resources/client-quota-presentation.json" with {type:"json"};
 export interface ClientDetection { client: string; evidence: string; }
 export interface ClientTrendBucket {
   client: string; startUnix: number; inputTokens: number; outputTokens: number;
@@ -12,6 +13,12 @@ export interface ClientQuotaReading {
   capturedAt?: string | null;
 }
 export interface ClientQuotaProvider { readonly allowsNetwork: false; reading(): ClientQuotaReading; }
+const quotaStates:Record<string,{label:string;compact:string}>=quotaPresentation.states;
+export const clientQuotaStatusText=(state:string)=>quotaStates[state]?.label??"额度不可用";
+export const clientQuotaCompactStatus=(state?:string)=>state?quotaStates[state]?.compact??"—":"—";
+export function quotaReadingIsPresent(reading:ClientQuotaReading,detected=false):boolean {
+  return reading.source!=="unsupported"&&(detected||reading.state==="api"||reading.windows.length>0||Boolean(reading.capturedAt));
+}
 export function codexQuotaProvider(quota?: QuotaSnapshot): ClientQuotaProvider {
   return { allowsNetwork: false, reading() {
     const windows = [quota?.fiveHour, quota?.sevenDay].filter(value => value?.availability === "measured" && value.usedPercent !== null)

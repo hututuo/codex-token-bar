@@ -98,7 +98,7 @@ struct ClaudeCapturedQuotaProvider: ClientQuotaProvider {
         let windows = [("5h", snapshot.fiveHour), ("7d", snapshot.sevenDay)].compactMap { label, value in
             value.map { ClientQuotaReading.Window(label: label, usedPercent: $0.usedPercent, resetsAt: $0.resetsAt) }
         }
-        let state = snapshot.state == "available" && !windows.isEmpty ? "available" : snapshot.state == "stale" && desktop ? "stale" : snapshot.state == "missing" ? "notConnected" : "unavailable"
+        let state = snapshot.state == "available" && !windows.isEmpty ? "available" : snapshot.state == "stale" ? "stale" : snapshot.state == "missing" ? "notConnected" : "unavailable"
         let notice: String
         if httpCache {
             notice = state == "available" ? "Desktop 本地 HTTP 缓存；保留官方重置时间，未验证当前账号。不发送网络请求。"

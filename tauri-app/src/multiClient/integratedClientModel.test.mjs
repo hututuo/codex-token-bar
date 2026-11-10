@@ -40,7 +40,7 @@ test("quota adapters convert Codex fractions once, preserve Claude percent and u
     );
     assert.deepEqual(
       items.map((i) => i.remaining),
-      [0, 92],
+      [0, 92, null],
     );
     const selected = {
       ...defaultQuotaSelection,
@@ -50,7 +50,7 @@ test("quota adapters convert Codex fractions once, preserve Claude percent and u
     };
     assert.deepEqual(
       orderedQuotaItems(items, selected, ["claudeCode"]).map((i) => i.id),
-      [],
+      ["claudeCode:status"],
     );
     assert.deepEqual(
       orderedQuotaItems(items, selected, ["codex"]).map((i) => i.remaining),

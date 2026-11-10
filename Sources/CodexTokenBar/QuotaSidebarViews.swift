@@ -160,7 +160,7 @@ struct QuotaSidebarCompactBars: View {
 
     private func quotaTrack(_ item: ClientQuotaItem) -> some View {
         ClientQuotaRailTrack(item: item, height: layout.barHeight, fillHex: colors[item.id] ?? item.fill)
-            .help(item.title + " · " + item.value + " " + item.status)
+            .help(item.title + " · " + item.accessibleValue + "\n" + item.source)
     }
 }
 

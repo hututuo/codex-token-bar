@@ -200,7 +200,7 @@ struct ClientPairedQuotaRing: View {
                     }.font(.system(size: 11, weight: .medium, design: .rounded))
                         .monospacedDigit().lineLimit(1).minimumScaleFactor(0.65)
                 } else {
-                    Text(left.value).font(.system(size: 14, weight: .medium, design: .rounded)).monospacedDigit()
+                    Text(left.remaining == nil ? left.compactValue : left.value).font(.system(size: 14, weight: .medium, design: .rounded)).monospacedDigit()
                 }
             }.frame(width: ClientSidebarMetrics.ringSize, height: ClientSidebarMetrics.ringSize)
                 .anchorPreference(key: ClientQuotaMorphAnchors.self, value: .bounds) { anchor in
@@ -219,7 +219,8 @@ struct ClientPairedQuotaRing: View {
             }
         }.frame(width: 74).padding(.vertical, 3).contentShape(Rectangle())
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel(right.map { "左侧 \(left.title) \(left.value)，右侧 \($0.title) \($0.value)" } ?? "\(left.title) 剩余 \(left.value)，完整圆环")
+            .help(([left] + (right.map { [$0] } ?? [])).map { $0.title + " · " + $0.accessibleValue + "\n" + $0.source }.joined(separator: "\n"))
+            .accessibilityLabel(right.map { "左侧 \(left.title) \(left.accessibleValue)，右侧 \($0.title) \($0.accessibleValue)" } ?? "\(left.title) \(left.remaining == nil ? "" : "剩余 ")\(left.accessibleValue)，完整圆环")
     }
     private func half(_ item: ClientQuotaItem, rotation: Double) -> some View {
         Circle().trim(from: 0.006, to: 0.006 + 0.488 * (item.remaining ?? 0) / 100)

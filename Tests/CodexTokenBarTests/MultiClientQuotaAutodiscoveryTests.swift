@@ -10,6 +10,24 @@ private final class QuotaProbeCounter: @unchecked Sendable {
 
 final class MultiClientQuotaAutodiscoveryTests: XCTestCase {
     @MainActor
+    func testCLIAPIModeRemainsVisibleBesideIndependentDesktopQuotaWithoutTranscriptOptIn() async throws {
+        let root = try temporaryDirectory()
+        let (defaults, name) = isolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: name) }
+        let store = MultiClientUsageStore(defaults: defaults, databaseURL: root.appendingPathComponent("usage.sqlite"),
+            quotaReader: { .init(state: "api", capturedAt: nil, fiveHour: nil, sevenDay: nil) },
+            desktopQuotaReader: { .init(state: "available", capturedAt: Date(), fiveHour: .init(usedPercent: 13, resetsAt: nil), sevenDay: nil) },
+            antigravityQuotaReader: { AntigravityLocalQuota.empty() })
+        store.refreshLocalQuotaCaches()
+        for _ in 0..<100 where store.claudeDesktopQuota.state != "available" { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(Set(store.displayClientIDs).isSuperset(of: ["claudeCode", "claudeDesktop"]))
+        XCTAssertFalse(store.preferences.contains { $0.enabled })
+        let readings = store.localQuotaReadings
+        XCTAssertEqual(readings.first { $0.client == "claudeCode" }?.state, "api")
+        XCTAssertTrue(readings.first { $0.client == "claudeCode" }?.windows.isEmpty == true)
+        XCTAssertEqual(readings.first { $0.client == "claudeDesktop" }?.windows.first?.usedPercent, 13)
+    }
+    @MainActor
     func testDesktopQuotaRemainsIndependentFromCLIAndTranscriptOptIn() async throws {
         let root = try temporaryDirectory()
         let (defaults, name) = isolatedDefaults()

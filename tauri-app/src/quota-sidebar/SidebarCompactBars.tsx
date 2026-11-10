@@ -30,7 +30,7 @@ export function SidebarCompactBars({ items, quotas, selection, ratePercent, mode
         data-task-state={taskMeter.status} style={{ height: layout.barHeight }}
         aria-label={taskMeter.label} title={taskMeter.label}><SidebarTaskCells meter={taskMeter}/></span>}
       {id.startsWith("quota:") && quotaWindowsForClient(quotas, id.slice(6)).map(item =>
-        <span key={item.id} data-sidebar-item={id} data-quota-id={item.id} className="integrated-quota-track" style={{ height: layout.barHeight }} title={`${item.client} · ${item.window} ${item.remaining === null ? item.status : Math.round(item.remaining) + "%"}`}>
+        <span key={item.id} data-sidebar-item={id} data-quota-id={item.id} className="integrated-quota-track" style={{ height: layout.barHeight }} title={`${item.client} · ${item.window} ${item.remaining === null ? item.status : Math.round(item.remaining) + "%"}\n${item.source??""}`}>
           <i className="integrated-client-cap" data-quota-marker-start={item.id} aria-hidden="true" style={{ background: clientBrand[item.client] ?? "#888" }} />
           <span className="integrated-quota-value-track" style={{ height: layout.barHeight - 2.5 }}>
             <span className={`qs-bar ${item.remaining === null ? "qs-unknown" : ""}`} data-sidebar-stroke-target={item.id}>

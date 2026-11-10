@@ -44,3 +44,31 @@ test("Desktop HTTP source preserves reset times and labels itself without implyi
   assert.equal(reading.windows[0].resetsAt,reset);assert.match(reading.notice,/HTTP 缓存/);
   assert.doesNotMatch(reading.notice,/重置时间未知|暂停/);
 }));
+
+test("Desktop, CLI API and detected Antigravity retain separate visible states without borrowing balances",async()=>withSsrModules(async load=>{
+  const {quotaItems,compactQuotaValue}=await load('/src/multiClient/integratedClientModel.ts');
+  const {claudeQuotaFromLocalCache,unavailableQuota,quotaReadingIsPresent}=await load('/src/multiClient/multiClientProduct.ts');
+  const {ClientQuotaDetailRings,PairedQuotaRing}=await load('/src/multiClient/ClientQuotaViews.tsx');
+  const {ClientQuotaPanel}=await load('/src/multiClient/MultiClientUsage.tsx');
+  const desktop=claudeQuotaFromLocalCache({state:'available',fiveHour:{usedPercent:13,resetsAt:null}},'claudeDesktop');
+  const cli=claudeQuotaFromLocalCache({state:'api'}),ag=unavailableQuota('antigravity');
+  const items=quotaItems(undefined,[desktop,cli,ag]).filter(item=>item.client!=='codex');
+  assert.deepEqual(items.map(item=>[item.id,item.remaining,compactQuotaValue(item)]),[
+    ['claudeDesktop:5h',87,'87'],['claudeCode:api',null,'API'],['antigravity:status',null,'待'],
+  ]);
+  assert.equal(quotaReadingIsPresent(cli),true);
+  assert.equal(quotaReadingIsPresent(ag),false);
+  assert.equal(quotaReadingIsPresent(ag,true),true);
+  assert.equal(quotaReadingIsPresent(unavailableQuota('gemini'),true),false);
+  const detail=renderToStaticMarkup(React.createElement(ClientQuotaDetailRings,{items}));
+  assert.match(detail,/Claude Desktop/);assert.match(detail,/Claude CLI/);assert.match(detail,/Antigravity/);
+  assert.match(detail,/87%/);assert.match(detail,/订阅额度不适用/);assert.match(detail,/额度未接入/);
+  assert.doesNotMatch(detail,/暂无本地额度读数/);
+  const missing=renderToStaticMarkup(React.createElement(PairedQuotaRing,{left:items[2]}));
+  assert.match(missing,/>待</);assert.match(missing,/aria-label="[^"]*额度未接入/);
+  const api=renderToStaticMarkup(React.createElement(ClientQuotaPanel,{reading:cli}));
+  assert.match(api,/API 接入/);assert.doesNotMatch(api,/额度不可用/);
+  const stale=claudeQuotaFromLocalCache({state:'stale',capturedAt:'2026-11-04T00:00:00Z'});
+  const cached=quotaItems(undefined,[stale]).find(item=>item.client==='claudeCode');
+  assert.equal(compactQuotaValue(cached),'旧');assert.equal(cached.remaining,null);
+}));

@@ -123,7 +123,7 @@ pub fn quota_provider_snapshots(
             "可手动配置 Claude 本地 statusLine 命令：Windows 使用 ClaudeLocalReader --capture-statusline，Mac 使用 TokenBarClaudeLocal；也兼容已有 claude-monitor --statusline 缓存。使用 Claude 生成新记录后刷新。此流程不会自动修改你的 Claude 配置。额度未绑定到具体账号，只反映最近 Claude 进程；缓存超过 10 分钟会过期。",
         ),
         "stale" => (
-            "unavailable",
+            "stale",
             Vec::new(),
             "Claude 状态栏缓存超过 10 分钟，已过期。请使用 Claude 生成新的本地状态栏记录；额度未绑定到具体账号。",
         ),
@@ -560,6 +560,13 @@ mod tests {
             .notice
             .contains("ClaudeLocalReader --capture-statusline"));
         assert!(disconnected[0].notice.contains("10 分钟"));
+        let mut stale_cli = missing.clone();
+        stale_cli.state = "stale".into();
+        stale_cli.captured_at = Some("2026-11-04T00:00:00Z".into());
+        let stale = quota_provider_snapshots(&stale_cli, &desktop_missing, &super::super::antigravity_local_quota::empty("notConnected", "local-antigravity-state"));
+        assert_eq!(stale[0].state, "stale");
+        assert!(stale[0].windows.is_empty());
+        assert_eq!(stale[0].captured_at, stale_cli.captured_at);
     }
 
     #[test]

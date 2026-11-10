@@ -450,7 +450,7 @@ final class MultiClientUsageStore: ObservableObject {
     }
     private func hasLocalQuota(_ client: UsageClient) -> Bool {
         let value = quotaReading(client)
-        return !value.windows.isEmpty || value.capturedAt != nil
+        return ClientQuotaPresentation.isPresent(value, detected: detections.contains { $0.client == client })
     }
     var localQuotaReadings: [ClientQuotaReading] {
         availablePreferences.map { quotaReading($0.client) }.filter { $0.source != "unsupported" }

@@ -91,4 +91,25 @@ final class OfflineClientQuotaTests: XCTestCase {
         let old = ClientQuotaProjection.items(codex: .empty, localReadings: [stale]).filter { $0.client == "antigravity" }
         XCTAssertEqual(old.count, 1); XCTAssertNil(old.first?.remaining); XCTAssertEqual(old.first?.status, "额度采样已过期")
     }
+
+    func testDesktopCLIAndInstalledAntigravityKeepIndependentVisibleQuotaStates() throws {
+        let desktop = ClaudeCapturedQuotaProvider(snapshot: .init(state: "available", capturedAt: Date(),
+            fiveHour: .init(usedPercent: 13, resetsAt: nil), sevenDay: nil), client: .claudeDesktop).reading()
+        let cli = ClaudeCapturedQuotaProvider(snapshot: .init(state: "api", capturedAt: nil, fiveHour: nil, sevenDay: nil)).reading()
+        let ag = AntigravityLocalQuota.empty()
+        let items = ClientQuotaProjection.items(codex: .empty, localReadings: [desktop, cli, ag]).filter { $0.client != "codex" }
+        XCTAssertEqual(items.map(\.id), ["claudeDesktop:5h", "claudeCode:api", "antigravity:status"])
+        XCTAssertEqual(items.map(\.remaining), [87, nil, nil])
+        XCTAssertEqual(items.map(\.compactValue), ["87", "API", "待"])
+        XCTAssertEqual(items.last?.accessibleValue, "额度未接入")
+        XCTAssertTrue(ClientQuotaPresentation.isPresent(cli))
+        XCTAssertFalse(ClientQuotaPresentation.isPresent(ag))
+        XCTAssertTrue(ClientQuotaPresentation.isPresent(ag, detected: true))
+        XCTAssertFalse(ClientQuotaPresentation.isPresent(UnavailableClientQuotaProvider(client: .gemini).reading(), detected: true))
+        let stale = ClaudeCapturedQuotaProvider(snapshot: .init(state: "stale", capturedAt: Date(), fiveHour: nil, sevenDay: nil)).reading()
+        let cached = try XCTUnwrap(ClientQuotaProjection.items(codex: .empty, localReadings: [stale]).last)
+        XCTAssertEqual(stale.state, "stale")
+        XCTAssertEqual(cached.compactValue, "旧")
+        XCTAssertNil(cached.remaining)
+    }
 }

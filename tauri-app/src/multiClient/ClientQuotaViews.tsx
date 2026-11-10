@@ -9,6 +9,7 @@ import {
   quotaFill,
   quotaWindowTitle,
   clientSidebarMetrics,
+  compactQuotaValue,
   type QuotaItem,
   type QuotaSelection,
 } from "./integratedClientModel";
@@ -99,10 +100,11 @@ export function PairedQuotaRing({
       className="integrated-paired-ring"
       role="img"
       data-mode={right ? "paired" : "single"}
+      title={[left,...(right?[right]:[])].map(item=>`${clientTitle(item.client)} ${item.window} · ${item.remaining===null?item.status:value(item)}\n${item.source??""}`).join("\n")}
       aria-label={
         right
-          ? `左侧 ${clientTitle(left.client)} ${left.window} ${value(left)}；右侧 ${clientTitle(right.client)} ${right.window} ${value(right)}`
-          : `${clientTitle(left.client)} ${left.window} 剩余 ${value(left)}，完整圆环`
+          ? `左侧 ${clientTitle(left.client)} ${left.window} ${left.remaining===null?left.status:value(left)}；右侧 ${clientTitle(right.client)} ${right.window} ${right.remaining===null?right.status:value(right)}`
+          : `${clientTitle(left.client)} ${left.window} ${left.remaining===null?left.status:"剩余 "+value(left)}，完整圆环`
       }
     >
       <div style={{ width: clientSidebarMetrics.ringSize, height: clientSidebarMetrics.ringSize }}>
@@ -153,7 +155,7 @@ export function PairedQuotaRing({
           )}
         </svg>
         <strong>
-          {right ? <><span data-digits={left.remaining === null ? 1 : String(Math.round(left.remaining)).length}>{left.remaining === null ? "—" : Math.round(left.remaining)}</span><b aria-hidden="true"/><span data-digits={right.remaining === null ? 1 : String(Math.round(right.remaining)).length}>{right.remaining === null ? "—" : Math.round(right.remaining)}</span></> : value(left)}
+          {right ? <><span data-digits={compactQuotaValue(left).length}>{compactQuotaValue(left)}</span><b aria-hidden="true"/><span data-digits={compactQuotaValue(right).length}>{compactQuotaValue(right)}</span></> : left.remaining===null?compactQuotaValue(left):value(left)}
         </strong>
       </div>
       <div className="integrated-ring-captions">

@@ -16,6 +16,7 @@ import {
   type QuotaSelection,
 } from "./integratedClientModel";
 import type { QuotaSnapshot } from "../types/dashboard";
+import {quotaReadingIsPresent} from "./multiClientProduct";
 export const clientTitle = (id: string) =>
   id === "codex"
     ? "Codex"
@@ -47,7 +48,7 @@ export function useClientScope() {
       .filter(
         (p) =>
           p.enabled || snapshot.summaries.some((s) => s.client === p.client) ||
-          snapshot.quotas?.some(q => q.client === p.client && (q.windows.length > 0 || q.capturedAt)),
+          snapshot.quotas?.some(q => q.client === p.client && quotaReadingIsPresent(q, snapshot.detections?.some(d=>d.client===q.client))),
       )
       .map((p) => p.client), [snapshot.preferences, snapshot.summaries, snapshot.quotas]);
   const allowed = useMemo(() => scopeClients(raw, available), [raw, available]);
@@ -73,8 +74,8 @@ export function useClientQuotaItems(codex?: QuotaSnapshot) {
   const { allowed, snapshot } = useClientScope(),
     { selection } = useClientQuotaSelection();
   const localReadings=(snapshot.quotas??[]).filter(q=>q.source!=="unsupported" && (
-    q.windows.length>0 || q.capturedAt || snapshot.preferences.some(p=>p.client===q.client && p.enabled)
-    || snapshot.detections?.some(d=>d.client===q.client)));
+    quotaReadingIsPresent(q, snapshot.detections?.some(d=>d.client===q.client))
+    || snapshot.preferences.some(p=>p.client===q.client && p.enabled)));
   const catalog=quotaItems(codex,localReadings,selection.enabled.includes("codex:5h"));
   return {
     items: orderedQuotaItems(

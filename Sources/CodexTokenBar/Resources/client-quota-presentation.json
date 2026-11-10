@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "states": {
+    "available": {"label":"", "compact":""},
+    "api": {"label":"API 接入", "compact":"API"},
+    "notConnected": {"label":"额度未接入", "compact":"待"},
+    "missing": {"label":"额度未接入", "compact":"待"},
+    "stale": {"label":"额度采样已过期", "compact":"旧"},
+    "cached": {"label":"采样时间未知", "compact":"缓存"},
+    "invalid": {"label":"额度缓存不可用", "compact":"未知"},
+    "unavailable": {"label":"额度不可用", "compact":"未知"}
+  }
+}

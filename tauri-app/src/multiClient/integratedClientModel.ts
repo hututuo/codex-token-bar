@@ -2,6 +2,7 @@ import type { ActivityDay } from "../types/usage";
 import type { ClientTrendBucket } from "./multiClientProduct";
 import { quotaWindowShortLabel } from "../utils/quota";
 import type { ClientQuotaReading } from "./multiClientProduct";
+import {clientQuotaCompactStatus,clientQuotaStatusText} from "./multiClientProduct";
 import type { QuotaSnapshot } from "../types/quota";
 export const clientBrand: Record<string, string> = {
   codex: "#3941FF",
@@ -41,7 +42,9 @@ export interface QuotaItem {
   resetsAt: string | null;
   source: string;
   status: string;
+  state?: string;
 }
+export const compactQuotaValue=(item:QuotaItem)=>item.remaining===null?clientQuotaCompactStatus(item.state):String(Math.round(item.remaining));
 export function quotaItems(
   codex: QuotaSnapshot | undefined,
   localReadings: ClientQuotaReading[],
@@ -95,16 +98,21 @@ export function quotaItems(
    const client=reading.client ?? "claudeCode";
    if(client==="codex" || !Object.hasOwn(clientBrand,client)) continue;
    if(reading.state === "api") {
-     items.push({id:client+":api",client,window:"API",remaining:null,resetsAt:null,source:"API 接入",status:"订阅额度不适用"});
+     items.push({id:client+":api",client,window:"API",remaining:null,resetsAt:null,source:reading.notice??"API 接入",status:"订阅额度不适用",state:"api"});
      continue;
    }
    const sampled=reading.capturedAt && Number.isFinite(Date.parse(reading.capturedAt))?` · 采样于 ${new Date(reading.capturedAt).toLocaleString()}`:"";
    if(reading.state === "stale" || reading.state === "cached") {
      items.push({id:client+":cache",client,window:"本地缓存",remaining:null,resetsAt:null,
-       source:reading.notice+sampled,status:reading.state === "stale"?"额度采样已过期":"采样时间未知"});
+       source:(reading.notice??"")+sampled,status:clientQuotaStatusText(reading.state),state:reading.state});
      continue;
    }
-   if(reading.state !== "available") continue;
+   if(reading.state !== "available") {
+     items.push({id:client+":status",client,window:"本地额度",remaining:null,resetsAt:null,
+       source:(reading.notice??"")+sampled,status:clientQuotaStatusText(reading.state),state:reading.state});
+     continue;
+   }
+    const previousCount=items.length;
     const seen=new Set<string>();
     reading.windows.forEach((w) => {
       const id=w.id??w.label,u=w.usedPercent;
@@ -121,6 +129,8 @@ export function quotaItems(
         status: "",
       });
     });
+    if(items.length===previousCount)items.push({id:client+":status",client,window:"本地额度",remaining:null,resetsAt:null,
+      source:(reading.notice??"")+sampled,status:clientQuotaStatusText("unavailable"),state:"unavailable"});
   }
   return items;
 }

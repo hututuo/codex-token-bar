@@ -39,6 +39,7 @@ struct ClientQuotaItem: Identifiable, Equatable {
     let source: String
     let status: String
     var expected: Double? = nil
+    var state: String? = nil
     var brand: String { ClientBrand.hex(client) }
     var fill: String { window == "5h" ? "#B6EF75" : window == "7d" ? "#B4ACFF" : "#78B7FF" }
     var shortClientTitle: String { ClientDisplayScope.title(client) }
@@ -51,8 +52,9 @@ struct ClientQuotaItem: Identifiable, Equatable {
         default: window
         }
     }
-    var compactValue: String { remaining.map { String(format: "%.0f", $0) } ?? "—" }
+    var compactValue: String { remaining.map { String(format: "%.0f", $0) } ?? ClientQuotaPresentation.compact(state) }
     var value: String { remaining.map { String(format: "%.0f%%", $0) } ?? "—" }
+    var accessibleValue: String { remaining == nil && !status.isEmpty ? status : value }
     var title: String { ClientDisplayScope.title(client) + " · " + window }
 }
 
@@ -107,17 +109,22 @@ enum ClientQuotaProjection {
             guard UsageClient(rawValue: reading.client) != nil, reading.source != "unsupported" else { continue }
             if reading.state == "api" {
                 items.append(ClientQuotaItem(id: reading.client + ":api", client: reading.client, window: "API", remaining: nil,
-                    resetsAt: nil, source: "API 接入", status: "订阅额度不适用"))
+                    resetsAt: nil, source: reading.notice, status: "订阅额度不适用", state: "api"))
                 continue
             }
             let sampled = reading.capturedAt.map { " · 采样于 " + $0.formatted(date: .abbreviated, time: .shortened) } ?? ""
             if ["stale", "cached"].contains(reading.state) {
                 items.append(ClientQuotaItem(id: reading.client + ":cache", client: reading.client, window: "本地缓存", remaining: nil,
                     resetsAt: nil, source: reading.notice + sampled,
-                    status: reading.state == "stale" ? "额度采样已过期" : "采样时间未知"))
+                    status: ClientQuotaPresentation.status(reading.state), state: reading.state))
                 continue
             }
-            guard reading.state == "available" else { continue }
+            guard reading.state == "available" else {
+                items.append(ClientQuotaItem(id: reading.client + ":status", client: reading.client, window: "本地额度", remaining: nil,
+                    resetsAt: nil, source: reading.notice + sampled, status: ClientQuotaPresentation.status(reading.state), state: reading.state))
+                continue
+            }
+            let previousCount = items.count
             var seen = Set<String>()
             for window in reading.windows {
                 let id = window.id ?? window.label
@@ -127,6 +134,10 @@ enum ClientQuotaProjection {
                 items.append(ClientQuotaItem(id: reading.client + ":" + id, client: reading.client, window: window.label,
                     remaining: 100 - used, resetsAt: window.resetsAt,
                     source: reading.notice + sampled, status: ""))
+            }
+            if items.count == previousCount {
+                items.append(ClientQuotaItem(id: reading.client + ":status", client: reading.client, window: "本地额度", remaining: nil,
+                    resetsAt: nil, source: reading.notice + sampled, status: ClientQuotaPresentation.status("unavailable"), state: "unavailable"))
             }
         }
         return items

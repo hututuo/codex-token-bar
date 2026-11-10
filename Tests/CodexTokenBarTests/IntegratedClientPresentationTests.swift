@@ -69,7 +69,9 @@ final class IntegratedClientPresentationTests: XCTestCase {
             sevenDay: AccountQuotaWindow(label: "7d", usedPercent: 8, resetsAt: nil))
         let items = ClientQuotaProjection.items(codex: snapshot,
             localReadings: [ClaudeCapturedQuotaProvider(snapshot: .missing).reading()])
-        XCTAssertEqual(items.map(\.id), ["codex:5h", "codex:7d"])
+        XCTAssertEqual(items.map(\.id), ["codex:5h", "codex:7d", "claudeCode:status"])
+        XCTAssertNil(items.last?.remaining)
+        XCTAssertEqual(items.last?.compactValue, "待")
         XCTAssertEqual(items[0].value, "0%")
         XCTAssertEqual(items[1].value, "92%")
         let measured = ClientQuotaReading(client: "claudeCode", state: "available", source: "local-statusline",
