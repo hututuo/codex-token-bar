@@ -84,4 +84,40 @@ macOS arm64 候选 `0.9.11 / 1011`：manifest source/run/lane、精确资产集�
 
 共享 11 组夹具覆盖完整复制、流式补全、跨窗口、完整/缺失/冲突 TTL、未知缓存、客户端边界、Fast 型号、fallback、非法哈希和非 Claude 来源。Swift/Rust 集成测试验证正反输入顺序、历史只读重开、全部消费者守恒、后续副本使缓存更新、真实 parser 跨本地午夜，以及原表/修订/checkpoint/schema 不变。原有畸形/BLOB/超大 payload 和逐请求分时价格测试接到生产共享读取层，保留原断言。
 
-本机轻量检查：共享 SQL 11 组通过；旧直接汇总会在其中 6 组重复计数。只读实际账本的历史窗口与人工核验一致，没有修改业务数据；Swift 语法解析、Rust 语法解析、vendor 离线校验和 diff 检查通过。完整编译/回归、历史版本兼容矩阵和 build 1012 安装包门禁待云端完成，不能把本节轻量检查或 build 1011 的旧结果当成新候选通过。
+本机轻量检查：共享 SQL 11 组通过；旧直接汇总会在其中 6 组重复计数。只读实际账本的历史窗口与人工核验一致，没有修改业务数据；Swift 语法解析、Rust 语法解析、vendor 离线校验和 diff 检查通过。新候选完整编译/回归、历史版本兼容与安装包结果见下，不复用 build 1011 的旧门禁冒充本次通过。
+
+### build 1012 追加修复候选
+
+产品源码固定为 `9a0ebc4c51231f6c00eb8436c20faf8092da8d09`。后续维护文档提交不改变安装包对应的产品源码。
+
+| 门禁 | Run | 状态 |
+| --- | --- | --- |
+| Hosted project checks | [42857922228](https://github.com/hututuo/codex-token-bar/actions/runs/42857922228) | 全部通过；attempt 2 最终执行封印 PASS |
+| Public v0.9.7 database upgrade | [42857922475](https://github.com/hututuo/codex-token-bar/actions/runs/42857922475) | 两端通过 |
+| 0.9.8–0.9.11 formed-state matrix | [42858041358](https://github.com/hututuo/codex-token-bar/actions/runs/42858041358) | 4 个版本 × macOS/Windows 全部通过 |
+| Prepare hosted installers | [42858049578](https://github.com/hututuo/codex-token-bar/actions/runs/42858049578) | macOS ARM64、Windows x64/ARM64 全部通过；安装包已下载校验 |
+
+- 前端 1,477、云端脚本 18 通过；Rust macOS 1,838、Windows 1,781 通过，各 14 个既有 ignored。两端新增的 3 个去重集成测试均实际执行通过，受检 tracked 源码未变，没有额外 untracked 输入；生产存储负控和 Windows 打包自检通过。
+- 正式 CI 和 macOS 打包任务均实际执行 Swift XCTest 2,464 通过、38 个既有跳过，Swift Testing 676 通过；包括新增去重、历史只读、后续缓存更新和真实 parser 跨午夜测试。发布脚本 112 通过、1 个既有 Windows 专属跳过；最终 CI 封印 PASS。
+- 正式 Swift CI 初次任务未取得 macOS ARM64 托管运行器，15 分钟后在零步骤状态被取消，GitHub 明确记录容量不足；没有编译或测试失败。重试仅针对该任务及其依赖的证据封印，保留已通过的前端和两端 Rust 结果，重试已成功。最终封印按 artifact ID `13786597793` 下载并核对归档 SHA256，未误用同名的初次失败报告。
+- Public097：Swift 升级 8 项和相关回归 107 项通过；Rust 升级 3 项及生产恢复/manifest 场景通过。
+- formed-state 矩阵使用真实旧版 producer 与当前 Rust 生产探针（`cfgTest=false`），每个版本/平台验证 8 个场景；committed/interrupted 各执行 3 次独立进程重开，恢复材料均保留。报告的候选 SHA、242 个受保护 Rust 源文件 blob hash 已与提交核对。原生 Swift 由独立 Swift/Public097 门禁证明，不能把 Rust 的 macOS 探针称为 Swift 矩阵。
+- 已查看本次源码生成的 640/840pt 四列模型布局图与一级额度圆点图：Claude 合并、三组各四槽、零用量 Haiku5.5、额外型号折叠和圆点直径与轨道同宽均符合预期。这些仍是云端合成数据的生产组件渲染，未冒充已安装 GUI 截图。
+
+macOS arm64 `0.9.11 / 1012` 已通过 manifest 精确资产集合/source/run/lane、checksum 文件、归档路径、深度严格签名、designated requirement、DMG 完整性及从 `/private/tmp` 执行 `--verify-bundled-resources`。共享 SQL、额度策略与型号排序资源的包内字节与源码一致；bundle ID、更新 feed 和公钥与 build 1010 一致。ad-hoc 签名、未公证、未发布公共更新。
+
+| build 1012 macOS 资产 | SHA256 |
+| --- | --- |
+| app.zip | `db615b18b78857240b33c0391eadb988ab28de33409a1a99f637baba7ef11ebf` |
+| DMG | `d3646c08de5775afd666dbb94ed9ac9ba664d84221490315f1e23230330cfd44` |
+| App 主程序 | `bf86dd7a7140762975596bd6eeab4072ca7e677d0b6c87f5f146f5d7e898cb49` |
+| 共享有效响应 SQL | `b4606fc4f517bd1e578ad8baa3e12a1bbebde370670f0f7f4dd5202735b89a0d` |
+
+Windows 构件的 candidate manifest 和 build manifest 均已核对：精确资产集合、同一源码/run、版本 0.9.11、`windowsArch=both`、平台标识、大小与 SHA256 一致。云端分别使用 `x86_64-pc-windows-msvc` / `aarch64-pc-windows-msvc` 编译并打包；NSIS 外层启动器本身均为 PE32 x86，不把该外壳误认成应用架构。未进行 Windows 实体 GUI 验收。
+
+| Windows 安装包 | SHA256 |
+| --- | --- |
+| x64 | `ec8c39f4fba858e827aeea94b63cc234a8058799025b82430241efae5d12aa81` |
+| ARM64 | `cd5be221bb1fc08a169b6689ad900cd09352c7cf98a190e9f4461c9094c90363` |
+
+2026-11-11 01:34（Asia/Shanghai）全部门禁与包校验完成。证据收拢在前述本机根目录的 `final-9a0ebc4c/`，最终索引为根目录 `final-validation.json`；旧候选证据分开保留。已安装应用仍为 build 1010；没有停止、替换或操作实机 GUI。受保护的三个文件 hash 与原基线一致，其余既有未跟踪文件保留。停在安装之前，由主控先询问用户是否在场，再安排备份、安装和 GUI 验收。
