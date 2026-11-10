@@ -1,0 +1,111 @@
+{
+  "schema": 1,
+  "fields": ["client", "session", "identityKind", "response", "model", "timestamp", "input", "output", "cacheRead", "cacheWrite", "reasoning", "cacheWrite5m", "cacheWrite1h"],
+  "expectedFields": ["client", "model", "timestamp", "input", "output", "cacheRead", "cacheWrite", "reasoning", "cacheWrite5m", "cacheWrite1h", "apiCostMicroUSD"],
+  "cases": [
+    {
+      "name": "desktop-exact-copied-response",
+      "observations": [
+        ["claudeDesktop", "original", "id", "message-1", "claude-opus-5-5", 1800000000, 50000, 1000, 10000, 20000, 10, 5000, 15000],
+        ["claudeDesktop", "fork", "id", "message-1", "claude-opus-5-5", 1800000000, 50000, 1000, 10000, 20000, 10, 5000, 15000]
+      ],
+      "expected": [["claudeDesktop", "claude-opus-5-5", 1800000000, 50000, 1000, 10000, 20000, 10, 5000, 15000, 247000]]
+    },
+    {
+      "name": "cli-partial-enrichment-and-later-incomplete-copy-cross-window",
+      "observations": [
+        ["claudeCode", "original", "id", "message-2", "claude-opus-5-5", 1799999999, 40000, 400, null, 20000, null, 20000, 0],
+        ["claudeCode", "fork", "id", "message-2", "claude-opus-5-5", 1800000001, 50000, 1000, 10000, 20000, null, 5000, 15000],
+        ["claudeCode", "copy", "id", "message-2", "claude-opus-5-5", 1800000002, 30000, 100, null, null, null, null, null]
+      ],
+      "expected": [["claudeCode", "claude-opus-5-5", 1800000002, 50000, 1000, 10000, 20000, null, 5000, 15000, 247000]]
+    },
+    {
+      "name": "coherent-latest-ttl-pair-not-independent-maxima",
+      "observations": [
+        ["claudeDesktop", "original", "id", "message-3", "claude-opus-5-5", 1800000000, 50000, 1000, 10000, 20000, 0, 20000, 0],
+        ["claudeDesktop", "fork", "id", "message-3", "claude-opus-5-5", 1800000001, 50000, 1000, 10000, 20000, 0, 5000, 15000]
+      ],
+      "expected": [["claudeDesktop", "claude-opus-5-5", 1800000001, 50000, 1000, 10000, 20000, 0, 5000, 15000, 247000]]
+    },
+    {
+      "name": "old-ttl-pair-cannot-price-larger-merged-write-total",
+      "observations": [
+        ["claudeDesktop", "original", "id", "message-4", "claude-opus-5-5", 1800000000, 50000, 1000, 10000, 20000, 0, 0, 20000],
+        ["claudeDesktop", "fork", "id", "message-4", "claude-opus-5-5", 1800000001, 60000, 1000, 10000, 30000, 0, null, null]
+      ],
+      "expected": [["claudeDesktop", "claude-opus-5-5", 1800000001, 60000, 1000, 10000, 30000, 0, null, null, 252000]]
+    },
+    {
+      "name": "invalid-latest-ttl-does-not-erase-valid-older-pair",
+      "observations": [
+        ["claudeDesktop", "original", "id", "message-5", "claude-opus-5-5", 1800000000, 50000, 1000, 10000, 20000, 0, 5000, 15000],
+        ["claudeDesktop", "fork", "id", "message-5", "claude-opus-5-5", 1800000002, 50000, 1000, 10000, 20000, 0, 5000, 14000]
+      ],
+      "expected": [["claudeDesktop", "claude-opus-5-5", 1800000002, 50000, 1000, 10000, 20000, 0, 5000, 15000, 247000]]
+    },
+    {
+      "name": "unknown-cache-counters-stay-unknown",
+      "observations": [
+        ["claudeDesktop", "original", "id", "message-6", "claude-opus-5-5", 1800000000, 50000, 900, null, null, null, null, null],
+        ["claudeDesktop", "fork", "id", "message-6", "claude-opus-5-5", 1800000000, 50000, 1000, null, null, null, null, null]
+      ],
+      "expected": [["claudeDesktop", "claude-opus-5-5", 1800000000, 50000, 1000, null, null, null, null, null, null]]
+    },
+    {
+      "name": "client-boundary",
+      "observations": [
+        ["claudeDesktop", "original", "id", "message-7", "claude-opus-5-5", 1800000000, 50000, 1000, 10000, 20000, 0, 5000, 15000],
+        ["claudeCode", "fork", "id", "message-7", "claude-opus-5-5", 1800000000, 50000, 1000, 10000, 20000, 0, 5000, 15000]
+      ],
+      "expected": [
+        ["claudeCode", "claude-opus-5-5", 1800000000, 50000, 1000, 10000, 20000, 0, 5000, 15000, 247000],
+        ["claudeDesktop", "claude-opus-5-5", 1800000000, 50000, 1000, 10000, 20000, 0, 5000, 15000, 247000]
+      ]
+    },
+    {
+      "name": "raw-model-and-fast-boundaries",
+      "observations": [
+        ["claudeDesktop", "original", "id", "message-8", "claude-opus-5-5", 1800000000, 50000, 1000, 10000, 20000, 0, 5000, 15000],
+        ["claudeDesktop", "fork", "id", "message-8", "claude-opus-5-5-fast", 1800000000, 50000, 1000, 10000, 20000, 0, 5000, 15000]
+      ],
+      "expected": [
+        ["claudeDesktop", "claude-opus-5-5", 1800000000, 50000, 1000, 10000, 20000, 0, 5000, 15000, 247000],
+        ["claudeDesktop", "claude-opus-5-5-fast", 1800000000, 50000, 1000, 10000, 20000, 0, 5000, 15000, 494000]
+      ]
+    },
+    {
+      "name": "fallback-identities-are-session-scoped",
+      "observations": [
+        ["claudeCode", "original", "fallback", "message-9", "claude-opus-5-5", 1800000000, 50000, 1000, 10000, 20000, 0, 5000, 15000],
+        ["claudeCode", "fork", "fallback", "message-9", "claude-opus-5-5", 1800000000, 50000, 1000, 10000, 20000, 0, 5000, 15000]
+      ],
+      "expected": [
+        ["claudeCode", "claude-opus-5-5", 1800000000, 50000, 1000, 10000, 20000, 0, 5000, 15000, 247000],
+        ["claudeCode", "claude-opus-5-5", 1800000000, 50000, 1000, 10000, 20000, 0, 5000, 15000, 247000]
+      ]
+    },
+    {
+      "name": "malformed-hashes-are-not-response-proof",
+      "observations": [
+        ["claudeCode", "original", "malformed", "message-10", "claude-opus-5-5", 1800000000, 50000, 1000, 10000, 20000, 0, 5000, 15000],
+        ["claudeCode", "fork", "malformed", "message-10", "claude-opus-5-5", 1800000000, 50000, 1000, 10000, 20000, 0, 5000, 15000]
+      ],
+      "expected": [
+        ["claudeCode", "claude-opus-5-5", 1800000000, 50000, 1000, 10000, 20000, 0, 5000, 15000, 247000],
+        ["claudeCode", "claude-opus-5-5", 1800000000, 50000, 1000, 10000, 20000, 0, 5000, 15000, 247000]
+      ]
+    },
+    {
+      "name": "other-client-records-remain-independent",
+      "observations": [
+        ["antigravity", "original", "id", "message-11", "claude-opus-5-5", 1800000000, 50000, 1000, 10000, 20000, 0, 5000, 15000],
+        ["antigravity", "fork", "id", "message-11", "claude-opus-5-5", 1800000000, 50000, 1000, 10000, 20000, 0, 5000, 15000]
+      ],
+      "expected": [
+        ["antigravity", "claude-opus-5-5", 1800000000, 50000, 1000, 10000, 20000, 0, 5000, 15000, 247000],
+        ["antigravity", "claude-opus-5-5", 1800000000, 50000, 1000, 10000, 20000, 0, 5000, 15000, 247000]
+      ]
+    }
+  ]
+}

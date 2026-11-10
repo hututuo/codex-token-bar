@@ -29,7 +29,7 @@ enum AppResources {
     /// readers or network owners are initialized. Works from any current cwd.
     static func verifyPackagedResources() throws {
         let paths = [
-            "codex-ledger-schema.sql", "activity-speed-schema.sql",
+            "codex-ledger-schema.sql", "activity-speed-schema.sql", "client-usage-effective-events.sql",
             "standard-api-price-history.json", "model-display-names.json", "o200k_base.tiktoken",
             "model-presentation-policy.json", "model-cost-order.json", "client-quota-presentation.json", "recent-chart-policy.json",
             "ModelTrace/fingerprint-core.js", "ModelTrace/unified_bank.json",

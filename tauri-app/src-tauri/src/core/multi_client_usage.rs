@@ -6,7 +6,6 @@ use crate::core::{
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use rusqlite::backup::Backup;
-use rusqlite::types::ValueRef;
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -23,6 +22,10 @@ use time::{Date, Duration as CalendarDuration, OffsetDateTime};
 #[path = "antigravity_usage.rs"]
 mod antigravity;
 
+#[cfg(test)]
+#[path = "multi_client_response_tests.rs"]
+mod response_tests;
+
 const SCHEMA_VERSION: i64 = 2;
 const MAX_SCAN_DEPTH: usize = 6;
 const MAX_SCANNED_ENTRIES: usize = 200_000;
@@ -31,7 +34,6 @@ const MAX_SOURCE_FILE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_OPENCODE_ROWS: usize = 500;
 const MAX_OPENCODE_ROW_BYTES: usize = 1024 * 1024;
 const MAX_COUNTER: u64 = 1_000_000_000_000;
-const MAX_PRICE_PAYLOAD_BYTES: usize = 65_536;
 const MAX_CLAUDE_DESKTOP_HISTORY_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_CLAUDE_DESKTOP_HISTORY_SAMPLES: usize = 50_000;
 const CLAUDE_DESKTOP_HISTORY_MAX_AGE_SECONDS: f64 = 1_200.0;
@@ -58,7 +60,16 @@ static CLAUDE_DESKTOP_QUOTA_PROBE_CACHE: OnceLock<Mutex<ClaudeDesktopQuotaProbeC
 const MAX_DEEPSEEK_SESSION_HINT_CACHE: usize = 1_024;
 const BUNDLED_PRICE_TABLE: &str =
     include_str!("../../../../Vendor/AgentSpeed/spec/assets/prices.json");
+const EFFECTIVE_USAGE_EVENTS_SQL: &str = include_str!(
+    "../../../../Sources/CodexTokenBar/Resources/client-usage-effective-events.sql"
+);
 const MAX_SCOPED_SUMMARY_CACHE_ENTRIES: usize = 8;
+
+/// Shared with Swift; raw ingestion/diagnostics retain session-scoped copies.
+/// Every numeric consumer filters and aggregates this response projection.
+fn effective_usage_query(select: &str) -> String {
+    format!("{EFFECTIVE_USAGE_EVENTS_SQL}\n{select}")
+}
 
 #[derive(Default)]
 struct ClaudeLocalQuotaProbeCache {
@@ -688,7 +699,7 @@ fn read_multi_client_cache_rankings_at(
         .map_err(|error| error.to_string())?;
     let matching_request_count: i64 = transaction
         .query_row(
-            "SELECT COUNT(*) FROM client_usage_events WHERE client=?1 AND input_tokens>=?2",
+            &effective_usage_query("SELECT COUNT(*) FROM effective_client_usage_events WHERE client=?1 AND input_tokens>=?2"),
             params![client, CACHE_RANKING_MIN_INPUT_TOKENS],
             |row| row.get(0),
         )
@@ -696,7 +707,7 @@ fn read_multi_client_cache_rankings_at(
 
     let request_sql = r#"
         SELECT event_id,session_id,model,timestamp,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens
-        FROM client_usage_events
+        FROM effective_client_usage_events
         WHERE client=?1 AND input_tokens>=?2
         ORDER BY CASE WHEN cache_read_tokens IS NULL OR input_tokens<=0 THEN 1 ELSE 0 END ASC,
                  CASE WHEN cache_read_tokens IS NOT NULL AND input_tokens>0
@@ -707,7 +718,7 @@ fn read_multi_client_cache_rankings_at(
         LIMIT ?3
     "#;
     let requests = transaction
-        .prepare(request_sql)
+        .prepare(&effective_usage_query(request_sql))
         .map_err(|error| error.to_string())?
         .query_map(
             params![
@@ -762,12 +773,12 @@ fn read_multi_client_cache_rankings_at(
                SUM(CASE WHEN input_tokens>=?2 AND cache_read_tokens IS NOT NULL
                         AND CAST(MIN(MAX(cache_read_tokens,0),input_tokens) AS REAL)/NULLIF(input_tokens,0)<?3 THEN 1 ELSE 0 END),
                SUM(CASE WHEN input_tokens>0 AND cache_read_tokens=0 THEN 1 ELSE 0 END)
-        FROM client_usage_events WHERE client=?1
+        FROM effective_client_usage_events WHERE client=?1
         GROUP BY session_id HAVING SUM(input_tokens)>=?4
         ORDER BY MAX(timestamp) DESC,session_id COLLATE BINARY
     "#;
     let mut sessions = transaction
-        .prepare(session_sql)
+        .prepare(&effective_usage_query(session_sql))
         .map_err(|error| error.to_string())?
         .query_map(
             params![
@@ -824,7 +835,7 @@ fn read_multi_client_cache_rankings_at(
     let mut models_by_session = BTreeMap::<String, Vec<String>>::new();
     let mut model_statement = transaction
         .prepare(
-            "SELECT session_id,model FROM client_usage_events WHERE client=?1 GROUP BY session_id,model ORDER BY session_id COLLATE BINARY,model COLLATE BINARY",
+            &effective_usage_query("SELECT session_id,model FROM effective_client_usage_events WHERE client=?1 GROUP BY session_id,model ORDER BY session_id COLLATE BINARY,model COLLATE BINARY"),
         )
         .map_err(|error| error.to_string())?;
     let model_rows = model_statement
@@ -3320,27 +3331,6 @@ fn read_bounded_counter(value: Option<&Value>) -> Option<u64> {
     (parsed <= MAX_COUNTER).then_some(parsed)
 }
 
-fn cache_write_ttl_pair_from_payload(payload: &[u8]) -> Option<(i64, i64)> {
-    if payload.len() > MAX_PRICE_PAYLOAD_BYTES {
-        return None;
-    }
-    let payload = std::str::from_utf8(payload).ok()?;
-    let payload = serde_json::from_str::<Value>(payload).ok()?;
-    let cache_write_5m = read_bounded_counter(payload.get("cacheWrite5mTokens"))?;
-    let cache_write_1h = read_bounded_counter(payload.get("cacheWrite1hTokens"))?;
-    Some((
-        i64::try_from(cache_write_5m).ok()?,
-        i64::try_from(cache_write_1h).ok()?,
-    ))
-}
-
-fn cache_write_ttl_pair_from_sql_value(payload: ValueRef<'_>) -> Option<(i64, i64)> {
-    match payload {
-        ValueRef::Text(payload) => cache_write_ttl_pair_from_payload(payload),
-        _ => None,
-    }
-}
-
 fn count_fields_valid(object: &Value, keys: &[&str]) -> bool {
     keys.iter().all(|key| {
         let mut value = Some(object);
@@ -4100,15 +4090,15 @@ fn read_summary_rows_range_with_prices(
          SUM(cache_write_tokens), SUM(reasoning_tokens), COUNT(*), MAX(timestamp), \
          SUM(cache_read_tokens IS NULL OR cache_write_tokens IS NULL OR reasoning_tokens IS NULL), \
          SUM(cache_read_tokens IS NULL)=0 \
-         FROM client_usage_events WHERE timestamp >= ?1 AND timestamp < ?2 GROUP BY client, model ORDER BY client, model"
+         FROM effective_client_usage_events WHERE timestamp >= ?1 AND timestamp < ?2 GROUP BY client, model ORDER BY client, model"
     } else {
         "SELECT client, model, SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), \
          SUM(cache_write_tokens), SUM(reasoning_tokens), COUNT(*), MAX(timestamp), \
          SUM(cache_read_tokens IS NULL OR cache_write_tokens IS NULL OR reasoning_tokens IS NULL), \
          SUM(cache_read_tokens IS NULL)=0 \
-         FROM client_usage_events GROUP BY client, model ORDER BY client, model"
+         FROM effective_client_usage_events GROUP BY client, model ORDER BY client, model"
     };
-    let mut statement = connection.prepare(query)?;
+    let mut statement = connection.prepare(&effective_usage_query(query))?;
     let read_row = |row: &rusqlite::Row<'_>| {
         let timestamp_seconds: Option<f64> = row.get(8)?;
         let client: String = row.get(0)?;
@@ -4166,8 +4156,8 @@ fn read_range_api_price_aggregates(
     let mut totals = HashMap::<MultiClientPriceModelKey, MultiClientPriceTally>::new();
     let mut statement = connection
         .prepare(
-            "SELECT client,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,timestamp,payload \
-             FROM client_usage_events WHERE timestamp >= ?1 AND timestamp < ?2",
+            &effective_usage_query("SELECT client,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,timestamp,cache_write_5m_tokens,cache_write_1h_tokens \
+             FROM effective_client_usage_events WHERE timestamp >= ?1 AND timestamp < ?2"),
         )
         .map_err(|error| error.to_string())?;
     let rows = statement
@@ -4180,7 +4170,7 @@ fn read_range_api_price_aggregates(
                 row.get::<_, Option<i64>>(4)?,
                 row.get::<_, Option<i64>>(5)?,
                 row.get::<_, f64>(6)?,
-                cache_write_ttl_pair_from_sql_value(row.get_ref(7)?),
+                row.get::<_, Option<i64>>(7)?.zip(row.get::<_, Option<i64>>(8)?),
             ))
         })
         .map_err(|error| error.to_string())?;
@@ -4279,8 +4269,8 @@ fn read_cached_api_price_aggregates(
     let mut totals = HashMap::<MultiClientPriceModelKey, MultiClientPriceTally>::new();
     let mut statement = connection
         .prepare(
-            "SELECT client,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,timestamp,payload \
-             FROM client_usage_events",
+            &effective_usage_query("SELECT client,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,timestamp,cache_write_5m_tokens,cache_write_1h_tokens \
+             FROM effective_client_usage_events"),
         )
         .map_err(|error| error.to_string())?;
     let rows = statement
@@ -4293,7 +4283,7 @@ fn read_cached_api_price_aggregates(
                 row.get::<_, Option<i64>>(4)?,
                 row.get::<_, Option<i64>>(5)?,
                 row.get::<_, f64>(6)?,
-                cache_write_ttl_pair_from_sql_value(row.get_ref(7)?),
+                row.get::<_, Option<i64>>(7)?.zip(row.get::<_, Option<i64>>(8)?),
             ))
         })
         .map_err(|error| error.to_string())?;
@@ -4508,8 +4498,8 @@ fn read_trend_buckets(
     // Use the summary's per-request price engine, never price grouped tokens.
     let mut prices = HashMap::<(String, String, i64), MultiClientPriceTally>::new();
     let mut price_query = connection.prepare(
-        "SELECT client,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,timestamp,payload \
-         FROM client_usage_events WHERE client <> 'codex' AND timestamp >= ?1 AND timestamp <= ?2",
+        &effective_usage_query("SELECT client,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,timestamp,cache_write_5m_tokens,cache_write_1h_tokens \
+         FROM effective_client_usage_events WHERE client <> 'codex' AND timestamp >= ?1 AND timestamp <= ?2"),
     )?;
     let mut priced_rows = price_query.query(params![start_unix, now_unix])?;
     while let Some(row) = priced_rows.next()? {
@@ -4519,17 +4509,17 @@ fn read_trend_buckets(
         let pricing_model = if client == "antigravity" { antigravity::price_model(&model) } else { model.clone() };
         prices.entry((client, model, (timestamp / 300.0).floor() as i64 * 300)).or_default().add(
             api_cost_micro_usd_at(&pricing_model, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?,
-                cache_write_ttl_pair_from_sql_value(row.get_ref(7)?), Some(timestamp)));
+                row.get::<_, Option<i64>>(7)?.zip(row.get::<_, Option<i64>>(8)?), Some(timestamp)));
     }
     let mut statement = connection.prepare(
-        "SELECT client, CAST(timestamp / 300 AS INTEGER) * 300 AS start_unix, \
+        &effective_usage_query("SELECT client, CAST(timestamp / 300 AS INTEGER) * 300 AS start_unix, \
          SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), \
          SUM(cache_write_tokens), SUM(reasoning_tokens), COUNT(*), model, \
          COUNT(cache_read_tokens) = COUNT(*), COUNT(cache_write_tokens) = COUNT(*) \
-         FROM client_usage_events \
+         FROM effective_client_usage_events \
          WHERE client <> 'codex' AND timestamp >= ?1 AND timestamp <= ?2 \
          GROUP BY client, model, CAST(timestamp / 300 AS INTEGER) \
-         ORDER BY client, start_unix, model",
+         ORDER BY client, start_unix, model"),
     )?;
     let rows = statement.query_map(params![start_unix, now_unix], |row| {
         let client: String = row.get(0)?;
@@ -4564,7 +4554,7 @@ fn read_trend_buckets(
     rows.collect()
 }
 
-/// Stream the raw multi-client events and retain only one aggregate per
+/// Stream effective multi-client responses and retain only one aggregate per
 /// client/local-date. This deliberately has no LIMIT: history size is reduced
 /// by day aggregation without silently dropping clients or source rows.
 fn read_daily_buckets(
@@ -4578,8 +4568,8 @@ fn read_daily_buckets(
     let (start_unix, _) = crate::core::localtime::local_day_bounds(first_day)?;
     let mut statement = connection
         .prepare(
-            "SELECT client,timestamp,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens \
-             FROM client_usage_events WHERE client <> 'codex' AND timestamp >= ?1 AND timestamp <= ?2",
+            &effective_usage_query("SELECT client,timestamp,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens \
+             FROM effective_client_usage_events WHERE client <> 'codex' AND timestamp >= ?1 AND timestamp <= ?2"),
         )
         .map_err(|error| error.to_string())?;
     let rows = statement
@@ -7055,34 +7045,28 @@ mod tests {
             Some(0),
             "zero cache writes remain priceable without TTL metadata"
         );
-        assert_eq!(
-            cache_write_ttl_pair_from_payload(
-                r#"{"cacheWrite5mTokens":60000,"cacheWrite1hTokens":null}"#.as_bytes()
-            ),
-            None
-        );
-        assert_eq!(
-            cache_write_ttl_pair_from_payload(
-                r#"{"cacheWrite5mTokens":"60000","cacheWrite1hTokens":40000}"#.as_bytes()
-            ),
-            None
-        );
-        assert_eq!(
-            cache_write_ttl_pair_from_payload(
-                r#"{"cacheWrite5mTokens":1000000000001,"cacheWrite1hTokens":0}"#.as_bytes()
-            ),
-            None
-        );
+        let connection = Connection::open_in_memory().unwrap();
+        ensure_schema(&connection, Path::new(":memory:")).unwrap();
+        for payload in [
+            r#"{"cacheWrite5mTokens":60000,"cacheWrite1hTokens":null}"#,
+            r#"{"cacheWrite5mTokens":"60000","cacheWrite1hTokens":40000}"#,
+            r#"{"cacheWrite5mTokens":1000000000001,"cacheWrite1hTokens":0}"#,
+        ] {
+            connection.execute("INSERT OR REPLACE INTO client_usage_events VALUES('claudeCode','ttl','s','claude-opus-5-5',1800000000,100000,0,0,100000,0,?1)", [payload]).unwrap();
+            let pair = connection.query_row(&effective_usage_query("SELECT cache_write_5m_tokens,cache_write_1h_tokens FROM effective_client_usage_events"), [], |row| {
+                Ok(row.get::<_, Option<i64>>(0)?.zip(row.get::<_, Option<i64>>(1)?))
+            }).unwrap();
+            assert_eq!(pair, None);
+        }
     }
 
     #[test]
     fn scoped_price_query_passes_each_record_timestamp_without_mutating_ledger() {
         let connection = Connection::open_in_memory().unwrap();
-        connection.execute_batch("CREATE TABLE client_usage_events(client TEXT,model TEXT,
-            input_tokens INTEGER,output_tokens INTEGER,cache_read_tokens INTEGER,cache_write_tokens INTEGER,timestamp REAL,payload TEXT)").unwrap();
+        ensure_schema(&connection, Path::new(":memory:")).unwrap();
         for time in ["2026-10-30T01:00:00Z", "2026-10-30T04:00:00Z"] {
             let timestamp = price_period_timestamp(&serde_json::json!(time)).unwrap() as f64;
-            connection.execute("INSERT INTO client_usage_events VALUES('deepseek','deepseek-flash',1000000,1000000,200000,NULL,?1,'{}')", [timestamp]).unwrap();
+            connection.execute("INSERT INTO client_usage_events VALUES('deepseek',?1,'s','deepseek-flash',?2,1000000,1000000,200000,NULL,NULL,'{}')", params![time,timestamp]).unwrap();
         }
         let totals = read_scoped_api_price_aggregates(&connection, 0).unwrap();
         let tally = totals
@@ -7105,33 +7089,25 @@ mod tests {
     #[test]
     fn invalid_price_payloads_leave_numeric_rows_readable_and_isolate_unknown_fees() {
         let connection = Connection::open_in_memory().unwrap();
-        connection
-            .execute_batch(
-                "CREATE TABLE client_usage_events(
-                    client TEXT,model TEXT,input_tokens INTEGER,output_tokens INTEGER,
-                    cache_read_tokens INTEGER,cache_write_tokens INTEGER,
-                    reasoning_tokens INTEGER,timestamp REAL,payload
-                );",
-            )
-            .unwrap();
+        ensure_schema(&connection, Path::new(":memory:")).unwrap();
         connection
             .execute_batch(
                 "INSERT INTO client_usage_events VALUES
-                 ('claudeCode','claude-opus-5-5',100000,0,0,100000,0,1800000000,X'FF'),
-                 ('claudeCode','claude-opus-5-5',100000,0,0,100000,0,1800000001,'{not-json'),
-                 ('claudeCode','claude-opus-5-5',100,0,0,0,0,1800000002,X'FF'),
-                 ('claudeCode','gpt-6.1-sol',100000,0,0,100000,0,1800000003,X'FF');",
+                 ('claudeCode','blob','s','claude-opus-5-5',1800000000,100000,0,0,100000,0,X'FF'),
+                 ('claudeCode','invalid','s','claude-opus-5-5',1800000001,100000,0,0,100000,0,'{not-json'),
+                 ('claudeCode','zero','s','claude-opus-5-5',1800000002,100,0,0,0,0,X'FF'),
+                 ('claudeCode','gpt','s','gpt-6.1-sol',1800000003,100000,0,0,100000,0,X'FF');",
             )
             .unwrap();
         let oversized_payload = format!(
             r#"{{"cacheWrite5mTokens":60000,"cacheWrite1hTokens":40000,"padding":"{}"}}"#,
-            "x".repeat(MAX_PRICE_PAYLOAD_BYTES)
+            "x".repeat(65_536)
         );
-        assert!(oversized_payload.len() > MAX_PRICE_PAYLOAD_BYTES);
+        assert!(oversized_payload.len() > 65_536);
         connection
             .execute(
                 "INSERT INTO client_usage_events VALUES
-                 ('claudeCode','claude-opus-5-5',100000,0,0,100000,0,1800000004,?1)",
+                 ('claudeCode','oversized','s','claude-opus-5-5',1800000004,100000,0,0,100000,0,?1)",
                 [&oversized_payload],
             )
             .unwrap();

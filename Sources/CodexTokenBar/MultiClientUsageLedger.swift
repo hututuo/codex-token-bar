@@ -327,16 +327,16 @@ final class MultiClientUsageLedger: @unchecked Sendable {
         return try database.withConnection { connection in
             try connection.readTransaction { snapshot in
                 let matchingRequestCount = try snapshot.readRows(
-                    "SELECT COUNT(*) FROM client_usage_events \(whereClause)\(whereClause.isEmpty ? "WHERE " : " AND ")input_tokens >= ?",
+                    ClientUsageReadModel.query("SELECT COUNT(*) FROM effective_client_usage_events \(whereClause)\(whereClause.isEmpty ? "WHERE " : " AND ")input_tokens >= ?"),
                     bindings: bindings + [.int64(ClientCacheRankingPolicy.minimumInputTokens)]
                 ) { $0.int(0) ?? 0 }.first ?? 0
 
-                let requests = try snapshot.readRows("""
+                let requests = try snapshot.readRows(ClientUsageReadModel.query("""
                     SELECT client,event_id,session_id,model,timestamp,input_tokens,output_tokens,
                            cache_read_tokens,cache_write_tokens
-                    FROM client_usage_events \(whereClause)\(whereClause.isEmpty ? "WHERE " : " AND ")input_tokens >= ?
+                    FROM effective_client_usage_events \(whereClause)\(whereClause.isEmpty ? "WHERE " : " AND ")input_tokens >= ?
                     ORDER BY \(requestSort) LIMIT ?
-                    """, bindings: bindings + [
+                    """), bindings: bindings + [
                         .int64(ClientCacheRankingPolicy.minimumInputTokens), .int64(Int64(requestLimit))
                     ]) { row -> ClientCacheRankingRequest? in
                     guard let client = UsageClient(rawValue: row.text(0) ?? "") else { return nil }
@@ -355,7 +355,7 @@ final class MultiClientUsageLedger: @unchecked Sendable {
                     )
                 }.compactMap { $0 }
 
-                let rawSessions = try snapshot.readRows("""
+                let rawSessions = try snapshot.readRows(ClientUsageReadModel.query("""
                     SELECT client,session_id,SUM(input_tokens),SUM(output_tokens),
                            SUM(CASE WHEN cache_read_tokens IS NOT NULL THEN MIN(MAX(cache_read_tokens,0),input_tokens) END),
                            SUM(cache_write_tokens),COUNT(*),MIN(timestamp),MAX(timestamp),
@@ -363,10 +363,10 @@ final class MultiClientUsageLedger: @unchecked Sendable {
                            SUM(CASE WHEN input_tokens >= ? AND cache_read_tokens IS NOT NULL
                                     AND CAST(MIN(MAX(cache_read_tokens,0),input_tokens) AS REAL) / NULLIF(input_tokens,0) < ? THEN 1 ELSE 0 END),
                            SUM(CASE WHEN input_tokens > 0 AND cache_read_tokens = 0 THEN 1 ELSE 0 END)
-                    FROM client_usage_events \(whereClause)
+                    FROM effective_client_usage_events \(whereClause)
                     GROUP BY client,session_id HAVING SUM(input_tokens) >= ?
                     ORDER BY MAX(timestamp) DESC,client COLLATE BINARY,session_id COLLATE BINARY
-                    """, bindings: [
+                    """), bindings: [
                         .int64(ClientCacheRankingPolicy.lowHitMinimumInputTokens),
                         .double(ClientCacheRankingPolicy.lowHitRate)
                     ] + bindings + [.int64(ClientCacheRankingPolicy.minimumInputTokens)]) { row -> ClientCacheRankingSession? in
@@ -391,10 +391,10 @@ final class MultiClientUsageLedger: @unchecked Sendable {
                     )
                 }.compactMap { $0 }
 
-                let modelRows = try snapshot.readRows("""
-                    SELECT client,session_id,model FROM client_usage_events \(whereClause)
+                let modelRows = try snapshot.readRows(ClientUsageReadModel.query("""
+                    SELECT client,session_id,model FROM effective_client_usage_events \(whereClause)
                     GROUP BY client,session_id,model ORDER BY client COLLATE BINARY,session_id COLLATE BINARY,model COLLATE BINARY
-                    """, bindings: bindings) { row -> (ClientCacheSessionKey, String)? in
+                    """), bindings: bindings) { row -> (ClientCacheSessionKey, String)? in
                     guard let client = UsageClient(rawValue: row.text(0) ?? "") else { return nil }
                     return (ClientCacheSessionKey(client: client, sessionID: row.text(1) ?? ""), row.text(2) ?? "unknown")
                 }.compactMap { $0 }
@@ -440,13 +440,13 @@ final class MultiClientUsageLedger: @unchecked Sendable {
             var tally = prices[key]?[bucket] ?? ClientPriceTally(knownCostMicroUSD: nil)
             tally.add(cost); prices[key, default: [:]][bucket] = tally
         }
-        return try snapshot.readRows("""
+        return try snapshot.readRows(ClientUsageReadModel.query("""
         SELECT client,CAST(timestamp/300 AS INTEGER)*300,SUM(input_tokens),SUM(output_tokens),
         SUM(cache_read_tokens),SUM(cache_write_tokens),SUM(reasoning_tokens),COUNT(*),model,
         COUNT(cache_read_tokens)=COUNT(*),COUNT(cache_write_tokens)=COUNT(*)
-        FROM client_usage_events WHERE timestamp >= ? AND timestamp <= ?
+        FROM effective_client_usage_events WHERE timestamp >= ? AND timestamp <= ?
         GROUP BY client,model,CAST(timestamp/300 AS INTEGER) ORDER BY 2,1,9
-        """, bindings: [.double(start), .date(now)]) { row in
+        """), bindings: [.double(start), .date(now)]) { row in
             guard let client = UsageClient(rawValue: row.text(0) ?? "") else { return nil as ClientTrendBucket? }
             let model = row.text(8) ?? "unknown"
             let price = prices[ClientPriceKey(client: client.rawValue, model: model)]?[row.int64(1) ?? 0]
@@ -468,14 +468,14 @@ final class MultiClientUsageLedger: @unchecked Sendable {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: now)
         let firstDay = calendar.date(byAdding: .day, value: -364, to: today) ?? today
-        return try database.readRows("""
+        return try database.readRows(ClientUsageReadModel.query("""
         SELECT client,
         CAST(strftime('%s',date(timestamp,'unixepoch','localtime'),'utc') AS INTEGER),
         SUM(input_tokens),SUM(output_tokens),SUM(cache_read_tokens),SUM(cache_write_tokens),
         SUM(reasoning_tokens),COUNT(*)
-        FROM client_usage_events WHERE timestamp >= ? AND timestamp <= ?
+        FROM effective_client_usage_events WHERE timestamp >= ? AND timestamp <= ?
         GROUP BY client,date(timestamp,'unixepoch','localtime') ORDER BY 2,1
-        """, bindings: [.date(firstDay), .date(now)]) { row in
+        """), bindings: [.date(firstDay), .date(now)]) { row in
             guard let client = UsageClient(rawValue: row.text(0) ?? "") else { return nil as ClientTrendBucket? }
             return ClientTrendBucket(client: client, startUnix: row.int64(1) ?? 0, inputTokens: row.int64(2) ?? 0,
                 outputTokens: row.int64(3) ?? 0, cacheReadTokens: row.int64(4), cacheWriteTokens: row.int64(5),
@@ -499,12 +499,12 @@ final class MultiClientUsageLedger: @unchecked Sendable {
                     before: before,
                     revision: since == nil && before == nil ? revision : nil
                 )
-                let summaries = try snapshot.readRows("""
+                let summaries = try snapshot.readRows(ClientUsageReadModel.query("""
                 SELECT client,model,SUM(input_tokens),SUM(output_tokens),SUM(cache_read_tokens),SUM(cache_write_tokens),
                 SUM(reasoning_tokens),COUNT(*),MAX(timestamp),SUM(cache_read_tokens IS NULL OR cache_write_tokens IS NULL OR reasoning_tokens IS NULL),
                 SUM(cache_read_tokens IS NULL)=0
-                FROM client_usage_events WHERE timestamp >= ? AND timestamp < ? GROUP BY client,model ORDER BY MAX(timestamp) DESC
-                """, bindings: [.date(since ?? Date(timeIntervalSince1970: 0)), .double(before?.timeIntervalSince1970 ?? .greatestFiniteMagnitude)]) { row in
+                FROM effective_client_usage_events WHERE timestamp >= ? AND timestamp < ? GROUP BY client,model ORDER BY MAX(timestamp) DESC
+                """), bindings: [.date(since ?? Date(timeIntervalSince1970: 0)), .double(before?.timeIntervalSince1970 ?? .greatestFiniteMagnitude)]) { row in
                     guard let client = UsageClient(rawValue: row.text(0) ?? "") else { return nil as ClientUsageSummary? }
                     let model = row.text(1) ?? "unknown"
                     let tally = priceTallies[ClientPriceKey(client: client.rawValue, model: model)]
@@ -587,12 +587,11 @@ final class MultiClientUsageLedger: @unchecked Sendable {
     /// aggregated token count: request tiers, dates and cache TTL stay intact.
     private func forEachPricedEvent(in connection: SQLiteDatabaseConnection, since: Date?, before: Date?,
         consume: (UsageClient, String, Double, Int64?) -> Void) throws {
-        try connection.forEachRow("""
+        try connection.forEachRow(ClientUsageReadModel.query("""
         SELECT client,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,timestamp,
-               CASE WHEN typeof(payload)='text' AND length(CAST(payload AS BLOB))<=65536 THEN CASE WHEN json_valid(payload) THEN CASE WHEN json_type(payload,'$.cacheWrite5mTokens')='integer' THEN json_extract(payload,'$.cacheWrite5mTokens') END END END,
-               CASE WHEN typeof(payload)='text' AND length(CAST(payload AS BLOB))<=65536 THEN CASE WHEN json_valid(payload) THEN CASE WHEN json_type(payload,'$.cacheWrite1hTokens')='integer' THEN json_extract(payload,'$.cacheWrite1hTokens') END END END
-        FROM client_usage_events WHERE timestamp >= ? AND timestamp < ?
-        """, bindings: [.date(since ?? Date(timeIntervalSince1970: 0)), .double(before?.timeIntervalSince1970 ?? .greatestFiniteMagnitude)]) { row in
+               cache_write_5m_tokens,cache_write_1h_tokens
+        FROM effective_client_usage_events WHERE timestamp >= ? AND timestamp < ?
+        """), bindings: [.date(since ?? Date(timeIntervalSince1970: 0)), .double(before?.timeIntervalSince1970 ?? .greatestFiniteMagnitude)]) { row in
             guard let client = UsageClient(rawValue: row.text(0) ?? "") else { return }
             let model = row.text(1) ?? "unknown"
             let cost = Self.apiCostMicroUSD(
