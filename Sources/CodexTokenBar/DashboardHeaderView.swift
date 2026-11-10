@@ -1370,8 +1370,7 @@ private struct DashboardModelCostScopePicker: View {
     }
 }
 
-/// Preserve the original adaptive 204pt chips (four at normal dashboard width).
-/// Empty slots are display-only
+/// Four equal-width columns. Empty slots are display-only
 /// and never enter totals, shares, pricing or the persisted model inventory.
 struct DashboardModelCostGrid: View {
     let items: [FloatingTodayModelUsageItem]
@@ -1383,9 +1382,10 @@ struct DashboardModelCostGrid: View {
             ForEach(0..<slotCount, id: \.self) { index in
                 if index < items.count {
                     let item = items[index]
-                    DashboardModelCostChip(item: item, color: ModelUsagePresentation.dashboardColor(for: item.id, latest: latest))
+                    let featured = latest && DashboardModelCostOrder.isFeaturedCandidate(item)
+                    DashboardModelCostChip(item: item, color: ModelUsagePresentation.dashboardColor(for: item.id, latest: featured))
                         .modifier(ModelColorEditModifier(model: ModelUsagePresentation.autoReviewUnderlyingModelKey(for: item.id)
-                            ?? String(item.id.split(separator: "|").last ?? Substring(item.id)), enabled: true, grayDefault: !latest))
+                            ?? String(item.id.split(separator: "|").last ?? Substring(item.id)), enabled: true, grayDefault: !featured))
                 } else {
                     Text(items.isEmpty ? "暂无模型用量" : "暂无其他模型用量")
                         .font(.system(size: 10)).foregroundStyle(.tertiary)
@@ -1403,7 +1403,6 @@ struct DashboardModelCostChip: View {
     let color: Color
 
     private var amount: String {
-        guard item.tokens > 0 else { return "—" }
         if item.isReferenceOnly {
             let value = item.referenceCostUSD?.quotaEstimatorMoneyText ?? "—"
             return item.isFallbackEstimate ? "参考 \(value)" : value
@@ -1412,9 +1411,10 @@ struct DashboardModelCostChip: View {
     }
 
     private var description: String {
-        let summary = item.tokens == 0 ? "\(item.label) · 暂无本地记录"
+        let summary = item.tokens == 0 ? "\(item.label) · 0 tokens · 本周期暂无本地用量记录"
             : "\(item.label)，费用 \(item.valueText(for: .cost))，用量 \(item.tokens.abbreviatedTokens)，占比 \(item.valueText(for: .share))"
-        let client = item.id.contains("|") ? ClientDisplayScope.title(String(item.id.split(separator: "|").first ?? "")) : ""
+        let sources = item.sourceClients.isEmpty ? (item.id.contains("|") ? [String(item.id.split(separator: "|").first ?? "")] : []) : item.sourceClients
+        let client = sources.map(ClientDisplayScope.title).joined(separator: "、")
         let provenance = client.isEmpty ? summary : summary + "\n来源：" + client
         return item.sourceModels.isEmpty ? provenance : provenance+"\n原始标识："+item.sourceModels.map(ModelPresentationIdentity.detail).joined(separator:"、")
     }
@@ -1448,7 +1448,7 @@ struct DashboardModelCostChip: View {
                 .lineLimit(1).minimumScaleFactor(0.75).layoutPriority(2)
             Spacer(minLength: 3)
             if showMetrics {
-                Text(item.tokens == 0 ? "暂无记录" : item.tokens.abbreviatedTokens)
+                Text(item.tokens.abbreviatedTokens)
                     .font(.system(size: 9, weight: .medium)).foregroundStyle(.secondary)
                     .monospacedDigit().fixedSize()
                 if item.tokens > 0 {

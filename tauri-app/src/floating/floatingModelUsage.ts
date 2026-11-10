@@ -26,6 +26,8 @@ export interface FloatingModelUsageItem {
   costUSD: number | null;
   knownPartialCostUSD?: number | null;
   sourceModels?: string[];
+  sourceClients?: string[];
+  isCatalogPlaceholder?: boolean;
   referenceModelLabel?: string;
   usesIndependentQuota: boolean;
   referenceCostUSD: number | null;

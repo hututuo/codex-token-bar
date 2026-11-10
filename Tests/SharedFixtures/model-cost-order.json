@@ -36,36 +36,7 @@
         "codex|gpt-6-astra",
         "codex|gpt-6.1-sol",
         "codex|gpt-6.1-terra",
-        "codex|gpt-6-luna"
-      ]
-    },
-    {
-      "id": "client:claudeDesktop",
-      "keys": [
-        "claudeDesktop|claude-opus-5-5"
-      ]
-    },
-    {
-      "id": "client:claudeCode",
-      "keys": [
-        "claudeCode|claude-fable-5-2",
-        "claudeCode|claude-sonnet-5-5",
-        "claudeCode|claude-haiku-5-5",
-        "claudeCode|claude-fable-5-1"
-      ]
-    },
-    {
-      "id": "client:antigravity",
-      "keys": [
-        "antigravity|gemini-4-argon-high",
-        "antigravity|gemini-3.8-flash-n",
-        "antigravity|claude-opus-5-5-high",
-        "antigravity|claude-sonnet-5-5"
-      ]
-    },
-    {
-      "id": "other:codex",
-      "keys": [
+        "codex|gpt-6-luna",
         "codex|gpt-6-sol",
         "codex|gpt-5.6-luna",
         "codex|gpt-5.6-sol",
@@ -74,8 +45,13 @@
       ]
     },
     {
-      "id": "other:claudeCode",
+      "id": "client:claude",
       "keys": [
+        "claudeCode|claude-fable-5-2",
+        "claudeDesktop|claude-opus-5-5",
+        "claudeCode|claude-sonnet-5-5",
+        "claudeCode|claude-haiku-5-5",
+        "claudeCode|claude-fable-5-1",
         "claudeCode|claude-fable-5",
         "claudeCode|claude-opus-5",
         "claudeCode|claude-sonnet-5",
@@ -85,9 +61,14 @@
       ]
     },
     {
-      "id": "other:antigravity",
+      "id": "client:antigravity",
       "keys": [
+        "antigravity|gemini-4-argon-high",
+        "antigravity|claude-opus-5-5-high",
+        "antigravity|claude-sonnet-5-5",
+        "antigravity|claude-haiku-5-5",
         "antigravity|claude-sonnet-5",
+        "antigravity|gemini-3.8-flash-n",
         "antigravity|claude-opus-4-6-thinking",
         "antigravity|gemini-3-flash-a"
       ]

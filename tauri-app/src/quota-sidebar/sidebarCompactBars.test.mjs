@@ -29,7 +29,8 @@ test("compact quota dots fit the real CSS track and task cells retain a capsule 
       assert.equal(dot.width, dot.height);
       assert.equal(parseFloat(dot.left) + radius, trackRadius);
       assert.equal(parseFloat(dot.top) + radius, inset + trackRadius);
-      assert.equal(trackRadius - radius, 0.5, "The dot fits entirely inside the top track circle with an inset");
+      assert.equal(dot.width, track.width, "The marker diameter must equal the entire track width");
+      assert.equal(trackRadius - radius, 0);
       const meter = window.document.querySelector(".qs-task-state-bar");
       assert.equal(css(meter).overflow, "hidden");
       assert.ok(parseFloat(css(meter).borderRadius) >= parseFloat(css(meter).width) / 2);

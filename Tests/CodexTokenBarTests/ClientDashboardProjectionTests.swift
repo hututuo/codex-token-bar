@@ -281,9 +281,9 @@ final class ClientDashboardProjectionTests: XCTestCase {
         XCTAssertTrue(context.today.isEmpty)
         XCTAssertEqual(context.lifetime.first?.id, "claudeCode|claude-sonnet-4-6")
         XCTAssertEqual(context.sevenDay.first?.costUSD, 0.05)
-        XCTAssertEqual(context.groups(.lifetime).first?.title, "Claude CLI")
-        XCTAssertEqual(context.groups(.lifetime).first?.id, "other:claudeCode")
-        XCTAssertEqual(context.groups(.lifetime).first?.isSecondary, true)
-        XCTAssertEqual(context.groups(.lifetime).flatMap(\.items).count, 1)
+        XCTAssertEqual(context.groups(.lifetime).first?.title, "Claude")
+        XCTAssertEqual(context.groups(.lifetime).first?.id, "client:claude")
+        XCTAssertEqual(context.groups(.lifetime).first?.visibleLimit, 4)
+        XCTAssertEqual(context.groups(.lifetime).flatMap(\.items).filter { !$0.isCatalogPlaceholder }.count, 1)
     }
 }

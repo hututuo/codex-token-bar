@@ -54,8 +54,8 @@ final class IntegratedClientPresentationTests: XCTestCase {
         }
         XCTAssertEqual(ClientSidebarMetrics.trackWidth, 4)
         XCTAssertGreaterThan(ClientSidebarMetrics.markerDiameter, ClientSidebarMetrics.trackWidth)
-        XCTAssertEqual(ClientSidebarMetrics.compactMarkerDiameter, 3)
-        XCTAssertLessThan(ClientSidebarMetrics.compactMarkerDiameter, ClientSidebarMetrics.trackWidth)
+        XCTAssertEqual(ClientSidebarMetrics.compactMarkerDiameter, 4)
+        XCTAssertEqual(ClientSidebarMetrics.compactMarkerDiameter, ClientSidebarMetrics.trackWidth)
         XCTAssertEqual(ClientSidebarMetrics.capGap, 0)
         XCTAssertEqual(ClientSidebarMetrics.ringSize, 46)
     }

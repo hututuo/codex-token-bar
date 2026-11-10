@@ -544,7 +544,7 @@ export function QuotaDetails({ data, onOpenRunning }: { data: SidebarData; onOpe
   // Reuse the dashboard's already-priced client contributions and unknown
   // reference group. Never turn external rows into Codex-priced breakdowns.
   const externalToday = useMemo(() => (clients.todaySummaries ?? []).filter(row => allowed.includes(row.client)), [clients.todaySummaries, allowed]);
-  const models = useMemo(() => clientCostGroups(clientModelCostItems(externalToday, snapshot.todayModelBreakdowns ?? [], allowed)).flatMap(group => group.items),
+  const models = useMemo(() => clientCostGroups(clientModelCostItems(externalToday, snapshot.todayModelBreakdowns ?? [], allowed)).flatMap(group => group.items).filter(item=>!item.isCatalogPlaceholder),
     [externalToday, snapshot.todayModelBreakdowns, allowed]);
   const externalTotal = clients.summaries.filter(row => allowed.includes(row.client)).reduce((n, row) => n + row.inputTokens + row.outputTokens, 0);
   const codexRows = includesCodex ? snapshot.todayModelBreakdowns ?? [] : [];

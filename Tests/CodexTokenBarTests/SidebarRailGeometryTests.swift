@@ -43,24 +43,25 @@ final class SidebarRailGeometryTests: XCTestCase {
                     dotPixels += 1
                     let point = CGPoint(x: (Double(x) + 0.5) / scale, y: (Double(y) + 0.5) / scale)
                     XCTAssertTrue(outline.contains(point), "Brand dot escaped the track at \(point)")
-                    XCTAssertGreaterThanOrEqual(point.x, track.minX + 0.5)
-                    XCTAssertLessThanOrEqual(point.x, track.maxX - 0.5)
+                    XCTAssertGreaterThanOrEqual(point.x, track.minX)
+                    XCTAssertLessThanOrEqual(point.x, track.maxX)
                 }
             }
         }
-        XCTAssertGreaterThan(dotPixels, 200, "The real marker must actually render")
+        XCTAssertGreaterThan(dotPixels, 700, "A 4pt dot at 8x must fill the track width, not regress to the old 3pt dot")
         let route = ClientQuotaMorphRoute(id: item.id, ring: CGRect(x: 0, y: 0, width: 46, height: 46),
             track: CGRect(x: padding, y: padding, width: 5, height: 46), half: 0, fraction: nil,
             color: .white, marker: CGRect(x: 0, y: 0, width: 5, height: 5), markerColor: .blue)
         let marker = try XCTUnwrap(ClientQuotaMorphGeometry.strokes([route]).first { $0.id == "marker:" + item.id })
         XCTAssertEqual(marker.expanded.width, 5)
-        XCTAssertEqual(marker.collapsed.width, 3)
+        XCTAssertEqual(marker.collapsed.width, track.width)
         XCTAssertEqual(marker.collapsed.points.first, CGPoint(x: track.midX, y: track.minY + 2))
         // The circle's entire boundary must fit inside the background capsule.
         for step in 0..<64 {
             let angle = Double(step) / 64 * 2 * Double.pi
-            XCTAssertTrue(outline.contains(CGPoint(x: track.midX + cos(angle) * 1.5,
-                y: track.minY + 2 + sin(angle) * 1.5)))
+            // Probe just inside the boundary: CGPath containment at the exact edge is unspecified.
+            XCTAssertTrue(outline.contains(CGPoint(x: track.midX + cos(angle) * 1.999,
+                y: track.minY + 2 + sin(angle) * 1.999)))
         }
         try save(image, "sidebar-quota-dot-contained")
     }

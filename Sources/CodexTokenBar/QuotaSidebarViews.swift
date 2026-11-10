@@ -48,7 +48,7 @@ private struct SidebarValueBar: View {
     }
 }
 
-/// A smaller client dot stays inside the continuous track's top semicircle.
+/// The client dot has exactly the width of the continuous track's top semicircle.
 struct ClientQuotaRailTrack: View {
     let item: ClientQuotaItem
     let height: Double
@@ -827,7 +827,7 @@ struct QuotaSidebarDetailView: View {
         let costs = modelCostCache.value(codex: store.snapshot, todayCodex: store.todayModelBreakdowns,
             rows: clients.summaries, today: clients.todaySummaries, sevenDay: clients.sevenDaySummaries,
             clientsUpdatedAt: clients.updatedAt, allowed: allowed)
-        let models = costs.groups(.today).flatMap(\.items)
+        let models = costs.groups(.today).flatMap(\.items).filter { !$0.isCatalogPlaceholder }
         let pending = costs.isPreparing || costs.codexPendingScopes.contains(.today)
         if allowed == ["codex"] { codexOverview(snapshot, models: models, modelPending: pending) }
         else {

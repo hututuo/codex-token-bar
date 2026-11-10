@@ -1,16 +1,15 @@
 {
-  "schema": 2,
-  "note": "Display only. Use positive usage in the selected period; never borrow lifetime usage, invent rows, reprice, or drop overflow. Preferred active models first, then eligible models by period tokens, newer version and stable ID.",
+  "schema": 3,
+  "note": "Display only. Combine the listed clients without changing ledger identities or repricing. Keep preferred model slots even at zero usage; hide all overflow under the same client heading by default. Zero catalog slots never enter accounting or sidebar details. Never borrow another period's usage.",
   "columns": 4,
   "otherVisibleLimit": 4,
   "clients": [
-    {"id":"codex","title":"Codex","preferred":["gpt-6-astra","gpt-6.1-sol","gpt-6.1-terra","gpt-6-luna"]},
-    {"id":"claudeDesktop","title":"Claude Desktop","preferred":["claude-fable-5-2","claude-opus-5-5","claude-sonnet-5-5","claude-haiku-5-5"]},
-    {"id":"claudeCode","title":"Claude CLI","preferred":["claude-fable-5-2","claude-opus-5-5","claude-sonnet-5-5","claude-haiku-5-5"]},
-    {"id":"antigravity","title":"Antigravity","preferred":["gemini-4-argon","gemini-3.8-flash","claude-opus-5-5","claude-sonnet-5-5"]},
-    {"id":"gemini","title":"Gemini CLI","preferred":["gemini-4-argon","gemini-3.8-flash","gemini-3.7-flash"]},
-    {"id":"deepseek","title":"DSH","preferred":["deepseek-v4.1-flash","deepseek-v4-flash"]},
-    {"id":"opencode","title":"OpenCode","preferred":[]}
+    {"id":"codex","title":"Codex","sources":["codex"],"preferred":["gpt-6-astra","gpt-6.1-sol","gpt-6.1-terra","gpt-6-luna"]},
+    {"id":"claude","title":"Claude","sources":["claudeDesktop","claudeCode"],"preferred":["claude-fable-5-2","claude-opus-5-5","claude-sonnet-5-5","claude-haiku-5-5"]},
+    {"id":"antigravity","title":"Antigravity","sources":["antigravity"],"preferred":["gemini-4-argon","claude-opus-5-5","claude-sonnet-5-5","claude-haiku-5-5"]},
+    {"id":"gemini","title":"Gemini CLI","sources":["gemini"],"preferred":["gemini-4-argon","gemini-3.8-flash","gemini-3.7-flash"]},
+    {"id":"deepseek","title":"DSH","sources":["deepseek"],"preferred":["deepseek-v4.1-flash","deepseek-v4-flash"]},
+    {"id":"opencode","title":"OpenCode","sources":["opencode"],"preferred":[]}
   ],
   "generations": [
     {"prefix":"gpt-","pattern":"^gpt-([0-9]+)(?:\\.([0-9]+))?(?:-|$)","minimum":[5,6]},

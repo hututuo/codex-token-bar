@@ -28,6 +28,8 @@ struct FloatingTodayModelUsageItem: Identifiable, Equatable, Sendable {
     /// Original model identifiers retained when presentation rows are combined.
     /// This is explanatory metadata, never an accounting or pricing input.
     var sourceModels: [String] = []
+    var sourceClients: [String] = []
+    var isCatalogPlaceholder = false
     var referenceModelLabel: String? = nil
     var isFallbackEstimate: Bool { id == "unknown-models" }
     var isReferenceOnly: Bool {

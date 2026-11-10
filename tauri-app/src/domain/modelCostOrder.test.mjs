@@ -9,10 +9,10 @@ test('shared cost order preserves all client rows and fees regardless of input o
  for(const input of [rows,[...rows].reverse(),[...rows.slice(1),rows[0]]]){
   const groups=orderedCostGroups(input);
   assert.deepEqual(groups.map(g=>({id:g.id,keys:g.items.map(x=>x.key)})),fixture.groups);
-  assert.deepEqual(groups.flatMap(g=>g.items).sort((a,b)=>a.key.localeCompare(b.key)),[...rows].sort((a,b)=>a.key.localeCompare(b.key)));
+  assert.deepEqual(groups.flatMap(g=>g.items).filter(x=>!x.isCatalogPlaceholder).sort((a,b)=>a.key.localeCompare(b.key)),[...rows].sort((a,b)=>a.key.localeCompare(b.key)));
  }
- assert.deepEqual(orderedCostGroups([{...rows[0],key:'claudeCode|claude-fable-5-1',tokens:0}]),[]);
+ assert.equal(orderedCostGroups([{...rows[0],key:'claudeCode|claude-fable-5-1',tokens:0}])[0].items.filter(x=>x.isCatalogPlaceholder).length,4);
  assert.equal(orderedCostGroups([{...rows[0],key:'codex|gpt-6-sol'}])[0].id,'client:codex');
- assert.equal(orderedCostGroups([{...rows[0],key:'claudeCode|claude-fable-5-2'}])[0].id,'client:claudeCode');
- assert.equal(orderedCostGroups([{...rows[0],key:'claudeCode|claude-fable-5'}])[0].id,'client:claudeCode');
+ assert.equal(orderedCostGroups([{...rows[0],key:'claudeCode|claude-fable-5-2'}])[0].id,'client:claude');
+ assert.equal(orderedCostGroups([{...rows[0],key:'claudeCode|claude-fable-5'}])[0].id,'client:claude');
 }));

@@ -6,7 +6,7 @@ const markerFrame = (node: HTMLElement): MarkerFrame => { const r=node.getBoundi
 
 /** Quota markers only. One compositor animation per transition; no frame loop,
  * scans, timers while settled, or network/IPC. Preserve both the presentation
- * center and diameter on reversal; the 3px rail dot grows into the 5px ring dot. */
+ * center and diameter on reversal; the 4px rail dot grows into the 5px ring dot. */
 export function animateQuotaMarkers(root: HTMLElement, expanded: boolean, previous = new Map<string,MarkerFrame>()) {
   const animations: Animation[]=[];
   const markers: {id:string;node:HTMLElement}[]=[];

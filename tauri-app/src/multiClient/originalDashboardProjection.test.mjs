@@ -98,7 +98,7 @@ test('client fee scopes retain the original six metrics and model chips',async()
  const {StatsStrip}=await load('/src/components/StatsStrip.tsx');const {clientCostPeriods}=await load('/src/multiClient/originalDashboardProjection.ts');const periods=clientCostPeriods(dashboard(),snapshot(),['claudeCode'],stamp);
  assert.equal(periods.today.length,0);assert.equal(periods.sevenDay[0].key,'claudeCode|claude-sonnet-4-6');
  const html=renderToStaticMarkup(React.createElement(StatsStrip,{stats:{...stats,totalTokens:1200},planLabel:'',clientCosts:periods}));
- assert.equal((html.match(/class="stats-cell/g)??[]).length,6);assert.match(html,/stats-model-cost-secondary-chip/);assert.match(html,/近7天/);assert.match(html,/Sonnet4.6/);assert.doesNotMatch(html,/<table|integrated-stats|选择周期|累计净薅到/);
+ assert.equal((html.match(/class="stats-cell/g)??[]).length,6);assert.match(html,/stats-model-cost-primary-card/);assert.match(html,/近7天/);assert.match(html,/另1项/);assert.doesNotMatch(html,/Sonnet4.6|<table|integrated-stats|选择周期|累计净薅到/);
 }));
 test('client model cost groups keep source headings and put legacy rows under that client Other',async()=>withSsrModules(async load=>{
  const {clientCostGroups}=await load('/src/multiClient/originalDashboardProjection.ts');
@@ -114,18 +114,17 @@ test('client model cost groups keep source headings and put legacy rows under th
  const groups=clientCostGroups(recordedRows);
  assert.deepEqual(groups.map(({id,label})=>({id,label})),[
   {id:'client:codex',label:'Codex'},
-  {id:'client:claudeDesktop',label:'Claude Desktop'},
-  {id:'client:claudeCode',label:'Claude CLI'},
-  {id:'other:claudeCode',label:'Claude CLI'},
+  {id:'client:claude',label:'Claude'},
  ]);
- assert.deepEqual(groups[0].items.map(item=>item.key),[
+ assert.deepEqual(groups[0].items.filter(row=>!row.isCatalogPlaceholder).map(item=>item.key),[
   'codex|gpt-6-astra','codex|gpt-5.6-sol',
  ]);
  const displayRows=groups.flatMap(group=>group.items);
  const recordedDisplayRows=[...recordedRows].sort((a,b)=>a.key.localeCompare(b.key));
  assert.deepEqual(displayRows.filter(row=>row.tokens>0).sort((a,b)=>a.key.localeCompare(b.key)),recordedDisplayRows,
   'display grouping preserves every recorded row');
- assert.deepEqual(displayRows.filter(row=>row.tokens===0),[],'cost tables show recorded usage only');
+ assert.ok(displayRows.filter(row=>row.tokens===0).every(row=>row.isCatalogPlaceholder&&row.costUSD===0));
+ assert.ok(groups.every(group=>group.visibleLimit===4));
 }));
 test('client quota reuses original quota bars without the Codex attribution owner',async()=>withSsrModules(async load=>{
  const {QuotaStrip}=await load('/src/components/QuotaStrip.tsx');const html=renderToStaticMarkup(React.createElement(QuotaStrip,{clientItems:[{id:'claudeCode:5h',client:'claudeCode',window:'5h',remaining:62,resetsAt:null,status:'',source:'模拟'}]}));
