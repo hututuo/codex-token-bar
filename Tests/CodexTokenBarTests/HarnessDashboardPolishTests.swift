@@ -44,7 +44,7 @@ final class HarnessDashboardPolishTests: XCTestCase {
         XCTAssertEqual(markers.count,1)
         let marker=try XCTUnwrap(markers.first)
         XCTAssertEqual(marker.collapsed.points.first,CGPoint(x:track.midX,y:track.minY+4.5))
-        XCTAssertEqual(marker.collapsed.width,3)
+        XCTAssertEqual(marker.collapsed.width,track.width)
         XCTAssertEqual(marker.expanded.width,5)
         XCTAssertEqual(marker.expanded.opacity,1);XCTAssertEqual(marker.collapsed.opacity,1)
         XCTAssertEqual(marker.color,.blue)

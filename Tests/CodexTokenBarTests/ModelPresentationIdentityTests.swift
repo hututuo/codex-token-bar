@@ -77,7 +77,12 @@ final class ModelPresentationIdentityTests: XCTestCase {
             share: 0, costUSD: 0, usesIndependentQuota: false, referenceCostUSD: nil, color: .blue)
         let periods = ClientModelCostPeriods(lifetime: [used,empty], today: [used,empty], sevenDay: [used,empty])
         for scope in [DashboardModelCostScope.lifetime, .today, .sevenDay] {
-            XCTAssertEqual(periods.groups(scope).flatMap(\.items).map(\.id), [used.id])
+            let display = periods.groups(scope).flatMap(\.items)
+            XCTAssertEqual(display.filter { !$0.isCatalogPlaceholder }.map(\.id), [used.id])
+            XCTAssertEqual(display.filter(\.isCatalogPlaceholder).count, 3)
+            XCTAssertTrue(display.filter(\.isCatalogPlaceholder).allSatisfy { $0.tokens == 0 && $0.costUSD == 0 && $0.share == 0 })
+            XCTAssertEqual(periods.items(scope), [used, empty], "Catalog slots never enter the period's accounting inputs")
+            XCTAssertEqual(FloatingTodayModelUsagePresentation.knownCostUSD(in: display), 0.2)
         }
     }
 }

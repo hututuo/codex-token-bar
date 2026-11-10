@@ -34,7 +34,7 @@ final class MultiClientProductTests: XCTestCase {
         XCTAssertTrue(missing.reading().windows.isEmpty)
         XCTAssertTrue(missing.reading().notice.contains("claude-monitor --statusline"))
         let stale = ClaudeCapturedQuotaProvider(snapshot: .init(state: "stale", capturedAt: nil, fiveHour: nil, sevenDay: nil))
-        XCTAssertEqual(stale.reading().state, "unavailable")
+        XCTAssertEqual(stale.reading().state, "stale")
         for client in UsageClient.allCases where client != .claudeCode {
             let provider = UnavailableClientQuotaProvider(client: client)
             XCTAssertFalse(provider.allowsNetwork); XCTAssertTrue(provider.reading().windows.isEmpty)
