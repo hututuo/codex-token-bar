@@ -874,69 +874,38 @@ extension View {
 struct ChartBubblePlacementModifier: ViewModifier {
     let tokenX: CGFloat
     let plot: CGRect
-    @State private var bubbleSize: CGSize = .zero
 
     func body(content: Content) -> some View {
-        let plot = self.plot
-        let tokenX = self.tokenX
-        // The zero-data card is about 173pt tall after the fixed rows are
-        // applied. Use a close first-pass estimate so the first frame cannot
-        // fall back into the candidate line while the preference settles.
-        let measuredHeight = bubbleSize.height > 0
-            ? bubbleSize.height
-            : min(max(plot.height * 0.8, 120), plot.height)
-        let cardY = plot.minY - recentChartHoverBubblePlotClearance - measuredHeight
-
-        ZStack(alignment: .topLeading) {
-            // Keep the overlay's layout the size of the plot without making
-            // the empty area steal mouse events from HoverTrackingArea.
-            Color.clear
-                .frame(width: plot.width, height: plot.height)
-                .allowsHitTesting(false)
-
-            content
-                .fixedSize(horizontal: true, vertical: false)
-                // Use the content's measured layout width directly. A state-based
-                // fallback based on plot width makes the first hover card wider than
-                // its actual body and visibly shifts it left of the active point.
-                .alignmentGuide(.leading) { dimensions in
-                    let lower = plot.minX
-                    let upper = max(lower, plot.maxX - dimensions.width)
-                    let centered = tokenX - dimensions.width / 2
-                    return -min(max(centered, lower), upper)
-                }
-                .background(
-                    GeometryReader { proxy in
-                        Color.clear
-                            .preference(
-                                key: ChartBubbleSizePreferenceKey.self,
-                                value: proxy.size
-                            )
-                    }
-                )
-                .contentShape(Rectangle())
-                // The candidate line begins at plot.minY. Position the card
-                // with an explicit offset so its bottom is exactly the
-                // configured gap above that line; alignment guides alone do
-                // not reliably move this overlay's rendered content.
-                .offset(y: cardY)
-                .allowsHitTesting(true)
+        ChartBubbleLayout(tokenX: tokenX, plot: plot) {
+            content.fixedSize(horizontal: true, vertical: true)
+                .contentShape(Rectangle()).allowsHitTesting(true)
         }
         .frame(width: plot.width, height: plot.height, alignment: .topLeading)
-        .onPreferenceChange(ChartBubbleSizePreferenceKey.self) { size in
-            guard size.width > 0, size.height > 0 else { return }
-            guard abs(size.width - bubbleSize.width) > 0.5
-                    || abs(size.height - bubbleSize.height) > 0.5 else { return }
-            bubbleSize = size
-        }
     }
 }
 
-private struct ChartBubbleSizePreferenceKey: PreferenceKey {
-    static let defaultValue = CGSize.zero
+/// Synchronous measurement avoids a guessed first frame and stale height when
+/// a point preview becomes a much taller fixed-selection preview.
+struct ChartBubbleLayout: Layout {
+    let tokenX: CGFloat
+    let plot: CGRect
 
-    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
-        value = nextValue()
+    static func origin(tokenX: CGFloat, plot: CGRect, size: CGSize) -> CGPoint {
+        CGPoint(x: min(max(tokenX - size.width / 2, plot.minX), max(plot.minX, plot.maxX - size.width)),
+                y: plot.minY - recentChartHoverBubblePlotClearance - size.height)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        CGSize(width: plot.width, height: plot.height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for view in subviews {
+            let size = view.sizeThatFits(.unspecified)
+            let origin = Self.origin(tokenX: tokenX, plot: plot, size: size)
+            view.place(at: CGPoint(x: bounds.minX + origin.x, y: bounds.minY + origin.y),
+                       anchor: .topLeading, proposal: ProposedViewSize(size))
+        }
     }
 }
 
@@ -1012,14 +981,14 @@ struct ChartHoverBubble: View {
             Text("请求 \(bin.calls) 次 · avg \(average.abbreviatedTokens)")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
-            Text(recordedCostText ?? (showsCost ? "金额 \(costUSD.quotaEstimatorMoneyText)" : "金额未接入"))
+            Text(displayedCostText)
                 .font(.system(size: 10))
                 .foregroundStyle(.pink)
             Text("缓存命中 \(usage?.cacheText ?? displayCacheBreakdown.cacheHitRate.percentString) · 命中 \((usage?.breakdown.cachedInputTokens ?? displayCacheBreakdown.cachedInputTokens).abbreviatedTokens)")
                 .font(.system(size: 10))
                 .foregroundStyle(AppTheme.accentCyan)
             if let usage { ChartModelUsageList(summary: usage) }
-            else { ModelUsageInlineSummary(rows: modelBreakdowns, emptyPlaceholder: "模型 0%") }
+            else { ModelUsageInlineSummary(rows: modelBreakdowns, emptyPlaceholder: "模型 0%", showsCacheHitRate: true) }
             Text("额度 5h \(percentText(fiveHourRemaining)) · 7d \(percentText(sevenDayRemaining))")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
@@ -1046,18 +1015,22 @@ struct ChartHoverBubble: View {
         bin.calls > 0 ? bin.tokens / bin.calls : 0
     }
 
-    private var accessibilitySummary: String {
+    private var displayedCostText: String {
+        usage?.costText ?? recordedCostText ?? (showsCost ? "金额 \(costUSD.quotaEstimatorMoneyText)" : "金额未接入")
+    }
+
+    var accessibilitySummary: String {
         var parts = [
             timeRange,
             "\(bin.tokens.abbreviatedTokens) token",
             "\(bin.calls) 次请求",
             "平均 \(average.abbreviatedTokens)",
-            "金额 \(costUSD.quotaEstimatorMoneyText)"
+            displayedCostText
         ]
         let displayCacheBreakdown = cacheBreakdown ?? .empty
-        parts.append("缓存命中率 \(displayCacheBreakdown.cacheHitRate.percentString)")
-        parts.append("命中 \(displayCacheBreakdown.cachedInputTokens.abbreviatedTokens)")
-        parts.append("模型占比 \(ModelUsagePresentation.compactText(from: modelBreakdowns) ?? "0%")")
+        parts.append("缓存命中率 \(usage?.cacheText ?? ModelUsagePresentation.cacheText(displayCacheBreakdown))")
+        parts.append("命中 \((usage?.breakdown.cachedInputTokens ?? displayCacheBreakdown.cachedInputTokens).abbreviatedTokens)")
+        parts.append(usage?.modelAccessibilitySummary ?? "模型占比 \(ModelUsagePresentation.compactText(from: modelBreakdowns) ?? "0%")")
         parts.append("5 小时额度 \(percentText(fiveHourRemaining))")
         parts.append("7 天额度 \(percentText(sevenDayRemaining))")
         if isHovering {
@@ -1076,8 +1049,7 @@ struct ChartHoverBubble: View {
     }
 
     private func percentText(_ value: Double?) -> String {
-        guard let value else { return "0%" }
-        return "\(Int(value.rounded()))%"
+        RecentUsageChart.percentText(value)
     }
 }
 
@@ -1166,7 +1138,7 @@ struct ChartSelectionSummaryBubble: View {
             Text("请求 \(displayedBreakdown.calls) 次 · avg \(average.abbreviatedTokens)")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
-            Text(recordedCostText ?? (showsCost ? "金额 \(selection.fullCurrentAPIPriceEstimate.costUSD.quotaEstimatorMoneyText)" : "金额未接入"))
+            Text(displayedCostText)
                 .font(.system(size: 10))
                 .foregroundStyle(.pink)
             Text("缓存命中 \(usage?.cacheText ?? displayedBreakdown.cacheHitRate.percentString) · 命中 \(displayedBreakdown.cachedInputTokens.abbreviatedTokens)")
@@ -1175,7 +1147,7 @@ struct ChartSelectionSummaryBubble: View {
             if let usage { ChartModelUsageList(summary: usage) }
             else { ModelUsageInlineSummary(
                 rows: ModelUsagePresentation.rows(from: selection.fullAttributionEvents),
-                emptyPlaceholder: "模型 0%"
+                emptyPlaceholder: "模型 0%", showsCacheHitRate: true
             ) }
             Text("持续 \(durationText)")
                 .font(.system(size: 10))
@@ -1206,15 +1178,21 @@ struct ChartSelectionSummaryBubble: View {
             : 0
     }
 
-    private var accessibilitySummary: String {
+    private var displayedCostText: String {
+        usage?.costText ?? recordedCostText ?? (showsCost ? "金额 \(selection.fullCurrentAPIPriceEstimate.costUSD.quotaEstimatorMoneyText)" : "金额未接入")
+    }
+
+    var accessibilitySummary: String {
         var parts = [
             timeRange,
             "\(displayedBreakdown.totalTokens.abbreviatedTokens) token",
             "\(displayedBreakdown.calls) 次请求",
-            usage?.costText ?? "金额 \(selection.fullCurrentAPIPriceEstimate.costUSD.quotaEstimatorMoneyText)",
+            displayedCostText,
             "缓存命中率 \(usage?.cacheText ?? displayedBreakdown.cacheHitRate.percentString)"
         ]
-        if let models = ModelUsagePresentation.compactText(
+        if let usage {
+            parts.append(usage.modelAccessibilitySummary)
+        } else if let models = ModelUsagePresentation.compactText(
             from: ModelUsagePresentation.rows(from: selection.fullAttributionEvents)
         ) {
             parts.append("模型占比 \(models)")

@@ -4,6 +4,48 @@ import XCTest
 @testable import CodexTokenBar
 
 final class IntegratedClientRenderingTests: XCTestCase {
+    @MainActor func testDetailCardsFillTheRightHalfForOneTwoAndManyWindows() throws {
+        struct Fixtures: Decodable {
+            struct Case: Decodable {
+                struct Item: Decodable {
+                    let id: String; let client: String; let window: String; let remaining: Double?; let status: String
+                    var quota: ClientQuotaItem { .init(id: id, client: client, window: window, remaining: remaining,
+                        resetsAt: nil, source: "本地缓存", status: status, expected: remaining == nil ? nil : 0.5) }
+                }
+                let name: String; let items: [Item]
+            }
+            let widths: [Int]; let cases: [Case]
+        }
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("SharedFixtures/quota-detail-cards.json")
+        let fixtures = try JSONDecoder().decode(Fixtures.self, from: Data(contentsOf: url))
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "QuotaDetailCards-" + UUID().uuidString))
+        for fixture in fixtures.cases {
+            for width in fixtures.widths {
+                let root = ClientQuotaRings(items: fixture.items.map(\.quota))
+                    .frame(width: CGFloat(width), height: 620, alignment: .topLeading)
+                    .background(.black).foregroundStyle(.white).environment(\.colorScheme, .dark).defaultAppStorage(defaults)
+                let host = NSHostingView(rootView: root)
+                host.frame = CGRect(x: 0, y: 0, width: CGFloat(width), height: 620)
+                host.layoutSubtreeIfNeeded()
+                let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+                host.cacheDisplay(in: host.bounds, to: bitmap)
+                let scale = CGFloat(bitmap.pixelsWide) / CGFloat(width)
+                let x = bitmap.pixelsWide - Int(20 * scale)
+                let occupied = (0..<bitmap.pixelsHigh).filter { y in
+                    guard let c = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { return false }
+                    return c.redComponent > 0.015 && c.greenComponent > 0.015 && c.blueComponent > 0.015
+                }.count
+                XCTAssertGreaterThan(CGFloat(occupied) / scale, CGFloat(fixture.items.count * 30),
+                    "\(fixture.name) at \(width)pt must paint its cards across the full available width")
+                if let output = ProcessInfo.processInfo.environment["TOKENBAR_POLISH_RENDER_OUTPUT"] {
+                    try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                        .write(to: URL(fileURLWithPath: output).appendingPathComponent("quota-\(fixture.name)-\(width).png"))
+                }
+            }
+        }
+    }
+
     @MainActor func testQuotaValuesRemainVisibleWhileMorphOwnsTheStrokes() throws {
         let fixtures = ClientQuotaProjection.previewItems(includeClaude: true)
         let suite = "QuotaValueHandoff-" + UUID().uuidString

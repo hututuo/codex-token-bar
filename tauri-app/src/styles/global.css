@@ -7763,6 +7763,8 @@ input[type="range"]::-moz-range-thumb {
   overflow: visible;
   z-index: 30;
   pointer-events: none;
+  /* Keep the taller model list visible above the horizontal scroll viewport. */
+  clip-path: inset(calc(-1 * var(--chart-bubble-top-reveal)) -40px -90px);
 }
 
 .recent-chart-page-controls {
@@ -7955,7 +7957,7 @@ input[type="range"]::-moz-range-thumb {
 .chart-hover-bubble {
   position: absolute;
   z-index: 31;
-  top: -2px;
+  top: var(--chart-bubble-bottom);
   display: flex;
   width: max-content;
   flex-direction: column;
@@ -13098,11 +13100,14 @@ details.session-management-banner {
 .live-model-rate-name>small{display:block;font-size:9px;opacity:.65}
 .live-model-rate-track,.live-model-rate-track>i{display:block;height:6px;border-radius:3px}
 .live-model-rate-value{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
-.chart-model-usage-list{min-width:300px;max-height:180px;overflow-y:auto;font-size:10px;display:flex;flex-direction:column;gap:4px}
-.chart-model-usage-list>div{display:flex;align-items:center;gap:5px;min-height:14px}
-.chart-model-usage-list>div>i{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.chart-model-usage-list{min-width:300px;max-height:180px;overflow-y:auto;font-size:10px;display:flex;flex-direction:column;gap:6px;pointer-events:auto}
+.chart-model-usage-list>div{display:flex;align-items:flex-start;gap:5px;min-height:26px;flex-shrink:0}
+.chart-model-usage-list>div>i{width:6px;height:6px;border-radius:50%;flex-shrink:0;margin-top:3px}
 .chart-model-usage-list small{color:var(--muted)}
-.chart-model-usage-list>div>span:last-child{margin-left:auto;font-variant-numeric:tabular-nums}
+.chart-model-identity,.chart-model-metrics{display:flex;flex-direction:column;gap:2px}
+.chart-model-identity{min-width:0}
+.chart-model-identity>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chart-model-metrics{margin-left:auto;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .chart-usage-selection-summary{display:flex;flex-direction:column;gap:6px;font-size:11px;margin:10px 0;padding:10px 12px;border:1px solid var(--line);border-radius:8px}
 .chart-usage-selection-summary .chart-model-usage-list{max-width:480px}
 .activity-live-chart.is-compact{color:#e3e8e6;padding:4px 0;--muted:#a0aaa4;--text:#e3e8e6}

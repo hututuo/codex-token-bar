@@ -1,0 +1,10 @@
+{
+  "widths": [320, 384],
+  "cases": [
+    {"name":"one-window","items":[{"id":"codex:7d","client":"codex","window":"7d","remaining":68,"status":""}]},
+    {"name":"pro-two-windows","items":[{"id":"codex:5h","client":"codex","window":"5h","remaining":42,"status":""},{"id":"codex:7d","client":"codex","window":"7d","remaining":68,"status":""}]},
+    {"name":"four-windows","items":[{"id":"codex:5h","client":"codex","window":"5h","remaining":42,"status":""},{"id":"codex:7d","client":"codex","window":"7d","remaining":68,"status":""},{"id":"codex:reserve5h","client":"codex","window":"储备5h","remaining":100,"status":""},{"id":"codex:reserve7d","client":"codex","window":"储备7d","remaining":80,"status":""}]},
+    {"name":"mixed-clients-unavailable","items":[{"id":"codex:7d","client":"codex","window":"7d","remaining":68,"status":""},{"id":"claudeCode:7d","client":"claudeCode","window":"7d","remaining":null,"status":"本地缓存尚未读取，额度未知"}]},
+    {"name":"api","items":[{"id":"codex:api","client":"codex","window":"API","remaining":null,"status":"订阅额度不适用"}]}
+  ]
+}

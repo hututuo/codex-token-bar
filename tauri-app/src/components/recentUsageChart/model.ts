@@ -55,6 +55,11 @@ const RECENT_CHART_GEOMETRY: RecentChartGeometry = {
   timeMarkerGap: 36,
 };
 
+export const RECENT_CHART_BUBBLE = chartPolicy.bubble;
+export function recentChartBubbleBottom(plotTop: number): number {
+  return plotTop - RECENT_CHART_BUBBLE.plotClearance;
+}
+
 export function recentChartGeometry(_range: RecentChartRange): RecentChartGeometry {
   return {
     ...RECENT_CHART_GEOMETRY,

@@ -284,9 +284,22 @@ final class RecentChartSelectionInteractionTests: XCTestCase {
     }
 
     func testHoverBubbleClearsThePlotByAnExtraVerticalGutter() {
-        XCTAssertEqual(recentChartHoverBubbleVerticalOffset, 74)
-        XCTAssertEqual(recentChartHoverBubblePlotClearance, 10)
-        XCTAssertEqual(recentChartHoverBubbleTopReveal, 220)
+        XCTAssertEqual(recentChartHoverBubblePlotClearance, 48)
+        XCTAssertEqual(recentChartHoverBubbleTopReveal, 600)
+        for range in RecentChartRange.allCases {
+            let geometry = range.chartGeometry
+            let plot = CGRect(x: 0, y: geometry.plotTop, width: 980, height: geometry.plotHeight)
+            for height: CGFloat in [90, 180, 340, 480] {
+                for x: CGFloat in [-50, 400, 1100] {
+                    let size = CGSize(width: 324, height: height)
+                    let origin = ChartBubbleLayout.origin(tokenX: x, plot: plot, size: size)
+                    XCTAssertEqual(origin.y + height, plot.minY - recentChartHoverBubblePlotClearance)
+                    XCTAssertGreaterThanOrEqual(origin.y, -recentChartHoverBubbleTopReveal)
+                    XCTAssertGreaterThanOrEqual(origin.x, 0)
+                    XCTAssertLessThanOrEqual(origin.x + size.width, plot.maxX)
+                }
+            }
+        }
     }
 
     @MainActor

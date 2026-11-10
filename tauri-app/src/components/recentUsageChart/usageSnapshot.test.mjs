@@ -7,7 +7,7 @@ test("shared multi-client fixture conserves every displayed model and amount in 
   const {codex,clients}=await chartFixtureSources(load);
   const {projectOriginalDashboard}=await load("/src/multiClient/originalDashboardProjection.ts");
   const {prepareRecentChartData,alignProviderPoints,prepareQuotaEvidenceData,chartQuotaConsumptionSelection}=await load("/src/components/recentUsageChart/model.ts");
-  const {buildChartUsageSnapshot,chartUsageSummary}=await load("/src/components/recentUsageChart/usageSnapshot.ts");
+  const {buildChartUsageSnapshot,chartUsageSummary,chartModelCacheText}=await load("/src/components/recentUsageChart/usageSnapshot.ts");
   const all=["codex","claudeCode","antigravity","gemini"];
   for(const [range,seconds]of Object.entries(fixture.ranges))for(const scope of [all,["codex"],["claudeCode"],["antigravity"],["gemini"],["claudeCode","antigravity"]]){
     const external=fixture.external.filter(row=>scope.includes(row.client)),includes=scope.includes("codex");
@@ -23,6 +23,7 @@ test("shared multi-client fixture conserves every displayed model and amount in 
     assert.equal(selected.knownCostUSD,snapshot.bucketCostsUSD.reduce((a,b)=>a+b,0));
     assert.deepEqual(selected,chartUsageSummary(snapshot.buckets,0,last));
     assert.ok(selected.models.every(row=>scope.includes(row.client)));
+    for(const row of selected.models) assert.equal(chartModelCacheText(row),fixture.expected.modelCacheText[row.id],range+row.id);
     if(scope===all){
       assert.equal(selected.totalTokens,fixture.expected.tokens);assert.equal(selected.calls,fixture.expected.calls);
       assert.equal(selected.inputTokens,fixture.expected.input);assert.equal(selected.cachedInputTokens,fixture.expected.cached);
@@ -32,6 +33,18 @@ test("shared multi-client fixture conserves every displayed model and amount in 
       assert.equal(quota.totalTokens,360);assert.equal(quota.startIndex,0);assert.equal(quota.endIndex,last);
       assert.ok(quota.modelBreakdowns.every(row=>row.model.startsWith("gpt")),"only the provider enters quota estimation");
     }
+  }
+}));
+
+test("shared model cache cases preserve weighted hits and per-model completeness",async()=>withSsrModules(async load=>{
+  const {combineChartModels,chartModelCacheHitRate}=await load("/src/components/recentUsageChart/usageSnapshot.ts");
+  for(const item of fixture.cacheMergeCases){
+    const rows=item.rows.map(row=>({id:"claudeCode|claude-sonnet-4-6",client:"claudeCode",model:"claude-sonnet-4-6",sourceModels:["claude-sonnet-4-6"],
+      totalTokens:row.input+10,inputTokens:row.input,cachedInputTokens:row.cached,outputTokens:10,calls:1,
+      cacheReadComplete:row.complete,cacheWriteTokens:null,knownCostUSD:null,unpricedRequests:1}));
+    const [model]=combineChartModels(rows);
+    assert.equal(model.cacheReadComplete,item.expectedComplete,item.name);
+    assert.equal(chartModelCacheHitRate(model),item.expectedRate,item.name);
   }
 }));
 

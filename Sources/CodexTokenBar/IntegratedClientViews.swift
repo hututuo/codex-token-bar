@@ -103,31 +103,61 @@ struct ClientQuotaRings: View {
                     Label { Text(ClientDisplayScope.title(client)).font(.headline) } icon: {
                         Circle().fill(Color(nsColor: NSColor(clientHex: ClientBrand.hex(client)))).frame(width: 8, height: 8)
                     }
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 130))], spacing: 12) {
+                    VStack(spacing: 8) {
                         ForEach(items.filter { $0.client == client }) { item in
-                            VStack(spacing: 5) {
-                                ZStack {
-                                    Circle().stroke(.secondary.opacity(0.15), lineWidth: 6)
-                                    Circle().trim(from: 0, to: (item.remaining ?? 0) / 100)
-                                        .stroke(Color(nsColor: NSColor(clientHex: ClientQuotaSelection.decode(selectionRaw).colors[item.id] ?? item.fill)), style: StrokeStyle(lineWidth: 6, lineCap: .round)).rotationEffect(.degrees(-90))
-                                    if let expected = item.expected {
-                                        Rectangle().fill(.primary).frame(width: 2, height: 10).offset(y: -44).rotationEffect(.degrees(expected * 360))
-                                    }
-                                    VStack(spacing: 3) { Text(item.value).font(.system(size: 24, weight: .semibold, design: .rounded)).monospacedDigit(); Text(item.window).font(.caption) }
-                                }.frame(width: 90, height: 90).padding(4)
-                                Text(item.resetsAt.map { "重置 " + $0.formatted(date: .numeric, time: .shortened) } ?? "重置时间未知").font(.system(size: 10)).foregroundStyle(.secondary)
-                                if !item.status.isEmpty { Text(item.status).font(.caption).foregroundStyle(.secondary) }
-                            }.frame(maxWidth: .infinity).accessibilityElement(children: .combine)
+                            ClientQuotaDetailCard(item: item,
+                                fill: ClientQuotaSelection.decode(selectionRaw).colors[item.id] ?? item.fill)
                         }
-                    }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
                     Text(items.first { $0.client == client }?.source ?? "").font(.caption).foregroundStyle(.secondary)
                     if client == "claudeCode", items.filter({ $0.client == client }).allSatisfy({ $0.remaining == nil }) {
                         DisclosureGroup("查看接入说明") { Text(ClaudeCapturedQuotaProvider.setup).font(.caption).textSelection(.enabled) }
                     }
-                }
+                }.frame(maxWidth: .infinity, alignment: .leading)
             }
+            if items.isEmpty { Text("所选客户端暂无本地额度读数").font(.caption).foregroundStyle(.secondary) }
             Text("各窗口独立，不合计额度").font(.caption).foregroundStyle(.secondary)
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Every available window owns a full-width row. One or two Pro windows no
+/// longer occupy a small intrinsic-width grid at the left of the detail panel.
+struct ClientQuotaDetailCard: View {
+    let item: ClientQuotaItem
+    let fill: String
+    var body: some View {
+        HStack(spacing: 14) {
+            if !item.id.hasSuffix(":api") {
+                ZStack {
+                    Circle().stroke(.secondary.opacity(0.15), lineWidth: 5)
+                    Circle().trim(from: 0, to: (item.remaining ?? 0) / 100)
+                        .stroke(Color(nsColor: NSColor(clientHex: fill)), style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                    if let expected = item.expected {
+                        Rectangle().fill(.primary).frame(width: 2, height: 8).offset(y: -29).rotationEffect(.degrees(expected * 360))
+                    }
+                    VStack(spacing: 2) {
+                        Text(item.value).font(.system(size: 18, weight: .semibold, design: .rounded)).monospacedDigit()
+                        Text(item.window).font(.system(size: 9)).foregroundStyle(.secondary)
+                    }
+                }.frame(width: 60, height: 60).padding(3).accessibilityHidden(true)
+            }
+            VStack(alignment: .leading, spacing: 5) {
+                Text(item.id.hasSuffix(":api") ? "API 接入" : item.windowTitle + "额度")
+                    .font(.system(size: 12, weight: .semibold))
+                if !item.id.hasSuffix(":api") {
+                    Text(item.resetsAt.map { "重置 " + $0.formatted(.dateTime.month(.twoDigits).day(.twoDigits).hour(.twoDigits(amPM: .omitted)).minute(.twoDigits)) } ?? "重置时间未知")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                if !item.status.isEmpty { Text(item.status).font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+            }.frame(maxWidth: .infinity, alignment: .leading)
         }
+        .padding(10).frame(maxWidth: .infinity, alignment: .leading)
+        .background(.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(item.title + " 剩余 " + item.value)
+        .accessibilityIdentifier("quota-detail-" + item.id)
     }
 }
 

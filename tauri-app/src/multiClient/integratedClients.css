@@ -41,6 +41,8 @@
 }
 .integrated-quota-details {
   color: inherit;
+  width: 100%;
+  min-width: 0;
 }
 .integrated-quota-details h4 {
   display: flex;
@@ -54,14 +56,32 @@
 }
 .integrated-full-rings {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-  gap: 12px;
+  grid-template-columns: minmax(0, 1fr);
+  width: 100%;
+  gap: 8px;
 }
-.integrated-full-rings > div {
+.integrated-quota-card {
   display: flex;
-  flex-direction: column;
   align-items: center;
+  gap: 14px;
+  padding: 10px;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  border-radius: 10px;
+  background: color-mix(in srgb, currentColor 6%, transparent);
+}
+.integrated-quota-window-info {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
   gap: 5px;
+  overflow-wrap: anywhere;
+}
+.integrated-quota-window-info > strong {
+  font-size: 12px;
 }
 .integrated-full-rings small {
   font-size: 10px;
@@ -70,8 +90,9 @@
 }
 .integrated-full-ring {
   position: relative;
-  width: 100px;
-  height: 100px;
+  flex: 0 0 66px;
+  width: 66px;
+  height: 66px;
 }
 .integrated-full-ring svg {
   width: 100%;
@@ -87,7 +108,7 @@
   gap: 4px;
 }
 .integrated-full-ring strong {
-  font-size: 24px;
+  font-size: 18px;
   font-variant-numeric: tabular-nums;
 }
 .integrated-paired-ring {

@@ -12,6 +12,11 @@ struct ModelUsageSlice: Identifiable, Equatable {
 enum ModelUsagePresentation {
     private static let autoReviewDisplayPrefix = "codex-auto-review@"
 
+    static func cacheText(_ breakdown: TokenCacheBreakdown, complete: Bool = true) -> String {
+        guard complete, breakdown.inputTokens > 0 else { return "—" }
+        return breakdown.cacheHitRate.percentString
+    }
+
     /// Presentation aliases are deliberately narrower than the pricing
     /// detector.  A bare `gpt-5.6` value identifies a family, not Sol, so it
     /// must remain an unknown/raw label until a source supplies the lane.
@@ -441,6 +446,7 @@ struct ModelUsageInlineSummary: View {
     let rows: [ModelTokenBreakdown]
     var limit = 3
     var emptyPlaceholder: String? = nil
+    var showsCacheHitRate = false
 
     var body: some View {
         let slices = ModelUsagePresentation.slices(from: rows)
@@ -449,7 +455,13 @@ struct ModelUsageInlineSummary: View {
                 ForEach(Array(slices.prefix(max(limit, 1)))) { slice in
                     HStack(spacing: 3) {
                         Circle().fill(slice.color).frame(width: 6, height: 6)
-                        Text("\(slice.label) \(Int((slice.share * 100).rounded()))%")
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("\(slice.label) \(Int((slice.share * 100).rounded()))%")
+                            if showsCacheHitRate {
+                                let breakdown = rows.filter { ModelUsagePresentation.key(for: $0.model) == slice.id }.map(\.breakdown).combined
+                                Text("缓存命中 " + ModelUsagePresentation.cacheText(breakdown))
+                            }
+                        }
                     }
                 }
                 if slices.count > limit {

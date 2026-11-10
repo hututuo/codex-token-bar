@@ -3,7 +3,8 @@ import SwiftUI
 
 enum RecentChartPolicy {
     struct Range: Decodable { let bucketSeconds: Double; let windowSeconds: Double }
-    struct Policy: Decodable { let schema: Int; let ranges: [String: Range] }
+    struct Bubble: Decodable { let plotClearance: Double; let topReveal: Double }
+    struct Policy: Decodable { let schema: Int; let ranges: [String: Range]; let bubble: Bubble }
     static let bundled: Policy? = {
         guard let url = AppResources.url(forResource: "recent-chart-policy", withExtension: "json"),
               let data = try? Data(contentsOf: url), let value = try? JSONDecoder().decode(Policy.self, from: data), value.schema == 1 else { return nil }
@@ -1018,11 +1019,10 @@ private final class RecentChartRenderFrameCache {
     }
 }
 
-let recentChartHoverBubbleVerticalOffset: CGFloat = 74
-// Keep the detail card just above the candidate line. SwiftUI coordinates are
-// logical points, so this is the requested 10pt visual gap.
-let recentChartHoverBubblePlotClearance: CGFloat = 10
-let recentChartHoverBubbleTopReveal: CGFloat = 220
+// Both platforms anchor the card's bottom above the plot, independently of
+// its row count. The reveal budget includes the complete multi-model card.
+let recentChartHoverBubblePlotClearance = CGFloat(RecentChartPolicy.bundled?.bubble.plotClearance ?? 48)
+let recentChartHoverBubbleTopReveal = CGFloat(RecentChartPolicy.bundled?.bubble.topReveal ?? 600)
 
 struct RecentChartQuotaSeriesVisibility: Equatable {
     let showsFiveHour: Bool

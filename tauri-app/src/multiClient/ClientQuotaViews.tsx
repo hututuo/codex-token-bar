@@ -184,73 +184,10 @@ export function ClientQuotaDetailRings({
             {items
               .filter((i) => i.client === client)
               .map((i) => (
-                <div
-                  key={i.id}
+                <ClientQuotaDetailCard
+                  key={i.id} item={i} fill={selection.colors[i.id] ?? quotaFill(i)} expected={expected[i.id]}
                   id={`qs-section-${i.id === "codex:5h" ? "five" : i.id === "codex:7d" ? "seven" : i.id.replace("codex:", "").replaceAll(" ", "-")}`}
-                >
-                  <div className="integrated-full-ring">
-                    <svg viewBox="0 0 100 100" aria-hidden="true">
-                      <circle
-                        cx="50"
-                        cy="50"
-                        r="44"
-                        fill="none"
-                        stroke="currentColor"
-                        opacity=".12"
-                        strokeWidth="6"
-                      />
-                      <circle
-                        cx="50"
-                        cy="50"
-                        r="44"
-                        fill="none"
-                        stroke={selection.colors[i.id] ?? quotaFill(i)}
-                        strokeWidth="6"
-                        strokeLinecap="round"
-                        strokeDasharray="276.46"
-                        strokeDashoffset={
-                          276.46 * (1 - (i.remaining ?? 0) / 100)
-                        }
-                        transform="rotate(-90 50 50)"
-                        opacity={i.remaining === null ? 0 : 1}
-                      />
-                      {expected[i.id] != null && (
-                        <line
-                          className="integrated-full-pace"
-                          data-quota-id={i.id}
-                          x1="50"
-                          y1="2"
-                          x2="50"
-                          y2="12"
-                          stroke="currentColor"
-                          strokeWidth="2"
-                          transform={`rotate(${expected[i.id]! * 360} 50 50)`}
-                        />
-                      )}
-                    </svg>
-                    <span>
-                      <strong>{value(i)}</strong>
-                      <small>{i.window}</small>
-                    </span>
-                  </div>
-                  <small>
-                    {i.window === "5h"
-                      ? "5 小时额度"
-                      : i.window === "7d"
-                        ? "7 天额度"
-                        : i.window === "储备5h"
-                          ? "Luna 储备 · 5小时"
-                          : i.window === "储备7d"
-                            ? "Luna 储备 · 7天"
-                            : i.window}
-                  </small>
-                  <small>
-                    {i.resetsAt
-                      ? `重置 ${new Date(i.resetsAt).toLocaleString()}`
-                      : "重置时间未知"}
-                  </small>
-                  {i.status && <small>{i.status}</small>}
-                </div>
+                />
               ))}
           </div>
           <p>{items.find((i) => i.client === client)?.source}</p>
@@ -265,7 +202,35 @@ export function ClientQuotaDetailRings({
             )}
         </section>
       ))}
+      {items.length === 0 && <p>所选客户端暂无本地额度读数</p>}
       <small>各窗口独立，不合计额度</small>
     </div>
   );
+}
+
+/** Full-width window card shared by every detail scope, including Pro's 5h/7d. */
+export function ClientQuotaDetailCard({item,fill,expected,id}: {
+  item: QuotaItem; fill: string; expected?: number|null; id?: string;
+}) {
+  const api=item.id.endsWith(":api");
+  return <div className="integrated-quota-card" id={id} data-quota-id={item.id}
+    role="group" aria-label={`${clientTitle(item.client)} ${item.window} 剩余 ${value(item)}`}>
+    {!api && <div className="integrated-full-ring" aria-hidden="true">
+      <svg viewBox="0 0 100 100">
+        <circle cx="50" cy="50" r="44" fill="none" stroke="currentColor" opacity=".12" strokeWidth="7.5"/>
+        <circle cx="50" cy="50" r="44" fill="none" stroke={fill} strokeWidth="7.5" strokeLinecap="round"
+          strokeDasharray="276.46" strokeDashoffset={276.46*(1-(item.remaining??0)/100)} transform="rotate(-90 50 50)"
+          opacity={item.remaining===null?0:1}/>
+        {expected!=null && <line className="integrated-full-pace" data-quota-id={item.id}
+          x1="50" y1="2" x2="50" y2="14" stroke="currentColor" strokeWidth="2"
+          transform={`rotate(${expected*360} 50 50)`}/>}
+      </svg>
+      <span><strong>{value(item)}</strong><small>{item.window}</small></span>
+    </div>}
+    <div className="integrated-quota-window-info">
+      <strong>{api?"API 接入":`${quotaWindowTitle(item.window)}额度`}</strong>
+      {!api && <small>{item.resetsAt ? `重置 ${new Date(item.resetsAt).toLocaleString(undefined,{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hour12:false})}` : "重置时间未知"}</small>}
+      {item.status && <small>{item.status}</small>}
+    </div>
+  </div>;
 }

@@ -39,6 +39,8 @@ import {
   quotaEstimateWindowVisibility,
   recentChartGeometry,
   recentChartHoverBubbleCenter,
+  recentChartBubbleBottom,
+  RECENT_CHART_BUBBLE,
   recentChartScrollLayout,
   recentChartScrollbarThumb,
   recentChartScrollLeftForThumb,
@@ -626,7 +628,10 @@ export function RecentUsageChart({
         </div>
 
       <RecentChartInteractionGuide />
-      <div className="recent-chart-plot">
+      <div className="recent-chart-plot" style={{
+        "--chart-bubble-bottom": `${recentChartBubbleBottom(plotTop)}px`,
+        "--chart-bubble-top-reveal": `${RECENT_CHART_BUBBLE.topReveal}px`,
+      } as CSSProperties}>
         <div
           key={data.range}
           className={scrollLayout.className}
@@ -980,9 +985,9 @@ function HoverBubble({
       <b>{formatTokens(point.tokens)}</b>
       <span className="chart-hover-row">请求 {point.calls} 次 · avg {formatTokens(average)}</span>
       <span className="chart-hover-row chart-hover-row--cost">{recordedCostText ?? `金额 ${pricingAvailable ? moneyText(costUSD) : "未接入"}`}</span>
-      {cacheVisible && point.calls > 0 && point.cacheHitRate !== null ? (
+      {cacheVisible && point.calls > 0 ? (
         <em className="chart-hover-row chart-hover-row--cache">
-          缓存命中 {percentText(point.cacheHitRate)} · 命中 {formatTokens(point.cachedInputTokens)}
+          缓存命中 {percentText(usage ? usage.cacheHitRate : point.cacheHitRate)} · 命中 {formatTokens(usage?.cachedInputTokens ?? point.cachedInputTokens)}
         </em>
       ) : null}
       {usage&&<ChartModelUsageList summary={usage}/>}

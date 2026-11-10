@@ -26,8 +26,13 @@ final class RecentChartUsageSnapshotTests: XCTestCase {
             cacheReadComplete: cacheReadComplete, cacheWriteComplete: cacheWriteComplete) }
     }
     struct Fixture: Decodable {
-        struct Expected: Decodable { let tokens: Int; let calls: Int; let input: Int; let cached: Int; let knownExternalUSD: Double; let unpriced: Int; let models: [String] }
+        struct Expected: Decodable { let tokens: Int; let calls: Int; let input: Int; let cached: Int; let knownExternalUSD: Double; let unpriced: Int; let models: [String]; let modelCacheText: [String: String] }
+        struct CacheCase: Decodable {
+            struct Part: Decodable { let input: Int; let cached: Int; let complete: Bool }
+            let name: String; let rows: [Part]; let expectedRate: Double?; let expectedComplete: Bool
+        }
         let now: Double; let ranges: [String: Double]; let codex: [Row]; let external: [Row]; let expected: Expected
+        let cacheMergeCases: [CacheCase]
     }
     func fixture() throws -> Fixture {
         let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
@@ -75,6 +80,9 @@ final class RecentChartUsageSnapshotTests: XCTestCase {
                 let header = snapshot.data.visibleWindowSummary(for: nil)
                 XCTAssertEqual(header.tokenTotal, selected.breakdown.totalTokens)
                 XCTAssertTrue(selected.models.allSatisfy { scope.contains($0.client) })
+                for row in selected.models {
+                    XCTAssertEqual(row.cacheText, fixture.expected.modelCacheText[row.id], "\(range) \(scope) \(row.id)")
+                }
                 if scope == all {
                     XCTAssertEqual(selected.breakdown.totalTokens, fixture.expected.tokens)
                     XCTAssertEqual(selected.breakdown.inputTokens, fixture.expected.input)
@@ -87,8 +95,38 @@ final class RecentChartUsageSnapshotTests: XCTestCase {
                     let provider = try XCTUnwrap(snapshot.consumptionSelection(state: state))
                     XCTAssertEqual(provider.breakdown.totalTokens, total.totalTokens, "External usage never enters quota estimation")
                     XCTAssertEqual(provider.startIndex, 0); XCTAssertEqual(provider.endIndex, last)
+                    let selectionBubble = ChartSelectionSummaryBubble(selection: provider, usage: selected)
+                    let hoverBubble = ChartHoverBubble(bin: .init(start: now, tokens: selected.breakdown.totalTokens, calls: selected.breakdown.calls),
+                        cacheBreakdown: nil, modelBreakdowns: [], fiveHourRemaining: nil, sevenDayRemaining: nil,
+                        bucketInterval: range.bucketInterval, isHovering: true, usage: selected)
+                    XCTAssertTrue(hoverBubble.accessibilitySummary.contains("5 小时额度 --"), "Unknown quota is not measured zero")
+                    for summary in [selectionBubble.accessibilitySummary, hoverBubble.accessibilitySummary] {
+                        XCTAssertTrue(summary.contains("Antigravity"))
+                        XCTAssertTrue(summary.contains("Claude CLI"))
+                        XCTAssertTrue(summary.contains("Gemini"))
+                        XCTAssertTrue(summary.contains("缓存命中率 83%"))
+                        XCTAssertTrue(summary.contains("缓存命中率未知"))
+                        XCTAssertTrue(summary.contains(selected.costText))
+                        XCTAssertFalse(summary.contains("Astra6 100%"))
+                    }
                 }
             }
+        }
+    }
+
+    func testSharedModelCacheCasesKeepWeightedRatesAndUnknownBoundaries() throws {
+        for fixture in try fixture().cacheMergeCases {
+            let rows = fixture.rows.map { part in
+                ChartModelUsage(client: "claudeCode", model: "claude-sonnet-4-6", sourceModels: ["claude-sonnet-4-6"],
+                    breakdown: .init(inputTokens: part.input, cachedInputTokens: part.cached, outputTokens: 10,
+                        reasoningOutputTokens: 0, totalTokens: part.input + 10, calls: 1),
+                    cacheReadComplete: part.complete, cacheWriteTokens: nil, knownCostUSD: nil, unpricedRequests: 1)
+            }
+            let model = try XCTUnwrap(ChartModelUsage.combined(rows).first)
+            XCTAssertEqual(model.cacheReadComplete, fixture.expectedComplete, fixture.name)
+            if let expected = fixture.expectedRate {
+                XCTAssertEqual(try XCTUnwrap(model.cacheHitRate), expected, accuracy: 0.000001, fixture.name)
+            } else { XCTAssertNil(model.cacheHitRate, fixture.name) }
         }
     }
 }

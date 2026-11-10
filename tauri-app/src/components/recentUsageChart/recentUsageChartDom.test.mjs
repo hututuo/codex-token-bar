@@ -26,11 +26,18 @@ test("real aggregate chart header hover and fixed selections expose all client m
           await React.act(async()=>chart.dispatchEvent(new window.PointerEvent("pointermove",{bubbles:true,clientX:0,clientY:100,pointerId:1})));
           const hover=container.querySelector(".chart-hover-bubble");assert.ok(hover,range+" hover");
           assert.ok(hover.querySelector('[data-client="codex"]'),range+" first hover retains Codex identity");
+          assert.match(hover.querySelector('[data-client="codex"]').textContent,/缓存命中 60%/);
+          assert.equal(container.querySelector(".recent-chart-plot").style.getPropertyValue("--chart-bubble-bottom"),"-21px");
           for(const clientX of [0,980])await React.act(async()=>chart.dispatchEvent(new window.PointerEvent("pointerdown",{bubbles:true,cancelable:true,clientX,clientY:100,pointerId:1})));
           for(const selector of [".chart-selection-summary-bubble",".chart-usage-selection-summary"]){
             const selection=container.querySelector(selector);assert.ok(selection,range+selector);
             const models=[...selection.querySelectorAll(".chart-model-usage-list [data-client]")].map(row=>row.dataset.client+"|"+row.dataset.model).sort();
             assert.deepEqual(models,[...usageFixture.expected.models].sort(),range+selector);
+            for (const row of selection.querySelectorAll(".chart-model-usage-list [data-client]")) {
+              const key=row.dataset.client+"|"+row.dataset.model;
+              assert.ok(row.textContent.includes("缓存命中 "+usageFixture.expected.modelCacheText[key]),range+key);
+              assert.ok(row.getAttribute("aria-label").includes("缓存命中率"),key+" accessible cache");
+            }
             assert.match(selection.textContent,/680/);assert.match(selection.textContent,/6 次/);
             assert.match(selection.textContent,/已知金额/);assert.match(selection.textContent,/缓存命中 --/);
           }
@@ -984,8 +991,17 @@ test("hover detail keeps a clear gutter above the chart plot", async () => {
   const bubbleRule = css.match(/\.chart-hover-bubble\s*\{(?<body>[\s\S]*?)\n\}/);
   assert.ok(bubbleRule?.groups?.body);
   assert.match(bubbleRule.groups.body, /z-index:\s*31;/);
-  assert.match(bubbleRule.groups.body, /top:\s*-2px;/);
+  assert.match(bubbleRule.groups.body, /top:\s*var\(--chart-bubble-bottom\);/);
   assert.match(bubbleRule.groups.body, /transform:\s*translate\(-50%,\s*-100%\);/);
+  const policy=JSON.parse(await readFile(new URL("../../../../Sources/CodexTokenBar/Resources/recent-chart-policy.json",import.meta.url),"utf8"));
+  await withSsrModules(async load=>{
+    const {recentChartGeometry,recentChartBubbleBottom}=await load("/src/components/recentUsageChart/model.ts");
+    for(const range of ["24h","7d","30d"])for(const height of [90,180,340,480]){
+      const plot=recentChartGeometry(range),bottom=recentChartBubbleBottom(plot.plotTop);
+      assert.equal(plot.plotTop-bottom,policy.bubble.plotClearance);
+      assert.ok(bottom-height>=-policy.bubble.topReveal);
+    }
+  });
 });
 
 test("hover detail uses explicit single-line rows instead of automatic wrapping", async () => {

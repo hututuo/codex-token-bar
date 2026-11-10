@@ -12,5 +12,13 @@
     {"client":"gemini","model":"gemini-4-argon","startUnix":1800036000,"inputTokens":60,"cacheReadTokens":null,"cacheReadComplete":false,"cacheWriteTokens":null,"cacheWriteComplete":false,"outputTokens":10,"requests":1,"apiCostMicroUSD":null,"unpricedRequests":1}
   ],
   "expected":{"tokens":680,"calls":6,"input":560,"cached":350,"knownExternalUSD":2,"unpriced":1,
-    "models":["antigravity|claude-sonnet-4-6","claudeCode|claude-sonnet-4-6","codex|gpt-6-astra","codex|gpt-6.1-sol","gemini|gemini-4-argon"]}
+    "models":["antigravity|claude-sonnet-4-6","claudeCode|claude-sonnet-4-6","codex|gpt-6-astra","codex|gpt-6.1-sol","gemini|gemini-4-argon"],
+    "modelCacheText":{"antigravity|claude-sonnet-4-6":"88%","claudeCode|claude-sonnet-4-6":"83%","codex|gpt-6-astra":"60%","codex|gpt-6.1-sol":"60%","gemini|gemini-4-argon":"—"}},
+  "cacheMergeCases":[
+    {"name":"weighted-not-average","rows":[{"input":100,"cached":10,"complete":true},{"input":900,"cached":810,"complete":true}],"expectedRate":0.82,"expectedComplete":true},
+    {"name":"partial-same-model","rows":[{"input":100,"cached":90,"complete":true},{"input":900,"cached":0,"complete":false}],"expectedRate":null,"expectedComplete":false},
+    {"name":"missing-cache-without-input","rows":[{"input":100,"cached":90,"complete":true},{"input":0,"cached":0,"complete":false}],"expectedRate":0.9,"expectedComplete":true},
+    {"name":"reported-zero","rows":[{"input":100,"cached":0,"complete":true}],"expectedRate":0,"expectedComplete":true},
+    {"name":"no-input","rows":[{"input":0,"cached":0,"complete":true}],"expectedRate":null,"expectedComplete":true}
+  ]
 }

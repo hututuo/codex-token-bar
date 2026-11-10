@@ -814,6 +814,7 @@ struct QuotaSidebarDetailView: View {
 
     private func detailQuotaItems(_ quota: AccountQuotaSnapshot) -> [ClientQuotaItem] {
         let allowed = ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs)
+        if let quotaItemsOverride { return quotaItemsOverride.filter { allowed.contains($0.client) } }
         return ClientQuotaProjection.items(codex: quota, claude: clients.quotaReading(.claudeCode), claudeDesktop: clients.quotaReading(.claudeDesktop),
             includeClaude: allowed.contains("claudeCode") || allowed.contains("claudeDesktop"), preview: ClientPreviewMode.simulated)
             .filter { allowed.contains($0.client) }
@@ -879,7 +880,7 @@ struct QuotaSidebarDetailView: View {
             SidebarTrendView(data: SidebarTrendData(codexBins: store.snapshot.recentBins,
                 projectedBins: projected?.recentBins, quota: history.snapshot.recentBins, clients: allowedClients))
             tokenComposition(snapshot, cacheKnown: cacheKnown)
-        }.padding(.bottom, 2)
+        }.frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 2)
     }
 
     private func tokenComposition(_ snapshot: TokenDisplaySnapshot, cacheKnown: Bool) -> some View {

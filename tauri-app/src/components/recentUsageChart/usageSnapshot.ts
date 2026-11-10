@@ -8,18 +8,31 @@ import { recentChartBucketEstimates, type PreparedRecentChartData } from "./mode
 export interface ChartModelUsage {
   id: string; client: string; model: string; sourceModels: string[];
   totalTokens: number; inputTokens: number; cachedInputTokens: number; outputTokens: number; calls: number;
-  cacheWriteTokens: number | null; knownCostUSD: number | null; unpricedRequests: number;
+  cacheReadComplete: boolean; cacheWriteTokens: number | null; knownCostUSD: number | null; unpricedRequests: number;
 }
 export interface ChartUsageSummary {
   totalTokens: number; inputTokens: number; cachedInputTokens: number; outputTokens: number; calls: number;
   models: ChartModelUsage[]; cacheReadComplete: boolean; modelComplete: boolean; cacheHitRate: number | null;
   knownCostUSD: number; hasKnownCost: boolean; unpricedRequests: number;
 }
+export function chartModelCacheHitRate(row: ChartModelUsage): number | null {
+  return row.cacheReadComplete && row.inputTokens > 0 ? row.cachedInputTokens / row.inputTokens : null;
+}
+export function chartModelCacheText(row: ChartModelUsage): string {
+  const rate = chartModelCacheHitRate(row);
+  return rate === null ? "—" : `${Math.round(rate * 100)}%`;
+}
+export function chartModelCacheDetail(row: ChartModelUsage): string {
+  return !row.cacheReadComplete ? "缓存命中率未知：部分请求未报告缓存读取量"
+    : row.inputTokens === 0 ? "缓存命中率不适用：没有输入 Token" : `缓存命中率 ${chartModelCacheText(row)}`;
+}
 export function combineChartModels(rows: readonly ChartModelUsage[]): ChartModelUsage[] {
   const groups = new Map<string, ChartModelUsage>();
   for (const row of rows) {
     const previous = groups.get(row.id);
-    if (!previous) { groups.set(row.id, { ...row, sourceModels: [...row.sourceModels] }); continue; }
+    if (!previous) { groups.set(row.id, { ...row, cacheReadComplete: row.inputTokens === 0 || row.cacheReadComplete, sourceModels: [...row.sourceModels] }); continue; }
+    previous.cacheReadComplete = (previous.inputTokens === 0 || previous.cacheReadComplete)
+      && (row.inputTokens === 0 || row.cacheReadComplete);
     previous.sourceModels = [...new Set([...previous.sourceModels, ...row.sourceModels])].sort();
     for (const key of ["totalTokens","inputTokens","cachedInputTokens","outputTokens","calls","unpricedRequests"] as const) previous[key] += row[key];
     previous.cacheWriteTokens = previous.cacheWriteTokens === null || row.cacheWriteTokens === null ? null : previous.cacheWriteTokens + row.cacheWriteTokens;
@@ -56,7 +69,7 @@ export function buildChartUsageSnapshot(data: PreparedRecentChartData, provider:
       const model=modelPresentationIdentity(row.model).key;
       const price=modelAwareAPICostUSD([{...row,eventStartUnix:row.eventStartUnix??point.startUnix}],row.breakdown,priceModel);
       return { id:"codex|"+model,client:"codex",model,sourceModels:[row.model??"unknown"],...row.breakdown,
-        cacheWriteTokens:null,knownCostUSD:price.unpricedCalls<row.breakdown.calls?price.costUSD:null,unpricedRequests:price.unpricedCalls };
+        cacheReadComplete:true,cacheWriteTokens:null,knownCostUSD:price.unpricedCalls<row.breakdown.calls?price.costUSD:null,unpricedRequests:price.unpricedCalls };
     });
     let inputTokens=codex?.inputTokens??0,cachedInputTokens=codex?.cachedInputTokens??0,outputTokens=codex?.outputTokens??0;
     let cacheReadComplete=!codex || codex.inputTokens<=0 || codex.cacheHitRate!==null;
@@ -65,14 +78,16 @@ export function buildChartUsageSnapshot(data: PreparedRecentChartData, provider:
     if(missingTokens>0)models.push({id:"codex|unknown",client:"codex",model:"unknown",sourceModels:["unknown"],totalTokens:missingTokens,
       inputTokens:Math.max(0,inputTokens-attributed("inputTokens")),cachedInputTokens:Math.max(0,cachedInputTokens-attributed("cachedInputTokens")),
       outputTokens:Math.max(0,outputTokens-attributed("outputTokens")),calls:Math.max(0,(codex?.calls??0)-attributed("calls")),
-      cacheWriteTokens:null,knownCostUSD:null,unpricedRequests:0});
+      cacheReadComplete,cacheWriteTokens:null,knownCostUSD:null,unpricedRequests:0});
     for (const row of others) {
       const model=modelPresentationIdentity(row.model).key;
       inputTokens+=row.inputTokens;cachedInputTokens+=row.cacheReadTokens??0;outputTokens+=row.outputTokens;
-      if(row.inputTokens>0 && (row.cacheReadComplete!==true || row.cacheReadTokens==null))cacheReadComplete=false;
+      const rowCacheComplete=row.inputTokens===0 || (row.cacheReadComplete===true && row.cacheReadTokens!=null);
+      if(!rowCacheComplete)cacheReadComplete=false;
       models.push({id:row.client+"|"+model,client:row.client,model,sourceModels:[row.model??"unknown"],
         totalTokens:row.inputTokens+row.outputTokens,inputTokens:row.inputTokens,cachedInputTokens:row.cacheReadTokens??0,
-        outputTokens:row.outputTokens,calls:row.requests,cacheWriteTokens:row.cacheWriteComplete===true?row.cacheWriteTokens??null:null,
+        outputTokens:row.outputTokens,calls:row.requests,cacheReadComplete:rowCacheComplete,
+        cacheWriteTokens:row.cacheWriteComplete===true?row.cacheWriteTokens??null:null,
         knownCostUSD:row.apiCostMicroUSD==null?null:row.apiCostMicroUSD/1_000_000,
         unpricedRequests:row.apiCostMicroUSD==null?row.requests:row.unpricedRequests??0});
     }

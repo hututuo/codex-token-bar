@@ -1,5 +1,6 @@
 {
   "schema":1,
+  "bubble":{"plotClearance":48,"topReveal":600},
   "ranges":{
     "24h":{"bucketSeconds":300,"windowSeconds":86400},
     "7d":{"bucketSeconds":3600,"windowSeconds":604800},
