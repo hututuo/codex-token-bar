@@ -5014,7 +5014,7 @@ mod tests {
             let before = start + interval - Duration::from_millis(1);
             assert_eq!(cached_claude_local_quota_read(&mut cli, before, interval, || panic!("early CLI probe")), initial);
             assert_eq!(cached_claude_desktop_quota_read(&mut desktop, before, interval, || panic!("early Desktop probe")), initial);
-            let automatic_reuse = super::quota::success_freshness_for_cadence_ms(seconds * 1000);
+            let automatic_reuse = crate::core::quota::success_freshness_for_cadence_ms(seconds * 1000);
             assert_eq!(cached_claude_local_quota_read(&mut cli, before, automatic_reuse, || claude_quota_state("stale")).state, "stale");
             assert_eq!(cached_claude_desktop_quota_read(&mut desktop, before, automatic_reuse, || claude_quota_state("stale")).state, "stale");
             let due = start + interval;
