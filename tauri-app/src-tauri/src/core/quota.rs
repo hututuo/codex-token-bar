@@ -558,7 +558,7 @@ fn observed_quota_cache_scope(codex_home: &Path) -> QuotaCacheScope {
     }
 }
 
-fn success_freshness_for_cadence_ms(cadence_ms: u64) -> Duration {
+pub(super) fn success_freshness_for_cadence_ms(cadence_ms: u64) -> Duration {
     let sanitized = match cadence_ms {
         30_000 | 60_000 | 120_000 | 180_000 | 300_000 | 600_000 => cadence_ms,
         _ => DEFAULT_QUOTA_REFRESH_CADENCE_MS,

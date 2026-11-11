@@ -38,7 +38,7 @@ let quotaSubscriptionGeneration = 0;
 let quotaIntervalMs = DEFAULT_QUOTA_REFRESH_INTERVAL_MS;
 let stopQuotaSettings: (() => void) | undefined;
 let quotaPending: Promise<void> | null = null;
-let quotaPendingForced = false;
+let quotaPendingPriority = 0;
 let quotaRevision = 0;
 const listeners = new Set<() => void>();
 let revision = 0;
@@ -47,18 +47,19 @@ function validSnapshot(value: unknown): value is Snapshot {
   const v = value as Snapshot | null;
   return !!v && Array.isArray(v.preferences) && Array.isArray(v.summaries) && Array.isArray(v.diagnostics);
 }
-export async function refreshLocalClientQuotas(forceRefresh = false): Promise<void> {
+export async function refreshLocalClientQuotas(forceRefresh = false, automaticRefresh = false): Promise<void> {
   if (!hasRuntime()) return;
+  const priority = forceRefresh ? 2 : automaticRefresh ? 1 : 0;
   if (quotaPending) {
-    const needsForcedRead = forceRefresh && !quotaPendingForced;
+    const needsRefresh = priority > quotaPendingPriority;
     await quotaPending;
-    if (needsForcedRead) await refreshLocalClientQuotas(true);
+    if (needsRefresh) await refreshLocalClientQuotas(forceRefresh, automaticRefresh);
     return;
   }
-  quotaPendingForced = forceRefresh;
+  quotaPendingPriority = priority;
   quotaPending = (async () => {
     try {
-      const readings = await callCommandStrict<ClientQuotaReading[]>("read_local_client_quotas", { forceRefresh });
+      const readings = await callCommandStrict<ClientQuotaReading[]>("read_local_client_quotas", { forceRefresh, automaticRefresh });
       if (!Array.isArray(readings)) throw new Error("Invalid local quota response");
       cached = { ...cached, quotas: readings };
     } catch {
@@ -66,7 +67,7 @@ export async function refreshLocalClientQuotas(forceRefresh = false): Promise<vo
     } finally {
       quotaRevision += 1;
       quotaPending = null;
-      quotaPendingForced = false;
+      quotaPendingPriority = 0;
       emit();
     }
   })();
@@ -79,7 +80,7 @@ function scheduleLocalQuotaPoll() {
   if (!listeners.size) return;
   quotaTimer = setTimeout(async () => {
     if (generation !== quotaTimerGeneration) return;
-    if (typeof document === "undefined" || !document.hidden) await refreshLocalClientQuotas();
+    if (typeof document === "undefined" || !document.hidden) await refreshLocalClientQuotas(false, true);
     if (generation === quotaTimerGeneration && listeners.size) scheduleLocalQuotaPoll();
   }, quotaIntervalMs);
 }

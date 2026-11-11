@@ -60,18 +60,18 @@ final class MultiClientQuotaAutodiscoveryTests: XCTestCase {
         for _ in 0..<100 where scheduler.timers.count < 2 { try await Task.sleep(for: .milliseconds(10)) }
         XCTAssertEqual(scheduler.timers.map(\.interval), [300, 30])
         XCTAssertTrue(scheduler.timers.first?.invalidated == true)
-        clock.set(29); scheduler.timers.last?.fire()
+        clock.set(29); store.refreshLocalQuotaCaches()
         for _ in 0..<5 { await Task.yield() }
         XCTAssertEqual(calls.read(), 1)
-        clock.set(30); scheduler.timers.last?.fire()
+        clock.set(29.999); scheduler.timers.last?.fire()
         for _ in 0..<100 where store.claudeQuota.fiveHour?.usedPercent != 2 { try await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertEqual(calls.read(), 2, "A fixed 60-second cache must not swallow the 30-second setting")
+        XCTAssertEqual(calls.read(), 2, "Neither the old 60-second cache nor timer jitter may swallow the 30-second tick")
 
         defaults.set("600", forKey: AccountQuotaRefreshCadence.storageKey)
         NotificationCenter.default.post(name: UserDefaults.didChangeNotification, object: defaults)
         for _ in 0..<100 where scheduler.timers.count < 3 { try await Task.sleep(for: .milliseconds(10)) }
         XCTAssertEqual(scheduler.timers.last?.interval, 600)
-        clock.set(90); scheduler.timers.last?.fire()
+        clock.set(90); store.refreshLocalQuotaCaches()
         for _ in 0..<5 { await Task.yield() }
         XCTAssertEqual(calls.read(), 2, "Usage refreshes must not shorten a selected ten-minute quota interval")
         clock.set(630); scheduler.timers.last?.fire()

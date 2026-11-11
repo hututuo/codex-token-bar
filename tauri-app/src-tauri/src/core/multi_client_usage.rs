@@ -1257,6 +1257,10 @@ pub fn refresh_local_client_quotas() -> Vec<QuotaProviderSnapshot> {
     read_local_client_quotas_with_interval(Duration::ZERO)
 }
 
+pub fn automatically_refresh_local_client_quotas() -> Vec<QuotaProviderSnapshot> {
+    read_local_client_quotas_with_interval(super::local_quota_cache::automatic_probe_interval())
+}
+
 fn read_local_client_quotas_with_interval(interval: Duration) -> Vec<QuotaProviderSnapshot> {
     multi_client_product::quota_provider_snapshots(
         &read_claude_local_quota_with_interval(interval),
@@ -5010,9 +5014,12 @@ mod tests {
             let before = start + interval - Duration::from_millis(1);
             assert_eq!(cached_claude_local_quota_read(&mut cli, before, interval, || panic!("early CLI probe")), initial);
             assert_eq!(cached_claude_desktop_quota_read(&mut desktop, before, interval, || panic!("early Desktop probe")), initial);
+            let automatic_reuse = super::quota::success_freshness_for_cadence_ms(seconds * 1000);
+            assert_eq!(cached_claude_local_quota_read(&mut cli, before, automatic_reuse, || claude_quota_state("stale")).state, "stale");
+            assert_eq!(cached_claude_desktop_quota_read(&mut desktop, before, automatic_reuse, || claude_quota_state("stale")).state, "stale");
             let due = start + interval;
-            assert_eq!(cached_claude_local_quota_read(&mut cli, due, interval, || claude_quota_state("stale")).state, "stale");
-            assert_eq!(cached_claude_desktop_quota_read(&mut desktop, due, interval, || claude_quota_state("stale")).state, "stale");
+            assert_eq!(cached_claude_local_quota_read(&mut cli, due, interval, || panic!("passive duplicate CLI probe")).state, "stale");
+            assert_eq!(cached_claude_desktop_quota_read(&mut desktop, due, automatic_reuse, || panic!("duplicate Desktop tick")).state, "stale");
             // A ten-minute choice cannot swallow a manual file reread.
             assert_eq!(cached_claude_local_quota_read(&mut cli, due, Duration::ZERO, || claude_quota_state("missing")).state, "missing");
             assert_eq!(cached_claude_desktop_quota_read(&mut desktop, due, Duration::ZERO, || claude_quota_state("missing")).state, "missing");

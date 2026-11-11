@@ -399,7 +399,7 @@ final class MultiClientUsageStore: ObservableObject {
         quotaTimerInterval = interval
         quotaTimer = quotaTimerScheduler.scheduleRepeatingTimer(interval: interval) { [weak self] in
             guard let self, self.isStarted, self.quotaTimerInterval == interval else { return }
-            self.refreshLocalQuotaCaches()
+            self.refreshLocalQuotaCaches(automatic: true)
         }
     }
     func update(_ value: MultiClientUsagePreference) {
@@ -450,10 +450,11 @@ final class MultiClientUsageStore: ObservableObject {
             if self?.generation != generation { self?.refresh() }
         }
     }
-    func refreshLocalQuotaCaches(force: Bool = false) {
+    func refreshLocalQuotaCaches(force: Bool = false, automatic: Bool = false) {
         let uptime = quotaProbeUptime()
         let interval = AccountQuotaRefreshCadence.storedValue(in: defaults).seconds
-        guard force || (lastQuotaProbeUptime.map({ uptime - $0 >= interval }) ?? true) else { return }
+        let reuseInterval = automatic ? AccountQuotaAutomaticRefreshPolicy.successCooldown(for: interval) : interval
+        guard force || (lastQuotaProbeUptime.map({ uptime - $0 >= reuseInterval }) ?? true) else { return }
         guard !quotaProbeInFlight else { return }
         quotaProbeInFlight = true
         lastQuotaProbeUptime = uptime

@@ -16,6 +16,12 @@ pub fn probe_interval() -> Duration {
     Duration::from_millis(milliseconds)
 }
 
+pub fn automatic_probe_interval() -> Duration {
+    // The scheduled tick uses the same short reuse policy as the main quota.
+    // Passive usage reads still retain the full configured interval.
+    super::quota::success_freshness_for_cadence_ms(probe_interval().as_millis() as u64)
+}
+
 pub fn probe_is_fresh(checked: Instant, now: Instant, interval: Duration) -> bool {
     now.saturating_duration_since(checked) < interval
 }

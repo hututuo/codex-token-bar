@@ -135,9 +135,11 @@ pub(crate) async fn read_claude_desktop_quota() -> Result<ClaudeLocalQuotaSnapsh
 }
 
 #[tauri::command]
-pub(crate) async fn read_local_client_quotas(force_refresh: Option<bool>) -> Result<Vec<crate::core::multi_client_product::QuotaProviderSnapshot>, String> {
+pub(crate) async fn read_local_client_quotas(force_refresh: Option<bool>, automatic_refresh: Option<bool>) -> Result<Vec<crate::core::multi_client_product::QuotaProviderSnapshot>, String> {
     run_blocking_command(move || Ok(if force_refresh.unwrap_or(false) {
         multi_client_usage::refresh_local_client_quotas()
+    } else if automatic_refresh.unwrap_or(false) {
+        multi_client_usage::automatically_refresh_local_client_quotas()
     } else {
         multi_client_usage::read_local_client_quotas()
     })).await

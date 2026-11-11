@@ -50,6 +50,8 @@ test("shared local quotas follow the main cadence, keep usage independent, and r
       assert.equal([...timers.values()].filter(t=>t.ms===600_000).length,0,"late startup settings cannot replace a newer selection");
       await React.act(async()=>fire(30_000));
       assert.equal(quotaReads,1);assert.equal(usageReads,1,"quota timing must not rescan transcripts");
+      assert.equal(calls.at(-1).args.automaticRefresh,true);
+      assert.equal(calls.at(-1).args.forceRefresh,false);
       assert.match(dom.document.body.textContent,/"usedPercent":41/);
 
       await React.act(async()=>settingsListener({quotaRefreshIntervalMs:600_000}));
