@@ -25,9 +25,12 @@ fn cache_advice_snapshot_uses_affected_thread_title_and_keeps_missing_title_unkn
         let event_time = fixed_rollout_time();
         let now = event_time.unix_timestamp() as f64;
         read_snapshot_result_at(&root, &scope, Some("selected"), now - 1.0).unwrap();
+        // This case covers title attribution. Keep each new observation at its
+        // poll's logical time: slow Windows I/O must not turn it into a sample
+        // predating the independent five-second resume guard.
         append_rollout_line_at(
             &rollout_path,
-            event_time,
+            event_time + time::Duration::milliseconds(250),
             "event_msg",
             r#"{"type":"token_count","info":{"last_token_usage":{"input_tokens":20000,"cached_input_tokens":2000},"total_token_usage":{"total_tokens":20000}}}"#,
         );
@@ -35,7 +38,7 @@ fn cache_advice_snapshot_uses_affected_thread_title_and_keeps_missing_title_unkn
         assert!(first.cache_advice.as_ref().is_none_or(|advice| !advice.low));
         append_rollout_line_at(
             &rollout_path,
-            event_time,
+            event_time + time::Duration::milliseconds(500),
             "event_msg",
             r#"{"type":"token_count","info":{"last_token_usage":{"input_tokens":20000,"cached_input_tokens":2000},"total_token_usage":{"total_tokens":40000}}}"#,
         );
