@@ -1062,7 +1062,7 @@ function MonitoringSettings({
           <output>{fullScale} tok/s</output>
         </label>
       </SettingsGroup>
-      <SettingsGroup title="额度刷新" description="控制当前可用额度窗口自动重读的频率。">
+      <SettingsGroup title="额度刷新" description="统一控制额度自动刷新频率；本地客户端仅重读已有缓存。">
         <QuotaHistoryFilterSetting />
         <SettingRow title="自动刷新频率" description="额度仍可在主界面随时手动刷新。">
           <select

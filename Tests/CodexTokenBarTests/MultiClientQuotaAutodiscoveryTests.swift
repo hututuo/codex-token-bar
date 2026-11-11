@@ -8,7 +8,85 @@ private final class QuotaProbeCounter: @unchecked Sendable {
     func read() -> Int { lock.withLock { value } }
 }
 
+private final class LocalQuotaTestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var time: TimeInterval = 0
+    func set(_ value: TimeInterval) { lock.withLock { time = value } }
+    func read() -> TimeInterval { lock.withLock { time } }
+}
+
+@MainActor
+private final class LocalQuotaTestTimer: AccountQuotaTimerToken {
+    let interval: TimeInterval
+    let handler: @MainActor @Sendable () -> Void
+    var invalidated = false
+    init(interval: TimeInterval, handler: @escaping @MainActor @Sendable () -> Void) {
+        self.interval = interval; self.handler = handler
+    }
+    func invalidate() { invalidated = true }
+    func fire() { if !invalidated { handler() } }
+}
+
+@MainActor
+private final class LocalQuotaTestScheduler: AccountQuotaTimerScheduling {
+    var timers: [LocalQuotaTestTimer] = []
+    func scheduleRepeatingTimer(interval: TimeInterval, handler: @escaping @MainActor @Sendable () -> Void) -> any AccountQuotaTimerToken {
+        let timer = LocalQuotaTestTimer(interval: interval, handler: handler)
+        timers.append(timer); return timer
+    }
+}
+
 final class MultiClientQuotaAutodiscoveryTests: XCTestCase {
+    @MainActor
+    func testLocalQuotaFollowsMainPageCadenceReschedulesAndAllowsManualRefresh() async throws {
+        let root = try temporaryDirectory()
+        let (defaults, name) = isolatedDefaults()
+        defer { defaults.removePersistentDomain(forName: name) }
+        defaults.set("300", forKey: AccountQuotaRefreshCadence.storageKey)
+        defaults.set(false, forKey: "liveRateMonitoringEnabled")
+        let scheduler = LocalQuotaTestScheduler(), clock = LocalQuotaTestClock(), calls = QuotaProbeCounter()
+        let store = MultiClientUsageStore(defaults: defaults, databaseURL: root.appendingPathComponent("usage.sqlite"),
+            quotaReader: { calls.increment(); return .init(state: "available", capturedAt: nil, fiveHour: .init(usedPercent: Double(calls.read()), resetsAt: nil), sevenDay: nil) }, desktopQuotaReader: { .missing },
+            antigravityQuotaReader: { AntigravityLocalQuota.empty() }, quotaTimerScheduler: scheduler,
+            quotaProbeUptime: { clock.read() })
+        defer { store.stop() }
+        store.start()
+        for _ in 0..<200 where store.claudeQuota.fiveHour?.usedPercent != 1 || store.refreshing { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(calls.read(), 1)
+        XCTAssertEqual(scheduler.timers.map(\.interval), [300])
+
+        defaults.set("30", forKey: AccountQuotaRefreshCadence.storageKey)
+        NotificationCenter.default.post(name: UserDefaults.didChangeNotification, object: defaults)
+        for _ in 0..<100 where scheduler.timers.count < 2 { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(scheduler.timers.map(\.interval), [300, 30])
+        XCTAssertTrue(scheduler.timers.first?.invalidated == true)
+        clock.set(29); scheduler.timers.last?.fire()
+        for _ in 0..<5 { await Task.yield() }
+        XCTAssertEqual(calls.read(), 1)
+        clock.set(30); scheduler.timers.last?.fire()
+        for _ in 0..<100 where store.claudeQuota.fiveHour?.usedPercent != 2 { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(calls.read(), 2, "A fixed 60-second cache must not swallow the 30-second setting")
+
+        defaults.set("600", forKey: AccountQuotaRefreshCadence.storageKey)
+        NotificationCenter.default.post(name: UserDefaults.didChangeNotification, object: defaults)
+        for _ in 0..<100 where scheduler.timers.count < 3 { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(scheduler.timers.last?.interval, 600)
+        clock.set(90); scheduler.timers.last?.fire()
+        for _ in 0..<5 { await Task.yield() }
+        XCTAssertEqual(calls.read(), 2, "Usage refreshes must not shorten a selected ten-minute quota interval")
+        clock.set(630); scheduler.timers.last?.fire()
+        for _ in 0..<100 where store.claudeQuota.fiveHour?.usedPercent != 3 { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(calls.read(), 3)
+        store.refreshLocalQuotaCaches(force: true)
+        for _ in 0..<100 where store.claudeQuota.fiveHour?.usedPercent != 4 { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(calls.read(), 4, "Manual refresh only bypasses local cache reuse")
+        let timerCount = scheduler.timers.count
+        NotificationCenter.default.post(name: UserDefaults.didChangeNotification, object: defaults)
+        for _ in 0..<5 { await Task.yield() }
+        XCTAssertEqual(scheduler.timers.count, timerCount, "Unrelated settings must not restart the quota clock")
+        store.stop()
+        XCTAssertTrue(scheduler.timers.allSatisfy(\.invalidated))
+    }
     @MainActor
     func testCLIAPIModeRemainsVisibleBesideIndependentDesktopQuotaWithoutTranscriptOptIn() async throws {
         let root = try temporaryDirectory()

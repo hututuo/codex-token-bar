@@ -334,7 +334,11 @@ final class MultiClientUsageStore: ObservableObject {
     private let desktopQuotaReader: @Sendable () -> ClaudeLocalQuota
     private let antigravityQuotaReader: @Sendable () -> ClientQuotaReading
     private var loop: Task<Void, Never>?
-    private var quotaLoop: Task<Void, Never>?
+    private var isStarted = false
+    private var quotaTimer: (any AccountQuotaTimerToken)?
+    private var quotaTimerInterval: TimeInterval?
+    private let quotaTimerScheduler: any AccountQuotaTimerScheduling
+    private let quotaProbeUptime: @Sendable () -> TimeInterval
     private var refreshTask: Task<Void, Never>?
     private var generation = 0
     private var quotaProbeInFlight = false
@@ -345,30 +349,32 @@ final class MultiClientUsageStore: ObservableObject {
     init(defaults: UserDefaults = .standard, databaseURL: URL = MultiClientUsageStore.defaultDatabaseURL,
          quotaReader: @escaping @Sendable () -> ClaudeLocalQuota = { ClaudeLocalQuota.read() },
          desktopQuotaReader: @escaping @Sendable () -> ClaudeLocalQuota = { ClaudeLocalQuota.readDesktop() },
-         antigravityQuotaReader: @escaping @Sendable () -> ClientQuotaReading = { AntigravityLocalQuota.read() }) {
+         antigravityQuotaReader: @escaping @Sendable () -> ClientQuotaReading = { AntigravityLocalQuota.read() },
+         quotaTimerScheduler: any AccountQuotaTimerScheduling = FoundationAccountQuotaTimerScheduler(),
+         quotaProbeUptime: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
         self.defaults = defaults
         self.quotaReader = quotaReader
         self.desktopQuotaReader = desktopQuotaReader
         self.antigravityQuotaReader = antigravityQuotaReader
+        self.quotaTimerScheduler = quotaTimerScheduler
+        self.quotaProbeUptime = quotaProbeUptime
         let decoded = defaults.data(forKey: Self.preferencesKey).flatMap { try? JSONDecoder().decode([MultiClientUsagePreference].self, from: $0) } ?? []
         preferences = MultiClientUsagePreference.normalized(decoded)
         scanner = MultiClientUsageScanner(databaseURL: databaseURL)
         acknowledgedClients = Set(defaults.stringArray(forKey: "multiClient.discoveryAcknowledged.v1") ?? [])
     }
     func start() {
-        guard loop == nil else { return }
+        guard !isStarted else { return }
+        isStarted = true
         monitoringUpdates = NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification, object: defaults)
-            .receive(on: DispatchQueue.main).sink { [weak self] _ in self?.syncLocalRuntime() }
-        // Quota is an independent local-cache feature. Probe at startup and every minute even
-        // when transcript collection and Claude speed monitoring are both disabled.
-        refreshLocalQuotaCaches()
-        quotaLoop = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(60))
-                guard !Task.isCancelled else { return }
-                self?.refreshLocalQuotaCaches()
+            .receive(on: DispatchQueue.main).sink { [weak self] _ in
+                self?.syncLocalRuntime()
+                self?.configureLocalQuotaTimer()
             }
-        }
+        // Local providers share the main page's quota cadence, independently of
+        // transcript ingestion and speed monitoring. No provider is invoked remotely.
+        refreshLocalQuotaCaches(force: true)
+        configureLocalQuotaTimer()
         syncLocalRuntime()
         refresh()
         loop = Task { [weak self] in
@@ -377,6 +383,23 @@ final class MultiClientUsageStore: ObservableObject {
                 guard !Task.isCancelled else { return }
                 self?.refresh()
             }
+        }
+    }
+    func stop() {
+        isStarted = false
+        loop?.cancel(); loop = nil
+        quotaTimer?.invalidate(); quotaTimer = nil; quotaTimerInterval = nil
+        monitoringUpdates?.cancel(); monitoringUpdates = nil
+    }
+    private func configureLocalQuotaTimer() {
+        guard isStarted else { return }
+        let interval = AccountQuotaRefreshCadence.storedValue(in: defaults).seconds
+        guard quotaTimerInterval != interval else { return }
+        quotaTimer?.invalidate()
+        quotaTimerInterval = interval
+        quotaTimer = quotaTimerScheduler.scheduleRepeatingTimer(interval: interval) { [weak self] in
+            guard let self, self.isStarted, self.quotaTimerInterval == interval else { return }
+            self.refreshLocalQuotaCaches()
         }
     }
     func update(_ value: MultiClientUsagePreference) {
@@ -427,9 +450,10 @@ final class MultiClientUsageStore: ObservableObject {
             if self?.generation != generation { self?.refresh() }
         }
     }
-    func refreshLocalQuotaCaches() {
-        let uptime = ProcessInfo.processInfo.systemUptime
-        guard lastQuotaProbeUptime.map({ uptime - $0 >= 60 }) ?? true else { return }
+    func refreshLocalQuotaCaches(force: Bool = false) {
+        let uptime = quotaProbeUptime()
+        let interval = AccountQuotaRefreshCadence.storedValue(in: defaults).seconds
+        guard force || (lastQuotaProbeUptime.map({ uptime - $0 >= interval }) ?? true) else { return }
         guard !quotaProbeInFlight else { return }
         quotaProbeInFlight = true
         lastQuotaProbeUptime = uptime

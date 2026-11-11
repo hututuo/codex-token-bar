@@ -42,7 +42,6 @@ const CACHE_RANKING_MIN_INPUT_TOKENS: i64 = 1_000;
 const CACHE_RANKING_LOW_HIT_MIN_INPUT_TOKENS: i64 = 20_000;
 const CACHE_RANKING_LOW_HIT_RATE: f64 = 0.3;
 const DATABASE_BUSY_TIMEOUT: Duration = Duration::from_secs(3);
-const CLAUDE_LOCAL_QUOTA_PROBE_INTERVAL: Duration = Duration::from_secs(60);
 type EventKey = (String, String, String);
 
 static MULTI_CLIENT_USAGE_GATE: OnceLock<Mutex<()>> = OnceLock::new();
@@ -86,10 +85,11 @@ struct ClaudeDesktopQuotaProbeCache {
 fn cached_claude_local_quota_read(
     cache: &mut ClaudeLocalQuotaProbeCache,
     now: Instant,
+    interval: Duration,
     reader: impl FnOnce() -> ClaudeLocalQuotaSnapshot,
 ) -> ClaudeLocalQuotaSnapshot {
     if cache.checked_at.is_some_and(|checked_at| {
-        now.saturating_duration_since(checked_at) < CLAUDE_LOCAL_QUOTA_PROBE_INTERVAL
+        super::local_quota_cache::probe_is_fresh(checked_at, now, interval)
     }) {
         if let Some(snapshot) = &cache.snapshot {
             return snapshot.clone();
@@ -104,10 +104,11 @@ fn cached_claude_local_quota_read(
 fn cached_claude_desktop_quota_read(
     cache: &mut ClaudeDesktopQuotaProbeCache,
     now: Instant,
+    interval: Duration,
     reader: impl FnOnce() -> ClaudeLocalQuotaSnapshot,
 ) -> ClaudeLocalQuotaSnapshot {
     if cache.checked_at.is_some_and(|checked_at| {
-        now.saturating_duration_since(checked_at) < CLAUDE_LOCAL_QUOTA_PROBE_INTERVAL
+        super::local_quota_cache::probe_is_fresh(checked_at, now, interval)
     }) {
         if let Some(snapshot) = &cache.snapshot {
             return snapshot.clone();
@@ -1248,10 +1249,27 @@ fn refresh_multi_client_usage_at(
 
 /// Callable even when transcript discovery or ledger refresh fails.
 pub fn read_local_client_quotas() -> Vec<QuotaProviderSnapshot> {
-    multi_client_product::quota_provider_snapshots(&read_claude_local_quota(), &read_claude_desktop_quota(), &super::antigravity_local_quota::read_cached())
+    read_local_client_quotas_with_interval(super::local_quota_cache::probe_interval())
+}
+
+pub fn refresh_local_client_quotas() -> Vec<QuotaProviderSnapshot> {
+    // A manual local refresh bypasses only file-read reuse, never invokes a provider.
+    read_local_client_quotas_with_interval(Duration::ZERO)
+}
+
+fn read_local_client_quotas_with_interval(interval: Duration) -> Vec<QuotaProviderSnapshot> {
+    multi_client_product::quota_provider_snapshots(
+        &read_claude_local_quota_with_interval(interval),
+        &read_claude_desktop_quota_with_interval(interval),
+        &super::antigravity_local_quota::read_cached(interval),
+    )
 }
 
 pub fn read_claude_local_quota() -> ClaudeLocalQuotaSnapshot {
+    read_claude_local_quota_with_interval(super::local_quota_cache::probe_interval())
+}
+
+fn read_claude_local_quota_with_interval(interval: Duration) -> ClaudeLocalQuotaSnapshot {
     let home = app_paths::home_dir();
     let environment = std::env::vars_os().filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?))).collect();
     if claude_uses_api(&home, &environment) { return claude_quota_state("api"); }
@@ -1260,7 +1278,7 @@ pub fn read_claude_local_quota() -> ClaudeLocalQuotaSnapshot {
     let mut cache = cache
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    cached_claude_local_quota_read(&mut cache, now, || {
+    cached_claude_local_quota_read(&mut cache, now, interval, || {
         let home = app_paths::home_dir();
         let app_capture = if cfg!(target_os = "windows") {
             std::env::var_os("LOCALAPPDATA")
@@ -1312,12 +1330,16 @@ fn claude_uses_api(home: &Path, environment: &std::collections::HashMap<String, 
 /// Reads only Claude Desktop's bounded local plan-usage history file. This remains separate
 /// from the Claude CLI statusline reader and never reads credentials or contacts a provider.
 pub fn read_claude_desktop_quota() -> ClaudeLocalQuotaSnapshot {
+    read_claude_desktop_quota_with_interval(super::local_quota_cache::probe_interval())
+}
+
+fn read_claude_desktop_quota_with_interval(interval: Duration) -> ClaudeLocalQuotaSnapshot {
     let now = Instant::now();
     let cache = CLAUDE_DESKTOP_QUOTA_PROBE_CACHE.get_or_init(Default::default);
     let mut cache = cache
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    cached_claude_desktop_quota_read(&mut cache, now, || {
+    cached_claude_desktop_quota_read(&mut cache, now, interval, || {
         let path = claude_desktop_history_path(&app_paths::home_dir());
         let now_epoch = OffsetDateTime::now_utc().unix_timestamp_nanos() as f64 / 1_000_000_000.0;
         let history = read_claude_desktop_quota_at(&path, now_epoch);
@@ -4944,18 +4966,19 @@ mod tests {
             five_hour: None,
             seven_day: None,
         };
-        let first = cached_claude_local_quota_read(&mut cache, start, || {
+        let first = cached_claude_local_quota_read(&mut cache, start, Duration::from_secs(60), || {
             probes += 1;
             fresh.clone()
         });
         let within_interval =
-            cached_claude_local_quota_read(&mut cache, start + Duration::from_secs(59), || {
+            cached_claude_local_quota_read(&mut cache, start + Duration::from_secs(59), Duration::from_secs(60), || {
                 probes += 1;
                 claude_quota_state("missing")
             });
         let after_interval = cached_claude_local_quota_read(
             &mut cache,
-            start + CLAUDE_LOCAL_QUOTA_PROBE_INTERVAL,
+            start + Duration::from_secs(60),
+            Duration::from_secs(60),
             || {
                 probes += 1;
                 claude_quota_state("stale")
@@ -4972,6 +4995,32 @@ mod tests {
             "a later probe observes freshness expiry"
         );
         assert_eq!(probes, 2);
+    }
+
+    #[test]
+    fn both_local_claude_caches_follow_every_selected_cadence_and_manual_bypass() {
+        let start = Instant::now();
+        for seconds in [30, 60, 120, 180, 300, 600] {
+            let interval = Duration::from_secs(seconds);
+            let mut cli = ClaudeLocalQuotaProbeCache::default();
+            let mut desktop = ClaudeDesktopQuotaProbeCache::default();
+            let initial = claude_quota_state("available");
+            cached_claude_local_quota_read(&mut cli, start, interval, || initial.clone());
+            cached_claude_desktop_quota_read(&mut desktop, start, interval, || initial.clone());
+            let before = start + interval - Duration::from_millis(1);
+            assert_eq!(cached_claude_local_quota_read(&mut cli, before, interval, || panic!("early CLI probe")), initial);
+            assert_eq!(cached_claude_desktop_quota_read(&mut desktop, before, interval, || panic!("early Desktop probe")), initial);
+            let due = start + interval;
+            assert_eq!(cached_claude_local_quota_read(&mut cli, due, interval, || claude_quota_state("stale")).state, "stale");
+            assert_eq!(cached_claude_desktop_quota_read(&mut desktop, due, interval, || claude_quota_state("stale")).state, "stale");
+            // A ten-minute choice cannot swallow a manual file reread.
+            assert_eq!(cached_claude_local_quota_read(&mut cli, due, Duration::ZERO, || claude_quota_state("missing")).state, "missing");
+            assert_eq!(cached_claude_desktop_quota_read(&mut desktop, due, Duration::ZERO, || claude_quota_state("missing")).state, "missing");
+        }
+        let mut cli = ClaudeLocalQuotaProbeCache::default();
+        cached_claude_local_quota_read(&mut cli, start, Duration::from_secs(600), || claude_quota_state("available"));
+        assert_eq!(cached_claude_local_quota_read(&mut cli, start + Duration::from_secs(30), Duration::from_secs(30), || claude_quota_state("stale")).state, "stale");
+        assert_eq!(cached_claude_local_quota_read(&mut cli, start + Duration::from_secs(60), Duration::from_secs(600), || panic!("longer cadence must retain the observation")).state, "stale");
     }
 
     #[test]
@@ -6047,18 +6096,19 @@ mod tests {
                 resets_at: None,
             }),
         };
-        let first = cached_claude_desktop_quota_read(&mut cache, start, || {
+        let first = cached_claude_desktop_quota_read(&mut cache, start, Duration::from_secs(60), || {
             probes += 1;
             sample.clone()
         });
         let within_interval =
-            cached_claude_desktop_quota_read(&mut cache, start + Duration::from_secs(59), || {
+            cached_claude_desktop_quota_read(&mut cache, start + Duration::from_secs(59), Duration::from_secs(60), || {
                 probes += 1;
                 claude_quota_state("missing")
             });
         let after_interval = cached_claude_desktop_quota_read(
             &mut cache,
-            start + CLAUDE_LOCAL_QUOTA_PROBE_INTERVAL,
+            start + Duration::from_secs(60),
+            Duration::from_secs(60),
             || {
                 probes += 1;
                 claude_quota_state("stale")

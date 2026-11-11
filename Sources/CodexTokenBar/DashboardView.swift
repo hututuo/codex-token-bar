@@ -1295,7 +1295,10 @@ struct DashboardView: View {
     }
 
     private func refreshAllData(trigger: DashboardRefreshTrigger = .manual) {
-        if case .manual = trigger { clients.refresh() }
+        if case .manual = trigger {
+            clients.refresh()
+            clients.refreshLocalQuotaCaches(force: true)
+        }
         let context = DashboardRefreshContext.fromSurfaces(
             providerSyncVisible: showingProviderSync,
             appActive: NSApp.isActive,

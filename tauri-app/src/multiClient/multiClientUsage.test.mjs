@@ -43,6 +43,7 @@ test("local Claude quota is still visible when transcript storage fails",async()
   const calls=[];let root;
   w.__TAURI_INTERNALS__={invoke:async command=>{
     calls.push(command);
+    if(command==='read_app_settings')return {quotaRefreshIntervalMs:60_000};
     if(command==='refresh_multi_client_usage')throw new Error('fixture usage storage unavailable');
     assert.equal(command,'read_local_client_quotas');
     return [
@@ -57,7 +58,7 @@ test("local Claude quota is still visible when transcript storage fails",async()
       function Readout(){const {snapshot}=useMultiClientUsage();return React.createElement('div',null,JSON.stringify(snapshot.quotas??[]));}
       const host=w.document.createElement('div');w.document.body.append(host);root=createRoot(host);
       await act(async()=>root.render(React.createElement(Readout)));
-      assert.deepEqual(calls,['refresh_multi_client_usage','read_local_client_quotas']);
+      assert.deepEqual(calls.filter(command=>command!=='read_app_settings'),['refresh_multi_client_usage','read_local_client_quotas']);
       assert.match(host.textContent,/claudeCode/);assert.match(host.textContent,/"usedPercent":25/);
       assert.match(host.textContent,/claudeDesktop/);assert.match(host.textContent,/"usedPercent":13/);
       assert.match(host.textContent,/"resetsAt":null/);

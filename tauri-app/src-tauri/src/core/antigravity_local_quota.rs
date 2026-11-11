@@ -30,13 +30,14 @@ pub fn empty(state: &str, source: &str) -> QuotaProviderSnapshot {
     }
 }
 
-pub fn read_cached() -> QuotaProviderSnapshot {
+pub fn read_cached(interval: Duration) -> QuotaProviderSnapshot {
+    let now = Instant::now();
     let mut cache = CACHE
         .get_or_init(Default::default)
         .lock()
         .unwrap_or_else(|p| p.into_inner());
     if let Some((checked, reading)) = cache.as_ref() {
-        if checked.elapsed() < Duration::from_secs(60) {
+        if super::local_quota_cache::probe_is_fresh(*checked, now, interval) {
             return reading.clone();
         }
     }

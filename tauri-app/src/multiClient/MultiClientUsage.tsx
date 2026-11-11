@@ -4,6 +4,9 @@ import { clientIsAvailable, clientQuotaStatusText, codexQuotaProvider, projectCl
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { callCommandStrict } from "../api/command";
 import { isTauriRuntimeAvailable } from "../platform/runtime";
+import { readAppSettings } from "../api/settingsClient";
+import { desktopPlatform } from "../platform/desktop";
+import { DEFAULT_QUOTA_REFRESH_INTERVAL_MS, sanitizeQuotaRefreshIntervalMs } from "../settings/quotaRefreshCadence";
 
 export type UsageClient = "claudeCode" | "claudeDesktop" | "deepseek" | "gemini" | "opencode" | "antigravity";
 export const clientNames: Record<UsageClient, string> = {
@@ -28,6 +31,15 @@ let cached = initial;
 let cacheError = "";
 let pending: Promise<void> | null = null;
 let timer: ReturnType<typeof setTimeout> | undefined;
+let usagePollGeneration = 0;
+let quotaTimer: ReturnType<typeof setTimeout> | undefined;
+let quotaTimerGeneration = 0;
+let quotaSubscriptionGeneration = 0;
+let quotaIntervalMs = DEFAULT_QUOTA_REFRESH_INTERVAL_MS;
+let stopQuotaSettings: (() => void) | undefined;
+let quotaPending: Promise<void> | null = null;
+let quotaPendingForced = false;
+let quotaRevision = 0;
 const listeners = new Set<() => void>();
 let revision = 0;
 const emit = () => { revision += 1; listeners.forEach(listener => listener()); };
@@ -35,23 +47,81 @@ function validSnapshot(value: unknown): value is Snapshot {
   const v = value as Snapshot | null;
   return !!v && Array.isArray(v.preferences) && Array.isArray(v.summaries) && Array.isArray(v.diagnostics);
 }
+export async function refreshLocalClientQuotas(forceRefresh = false): Promise<void> {
+  if (!hasRuntime()) return;
+  if (quotaPending) {
+    const needsForcedRead = forceRefresh && !quotaPendingForced;
+    await quotaPending;
+    if (needsForcedRead) await refreshLocalClientQuotas(true);
+    return;
+  }
+  quotaPendingForced = forceRefresh;
+  quotaPending = (async () => {
+    try {
+      const readings = await callCommandStrict<ClientQuotaReading[]>("read_local_client_quotas", { forceRefresh });
+      if (!Array.isArray(readings)) throw new Error("Invalid local quota response");
+      cached = { ...cached, quotas: readings };
+    } catch {
+      cached = { ...cached, quotas: ["claudeCode", "claudeDesktop", "antigravity"].map(unavailableQuota) };
+    } finally {
+      quotaRevision += 1;
+      quotaPending = null;
+      quotaPendingForced = false;
+      emit();
+    }
+  })();
+  return quotaPending;
+}
+
+function scheduleLocalQuotaPoll() {
+  const generation = ++quotaTimerGeneration;
+  clearTimeout(quotaTimer);
+  if (!listeners.size) return;
+  quotaTimer = setTimeout(async () => {
+    if (generation !== quotaTimerGeneration) return;
+    if (typeof document === "undefined" || !document.hidden) await refreshLocalClientQuotas();
+    if (generation === quotaTimerGeneration && listeners.size) scheduleLocalQuotaPoll();
+  }, quotaIntervalMs);
+}
+
+function startLocalQuotaClock() {
+  const generation = ++quotaSubscriptionGeneration;
+  let settingsRevision = 0;
+  const apply = (value: unknown) => {
+    if (generation !== quotaSubscriptionGeneration || !listeners.size) return;
+    const interval = sanitizeQuotaRefreshIntervalMs(value);
+    if (interval !== quotaIntervalMs) { quotaIntervalMs = interval; scheduleLocalQuotaPoll(); }
+  };
+  scheduleLocalQuotaPoll();
+  void readAppSettings().then(settings => {
+    // A slow startup read must not overwrite a newer settings event.
+    if (settings && settingsRevision === 0) apply(settings.quotaRefreshIntervalMs);
+  }).catch(() => {});
+  void desktopPlatform.onAppSettingsChanged(settings => {
+    settingsRevision += 1;
+    apply(settings.quotaRefreshIntervalMs);
+  }).then(unlisten => {
+    if (generation !== quotaSubscriptionGeneration || !listeners.size) unlisten();
+    else stopQuotaSettings = unlisten;
+  }).catch(() => {});
+}
+
 async function refreshShared() {
   if (pending || !hasRuntime()) return pending;
   pending = (async () => {
+    const readingRevision = quotaRevision;
     try {
       const next = await callCommandStrict<unknown>("refresh_multi_client_usage");
-      if (validSnapshot(next)) { cached = next; cacheError = ""; }
+      if (validSnapshot(next)) {
+        cached = quotaRevision === readingRevision ? next : { ...next, quotas: cached.quotas };
+        cacheError = "";
+      }
       else { throw new Error("本地用量接口暂不可用，保留已读取的数据"); }
     } catch (error) {
       cacheError = String(error);
       // A transcript/index error must not hide an independently readable local
       // quota cache. Keep all last-good usage rows; update only this reading.
-      try {
-        const readings=await callCommandStrict<ClientQuotaReading[]>("read_local_client_quotas");
-        cached={...cached,quotas:readings};
-      } catch {
-        cached={...cached,quotas:["claudeCode","claudeDesktop","antigravity"].map(unavailableQuota)};
-      }
+      await refreshLocalClientQuotas();
     }
     finally { pending = null; emit(); }
   })();
@@ -61,14 +131,25 @@ async function refreshShared() {
 function subscribe(listener: () => void) {
   listeners.add(listener);
   if (listeners.size === 1 && hasRuntime()) {
+    const generation = ++usagePollGeneration;
+    startLocalQuotaClock();
     const poll = async () => {
       // Each WebView shares one poll; hidden windows keep no scanning timer work.
       if (typeof document === "undefined" || !document.hidden) await refreshShared();
-      if (listeners.size) timer = setTimeout(poll, 60_000);
+      if (generation === usagePollGeneration && listeners.size) timer = setTimeout(poll, 60_000);
     };
     void poll();
   }
-  return () => { listeners.delete(listener); if (!listeners.size) clearTimeout(timer); };
+  return () => {
+    listeners.delete(listener);
+    if (!listeners.size) {
+      usagePollGeneration += 1;
+      quotaSubscriptionGeneration += 1;
+      quotaTimerGeneration += 1;
+      clearTimeout(timer); clearTimeout(quotaTimer);
+      stopQuotaSettings?.(); stopQuotaSettings = undefined;
+    }
+  };
 }
 export function useMultiClientUsage() {
   useSyncExternalStore(subscribe, () => revision, () => 0);
@@ -86,7 +167,8 @@ export function useMultiClientUsage() {
     } catch (error) { cacheError = String(error); emit(); return false; }
     finally { setSaving(false); }
   }
-  return { snapshot, error: cacheError, busy: saving || !!pending, refresh: refreshShared, save };
+  async function refresh() { await Promise.all([refreshShared(), refreshLocalClientQuotas(true)]); }
+  return { snapshot, error: cacheError, busy: saving || !!pending, refresh, save };
 }
 
 interface QuotaDisplay { overviewSidebar: boolean; codexSidebar: boolean; codexColor: string; claudeSidebar: boolean; claudeColor: string; claudeFirst: boolean; claudeStyle: string; }

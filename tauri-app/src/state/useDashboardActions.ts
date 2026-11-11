@@ -5,6 +5,7 @@ import {
 } from "react";
 import type { DashboardDataSource } from "../data/dashboardDataSource";
 import { desktopPlatform } from "../platform/desktop";
+import { refreshLocalClientQuotas } from "../multiClient/MultiClientUsage";
 import type {
   CodexHomeSourceEnvelope,
   PreciseDashboardDedupeDomain,
@@ -79,6 +80,7 @@ export function useDashboardActions({
         refreshLightSummary: () => {},
         refreshPreciseUsage: () => requestPreciseRefresh(true, "manual"),
         refreshQuota: () => {
+          void refreshLocalClientQuotas(true);
           setForceNextQuotaLoad(true);
           setQuotaLoadGeneration((current) => current + 1);
         },
@@ -111,6 +113,7 @@ export function useDashboardActions({
       refreshLightSummary: () => {},
       refreshPreciseUsage: () => {},
       refreshQuota: () => {
+        void refreshLocalClientQuotas(true);
         setForceNextQuotaLoad(true);
         setQuotaLoadGeneration((current) => current + 1);
       },
