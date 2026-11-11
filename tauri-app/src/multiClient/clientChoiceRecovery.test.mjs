@@ -39,6 +39,7 @@ async function withChoices(run, options = {}) {
   dom.__TAURI_INTERNALS__ = {
     transformCallback(callback) { const id = ++sequence; callbacks.set(id, callback); return id; },
     async invoke(command, args = {}) {
+      if (command === "read_app_settings") return { quotaRefreshIntervalMs: 60_000 };
       if (command.startsWith("plugin:event|")) {
         attempts.push({ command, event: args.event });
         // Record invalid requests without creating an unhandled rejection in the old
@@ -110,7 +111,8 @@ test("all three persisted choices use distinct valid native channels without ren
     assert.equal(values.get("sidebar").raw, "all");
     assert.ok(native.attempts.every(({ event }) => /^[A-Za-z0-9_:/-]+$/.test(event)),
       "storage keys containing dots must never be sent as Tauri event names");
-    assert.deepEqual(new Set(native.attempts.map(({ event }) => event)), new Set(Object.values(channels)));
+    assert.deepEqual(new Set(native.attempts.map(({ event }) => event).filter(event => event !== "app-settings-changed")), new Set(Object.values(channels)));
+    assert.equal(native.attempts.filter(({ event }) => event === "app-settings-changed").length, 1);
     await React.act(async () => values.get("first").setScope("codex"));
     assert.equal(dom.localStorage.getItem(keys.dashboard), "codex");
     assert.equal(values.get("second").raw, "codex");

@@ -25,7 +25,8 @@ test("stored client choices use distinct valid native channels without migrating
     assert.equal(dom.document.querySelector("#home").textContent, "claudeCode");
     assert.equal(dom.document.querySelector("#sidebar").textContent, "codex");
     assert.equal(dom.document.querySelector("#quota").textContent, "codex:5h");
-    assert.deepEqual(new Set(native.listens.map(x => x.event)), new Set(Object.values(channels)));
+    assert.deepEqual(new Set(native.listens.map(x => x.event).filter(event => event !== "app-settings-changed")), new Set(Object.values(channels)));
+    assert.equal(native.listens.filter(x => x.event === "app-settings-changed").length, 1);
     assert.ok(native.listens.every(x => nativeEventName.test(x.event)), "native listen must never receive dotted storage keys");
     assert.equal(dom.localStorage.length, 3);
   });
@@ -83,11 +84,11 @@ test("rejected native subscriptions and emissions are diagnosed without losing l
 test("subscriptions resolving after unmount are immediately released", async () => {
   await withChoices({ deferListen: true }, async ({ native, mount, unmount }) => {
     await mount();
-    assert.equal(native.pending.length, 4);
+    assert.equal(native.pending.length, 5, "four choice listeners plus the shared quota cadence listener");
     await unmount();
     await React.act(async () => native.pending.splice(0).forEach(resolve => resolve()));
     assert.equal(native.registrations.size, 0);
-    assert.equal(native.unlistens.length, 4);
+    assert.equal(native.unlistens.length, 5);
   });
 });
 
@@ -149,6 +150,7 @@ function installNativeEvents(dom, options) {
   dom.__TAURI_INTERNALS__ = {
     transformCallback(callback) { const id = ++sequence; callbacks.set(id, callback); return id; },
     async invoke(command, args) {
+      if (command === "read_app_settings") return { quotaRefreshIntervalMs: 60_000 };
       if (command === "refresh_multi_client_usage") return { preferences: [], summaries: [], diagnostics: [], updatedAt: null };
       if (command === "plugin:event|listen") {
         listens.push(args);

@@ -13,13 +13,24 @@ test("shared local quotas follow the main cadence, keep usage independent, and r
   const oldSet=globalThis.setTimeout,oldClear=globalThis.clearTimeout,timers=new Map();let serial=0;
   globalThis.setTimeout=(fn,ms)=>{const id=++serial;timers.set(id,{fn,ms});return id;};
   globalThis.clearTimeout=id=>timers.delete(id);
-  let resolveSettings,resolveUsage,holdUsage=false,usageReads=0,quotaReads=0,settingsListener,unlistens=0,root,platform,oldListen;
+  let resolveSettings,resolveUsage,holdUsage=false,usageReads=0,quotaReads=0,settingsListener,unlistens=0,root;
+  const callbacks=new Map();let callbackSerial=0;
   const calls=[];
   const quota=value=>[{client:"claudeDesktop",state:"available",source:"local-desktop-http-cache",windows:[{label:"5h",usedPercent:value,resetsAt:null}]}];
   const snapshot=()=>({preferences:[],summaries:[],diagnostics:[],updatedAt:null,quotas:quota(5)});
   const settings=new Promise(resolve=>{resolveSettings=resolve;});
-  dom.__TAURI_INTERNALS__={invoke:async(command,args)=>{
+  dom.__TAURI_EVENT_PLUGIN_INTERNALS__={unregisterListener(){}};
+  dom.__TAURI_INTERNALS__={
+    transformCallback(callback){const id=++callbackSerial;callbacks.set(id,callback);return id;},
+    unregisterCallback(id){callbacks.delete(id);},
+    invoke:async(command,args)=>{
     calls.push({command,args});
+    if(command==="plugin:event|listen"){
+      assert.equal(args.event,"app-settings-changed");
+      settingsListener=payload=>callbacks.get(args.handler)({event:args.event,id:1,payload});
+      return 1;
+    }
+    if(command==="plugin:event|unlisten"){unlistens++;return;}
     if(command==="read_app_settings")return settings;
     if(command==="refresh_multi_client_usage"){
       usageReads++;
@@ -34,9 +45,6 @@ test("shared local quotas follow the main cadence, keep usage independent, and r
   };
   try{
     await withSsrModules(async load=>{
-      ({desktopPlatform:platform}=await load("/src/platform/desktop.ts"));
-      oldListen=platform.onAppSettingsChanged;
-      platform.onAppSettingsChanged=async listener=>{settingsListener=listener;return()=>{unlistens++;};};
       const {useMultiClientUsage,refreshLocalClientQuotas}=await load("/src/multiClient/MultiClientUsage.tsx");
       function Probe(){const{snapshot}=useMultiClientUsage();return React.createElement("span",null,JSON.stringify(snapshot.quotas??[]));}
       root=createRoot(dom.document.body);
@@ -77,7 +85,6 @@ test("shared local quotas follow the main cadence, keep usage independent, and r
     });
   }finally{
     if(root)await React.act(async()=>root.unmount());
-    if(platform&&oldListen)platform.onAppSettingsChanged=oldListen;
     globalThis.setTimeout=oldSet;globalThis.clearTimeout=oldClear;
     for(const[key,descriptor]of prior)descriptor?Object.defineProperty(globalThis,key,descriptor):delete globalThis[key];
     dom.close();
