@@ -76,7 +76,7 @@ export function quotaItems(
           : null,
       source: "Codex 现有额度观测",
       status: remaining === null ? "不可用" : "",
-      automaticallyVisible: remaining !== null,
+      automaticallyVisible: v !== undefined && v !== null,
     });
   }
   if (codex?.connectionMode === "api") {
