@@ -121,3 +121,11 @@ Windows 构件的 candidate manifest 和 build manifest 均已核对：精确资
 | ARM64 | `cd5be221bb1fc08a169b6689ad900cd09352c7cf98a190e9f4461c9094c90363` |
 
 2026-11-11 01:34（Asia/Shanghai）全部门禁与包校验完成。证据收拢在前述本机根目录的 `final-9a0ebc4c/`，最终索引为根目录 `final-validation.json`；旧候选证据分开保留。已安装应用仍为 build 1010；没有停止、替换或操作实机 GUI。受保护的三个文件 hash 与原基线一致，其余既有未跟踪文件保留。停在安装之前，由主控先询问用户是否在场，再安排备份、安装和 GUI 验收。
+
+### 用户批准替换后的安装结果
+
+用户在上述安装前报告后明确回复“替换”。2026-11-11 11:16（Asia/Shanghai）已将 `/Applications/Codex Token Bar.app` 从 build 1010 替换为 `0.9.11 / 1012`，产品源码仍为 `9a0ebc4c`。替换前完整备份校验了 130 个文件/符号链接及签名，原安装包本体另行保留；旧进程正常退出，候选在 Applications 同卷暂存后改名到正式路径。安装后的主程序 SHA256 与云端候选一致，深度严格签名、包内资源和共享 SQL 校验通过。
+
+已安装进程 PID 38685：11:16:33 启动、11:16:39 startup ready；11:16:59 存储完成 4,406 个文件、pending 0、schema 14、published generation 27813；11:17:08 首次刷新 numeric/detail ready，并生成 build 1012 的安装确认回执。启动会话未观察到 failed 事件。
+
+本机证据为前述根目录 `install-build1012.P1fb9x/installation.json`，备份位于该目录的 `backup-build1010/Codex Token Bar.app`，原安装包保留为 `original-build1010.app`。最终验证索引已更新为 installed=true、guiTested=false；本次完成替换与启动验证，界面交互由用户查看验收。没有修改用户设置，受保护文件保持原样。
