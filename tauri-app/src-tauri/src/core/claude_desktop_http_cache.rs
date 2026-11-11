@@ -13,6 +13,8 @@ use time::{
 
 const MAX_ENTRY: usize = 2 * 1024 * 1024;
 const MAX_BODY: usize = 65_536;
+// Streaming responses use a 2 MiB window; the decoded JSON remains capped at 64 KiB.
+const MAX_WINDOW_LOG: u32 = 21;
 const ENTRY_MAGIC: u64 = 0xfcfb6d1ba7725c30;
 const EOF_MAGIC: u64 = 0xf4fa6f45970d41d8;
 const SOURCE: &str = "local-desktop-http-cache";
@@ -43,8 +45,12 @@ fn usage_key(bytes: &[u8]) -> Option<&[u8]> {
             return None;
         }
     }
-    let organization = pieces
-        .next()?
+    let url = pieces.next()?;
+    if url.bytes().any(|b| b <= b' ' || b == 0x7f || b == b'#') {
+        return None;
+    }
+    let path = url.split_once('?').map_or(url, |(path, _)| path);
+    let organization = path
         .strip_prefix("https://claude.ai/api/organizations/")?
         .strip_suffix("/usage")?;
     if organization.len() != 36
@@ -230,7 +236,7 @@ fn decompress(bytes: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     let mut decoder = zstd::stream::read::Decoder::new(bytes).ok()?.single_frame();
-    decoder.window_log_max(20).ok()?;
+    decoder.window_log_max(MAX_WINDOW_LOG).ok()?;
     let mut decoded = Vec::new();
     decoder
         .take(MAX_BODY as u64 + 1)

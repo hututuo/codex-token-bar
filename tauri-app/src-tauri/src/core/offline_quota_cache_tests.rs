@@ -51,6 +51,38 @@ fn shared_http_cache_fixtures_keep_integrity_age_reset_and_zero() {
 }
 
 #[test]
+fn reader_selects_newest_streaming_query_without_borrowing_windows_or_writing_cache() {
+    let rows = fixture();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut originals = Vec::new();
+    for (index, name) in ["expired", "zstd", "query-parameters"].iter().enumerate() {
+        let row = rows["claude"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["name"].as_str() == Some(*name))
+            .unwrap();
+        let bytes = STANDARD
+            .decode(row["entryBase64"].as_str().unwrap())
+            .unwrap();
+        let path = tmp.path().join(format!("{index:016x}_0"));
+        std::fs::write(&path, &bytes).unwrap();
+        originals.push((path, bytes));
+    }
+    let value = http::read(tmp.path(), 1_800_000_000.0).unwrap();
+    assert_eq!(value.state, "available");
+    assert_eq!(value.captured_at.as_deref(), Some("2027-01-15T07:59:50Z"));
+    assert!(
+        value.five_hour.is_none(),
+        "Do not borrow the older bare response's window"
+    );
+    assert_eq!(value.seven_day.unwrap().used_percent, 20.0);
+    for (path, bytes) in originals {
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+}
+
+#[test]
 fn shared_antigravity_fixtures_keep_accounts_pools_and_unknown_sample_time() {
     for row in fixture()["antigravityTools"].as_array().unwrap() {
         let value = ag::decode_tools(

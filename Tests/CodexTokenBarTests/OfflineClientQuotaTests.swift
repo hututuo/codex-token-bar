@@ -26,6 +26,29 @@ final class OfflineClientQuotaTests: XCTestCase {
         }
     }
 
+    func testReaderSelectsNewestStreamingQueryAsOneObservationAndLeavesCacheUntouched() throws {
+        let rows = try XCTUnwrap(try fixture()["claude"] as? [[String: Any]])
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        var originals: [URL: Data] = [:]
+        for (index, name) in ["expired", "zstd", "query-parameters"].enumerated() {
+            let row = try XCTUnwrap(rows.first { $0["name"] as? String == name })
+            let bytes = try XCTUnwrap(Data(base64Encoded: try XCTUnwrap(row["entryBase64"] as? String)))
+            let file = directory.appendingPathComponent(String(format: "%016x_0", index))
+            try bytes.write(to: file)
+            originals[file] = bytes
+        }
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let reading = try XCTUnwrap(ClaudeDesktopHTTPCache.read(directory: directory, now: now))
+        XCTAssertEqual(reading.state, "available")
+        XCTAssertEqual(reading.capturedAt, now.addingTimeInterval(-10))
+        XCTAssertNil(reading.fiveHour, "Do not borrow the older bare response's window")
+        XCTAssertEqual(reading.sevenDay?.usedPercent, 20)
+        XCTAssertEqual(ClaudeCapturedQuotaProvider(snapshot: reading, client: .claudeDesktop).reading().windows.count, 1)
+        for (file, bytes) in originals { XCTAssertEqual(try Data(contentsOf: file), bytes) }
+    }
+
     func testSharedAntigravityFixturesKeepModelPoolsAndAccountBoundary() throws {
         for row in try XCTUnwrap(try fixture()["antigravityTools"] as? [[String: Any]]) {
             let reading = AntigravityLocalQuota.decodeTools(try JSONSerialization.data(withJSONObject: row["data"]!),

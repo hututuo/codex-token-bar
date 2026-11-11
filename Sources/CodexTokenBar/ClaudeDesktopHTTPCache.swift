@@ -8,6 +8,9 @@ import Foundation
 enum ClaudeDesktopHTTPCache {
     static let maximumEntryBytes = 2 * 1_024 * 1_024
     static let maximumBodyBytes = 65_536
+    // Current Claude responses stream with a 2 MiB window even for a small JSON body.
+    // Bound decoder memory separately from the 64 KiB output limit.
+    static let maximumWindowLog: Int32 = 21
     static let maximumEntries = 20_000
     private static let entryMagic: UInt64 = 0xfcfb6d1ba7725c30
     private static let eofMagic: UInt64 = 0xf4fa6f45970d41d8
@@ -51,7 +54,7 @@ enum ClaudeDesktopHTTPCache {
               24 + Int(length) <= bytes.count else { return nil }
         let key = bytes.subdata(in: 24..<24 + Int(length))
         guard let text = String(data: key, encoding: .utf8),
-              text.range(of: "^(?:[0-9]+/){2}https://claude\\.ai/api/organizations/[0-9a-fA-F-]{36}/usage$", options: .regularExpression) != nil else { return nil }
+              text.range(of: "\\A(?:[0-9]+/){2}https://claude\\.ai/api/organizations/[0-9a-fA-F-]{36}/usage(?:\\?[^#\\x00-\\x20\\x7f]*)?\\z", options: .regularExpression) != nil else { return nil }
         return key
     }
 
@@ -117,7 +120,7 @@ enum ClaudeDesktopHTTPCache {
         guard let stream = ZSTD_createDStream() else { return nil }
         defer { ZSTD_freeDStream(stream) }
         guard ZSTD_isError(ZSTD_initDStream(stream)) == 0,
-              ZSTD_isError(ZSTD_DCtx_setParameter(stream, ZSTD_d_windowLogMax, 20)) == 0 else { return nil }
+              ZSTD_isError(ZSTD_DCtx_setParameter(stream, ZSTD_d_windowLogMax, maximumWindowLog)) == 0 else { return nil }
         return bytes.withUnsafeBytes { input in
             var source = ZSTD_inBuffer(src: input.baseAddress, size: input.count, pos: 0)
             var output = [UInt8](repeating: 0, count: maximumBodyBytes + 1)
