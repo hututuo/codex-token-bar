@@ -1,6 +1,6 @@
 import { modelUsageLabel as shortModelName } from "../components/modelUsagePresentation";
 import type { DashboardSnapshot } from "../types/dashboard";
-import { clientIsAvailable, clientQuotaStatusText, codexQuotaProvider, projectClientChart, unavailableQuota, type ClientDetection, type ClientQuotaReading, type ClientTrendBucket, type ClientChartPoint } from "./multiClientProduct";
+import { clientIsAvailable, clientQuotaStatusText, quotaPercentNumber, codexQuotaProvider, projectClientChart, unavailableQuota, type ClientDetection, type ClientQuotaReading, type ClientTrendBucket, type ClientChartPoint } from "./multiClientProduct";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { callCommandStrict } from "../api/command";
 import { isTauriRuntimeAvailable } from "../platform/runtime";
@@ -242,7 +242,7 @@ export function MultiClientUsageSettings() {
     </fieldset>)}
     <button onClick={()=>setShowCustom(value=>!value)}>{showCustom ? "只显示已发现的客户端" : "手动接入其他日志目录"}</button>
     <ClaudeLocalQuotaPanel />
-    <p>Claude 与 Antigravity 额度只读已有本地缓存，不安装钩子、不使用登录凭据、不联网。过期或采样时间未知的记录不会显示为当前余额。Codex 额度沿用原有观测。</p>
+    <p>Claude 读取已有本地缓存。Antigravity 优先查询已运行且受支持的本机语言服务，不强制刷新、不直接访问 Google；客户端可能自行联网。客户端未运行时读取旧缓存，过期或采样时间未知的记录不会作为当前余额。Codex 额度沿用原有观测。</p>
     {error && <p role="alert">{error}</p>}
     {snapshot.diagnostics.map((line, index) => <p className="multi-client-note" key={index}>{line}</p>)}
   </section>;
@@ -275,9 +275,9 @@ export function MultiClientDiscoveryNotice() {
 }
 export function ClientQuotaPanel({reading, compact=false}: {reading:ClientQuotaReading;compact?:boolean}) {
   return <div className={compact ? "multi-client-quota-inline" : "multi-client-quota"} title={reading.notice}>
-    {reading.state === "available" ? reading.windows.map(w=><span key={w.id??w.label}>{w.label} 剩余 {(100-w.usedPercent).toFixed(0)}%</span>) : <span>{clientQuotaStatusText(reading.state)}</span>}
-    {!compact && ["stale","cached"].includes(reading.state) && reading.windows.length>0 && <details><summary>查看历史缓存（非当前余额）</summary>{reading.windows.map(w=><div key={w.id??w.label}>{w.label} · 上次剩余 {(100-w.usedPercent).toFixed(0)}%</div>)}</details>}
-    {!compact && <>{reading.capturedAt && Number.isFinite(Date.parse(reading.capturedAt)) && <small>采样于 {new Date(reading.capturedAt).toLocaleString()}</small>}<small>{reading.notice}</small></>}
+    {reading.state === "available" ? reading.windows.map(w=><span key={w.id??w.label}>{w.label} 剩余 {quotaPercentNumber(100-w.usedPercent)}%</span>) : <span>{clientQuotaStatusText(reading.state)}</span>}
+    {!compact && ["stale","cached"].includes(reading.state) && reading.windows.length>0 && <details><summary>查看历史缓存（非当前余额）</summary>{reading.windows.map(w=><div key={w.id??w.label}>{w.label} · 上次剩余 {quotaPercentNumber(100-w.usedPercent)}%</div>)}</details>}
+    {!compact && <>{reading.capturedAt && Number.isFinite(Date.parse(reading.capturedAt)) && <small>{reading.source==="local-antigravity-rpc"?"读取于":"采样于"} {new Date(reading.capturedAt).toLocaleString()}</small>}<small>{reading.notice}</small></>}
   </div>;
 }
 function clientName(client:string) { return client === "codex" ? "Codex" : client === "all" ? "合计" : clientNames[client as UsageClient] ?? client; }

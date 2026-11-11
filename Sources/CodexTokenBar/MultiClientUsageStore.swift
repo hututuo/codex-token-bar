@@ -372,7 +372,8 @@ final class MultiClientUsageStore: ObservableObject {
                 self?.configureLocalQuotaTimer()
             }
         // Local providers share the main page's quota cadence, independently of
-        // transcript ingestion and speed monitoring. No provider is invoked remotely.
+        // transcript ingestion and speed monitoring. Claude reads files; the active
+        // Antigravity Hub may use its authorized loopback status query.
         refreshLocalQuotaCaches(force: true)
         configureLocalQuotaTimer()
         syncLocalRuntime()
@@ -545,7 +546,7 @@ final class MultiClientUsageStore: ObservableObject {
         if showClaudeQuota {
             let quotaText: String
             if claudeQuota.state == "available", let window = claudeQuota.fiveHour ?? claudeQuota.sevenDay {
-                quotaText = "Claude " + String(Int((100 - window.usedPercent).rounded())) + "%"
+                quotaText = "Claude " + ClientQuotaPresentation.percentNumber(100 - window.usedPercent) + "%"
             } else { quotaText = "Claude —" }
             let quotaTitle = NSAttributedString(string: quotaText, attributes: [.foregroundColor: NSColor(clientHex: defaults.string(forKey: "multiClient.claudeQuotaColor") ?? "#d87757")])
             if defaults.bool(forKey: "multiClient.claudeQuotaFirst") {

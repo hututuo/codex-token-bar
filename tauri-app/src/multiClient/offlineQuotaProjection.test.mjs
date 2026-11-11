@@ -9,12 +9,14 @@ const fixture=JSON.parse(await readFile(new URL("../../../fixtures/local-quota-c
 
 test("shared offline quotas retain Antigravity model pools and Claude resets across scopes",async()=>withSsrModules(async load=>{
   const {quotaItems,orderedQuotaItems,defaultQuotaSelection}=await load("/src/multiClient/integratedClientModel.ts");
-  const rows=quotaItems(undefined,fixture.readings);
+  const now=Date.parse("2026-11-12T00:00:00Z");
+  const readings=fixture.readings.map(reading=>({...reading,capturedAt:new Date(now).toISOString()}));
+  const rows=quotaItems(undefined,readings,false,now);
   const ag=orderedQuotaItems(rows,defaultQuotaSelection,["antigravity"]);
   assert.deepEqual(ag.map(r=>[r.id,r.remaining]),[["antigravity:gemini-4-argon",70],["antigravity:claude-opus-5-5",0]]);
   const desktop=orderedQuotaItems(rows,defaultQuotaSelection,["claudeDesktop"]);
   assert.deepEqual(desktop.map(r=>r.remaining),[70,10]);
-  assert.ok(desktop.every(r=>r.resetsAt===fixture.readings[1].windows[0].resetsAt));
+  assert.ok(desktop.every(r=>r.resetsAt===readings[1].windows[0].resetsAt));
   const hidden={...defaultQuotaSelection,hidden:[ag[0].id]};
   assert.deepEqual(orderedQuotaItems(rows,hidden,["antigravity"]).map(r=>r.id),[ag[1].id]);
   const {ClientQuotaDetailRings}=await load("/src/multiClient/ClientQuotaViews.tsx");
@@ -46,16 +48,21 @@ test("Desktop HTTP source preserves reset times and labels itself without implyi
 }));
 
 test("Desktop, CLI API and detected Antigravity retain separate visible states without borrowing balances",async()=>withSsrModules(async load=>{
-  const {quotaItems,compactQuotaValue}=await load('/src/multiClient/integratedClientModel.ts');
+  const {quotaItems,compactQuotaValue,orderedQuotaItems,defaultQuotaSelection}=await load('/src/multiClient/integratedClientModel.ts');
   const {claudeQuotaFromLocalCache,unavailableQuota,quotaReadingIsPresent}=await load('/src/multiClient/multiClientProduct.ts');
   const {ClientQuotaDetailRings,PairedQuotaRing}=await load('/src/multiClient/ClientQuotaViews.tsx');
   const {ClientQuotaPanel}=await load('/src/multiClient/MultiClientUsage.tsx');
-  const desktop=claudeQuotaFromLocalCache({state:'available',fiveHour:{usedPercent:13,resetsAt:null}},'claudeDesktop');
+  const now=Date.parse('2026-11-12T00:00:00Z');
+  const desktop=claudeQuotaFromLocalCache({state:'available',capturedAt:new Date(now).toISOString(),fiveHour:{usedPercent:13,resetsAt:null}},'claudeDesktop');
   const cli=claudeQuotaFromLocalCache({state:'api'}),ag=unavailableQuota('antigravity');
-  const items=quotaItems(undefined,[desktop,cli,ag]).filter(item=>item.client!=='codex');
+  const items=quotaItems(undefined,[desktop,cli,ag],false,now).filter(item=>item.client!=='codex');
   assert.deepEqual(items.map(item=>[item.id,item.remaining,compactQuotaValue(item)]),[
     ['claudeDesktop:5h',87,'87'],['claudeCode:api',null,'API'],['antigravity:status',null,'待'],
   ]);
+  const allowed=['claudeDesktop','claudeCode','antigravity'];
+  assert.deepEqual(orderedQuotaItems(items,defaultQuotaSelection,allowed).map(item=>item.id),['claudeDesktop:5h']);
+  const explicitlyEnabledApi={...defaultQuotaSelection,enabled:[...defaultQuotaSelection.enabled,'claudeCode:api']};
+  assert.deepEqual(orderedQuotaItems(items,explicitlyEnabledApi,allowed).map(item=>item.id),['claudeDesktop:5h','claudeCode:api']);
   assert.equal(quotaReadingIsPresent(cli),true);
   assert.equal(quotaReadingIsPresent(ag),false);
   assert.equal(quotaReadingIsPresent(ag,true),true);
@@ -68,7 +75,8 @@ test("Desktop, CLI API and detected Antigravity retain separate visible states w
   assert.match(missing,/>待</);assert.match(missing,/aria-label="[^"]*额度未接入/);
   const api=renderToStaticMarkup(React.createElement(ClientQuotaPanel,{reading:cli}));
   assert.match(api,/API 接入/);assert.doesNotMatch(api,/额度不可用/);
-  const stale=claudeQuotaFromLocalCache({state:'stale',capturedAt:'2026-11-04T00:00:00Z'});
-  const cached=quotaItems(undefined,[stale]).find(item=>item.client==='claudeCode');
+  const staleNow=Date.parse('2026-11-04T00:00:00Z');
+  const stale=claudeQuotaFromLocalCache({state:'stale',capturedAt:new Date(staleNow).toISOString()});
+  const cached=quotaItems(undefined,[stale],false,staleNow).find(item=>item.client==='claudeCode');
   assert.equal(compactQuotaValue(cached),'旧');assert.equal(cached.remaining,null);
 }));

@@ -16,6 +16,13 @@ export interface ClientQuotaProvider { readonly allowsNetwork: false; reading():
 const quotaStates:Record<string,{label:string;compact:string}>=quotaPresentation.states;
 export const clientQuotaStatusText=(state:string)=>quotaStates[state]?.label??"额度不可用";
 export const clientQuotaCompactStatus=(state?:string)=>state?quotaStates[state]?.compact??"—":"—";
+export const quotaPercentNumber=(value:number)=>Number.isFinite(value)?value.toFixed(2).replace(/\.?0+$/, ""):"—";
+export function quotaAutomaticallyVisible(reading:ClientQuotaReading,now=Date.now()):boolean {
+  if(reading.source==="unsupported" || !["claudeCode","claudeDesktop","antigravity"].includes(reading.client)
+    || !["available","stale","cached"].includes(reading.state) || !reading.capturedAt) return false;
+  const captured=Date.parse(reading.capturedAt);
+  return Number.isFinite(captured) && captured<=now+60_000 && now-captured<=3*24*60*60*1000;
+}
 export function quotaReadingIsPresent(reading:ClientQuotaReading,detected=false):boolean {
   return reading.source!=="unsupported"&&(detected||reading.state==="api"||reading.windows.length>0||Boolean(reading.capturedAt));
 }

@@ -1,0 +1,1820 @@
+{
+  "cases": [
+    {
+      "name": "valid_future_resets_keep_independent_models",
+      "now": 1800000000,
+      "data": {
+        "userStatus": {
+          "cascadeModelConfigData": {
+            "clientModelConfigs": [
+              {
+                "label": "Gemini Synthetic",
+                "modelOrAlias": {
+                  "model": "gemini-synthetic"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.75,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Claude Synthetic",
+                "modelOrAlias": {
+                  "model": "claude-synthetic"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.4,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "expectedState": "available",
+      "used": [
+        25,
+        60
+      ],
+      "ids": [
+        "gemini-synthetic",
+        "claude-synthetic"
+      ]
+    },
+    {
+      "name": "missing_fraction_skips_only_that_model",
+      "now": 1800000000,
+      "data": {
+        "userStatus": {
+          "cascadeModelConfigData": {
+            "clientModelConfigs": [
+              {
+                "label": "Gemini Missing Fraction",
+                "modelOrAlias": {
+                  "model": "gemini-missing"
+                },
+                "quotaInfo": {
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Claude Valid Fraction",
+                "modelOrAlias": {
+                  "model": "claude-valid"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "expectedState": "available",
+      "used": [
+        50
+      ],
+      "ids": [
+        "claude-valid"
+      ]
+    },
+    {
+      "name": "fraction_zero_and_one_are_valid_boundaries",
+      "now": 1800000000,
+      "data": {
+        "userStatus": {
+          "cascadeModelConfigData": {
+            "clientModelConfigs": [
+              {
+                "label": "Gemini Empty",
+                "modelOrAlias": {
+                  "model": "gemini-zero"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Claude Full",
+                "modelOrAlias": {
+                  "model": "claude-one"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 1,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "expectedState": "available",
+      "used": [
+        100,
+        0
+      ],
+      "ids": [
+        "gemini-zero",
+        "claude-one"
+      ]
+    },
+    {
+      "name": "integer_id_and_label_fallback",
+      "now": 1800000000,
+      "data": {
+        "userStatus": {
+          "cascadeModelConfigData": {
+            "clientModelConfigs": [
+              {
+                "label": "Gemini Fallback ID",
+                "modelOrAlias": {},
+                "quotaInfo": {
+                  "remainingFraction": 0.9,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Claude Integer ID",
+                "modelOrAlias": {
+                  "model": 42
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.6,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Long ID Fallback",
+                "modelOrAlias": {
+                  "model": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.4,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "expectedState": "available",
+      "used": [
+        10,
+        40,
+        60
+      ],
+      "ids": [
+        "Gemini Fallback ID",
+        "42",
+        "Gemini Long ID Fallback"
+      ]
+    },
+    {
+      "name": "duplicate_id_keeps_first_model",
+      "now": 1800000000,
+      "data": {
+        "userStatus": {
+          "cascadeModelConfigData": {
+            "clientModelConfigs": [
+              {
+                "label": "Gemini First",
+                "modelOrAlias": {
+                  "model": "gemini-duplicate"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.8,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Later",
+                "modelOrAlias": {
+                  "model": "gemini-duplicate"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.2,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "expectedState": "available",
+      "used": [
+        20
+      ],
+      "ids": [
+        "gemini-duplicate"
+      ]
+    },
+    {
+      "name": "invalid_labels_and_numbers_skip_items",
+      "now": 1800000000,
+      "data": {
+        "userStatus": {
+          "cascadeModelConfigData": {
+            "clientModelConfigs": [
+              {
+                "label": "",
+                "modelOrAlias": {
+                  "model": "gemini-empty-label"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini\u0001Control",
+                "modelOrAlias": {
+                  "model": "gemini-control-label"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Claude Bool",
+                "modelOrAlias": {
+                  "model": "claude-bool"
+                },
+                "quotaInfo": {
+                  "remainingFraction": true,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Below Range",
+                "modelOrAlias": {
+                  "model": "gemini-below"
+                },
+                "quotaInfo": {
+                  "remainingFraction": -0.01,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Claude Above Range",
+                "modelOrAlias": {
+                  "model": "claude-above"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 1.01,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Valid Fallback",
+                "modelOrAlias": {
+                  "model": false
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.7,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG",
+                "modelOrAlias": {
+                  "model": "gemini-long-label"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "expectedState": "available",
+      "used": [
+        30
+      ],
+      "ids": [
+        "Gemini Valid Fallback"
+      ]
+    },
+    {
+      "name": "all_invalid_numbers_make_unavailable",
+      "now": 1800000000,
+      "data": {
+        "userStatus": {
+          "cascadeModelConfigData": {
+            "clientModelConfigs": [
+              {
+                "label": "Gemini Bool",
+                "modelOrAlias": {
+                  "model": "gemini-bool"
+                },
+                "quotaInfo": {
+                  "remainingFraction": false,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Claude Missing",
+                "modelOrAlias": {
+                  "model": "claude-missing"
+                },
+                "quotaInfo": {
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Out Of Range",
+                "modelOrAlias": {
+                  "model": "gemini-range"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 1.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "expectedState": "unavailable",
+      "used": [],
+      "ids": []
+    },
+    {
+      "name": "missing_reset_keeps_window_but_marks_stale",
+      "now": 1800000000,
+      "data": {
+        "userStatus": {
+          "cascadeModelConfigData": {
+            "clientModelConfigs": [
+              {
+                "label": "Gemini No Reset",
+                "modelOrAlias": {
+                  "model": "gemini-no-reset"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.65
+                }
+              }
+            ]
+          }
+        }
+      },
+      "expectedState": "stale",
+      "used": [
+        35
+      ],
+      "ids": [
+        "gemini-no-reset"
+      ]
+    },
+    {
+      "name": "expired_reset_keeps_window_but_marks_stale",
+      "now": 1800000000,
+      "data": {
+        "userStatus": {
+          "cascadeModelConfigData": {
+            "clientModelConfigs": [
+              {
+                "label": "Claude Expired Reset",
+                "modelOrAlias": {
+                  "model": "claude-expired"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.3,
+                  "resetTime": "2027-01-14T00:00:00Z"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "expectedState": "stale",
+      "used": [
+        70
+      ],
+      "ids": [
+        "claude-expired"
+      ]
+    },
+    {
+      "name": "invalid_reset_keeps_window_but_marks_stale",
+      "now": 1800000000,
+      "data": {
+        "userStatus": {
+          "cascadeModelConfigData": {
+            "clientModelConfigs": [
+              {
+                "label": "Gemini Invalid Reset",
+                "modelOrAlias": {
+                  "model": "gemini-invalid-reset"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.55,
+                  "resetTime": "not-a-date"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "expectedState": "stale",
+      "used": [
+        45
+      ],
+      "ids": [
+        "gemini-invalid-reset"
+      ]
+    },
+    {
+      "name": "empty_model_array_is_unavailable",
+      "now": 1800000000,
+      "data": {
+        "userStatus": {
+          "cascadeModelConfigData": {
+            "clientModelConfigs": []
+          }
+        }
+      },
+      "expectedState": "unavailable",
+      "used": [],
+      "ids": []
+    },
+    {
+      "name": "wrong_top_level_schema_is_unavailable",
+      "now": 1800000000,
+      "data": {
+        "unexpected": {
+          "clientModelConfigs": []
+        }
+      },
+      "expectedState": "unavailable",
+      "used": [],
+      "ids": []
+    },
+    {
+      "name": "wrong_model_array_schema_is_unavailable",
+      "now": 1800000000,
+      "data": {
+        "userStatus": {
+          "cascadeModelConfigData": {
+            "clientModelConfigs": {
+              "label": "not-an-array"
+            }
+          }
+        }
+      },
+      "expectedState": "unavailable",
+      "used": [],
+      "ids": []
+    },
+    {
+      "name": "identity_fields_are_not_projected",
+      "now": 1800000000,
+      "data": {
+        "userStatus": {
+          "cascadeModelConfigData": {
+            "clientModelConfigs": [
+              {
+                "label": "Gemini Identity Guard",
+                "modelOrAlias": {
+                  "model": "gemini-identity-guard"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.8,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              }
+            ]
+          },
+          "name": "Synthetic User",
+          "email": "quota-fixture@example.invalid",
+          "userTier": {
+            "name": "Synthetic Tier"
+          },
+          "planStatus": {
+            "planInfo": {
+              "planName": "Synthetic Plan"
+            },
+            "availablePromptCredits": 999
+          }
+        }
+      },
+      "expectedState": "available",
+      "used": [
+        20
+      ],
+      "ids": [
+        "gemini-identity-guard"
+      ]
+    },
+    {
+      "name": "more_than_128_configs_is_unavailable",
+      "now": 1800000000,
+      "data": {
+        "userStatus": {
+          "cascadeModelConfigData": {
+            "clientModelConfigs": [
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              },
+              {
+                "label": "Gemini Overflow",
+                "modelOrAlias": {
+                  "model": "gemini-overflow"
+                },
+                "quotaInfo": {
+                  "remainingFraction": 0.5,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "expectedState": "unavailable",
+      "used": [],
+      "ids": []
+    }
+  ]
+}

@@ -40,6 +40,7 @@ struct ClientQuotaItem: Identifiable, Equatable {
     let status: String
     var expected: Double? = nil
     var state: String? = nil
+    var automaticallyVisible = true
     var brand: String { ClientBrand.hex(client) }
     var fill: String { window == "5h" ? "#B6EF75" : window == "7d" ? "#B4ACFF" : "#78B7FF" }
     var shortClientTitle: String { ClientDisplayScope.title(client) }
@@ -52,8 +53,8 @@ struct ClientQuotaItem: Identifiable, Equatable {
         default: window
         }
     }
-    var compactValue: String { remaining.map { String(format: "%.0f", $0) } ?? ClientQuotaPresentation.compact(state) }
-    var value: String { remaining.map { String(format: "%.0f%%", $0) } ?? "—" }
+    var compactValue: String { remaining.map(ClientQuotaPresentation.percentNumber) ?? ClientQuotaPresentation.compact(state) }
+    var value: String { remaining.map { ClientQuotaPresentation.percentNumber($0) + "%" } ?? "—" }
     var accessibleValue: String { remaining == nil && !status.isEmpty ? status : value }
     var title: String { ClientDisplayScope.title(client) + " · " + window }
 }
@@ -67,7 +68,7 @@ struct ClientQuotaSelection: Codable, Equatable {
     var colors: [String: String] = [:]
     var pairAcrossClients = false
     func includes(_ item: ClientQuotaItem) -> Bool {
-        !hidden.contains(item.id)
+        !hidden.contains(item.id) && (item.automaticallyVisible || enabled.contains(item.id))
     }
     func arranged(_ items: [ClientQuotaItem]) -> [ClientQuotaItem] {
         items.sorted {
@@ -83,7 +84,7 @@ struct ClientQuotaSelection: Codable, Equatable {
 }
 
 enum ClientQuotaProjection {
-    static func items(codex: AccountQuotaSnapshot, localReadings: [ClientQuotaReading], includeFiveHour: Bool = false, preview: Bool = false) -> [ClientQuotaItem] {
+    static func items(codex: AccountQuotaSnapshot, localReadings: [ClientQuotaReading], includeFiveHour: Bool = false, preview: Bool = false, now: Date = Date()) -> [ClientQuotaItem] {
         // Explicit display-only fixture. Callers gate this to the isolated DEBUG preview;
         // never put simulated observations into AccountQuotaStore or quota history.
         if preview { return previewItems(includeClaude: localReadings.contains { $0.client.hasPrefix("claude") }) }
@@ -92,7 +93,7 @@ enum ClientQuotaProjection {
             let data = QuotaSidebarQuotaPresentation.make(window: window, snapshot: codex)
             items.append(ClientQuotaItem(id: "codex:" + id, client: "codex", window: label,
                 remaining: data.remaining.map(Double.init), resetsAt: window?.resetsAt,
-                source: "Codex 现有额度观测", status: data.stale ? "旧数据" : window == nil ? "不可用" : "", expected: data.stale ? nil : window?.expectedRemainingPercentByEvenPace.map { Double($0) / 100 }))
+                source: "Codex 现有额度观测", status: data.stale ? "旧数据" : window == nil ? "不可用" : "", expected: data.stale ? nil : window?.expectedRemainingPercentByEvenPace.map { Double($0) / 100 }, automaticallyVisible: window != nil))
         }
         if codex.connectionMode == .api {
             items.append(ClientQuotaItem(id: "codex:api", client: "codex", window: "API", remaining: nil,
@@ -107,21 +108,22 @@ enum ClientQuotaProjection {
         }
         for reading in localReadings {
             guard UsageClient(rawValue: reading.client) != nil, reading.source != "unsupported" else { continue }
+            let automaticallyVisible = ClientQuotaPresentation.shouldAutomaticallyShow(reading, now: now)
             if reading.state == "api" {
                 items.append(ClientQuotaItem(id: reading.client + ":api", client: reading.client, window: "API", remaining: nil,
-                    resetsAt: nil, source: reading.notice, status: "订阅额度不适用", state: "api"))
+                    resetsAt: nil, source: reading.notice, status: "订阅额度不适用", state: "api", automaticallyVisible: false))
                 continue
             }
-            let sampled = reading.capturedAt.map { " · 采样于 " + $0.formatted(date: .abbreviated, time: .shortened) } ?? ""
+            let sampled = reading.capturedAt.map { (reading.source == AntigravityLocalRPCQuota.source ? " · 读取于 " : " · 采样于 ") + $0.formatted(date: .abbreviated, time: .shortened) } ?? ""
             if ["stale", "cached"].contains(reading.state) {
                 items.append(ClientQuotaItem(id: reading.client + ":cache", client: reading.client, window: "本地缓存", remaining: nil,
                     resetsAt: nil, source: reading.notice + sampled,
-                    status: ClientQuotaPresentation.status(reading.state), state: reading.state))
+                    status: ClientQuotaPresentation.status(reading.state), state: reading.state, automaticallyVisible: automaticallyVisible))
                 continue
             }
             guard reading.state == "available" else {
                 items.append(ClientQuotaItem(id: reading.client + ":status", client: reading.client, window: "本地额度", remaining: nil,
-                    resetsAt: nil, source: reading.notice + sampled, status: ClientQuotaPresentation.status(reading.state), state: reading.state))
+                    resetsAt: nil, source: reading.notice + sampled, status: ClientQuotaPresentation.status(reading.state), state: reading.state, automaticallyVisible: automaticallyVisible))
                 continue
             }
             let previousCount = items.count
@@ -133,11 +135,11 @@ enum ClientQuotaProjection {
                 guard used.isFinite, (0...100).contains(used) else { continue }
                 items.append(ClientQuotaItem(id: reading.client + ":" + id, client: reading.client, window: window.label,
                     remaining: 100 - used, resetsAt: window.resetsAt,
-                    source: reading.notice + sampled, status: ""))
+                    source: reading.notice + sampled, status: "", automaticallyVisible: automaticallyVisible))
             }
             if items.count == previousCount {
                 items.append(ClientQuotaItem(id: reading.client + ":status", client: reading.client, window: "本地额度", remaining: nil,
-                    resetsAt: nil, source: reading.notice + sampled, status: ClientQuotaPresentation.status("unavailable"), state: "unavailable"))
+                    resetsAt: nil, source: reading.notice + sampled, status: ClientQuotaPresentation.status("unavailable"), state: "unavailable", automaticallyVisible: false))
             }
         }
         return items

@@ -28,4 +28,8 @@
 
 新增 Swift 可控时钟/计时器回归、Rust 六档间隔和手动读取回归，以及实际 React 订阅回归，检查设置变更、30 秒不被旧限频吞掉、10 分钟不被用量扫描缩短、手动读取、晚到结果及订阅清理。保留原有默认 60 秒回归和用量读取失败时的额度独立回退。
 
-本机仅做 Swift/Rust/JS 语法检查与 diff 检查，完整运行交云端。此部分未打包、未安装；不将源码接线写成 build 1013 的已安装行为。后续云端结果待追加。
+本机仅做 Swift/Rust/JS 语法检查与 diff 检查，完整运行交云端。此部分未打包、未安装；不将源码接线写成 build 1013 的已安装行为。
+
+刷新接线最终受检源码 `666aea154fe03dba5de1d54af85550d37222f6fa` 的 [完整 CI 43057619879](https://github.com/hututuo/codex-token-bar/actions/runs/43057619879) 全部通过，最终 evidence seal 也通过。Swift XCTest 2,466 通过、38 个既有跳过，Swift Testing 676 通过；Rust macOS 1,840 / Windows 1,783 通过，各 14 个既有 ignored；前端 1,478、云端脚本 18 通过；发布脚本 112 通过、1 个既有平台跳过。新增 cadence 回归均在实际执行日志中通过。下载的 artifact digest、native 报告源码、前后 tracked 源码未变、无额外 untracked 输入及日志 SHA256 已核对。本机证据 `cadence/ci/`。
+
+2026-11-12 用户随后允许参考开源工具使用 Antigravity 本机 RPC，并进一步提出三天缓存自动显示与小数显示；这些后续改动不属于上述 `666aea15` 门禁范围，见 [后续读取与兼容性记录](2026-11-12-antigravity-local-rpc-and-quota-visibility.md)。

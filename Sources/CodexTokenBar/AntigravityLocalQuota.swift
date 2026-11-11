@@ -2,7 +2,7 @@ import CoreFoundation
 import Foundation
 import SQLite3
 
-/// Offline observations only. Never runs Antigravity/Tools, reads a keychain, or calls a server.
+/// Active Hub uses its authorized loopback RPC; otherwise retain the offline cache path.
 enum AntigravityLocalQuota {
     static let maximumBytes = 512 * 1_024
     static let statusKey = "antigravityUnifiedStateSync.userStatus"
@@ -14,6 +14,8 @@ enum AntigravityLocalQuota {
     }
 
     static func read(home: URL = FileManager.default.homeDirectoryForCurrentUser, now: Date = Date()) -> ClientQuotaReading {
+        if home.standardizedFileURL == FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL,
+           let live = AntigravityLocalRPCQuota.read(home: home, now: now) { return live }
         // Tools has an explicit selected-account pointer and a quota capture time. Do not scan
         // every account or recover old .bak files after the selected record becomes invalid.
         let tools = home.appendingPathComponent(".antigravity_tools")

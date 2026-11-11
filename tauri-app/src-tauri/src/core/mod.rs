@@ -17,6 +17,7 @@ pub mod multi_client_product;
 pub mod local_quota_cache;
 pub mod claude_desktop_http_cache;
 pub mod antigravity_local_quota;
+pub(crate) mod antigravity_local_rpc;
 #[cfg(test)]
 mod offline_quota_cache_tests;
 pub mod multi_client_usage;

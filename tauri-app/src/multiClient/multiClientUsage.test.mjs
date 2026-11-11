@@ -33,7 +33,9 @@ test("Claude quota panel remains unavailable without a captured local provider w
     const { ClaudeLocalQuotaPanel, MultiClientUsageSettings } = await load("/src/multiClient/MultiClientUsage.tsx");
     assert.match(renderToStaticMarkup(React.createElement(ClaudeLocalQuotaPanel)), /额度未接入/);
     const settings = renderToStaticMarkup(React.createElement(MultiClientUsageSettings));
-    assert.match(settings, /不使用登录凭据、不联网/); assert.doesNotMatch(settings, /api\.anthropic\.com/);
+    assert.match(settings, /Claude 读取已有本地缓存/);
+    assert.match(settings, /Antigravity 优先查询已运行且受支持的本机语言服务，不强制刷新、不直接访问 Google；客户端可能自行联网/);
+    assert.doesNotMatch(settings, /api\.anthropic\.com/);
   });
 });
 

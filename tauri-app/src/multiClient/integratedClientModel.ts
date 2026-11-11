@@ -2,7 +2,7 @@ import type { ActivityDay } from "../types/usage";
 import type { ClientTrendBucket } from "./multiClientProduct";
 import { quotaWindowShortLabel } from "../utils/quota";
 import type { ClientQuotaReading } from "./multiClientProduct";
-import {clientQuotaCompactStatus,clientQuotaStatusText} from "./multiClientProduct";
+import {clientQuotaCompactStatus,clientQuotaStatusText,quotaPercentNumber,quotaAutomaticallyVisible} from "./multiClientProduct";
 import type { QuotaSnapshot } from "../types/quota";
 export const clientBrand: Record<string, string> = {
   codex: "#3941FF",
@@ -43,12 +43,14 @@ export interface QuotaItem {
   source: string;
   status: string;
   state?: string;
+  automaticallyVisible?: boolean;
 }
-export const compactQuotaValue=(item:QuotaItem)=>item.remaining===null?clientQuotaCompactStatus(item.state):String(Math.round(item.remaining));
+export const compactQuotaValue=(item:QuotaItem)=>item.remaining===null?clientQuotaCompactStatus(item.state):quotaPercentNumber(item.remaining);
 export function quotaItems(
   codex: QuotaSnapshot | undefined,
   localReadings: ClientQuotaReading[],
   includeFive = false,
+  now = Date.now(),
 ): QuotaItem[] {
   const items: QuotaItem[] = [];
   function add(
@@ -74,6 +76,7 @@ export function quotaItems(
           : null,
       source: "Codex 现有额度观测",
       status: remaining === null ? "不可用" : "",
+      automaticallyVisible: remaining !== null,
     });
   }
   if (codex?.connectionMode === "api") {
@@ -97,19 +100,20 @@ export function quotaItems(
    if (!reading || reading.source === "unsupported") continue;
    const client=reading.client ?? "claudeCode";
    if(client==="codex" || !Object.hasOwn(clientBrand,client)) continue;
+   const automaticallyVisible=quotaAutomaticallyVisible({...reading,client},now);
    if(reading.state === "api") {
-     items.push({id:client+":api",client,window:"API",remaining:null,resetsAt:null,source:reading.notice??"API 接入",status:"订阅额度不适用",state:"api"});
+     items.push({id:client+":api",client,window:"API",remaining:null,resetsAt:null,source:reading.notice??"API 接入",status:"订阅额度不适用",state:"api",automaticallyVisible:false});
      continue;
    }
-   const sampled=reading.capturedAt && Number.isFinite(Date.parse(reading.capturedAt))?` · 采样于 ${new Date(reading.capturedAt).toLocaleString()}`:"";
+   const sampled=reading.capturedAt && Number.isFinite(Date.parse(reading.capturedAt))?` · ${reading.source==="local-antigravity-rpc"?"读取于":"采样于"} ${new Date(reading.capturedAt).toLocaleString()}`:"";
    if(reading.state === "stale" || reading.state === "cached") {
      items.push({id:client+":cache",client,window:"本地缓存",remaining:null,resetsAt:null,
-       source:(reading.notice??"")+sampled,status:clientQuotaStatusText(reading.state),state:reading.state});
+       source:(reading.notice??"")+sampled,status:clientQuotaStatusText(reading.state),state:reading.state,automaticallyVisible});
      continue;
    }
    if(reading.state !== "available") {
      items.push({id:client+":status",client,window:"本地额度",remaining:null,resetsAt:null,
-       source:(reading.notice??"")+sampled,status:clientQuotaStatusText(reading.state),state:reading.state});
+       source:(reading.notice??"")+sampled,status:clientQuotaStatusText(reading.state),state:reading.state,automaticallyVisible});
      continue;
    }
     const previousCount=items.length;
@@ -127,10 +131,11 @@ export function quotaItems(
         resetsAt: w?.resetsAt ?? null,
         source: (reading.notice??"")+sampled,
         status: "",
+        automaticallyVisible,
       });
     });
     if(items.length===previousCount)items.push({id:client+":status",client,window:"本地额度",remaining:null,resetsAt:null,
-      source:(reading.notice??"")+sampled,status:clientQuotaStatusText("unavailable"),state:"unavailable"});
+      source:(reading.notice??"")+sampled,status:clientQuotaStatusText("unavailable"),state:"unavailable",automaticallyVisible:false});
   }
   return items;
 }
@@ -187,7 +192,7 @@ export function orderedQuotaItems(
       (i) =>
         all ||
         (allowed.includes(i.client) &&
-          !s.hidden.includes(i.id)),
+          !s.hidden.includes(i.id) && (i.automaticallyVisible!==false || s.enabled.includes(i.id))),
     )
     .sort((a, b) => {
       const rank = (i: QuotaItem) => {

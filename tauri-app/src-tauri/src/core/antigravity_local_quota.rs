@@ -1,4 +1,4 @@
-//! Existing IDE/Tools cache only. No RPC, credential use, refresh command, or source writes.
+//! Active macOS Hub uses authorized loopback RPC; otherwise retain IDE/Tools cache reads.
 use super::{
     app_paths,
     local_quota_cache::read_file,
@@ -43,6 +43,10 @@ pub fn read_cached(interval: Duration) -> QuotaProviderSnapshot {
     }
     let home = app_paths::home_dir();
     let now = OffsetDateTime::now_utc().unix_timestamp() as f64;
+    if let Some(value) = super::antigravity_local_rpc::read(&home, now) {
+        *cache = Some((Instant::now(), value.clone()));
+        return value;
+    }
     let tools = home.join(".antigravity_tools");
     let value = if tools.join("accounts.json").exists() {
         read_tools(&tools, now)

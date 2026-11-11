@@ -152,14 +152,14 @@ struct ClientQuotaReadingView: View {
         VStack(alignment: compact ? .center : .leading, spacing: 3) {
             if reading.state == "available" {
                 ForEach(reading.windows, id: \.label) { window in
-                    Text("\(window.label) 剩余 \(Int((100 - window.usedPercent).rounded()))%").font(compact ? .system(size: 9) : .callout)
+                    Text("\(window.label) 剩余 \(ClientQuotaPresentation.percentNumber(100 - window.usedPercent))%").font(compact ? .system(size: 9) : .callout)
                 }
             } else {
                 Text(ClientQuotaPresentation.status(reading.state)).font(compact ? .system(size: 9) : .callout)
                 if !compact && ["stale", "cached"].contains(reading.state) && !reading.windows.isEmpty {
                     DisclosureGroup("查看历史缓存（非当前余额）") {
                         ForEach(reading.windows, id: \.label) { window in
-                            Text("\(window.label) · 上次剩余 \(Int((100 - window.usedPercent).rounded()))%")
+                            Text("\(window.label) · 上次剩余 \(ClientQuotaPresentation.percentNumber(100 - window.usedPercent))%")
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                     }
@@ -167,7 +167,7 @@ struct ClientQuotaReadingView: View {
             }
             if !compact {
                 if let captured = reading.capturedAt {
-                    Text("采样于 \(captured.formatted(date: .abbreviated, time: .shortened))").font(.caption).foregroundStyle(.secondary)
+                    Text("\(reading.source == AntigravityLocalRPCQuota.source ? "读取于" : "采样于") \(captured.formatted(date: .abbreviated, time: .shortened))").font(.caption).foregroundStyle(.secondary)
                 }
                 Text(reading.notice).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
             }

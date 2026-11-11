@@ -6,9 +6,11 @@ import { withSsrModules } from "../test/ssrHarness.mjs";
 test("Desktop quota keeps separate client windows and never substitutes CLI in Desktop scope", async()=>
  withSsrModules(async load=>{
   const {quotaItems,orderedQuotaItems,defaultQuotaSelection}=await load("/src/multiClient/integratedClientModel.ts");
-  const cli={client:"claudeCode",state:"available",windows:[{label:"5h",usedPercent:25,resetsAt:null}]};
-  const desktop={client:"claudeDesktop",state:"available",capturedAt:"2026-11-04T02:14:00Z",windows:[{label:"5h",usedPercent:13,resetsAt:null},{label:"7d",usedPercent:29,resetsAt:null}]};
-  const rows=quotaItems(undefined,[cli,desktop]);
+  const now=Date.parse("2026-11-04T02:14:00Z");
+  const capturedAt=new Date(now).toISOString();
+  const cli={client:"claudeCode",state:"available",capturedAt,windows:[{label:"5h",usedPercent:25,resetsAt:null}]};
+  const desktop={client:"claudeDesktop",state:"available",capturedAt,windows:[{label:"5h",usedPercent:13,resetsAt:null},{label:"7d",usedPercent:29,resetsAt:null}]};
+  const rows=quotaItems(undefined,[cli,desktop],false,now);
   const visible=orderedQuotaItems(rows,defaultQuotaSelection,["claudeDesktop"]);
   assert.deepEqual(visible.map(r=>r.id),["claudeDesktop:5h","claudeDesktop:7d"]);
   assert.deepEqual(visible.map(r=>r.remaining),[87,71]);assert.ok(visible.every(r=>r.resetsAt===null && r.source.includes("采样于")));
@@ -50,6 +52,11 @@ test("quota adapters convert Codex fractions once, preserve Claude percent and u
     };
     assert.deepEqual(
       orderedQuotaItems(items, selected, ["claudeCode"]).map((i) => i.id),
+      [],
+    );
+    const explicitlyEnabledStatus = { ...selected, enabled: [...selected.enabled, "claudeCode:status"] };
+    assert.deepEqual(
+      orderedQuotaItems(items, explicitlyEnabledStatus, ["claudeCode"]).map((i) => i.id),
       ["claudeCode:status"],
     );
     assert.deepEqual(
@@ -59,11 +66,13 @@ test("quota adapters convert Codex fractions once, preserve Claude percent and u
   }));
 test("Claude quota only shows measured usable windows, including zero remaining", async () =>
   withSsrModules(async (load) => {
-    const { quotaItems } = await load("/src/multiClient/integratedClientModel.ts");
+    const { quotaItems, defaultQuotaSelection, orderedQuotaItems } = await load("/src/multiClient/integratedClientModel.ts");
+    const now=Date.parse("2026-11-04T02:14:00Z");
     for (const state of ["missing", "notConnected", "stale", "invalid", "unavailable"])
       assert.ok(quotaItems(undefined, [{state, windows:[{label:"5h", usedPercent:20}]}]).filter(i => i.client === "claudeCode").every(i=>i.remaining===null));
-    const items=quotaItems(undefined, [{state:"available", windows:[{label:"5h",usedPercent:100}]}]);
+    const items=quotaItems(undefined, [{state:"available",capturedAt:new Date(now).toISOString(),windows:[{label:"5h",usedPercent:100}]}],false,now);
     assert.deepEqual(items.filter(i=>i.client === "claudeCode").map(i=>[i.id,i.remaining]), [["claudeCode:5h",0]]);
+    assert.deepEqual(orderedQuotaItems(items,defaultQuotaSelection,["claudeCode"]).map(i=>i.id),["claudeCode:5h"]);
     const invalid=quotaItems(undefined, [{state:"available",windows:[{label:"5h",usedPercent:NaN},{label:"7d",usedPercent:0}]}]);
     assert.deepEqual(invalid.filter(i=>i.client === "claudeCode").map(i=>i.remaining), [100]);
   }));

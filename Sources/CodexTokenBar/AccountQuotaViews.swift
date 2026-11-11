@@ -156,6 +156,7 @@ struct AccountQuotaStrip: View {
     @Binding var showingResetCreditDetails: Bool
     var clientItems: [ClientQuotaItem]? = nil
     var clientPlanLabels: [String: String] = [:]
+    @AppStorage(ClientQuotaSelection.key) private var clientQuotaSelectionRaw = ""
 
     private var presentation: AccountQuotaStripPresentation {
         AccountQuotaStripPresentation(snapshot: snapshot)
@@ -168,7 +169,7 @@ struct AccountQuotaStrip: View {
     var body: some View {
         VStack(alignment: .leading, spacing: clientItems == nil ? 5 : 10) {
             if let clientItems {
-                clientRows(clientItems)
+                clientRows(clientItems.filter(ClientQuotaSelection.decode(clientQuotaSelectionRaw).includes))
             } else if snapshot.connectionMode == .api {
                 HStack(spacing: 12) {
                     clientLabel("codex", subtitle: "API 接入")
@@ -282,7 +283,8 @@ struct AccountQuotaStrip: View {
                                 accent: AppTheme.quotaRemainingColor(percent: item.remaining ?? 0),
                                 isStale: item.status.contains("旧") || (client == "codex" && snapshot.staleDataDisplayed),
                                 unavailable: item.remaining == nil,
-                                unavailableText: item.status.isEmpty ? "不可用" : item.status)
+                                unavailableText: item.status.isEmpty ? "不可用" : item.status,
+                                remainingPercentOverride: item.remaining)
                                 .help([item.source, item.status].filter { !$0.isEmpty }.joined(separator: " · "))
                         }
                     }
@@ -309,7 +311,7 @@ struct AccountQuotaStrip: View {
     }
 
     private var helpText: String {
-        if let clientItems { return clientItems.map { $0.title + " " + ($0.remaining == nil ? $0.status : $0.value) }.joined(separator: "；") }
+        if let clientItems { return clientItems.filter(ClientQuotaSelection.decode(clientQuotaSelectionRaw).includes).map { $0.title + " " + ($0.remaining == nil ? $0.status : $0.value) }.joined(separator: "；") }
         guard snapshot.isAvailable else { return snapshot.status }
         return [snapshot.fiveHour, snapshot.sevenDay].compactMap { window -> String? in
             guard let window else { return nil }
@@ -731,13 +733,14 @@ struct AccountQuotaSegment: View {
     var isStale = false
     var unavailable = false
     var unavailableText = "未接入"
+    var remainingPercentOverride: Double? = nil
 
     private var presentation: AccountQuotaSegmentPresentation {
-        AccountQuotaSegmentPresentation(window: window)
+        AccountQuotaSegmentPresentation(window: window, remainingPercent: remainingPercentOverride)
     }
 
     private var remainingFraction: CGFloat {
-        unavailable ? 0 : CGFloat(Double(window.remainingPercent) / 100.0)
+        unavailable ? 0 : CGFloat((remainingPercentOverride ?? Double(window.remainingPercent)) / 100.0)
     }
 
     var body: some View {
@@ -745,7 +748,7 @@ struct AccountQuotaSegment: View {
             HStack(spacing: AccountQuotaSegmentLayout.topRowSpacing) {
                 Text(presentation.title)
                     .font(.system(size: 10, weight: .bold))
-                    .fixedSize(horizontal: true, vertical: false)
+                    .lineLimit(1).truncationMode(.tail).help(presentation.title)
                 Text(presentation.resetText)
                     .font(.system(size: 8, weight: .medium))
                     .foregroundStyle(.secondary)
@@ -795,7 +798,7 @@ struct AccountQuotaSegment: View {
         .frame(maxWidth: .infinity, minHeight: AccountQuotaSegmentLayout.controlHeight, maxHeight: AccountQuotaSegmentLayout.controlHeight)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(window.displayLabel)额度")
-         .accessibilityValue(unavailable ? unavailableText : "剩余 \(window.remainingPercent)%\(isStale ? "，旧数据" : "")，已用 \(window.usedPercent)%，\(window.accessibleResetText) 重置")
+         .accessibilityValue(unavailable ? unavailableText : "剩余 \(ClientQuotaPresentation.percentNumber(remainingPercentOverride ?? Double(window.remainingPercent)))%\(isStale ? "，旧数据" : "")，\(presentation.usedText)，\(window.accessibleResetText) 重置")
     }
 }
 
@@ -805,11 +808,12 @@ struct AccountQuotaSegmentPresentation: Equatable {
     let remainingText: String
     let usedText: String
 
-    init(window: AccountQuotaWindow) {
+    init(window: AccountQuotaWindow, remainingPercent: Double? = nil) {
         title = window.displayLabel
         resetText = "重置 \(window.detailedResetText)"
-        remainingText = "剩 \(window.remainingPercent)%"
-        usedText = "已用 \(window.usedPercent)%"
+        let remaining = remainingPercent ?? Double(window.remainingPercent)
+        remainingText = "剩 \(ClientQuotaPresentation.percentNumber(remaining))%"
+        usedText = "已用 \(ClientQuotaPresentation.percentNumber(100 - remaining))%"
     }
 
     var allVisibleText: [String] {

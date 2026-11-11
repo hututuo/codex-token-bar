@@ -181,6 +181,10 @@ jobs:
           python3 scripts/check_test_execution.py --kind swift --log swift-tests.log --source-sha "$SOURCE_SHA" \
             --allow-untracked-output 'visual-previews/*.png' \
             --require testPreciseStartupAndWarmRefreshExposePreparationAndCompleteTheStream \
+              --require testSharedRPCFixturesKeepExplicitFractionsResetsAndPrivacy \
+              --require testDiscoveryRequiresInstalledProcessOwnedLoopbackPortAndCSRF \
+              --require testAutomaticVisibilityRequiresRecentQuotaAndRespectsManualChoices \
+              --require testQuotaTextPreservesTwoFractionalDigitsWithoutPaddingIntegers \
             --require testEveryDiscoveryUsesTheCardWidthAndWrapsAtNarrowWidths \
             --require testCompactQuotaDotPixelsStayInsideTrackAndMatchMorphEndpoint \
             --require testDiagnosticsBundleAllowlistRemovesSecretsAndPaths \
@@ -370,6 +374,8 @@ jobs:
               --allow-untracked-output runtime-recovery-production.json \
               --allow-untracked-output runtime-recovery-production.validation.json \
               --require failed_partial_backup_is_never_published \
+              --require shared_local_rpc_fixtures_preserve_explicit_fractions_and_account_privacy \
+              --require discovery_requires_installed_process_owned_loopback_port_and_current_csrf \
               --require confirmed_antigravity_route_prices_match_canonical_models_and_legacy_opus_prices \
               --require claude_cache_write_lifetimes_prefer_valid_split_and_default_to_five_minutes \
               --require trend_prices_reuse_request_pricing_and_keep_unknown_requests_explicit \

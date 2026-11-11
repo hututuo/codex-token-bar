@@ -12,6 +12,7 @@ import {
   quotaSelectionKey,
   quotaItems,
   orderedQuotaItems,
+  compactQuotaValue,
   type QuotaItem,
   type QuotaSelection,
 } from "./integratedClientModel";
@@ -29,7 +30,7 @@ export const amount = (n: number) =>
     maximumFractionDigits: 1,
   });
 export const value = (i: QuotaItem) =>
-  i.remaining === null ? "—" : `${Math.round(i.remaining)}%`;
+  i.remaining === null ? "—" : `${compactQuotaValue(i)}%`;
 const ClientScopeSurface = createContext<"dashboard" | "sidebar">("dashboard");
 export function ClientScopeBoundary({surface,children}:{surface:"dashboard"|"sidebar";children:ReactNode}) {
   return createElement(ClientScopeSurface.Provider,{value:surface},children);

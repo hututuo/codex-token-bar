@@ -618,7 +618,7 @@ struct AppSettingsView: View {
                 )
             }
 
-            settingsSection(title: "额度", subtitle: "统一设置额度刷新频率；本地客户端仅重读已有缓存") {
+            settingsSection(title: "额度", subtitle: "统一设置额度刷新频率；Claude 读取缓存，Antigravity 查询本机语言服务") {
                 settingsToggle("过滤异常点", systemImage: "line.3.horizontal.decrease.circle", isOn: $filterQuotaHistoryAnomalies)
                 Text("默认开启。过滤额度历史中的异常跳变；关闭后显示原始记录。不会删除数据或改变实时额度。")
                     .font(.caption)

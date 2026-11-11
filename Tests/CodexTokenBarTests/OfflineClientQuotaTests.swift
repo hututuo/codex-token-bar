@@ -104,33 +104,42 @@ final class OfflineClientQuotaTests: XCTestCase {
     }
 
     func testAntigravityProjectionReachesAllSurfacesAndStaleCacheIsNotCurrent() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
         let reading = ClientQuotaReading(client: "antigravity", state: "available", source: "local-antigravity-tools",
             windows: [.init(label: "Argon 4", usedPercent: 30, resetsAt: nil, id: "gemini-4-argon"),
-                      .init(label: "Opus 5.5", usedPercent: 100, resetsAt: nil, id: "claude-opus-5-5")], notice: "离线缓存")
-        let items = ClientQuotaProjection.items(codex: .empty, localReadings: [reading]).filter { $0.client == "antigravity" }
+                      .init(label: "Opus 5.5", usedPercent: 100, resetsAt: nil, id: "claude-opus-5-5")], notice: "离线缓存", capturedAt: now)
+        let items = ClientQuotaProjection.items(codex: .empty, localReadings: [reading], now: now).filter { $0.client == "antigravity" }
         XCTAssertEqual(items.map(\.remaining), [70, 0]); XCTAssertEqual(items.map(\.id), ["antigravity:gemini-4-argon", "antigravity:claude-opus-5-5"])
         XCTAssertTrue(items.allSatisfy(ClientQuotaSelection().includes))
-        let stale = ClientQuotaReading(client: reading.client, state: "stale", source: reading.source, windows: reading.windows, notice: "历史缓存")
-        let old = ClientQuotaProjection.items(codex: .empty, localReadings: [stale]).filter { $0.client == "antigravity" }
+        let stale = ClientQuotaReading(client: reading.client, state: "stale", source: reading.source, windows: reading.windows, notice: "历史缓存", capturedAt: now)
+        let old = ClientQuotaProjection.items(codex: .empty, localReadings: [stale], now: now).filter { $0.client == "antigravity" }
         XCTAssertEqual(old.count, 1); XCTAssertNil(old.first?.remaining); XCTAssertEqual(old.first?.status, "额度采样已过期")
     }
 
     func testDesktopCLIAndInstalledAntigravityKeepIndependentVisibleQuotaStates() throws {
-        let desktop = ClaudeCapturedQuotaProvider(snapshot: .init(state: "available", capturedAt: Date(),
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let desktop = ClaudeCapturedQuotaProvider(snapshot: .init(state: "available", capturedAt: now,
             fiveHour: .init(usedPercent: 13, resetsAt: nil), sevenDay: nil), client: .claudeDesktop).reading()
         let cli = ClaudeCapturedQuotaProvider(snapshot: .init(state: "api", capturedAt: nil, fiveHour: nil, sevenDay: nil)).reading()
         let ag = AntigravityLocalQuota.empty()
-        let items = ClientQuotaProjection.items(codex: .empty, localReadings: [desktop, cli, ag]).filter { $0.client != "codex" }
+        let items = ClientQuotaProjection.items(codex: .empty, localReadings: [desktop, cli, ag], now: now).filter { $0.client != "codex" }
         XCTAssertEqual(items.map(\.id), ["claudeDesktop:5h", "claudeCode:api", "antigravity:status"])
         XCTAssertEqual(items.map(\.remaining), [87, nil, nil])
         XCTAssertEqual(items.map(\.compactValue), ["87", "API", "待"])
         XCTAssertEqual(items.last?.accessibleValue, "额度未接入")
+        let defaultSelection = ClientQuotaSelection()
+        XCTAssertEqual(items.filter(defaultSelection.includes).map(\.id), ["claudeDesktop:5h"])
+        let api = try XCTUnwrap(items.first(where: { $0.id == "claudeCode:api" }))
+        XCTAssertFalse(defaultSelection.includes(api), "API status remains in the catalog but is not auto-selected")
+        var explicitlySelected = defaultSelection
+        explicitlySelected.enabled.insert(api.id)
+        XCTAssertTrue(explicitlySelected.includes(api), "A user can explicitly enable the API status item")
         XCTAssertTrue(ClientQuotaPresentation.isPresent(cli))
         XCTAssertFalse(ClientQuotaPresentation.isPresent(ag))
         XCTAssertTrue(ClientQuotaPresentation.isPresent(ag, detected: true))
         XCTAssertFalse(ClientQuotaPresentation.isPresent(UnavailableClientQuotaProvider(client: .gemini).reading(), detected: true))
-        let stale = ClaudeCapturedQuotaProvider(snapshot: .init(state: "stale", capturedAt: Date(), fiveHour: nil, sevenDay: nil)).reading()
-        let cached = try XCTUnwrap(ClientQuotaProjection.items(codex: .empty, localReadings: [stale]).last)
+        let stale = ClaudeCapturedQuotaProvider(snapshot: .init(state: "stale", capturedAt: now, fiveHour: nil, sevenDay: nil)).reading()
+        let cached = try XCTUnwrap(ClientQuotaProjection.items(codex: .empty, localReadings: [stale], now: now).last)
         XCTAssertEqual(stale.state, "stale")
         XCTAssertEqual(cached.compactValue, "旧")
         XCTAssertNil(cached.remaining)

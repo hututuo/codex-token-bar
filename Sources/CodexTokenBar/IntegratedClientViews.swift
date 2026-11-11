@@ -97,6 +97,7 @@ struct ClientQuotaRings: View {
     @AppStorage(ClientQuotaSelection.key) private var selectionRaw = ""
     let items: [ClientQuotaItem]
     var body: some View {
+        let items = self.items.filter(ClientQuotaSelection.decode(selectionRaw).includes)
         VStack(alignment: .leading, spacing: 14) {
             ForEach(items.map(\.client).reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }, id: \.self) { client in
                 VStack(alignment: .leading, spacing: 8) {
@@ -194,13 +195,13 @@ struct ClientPairedQuotaRing: View {
                 // the normal disclosure fade instead of waiting for handoff.
                 if let right {
                     HStack(spacing: 1) {
-                        Text(left.compactValue).frame(width: 14)
+                        Text(left.compactValue).frame(width: 20).lineLimit(1).minimumScaleFactor(0.6)
                         Rectangle().fill(.white.opacity(0.35)).frame(width: 1, height: 8)
-                        Text(right.compactValue).frame(width: 14)
+                        Text(right.compactValue).frame(width: 20).lineLimit(1).minimumScaleFactor(0.6)
                     }.font(.system(size: 11, weight: .medium, design: .rounded))
                         .monospacedDigit().lineLimit(1).minimumScaleFactor(0.65)
                 } else {
-                    Text(left.remaining == nil ? left.compactValue : left.value).font(.system(size: 14, weight: .medium, design: .rounded)).monospacedDigit()
+                    Text(left.remaining == nil ? left.compactValue : left.value).font(.system(size: 14, weight: .medium, design: .rounded)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.6)
                 }
             }.frame(width: ClientSidebarMetrics.ringSize, height: ClientSidebarMetrics.ringSize)
                 .anchorPreference(key: ClientQuotaMorphAnchors.self, value: .bounds) { anchor in
