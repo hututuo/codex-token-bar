@@ -20,7 +20,7 @@ enum AntigravityLocalRPCQuota {
     }
 
     static func read(home: URL = FileManager.default.homeDirectoryForCurrentUser, now: Date = Date()) -> ClientQuotaReading? {
-        guard let listing = command("/bin/ps", ["-axo", "pid=,comm="]) else { return unavailable() }
+        guard let listing = command("/bin/ps", ["-U", String(getuid()), "-o", "pid=,comm="]) else { return unavailable() }
         let servers = runningServers(listing, home: home)
         guard !servers.isEmpty else { return nil }
         guard servers.count == 1, let server = servers.first,

@@ -277,7 +277,8 @@ fn discover(pid: i32, executable: &str, home: &Path) -> Option<Endpoint> {
 #[cfg(target_os = "macos")]
 pub fn read(home: &Path, now: f64) -> Option<QuotaProviderSnapshot> {
     use std::{io::Read, time::Duration};
-    let Some(listing) = command("/bin/ps", &["-axo", "pid=,comm="]) else {
+    let uid = unsafe { libc::getuid() }.to_string();
+    let Some(listing) = command("/bin/ps", &["-U", &uid, "-o", "pid=,comm="]) else {
         return Some(unavailable());
     };
     let servers = running_servers(&listing, home);
