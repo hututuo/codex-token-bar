@@ -17,7 +17,8 @@ import {
   QUOTA_REFRESH_CADENCE_OPTIONS,
   sanitizeQuotaRefreshIntervalMs,
 } from "../settings/quotaRefreshCadence";
-import { formatPercent, formatTokens } from "../utils/format";
+import { formatTokens } from "../utils/format";
+import { quotaPercentNumber } from "../multiClient/multiClientProduct";
 import { quotaWindowDisplayLabel } from "../utils/quota";
 import {
   estimateSharedAccountAttribution,
@@ -137,14 +138,14 @@ function QuotaBar({ quota, stale = false, pendingLabel = "待读取" }: { quota:
   const label = quotaWindowDisplayLabel(quota.label);
   const remainingPercent = typeof quota.remainingPercent === "number" ? quota.remainingPercent : null;
   const measured = quota.availability === "measured" && remainingPercent !== null;
-  const measuredLabel = remainingPercent === null ? "" : formatPercent(remainingPercent);
+  const measuredLabel = remainingPercent === null ? "" : `${quotaPercentNumber(remainingPercent * 100)}%`;
   const usedPercent = typeof quota.usedPercent === "number"
     ? quota.usedPercent
     : remainingPercent === null ? null : Math.max(0, 1 - remainingPercent);
-  const usedLabel = usedPercent === null ? "" : formatPercent(usedPercent);
+  const usedLabel = usedPercent === null ? "" : `${quotaPercentNumber(usedPercent * 100)}%`;
   const boundedRemaining = remainingPercent === null ? null : Math.min(1, Math.max(0, remainingPercent));
   const fillStyle = boundedRemaining === null ? undefined : {
-    width: `${Math.round(boundedRemaining * 100)}%`,
+    width: `${boundedRemaining * 100}%`,
     "--metric-color": semanticMetricColor(boundedRemaining * 100),
   } as CSSProperties;
   return (

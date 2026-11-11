@@ -32,9 +32,12 @@ test("fractional quota survives detail, paired rings, panel and accessible text"
   const {value}=await load("/src/multiClient/useClientScope.ts");
   const {ClientQuotaDetailRings,PairedQuotaRing}=await load("/src/multiClient/ClientQuotaViews.tsx");
   const {ClientQuotaPanel}=await load("/src/multiClient/MultiClientUsage.tsx");
+  const {QuotaStrip}=await load("/src/components/QuotaStrip.tsx");
   for(const [number,text] of [[9.1135,"9.11"],[12.5,"12.5"],[0.1,"0.1"],[100,"100"],[0,"0"]])assert.equal(quotaPercentNumber(number),text);
   const item={id:"antigravity:gemini",client:"antigravity",window:"Gemini",remaining:9.1135,resetsAt:null,source:"本机语言服务",status:""};
   assert.equal(compactQuotaValue(item),"9.11");assert.equal(value(item),"9.11%");
+  const main=renderToStaticMarkup(React.createElement(QuotaStrip,{clientItems:[item]}));
+  assert.match(main,/剩 9\.11%/);assert.match(main,/已用 90\.89%/);assert.doesNotMatch(main,/剩 9%/);
   const detail=renderToStaticMarkup(React.createElement(ClientQuotaDetailRings,{items:[item]}));assert.match(detail,/9\.11%/);
   const paired=renderToStaticMarkup(React.createElement(PairedQuotaRing,{left:item,right:{...item,id:"antigravity:claude",window:"Claude",remaining:100}}));assert.match(paired,/data-digits="4"/);assert.match(paired,/9\.11/);
   const panel=renderToStaticMarkup(React.createElement(ClientQuotaPanel,{reading:{client:"antigravity",state:"available",source:"local-antigravity-rpc",windows:[{id:"gemini",label:"Gemini",usedPercent:90.8865,resetsAt:null}],notice:"",capturedAt:new Date().toISOString()}}));
