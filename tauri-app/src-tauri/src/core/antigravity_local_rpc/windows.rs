@@ -251,10 +251,14 @@ fn decode_snapshot(
                     || args.iter().any(|s| s == "--enable_lsp")
             }
         };
+        // agy can also be running foreground CLI commands. A recognized image
+        // without a server mode is not a quota endpoint or another account.
+        if !mode {
+            continue;
+        }
         let app_data = flag(&args, "--app_data_dir")?;
-        if !mode
-            || (kind == Kind::Ide
-                && !app_data.is_some_and(|s| ["antigravity", "antigravity-ide"].contains(&s)))
+        if kind == Kind::Ide
+            && !app_data.is_some_and(|s| ["antigravity", "antigravity-ide"].contains(&s))
         {
             return Err(());
         }
@@ -921,6 +925,18 @@ mod tests {
             .unwrap();
         assert_eq!(server.targets()[0].port, 53102);
         let mut mixed = snapshot(&hub, args(&hub.executable, "--standalone"));
+        let mut with_cli = mixed.clone();
+        with_cli["processes"].as_array_mut().unwrap().push(
+            snapshot(&agy, vec![agy.executable.clone(), "--help".into()])["processes"][0].clone(),
+        );
+        assert_eq!(
+            planned(&with_cli, &[hub.clone(), agy.clone()], &roots, &home)
+                .unwrap()
+                .unwrap()
+                .binding
+                .pid,
+            hub.pid
+        );
         mixed["processes"]
             .as_array_mut()
             .unwrap()
