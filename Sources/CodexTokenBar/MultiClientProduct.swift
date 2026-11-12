@@ -101,7 +101,7 @@ struct ClaudeCapturedQuotaProvider: ClientQuotaProvider {
         let state = snapshot.state == "available" && !windows.isEmpty ? "available" : snapshot.state == "stale" ? "stale" : snapshot.state == "missing" ? "notConnected" : "unavailable"
         let notice: String
         if httpCache {
-            notice = state == "available" ? "Desktop 上次用量采样，保留官方重置时间；重置后等待客户端更新，不推算新余额。可在 Claude 中打开用量更新缓存。不发送网络请求，未验证当前账号。"
+            notice = state == "available" ? "Desktop 本地 HTTP 缓存中的上次用量采样，保留官方重置时间；重置后等待客户端更新，不推算新余额。可在 Claude 中打开用量更新缓存。不发送网络请求，未验证当前账号。"
                 : "Desktop 本地 HTTP 缓存不可用；不会唤醒客户端或请求刷新。"
         } else if desktop {
             notice = state == "available" ? "Desktop 上次本地用量采样；不因闲置清空。文件不含重置时间，无法确认当前周期余额，不与 CLI 额度合并。未验证当前账号。"

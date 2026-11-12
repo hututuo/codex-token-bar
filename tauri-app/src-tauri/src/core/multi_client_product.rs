@@ -209,7 +209,7 @@ fn claude_desktop_windows(snapshot: &ClaudeLocalQuotaSnapshot) -> Vec<QuotaProvi
 
 fn claude_desktop_notice(snapshot: &ClaudeLocalQuotaSnapshot) -> String {
     if snapshot.source.as_deref() == Some("local-desktop-http-cache") {
-        return if snapshot.state == "available" { "Desktop 上次用量采样，保留官方重置时间；重置后等待客户端更新，不推算新余额。可在 Claude 中打开用量更新缓存。不发送网络请求，未验证当前账号。" }
+        return if snapshot.state == "available" { "Desktop 本地 HTTP 缓存中的上次用量采样，保留官方重置时间；重置后等待客户端更新，不推算新余额。可在 Claude 中打开用量更新缓存。不发送网络请求，未验证当前账号。" }
             else { "Desktop 本地 HTTP 缓存不可用；不会唤醒客户端或请求刷新。" }.into();
     }
     match snapshot.state.as_str() {
