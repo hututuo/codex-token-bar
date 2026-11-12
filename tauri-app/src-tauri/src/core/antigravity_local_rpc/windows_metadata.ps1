@@ -3,7 +3,9 @@ $ProgressPreference = 'SilentlyContinue'
 $WarningPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$allowedExecutables = @([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__EXECUTABLES_BASE64__')) | ConvertFrom-Json)
+# Windows PowerShell 5.1 emits a JSON array as one pipeline object. Wrapping
+# this pipeline in @() nests the allowlist and makes -contains reject paths.
+$allowedExecutables = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__EXECUTABLES_BASE64__')) | ConvertFrom-Json
 $ids = @(__PROCESS_IDS__)
 $rows = @()
 foreach ($candidateId in $ids) {
