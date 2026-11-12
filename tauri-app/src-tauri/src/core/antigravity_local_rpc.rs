@@ -1,9 +1,12 @@
-//! Authorized loopback query to the already-running macOS standalone Hub.
+//! Authorized loopback query to an already-running Antigravity client.
 //! No OAuth, provider URL, client launch, forceRefresh or remote fallback.
 use super::multi_client_product::{QuotaProviderSnapshot, QuotaProviderWindow};
 use serde_json::Value;
 use std::path::Path;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+
+#[cfg(any(windows, test))]
+mod windows;
 
 pub const SOURCE: &str = "local-antigravity-rpc";
 const MAX_BYTES: usize = 512 * 1024;
@@ -323,8 +326,12 @@ pub fn read(home: &Path, now: f64) -> Option<QuotaProviderSnapshot> {
     Some(probe().unwrap_or_else(unavailable))
 }
 
-// The verified discovery currently covers the macOS standalone Hub only.
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+pub fn read(home: &Path, now: f64) -> Option<QuotaProviderSnapshot> {
+    windows::read(home, now)
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 pub fn read(_home: &Path, _now: f64) -> Option<QuotaProviderSnapshot> {
     None
 }
