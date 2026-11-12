@@ -22,4 +22,16 @@
 
 本机仍是 build 1013，二进制 SHA256 `1de453a06cd66f4e7766bc07c10780a638cc9d8e53d376afa4ccf4618f79357e`，没有安装后续 RPC 接入及本次保留逻辑，因此旧安装版的“没有显示”不等于新读取器读取失败。脱敏实机证据见私有维护目录 `antigravity-open-source/live-2026-11-12.json`，过夜诊断见同级上一层 `claude-overnight-cache-2026-11-12.json`。
 
-源码和云端结果待回填；本次未替换安装版，不以本机接口诊断代替新二进制界面验收。
+## 验证结果
+
+最终受检源码 `023e28ced2512874721477b31543d27e0dcd3aa7` 的 [完整 CI 43161740546](https://github.com/hututuo/codex-token-bar/actions/runs/43161740546) 全部通过，最终 evidence seal 与 checked-source 均对应同一源码。同源 [Public097 43161740482](https://github.com/hututuo/codex-token-bar/actions/runs/43161740482) Windows/macOS 双端通过。
+
+Swift XCTest 2,471（38 个既有跳过）、Swift Testing 676、Rust macOS 1,846 / Windows 1,789（各 14 个既有 ignored）、前端 1,481、云端脚本 18、发布脚本 112（1 个既有平台跳过）通过。新增 Swift/Rust required 用例均实际执行并通过；前端新增用例实际验证隔夜数值、重置待更新、三天外默认隐藏、显式显示、主页面、配对圆环和详情输出，未改变原始采样。
+
+初始 `601e5657` 的前端出现 1,480 通过、1 失败：新提示漏掉了 HTTP 缓存来源标记。补回三端来源标签，保留既有断言，没有跳过或放宽检查。该前端失败原始 job 日志与 artifact/digest 保留，随后旧 run 取消并以修正版重新验证。
+
+已核对原生/Swift 报告源码、tracked 源码前后未变、无额外 untracked 输入与日志 SHA256；六路下载 artifact digest 均核对。前端报告自身没有 sourceSha 字段，源码关联由同源 run、带 SHA/run ID 的 artifact 名、checked-source seal 及实际 checkout 的完整 job 日志共同验证；该日志包含新增用例成功输出，并单独保存 SHA256。
+
+私有证据位于既有维护目录的 `antigravity-open-source/claude-retention-ci-023e28ce/`、`claude-retention-validation-final.json`、`claude-retention-public097-023e28ce.json`，首次前端失败在 `claude-retention-ci-601e5657/`。原始脏文件保持原内容。
+
+本次未制作或替换新安装版，当前 1013 的二进制与众测推荐隐藏设置再次核对；不以本机接口诊断或云端测试代替新二进制界面验收。
