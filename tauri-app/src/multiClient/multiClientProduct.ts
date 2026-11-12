@@ -17,6 +17,11 @@ const quotaStates:Record<string,{label:string;compact:string}>=quotaPresentation
 export const clientQuotaStatusText=(state:string)=>quotaStates[state]?.label??"额度不可用";
 export const clientQuotaCompactStatus=(state?:string)=>state?quotaStates[state]?.compact??"—":"—";
 export const quotaPercentNumber=(value:number)=>Number.isFinite(value)?value.toFixed(2).replace(/\.?0+$/, ""):"—";
+export function quotaSampleStatus(client:string,resetsAt:string|null|undefined,now=Date.now()):string {
+  if(client!=="claudeDesktop")return "";
+  const reset=resetsAt?Date.parse(resetsAt):NaN;
+  return Number.isFinite(reset)&&reset<=now?"重置待更新":"缓存";
+}
 export function quotaAutomaticallyVisible(reading:ClientQuotaReading,now=Date.now()):boolean {
   if(reading.source==="unsupported" || !["claudeCode","claudeDesktop","antigravity"].includes(reading.client)
     || !["available","stale","cached"].includes(reading.state) || !reading.capturedAt) return false;
@@ -51,7 +56,7 @@ export function claudeQuotaFromLocalCache(value: {
   }
   const desktop=client==="claudeDesktop";
   const httpCache=desktop && value.source==="local-desktop-http-cache";
-  const notice=httpCache ? (value.state==="available" ? "Desktop 本地 HTTP 缓存；保留官方重置时间，未验证当前账号。不发送网络请求。" : "Desktop 本地 HTTP 缓存已过期或不可用；不会唤醒客户端或请求刷新。") : desktop ? value.state==="stale" ? "Desktop 历史文件中的采样超过 20 分钟；这不表示应用已关闭或额度已用尽。本软件不会唤醒客户端或发网络请求。" : "Desktop 本地历史采样；未验证当前账号。文件不含重置时间，不与 CLI 额度合并。" : "只读取本地 CLI 额度缓存，不联网。";
+  const notice=httpCache ? (value.state==="available" ? "Desktop 上次用量采样，保留官方重置时间；重置后等待客户端更新，不推算新余额。可在 Claude 中打开用量更新缓存。不发送网络请求，未验证当前账号。" : "Desktop 本地 HTTP 缓存不可用；不会唤醒客户端或请求刷新。") : desktop ? "Desktop 上次本地用量采样；不因闲置清空。文件不含重置时间，无法确认当前周期余额，不与 CLI 额度合并。未验证当前账号。" : "只读取本地 CLI 额度缓存，不联网。";
   const state=windows.length?"available":desktop?(value.state==="stale"?"stale":value.state==="missing"?"notConnected":"unavailable"):value.state;
   return {client,state,source:value.source??(desktop?"local-desktop-history":"local-statusline"),windows,notice,capturedAt:value.capturedAt??null};
 }

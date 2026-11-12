@@ -15,6 +15,7 @@ import {
 } from "./integratedClientModel";
 import { claudeQuotaSetup } from "./multiClientProduct";
 import type { QuotaSnapshot } from "../types/dashboard";
+const observedValue=(item:QuotaItem)=>item.client==="claudeDesktop"&&item.status?`${value(item)} · ${item.status}`:value(item);
 export function ClientQuotaSettings({ codex, colorsOnly = false }: { codex?: QuotaSnapshot; colorsOnly?: boolean }) {
   const { catalog } = useClientQuotaItems(codex), { selection, save } = useClientQuotaSelection();
   return <section className="integrated-quota-settings">
@@ -100,11 +101,11 @@ export function PairedQuotaRing({
       className="integrated-paired-ring"
       role="img"
       data-mode={right ? "paired" : "single"}
-      title={[left,...(right?[right]:[])].map(item=>`${clientTitle(item.client)} ${item.window} · ${item.remaining===null?item.status:value(item)}\n${item.source??""}`).join("\n")}
+      title={[left,...(right?[right]:[])].map(item=>`${clientTitle(item.client)} ${item.window} · ${item.remaining===null?item.status:observedValue(item)}\n${item.source??""}`).join("\n")}
       aria-label={
         right
-          ? `左侧 ${clientTitle(left.client)} ${left.window} ${left.remaining===null?left.status:value(left)}；右侧 ${clientTitle(right.client)} ${right.window} ${right.remaining===null?right.status:value(right)}`
-          : `${clientTitle(left.client)} ${left.window} ${left.remaining===null?left.status:"剩余 "+value(left)}，完整圆环`
+          ? `左侧 ${clientTitle(left.client)} ${left.window} ${left.remaining===null?left.status:observedValue(left)}；右侧 ${clientTitle(right.client)} ${right.window} ${right.remaining===null?right.status:observedValue(right)}`
+          : `${clientTitle(left.client)} ${left.window} ${left.remaining===null?left.status:"剩余 "+observedValue(left)}，完整圆环`
       }
     >
       <div style={{ width: clientSidebarMetrics.ringSize, height: clientSidebarMetrics.ringSize }}>
@@ -216,7 +217,7 @@ export function ClientQuotaDetailCard({item,fill,expected,id}: {
 }) {
   const api=item.id.endsWith(":api");
   return <div className="integrated-quota-card" id={id} data-quota-id={item.id}
-    role="group" aria-label={`${clientTitle(item.client)} ${item.window} 剩余 ${value(item)}`}>
+    role="group" aria-label={`${clientTitle(item.client)} ${item.window} 剩余 ${observedValue(item)}`}>
     {!api && <div className="integrated-full-ring" aria-hidden="true">
       <svg viewBox="0 0 100 100">
         <circle cx="50" cy="50" r="44" fill="none" stroke="currentColor" opacity=".12" strokeWidth="7.5"/>

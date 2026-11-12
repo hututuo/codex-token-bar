@@ -30,9 +30,9 @@
       "name": "expired",
       "now": 1800000000,
       "entryBase64": "MFxypxtt+/wFAAAAUgAAAAAAAAAAAAAAMS8wL2h0dHBzOi8vY2xhdWRlLmFpL2FwaS9vcmdhbml6YXRpb25zLzAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMS91c2FnZSi1L/0gje0CAHIFFBuAuTnosa3FlKbzAgqp2Y4oCxGxT+b1gw2ZMwIN4UywFM7Qjlzy+TQu/Dd+/HGdBRJKRwN1ZfS69jZfJj4HoA9E1y00oauYQScKgmi56MFMAwDgIAAvSuZwBthBDZdFb/r0AQAAABaUcgIAAAAAAAAAAGZpeHR1cmUASFRUUC8xLjEgMjAwAGRhdGU6RnJpLCAxNSBKYW4gMjAyNyAwNzozOTo1OSBHTVQAY29udGVudC10eXBlOmFwcGxpY2F0aW9uL2pzb24AY29udGVudC1lbmNvZGluZzp6c3RkAACFuTMdDAPH3VVyhm7ckYsUjDXcfTD3o6OI8e5W2fZz49hBDZdFb/r0AwAAABFVg6RtAAAAAAAAAA==",
-      "expectedState": "stale",
-      "five": null,
-      "seven": null
+      "expectedState": "available",
+      "five": 30,
+      "seven": 90
     },
     {
       "name": "boundary",
@@ -86,8 +86,8 @@
       "name": "reset-expired",
       "now": 1800000000,
       "entryBase64": "MFxypxtt+/wFAAAAUgAAAAAAAAAAAAAAMS8wL2h0dHBzOi8vY2xhdWRlLmFpL2FwaS9vcmdhbml6YXRpb25zLzAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMS91c2FnZSi1L/0gRzkCAHsiZml2ZV9ob3VyIjp7InV0aWxpemF0aW9uIjoyMCwicmVzZXRzX2F0IjoiMjAyNy0wMS0xNVQwNzo1OTo1OS4wMDBaIn192EENl0Vv+vQBAAAAuLvv7AAAAAAAAAAAZml4dHVyZQBIVFRQLzEuMSAyMDAAZGF0ZTpGcmksIDE1IEphbiAyMDI3IDA3OjU5OjMwIEdNVABjb250ZW50LXR5cGU6YXBwbGljYXRpb24vanNvbgBjb250ZW50LWVuY29kaW5nOnpzdGQAAIW5Mx0MA8fdVXKGbtyRixSMNdx9MPejo4jx7lbZ9nPj2EENl0Vv+vQDAAAAgibt2m0AAAAAAAAA",
-      "expectedState": "stale",
-      "five": null,
+      "expectedState": "available",
+      "five": 20,
       "seven": null
     },
     {
@@ -169,6 +169,22 @@
       "expectedState": null,
       "five": null,
       "seven": null
+    },
+    {
+      "name": "overnight-idle",
+      "now": 1800046800,
+      "entryBase64": "MFxypxtt+/wFAAAAUgAAAAAAAAAAAAAAMS8wL2h0dHBzOi8vY2xhdWRlLmFpL2FwaS9vcmdhbml6YXRpb25zLzAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMS91c2FnZSi1L/0gje0CAHIFFBuAuTnosa3FlKbzAgqp2Y4oCxGxT+b1gw2ZMwIN4UywFM7Qjlzy+TQu/Dd+/HGdBRJKRwN1ZfS69jZfJj4HoA9E1y00oauYQScKgmi56MFMAwDgIAAvSuZwBthBDZdFb/r0AQAAABaUcgIAAAAAAAAAAGZpeHR1cmUASFRUUC8xLjEgMjAwAGRhdGU6RnJpLCAxNSBKYW4gMjAyNyAwNzo1OTozMCBHTVQAY29udGVudC10eXBlOmFwcGxpY2F0aW9uL2pzb24AY29udGVudC1lbmNvZGluZzp6c3RkAACFuTMdDAPH3VVyhm7ckYsUjDXcfTD3o6OI8e5W2fZz49hBDZdFb/r0AwAAAIIm7dptAAAAAAAAAA==",
+      "expectedState": "available",
+      "five": 30,
+      "seven": 90
+    },
+    {
+      "name": "older-than-auto-display",
+      "now": 1800345600,
+      "entryBase64": "MFxypxtt+/wFAAAAUgAAAAAAAAAAAAAAMS8wL2h0dHBzOi8vY2xhdWRlLmFpL2FwaS9vcmdhbml6YXRpb25zLzAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMS91c2FnZSi1L/0gje0CAHIFFBuAuTnosa3FlKbzAgqp2Y4oCxGxT+b1gw2ZMwIN4UywFM7Qjlzy+TQu/Dd+/HGdBRJKRwN1ZfS69jZfJj4HoA9E1y00oauYQScKgmi56MFMAwDgIAAvSuZwBthBDZdFb/r0AQAAABaUcgIAAAAAAAAAAGZpeHR1cmUASFRUUC8xLjEgMjAwAGRhdGU6RnJpLCAxNSBKYW4gMjAyNyAwNzo1OTozMCBHTVQAY29udGVudC10eXBlOmFwcGxpY2F0aW9uL2pzb24AY29udGVudC1lbmNvZGluZzp6c3RkAACFuTMdDAPH3VVyhm7ckYsUjDXcfTD3o6OI8e5W2fZz49hBDZdFb/r0AwAAAIIm7dptAAAAAAAAAA==",
+      "expectedState": "available",
+      "five": 30,
+      "seven": 90
     }
   ],
   "antigravityTools": [

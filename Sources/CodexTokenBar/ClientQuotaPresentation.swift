@@ -24,6 +24,10 @@ enum ClientQuotaPresentation {
     }()
     static func status(_ state: String) -> String { states[state]?.label ?? "额度不可用" }
     static func compact(_ state: String?) -> String { state.flatMap { states[$0]?.compact } ?? "—" }
+    static func sampleStatus(client: String, resetsAt: Date?, now: Date = Date()) -> String {
+        guard client == "claudeDesktop" else { return "" }
+        return resetsAt.map { $0 <= now } == true ? "重置待更新" : "缓存"
+    }
     static func isPresent(_ reading: ClientQuotaReading, detected: Bool = false) -> Bool {
         reading.source != "unsupported" && (detected || reading.state == "api" || !reading.windows.isEmpty || reading.capturedAt != nil)
     }

@@ -1,6 +1,6 @@
 import { modelUsageLabel as shortModelName } from "../components/modelUsagePresentation";
 import type { DashboardSnapshot } from "../types/dashboard";
-import { clientIsAvailable, clientQuotaStatusText, quotaPercentNumber, codexQuotaProvider, projectClientChart, unavailableQuota, type ClientDetection, type ClientQuotaReading, type ClientTrendBucket, type ClientChartPoint } from "./multiClientProduct";
+import { clientIsAvailable, clientQuotaStatusText, quotaPercentNumber, quotaSampleStatus, codexQuotaProvider, projectClientChart, unavailableQuota, type ClientDetection, type ClientQuotaReading, type ClientTrendBucket, type ClientChartPoint } from "./multiClientProduct";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { callCommandStrict } from "../api/command";
 import { isTauriRuntimeAvailable } from "../platform/runtime";
@@ -275,7 +275,7 @@ export function MultiClientDiscoveryNotice() {
 }
 export function ClientQuotaPanel({reading, compact=false}: {reading:ClientQuotaReading;compact?:boolean}) {
   return <div className={compact ? "multi-client-quota-inline" : "multi-client-quota"} title={reading.notice}>
-    {reading.state === "available" ? reading.windows.map(w=><span key={w.id??w.label}>{w.label} 剩余 {quotaPercentNumber(100-w.usedPercent)}%</span>) : <span>{clientQuotaStatusText(reading.state)}</span>}
+    {reading.state === "available" ? reading.windows.map(w=><span key={w.id??w.label}>{w.label} 剩余 {quotaPercentNumber(100-w.usedPercent)}%{reading.client==="claudeDesktop"?` · ${quotaSampleStatus(reading.client,w.resetsAt)}`:""}</span>) : <span>{clientQuotaStatusText(reading.state)}</span>}
     {!compact && ["stale","cached"].includes(reading.state) && reading.windows.length>0 && <details><summary>查看历史缓存（非当前余额）</summary>{reading.windows.map(w=><div key={w.id??w.label}>{w.label} · 上次剩余 {quotaPercentNumber(100-w.usedPercent)}%</div>)}</details>}
     {!compact && <>{reading.capturedAt && Number.isFinite(Date.parse(reading.capturedAt)) && <small>{reading.source==="local-antigravity-rpc"?"读取于":"采样于"} {new Date(reading.capturedAt).toLocaleString()}</small>}<small>{reading.notice}</small></>}
   </div>;

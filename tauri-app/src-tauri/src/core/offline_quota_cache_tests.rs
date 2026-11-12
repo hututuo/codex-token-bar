@@ -10,6 +10,24 @@ fn fixture() -> Value {
 }
 
 #[test]
+fn claude_desktop_offline_samples_survive_idle_and_reset_boundaries() {
+    let fixtures = fixture();
+    let row = fixtures["claude"].as_array().unwrap().iter().find(|r| r["name"] == "zstd").unwrap();
+    let bytes = STANDARD.decode(row["entryBase64"].as_str().unwrap()).unwrap();
+    let now = row["now"].as_f64().unwrap();
+    let fresh = http::decode(&bytes, now).unwrap();
+    for age in [1201.0, 13.0 * 3600.0, 4.0 * 86400.0] {
+        let idle = http::decode(&bytes, now + age).unwrap();
+        assert_eq!(idle.state, "available");
+        assert_eq!(idle.captured_at, fresh.captured_at);
+        assert_eq!(idle.five_hour, fresh.five_hour);
+        assert_eq!(idle.seven_day, fresh.seven_day);
+        assert_eq!(idle.five_hour.unwrap().used_percent, 30.0);
+        assert_eq!(idle.seven_day.unwrap().used_percent, 90.0);
+    }
+}
+
+#[test]
 fn shared_http_cache_fixtures_keep_integrity_age_reset_and_zero() {
     for row in fixture()["claude"].as_array().unwrap() {
         let bytes = STANDARD

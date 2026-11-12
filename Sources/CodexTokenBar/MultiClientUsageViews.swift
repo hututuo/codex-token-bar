@@ -152,7 +152,8 @@ struct ClientQuotaReadingView: View {
         VStack(alignment: compact ? .center : .leading, spacing: 3) {
             if reading.state == "available" {
                 ForEach(reading.windows, id: \.label) { window in
-                    Text("\(window.label) 剩余 \(ClientQuotaPresentation.percentNumber(100 - window.usedPercent))%").font(compact ? .system(size: 9) : .callout)
+                    let note = ClientQuotaPresentation.sampleStatus(client: reading.client, resetsAt: window.resetsAt)
+                    Text("\(window.label) 剩余 \(ClientQuotaPresentation.percentNumber(100 - window.usedPercent))%\(note.isEmpty ? "" : " · " + note)").font(compact ? .system(size: 9) : .callout)
                 }
             } else {
                 Text(ClientQuotaPresentation.status(reading.state)).font(compact ? .system(size: 9) : .callout)

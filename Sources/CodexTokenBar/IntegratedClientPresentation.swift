@@ -55,7 +55,10 @@ struct ClientQuotaItem: Identifiable, Equatable {
     }
     var compactValue: String { remaining.map(ClientQuotaPresentation.percentNumber) ?? ClientQuotaPresentation.compact(state) }
     var value: String { remaining.map { ClientQuotaPresentation.percentNumber($0) + "%" } ?? "—" }
-    var accessibleValue: String { remaining == nil && !status.isEmpty ? status : value }
+    var accessibleValue: String {
+        if remaining == nil && !status.isEmpty { return status }
+        return client == "claudeDesktop" && !status.isEmpty ? value + " · " + status : value
+    }
     var title: String { ClientDisplayScope.title(client) + " · " + window }
 }
 
@@ -135,7 +138,9 @@ enum ClientQuotaProjection {
                 guard used.isFinite, (0...100).contains(used) else { continue }
                 items.append(ClientQuotaItem(id: reading.client + ":" + id, client: reading.client, window: window.label,
                     remaining: 100 - used, resetsAt: window.resetsAt,
-                    source: reading.notice + sampled, status: "", automaticallyVisible: automaticallyVisible))
+                    source: reading.notice + sampled,
+                    status: ClientQuotaPresentation.sampleStatus(client: reading.client, resetsAt: window.resetsAt, now: now),
+                    automaticallyVisible: automaticallyVisible))
             }
             if items.count == previousCount {
                 items.append(ClientQuotaItem(id: reading.client + ":status", client: reading.client, window: "本地额度", remaining: nil,

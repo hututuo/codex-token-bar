@@ -2,7 +2,7 @@ import type { ActivityDay } from "../types/usage";
 import type { ClientTrendBucket } from "./multiClientProduct";
 import { quotaWindowShortLabel } from "../utils/quota";
 import type { ClientQuotaReading } from "./multiClientProduct";
-import {clientQuotaCompactStatus,clientQuotaStatusText,quotaPercentNumber,quotaAutomaticallyVisible} from "./multiClientProduct";
+import {clientQuotaCompactStatus,clientQuotaStatusText,quotaPercentNumber,quotaAutomaticallyVisible,quotaSampleStatus} from "./multiClientProduct";
 import type { QuotaSnapshot } from "../types/quota";
 export const clientBrand: Record<string, string> = {
   codex: "#3941FF",
@@ -130,7 +130,7 @@ export function quotaItems(
         remaining: 100 - u,
         resetsAt: w?.resetsAt ?? null,
         source: (reading.notice??"")+sampled,
-        status: "",
+        status: quotaSampleStatus(client,w.resetsAt,now),
         automaticallyVisible,
       });
     });

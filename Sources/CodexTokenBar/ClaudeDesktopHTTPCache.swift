@@ -105,14 +105,11 @@ enum ClaudeDesktopHTTPCache {
             return .init(usedPercent: value.doubleValue, resetsAt: reset)
         }
         let five = window("five_hour"), seven = window("seven_day")
-        let stale = now.timeIntervalSince(captured) > ClaudeLocalQuota.desktopHistoryFreshness
-        result = ClaudeLocalQuota(state: stale ? "stale" : five == nil && seven == nil ? "missing" : "available", capturedAt: captured,
-            fiveHour: five.flatMap { $0.resetsAt.map { $0 > now } == true && !stale ? $0 : nil },
-            sevenDay: seven.flatMap { $0.resetsAt.map { $0 > now } == true && !stale ? $0 : nil })
+        // These are sampled values, not a live balance. A passed reset is shown
+        // as awaiting an update, never used to erase or infer a new percentage.
+        result = ClaudeLocalQuota(state: five == nil && seven == nil ? "missing" : "available", capturedAt: captured,
+            fiveHour: five, sevenDay: seven)
         result.source = "local-desktop-http-cache"
-        if !stale && (five != nil || seven != nil) && result.fiveHour == nil && result.sevenDay == nil {
-            result = ClaudeLocalQuota(state: "stale", capturedAt: captured, fiveHour: nil, sevenDay: nil, source: result.source)
-        }
         return result
     }
 

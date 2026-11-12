@@ -24,17 +24,17 @@ final class ClaudeDesktopQuotaHistoryTests: XCTestCase {
         let last = ClaudeLocalQuota.decodeDesktopHistory(tied, now: now)
         XCTAssertEqual(last.fiveHour?.usedPercent, 13); XCTAssertNil(last.sevenDay)
     }
-    func testNormalFifteenMinutePollIsFreshButTwentyMinuteGapExpires() throws {
-        for (age, state) in [(900.0, "available"), (1_200.0, "available"), (1_201.0, "stale")] {
+    func testIdleHistoryKeepsValuesAndThreeDayAgeOnlyControlsAutomaticDisplay() throws {
+        for age in [900.0, 1_200.0, 1_201.0, 43_200.0, 259_200.0, 259_201.0] {
             let data = try bytes([["t": (now.timeIntervalSince1970-age)*1_000, "u": ["fh": 13, "sd": 29]]])
             let quota = ClaudeLocalQuota.decodeDesktopHistory(data, now: now)
-            XCTAssertEqual(quota.state, state)
+            XCTAssertEqual(quota.state, "available")
             XCTAssertEqual(quota.capturedAt?.timeIntervalSince1970, now.timeIntervalSince1970-age)
-            if state == "stale" {
-                XCTAssertNil(quota.fiveHour)
-                let reading = ClaudeCapturedQuotaProvider(snapshot: quota, client: .claudeDesktop).reading()
-                XCTAssertEqual(reading.state, "stale"); XCTAssertTrue(reading.windows.isEmpty)
-            }
+            XCTAssertEqual(quota.fiveHour?.usedPercent, 13)
+            XCTAssertEqual(quota.sevenDay?.usedPercent, 29)
+            let reading = ClaudeCapturedQuotaProvider(snapshot: quota, client: .claudeDesktop).reading()
+            XCTAssertEqual(reading.windows.count, 2)
+            XCTAssertEqual(ClientQuotaPresentation.shouldAutomaticallyShow(reading, now: now), age <= 259_200)
         }
     }
     func testNewestEmptyOrFutureSampleDoesNotResurrectOlderQuota() throws {

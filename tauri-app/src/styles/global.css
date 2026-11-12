@@ -1612,6 +1612,7 @@ button {
 .quota-client-label span { color: var(--muted); font-size: 9px; }
 .quota-client-windows { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); gap: 10px 12px; min-width: 0; }
 .quota-client-window { min-width: 0; }
+.quota-client-window > small { display: block; font-size: 10px; color: var(--muted); margin-top: 2px; }
 .quota-client-empty { margin: 3px 0; color: var(--muted); font-size: 11px; }
 .quota-strip.quota-strip--tools {
   display: flex;

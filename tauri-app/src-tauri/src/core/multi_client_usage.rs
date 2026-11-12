@@ -36,7 +36,6 @@ const MAX_OPENCODE_ROW_BYTES: usize = 1024 * 1024;
 const MAX_COUNTER: u64 = 1_000_000_000_000;
 const MAX_CLAUDE_DESKTOP_HISTORY_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_CLAUDE_DESKTOP_HISTORY_SAMPLES: usize = 50_000;
-const CLAUDE_DESKTOP_HISTORY_MAX_AGE_SECONDS: f64 = 1_200.0;
 const CLAUDE_CACHE_LIFETIMES_FINGERPRINT: &str = "claude-cache-lifetimes-v1|";
 const CACHE_RANKING_MIN_INPUT_TOKENS: i64 = 1_000;
 const CACHE_RANKING_LOW_HIT_MIN_INPUT_TOKENS: i64 = 20_000;
@@ -1475,15 +1474,6 @@ fn parse_claude_desktop_usage_history(bytes: &[u8], now_epoch: f64) -> ClaudeLoc
     let Some(captured_at) = captured_at else {
         return claude_quota_state("invalid");
     };
-    if now_ms - timestamp_ms > CLAUDE_DESKTOP_HISTORY_MAX_AGE_SECONDS * 1_000.0 {
-        return ClaudeLocalQuotaSnapshot {
-            source: None,
-            state: "stale".into(),
-            captured_at: Some(captured_at),
-            five_hour: None,
-            seven_day: None,
-        };
-    }
 
     let Some(latest_sample) = latest_sample.as_object() else {
         return claude_quota_state("invalid");
@@ -5955,7 +5945,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_desktop_history_supports_v1_and_preserves_stale_state() {
+    fn claude_desktop_history_supports_v1_and_retains_idle_samples() {
         let v1 = parse_claude_desktop_usage_history(
             br#"{"version":1,"samples":[{"t":10000000,"fh":33.5,"sd":64}]}"#,
             10_000.0,
@@ -5965,14 +5955,14 @@ mod tests {
         assert_eq!(v1.seven_day.as_ref().unwrap().used_percent, 64.0);
         assert_eq!(v1.five_hour.as_ref().unwrap().resets_at, None);
 
-        let stale = parse_claude_desktop_usage_history(
+        let idle = parse_claude_desktop_usage_history(
             br#"{"version":2,"samples":[{"t":8799000,"org":"org-a","u":{"fh":33,"sd":64}}]}"#,
             10_000.0,
         );
-        assert_eq!(stale.state, "stale");
-        assert!(stale.captured_at.is_some());
-        assert!(stale.five_hour.is_none());
-        assert!(stale.seven_day.is_none());
+        assert_eq!(idle.state, "available");
+        assert!(idle.captured_at.is_some());
+        assert_eq!(idle.five_hour.unwrap().used_percent, 33.0);
+        assert_eq!(idle.seven_day.unwrap().used_percent, 64.0);
     }
 
     #[test]

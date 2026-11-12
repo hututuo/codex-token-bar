@@ -209,12 +209,12 @@ fn claude_desktop_windows(snapshot: &ClaudeLocalQuotaSnapshot) -> Vec<QuotaProvi
 
 fn claude_desktop_notice(snapshot: &ClaudeLocalQuotaSnapshot) -> String {
     if snapshot.source.as_deref() == Some("local-desktop-http-cache") {
-        return if snapshot.state == "available" { "Desktop 本地 HTTP 缓存；保留官方重置时间，未验证当前账号。不发送网络请求。" }
-            else { "Desktop 本地 HTTP 缓存已过期或不可用；不会唤醒客户端或请求刷新。" }.into();
+        return if snapshot.state == "available" { "Desktop 上次用量采样，保留官方重置时间；重置后等待客户端更新，不推算新余额。可在 Claude 中打开用量更新缓存。不发送网络请求，未验证当前账号。" }
+            else { "Desktop 本地 HTTP 缓存不可用；不会唤醒客户端或请求刷新。" }.into();
     }
     match snapshot.state.as_str() {
-        "available" => "Claude Desktop plan-usage-history.json 本地历史采样；未验证当前账号。文件不含重置时间，不与 CLI 额度合并。".into(),
-        "stale" => "Claude Desktop plan-usage-history.json 历史采样已超过 20 分钟；这不表示应用已关闭或额度已用尽。此状态不会唤醒应用，也不会发起网络请求。".into(),
+        "available" => "Claude Desktop 上次本地用量采样；不因闲置清空。文件不含重置时间，无法确认当前周期余额，不与 CLI 额度合并。未验证当前账号。".into(),
+        "stale" => "Claude Desktop 本地历史状态无法确认；不会唤醒应用，也不发送网络请求。".into(),
         "missing" => "未发现 Claude Desktop 本地套餐使用历史（plan-usage-history.json）；来源仅为本地文件，未验证当前账号。".into(),
         _ => "Claude Desktop 本地套餐使用历史（plan-usage-history.json）无效或暂不可用；未验证当前账号。".into(),
     }
@@ -607,7 +607,7 @@ mod tests {
         assert_eq!(snapshots[1].windows[0].label, "5h");
         assert_eq!(snapshots[1].windows[0].used_percent, Some(25.0));
         assert_eq!(snapshots[1].windows[0].resets_at, None);
-        assert!(snapshots[1].notice.contains("plan-usage-history.json"));
+        assert!(snapshots[1].notice.contains("上次本地用量采样"));
         assert!(snapshots[1].notice.contains("未验证当前账号"));
         assert!(snapshots[1].notice.contains("不与 CLI 额度合并"));
 
@@ -622,7 +622,7 @@ mod tests {
         assert_eq!(stale_projection[1].state, "stale");
         assert!(stale_projection[1].windows.is_empty());
         assert!(stale_projection[1].captured_at.is_some());
-        assert!(stale_projection[1].notice.contains("超过 20 分钟"));
+        assert!(!stale_projection[1].notice.contains("20 分钟"));
         assert!(stale_projection[1].notice.contains("不会唤醒应用"));
     }
 

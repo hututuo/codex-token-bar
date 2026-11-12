@@ -2,6 +2,25 @@ import XCTest
 @testable import CodexTokenBar
 
 final class OfflineClientQuotaTests: XCTestCase {
+    func testDesktopCacheRetainsOvernightAndResetBoundaryReadingsWithoutInferringUsage() throws {
+        let rows = try XCTUnwrap(try fixture()["claude"] as? [[String: Any]])
+        let row = try XCTUnwrap(rows.first { $0["name"] as? String == "zstd" })
+        let bytes = try XCTUnwrap(Data(base64Encoded: try XCTUnwrap(row["entryBase64"] as? String)))
+        let sampled = Date(timeIntervalSince1970: try XCTUnwrap(row["now"] as? Double))
+        let now = sampled.addingTimeInterval(13 * 3600)
+        let decoded = try XCTUnwrap(ClaudeDesktopHTTPCache.decode(bytes, now: now))
+        XCTAssertEqual(decoded.state, "available")
+        XCTAssertEqual(decoded.fiveHour?.usedPercent, 30)
+        XCTAssertEqual(decoded.sevenDay?.usedPercent, 90)
+        XCTAssertLessThan(try XCTUnwrap(decoded.capturedAt), sampled)
+        let reading = ClaudeCapturedQuotaProvider(snapshot: decoded, client: .claudeDesktop).reading()
+        let items = ClientQuotaProjection.items(codex: .empty, localReadings: [reading], now: now).filter { $0.client == "claudeDesktop" }
+        XCTAssertEqual(items.map(\.remaining), [70, 10])
+        XCTAssertEqual(items.map(\.status), ["重置待更新", "缓存"])
+        XCTAssertTrue(items[0].accessibleValue.contains("重置待更新"))
+        XCTAssertTrue(items.allSatisfy { ClientQuotaSelection().includes($0) && $0.source.contains("采样于") })
+        XCTAssertFalse(ClientQuotaPresentation.shouldAutomaticallyShow(reading, now: sampled.addingTimeInterval(4 * 86400)))
+    }
     private func fixture() throws -> [String: Any] {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         return try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("fixtures/local-quota-caches.json"))) as? [String: Any])

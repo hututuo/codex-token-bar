@@ -15,7 +15,6 @@ struct ClaudeLocalQuota: Equatable, Sendable {
     var source: String? = nil
     static let missing = Self(state: "missing", capturedAt: nil, fiveHour: nil, sevenDay: nil)
     static let desktopHistoryMaximumBytes = 4 * 1_024 * 1_024
-    static let desktopHistoryFreshness: TimeInterval = 20 * 60
 
     static func readDesktop(home: URL = FileManager.default.homeDirectoryForCurrentUser, now: Date = Date()) -> Self {
         let history = readDesktopHistory(home: home, now: now)
@@ -69,7 +68,8 @@ struct ClaudeLocalQuota: Equatable, Sendable {
         guard let latest else { return empty(samples.isEmpty ? "missing" : "invalid") }
         let captured = Date(timeIntervalSince1970: latest.time / 1_000)
         guard captured <= now.addingTimeInterval(60) else { return empty("invalid") }
-        guard now.timeIntervalSince(captured) <= desktopHistoryFreshness else { return empty("stale", captured) }
+        // Idle Desktop clients may not sample again until Usage is opened.
+        // Keep the last observation; display selection owns the three-day gate.
         // Never complete a new organization's partial sample from another row or source.
         guard let values = version == 1 ? latest.row : latest.row["u"] as? [String: Any] else { return empty("missing", captured) }
         func window(_ key: String) -> Window? {

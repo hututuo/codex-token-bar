@@ -277,15 +277,20 @@ struct AccountQuotaStrip: View {
                         if item.id.hasSuffix(":api") {
                             Text(item.status).font(.system(size: 11)).foregroundStyle(.secondary)
                         } else {
-                            AccountQuotaSegment(
-                                window: AccountQuotaWindow(label: item.window,
-                                    usedPercent: Int((100 - (item.remaining ?? 100)).rounded()), resetsAt: item.resetsAt),
-                                accent: AppTheme.quotaRemainingColor(percent: item.remaining ?? 0),
-                                isStale: item.status.contains("旧") || (client == "codex" && snapshot.staleDataDisplayed),
-                                unavailable: item.remaining == nil,
-                                unavailableText: item.status.isEmpty ? "不可用" : item.status,
-                                remainingPercentOverride: item.remaining)
-                                .help([item.source, item.status].filter { !$0.isEmpty }.joined(separator: " · "))
+                            VStack(alignment: .leading, spacing: 2) {
+                                AccountQuotaSegment(
+                                    window: AccountQuotaWindow(label: item.window,
+                                        usedPercent: Int((100 - (item.remaining ?? 100)).rounded()), resetsAt: item.resetsAt),
+                                    accent: AppTheme.quotaRemainingColor(percent: item.remaining ?? 0),
+                                    isStale: item.status.contains("旧") || (client == "codex" && snapshot.staleDataDisplayed),
+                                    unavailable: item.remaining == nil,
+                                    unavailableText: item.status.isEmpty ? "不可用" : item.status,
+                                    remainingPercentOverride: item.remaining)
+                                    .help([item.source, item.status].filter { !$0.isEmpty }.joined(separator: " · "))
+                                if client == "claudeDesktop", item.remaining != nil, !item.status.isEmpty {
+                                    Text(item.status).font(.system(size: 10)).foregroundStyle(.secondary)
+                                }
+                            }
                         }
                     }
                 }.frame(maxWidth: .infinity)

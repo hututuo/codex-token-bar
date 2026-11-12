@@ -2004,6 +2004,7 @@ function ClientQuotaRows({ items, stale, codexTools, planLabels = {} }: { items:
             resetsAt: item.resetsAt && Number.isFinite(Date.parse(item.resetsAt))
               ? new Date(item.resetsAt).toLocaleString(undefined, { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "重置时间未知",
           }}/>}
+          {client === "claudeDesktop" && item.remaining !== null && item.status && <small>{item.status}</small>}
         </div>)}</div>
       {client === "codex" && codexTools}
     </div>)}</div>;

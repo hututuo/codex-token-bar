@@ -205,29 +205,15 @@ pub fn decode(bytes: &[u8], now: f64) -> Option<ClaudeLocalQuotaSnapshot> {
             resets_at: reset.format(&Rfc3339).ok(),
         })
     };
-    if now - captured.unix_timestamp() as f64 > 1200.0 {
-        result.state = "stale".into();
+    // Preserve the last sample across idle time and reset boundaries. The UI
+    // labels passed resets as awaiting an update and never guesses new usage.
+    result.five_hour = window("five_hour");
+    result.seven_day = window("seven_day");
+    result.state = if result.five_hour.is_some() || result.seven_day.is_some() {
+        "available"
     } else {
-        let five = window("five_hour");
-        let seven = window("seven_day");
-        let has_observation = five.is_some() || seven.is_some();
-        let valid = |w: &ClaudeLocalQuotaWindow| {
-            w.resets_at
-                .as_deref()
-                .and_then(|s| OffsetDateTime::parse(s, &Rfc3339).ok())
-                .is_some_and(|d| d.unix_timestamp_nanos() as f64 / 1e9 > now)
-        };
-        result.five_hour = five.filter(valid);
-        result.seven_day = seven.filter(valid);
-        result.state = if result.five_hour.is_some() || result.seven_day.is_some() {
-            "available"
-        } else if has_observation {
-            "stale"
-        } else {
-            "missing"
-        }
-        .into();
-    }
+        "missing"
+    }.into();
     Some(result)
 }
 
