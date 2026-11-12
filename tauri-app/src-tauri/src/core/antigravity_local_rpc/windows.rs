@@ -353,7 +353,10 @@ fn decode_reply(value: &Value, method: Method, now: f64) -> Option<QuotaProvider
     let mut seen = std::collections::HashSet::new();
     let mut bucket_count = 0;
     for (index, group) in groups.iter().enumerate() {
-        let buckets = group.get("buckets")?.as_array()?;
+        let buckets = match group.get("buckets") {
+            None | Some(Value::Null) => continue,
+            Some(value) => value.as_array()?,
+        };
         bucket_count += buckets.len();
         if bucket_count > 128 {
             return None;
@@ -1031,6 +1034,18 @@ mod tests {
         assert!(methods[0] == Method::Summary);
         assert_eq!(reading.state, "available");
         assert_eq!(reading.windows[0].used_percent, Some(25.0));
+        let mut partial = summary.clone();
+        partial["response"]["groups"]
+            .as_array_mut()
+            .unwrap()
+            .insert(0, serde_json::json!({"displayName":"Empty optional group"}));
+        assert_eq!(
+            decode_reply(&partial, Method::Summary, now)
+                .unwrap()
+                .windows[0]
+                .used_percent,
+            Some(25.0)
+        );
         let mut methods = Vec::new();
         let fallback = probe(
             server(),
