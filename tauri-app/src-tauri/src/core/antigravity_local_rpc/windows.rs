@@ -144,12 +144,7 @@ impl Method {
         }
     }
     fn body(self) -> Value {
-        match self {
-            Self::Status => {
-                serde_json::json!({"metadata":{"ideName":"antigravity","extensionName":"antigravity","locale":"en"}})
-            }
-            Self::Summary => serde_json::json!({}),
-        }
+        serde_json::json!({"metadata":{"ideName":"antigravity","extensionName":"antigravity","locale":"en"}})
     }
 }
 
@@ -246,7 +241,10 @@ fn decode_snapshot(
             .filter(|a| !a.is_empty() && a.len() <= 512)
             .ok_or(())?;
         let mode = match kind {
-            Kind::Hub => args.iter().any(|s| s == "--standalone"),
+            Kind::Hub => {
+                args.iter().any(|s| s == "--standalone")
+                    || flag(&args, "--subclient_type")? == Some("hub")
+            }
             Kind::AgyHub => args.iter().any(|s| s == "--hub"),
             Kind::Ide => {
                 flag(&args, "--extension_server_port")?.is_some()
@@ -459,7 +457,9 @@ fn probe(
     rediscover: impl FnOnce() -> Result<Option<Server>, ()>,
 ) -> QuotaProviderSnapshot {
     for target in server.targets() {
-        for method in [Method::Status, Method::Summary] {
+        // Modern clients expose independent quota windows in Summary. A legacy
+        // model percentage must not hide a supported weekly window.
+        for method in [Method::Summary, Method::Status] {
             let Some(value) = query(target, method, &server.csrf) else {
                 continue;
             };
@@ -886,6 +886,14 @@ mod tests {
         let legacy=Binding{pid:43,executable:r"C:\Program Files\Antigravity IDE\resources\app\extensions\antigravity\bin\language_server_windows_arm.exe".into(),identity:"start-two".into()};
         let legacy_args = args(&legacy.executable, "--extension_server_port=53000");
         assert!(planned(
+            &snapshot(&hub, args(&hub.executable, "--subclient_type=hub")),
+            std::slice::from_ref(&hub),
+            &roots,
+            &home
+        )
+        .unwrap()
+        .is_some());
+        assert!(planned(
             &snapshot(&legacy, legacy_args.clone()),
             std::slice::from_ref(&legacy),
             &roots,
@@ -941,7 +949,7 @@ mod tests {
     }
 
     #[test]
-    fn windows_quota_revalidates_identity_and_uses_nonforcing_summary_fallback() {
+    fn windows_quota_revalidates_identity_and_uses_nonforcing_quota_fallbacks() {
         let (roots, home, binding) = context();
         let data = snapshot(&binding, args(&binding.executable, "--standalone"));
         let server = || {
@@ -957,7 +965,7 @@ mod tests {
                 if method == Method::Status {
                     Some(status())
                 } else {
-                    panic!("a valid status must not issue another request")
+                    None
                 }
             },
             || Ok(Some(server())),
@@ -1011,17 +1019,34 @@ mod tests {
             now,
             |_, method, _| {
                 methods.push(method);
-                if method == Method::Status {
-                    Some(serde_json::json!({"userStatus":{}}))
-                } else {
+                if method == Method::Summary {
                     Some(summary.clone())
+                } else {
+                    panic!("a valid summary must not issue a legacy request")
                 }
             },
             || Ok(Some(server())),
         );
-        assert_eq!(methods.len(), 2);
+        assert_eq!(methods.len(), 1);
+        assert!(methods[0] == Method::Summary);
         assert_eq!(reading.state, "available");
         assert_eq!(reading.windows[0].used_percent, Some(25.0));
+        let mut methods = Vec::new();
+        let fallback = probe(
+            server(),
+            now,
+            |_, method, _| {
+                methods.push(method);
+                if method == Method::Summary {
+                    Some(serde_json::json!({"response":{"groups":[]}}))
+                } else {
+                    Some(status())
+                }
+            },
+            || Ok(Some(server())),
+        );
+        assert_eq!(fallback.windows[0].used_percent, Some(25.0));
+        assert!(methods == [Method::Summary, Method::Status]);
         let snake = serde_json::json!({"user_status":{"cascade_model_config_data":{"client_model_configs":[{"label":"Fixture","quota_info":{"remaining_fraction":0.0,"reset_time":"2027-01-16T09:00:00Z"}}]}}});
         assert_eq!(
             decode_reply(&snake, Method::Status, now).unwrap().windows[0].used_percent,
