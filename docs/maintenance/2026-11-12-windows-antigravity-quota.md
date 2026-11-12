@@ -26,4 +26,16 @@ ToolHelp 先筛选进程名，内核查询可执行文件路径及进程创建�
 
 三个新增 Rust 用例列入 required-execution 门禁：合成路径/身份/端口约束，Hub/旧 IDE/agy 与多账号歧义，响应解析及查询后重新验证。Windows 测试块另以测试进程自身实际创建 loopback 监听，执行真实系统 CIM、SID、TCP 归属与原生命令行解析；没有安装 Antigravity、调用提供商或发模型请求。
 
-云端编译/测试结果待回填。Windows 系统元数据实测与合成响应不等于真实 Windows Antigravity 客户端验收；本机只有 macOS 客户端诊断证据。当前安装和用户的众测推荐隐藏设置均未替换。
+## Windows PowerShell 5.1 实测修正
+
+首次完整受检源码 `6b1ea8ca9bec30da876a59509d863a77e736aa51` 的 Windows 原生用例真实失败：1,787 通过、1 失败、14 个既有 ignored。失败发生在当前测试进程的系统元数据返回空候选；没有跳过该用例。根因是 Windows PowerShell 5.1 将 `ConvertFrom-Json` 顶层数组作为一个 pipeline 对象输出，外层 `@(...)` 再包装后，路径允许列表成为嵌套数组，合法进程也被过滤。参见 [PowerShell 官方 issue 3424](https://github.com/PowerShell/PowerShell/issues/3424)。修正为直接赋值 JSON 转换结果，保留原路径和同用户限制。
+
+新增编译前的 Windows PowerShell 5.1 系统门禁：实际创建本进程的 loopback 监听，验证单路径和多路径允许列表、错误路径拒绝、SID 与 TCP PID 归属；同时以无害路径夹具证明旧写法确实拒绝、修正写法接受。同一生产脚本通过该门禁，未发送 Antigravity/提供商请求。Rust 内原有真实系统用例及全部断言继续保留。
+
+最终受检源码 `a69e01371c4778eca0e852e5ce28b5b3eacf44b4` 的 [完整 CI 43140820949](https://github.com/hututuo/codex-token-bar/actions/runs/43140820949) 全部通过，最终 evidence seal 通过。Rust Windows 1,788 / macOS 1,845 通过（各 14 个既有 ignored），三个新增 required 用例在两端均实际执行通过，Windows 内的真实系统元数据和原生命令行解析断言也保留并通过。编译前 PS5 系统测试及其旧写法失败对照同样通过。前端 1,480、云端脚本 18、Swift XCTest 2,470（38 个既有跳过）、Swift Testing 676、发布脚本 112（1 个既有平台跳过）通过。
+
+同一源码的 [Public097 43140820935](https://github.com/hututuo/codex-token-bar/actions/runs/43140820935) Windows / macOS 双端通过。执行报告的源码、tracked 源码前后未变、无额外 untracked 输入、日志 SHA256、下载 artifact digest 与 required 用例通过记录均核对。Windows 整个 job 的系统门禁成功输出也单独留存。
+
+私有证据目录为 `~/Library/Application Support/CodexTokenBar-Maintenance/2026-11-11-quota-investigation-7shd8xj3/antigravity-open-source/`：最终 `windows-ci-a69e0137/`、`windows-validation-final.json`、`windows-public097-final-run-a69e0137.json`；首次真实失败保留在 `windows-ci-6b1ea8ca/`，没有用新成功覆盖旧失败。
+
+Windows 系统元数据实测与合成响应不等于真实 Windows Antigravity 客户端验收；本机只有 macOS 客户端诊断证据。当前安装和用户的众测推荐隐藏设置均未替换。

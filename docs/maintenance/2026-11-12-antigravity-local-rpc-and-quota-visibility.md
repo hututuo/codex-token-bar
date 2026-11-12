@@ -40,7 +40,7 @@ Swift 与 Tauri macOS 读取器只识别当前用户、标准系统/用户 Appli
 | --- | --- | --- |
 | Codex | 不必打开主窗口 | Token Bar 使用安装的可执行文件启动自有 app-server 并调用 `account/rateLimits/read`；需要兼容二进制和有效订阅登录，可由 app-server 联网。API 模式没有订阅余额。 |
 | Antigravity macOS standalone Hub | 需要语言服务进程运行，窗口不必在前台 | 本机 2.31.0 接口诊断成功；标准系统/用户 Applications 路径；多进程、自定义安装路径、日志轮换缺少 HTTPS 启动记录等情形可能不可用，不能假定兼容。 |
-| Antigravity Windows / 旧 IDE | 本轮没有接入实时路径 | 保留原 Tools 所选账号与 IDE 缓存读取；不是已通过的实时支持，不以跨平台编译通过代替客户端实测。 |
+| Antigravity Windows Hub / 旧 IDE / agy | 新增实时读取源码，需要语言服务运行 | 后续 Windows 补齐与单独门禁记录见 [Windows 读取说明](2026-11-12-windows-antigravity-quota.md)；没有运行候选时保留缓存读取。仍未做真实 Windows Antigravity 客户端验收。 |
 | Claude CLI | 读取缓存时不需要运行 | 需要此前配置本地额度采集或存在兼容 statusline 缓存；API/Bedrock/Vertex/Foundry 等模式默认不展示订阅额度。自定义配置目录及环境来源可能影响模式识别。 |
 | Claude Desktop | 读取缓存时不需要运行 | 识别支持的 plan-history 与 Chromium Simple Cache 格式；支持本轮确认的 zstd 2 MiB 流和查询参数。应用版本、缓存格式/位置改变、缓存清理、Windows 封装路径等可能造成未读到，不能用安装检测代替有效采样。 |
 
@@ -50,7 +50,7 @@ Swift 与 Tauri macOS 读取器只识别当前用户、标准系统/用户 Appli
 
 新增纯合成共享 RPC 夹具及两端解析、进程/端口/CSRF 约束回归；自动显示测试覆盖三天边界、未来时间、API、首次出现及手动隐藏/勾选；小数回归覆盖主页面/圆环/详情/无障碍。只在本机做轻量语法和 diff 检查；完整编译和套件交云端。
 
-最终受检源码 `652fd7145efb0830d29dbd327e7e85f722a40229` 的 [完整 CI 43074744378](https://github.com/hututuo/codex-token-bar/actions/runs/43074744378) 全部通过，最终 evidence seal 通过。前端 1,480、云端脚本 18，Swift XCTest 2,470（38 个既有跳过）、Swift Testing 676，发布脚本 112（1 个既有平台跳过），Rust macOS 1,842 / Windows 1,785（各 14 个既有 ignored）通过。新增四个 Swift、两个 Rust 约束用例列入 required execution 门禁；下载的执行报告源码、前后 tracked 源码未变、无额外 untracked 输入、日志 SHA256 与 artifact digest 均已核对。最终源码的主页面实际渲染也验证 `9.11%` 和 `90.89%`，没有绕回旧整数格式。
+此前 macOS 读取与自动显示阶段的受检源码 `652fd7145efb0830d29dbd327e7e85f722a40229` 的 [完整 CI 43074744378](https://github.com/hututuo/codex-token-bar/actions/runs/43074744378) 全部通过，最终 evidence seal 通过。前端 1,480、云端脚本 18，Swift XCTest 2,470（38 个既有跳过）、Swift Testing 676，发布脚本 112（1 个既有平台跳过），Rust macOS 1,842 / Windows 1,785（各 14 个既有 ignored）通过。新增四个 Swift、两个 Rust 约束用例列入 required execution 门禁；下载的执行报告源码、前后 tracked 源码未变、无额外 untracked 输入、日志 SHA256 与 artifact digest 均已核对。最终源码的主页面实际渲染也验证 `9.11%` 和 `90.89%`，没有绕回旧整数格式。
 
 首次前端回归发现“Codex 已返回但不可读的储备窗口”被新自动规则隐藏。已修正为“窗口对象存在即保留不可用状态”，未返回的占位仍默认不选中；不能把未知当作零。上述最终源码已通过该既有回归。
 
