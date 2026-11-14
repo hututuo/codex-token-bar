@@ -384,7 +384,7 @@ jobs:
               --require discovery_requires_installed_process_owned_loopback_port_and_current_csrf \
               --require windows_quota_discovery_checks_user_paths_sockets_and_real_os_metadata \
               --require windows_quota_supports_hub_legacy_and_agy_without_guessing_between_accounts \
-              --require windows_quota_revalidates_identity_and_uses_nonforcing_quota_fallbacks \
+              --require windows_quota_uses_only_summary_and_revalidates_identity \
               --require confirmed_antigravity_route_prices_match_canonical_models_and_legacy_opus_prices \
               --require claude_cache_write_lifetimes_prefer_valid_split_and_default_to_five_minutes \
               --require trend_prices_reuse_request_pricing_and_keep_unknown_requests_explicit \

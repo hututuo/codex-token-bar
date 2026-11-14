@@ -128,7 +128,7 @@ impl Target {
         )
     }
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Method {
     Summary,
 }
