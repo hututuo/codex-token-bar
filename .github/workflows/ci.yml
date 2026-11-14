@@ -379,7 +379,7 @@ jobs:
               --allow-untracked-output runtime-recovery-production.json \
               --allow-untracked-output runtime-recovery-production.validation.json \
               --require failed_partial_backup_is_never_published \
-              --require shared_local_rpc_fixtures_preserve_explicit_fractions_and_account_privacy \
+              --require shared_quota_summary_fixture_keeps_only_stable_pool_ids \
               --require claude_desktop_offline_samples_survive_idle_and_reset_boundaries \
               --require discovery_requires_installed_process_owned_loopback_port_and_current_csrf \
               --require windows_quota_discovery_checks_user_paths_sockets_and_real_os_metadata \
