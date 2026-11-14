@@ -1,12 +1,9 @@
 //! Windows Hub, IDE LSP and agy --hub discovery. No client launch, remote
 //! CIM session, account credentials, forceRefresh, or arbitrary request URL.
-use super::{
-    decode, unavailable, valid_label, QuotaProviderSnapshot, QuotaProviderWindow, MAX_BYTES, SOURCE,
-};
+use super::{parse_quota_summary, unavailable, QuotaProviderSnapshot, MAX_BYTES};
 use serde::Deserialize;
 use serde_json::Value;
 use std::path::Path;
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 const MAX_SERVERS: usize = 16;
 const MAX_SOCKETS: usize = 32;
@@ -133,15 +130,11 @@ impl Target {
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Method {
-    Status,
     Summary,
 }
 impl Method {
     fn name(self) -> &'static str {
-        match self {
-            Self::Status => "GetUserStatus",
-            Self::Summary => "RetrieveUserQuotaSummary",
-        }
+        "RetrieveUserQuotaSummary"
     }
     fn body(self) -> Value {
         serde_json::json!({"metadata":{"ideName":"antigravity","extensionName":"antigravity","locale":"en"}})
@@ -314,147 +307,9 @@ fn decode_snapshot(
 }
 
 fn decode_reply(value: &Value, method: Method, now: f64) -> Option<QuotaProviderSnapshot> {
-    if method == Method::Status {
-        let user = value
-            .get("userStatus")
-            .or_else(|| value.get("user_status"))?;
-        let config = user
-            .get("cascadeModelConfigData")
-            .or_else(|| user.get("cascade_model_config_data"))?;
-        let models = config
-            .get("clientModelConfigs")
-            .or_else(|| config.get("client_model_configs"))?
-            .as_array()?;
-        if models.len() > 128 {
-            return None;
-        }
-        let models: Vec<_> = models.iter().map(|model| {
-            let empty = Value::Null;
-            let quota = model.get("quotaInfo")
-                .or_else(|| model.get("quota_info")).unwrap_or(&empty);
-            serde_json::json!({
-                "label": model.get("label"),
-                "modelOrAlias": model.get("modelOrAlias").or_else(|| model.get("model_or_alias")),
-                "quotaInfo": {
-                    "remainingFraction": quota.get("remainingFraction").or_else(|| quota.get("remaining_fraction")),
-                    "resetTime": quota.get("resetTime").or_else(|| quota.get("reset_time"))
-                }
-            })
-        }).collect();
-        let projected = serde_json::json!({"userStatus":{"cascadeModelConfigData":{"clientModelConfigs":models}}});
-        let reading = decode(&serde_json::to_vec(&projected).ok()?, now);
-        return (!reading.windows.is_empty()).then_some(reading);
-    }
-    let root = value
-        .get("response")
-        .or_else(|| value.get("summary"))
-        .unwrap_or(value);
-    let groups = root.get("groups")?.as_array()?;
-    if groups.len() > 128 {
-        return None;
-    }
-    let mut windows = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    let mut bucket_count = 0;
-    for (index, group) in groups.iter().enumerate() {
-        let buckets = match group.get("buckets") {
-            None | Some(Value::Null) => continue,
-            Some(value) => value.as_array()?,
-        };
-        bucket_count += buckets.len();
-        if bucket_count > 128 {
-            return None;
-        }
-        if group.get("disabled").and_then(Value::as_bool) == Some(true) {
-            continue;
-        }
-        let group_name = group
-            .get("displayName")
-            .or_else(|| group.get("display_name"))
-            .and_then(Value::as_str)
-            .filter(|s| valid_label(s))
-            .unwrap_or("额度");
-        for bucket in buckets {
-            if bucket.get("disabled").and_then(Value::as_bool) == Some(true) {
-                continue;
-            }
-            let raw = bucket
-                .get("remainingFraction")
-                .or_else(|| bucket.get("remaining_fraction"))
-                .or_else(|| {
-                    bucket.get("remaining").and_then(|r| {
-                        r.get("remainingFraction")
-                            .or_else(|| r.get("remaining_fraction"))
-                    })
-                })
-                .or_else(|| {
-                    bucket
-                        .get("remaining")
-                        .filter(|r| {
-                            r.get("case").and_then(Value::as_str) == Some("remainingFraction")
-                        })
-                        .and_then(|r| r.get("value"))
-                });
-            let Some(fraction) = raw
-                .and_then(Value::as_f64)
-                .filter(|n| n.is_finite() && (0.0..=1.0).contains(n))
-            else {
-                continue;
-            };
-            let name = bucket
-                .get("displayName")
-                .or_else(|| bucket.get("display_name"))
-                .or_else(|| bucket.get("window"))
-                .and_then(Value::as_str)
-                .filter(|s| valid_label(s))
-                .unwrap_or("额度");
-            let id = bucket
-                .get("bucketId")
-                .or_else(|| bucket.get("bucket_id"))
-                .and_then(Value::as_str)
-                .filter(|s| valid_label(s))
-                .unwrap_or(name);
-            let id = format!("bucket:{index}:{id}");
-            if !seen.insert(id.clone()) {
-                continue;
-            }
-            let label = format!("{group_name} · {name}");
-            let label = if valid_label(&label) {
-                label
-            } else {
-                group_name.into()
-            };
-            let reset = bucket
-                .get("resetTime")
-                .or_else(|| bucket.get("reset_time"))
-                .and_then(Value::as_str)
-                .and_then(|s| OffsetDateTime::parse(s, &Rfc3339).ok());
-            windows.push(QuotaProviderWindow {
-                id: Some(id),
-                label,
-                used_percent: Some((1.0 - fraction) * 100.0),
-                resets_at: reset.and_then(|d| d.format(&Rfc3339).ok()),
-            });
-        }
-    }
-    if windows.is_empty() {
-        return None;
-    }
-    let stale = windows.iter().any(|w| {
-        w.resets_at
-            .as_deref()
-            .and_then(|s| OffsetDateTime::parse(s, &Rfc3339).ok())
-            .is_none_or(|d| d.unix_timestamp() as f64 <= now)
-    });
-    Some(QuotaProviderSnapshot {
-        client: "antigravity".into(),
-        state: if stale { "stale" } else { "available" }.into(),
-        source: SOURCE.into(),
-        windows,
-        captured_at: OffsetDateTime::from_unix_timestamp(now as i64).ok()
-            .and_then(|d| d.format(&Rfc3339).ok()),
-        notice: "当前运行的 Antigravity 本机语言服务返回值；未强制刷新。客户端可能自行联网。读取时间不代表上游采样时间，按额度池展示，不合计余额。".into(),
-    })
+    let _ = method;
+    let reading = parse_quota_summary(value, now)?;
+    (!reading.windows.is_empty()).then_some(reading)
 }
 
 fn probe(
@@ -464,9 +319,7 @@ fn probe(
     rediscover: impl FnOnce() -> Result<Option<Server>, ()>,
 ) -> QuotaProviderSnapshot {
     for target in server.targets() {
-        // Modern clients expose independent quota windows in Summary. A legacy
-        // model percentage must not hide a supported weekly window.
-        for method in [Method::Summary, Method::Status] {
+        for method in [Method::Summary] {
             let Some(value) = query(target, method, &server.csrf) else {
                 continue;
             };
@@ -801,9 +654,14 @@ mod tests {
             |s| serde_json::from_str(s).ok(),
         )
     }
-    fn status() -> Value {
-        serde_json::json!({"userStatus":{"email":"DO-NOT-PROJECT","cascadeModelConfigData":{"clientModelConfigs":[
-        {"label":"Fixture Gemini","modelOrAlias":{"model":"gemini-fixture"},"quotaInfo":{"remainingFraction":0.75,"resetTime":"2027-01-16T09:00:00Z"}}]}}})
+    fn summary() -> Value {
+        serde_json::json!({"response":{"groups":[{"buckets":[
+            {"bucketId":"gemini-5h","remainingFraction":0.75,"resetTime":"2027-01-16T09:00:00Z"},
+            {"bucketId":"gemini-weekly","remaining":{"remainingFraction":0.6},"resetTimeUtc":"2027-01-16T09:00:00Z"},
+            {"bucketId":"3p-5h","remaining":{"case":"remainingFraction","value":0.4},"resetTime":"2027-01-16T09:00:00Z"},
+            {"id":"3p-weekly","remainingFraction":0.25,"resetTime":"2027-01-16T09:00:00Z"},
+            {"bucketId":"model-percentage","remainingFraction":0.01}
+        ]}]}})
     }
 
     #[test]
@@ -815,7 +673,7 @@ mod tests {
             .unwrap();
         assert_eq!(server.targets().len(), 2);
         for target in server.targets() {
-            let url = reqwest::Url::parse(&target.url(Method::Status)).unwrap();
+            let url = reqwest::Url::parse(&target.url(Method::Summary)).unwrap();
             assert_eq!(url.scheme(), "https");
             assert!(matches!(
                 url.host_str(),
@@ -968,7 +826,7 @@ mod tests {
     }
 
     #[test]
-    fn windows_quota_revalidates_identity_and_uses_nonforcing_quota_fallbacks() {
+    fn windows_quota_uses_only_summary_and_revalidates_identity() {
         let (roots, home, binding) = context();
         let data = snapshot(&binding, args(&binding.executable, "--standalone"));
         let server = || {
@@ -977,27 +835,50 @@ mod tests {
                 .unwrap()
         };
         let now = 1_800_000_000.0;
+        let summary = summary();
+        let mut methods = Vec::new();
         let reading = probe(
             server(),
             now,
             |_, method, _| {
-                if method == Method::Status {
-                    Some(status())
-                } else {
-                    None
-                }
+                methods.push(method);
+                Some(summary.clone())
             },
             || Ok(Some(server())),
         );
+        assert_eq!(methods, vec![Method::Summary]);
+        assert_eq!(Method::Summary.name(), "RetrieveUserQuotaSummary");
         assert_eq!(reading.state, "available");
-        assert_eq!(reading.windows[0].used_percent, Some(25.0));
-        assert!(!serde_json::to_string(&reading)
-            .unwrap()
-            .contains("DO-NOT-PROJECT"));
+        assert_eq!(
+            reading.windows.iter().map(|window| window.id.as_deref().unwrap()).collect::<Vec<_>>(),
+            vec!["gemini-5h", "gemini-weekly", "3p-5h", "3p-weekly"]
+        );
+        assert_eq!(
+            reading.windows.iter().map(|window| window.label.as_str()).collect::<Vec<_>>(),
+            vec!["Gemini · 5h", "Gemini · 7d", "第三方模型 · 5h", "第三方模型 · 7d"]
+        );
+        assert_eq!(
+            reading.windows.iter().map(|window| window.used_percent.unwrap()).collect::<Vec<_>>(),
+            vec![25.0, 40.0, 60.0, 75.0]
+        );
+        assert!(reading.history.is_empty());
+        assert!(!serde_json::to_string(&reading).unwrap().contains("DO-NOT-PROJECT"));
+
+        let target = Target { port: 53100, host: Loopback::V4 };
+        let request = reqwest::blocking::Client::new()
+            .post(target.url(Method::Summary))
+            .header("X-Codeium-Csrf-Token", NONCE)
+            .json(&Method::Summary.body())
+            .build()
+            .unwrap();
+        assert!(Method::Summary.body().get("forceRefresh").is_none());
+        assert!(request.headers().get("Authorization").is_none());
+        assert!(request.headers().get("Cookie").is_none());
+
         let dropped = probe(
             server(),
             now,
-            |_, _, _| Some(status()),
+            |_, _, _| Some(summary.clone()),
             || {
                 let mut changed = server();
                 changed.binding.identity = "new-process".into();
@@ -1008,7 +889,7 @@ mod tests {
         let dropped = probe(
             server(),
             now,
-            |_, _, _| Some(status()),
+            |_, _, _| Some(summary.clone()),
             || {
                 let mut changed = server();
                 changed.sockets.clear();
@@ -1016,84 +897,61 @@ mod tests {
             },
         );
         assert_eq!(dropped.state, "unavailable");
-        for method in [Method::Status, Method::Summary] {
-            assert!(method.body().get("forceRefresh").is_none());
-            let target = Target {
-                port: 53100,
-                host: Loopback::V4,
-            };
-            let request = reqwest::blocking::Client::new()
-                .post(target.url(method))
-                .header("X-Codeium-Csrf-Token", NONCE)
-                .json(&method.body())
-                .build()
-                .unwrap();
-            assert!(request.headers().get("Authorization").is_none());
-            assert!(request.headers().get("Cookie").is_none());
-        }
-        let summary = serde_json::json!({"response":{"groups":[{"displayName":"Fixture Gemini","buckets":[{"bucketId":"gemini-5h","window":"5h","remaining":{"case":"remainingFraction","value":0.75},"resetTime":"2027-01-16T09:00:00Z"}]}]}});
+
         let mut methods = Vec::new();
-        let reading = probe(
+        let failed = probe(
             server(),
             now,
             |_, method, _| {
                 methods.push(method);
-                if method == Method::Summary {
-                    Some(summary.clone())
-                } else {
-                    panic!("a valid summary must not issue a legacy request")
-                }
+                Some(serde_json::json!({"response":{"groups":[]}}))
             },
             || Ok(Some(server())),
         );
-        assert_eq!(methods.len(), 1);
-        assert!(methods[0] == Method::Summary);
-        assert_eq!(reading.state, "available");
-        assert_eq!(reading.windows[0].used_percent, Some(25.0));
-        let mut partial = summary.clone();
-        partial["response"]["groups"]
-            .as_array_mut()
-            .unwrap()
-            .insert(0, serde_json::json!({"displayName":"Empty optional group"}));
-        assert_eq!(
-            decode_reply(&partial, Method::Summary, now)
-                .unwrap()
-                .windows[0]
-                .used_percent,
-            Some(25.0)
-        );
-        let mut methods = Vec::new();
-        let fallback = probe(
-            server(),
-            now,
-            |_, method, _| {
-                methods.push(method);
-                if method == Method::Summary {
-                    Some(serde_json::json!({"response":{"groups":[]}}))
-                } else {
-                    Some(status())
-                }
-            },
-            || Ok(Some(server())),
-        );
-        assert_eq!(fallback.windows[0].used_percent, Some(25.0));
-        assert!(methods == [Method::Summary, Method::Status]);
-        let snake = serde_json::json!({"user_status":{"cascade_model_config_data":{"client_model_configs":[{"label":"Fixture","quota_info":{"remaining_fraction":0.0,"reset_time":"2027-01-16T09:00:00Z"}}]}}});
-        assert_eq!(
-            decode_reply(&snake, Method::Status, now).unwrap().windows[0].used_percent,
-            Some(100.0)
-        );
-        let mut bad = summary.clone();
-        bad["response"]["groups"][0]["buckets"][0]["remaining"]["value"] = true.into();
-        assert!(decode_reply(&bad, Method::Summary, now).is_none());
+        assert_eq!(failed.state, "unavailable");
+        assert_eq!(methods, vec![Method::Summary]);
+
+        let legacy = serde_json::json!({"userStatus":{"cascadeModelConfigData":{"clientModelConfigs":[
+            {"label":"Gemini","quotaInfo":{"remainingFraction":0.75}}
+        ]}}});
+        assert!(decode_reply(&legacy, Method::Summary, now).is_none());
+        let mut error = summary.clone();
+        error["code"] = 13.into();
+        assert!(decode_reply(&error, Method::Summary, now).is_none());
+        let mut bad_percent = summary.clone();
+        bad_percent["response"]["groups"][0]["buckets"][0]["remainingFraction"] = true.into();
+        assert_eq!(decode_reply(&bad_percent, Method::Summary, now).unwrap().windows.len(), 3);
         let mut disabled = summary.clone();
         disabled["response"]["groups"][0]["buckets"][0]["disabled"] = true.into();
-        assert!(decode_reply(&disabled, Method::Summary, now).is_none());
+        assert_eq!(decode_reply(&disabled, Method::Summary, now).unwrap().windows.len(), 3);
         let mut stale = summary.clone();
         stale["response"]["groups"][0]["buckets"][0]["resetTime"] = Value::Null;
-        assert_eq!(
-            decode_reply(&stale, Method::Summary, now).unwrap().state,
-            "stale"
-        );
+        assert_eq!(decode_reply(&stale, Method::Summary, now).unwrap().state, "stale");
+        let mut duplicate = summary.clone();
+        let bucket = duplicate["response"]["groups"][0]["buckets"][0].clone();
+        duplicate["response"]["groups"][0]["buckets"].as_array_mut().unwrap().push(bucket);
+        assert!(decode_reply(&duplicate, Method::Summary, now).is_none());
+    }
+
+    #[test]
+    fn windows_decode_matches_shared_quota_summary_fixture() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../fixtures/antigravity-quota-summary.json"
+        ))
+        .unwrap();
+        for row in fixture["cases"].as_array().unwrap() {
+            let value = parse_quota_summary(&row["data"], row["now"].as_f64().unwrap())
+                .unwrap_or_else(unavailable);
+            assert_eq!(value.state, row["expectedState"].as_str().unwrap(), "{}", row["name"]);
+            assert_eq!(
+                value.windows.iter().map(|window| window.id.as_deref().unwrap()).collect::<Vec<_>>(),
+                row["ids"].as_array().unwrap().iter().map(|value| value.as_str().unwrap()).collect::<Vec<_>>(),
+                "{}",
+                row["name"]
+            );
+            for (window, used) in value.windows.iter().zip(row["used"].as_array().unwrap()) {
+                assert!((window.used_percent.unwrap() - used.as_f64().unwrap()).abs() < 0.000001);
+            }
+        }
     }
 }

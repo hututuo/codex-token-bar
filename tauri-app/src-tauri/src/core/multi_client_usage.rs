@@ -1,6 +1,6 @@
 use crate::core::{
     app_paths, atomic_file,
-    multi_client_product::{self, ProductDetection, QuotaProviderSnapshot},
+    multi_client_product::{self, ClientQuotaHistorySample, ProductDetection, QuotaProviderSnapshot},
     shared_source_io::{probe_uncached, read_range, SourceReader},
 };
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -955,7 +955,7 @@ fn read_multi_client_usage_snapshot_at(
     database_path: &Path,
 ) -> Result<MultiClientUsageSnapshot, String> {
     // Bounded local-cache probes stay independent of transcript opt-in and ledger availability.
-    let local_quotas = read_local_client_quotas();
+    let local_quotas = read_local_client_quotas_with_interval(super::local_quota_cache::probe_interval());
     let (preferences, mut diagnostics) = load_preferences(settings_path);
     let (summaries, today_summaries, seven_day_summaries, updated_at, trend_buckets, daily_buckets) =
         if database_path.exists() {
@@ -1047,7 +1047,7 @@ fn refresh_multi_client_usage_at(
 ) -> Result<MultiClientUsageSnapshot, String> {
     // Provider cache readers have fixed paths/byte limits and never launch a client or use
     // credentials/network. Transcript failures must not suppress independently readable quota.
-    let local_quotas = read_local_client_quotas();
+    let local_quotas = read_local_client_quotas_with_interval(super::local_quota_cache::probe_interval());
     let (preferences, mut diagnostics) = load_preferences(settings_path);
     let enabled = preferences
         .iter()
@@ -1248,16 +1248,82 @@ fn refresh_multi_client_usage_at(
 
 /// Callable even when transcript discovery or ledger refresh fails.
 pub fn read_local_client_quotas() -> Vec<QuotaProviderSnapshot> {
-    read_local_client_quotas_with_interval(super::local_quota_cache::probe_interval())
+    read_local_client_quotas_with_history(super::local_quota_cache::probe_interval())
 }
 
 pub fn refresh_local_client_quotas() -> Vec<QuotaProviderSnapshot> {
     // A manual local refresh bypasses only file-read reuse, never invokes a provider.
-    read_local_client_quotas_with_interval(Duration::ZERO)
+    read_local_client_quotas_with_history(Duration::ZERO)
 }
 
 pub fn automatically_refresh_local_client_quotas() -> Vec<QuotaProviderSnapshot> {
-    read_local_client_quotas_with_interval(super::local_quota_cache::automatic_probe_interval())
+    read_local_client_quotas_with_history(super::local_quota_cache::automatic_probe_interval())
+}
+
+fn read_local_client_quotas_with_history(interval: Duration) -> Vec<QuotaProviderSnapshot> {
+    let mut readings = read_local_client_quotas_with_interval(interval);
+    let now = OffsetDateTime::now_utc().unix_timestamp_nanos() as f64 / 1_000_000_000.0;
+    if let Some(desktop) = readings.iter_mut().find(|reading| reading.client == "claudeDesktop") {
+        desktop.history = read_claude_desktop_history_observations(&app_paths::home_dir(), now);
+    }
+    attach_client_quota_history(&mut readings);
+    readings
+}
+
+fn attach_client_quota_history(readings: &mut [QuotaProviderSnapshot]) {
+    let now = OffsetDateTime::now_utc().unix_timestamp_nanos() as f64 / 1_000_000_000.0;
+    let database_exists = app_paths::multi_client_usage_database_path()
+        .is_some_and(|path| path.is_file());
+    if !database_exists && !super::client_quota_history::has_recordable_observation(readings, now) {
+        for reading in readings {
+            reading.history.clear();
+        }
+        return;
+    }
+    let connection = match open_activity_module_connection() {
+        Ok(connection) => connection,
+        Err(error) => {
+            for reading in readings {
+                if reading.source == "unsupported"
+                    || !matches!(reading.client.as_str(), "claudeCode" | "claudeDesktop" | "antigravity")
+                {
+                    continue;
+                }
+                reading.history.clear();
+                append_quota_history_notice(reading, &format!("本机额度历史暂不可用：{error}"));
+            }
+            return;
+        }
+    };
+    let record_error = super::client_quota_history::record_history(&connection, readings, now).err();
+    for reading in readings {
+        if reading.state == "api" || reading.source == "unsupported" {
+            continue;
+        }
+        match super::client_quota_history::read_history(
+            &connection,
+            &reading.client,
+            now,
+        ) {
+            Ok(history) => reading.history = history,
+            Err(error) => {
+                reading.history.clear();
+                append_quota_history_notice(reading, &error);
+            }
+        }
+        if let Some(error) = record_error.as_deref() {
+            append_quota_history_notice(reading, &format!("本次额度历史写入失败：{error}"));
+        }
+    }
+}
+
+fn append_quota_history_notice(reading: &mut QuotaProviderSnapshot, message: &str) {
+    if reading.notice.is_empty() {
+        reading.notice = message.into();
+    } else {
+        reading.notice.push_str("；");
+        reading.notice.push_str(message);
+    }
 }
 
 fn read_local_client_quotas_with_interval(interval: Duration) -> Vec<QuotaProviderSnapshot> {
@@ -1410,6 +1476,120 @@ fn read_claude_desktop_quota_at(path: &Path, now_epoch: f64) -> ClaudeLocalQuota
         Err(_) => return claude_quota_state("invalid"),
     };
     parse_claude_desktop_usage_history(&bytes, now_epoch)
+}
+
+fn read_claude_desktop_history_observations(
+    home: &Path,
+    now_epoch: f64,
+) -> Vec<ClientQuotaHistorySample> {
+    let path = claude_desktop_history_path(home);
+    let Ok(metadata) = fs::symlink_metadata(&path) else {
+        return Vec::new();
+    };
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() > MAX_CLAUDE_DESKTOP_HISTORY_BYTES
+    {
+        return Vec::new();
+    }
+    let bytes = match fs::File::open(path).and_then(|file| {
+        let mut bytes = Vec::new();
+        file.take(MAX_CLAUDE_DESKTOP_HISTORY_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        Ok(bytes)
+    }) {
+        Ok(bytes) if bytes.len() as u64 <= MAX_CLAUDE_DESKTOP_HISTORY_BYTES => bytes,
+        _ => return Vec::new(),
+    };
+    parse_claude_desktop_history_observations(&bytes, now_epoch)
+}
+
+fn parse_claude_desktop_history_observations(
+    bytes: &[u8],
+    now_epoch: f64,
+) -> Vec<ClientQuotaHistorySample> {
+    if bytes.len() as u64 > MAX_CLAUDE_DESKTOP_HISTORY_BYTES || !now_epoch.is_finite() {
+        return Vec::new();
+    }
+    let Ok(root) = serde_json::from_slice::<Value>(bytes) else {
+        return Vec::new();
+    };
+    let Some(root) = root.as_object() else {
+        return Vec::new();
+    };
+    let version = match root.get("version").and_then(Value::as_f64) {
+        Some(1.0) => ClaudeDesktopHistoryVersion::V1,
+        Some(2.0) => ClaudeDesktopHistoryVersion::V2,
+        _ => return Vec::new(),
+    };
+    let Some(samples) = root.get("samples").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    if samples.is_empty() || samples.len() > MAX_CLAUDE_DESKTOP_HISTORY_SAMPLES {
+        return Vec::new();
+    }
+    let latest = samples
+        .iter()
+        .filter_map(|sample| {
+            let object = sample.as_object()?;
+            let timestamp = object
+                .get("t")
+                .and_then(value_as_f64)
+                .filter(|value| value.is_finite() && *value >= 0.0)?;
+            Some((timestamp, object.get("org")))
+        })
+        .max_by(|left, right| left.0.total_cmp(&right.0));
+    let Some((_, latest_org)) = latest else {
+        return Vec::new();
+    };
+    let latest_org = latest_org.cloned();
+    let now_ms = now_epoch * 1_000.0;
+    let cutoff_ms = (now_epoch - 30.0 * 24.0 * 60.0 * 60.0).max(0.0) * 1_000.0;
+    let mut observations = Vec::new();
+    for sample in samples {
+        let Some(object) = sample.as_object() else {
+            continue;
+        };
+        if object.get("org") != latest_org.as_ref() {
+            continue;
+        }
+        let Some(timestamp_ms) = object
+            .get("t")
+            .and_then(value_as_f64)
+            .filter(|value| {
+                value.is_finite() && *value >= cutoff_ms && *value <= now_ms
+            })
+        else {
+            continue;
+        };
+        let usage = match version {
+            ClaudeDesktopHistoryVersion::V1 => Some(object),
+            ClaudeDesktopHistoryVersion::V2 => object.get("u").and_then(Value::as_object),
+        };
+        let observed_at = timestamp_ms / 1_000.0;
+        for (window_id, key) in [("5h", "fh"), ("7d", "sd")] {
+            let Some(used_percent) = usage
+                .and_then(|usage| usage.get(key))
+                .and_then(value_as_f64)
+                .filter(|value| value.is_finite() && (0.0..=100.0).contains(value))
+            else {
+                continue;
+            };
+            observations.push(ClientQuotaHistorySample {
+                window_id: window_id.into(),
+                observed_at,
+                used_percent,
+                source: Some("local-desktop-history".into()),
+                resets_at: None,
+            });
+        }
+    }
+    observations.sort_by(|left, right| {
+        left.observed_at
+            .total_cmp(&right.observed_at)
+            .then_with(|| left.window_id.cmp(&right.window_id))
+    });
+    observations
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -5963,6 +6143,31 @@ mod tests {
         assert!(idle.captured_at.is_some());
         assert_eq!(idle.five_hour.unwrap().used_percent, 33.0);
         assert_eq!(idle.seven_day.unwrap().used_percent, 64.0);
+    }
+
+    #[test]
+    fn claude_desktop_history_import_keeps_only_latest_org_and_recent_valid_samples() {
+        let observations = parse_claude_desktop_history_observations(
+            br#"{"version":2,"samples":[
+                {"t":407999999,"org":"old","u":{"fh":1}},
+                {"t":408000000,"org":"current","u":{"fh":12.345,"sd":67.89}},
+                {"t":2999500000,"org":"other","u":{"fh":99,"sd":99}},
+                {"t":2999000000,"org":"current","u":{"fh":12.346,"sd":67.88}},
+                {"t":3000000001,"org":"current","u":{"fh":100,"sd":100}}
+            ]}"#,
+            3_000_000.0,
+        );
+        assert_eq!(observations.len(), 4);
+        assert!(observations.iter().all(|sample| {
+            sample.source.as_deref() == Some("local-desktop-history")
+                && sample.observed_at <= 3_000_000.0
+        }));
+        assert_eq!(observations[0].observed_at, 408_000.0);
+        assert_eq!(observations[0].used_percent, 12.345);
+        assert_eq!(observations[0].window_id, "5h");
+        assert_eq!(observations[1].window_id, "7d");
+        assert_eq!(observations[2].observed_at, 2_999_000.0);
+        assert_eq!(observations[2].used_percent, 12.346);
     }
 
     #[test]

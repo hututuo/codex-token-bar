@@ -25,6 +25,7 @@ pub fn empty(state: &str, source: &str) -> QuotaProviderSnapshot {
         source: source.into(),
         captured_at: None,
         windows: Vec::new(),
+        history: Vec::new(),
         notice: "未读到可用的 Antigravity 本地额度缓存。只读已有文件，不启动客户端、不发网络请求。"
             .into(),
     }
@@ -166,7 +167,7 @@ pub fn decode_tools(bytes: &[u8], selected_id: &str, now: f64) -> QuotaProviderS
                     .map_or(true, |d| d.unix_timestamp() as f64 <= now)
             });
         Some(QuotaProviderSnapshot { client: "antigravity".into(), state: if windows.is_empty() { "unavailable" } else if stale { "stale" } else { "available" }.into(),
-            source: source.into(), captured_at: OffsetDateTime::from_unix_timestamp(captured as i64).ok().and_then(|d| d.format(&Rfc3339).ok()), windows,
+            source: source.into(), captured_at: OffsetDateTime::from_unix_timestamp(captured as i64).ok().and_then(|d| d.format(&Rfc3339).ok()), windows, history: Vec::new(),
             notice: format!("Antigravity Tools 所选账号的本地采样；未验证与当前 Antigravity 账号一致。逐模型展示，不合计余额。{}", if stale { "采样已过期，不作为当前余额。" } else { "" }) })
     };
     parse().unwrap_or_else(|| empty("unavailable", source))
@@ -260,7 +261,7 @@ pub fn decode_state(bytes: &[u8], now: f64) -> QuotaProviderSnapshot {
             .is_some_and(|d| d.unix_timestamp() as f64 <= now)
     });
     QuotaProviderSnapshot { client: "antigravity".into(), state: if windows.is_empty() { "unavailable" } else if stale { "stale" } else { "cached" }.into(),
-        source: source.into(), captured_at: None, windows,
+        source: source.into(), captured_at: None, windows, history: Vec::new(),
         notice: "Antigravity IDE 本地模型额度缓存；未验证当前账号。此格式没有采样时间，数据库修改时间不代表额度刷新，不能作为实时余额。".into() }
 }
 

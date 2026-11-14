@@ -18,84 +18,145 @@ fn unavailable() -> QuotaProviderSnapshot {
         source: SOURCE.into(),
         captured_at: None,
         windows: vec![],
+        history: Vec::new(),
         notice: "当前 Antigravity 本机语言服务额度不可用；不改用其他账号的旧缓存，不启动客户端。"
             .into(),
     }
 }
 
-fn valid_label(value: &str) -> bool {
-    !value.is_empty() && value.len() <= 128 && !value.chars().any(char::is_control)
+pub fn decode(bytes: &[u8], now: f64) -> QuotaProviderSnapshot {
+    if bytes.len() > MAX_BYTES || !now.is_finite() {
+        return unavailable();
+    }
+    let Ok(root) = serde_json::from_slice::<Value>(bytes) else {
+        return unavailable();
+    };
+    parse_quota_summary(&root, now).unwrap_or_else(unavailable)
 }
 
-pub fn decode(bytes: &[u8], now: f64) -> QuotaProviderSnapshot {
-    let parse = || -> Option<QuotaProviderSnapshot> {
-        if bytes.len() > MAX_BYTES {
+pub(super) fn parse_quota_summary(
+    envelope: &Value,
+    now: f64,
+) -> Option<QuotaProviderSnapshot> {
+    if !now.is_finite() || !successful_code(envelope) {
+        return None;
+    }
+    let summary = envelope
+        .get("response")
+        .or_else(|| envelope.get("summary"))
+        .unwrap_or(envelope);
+    if !successful_code(summary) {
+        return None;
+    }
+    let groups = summary.get("groups")?.as_array()?;
+    if groups.len() > 128 {
+        return None;
+    }
+    let mut windows = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut bucket_count = 0;
+    for group in groups {
+        let buckets = match group.get("buckets") {
+            None | Some(Value::Null) => continue,
+            Some(value) => value.as_array()?,
+        };
+        bucket_count += buckets.len();
+        if bucket_count > 128 {
             return None;
         }
-        let root: Value = serde_json::from_slice(bytes).ok()?;
-        let models = root
-            .get("userStatus")?
-            .get("cascadeModelConfigData")?
-            .get("clientModelConfigs")?
-            .as_array()?;
-        if models.len() > 128 {
-            return None;
-        }
-        let mut seen = std::collections::HashSet::new();
-        let windows: Vec<_> = models
-            .iter()
-            .filter_map(|model| {
-                let label = model.get("label")?.as_str()?;
-                if !valid_label(label) {
-                    return None;
-                }
-                let quota = model.get("quotaInfo")?;
-                let remaining = quota.get("remainingFraction")?.as_f64()?;
-                if !remaining.is_finite() || !(0.0..=1.0).contains(&remaining) {
-                    return None;
-                }
-                let raw_id = model.get("modelOrAlias").and_then(|m| m.get("model"));
-                let id = raw_id
-                    .and_then(Value::as_str)
-                    .filter(|s| valid_label(s))
-                    .map(str::to_owned)
-                    .or_else(|| {
-                        raw_id
-                            .filter(|v| v.is_i64() || v.is_u64())
-                            .map(Value::to_string)
+        for bucket in buckets {
+            if bucket.get("disabled").and_then(Value::as_bool) == Some(true) {
+                continue;
+            }
+            let Some(id) = bucket
+                .get("bucketId")
+                .or_else(|| bucket.get("bucket_id"))
+                .or_else(|| bucket.get("id"))
+                .and_then(Value::as_str)
+            else {
+                continue;
+            };
+            let label = match id {
+                "gemini-5h" => "Gemini · 5h",
+                "gemini-weekly" => "Gemini · 7d",
+                "3p-5h" => "第三方模型 · 5h",
+                "3p-weekly" => "第三方模型 · 7d",
+                _ => continue,
+            };
+            if !seen.insert(id.to_owned()) {
+                return None;
+            }
+            let Some(remaining) = bucket
+                .get("remainingFraction")
+                .or_else(|| bucket.get("remaining_fraction"))
+                .or_else(|| {
+                    bucket.get("remaining").and_then(|value| {
+                        value
+                            .get("remainingFraction")
+                            .or_else(|| value.get("remaining_fraction"))
                     })
-                    .filter(|s| valid_label(s))
-                    .unwrap_or_else(|| label.to_owned());
-                if !seen.insert(id.clone()) {
-                    return None;
-                }
-                let reset = quota
-                    .get("resetTime")
-                    .and_then(Value::as_str)
-                    .and_then(|s| OffsetDateTime::parse(s, &Rfc3339).ok());
-                Some(QuotaProviderWindow {
-                    id: Some(id),
-                    label: label.into(),
-                    used_percent: Some((1.0 - remaining) * 100.0),
-                    resets_at: reset.and_then(|d| d.format(&Rfc3339).ok()),
                 })
-            })
-            .collect();
-        if windows.is_empty() {
-            return None;
+                .or_else(|| {
+                    bucket
+                        .get("remaining")
+                        .filter(|value| value.get("case").and_then(Value::as_str) == Some("remainingFraction"))
+                        .and_then(|value| value.get("value"))
+                })
+                .and_then(Value::as_f64)
+                .filter(|value| value.is_finite() && (0.0..=1.0).contains(value))
+            else {
+                continue;
+            };
+            let reset = bucket
+                .get("resetTime")
+                .or_else(|| bucket.get("reset_time"))
+                .or_else(|| bucket.get("resetTimeUtc"))
+                .or_else(|| bucket.get("reset_time_utc"))
+                .and_then(Value::as_str)
+                .and_then(|value| OffsetDateTime::parse(value, &Rfc3339).ok());
+            windows.push(QuotaProviderWindow {
+                id: Some(id.into()),
+                label: label.into(),
+                used_percent: Some((1.0 - remaining) * 100.0),
+                resets_at: reset.and_then(|value| value.format(&Rfc3339).ok()),
+            });
         }
-        let stale = windows.iter().any(|w| {
-            w.resets_at
-                .as_deref()
-                .and_then(|s| OffsetDateTime::parse(s, &Rfc3339).ok())
-                .map_or(true, |d| d.unix_timestamp() as f64 <= now)
-        });
-        Some(QuotaProviderSnapshot { client: "antigravity".into(), state: if stale { "stale" } else { "available" }.into(),
-            source: SOURCE.into(), windows,
-            captured_at: OffsetDateTime::from_unix_timestamp(now as i64).ok().and_then(|d| d.format(&Rfc3339).ok()),
-            notice: "当前运行的 Antigravity 本机语言服务返回值；未强制刷新。客户端可能自行联网。读取时间不代表上游采样时间，逐模型展示，不合计共享池。".into() })
-    };
-    parse().unwrap_or_else(unavailable)
+    }
+    if windows.is_empty() {
+        return None;
+    }
+    let stale = windows.iter().any(|window| {
+        window
+            .resets_at
+            .as_deref()
+            .and_then(|value| OffsetDateTime::parse(value, &Rfc3339).ok())
+            .map_or(true, |value| value.unix_timestamp() as f64 <= now)
+    });
+    let captured_at = OffsetDateTime::from_unix_timestamp_nanos((now * 1_000_000_000.0) as i128)
+        .ok()
+        .and_then(|value| value.format(&Rfc3339).ok());
+    Some(QuotaProviderSnapshot {
+        client: "antigravity".into(),
+        state: if stale { "stale" } else { "available" }.into(),
+        source: SOURCE.into(),
+        captured_at,
+        windows,
+        history: Vec::new(),
+        notice: "当前运行的 Antigravity 本机语言服务返回值；未强制刷新。客户端可能自行联网。读取时间不代表上游采样时间，额度池分别展示。".into(),
+    })
+}
+
+fn successful_code(value: &Value) -> bool {
+    match value.get("code") {
+        None => true,
+        Some(Value::String(code)) => code == "OK",
+        Some(Value::Number(code)) => {
+            code.as_i64() == Some(0)
+                || code.as_u64() == Some(0)
+                || code.as_f64() == Some(0.0)
+        }
+        _ => false,
+    }
 }
 
 #[derive(PartialEq, Eq)]
@@ -303,7 +364,7 @@ pub fn read(home: &Path, now: f64) -> Option<QuotaProviderSnapshot> {
             .timeout(Duration::from_secs(5))
             .build()
             .ok()?;
-        let response = client.post(format!("https://127.0.0.1:{}/exa.language_server_pb.LanguageServerService/GetUserStatus", endpoint.port))
+        let response = client.post(format!("https://127.0.0.1:{}/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary", endpoint.port))
             .header("Connect-Protocol-Version", "1").header("X-Codeium-Csrf-Token", &endpoint.csrf)
             .json(&serde_json::json!({"metadata":{"ideName":"antigravity","extensionName":"antigravity","locale":"en"}})).send().ok()?;
         if response.status() != reqwest::StatusCode::OK
@@ -340,9 +401,25 @@ pub fn read(_home: &Path, _now: f64) -> Option<QuotaProviderSnapshot> {
 mod tests {
     use super::*;
     #[test]
-    fn shared_local_rpc_fixtures_preserve_explicit_fractions_and_account_privacy() {
+    fn legacy_model_quota_responses_are_not_used_as_pool_history() {
         let fixture: Value = serde_json::from_str(include_str!(
             "../../../../fixtures/antigravity-local-rpc.json"
+        ))
+        .unwrap();
+        for row in fixture["cases"].as_array().unwrap() {
+            let value = decode(
+                &serde_json::to_vec(&row["data"]).unwrap(),
+                row["now"].as_f64().unwrap(),
+            );
+            assert_eq!(value.state, "unavailable", "{}", row["name"]);
+        }
+        assert_eq!(decode(&vec![b' '; MAX_BYTES + 1], 0.0).state, "unavailable");
+    }
+
+    #[test]
+    fn shared_quota_summary_fixture_keeps_only_stable_pool_ids() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../fixtures/antigravity-quota-summary.json"
         ))
         .unwrap();
         for row in fixture["cases"].as_array().unwrap() {
@@ -360,23 +437,20 @@ mod tests {
                 value
                     .windows
                     .iter()
-                    .map(|w| w.id.as_deref().unwrap())
+                    .map(|window| window.id.as_deref().unwrap())
                     .collect::<Vec<_>>(),
                 row["ids"]
                     .as_array()
                     .unwrap()
                     .iter()
-                    .map(|v| v.as_str().unwrap())
+                    .map(|value| value.as_str().unwrap())
                     .collect::<Vec<_>>()
             );
             for (window, used) in value.windows.iter().zip(row["used"].as_array().unwrap()) {
                 assert!((window.used_percent.unwrap() - used.as_f64().unwrap()).abs() < 0.000001);
             }
-            assert!(!serde_json::to_string(&value)
-                .unwrap()
-                .contains("DO-NOT-PROJECT"));
+            assert!(value.history.is_empty());
         }
-        assert_eq!(decode(&vec![b' '; MAX_BYTES + 1], 0.0).state, "unavailable");
     }
     #[test]
     fn discovery_requires_installed_process_owned_loopback_port_and_current_csrf() {

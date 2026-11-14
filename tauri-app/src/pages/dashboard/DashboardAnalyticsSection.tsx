@@ -94,7 +94,7 @@ function DashboardAnalyticsSectionView({ dashboard, originalCodex, clients, allo
       sevenDayResetAtUnix={isCodexQuota ? codex.quota.sevenDay.resetsAtUnix : null}
       sharedAccountAttribution={isCodexQuota ? sharedAccountAttribution : null}
     />
-    {quotaSource && !isCodexQuota && <p className="analytics-source-note">{quotaSource.title} · 本地采样历史，保留原采样时间；空白处尚无有效观测。</p>}
+    {quotaSource && !isCodexQuota && <p className="analytics-source-note">{quotaSource.title} · 本地额度观测历史；空白处尚无有效观测。</p>}
     {chartAggregate && isCodexQuota && <p className="analytics-source-note">Token、调用与金额汇总所选客户端，命中率按输入加权；额度和额度反推仅对应 Codex 账户。</p>}
     {localRanking.issue && <p role="status">{localRanking.issue}</p>}
     <CacheHitRanking key={scope.join(",") + JSON.stringify(sourceToken)}

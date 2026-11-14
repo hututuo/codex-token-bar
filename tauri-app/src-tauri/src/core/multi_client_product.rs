@@ -43,6 +43,18 @@ pub struct QuotaProviderWindow {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ClientQuotaHistorySample {
+    pub window_id: String,
+    pub observed_at: f64,
+    pub used_percent: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct QuotaProviderSnapshot {
     pub client: String,
     pub state: String,
@@ -50,6 +62,8 @@ pub struct QuotaProviderSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub captured_at: Option<String>,
     pub windows: Vec<QuotaProviderWindow>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub history: Vec<ClientQuotaHistorySample>,
     pub notice: String,
 }
 
@@ -144,6 +158,7 @@ pub fn quota_provider_snapshots(
                     source: if claude_cli.state == "api" { "local-config" } else { "local-statusline" }.into(),
                     captured_at: claude_cli.captured_at.clone(),
                     windows: windows.clone(),
+                    history: Vec::new(),
                     notice: if claude_cli.state == "api" { "API 接入 · 订阅额度不适用" } else { notice }.into(),
                 }
             } else if *client == "claudeDesktop" {
@@ -160,6 +175,7 @@ pub fn quota_provider_snapshots(
                     source: claude_desktop.source.clone().unwrap_or_else(|| "local-desktop-history".into()),
                     captured_at: claude_desktop.captured_at.clone(),
                     windows,
+                    history: Vec::new(),
                     notice: claude_desktop_notice(claude_desktop),
                 }
             } else if *client == "antigravity" {
@@ -171,6 +187,7 @@ pub fn quota_provider_snapshots(
                     source: "unsupported".into(),
                     captured_at: None,
                     windows: Vec::new(),
+                    history: Vec::new(),
                     notice: "暂不支持读取此客户端的订阅额度。".into(),
                 }
             }
@@ -637,5 +654,6 @@ mod tests {
         });
         let snapshot: QuotaProviderSnapshot = serde_json::from_value(old_payload).unwrap();
         assert_eq!(snapshot.captured_at, None);
+        assert!(snapshot.history.is_empty());
     }
 }

@@ -145,14 +145,14 @@ extension MultiClientUsageLedger {
         for reading in readings {
             let rows = try database.readRows("""
                 SELECT source,window_id,observed_at,used_percent,resets_at FROM client_quota_observations
-                WHERE client=? AND observed_at>=? AND observed_at<=? ORDER BY observed_at DESC LIMIT 100001
+                WHERE client=? AND observed_at>=? AND observed_at<=? ORDER BY observed_at DESC LIMIT 500001
                 """, bindings: [.text(reading.client), .date(now.addingTimeInterval(-30 * 24 * 60 * 60)), .date(now)]) {
                     ($0.text(0)!, ClientQuotaHistorySample(windowID: $0.text(1)!, observedAt: $0.date(2)!, usedPercent: $0.double(3)!, resetsAt: $0.date(4)))
                 }
-            guard rows.count <= 100_000 else { throw ClientQuotaHistoryError.tooManySamples }
+            guard rows.count <= 500_000 else { throw ClientQuotaHistoryError.tooManySamples }
             let sources = [reading.source] + Set(rows.map(\.0)).subtracting([reading.source]).sorted()
             for source in sources {
-                let current = rows.filter { $0.0 == source }.map(\.1).reversed()
+                let current = rows.filter { $0.0 == source && ClientQuotaHistory.pool(client: reading.client, windowID: $0.1.windowID) != nil }.map(\.1).reversed()
                 let pools = Dictionary(grouping: current) { ClientQuotaHistory.pool(client: reading.client, windowID: $0.windowID) ?? "" }
                 for pool in pools.keys.sorted() {
                     histories.append(ClientQuotaHistory(client: reading.client, source: source, pool: pool, samples: pools[pool] ?? []))

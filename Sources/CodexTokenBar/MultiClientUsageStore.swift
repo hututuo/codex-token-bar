@@ -152,6 +152,11 @@ actor MultiClientUsageScanner {
     func backup() throws -> URL { try open().backup() }
 
     func recordQuotaHistory(_ readings: [ClientQuotaReading]) throws -> [ClientQuotaHistory] {
+        let hasObservation = readings.contains { reading in
+            reading.capturedAt != nil && ["available", "stale", "cached"].contains(reading.state)
+                && reading.windows.contains { ClientQuotaHistory.pool(client: reading.client, windowID: $0.id ?? $0.label) != nil }
+        }
+        guard FileManager.default.fileExists(atPath: databaseURL.path) || hasObservation else { return [] }
         let ledger = try open()
         if !importedQuotaHistory {
             try ledger.recordQuotaHistory(ClaudeLocalQuota.desktopHistoryReadings(home: home))

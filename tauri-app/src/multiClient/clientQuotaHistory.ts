@@ -31,7 +31,14 @@ export function quotaChartSources(clients: readonly string[], readings: readonly
 }
 export function resolveQuotaChartSource(selection: string, clients: readonly string[], readings: readonly ClientQuotaReading[] = []) {
   const options = quotaChartSources(clients, readings);
-  return options.find(source => source.id === selection) ?? options[0];
+  const selected = options.find(source => source.id === selection) ?? options[0];
+  if (selected && selected.client !== "codex" && !selected.historySource) {
+    const reading = readings.find(reading => reading.client === selected.client);
+    const hasCurrentHistory = reading?.history?.some(sample => (sample.source ?? reading.source) === reading.source);
+    if (!hasCurrentHistory) return options.find(source => source.client === selected.client
+      && source.pool === selected.pool && source.historySource) ?? selected;
+  }
+  return selected;
 }
 function windowId(source: ClientQuotaChartSource, period: "5h" | "7d") {
   if (source.client !== "antigravity") return period;
