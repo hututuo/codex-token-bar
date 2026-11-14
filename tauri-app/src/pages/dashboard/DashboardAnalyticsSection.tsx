@@ -49,7 +49,8 @@ function DashboardAnalyticsSectionView({ dashboard, originalCodex, clients, allo
   const externalCosts = useMemo(() => trendBuckets?.filter(row=>chartClients.includes(row.client)) ?? [], [trendBuckets,chartKey]);
   const effectiveSelection = ["dashboard", "all", "codex", ...available].includes(chartSelection) ? chartSelection : "dashboard";
   const [quotaSelection, setQuotaSelection] = useSharedChoice("recentChartQuotaSource.v1", "recent-chart-quota-source-changed", "codex");
-  const quotaSource = resolveQuotaChartSource(quotaSelection, chartClients, clients?.quotas);
+  const quotaSource = useMemo(() => resolveQuotaChartSource(quotaSelection, chartClients, clients?.quotas),
+    [quotaSelection, chartKey, clients?.quotas]);
   const isCodexQuota = quotaSource?.client === "codex";
   const quotaReading = clients?.quotas?.find(reading => reading.client === quotaSource?.client);
   const quotaChart = useMemo(() => isCodexQuota ? chart : {

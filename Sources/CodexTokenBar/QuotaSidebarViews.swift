@@ -884,7 +884,7 @@ struct QuotaSidebarDetailView: View {
     private func quotaTrend(projected: DashboardSnapshot?) -> some View {
         let source = ClientQuotaChartSource.resolve(quotaHistorySource, clients: allowedClients, histories: clients.quotaHistories)
         let samples = source?.client == "codex" ? history.snapshot.recentBins
-            : source?.history(in: clients.quotaHistories)?.buckets(interval: 300) ?? []
+            : source?.history(in: clients.quotaHistories)?.recentBins ?? []
         return VStack(alignment: .trailing, spacing: 4) {
             if let source {
                 Picker("额度来源", selection: Binding(get: { source.id }, set: { quotaHistorySource = $0 })) {

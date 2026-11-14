@@ -52,8 +52,8 @@ struct DashboardRecentUsageChart: View {
         let quotaSource = ClientQuotaChartSource.resolve(quotaSelection, clients: allowed, histories: clients.quotaHistories)
         let isCodexQuota = quotaSource?.client == "codex"
         let localHistory = quotaSource?.history(in: clients.quotaHistories)
-        let quotaRecent = isCodexQuota ? quotaHistory.recentBins : localHistory?.buckets(interval: 300) ?? []
-        let quotaHourly = isCodexQuota ? quotaHistory.hourlyBins : localHistory?.buckets(interval: 3600) ?? []
+        let quotaRecent = isCodexQuota ? quotaHistory.recentBins : localHistory?.recentBins ?? []
+        let quotaHourly = isCodexQuota ? quotaHistory.hourlyBins : localHistory?.hourlyBins ?? []
         VStack(alignment: .leading, spacing: 8) {
             if let quotaSource {
                 HStack {

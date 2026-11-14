@@ -13,6 +13,8 @@ struct ClientQuotaHistory: Identifiable, Equatable, Sendable {
     let source: String
     let pool: String
     let samples: [ClientQuotaHistorySample]
+    var recentBins: [QuotaHistoryRecentBucket] = []
+    var hourlyBins: [QuotaHistoryRecentBucket] = []
     var id: String { client + ":" + source + ":" + pool }
     var title: String {
         let name = ClientDisplayScope.title(client)
@@ -155,7 +157,10 @@ extension MultiClientUsageLedger {
                 let current = rows.filter { $0.0 == source && ClientQuotaHistory.pool(client: reading.client, windowID: $0.1.windowID) != nil }.map(\.1).reversed()
                 let pools = Dictionary(grouping: current) { ClientQuotaHistory.pool(client: reading.client, windowID: $0.windowID) ?? "" }
                 for pool in pools.keys.sorted() {
-                    histories.append(ClientQuotaHistory(client: reading.client, source: source, pool: pool, samples: pools[pool] ?? []))
+                    var history = ClientQuotaHistory(client: reading.client, source: source, pool: pool, samples: pools[pool] ?? [])
+                    history.recentBins = history.buckets(interval: 300, now: now)
+                    history.hourlyBins = history.buckets(interval: 3600, now: now)
+                    histories.append(history)
                 }
             }
         }

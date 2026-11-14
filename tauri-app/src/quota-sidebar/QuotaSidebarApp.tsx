@@ -545,7 +545,9 @@ export function QuotaDetails({ data, onOpenRunning }: { data: SidebarData; onOpe
   const { codexOnly, allowed, snapshot: clients } = useClientScope();
   const includesCodex = allowed.includes("codex");
   const [quotaHistorySource, setQuotaHistorySource] = useSharedChoice("sidebarQuotaHistorySource.v1", "sidebar-quota-history-source-changed", "codex");
-  const historySource = resolveQuotaChartSource(quotaHistorySource, allowed, clients.quotas);
+  const historyScopeKey = allowed.join(",");
+  const historySource = useMemo(() => resolveQuotaChartSource(quotaHistorySource, allowed, clients.quotas),
+    [quotaHistorySource, historyScopeKey, clients.quotas]);
   const historyReading = clients.quotas?.find(reading => reading.client === historySource?.client);
   const historyTrend = useMemo(() => {
     if (historySource?.client === "codex") return data.trend ?? [];
@@ -567,7 +569,7 @@ export function QuotaDetails({ data, onOpenRunning }: { data: SidebarData; onOpe
     return applyClientQuotaHistory(axis, historyReading, historySource, 300, now).map(point => ({
       at: point.startUnix, tokens: point.tokens, five: point.fiveHourRemainingPercent, seven: point.sevenDayRemainingPercent,
     }));
-  }, [data.trend, historySource, historyReading, clients.trendBuckets, allowed, includesCodex]);
+  }, [data.trend, historySource, historyReading, clients.trendBuckets, historyScopeKey, includesCodex]);
   // Reuse the dashboard's already-priced client contributions and unknown
   // reference group. Never turn external rows into Codex-priced breakdowns.
   const externalToday = useMemo(() => (clients.todaySummaries ?? []).filter(row => allowed.includes(row.client)), [clients.todaySummaries, allowed]);
