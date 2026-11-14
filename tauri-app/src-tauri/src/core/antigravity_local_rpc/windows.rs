@@ -909,7 +909,7 @@ mod tests {
             || Ok(Some(server())),
         );
         assert_eq!(failed.state, "unavailable");
-        assert_eq!(methods, vec![Method::Summary]);
+        assert_eq!(methods, vec![Method::Summary, Method::Summary]);
 
         let legacy = serde_json::json!({"userStatus":{"cascadeModelConfigData":{"clientModelConfigs":[
             {"label":"Gemini","quotaInfo":{"remainingFraction":0.75}}
