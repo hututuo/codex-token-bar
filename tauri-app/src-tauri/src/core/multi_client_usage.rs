@@ -1262,12 +1262,16 @@ pub fn automatically_refresh_local_client_quotas() -> Vec<QuotaProviderSnapshot>
 
 fn read_local_client_quotas_with_history(interval: Duration) -> Vec<QuotaProviderSnapshot> {
     let mut readings = read_local_client_quotas_with_interval(interval);
+    capture_local_client_quota_history(&mut readings);
+    readings
+}
+
+pub(crate) fn capture_local_client_quota_history(readings: &mut [QuotaProviderSnapshot]) {
     let now = OffsetDateTime::now_utc().unix_timestamp_nanos() as f64 / 1_000_000_000.0;
     if let Some(desktop) = readings.iter_mut().find(|reading| reading.client == "claudeDesktop") {
         desktop.history = read_claude_desktop_history_observations(&app_paths::home_dir(), now);
     }
-    attach_client_quota_history(&mut readings);
-    readings
+    attach_client_quota_history(readings);
 }
 
 fn attach_client_quota_history(readings: &mut [QuotaProviderSnapshot]) {

@@ -91,14 +91,16 @@ async fn refresh_and_publish(app: tauri::AppHandle) -> Result<MultiClientUsageSn
     } else {
         run_blocking_command(multi_client_usage::read_multi_client_usage_snapshot).await?
     };
-    let preferences = snapshot.preferences.clone();
-    let summaries = snapshot.summaries.clone();
     run_blocking_command(move || {
-        let lines = multi_client_usage::configured_menu_bar_usage_lines(&preferences, &summaries);
-        crate::platform::set_multi_client_usage_tray_lines(&app, lines).map(|_| ())
+        // The scan's usage gate has been released. Persist quota observations
+        // here too, so the app-owned background loop records with WebViews hidden.
+        let mut snapshot = snapshot;
+        multi_client_usage::capture_local_client_quota_history(&mut snapshot.quotas);
+        let lines = multi_client_usage::configured_menu_bar_usage_lines(&snapshot.preferences, &snapshot.summaries);
+        crate::platform::set_multi_client_usage_tray_lines(&app, lines)?;
+        Ok(snapshot)
     })
-    .await?;
-    Ok(snapshot)
+    .await
 }
 
 fn multi_client_scan_clock() -> &'static Mutex<Option<Instant>> {
