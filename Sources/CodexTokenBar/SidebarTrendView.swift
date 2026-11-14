@@ -20,7 +20,7 @@ struct SidebarTrendView: View {
             HStack {
                 Text("最近 24 小时").font(.system(size: 11, weight: .semibold))
                 Spacer()
-                Text(data.includesCodex ? "Token / Codex 剩余额度 · 点击查看" : "Token · 点击查看").font(.system(size: 9)).foregroundStyle(.gray)
+                Text(data.quotaTitle.map { "Token / " + $0 + " 剩余额度" } ?? "Token · 点击查看").font(.system(size: 9)).foregroundStyle(.gray)
             }
             if bins.isEmpty {
                 Text("趋势待读取").font(.system(size: 10)).foregroundStyle(.gray)
@@ -50,15 +50,15 @@ struct SidebarTrendView: View {
                     }
                     if hasSeven { Text("7d \(percent(values[index]?.sevenDayRemainingPercent))").foregroundStyle(purple) }
                 }.font(.system(size: 9)).monospacedDigit()
-                if data.includesCodex && !hasFive && !hasSeven {
-                    Text("Codex 额度暂无历史采样").font(.system(size: 9)).foregroundStyle(.gray)
+                if let title = data.quotaTitle, !hasFive && !hasSeven {
+                    Text(title + " 额度暂无历史采样").font(.system(size: 9)).foregroundStyle(.gray)
                 }
             }
         }.padding(12).background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
     }
     private func percent(_ value: Double?) -> String {
         guard let value, value.isFinite else { return "—" }
-        return "\(Int(min(100, max(0, value)).rounded()))%"
+        return ClientQuotaPresentation.percentNumber(min(100, max(0, value))) + "%"
     }
     private func isolated(_ values: [Double?], size: CGSize) -> Path {
         Path { path in

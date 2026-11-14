@@ -680,6 +680,7 @@ struct QuotaSidebarDetailView: View {
     @State private var clientProjectionCache = ClientDashboardProjectionCache()
     @StateObject private var modelCostCache = ClientModelCostPeriodsCache()
     @AppStorage(ClientDisplayScope.sidebarKey) private var clientScope = "all"
+    @AppStorage("sidebarQuotaHistorySource.v1") private var quotaHistorySource = "codex"
 
     @ObservedObject var controller: QuotaSidebarController
     @ObservedObject var store: CodexUsageStore
@@ -875,10 +876,24 @@ struct QuotaSidebarDetailView: View {
                 Text("实时：\(snapshot.status)").font(.system(size: 9)).foregroundStyle(.gray).lineLimit(1).help(snapshot.status)
             }
             modelUsage(models, pending: modelPending).id("models")
-            SidebarTrendView(data: SidebarTrendData(codexBins: store.snapshot.recentBins,
-                projectedBins: projected?.recentBins, quota: history.snapshot.recentBins, clients: allowedClients))
+            quotaTrend(projected: projected)
             tokenComposition(snapshot, cacheKnown: cacheKnown)
         }.frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 2)
+    }
+
+    private func quotaTrend(projected: DashboardSnapshot?) -> some View {
+        let source = ClientQuotaChartSource.resolve(quotaHistorySource, clients: allowedClients, histories: clients.quotaHistories)
+        let samples = source?.client == "codex" ? history.snapshot.recentBins
+            : source?.history(in: clients.quotaHistories)?.buckets(interval: 300) ?? []
+        return VStack(alignment: .trailing, spacing: 4) {
+            if let source {
+                Picker("额度来源", selection: Binding(get: { source.id }, set: { quotaHistorySource = $0 })) {
+                    ForEach(ClientQuotaChartSource.options(clients: allowedClients, histories: clients.quotaHistories)) { item in Text(item.title).tag(item.id) }
+                }.pickerStyle(.menu).font(.caption).fixedSize()
+            }
+            SidebarTrendView(data: SidebarTrendData(codexBins: store.snapshot.recentBins,
+                projectedBins: projected?.recentBins, quota: samples, clients: allowedClients, quotaSource: source))
+        }
     }
 
     private func tokenComposition(_ snapshot: TokenDisplaySnapshot, cacheKnown: Bool) -> some View {

@@ -39,6 +39,7 @@ struct DashboardRecentUsageChart: View {
     @ObservedObject private var clients = MultiClientUsageStore.shared
     @State private var projection = ClientDashboardProjectionCache()
     @AppStorage(RecentChartClientScope.key) private var selection = RecentChartClientScope.followDashboard
+    @AppStorage("recentChartQuotaSource.v1") private var quotaSelection = "codex"
 
     var body: some View {
         let available = clients.displayClientIDs
@@ -48,17 +49,33 @@ struct DashboardRecentUsageChart: View {
         let externalCosts = clients.trendBuckets.filter { allowed.contains($0.client.rawValue) }
         let display = allowed == pageClients ? page : projection.value(codex: codex, clients: clients, allowed: allowed)
         let effectiveSelection = (["dashboard", "all", "codex"] + available).contains(selection) ? selection : RecentChartClientScope.followDashboard
+        let quotaSource = ClientQuotaChartSource.resolve(quotaSelection, clients: allowed, histories: clients.quotaHistories)
+        let isCodexQuota = quotaSource?.client == "codex"
+        let localHistory = quotaSource?.history(in: clients.quotaHistories)
+        let quotaRecent = isCodexQuota ? quotaHistory.recentBins : localHistory?.buckets(interval: 300) ?? []
+        let quotaHourly = isCodexQuota ? quotaHistory.hourlyBins : localHistory?.buckets(interval: 3600) ?? []
         VStack(alignment: .leading, spacing: 8) {
+            if let quotaSource {
+                HStack {
+                    Spacer()
+                    Picker("额度来源", selection: Binding(get: { quotaSource.id }, set: { quotaSelection = $0 })) {
+                        ForEach(ClientQuotaChartSource.options(clients: allowed, histories: clients.quotaHistories)) { item in
+                            Text(item.title).tag(item.id)
+                        }
+                    }.pickerStyle(.menu).fixedSize().accessibilityIdentifier("recent-chart-quota-source")
+                }
+            }
             RecentUsageChart(
-                bins: display.recentBins, hourlyBins: display.hourlyUsage,
+                bins: display.recentBins.isEmpty ? quotaRecent.map { BinUsage(start: $0.start, tokens: 0, calls: 0) } : display.recentBins,
+                hourlyBins: display.hourlyUsage.isEmpty ? quotaHourly.map { BinUsage(start: $0.start, tokens: 0, calls: 0) } : display.hourlyUsage,
                 cacheRecentBins: display.cacheUsage.recentBins, cacheHourlyBins: display.cacheUsage.hourly,
                 attributionEvents: includesCodex ? codex.cacheUsage.attributionEvents : [],
                 attributionEventsComplete: includesCodex && codex.cacheUsage.attributionEventsComplete,
-                quotaRecentBins: includesCodex ? quotaHistory.recentBins : [],
-                quotaHourlyBins: includesCodex ? quotaHistory.hourlyBins : [],
-                currentFiveHourQuotaPresent: includesCodex && quota.fiveHour != nil,
-                currentSevenDayQuotaPresent: includesCodex && quota.sevenDay != nil,
-                sharedAccountAttributionContext: includesCodex ? attribution : nil,
+                quotaRecentBins: quotaRecent,
+                quotaHourlyBins: quotaHourly,
+                currentFiveHourQuotaPresent: isCodexQuota ? quota.fiveHour != nil : localHistory?.samples.contains { ClientQuotaHistory.period($0.windowID) == "5h" } == true,
+                currentSevenDayQuotaPresent: isCodexQuota ? quota.sevenDay != nil : localHistory?.samples.contains { ClientQuotaHistory.period($0.windowID) == "7d" } == true,
+                sharedAccountAttributionContext: isCodexQuota ? attribution : nil,
                 pricingAvailable: includesCodex || externalCosts.contains { $0.apiCostMicroUSD != nil },
                 quotaCostSource: !codexOnly && includesCodex ? .init(
                     bins: codex.recentBins, hourlyBins: codex.hourlyUsage,
@@ -70,12 +87,17 @@ struct DashboardRecentUsageChart: View {
                 clientSelector: RecentChartClientSelector(selection: Binding(get: { effectiveSelection }, set: { selection = $0 }), clients: available,
                     pageTitle: ClientDisplayScope.title(pageClients.count == 1 ? pageClients.first! : "all")),
                 externalCostBuckets: codexOnly ? nil : externalCosts,
-                includesCodexCost: includesCodex
+                includesCodexCost: includesCodex,
+                quotaEstimationAvailable: isCodexQuota
             )
             // A prepared result/selection from another source must not survive
             // a client switch, even when both clients have identical timestamps.
-            .id(allowed.sorted().joined(separator: ",") + "|" + (codex.homeIdentity ?? ""))
-            if !codexOnly && includesCodex {
+            .id(allowed.sorted().joined(separator: ",") + "|" + (codex.homeIdentity ?? "") + "|" + (quotaSource?.id ?? ""))
+            if let issue = clients.quotaHistoryIssue { Text(issue).font(.caption).foregroundStyle(.secondary) }
+            if let quotaSource, !isCodexQuota {
+                Text(quotaSource.title + " · 本地采样历史，保留原采样时间；空白处尚无有效观测。")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            } else if !codexOnly && includesCodex {
                 Text("Token、调用与金额汇总所选客户端，命中率按输入加权；额度和额度反推仅对应 Codex 账户。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
             }

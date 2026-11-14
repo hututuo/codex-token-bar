@@ -12,6 +12,7 @@ import { TokenActivitySection } from "../../components/TokenActivitySection";
 import type { DashboardSnapshot, CodexHomeSourceToken } from "../../types/dashboard";
 import type { SharedAccountAttributionResult } from "../../components/sharedAccountAttribution/model";
 import { modelCostProjectionAvailable } from "../../components/tokenActivity/modelCostAvailability";
+import { applyClientQuotaHistory, quotaChartSources, resolveQuotaChartSource } from "../../multiClient/clientQuotaHistory";
 
 interface DashboardAnalyticsSectionProps {
   dashboard: DashboardSnapshot;
@@ -47,6 +48,18 @@ function DashboardAnalyticsSectionView({ dashboard, originalCodex, clients, allo
   const trendBuckets = clients?.trendBuckets;
   const externalCosts = useMemo(() => trendBuckets?.filter(row=>chartClients.includes(row.client)) ?? [], [trendBuckets,chartKey]);
   const effectiveSelection = ["dashboard", "all", "codex", ...available].includes(chartSelection) ? chartSelection : "dashboard";
+  const [quotaSelection, setQuotaSelection] = useSharedChoice("recentChartQuotaSource.v1", "recent-chart-quota-source-changed", "codex");
+  const quotaSource = resolveQuotaChartSource(quotaSelection, chartClients, clients?.quotas);
+  const isCodexQuota = quotaSource?.client === "codex";
+  const quotaReading = clients?.quotas?.find(reading => reading.client === quotaSource?.client);
+  const quotaChart = useMemo(() => isCodexQuota ? chart : {
+    recentUsage24h: applyClientQuotaHistory(chart.recentUsage24h, quotaReading, quotaSource, 300),
+    recentUsage7d: applyClientQuotaHistory(chart.recentUsage7d, quotaReading, quotaSource, 3600),
+    recentUsage30d: applyClientQuotaHistory(chart.recentUsage30d, quotaReading, quotaSource, 21600),
+  }, [chart, isCodexQuota, quotaReading, quotaSource]);
+  const hasLocalPeriod = (period: string) => quotaReading?.history?.some(sample =>
+    (sample.source ?? quotaReading.source) === (quotaSource?.historySource ?? quotaReading.source)
+    && sample.windowId === (quotaSource?.pool ? quotaSource.pool + "-" + (period === "7d" ? "weekly" : period) : period)) ?? false;
   const localRanking = useAggregateClientCacheRows(clients, scope);
   const [localDetail, setLocalDetail] = useState<{client: string; sessionID: string} | null>(null);
   const scopeKey = scope.join(",");
@@ -58,27 +71,31 @@ function DashboardAnalyticsSectionView({ dashboard, originalCodex, clients, allo
       modelCostDataAvailable={modelCostProjectionAvailable(source.activityDays, source.preciseRecentUsageFresh)}
     />
     <RecentUsageChart
-      key={chartKey + "|" + JSON.stringify(sourceToken)}
-      sourceControl={clients && <select aria-label="图表客户端" className="recent-chart-client" value={effectiveSelection} onChange={e => setChartSelection(e.target.value)}>
+      key={chartKey + "|" + JSON.stringify(sourceToken) + "|" + (quotaSource?.id ?? "")}
+      sourceControl={clients && <><select aria-label="图表客户端" className="recent-chart-client" value={effectiveSelection} onChange={e => setChartSelection(e.target.value)}>
         <option value="dashboard">跟随主页 · {scope.length === 1 ? clientTitle(scope[0]) : "汇总"}</option>
         <option value="all">汇总</option><option value="codex">Codex</option>
         {available.map(id => <option key={id} value={id}>{clientTitle(id)}</option>)}
-      </select>}
+      </select>{quotaSource && <label>额度来源 <select aria-label="额度来源" className="recent-chart-client" value={quotaSource.id} onChange={e => setQuotaSelection(e.target.value)}>
+        {quotaChartSources(chartClients, clients?.quotas).map(source => <option key={source.id} value={source.id}>{source.title}</option>)}
+      </select></label>}</>}
       unreportedCompactionUnix={chartIncludesCodex ? codex.stats.unreportedCompactionUnix : undefined}
       pricingAvailable={chartIncludesCodex || externalCosts.some(row=>row.apiCostMicroUSD!=null)}
       externalCostBuckets={chartAggregate ? externalCosts : undefined}
       includesCodexCost={chartIncludesCodex}
+      quotaEstimationAvailable={isCodexQuota}
       quotaCostSeries={chartAggregate && chartIncludesCodex ? codex : undefined}
-      fiveHourQuotaPresent={chartIncludesCodex && codex.quota.fiveHour.availability !== "absent"}
-      fiveHourResetAtUnix={chartIncludesCodex ? codex.quota.fiveHour.resetsAtUnix : null}
-      recentUsage24h={chart.recentUsage24h}
-      recentUsage7d={chart.recentUsage7d}
-      recentUsage30d={chart.recentUsage30d}
-      sevenDayQuotaPresent={chartIncludesCodex && codex.quota.sevenDay.availability !== "absent"}
-      sevenDayResetAtUnix={chartIncludesCodex ? codex.quota.sevenDay.resetsAtUnix : null}
-      sharedAccountAttribution={chartIncludesCodex ? sharedAccountAttribution : null}
+      fiveHourQuotaPresent={isCodexQuota ? codex.quota.fiveHour.availability !== "absent" : hasLocalPeriod("5h")}
+      fiveHourResetAtUnix={isCodexQuota ? codex.quota.fiveHour.resetsAtUnix : null}
+      recentUsage24h={quotaChart.recentUsage24h}
+      recentUsage7d={quotaChart.recentUsage7d}
+      recentUsage30d={quotaChart.recentUsage30d}
+      sevenDayQuotaPresent={isCodexQuota ? codex.quota.sevenDay.availability !== "absent" : hasLocalPeriod("7d")}
+      sevenDayResetAtUnix={isCodexQuota ? codex.quota.sevenDay.resetsAtUnix : null}
+      sharedAccountAttribution={isCodexQuota ? sharedAccountAttribution : null}
     />
-    {chartAggregate && chartIncludesCodex && <p className="analytics-source-note">Token、调用与金额汇总所选客户端，命中率按输入加权；额度和额度反推仅对应 Codex 账户。</p>}
+    {quotaSource && !isCodexQuota && <p className="analytics-source-note">{quotaSource.title} · 本地采样历史，保留原采样时间；空白处尚无有效观测。</p>}
+    {chartAggregate && isCodexQuota && <p className="analytics-source-note">Token、调用与金额汇总所选客户端，命中率按输入加权；额度和额度反推仅对应 Codex 账户。</p>}
     {localRanking.issue && <p role="status">{localRanking.issue}</p>}
     <CacheHitRanking key={scope.join(",") + JSON.stringify(sourceToken)}
       sourceToken={includesCodex ? sourceToken : null} cacheUsage={source.cacheUsage}

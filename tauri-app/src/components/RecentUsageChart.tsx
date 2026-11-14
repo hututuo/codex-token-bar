@@ -1,7 +1,7 @@
 import { RecentChartInteractionGuide } from "./recentUsageChart/InteractionGuide";
 import {buildChartUsageSnapshot,chartUsageSummary,type ChartUsageSummary} from "./recentUsageChart/usageSnapshot";
 import {ChartModelUsageList} from "./recentUsageChart/ChartModelUsageList";
-import type {ClientTrendBucket} from "../multiClient/multiClientProduct";
+import { quotaPercentNumber, type ClientTrendBucket } from "../multiClient/multiClientProduct";
 import { EMPTY_QUOTA_SELECTION, clickQuotaSelectionAnchor, quotaSelectionIndices,
   type QuotaSelectionAnchors } from "./recentUsageChart/selectionAnchors";
 import {
@@ -66,9 +66,13 @@ import {
 import type { SharedAccountAttributionResult } from "./sharedAccountAttribution/model";
 
 const NO_UNREPORTED_COMPACTIONS: readonly number[] = [];
+function quotaPercentText(value: number | null): string {
+  return value === null || !Number.isFinite(value) ? "--" : quotaPercentNumber(value * 100) + "%";
+}
 interface RecentUsageChartProps {
   externalCostBuckets?: ClientTrendBucket[];
   includesCodexCost?: boolean;
+  quotaEstimationAvailable?: boolean;
   sourceControl?: ReactNode;
   unreportedCompactionUnix?: readonly number[];
   pricingAvailable?: boolean;
@@ -117,6 +121,7 @@ function useChartBubbleWidth(fallbackWidth: number) {
 export function RecentUsageChart({
   externalCostBuckets,
   includesCodexCost = true,
+  quotaEstimationAvailable = true,
   sourceControl,
   unreportedCompactionUnix = NO_UNREPORTED_COMPACTIONS,
   pricingAvailable = true,
@@ -286,14 +291,14 @@ export function RecentUsageChart({
     Math.max(data.points.length - 1, 0),
   );
   const consumptionSelection = useMemo(() => (
-    quotaSelectionState.startIndex !== null && quotaEndIndex !== null
+    quotaEstimationAvailable && quotaSelectionState.startIndex !== null && quotaEndIndex !== null
       ? chartQuotaConsumptionSelection(data,quotaEvidence, quotaSelectionState.startIndex, quotaEndIndex, quotaModel, {
         unreportedCompactionUnix,
         fiveHour: { resetAtUnix: fiveHourResetAtUnix, periodSeconds: 5 * 60 * 60 },
         sevenDay: { resetAtUnix: sevenDayResetAtUnix, periodSeconds: 7 * 24 * 60 * 60 },
       })
       : null
-  ), [data,quotaEvidence, quotaSelectionState.startIndex, quotaEndIndex, quotaModel, fiveHourResetAtUnix, sevenDayResetAtUnix, unreportedCompactionUnix]);
+  ), [data,quotaEvidence, quotaSelectionState.startIndex, quotaEndIndex, quotaModel, fiveHourResetAtUnix, sevenDayResetAtUnix, unreportedCompactionUnix, quotaEstimationAvailable]);
   const selectedUsage=consumptionSelection?chartUsageSummary(usageSnapshot.buckets,consumptionSelection.startIndex,consumptionSelection.endIndex):null;
   const selectionAttribution = useMemo(() => fixedSelectionEndIndex !== null
     && consumptionSelection !== null
@@ -585,7 +590,7 @@ export function RecentUsageChart({
         <div className="recent-chart-head">
           <div className="recent-chart-title">
             <h2>{data.title}</h2>
-            <span className="recent-estimate-hint">点击起点/终点可估算额度</span>
+            {quotaEstimationAvailable && <span className="recent-estimate-hint">点击起点/终点可估算额度</span>}
             <span>{data.subtitle}</span>
           </div>
           <div className="recent-range-tabs" aria-label="曲线范围">
@@ -608,8 +613,8 @@ export function RecentUsageChart({
             <LegendDot className="legend-dot--calls" label="调用" value={`${visibleWindowSummary.callTotal}`} />
             <LegendDot className="legend-dot--hit" label="命中率" value={percentText(visibleUsage?.cacheHitRate??null)} />
             <LegendDot className="legend-dot--cost" label={displayCostLabel} value={pricingAvailable && recordedCostText(visibleWindowSummary.startIndex,visibleWindowSummary.endIndex)!=='金额未报告' ? moneyText(visibleWindowCostUSD) : "—"} />
-            {fiveHourQuotaPresent ? <LegendDot className="legend-dot--five" label="5h" value={percentText(visibleWindowSummary.latestFiveHourRemaining)} /> : null}
-            {sevenDayQuotaPresent ? <LegendDot className="legend-dot--seven" label="7d" value={percentText(visibleWindowSummary.latestSevenDayRemaining)} /> : null}
+            {fiveHourQuotaPresent ? <LegendDot className="legend-dot--five" label="5h" value={quotaPercentText(visibleWindowSummary.latestFiveHourRemaining)} /> : null}
+            {sevenDayQuotaPresent ? <LegendDot className="legend-dot--seven" label="7d" value={quotaPercentText(visibleWindowSummary.latestSevenDayRemaining)} /> : null}
           </div>
           <div className="chart-line-toggles" aria-label="曲线显示">
             <LineToggle active={visibility.tokens} className="toggle-token" label="Token" onClick={() => updateVisibility("tokens")} />
@@ -627,7 +632,7 @@ export function RecentUsageChart({
           </div>
         </div>
 
-      <RecentChartInteractionGuide />
+      {quotaEstimationAvailable && <RecentChartInteractionGuide />}
       <div className="recent-chart-plot" style={{
         "--chart-bubble-bottom": `${recentChartBubbleBottom(plotTop)}px`,
         "--chart-bubble-top-reveal": `${RECENT_CHART_BUBBLE.topReveal}px`,
@@ -971,8 +976,8 @@ function HoverBubble({
   const left = recentChartHoverBubbleCenter(x, viewportWidth, bubbleWidth);
   const average = point.calls > 0 ? Math.round(point.tokens / point.calls) : 0;
   const quotaParts = [
-    fiveHourRemaining !== null ? `5h ${percentText(fiveHourRemaining)}` : null,
-    sevenDayRemaining !== null ? `7d ${percentText(sevenDayRemaining)}` : null,
+    fiveHourRemaining !== null ? `5h ${quotaPercentText(fiveHourRemaining)}` : null,
+    sevenDayRemaining !== null ? `7d ${quotaPercentText(sevenDayRemaining)}` : null,
   ].filter(Boolean);
 
   return (

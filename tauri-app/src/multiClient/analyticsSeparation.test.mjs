@@ -149,6 +149,33 @@ test("Claude-only analytics does not expose Codex quota, pricing, or cache-rank 
   });
 });
 
+test("Claude Desktop history reaches the normal 24-hour chart with its own fractional quota", async () => {
+  await withSsrModules(async load => {
+    const { emptyDashboardSnapshot } = await load("/src/api/fallback/dashboardFallback.ts");
+    const { DashboardAnalyticsSection } = await load("/src/pages/dashboard/DashboardAnalyticsSection.tsx");
+    const now = Math.floor(Date.now() / 300000) * 300;
+    const dashboard = emptyDashboardSnapshot();
+    dashboard.generatedAt = new Date(now * 1000).toISOString();
+    dashboard.recentUsage24h = [usagePoint(now - 300, {
+      tokens: 17, calls: 1, inputTokens: 10, cachedInputTokens: 0, outputTokens: 7, hitRate: 0,
+    })];
+    const clients = { preferences: [], summaries: [], todaySummaries: [], sevenDaySummaries: [],
+      trendBuckets: [], dailyBuckets: [], diagnostics: [], updatedAt: dashboard.generatedAt,
+      quotas: [{ client: "claudeDesktop", state: "available", source: "fixture", windows: [], notice: "",
+        capturedAt: dashboard.generatedAt, history: [
+          { windowId: "5h", observedAt: now - 300, usedPercent: 99.7554, resetsAt: now + 3600, source: "fixture" },
+        ] }],
+    };
+    const markup = renderWithBrowserStorage(React.createElement(DashboardAnalyticsSection, {
+      dashboard, originalCodex: dashboard, clients, allowed: ["claudeDesktop"], sharedAccountAttribution: null,
+    }));
+    assert.match(markup, /额度来源/);
+    assert.match(markup, /Claude Desktop/);
+    assert.match(markup, /0\.24%/);
+    assert.doesNotMatch(markup, /点击起点\/终点可估算额度/);
+  });
+});
+
 test("activity panel uses only a three-minute memory plot without a history query or fabricated zero", async () => {
   await withSsrModules(async load => {
     const { ClientActivitySpeedPanel } = await load("/src/multiClient/ClaudeLocalRuntime.tsx");

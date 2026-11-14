@@ -279,7 +279,7 @@ extension RecentUsageChart {
 
     nonisolated static func percentText(_ value: Double?) -> String {
         guard let value else { return "--" }
-        return "\(Int(value.rounded()))%"
+        return ClientQuotaPresentation.percentNumber(value) + "%"
     }
 
     nonisolated private static func observedCacheHitRates(cacheBreakdowns: [TokenCacheBreakdown]) -> [Double?] {

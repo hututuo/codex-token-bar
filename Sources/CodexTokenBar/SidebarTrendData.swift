@@ -6,12 +6,16 @@ struct SidebarTrendData {
     let bins: [BinUsage]
     let quota: [QuotaHistoryRecentBucket]
     let includesCodex: Bool
+    let quotaTitle: String?
 
     init(codexBins: [BinUsage], projectedBins: [BinUsage]?,
-         quota: [QuotaHistoryRecentBucket], clients: Set<String>) {
-        bins = Array((projectedBins ?? codexBins).suffix(288))
+         quota: [QuotaHistoryRecentBucket], clients: Set<String>, quotaSource: ClientQuotaChartSource? = nil) {
+        let source = quotaSource ?? (clients.contains("codex") ? ClientQuotaChartSource(client: "codex") : nil)
+        let usage = projectedBins ?? codexBins
+        bins = Array((usage.isEmpty ? quota.map { BinUsage(start: $0.start, tokens: 0, calls: 0) } : usage).suffix(288))
         includesCodex = clients.contains("codex")
-        self.quota = includesCodex ? Array(quota.suffix(288)) : []
+        quotaTitle = source?.title
+        self.quota = source.map { clients.contains($0.client) } == true ? Array(quota.suffix(288)) : []
     }
 
     var alignedQuota: [QuotaHistoryRecentBucket?] {

@@ -1,4 +1,5 @@
 import type { QuotaSnapshot } from "../types/quota";
+import type { ClientQuotaHistorySample } from "./clientQuotaHistory";
 import quotaPresentation from "../../../Sources/CodexTokenBar/Resources/client-quota-presentation.json" with {type:"json"};
 export interface ClientDetection { client: string; evidence: string; }
 export interface ClientTrendBucket {
@@ -11,6 +12,7 @@ export interface ClientQuotaReading {
   client: string; state: string; source: string;
   windows: { id?: string | null; label: string; usedPercent: number; resetsAt: string | null }[]; notice: string;
   capturedAt?: string | null;
+  history?: ClientQuotaHistorySample[];
 }
 export interface ClientQuotaProvider { readonly allowsNetwork: false; reading(): ClientQuotaReading; }
 const quotaStates:Record<string,{label:string;compact:string}>=quotaPresentation.states;

@@ -43,7 +43,7 @@ final class AntigravityLocalRPCQuotaTests: XCTestCase {
 
     func testSharedRPCFixturesKeepExplicitFractionsResetsAndPrivacy() throws {
         let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .deletingLastPathComponent().appendingPathComponent("fixtures/antigravity-local-rpc.json")
+            .deletingLastPathComponent().appendingPathComponent("fixtures/antigravity-quota-summary.json")
         let fixture = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
         for row in try XCTUnwrap(fixture["cases"] as? [[String: Any]]) {
             let reading = AntigravityLocalRPCQuota.decode(try JSONSerialization.data(withJSONObject: row["data"]!),
@@ -75,6 +75,7 @@ final class AntigravityLocalRPCQuotaTests: XCTestCase {
         XCTAssertEqual(request.url?.host, "127.0.0.1")
         XCTAssertEqual(request.url?.scheme, "https")
         XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertTrue(request.url?.path.hasSuffix("/RetrieveUserQuotaSummary") == true)
         let body = try XCTUnwrap(try JSONSerialization.jsonObject(with: try XCTUnwrap(request.httpBody)) as? [String: Any])
         XCTAssertNil(body["forceRefresh"])
         XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))

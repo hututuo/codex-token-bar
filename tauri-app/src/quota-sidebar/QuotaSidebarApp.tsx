@@ -7,6 +7,9 @@ import { SpeedDisplayControls, useSpeedDisplayPreferences, useLiveModelRateSnaps
 import { LiveModelRateBars } from "../components/liveRate/LiveModelRateBars";
 import { ClientActivitySpeedPanel, useClaudeLocalRuntime } from "../multiClient/ClaudeLocalRuntime";
 import { useMultiClientUsage } from "../multiClient/MultiClientUsage";
+import { useSharedChoice } from "../multiClient/useSharedChoice";
+import { applyClientQuotaHistory, quotaChartSources, resolveQuotaChartSource } from "../multiClient/clientQuotaHistory";
+import type { RecentUsagePoint } from "../types/dashboard";
 import { ClientQuotaSettings, ClientQuotaDetailRings, PairedQuotaRing, ClientSidebarUsageRows, clientTitle, useClientQuotaItems, useClientScope, useClientQuotaSelection } from "../multiClient/IntegratedClients";
 import { clientCostGroups, clientModelCostItems } from "../multiClient/originalDashboardProjection";
 import { quotaRingGroups } from "../multiClient/integratedClientModel";
@@ -541,6 +544,30 @@ export function QuotaDetails({ data, onOpenRunning }: { data: SidebarData; onOpe
   const { items: detailQuotaItems } = useClientQuotaItems(scopedQuota);
   const { codexOnly, allowed, snapshot: clients } = useClientScope();
   const includesCodex = allowed.includes("codex");
+  const [quotaHistorySource, setQuotaHistorySource] = useSharedChoice("sidebarQuotaHistorySource.v1", "sidebar-quota-history-source-changed", "codex");
+  const historySource = resolveQuotaChartSource(quotaHistorySource, allowed, clients.quotas);
+  const historyReading = clients.quotas?.find(reading => reading.client === historySource?.client);
+  const historyTrend = useMemo(() => {
+    if (historySource?.client === "codex") return data.trend ?? [];
+    const now = Date.now() / 1000;
+    const end = Math.floor(now / 300) * 300;
+    const tokens = new Map<number, number>();
+    if (includesCodex) for (const point of data.trend ?? []) tokens.set(Math.floor(point.at / 300), point.tokens);
+    for (const point of clients.trendBuckets ?? []) {
+      if (!allowed.includes(point.client)) continue;
+      const key = Math.floor(point.startUnix / 300);
+      tokens.set(key, (tokens.get(key) ?? 0) + point.inputTokens + point.outputTokens);
+    }
+    const axis: RecentUsagePoint[] = Array.from({ length: 288 }, (_, index) => {
+      const startUnix = end - (287 - index) * 300;
+      return { label: "", startUnix, tokens: tokens.get(startUnix / 300) ?? 0, calls: 0,
+        inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, cacheHitRate: null,
+        fiveHourRemainingPercent: null, sevenDayRemainingPercent: null };
+    });
+    return applyClientQuotaHistory(axis, historyReading, historySource, 300, now).map(point => ({
+      at: point.startUnix, tokens: point.tokens, five: point.fiveHourRemainingPercent, seven: point.sevenDayRemainingPercent,
+    }));
+  }, [data.trend, historySource, historyReading, clients.trendBuckets, allowed, includesCodex]);
   // Reuse the dashboard's already-priced client contributions and unknown
   // reference group. Never turn external rows into Codex-priced breakdowns.
   const externalToday = useMemo(() => (clients.todaySummaries ?? []).filter(row => allowed.includes(row.client)), [clients.todaySummaries, allowed]);
@@ -598,7 +625,13 @@ export function QuotaDetails({ data, onOpenRunning }: { data: SidebarData; onOpe
         <progress max={100} value={model.share * 100} style={{ "--qs-accent": model.color } as CSSProperties} />
       </div>)}
     </section>
-    {includesCodex && <SidebarTrend points={data.trend ?? []} tokenLabel={codexOnly ? "Token" : "Codex Token"} />}
+    {historySource && <>
+      <label>额度来源 <select aria-label="侧栏额度历史来源" value={historySource.id} onChange={event => setQuotaHistorySource(event.target.value)}>
+        {quotaChartSources(allowed, clients.quotas).map(source => <option key={source.id} value={source.id}>{source.title}</option>)}
+      </select></label>
+      <SidebarTrend points={historyTrend} quotaTitle={historySource.title}
+        tokenLabel={historySource.client === "codex" && !codexOnly ? "Codex Token" : "Token"} />
+    </>}
     <section className="qs-token-composition">
       <div className="qs-section-heading"><h3>今日 Token 构成</h3><span>缓存包含在输入内</span></div>
       <div className="qs-composition-chart" role="img" aria-label="今日输入、缓存和输出占比">{breakdownKnown && inputParts.map(part => <i key={part.label} style={{ flexGrow: part.value, background: part.color }} />)}</div>

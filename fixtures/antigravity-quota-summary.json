@@ -1,0 +1,292 @@
+{
+  "cases": [
+    {
+      "name": "root",
+      "now": 1800000000,
+      "data": {
+        "groups": [
+          {
+            "displayName": "Gemini Models",
+            "buckets": [
+              {
+                "bucketId": "gemini-5h",
+                "remainingFraction": 0.999539,
+                "resetTime": "2027-01-16T00:00:00Z"
+              },
+              {
+                "bucketId": "gemini-weekly",
+                "remainingFraction": 0.002446,
+                "resetTime": "2027-01-16T00:00:00Z"
+              }
+            ]
+          },
+          {
+            "displayName": "Claude and GPT models",
+            "buckets": [
+              {
+                "bucketId": "3p-5h",
+                "remainingFraction": 1.0,
+                "resetTime": "2027-01-16T00:00:00Z"
+              },
+              {
+                "bucketId": "3p-weekly",
+                "remainingFraction": 1.0,
+                "resetTime": "2027-01-16T00:00:00Z"
+              }
+            ]
+          }
+        ]
+      },
+      "expectedState": "available",
+      "used": [
+        0.0461,
+        99.7554,
+        0.0,
+        0.0
+      ],
+      "ids": [
+        "gemini-5h",
+        "gemini-weekly",
+        "3p-5h",
+        "3p-weekly"
+      ]
+    },
+    {
+      "name": "response-wrapper",
+      "now": 1800000000,
+      "data": {
+        "response": {
+          "groups": [
+            {
+              "displayName": "Gemini Models",
+              "buckets": [
+                {
+                  "bucketId": "gemini-5h",
+                  "remainingFraction": 0.999539,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                },
+                {
+                  "bucketId": "gemini-weekly",
+                  "remainingFraction": 0.002446,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              ]
+            },
+            {
+              "displayName": "Claude and GPT models",
+              "buckets": [
+                {
+                  "bucketId": "3p-5h",
+                  "remainingFraction": 1.0,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                },
+                {
+                  "bucketId": "3p-weekly",
+                  "remainingFraction": 1.0,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expectedState": "available",
+      "used": [
+        0.0461,
+        99.7554,
+        0.0,
+        0.0
+      ],
+      "ids": [
+        "gemini-5h",
+        "gemini-weekly",
+        "3p-5h",
+        "3p-weekly"
+      ]
+    },
+    {
+      "name": "summary-wrapper",
+      "now": 1800000000,
+      "data": {
+        "summary": {
+          "groups": [
+            {
+              "displayName": "Gemini Models",
+              "buckets": [
+                {
+                  "bucketId": "gemini-5h",
+                  "remainingFraction": 0.999539,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                },
+                {
+                  "bucketId": "gemini-weekly",
+                  "remainingFraction": 0.002446,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              ]
+            },
+            {
+              "displayName": "Claude and GPT models",
+              "buckets": [
+                {
+                  "bucketId": "3p-5h",
+                  "remainingFraction": 1.0,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                },
+                {
+                  "bucketId": "3p-weekly",
+                  "remainingFraction": 1.0,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expectedState": "available",
+      "used": [
+        0.0461,
+        99.7554,
+        0.0,
+        0.0
+      ],
+      "ids": [
+        "gemini-5h",
+        "gemini-weekly",
+        "3p-5h",
+        "3p-weekly"
+      ]
+    },
+    {
+      "name": "oneof-and-zero",
+      "now": 1800000000,
+      "data": {
+        "groups": [
+          {
+            "buckets": [
+              {
+                "id": "gemini-weekly",
+                "remaining": {
+                  "case": "remainingFraction",
+                  "value": 0
+                },
+                "resetTimeUtc": "2027-01-16T00:00:00Z"
+              },
+              {
+                "id": "gemini-5h",
+                "remainingFraction": true
+              },
+              {
+                "id": "other",
+                "remainingFraction": 1
+              }
+            ]
+          }
+        ]
+      },
+      "expectedState": "available",
+      "used": [
+        100.0
+      ],
+      "ids": [
+        "gemini-weekly"
+      ]
+    },
+    {
+      "name": "model-rows-are-not-pools",
+      "now": 1800000000,
+      "data": {
+        "userStatus": {
+          "cascadeModelConfigData": {
+            "clientModelConfigs": [
+              {
+                "label": "Gemini",
+                "quotaInfo": {
+                  "remainingFraction": 1
+                }
+              }
+            ]
+          }
+        }
+      },
+      "expectedState": "unavailable",
+      "used": [],
+      "ids": []
+    },
+    {
+      "name": "error",
+      "now": 1800000000,
+      "data": {
+        "code": 13,
+        "groups": [
+          {
+            "displayName": "Gemini Models",
+            "buckets": [
+              {
+                "bucketId": "gemini-5h",
+                "remainingFraction": 0.999539,
+                "resetTime": "2027-01-16T00:00:00Z"
+              },
+              {
+                "bucketId": "gemini-weekly",
+                "remainingFraction": 0.002446,
+                "resetTime": "2027-01-16T00:00:00Z"
+              }
+            ]
+          },
+          {
+            "displayName": "Claude and GPT models",
+            "buckets": [
+              {
+                "bucketId": "3p-5h",
+                "remainingFraction": 1.0,
+                "resetTime": "2027-01-16T00:00:00Z"
+              },
+              {
+                "bucketId": "3p-weekly",
+                "remainingFraction": 1.0,
+                "resetTime": "2027-01-16T00:00:00Z"
+              }
+            ]
+          }
+        ]
+      },
+      "expectedState": "unavailable",
+      "used": [],
+      "ids": []
+    },
+    {
+      "name": "duplicate",
+      "now": 1800000000,
+      "data": {
+        "groups": [
+          {
+            "buckets": [
+              {
+                "bucketId": "gemini-5h",
+                "remainingFraction": 0.999539,
+                "resetTime": "2027-01-16T00:00:00Z"
+              },
+              {
+                "bucketId": "gemini-5h",
+                "remainingFraction": 0.999539,
+                "resetTime": "2027-01-16T00:00:00Z"
+              }
+            ]
+          }
+        ]
+      },
+      "expectedState": "unavailable",
+      "used": [],
+      "ids": []
+    },
+    {
+      "name": "missing",
+      "now": 1800000000,
+      "data": {},
+      "expectedState": "unavailable",
+      "used": [],
+      "ids": []
+    }
+  ]
+}

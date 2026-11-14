@@ -69,6 +69,7 @@ actor MultiClientUsageScanner {
         summaries: [ClientUsageSummary], todaySummaries: [ClientUsageSummary],
         sevenDaySummaries: [ClientUsageSummary], trend: [ClientTrendBucket], daily: [ClientTrendBucket])?
     private var scanNotices: [String] = []
+    private var importedQuotaHistory = false
     private var deepSeekContexts: [String: (identity: String, session: String)] = [:]
     init(databaseURL: URL, home: URL = FileManager.default.homeDirectoryForCurrentUser,
          environment: [String: String] = ProcessInfo.processInfo.environment) {
@@ -149,6 +150,16 @@ actor MultiClientUsageScanner {
     }
 
     func backup() throws -> URL { try open().backup() }
+
+    func recordQuotaHistory(_ readings: [ClientQuotaReading]) throws -> [ClientQuotaHistory] {
+        let ledger = try open()
+        if !importedQuotaHistory {
+            try ledger.recordQuotaHistory(ClaudeLocalQuota.desktopHistoryReadings(home: home))
+            importedQuotaHistory = true
+        }
+        try ledger.recordQuotaHistory(readings)
+        return try ledger.quotaHistory(readings: readings)
+    }
 
     /// Reads cached cache-ranking projections on demand without scanning source logs. If the
     /// ledger has not been opened by a normal scan, it is queried with SQLite read-only flags.
@@ -328,6 +339,8 @@ final class MultiClientUsageStore: ObservableObject {
     @Published private(set) var claudeQuota = ClaudeLocalQuota.missing
     @Published private(set) var claudeDesktopQuota = ClaudeLocalQuota.missing
     @Published private(set) var antigravityQuota = AntigravityLocalQuota.empty()
+    @Published private(set) var quotaHistories: [ClientQuotaHistory] = []
+    @Published private(set) var quotaHistoryIssue: String?
     private let defaults: UserDefaults
     private let scanner: MultiClientUsageScanner
     private let quotaReader: @Sendable () -> ClaudeLocalQuota
@@ -465,13 +478,21 @@ final class MultiClientUsageStore: ObservableObject {
         Task { [weak self] in
             let (reading, desktop, antigravity) = await Task.detached(priority: .utility) { (reader(), desktopReader(), antigravityReader()) }.value
             guard let self else { return }
+            let readings = [ClaudeCapturedQuotaProvider(snapshot: reading).reading(),
+                ClaudeCapturedQuotaProvider(snapshot: desktop, client: .claudeDesktop).reading(), antigravity]
+            do {
+                self.quotaHistories = try await self.scanner.recordQuotaHistory(readings)
+                self.quotaHistoryIssue = nil
+            } catch {
+                self.quotaHistoryIssue = "额度历史暂不可用，已保留当前读数和原记录（\(error.localizedDescription)）"
+            }
+            self.quotaProbeInFlight = false
             if self.claudeQuota != reading || self.claudeDesktopQuota != desktop || self.antigravityQuota != antigravity {
                 self.claudeQuota = reading
                 self.claudeDesktopQuota = desktop
                 self.antigravityQuota = antigravity
                 self.syncMenuItems()
             }
-            self.quotaProbeInFlight = false
         }
     }
     private func hasLocalQuota(_ client: UsageClient) -> Bool {

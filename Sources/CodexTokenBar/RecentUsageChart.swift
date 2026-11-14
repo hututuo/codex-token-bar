@@ -1373,6 +1373,7 @@ struct RecentUsageChart: View {
     let currentFiveHourQuotaPresent: Bool
     let currentSevenDayQuotaPresent: Bool
     let sharedAccountAttributionContext: QuotaSelectionAttributionContext?
+    let quotaEstimationAvailable: Bool
     private static let dataLineWidth: CGFloat = 1.55
     private static let hoverRingLineWidth: CGFloat = 1.55
     static let costPointRadius: CGFloat = 1.68
@@ -1425,11 +1426,13 @@ struct RecentUsageChart: View {
         unreportedCompactionDates: [Date] = [],
         clientSelector: RecentChartClientSelector? = nil,
         externalCostBuckets: [ClientTrendBucket]? = nil,
-        includesCodexCost: Bool = true
+        includesCodexCost: Bool = true,
+        quotaEstimationAvailable: Bool = true
     ) {
         self.clientSelector = clientSelector
         self.externalCostBuckets = externalCostBuckets
         self.includesCodexCost = includesCodexCost
+        self.quotaEstimationAvailable = quotaEstimationAvailable
         self.pricingAvailable = pricingAvailable
         self.quotaCostSource = quotaCostSource
         self.unreportedCompactionDates = unreportedCompactionDates
@@ -1555,7 +1558,8 @@ struct RecentUsageChart: View {
                 HStack(spacing: 10) {
                     Text(selectedRange.title)
                         .font(.system(size: 19, weight: .semibold))
-                    Label(RecentChartQuotaEstimateAffordancePresentation.headerLabel, systemImage: "cursorarrow.click.2")
+                    if quotaEstimationAvailable {
+                        Label(RecentChartQuotaEstimateAffordancePresentation.headerLabel, systemImage: "cursorarrow.click.2")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(AppTheme.accentBlue)
                         .padding(.horizontal, 9)
@@ -1566,6 +1570,7 @@ struct RecentUsageChart: View {
                                 .stroke(AppTheme.accentBlue.opacity(0.28), lineWidth: 1)
                         )
                         .help(RecentChartQuotaEstimateAffordancePresentation.headerHelp)
+                    }
                 }
                 Text(selectedRange == .sevenDays && preparedData.bucketInterval == 300 ? RecentChartRange.twentyFourHours.subtitle : selectedRange.subtitle)
                     .font(.system(size: 12))
@@ -2319,7 +2324,7 @@ struct RecentUsageChart: View {
         )
         VStack(alignment: .leading, spacing: 18) {
             chartHeader
-            RecentChartInteractionGuide()
+            if quotaEstimationAvailable { RecentChartInteractionGuide() }
             if hasPreparedData && preparedData.range == selectedRange {
                 chartPlot(
                     consumptionSelection: consumptionSelection,
@@ -2508,7 +2513,7 @@ struct RecentUsageChart: View {
     }
 
     private func rebuildFixedConsumptionSelectionCache() {
-        guard consumptionSelectionState.startIndex != nil,
+        guard quotaEstimationAvailable, consumptionSelectionState.startIndex != nil,
               consumptionSelectionState.fixedEndIndex != nil else {
             cachedFixedConsumptionSelection = nil
             return
@@ -2518,7 +2523,7 @@ struct RecentUsageChart: View {
     }
 
     private var activeConsumptionSelection: QuotaConsumptionSelection? {
-        guard let startIndex = consumptionSelectionState.startIndex,
+        guard quotaEstimationAvailable, let startIndex = consumptionSelectionState.startIndex,
               !preparedData.bins.isEmpty else { return nil }
         let fallbackEnd = preparedData.bins.index(before: preparedData.bins.endIndex)
         let validHover = hoveredIndex.flatMap { preparedData.bins.indices.contains($0) ? $0 : nil }

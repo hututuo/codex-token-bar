@@ -89,7 +89,7 @@ enum AntigravityLocalRPCQuota {
 
     static func request(_ endpoint: Endpoint) -> URLRequest? {
         guard (1_024...65_535).contains(endpoint.port), UUID(uuidString: endpoint.csrf) != nil,
-              let url = URL(string: "https://127.0.0.1:\(endpoint.port)/exa.language_server_pb.LanguageServerService/GetUserStatus") else { return nil }
+              let url = URL(string: "https://127.0.0.1:\(endpoint.port)/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary") else { return nil }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = 4
@@ -102,34 +102,35 @@ enum AntigravityLocalRPCQuota {
 
     static func decode(_ bytes: Data, now: Date) -> ClientQuotaReading {
         guard bytes.count <= maximumBytes,
-              let root = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any],
-              let status = root["userStatus"] as? [String: Any],
-              let config = status["cascadeModelConfigData"] as? [String: Any],
-              let models = config["clientModelConfigs"] as? [[String: Any]], models.count <= 128 else { return unavailable() }
-        func label(_ value: String) -> Bool {
-            !value.isEmpty && value.utf8.count <= 128 && !value.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }
-        }
+              let root = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any] else { return unavailable() }
+        if let code = root["code"], !["0", "OK", "ok"].contains(String(describing: code)) { return unavailable() }
+        let payload = root["response"] as? [String: Any] ?? root["summary"] as? [String: Any] ?? root
+        guard let groups = payload["groups"] as? [[String: Any]], groups.count <= 16 else { return unavailable() }
+        let labels = ["gemini-5h": "Gemini · 5h", "gemini-weekly": "Gemini · 7d",
+                      "3p-5h": "第三方模型 · 5h", "3p-weekly": "第三方模型 · 7d"]
         var seen = Set<String>()
-        let windows = models.compactMap { model -> ClientQuotaReading.Window? in
-            guard let name = model["label"] as? String, label(name),
-                  let quota = model["quotaInfo"] as? [String: Any],
-                  let fraction = quota["remainingFraction"] as? NSNumber,
-                  CFGetTypeID(fraction) != CFBooleanGetTypeID(), fraction.doubleValue.isFinite,
-                  (0...1).contains(fraction.doubleValue) else { return nil }
-            let rawID = (model["modelOrAlias"] as? [String: Any])?["model"]
-            let id: String
-            if let value = rawID as? String, label(value) { id = value }
-            else if let value = rawID as? NSNumber, CFGetTypeID(value) != CFBooleanGetTypeID(),
-                    value.doubleValue.isFinite, value.doubleValue.rounded() == value.doubleValue { id = value.stringValue }
-            else { id = name }
-            guard label(id), seen.insert(id).inserted else { return nil }
-            let reset = (quota["resetTime"] as? String).flatMap(LocalQuotaCacheFile.isoDate)
-            return .init(label: name, usedPercent: (1 - fraction.doubleValue) * 100, resetsAt: reset, id: id)
+        var windows: [ClientQuotaReading.Window] = []
+        for group in groups {
+            guard let buckets = group["buckets"] as? [[String: Any]], buckets.count <= 32 else { return unavailable() }
+            for bucket in buckets {
+                guard let id = bucket["bucketId"] as? String ?? bucket["id"] as? String,
+                      let label = labels[id], bucket["disabled"] as? Bool != true else { continue }
+                guard seen.insert(id).inserted else { return unavailable() }
+                let remaining = bucket["remaining"] as? [String: Any]
+                let raw = bucket["remainingFraction"] ?? remaining?["remainingFraction"]
+                    ?? (remaining?["case"] as? String == "remainingFraction" ? remaining?["value"] : nil)
+                guard let fraction = raw as? NSNumber, CFGetTypeID(fraction) != CFBooleanGetTypeID(),
+                      fraction.doubleValue.isFinite, (0...1).contains(fraction.doubleValue) else { continue }
+                let reset = (bucket["resetTime"] as? String ?? bucket["resetTimeUtc"] as? String).flatMap(LocalQuotaCacheFile.isoDate)
+                windows.append(.init(label: label, usedPercent: (1 - fraction.doubleValue) * 100, resetsAt: reset, id: id))
+            }
         }
         guard !windows.isEmpty else { return unavailable() }
+        let order = ["gemini-5h", "gemini-weekly", "3p-5h", "3p-weekly"]
+        windows.sort { order.firstIndex(of: $0.id ?? "")! < order.firstIndex(of: $1.id ?? "")! }
         let stale = windows.contains { $0.resetsAt.map { $0 <= now } ?? true }
         return .init(client: "antigravity", state: stale ? "stale" : "available", source: source, windows: windows,
-                     notice: "当前运行的 Antigravity 本机语言服务返回值；未强制刷新。客户端可能自行联网。读取时间不代表上游采样时间，逐模型展示，不合计共享池。", capturedAt: now)
+                     notice: "Antigravity 本机语言服务的分池额度，Gemini 与第三方模型各有 5h / 7d 窗口。未强制刷新；读取时间不代表上游采样时间。", capturedAt: now)
     }
 
     private static func fetch(_ request: URLRequest, endpoint: Endpoint) -> Data? {
