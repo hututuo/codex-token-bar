@@ -1,6 +1,6 @@
 # 多客户端统一接入计划
 
-状态：2026-11-17已开始实施第一包（A+B+C及已有客户端状态兼容）；源码修改正在云端验证，尚不代表安装版已完成以下接入。
+状态：2026-11-17第一包（A+B+C及已有客户端基本状态兼容）已通过云端检查并安装build1022，真实界面已点验。继续执行账号分段与缺失额度来源取证；详见[实施记录](2026-11-17-multiclient-heatmap-implementation.md)。
 
 基线：本机 `0.9.11 / build 1021`；代码 `851b8460852277d08c3582929f382f6d74db9ef4`，审计文档提交 `e70fa3a8fc48736732b5f9c37239ef2f5d9c3024`。工作目录为 `/Users/huyiyang/.codex/worktrees/f97f/codex-token-dashboard`，任务分支为 `codex/production-rail-20261116`。
 
