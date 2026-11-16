@@ -142,7 +142,8 @@ final class IntegratedClientRenderingTests: XCTestCase {
         if let output = ProcessInfo.processInfo.environment["TOKENBAR_QUOTA_RENDER_OUTPUT"] {
             try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: output))
         }
-        if let folder = ProcessInfo.processInfo.environment["TOKENBAR_DISCOVERY_RENDER_DIR"] {
+        if let folder = ProcessInfo.processInfo.environment["TOKENBAR_DISCOVERY_RENDER_DIR"]
+            ?? ProcessInfo.processInfo.environment["CODEX_CYCLE_LAYOUT_OUTPUT"] {
             try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
                 .write(to: URL(fileURLWithPath: folder).appendingPathComponent("sidebar-quota-complete-labels.png"))
         }
