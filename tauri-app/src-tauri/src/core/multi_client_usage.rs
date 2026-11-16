@@ -88,7 +88,7 @@ fn cached_claude_local_quota_read(
     reader: impl FnOnce() -> ClaudeLocalQuotaSnapshot,
 ) -> ClaudeLocalQuotaSnapshot {
     if cache.checked_at.is_some_and(|checked_at| {
-        super::local_quota_cache::probe_is_fresh(checked_at, now, interval)
+        crate::core::local_quota_cache::probe_is_fresh(checked_at, now, interval)
     }) {
         if let Some(snapshot) = &cache.snapshot {
             return snapshot.clone();
@@ -107,7 +107,7 @@ fn cached_claude_desktop_quota_read(
     reader: impl FnOnce() -> ClaudeLocalQuotaSnapshot,
 ) -> ClaudeLocalQuotaSnapshot {
     if cache.checked_at.is_some_and(|checked_at| {
-        super::local_quota_cache::probe_is_fresh(checked_at, now, interval)
+        crate::core::local_quota_cache::probe_is_fresh(checked_at, now, interval)
     }) {
         if let Some(snapshot) = &cache.snapshot {
             return snapshot.clone();
@@ -956,7 +956,7 @@ fn read_multi_client_usage_snapshot_at(
     database_path: &Path,
 ) -> Result<MultiClientUsageSnapshot, String> {
     // Bounded local-cache probes stay independent of transcript opt-in and ledger availability.
-    let local_quotas = read_local_client_quotas_with_interval(super::local_quota_cache::probe_interval());
+    let local_quotas = read_local_client_quotas_with_interval(crate::core::local_quota_cache::probe_interval());
     let (preferences, mut diagnostics) = load_preferences(settings_path);
     let (summaries, today_summaries, seven_day_summaries, updated_at, trend_buckets, daily_buckets) =
         if database_path.exists() {
@@ -1048,7 +1048,7 @@ fn refresh_multi_client_usage_at(
 ) -> Result<MultiClientUsageSnapshot, String> {
     // Provider cache readers have fixed paths/byte limits and never launch a client or use
     // credentials/network. Transcript failures must not suppress independently readable quota.
-    let local_quotas = read_local_client_quotas_with_interval(super::local_quota_cache::probe_interval());
+    let local_quotas = read_local_client_quotas_with_interval(crate::core::local_quota_cache::probe_interval());
     let (preferences, mut diagnostics) = load_preferences(settings_path);
     let enabled = preferences
         .iter()
@@ -1249,7 +1249,7 @@ fn refresh_multi_client_usage_at(
 
 /// Callable even when transcript discovery or ledger refresh fails.
 pub fn read_local_client_quotas() -> Vec<QuotaProviderSnapshot> {
-    read_local_client_quotas_with_history(super::local_quota_cache::probe_interval())
+    read_local_client_quotas_with_history(crate::core::local_quota_cache::probe_interval())
 }
 
 pub fn refresh_local_client_quotas() -> Vec<QuotaProviderSnapshot> {
@@ -1258,7 +1258,7 @@ pub fn refresh_local_client_quotas() -> Vec<QuotaProviderSnapshot> {
 }
 
 pub fn automatically_refresh_local_client_quotas() -> Vec<QuotaProviderSnapshot> {
-    read_local_client_quotas_with_history(super::local_quota_cache::automatic_probe_interval())
+    read_local_client_quotas_with_history(crate::core::local_quota_cache::automatic_probe_interval())
 }
 
 fn read_local_client_quotas_with_history(interval: Duration) -> Vec<QuotaProviderSnapshot> {
@@ -1347,7 +1347,7 @@ fn read_local_client_quotas_with_interval(interval: Duration) -> Vec<QuotaProvid
 }
 
 pub fn read_claude_local_quota() -> ClaudeLocalQuotaSnapshot {
-    read_claude_local_quota_with_interval(super::local_quota_cache::probe_interval())
+    read_claude_local_quota_with_interval(crate::core::local_quota_cache::probe_interval())
 }
 
 fn read_claude_local_quota_with_interval(interval: Duration) -> ClaudeLocalQuotaSnapshot {
@@ -1411,7 +1411,7 @@ fn claude_uses_api(home: &Path, environment: &std::collections::HashMap<String, 
 /// Reads only Claude Desktop's bounded local plan-usage history file. This remains separate
 /// from the Claude CLI statusline reader and never reads credentials or contacts a provider.
 pub fn read_claude_desktop_quota() -> ClaudeLocalQuotaSnapshot {
-    read_claude_desktop_quota_with_interval(super::local_quota_cache::probe_interval())
+    read_claude_desktop_quota_with_interval(crate::core::local_quota_cache::probe_interval())
 }
 
 fn read_claude_desktop_quota_with_interval(interval: Duration) -> ClaudeLocalQuotaSnapshot {
@@ -1591,7 +1591,7 @@ fn parse_claude_desktop_history_observations(
                 window_id: window_id.into(),
                 observed_at,
                 used_percent,
-                source: Some("local-desktop-history".into()),
+                source: Some(crate::core::local_quota_cache::scoped_source("local-desktop-history", object.get("org").and_then(Value::as_str))),
                 resets_at: None,
             });
         }
@@ -1687,7 +1687,7 @@ fn parse_claude_desktop_usage_history(bytes: &[u8], now_epoch: f64) -> ClaudeLoc
     let five_hour = percent("fh");
     let seven_day = percent("sd");
     ClaudeLocalQuotaSnapshot {
-        source: None,
+        source: Some(crate::core::local_quota_cache::scoped_source("local-desktop-history", latest_sample.get("org").and_then(Value::as_str))),
         state: if five_hour.is_some() || seven_day.is_some() {
             "available"
         } else {
@@ -6256,7 +6256,7 @@ mod tests {
         );
         assert_eq!(observations.len(), 4);
         assert!(observations.iter().all(|sample| {
-            sample.source.as_deref() == Some("local-desktop-history")
+            sample.source.as_deref().map(crate::core::local_quota_cache::base_source) == Some("local-desktop-history")
                 && sample.observed_at <= 3_000_000.0
         }));
         assert_eq!(observations[0].observed_at, 408_000.0);

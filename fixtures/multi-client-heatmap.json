@@ -1,10 +1,74 @@
 {
   "now": 1800000000,
   "rows": [
-    {"client":"claudeDesktop","model":"claude-opus-5","input":1000,"output":100,"cached":900,"costMicroUSD":1250000,"unpriced":0},
-    {"client":"antigravity","model":"claude-opus-5","input":100,"output":20,"cached":20,"costMicroUSD":250000,"unpriced":0},
-    {"client":"antigravity","model":null,"input":200,"output":30,"cached":null,"costMicroUSD":null,"unpriced":1}
+    {
+      "client": "claudeDesktop",
+      "model": "claude-opus-5",
+      "input": 1000,
+      "output": 100,
+      "cached": 900,
+      "costMicroUSD": 1250000,
+      "unpriced": 0
+    },
+    {
+      "client": "antigravity",
+      "model": "claude-opus-5",
+      "input": 100,
+      "output": 20,
+      "cached": 20,
+      "costMicroUSD": 250000,
+      "unpriced": 0
+    },
+    {
+      "client": "antigravity",
+      "model": null,
+      "input": 200,
+      "output": 30,
+      "cached": null,
+      "costMicroUSD": null,
+      "unpriced": 1
+    }
   ],
-  "expected":{"tokens":1450,"calls":3,"knownCostUSD":1.5,"unpriced":1,"cacheComplete":false,"modelComplete":false},
-  "rounding":[{"value":83.125,"text":"83.13"},{"value":83.195,"text":"83.2"},{"value":98.25,"text":"98.25"},{"value":100,"text":"100"},{"value":0,"text":"0"}]
+  "expected": {
+    "tokens": 1450,
+    "calls": 3,
+    "knownCostUSD": 1.5,
+    "unpriced": 1,
+    "cacheComplete": false,
+    "modelComplete": false
+  },
+  "rounding": [
+    {
+      "value": 83.125,
+      "text": "83.13"
+    },
+    {
+      "value": 83.195,
+      "text": "83.2"
+    },
+    {
+      "value": 98.25,
+      "text": "98.25"
+    },
+    {
+      "value": 100,
+      "text": "100"
+    },
+    {
+      "value": 0,
+      "text": "0"
+    }
+  ],
+  "identityCases": [
+    {
+      "organization": "Org-A",
+      "source": "local-desktop-history",
+      "expected": "local-desktop-history@scope:2d4db990dc79fed0be5f58a9f753f0130e4ec4c2496e4a04e1959567ff340da4"
+    },
+    {
+      "organization": "org-b",
+      "source": "local-desktop-history",
+      "expected": "local-desktop-history@scope:a2d9745c678d0f069f469b320c4a3744b828dcae3f90825cc39257142335c06f"
+    }
+  ]
 }

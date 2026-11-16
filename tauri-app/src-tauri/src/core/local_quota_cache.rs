@@ -6,6 +6,22 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Stable history identity, without storing an organization ID in the ledger.
+pub fn scoped_source(source: &str, organization: Option<&str>) -> String {
+    use sha2::{Digest, Sha256};
+    let Some(org) = organization.map(str::trim).filter(|v| !v.is_empty()
+        && v.len() <= 256 && !v.chars().any(char::is_control)) else { return source.into(); };
+    let digest = Sha256::digest(format!("claude-org:v1:{}", org.to_lowercase()).as_bytes());
+    format!("{source}@scope:{digest:x}")
+}
+
+pub fn base_source(source: &str) -> &str {
+    match source.split_once("@scope:") {
+        Some((base, digest)) if digest.len() == 64 && digest.bytes().all(|v| v.is_ascii_digit() || (b'a'..=b'f').contains(&v)) => base,
+        _ => source,
+    }
+}
+
 /// Use the existing main-page quota setting for every offline provider cache.
 pub fn probe_interval() -> Duration {
     let milliseconds = crate::platform::read_app_settings()

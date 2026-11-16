@@ -64,3 +64,21 @@ test("Codex independent references and unknown models preserve existing cost tot
     if(names.includes("gpt-5.6-sol"))assert.match(recordedCostText(usage),/已知金额/);
   }
 }));
+test("account switch leaves current quota empty and offers old identities separately",async()=>withSsrModules(async load=>{
+  const {resolveQuotaChartSource,quotaChartSources,applyClientQuotaDays}=await load("/src/multiClient/clientQuotaHistory.ts");
+  const {localDayKey}=await load("/src/multiClient/heatmapProjection.ts");
+  const [a,b]=fixture.identityCases.map(row=>row.expected);
+  const reading={client:"claudeDesktop",source:b,dailyHistory:[a,"local-desktop-history"].map(source=>({source,
+    windowId:"5h",startUnix:fixture.now,remainingPercent:80,sampleCount:1,firstObservedAt:fixture.now,lastObservedAt:fixture.now}))};
+  const choices=quotaChartSources(["claudeDesktop"],[reading]);
+  assert.equal(choices.length,3);
+  assert.equal(new Set(choices.map(row=>row.id)).size,3);
+  assert.ok(choices.some(row=>row.title.includes("身份未验证")));
+  assert.ok(choices.some(row=>row.title.includes("独立账号")));
+  const source=resolveQuotaChartSource("claudeDesktop",["claudeDesktop"],[reading]);
+  assert.equal(source.historySource,undefined);
+  const values=applyClientQuotaDays([day(localDayKey(fixture.now))],[],reading,source,"5h");
+  assert.equal(values[0].fiveHourRemainingPercent,null);
+  const old=choices.find(row=>row.historySource===a);
+  assert.equal(applyClientQuotaDays(values,[],reading,old,"5h")[0].fiveHourRemainingPercent,.8);
+}));

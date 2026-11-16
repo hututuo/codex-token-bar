@@ -37,7 +37,8 @@ final class OfflineClientQuotaTests: XCTestCase {
             XCTAssertEqual(reading?.fiveHour?.usedPercent, row["five"] as? Double, name)
             XCTAssertEqual(reading?.sevenDay?.usedPercent, row["seven"] as? Double, name)
             if reading?.state == "available" {
-                XCTAssertEqual(reading?.source, "local-desktop-http-cache")
+                XCTAssertEqual(reading?.source.map(ClientQuotaSourceIdentity.base), "local-desktop-http-cache")
+                XCTAssertTrue(reading?.source?.contains("@scope:") == true)
                 XCTAssertNotNil((reading?.fiveHour ?? reading?.sevenDay)?.resetsAt, name)
             }
             var corrupt = bytes; corrupt.removeLast()

@@ -71,13 +71,17 @@ struct ClaudeLocalQuota: Equatable, Sendable {
         // Idle Desktop clients may not sample again until Usage is opened.
         // Keep the last observation; display selection owns the three-day gate.
         // Never complete a new organization's partial sample from another row or source.
-        guard let values = version == 1 ? latest.row : latest.row["u"] as? [String: Any] else { return empty("missing", captured) }
+        let source = ClientQuotaSourceIdentity.scoped("local-desktop-history", organization: latest.row["org"] as? String)
+        guard let values = version == 1 ? latest.row : latest.row["u"] as? [String: Any] else {
+            return .init(state: "missing", capturedAt: captured, fiveHour: nil, sevenDay: nil, source: source)
+        }
         func window(_ key: String) -> Window? {
             guard let used = number(values[key]), (0...100).contains(used) else { return nil }
             return Window(usedPercent: used, resetsAt: nil)
         }
         let five = window("fh"), seven = window("sd")
-        return .init(state: five == nil && seven == nil ? "missing" : "available", capturedAt: captured, fiveHour: five, sevenDay: seven)
+        return .init(state: five == nil && seven == nil ? "missing" : "available", capturedAt: captured, fiveHour: five, sevenDay: seven,
+            source: source)
     }
     static func read(home: URL = FileManager.default.homeDirectoryForCurrentUser, now: Date = Date(),
                      environment: [String: String] = ProcessInfo.processInfo.environment) -> Self {

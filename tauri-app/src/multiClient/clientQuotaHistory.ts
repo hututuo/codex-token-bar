@@ -25,8 +25,8 @@ export function quotaChartSources(clients: readonly string[], readings: readonly
     const recorded = new Set([...(reading?.history ?? []).map(sample => sample.source ?? reading?.source),
       ...(reading?.dailyHistory??[]).map(sample=>sample.source)]);
     recorded.delete(reading?.source);
-    return [...recorded].filter((origin): origin is string => Boolean(origin)).map(origin => ({
-      ...source, id: source.id + "@" + origin, historySource: origin, title: source.title + " · 历史采样",
+    return [...recorded].filter((origin): origin is string => Boolean(origin)).sort().map((origin, index) => ({
+      ...source, id: source.id + "@" + origin, historySource: origin, title: source.title + (origin.includes("@scope:") ? ` · 历史采样 ${index+1} · 独立账号` : " · 历史采样 · 身份未验证"),
     }));
   });
   return base.concat(earlier);
@@ -38,7 +38,7 @@ export function resolveQuotaChartSource(selection: string, clients: readonly str
     const reading = readings.find(reading => reading.client === selected.client);
     const hasCurrentHistory = reading?.history?.some(sample => (sample.source ?? reading.source) === reading.source)
       || reading?.dailyHistory?.some(sample=>sample.source===reading.source);
-    if (!hasCurrentHistory) return options.find(source => source.client === selected.client
+    if (!hasCurrentHistory && !reading?.source.includes("@scope:")) return options.find(source => source.client === selected.client
       && source.pool === selected.pool && source.historySource) ?? selected;
   }
   return selected;

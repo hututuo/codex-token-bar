@@ -14,7 +14,8 @@ final class HeatmapDayUsageTests: XCTestCase {
             let cacheComplete: Bool; let modelComplete: Bool
         }
         struct Rounding: Decodable { let value: Double; let text: String }
-        let now: Double; let rows: [Row]; let expected: Expected; let rounding: [Rounding]
+        struct Identity: Decodable { let organization: String; let source: String; let expected: String }
+        let now: Double; let rows: [Row]; let expected: Expected; let rounding: [Rounding]; let identityCases: [Identity]
     }
     private func fixture() throws -> (Fixture, [ClientTrendBucket]) {
         let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
@@ -30,6 +31,9 @@ final class HeatmapDayUsageTests: XCTestCase {
     func testSharedDailyFixturePreservesKnownMoneyAndClientIdentity() throws {
         let (f, rows) = try fixture()
         for sample in f.rounding { XCTAssertEqual(ClientQuotaPresentation.percentNumber(sample.value), sample.text) }
+        for sample in f.identityCases {
+            XCTAssertEqual(ClientQuotaSourceIdentity.scoped(sample.source, organization: sample.organization), sample.expected)
+        }
         let days = HeatmapDayUsage.project(codex: .empty, external: rows,
             allowed: Set(rows.map { $0.client.rawValue }), priceModel: .gpt56Sol)
         let value = try XCTUnwrap(days.first?.usage)

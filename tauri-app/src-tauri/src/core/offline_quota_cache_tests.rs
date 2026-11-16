@@ -56,7 +56,8 @@ fn shared_http_cache_fixtures_keep_integrity_age_reset_and_zero() {
             row["seven"].as_f64()
         );
         if let Some(value) = value.filter(|s| s.state == "available") {
-            assert_eq!(value.source.as_deref(), Some("local-desktop-http-cache"));
+            assert_eq!(value.source.as_deref().map(super::local_quota_cache::base_source), Some("local-desktop-http-cache"));
+            assert!(value.source.as_deref().unwrap().contains("@scope:"));
             assert!(value
                 .five_hour
                 .or(value.seven_day)
@@ -175,7 +176,7 @@ fn newer_cache_does_not_merge_accounts_and_provider_keeps_official_reset() {
         1_800_000_000.0,
     );
     let projected = multi_client_product::quota_provider_snapshots(&missing, &selected, &ag);
-    assert_eq!(projected[1].source, "local-desktop-http-cache");
+    assert_eq!(super::local_quota_cache::base_source(&projected[1].source), "local-desktop-http-cache");
     assert!(projected[1].windows[0].resets_at.is_some());
     assert_eq!(
         projected

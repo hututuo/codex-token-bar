@@ -88,8 +88,11 @@ enum ClaudeDesktopHTTPCache {
         date.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
         guard headers["content-type"]?.lowercased().hasPrefix("application/json") == true,
               let captured = headers["date"].flatMap(date.date(from:)), captured <= now.addingTimeInterval(60) else { return nil }
+        let path = String(data: key, encoding: .utf8) ?? ""
+        let organization = path.components(separatedBy: "/organizations/").last?.components(separatedBy: "/usage").first
+        let source = ClientQuotaSourceIdentity.scoped("local-desktop-http-cache", organization: organization)
         var result = ClaudeLocalQuota(state: "invalid", capturedAt: captured, fiveHour: nil, sevenDay: nil)
-        result.source = "local-desktop-http-cache"
+        result.source = source
         let decoded: Data?
         switch headers["content-encoding"]?.lowercased() ?? "identity" {
         case "identity": decoded = body.count <= maximumBodyBytes ? body : nil
@@ -109,7 +112,7 @@ enum ClaudeDesktopHTTPCache {
         // as awaiting an update, never used to erase or infer a new percentage.
         result = ClaudeLocalQuota(state: five == nil && seven == nil ? "missing" : "available", capturedAt: captured,
             fiveHour: five, sevenDay: seven)
-        result.source = "local-desktop-http-cache"
+        result.source = source
         return result
     }
 

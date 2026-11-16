@@ -172,7 +172,9 @@ pub fn decode(bytes: &[u8], now: f64) -> Option<ClaudeLocalQuotaSnapshot> {
         return None;
     }
     let mut result = ClaudeLocalQuotaSnapshot {
-        source: Some(SOURCE.into()),
+        source: Some(super::local_quota_cache::scoped_source(SOURCE, std::str::from_utf8(key).ok()
+            .and_then(|s| s.split_once("/organizations/"))
+            .and_then(|(_, s)| s.split_once("/usage").map(|(org, _)| org)))),
         state: "invalid".into(),
         captured_at: captured.format(&Rfc3339).ok(),
         five_hour: None,

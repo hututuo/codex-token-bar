@@ -2,6 +2,35 @@ import XCTest
 @testable import CodexTokenBar
 
 final class ClientQuotaHistoryTests: XCTestCase {
+    func testOrganizationSwitchDoesNotBorrowOrRewriteLegacyHistory() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("identity.sqlite"))
+        func account(_ org: String?, used: Double, state: String = "available") -> ClientQuotaReading {
+            .init(client: "claudeDesktop", state: state,
+                source: ClientQuotaSourceIdentity.scoped("local-desktop-history", organization: org),
+                windows: state == "available" ? [.init(label: "5h", usedPercent: used, resetsAt: nil)] : [],
+                notice: "", capturedAt: now)
+        }
+        let legacy = account(nil, used: 10), first = account("Org-A", used: 20), second = account("org-b", used: 80)
+        try ledger.recordQuotaHistory([legacy, first], now: now)
+        let before = try ledger.database.readRows("SELECT source,used_percent FROM client_quota_observations ORDER BY source") { ($0.text(0)!, $0.double(1)!) }
+        let empty = try ledger.quotaHistory(readings: [account("org-b", used: 0, state: "notConnected")], now: now)
+        let current = try XCTUnwrap(ClientQuotaChartSource.resolve("claudeDesktop", clients: ["claudeDesktop"], histories: empty))
+        XCTAssertTrue(try XCTUnwrap(current.history(in: empty)).daily.isEmpty)
+        try ledger.recordQuotaHistory([second], now: now)
+        let histories = try ledger.quotaHistory(readings: [second], now: now)
+        XCTAssertEqual(histories.count, 3)
+        XCTAssertEqual(current.history(in: histories)?.daily.first?.fiveHourRemainingPercent, 20)
+        let choices = ClientQuotaChartSource.options(clients: ["claudeDesktop"], histories: histories)
+        XCTAssertTrue(choices.contains { $0.title.contains("身份未验证") })
+        XCTAssertTrue(choices.contains { $0.title.contains("独立账号") })
+        XCTAssertEqual(Set(choices.map(\.id)).count, 3)
+        for (source, value) in before {
+            XCTAssertEqual(try ledger.database.readRows("SELECT used_percent FROM client_quota_observations WHERE source=?", bindings: [.text(source)]) { $0.double(0) }.first!, value)
+        }
+        XCTAssertEqual(try ledger.database.readRows("PRAGMA user_version") { $0.int(0) }.first!, 2)
+    }
     func testDailyHistoryRetainsOldDaysWithoutExtendingChartOrInventingSamples() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

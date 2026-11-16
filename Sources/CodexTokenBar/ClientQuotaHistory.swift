@@ -86,17 +86,19 @@ struct ClientQuotaChartSource: Identifiable, Equatable {
     let client: String
     var pool = ""
     var historySource: String? = nil
+    var historyLabel: String? = nil
     var id: String { (pool.isEmpty ? client : client + ":" + pool) + (historySource.map { "@" + $0 } ?? "") }
     var title: String {
         ClientDisplayScope.title(client) + (pool.isEmpty ? "" : " · " + (pool == "gemini" ? "Gemini" : "第三方模型"))
-            + (historySource == nil ? "" : " · 历史采样")
+            + (historySource == nil ? "" : " · " + (historyLabel ?? "历史采样"))
     }
     static func options(clients: Set<String>, histories: [ClientQuotaHistory] = []) -> [Self] {
         let base = [Self(client: "codex"), Self(client: "claudeCode"), Self(client: "claudeDesktop"),
          Self(client: "antigravity", pool: "gemini"), Self(client: "antigravity", pool: "3p")].filter { clients.contains($0.client) }
         let earlier = base.flatMap { source in
-            histories.filter { $0.client == source.client && $0.pool == source.pool }.dropFirst().map {
-                Self(client: $0.client, pool: $0.pool, historySource: $0.source)
+            histories.filter { $0.client == source.client && $0.pool == source.pool }.dropFirst().enumerated().map { index, history in
+                Self(client: history.client, pool: history.pool, historySource: history.source,
+                    historyLabel: ClientQuotaSourceIdentity.historyLabel(history.source, ordinal: index + 1))
             }
         }
         return base + earlier
@@ -182,7 +184,11 @@ extension MultiClientUsageLedger {
                 let current = rows.filter { $0.0 == source && ClientQuotaHistory.pool(client: reading.client, windowID: $0.1.windowID) != nil }.map(\.1).reversed()
                 let pools = Dictionary(grouping: current) { ClientQuotaHistory.pool(client: reading.client, windowID: $0.windowID) ?? "" }
                 let dailyForSource = dailyRows.filter { $0.0 == source && ClientQuotaHistory.pool(client: reading.client, windowID: $0.1) != nil }
-                let poolIDs = Set(pools.keys).union(dailyForSource.compactMap { ClientQuotaHistory.pool(client: reading.client, windowID: $0.1) })
+                var poolIDs = Set(pools.keys).union(dailyForSource.compactMap { ClientQuotaHistory.pool(client: reading.client, windowID: $0.1) })
+                // A newly observed account without a valid sample cannot
+                // silently fall back to another account's history.
+                if source == reading.source, ClientQuotaSourceIdentity.base(source) != source,
+                   reading.client == "claudeDesktop" { poolIDs.insert("") }
                 for pool in poolIDs.sorted() {
                     var history = ClientQuotaHistory(client: reading.client, source: source, pool: pool, samples: pools[pool] ?? [])
                     history.recentBins = history.buckets(interval: 300, now: now)

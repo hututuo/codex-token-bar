@@ -45,7 +45,7 @@ struct DashboardTokenActivity: View {
                         Picker("周期", selection: $period) {
                             Text("5小时").tag("5h")
                             Text("7天").tag("7d")
-                        }.pickerStyle(.segmented).frame(width: 120)
+                        }.pickerStyle(.segmented).labelsHidden().frame(width: 110)
                     } else {
                         Text("所选客户端尚无本地额度来源").font(.caption).foregroundStyle(.secondary)
                     }

@@ -357,6 +357,7 @@ fn valid_client(client: &str) -> bool {
 }
 
 fn valid_window_source(client: &str, source: &str, window_id: &str) -> bool {
+    let source = super::local_quota_cache::base_source(source);
     let allowed_source = match client {
         "claudeCode" => source == "local-statusline",
         "claudeDesktop" => {
@@ -396,6 +397,29 @@ fn bucket_start(timestamp: f64) -> i64 {
 mod tests {
     use super::*;
     use crate::core::multi_client_product::QuotaProviderWindow;
+
+    #[test]
+    fn organization_history_uses_shared_digest_and_keeps_legacy_rows_separate() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!("../../../../fixtures/multi-client-heatmap.json")).unwrap();
+        for item in fixture["identityCases"].as_array().unwrap() {
+            assert_eq!(super::super::local_quota_cache::scoped_source(item["source"].as_str().unwrap(),
+                item["organization"].as_str()), item["expected"].as_str().unwrap());
+        }
+        let connection = Connection::open_in_memory().unwrap();
+        let legacy = reading("claudeDesktop", "local-desktop-history", "available", Some(timestamp(1000)), 10.0);
+        let mut first = legacy.clone();
+        first.source = super::super::local_quota_cache::scoped_source(&legacy.source, Some("Org-A"));
+        first.windows[0].used_percent = Some(20.0);
+        let mut second = legacy.clone();
+        second.source = super::super::local_quota_cache::scoped_source(&legacy.source, Some("org-b"));
+        second.windows[0].used_percent = Some(80.0);
+        record_history(&connection, &[legacy.clone(), first, second.clone()], 2000.0).unwrap();
+        let history = read_daily_history(&connection, "claudeDesktop", 2000.0).unwrap();
+        assert_eq!(history.len(), 3);
+        assert_eq!(history.iter().find(|r| r.source == second.source).unwrap().remaining_percent, 20.0);
+        assert_eq!(history.iter().find(|r| r.source == legacy.source).unwrap().remaining_percent, 90.0);
+        assert_eq!(connection.query_row("SELECT COUNT(*) FROM client_quota_observations", [], |r| r.get::<_,i64>(0)).unwrap(), 3);
+    }
 
     fn open_schema_two_without_history() -> Connection {
         let connection = Connection::open_in_memory().unwrap();

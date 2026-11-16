@@ -69,7 +69,7 @@ actor MultiClientUsageScanner {
         summaries: [ClientUsageSummary], todaySummaries: [ClientUsageSummary],
         sevenDaySummaries: [ClientUsageSummary], trend: [ClientTrendBucket], daily: [ClientTrendBucket])?
     private var scanNotices: [String] = []
-    private var importedQuotaHistory = false
+    private var importedQuotaHistorySource: String?
     private var deepSeekContexts: [String: (identity: String, session: String)] = [:]
     init(databaseURL: URL, home: URL = FileManager.default.homeDirectoryForCurrentUser,
          environment: [String: String] = ProcessInfo.processInfo.environment) {
@@ -158,9 +158,10 @@ actor MultiClientUsageScanner {
         }
         guard FileManager.default.fileExists(atPath: databaseURL.path) || hasObservation else { return [] }
         let ledger = try open()
-        if !importedQuotaHistory {
+        let desktopSource = readings.first { $0.client == "claudeDesktop" }?.source ?? ""
+        if importedQuotaHistorySource != desktopSource {
             try ledger.recordQuotaHistory(ClaudeLocalQuota.desktopHistoryReadings(home: home))
-            importedQuotaHistory = true
+            importedQuotaHistorySource = desktopSource
         }
         try ledger.recordQuotaHistory(readings)
         return try ledger.quotaHistory(readings: readings)
