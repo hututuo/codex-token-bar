@@ -65,9 +65,9 @@ enum ClientQuotaPodLayout {
             if case let .quota(client) = item { return result + height(quotas.filter { $0.client == client }) }
             return result + 46
         }
-        let height = content + Double(max(0, visible.count - 1)) * 12 + 30
+        let totalHeight = content + Double(max(0, visible.count - 1)) * 12 + 30
         return ClientRailLayout(barHeight: 46, gap: 12,
-            height: min(max(30, availableHeight.isFinite ? availableHeight : 900), height))
+            height: min(max(30, availableHeight.isFinite ? availableHeight : 900), totalHeight))
     }
 }
 
