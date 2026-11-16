@@ -38,6 +38,9 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     private(set) var detailScrollTarget = "top"
     private(set) var railPanel: QuotaSidebarPanel?
     private(set) var detailPanel: QuotaSidebarPanel?
+    private(set) var peekPanel: QuotaSidebarPanel?
+    @Published private(set) var hoveredItem: QuotaSidebarItem?
+    private var peekDismissTask: Task<Void, Never>?
     private(set) var settingsPreviewPanel: QuotaSidebarPanel?
     @Published private(set) var edge = QuotaSidebarEdge.right
     @Published private(set) var expandedContentHeight: CGFloat = QuotaSidebarLayout.weeklyExpandedHeight
@@ -172,6 +175,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     private var dashboardOpenAction: (() -> Void)?
     private var makeRail: (() -> AnyView)?
     private var makeDetail: (() -> AnyView)?
+    private var makePeek: (() -> AnyView)?
     private var makeCompactPreview: (() -> AnyView)?
     private var detailContentMounted = false
     private var cacheAdviceID: String?
@@ -212,6 +216,10 @@ final class QuotaSidebarController: NSObject, ObservableObject {
                 guard let self else { return AnyView(EmptyView()) }
                 return AnyView(QuotaSidebarRail(controller: self, store: store, quota: quota, tasks: tasks, radar: radar, monitor: monitor))
             }
+            makePeek = { [weak self] in
+                guard let self else { return AnyView(EmptyView()) }
+                return AnyView(QuotaSidebarRail(controller: self, store: store, quota: quota, tasks: tasks, radar: radar, monitor: monitor, peekOnly: true))
+            }
             makeDetail = { [weak self] in
                 guard let self else { return AnyView(EmptyView()) }
                 return AnyView(QuotaSidebarDetailView(controller: self, store: store, monitor: monitor, quota: quota, tasks: tasks, radar: radar, history: history))
@@ -243,6 +251,8 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     }
 
     func close() {
+        hidePeek()
+        peekPanel = nil; makePeek = nil
         settingsReordering = false
         isCollapsing = false
         cancelFrameAnimation()
@@ -294,6 +304,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     }
 
     func enter() {
+        hidePeek()
         guard !isTrackingPress, !isDragging else { return }
         collapseTask?.cancel(); collapseTask = nil
         if interaction.expanded {
@@ -306,6 +317,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     }
 
     func select(_ detail: QuotaSidebarDetail, section: String = "top") {
+        hidePeek()
         guard !isTrackingPress, !isDragging else { return }
         let settingsChanged = (interaction.detail == .settings) != (detail == .settings)
         collapseTask?.cancel(); collapseTask = nil
@@ -317,11 +329,55 @@ final class QuotaSidebarController: NSObject, ObservableObject {
         updateFrames(animateDocking: settingsChanged)
     }
 
+    func hover(_ item: QuotaSidebarItem) {
+        guard !interaction.expanded, !isDragging, !isTrackingPress,
+              let railPanel, let screen else { return }
+        peekDismissTask?.cancel(); peekDismissTask = nil
+        if hoveredItem == item, peekPanel?.isVisible == true { return }
+        hoveredItem = item
+        if peekPanel == nil {
+            let panel = makePanel(identifier: "CodexTokenBarQuotaSidebarPeek")
+            let host = QuotaSidebarHostingView(rootView: makePeek?())
+            host.sizingOptions = []
+            panel.contentView = host
+            peekPanel = panel
+        }
+        let area = screen.visibleFrame
+        let width = min(258.0, max(0, area.width - railPanel.frame.width - 8))
+        let height = min(280.0, area.height)
+        let x = edge == .right ? railPanel.frame.minX - width - 8 : railPanel.frame.maxX + 8
+        let y = min(max(area.minY, pointerLocation().y - height / 2), area.maxY - height)
+        peekPanel?.setFrame(CGRect(x: max(area.minX, min(x, area.maxX - width)), y: y,
+                                  width: width, height: height), display: true)
+        peekPanel?.orderFrontRegardless()
+    }
+
+    private func hidePeek() {
+        peekDismissTask?.cancel(); peekDismissTask = nil
+        peekPanel?.orderOut(nil)
+        hoveredItem = nil
+    }
+
+    private func updatePeekPresence() {
+        guard let peekPanel, peekPanel.isVisible, let railPanel else { return }
+        let point = pointerLocation()
+        let bridge = peekPanel.frame.union(railPanel.frame)
+        if bridge.contains(point) {
+            peekDismissTask?.cancel(); peekDismissTask = nil
+        } else if peekDismissTask == nil {
+            peekDismissTask = Task { [weak self] in
+                do { try await Task.sleep(for: .milliseconds(220)) } catch { return }
+                self?.hidePeek()
+            }
+        }
+    }
+
     func openDashboard() { dashboardOpenAction?() }
 
     func togglePin() { interaction.togglePin(); reconcilePresenceMonitoring(); pointerMoved() }
 
     func dismiss() {
+        hidePeek()
         collapseTask?.cancel(); collapseTask = nil
         if let id = interaction.cacheNoticeID {
             settings.set(id, forKey: "cacheHitAdviceDismissed")
@@ -471,7 +527,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown]) { [weak self] event in
             MainActor.assumeIsolated {
                 if event.type == .keyDown {
-                    if event.keyCode == 53, self?.interaction.expanded == true { self?.dismiss() }
+                    if event.keyCode == 53 { self?.hidePeek(); if self?.interaction.expanded == true { self?.dismiss() } }
                 } else if [.leftMouseDown, .rightMouseDown, .otherMouseDown].contains(event.type) {
                     self?.outsideClick()
                 } else { self?.pointerMoved() }
@@ -501,6 +557,8 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     }
 
     private func outsideClick() {
+        if let peekPanel, peekPanel.isVisible, let railPanel,
+           !peekPanel.frame.union(railPanel.frame).contains(pointerLocation()) { hidePeek() }
         guard interaction.expanded, !interaction.pinned, !isDragging, !isTrackingPress,
               let frames, !frames.contains(pointerLocation(), detailVisible: interaction.detail != nil) else { return }
         dismiss()
@@ -510,6 +568,10 @@ final class QuotaSidebarController: NSObject, ObservableObject {
         updateRevealInputRegion()
         guard !isTrackingPress, !isDragging, !settingsReordering else { return }
         guard let frames else { return }
+        if !interaction.expanded {
+            updatePeekPresence()
+            return
+        }
         if frames.contains(pointerLocation(), detailVisible: interaction.detail != nil) {
             enter()
         } else if interaction.expanded && interaction.allowsAutomaticCollapse && collapseTask == nil {
@@ -864,7 +926,7 @@ final class QuotaSidebarCanvasView: NSView {
         self.host = host; self.edge = edge; self.signal = signal
         super.init(frame: .zero)
         wantsLayer = true; layer?.masksToBounds = true
-        layer?.backgroundColor = NSColor(calibratedWhite: 0.035, alpha: 1).cgColor
+        layer?.backgroundColor = NSColor.clear.cgColor
         addSubview(host); if let signal { addSubview(signal) }
         addSubview(dragHandle)
         layoutCanvas()
@@ -886,7 +948,7 @@ final class QuotaSidebarCanvasView: NSView {
         if let signal, signal.frame != bounds { signal.frame = bounds }
         let gripFrame = QuotaSidebarPressRouting.dragHandleFrame(in: bounds)
         if dragHandle.frame != gripFrame { dragHandle.frame = gripFrame }
-        dragHandle.isHidden = bounds.width <= 16
+        dragHandle.isHidden = bounds.width <= QuotaSidebarLayout.compactWidth
         layer?.cornerRadius = min(22, max(8, 8 + (bounds.width - 16) * 14 / 72))
         layer?.maskedCorners = edge == .right ? [.layerMinXMinYCorner, .layerMinXMaxYCorner] : [.layerMaxXMinYCorner, .layerMaxXMaxYCorner]
         CATransaction.commit()

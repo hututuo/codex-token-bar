@@ -10,8 +10,8 @@ final class QuotaSidebarItemLayoutTests: XCTestCase {
                 let editing = QuotaSidebarFrames.make(usableFrame: area, edge: edge, expanded: true, compactHeight: 366, settingsPreview: true)
                 let compact = try XCTUnwrap(editing.compactPreview)
                 for rect in [compact, editing.rail, editing.detail] { XCTAssertTrue(area.contains(rect)) }
-                XCTAssertEqual(compact.width, 16)
-                XCTAssertEqual(abs(normal.rail.minX - editing.rail.minX), 24)
+                XCTAssertEqual(compact.width, QuotaSidebarLayout.compactWidth)
+                XCTAssertEqual(abs(normal.rail.minX - editing.rail.minX), QuotaSidebarLayout.compactWidth + 8)
                 XCTAssertEqual(edge == .left ? compact.maxX + 8 : editing.rail.maxX + 8, edge == .left ? editing.rail.minX : compact.minX)
                 XCTAssertTrue(editing.contains(CGPoint(x: compact.midX, y: compact.midY), detailVisible: true))
                 XCTAssertNil(normal.compactPreview)
@@ -61,13 +61,13 @@ final class QuotaSidebarItemLayoutTests: XCTestCase {
         var value = QuotaSidebarItemLayout()
         value.move(.quota("claudeCode"), relativeTo: .speed, after: false)
         var items = value.arranged(availableQuotaClients: ["codex", "claudeCode"]).filter(value.isVisible)
-        XCTAssertEqual(QuotaSidebarContentOrder.compactIDs(items: items, quotas: quotas), ["claudeCode:5h", "claudeCode:7d", "speed", "codex:7d", "models", "tasks"])
+        XCTAssertEqual(QuotaSidebarContentOrder.compactIDs(items: items, quotas: quotas), ["claudeCode:5h", "claudeCode:7d", "speed", "codex:7d", "models", "tasks", "radar"])
         value.hidden.insert(QuotaSidebarItem.quota("claudeCode").id)
         items = value.arranged(availableQuotaClients: ["codex", "claudeCode"]).filter(value.isVisible)
         XCTAssertFalse(items.contains(.quota("claudeCode")))
-        XCTAssertEqual(QuotaSidebarContentOrder.compactIDs(items: items, quotas: quotas), ["speed", "codex:7d", "models", "tasks"])
+        XCTAssertEqual(QuotaSidebarContentOrder.compactIDs(items: items, quotas: quotas), ["speed", "codex:7d", "models", "tasks", "radar"])
         value.hidden.insert(QuotaSidebarItem.tps.id)
-        XCTAssertEqual(QuotaSidebarContentOrder.compactIDs(items: items.filter(value.isVisible), quotas: quotas), ["speed", "codex:7d", "models", "tasks"])
+        XCTAssertEqual(QuotaSidebarContentOrder.compactIDs(items: items.filter(value.isVisible), quotas: quotas), ["speed", "codex:7d", "models", "tasks", "radar"])
     }
 
     func testCompactProjectionOmitsPlaceholdersAndReclaimsTheirHeight() {

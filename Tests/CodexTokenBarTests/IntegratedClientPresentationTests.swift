@@ -168,7 +168,7 @@ final class IntegratedClientPresentationTests: XCTestCase {
         for edge in [QuotaSidebarEdge.left, .right] {
             let frames = QuotaSidebarFrames.make(usableFrame: area, edge: edge, expanded: false, compactHeight: 1200)
             XCTAssertEqual(frames.rail.height, 720)
-            XCTAssertEqual(frames.rail.width, 16)
+            XCTAssertEqual(frames.rail.width, QuotaSidebarLayout.compactWidth)
             XCTAssertTrue(area.contains(frames.rail))
         }
     }

@@ -75,6 +75,7 @@ struct QuotaSidebarInteraction: Equatable {
 }
 
 enum QuotaSidebarLayout {
+    static let compactWidth: CGFloat = 28
     static let expandedCanvasHeight: CGFloat = 680
     static let weeklyExpandedHeight: CGFloat = 590
 }
@@ -97,13 +98,13 @@ struct QuotaSidebarFrames: Equatable {
         let area = CGRect(x: left, y: bottom,
                           width: max(0, floor(source.maxX * safeScale) / safeScale - left),
                           height: max(0, floor(source.maxY * safeScale) / safeScale - bottom))
-        let railWidth = min(expanded ? 88.0 : 16.0, area.width)
+        let railWidth = min(expanded ? 88.0 : QuotaSidebarLayout.compactWidth, area.width)
         let contentHeight = expanded ? (hasFiveHour ? QuotaSidebarLayout.expandedCanvasHeight : QuotaSidebarLayout.weeklyExpandedHeight) : (hasFiveHour ? 250.0 : 192.0)
         let measuredHeight = expandedHeight.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
         let compact = compactHeight.flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? contentHeight
         let railHeight = min(expanded ? (measuredHeight ?? contentHeight) : compact, area.height)
         let gap = min(12.0, max(0, area.width - railWidth))
-        let previewInset = expanded && settingsPreview ? min(24.0, max(0, area.width - railWidth - gap)) : 0
+        let previewInset = expanded && settingsPreview ? min(QuotaSidebarLayout.compactWidth + 8, max(0, area.width - railWidth - gap)) : 0
         let detailWidth = min(420.0, max(0, area.width - railWidth - gap - previewInset))
         let detailHeight = min(600.0, area.height)
         func snap(_ n: CGFloat) -> CGFloat { (n * safeScale).rounded() / safeScale }
@@ -119,7 +120,7 @@ struct QuotaSidebarFrames: Equatable {
         let detailX = edge == .left ? railX + railWidth + gap : railX - gap - detailWidth
         return Self(rail: rect(x: railX, width: railWidth, height: railHeight),
                     detail: rect(x: detailX, width: detailWidth, height: detailHeight),
-                    compactPreview: previewInset >= 16 ? rect(x: edge == .left ? area.minX : area.maxX - 16, width: 16, height: min(compactHeight ?? 192, area.height)) : nil)
+                    compactPreview: previewInset >= QuotaSidebarLayout.compactWidth ? rect(x: edge == .left ? area.minX : area.maxX - QuotaSidebarLayout.compactWidth, width: QuotaSidebarLayout.compactWidth, height: min(compactHeight ?? 192, area.height)) : nil)
     }
 
     func contains(_ point: CGPoint, detailVisible: Bool) -> Bool {

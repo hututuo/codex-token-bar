@@ -129,7 +129,7 @@ final class QuotaSidebarTests: XCTestCase {
         for edge in QuotaSidebarEdge.allCases {
             let compact = QuotaSidebarFrames.make(usableFrame: area, edge: edge, expanded: false, scale: 2)
             let expanded = QuotaSidebarFrames.make(usableFrame: area, edge: edge, expanded: true, scale: 2)
-            XCTAssertEqual(compact.rail.width, 16)
+            XCTAssertEqual(compact.rail.width, QuotaSidebarLayout.compactWidth)
             XCTAssertEqual(expanded.rail.width, 88)
             XCTAssertEqual(compact.rail.midY, expanded.rail.midY)
             XCTAssertEqual(expanded.detail.midY, expanded.rail.midY)
@@ -383,7 +383,7 @@ final class QuotaSidebarTests: XCTestCase {
                 XCTAssertEqual(canvas.dragHandle.frame.maxY, canvas.bounds.maxY - 4.5)
                 XCTAssertEqual(canvas.dragHandle.frame.width, min(24, width - 6))
                 XCTAssertNil(canvas.dragHandle.hitTest(.zero))
-                XCTAssertEqual(canvas.dragHandle.isHidden, width <= 16)
+                XCTAssertEqual(canvas.dragHandle.isHidden, width <= QuotaSidebarLayout.compactWidth)
             }
         }
     }

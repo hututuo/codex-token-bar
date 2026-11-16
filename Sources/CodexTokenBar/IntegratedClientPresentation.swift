@@ -42,7 +42,11 @@ struct ClientQuotaItem: Identifiable, Equatable {
     var state: String? = nil
     var automaticallyVisible = true
     var brand: String { ClientBrand.hex(client) }
-    var fill: String { window == "5h" ? "#B6EF75" : window == "7d" ? "#B4ACFF" : "#78B7FF" }
+    var fill: String {
+        if window == "5h" || id.hasSuffix("-5h") { return "#B6EF75" }
+        if window == "7d" || id.hasSuffix("-weekly") { return "#B4ACFF" }
+        return "#78B7FF"
+    }
     var shortClientTitle: String { ClientDisplayScope.title(client) }
     var windowTitle: String {
         switch window {

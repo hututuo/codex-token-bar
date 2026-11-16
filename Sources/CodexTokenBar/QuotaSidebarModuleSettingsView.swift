@@ -190,14 +190,15 @@ struct QuotaSidebarSettingsRailPreview: View {
     private var selectedRunning: RunningThreadSummary { ClientLocalRuntimePresentation.observedRunning(codex: tasks.runningThreadSummary,
         claude: runtime, upstream: upstreamActivity, allowed: allowedClients, preferences: clients.preferences) }
     var body: some View {
-        let layout = ClientRailLayout.fixed(trackCount: QuotaSidebarContentOrder.compactIDs(items: items, quotas: quotas).count, dotCount: items.filter(\.usesCompactDot).count, availableHeight: controller.availableRailHeight)
+        let height = QuotaSidebarCompactRail.height(items, available: controller.availableRailHeight)
         ScrollView(.vertical) {
-            QuotaSidebarCompactBars(items: items, quotas: quotas, layout: layout,
+            QuotaSidebarCompactRail(items: items, quotas: quotas,
                 rateFraction: QuotaSidebarRatePresentation.fraction(rate: liveRateSnapshot.total, fullScale: fullScale, available: liveRateSnapshot.available),
-                modelRates: liveRateSnapshot.colorRates, shares: shares,
-                taskSummary: selectedRunning, highlightedItem: controller.settingsHighlightedItem, colors: selection.colors)
-                .frame(minHeight: layout.height)
-        }.scrollIndicators(.hidden).frame(width: 16)
+                rateText: liveRateSnapshot.valueText, tpsText: "", summary: selectedRunning,
+                shares: shares, radarActive: false, colors: selection.colors,
+                hovered: controller.settingsHighlightedItem, onHover: { controller.highlightSidebarItem($0) }, onOpen: { controller.highlightSidebarItem($0) })
+                .frame(minHeight: height)
+        }.scrollIndicators(.hidden).frame(width: QuotaSidebarLayout.compactWidth)
             .background(Color(red: 0.035, green: 0.045, blue: 0.038), in: Capsule())
             .help("一级菜单实时预览；修改显示与顺序可立即查看")
             .onChange(of: selectedModels, initial: true) { _, rows in

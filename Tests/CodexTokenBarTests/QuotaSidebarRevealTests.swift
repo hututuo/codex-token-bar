@@ -153,9 +153,9 @@ final class QuotaSidebarRevealTests: XCTestCase {
         let reversed = try XCTUnwrap(controller.presentedRailFrame)
         XCTAssertEqual(reversed.width, beforeReverse.width, accuracy: 4, "Reverse from the compositor pose, not the model endpoint")
         XCTAssertEqual(reversed.midY, beforeReverse.midY, accuracy: 4)
-        wait(until: { controller.presentedRailFrame == nil && panel.frame.width == 16 })
+        wait(until: { controller.presentedRailFrame == nil && panel.frame.width == QuotaSidebarLayout.compactWidth })
         XCTAssertNil(controller.presentedRailFrame)
-        XCTAssertEqual(panel.frame.width, 16)
+        XCTAssertEqual(panel.frame.width, QuotaSidebarLayout.compactWidth)
         XCTAssertEqual(reveal.canvas.frame, reveal.bounds)
         XCTAssertFalse(panel.ignoresMouseEvents, "Settled compact strip must accept hover/click again")
     }
