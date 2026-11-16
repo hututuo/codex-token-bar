@@ -15,6 +15,7 @@ struct DashboardTokenActivity: View {
     @AppStorage(SharedAccountUsageAttributionSettings.priceModelKey) private var priceRaw = OfficialAPIPriceModel.gpt56Sol.rawValue
     @State private var prepared: [HeatmapDayUsage] = []
     @State private var preparedKey = ""
+    @State private var preparedInput: HeatmapPreparationInput?
 
     var body: some View {
         let available = clients.displayClientIDs
@@ -61,13 +62,44 @@ struct DashboardTokenActivity: View {
         }.frame(maxWidth: 980, alignment: .leading)
         .task(id: key) {
             let model = OfficialAPIPriceModel.storedValue(for: priceRaw)
+            let input = HeatmapPreparationInput(codex: codex, external: external, allowed: allowed, model: model)
+            // A successful source check advances updatedAt even when the daily
+            // facts are identical. Reuse prices and the prepared day arrays.
+            if input == preparedInput {
+                preparedKey = key
+                return
+            }
             let worker = Task.detached(priority: .utility) { [codex, external, allowed, model] in
                 HeatmapDayUsage.project(codex: codex, external: external, allowed: allowed, priceModel: model)
             }
             let value = await withTaskCancellationHandler(operation: { await worker.value }, onCancel: { worker.cancel() })
             guard !Task.isCancelled else { return }
             prepared = value
+            preparedInput = input
             preparedKey = key
         }
+    }
+}
+
+private struct HeatmapPreparationInput: Equatable {
+    let home: String?
+    let days: [DayUsage]
+    let cache: [TokenCacheBucket]
+    let models: [ModelTokenBucket]
+    let external: [ClientTrendBucket]
+    let allowed: Set<String>
+    let model: OfficialAPIPriceModel
+    let timezone: String
+
+    init(codex: DashboardSnapshot, external: [ClientTrendBucket], allowed: Set<String>, model: OfficialAPIPriceModel) {
+        let includesCodex = allowed.contains("codex")
+        home = includesCodex ? codex.homeIdentity : nil
+        days = includesCodex ? codex.dailyUsage : []
+        cache = includesCodex ? codex.cacheUsage.daily : []
+        models = includesCodex ? codex.cacheUsage.dailyModelBreakdowns : []
+        self.external = external.filter { allowed.contains($0.client.rawValue) }
+        self.allowed = allowed
+        self.model = model
+        timezone = TimeZone.current.identifier
     }
 }

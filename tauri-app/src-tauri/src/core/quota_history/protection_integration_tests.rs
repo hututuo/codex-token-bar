@@ -18,6 +18,24 @@ fn input(used: f64, reset: i64) -> AccountQuotaBundle {
 }
 
 #[test]
+fn daily_quota_keeps_subsecond_observation_before_local_midnight_on_prior_date() {
+    let (_directory, database, identity) = fixture("sub:daily-midnight");
+    let day = crate::core::localtime::local_date_at(1_800_000_000);
+    let midnight = crate::core::localtime::local_day_bounds(day).unwrap().0 as f64;
+    let before = midnight - 0.25;
+    let bundle = input(0.25, midnight as i64 + 10_800);
+    database.record_for_identity_at(Some(&identity), &bundle, before).unwrap();
+    let rows = raw(&database, &identity, &bundle);
+    let daily = series::make_daily_history_with_filter(rows, midnight + 60.0, false);
+    assert_eq!(daily.len(), 1);
+    let expected = crate::core::localtime::local_date_at(midnight as i64 - 1).to_string();
+    let value = daily.get(&expected).expect("The final fraction of a day belongs to that day");
+    assert_eq!(value.five_hour_sample_count, 1);
+    assert_eq!(value.five_hour_remaining_percent, Some(75.0));
+    assert_eq!(value.first_observed_at, Some(before));
+}
+
+#[test]
 fn unknown_consumption_coverage_keeps_raw_exhaustion_without_mutating_history() {
     let (_directory, database, identity) = fixture("sub:filter-toggle");
     let now = (now_unix() / 300.0).floor() * 300.0;

@@ -182,7 +182,7 @@ pub(super) fn make_daily_history_with_filter(
 
     for row in sorted {
         let Some(timestamp) =
-            OffsetDateTime::from_unix_timestamp(row.created_at.round() as i64).ok()
+            OffsetDateTime::from_unix_timestamp(row.created_at.floor() as i64).ok()
         else {
             continue;
         };
