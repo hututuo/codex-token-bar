@@ -81,12 +81,18 @@ jobs:
           FORMED_RELEASE: ${{ inputs.formed_release || '' }}
           SCALE: ${{ inputs.scale || false }}
           SCALE_ONLY: ${{ inputs.scale_only || false }}
+          DAILY_PROJECTION_ONLY: ${{ inputs.daily_projection_only || false }}
+          BASELINE_SHA: ${{ inputs.baseline_sha || '' }}
         run: |
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'An exact source SHA is required'; exit 1; }
           [[ "$FORMED_ONLY" != true || -n "$FORMED_RELEASE" ]] || { echo 'formed_only requires an explicit historical producer'; exit 1; }
           if [[ "$SCALE_ONLY" == true ]]; then
             [[ "$SCALE" == true ]] || { echo 'scale_only requires scale=true'; exit 1; }
             [[ "$FORMED_ONLY" != true && -z "$FORMED_RELEASE" ]] || { echo 'scale_only cannot be combined with formed upgrade checks'; exit 1; }
+          fi
+          if [[ "$DAILY_PROJECTION_ONLY" == true ]]; then
+            [[ "$SCALE_ONLY" == true ]] || { echo 'daily_projection_only requires scale_only=true'; exit 1; }
+            [[ "$BASELINE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'daily_projection_only requires an exact baseline SHA'; exit 1; }
           fi
           echo "sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
 

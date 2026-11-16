@@ -47,6 +47,7 @@ def evaluate_expression(expression, *, event_name='workflow_dispatch', inputs=No
         'formed_platform': 'all',
         'claude_reader_only': False,
         'claude_usage_only': False,
+        'daily_projection_only': False,
     }
     input_values.update(inputs)
     need_values = {
@@ -289,7 +290,7 @@ class BackfillScaleWorkflowTests(unittest.TestCase):
 
     def test_scale_evidence_is_failure_safe_and_not_a_release_or_installer_job(self):
         jobs = self.scale['jobs']
-        self.assertEqual(set(jobs), {'resolve', 'scale'})
+        self.assertEqual(set(jobs), {'resolve', 'scale', 'daily-projection'})
         steps = jobs['scale']['steps']
         initializer = next(item for item in steps if item.get('name') == 'Initialize failure-safe evidence envelope')
         checkout_index = next(index for index, item in enumerate(steps) if item.get('uses', '').startswith('actions/checkout@'))
@@ -326,6 +327,23 @@ class BackfillScaleWorkflowTests(unittest.TestCase):
         scale_group = self.scale['concurrency']['group']
         self.assertIn('backfill-scale-', scale_group)
         self.assertNotEqual(ci_group, scale_group)
+
+    def test_daily_comparison_is_opt_in_and_cannot_replace_full_ci_evidence(self):
+        self.assertTrue(evaluate_expression(self.scale['jobs']['scale']['if']))
+        self.assertFalse(evaluate_expression(self.scale['jobs']['daily-projection']['if']))
+        self.assertFalse(evaluate_expression(self.scale['jobs']['scale']['if'], inputs={'daily_projection_only': True}))
+        self.assertTrue(evaluate_expression(self.scale['jobs']['daily-projection']['if'], inputs={'daily_projection_only': True}))
+        resolve = next(step for step in self.ci['jobs']['source']['steps'] if step.get('id') == 'resolve')
+        self.assertIn('daily_projection_only requires scale_only=true', resolve['run'])
+        self.assertIn('daily_projection_only requires an exact baseline SHA', resolve['run'])
+        self.assertIn('!inputs.scale_only', self.ci['jobs']['evidence']['if'])
+        job = self.scale['jobs']['daily-projection']
+        run = next(step for step in job['steps'] if step.get('name') == 'Compare baseline and candidate on identical synthetic rows')
+        self.assertIn('for revision in "$BASELINE_SHA" "$SOURCE_SHA"', run['run'])
+        self.assertIn('swift test --skip-build --filter DailyProjectionBenchmarkTests', run['run'])
+        self.assertIn('summarize_daily_projection_benchmark.py', run['run'])
+        upload = next(step for step in job['steps'] if step.get('name') == 'Upload daily projection comparison')
+        self.assertEqual(upload['if'], 'always()')
 
 
 if __name__ == '__main__':

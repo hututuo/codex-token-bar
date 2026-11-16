@@ -166,6 +166,7 @@ jobs:
       - name: Compare baseline and candidate on identical synthetic rows
         run: |
           set -euo pipefail
+          python3 -m unittest discover -s benchmark-tools/scripts/tests -p 'test_backfill_scale_workflow.py'
           [[ "$BASELINE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'Exact baseline SHA required'; exit 1; }
           mkdir -p daily-projection-evidence
           {
