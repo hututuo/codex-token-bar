@@ -13,6 +13,8 @@ export interface ClientQuotaReading {
   windows: { id?: string | null; label: string; usedPercent: number; resetsAt: string | null }[]; notice: string;
   capturedAt?: string | null;
   history?: ClientQuotaHistorySample[];
+  dailyHistory?: {source:string;windowId:string;startUnix:number;remainingPercent:number;
+    sampleCount:number;firstObservedAt:number;lastObservedAt:number}[];
 }
 export interface ClientQuotaProvider { readonly allowsNetwork: false; reading(): ClientQuotaReading; }
 const quotaStates:Record<string,{label:string;compact:string}>=quotaPresentation.states;

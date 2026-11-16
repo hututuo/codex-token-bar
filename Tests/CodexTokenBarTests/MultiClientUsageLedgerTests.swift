@@ -3,6 +3,25 @@ import CryptoKit
 @testable import CodexTokenBar
 
 final class MultiClientUsageLedgerTests: XCTestCase {
+    func testDailyPricesMatchRequestsAndMovedRevisionInvalidatesPriorDay() throws {
+        let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("daily-prices.sqlite"))
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let previous = now.addingTimeInterval(-86400 * 3)
+        var event = ClientUsageEvent(client: .claudeCode, eventID: "moved", sessionID: "s", model: "claude-opus-5",
+            timestamp: previous, inputTokens: 100_000, outputTokens: 100, cacheReadTokens: 1000, cacheWriteTokens: 10_000)
+        _ = try ledger.ingest([event])
+        let before = try ledger.dailyBuckets(now: now)
+        XCTAssertEqual(before.reduce(0) { $0 + $1.requests }, 1)
+        XCTAssertEqual(try ledger.dailyBuckets(now: now.addingTimeInterval(60)), before)
+        event.timestamp = now
+        _ = try ledger.ingest([event])
+        let after = try ledger.dailyBuckets(now: now.addingTimeInterval(120))
+        XCTAssertEqual(after.count, 1)
+        XCTAssertEqual(after[0].startUnix, Int64(Calendar.current.startOfDay(for: now).timeIntervalSince1970))
+        XCTAssertEqual(after[0].apiCostMicroUSD, try ledger.trendBuckets(now: now.addingTimeInterval(120)).first?.apiCostMicroUSD)
+        XCTAssertEqual(after[0].cacheReadComplete, true)
+        XCTAssertEqual(try ledger.database.readRows("SELECT COUNT(*) FROM client_usage_revisions") { $0.int(0) }.first!, 2)
+    }
     func testTrendModelsAndPricesStaySeparateWithinOneClientAndBucket() throws {
         let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("model-trend.sqlite"))
         let now = Date(timeIntervalSince1970: 1_800_000_000)

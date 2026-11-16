@@ -36,6 +36,10 @@ export interface QuotaHistoryDailyPoint {
   date: string;
   fiveHourRemainingPercent: number | null;
   sevenDayRemainingPercent: number | null;
+  fiveHourSampleCount?: number;
+  sevenDaySampleCount?: number;
+  firstObservedAt?: number | null;
+  lastObservedAt?: number | null;
 }
 
 export interface ResetCreditSummary {

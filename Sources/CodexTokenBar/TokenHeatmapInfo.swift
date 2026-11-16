@@ -1,6 +1,9 @@
 import SwiftUI
 
 struct HeatmapUsageSummary {
+    var recordedUsage: ChartUsageSummary? = nil
+    var quotaPeriod: HeatmapQuotaPeriod = .sevenDay
+    var quotaDetail: String? = nil
     let title: String
     let tokens: Int
     let calls: Int
@@ -51,6 +54,9 @@ struct HeatmapUsageSummary {
 }
 
 struct HeatmapRangeSummary {
+    var recordedUsage: ChartUsageSummary? = nil
+    var quotaPeriod: HeatmapQuotaPeriod = .sevenDay
+    var isQuota = false
     let title: String
     let dayCount: Int
     let tokens: Int
@@ -104,24 +110,25 @@ struct HeatmapHoverInfo: View {
     let rangeSummary: HeatmapRangeSummary?
     let hasRangeStart: Bool
     let fallbackModel: OfficialAPIPriceModel
+    var expanded = false
 
     var body: some View {
-        GeometryReader { proxy in
-            let leftWidth = max(300, proxy.size.width * 0.43)
-            HStack(spacing: 14) {
-                singleDayContent
-                    .frame(width: leftWidth, alignment: .leading)
-
-                Rectangle()
-                    .fill(AppTheme.border)
-                    .frame(width: 1, height: 22)
-
-                rangeContent
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                    .layoutPriority(1)
+        Group {
+            if expanded {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 8) {
+                        singleDayContent
+                        rangeContent
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }.frame(height: 100)
+            } else {
+                HStack(spacing: 14) {
+                    singleDayContent
+                    Spacer(minLength: 0)
+                    rangeContent
+                }.frame(height: 20)
             }
         }
-        .frame(height: 20)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(
@@ -132,6 +139,13 @@ struct HeatmapHoverInfo: View {
 
     @ViewBuilder
     private var singleDayContent: some View {
+        if let summary, let usage = summary.recordedUsage, summary.isCacheRate || summary.isModelCost || summary.isModelShare {
+            Text(summary.title + " · " + recordedText(usage, cost: summary.isModelCost, cache: summary.isCacheRate))
+                .font(.system(size: 11)).fixedSize(horizontal: false, vertical: true)
+        } else if let summary, summary.isQuotaRemaining {
+            Text(summary.title + " · " + (summary.quotaDetail ?? "暂无额度记录"))
+                .font(.system(size: 11)).fixedSize(horizontal: false, vertical: true)
+        } else {
         HStack(spacing: 12) {
             if let summary {
                 Image(systemName: summary.iconName)
@@ -199,10 +213,20 @@ struct HeatmapHoverInfo: View {
             }
         }
         .lineLimit(1)
+        }
     }
 
     @ViewBuilder
     private var rangeContent: some View {
+        if let rangeSummary, let usage = rangeSummary.recordedUsage {
+            Text(rangeSummary.compactTitle + " · " + recordedText(usage, cost: rangeSummary.isModelCost, cache: rangeSummary.cacheBreakdown != nil))
+                .font(.system(size: 11)).fixedSize(horizontal: false, vertical: true)
+        } else if let rangeSummary, rangeSummary.isQuota {
+            Text(rangeSummary.compactTitle + " · " + rangeSummary.quotaPeriod.rawValue + " 有观测日均剩余 "
+                + (rangeSummary.quotaAverageRemainingPercent.map { ClientQuotaPresentation.percentNumber($0) + "%" } ?? "暂无")
+                + " · 覆盖 \(rangeSummary.calls)/\(rangeSummary.dayCount) 天")
+                .font(.system(size: 11)).fixedSize(horizontal: false, vertical: true)
+        } else {
         HStack(spacing: 12) {
             if let rangeSummary {
                 Image(systemName: "calendar.badge.plus")
@@ -285,6 +309,17 @@ struct HeatmapHoverInfo: View {
             }
         }
         .lineLimit(1)
+        }
+    }
+
+    private func recordedText(_ usage: ChartUsageSummary, cost: Bool, cache: Bool) -> String {
+        if cache {
+            return usage.cacheReadComplete
+                ? "命中率 " + usage.cacheText + " · \(usage.breakdown.calls) calls"
+                : "缓存字段不完整 · \(usage.breakdown.calls) calls"
+        }
+        return (cost ? usage.heatmapCostText : usage.breakdown.totalTokens.abbreviatedTokens + " Token")
+            + " · " + usage.heatmapModelText(cost: cost)
     }
 }
 

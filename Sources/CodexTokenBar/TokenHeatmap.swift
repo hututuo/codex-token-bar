@@ -34,6 +34,8 @@ struct TokenHeatmap: View {
     let quotaDaily: [QuotaHistoryDailyBucket]
     let fallbackModel: OfficialAPIPriceModel
     let mode: ActivityMode
+    var recordedDaily: [HeatmapDayUsage]? = nil
+    var quotaPeriod: HeatmapQuotaPeriod = .sevenDay
     @State private var hoveredIndex: Int?
     @State private var rangeStartIndex: Int?
     @State private var rangeEndIndex: Int?
@@ -52,7 +54,9 @@ struct TokenHeatmap: View {
         attributionEvents: [TokenCacheAttributionEvent] = [],
         quotaDaily: [QuotaHistoryDailyBucket],
         fallbackModel: OfficialAPIPriceModel = .gpt56Sol,
-        mode: ActivityMode
+        mode: ActivityMode,
+        recordedDaily: [HeatmapDayUsage]? = nil,
+        quotaPeriod: HeatmapQuotaPeriod = .sevenDay
     ) {
         self.dailyUsage = dailyUsage
         self.cacheDaily = cacheDaily
@@ -61,6 +65,8 @@ struct TokenHeatmap: View {
         self.quotaDaily = quotaDaily
         self.fallbackModel = fallbackModel
         self.mode = mode
+        self.recordedDaily = recordedDaily
+        self.quotaPeriod = quotaPeriod
         _preparedData = State(initialValue: .empty)
     }
 
@@ -147,32 +153,40 @@ struct TokenHeatmap: View {
                     summary: hoveredIndex.flatMap { summaries[safe: $0] } ?? summaries.last,
                     rangeSummary: rangeSummary,
                     hasRangeStart: rangeStartIndex != nil,
-                    fallbackModel: fallbackModel
+                    fallbackModel: fallbackModel, expanded: recordedDaily != nil
                 )
             }
         }
-        .frame(height: 180)
+        .frame(height: recordedDaily == nil ? 180 : 300)
         .onAppear(perform: refreshPreparedData)
-        .onChange(of: dailyUsage) { _, _ in
-            clearRangeSelection()
+        .onChange(of: dailyUsage) { old, updated in
+            if let index = rangeStartIndex {
+                rangeStartIndex = old[safe: index].flatMap { oldDay in updated.firstIndex { $0.date == oldDay.date } }
+            }
+            if let index = rangeEndIndex {
+                rangeEndIndex = old[safe: index].flatMap { oldDay in updated.firstIndex { $0.date == oldDay.date } }
+            }
+            hoveredIndex = nil
             refreshPreparedData()
         }
         .onChange(of: cacheDaily) { _, _ in
-            clearRangeSelection()
             refreshPreparedData()
         }
         .onChange(of: dailyModelBreakdowns) { _, _ in
-            clearRangeSelection()
             refreshPreparedData()
         }
         .onChange(of: attributionEvents) { _, _ in
-            clearRangeSelection()
             refreshPreparedData()
         }
         .onChange(of: quotaDaily) { _, _ in
-            clearRangeSelection()
+            hoveredIndex = nil
             refreshPreparedData()
         }
+        .onChange(of: recordedDaily) { _, _ in
+            hoveredIndex = nil
+            refreshPreparedData()
+        }
+        .onChange(of: quotaPeriod) { _, _ in refreshPreparedData() }
         .onChange(of: fallbackModel) { _, _ in
             refreshPreparedData()
         }
@@ -205,6 +219,12 @@ struct TokenHeatmap: View {
     }
 
     private func summaryAccessibilityText(_ summary: HeatmapUsageSummary) -> String {
+        if let usage = summary.recordedUsage {
+            if summary.isCacheRate { return summary.title + "，" + (usage.cacheReadComplete ? "命中率 " + usage.cacheText : "缓存字段不完整") }
+            return summary.title + "，" + (summary.isModelCost ? usage.heatmapCostText : "\(usage.breakdown.totalTokens) Token")
+                + "，" + usage.heatmapModelText(cost: summary.isModelCost)
+        }
+        if let detail = summary.quotaDetail { return summary.title + "，" + detail }
         if summary.isCacheRate {
             guard let breakdown = summary.cacheBreakdown, breakdown.calls > 0 else {
                 return "\(summary.title)，暂无缓存命中数据"
@@ -232,6 +252,15 @@ struct TokenHeatmap: View {
     }
 
     private func rangeAccessibilityText(_ rangeSummary: HeatmapRangeSummary) -> String {
+        if let usage = rangeSummary.recordedUsage {
+            return rangeSummary.title + "，" + (rangeSummary.isModelCost ? usage.heatmapCostText : "\(usage.breakdown.totalTokens) Token")
+                + "，" + (mode == .cacheHitRate ? (usage.cacheReadComplete ? usage.cacheText : "缓存字段不完整") : usage.heatmapModelText(cost: rangeSummary.isModelCost))
+        }
+        if rangeSummary.isQuota {
+            return rangeSummary.title + "，\(rangeSummary.quotaPeriod.rawValue) 日均剩余 "
+                + (rangeSummary.quotaAverageRemainingPercent.map { ClientQuotaPresentation.percentNumber($0) + "%" } ?? "暂无")
+                + "，覆盖 \(rangeSummary.calls)/\(rangeSummary.dayCount) 天"
+        }
         if let breakdown = rangeSummary.cacheBreakdown {
             return "\(rangeSummary.title)，\(rangeSummary.dayCount) 天，命中率 \(breakdown.cacheHitRate.percentString)，命中 \(breakdown.cachedInputTokens.abbreviatedTokens)，未命中 \(breakdown.uncachedInputTokens.abbreviatedTokens)，\(breakdown.calls) 次调用"
         }
@@ -302,7 +331,8 @@ struct TokenHeatmap: View {
         if summary.isModelShare {
             guard summary.tokens > 0 else { return AppTheme.emptyCell }
             let ratio = min(1.0, Double(summary.tokens) / Double(max(maxTokens, 1)))
-            return (ModelUsagePresentation.dominantColor(from: summary.modelBreakdowns) ?? AppTheme.emptyCell)
+            let dominant = summary.recordedUsage?.models.first.map { ModelUsagePresentation.color(for: $0.model) }
+            return (dominant ?? ModelUsagePresentation.dominantColor(from: summary.modelBreakdowns) ?? AppTheme.emptyCell)
                 .opacity(0.24 + ratio * 0.76)
         }
 
@@ -321,6 +351,21 @@ struct TokenHeatmap: View {
         }
         guard summary.modelCostUSD != nil else {
             return AnyShapeStyle(AppTheme.emptyCell)
+        }
+        if let usage = summary.recordedUsage {
+            let paid = usage.models.filter { ($0.knownCostUSD ?? 0) > 0 }
+            let total = paid.reduce(0) { $0 + ($1.knownCostUSD ?? 0) }
+            guard total > 0 else { return AnyShapeStyle(AppTheme.emptyCell) }
+            let opacity = 0.30 + min(1, total / max(preparedData.maxModelCostUSD, 0.000_001)) * 0.70
+            var cursor = 0.0
+            var stops: [Gradient.Stop] = []
+            for row in paid {
+                let next = min(1, cursor + (row.knownCostUSD ?? 0) / total)
+                let color = ModelUsagePresentation.color(for: row.model).opacity(opacity)
+                stops += [.init(color: color, location: cursor), .init(color: color, location: next)]
+                cursor = next
+            }
+            return AnyShapeStyle(LinearGradient(gradient: Gradient(stops: stops), startPoint: .leading, endPoint: .trailing))
         }
         let items = FloatingTodayModelUsagePresentation.items(
             from: summary.modelBreakdowns,
@@ -363,7 +408,7 @@ struct TokenHeatmap: View {
             attributionEvents: attributionEvents,
             quotaDaily: quotaDaily,
             fallbackModel: fallbackModel,
-            mode: mode
+            mode: mode, recordedDaily: recordedDaily, quotaPeriod: quotaPeriod
         )
         // Prices and model gradients change with usage inputs, never with the
         // pointer. Keep both preparation and the cell tree out of hover updates.
@@ -402,6 +447,15 @@ struct TokenHeatmap: View {
 
         let days = range.compactMap { dailyUsage[safe: $0] }
         let title = rangeTitle(first: firstDay.date, last: lastDay.date)
+        if recordedDaily != nil, [.cacheHitRate, .modelShare, .modelCost].contains(mode) {
+            let usage = ChartUsageSummary.combined(range.compactMap { preparedData.summaries[safe: $0]?.recordedUsage })
+            var summary = HeatmapRangeSummary(title: title, dayCount: days.count, tokens: usage.breakdown.totalTokens,
+                calls: usage.breakdown.calls, cacheBreakdown: mode == .cacheHitRate ? usage.breakdown : nil,
+                quotaAverageRemainingPercent: nil, modelCostUSD: usage.hasKnownCost ? usage.knownCostUSD : nil,
+                isModelCost: mode == .modelCost, hasUnknownPrices: usage.unpricedRequests > 0 || !usage.modelComplete)
+            summary.recordedUsage = usage
+            return summary
+        }
 
         if mode == .cacheHitRate {
             let calendar = Calendar.current
@@ -427,9 +481,9 @@ struct TokenHeatmap: View {
                 (calendar.startOfDay(for: bucket.date), bucket)
             })
             let values = days.compactMap { day in
-                quotaByDay[calendar.startOfDay(for: day.date)]?.sevenDayRemainingPercent
+                quotaByDay[calendar.startOfDay(for: day.date)].flatMap { quotaPeriod.remaining($0) }
             }
-            return HeatmapRangeSummary(
+            var summary = HeatmapRangeSummary(
                 title: title,
                 dayCount: days.count,
                 tokens: 0,
@@ -437,6 +491,9 @@ struct TokenHeatmap: View {
                 cacheBreakdown: nil,
                 quotaAverageRemainingPercent: values.isEmpty ? nil : values.reduce(0, +) / Double(values.count)
             )
+            summary.quotaPeriod = quotaPeriod
+            summary.isQuota = true
+            return summary
         }
 
         if mode == .modelShare || mode == .modelCost {

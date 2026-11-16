@@ -83,6 +83,8 @@ struct ActivitySection: View {
     let quotaDaily: [QuotaHistoryDailyBucket]
     @Binding var selectedMode: ActivityMode
     var tokensOnly = false
+    var recordedDaily: [HeatmapDayUsage]? = nil
+    var quotaPeriod: HeatmapQuotaPeriod = .sevenDay
     @AppStorage(SharedAccountUsageAttributionSettings.priceModelKey) private var quotaEstimateModelRaw = OfficialAPIPriceModel.gpt56Sol.rawValue
 
     init(
@@ -92,7 +94,9 @@ struct ActivitySection: View {
         attributionEvents: [TokenCacheAttributionEvent] = [],
         quotaDaily: [QuotaHistoryDailyBucket],
         selectedMode: Binding<ActivityMode>,
-        tokensOnly: Bool = false
+        tokensOnly: Bool = false,
+        recordedDaily: [HeatmapDayUsage]? = nil,
+        quotaPeriod: HeatmapQuotaPeriod = .sevenDay
     ) {
         self.dailyUsage = dailyUsage
         self.cacheDaily = cacheDaily
@@ -101,6 +105,8 @@ struct ActivitySection: View {
         self.quotaDaily = quotaDaily
         _selectedMode = selectedMode
         self.tokensOnly = tokensOnly
+        self.recordedDaily = recordedDaily
+        self.quotaPeriod = quotaPeriod
     }
 
     var body: some View {
@@ -119,7 +125,7 @@ struct ActivitySection: View {
                 attributionEvents: attributionEvents,
                 quotaDaily: quotaDaily,
                 fallbackModel: OfficialAPIPriceModel.storedValue(for: quotaEstimateModelRaw),
-                mode: selectedMode
+                mode: selectedMode, recordedDaily: recordedDaily, quotaPeriod: quotaPeriod
             )
         }
         .frame(maxWidth: 980)

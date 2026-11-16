@@ -14,6 +14,10 @@ const LEGACY_FIVE_HOUR_MAX_RESET_SPAN_SECONDS: f64 = 6.0 * 60.0 * 60.0;
 pub(super) struct DailyQuotaHistory {
     pub(super) five_hour_remaining_percent: Option<f64>,
     pub(super) seven_day_remaining_percent: Option<f64>,
+    pub(super) five_hour_sample_count: u32,
+    pub(super) seven_day_sample_count: u32,
+    pub(super) first_observed_at: Option<f64>,
+    pub(super) last_observed_at: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -22,10 +26,14 @@ struct DailyQuotaAccumulator {
     five_hour_count: u32,
     seven_day_total: f64,
     seven_day_count: u32,
+    first: Option<f64>,
+    last: Option<f64>,
 }
 
 impl DailyQuotaAccumulator {
     fn add(&mut self, row: &QuotaHistoryRow) {
+        self.first = Some(self.first.map_or(row.created_at, |v| v.min(row.created_at)));
+        self.last = Some(self.last.map_or(row.created_at, |v| v.max(row.created_at)));
         if let Some(value) = row.five_hour_remaining() {
             self.five_hour_total += value;
             self.five_hour_count = self.five_hour_count.saturating_add(1);
@@ -40,6 +48,9 @@ impl DailyQuotaAccumulator {
         DailyQuotaHistory {
             five_hour_remaining_percent: average(self.five_hour_total, self.five_hour_count),
             seven_day_remaining_percent: average(self.seven_day_total, self.seven_day_count),
+            five_hour_sample_count: self.five_hour_count,
+            seven_day_sample_count: self.seven_day_count,
+            first_observed_at:self.first,last_observed_at:self.last,
         }
     }
 }
@@ -167,7 +178,6 @@ pub(super) fn make_daily_history_with_filter(
     filter_anomalies: bool,
 ) -> HashMap<String, DailyQuotaHistory> {
     let sorted = projected_rows(rows, now, filter_anomalies);
-    let local_offset = crate::core::localtime::local_offset();
     let mut grouped: HashMap<String, DailyQuotaAccumulator> = HashMap::new();
 
     for row in sorted {
@@ -176,7 +186,7 @@ pub(super) fn make_daily_history_with_filter(
         else {
             continue;
         };
-        let date = timestamp.to_offset(local_offset).date();
+        let date = crate::core::localtime::local_date_at(timestamp.unix_timestamp());
         grouped.entry(format_date(date)).or_default().add(&row);
     }
 

@@ -1,4 +1,5 @@
-import type { RecentUsagePoint } from "../types/dashboard";
+import type { RecentUsagePoint, ActivityDay } from "../types/dashboard";
+import { localDayKey } from "./heatmapProjection";
 import type { ClientQuotaReading } from "./multiClientProduct";
 
 export interface ClientQuotaHistorySample {
@@ -21,7 +22,8 @@ export function quotaChartSources(clients: readonly string[], readings: readonly
   const base = sources.filter(source => clients.includes(source.client));
   const earlier = base.flatMap(source => {
     const reading = readings.find(reading => reading.client === source.client);
-    const recorded = new Set((reading?.history ?? []).map(sample => sample.source ?? reading?.source));
+    const recorded = new Set([...(reading?.history ?? []).map(sample => sample.source ?? reading?.source),
+      ...(reading?.dailyHistory??[]).map(sample=>sample.source)]);
     recorded.delete(reading?.source);
     return [...recorded].filter((origin): origin is string => Boolean(origin)).map(origin => ({
       ...source, id: source.id + "@" + origin, historySource: origin, title: source.title + " · 历史采样",
@@ -34,11 +36,40 @@ export function resolveQuotaChartSource(selection: string, clients: readonly str
   const selected = options.find(source => source.id === selection) ?? options[0];
   if (selected && selected.client !== "codex" && !selected.historySource) {
     const reading = readings.find(reading => reading.client === selected.client);
-    const hasCurrentHistory = reading?.history?.some(sample => (sample.source ?? reading.source) === reading.source);
+    const hasCurrentHistory = reading?.history?.some(sample => (sample.source ?? reading.source) === reading.source)
+      || reading?.dailyHistory?.some(sample=>sample.source===reading.source);
     if (!hasCurrentHistory) return options.find(source => source.client === selected.client
       && source.pool === selected.pool && source.historySource) ?? selected;
   }
   return selected;
+}
+
+export function applyClientQuotaDays(days: ActivityDay[], codex: ActivityDay[], reading: ClientQuotaReading | undefined,
+  source: ClientQuotaChartSource | undefined, period: "5h"|"7d"): ActivityDay[] {
+  const original=new Map(codex.map(day=>[day.date,day]));
+  const groups=new Map<string,NonNullable<ClientQuotaReading["dailyHistory"]>>();
+  for(const sample of reading?.dailyHistory??[]){
+    if(sample.source!==(source?.historySource??reading?.source)||!Number.isFinite(sample.remainingPercent)
+      ||sample.remainingPercent<0||sample.remainingPercent>100||sample.sampleCount<=0)continue;
+    const key=localDayKey(sample.startUnix),rows=groups.get(key)??[];rows.push(sample);groups.set(key,rows);
+  }
+  return days.map(day=>{
+    if(source?.client==="codex"){
+      const base=original.get(day.date);
+      return {...day,quotaPeriod:period,fiveHourRemainingPercent:base?.fiveHourRemainingPercent??null,
+        sevenDayRemainingPercent:base?.sevenDayRemainingPercent??null,
+        quotaSampleCounts:base?.quotaSampleCounts,quotaObservedRange:base?.quotaObservedRange};
+    }
+    const rows=groups.get(day.date)??[];
+    const five=source?rows.find(row=>row.windowId===windowId(source,"5h")):undefined;
+    const seven=source?rows.find(row=>row.windowId===windowId(source,"7d")):undefined;
+    const samples=[five,seven].filter((row):row is NonNullable<typeof row>=>row!=null);
+    return {...day,quotaPeriod:period,fiveHourRemainingPercent:five?five.remainingPercent/100:null,
+      sevenDayRemainingPercent:seven?seven.remainingPercent/100:null,
+      quotaSampleCounts:{five:five?.sampleCount??0,seven:seven?.sampleCount??0},
+      quotaObservedRange:samples.length?{first:Math.min(...samples.map(row=>row.firstObservedAt)),
+        last:Math.max(...samples.map(row=>row.lastObservedAt))}:undefined};
+  });
 }
 function windowId(source: ClientQuotaChartSource, period: "5h" | "7d") {
   if (source.client !== "antigravity") return period;

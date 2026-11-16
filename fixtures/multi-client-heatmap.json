@@ -1,0 +1,9 @@
+{
+  "now": 1800000000,
+  "rows": [
+    {"client":"claudeDesktop","model":"claude-opus-5","input":1000,"output":100,"cached":900,"costMicroUSD":1250000,"unpriced":0},
+    {"client":"antigravity","model":"claude-opus-5","input":100,"output":20,"cached":20,"costMicroUSD":250000,"unpriced":0},
+    {"client":"antigravity","model":null,"input":200,"output":30,"cached":null,"costMicroUSD":null,"unpriced":1}
+  ],
+  "expected":{"tokens":1450,"calls":3,"knownCostUSD":1.5,"unpriced":1,"cacheComplete":false,"modelComplete":false}
+}

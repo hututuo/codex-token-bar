@@ -1,5 +1,6 @@
 import type { LocalDataWarning, QuotaDiagnostic } from "./diagnostics";
 import type { AccountInfo, QuotaAttributionIdentity, QuotaSnapshot } from "./quota";
+import type { ChartUsageSummary } from "../components/recentUsageChart/usageSnapshot";
 
 /**
  * Stable, non-sensitive labels for the events that can request an exact
@@ -71,6 +72,10 @@ export interface DashboardStats {
 }
 
 export interface ActivityDay {
+  recordedUsage?: ChartUsageSummary;
+  quotaPeriod?: "5h" | "7d";
+  quotaSampleCounts?: {five: number; seven: number};
+  quotaObservedRange?: {first: number; last: number};
   /** Derived aggregate metadata; not a persisted ledger schema. */
   cacheHitRateKnown?: boolean;
   cacheInputTokens?: number;

@@ -1,5 +1,15 @@
 import Foundation
 
+enum HeatmapQuotaPeriod: String, CaseIterable {
+    case fiveHour = "5h", sevenDay = "7d"
+    func remaining(_ day: QuotaHistoryDailyBucket) -> Double? {
+        self == .fiveHour ? day.fiveHourRemainingPercent : day.sevenDayRemainingPercent
+    }
+    func count(_ day: QuotaHistoryDailyBucket) -> Int {
+        (self == .fiveHour ? day.fiveHourSampleCount : day.sevenDaySampleCount) ?? day.sampleCount
+    }
+}
+
 struct ClientQuotaHistorySample: Equatable, Sendable {
     let windowID: String
     let observedAt: Date
@@ -15,6 +25,7 @@ struct ClientQuotaHistory: Identifiable, Equatable, Sendable {
     let samples: [ClientQuotaHistorySample]
     var recentBins: [QuotaHistoryRecentBucket] = []
     var hourlyBins: [QuotaHistoryRecentBucket] = []
+    var daily: [QuotaHistoryDailyBucket] = []
     var id: String { client + ":" + source + ":" + pool }
     var title: String {
         let name = ClientDisplayScope.title(client)
@@ -145,6 +156,20 @@ extension MultiClientUsageLedger {
         guard exists else { return [] }
         var histories: [ClientQuotaHistory] = []
         for reading in readings {
+            let calendar = Calendar.current
+            let firstDay = calendar.date(byAdding: .day, value: -364, to: calendar.startOfDay(for: now)) ?? now
+            let dailyRows = try database.readRows("""
+                SELECT source,window_id,
+                CAST(strftime('%s',date(observed_at,'unixepoch','localtime'),'utc') AS INTEGER),
+                AVG(100-used_percent),COUNT(*),MIN(observed_at),MAX(observed_at)
+                FROM client_quota_observations
+                WHERE client=? AND observed_at>=? AND observed_at<=?
+                AND used_percent>=0 AND used_percent<=100 AND (resets_at IS NULL OR resets_at>observed_at)
+                GROUP BY source,window_id,date(observed_at,'unixepoch','localtime')
+                ORDER BY 3,1,2
+                """, bindings: [.text(reading.client), .date(firstDay), .date(now)]) {
+                    ($0.text(0)!, $0.text(1)!, $0.date(2)!, $0.double(3)!, $0.int(4)!, $0.date(5)!, $0.date(6)!)
+                }
             let rows = try database.readRows("""
                 SELECT source,window_id,observed_at,used_percent,resets_at FROM client_quota_observations
                 WHERE client=? AND observed_at>=? AND observed_at<=? ORDER BY observed_at DESC LIMIT 500001
@@ -152,14 +177,28 @@ extension MultiClientUsageLedger {
                     ($0.text(0)!, ClientQuotaHistorySample(windowID: $0.text(1)!, observedAt: $0.date(2)!, usedPercent: $0.double(3)!, resetsAt: $0.date(4)))
                 }
             guard rows.count <= 500_000 else { throw ClientQuotaHistoryError.tooManySamples }
-            let sources = [reading.source] + Set(rows.map(\.0)).subtracting([reading.source]).sorted()
+            let sources = [reading.source] + Set(rows.map(\.0) + dailyRows.map(\.0)).subtracting([reading.source]).sorted()
             for source in sources {
                 let current = rows.filter { $0.0 == source && ClientQuotaHistory.pool(client: reading.client, windowID: $0.1.windowID) != nil }.map(\.1).reversed()
                 let pools = Dictionary(grouping: current) { ClientQuotaHistory.pool(client: reading.client, windowID: $0.windowID) ?? "" }
-                for pool in pools.keys.sorted() {
+                let dailyForSource = dailyRows.filter { $0.0 == source && ClientQuotaHistory.pool(client: reading.client, windowID: $0.1) != nil }
+                let poolIDs = Set(pools.keys).union(dailyForSource.compactMap { ClientQuotaHistory.pool(client: reading.client, windowID: $0.1) })
+                for pool in poolIDs.sorted() {
                     var history = ClientQuotaHistory(client: reading.client, source: source, pool: pool, samples: pools[pool] ?? [])
                     history.recentBins = history.buckets(interval: 300, now: now)
                     history.hourlyBins = history.buckets(interval: 3600, now: now)
+                    let days = Dictionary(grouping: dailyForSource.filter {
+                        ClientQuotaHistory.pool(client: reading.client, windowID: $0.1) == pool
+                    }, by: { $0.2 })
+                    history.daily = days.keys.sorted().map { date in
+                        let values = days[date]!
+                        let five = values.first { ClientQuotaHistory.period($0.1) == "5h" }
+                        let seven = values.first { ClientQuotaHistory.period($0.1) == "7d" }
+                        return QuotaHistoryDailyBucket(date: date, fiveHourRemainingPercent: five?.3,
+                            sevenDayRemainingPercent: seven?.3, sampleCount: values.reduce(0) { $0 + $1.4 },
+                            fiveHourSampleCount: five?.4 ?? 0, sevenDaySampleCount: seven?.4 ?? 0,
+                            firstObservedAt: values.map(\.5).min(), lastObservedAt: values.map(\.6).max())
+                    }
                     histories.append(history)
                 }
             }

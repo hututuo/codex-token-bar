@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { ActivityDay } from "../types/dashboard";
 import { ActivityModeSelector } from "./tokenActivity/ActivityModeSelector";
 import { HeatmapGrid } from "./tokenActivity/HeatmapGrid";
@@ -22,14 +22,17 @@ interface TokenActivitySectionProps {
   days: ActivityDay[];
   modelCostDataAvailable?: boolean;
   tokensOnly?: boolean;
+  controls?: ReactNode;
+  quotaControls?: ReactNode;
 }
 
-export function TokenActivitySection({ days, modelCostDataAvailable = true, tokensOnly = false }: TokenActivitySectionProps) {
+export function TokenActivitySection({ days, modelCostDataAvailable = true, tokensOnly = false, controls, quotaControls }: TokenActivitySectionProps) {
   const [mode, setMode] = useState<ActivityMode>("daily");
   const [rangeStart, setRangeStart] = useState<string | null>(null);
   const [rangeEnd, setRangeEnd] = useState<string | null>(null);
   const [hoveredDay, setHoveredDay] = useState<ActivityDay | null>(null);
   const [priceModel, setPriceModel] = useState<OfficialAPIPriceModel>("gpt56Sol");
+  useEffect(()=>setHoveredDay(previous=>previous?days.find(day=>day.date===previous.date)??null:null),[days]);
 
   const calendarDays = useMemo(() => buildCalendarDays(days), [days]);
   const heatmapDays = useMemo(
@@ -76,10 +79,12 @@ export function TokenActivitySection({ days, modelCostDataAvailable = true, toke
 
   return (
     <section className="activity-section" aria-label="Token 活动">
+      {controls && <div className="heatmap-source-controls">{controls}</div>}
       <div className="section-title-row">
         <h2>Token 活动</h2>
         <ActivityModeSelector mode={mode} onModeChange={setMode} tokensOnly={tokensOnly} />
       </div>
+      {mode==="quota"&&quotaControls}
 
       <HeatmapGrid
         days={heatmapDays}

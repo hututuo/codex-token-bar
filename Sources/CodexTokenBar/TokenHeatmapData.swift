@@ -8,9 +8,12 @@ extension TokenHeatmap {
         attributionEvents: [TokenCacheAttributionEvent] = [],
         quotaDaily: [QuotaHistoryDailyBucket],
         fallbackModel: OfficialAPIPriceModel = .gpt56Sol,
-        mode: ActivityMode
+        mode: ActivityMode,
+        recordedDaily: [HeatmapDayUsage]? = nil,
+        quotaPeriod: HeatmapQuotaPeriod = .sevenDay
     ) -> HeatmapPreparedData {
-        let summaries = makeSummaries(
+        let usesRecorded = recordedDaily != nil && [.cacheHitRate, .modelShare, .modelCost].contains(mode)
+        var summaries = usesRecorded || mode == .quotaRemaining ? [] : makeSummaries(
             dailyUsage: dailyUsage,
             cacheDaily: cacheDaily,
             dailyModelBreakdowns: dailyModelBreakdowns,
@@ -19,6 +22,41 @@ extension TokenHeatmap {
             fallbackModel: fallbackModel,
             mode: mode
         )
+        if mode == .quotaRemaining {
+            let byDate = Dictionary(grouping: quotaDaily, by: { Calendar.current.startOfDay(for: $0.date) })
+            summaries = dailyUsage.map { day in
+                let bucket = byDate[Calendar.current.startOfDay(for: day.date)]?.first
+                let value = bucket.flatMap { quotaPeriod.remaining($0) }
+                var summary = HeatmapUsageSummary(title: DateFormatter.fullDay.string(from: day.date),
+                    tokens: 0, calls: bucket.map { quotaPeriod.count($0) } ?? 0, iconName: "gauge.with.dots.needle.67percent",
+                    quotaRemainingPercent: value, isQuotaRemaining: true)
+                summary.quotaPeriod = quotaPeriod
+                summary.quotaDetail = bucket.map { value in
+                    func text(_ percent: Double?) -> String { percent.map { ClientQuotaPresentation.percentNumber($0) + "%" } ?? "暂无" }
+                    let times = [value.firstObservedAt, value.lastObservedAt].compactMap { $0?.formatted(date: .omitted, time: .shortened) }.joined(separator: "–")
+                    return "日均剩余 5h \(text(value.fiveHourRemainingPercent))（\(value.fiveHourSampleCount ?? 0)次）"
+                        + " · 7d \(text(value.sevenDayRemainingPercent))（\(value.sevenDaySampleCount ?? 0)次） · " + times
+                }
+                return summary
+            }
+        } else if let recordedDaily, [.cacheHitRate, .modelShare, .modelCost].contains(mode) {
+            let byDate = Dictionary(grouping: recordedDaily, by: { Calendar.current.startOfDay(for: $0.date) })
+            summaries = dailyUsage.map { day in
+                let usage = byDate[Calendar.current.startOfDay(for: day.date)]?.first?.usage
+                    ?? ChartUsageSummary(breakdown: .init(inputTokens: 0, cachedInputTokens: 0, outputTokens: 0,
+                        reasoningOutputTokens: 0, totalTokens: day.tokens, calls: day.calls), models: [],
+                        cacheReadComplete: day.tokens == 0, modelComplete: day.tokens == 0,
+                        knownCostUSD: 0, hasKnownCost: day.tokens == 0, unpricedRequests: day.calls)
+                var summary = HeatmapUsageSummary(title: DateFormatter.fullDay.string(from: day.date),
+                    tokens: day.tokens, calls: day.calls, iconName: mode == .modelCost ? "dollarsign.circle.fill" : "circle.grid.2x2.fill",
+                    cacheBreakdown: mode == .cacheHitRate && usage.cacheReadComplete ? usage.breakdown : nil,
+                    isCacheRate: mode == .cacheHitRate, isModelShare: mode == .modelShare,
+                    modelCostUSD: usage.hasKnownCost ? usage.knownCostUSD : nil, isModelCost: mode == .modelCost,
+                    hasUnknownPrices: usage.unpricedRequests > 0 || !usage.modelComplete)
+                summary.recordedUsage = usage
+                return summary
+            }
+        }
         let columns = makeColumnIndices(dayCount: summaries.count)
         return HeatmapPreparedData(
             summaries: summaries,

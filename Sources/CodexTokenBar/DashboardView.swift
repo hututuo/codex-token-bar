@@ -1241,15 +1241,8 @@ struct DashboardView: View {
                 sourceAvailable: allowedClients.contains("codex"), localClients: allowedClients
             )
 
-            ActivitySection(
-                dailyUsage: display.dailyUsage,
-                cacheDaily: display.cacheUsage.daily,
-                dailyModelBreakdowns: display.cacheUsage.dailyModelBreakdowns,
-                attributionEvents: codexOnly ? display.cacheUsage.attributionEvents : [],
-                quotaDaily: allowedClients.contains("codex") ? quotaHistoryStore.snapshot.daily : [],
-                selectedMode: $store.selectedMode,
-                tokensOnly: !allowedClients.contains("codex")
-            )
+            DashboardTokenActivity(codex: store.snapshot, page: display, pageClients: allowedClients,
+                quotaHistory: quotaHistoryStore.snapshot, selectedMode: $store.selectedMode)
             DashboardRecentUsageChart(
                 codex: store.snapshot, page: display, pageClients: allowedClients,
                 quota: quotaStore.snapshot, quotaHistory: quotaHistoryStore.snapshot,

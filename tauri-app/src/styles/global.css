@@ -13043,6 +13043,10 @@ details.session-management-banner {
 .quota-client-row[data-client="antigravity"] .quota-track{grid-column:1;grid-row:2}
 .quota-client-row[data-client="antigravity"] .quota-bar-meta{grid-column:1;grid-row:3;flex-direction:column;align-items:stretch;gap:4px;white-space:normal;line-height:1.3}
 .quota-client-row[data-client="antigravity"] .quota-bar-meta>span{justify-content:space-between;flex-wrap:wrap}
+.heatmap-source-controls,.heatmap-quota-controls{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px}
+.heatmap-quota-controls>span{font-size:11px;color:var(--text-secondary);white-space:normal}
+.activity-section .range-summary{align-items:flex-start;flex-wrap:wrap;height:auto;min-height:32px}
+.activity-section .range-summary>span,.activity-section .range-summary>strong{white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere}
 .quota-strip.quota-strip--embedded{padding:0;border:0;gap:10px;flex-wrap:nowrap}
 .quota-strip--embedded>.quota-pace{flex:0 1 250px;margin-left:0}
 .quota-strip--embedded>.quota-reset-card{flex:0 0 130px}

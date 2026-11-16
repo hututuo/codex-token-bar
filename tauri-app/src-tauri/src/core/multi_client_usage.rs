@@ -1304,6 +1304,13 @@ fn attach_client_quota_history(readings: &mut [QuotaProviderSnapshot]) {
         if reading.state == "api" || reading.source == "unsupported" {
             continue;
         }
+        match super::client_quota_history::read_daily_history(&connection, &reading.client, now) {
+            Ok(days) => reading.daily_history = days,
+            Err(error) => {
+                reading.daily_history.clear();
+                append_quota_history_notice(reading, &error);
+            }
+        }
         match super::client_quota_history::read_history(
             &connection,
             &reading.client,
@@ -4655,7 +4662,7 @@ fn read_cached_multi_client_aggregates_in_snapshot(
         seven_day_summaries,
         trend_buckets: read_trend_buckets(connection, now_unix)
             .map_err(|error| error.to_string())?,
-        daily_buckets: read_daily_buckets(connection, now_unix)?,
+        daily_buckets: read_incremental_daily_buckets(connection, now_unix, &key, cache)?,
     };
     let updated_at = read_updated_at(connection).map_err(|error| error.to_string())?;
 
@@ -4754,21 +4761,62 @@ fn read_trend_buckets(
     rows.collect()
 }
 
-/// Stream effective multi-client responses and retain only one aggregate per
-/// client/local-date. This deliberately has no LIMIT: history size is reduced
-/// by day aggregation without silently dropping clients or source rows.
+/// Reprice affected local days, retaining older derived rows from the last
+/// committed snapshot. A moved/enriched event invalidates its prior dates too.
+fn read_incremental_daily_buckets(
+    connection: &Connection, now: i64, key: &MultiClientAggregateCacheKey,
+    cache: &Mutex<MultiClientAggregateCache>,
+) -> Result<Vec<MultiClientUsageTrendBucket>, String> {
+    let previous = cache.lock().ok().and_then(|cache| cache.entry.clone());
+    let Some((old, arrays)) = previous.filter(|(old, _)| old.database_path == key.database_path
+        && old.revision <= key.revision && old.minute <= key.minute
+        && old.local_offset_seconds == key.local_offset_seconds) else {
+        return read_daily_buckets(connection, now);
+    };
+    let first = crate::core::localtime::local_day_bounds(
+        key.local_day.checked_sub(CalendarDuration::days(364)).ok_or("Invalid daily range")?)?.0;
+    let mut since = crate::core::localtime::local_day_bounds(old.local_day)?.0.max(first);
+    if old.revision != key.revision {
+        let earliest: Option<f64> = connection.query_row(
+            "SELECT MIN(CASE WHEN json_valid(r.payload) THEN CAST(json_extract(r.payload,'$.timestamp') AS REAL)/1000.0 END) \
+             FROM client_usage_revisions r JOIN \
+             (SELECT DISTINCT client,event_id FROM client_usage_revisions WHERE revision>?1) c \
+             ON r.client=c.client AND (r.event_id=c.event_id OR \
+             (r.client IN ('claudeCode','claudeDesktop') AND length(r.event_id)=135 AND length(c.event_id)=135 \
+             AND substr(r.event_id,68,4)=':id:' AND substr(c.event_id,68,4)=':id:' \
+             AND substr(r.event_id,72,64)=substr(c.event_id,72,64)))",
+            [old.revision], |row| row.get(0)).map_err(|e| e.to_string())?;
+        since = match earliest.filter(|v| v.is_finite()) {
+            Some(value) => since.min(crate::core::localtime::local_day_bounds(
+                crate::core::localtime::local_date_at(value.floor() as i64))?.0).max(first),
+            None => first,
+        };
+    }
+    let mut rows: Vec<_> = arrays.daily_buckets.into_iter()
+        .filter(|row| row.start_unix >= first && row.start_unix < since).collect();
+    rows.extend(read_daily_buckets_since(connection, now, Some(since))?);
+    Ok(rows)
+}
+
+/// One row per client/local-date/raw model, with request-time prices.
 fn read_daily_buckets(
     connection: &Connection,
     now_unix: i64,
+) -> Result<Vec<MultiClientUsageTrendBucket>, String> {
+    read_daily_buckets_since(connection, now_unix, None)
+}
+
+fn read_daily_buckets_since(
+    connection: &Connection, now_unix: i64, since: Option<i64>,
 ) -> Result<Vec<MultiClientUsageTrendBucket>, String> {
     let today = crate::core::localtime::local_date_at(now_unix);
     let first_day = today
         .checked_sub(CalendarDuration::days(364))
         .ok_or_else(|| "Daily bucket window is outside the supported date range".to_string())?;
-    let (start_unix, _) = crate::core::localtime::local_day_bounds(first_day)?;
+    let start_unix = crate::core::localtime::local_day_bounds(first_day)?.0.max(since.unwrap_or(i64::MIN));
     let mut statement = connection
         .prepare(
-            &effective_usage_query("SELECT client,timestamp,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens \
+            &effective_usage_query("SELECT client,timestamp,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens,model,cache_write_5m_tokens,cache_write_1h_tokens \
              FROM effective_client_usage_events WHERE client <> 'codex' AND timestamp >= ?1 AND timestamp <= ?2"),
         )
         .map_err(|error| error.to_string())?;
@@ -4782,14 +4830,18 @@ fn read_daily_buckets(
                 row.get::<_, Option<i64>>(4)?,
                 row.get::<_, Option<i64>>(5)?,
                 row.get::<_, Option<i64>>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, Option<i64>>(8)?,
+                row.get::<_, Option<i64>>(9)?,
             ))
         })
         .map_err(|error| error.to_string())?;
 
-    let mut grouped = BTreeMap::<(String, i64), MultiClientUsageTrendBucket>::new();
+    let mut grouped = BTreeMap::<(String, i64, String), MultiClientUsageTrendBucket>::new();
+    let mut prices = BTreeMap::<(String, i64, String), MultiClientPriceTally>::new();
     let mut day_starts = BTreeMap::<Date, i64>::new();
     for row in rows {
-        let (client, timestamp, input, output, cache_read, cache_write, reasoning) =
+        let (client, timestamp, input, output, cache_read, cache_write, reasoning, model, write5m, write1h) =
             row.map_err(|error| error.to_string())?;
         if !timestamp.is_finite() {
             continue;
@@ -4806,7 +4858,10 @@ fn read_daily_buckets(
             day_starts.insert(day, start);
             start
         };
-        let key = (client.clone(), start_unix);
+        let key = (client.clone(), start_unix, model.clone());
+        let pricing_model = if client == "antigravity" { antigravity::price_model(&model) } else { model.clone() };
+        prices.entry(key.clone()).or_default().add(api_cost_micro_usd_at(
+            &pricing_model, input, output, cache_read, cache_write, write5m.zip(write1h), Some(timestamp)));
         let bucket = grouped
             .entry(key)
             .or_insert_with(|| MultiClientUsageTrendBucket {
@@ -4820,9 +4875,9 @@ fn read_daily_buckets(
                 requests: 0,
                 api_cost_micro_usd: None,
                 unpriced_requests: 0,
-                model: None,
-                cache_read_complete: None,
-                cache_write_complete: None,
+                model: Some(model),
+                cache_read_complete: Some(true),
+                cache_write_complete: Some(true),
             });
         bucket.input_tokens = bucket.input_tokens.saturating_add(input.max(0) as u64);
         bucket.output_tokens = bucket.output_tokens.saturating_add(output.max(0) as u64);
@@ -4830,8 +4885,43 @@ fn read_daily_buckets(
         bucket.cache_write_tokens = sum_optional(bucket.cache_write_tokens, cache_write);
         bucket.reasoning_tokens = sum_optional(bucket.reasoning_tokens, reasoning);
         bucket.requests = bucket.requests.saturating_add(1);
+        bucket.cache_read_complete = Some(bucket.cache_read_complete == Some(true) && cache_read.is_some());
+        bucket.cache_write_complete = Some(bucket.cache_write_complete == Some(true) && cache_write.is_some());
+    }
+    for (key, bucket) in &mut grouped {
+        let tally = &prices[key];
+        bucket.api_cost_micro_usd = (!tally.overflowed).then_some(tally.known_cost_micro_usd)
+            .flatten().and_then(|value| i64::try_from(value).ok());
+        bucket.unpriced_requests = if bucket.api_cost_micro_usd.is_some() { tally.unpriced_requests } else { bucket.requests };
     }
     Ok(grouped.into_values().collect())
+}
+
+#[cfg(test)]
+mod daily_model_projection_tests {
+    use super::*;
+    #[test]
+    fn daily_model_costs_equal_request_priced_trend_without_changing_ledger() {
+        let connection = Connection::open_in_memory().unwrap();
+        ensure_schema(&connection, Path::new(":memory:")).unwrap();
+        let now = 1_800_000_000;
+        for (id, model, cache) in [("a","claude-opus-5",Some(900_i64)),("b","claude-sonnet-5",Some(20)),("c","unknown",None)] {
+            connection.execute(
+                "INSERT INTO client_usage_events VALUES(?1,?2,'s',?3,?4,1000,100,?5,0,NULL,'{}')",
+                params!["claudeCode",id,model,now,cache]).unwrap();
+        }
+        let daily=read_daily_buckets(&connection,now).unwrap();
+        let trend=read_trend_buckets(&connection,now).unwrap();
+        assert_eq!(daily.len(),3);
+        assert_eq!(daily.iter().map(|r|r.requests).sum::<u64>(),3);
+        for row in daily {
+            let other=trend.iter().find(|r|r.model==row.model).unwrap();
+            assert_eq!(row.api_cost_micro_usd,other.api_cost_micro_usd);
+            assert_eq!(row.unpriced_requests,other.unpriced_requests);
+            assert_eq!(row.cache_read_complete,other.cache_read_complete);
+        }
+        assert_eq!(connection.query_row("SELECT COUNT(*) FROM client_usage_revisions",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    }
 }
 
 fn sum_optional(current: Option<u64>, incoming: Option<i64>) -> Option<u64> {

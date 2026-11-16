@@ -2,6 +2,21 @@ import XCTest
 @testable import CodexTokenBar
 
 final class ClientQuotaHistoryTests: XCTestCase {
+    func testDailyHistoryRetainsOldDaysWithoutExtendingChartOrInventingSamples() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("history.sqlite"))
+        let old = now.addingTimeInterval(-60 * 86400)
+        let samples = [reading(at: old, used: 20), reading(at: old.addingTimeInterval(60), used: 40)]
+        try ledger.recordQuotaHistory(samples, now: old.addingTimeInterval(60))
+        try ledger.recordQuotaHistory([samples[1]], now: old.addingTimeInterval(120))
+        let history = try XCTUnwrap(ledger.quotaHistory(readings: [reading(at: now)], now: now).first)
+        XCTAssertTrue(history.samples.isEmpty)
+        XCTAssertEqual(history.daily.count, 1)
+        XCTAssertEqual(history.daily[0].fiveHourRemainingPercent, 70)
+        XCTAssertEqual(history.daily[0].fiveHourSampleCount, 2)
+        XCTAssertEqual(history.daily[0].sevenDaySampleCount, 0)
+    }
     private let now = Date(timeIntervalSince1970: 1_800_000_000)
 
     private func reading(_ client: String = "claudeDesktop", at: Date, used: Double = 9.1135,

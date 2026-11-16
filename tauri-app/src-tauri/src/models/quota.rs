@@ -96,6 +96,14 @@ pub struct QuotaHistoryDailyPoint {
     pub date: String,
     pub five_hour_remaining_percent: Option<f64>,
     pub seven_day_remaining_percent: Option<f64>,
+    #[serde(default)]
+    pub five_hour_sample_count: u32,
+    #[serde(default)]
+    pub seven_day_sample_count: u32,
+    #[serde(default)]
+    pub first_observed_at: Option<f64>,
+    #[serde(default)]
+    pub last_observed_at: Option<f64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

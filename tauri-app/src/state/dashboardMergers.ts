@@ -861,6 +861,11 @@ function mergeActivityQuotaHistory(
       ...day,
       fiveHourRemainingPercent: history.fiveHourRemainingPercent,
       sevenDayRemainingPercent: history.sevenDayRemainingPercent,
+      ...("fiveHourSampleCount" in history ? {
+        quotaSampleCounts:{five:history.fiveHourSampleCount??0,seven:history.sevenDaySampleCount??0},
+        quotaObservedRange:history.firstObservedAt!=null&&history.lastObservedAt!=null
+          ? {first:history.firstObservedAt,last:history.lastObservedAt}:undefined,
+      }:{}),
     };
   });
 }

@@ -766,6 +766,9 @@ fn history_bundle_from_rows_with_filter(
                 date,
                 five_hour_remaining_percent: history.five_hour_remaining_percent,
                 seven_day_remaining_percent: history.seven_day_remaining_percent,
+                five_hour_sample_count:history.five_hour_sample_count,
+                seven_day_sample_count:history.seven_day_sample_count,
+                first_observed_at:history.first_observed_at,last_observed_at:history.last_observed_at,
             })
             .collect(),
         recent_24h: series::make_interval_history_with_filter(rows.clone(), recent_count.max(1), 300, now, filter_anomalies),

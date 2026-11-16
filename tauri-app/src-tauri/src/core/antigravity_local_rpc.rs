@@ -18,7 +18,7 @@ fn unavailable() -> QuotaProviderSnapshot {
         source: SOURCE.into(),
         captured_at: None,
         windows: vec![],
-        history: Vec::new(),
+        history: Vec::new(), daily_history: Vec::new(),
         notice: "当前 Antigravity 本机语言服务额度不可用；不改用其他账号的旧缓存，不启动客户端。"
             .into(),
     }
@@ -141,7 +141,7 @@ pub(super) fn parse_quota_summary(
         source: SOURCE.into(),
         captured_at,
         windows,
-        history: Vec::new(),
+        history: Vec::new(), daily_history: Vec::new(),
         notice: "当前运行的 Antigravity 本机语言服务返回值；未强制刷新。客户端可能自行联网。读取时间不代表上游采样时间，额度池分别展示。".into(),
     })
 }

@@ -854,12 +854,12 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             now: now
         )
 
-        let startDay = calendar.startOfDay(for: calendar.date(byAdding: .day, value: -29, to: now) ?? now)
+        let startDay = calendar.startOfDay(for: calendar.date(byAdding: .day, value: -364, to: now) ?? now)
         var grouped: [Date: [QuotaHistoryRow]] = [:]
         for row in sorted where row.createdAt >= startDay {
             grouped[calendar.startOfDay(for: row.createdAt), default: []].append(row)
         }
-        let daily = (0..<30).compactMap { offset -> QuotaHistoryDailyBucket? in
+        let daily = (0..<365).compactMap { offset -> QuotaHistoryDailyBucket? in
             guard let date = calendar.date(byAdding: .day, value: offset, to: startDay) else { return nil }
             let dayRows = grouped[date] ?? []
             let fiveValues = dayRows.compactMap(\.fiveHourRemainingPercent)
@@ -868,7 +868,9 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
                 date: date,
                 fiveHourRemainingPercent: Self.average(fiveValues),
                 sevenDayRemainingPercent: Self.average(sevenValues),
-                sampleCount: dayRows.count
+                sampleCount: dayRows.count,
+                fiveHourSampleCount: fiveValues.count, sevenDaySampleCount: sevenValues.count,
+                firstObservedAt: dayRows.map(\.createdAt).min(), lastObservedAt: dayRows.map(\.createdAt).max()
             )
         }
 

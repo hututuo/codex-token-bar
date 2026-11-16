@@ -3,6 +3,7 @@ import type { ActivityMode } from "./types";
 import { modelUsageCompactText } from "../modelUsagePresentation.ts";
 import { modelCostSummaryText } from "./heatmap.ts";
 import type { OfficialAPIPriceModel } from "../../settings/quotaPriceModel.ts";
+import { recordedSummary, quotaDayText } from "./recordedUsage";
 
 export function hoverSummary(
   day: ActivityDay,
@@ -10,14 +11,13 @@ export function hoverSummary(
   fallbackModel: OfficialAPIPriceModel = "gpt56Sol",
   modelCostDataAvailable = true,
 ): string {
+  if(day.recordedUsage&&["cache","model","modelCost"].includes(mode))return `${day.date} · ${recordedSummary(day.recordedUsage,mode)}`;
   if (mode === "cache") {
     return `${day.date} · 命中率 ${day.cacheHitRateKnown === false ? "未知" : formatPercent(day.cacheHitRate)} · ${day.calls} calls`;
   }
 
   if (mode === "quota") {
-    return `${day.date} · 7d ${formatOptionalPercent(day.sevenDayRemainingPercent)} · 5h ${formatOptionalPercent(
-      day.fiveHourRemainingPercent,
-    )}`;
+    return `${day.date} · ${quotaDayText(day)}`;
   }
   if (mode === "model") {
     const parsed = Date.parse(`${day.date}T00:00:00Z`);
@@ -33,10 +33,6 @@ export function hoverSummary(
   }
 
   return `${day.date} · ${formatTokens(day.tokens)} tokens · ${day.calls} calls`;
-}
-
-function formatOptionalPercent(value: number | null): string {
-  return value === null ? "暂无" : formatPercent(value);
 }
 
 function formatTokens(value: number): string {

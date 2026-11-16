@@ -526,12 +526,16 @@ struct TokenCacheUsage: Codable {
     )
 }
 
-struct QuotaHistoryDailyBucket: Identifiable, Equatable {
+struct QuotaHistoryDailyBucket: Identifiable, Equatable, Sendable {
     var id: Date { date }
     let date: Date
     let fiveHourRemainingPercent: Double?
     let sevenDayRemainingPercent: Double?
     let sampleCount: Int
+    var fiveHourSampleCount: Int? = nil
+    var sevenDaySampleCount: Int? = nil
+    var firstObservedAt: Date? = nil
+    var lastObservedAt: Date? = nil
 }
 
 /// A persisted quota row, kept separate from chart-only carry/interpolation.

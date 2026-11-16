@@ -86,6 +86,8 @@ final class MultiClientUsageLedger: @unchecked Sendable {
     private var cachedSummaryRows: [ClientSummaryCacheKey: [ClientUsageSummary]] = [:]
     private var summaryCacheOrder: [ClientSummaryCacheKey] = []
     private let summaryCacheLimit = 8
+    private let dailyCacheLock = NSLock()
+    private var dailyCache: (revision: Int64, now: Date, timezone: String, rows: [ClientTrendBucket])?
 
     private static let exactBundledPriceEntries: [String: ExactBundledPriceEntry] = {
         var entries: [String: ExactBundledPriceEntry] = [:]
@@ -468,19 +470,72 @@ final class MultiClientUsageLedger: @unchecked Sendable {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: now)
         let firstDay = calendar.date(byAdding: .day, value: -364, to: today) ?? today
-        return try database.readRows(ClientUsageReadModel.query("""
+        let timezone = calendar.timeZone.identifier + ":" + String(calendar.timeZone.secondsFromGMT(for: now))
+        dailyCacheLock.lock()
+        let cached = dailyCache
+        dailyCacheLock.unlock()
+        let result = try database.withConnection { connection in
+            try connection.readTransaction { snapshot -> (Int64, [ClientTrendBucket]) in
+        let revision = try snapshot.readRows("SELECT COALESCE(MAX(revision),0) FROM client_usage_revisions") { $0.int64(0) ?? 0 }.first ?? 0
+        var since = firstDay
+        var retained: [ClientTrendBucket] = []
+        if let cached, cached.timezone == timezone, cached.revision <= revision, cached.now <= now {
+            if cached.revision == revision,
+               Int(cached.now.timeIntervalSince1970 / 60) == Int(now.timeIntervalSince1970 / 60) {
+                return (revision, cached.rows)
+            }
+            since = max(firstDay, calendar.startOfDay(for: cached.now))
+            if cached.revision != revision {
+                // Include every prior timestamp of changed identities: an enriched
+                // response can move to a later day. No persistent cache or migration.
+                let earliest = try snapshot.readRows("""
+                    SELECT MIN(CASE WHEN json_valid(r.payload)
+                        THEN CAST(json_extract(r.payload,'$.timestamp') AS REAL)/1000.0 END)
+                    FROM client_usage_revisions r JOIN
+                    (SELECT DISTINCT client,event_id FROM client_usage_revisions WHERE revision>?) c
+                    ON r.client=c.client AND (r.event_id=c.event_id OR
+                        (r.client IN ('claudeCode','claudeDesktop') AND length(r.event_id)=135 AND length(c.event_id)=135
+                        AND substr(r.event_id,68,4)=':id:' AND substr(c.event_id,68,4)=':id:'
+                        AND substr(r.event_id,72,64)=substr(c.event_id,72,64)))
+                    """, bindings: [.int64(cached.revision)]) { $0.double(0) }.first ?? nil
+                since = earliest.map { max(firstDay, min(since, calendar.startOfDay(for: Date(timeIntervalSince1970: $0)))) } ?? firstDay
+            }
+            retained = cached.rows.filter { Double($0.startUnix) >= firstDay.timeIntervalSince1970 && Double($0.startUnix) < since.timeIntervalSince1970 }
+        }
+        var prices: [ClientPriceKey: [Int64: ClientPriceTally]] = [:]
+        try forEachPricedEvent(in: snapshot, since: since,
+            before: Date(timeIntervalSince1970: now.timeIntervalSince1970.nextUp)) { client, model, timestamp, cost in
+            let day = Int64(calendar.startOfDay(for: Date(timeIntervalSince1970: timestamp)).timeIntervalSince1970)
+            let key = ClientPriceKey(client: client.rawValue, model: model)
+            var tally = prices[key]?[day] ?? ClientPriceTally(knownCostMicroUSD: nil)
+            tally.add(cost); prices[key, default: [:]][day] = tally
+        }
+        let rows = try snapshot.readRows(ClientUsageReadModel.query("""
         SELECT client,
         CAST(strftime('%s',date(timestamp,'unixepoch','localtime'),'utc') AS INTEGER),
         SUM(input_tokens),SUM(output_tokens),SUM(cache_read_tokens),SUM(cache_write_tokens),
-        SUM(reasoning_tokens),COUNT(*)
+        SUM(reasoning_tokens),COUNT(*),model,
+        COUNT(cache_read_tokens)=COUNT(*),COUNT(cache_write_tokens)=COUNT(*)
         FROM effective_client_usage_events WHERE timestamp >= ? AND timestamp <= ?
-        GROUP BY client,date(timestamp,'unixepoch','localtime') ORDER BY 2,1
-        """), bindings: [.date(firstDay), .date(now)]) { row in
+        GROUP BY client,model,date(timestamp,'unixepoch','localtime') ORDER BY 2,1,9
+        """), bindings: [.date(since), .date(now)]) { row in
             guard let client = UsageClient(rawValue: row.text(0) ?? "") else { return nil as ClientTrendBucket? }
+            let model = row.text(8) ?? "unknown"
+            let price = prices[ClientPriceKey(client: client.rawValue, model: model)]?[row.int64(1) ?? 0]
+            let cost = price?.overflowed == false ? price?.knownCostMicroUSD : nil
             return ClientTrendBucket(client: client, startUnix: row.int64(1) ?? 0, inputTokens: row.int64(2) ?? 0,
                 outputTokens: row.int64(3) ?? 0, cacheReadTokens: row.int64(4), cacheWriteTokens: row.int64(5),
-                reasoningTokens: row.int64(6), requests: row.int(7) ?? 0)
+                reasoningTokens: row.int64(6), requests: row.int(7) ?? 0,
+                apiCostMicroUSD: cost, unpricedRequests: cost == nil ? (row.int(7) ?? 0) : price?.unpricedRequests ?? 0,
+                model: model, cacheReadComplete: row.int(9) == 1, cacheWriteComplete: row.int(10) == 1)
         }.compactMap { $0 }
+        return (revision, retained + rows)
+            }
+        }
+        dailyCacheLock.lock()
+        dailyCache = (result.0, now, timezone, result.1)
+        dailyCacheLock.unlock()
+        return result.1
     }
 
     func summaries(since: Date? = nil, before: Date? = nil) throws -> [ClientUsageSummary] {

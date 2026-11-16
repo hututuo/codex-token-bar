@@ -8,10 +8,9 @@ import { ClientCacheRanking } from "../../multiClient/ClientCacheRanking";
 import { useAggregateClientCacheRows } from "../../multiClient/aggregateCacheRanking";
 import { CacheHitRanking } from "../../components/CacheHitRanking";
 import { RecentUsageChart } from "../../components/RecentUsageChart";
-import { TokenActivitySection } from "../../components/TokenActivitySection";
+import { DashboardTokenActivity } from "./DashboardTokenActivity";
 import type { DashboardSnapshot, CodexHomeSourceToken } from "../../types/dashboard";
 import type { SharedAccountAttributionResult } from "../../components/sharedAccountAttribution/model";
-import { modelCostProjectionAvailable } from "../../components/tokenActivity/modelCostAvailability";
 import { applyClientQuotaHistory, quotaChartSources, resolveQuotaChartSource } from "../../multiClient/clientQuotaHistory";
 
 interface DashboardAnalyticsSectionProps {
@@ -66,11 +65,7 @@ function DashboardAnalyticsSectionView({ dashboard, originalCodex, clients, allo
   const scopeKey = scope.join(",");
   useEffect(() => setLocalDetail(null), [scopeKey]);
   return <section className="client-analytics" data-client={scope.length > 1 ? "all" : scope[0]}>
-    <TokenActivitySection
-      days={source.activityDays}
-      tokensOnly={!includesCodex}
-      modelCostDataAvailable={modelCostProjectionAvailable(source.activityDays, source.preciseRecentUsageFresh)}
-    />
+    <DashboardTokenActivity dashboard={source} codex={codex} clients={clients} pageClients={scope}/>
     <RecentUsageChart
       key={chartKey + "|" + JSON.stringify(sourceToken) + "|" + (quotaSource?.id ?? "")}
       sourceControl={clients && <><select aria-label="图表客户端" className="recent-chart-client" value={effectiveSelection} onChange={e => setChartSelection(e.target.value)}>

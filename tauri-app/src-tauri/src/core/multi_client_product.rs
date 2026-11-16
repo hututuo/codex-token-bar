@@ -64,6 +64,8 @@ pub struct QuotaProviderSnapshot {
     pub windows: Vec<QuotaProviderWindow>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub history: Vec<ClientQuotaHistorySample>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub daily_history: Vec<super::client_quota_history::ClientQuotaDailySample>,
     pub notice: String,
 }
 
@@ -158,7 +160,7 @@ pub fn quota_provider_snapshots(
                     source: if claude_cli.state == "api" { "local-config" } else { "local-statusline" }.into(),
                     captured_at: claude_cli.captured_at.clone(),
                     windows: windows.clone(),
-                    history: Vec::new(),
+                    history: Vec::new(), daily_history: Vec::new(),
                     notice: if claude_cli.state == "api" { "API 接入 · 订阅额度不适用" } else { notice }.into(),
                 }
             } else if *client == "claudeDesktop" {
@@ -175,7 +177,7 @@ pub fn quota_provider_snapshots(
                     source: claude_desktop.source.clone().unwrap_or_else(|| "local-desktop-history".into()),
                     captured_at: claude_desktop.captured_at.clone(),
                     windows,
-                    history: Vec::new(),
+                    history: Vec::new(), daily_history: Vec::new(),
                     notice: claude_desktop_notice(claude_desktop),
                 }
             } else if *client == "antigravity" {
@@ -187,7 +189,7 @@ pub fn quota_provider_snapshots(
                     source: "unsupported".into(),
                     captured_at: None,
                     windows: Vec::new(),
-                    history: Vec::new(),
+                    history: Vec::new(), daily_history: Vec::new(),
                     notice: "暂不支持读取此客户端的订阅额度。".into(),
                 }
             }

@@ -11,6 +11,9 @@ import {
   hasUnknownModelPrices,
 } from "../../floating/floatingModelUsage.ts";
 import type { OfficialAPIPriceModel } from "../../settings/quotaPriceModel.ts";
+import { chartUsageSummary } from "../recentUsageChart/usageSnapshot";
+import { recordedSummary } from "./recordedUsage";
+import { quotaPercentNumber } from "../../multiClient/multiClientProduct";
 
 export function summarizeRange(
   selectedDays: ActivityDay[],
@@ -35,6 +38,10 @@ export function summarizeRange(
 
   const tokens = sumTokens(selectedDays);
   const calls = selectedDays.reduce((total, day) => total + day.calls, 0);
+  if(["cache","model","modelCost"].includes(mode)&&selectedDays.every(day=>day.recordedUsage)){
+    const usage=chartUsageSummary(selectedDays.flatMap(day=>day.recordedUsage?[day.recordedUsage]:[]),0,selectedDays.length-1);
+    if(usage)return {hint:`${rangeStart} - ${rangeEnd}`,value:recordedSummary(usage,mode)};
+  }
   if (mode === "cache") {
     return {
       hint: `${rangeStart} - ${rangeEnd}`,
@@ -44,11 +51,14 @@ export function summarizeRange(
     };
   }
   if (mode === "quota") {
+    const period=selectedDays[0]?.quotaPeriod??"7d";
+    const values=selectedDays.flatMap(day=>{
+      const value=period==="5h"?day.fiveHourRemainingPercent:day.sevenDayRemainingPercent;
+      return value==null?[]:[value];
+    });
     return {
       hint: `${rangeStart} - ${rangeEnd}`,
-      value: `7d ${formatOptionalPercent(averageQuota(selectedDays, "sevenDayRemainingPercent"))} · 5h ${formatOptionalPercent(
-        averageQuota(selectedDays, "fiveHourRemainingPercent"),
-      )}`,
+      value: `${period} 有观测日均剩余 ${values.length?quotaPercentNumber(values.reduce((a,b)=>a+b,0)/values.length*100)+"%":"暂无"} · 覆盖 ${values.length}/${selectedDays.length} 天`,
     };
   }
   if (mode === "model") {

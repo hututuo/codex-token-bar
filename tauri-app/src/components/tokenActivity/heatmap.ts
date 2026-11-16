@@ -10,6 +10,8 @@ import {
   hasUnknownModelPrices,
 } from "../../floating/floatingModelUsage.ts";
 import type { OfficialAPIPriceModel } from "../../settings/quotaPriceModel.ts";
+import { recordedCostText, recordedModelsText, recordedGradient, recordedSummary, quotaDayText } from "./recordedUsage";
+import { modelUsageColor } from "../modelUsagePresentation";
 
 export function buildHeatmapDays(
   days: ActivityDay[],
@@ -28,7 +30,7 @@ export function buildHeatmapDays(
       case "cache":
         return day.tokens > 0 && day.cacheHitRateKnown !== false ? day.cacheHitRate : null;
       case "quota":
-        return day.sevenDayRemainingPercent ?? day.fiveHourRemainingPercent;
+        return day.quotaPeriod === "5h" ? day.fiveHourRemainingPercent : day.sevenDayRemainingPercent;
       case "model":
         return day.tokens > 0 ? day.tokens : null;
       case "modelCost":
@@ -67,7 +69,7 @@ export function cellColor(mode: ActivityMode, intensity: number): string {
 
 export function modelCellColor(day: ActivityDay, intensity: number): string {
   if (intensity <= 0) return "var(--heatmap-empty)";
-  const color = dominantModelColor(dayModelRows(day)) ?? "#7a879e";
+  const color = day.recordedUsage?.models[0] ? modelUsageColor(day.recordedUsage.models[0].model) : dominantModelColor(dayModelRows(day)) ?? "#7a879e";
   const weight = Math.round(24 + intensity * 72);
   return `color-mix(in srgb, ${color} ${weight}%, var(--heatmap-empty))`;
 }
@@ -78,6 +80,7 @@ export function modelCostCellBackground(
   fallbackModel: OfficialAPIPriceModel = "gpt56Sol",
   modelCostDataAvailable = true,
 ): string {
+  if(day.recordedUsage)return recordedGradient(day.recordedUsage,intensity);
   if (!modelCostDataAvailable) return "var(--heatmap-empty)";
   const items = floatingTodayModelUsageItems(dayModelRows(day), fallbackModel, { mergeAutoReview: false });
   const paid = items.filter((item) => (item.costUSD ?? 0) > 0);
@@ -107,13 +110,12 @@ export function cellLabel(
   fallbackModel: OfficialAPIPriceModel = "gpt56Sol",
   modelCostDataAvailable = true,
 ): string {
+  if(day.recordedUsage&&["cache","model","modelCost"].includes(mode))return `${day.date} · ${recordedSummary(day.recordedUsage,mode)}`;
   if (mode === "cache") {
     return `${day.date} · 命中率 ${day.cacheHitRateKnown === false ? "未知" : formatPercent(day.cacheHitRate)} · ${day.calls} calls`;
   }
   if (mode === "quota") {
-    return `${day.date} · 7d ${formatOptionalPercent(day.sevenDayRemainingPercent)} · 5h ${formatOptionalPercent(
-      day.fiveHourRemainingPercent,
-    )}`;
+    return `${day.date} · ${quotaDayText(day)}`;
   }
   if (mode === "model") {
     return `${day.date} · ${formatTokens(day.tokens)} tokens · ${modelUsageCompactText(dayModelRows(day)) ?? "暂无模型明细"}`;
@@ -129,6 +131,7 @@ export function modelCostUSD(
   fallbackModel: OfficialAPIPriceModel,
   modelCostDataAvailable = true,
 ): number | null {
+  if(day.recordedUsage)return day.recordedUsage.hasKnownCost?day.recordedUsage.knownCostUSD:null;
   if (!modelCostDataAvailable) return null;
   if (day.tokens > 0 && (!day.modelBreakdowns || day.modelBreakdowns.length === 0)) {
     return null;
@@ -143,6 +146,7 @@ export function modelCostSummaryText(
   fallbackModel: OfficialAPIPriceModel,
   modelCostDataAvailable = true,
 ): string {
+  if(day.recordedUsage)return recordedCostText(day.recordedUsage)+" · "+recordedModelsText(day.recordedUsage,true);
   if (!modelCostDataAvailable || (day.tokens > 0 && !day.modelBreakdowns?.length)) {
     return "模型明细待读取";
   }
@@ -169,10 +173,6 @@ function normalizeValue(value: number | null, tokenMax: number, mode: ActivityMo
     return clamp((value - 0.55) / 0.45, 0, 1);
   }
   return clamp(value / tokenMax, 0, 1);
-}
-
-function formatOptionalPercent(value: number | null): string {
-  return value === null ? "暂无" : formatPercent(value);
 }
 
 function sumTokens(days: ActivityDay[]): number {

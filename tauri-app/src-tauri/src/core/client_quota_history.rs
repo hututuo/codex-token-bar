@@ -14,6 +14,54 @@ const HISTORY_SECONDS: f64 = 30.0 * 24.0 * 60.0 * 60.0;
 const SAMPLE_BUCKET_SECONDS: f64 = 5.0 * 60.0;
 const MAX_WINDOW_ID_BYTES: usize = 128;
 
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientQuotaDailySample {
+    pub source: String,
+    pub window_id: String,
+    pub start_unix: i64,
+    pub remaining_percent: f64,
+    pub sample_count: u64,
+    pub first_observed_at: f64,
+    pub last_observed_at: f64,
+}
+
+/// Bounded numeric day aggregates; chart history keeps its existing 30-day
+/// detail window. The records and their original timestamps are never rewritten.
+pub(crate) fn read_daily_history(connection: &Connection, client: &str, now: f64)
+    -> Result<Vec<ClientQuotaDailySample>, String> {
+    if !now.is_finite() { return Err("当前时间无效".into()); }
+    if !table_exists(connection).map_err(|e| e.to_string())? { return Ok(Vec::new()); }
+    let today = crate::core::localtime::local_date_at(now.floor() as i64);
+    let first = today.checked_sub(time::Duration::days(364)).ok_or("Invalid history range")?;
+    let cutoff = crate::core::localtime::local_day_bounds(first)?.0;
+    let mut query = connection.prepare(
+        "SELECT source,window_id,observed_at,used_percent,resets_at FROM client_quota_observations \
+         WHERE client=?1 AND observed_at>=?2 AND observed_at<=?3 ORDER BY observed_at")
+        .map_err(|e| e.to_string())?;
+    let mut rows = query.query(params![client,cutoff,now]).map_err(|e| e.to_string())?;
+    let mut sums = std::collections::BTreeMap::<(String,String,i64),ClientQuotaDailySample>::new();
+    while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+        let source: String = row.get(0).map_err(|e| e.to_string())?;
+        let window: String = row.get(1).map_err(|e| e.to_string())?;
+        let at: f64 = row.get(2).map_err(|e| e.to_string())?;
+        let used: f64 = row.get(3).map_err(|e| e.to_string())?;
+        let reset: Option<f64> = row.get(4).map_err(|e| e.to_string())?;
+        if !valid_window_source(client,&source,&window) || !at.is_finite() || !used.is_finite()
+            || !(0.0..=100.0).contains(&used) || reset.is_some_and(|v| !v.is_finite() || v<=at) { continue; }
+        let start = crate::core::localtime::local_day_bounds(crate::core::localtime::local_date_at(at.floor() as i64))?.0;
+        let value = sums.entry((source.clone(),window.clone(),start)).or_insert(ClientQuotaDailySample {
+            source, window_id:window, start_unix:start, remaining_percent:0.0, sample_count:0,
+            first_observed_at:at,last_observed_at:at,
+        });
+        value.remaining_percent += 100.0-used;
+        value.sample_count += 1;
+        value.first_observed_at = value.first_observed_at.min(at);
+        value.last_observed_at = value.last_observed_at.max(at);
+    }
+    Ok(sums.into_values().map(|mut day| { day.remaining_percent/=day.sample_count as f64; day }).collect())
+}
+
 pub(crate) fn ensure_schema(connection: &Connection) -> rusqlite::Result<()> {
     connection.execute_batch(
         r#"
@@ -383,7 +431,7 @@ mod tests {
                 resets_at: Some("1970-01-01T02:00:00Z".into()),
             }],
             notice: String::new(),
-            history: Vec::new(),
+            history: Vec::new(), daily_history: Vec::new(),
         }
     }
 
