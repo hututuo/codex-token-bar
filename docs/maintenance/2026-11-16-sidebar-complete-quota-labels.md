@@ -8,4 +8,16 @@ build 1017 的原版二级菜单把每个周期标题限制在 34pt 单行区域
 
 build 1018 的云端组件图确认名称完整显示，但也暴露了小数值的既有截断。build 1019 调整自动缩放的顺序后，渲染图仍出现截断。最终使用 `ViewThatFits` 按完整数字的实际宽度选择字号，文本本身按完整字形布局，保留所有小数位。
 
-最终候选构建号为 1020；1018、1019 均未替换到本机。云端结果及安装证据在完成后补记。
+最终源码为 `93e58e27de858bfaa91b14094d5ebbff8297dbdf`，构建号为 **1020**；1018、1019 均未替换到本机。
+
+云端检查 `43840881260` 全部成功，含 macOS/Windows 原生、前端、更新器和 Swift。Swift XCTest 执行 2519 项、38 项跳过、0 失败；Swift Testing 676 项、79 组通过。最终原生组件图 `visuals-1020/sidebar-quota-complete-labels.png` 已人工核对：Antigravity、Gemini、第三方模型和 `99.92 / 82.69` 均完整显示，整数保持原字号。
+
+macOS 候选来自 `43840888500`，来源清单、ZIP 路径/符号链接、代码签名、打包资源和 DMG 校验通过。2026-11-16 18:02:59（北京时间）替换 `/Applications/Codex Token Bar.app` 为 **0.9.11 / build 1020**。可执行文件 SHA-256：
+
+`4a723a5111a5108b6f3ce4e8cdd7d8195be964397ad87c21263b1d1f171cc14f`
+
+旧进程在 CUA 连续连接超时后，经核对完整可执行路径和摘要，以 SIGTERM 退出；未使用强制结束。旧 build 1017 原位移动到回退目录，再切换已验证候选。新进程 PID 14289，`startup.ready` 已观察到；CUA 后续恢复，主页已确认 Claude 与 Antigravity 真实额度，收起主页后也确认一级紧凑侧栏。二级菜单悬停未能由 CUA 稳定触发，文字效果使用同一源码的原生组件渲染验收。启动后的精确索引仍在进行，初次核对时升级确认回执尚未生成，不将其写成已完成。
+
+安装前后两份额度数据库的 inode、schema 摘要、版本均一致，`quick_check=ok`；安装前 26,145 条用量修订的完整内容摘要匹配。保留 build 1017 App，未生成数据库副本。
+
+证据目录：`~/Library/Application Support/CodexTokenBar-Maintenance/2026-11-16-sidebar-complete-labels/`。未公开发布、创建标签、修改更新源或合并主分支。
