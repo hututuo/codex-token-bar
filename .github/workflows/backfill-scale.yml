@@ -8,6 +8,14 @@ on:
         description: 'Optional exact 40-character source commit; empty means this workflow commit'
         type: string
         default: ''
+      daily_projection_only:
+        description: 'Compare daily ledger projections on one hosted machine, without the backfill gate'
+        type: boolean
+        default: false
+      baseline_sha:
+        description: 'Exact baseline commit for the daily projection comparison'
+        type: string
+        default: ''
   workflow_call:
     inputs:
       source_sha:
@@ -40,6 +48,7 @@ jobs:
 
   scale:
     needs: resolve
+    if: ${{ !inputs.daily_projection_only }}
     runs-on: macos-26
     timeout-minutes: 90
     env:
@@ -120,4 +129,70 @@ jobs:
             backfill-scale-evidence/
             backfill-scale-results/
           if-no-files-found: warn
+          retention-days: 30
+
+  daily-projection:
+    needs: resolve
+    if: ${{ inputs.daily_projection_only }}
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      SOURCE_SHA: ${{ needs.resolve.outputs.sha }}
+      BASELINE_SHA: ${{ inputs.baseline_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: benchmark-tools
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ needs.resolve.outputs.sha }}
+          path: product
+      - name: Swift dependency cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            product/.build/artifacts
+            product/.build/checkouts
+            product/.build/repositories
+          key: swift-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('product/Package.resolved') }}-v1
+      - name: Compare baseline and candidate on identical synthetic rows
+        run: |
+          set -euo pipefail
+          [[ "$BASELINE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'Exact baseline SHA required'; exit 1; }
+          mkdir -p daily-projection-evidence
+          {
+            sw_vers
+            swift --version
+            xcodebuild -version
+            printf 'baseline=%s\ncandidate=%s\nharness=%s\n' "$BASELINE_SHA" "$SOURCE_SHA" "$(git -C benchmark-tools rev-parse HEAD)"
+          } > daily-projection-evidence/toolchain.txt
+          command -v git-lfs >/dev/null || brew install git-lfs
+          git -C product fetch --no-tags --depth=1 origin "$BASELINE_SHA"
+          for revision in "$BASELINE_SHA" "$SOURCE_SHA"; do
+            git -C product checkout --detach "$revision"
+            [[ "$(git -C product rev-parse HEAD)" == "$revision" ]]
+            cp benchmark-tools/scripts/cloud/fixtures/DailyProjectionBenchmarkTests.swift product/Tests/CodexTokenBarTests/
+            (
+              cd product
+              bash scripts/prepare_tiktoken_lfs.sh
+              DAILY_BENCHMARK_SOURCE="$revision" DAILY_BENCHMARK_ROWS=3650 \
+                swift test --filter DailyProjectionBenchmarkTests 2>&1 | tee "../daily-projection-evidence/$revision-build.log"
+              for rows in 3650 36500; do
+                for trial in 1 2 3; do
+                  DAILY_BENCHMARK_SOURCE="$revision" DAILY_BENCHMARK_ROWS="$rows" DAILY_BENCHMARK_TRIAL="$trial" \
+                    swift test --skip-build --filter DailyProjectionBenchmarkTests 2>&1 | tee "../daily-projection-evidence/$revision-$rows-$trial.log"
+                done
+              done
+            )
+          done
+          python3 benchmark-tools/scripts/cloud/summarize_daily_projection_benchmark.py daily-projection-evidence "$BASELINE_SHA" "$SOURCE_SHA"
+      - name: Upload daily projection comparison
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: daily-projection-${{ needs.resolve.outputs.sha }}-${{ github.run_id }}
+          path: daily-projection-evidence/
+          if-no-files-found: error
           retention-days: 30
