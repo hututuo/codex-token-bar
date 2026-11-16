@@ -31,7 +31,7 @@ fn daily_quota_keeps_subsecond_observation_before_local_midnight_on_prior_date()
     let expected = crate::core::localtime::local_date_at(midnight as i64 - 1).to_string();
     let value = daily.get(&expected).expect("The final fraction of a day belongs to that day");
     assert_eq!(value.five_hour_sample_count, 1);
-    assert_eq!(value.five_hour_remaining_percent, Some(75.0));
+    assert_eq!(value.five_hour_remaining_percent, Some(0.75));
     assert_eq!(value.first_observed_at, Some(before));
 }
 
