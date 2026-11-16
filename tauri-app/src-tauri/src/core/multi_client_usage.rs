@@ -126,6 +126,7 @@ struct MultiClientAggregateCacheKey {
     minute: i64,
     local_day: Date,
     local_offset_seconds: i32,
+    timezone_identity: String,
 }
 
 #[derive(Clone, Debug)]
@@ -4692,6 +4693,7 @@ fn multi_client_aggregate_cache_key(
         minute: now_unix.div_euclid(60),
         local_day: crate::core::localtime::local_date_at(now_unix),
         local_offset_seconds: crate::core::localtime::local_offset_at(now_unix).whole_seconds(),
+        timezone_identity: crate::core::localtime::timezone_cache_identity(),
     })
 }
 
@@ -4770,7 +4772,8 @@ fn read_incremental_daily_buckets(
     let previous = cache.lock().ok().and_then(|cache| cache.entry.clone());
     let Some((old, arrays)) = previous.filter(|(old, _)| old.database_path == key.database_path
         && old.revision <= key.revision && old.minute <= key.minute
-        && old.local_offset_seconds == key.local_offset_seconds) else {
+        && old.local_offset_seconds == key.local_offset_seconds
+        && old.timezone_identity == key.timezone_identity) else {
         return read_daily_buckets(connection, now);
     };
     let first = crate::core::localtime::local_day_bounds(
@@ -7058,6 +7061,13 @@ mod tests {
         let unchanged =
             read_cached_multi_client_aggregates(&connection, &database, now + 20, &cache).unwrap();
         assert_eq!(unchanged.arrays.summaries[0].input_tokens, 5);
+        assert_eq!(cache.lock().unwrap().hits, 1);
+        // Equal current UTC offsets do not make two timezone histories equal.
+        // Simulate the prior system zone while leaving all ledger facts intact.
+        cache.lock().unwrap().entry.as_mut().unwrap().0.timezone_identity = "previous-system-zone".into();
+        let changed_zone =
+            read_cached_multi_client_aggregates(&connection, &database, now + 20, &cache).unwrap();
+        assert_eq!(changed_zone.arrays.daily_buckets[0].input_tokens, 5);
         assert_eq!(cache.lock().unwrap().hits, 1);
 
         connection

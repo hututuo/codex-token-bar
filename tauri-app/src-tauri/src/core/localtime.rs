@@ -14,6 +14,28 @@ use time::{Date, Duration, OffsetDateTime, UtcOffset};
 
 static CACHED_LOCAL_OFFSET: OnceLock<UtcOffset> = OnceLock::new();
 
+/// Cache identity must distinguish zones that share today's offset but have
+/// different historical DST rules. No process-wide timezone mutation is used.
+pub(crate) fn timezone_cache_identity() -> String {
+    #[cfg(windows)]
+    {
+        use winreg::{enums::HKEY_LOCAL_MACHINE, RegKey};
+        let key = RegKey::predef(HKEY_LOCAL_MACHINE)
+            .open_subkey(r"SYSTEM\CurrentControlSet\Control\TimeZoneInformation");
+        return match key {
+            Ok(key) => format!("{:?}:{:?}", key.get_value::<String, _>("TimeZoneKeyName").ok(),
+                key.get_value::<u32, _>("DynamicDaylightTimeDisabled").ok()),
+            Err(_) => "system-timezone-unavailable".into(),
+        };
+    }
+    #[cfg(not(windows))]
+    {
+        let path = std::fs::canonicalize("/etc/localtime").ok();
+        let modified = std::fs::metadata("/etc/localtime").ok().and_then(|m| m.modified().ok());
+        format!("{:?}:{:?}:{:?}", std::env::var_os("TZ"), path, modified)
+    }
+}
+
 /// 必须在 main 线程尚未创建任何其他线程时调用：单线程期读取本地偏移
 /// 既安全也不会被 time crate 拒绝。重复调用无效果（首次缓存值恒定）。
 pub fn cache_local_offset_at_startup() {

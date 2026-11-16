@@ -41,6 +41,7 @@ pub(crate) fn read_daily_history(connection: &Connection, client: &str, now: f64
         .map_err(|e| e.to_string())?;
     let mut rows = query.query(params![client,cutoff,now]).map_err(|e| e.to_string())?;
     let mut sums = std::collections::BTreeMap::<(String,String,i64),ClientQuotaDailySample>::new();
+    let mut day_starts = std::collections::BTreeMap::new();
     while let Some(row) = rows.next().map_err(|e| e.to_string())? {
         let source: String = row.get(0).map_err(|e| e.to_string())?;
         let window: String = row.get(1).map_err(|e| e.to_string())?;
@@ -49,7 +50,12 @@ pub(crate) fn read_daily_history(connection: &Connection, client: &str, now: f64
         let reset: Option<f64> = row.get(4).map_err(|e| e.to_string())?;
         if !valid_window_source(client,&source,&window) || !at.is_finite() || !used.is_finite()
             || !(0.0..=100.0).contains(&used) || reset.is_some_and(|v| !v.is_finite() || v<=at) { continue; }
-        let start = crate::core::localtime::local_day_bounds(crate::core::localtime::local_date_at(at.floor() as i64))?.0;
+        let date = crate::core::localtime::local_date_at(at.floor() as i64);
+        let start = if let Some(start) = day_starts.get(&date) { *start } else {
+            let start = crate::core::localtime::local_day_bounds(date)?.0;
+            day_starts.insert(date, start);
+            start
+        };
         let value = sums.entry((source.clone(),window.clone(),start)).or_insert(ClientQuotaDailySample {
             source, window_id:window, start_unix:start, remaining_percent:0.0, sample_count:0,
             first_observed_at:at,last_observed_at:at,
@@ -440,6 +446,30 @@ mod tests {
             .unwrap()
             .format(&Rfc3339)
             .unwrap()
+    }
+
+    #[test]
+    fn daily_history_keeps_old_real_observations_without_retiming_or_pool_mixing() {
+        let connection = Connection::open_in_memory().unwrap();
+        ensure_schema(&connection).unwrap();
+        let now = 1_800_000_000.0;
+        let at = now - 60.0 * 86400.0;
+        let first = Observation { client: "antigravity".into(), source: "local-antigravity-rpc".into(),
+            window_id: "gemini-5h".into(), observed_at: at, used_percent: 20.0, resets_at: Some(at + 3600.0) };
+        record_observation(&connection, &first).unwrap();
+        record_observation(&connection, &first).unwrap();
+        record_observation(&connection, &Observation { observed_at: at + 1.0, used_percent: 40.0, ..first.clone() }).unwrap();
+        record_observation(&connection, &Observation { window_id: "3p-weekly".into(), used_percent: 100.0, ..first.clone() }).unwrap();
+        record_observation(&connection, &Observation { observed_at: now + 1.0, resets_at: None, ..first }).unwrap();
+        let daily = read_daily_history(&connection, "antigravity", now).unwrap();
+        assert_eq!(daily.len(), 2);
+        let gemini = daily.iter().find(|d| d.window_id == "gemini-5h").unwrap();
+        assert_eq!(gemini.remaining_percent, 70.0);
+        assert_eq!(gemini.sample_count, 2);
+        assert_eq!((gemini.first_observed_at, gemini.last_observed_at), (at, at + 1.0));
+        assert_eq!(daily.iter().find(|d| d.window_id == "3p-weekly").unwrap().remaining_percent, 0.0);
+        assert!(read_history(&connection, "antigravity", now).unwrap().is_empty());
+        assert_eq!(read_daily_history(&connection, "antigravity", now).unwrap(), daily);
     }
 
     #[test]

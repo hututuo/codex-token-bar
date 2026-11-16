@@ -3,6 +3,34 @@ import CryptoKit
 @testable import CodexTokenBar
 
 final class MultiClientUsageLedgerTests: XCTestCase {
+    func testDailyProjectionScaleKeepsTotalsAcrossCachedAndIncrementalReads() throws {
+        let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("daily-scale.sqlite"))
+        let now = Calendar.current.startOfDay(for: Date(timeIntervalSince1970: 1_800_000_000)).addingTimeInterval(3600)
+        let events = (0..<3650).map { index in
+            ClientUsageEvent(client: .claudeCode, eventID: "scale-\(index)", sessionID: "s", model: "claude-opus-5",
+                timestamp: Calendar.current.date(byAdding: .day, value: -(index / 10), to: now)!,
+                inputTokens: 1000, outputTokens: 100, cacheReadTokens: 900, cacheWriteTokens: 0)
+        }
+        _ = try ledger.ingest(events)
+        let start = Date()
+        let first = try ledger.dailyBuckets(now: now)
+        let firstMS = Date().timeIntervalSince(start) * 1000
+        let cachedStart = Date()
+        let cached = try ledger.dailyBuckets(now: now)
+        let cachedMS = Date().timeIntervalSince(cachedStart) * 1000
+        XCTAssertEqual(first, cached)
+        XCTAssertEqual(first.reduce(0) { $0 + $1.requests }, events.count)
+        XCTAssertEqual(first.reduce(0) { $0 + Int($1.tokens) }, events.count * 1100)
+        var changed = events[0]; changed.outputTokens += 100
+        _ = try ledger.ingest([changed])
+        let incrementalStart = Date()
+        let updated = try ledger.dailyBuckets(now: now)
+        let incrementalMS = Date().timeIntervalSince(incrementalStart) * 1000
+        XCTAssertEqual(updated.reduce(0) { $0 + $1.requests }, events.count)
+        XCTAssertEqual(updated.reduce(0) { $0 + Int($1.tokens) }, events.count * 1100 + 100)
+        XCTAssertEqual(Array(first.dropLast()), Array(updated.dropLast()))
+        print("HEATMAP_DAILY_PERF rows=\(events.count) days=\(first.count) first_ms=\(firstMS) cached_ms=\(cachedMS) incremental_ms=\(incrementalMS)")
+    }
     func testDailyPricesMatchRequestsAndMovedRevisionInvalidatesPriorDay() throws {
         let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("daily-prices.sqlite"))
         let now = Date(timeIntervalSince1970: 1_800_000_000)
