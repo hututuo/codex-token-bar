@@ -116,16 +116,19 @@ struct QuotaSidebarModuleSettingsView: View {
 
     private var compactPreview: some View {
         let count = QuotaSidebarContentOrder.compactIDs(items: previewItems, quotas: previewQuotas).count
-        let layout = ClientRailLayout.fixed(trackCount: count, dotCount: previewItems.filter(\.usesCompactDot).count, availableHeight: controller.availableRailHeight)
         let shares = FloatingTodayModelUsagePresentation.items(from: ClientLocalRuntimePresentation.models(codex: modelShares, clients: clients.todaySummaries, allowed: allowedClients), fallbackModel: .gpt56Sol, mergeAutoReview: true).filter { $0.share > 0 }
         return HStack(alignment: .center, spacing: 24) {
             if count > 0 {
                 ScrollView(.vertical) {
-                    QuotaSidebarCompactBars(items: previewItems, quotas: previewQuotas, layout: layout,
+                    QuotaSidebarCompactRail(items: previewItems, quotas: previewQuotas,
                         rateFraction: QuotaSidebarRatePresentation.fraction(rate: liveRateSnapshot.total,
                             fullScale: fullScale, available: liveRateSnapshot.available),
-                        modelRates: liveRateSnapshot.colorRates, shares: shares, colors: selection.colors)
-                }.scrollIndicators(.hidden).frame(width: 16, height: min(layout.height, 330))
+                        rateText: liveRateSnapshot.valueText, tpsText: "", summary: .unavailable,
+                        shares: shares, radarActive: false, colors: selection.colors,
+                        hovered: controller.settingsHighlightedItem,
+                        onHover: { controller.highlightSidebarItem($0) }, onOpen: { controller.highlightSidebarItem($0) })
+                }.scrollIndicators(.hidden).frame(width: QuotaSidebarLayout.compactWidth,
+                    height: min(QuotaSidebarCompactRail.height(previewItems, available: controller.availableRailHeight), 330))
                     .background(Color.black, in: Capsule())
             }
             Text(count > 0 ? "仅预览收起状态。\n设置打开时，侧栏保持二级菜单。" : "当前没有显示在一级的项目。")

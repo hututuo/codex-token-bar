@@ -354,8 +354,8 @@ final class QuotaSidebarController: NSObject, ObservableObject {
 
     private func hidePeek() {
         peekDismissTask?.cancel(); peekDismissTask = nil
-        peekPanel?.orderOut(nil)
-        hoveredItem = nil
+        if peekPanel?.isVisible == true { peekPanel?.orderOut(nil) }
+        if hoveredItem != nil { hoveredItem = nil }
     }
 
     private func updatePeekPresence() {
