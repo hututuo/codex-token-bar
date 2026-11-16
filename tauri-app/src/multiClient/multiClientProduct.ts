@@ -20,7 +20,7 @@ export interface ClientQuotaProvider { readonly allowsNetwork: false; reading():
 const quotaStates:Record<string,{label:string;compact:string}>=quotaPresentation.states;
 export const clientQuotaStatusText=(state:string)=>quotaStates[state]?.label??"额度不可用";
 export const clientQuotaCompactStatus=(state?:string)=>state?quotaStates[state]?.compact??"—":"—";
-export const quotaPercentNumber=(value:number)=>Number.isFinite(value)?value.toFixed(2).replace(/\.?0+$/, ""):"—";
+export const quotaPercentNumber=(value:number)=>Number.isFinite(value)?(Math.round(value*100)/100).toFixed(2).replace(/\.?0+$/, ""):"—";
 export function quotaSampleStatus(client:string,resetsAt:string|null|undefined,now=Date.now()):string {
   if(client!=="claudeDesktop")return "";
   const reset=resetsAt?Date.parse(resetsAt):NaN;

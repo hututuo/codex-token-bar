@@ -35,7 +35,8 @@ extension TokenHeatmap {
                     func text(_ percent: Double?) -> String { percent.map { ClientQuotaPresentation.percentNumber($0) + "%" } ?? "暂无" }
                     let times = [value.firstObservedAt, value.lastObservedAt].compactMap { $0?.formatted(date: .omitted, time: .shortened) }.joined(separator: "–")
                     return "日均剩余 5h \(text(value.fiveHourRemainingPercent))（\(value.fiveHourSampleCount ?? 0)次）"
-                        + " · 7d \(text(value.sevenDayRemainingPercent))（\(value.sevenDaySampleCount ?? 0)次） · " + times
+                        + " · 7d \(text(value.sevenDayRemainingPercent))（\(value.sevenDaySampleCount ?? 0)次）"
+                        + (times.isEmpty ? "" : " · " + times)
                 }
                 return summary
             }

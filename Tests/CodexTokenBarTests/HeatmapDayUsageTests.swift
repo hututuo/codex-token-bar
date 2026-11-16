@@ -13,7 +13,8 @@ final class HeatmapDayUsageTests: XCTestCase {
             let tokens: Int; let calls: Int; let knownCostUSD: Double; let unpriced: Int
             let cacheComplete: Bool; let modelComplete: Bool
         }
-        let now: Double; let rows: [Row]; let expected: Expected
+        struct Rounding: Decodable { let value: Double; let text: String }
+        let now: Double; let rows: [Row]; let expected: Expected; let rounding: [Rounding]
     }
     private func fixture() throws -> (Fixture, [ClientTrendBucket]) {
         let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
@@ -28,6 +29,7 @@ final class HeatmapDayUsageTests: XCTestCase {
     }
     func testSharedDailyFixturePreservesKnownMoneyAndClientIdentity() throws {
         let (f, rows) = try fixture()
+        for sample in f.rounding { XCTAssertEqual(ClientQuotaPresentation.percentNumber(sample.value), sample.text) }
         let days = HeatmapDayUsage.project(codex: .empty, external: rows,
             allowed: Set(rows.map { $0.client.rawValue }), priceModel: .gpt56Sol)
         let value = try XCTUnwrap(days.first?.usage)
@@ -105,9 +107,11 @@ final class HeatmapDayUsageTests: XCTestCase {
                 sevenDayRemainingPercent: 12.5, sampleCount: 4, fiveHourSampleCount: 2, sevenDaySampleCount: 2)]
             let view = ActivitySection(dailyUsage: axis, cacheDaily: [], quotaDaily: quota,
                 selectedMode: .constant(mode), recordedDaily: days).frame(width: 980)
-                .environment(\.colorScheme, .dark).background(AppTheme.pageBackground)
+                .background(AppTheme.pageBackground).environment(\.colorScheme, .dark)
             let host = NSHostingView(rootView: view)
+            host.appearance = NSAppearance(named: .darkAqua)
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 980, height: 360), styleMask: [.borderless], backing: .buffered, defer: false)
+            window.appearance = NSAppearance(named: .darkAqua)
             window.contentView = host
             window.orderFrontRegardless()
             RunLoop.main.run(until: Date().addingTimeInterval(0.1))

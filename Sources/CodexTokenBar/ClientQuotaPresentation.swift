@@ -11,7 +11,10 @@ enum ClientQuotaPresentation {
     }
     static func percentNumber(_ value: Double) -> String {
         guard value.isFinite else { return "—" }
-        let text = String(format: "%.2f", locale: Locale(identifier: "en_US_POSIX"), value)
+        // Match the shared positive-percentage rule on Swift and JavaScript;
+        // printf's tie-to-even otherwise displays 83.125 differently.
+        let rounded = (value * 100).rounded(.toNearestOrAwayFromZero) / 100
+        let text = String(format: "%.2f", locale: Locale(identifier: "en_US_POSIX"), rounded)
         return text.replacingOccurrences(of: "\\.?0+$", with: "", options: .regularExpression)
     }
     private struct State: Decodable { let label: String; let compact: String }

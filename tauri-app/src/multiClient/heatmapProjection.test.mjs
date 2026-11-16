@@ -6,6 +6,8 @@ import { withSsrModules } from "../test/ssrHarness.mjs";
 const fixture=JSON.parse(await readFile(new URL("../../../fixtures/multi-client-heatmap.json",import.meta.url),"utf8"));
 const day=(date,tokens=0,calls=0)=>({date,tokens,calls,cacheHitRate:0,fiveHourRemainingPercent:null,sevenDayRemainingPercent:null});
 test("shared fixture preserves client identity, exact known money and local unknowns",async()=>withSsrModules(async load=>{
+  const {quotaPercentNumber}=await load("/src/multiClient/multiClientProduct.ts");
+  for(const sample of fixture.rounding)assert.equal(quotaPercentNumber(sample.value),sample.text);
   const {projectHeatmapDays,localDayKey}=await load("/src/multiClient/heatmapProjection.ts");
   const {modelCostUSD,cellLabel,buildHeatmapDays}=await load("/src/components/tokenActivity/heatmap.ts");
   const {summarizeRange}=await load("/src/components/tokenActivity/rangeSummary.ts");
