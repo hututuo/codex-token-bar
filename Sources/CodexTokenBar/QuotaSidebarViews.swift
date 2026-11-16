@@ -10,7 +10,7 @@ private enum SidebarPalette {
 
 // Animate the fill dimensions inside a fixed track. Rebuilding the capsule
 // at its actual size keeps both end caps round, even for small readings.
-private struct SidebarValueBar: View {
+struct SidebarValueBar: View {
     let fraction: Double?
     let color: Color
     var vertical = false
@@ -119,7 +119,7 @@ struct QuotaSidebarCompactBars: View {
 
     var body: some View {
         VStack(spacing: layout.gap) {
-            ForEach(items.filter(\.hasCompactRepresentation)) { item in
+            ForEach(ClientQuotaPodLayout.visibleItems(items, quotas: quotas)) { item in
                 Group {
                     switch item {
                     case .speed:
@@ -134,11 +134,9 @@ struct QuotaSidebarCompactBars: View {
                         }.help(SidebarTaskMeterPresentation(summary: taskSummary).label)
                             .accessibilityLabel(SidebarTaskMeterPresentation(summary: taskSummary).label)
                     case let .quota(client):
-                        ForEach(QuotaSidebarContentOrder.quotaWindows(quotas, client: client)) { quota in
-                            if usesMorphAnchors {
-                                quotaTrack(quota).anchorPreference(key: ClientQuotaMorphAnchors.self, value: .bounds) { ["track:" + quota.id: $0] }
-                            } else { quotaTrack(quota) }
-                        }
+                        ClientQuotaCompactPod(client: client,
+                            items: QuotaSidebarContentOrder.quotaWindows(quotas, client: client),
+                            colors: colors, usesMorphAnchors: usesMorphAnchors)
                     case .models:
                         compactStroke(id: "models") {
                             SidebarModelShareStrip(items: shares, vertical: true).frame(width: 4, height: layout.barHeight)
@@ -150,7 +148,7 @@ struct QuotaSidebarCompactBars: View {
                     Capsule().stroke(SidebarPalette.green.opacity(highlightedItem == item ? 0.85 : 0), lineWidth: 1).padding(.horizontal, -3)
                 }
             }
-        }.frame(width: 16).padding(.vertical, 15)
+        }.frame(width: QuotaSidebarLayout.compactWidth).padding(.vertical, 15)
     }
 
     private func compactStroke<Content: View>(id: String, @ViewBuilder content: @escaping () -> Content) -> some View {
@@ -158,10 +156,6 @@ struct QuotaSidebarCompactBars: View {
             .anchorPreference(key: ClientQuotaMorphAnchors.self, value: .bounds) { usesMorphAnchors ? ["track:" + id: $0] : [:] }
     }
 
-    private func quotaTrack(_ item: ClientQuotaItem) -> some View {
-        ClientQuotaRailTrack(item: item, height: layout.barHeight, fillHex: colors[item.id] ?? item.fill)
-            .help(item.title + " · " + item.accessibleValue + "\n" + item.source)
-    }
 }
 
 struct QuotaSidebarRail: View {
@@ -172,7 +166,6 @@ struct QuotaSidebarRail: View {
     @ObservedObject var radar: CodexRadarStore
     @ObservedObject var monitor: LiveRateMonitor
     var quotaItemsOverride: [ClientQuotaItem]? = nil
-    var peekOnly = false
     @AppStorage(TokenRateScaleSettings.key) private var fullScale = TokenRateScaleSettings.defaultValue
     @AppStorage("cacheHitAdviceEnabled") private var cacheRemindersEnabled = true
     @AppStorage("cacheHitAdviceDismissed") private var dismissedCacheAdviceID = ""
@@ -221,17 +214,17 @@ struct QuotaSidebarRail: View {
         }
     }
     private func railLayout(_ height: CGFloat) -> ClientRailLayout {
-        .fixed(trackCount: QuotaSidebarContentOrder.compactIDs(items: compactItems, quotas: quotaItems).count,
-               dotCount: compactItems.filter(\.usesCompactDot).count, availableHeight: Double(height))
+        ClientQuotaPodLayout.railLayout(items: compactItems, quotas: quotaItems, availableHeight: Double(height))
     }
     @StateObject private var morphRegistry = MatchedStrokeMorphRegistry()
     @State private var shares: [FloatingTodayModelUsageItem] = []
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    // Grouped compact glyphs replace the old one-track-per-window geometry.
-    // The native canvas still animates; the old stroke morph has no matching targets.
-    private var morphEnabled: Bool { false }
+    private var morphEnabled: Bool {
+        !reduceMotion && !controller.isDragging && cacheWarning == nil && sidebarItems.contains {
+            switch $0 { case .speed, .tasks, .models, .quota: true; default: false }
+        }
+    }
 
     private var disclosureFade: Animation? {
         guard !reduceMotion else { return nil }
@@ -254,7 +247,7 @@ struct QuotaSidebarRail: View {
                 guard viewport?.contains(ring) != false else { return nil }
                 return ClientQuotaMorphRoute(id: item.id, ring: ring, track: track, half: half,
                     fraction: item.remaining.map { $0 / 100 }, color: NSColor(clientHex: quotaSelection.colors[item.id] ?? item.fill),
-                    marker: anchors["marker:" + item.id].map { proxy[$0] }, markerColor: NSColor(clientHex: item.brand), expected: item.expected)
+                    expected: item.expected)
             }
         }
         for item in [QuotaSidebarItem.speed, .tasks, .models] where sidebarItems.contains(item) {
@@ -293,11 +286,7 @@ struct QuotaSidebarRail: View {
         return advice
     }
 
-    @ViewBuilder var body: some View {
-        if peekOnly { peekBody } else { railBody }
-    }
-
-    private var railBody: some View {
+    var body: some View {
         ZStack(alignment: controller.edge == .right ? .trailing : .leading) {
             Group {
                 if let advice = cacheWarning {
@@ -371,24 +360,15 @@ struct QuotaSidebarRail: View {
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: controller.sidebarLayout)
             Group {
                 GeometryReader { geometry in
+                    let layout = railLayout(geometry.size.height)
                     ScrollView(.vertical) {
-                        TimelineView(QuotaSidebarRadarPresentation.schedule(radar.snapshot, updatedAt: radar.lastSuccessfulRefreshAt)) { tick in
-                            let state = QuotaSidebarRadarPresentation.windowState(radar.snapshot, stale: radar.staleDataDisplayed, updatedAt: radar.lastSuccessfulRefreshAt, now: tick.date)
-                            QuotaSidebarCompactRail(items: compactItems, quotas: quotaItems,
-                                rateFraction: Double(rateFraction), rateText: rateText, tpsText: tpsText,
-                                summary: runningSummary, shares: shares, radarActive: state.active,
-                                colors: quotaSelection.colors, hovered: controller.hoveredItem,
-                                onHover: { item in
-                                    controller.hover(item, preferredHeight: QuotaSidebarPeekRegion.preferredHeight(for: item,
-                                        quotaCount: { if case let .quota(client) = item { return quotaItems.filter { $0.client == client }.count }; return 0 }(),
-                                        taskRows: runningSummary.groups.reduce(0) { $0 + 1 + $1.subagents.count } + runningSummary.unassignedSubagents.count,
-                                        modelCount: shares.count))
-                                }, onOpen: { controller.select($0.detail) })
-                        }
-                            .frame(minHeight: geometry.size.height)
+                        QuotaSidebarCompactBars(items: compactItems, quotas: quotaItems, layout: layout,
+                            rateFraction: Double(rateFraction),
+                            modelRates: barRates, shares: shares, taskSummary: runningSummary, colors: quotaSelection.colors,
+                            usesMorphAnchors: true)
+                            .frame(minHeight: layout.height)
                     }.scrollIndicators(.hidden)
-                }.frame(width: QuotaSidebarLayout.compactWidth,
-                    height: QuotaSidebarCompactRail.height(compactItems, available: controller.availableRailHeight))
+                }.frame(width: QuotaSidebarLayout.compactWidth, height: railLayout(controller.availableRailHeight).height)
                     .frame(maxHeight: .infinity)
                     .overlay(alignment: .center) {
                         if let advice = cacheWarning {
@@ -398,9 +378,10 @@ struct QuotaSidebarRail: View {
                                 .help("缓存命中偏低 · \(advice.displayTitle)")
                         }
                     }
-                    .accessibilityLabel("额度侧栏，悬停查看摘要，点击打开详情")
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(cacheWarning.map { "缓存命中偏低，\($0.displayTitle)，悬停查看提醒" } ?? "额度侧栏，实时速率\(rateText)，悬停展开简略信息，可拖动调整位置")
                     .contentShape(Rectangle())
-
+                    .onTapGesture { controller.enter() }
             }
             .opacity(controller.interaction.expanded ? 0 : 1)
             .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: controller.interaction.expanded)
@@ -408,7 +389,7 @@ struct QuotaSidebarRail: View {
             .accessibilityHidden(controller.interaction.expanded)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: controller.edge == .right ? .trailing : .leading)
-        .background(SidebarPalette.background.opacity(reduceTransparency ? 1 : controller.interaction.expanded ? 0.96 : 0.72))
+        .background(SidebarPalette.background)
         .overlayPreferenceValue(ClientQuotaMorphAnchors.self) { anchors in
             GeometryReader { proxy in
                 ClientQuotaMorphSurface(expanded: controller.interaction.expanded, enabled: morphEnabled,
@@ -431,20 +412,20 @@ struct QuotaSidebarRail: View {
             shares = FloatingTodayModelUsagePresentation.items(from: selectedModelRows,
                 fallbackModel: .gpt56Sol, mergeAutoReview: false).filter { $0.share > 0 }
         }
-        .onChange(of: compactItems) { _, _ in updateCompactLayout() }
         .onChange(of: quotaItems, initial: true) { _, _ in updateCompactLayout() }
         .onChange(of: controller.sidebarLayout) { _, _ in updateCompactLayout() }
         .onChange(of: controller.availableRailHeight) { _, _ in updateCompactLayout() }
         .onPreferenceChange(QuotaSidebarContentMeasurementKey.self) { controller.updateContentMeasurement($0) }
         .clipShape(QuotaSidebarEdgeShape(edge: controller.edge))
         .foregroundStyle(.white)
-
+        .onHover { if $0 { controller.enter() } }
         .environment(\.matchedStrokeMorphRegistry, morphEnabled ? morphRegistry : nil)
         .onChange(of: cacheWarning?.presentationID, initial: true) { _, id in controller.updateCacheAdvice(id) }
     }
 
     private func updateCompactLayout() {
-        controller.updateCompactHeight(QuotaSidebarCompactRail.height(compactItems, available: controller.availableRailHeight))
+        let layout = railLayout(controller.availableRailHeight)
+        controller.updateCompactHeight(layout.height)
     }
 
     @ViewBuilder
@@ -636,114 +617,6 @@ struct QuotaSidebarRail: View {
         guard value.enabled else { return "已关闭" }
         guard value.available else { return "待读取" }
         return value.valueText + " tok/s"
-    }
-
-    private var peekBody: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if let item = controller.hoveredItem {
-                HStack {
-                    Text(item == .tasks ? "任务与子 agent" : item == .radar ? "速登窗口" : item.title)
-                        .font(.system(size: 12, weight: .semibold))
-                    Spacer()
-                    Image(systemName: "arrow.up.right").foregroundStyle(.secondary)
-                }
-                Divider().overlay(.white.opacity(0.08))
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 10) { peekContent(item) }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }.scrollIndicators(.hidden)
-                HStack {
-                    Button("展开菜单") { controller.enter() }
-                    Spacer()
-                    Button("查看详情") { controller.select(item.detail) }
-                }.font(.system(size: 10, weight: .medium)).buttonStyle(.plain).foregroundStyle(SidebarPalette.green)
-            }
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .foregroundStyle(.white)
-        .background(SidebarPalette.background.opacity(reduceTransparency ? 1 : 0.96), in: RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(.white.opacity(0.12), lineWidth: 1))
-        .onChange(of: controller.hoveredItem, initial: true) { _, _ in bodySpeedNow = Date().timeIntervalSince1970 }
-    }
-
-    @ViewBuilder private func peekContent(_ item: QuotaSidebarItem) -> some View {
-        switch item {
-        case let .quota(client):
-            ForEach(QuotaSidebarContentOrder.quotaWindows(quotaItems, client: client)) { reading in
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack {
-                        Text(reading.windowTitle).font(.system(size: 10)).foregroundStyle(.secondary)
-                        Spacer()
-                        Text(reading.value).font(.system(size: 14, weight: .semibold, design: .rounded)).monospacedDigit()
-                    }
-                    SidebarValueBar(fraction: reading.remaining.map { $0 / 100 },
-                        color: Color(nsColor: NSColor(clientHex: quotaSelection.colors[reading.id] ?? reading.fill)), expected: reading.expected)
-                        .frame(height: 4)
-                    if let reset = reading.resetsAt {
-                        Text("重置 " + reset.formatted(.dateTime.month().day().hour().minute()))
-                            .font(.system(size: 9)).foregroundStyle(.secondary)
-                    }
-                    if !reading.status.isEmpty {
-                        Text(reading.status).font(.system(size: 9)).foregroundStyle(.secondary)
-                    }
-                }.accessibilityElement(children: .combine)
-            }
-        case .tasks:
-            Text(runningText).font(.system(size: 18, weight: .semibold, design: .rounded))
-            if runningSummary.freshness != .fresh {
-                Text("等待客户端提供运行状态").font(.system(size: 10)).foregroundStyle(.secondary)
-            }
-            ForEach(runningSummary.groups.prefix(3)) { group in
-                SidebarRunningTaskGroup(group: group, showClient: true)
-            }
-            if !runningSummary.unassignedSubagents.isEmpty {
-                Text("另有 \(runningSummary.unassignedSubagents.count) 个子 agent，详情中查看")
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
-            }
-        case .speed, .tps:
-            Text(item == .tps ? tpsText : rateText)
-                .font(.system(size: 22, weight: .medium, design: .rounded)).monospacedDigit().foregroundStyle(SidebarPalette.blue)
-            Text(item == .tps ? "最近正文输出采样" : "当前客户端实时速率")
-                .font(.system(size: 10)).foregroundStyle(.secondary)
-            if item == .speed { ActivitySpeedSummaryView(allowed: allowedClients, compact: true) }
-            ForEach(recentBodySpeeds.prefix(4)) { speed in
-                HStack {
-                    Text(speed.model).lineLimit(1)
-                    Spacer()
-                    Text(String(format: "%.1f tok/s", speed.tokensPerSecond)).monospacedDigit()
-                }.font(.system(size: 10))
-            }
-        case .models:
-            let rows = FloatingTodayModelUsagePresentation.items(from: selectedModelRows,
-                fallbackModel: .gpt56Sol, mergeAutoReview: false).filter { $0.share > 0 }
-            ForEach(rows.prefix(5)) { row in
-                HStack {
-                    Circle().fill(row.color).frame(width: 5, height: 5)
-                    Text(row.label).lineLimit(1)
-                    Spacer()
-                    Text(row.valueText(for: .share)).monospacedDigit()
-                }.font(.system(size: 10))
-            }
-            if rows.isEmpty { Text("暂无今日模型用量").font(.system(size: 11)).foregroundStyle(.secondary) }
-        case .radar:
-            TimelineView(QuotaSidebarRadarPresentation.schedule(radar.snapshot, updatedAt: radar.lastSuccessfulRefreshAt)) { tick in
-                let state = QuotaSidebarRadarPresentation.windowState(radar.snapshot, stale: radar.staleDataDisplayed, updatedAt: radar.lastSuccessfulRefreshAt, now: tick.date)
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(state.text).font(.system(size: 18, weight: .medium)).foregroundStyle(state.active ? Color.red : Color.gray)
-                    Text(CodexRadarPresentationText.actionDisplay(snapshot: radar.snapshot, now: tick.date))
-                        .font(.system(size: 11)).monospacedDigit()
-                    if radar.staleDataDisplayed {
-                        Text("上次观测，等待更新").font(.system(size: 10)).foregroundStyle(.secondary)
-                    }
-                }
-            }
-        default: Text(item.title).font(.system(size: 11))
-        }
-    }
-
-    private var tpsText: String {
-        recentBodySpeeds.first.map { String(format: "%.1f tok/s", $0.tokensPerSecond) } ?? "等待采样"
     }
 
     private var runningText: String {

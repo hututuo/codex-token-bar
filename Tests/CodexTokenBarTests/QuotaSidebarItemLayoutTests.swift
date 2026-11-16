@@ -61,13 +61,13 @@ final class QuotaSidebarItemLayoutTests: XCTestCase {
         var value = QuotaSidebarItemLayout()
         value.move(.quota("claudeCode"), relativeTo: .speed, after: false)
         var items = value.arranged(availableQuotaClients: ["codex", "claudeCode"]).filter(value.isVisible)
-        XCTAssertEqual(QuotaSidebarContentOrder.compactIDs(items: items, quotas: quotas), ["claudeCode:5h", "claudeCode:7d", "speed", "codex:7d", "models", "tasks", "radar"])
+        XCTAssertEqual(QuotaSidebarContentOrder.compactIDs(items: items, quotas: quotas), ["claudeCode:5h", "claudeCode:7d", "speed", "codex:7d", "models", "tasks"])
         value.hidden.insert(QuotaSidebarItem.quota("claudeCode").id)
         items = value.arranged(availableQuotaClients: ["codex", "claudeCode"]).filter(value.isVisible)
         XCTAssertFalse(items.contains(.quota("claudeCode")))
-        XCTAssertEqual(QuotaSidebarContentOrder.compactIDs(items: items, quotas: quotas), ["speed", "codex:7d", "models", "tasks", "radar"])
+        XCTAssertEqual(QuotaSidebarContentOrder.compactIDs(items: items, quotas: quotas), ["speed", "codex:7d", "models", "tasks"])
         value.hidden.insert(QuotaSidebarItem.tps.id)
-        XCTAssertEqual(QuotaSidebarContentOrder.compactIDs(items: items.filter(value.isVisible), quotas: quotas), ["speed", "codex:7d", "models", "tasks", "radar"])
+        XCTAssertEqual(QuotaSidebarContentOrder.compactIDs(items: items.filter(value.isVisible), quotas: quotas), ["speed", "codex:7d", "models", "tasks"])
     }
 
     func testCompactProjectionOmitsPlaceholdersAndReclaimsTheirHeight() {

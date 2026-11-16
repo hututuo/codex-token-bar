@@ -116,19 +116,16 @@ struct QuotaSidebarModuleSettingsView: View {
 
     private var compactPreview: some View {
         let count = QuotaSidebarContentOrder.compactIDs(items: previewItems, quotas: previewQuotas).count
+        let layout = ClientQuotaPodLayout.railLayout(items: previewItems, quotas: previewQuotas, availableHeight: controller.availableRailHeight)
         let shares = FloatingTodayModelUsagePresentation.items(from: ClientLocalRuntimePresentation.models(codex: modelShares, clients: clients.todaySummaries, allowed: allowedClients), fallbackModel: .gpt56Sol, mergeAutoReview: true).filter { $0.share > 0 }
         return HStack(alignment: .center, spacing: 24) {
             if count > 0 {
                 ScrollView(.vertical) {
-                    QuotaSidebarCompactRail(items: previewItems, quotas: previewQuotas,
+                    QuotaSidebarCompactBars(items: previewItems, quotas: previewQuotas, layout: layout,
                         rateFraction: QuotaSidebarRatePresentation.fraction(rate: liveRateSnapshot.total,
                             fullScale: fullScale, available: liveRateSnapshot.available),
-                        rateText: liveRateSnapshot.valueText, tpsText: "", summary: .unavailable,
-                        shares: shares, radarActive: false, colors: selection.colors,
-                        hovered: controller.settingsHighlightedItem,
-                        onHover: { controller.highlightSidebarItem($0) }, onOpen: { controller.highlightSidebarItem($0) })
-                }.scrollIndicators(.hidden).frame(width: QuotaSidebarLayout.compactWidth,
-                    height: min(QuotaSidebarCompactRail.height(previewItems, available: controller.availableRailHeight), 330))
+                        modelRates: liveRateSnapshot.colorRates, shares: shares, colors: selection.colors)
+                }.scrollIndicators(.hidden).frame(width: QuotaSidebarLayout.compactWidth, height: min(layout.height, 330))
                     .background(Color.black, in: Capsule())
             }
             Text(count > 0 ? "仅预览收起状态。\n设置打开时，侧栏保持二级菜单。" : "当前没有显示在一级的项目。")
@@ -193,14 +190,13 @@ struct QuotaSidebarSettingsRailPreview: View {
     private var selectedRunning: RunningThreadSummary { ClientLocalRuntimePresentation.observedRunning(codex: tasks.runningThreadSummary,
         claude: runtime, upstream: upstreamActivity, allowed: allowedClients, preferences: clients.preferences) }
     var body: some View {
-        let height = QuotaSidebarCompactRail.height(items, available: controller.availableRailHeight)
+        let layout = ClientQuotaPodLayout.railLayout(items: items, quotas: quotas, availableHeight: controller.availableRailHeight)
         ScrollView(.vertical) {
-            QuotaSidebarCompactRail(items: items, quotas: quotas,
+            QuotaSidebarCompactBars(items: items, quotas: quotas, layout: layout,
                 rateFraction: QuotaSidebarRatePresentation.fraction(rate: liveRateSnapshot.total, fullScale: fullScale, available: liveRateSnapshot.available),
-                rateText: liveRateSnapshot.valueText, tpsText: "", summary: selectedRunning,
-                shares: shares, radarActive: false, colors: selection.colors,
-                hovered: controller.settingsHighlightedItem, onHover: { controller.highlightSidebarItem($0) }, onOpen: { controller.highlightSidebarItem($0) })
-                .frame(minHeight: height)
+                modelRates: liveRateSnapshot.colorRates, shares: shares,
+                taskSummary: selectedRunning, highlightedItem: controller.settingsHighlightedItem, colors: selection.colors)
+                .frame(minHeight: layout.height)
         }.scrollIndicators(.hidden).frame(width: QuotaSidebarLayout.compactWidth)
             .background(Color(red: 0.035, green: 0.045, blue: 0.038), in: Capsule())
             .help("一级菜单实时预览；修改显示与顺序可立即查看")

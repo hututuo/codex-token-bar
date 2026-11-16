@@ -65,7 +65,7 @@ enum QuotaSidebarItem: Hashable, Identifiable, Sendable {
     }
 
     var hasCompactRepresentation: Bool {
-        switch self { case .speed, .quota, .models, .tasks, .radar: true; default: false }
+        switch self { case .speed, .quota, .models, .tasks: true; default: false }
     }
     var usesCompactDot: Bool {
         false

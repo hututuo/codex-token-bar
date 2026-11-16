@@ -153,7 +153,7 @@ final class ClientQuotaMorphTests: XCTestCase {
             let half = QuotaSidebarMotion.collapseFrame(from: from, to: to, time: 0.5, edge: edge, area: area, scale: 2)
             XCTAssertLessThan(half.height, from.height)
             XCTAssertGreaterThan(half.height, to.height)
-            XCTAssertLessThan(half.width, to.width + (from.width - to.width) * 0.2, "At halfway the collapse has completed over 80% of the width change")
+            XCTAssertLessThan(half.width, to.width + (from.width - to.width) * 0.2)
             for step in 0...100 {
                 let frame = QuotaSidebarMotion.collapseFrame(from: from, to: to, time: Double(step) / 100, edge: edge, area: area, scale: 2)
                 XCTAssertTrue(area.contains(frame))
@@ -248,7 +248,7 @@ final class ClientQuotaMorphTests: XCTestCase {
         XCTAssertEqual(view.morphLayerCount, 0, "Completion must leave no idle animation, layers or timer")
     }
 
-    @MainActor func testGroupedRailDoesNotRunTheLegacyBarMorphDuringReversal() throws {
+    @MainActor func testOriginalRailResolvesBothHalfArcsToTheirOwnPodColumnAndReverses() throws {
         let suite = "QuotaMorph-" + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -283,20 +283,20 @@ final class ClientQuotaMorphTests: XCTestCase {
         }
         settle(0.1)
         let overlay = try XCTUnwrap(morph(host))
-        XCTAssertEqual(overlay.availableRouteCount, 0, "Grouped compact tiles no longer have one vertical track per quota window")
+        XCTAssertEqual(overlay.availableRouteCount, 6, "Quota, speed, tasks and model usage share the same morph surface")
         // Hosting can deliver its initial hover while first laying out on a
         // fresh runner. Start this reversal scenario from a settled compact rail.
         controller.dismiss(); settle(0.4)
         XCTAssertFalse(controller.interaction.expanded)
         let started = overlay.animationsStarted
+        let reducedMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         controller.enter(); settle(0.08)
-        XCTAssertTrue(controller.interaction.expanded)
-        XCTAssertEqual(overlay.animationsStarted, started)
-        XCTAssertEqual(overlay.morphLayerCount, 0, "The new tile glyphs must never be replaced by stale bar geometry")
-        XCTAssertEqual(overlay.coveredParticipantViewCount, 0, "Expanded values remain visible throughout native reveal")
+        XCTAssertEqual(overlay.animationsStarted, started + (reducedMotion ? 0 : 1))
+        XCTAssertEqual(overlay.morphLayerCount, reducedMotion ? 0 : 21, "Quota columns, speed and the original task cells keep their morph; software icons replace the three old quota-dot routes")
+        if reducedMotion { XCTAssertEqual(overlay.coveredParticipantViewCount, 0) }
+        else { XCTAssertGreaterThan(overlay.coveredParticipantViewCount, 0, "The original value views hand off to the animated paths") }
         controller.dismiss(); settle(0.08)
-        XCTAssertFalse(controller.interaction.expanded)
-        XCTAssertEqual(overlay.animationsStarted, started)
+        XCTAssertEqual(overlay.animationsStarted, started + (reducedMotion ? 0 : 2))
         settle(0.5)
         XCTAssertEqual(overlay.morphLayerCount, 0)
         XCTAssertFalse(overlay.isAnimating)
