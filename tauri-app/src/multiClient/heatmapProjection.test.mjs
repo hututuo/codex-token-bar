@@ -74,7 +74,7 @@ test("account switch leaves current quota empty and offers old identities separa
   assert.equal(choices.length,3);
   assert.equal(new Set(choices.map(row=>row.id)).size,3);
   assert.ok(choices.some(row=>row.title.includes("身份未验证")));
-  assert.ok(choices.some(row=>row.title.includes("独立账号")));
+  assert.ok(choices.some(row=>row.title.includes("独立组织")));
   const source=resolveQuotaChartSource("claudeDesktop",["claudeDesktop"],[reading]);
   assert.equal(source.historySource,undefined);
   const values=applyClientQuotaDays([day(localDayKey(fixture.now))],[],reading,source,"5h");

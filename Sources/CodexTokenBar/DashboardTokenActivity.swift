@@ -37,11 +37,14 @@ struct DashboardTokenActivity: View {
                     ForEach(available.filter { $0 != "codex" }, id: \.self) { Text(ClientDisplayScope.title($0)).tag($0) }
                 }.pickerStyle(.menu).fixedSize().accessibilityIdentifier("heatmap-client")
                 Spacer()
-                if selectedMode == .quotaRemaining {
+            }
+            if selectedMode == .quotaRemaining {
+                HStack {
                     if let source {
                         Picker("额度来源", selection: Binding(get: { source.id }, set: { quotaSelection = $0 })) {
                             ForEach(ClientQuotaChartSource.options(clients: allowed, histories: clients.quotaHistories)) { Text($0.title).tag($0.id) }
                         }.pickerStyle(.menu).fixedSize().accessibilityIdentifier("heatmap-quota-source")
+                        Spacer()
                         Picker("周期", selection: $period) {
                             Text("5小时").tag("5h")
                             Text("7天").tag("7d")

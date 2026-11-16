@@ -23,6 +23,6 @@ enum ClientQuotaSourceIdentity {
     }
 
     static func historyLabel(_ source: String, ordinal: Int) -> String {
-        base(source) == source ? "历史采样 · 身份未验证" : "历史采样 \(ordinal) · 独立账号"
+        base(source) == source ? "历史采样 · 身份未验证" : "历史采样 \(ordinal) · 独立组织"
     }
 }

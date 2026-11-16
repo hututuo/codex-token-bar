@@ -24,7 +24,7 @@ final class ClientQuotaHistoryTests: XCTestCase {
         XCTAssertEqual(current.history(in: histories)?.daily.first?.fiveHourRemainingPercent, 20)
         let choices = ClientQuotaChartSource.options(clients: ["claudeDesktop"], histories: histories)
         XCTAssertTrue(choices.contains { $0.title.contains("身份未验证") })
-        XCTAssertTrue(choices.contains { $0.title.contains("独立账号") })
+        XCTAssertTrue(choices.contains { $0.title.contains("独立组织") })
         XCTAssertEqual(Set(choices.map(\.id)).count, 3)
         for (source, value) in before {
             XCTAssertEqual(try ledger.database.readRows("SELECT used_percent FROM client_quota_observations WHERE source=?", bindings: [.text(source)]) { $0.double(0) }.first!, value)
