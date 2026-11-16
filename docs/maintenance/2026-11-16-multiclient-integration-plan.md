@@ -1,6 +1,6 @@
 # 多客户端统一接入计划
 
-状态：2026-11-17第一包（A+B+C及已有客户端基本状态兼容）已通过云端检查并安装build1022，真实界面已点验。继续执行账号分段与缺失额度来源取证；详见[实施记录](2026-11-17-multiclient-heatmap-implementation.md)。
+状态：2026-11-17第一包（A+B+C及已有客户端基本状态兼容）和Claude组织分段补充已完成，当前本机为实测build1023。三类缺失额度提供者的来源调查已完成：本次未取得符合本地读取边界的可靠来源，明确保留缺少来源状态。详见[第一包记录](2026-11-17-multiclient-heatmap-implementation.md)、[build1023验收](2026-11-17-quota-identity-implementation.md)、[来源取证](2026-11-17-local-quota-provider-evidence.md)。Windows云端验证与实机验收分别记录，后者尚无设备证据；同机性能对照补充中。
 
 基线：本机 `0.9.11 / build 1021`；代码 `851b8460852277d08c3582929f382f6d74db9ef4`，审计文档提交 `e70fa3a8fc48736732b5f9c37239ef2f5d9c3024`。工作目录为 `/Users/huyiyang/.codex/worktrees/f97f/codex-token-dashboard`，任务分支为 `codex/production-rail-20261116`。
 

@@ -1,5 +1,7 @@
 # 多客户端接入核对与主页 Antigravity 四栏布局
 
+后续状态（2026-11-17）：本文保留build1020/1021的历史基线。下面列出的热力图缺口已由build1022补齐，Claude组织分段及布局修正已在build1023实测；当前结果见[统一接入计划](2026-11-16-multiclient-integration-plan.md)及[最终验收记录](2026-11-17-quota-identity-implementation.md)。
+
 本次按“读取器 → 账本 → 展示投影 → 页面组件 → 入口”核对 macOS Swift 和 Windows Rust/React 路径。基线是本机 build 1020，任务分支 `codex/production-rail-20261116`。本次没有把“解析器存在”当作“所有页面均已接入”，也没有把云端 Windows 测试当作用户 Windows 实机验证。
 
 ## 结论
