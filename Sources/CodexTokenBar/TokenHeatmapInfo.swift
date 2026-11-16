@@ -103,6 +103,11 @@ struct HeatmapRangeSummary {
             .replacingOccurrences(of: "日", with: "")
             .replacingOccurrences(of: " - ", with: "-")
     }
+
+    var quotaText: String {
+        let percent = quotaAverageRemainingPercent.map { ClientQuotaPresentation.percentNumber($0) + "%" } ?? "暂无"
+        return "\(compactTitle) · \(quotaPeriod.rawValue) 有观测日均剩余 \(percent) · 覆盖 \(calls)/\(dayCount) 天"
+    }
 }
 
 struct HeatmapHoverInfo: View {
@@ -222,9 +227,7 @@ struct HeatmapHoverInfo: View {
             Text(rangeSummary.compactTitle + " · " + recordedText(usage, cost: rangeSummary.isModelCost, cache: rangeSummary.cacheBreakdown != nil))
                 .font(.system(size: 11)).fixedSize(horizontal: false, vertical: true)
         } else if let rangeSummary, rangeSummary.isQuota {
-            Text(rangeSummary.compactTitle + " · " + rangeSummary.quotaPeriod.rawValue + " 有观测日均剩余 "
-                + (rangeSummary.quotaAverageRemainingPercent.map { ClientQuotaPresentation.percentNumber($0) + "%" } ?? "暂无")
-                + " · 覆盖 \(rangeSummary.calls)/\(rangeSummary.dayCount) 天")
+            Text(rangeSummary.quotaText)
                 .font(.system(size: 11)).fixedSize(horizontal: false, vertical: true)
         } else {
         HStack(spacing: 12) {

@@ -85,7 +85,7 @@ test("hoverSummary describes the nearby heatmap day without changing range total
 
   assert.equal(hoverSummary(day, "daily"), "2026-06-20 · 12.3万 tokens · 7 calls");
   assert.equal(hoverSummary(day, "cache"), "2026-06-20 · 命中率 92% · 7 calls");
-  assert.equal(hoverSummary(day, "quota"), "2026-06-20 · 7d 64% · 5h 81%");
+  assert.equal(hoverSummary(day, "quota"), "2026-06-20 · 日均剩余 5h 81% · 7d 64%");
   assert.equal(hoverSummary(day, "model"), "2026-06-20 · 12.3万 tokens · Sol5.6 90% · Luna5.6 10%");
   assert.equal(
     hoverSummary(day, "modelCost", "gpt56Sol"),

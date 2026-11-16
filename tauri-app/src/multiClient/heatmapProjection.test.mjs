@@ -44,3 +44,21 @@ test("quota days use selected pool/window, preserve decimals and leave missing d
   const third=applyClientQuotaDays([day(date)],[],reading,resolveQuotaChartSource("antigravity:3p",["antigravity"],[reading]),"7d");
   assert.equal(third[0].sevenDayRemainingPercent,0);
 }));
+test("Codex independent references and unknown models preserve existing cost totals",async()=>withSsrModules(async load=>{
+  const {projectHeatmapDays}=await load("/src/multiClient/heatmapProjection.ts");
+  const {floatingTodayModelUsageItems,floatingModelUsageKnownCostUSD}=await load("/src/floating/floatingModelUsage.ts");
+  const {recordedCostText,recordedModelsText}=await load("/src/components/tokenActivity/recordedUsage.ts");
+  for(const names of [["gpt-5.3-codex-spark","codex-auto-review"],
+    ["future-unpriced-model","gpt-5.3-codex-spark"],
+    ["gpt-5.6-sol","future-unpriced-model","gpt-5.3-codex-spark"]]){
+    const rows=names.map(model=>({model,breakdown:{inputTokens:1000,cachedInputTokens:0,outputTokens:200,totalTokens:1200,calls:1}}));
+    const base={...day("2026-11-17",1200*rows.length,rows.length),modelBreakdowns:rows};
+    const usage=projectHeatmapDays([base],[base],[],["codex"],"gpt56Sol")[0].recordedUsage;
+    const expected=floatingModelUsageKnownCostUSD(floatingTodayModelUsageItems(rows,"gpt56Sol",{mergeAutoReview:false}));
+    assert.equal(usage.hasKnownCost,expected!==null);
+    assert.equal(usage.knownCostUSD,expected??0);
+    assert.match(recordedModelsText(usage,true),/不计入合计/);
+    if(names.includes("future-unpriced-model"))assert.ok(usage.unpricedRequests>0);
+    if(names.includes("gpt-5.6-sol"))assert.match(recordedCostText(usage),/已知金额/);
+  }
+}));

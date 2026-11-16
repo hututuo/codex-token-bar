@@ -3,7 +3,7 @@ import type { ActivityMode } from "./types";
 import { modelUsageCompactText } from "../modelUsagePresentation.ts";
 import { modelCostSummaryText } from "./heatmap.ts";
 import type { OfficialAPIPriceModel } from "../../settings/quotaPriceModel.ts";
-import { recordedSummary, quotaDayText } from "./recordedUsage";
+import { recordedSummary, quotaDayText } from "./recordedUsage.ts";
 
 export function hoverSummary(
   day: ActivityDay,

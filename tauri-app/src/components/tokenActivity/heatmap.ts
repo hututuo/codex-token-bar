@@ -10,8 +10,8 @@ import {
   hasUnknownModelPrices,
 } from "../../floating/floatingModelUsage.ts";
 import type { OfficialAPIPriceModel } from "../../settings/quotaPriceModel.ts";
-import { recordedCostText, recordedModelsText, recordedGradient, recordedSummary, quotaDayText } from "./recordedUsage";
-import { modelUsageColor } from "../modelUsagePresentation";
+import { recordedCostText, recordedModelsText, recordedGradient, recordedSummary, quotaDayText } from "./recordedUsage.ts";
+import { modelUsageColor } from "../modelUsagePresentation.ts";
 
 export function buildHeatmapDays(
   days: ActivityDay[],

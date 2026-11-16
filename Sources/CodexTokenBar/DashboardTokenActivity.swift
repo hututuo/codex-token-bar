@@ -61,7 +61,7 @@ struct DashboardTokenActivity: View {
         }.frame(maxWidth: 980, alignment: .leading)
         .task(id: key) {
             let model = OfficialAPIPriceModel.storedValue(for: priceRaw)
-            let worker = Task.detached(priority: .utility) {
+            let worker = Task.detached(priority: .utility) { [codex, external, allowed, model] in
                 HeatmapDayUsage.project(codex: codex, external: external, allowed: allowed, priceModel: model)
             }
             let value = await withTaskCancellationHandler(operation: { await worker.value }, onCancel: { worker.cancel() })

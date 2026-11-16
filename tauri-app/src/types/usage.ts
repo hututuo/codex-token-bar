@@ -1,6 +1,6 @@
 import type { LocalDataWarning, QuotaDiagnostic } from "./diagnostics";
 import type { AccountInfo, QuotaAttributionIdentity, QuotaSnapshot } from "./quota";
-import type { ChartUsageSummary } from "../components/recentUsageChart/usageSnapshot";
+import type { ChartUsageSummary } from "../components/recentUsageChart/usageSummary.ts";
 
 /**
  * Stable, non-sensitive labels for the events that can request an exact

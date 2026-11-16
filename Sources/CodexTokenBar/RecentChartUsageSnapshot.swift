@@ -12,6 +12,8 @@ struct ChartModelUsage: Equatable, Sendable, Identifiable {
     var cacheWriteTokens: Int?
     var knownCostUSD: Double?
     var unpricedRequests: Int
+    var referenceCostUSD: Double? = nil
+    var isReferenceOnly = false
     var id: String { client + "|" + model }
     var label: String { ModelPresentationIdentity.resolve(model).label }
     var clientLabel: String { SpeedColorOverrides.clientTitle("client:" + client) }
@@ -40,6 +42,9 @@ struct ChartModelUsage: Equatable, Sendable, Identifiable {
             let costs = values.compactMap(\.knownCostUSD)
             first.knownCostUSD = costs.isEmpty ? nil : costs.reduce(0, +)
             first.unpricedRequests = values.reduce(0) { $0 + $1.unpricedRequests }
+            let references = values.compactMap(\.referenceCostUSD)
+            first.referenceCostUSD = references.isEmpty ? nil : references.reduce(0, +)
+            first.isReferenceOnly = values.allSatisfy(\.isReferenceOnly)
             return first
         }.sorted { $0.breakdown.totalTokens == $1.breakdown.totalTokens ? $0.id < $1.id : $0.breakdown.totalTokens > $1.breakdown.totalTokens }
     }

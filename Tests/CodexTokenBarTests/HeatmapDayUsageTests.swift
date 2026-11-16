@@ -61,6 +61,34 @@ final class HeatmapDayUsageTests: XCTestCase {
         XCTAssertEqual(five.summaries.first?.quotaRemainingPercent, 83.125)
         XCTAssertNil(seven.summaries.first?.quotaRemainingPercent)
     }
+    func testCodexReferencesAndUnknownPricesNeverInflateKnownCost() throws {
+        let date = Calendar.current.startOfDay(for: Date(timeIntervalSince1970: 1_800_000_000))
+        let part = TokenCacheBreakdown(inputTokens: 1000, cachedInputTokens: 0, outputTokens: 200,
+            reasoningOutputTokens: 0, totalTokens: 1200, calls: 1)
+        func project(_ names: [String]) throws -> ChartUsageSummary {
+            let rows = names.map { ModelTokenBreakdown(model: $0, breakdown: part) }
+            let total = rows.map(\.breakdown).combined
+            let cache = TokenCacheUsage(total: total, dailyModelBreakdowns: [.init(start: date, modelBreakdowns: rows)],
+                daily: [.init(start: date, breakdown: total)], hourly: [], recentBins: [], sessions: [], turns: [])
+            let snapshot = DashboardSnapshot(stats: DashboardSnapshot.empty.stats,
+                dailyUsage: [.init(date: date, tokens: total.totalTokens, calls: total.calls)],
+                recentBins: [], hourlyUsage: [], pluginUsage: [], cacheUsage: cache, generatedAt: date)
+            let result = try XCTUnwrap(HeatmapDayUsage.project(codex: snapshot, external: [], allowed: ["codex"], priceModel: .gpt56Sol).first?.usage)
+            let expected = FloatingTodayModelUsagePresentation.knownCostUSD(in:
+                FloatingTodayModelUsagePresentation.items(from: rows, fallbackModel: .gpt56Sol))
+            XCTAssertEqual(result.hasKnownCost, expected != nil)
+            XCTAssertEqual(result.knownCostUSD, expected ?? 0)
+            return result
+        }
+        let references = try project(["gpt-5.3-codex-spark", "codex-auto-review"])
+        XCTAssertEqual(references.knownCostUSD, 0)
+        XCTAssertTrue(references.heatmapModelText(cost: true).contains("不计入合计"))
+        let unknown = try project(["future-unpriced-model", "gpt-5.3-codex-spark"])
+        XCTAssertFalse(unknown.hasKnownCost)
+        XCTAssertGreaterThan(unknown.unpricedRequests, 0)
+        let mixed = try project(["gpt-5.6-sol", "future-unpriced-model", "gpt-5.3-codex-spark"])
+        XCTAssertTrue(mixed.heatmapCostText.contains("已知金额"))
+    }
     @MainActor
     func testNativeMultiClientHeatmapPreview() throws {
         guard let folder = ProcessInfo.processInfo.environment["CODEX_CYCLE_LAYOUT_OUTPUT"] else { return }

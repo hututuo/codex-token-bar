@@ -11,9 +11,9 @@ import {
   hasUnknownModelPrices,
 } from "../../floating/floatingModelUsage.ts";
 import type { OfficialAPIPriceModel } from "../../settings/quotaPriceModel.ts";
-import { chartUsageSummary } from "../recentUsageChart/usageSnapshot";
-import { recordedSummary } from "./recordedUsage";
-import { quotaPercentNumber } from "../../multiClient/multiClientProduct";
+import { chartUsageSummary } from "../recentUsageChart/usageSummary.ts";
+import { recordedSummary } from "./recordedUsage.ts";
+import { quotaPercentNumber } from "../../multiClient/multiClientProduct.ts";
 
 export function summarizeRange(
   selectedDays: ActivityDay[],
@@ -135,23 +135,6 @@ function weightedCacheRate(days: ActivityDay[]): number {
   return (
     activeDays.reduce((total, day) => total + day.cacheHitRate * day.calls, 0) / weightedCalls
   );
-}
-
-function averageQuota(
-  days: ActivityDay[],
-  key: "fiveHourRemainingPercent" | "sevenDayRemainingPercent",
-): number | null {
-  const values = days
-    .map((day) => day[key])
-    .filter((value): value is number => value !== null && Number.isFinite(value));
-  if (values.length === 0) {
-    return null;
-  }
-  return values.reduce((total, value) => total + value, 0) / values.length;
-}
-
-function formatOptionalPercent(value: number | null): string {
-  return value === null ? "暂无" : formatPercent(value);
 }
 
 function sumTokens(days: ActivityDay[]): number {

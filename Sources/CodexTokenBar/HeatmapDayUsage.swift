@@ -25,10 +25,14 @@ struct HeatmapDayUsage: Equatable, Sendable {
             var models = (codexModels[date] ?? []).flatMap(\.modelBreakdowns).map { row in
                 let price = ModelAwareAPIPriceEstimator.estimate(modelBreakdowns: [row], fallbackBreakdown: row.breakdown,
                     fallbackModel: priceModel, standardAPI: true, rates: { $0.currentPriceRates })
+                let item = FloatingTodayModelUsagePresentation.items(from: [row], fallbackModel: priceModel).first
+                let reference = item?.isReferenceOnly == true && item?.isFallbackEstimate == false
+                let known = reference ? nil : item?.knownPartialCostUSD ?? item?.costUSD
                 return ChartModelUsage(client: "codex", model: ModelPresentationIdentity.resolve(row.model).key,
                     sourceModels: [row.model ?? "unknown"], breakdown: row.breakdown, cacheReadComplete: true,
-                    cacheWriteTokens: nil, knownCostUSD: price.unpricedCalls < row.breakdown.calls ? price.costUSD : nil,
-                    unpricedRequests: price.unpricedCalls)
+                    cacheWriteTokens: nil, knownCostUSD: known,
+                    unpricedRequests: reference ? 0 : known == nil ? max(1, row.breakdown.calls) : price.unpricedCalls,
+                    referenceCostUSD: item?.referenceCostUSD, isReferenceOnly: reference)
             }
             let missing = max(0, originalTokens - models.reduce(0) { $0 + $1.breakdown.totalTokens })
             let missingCalls = max(0, originalCalls - models.reduce(0) { $0 + $1.breakdown.calls })
@@ -55,7 +59,7 @@ struct HeatmapDayUsage: Equatable, Sendable {
             let sum = parts.combined
             let tokens = originalTokens + externalRows.reduce(0) { $0 + Int($1.tokens) }
             let calls = originalCalls + externalRows.reduce(0) { $0 + $1.requests }
-            let complete = missing == 0 && missingCalls == 0 && externalRows.allSatisfy { $0.model != nil }
+            let complete = missing == 0 && missingCalls == 0 && models.allSatisfy { $0.model != "unknown" }
             let cacheComplete = (originalTokens == 0 || original.calls >= originalCalls && original.totalTokens == originalTokens)
                 && externalRows.allSatisfy { $0.inputTokens == 0 || $0.cacheReadComplete == true && $0.cacheReadTokens != nil }
             let costs = models.compactMap(\.knownCostUSD)
@@ -63,7 +67,7 @@ struct HeatmapDayUsage: Equatable, Sendable {
                 breakdown: .init(inputTokens: sum.inputTokens, cachedInputTokens: sum.cachedInputTokens,
                     outputTokens: sum.outputTokens, reasoningOutputTokens: sum.reasoningOutputTokens, totalTokens: tokens, calls: calls),
                 models: ChartModelUsage.combined(models), cacheReadComplete: cacheComplete, modelComplete: complete,
-                knownCostUSD: costs.reduce(0, +), hasKnownCost: !costs.isEmpty || calls == 0 && tokens == 0,
+                knownCostUSD: costs.reduce(0, +), hasKnownCost: !costs.isEmpty || models.allSatisfy(\.isReferenceOnly) && complete,
                 unpricedRequests: models.reduce(0) { $0 + $1.unpricedRequests }))
         }
     }
@@ -77,7 +81,8 @@ extension ChartUsageSummary {
     }
     func heatmapModelText(cost: Bool) -> String {
         let rows = models.map { row in
-            let value = cost ? row.knownCostUSD?.quotaEstimatorMoneyText ?? "金额未报告"
+            let value = cost ? (row.isReferenceOnly ? "参考 " + (row.referenceCostUSD?.quotaEstimatorMoneyText ?? "—") + "（不计入合计）"
+                : row.knownCostUSD?.quotaEstimatorMoneyText ?? "金额未报告")
                 : row.breakdown.totalTokens.abbreviatedTokens + " Token"
             return row.clientLabel + " · " + row.label + " " + value
         }
