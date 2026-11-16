@@ -23,6 +23,14 @@ final class QuotaSidebarCompactRailTests: XCTestCase {
         XCTAssertEqual(weekly.value, "—")
     }
 
+    func testPeekHeightFitsAnEmptyTaskStateAndGrowsForActualRows() {
+        XCTAssertEqual(QuotaSidebarPeekRegion.preferredHeight(for: .tasks), 154)
+        XCTAssertEqual(QuotaSidebarPeekRegion.preferredHeight(for: .tasks, taskRows: 20), 320)
+        XCTAssertEqual(QuotaSidebarPeekRegion.preferredHeight(for: .quota("codex"), quotaCount: 1), 152)
+        XCTAssertEqual(QuotaSidebarPeekRegion.preferredHeight(for: .quota("antigravity"), quotaCount: 4), 320)
+        XCTAssertEqual(QuotaSidebarPeekRegion.preferredHeight(for: .radar), 180)
+    }
+
     func testPeekGapDoesNotTrapThePointerInUnusedDesktopCorners() {
         let rail = CGRect(x: 1000, y: 200, width: 28, height: 200)
         let peek = CGRect(x: 734, y: 300, width: 258, height: 280)

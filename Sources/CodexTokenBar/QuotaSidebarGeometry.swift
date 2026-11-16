@@ -342,6 +342,16 @@ enum QuotaSidebarPressRouting {
 /// Only the visible surfaces and the narrow shared-height gap keep a peek open.
 /// The unused corners of their bounding box belong to the desktop.
 enum QuotaSidebarPeekRegion {
+    static func preferredHeight(for item: QuotaSidebarItem, quotaCount: Int = 0,
+                                taskRows: Int = 0, modelCount: Int = 0) -> CGFloat {
+        switch item {
+        case .quota: return CGFloat(min(320, 96 + max(1, quotaCount) * 56))
+        case .tasks: return CGFloat(min(320, 154 + max(0, taskRows) * 26))
+        case .models: return CGFloat(max(148, min(280, 100 + max(0, modelCount) * 24)))
+        case .radar: return 180
+        default: return 280
+        }
+    }
     static func contains(_ point: CGPoint, rail: CGRect, peek: CGRect) -> Bool {
         if rail.contains(point) || peek.contains(point) { return true }
         let gap = CGRect(x: min(rail.maxX, peek.maxX),

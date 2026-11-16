@@ -329,7 +329,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
         updateFrames(animateDocking: settingsChanged)
     }
 
-    func hover(_ item: QuotaSidebarItem) {
+    func hover(_ item: QuotaSidebarItem, preferredHeight: CGFloat? = nil) {
         guard !interaction.expanded, !isDragging, !isTrackingPress,
               let railPanel, let screen else { return }
         peekDismissTask?.cancel(); peekDismissTask = nil
@@ -344,7 +344,8 @@ final class QuotaSidebarController: NSObject, ObservableObject {
         }
         let area = screen.visibleFrame
         let width = min(258.0, max(0, area.width - railPanel.frame.width - 8))
-        let height = min(280.0, area.height)
+        let preferred = preferredHeight.flatMap { $0.isFinite ? $0 : nil } ?? QuotaSidebarPeekRegion.preferredHeight(for: item)
+        let height = min(max(140, preferred), area.height)
         let x = edge == .right ? railPanel.frame.minX - width - 8 : railPanel.frame.maxX + 8
         let y = min(max(area.minY, pointerLocation().y - height / 2), area.maxY - height)
         peekPanel?.setFrame(CGRect(x: max(area.minX, min(x, area.maxX - width)), y: y,

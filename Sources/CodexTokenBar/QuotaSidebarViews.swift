@@ -378,7 +378,12 @@ struct QuotaSidebarRail: View {
                                 rateFraction: Double(rateFraction), rateText: rateText, tpsText: tpsText,
                                 summary: runningSummary, shares: shares, radarActive: state.active,
                                 colors: quotaSelection.colors, hovered: controller.hoveredItem,
-                                onHover: { controller.hover($0) }, onOpen: { controller.select($0.detail) })
+                                onHover: { item in
+                                    controller.hover(item, preferredHeight: QuotaSidebarPeekRegion.preferredHeight(for: item,
+                                        quotaCount: { if case let .quota(client) = item { return quotaItems.filter { $0.client == client }.count }; return 0 }(),
+                                        taskRows: runningSummary.groups.reduce(0) { $0 + 1 + $1.subagents.count } + runningSummary.unassignedSubagents.count,
+                                        modelCount: shares.count))
+                                }, onOpen: { controller.select($0.detail) })
                         }
                             .frame(minHeight: geometry.size.height)
                     }.scrollIndicators(.hidden)
