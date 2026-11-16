@@ -258,7 +258,10 @@ final class AccountQuotaSegmentTests: XCTestCase {
         hostingView.layoutSubtreeIfNeeded()
 
         XCTAssertEqual(hostingView.fittingSize.width, AccountQuotaSegmentLayout.twoSegmentWidth, accuracy: 0.5)
-        XCTAssertEqual(hostingView.fittingSize.height, AccountQuotaSegmentLayout.controlHeight, accuracy: 0.5)
+        // Complete text uses its natural line height; the compact single-line
+        // heading can be one point taller than the former fixed-height frame.
+        XCTAssertGreaterThanOrEqual(hostingView.fittingSize.height, AccountQuotaSegmentLayout.controlHeight)
+        XCTAssertLessThanOrEqual(hostingView.fittingSize.height, AccountQuotaSegmentLayout.controlHeight + 2)
     }
 }
 
