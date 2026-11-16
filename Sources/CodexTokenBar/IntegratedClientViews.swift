@@ -195,9 +195,11 @@ struct ClientPairedQuotaRing: View {
                 // the normal disclosure fade instead of waiting for handoff.
                 if let right {
                     HStack(spacing: 1) {
-                        Text(left.compactValue).frame(width: 20).lineLimit(1).minimumScaleFactor(0.6)
+                        // Scale the text before fixing its column width so
+                        // fractional values keep every digit inside the ring.
+                        Text(left.compactValue).lineLimit(1).minimumScaleFactor(0.6).frame(width: 20)
                         Rectangle().fill(.white.opacity(0.35)).frame(width: 1, height: 8)
-                        Text(right.compactValue).frame(width: 20).lineLimit(1).minimumScaleFactor(0.6)
+                        Text(right.compactValue).lineLimit(1).minimumScaleFactor(0.6).frame(width: 20)
                     }.font(.system(size: 11, weight: .medium, design: .rounded))
                         .monospacedDigit().lineLimit(1).minimumScaleFactor(0.65)
                 } else {
