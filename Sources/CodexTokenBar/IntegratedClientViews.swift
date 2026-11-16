@@ -210,14 +210,20 @@ struct ClientPairedQuotaRing: View {
                     return values
                 }
             VStack(spacing: 3) {
-                HStack(spacing: 0) {
+                if let pool = sharedWindowPool {
+                    Text(pool).font(.system(size: 9))
+                        .foregroundStyle(.white.opacity(0.8))
+                        .lineLimit(nil).multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                HStack(alignment: .top, spacing: 0) {
                     windowLabel(left)
                     if let right { windowLabel(right) }
                 }
                 if let right, right.client != left.client {
                     HStack(spacing: 2) { legend(left); legend(right) }
                 } else { legend(left, linkedIDs: [left.id] + (right.map { [$0.id] } ?? [])) }
-            }
+            }.frame(width: 68)
         }.frame(width: 74).padding(.vertical, 3).contentShape(Rectangle())
             .accessibilityElement(children: .ignore)
             .help(([left] + (right.map { [$0] } ?? [])).map { $0.title + " · " + $0.accessibleValue + "\n" + $0.source }.joined(separator: "\n"))
@@ -228,10 +234,28 @@ struct ClientPairedQuotaRing: View {
             .stroke(Color(nsColor: NSColor(clientHex: ClientQuotaSelection.decode(selectionRaw).colors[item.id] ?? item.fill)), style: StrokeStyle(lineWidth: 3, lineCap: .round))
             .rotationEffect(.degrees(rotation)).opacity(item.remaining == nil ? 0 : 1)
     }
+    // Keep the pool name once at the full label width instead of squeezing
+    // "第三方模型 · 5h" into each 34pt half. Unrecognized labels wrap intact.
+    private func windowParts(_ item: ClientQuotaItem) -> (pool: String?, period: String) {
+        let parts = item.windowTitle.components(separatedBy: " · ")
+        guard parts.count > 1, let period = parts.last,
+              ["5h", "7d", "5小时", "7天"].contains(period) else {
+            return (nil, item.windowTitle)
+        }
+        return (parts.dropLast().joined(separator: " · "),
+                period == "5h" ? "5小时" : period == "7d" ? "7天" : period)
+    }
+    private var sharedWindowPool: String? {
+        guard let pool = windowParts(left).pool else { return nil }
+        if let right, right.client != left.client || windowParts(right).pool != pool { return nil }
+        return pool
+    }
     private func windowLabel(_ item: ClientQuotaItem) -> some View {
-        Text(item.windowTitle).font(.system(size: 9))
+        Text(sharedWindowPool == nil ? item.windowTitle : windowParts(item).period).font(.system(size: 9))
             .foregroundStyle(Color(nsColor: NSColor(clientHex: ClientQuotaSelection.decode(selectionRaw).colors[item.id] ?? item.fill)))
-            .lineLimit(1).minimumScaleFactor(0.75).frame(width: right == nil ? 68 : 34)
+            .lineLimit(nil).multilineTextAlignment(.center)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(width: right == nil ? 68 : 34)
     }
     private func legend(_ item: ClientQuotaItem, linkedIDs: [String]? = nil) -> some View {
         let ids = linkedIDs ?? [item.id]
@@ -241,7 +265,8 @@ struct ClientPairedQuotaRing: View {
             }.anchorPreference(key: ClientQuotaMorphAnchors.self, value: .bounds) { anchor in
                 Dictionary(uniqueKeysWithValues: ids.map { ("marker:" + $0, anchor) })
             }
-            Text(item.shortClientTitle).lineLimit(1).minimumScaleFactor(0.8)
+            Text(item.shortClientTitle).lineLimit(nil).multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
         }.font(.system(size: 10)).foregroundStyle(.white.opacity(0.8))
     }
 }

@@ -89,6 +89,12 @@ final class IntegratedClientRenderingTests: XCTestCase {
     @MainActor func testQuotaComponentsRenderWithMatchedSidebarMetricsAndDisplayOnlyMockQuota() throws {
         let fixtures = ClientQuotaProjection.previewItems(includeClaude: true)
         let codex = fixtures[0], claude = fixtures[1], claudeSeven = fixtures[2]
+        let antigravity = [("gemini-5h", "Gemini · 5h", 99.92), ("gemini-weekly", "Gemini · 7d", 82.69),
+                          ("3p-5h", "第三方模型 · 5h", 100.0), ("3p-weekly", "第三方模型 · 7d", 100.0)]
+            .map { id, window, remaining in
+                ClientQuotaItem(id: "antigravity:" + id, client: "antigravity", window: window,
+                    remaining: remaining, resetsAt: nil, source: "模拟额度 · 不写入账本", status: "模拟")
+            }
         let suite = "IntegratedQuotaRender-" + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -109,6 +115,8 @@ final class IntegratedClientRenderingTests: XCTestCase {
                     }.frame(width: ClientSidebarMetrics.ringSize, height: ClientSidebarMetrics.ringSize)
                     ClientPairedQuotaRing(left: codex, right: nil)
                     ClientPairedQuotaRing(left: claude, right: claudeSeven)
+                    ClientPairedQuotaRing(left: antigravity[0], right: antigravity[1])
+                    ClientPairedQuotaRing(left: antigravity[2], right: antigravity[3])
                     ZStack {
                         Circle().stroke(Color.orange.opacity(0.5), lineWidth: 2)
                         Text("2").font(.system(size: 18, weight: .medium, design: .rounded)).foregroundStyle(.orange)
@@ -121,18 +129,22 @@ final class IntegratedClientRenderingTests: XCTestCase {
                     ClientQuotaRings(items: [codex, claude, claudeSeven])
                 }.padding(20).frame(width: 380).background(Color.black, in: RoundedRectangle(cornerRadius: 24))
             }
-        }.padding(24).frame(width: 620, height: 580, alignment: .topLeading)
+        }.padding(24).frame(width: 620, height: 720, alignment: .topLeading)
             .background(Color(white: 0.07)).foregroundStyle(.white)
             .environment(\.colorScheme, .dark).defaultAppStorage(defaults)
             .environment(\.matchedStrokeMorphRegistry, ProcessInfo.processInfo.environment["TOKENBAR_USE_NATIVE_MORPH_HOST"] == "1" ? MatchedStrokeMorphRegistry() : nil)
         let host = NSHostingView(rootView: candidate)
-        host.frame = CGRect(x: 0, y: 0, width: 620, height: 580)
+        host.frame = CGRect(x: 0, y: 0, width: 620, height: 720)
         host.layoutSubtreeIfNeeded()
         let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
         host.cacheDisplay(in: host.bounds, to: bitmap)
         XCTAssertGreaterThan(bitmap.pixelsWide, 0)
         if let output = ProcessInfo.processInfo.environment["TOKENBAR_QUOTA_RENDER_OUTPUT"] {
             try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: URL(fileURLWithPath: output))
+        }
+        if let folder = ProcessInfo.processInfo.environment["TOKENBAR_DISCOVERY_RENDER_DIR"] {
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                .write(to: URL(fileURLWithPath: folder).appendingPathComponent("sidebar-quota-complete-labels.png"))
         }
     }
     @MainActor func testQuotaColorSettingsRenderWithoutSeparateOrderingOrLengthControls() throws {
