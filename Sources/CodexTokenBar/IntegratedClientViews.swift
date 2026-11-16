@@ -195,13 +195,10 @@ struct ClientPairedQuotaRing: View {
                 // the normal disclosure fade instead of waiting for handoff.
                 if let right {
                     HStack(spacing: 1) {
-                        // Scale the text before fixing its column width so
-                        // fractional values keep every digit inside the ring.
-                        Text(left.compactValue).lineLimit(1).minimumScaleFactor(0.6).frame(width: 20)
+                        pairedValue(left)
                         Rectangle().fill(.white.opacity(0.35)).frame(width: 1, height: 8)
-                        Text(right.compactValue).lineLimit(1).minimumScaleFactor(0.6).frame(width: 20)
-                    }.font(.system(size: 11, weight: .medium, design: .rounded))
-                        .monospacedDigit().lineLimit(1).minimumScaleFactor(0.65)
+                        pairedValue(right)
+                    }
                 } else {
                     Text(left.remaining == nil ? left.compactValue : left.value).font(.system(size: 14, weight: .medium, design: .rounded)).monospacedDigit().lineLimit(1).minimumScaleFactor(0.6)
                 }
@@ -235,6 +232,20 @@ struct ClientPairedQuotaRing: View {
         Circle().trim(from: 0.006, to: 0.006 + 0.488 * (item.remaining ?? 0) / 100)
             .stroke(Color(nsColor: NSColor(clientHex: ClientQuotaSelection.decode(selectionRaw).colors[item.id] ?? item.fill)), style: StrokeStyle(lineWidth: 3, lineCap: .round))
             .rotationEffect(.degrees(rotation)).opacity(item.remaining == nil ? 0 : 1)
+    }
+    private func pairedValue(_ item: ClientQuotaItem) -> some View {
+        // Each candidate reports its complete glyph width. Automatic text
+        // scaling inside a 20pt frame can still produce a truncated number.
+        ViewThatFits(in: .horizontal) {
+            valueText(item.compactValue, size: 11)
+            valueText(item.compactValue, size: 9)
+            valueText(item.compactValue, size: 7)
+            valueText(item.compactValue, size: 6)
+        }.frame(width: 20)
+    }
+    private func valueText(_ value: String, size: CGFloat) -> some View {
+        Text(value).font(.system(size: size, weight: .medium, design: .rounded))
+            .monospacedDigit().fixedSize(horizontal: true, vertical: true)
     }
     // Keep the pool name once at the full label width instead of squeezing
     // "第三方模型 · 5h" into each 34pt half. Unrecognized labels wrap intact.
