@@ -30,10 +30,10 @@ final class DailyProjectionBenchmarkTests: XCTestCase {
             // mark. It includes XCTest and fixture setup, not only the query.
             return Int64(usage.ru_maxrss)
         }
-        func read(_ phase: String) throws -> [ClientTrendBucket] {
+        func read(_ phase: String, at date: Date) throws -> [ClientTrendBucket] {
             let before = peakBytes()
             let start = DispatchTime.now().uptimeNanoseconds
-            let rows = try ledger.dailyBuckets(now: now)
+            let rows = try ledger.dailyBuckets(now: date)
             let elapsed = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000
             let after = peakBytes()
             let record: [String: Any] = [
@@ -50,16 +50,21 @@ final class DailyProjectionBenchmarkTests: XCTestCase {
             return rows
         }
 
-        let first = try read("first")
-        let cached = try read("unchanged")
+        let first = try read("first", at: now)
+        let cached = try read("cached", at: now)
         XCTAssertEqual(first, cached)
+        // A real refresh advances across the cache's minute boundary, even
+        // without new requests. Measure it separately from an immediate hit.
+        let refreshTime = now.addingTimeInterval(120)
+        let refreshed = try read("unchanged", at: refreshTime)
+        XCTAssertEqual(first, refreshed)
         XCTAssertEqual(first.count, 365)
         XCTAssertEqual(first.reduce(0) { $0 + $1.requests }, count)
         XCTAssertEqual(first.reduce(Int64(0)) { $0 + $1.tokens }, Int64(count * 1100))
         var changed = events[0]
         changed.outputTokens += 100
         _ = try ledger.ingest([changed])
-        let updated = try read("incremental")
+        let updated = try read("incremental", at: refreshTime)
         XCTAssertEqual(updated.reduce(0) { $0 + $1.requests }, count)
         XCTAssertEqual(updated.reduce(Int64(0)) { $0 + $1.tokens }, Int64(count * 1100 + 100))
         XCTAssertEqual(Array(first.dropLast()), Array(updated.dropLast()))

@@ -14,8 +14,8 @@ for source in (baseline, candidate):
             rows = [json.loads(line.split("DAILY_PROJECTION_BENCHMARK ", 1)[1])
                     for line in log.read_text().splitlines()
                     if "DAILY_PROJECTION_BENCHMARK " in line]
-            assert {row["phase"] for row in rows} == {"first", "unchanged", "incremental"}
-            assert len(rows) == 3
+            assert {row["phase"] for row in rows} == {"first", "cached", "unchanged", "incremental"}
+            assert len(rows) == 4
             for row in rows:
                 assert (row["source"], row["fixtureRows"], row["trial"]) == (source, size, trial)
                 assert row["requests"] == size and row["resultRows"] == 365
@@ -27,7 +27,7 @@ for source in (baseline, candidate):
 summary = []
 for source in (baseline, candidate):
     for size in (3650, 36500):
-        for phase in ("first", "unchanged", "incremental"):
+        for phase in ("first", "cached", "unchanged", "incremental"):
             rows = [row for row in records if (row["source"], row["fixtureRows"], row["phase"]) == (source, size, phase)]
             summary.append({
                 "source": source, "fixtureRows": size, "phase": phase, "trials": len(rows),
