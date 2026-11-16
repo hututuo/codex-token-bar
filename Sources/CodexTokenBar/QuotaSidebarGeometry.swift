@@ -338,3 +338,16 @@ enum QuotaSidebarPressRouting {
         return point.y >= size.height - topDragInset || point.x < 4 || point.x > size.width - 4
     }
 }
+
+/// Only the visible surfaces and the narrow shared-height gap keep a peek open.
+/// The unused corners of their bounding box belong to the desktop.
+enum QuotaSidebarPeekRegion {
+    static func contains(_ point: CGPoint, rail: CGRect, peek: CGRect) -> Bool {
+        if rail.contains(point) || peek.contains(point) { return true }
+        let gap = CGRect(x: min(rail.maxX, peek.maxX),
+                         y: max(rail.minY, peek.minY),
+                         width: max(0, max(rail.minX, peek.minX) - min(rail.maxX, peek.maxX)),
+                         height: max(0, min(rail.maxY, peek.maxY) - max(rail.minY, peek.minY)))
+        return gap.width > 0 && gap.height > 0 && gap.contains(point)
+    }
+}

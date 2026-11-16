@@ -361,8 +361,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     private func updatePeekPresence() {
         guard let peekPanel, peekPanel.isVisible, let railPanel else { return }
         let point = pointerLocation()
-        let bridge = peekPanel.frame.union(railPanel.frame)
-        if bridge.contains(point) {
+        if QuotaSidebarPeekRegion.contains(point, rail: railPanel.frame, peek: peekPanel.frame) {
             peekDismissTask?.cancel(); peekDismissTask = nil
         } else if peekDismissTask == nil {
             peekDismissTask = Task { [weak self] in
@@ -559,7 +558,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
 
     private func outsideClick() {
         if let peekPanel, peekPanel.isVisible, let railPanel,
-           !peekPanel.frame.union(railPanel.frame).contains(pointerLocation()) { hidePeek() }
+           !QuotaSidebarPeekRegion.contains(pointerLocation(), rail: railPanel.frame, peek: peekPanel.frame) { hidePeek() }
         guard interaction.expanded, !interaction.pinned, !isDragging, !isTrackingPress,
               let frames, !frames.contains(pointerLocation(), detailVisible: interaction.detail != nil) else { return }
         dismiss()

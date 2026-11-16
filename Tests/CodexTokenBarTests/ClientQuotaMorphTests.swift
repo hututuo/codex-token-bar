@@ -153,7 +153,7 @@ final class ClientQuotaMorphTests: XCTestCase {
             let half = QuotaSidebarMotion.collapseFrame(from: from, to: to, time: 0.5, edge: edge, area: area, scale: 2)
             XCTAssertLessThan(half.height, from.height)
             XCTAssertGreaterThan(half.height, to.height)
-            XCTAssertLessThan(half.width, 30)
+            XCTAssertLessThan(half.width, to.width + (from.width - to.width) * 0.2, "At halfway the collapse has completed over 80% of the width change")
             for step in 0...100 {
                 let frame = QuotaSidebarMotion.collapseFrame(from: from, to: to, time: Double(step) / 100, edge: edge, area: area, scale: 2)
                 XCTAssertTrue(area.contains(frame))
@@ -248,7 +248,7 @@ final class ClientQuotaMorphTests: XCTestCase {
         XCTAssertEqual(view.morphLayerCount, 0, "Completion must leave no idle animation, layers or timer")
     }
 
-    @MainActor func testOriginalRailResolvesBothHalfArcsToTheirOwnBarAndReverses() throws {
+    @MainActor func testGroupedRailDoesNotRunTheLegacyBarMorphDuringReversal() throws {
         let suite = "QuotaMorph-" + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -283,19 +283,20 @@ final class ClientQuotaMorphTests: XCTestCase {
         }
         settle(0.1)
         let overlay = try XCTUnwrap(morph(host))
-        XCTAssertEqual(overlay.availableRouteCount, 6, "Quota, speed, tasks and model usage share the same morph surface")
+        XCTAssertEqual(overlay.availableRouteCount, 0, "Grouped compact tiles no longer have one vertical track per quota window")
         // Hosting can deliver its initial hover while first laying out on a
         // fresh runner. Start this reversal scenario from a settled compact rail.
         controller.dismiss(); settle(0.4)
         XCTAssertFalse(controller.interaction.expanded)
         let started = overlay.animationsStarted
-        let reducedMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         controller.enter(); settle(0.08)
-        XCTAssertEqual(overlay.animationsStarted, started + (reducedMotion ? 0 : 1))
-        XCTAssertEqual(overlay.morphLayerCount, reducedMotion ? 0 : 24, "The task outline now has ten independent cells in place of two solid half-arcs")
-        XCTAssertEqual(overlay.coveredParticipantViewCount, reducedMotion ? 0 : 16, "Quota dots join quota, speed and task source/target views until handoff; reduced motion uses the native endpoints directly")
+        XCTAssertTrue(controller.interaction.expanded)
+        XCTAssertEqual(overlay.animationsStarted, started)
+        XCTAssertEqual(overlay.morphLayerCount, 0, "The new tile glyphs must never be replaced by stale bar geometry")
+        XCTAssertEqual(overlay.coveredParticipantViewCount, 0, "Expanded values remain visible throughout native reveal")
         controller.dismiss(); settle(0.08)
-        XCTAssertEqual(overlay.animationsStarted, started + (reducedMotion ? 0 : 2))
+        XCTAssertFalse(controller.interaction.expanded)
+        XCTAssertEqual(overlay.animationsStarted, started)
         settle(0.5)
         XCTAssertEqual(overlay.morphLayerCount, 0)
         XCTAssertFalse(overlay.isAnimating)

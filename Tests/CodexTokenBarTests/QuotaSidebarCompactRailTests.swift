@@ -23,6 +23,15 @@ final class QuotaSidebarCompactRailTests: XCTestCase {
         XCTAssertEqual(weekly.value, "—")
     }
 
+    func testPeekGapDoesNotTrapThePointerInUnusedDesktopCorners() {
+        let rail = CGRect(x: 1000, y: 200, width: 28, height: 200)
+        let peek = CGRect(x: 734, y: 300, width: 258, height: 280)
+        XCTAssertTrue(QuotaSidebarPeekRegion.contains(CGPoint(x: 996, y: 350), rail: rail, peek: peek))
+        XCTAssertFalse(QuotaSidebarPeekRegion.contains(CGPoint(x: 800, y: 250), rail: rail, peek: peek))
+        XCTAssertFalse(QuotaSidebarPeekRegion.contains(CGPoint(x: 1010, y: 500), rail: rail, peek: peek))
+        XCTAssertTrue(QuotaSidebarPeekRegion.contains(CGPoint(x: 800, y: 500), rail: rail, peek: peek))
+    }
+
     @MainActor
     func testCompactCanvasDoesNotPaintAnOpaqueBackingOverSwiftUITransparency() {
         let canvas = QuotaSidebarCanvasView(host: NSView(), edge: .right)
@@ -57,10 +66,48 @@ final class QuotaSidebarCompactRailTests: XCTestCase {
             }.count
         }
         XCTAssertGreaterThan(colored, 60, "The compact view must draw actual colored module glyphs")
-        if let directory = ProcessInfo.processInfo.environment["TOKENBAR_DISCOVERY_RENDER_DIR"] {
+        if let directory = ProcessInfo.processInfo.environment["TOKENBAR_DISCOVERY_RENDER_DIR"] ?? ProcessInfo.processInfo.environment["CODEX_CYCLE_LAYOUT_OUTPUT"] {
             try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
                 .write(to: URL(fileURLWithPath: directory).appendingPathComponent("production-compact-rail.png"))
         }
+    }
+
+    @MainActor
+    func testHoverPeekKeepsRailCompactAndClickReusesTaskDetail() throws {
+        let suite = "ProductionRailPeek-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let controller = QuotaSidebarController(settings: defaults)
+        controller.show(store: CodexUsageStore(autoStart: false, continuityDefaults: defaults),
+            monitor: LiveRateMonitor(preciseTokenCountingEnabled: false, monitoringEnabled: false),
+            quota: AccountQuotaStore(userDefaults: defaults, observesUserDefaults: false),
+            tasks: TaskCompletionMonitor(defaults: defaults), radar: CodexRadarStore(detailRefreshDefaults: defaults),
+            history: QuotaHistoryStore(), edge: .right)
+        defer { controller.close() }
+        guard let rail = controller.railPanel, let screen = rail.screen else {
+            throw XCTSkip("A native display is required to validate popup geometry")
+        }
+        controller.hover(.tasks)
+        let peek = try XCTUnwrap(controller.peekPanel)
+        XCTAssertTrue(peek.isVisible)
+        XCTAssertFalse(controller.interaction.expanded, "Hover must not expand the entire sidebar")
+        XCTAssertNil(controller.interaction.detail)
+        XCTAssertEqual(controller.hoveredItem, .tasks)
+        XCTAssertTrue(screen.visibleFrame.contains(peek.frame))
+        if let directory = ProcessInfo.processInfo.environment["TOKENBAR_DISCOVERY_RENDER_DIR"] ?? ProcessInfo.processInfo.environment["CODEX_CYCLE_LAYOUT_OUTPUT"], let host = peek.contentView {
+            host.layoutSubtreeIfNeeded()
+            let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                .write(to: URL(fileURLWithPath: directory).appendingPathComponent("production-task-peek.png"))
+        }
+        controller.select(.tasks)
+        XCTAssertFalse(peek.isVisible)
+        XCTAssertNil(controller.hoveredItem)
+        XCTAssertTrue(controller.interaction.expanded)
+        XCTAssertEqual(controller.interaction.detail, .tasks)
+        controller.dismiss()
+        XCTAssertFalse(controller.interaction.expanded)
     }
 
 }

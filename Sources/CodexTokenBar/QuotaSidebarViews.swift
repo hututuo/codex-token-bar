@@ -382,7 +382,9 @@ struct QuotaSidebarRail: View {
                         }
                             .frame(minHeight: geometry.size.height)
                     }.scrollIndicators(.hidden)
-                }.frame(width: QuotaSidebarLayout.compactWidth).frame(maxHeight: .infinity)
+                }.frame(width: QuotaSidebarLayout.compactWidth,
+                    height: QuotaSidebarCompactRail.height(compactItems, available: controller.availableRailHeight))
+                    .frame(maxHeight: .infinity)
                     .overlay(alignment: .center) {
                         if let advice = cacheWarning {
                             Circle().fill(.orange).frame(width: 6, height: 6)
