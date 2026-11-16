@@ -16,7 +16,7 @@ struct QuotaSidebarCompactRail: View {
     let onHover: (QuotaSidebarItem) -> Void
     let onOpen: (QuotaSidebarItem) -> Void
 
-    static func section(_ item: QuotaSidebarItem) -> Int {
+    nonisolated static func section(_ item: QuotaSidebarItem) -> Int {
         switch item {
         case .speed, .tps, .tasks: 0
         case .quota: 1
@@ -25,7 +25,7 @@ struct QuotaSidebarCompactRail: View {
         }
     }
 
-    static func height(_ items: [QuotaSidebarItem], available: Double) -> Double {
+    nonisolated static func height(_ items: [QuotaSidebarItem], available: Double) -> Double {
         let rows = items.filter(\.hasCompactRepresentation)
         let separators = rows.indices.dropFirst().filter { section(rows[$0 - 1]) != section(rows[$0]) }.count
         return min(max(40, available), Double(rows.count * 34 + separators * 11 + 24))

@@ -688,15 +688,7 @@ struct QuotaSidebarRail: View {
                 Text("等待客户端提供运行状态").font(.system(size: 10)).foregroundStyle(.secondary)
             }
             ForEach(runningSummary.groups.prefix(3)) { group in
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(group.mainThread.title ?? "主任务").font(.system(size: 11)).lineLimit(1)
-                    ForEach(group.subagents.prefix(3)) { child in
-                        HStack(spacing: 5) {
-                            Image(systemName: "arrow.triangle.branch").foregroundStyle(SidebarPalette.purple)
-                            Text(child.title ?? child.model ?? "子 agent").lineLimit(1)
-                        }.font(.system(size: 10)).foregroundStyle(.secondary)
-                    }
-                }
+                SidebarRunningTaskGroup(group: group, showClient: true)
             }
             if !runningSummary.unassignedSubagents.isEmpty {
                 Text("另有 \(runningSummary.unassignedSubagents.count) 个子 agent，详情中查看")
@@ -707,6 +699,7 @@ struct QuotaSidebarRail: View {
                 .font(.system(size: 22, weight: .medium, design: .rounded)).monospacedDigit().foregroundStyle(SidebarPalette.blue)
             Text(item == .tps ? "最近正文输出采样" : "当前客户端实时速率")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
+            if item == .speed { ActivitySpeedSummaryView(allowed: allowedClients, compact: true) }
             ForEach(recentBodySpeeds.prefix(4)) { speed in
                 HStack {
                     Text(speed.model).lineLimit(1)

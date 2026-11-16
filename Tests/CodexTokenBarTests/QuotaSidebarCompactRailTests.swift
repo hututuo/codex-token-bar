@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 @testable import CodexTokenBar
 
@@ -29,4 +30,37 @@ final class QuotaSidebarCompactRailTests: XCTestCase {
         canvas.setFrameSize(NSSize(width: QuotaSidebarLayout.compactWidth, height: 220))
         XCTAssertTrue(canvas.dragHandle.isHidden)
     }
+    @MainActor
+    func testProductionCompactRailRendersGroupedPoolsTasksAndRadar() throws {
+        let items: [QuotaSidebarItem] = [.speed, .tasks, .quota("codex"), .quota("antigravity"), .models, .radar]
+        let quotas = [ClientQuotaItem(id: "codex:7d", client: "codex", window: "7d", remaining: 71.5, resetsAt: nil, source: "fixture", status: "")] +
+            ["gemini-5h", "gemini-weekly", "3p-5h", "3p-weekly"].enumerated().map { index, id in
+                ClientQuotaItem(id: "antigravity:" + id, client: "antigravity", window: id,
+                    remaining: [82.5, 60, 9.5, 42][index], resetsAt: nil, source: "fixture", status: "")
+            }
+        let root = QuotaSidebarCompactRail(items: items, quotas: quotas, rateFraction: 0.48,
+            rateText: "48 tok/s", tpsText: "35.5 tok/s",
+            summary: RunningThreadSummary(main: 2, subagents: 3, updatedAt: Date(), freshness: .fresh),
+            shares: [], radarActive: true, colors: [:], hovered: nil, onHover: { _ in }, onOpen: { _ in })
+            .background(Color.black.opacity(0.72))
+        let height = QuotaSidebarCompactRail.height(items, available: 900)
+        let host = NSHostingView(rootView: root)
+        host.frame = CGRect(x: 0, y: 0, width: QuotaSidebarLayout.compactWidth, height: height)
+        host.layoutSubtreeIfNeeded()
+        let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        let colored = (0..<bitmap.pixelsWide).reduce(0) { count, x in
+            count + (0..<bitmap.pixelsHigh).filter { y in
+                guard let color = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { return false }
+                return max(color.redComponent, color.greenComponent, color.blueComponent) > 0.3 &&
+                    max(color.redComponent, color.greenComponent, color.blueComponent) - min(color.redComponent, color.greenComponent, color.blueComponent) > 0.15
+            }.count
+        }
+        XCTAssertGreaterThan(colored, 60, "The compact view must draw actual colored module glyphs")
+        if let directory = ProcessInfo.processInfo.environment["TOKENBAR_DISCOVERY_RENDER_DIR"] {
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                .write(to: URL(fileURLWithPath: directory).appendingPathComponent("production-compact-rail.png"))
+        }
+    }
+
 }

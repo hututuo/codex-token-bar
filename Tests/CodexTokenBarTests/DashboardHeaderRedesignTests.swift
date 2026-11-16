@@ -24,7 +24,7 @@ final class DashboardHeaderRedesignTests: XCTestCase {
         XCTAssertEqual(groups.flatMap(\.items).compactMap(\.costUSD).reduce(0,+), 5)
     }
     func testUnlabelledCompactPlaceholdersHaveNoRepresentationOrHeight() {
-        let omitted:[QuotaSidebarItem]=[.modeltrace,.tps,.radar,.credits,.clientUsage]
+        let omitted:[QuotaSidebarItem]=[.modeltrace,.tps,.credits,.clientUsage]
         XCTAssertTrue(omitted.allSatisfy{!$0.hasCompactRepresentation && !$0.usesCompactDot})
         XCTAssertTrue(QuotaSidebarContentOrder.compactIDs(items:omitted,quotas:[]).isEmpty)
         XCTAssertEqual(QuotaSidebarContentOrder.compactIDs(items:omitted + [.speed,.models,.tasks],quotas:[]),["speed","models","tasks"])

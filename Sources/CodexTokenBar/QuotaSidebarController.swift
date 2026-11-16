@@ -246,7 +246,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
             }
             installObservers()
         }
-        if changedEdge { isCollapsing = false; interaction.dismiss() }
+        if changedEdge { hidePeek(); isCollapsing = false; interaction.dismiss() }
         updateFrames()
     }
 
@@ -438,6 +438,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
             let pointer = NSEvent.mouseLocation
             if let draggedFrame = session.update(to: pointer) {
                 if !isDragging {
+                    hidePeek()
                     isDragging = true
                     interaction.beginDrag()
                     hideDetail()
@@ -552,7 +553,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
         screenObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.updateFrames() }
+            MainActor.assumeIsolated { self?.hidePeek(); self?.updateFrames() }
         }
     }
 
