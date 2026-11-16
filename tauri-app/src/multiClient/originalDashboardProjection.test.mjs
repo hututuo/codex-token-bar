@@ -9,6 +9,19 @@ const dashboard=()=>({generatedAt:new Date(stamp*1000).toISOString(),stats:{...s
 const row={client:'claudeCode',model:'claude-sonnet-4-6',inputTokens:1000,outputTokens:200,cacheReadTokens:800,cacheWriteTokens:0,reasoningTokens:0,requests:2,lastSeen:new Date(stamp*1000).toISOString(),apiCostUSD:0.03,unpricedRequests:0,cacheReadComplete:true};
 const bucket={client:'claudeCode',startUnix:stamp-3600,inputTokens:1000,outputTokens:200,cacheReadTokens:800,cacheWriteTokens:0,reasoningTokens:0,requests:2};
 const snapshot=()=>({preferences:[],summaries:[row],todaySummaries:[],sevenDaySummaries:[row],dailyBuckets:[bucket],trendBuckets:[bucket],updatedAt:new Date(stamp*1000).toISOString()});
+test('every supported client uses the same recent and yearly daily projections',async()=>withSsrModules(async load=>{
+ const {projectOriginalDashboard}=await load('/src/multiClient/originalDashboardProjection.ts');
+ const clients=['claudeCode','claudeDesktop','deepseek','gemini','opencode','antigravity'];
+ const rows=clients.map((client,index)=>({...bucket,client,inputTokens:(index+1)*100,outputTokens:20}));
+ const data={...snapshot(),summaries:[],trendBuckets:rows,dailyBuckets:rows};
+ for(const scope of [...clients.map(client=>[client]),clients]){
+  const projected=projectOriginalDashboard(dashboard(),data,scope);
+  const expected=rows.filter(row=>scope.includes(row.client)).reduce((sum,row)=>sum+row.inputTokens+row.outputTokens,0);
+  for(const values of [projected.recentUsage24h,projected.recentUsage7d,projected.recentUsage30d,projected.activityDays])
+   assert.equal(values.reduce((sum,row)=>sum+row.tokens,0),expected,scope.join(','));
+  assert.equal(projected.activityDays.length,365);
+ }
+}));
 test('all unclassified identities share a last reference slot in every period and never rewrite totals',async()=>withSsrModules(async load=>{
  const {clientModelCostItems,clientCostGroups,clientCostPeriods}=await load('/src/multiClient/originalDashboardProjection.ts');
  const {officialAPICostUSD}=await load('/src/settings/quotaPriceModel.ts');

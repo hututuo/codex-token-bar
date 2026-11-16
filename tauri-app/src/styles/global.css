@@ -13037,6 +13037,12 @@ details.session-management-banner {
 /* One harness row owns its quota windows and its existing tools. */
 .quota-client-row:has(.quota-strip--embedded){grid-template-columns:84px minmax(120px,1fr) auto;align-items:center}
 .quota-client-row .quota-client-windows{grid-template-columns:repeat(auto-fit,minmax(min(130px,100%),1fr))}
+.quota-client-row[data-client="antigravity"] .quota-client-windows{grid-template-columns:repeat(4,minmax(0,1fr))}
+.quota-client-row[data-client="antigravity"] .quota-bar{grid-template-columns:minmax(0,1fr);grid-template-rows:auto 17px auto;align-content:start}
+.quota-client-row[data-client="antigravity"] .quota-label{grid-column:1;grid-row:1;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere}
+.quota-client-row[data-client="antigravity"] .quota-track{grid-column:1;grid-row:2}
+.quota-client-row[data-client="antigravity"] .quota-bar-meta{grid-column:1;grid-row:3;flex-direction:column;align-items:stretch;gap:4px;white-space:normal;line-height:1.3}
+.quota-client-row[data-client="antigravity"] .quota-bar-meta>span{justify-content:space-between;flex-wrap:wrap}
 .quota-strip.quota-strip--embedded{padding:0;border:0;gap:10px;flex-wrap:nowrap}
 .quota-strip--embedded>.quota-pace{flex:0 1 250px;margin-left:0}
 .quota-strip--embedded>.quota-reset-card{flex:0 0 130px}

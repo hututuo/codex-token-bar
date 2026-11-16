@@ -272,7 +272,8 @@ struct AccountQuotaStrip: View {
             HStack(alignment: .center, spacing: 12) {
                 clientLabel(client, subtitle: client == "codex" ? "当前账户" : "本地缓存")
                     .padding(.top, 3)
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 120), spacing: 12), count: min(client == "codex" ? 2 : 3, max(1, windows.count))), alignment: .leading, spacing: 10) {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(minimum: 120), spacing: 12),
+                    count: min(client == "codex" ? 2 : client == "antigravity" ? 4 : 3, max(1, windows.count))), alignment: .leading, spacing: 10) {
                     ForEach(windows) { item in
                         if item.id.hasSuffix(":api") {
                             Text(item.status).font(.system(size: 11)).foregroundStyle(.secondary)
@@ -285,7 +286,8 @@ struct AccountQuotaStrip: View {
                                     isStale: item.status.contains("旧") || (client == "codex" && snapshot.staleDataDisplayed),
                                     unavailable: item.remaining == nil,
                                     unavailableText: item.status.isEmpty ? "不可用" : item.status,
-                                    remainingPercentOverride: item.remaining)
+                                    remainingPercentOverride: item.remaining,
+                                    stackedHeading: client == "antigravity")
                                     .help([item.source, item.status].filter { !$0.isEmpty }.joined(separator: " · "))
                                 if client == "claudeDesktop", item.remaining != nil, !item.status.isEmpty {
                                     Text(item.status).font(.system(size: 10)).foregroundStyle(.secondary)
@@ -739,6 +741,7 @@ struct AccountQuotaSegment: View {
     var unavailable = false
     var unavailableText = "未接入"
     var remainingPercentOverride: Double? = nil
+    var stackedHeading = false
 
     private var presentation: AccountQuotaSegmentPresentation {
         AccountQuotaSegmentPresentation(window: window, remainingPercent: remainingPercentOverride)
@@ -750,16 +753,17 @@ struct AccountQuotaSegment: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: AccountQuotaSegmentLayout.topRowSpacing) {
-                Text(presentation.title)
-                    .font(.system(size: 10, weight: .bold))
-                    .lineLimit(1).truncationMode(.tail).help(presentation.title)
-                Text(presentation.resetText)
-                    .font(.system(size: 8, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
-                    .fixedSize(horizontal: true, vertical: false)
-                Spacer(minLength: 0)
+            if stackedHeading {
+                VStack(alignment: .leading, spacing: 2) {
+                    title
+                    resetTime
+                }
+            } else {
+                HStack(spacing: AccountQuotaSegmentLayout.topRowSpacing) {
+                    title
+                    resetTime
+                    Spacer(minLength: 0)
+                }
             }
 
             GeometryReader { proxy in
@@ -800,10 +804,21 @@ struct AccountQuotaSegment: View {
             }
             .frame(height: AccountQuotaSegmentLayout.progressBarHeight)
         }
-        .frame(maxWidth: .infinity, minHeight: AccountQuotaSegmentLayout.controlHeight, maxHeight: AccountQuotaSegmentLayout.controlHeight)
+        .frame(maxWidth: .infinity, minHeight: AccountQuotaSegmentLayout.controlHeight)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(window.displayLabel)额度")
          .accessibilityValue(unavailable ? unavailableText : "剩余 \(ClientQuotaPresentation.percentNumber(remainingPercentOverride ?? Double(window.remainingPercent)))%\(isStale ? "，旧数据" : "")，\(presentation.usedText)，\(window.accessibleResetText) 重置")
+    }
+
+    private var title: some View {
+        Text(presentation.title).font(.system(size: 10, weight: .bold))
+            .fixedSize(horizontal: false, vertical: true).help(presentation.title)
+    }
+
+    private var resetTime: some View {
+        Text(presentation.resetText).font(.system(size: 8, weight: .medium))
+            .foregroundStyle(.secondary).monospacedDigit()
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 

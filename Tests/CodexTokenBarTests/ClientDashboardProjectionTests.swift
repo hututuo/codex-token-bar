@@ -2,6 +2,26 @@ import XCTest
 @testable import CodexTokenBar
 
 final class ClientDashboardProjectionTests: XCTestCase {
+    func testEveryRegisteredClientFeedsTheSameDailyAndRecentContracts() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let rows = UsageClient.allCases.enumerated().map { index, client in
+            ClientTrendBucket(client: client, startUnix: Int64(now.timeIntervalSince1970),
+                inputTokens: Int64((index + 1) * 100), outputTokens: 20, cacheReadTokens: 10,
+                cacheWriteTokens: 0, reasoningTokens: nil, requests: 1,
+                model: "fixture-model", cacheReadComplete: true, cacheWriteComplete: true)
+        }
+        let all = Set(rows.map { $0.client.rawValue })
+        for scope in rows.map({ Set([$0.client.rawValue]) }) + [all] {
+            let display = ClientDashboardProjection.snapshot(codex: .empty, rows: [],
+                trend: rows, daily: rows, allowed: scope, now: now)
+            let expected = rows.filter { scope.contains($0.client.rawValue) }.reduce(0) { $0 + Int($1.tokens) }
+            XCTAssertEqual(display.recentBins.reduce(0) { $0 + $1.tokens }, expected, "\(scope)")
+            XCTAssertEqual(display.hourlyUsage.reduce(0) { $0 + $1.tokens }, expected, "\(scope)")
+            XCTAssertEqual(display.dailyUsage.reduce(0) { $0 + $1.tokens }, expected, "\(scope)")
+            XCTAssertEqual(display.dailyUsage.count, 365)
+        }
+    }
+
     private func cacheUsage(total: TokenCacheBreakdown,
                             daily: [TokenCacheBucket] = [],
                             dailyModelBreakdowns: [ModelTokenBucket] = [],
