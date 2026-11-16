@@ -21,6 +21,12 @@ on:
       source_sha:
         type: string
         default: ''
+      daily_projection_only:
+        type: boolean
+        default: false
+      baseline_sha:
+        type: string
+        default: ''
 
 permissions:
   contents: read

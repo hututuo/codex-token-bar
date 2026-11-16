@@ -40,6 +40,14 @@ on:
         description: 'Run only the hosted multi-size backfill performance gate'
         type: boolean
         default: false
+      daily_projection_only:
+        description: 'With scale_only, run the paired daily projection benchmark'
+        type: boolean
+        default: false
+      baseline_sha:
+        description: 'Exact baseline source for the paired daily projection benchmark'
+        type: string
+        default: ''
   workflow_call:
     inputs:
       source_sha:
@@ -569,6 +577,8 @@ jobs:
     uses: ./.github/workflows/backfill-scale.yml
     with:
       source_sha: ${{ needs.source.outputs.sha }}
+      daily_projection_only: ${{ inputs.daily_projection_only || false }}
+      baseline_sha: ${{ inputs.baseline_sha || '' }}
 
   evidence:
     needs: [source, frontend, swift, native, windows-updater, formed-upgrade, scale]
