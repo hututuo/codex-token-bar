@@ -35,6 +35,8 @@ let package = Package(
             path: "Sources/TokenBarClaudeLocal"
         ),
         .target(name: "SharedSourceIO", path: "Sources/SharedSourceIO"),
+        .target(name: "CSQLiteMemory", path: "Sources/CSQLiteMemory",
+                publicHeadersPath: "include", linkerSettings: [.linkedLibrary("sqlite3")]),
         .target(
             name: "AgentSpeedCore",
             dependencies: ["CZstd", "SharedSourceIO"],
@@ -48,6 +50,7 @@ let package = Package(
                 "CZstd",
                 "AgentSpeedCore",
                 "SharedSourceIO",
+                "CSQLiteMemory",
                 .product(name: "Sparkle", package: "Sparkle")
             ],
             path: "Sources/CodexTokenBar",

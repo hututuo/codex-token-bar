@@ -1,11 +1,14 @@
 import Sparkle
 import SwiftUI
 import TokenBarDiagnosticsCore
+import CSQLiteMemory
 
 @main
 @MainActor
 enum CodexTokenBarEntry {
     static func main() {
+        _ = tb_sqlite_memory_install()
+        if let code = SQLiteMemoryProbe.runIfRequested() { exit(code) }
         if let code = DiagnosticCLI.runIfRequested() { exit(code) }
         if CommandLine.arguments.contains("--verify-bundled-resources") {
             do {
