@@ -673,6 +673,9 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
     private let physicalConnectionLock = NSRecursiveLock()
     private var retainedPhysicalConnection: (database: OpaquePointer, identity: String, catalog: SQLiteStoreCatalogSnapshot?)?
     private var physicalConnectionDepth = 0
+    private let physicalConnectionIdleSeconds: TimeInterval?
+    private var physicalConnectionLastUse: TimeInterval = 0
+    private var physicalConnectionIdleTimer: DispatchSourceTimer?
     #if DEBUG
     private(set) var physicalOpenCount = 0
     private(set) var physicalCatalogReadCount = 0
@@ -688,7 +691,8 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
         fileManager: FileManager = .default,
         consistency: SQLiteConnectionConsistency = .ordinary,
         bypassBusinessRoutes: Bool = false,
-        retainsPhysicalConnection: Bool = false
+        retainsPhysicalConnection: Bool = false,
+        physicalConnectionIdleSeconds: TimeInterval? = nil
     ) {
         self.url = url
         self.businessStore = bypassBusinessRoutes ? nil : BusinessSQLiteRoutes.store(for: url)
@@ -699,14 +703,54 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
         self.fileManager = fileManager
         self.consistency = consistency
         self.retainsPhysicalConnection = retainsPhysicalConnection && !createsFileIfMissing && consistency == .ordinary
+        self.physicalConnectionIdleSeconds = physicalConnectionIdleSeconds.map { max(0.01, $0) }
     }
 
     deinit { discardRetainedPhysicalConnection() }
 
     private func discardRetainedPhysicalConnection() {
+        physicalConnectionIdleTimer?.cancel()
+        physicalConnectionIdleTimer = nil
         if let retainedPhysicalConnection { sqlite3_close_v2(retainedPhysicalConnection.database) }
         retainedPhysicalConnection = nil
     }
+
+    private func schedulePhysicalConnectionExpiry() {
+        guard let timeout = physicalConnectionIdleSeconds else { return }
+        physicalConnectionLastUse = ProcessInfo.processInfo.systemUptime
+        guard physicalConnectionIdleTimer == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+        physicalConnectionIdleTimer = timer
+        timer.setEventHandler { @Sendable [weak self] in self?.expirePhysicalConnectionIfIdle() }
+        timer.schedule(deadline: .now() + timeout, leeway: .milliseconds(100))
+        timer.resume()
+    }
+
+    private func expirePhysicalConnectionIfIdle() {
+        physicalConnectionLock.lock()
+        guard let timeout = physicalConnectionIdleSeconds else {
+            physicalConnectionLock.unlock()
+            return
+        }
+        let remaining = timeout - (ProcessInfo.processInfo.systemUptime - physicalConnectionLastUse)
+        if remaining > 0 {
+            physicalConnectionIdleTimer?.schedule(deadline: .now() + remaining, leeway: .milliseconds(100))
+            physicalConnectionLock.unlock()
+            return
+        }
+        // The same lock guards every borrowed connection. Closing here cannot
+        // interrupt a transaction or a synchronous operation scope.
+        discardRetainedPhysicalConnection()
+        physicalConnectionLock.unlock()
+        ProcessMemoryReclaimer.schedule()
+    }
+
+    #if DEBUG
+    var hasRetainedConnectionForTesting: Bool {
+        physicalConnectionLock.lock(); defer { physicalConnectionLock.unlock() }
+        return retainedPhysicalConnection != nil
+    }
+    #endif
 
     func readRows<T>(
         _ sql: String,
@@ -922,10 +966,12 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
             if retain, completed, sqlite3_get_autocommit(database) != 0,
                sqlite3_next_stmt(database, nil) == nil, let identity {
                 retainedPhysicalConnection = (database, identity, catalog)
+                schedulePhysicalConnectionExpiry()
             } else {
                 // An abandoned transaction or escaping statement must retain
                 // close_v2 rollback/lifetime semantics, including on errors.
                 sqlite3_close_v2(database)
+                if businessStore != nil { ProcessMemoryReclaimer.schedule() }
             }
         }
 

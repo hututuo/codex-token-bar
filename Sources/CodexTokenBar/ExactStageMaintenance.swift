@@ -62,6 +62,7 @@ final class ExactStageMaintenance: @unchecked Sendable {
                 // expensive. An empty cleanup queue must not pin another
                 // full schema for the lifetime of the ready runtime.
                 self.pool = nil
+                ProcessMemoryReclaimer.schedule()
                 delay = 120
             }
         } catch {

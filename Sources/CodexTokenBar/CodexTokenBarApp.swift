@@ -36,8 +36,10 @@ struct CodexTokenBarApp: App {
         Window("Codex Token Bar", id: "dashboard") {
             Group {
                 if let runtime = startup.runtime {
-                    ReadyDashboardView(runtime: runtime)
-                        .safeAreaInset(edge: .top, spacing: 0) { PublishedRecoveryNotice(startup: startup) }
+                    DashboardContentLifetime {
+                        ReadyDashboardView(runtime: runtime)
+                            .safeAreaInset(edge: .top, spacing: 0) { PublishedRecoveryNotice(startup: startup) }
+                    }
                 } else {
                     ApplicationStartupView(startup: startup)
                 }

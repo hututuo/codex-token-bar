@@ -167,7 +167,8 @@ final class SharedAccountUsageSafetyDatabase: @unchecked Sendable {
                 createsFileIfMissing: false,
                 busyTimeoutMilliseconds: 5_000,
                 fileManager: fileManager,
-                retainsPhysicalConnection: true
+                retainsPhysicalConnection: true,
+                physicalConnectionIdleSeconds: 5
             )
             if claimsObserverOwnership {
                 resolvedObserverOwnerLock = try? CodexCrossProcessFileLock(

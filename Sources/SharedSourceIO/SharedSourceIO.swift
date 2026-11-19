@@ -25,7 +25,7 @@ public final class SharedSourceIO: @unchecked Sendable {
     private let limit: Int, ownerLimit: Int
     private static let pageBytes = 64 * 1024, maxRead = 4 * 1024 * 1024
 
-    public init(maxCacheBytes: Int = 16 * 1024 * 1024, maxOwners: Int = 256) {
+    public init(maxCacheBytes: Int = 4 * 1024 * 1024, maxOwners: Int = 128) {
         limit = max(0,maxCacheBytes); ownerLimit = max(1,maxOwners)
     }
     public var statistics: Statistics {

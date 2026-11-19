@@ -9,7 +9,7 @@ final class SQLiteRetainedPhysicalConnectionTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at:root) }
         return root
     }
-    private func bound() throws -> (CodexBusinessDatabase,BusinessSQLiteStore,SQLiteDatabaseDriver) {
+    private func bound(idleSeconds: TimeInterval? = nil) throws -> (CodexBusinessDatabase,BusinessSQLiteStore,SQLiteDatabaseDriver) {
         let root=try directory(),logical=root.appendingPathComponent("safety.sqlite")
         let container=try CodexBusinessDatabase(url:root.appendingPathComponent("codex-ledger.sqlite"))
         let store=BusinessSQLiteStore(containerURL:container.url,logicalURL:logical,module:"fixture",sourceIdentity:"safety")
@@ -17,7 +17,34 @@ final class SQLiteRetainedPhysicalConnectionTests: XCTestCase {
         BusinessSQLiteRoutes.install([store])
         addTeardownBlock { BusinessSQLiteRoutes.remove([store]) }
         try SQLiteDatabaseDriver(url:logical).execute("CREATE TABLE facts(value INTEGER); INSERT INTO facts VALUES(1)")
-        return (container,store,SQLiteDatabaseDriver(url:logical,createsFileIfMissing:false,retainsPhysicalConnection:true))
+        return (container,store,SQLiteDatabaseDriver(url:logical,createsFileIfMissing:false,
+            retainsPhysicalConnection:true,physicalConnectionIdleSeconds:idleSeconds))
+    }
+
+    func testIdlePhysicalHandleClosesAndReopensWithFreshSchemaAndRows() throws {
+        let (_,_,driver)=try bound(idleSeconds:0.05)
+        XCTAssertEqual(try driver.readRows("SELECT value FROM facts"){$0.int(0)!},[1])
+        let deadline=Date().addingTimeInterval(3)
+        while driver.hasRetainedConnectionForTesting && Date()<deadline {
+            Thread.sleep(forTimeInterval:0.01)
+        }
+        XCTAssertFalse(driver.hasRetainedConnectionForTesting,"Idle timer must release the parsed physical schema")
+        let writer=SQLiteDatabaseDriver(url:driver.url,createsFileIfMissing:false)
+        try writer.execute("CREATE TABLE after_idle(value INTEGER);INSERT INTO after_idle VALUES(7);INSERT INTO facts VALUES(2)")
+        XCTAssertEqual(try driver.readRows("SELECT value FROM after_idle"){$0.int(0)!},[7])
+        XCTAssertEqual(try driver.readRows("SELECT value FROM facts ORDER BY value"){$0.int(0)!},[1,2])
+        XCTAssertGreaterThanOrEqual(driver.physicalOpenCount,2)
+    }
+
+    func testIdleExpiryNeverClosesABorrowedTransaction() throws {
+        let (_,_,driver)=try bound(idleSeconds:0.05)
+        _ = try driver.readRows("SELECT value FROM facts"){$0.int(0)!}
+        try driver.transaction { connection in
+            try connection.execute("INSERT INTO facts VALUES(2)")
+            Thread.sleep(forTimeInterval:0.2)
+            XCTAssertEqual(try connection.readRows("SELECT value FROM facts ORDER BY value"){$0.int(0)!},[1,2])
+        }
+        XCTAssertEqual(try driver.readRows("SELECT value FROM facts ORDER BY value"){$0.int(0)!},[1,2])
     }
 
     func testRetainedPhysicalHandleKeepsFreshRowsAndNamespaceWithoutRepeatedOpens() throws {

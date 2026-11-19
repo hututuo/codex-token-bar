@@ -60,6 +60,7 @@ final class IdleResourceCache<Value: AnyObject & Sendable>: @unchecked Sendable 
         // Native tokenizers can own a large allocation tree. Destroy outside
         // the lock, after any in-flight caller has finished with its borrow.
         withExtendedLifetime(expired) {}
+        ProcessMemoryReclaimer.schedule()
     }
 
     deinit { timer?.cancel() }

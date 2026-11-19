@@ -94,7 +94,7 @@ final class SharedSourceIOTests: XCTestCase {
             XCTAssertEqual(try broker.read(descriptor: reader.fileDescriptor,
                                           offset: Int64(index * chunk.count), count: chunk.count), chunk)
         }
-        XCTAssertLessThanOrEqual(broker.statistics.cachedBytes, 16 * 1024 * 1024)
+        XCTAssertLessThanOrEqual(broker.statistics.cachedBytes, 4 * 1024 * 1024)
         let reads = broker.statistics.physicalReads
         XCTAssertEqual(try broker.read(descriptor: reader.fileDescriptor, offset: 0, count: chunk.count), chunk)
         XCTAssertGreaterThan(broker.statistics.physicalReads, reads)

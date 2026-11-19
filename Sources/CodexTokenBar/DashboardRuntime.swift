@@ -563,7 +563,8 @@ final class DashboardRuntime: ObservableObject {
             NSApplication.didUnhideNotification,
             NSApplication.didBecomeActiveNotification,
             NSWindow.didMiniaturizeNotification,
-            NSWindow.didDeminiaturizeNotification
+            NSWindow.didDeminiaturizeNotification,
+            NSWindow.didChangeOcclusionStateNotification
         ]
         for name in appNotifications {
             notificationCenter.publisher(for: name).sink { [weak self] _ in
