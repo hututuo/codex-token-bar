@@ -38,7 +38,8 @@ final class IdleResourceCacheTests: XCTestCase {
         let cache = IdleResourceCache(idleSeconds: 60, automaticallyExpires: false,
                                       make: { state.make() })
         DispatchQueue.concurrentPerform(iterations: 20) { _ in
-            XCTAssertNoThrow(try cache.get())
+            do { _ = try cache.get() }
+            catch { XCTFail("Concurrent load failed: \(error)") }
         }
         XCTAssertEqual(state.loads, 1)
     }
