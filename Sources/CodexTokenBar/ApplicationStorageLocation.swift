@@ -8,8 +8,10 @@ enum ApplicationStorageLocation {
         let process = ProcessInfo.processInfo
         return process.environment["XCTestConfigurationFilePath"] != nil
             || Bundle.main.bundlePath.hasSuffix(".xctest")
-            || process.arguments.first?.contains(".xctest/") == true
+            || process.arguments.contains { $0.hasSuffix(".xctest") || $0.contains(".xctest/") }
+            || process.processName == "xctest"
             || process.processName.hasSuffix("PackageTests")
+            || NSClassFromString("XCTestCase") != nil
     }()
 
     private static let testRoot = FileManager.default.temporaryDirectory
