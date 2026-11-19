@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import SQLite3
 import Darwin
+import CSQLiteMemory
 
 /// One durable pool in A. Jobs are rows, never new stores or MAIN tables.
 /// Parsing happens in private SQLite work areas; only verified numeric rows
@@ -107,6 +108,8 @@ final class ExactStagePool: @unchecked Sendable {
     private static let payloadTables = ["events": "event_rows", "fingerprints": "fingerprints", "chunks": "chunks"]
 
     private init(target: BusinessSQLiteStore) throws {
+        let memoryScope = tb_sqlite_memory_begin_scope()
+        defer { tb_sqlite_memory_end_scope(memoryScope) }
         guard target.module == "exact.swift", try BusinessSQLiteRoutes.validateActiveContainer(target.containerURL) else {
             throw Failure.invalid
         }
@@ -199,6 +202,8 @@ final class ExactStagePool: @unchecked Sendable {
 
     private func use<T>(_ body: (SQLiteDatabaseConnection) throws -> T) throws -> T {
         lock.lock(); defer { lock.unlock() }
+        let memoryScope = tb_sqlite_memory_begin_scope()
+        defer { tb_sqlite_memory_end_scope(memoryScope) }
         try BusinessSQLiteRoutes.requireAccess(to: store, readOnly: false)
         guard try BusinessSQLiteRoutes.validateActiveContainer(store.containerURL),
               try Self.fileIdentity(store.containerURL) == openedIdentity,

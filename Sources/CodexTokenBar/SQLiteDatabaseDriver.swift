@@ -1,6 +1,7 @@
 import Foundation
 import Darwin
 import SQLite3
+import CSQLiteMemory
 
 enum SQLiteBinding {
     case null
@@ -873,6 +874,8 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
     private func withUncoordinatedConnection<T>(
         _ body: (SQLiteDatabaseConnection) throws -> T
     ) throws -> T {
+        let memoryScope = tb_sqlite_memory_begin_scope()
+        defer { tb_sqlite_memory_end_scope(memoryScope) }
         let openURL = backingURL
         if let businessStore {
             guard BusinessSQLiteRoutes.store(for: url) == businessStore else {
