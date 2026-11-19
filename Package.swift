@@ -46,7 +46,6 @@ let package = Package(
             name: "CodexTokenBar",
             dependencies: [
                 "TokenBarDiagnosticsCore",
-                "TiktokenSwift",
                 "CZstd",
                 "AgentSpeedCore",
                 "SharedSourceIO",
@@ -68,7 +67,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CodexTokenBarTests",
-            dependencies: ["CodexTokenBar"],
+            dependencies: ["CodexTokenBar", "TiktokenSwift"],
             path: "Tests/CodexTokenBarTests"
         )
     ]

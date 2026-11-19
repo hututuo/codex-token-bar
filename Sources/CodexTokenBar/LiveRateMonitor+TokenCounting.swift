@@ -1,5 +1,4 @@
 import Foundation
-import TiktokenSwift
 
 extension LiveRateMonitor {
     func warmTokenEncoder() async {

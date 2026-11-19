@@ -1,36 +1,22 @@
 import Foundation
 import CryptoKit
 import CoreFoundation
-import TiktokenSwift
 
 /// Fully local, bundled tokenizer. Never downloads a vocabulary or sends response text.
 enum BodySpeedTokenizer {
-    private static let cache = IdleResourceCache<CoreBpe>(idleSeconds: 60) {
+    private static let cache = IdleResourceCache<CompactO200kTokenizer>(idleSeconds: 60) {
         try makeEncoder()
     }
 
-    static func load() throws -> CoreBpe {
+    static func load() throws -> CompactO200kTokenizer {
         try cache.get()
     }
 
-    private static func makeEncoder() throws -> CoreBpe {
+    private static func makeEncoder() throws -> CompactO200kTokenizer {
         guard let url = AppResources.url(forResource: "o200k_base", withExtension: "tiktoken") else {
             throw CocoaError(.fileNoSuchFile)
         }
-        let data = try Data(contentsOf: url)
-        guard SHA256.hash(data: data).map({ String(format: "%02x", $0) }).joined()
-                == "446a9538cb6c348e3516120d7c08b09f57c36495e2acfffe59a5bf8b0cfb1a2d",
-              let text = String(data: data, encoding: .utf8) else { throw CocoaError(.fileReadCorruptFile) }
-        var ranks: [[UInt8]: UInt32] = [:]
-        ranks.reserveCapacity(199_998)
-        for line in text.split(separator: "\n") {
-            let parts = line.split(separator: " ")
-            guard parts.count == 2, let bytes = Data(base64Encoded: String(parts[0])),
-                  let rank = UInt32(parts[1]) else { throw CocoaError(.fileReadCorruptFile) }
-            ranks[Array(bytes)] = rank
-        }
-        let pattern = #"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n/]*|\s*[\r\n]+|\s+(?!\S)|\s+"#
-        return try newCoreBpe(encoder: ranks, specialTokensEncoder: ["<|endoftext|>": 199999, "<|endofprompt|>": 200018], pattern: pattern)
+        return try autoreleasepool { try CompactO200kTokenizer(vocabulary: Data(contentsOf: url)) }
     }
 }
 

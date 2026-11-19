@@ -2,7 +2,6 @@ import Combine
 import Foundation
 import Darwin
 import SwiftUI
-import TiktokenSwift
 
 enum LiveRateSnapshotPublicationPolicy {
     static let activeInterval: TimeInterval = 1.0
@@ -172,7 +171,7 @@ final class LiveRateMonitor: ObservableObject {
     private var pendingRolloutOrder: [String] = []
     private let pendingRolloutWindow: TimeInterval = 1.0
     private let pendingRolloutLimit = 1_024
-    var tokenEncoder: CoreBpe?
+    var tokenEncoder: CompactO200kTokenizer?
 
     struct FileStoreSignature: Equatable {
         let device: UInt64?
