@@ -537,7 +537,6 @@ final class ExactStagePool: @unchecked Sendable {
     /// scan or age/filename heuristic authorizes removing a namespace.
     func reclaimPublished(maximumJobs: Int = 4, budget: TimeInterval = 0.25) throws -> Int {
         guard (1...16).contains(maximumJobs), budget > 0 else { throw Failure.invalid }
-        let started = Date()
         let candidates = try use { db in
             try db.readRows("""
             SELECT o.logical_path,o.module,o.source_identity,j.logical_path,NULL
@@ -555,6 +554,10 @@ final class ExactStagePool: @unchecked Sendable {
                     module: row.text(1)!, sourceIdentity: row.text(2)!), URL(fileURLWithPath: row.text(3)!), row.text(4))
             }
         }
+        // Charge the bounded cleanup work, not a cold SQLite schema open.
+        // Otherwise a reopened large ledger can exhaust the budget before
+        // the first job and make no progress on every maintenance tick.
+        let started = Date()
         var reclaimed = 0
         for (target, url, legacySource) in candidates {
             if Date().timeIntervalSince(started) >= budget { break }

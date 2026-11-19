@@ -84,6 +84,30 @@ final class ExactStagePoolTests: XCTestCase {
         XCTAssertEqual(try f.writer.readRows("SELECT value FROM schema_meta WHERE key='published_tokens'") { $0.text(0) }, ["123"])
     }
 
+    func testMaintenanceReleasesIdlePoolAndReopensDurableQueue() throws {
+        let f = try fixture()
+        let maintenance = ExactStageMaintenance()
+        var pool: ExactStagePool? = try ExactStagePool.shared(for: f.target)
+        let job = try makeJob(pool!, f), source = try seed(job)
+        try pool!.persist(job, from: source.connection)
+        try f.writer.transaction { try pool!.consume(job, generation: "generation-2", on: $0) }
+        weak var released = pool
+        maintenance.runTickForTesting()
+        XCTAssertNotNil(maintenance.retainedPoolForTesting, "Keep the connection warm while draining a batch")
+        pool = nil
+        maintenance.runTickForTesting()
+        XCTAssertNil(maintenance.retainedPoolForTesting)
+        XCTAssertNil(released, "An empty maintenance queue must not pin A's schema")
+        let reopened = try ExactStagePool.shared(for: f.target)
+        let next = try makeJob(reopened, f, 1), nextSource = try seed(next)
+        try reopened.persist(next, from: nextSource.connection)
+        try f.writer.transaction { try reopened.consume(next, generation: "generation-3", on: $0) }
+        maintenance.runTickForTesting()
+        XCTAssertEqual(try count(f, reopened.store.prefix + "publication_receipts"), 2)
+        XCTAssertEqual(try count(f, reopened.store.prefix + "event_rows"), 0)
+        XCTAssertEqual(try f.writer.readRows("SELECT value FROM schema_meta WHERE key='published_tokens'") { $0.text(0) }, ["123"])
+    }
+
     func testLegacyCandidatesUseIndexedSourceBoundsWithoutMixingOwners() throws {
         let f = try fixture(), pool = try ExactStagePool.shared(for: f.target)
         let digest = String(repeating: "b", count: 64)

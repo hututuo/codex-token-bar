@@ -79,4 +79,27 @@ final class SharedSourceIOTests: XCTestCase {
         XCTAssertThrowsError(try broker.read(descriptor: f.fileDescriptor, offset: 0, count: -1))
     }
 
+    func testDefaultBudgetEvictsOldPagesButKeepsFreshReadsCorrect() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let chunk = Data(repeating: 7, count: 1024 * 1024)
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        let writer = try FileHandle(forWritingTo: url)
+        for _ in 0..<20 { try writer.write(contentsOf: chunk) }
+        try writer.close()
+        let reader = try FileHandle(forReadingFrom: url)
+        defer { try? reader.close() }
+        let broker = SharedSourceIO()
+        for index in 0..<20 {
+            XCTAssertEqual(try broker.read(descriptor: reader.fileDescriptor,
+                                          offset: Int64(index * chunk.count), count: chunk.count), chunk)
+        }
+        XCTAssertLessThanOrEqual(broker.statistics.cachedBytes, 16 * 1024 * 1024)
+        let reads = broker.statistics.physicalReads
+        XCTAssertEqual(try broker.read(descriptor: reader.fileDescriptor, offset: 0, count: chunk.count), chunk)
+        XCTAssertGreaterThan(broker.statistics.physicalReads, reads)
+        let afterReload = broker.statistics.physicalReads
+        XCTAssertEqual(try broker.read(descriptor: reader.fileDescriptor, offset: 0, count: chunk.count), chunk)
+        XCTAssertEqual(broker.statistics.physicalReads, afterReload)
+    }
 }

@@ -152,6 +152,8 @@ final class CompletedBodySpeedTests: XCTestCase {
     }
     func testBundledO200kWorksWithoutNetworkAndHasNoSixteenKTruncation() throws {
         let encoder = try BodySpeedTokenizer.load()
+        XCTAssertTrue(encoder === (try BodySpeedTokenizer.load()),
+                      "Completed-body and optional live counting must share the vocabulary")
         XCTAssertEqual(encoder.encodeOrdinary(text: "hello world").count, 2)
         XCTAssertEqual(encoder.encodeOrdinary(text: "你好世界").count, 2)
         XCTAssertEqual(encoder.encodeOrdinary(text: String(repeating: "hello world ", count: 3000)).count, 6001)

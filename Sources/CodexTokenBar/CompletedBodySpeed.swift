@@ -5,7 +5,15 @@ import TiktokenSwift
 
 /// Fully local, bundled tokenizer. Never downloads a vocabulary or sends response text.
 enum BodySpeedTokenizer {
+    private static let cache = IdleResourceCache<CoreBpe>(idleSeconds: 60) {
+        try makeEncoder()
+    }
+
     static func load() throws -> CoreBpe {
+        try cache.get()
+    }
+
+    private static func makeEncoder() throws -> CoreBpe {
         guard let url = AppResources.url(forResource: "o200k_base", withExtension: "tiktoken") else {
             throw CocoaError(.fileNoSuchFile)
         }
@@ -186,7 +194,6 @@ actor CompletedBodySpeedReader {
         let sample: ObservedSpeedSample
     }
     private var states: [String: State] = [:]
-    private var encoder: CoreBpe?
     private var recent: [String: [ObservedSpeedSample]] = [:]
     private var sampleRevisionsByPath: [String: UInt64] = [:]
     private var pendingSamplesByPath: [String: [PendingSample]] = [:]
@@ -212,8 +219,6 @@ actor CompletedBodySpeedReader {
             else { pendingSamplesByPath[path] = remaining }
         }
         do {
-            if encoder == nil { encoder = try BodySpeedTokenizer.load() }
-            guard let encoder else { return result }
             var budget = 64 * 1_048_576
             var seen: Set<String> = []
             var recentIDsByPath: [String: Set<String>] = [:]
@@ -253,7 +258,9 @@ actor CompletedBodySpeedReader {
                 if state.discardPartial, let first = data.firstIndex(of: 10) { start = data.index(after: first); state.discardPartial = false }
                 if start <= last {
                     for line in data[start...last].split(separator: 10) {
-                        if let sample = state.assembler.consume(Data(line), thread: option.id, now: now, tokenizer: { encoder.encodeOrdinary(text: $0).count }) {
+                        if let sample = try state.assembler.consume(Data(line), thread: option.id, now: now, tokenizer: {
+                            try BodySpeedTokenizer.load().encodeOrdinary(text: $0).count
+                        }) {
                             if recentIDsByPath[path] == nil {
                                 recentIDsByPath[path] = Set(recent[path, default: []].map(\.id))
                             }

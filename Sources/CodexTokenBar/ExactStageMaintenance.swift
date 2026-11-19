@@ -1,7 +1,7 @@
 import Foundation
 
 /// One utility timer for A, independent of a window or Home refresh. Durable
-/// publication receipts supply the queue; idle checks back off to 30 seconds.
+/// publication receipts supply the queue; idle checks back off to two minutes.
 /// Constructed only by the ready application runtime, never by a reader.
 final class ExactStageMaintenance: @unchecked Sendable {
     private let queue = DispatchQueue(label: "tokenbar.exact-stage-maintenance", qos: .utility)
@@ -18,6 +18,8 @@ final class ExactStageMaintenance: @unchecked Sendable {
         self.firstTickDelayForTesting = firstTickDelayForTesting
         self.onTickForTesting = onTickForTesting
     }
+    var retainedPoolForTesting: ExactStagePool? { pool }
+    func runTickForTesting() { tick() }
     #endif
 
     @MainActor func start() {
@@ -55,7 +57,15 @@ final class ExactStageMaintenance: @unchecked Sendable {
             let count = try pool.reclaimPublished()
             lastError = nil
             if count > 0 { delay = 2 }
+            else {
+                // A's historical namespaces make one parsed SQLite schema
+                // expensive. An empty cleanup queue must not pin another
+                // full schema for the lifetime of the ready runtime.
+                self.pool = nil
+                delay = 120
+            }
         } catch {
+            pool = nil
             delay = 60
             let message = String(error.localizedDescription.prefix(1024))
             if message != lastError { NSLog("Exact stage maintenance deferred: %@", message); lastError = message }
