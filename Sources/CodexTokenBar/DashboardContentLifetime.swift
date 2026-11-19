@@ -6,7 +6,7 @@ import SwiftUI
 /// while the window is closed or minimized. App-owned readers keep running.
 struct DashboardContentLifetime<Content: View>: View {
     @State private var mounted = true
-    @State private var visible = true
+    @State private var unloadTask: Task<Void, Never>?
     private let content: () -> Content
 
     init(@ViewBuilder content: @escaping () -> Content) {
@@ -19,16 +19,22 @@ struct DashboardContentLifetime<Content: View>: View {
             else { Color.clear }
         }
         .background(DashboardWindowVisibility { isVisible in
-            visible = isVisible
-            if isVisible { mounted = true }
+            unloadTask?.cancel()
+            unloadTask = nil
+            if isVisible {
+                mounted = true
+            } else {
+                // A SwiftUI .task is cancelled when the window disappears,
+                // exactly when this delayed unload needs to keep running.
+                unloadTask = Task { @MainActor in
+                    do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                    guard !Task.isCancelled else { return }
+                    mounted = false
+                    unloadTask = nil
+                    ProcessMemoryReclaimer.schedule()
+                }
+            }
         })
-        .task(id: visible) {
-            guard !visible else { return }
-            do { try await Task.sleep(for: .seconds(1)) } catch { return }
-            guard !Task.isCancelled else { return }
-            mounted = false
-            ProcessMemoryReclaimer.schedule()
-        }
     }
 }
 
