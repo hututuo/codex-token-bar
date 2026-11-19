@@ -44,6 +44,18 @@ final class IdleResourceCacheTests: XCTestCase {
         XCTAssertEqual(state.loads, 1)
     }
 
+    func testLongLivedBorrowerPreventsDuplicateConstructionAfterExpiry() throws {
+        let state = State()
+        let cache = IdleResourceCache(idleSeconds: 60, automaticallyExpires: false,
+                                      now: { state.now() }, make: { state.make() })
+        let activeCounter = try cache.get()
+        state.advance(61)
+        cache.expireIfIdle()
+        XCTAssertTrue(activeCounter === (try cache.get()),
+                      "Optional live counting may still own the tokenizer after body counting idles")
+        XCTAssertEqual(state.loads, 1)
+    }
+
     func testFailedLoadCanRetry() throws {
         enum Failure: Error { case unavailable }
         let state = State()

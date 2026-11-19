@@ -9,6 +9,7 @@ final class IdleResourceCache<Value: AnyObject & Sendable>: @unchecked Sendable 
     private let make: @Sendable () throws -> Value
     private let now: @Sendable () -> TimeInterval
     private var value: Value?
+    private weak var borrowedValue: Value?
     private var lastUse: TimeInterval = 0
     private var timer: DispatchSourceTimer?
     private let automaticallyExpires: Bool
@@ -26,11 +27,12 @@ final class IdleResourceCache<Value: AnyObject & Sendable>: @unchecked Sendable 
         lock.lock()
         defer { lock.unlock() }
         let resource: Value
-        if let value { resource = value }
+        if let existing = value ?? borrowedValue { resource = existing }
         else {
             resource = try make()
-            value = resource
         }
+        value = resource
+        borrowedValue = resource
         lastUse = now()
         if automaticallyExpires, timer == nil {
             let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
