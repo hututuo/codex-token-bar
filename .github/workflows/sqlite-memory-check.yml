@@ -1,0 +1,111 @@
+name: SQLite allocator stress
+
+on:
+  push:
+    branches: [codex/production-rail-20261116]
+    paths: [.github/workflows/sqlite-memory-check.yml]
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact product source to validate
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  allocator:
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.source_sha || github.sha }}
+          persist-credentials: false
+      - name: Validate allocation, resize, concurrent release and sparse survivors
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          cat > /tmp/sqlite-memory-stress.c <<'C'
+          #include "CSQLiteMemory.h"
+          #include <assert.h>
+          #include <pthread.h>
+          #include <sqlite3.h>
+          #include <stdint.h>
+          #include <stdio.h>
+          #include <string.h>
+          #include <limits.h>
+          #include <stdlib.h>
+          typedef struct { void *p; int length; unsigned char byte; } Slot;
+          static void *worker(void *arg) {
+              uintptr_t seed = (uintptr_t)arg + 1;
+              Slot slots[1024] = {0};
+              void *scope = tb_sqlite_memory_begin_scope();
+              for (int i=0; i<100000; i++) {
+                  seed = seed * 1664525 + 1013904223;
+                  Slot *slot = &slots[(seed >> 13) % 1024];
+                  if (slot->p) {
+                      unsigned char *bytes = slot->p;
+                      for (int j=0; j<slot->length; j++) assert(bytes[j]==slot->byte);
+                      int next = (int)((seed >> 3) % 30000) + 1;
+                      void *resized = sqlite3_realloc(slot->p,next);
+                      assert(resized);
+                      for (int j=0; j<(next<slot->length?next:slot->length); j++)
+                          assert(((unsigned char *)resized)[j]==slot->byte);
+                      slot->p=resized; slot->length=next;
+                  } else {
+                      slot->length=(int)((seed >> 7) % 20000)+1;
+                      slot->p=sqlite3_malloc(slot->length);
+                      assert(slot->p && (uintptr_t)slot->p % 8 == 0);
+                  }
+                  slot->byte=(unsigned char)(seed % 251);
+                  memset(slot->p,slot->byte,slot->length);
+                  if (i % 3 == 0) { sqlite3_free(slot->p); slot->p=NULL; }
+              }
+              tb_sqlite_memory_end_scope(scope);
+              for (int i=0;i<1024;i++) sqlite3_free(slots[i].p);
+              return NULL;
+          }
+          static void *free_elsewhere(void *p) { sqlite3_free(p); return NULL; }
+          int main(void) {
+              assert(tb_sqlite_memory_install()==SQLITE_OK);
+              size_t baseline=tb_sqlite_memory_mapped_bytes();
+              pthread_t threads[4];
+              for (uintptr_t i=0;i<4;i++) assert(!pthread_create(&threads[i],NULL,worker,(void *)i));
+              for (int i=0;i<4;i++) assert(!pthread_join(threads[i],NULL));
+              assert(tb_sqlite_memory_mapped_bytes()==baseline);
+              void *scope=tb_sqlite_memory_begin_scope();
+              void *survivor=sqlite3_malloc(32);
+              void **blocks=calloc(100000,sizeof(void *));
+              assert(blocks && survivor);
+              for(int i=0;i<100000;i++) { blocks[i]=sqlite3_malloc(16+(i%128)*16); assert(blocks[i]); }
+              for(int i=99999;i>=0;i--) sqlite3_free(blocks[i]);
+              free(blocks);
+              assert(sqlite3_realloc(survivor,INT_MAX)==NULL);
+              tb_sqlite_memory_end_scope(scope);
+              assert(tb_sqlite_memory_mapped_bytes()<=baseline+65536);
+              assert(!pthread_create(&threads[0],NULL,free_elsewhere,survivor));
+              assert(!pthread_join(threads[0],NULL));
+              assert(tb_sqlite_memory_mapped_bytes()==baseline);
+              printf("PASS: 400000 concurrent allocation/resize operations; sparse survivor; failed resize; cross-thread free\n");
+          }
+          C
+          clang -std=c11 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -I Sources/CSQLiteMemory/include Sources/CSQLiteMemory/SQLiteMemory.c \
+            /tmp/sqlite-memory-stress.c -lsqlite3 -lpthread -o /tmp/sqlite-memory-stress
+          /tmp/sqlite-memory-stress 2>&1 | tee sqlite-memory-stress.log
+          printf '%s\n' "$SOURCE_SHA" > checked-allocator-source.txt
+          shasum -a 256 Sources/CSQLiteMemory/SQLiteMemory.c Sources/CSQLiteMemory/include/CSQLiteMemory.h > allocator-files.sha256
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: sqlite-memory-stress-${{ inputs.source_sha || github.sha }}
+          path: |
+            sqlite-memory-stress.log
+            checked-allocator-source.txt
+            allocator-files.sha256
+          retention-days: 14
