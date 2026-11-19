@@ -9818,7 +9818,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 .appendingPathComponent(cacheDirectoryName, isDirectory: true)
                 .appendingPathComponent(indexNamespace, isDirectory: true)
         } else {
-            let dataRoot = FileManager.default.urls(for: legacyCache ? .cachesDirectory : .applicationSupportDirectory, in: .userDomainMask).first
+            let dataRoot = ApplicationStorageLocation.directory(legacyCache ? .cachesDirectory : .applicationSupportDirectory)
                 ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
             root = dataRoot
                 .appendingPathComponent(cacheDirectoryName, isDirectory: true)

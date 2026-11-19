@@ -701,8 +701,8 @@
       "sha256": "337b87c0f66b46c618a8e24647e2cec3d59097ec67893ad26f58b606f3be9dd5"
     },
     "macos/Sources/AgentSpeedCore/Parsing/TranscriptParser.swift": {
-      "reason": "Select the one initialized parser directly when projecting AgentState; avoid nil-coalescing autoclosure copies of the aggregate in each live snapshot without changing value semantics or accounting.",
-      "sha256": "e43872576849c108bb42b45d43a256f1a6a6cd627f18131e0f007b6943fbd6b5"
+      "reason": "Select the one initialized parser directly when projecting AgentState; avoid nil-coalescing autoclosure copies of the aggregate in each live snapshot without changing value semantics or accounting. Store only the active parser payload in copy-on-write storage to avoid reserving all nine machines per tracked file, preserving independent parser values.",
+      "sha256": "42ff3934db796bc51cdc1fadf401973b2ed718c8012009d189448d89776e0143"
     },
     "macos/Sources/AgentSpeedCore/Pricing/BundledPriceAssets.swift": {
       "reason": "Price assets only from reviewed upstream f32bc2945bce5dcfc94d6befb28dcb2e0abc9532: version 4 adds five Kimi/MiMo entries and documented Kimi aliases. Existing model prices, tiers and periods, including the GPT-6.1 Terra fix, are unchanged. SDK code remains pinned. Local v5 adds Fable 5.2 standard/fast rates and its documented alias from official Claude pricing evidence reviewed 2026-11-10; preserves all 199 prior entries, tiers and periods. SDK and upstream pin remain unchanged.",
@@ -729,8 +729,8 @@
       "sha256": "2dccb1b1319ccdf24fe8392bdd998c21f8a71197f0c54abab2d9c2852d72bcc0"
     },
     "macos/Tests/AgentSpeedCoreTests/ParserBehaviorTests.swift": {
-      "reason": "Add local regression coverage for bounded Claude display titles, metadata precedence and rename updates, property ordering, stable fallback, per-subagent labels, Unicode/control cleanup, interrupt handling and oversized text. Verify every parser family retains live state and independent value copies after direct state projection, including TrackedFile reads, mutation and reset.",
-      "sha256": "b84ce09770a99ed6f3c7f75250ee4d3c57d331d7d49f2a2957764731ea07ec03"
+      "reason": "Add local regression coverage for bounded Claude display titles, metadata precedence and rename updates, property ordering, stable fallback, per-subagent labels, Unicode/control cleanup, interrupt handling and oversized text. Verify every parser family retains live state and independent value copies after direct state projection, including TrackedFile reads, mutation and reset. Enforce a bounded inline parser footprint while retaining all-family value-copy and mutation tests.",
+      "sha256": "b4d4318f0d2566def5fe75355c549503611b5a89200c9bfcbc9e2acec52dc58e"
     },
     "macos/Tests/AgentSpeedCoreTests/ProtobufTests.swift": {
       "reason": "Break the repeated-scalar protobuf fixture into typed byte-array appends for Swift 6 compiler compatibility; emitted fixture bytes and assertions are unchanged.",

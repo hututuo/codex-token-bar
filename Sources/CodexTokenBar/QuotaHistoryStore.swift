@@ -1937,13 +1937,13 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
     }
 
     private static var defaultDatabaseURL: URL? {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+        ApplicationStorageLocation.directory(.applicationSupportDirectory)?
             .appendingPathComponent("CodexTokenBar", isDirectory: true)
             .appendingPathComponent("quota-history.sqlite")
     }
 
     private static var defaultPeerDatabaseURL: URL? {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+        ApplicationStorageLocation.directory(.applicationSupportDirectory)?
             .appendingPathComponent("CodexTokenBarTauri", isDirectory: true)
             .appendingPathComponent("quota-history.sqlite")
     }

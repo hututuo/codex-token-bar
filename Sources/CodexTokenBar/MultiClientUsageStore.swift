@@ -328,7 +328,7 @@ final class MultiClientUsageStore: ObservableObject {
     static let preferencesKey = "multiClientUsage.preferences.v1"
     static var defaultDatabaseURL: URL {
         ClientUsageDataLocation.databaseURL(
-            applicationSupport: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0],
+            applicationSupport: ApplicationStorageLocation.applicationSupport,
             bundleIdentifier: Bundle.main.bundleIdentifier)
     }
     @Published private(set) var preferences: [MultiClientUsagePreference]

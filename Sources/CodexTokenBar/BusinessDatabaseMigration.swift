@@ -20,7 +20,9 @@ final class BusinessDatabaseMigration {
         let legacyExact: URL
         var backups: URL { container.deletingLastPathComponent().appendingPathComponent("ledger-migration-backups", isDirectory: true) }
         static func production(fileManager: FileManager = .default) throws -> Self {
-            let support = try fileManager.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+            let support = try ApplicationStorageLocation.isTestProcess
+                ? ApplicationStorageLocation.applicationSupport
+                : fileManager.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
             let native = support.appendingPathComponent("CodexTokenBar", isDirectory: true)
             return .init(container: native.appendingPathComponent("codex-ledger.sqlite"), support: native,
                 exact: CodexUsageHistoryIndex.businessIndexDirectory(),

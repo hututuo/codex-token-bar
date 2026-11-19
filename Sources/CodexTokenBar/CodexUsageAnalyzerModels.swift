@@ -1287,7 +1287,7 @@ extension CodexUsageAnalyzer {
                !override.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 return URL(fileURLWithPath: (override as NSString).expandingTildeInPath)
             }
-            return FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            return ApplicationStorageLocation.directory(.cachesDirectory)
         }
 
         private static func canonicalRootPath(_ root: String) -> String {

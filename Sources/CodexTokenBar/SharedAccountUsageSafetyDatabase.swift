@@ -87,12 +87,7 @@ final class SharedAccountUsageSafetyDatabase: @unchecked Sendable {
         let resolvedDatabaseURL: URL
         if let url {
             resolvedDatabaseURL = url
-        } else if let support = try? fileManager.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        ) {
+        } else if let support = ApplicationStorageLocation.directory(.applicationSupportDirectory, fileManager: fileManager) {
             let directory = support.appendingPathComponent(
                 "CodexTokenBar",
                 isDirectory: true

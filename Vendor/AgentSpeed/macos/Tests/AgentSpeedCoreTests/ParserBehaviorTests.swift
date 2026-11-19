@@ -4,6 +4,12 @@ import Testing
 
 @Suite("Parser behavior")
 struct ParserBehaviorTests {
+    @Test func trackedParserDoesNotReserveEveryClientMachine() {
+        // Thousands of cold transcript files retain this wrapper. Reserving
+        // all nine inline parser structs previously made each file about 4KiB.
+        #expect(MemoryLayout<TranscriptParser>.stride <= 128)
+    }
+
     @Test(arguments: TranscriptFamily.allCases)
     func stateProjectionSelectsTheLiveFamilyAndKeepsIndependentValueCopies(_ family: TranscriptFamily) {
         var parser=TranscriptParser(family:family,agentId:"/fixture/session",fileID:17)

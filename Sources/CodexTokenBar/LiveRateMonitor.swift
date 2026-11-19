@@ -1149,7 +1149,7 @@ final class LiveRateMonitor: ObservableObject {
             resolvedSpeedModels.removeAll(); speedModelLookupAttempts.removeAll()
             // Store metadata only in TokenBar support, partitioned by a non-reversible source hash.
             let digest = identity.map { ObservedSpeedCollector.sourceKey($0) } ?? "default"
-            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            let base = ApplicationStorageLocation.applicationSupport
             speedCollector = ObservedSpeedCollector()
             let url = base.appendingPathComponent("CodexTokenBar/body-speed-\(digest).sqlite")
             speedDatabaseURL = url; speedDatabaseReady = false; speedTrendPoints = []; speedTrendError = nil

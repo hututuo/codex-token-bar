@@ -117,34 +117,53 @@ enum DecodedLines: Sendable {
     case grokBuild([LineExtraction<GrokBuildLine>])
 }
 
-/// A family-agnostic per-file parser. Exactly one of the machines is set.
+/// The optional slots below used to reserve every parser's full inline size in
+/// each tracked file, although only one family is active. Store only the active
+/// payload and copy on mutation so snapshots retain independent value semantics.
+private struct ParserStorage<Value: Sendable>: Sendable {
+    private final class Box: @unchecked Sendable {
+        var value: Value
+        init(_ value: Value) { self.value = value }
+    }
+    private var box: Box
+    init(_ value: Value) { box = Box(value) }
+    var value: Value {
+        _read { yield box.value }
+        _modify {
+            if !isKnownUniquelyReferenced(&box) { box = Box(box.value) }
+            yield &box.value
+        }
+    }
+}
+
+/// A family-agnostic per-file parser. Only the selected machine allocates storage.
 struct TranscriptParser: Sendable {
     let family: TranscriptFamily
-    private var codex: CodexParser?
-    private var claude: ClaudeParser?
-    private var dsh: DshParser?
-    private var gemini: GeminiParser?
-    private var omp: OmpParser?
-    private var antigravity: AntigravityParser?
-    private var workbuddy: WorkBuddyParser?
-    private var kimi: KimiParser?
-    private var grokBuild: GrokBuildParser?
+    private var codex: ParserStorage<CodexParser>?
+    private var claude: ParserStorage<ClaudeParser>?
+    private var dsh: ParserStorage<DshParser>?
+    private var gemini: ParserStorage<GeminiParser>?
+    private var omp: ParserStorage<OmpParser>?
+    private var antigravity: ParserStorage<AntigravityParser>?
+    private var workbuddy: ParserStorage<WorkBuddyParser>?
+    private var kimi: ParserStorage<KimiParser>?
+    private var grokBuild: ParserStorage<GrokBuildParser>?
 
     /// `root` is the root folder the file was discovered under (omp and WorkBuddy derive `isSubagent` from it,
     /// METRICS 4.7, 4.9).
     init(family: TranscriptFamily, agentId: String, fileID: FileID, root: String? = nil) {
         self.family = family
         switch family {
-        case .codex: codex = CodexParser(agentId: agentId, fileID: fileID)
-        case .claude: claude = ClaudeParser(agentId: agentId, fileID: fileID)
-        case .dsh: dsh = DshParser(agentId: agentId, fileID: fileID)
-        case .gemini: gemini = GeminiParser(agentId: agentId, fileID: fileID)
-        case .omp: omp = OmpParser(agentId: agentId, fileID: fileID, root: root)
-        case .antigravity: antigravity = AntigravityParser(agentId: agentId, fileID: fileID)
+        case .codex: codex = ParserStorage(CodexParser(agentId: agentId, fileID: fileID))
+        case .claude: claude = ParserStorage(ClaudeParser(agentId: agentId, fileID: fileID))
+        case .dsh: dsh = ParserStorage(DshParser(agentId: agentId, fileID: fileID))
+        case .gemini: gemini = ParserStorage(GeminiParser(agentId: agentId, fileID: fileID))
+        case .omp: omp = ParserStorage(OmpParser(agentId: agentId, fileID: fileID, root: root))
+        case .antigravity: antigravity = ParserStorage(AntigravityParser(agentId: agentId, fileID: fileID))
         case .workbuddy, .workbuddyAi:
-            workbuddy = WorkBuddyParser(source: family.sources[0], agentId: agentId, fileID: fileID, root: root)
-        case .kimi: kimi = KimiParser(agentId: agentId, fileID: fileID)
-        case .grokBuild: grokBuild = GrokBuildParser(agentId: agentId, fileID: fileID)
+            workbuddy = ParserStorage(WorkBuddyParser(source: family.sources[0], agentId: agentId, fileID: fileID, root: root))
+        case .kimi: kimi = ParserStorage(KimiParser(agentId: agentId, fileID: fileID))
+        case .grokBuild: grokBuild = ParserStorage(GrokBuildParser(agentId: agentId, fileID: fileID))
         }
     }
 
@@ -153,20 +172,20 @@ struct TranscriptParser: Sendable {
         // this large aggregate for every fallback during each snapshot scan.
         // Select the same initialized parser directly; retain value semantics.
         switch family {
-        case .codex: codex!.state
-        case .claude: claude!.state
-        case .dsh: dsh!.state
-        case .gemini: gemini!.state
-        case .omp: omp!.state
-        case .workbuddy, .workbuddyAi: workbuddy!.state
-        case .kimi: kimi!.state
-        case .grokBuild: grokBuild!.state
-        case .antigravity: antigravity!.state
+        case .codex: codex!.value.state
+        case .claude: claude!.value.state
+        case .dsh: dsh!.value.state
+        case .gemini: gemini!.value.state
+        case .omp: omp!.value.state
+        case .workbuddy, .workbuddyAi: workbuddy!.value.state
+        case .kimi: kimi!.value.state
+        case .grokBuild: grokBuild!.value.state
+        case .antigravity: antigravity!.value.state
         }
     }
 
     /// An Antigravity database without the expected tables (`unsupportedFormat`).
-    var isUnsupported: Bool { antigravity?.isUnsupported ?? false }
+    var isUnsupported: Bool { antigravity?.value.isUnsupported ?? false }
 
     /// Decodes one unit of input: a line, or a whole document for Gemini CLI legacy `.json` files. Antigravity
     /// databases are never fed bytes; their reads arrive as batches.
@@ -176,7 +195,7 @@ struct TranscriptParser: Sendable {
         case .claude: .claude(ClaudeLineExtractor.extract(bytes))
         case .dsh: .dsh(DshLineExtractor.extract(bytes))
         case .gemini:
-            .gemini(gemini?.isDocument == true ? GeminiLineExtractor.extractDocument(bytes) : GeminiLineExtractor.extract(bytes))
+            .gemini(gemini?.value.isDocument == true ? GeminiLineExtractor.extractDocument(bytes) : GeminiLineExtractor.extract(bytes))
         case .omp: .omp(OmpLineExtractor.extract(bytes))
         case .workbuddy, .workbuddyAi: .workbuddy(WorkBuddyLineExtractor.extract(bytes))
         case .antigravity: nil
@@ -185,35 +204,35 @@ struct TranscriptParser: Sendable {
         }
     }
 
-    var hasPartialHistory: Bool { grokBuild?.partialHistory ?? false }
+    var hasPartialHistory: Bool { grokBuild?.value.partialHistory ?? false }
 
     mutating func refreshMetadata(deduper: inout Deduper, emit: (ResponseUpsert) -> Void) -> Bool {
-        grokBuild?.refreshMetadata(deduper: &deduper, emit: emit) ?? false
+        grokBuild?.value.refreshMetadata(deduper: &deduper, emit: emit) ?? false
     }
 
     /// Counts a unit of input that could not be decoded at all, such as a corrupt zstd frame (METRICS 5.1).
     mutating func noteMalformedLine() {
-        codex?.noteMalformedLine()
-        claude?.noteMalformedLine()
-        dsh?.noteMalformedLine()
-        gemini?.noteMalformedLine()
-        omp?.noteMalformedLine()
-        antigravity?.noteMalformedLine()
-        workbuddy?.noteMalformedLine()
-        kimi?.noteMalformedLine()
-        grokBuild?.noteMalformedLine()
+        codex?.value.noteMalformedLine()
+        claude?.value.noteMalformedLine()
+        dsh?.value.noteMalformedLine()
+        gemini?.value.noteMalformedLine()
+        omp?.value.noteMalformedLine()
+        antigravity?.value.noteMalformedLine()
+        workbuddy?.value.noteMalformedLine()
+        kimi?.value.noteMalformedLine()
+        grokBuild?.value.noteMalformedLine()
     }
 
     mutating func consume(_ line: DecodedLine, deduper: inout Deduper, emit: (ResponseUpsert) -> Void) {
         switch line {
-        case .codex(let extraction): codex?.consume(extraction, deduper: &deduper, emit: emit)
-        case .claude(let extraction): claude?.consume(extraction, deduper: &deduper, emit: emit)
-        case .dsh(let extraction): dsh?.consume(extraction, deduper: &deduper, emit: emit)
-        case .gemini(let extraction): gemini?.consume(extraction, deduper: &deduper, emit: emit)
-        case .omp(let extraction): omp?.consume(extraction, deduper: &deduper, emit: emit)
-        case .workbuddy(let extraction): workbuddy?.consume(extraction, deduper: &deduper, emit: emit)
-        case .kimi(let extraction): kimi?.consume(extraction, deduper: &deduper, emit: emit)
-        case .grokBuild(let extraction): grokBuild?.consume(extraction, deduper: &deduper, emit: emit)
+        case .codex(let extraction): codex?.value.consume(extraction, deduper: &deduper, emit: emit)
+        case .claude(let extraction): claude?.value.consume(extraction, deduper: &deduper, emit: emit)
+        case .dsh(let extraction): dsh?.value.consume(extraction, deduper: &deduper, emit: emit)
+        case .gemini(let extraction): gemini?.value.consume(extraction, deduper: &deduper, emit: emit)
+        case .omp(let extraction): omp?.value.consume(extraction, deduper: &deduper, emit: emit)
+        case .workbuddy(let extraction): workbuddy?.value.consume(extraction, deduper: &deduper, emit: emit)
+        case .kimi(let extraction): kimi?.value.consume(extraction, deduper: &deduper, emit: emit)
+        case .grokBuild(let extraction): grokBuild?.value.consume(extraction, deduper: &deduper, emit: emit)
         }
     }
 
@@ -225,23 +244,23 @@ struct TranscriptParser: Sendable {
     mutating func consume(_ lines: DecodedLines, deduper: inout Deduper, emit: (ResponseUpsert) -> Void) {
         switch lines {
         case .codex(let extractions):
-            for extraction in extractions { codex?.consume(extraction, deduper: &deduper, emit: emit) }
+            for extraction in extractions { codex?.value.consume(extraction, deduper: &deduper, emit: emit) }
         case .claude(let extractions):
-            for extraction in extractions { claude?.consume(extraction, deduper: &deduper, emit: emit) }
+            for extraction in extractions { claude?.value.consume(extraction, deduper: &deduper, emit: emit) }
         case .dsh(let extractions):
-            for extraction in extractions { dsh?.consume(extraction, deduper: &deduper, emit: emit) }
+            for extraction in extractions { dsh?.value.consume(extraction, deduper: &deduper, emit: emit) }
         case .gemini(let extractions):
-            for extraction in extractions { gemini?.consume(extraction, deduper: &deduper, emit: emit) }
+            for extraction in extractions { gemini?.value.consume(extraction, deduper: &deduper, emit: emit) }
         case .omp(let extractions):
-            for extraction in extractions { omp?.consume(extraction, deduper: &deduper, emit: emit) }
+            for extraction in extractions { omp?.value.consume(extraction, deduper: &deduper, emit: emit) }
         case .antigravity(let batch):
-            if let batch { antigravity?.consume(batch, deduper: &deduper, emit: emit) }
+            if let batch { antigravity?.value.consume(batch, deduper: &deduper, emit: emit) }
         case .workbuddy(let extractions):
-            for extraction in extractions { workbuddy?.consume(extraction, deduper: &deduper, emit: emit) }
+            for extraction in extractions { workbuddy?.value.consume(extraction, deduper: &deduper, emit: emit) }
         case .kimi(let extractions):
-            for extraction in extractions { kimi?.consume(extraction, deduper: &deduper, emit: emit) }
+            for extraction in extractions { kimi?.value.consume(extraction, deduper: &deduper, emit: emit) }
         case .grokBuild(let extractions):
-            for extraction in extractions { grokBuild?.consume(extraction, deduper: &deduper, emit: emit) }
+            for extraction in extractions { grokBuild?.value.consume(extraction, deduper: &deduper, emit: emit) }
         }
     }
 }
