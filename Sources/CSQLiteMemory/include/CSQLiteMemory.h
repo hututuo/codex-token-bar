@@ -14,4 +14,5 @@ size_t tb_sqlite_memory_allocation_count(void);
 void *tb_sqlite_memory_begin_scope(void);
 void tb_sqlite_memory_end_scope(void *scope);
 size_t tb_sqlite_memory_zone_count(void);
+size_t tb_sqlite_memory_mapped_bytes(void);
 #endif

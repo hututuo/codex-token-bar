@@ -19,6 +19,7 @@ enum SQLiteMemoryProbe {
         guard sqlite3_exec(sentinel, "CREATE TABLE keep_alive(value)", nil, nil, nil) == SQLITE_OK else { return 1 }
         let baseline = tb_sqlite_memory_live_bytes()
         let baselineZones = tb_sqlite_memory_zone_count()
+        let baselineMapped = tb_sqlite_memory_mapped_bytes()
         final class Results: @unchecked Sendable {
             let lock = NSLock()
             var failures = 0
@@ -83,7 +84,30 @@ enum SQLiteMemoryProbe {
         }
         guard completion.wait(timeout: .now() + 10) == .success else { return 1 }
         guard results.failures == 0, tb_sqlite_memory_zone_count() == baselineZones else { return 1 }
-        print("PASS SQLite isolated memory: baseline=\(baseline), remaining=\(remaining)")
+        // Model the real failure: one tiny retained SQLite allocation survived
+        // an operation containing hundreds of thousands of schema allocations.
+        // Its slab must not pin all the pages used by the released objects.
+        let sparseScope = tb_sqlite_memory_begin_scope()
+        guard let survivor = sqlite3_malloc(32) else { return 1 }
+        var allocations: [UnsafeMutableRawPointer] = []
+        for index in 0..<100_000 {
+            let size = 16 + (index % 128) * 16
+            guard let allocation = sqlite3_malloc(Int32(size)) else { return 1 }
+            memset(allocation, Int32(index % 251), size)
+            allocations.append(allocation)
+        }
+        for index in allocations.indices.reversed() {
+            if allocations[index].load(as: UInt8.self) != UInt8(index % 251) { return 1 }
+            sqlite3_free(allocations[index])
+        }
+        tb_sqlite_memory_end_scope(sparseScope)
+        guard tb_sqlite_memory_mapped_bytes() <= baselineMapped + 65_536 else {
+            print("FAIL a tiny survivor pinned an operation's memory")
+            return 1
+        }
+        sqlite3_free(survivor)
+        guard tb_sqlite_memory_mapped_bytes() == baselineMapped else { return 1 }
+        print("PASS SQLite isolated memory: baseline=\(baseline), remaining=\(remaining), mapped=\(baselineMapped)")
         return 0
     }
 }
