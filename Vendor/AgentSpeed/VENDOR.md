@@ -52,3 +52,8 @@
 - Windows uses reference-based parser instances with direct state properties, so this Swift-specific aggregate-copy optimization is not applied there. The upstream pin and original hashes stay unchanged; only local patch hashes are updated.
 - Installed resampling showed the outer `TrackedFile.parser` getter still copied the large value. Monitor state reads now use an exclusive inout projection of that stored value and return only AgentState; no parser mutation, caching or reference-semantics change. All families are tested across repeated reads, mutations and reset.
 - The remaining Antigravity unsupported-source projection uses the same short borrow. Its Boolean result, parser/value semantics and warning behavior are unchanged; it no longer copies the full parser to read one capability bit.
+
+## Local partial-line buffer lifetime (2026-11-20)
+
+- Swift `LineSplitter` trims unused capacity above 64 KiB after consuming a chunk, retaining every byte of an unfinished line. A completed long line no longer leaves a large empty buffer in an idle tracked file. Oversized-line handling, offsets and parsed output are unchanged.
+- Regression tests cover a long line followed by a short unfinished tail, independent copied splitters and an oversized fragmented line. Windows already exposes an idle `Trim` operation; its reader is unchanged. The upstream revision and original hashes remain pinned, with this adaptation recorded separately.

@@ -8,6 +8,10 @@
       "reason": "Token Bar local strict Draft-1 WebSocket capability/limit parsing; upstream has no equivalent file, and HTTP remains the default.",
       "sha256": "e70e1feab52fcfe92a7baccbf46c30d2ba643acbb6af1dd222544ec4af7d8f1a"
     },
+    "macos/Tests/AgentSpeedCoreTests/LineSplitterMemoryTests.swift": {
+      "reason": "Verify bounded retained buffer capacity after long lines, small trailing fragments, independent copies and oversized line handling.",
+      "sha256": "e7ef612704c66fa4adcdb533e0d6aeb1cb456514f287ceb47864254292353918"
+    },
     "macos/Tests/AgentSpeedCoreTests/LocalDisplayStopTests.swift": {
       "reason": "Token Bar local regression coverage for explicit stopped-state display metadata; not an upstream Agent Speed test.",
       "sha256": "32c79be91c782ef7661d246e661e653f5026c8822421fa220ad64fb942f7de78"
@@ -623,6 +627,10 @@
     "macos/Sources/AgentSpeedCore/IO/HarnessMetadata.swift": {
       "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
       "sha256": "d0c5365b86a4e77ebef0354f92b328b28bf503b2fd59f6ded2647a49a730c7a9"
+    },
+    "macos/Sources/AgentSpeedCore/IO/LineSplitter.swift": {
+      "reason": "Release unused partial-line capacity above 64 KiB after each chunk while preserving incomplete bytes, limits and value semantics.",
+      "sha256": "be26736708f520d776e44496ab72f12389aeac5b40e66e484a635c531997e4f1"
     },
     "macos/Sources/AgentSpeedCore/IO/TranscriptReader.swift": {
       "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",

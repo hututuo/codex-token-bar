@@ -3,11 +3,16 @@ import Darwin
 /// Splits a byte stream into newline-terminated lines (METRICS 5): an incomplete trailing line is buffered until its
 /// newline arrives, and lines longer than `maxLineBytes` are dropped.
 struct LineSplitter: Sendable {
+    private static let retainedPartialBytes = 64 * 1024
     let maxLineBytes: Int
     private(set) var oversizedLines = 0
     private var partial: [UInt8] = []
     /// Skipping bytes until the next newline (oversized or unaligned line).
     private var discarding = false
+
+    #if DEBUG
+    var retainedCapacityForTesting: Int { partial.capacity }
+    #endif
 
     init(maxLineBytes: Int) {
         self.maxLineBytes = max(1, maxLineBytes)
@@ -25,6 +30,10 @@ struct LineSplitter: Sendable {
     }
 
     mutating func consume(_ chunk: UnsafeRawBufferPointer, onLine: (UnsafeRawBufferPointer) -> Void) {
+        // A tracked file can stay idle for days after one large line. Reuse its
+        // buffer within this chunk, then retain only an unfinished line and a
+        // small reusable allocation. Never discard an incomplete line.
+        defer { trimPartial() }
         guard let base = chunk.baseAddress else { return }
         var lineStart = 0
         while lineStart < chunk.count {
@@ -63,6 +72,15 @@ struct LineSplitter: Sendable {
                 lineStart = chunk.count
             }
         }
+    }
+
+    private mutating func trimPartial() {
+        guard partial.capacity > Self.retainedPartialBytes,
+              partial.count <= Self.retainedPartialBytes else { return }
+        var compact: [UInt8] = []
+        compact.reserveCapacity(partial.count)
+        compact.append(contentsOf: partial)
+        partial = compact
     }
 
     private mutating func releasePartial() {

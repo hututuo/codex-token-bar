@@ -244,8 +244,9 @@ struct VisibleTextSummary: Equatable {
     }
 
     mutating func append(_ text: String) {
-        let bytes = Array(text.utf8)
-        utf8Count += bytes.count
+        let bytes = text.utf8
+        let byteCount = bytes.count
+        utf8Count += byteCount
         for byte in bytes {
             hashA = (hashA ^ UInt64(byte)) &* 1_099_511_628_211
             hashB = ((hashB &* 33) ^ UInt64(byte)) &+ 0x9e3779b97f4a7c15
@@ -253,11 +254,16 @@ struct VisibleTextSummary: Equatable {
         if prefix.count < 64 {
             prefix.append(contentsOf: bytes.prefix(64 - prefix.count))
         }
-        suffix.append(contentsOf: bytes)
-        if suffix.count > 64 {
-            suffix.removeFirst(suffix.count - 64)
+        // Do not grow a 64-byte fingerprint to the size of a full response.
+        // Removing the prefix afterwards would keep that large allocation.
+        if byteCount >= 64 {
+            suffix = Array(bytes.suffix(64))
+        } else {
+            let overflow = max(0, suffix.count + byteCount - 64)
+            if overflow > 0 { suffix.removeFirst(overflow) }
+            suffix.append(contentsOf: bytes)
         }
-        if let current = exactText, current.utf8.count + bytes.count <= 32_768 {
+        if let current = exactText, current.utf8.count + byteCount <= 32_768 {
             exactText = current + text
         } else {
             exactText = nil
