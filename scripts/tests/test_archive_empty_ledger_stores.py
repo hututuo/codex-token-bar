@@ -54,6 +54,7 @@ class EmptyLedgerArchiveTests(unittest.TestCase):
         con.execute("INSERT INTO s" + ids[2] + "_retained_usage_events(rowid,evidence) VALUES(37,x'00fe')")
         con.execute("INSERT INTO s" + ids[3] + "_session_catalog_entries VALUES('/Users/person/.codex/sessions/real.jsonl')")
         con.commit()
+        con.execute("PRAGMA journal_mode=WAL")
         con.close()
         return path, ids
 

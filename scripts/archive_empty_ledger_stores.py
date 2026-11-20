@@ -9,6 +9,7 @@ Never infer emptiness from one table, a filename, a date or a missing source.
 import argparse
 import base64
 import collections
+from contextlib import closing
 import fcntl
 import hashlib
 import json
@@ -136,7 +137,7 @@ def eligible_stores(con):
 
 def make_plan(database):
     path = Path(database).resolve()
-    with read_only(path) as con:
+    with closing(read_only(path)) as con:
         con.execute("BEGIN")
         if con.execute("SELECT value FROM tb_container_meta WHERE key='activation_state'").fetchone() != ("ready",):
             raise ValueError("Migration is not ready")
@@ -256,7 +257,7 @@ def apply_plan(database, manifest, evidence, enforce_offline=True):
                 raise ValueError("Unable to seal original WAL")
         finally:
             checkpoint.close()
-        with read_only(path) as source:
+        with closing(read_only(path)) as source:
             source.execute("BEGIN")
             result = copy_selected(source, candidate, excluded)
             source.rollback()
