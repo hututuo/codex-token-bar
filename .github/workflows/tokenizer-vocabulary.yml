@@ -1,6 +1,9 @@
 name: Compile immutable tokenizer vocabulary
 
 on:
+  push:
+    branches: [codex/production-rail-20261116]
+    paths: [.github/workflows/tokenizer-vocabulary.yml]
   workflow_dispatch:
     inputs:
       source_sha:
@@ -18,10 +21,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ inputs.source_sha }}
+          ref: ${{ inputs.source_sha || github.sha }}
+          persist-credentials: false
       - name: Compile and verify every vocabulary rank
         env:
-          SOURCE_SHA: ${{ inputs.source_sha }}
+          SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
         run: |
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
@@ -31,6 +35,6 @@ jobs:
           printf '%s\n' "$SOURCE_SHA" > compiled-vocabulary/source-sha.txt
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: compiled-tokenizer-${{ inputs.source_sha }}
+          name: compiled-tokenizer-${{ inputs.source_sha || github.sha }}
           path: compiled-vocabulary/
           retention-days: 14
