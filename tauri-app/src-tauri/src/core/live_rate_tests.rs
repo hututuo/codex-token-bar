@@ -1258,7 +1258,7 @@ fn useful_stream_rows_are_not_evicted_by_diagnostic_tail_noise() {
     fs::create_dir_all(&root).unwrap();
     // This tests filtering before LIMIT, not fixture insertion speed. A slow
     // Windows disk must not age the rows out of the query's one-second window.
-    let now = 1_800_000_000.0;
+    let now: i64 = 1_800_000_000;
     create_logs_database(&root, |connection, _wall_clock| {
         connection
             .execute_batch(
@@ -1286,10 +1286,10 @@ fn useful_stream_rows_are_not_evicted_by_diagnostic_tail_noise() {
         connection.execute_batch("COMMIT;").unwrap();
     });
 
-    let rows = logs::read_recent_log_rows(&root, now - 1.0).unwrap();
+    let rows = logs::read_recent_log_rows(&root, now as f64 - 1.0).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, 1);
-    assert!(logs::read_recent_log_rows(&root, now + 1.0)
+    assert!(logs::read_recent_log_rows(&root, now as f64 + 1.0)
         .unwrap()
         .is_empty());
 
@@ -1300,7 +1300,7 @@ fn useful_stream_rows_are_not_evicted_by_diagnostic_tail_noise() {
 fn useful_stream_row_limit_keeps_the_newest_activity() {
     let root = temp_root("live-rate-useful-row-limit");
     fs::create_dir_all(&root).unwrap();
-    let now = 1_800_000_000.0;
+    let now: i64 = 1_800_000_000;
     create_logs_database(&root, |connection, _wall_clock| {
         connection.execute_batch("BEGIN;").unwrap();
         for id in 1..=2_500 {
@@ -1318,7 +1318,7 @@ fn useful_stream_row_limit_keeps_the_newest_activity() {
         connection.execute_batch("COMMIT;").unwrap();
     });
 
-    let rows = logs::read_recent_log_rows(&root, now - 1.0).unwrap();
+    let rows = logs::read_recent_log_rows(&root, now as f64 - 1.0).unwrap();
     assert_eq!(rows.len(), 2_000);
     assert_eq!(rows.first().map(|row| row.id), Some(501));
     assert_eq!(rows.last().map(|row| row.id), Some(2_500));
