@@ -259,7 +259,7 @@ final class DashboardRuntime: ObservableObject {
     private var autoResumeQuotaBackgroundEnabled = false
     private var autoResumeRunningStateBackgroundEnabled = false
     private(set) var statusBarSummaryPresented = false
-    private var dashboardOpenAction: (() -> Void)?
+    private let dashboardReopenCoordinator: DashboardReopenCoordinator
     private(set) var configuration: DashboardRuntimeConfiguration?
     private(set) var isStarted = false
 
@@ -327,7 +327,8 @@ final class DashboardRuntime: ObservableObject {
         surfaceApplyAction: ((DashboardRuntimeConfiguration) -> Void)? = nil,
         sideEffectStartAction: (() -> Void)? = nil,
         sideEffectStopAction: (() -> Void)? = nil,
-        backgroundOwnerActivityAction: ((Bool) -> Void)? = nil
+        backgroundOwnerActivityAction: ((Bool) -> Void)? = nil,
+        dashboardReopenCoordinator: DashboardReopenCoordinator = .shared
     ) {
         self.usageStore = usageStore
         self.quotaStore = quotaStore
@@ -356,6 +357,7 @@ final class DashboardRuntime: ObservableObject {
         self.sideEffectStartAction = sideEffectStartAction
         self.sideEffectStopAction = sideEffectStopAction
         self.backgroundOwnerActivityAction = backgroundOwnerActivityAction
+        self.dashboardReopenCoordinator = dashboardReopenCoordinator
     }
 
     func acquireConsumer(_ id: UUID, preciseTokenCountingEnabled: Bool = false) {
@@ -381,8 +383,11 @@ final class DashboardRuntime: ObservableObject {
         sideEffects.release(id)
     }
 
-    func setDashboardOpenAction(_ action: @escaping () -> Void) {
-        dashboardOpenAction = action
+    func openDashboard() {
+        // The scene owns reopening even while its content is unloaded. Never
+        // retain a closure supplied by DashboardView: it captures view state
+        // and keeps the closed dashboard's projection caches alive.
+        dashboardReopenCoordinator.handleApplicationReopen(hasVisibleWindows: false)
     }
 
     func reportConfiguration(_ configuration: DashboardRuntimeConfiguration, for id: UUID) {
@@ -639,7 +644,7 @@ final class DashboardRuntime: ObservableObject {
                 scale: configuration.floatingPanelScale,
                 visibility: configuration.floatingPanelVisibility,
                 isLocked: configuration.floatingPanelLocked,
-                onOpenDashboard: { [weak self] in self?.dashboardOpenAction?() },
+                onOpenDashboard: { [weak self] in self?.openDashboard() },
                 onToggleLock: { [weak self] in self?.toggleFloatingPanelLock() },
                 onClose: { [weak self] in self?.closeFloatingPanel() }
             )
@@ -651,7 +656,7 @@ final class DashboardRuntime: ObservableObject {
         }
         if configuration.quotaSidebarEnabled {
             quotaSidebar.show(store: usageStore, monitor: liveMonitor, quota: quotaStore,
-                              tasks: taskCompletionMonitor, radar: radarStore, history: quotaHistoryStore, edge: configuration.quotaSidebarEdge, onOpenDashboard: { [weak self] in self?.dashboardOpenAction?() })
+                              tasks: taskCompletionMonitor, radar: radarStore, history: quotaHistoryStore, edge: configuration.quotaSidebarEdge, onOpenDashboard: { [weak self] in self?.openDashboard() })
         } else {
             quotaSidebar.close()
         }
@@ -664,7 +669,7 @@ final class DashboardRuntime: ObservableObject {
             metricsEnabled: configuration.statusBarPanelEnabled,
             configuration: configuration.statusBarMetricConfiguration,
             summaryConfiguration: configuration.statusSummaryConfiguration,
-            onOpenDashboard: { [weak self] in self?.dashboardOpenAction?() },
+            onOpenDashboard: { [weak self] in self?.openDashboard() },
             onOpenSettings: { [weak self] in
                 guard let self else { return }
                 AppSettingsRouteRequest.request(
@@ -672,7 +677,7 @@ final class DashboardRuntime: ObservableObject {
                     defaults: self.settings,
                     notificationCenter: self.notificationCenter
                 )
-                self.dashboardOpenAction?()
+                self.openDashboard()
             },
             onClose: { [weak self] in self?.closeStatusBarPanel() },
             onPopoverPresentationChanged: { [weak self] presented in

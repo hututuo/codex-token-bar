@@ -12,6 +12,38 @@ private final class TestAutomaticInterfaceScale {
 
 final class DashboardRuntimeCompositionTests: XCTestCase {
     @MainActor
+    func testCompactSurfaceReopensThroughSceneWithoutRetainingADashboardConsumer() {
+        let suiteName = "DashboardSceneReopen.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let coordinator = DashboardReopenCoordinator()
+        let runtime = DashboardRuntime(
+            settings: defaults,
+            startupAction: {},
+            surfaceApplyAction: { _ in },
+            sideEffectStartAction: {},
+            sideEffectStopAction: {},
+            dashboardReopenCoordinator: coordinator
+        )
+        var firstOpens = 0
+        var currentOpens = 0
+        runtime.openDashboard() // The scene may not have registered yet.
+        coordinator.install { firstOpens += 1 }
+        runtime.openDashboard()
+        XCTAssertEqual(firstOpens, 1)
+
+        let consumer = UUID()
+        runtime.acquireConsumer(consumer)
+        runtime.releaseConsumer(consumer)
+        XCTAssertEqual(runtime.activeConsumerCount, 0)
+        coordinator.install { currentOpens += 1 }
+        runtime.openDashboard()
+        XCTAssertEqual(firstOpens, 1, "A surface must not keep a prior view's reopen callback")
+        XCTAssertEqual(currentOpens, 1, "The scene can reopen after all dashboard consumers unload")
+        XCTAssertEqual(runtime.activeConsumerCount, 0)
+    }
+
+    @MainActor
     func testSurfacePausePreservesTrustedLiveSnapshot() {
         let monitor = LiveRateMonitor(monitoringEnabled: false)
         var trusted = LiveRateSnapshot()

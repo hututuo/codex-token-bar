@@ -8,6 +8,18 @@ final class DashboardContentLifetimeTests: XCTestCase {
     private final class Counts {
         var mounted = 0
         var dismantled = 0
+        weak var probe: LifetimeProbe?
+    }
+
+    private final class LifetimeProbe: ObservableObject {}
+
+    private struct ContentWithState: View {
+        @StateObject private var probe = LifetimeProbe()
+        let counts: Counts
+        var body: some View {
+            Content(counts: counts)
+                .onAppear { counts.probe = probe }
+        }
     }
 
     private struct Content: NSViewRepresentable {
@@ -65,5 +77,27 @@ final class DashboardContentLifetimeTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(1_200))
         XCTAssertEqual(counts.mounted, 1)
         XCTAssertEqual(counts.dismantled, 0, "An obsolete hidden-window task cannot unload visible content")
+    }
+
+    func testNativeCloseReleasesViewOwnedStateWhileWindowShellSurvives() async throws {
+        NSApplication.shared.unhide(nil)
+        let counts = Counts()
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 200),
+                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let host = NSHostingView(rootView: DashboardContentLifetime { ContentWithState(counts: counts) })
+        window.contentView = host
+        defer { window.close() }
+        window.orderFront(nil)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertNotNil(counts.probe)
+        window.close()
+        try await Task.sleep(for: .milliseconds(1_300))
+        XCTAssertNil(counts.probe, "A dismantled view must release its state objects, not just its native child")
+        XCTAssertTrue(window.contentView === host, "The scene shell survives for normal reopening")
+        window.orderFront(nil)
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertNotNil(counts.probe)
+        XCTAssertEqual(counts.mounted, 2)
     }
 }

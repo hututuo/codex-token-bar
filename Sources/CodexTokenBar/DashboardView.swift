@@ -53,7 +53,6 @@ struct DashboardView: View {
     @StateObject private var clientCostCache = ClientModelCostPeriodsCache()
     private var codexOnly: Bool { allowedClients == ["codex"] }
 
-    @Environment(\.openWindow) private var openWindow
     @ObservedObject var loginItemStore: LoginItemStore
     @ObservedObject var updateSettingsStore: AppUpdateSettingsStore
     @ObservedObject var threadDeleteBridge: CodexThreadDeleteBridgeController
@@ -416,12 +415,6 @@ struct DashboardView: View {
             showingInterfaceScaleMenu = false
         }
         .onAppear {
-            let dashboardOpenAction = {
-                StartupPresentation.showDashboardWindow {
-                    openWindow(id: "dashboard")
-                }
-            }
-            runtime.setDashboardOpenAction(dashboardOpenAction)
             applyDisplaySurfaceDefaultsIfNeeded()
             runtime.acquireConsumer(
                 runtimeConsumerID,
