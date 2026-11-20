@@ -1,6 +1,10 @@
 import AppKit
 import SwiftUI
 
+extension Notification.Name {
+    static let dashboardContentWillShow = Notification.Name("CodexTokenBar.dashboardContentWillShow")
+}
+
 /// SwiftUI keeps a Window's hosting tree after its close button is pressed.
 /// Keep a tiny shell alive for reopening, and discard its chart/view caches
 /// while the window is closed or minimized. App-owned readers keep running.
@@ -61,7 +65,8 @@ private struct DashboardWindowVisibility: NSViewRepresentable {
             guard let window else { return }
             for name in [NSWindow.didChangeOcclusionStateNotification,
                          NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification,
-                         NSWindow.didBecomeKeyNotification, NSWindow.willCloseNotification] {
+                         NSWindow.didBecomeKeyNotification, NSWindow.willCloseNotification,
+                         .dashboardContentWillShow] {
                 NotificationCenter.default.addObserver(self, selector: #selector(windowChanged(_:)),
                                                        name: name, object: window)
             }
@@ -73,7 +78,12 @@ private struct DashboardWindowVisibility: NSViewRepresentable {
         }
 
         @objc private func windowChanged(_ notification: Notification) {
-            if notification.name == NSWindow.willCloseNotification {
+            if notification.name == .dashboardContentWillShow {
+                // A closed window need not generate an occlusion/key change
+                // before SwiftUI can render. The explicit open path owns this
+                // transition and also cancels any pending unload.
+                report(true)
+            } else if notification.name == NSWindow.willCloseNotification {
                 report(false)
             } else {
                 reportVisibility()

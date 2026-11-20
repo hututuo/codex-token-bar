@@ -120,11 +120,17 @@ enum StartupPresentation {
 
         let windows = dashboardWindows()
         if let window = windows.first {
-            if window.isMiniaturized { window.deminiaturize(nil) }
-            window.makeKeyAndOrderFront(nil)
+            showExistingDashboardWindow(window)
         } else {
             openWindow()
         }
+    }
+
+    @MainActor
+    static func showExistingDashboardWindow(_ window: NSWindow) {
+        NotificationCenter.default.post(name: .dashboardContentWillShow, object: window)
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        window.makeKeyAndOrderFront(nil)
     }
 
     private static func shouldHideDashboardAtStartup() -> Bool {

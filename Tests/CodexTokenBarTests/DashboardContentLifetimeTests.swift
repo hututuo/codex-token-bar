@@ -72,8 +72,7 @@ final class DashboardContentLifetimeTests: XCTestCase {
         window.orderOut(nil)
         NotificationCenter.default.post(name: NSWindow.didChangeOcclusionStateNotification, object: window)
         try await Task.sleep(for: .milliseconds(100))
-        window.orderFront(nil)
-        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+        StartupPresentation.showExistingDashboardWindow(window)
         try await Task.sleep(for: .milliseconds(1_200))
         XCTAssertEqual(counts.mounted, 1)
         XCTAssertEqual(counts.dismantled, 0, "An obsolete hidden-window task cannot unload visible content")
@@ -95,10 +94,10 @@ final class DashboardContentLifetimeTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(1_300))
         XCTAssertNil(counts.probe, "A dismantled view must release its state objects, not just its native child")
         XCTAssertTrue(window.contentView === host, "The scene shell survives for normal reopening")
-        // Match StartupPresentation.showDashboardWindow, including native
-        // activation. orderFront alone does not send didBecomeKey.
+        // Exercise the production reopen operation. A native key/occlusion
+        // change is not guaranteed for a previously closed window.
         NSApplication.shared.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        StartupPresentation.showExistingDashboardWindow(window)
         try await Task.sleep(for: .milliseconds(400))
         XCTAssertNotNil(counts.probe)
         XCTAssertEqual(counts.mounted, 2)
