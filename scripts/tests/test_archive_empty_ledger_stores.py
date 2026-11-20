@@ -38,7 +38,7 @@ class EmptyLedgerArchiveTests(unittest.TestCase):
             for name, definition in [
                 ("schema_meta", "(key TEXT PRIMARY KEY,value TEXT)"),
                 ("sources", "(source_id INTEGER PRIMARY KEY,path TEXT)"),
-                ("events", "(id INTEGER PRIMARY KEY,tokens INTEGER)"),
+                ("events", "(id INTEGER PRIMARY KEY AUTOINCREMENT,tokens INTEGER)"),
                 ("retained_usage_events", "(evidence BLOB)"),
                 ("session_catalog_entries", "(path TEXT)"),
             ]:
@@ -49,6 +49,8 @@ class EmptyLedgerArchiveTests(unittest.TestCase):
             con.execute("CREATE VIEW " + prefix + "projection AS SELECT * FROM " + prefix + "events")
         # A is truly empty; B has an original test catalog; C has retained
         # evidence despite an empty sources table; D has a real catalog only.
+        con.execute("INSERT INTO s" + ids[0] + "_events VALUES(100,10)")
+        con.execute("DELETE FROM s" + ids[0] + "_events")
         con.execute("INSERT INTO s" + ids[1] + "_session_catalog_entries VALUES(?)",
                     ("/var/folders/aa/bb/T/codex-token-bar-session-management-12345678-1234-1234-1234-123456789abc/sessions/test.jsonl",))
         con.execute("INSERT INTO s" + ids[2] + "_retained_usage_events(rowid,evidence) VALUES(37,x'00fe')")
@@ -84,6 +86,8 @@ class EmptyLedgerArchiveTests(unittest.TestCase):
                 self.assertEqual(con.execute("SELECT rowid,key,value FROM s" + ids[0] + "_schema_meta").fetchall(), [(17, "provenance_epoch", "epoch-0")])
                 self.assertEqual(con.execute("SELECT count(*) FROM tb_store_imports").fetchone(), (4,))
                 self.assertEqual(con.execute("PRAGMA foreign_key_check").fetchall(), [])
+                con.execute("INSERT INTO s" + ids[0] + "_events(tokens) VALUES(20)")
+                self.assertEqual(con.execute("SELECT id FROM s" + ids[0] + "_events").fetchall(), [(101,)])
 
     def test_new_business_row_invalidates_plan_before_switch(self):
         with tempfile.TemporaryDirectory() as temp:

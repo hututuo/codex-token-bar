@@ -321,6 +321,11 @@ def restore_stores(database, archive, store_ids):
                                       + ",".join("?" for _ in selected) + ")", sorted(selected))
                 destination.executemany("INSERT INTO " + quote(table) + " VALUES("
                                         + ",".join("?" for _ in columns) + ")", rows)
+            if source.execute("SELECT 1 FROM sqlite_schema WHERE name='sqlite_sequence'").fetchone():
+                for name, sequence in source.execute("SELECT name,seq FROM sqlite_sequence"):
+                    if any(name.startswith(prefix) for prefix in prefixes):
+                        destination.execute("DELETE FROM sqlite_sequence WHERE name=?", (name,))
+                        destination.execute("INSERT INTO sqlite_sequence VALUES(?,?)", (name, sequence))
             if destination.execute("PRAGMA foreign_key_check").fetchone():
                 raise ValueError("Restored ownership failed verification")
             for kind, name, _, _ in entries:
