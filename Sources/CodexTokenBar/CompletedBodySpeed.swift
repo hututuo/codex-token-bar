@@ -194,6 +194,12 @@ actor CompletedBodySpeedReader {
         now: Double,
         acceptedRevisions: [String: UInt64] = [:]
     ) -> Result {
+        autoreleasepool { readSynchronously(options: options, now: now, acceptedRevisions: acceptedRevisions) }
+    }
+
+    private func readSynchronously(
+        options: [LiveThreadOption], now: Double, acceptedRevisions: [String: UInt64]
+    ) -> Result {
         var result = Result()
         // Acknowledge only revisions the main actor committed after source validation.
         // If rollout parsing or poll application failed, the caller keeps its older
@@ -244,9 +250,12 @@ actor CompletedBodySpeedReader {
                 if state.discardPartial, let first = data.firstIndex(of: 10) { start = data.index(after: first); state.discardPartial = false }
                 if start <= last {
                     for line in data[start...last].split(separator: 10) {
-                        if let sample = try state.assembler.consume(Data(line), thread: option.id, now: now, tokenizer: {
-                            try BodySpeedTokenizer.load().encodeOrdinary(text: $0).count
-                        }) {
+                        let sample = try autoreleasepool {
+                            try state.assembler.consume(Data(line), thread: option.id, now: now, tokenizer: {
+                                try BodySpeedTokenizer.load().encodeOrdinary(text: $0).count
+                            })
+                        }
+                        if let sample {
                             if recentIDsByPath[path] == nil {
                                 recentIDsByPath[path] = Set(recent[path, default: []].map(\.id))
                             }

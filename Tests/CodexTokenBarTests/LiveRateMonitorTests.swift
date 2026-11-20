@@ -1855,6 +1855,35 @@ final class LiveRateMonitorTests: XCTestCase {
         XCTAssertEqual(events.map(\.text), ["same", "same", "same"])
     }
 
+    func testBatchDecodingKeepsTurnOwnershipAndCacheFactsAcrossTemporaryObjectRelease() throws {
+        let timestamp = "2026-06-24T13:00:00.000Z"
+        let lines = [
+            "malformed",
+            jsonLine(["type": "turn_context", "payload": ["turn_id": "turn-without-time"]]),
+            rolloutFunctionCallOutputLine(timestamp: timestamp, callID: "irrelevant",
+                output: String(repeating: "large ignored tool result ", count: 10_000)),
+            rolloutAgentMessageLine(timestamp: timestamp, message: "first answer"),
+            jsonLine(["timestamp": timestamp, "type": "event_msg", "payload": [
+                "type": "token_count", "info": ["last_token_usage": [
+                    "input_tokens": 20_000, "cached_input_tokens": 15_000, "output_tokens": 100]]]]),
+            jsonLine(["timestamp": timestamp, "type": "event_msg", "payload": [
+                "type": "task_started", "metadata": ["turn_id": "turn-metadata"]]]),
+            rolloutAssistantResponseItemLine(timestamp: timestamp, id: "message-next", text: "second answer"),
+        ]
+        let result = LiveRateMonitor.rolloutEvents(fromLines: lines, previousTurnID: "previous")
+        XCTAssertEqual(result.currentTurnID, "turn-metadata")
+        XCTAssertEqual(result.events.map(\.turnID), ["turn-without-time", "turn-metadata"])
+        XCTAssertEqual(result.events.map(\.text), ["first answer", "second answer"])
+        XCTAssertTrue(try XCTUnwrap(result.events.first?.key).hasSuffix(":line:3"))
+        let usage = try XCTUnwrap(result.cacheSamples.first { $0.input == 20_000 })
+        XCTAssertEqual(usage.cached, 15_000)
+        let withoutCache = LiveRateMonitor.rolloutEvents(fromLines: lines,
+            previousTurnID: "previous", includeCacheSamples: false)
+        XCTAssertTrue(withoutCache.cacheSamples.isEmpty)
+        XCTAssertEqual(withoutCache.events.map(\.text), result.events.map(\.text))
+        XCTAssertEqual(withoutCache.events.map(\.turnID), result.events.map(\.turnID))
+    }
+
     func testRolloutParserCountsCompleteAgentMessageWhileAssistantItemIsStillBuffered() {
         let text = "可以，先按这个修。"
         let events = LiveRateMonitor.rolloutEvents(fromLines: [

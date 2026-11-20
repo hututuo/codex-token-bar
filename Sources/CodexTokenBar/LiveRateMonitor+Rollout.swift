@@ -207,23 +207,32 @@ extension LiveRateMonitor {
         var cacheSamples: [CacheUsageSample] = []
         let events = suppressDuplicateVisibleMessages(
             lines.enumerated().flatMap { lineIndex, line in
-                if let turnID = rolloutTurnID(fromLine: line) {
-                    currentTurnID = turnID
-                }
-                return rolloutEvents(fromLine: line, callStarts: &callStarts, currentTurnID: currentTurnID, cacheSamples: &cacheSamples, includeCacheSamples: includeCacheSamples).map { event in
-                    guard event.category == .visibleText, event.itemID == nil else { return event }
-                    return RolloutMetricEvent(
-                        timestamp: event.timestamp,
-                        startTimestamp: event.startTimestamp,
-                        key: "\(event.key):line:\(lineIndex)",
-                        turnID: event.turnID,
-                        itemID: nil,
-                        category: event.category,
-                        text: event.text,
-                        exactTokens: event.exactTokens,
-                        exactOutputTokens: event.exactOutputTokens,
-                        rollingOnly: event.rollingOnly
-                    )
+                autoreleasepool { () -> [RolloutMetricEvent] in
+                    // Decode once for both turn ownership and metric content.
+                    // Temporary Foundation objects end at this line boundary.
+                    guard let data = line.data(using: .utf8),
+                          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                          let payload = object["payload"] as? [String: Any] else { return [] }
+                    if let turnID = rolloutTurnID(object: object, payload: payload) {
+                        currentTurnID = turnID
+                    }
+                    return rolloutEvents(object: object, payload: payload, callStarts: &callStarts,
+                        currentTurnID: currentTurnID, cacheSamples: &cacheSamples,
+                        includeCacheSamples: includeCacheSamples).map { event in
+                        guard event.category == .visibleText, event.itemID == nil else { return event }
+                        return RolloutMetricEvent(
+                            timestamp: event.timestamp,
+                            startTimestamp: event.startTimestamp,
+                            key: "\(event.key):line:\(lineIndex)",
+                            turnID: event.turnID,
+                            itemID: nil,
+                            category: event.category,
+                            text: event.text,
+                            exactTokens: event.exactTokens,
+                            exactOutputTokens: event.exactOutputTokens,
+                            rollingOnly: event.rollingOnly
+                        )
+                    }
                 }
             }
         )
@@ -232,7 +241,7 @@ extension LiveRateMonitor {
 
     nonisolated static func rolloutEvents(fromLine line: String) -> [RolloutMetricEvent] {
         var callStarts: [String: TimeInterval] = [:]
-        return rolloutEvents(fromLine: line, callStarts: &callStarts, currentTurnID: rolloutTurnID(fromLine: line))
+        return rolloutEvents(fromLine: line, callStarts: &callStarts, currentTurnID: nil)
     }
 
     nonisolated static func rolloutEvents(
@@ -248,12 +257,21 @@ extension LiveRateMonitor {
         fromLine line: String, callStarts: inout [String: TimeInterval], currentTurnID: String?,
         cacheSamples: inout [CacheUsageSample], includeCacheSamples: Bool = true
     ) -> [RolloutMetricEvent] {
-        guard let data = line.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let payload = object["payload"] as? [String: Any] else {
-            return []
+        autoreleasepool {
+            guard let data = line.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let payload = object["payload"] as? [String: Any] else {
+                return []
+            }
+            return rolloutEvents(object: object, payload: payload, callStarts: &callStarts,
+                currentTurnID: currentTurnID, cacheSamples: &cacheSamples, includeCacheSamples: includeCacheSamples)
         }
+    }
 
+    nonisolated private static func rolloutEvents(
+        object: [String: Any], payload: [String: Any], callStarts: inout [String: TimeInterval],
+        currentTurnID: String?, cacheSamples: inout [CacheUsageSample], includeCacheSamples: Bool
+    ) -> [RolloutMetricEvent] {
         let parsedTimestamp = parseTimestamp(object["timestamp"] as? String)
         if includeCacheSamples, let sample = CacheUsageSample.parse(object: object, payload: payload, timestamp: parsedTimestamp ?? .nan) {
             cacheSamples.append(sample)
@@ -354,14 +372,6 @@ extension LiveRateMonitor {
             seen.removeAll { event.timestamp - $0.timestamp > 10 }
             return true
         }
-    }
-
-    nonisolated private static func rolloutTurnID(fromLine line: String) -> String? {
-        guard let data = line.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let payload = object["payload"] as? [String: Any]
-        else { return nil }
-        return rolloutTurnID(object: object, payload: payload)
     }
 
     nonisolated private static func rolloutTurnID(object: [String: Any], payload: [String: Any]) -> String? {
