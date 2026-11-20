@@ -820,10 +820,12 @@ final class SQLiteDatabaseDriver: DatabaseAccessing, @unchecked Sendable {
     }
 
     func withConnection<T>(_ body: (SQLiteDatabaseConnection) throws -> T) throws -> T {
-        guard retainsPhysicalConnection else { return try withCheckedConnection(body) }
+        guard retainsPhysicalConnection else {
+            return try autoreleasepool { try withCheckedConnection(body) }
+        }
         physicalConnectionLock.lock()
         defer { physicalConnectionLock.unlock() }
-        do { return try withCheckedConnection(body) }
+        do { return try autoreleasepool { try withCheckedConnection(body) } }
         catch {
             if physicalConnectionDepth == 0 { discardRetainedPhysicalConnection() }
             throw error

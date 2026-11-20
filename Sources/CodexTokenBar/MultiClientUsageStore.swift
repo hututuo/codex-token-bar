@@ -80,6 +80,10 @@ actor MultiClientUsageScanner {
         let opened = try MultiClientUsageLedger(url: databaseURL); ledger = opened; return opened
     }
     func scan(_ preferences: [MultiClientUsagePreference]) throws -> MultiClientScanResult {
+        try autoreleasepool { try scanSynchronously(preferences) }
+    }
+
+    private func scanSynchronously(_ preferences: [MultiClientUsagePreference]) throws -> MultiClientScanResult {
         let enabled = preferences.filter(\.enabled)
         guard !enabled.isEmpty || FileManager.default.fileExists(atPath: databaseURL.path) else {
             return MultiClientScanResult(summaries: [], diagnostics: [])
@@ -113,7 +117,7 @@ actor MultiClientUsageScanner {
             for step in 0..<count {
                 if Task.isCancelled { break }
                 let (client, url) = entries[(start + step) % entries.count]
-                do { try ingestFile(url, client: client, ledger: ledger) }
+                do { try autoreleasepool { try ingestFile(url, client: client, ledger: ledger) } }
                 catch { diagnostics.append("\(client.displayName)：部分日志读取失败，已保留旧账（\(error.localizedDescription)）") }
             }
             cursor = (start + count) % entries.count
