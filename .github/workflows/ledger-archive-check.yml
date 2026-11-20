@@ -1,0 +1,34 @@
+name: Empty ledger archive safety
+
+on:
+  push:
+    branches: [codex/production-rail-20261116]
+    paths:
+      - scripts/archive_empty_ledger_stores.py
+      - scripts/tests/test_archive_empty_ledger_stores.py
+      - .github/workflows/ledger-archive-check.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  archive:
+    strategy:
+      matrix:
+        os: [macos-26, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Verify plans, conservation, failure safety and selective restoration
+        run: |
+          python3 -m unittest discover -s scripts/tests -p test_archive_empty_ledger_stores.py -v 2>&1 | tee ledger-archive-check.log
+        shell: bash -e -o pipefail {0}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: ledger-archive-check-${{ matrix.os }}-${{ github.sha }}
+          path: ledger-archive-check.log
