@@ -9,6 +9,10 @@ final class CompactO200kTokenizerTests: XCTestCase {
         let data = try Data(contentsOf: url)
         let compact = try CompactO200kTokenizer(vocabulary: data)
         XCTAssertLessThan(compact.retainedVocabularyBytes, 12 * 1_048_576)
+        let mappedURL = try XCTUnwrap(AppResources.url(forResource: "o200k_base", withExtension: "ctbvocab"))
+        let mapped = try CompactO200kTokenizer(mappedVocabularyURL: mappedURL)
+        XCTAssertEqual(mapped.retainedVocabularyBytes, 0, "Fixed vocabulary must not be rebuilt on the malloc heap")
+        XCTAssertLessThan(mapped.mappedVocabularyBytes, 5 * 1_048_576)
         var ranks: [[UInt8]: UInt32] = [:]
         var tokenSamples: [String] = []
         for (index, line) in String(decoding: data, as: UTF8.self).split(separator: "\n").enumerated() {
@@ -44,7 +48,40 @@ final class CompactO200kTokenizerTests: XCTestCase {
         for text in examples + tokenSamples + randomExamples {
             let expected = reference.encodeOrdinary(text: text)
             XCTAssertEqual(compact.encodeOrdinary(text: text), expected, String(text.prefix(100)))
+            XCTAssertEqual(mapped.encodeOrdinary(text: text), expected, String(text.prefix(100)))
         }
+    }
+
+    func testMappedVocabularyRejectsCorruptOrTruncatedArtifact() throws {
+        let source = try XCTUnwrap(AppResources.url(forResource: "o200k_base", withExtension: "ctbvocab"))
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: path) }
+        var data = try Data(contentsOf: source)
+        data[data.count - 1] ^= 1
+        try data.write(to: path)
+        XCTAssertThrowsError(try CompactO200kTokenizer(mappedVocabularyURL: path))
+        try data.prefix(32).write(to: path)
+        XCTAssertThrowsError(try CompactO200kTokenizer(mappedVocabularyURL: path))
+    }
+
+    func testMappedLookupSurvivesAtomicResourceReplacementAndConcurrentReads() async throws {
+        let source = try XCTUnwrap(AppResources.url(forResource: "o200k_base", withExtension: "ctbvocab"))
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: path) }
+        try FileManager.default.copyItem(at: source, to: path)
+        let tokenizer = try CompactO200kTokenizer(mappedVocabularyURL: path)
+        let text = "你好 world 👩‍💻 123456\n"
+        let expected = tokenizer.encodeOrdinary(text: text)
+        try Data("replaced".utf8).write(to: path, options: .atomic)
+        let results = await withTaskGroup(of: [UInt32].self, returning: [[UInt32]].self) { group in
+            for _ in 0..<32 { group.addTask { tokenizer.encodeOrdinary(text: text) } }
+            var result: [[UInt32]] = []
+            for await value in group { result.append(value) }
+            return result
+        }
+        XCTAssertEqual(results.count, 32)
+        XCTAssertTrue(results.allSatisfy { $0 == expected })
+        XCTAssertThrowsError(try CompactO200kTokenizer(mappedVocabularyURL: path))
     }
 
     func testCorruptVocabularyCannotProducePlausibleCounts() {

@@ -4,6 +4,45 @@ import XCTest
 
 final class StatusBarTokenPanelTests: XCTestCase {
     @MainActor
+    func testDismissedPopoverReleasesItsHostingController() async throws {
+        let owner = StatusBarTokenController()
+        let popover = NSPopover()
+        var host: NSViewController? = NSHostingController(rootView: Text("temporary summary"))
+        weak var retained = host
+        popover.contentViewController = host
+        host = nil
+        XCTAssertNotNil(retained)
+        owner.popoverDidClose(Notification(name: NSPopover.didCloseNotification, object: popover))
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(popover.contentViewController)
+        XCTAssertNil(retained, "Hidden summaries must release their view caches and subscriptions")
+        popover.contentViewController = NSHostingController(rootView: Text("current summary"))
+        XCTAssertNotNil(popover.contentViewController, "The same popover shell can host fresh data")
+    }
+
+    @MainActor
+    func testRapidPopoverReopenKeepsVisibleContent() async throws {
+        NSApplication.shared.unhide(nil)
+        let owner = StatusBarTokenController()
+        let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 240, height: 120),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let anchor = NSView(frame: NSRect(x: 0, y: 0, width: 240, height: 120))
+        window.contentView = anchor
+        window.orderFront(nil)
+        let popover = NSPopover()
+        popover.animates = false
+        let host = NSHostingController(rootView: Text("reopened summary").frame(width: 180, height: 80))
+        popover.contentViewController = host
+        defer { popover.performClose(nil); window.close() }
+        owner.popoverDidClose(Notification(name: NSPopover.didCloseNotification, object: popover))
+        popover.show(relativeTo: NSRect(x: 20, y: 20, width: 20, height: 20), of: anchor, preferredEdge: .maxY)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(popover.isShown)
+        XCTAssertTrue(popover.contentViewController === host, "A queued old dismissal must not clear a reopened summary")
+    }
+
+    @MainActor
     func testHostedPopoverKeepsConfigurableSummaryInsideStableFrame() {
         let defaults = UserDefaults.standard
         let previousAuto = defaults.object(forKey: InterfaceScaleSettings.autoEnabledKey)

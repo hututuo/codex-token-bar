@@ -30,7 +30,7 @@ enum AppResources {
     static func verifyPackagedResources() throws {
         let paths = [
             "codex-ledger-schema.sql", "activity-speed-schema.sql", "client-usage-effective-events.sql",
-            "standard-api-price-history.json", "model-display-names.json", "o200k_base.tiktoken",
+            "standard-api-price-history.json", "model-display-names.json", "o200k_base.ctbvocab",
             "model-presentation-policy.json", "model-cost-order.json", "client-quota-presentation.json", "recent-chart-policy.json",
             "ModelTrace/fingerprint-core.js", "ModelTrace/unified_bank.json",
             "ModelTrace/scoring-fixtures.json", "SpeedLeaderboard/leaderboard.mp4",
@@ -41,6 +41,12 @@ enum AppResources {
             let url = root.appendingPathComponent(path)
             let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
             guard values.isRegularFile == true, (values.fileSize ?? 0) > 0 else { throw Failure.missing(path) }
+        }
+        // Exercise the installed lookup's actual mapping and integrity check,
+        // before UI, database or network owners are created.
+        let tokenizer = try CompactO200kTokenizer(mappedVocabularyURL: root.appendingPathComponent("o200k_base.ctbvocab"))
+        guard tokenizer.encodeOrdinary(text: "hello world") == [24912, 2375] else {
+            throw Failure.missing("verified tokenizer lookup")
         }
     }
 

@@ -32,7 +32,7 @@ struct ClientQuotaHistory: Identifiable, Equatable, Sendable {
         return pool.isEmpty ? name : name + " · " + (pool == "gemini" ? "Gemini" : "第三方模型")
     }
 
-    func buckets(interval: TimeInterval, now: Date = Date()) -> [QuotaHistoryRecentBucket] {
+    func buckets(interval: TimeInterval, now: Date = Date(), includeEmptyBuckets: Bool = true) -> [QuotaHistoryRecentBucket] {
         guard interval.isFinite, interval > 0 else { return [] }
         let end = floor(now.timeIntervalSince1970 / interval) * interval
         let start = end - 30 * 24 * 60 * 60 + interval
@@ -53,11 +53,14 @@ struct ClientQuotaHistory: Identifiable, Equatable, Sendable {
             let beforeReset = latest.resetsAt.map { boundary < $0 } ?? true
             return (fresh && beforeReset ? 100 - latest.usedPercent : observations.last?.remainingPercent, observations)
         }
-        return (0..<Int(30 * 24 * 60 * 60 / interval)).map { offset in
+        return (0..<Int(30 * 24 * 60 * 60 / interval)).compactMap { offset in
             let date = Date(timeIntervalSince1970: start + Double(offset) * interval)
             let boundary = min(date.addingTimeInterval(interval - 0.000_001), now)
             let f = value(five, &fiveIndex, from: date, through: boundary)
             let s = value(seven, &sevenIndex, from: date, through: boundary)
+            // Chart axes come from usage bins. A missing quota key is already
+            // an explicit gap, so empty accounts need no 30-day placeholder array.
+            guard includeEmptyBuckets || f.0 != nil || s.0 != nil || !f.1.isEmpty || !s.1.isEmpty else { return nil }
             return QuotaHistoryRecentBucket(start: date, fiveHourRemainingPercent: f.0, sevenDayRemainingPercent: s.0,
                 fiveHourObservations: f.1, sevenDayObservations: s.1)
         }
@@ -191,8 +194,8 @@ extension MultiClientUsageLedger {
                    reading.client == "claudeDesktop" { poolIDs.insert("") }
                 for pool in poolIDs.sorted() {
                     var history = ClientQuotaHistory(client: reading.client, source: source, pool: pool, samples: pools[pool] ?? [])
-                    history.recentBins = history.buckets(interval: 300, now: now)
-                    history.hourlyBins = history.buckets(interval: 3600, now: now)
+                    history.recentBins = history.buckets(interval: 300, now: now, includeEmptyBuckets: false)
+                    history.hourlyBins = history.buckets(interval: 3600, now: now, includeEmptyBuckets: false)
                     let days = Dictionary(grouping: dailyForSource.filter {
                         ClientQuotaHistory.pool(client: reading.client, windowID: $0.1) == pool
                     }, by: { $0.2 })

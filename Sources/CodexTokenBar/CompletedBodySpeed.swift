@@ -13,10 +13,10 @@ enum BodySpeedTokenizer {
     }
 
     private static func makeEncoder() throws -> CompactO200kTokenizer {
-        guard let url = AppResources.url(forResource: "o200k_base", withExtension: "tiktoken") else {
+        guard let url = AppResources.url(forResource: "o200k_base", withExtension: "ctbvocab") else {
             throw CocoaError(.fileNoSuchFile)
         }
-        return try autoreleasepool { try CompactO200kTokenizer(vocabulary: Data(contentsOf: url)) }
+        return try autoreleasepool { try CompactO200kTokenizer(mappedVocabularyURL: url) }
     }
 }
 

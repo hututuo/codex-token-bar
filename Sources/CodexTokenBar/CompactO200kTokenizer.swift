@@ -17,7 +17,17 @@ final class CompactO200kTokenizer: @unchecked Sendable {
     private let entries: [Entry]
     private let expression: NSRegularExpression
     private let mask: Int
+    private let mapped: MappedTokenizerVocabulary?
     var retainedVocabularyBytes: Int { bytes.count + entries.count * MemoryLayout<Entry>.stride }
+    var mappedVocabularyBytes: Int { mapped?.byteCount ?? 0 }
+
+    init(mappedVocabularyURL: URL) throws {
+        mapped = try MappedTokenizerVocabulary(url: mappedVocabularyURL)
+        bytes = []
+        entries = []
+        mask = 0
+        expression = try NSRegularExpression(pattern: Self.pattern)
+    }
 
     init(vocabulary: Data) throws {
         guard SHA256.hash(data: vocabulary).map({ String(format: "%02x", $0) }).joined()
@@ -50,6 +60,7 @@ final class CompactO200kTokenizer: @unchecked Sendable {
         bytes = storage
         entries = table
         self.mask = mask
+        mapped = nil
         expression = try NSRegularExpression(pattern: Self.pattern)
     }
 
@@ -60,6 +71,7 @@ final class CompactO200kTokenizer: @unchecked Sendable {
     }
 
     private func rank(_ piece: [UInt8], _ start: Int, _ end: Int) -> UInt32? {
+        if let mapped { return mapped.rank(piece, start, end) }
         let length = end - start
         let hash = Self.hash(piece[start..<end])
         var index = Int(hash) & mask

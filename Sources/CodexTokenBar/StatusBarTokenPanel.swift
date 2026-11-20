@@ -208,6 +208,14 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
     func popoverDidClose(_ notification: Notification) {
         setPopoverPresented(false)
         updateStatusItem()
+        guard let closed = notification.object as? NSPopover else { return }
+        // AppKit is still finishing dismissal during this callback. Release
+        // its hosting tree on the next turn, unless it has already reopened.
+        DispatchQueue.main.async { [weak closed] in
+            guard let closed, !closed.isShown else { return }
+            closed.contentViewController = nil
+            ProcessMemoryReclaimer.schedule()
+        }
     }
 
     @objc private func togglePopover() {

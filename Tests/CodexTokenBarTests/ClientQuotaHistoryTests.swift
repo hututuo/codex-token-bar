@@ -2,6 +2,39 @@ import XCTest
 @testable import CodexTokenBar
 
 final class ClientQuotaHistoryTests: XCTestCase {
+    func testSparseQuotaHistoryPreservesEveryChartValueObservationAndGap() {
+        let rows: [ClientQuotaHistorySample] = [
+            .init(windowID: "5h", observedAt: now.addingTimeInterval(-28 * 86400), usedPercent: 12.25, resetsAt: nil),
+            .init(windowID: "5h", observedAt: now.addingTimeInterval(-8 * 86400), usedPercent: 70, resetsAt: nil),
+            .init(windowID: "7d", observedAt: now.addingTimeInterval(-86400), usedPercent: 40, resetsAt: now.addingTimeInterval(-3600)),
+            .init(windowID: "5h", observedAt: now.addingTimeInterval(-600), usedPercent: 99.7554, resetsAt: now.addingTimeInterval(-300)),
+            .init(windowID: "7d", observedAt: now.addingTimeInterval(-120), usedPercent: 5, resetsAt: nil),
+        ]
+        let history = ClientQuotaHistory(client: "claudeDesktop", source: "fixture", pool: "", samples: rows)
+        let dense = history.buckets(interval: 300, now: now)
+        let coarse = history.buckets(interval: 3600, now: now)
+        let sparse = history.buckets(interval: 300, now: now, includeEmptyBuckets: false)
+        let sparseCoarse = history.buckets(interval: 3600, now: now, includeEmptyBuckets: false)
+        XCTAssertLessThan(sparse.count, 30, "A few observations must not retain 8,640 empty buckets")
+        XCTAssertTrue(ClientQuotaHistory(client: "claudeDesktop", source: "empty", pool: "", samples: [])
+            .buckets(interval: 300, now: now, includeEmptyBuckets: false).isEmpty)
+        for range in RecentChartRange.allCases {
+            func project(_ fine: [QuotaHistoryRecentBucket], _ hourly: [QuotaHistoryRecentBucket]) -> RecentChartPreparedData {
+                RecentUsageChart.prepare(range: range,
+                    recentBins: dense.map { .init(start: $0.start, tokens: 0, calls: 0) },
+                    hourlyBins: coarse.map { .init(start: $0.start, tokens: 0, calls: 0) },
+                    cacheRecentBins: [], cacheHourlyBins: [],
+                    quotaRecentBins: fine, quotaHourlyBins: hourly)
+            }
+            let expected = project(dense, coarse), actual = project(sparse, sparseCoarse)
+            XCTAssertEqual(actual.bins, expected.bins)
+            XCTAssertEqual(actual.fiveHourRemainingPercents, expected.fiveHourRemainingPercents)
+            XCTAssertEqual(actual.sevenDayRemainingPercents, expected.sevenDayRemainingPercents)
+            XCTAssertEqual(actual.fiveHourQuotaObservations, expected.fiveHourQuotaObservations)
+            XCTAssertEqual(actual.sevenDayQuotaObservations, expected.sevenDayQuotaObservations)
+        }
+    }
+
     func testOrganizationSwitchDoesNotBorrowOrRewriteLegacyHistory() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
