@@ -95,8 +95,11 @@ final class DashboardContentLifetimeTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(1_300))
         XCTAssertNil(counts.probe, "A dismantled view must release its state objects, not just its native child")
         XCTAssertTrue(window.contentView === host, "The scene shell survives for normal reopening")
-        window.orderFront(nil)
-        try await Task.sleep(for: .milliseconds(200))
+        // Match StartupPresentation.showDashboardWindow, including native
+        // activation. orderFront alone does not send didBecomeKey.
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        try await Task.sleep(for: .milliseconds(400))
         XCTAssertNotNil(counts.probe)
         XCTAssertEqual(counts.mounted, 2)
     }
