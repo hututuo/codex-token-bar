@@ -27,6 +27,12 @@ struct RecentChartAccessibilityButtonRepresentation: NSViewRepresentable {
         Self.configure(button, presentation: presentation)
     }
 
+    static func dismantleNSView(_ button: NSButton, coordinator: Coordinator) {
+        button.target = nil
+        button.action = nil
+        coordinator.action = {}
+    }
+
     @MainActor
     static func makeButton(presentation: RecentChartAccessibilityButtonPresentation) -> NSButton {
         let button = NSButton(title: presentation.label, target: nil, action: nil)

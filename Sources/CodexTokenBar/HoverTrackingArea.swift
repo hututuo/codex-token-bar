@@ -20,6 +20,10 @@ struct HoverTrackingArea: NSViewRepresentable {
         nsView.onExit = onExit
     }
 
+    static func dismantleNSView(_ nsView: TrackingView, coordinator: Void) {
+        nsView.releaseCallbacks()
+    }
+
     final class TrackingView: NSView {
         var onMove: ((CGPoint) -> Void)?
         var onClick: ((CGPoint) -> Void)?
@@ -74,6 +78,16 @@ struct HoverTrackingArea: NSViewRepresentable {
 
         override func mouseExited(with event: NSEvent) {
             onExit?()
+        }
+
+        func releaseCallbacks() {
+            onMove = nil
+            onClick = nil
+            onExit = nil
+            if let currentTrackingArea {
+                removeTrackingArea(currentTrackingArea)
+                self.currentTrackingArea = nil
+            }
         }
     }
 }

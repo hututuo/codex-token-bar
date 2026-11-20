@@ -33,6 +33,12 @@ struct ActivityModeAccessibilityButtonRepresentation: NSViewRepresentable {
         Self.configure(button, presentation: presentation)
     }
 
+    static func dismantleNSView(_ button: NSButton, coordinator: Coordinator) {
+        button.target = nil
+        button.action = nil
+        coordinator.action = {}
+    }
+
     @MainActor
     static func makeButton(presentation: ActivityModeOptionPresentation) -> NSButton {
         let button = ActivityModeAccessibilityButton(title: "", target: nil, action: nil)

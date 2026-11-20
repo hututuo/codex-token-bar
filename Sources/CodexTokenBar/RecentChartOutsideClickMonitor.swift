@@ -19,6 +19,7 @@ struct RecentChartOutsideClickMonitor: NSViewRepresentable {
 
     static func dismantleNSView(_ nsView: MonitoringView, coordinator: Void) {
         nsView.stopMonitoring()
+        nsView.onOutsideClick = nil
     }
 
     final class MonitoringView: NSView {

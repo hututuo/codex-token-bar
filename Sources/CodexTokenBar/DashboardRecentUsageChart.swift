@@ -1,5 +1,13 @@
 import SwiftUI
 
+/// A menu's focus proxy may outlive the rendered page. Retain only its small
+/// storage binding and displayed fallback, never the view's source snapshots.
+enum DashboardSelectionBinding {
+    static func displayed(_ value: String, storage: Binding<String>) -> Binding<String> {
+        Binding(get: { value }, set: { storage.wrappedValue = $0 })
+    }
+}
+
 /// The chart can inspect another client without changing the page's cost table,
 /// heatmap, or ranking. An unavailable saved choice follows the page again.
 enum RecentChartClientScope {
@@ -58,7 +66,7 @@ struct DashboardRecentUsageChart: View {
             if let quotaSource {
                 HStack {
                     Spacer()
-                    Picker("额度来源", selection: Binding(get: { quotaSource.id }, set: { quotaSelection = $0 })) {
+                    Picker("额度来源", selection: DashboardSelectionBinding.displayed(quotaSource.id, storage: $quotaSelection)) {
                         ForEach(ClientQuotaChartSource.options(clients: allowed, histories: clients.quotaHistories)) { item in
                             Text(item.title).tag(item.id)
                         }
@@ -84,7 +92,7 @@ struct DashboardRecentUsageChart: View {
                     settledThrough: codex.settledThrough ?? codex.preciseTimeSeriesGeneratedAt) : nil,
                 settledThrough: codex.settledThrough ?? codex.preciseTimeSeriesGeneratedAt,
                 unreportedCompactionDates: includesCodex ? codex.cacheUsage.unreportedCompactionDates : [],
-                clientSelector: RecentChartClientSelector(selection: Binding(get: { effectiveSelection }, set: { selection = $0 }), clients: available,
+                clientSelector: RecentChartClientSelector(selection: DashboardSelectionBinding.displayed(effectiveSelection, storage: $selection), clients: available,
                     pageTitle: ClientDisplayScope.title(pageClients.count == 1 ? pageClients.first! : "all")),
                 externalCostBuckets: codexOnly ? nil : externalCosts,
                 includesCodexCost: includesCodex,

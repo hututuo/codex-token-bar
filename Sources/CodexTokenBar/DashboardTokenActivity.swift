@@ -30,7 +30,7 @@ struct DashboardTokenActivity: View {
         let external = clients.dailyBuckets
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Picker("热力图客户端", selection: Binding(get: { effectiveSelection }, set: { selection = $0 })) {
+                Picker("热力图客户端", selection: DashboardSelectionBinding.displayed(effectiveSelection, storage: $selection)) {
                     Text("跟随主页 · " + ClientDisplayScope.title(pageClients.count == 1 ? pageClients.first! : "all")).tag("dashboard")
                     Text("汇总").tag("all")
                     Text("Codex").tag("codex")
@@ -41,7 +41,7 @@ struct DashboardTokenActivity: View {
             if selectedMode == .quotaRemaining {
                 HStack {
                     if let source {
-                        Picker("额度来源", selection: Binding(get: { source.id }, set: { quotaSelection = $0 })) {
+                        Picker("额度来源", selection: DashboardSelectionBinding.displayed(source.id, storage: $quotaSelection)) {
                             ForEach(ClientQuotaChartSource.options(clients: allowed, histories: clients.quotaHistories)) { Text($0.title).tag($0.id) }
                         }.pickerStyle(.menu).fixedSize().accessibilityIdentifier("heatmap-quota-source")
                         Spacer()
