@@ -1256,7 +1256,10 @@ fn rollout_fallback_expires_metrics_after_the_rolling_window() {
 fn useful_stream_rows_are_not_evicted_by_diagnostic_tail_noise() {
     let root = temp_root("live-rate-useful-row-before-noise");
     fs::create_dir_all(&root).unwrap();
-    create_logs_database(&root, |connection, now| {
+    // This tests filtering before LIMIT, not fixture insertion speed. A slow
+    // Windows disk must not age the rows out of the query's one-second window.
+    let now = 1_800_000_000.0;
+    create_logs_database(&root, |connection, _wall_clock| {
         connection
             .execute_batch(
                 "CREATE INDEX idx_logs_ts ON logs(ts DESC, ts_nanos DESC, id DESC); BEGIN;",
@@ -1283,9 +1286,12 @@ fn useful_stream_rows_are_not_evicted_by_diagnostic_tail_noise() {
         connection.execute_batch("COMMIT;").unwrap();
     });
 
-    let rows = logs::read_recent_log_rows(&root, current_time_seconds() - 1.0).unwrap();
+    let rows = logs::read_recent_log_rows(&root, now - 1.0).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].id, 1);
+    assert!(logs::read_recent_log_rows(&root, now + 1.0)
+        .unwrap()
+        .is_empty());
 
     fs::remove_dir_all(root).unwrap();
 }
@@ -1294,7 +1300,8 @@ fn useful_stream_rows_are_not_evicted_by_diagnostic_tail_noise() {
 fn useful_stream_row_limit_keeps_the_newest_activity() {
     let root = temp_root("live-rate-useful-row-limit");
     fs::create_dir_all(&root).unwrap();
-    create_logs_database(&root, |connection, now| {
+    let now = 1_800_000_000.0;
+    create_logs_database(&root, |connection, _wall_clock| {
         connection.execute_batch("BEGIN;").unwrap();
         for id in 1..=2_500 {
             insert_log(
@@ -1311,7 +1318,7 @@ fn useful_stream_row_limit_keeps_the_newest_activity() {
         connection.execute_batch("COMMIT;").unwrap();
     });
 
-    let rows = logs::read_recent_log_rows(&root, current_time_seconds() - 1.0).unwrap();
+    let rows = logs::read_recent_log_rows(&root, now - 1.0).unwrap();
     assert_eq!(rows.len(), 2_000);
     assert_eq!(rows.first().map(|row| row.id), Some(501));
     assert_eq!(rows.last().map(|row| row.id), Some(2_500));
