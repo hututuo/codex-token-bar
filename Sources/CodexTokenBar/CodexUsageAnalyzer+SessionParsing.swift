@@ -743,45 +743,49 @@ extension CodexUsageAnalyzer {
         var pendingDirectories: [(url: URL, depth: Int)] = [(root, 0)]
 
         while let directory = pendingDirectories.popLast() {
-            let children: [URL]
-            do {
-                children = try fileManager.contentsOfDirectory(
-                    at: directory.url,
-                    includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey],
-                    options: [.skipsHiddenFiles]
-                )
-            } catch {
-                throw CodexUsageDiscoveryError.traversalFailed(
-                    path: directory.url.path,
-                    reason: error.localizedDescription
-                )
-            }
-            var childDirectories: [URL] = []
-
-            for child in children.sorted(by: { $0.path < $1.path }) {
-                guard let values = fileResourceValues(for: child) else {
+            // Directory/URL metadata creates temporary Foundation objects.
+            // Retain discovered URLs, but drain intermediates per directory.
+            try autoreleasepool {
+                let children: [URL]
+                do {
+                    children = try fileManager.contentsOfDirectory(
+                        at: directory.url,
+                        includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey],
+                        options: [.skipsHiddenFiles]
+                    )
+                } catch {
                     throw CodexUsageDiscoveryError.traversalFailed(
-                        path: child.path,
-                        reason: "无法读取文件类型"
+                        path: directory.url.path,
+                        reason: error.localizedDescription
                     )
                 }
-                guard values.isSymbolicLink != true else {
-                    continue
-                }
-                if values.isDirectory == true {
-                    let resolvedDirectory = child.resolvingSymlinksInPath()
-                    guard isContained(resolvedDirectory, in: canonicalHome) else {
+                var childDirectories: [URL] = []
+
+                for child in children.sorted(by: { $0.path < $1.path }) {
+                    guard let values = fileResourceValues(for: child) else {
+                        throw CodexUsageDiscoveryError.traversalFailed(
+                            path: child.path,
+                            reason: "无法读取文件类型"
+                        )
+                    }
+                    guard values.isSymbolicLink != true else {
                         continue
                     }
-                    childDirectories.append(child)
-                } else if values.isRegularFile == true,
-                          let file = try trustedJSONLFile(child, canonicalHome: canonicalHome) {
-                    files.append(file)
+                    if values.isDirectory == true {
+                        let resolvedDirectory = child.resolvingSymlinksInPath()
+                        guard isContained(resolvedDirectory, in: canonicalHome) else {
+                            continue
+                        }
+                        childDirectories.append(child)
+                    } else if values.isRegularFile == true,
+                              let file = try trustedJSONLFile(child, canonicalHome: canonicalHome) {
+                        files.append(file)
+                    }
                 }
-            }
 
-            for childDirectory in childDirectories.reversed() {
-                pendingDirectories.append((childDirectory, directory.depth + 1))
+                for childDirectory in childDirectories.reversed() {
+                    pendingDirectories.append((childDirectory, directory.depth + 1))
+                }
             }
         }
 
@@ -808,7 +812,9 @@ extension CodexUsageAnalyzer {
             localDate: localDateString(for: now, timeZone: timeZone),
             utcOffsetSeconds: timeZone.secondsFromGMT(for: now),
             files: files
-                .map { sessionCacheKey(for: $0, known: known) }
+                .map { file in
+                    autoreleasepool { sessionCacheKey(for: file, known: known) }
+                }
                 .sorted { $0.path < $1.path },
             stateDatabase: sessionCacheKey(for: dataSource.stateDatabase),
             attributionProvenanceEpoch: attributionProvenanceEpoch,
@@ -918,7 +924,7 @@ extension CodexUsageAnalyzer {
         var seen = Set<String>()
         var deduped: [URL] = []
         for file in files {
-            let key = canonicalPath(for: file)
+            let key = autoreleasepool { canonicalPath(for: file) }
             if seen.insert(key).inserted {
                 deduped.append(file)
             }
