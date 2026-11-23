@@ -1697,6 +1697,50 @@ final class QuotaHistoryStoreTests: XCTestCase {
         )
     }
 
+    func testOrderedHistoryKeepsDailyCoverageAndPersistedCycleOffsets() throws {
+        let url = try makeDatabaseURL()
+        let database = QuotaHistoryDatabase(databaseURL: url, filterAnomalies: { false })
+        let day = Calendar.current.startOfDay(for: Date(timeIntervalSince1970: 1_800_000_000))
+        let firstAt = day.addingTimeInterval(3600)
+        let latestAt = firstAt.addingTimeInterval(600)
+        let fiveReset = firstAt.addingTimeInterval(3 * 3600)
+        let sevenReset = firstAt.addingTimeInterval(5 * 86400)
+        func quota(at date: Date, five: AccountQuotaWindow?, sevenUsed: Int) -> AccountQuotaSnapshot {
+            var value = identifiedSnapshot(usedPercent: 20, reset: fiveReset,
+                homeIdentity: "/fixture/ordered-quota", stableAccountKey: "sub:ordered-quota",
+                planType: "Pro", limitID: "codex", accountName: "Ordered Quota", at: date)
+            value.fiveHour = five
+            value.sevenDay = AccountQuotaWindow(label: "7d", usedPercent: sevenUsed, resetsAt: sevenReset)
+            return value
+        }
+
+        let first = quota(at: firstAt, five: AccountQuotaWindow(label: "5h", usedPercent: 20, resetsAt: fiveReset), sevenUsed: 30)
+        XCTAssertTrue(try database.record(first))
+        let storage = SQLiteDatabaseDriver(url: url)
+        try storage.execute("UPDATE quota_snapshots SET five_hour_cycle_generation=7, seven_day_cycle_generation=11")
+        XCTAssertTrue(try database.record(quota(at: firstAt.addingTimeInterval(300), five: nil, sevenUsed: 35)))
+        let current = quota(at: latestAt,
+            five: AccountQuotaWindow(label: "5h", usedPercent: 0, resetsAt: fiveReset.addingTimeInterval(1_801)),
+            sevenUsed: 40)
+        XCTAssertTrue(try database.record(current))
+        let stored = try storage.readRows("""
+            SELECT five_hour_cycle_generation, seven_day_cycle_generation FROM quota_snapshots ORDER BY created_at
+            """) { [$0.int(0), $0.int(1)] }
+        XCTAssertEqual(stored, [[7, 11], [nil, 11], [8, 11]])
+
+        let snapshot = try database.loadSnapshot(for: current, now: latestAt)
+        let daily = try XCTUnwrap(snapshot.daily.first { $0.date == day })
+        XCTAssertEqual(daily.sampleCount, 3)
+        XCTAssertEqual(daily.fiveHourSampleCount, 2)
+        XCTAssertEqual(daily.sevenDaySampleCount, 3)
+        XCTAssertEqual(daily.fiveHourRemainingPercent, 90)
+        XCTAssertEqual(daily.sevenDayRemainingPercent, 65)
+        XCTAssertEqual(daily.firstObservedAt, firstAt)
+        XCTAssertEqual(daily.lastObservedAt, latestAt)
+        XCTAssertEqual(snapshot.hourlyBins.flatMap(\.fiveHourObservations).map(\.cycleID), ["g7", "g8"])
+        XCTAssertEqual(snapshot.recentBins.flatMap(\.sevenDayObservations).map(\.remainingPercent), [70, 65, 60])
+    }
+
     func testLargeStableHistoryLoadsWithoutQuadraticSpikeScan() throws {
         let url = try makeDatabaseURL()
         let database = QuotaHistoryDatabase(databaseURL: url)

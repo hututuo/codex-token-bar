@@ -112,11 +112,15 @@ actor MultiClientUsageScanner {
         if !entries.isEmpty {
             let start = cursor % entries.count
             let count = min(200, entries.count)
-            for step in 0..<count {
-                if Task.isCancelled { break }
-                let (client, url) = entries[(start + step) % entries.count]
-                do { try autoreleasepool { try ingestFile(url, client: client, ledger: ledger) } }
-                catch { diagnostics.append("\(client.displayName)：部分日志读取失败，已保留旧账（\(error.localizedDescription)）") }
+            // Only the connection is shared. Each file still commits its
+            // checkpoint and events together in its own transaction.
+            try ledger.database.withOperationConnection {
+                for step in 0..<count {
+                    if Task.isCancelled { break }
+                    let (client, url) = entries[(start + step) % entries.count]
+                    do { try autoreleasepool { try ingestFile(url, client: client, ledger: ledger) } }
+                    catch { diagnostics.append("\(client.displayName)：部分日志读取失败，已保留旧账（\(error.localizedDescription)）") }
+                }
             }
             cursor = (start + count) % entries.count
             if count < entries.count { diagnostics.append("本轮检查 \(count)/\(entries.count) 个文件，后续自动继续；已入账数据保留") }
