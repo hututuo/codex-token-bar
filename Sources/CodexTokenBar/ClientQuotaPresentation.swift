@@ -11,6 +11,15 @@ enum ClientQuotaPresentation {
     }
     static func percentNumber(_ value: Double) -> String {
         guard value.isFinite else { return "—" }
+        // Quota percentages have a fixed two-decimal, ASCII representation.
+        // Avoid building ICU formatting/regex state for every live ring label.
+        if value.sign == .plus, value <= 100 {
+            let hundredths = Int((value * 100).rounded(.toNearestOrAwayFromZero))
+            let whole = String(hundredths / 100), fraction = hundredths % 100
+            if fraction == 0 { return whole }
+            if fraction % 10 == 0 { return whole + "." + String(fraction / 10) }
+            return whole + "." + (fraction < 10 ? "0" : "") + String(fraction)
+        }
         // Match the shared positive-percentage rule on Swift and JavaScript;
         // printf's tie-to-even otherwise displays 83.125 differently.
         let rounded = (value * 100).rounded(.toNearestOrAwayFromZero) / 100

@@ -53,7 +53,7 @@ final class QuotaSidebarController: NSObject, ObservableObject {
     }
 
     // Keep the expanded layout fixed until the native collapse has settled.
-    private var isCollapsing = false
+    @Published private(set) var isCollapsing = false
     @Published private(set) var sidebarLayout = QuotaSidebarItemLayout()
     @Published private(set) var settingsHighlightedItem: QuotaSidebarItem?
     private var settingsReordering = false
