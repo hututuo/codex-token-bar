@@ -190,7 +190,8 @@ struct RegularFileMetadata {
 
     static func read(path: String, followSymlinks: Bool) -> Self? {
         var status = Darwin.stat()
-        let result = followSymlinks ? Darwin.stat(path, &status) : Darwin.lstat(path, &status)
+        let flags: Int32 = followSymlinks ? 0 : AT_SYMLINK_NOFOLLOW
+        let result = fstatat(AT_FDCWD, path, &status, flags)
         return result == 0 ? Self(status: status) : nil
     }
 
