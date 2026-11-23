@@ -1,6 +1,7 @@
 import CoreFoundation
 import CryptoKit
 import CZstd
+import Darwin
 import Foundation
 
 /// Chromium Simple Cache v5: reads only the official /usage response from disk.
@@ -12,35 +13,80 @@ enum ClaudeDesktopHTTPCache {
     // Bound decoder memory separately from the 64 KiB output limit.
     static let maximumWindowLog: Int32 = 21
     static let maximumEntries = 20_000
+    private static let maximumKeyBytes = 1_024
+    private static let usageRoute = Data("/usage".utf8)
     private static let entryMagic: UInt64 = 0xfcfb6d1ba7725c30
     private static let eofMagic: UInt64 = 0xf4fa6f45970d41d8
 
     static func read(directory: URL, now: Date) -> ClaudeLocalQuota? {
-        guard let entries = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: nil,
-            options: [.skipsSubdirectoryDescendants, .skipsHiddenFiles]) else { return nil }
+        guard let entries = opendir(directory.path) else { return nil }
+        defer { closedir(entries) }
+        let parent = dirfd(entries)
+        guard parent >= 0 else { return nil }
+
+        var header = Data(count: 24 + maximumKeyBytes)
         var latest: ClaudeLocalQuota?
         var visited = 0
-        for case let url as URL in entries {
-            visited += 1
+        while true {
+            errno = 0
+            guard let entry = readdir(entries) else { return errno == 0 ? latest : nil }
+            let length = Int(entry.pointee.d_namlen)
+            let reading = withUnsafePointer(to: &entry.pointee.d_name) { pointer in
+                pointer.withMemoryRebound(to: CChar.self, capacity: length + 1) { name -> ClaudeLocalQuota? in
+                    guard name[0] != 46 else { return nil } // Hidden entries and the directory markers.
+                    visited += 1
+                    guard visited <= maximumEntries, length == 18, name[16] == 95, name[17] == 48 else { return nil }
+                    for index in 0..<16 {
+                        let byte = name[index]
+                        guard (48...57).contains(byte) || (97...102).contains(byte) else { return nil }
+                    }
+                    return autoreleasepool { readEntry(parent: parent, name: name, header: &header, now: now) }
+                }
+            }
             // An incomplete inventory cannot establish which account was observed last.
             guard visited <= maximumEntries else { return nil }
-            guard url.lastPathComponent.range(of: "^[0-9a-f]{16}_0$", options: .regularExpression) != nil,
-                  let header = readHeader(url), usageKey(header) != nil,
-                  let bytes = LocalQuotaCacheFile.read(url, limit: maximumEntryBytes),
-                  let reading = decode(bytes, now: now) else { continue }
-            if latest == nil || (reading.capturedAt ?? .distantPast) > (latest?.capturedAt ?? .distantPast) {
+            if let reading, latest == nil || (reading.capturedAt ?? .distantPast) > (latest?.capturedAt ?? .distantPast) {
                 latest = reading
             }
         }
-        return latest
     }
 
-    private static func readHeader(_ url: URL) -> Data? {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-              attributes[.type] as? FileAttributeType == .typeRegular,
-              let handle = try? FileHandle(forReadingFrom: url) else { return nil }
-        defer { try? handle.close() }
-        return try? handle.read(upToCount: 2_048)
+    private static func readEntry(
+        parent: Int32, name: UnsafePointer<CChar>, header: inout Data, now: Date
+    ) -> ClaudeLocalQuota? {
+        let descriptor = openat(parent, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard descriptor >= 0 else { return nil }
+        defer { close(descriptor) }
+        var status = stat()
+        guard fstat(descriptor, &status) == 0, (status.st_mode & S_IFMT) == S_IFREG,
+              status.st_size >= 24, status.st_size <= off_t(maximumEntryBytes) else { return nil }
+
+        let headerCount = min(header.count, Int(status.st_size))
+        guard header.withUnsafeMutableBytes({ (buffer: UnsafeMutableRawBufferPointer) in
+            readFully(descriptor, into: UnsafeMutableRawBufferPointer(rebasing: buffer[..<headerCount]))
+        }), usageKey(header.prefix(headerCount)) != nil else { return nil }
+
+        // Only an official usage entry needs its body. Read it through the
+        // same descriptor, and reject an entry that changed during the read.
+        var bytes = Data(count: Int(status.st_size))
+        guard bytes.withUnsafeMutableBytes({ readFully(descriptor, into: $0) }) else { return nil }
+        var after = stat()
+        guard fstat(descriptor, &after) == 0, after.st_size == status.st_size,
+              after.st_ctimespec.tv_sec == status.st_ctimespec.tv_sec,
+              after.st_ctimespec.tv_nsec == status.st_ctimespec.tv_nsec else { return nil }
+        return decode(bytes, now: now)
+    }
+
+    private static func readFully(_ descriptor: Int32, into buffer: UnsafeMutableRawBufferPointer) -> Bool {
+        guard let start = buffer.baseAddress else { return buffer.isEmpty }
+        var offset = 0
+        while offset < buffer.count {
+            let count = pread(descriptor, start.advanced(by: offset), buffer.count - offset, off_t(offset))
+            if count < 0, errno == EINTR { continue }
+            guard count > 0 else { return false }
+            offset += count
+        }
+        return true
     }
 
     private static func integer(_ bytes: Data, _ offset: Int, _ count: Int) -> UInt64? {
@@ -50,9 +96,11 @@ enum ClaudeDesktopHTTPCache {
 
     private static func usageKey(_ bytes: Data) -> Data? {
         guard integer(bytes, 0, 8) == entryMagic, integer(bytes, 8, 4) == 5,
-              let length = integer(bytes, 12, 4), length > 0, length <= 1_024,
+              let length = integer(bytes, 12, 4), length > 0, length <= UInt64(maximumKeyBytes),
               24 + Int(length) <= bytes.count else { return nil }
-        let key = bytes.subdata(in: 24..<24 + Int(length))
+        let keyRange = 24..<24 + Int(length)
+        guard bytes.range(of: usageRoute, in: keyRange) != nil else { return nil }
+        let key = bytes.subdata(in: keyRange)
         guard let text = String(data: key, encoding: .utf8),
               text.range(of: "\\A(?:[0-9]+/){2}https://claude\\.ai/api/organizations/[0-9a-fA-F-]{36}/usage(?:\\?[^#\\x00-\\x20\\x7f]*)?\\z", options: .regularExpression) != nil else { return nil }
         return key

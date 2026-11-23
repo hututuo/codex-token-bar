@@ -69,6 +69,29 @@ final class OfflineClientQuotaTests: XCTestCase {
         for (file, bytes) in originals { XCTAssertEqual(try Data(contentsOf: file), bytes) }
     }
 
+    func testDesktopCacheSweepSkipsSymlinksSubdirectoriesAndNonCacheNames() throws {
+        let rows = try XCTUnwrap(try fixture()["claude"] as? [[String: Any]])
+        func bytes(named name: String) throws -> Data {
+            let row = try XCTUnwrap(rows.first { $0["name"] as? String == name })
+            return try XCTUnwrap(Data(base64Encoded: try XCTUnwrap(row["entryBase64"] as? String)))
+        }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let nested = directory.appendingPathComponent("subdir", isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        let valid = try bytes(named: "zstd")
+        let newest = try bytes(named: "query-parameters")
+        try valid.write(to: directory.appendingPathComponent("0000000000000000_0"))
+        let nestedEntry = nested.appendingPathComponent("0000000000000002_0")
+        try newest.write(to: nestedEntry)
+        try FileManager.default.createSymbolicLink(at: directory.appendingPathComponent("0000000000000001_0"),
+                                                  withDestinationURL: nestedEntry)
+        try newest.write(to: directory.appendingPathComponent("000000000000000A_0"))
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertEqual(try XCTUnwrap(ClaudeDesktopHTTPCache.read(directory: directory, now: now)),
+                       try XCTUnwrap(ClaudeDesktopHTTPCache.decode(valid, now: now)))
+    }
+
     func testSharedAntigravityFixturesKeepModelPoolsAndAccountBoundary() throws {
         for row in try XCTUnwrap(try fixture()["antigravityTools"] as? [[String: Any]]) {
             let reading = AntigravityLocalQuota.decodeTools(try JSONSerialization.data(withJSONObject: row["data"]!),
