@@ -1998,6 +1998,46 @@ final class LiveRateMonitorTests: XCTestCase {
         XCTAssertEqual(appendedReads[0].events.map(\.text), ["second"])
     }
 
+    func testRolloutChunkBoundariesPreserveUTF8DeduplicationAndTheIncompleteTail() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LiveRateMonitorRolloutChunks-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        temporaryDirectories.append(directory)
+        let url = directory.appendingPathComponent("rollout.jsonl")
+        let timestamp = "2026-06-24T13:00:00.010Z"
+        let context = rolloutTurnContextLine(timestamp: timestamp, turnID: "turn-1") + "\n"
+        try Data(context.utf8).write(to: url)
+        let initial = LiveRateMonitor.initialRolloutReadState(path: url.path)
+        let writer = try FileHandle(forWritingTo: url)
+        defer { try? writer.close() }
+        try writer.seekToEnd()
+
+        let answer = String(repeating: "界", count: 90_000)
+        let agent = rolloutAgentMessageLine(timestamp: timestamp, message: answer)
+        let item = rolloutAssistantResponseItemLine(timestamp: timestamp, id: "matched", text: answer)
+        let tail = rolloutAssistantResponseItemLine(timestamp: timestamp, id: "next", text: "另一条回复")
+        let prefix = Data((agent + "\n" + item + "\n").utf8)
+        try writer.write(contentsOf: prefix)
+        try writer.write(contentsOf: Data([0xFF, 0x0A]))
+        let tailBytes = Data(tail.utf8)
+        let split = try XCTUnwrap(tailBytes.firstIndex(where: { $0 >= 0xE0 })) + 1
+        try writer.write(contentsOf: tailBytes[..<split])
+
+        let first = try LiveRateMonitor.rolloutEvents(path: url.path, state: initial)
+        XCTAssertEqual(first.events.map(\.text), [answer])
+        XCTAssertEqual(first.state.currentTurnID, "turn-1")
+        XCTAssertEqual(first.state.offset, initial.offset + UInt64(prefix.count + 2))
+        XCTAssertFalse(first.cacheReset)
+        try writer.write(contentsOf: tailBytes[split...])
+        try writer.write(contentsOf: Data([0x0A]))
+        let second = try LiveRateMonitor.rolloutEvents(path: url.path, state: first.state)
+        XCTAssertEqual(second.events.map(\.text), ["另一条回复"])
+        XCTAssertEqual(second.events.first?.turnID, "turn-1")
+        XCTAssertEqual(second.state.offset, first.state.offset + UInt64(tailBytes.count + 1))
+        XCTAssertFalse(second.cacheReset)
+        XCTAssertTrue(try LiveRateMonitor.rolloutEvents(path: url.path, state: second.state).events.isEmpty)
+    }
+
     @MainActor
     func testIncrementalRolloutReadCarriesTurnContextAcrossAppendsAndDeduplicatesStream() throws {
         let directory = FileManager.default.temporaryDirectory

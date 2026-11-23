@@ -702,12 +702,7 @@ enum MultiClientUsageParsers {
 
     private static func date(_ value: Any?) -> Date? {
         if let string = value as? String {
-            let fractional = ISO8601DateFormatter()
-            fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            if let parsed = fractional.date(from: string) { return parsed }
-            let ordinary = ISO8601DateFormatter()
-            ordinary.formatOptions = [.withInternetDateTime]
-            return ordinary.date(from: string)
+            return LocalLogISO8601.date(from: string)
         }
         guard let number = value as? NSNumber,
               CFGetTypeID(number) != CFBooleanGetTypeID()

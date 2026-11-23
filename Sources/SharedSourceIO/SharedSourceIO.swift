@@ -55,11 +55,11 @@ public final class SharedSourceIO: @unchecked Sendable {
         guard offset < before.size else { return Data() }
         let end = offset + min(Int64(min(count,Self.maxRead)),before.size-offset)
         var output = Data()
-        output.reserveCapacity(Int(end-offset))
         do {
             if probe {
                 output = try rawRead(descriptor,offset:offset,count:Int(end-offset))
             } else {
+                output.reserveCapacity(Int(end-offset))
                 var position = offset
                 while position < end {
                     let index = position / Int64(Self.pageBytes)

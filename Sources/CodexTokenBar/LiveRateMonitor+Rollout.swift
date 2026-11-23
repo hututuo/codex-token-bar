@@ -5,6 +5,7 @@ import CryptoKit
 extension LiveRateMonitor {
     nonisolated static let rolloutTurnContextBackscanByteLimit: UInt64 = 64 * 1_024
     nonisolated static let rolloutBoundarySignatureByteLimit: UInt64 = 256
+    private nonisolated static let rolloutReadChunkBytes = 256 * 1_024
 
     nonisolated static func rolloutReads(
         options: [LiveThreadOption],
@@ -46,115 +47,71 @@ extension LiveRateMonitor {
         let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: path, isDirectory: false))
         defer { try? handle.close() }
         let metadata = try rolloutFileMetadata(handle: handle)
-        let boundaryChanged: Bool
-        if metadata.size >= state.offset, let expected = state.boundarySignature {
-            boundaryChanged = try rolloutBoundarySignature(handle: handle, endingAt: state.offset) != expected
+        let checkedBoundary: RolloutBoundarySignature? = if metadata.size >= state.offset, state.boundarySignature != nil {
+            try rolloutBoundarySignature(handle: handle, endingAt: state.offset)
         } else {
-            boundaryChanged = false
+            nil
         }
         let restarted = metadata.size < state.offset
             || state.fileIdentity.map { $0 != metadata.identity } == true
-            || boundaryChanged
+            || (checkedBoundary != nil && checkedBoundary != state.boundarySignature)
         let readOffset = restarted ? 0 : state.offset
-        let previousTurnID = restarted ? nil : state.currentTurnID
         var discardLeadingPartialLine = restarted ? false : state.discardLeadingPartialLine
-        if metadata.size == readOffset {
-            return (
-                try rolloutReadState(
-                    handle: handle,
-                    offset: metadata.size,
-                    currentTurnID: previousTurnID,
-                    fileIdentity: metadata.identity,
-                    discardLeadingPartialLine: discardLeadingPartialLine
-                ),
-                [], [], restarted, []
-            )
+        var batch = RolloutEventBatch(currentTurnID: restarted ? nil : state.currentTurnID,
+                                      includeCacheSamples: !restarted)
+        let newOffset = try readCompleteRolloutLines(handle: handle, from: readOffset, through: metadata.size,
+            discardLeadingPartialLine: &discardLeadingPartialLine) { batch.append($0) }
+        let boundary = if newOffset == state.offset, !restarted, let checkedBoundary {
+            checkedBoundary
+        } else {
+            try rolloutBoundarySignature(handle: handle, endingAt: newOffset)
         }
-        try handle.seek(toOffset: readOffset)
-        let data = try handle.readToEndShared()
-        guard !data.isEmpty else {
-            return (
-                try rolloutReadState(
-                    handle: handle,
-                    offset: readOffset,
-                    currentTurnID: previousTurnID,
-                    fileIdentity: metadata.identity,
-                    discardLeadingPartialLine: discardLeadingPartialLine
-                ),
-                [], [], restarted, []
-            )
-        }
-
-        var skippedByteCount = 0
-        if discardLeadingPartialLine {
-            guard let firstNewline = data.firstIndex(of: 0x0A) else {
-                return (
-                    try rolloutReadState(
-                        handle: handle,
-                        offset: readOffset,
-                        currentTurnID: previousTurnID,
-                        fileIdentity: metadata.identity,
-                        discardLeadingPartialLine: true
-                    ),
-                    [], [], restarted, []
-                )
-            }
-            skippedByteCount = data.distance(from: data.startIndex, to: data.index(after: firstNewline))
-            discardLeadingPartialLine = false
-        }
-
-        let remaining = data.dropFirst(skippedByteCount)
-        guard let lastNewline = remaining.lastIndex(of: 0x0A) else {
-            let newOffset = readOffset + UInt64(skippedByteCount)
-            return (
-                try rolloutReadState(
-                    handle: handle,
-                    offset: newOffset,
-                    currentTurnID: previousTurnID,
-                    fileIdentity: metadata.identity,
-                    discardLeadingPartialLine: false
-                ),
-                [], [], restarted, []
-            )
-        }
-        let completeEnd = remaining.index(after: lastNewline)
-        let completeByteCount = remaining.distance(from: remaining.startIndex, to: completeEnd)
-        let completeData = Data(remaining[..<completeEnd])
-        guard let text = String(data: completeData, encoding: .utf8) else {
-            let newOffset = readOffset + UInt64(skippedByteCount)
-            return (
-                try rolloutReadState(
-                    handle: handle,
-                    offset: newOffset,
-                    currentTurnID: previousTurnID,
-                    fileIdentity: metadata.identity,
-                    discardLeadingPartialLine: false
-                ),
-                [], [], restarted, []
-            )
-        }
-
-        let newOffset = readOffset + UInt64(skippedByteCount + completeByteCount)
-        let parsed = rolloutEvents(
-            fromLines: text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init),
-            previousTurnID: previousTurnID, includeCacheSamples: !restarted
-        )
-        var nextState = try rolloutReadState(
-            handle: handle,
-            offset: newOffset,
-            currentTurnID: parsed.currentTurnID,
-            fileIdentity: metadata.identity,
-            discardLeadingPartialLine: false
-        )
+        var nextState = RolloutReadState(offset: newOffset, currentTurnID: batch.currentTurnID,
+            fileIdentity: metadata.identity, boundarySignature: boundary,
+            discardLeadingPartialLine: discardLeadingPartialLine)
         if restarted {
             let history = try initialRolloutReadState(handle: handle, metadata: metadata)
             nextState.initialCacheContextReset = history.initialCacheContextReset
             nextState.initialCacheContextEstablished = history.initialCacheContextEstablished
         }
-        return (
-            nextState,
-            parsed.events, restarted ? [] : parsed.cacheSamples, restarted, parsed.telemetry
-        )
+        let parsed = batch.result()
+        return (nextState, parsed.events, parsed.cacheSamples, restarted, parsed.telemetry)
+    }
+
+    /// Limit transient file storage to one chunk and one unfinished record.
+    /// Only bytes through a newline advance the cursor; an append can finish
+    /// the last record on the next poll without replaying the committed lines.
+    nonisolated private static func readCompleteRolloutLines(
+        handle: FileHandle, from offset: UInt64, through end: UInt64,
+        discardLeadingPartialLine: inout Bool, consume: (Data) -> Void
+    ) throws -> UInt64 {
+        guard offset < end else { return offset }
+        try handle.seek(toOffset: offset)
+        var position = offset
+        var committed = offset
+        var unfinished = Data()
+        while position < end {
+            let amount = Int(min(end - position, UInt64(rolloutReadChunkBytes)))
+            let chunk = try handle.readShared(upToCount: amount)
+            guard !chunk.isEmpty else { break }
+            var start = chunk.startIndex
+            while let newline = chunk[start...].firstIndex(of: 0x0A) {
+                if discardLeadingPartialLine {
+                    discardLeadingPartialLine = false
+                } else if unfinished.isEmpty {
+                    if start < newline { consume(chunk[start..<newline]) }
+                } else {
+                    unfinished.append(chunk[start..<newline])
+                    consume(unfinished)
+                    unfinished = Data()
+                }
+                start = chunk.index(after: newline)
+                committed = position + UInt64(start - chunk.startIndex)
+            }
+            if !discardLeadingPartialLine { unfinished.append(chunk[start...]) }
+            position += UInt64(chunk.count)
+        }
+        return committed
     }
 
     nonisolated static func initialRolloutReadState(path: String) -> RolloutReadState {
@@ -202,41 +159,51 @@ extension LiveRateMonitor {
         fromLines lines: [String],
         previousTurnID: String?, includeCacheSamples: Bool = true
     ) -> (events: [RolloutMetricEvent], currentTurnID: String?, cacheSamples: [CacheUsageSample], telemetry: [ThroughputSignal]) {
-        var callStarts: [String: TimeInterval] = [:]
-        var currentTurnID = previousTurnID
-        var cacheSamples: [CacheUsageSample] = []
-        let events = suppressDuplicateVisibleMessages(
-            lines.enumerated().flatMap { lineIndex, line in
-                autoreleasepool { () -> [RolloutMetricEvent] in
-                    // Decode once for both turn ownership and metric content.
-                    // Temporary Foundation objects end at this line boundary.
-                    guard let data = line.data(using: .utf8),
-                          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                          let payload = object["payload"] as? [String: Any] else { return [] }
-                    if let turnID = rolloutTurnID(object: object, payload: payload) {
-                        currentTurnID = turnID
-                    }
-                    return rolloutEvents(object: object, payload: payload, callStarts: &callStarts,
-                        currentTurnID: currentTurnID, cacheSamples: &cacheSamples,
-                        includeCacheSamples: includeCacheSamples).map { event in
-                        guard event.category == .visibleText, event.itemID == nil else { return event }
-                        return RolloutMetricEvent(
-                            timestamp: event.timestamp,
-                            startTimestamp: event.startTimestamp,
-                            key: "\(event.key):line:\(lineIndex)",
-                            turnID: event.turnID,
-                            itemID: nil,
-                            category: event.category,
-                            text: event.text,
-                            exactTokens: event.exactTokens,
-                            exactOutputTokens: event.exactOutputTokens,
-                            rollingOnly: event.rollingOnly
-                        )
+        var batch = RolloutEventBatch(currentTurnID: previousTurnID, includeCacheSamples: includeCacheSamples)
+        for line in lines { batch.append(Data(line.utf8)) }
+        return batch.result()
+    }
+
+    private struct RolloutEventBatch {
+        var currentTurnID: String?
+        let includeCacheSamples: Bool
+        private var callStarts: [String: TimeInterval] = [:]
+        private var events: [RolloutMetricEvent] = []
+        private var cacheSamples: [CacheUsageSample] = []
+        private var lineIndex = 0
+
+        init(currentTurnID: String?, includeCacheSamples: Bool) {
+            self.currentTurnID = currentTurnID
+            self.includeCacheSamples = includeCacheSamples
+        }
+
+        mutating func append(_ data: Data) {
+            let index = lineIndex
+            lineIndex += 1
+            autoreleasepool {
+                guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let payload = object["payload"] as? [String: Any] else { return }
+                if let turnID = rolloutTurnID(object: object, payload: payload) { currentTurnID = turnID }
+                let parsed = rolloutEvents(object: object, payload: payload, callStarts: &callStarts,
+                    currentTurnID: currentTurnID, cacheSamples: &cacheSamples, includeCacheSamples: includeCacheSamples)
+                for event in parsed {
+                    if event.category == .visibleText && event.itemID == nil {
+                        events.append(RolloutMetricEvent(timestamp: event.timestamp, startTimestamp: event.startTimestamp,
+                            key: "\(event.key):line:\(index)", turnID: event.turnID, itemID: nil, category: event.category,
+                            text: event.text, exactTokens: event.exactTokens, exactOutputTokens: event.exactOutputTokens,
+                            rollingOnly: event.rollingOnly))
+                    } else {
+                        events.append(event)
                     }
                 }
             }
-        )
-        return (events.filter { $0.telemetry == nil }, currentTurnID, cacheSamples, events.compactMap(\.telemetry))
+        }
+
+        func result() -> (events: [RolloutMetricEvent], currentTurnID: String?,
+                          cacheSamples: [CacheUsageSample], telemetry: [ThroughputSignal]) {
+            let unique = suppressDuplicateVisibleMessages(events)
+            return (unique.filter { $0.telemetry == nil }, currentTurnID, cacheSamples, unique.compactMap(\.telemetry))
+        }
     }
 
     nonisolated static func rolloutEvents(fromLine line: String) -> [RolloutMetricEvent] {
@@ -482,7 +449,7 @@ extension LiveRateMonitor {
     ) throws -> RolloutBoundarySignature {
         let requestedByteCount = min(offset, rolloutBoundarySignatureByteLimit)
         try handle.seek(toOffset: offset - requestedByteCount)
-        let data = try handle.readShared(upToCount: Int(requestedByteCount))
+        let data = try handle.readShared(upToCount: Int(requestedByteCount), probe: true)
         return RolloutBoundarySignature(
             sampledByteCount: data.count,
             sha256: Array(SHA256.hash(data: data))
@@ -504,13 +471,7 @@ extension LiveRateMonitor {
 
     nonisolated static func parseTimestamp(_ text: String?) -> TimeInterval? {
         guard let text else { return nil }
-        let fractionalFormatter = ISO8601DateFormatter()
-        fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let fallbackFormatter = ISO8601DateFormatter()
-        guard let date = fractionalFormatter.date(from: text) ?? fallbackFormatter.date(from: text) else {
-            return nil
-        }
-        return date.timeIntervalSince1970
+        return LocalLogISO8601.date(from: text)?.timeIntervalSince1970
     }
 
     nonisolated static func sqliteScalarInt(db: String, sql: String, bindings: [SQLiteBinding] = []) throws -> Int {

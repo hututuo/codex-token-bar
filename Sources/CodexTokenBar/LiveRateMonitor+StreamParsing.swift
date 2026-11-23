@@ -149,11 +149,6 @@ extension LiveRateMonitor {
         }.joined()
     }
 
-    nonisolated static func fileSize(path: String) -> UInt64 {
-        let attrs = try? FileManager.default.attributesOfItem(atPath: path)
-        return attrs?[.size] as? UInt64 ?? 0
-    }
-
     nonisolated static func logStoreSignature(logsDB: String) -> LogStoreSignature {
         let database = fileSignaturePart(path: logsDB)
         let wal = fileSignaturePart(path: logsDB + "-wal")
@@ -164,15 +159,10 @@ extension LiveRateMonitor {
     }
 
     nonisolated static func fileSignaturePart(path: String) -> FileStoreSignature {
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-              attrs[.type] as? FileAttributeType == .typeRegular
-        else {
+        guard let metadata = RegularFileMetadata.read(path: path, followSymlinks: false) else {
             return FileStoreSignature(device: nil, inode: nil, size: 0, modifiedAt: 0)
         }
-        let size = attrs[.size] as? UInt64 ?? 0
-        let modifiedAt = (attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
-        let device = (attrs[.systemNumber] as? NSNumber)?.uint64Value
-        let inode = (attrs[.systemFileNumber] as? NSNumber)?.uint64Value
-        return FileStoreSignature(device: device, inode: inode, size: size, modifiedAt: modifiedAt)
+        return FileStoreSignature(device: metadata.identity.device, inode: metadata.identity.inode,
+                                  size: metadata.size, modifiedAt: metadata.modifiedAt)
     }
 }

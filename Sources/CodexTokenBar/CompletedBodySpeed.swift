@@ -161,7 +161,7 @@ struct CompletedBodyAssembler: Sendable {
 actor CompletedBodySpeedReader {
     struct State {
         var offset: UInt64 = 0
-        var identity: String = ""
+        var identity: RegularFileMetadata.Identity?
         var assembler = CompletedBodyAssembler()
         var discardPartial = false
         var boundary: Data?
@@ -216,13 +216,13 @@ actor CompletedBodySpeedReader {
             var recentIDsByPath: [String: Set<String>] = [:]
             for option in options.sorted(by: { $0.updatedAtMS > $1.updatedAtMS }).prefix(64) where budget > 0 {
                 guard let path = option.normalizedRolloutPath, seen.insert(path).inserted,
-                      let attrs = try? FileManager.default.attributesOfItem(atPath: path),
-                      let size = (attrs[.size] as? NSNumber)?.uint64Value,
+                      let named = RegularFileMetadata.read(path: path, followSymlinks: true),
+                      states[path] != nil || named.modifiedAt >= now - 30 * 86400,
                       let handle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: path)) else { continue }
                 defer { try? handle.close() }
-                if states[path] == nil, let modified = attrs[.modificationDate] as? Date,
-                   modified.timeIntervalSince1970 < now - 30 * 86400 { continue }
-                let identity = "\(attrs[.systemNumber] ?? "")/\(attrs[.systemFileNumber] ?? "")"
+                guard let file = RegularFileMetadata.read(handle: handle), file.identity == named.identity else { continue }
+                let size = file.size
+                let identity = file.identity
                 var state = states[path] ?? State()
                 let changedBoundary = size >= state.offset && state.boundary != nil
                     ? try boundary(handle, at: state.offset) != state.boundary : false

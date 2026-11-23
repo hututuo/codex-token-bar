@@ -167,3 +167,35 @@ struct SourceFileObservation {
         return false
     }
 }
+
+/// Polling only needs the numeric metadata. Avoid building a Foundation
+/// attribute dictionary, and distinguish a named path from a pinned handle.
+struct RegularFileMetadata {
+    struct Identity: Equatable {
+        let device: UInt64
+        let inode: UInt64
+    }
+
+    let identity: Identity
+    let size: UInt64
+    let modifiedAt: TimeInterval
+
+    private init?(status: Darwin.stat) {
+        guard (status.st_mode & S_IFMT) == S_IFREG, status.st_size >= 0 else { return nil }
+        identity = Identity(device: UInt64(truncatingIfNeeded: status.st_dev), inode: status.st_ino)
+        size = UInt64(status.st_size)
+        modifiedAt = TimeInterval(status.st_mtimespec.tv_sec)
+            + TimeInterval(status.st_mtimespec.tv_nsec) / 1_000_000_000
+    }
+
+    static func read(path: String, followSymlinks: Bool) -> Self? {
+        var status = Darwin.stat()
+        let result = followSymlinks ? Darwin.stat(path, &status) : Darwin.lstat(path, &status)
+        return result == 0 ? Self(status: status) : nil
+    }
+
+    static func read(handle: FileHandle) -> Self? {
+        var status = Darwin.stat()
+        return fstat(handle.fileDescriptor, &status) == 0 ? Self(status: status) : nil
+    }
+}

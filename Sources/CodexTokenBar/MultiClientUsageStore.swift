@@ -65,9 +65,7 @@ actor MultiClientUsageScanner {
     private let environment: [String: String]
     private var ledger: MultiClientUsageLedger?
     private var cursor = 0
-    private var aggregateCache: (revision: Int64, minute: Int64, timezone: String,
-        summaries: [ClientUsageSummary], todaySummaries: [ClientUsageSummary],
-        sevenDaySummaries: [ClientUsageSummary], trend: [ClientTrendBucket], daily: [ClientTrendBucket])?
+    private var aggregateCache: (minute: Int64, timezone: String, projection: MultiClientUsageLedger.ScanProjection)?
     private var scanNotices: [String] = []
     private var importedQuotaHistorySource: String?
     private var deepSeekContexts: [String: (identity: String, session: String)] = [:]
@@ -124,21 +122,19 @@ actor MultiClientUsageScanner {
             if count < entries.count { diagnostics.append("本轮检查 \(count)/\(entries.count) 个文件，后续自动继续；已入账数据保留") }
         }
         let now = Date(), minute = Int64(now.timeIntervalSince1970 / 60)
-        let todayStart = Calendar.current.startOfDay(for: now)
-        let sevenDayStartUnix = floor((now.timeIntervalSince1970 - 7 * 24 * 60 * 60) / 300) * 300
-        let sevenDayStart = Date(timeIntervalSince1970: sevenDayStartUnix)
-        let revision = try ledger.database.readRows("SELECT COALESCE(MAX(revision),0) FROM client_usage_revisions") { $0.int64(0) ?? 0 }.first ?? 0
         let timezone = TimeZone.current.identifier + ":" + String(TimeZone.current.secondsFromGMT(for: now))
-        if aggregateCache?.revision != revision || aggregateCache?.minute != minute || aggregateCache?.timezone != timezone {
-            aggregateCache = (revision, minute, timezone, try ledger.summaries(),
-                try ledger.summaries(since: todayStart), try ledger.summaries(since: sevenDayStart),
-                try ledger.trendBuckets(now: now), try ledger.dailyBuckets(now: now))
+        let unchangedRevision = aggregateCache.flatMap {
+            $0.minute == minute && $0.timezone == timezone ? $0.projection.revision : nil
         }
-        return MultiClientScanResult(summaries: aggregateCache?.summaries ?? [],
+        if let projection = try ledger.scanProjection(now: now, unchangedRevision: unchangedRevision) {
+            aggregateCache = (minute, timezone, projection)
+        }
+        let projection = aggregateCache?.projection
+        return MultiClientScanResult(summaries: projection?.summaries ?? [],
             diagnostics: Array((diagnostics + scanNotices).prefix(12)),
-            todaySummaries: aggregateCache?.todaySummaries ?? [],
-            sevenDaySummaries: aggregateCache?.sevenDaySummaries ?? [],
-            trendBuckets: aggregateCache?.trend ?? [], dailyBuckets: aggregateCache?.daily ?? [])
+            todaySummaries: projection?.todaySummaries ?? [],
+            sevenDaySummaries: projection?.sevenDaySummaries ?? [],
+            trendBuckets: projection?.trend ?? [], dailyBuckets: projection?.daily ?? [])
     }
 
     private func deepSeekSession(_ url: URL, identity: String) throws -> String {

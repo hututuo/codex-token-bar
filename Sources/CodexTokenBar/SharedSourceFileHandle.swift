@@ -12,7 +12,8 @@ extension FileHandle {
             let bytes = try SharedSourceIO.shared.read(descriptor: fileDescriptor,
                 offset: Int64(offset) + Int64(result.count), count: count - result.count, probe: probe)
             if bytes.isEmpty { break }
-            result.append(bytes)
+            if result.isEmpty { result = bytes }
+            else { result.append(bytes) }
         }
         try seek(toOffset: offset + UInt64(result.count))
         return result
@@ -27,13 +28,5 @@ extension FileHandle {
               before.matches(try SourceFileObservation.readPhysical(handle: handle)),
               before.matches(try SourceFileObservation.read(at: url)) else { throw POSIXError(.ESTALE) }
         return data
-    }
-    func readToEndShared() throws -> Data {
-        var result = Data()
-        while true {
-            let bytes = try readShared(upToCount:4*1024*1024)
-            if bytes.isEmpty { return result }
-            result.append(bytes)
-        }
     }
 }

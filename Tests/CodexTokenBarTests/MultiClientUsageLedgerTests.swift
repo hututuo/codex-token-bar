@@ -3,6 +3,57 @@ import CryptoKit
 @testable import CodexTokenBar
 
 final class MultiClientUsageLedgerTests: XCTestCase {
+    func testScanProjectionMatchesIndependentReadsAfterResponseMovesAcrossDays() throws {
+        let url = root.appendingPathComponent("scan-projection.sqlite")
+        let ledger = try MultiClientUsageLedger(url: url)
+        let today = Calendar.current.startOfDay(for: Date(timeIntervalSince1970: 1_800_000_000))
+        let now = today.addingTimeInterval(3600)
+        let week = Date(timeIntervalSince1970: floor((now.timeIntervalSince1970 - 7 * 86400) / 300) * 300)
+        let response = String(repeating: "a", count: 64)
+        let original = ClientUsageEvent(client: .claudeDesktop,
+            eventID: "v1:" + String(repeating: "b", count: 64) + ":id:" + response,
+            sessionID: "original", model: "claude-opus-5-5", timestamp: today.addingTimeInterval(-1),
+            inputTokens: 100, outputTokens: 10, cacheReadTokens: 20, cacheWriteTokens: 30)
+        var copy = original
+        copy.eventID = "v1:" + String(repeating: "c", count: 64) + ":id:" + response
+        copy.sessionID = "copied"
+        copy.timestamp = today.addingTimeInterval(-2)
+        copy.cacheWrite5mTokens = 10; copy.cacheWrite1hTokens = 20
+        let futureUnknown = ClientUsageEvent(client: .antigravity, eventID: "unknown", sessionID: "s", model: "unknown",
+            timestamp: now.addingTimeInterval(1), inputTokens: 200, outputTokens: 5)
+        let oldPriced = ClientUsageEvent(client: .antigravity, eventID: "older", sessionID: "s", model: "gemini-3-flash-a",
+            timestamp: now.addingTimeInterval(-45 * 86400), inputTokens: 200, outputTokens: 80,
+            cacheReadTokens: 0, cacheWriteTokens: 0)
+        _ = try ledger.ingest([original, copy, futureUnknown, oldPriced])
+
+        func check(_ projection: MultiClientUsageLedger.ScanProjection) throws {
+            let independent = try MultiClientUsageLedger(url: url, readOnly: true)
+            XCTAssertEqual(projection.summaries, try independent.summaries())
+            XCTAssertEqual(projection.todaySummaries, try independent.summaries(since: today))
+            XCTAssertEqual(projection.sevenDaySummaries, try independent.summaries(since: week))
+            XCTAssertEqual(projection.trend, try independent.trendBuckets(now: now))
+            XCTAssertEqual(projection.daily, try independent.dailyBuckets(now: now))
+            XCTAssertEqual(projection.summaries.reduce(0) { $0 + $1.requests }, 3)
+            XCTAssertEqual(projection.summaries.reduce(0) { $0 + $1.unpricedRequests }, 1)
+            XCTAssertEqual(projection.trend.count, 1)
+            XCTAssertEqual(projection.daily.count, 2)
+        }
+
+        let first = try XCTUnwrap(ledger.scanProjection(now: now, unchangedRevision: nil))
+        try check(first)
+        XCTAssertNil(try ledger.scanProjection(now: now, unchangedRevision: first.revision))
+        copy.timestamp = today
+        copy.outputTokens += 50
+        _ = try ledger.ingest([copy])
+        let updated = try XCTUnwrap(ledger.scanProjection(now: now, unchangedRevision: first.revision))
+        try check(updated)
+        XCTAssertEqual(updated.daily.first { $0.client == .claudeDesktop }?.startUnix, Int64(today.timeIntervalSince1970))
+        XCTAssertEqual(try ledger.database.readRows("SELECT COUNT(*) FROM client_usage_revisions") { $0.int(0) }.first, 5)
+        XCTAssertTrue(try ledger.database.readRows("SELECT name FROM main.sqlite_schema WHERE name='effective_client_usage_events'") {
+            $0.text(0)
+        }.isEmpty)
+    }
+
     func testDailyProjectionScaleKeepsTotalsAcrossCachedAndIncrementalReads() throws {
         let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("daily-scale.sqlite"))
         let now = Calendar.current.startOfDay(for: Date(timeIntervalSince1970: 1_800_000_000)).addingTimeInterval(3600)
