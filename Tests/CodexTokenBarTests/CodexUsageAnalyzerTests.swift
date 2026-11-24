@@ -8467,6 +8467,10 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         let db = SQLiteDatabaseDriver(url:try exactUsageDatabaseURL(in:cacheRoot))
         XCTAssertEqual(try scalarInt("SELECT COUNT(*) FROM dashboard_turn_candidates",in:db),2)
         let before = try scalarInt("SELECT SUM(tokens) FROM events",in:db)
+        let checkpoint = try XCTUnwrap(db.readRows("SELECT accounting_state FROM sources") { $0.text(0) }.first ?? nil)
+        // The unchanged-source check and link repair can use published usage
+        // and byte proofs without opening an unrelated append checkpoint.
+        try db.execute("UPDATE sources SET accounting_state='invalid checkpoint'")
         try db.execute("UPDATE events SET user_prompt_offset=NULL,assistant_start_offset=NULL; UPDATE usage_ledger_bindings SET prompt_offset=NULL,assistant_offset=NULL; DELETE FROM usage_ledger_turns; DELETE FROM dashboard_turn_candidates; UPDATE sources SET current_user_prompt_offset=NULL,assistant_start_offset=NULL;")
         var scanned = 0
         let scanner: CodexUsageHistoryIndex.MessageScanner = { file, size, offsets in
@@ -8490,6 +8494,12 @@ final class CodexUsageAnalyzerTests: XCTestCase {
         try handle.seekToEnd()
         try handle.write(contentsOf:Data((tail + "\n").utf8))
         try handle.close()
+        XCTAssertThrowsError(try index.synchronize(files: [file], sessionID: { _ in "message-links" },
+            messageScanner: scanner, parser: noReplay)) { error in
+            XCTAssertTrue(error is DecodingError, "Changed bytes must validate the saved checkpoint before parsing")
+        }
+        XCTAssertEqual(try scalarInt("SELECT SUM(tokens) FROM events", in: db), before)
+        try db.execute("UPDATE sources SET accounting_state=?", bindings: [.text(checkpoint)])
         _ = try index.synchronize(files:[file],sessionID:{_ in "message-links"},messageScanner:scanner) { file,id,request,fingerprint,emit in
             try analyzer.parseSessionIntoHistoryIndex(file:file,sessionID:id,request:request,insertFingerprint:fingerprint,emit:emit)
         }

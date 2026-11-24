@@ -391,6 +391,14 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         let checkpoint: SourceCheckpoint?
     }
 
+    private struct SourceCatalogEntry {
+        let id: Int64
+        let storedPath: String
+        let signature: SourceSignature
+        let isMissing: Bool
+        let hasRepresentation: Bool
+    }
+
     private struct SourceIdentity {
         let id: Int64
         let path: String
@@ -637,8 +645,8 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     }
 
     private func verifyRetryDurableSources(current: SQLiteDatabaseConnection, previous: SQLiteDatabaseConnection) throws -> Bool {
-        let old = try indexedSources(connection: previous, includeMissing: true)
-        let next = try indexedSources(connection: current, includeMissing: true)
+        let old = try indexedSourcesForRecoveryProof(connection: previous)
+        let next = try indexedSourcesForRecoveryProof(connection: current)
         var nextPaths: [Int64: Data] = [:]
         for (path, source) in next {
             guard nextPaths.updateValue(Data(path.utf8), forKey: source.id) == nil else {
@@ -3237,7 +3245,9 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         preparedStages: [URL: PreparedStage]
     ) throws -> SynchronizationResult {
         let generation = UUID().uuidString
-        let canonicalFiles = Array(Set(files.map { CodexRolloutReader.canonicalLogicalURL($0) })).sorted { $0.path < $1.path }
+        let canonicalFiles = autoreleasepool {
+            Set(files.lazy.map { CodexRolloutReader.canonicalLogicalURL($0) }).sorted { $0.path < $1.path }
+        }
         let observedPaths = Set(canonicalFiles.map(\.path))
         var changedFiles = 0
         var unchangedFiles = 0
@@ -3246,14 +3256,12 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         var rewrittenFiles = 0
         var removedFiles = 0
         var fullRebuildJobs: [FullRebuildJob] = []
-        let canonicalLineageCounts = Dictionary(
-            grouping: canonicalFiles.compactMap { file in
-                canonicalSessionID(sessionID(file))
-            },
-            by: { $0 }
-        )
-        var lineageAmbiguityDetected = canonicalLineageCounts.values.contains {
-            $0.count > 1
+        var lineageAmbiguityDetected = autoreleasepool {
+            var seen = Set<String>()
+            return canonicalFiles.contains { file in
+                guard let identity = canonicalSessionID(sessionID(file)) else { return false }
+                return !seen.insert(identity).inserted
+            }
         }
         var sourceMutationDetected = false
         var dirtyTurnCandidateSessions = Set<String>()
@@ -3266,9 +3274,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         )
 
         try ExactBackfillMetrics.measure(.discovery) {
-            let indexedSources = try indexedSources(connection: connection, includeMissing: true)
-            let missingSourceIDs = Set(try connection.readRows("SELECT source_id FROM usage_ledger_sources WHERE missing=1") { $0.int64(0) }.compactMap { $0 })
-            let representedSourceIDs = Set(try connection.readRows("SELECT source_id FROM source_representations") { $0.int64(0) }.compactMap { $0 })
+            let catalog = try indexedSourceCatalog(connection: connection)
             let enrichmentPendingSourceIDs = try eventEnrichmentPendingSourceIDs(
                 connection: connection
             )
@@ -3277,15 +3283,26 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             for file in canonicalFiles {
                 try autoreleasepool {
                     let path = file.path
-                    let existing = indexedSources[path]
-                    let observedMetadata = try sourceSignatureMetadata(for: file, reusing: existing?.signature)
-                    if let existing, representedSourceIDs.contains(existing.id),
-                       !missingSourceIDs.contains(existing.id),
-                       !enrichmentPendingSourceIDs.contains(existing.id),
-                       isTrustedContentProbe(existing.signature.contentProbe),
-                       sourceMetadataMatches(existing.signature, observedMetadata) {
+                    let entry = catalog[path]
+                    let observedMetadata = try sourceSignatureMetadata(for: file, reusing: entry?.signature)
+                    if let entry, entry.hasRepresentation, !entry.isMissing,
+                       !enrichmentPendingSourceIDs.contains(entry.id),
+                       isTrustedContentProbe(entry.signature.contentProbe),
+                       sourceMetadataMatches(entry.signature, observedMetadata) {
                         unchangedFiles += 1
                         return
+                    }
+                    let existing: IndexedSource?
+                    if let entry {
+                        // Swift path identity may match equivalent Unicode
+                        // spellings. Use the stored spelling for SQLite.
+                        guard let source = try indexedSource(path: entry.storedPath, connection: connection),
+                              source.id == entry.id else {
+                            throw malformedIndexedSourceError("source catalog changed within synchronization")
+                        }
+                        existing = source
+                    } else {
+                        existing = nil
                     }
                     if let existing,
                        !enrichmentPendingSourceIDs.contains(existing.id),
@@ -3644,23 +3661,15 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 // and diffing against this round's observed canonical paths
                 // avoids rewriting every unchanged row and keeps deletion
                 // detection independent of SQLite's host parameter limit.
-                let currentSources = try indexedSourceIdentities(
-                    connection: transaction
-                )
-                let removedSourceIDs = currentSources
+                let removedSources = try indexedSourceIdentities(connection: transaction)
                     .filter { !observedPaths.contains($0.path) }
-                    .map(\.id)
-                let currentSessionBySourceID = Dictionary(
-                    uniqueKeysWithValues: currentSources.compactMap { source in
-                        source.sessionID.map { (source.id, $0) }
-                    }
-                )
-                removedFiles = removedSourceIDs.count
+                removedFiles = removedSources.count
                 sourceMutationDetected = sourceMutationDetected
-                    || !removedSourceIDs.isEmpty
+                    || !removedSources.isEmpty
                 var removedDashboardBuckets = Set<Int64>()
-                for sourceID in removedSourceIDs {
-                    if let removedSessionID = currentSessionBySourceID[sourceID] {
+                for source in removedSources {
+                    let sourceID = source.id
+                    if let removedSessionID = source.sessionID {
                         dirtyTurnCandidateSessions.insert(removedSessionID)
                     }
                     let sourceBuckets = try transaction.readRows(
@@ -5745,19 +5754,27 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                                     onProgress: ((Int, Int, PreciseIndexProgressPhase) -> Void)?) throws -> Bool {
         try connection.execute("CREATE TABLE IF NOT EXISTS usage_ledger_message_receipts(source_id INTEGER PRIMARY KEY, generation TEXT NOT NULL, revision INTEGER NOT NULL);")
         let pending = try connection.readRows("""
-            SELECT s.source_id,s.path,l.generation
+            SELECT s.source_id,s.path,l.generation,s.session_id,
+                   s.size_bytes,s.modified_at,s.content_probe,o.physical_stamp
             FROM sources s JOIN usage_ledger_sources l USING(source_id)
             LEFT JOIN usage_ledger_message_receipts r ON r.source_id=s.source_id AND r.generation=l.generation AND r.revision=1
+            LEFT JOIN source_observations o ON o.source_id=s.source_id AND o.size_bytes=s.size_bytes AND o.modified_at=s.modified_at
             WHERE l.missing=0 AND r.source_id IS NULL AND EXISTS(
                 SELECT 1 FROM usage_ledger_bindings b JOIN events e ON e.source_id=b.source_id AND e.source_offset=b.event_id
                 WHERE b.source_id=s.source_id AND b.generation=l.generation AND b.available=1
                   AND e.user_prompt_offset IS NULL)
             ORDER BY s.modified_at DESC;
-            """) { ($0.int64(0)!, $0.text(1)!, $0.text(2)!) }
-        let sources = try indexedSources(connection: connection)
-        for (position, (sourceID, path, generation)) in pending.enumerated() {
+            """) { row in
+                guard let id = row.int64(0), let path = row.text(1),
+                      let generation = row.text(2), let sessionID = row.text(3) else {
+                    throw malformedIndexedSourceError("invalid message link source")
+                }
+                let signature = try decodeSourceSignature(row, sizeColumn: 4, stampColumn: 7)
+                return (id, path, generation, sessionID, signature)
+            }
+        for (position, (sourceID, path, generation, sessionID, signature)) in pending.enumerated() {
             if Task.isCancelled { throw CancellationError() }
-            guard observedPaths.contains(path), let source = sources[path] else { continue }
+            guard observedPaths.contains(path) else { continue }
             let file = URL(fileURLWithPath: path)
             guard let physical = try? CodexRolloutReader.physicalURL(for: file),
                   !physical.lastPathComponent.hasSuffix(".jsonl.zst") else { continue }
@@ -5765,7 +5782,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             do { observed = try sourceSignatureMetadata(for: file, allowsCompressed: false) }
             catch is CancellationError { throw CancellationError() }
             catch { continue }
-            guard sourceMetadataMatches(source.signature, observed) else { continue }
+            guard sourceMetadataMatches(signature, observed) else { continue }
             let bindings = try connection.readRows("""
                 SELECT b.raw_offset,b.event_id FROM usage_ledger_bindings b
                 JOIN events e ON e.source_id=b.source_id AND e.source_offset=b.event_id
@@ -5774,7 +5791,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             let events = Dictionary(uniqueKeysWithValues: bindings)
             onProgress?(position, pending.count, .backfillingModel)
             let scan: CodexUsageAnalyzer.MessageLinkScan
-            do { scan = try scanner(file, source.signature.size, Set(events.keys)) }
+            do { scan = try scanner(file, signature.size, Set(events.keys)) }
             catch is CancellationError { throw CancellationError() }
             catch let error as SQLiteDatabaseError { throw error }
             catch { continue } // Optional excerpts must not take numeric usage offline.
@@ -5782,7 +5799,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
             do { after = try sourceSignatureMetadata(for: file, allowsCompressed: false) }
             catch is CancellationError { throw CancellationError() }
             catch { continue }
-            guard sourceMetadataMatches(source.signature, after),
+            guard sourceMetadataMatches(signature, after),
                   !scan.chunks.isEmpty else { continue }
             let storedChunkCount = try connection.readRows("SELECT COUNT(*) FROM source_chunks WHERE source_id=?", bindings:[.int64(sourceID)]) { $0.int(0) }.first ?? 0
             var verified = storedChunkCount == scan.chunks.count
@@ -5800,7 +5817,7 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 // Resume the live tail in the same turn after this one-time pass.
                 try tx.execute("UPDATE sources SET current_user_prompt_offset=?,assistant_start_offset=? WHERE source_id=?",bindings:[try scan.prompt.map { .int64(try sqliteInt64($0)) } ?? .null,try scan.assistant.map { .int64(try sqliteInt64($0)) } ?? .null,.int64(sourceID)])
                 if !scan.links.isEmpty {
-                    try refreshDashboardTurnCandidates(sessionIDs: [source.sessionID], connection: tx)
+                    try refreshDashboardTurnCandidates(sessionIDs: [sessionID], connection: tx)
                     try tx.execute("INSERT OR REPLACE INTO schema_meta VALUES('message_links_pending','1');")
                 }
                 try tx.execute("INSERT OR REPLACE INTO usage_ledger_message_receipts VALUES(?,?,1)", bindings:[.int64(sourceID),.text(generation)])
@@ -7078,14 +7095,41 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         return rows.first
     }
 
-    /// Loads the small source catalog once per synchronization. The previous
-    /// implementation issued one SQLite query per JSONL file, which amplified
-    /// cold-page I/O into thousands of random reads on every refresh.
-    private func indexedSources(
-        connection: SQLiteDatabaseConnection,
-        includeMissing: Bool = false
-    ) throws -> [String: IndexedSource] {
-        let rows: [(String, IndexedSource)] = try connection.readRows(
+    /// Unchanged files only need a signature comparison. Stream metadata into
+    /// the lookup without reading or decoding the stored parser checkpoints.
+    private func indexedSourceCatalog(connection: SQLiteDatabaseConnection) throws -> [String: SourceCatalogEntry] {
+        var catalog: [String: SourceCatalogEntry] = [:]
+        try connection.forEachRow("""
+            SELECT s.path, s.source_id, s.session_id IS NOT NULL,
+                   s.size_bytes, s.modified_at, s.content_probe, o.physical_stamp,
+                   COALESCE(l.missing=1,0), r.source_id IS NOT NULL
+            FROM sources s
+            LEFT JOIN source_observations o ON o.source_id=s.source_id AND o.size_bytes=s.size_bytes AND o.modified_at=s.modified_at
+            LEFT JOIN usage_ledger_sources l ON l.source_id=s.source_id
+            LEFT JOIN source_representations r ON r.source_id=s.source_id
+            ORDER BY s.source_id;
+            """) { row in
+                guard let path = row.text(0), !path.isEmpty else {
+                    throw malformedIndexedSourceError("missing source path")
+                }
+                guard let id = row.int64(1), row.int(2) == 1 else {
+                    throw malformedIndexedSourceError("invalid required source fields")
+                }
+                let signature = try decodeSourceSignature(row, sizeColumn: 3, stampColumn: 6)
+                let entry = SourceCatalogEntry(id: id, storedPath: path, signature: signature,
+                    isMissing: row.int(7) == 1, hasRepresentation: row.int(8) == 1)
+                if let prior = catalog.updateValue(entry, forKey: path) {
+                    throw malformedIndexedSourceError("duplicate source path identity for sources \(prior.id) and \(id)")
+                }
+            }
+        return catalog
+    }
+
+    /// Recovery proof requires every retained parser checkpoint, including
+    /// sources no longer present on disk.
+    private func indexedSourcesForRecoveryProof(connection: SQLiteDatabaseConnection) throws -> [String: IndexedSource] {
+        var sources: [String: IndexedSource] = [:]
+        try connection.forEachRow(
             """
             SELECT
                 path,
@@ -7108,21 +7152,16 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 accounting_state,
                 (SELECT o.physical_stamp FROM source_observations o WHERE o.source_id=sources.source_id AND o.size_bytes=sources.size_bytes AND o.modified_at=sources.modified_at)
             FROM sources
-            WHERE \(includeMissing ? "1=1" : "NOT EXISTS(SELECT 1 FROM usage_ledger_sources l WHERE l.source_id=sources.source_id AND l.missing=1)")
             ORDER BY source_id;
             """
         ) { row in
             guard let path = row.text(0), !path.isEmpty else {
                 throw malformedIndexedSourceError("missing source path")
             }
-            return (path, try decodeIndexedSource(row, startingAt: 1))
-        }
-        var sources: [String: IndexedSource] = [:]
-        for (path, source) in rows {
-            if let prior = sources[path] {
+            let source = try decodeIndexedSource(row, startingAt: 1)
+            if let prior = sources.updateValue(source, forKey: path) {
                 throw malformedIndexedSourceError("duplicate source path identity for sources \(prior.id) and \(source.id)")
             }
-            sources[path] = source
         }
         return sources
     }
@@ -7132,13 +7171,10 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         startingAt offset: Int32
     ) throws -> IndexedSource {
         guard let sourceID = row.int64(offset),
-              let sessionID = row.text(offset + 15),
-              let rawSize = row.int64(offset + 1),
-              rawSize >= 0,
-              let modifiedAt = row.double(offset + 2),
-              let probe = row.text(offset + 3) else {
+              let sessionID = row.text(offset + 15) else {
             throw malformedIndexedSourceError("invalid required source fields")
         }
+        let signature = try decodeSourceSignature(row, sizeColumn: offset + 1, stampColumn: offset + 17)
         let checkpoint: SourceCheckpoint?
         if row.int(offset + 4) == 1,
            let rawResumeOffset = row.int64(offset + 5),
@@ -7174,14 +7210,19 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
         return IndexedSource(
             id: sourceID,
             sessionID: sessionID,
-            signature: SourceSignature(
-                size: UInt64(rawSize),
-                modifiedAt: modifiedAt,
-                contentProbe: probe,
-                physicalStamp: row.text(offset + 17)
-            ),
+            signature: signature,
             checkpoint: checkpoint
         )
+    }
+
+    private func decodeSourceSignature(_ row: SQLiteStatement, sizeColumn: Int32, stampColumn: Int32) throws -> SourceSignature {
+        guard let size = row.int64(sizeColumn), size >= 0,
+              let modifiedAt = row.double(sizeColumn + 1),
+              let probe = row.text(sizeColumn + 2) else {
+            throw malformedIndexedSourceError("invalid required source fields")
+        }
+        return SourceSignature(size: UInt64(size), modifiedAt: modifiedAt,
+            contentProbe: probe, physicalStamp: row.text(stampColumn))
     }
 
     private func malformedIndexedSourceError(_ reason: String) -> SQLiteDatabaseError {
