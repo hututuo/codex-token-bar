@@ -702,7 +702,11 @@ extension CodexUsageAnalyzer {
                 )
                 files.append(contentsOf: sessionFiles)
             }
-            files.append(contentsOf: try activeStateRolloutFiles(canonicalHome: canonicalHome))
+            let verifiedTreePaths = autoreleasepool { Set(files.lazy.map(\.path)) }
+            files.append(contentsOf: try activeStateRolloutFiles(
+                canonicalHome: canonicalHome,
+                verifiedTreePaths: verifiedTreePaths
+            ))
             let discovered = deduplicateJSONLFiles(files)
             trace?.end("ok", metadata: ["files": String(discovered.count)])
             return discovered
@@ -828,63 +832,52 @@ extension CodexUsageAnalyzer {
         return signature
     }
 
-    private func activeStateRolloutFiles(canonicalHome: URL) throws -> [URL] {
-        guard try discoveryPathExists(dataSource.stateDatabase) else {
+    private func activeStateRolloutFiles(canonicalHome: URL, verifiedTreePaths: Set<String>) throws -> [URL] {
+        let database = dataSource.stateDatabase
+        guard try discoveryPathExists(database) else {
             return []
         }
-        let columns = try threadColumnNames()
-        guard columns.contains("rollout_path") else {
-            return []
-        }
-        let archivedFilter = columns.contains("archived")
-            ? "COALESCE(archived, 0) = 0"
-            : "1 = 1"
-        let sql = """
-        SELECT rollout_path
-        FROM threads
-        WHERE \(archivedFilter)
-          AND rollout_path IS NOT NULL
-          AND rollout_path <> '';
-        """
-        let rows: [[String]]
+        let rows: [String]
         do {
-            rows = try sqliteRows(db: dataSource.stateDatabase.path, sql: sql)
+            let columns = try sqliteRows(
+                db: database,
+                sql: "PRAGMA table_info(threads);",
+                column: 1
+            )
+            guard columns.contains("rollout_path") else { return [] }
+            let archivedFilter = columns.contains("archived")
+                ? "COALESCE(archived, 0) = 0"
+                : "1 = 1"
+            rows = try sqliteRows(db: database, sql: """
+                SELECT rollout_path
+                FROM threads
+                WHERE \(archivedFilter)
+                  AND rollout_path IS NOT NULL
+                  AND rollout_path <> '';
+                """, column: 0)
         } catch {
             throw CodexUsageDiscoveryError.stateDatabaseReadFailed(
-                path: dataSource.stateDatabase.path,
+                path: database.path,
                 reason: error.localizedDescription,
                 transient: SQLiteReadRecovery.isTransientReadFailure(error)
             )
         }
         return try rows.compactMap { row in
-            guard let rawPath = row.first?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !rawPath.isEmpty else {
-                return nil
+            try autoreleasepool {
+                let rawPath = row.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !rawPath.isEmpty else { return nil }
+                let rollout = normalizedRolloutPath(rawPath)
+                // Reuse only exact logical paths already checked in this scan.
+                // Other spellings and state-only paths go through full validation.
+                guard !verifiedTreePaths.contains(CodexRolloutReader.logicalURL(rollout).path) else {
+                    return nil
+                }
+                return try trustedJSONLFile(rollout, canonicalHome: canonicalHome)
             }
-            return try trustedJSONLFile(
-                normalizedRolloutPath(rawPath),
-                canonicalHome: canonicalHome
-            )
         }
     }
 
-    private func threadColumnNames() throws -> Set<String> {
-        let rows: [[String]]
-        do {
-            rows = try sqliteRows(db: dataSource.stateDatabase.path, sql: "PRAGMA table_info(threads);")
-        } catch {
-            throw CodexUsageDiscoveryError.stateDatabaseReadFailed(
-                path: dataSource.stateDatabase.path,
-                reason: error.localizedDescription,
-                transient: SQLiteReadRecovery.isTransientReadFailure(error)
-            )
-        }
-        return Set(rows.compactMap { row in
-            row.count > 1 ? row[1] : nil
-        })
-    }
-
-    private func sqliteRows(db: String, sql: String) throws -> [[String]] {
+    private func sqliteRows(db: URL, sql: String, column: Int32) throws -> [String] {
         // Codex owns this WAL database. During login/startup its checkpoint
         // can replace a sidecar for several seconds; the short default retry
         // window turns that expected race into a false discovery error.
@@ -897,18 +890,14 @@ extension CodexUsageAnalyzer {
             // transient SQLITE_IOERR state and unnecessarily stale the whole
             // precise-usage snapshot.
             let driver = SQLiteDatabaseDriver(
-                url: URL(fileURLWithPath: db),
+                url: db,
                 readOnly: true,
                 createsFileIfMissing: false,
                 busyTimeoutMilliseconds: 3_000,
                 enableWAL: false,
                 consistency: .externallyOwnedWAL
             )
-            return try driver.readRows(sql) { statement in
-                (0..<statement.columnCount).map { column in
-                    statement.text(column) ?? ""
-                }
-            }
+            return try driver.readRows(sql) { $0.text(column) ?? "" }
         }
     }
 

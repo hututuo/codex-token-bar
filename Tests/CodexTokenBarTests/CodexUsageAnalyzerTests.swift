@@ -2406,18 +2406,34 @@ final class CodexUsageAnalyzerTests: XCTestCase {
                 last: Usage(input: 90, cachedInput: 10, output: 20, reasoning: 0, total: 110)
             )
         ].joined(separator: "\n").appending("\n").write(to: sessionFile, atomically: true, encoding: .utf8)
+        // Hidden files are skipped by directory enumeration. An active path in
+        // state must still be validated and included even under sessions.
+        let stateOnlyRoot = sessionFile.deletingLastPathComponent()
+            .appendingPathComponent(".active", isDirectory: true)
+        try FileManager.default.createDirectory(at: stateOnlyRoot, withIntermediateDirectories: true)
+        let stateOnlyFile = try writeTokenCountRollout(
+            in: stateOnlyRoot,
+            sessionID: "019eaaaa-bbbb-cccc-dddd-stateonlypath",
+            timestamp: now.addingTimeInterval(-30),
+            totalTokens: 70
+        )
         try seedStateDatabase(
             at: codexHome,
-            rolloutPaths: [sessionFile.path],
-            archived: [0],
-            threadSources: ["user"]
+            rolloutPaths: [sessionFile.path, "sessions/\(sessionFile.lastPathComponent).zst", stateOnlyFile.path],
+            archived: [0, 0, 0],
+            threadSources: ["user", "user", "user"]
         )
 
-        let snapshot = try CodexUsageAnalyzer(dataSource: dataSource(for: codexHome)).load()
+        let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
+        XCTAssertEqual(
+            try analyzer.usageJSONLFiles().map(\.path),
+            [sessionFile, stateOnlyFile].map { $0.resolvingSymlinksInPath().path }.sorted()
+        )
+        let snapshot = try analyzer.load()
 
-        XCTAssertEqual(snapshot.stats.totalTokens, 110)
-        XCTAssertEqual(snapshot.stats.totalCalls, 1)
-        XCTAssertEqual(snapshot.cacheUsage.sessions.count, 1)
+        XCTAssertEqual(snapshot.stats.totalTokens, 180)
+        XCTAssertEqual(snapshot.stats.totalCalls, 2)
+        XCTAssertEqual(snapshot.cacheUsage.sessions.count, 2)
     }
 
     func testPreciseJSONLScanIncludesActiveUserAndSubagentStateRolloutPaths() throws {
