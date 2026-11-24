@@ -2505,11 +2505,17 @@ final class CodexUsageStoreTests: XCTestCase {
             (400, laterGap.addingTimeInterval(1)),
         ].map { tokens, observedAt in
             makeSnapshot(totalTokens: tokens, dayTokens: tokens,
-                preciseTimeSeriesGeneratedAt: observedAt, observedThrough: observedAt)
+                preciseTimeSeriesGeneratedAt: observedAt,
+                generatedAt: observedAt, observedThrough: observedAt)
         }
-        let loader = CompactSummaryProbeLoader(
-            preciseResults: snapshots,
-            summary: .init(totalTokens: 900, todayTokens: 50, todayCalls: 1, generatedAt: now)
+        let loader = CompactSummarySequenceProbeLoader(
+            precise: snapshots,
+            summaries: [
+                .init(totalTokens: 900, todayTokens: 50, todayCalls: 1,
+                    generatedAt: firstObservation.addingTimeInterval(1)),
+                .init(totalTokens: 950, todayTokens: 55, todayCalls: 1,
+                    generatedAt: laterGap.addingTimeInterval(2)),
+            ]
         )
         let store = CodexUsageStore(
             resolver: StaticCodexDataSourceResolver(source: source),
@@ -2535,7 +2541,13 @@ final class CodexUsageStoreTests: XCTestCase {
         // A second dropped watcher interval cannot use an older certificate,
         // even though the UI and attribution still carry the original gap ID.
         store.recordSessionObservationGap(for: source, detectedAt: laterGap)
-        for expected in [300, 400, 900] {
+        store.requestLightRefreshForTesting()
+        await waitUntil("full retry with a certificate older than the watcher gap") {
+            let count = await loader.preciseLoadCount
+            return count == 3 && !store.isRefreshing
+        }
+        XCTAssertFalse(store.isCompactSummaryPending)
+        for expected in [400, 950] {
             store.requestLightRefreshForTesting()
             await waitUntil("timer publishes \(expected) after the next watcher gap") {
                 store.snapshot.stats.totalTokens == expected && !store.isRefreshing
@@ -2922,6 +2934,8 @@ private actor CompactSummaryProbeLoader: DashboardSnapshotLoading {
 private actor CompactSummarySequenceProbeLoader: DashboardSnapshotLoading {
     private var preciseResults: [DashboardSnapshot]
     private var summaries: [CodexUsageAnalyzer.CompactUsageSummary]
+    private(set) var preciseLoadCount = 0
+    private(set) var compactSummaryCount = 0
 
     init(
         precise: [DashboardSnapshot],
@@ -2936,6 +2950,7 @@ private actor CompactSummarySequenceProbeLoader: DashboardSnapshotLoading {
     }
 
     func loadSnapshot(dataSource: CodexDataSource) async throws -> DashboardSnapshot {
+        preciseLoadCount += 1
         guard !preciseResults.isEmpty else { throw UsageStoreTestError() }
         return preciseResults.removeFirst()
     }
@@ -2943,6 +2958,7 @@ private actor CompactSummarySequenceProbeLoader: DashboardSnapshotLoading {
     func loadCompactSummary(
         dataSource: CodexDataSource
     ) async throws -> CodexUsageAnalyzer.CompactUsageSummary? {
+        compactSummaryCount += 1
         guard !summaries.isEmpty else { return nil }
         return summaries.removeFirst()
     }
