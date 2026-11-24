@@ -39,8 +39,13 @@ final class MultiClientUsageLedgerTests: XCTestCase {
             XCTAssertEqual(projection.daily.count, 2)
         }
 
+        let headless = try XCTUnwrap(ledger.scanProjection(now: now, unchangedRevision: nil, includesCharts: false))
+        XCTAssertTrue(headless.trend.isEmpty && headless.daily.isEmpty)
         let first = try XCTUnwrap(ledger.scanProjection(now: now, unchangedRevision: nil))
         try check(first)
+        XCTAssertEqual(headless.summaries, first.summaries)
+        XCTAssertEqual(headless.todaySummaries, first.todaySummaries)
+        XCTAssertEqual(headless.sevenDaySummaries, first.sevenDaySummaries)
         XCTAssertNil(try ledger.scanProjection(now: now, unchangedRevision: first.revision))
         copy.timestamp = today
         copy.outputTokens += 50
@@ -52,6 +57,58 @@ final class MultiClientUsageLedgerTests: XCTestCase {
         XCTAssertTrue(try ledger.database.readRows("SELECT name FROM main.sqlite_schema WHERE name='effective_client_usage_events'") {
             $0.text(0)
         }.isEmpty)
+    }
+
+    @MainActor
+    func testUsageChartsReloadFromLedgerAfterLastDashboardCloses() async throws {
+        let suite = "MultiClientUsageChartDemand.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let url = root.appendingPathComponent("chart-demand.sqlite")
+        let ledger = try MultiClientUsageLedger(url: url)
+        var event = ClientUsageEvent(client: .claudeCode, eventID: "old", sessionID: "s",
+            model: "claude-opus-5", timestamp: Date().addingTimeInterval(-30),
+            inputTokens: 100, outputTokens: 10, cacheReadTokens: 50, cacheWriteTokens: 0)
+        try ledger.ingest([event])
+        let store = MultiClientUsageStore(defaults: defaults, databaseURL: url)
+        let primary = UUID(), secondary = UUID()
+
+        func waitFor(_ label: String, _ ready: () -> Bool) async throws {
+            let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+            while !ready(), ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            XCTAssertTrue(ready(), label)
+        }
+
+        store.refresh()
+        try await waitFor("background summaries") { !store.refreshing && store.summaries.count == 1 }
+        XCTAssertTrue(store.trendBuckets.isEmpty && store.dailyBuckets.isEmpty)
+        let summaryTimestamp = store.updatedAt
+        store.setUsageChartDemand(true, consumer: primary)
+        try await waitFor("charts appear directly from the ledger") {
+            store.trendBuckets.count == 1 && store.dailyBuckets.count == 1
+        }
+        XCTAssertEqual(store.updatedAt, summaryTimestamp)
+        store.setUsageChartDemand(true, consumer: secondary)
+        store.setUsageChartDemand(false, consumer: primary)
+        XCTAssertFalse(store.dailyBuckets.isEmpty)
+        store.setUsageChartDemand(false, consumer: secondary)
+        XCTAssertTrue(store.trendBuckets.isEmpty && store.dailyBuckets.isEmpty)
+
+        event.eventID = "new"
+        event.outputTokens = 25
+        try ledger.ingest([event])
+        store.refresh()
+        try await waitFor("new background totals") {
+            !store.refreshing && store.summaries.first?.outputTokens == 35
+        }
+        XCTAssertTrue(store.trendBuckets.isEmpty && store.dailyBuckets.isEmpty)
+        store.setUsageChartDemand(true, consumer: primary)
+        try await waitFor("reopening restores both current charts") {
+            store.trendBuckets.first?.outputTokens == 35 && store.dailyBuckets.first?.outputTokens == 35
+        }
+        store.setUsageChartDemand(false, consumer: primary)
     }
 
     func testDailyProjectionScaleKeepsTotalsAcrossCachedAndIncrementalReads() throws {

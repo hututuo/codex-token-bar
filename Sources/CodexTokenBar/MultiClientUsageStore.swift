@@ -65,7 +65,9 @@ actor MultiClientUsageScanner {
     private let environment: [String: String]
     private var ledger: MultiClientUsageLedger?
     private var cursor = 0
-    private var aggregateCache: (minute: Int64, timezone: String, projection: MultiClientUsageLedger.ScanProjection)?
+    private var aggregateCache: (
+        minute: Int64, timezone: String, includesCharts: Bool, projection: MultiClientUsageLedger.ScanProjection
+    )?
     private var scanNotices: [String] = []
     private var importedQuotaHistorySource: String?
     private var deepSeekContexts: [String: (identity: String, session: String)] = [:]
@@ -77,11 +79,11 @@ actor MultiClientUsageScanner {
         if let ledger { return ledger }
         let opened = try MultiClientUsageLedger(url: databaseURL); ledger = opened; return opened
     }
-    func scan(_ preferences: [MultiClientUsagePreference]) throws -> MultiClientScanResult {
-        try autoreleasepool { try scanSynchronously(preferences) }
+    func scan(_ preferences: [MultiClientUsagePreference], includesCharts: Bool = true) throws -> MultiClientScanResult {
+        try autoreleasepool { try scanSynchronously(preferences, includesCharts: includesCharts) }
     }
 
-    private func scanSynchronously(_ preferences: [MultiClientUsagePreference]) throws -> MultiClientScanResult {
+    private func scanSynchronously(_ preferences: [MultiClientUsagePreference], includesCharts: Bool) throws -> MultiClientScanResult {
         let enabled = preferences.filter(\.enabled)
         guard !enabled.isEmpty || FileManager.default.fileExists(atPath: databaseURL.path) else {
             return MultiClientScanResult(summaries: [], diagnostics: [])
@@ -125,20 +127,42 @@ actor MultiClientUsageScanner {
             cursor = (start + count) % entries.count
             if count < entries.count { diagnostics.append("本轮检查 \(count)/\(entries.count) 个文件，后续自动继续；已入账数据保留") }
         }
-        let now = Date(), minute = Int64(now.timeIntervalSince1970 / 60)
-        let timezone = TimeZone.current.identifier + ":" + String(TimeZone.current.secondsFromGMT(for: now))
-        let unchangedRevision = aggregateCache.flatMap {
-            $0.minute == minute && $0.timezone == timezone ? $0.projection.revision : nil
-        }
-        if let projection = try ledger.scanProjection(now: now, unchangedRevision: unchangedRevision) {
-            aggregateCache = (minute, timezone, projection)
-        }
-        let projection = aggregateCache?.projection
+        let projection = try usageProjection(ledger, includesCharts: includesCharts)
         return MultiClientScanResult(summaries: projection?.summaries ?? [],
             diagnostics: Array((diagnostics + scanNotices).prefix(12)),
             todaySummaries: projection?.todaySummaries ?? [],
             sevenDaySummaries: projection?.sevenDaySummaries ?? [],
             trendBuckets: projection?.trend ?? [], dailyBuckets: projection?.daily ?? [])
+    }
+
+    private func usageProjection(_ ledger: MultiClientUsageLedger, includesCharts: Bool) throws -> MultiClientUsageLedger.ScanProjection? {
+        if !includesCharts, aggregateCache?.includesCharts == true { discardUsageCharts() }
+        let now = Date(), minute = Int64(now.timeIntervalSince1970 / 60)
+        let timezone = TimeZone.current.identifier + ":" + String(TimeZone.current.secondsFromGMT(for: now))
+        let unchangedRevision = aggregateCache.flatMap {
+            $0.minute == minute && $0.timezone == timezone && $0.includesCharts == includesCharts
+                ? $0.projection.revision : nil
+        }
+        if let projection = try ledger.scanProjection(
+            now: now, unchangedRevision: unchangedRevision, includesCharts: includesCharts
+        ) {
+            aggregateCache = (minute, timezone, includesCharts, projection)
+        }
+        return aggregateCache?.projection
+    }
+
+    func loadUsageCharts() throws -> (trend: [ClientTrendBucket], daily: [ClientTrendBucket]) {
+        try Task.checkCancellation()
+        guard FileManager.default.fileExists(atPath: databaseURL.path) else { return ([], []) }
+        let projection = try autoreleasepool { try usageProjection(open(), includesCharts: true) }
+        return (projection?.trend ?? [], projection?.daily ?? [])
+    }
+
+    func discardUsageCharts() {
+        aggregateCache?.projection.trend = []
+        aggregateCache?.projection.daily = []
+        aggregateCache?.includesCharts = false
+        ledger?.discardDailyProjection()
     }
 
     private func deepSeekSession(_ url: URL, identity: String) throws -> String {
@@ -342,8 +366,9 @@ final class MultiClientUsageStore: ObservableObject {
     }
     @Published private(set) var preferences: [MultiClientUsagePreference]
     @Published private(set) var detections: [DetectedUsageClient] = []
-    @Published private(set) var trendBuckets: [ClientTrendBucket] = []
-    @Published private(set) var dailyBuckets: [ClientTrendBucket] = []
+    private(set) var trendBuckets: [ClientTrendBucket] = []
+    private(set) var dailyBuckets: [ClientTrendBucket] = []
+    @Published private(set) var usageChartRevision = 0
     @Published private(set) var acknowledgedClients: Set<String> = []
     @Published private(set) var summaries: [ClientUsageSummary] = []
     @Published private(set) var todaySummaries: [ClientUsageSummary] = []
@@ -369,6 +394,8 @@ final class MultiClientUsageStore: ObservableObject {
     private let quotaProbeUptime: @Sendable () -> TimeInterval
     private var refreshTask: Task<Void, Never>?
     private var generation = 0
+    private var usageChartConsumers: Set<UUID> = []
+    private var usageChartLoadTask: Task<Void, Never>?
     private var quotaProbeInFlight = false
     private var lastQuotaProbeUptime: TimeInterval?
     private var quotaHistoryConsumers: [UUID: QuotaHistoryProjection] = [:]
@@ -464,23 +491,80 @@ final class MultiClientUsageStore: ObservableObject {
         refreshing = true
         let preferences = preferences, generation = generation
         refreshTask = Task { [weak self, scanner] in
+            var includesCharts = false
             do {
                 let detected = await Task.detached(priority: .utility) { UsageClientDetection.detect() }.value
-                self?.detections = detected
-                let result = try await scanner.scan(preferences)
                 guard let self else { return }
+                self.detections = detected
+                includesCharts = !self.usageChartConsumers.isEmpty
+                let result = try await scanner.scan(preferences, includesCharts: includesCharts)
                 if self.generation == generation {
                     self.summaries = result.summaries
                     self.todaySummaries = result.todaySummaries
                     self.sevenDaySummaries = result.sevenDaySummaries
                     self.diagnostics = result.diagnostics
-                    self.detections = detected; self.trendBuckets = result.trendBuckets; self.dailyBuckets = result.dailyBuckets
+                    self.detections = detected
+                    if includesCharts, !self.usageChartConsumers.isEmpty {
+                        self.usageChartLoadTask?.cancel()
+                        self.usageChartLoadTask = nil
+                        self.publishUsageCharts(trend: result.trendBuckets, daily: result.dailyBuckets)
+                    }
                     self.updatedAt = Date(); self.syncMenuItems()
                 }
+                if includesCharts, self.usageChartConsumers.isEmpty {
+                    await scanner.discardUsageCharts()
+                }
             } catch { self?.diagnostics = [error.localizedDescription] }
-            self?.refreshing = false
-            if self?.generation != generation { self?.refresh() }
+            guard let self else { return }
+            self.refreshing = false
+            if self.generation != generation { self.refresh() }
+            else if !includesCharts { self.loadUsageChartsForDashboard() }
         }
+    }
+
+    func setUsageChartDemand(_ active: Bool, consumer: UUID) {
+        let hadDemand = !usageChartConsumers.isEmpty
+        if active { usageChartConsumers.insert(consumer) }
+        else { usageChartConsumers.remove(consumer) }
+        if !usageChartConsumers.isEmpty {
+            if !hadDemand { loadUsageChartsForDashboard() }
+        } else if hadDemand {
+            usageChartLoadTask?.cancel()
+            usageChartLoadTask = nil
+            publishUsageCharts(trend: [], daily: [])
+            Task { [weak self, scanner] in
+                guard self?.usageChartConsumers.isEmpty != false else { return }
+                await scanner.discardUsageCharts()
+            }
+        }
+    }
+
+    private func loadUsageChartsForDashboard() {
+        guard !usageChartConsumers.isEmpty, !refreshing, usageChartLoadTask == nil else { return }
+        usageChartLoadTask = Task(priority: .utility) { [weak self, scanner] in
+            do {
+                let charts = try await scanner.loadUsageCharts()
+                guard let self else { return }
+                guard !self.usageChartConsumers.isEmpty else {
+                    await scanner.discardUsageCharts()
+                    return
+                }
+                guard !Task.isCancelled else { return }
+                self.usageChartLoadTask = nil
+                self.publishUsageCharts(trend: charts.trend, daily: charts.daily)
+            } catch {
+                guard let self, !Task.isCancelled else { return }
+                self.usageChartLoadTask = nil
+                self.diagnostics = [error.localizedDescription]
+            }
+        }
+    }
+
+    private func publishUsageCharts(trend: [ClientTrendBucket], daily: [ClientTrendBucket]) {
+        guard trend != trendBuckets || daily != dailyBuckets else { return }
+        trendBuckets = trend
+        dailyBuckets = daily
+        usageChartRevision &+= 1
     }
     func refreshLocalQuotaCaches(force: Bool = false, automatic: Bool = false) {
         let uptime = quotaProbeUptime()

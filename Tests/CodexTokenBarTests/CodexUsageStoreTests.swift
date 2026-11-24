@@ -2481,6 +2481,74 @@ final class CodexUsageStoreTests: XCTestCase {
         )
     }
 
+    func testTimedSummaryRequiresAnObservationAfterEachWatcherGap() async throws {
+        let suite = "CodexUsageStoreTimedGapTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let source = CodexDataSource(
+            codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/timed-gap/.codex"),
+            origin: .defaultHome
+        )
+        let now = Date()
+        let loss = PreciseTimeSeriesContinuityLossRecord(
+            id: UUID(), detectedAt: now.addingTimeInterval(-10), reason: .observationGap
+        )
+        let storageKey = "timed-gap"
+        let payload = try JSONEncoder().encode([CodexUsageStore.continuityIdentifier(for: source): loss])
+        defaults.set(payload, forKey: storageKey)
+        let firstObservation = now.addingTimeInterval(60)
+        let laterGap = now.addingTimeInterval(120)
+        let snapshots = [
+            (100, now.addingTimeInterval(-30)),
+            (200, firstObservation),
+            (300, firstObservation),
+            (400, laterGap.addingTimeInterval(1)),
+        ].map { tokens, observedAt in
+            makeSnapshot(totalTokens: tokens, dayTokens: tokens,
+                preciseTimeSeriesGeneratedAt: observedAt, observedThrough: observedAt)
+        }
+        let loader = CompactSummaryProbeLoader(
+            preciseResults: snapshots,
+            summary: .init(totalTokens: 900, todayTokens: 50, todayCalls: 1, generatedAt: now)
+        )
+        let store = CodexUsageStore(
+            resolver: StaticCodexDataSourceResolver(source: source),
+            snapshotLoader: loader,
+            autoStart: false,
+            continuityDefaults: defaults,
+            continuityStorageKey: storageKey,
+            legacyContinuityStorageKey: nil
+        )
+
+        for expected in [100, 200, 900] {
+            store.requestLightRefreshForTesting()
+            await waitUntil("timer publishes \(expected)") {
+                store.snapshot.stats.totalTokens == expected && !store.isRefreshing
+            }
+        }
+        XCTAssertEqual(store.preciseTimeSeriesContinuityLossID, loss.id)
+        let initialFullCount = await loader.preciseLoadCount
+        let initialCompactCount = await loader.compactSummaryCount
+        XCTAssertEqual(initialFullCount, 2)
+        XCTAssertEqual(initialCompactCount, 1)
+
+        // A second dropped watcher interval cannot use an older certificate,
+        // even though the UI and attribution still carry the original gap ID.
+        store.recordSessionObservationGap(for: source, detectedAt: laterGap)
+        for expected in [300, 400, 900] {
+            store.requestLightRefreshForTesting()
+            await waitUntil("timer publishes \(expected) after the next watcher gap") {
+                store.snapshot.stats.totalTokens == expected && !store.isRefreshing
+            }
+        }
+        let fullCount = await loader.preciseLoadCount
+        let compactCount = await loader.compactSummaryCount
+        XCTAssertEqual(fullCount, 4)
+        XCTAssertEqual(compactCount, 2)
+        XCTAssertEqual(store.preciseTimeSeriesContinuityLossID, loss.id)
+        XCTAssertEqual(defaults.data(forKey: storageKey), payload)
+    }
+
     func testExpandingDashboardQueuesFullRefreshBehindInFlightCompactSummary() async {
         let source = CodexDataSource(
             codexHome: URL(fileURLWithPath: "/tmp/codex-token-bar-tests/compact-expand-race/.codex"),

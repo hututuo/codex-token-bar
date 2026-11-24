@@ -184,6 +184,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         let exactGeneration: Int64?
         let exactSynchronizationReceipt: ExactSynchronizationReceipt?
         var unreportedCompactionDates: [Date] = []
+        var attributionUnsafeSinceGeneration: Int64?
 
         init(
             totalTokens: Int,
@@ -316,17 +317,15 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 at: Date()
             )
             let summaryGeneratedAt = Date()
-            let dataUpdatedAt = sessionFiles
-                .compactMap { file in
-                    (try? FileManager.default.attributesOfItem(atPath: file.path)[.modificationDate]) as? Date
-                }
-                .max()
             let synchronizedSignature = sessionTreeSignature(
                 for: sessionFiles,
                 attributionProvenanceEpoch: synchronization.provenanceEpoch,
                 attributionGeneration: synchronization.attributionGeneration,
                 historyIndex: historyIndex
             )
+            let dataUpdatedAt = synchronizedSignature.files.lazy
+                .filter { $0.modifiedAt > 0 }.map(\.modifiedAt).max()
+                .map { Date(timeIntervalSince1970: $0) }
             var summary = CompactUsageSummary(
                 totalTokens: totals.totalTokens,
                 todayTokens: totals.todayTokens,
@@ -347,6 +346,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                     eventEnrichmentComplete: synchronization.eventEnrichmentComplete
                 )
             )
+            summary.attributionUnsafeSinceGeneration = synchronization.attributionUnsafeSinceGeneration
             summary.unreportedCompactionDates = try historyIndex.unreportedCompactionDates()
             if structureMigrationReported || synchronization.eventEnrichmentTotal > 0 {
                 if synchronization.eventEnrichmentComplete {

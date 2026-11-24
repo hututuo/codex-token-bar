@@ -246,6 +246,7 @@ final class ClientDashboardProjectionCache {
         let scope = allowed.sorted().joined(separator: ",")
         let nextKey = String(codex.generatedAt.timeIntervalSince1970)
             + "|" + String(codex.exactGeneration ?? 0) + "|" + String(clients.updatedAt?.timeIntervalSince1970 ?? 0)
+            + "|" + String(clients.usageChartRevision)
         if nextKey != key { cached.removeAll(); key = nextKey }
         if let value = cached[scope] { return value }
         let result = ClientDashboardProjection.snapshot(codex: codex, rows: clients.summaries,

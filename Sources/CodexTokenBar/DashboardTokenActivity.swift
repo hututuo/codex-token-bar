@@ -27,6 +27,7 @@ struct DashboardTokenActivity: View {
         let key = allowed.sorted().joined(separator: ",") + "|" + (codex.homeIdentity ?? "")
             + "|\(codex.generatedAt.timeIntervalSince1970)|\(codex.exactGeneration ?? 0)"
             + "|\(clients.updatedAt?.timeIntervalSince1970 ?? 0)|\(priceRaw)|\(TimeZone.current.identifier)"
+            + "|\(clients.usageChartRevision)"
         let external = clients.dailyBuckets
         VStack(alignment: .leading, spacing: 8) {
             HStack {

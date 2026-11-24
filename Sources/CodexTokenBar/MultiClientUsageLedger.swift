@@ -453,8 +453,8 @@ final class MultiClientUsageLedger: @unchecked Sendable {
         let summaries: [ClientUsageSummary]
         let todaySummaries: [ClientUsageSummary]
         let sevenDaySummaries: [ClientUsageSummary]
-        let trend: [ClientTrendBucket]
-        let daily: [ClientTrendBucket]
+        var trend: [ClientTrendBucket]
+        var daily: [ClientTrendBucket]
     }
 
     private func revision(in connection: SQLiteDatabaseConnection) throws -> Int64 {
@@ -463,8 +463,8 @@ final class MultiClientUsageLedger: @unchecked Sendable {
         }.first ?? 0
     }
 
-    func scanProjection(now: Date, unchangedRevision: Int64?) throws -> ScanProjection? {
-        typealias PendingProjection = (value: ScanProjection, summaries: [ClientSummaryReadResult], daily: DailyCache)
+    func scanProjection(now: Date, unchangedRevision: Int64?, includesCharts: Bool = true) throws -> ScanProjection? {
+        typealias PendingProjection = (value: ScanProjection, summaries: [ClientSummaryReadResult], daily: DailyCache?)
         let prepared: PendingProjection? = try database.withConnection { connection in
             // SQLite owns the scratch table for this operation. Its pages can
             // spill to a temporary file while reading larger histories.
@@ -472,6 +472,16 @@ final class MultiClientUsageLedger: @unchecked Sendable {
             return try connection.readTransaction { snapshot in
                 let revision = try self.revision(in: snapshot)
                 guard revision != unchangedRevision else { return nil }
+                let today = Calendar.current.startOfDay(for: now)
+                let week = Date(timeIntervalSince1970: floor((now.timeIntervalSince1970 - 7 * 86400) / 300) * 300)
+                if !includesCharts,
+                   let all = cachedSummaries(for: .init(revision: revision, since: nil, before: nil)),
+                   let current = cachedSummaries(for: .init(revision: revision, since: today, before: nil)),
+                   let sevenDays = cachedSummaries(for: .init(revision: revision, since: week, before: nil)) {
+                    let value = ScanProjection(revision: revision, summaries: all, todaySummaries: current,
+                                               sevenDaySummaries: sevenDays, trend: [], daily: [])
+                    return (value, [], nil)
+                }
                 let select = try ClientUsageReadModel.query("""
                     SELECT client,model,timestamp,input_tokens,output_tokens,reasoning_tokens,
                            cache_read_tokens,cache_write_tokens,cache_write_5m_tokens,cache_write_1h_tokens
@@ -479,23 +489,25 @@ final class MultiClientUsageLedger: @unchecked Sendable {
                     """)
                 try snapshot.execute("CREATE TEMP TABLE effective_client_usage_events AS " + select)
                 let rows = ProjectionRows(connection: snapshot, staged: true)
-                let today = Calendar.current.startOfDay(for: now)
-                let week = Date(timeIntervalSince1970: floor((now.timeIntervalSince1970 - 7 * 86400) / 300) * 300)
                 let all = try readSummaries(in: rows, revision: revision, since: nil, before: nil)
                 let current = try readSummaries(in: rows, revision: revision, since: today, before: nil)
                 let sevenDays = try readSummaries(in: rows, revision: revision, since: week, before: nil)
-                let trend = try readTrendBuckets(in: rows, now: now)
-                let daily = try readDailyBuckets(in: rows, revision: revision, now: now)
+                let trend = includesCharts ? try readTrendBuckets(in: rows, now: now) : []
+                let daily = includesCharts ? try readDailyBuckets(in: rows, revision: revision, now: now) : nil
                 try snapshot.execute("DROP TABLE temp.effective_client_usage_events")
                 let value = ScanProjection(revision: revision, summaries: all.summaries, todaySummaries: current.summaries,
-                                           sevenDaySummaries: sevenDays.summaries, trend: trend, daily: daily.rows)
+                                           sevenDaySummaries: sevenDays.summaries, trend: trend, daily: daily?.rows ?? [])
                 return (value, [all, current, sevenDays], daily)
             }
         }
         guard let prepared else { return nil }
         for result in prepared.summaries { publishSummaryCache(result) }
-        publishDailyCache(prepared.daily)
+        if let daily = prepared.daily { publishDailyCache(daily) }
         return prepared.value
+    }
+
+    func discardDailyProjection() {
+        dailyCacheLock.withLock { dailyCache = nil }
     }
 
     func trendBuckets(now: Date = Date()) throws -> [ClientTrendBucket] {

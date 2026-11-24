@@ -422,6 +422,7 @@ struct DashboardView: View {
             )
             quotaHistoryStore.setProjectionDemand(.dashboard, consumer: runtimeConsumerID)
             clients.setQuotaHistoryDemand(.dashboard, consumer: runtimeConsumerID)
+            clients.setUsageChartDemand(true, consumer: runtimeConsumerID)
             reportRuntimeConfiguration()
             consumePendingSettingsRequest()
             migrateSharedAccountPriceModelIfNeeded()
@@ -474,6 +475,7 @@ struct DashboardView: View {
         .onDisappear {
             quotaHistoryStore.setProjectionDemand(nil, consumer: runtimeConsumerID)
             clients.setQuotaHistoryDemand(nil, consumer: runtimeConsumerID)
+            clients.setUsageChartDemand(false, consumer: runtimeConsumerID)
             runtime.releaseConsumer(runtimeConsumerID)
         }
         .onReceive(NotificationCenter.default.publisher(for: .dashboardBlankAreaClicked)) { _ in

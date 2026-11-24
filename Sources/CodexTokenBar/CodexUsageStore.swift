@@ -61,6 +61,12 @@ final class CodexUsageStore: ObservableObject {
         case compensation
     }
 
+    private struct ObservationGapCheck: Equatable {
+        let lossID: UUID
+        let revision: UInt64
+        let requiredObservation: Date
+    }
+
     /// The initial precise pass is deliberately a small process-local
     /// coordination window.  The dashboard's attribution computation can
     /// observe the fast snapshot before the 2.5s initial task starts; it must
@@ -159,6 +165,9 @@ final class CodexUsageStore: ObservableObject {
     private var pendingFullRefresh = false
     private var latestCompactSynchronizationReceipt:
         CodexUsageAnalyzer.CompactUsageSummary.ExactSynchronizationReceipt?
+    private var observationGapRevision: UInt64 = 0
+    private var latestUnobservedAt: Date = .distantPast
+    private var checkedObservationGap: ObservationGapCheck?
     private var attributionSafetyAckTask: Task<Void, Never>?
     private var pendingAttributionSafetyAckKey: String?
     private let continuityDefaults: UserDefaults
@@ -455,6 +464,7 @@ final class CodexUsageStore: ObservableObject {
             // ready attribution segment across the unobserved interval.
             preciseObservationSessionID = UUID()
             startupPreciseRefreshWindow = nil
+            invalidateObservationGapCheck()
         }
         dataSource = nextDataSource
         dataSourceIdentity = nextIdentity
@@ -726,6 +736,8 @@ final class CodexUsageStore: ObservableObject {
         isCompactSummaryPending = false
         refreshGeneration += 1
         let generation = refreshGeneration
+        let observationGapAtStart = observationGapCheck
+        let observationRevisionAtStart = observationGapRevision
         DiagnosticRuntime.record(.refresh, .started, ["generation":Int64(generation)])
         let bindingGeneration = sourceBindingGeneration
         activeRefreshSourceID = sourceID
@@ -861,8 +873,17 @@ final class CodexUsageStore: ObservableObject {
                             return
                         }
                         if let summary {
-                            self.latestCompactSynchronizationReceipt =
-                                summary.exactSynchronizationReceipt
+                            if self.checkedObservationGap != nil,
+                               let receipt = summary.exactSynchronizationReceipt,
+                               (receipt.signature.attributionProvenanceEpoch != self.snapshot.cacheUsage.attributionProvenanceEpoch
+                                || summary.attributionUnsafeSinceGeneration != self.snapshot.cacheUsage.attributionUnsafeSinceGeneration) {
+                                self.invalidateObservationGapCheck()
+                                self.preciseTimeSeriesFresh = false
+                                self.pendingFullRefresh = true
+                            }
+                            if observationRevisionAtStart == self.observationGapRevision {
+                                self.latestCompactSynchronizationReceipt = summary.exactSynchronizationReceipt
+                            }
                             self.publish(
                                 Self.applyingCompactSummary(summary, to: self.snapshot),
                                 todayModelBreakdowns: summary.todayModelBreakdowns,
@@ -890,6 +911,9 @@ final class CodexUsageStore: ObservableObject {
                             compactSummaryApplied = true
                         } else {
                             trace?.mark("compactSummary.unavailable")
+                            if self.checkedObservationGap != nil {
+                                self.invalidateObservationGapCheck()
+                            }
                             if compactSummaryOnly == true {
                                 // A lightweight owner is never allowed to
                                 // silently become a historical aggregation.
@@ -970,6 +994,16 @@ final class CodexUsageStore: ObservableObject {
                                 }
                                 if loaded.cacheUsage.attributionEventsComplete {
                                     sawFinalPrecisePhase = true
+                                    if loaded.cacheUsage.attributionCurrentScanUnsafeCauseDetected,
+                                       self.checkedObservationGap != nil {
+                                        self.invalidateObservationGapCheck()
+                                    } else if let observationGapAtStart,
+                                       observationGapAtStart == self.observationGapCheck,
+                                       let observedThrough = loaded.observedThrough,
+                                       observedThrough >= observationGapAtStart.requiredObservation,
+                                       !loaded.cacheUsage.attributionCurrentScanUnsafeCauseDetected {
+                                        self.checkedObservationGap = observationGapAtStart
+                                    }
                                     self.isDetailHydrating = false
                                     self.preciseTimeSeriesFresh =
                                         loaded.preciseTimeSeriesGeneratedAt != nil
@@ -1753,6 +1787,9 @@ final class CodexUsageStore: ObservableObject {
         detectedAt: Date = Date(),
         reason: PreciseTimeSeriesContinuityLossReason = .observationGap
     ) {
+        if dataSource?.usageIdentityKey == source.usageIdentityKey {
+            invalidateObservationGapCheck(at: detectedAt)
+        }
         // This timestamp identifies the latest failed exact-read generation;
         // segment bounds are derived from the later successful recovery scan.
         // Updating it on another failure lets that distinct unknown interval
@@ -1810,7 +1847,10 @@ final class CodexUsageStore: ObservableObject {
         let values = loadMigratedContinuityLosses()
         let loss = source.flatMap { values?[Self.continuityIdentifier(for: $0)] }
         if preciseTimeSeriesContinuityLostAt != loss?.detectedAt { preciseTimeSeriesContinuityLostAt = loss?.detectedAt }
-        if preciseTimeSeriesContinuityLossID != loss?.id { preciseTimeSeriesContinuityLossID = loss?.id }
+        if preciseTimeSeriesContinuityLossID != loss?.id {
+            invalidateObservationGapCheck(at: loss?.detectedAt ?? .distantPast)
+            preciseTimeSeriesContinuityLossID = loss?.id
+        }
         if preciseTimeSeriesContinuityLossReason != loss?.reason { preciseTimeSeriesContinuityLossReason = loss?.reason }
         if loss?.reason == .storageRecovery,
            sharedAccountSafetyRecoveryState != .rebuilding,
@@ -2216,6 +2256,7 @@ final class CodexUsageStore: ObservableObject {
             // the observer session before the first resumed scan so attribution
             // establishes one new synthetic baseline for the uncovered gap.
             preciseObservationSessionID = UUID()
+            invalidateObservationGapCheck()
             sessionMutationMonitoringActive = true
             configureSessionMutationMonitor()
             scheduleTimer()
@@ -2285,12 +2326,7 @@ final class CodexUsageStore: ObservableObject {
                 guard let self,
                       self.backgroundActivityEnabled,
                       let source = self.dataSource else { return }
-                self.reloadPreciseTimeSeriesContinuityLoss()
-                guard self.preciseTimeSeriesContinuityLossID == nil else { return }
-                self.markPreciseTimeSeriesContinuityLoss(
-                    for: source,
-                    detectedAt: detectedAt
-                )
+                self.recordSessionObservationGap(for: source, detectedAt: detectedAt)
             }
         }
     }
@@ -2303,15 +2339,48 @@ final class CodexUsageStore: ObservableObject {
         }
         timer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                guard let self else { return }
-                self.refresh(
-                    includePreciseScan: true,
-                    forceFullTimeSeries: self.preciseTimeSeriesContinuityLossID != nil,
-                    requestKind: .automatic,
-                    compactSummaryOnly: self.preciseTimeSeriesContinuityLossID == nil
-                )
+                self?.requestTimedSummaryRefresh()
             }
         }
+    }
+
+    private var observationGapCheck: ObservationGapCheck? {
+        guard preciseTimeSeriesContinuityLossReason == .observationGap,
+              let lossID = preciseTimeSeriesContinuityLossID,
+              let detectedAt = preciseTimeSeriesContinuityLostAt else { return nil }
+        return ObservationGapCheck(lossID: lossID, revision: observationGapRevision,
+            requiredObservation: max(detectedAt, latestUnobservedAt))
+    }
+
+    private func invalidateObservationGapCheck(at date: Date = Date()) {
+        observationGapRevision &+= 1
+        latestUnobservedAt = max(latestUnobservedAt, date)
+        checkedObservationGap = nil
+        latestCompactSynchronizationReceipt = nil
+    }
+
+    func recordSessionObservationGap(for source: CodexDataSource, detectedAt: Date) {
+        // A watcher can lose another interval while the previous gap is still
+        // awaiting attribution cutover. Require a new observation even when
+        // the durable marker intentionally retains its original identity.
+        guard dataSource?.usageIdentityKey == source.usageIdentityKey else { return }
+        reloadPreciseTimeSeriesContinuityLoss()
+        if preciseTimeSeriesContinuityLossID == nil {
+            markPreciseTimeSeriesContinuityLoss(for: source, detectedAt: detectedAt)
+        } else {
+            invalidateObservationGapCheck(at: detectedAt)
+        }
+    }
+
+    private func requestTimedSummaryRefresh() {
+        // A completed recheck lets routine totals use the exact compact scan.
+        // The durable gap still governs attribution and the aggregate timer.
+        let check = observationGapCheck
+        let requiresFull = preciseTimeSeriesContinuityLossID != nil
+            && (check == nil || check != checkedObservationGap
+                || !preciseContinuityPersistenceHealthy)
+        refresh(includePreciseScan: true, forceFullTimeSeries: requiresFull,
+            requestKind: .automatic, compactSummaryOnly: !requiresFull)
     }
 
     private func scheduleAggregateTimer(
@@ -2370,12 +2439,7 @@ final class CodexUsageStore: ObservableObject {
     }
 
     func requestLightRefreshForTesting() {
-        refresh(
-            includePreciseScan: true,
-            forceFullTimeSeries: preciseTimeSeriesContinuityLossID != nil,
-            requestKind: .automatic,
-            compactSummaryOnly: preciseTimeSeriesContinuityLossID == nil
-        )
+        requestTimedSummaryRefresh()
     }
 
     func requestAggregateRefreshForTesting() {
