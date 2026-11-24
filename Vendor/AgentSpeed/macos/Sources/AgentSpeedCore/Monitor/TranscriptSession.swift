@@ -137,6 +137,10 @@ final class TranscriptSession {
     private var pendingEvents: [SpeedEvent] = []
     private var unreadablePaths: Set<String> = []
     private var removedMalformedLines = 0
+    private var trackedMalformedLines = 0
+    private var unsupportedDatabases = 0
+    private var sessionCountDayStartMs: Int64?
+    private var trackedSessionCounts: [SourceKind: Int] = [:]
     private(set) var partialHistory = false
     /// The OpenCode database, when that source is enabled (METRICS 4.5, 5.2).
     let opencode: OpencodeSource?
@@ -723,7 +727,7 @@ final class TranscriptSession {
     var responses: [ResponseRecord] { engine.storedResponses }
 
     var malformedLines: Int {
-        files.values.reduce(removedMalformedLines) { $0 + $1.state.malformedLines } + (opencode?.malformedRows ?? 0)
+        removedMalformedLines + trackedMalformedLines + (opencode?.malformedRows ?? 0)
     }
 
     var unreadableFileCount: Int { unreadablePaths.count + (opencode?.status == .unreadable ? 1 : 0) + (zcode?.status == .unreadable ? 1 : 0) }
@@ -738,7 +742,7 @@ final class TranscriptSession {
         var sources: [SourceKind] = []
         if opencode?.status == .unsupported { sources.append(.opencode) }
         if zcode?.status == .unsupported { sources.append(.zcode) }
-        if enabledSources.contains(.antigravity), files.values.contains(where: { $0.family.isDatabase && $0.isUnsupported }) {
+        if enabledSources.contains(.antigravity), unsupportedDatabases > 0 {
             sources.append(.antigravity)
         }
         return sources
@@ -746,13 +750,16 @@ final class TranscriptSession {
 
     /// Agents of each source with at least one line today; WorkBuddy counts main sessions only (DESIGN 5).
     func sessionCounts(todayStartMs: Int64) -> [SourceKind: Int] {
-        var counts: [SourceKind: Int] = [:]
-        for file in files.values {
-            let state = file.state
-            guard let last = state.lastLineMs, last >= todayStartMs, enabledSources.contains(state.source) else { continue }
-            if (file.family.isWorkBuddy || file.family == .kimi || file.family == .grokBuild), state.isSubagent { continue }
-            counts[state.source, default: 0] += 1
+        if sessionCountDayStartMs != todayStartMs {
+            sessionCountDayStartMs = todayStartMs
+            trackedSessionCounts.removeAll(keepingCapacity: true)
+            for file in files.values {
+                if let source = file.snapshotFacts.countedSource(since: todayStartMs) {
+                    trackedSessionCounts[source, default: 0] += 1
+                }
+            }
         }
+        var counts = trackedSessionCounts
         if let opencode, enabledSources.contains(.opencode) {
             counts[.opencode] = opencode.activeSessionCount(todayStartMs: todayStartMs)
         }
@@ -774,8 +781,30 @@ final class TranscriptSession {
         }
     }
 
+    // Parser facts change at the same read boundary as the engine agent.
+    // Timer-only publications reuse the totals for this calendar boundary.
+    private func updateSnapshotFacts(_ file: TrackedFile, to current: TrackedFile.SnapshotFacts) {
+        let previous = file.snapshotFacts
+        file.snapshotFacts = current
+        trackedMalformedLines += current.malformed - previous.malformed
+        unsupportedDatabases += (current.unsupportedDatabase ? 1 : 0) - (previous.unsupportedDatabase ? 1 : 0)
+        guard let dayStartMs = sessionCountDayStartMs else { return }
+        let oldSource = previous.countedSource(since: dayStartMs)
+        let newSource = current.countedSource(since: dayStartMs)
+        guard oldSource != newSource else { return }
+        if let oldSource, let count = trackedSessionCounts[oldSource] {
+            trackedSessionCounts[oldSource] = count > 1 ? count - 1 : nil
+        }
+        if let newSource { trackedSessionCounts[newSource, default: 0] += 1 }
+    }
+
     private func syncAgent(_ file: TrackedFile) {
         let state = file.state
+        let countsOnlyMain = file.family.isWorkBuddy || file.family == .kimi || file.family == .grokBuild
+        let countedSource: SourceKind? = enabledSources.contains(state.source) && !(countsOnlyMain && state.isSubagent)
+            ? state.source : nil
+        updateSnapshotFacts(file, to: .init(source: countedSource, lastLineMs: state.lastLineMs,
+            malformed: state.malformedLines, unsupportedDatabase: file.family.isDatabase && file.isUnsupported))
         if state.lastLineMs != nil, enabledSources.contains(state.source) {
             let member = AgentParents.Member(id: file.path, family: file.family, thread: state.thread)
             if parentMembers.updateValue(member, forKey: file.path) != member { parentLinksAreStale = true }
@@ -863,6 +892,7 @@ final class TranscriptSession {
     private func untrack(_ path: String) {
         guard let file = files.removeValue(forKey: path) else { return }
         removedMalformedLines += file.state.malformedLines
+        updateSnapshotFacts(file, to: .init())
         unreadablePaths.remove(path)
         removeAgent(path)
     }

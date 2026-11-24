@@ -1,7 +1,15 @@
+import CryptoKit
 import Foundation
 import Darwin
+import os
 
 enum ConfiguredModes {
+    private struct ConfigProjection {
+        let digest: SHA256.Digest
+        let modes: ExecutionModes
+    }
+    private static let lastProjection = OSAllocatedUnfairLock<ConfigProjection?>(initialState: nil)
+
     static func codex(sessionsRoot: String) -> ExecutionModes {
         let directory = (sessionsRoot as NSString).lastPathComponent == "sessions"
             ? (sessionsRoot as NSString).deletingLastPathComponent : sessionsRoot
@@ -11,9 +19,16 @@ enum ConfiguredModes {
         let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
         defer { try? handle.close() }
         guard let stat = FileStat.fstat(descriptor), stat.isRegularFile, stat.size <= 65_536,
-              let data = try? handle.read(upToCount: 65_537), data.count <= 65_536,
-              let text = String(data: data, encoding: .utf8), let tier = declaredTier(text) else { return .empty }
-        return ExecutionModeAdapters.openAI(tier, evidence: .configured, scope: .configuration)
+              let data = try? handle.read(upToCount: 65_537), data.count <= 65_536 else { return .empty }
+        let digest = SHA256.hash(data: data)
+        return lastProjection.withLock { cached in
+            if let cached, cached.digest == digest { return cached.modes }
+            let modes = String(data: data, encoding: .utf8).flatMap(declaredTier).map {
+                ExecutionModeAdapters.openAI($0, evidence: .configured, scope: .configuration)
+            } ?? .empty
+            cached = ConfigProjection(digest: digest, modes: modes)
+            return modes
+        }
     }
 
     /// Only a literal root setting is claimed; this is not Codex's layered effective configuration.

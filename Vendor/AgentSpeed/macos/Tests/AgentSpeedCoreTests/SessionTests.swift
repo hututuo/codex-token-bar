@@ -59,6 +59,38 @@ struct SessionTests {
         _ = directory
     }
 
+    @Test func snapshotCountsFollowFileChangesAndDayBoundaries() throws {
+        let directory = try TempDirectory()
+        let relative = "codex/sessions/2026/10/20/rollout-2026-10-20T10-00-00-metrics.jsonl"
+        let morning = try #require(Timestamp.parse("2026-10-20T00:00:00.000Z"))
+        let nextMorning = morning + 86_400_000
+        func line(at timestamp: String) -> String {
+            """
+            {"timestamp":"\(timestamp)","type":"event_msg","payload":{"type":"user_message","message":"fixture"}}
+
+            """
+        }
+        try directory.write(relative, line(at: "2026-10-20T10:00:00.000Z"))
+        let session = TranscriptSession(configuration: MonitorConfiguration(
+            enabledSources: [.codex], codexRoot: directory.file("codex/sessions")
+        ))
+        _ = session.seed(todayStartMs: morning)
+        #expect(session.sessionCounts(todayStartMs: morning)[.codex] == 1)
+        #expect(session.sessionCounts(todayStartMs: nextMorning)[.codex] == nil)
+
+        let file = directory.file(relative)
+        let canonicalPath = file.resolvingSymlinksInPath().path
+        try directory.append(relative, line(at: "2026-10-21T10:00:00.000Z") + "{bad-json}\n")
+        #expect(session.handleChanges(atCanonicalPaths: [canonicalPath]))
+        #expect(session.sessionCounts(todayStartMs: nextMorning)[.codex] == 1)
+        #expect(session.malformedLines == 1)
+
+        try FileManager.default.removeItem(at: file)
+        #expect(session.rediscover(todayStartMs: nextMorning))
+        #expect(session.sessionCounts(todayStartMs: nextMorning)[.codex] == nil)
+        #expect(session.malformedLines == 1, "Removing a tracked file retains its historical warning count")
+    }
+
     @Test func subagentsAreListedRightAfterTheirParents() throws {
         let (directory, configuration) = try Self.makeFixtureRoots()
         let session = TranscriptSession(configuration: configuration)

@@ -652,6 +652,10 @@
       "reason": "Carry source/model attribution, local stopped-state metadata and optional local-only Claude displayTitle in public snapshots; existing rate accounting and signed report fields remain unchanged.",
       "sha256": "e2d610890ac37ac236112ae7f9b990d6225a8eeceaf9d74bc4d1f4286a753198"
     },
+    "macos/Sources/AgentSpeedCore/Modes/ConfiguredModes.swift": {
+      "reason": "Reuse literal Codex execution mode projection for byte-identical config content in periodic snapshots. Preserve file and mode admission rules.",
+      "sha256": "af9b4ec4066df07b36c7927cccb3f97332412d4467260e463bd6584151116bca"
+    },
     "macos/Sources/AgentSpeedCore/Monitor/MonitorCore.swift": {
       "reason": "Propagate source-read observations and use the negotiated low-latency event cadence only for opt-in realtime reporting.",
       "sha256": "0cc23ff3e2c62627d05e1804ca48fdb19c56ef10310ad08328817f1725e6e28c"
@@ -665,16 +669,16 @@
       "sha256": "f38ef496a53582ef197cbf3f13b57aa89dd2458d72328f20fbcd303fc015f66e"
     },
     "macos/Sources/AgentSpeedCore/Monitor/TrackedFile.swift": {
-      "reason": "Retain read-trigger provenance across throttled database reads and deferred whole-file reads. Project AgentState through an inout borrow of the stored parser to avoid copying all parser payloads on the serial monitor queue.",
-      "sha256": "1835cd0f6216b1bbcad89e33ab17879d26efb57e89edd59fa48772f863f3ab12"
+      "reason": "Retain read-trigger provenance across throttled database reads and deferred whole-file reads. Project AgentState through an inout borrow of the stored parser to avoid copying all parser payloads on the serial monitor queue. Retain small per-file facts for incremental session counts and warnings.",
+      "sha256": "57bf423150e67bcad79787455535dffc79cfa57e80961a8f37642f805357e6b3"
     },
     "macos/Sources/AgentSpeedCore/Monitor/TranscriptLocations.swift": {
       "reason": "Discover standalone ACP and macOS Orca Antigravity stores by default and expand explicitly selected parent directories; preserve direct store/conversations selection and backup exclusion without changing parsing or reporting consent.",
       "sha256": "df1648c7c3ebed22ec6f6de10ce384ddabbf51851b78d7c51bdb075a667deaee"
     },
     "macos/Sources/AgentSpeedCore/Monitor/TranscriptSession.swift": {
-      "reason": "Capture and merge local log/poll read observations through transcript, database, and whole-file reads; keep provider event timing distinct. Preserve shared positioned IO and source-read provenance; backport c668286 bounded quiet-file rediscovery (24h hot set and one sixth older files each round). Use the fresh TrackedFile state projection without copying its full parser for snapshot counts and warnings.",
-      "sha256": "c7a03f6d35190c2ea4b98bf946c1d737a3e5f14fc16d04fe9252e770bef9a988"
+      "reason": "Capture and merge local log/poll read observations through transcript, database, and whole-file reads; keep provider event timing distinct. Preserve shared positioned IO and source-read provenance; backport c668286 bounded quiet-file rediscovery (24h hot set and one sixth older files each round). Use the fresh TrackedFile state projection without copying its full parser for snapshot counts and warnings. Maintain session count, malformed and unsupported totals alongside successful parser updates; rebuild date-sensitive counts on local day changes.",
+      "sha256": "1f74a25c34712cc8ea08a7964ecb3626105d239ab7d6f55e897c9a98c1bb5838"
     },
     "macos/Sources/AgentSpeedCore/Parsing/ClaudeLine.swift": {
       "reason": "Recognize explicit Claude API/stream errors as local display-stop metadata and backport upstream b89d983 toolEndsTurn extraction. Extract bounded local-only Claude task labels from agentName, title/customTitle, summary or first direct user text; do not retain full text or change token accounting.",
@@ -753,8 +757,8 @@
       "sha256": "9f666dc4a4e1f7b724a01efd9ced3023bbe39fa3d50d30e7d5bd780888e8ba15"
     },
     "macos/Tests/AgentSpeedCoreTests/SessionTests.swift": {
-      "reason": "Use explicit isolated source roots; never read developer home during tests Backport c668286 deterministic quiet-file and midnight resumption regressions, retaining existing source-read context tests.",
-      "sha256": "fcdb4f2ba6f4f8b6e7f27c737dd61db8ba1f9d69714d50f6545cc9b82a7610b7"
+      "reason": "Use explicit isolated source roots; never read developer home during tests Backport c668286 deterministic quiet-file and midnight resumption regressions, retaining existing source-read context tests. Verify cached session counts across local day changes, appended lines, removal, and retained malformed diagnostics.",
+      "sha256": "b21a5c5727ca0a1c7d11cd533bcecc087b68abac157fb115e4500408c1e76812"
     },
     "macos/Tests/AgentSpeedCoreTests/TrafficSamplerTests.swift": {
       "reason": "Break the process-argument fixture into typed byte-array appends for Swift 6 compiler compatibility; emitted fixture bytes and assertions are unchanged.",

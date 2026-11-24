@@ -2,6 +2,19 @@ import Foundation
 
 /// One transcript file being followed: its reader, its parser and the last observed stat.
 final class TrackedFile {
+    struct SnapshotFacts {
+        var source: SourceKind? = nil
+        var lastLineMs: Int64? = nil
+        var malformed = 0
+        var unsupportedDatabase = false
+
+        func countedSource(since dayStartMs: Int64) -> SourceKind? {
+            guard let lastLineMs, lastLineMs >= dayStartMs else { return nil }
+            return source
+        }
+    }
+
+    var snapshotFacts = SnapshotFacts()
     let path: String
     let family: TranscriptFamily
     /// The root the file was discovered under (omp derives sub-agents from it).
