@@ -689,32 +689,17 @@ extension CodexUsageAnalyzer {
             return cached.snapshot
         }
 
-        func storeSnapshot(
+        /// Detailed completion is an in-process receipt. Fast start restores
+        /// the numeric projection committed before hydration, which contains
+        /// the same aggregates and deliberately excludes session details.
+        func storeHydratedSnapshot(
             _ snapshot: DashboardSnapshot,
             for root: String,
-            homeIdentityKey: String,
             signature: SessionTreeSignature
         ) {
-            let canonicalRoot = Self.canonicalRootPath(root)
-            let persistentPayload = PersistentExactSnapshot(
-                snapshot: snapshot,
-                root: canonicalRoot,
-                homeIdentityKey: homeIdentityKey,
-                signature: signature
-            )
-            lock.lock()
-            snapshotStorage[root] = (signature, snapshot)
-            // Keep the in-process persistent projection in sync with the
-            // complete snapshot. This lets a later fast refresh avoid disk
-            // I/O while preserving the same incomplete-attribution contract
-            // used after a process restart.
-            persistentExactSnapshotStorage[canonicalRoot] = (
-                signature,
-                persistentPayload
-            )
-            didLoadPersistentExactSnapshotRoots.insert(canonicalRoot)
-            lock.unlock()
-            Self.persistPersistentExactSnapshot(persistentPayload)
+            lock.withLock {
+                snapshotStorage[root] = (signature, snapshot)
+            }
         }
 
         /// Commits the exact numeric phase independently of excerpt/detail

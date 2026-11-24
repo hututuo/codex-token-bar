@@ -1565,6 +1565,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
         let analyzer = CodexUsageAnalyzer(dataSource: dataSource(for: codexHome))
         let initial = try analyzer.load()
+        XCTAssertEqual(initial.coverageKind, .full)
         XCTAssertTrue(initial.cacheUsage.attributionEventsComplete)
         XCTAssertEqual(initial.cacheUsage.turns.count, 1)
         XCTAssertGreaterThan(initial.stats.totalTokens, 0)
@@ -1577,6 +1578,7 @@ final class CodexUsageAnalyzerTests: XCTestCase {
 
         let fast = try analyzer.loadFastSnapshot()
         XCTAssertEqual(fast.usagePrecision, .precise)
+        XCTAssertEqual(fast.coverageKind, .settled, "Detail hydration should leave the durable numeric projection in place")
         XCTAssertEqual(fast.stats.totalTokens, initial.stats.totalTokens)
         XCTAssertEqual(fast.stats.totalCalls, initial.stats.totalCalls)
         XCTAssertEqual(fast.dailyUsage, initial.dailyUsage)

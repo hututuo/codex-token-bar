@@ -208,11 +208,19 @@ struct ClientQuotaMorphColorSegment {
 struct ClientQuotaMorphSurface: NSViewRepresentable {
     let expanded: Bool
     let enabled: Bool
-    let routes: [ClientQuotaMorphRoute]
+    let endpointsReady: Bool
+    let routes: () -> [ClientQuotaMorphRoute]
     @Environment(\.matchedStrokeMorphRegistry) private var registry
     func makeNSView(context: Context) -> MatchedStrokeMorphView { MatchedStrokeMorphView() }
     func updateNSView(_ view: MatchedStrokeMorphView, context: Context) {
-        view.update(expanded: expanded, enabled: enabled, participantCount: routes.count, registry: registry) { ClientQuotaMorphGeometry.strokes(routes) }
+        let transitioning = enabled && view.needsEndpoints(expanded: expanded)
+        // The hidden menu has just mounted on open. Start the morph after
+        // SwiftUI supplies that layout's anchors, without resolving them at rest.
+        if transitioning && expanded && !endpointsReady { return }
+        let resolved = transitioning && endpointsReady ? routes() : []
+        view.update(expanded: expanded, enabled: enabled, participantCount: resolved.count, registry: registry) {
+            ClientQuotaMorphGeometry.strokes(resolved)
+        }
     }
     static func dismantleNSView(_ view: MatchedStrokeMorphView, coordinator: ()) { view.clear() }
 }

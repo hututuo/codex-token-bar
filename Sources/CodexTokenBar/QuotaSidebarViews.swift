@@ -126,6 +126,9 @@ struct QuotaSidebarCompactBars: View {
                         compactStroke(id: "speed") {
                             SidebarValueBar(fraction: rateFraction, color: SidebarPalette.blue, vertical: true, modelRates: modelRates)
                                 .frame(width: 4, height: layout.barHeight)
+                                // Frequent samples on the tiny bar should not
+                                // keep a compositor animation running at rest.
+                                .transaction { $0.disablesAnimations = true }
                         }.help("全会话实时速率（估算）")
                     case .tasks:
                         compactStroke(id: "tasks") {
@@ -287,64 +290,11 @@ struct QuotaSidebarRail: View {
 
     private func content(_ p: QuotaSidebarRailPresentation) -> some View {
         ZStack(alignment: controller.edge == .right ? .trailing : .leading) {
-            Group {
-                if let advice = cacheWarning {
-                    cacheNotice(advice)
-                        .frame(height: controller.expandedContentHeight)
-                        .transition(.opacity)
-                } else {
-                VStack(spacing: 7) {
-                    HStack(spacing: 4) {
-                        Button { controller.togglePin() } label: {
-                            Image(systemName: controller.interaction.pinned ? "pin.fill" : "pin")
-                                .foregroundStyle(controller.interaction.pinned ? SidebarPalette.green : .gray)
-                                .frame(width: 24, height: 24).contentShape(Rectangle())
-                        }.help(controller.interaction.pinned ? "取消固定" : "固定")
-                            .accessibilityLabel(controller.interaction.pinned ? "取消固定" : "固定")
-                            .accessibilityIdentifier("quota-sidebar-pin")
-                        Button { quota.refresh(force: true) } label: {
-                            Image(systemName: "arrow.clockwise").foregroundStyle(.gray)
-                                .frame(width: 24, height: 24).contentShape(Rectangle())
-                        }.help("刷新额度与重置卡").accessibilityLabel("刷新数据")
-                            .accessibilityIdentifier("quota-sidebar-refresh")
-                        Button { controller.openDashboard() } label: {
-                            Image(systemName: "macwindow").foregroundStyle(.gray)
-                                .frame(width: 24, height: 24).contentShape(Rectangle())
-                        }.help("打开主页面").accessibilityLabel("打开主页面")
-                            .accessibilityIdentifier("quota-sidebar-dashboard")
-                    }.font(.system(size: 12)).buttonStyle(SidebarPulseButtonStyle())
-                    ScrollView(.vertical) {
-                        VStack(spacing: 7) {
-                            ForEach(p.expandedItems) { item in
-                                moduleContent(item, shares: shares, presentation: p)
-                                    .background {
-                                        RoundedRectangle(cornerRadius: 9).fill(Color.white.opacity(controller.settingsHighlightedItem == item && controller.interaction.detail == .settings ? 0.055 : 0))
-                                            .overlay(RoundedRectangle(cornerRadius: 9).stroke(SidebarPalette.green.opacity(controller.settingsHighlightedItem == item && controller.interaction.detail == .settings ? 0.55 : 0), lineWidth: 1))
-                                    }
-                            }
-                        }.frame(width: 88).fixedSize(horizontal: false, vertical: true)
-                            .background(GeometryReader { proxy in
-                                Color.clear.preference(key: QuotaSidebarContentMeasurementKey.self,
-                                    value: QuotaSidebarContentMeasurement(contentHeight: proxy.size.height + 66))
-                            })
-                    }.scrollIndicators(.hidden).frame(maxHeight: .infinity)
-                        .transformAnchorPreference(key: ClientQuotaMorphAnchors.self, value: .bounds) { values, anchor in values["quota-viewport"] = anchor }
-                    Button { controller.select(.settings) } label: {
-                        Label("侧栏设置", systemImage: "slider.horizontal.3")
-                            .font(.system(size: 10, weight: .medium)).foregroundStyle(.white.opacity(0.8))
-                            .frame(width: 74, height: 28).contentShape(Rectangle())
-                    }.buttonStyle(SidebarPulseButtonStyle())
-                        .help("调整侧栏模块显示与顺序")
-                        .accessibilityIdentifier("quota-sidebar-settings")
-                }.padding(.vertical, 12)
-                    .frame(width: 88, height: controller.expandedContentHeight)
-                    .frame(maxHeight: .infinity, alignment: .center)
-                    .transition(.opacity)
-                }
+            // Retain endpoints through the native close. At rest the shared
+            // lifetime view keeps only the last measured height.
+            SidebarDeferredContent(active: controller.interaction.expanded || controller.isCollapsing) {
+                expandedContent(p)
             }
-            // Opacity alone leaves every numeric/ring animation running in
-            // the clipped 88pt canvas. Keep measurement/data alive while making
-            // the invisible menu's updates immediate and animation-free.
             .transaction { transaction in
                 if !controller.interaction.expanded {
                     transaction.animation = nil
@@ -355,7 +305,7 @@ struct QuotaSidebarRail: View {
             .animation(disclosureFade, value: controller.interaction.expanded)
             .allowsHitTesting(controller.interaction.expanded)
             .accessibilityHidden(!controller.interaction.expanded)
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: monitor.latestModelSpeeds30m.count)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.24), value: p.recentBodySpeeds.count)
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: controller.sidebarLayout)
             Group {
                 GeometryReader { geometry in
@@ -392,7 +342,9 @@ struct QuotaSidebarRail: View {
         .overlayPreferenceValue(ClientQuotaMorphAnchors.self) { anchors in
             GeometryReader { proxy in
                 ClientQuotaMorphSurface(expanded: controller.interaction.expanded, enabled: morphEnabled(p),
-                    routes: morphRoutes(anchors, in: proxy, presentation: p))
+                    endpointsReady: anchors["quota-viewport"] != nil) {
+                    morphRoutes(anchors, in: proxy, presentation: p)
+                }
             }.allowsHitTesting(false).accessibilityHidden(true)
         }
         .task(id: bodySpeedDeadlineKey) {
@@ -422,6 +374,63 @@ struct QuotaSidebarRail: View {
         .onChange(of: cacheWarning?.presentationID, initial: true) { _, id in controller.updateCacheAdvice(id) }
     }
 
+    @ViewBuilder
+    private func expandedContent(_ p: QuotaSidebarRailPresentation) -> some View {
+        if let advice = cacheWarning {
+            cacheNotice(advice)
+                .frame(height: controller.expandedContentHeight)
+                .transition(.opacity)
+        } else {
+            VStack(spacing: 7) {
+                HStack(spacing: 4) {
+                    Button { controller.togglePin() } label: {
+                        Image(systemName: controller.interaction.pinned ? "pin.fill" : "pin")
+                            .foregroundStyle(controller.interaction.pinned ? SidebarPalette.green : .gray)
+                            .frame(width: 24, height: 24).contentShape(Rectangle())
+                    }.help(controller.interaction.pinned ? "取消固定" : "固定")
+                        .accessibilityLabel(controller.interaction.pinned ? "取消固定" : "固定")
+                        .accessibilityIdentifier("quota-sidebar-pin")
+                    Button { quota.refresh(force: true) } label: {
+                        Image(systemName: "arrow.clockwise").foregroundStyle(.gray)
+                            .frame(width: 24, height: 24).contentShape(Rectangle())
+                    }.help("刷新额度与重置卡").accessibilityLabel("刷新数据")
+                        .accessibilityIdentifier("quota-sidebar-refresh")
+                    Button { controller.openDashboard() } label: {
+                        Image(systemName: "macwindow").foregroundStyle(.gray)
+                            .frame(width: 24, height: 24).contentShape(Rectangle())
+                    }.help("打开主页面").accessibilityLabel("打开主页面")
+                        .accessibilityIdentifier("quota-sidebar-dashboard")
+                }.font(.system(size: 12)).buttonStyle(SidebarPulseButtonStyle())
+                ScrollView(.vertical) {
+                    VStack(spacing: 7) {
+                        ForEach(p.expandedItems) { item in
+                            moduleContent(item, shares: shares, presentation: p)
+                                .background {
+                                    RoundedRectangle(cornerRadius: 9).fill(Color.white.opacity(controller.settingsHighlightedItem == item && controller.interaction.detail == .settings ? 0.055 : 0))
+                                        .overlay(RoundedRectangle(cornerRadius: 9).stroke(SidebarPalette.green.opacity(controller.settingsHighlightedItem == item && controller.interaction.detail == .settings ? 0.55 : 0), lineWidth: 1))
+                                }
+                        }
+                    }.frame(width: 88).fixedSize(horizontal: false, vertical: true)
+                        .background(GeometryReader { proxy in
+                            Color.clear.preference(key: QuotaSidebarContentMeasurementKey.self,
+                                value: QuotaSidebarContentMeasurement(contentHeight: proxy.size.height + 66))
+                        })
+                }.scrollIndicators(.hidden).frame(maxHeight: .infinity)
+                    .transformAnchorPreference(key: ClientQuotaMorphAnchors.self, value: .bounds) { values, anchor in values["quota-viewport"] = anchor }
+                Button { controller.select(.settings) } label: {
+                    Label("侧栏设置", systemImage: "slider.horizontal.3")
+                        .font(.system(size: 10, weight: .medium)).foregroundStyle(.white.opacity(0.8))
+                        .frame(width: 74, height: 28).contentShape(Rectangle())
+                }.buttonStyle(SidebarPulseButtonStyle())
+                    .help("调整侧栏模块显示与顺序")
+                    .accessibilityIdentifier("quota-sidebar-settings")
+            }.padding(.vertical, 12)
+                .frame(width: 88, height: controller.expandedContentHeight)
+                .frame(maxHeight: .infinity, alignment: .center)
+                .transition(.opacity)
+        }
+    }
+
     private func updateCompactLayout(_ p: QuotaSidebarRailPresentation) {
         let layout = p.railLayout(controller.availableRailHeight)
         controller.updateCompactHeight(layout.height)
@@ -432,10 +441,8 @@ struct QuotaSidebarRail: View {
         switch item {
         case .speed:
             rateRing(p)
-            SidebarDeferredContent(active: controller.interaction.expanded || controller.isCollapsing) {
-                ActivitySpeedSummaryView(allowed: p.allowedClients, compact: true,
-                    onOpen: { controller.select(.speeds, section: "activity-speed-curve") })
-            }
+            ActivitySpeedSummaryView(allowed: p.allowedClients, compact: true,
+                onOpen: { controller.select(.speeds, section: "activity-speed-curve") })
         case .tps:
             if p.supportsCodex {
                 QuotaSidebarBodySpeedReadings(monitor: monitor, latest: p.recentBodySpeeds, active: controller.interaction.expanded, onOpen: { controller.select(.speeds) })

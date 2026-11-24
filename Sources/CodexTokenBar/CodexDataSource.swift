@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 struct CodexHomeIdentity: Equatable, Sendable {
@@ -114,6 +115,28 @@ struct CodexDataSource: Equatable, Sendable {
 }
 
 enum CodexSQLiteHomeResolver {
+    // Polling checks the config on every read. Keep only its digest and the
+    // routing value so edits are visible immediately even with a preserved mtime.
+    private final class ConfigProjection: @unchecked Sendable {
+        private let lock = NSLock()
+        private var latest: (digest: SHA256.Digest, sqliteHome: String?)?
+
+        func sqliteHome(in data: Data) throws -> String? {
+            let digest = SHA256.hash(data: data)
+            return try lock.withLock {
+                if let latest, latest.digest == digest { return latest.sqliteHome }
+                guard let text = String(data: data, encoding: .utf8) else {
+                    throw providerSyncDescriptorError("config.toml 不是 UTF-8")
+                }
+                let sqliteHome = try providerSyncTopLevelStringValues(text)["sqlite_home"]
+                latest = (digest, sqliteHome)
+                return sqliteHome
+            }
+        }
+    }
+
+    private static let configProjection = ConfigProjection()
+
     static func resolvedSQLiteHome(
         codexHome: URL,
         fileManager: FileManager = .default,
@@ -125,12 +148,7 @@ enum CodexSQLiteHomeResolver {
         let configURL = canonicalHome.appendingPathComponent("config.toml")
         if fileManager.fileExists(atPath: configURL.path) {
             let data = try Data(contentsOf: configURL)
-            guard let text = String(data: data, encoding: .utf8) else {
-                throw providerSyncDescriptorError("config.toml 不是 UTF-8")
-            }
-            if let configured = try providerSyncTopLevelStringValues(text)[
-                "sqlite_home"
-            ] {
+            if let configured = try configProjection.sqliteHome(in: data) {
                 let expanded = NSString(string: configured)
                     .expandingTildeInPath
                 guard expanded.hasPrefix("/") else {

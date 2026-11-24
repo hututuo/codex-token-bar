@@ -186,14 +186,19 @@ private struct MatchedStrokeMorphHost: NSViewRepresentable {
         shapes.values.forEach { $0.removeAllAnimations(); $0.removeFromSuperlayer() }
         opacityGroups.values.forEach { $0.removeAllAnimations(); $0.removeFromSuperlayer() }
         opacityGroups.removeAll(); shapeGroups.removeAll()
+        availableRouteCount = 0
         shapes.removeAll(); startingStates.removeAll(); completion = nil
         CATransaction.commit()
+    }
+
+    func needsEndpoints(expanded next: Bool) -> Bool {
+        expanded.map { $0 != next } ?? false
     }
 
     func update(expanded next: Bool, enabled: Bool, participantCount: Int,
                 registry: MatchedStrokeMorphRegistry? = nil, timing: MatchedStrokeMorphTiming = .standard,
                 routes: () -> [MatchedStrokeMorphRoute]) {
-        let previous = expanded; expanded = next; availableRouteCount = participantCount
+        let previous = expanded; expanded = next
         guard enabled else { clear(); return }
         guard let previous, previous != next else { return }
         let started = CACurrentMediaTime()
@@ -217,6 +222,7 @@ private struct MatchedStrokeMorphHost: NSViewRepresentable {
         }
         CATransaction.begin(); CATransaction.setDisableActions(true)
         clear(); self.registry = registry
+        availableRouteCount = participantCount
         let routes = routes().filter { route in
             let a = route.expanded.points, b = route.collapsed.points
             func valid(_ endpoint: MatchedStrokeMorphEndpoint) -> Bool {

@@ -248,7 +248,7 @@ final class ClientQuotaMorphTests: XCTestCase {
         XCTAssertEqual(view.morphLayerCount, 0, "Completion must leave no idle animation, layers or timer")
     }
 
-    @MainActor func testOriginalRailResolvesBothHalfArcsToTheirOwnPodColumnAndReverses() throws {
+    @MainActor func testOriginalRailMountsExpandedContentAndResolvesBothHalfArcs() throws {
         let suite = "QuotaMorph-" + UUID().uuidString
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -283,25 +283,31 @@ final class ClientQuotaMorphTests: XCTestCase {
         }
         settle(0.1)
         let overlay = try XCTUnwrap(morph(host))
-        XCTAssertEqual(overlay.availableRouteCount, 6, "Quota, speed, tasks and model usage share the same morph surface")
         // Hosting can deliver its initial hover while first laying out on a
         // fresh runner. Start this reversal scenario from a settled compact rail.
         controller.dismiss(); settle(0.4)
         XCTAssertFalse(controller.interaction.expanded)
+        XCTAssertEqual(overlay.availableRouteCount, 0, "The compact state has no expanded endpoints to resolve")
         let started = overlay.animationsStarted
         let reducedMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         controller.enter(); settle(0.08)
         XCTAssertEqual(overlay.animationsStarted, started + (reducedMotion ? 0 : 1))
+        XCTAssertEqual(overlay.availableRouteCount, reducedMotion ? 0 : 6,
+            "The mounted view supplies quota, speed, tasks and model endpoints")
         XCTAssertEqual(overlay.morphLayerCount, reducedMotion ? 0 : 21, "Quota columns, speed and the original task cells keep their morph; software icons replace the three old quota-dot routes")
         if reducedMotion { XCTAssertEqual(overlay.coveredParticipantViewCount, 0) }
         else { XCTAssertGreaterThan(overlay.coveredParticipantViewCount, 0, "The original value views hand off to the animated paths") }
-        controller.dismiss(); settle(0.08)
-        XCTAssertEqual(overlay.animationsStarted, started + (reducedMotion ? 0 : 2))
-        settle(0.5)
+        // The hosting fixture has no native rail panel to carry a closing
+        // reveal. Closing must still clear the paths and allow another open.
+        controller.dismiss(); settle(0.5)
         XCTAssertEqual(overlay.morphLayerCount, 0)
         XCTAssertFalse(overlay.isAnimating)
         XCTAssertEqual(overlay.coveredParticipantViewCount, 0)
 
+        let afterClose = overlay.animationsStarted
+        controller.enter(); settle(0.08)
+        XCTAssertEqual(overlay.animationsStarted, afterClose + (reducedMotion ? 0 : 1))
+        XCTAssertEqual(overlay.availableRouteCount, reducedMotion ? 0 : 6)
     }
 
     @MainActor private func fixtures() -> [ClientQuotaMorphRoute] {

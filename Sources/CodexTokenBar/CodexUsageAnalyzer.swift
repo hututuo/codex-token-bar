@@ -534,8 +534,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
 
             // A concurrent numeric owner may have advanced the source tree or
             // generation while this detail phase was reading excerpts. Only a
-            // still-exact completion can become the in-memory detail receipt or
-            // replace the durable numeric last-good file.
+            // still-exact completion can become the in-memory detail receipt.
             let stored = (try? {
                 let currentState = try phase.historyIndex.attributionState()
                 guard currentState.provenanceEpoch
@@ -545,10 +544,9 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                     return false
                 }
                 Self.sessionEventCache.recordSnapshotBuildForTesting()
-                Self.sessionEventCache.storeSnapshot(
+                Self.sessionEventCache.storeHydratedSnapshot(
                     finalSnapshot,
                     for: dataSource.codexHome.path,
-                    homeIdentityKey: dataSource.usageIdentityKey,
                     signature: phase.signature
                 )
                 return true
