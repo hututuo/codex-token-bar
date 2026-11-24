@@ -167,7 +167,7 @@ final class CodexUsageStore: ObservableObject {
         CodexUsageAnalyzer.CompactUsageSummary.ExactSynchronizationReceipt?
     private var observationGapRevision: UInt64 = 0
     private var latestUnobservedAt: Date = .distantPast
-    private var checkedObservationGap: ObservationGapCheck?
+    private var lastFullObservationGapCheck: ObservationGapCheck?
     private var attributionSafetyAckTask: Task<Void, Never>?
     private var pendingAttributionSafetyAckKey: String?
     private let continuityDefaults: UserDefaults
@@ -873,9 +873,10 @@ final class CodexUsageStore: ObservableObject {
                             return
                         }
                         if let summary {
-                            if self.checkedObservationGap != nil,
+                            if self.lastFullObservationGapCheck != nil,
                                let receipt = summary.exactSynchronizationReceipt,
-                               (receipt.signature.attributionProvenanceEpoch != self.snapshot.cacheUsage.attributionProvenanceEpoch
+                               (summary.attributionCurrentScanUnsafeCauseDetected
+                                || receipt.signature.attributionProvenanceEpoch != self.snapshot.cacheUsage.attributionProvenanceEpoch
                                 || summary.attributionUnsafeSinceGeneration != self.snapshot.cacheUsage.attributionUnsafeSinceGeneration) {
                                 self.invalidateObservationGapCheck()
                                 self.preciseTimeSeriesFresh = false
@@ -911,7 +912,7 @@ final class CodexUsageStore: ObservableObject {
                             compactSummaryApplied = true
                         } else {
                             trace?.mark("compactSummary.unavailable")
-                            if self.checkedObservationGap != nil {
+                            if self.lastFullObservationGapCheck != nil {
                                 self.invalidateObservationGapCheck()
                             }
                             if compactSummaryOnly == true {
@@ -995,14 +996,14 @@ final class CodexUsageStore: ObservableObject {
                                 if loaded.cacheUsage.attributionEventsComplete {
                                     sawFinalPrecisePhase = true
                                     if loaded.cacheUsage.attributionCurrentScanUnsafeCauseDetected,
-                                       self.checkedObservationGap != nil {
+                                       self.lastFullObservationGapCheck != nil {
                                         self.invalidateObservationGapCheck()
                                     } else if let observationGapAtStart,
                                        observationGapAtStart == self.observationGapCheck,
                                        let observedThrough = loaded.observedThrough,
                                        observedThrough >= observationGapAtStart.requiredObservation,
                                        !loaded.cacheUsage.attributionCurrentScanUnsafeCauseDetected {
-                                        self.checkedObservationGap = observationGapAtStart
+                                        self.lastFullObservationGapCheck = observationGapAtStart
                                     }
                                     self.isDetailHydrating = false
                                     self.preciseTimeSeriesFresh =
@@ -2352,10 +2353,15 @@ final class CodexUsageStore: ObservableObject {
             requiredObservation: max(detectedAt, latestUnobservedAt))
     }
 
-    private func invalidateObservationGapCheck(at date: Date = Date()) {
+    private func invalidateObservationGapCheck(
+        at date: Date = Date(),
+        retainLastFullCheck: Bool = false
+    ) {
         observationGapRevision &+= 1
         latestUnobservedAt = max(latestUnobservedAt, date)
-        checkedObservationGap = nil
+        if !retainLastFullCheck {
+            lastFullObservationGapCheck = nil
+        }
         latestCompactSynchronizationReceipt = nil
     }
 
@@ -2368,16 +2374,23 @@ final class CodexUsageStore: ObservableObject {
         if preciseTimeSeriesContinuityLossID == nil {
             markPreciseTimeSeriesContinuityLoss(for: source, detectedAt: detectedAt)
         } else {
-            invalidateObservationGapCheck(at: detectedAt)
+            invalidateObservationGapCheck(at: detectedAt, retainLastFullCheck: true)
         }
     }
 
     private func requestTimedSummaryRefresh() {
-        // A completed recheck lets routine totals use the exact compact scan.
-        // The durable gap still governs attribution and the aggregate timer.
+        // A repeated watcher signal leaves the same durable gap open. A
+        // compact-only surface can still import and show exact totals while
+        // the aggregate owner waits to recheck chart/attribution coverage.
         let check = observationGapCheck
+        let needsFullCheck = check == nil || check != lastFullObservationGapCheck
+        let canDeferRepeatCheck = onlyCompactSurfaceVisible && !mainDashboardVisible
+            && check != nil && check?.lossID == lastFullObservationGapCheck?.lossID
+        if needsFullCheck, canDeferRepeatCheck, preciseTimeSeriesFresh {
+            preciseTimeSeriesFresh = false
+        }
         let requiresFull = preciseTimeSeriesContinuityLossID != nil
-            && (check == nil || check != checkedObservationGap
+            && ((needsFullCheck && !canDeferRepeatCheck)
                 || !preciseContinuityPersistenceHealthy)
         refresh(includePreciseScan: true, forceFullTimeSeries: requiresFull,
             requestKind: .automatic, compactSummaryOnly: !requiresFull)
@@ -2413,6 +2426,11 @@ final class CodexUsageStore: ObservableObject {
     }
 
     private func aggregateIsBehind(now: Date) -> Bool {
+        if let check = observationGapCheck,
+           check.lossID == lastFullObservationGapCheck?.lossID,
+           check != lastFullObservationGapCheck {
+            return true
+        }
         guard let published = snapshot.preciseTimeSeriesGeneratedAt else { return true }
         return QuotaCycleUsageRequest.preciseCoverageIsBehind(snapshot)
             || published < UsageRefreshCadencePolicy.latestEligibleBoundary(now: now)

@@ -185,6 +185,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
         let exactSynchronizationReceipt: ExactSynchronizationReceipt?
         var unreportedCompactionDates: [Date] = []
         var attributionUnsafeSinceGeneration: Int64?
+        var attributionCurrentScanUnsafeCauseDetected = false
 
         init(
             totalTokens: Int,
@@ -347,6 +348,7 @@ final class CodexUsageAnalyzer: @unchecked Sendable {
                 )
             )
             summary.attributionUnsafeSinceGeneration = synchronization.attributionUnsafeSinceGeneration
+            summary.attributionCurrentScanUnsafeCauseDetected = synchronization.lineageAmbiguityDetected
             summary.unreportedCompactionDates = try historyIndex.unreportedCompactionDates()
             if structureMigrationReported || synchronization.eventEnrichmentTotal > 0 {
                 if synchronization.eventEnrichmentComplete {

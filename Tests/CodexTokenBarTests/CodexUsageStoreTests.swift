@@ -2498,11 +2498,13 @@ final class CodexUsageStoreTests: XCTestCase {
         defaults.set(payload, forKey: storageKey)
         let firstObservation = now.addingTimeInterval(60)
         let laterGap = now.addingTimeInterval(120)
+        let backgroundGap = now.addingTimeInterval(180)
         let snapshots = [
             (100, now.addingTimeInterval(-30)),
             (200, firstObservation),
             (300, firstObservation),
             (400, laterGap.addingTimeInterval(1)),
+            (500, backgroundGap.addingTimeInterval(2)),
         ].map { tokens, observedAt in
             makeSnapshot(totalTokens: tokens, dayTokens: tokens,
                 preciseTimeSeriesGeneratedAt: observedAt,
@@ -2515,6 +2517,8 @@ final class CodexUsageStoreTests: XCTestCase {
                     generatedAt: firstObservation.addingTimeInterval(1)),
                 .init(totalTokens: 950, todayTokens: 55, todayCalls: 1,
                     generatedAt: laterGap.addingTimeInterval(2)),
+                .init(totalTokens: 975, todayTokens: 60, todayCalls: 1,
+                    generatedAt: backgroundGap.addingTimeInterval(1)),
             ]
         )
         let store = CodexUsageStore(
@@ -2558,6 +2562,29 @@ final class CodexUsageStoreTests: XCTestCase {
         XCTAssertEqual(fullCount, 4)
         XCTAssertEqual(compactCount, 2)
         XCTAssertEqual(store.preciseTimeSeriesContinuityLossID, loss.id)
+        XCTAssertEqual(defaults.data(forKey: storageKey), payload)
+
+        // A compact-only surface can publish numeric updates while waiting
+        // for the normal aggregate owner to recheck the same durable gap.
+        store.setOnlyCompactSurfaceVisible(true)
+        store.recordSessionObservationGap(for: source, detectedAt: backgroundGap)
+        store.requestLightRefreshForTesting()
+        await waitUntil("parked summary advances across a repeated watcher signal") {
+            store.snapshot.stats.totalTokens == 975 && !store.isRefreshing
+        }
+        let parkedFullCount = await loader.preciseLoadCount
+        XCTAssertEqual(parkedFullCount, 4)
+        XCTAssertFalse(store.preciseTimeSeriesFresh)
+        XCTAssertEqual(defaults.data(forKey: storageKey), payload)
+
+        store.setOnlyCompactSurfaceVisible(false)
+        store.requestLightRefreshForTesting()
+        await waitUntil("a visible consumer requires current full coverage again") {
+            store.snapshot.stats.totalTokens == 500 && !store.isRefreshing
+        }
+        let visibleFullCount = await loader.preciseLoadCount
+        XCTAssertEqual(visibleFullCount, 5)
+        XCTAssertTrue(store.preciseTimeSeriesFresh)
         XCTAssertEqual(defaults.data(forKey: storageKey), payload)
     }
 
