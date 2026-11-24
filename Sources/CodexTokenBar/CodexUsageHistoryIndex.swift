@@ -3284,11 +3284,17 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
                 try autoreleasepool {
                     let path = file.path
                     let entry = catalog[path]
-                    let observedMetadata = try sourceSignatureMetadata(for: file, reusing: entry?.signature)
-                    if let entry, entry.hasRepresentation, !entry.isMissing,
+                    let observation = try preferredSourceSignature(for: file, reusing: entry?.signature)
+                    let observedMetadata = observation.signature
+                    if let entry, !entry.isMissing,
                        !enrichmentPendingSourceIDs.contains(entry.id),
                        isTrustedContentProbe(entry.signature.contentProbe),
-                       sourceMetadataMatches(entry.signature, observedMetadata) {
+                       sourceMetadataMatches(entry.signature, observedMetadata),
+                       entry.hasRepresentation || (!observation.isCompressed && entry.signature.physicalStamp != nil) {
+                        // Plain JSONL can already have a complete physical
+                        // stamp without a representation row. Compressed
+                        // discovery and legacy stamp adoption still need the
+                        // existing proof paths below.
                         unchangedFiles += 1
                         return
                     }
@@ -9633,26 +9639,33 @@ final class CodexUsageHistoryIndex: @unchecked Sendable {
     }
 
     private func sourceSignatureMetadata(for file: URL, reusing stored: SourceSignature? = nil, allowsCompressed: Bool = true) throws -> SourceSignature {
+        try preferredSourceSignature(for: file, reusing: stored, allowsCompressed: allowsCompressed).signature
+    }
+
+    private func preferredSourceSignature(for file: URL, reusing stored: SourceSignature?, allowsCompressed: Bool = true)
+        throws -> (signature: SourceSignature, isCompressed: Bool) {
         let physical = try SourceFileObservation.readPreferredPhysical(at: file)
-        guard allowsCompressed || !physical.file.lastPathComponent.hasSuffix(".jsonl.zst") else {
+        let isCompressed = physical.file.lastPathComponent.hasSuffix(".jsonl.zst")
+        guard allowsCompressed || !isCompressed else {
             throw CodexRolloutReader.failure("可选原文读取已延期：来源为压缩历史", file: physical.file)
         }
         let observation: SourceFileObservation
-        if physical.file.lastPathComponent.hasSuffix(".jsonl.zst"),
+        if isCompressed,
            let stored, stored.physicalStamp == physical.observation.physicalStamp,
            stored.modifiedAt == physical.observation.modifiedAt {
             observation = physical.observation.withLogicalSize(stored.size)
-        } else if !allowsCompressed || !physical.file.lastPathComponent.hasSuffix(".jsonl.zst") {
+        } else if !isCompressed {
             observation = physical.observation
         } else {
             observation = try SourceFileObservation.read(at: file)
         }
-        return SourceSignature(
+        let signature = SourceSignature(
             size: observation.size,
             modifiedAt: observation.modifiedAt,
             contentProbe: "",
             physicalStamp: observation.physicalStamp
         )
+        return (signature, isCompressed)
     }
 
     private func sourceSignature(
