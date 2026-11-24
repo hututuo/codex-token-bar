@@ -1,19 +1,34 @@
 import Foundation
 
+enum QuotaHistoryProjection: Int, Comparable, Sendable {
+    case sidebar, dashboard
+
+    static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
+}
+
 protocol QuotaHistoryLoading: Sendable {
     func loadSnapshot(for quota: AccountQuotaSnapshot) async throws -> QuotaHistorySnapshot
     func recordAndLoadSnapshot(_ quota: AccountQuotaSnapshot) async throws -> QuotaHistorySnapshot
+    func loadSnapshot(for quota: AccountQuotaSnapshot, projection: QuotaHistoryProjection) async throws -> QuotaHistorySnapshot
+    func recordAndLoadSnapshot(_ quota: AccountQuotaSnapshot, projection: QuotaHistoryProjection?) async throws -> QuotaHistorySnapshot
     func normalizedSnapshot(_ quota: AccountQuotaSnapshot) async throws -> AccountQuotaSnapshot
     func resetStabilityTracking()
     func checkMaintenance()
 }
 
 extension QuotaHistoryLoading {
+    func loadSnapshot(for quota: AccountQuotaSnapshot, projection: QuotaHistoryProjection) async throws -> QuotaHistorySnapshot {
+        try await loadSnapshot(for: quota)
+    }
+    func recordAndLoadSnapshot(_ quota: AccountQuotaSnapshot, projection: QuotaHistoryProjection?) async throws -> QuotaHistorySnapshot {
+        let loaded = try await recordAndLoadSnapshot(quota)
+        return projection == nil ? .empty : loaded
+    }
     func resetStabilityTracking() {}
     func checkMaintenance() {}
 }
 
-struct LiveQuotaHistoryClient: QuotaHistoryLoading {
+actor LiveQuotaHistoryClient: QuotaHistoryLoading {
     private let database: QuotaHistoryDatabase
 
     init(database: QuotaHistoryDatabase = QuotaHistoryDatabase()) {
@@ -21,36 +36,38 @@ struct LiveQuotaHistoryClient: QuotaHistoryLoading {
     }
 
     func loadSnapshot(for quota: AccountQuotaSnapshot) async throws -> QuotaHistorySnapshot {
-        let database = database
-        return try await Task.detached(priority: .utility) {
-            try autoreleasepool { try database.loadSnapshot(for: quota) }
-        }.value
+        try await loadSnapshot(for: quota, projection: .dashboard)
     }
 
     func recordAndLoadSnapshot(_ quota: AccountQuotaSnapshot) async throws -> QuotaHistorySnapshot {
-        let database = database
-        return try await Task.detached(priority: .utility) {
-            try autoreleasepool { _ = try database.record(quota) }
-            return try autoreleasepool { try database.loadSnapshot(for: quota) }
-        }.value
+        try await recordAndLoadSnapshot(quota, projection: .dashboard)
+    }
+
+    func loadSnapshot(for quota: AccountQuotaSnapshot, projection: QuotaHistoryProjection) async throws -> QuotaHistorySnapshot {
+        try Task.checkCancellation()
+        return try autoreleasepool { try database.loadSnapshot(for: quota, projection: projection) }
+    }
+
+    func recordAndLoadSnapshot(_ quota: AccountQuotaSnapshot, projection: QuotaHistoryProjection?) async throws -> QuotaHistorySnapshot {
+        try autoreleasepool { _ = try database.record(quota) }
+        guard let projection, !Task.isCancelled else { return .empty }
+        return try await loadSnapshot(for: quota, projection: projection)
     }
 
     func normalizedSnapshot(_ quota: AccountQuotaSnapshot) async throws -> AccountQuotaSnapshot {
-        let database = database
-        return try await Task.detached(priority: .utility) {
-            try autoreleasepool { try database.normalizedSnapshot(quota) }
-        }.value
+        try autoreleasepool { try database.normalizedSnapshot(quota) }
     }
 
-    func resetStabilityTracking() {
+    nonisolated func resetStabilityTracking() {
         database.resetStabilityTracking()
     }
 
-    func checkMaintenance() {
-        let database = database
-        Task.detached(priority: .utility) {
-            try? database.migrate()
-        }
+    nonisolated func checkMaintenance() {
+        Task(priority: .utility) { await migrate() }
+    }
+
+    private func migrate() {
+        try? database.migrate()
     }
 }
 
@@ -76,7 +93,10 @@ final class QuotaHistoryStore: ObservableObject {
     @Published private(set) var snapshot: QuotaHistorySnapshot = .empty
 
     private let historyClient: any QuotaHistoryLoading
+    private let backgroundProjection: QuotaHistoryProjection?
+    private var projectionConsumers: [UUID: QuotaHistoryProjection] = [:]
     private var operationTask: Task<Void, Never>?
+    private var recordingTask: Task<Void, Never>?
     private var operationGeneration = 0
     private var currentQuota: AccountQuotaSnapshot?
     private var diagnosticIdentity: QuotaHistoryIdentity?
@@ -84,8 +104,10 @@ final class QuotaHistoryStore: ObservableObject {
     private var expectedCycleStart: Date?
     private var healingKey: String?
 
-    init(historyClient: any QuotaHistoryLoading = LiveQuotaHistoryClient()) {
+    init(historyClient: any QuotaHistoryLoading = LiveQuotaHistoryClient(),
+         backgroundProjection: QuotaHistoryProjection? = .dashboard) {
         self.historyClient = historyClient
+        self.backgroundProjection = backgroundProjection
     }
 
     deinit {
@@ -106,7 +128,24 @@ final class QuotaHistoryStore: ObservableObject {
         historyClient.checkMaintenance()
     }
 
+    private var projection: QuotaHistoryProjection? {
+        projectionConsumers.values.max() ?? backgroundProjection
+    }
+
+    func setProjectionDemand(_ demand: QuotaHistoryProjection?, consumer: UUID) {
+        let previous = projection
+        projectionConsumers[consumer] = demand
+        guard projection != previous else { return }
+        if projection == nil || previous == .dashboard {
+            operationTask?.cancel()
+            operationGeneration += 1
+            if snapshot != .empty { snapshot = .empty }
+        }
+        if projection != nil { reload() }
+    }
+
     func reload() {
+        guard let projection else { return }
         guard let quota = currentQuota, quota.historyIdentity != nil else {
             clearIdentity()
             return
@@ -116,10 +155,16 @@ final class QuotaHistoryStore: ObservableObject {
         let generation = operationGeneration
         let trace = RefreshPerformanceProbe.begin("quotaHistory.reload")
         let historyClient = historyClient
-        operationTask = Task {
+        let pendingRecord = recordingTask
+        operationTask = Task(priority: .utility) {
+            await pendingRecord?.value
+            guard !Task.isCancelled else {
+                trace?.end("cancelled-before-load")
+                return
+            }
             trace?.mark("database.loadSnapshot.begin")
             do {
-                let loaded = try await historyClient.loadSnapshot(for: quota)
+                let loaded = try await historyClient.loadSnapshot(for: quota, projection: projection)
                 trace?.mark("database.loadSnapshot.end", metadata: [
                     "daily": String(loaded.daily.count),
                     "recent": String(loaded.recentBins.count),
@@ -160,15 +205,20 @@ final class QuotaHistoryStore: ObservableObject {
         operationTask?.cancel()
         operationGeneration += 1
         let generation = operationGeneration
+        let projection = projection
         let trace = RefreshPerformanceProbe.begin("quotaHistory.record", metadata: [
             "fiveHour": quota.fiveHour.map { String(format: "%.2f", $0.remainingPercent) } ?? "nil",
             "sevenDay": quota.sevenDay.map { String(format: "%.2f", $0.remainingPercent) } ?? "nil"
         ])
         let historyClient = historyClient
-        operationTask = Task {
+        let pendingRecord = recordingTask
+        let task = Task(priority: .utility) {
+            // Opening or closing a chart can cancel projection work, but a
+            // captured observation still commits before the next read or write.
+            await pendingRecord?.value
             do {
                 trace?.mark("database.recordAndLoadSnapshot.begin")
-                let loaded = try await historyClient.recordAndLoadSnapshot(quota)
+                let loaded = try await historyClient.recordAndLoadSnapshot(quota, projection: projection)
                 trace?.mark("database.recordAndLoadSnapshot.end", metadata: [
                     "daily": String(loaded.daily.count),
                     "recent": String(loaded.recentBins.count),
@@ -178,7 +228,7 @@ final class QuotaHistoryStore: ObservableObject {
                     trace?.end("stale-after-record")
                     return
                 }
-                applyProjection(loaded)
+                if projection != nil { applyProjection(loaded) }
                 trace?.end("ok")
             } catch {
                 guard !Task.isCancelled, isCurrentOperation(generation: generation) else {
@@ -190,6 +240,8 @@ final class QuotaHistoryStore: ObservableObject {
                 // Quota history is helpful context, not the source of truth for quota display.
             }
         }
+        recordingTask = task
+        operationTask = task
     }
 
     func normalizedForDisplay(_ quota: AccountQuotaSnapshot) async -> AccountQuotaSnapshot {
@@ -632,7 +684,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         guard let now = createdAt ?? quota.updatedAt,
               now.timeIntervalSince1970.isFinite else { return false }
         guard quota.isAvailable, let rawRow = Self.row(from: quota, createdAt: now),
-              stableIdentity(from: rawRow) != nil else {
+              let identity = stableIdentity(from: rawRow) else {
             return false
         }
         let peerRows = loadPeerRows(for: rawRow, cutoff: nil)
@@ -640,10 +692,24 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         var deletedRows = 0
         let recorded = try withDatabase { database in
             try ensureSchema(database)
-            let localRows = try matchingRows(database: database, row: rawRow, cutoff: nil, now: now)
-            let history = mergedRows(localRows + peerRows)
-            guard history.last.map({ now.timeIntervalSince($0.createdAt) > QuotaHistoryCyclePolicy.timestampComparisonTolerance }) ?? true else { return false }
-            let planned = Self.annotatedCurrentRow(rawRow, after: history)
+            let sequential: SequentialRecord
+            if peerRows.isEmpty, try legacyBridges(row: rawRow, identity: identity).allSatisfy({
+                try legacyRows(database: database, bridge: $0, cutoff: .distantPast, limitOne: true).isEmpty
+            }) {
+                sequential = try planSequentialRecord(rawRow, identity: identity, database: database)
+            } else {
+                sequential = .needsMerge
+            }
+            let planned: QuotaHistoryRow
+            switch sequential {
+            case .unchanged: return false
+            case .append(let row): planned = row
+            case .needsMerge:
+                let localRows = try matchingRows(database: database, row: rawRow, cutoff: nil, now: now)
+                let history = mergedRows(localRows + peerRows)
+                guard history.last.map({ now.timeIntervalSince($0.createdAt) > QuotaHistoryCyclePolicy.timestampComparisonTolerance }) ?? true else { return false }
+                planned = Self.annotatedCurrentRow(rawRow, after: history)
+            }
             // Persist distinct successful observations together with their
             // freshness timestamp. Cached/older responses cannot become fresh
             // confirmation evidence after a restart or normal-value dedup.
@@ -653,6 +719,49 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         }
         reclaimDatabaseIfNeeded(deletedRows: deletedRows)
         return recorded
+    }
+
+    private enum SequentialRecord {
+        case unchanged, needsMerge
+        case append(QuotaHistoryRow)
+    }
+
+    private func planSequentialRecord(
+        _ row: QuotaHistoryRow, identity: QuotaHistoryIdentity, database: SQLiteDatabaseConnection
+    ) throws -> SequentialRecord {
+        let (sql, bindings) = stableTimelineQuery(columns: """
+            created_at, five_hour_used_percent, five_hour_resets_at, seven_day_used_percent,
+            source, five_hour_cycle_generation, seven_day_cycle_generation
+            """, identity: identity, cutoff: nil)
+        var replay = CycleAssignment()
+        var latest: Date?
+        var duplicateTime = false
+        var fiveOffset = 0, sevenOffset = 0
+        try database.forEachRow(sql, bindings: bindings) { observation in
+            guard !duplicateTime else { return }
+            let at = observation.date(0) ?? Date(timeIntervalSince1970: 0)
+            if let latest, at.timeIntervalSince1970 <= latest.timeIntervalSince1970 {
+                duplicateTime = true
+                return
+            }
+            latest = at
+            let cycles = replay.advance(fiveUsed: observation.int(1), fiveReset: observation.date(2),
+                sevenUsed: observation.int(3))
+            guard observation.text(4)?.caseInsensitiveCompare("swift") == .orderedSame else { return }
+            // The newest retained native generation anchors each window.
+            // Peer, legacy, and duplicate timestamps use the general merge path.
+            if let persisted = observation.int(5) {
+                fiveOffset = cycles.five.map { persisted - $0 } ?? 0
+            }
+            if let persisted = observation.int(6) {
+                sevenOffset = cycles.seven.map { persisted - $0 } ?? 0
+            }
+        }
+        if duplicateTime { return .needsMerge }
+        if let latest, row.createdAt.timeIntervalSince(latest) <= QuotaHistoryCyclePolicy.timestampComparisonTolerance {
+            return .unchanged
+        }
+        return .append(replay.assign(row, fiveOffset: fiveOffset, sevenOffset: sevenOffset))
     }
 
     func normalizedSnapshot(_ quota: AccountQuotaSnapshot) throws -> AccountQuotaSnapshot {
@@ -665,7 +774,9 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         return Self.snapshot(from: annotatedRow, base: quota)
     }
 
-    func loadSnapshot(for quota: AccountQuotaSnapshot, now: Date = Date()) throws -> QuotaHistorySnapshot {
+    func loadSnapshot(
+        for quota: AccountQuotaSnapshot, now: Date = Date(), projection: QuotaHistoryProjection = .dashboard
+    ) throws -> QuotaHistorySnapshot {
         guard let row = Self.row(from: quota, createdAt: now) else { return .empty }
         // Replay the retained identity timeline before selecting visible
         // ranges; the accepted baseline can predate any chart cutoff.
@@ -680,6 +791,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             recentInterval: recentInterval,
             maxCarryGap: maxCarryGap,
             now: now,
+            projection: projection,
             filterAnomalies: filterAnomalies(),
             consumption: consumption
         )
@@ -737,60 +849,9 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         }
         let fiveGenerationTarget = nativeTarget(\.fiveHourCycleGeneration)
         let sevenGenerationTarget = nativeTarget(\.sevenDayCycleGeneration)
-        var fiveGeneration = 0
-        var sevenGeneration = 0
-        var fiveAcceptedReset: Date?
-        var sevenPreviousUsed: Int?
-        var hasFive = false
-        var hasSeven = false
-
+        var replay = CycleAssignment()
         for index in ordered.indices {
-            let row = ordered[index]
-            var fiveAnchor = false
-            var sevenAnchor = false
-            var fiveValueGeneration: Int?
-            var sevenValueGeneration: Int?
-
-            if row.fiveHourUsedPercent.map({ (0...100).contains($0) }) == true {
-                if !hasFive {
-                    hasFive = true
-                    fiveAnchor = true
-                } else if QuotaHistoryCyclePolicy.startsNewCycle(
-                    currentUsedPercent: row.fiveHourUsedPercent,
-                    currentResetsAt: row.fiveHourResetsAt,
-                    acceptedResetsAt: fiveAcceptedReset,
-                    window: .fiveHour
-                ) {
-                    fiveGeneration += 1
-                    fiveAnchor = true
-                }
-                fiveValueGeneration = fiveGeneration
-                if fiveAnchor, let reset = row.fiveHourResetsAt {
-                    fiveAcceptedReset = reset
-                } else if fiveAcceptedReset == nil {
-                    fiveAcceptedReset = row.fiveHourResetsAt
-                }
-            }
-
-            if row.sevenDayUsedPercent.map({ (0...100).contains($0) }) == true {
-                if !hasSeven {
-                    hasSeven = true
-                    sevenAnchor = true
-                } else if let before = sevenPreviousUsed, let used = row.sevenDayUsedPercent,
-                          before - used >= QuotaActualCycleProjector.minimumDrop {
-                    sevenGeneration += 1
-                    sevenAnchor = true
-                }
-                sevenValueGeneration = sevenGeneration
-                sevenPreviousUsed = row.sevenDayUsedPercent
-            }
-
-            ordered[index] = row.replacingCycleMetadata(
-                fiveHourGeneration: fiveValueGeneration,
-                fiveHourAnchor: fiveAnchor,
-                sevenDayGeneration: sevenValueGeneration,
-                sevenDayAnchor: sevenAnchor
-            )
+            ordered[index] = replay.assign(ordered[index])
         }
         if let (targetIndex, persisted) = fiveGenerationTarget,
            let relative = ordered[targetIndex].fiveHourCycleGeneration {
@@ -820,7 +881,52 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         }
     }
 
-    private static func makeSnapshot(rows: [QuotaHistoryRow], recentInterval: TimeInterval, maxCarryGap: TimeInterval, now: Date = Date(), filterAnomalies: Bool = true, consumption: (URL, Date, Date) -> QuotaCycleConsumption = { _, _, _ in .unknown }) -> QuotaHistorySnapshot {
+    /// Both persisted raw observations and protected chart projections use
+    /// the same boundary decisions, with their own retained generation offsets.
+    private struct CycleAssignment {
+        private var fiveGeneration: Int?
+        private var sevenGeneration: Int?
+        private var fiveAcceptedReset: Date?
+        private var sevenPreviousUsed: Int?
+
+        mutating func advance(fiveUsed: Int?, fiveReset: Date?, sevenUsed: Int?)
+            -> (five: Int?, fiveAnchor: Bool, seven: Int?, sevenAnchor: Bool) {
+            var five: Int?, seven: Int?
+            var fiveAnchor = false, sevenAnchor = false
+            if let fiveUsed, (0...100).contains(fiveUsed) {
+                fiveAnchor = fiveGeneration == nil || QuotaHistoryCyclePolicy.startsNewCycle(
+                    currentUsedPercent: fiveUsed, currentResetsAt: fiveReset,
+                    acceptedResetsAt: fiveAcceptedReset, window: .fiveHour
+                )
+                if fiveAnchor { fiveGeneration = (fiveGeneration ?? -1) + 1 }
+                if fiveAnchor || fiveAcceptedReset == nil {
+                    fiveAcceptedReset = fiveReset ?? fiveAcceptedReset
+                }
+                five = fiveGeneration
+            }
+            if let sevenUsed, (0...100).contains(sevenUsed) {
+                sevenAnchor = sevenPreviousUsed.map { $0 - sevenUsed >= QuotaActualCycleProjector.minimumDrop } ?? true
+                if sevenAnchor { sevenGeneration = (sevenGeneration ?? -1) + 1 }
+                sevenPreviousUsed = sevenUsed
+                seven = sevenGeneration
+            }
+            return (five, fiveAnchor, seven, sevenAnchor)
+        }
+
+        mutating func assign(_ row: QuotaHistoryRow, fiveOffset: Int = 0, sevenOffset: Int = 0) -> QuotaHistoryRow {
+            let cycles = advance(fiveUsed: row.fiveHourUsedPercent, fiveReset: row.fiveHourResetsAt,
+                sevenUsed: row.sevenDayUsedPercent)
+            return row.replacingCycleMetadata(fiveHourGeneration: cycles.five.map { $0 + fiveOffset },
+                fiveHourAnchor: cycles.fiveAnchor, sevenDayGeneration: cycles.seven.map { $0 + sevenOffset },
+                sevenDayAnchor: cycles.sevenAnchor)
+        }
+    }
+
+    private static func makeSnapshot(
+        rows: [QuotaHistoryRow], recentInterval: TimeInterval, maxCarryGap: TimeInterval,
+        now: Date = Date(), projection: QuotaHistoryProjection = .dashboard, filterAnomalies: Bool = true,
+        consumption: (URL, Date, Date) -> QuotaCycleConsumption = { _, _, _ in .unknown }
+    ) -> QuotaHistorySnapshot {
         let calendar = Calendar.current
         guard let recentStart = calendar.date(byAdding: .day, value: -30, to: now) else {
             return .empty
@@ -838,35 +944,35 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             return value
         }
         let sorted = sanitizedRows(raw, now: now, filterAnomalies: filterAnomalies, consumption: lookup)
+        let visibleCount = projection == .dashboard ? intervalCount : 288
         let recentBins = makeCarriedBins(
             rows: sorted,
-            start: recentStart,
-            count: intervalCount,
+            start: recentStart.addingTimeInterval(Double(intervalCount - visibleCount) * recentInterval),
+            count: visibleCount,
             interval: recentInterval,
             maxCarryGap: maxCarryGap,
             now: now
         )
 
-        let currentHour = calendar.dateInterval(of: .hour, for: now)?.start ?? now
-        let hourlyCount = 365 * 24
-        let hourlyStart = calendar.date(byAdding: .hour, value: -(hourlyCount - 1), to: currentHour) ?? currentHour
-        let hourlyBins = makeCarriedBins(
-            rows: sorted,
-            start: hourlyStart,
-            count: hourlyCount,
-            interval: 60 * 60,
-            maxCarryGap: maxCarryGap,
-            now: now
-        )
-
-        let startDay = calendar.startOfDay(for: calendar.date(byAdding: .day, value: -364, to: now) ?? now)
-        var grouped: [Date: DailyQuotaTotals] = [:]
-        for row in sorted where row.createdAt >= startDay {
-            grouped[calendar.startOfDay(for: row.createdAt), default: DailyQuotaTotals()].add(row)
-        }
-        let daily = (0..<365).compactMap { offset -> QuotaHistoryDailyBucket? in
-            guard let date = calendar.date(byAdding: .day, value: offset, to: startDay) else { return nil }
-            return (grouped[date] ?? DailyQuotaTotals()).bucket(at: date)
+        var hourlyBins: [QuotaHistoryRecentBucket] = []
+        var daily: [QuotaHistoryDailyBucket] = []
+        if projection == .dashboard {
+            let currentHour = calendar.dateInterval(of: .hour, for: now)?.start ?? now
+            let hourlyCount = 365 * 24
+            let hourlyStart = calendar.date(byAdding: .hour, value: -(hourlyCount - 1), to: currentHour) ?? currentHour
+            hourlyBins = makeCarriedBins(
+                rows: sorted, start: hourlyStart, count: hourlyCount, interval: 60 * 60,
+                maxCarryGap: maxCarryGap, now: now
+            )
+            let startDay = calendar.startOfDay(for: calendar.date(byAdding: .day, value: -364, to: now) ?? now)
+            var grouped: [Date: DailyQuotaTotals] = [:]
+            for row in sorted where row.createdAt >= startDay {
+                grouped[calendar.startOfDay(for: row.createdAt), default: DailyQuotaTotals()].add(row)
+            }
+            daily = (0..<365).compactMap { offset in
+                guard let date = calendar.date(byAdding: .day, value: offset, to: startDay) else { return nil }
+                return (grouped[date] ?? DailyQuotaTotals()).bucket(at: date)
+            }
         }
 
         let identity = sorted.last(where: { $0.identityVersion != nil }).flatMap { row in
@@ -878,13 +984,13 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             guard let used = row.sevenDayUsedPercent else { return nil }
             return QuotaCycleObservation(at: row.createdAt, usedPercent: used, resetsAt: row.sevenDayResetsAt ?? .distantPast)
         }
-        let projection = QuotaActualCycleProjector.projectWithDiagnostics(observations, now: now) { start, end in
+        let cycles = QuotaActualCycleProjector.projectWithDiagnostics(observations, now: now) { start, end in
             guard let home = identity?.homeIdentity else { return .unknown }
             return lookup(URL(fileURLWithPath: home), start, end)
         }
         return QuotaHistorySnapshot(daily: daily, recentBins: recentBins, hourlyBins: hourlyBins,
             latest: sorted.last?.createdAt,
-            actualCycles: projection.cycles, cycleIdentity: identity, cycleDiagnostics: projection.diagnostics)
+            actualCycles: cycles.cycles, cycleIdentity: identity, cycleDiagnostics: cycles.diagnostics)
     }
 
     private static func sanitizedRows(_ rows: [QuotaHistoryRow], now: Date, filterAnomalies: Bool = true, consumption: (URL, Date, Date) -> QuotaCycleConsumption = { _, _, _ in .unknown }) -> [QuotaHistoryRow] {
@@ -1701,13 +1807,20 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         includeCycleMetadata: Bool = true
     ) throws -> [QuotaHistoryRow] {
         let cycleColumns = try cycleColumnProjection(database, includeCycleMetadata: includeCycleMetadata)
+        let (sql, bindings) = stableTimelineQuery(columns: """
+            created_at, account_key, plan_type, limit_name, account_name,
+            source, five_hour_used_percent, five_hour_resets_at,
+            seven_day_used_percent, seven_day_resets_at, status,
+            identity_version, home_identity, stable_account_key,
+            identity_plan_type, identity_limit_id, \(cycleColumns)
+            """, identity: identity, cutoff: cutoff)
+        return try rows(database: database, sql: sql, bindings: bindings)
+    }
+
+    private func stableTimelineQuery(columns: String, identity: QuotaHistoryIdentity, cutoff: Date?)
+        -> (String, [SQLiteBinding]) {
         var sql = """
-        SELECT created_at, account_key, plan_type, limit_name, account_name,
-               source, five_hour_used_percent, five_hour_resets_at,
-               seven_day_used_percent, seven_day_resets_at, status,
-               identity_version, home_identity, stable_account_key,
-               identity_plan_type, identity_limit_id,
-               \(cycleColumns)
+        SELECT \(columns)
         FROM quota_snapshots
         WHERE identity_version = ?
           AND home_identity = ?
@@ -1727,7 +1840,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
             bindings.append(.date(cutoff))
         }
         sql += " ORDER BY created_at ASC;"
-        return try rows(database: database, sql: sql, bindings: bindings)
+        return (sql, bindings)
     }
 
     private func legacyBridges(
@@ -1759,7 +1872,8 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
         database: SQLiteDatabaseConnection,
         bridge: LegacyBridge,
         cutoff: Date,
-        includeCycleMetadata: Bool = true
+        includeCycleMetadata: Bool = true,
+        limitOne: Bool = false
     ) throws -> [QuotaHistoryRow] {
         let cycleColumns = try cycleColumnProjection(database, includeCycleMetadata: includeCycleMetadata)
         return try rows(
@@ -1791,7 +1905,7 @@ final class QuotaHistoryDatabase: @unchecked Sendable {
                 OR trim(source) = ''
                 OR lower(trim(source)) = 'swift'
               )
-            ORDER BY created_at DESC;
+            ORDER BY created_at DESC \(limitOne ? "LIMIT 1" : "");
             """,
             bindings: [
                 .text(bridge.accountName),

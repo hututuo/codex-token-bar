@@ -149,6 +149,34 @@ final class ClientQuotaHistoryTests: XCTestCase {
         XCTAssertEqual(ClientQuotaChartSource.resolve("codex", clients: ["antigravity"])?.pool, "gemini")
     }
 
+    func testSidebarKeepsFullProjectionValuesAndSourceChoicesWithinItsDay() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("history.sqlite"))
+        let firstBin = now.addingTimeInterval(-86400 + 300)
+        let older = now.addingTimeInterval(-60 * 86400)
+        let historical = ClientQuotaReading(client: "claudeDesktop", state: "available", source: "older-source",
+            windows: [.init(label: "5h", usedPercent: 30, resetsAt: nil, id: "5h")], notice: "", capturedAt: older)
+        try ledger.recordQuotaHistory([historical], now: older)
+        let readings = [reading(at: now, used: 42.125), reading("antigravity", at: now, used: 63, id: "3p-weekly")]
+        try ledger.recordQuotaHistory([
+            reading(at: firstBin.addingTimeInterval(-60), used: 21.3),
+            reading("antigravity", at: now.addingTimeInterval(-86400 * 2), used: 13, id: "gemini-5h")
+        ] + readings, now: now)
+        let full = try ledger.quotaHistory(readings: readings, now: now)
+        let short = try ledger.quotaHistory(readings: readings, now: now, projection: .sidebar)
+        XCTAssertEqual(short.map(\.id), full.map(\.id))
+        for (compact, complete) in zip(short, full) {
+            XCTAssertEqual(compact.recentBins, complete.recentBins.filter { $0.start >= firstBin })
+            XCTAssertTrue(compact.hourlyBins.isEmpty)
+            XCTAssertTrue(compact.daily.isEmpty)
+        }
+        let first = try XCTUnwrap(short.first?.recentBins.first)
+        XCTAssertEqual(first.start, firstBin)
+        XCTAssertEqual(first.fiveHourRemainingPercent, 100 - 21.3)
+        XCTAssertTrue(first.fiveHourObservations.isEmpty)
+    }
+
     func testExistingDesktopHistoryImportsOnlyLatestOrganizationAtOriginalTimes() throws {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: home) }

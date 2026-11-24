@@ -651,6 +651,7 @@ struct QuotaSidebarDetailView: View {
     @ObservedObject private var speedPalette = SpeedDisplayPreferences.shared
     @AppStorage(ActivitySpeedDisplayMode.key) private var speedModeRaw = ActivitySpeedDisplayMode.bar.rawValue
     @State private var clientProjectionCache = ClientDashboardProjectionCache()
+    @State private var quotaHistoryConsumer = UUID()
     @StateObject private var modelCostCache = ClientModelCostPeriodsCache()
     @AppStorage(ClientDisplayScope.sidebarKey) private var clientScope = "all"
     @AppStorage("sidebarQuotaHistorySource.v1") private var quotaHistorySource = "codex"
@@ -743,6 +744,19 @@ struct QuotaSidebarDetailView: View {
         .overlay(RoundedRectangle(cornerRadius: 22).stroke(.white.opacity(0.12), lineWidth: 1))
         .foregroundStyle(.white)
         .onHover { if $0 { controller.enter() } }
+        .onAppear { updateQuotaHistoryDemand() }
+        .onChange(of: controller.interaction.detail) { _, _ in updateQuotaHistoryDemand() }
+        .onDisappear {
+            history.setProjectionDemand(nil, consumer: quotaHistoryConsumer)
+            clients.setQuotaHistoryDemand(nil, consumer: quotaHistoryConsumer)
+        }
+    }
+
+    private func updateQuotaHistoryDemand() {
+        let detail = controller.interaction.detail
+        let overview = detail == .overview || detail == nil
+        history.setProjectionDemand(overview || detail == .speeds ? .sidebar : nil, consumer: quotaHistoryConsumer)
+        clients.setQuotaHistoryDemand(overview ? .sidebar : nil, consumer: quotaHistoryConsumer)
     }
 
     private func header(_ quota: AccountQuotaSnapshot) -> some View {

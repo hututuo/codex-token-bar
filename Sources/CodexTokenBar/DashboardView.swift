@@ -420,6 +420,8 @@ struct DashboardView: View {
                 runtimeConsumerID,
                 preciseTokenCountingEnabled: preciseTokenCountingEnabled
             )
+            quotaHistoryStore.setProjectionDemand(.dashboard, consumer: runtimeConsumerID)
+            clients.setQuotaHistoryDemand(.dashboard, consumer: runtimeConsumerID)
             reportRuntimeConfiguration()
             consumePendingSettingsRequest()
             migrateSharedAccountPriceModelIfNeeded()
@@ -470,6 +472,8 @@ struct DashboardView: View {
             showingSharedAccountAttributionDetails = false
         }
         .onDisappear {
+            quotaHistoryStore.setProjectionDemand(nil, consumer: runtimeConsumerID)
+            clients.setQuotaHistoryDemand(nil, consumer: runtimeConsumerID)
             runtime.releaseConsumer(runtimeConsumerID)
         }
         .onReceive(NotificationCenter.default.publisher(for: .dashboardBlankAreaClicked)) { _ in

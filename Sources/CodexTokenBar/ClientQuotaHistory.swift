@@ -32,37 +32,48 @@ struct ClientQuotaHistory: Identifiable, Equatable, Sendable {
         return pool.isEmpty ? name : name + " · " + (pool == "gemini" ? "Gemini" : "第三方模型")
     }
 
-    func buckets(interval: TimeInterval, now: Date = Date(), includeEmptyBuckets: Bool = true) -> [QuotaHistoryRecentBucket] {
-        guard interval.isFinite, interval > 0 else { return [] }
+    func buckets(interval: TimeInterval, now: Date = Date(), includeEmptyBuckets: Bool = true,
+                 days: Int = 30) -> [QuotaHistoryRecentBucket] {
+        guard interval.isFinite, interval > 0, days > 0 else { return [] }
+        let duration = Double(days) * 86400
+        guard let count = Int(exactly: floor(duration / interval)) else { return [] }
         let end = floor(now.timeIntervalSince1970 / interval) * interval
-        let start = end - 30 * 24 * 60 * 60 + interval
-        let five = samples.filter { Self.period($0.windowID) == "5h" }
-        let seven = samples.filter { Self.period($0.windowID) == "7d" }
-        var fiveIndex = 0, sevenIndex = 0
-        func value(_ rows: [ClientQuotaHistorySample], _ index: inout Int, from start: Date, through boundary: Date) -> (Double?, [QuotaHistoryObservation]) {
-            let first = index
-            while index < rows.count && rows[index].observedAt <= boundary { index += 1 }
-            let observations = rows[first..<index].filter { $0.observedAt >= start }.map {
-                QuotaHistoryObservation(observedAt: $0.observedAt, remainingPercent: 100 - $0.usedPercent, resetsAt: $0.resetsAt)
-            }
-            guard index > 0 else { return (nil, observations) }
-            let latest = rows[index - 1]
+        let start = end - duration + interval
+        var index = 0
+        var latestFive: ClientQuotaHistorySample?, latestSeven: ClientQuotaHistorySample?
+        func value(_ latest: ClientQuotaHistorySample?, at boundary: Date, fallback: Double?) -> Double? {
+            guard let latest else { return fallback }
             // Carry a recent observation only within its known reset boundary.
             // Reopening an old disk cache never creates a new observation.
             let fresh = boundary.timeIntervalSince(latest.observedAt) <= 20 * 60
             let beforeReset = latest.resetsAt.map { boundary < $0 } ?? true
-            return (fresh && beforeReset ? 100 - latest.usedPercent : observations.last?.remainingPercent, observations)
+            return fresh && beforeReset ? 100 - latest.usedPercent : fallback
         }
-        return (0..<Int(30 * 24 * 60 * 60 / interval)).compactMap { offset in
+        return (0..<count).compactMap { offset in
             let date = Date(timeIntervalSince1970: start + Double(offset) * interval)
             let boundary = min(date.addingTimeInterval(interval - 0.000_001), now)
-            let f = value(five, &fiveIndex, from: date, through: boundary)
-            let s = value(seven, &sevenIndex, from: date, through: boundary)
+            var five: [QuotaHistoryObservation] = [], seven: [QuotaHistoryObservation] = []
+            while index < samples.count, samples[index].observedAt <= boundary {
+                let sample = samples[index]
+                index += 1
+                guard let period = Self.period(sample.windowID) else { continue }
+                let observation = QuotaHistoryObservation(observedAt: sample.observedAt,
+                    remainingPercent: 100 - sample.usedPercent, resetsAt: sample.resetsAt)
+                if period == "5h" {
+                    latestFive = sample
+                    if sample.observedAt >= date { five.append(observation) }
+                } else {
+                    latestSeven = sample
+                    if sample.observedAt >= date { seven.append(observation) }
+                }
+            }
+            let fiveValue = value(latestFive, at: boundary, fallback: five.last?.remainingPercent)
+            let sevenValue = value(latestSeven, at: boundary, fallback: seven.last?.remainingPercent)
             // Chart axes come from usage bins. A missing quota key is already
             // an explicit gap, so empty accounts need no 30-day placeholder array.
-            guard includeEmptyBuckets || f.0 != nil || s.0 != nil || !f.1.isEmpty || !s.1.isEmpty else { return nil }
-            return QuotaHistoryRecentBucket(start: date, fiveHourRemainingPercent: f.0, sevenDayRemainingPercent: s.0,
-                fiveHourObservations: f.1, sevenDayObservations: s.1)
+            guard includeEmptyBuckets || fiveValue != nil || sevenValue != nil || !five.isEmpty || !seven.isEmpty else { return nil }
+            return QuotaHistoryRecentBucket(start: date, fiveHourRemainingPercent: fiveValue, sevenDayRemainingPercent: sevenValue,
+                fiveHourObservations: five, sevenDayObservations: seven)
         }
     }
 
@@ -150,20 +161,26 @@ extension MultiClientUsageLedger {
                         INSERT INTO client_quota_observations(client,source,window_id,observed_at,used_percent,resets_at)
                         VALUES(?,?,?,?,?,?) ON CONFLICT(client,source,window_id,observed_at)
                         DO UPDATE SET used_percent=excluded.used_percent,resets_at=excluded.resets_at
+                        WHERE used_percent IS NOT excluded.used_percent OR resets_at IS NOT excluded.resets_at
                         """, bindings: bindings + [.date(captured), .double(window.usedPercent), .optionalDate(window.resetsAt)])
                 }
             }
         }
     }
 
-    func quotaHistory(readings: [ClientQuotaReading], now: Date = Date()) throws -> [ClientQuotaHistory] {
+    func quotaHistory(readings: [ClientQuotaReading], now: Date = Date(),
+                      projection: QuotaHistoryProjection = .dashboard) throws -> [ClientQuotaHistory] {
         let exists = try database.readRows("SELECT 1 FROM sqlite_master WHERE type='table' AND name='client_quota_observations'") { $0.int(0) }.first == 1
         guard exists else { return [] }
+        let calendar = Calendar.current
+        let firstDay = calendar.date(byAdding: .day, value: -364, to: calendar.startOfDay(for: now)) ?? now
+        let recentDays = projection == .dashboard ? 30 : 1
+        let carryBeforeSidebar: TimeInterval = projection == .sidebar ? 20 * 60 : 0
+        let recentCutoff = now.addingTimeInterval(-Double(recentDays) * 86400 - carryBeforeSidebar)
         var histories: [ClientQuotaHistory] = []
         for reading in readings {
-            let calendar = Calendar.current
-            let firstDay = calendar.date(byAdding: .day, value: -364, to: calendar.startOfDay(for: now)) ?? now
-            let dailyRows = try database.readRows("""
+            try Task.checkCancellation()
+            let dailyRows = projection == .sidebar ? [] : try database.readRows("""
                 SELECT source,window_id,
                 CAST(strftime('%s',date(observed_at,'unixepoch','localtime'),'utc') AS INTEGER),
                 AVG(100-used_percent),COUNT(*),MIN(observed_at),MAX(observed_at)
@@ -175,29 +192,60 @@ extension MultiClientUsageLedger {
                 """, bindings: [.text(reading.client), .date(firstDay), .date(now)]) {
                     ($0.text(0)!, $0.text(1)!, $0.date(2)!, $0.double(3)!, $0.int(4)!, $0.date(5)!, $0.date(6)!)
                 }
-            let rows = try database.readRows("""
+            var poolsBySource: [String: Set<String>] = [:]
+            if projection == .sidebar {
+                // Preserve the same source selector for accounts that only
+                // have history outside the sidebar's 24-hour curve.
+                try database.forEachRow("""
+                    SELECT DISTINCT source,window_id FROM client_quota_observations
+                    WHERE client=? AND observed_at>=? AND observed_at<=?
+                    AND used_percent>=0 AND used_percent<=100 AND (resets_at IS NULL OR resets_at>observed_at)
+                    """, bindings: [.text(reading.client), .date(firstDay), .date(now)]) {
+                        if let source = $0.text(0), let window = $0.text(1),
+                           let pool = ClientQuotaHistory.pool(client: reading.client, windowID: window) {
+                            poolsBySource[source, default: []].insert(pool)
+                        }
+                    }
+            }
+            for row in dailyRows {
+                if let pool = ClientQuotaHistory.pool(client: reading.client, windowID: row.1) {
+                    poolsBySource[row.0, default: []].insert(pool)
+                }
+            }
+            var recentBySource: [String: [String: [ClientQuotaHistorySample]]] = [:]
+            var rowCount = 0
+            try database.forEachRow("""
                 SELECT source,window_id,observed_at,used_percent,resets_at FROM client_quota_observations
                 WHERE client=? AND observed_at>=? AND observed_at<=? ORDER BY observed_at DESC LIMIT 500001
-                """, bindings: [.text(reading.client), .date(now.addingTimeInterval(-30 * 24 * 60 * 60)), .date(now)]) {
-                    ($0.text(0)!, ClientQuotaHistorySample(windowID: $0.text(1)!, observedAt: $0.date(2)!, usedPercent: $0.double(3)!, resetsAt: $0.date(4)))
+                """, bindings: [.text(reading.client), .date(recentCutoff), .date(now)]) {
+                    rowCount += 1
+                    if rowCount.isMultiple(of: 512) { try Task.checkCancellation() }
+                    guard rowCount <= 500_000 else { throw ClientQuotaHistoryError.tooManySamples }
+                    let source = $0.text(0)!, window = $0.text(1)!
+                    guard let pool = ClientQuotaHistory.pool(client: reading.client, windowID: window) else { return }
+                    poolsBySource[source, default: []].insert(pool)
+                    recentBySource[source, default: [:]][pool, default: []].append(
+                        .init(windowID: window, observedAt: $0.date(2)!, usedPercent: $0.double(3)!, resetsAt: $0.date(4))
+                    )
                 }
-            guard rows.count <= 500_000 else { throw ClientQuotaHistoryError.tooManySamples }
-            let sources = [reading.source] + Set(rows.map(\.0) + dailyRows.map(\.0)).subtracting([reading.source]).sorted()
+            let sources = [reading.source] + poolsBySource.keys.filter { $0 != reading.source }.sorted()
             for source in sources {
-                let current = rows.filter { $0.0 == source && ClientQuotaHistory.pool(client: reading.client, windowID: $0.1.windowID) != nil }.map(\.1).reversed()
-                let pools = Dictionary(grouping: current) { ClientQuotaHistory.pool(client: reading.client, windowID: $0.windowID) ?? "" }
-                let dailyForSource = dailyRows.filter { $0.0 == source && ClientQuotaHistory.pool(client: reading.client, windowID: $0.1) != nil }
-                var poolIDs = Set(pools.keys).union(dailyForSource.compactMap { ClientQuotaHistory.pool(client: reading.client, windowID: $0.1) })
+                var poolIDs = poolsBySource[source] ?? []
                 // A newly observed account without a valid sample cannot
                 // silently fall back to another account's history.
                 if source == reading.source, ClientQuotaSourceIdentity.base(source) != source,
                    reading.client == "claudeDesktop" { poolIDs.insert("") }
+                var recentByPool = recentBySource.removeValue(forKey: source) ?? [:]
                 for pool in poolIDs.sorted() {
-                    var history = ClientQuotaHistory(client: reading.client, source: source, pool: pool, samples: pools[pool] ?? [])
-                    history.recentBins = history.buckets(interval: 300, now: now, includeEmptyBuckets: false)
-                    history.hourlyBins = history.buckets(interval: 3600, now: now, includeEmptyBuckets: false)
-                    let days = Dictionary(grouping: dailyForSource.filter {
-                        ClientQuotaHistory.pool(client: reading.client, windowID: $0.1) == pool
+                    var samples = recentByPool.removeValue(forKey: pool) ?? []
+                    samples.reverse()
+                    var history = ClientQuotaHistory(client: reading.client, source: source, pool: pool, samples: samples)
+                    history.recentBins = history.buckets(interval: 300, now: now, includeEmptyBuckets: false, days: recentDays)
+                    if projection == .dashboard {
+                        history.hourlyBins = history.buckets(interval: 3600, now: now, includeEmptyBuckets: false)
+                    }
+                    let days = Dictionary(grouping: dailyRows.filter {
+                        $0.0 == source && ClientQuotaHistory.pool(client: reading.client, windowID: $0.1) == pool
                     }, by: { $0.2 })
                     history.daily = days.keys.sorted().map { date in
                         let values = days[date]!

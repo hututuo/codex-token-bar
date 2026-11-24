@@ -155,12 +155,12 @@ actor MultiClientUsageScanner {
 
     func backup() throws -> URL { try open().backup() }
 
-    func recordQuotaHistory(_ readings: [ClientQuotaReading]) throws -> [ClientQuotaHistory] {
+    func recordQuotaHistory(_ readings: [ClientQuotaReading]) throws {
         let hasObservation = readings.contains { reading in
             reading.capturedAt != nil && ["available", "stale", "cached"].contains(reading.state)
                 && reading.windows.contains { ClientQuotaHistory.pool(client: reading.client, windowID: $0.id ?? $0.label) != nil }
         }
-        guard FileManager.default.fileExists(atPath: databaseURL.path) || hasObservation else { return [] }
+        guard FileManager.default.fileExists(atPath: databaseURL.path) || hasObservation else { return }
         let ledger = try open()
         let desktopSource = readings.first { $0.client == "claudeDesktop" }?.source ?? ""
         if importedQuotaHistorySource != desktopSource {
@@ -168,7 +168,12 @@ actor MultiClientUsageScanner {
             importedQuotaHistorySource = desktopSource
         }
         try ledger.recordQuotaHistory(readings)
-        return try ledger.quotaHistory(readings: readings)
+    }
+
+    func loadQuotaHistory(_ readings: [ClientQuotaReading], projection: QuotaHistoryProjection) throws -> [ClientQuotaHistory] {
+        try Task.checkCancellation()
+        guard FileManager.default.fileExists(atPath: databaseURL.path) else { return [] }
+        return try autoreleasepool { try open().quotaHistory(readings: readings, projection: projection) }
     }
 
     /// Reads cached cache-ranking projections on demand without scanning source logs. If the
@@ -366,6 +371,9 @@ final class MultiClientUsageStore: ObservableObject {
     private var generation = 0
     private var quotaProbeInFlight = false
     private var lastQuotaProbeUptime: TimeInterval?
+    private var quotaHistoryConsumers: [UUID: QuotaHistoryProjection] = [:]
+    private var quotaHistoryReadings: [ClientQuotaReading] = []
+    private var quotaHistoryTask: Task<Void, Never>?
     private var menuItem: NSStatusItem?
     private var monitoringUpdates: AnyCancellable?
 
@@ -490,21 +498,62 @@ final class MultiClientUsageStore: ObservableObject {
             guard let self else { return }
             let readings = [ClaudeCapturedQuotaProvider(snapshot: reading).reading(),
                 ClaudeCapturedQuotaProvider(snapshot: desktop, client: .claudeDesktop).reading(), antigravity]
-            do {
-                self.quotaHistories = try await self.scanner.recordQuotaHistory(readings)
-                self.quotaHistoryIssue = nil
-            } catch {
-                self.quotaHistoryIssue = "额度历史暂不可用，已保留当前读数和原记录（\(error.localizedDescription)）"
+            if self.quotaHistoryReadings.map(\.source) != readings.map(\.source) {
+                self.quotaHistoryTask?.cancel()
+                if !self.quotaHistories.isEmpty { self.quotaHistories = [] }
             }
-            self.quotaProbeInFlight = false
+            self.quotaHistoryReadings = readings
             if self.claudeQuota != reading || self.claudeDesktopQuota != desktop || self.antigravityQuota != antigravity {
                 self.claudeQuota = reading
                 self.claudeDesktopQuota = desktop
                 self.antigravityQuota = antigravity
                 self.syncMenuItems()
             }
+            do {
+                try await self.scanner.recordQuotaHistory(readings)
+                if self.quotaHistoryIssue != nil { self.quotaHistoryIssue = nil }
+                self.reloadQuotaHistory()
+            } catch {
+                self.reportQuotaHistoryError(error)
+            }
+            self.quotaProbeInFlight = false
         }
     }
+
+    func setQuotaHistoryDemand(_ demand: QuotaHistoryProjection?, consumer: UUID) {
+        let previous = quotaHistoryConsumers.values.max()
+        quotaHistoryConsumers[consumer] = demand
+        let projection = quotaHistoryConsumers.values.max()
+        guard previous != projection else { return }
+        if projection == nil || previous == .dashboard {
+            quotaHistoryTask?.cancel()
+            if !quotaHistories.isEmpty { quotaHistories = [] }
+        }
+        reloadQuotaHistory()
+    }
+
+    private func reloadQuotaHistory() {
+        guard let projection = quotaHistoryConsumers.values.max(), !quotaHistoryReadings.isEmpty else { return }
+        let readings = quotaHistoryReadings
+        quotaHistoryTask?.cancel()
+        quotaHistoryTask = Task(priority: .utility) { [weak self, scanner] in
+            do {
+                let loaded = try await scanner.loadQuotaHistory(readings, projection: projection)
+                guard let self, !Task.isCancelled else { return }
+                if self.quotaHistories != loaded { self.quotaHistories = loaded }
+                if self.quotaHistoryIssue != nil { self.quotaHistoryIssue = nil }
+            } catch {
+                guard !Task.isCancelled else { return }
+                self?.reportQuotaHistoryError(error)
+            }
+        }
+    }
+
+    private func reportQuotaHistoryError(_ error: Error) {
+        let issue = "额度历史暂不可用，已保留当前读数和原记录（\(error.localizedDescription)）"
+        if quotaHistoryIssue != issue { quotaHistoryIssue = issue }
+    }
+
     private func hasLocalQuota(_ client: UsageClient) -> Bool {
         let value = quotaReading(client)
         return ClientQuotaPresentation.isPresent(value, detected: detections.contains { $0.client == client })

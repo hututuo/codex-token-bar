@@ -76,6 +76,38 @@ final class QuotaCycleHistoryFreshnessTests: XCTestCase {
         XCTAssertTrue(QuotaCycleProjectionConsistency.needsRebuild(corrected, quota: current))
     }
 
+    func testOpeningDuringBackgroundWriteLoadsTheCommittedHistoryAtTheRequestedSize() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = QuotaHistoryDatabase(databaseURL: root.appendingPathComponent("history.sqlite"))
+        let client = LiveQuotaHistoryClient(database: database)
+        let store = QuotaHistoryStore(historyClient: client, backgroundProjection: nil)
+        let sidebar = UUID(), dashboard = UUID()
+        let now = Date(timeIntervalSince1970: floor(Date().timeIntervalSince1970))
+        var current = quota(0)
+        current.updatedAt = now
+        current.sevenDay = .init(label: "7d", usedPercent: 13, resetsAt: now.addingTimeInterval(86400))
+
+        store.record(current)
+        XCTAssertEqual(store.snapshot, .empty)
+        store.setProjectionDemand(.sidebar, consumer: sidebar)
+        try await waitUntil { store.snapshot.latest == now }
+        XCTAssertEqual(store.snapshot.recentBins.count, 288)
+        XCTAssertTrue(store.snapshot.hourlyBins.isEmpty)
+        XCTAssertTrue(store.snapshot.daily.isEmpty)
+        XCTAssertFalse(store.snapshot.actualCycles.isEmpty)
+
+        store.setProjectionDemand(.dashboard, consumer: dashboard)
+        try await waitUntil { store.snapshot.daily.count == 365 }
+        XCTAssertEqual(store.snapshot.recentBins.count, 8640)
+        XCTAssertEqual(store.snapshot.hourlyBins.count, 8760)
+        store.setProjectionDemand(nil, consumer: dashboard)
+        try await waitUntil { store.snapshot.recentBins.count == 288 }
+        store.setProjectionDemand(nil, consumer: sidebar)
+        XCTAssertEqual(store.snapshot, .empty)
+        XCTAssertEqual(try database.loadSnapshot(for: current).latest, now)
+    }
+
 }
 
 private final class CycleHistoryProbe: QuotaHistoryLoading, @unchecked Sendable {

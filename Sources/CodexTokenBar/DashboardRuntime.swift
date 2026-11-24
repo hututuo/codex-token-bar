@@ -310,7 +310,7 @@ final class DashboardRuntime: ObservableObject {
         quotaStore: AccountQuotaStore = AccountQuotaStore(
             resetCreditReader: LiveAccountQuotaResetCreditReader()
         ),
-        quotaHistoryStore: QuotaHistoryStore = QuotaHistoryStore(),
+        quotaHistoryStore: QuotaHistoryStore = QuotaHistoryStore(backgroundProjection: nil),
         radarStore: CodexRadarStore = CodexRadarStore(),
         providerSyncStore: ProviderSyncStore = ProviderSyncStore(),
         taskCompletionMonitor: TaskCompletionMonitor? = nil,
