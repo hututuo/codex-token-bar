@@ -79,7 +79,9 @@ struct SessionTests {
         #expect(session.sessionCounts(todayStartMs: nextMorning)[.codex] == nil)
 
         let file = directory.file(relative)
-        let canonicalPath = file.resolvingSymlinksInPath().path
+        let canonical = try #require(realpath(file.path, nil))
+        defer { free(canonical) }
+        let canonicalPath = String(cString: canonical)
         try directory.append(relative, line(at: "2026-10-21T10:00:00.000Z") + "{bad-json}\n")
         #expect(session.handleChanges(atCanonicalPaths: [canonicalPath]))
         #expect(session.sessionCounts(todayStartMs: nextMorning)[.codex] == 1)

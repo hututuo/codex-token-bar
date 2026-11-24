@@ -758,7 +758,7 @@
     },
     "macos/Tests/AgentSpeedCoreTests/SessionTests.swift": {
       "reason": "Use explicit isolated source roots; never read developer home during tests Backport c668286 deterministic quiet-file and midnight resumption regressions, retaining existing source-read context tests. Verify cached session counts across local day changes, appended lines, removal, and retained malformed diagnostics.",
-      "sha256": "b21a5c5727ca0a1c7d11cd533bcecc087b68abac157fb115e4500408c1e76812"
+      "sha256": "da81a9c15ca7b3fb8e1099e911e540335169929ff6ec18bde3587ada9ec96f4c"
     },
     "macos/Tests/AgentSpeedCoreTests/TrafficSamplerTests.swift": {
       "reason": "Break the process-argument fixture into typed byte-array appends for Swift 6 compiler compatibility; emitted fixture bytes and assertions are unchanged.",
