@@ -1017,6 +1017,62 @@ private final class RecentChartRenderFrameCache {
         frame = updated
         return updated
     }
+
+    func removeAll() {
+        key = nil
+        frame = nil
+    }
+}
+
+private enum RecentChartFocusCommand {
+    case move(RecentChartAccessibilityCursorDirection)
+    case select, clear, dismiss
+}
+
+@MainActor
+private final class RecentChartFocusActions {
+    var handle: ((RecentChartFocusCommand) -> Bool)?
+}
+
+@MainActor
+private struct RecentChartFocus: ViewModifier {
+    let handle: (RecentChartFocusCommand) -> Bool
+    @State private var actions = RecentChartFocusActions()
+
+    func body(content: Content) -> some View {
+        // AppKit can retain the focus responder after closing the window.
+        // Its commands hold only a weak reference to the mounted chart.
+        content
+            .accessibilityAdjustableAction { [weak actions] direction in
+                switch direction {
+                case .increment: _ = actions?.handle?(.move(.next))
+                case .decrement: _ = actions?.handle?(.move(.previous))
+                @unknown default: break
+                }
+            }
+            .accessibilityAction(named: Text("设置选区点")) { [weak actions] in
+                _ = actions?.handle?(.select)
+            }
+            .accessibilityAction(named: Text("清除选区")) { [weak actions] in
+                _ = actions?.handle?(.clear)
+            }
+            .focusable()
+            .onMoveCommand { [weak actions] direction in
+                switch direction {
+                case .left, .up: _ = actions?.handle?(.move(.previous))
+                case .right, .down: _ = actions?.handle?(.move(.next))
+                default: break
+                }
+            }
+            .onKeyPress(.space) { [weak actions] in
+                actions?.handle?(.select) == true ? .handled : .ignored
+            }
+            .onKeyPress(.escape) { [weak actions] in
+                actions?.handle?(.dismiss) == true ? .handled : .ignored
+            }
+            .onAppear { actions.handle = handle }
+            .onDisappear { actions.handle = nil }
+    }
 }
 
 // Both platforms anchor the card's bottom above the plot, independently of
@@ -1736,45 +1792,7 @@ struct RecentUsageChart: View {
                         .accessibilityLabel("\(selectedRange.title) 曲线图")
                         .accessibilityValue(chartInteractionAccessibilityValue)
                         .accessibilityHint("调整时间点后，执行设置选区点；第一次设起点，第二次固定终点，固定后再次设置会开始新选区。")
-                        .accessibilityAdjustableAction { direction in
-                            switch direction {
-                            case .increment:
-                                moveAccessibilityCursor(.next)
-                            case .decrement:
-                                moveAccessibilityCursor(.previous)
-                            @unknown default:
-                                break
-                            }
-                        }
-                        .accessibilityAction(named: Text("设置选区点")) {
-                            selectAccessibilityCursor()
-                        }
-                        .accessibilityAction(named: Text("清除选区")) {
-                            clearConsumptionSelection()
-                        }
-                        .focusable()
-                        .onMoveCommand { direction in
-                            switch direction {
-                            case .left, .up:
-                                moveAccessibilityCursor(.previous)
-                            case .right, .down:
-                                moveAccessibilityCursor(.next)
-                            default:
-                                break
-                            }
-                        }
-                        .onKeyPress(.space) {
-                            selectAccessibilityCursor()
-                            return .handled
-                        }
-                        .onKeyPress(.escape) {
-                            guard consumptionSelectionState.startIndex != nil || hoveredIndexSnapshot != nil else {
-                                return .ignored
-                            }
-                            dismissTopPreview()
-                            dismissSelectionSummary()
-                            return .handled
-                        }
+                        .modifier(RecentChartFocus(handle: handleFocusCommand))
 
                         RecentChartEdgeFadeOverlay(
                             state: presentation.edgeFadeState
@@ -2363,6 +2381,12 @@ struct RecentUsageChart: View {
         .onDisappear {
             preparationStore.cancel()
             hasPreparedData = false
+            preparedData = .empty
+            cachedQuotaData = nil
+            cachedPricingSnapshot = nil
+            cachedBucketCostsUSD = []
+            cachedFixedScales = .empty
+            renderFrameCache.removeAll()
             seriesVisibility.flushPendingPersistence()
         }
     }
@@ -2670,6 +2694,24 @@ struct RecentUsageChart: View {
         ) else { return }
         accessibilityCursorState.select(index: index, validCount: preparedData.bins.count)
         updateConsumptionSelection(forClickedIndex: index)
+    }
+
+    private func handleFocusCommand(_ command: RecentChartFocusCommand) -> Bool {
+        switch command {
+        case let .move(direction):
+            moveAccessibilityCursor(direction)
+        case .select:
+            selectAccessibilityCursor()
+        case .clear:
+            clearConsumptionSelection()
+        case .dismiss:
+            guard consumptionSelectionState.startIndex != nil || hoveredIndex != nil else {
+                return false
+            }
+            dismissTopPreview()
+            dismissSelectionSummary()
+        }
+        return true
     }
 }
 
