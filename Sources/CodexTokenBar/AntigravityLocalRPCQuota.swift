@@ -26,7 +26,7 @@ enum AntigravityLocalRPCQuota {
     }
 
     static func read(home: URL = FileManager.default.homeDirectoryForCurrentUser, now: Date = Date()) -> ClientQuotaReading? {
-        guard let listing = command("/bin/ps", ["-U", String(getuid()), "-o", "pid=,comm="]) else { return unavailable() }
+        guard let listing = command("/bin/ps", ["-ww", "-U", String(getuid()), "-o", "pid=,command="]) else { return unavailable() }
         let servers = runningServers(listing, home: home)
         guard !servers.isEmpty else { return nil }
         guard servers.count == 1, let server = servers.first,
@@ -43,8 +43,12 @@ enum AntigravityLocalRPCQuota {
         return listing.split(separator: "\n").compactMap { line in
             let parts = line.split(maxSplits: 1, whereSeparator: { $0 == " " || $0 == "\t" })
             guard parts.count == 2, let pid = Int32(parts[0]), pid > 1 else { return nil }
-            let path = String(parts[1]).trimmingCharacters(in: .whitespaces)
-            return paths.contains(path) ? (pid, path) : nil
+            let commandLine = String(parts[1]).trimmingCharacters(in: .whitespaces)
+            guard let path = paths.first(where: { commandLine.hasPrefix($0 + " ") }),
+                  commandLine.dropFirst(path.count).split(whereSeparator: { $0.isWhitespace }).contains("--standalone") else { return nil }
+            // Task workers reuse the same executable with --parent. Only desktop Hubs
+            // participate in the ambiguity check before querying account quotas.
+            return (pid, path)
         }
     }
 

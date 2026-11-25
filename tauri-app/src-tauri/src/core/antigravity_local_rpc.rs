@@ -267,8 +267,11 @@ fn running_servers(listing: &str, home: &Path) -> Vec<(i32, String)> {
             let l = l.trim();
             let at = l.find(char::is_whitespace)?;
             let pid: i32 = l[..at].parse().ok()?;
-            let path = l[at..].trim();
-            (pid > 1 && paths.iter().any(|p| p == path)).then(|| (pid, path.to_owned()))
+            let command = l[at..].trim();
+            let path = paths.iter().find(|path| command.starts_with(&format!("{path} ")))?;
+            let standalone = command[path.len()..].split_ascii_whitespace().any(|arg| arg == "--standalone");
+            // Workers reuse this binary with --parent, but do not own a desktop account.
+            (pid > 1 && standalone).then(|| (pid, path.to_owned()))
         })
         .collect()
 }
@@ -420,7 +423,7 @@ fn discover(pid: i32, executable: &str, home: &Path) -> Option<Endpoint> {
 pub fn read(home: &Path, now: f64) -> Option<QuotaProviderSnapshot> {
     use std::{io::Read, time::Duration};
     let uid = unsafe { libc::getuid() }.to_string();
-    let Some(listing) = command("/bin/ps", &["-U", &uid, "-o", "pid=,comm="]) else {
+    let Some(listing) = command("/bin/ps", &["-ww", "-U", &uid, "-o", "pid=,command="]) else {
         return Some(unavailable());
     };
     let servers = running_servers(&listing, home);
@@ -538,7 +541,7 @@ mod tests {
         let listeners = "p42\nn127.0.0.1:53100\n";
         assert_eq!(
             running_servers(
-                &format!("42 {path}\n43 /tmp/language_server"),
+                &format!("42 {args}\n43 /tmp/language_server --standalone"),
                 Path::new("/fixture")
             )
             .len(),
@@ -554,6 +557,22 @@ mod tests {
         assert!(resolve(&args, "p41\nn127.0.0.1:53100", log).is_none());
         assert!(resolve(&args, listeners, "old log, no HTTPS port").is_none());
         assert!(resolve(&args.replace("--standalone", "--other"), listeners, log).is_none());
+    }
+
+    #[test]
+    fn desktop_quota_discovery_excludes_workers_before_counting_hubs() {
+        let home = Path::new("/fixture user");
+        let system_path = "/Applications/Antigravity.app/Contents/Resources/bin/language_server";
+        let user_path = home.join("Applications/Antigravity.app/Contents/Resources/bin/language_server");
+        let listing = format!(
+            " 40 {system_path} --parent 100\n 41 {} --parent 200\n 42 {system_path} --standalone --https_server_port 0\n 43 {system_path}.other --standalone\n 44 {system_path} --standalone-helper\n",
+            user_path.display()
+        );
+        let servers = running_servers(&listing, home);
+        assert_eq!(servers, vec![(42, system_path.to_owned())]);
+        assert!(running_servers(&format!("40 {system_path} --parent 100"), home).is_empty());
+        let multiple = format!("{listing} 45 {} --standalone --https_server_port 0\n", user_path.display());
+        assert_eq!(running_servers(&multiple, home).len(), 2, "two real desktop Hubs remain ambiguous");
     }
 
     pub(super) fn write_hub_record(home: &Path, pid: u32, https_port: u16, http_port: u16, token: &str) {

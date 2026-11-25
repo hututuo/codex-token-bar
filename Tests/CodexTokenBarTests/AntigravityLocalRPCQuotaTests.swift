@@ -63,7 +63,7 @@ final class AntigravityLocalRPCQuotaTests: XCTestCase {
         let args = path + " --standalone --https_server_port 0 --csrf_token 00000000-0000-0000-0000-000000000001"
         let log = "I server.go] Language server listening on random port at 53100 for HTTPS (gRPC)"
         let listeners = "p42\nn127.0.0.1:53100\n"
-        XCTAssertEqual(AntigravityLocalRPCQuota.runningServers("42 \(path)\n43 /tmp/language_server", home: URL(fileURLWithPath: "/fixture")).count, 1)
+        XCTAssertEqual(AntigravityLocalRPCQuota.runningServers("42 \(args)\n43 /tmp/language_server --standalone", home: URL(fileURLWithPath: "/fixture")).count, 1)
         let endpoint = try XCTUnwrap(AntigravityLocalRPCQuota.endpoint(pid: 42, executable: path, commandLine: args, listeners: listeners, logPrefix: log))
         XCTAssertEqual(endpoint.port, 53100)
         for badListeners in ["p42\nn*:53100", "p41\nn127.0.0.1:53100"] {
@@ -80,6 +80,26 @@ final class AntigravityLocalRPCQuotaTests: XCTestCase {
         XCTAssertNil(body["forceRefresh"])
         XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
         XCTAssertNil(request.value(forHTTPHeaderField: "Cookie"))
+    }
+
+    func testDesktopDiscoveryExcludesTaskWorkersBeforeCountingHubs() {
+        let home = URL(fileURLWithPath: "/fixture user")
+        let path = "/Applications/Antigravity.app/Contents/Resources/bin/language_server"
+        let userPath = home.appendingPathComponent("Applications/Antigravity.app/Contents/Resources/bin/language_server").path
+        let listing = """
+             40 \(path) --parent 100
+             41 \(userPath) --parent 200
+             42 \(path) --standalone --https_server_port 0
+             43 \(path).other --standalone
+             44 \(path) --standalone-helper
+            """
+        let servers = AntigravityLocalRPCQuota.runningServers(listing, home: home)
+        XCTAssertEqual(servers.map { $0.0 }, [42])
+        XCTAssertEqual(servers.map { $0.1 }, [path])
+        XCTAssertTrue(AntigravityLocalRPCQuota.runningServers("40 \(path) --parent 100", home: home).isEmpty)
+        let twoHubs = listing + "\n45 \(userPath) --standalone --https_server_port 0"
+        XCTAssertEqual(AntigravityLocalRPCQuota.runningServers(twoHubs, home: home).count, 2,
+                       "Two real desktop Hubs remain ambiguous")
     }
 
     func testDiscoveryUsesCurrentHubRecordWithoutLegacyArguments() throws {
