@@ -13,6 +13,12 @@ enum AntigravityLocalRPCQuota {
         let port: Int
         let csrf: String
     }
+    private struct HubRecord: Decodable {
+        let pid: Int32
+        let httpsPort: Int
+        let httpPort: Int
+        let csrfToken: String
+    }
 
     static func unavailable() -> ClientQuotaReading {
         .init(client: "antigravity", state: "unavailable", source: source, windows: [],
@@ -46,22 +52,58 @@ enum AntigravityLocalRPCQuota {
         var path = [CChar](repeating: 0, count: 4_096)
         guard proc_pidpath(pid, &path, UInt32(path.count)) > 0,
               String(cString: path) == executable,
-              let args = command("/bin/ps", ["-p", String(pid), "-o", "command="]),
+              let args = command("/bin/ps", ["-ww", "-p", String(pid), "-o", "command="]),
               let listeners = command("/usr/sbin/lsof", ["-nP", "-a", "-p", String(pid), "-iTCP", "-sTCP:LISTEN", "-Fn"]) else { return nil }
-        let log = home.appendingPathComponent("Library/Logs/Antigravity/language_server.log")
-        var prefix = ""
-        if (try? FileManager.default.attributesOfItem(atPath: log.path)[.type]) as? FileAttributeType == .typeRegular,
-           let handle = try? FileHandle(forReadingFrom: log) {
-            defer { try? handle.close() }
-            prefix = (try? handle.read(upToCount: 131_072)).map { String(decoding: $0, as: UTF8.self) } ?? ""
-        }
-        return endpoint(pid: pid, executable: executable, commandLine: args, listeners: listeners, logPrefix: prefix)
+        return endpoint(pid: pid, executable: executable, commandLine: args, listeners: listeners,
+                        logPrefix: legacyLogPrefix(home: home), readHubRecord: { httpPort in
+            let url = home.appendingPathComponent(".gemini/antigravity/daemon/hub_\(httpPort).json")
+            return readRegistryFile(url)
+        })
     }
 
-    static func endpoint(pid: Int32, executable: String, commandLine: String, listeners: String, logPrefix: String) -> Endpoint? {
+    static func readRegistryFile(_ url: URL) -> Data? {
+        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard fd >= 0 else { return nil }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var metadata = stat()
+        guard fstat(fd, &metadata) == 0, metadata.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG),
+              metadata.st_uid == getuid(), metadata.st_mode & 0o077 == 0,
+              (1...4_096).contains(metadata.st_size),
+              let data = try? handle.read(upToCount: 4_097), data.count <= 4_096 else { return nil }
+        return data
+    }
+
+    private static func legacyLogPrefix(home: URL) -> String {
+        let log = home.appendingPathComponent("Library/Logs/Antigravity/language_server.log")
+        guard (try? FileManager.default.attributesOfItem(atPath: log.path)[.type]) as? FileAttributeType == .typeRegular,
+              let handle = try? FileHandle(forReadingFrom: log) else { return "" }
+        defer { try? handle.close() }
+        return (try? handle.read(upToCount: 131_072)).map { String(decoding: $0, as: UTF8.self) } ?? ""
+    }
+
+    static func endpoint(pid: Int32, executable: String, commandLine: String, listeners: String,
+                         logPrefix: @autoclosure () -> String,
+                         readHubRecord: (Int) -> Data? = { _ in nil }) -> Endpoint? {
         guard commandLine.hasPrefix(executable + " "),
               commandLine.dropFirst(executable.count).split(whereSeparator: { $0.isWhitespace }).contains("--standalone"),
               listeners.split(separator: "\n").contains(Substring("p\(pid)")) else { return nil }
+        let owned = Set(listeners.split(separator: "\n").compactMap { line -> Int? in
+            guard line.hasPrefix("n127.0.0.1:"),
+                  let port = Int(line.split(separator: ":").last ?? ""), (1_024...65_535).contains(port) else { return nil }
+            return port
+        })
+        // New Hubs publish their local RPC credentials in a per-user registry.
+        // The basename comes from the process's HTTP listener. Query only its registered HTTPS port.
+        let registered = owned.compactMap { httpPort -> Endpoint? in
+            guard let data = readHubRecord(httpPort), data.count <= 4_096,
+                  let record = try? JSONDecoder().decode(HubRecord.self, from: data),
+                  record.pid == pid, record.httpPort == httpPort, record.httpsPort != httpPort,
+                  owned.contains(record.httpsPort), UUID(uuidString: record.csrfToken) != nil else { return nil }
+            return Endpoint(pid: pid, executable: executable, port: record.httpsPort, csrf: record.csrfToken)
+        }
+        if !registered.isEmpty { return registered.count == 1 ? registered[0] : nil }
+
         func flag(_ name: String) -> String? {
             guard let regex = try? NSRegularExpression(pattern: "(?:^|\\s)" + name + "(?:=|\\s+)([^\\s]+)"),
                   let match = regex.firstMatch(in: commandLine, range: NSRange(commandLine.startIndex..., in: commandLine)),
@@ -70,17 +112,13 @@ enum AntigravityLocalRPCQuota {
         }
         guard let csrf = flag("--csrf_token"), UUID(uuidString: csrf) != nil,
               let requested = flag("--https_server_port"), let requestedPort = Int(requested), (0...65_535).contains(requestedPort) else { return nil }
-        let owned = Set(listeners.split(separator: "\n").compactMap { line -> Int? in
-            guard line.hasPrefix("n127.0.0.1:") || line.hasPrefix("n[::1]:"),
-                  let port = Int(line.split(separator: ":").last ?? ""), (1_024...65_535).contains(port) else { return nil }
-            return port
-        })
         var port = requestedPort
         if port == 0 {
             let pattern = "Language server listening on random port at ([0-9]{1,5}) for HTTPS \\(gRPC\\)"
             guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
-            port = regex.matches(in: logPrefix, range: NSRange(logPrefix.startIndex..., in: logPrefix)).compactMap { match in
-                Range(match.range(at: 1), in: logPrefix).flatMap { Int(logPrefix[$0]) }
+            let log = logPrefix()
+            port = regex.matches(in: log, range: NSRange(log.startIndex..., in: log)).compactMap { match in
+                Range(match.range(at: 1), in: log).flatMap { Int(log[$0]) }
             }.last ?? 0
         }
         guard owned.contains(port) else { return nil }
@@ -128,7 +166,10 @@ enum AntigravityLocalRPCQuota {
         guard !windows.isEmpty else { return unavailable() }
         let order = ["gemini-5h", "gemini-weekly", "3p-5h", "3p-weekly"]
         windows.sort { order.firstIndex(of: $0.id ?? "")! < order.firstIndex(of: $1.id ?? "")! }
-        let stale = windows.contains { $0.resetsAt.map { $0 <= now } ?? true }
+        // A fully replenished window can omit its countdown until it is used again.
+        let stale = windows.contains { window in
+            window.resetsAt.map { $0 <= now } ?? (window.usedPercent > 0)
+        }
         return .init(client: "antigravity", state: stale ? "stale" : "available", source: source, windows: windows,
                      notice: "Antigravity 本机语言服务的分池额度，Gemini 与第三方模型各有 5h / 7d 窗口。未强制刷新；读取时间不代表上游采样时间。", capturedAt: now)
     }

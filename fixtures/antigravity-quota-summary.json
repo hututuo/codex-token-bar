@@ -1,7 +1,7 @@
 {
   "cases": [
     {
-      "name": "root",
+      "name": "root-with-full-window-without-reset",
       "now": 1800000000,
       "data": {
         "groups": [
@@ -25,8 +25,7 @@
             "buckets": [
               {
                 "bucketId": "3p-5h",
-                "remainingFraction": 1.0,
-                "resetTime": "2027-01-16T00:00:00Z"
+                "remainingFraction": 1.0
               },
               {
                 "bucketId": "3p-weekly",

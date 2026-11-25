@@ -81,4 +81,28 @@ final class AntigravityLocalRPCQuotaTests: XCTestCase {
         XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
         XCTAssertNil(request.value(forHTTPHeaderField: "Cookie"))
     }
+
+    func testDiscoveryUsesCurrentHubRecordWithoutLegacyArguments() throws {
+        let path = "/Applications/Antigravity.app/Contents/Resources/bin/language_server"
+        let args = path + " --standalone --https_server_port 0 --read_host_bridge_token_from_stdin"
+        let listeners = "p42\nn127.0.0.1:53100\nn127.0.0.1:53101\n"
+        let token = "00000000-0000-0000-0000-000000000001"
+        func resolve(_ listing: String, registeredPID: Int32 = 42, registeredPort: Int = 53100) -> AntigravityLocalRPCQuota.Endpoint? {
+            AntigravityLocalRPCQuota.endpoint(pid: 42, executable: path, commandLine: args, listeners: listing,
+                                              logPrefix: "stale log", readHubRecord: { port in
+                guard port == 53101 else { return nil }
+                return Data("""
+                    {"pid":\(registeredPID),"httpsPort":\(registeredPort),"httpPort":53101,"csrfToken":"\(token)"}
+                    """.utf8)
+            })
+        }
+        let endpoint = try XCTUnwrap(resolve(listeners))
+        XCTAssertEqual(endpoint.port, 53100)
+        let request = try XCTUnwrap(AntigravityLocalRPCQuota.request(endpoint))
+        XCTAssertEqual(request.value(forHTTPHeaderField: "X-Codeium-Csrf-Token"), token)
+        XCTAssertNil(resolve(listeners, registeredPID: 41))
+        XCTAssertNil(resolve(listeners, registeredPort: 53102))
+        XCTAssertNil(resolve(listeners.replacingOccurrences(of: "127.0.0.1:53100", with: "[::1]:53100")))
+        XCTAssertNil(resolve(listeners.replacingOccurrences(of: "127.0.0.1:53101", with: "*:53101")))
+    }
 }

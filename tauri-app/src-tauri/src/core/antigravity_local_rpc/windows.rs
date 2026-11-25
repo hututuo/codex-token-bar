@@ -171,6 +171,7 @@ impl Server {
                 .eq_ignore_ascii_case(&after.binding.executable)
             && self.kind == after.kind
             && self.csrf == after.csrf
+            && after.https_port.is_none_or(|port| port == target.port)
             && after.sockets.contains(&target)
     }
 }
@@ -255,12 +256,7 @@ fn decode_snapshot(
         {
             return Err(());
         }
-        let csrf = flag(&args, "--csrf_token")?.ok_or(())?;
-        if !(16..=128).contains(&csrf.len())
-            || !csrf.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
-        {
-            return Err(());
-        }
+        let legacy_csrf = flag(&args, "--csrf_token")?;
         let port_flag = |name| -> Result<Option<u16>, ()> {
             flag(&args, name)?
                 .map(|s| s.parse::<u16>().map_err(|_| ()))
@@ -285,10 +281,32 @@ fn decode_snapshot(
         }
         sockets.sort_unstable();
         sockets.dedup();
+        let record = if kind == Kind::Ide {
+            None
+        } else {
+            let mut ports: Vec<_> = sockets.iter().map(|target| target.port).collect();
+            ports.sort_unstable();
+            ports.dedup();
+            super::registered_hub(home, process.pid, &ports)?
+        };
+        let (https_port, csrf) = if let Some(record) = record {
+            if https_port.is_some_and(|port| port != record.https_port) {
+                return Err(());
+            }
+            (Some(record.https_port), record.csrf_token)
+        } else {
+            let csrf = legacy_csrf.ok_or(())?;
+            if !(16..=128).contains(&csrf.len())
+                || !csrf.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+            {
+                return Err(());
+            }
+            (https_port, csrf.into())
+        };
         servers.push(Server {
             binding: binding.clone(),
             kind,
-            csrf: csrf.into(),
+            csrf,
             https_port,
             ui_port,
             sockets,
@@ -823,6 +841,26 @@ mod tests {
         .is_err());
         assert!(process_name("LANGUAGE_SERVER_WINDOWS_X64.EXE"));
         assert!(!process_name("some-language-server.exe"));
+    }
+
+    #[test]
+    fn windows_quota_uses_the_same_user_hub_registry_and_its_https_port() {
+        let (roots, _, binding) = context();
+        let home = tempfile::tempdir().unwrap();
+        let mut new_args = args(&binding.executable, "--standalone");
+        new_args.retain(|arg| !arg.starts_with("--csrf_token="));
+        let mut data = snapshot(&binding, new_args);
+        data["processes"][0]["ports"].as_array_mut().unwrap()
+            .push(serde_json::json!({"address":"127.0.0.1","port":53101,"ownerPid":42}));
+        let fixture = || planned(&data, std::slice::from_ref(&binding), &roots, home.path());
+        super::super::tests::write_hub_record(home.path(), 42, 53100, 53101, NONCE);
+        let server = fixture().unwrap().unwrap();
+        assert_eq!(server.csrf, NONCE);
+        assert!(server.targets().iter().all(|target| target.port == 53100));
+        super::super::tests::write_hub_record(home.path(), 42, 53102, 53101, NONCE);
+        assert!(fixture().is_err());
+        super::super::tests::write_hub_record(home.path(), 43, 53100, 53101, NONCE);
+        assert!(fixture().is_err());
     }
 
     #[test]

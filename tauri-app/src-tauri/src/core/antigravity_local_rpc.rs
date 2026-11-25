@@ -1,6 +1,7 @@
 //! Authorized loopback query to an already-running Antigravity client.
 //! No OAuth, provider URL, client launch, forceRefresh or remote fallback.
 use super::multi_client_product::{QuotaProviderSnapshot, QuotaProviderWindow};
+use serde::Deserialize;
 use serde_json::Value;
 use std::path::Path;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -125,12 +126,16 @@ pub(super) fn parse_quota_summary(
     if windows.is_empty() {
         return None;
     }
+    // A fully replenished window can omit its countdown until it is used again.
     let stale = windows.iter().any(|window| {
         window
             .resets_at
             .as_deref()
             .and_then(|value| OffsetDateTime::parse(value, &Rfc3339).ok())
-            .map_or(true, |value| value.unix_timestamp() as f64 <= now)
+            .map_or_else(
+                || window.used_percent.is_none_or(|used| used > 0.0),
+                |value| value.unix_timestamp() as f64 <= now,
+            )
     });
     let captured_at = OffsetDateTime::from_unix_timestamp_nanos((now * 1_000_000_000.0) as i128)
         .ok()
@@ -165,6 +170,77 @@ struct Endpoint {
     executable: String,
     port: u16,
     csrf: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HubRecord {
+    pid: u32,
+    https_port: u16,
+    http_port: u16,
+    csrf_token: String,
+}
+
+fn read_registry_file(path: &Path) -> Option<Vec<u8>> {
+    use std::io::Read;
+    const LIMIT: u64 = 4096;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let file = options.open(path).ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file() || metadata.len() == 0 || metadata.len() > LIMIT {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.uid() != unsafe { libc::getuid() } || metadata.mode() & 0o077 != 0 {
+            return None;
+        }
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return None;
+        }
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(LIMIT + 1).read_to_end(&mut bytes).ok()?;
+    (bytes.len() <= LIMIT as usize).then_some(bytes)
+}
+
+/// Inspect records named for a listener already verified for this same-user process.
+fn registered_hub(home: &Path, pid: u32, ports: &[u16]) -> Result<Option<HubRecord>, ()> {
+    let directory = home.join(".gemini/antigravity/daemon");
+    let mut result = None;
+    for &http_port in ports {
+        let path = directory.join(format!("hub_{http_port}.json"));
+        let Some(record) = read_registry_file(&path)
+            .and_then(|bytes| serde_json::from_slice::<HubRecord>(&bytes).ok())
+            .filter(|record| {
+                record.pid == pid && record.http_port == http_port
+                    && record.https_port != http_port && ports.contains(&record.https_port)
+                    && csrf_valid(&record.csrf_token)
+            })
+        else { continue };
+        if result.replace(record).is_some() {
+            return Err(());
+        }
+    }
+    Ok(result)
 }
 
 fn csrf_valid(value: &str) -> bool {
@@ -202,7 +278,8 @@ fn endpoint(
     executable: &str,
     command: &str,
     listeners: &str,
-    log: &str,
+    home: &Path,
+    log: impl FnOnce() -> String,
 ) -> Option<Endpoint> {
     let args: Vec<_> = command
         .strip_prefix(executable)?
@@ -211,6 +288,19 @@ fn endpoint(
         .collect();
     if !args.contains(&"--standalone") || !listeners.lines().any(|l| l == format!("p{pid}")) {
         return None;
+    }
+    let mut ports: Vec<u16> = listeners.lines().filter_map(|line| {
+        line.strip_prefix("n127.0.0.1:")?.parse().ok().filter(|port| *port >= 1024)
+    }).collect();
+    ports.sort_unstable();
+    ports.dedup();
+    if let Some(record) = registered_hub(home, u32::try_from(pid).ok()?, &ports).ok()? {
+        return Some(Endpoint {
+            pid,
+            executable: executable.into(),
+            port: record.https_port,
+            csrf: record.csrf_token,
+        });
     }
     let flag = |name: &str| -> Option<&str> {
         args.iter().enumerate().find_map(|(i, a)| {
@@ -229,7 +319,7 @@ fn endpoint(
     let port = if requested != 0 {
         requested
     } else {
-        log.lines()
+        log().lines()
             .filter_map(|l| {
                 l.split_once("Language server listening on random port at ")?
                     .1
@@ -240,12 +330,7 @@ fn endpoint(
             })
             .last()?
     };
-    if port < 1024
-        || !listeners.lines().any(|l| {
-            (l.starts_with("n127.0.0.1:") || l.starts_with("n[::1]:"))
-                && l.rsplit(':').next() == Some(port.to_string().as_str())
-        })
-    {
+    if !ports.contains(&port) {
         return None;
     }
     Some(Endpoint {
@@ -294,7 +379,6 @@ fn command(executable: &str, args: &[&str]) -> Option<String> {
 
 #[cfg(target_os = "macos")]
 fn discover(pid: i32, executable: &str, home: &Path) -> Option<Endpoint> {
-    use std::io::Read;
     let mut path = [0_u8; 4096];
     let n = unsafe { libc::proc_pidpath(pid, path.as_mut_ptr().cast(), path.len() as u32) };
     if n <= 0
@@ -306,7 +390,7 @@ fn discover(pid: i32, executable: &str, home: &Path) -> Option<Endpoint> {
     {
         return None;
     }
-    let args = command("/bin/ps", &["-p", &pid.to_string(), "-o", "command="])?;
+    let args = command("/bin/ps", &["-ww", "-p", &pid.to_string(), "-o", "command="])?;
     let listeners = command(
         "/usr/sbin/lsof",
         &[
@@ -319,23 +403,17 @@ fn discover(pid: i32, executable: &str, home: &Path) -> Option<Endpoint> {
             "-Fn",
         ],
     )?;
-    let log_path = home.join("Library/Logs/Antigravity/language_server.log");
-    let mut log = Vec::new();
-    if std::fs::symlink_metadata(&log_path)
-        .ok()
-        .is_some_and(|m| m.is_file())
-    {
-        if let Ok(file) = std::fs::File::open(log_path) {
-            let _ = file.take(131_072).read_to_end(&mut log);
+    endpoint(pid, executable, &args, &listeners, home, || {
+        use std::io::Read;
+        let log_path = home.join("Library/Logs/Antigravity/language_server.log");
+        let mut log = Vec::new();
+        if std::fs::symlink_metadata(&log_path).ok().is_some_and(|m| m.is_file()) {
+            if let Ok(file) = std::fs::File::open(log_path) {
+                let _ = file.take(131_072).read_to_end(&mut log);
+            }
         }
-    }
-    endpoint(
-        pid,
-        executable,
-        &args,
-        &listeners,
-        &String::from_utf8_lossy(&log),
-    )
+        String::from_utf8_lossy(&log).into_owned()
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -466,18 +544,48 @@ mod tests {
             .len(),
             1
         );
-        let endpoint = endpoint(42, path, &args, listeners, log).unwrap();
+        let home = Path::new("/fixture");
+        let resolve = |args: &str, listeners: &str, log: &str| {
+            endpoint(42, path, args, listeners, home, || log.into())
+        };
+        let endpoint = resolve(&args, listeners, log).unwrap();
         assert_eq!(endpoint.port, 53100);
-        assert!(super::endpoint(42, path, &args, "p42\nn*:53100", log).is_none());
-        assert!(super::endpoint(42, path, &args, "p41\nn127.0.0.1:53100", log).is_none());
-        assert!(super::endpoint(42, path, &args, listeners, "old log, no HTTPS port").is_none());
-        assert!(super::endpoint(
-            42,
-            path,
-            &args.replace("--standalone", "--other"),
-            listeners,
-            log
-        )
-        .is_none());
+        assert!(resolve(&args, "p42\nn*:53100", log).is_none());
+        assert!(resolve(&args, "p41\nn127.0.0.1:53100", log).is_none());
+        assert!(resolve(&args, listeners, "old log, no HTTPS port").is_none());
+        assert!(resolve(&args.replace("--standalone", "--other"), listeners, log).is_none());
+    }
+
+    pub(super) fn write_hub_record(home: &Path, pid: u32, https_port: u16, http_port: u16, token: &str) {
+        use std::io::Write;
+        let directory = home.join(".gemini/antigravity/daemon");
+        std::fs::create_dir_all(&directory).unwrap();
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(directory.join(format!("hub_{http_port}.json"))).unwrap();
+        write!(file, "{}", serde_json::json!({"pid":pid,"httpsPort":https_port,"httpPort":http_port,"csrfToken":token})).unwrap();
+    }
+
+    #[test]
+    fn discovery_works_with_registered_hub_without_legacy_arguments() {
+        let home = tempfile::tempdir().unwrap();
+        let path = "/Applications/Antigravity.app/Contents/Resources/bin/language_server";
+        let args = format!("{path} --standalone --https_server_port 0 --read_host_bridge_token_from_stdin");
+        let resolve = |listeners| endpoint(42, path, &args, listeners, home.path(), || panic!("no legacy log needed"));
+        let token = "00000000-0000-0000-0000-000000000001";
+        write_hub_record(home.path(), 42, 53100, 53101, token);
+        let listeners = "p42\nn127.0.0.1:53100\nn127.0.0.1:53101\n";
+        let bound = resolve(listeners).unwrap();
+        assert_eq!(bound.port, 53100);
+        assert_eq!(bound.csrf, token);
+        assert!(resolve("p42\nn[::1]:53100\nn127.0.0.1:53101\n").is_none());
+        assert!(resolve("p42\nn127.0.0.1:53100\nn*:53101\n").is_none());
+        write_hub_record(home.path(), 41, 53100, 53101, token);
+        assert!(resolve(listeners).is_none());
     }
 }
