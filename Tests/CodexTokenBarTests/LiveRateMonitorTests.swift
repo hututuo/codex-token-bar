@@ -1,3 +1,4 @@
+import Combine
 import SQLite3
 import XCTest
 @testable import CodexTokenBar
@@ -302,6 +303,84 @@ final class LiveRateMonitorTests: XCTestCase {
         XCTAssertEqual(loader.loadCount, 2)
         XCTAssertEqual(monitor.threadOptions.map(\.id), ["thread-new"])
         XCTAssertEqual(monitor.testRolloutOffset(path: rollout.path), UInt64(try Data(contentsOf: rollout).count))
+    }
+
+    @MainActor
+    func testMissingStatePollPublishesRepeatedFailureOnlyOnce() async throws {
+        let source = try makeCodexDataSource(named: "missing-state-publication")
+        let escapedHome = source.codexHome.path
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        try "sqlite_home = \"\(escapedHome)\"\n".write(
+            to: source.codexHome.appendingPathComponent("config.toml"), atomically: true, encoding: .utf8
+        )
+        XCTAssertEqual(source.stateDatabase, source.codexHome.appendingPathComponent("state_5.sqlite"))
+        let monitor = LiveRateMonitor(preciseTokenCountingEnabled: false, monitoringEnabled: false)
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        monitor.setDataSource(source)
+        monitor.testActivatePollingWithoutScheduling()
+        var publications: [LiveRateSnapshot] = []
+        let observation = monitor.$snapshot.dropFirst().sink { publications.append($0) }
+        defer {
+            observation.cancel()
+            monitor.setPollingActive(false)
+        }
+
+        await monitor.testPollOnce()
+        let unavailable = monitor.snapshot
+        XCTAssertTrue(unavailable.status.hasPrefix("实时测速不可用："))
+        XCTAssertEqual(publications.count, 1)
+
+        await monitor.testPollOnce()
+        await monitor.testPollOnce()
+
+        XCTAssertEqual(publications, [unavailable])
+        XCTAssertEqual(monitor.snapshot, unavailable)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: source.stateDatabase.path))
+    }
+
+    @MainActor
+    func testEmptyThreadPollingStillRetriesAndPublishesErrorChangesAndRecovery() async throws {
+        let source = try makeCodexDataSource(named: "thread-publication-recovery")
+        let firstError = NSError(domain: "LiveRatePublicationTest", code: 1,
+                                 userInfo: [NSLocalizedDescriptionKey: "state unavailable"])
+        let nextError = NSError(domain: "LiveRatePublicationTest", code: 2,
+                                userInfo: [NSLocalizedDescriptionKey: "state changed"])
+        let loader = SequencedRecentThreadsLoader(results: [
+            .failure(firstError), .failure(firstError),
+            .failure(nextError), .failure(nextError),
+            .success([]), .success([]), .failure(firstError)
+        ])
+        let monitor = LiveRateMonitor(
+            preciseTokenCountingEnabled: false,
+            monitoringEnabled: false,
+            recentThreadsLoader: { path in try loader.load(path: path) }
+        )
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        monitor.setDataSource(source)
+        monitor.testActivatePollingWithoutScheduling()
+        let totalBefore = monitor.totalSnapshot
+        var statuses: [String] = []
+        let observation = monitor.$snapshot.dropFirst().sink { statuses.append($0.status) }
+        defer {
+            observation.cancel()
+            monitor.setPollingActive(false)
+        }
+
+        for _ in 0..<7 {
+            await monitor.testPollOnce()
+        }
+
+        XCTAssertEqual(loader.loadCount, 7, "unchanged status must not skip discovery retries")
+        XCTAssertEqual(statuses, [
+            "实时测速不可用：\(firstError.localizedDescription)",
+            "实时测速不可用：\(nextError.localizedDescription)",
+            "未找到活动会话",
+            "实时测速不可用：\(firstError.localizedDescription)"
+        ])
+        XCTAssertEqual(monitor.totalSnapshot, totalBefore)
+        XCTAssertTrue(monitor.threadOptions.isEmpty)
+        XCTAssertEqual(monitor.selectedThreadID, "")
     }
 
     @MainActor
@@ -2649,6 +2728,31 @@ private struct CountingLiveRateLogReader: LiveRateLogReading, @unchecked Sendabl
 
     func globalLogRows(since timestamp: TimeInterval) throws -> [LiveRateMonitor.LogRow] {
         rows
+    }
+}
+
+private final class SequencedRecentThreadsLoader: @unchecked Sendable {
+    private let lock = NSLock()
+    private let results: [Result<[LiveRateMonitor.ThreadRow], Error>]
+    private var count = 0
+
+    init(results: [Result<[LiveRateMonitor.ThreadRow], Error>]) {
+        precondition(!results.isEmpty)
+        self.results = results
+    }
+
+    var loadCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+
+    func load(path: String) throws -> [LiveRateMonitor.ThreadRow] {
+        lock.lock()
+        let result = results[min(count, results.count - 1)]
+        count += 1
+        lock.unlock()
+        return try result.get()
     }
 }
 

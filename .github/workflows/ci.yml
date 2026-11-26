@@ -195,6 +195,8 @@ jobs:
           python3 scripts/check_test_execution.py --kind swift --log swift-tests.log --source-sha "$SOURCE_SHA" \
             --allow-untracked-output 'visual-previews/*.png' \
             --require testPreciseStartupAndWarmRefreshExposePreparationAndCompleteTheStream \
+            --require testMissingStatePollPublishesRepeatedFailureOnlyOnce \
+            --require testEmptyThreadPollingStillRetriesAndPublishesErrorChangesAndRecovery \
               --require testSharedRPCFixturesKeepExplicitFractionsResetsAndPrivacy \
               --require testDiscoveryRequiresInstalledProcessOwnedLoopbackPortAndCSRF \
               --require testAutomaticVisibilityRequiresRecentQuotaAndRespectsManualChoices \

@@ -594,7 +594,7 @@ final class LiveRateMonitor: ObservableObject {
         guard isCurrentPollingActivity(activityGeneration) else { return }
         let resetStartedAt = Date().timeIntervalSince1970
         guard let source = monitoringDataSource() else {
-            snapshot.status = "未找到 Codex 数据目录"
+            updateSnapshotStatus("未找到 Codex 数据目录")
             return
         }
         let generation = sourceGeneration
@@ -617,7 +617,7 @@ final class LiveRateMonitor: ObservableObject {
             lastThreadOptionsSignature = Self.logStoreSignature(logsDB: stateDB)
             lastThreadOptionsRefreshAt = Date().timeIntervalSince1970
             guard let thread = threadOptions.first else {
-                snapshot.status = "未找到活动会话"
+                updateSnapshotStatus("未找到活动会话")
                 return
             }
             let logsDB = cachedLogsDatabasePath
@@ -657,8 +657,15 @@ final class LiveRateMonitor: ObservableObject {
                 sourceGeneration: generation,
                 sourceBindingGeneration: bindingGeneration
             ) else { return }
-            snapshot.status = "实时测速不可用：\(error.localizedDescription)"
+            updateSnapshotStatus("实时测速不可用：\(error.localizedDescription)")
         }
+    }
+
+    private func updateSnapshotStatus(_ status: String) {
+        // Keep retrying discovery at the normal cadence without invalidating
+        // every observing view when an empty or unavailable source is unchanged.
+        guard snapshot.status != status else { return }
+        snapshot.status = status
     }
 
     private func backfillStartupRows(
