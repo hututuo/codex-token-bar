@@ -1106,7 +1106,7 @@ fn refresh_multi_client_usage_at(
     let mut work = Vec::<(String, PathBuf)>::new();
     for preference in enabled {
         if preference.client == "opencode" {
-            let (roots, _) = source_roots("opencode", preference_path(preference));
+            let roots = source_roots("opencode", preference_path(preference));
             if roots.is_empty() {
                 diagnostics.push("opencode: 找不到默认用户目录".into());
                 continue;
@@ -1134,7 +1134,7 @@ fn refresh_multi_client_usage_at(
             }
             continue;
         }
-        let (roots, incomplete) = source_roots(&preference.client, preference_path(preference));
+        let (roots, incomplete) = source_roots_with_status(&preference.client, preference_path(preference));
         if incomplete {
             diagnostics.push(format!("{}: 账号目录登记未完整读取；当前不是完整历史", preference.client));
         }
@@ -1959,7 +1959,11 @@ fn load_preferences(path: &Path) -> (Vec<MultiClientUsagePreference>, Vec<String
     }
 }
 
-fn source_roots(client: &str, override_path: Option<&str>) -> (Vec<PathBuf>, bool) {
+fn source_roots(client: &str, override_path: Option<&str>) -> Vec<PathBuf> {
+    source_roots_with_status(client, override_path).0
+}
+
+fn source_roots_with_status(client: &str, override_path: Option<&str>) -> (Vec<PathBuf>, bool) {
     if client == "antigravity" {
         let selected = override_path.map(str::trim).filter(|path| !path.is_empty()).map(expand_path);
         return (antigravity::resolve_roots(&app_paths::home_dir(), selected.as_deref()), false);
@@ -7456,7 +7460,7 @@ mod tests {
         assert_eq!(summaries[0].requests, 3);
         assert_eq!(summaries[0].input_tokens, 90);
         let explicit = old.to_str().unwrap();
-        assert_eq!(source_roots("claudeDesktop", Some(explicit)), (vec![old.clone()], false));
+        assert_eq!(source_roots("claudeDesktop", Some(explicit)), vec![old.clone()]);
         fs::remove_file(&account).unwrap();
         assert_eq!(read_summaries(&connection).unwrap().0[0].requests, 3);
     }
