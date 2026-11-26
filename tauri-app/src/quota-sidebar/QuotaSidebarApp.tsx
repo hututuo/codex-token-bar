@@ -10,7 +10,7 @@ import { useMultiClientUsage } from "../multiClient/MultiClientUsage";
 import { useSharedChoice } from "../multiClient/useSharedChoice";
 import { applyClientQuotaHistory, quotaChartSources, resolveQuotaChartSource } from "../multiClient/clientQuotaHistory";
 import type { RecentUsagePoint } from "../types/dashboard";
-import { ClientQuotaSettings, ClientQuotaDetailRings, PairedQuotaRing, ClientSidebarUsageRows, clientTitle, useClientQuotaItems, useClientScope, useClientQuotaSelection } from "../multiClient/IntegratedClients";
+import { ClientQuotaSettings, ClientQuotaDetailRings, PairedQuotaRing, QuarteredQuotaRing, ClientSidebarUsageRows, clientTitle, useClientQuotaItems, useClientScope, useClientQuotaSelection } from "../multiClient/IntegratedClients";
 import { clientCostGroups, clientModelCostItems } from "../multiClient/originalDashboardProjection";
 import { quotaRingGroups } from "../multiClient/integratedClientModel";
 import { modelUsageColor } from "../components/modelUsagePresentation";
@@ -443,7 +443,7 @@ export function SidebarRailContent({ order = DEFAULT_MODULE_ORDER, visibility = 
         <button aria-label="打开主页面" title="打开主页面" onClick={() => void desktopPlatform.showDashboardWindow()}><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18"/></svg></button>
       </div>
       <div className="qs-module-scroll"><div className="qs-module-stack">{layoutItems.filter(id => id.startsWith("quota:") || moduleContent[id] != null).map(id => <div className="qs-linked-item" data-sidebar-item={id} data-highlighted={highlightedItem === id} key={id}>
-        {id.startsWith("quota:") ? <>{quotaRingGroups(quotaWindowsForClient(quotaItems, id.slice(6))).map(group => <button className="qs-quota-trigger" key={group.left.id} onClick={() => onOpen("quota", "top")}><PairedQuotaRing left={group.left} right={group.right} expected={{"codex:5h":expectedFive,"codex:7d":expectedSeven}} colors={quotaSelection.colors}/></button>)}{id === "quota:codex" && data.snapshot.quotaDataStale && <span className="qs-warning">额度已过期</span>}</> : moduleContent[id]}
+        {id.startsWith("quota:") ? <>{quotaRingGroups(quotaWindowsForClient(quotaItems, id.slice(6))).map(group => <button className="qs-quota-trigger" key={group.left.id} onClick={() => onOpen("quota", "top")}>{group.quarters ? <QuarteredQuotaRing items={group.quarters} colors={quotaSelection.colors}/> : <PairedQuotaRing left={group.left} right={group.right} expected={{"codex:5h":expectedFive,"codex:7d":expectedSeven}} colors={quotaSelection.colors}/>}</button>)}{id === "quota:codex" && data.snapshot.quotaDataStale && <span className="qs-warning">额度已过期</span>}</> : moduleContent[id]}
       </div>)}{error && <span className="qs-warning" title={error}>窗口异常</span>}</div></div>
       <button className="qs-settings-trigger" onClick={() => onOpen("settings", "top")} aria-label="侧栏设置" title="调整侧栏模块显示与顺序"><svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M4 6h16M4 12h16M4 18h16M8 3v6M16 9v6M10 15v6"/></svg>侧栏设置</button>
       </>;

@@ -15,6 +15,10 @@ export const clientBrand: Record<string, string> = {
 };
 // Match the existing Windows sidebar's 49px rate/task rings.
 export const clientSidebarMetrics = { ringSize: 49, capWidth: 4, capHeight: 2, capGap: 0 } as const;
+export const quotaQuarterLayout = {
+  ids: ["antigravity:gemini-5h", "antigravity:gemini-weekly", "antigravity:3p-5h", "antigravity:3p-weekly"],
+  rotations: [180, 90, -90, 0], size: 60, inset: 3, gap: .006, sweep: .238,
+} as const;
 export function quotaFill(item: Pick<QuotaItem, "window">): string {
   return item.window === "5h" ? "#B6EF75" : item.window === "7d" ? "#B4ACFF" : "#78B7FF";
 }
@@ -289,16 +293,20 @@ export function projectClientDays(
 export function quotaRingGroups(
   items: QuotaItem[],
   acrossClients = false,
-): { left: QuotaItem; right?: QuotaItem }[] {
+): { left: QuotaItem; right?: QuotaItem; quarters?: QuotaItem[] }[] {
   const groups = acrossClients
     ? [items]
     : [...new Set(items.map((i) => i.client))].map((client) =>
         items.filter((i) => i.client === client),
       );
-  return groups.flatMap((group) =>
-    Array.from({ length: Math.ceil(group.length / 2) }, (_, index) => ({
+  return groups.flatMap<{left: QuotaItem; right?: QuotaItem; quarters?: QuotaItem[]}>((group) => {
+    if (!acrossClients && group.length === 4 && quotaQuarterLayout.ids.every(id => group.some(item => item.id === id))) {
+      const quarters = quotaQuarterLayout.ids.map(id => group.find(item => item.id === id)!);
+      return [{left: quarters[0], quarters}];
+    }
+    return Array.from({ length: Math.ceil(group.length / 2) }, (_, index) => ({
       left: group[index * 2],
       right: group[index * 2 + 1],
-    })),
-  );
+    }));
+  });
 }

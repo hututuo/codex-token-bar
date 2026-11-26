@@ -153,8 +153,7 @@ final class IntegratedClientRenderingTests: XCTestCase {
                     }.frame(width: ClientSidebarMetrics.ringSize, height: ClientSidebarMetrics.ringSize)
                     ClientPairedQuotaRing(left: codex, right: nil)
                     ClientPairedQuotaRing(left: claude, right: claudeSeven)
-                    ClientPairedQuotaRing(left: antigravity[0], right: antigravity[1])
-                    ClientPairedQuotaRing(left: antigravity[2], right: antigravity[3])
+                    ClientQuarteredQuotaRing(items: antigravity)
                     ZStack {
                         Circle().stroke(Color.orange.opacity(0.5), lineWidth: 2)
                         Text("2").font(.system(size: 18, weight: .medium, design: .rounded)).foregroundStyle(.orange)

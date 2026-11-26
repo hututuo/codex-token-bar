@@ -262,16 +262,33 @@ extension ClientQuotaSelection {
 struct ClientQuotaRingGroup: Identifiable, Equatable {
     let left: ClientQuotaItem
     let right: ClientQuotaItem?
-    var id: String { left.id + "|" + (right?.id ?? "") }
+    var quarters: [ClientQuotaItem] = []
+    var members: [ClientQuotaItem] { quarters.isEmpty ? [left] + (right.map { [$0] } ?? []) : quarters }
+    var id: String { quarters.isEmpty ? left.id + "|" + (right?.id ?? "") : quarters.map(\.id).joined(separator: "|") }
     static func make(_ items: [ClientQuotaItem], acrossClients: Bool = false) -> [Self] {
         let clientOrder = items.map(\.client).reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
         let groups = acrossClients ? [items] : clientOrder.map { client in items.filter { $0.client == client } }
         return groups.flatMap { group in
-            stride(from: 0, to: group.count, by: 2).map { index in
+            if !acrossClients, group.count == 4,
+               Set(group.map(\.id)) == Set(ClientQuotaQuarterLayout.ids) {
+                let quarters = ClientQuotaQuarterLayout.ids.compactMap { id in group.first { $0.id == id } }
+                return [Self(left: quarters[0], right: nil, quarters: quarters)]
+            }
+            return stride(from: 0, to: group.count, by: 2).map { index in
                 Self(left: group[index], right: index + 1 < group.count ? group[index + 1] : nil)
             }
         }
     }
+}
+
+/// Column-major order: the first pool's 5h/7d on the left, the next on the right.
+enum ClientQuotaQuarterLayout {
+    static let ids = ["antigravity:gemini-5h", "antigravity:gemini-weekly", "antigravity:3p-5h", "antigravity:3p-weekly"]
+    static let size = 60.0
+    static let inset = 3.0
+    static let gap = 0.006
+    static let sweep = 0.25 - 2 * gap
+    static func rotation(_ index: Int) -> Double { [180.0, 90, -90, 0][index] }
 }
 
 

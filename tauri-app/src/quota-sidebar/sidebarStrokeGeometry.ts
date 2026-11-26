@@ -4,7 +4,7 @@ export type StrokePoint = { x: number; y: number };
 export type StrokeRect = { x: number; y: number; width: number; height: number };
 export type StrokeSegment = { id: string; start: number; end: number; color: string };
 export type SidebarStrokeSpec = {
-  id: string; half?: number; shape?: "ring" | "strip" | "taskCells"; fraction: number | null; color: string;
+  id: string; half?: number; quarter?: number; shape?: "ring" | "strip" | "taskCells"; fraction: number | null; color: string;
   expected?: number | null; segments?: StrokeSegment[]; trackColor?: string; trackOpacity?: number; fillOpacity?: number; width?: number;
 };
 export type SidebarStroke = {
@@ -37,6 +37,19 @@ export function strokeInterval(half: number, lower: number, upper: number, colla
   if (half === 2) return [1 - Math.min(1, upper * 2), 1 - Math.min(1, lower * 2)];
   if (half === -2) return [Math.max(0, lower * 2 - 1), Math.max(0, upper * 2 - 1)];
   return half > 0 && !collapsed ? [1 - upper, 1 - lower] : [lower, upper];
+}
+/** Same column-major quarters and bottom-to-top ordering as macOS. */
+export function quarterPoints(ring: StrokeRect, bar: StrokeRect, quarter: number, progress: number): StrokePoint[] {
+  const p = clamp(progress), start = [180, 90, -90, 0][quarter] * Math.PI / 180 + .006 * 2 * Math.PI;
+  const sweep = .238 * 2 * Math.PI, low = Math.min(Math.sin(start), Math.sin(start + sweep));
+  const high = Math.max(Math.sin(start), Math.sin(start + sweep));
+  return Array.from({length:33}, (_,index) => {
+    const t = index / 32, angle = start + sweep * (quarter >= 2 ? 1 - t : t);
+    const x = ring.x + ring.width / 2 + ring.width / 2 * Math.cos(angle);
+    const y = ring.y + ring.height / 2 + ring.height / 2 * Math.sin(angle);
+    const endY = bar.y + 2 + (Math.sin(angle) - low) / (high - low) * Math.max(0, bar.height - 4);
+    return {x:x + (bar.x + bar.width / 2 - x) * p, y:y + (endY - y) * p};
+  });
 }
 function trim(points: StrokePoint[], lower: number, upper: number): StrokePoint[] {
   const lengths = [0];
@@ -77,17 +90,18 @@ export function sidebarStrokes(spec: SidebarStrokeSpec, source: StrokeRect, targ
       }))}:{}),
     };});
   }
-  const q = clamp(spec.fraction ?? 0), strip = spec.shape === "strip", half = spec.half ?? 0;
+  const q = clamp(spec.fraction ?? 0), strip = spec.shape === "strip", half = spec.half ?? 0, quarter = spec.quarter;
+  if (quarter !== undefined && (!Number.isInteger(quarter) || quarter < 0 || quarter > 3)) return [];
   const barFraction = strip ? q : clamp((q * target.height - 4) / Math.max(1, target.height - 4));
-  const parts = strip ? [0] : half === 0 ? [-2, 2] : [half];
+  const parts = quarter !== undefined ? [quarter] : strip ? [0] : half === 0 ? [-2, 2] : [half];
   const strokes = parts.flatMap(part => {
-    const a = strip ? [{ x: source.x, y: source.y + source.height / 2 }, { x: source.x + source.width, y: source.y + source.height / 2 }] : squeezePoints(source, target, part, 0);
-    const b = strip ? [{ x: target.x + target.width / 2, y: target.y }, { x: target.x + target.width / 2, y: target.y + target.height }] : squeezePoints(source, target, part, 1);
+    const a = quarter !== undefined ? quarterPoints(source,target,quarter,0) : strip ? [{ x: source.x, y: source.y + source.height / 2 }, { x: source.x + source.width, y: source.y + source.height / 2 }] : squeezePoints(source, target, part, 0);
+    const b = quarter !== undefined ? quarterPoints(source,target,quarter,1) : strip ? [{ x: target.x + target.width / 2, y: target.y }, { x: target.x + target.width / 2, y: target.y + target.height }] : squeezePoints(source, target, part, 1);
     const clip = strip ? {
       lineCap: "butt" as const,
       sourceClip: [{x:source.x+2,y:source.y+source.height/2},{x:source.x+source.width-2,y:source.y+source.height/2}],
       targetClip: [{x:target.x+target.width/2,y:target.y+2},{x:target.x+target.width/2,y:target.y+target.height-2}],
-    } : Math.abs(half) === 1 ? {
+    } : quarter !== undefined || Math.abs(half) === 1 ? {
       // Clip the fixed ring joins, but allow full round caps inside the bar.
       sourceClip: a,
       targetClip: b.map(point => ({x:point.x,y:target.y+target.height/2
@@ -103,8 +117,8 @@ export function sidebarStrokes(spec: SidebarStrokeSpec, source: StrokeRect, targ
     if (q <= 0) return strokes;
     for (const segment of spec.segments ?? [{ id: "fill", start: 0, end: 1, color: spec.color }]) {
       const lo = clamp(segment.start), hi = Math.max(lo, clamp(segment.end));
-      const range: [number, number] = strip ? [lo * q, hi * q] : strokeInterval(part, lo * q, hi * q, false);
-      const end: [number, number] = strip ? [lo * q, hi * q] : strokeInterval(part, lo * barFraction, hi * barFraction, true);
+      const range: [number, number] = quarter !== undefined ? (quarter >= 2 ? [1-hi*q,1-lo*q] : [lo*q,hi*q]) : strip ? [lo * q, hi * q] : strokeInterval(part, lo * q, hi * q, false);
+      const end: [number, number] = quarter !== undefined ? [lo*barFraction,hi*barFraction] : strip ? [lo * q, hi * q] : strokeInterval(part, lo * barFraction, hi * barFraction, true);
       if (spec.segments && range[0] === range[1] && end[0] === end[1]) continue;
       strokes.push(make(segment.id, segment.color, range, end, spec.fillOpacity ?? 1));
     }
@@ -112,7 +126,8 @@ export function sidebarStrokes(spec: SidebarStrokeSpec, source: StrokeRect, targ
   });
   if (!strip && typeof spec.expected === "number" && Number.isFinite(spec.expected)) {
     const expected=clamp(spec.expected),radius=source.width/2;
-    const angle=half===0?-Math.PI/2+expected*2*Math.PI:(half<0?Math.PI/2:-Math.PI/2)+expected*Math.PI;
+    const angle=quarter!==undefined?[180,90,-90,0][quarter]*Math.PI/180+(.006+expected*.238)*2*Math.PI
+      :half===0?-Math.PI/2+expected*2*Math.PI:(half<0?Math.PI/2:-Math.PI/2)+expected*Math.PI;
     const radial=(r:number)=>({x:source.x+source.width/2+Math.cos(angle)*r,y:source.y+source.height/2+Math.sin(angle)*r});
     const y=target.y+target.height*(1-expected),x=target.x+target.width/2;
     strokes.push({id:spec.id+":pace",group:spec.id+":pace",source:trim([radial(radius-3.5),radial(radius+3.5)],0,1),

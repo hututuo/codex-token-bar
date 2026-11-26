@@ -205,6 +205,9 @@ jobs:
             --require testPairedQuotaRingSeamsClipCapsWithoutFlatteningProgressTips \
             --require testPairedQuotaMorphClipsJoinsButPreservesRoundedCompactCaps \
             --require testDetailQuotaDecimalsStayOnOneLineInsideTheRing \
+            --require testFourAntigravityWindowsShareOneRingWithoutLosingIdentityOrHiddenChoices \
+            --require testQuarteredQuotaPixelsKeepFourCleanJoinsAndSaveVerticalHeight \
+            --require testQuarteredQuotaMorphKeepsIndependentTracksAndSurvivesReversal \
             --require testDiagnosticsBundleAllowlistRemovesSecretsAndPaths \
             --require testRetainedPhysicalHandleKeepsFreshRowsAndNamespaceWithoutRepeatedOpens \
             --require testRetainedHandleRechecksSealedOwnerAndRouteOnEveryOperation \

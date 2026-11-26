@@ -1,0 +1,15 @@
+{
+  "windows": [
+    {"id":"antigravity:gemini-5h","window":"Gemini · 5h"},
+    {"id":"antigravity:gemini-weekly","window":"Gemini · 7d"},
+    {"id":"antigravity:3p-5h","window":"第三方模型 · 5h"},
+    {"id":"antigravity:3p-weekly","window":"第三方模型 · 7d"}
+  ],
+  "cases": [
+    {"name":"mixed","remaining":[85.12,90.53,0,null]},
+    {"name":"zero","remaining":[0,0,0,0]},
+    {"name":"half","remaining":[50,50,50,50]},
+    {"name":"full","remaining":[100,100,100,100]},
+    {"name":"unknown","remaining":[null,null,null,null]}
+  ]
+}

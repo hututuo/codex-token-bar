@@ -72,6 +72,7 @@ enum ClientQuotaMorphGeometry {
 
     static func strokes(_ routes: [ClientQuotaMorphRoute]) -> [MatchedStrokeMorphRoute] {
         let strokes = routes.flatMap { route -> [MatchedStrokeMorphRoute] in
+            if let quarter = route.quarter { return quarterStrokes(route, quarter: quarter) }
             if route.shape == .taskCells { return taskCellStrokes(route) }
             if route.shape == .strip { return stripStrokes(route) }
             return parts(half: route.half, fraction: route.fraction).flatMap { part -> [MatchedStrokeMorphRoute] in
@@ -120,8 +121,14 @@ enum ClientQuotaMorphGeometry {
         let guides: [MatchedStrokeMorphRoute] = routes.compactMap { route in
             guard let value = route.expected, value.isFinite else { return nil }
             let expected = min(1, max(0, value)), radius = route.ring.width / 2
-            let angle = route.half == 0 ? -Double.pi / 2 + expected * 2 * Double.pi
-                : (route.half < 0 ? Double.pi / 2 : -Double.pi / 2) + expected * Double.pi
+            let angle: Double
+            if let quarter = route.quarter {
+                angle = ClientQuotaQuarterLayout.rotation(quarter) * Double.pi / 180
+                    + (ClientQuotaQuarterLayout.gap + expected * ClientQuotaQuarterLayout.sweep) * 2 * Double.pi
+            } else {
+                angle = route.half == 0 ? -Double.pi / 2 + expected * 2 * Double.pi
+                    : (route.half < 0 ? Double.pi / 2 : -Double.pi / 2) + expected * Double.pi
+            }
             func radial(_ radius: Double) -> CGPoint { CGPoint(x: route.ring.midX + cos(angle) * radius, y: route.ring.midY + sin(angle) * radius) }
             let y = route.track.minY + 2.5 + (route.track.height - 2.5) * (1 - expected)
             return .init(id: "pace:" + route.id, participantID: "pace:" + route.id,
@@ -130,6 +137,45 @@ enum ClientQuotaMorphGeometry {
         }
         // Forecast guides must paint above both the value stroke and brand dot.
         return strokes + markers + guides
+    }
+
+    static func quarterPoints(ring: CGRect, track: CGRect, quarter: Int, progress: Double) -> [CGPoint] {
+        let p = min(1, max(0, progress))
+        let start = ClientQuotaQuarterLayout.rotation(quarter) * Double.pi / 180 + ClientQuotaQuarterLayout.gap * 2 * Double.pi
+        let sweep = ClientQuotaQuarterLayout.sweep * 2 * Double.pi
+        let low = min(sin(start), sin(start + sweep)), high = max(sin(start), sin(start + sweep))
+        return (0...segments).map { index in
+            let t = Double(index) / Double(segments)
+            // Reverse the two right quarters so every path stays bottom-to-top.
+            let angle = start + sweep * (quarter >= 2 ? 1 - t : t)
+            let x = ring.midX + ring.width / 2 * cos(angle), y = ring.midY + ring.height / 2 * sin(angle)
+            let endY = track.minY + 2 + (sin(angle) - low) / (high - low) * max(0, track.height - 4)
+            return CGPoint(x: x + (track.midX - x) * p, y: y + (endY - y) * p)
+        }
+    }
+
+    private static func quarterStrokes(_ route: ClientQuotaMorphRoute, quarter: Int) -> [MatchedStrokeMorphRoute] {
+        let a = quarterPoints(ring: route.ring, track: route.track, quarter: quarter, progress: 0)
+        let b = quarterPoints(ring: route.ring, track: route.track, quarter: quarter, progress: 1)
+        let clip = b.map { point in
+            CGPoint(x: point.x, y: route.track.midY + (point.y - route.track.midY)
+                * route.track.height / max(1, route.track.height - 4))
+        }
+        func stroke(_ name: String, start: Double = 0, end: Double = 1, barEnd: Double = 1,
+                    color: NSColor, expandedOpacity: Float, collapsedOpacity: Float) -> MatchedStrokeMorphRoute {
+            .init(id: route.id + ":quarter:" + name, participantID: route.id,
+                expanded: .init(points: a, start: start, end: end, width: 3, opacity: expandedOpacity, clipPoints: a),
+                collapsed: .init(points: b, end: barEnd, width: 4, opacity: collapsedOpacity, clipPoints: clip),
+                color: color, clipLineCap: .butt, clipWidthScale: 4)
+        }
+        var strokes = [stroke("track", color: .white, expandedOpacity: route.expandedTrackOpacity, collapsedOpacity: route.collapsedTrackOpacity)]
+        let q = min(1, max(0, route.fraction ?? 0))
+        if q > 0 {
+            let bar = min(1, max(0, (q * route.track.height - 4) / max(1, route.track.height - 4)))
+            strokes.append(stroke("fill", start: quarter >= 2 ? 1 - q : 0, end: quarter >= 2 ? 1 : q,
+                barEnd: bar, color: route.color, expandedOpacity: route.fillOpacity, collapsedOpacity: route.fillOpacity))
+        }
+        return strokes
     }
 
     private static func taskCellStrokes(_ route: ClientQuotaMorphRoute) -> [MatchedStrokeMorphRoute] {
@@ -203,6 +249,7 @@ struct ClientQuotaMorphRoute {
     var markerColor: NSColor? = nil
     var expected: Double? = nil
     var shape: ClientQuotaMorphShape = .ring
+    var quarter: Int? = nil
 }
 
 struct ClientQuotaMorphColorSegment {

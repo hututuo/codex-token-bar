@@ -237,15 +237,16 @@ struct QuotaSidebarRail: View {
     private func morphRoutes(_ anchors: [String: Anchor<CGRect>], in proxy: GeometryProxy, presentation p: QuotaSidebarRailPresentation) -> [ClientQuotaMorphRoute] {
         let viewport = anchors["quota-viewport"].map { proxy[$0] }
         var routes = ClientQuotaRingGroup.make(p.quotaItems).flatMap { group -> [ClientQuotaMorphRoute] in
-            let members = [(group.left, group.right == nil ? 0 : -1)] + (group.right.map { [($0, 1)] } ?? [])
-            return members.compactMap { entry -> ClientQuotaMorphRoute? in
-                let (item, half) = entry
+            return group.members.enumerated().compactMap { index, item -> ClientQuotaMorphRoute? in
+                let quarter = group.quarters.isEmpty ? nil : index
+                let half = quarter == nil && group.right != nil ? (index == 0 ? -1 : 1) : 0
                 guard let source = anchors["ring:" + item.id], let target = anchors["track:" + item.id] else { return nil }
-                let ring = proxy[source], track = proxy[target]
-                guard viewport?.contains(ring) != false else { return nil }
+                let bounds = proxy[source], track = proxy[target]
+                guard viewport?.contains(bounds) != false else { return nil }
+                let ring = quarter == nil ? bounds : bounds.insetBy(dx: ClientQuotaQuarterLayout.inset, dy: ClientQuotaQuarterLayout.inset)
                 return ClientQuotaMorphRoute(id: item.id, ring: ring, track: track, half: half,
                     fraction: item.remaining.map { $0 / 100 }, color: NSColor(clientHex: p.quotaSelection.colors[item.id] ?? item.fill),
-                    expected: item.expected)
+                    expected: item.expected, quarter: quarter)
             }
         }
         for item in [QuotaSidebarItem.speed, .tasks, .models] where p.sidebarItems.contains(item) {
@@ -464,7 +465,11 @@ struct QuotaSidebarRail: View {
         case let .quota(client):
             ForEach(ClientQuotaRingGroup.make(p.quotaItems.filter { $0.client == client })) { group in
                 Button { controller.select(.overview) } label: {
-                    ClientPairedQuotaRing(left: group.left, right: group.right)
+                    if group.quarters.isEmpty {
+                        ClientPairedQuotaRing(left: group.left, right: group.right)
+                    } else {
+                        ClientQuarteredQuotaRing(items: group.quarters)
+                    }
                 }.buttonStyle(SidebarPulseButtonStyle())
             }
         case .models:
