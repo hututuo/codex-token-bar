@@ -497,7 +497,7 @@ struct AntigravityTests {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let t0: Int64 = 1_792_573_200_000
         var writers: [ConversationWriter] = []
-        for index in 0..<18 {
+        for index in 0..<50 {
             let id = String(format: "%08x-0000-4000-8000-000000000000", index)
             let writer = try ConversationWriter(path: folder.appendingPathComponent("\(id).db").path,
                                                 trajectory: AG.trajectory(created: t0, uris: ["file:///w/p\(index)"]))
@@ -511,11 +511,11 @@ struct AntigravityTests {
 
         let session = Self.session(store: store)
         _ = session.seed(todayStartMs: 0)
-        #expect(session.responses.count == 18)
+        #expect(session.responses.count == 50, "all startup decode windows retain their responses")
         #expect(session.openDatabaseCount == TranscriptSession.maxOpenDatabases, "open WAL databases are capped")
         let context = SnapshotContext(session: session, todayStartMs: 0)
         #expect(context.warnings.contains(.unsupportedFormat(.antigravity)))
-        #expect(session.sessionCounts(todayStartMs: 0)[.antigravity] == 18)
+        #expect(session.sessionCounts(todayStartMs: 0)[.antigravity] == 50)
         for writer in writers { try writer.close() }
     }
 

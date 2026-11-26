@@ -669,8 +669,8 @@
       "sha256": "0cc23ff3e2c62627d05e1804ca48fdb19c56ef10310ad08328817f1725e6e28c"
     },
     "macos/Sources/AgentSpeedCore/Monitor/SnapshotBuilder.swift": {
-      "reason": "Project source/model attribution, one-shot local read observations and local Claude displayTitle into Token Bar snapshots without changing upstream rate calculations. Support per-client Claude root sets in one monitor, preserve legacy shared-root configuration, and keep root ownership, availability, parser resets and pre-dedupe filtering consistent.",
-      "sha256": "519dec9ef93acf27034a52462ecbaf69902e3488c9863610d55a433b861ee567"
+      "reason": "Project source/model attribution, one-shot local read observations and local Claude displayTitle into Token Bar snapshots without changing upstream rate calculations. Support per-client Claude root sets in one monitor, preserve legacy shared-root configuration, and keep root ownership, availability, parser resets and pre-dedupe filtering consistent. Use the distinct source-root lookup label without overloading existing family-root inference.",
+      "sha256": "509005b85e52b757d9b66d4816e489e983d65d5822893d39181968336b6fa112"
     },
     "macos/Sources/AgentSpeedCore/Monitor/SnapshotMailbox.swift": {
       "reason": "Carry and merge pending source-read observations into the next published snapshot so metadata is not lost during coalescing.",
@@ -685,8 +685,8 @@
       "sha256": "8a78c810a817df0f1caa6ea54990781ef9eb2e4d89f9516fcfdbaac2c193e49f"
     },
     "macos/Sources/AgentSpeedCore/Monitor/TranscriptSession.swift": {
-      "reason": "Capture and merge local log/poll read observations through transcript, database, and whole-file reads; keep provider event timing distinct. Preserve shared positioned IO and source-read provenance; backport c668286 bounded quiet-file rediscovery (24h hot set and one sixth older files each round). Use the fresh TrackedFile state projection without copying its full parser for snapshot counts and warnings. Maintain session count, malformed and unsupported totals alongside successful parser updates; rebuild date-sensitive counts on local day changes. Read per-client Claude root sets once with overlapping-root ownership, filter excluded copies before shared dedupe, and bound startup decode output to ordered 16-file/64-MiB windows while preserving read offsets and ownership order.",
-      "sha256": "62282fcada120613264bb6864ee574ca778dc36cb4de06209ff9055eb00c7677"
+      "reason": "Capture and merge local log/poll read observations through transcript, database, and whole-file reads; keep provider event timing distinct. Preserve shared positioned IO and source-read provenance; backport c668286 bounded quiet-file rediscovery (24h hot set and one sixth older files each round). Use the fresh TrackedFile state projection without copying its full parser for snapshot counts and warnings. Maintain session count, malformed and unsupported totals alongside successful parser updates; rebuild date-sensitive counts on local day changes. Read per-client Claude root sets once with overlapping-root ownership, filter excluded copies before shared dedupe, and bound startup decode output to ordered 16-file/64-MiB windows while preserving read offsets and ownership order. Apply the existing idle/open connection cap between database startup decode windows so consumed WAL readers do not accumulate across the entire backlog. Give source-root lookup a distinct argument label to preserve existing family-root enum inference.",
+      "sha256": "5c87068b9333ed048f7e2409149635f18ac44dddb2ec7d32c4204c81c49cab6f"
     },
     "macos/Sources/AgentSpeedCore/Parsing/ClaudeLine.swift": {
       "reason": "Recognize explicit Claude API/stream errors as local display-stop metadata and backport upstream b89d983 toolEndsTurn extraction. Extract bounded local-only Claude task labels from agentName, title/customTitle, summary or first direct user text; do not retain full text or change token accounting.",
@@ -737,8 +737,8 @@
       "sha256": "8ee6f284e5dd0a85445a782ec4b66b32c21964738c8c454ee93a416cfc422c03"
     },
     "macos/Tests/AgentSpeedCoreTests/AntigravityTests.swift": {
-      "reason": "Update the expected default store inventory for standalone ACP and macOS Orca; retain existing parser, deduplication, backup and live database regressions. Treat only zero-byte regular Antigravity main files without a WAL path as retryable empty placeholders; preserve actual WAL reads and retry after initialization. Align Windows explicit-parent expansion and ACP defaults with the native ledger.",
-      "sha256": "ca8446eb7f2112e572771973e2448d9ec54648781b3efa0f2ec4c8741e61ecfa"
+      "reason": "Update the expected default store inventory for standalone ACP and macOS Orca; retain existing parser, deduplication, backup and live database regressions. Treat only zero-byte regular Antigravity main files without a WAL path as retryable empty placeholders; preserve actual WAL reads and retry after initialization. Align Windows explicit-parent expansion and ACP defaults with the native ledger. Cover fifty WAL-backed databases across multiple startup decode windows while preserving every response and the final open-connection cap.",
+      "sha256": "12ca4e75647b0e7a2a66e7d714d64761893316f894f982e11f7ed0362ff5b126"
     },
     "macos/Tests/AgentSpeedCoreTests/EngineBehaviorTests.swift": {
       "reason": "Guard old-model response tails, current-model estimates, unknown models and per-source conservation",
@@ -765,8 +765,8 @@
       "sha256": "9f666dc4a4e1f7b724a01efd9ced3023bbe39fa3d50d30e7d5bd780888e8ba15"
     },
     "macos/Tests/AgentSpeedCoreTests/SessionTests.swift": {
-      "reason": "Use explicit isolated source roots; never read developer home during tests Backport c668286 deterministic quiet-file and midnight resumption regressions, retaining existing source-read context tests. Verify cached session counts across local day changes, appended lines, removal, and retained malformed diagnostics. Read per-client Claude root sets once with overlapping-root ownership, filter excluded copies before shared dedupe, and bound startup decode output to ordered 16-file/64-MiB windows while preserving read offsets and ownership order.",
-      "sha256": "04569b814a0a7478ad6000f75242a11ef4a420161379fba27fb78b4abcf4d944"
+      "reason": "Use explicit isolated source roots; never read developer home during tests Backport c668286 deterministic quiet-file and midnight resumption regressions, retaining existing source-read context tests. Verify cached session counts across local day changes, appended lines, removal, and retained malformed diagnostics. Read per-client Claude root sets once with overlapping-root ownership, filter excluded copies before shared dedupe, and bound startup decode output to ordered 16-file/64-MiB windows while preserving read offsets and ownership order. Exercise the distinct source-root lookup label while legacy family-root shorthand remains unambiguous.",
+      "sha256": "f5f71da5a3ef99b3550b2edd4196fb3168b4035c0c264991aeb93957239d27c3"
     },
     "macos/Tests/AgentSpeedCoreTests/TrafficSamplerTests.swift": {
       "reason": "Break the process-argument fixture into typed byte-array appends for Swift 6 compiler compatibility; emitted fixture bytes and assertions are unchanged.",

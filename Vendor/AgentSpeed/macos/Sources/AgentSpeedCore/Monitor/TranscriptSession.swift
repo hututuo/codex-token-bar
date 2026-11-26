@@ -238,7 +238,7 @@ final class TranscriptSession {
     }
 
     /// A source can use a different set of folders than its sibling in the same family.
-    func root(for source: SourceKind) -> Root {
+    func root(forSource source: SourceKind) -> Root {
         let family = TranscriptFamily(source)!
         guard family == .claude else { return root(for: family) }
         let selected = roots.filter { $0.family == family && $0.selectedSources.contains(source) }
@@ -340,6 +340,11 @@ final class TranscriptSession {
                 }
             }
             completedBytes += batchBytes
+            if jobs[window].contains(where: { $0.family.isDatabase }) {
+                // Apply the existing connection cap between windows too; otherwise
+                // consumed WAL readers would accumulate until the entire seed ends.
+                closeIdleDatabases(nowNs: DispatchTime.now().uptimeNanoseconds)
+            }
         }
         closeIdleDatabases(nowNs: DispatchTime.now().uptimeNanoseconds)
         if let opencode, opencode.exists {

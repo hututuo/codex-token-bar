@@ -122,7 +122,7 @@ struct SessionTests {
         #expect(context.sources[.claudeDesktop]?.available == true)
         var desktopOnly = configuration
         desktopOnly.enabledSources = [.claudeDesktop]
-        let disabled = TranscriptSession(configuration: desktopOnly).root(for: SourceKind.claudeCode)
+        let disabled = TranscriptSession(configuration: desktopOnly).root(forSource: .claudeCode)
         #expect(disabled.path.isEmpty && disabled.canonicalPath.isEmpty && disabled.detectionPath == nil)
         #expect(!disabled.enabled && !disabled.available && !disabled.detected && !disabled.readable)
     }
