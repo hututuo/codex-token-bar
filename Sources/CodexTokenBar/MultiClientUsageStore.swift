@@ -332,9 +332,38 @@ actor MultiClientUsageScanner {
             let handle = try FileHandle(forReadingFrom: url); defer { try? handle.close() }
             let start = saved.flatMap { $0.identity == identity && $0.offset <= size && ($0.size != size || $0.modified == modified) ? $0.offset : nil } ?? 0
             try handle.seek(toOffset: UInt64(start))
-            let bytes = try handle.readShared(upToCount: 4 * 1024 * 1024)
+            let readWindow = 4 * 1024 * 1024
+            let isClaude = client == .claudeCode || client == .claudeDesktop
+            let recordLimit = isClaude ? MultiClientUsageParsers.maximumInputBytes : readWindow
+            let before: SourceFileObservation?
+            if isClaude && size - start >= Int64(readWindow) {
+                before = try SourceFileObservation.readPhysical(handle: handle)
+            } else {
+                before = nil
+            }
+            var bytes = try handle.readShared(upToCount: readWindow)
+            var extendedObservation: SourceFileObservation?
+            // Preserve ordinary batch paging. Only a first record without LF
+            // needs continuation, and it must fit the existing parser limit.
+            if isClaude, bytes.count == readWindow, !bytes.contains(10) {
+                guard let before else { throw POSIXError(.ESTALE) }
+                extendedObservation = before
+                while bytes.count < recordLimit {
+                    try Task.checkCancellation()
+                    let next = try handle.readShared(upToCount: min(readWindow, recordLimit - bytes.count))
+                    if next.isEmpty { break }
+                    if let newline = next.firstIndex(of: 10) {
+                        bytes.append(next.prefix(through: newline))
+                        break // A large record's successor belongs to the next scan.
+                    }
+                    bytes.append(next)
+                }
+                guard before.matches(try SourceFileObservation.readPhysical(handle: handle)),
+                      before.matches(try SourceFileObservation.read(at: url))
+                else { throw POSIXError(.ESTALE) }
+            }
             guard let newline = bytes.lastIndex(of: 10) else {
-                if bytes.count >= 4 * 1024 * 1024 { throw ScanError.oversized }
+                if bytes.count >= recordLimit { throw ScanError.oversized }
                 return // Hold a partial trailing line; do not publish a checkpoint beyond it.
             }
             let complete = bytes.prefix(through: newline)
@@ -345,6 +374,11 @@ actor MultiClientUsageScanner {
             let prefix = try handle.readShared(upToCount: Int(width), probe: true)
             let digest = SHA256.hash(data: prefix).map { String(format: "%02x", $0) }.joined()
             checkpointIdentity = String(describing: attrs[.systemFileNumber] ?? "") + ":" + String(width) + ":" + digest
+            if let before = extendedObservation {
+                guard before.matches(try SourceFileObservation.readPhysical(handle: handle)),
+                      before.matches(try SourceFileObservation.read(at: url))
+                else { throw POSIXError(.ESTALE) }
+            }
         } else {
             guard size <= 16 * 1024 * 1024 else { throw ScanError.oversized }
             events = try MultiClientUsageParsers.parse(data: FileHandle.readSourceDocument(at: url, maximumBytes: 16 * 1024 * 1024), client: client, sessionHint: sessionHint)

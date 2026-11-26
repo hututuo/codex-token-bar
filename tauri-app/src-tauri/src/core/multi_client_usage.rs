@@ -1,7 +1,7 @@
 use crate::core::{
     app_paths, atomic_file,
     multi_client_product::{self, ClientQuotaHistorySample, ProductDetection, QuotaProviderSnapshot},
-    shared_source_io::{probe_uncached, read_range, SourceReader},
+    shared_source_io::{probe_uncached, read_range, source_file_witness, SourceReader},
 };
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
@@ -25,6 +25,10 @@ mod antigravity;
 #[cfg(test)]
 #[path = "multi_client_response_tests.rs"]
 mod response_tests;
+
+#[cfg(test)]
+#[path = "claude_record_boundary_tests.rs"]
+mod claude_record_boundary_tests;
 
 const SCHEMA_VERSION: i64 = 2;
 const MAX_SCAN_DEPTH: usize = 6;
@@ -2422,11 +2426,40 @@ fn scan_transcript_file(
         } else {
             0
         };
-        let chunk =
-            read_range(&source, start, 4 * 1024 * 1024).map_err(|error| error.to_string())?;
+        const READ_WINDOW: usize = 4 * 1024 * 1024;
+        let is_claude = matches!(client, "claudeCode" | "claudeDesktop");
+        let record_limit = if is_claude { MAX_SOURCE_FILE_BYTES as usize } else { READ_WINDOW };
+        let before = if is_claude && metadata.len().saturating_sub(start) >= READ_WINDOW as u64 {
+            Some(source_file_witness(&source).map_err(|error| error.to_string())?)
+        } else {
+            None
+        };
+        let mut chunk = read_range(&source, start, READ_WINDOW).map_err(|error| error.to_string())?;
+        let mut extended = false;
+        // Keep ordinary 4 MiB paging. Only a first record without LF may
+        // continue, bounded by the existing 16 MiB source-document limit.
+        if is_claude && chunk.len() == READ_WINDOW && !chunk.contains(&b'\n') {
+            let witness = before.ok_or("源文件在读取期间发生变化，断点未前移")?;
+            extended = true;
+            while chunk.len() < record_limit {
+                let next = read_range(&source, start + chunk.len() as u64,
+                    READ_WINDOW.min(record_limit - chunk.len())).map_err(|error| error.to_string())?;
+                if next.is_empty() { break; }
+                if let Some(newline) = next.iter().position(|byte| *byte == b'\n') {
+                    chunk.extend_from_slice(&next[..=newline]);
+                    break; // Leave the short successor for the next scan.
+                }
+                chunk.extend_from_slice(&next);
+            }
+            let named = fs::File::open(path).map_err(|error| error.to_string())?;
+            if witness != source_file_witness(&source).map_err(|error| error.to_string())?
+                || witness != source_file_witness(&named).map_err(|error| error.to_string())? {
+                return Err("源文件在读取期间发生变化，断点未前移".into());
+            }
+        }
         let Some(last_newline) = chunk.iter().rposition(|byte| *byte == b'\n') else {
-            if chunk.len() >= 4 * 1024 * 1024 {
-                return Err("单条 JSONL 记录超过 4 MiB，断点未前移".into());
+            if chunk.len() >= record_limit {
+                return Err(format!("单条 JSONL 记录超过 {} MiB，断点未前移", record_limit / 1024 / 1024));
             }
             return Ok(()); // Hold a partial trailing line and preserve the prior checkpoint.
         };
@@ -2451,6 +2484,14 @@ fn scan_transcript_file(
         let offset = start.saturating_add(complete_len as u64);
         let identity = file_prefix_identity_from_file(&source, offset.min(4_096) as usize)?;
         let checkpoint_fingerprint = source_checkpoint_fingerprint(client, &identity);
+        if extended {
+            let named = fs::File::open(path).map_err(|error| error.to_string())?;
+            let witness = before.ok_or("源文件在读取期间发生变化，断点未前移")?;
+            if witness != source_file_witness(&source).map_err(|error| error.to_string())?
+                || witness != source_file_witness(&named).map_err(|error| error.to_string())? {
+                return Err("源文件在读取期间发生变化，断点未前移".into());
+            }
+        }
         persist_source_update(
             connection,
             client,

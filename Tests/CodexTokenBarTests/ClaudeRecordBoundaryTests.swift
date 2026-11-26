@@ -5,6 +5,7 @@ import XCTest
 
 final class ClaudeRecordBoundaryTests: XCTestCase {
     private static let readWindowBytes = 4 * 1_024 * 1_024
+    private static let maximumRecordBytes = 16 * 1_024 * 1_024
 
     private enum ContentShape: CaseIterable {
         case plainText
@@ -23,12 +24,20 @@ final class ClaudeRecordBoundaryTests: XCTestCase {
         try await assertAcceptedRecord(recordBytes: Self.readWindowBytes)
     }
 
-    func testHistoryScannerRejects4MiBPlusOneWithoutCheckpointOrSuccessorUsage() async throws {
+    func testHistoryScannerAccepts4MiBPlusOneRecordAndShortSuccessorAcrossScans() async throws {
+        try await assertAcceptedRecord(recordBytes: Self.readWindowBytes + 1)
+    }
+
+    func testHistoryScannerAcceptsExactly16MiBRecordAndShortSuccessorAcrossScans() async throws {
+        try await assertAcceptedRecord(recordBytes: Self.maximumRecordBytes)
+    }
+
+    func testHistoryScannerRejects16MiBPlusOneWithoutCheckpointOrSuccessorUsage() async throws {
         for shape in ContentShape.allCases {
             let root = try temporaryRoot()
             defer { try? FileManager.default.removeItem(at: root) }
             let source = root.appendingPathComponent("session.jsonl")
-            let large = try record(id: "large", seed: 1, bytes: Self.readWindowBytes + 1, shape: shape)
+            let large = try record(id: "large", seed: 1, bytes: Self.maximumRecordBytes + 1, shape: shape)
             let after = try record(id: "after", seed: 2)
             try (large + after).write(to: source)
             let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("usage.sqlite"))
@@ -46,12 +55,147 @@ final class ClaudeRecordBoundaryTests: XCTestCase {
         }
     }
 
+    func testHistoryScannerKeepsOtherClientRecordLimitsAt4MiB() async throws {
+        for client in [UsageClient.gemini, .deepseek] {
+            let root = try temporaryRoot()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let source = root.appendingPathComponent("session.jsonl")
+            // Parsing is never reached: the first 4 MiB has no LF, regardless of JSON shape.
+            let large = try record(id: "large", seed: 1, bytes: Self.readWindowBytes + 1)
+            XCTAssertFalse(large.prefix(Self.readWindowBytes).contains(0x0A))
+            try large.write(to: source)
+            let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("usage.sqlite"))
+            let scanner = MultiClientUsageScanner(databaseURL: ledger.url, home: root, environment: [:])
+            let preference = try preference(for: source, client: client)
+
+            for _ in 0..<3 {
+                let result = try await scanner.scan([preference], includesCharts: false)
+                assertOversizedDiagnostic(result)
+                XCTAssertTrue(result.summaries.isEmpty)
+                let eventCount = try ledger.database.readRows(
+                    "SELECT COUNT(*) FROM client_usage_events WHERE client = ?", bindings: [.text(client.rawValue)]
+                ) { $0.int64(0) ?? 0 }.first ?? 0
+                let revisionCount = try ledger.database.readRows(
+                    "SELECT COUNT(*) FROM client_usage_revisions WHERE client = ?", bindings: [.text(client.rawValue)]
+                ) { $0.int64(0) ?? 0 }.first ?? 0
+                XCTAssertEqual(eventCount, 0)
+                XCTAssertEqual(revisionCount, 0)
+                XCTAssertNil(try ledger.checkpoint(client: client, sourceKey: sourceKey(source)))
+            }
+        }
+    }
+
+    func testHistoryScannerRejectsIncomplete16MiBRecordAndPreservesCommittedPrefix() async throws {
+        for shape in ContentShape.allCases {
+            let root = try temporaryRoot()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let source = root.appendingPathComponent("session.jsonl")
+            let prefix = try record(id: "prefix", seed: 3)
+            let large = try record(id: "large", seed: 1, bytes: Self.maximumRecordBytes + 1_024,
+                                   shape: shape)
+            let incomplete = Data(large.prefix(Self.maximumRecordBytes))
+            XCTAssertFalse(incomplete.contains(0x0A))
+            XCTAssertThrowsError(try JSONSerialization.jsonObject(with: incomplete))
+            try (prefix + incomplete).write(to: source)
+            let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("usage.sqlite"))
+            let scanner = MultiClientUsageScanner(databaseURL: ledger.url, home: root, environment: [:])
+            let preference = try preference(for: source)
+
+            let first = try await scanner.scan([preference], includesCharts: false)
+            XCTAssertTrue(first.diagnostics.isEmpty)
+            try assertEvents(in: ledger, seeds: [3])
+            let committed = try assertCheckpoint(in: ledger, source: source, offset: prefix.count)
+            for _ in 0..<2 {
+                let blocked = try await scanner.scan([preference], includesCharts: false)
+                assertOversizedDiagnostic(blocked)
+                try assertEvents(in: ledger, seeds: [3])
+                let unchanged = try XCTUnwrap(ledger.checkpoint(client: .claudeCode, sourceKey: sourceKey(source)))
+                assertSameCheckpoint(unchanged, committed)
+                XCTAssertEqual(try revisionCount(in: ledger), 1)
+            }
+        }
+    }
+
+    func testHistoryScannerWaitsForLFWhenPartialAppendCrosses4MiBAndResumesAcrossScanners() async throws {
+        for shape in ContentShape.allCases {
+            let root = try temporaryRoot()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let source = root.appendingPathComponent("session.jsonl")
+            let large = try record(id: "large", seed: 1, bytes: Self.readWindowBytes + 64 * 1_024,
+                                   shape: shape)
+            let after = try record(id: "after", seed: 2)
+            let initialCount = Self.readWindowBytes - 1
+            let extendedCount = Self.readWindowBytes + 1
+            try Data(large.prefix(initialCount)).write(to: source)
+            let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("usage.sqlite"))
+            let scanner = MultiClientUsageScanner(databaseURL: ledger.url, home: root, environment: [:])
+            let preference = try preference(for: source)
+
+            let initial = try await scanner.scan([preference], includesCharts: false)
+            try assertUncommitted(initial, in: ledger, source: source)
+            try append(large.subdata(in: initialCount..<extendedCount), to: source)
+            let extended = try await scanner.scan([preference], includesCharts: false)
+            try assertUncommitted(extended, in: ledger, source: source)
+
+            // A complete JSON value is still an uncommitted JSONL record until its LF arrives.
+            try append(large.subdata(in: extendedCount..<(large.count - 1)), to: source)
+            let completeJSON = Data(large.dropLast())
+            XCTAssertFalse(completeJSON.contains(0x0A))
+            _ = try JSONSerialization.jsonObject(with: completeJSON)
+            let resumedScanner = MultiClientUsageScanner(databaseURL: ledger.url, home: root, environment: [:])
+            let waiting = try await resumedScanner.scan([preference], includesCharts: false)
+            try assertUncommitted(waiting, in: ledger, source: source)
+
+            try append(Data([0x0A]) + after, to: source)
+            let first = try await resumedScanner.scan([preference], includesCharts: false)
+            XCTAssertTrue(first.diagnostics.isEmpty)
+            XCTAssertEqual(first.summaries.reduce(0) { $0 + $1.requests }, 1)
+            try assertEvents(in: ledger, seeds: [1])
+            _ = try assertCheckpoint(in: ledger, source: source, offset: large.count)
+            XCTAssertEqual(try revisionCount(in: ledger), 1)
+            let completed = try await resumedScanner.scan([preference], includesCharts: false)
+            XCTAssertTrue(completed.diagnostics.isEmpty)
+            XCTAssertEqual(completed.summaries.reduce(0) { $0 + $1.requests }, 2)
+            try assertEvents(in: ledger, seeds: [1, 2])
+            _ = try assertCheckpoint(in: ledger, source: source, offset: large.count + after.count)
+            XCTAssertEqual(try revisionCount(in: ledger), 2)
+        }
+    }
+
+    func testHistoryScannerCommitsUsageFreeRecordOver4MiBAndOnlyCountsShortSuccessor() async throws {
+        for shape in ContentShape.allCases {
+            let root = try temporaryRoot()
+            defer { try? FileManager.default.removeItem(at: root) }
+            let source = root.appendingPathComponent("session.jsonl")
+            let large = try record(id: "usage-free", seed: 1, bytes: Self.readWindowBytes + 1,
+                                   shape: shape, includesUsage: false)
+            let after = try record(id: "after", seed: 2)
+            try (large + after).write(to: source)
+            let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("usage.sqlite"))
+            let scanner = MultiClientUsageScanner(databaseURL: ledger.url, home: root, environment: [:])
+            let preference = try preference(for: source)
+
+            let first = try await scanner.scan([preference], includesCharts: false)
+            XCTAssertTrue(first.diagnostics.isEmpty)
+            XCTAssertTrue(first.summaries.isEmpty)
+            try assertEvents(in: ledger, seeds: [])
+            _ = try assertCheckpoint(in: ledger, source: source, offset: large.count)
+            XCTAssertEqual(try revisionCount(in: ledger), 0)
+            let completed = try await scanner.scan([preference], includesCharts: false)
+            XCTAssertTrue(completed.diagnostics.isEmpty)
+            XCTAssertEqual(completed.summaries.reduce(0) { $0 + $1.requests }, 1)
+            try assertEvents(in: ledger, seeds: [2])
+            _ = try assertCheckpoint(in: ledger, source: source, offset: large.count + after.count)
+            XCTAssertEqual(try revisionCount(in: ledger), 1)
+        }
+    }
+
     func testHistoryScannerPreservesCommittedPrefixAndResumesAfterSameFileRepair() async throws {
         let root = try temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let source = root.appendingPathComponent("session.jsonl")
         let prefix = try record(id: "prefix", seed: 3)
-        let oversized = try record(id: "large", seed: 1, bytes: Self.readWindowBytes + 1,
+        let oversized = try record(id: "large", seed: 1, bytes: Self.maximumRecordBytes + 1,
                                    shape: .structuredToolResult)
         let after = try record(id: "after", seed: 2)
         let original = prefix + oversized + after
@@ -116,9 +260,11 @@ final class ClaudeRecordBoundaryTests: XCTestCase {
 
             let first = try await scanner.scan([preference], includesCharts: false)
             XCTAssertTrue(first.diagnostics.isEmpty)
-            let firstOffset = recordBytes == Self.readWindowBytes ? large.count : contents.count
+            let needsSuccessorScan = recordBytes >= Self.readWindowBytes
+            let firstOffset = needsSuccessorScan ? large.count : contents.count
             _ = try assertCheckpoint(in: ledger, source: source, offset: firstOffset)
-            try assertEvents(in: ledger, seeds: recordBytes == Self.readWindowBytes ? [1] : [1, 2])
+            try assertEvents(in: ledger, seeds: needsSuccessorScan ? [1] : [1, 2])
+            XCTAssertEqual(first.summaries.reduce(0) { $0 + $1.requests }, needsSuccessorScan ? 1 : 2)
             let completed = try await scanner.scan([preference], includesCharts: false)
             XCTAssertTrue(completed.diagnostics.isEmpty)
             XCTAssertEqual(completed.summaries.reduce(0) { $0 + $1.requests }, 2)
@@ -132,11 +278,13 @@ final class ClaudeRecordBoundaryTests: XCTestCase {
             let modified = try XCTUnwrap(attributes[.modificationDate] as? Date)
             try FileManager.default.setAttributes([.modificationDate: modified.addingTimeInterval(60)],
                                                  ofItemAtPath: source.path)
-            for _ in 0..<2 {
+            for pass in 0..<2 {
                 let replayed = try await scanner.scan([preference], includesCharts: false)
                 XCTAssertTrue(replayed.diagnostics.isEmpty)
                 try assertEvents(in: ledger, seeds: [1, 2])
                 XCTAssertEqual(try revisionCount(in: ledger), 2)
+                _ = try assertCheckpoint(in: ledger, source: source,
+                                         offset: needsSuccessorScan && pass == 0 ? large.count : contents.count)
             }
             _ = try assertCheckpoint(in: ledger, source: source, offset: contents.count)
         }
@@ -145,7 +293,7 @@ final class ClaudeRecordBoundaryTests: XCTestCase {
     /// Every size includes its LF. Padding lives inside anonymous JSON content,
     /// never trailing whitespace; usage comes after the large value in wire order.
     private func record(id: String, seed: Int, bytes: Int? = nil,
-                        shape: ContentShape = .plainText) throws -> Data {
+                        shape: ContentShape = .plainText, includesUsage: Bool = true) throws -> Data {
         let contentStart: String
         let contentEnd: String
         switch shape {
@@ -157,7 +305,10 @@ final class ClaudeRecordBoundaryTests: XCTestCase {
             contentEnd = #""}]},{"type":"text","text":"anonymous suffix"}]"#
         }
         let start = #"{"type":"assistant","entrypoint":"cli","sessionId":"anonymous-session","timestamp":"2026-11-26T10:00:0\#(seed)Z","message":{"id":"\#(id)","model":"claude-opus","content":\#(contentStart)"#
-        let end = #"\#(contentEnd),"stop_reason":"end_turn","usage":{"input_tokens":\#(7 * seed),"output_tokens":\#(19 * seed),"cache_read_input_tokens":\#(11 * seed),"cache_creation_input_tokens":\#(13 * seed),"cache_creation":{"ephemeral_5m_input_tokens":\#(5 * seed),"ephemeral_1h_input_tokens":\#(8 * seed)},"output_tokens_details":{"thinking_tokens":\#(3 * seed)}}}}"# + "\n"
+        let usage = includesUsage
+            ? #","usage":{"input_tokens":\#(7 * seed),"output_tokens":\#(19 * seed),"cache_read_input_tokens":\#(11 * seed),"cache_creation_input_tokens":\#(13 * seed),"cache_creation":{"ephemeral_5m_input_tokens":\#(5 * seed),"ephemeral_1h_input_tokens":\#(8 * seed)},"output_tokens_details":{"thinking_tokens":\#(3 * seed)}}"#
+            : ""
+        let end = #"\#(contentEnd),"stop_reason":"end_turn"\#(usage)}}"# + "\n"
         let overhead = start.utf8.count + end.utf8.count
         let target = bytes ?? overhead + 16
         XCTAssertGreaterThanOrEqual(target, overhead)
@@ -170,6 +321,13 @@ final class ClaudeRecordBoundaryTests: XCTestCase {
         return result
     }
 
+    private func append(_ data: Data, to source: URL) throws {
+        let handle = try FileHandle(forWritingTo: source)
+        defer { try? handle.close() }
+        _ = try handle.seekToEnd()
+        try handle.write(contentsOf: data)
+    }
+
     private func temporaryRoot() throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("claude-record-boundary-\(UUID())", isDirectory: true)
@@ -177,8 +335,8 @@ final class ClaudeRecordBoundaryTests: XCTestCase {
         return root
     }
 
-    private func preference(for source: URL) throws -> MultiClientUsagePreference {
-        var value = try XCTUnwrap(MultiClientUsagePreference.defaults.first { $0.client == .claudeCode })
+    private func preference(for source: URL, client: UsageClient = .claudeCode) throws -> MultiClientUsagePreference {
+        var value = try XCTUnwrap(MultiClientUsagePreference.defaults.first { $0.client == client })
         value.enabled = true
         value.path = source.path
         return value
@@ -201,10 +359,20 @@ final class ClaudeRecordBoundaryTests: XCTestCase {
         let stored = try events(in: ledger)
         XCTAssertEqual(stored.count, seeds.count)
         XCTAssertEqual(Set(stored.map(\.eventID)).count, seeds.count)
+        let expectedSourceHashes = [
+            1: "d35c416a85b807e9b5384915d6ebb4a9f7352713efd89857b45a242f473728a9",
+            2: "f39592393ef0859cb196a52693d2cea00fb2df784b3c04ae54aa7cadb8e562f8",
+            3: "e7a2e8b216e5aec3facf743962d3997f2e7d70088ef257de472d6a258049832e",
+        ]
         for (event, seed) in zip(stored, seeds.sorted()) {
             XCTAssertEqual(event.client, .claudeCode)
+            let sourceHash = try XCTUnwrap(expectedSourceHashes[seed])
+            XCTAssertEqual(event.eventID,
+                           "v1:685324ddea20b1b2249ed472fc7b1b219a605237285b73c306a7fcf470d64647:id:" + sourceHash)
             XCTAssertEqual(event.sessionID, "anonymous-session")
             XCTAssertEqual(event.model, "claude-opus")
+            let timestamp = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-11-26T10:00:0\(seed)Z"))
+            XCTAssertEqual(event.timestamp, timestamp)
             XCTAssertEqual(event.inputTokens, Int64(31 * seed))
             XCTAssertEqual(event.outputTokens, Int64(19 * seed))
             XCTAssertEqual(event.cacheReadTokens, Int64(11 * seed))
@@ -214,6 +382,15 @@ final class ClaudeRecordBoundaryTests: XCTestCase {
             XCTAssertEqual(event.reasoningTokens, Int64(3 * seed))
             XCTAssertEqual(event.quality, "recorded")
         }
+    }
+
+    private func assertUncommitted(_ result: MultiClientScanResult, in ledger: MultiClientUsageLedger,
+                                   source: URL) throws {
+        XCTAssertTrue(result.diagnostics.isEmpty)
+        XCTAssertTrue(result.summaries.isEmpty)
+        XCTAssertTrue(try events(in: ledger).isEmpty)
+        XCTAssertEqual(try revisionCount(in: ledger), 0)
+        XCTAssertNil(try ledger.checkpoint(client: .claudeCode, sourceKey: sourceKey(source)))
     }
 
     @discardableResult

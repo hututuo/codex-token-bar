@@ -192,7 +192,13 @@ jobs:
               --require testHistoryScannerAccepts64KiBRecordAndShortSuccessor \
               --require testHistoryScannerAccepts1MiBRecordAndShortSuccessor \
               --require testHistoryScannerAcceptsExactly4MiBRecordAndShortSuccessorAcrossScans \
-              --require testHistoryScannerRejects4MiBPlusOneWithoutCheckpointOrSuccessorUsage \
+              --require testHistoryScannerAccepts4MiBPlusOneRecordAndShortSuccessorAcrossScans \
+              --require testHistoryScannerAcceptsExactly16MiBRecordAndShortSuccessorAcrossScans \
+              --require testHistoryScannerRejectsIncomplete16MiBRecordAndPreservesCommittedPrefix \
+              --require testHistoryScannerWaitsForLFWhenPartialAppendCrosses4MiBAndResumesAcrossScanners \
+              --require testHistoryScannerCommitsUsageFreeRecordOver4MiBAndOnlyCountsShortSuccessor \
+              --require testHistoryScannerKeepsOtherClientRecordLimitsAt4MiB \
+              --require testHistoryScannerRejects16MiBPlusOneWithoutCheckpointOrSuccessorUsage \
               --require testHistoryScannerPreservesCommittedPrefixAndResumesAfterSameFileRepair -- \
               swift test --filter 'MultiClientUsage|ClaudeRecordBoundaryTests|ClaudeDesktopQuotaHistory|ClaudeLocalQuota|MultiClientQuotaAutodiscovery|MultiClientProduct|IntegratedClientPresentation'
             exit 0
@@ -217,7 +223,13 @@ jobs:
             --require testHistoryScannerAccepts64KiBRecordAndShortSuccessor \
             --require testHistoryScannerAccepts1MiBRecordAndShortSuccessor \
             --require testHistoryScannerAcceptsExactly4MiBRecordAndShortSuccessorAcrossScans \
-            --require testHistoryScannerRejects4MiBPlusOneWithoutCheckpointOrSuccessorUsage \
+            --require testHistoryScannerAccepts4MiBPlusOneRecordAndShortSuccessorAcrossScans \
+            --require testHistoryScannerAcceptsExactly16MiBRecordAndShortSuccessorAcrossScans \
+            --require testHistoryScannerRejectsIncomplete16MiBRecordAndPreservesCommittedPrefix \
+            --require testHistoryScannerWaitsForLFWhenPartialAppendCrosses4MiBAndResumesAcrossScanners \
+            --require testHistoryScannerCommitsUsageFreeRecordOver4MiBAndOnlyCountsShortSuccessor \
+            --require testHistoryScannerKeepsOtherClientRecordLimitsAt4MiB \
+            --require testHistoryScannerRejects16MiBPlusOneWithoutCheckpointOrSuccessorUsage \
             --require testHistoryScannerPreservesCommittedPrefixAndResumesAfterSameFileRepair \
               --require testSharedRPCFixturesKeepExplicitFractionsResetsAndPrivacy \
               --require testDiscoveryRequiresInstalledProcessOwnedLoopbackPortAndCSRF \
@@ -415,7 +427,14 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$CLAUDE_USAGE_ONLY" == true ]]; then
-            python scripts/check_test_execution.py --kind rust --log native-library.log --source-sha "$SOURCE_SHA" -- \
+            python scripts/check_test_execution.py --kind rust --log native-library.log --source-sha "$SOURCE_SHA" \
+              --require claude_jsonl_record_size_matrix_preserves_usage_and_exact_checkpoints \
+              --require claude_jsonl_incomplete_append_waits_through_reopen_until_line_feed \
+              --require claude_jsonl_sixteen_mib_limit_preserves_absent_and_committed_ledgers \
+              --require claude_jsonl_usage_free_large_record_advances_without_fabricating_usage \
+              --require claude_jsonl_keeps_normal_batch_boundary_when_prefix_has_line_feed \
+              --require non_claude_jsonl_keeps_its_four_mib_record_rejection \
+              -- \
               cargo test --locked --manifest-path tauri-app/src-tauri/Cargo.toml --lib multi_client_ -- --test-threads=1
           else
             python scripts/check_test_execution.py --kind rust --log native-library.log --source-sha "$SOURCE_SHA" \
@@ -431,6 +450,12 @@ jobs:
               --require windows_quota_uses_only_summary_and_revalidates_identity \
               --require confirmed_antigravity_route_prices_match_canonical_models_and_legacy_opus_prices \
               --require claude_cache_write_lifetimes_prefer_valid_split_and_default_to_five_minutes \
+              --require claude_jsonl_record_size_matrix_preserves_usage_and_exact_checkpoints \
+              --require claude_jsonl_incomplete_append_waits_through_reopen_until_line_feed \
+              --require claude_jsonl_sixteen_mib_limit_preserves_absent_and_committed_ledgers \
+              --require claude_jsonl_usage_free_large_record_advances_without_fabricating_usage \
+              --require claude_jsonl_keeps_normal_batch_boundary_when_prefix_has_line_feed \
+              --require non_claude_jsonl_keeps_its_four_mib_record_rejection \
               --require trend_prices_reuse_request_pricing_and_keep_unknown_requests_explicit \
               --require running_task_titles_use_database_fallbacks_and_agent_metadata \
               --require orphan_start_needs_current_writer_while_terminal_always_wins \
