@@ -8,6 +8,7 @@ import XCTest
 final class SpeedEngineBenchmarkTests: XCTestCase {
     private let day: Int64 = 1_800_000_000_000
     private var environment: [String: String] { ProcessInfo.processInfo.environment }
+    private var hasWrittenRecord = false
 
     private struct MemorySample {
         var userMicroseconds: Int64
@@ -41,8 +42,25 @@ final class SpeedEngineBenchmarkTests: XCTestCase {
         record["kind"] = kind
         record["source"] = environment["SPEED_BENCHMARK_SOURCE"] ?? "unspecified"
         record["trial"] = Int(environment["SPEED_BENCHMARK_TRIAL"] ?? "0") ?? 0
-        let data = try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])
-        print("SPEED_ENGINE_BENCHMARK " + String(decoding: data, as: UTF8.self))
+        var data = try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])
+        data.append(0x0a)
+        guard let path = environment["SPEED_BENCHMARK_OUTPUT"], !path.isEmpty else {
+            throw NSError(domain: "SpeedEngineBenchmarkOutput", code: 1)
+        }
+        // XCTest writes to the same captured console stream. Large print()
+        // records can be interrupted by its diagnostics, so retain the complete
+        // JSON bytes in a dedicated file for this one test process instead.
+        if !hasWrittenRecord {
+            guard !FileManager.default.fileExists(atPath: path),
+                  FileManager.default.createFile(atPath: path, contents: nil) else {
+                throw NSError(domain: "SpeedEngineBenchmarkOutput", code: 2)
+            }
+            hasWrittenRecord = true
+        }
+        let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
+        defer { try? handle.close() }
+        _ = try handle.seekToEnd()
+        try handle.write(contentsOf: data)
     }
 
     private func nullable<T>(_ value: T?) -> Any { value.map { $0 as Any } ?? NSNull() }
@@ -126,6 +144,11 @@ final class SpeedEngineBenchmarkTests: XCTestCase {
         let sources: [SourceKind] = [.codex, .claudeCode, .deepseek, .gemini]
         let subsets: Set<SourceSet> = [SourceSet(.codex), SourceSet([.codex, .claudeCode]), .everything]
         var engine = SpeedEngine()
+        // Build the empty day ledger first so seed upserts accumulate Float32
+        // source buckets in index order. This unchanged-loop fixture's first
+        // post-seed publish no longer tests unordered bulk ledger initialization;
+        // the separate compatibility trace retains its original startup/rollover.
+        _ = engine.advance(nowMs: now, todayStartMs: day, emitsEvents: false)
         var expectedInput = 0
         var expectedOutput = 0
         var expectedUnfinalized = 0
@@ -135,8 +158,7 @@ final class SpeedEngineBenchmarkTests: XCTestCase {
             let source = sources[index % sources.count]
             let end = now - Int64(index) * span / Int64(count)
             let input = 100 + index % 17
-            // Distinct magnitudes reduce artificial equal-height peak ties in
-            // the day ledger's independent dictionary-order accumulation.
+            // Distinct magnitudes reduce artificial equal-height peak ties.
             let output = 40 + index
             let final = index % 19 != 0
             let knownCost: Int64? = index % 7 == 0 ? nil : Int64(100 + index % 29)

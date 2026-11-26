@@ -29,6 +29,8 @@ class SpeedEngineBenchmarkTests(unittest.TestCase):
             "configuration": "release", "swiftFlags": ["-Xswiftc", "-enable-testing"],
             "responses": list(BENCH.SIZES), "shapes": list(BENCH.SHAPES), "trials": list(BENCH.TRIALS),
             "ticks": 200, "freshProcessPerCase": True, "singleHostedRunner": True,
+            "recordTransport": "per-case-jsonl-v1",
+            "seedOrder": "empty-ledger-then-indexed-upserts-v1",
         }
         self.write_json("manifest.json", manifest)
         (self.root / "toolchain.txt").write_text("synthetic hosted toolchain fixture\n")
@@ -71,15 +73,45 @@ class SpeedEngineBenchmarkTests(unittest.TestCase):
                 "swift", "test", "-c", "release", "-Xswiftc", "-enable-testing", "--skip-build", "--filter", filter_name]
 
     def write_command(self, label, records, argv):
+        if "test" in argv:
+            argv = [*argv, f"SPEED_BENCHMARK_OUTPUT=/hosted-evidence/{label}.records.jsonl"]
         self.write_json(label + ".exit.json", {"commandExitCode": 0, "logExitCode": 0, "argv": argv})
+        (self.root / (label + ".log")).write_text("synthetic command diagnostics\n")
         self.write_records(label, records)
 
     def write_records(self, label, records):
-        (self.root / (label + ".log")).write_text("".join(BENCH.PREFIX + json.dumps(record) + "\n" for record in records))
+        (self.root / (label + ".records.jsonl")).write_text("".join(json.dumps(record) + "\n" for record in records))
 
     def records(self, label):
-        return [json.loads(line.split(BENCH.PREFIX, 1)[1]) for line in (self.root / (label + ".log")).read_text().splitlines()
-                if BENCH.PREFIX in line]
+        return [json.loads(line) for line in (self.root / (label + ".records.jsonl")).read_text().splitlines()]
+
+    def test_console_interleaving_does_not_corrupt_dedicated_jsonl_records(self):
+        label = "baseline-compatibility-1"
+        (self.root / (label + ".log")).write_text(
+            'SPEED_ENGINE_BENCHMARK {"kind":"compatibility","output":{"average":null,'
+            "Test Case 'testReplacementAndBoundaryCompatibilityTrace' passed (0.057 seconds).\n"
+            '"eventCount":0}}\n')
+        self.assertEqual(self.summarize()["status"], "PASS")
+
+    def test_missing_wrong_destination_or_corrupt_jsonl_is_rejected(self):
+        label = "baseline-compatibility-1"
+        path = self.root / (label + ".records.jsonl")
+        original = path.read_text()
+        path.unlink()
+        with self.assertRaisesRegex(BENCH.EvidenceError, "missing benchmark JSONL"):
+            self.summarize()
+        for content, message in ((original.rstrip("\n"), "incomplete benchmark JSONL"),
+                                 (original + '{"truncated":\n', "invalid benchmark JSON")):
+            path.write_text(content)
+            with self.subTest(message=message), self.assertRaisesRegex(BENCH.EvidenceError, message):
+                self.summarize()
+        path.write_text(original)
+        status_path = self.root / (label + ".exit.json")
+        status = json.loads(status_path.read_text())
+        status["argv"][-1] = "SPEED_BENCHMARK_OUTPUT=/hosted-evidence/another-case.records.jsonl"
+        self.write_json(label + ".exit.json", status)
+        with self.assertRaisesRegex(BENCH.EvidenceError, "per-case JSONL output argument"):
+            self.summarize()
 
     def output(self, size, phase):
         expected = BENCH.independent_totals(size)
@@ -158,6 +190,15 @@ class SpeedEngineBenchmarkTests(unittest.TestCase):
         self.write_records(label, records)
         with self.assertRaisesRegex(BENCH.EvidenceError, "identity mismatch"):
             self.summarize()
+
+    def test_seed_order_and_record_transport_are_required_contracts(self):
+        manifest = json.loads((self.root / "manifest.json").read_text())
+        for field in ("seedOrder", "recordTransport"):
+            for replacement in (None, "unknown"):
+                changed = {**manifest, field: replacement}
+                self.write_json("manifest.json", changed)
+                with self.subTest(field=field, replacement=replacement), self.assertRaisesRegex(BENCH.EvidenceError, "manifest: wrong " + field):
+                    self.summarize()
 
     def test_trace_order_and_missing_semantic_fields_are_rejected(self):
         label = "candidate-compatibility-1"

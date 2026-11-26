@@ -114,6 +114,8 @@ jobs:
               'configuration': 'release', 'swiftFlags': ['-Xswiftc', '-enable-testing'],
               'responses': [2000, 20000], 'shapes': ['day', 'dense'], 'trials': [1, 2, 3],
               'ticks': 200, 'freshProcessPerCase': True, 'singleHostedRunner': True,
+              'recordTransport': 'per-case-jsonl-v1',
+              'seedOrder': 'empty-ledger-then-indexed-upserts-v1',
           }
           Path('performance-compatibility-evidence/manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
           PY
@@ -176,11 +178,14 @@ jobs:
           done
           run_case() {
             local role="$1" responses="$2" shape="$3" trial="$4" revision="$BASELINE_SHA"
+            local label="$role-$responses-$shape-$trial"
             [[ "$role" == baseline ]] || revision="$SOURCE_SHA"
             (
               cd "$GITHUB_WORKSPACE/product-$role"
-              run_logged "$role-$responses-$shape-$trial" env \
+              [[ ! -e "$EVIDENCE/$label.records.jsonl" ]]
+              run_logged "$label" env \
                 SPEED_BENCHMARK_SOURCE="$revision" SPEED_BENCHMARK_TRIAL="$trial" \
+                SPEED_BENCHMARK_OUTPUT="$EVIDENCE/$label.records.jsonl" \
                 SPEED_BENCHMARK_RESPONSES="$responses" SPEED_BENCHMARK_SHAPE="$shape" SPEED_BENCHMARK_TICKS=200 \
                 swift test -c release -Xswiftc -enable-testing --skip-build \
                 --filter SpeedEngineBenchmarkTests.testUnchangedSyntheticPublishes
@@ -195,7 +200,10 @@ jobs:
               [[ "$role" == baseline ]] || revision="$SOURCE_SHA"
               (
                 cd "$GITHUB_WORKSPACE/product-$role"
-                run_logged "$role-compatibility-$trial" env SPEED_BENCHMARK_SOURCE="$revision" SPEED_BENCHMARK_TRIAL="$trial" \
+                label="$role-compatibility-$trial"
+                [[ ! -e "$EVIDENCE/$label.records.jsonl" ]]
+                run_logged "$label" env SPEED_BENCHMARK_SOURCE="$revision" SPEED_BENCHMARK_TRIAL="$trial" \
+                  SPEED_BENCHMARK_OUTPUT="$EVIDENCE/$label.records.jsonl" \
                   swift test -c release -Xswiftc -enable-testing --skip-build \
                   --filter SpeedEngineBenchmarkTests.testReplacementAndBoundaryCompatibilityTrace
               )

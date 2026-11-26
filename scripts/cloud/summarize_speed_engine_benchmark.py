@@ -9,7 +9,6 @@ import re
 import statistics
 import sys
 
-PREFIX = "SPEED_ENGINE_BENCHMARK "
 SIZES = (2000, 20000)
 SHAPES = ("day", "dense")
 TRIALS = (1, 2, 3)
@@ -33,6 +32,7 @@ LIMITATIONS = [
     "Darwin ru_maxrss is lifetime process peak RSS in bytes, including XCTest and fixture setup; its growth is not allocation.",
     "Current task resident_size is endpoint process RSS, not phys_footprint, and endpoints miss transient peaks.",
     "Warmup/setup are outside the measured loop; retained caches can trade CPU for additional memory.",
+    "An empty ledger is initialized before indexed seed upserts; unchanged cases do not test unordered bulk ledger initialization.",
     "Three trials describe this runner/toolchain/workload; reduction percentages are observations, not a 50% performance gate.",
 ]
 
@@ -107,12 +107,19 @@ def check_exit(root, label, required_argv=()):
 def read_records(root, label, source, trial, required_filter):
     check_exit(root, label, ("swift", "test", "release", "-enable-testing", "--skip-build", required_filter,
                              f"SPEED_BENCHMARK_SOURCE={source}", f"SPEED_BENCHMARK_TRIAL={trial}"))
+    status = read_json(root / f"{label}.exit.json")
+    destinations = [argument.split("=", 1)[1] for argument in status["argv"]
+                    if argument.startswith("SPEED_BENCHMARK_OUTPUT=")]
+    require(len(destinations) == 1 and Path(destinations[0]).name == f"{label}.records.jsonl",
+            f"{label}: missing/wrong per-case JSONL output argument")
+    path = root / f"{label}.records.jsonl"
+    require(path.is_file(), f"{label}: missing benchmark JSONL (console logs are diagnostics only)")
+    text = path.read_text()
+    require(not text or text.endswith("\n"), f"{label}: incomplete benchmark JSONL record")
     records = []
-    for line_number, line in enumerate((root / f"{label}.log").read_text().splitlines(), 1):
-        if PREFIX not in line:
-            continue
+    for line_number, line in enumerate(text.splitlines(), 1):
         try:
-            record = json.loads(line.split(PREFIX, 1)[1], parse_constant=reject_constant)
+            record = json.loads(line, parse_constant=reject_constant)
         except ValueError as error:
             raise EvidenceError(f"{label}:{line_number}: invalid benchmark JSON") from error
         require(isinstance(record, dict), f"{label}:{line_number}: record must be an object")
@@ -218,7 +225,8 @@ def validate_and_summarize(root, baseline, candidate, fixture):
                 "actualSources": {"baseline": baseline, "candidate": candidate},
                 "configuration": "release", "swiftFlags": ["-Xswiftc", "-enable-testing"],
                 "responses": list(SIZES), "shapes": list(SHAPES), "trials": list(TRIALS), "ticks": 200,
-                "freshProcessPerCase": True, "singleHostedRunner": True}
+                "freshProcessPerCase": True, "singleHostedRunner": True, "recordTransport": "per-case-jsonl-v1",
+                "seedOrder": "empty-ledger-then-indexed-upserts-v1"}
     for field, value in expected.items():
         require(type(manifest.get(field)) is type(value) and manifest.get(field) == value, f"manifest: wrong {field}")
     require(re.fullmatch(r"[0-9a-f]{40}", manifest.get("harness", "")) is not None, "manifest: exact harness SHA required")
