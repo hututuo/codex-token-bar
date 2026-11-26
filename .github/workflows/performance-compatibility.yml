@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/performance-compatibility.yml'
       - 'scripts/cloud/fixtures/SpeedEngineBenchmarkTests.swift'
+      - 'scripts/cloud/fixtures/SpeedEngineBenchmarkPackage.swift'
       - 'scripts/cloud/summarize_speed_engine_benchmark.py'
   workflow_dispatch:
     inputs:
@@ -147,6 +148,9 @@ jobs:
               # Preflight before injection: the fixture is never a vendor patch.
               run_logged "$role-provenance-before" python3 scripts/agent_speed_vendor.py check
               [[ ! -e "$FIXTURE_REL" ]] || { echo 'Refusing to overwrite a product-owned test'; exit 1; }
+              cp Package.swift "$EVIDENCE/$role-Package.swift.original"
+              cp "$HARNESS/scripts/cloud/fixtures/SpeedEngineBenchmarkPackage.swift" Package.swift
+              shasum -a 256 Package.swift "$EVIDENCE/$role-Package.swift.original" > "$EVIDENCE/$role-package-hashes.txt"
               cp "$HARNESS/scripts/cloud/fixtures/SpeedEngineBenchmarkTests.swift" "$FIXTURE_REL"
               cmp "$FIXTURE_REL" "$HARNESS/scripts/cloud/fixtures/SpeedEngineBenchmarkTests.swift"
               run_logged "$role-prepare-lfs" bash scripts/prepare_tiktoken_lfs.sh
@@ -192,6 +196,7 @@ jobs:
               cd "$GITHUB_WORKSPACE/product-$role"
               cmp "$FIXTURE_REL" "$HARNESS/scripts/cloud/fixtures/SpeedEngineBenchmarkTests.swift"
               rm -- "$FIXTURE_REL"
+              cp "$EVIDENCE/$role-Package.swift.original" Package.swift
               git diff --exit-code
               run_logged "$role-provenance-after" python3 scripts/agent_speed_vendor.py check
             )
