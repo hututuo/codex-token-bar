@@ -27,7 +27,6 @@ struct SpeedEngine: Sendable {
     private var responseViewCutoffMs: Int64?
     private var latestResponseEnds: [String: Int64] = [:]
     private var earliestResponseEndMs: Int64?
-    private var projects: [String: String] = [:]
     private var ledger: DayLedger?
     private var lastResponse: ResponseSummary?
     private var observedPeak = Rate.zero
@@ -87,7 +86,6 @@ struct SpeedEngine: Sendable {
             responseViewsDirty = true
             earliestResponseEndMs = min(earliestResponseEndMs ?? record.endMs, record.endMs)
         }
-        projects[record.key] = project
         ledger?.replace(old, with: record)
         if let provider = record.provider { agentProviders[record.agentId] = provider }
         let isLiveCompletion = isCompletion && emitsEvents && nowMs.map { record.endMs >= $0 - Self.completionEventMaxAgeMs } ?? false
@@ -264,7 +262,6 @@ struct SpeedEngine: Sendable {
         self.earliestResponseEndMs = responses.values.map(\.endMs).min()
         guard responses.count != previousCount else { return }
         responseViewsDirty = true
-        projects = projects.filter { responses[$0.key] != nil }
         reportLedger.prune(before: cutoff)
         agentProviders = agentProviders.filter { agents[$0.key] != nil }
     }

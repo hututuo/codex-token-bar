@@ -1,5 +1,6 @@
 """Stdlib-only harness checks. These tests never launch or build an App."""
 import ctypes
+import datetime as dt
 import importlib.util
 import json
 from pathlib import Path
@@ -17,6 +18,28 @@ SPEC.loader.exec_module(bench)
 
 
 class WholeAppHarnessTests(unittest.TestCase):
+    def test_absent_defaults_domain_can_export_an_empty_plist(self):
+        exported = SimpleNamespace(returncode=0, stdout=plistlib.dumps({}))
+        absent = SimpleNamespace(returncode=1, stdout=b"")
+        env = {"HOME": "/synthetic-home"}
+        with patch.object(bench, "command", side_effect=[exported, absent]) as command:
+            self.assertIsNone(bench.export_defaults(env))
+        self.assertEqual(command.call_count, 2)
+        self.assertEqual(command.call_args.args[0], ["/usr/bin/defaults", "read", bench.BUNDLE_ID])
+        self.assertEqual(command.call_args.kwargs, {"env": env, "check": False})
+
+    def test_existing_empty_defaults_domain_remains_present(self):
+        exported = SimpleNamespace(returncode=0, stdout=plistlib.dumps({}))
+        existing = SimpleNamespace(returncode=0, stdout=b"{}")
+        with patch.object(bench, "command", side_effect=[exported, existing]):
+            self.assertEqual(bench.export_defaults({}), {})
+
+    def test_nonempty_defaults_domain_preserves_values_without_another_query(self):
+        value = {"fixture": True}
+        with patch.object(bench, "command", return_value=SimpleNamespace(returncode=0, stdout=plistlib.dumps(value))) as command:
+            self.assertEqual(bench.export_defaults({}), value)
+        command.assert_called_once()
+
     def test_rusage_abi_has_uuid_and_35_uint64_fields(self):
         self.assertEqual(len(bench.RU_FIELDS), 35)
         self.assertEqual(ctypes.sizeof(bench.RUsage), 296)
@@ -88,6 +111,29 @@ class WholeAppHarnessTests(unittest.TestCase):
             self.assertNotIn("OPENAI_API_KEY", env)
             self.assertNotIn("HTTPS_PROXY", env)
             self.assertEqual(env["CODEX_HOME"], str(root / "empty-codex"))
+
+    def test_fixture_gives_every_response_an_explicit_start_and_completion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "source"
+            fixture = bench.generate_fixture(root, 2000, 1800000000)
+            completed = 0
+            ids = set()
+            for path in (root / "claudeCode").glob("*.jsonl"):
+                rows = [json.loads(line) for line in path.read_bytes().splitlines()]
+                self.assertEqual(len(rows) % 2, 0)
+                for user, assistant in zip(rows[::2], rows[1::2]):
+                    self.assertEqual(user["type"], "user")
+                    self.assertEqual(assistant["type"], "assistant")
+                    self.assertEqual(user["sessionId"], assistant["sessionId"])
+                    self.assertEqual(assistant["message"]["stop_reason"], "end_turn")
+                    duration = (dt.datetime.fromisoformat(assistant["timestamp"]) - dt.datetime.fromisoformat(user["timestamp"])).total_seconds()
+                    self.assertEqual(duration, 1)
+                    ids.add(assistant["message"]["id"])
+                    completed += 1
+            self.assertEqual(completed, fixture["responses"])
+            self.assertEqual(len(ids), completed)
+            self.assertEqual(fixture["completedResponses"], completed)
+            self.assertEqual(fixture["fixtureSchemaVersion"], 2)
 
     def test_ledger_digest_includes_all_stable_columns_and_rejects_wrong_totals(self):
         with tempfile.TemporaryDirectory() as tmp:

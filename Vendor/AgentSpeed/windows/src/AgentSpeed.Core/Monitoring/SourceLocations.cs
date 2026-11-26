@@ -43,7 +43,6 @@ internal sealed record SourceLocations(
         var selected = new Dictionary<SourceKind, IReadOnlyList<string>>();
         foreach (var source in new[] { SourceKind.ClaudeCode, SourceKind.ClaudeDesktop })
         {
-            if (!configuration.EnabledSources.Contains(source)) { continue; }
             selected[source] = [.. Distinct(NormalizeAll(configuration.ClaudeRootsBySource?.GetValueOrDefault(source)
                 ?? [configuration.ClaudeRoot ?? LiveMonitor.DefaultClaudeRoot]))];
         }
@@ -65,10 +64,12 @@ internal sealed record SourceLocations(
     /// Transcript roots in family order; Gemini and omp may contribute several, Antigravity one <c>conversations</c>
     /// folder per store, each WorkBuddy edition its <c>projects</c> folder. A path listed twice within a family is returned once.
     /// </summary>
-    public IEnumerable<(RootFamily Family, string Path)> FileRoots()
+    public IEnumerable<(RootFamily Family, string Path)> FileRoots(IReadOnlySet<SourceKind>? enabled = null)
     {
         yield return (RootFamily.Codex, CodexRoot);
-        var claudeRoots = Distinct(ClaudeRootsBySource?.Values.SelectMany(roots => roots) ?? [ClaudeRoot]).ToList();
+        // The monitor retains all ownership roots; walking callers pass enabled.
+        var claudeRoots = Distinct(ClaudeRootsBySource?.Where(selection => enabled is null || enabled.Contains(selection.Key))
+            .SelectMany(selection => selection.Value) ?? [ClaudeRoot]).ToList();
         if (claudeRoots.Count == 0) { claudeRoots.Add(ClaudeRoot); }
         foreach (var root in claudeRoots)
         {

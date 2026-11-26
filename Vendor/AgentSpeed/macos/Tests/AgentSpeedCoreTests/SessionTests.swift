@@ -33,6 +33,12 @@ struct SessionTests {
 
     static func startOfToday() -> Int64 { Clock.milliseconds(Calendar.current.startOfDay(for: Date())) }
 
+    static func canonicalPath(_ url: URL) throws -> String {
+        let resolved = try #require(realpath(url.path, nil))
+        defer { free(resolved) }
+        return String(cString: resolved)
+    }
+
     @Test func startupDecodeWindowsBoundFilesBytesAndOversizedInputs() {
         #expect(TranscriptSession.startupDecodeWindows(weights: []).isEmpty)
         #expect(TranscriptSession.startupDecodeWindows(weights: [5, 4, 1, 8, 2, 0], maxFiles: 3, maxBytes: 10)
@@ -71,7 +77,7 @@ struct SessionTests {
         let path = "projects/p/016.jsonl"
         let appended = #"{"type":"assistant","entrypoint":"cli","message":{"id":"after-window","model":"m","stop_reason":"end_turn","usage":{"output_tokens":7}},"timestamp":"\#(timestamp)"}"#
         try directory.append(path, appended + "\n")
-        let canonical = directory.file(path).resolvingSymlinksInPath().path
+        let canonical = try Self.canonicalPath(directory.file(path))
         #expect(session.handleChanges(atCanonicalPaths: [canonical]))
         #expect(session.responses.count == 37)
         #expect(session.responses.first { $0.key == "after-window" }?.usage.output == 7)
@@ -172,12 +178,12 @@ struct SessionTests {
         #expect(session.responses.first { $0.key == "same-desktop" }?.agentId.hasSuffix("/right-desktop.jsonl") == true)
         #expect(session.responses.reduce(0) { $0 + $1.usage.output } == 24)
         // Truncation rebuilds this parser; it must retain its original folder selection.
-        let wrongCodePath = directory.file("desktop/p/wrong-code.jsonl").resolvingSymlinksInPath().path
+        let wrongCodePath = try Self.canonicalPath(directory.file("desktop/p/wrong-code.jsonl"))
         try directory.write("desktop/p/wrong-code.jsonl", "")
         _ = session.handleChanges(atCanonicalPaths: [wrongCodePath])
         for (path, output) in [("desktop/p/wrong-code.jsonl", 999), ("code/p/right-code.jsonl", 17)] {
             try directory.append(path, #"{"type":"assistant","entrypoint":"cli","message":{"id":"after-reset","model":"m","stop_reason":"end_turn","usage":{"output_tokens":\#(output)}},"timestamp":"\#(timestamp)"}"# + "\n")
-            _ = session.handleChanges(atCanonicalPaths: [directory.file(path).resolvingSymlinksInPath().path])
+            _ = session.handleChanges(atCanonicalPaths: [try Self.canonicalPath(directory.file(path))])
         }
         #expect(session.responses.first { $0.key == "after-reset" }?.usage.output == 17)
     }
@@ -289,7 +295,35 @@ struct SessionTests {
         let session = TranscriptSession(configuration: configuration)
         _ = session.seed(todayStartMs: Self.startOfToday())
         #expect(session.responses.map(\.key) == ["msg_C"])
+        let context = SnapshotContext(session: session, todayStartMs: Self.startOfToday())
+        #expect(context.sources[.claudeCode]?.enabled == false)
+        #expect(context.sources[.claudeCode]?.rootPath == "")
+        #expect(context.sources[.claudeCode]?.available == false)
+        #expect(context.sources[.claudeCode]?.sessionCount == 0)
         _ = directory
+    }
+
+    @Test func disabledNestedClaudeSourceRetainsOwnershipWithoutItsOwnWatch() throws {
+        let directory = try TempDirectory()
+        let now = Date()
+        let timestamp = ISO8601DateFormatter().string(from: now)
+        for (index, record) in [("projects/nested/p/code.jsonl", "cli", "shared-nested", 101),
+            ("projects/p/copy.jsonl", "claude-desktop", "shared-nested", 103),
+            ("projects/p/unique.jsonl", "claude-desktop", "desktop-unique", 13)].enumerated() {
+            let (path, entrypoint, id, output) = record
+            try directory.write(path, #"{"type":"assistant","entrypoint":"\#(entrypoint)","message":{"id":"\#(id)","model":"m","stop_reason":"end_turn","usage":{"output_tokens":\#(output)}},"timestamp":"\#(timestamp)"}"# + "\n",
+                modified: now.addingTimeInterval(TimeInterval(index - 5)))
+        }
+        let configuration = MonitorConfiguration(enabledSources: [.claudeDesktop],
+            claudeRootsBySource: [.claudeCode: [directory.file("projects/nested")], .claudeDesktop: [directory.file("projects")]])
+        let session = TranscriptSession(configuration: configuration)
+        #expect(session.seed(todayStartMs: Self.startOfToday()).filesRead == 3)
+        #expect(session.responses.map(\.key) == ["desktop-unique"])
+        #expect(session.responses.first?.usage.output == 13)
+        #expect(session.watchedPaths == [try Self.canonicalPath(directory.file("projects"))])
+        let context = SnapshotContext(session: session, todayStartMs: Self.startOfToday())
+        #expect(context.sources[.claudeCode]?.rootPath == "")
+        #expect(context.sources[.claudeCode]?.available == false)
     }
 
     @Test func liveAppendsProduceCompletionsAndTruncationDoesNotDoubleCount() throws {

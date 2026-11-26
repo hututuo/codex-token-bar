@@ -355,7 +355,7 @@ public sealed class LiveMonitor : IDisposable
     {
         var zone = TimeZoneInfo.Local;
         var locations = SourceLocations.Resolve(configuration);
-        foreach (var (family, path) in locations.FileRoots())
+        foreach (var (family, path) in locations.FileRoots(configuration.EnabledSources))
         {
             if (path.Length > 0 && Families.IsEnabled(family, configuration.EnabledSources))
             {

@@ -178,8 +178,11 @@ final class BodySpeedHistoryTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let url = directory.appendingPathComponent("history.sqlite")
-        let now = sample().endedAt
-        var first = sample(), second = sample(), expired = sample()
+        // Keep all timestamps valid after moving one sample twenty days back.
+        var base = sample()
+        base.startedAt += 1_800_000_000; base.endedAt += 1_800_000_000
+        let now = base.endedAt
+        var first = base, second = base, expired = base
         first.id = "first"; first.startedAt -= 10; first.endedAt -= 10
         second.id = "second"
         expired.id = "expired"; expired.startedAt -= 20 * 86_400; expired.endedAt -= 20 * 86_400

@@ -617,8 +617,8 @@
       "sha256": "397cb365076980a522ec392e993083bf4cba9488016b230679c6e86132d52914"
     },
     "macos/Sources/AgentSpeedCore/Engine/SpeedEngine.swift": {
-      "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged Reuse mutation-invalidated timed-response ordering and latest-agent ends across timer publishes, with an earliest-end retention guard; preserve clock-dependent arithmetic and source/model attribution. Limit duplicate timed-response slots to the live/reference retention window and rebuild from retained authoritative records on a backwards clock cutoff.",
-      "sha256": "681d8fe41177e42db866caaa6c7e82b9f47afd3eefd2c0b8abbc17d4c335aae5"
+      "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged Reuse mutation-invalidated timed-response ordering and latest-agent ends across timer publishes, with an earliest-end retention guard; preserve clock-dependent arithmetic and source/model attribution. Limit duplicate timed-response slots to the live/reference retention window and rebuild from retained authoritative records on a backwards clock cutoff. Remove the unused per-response project dictionary; completion summaries still use the upsert project argument.",
+      "sha256": "a271179770517a70593d47b87650dec1f34e2471c467cbcea9fb3977c36b2ba7"
     },
     "macos/Sources/AgentSpeedCore/History/HistoryAnalyzer.swift": {
       "reason": "Local analysis revision4 to5 for paginated prefix accounting semantics; does not change DB schema or start Token Bar HistoryService.",
@@ -685,8 +685,8 @@
       "sha256": "8a78c810a817df0f1caa6ea54990781ef9eb2e4d89f9516fcfdbaac2c193e49f"
     },
     "macos/Sources/AgentSpeedCore/Monitor/TranscriptSession.swift": {
-      "reason": "Capture and merge local log/poll read observations through transcript, database, and whole-file reads; keep provider event timing distinct. Preserve shared positioned IO and source-read provenance; backport c668286 bounded quiet-file rediscovery (24h hot set and one sixth older files each round). Use the fresh TrackedFile state projection without copying its full parser for snapshot counts and warnings. Maintain session count, malformed and unsupported totals alongside successful parser updates; rebuild date-sensitive counts on local day changes. Read per-client Claude root sets once with overlapping-root ownership, filter excluded copies before shared dedupe, and bound startup decode output to ordered 16-file/64-MiB windows while preserving read offsets and ownership order. Apply the existing idle/open connection cap between database startup decode windows so consumed WAL readers do not accumulate across the entire backlog. Give source-root lookup a distinct argument label to preserve existing family-root enum inference.",
-      "sha256": "5c87068b9333ed048f7e2409149635f18ac44dddb2ec7d32c4204c81c49cab6f"
+      "reason": "Capture and merge local log/poll read observations through transcript, database, and whole-file reads; keep provider event timing distinct. Preserve shared positioned IO and source-read provenance; backport c668286 bounded quiet-file rediscovery (24h hot set and one sixth older files each round). Use the fresh TrackedFile state projection without copying its full parser for snapshot counts and warnings. Maintain session count, malformed and unsupported totals alongside successful parser updates; rebuild date-sensitive counts on local day changes. Read per-client Claude root sets once with overlapping-root ownership, filter excluded copies before shared dedupe, and bound startup decode output to ordered 16-file/64-MiB windows while preserving read offsets and ownership order. Apply the existing idle/open connection cap between database startup decode windows so consumed WAL readers do not accumulate across the entire backlog. Give source-root lookup a distinct argument label to preserve existing family-root enum inference. Keep Claude root ownership independent of enablement, including disabled nested selections; only enabled roots are read or watched and disabled source paths remain hidden.",
+      "sha256": "2d54f3e10ca8ccfab6181b4571904a543d77c7c69cb6f851fcbee9c31c75fb56"
     },
     "macos/Sources/AgentSpeedCore/Parsing/ClaudeLine.swift": {
       "reason": "Recognize explicit Claude API/stream errors as local display-stop metadata and backport upstream b89d983 toolEndsTurn extraction. Extract bounded local-only Claude task labels from agentName, title/customTitle, summary or first direct user text; do not retain full text or change token accounting.",
@@ -765,8 +765,8 @@
       "sha256": "9f666dc4a4e1f7b724a01efd9ced3023bbe39fa3d50d30e7d5bd780888e8ba15"
     },
     "macos/Tests/AgentSpeedCoreTests/SessionTests.swift": {
-      "reason": "Use explicit isolated source roots; never read developer home during tests Backport c668286 deterministic quiet-file and midnight resumption regressions, retaining existing source-read context tests. Verify cached session counts across local day changes, appended lines, removal, and retained malformed diagnostics. Read per-client Claude root sets once with overlapping-root ownership, filter excluded copies before shared dedupe, and bound startup decode output to ordered 16-file/64-MiB windows while preserving read offsets and ownership order. Exercise the distinct source-root lookup label while legacy family-root shorthand remains unambiguous.",
-      "sha256": "f5f71da5a3ef99b3550b2edd4196fb3168b4035c0c264991aeb93957239d27c3"
+      "reason": "Use explicit isolated source roots; never read developer home during tests Backport c668286 deterministic quiet-file and midnight resumption regressions, retaining existing source-read context tests. Verify cached session counts across local day changes, appended lines, removal, and retained malformed diagnostics. Read per-client Claude root sets once with overlapping-root ownership, filter excluded copies before shared dedupe, and bound startup decode output to ordered 16-file/64-MiB windows while preserving read offsets and ownership order. Exercise the distinct source-root lookup label while legacy family-root shorthand remains unambiguous. Use POSIX canonical watcher paths in startup/reset fixtures and cover disabled shared/nested Claude ownership and hidden source status.",
+      "sha256": "605d33ac86fe34ddf01a3283c2d755725b121956cb649ccf614b92a09a985371"
     },
     "macos/Tests/AgentSpeedCoreTests/TrafficSamplerTests.swift": {
       "reason": "Break the process-argument fixture into typed byte-array appends for Swift 6 compiler compatibility; emitted fixture bytes and assertions are unchanged.",
@@ -809,8 +809,8 @@
       "sha256": "de03acb2e635961159d04a49d03fb9e4610bff3b3a260c8694ffc71639fee5a7"
     },
     "windows/src/AgentSpeed.Core/History/HistoryAnalyzer.cs": {
-      "reason": "Match Swift local analysis revision5 for paginated prefix semantics; no business DB migration or new history scanner.",
-      "sha256": "f9768512c27229a4bba043855455fe52cc2dddb93fffeea20916d18d0559979d"
+      "reason": "Match Swift local analysis revision5 for paginated prefix semantics; no business DB migration or new history scanner. Walk only enabled Claude root selections while preserving the full ownership map for live deduplication.",
+      "sha256": "3f030906c1fff25d0104645e3099f1a50e8d1aee4d4dfc49b461eecc9e06a036"
     },
     "windows/src/AgentSpeed.Core/IO/FileIdentity.cs": {
       "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
@@ -837,8 +837,8 @@
       "sha256": "8c0edcc795c308b1c8927e6a6a6471288166333f40207ef1ddcd19c053f14238"
     },
     "windows/src/AgentSpeed.Core/LiveMonitor.cs": {
-      "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
-      "sha256": "6d9699fd48bdb37a043a3f58d584b019a57f37013f6970d17a26f005aa15d934"
+      "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources. Apply local source path policy only to enabled Claude walk roots.",
+      "sha256": "407685ab550851b8544e1c6e7f6658bb1858fd6ba7fe219ebb67342f564bdb23"
     },
     "windows/src/AgentSpeed.Core/Models.cs": {
       "reason": "Carry optional local-only Claude displayTitle in public snapshots; no report schema or token accounting changes. Support per-client Claude root sets in one monitor, preserve legacy shared-root configuration, and keep root ownership, availability, parser resets and pre-dedupe filtering consistent.",
@@ -849,12 +849,12 @@
       "sha256": "ed38b03c255ba4b40340c2ecddb27c1e61d8d38edba6a8910fad9e21f2d0d34b"
     },
     "windows/src/AgentSpeed.Core/Monitoring/MonitorCore.cs": {
-      "reason": "Propagate source-read observations, local display-stop metadata, local Claude displayTitle and realtime event cadence opt-in; preserve default monitor and rate behavior. Support per-client Claude root sets in one monitor, preserve legacy shared-root configuration, and keep root ownership, availability, parser resets and pre-dedupe filtering consistent.",
-      "sha256": "347491f50b440e926d6ec8f79f776edb72d2825d8de67b8b9a041d1821e1becd"
+      "reason": "Propagate source-read observations, local display-stop metadata, local Claude displayTitle and realtime event cadence opt-in; preserve default monitor and rate behavior. Support per-client Claude root sets in one monitor, preserve legacy shared-root configuration, and keep root ownership, availability, parser resets and pre-dedupe filtering consistent. Keep shared and nested Claude dedupe ownership stable when a sibling is disabled; do not scan/watch disabled roots or expose their source status paths.",
+      "sha256": "7d0e97608c81b70fa7b1c1d22179856e75537e71a4f8c0c790f775dc30703198"
     },
     "windows/src/AgentSpeed.Core/Monitoring/SourceLocations.cs": {
-      "reason": "Support per-client Claude root sets in one monitor, preserve legacy shared-root configuration, and keep root ownership, availability, parser resets and pre-dedupe filtering consistent.",
-      "sha256": "a803177e223915ddd297985c0ef7e4a144e77bfad5560ef3155bcb915ae30516"
+      "reason": "Support per-client Claude root sets in one monitor, preserve legacy shared-root configuration, and keep root ownership, availability, parser resets and pre-dedupe filtering consistent. Resolve ownership for both Claude clients independently of enablement and allow walking callers to filter enabled roots.",
+      "sha256": "51b8993e4767ad05151debb6fbce20117d96c535a7864f74db859ad66f5c6146"
     },
     "windows/src/AgentSpeed.Core/Monitoring/TrackedFile.cs": {
       "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources. Support per-client Claude root sets in one monitor, preserve legacy shared-root configuration, and keep root ownership, availability, parser resets and pre-dedupe filtering consistent.",

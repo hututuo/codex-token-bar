@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using AgentSpeed.Core;
 using AgentSpeed.Core.Antigravity;
+using AgentSpeed.Core.Monitoring;
 using AgentSpeed.Core.Parsing;
 
 namespace CodexTokenBar.AgentSpeedReporter;
@@ -34,8 +35,163 @@ internal static class ParserCompatibilitySelfTests
 
         CodexResetClearsPaginatedOrdinal();
         ClaudeDisplayTitles();
+        ClaudeRootOwnership();
         AntigravityStoreLocations();
-        Console.WriteLine($"PASS: upstream parser compatibility ({count} fixtures, Codex reset, Claude display titles and Antigravity stores)");
+        Console.WriteLine($"PASS: upstream parser compatibility ({count} fixtures, Codex reset, Claude display titles, Claude root ownership and Antigravity stores)");
+    }
+
+    private static void ClaudeRootOwnership()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), "tokenbar-claude-ownership-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        var day = new DateTimeOffset(2026, 10, 20, 0, 0, 0, TimeSpan.Zero);
+        var now = day.AddHours(10);
+        var nowMs = now.ToUnixTimeMilliseconds();
+        var todayStartMs = day.ToUnixTimeMilliseconds();
+        var desktopOnly = new HashSet<SourceKind> { SourceKind.ClaudeDesktop };
+        var bothClients = new HashSet<SourceKind> { SourceKind.ClaudeCode, SourceKind.ClaudeDesktop };
+        try
+        {
+            var shared = Path.Combine(folder, "shared");
+            Write(shared, "code", 0, Assistant("cli", "copied-legacy", 101));
+            Write(shared, "desktop", 1, Assistant("claude-desktop", "copied-legacy", 101),
+                Assistant("claude-desktop", "unique-desktop", 13));
+            var legacy = Configuration(desktopOnly, shared);
+            using (var core = new MonitorCore(legacy, SourceLocations.Resolve(legacy), todayStartMs, zone: TimeZoneInfo.Utc))
+            {
+                core.Clock = () => nowMs;
+                var report = core.Seed(nowMs, todayStartMs, CancellationToken.None);
+                var snapshot = core.BuildSnapshot(nowMs, todayStartMs, MonitorState.Running, observeLive: false).Snapshot;
+                Check("claude-legacy-disabled-copy", "filesRead", 2, report.FilesRead, "shared legacy root");
+                Check("claude-legacy-disabled-copy", "output", 13L, snapshot.Today.Output, "only unique Desktop usage counts");
+                Check("claude-legacy-disabled-copy", "requests", 1L, snapshot.Today.Requests, "Code retains ownership of copied history");
+                Check("claude-legacy-disabled-copy", "desktopOutput", 13L,
+                    snapshot.Sources.Single(source => source.Kind == SourceKind.ClaudeDesktop).Today.Output, "Desktop source total");
+                CheckDisabledCode("claude-legacy-disabled-copy", snapshot);
+                CheckDisabledCode("claude-legacy-disabled-copy-starting", core.BuildStartingSnapshot(nowMs, todayStartMs, 0));
+            }
+
+            var codeRoot = Path.Combine(folder, "explicit-code");
+            var desktopRoot = Path.Combine(folder, "explicit-desktop");
+            // Wrong-root copies are deliberately older so they reach shared dedupe first if the ownership gate fails.
+            Write(desktopRoot, "wrong-code", 0, Assistant("cli", "same-code", 1001));
+            Write(codeRoot, "wrong-desktop", 1, Assistant("claude-desktop", "same-desktop", 1003));
+            Write(codeRoot, "right-code", 2, Assistant("cli", "same-code", 11));
+            Write(desktopRoot, "right-desktop", 3, Assistant("claude-desktop", "same-desktop", 13));
+            var explicitRoots = Configuration(bothClients, Path.Combine(folder, "unused-legacy"),
+                new Dictionary<SourceKind, IReadOnlyList<string>> {
+                    [SourceKind.ClaudeCode] = [codeRoot], [SourceKind.ClaudeDesktop] = [desktopRoot] });
+            using (var core = new MonitorCore(explicitRoots, SourceLocations.Resolve(explicitRoots), todayStartMs, zone: TimeZoneInfo.Utc))
+            {
+                core.Clock = () => nowMs;
+                var report = core.Seed(nowMs, todayStartMs, CancellationToken.None);
+                var snapshot = core.BuildSnapshot(nowMs, todayStartMs, MonitorState.Running, observeLive: false).Snapshot;
+                Check("claude-explicit-wrong-copy-first", "filesRead", 4, report.FilesRead, "distinct explicit roots");
+                Check("claude-explicit-wrong-copy-first", "output", 24L, snapshot.Today.Output, "only selected copies count");
+                Check("claude-explicit-wrong-copy-first", "requests", 2L, snapshot.Today.Requests, "one request per selected key");
+                Check("claude-explicit-wrong-copy-first", "codeOutput", 11L,
+                    snapshot.Sources.Single(source => source.Kind == SourceKind.ClaudeCode).Today.Output, "wrong-root Code copy cannot claim");
+                Check("claude-explicit-wrong-copy-first", "desktopOutput", 13L,
+                    snapshot.Sources.Single(source => source.Kind == SourceKind.ClaudeDesktop).Today.Output, "wrong-root Desktop copy cannot claim");
+            }
+
+            var disabledRoot = Path.Combine(folder, "disabled-code");
+            var enabledRoot = Path.Combine(folder, "enabled-desktop");
+            Write(disabledRoot, "unscanned", 0, Assistant("cli", "disabled-only", 999));
+            Write(enabledRoot, "scanned", 1, Assistant("claude-desktop", "enabled-only", 17));
+            var filtered = Configuration(desktopOnly, Path.Combine(folder, "unused-filtered-legacy"),
+                new Dictionary<SourceKind, IReadOnlyList<string>> {
+                    [SourceKind.ClaudeCode] = [disabledRoot], [SourceKind.ClaudeDesktop] = [enabledRoot] });
+            var locations = SourceLocations.Resolve(filtered);
+            Check("claude-disabled-root-filter", "retainedOwnership", true,
+                locations.ClaudeRootsBySource?.GetValueOrDefault(SourceKind.ClaudeCode)?.Contains(disabledRoot) == true,
+                "disabled source selection remains available for ownership checks");
+            var walkRoots = locations.FileRoots(desktopOnly).Where(root => root.Family == RootFamily.Claude).Select(root => root.Path).ToArray();
+            Check("claude-disabled-root-filter", "walkRootCount", 1, walkRoots.Length, "only enabled source roots are scanned");
+            Check("claude-disabled-root-filter", "walkRoot", enabledRoot, walkRoots.Single(), "disabled-only root is excluded");
+            using (var core = new MonitorCore(filtered, locations, todayStartMs, zone: TimeZoneInfo.Utc))
+            {
+                core.Clock = () => nowMs;
+                var report = core.Seed(nowMs, todayStartMs, CancellationToken.None);
+                var snapshot = core.BuildSnapshot(nowMs, todayStartMs, MonitorState.Running, observeLive: false).Snapshot;
+                Check("claude-disabled-root-filter", "filesDiscovered", 1, report.FilesDiscovered, "disabled directory is never walked");
+                Check("claude-disabled-root-filter", "trackedFiles", 1, core.TrackedFileCount, "disabled transcript is never tracked");
+                Check("claude-disabled-root-filter", "output", 17L, snapshot.Today.Output, "enabled source remains readable");
+                CheckDisabledCode("claude-disabled-root-filter", snapshot);
+            }
+
+            var parentRoot = Path.Combine(folder, "nested-parent");
+            var nestedRoot = Path.Combine(parentRoot, "nested-code");
+            Write(nestedRoot, "original-code", 0, Assistant("cli", "nested-copy", 101));
+            Write(parentRoot, "copied-desktop", 1, Assistant("claude-desktop", "nested-copy", 101),
+                Assistant("claude-desktop", "nested-unique", 19));
+            var nested = Configuration(desktopOnly, Path.Combine(folder, "unused-nested-legacy"),
+                new Dictionary<SourceKind, IReadOnlyList<string>> {
+                    [SourceKind.ClaudeCode] = [nestedRoot], [SourceKind.ClaudeDesktop] = [parentRoot] });
+            var nestedLocations = SourceLocations.Resolve(nested);
+            var nestedWalkRoots = nestedLocations.FileRoots(desktopOnly).Where(root => root.Family == RootFamily.Claude)
+                .Select(root => root.Path).ToArray();
+            Check("claude-disabled-nested-ownership", "walkRootCount", 1, nestedWalkRoots.Length, "only the enabled parent is walked");
+            Check("claude-disabled-nested-ownership", "walkRoot", parentRoot, nestedWalkRoots.Single(), "nested Code root has no separate walk");
+            using (var core = new MonitorCore(nested, nestedLocations, todayStartMs, zone: TimeZoneInfo.Utc))
+            {
+                core.Clock = () => nowMs;
+                var enabledRoots = core.Roots.Where(root => root.Family == RootFamily.Claude && root.Enabled).ToArray();
+                Check("claude-disabled-nested-ownership", "enabledRootCount", 1, enabledRoots.Length, "one enabled Claude root");
+                Check("claude-disabled-nested-ownership", "enabledRoot", parentRoot, enabledRoots.Single().Path, "only the parent is enabled");
+                Check("claude-disabled-nested-ownership", "retainedNestedRoot", true,
+                    core.Roots.Any(root => root.Family == RootFamily.Claude && root.Path == nestedRoot && !root.Enabled),
+                    "disabled nested selection still determines ownership");
+                var report = core.Seed(nowMs, todayStartMs, CancellationToken.None);
+                var snapshot = core.BuildSnapshot(nowMs, todayStartMs, MonitorState.Running, observeLive: false).Snapshot;
+                Check("claude-disabled-nested-ownership", "filesDiscovered", 2, report.FilesDiscovered, "parent walk encounters both transcripts once");
+                Check("claude-disabled-nested-ownership", "filesRead", 2, report.FilesRead, "nested original participates in shared dedupe");
+                Check("claude-disabled-nested-ownership", "trackedFiles", 2, core.TrackedFileCount, "both encountered transcripts are tracked");
+                Check("claude-disabled-nested-ownership", "output", 19L, snapshot.Today.Output, "only unique Desktop usage counts");
+                Check("claude-disabled-nested-ownership", "requests", 1L, snapshot.Today.Requests, "nested Code original retains the copied key");
+                Check("claude-disabled-nested-ownership", "desktopOutput", 19L,
+                    snapshot.Sources.Single(source => source.Kind == SourceKind.ClaudeDesktop).Today.Output, "Desktop copy cannot reclaim the nested Code key");
+                CheckDisabledCode("claude-disabled-nested-ownership", snapshot);
+                CheckDisabledCode("claude-disabled-nested-ownership-starting", core.BuildStartingSnapshot(nowMs, todayStartMs, 0));
+            }
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+
+        MonitorConfiguration Configuration(IReadOnlySet<SourceKind> enabled, string legacyRoot,
+            IReadOnlyDictionary<SourceKind, IReadOnlyList<string>>? selected = null)
+        {
+            var absent = Path.Combine(folder, "absent");
+            return new MonitorConfiguration(enabled, CodexRoot: absent, ClaudeRoot: legacyRoot, DshRoot: absent,
+                OpenCodeRoot: absent, GeminiRoot: absent, OmpRoot: absent, AntigravityRoot: absent,
+                WorkBuddyRoot: absent, WorkBuddyAiRoot: absent, ZCodeRoot: absent, KimiRoot: absent,
+                GrokBuildRoot: absent, ClaudeRootsBySource: selected);
+        }
+
+        string Assistant(string entrypoint, string id, int output) => JsonSerializer.Serialize(new {
+            type = "assistant", entrypoint, timestamp = now.AddSeconds(-5).ToString("O"),
+            message = new { id, model = "fixture", stop_reason = "end_turn", usage = new { output_tokens = output } }
+        });
+
+        void Write(string root, string name, int order, params string[] lines)
+        {
+            var project = Path.Combine(root, "p");
+            Directory.CreateDirectory(project);
+            var path = Path.Combine(project, name + ".jsonl");
+            File.WriteAllText(path, string.Join("\n", lines) + "\n", new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            File.SetLastWriteTimeUtc(path, now.AddSeconds(order - 60).UtcDateTime);
+        }
+
+        static void CheckDisabledCode(string fixture, SpeedSnapshot snapshot)
+        {
+            var code = snapshot.Sources.Single(source => source.Kind == SourceKind.ClaudeCode);
+            Check(fixture, "codeEnabled", false, code.Enabled, "disabled source status");
+            Check(fixture, "codePath", string.Empty, code.RootPath, "disabled source path remains hidden");
+            Check(fixture, "codeAvailable", false, code.Available, "disabled source is unavailable");
+            Check(fixture, "codeSessions", 0, code.SessionCount, "disabled source has no sessions in the view");
+        }
     }
 
     private static void AntigravityStoreLocations()

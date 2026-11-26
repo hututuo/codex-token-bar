@@ -125,6 +125,12 @@ def export_defaults(env):
     except (ValueError, plistlib.InvalidFileException) as error:
         raise BenchError("defaults export did not return a plist") from error
     require(isinstance(value, dict), "defaults domain is not a dictionary")
+    if not value:
+        # macOS can successfully export an absent domain as an empty plist.
+        # Keep an existing empty domain distinct so the preflight still refuses it.
+        existing = command(["/usr/bin/defaults", "read", BUNDLE_ID], env=env, check=False)
+        if existing.returncode != 0:
+            return None
     return value
 
 
@@ -209,18 +215,24 @@ def generate_fixture(root, count, anchor_seconds):
     try:
         for i in range(count):
             timestamp = dt.datetime.fromtimestamp(anchor_seconds - i % 600, dt.timezone.utc)
+            started = timestamp - dt.timedelta(seconds=1)
+            user = {"type": "user", "entrypoint": "cli",
+                    "sessionId": f"fixture-session-{i % 20:02d}",
+                    "timestamp": started.isoformat(timespec="seconds").replace("+00:00", "Z"),
+                    "message": {"role": "user", "content": "synthetic benchmark prompt"}}
             row = {"type": "assistant", "entrypoint": "cli",
                    "sessionId": f"fixture-session-{i % 20:02d}",
                    "timestamp": timestamp.isoformat(timespec="seconds").replace("+00:00", "Z"),
-                   "message": {"id": f"fixture-response-{i:08d}", "model": "claude-opus-4-6",
+                   "message": {"id": f"fixture-response-{i:08d}", "model": "claude-opus-4-6", "stop_reason": "end_turn",
                                "content": [{"type": "text", "text": "fixture response"}],
                                "usage": {"input_tokens": 100 + i % 17, "output_tokens": 20 + i % 13}}}
-            files[i % 20].write(canonical(row) + b"\n")
+            files[i % 20].write(canonical(user) + b"\n" + canonical(row) + b"\n")
     finally:
         for handle in files:
             handle.close()
     rows = expected_rows(count, anchor_seconds)
-    return {"responses": count, "anchorUnixSeconds": anchor_seconds,
+    return {"fixtureSchemaVersion": 2, "responses": count, "anchorUnixSeconds": anchor_seconds,
+            "responseDurationSeconds": 1, "completedResponses": count,
             "source": source_inventory(root), "expectedLedgerSha256": digest(canonical(rows)),
             "expectedTotals": {"count": count, "inputTokens": sum(r[5] for r in rows),
                                "outputTokens": sum(r[6] for r in rows)}}
@@ -575,7 +587,10 @@ def main(argv=None):
                        order=["baseline/candidate", "candidate/baseline", "baseline/candidate"])
         # The original account home is passed unchanged; only source locations vary.
         env = clean_environment(home, root / "unused", Path(os.environ.get("TMPDIR", "/tmp")))
-        require(export_defaults(env) is None, "preexisting product defaults domain", "REFUSED")
+        initial_defaults = export_defaults(env)
+        summary["initialDefaultsDomain"] = {"present": initial_defaults is not None,
+                                             "keyCount": len(initial_defaults or {})}
+        require(initial_defaults is None, "preexisting product defaults domain", "REFUSED")
         require(not product_processes(env=env),
                 "another product process is running", "REFUSED")
         try:
@@ -586,6 +601,8 @@ def main(argv=None):
         # run; no late pair silently measures 30-minute row expiry instead.
         anchor = int(time.time()) - 3600
         local_day = dt.date.today()
+        day_start = dt.datetime.combine(local_day, dt.time.min).timestamp()
+        require(anchor - 600 >= day_start, "historical fixture would cross the local day boundary", "NOT_RUN")
         for count in args.responses:
             fixture_root = root / f"fixture-{count}"
             fixture = generate_fixture(fixture_root, count, anchor)

@@ -175,11 +175,17 @@ final class TranscriptSession {
             ($0, Set(configuration.resolvedClaudeRoots(for: $0)))
         })
         roots = TranscriptFamily.allCases.flatMap { family in
-            configuration.resolvedRoots(for: family).map { path in
+            let ownershipRoots = family == .claude ? Set(claudeSelections.values.flatMap { $0 }).sorted() : []
+            let paths = ownershipRoots.isEmpty ? configuration.resolvedRoots(for: family) : ownershipRoots
+            return paths.map { path in
                 let ownershipPath = family == .claude ? URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path : path
-                let selected = Set(family.sources.filter { configuration.enabledSources.contains($0)
-                    && (family != .claude || claudeSelections[$0]?.contains(ownershipPath) == true) })
-                return Root(family: family, selectedSources: selected, path: path, canonicalPath: path, enabled: !selected.isEmpty, available: false,
+                // Ownership is independent of enablement: a disabled sibling's
+                // original in a shared folder must still suppress copied history.
+                let selected = Set(family.sources.filter { family == .claude
+                    ? claudeSelections[$0]?.contains(ownershipPath) == true
+                    : configuration.enabledSources.contains($0) })
+                return Root(family: family, selectedSources: selected, path: path, canonicalPath: path,
+                     enabled: !selected.isDisjoint(with: configuration.enabledSources), available: false,
                      readable: MonitorConfiguration.isReadable(root: path, family: family),
                      detectionPath: family.isWorkBuddy ? TranscriptLocations.workbuddyDataFolder(ofRoot: path) : nil)
             }
@@ -224,6 +230,11 @@ final class TranscriptSession {
             zcodeNeedsSeed = true
         }
         for index in roots.indices {
+            if roots[index].family == .claude, !roots[index].enabled {
+                roots[index].available = false
+                roots[index].detected = false
+                continue
+            }
             let available = roots[index].readable && TranscriptDiscovery.isAvailable(root: roots[index].path)
             let detected = available || roots[index].detectionPath.map(TranscriptDiscovery.isAvailable(root:)) == true
             if available != roots[index].available || detected != roots[index].detected { changed = true }
@@ -241,7 +252,8 @@ final class TranscriptSession {
     func root(forSource source: SourceKind) -> Root {
         let family = TranscriptFamily(source)!
         guard family == .claude else { return root(for: family) }
-        let selected = roots.filter { $0.family == family && $0.selectedSources.contains(source) }
+        let selected = enabledSources.contains(source)
+            ? roots.filter { $0.family == family && $0.selectedSources.contains(source) } : []
         if let root = selected.first(where: \.detected) ?? selected.first { return root }
         var placeholder = root(for: family)
         placeholder.selectedSources = []

@@ -83,14 +83,16 @@ internal sealed partial class MonitorCore : IDisposable
         _enabledSet = SourceSet.From(_enabled);
         _observer = observer;
         _engine = new SpeedEngine(todayStartMs, pricing, zone);
+        // Disabled roots retain ownership for files reached through an enabled
+        // parent. Their Enabled flag still excludes scanning and watching them.
         foreach (var (family, path) in locations.FileRoots())
         {
             var selected = family == RootFamily.Claude
-                ? _enabled.Where(source => (source is SourceKind.ClaudeCode or SourceKind.ClaudeDesktop)
-                    && (locations.ClaudeRootsBySource?.GetValueOrDefault(source) ?? [locations.ClaudeRoot])
+                ? new[] { SourceKind.ClaudeCode, SourceKind.ClaudeDesktop }.Where(source =>
+                    (locations.ClaudeRootsBySource?.GetValueOrDefault(source) ?? [locations.ClaudeRoot])
                         .Any(root => PathComparer.Equals(Path.TrimEndingDirectorySeparator(root), Path.TrimEndingDirectorySeparator(path)))).ToHashSet()
                 : null;
-            _roots.Add(new SourceRoot(family, path, selected is null ? Families.IsEnabled(family, _enabled) : selected.Count > 0)
+            _roots.Add(new SourceRoot(family, path, selected is null ? Families.IsEnabled(family, _enabled) : selected.Any(_enabled.Contains))
             { SelectedSources = selected });
         }
 
@@ -161,7 +163,7 @@ internal sealed partial class MonitorCore : IDisposable
         RefreshZCodeAvailability();
         foreach (var root in _roots)
         {
-            root.Available = SafeDirectoryExists(root.DetectionPath);
+            root.Available = (root.Family != RootFamily.Claude || root.Enabled) && SafeDirectoryExists(root.DetectionPath);
         }
 
         if (_openCode is not null)
@@ -679,6 +681,13 @@ internal sealed partial class MonitorCore : IDisposable
             path = roots.Count > 0 ? roots[0].Path : string.Empty;
             available = roots.Any(r => r.Available);
             rootEnabled = roots.Any(r => r.Enabled);
+        }
+
+        if (!enabled && (kind is SourceKind.ClaudeCode or SourceKind.ClaudeDesktop))
+        {
+            path = string.Empty;
+            available = false;
+            rootEnabled = false;
         }
 
         return new SourceStatus(

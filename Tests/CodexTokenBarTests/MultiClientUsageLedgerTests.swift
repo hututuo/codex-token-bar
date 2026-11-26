@@ -476,14 +476,15 @@ final class MultiClientUsageLedgerTests: XCTestCase {
 
     func testReadOnlyCacheRankingRejectsFutureSchemaWithoutChangingExistingLedger() throws {
         let url = root.appendingPathComponent("future-rankings.sqlite")
-        let ledger = try MultiClientUsageLedger(url: url)
+        let sourceURL = root.appendingPathComponent("future-rankings-source.sqlite")
+        let ledger = try MultiClientUsageLedger(url: sourceURL)
         var rankedEvent = event()
         rankedEvent.inputTokens = 2_000
         _ = try ledger.ingest([rankedEvent], client: .claudeCode, sourceKey: "fixture",
                               checkpoint: .init(offset: 100, size: 100, modified: 10, identity: "fixture"))
-        let original = SQLiteDatabaseDriver(url: url)
-        try original.execute("PRAGMA user_version=99")
-        try prepareDeleteModeFixture(driver: original, url: url)
+        let source = SQLiteDatabaseDriver(url: sourceURL)
+        try source.execute("PRAGMA user_version=99")
+        let original = try prepareDeleteModeFixture(driver: source, url: url)
         let before = try Data(contentsOf: url)
         let filesBefore = try FileManager.default.contentsOfDirectory(atPath: root.path).sorted()
 
@@ -507,13 +508,13 @@ final class MultiClientUsageLedgerTests: XCTestCase {
 
     func testReadOnlyCacheRankingReadsCurrentSchemaWithoutChangingExistingLedger() throws {
         let url = root.appendingPathComponent("current-rankings.sqlite")
-        let ledger = try MultiClientUsageLedger(url: url)
+        let sourceURL = root.appendingPathComponent("current-rankings-source.sqlite")
+        let ledger = try MultiClientUsageLedger(url: sourceURL)
         var rankedEvent = event()
         rankedEvent.inputTokens = 2_000
         _ = try ledger.ingest([rankedEvent])
         let expected = try ledger.cacheRankingProjection(clients: [.claudeCode])
-        let original = SQLiteDatabaseDriver(url: url)
-        try prepareDeleteModeFixture(driver: original, url: url)
+        let original = try prepareDeleteModeFixture(driver: SQLiteDatabaseDriver(url: sourceURL), url: url)
         let before = try Data(contentsOf: url)
         let filesBefore = try FileManager.default.contentsOfDirectory(atPath: root.path).sorted()
 
@@ -530,9 +531,9 @@ final class MultiClientUsageLedgerTests: XCTestCase {
 
     func testCurrentVersionWithUnrelatedSchemaIsRejectedBeforeAnyWrite() throws {
         let url = root.appendingPathComponent("wrong-shape.sqlite")
-        let original = SQLiteDatabaseDriver(url: url)
-        try original.execute("CREATE TABLE unrelated(id INTEGER PRIMARY KEY); INSERT INTO unrelated VALUES(42); PRAGMA user_version=2")
-        try prepareDeleteModeFixture(driver: original, url: url)
+        let source = SQLiteDatabaseDriver(url: root.appendingPathComponent("wrong-shape-source.sqlite"))
+        try source.execute("CREATE TABLE unrelated(id INTEGER PRIMARY KEY); INSERT INTO unrelated VALUES(42); PRAGMA user_version=2")
+        let original = try prepareDeleteModeFixture(driver: source, url: url)
         let before = try Data(contentsOf: url)
         XCTAssertThrowsError(try MultiClientUsageLedger(url: url))
         XCTAssertThrowsError(try MultiClientUsageLedger.readOnlyCacheRankingProjection(url: url, clients: [.claudeCode])) { error in
@@ -571,7 +572,8 @@ final class MultiClientUsageLedgerTests: XCTestCase {
                     let directory = root.appendingPathComponent("refuse-v\(version)-\(object.name)-\(kind)", isDirectory: true)
                     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
                     let url = directory.appendingPathComponent("usage.sqlite")
-                    let ledger = try MultiClientUsageLedger(url: url)
+                    let sourceURL = directory.appendingPathComponent("source.sqlite")
+                    let ledger = try MultiClientUsageLedger(url: sourceURL)
                     try ledger.database.execute("DROP TABLE IF EXISTS \(object.name)")
                     if kind == "table" {
                         let columns = object.name == "client_usage_events" ? "client TEXT,model TEXT,timestamp REAL" : "\(object.columns[0]) TEXT"
@@ -581,9 +583,9 @@ final class MultiClientUsageLedgerTests: XCTestCase {
                         let columns = object.columns.map { "NULL AS \($0)" }.joined(separator: ",")
                         try ledger.database.execute("CREATE VIEW \(object.name) AS SELECT \(columns)")
                     }
-                    let original = SQLiteDatabaseDriver(url: url)
-                    try original.execute("PRAGMA user_version=\(version)")
-                    try prepareDeleteModeFixture(driver: original, url: url)
+                    let source = SQLiteDatabaseDriver(url: sourceURL)
+                    try source.execute("PRAGMA user_version=\(version)")
+                    _ = try prepareDeleteModeFixture(driver: source, url: url)
 
                     try assertSchemaRefusalPreservesFiles(at: url, version: version)
                 }
@@ -609,12 +611,17 @@ final class MultiClientUsageLedgerTests: XCTestCase {
         XCTAssertTrue(try backup.readRows("SELECT name FROM sqlite_master WHERE name='client_usage_events'") { $0.text(0) }.isEmpty)
     }
 
-    private func prepareDeleteModeFixture(driver: SQLiteDatabaseDriver, url: URL, file: StaticString = #filePath, line: UInt = #line) throws {
-        // Callers finish version writes first; no ledger writer may re-enable WAL after this point.
-        let checkpoint = try driver.readRows("PRAGMA wal_checkpoint(TRUNCATE)") { $0.int(0) }
+    private func prepareDeleteModeFixture(driver: SQLiteDatabaseDriver, url: URL, file: StaticString = #filePath, line: UInt = #line) throws -> SQLiteDatabaseDriver {
+        // A WAL-to-DELETE conversion can leave an orphan -shm on macOS. Retain
+        // that source intact and test a fresh SQLite-created DELETE snapshot.
+        XCTAssertNotEqual(driver.url.standardizedFileURL, url.standardizedFileURL, "Fixture snapshot must use a new path", file: file, line: line)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path), "Fixture snapshot target must not exist", file: file, line: line)
+        try driver.execute("VACUUM INTO ?", bindings: [.text(url.path)])
+        let fixture = SQLiteDatabaseDriver(url: url, createsFileIfMissing: false, enableWAL: false)
+        let checkpoint = try fixture.readRows("PRAGMA wal_checkpoint(TRUNCATE)") { $0.int(0) }
         let busy = try XCTUnwrap(checkpoint.first ?? nil, "Fixture checkpoint returned no busy status", file: file, line: line)
         XCTAssertEqual(busy, 0, "Fixture checkpoint must finish before the baseline snapshot", file: file, line: line)
-        let modes = try driver.readRows("PRAGMA journal_mode=DELETE") { $0.text(0) }
+        let modes = try fixture.readRows("PRAGMA journal_mode=DELETE") { $0.text(0) }
         let mode = try XCTUnwrap(modes.first ?? nil, "Fixture journal mode returned no result", file: file, line: line)
         XCTAssertEqual(mode, "delete", "Fixture must enter DELETE mode before the baseline snapshot", file: file, line: line)
         let header = try Data(contentsOf: url)
@@ -622,6 +629,7 @@ final class MultiClientUsageLedgerTests: XCTestCase {
         for suffix in ["-wal", "-shm", "-journal"] {
             XCTAssertFalse(FileManager.default.fileExists(atPath: url.path + suffix), "Fixture setup left \(suffix) before the baseline snapshot", file: file, line: line)
         }
+        return fixture
     }
 
     private func assertSchemaRefusalPreservesFiles(at url: URL, version: Int, file: StaticString = #filePath, line: UInt = #line) throws {
