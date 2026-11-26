@@ -1070,6 +1070,31 @@ fn stop_worker(mut worker: Option<RuntimeWorker>) {
     let _ = worker.child.wait();
 }
 
+/// Mirror the helper's AntigravityPaths.Stores/ConversationsOf selection, including
+/// stores that may be created later. Antigravity SQLite reads currently stay in the
+/// helper; this list authorizes only requests actually sent through sourceRead IPC.
+fn antigravity_source_read_roots(root: &Path, automatic: bool) -> Vec<PathBuf> {
+    const STORES: [&str; 4] = ["antigravity-cli", "antigravity", "antigravity-ide", "antigravity-acp"];
+    if automatic {
+        return STORES.map(|store| root.join(store).join("conversations")).into();
+    }
+    let name = root.file_name().and_then(|name| name.to_str()).unwrap_or("");
+    let is_conversations = name.eq_ignore_ascii_case("conversations");
+    let store = if is_conversations { root.parent().unwrap_or(root) } else { root };
+    if store.file_name().and_then(|name| name.to_str())
+        .is_some_and(|name| name.to_ascii_lowercase().ends_with("-backup")) {
+        return Vec::new();
+    }
+    if is_conversations {
+        return vec![root.to_path_buf()];
+    }
+    let mut allowed = vec![root.join("conversations")];
+    if !STORES.iter().any(|store| name.eq_ignore_ascii_case(store)) {
+        allowed.extend(STORES.map(|store| root.join(store).join("conversations")));
+    }
+    allowed
+}
+
 /// Roots shared by the opted-in local display reader. Only clients explicitly enabled in the
 /// helper configuration are included; the reporter uses its separate non-Claude allowlist.
 fn runtime_source_read_roots(roots: &RuntimeRoots, key: &RuntimeConfigKey) -> Vec<PathBuf> {
@@ -1078,11 +1103,7 @@ fn runtime_source_read_roots(roots: &RuntimeRoots, key: &RuntimeConfigKey) -> Ve
         match client.as_str() {
             "antigravity" => {
                 if let Some(root) = roots.other_roots.get(client) {
-                    if roots.default_antigravity_roots {
-                        allowed.extend(["antigravity-cli", "antigravity", "antigravity-ide"].map(|store| root.join(store).join("conversations")));
-                    } else {
-                        allowed.push(if root.file_name().is_some_and(|n| n == "conversations") { root.clone() } else { root.join("conversations") });
-                    }
+                    allowed.extend(antigravity_source_read_roots(root, roots.default_antigravity_roots));
                 }
             }
             "codex" => {
@@ -1176,9 +1197,7 @@ pub(crate) fn reporting_source_read_roots(
         }
     }
 
-    for store in ["antigravity-cli", "antigravity", "antigravity-ide"] {
-        roots.push(home.join(".gemini").join(store).join("conversations"));
-    }
+    roots.extend(antigravity_source_read_roots(&home.join(".gemini"), true));
     roots.push(home.join(".workbuddy").join("projects"));
     roots.push(home.join(".workbuddy-ai").join("projects"));
 
@@ -2053,6 +2072,7 @@ mod tests {
         let deepseek = std::env::temp_dir().join("tokenbar-source-read-deepseek");
         let gemini = std::env::temp_dir().join("tokenbar-source-read-gemini");
         let opencode = std::env::temp_dir().join("tokenbar-source-read-opencode");
+        let display_antigravity = std::env::temp_dir().join("tokenbar-display-only-antigravity");
         let roots = reporting_source_read_roots(
             &codex_home,
             &BTreeMap::from([
@@ -2065,6 +2085,7 @@ mod tests {
                     "opencode".to_owned(),
                     opencode.to_string_lossy().into_owned(),
                 ),
+                ("antigravity".to_owned(), display_antigravity.to_string_lossy().into_owned()),
             ]),
         );
         for expected in [
@@ -2082,6 +2103,10 @@ mod tests {
         assert!(roots
             .iter()
             .all(|root| !root.to_string_lossy().contains(".claude")));
+        for store in ["antigravity-cli", "antigravity", "antigravity-ide", "antigravity-acp"] {
+            assert!(roots.contains(&source_read_user_home().join(".gemini").join(store).join("conversations")));
+        }
+        assert!(roots.iter().all(|root| !root.starts_with(&display_antigravity)));
     }
 
     #[test]
@@ -2334,14 +2359,14 @@ mod tests {
     }
 
     #[test]
-    fn antigravity_selection_covers_three_default_stores_and_isolates_custom_root() {
+    fn antigravity_selection_covers_four_default_stores_and_isolates_custom_parent() {
         let automatic = [EnabledClaudePreference { client:"antigravity".into(),path:String::new() }];
         let (key, roots) = runtime_configuration(&automatic, None).unwrap().unwrap();
         assert!(key.default_antigravity_roots);
         assert_eq!(key.enabled_clients, vec!["antigravity"]);
         let allowed = runtime_source_read_roots(&roots, &key);
-        assert_eq!(allowed.len(), 3);
-        for store in ["antigravity-cli", "antigravity", "antigravity-ide"] {
+        assert_eq!(allowed.len(), 4);
+        for store in ["antigravity-cli", "antigravity", "antigravity-ide", "antigravity-acp"] {
             assert!(allowed.iter().any(|root| root.ends_with(Path::new(store).join("conversations"))));
         }
         let custom_root = std::env::temp_dir().join("tokenbar-antigravity-selected");
@@ -2349,12 +2374,42 @@ mod tests {
         let (custom_key, custom_roots) = runtime_configuration(&custom, None).unwrap().unwrap();
         assert!(!custom_key.default_antigravity_roots);
         assert_ne!(key,custom_key);
-        assert_eq!(runtime_source_read_roots(&custom_roots,&custom_key),vec![custom_root.join("conversations")]);
+        let selected = runtime_source_read_roots(&custom_roots,&custom_key);
+        assert_eq!(selected.len(), 5);
+        assert!(selected.contains(&custom_root.join("conversations")));
+        for store in ["antigravity-cli", "antigravity", "antigravity-ide", "antigravity-acp"] {
+            assert!(selected.contains(&custom_root.join(store).join("conversations")));
+        }
+        assert!(selected.iter().all(|path| path.starts_with(&custom_root)));
         let fixture = fresh_fixture().replace("claudeCode", "antigravity")
             .replace("\"sourceAvailable\":{", "\"sourceAvailable\":{\"claudeCode\":false,");
         let parsed = parse_runtime_snapshot(fixture.as_bytes(), &["antigravity".into()]).unwrap();
         assert_eq!(parsed.main_agents.len(), 1);
         assert_eq!(parsed.model_rates[0].client, "antigravity");
+    }
+
+    #[test]
+    fn antigravity_source_read_selection_matches_helper_leaf_and_backup_rules() {
+        let parent = std::env::temp_dir().join("tokenbar-antigravity-path-contract");
+        for name in ["antigravity-cli", "antigravity", "antigravity-ide", "antigravity-acp", "ANTIGRAVITY-ACP"] {
+            let store = parent.join(name);
+            let conversations = store.join("conversations");
+            assert_eq!(antigravity_source_read_roots(&store, false), vec![conversations.clone()]);
+            assert_eq!(antigravity_source_read_roots(&store.join(""), false), vec![conversations.clone()]);
+            assert_eq!(antigravity_source_read_roots(&conversations, false), vec![conversations]);
+        }
+        let conversations = parent.join("ANTIGRAVITY-ACP/Conversations");
+        assert_eq!(antigravity_source_read_roots(&conversations, false), vec![conversations.clone()]);
+        assert_eq!(antigravity_source_read_roots(&conversations.join(""), false), vec![conversations]);
+        for name in ["antigravity-backup", "ANTIGRAVITY-ACP-BACKUP"] {
+            let store = parent.join(name);
+            assert!(antigravity_source_read_roots(&store, false).is_empty());
+            assert!(antigravity_source_read_roots(&store.join(""), false).is_empty());
+            assert!(antigravity_source_read_roots(&store.join("Conversations"), false).is_empty());
+            assert!(antigravity_source_read_roots(&store.join("Conversations").join(""), false).is_empty());
+        }
+        // No filesystem access: absent child stores must be authorized before creation.
+        assert_eq!(antigravity_source_read_roots(&parent, false).len(), 5);
     }
 
     #[test]
