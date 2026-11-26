@@ -408,13 +408,44 @@ def parse_report(text: str, phase: str, release: str, scenario: str) -> dict:
         raise ValueError("Expected a production proof object")
     expected = dict(status="PASS", phase=phase, producerVersion=release, scenario=scenario,
         cfgTest=False, totals=[162, 310], oldTypedProofsPreserved=True, crashWALPreserved=True,
-        rawDisappearanceRetainsHistory=True, oldBPreserved=scenario=="committed")
+        rawDisappearanceRetainsHistory=True, oldBPreserved=scenario=="committed",
+        bLedgerProof=(dict(producerLanguage="rust", candidateActivityOpen=True, candidateSnapshotRead=True,
+            eventCount=2, revisionCountBefore=2, replayPasses=2, replayRevisionCounts=[2, 2],
+            checkpointAdvances=[True, True], originalPayloadsPreserved=True, schemaPreserved=True,
+            activityPreserved=True, initialCheckpointPreserved=True if phase == "resume" else None)
+            if scenario == "committed" else None))
+
+    def matches(observed, required):
+        if type(observed) is not type(required):
+            return False
+        if isinstance(required, dict):
+            return all(key in observed and matches(observed[key], item) for key, item in required.items())
+        if isinstance(required, list):
+            return len(observed) == len(required) and all(matches(left, right) for left, right in zip(observed, required))
+        return observed == required
+
     for key, item in expected.items():
         observed = value.get(key)
-        if (type(observed) is not type(item) or observed != item
-                or isinstance(item, list) and any(type(v) is not int for v in observed)):
+        if key not in value or not matches(observed, item):
             raise ValueError(f"Invalid production proof {key}: {value.get(key)!r}, expected {item!r}")
     return value
+
+
+def preserve_producer_state(root: Path, output: Path, scenario: str) -> dict:
+    """Freeze raw released inputs, including committed WAL, before candidate writes.
+
+    The existing scenario root is the explicit upgrade target. The separate ZIP
+    and byte manifest are evidence only and are never opened by the candidate.
+    Do not use SQLite here: opening a source can change/checkpoint its sidecars.
+    """
+    files = [{"path": str(path.relative_to(root)), "size": path.stat().st_size, "sha256": digest(path)}
+             for path in sorted(root.rglob("*")) if path.is_file()]
+    archive = Path(shutil.make_archive(str(output / (scenario + "-producer-state")), "zip", root))
+    evidence = {"archive": archive.name, "sha256": digest(archive), "files": files,
+                "scope": "Raw synthetic released Rust producer state before candidate upgrade"}
+    (output / (scenario + "-producer-state-manifest.json")).write_text(
+        json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
+    return evidence
 
 
 def external_temporary_base(candidates: list[Path], home: Path) -> Path:
@@ -444,7 +475,7 @@ def run(repository: Path, release: str, output: Path) -> dict:
     old = pinned_revision(repository, release)
     candidate = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repository, text=True).strip()
     report = {"schemaVersion": 1, "release": release, "releaseSha": old, "candidateSha": candidate,
-              "status": "RUNNING", "scenarios": [], "recoveryMaterialChecks": {},
+              "status": "RUNNING", "scenarios": [], "recoveryMaterialChecks": {}, "producerStateArchives": {},
               "scope": "Actual Rust production; native Swift uses separate gates"}
     def save():
         (output / "report.json").write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8")
@@ -491,6 +522,10 @@ def run(repository: Path, release: str, output: Path) -> dict:
                             output / "interrupted-late-quota.log", timeout=30)
                     if not Path(state["legacyQuota"]+"-wal").is_file():
                         raise ValueError("Late observation was not left committed in a real source WAL")
+                elif not Path(state["legacyB"] + "-wal").is_file():
+                    raise ValueError("Released B activity was not left committed in a real WAL")
+                report["producerStateArchives"][scenario] = preserve_producer_state(root, output, scenario)
+                save()
                 text = execute([str(bins["candidate"]), str(root), "resume"], repository, env,
                     output / (scenario+"-resume.log"), timeout=300)
                 report["scenarios"].append(parse_report(text, "resume", release, scenario)); save()

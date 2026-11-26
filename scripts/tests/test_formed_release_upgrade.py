@@ -6,6 +6,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import patch
 
 scripts = Path(__file__).resolve().parents[1]
@@ -31,7 +32,12 @@ if mode == "attempt" and calls == 2:
 report = {"status":"PASS", "phase":phase, "producerVersion":"0.9.8", "scenario":root.name,
     "cfgTest":False, "totals":[162,310], "oldTypedProofsPreserved":True,
     "crashWALPreserved":True, "rawDisappearanceRetainsHistory":True,
-    "oldBPreserved":root.name == "committed"}
+    "oldBPreserved":root.name == "committed", "bLedgerProof":None}
+if root.name == "committed":
+    report["bLedgerProof"] = {"producerLanguage":"rust", "candidateActivityOpen":True, "candidateSnapshotRead":True,
+        "eventCount":2, "revisionCountBefore":2, "replayPasses":2, "replayRevisionCounts":[2,2],
+        "checkpointAdvances":[True,True], "originalPayloadsPreserved":True, "schemaPreserved":True,
+        "activityPreserved":True, "initialCheckpointPreserved":True if phase == "resume" else None}
 print("TOKENBAR_FORMED_REPORT " + json.dumps(report, separators=(",", ":")))
 '''
 
@@ -78,7 +84,11 @@ print("TOKENBAR_FORMED_REPORT " + json.dumps(report, separators=(",", ":")))
     def report(self, **changes):
         value = dict(status='PASS', phase='resume', producerVersion='0.9.8', scenario='committed',
             cfgTest=False, totals=[162, 310], oldTypedProofsPreserved=True, crashWALPreserved=True,
-            rawDisappearanceRetainsHistory=True, oldBPreserved=True)
+            rawDisappearanceRetainsHistory=True, oldBPreserved=True,
+            bLedgerProof=dict(producerLanguage='rust', candidateActivityOpen=True, candidateSnapshotRead=True,
+                eventCount=2, revisionCountBefore=2, replayPasses=2, replayRevisionCounts=[2, 2],
+                checkpointAdvances=[True, True], originalPayloadsPreserved=True, schemaPreserved=True,
+                activityPreserved=True, initialCheckpointPreserved=True))
         value.update(changes)
         return probe.PREFIX + json.dumps(value)
 
@@ -99,6 +109,60 @@ print("TOKENBAR_FORMED_REPORT " + json.dumps(report, separators=(",", ":")))
         for payload in ('null', '[]', 'true'):
             with self.subTest(payload=payload), self.assertRaises(ValueError):
                 probe.parse_report(probe.PREFIX + payload, 'resume', '0.9.8', 'committed')
+
+    def test_b_proof_requires_real_candidate_open_read_and_two_proven_replays(self):
+        valid = json.loads(self.report().split(probe.PREFIX, 1)[1])
+        for missing in ('bLedgerProof', 'candidateActivityOpen', 'candidateSnapshotRead', 'checkpointAdvances'):
+            changed = json.loads(json.dumps(valid))
+            if missing == 'bLedgerProof':
+                del changed[missing]
+            else:
+                del changed['bLedgerProof'][missing]
+            with self.subTest(missing=missing), self.assertRaises(ValueError):
+                probe.parse_report(probe.PREFIX + json.dumps(changed), 'resume', '0.9.8', 'committed')
+        for field, wrong in [('producerLanguage', 'swift'), ('candidateActivityOpen', False),
+                             ('candidateSnapshotRead', 1), ('eventCount', 1), ('revisionCountBefore', 1),
+                             ('replayPasses', 1), ('replayPasses', 3), ('replayPasses', 2.0),
+                             ('checkpointAdvances', [True, False]), ('checkpointAdvances', [1, 1]),
+                             ('originalPayloadsPreserved', False), ('schemaPreserved', False),
+                             ('activityPreserved', False), ('initialCheckpointPreserved', None)]:
+            changed = json.loads(json.dumps(valid))
+            changed['bLedgerProof'][field] = wrong
+            with self.subTest(field=field, wrong=wrong), self.assertRaises(ValueError):
+                probe.parse_report(probe.PREFIX + json.dumps(changed), 'resume', '0.9.8', 'committed')
+
+    def test_either_b_replay_revision_drift_or_wrong_phase_semantics_fails(self):
+        for counts in ([3, 3], [2, 3], [2], [2.0, 2], [True, 2]):
+            value = json.loads(self.report().split(probe.PREFIX, 1)[1])
+            value['bLedgerProof']['replayRevisionCounts'] = counts
+            with self.subTest(counts=counts), self.assertRaises(ValueError):
+                probe.parse_report(probe.PREFIX + json.dumps(value), 'resume', '0.9.8', 'committed')
+        value = json.loads(self.report().split(probe.PREFIX, 1)[1])
+        value['phase'] = 'reopen'
+        with self.assertRaises(ValueError):
+            probe.parse_report(probe.PREFIX + json.dumps(value), 'reopen', '0.9.8', 'committed')
+        value['bLedgerProof']['initialCheckpointPreserved'] = None
+        self.assertEqual(probe.parse_report(probe.PREFIX + json.dumps(value), 'reopen', '0.9.8', 'committed')['bLedgerProof']['replayPasses'], 2)
+
+    def test_released_original_bytes_and_wal_are_frozen_before_upgrade_target_changes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            root = parent / 'committed'; root.mkdir()
+            output = parent / 'evidence'; output.mkdir()
+            originals = {'support/codex-ledger.sqlite': b'A-main',
+                'support/codex-ledger.sqlite-wal': b'committed-A-WAL',
+                'support/multi-client-usage.sqlite-wal': b'committed-B-WAL',
+                'b-source-original.jsonl': b'{"synthetic":"released"}\n'}
+            for name, content in originals.items():
+                path = root / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(content)
+            evidence = probe.preserve_producer_state(root, output, 'committed')
+            self.assertEqual({item['path'] for item in evidence['files']}, set(originals))
+            self.assertEqual(probe.digest(output / evidence['archive']), evidence['sha256'])
+            for name in originals:
+                (root / name).write_bytes(b'candidate upgrade target changed')
+            with zipfile.ZipFile(output / evidence['archive']) as archived:
+                self.assertEqual({name: archived.read(name) for name in originals}, originals)
+            self.assertEqual(json.loads((output / 'committed-producer-state-manifest.json').read_text()), evidence)
 
     def test_no_duplicate_or_absent_proof_can_pass(self):
         for text in ('', self.report()+'\n'+self.report()):

@@ -1,6 +1,6 @@
 //! Injected only into disposable exact-release/candidate source archives.
 //! No cfg(test), no production source edits, no installed-app data roots.
-use crate::core::{app_paths, business_store_route as route, quota_history,
+use crate::core::{app_paths, business_store_route as route, multi_client_usage as multi, quota_history,
     usage::token_count_jsonl as token, business_store_container::{Container, StoreSpec}};
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
@@ -54,16 +54,126 @@ fn start() -> Result<(), String> {
     require!(coordinator.begin_initial(), "startup already claimed");
     let result=route::bootstrap(); coordinator.finish(result.clone()); result
 }
-fn b_canary() -> Result<(), String> {
-    let b=crate::core::multi_client_usage::open_activity_module_connection()?;
+fn b_canary() -> Result<Connection, String> {
+    let b=multi::open_activity_module_connection()?;
+    checked!(b.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;"));
     checked!(b.execute("INSERT INTO activity_speed_samples(source_identity,id,display_mode,estimator_id,estimator_version,metric_kind,client,model,started_at,ended_at,output_rate,covered_seconds,weighted_output) VALUES('formed-synthetic','formed-existing-b-row','model','fixture','1','output','codex','gpt-6.1-sol',1800000000,1800000010,12,10,120)", []));
-    Ok(())
+    Ok(b)
 }
 fn assert_b() -> Result<(), String> {
     let path=app_paths::multi_client_usage_database_path().ok_or("missing B path")?;
     let b=checked!(Connection::open_with_flags(path,rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY));
     let row:(i64,f64,f64)=checked!(b.query_row("SELECT COUNT(*),SUM(covered_seconds),SUM(weighted_output) FROM activity_speed_samples WHERE id='formed-existing-b-row'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))));
     require!(row==(1,10.0,120.0), "old B activity history changed"); Ok(())
+}
+fn b_rows(connection: &Connection, sql: &str, width: usize) -> Result<Value, String> {
+    let mut statement=checked!(connection.prepare(sql));
+    let rows=checked!(statement.query_map([], |row| {
+        (0..width).map(|column| Ok(match row.get_ref(column)? {
+            rusqlite::types::ValueRef::Null => Value::Null,
+            rusqlite::types::ValueRef::Integer(value) => json!(value),
+            rusqlite::types::ValueRef::Real(value) => json!(value),
+            rusqlite::types::ValueRef::Text(value) => json!(String::from_utf8_lossy(value)),
+            rusqlite::types::ValueRef::Blob(value) => json!({"blob":value}),
+        })).collect::<rusqlite::Result<Vec<Value>>>()
+    }));
+    let values=checked!(rows.collect::<rusqlite::Result<Vec<_>>>());
+    Ok(json!(values))
+}
+fn b_read_connection() -> Result<Connection, String> {
+    let path=app_paths::multi_client_usage_database_path().ok_or("missing B path")?;
+    Ok(checked!(Connection::open_with_flags(path,rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)))
+}
+fn b_frozen() -> Result<Value, String> {
+    let b=b_read_connection()?;
+    Ok(json!({
+        "version":checked!(b.query_row("PRAGMA user_version",[],|row|row.get::<_,i64>(0))),
+        "schema":b_rows(&b,"SELECT type,name,tbl_name,sql FROM sqlite_master WHERE tbl_name IN ('client_usage_events','client_usage_revisions','client_file_checkpoints','multi_usage_metadata') AND name NOT LIKE 'sqlite_%' ORDER BY type,name",4)?,
+        "events":b_rows(&b,"SELECT rowid,client,event_id,session_id,model,timestamp,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens,payload FROM client_usage_events ORDER BY client,event_id",12)?,
+        "revisions":b_rows(&b,"SELECT revision,client,event_id,captured_at,payload FROM client_usage_revisions ORDER BY revision",5)?,
+        "sequence":b_rows(&b,"SELECT name,seq FROM sqlite_sequence WHERE name='client_usage_revisions'",2)?,
+        // A successful refresh is allowed to update its timestamp, but no old metadata may disappear.
+        "metadata":b_rows(&b,"SELECT key,value FROM multi_usage_metadata WHERE key<>'updated_at_ms' ORDER BY key",2)?,
+    }))
+}
+fn b_checkpoint() -> Result<Value, String> {
+    b_rows(&b_read_connection()?,"SELECT client,source_key,offset,size,modified,identity FROM client_file_checkpoints ORDER BY client,source_key",6)
+}
+fn assert_b_summary(snapshot: &multi::MultiClientUsageSnapshot) -> Result<(), String> {
+    let rows:Vec<_>=snapshot.summaries.iter().filter(|row|row.client=="claudeCode").collect();
+    require!(rows.len()==1,"B production snapshot lost or split the synthetic model");
+    let row=rows[0];
+    require!(row.model=="claude-sonnet-4-5" && (row.input_tokens,row.output_tokens,row.requests)==(21,11,2),
+        "B production snapshot changed released token/request totals");
+    Ok(())
+}
+fn seed_b_ledger(root: &Path, at: f64) -> Result<(), String> {
+    let directory=root.join("b-transcripts"); checked!(fs::create_dir(&directory));
+    let mut transcript=String::new();
+    for recorded in [true,false] {
+        let mut message=json!({"model":"claude-sonnet-4-5","usage":if recorded {
+            json!({"input_tokens":11,"output_tokens":7,"cache_read_input_tokens":3,"cache_creation_input_tokens":2,"output_tokens_details":{"thinking_tokens":1}})
+        } else { json!({"input_tokens":5,"output_tokens":4}) }});
+        if recorded { message["id"]=json!("formed-b-recorded-message"); }
+        transcript.push_str(&json!({"type":"assistant","entrypoint":"cli","sessionId":"formed-b-session",
+            "timestamp":date(at as i64-60),"message":message}).to_string());
+        transcript.push('\n');
+    }
+    checked!(fs::write(directory.join("formed.jsonl"),&transcript));
+    checked!(fs::write(root.join("b-source-original.jsonl"),&transcript));
+    let mut preferences=multi::default_preferences();
+    for preference in &mut preferences {
+        preference.enabled=preference.client=="claudeCode";
+        if preference.enabled { preference.path=directory.to_string_lossy().into_owned(); }
+    }
+    multi::save_multi_client_usage_preferences(preferences)?;
+    assert_b_summary(&multi::refresh_multi_client_usage()?)?;
+    assert_b_summary(&multi::read_multi_client_usage_snapshot()?)?;
+    let frozen=b_frozen()?;
+    require!(frozen["events"].as_array().is_some_and(|rows|rows.len()==2)
+        && frozen["revisions"].as_array().is_some_and(|rows|rows.len()==2),"released producer did not create two B events/revisions");
+    require!(frozen["events"].as_array().unwrap().iter().any(|row|
+        row[11].as_str().is_some_and(|payload|payload.contains("\"quality\":\"fallback_identity\""))),
+        "released B fixture did not exercise its legacy fallback payload");
+    Ok(())
+}
+fn exercise_candidate_b(root: &Path, old: &Value, phase: &str) -> Result<Value, String> {
+    let frozen=&old["bLedger"]["frozen"];
+    require!(&b_frozen()?==frozen,"released B rows/schema changed before candidate ledger admission");
+    let initial_checkpoint=b_checkpoint()?;
+    if phase=="resume" {
+        require!(initial_checkpoint==old["bLedger"]["checkpoint"],"released B checkpoint changed before candidate admission");
+    }
+    // This real candidate entrypoint runs strict schema admission, then the public reader
+    // exercises production aggregates before either forced transcript rescan.
+    drop(multi::open_activity_module_connection()?);
+    assert_b_summary(&multi::read_multi_client_usage_snapshot()?)?;
+    require!(&b_frozen()?==frozen && b_checkpoint()?==initial_checkpoint,"candidate B open/read changed retained ledger data");
+    let original=checked!(fs::read_to_string(root.join("b-source-original.jsonl")));
+    require!(old["bLedger"]["transcript"].as_str()==Some(original.as_str()),"released transcript original changed");
+    let mut revision_counts=Vec::new();
+    for pass in 1..=2 {
+        let before=b_checkpoint()?;
+        // Different leading blank lines change the prefix fingerprint, forcing a full
+        // real rescan on both passes without changing any event's semantic content.
+        let replay="\n".repeat(pass)+&original;
+        checked!(fs::write(root.join("b-transcripts/formed.jsonl"),&replay));
+        assert_b_summary(&multi::refresh_multi_client_usage()?)?;
+        assert_b_summary(&multi::read_multi_client_usage_snapshot()?)?;
+        let current=b_frozen()?;
+        require!(&current==frozen,"B replay changed original rows, payload bytes, revision history or schema");
+        let checkpoint=b_checkpoint()?;
+        let rows=checkpoint.as_array().ok_or("invalid B checkpoint proof")?;
+        require!(rows.len()==1 && rows[0][0]=="claudeCode" && rows[0][1]==initial_checkpoint[0][1]
+            && rows[0][2].as_u64()==Some(replay.len() as u64) && rows[0][3].as_u64()==Some(replay.len() as u64)
+            && rows[0][5]!=before[0][5],"B replay did not commit its changed source fingerprint and complete offset");
+        revision_counts.push(current["revisions"].as_array().ok_or("missing B revisions")?.len());
+        assert_b()?;
+    }
+    Ok(json!({"producerLanguage":"rust","candidateActivityOpen":true,"candidateSnapshotRead":true,
+        "eventCount":2,"revisionCountBefore":2,"replayPasses":2,"replayRevisionCounts":revision_counts,
+        "checkpointAdvances":[true,true],"originalPayloadsPreserved":true,"schemaPreserved":true,
+        "activityPreserved":true,"initialCheckpointPreserved":if phase=="resume" {json!(true)} else {Value::Null}}))
 }
 fn identity(home: &Path) -> Result<quota_history::QuotaHistoryIdentity, String> {
     quota_history::QuotaHistoryIdentity::from_canonical_parts(home,Some("sub:fixture-account"),"pro","codex").ok_or("quota identity rejected".into())
@@ -89,22 +199,29 @@ pub fn run(input: &Path, phase: &str) -> Result<Value,String> {
         }
         let homes=homes(&root)?;
         seed_quota(&quota,&homes[0],at-1200.0,"formed-legacy")?;
-        if phase=="committed" {
+        let (b_ledger,_retained_b)=if phase=="committed" {
             start()?;
             for (home, expected) in homes.iter().zip([155_u64,310]) {
                 require!(token::dashboard_snapshot(home)?.stats.total_tokens==expected,"released code failed to form exact history");
             }
             quota_history::record_bundle(&identity(&homes[0])?, &quota_bundle(at))?;
-            b_canary()?;
+            seed_b_ledger(&root,at)?;
+            // Keep the released B connection alive until exit(86), retaining its
+            // genuinely committed activity WAL beside the committed A WAL.
+            let retained=b_canary()?;
+            (json!({"frozen":b_frozen()?,"checkpoint":b_checkpoint()?,
+                "transcript":checked!(fs::read_to_string(root.join("b-source-original.jsonl")))}),Some(retained))
         } else {
             // The exact released importer commits a real partial A partition.
             // Stop before bootstrap activation, without altering any app code.
             let spec=quota_spec(&quota)?;
             drop(route::open_store_during_bootstrap(&spec.module,&spec.source_identity,&spec.logical_path,&[quota.clone()])?);
             require!(!marker.exists(),"partial import unexpectedly activated A");
-        }
+            (Value::Null,None)
+        };
         let report=json!({"schemaVersion":1,"phase":phase,"producerVersion":env!("CARGO_PKG_VERSION"),
             "cfgTest":cfg!(test),"proofs":catalog_proofs(&a)?,"legacyQuota":quota,
+            "legacyB":app_paths::multi_client_usage_database_path(),"bLedger":b_ledger,
             "formedExact":phase=="committed","formedB":phase=="committed"});
         checked!(fs::write(&state,checked!(serde_json::to_vec_pretty(&report))));
         // A real committed WAL survives abrupt termination without destructors.
@@ -158,11 +275,15 @@ pub fn run(input: &Path, phase: &str) -> Result<Value,String> {
     }
     require!(token::dashboard_snapshot(&homes[0])?.stats.total_tokens==162,"missing raw source erased recorded history");
     require!(token::dashboard_snapshot(&homes[1])?.stats.total_tokens==310,"home identities mixed");
-    if old["formedB"]==true { assert_b()?; }
+    let b_ledger_proof=if old["formedB"]==true {
+        assert_b()?;
+        exercise_candidate_b(&root,&old,phase)?
+    } else { Value::Null };
     route::bootstrap()?;
     Ok(json!({"status":"PASS","phase":phase,"producerVersion":old["producerVersion"],"candidateVersion":env!("CARGO_PKG_VERSION"),
         "cfgTest":cfg!(test),"scenario":old["phase"],"totals":[162,310],"oldTypedProofsPreserved":true,
-        "oldBPreserved":old["formedB"],"crashWALPreserved":true,"rawDisappearanceRetainsHistory":true}))
+        "oldBPreserved":old["formedB"],"bLedgerProof":b_ledger_proof,
+        "crashWALPreserved":true,"rawDisappearanceRetainsHistory":true}))
 }
 
 fn seed_quota(path: &Path, home: &Path, at: f64, source: &str) -> Result<(), String> {
