@@ -537,7 +537,7 @@ mod tests {
             for (window, used) in value.windows.iter().zip(row["used"].as_array().unwrap()) {
                 assert!((window.used_percent.unwrap() - used.as_f64().unwrap()).abs() < 0.000001);
             }
-            if let resets = row["resets"].as_array() {
+            if let Some(resets) = row["resets"].as_array() {
                 assert_eq!(value.windows.len(), resets.len(), "{}", row["name"]);
                 for (window, reset) in value.windows.iter().zip(resets) {
                     let actual = window.resets_at.as_deref()

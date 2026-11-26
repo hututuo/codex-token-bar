@@ -609,8 +609,8 @@
       "sha256": "397cb365076980a522ec392e993083bf4cba9488016b230679c6e86132d52914"
     },
     "macos/Sources/AgentSpeedCore/Engine/SpeedEngine.swift": {
-      "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged",
-      "sha256": "cf79f56a0a2a187da7278f2d3799b3e6a4dd86379367d2a432d4b8b04347bdcd"
+      "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged Reuse mutation-invalidated timed-response ordering and latest-agent ends across timer publishes, with an earliest-end retention guard; preserve clock-dependent arithmetic and source/model attribution.",
+      "sha256": "05819c03cc5b87dcb4187363de9c9629c4cf9a3ebd73acc04471c83a15abfa5a"
     },
     "macos/Sources/AgentSpeedCore/History/HistoryAnalyzer.swift": {
       "reason": "Local analysis revision4 to5 for paginated prefix accounting semantics; does not change DB schema or start Token Bar HistoryService.",

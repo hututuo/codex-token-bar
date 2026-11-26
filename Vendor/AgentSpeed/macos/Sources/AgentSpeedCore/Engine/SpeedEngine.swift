@@ -20,6 +20,12 @@ struct SpeedEngine: Sendable {
 
     private(set) var agents: [String: EngineAgent] = [:]
     private var responses: [String: ResponseRecord] = [:]
+    /// Response-only views survive timer publishes. Clock-dependent window,
+    /// reference, history and in-flight computations still run on every tick.
+    private var responseViewsDirty = true
+    private var sortedTimedResponses: [TimedResponse] = []
+    private var latestResponseEnds: [String: Int64] = [:]
+    private var earliestResponseEndMs: Int64?
     private var projects: [String: String] = [:]
     private var ledger: DayLedger?
     private var lastResponse: ResponseSummary?
@@ -76,6 +82,10 @@ struct SpeedEngine: Sendable {
                 ? pricing.cost(of: record, day: dayLabeler.label(forMs: record.endMs)) : nil
         }
         let old = responses.updateValue(record, forKey: record.key)
+        if old != record {
+            responseViewsDirty = true
+            earliestResponseEndMs = min(earliestResponseEndMs ?? record.endMs, record.endMs)
+        }
         projects[record.key] = project
         ledger?.replace(old, with: record)
         if let provider = record.provider { agentProviders[record.agentId] = provider }
@@ -104,6 +114,7 @@ struct SpeedEngine: Sendable {
         rollOverIfNeeded(todayStartMs: todayStartMs)
         prune(nowMs: nowMs, todayStartMs: todayStartMs)
         repriceIfNeeded()
+        refreshResponseViewsIfNeeded()
 
         let timed = recentTimedResponses(nowMs: nowMs)
         let measured = timed.filter(\.record.isFinal)
@@ -220,6 +231,7 @@ struct SpeedEngine: Sendable {
             var priced = record
             priced.costMicroUsd = cost
             responses[key] = priced
+            responseViewsDirty = true
             ledger?.replace(record, with: priced)
             if reportLedger.isCounted(key) { reportLedger.grow(priced, modelId: reportModelId(of: priced)) }
         }
@@ -243,33 +255,56 @@ struct SpeedEngine: Sendable {
 
     private mutating func prune(nowMs: Int64, todayStartMs: Int64) {
         let cutoff = min(todayStartMs, nowMs - Self.retentionMs)
-        guard responses.values.contains(where: { $0.endMs < cutoff }) else { return }
+        guard let earliestResponseEndMs, earliestResponseEndMs < cutoff else { return }
+        let previousCount = responses.count
         responses = responses.filter { $0.value.endMs >= cutoff }
+        // A replacement may have moved the old minimum forward. Recompute
+        // even when no row expired so the conservative watermark stops scans.
+        self.earliestResponseEndMs = responses.values.map(\.endMs).min()
+        guard responses.count != previousCount else { return }
+        responseViewsDirty = true
         projects = projects.filter { responses[$0.key] != nil }
         reportLedger.prune(before: cutoff)
         agentProviders = agentProviders.filter { agents[$0.key] != nil }
     }
 
-    /// Latest end of any stored response (valid or not) per agent.
-    private func latestEndsByAgent() -> [String: Int64] {
+    private mutating func refreshResponseViewsIfNeeded() {
+        guard responseViewsDirty else { return }
         var ends: [String: Int64] = [:]
+        var timed: [TimedResponse] = []
         for record in responses.values {
             ends[record.agentId] = max(ends[record.agentId] ?? record.endMs, record.endMs)
-        }
-        return ends
-    }
-
-    /// Valid responses ending within the retention window, most recent first.
-    private func recentTimedResponses(nowMs: Int64) -> [TimedResponse] {
-        let cutoff = nowMs - Self.retentionMs
-        var timed: [TimedResponse] = []
-        for record in responses.values where record.endMs >= cutoff {
             if let response = TimedResponse(record) { timed.append(response) }
         }
         timed.sort { lhs, rhs in
             lhs.endMs != rhs.endMs ? lhs.endMs > rhs.endMs : lhs.record.key < rhs.record.key
         }
-        return timed
+        latestResponseEnds = ends
+        sortedTimedResponses = timed
+        responseViewsDirty = false
+    }
+
+    /// Latest end of every stored response, including invalid/nonfinal ones.
+    private func latestEndsByAgent() -> [String: Int64] {
+        latestResponseEnds
+    }
+
+    /// Valid responses ending within the retention window, most recent first.
+    private func recentTimedResponses(nowMs: Int64) -> ArraySlice<TimedResponse> {
+        let cutoff = nowMs - Self.retentionMs
+        // Keep all retained valid responses in the view so a clock rollback
+        // can include old-today records again, exactly as the uncached path.
+        var low = 0
+        var high = sortedTimedResponses.count
+        while low < high {
+            let middle = low + (high - low) / 2
+            if sortedTimedResponses[middle].endMs >= cutoff {
+                low = middle + 1
+            } else {
+                high = middle
+            }
+        }
+        return sortedTimedResponses[..<low]
     }
 
     // MARK: - History

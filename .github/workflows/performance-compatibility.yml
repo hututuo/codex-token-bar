@@ -1,0 +1,208 @@
+name: Speed engine performance compatibility
+run-name: Speed engine pair ${{ inputs.baseline_sha }} vs ${{ inputs.source_sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: 'Required exact 40-character candidate source commit'
+        type: string
+        required: true
+      baseline_sha:
+        description: 'Required exact 40-character baseline source commit'
+        type: string
+        required: true
+        default: 'f9e917917df07a24a800bf63d00700d0028bcb28'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: speed-engine-performance-${{ github.ref }}-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+env:
+  GIT_LFS_SKIP_SMUDGE: '1'
+  DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+
+jobs:
+  paired-speed-engine:
+    runs-on: macos-26
+    timeout-minutes: 120
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      BASELINE_SHA: ${{ inputs.baseline_sha }}
+    steps:
+      - name: Initialize evidence and validate exact SHAs
+        run: |
+          set -euo pipefail
+          mkdir -p performance-compatibility-evidence
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          request = {key: os.environ.get(key, '') for key in ('SOURCE_SHA', 'BASELINE_SHA', 'GITHUB_SHA', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'RUNNER_OS', 'RUNNER_ARCH')}
+          Path('performance-compatibility-evidence/request.json').write_text(json.dumps(request, indent=2) + '\n')
+          PY
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'Exact 40-character candidate SHA required'; exit 1; }
+          [[ "$BASELINE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'Exact 40-character baseline SHA required'; exit 1; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          path: benchmark-tools
+          lfs: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.baseline_sha }}
+          path: product-baseline
+          lfs: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.source_sha }}
+          path: product-candidate
+          lfs: false
+      - name: Swift dependency cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            product-baseline/.build/artifacts
+            product-baseline/.build/checkouts
+            product-baseline/.build/repositories
+            product-candidate/.build/artifacts
+            product-candidate/.build/checkouts
+            product-candidate/.build/repositories
+          key: speed-pair-swift-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('product-baseline/Package.resolved', 'product-candidate/Package.resolved') }}-v1
+      - name: Record toolchain and prepare benchmark harness
+        run: |
+          set -euo pipefail
+          command -v git-lfs >/dev/null || brew install git-lfs
+          {
+            printf 'runner=macos-26\nconfiguration=release\nflags=-Xswiftc -enable-testing\n'
+            sw_vers
+            swift --version
+            xcodebuild -version
+            git-lfs version
+          } > performance-compatibility-evidence/toolchain.txt
+          python3 -m unittest discover -s benchmark-tools/scripts/tests -p 'test_speed_engine_benchmark.py' 2>&1 | tee performance-compatibility-evidence/harness-tests.log
+          python3 - <<'PY'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          fixture = Path('benchmark-tools/scripts/cloud/fixtures/SpeedEngineBenchmarkTests.swift')
+          def head(path):
+              return subprocess.check_output(['git', '-C', path, 'rev-parse', 'HEAD'], text=True).strip()
+          expected = {'baseline': os.environ['BASELINE_SHA'], 'candidate': os.environ['SOURCE_SHA']}
+          actual = {role: head('product-' + role) for role in expected}
+          if actual != expected:
+              raise SystemExit('Checked-out source SHAs differ from requested exact SHAs')
+          harness = head('benchmark-tools')
+          if harness != os.environ['GITHUB_SHA']:
+              raise SystemExit('Harness checkout differs from workflow SHA')
+          manifest = {
+              'schemaVersion': 1, 'baseline': expected['baseline'], 'candidate': expected['candidate'],
+              'actualSources': actual, 'harness': harness,
+              'fixtureSha256': hashlib.sha256(fixture.read_bytes()).hexdigest(),
+              'runId': os.environ['GITHUB_RUN_ID'], 'runAttempt': os.environ['GITHUB_RUN_ATTEMPT'],
+              'configuration': 'release', 'swiftFlags': ['-Xswiftc', '-enable-testing'],
+              'responses': [2000, 20000], 'shapes': ['day', 'dense'], 'trials': [1, 2, 3],
+              'ticks': 200, 'freshProcessPerCase': True, 'singleHostedRunner': True,
+          }
+          Path('performance-compatibility-evidence/manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+          PY
+      - name: Build each revision once and run paired fresh processes
+        run: |
+          set -euo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/performance-compatibility-evidence"
+          HARNESS="$GITHUB_WORKSPACE/benchmark-tools"
+          FIXTURE_REL='Vendor/AgentSpeed/macos/Tests/AgentSpeedCoreTests/SpeedEngineBenchmarkTests.swift'
+          run_logged() {
+            local label="$1"
+            shift
+            local pipeline_status
+            set +e
+            "$@" 2>&1 | tee "$EVIDENCE/$label.log"
+            pipeline_status=("${PIPESTATUS[@]}")
+            set -e
+            python3 - "$EVIDENCE/$label.exit.json" "${pipeline_status[0]}" "${pipeline_status[1]}" "$@" <<'PY'
+          import json, sys
+          from pathlib import Path
+          Path(sys.argv[1]).write_text(json.dumps({'commandExitCode': int(sys.argv[2]), 'logExitCode': int(sys.argv[3]), 'argv': sys.argv[4:]}, indent=2) + '\n')
+          PY
+            [[ "${pipeline_status[0]}" -eq 0 && "${pipeline_status[1]}" -eq 0 ]]
+          }
+          for role in baseline candidate; do
+            revision="$BASELINE_SHA"
+            [[ "$role" == baseline ]] || revision="$SOURCE_SHA"
+            (
+              cd "$GITHUB_WORKSPACE/product-$role"
+              [[ "$(git rev-parse HEAD)" == "$revision" ]]
+              git diff --exit-code
+              # Preflight before injection: the fixture is never a vendor patch.
+              run_logged "$role-provenance-before" python3 scripts/agent_speed_vendor.py check
+              [[ ! -e "$FIXTURE_REL" ]] || { echo 'Refusing to overwrite a product-owned test'; exit 1; }
+              cp "$HARNESS/scripts/cloud/fixtures/SpeedEngineBenchmarkTests.swift" "$FIXTURE_REL"
+              cmp "$FIXTURE_REL" "$HARNESS/scripts/cloud/fixtures/SpeedEngineBenchmarkTests.swift"
+              run_logged "$role-prepare-lfs" bash scripts/prepare_tiktoken_lfs.sh
+              run_logged "$role-build" swift build --build-tests -c release -Xswiftc -enable-testing
+            )
+          done
+          run_case() {
+            local role="$1" responses="$2" shape="$3" trial="$4" revision="$BASELINE_SHA"
+            [[ "$role" == baseline ]] || revision="$SOURCE_SHA"
+            (
+              cd "$GITHUB_WORKSPACE/product-$role"
+              run_logged "$role-$responses-$shape-$trial" env \
+                SPEED_BENCHMARK_SOURCE="$revision" SPEED_BENCHMARK_TRIAL="$trial" \
+                SPEED_BENCHMARK_RESPONSES="$responses" SPEED_BENCHMARK_SHAPE="$shape" SPEED_BENCHMARK_TICKS=200 \
+                swift test -c release -Xswiftc -enable-testing --skip-build \
+                --filter SpeedEngineBenchmarkTests.testUnchangedSyntheticPublishes
+            )
+          }
+          for trial in 1 2 3; do
+            # Alternate order to reduce a fixed baseline-first timing bias.
+            order='baseline candidate'
+            [[ "$trial" -ne 2 ]] || order='candidate baseline'
+            for role in $order; do
+              revision="$BASELINE_SHA"
+              [[ "$role" == baseline ]] || revision="$SOURCE_SHA"
+              (
+                cd "$GITHUB_WORKSPACE/product-$role"
+                run_logged "$role-compatibility-$trial" env SPEED_BENCHMARK_SOURCE="$revision" SPEED_BENCHMARK_TRIAL="$trial" \
+                  swift test -c release -Xswiftc -enable-testing --skip-build \
+                  --filter SpeedEngineBenchmarkTests.testReplacementAndBoundaryCompatibilityTrace
+              )
+            done
+            for responses in 2000 20000; do
+              for shape in day dense; do
+                for role in $order; do
+                  run_case "$role" "$responses" "$shape" "$trial"
+                done
+              done
+            done
+          done
+          for role in baseline candidate; do
+            (
+              cd "$GITHUB_WORKSPACE/product-$role"
+              cmp "$FIXTURE_REL" "$HARNESS/scripts/cloud/fixtures/SpeedEngineBenchmarkTests.swift"
+              rm -- "$FIXTURE_REL"
+              git diff --exit-code
+              run_logged "$role-provenance-after" python3 scripts/agent_speed_vendor.py check
+            )
+          done
+      - name: Validate semantics and summarize subsystem measurements
+        if: always()
+        run: |
+          set -euo pipefail
+          python3 benchmark-tools/scripts/cloud/summarize_speed_engine_benchmark.py \
+            performance-compatibility-evidence --baseline "$BASELINE_SHA" --candidate "$SOURCE_SHA" \
+            --fixture benchmark-tools/scripts/cloud/fixtures/SpeedEngineBenchmarkTests.swift \
+            2>&1 | tee performance-compatibility-evidence/summary.log
+      - name: Upload paired benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: speed-engine-pair-${{ github.run_id }}-${{ github.run_attempt }}
+          path: performance-compatibility-evidence/
+          if-no-files-found: error
+          retention-days: 30
