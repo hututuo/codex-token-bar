@@ -545,7 +545,19 @@ struct ClientUsageEventPayload {
     cache_write_1h_tokens: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_tokens: Option<u64>,
+    #[serde(default = "recorded_usage_quality", deserialize_with = "deserialize_usage_quality")]
     quality: String,
+}
+
+fn recorded_usage_quality() -> String {
+    "recorded".to_owned()
+}
+
+fn deserialize_usage_quality<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_else(recorded_usage_quality))
 }
 
 fn deserialize_millis_timestamp<'de, D>(deserializer: D) -> Result<f64, D::Error>
@@ -3887,10 +3899,10 @@ fn read_checkpoint(
 
 fn ensure_schema(connection: &Connection, database_path: &Path) -> rusqlite::Result<()> {
     let schema_version = read_schema_version(connection)?;
-    if schema_version > SCHEMA_VERSION {
+    if schema_version < 0 || schema_version > SCHEMA_VERSION {
         return Err(rusqlite::Error::InvalidQuery);
     }
-    if schema_version > 0 && !has_expected_usage_tables(connection)? {
+    if !has_compatible_existing_usage_tables(connection, schema_version > 0)? {
         // Never reinterpret a database that claims to be supported but has another layout.
         return Err(rusqlite::Error::InvalidQuery);
     }
@@ -3951,15 +3963,13 @@ fn ensure_schema(connection: &Connection, database_path: &Path) -> rusqlite::Res
 }
 
 fn has_expected_usage_tables(connection: &Connection) -> rusqlite::Result<bool> {
-    let count: i64 = connection.query_row(
-        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN \
-         ('client_usage_events','client_usage_revisions','client_file_checkpoints')",
-        [],
-        |row| row.get(0),
-    )?;
-    if count != 3 {
-        return Ok(false);
-    }
+    has_compatible_existing_usage_tables(connection, true)
+}
+
+fn has_compatible_existing_usage_tables(
+    connection: &Connection,
+    require_all: bool,
+) -> rusqlite::Result<bool> {
     for (table, expected) in [
         (
             "client_usage_events",
@@ -3992,7 +4002,23 @@ fn has_expected_usage_tables(connection: &Connection) -> rusqlite::Result<bool> 
                 "identity",
             ][..],
         ),
+        ("multi_usage_metadata", &["key", "value"][..]),
     ] {
+        let mut objects = connection.prepare(
+            "SELECT type FROM sqlite_master WHERE name=?1 COLLATE NOCASE AND type IN ('table','view','index')",
+        )?;
+        let types = objects
+            .query_map([table], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if types.is_empty() {
+            if require_all && table != "multi_usage_metadata" {
+                return Ok(false);
+            }
+            continue;
+        }
+        if types.len() != 1 || types[0] != "table" {
+            return Ok(false);
+        }
         let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
         let columns = statement
             .query_map([], |row| row.get::<_, String>(1))?
@@ -6117,6 +6143,48 @@ mod tests {
         assert_eq!(stored, ("owner-A".into(), "known-model".into()));
     }
 
+    #[test]
+    fn legacy_optional_quality_replay_preserves_counts_and_is_idempotent() {
+        for null_quality in [false, true] {
+            let connection = Connection::open_in_memory().unwrap();
+            ensure_schema(&connection, Path::new(":memory:")).unwrap();
+            let original = normalized_event("claudeCode", "s", Some("r"), None,
+                Some("known-model"), Some(2000), 100, 10, Some(30), Some(20), None).unwrap();
+            let transaction = connection.unchecked_transaction().unwrap();
+            upsert_event(&transaction, &original).unwrap();
+            transaction.commit().unwrap();
+            let mut legacy: Value = serde_json::from_str(&event_payload(&original).unwrap()).unwrap();
+            if null_quality {
+                legacy["quality"] = Value::Null;
+            } else {
+                legacy.as_object_mut().unwrap().remove("quality");
+            }
+            connection.execute("UPDATE client_usage_events SET payload=?1", [legacy.to_string()]).unwrap();
+            let mut incoming = original.clone();
+            incoming.timestamp_ms = 3000;
+            incoming.input_tokens = 1;
+            incoming.output_tokens = 1;
+            incoming.cache_read_tokens = None;
+            incoming.cache_write_tokens = None;
+            for expected_revision in [2_i64, 2_i64] {
+                let transaction = connection.unchecked_transaction().unwrap();
+                upsert_event(&transaction, &incoming).unwrap();
+                transaction.commit().unwrap();
+                let stored: (i64, i64, String) = connection.query_row(
+                    "SELECT input_tokens,output_tokens,payload FROM client_usage_events", [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+                let payload: ClientUsageEventPayload = serde_json::from_str(&stored.2).unwrap();
+                assert_eq!((stored.0, stored.1), (100, 10));
+                assert_eq!((payload.input_tokens, payload.output_tokens), (100, 10));
+                assert_eq!((payload.cache_read_tokens, payload.cache_write_tokens), (Some(30), Some(20)));
+                assert_eq!(payload.timestamp, 3000.0);
+                assert_eq!(payload.quality, "recorded");
+                assert_eq!(connection.query_row("SELECT COUNT(*) FROM client_usage_revisions", [],
+                    |row| row.get::<_, i64>(0)).unwrap(), expected_revision);
+            }
+        }
+    }
+
     fn projection_bundle(connection: &Connection, now: i64, projection: UsageProjection) -> serde_json::Value {
         let prices = Mutex::new(MultiClientPriceCache::default());
         let (totals, _) = read_cached_api_price_aggregates_in_projection(connection, Path::new(":memory:"), &prices, projection).unwrap();
@@ -6856,6 +6924,58 @@ mod tests {
             .unwrap();
         assert_eq!(version, 99);
         assert_eq!(value, 7);
+    }
+
+    #[test]
+    fn schema_admission_refuses_collisions_without_writes_or_backups() {
+        for (version, schema) in [
+            (-1_i64, ""),
+            (0, "CREATE TABLE client_usage_events(client TEXT,model TEXT,timestamp REAL);"),
+            (1, "CREATE TABLE client_usage_events(client TEXT,model TEXT,timestamp REAL);"),
+            (2, "CREATE TABLE client_usage_events(client TEXT,model TEXT,timestamp REAL);"),
+            (0, "CREATE VIEW client_usage_events AS SELECT 'c' AS client,'m' AS model,0 AS timestamp;"),
+            (1, "CREATE VIEW client_usage_revisions AS SELECT 1 AS revision;"),
+            (0, "CREATE TABLE multi_usage_metadata(unrelated TEXT);"),
+        ] {
+            for explicit_initialization in [false, true] {
+                let temporary = TempDir::new("schema-admission-refusal");
+                let path = temporary.path().join("ledger.sqlite");
+                let connection = Connection::open(&path).unwrap();
+                connection.execute_batch(schema).unwrap();
+                connection.pragma_update(None, "user_version", version).unwrap();
+                drop(connection);
+                let before = fs::read(&path).unwrap();
+                if explicit_initialization {
+                    assert!(initialize_usage_database_at(&path).is_err());
+                } else {
+                    let connection = Connection::open(&path).unwrap();
+                    assert!(ensure_schema(&connection, &path).is_err());
+                }
+                assert_eq!(fs::read(&path).unwrap(), before, "version={version}, schema={schema}");
+                assert_eq!(fs::read_dir(temporary.path()).unwrap().count(), 1);
+                let connection = Connection::open(&path).unwrap();
+                assert_eq!(read_schema_version(&connection).unwrap(), version);
+                let mode: String = connection.query_row("PRAGMA journal_mode", [], |row| row.get(0)).unwrap();
+                assert_eq!(mode, "delete");
+            }
+        }
+    }
+
+    #[test]
+    fn current_schema_rejects_colliding_metadata_and_preserves_file() {
+        let temporary = TempDir::new("schema-metadata-refusal");
+        let path = temporary.path().join("ledger.sqlite");
+        let connection = Connection::open(&path).unwrap();
+        ensure_schema(&connection, &path).unwrap();
+        connection.execute_batch("DROP TABLE multi_usage_metadata; CREATE TABLE multi_usage_metadata(unrelated TEXT);").unwrap();
+        drop(connection);
+        let before = fs::read(&path).unwrap();
+        assert!(initialize_usage_database_at(&path).is_err());
+        let connection = Connection::open(&path).unwrap();
+        assert!(ensure_schema(&connection, &path).is_err());
+        drop(connection);
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(fs::read_dir(temporary.path()).unwrap().count(), 1);
     }
 
     #[test]

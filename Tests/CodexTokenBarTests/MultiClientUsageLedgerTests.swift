@@ -371,6 +371,72 @@ final class MultiClientUsageLedgerTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: codex), sentinel)
         XCTAssertEqual(try ledger.database.readRows("SELECT COUNT(*) FROM client_usage_revisions") { $0.int(0) }.first!, 3)
     }
+
+    func testReplayRepairsModelAndSessionColumnDriftWithoutChangingPayload() throws {
+        var expected = event()
+        expected.model = "claude-opus-5"
+        let variants = [
+            (name: "model", sessionID: expected.sessionID, model: "unknown"),
+            (name: "session", sessionID: "legacy-owner", model: expected.model),
+            (name: "both", sessionID: "legacy-owner", model: "unknown")
+        ]
+        for variant in variants {
+            let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("column-drift-\(variant.name).sqlite"))
+            XCTAssertEqual(try ledger.ingest([expected]), 1)
+            let payload = try XCTUnwrap(ledger.database.readRows("SELECT payload FROM client_usage_events") { $0.text(0) }.first!)
+            let revisions = try XCTUnwrap(ledger.database.readRows("SELECT COUNT(*) FROM client_usage_revisions") { $0.int(0) }.first!)
+            try ledger.database.execute("UPDATE client_usage_events SET session_id=?,model=?",
+                                        bindings: [.text(variant.sessionID), .text(variant.model)])
+            XCTAssertEqual(try ledger.database.readRows("SELECT payload FROM client_usage_events") { $0.text(0) }.first!, payload)
+
+            XCTAssertEqual(try ledger.ingest([expected]), 1, variant.name)
+
+            XCTAssertEqual(try ledger.database.readRows("SELECT session_id FROM client_usage_events") { $0.text(0) }.first!, expected.sessionID, variant.name)
+            XCTAssertEqual(try ledger.database.readRows("SELECT model FROM client_usage_events") { $0.text(0) }.first!, expected.model, variant.name)
+            XCTAssertEqual(try ledger.database.readRows("SELECT payload FROM client_usage_events") { $0.text(0) }.first!, payload, variant.name)
+            XCTAssertEqual(try ledger.database.readRows("SELECT COUNT(*) FROM client_usage_revisions") { $0.int(0) }.first!, revisions + 1, variant.name)
+            XCTAssertEqual(try ledger.ingest([expected]), 0, variant.name)
+            XCTAssertEqual(try ledger.database.readRows("SELECT COUNT(*) FROM client_usage_revisions") { $0.int(0) }.first!, revisions + 1, variant.name)
+        }
+    }
+
+    func testNullableEventAndCheckpointColumnsRemainWritable() throws {
+        let url = root.appendingPathComponent("additive-columns.sqlite")
+        let original = try MultiClientUsageLedger(url: url)
+        let initialCheckpoint = MultiClientFileCheckpoint(offset: 100, size: 100, modified: 10, identity: "inode")
+        XCTAssertEqual(try original.ingest([event()], client: .claudeCode, sourceKey: "existing", checkpoint: initialCheckpoint), 1)
+        try original.database.execute("""
+        ALTER TABLE client_usage_events ADD COLUMN future_event TEXT;
+        ALTER TABLE client_file_checkpoints ADD COLUMN future_checkpoint TEXT;
+        UPDATE client_usage_events SET future_event='event-extension';
+        UPDATE client_file_checkpoints SET future_checkpoint='checkpoint-extension';
+        """)
+
+        let ledger = try MultiClientUsageLedger(url: url)
+        let updatedCheckpoint = MultiClientFileCheckpoint(offset: 200, size: 250, modified: 11, identity: "updated-inode")
+        XCTAssertEqual(try ledger.ingest([event(40)], client: .claudeCode, sourceKey: "existing", checkpoint: updatedCheckpoint), 1)
+        var added = event(30)
+        added.eventID = "s:msg2"
+        let addedCheckpoint = MultiClientFileCheckpoint(offset: 300, size: 350, modified: 12, identity: "new-inode")
+        XCTAssertEqual(try ledger.ingest([added], client: .claudeCode, sourceKey: "added", checkpoint: addedCheckpoint), 1)
+
+        XCTAssertEqual(try ledger.summaries().first?.outputTokens, 70)
+        XCTAssertEqual(try ledger.summaries().first?.requests, 2)
+        XCTAssertEqual(try ledger.database.readRows("SELECT future_event FROM client_usage_events WHERE event_id='s:msg1'") { $0.text(0) }.first!, "event-extension")
+        XCTAssertNil(try ledger.database.readRows("SELECT future_event FROM client_usage_events WHERE event_id='s:msg2'") { $0.text(0) }.first!)
+        XCTAssertEqual(try ledger.database.readRows("SELECT future_checkpoint FROM client_file_checkpoints WHERE source_key='existing'") { $0.text(0) }.first!, "checkpoint-extension")
+        XCTAssertNil(try ledger.database.readRows("SELECT future_checkpoint FROM client_file_checkpoints WHERE source_key='added'") { $0.text(0) }.first!)
+        for (key, expected) in [("existing", updatedCheckpoint), ("added", addedCheckpoint)] {
+            let actual = try XCTUnwrap(ledger.checkpoint(client: .claudeCode, sourceKey: key))
+            XCTAssertEqual(actual.offset, expected.offset)
+            XCTAssertEqual(actual.size, expected.size)
+            XCTAssertEqual(actual.modified, expected.modified)
+            XCTAssertEqual(actual.identity, expected.identity)
+        }
+        XCTAssertEqual(try ledger.database.readRows("PRAGMA user_version") { $0.int(0) }.first!, MultiClientUsageLedger.schemaVersion)
+        XCTAssertEqual(try ledger.database.readRows("SELECT COUNT(*) FROM client_usage_revisions") { $0.int(0) }.first!, 3)
+    }
+
     func testCheckpointAndEventsRollbackTogether() throws {
         let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("usage.sqlite"))
         let checkpoint = MultiClientFileCheckpoint(offset: 100, size: 100, modified: 10, identity: "inode")
@@ -416,7 +482,8 @@ final class MultiClientUsageLedgerTests: XCTestCase {
         _ = try ledger.ingest([rankedEvent], client: .claudeCode, sourceKey: "fixture",
                               checkpoint: .init(offset: 100, size: 100, modified: 10, identity: "fixture"))
         let original = SQLiteDatabaseDriver(url: url)
-        try original.execute("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE; PRAGMA user_version=99")
+        try original.execute("PRAGMA user_version=99")
+        try prepareDeleteModeFixture(driver: original, url: url)
         let before = try Data(contentsOf: url)
         let filesBefore = try FileManager.default.contentsOfDirectory(atPath: root.path).sorted()
 
@@ -431,7 +498,7 @@ final class MultiClientUsageLedgerTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: url), before)
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path).sorted(), filesBefore)
         for suffix in ["-wal", "-shm", "-journal"] {
-            XCTAssertFalse(FileManager.default.fileExists(atPath: url.path + suffix))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: url.path + suffix), "Refusal left \(suffix)")
         }
         XCTAssertEqual(try original.readRows("PRAGMA user_version") { $0.int(0) }.first!, 99)
         XCTAssertEqual(try original.readRows("SELECT COUNT(*) FROM client_usage_revisions") { $0.int(0) }.first!, 1)
@@ -446,7 +513,7 @@ final class MultiClientUsageLedgerTests: XCTestCase {
         _ = try ledger.ingest([rankedEvent])
         let expected = try ledger.cacheRankingProjection(clients: [.claudeCode])
         let original = SQLiteDatabaseDriver(url: url)
-        try original.execute("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE")
+        try prepareDeleteModeFixture(driver: original, url: url)
         let before = try Data(contentsOf: url)
         let filesBefore = try FileManager.default.contentsOfDirectory(atPath: root.path).sorted()
 
@@ -465,6 +532,7 @@ final class MultiClientUsageLedgerTests: XCTestCase {
         let url = root.appendingPathComponent("wrong-shape.sqlite")
         let original = SQLiteDatabaseDriver(url: url)
         try original.execute("CREATE TABLE unrelated(id INTEGER PRIMARY KEY); INSERT INTO unrelated VALUES(42); PRAGMA user_version=2")
+        try prepareDeleteModeFixture(driver: original, url: url)
         let before = try Data(contentsOf: url)
         XCTAssertThrowsError(try MultiClientUsageLedger(url: url))
         XCTAssertThrowsError(try MultiClientUsageLedger.readOnlyCacheRankingProjection(url: url, clients: [.claudeCode])) { error in
@@ -477,6 +545,118 @@ final class MultiClientUsageLedgerTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: url.path + "-wal"))
         XCTAssertEqual(try original.readRows("SELECT id FROM unrelated") { $0.int(0)! }, [42])
     }
+
+    func testNegativeSchemaVersionIsRejectedWithoutChangingDatabaseFiles() throws {
+        let directory = root.appendingPathComponent("negative-version", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("usage.sqlite")
+        let original = SQLiteDatabaseDriver(url: url)
+        try original.execute("CREATE TABLE unrelated(id INTEGER PRIMARY KEY); INSERT INTO unrelated VALUES(42); PRAGMA user_version=-1")
+
+        try assertSchemaRefusalPreservesFiles(at: url, version: -1)
+
+        XCTAssertEqual(try original.readRows("SELECT id FROM unrelated") { $0.int(0)! }, [42])
+    }
+
+    func testIncompleteTablesAndCollidingViewsAreRejectedAtEverySupportedVersion() throws {
+        let objects: [(name: String, columns: [String])] = [
+            ("client_usage_events", ["client", "event_id", "session_id", "model", "timestamp", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "payload"]),
+            ("client_usage_revisions", ["revision", "client", "event_id", "captured_at", "payload"]),
+            ("client_file_checkpoints", ["client", "source_key", "offset", "size", "modified", "identity"]),
+            ("multi_usage_metadata", ["key", "value"])
+        ]
+        for version in [0, 1, MultiClientUsageLedger.schemaVersion] {
+            for object in objects {
+                for kind in ["table", "view"] {
+                    let directory = root.appendingPathComponent("refuse-v\(version)-\(object.name)-\(kind)", isDirectory: true)
+                    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                    let url = directory.appendingPathComponent("usage.sqlite")
+                    let ledger = try MultiClientUsageLedger(url: url)
+                    try ledger.database.execute("DROP TABLE IF EXISTS \(object.name)")
+                    if kind == "table" {
+                        let columns = object.name == "client_usage_events" ? "client TEXT,model TEXT,timestamp REAL" : "\(object.columns[0]) TEXT"
+                        try ledger.database.execute("CREATE TABLE \(object.name)(\(columns))")
+                    } else {
+                        // A view with all required names must still be refused as a non-table.
+                        let columns = object.columns.map { "NULL AS \($0)" }.joined(separator: ",")
+                        try ledger.database.execute("CREATE VIEW \(object.name) AS SELECT \(columns)")
+                    }
+                    let original = SQLiteDatabaseDriver(url: url)
+                    try original.execute("PRAGMA user_version=\(version)")
+                    try prepareDeleteModeFixture(driver: original, url: url)
+
+                    try assertSchemaRefusalPreservesFiles(at: url, version: version)
+                }
+            }
+        }
+    }
+
+    func testUnversionedUnrelatedDatabaseIsBackedUpBeforeUpgrade() throws {
+        let url = root.appendingPathComponent("unversioned-unrelated.sqlite")
+        let original = SQLiteDatabaseDriver(url: url)
+        try original.execute("CREATE TABLE unrelated(id INTEGER PRIMARY KEY,payload TEXT NOT NULL); INSERT INTO unrelated VALUES(42,'preserved'); PRAGMA user_version=0")
+
+        let ledger = try MultiClientUsageLedger(url: url)
+
+        XCTAssertEqual(try ledger.database.readRows("PRAGMA user_version") { $0.int(0) }.first!, MultiClientUsageLedger.schemaVersion)
+        XCTAssertEqual(try ledger.database.readRows("SELECT payload FROM unrelated WHERE id=42") { $0.text(0) }.first!, "preserved")
+        XCTAssertEqual(try ledger.ingest([event()]), 1)
+        let backups = try FileManager.default.contentsOfDirectory(at: root.appendingPathComponent("backups", isDirectory: true), includingPropertiesForKeys: nil)
+        XCTAssertEqual(backups.count, 1)
+        let backup = SQLiteDatabaseDriver(url: try XCTUnwrap(backups.first), readOnly: true, createsFileIfMissing: false)
+        XCTAssertEqual(try backup.readRows("PRAGMA user_version") { $0.int(0) }.first!, 0)
+        XCTAssertEqual(try backup.readRows("SELECT payload FROM unrelated WHERE id=42") { $0.text(0) }.first!, "preserved")
+        XCTAssertTrue(try backup.readRows("SELECT name FROM sqlite_master WHERE name='client_usage_events'") { $0.text(0) }.isEmpty)
+    }
+
+    private func prepareDeleteModeFixture(driver: SQLiteDatabaseDriver, url: URL, file: StaticString = #filePath, line: UInt = #line) throws {
+        // Callers finish version writes first; no ledger writer may re-enable WAL after this point.
+        let checkpoint = try driver.readRows("PRAGMA wal_checkpoint(TRUNCATE)") { $0.int(0) }
+        let busy = try XCTUnwrap(checkpoint.first ?? nil, "Fixture checkpoint returned no busy status", file: file, line: line)
+        XCTAssertEqual(busy, 0, "Fixture checkpoint must finish before the baseline snapshot", file: file, line: line)
+        let modes = try driver.readRows("PRAGMA journal_mode=DELETE") { $0.text(0) }
+        let mode = try XCTUnwrap(modes.first ?? nil, "Fixture journal mode returned no result", file: file, line: line)
+        XCTAssertEqual(mode, "delete", "Fixture must enter DELETE mode before the baseline snapshot", file: file, line: line)
+        let header = try Data(contentsOf: url)
+        XCTAssertEqual(Array(header.dropFirst(18).prefix(2)), [1, 1], "Fixture header bytes 18/19 must both be 1", file: file, line: line)
+        for suffix in ["-wal", "-shm", "-journal"] {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: url.path + suffix), "Fixture setup left \(suffix) before the baseline snapshot", file: file, line: line)
+        }
+    }
+
+    private func assertSchemaRefusalPreservesFiles(at url: URL, version: Int, file: StaticString = #filePath, line: UInt = #line) throws {
+        let fm = FileManager.default
+        let directory = url.deletingLastPathComponent()
+        let backupDirectory = directory.appendingPathComponent("backups", isDirectory: true)
+        try fm.createDirectory(at: backupDirectory, withIntermediateDirectories: true)
+        let backup = backupDirectory.appendingPathComponent("existing.sqlite")
+        let backupBytes = Data("preexisting backup must remain unchanged".utf8)
+        try backupBytes.write(to: backup)
+        let bytes = try Data(contentsOf: url)
+        let paths = try fm.subpathsOfDirectory(atPath: directory.path).sorted()
+        let original = SQLiteDatabaseDriver(url: url, readOnly: true, createsFileIfMissing: false)
+        let attempts: [() throws -> Void] = [
+            { _ = try MultiClientUsageLedger(url: url) },
+            { _ = try MultiClientUsageLedger(url: url, readOnly: true) },
+            { _ = try MultiClientUsageLedger.readOnlyCacheRankingProjection(url: url, clients: [.claudeCode]) }
+        ]
+        for attempt in attempts {
+            XCTAssertThrowsError(try attempt(), url.deletingLastPathComponent().lastPathComponent, file: file, line: line) { error in
+                guard let ledgerError = error as? MultiClientUsageLedger.LedgerError,
+                      case .incompatibleSchema = ledgerError else {
+                    return XCTFail("Expected schema admission refusal, got \(error)", file: file, line: line)
+                }
+            }
+            XCTAssertEqual(try Data(contentsOf: url), bytes, file: file, line: line)
+            XCTAssertEqual(try original.readRows("PRAGMA user_version") { $0.int(0) }.first!, version, file: file, line: line)
+            XCTAssertEqual(try fm.subpathsOfDirectory(atPath: directory.path).sorted(), paths, file: file, line: line)
+            XCTAssertEqual(try Data(contentsOf: backup), backupBytes, file: file, line: line)
+            for suffix in ["-wal", "-shm", "-journal"] {
+                XCTAssertFalse(fm.fileExists(atPath: url.path + suffix), "Refusal left \(suffix)", file: file, line: line)
+            }
+        }
+    }
+
     func testTrendBucketsUseFiveMinuteUTCWindowsAndConserveRawEvents() throws {
         let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("usage.sqlite"))
         let now: Int64 = 1_800_000_600

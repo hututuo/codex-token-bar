@@ -165,16 +165,23 @@ final class MultiClientUsageLedger: @unchecked Sendable {
         let version = try database.readRows("PRAGMA user_version") { $0.int(0) ?? 0 }.first ?? 0
         guard version <= schemaVersion else { throw LedgerError.newerSchema(version) }
         guard version >= 0 else { throw LedgerError.incompatibleSchema }
-        if version == schemaVersion {
-            let required: [String: Set<String>] = [
-                "client_usage_events": ["client", "event_id", "session_id", "model", "timestamp", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "payload"],
-                "client_usage_revisions": ["revision", "client", "event_id", "captured_at", "payload"],
-                "client_file_checkpoints": ["client", "source_key", "offset", "size", "modified", "identity"]
-            ]
-            for (table, fields) in required {
-                let actual = try database.readRows("PRAGMA table_info(\(table))") { $0.text(1) ?? "" }
-                guard fields.isSubset(of: Set(actual)) else { throw LedgerError.incompatibleSchema }
+        // Even an unversioned file can contain a colliding table or view. Refuse
+        // incompatible existing objects before WAL, backups, or migration writes.
+        let required: [String: Set<String>] = [
+            "client_usage_events": ["client", "event_id", "session_id", "model", "timestamp", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "payload"],
+            "client_usage_revisions": ["revision", "client", "event_id", "captured_at", "payload"],
+            "client_file_checkpoints": ["client", "source_key", "offset", "size", "modified", "identity"],
+            "multi_usage_metadata": ["key", "value"]
+        ]
+        for (table, fields) in required {
+            let types = try database.readRows("SELECT type FROM sqlite_master WHERE name=? COLLATE NOCASE AND type IN ('table','view','index')", bindings: [.text(table)]) { $0.text(0) ?? "" }
+            if types.isEmpty {
+                guard version != schemaVersion || table == "multi_usage_metadata" else { throw LedgerError.incompatibleSchema }
+                continue
             }
+            guard types == ["table"] else { throw LedgerError.incompatibleSchema }
+            let actual = try database.readRows("PRAGMA table_info(\(table))") { $0.text(1) ?? "" }
+            guard fields.isSubset(of: Set(actual)) else { throw LedgerError.incompatibleSchema }
         }
         if requireCurrentVersion {
             guard version == schemaVersion else { throw LedgerError.incompatibleSchema }
@@ -219,18 +226,21 @@ final class MultiClientUsageLedger: @unchecked Sendable {
                 var event = incoming
                 var payload = originalPayload
                 let key: [SQLiteBinding] = [.text(event.client.rawValue), .text(event.eventID)]
-                let previous = try connection.readRows("SELECT payload FROM client_usage_events WHERE client=? AND event_id=?", bindings: key) { $0.text(0) }.first ?? nil
-                if let previous, let old = try? Self.decode(previous), old.sessionID == event.sessionID || event.client == .antigravity {
+                let previous = try connection.readRows("SELECT payload,session_id,model FROM client_usage_events WHERE client=? AND event_id=?", bindings: key) {
+                    (payload: $0.text(0), sessionID: $0.text(1), model: $0.text(2))
+                }.first
+                if let previousPayload = previous?.payload, let old = try? Self.decode(previousPayload), old.sessionID == event.sessionID || event.client == .antigravity {
                     // A response copied into another store/fork keeps its first ledger owner.
                     if event.client == .antigravity { event.sessionID = old.sessionID }
                     event = old.mergingUpdate(event)
                     payload = String(decoding: try encoder.encode(event), as: UTF8.self)
                 }
-                guard previous != payload else { continue }
+                // Column-only legacy repairs must invalidate readers' revision caches too.
+                guard previous?.payload != payload || previous?.sessionID != event.sessionID || previous?.model != event.model else { continue }
                 try connection.execute("INSERT INTO client_usage_revisions(client,event_id,captured_at,payload) VALUES(?,?,?,?)",
                                        bindings: key + [.date(Date()), .text(originalPayload)])
                 try connection.execute("""
-                INSERT INTO client_usage_events VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                INSERT INTO client_usage_events(client,event_id,session_id,model,timestamp,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens,payload) VALUES(?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(client,event_id) DO UPDATE SET session_id=excluded.session_id,model=excluded.model,
                 timestamp=excluded.timestamp,input_tokens=excluded.input_tokens,output_tokens=excluded.output_tokens,
                 cache_read_tokens=excluded.cache_read_tokens,cache_write_tokens=excluded.cache_write_tokens,
@@ -244,7 +254,7 @@ final class MultiClientUsageLedger: @unchecked Sendable {
             }
             if let client, let sourceKey, let checkpoint {
                 try connection.execute("""
-                INSERT INTO client_file_checkpoints VALUES(?,?,?,?,?,?) ON CONFLICT(client,source_key)
+                INSERT INTO client_file_checkpoints(client,source_key,offset,size,modified,identity) VALUES(?,?,?,?,?,?) ON CONFLICT(client,source_key)
                 DO UPDATE SET offset=excluded.offset,size=excluded.size,modified=excluded.modified,identity=excluded.identity
                 """, bindings: [.text(client.rawValue), .text(sourceKey), .int64(checkpoint.offset), .int64(checkpoint.size),
                                   .double(checkpoint.modified), .text(checkpoint.identity)])
