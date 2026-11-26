@@ -23,7 +23,7 @@ struct SpeedEngine: Sendable {
     /// Response-only views survive timer publishes. Clock-dependent window,
     /// reference, history and in-flight computations still run on every tick.
     private var responseViewsDirty = true
-    private var sortedTimedResponses: [TimedResponse] = []
+    private var sortedTimedResponses: [CachedTimedResponse] = []
     private var responseViewCutoffMs: Int64?
     private var latestResponseEnds: [String: Int64] = [:]
     private var earliestResponseEndMs: Int64?
@@ -287,13 +287,13 @@ struct SpeedEngine: Sendable {
         let cutoff = nowMs - Self.retentionMs
         if !responseViewsDirty, let responseViewCutoffMs, cutoff >= responseViewCutoffMs { return }
         var ends: [String: Int64] = [:]
-        var timed: [TimedResponse] = []
+        var timed: [CachedTimedResponse] = []
         for storage in responses.values {
             let record = storage.record
             ends[record.agentId] = max(ends[record.agentId] ?? record.endMs, record.endMs)
             // Today's older records remain in the authoritative dictionary and
             // day ledger; the live/reference view need not duplicate them.
-            if record.endMs >= cutoff, let response = TimedResponse(record) { timed.append(response) }
+            if record.endMs >= cutoff, let response = CachedTimedResponse(storage) { timed.append(response) }
         }
         timed.sort { lhs, rhs in
             lhs.endMs != rhs.endMs ? lhs.endMs > rhs.endMs : lhs.record.key < rhs.record.key
@@ -310,7 +310,7 @@ struct SpeedEngine: Sendable {
     }
 
     /// Valid responses ending within the retention window, most recent first.
-    private func recentTimedResponses(nowMs: Int64) -> ArraySlice<TimedResponse> {
+    private func recentTimedResponses(nowMs: Int64) -> ArraySlice<CachedTimedResponse> {
         let cutoff = nowMs - Self.retentionMs
         // A backwards cutoff rebuilds the view before this lookup, allowing
         // old-today records to reenter without retaining their duplicate slots.
@@ -329,7 +329,7 @@ struct SpeedEngine: Sendable {
 
     // MARK: - History
 
-    private static func history(nowMs: Int64, measured timed: [TimedResponse], estimates: [InFlightEstimate]) -> [HistoryPoint] {
+    private static func history(nowMs: Int64, measured timed: [CachedTimedResponse], estimates: [InFlightEstimate]) -> [HistoryPoint] {
         let lastSecond = ResponseTiming.second(of: nowMs)
         let firstSecond = lastSecond - Int64(historySeconds) + 1
         var measured = Array(repeating: Rate.zero, count: historySeconds)

@@ -30,7 +30,7 @@ struct SpeedReferences: Sendable {
         var costDurationMs: Int64 = 0
         var hasCost = false
 
-        mutating func add(_ response: TimedResponse) {
+        mutating func add(_ response: CachedTimedResponse) {
             count += 1
             output += response.output
             total += response.total
@@ -52,12 +52,12 @@ struct SpeedReferences: Sendable {
         }
     }
 
-    private let timed: [TimedResponse]
+    private let timed: [CachedTimedResponse]
     private let nowMs: Int64
     private var recentByAgent: [String: SpeedEstimate] = [:]
 
     /// `timed` must be sorted most recent first.
-    init(timed: [TimedResponse], nowMs: Int64) {
+    init(timed: [CachedTimedResponse], nowMs: Int64) {
         self.timed = timed
         self.nowMs = nowMs
         var sums: [String: Sums] = [:]
@@ -141,8 +141,8 @@ struct LiveWindow: Sendable {
     /// `measured` and `unmeasured` hold valid-interval responses that are final and unfinalized respectively.
     init(
         nowMs: Int64,
-        measured measuredResponses: [TimedResponse],
-        unmeasured: [TimedResponse],
+        measured measuredResponses: [CachedTimedResponse],
+        unmeasured: [CachedTimedResponse],
         agents: [String: EngineAgent],
         latestEnds: [String: Int64],
         references: SpeedReferences

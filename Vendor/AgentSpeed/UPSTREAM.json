@@ -613,12 +613,16 @@
       "sha256": "d38bbe9d50ac40ec67276fc19cf3e762e038cba2d8ea948e1c95ecdbaf7577de"
     },
     "macos/Sources/AgentSpeedCore/Engine/LiveRate.swift": {
-      "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged",
-      "sha256": "397cb365076980a522ec392e993083bf4cba9488016b230679c6e86132d52914"
+      "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged Consume compact immutable-revision timed views without changing measured, unfinalized, reference or attribution arithmetic.",
+      "sha256": "038921266469ea930e9ce4a652a450efefafcfaff3d0c657a50a570bbb14d4b9"
+    },
+    "macos/Sources/AgentSpeedCore/Engine/ResponseTiming.swift": {
+      "reason": "Share existing engine-owned immutable response revisions in compact live timed views; keep value-only history timing allocation-free and use the same bucket arithmetic for both representations.",
+      "sha256": "5027f4ab1152bbcb6a735632683206619e30df57bd95dfc09d6eaef2046cd528"
     },
     "macos/Sources/AgentSpeedCore/Engine/SpeedEngine.swift": {
-      "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged Reuse mutation-invalidated timed-response ordering and latest-agent ends across timer publishes, with an earliest-end retention guard; preserve clock-dependent arithmetic and source/model attribution. Limit duplicate timed-response slots to the live/reference retention window and rebuild from retained authoritative records on a backwards clock cutoff. Remove the unused per-response project dictionary; completion summaries still use the upsert project argument. Store immutable response revisions shared with parser emissions; detach only when pricing changes the stored cost and preserve independent engine value copies.",
-      "sha256": "af279ab76d659213c2f4a1ce682145057bdf478bda7825094a6173ed312a406c"
+      "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged Reuse mutation-invalidated timed-response ordering and latest-agent ends across timer publishes, with an earliest-end retention guard; preserve clock-dependent arithmetic and source/model attribution. Limit duplicate timed-response slots to the live/reference retention window and rebuild from retained authoritative records on a backwards clock cutoff. Remove the unused per-response project dictionary; completion summaries still use the upsert project argument. Store immutable response revisions shared with parser emissions; detach only when pricing changes the stored cost and preserve independent engine value copies. Use compact immutable-revision views for live sorting, filtering and history without duplicating full ResponseRecord payloads; preserve ordering, rollback, retention and repricing invalidation.",
+      "sha256": "c94fd55749c5745d277942746aed0bd6a3f96345d983448a9a4bb7f420230a74"
     },
     "macos/Sources/AgentSpeedCore/History/HistoryAnalyzer.swift": {
       "reason": "Local analysis revision4 to5 for paginated prefix accounting semantics; does not change DB schema or start Token Bar HistoryService.",
@@ -741,8 +745,8 @@
       "sha256": "12ca4e75647b0e7a2a66e7d714d64761893316f894f982e11f7ed0362ff5b126"
     },
     "macos/Tests/AgentSpeedCoreTests/EngineBehaviorTests.swift": {
-      "reason": "Guard old-model response tails, current-model estimates, unknown models and per-source conservation Cover bounded recent-view slots, old-today count preservation, clock rollback and response replacements entering/leaving the live window. Verify response revision retention and release, independent copied engines, and unchanged replacement totals.",
-      "sha256": "28a1bf89336e917d5f162c1a35fa72a1aab40a9bad32c4af8b83b1f89eb0a5e1"
+      "reason": "Guard old-model response tails, current-model estimates, unknown models and per-source conservation Cover bounded recent-view slots, old-today count preservation, clock rollback and response replacements entering/leaving the live window. Verify response revision retention and release, independent copied engines, and unchanged replacement totals. Verify compact view layout, interval and bucket equivalence, warm-cache partial/final engine copies and release after cache refresh.",
+      "sha256": "26c82d2cde094f7ff4d9c4214031953b3fa0b2e68eab47f642f6aa828121d47f"
     },
     "macos/Tests/AgentSpeedCoreTests/HistoryCostTests.swift": {
       "reason": "Verify initial pricing and late repricing detach engine costs from immutable parser revisions and unpriced engines.",

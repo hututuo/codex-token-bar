@@ -77,6 +77,79 @@ struct EngineBehaviorTests {
         #expect(copy.advance(nowMs: replacement.endMs, todayStartMs: Self.base - 1000, emitsEvents: false).today.output == 40)
     }
 
+    @Test func cachedTimedResponseSharesRevisionAndPreservesIntervalMath() {
+        #expect(MemoryLayout<CachedTimedResponse>.stride <= 2 * MemoryLayout<Int64>.stride)
+        #expect(MemoryLayout<CachedTimedResponse>.stride < MemoryLayout<TimedResponse>.stride)
+        let intervals: [(Int64?, Int64)] = [
+            (nil, 0), (1000, 0), (0, ResponseTiming.maxIntervalMs + 1),
+            (0, 0), (-250, 250), (-2000, -1500), (250, 1750),
+            (0, ResponseTiming.maxIntervalMs)
+        ]
+        for (start, end) in intervals {
+            let record = Self.record("interval", start: start, end: end, input: 7, output: 10)
+            let revision = ResponseStorage(record)
+            let value = TimedResponse(record)
+            let cached = CachedTimedResponse(revision)
+            guard let value else {
+                #expect(cached == nil)
+                continue
+            }
+            guard let cached else { Issue.record("cached view lost a valid interval"); continue }
+            #expect(cached.storage === revision)
+            #expect(cached.record == record)
+            #expect(cached.startMs == value.startMs && cached.endMs == value.endMs)
+            #expect(cached.durationMs == value.durationMs && cached.output == value.output && cached.total == value.total)
+            for (first, last) in [(-3, 2), (0, 1), (2, 1)] {
+                var valueSeconds: [Int64] = [], cachedSeconds: [Int64] = []
+                var valueTokens: [Double] = [], cachedTokens: [Double] = []
+                value.distribute(firstSecond: Int64(first), lastSecond: Int64(last)) { second, output, total in
+                    valueSeconds.append(second); valueTokens.append(contentsOf: [output, total])
+                }
+                cached.distribute(firstSecond: Int64(first), lastSecond: Int64(last)) { second, output, total in
+                    cachedSeconds.append(second); cachedTokens.append(contentsOf: [output, total])
+                }
+                #expect(cachedSeconds == valueSeconds && cachedTokens == valueTokens)
+            }
+        }
+        let crossing = CachedTimedResponse(ResponseStorage(Self.record("crossing", start: -250, end: 250, input: 7, output: 10)))!
+        var seconds: [Int64] = [], tokens: [Double] = []
+        crossing.distribute(firstSecond: -1, lastSecond: 0) { second, output, total in
+            seconds.append(second); tokens.append(contentsOf: [output, total])
+        }
+        #expect(seconds == [-1, 0] && tokens == [5, 8.5, 5, 8.5])
+    }
+
+    @Test func warmedSharedTimedViewsKeepCopiedEnginesIndependentAndReleaseOldRevisions() {
+        var engine = SpeedEngine()
+        var partial = Self.record("shared-warm", start: Self.base, end: Self.base + 1000, input: 10, output: 5)
+        partial.isFinal = false
+        var revision: ResponseStorage? = ResponseStorage(partial)
+        weak var retained = revision
+        engine.upsert(revision!, project: "p", isCompletion: true, emitsEvents: false)
+        revision = nil
+        let initial = engine.advance(nowMs: partial.endMs, todayStartMs: Self.base - 1000, emitsEvents: false)
+        #expect(engine.cachedTimedResponseCount == 1 && initial.unfinalizedToday == 1)
+        var copy = engine
+        var final = partial
+        final.isFinal = true
+        final.usage.output = 40
+        final.endMs += 1000
+        engine.upsert(final, project: "p", isCompletion: false, emitsEvents: false)
+        let updated = engine.advance(nowMs: final.endMs, todayStartMs: Self.base - 1000, emitsEvents: false)
+        #expect(updated.today.output == 40 && updated.unfinalizedToday == 0)
+        #expect(retained != nil, "the copied engine's warm view still owns its earlier revision")
+        let independent = copy.advance(nowMs: final.endMs, todayStartMs: Self.base - 1000, emitsEvents: false)
+        #expect(independent.today.output == 5 && independent.unfinalizedToday == 1)
+        copy.upsert(final, project: "p", isCompletion: false, emitsEvents: false)
+        #expect(retained != nil, "a dirty view releases its old revision when refreshed")
+        let refreshed = copy.advance(nowMs: final.endMs, todayStartMs: Self.base - 1000, emitsEvents: false)
+        #expect(retained == nil)
+        #expect(refreshed.today == updated.today && refreshed.unfinalizedToday == updated.unfinalizedToday)
+        #expect(refreshed.live == updated.live && refreshed.sourceLive == updated.sourceLive)
+        #expect(refreshed.history == updated.history && refreshed.todayBySource == updated.todayBySource)
+        #expect(refreshed.liveModels == updated.liveModels && refreshed.todayCost == updated.todayCost)
+    }
+
     @Test func newPeakNeedsMarginMinimumAndCooldown() {
         var engine = SpeedEngine()
         let today = Self.base - 3_600_000
