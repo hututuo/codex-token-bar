@@ -53,9 +53,16 @@ final class AntigravityLocalRPCQuotaTests: XCTestCase {
             let used = try XCTUnwrap(row["used"] as? [Double])
             XCTAssertEqual(reading.windows.count, used.count)
             for (window, value) in zip(reading.windows, used) { XCTAssertEqual(window.usedPercent, value, accuracy: 0.000001) }
+            if let resets = row["resets"] as? [Any] {
+                XCTAssertEqual(reading.windows.count, resets.count)
+                for (window, reset) in zip(reading.windows, resets) {
+                    XCTAssertEqual(window.resetsAt?.timeIntervalSince1970, reset as? Double, row["name"] as? String ?? "")
+                }
+            }
             XCTAssertFalse(String(describing: reading).contains("DO-NOT-PROJECT"))
         }
         XCTAssertEqual(AntigravityLocalRPCQuota.decode(Data(repeating: 32, count: 524_289), now: Date()).state, "unavailable")
+        XCTAssertEqual(AntigravityLocalRPCQuota.decode(Data("{}".utf8), now: Date(timeIntervalSince1970: .infinity)).state, "unavailable")
     }
 
     func testDiscoveryRequiresInstalledProcessOwnedLoopbackPortAndCSRF() throws {

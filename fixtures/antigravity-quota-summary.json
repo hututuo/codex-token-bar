@@ -286,6 +286,1083 @@
       "expectedState": "unavailable",
       "used": [],
       "ids": []
+    },
+    {
+      "name": "response-nested-error",
+      "now": 1800000000,
+      "data": {
+        "response": {
+          "code": 13,
+          "groups": [
+            {
+              "buckets": [
+                {
+                  "bucketId": "gemini-5h",
+                  "remainingFraction": 0.25,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expectedState": "unavailable",
+      "ids": [],
+      "used": [],
+      "resets": []
+    },
+    {
+      "name": "response-nested-string-error",
+      "now": 1800000000,
+      "data": {
+        "response": {
+          "code": "permission_denied",
+          "groups": [
+            {
+              "buckets": [
+                {
+                  "bucketId": "gemini-5h",
+                  "remainingFraction": 0.25,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expectedState": "unavailable",
+      "ids": [],
+      "used": [],
+      "resets": []
+    },
+    {
+      "name": "summary-nested-error",
+      "now": 1800000000,
+      "data": {
+        "summary": {
+          "code": 13,
+          "groups": [
+            {
+              "buckets": [
+                {
+                  "bucketId": "gemini-5h",
+                  "remainingFraction": 0.25,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expectedState": "unavailable",
+      "ids": [],
+      "used": [],
+      "resets": []
+    },
+    {
+      "name": "summary-nested-string-error",
+      "now": 1800000000,
+      "data": {
+        "summary": {
+          "code": "permission_denied",
+          "groups": [
+            {
+              "buckets": [
+                {
+                  "bucketId": "gemini-5h",
+                  "remainingFraction": 0.25,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expectedState": "unavailable",
+      "ids": [],
+      "used": [],
+      "resets": []
+    },
+    {
+      "name": "success-code-numeric-zero",
+      "now": 1800000000,
+      "data": {
+        "code": 0,
+        "response": {
+          "code": 0,
+          "groups": [
+            {
+              "buckets": [
+                {
+                  "bucketId": "gemini-5h",
+                  "remainingFraction": 0.25,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expectedState": "available",
+      "ids": [
+        "gemini-5h"
+      ],
+      "used": [
+        75
+      ],
+      "resets": [
+        1800057600.0
+      ]
+    },
+    {
+      "name": "success-code-floating-zero",
+      "now": 1800000000,
+      "data": {
+        "code": 0.0,
+        "response": {
+          "code": 0.0,
+          "groups": [
+            {
+              "buckets": [
+                {
+                  "bucketId": "gemini-5h",
+                  "remainingFraction": 0.25,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expectedState": "available",
+      "ids": [
+        "gemini-5h"
+      ],
+      "used": [
+        75
+      ],
+      "resets": [
+        1800057600.0
+      ]
+    },
+    {
+      "name": "success-code-string-zero",
+      "now": 1800000000,
+      "data": {
+        "code": "0",
+        "response": {
+          "code": "0",
+          "groups": [
+            {
+              "buckets": [
+                {
+                  "bucketId": "gemini-5h",
+                  "remainingFraction": 0.25,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expectedState": "available",
+      "ids": [
+        "gemini-5h"
+      ],
+      "used": [
+        75
+      ],
+      "resets": [
+        1800057600.0
+      ]
+    },
+    {
+      "name": "success-code-lower-ok",
+      "now": 1800000000,
+      "data": {
+        "code": "ok",
+        "response": {
+          "code": "ok",
+          "groups": [
+            {
+              "buckets": [
+                {
+                  "bucketId": "gemini-5h",
+                  "remainingFraction": 0.25,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expectedState": "available",
+      "ids": [
+        "gemini-5h"
+      ],
+      "used": [
+        75
+      ],
+      "resets": [
+        1800057600.0
+      ]
+    },
+    {
+      "name": "success-code-upper-ok",
+      "now": 1800000000,
+      "data": {
+        "code": "OK",
+        "response": {
+          "code": "OK",
+          "groups": [
+            {
+              "buckets": [
+                {
+                  "bucketId": "gemini-5h",
+                  "remainingFraction": 0.25,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expectedState": "available",
+      "ids": [
+        "gemini-5h"
+      ],
+      "used": [
+        75
+      ],
+      "resets": [
+        1800057600.0
+      ]
+    },
+    {
+      "name": "invalid-code-boolean-false",
+      "now": 1800000000,
+      "data": {
+        "code": false,
+        "groups": [
+          {
+            "buckets": [
+              {
+                "bucketId": "gemini-5h",
+                "remainingFraction": 0.25,
+                "resetTime": "2027-01-16T00:00:00Z"
+              }
+            ]
+          }
+        ]
+      },
+      "expectedState": "unavailable",
+      "ids": [],
+      "used": [],
+      "resets": []
+    },
+    {
+      "name": "invalid-code-boolean-true",
+      "now": 1800000000,
+      "data": {
+        "code": true,
+        "groups": [
+          {
+            "buckets": [
+              {
+                "bucketId": "gemini-5h",
+                "remainingFraction": 0.25,
+                "resetTime": "2027-01-16T00:00:00Z"
+              }
+            ]
+          }
+        ]
+      },
+      "expectedState": "unavailable",
+      "ids": [],
+      "used": [],
+      "resets": []
+    },
+    {
+      "name": "invalid-code-null",
+      "now": 1800000000,
+      "data": {
+        "code": null,
+        "groups": [
+          {
+            "buckets": [
+              {
+                "bucketId": "gemini-5h",
+                "remainingFraction": 0.25,
+                "resetTime": "2027-01-16T00:00:00Z"
+              }
+            ]
+          }
+        ]
+      },
+      "expectedState": "unavailable",
+      "ids": [],
+      "used": [],
+      "resets": []
+    },
+    {
+      "name": "invalid-code-object",
+      "now": 1800000000,
+      "data": {
+        "code": {},
+        "groups": [
+          {
+            "buckets": [
+              {
+                "bucketId": "gemini-5h",
+                "remainingFraction": 0.25,
+                "resetTime": "2027-01-16T00:00:00Z"
+              }
+            ]
+          }
+        ]
+      },
+      "expectedState": "unavailable",
+      "ids": [],
+      "used": [],
+      "resets": []
+    },
+    {
+      "name": "snake-case-fraction-and-reset",
+      "now": 1800000000,
+      "data": {
+        "summary": {
+          "groups": [
+            {
+              "buckets": [
+                {
+                  "bucket_id": "gemini-5h",
+                  "remaining_fraction": 0.25,
+                  "reset_time": "2027-01-16T00:00:00Z"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expectedState": "available",
+      "ids": [
+        "gemini-5h"
+      ],
+      "used": [
+        75
+      ],
+      "resets": [
+        1800057600.0
+      ]
+    },
+    {
+      "name": "nested-snake-case-remaining-and-utc",
+      "now": 1800000000,
+      "data": {
+        "groups": [
+          {
+            "buckets": [
+              {
+                "bucket_id": "gemini-5h",
+                "remaining": {
+                  "remaining_fraction": 0.25
+                },
+                "reset_time_utc": "2027-01-16T00:00:00Z"
+              }
+            ]
+          }
+        ]
+      },
+      "expectedState": "available",
+      "ids": [
+        "gemini-5h"
+      ],
+      "used": [
+        75
+      ],
+      "resets": [
+        1800057600.0
+      ]
+    },
+    {
+      "name": "canonical-order",
+      "now": 1800000000,
+      "data": {
+        "groups": [
+          {
+            "buckets": [
+              {
+                "bucketId": "3p-weekly",
+                "remainingFraction": 0.25,
+                "resetTime": "2027-01-16T00:00:00Z"
+              },
+              {
+                "bucketId": "gemini-weekly",
+                "remainingFraction": 0.25,
+                "resetTime": "2027-01-16T00:00:00Z"
+              },
+              {
+                "bucketId": "3p-5h",
+                "remainingFraction": 0.25,
+                "resetTime": "2027-01-16T00:00:00Z"
+              },
+              {
+                "bucketId": "gemini-5h",
+                "remainingFraction": 0.25,
+                "resetTime": "2027-01-16T00:00:00Z"
+              }
+            ]
+          }
+        ]
+      },
+      "expectedState": "available",
+      "ids": [
+        "gemini-5h",
+        "gemini-weekly",
+        "3p-5h",
+        "3p-weekly"
+      ],
+      "used": [
+        75,
+        75,
+        75,
+        75
+      ],
+      "resets": [
+        1800057600.0,
+        1800057600.0,
+        1800057600.0,
+        1800057600.0
+      ]
+    },
+    {
+      "name": "groups-without-buckets",
+      "now": 1800000000,
+      "data": {
+        "groups": [
+          {},
+          {
+            "buckets": null
+          },
+          {
+            "buckets": [
+              {
+                "bucketId": "gemini-5h",
+                "remainingFraction": 0.25,
+                "resetTime": "2027-01-16T00:00:00Z"
+              }
+            ]
+          }
+        ]
+      },
+      "expectedState": "available",
+      "ids": [
+        "gemini-5h"
+      ],
+      "used": [
+        75
+      ],
+      "resets": [
+        1800057600.0
+      ]
+    },
+    {
+      "name": "scalar-group",
+      "now": 1800000000,
+      "data": {
+        "groups": [
+          null,
+          {
+            "buckets": [
+              {
+                "bucketId": "gemini-5h",
+                "remainingFraction": 0.25,
+                "resetTime": "2027-01-16T00:00:00Z"
+              }
+            ]
+          }
+        ]
+      },
+      "expectedState": "unavailable",
+      "ids": [],
+      "used": [],
+      "resets": []
+    },
+    {
+      "name": "invalid-buckets-shape",
+      "now": 1800000000,
+      "data": {
+        "groups": [
+          {
+            "buckets": {}
+          },
+          {
+            "buckets": [
+              {
+                "bucketId": "gemini-5h",
+                "remainingFraction": 0.25,
+                "resetTime": "2027-01-16T00:00:00Z"
+              }
+            ]
+          }
+        ]
+      },
+      "expectedState": "unavailable",
+      "ids": [],
+      "used": [],
+      "resets": []
+    },
+    {
+      "name": "scalar-bucket",
+      "now": 1800000000,
+      "data": {
+        "groups": [
+          {
+            "buckets": [
+              null,
+              {
+                "bucketId": "gemini-5h",
+                "remainingFraction": 0.25,
+                "resetTime": "2027-01-16T00:00:00Z"
+              }
+            ]
+          }
+        ]
+      },
+      "expectedState": "unavailable",
+      "ids": [],
+      "used": [],
+      "resets": []
+    },
+    {
+      "name": "invalid-response-does-not-fall-back",
+      "now": 1800000000,
+      "data": {
+        "response": null,
+        "summary": {
+          "groups": [
+            {
+              "buckets": [
+                {
+                  "bucketId": "gemini-5h",
+                  "remainingFraction": 0.25,
+                  "resetTime": "2027-01-16T00:00:00Z"
+                }
+              ]
+            }
+          ]
+        },
+        "groups": [
+          {
+            "buckets": [
+              {
+                "bucketId": "gemini-5h",
+                "remainingFraction": 0.25,
+                "resetTime": "2027-01-16T00:00:00Z"
+              }
+            ]
+          }
+        ]
+      },
+      "expectedState": "unavailable",
+      "ids": [],
+      "used": [],
+      "resets": []
+    },
+    {
+      "name": "invalid-summary-does-not-fall-back",
+      "now": 1800000000,
+      "data": {
+        "summary": false,
+        "groups": [
+          {
+            "buckets": [
+              {
+                "bucketId": "gemini-5h",
+                "remainingFraction": 0.25,
+                "resetTime": "2027-01-16T00:00:00Z"
+              }
+            ]
+          }
+        ]
+      },
+      "expectedState": "unavailable",
+      "ids": [],
+      "used": [],
+      "resets": []
+    },
+    {
+      "name": "invalid-primary-id-does-not-use-alias",
+      "now": 1800000000,
+      "data": {
+        "groups": [
+          {
+            "buckets": [
+              {
+                "bucketId": null,
+                "id": "gemini-5h",
+                "remainingFraction": 0.25,
+                "resetTime": "2027-01-16T00:00:00Z"
+              }
+            ]
+          }
+        ]
+      },
+      "expectedState": "unavailable",
+      "ids": [],
+      "used": [],
+      "resets": []
+    },
+    {
+      "name": "invalid-primary-fraction-does-not-use-alias",
+      "now": 1800000000,
+      "data": {
+        "groups": [
+          {
+            "buckets": [
+              {
+                "bucketId": "gemini-5h",
+                "remainingFraction": true,
+                "remaining_fraction": 0.25,
+                "resetTime": "2027-01-16T00:00:00Z"
+              }
+            ]
+          }
+        ]
+      },
+      "expectedState": "unavailable",
+      "ids": [],
+      "used": [],
+      "resets": []
+    },
+    {
+      "name": "invalid-primary-reset-remains-unknown",
+      "now": 1800000000,
+      "data": {
+        "groups": [
+          {
+            "buckets": [
+              {
+                "bucketId": "gemini-5h",
+                "remainingFraction": 0.25,
+                "resetTime": false,
+                "reset_time": "2027-01-16T00:00:00Z"
+              }
+            ]
+          }
+        ]
+      },
+      "expectedState": "stale",
+      "ids": [
+        "gemini-5h"
+      ],
+      "used": [
+        75
+      ],
+      "resets": [
+        null
+      ]
+    },
+    {
+      "name": "numeric-disabled-is-not-boolean",
+      "now": 1800000000,
+      "data": {
+        "groups": [
+          {
+            "buckets": [
+              {
+                "bucketId": "gemini-5h",
+                "remainingFraction": 0.25,
+                "resetTime": "2027-01-16T00:00:00Z",
+                "disabled": 1
+              }
+            ]
+          }
+        ]
+      },
+      "expectedState": "available",
+      "ids": [
+        "gemini-5h"
+      ],
+      "used": [
+        75
+      ],
+      "resets": [
+        1800057600.0
+      ]
+    },
+    {
+      "name": "boolean-disabled",
+      "now": 1800000000,
+      "data": {
+        "groups": [
+          {
+            "buckets": [
+              {
+                "bucketId": "gemini-5h",
+                "remainingFraction": 0.25,
+                "resetTime": "2027-01-16T00:00:00Z",
+                "disabled": true
+              }
+            ]
+          }
+        ]
+      },
+      "expectedState": "unavailable",
+      "ids": [],
+      "used": [],
+      "resets": []
+    },
+    {
+      "name": "empty-group-limit",
+      "now": 1800000000,
+      "data": {
+        "groups": [
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {
+            "buckets": [
+              {
+                "bucketId": "gemini-5h",
+                "remainingFraction": 0.25,
+                "resetTime": "2027-01-16T00:00:00Z"
+              }
+            ]
+          }
+        ]
+      },
+      "expectedState": "available",
+      "ids": [
+        "gemini-5h"
+      ],
+      "used": [
+        75
+      ],
+      "resets": [
+        1800057600.0
+      ]
+    },
+    {
+      "name": "too-many-groups",
+      "now": 1800000000,
+      "data": {
+        "groups": [
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {},
+          {
+            "buckets": [
+              {
+                "bucketId": "gemini-5h",
+                "remainingFraction": 0.25,
+                "resetTime": "2027-01-16T00:00:00Z"
+              }
+            ]
+          }
+        ]
+      },
+      "expectedState": "unavailable",
+      "ids": [],
+      "used": [],
+      "resets": []
+    },
+    {
+      "name": "per-group-limit",
+      "now": 1800000000,
+      "data": {"groups":[{"buckets":[{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"gemini-5h","remainingFraction":0.25,"resetTime":"2027-01-16T00:00:00Z"}]}]},
+      "expectedState": "available",
+      "ids": [
+        "gemini-5h"
+      ],
+      "used": [
+        75
+      ],
+      "resets": [
+        1800057600.0
+      ]
+    },
+    {
+      "name": "too-many-buckets-in-group",
+      "now": 1800000000,
+      "data": {"groups":[{"buckets":[{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"gemini-5h","remainingFraction":0.25,"resetTime":"2027-01-16T00:00:00Z"}]}]},
+      "expectedState": "unavailable",
+      "ids": [],
+      "used": [],
+      "resets": []
+    },
+    {
+      "name": "legacy-swift-total-bucket-limit",
+      "now": 1800000000,
+      "data": {"groups":[{"buckets":[{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1}]},{"buckets":[{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1}]},{"buckets":[{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1}]},{"buckets":[{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1}]},{"buckets":[{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1}]},{"buckets":[{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1}]},{"buckets":[{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1}]},{"buckets":[{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1}]},{"buckets":[{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1}]},{"buckets":[{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1}]},{"buckets":[{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1}]},{"buckets":[{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1}]},{"buckets":[{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1}]},{"buckets":[{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1}]},{"buckets":[{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1}]},{"buckets":[{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"gemini-5h","remainingFraction":0.25,"resetTime":"2027-01-16T00:00:00Z"}]}]},
+      "expectedState": "available",
+      "ids": [
+        "gemini-5h"
+      ],
+      "used": [
+        75
+      ],
+      "resets": [
+        1800057600.0
+      ]
+    },
+    {
+      "name": "too-many-total-buckets",
+      "now": 1800000000,
+      "data": {"groups":[{"buckets":[{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1}]},{"buckets":[{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1}]},{"buckets":[{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1}]},{"buckets":[{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1},{"bucketId":"future-pool","remainingFraction":1}]},{"buckets":[{"bucketId":"gemini-5h","remainingFraction":0.25,"resetTime":"2027-01-16T00:00:00Z"}]}]},
+      "expectedState": "unavailable",
+      "ids": [],
+      "used": [],
+      "resets": []
     }
   ]
 }

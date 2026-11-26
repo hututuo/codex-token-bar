@@ -39,14 +39,14 @@ pub(super) fn parse_quota_summary(
     envelope: &Value,
     now: f64,
 ) -> Option<QuotaProviderSnapshot> {
-    if !now.is_finite() || !successful_code(envelope) {
+    if !now.is_finite() || !envelope.is_object() || !successful_code(envelope) {
         return None;
     }
     let summary = envelope
         .get("response")
         .or_else(|| envelope.get("summary"))
         .unwrap_or(envelope);
-    if !successful_code(summary) {
+    if !summary.is_object() || !successful_code(summary) {
         return None;
     }
     let groups = summary.get("groups")?.as_array()?;
@@ -57,12 +57,17 @@ pub(super) fn parse_quota_summary(
     let mut seen = std::collections::HashSet::new();
     let mut bucket_count = 0;
     for group in groups {
+        if !group.is_object() {
+            return None;
+        }
         let buckets = match group.get("buckets") {
             None | Some(Value::Null) => continue,
             Some(value) => value.as_array()?,
         };
         bucket_count += buckets.len();
-        if bucket_count > 128 {
+        // Preserve both readers' previously supported shapes with shared bounds:
+        // Swift allowed 512 total buckets; Rust allowed 128 in a single group.
+        if buckets.len() > 128 || bucket_count > 512 || buckets.iter().any(|bucket| !bucket.is_object()) {
             return None;
         }
         for bucket in buckets {
@@ -126,6 +131,8 @@ pub(super) fn parse_quota_summary(
     if windows.is_empty() {
         return None;
     }
+    let order = ["gemini-5h", "gemini-weekly", "3p-5h", "3p-weekly"];
+    windows.sort_by_key(|window| order.iter().position(|id| Some(*id) == window.id.as_deref()).unwrap());
     // A fully replenished window can omit its countdown until it is used again.
     let stale = windows.iter().any(|window| {
         window
@@ -154,7 +161,7 @@ pub(super) fn parse_quota_summary(
 fn successful_code(value: &Value) -> bool {
     match value.get("code") {
         None => true,
-        Some(Value::String(code)) => code == "OK",
+        Some(Value::String(code)) => matches!(code.as_str(), "0" | "OK" | "ok"),
         Some(Value::Number(code)) => {
             code.as_i64() == Some(0)
                 || code.as_u64() == Some(0)
@@ -529,6 +536,15 @@ mod tests {
             );
             for (window, used) in value.windows.iter().zip(row["used"].as_array().unwrap()) {
                 assert!((window.used_percent.unwrap() - used.as_f64().unwrap()).abs() < 0.000001);
+            }
+            if let resets = row["resets"].as_array() {
+                assert_eq!(value.windows.len(), resets.len(), "{}", row["name"]);
+                for (window, reset) in value.windows.iter().zip(resets) {
+                    let actual = window.resets_at.as_deref()
+                        .and_then(|text| OffsetDateTime::parse(text, &Rfc3339).ok())
+                        .map(|date| date.unix_timestamp() as f64);
+                    assert_eq!(actual, reset.as_f64(), "{}", row["name"]);
+                }
             }
             assert!(value.history.is_empty());
         }

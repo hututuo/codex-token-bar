@@ -143,27 +143,37 @@ enum AntigravityLocalRPCQuota {
     }
 
     static func decode(_ bytes: Data, now: Date) -> ClientQuotaReading {
-        guard bytes.count <= maximumBytes,
-              let root = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any] else { return unavailable() }
-        if let code = root["code"], !["0", "OK", "ok"].contains(String(describing: code)) { return unavailable() }
-        let payload = root["response"] as? [String: Any] ?? root["summary"] as? [String: Any] ?? root
-        guard let groups = payload["groups"] as? [[String: Any]], groups.count <= 16 else { return unavailable() }
+        guard bytes.count <= maximumBytes, now.timeIntervalSince1970.isFinite,
+              let root = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+              successfulCode(root),
+              let payload = (root["response"] ?? root["summary"] ?? root) as? [String: Any],
+              successfulCode(payload),
+              let groups = payload["groups"] as? [[String: Any]], groups.count <= 128 else { return unavailable() }
         let labels = ["gemini-5h": "Gemini · 5h", "gemini-weekly": "Gemini · 7d",
                       "3p-5h": "第三方模型 · 5h", "3p-weekly": "第三方模型 · 7d"]
         var seen = Set<String>()
         var windows: [ClientQuotaReading.Window] = []
+        var bucketCount = 0
         for group in groups {
-            guard let buckets = group["buckets"] as? [[String: Any]], buckets.count <= 32 else { return unavailable() }
+            guard let rawBuckets = group["buckets"], !(rawBuckets is NSNull) else { continue }
+            // Shared with Rust: retain Swift's 512 total and Rust's 128 per group.
+            guard let buckets = rawBuckets as? [[String: Any]], buckets.count <= 128 else { return unavailable() }
+            bucketCount += buckets.count
+            guard bucketCount <= 512 else { return unavailable() }
             for bucket in buckets {
-                guard let id = bucket["bucketId"] as? String ?? bucket["id"] as? String,
-                      let label = labels[id], bucket["disabled"] as? Bool != true else { continue }
+                guard let id = (bucket["bucketId"] ?? bucket["bucket_id"] ?? bucket["id"]) as? String,
+                      let label = labels[id] else { continue }
+                if let disabled = bucket["disabled"] as? NSNumber,
+                   CFGetTypeID(disabled) == CFBooleanGetTypeID(), disabled.boolValue { continue }
                 guard seen.insert(id).inserted else { return unavailable() }
                 let remaining = bucket["remaining"] as? [String: Any]
-                let raw = bucket["remainingFraction"] ?? remaining?["remainingFraction"]
+                let raw = bucket["remainingFraction"] ?? bucket["remaining_fraction"]
+                    ?? remaining?["remainingFraction"] ?? remaining?["remaining_fraction"]
                     ?? (remaining?["case"] as? String == "remainingFraction" ? remaining?["value"] : nil)
                 guard let fraction = raw as? NSNumber, CFGetTypeID(fraction) != CFBooleanGetTypeID(),
                       fraction.doubleValue.isFinite, (0...1).contains(fraction.doubleValue) else { continue }
-                let reset = (bucket["resetTime"] as? String ?? bucket["resetTimeUtc"] as? String).flatMap(LocalQuotaCacheFile.isoDate)
+                let reset = ((bucket["resetTime"] ?? bucket["reset_time"] ?? bucket["resetTimeUtc"]
+                    ?? bucket["reset_time_utc"]) as? String).flatMap(LocalQuotaCacheFile.isoDate)
                 windows.append(.init(label: label, usedPercent: (1 - fraction.doubleValue) * 100, resetsAt: reset, id: id))
             }
         }
@@ -176,6 +186,15 @@ enum AntigravityLocalRPCQuota {
         }
         return .init(client: "antigravity", state: stale ? "stale" : "available", source: source, windows: windows,
                      notice: "Antigravity 本机语言服务的分池额度，Gemini 与第三方模型各有 5h / 7d 窗口。未强制刷新；读取时间不代表上游采样时间。", capturedAt: now)
+    }
+
+    private static func successfulCode(_ value: [String: Any]) -> Bool {
+        guard let code = value["code"] else { return true }
+        if let number = code as? NSNumber {
+            return CFGetTypeID(number) != CFBooleanGetTypeID() && number.doubleValue == 0
+        }
+        guard let text = code as? String else { return false }
+        return ["0", "OK", "ok"].contains(text)
     }
 
     private static func fetch(_ request: URLRequest, endpoint: Endpoint) -> Data? {
