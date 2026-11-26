@@ -270,22 +270,42 @@ private struct SpeedReportingNicknameStep: View {
     }
 }
 
-struct SpeedLeaderboardMovie: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var player: AVPlayer = {
+@MainActor
+final class SpeedLeaderboardMovieMedia: ObservableObject {
+    let player: AVPlayer
+    let poster: NSImage?
+
+    init(player: AVPlayer? = nil, poster: NSImage? = nil) {
+        self.player = player ?? Self.makePlayer()
+        self.poster = poster ?? AppResources.url(forResource: "poster", withExtension: "jpg", subdirectory: "SpeedLeaderboard")
+            .flatMap { NSImage(contentsOf: $0) }
+    }
+
+    private static func makePlayer() -> AVPlayer {
         guard let url = AppResources.url(forResource: "leaderboard", withExtension: "mp4", subdirectory: "SpeedLeaderboard") else { return AVPlayer() }
         return AVPlayer(url: url)
-    }()
+    }
+}
+
+struct SpeedLeaderboardMovie: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @StateObject private var media: SpeedLeaderboardMovieMedia
     @State private var playing = false
     @State private var playback = LeaderboardMoviePlayback()
     @State private var lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+
+    init(makeMedia: @escaping @MainActor () -> SpeedLeaderboardMovieMedia = { SpeedLeaderboardMovieMedia() }) {
+        // StateObject defers this factory until the view is mounted, and keeps
+        // one player/poster for its identity across parent-body reevaluations.
+        _media = StateObject(wrappedValue: makeMedia())
+    }
+
     var body: some View {
         ZStack(alignment: .bottom) {
-            if let url = AppResources.url(forResource: "poster", withExtension: "jpg", subdirectory: "SpeedLeaderboard"),
-               let poster = NSImage(contentsOf: url) {
+            if let poster = media.poster {
                 Image(nsImage: poster).resizable().aspectRatio(contentMode: .fit)
             }
-            LeaderboardPlayer(player: player).aspectRatio(1684.0 / 1100.0, contentMode: .fit)
+            LeaderboardPlayer(player: media.player).aspectRatio(1684.0 / 1100.0, contentMode: .fit)
             HStack {
                 Text("排行榜实录 · 非当前实时数据").font(.caption2)
                 Spacer()
@@ -302,11 +322,11 @@ struct SpeedLeaderboardMovie: View {
             updatePlayback()
         })
         .onAppear {
-            player.isMuted = true
+            media.player.isMuted = true
         }
         .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { event in
-            guard let item = event.object as? AVPlayerItem, item === player.currentItem else { return }
-            player.seek(to: .zero)
+            guard let item = event.object as? AVPlayerItem, item === media.player.currentItem else { return }
+            media.player.seek(to: .zero)
             updatePlayback()
         }
         .onChange(of: reduceMotion) { _, _ in updatePlayback() }
@@ -318,8 +338,8 @@ struct SpeedLeaderboardMovie: View {
     }
     private func updatePlayback() {
         playing = playback.shouldPlay(reducedMotion: reduceMotion, lowPower: lowPower)
-        if playing { player.isMuted = true; player.play() }
-        else { player.pause() }
+        if playing { media.player.isMuted = true; media.player.play() }
+        else { media.player.pause() }
     }
 }
 

@@ -188,8 +188,13 @@ jobs:
           mkdir -p visual-previews
           if [[ "$CLAUDE_USAGE_ONLY" == true ]]; then
             python3 scripts/check_test_execution.py --kind swift --log swift-tests.log --source-sha "$SOURCE_SHA" \
-              --allow-untracked-output 'visual-previews/*.png' -- \
-              swift test --filter 'MultiClientUsage|ClaudeDesktopQuotaHistory|ClaudeLocalQuota|MultiClientQuotaAutodiscovery|MultiClientProduct|IntegratedClientPresentation'
+              --allow-untracked-output 'visual-previews/*.png' \
+              --require testHistoryScannerAccepts64KiBRecordAndShortSuccessor \
+              --require testHistoryScannerAccepts1MiBRecordAndShortSuccessor \
+              --require testHistoryScannerAcceptsExactly4MiBRecordAndShortSuccessorAcrossScans \
+              --require testHistoryScannerRejects4MiBPlusOneWithoutCheckpointOrSuccessorUsage \
+              --require testHistoryScannerPreservesCommittedPrefixAndResumesAfterSameFileRepair -- \
+              swift test --filter 'MultiClientUsage|ClaudeRecordBoundaryTests|ClaudeDesktopQuotaHistory|ClaudeLocalQuota|MultiClientQuotaAutodiscovery|MultiClientProduct|IntegratedClientPresentation'
             exit 0
           fi
           python3 scripts/check_test_execution.py --kind swift --log swift-tests.log --source-sha "$SOURCE_SHA" \
@@ -203,6 +208,11 @@ jobs:
             --require testFrameCacheReleasesImageStorageAfterLastConsumerLeaves \
             --require testFrameCacheDoesNotRefillAfterLastConsumerLeavesDuringRender \
             --require testFrameCacheNewConsumerReusesPendingRenderAfterPriorDeparture \
+            --require testPausedRippleReleasesSequenceKeepsPosterAndResumesWhileAttached \
+            --require testPausedShimmerReleasesSequenceKeepsPosterAndResumesWhileAttached \
+            --require testPausingUnreadEffectKeepsOtherAttachedConsumerAnimating \
+            --require testUnpresentedMovieDoesNotConstructPlayerOrPoster \
+            --require testMountedMovieReusesMediaAcrossParentUpdatesAndReleasesOnRemoval \
             --require testDefaultRippleSizeKeepsRetinaBackingScaleWithinBudget \
             --require testHistoryScannerAccepts64KiBRecordAndShortSuccessor \
             --require testHistoryScannerAccepts1MiBRecordAndShortSuccessor \

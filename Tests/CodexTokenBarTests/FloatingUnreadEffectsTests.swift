@@ -1,3 +1,5 @@
+import AppKit
+import QuartzCore
 import XCTest
 @testable import CodexTokenBar
 
@@ -59,6 +61,57 @@ private final class UnreadApplyRecorder {
 }
 
 final class FloatingUnreadEffectsTests: XCTestCase {
+    @MainActor
+    func testPausedRippleReleasesSequenceKeepsPosterAndResumesWhileAttached() async throws {
+        let view = FloatingUnreadSpriteRippleView(frame: .init(x: 0, y: 0, width: 24, height: 12))
+        try await assertAttachedPauseAndResume(
+            view, setActivity: view.setAnimationActivity,
+            frameCount: { view.retainedAnimationFrameCount }, animationKey: "floatingUnreadRippleFrames"
+        )
+    }
+
+    @MainActor
+    func testPausedShimmerReleasesSequenceKeepsPosterAndResumesWhileAttached() async throws {
+        let view = FloatingUnreadShimmerView(frame: .init(x: 0, y: 0, width: 24, height: 12))
+        try await assertAttachedPauseAndResume(
+            view, setActivity: view.setAnimationActivity,
+            frameCount: { view.retainedAnimationFrameCount }, animationKey: "floatingUnreadShimmerFrames"
+        )
+    }
+
+    @MainActor
+    func testPausingUnreadEffectKeepsOtherAttachedConsumerAnimating() async throws {
+        let container = NSView(frame: .init(x: 0, y: 0, width: 56, height: 12))
+        let first = FloatingUnreadShimmerView(frame: .init(x: 0, y: 0, width: 24, height: 12))
+        let second = FloatingUnreadShimmerView(frame: .init(x: 32, y: 0, width: 24, height: 12))
+        container.addSubview(first)
+        container.addSubview(second)
+        let window = makeEffectWindow(content: container)
+        defer { window.contentView = nil; window.close() }
+        window.orderFrontRegardless()
+        // Let the real probe deliver its initial policy. The transition below
+        // is explicit so this lifecycle test also works on low-power CI hosts.
+        await deliverInitialProbeCheck()
+        first.setAnimationActivity(true)
+        second.setAnimationActivity(true)
+        try await waitForFrames { first.retainedAnimationFrameCount > 1 && second.retainedAnimationFrameCount > 1 }
+        let secondLayer = try XCTUnwrap(second.layer?.sublayers?.first)
+        let secondPoster = try XCTUnwrap(secondLayer.contents) as AnyObject
+        let count = second.retainedAnimationFrameCount
+
+        first.setAnimationActivity(false)
+        XCTAssertNotNil(first.window, "Pausing must be tested before view detachment.")
+        XCTAssertEqual(first.retainedAnimationFrameCount, 0)
+        XCTAssertEqual(second.retainedAnimationFrameCount, count)
+        XCTAssertNotNil(secondLayer.animation(forKey: "floatingUnreadShimmerFrames"))
+        XCTAssertTrue((try XCTUnwrap(secondLayer.contents) as AnyObject) === secondPoster)
+
+        first.setAnimationActivity(true)
+        try await waitForFrames { first.retainedAnimationFrameCount > 1 }
+        XCTAssertEqual(second.retainedAnimationFrameCount, count)
+        XCTAssertNotNil(secondLayer.animation(forKey: "floatingUnreadShimmerFrames"))
+    }
+
     @MainActor
     func testFrameCacheMissReturnsImmediatelyAndSingleFlightsSameDescriptor() throws {
         let renderExecutor = ManualUnreadRenderExecutor()
@@ -314,6 +367,65 @@ final class FloatingUnreadEffectsTests: XCTestCase {
         XCTAssertNil(scale)
     }
 
+    @MainActor
+    private func assertAttachedPauseAndResume(
+        _ view: NSView, setActivity: (Bool) -> Void, frameCount: () -> Int,
+        animationKey: String
+    ) async throws {
+        let window = makeEffectWindow(content: view)
+        defer { window.contentView = nil; window.close() }
+        window.orderFrontRegardless()
+        await deliverInitialProbeCheck()
+        setActivity(true)
+        try await waitForFrames { frameCount() > 1 }
+        let imageLayer = try XCTUnwrap(view.layer?.sublayers?.first)
+        XCTAssertNotNil(imageLayer.animation(forKey: animationKey))
+        let poster = try XCTUnwrap(imageLayer.contents) as AnyObject
+
+        setActivity(false)
+        XCTAssertTrue(view.window === window)
+        XCTAssertEqual(frameCount(), 0, "An attached inactive view must release its local frame sequence.")
+        XCTAssertNil(imageLayer.animation(forKey: animationKey))
+        XCTAssertTrue((try XCTUnwrap(imageLayer.contents) as AnyObject) === poster, "Low-power/reduced-motion keeps its static appearance.")
+        setActivity(false)
+        XCTAssertEqual(frameCount(), 0, "Repeated inactive delivery must not start another render.")
+
+        setActivity(true)
+        try await waitForFrames { frameCount() > 1 }
+        XCTAssertNotNil(imageLayer.animation(forKey: animationKey))
+        window.contentView = nil
+        XCTAssertEqual(frameCount(), 0)
+        XCTAssertNil(imageLayer.contents, "Detachment also releases the single static poster.")
+        XCTAssertNil(imageLayer.animation(forKey: animationKey))
+    }
+
+    @MainActor
+    private func deliverInitialProbeCheck() async {
+        // viewDidMoveToWindow queues the initial visibility check on this
+        // queue. Await delivery rather than assuming a timed sleep flushes it.
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+    }
+
+    @MainActor
+    private func waitForFrames(_ ready: () -> Bool) async throws {
+        let deadline = ProcessInfo.processInfo.systemUptime + 10
+        while !ready(), ProcessInfo.processInfo.systemUptime < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertTrue(ready(), "The real background render must complete before lifecycle assertions.")
+    }
+
+    @MainActor
+    private func makeEffectWindow(content: NSView) -> NSWindow {
+        let window = UnreadEffectTestWindow(contentRect: content.bounds,
+            styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = content
+        return window
+    }
+
     private func makeDescriptor(effect: String) -> FloatingUnreadFrameCacheDescriptor {
         FloatingUnreadFrameCacheDescriptor(
             effect: effect,
@@ -363,4 +475,11 @@ final class FloatingUnreadEffectsTests: XCTestCase {
         ) else { return [] }
         return [image]
     }
+}
+
+// Do not depend on which full-screen Space owns the disposable XCTest host.
+// AnimationActivityTests separately verifies the production exposure policy.
+@MainActor
+private final class UnreadEffectTestWindow: NSWindow {
+    override var occlusionState: NSWindow.OcclusionState { .visible }
 }

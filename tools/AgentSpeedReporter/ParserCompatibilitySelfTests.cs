@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using AgentSpeed.Core;
 using AgentSpeed.Core.Antigravity;
+using AgentSpeed.Core.IO;
 using AgentSpeed.Core.Monitoring;
 using AgentSpeed.Core.Parsing;
 
@@ -35,6 +36,9 @@ internal static class ParserCompatibilitySelfTests
 
         CodexResetClearsPaginatedOrdinal();
         ClaudeDisplayTitles();
+        ClaudeUsageBeyondFourMiBAndShortSuccessor();
+        ClaudePartialFourMiBPlusOneUntilLf();
+        Console.WriteLine("PASS: claude live large record boundaries (plain text and structured tool_result, multi-chunk, partial LF, replay)");
         ClaudeRootOwnership();
         GeminiRootSelection();
         AntigravityStoreLocations();
@@ -400,6 +404,197 @@ internal static class ParserCompatibilitySelfTests
         Check("claude-long-user-still-parses-usage", "output", 9L, longUserSink.Latest.Values.Sum(response => response.Tokens.Output), longUserSink.Describe());
     }
 
+    private static void ClaudeUsageBeyondFourMiBAndShortSuccessor()
+    {
+        foreach (var shape in Enum.GetValues<ClaudeContentShape>())
+        {
+            var fixture = "claude-live-large-" + shape;
+            WithClaudeBoundaryFile(path =>
+            {
+                // Size includes LF; usage follows the large content value, across multiple 1 MiB tailer reads.
+                var large = ClaudeBoundaryRecord("large", 1, 4 * 1024 * 1024 + 257, shape);
+                var after = ClaudeBoundaryRecord("after", 2);
+                using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.ReadWrite))
+                {
+                    stream.Write(large);
+                    stream.Write(after);
+                }
+
+                var tailer = new FileTailer(path);
+                var harness = new ClaudeBoundaryHarness(path);
+                var length = (long)large.Length + after.Length;
+                Check(fixture, "maxLineBytes", 32 * 1024 * 1024, FileTailer.MaxLineBytes, "live line cap");
+                Check(fixture, "belowLineCap", true, large.Length - 1 < FileTailer.MaxLineBytes, "valid live record");
+                CheckClaudeBoundaryRead(fixture, "initial", length, length, harness.Read(tailer), tailer, harness);
+                CheckClaudeBoundaryLines(fixture, harness, large.Length - 1, after.Length - 1);
+                CheckClaudeBoundarySemantics(fixture, harness);
+
+                CheckClaudeBoundaryRead(fixture, "idle", 0, length, harness.Read(tailer), tailer, harness);
+                Check(fixture, "idleUpserts", 2, harness.Upserts.Count, "idle read emits nothing");
+                Check(fixture, "idleLines", 2, harness.LineSizes.Count, "idle read emits no lines");
+                Check(fixture, "totalBytesRead", length, tailer.TotalBytesRead, "idle read performs no new work");
+
+                var original = harness.Upserts.Select(upsert => upsert.Response).ToArray();
+                // Keep the parser and shared deduper while restarting the same file from byte zero.
+                tailer.StartAt(0);
+                CheckClaudeBoundaryRead(fixture, "replay", length, length, harness.Read(tailer), tailer, harness);
+                Check(fixture, "replayUpserts", 4, harness.Upserts.Count, "same-file replay emits updates");
+                Check(fixture, "replayLines", 4, harness.LineSizes.Count, "both records replay");
+                Check(fixture, "replayCompletions", 2, harness.Upserts.Count(upsert => upsert.IsCompletion), "replay adds no completions");
+                Check(fixture, "replayTotalBytesRead", 2 * length, tailer.TotalBytesRead, "one initial read and one replay");
+                for (var index = 0; index < original.Length; index++)
+                {
+                    var replayed = harness.Upserts[index + original.Length];
+                    Check(fixture, $"replayCompletion{index}", false, replayed.IsCompletion, "same-key update");
+                    Check(fixture, $"replayRecord{index}", original[index], replayed.Response, "replay preserves every response field");
+                }
+            });
+        }
+    }
+
+    private static void ClaudePartialFourMiBPlusOneUntilLf()
+    {
+        foreach (var shape in Enum.GetValues<ClaudeContentShape>())
+        {
+            var fixture = "claude-live-partial-" + shape;
+            WithClaudeBoundaryFile(path =>
+            {
+                // Match the historical boundary convention, but exercise the live path's separate 32 MiB cap.
+                var large = ClaudeBoundaryRecord("large", 1, 4 * 1024 * 1024 + 1, shape);
+                var after = ClaudeBoundaryRecord("after", 2);
+                const int firstEnd = 4 * 1024 * 1024 - 31;
+                using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.ReadWrite))
+                {
+                    stream.Write(large.AsSpan(0, firstEnd));
+                }
+
+                var tailer = new FileTailer(path);
+                var harness = new ClaudeBoundaryHarness(path);
+                CheckClaudeBoundaryRead(fixture, "first", firstEnd, firstEnd, harness.Read(tailer), tailer, harness);
+                CheckClaudeBoundaryPending(fixture, "first", harness);
+                CheckClaudeBoundaryRead(fixture, "firstIdle", 0, firstEnd, harness.Read(tailer), tailer, harness);
+                CheckClaudeBoundaryPending(fixture, "firstIdle", harness);
+
+                // A complete JSON object without LF is still pending, and must not reach the parser.
+                var remainderBytes = large.Length - 1 - firstEnd;
+                using (var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
+                {
+                    stream.Write(large.AsSpan(firstEnd, remainderBytes));
+                }
+
+                CheckClaudeBoundaryRead(fixture, "pending", remainderBytes, large.Length - 1, harness.Read(tailer), tailer, harness);
+                CheckClaudeBoundaryPending(fixture, "pending", harness);
+                CheckClaudeBoundaryRead(fixture, "pendingIdle", 0, large.Length - 1, harness.Read(tailer), tailer, harness);
+                CheckClaudeBoundaryPending(fixture, "pendingIdle", harness);
+
+                using (var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite))
+                {
+                    stream.Write(large.AsSpan(large.Length - 1));
+                    stream.Write(after);
+                }
+
+                var length = (long)large.Length + after.Length;
+                CheckClaudeBoundaryRead(fixture, "completed", 1 + after.Length, length, harness.Read(tailer), tailer, harness);
+                CheckClaudeBoundaryLines(fixture, harness, large.Length - 1, after.Length - 1);
+                CheckClaudeBoundarySemantics(fixture, harness);
+                CheckClaudeBoundaryRead(fixture, "idle", 0, length, harness.Read(tailer), tailer, harness);
+                Check(fixture, "idleUpserts", 2, harness.Upserts.Count, "idle read emits nothing");
+                Check(fixture, "idleLines", 2, harness.LineSizes.Count, "no partial record was emitted early");
+                Check(fixture, "totalBytesRead", length, tailer.TotalBytesRead, "each appended byte is consumed once");
+            });
+        }
+    }
+
+    private static void CheckClaudeBoundaryRead(string fixture, string stage, long bytes, long offset,
+        TailReadResult read, FileTailer tailer, ClaudeBoundaryHarness harness)
+    {
+        Check(fixture, stage + "Reset", false, read.WasReset, "same file identity");
+        Check(fixture, stage + "Bytes", bytes, read.BytesRead, "appended bytes consumed");
+        Check(fixture, stage + "Length", offset, read.Length, "current file length");
+        Check(fixture, stage + "Offset", offset, tailer.Offset, "tailer reaches current EOF");
+        Check(fixture, stage + "Oversized", 0L, tailer.OversizedLines, "record is below the live line cap");
+        Check(fixture, stage + "Malformed", 0L, harness.Parser.MalformedLines, "real Claude selective extraction");
+    }
+
+    private static void CheckClaudeBoundaryPending(string fixture, string stage, ClaudeBoundaryHarness harness)
+    {
+        Check(fixture, stage + "Lines", 0, harness.LineSizes.Count, "LF has not arrived");
+        Check(fixture, stage + "Upserts", 0, harness.Upserts.Count, "no response or completion before LF");
+    }
+
+    private static void CheckClaudeBoundaryLines(string fixture, ClaudeBoundaryHarness harness, int large, int after)
+    {
+        Check(fixture, "lineSizes", $"{large},{after}", string.Join(",", harness.LineSizes), "LF is excluded from both emitted lines");
+    }
+
+    private static void CheckClaudeBoundarySemantics(string fixture, ClaudeBoundaryHarness harness)
+    {
+        Check(fixture, "upserts", 2, harness.Upserts.Count, "large response and short successor");
+        Check(fixture, "sourceDecided", true, harness.Parser.SourceDecided, "entrypoint survives large content");
+        Check(fixture, "source", SourceKind.ClaudeCode, harness.Parser.Source, "cli entrypoint");
+        Check(fixture, "phase", AgentPhase.Idle, harness.Parser.Phase, "end_turn is final");
+        Check(fixture, "model", "claude-opus", harness.Parser.Model, "assistant model");
+        Check(fixture, "displayTitle", null, harness.Parser.DisplayTitle, "assistant content creates no task title");
+        for (var index = 0; index < harness.Upserts.Count; index++)
+        {
+            var seed = index + 1;
+            var upsert = harness.Upserts[index];
+            var response = upsert.Response;
+            var expected = new TokenCounts(Input: 31L * seed, CachedInput: 11L * seed,
+                CacheWriteInput: 13L * seed, Output: 19L * seed, Reasoning: 3L * seed, CacheWrite1hInput: 8L * seed);
+            Check(fixture, $"key{index}", index == 0 ? "large" : "after", response.Key, "record order is preserved");
+            Check(fixture, $"usage{index}", expected, response.Tokens, "input includes cache read and cache creation");
+            Check(fixture, $"completion{index}", true, upsert.IsCompletion, "one first completion per key");
+            Check(fixture, $"final{index}", true, response.Final, "end_turn is extracted after content");
+            Check(fixture, $"source{index}", SourceKind.ClaudeCode, response.Source, "cli entrypoint");
+            Check(fixture, $"model{index}", "claude-opus", response.Model, "model is preserved");
+            Check(fixture, $"agent{index}", harness.Parser.AgentId, response.AgentId, "response belongs to this file");
+            Check(fixture, $"end{index}", new DateTimeOffset(2026, 11, 26, 10, 0, seed, TimeSpan.Zero).ToUnixTimeMilliseconds(),
+                response.EndMs, "timestamp is preserved");
+        }
+    }
+
+    private static byte[] ClaudeBoundaryRecord(string id, int seed, int? bytes = null,
+        ClaudeContentShape shape = ClaudeContentShape.PlainText)
+    {
+        var contentStart = shape == ClaudeContentShape.PlainText ? "\""
+            : """[{"type":"tool_result","tool_use_id":"anonymous-tool","content":[{"type":"text","text":"escaped: \" \\ \n \u263a """;
+        var contentEnd = shape == ClaudeContentShape.PlainText ? "\""
+            : "\"}]},{\"type\":\"text\",\"text\":\"anonymous suffix\"}]";
+        var prefix = Encoding.UTF8.GetBytes("{\"type\":\"assistant\",\"entrypoint\":\"cli\",\"sessionId\":\"anonymous-session\","
+            + $"\"timestamp\":\"2026-11-26T10:00:0{seed}Z\",\"message\":{{\"id\":\"{id}\",\"model\":\"claude-opus\",\"content\":" + contentStart);
+        var usage = JsonSerializer.Serialize(new {
+            input_tokens = 7 * seed, output_tokens = 19 * seed, cache_read_input_tokens = 11 * seed,
+            cache_creation_input_tokens = 13 * seed,
+            cache_creation = new { ephemeral_5m_input_tokens = 5 * seed, ephemeral_1h_input_tokens = 8 * seed },
+            output_tokens_details = new { thinking_tokens = 3 * seed }
+        });
+        var suffix = Encoding.UTF8.GetBytes(contentEnd + ",\"stop_reason\":\"end_turn\",\"usage\":" + usage + "}}\n");
+        var overhead = prefix.Length + suffix.Length;
+        var target = bytes ?? overhead + 16;
+        if (target < overhead) throw new InvalidOperationException("claude_boundary_record_too_small");
+        // One bounded UTF-8 buffer; padding belongs to content, with no real LF until the record terminator.
+        var record = new byte[target];
+        prefix.CopyTo(record, 0);
+        record.AsSpan(prefix.Length, target - overhead).Fill((byte)'a');
+        suffix.CopyTo(record, target - suffix.Length);
+        return record;
+    }
+
+    private static void WithClaudeBoundaryFile(Action<string> test)
+    {
+        var folder = Path.Combine(Path.GetTempPath(), "tokenbar-claude-record-boundary-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        try
+        {
+            test(Path.Combine(folder, "anonymous-session.jsonl"));
+        }
+        finally
+        {
+            Directory.Delete(folder, recursive: true);
+        }
+    }
+
     private static void RunFixture(JsonElement fixture)
     {
         var name = RequiredString(fixture, "name");
@@ -557,5 +752,46 @@ internal static class ParserCompatibilitySelfTests
             ",",
             Latest.OrderBy(pair => pair.Key, StringComparer.Ordinal)
                 .Select(pair => $"{pair.Key}:{pair.Value.Tokens.Output}"));
+    }
+
+    private enum ClaudeContentShape
+    {
+        PlainText,
+        StructuredToolResult,
+    }
+
+    /// <summary>Runs the real tailer and parser batch, retaining only line lengths and extracted response metadata.</summary>
+    private sealed class ClaudeBoundaryHarness : ILineSink, IResponseSink
+    {
+        private readonly ILineBatch _batch;
+
+        public ClaudeBoundaryHarness(string path)
+        {
+            Parser = new ClaudeParser(path, new Deduper());
+            _batch = Parser.NewBatch();
+        }
+
+        public ClaudeParser Parser { get; }
+        public List<int> LineSizes { get; } = [];
+        public List<(ParsedResponse Response, bool IsCompletion)> Upserts { get; } = [];
+
+        public TailReadResult Read(FileTailer tailer)
+        {
+            // ClaudeParser.NewBatch invokes ClaudeLineReader.Read before applying ClaudeLine to this parser.
+            var result = tailer.ReadAppended(this);
+            _batch.ApplyTo(this);
+            _batch.Clear();
+            return result;
+        }
+
+        public void OnLine(ReadOnlySpan<byte> line)
+        {
+            LineSizes.Add(line.Length);
+            _batch.OnLine(line);
+        }
+
+        public void OnMalformed() => _batch.OnMalformed();
+
+        public void OnResponse(ParsedResponse response, bool isCompletion) => Upserts.Add((response, isCompletion));
     }
 }

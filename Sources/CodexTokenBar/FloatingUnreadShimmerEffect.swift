@@ -40,11 +40,7 @@ final class FloatingUnreadShimmerView: NSView {
         probe.autoresizingMask = [.width, .height]
         probe.includesMotionPolicy = true
         probe.changed = { [weak self] active in
-            guard let self, self.motionActive != active else { return }
-            self.motionActive = active
-            self.layer?.borderWidth = active ? 0 : 1.5
-            if active { self.updateLayoutIfNeeded(force: self.cachedFrames.isEmpty); self.startAnimations() }
-            else { self.cancelPendingRender(); self.stopAnimations() }
+            self?.setAnimationActivity(active)
         }
         return probe
     }()
@@ -62,6 +58,24 @@ final class FloatingUnreadShimmerView: NSView {
     private let cycleDuration: CFTimeInterval = 2.1
     private let targetFramesPerSecond = 30
     private let resizeRenderDebounce: TimeInterval = 0.14
+
+    var retainedAnimationFrameCount: Int { cachedFrames.count }
+
+    func setAnimationActivity(_ active: Bool) {
+        guard motionActive != active else { return }
+        motionActive = active
+        layer?.borderWidth = active ? 0 : 1.5
+        if active {
+            updateLayoutIfNeeded(force: cachedFrames.isEmpty)
+            startAnimations()
+        } else {
+            cancelPendingRender()
+            stopAnimations()
+            // Preserve the existing static appearance while motion is disabled,
+            // without retaining the full, reconstructible animation sequence.
+            clearFrameCache(keepingPoster: true)
+        }
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -404,9 +418,9 @@ final class FloatingUnreadShimmerView: NSView {
         return elapsed.truncatingRemainder(dividingBy: cycleDuration)
     }
 
-    private func clearFrameCache() {
+    private func clearFrameCache(keepingPoster: Bool = false) {
         cachedFrames.removeAll()
-        imageLayer.contents = nil
+        if !keepingPoster { imageLayer.contents = nil }
         frameCacheConsumer = nil
         lastBounds = .zero
         lastBackingScale = 0
