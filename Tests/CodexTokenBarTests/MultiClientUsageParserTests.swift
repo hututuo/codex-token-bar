@@ -47,7 +47,7 @@ final class MultiClientUsageParserTests: XCTestCase {
         let accounts = home.appendingPathComponent(".local/share/claude-adapter/accounts")
         try fm.createDirectory(at: accounts, withIntermediateDirectories: true)
         let registry = accounts.appendingPathComponent("registry.json")
-        let fallback = home.appendingPathComponent(".claude/projects")
+        let fallback = home.appendingPathComponent(".claude/projects", isDirectory: true)
         for value: [String: Any] in [
             ["version": 1, "accounts": [["id": "existing"], ["id": "../../outside"]]],
             ["version": 1, "accounts": [["id": "existing"], ["id": "existing"]]],
