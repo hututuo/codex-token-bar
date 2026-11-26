@@ -52,3 +52,15 @@ test("dashboard header exposes the PNG export action", async () => {
   assert.match(source, /导出 PNG/);
   assert.match(source, /onExportPng/);
 });
+
+
+test("both dashboard export actions use the displayed client projection", async () => {
+  const page = await readFile(new URL("../pages/DashboardPage.tsx", import.meta.url), "utf8");
+  assert.match(page, /onExportCsv=\{\(\) => downloadDashboardCsv\(displayDashboard\)\}/);
+  assert.match(page, /onExportPng=\{\(\) => \{\s*void downloadDashboardPng\(displayDashboard\)/);
+  const native = await readFile(new URL("../../../Sources/CodexTokenBar/DashboardView.swift", import.meta.url), "utf8");
+  assert.match(native, /Exporter\.exportCSV\(snapshot: displayedSnapshot\)/);
+  assert.match(native, /Exporter\.exportPNG\(snapshot: displayedSnapshot\)/);
+  assert.match(native, /let display = displayedSnapshot/);
+  assert.match(native, /private var displayedSnapshot: DashboardSnapshot \{\s*clientProjectionCache\.value\(codex: store\.snapshot, clients: clients, allowed: allowedClients\)/);
+});

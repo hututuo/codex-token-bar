@@ -226,6 +226,82 @@ struct AntigravityTests {
                                        responseId: id))
     }
 
+    @Test func emptyPlaceholderIsNoDataAndInitializesOnTheSameReader() throws {
+        let directory = try TempDirectory()
+        let file = try directory.write("conversations/6f0e0d0c-0b0a-4908-8706-050403020100.db", "")
+        let before = try #require(FileStat.lstat(file.path))
+        let listing = Self.listing(directory.url)
+        var reader = AntigravityReader(path: file.path)
+        for _ in 0..<2 {
+            let (batch, result) = reader.read()
+            #expect(!result.failed && batch == AntigravityBatch())
+            #expect(!reader.hasOpenConnection)
+        }
+        let empty = try AntigravityUsageRead.read(path: file.path)
+        #expect(empty.responses.isEmpty && empty.malformedRows == 0)
+        #expect(FileStat.lstat(file.path) == before)
+        #expect(Self.listing(directory.url) == listing, "empty reads create no sidecars or other files")
+
+        let t0: Int64 = 1_792_573_200_000
+        let writer = try ConversationWriter(path: file.path, trajectory: AG.trajectory(created: t0))
+        defer { try? writer.close() }
+        try writer.step(1, type: Self.planner, status: 3, Self.plannerDone(t0 + 100, t0 + 900, output: 50, id: "initialized"))
+        #expect(FileStat.lstat(file.path)?.identity == before.identity, "the server initializes the same file in place")
+        var parser = AntigravityParser(agentId: file.path, fileID: 0)
+        var deduper = Deduper()
+        var completions: [String] = []
+        for _ in 0..<2 {
+            let (batch, result) = reader.read()
+            #expect(!result.failed)
+            parser.consume(try #require(batch), deduper: &deduper) {
+                if $0.isCompletion { completions.append($0.record.key) }
+            }
+        }
+        #expect(!parser.isUnsupported && completions == ["initialized"])
+        #expect(try AntigravityUsageRead.read(path: file.path).responses.map(\.key) == ["initialized"])
+    }
+
+    @Test func placeholderHandlingPreservesFileAndFormatRejections() throws {
+        let directory = try TempDirectory()
+        let empty = try directory.write("empty.db", "")
+        #expect(throws: AntigravityDatabase.OpenError.emptyPlaceholder) { try AntigravityDatabase(path: empty.path) }
+        #expect(throws: AntigravityDatabase.OpenError.missing) { try AntigravityDatabase(path: directory.file("missing.db").path) }
+        #expect(throws: AntigravityDatabase.OpenError.missing) { try AntigravityDatabase(path: directory.path) }
+        let symlink = directory.file("symlink.db")
+        try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: empty)
+        #expect(throws: AntigravityDatabase.OpenError.missing) { try AntigravityDatabase(path: symlink.path) }
+        #expect(throws: (any Error).self) { try AntigravityUsageRead.read(path: symlink.path) }
+
+        let unsupported = directory.file("unsupported.db")
+        let connection = try SQLiteConnection(path: unsupported.path, mode: .readWriteCreate)
+        try connection.execute("CREATE TABLE trajectory_steps(idx INTEGER, payload BLOB)")
+        connection.close()
+        #expect(throws: AntigravityDatabase.OpenError.unsupported) { try AntigravityDatabase(path: unsupported.path) }
+        #expect(throws: (any Error).self) { try AntigravityUsageRead.read(path: unsupported.path) }
+        let garbage = try directory.write("garbage.db", "not a database")
+        #expect(throws: AntigravityDatabase.OpenError.unreadable) { try AntigravityDatabase(path: garbage.path) }
+    }
+
+    @Test func emptyMainWithNonemptyWALIsNotSilentlySkipped() throws {
+        let directory = try TempDirectory()
+        let t0: Int64 = 1_792_573_200_000
+        let writer = try ConversationWriter(path: directory.file("server.db").path, trajectory: AG.trajectory(created: t0))
+        defer { try? writer.close() }
+        try writer.step(1, type: Self.planner, status: 3, Self.plannerDone(t0 + 100, t0 + 900, output: 50, id: "wal-response"))
+        let wal = try Data(contentsOf: URL(fileURLWithPath: writer.path + "-wal"))
+        #expect(!wal.isEmpty)
+        let empty = try directory.write("empty-main.db", "")
+        try wal.write(to: URL(fileURLWithPath: empty.path + "-wal"))
+        // SQLite may recover the WAL or reject the incomplete pair. Either result must remain visible rather
+        // than report a successful empty read merely because the main file has zero bytes.
+        do {
+            let result = try AntigravityUsageRead.read(path: empty.path)
+            #expect(result.responses.map(\.key) == ["wal-response"])
+        } catch AntigravityUsageRead.ReadError.unreadable {
+        } catch AntigravityUsageRead.ReadError.unsupported {
+        }
+    }
+
     @Test func incrementalReadsFollowAConversationThatIsBeingWritten() throws {
         let directory = try TempDirectory()
         let path = directory.file("conversations/0f0e0d0c-0b0a-4908-8706-050403020100.db").path

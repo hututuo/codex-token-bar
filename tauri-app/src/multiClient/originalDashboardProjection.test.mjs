@@ -200,3 +200,24 @@ test('missing aggregate cache fields remain unknown on heatmaps and ranges',asyn
  assert.equal(day.cacheHitRateKnown,false);assert.equal(buildHeatmapDays([day],'cache')[0].intensity,0);
  assert.match(hoverSummary(day,'cache'),/未知/);assert.match(summarizeRange([day],day.date,day.date,'cache').value,/字段不完整/);
 }));
+
+
+test('CSV and image exports conserve each selected client scope',async()=>withSsrModules(async load=>{
+ const {projectOriginalDashboard}=await load('/src/multiClient/originalDashboardProjection.ts');
+ const {dashboardToCsv,dashboardToExportSvg}=await load('/src/utils/dashboardExport.ts');
+ const clients=['claudeCode','claudeDesktop','deepseek','gemini','opencode','antigravity'];
+ const rows=clients.map((client,index)=>({...bucket,client,inputTokens:(index+1)*100,outputTokens:20}));
+ const summaries=rows.map(value=>({...row,...value}));
+ const source={...snapshot(),summaries,trendBuckets:rows,dailyBuckets:rows};
+ const original=dashboard();original.stats.totalTokens=999999;original.activityDays=[{date:'2026-10-25',tokens:999999,calls:999}];
+ const before=structuredClone({original,source});
+ for(const scope of [...clients.map(client=>[client]),clients,['codex',...clients],['codex']]){
+  const display=projectOriginalDashboard(original,source,scope);
+  const exported=dashboardToCsv(display).split('\n').slice(1).map(line=>line.split(','));
+  assert.equal(exported.reduce((sum,parts)=>sum+Number(parts[1]),0),display.activityDays.reduce((sum,day)=>sum+day.tokens,0),scope.join(','));
+  assert.equal(exported.reduce((sum,parts)=>sum+Number(parts[2]),0),display.activityDays.reduce((sum,day)=>sum+day.calls,0),scope.join(','));
+  assert.match(dashboardToExportSvg(display),/^<svg /);
+  if(!scope.includes('codex')) assert.ok(!dashboardToCsv(display).includes('999999'),scope.join(','));
+ }
+ assert.deepEqual({original,source},before);
+}));

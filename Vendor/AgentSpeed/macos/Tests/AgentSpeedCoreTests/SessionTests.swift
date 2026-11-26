@@ -33,6 +33,170 @@ struct SessionTests {
 
     static func startOfToday() -> Int64 { Clock.milliseconds(Calendar.current.startOfDay(for: Date())) }
 
+    @Test func startupDecodeWindowsBoundFilesBytesAndOversizedInputs() {
+        #expect(TranscriptSession.startupDecodeWindows(weights: []).isEmpty)
+        #expect(TranscriptSession.startupDecodeWindows(weights: [5, 4, 1, 8, 2, 0], maxFiles: 3, maxBytes: 10)
+            == [0..<3, 3..<6])
+        #expect(TranscriptSession.startupDecodeWindows(weights: [1, .max, 1], maxFiles: 3, maxBytes: 10)
+            == [0..<1, 1..<2, 2..<3])
+        #expect(TranscriptSession.startupDecodeWindows(weights: [-1, 0, 1], maxFiles: 0, maxBytes: 0)
+            == [0..<1, 1..<2, 2..<3])
+        let weights = Array(repeating: Int64(5 << 20), count: 99)
+        let windows = TranscriptSession.startupDecodeWindows(weights: weights)
+        #expect(windows.flatMap(Array.init) == Array(weights.indices))
+        #expect(windows.allSatisfy { $0.count <= 16 && $0.reduce(0) { $0 + weights[$1] } <= 64 << 20 })
+    }
+
+    @Test func startupDecodeWindowsPreserveOwnershipAndResumeReaderOffsets() throws {
+        let directory = try TempDirectory()
+        let now = Date()
+        let timestamp = ISO8601DateFormatter().string(from: now)
+        let samples = OSAllocatedUnfairLock(initialState: [Double]())
+        for index in 0..<35 {
+            let path = "projects/p/\(String(format: "%03d", index)).jsonl"
+            let shared = #"{"type":"assistant","entrypoint":"cli","message":{"id":"shared-window","model":"m","stop_reason":"end_turn","usage":{"output_tokens":\#(index + 1)}},"timestamp":"\#(timestamp)"}"#
+            let unique = #"{"type":"assistant","entrypoint":"cli","message":{"id":"unique-\#(index)","model":"m","stop_reason":"end_turn","usage":{"output_tokens":2}},"timestamp":"\#(timestamp)"}"#
+            try directory.write(path, shared + "\n" + unique + "\n", modified: now.addingTimeInterval(Double(index - 40)))
+        }
+        let session = TranscriptSession(configuration: MonitorConfiguration(
+            enabledSources: [.claudeCode], claudeRoot: directory.file("projects")))
+        let summary = session.seed(todayStartMs: Self.startOfToday(), progress: { value in
+            samples.withLock { $0.append(value) }
+        })
+        #expect(summary.filesRead == 35)
+        #expect(session.responses.count == 36)
+        #expect(session.responses.first { $0.key == "shared-window" }?.usage.output == 1)
+        #expect(samples.withLock { $0.max() } == 1)
+        #expect(samples.withLock { $0.allSatisfy { (0...1).contains($0) } })
+        let path = "projects/p/016.jsonl"
+        let appended = #"{"type":"assistant","entrypoint":"cli","message":{"id":"after-window","model":"m","stop_reason":"end_turn","usage":{"output_tokens":7}},"timestamp":"\#(timestamp)"}"#
+        try directory.append(path, appended + "\n")
+        let canonical = directory.file(path).resolvingSymlinksInPath().path
+        #expect(session.handleChanges(atCanonicalPaths: [canonical]))
+        #expect(session.responses.count == 37)
+        #expect(session.responses.first { $0.key == "after-window" }?.usage.output == 7)
+        #expect(!session.handleChanges(atCanonicalPaths: [canonical]))
+    }
+
+    @Test func claudeRootsKeepClientOwnershipAndCoalescePhysicalAliases() throws {
+        let directory = try TempDirectory()
+        let now = ISO8601DateFormatter().string(from: Date())
+        for (root, entrypoint, id, output) in [("code", "cli", "code-allowed", 11),
+            ("code", "claude-desktop", "desktop-wrong", 101),
+            ("desktop", "cli", "code-wrong", 103),
+            ("desktop", "claude-desktop", "desktop-allowed", 13)] {
+            try directory.write("\(root)/p/\(id).jsonl", [
+                #"{"type":"user","entrypoint":"\#(entrypoint)","message":{"role":"user","content":"go"},"timestamp":"\#(now)"}"#,
+                #"{"type":"assistant","entrypoint":"\#(entrypoint)","message":{"id":"\#(id)","model":"m","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":\#(output)}},"timestamp":"\#(now)"}"#,
+            ].joined(separator: "\n") + "\n")
+        }
+        let code = directory.file("code")
+        let desktop = directory.file("desktop")
+        let alias = directory.file("code-alias")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: code)
+        let configuration = MonitorConfiguration(enabledSources: [.claudeCode, .claudeDesktop],
+            claudeRootsBySource: [.claudeCode: [code, alias], .claudeDesktop: [desktop]])
+        let session = TranscriptSession(configuration: configuration)
+        #expect(session.roots.filter { $0.family == .claude }.count == 2)
+        #expect(session.seed(todayStartMs: Self.startOfToday()).filesRead == 4)
+        #expect(Set(session.responses.map(\.key)) == ["code-allowed", "desktop-allowed"])
+        #expect(session.sessionCounts(todayStartMs: Self.startOfToday())[.claudeCode] == 1)
+        #expect(session.sessionCounts(todayStartMs: Self.startOfToday())[.claudeDesktop] == 1)
+        var swapped = configuration
+        swapped.claudeRootsBySource = [.claudeCode: [desktop], .claudeDesktop: [code]]
+        #expect(swapped.resolvedRoots(for: .claude) == configuration.resolvedRoots(for: .claude))
+        #expect(swapped.requiresRescan(comparedTo: configuration), "ownership changes require a rescan even with the same union")
+        let swappedSession = TranscriptSession(configuration: swapped)
+        _ = swappedSession.seed(todayStartMs: Self.startOfToday())
+        #expect(Set(swappedSession.responses.map(\.key)) == ["code-wrong", "desktop-wrong"])
+        var shared = configuration
+        shared.claudeRootsBySource = [.claudeCode: [code, desktop], .claudeDesktop: [alias, desktop]]
+        let sharedSession = TranscriptSession(configuration: shared)
+        #expect(sharedSession.seed(todayStartMs: Self.startOfToday()).filesRead == 4)
+        #expect(sharedSession.responses.count == 4)
+        var missingCode = configuration
+        missingCode.claudeRootsBySource[.claudeCode] = [directory.file("missing")]
+        let availability = TranscriptSession(configuration: missingCode)
+        let context = SnapshotContext(session: availability, todayStartMs: Self.startOfToday())
+        #expect(context.sources[.claudeCode]?.available == false)
+        #expect(context.sources[.claudeDesktop]?.available == true)
+        var desktopOnly = configuration
+        desktopOnly.enabledSources = [.claudeDesktop]
+        let disabled = TranscriptSession(configuration: desktopOnly).root(for: SourceKind.claudeCode)
+        #expect(disabled.path.isEmpty && disabled.canonicalPath.isEmpty && disabled.detectionPath == nil)
+        #expect(!disabled.enabled && !disabled.available && !disabled.detected && !disabled.readable)
+    }
+
+    @Test func claudeAutomaticRootsRemainTheFallbackForClientsWithoutAnOverride() throws {
+        let directory = try TempDirectory()
+        let automatic = directory.file("automatic")
+        let explicit = directory.file("explicit")
+        let now = ISO8601DateFormatter().string(from: Date())
+        for (path, entrypoint, id) in [("automatic/p/desktop.jsonl", "claude-desktop", "legacy-desktop"),
+            ("automatic/p/code.jsonl", "cli", "legacy-code"), ("explicit/p/code.jsonl", "cli", "explicit-code")] {
+            try directory.write(path, #"{"type":"assistant","entrypoint":"\#(entrypoint)","message":{"id":"\#(id)","model":"m","stop_reason":"end_turn","usage":{"output_tokens":7}},"timestamp":"\#(now)"}"# + "\n")
+        }
+        var configuration = MonitorConfiguration(enabledSources: [.claudeCode, .claudeDesktop], claudeRoot: directory.file("unused-legacy"))
+        configuration.automaticRoots[.claude] = [automatic]
+        #expect(configuration.resolvedClaudeRoots(for: .claudeCode) == [automatic.resolvingSymlinksInPath().path])
+        #expect(configuration.resolvedRoots(for: .claude) == [automatic.resolvingSymlinksInPath().path])
+        let legacy = TranscriptSession(configuration: configuration)
+        _ = legacy.seed(todayStartMs: Self.startOfToday())
+        #expect(Set(legacy.responses.map(\.key)) == ["legacy-code", "legacy-desktop"])
+        configuration.claudeRootsBySource[.claudeCode] = [explicit]
+        #expect(configuration.resolvedClaudeRoots(for: .claudeCode) == [explicit.resolvingSymlinksInPath().path])
+        #expect(configuration.resolvedClaudeRoots(for: .claudeDesktop) == [automatic.resolvingSymlinksInPath().path])
+        let overridden = TranscriptSession(configuration: configuration)
+        _ = overridden.seed(todayStartMs: Self.startOfToday())
+        #expect(Set(overridden.responses.map(\.key)) == ["explicit-code", "legacy-desktop"])
+    }
+
+    @Test func excludedClaudeCopiesCannotClaimSharedResponseKeysBeforeSelectedCopies() throws {
+        let directory = try TempDirectory()
+        let now = Date()
+        let timestamp = ISO8601DateFormatter().string(from: now)
+        for (index, record) in [("desktop/p/wrong-code.jsonl", "cli", "same-code", 101),
+            ("code/p/wrong-desktop.jsonl", "claude-desktop", "same-desktop", 103),
+            ("code/p/right-code.jsonl", "cli", "same-code", 11),
+            ("desktop/p/right-desktop.jsonl", "claude-desktop", "same-desktop", 13)].enumerated() {
+            let (path, entrypoint, id, output) = record
+            try directory.write(path, #"{"type":"assistant","entrypoint":"\#(entrypoint)","message":{"id":"\#(id)","model":"m","stop_reason":"end_turn","usage":{"output_tokens":\#(output)}},"timestamp":"\#(timestamp)"}"# + "\n",
+                modified: now.addingTimeInterval(TimeInterval(index - 5)))
+        }
+        let configuration = MonitorConfiguration(enabledSources: [.claudeCode, .claudeDesktop],
+            claudeRootsBySource: [.claudeCode: [directory.file("code")], .claudeDesktop: [directory.file("desktop")]])
+        let session = TranscriptSession(configuration: configuration)
+        #expect(session.seed(todayStartMs: Self.startOfToday()).filesRead == 4)
+        #expect(session.responses.count == 2)
+        #expect(session.responses.first { $0.key == "same-code" }?.agentId.hasSuffix("/right-code.jsonl") == true)
+        #expect(session.responses.first { $0.key == "same-desktop" }?.agentId.hasSuffix("/right-desktop.jsonl") == true)
+        #expect(session.responses.reduce(0) { $0 + $1.usage.output } == 24)
+        // Truncation rebuilds this parser; it must retain its original folder selection.
+        let wrongCodePath = directory.file("desktop/p/wrong-code.jsonl").resolvingSymlinksInPath().path
+        try directory.write("desktop/p/wrong-code.jsonl", "")
+        _ = session.handleChanges(atCanonicalPaths: [wrongCodePath])
+        for (path, output) in [("desktop/p/wrong-code.jsonl", 999), ("code/p/right-code.jsonl", 17)] {
+            try directory.append(path, #"{"type":"assistant","entrypoint":"cli","message":{"id":"after-reset","model":"m","stop_reason":"end_turn","usage":{"output_tokens":\#(output)}},"timestamp":"\#(timestamp)"}"# + "\n")
+            _ = session.handleChanges(atCanonicalPaths: [directory.file(path).resolvingSymlinksInPath().path])
+        }
+        #expect(session.responses.first { $0.key == "after-reset" }?.usage.output == 17)
+    }
+
+    @Test func nestedClaudeClientSelectionDoesNotDependOnWhichRootDiscoversTheFile() throws {
+        let directory = try TempDirectory()
+        let now = ISO8601DateFormatter().string(from: Date())
+        for (path, entrypoint, id) in [("projects/p/code.jsonl", "cli", "parent-code"),
+            ("projects/p/desktop-excluded.jsonl", "claude-desktop", "parent-desktop"),
+            ("projects/nested/p/desktop.jsonl", "claude-desktop", "nested-desktop")] {
+            try directory.write(path, #"{"type":"assistant","entrypoint":"\#(entrypoint)","message":{"id":"\#(id)","model":"m","stop_reason":"end_turn","usage":{"output_tokens":7}},"timestamp":"\#(now)"}"# + "\n")
+        }
+        let configuration = MonitorConfiguration(enabledSources: [.claudeCode, .claudeDesktop],
+            claudeRootsBySource: [.claudeCode: [directory.file("projects")], .claudeDesktop: [directory.file("projects/nested")]])
+        let session = TranscriptSession(configuration: configuration)
+        #expect(session.seed(todayStartMs: Self.startOfToday()).filesRead == 3)
+        #expect(Set(session.responses.map(\.key)) == ["parent-code", "nested-desktop"])
+    }
+
     @Test func seedsFixturesWithoutLiveEvents() throws {
         let (directory, configuration) = try Self.makeFixtureRoots()
         let session = TranscriptSession(configuration: configuration)

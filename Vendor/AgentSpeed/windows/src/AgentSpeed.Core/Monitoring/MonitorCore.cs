@@ -85,7 +85,13 @@ internal sealed partial class MonitorCore : IDisposable
         _engine = new SpeedEngine(todayStartMs, pricing, zone);
         foreach (var (family, path) in locations.FileRoots())
         {
-            _roots.Add(new SourceRoot(family, path, Families.IsEnabled(family, _enabled)));
+            var selected = family == RootFamily.Claude
+                ? _enabled.Where(source => (source is SourceKind.ClaudeCode or SourceKind.ClaudeDesktop)
+                    && (locations.ClaudeRootsBySource?.GetValueOrDefault(source) ?? [locations.ClaudeRoot])
+                        .Any(root => PathComparer.Equals(Path.TrimEndingDirectorySeparator(root), Path.TrimEndingDirectorySeparator(path)))).ToHashSet()
+                : null;
+            _roots.Add(new SourceRoot(family, path, selected is null ? Families.IsEnabled(family, _enabled) : selected.Count > 0)
+            { SelectedSources = selected });
         }
 
         CodexRoot = _roots.First(r => r.Family == RootFamily.Codex);
@@ -259,7 +265,7 @@ internal sealed partial class MonitorCore : IDisposable
                     continue;
                 }
 
-                var tracked = new TrackedFile(root, file.Path, _deduper, _readBackend);
+                var tracked = CreateTrackedFile(root, file.Path);
                 _files[file.Path] = tracked;
                 if (PlanInitialRead(tracked, file, todayStartMs) is { } plan)
                 {
@@ -482,7 +488,7 @@ internal sealed partial class MonitorCore : IDisposable
         var count = 0;
         foreach (var tracked in _files.Values)
         {
-            if (tracked.Parser.Source == kind && tracked.Parser.LastLineMs >= todayStartMs
+            if (tracked.Selects(kind) && tracked.Parser.Source == kind && tracked.Parser.LastLineMs >= todayStartMs
                 && !(mainOnly && tracked.Parser.IsSubagent))
             {
                 count++;
@@ -669,7 +675,7 @@ internal sealed partial class MonitorCore : IDisposable
         else
         {
             var family = Families.Of(kind);
-            var roots = _roots.Where(r => r.Family == family).ToList();
+            var roots = _roots.Where(r => r.Family == family && r.Selects(kind)).ToList();
             path = roots.Count > 0 ? roots[0].Path : string.Empty;
             available = roots.Any(r => r.Available);
             rootEnabled = roots.Any(r => r.Enabled);
@@ -857,7 +863,7 @@ internal sealed partial class MonitorCore : IDisposable
         foreach (var (response, isCompletion) in _collector.Items)
         {
             _responsesSeen++;
-            if (_enabled.Contains(response.Source))
+            if (_enabled.Contains(response.Source) && tracked.Selects(response.Source))
             {
                 _engine.Upsert(response, isCompletion, seeded, liveNowMs);
                 if (!seeded)
@@ -868,7 +874,7 @@ internal sealed partial class MonitorCore : IDisposable
                 }
             }
 
-            _observer?.OnResponse(response, isCompletion, seeded);
+            if (tracked.Selects(response.Source)) { _observer?.OnResponse(response, isCompletion, seeded); }
         }
 
         _collector.Items.Clear();
@@ -939,6 +945,15 @@ internal sealed partial class MonitorCore : IDisposable
             TaskScheduler.Default);
     }
 
+    private TrackedFile CreateTrackedFile(SourceRoot root, string path)
+    {
+        var selected = root.Family == RootFamily.Claude ? _roots.Where(candidate => candidate.Family == RootFamily.Claude
+            && path.StartsWith(Path.EndsInDirectorySeparator(candidate.Path) ? candidate.Path : candidate.Path + Path.DirectorySeparatorChar,
+                OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+            .SelectMany(candidate => candidate.SelectedSources ?? _enabled).ToHashSet() : null;
+        return new TrackedFile(root, path, _deduper, _readBackend, selected);
+    }
+
     private bool AddRuntimeFile(SourceRoot root, string path, long todayStartMs, DiscoveredFile? known = null)
     {
         DiscoveredFile file;
@@ -962,7 +977,7 @@ internal sealed partial class MonitorCore : IDisposable
             return false;
         }
 
-        var tracked = new TrackedFile(root, file.Path, _deduper, _readBackend);
+        var tracked = CreateTrackedFile(root, file.Path);
         _files[file.Path] = tracked;
         if (PlanInitialRead(tracked, file, todayStartMs) is not { } plan)
         {
@@ -987,7 +1002,7 @@ internal sealed partial class MonitorCore : IDisposable
             return;
         }
 
-        if (!_enabled.Contains(parser.Source))
+        if (!_enabled.Contains(parser.Source) || !tracked.Selects(parser.Source))
         {
             _engine.RemoveAgent(parser.AgentId);
             _linksChanged |= _links.Remove(parser.AgentId);

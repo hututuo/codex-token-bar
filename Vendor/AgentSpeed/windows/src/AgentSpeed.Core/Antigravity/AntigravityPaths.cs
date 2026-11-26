@@ -10,21 +10,37 @@ internal static class AntigravityPaths
     public const string DatabaseExtension = ".db";
     public const string WalSuffix = "-wal";
 
-    /// <summary>The three stores, in this order: CLI, desktop app (and IDE 1.x, extensions), IDE 2.x.</summary>
-    public static readonly string[] StoreNames = ["antigravity-cli", "antigravity", "antigravity-ide"];
+    /// <summary>The four stores, in this order: CLI, desktop app (and IDE 1.x, extensions), IDE 2.x, ACP.</summary>
+    public static readonly string[] StoreNames = ["antigravity-cli", "antigravity", "antigravity-ide", "antigravity-acp"];
 
     private const string BackupSuffix = "-backup";
 
-    /// <summary>The three default stores below <paramref name="geminiFolder"/> (<c>~/.gemini</c>).</summary>
+    /// <summary>The four default stores below <paramref name="geminiFolder"/> (<c>~/.gemini</c>).</summary>
     public static IReadOnlyList<string> DefaultStores(string geminiFolder) =>
         [.. StoreNames.Select(name => Path.Combine(geminiFolder, name))];
 
     /// <summary>
-    /// The folders to read: the setting alone when given, else the default stores; a store named <c>*-backup</c> (or its
-    /// <c>conversations</c> folder) is never read.
+    /// The folders to read: the default stores, or the selected store/conversations folder. A selected parent also
+    /// includes its four known child stores, even before they exist; a <c>*-backup</c> store is never read.
     /// </summary>
-    public static IReadOnlyList<string> Stores(string geminiFolder, string? setting) =>
-        [.. (setting is { Length: > 0 } ? [setting] : DefaultStores(geminiFolder)).Select(Trim).Where(c => !IsBackupStore(c))];
+    public static IReadOnlyList<string> Stores(string geminiFolder, string? setting)
+    {
+        if (setting is not { Length: > 0 })
+        {
+            return DefaultStores(geminiFolder);
+        }
+
+        var selected = Trim(setting);
+        if (IsBackupStore(selected))
+        {
+            return [];
+        }
+
+        var name = Parsing.PathText.Basename(selected);
+        return IsConversationsFolder(selected) || StoreNames.Contains(name, StringComparer.OrdinalIgnoreCase)
+            ? [selected]
+            : [selected, .. StoreNames.Select(store => Path.Combine(selected, store))];
+    }
 
     /// <summary>The <c>conversations</c> folder of a store; a path that already names it is used directly.</summary>
     public static string ConversationsOf(string storeOrFolder) =>

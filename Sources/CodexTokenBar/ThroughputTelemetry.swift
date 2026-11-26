@@ -488,10 +488,13 @@ actor BodySpeedSampleWriter {
 
     func load(from url: URL, now: Double, retentionDays: Int = 30) throws -> [ObservedSpeedSample] {
         let key = url.standardizedFileURL
-        var cache = try storeCache(for: key, now: now, retentionDays: retentionDays)
-        let samples = try cache.store.loadSamples(now: now, retentionDays: retentionDays)
-        cache.persistedByID = Dictionary(samples.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
-        caches[key] = cache
+        // Opening a cold store must not load the full history twice. A warm
+        // explicit load still reads SQLite so another process's updates are visible.
+        let store = try caches[key]?.store ?? openStore(for: key, now: now, retentionDays: retentionDays)
+        let samples = try store.loadSamples(now: now, retentionDays: retentionDays)
+        caches[key] = StoreCache(store: store,
+            persistedByID: Dictionary(samples.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last }),
+            retentionDays: try caches[key]?.retentionDays ?? store.retentionDays())
         return samples
     }
 
@@ -560,15 +563,20 @@ actor BodySpeedSampleWriter {
 
     private func storeCache(for url: URL, now: Double, retentionDays: Int) throws -> StoreCache {
         if let cache = caches[url] { return cache }
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let store = try BodySpeedTrendStore(url: url, sharedURL: sharedURL)
-        try store.importLegacyJSON(now: now, retentionDays: retentionDays)
+        let store = try openStore(for: url, now: now, retentionDays: retentionDays)
         let samples = try store.loadSamples(now: now, retentionDays: retentionDays)
         return StoreCache(
             store: store,
             persistedByID: Dictionary(samples.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last }),
             retentionDays: try store.retentionDays()
         )
+    }
+
+    private func openStore(for url: URL, now: Double, retentionDays: Int) throws -> BodySpeedTrendStore {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let store = try BodySpeedTrendStore(url: url, sharedURL: sharedURL)
+        try store.importLegacyJSON(now: now, retentionDays: retentionDays)
+        return store
     }
 }
 

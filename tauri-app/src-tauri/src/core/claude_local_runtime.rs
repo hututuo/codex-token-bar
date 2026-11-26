@@ -156,6 +156,7 @@ struct RegistryState {
 struct RuntimeConfigKey {
     default_antigravity_roots: bool,
     claude_root: Option<String>,
+    claude_roots_by_client: BTreeMap<String, Vec<String>>,
     codex_root: Option<String>,
     enabled_clients: Vec<String>,
     other_roots: BTreeMap<String, String>,
@@ -165,6 +166,7 @@ struct RuntimeConfigKey {
 struct RuntimeRoots {
     default_antigravity_roots: bool,
     claude_root: Option<std::path::PathBuf>,
+    claude_roots_by_client: BTreeMap<String, Vec<PathBuf>>,
     codex_root: Option<std::path::PathBuf>,
     other_roots: BTreeMap<String, std::path::PathBuf>,
 }
@@ -567,40 +569,59 @@ fn read_enabled_claude_preferences() -> Result<Vec<EnabledClaudePreference>, &'s
     Ok(selected.into_values().collect())
 }
 
-fn shared_local_root(
-    preferences: &[EnabledClaudePreference],
-) -> Result<std::path::PathBuf, &'static str> {
-    let mut roots = preferences
-        .iter()
-        .map(|preference| preference_root(&preference.path))
-        .collect::<Result<Vec<_>, _>>()?;
-    let Some(root) = roots.pop() else {
-        return Err("claude_usage_disabled");
-    };
-    let key = normalized_path_key(&root);
-    if roots
-        .iter()
-        .any(|candidate| normalized_path_key(candidate) != key)
-    {
-        return Err("claude_sources_must_share_a_local_root");
-    }
+/// Canonical roots remove aliases before they become monitor or activity identities.
+fn canonical_local_root(root: PathBuf) -> Result<PathBuf, &'static str> {
+    validate_local_absolute_path(&root)?;
+    let root = std::fs::canonicalize(&root).unwrap_or_else(|_| {
+        let mut normalized = PathBuf::new();
+        for component in root.components() {
+            match component {
+                std::path::Component::CurDir => {},
+                std::path::Component::ParentDir => { normalized.pop(); },
+                _ => normalized.push(component.as_os_str()),
+            }
+        }
+        normalized
+    });
+    validate_local_absolute_path(&root)?;
     Ok(root)
+}
+
+fn automatic_claude_roots() -> Vec<PathBuf> {
+    let home = crate::core::app_paths::home_dir();
+    let configured = std::env::var_os("CLAUDE_CONFIG_DIR").filter(|value| !value.is_empty()).map(PathBuf::from);
+    crate::core::multi_client_usage::claude_project_roots(&home, configured.as_deref()).0
 }
 
 fn runtime_configuration(
     preferences: &[EnabledClaudePreference],
     codex_root: Option<std::path::PathBuf>,
 ) -> Result<Option<(RuntimeConfigKey, RuntimeRoots)>, &'static str> {
-    let claude_preferences = preferences
-        .iter()
-        .filter(|p| CLAUDE_CLIENTS.contains(&p.client.as_str()))
-        .cloned()
-        .collect::<Vec<_>>();
-    let claude_root = if claude_preferences.is_empty() {
-        None
-    } else {
-        Some(shared_local_root(&claude_preferences)?)
-    };
+    runtime_configuration_with_claude_roots(preferences, codex_root, automatic_claude_roots)
+}
+
+fn runtime_configuration_with_claude_roots(
+    preferences: &[EnabledClaudePreference],
+    codex_root: Option<PathBuf>,
+    automatic: impl FnOnce() -> Vec<PathBuf>,
+) -> Result<Option<(RuntimeConfigKey, RuntimeRoots)>, &'static str> {
+    let needs_automatic = preferences.iter().any(|p| CLAUDE_CLIENTS.contains(&p.client.as_str()) && p.path.trim().is_empty());
+    let automatic = if needs_automatic { automatic() } else { Vec::new() };
+    let mut claude_roots_by_client = BTreeMap::new();
+    for preference in preferences.iter().filter(|p| CLAUDE_CLIENTS.contains(&p.client.as_str())) {
+        let roots = if preference.path.trim().is_empty() { automatic.clone() } else { vec![preference_root(&preference.path)?] };
+        let mut selected = BTreeMap::new();
+        for root in roots {
+            let root = canonical_local_root(root)?;
+            selected.entry(normalized_path_key(&root)).or_insert(root);
+        }
+        let roots = selected.into_values().collect::<Vec<_>>();
+        if roots.is_empty() || roots.len() > 17 { return Err("claude_roots_invalid"); }
+        claude_roots_by_client.entry(preference.client.clone()).or_insert(roots);
+    }
+    // The old helper contract remains valid only when all Claude clients share one folder.
+    let legacy_root = claude_roots_by_client.values().next().and_then(|roots| (roots.len() == 1).then(|| roots[0].clone()));
+    let claude_root = legacy_root.filter(|root| claude_roots_by_client.values().all(|roots| roots.len() == 1 && normalized_path_key(&roots[0]) == normalized_path_key(root)));
     let mut other_roots = BTreeMap::new();
     for preference in preferences
         .iter()
@@ -609,7 +630,7 @@ fn runtime_configuration(
         let root = other_client_root(&preference.client, &preference.path)?;
         other_roots.insert(preference.client.clone(), root);
     }
-    if claude_root.is_none() && codex_root.is_none() && other_roots.is_empty() {
+    if claude_roots_by_client.is_empty() && codex_root.is_none() && other_roots.is_empty() {
         return Ok(None);
     }
     let mut enabled_clients = preferences
@@ -625,6 +646,8 @@ fn runtime_configuration(
     let key = RuntimeConfigKey {
         default_antigravity_roots,
         claude_root: claude_root.as_deref().map(normalized_path_key),
+        claude_roots_by_client: claude_roots_by_client.iter().map(|(client, roots)|
+            (client.clone(), roots.iter().map(|root| normalized_path_key(root)).collect())).collect(),
         codex_root: codex_root.as_deref().map(normalized_path_key),
         enabled_clients: enabled_clients.clone(),
         other_roots: other_roots
@@ -637,6 +660,7 @@ fn runtime_configuration(
         RuntimeRoots {
             default_antigravity_roots,
             claude_root,
+            claude_roots_by_client,
             codex_root,
             other_roots,
         },
@@ -781,10 +805,11 @@ fn validate_local_absolute_path(path: &std::path::Path) -> Result<(), &'static s
 }
 
 fn normalized_path_key(path: &std::path::Path) -> String {
-    path.to_string_lossy()
-        .replace('/', "\\")
-        .trim_end_matches('\\')
-        .to_lowercase()
+    let text = path.to_string_lossy();
+    // canonicalize() adds the Windows extended-drive prefix. Keep existing single-root
+    // history identities stable and coalesce the ordinary and extended spellings.
+    let text = if is_verbatim_local_disk_path(&text) { &text[4..] } else { &text };
+    text.replace('/', "\\").trim_end_matches('\\').to_lowercase()
 }
 
 fn capture_activity_rates(
@@ -800,20 +825,17 @@ fn capture_activity_rates(
     };
     let now = captured_at.unix_timestamp_nanos() as f64 / 1_000_000_000.0;
     for client in &key.enabled_clients {
-        let root = match client.as_str() {
-            "codex" => key.codex_root.as_deref(),
-            "claudeCode" | "claudeDesktop" => key.claude_root.as_deref(),
-            other => key.other_roots.get(other).map(String::as_str),
-        };
-        let Some(root) = root else { continue };
-        // Codex's monitor receives <home>/sessions; keep Bar and Agent Speed
-        // samples under the same home identity rather than two folder hashes.
-        let activity_root = if client == "codex" {
-            codex_activity_root(root)
+        let source_signature = if CLAUDE_CLIENTS.contains(&client.as_str()) {
+            let Some(roots) = key.claude_roots_by_client.get(client) else { continue };
+            let Some(first) = roots.first() else { continue };
+            let identity = if roots.len() == 1 { first.clone() } else { format!("claude-roots-v2\n{}", roots.join("\n")) };
+            crate::core::activity_speed_capture::root_identity(&identity)
         } else {
-            root
+            let root = if client == "codex" { key.codex_root.as_deref() } else { key.other_roots.get(client).map(String::as_str) };
+            let Some(root) = root else { continue };
+            let root = if client == "codex" { codex_activity_root(root) } else { root };
+            crate::core::activity_speed_capture::root_identity(root)
         };
-        let source_signature = crate::core::activity_speed_capture::root_identity(activity_root);
         let rates = snapshot
             .model_rates
             .iter()
@@ -888,6 +910,7 @@ fn start_worker(
     #[cfg(windows)]
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let source_roots = runtime_source_read_roots(&roots, &key);
+    let expected_schema = if roots.claude_root.is_none() && !roots.claude_roots_by_client.is_empty() { 2 } else { 1 };
     let mut command = Command::new(helper);
     command
         .arg("--watch")
@@ -896,6 +919,14 @@ fn start_worker(
         .stderr(Stdio::null());
     if let Some(root) = roots.claude_root {
         command.arg("--root").arg(root);
+    } else if !roots.claude_roots_by_client.is_empty() {
+        let selected = roots.claude_roots_by_client.iter().map(|(client, paths)| {
+            let paths = paths.iter().map(|path| path.to_str().ok_or(())).collect::<Result<Vec<_>, _>>()?;
+            if paths.iter().any(|path| path.chars().count() > 1024 || path.chars().any(char::is_control)) { return Err(()); }
+            Ok((client.clone(), paths))
+        }).collect::<Result<BTreeMap<_, _>, ()>>()?;
+        let configuration = serde_json::json!({"version": 2, "roots": selected});
+        command.arg("--claude-roots-v2").arg(configuration.to_string());
     }
     if let Some(root) = roots.codex_root {
         command.arg("--codex-root").arg(root);
@@ -969,7 +1000,7 @@ fn start_worker(
                             continue;
                         }
 
-                        let parsed = parse_runtime_snapshot(&bytes, &client_allowlist);
+                        let parsed = parse_runtime_snapshot_for_schema(&bytes, &client_allowlist, expected_schema);
                         if let Ok(mut frame) = reader_frame.lock() {
                             match parsed {
                                 Ok(snapshot) => {
@@ -1063,8 +1094,8 @@ fn runtime_source_read_roots(roots: &RuntimeRoots, key: &RuntimeConfigKey) -> Ve
                 }
             }
             "claudeCode" | "claudeDesktop" => {
-                if let Some(root) = roots.claude_root.as_ref() {
-                    allowed.push(root.clone());
+                if let Some(roots) = roots.claude_roots_by_client.get(client) {
+                    allowed.extend(roots.iter().cloned());
                 }
             }
             other => {
@@ -1074,6 +1105,8 @@ fn runtime_source_read_roots(roots: &RuntimeRoots, key: &RuntimeConfigKey) -> Ve
             }
         }
     }
+    let mut seen = std::collections::HashSet::new();
+    allowed.retain(|root| seen.insert(normalized_path_key(root)));
     allowed
 }
 
@@ -1558,12 +1591,18 @@ fn parse_runtime_snapshot(
     bytes: &[u8],
     enabled_clients: &[String],
 ) -> Result<ClaudeLocalRuntimeSnapshot, &'static str> {
+    parse_runtime_snapshot_for_schema(bytes, enabled_clients, 1)
+}
+
+fn parse_runtime_snapshot_for_schema(
+    bytes: &[u8], enabled_clients: &[String], expected_schema: u32,
+) -> Result<ClaudeLocalRuntimeSnapshot, &'static str> {
     if bytes.len() > MAX_RUNTIME_LINE_BYTES {
         return Err("helper_output_too_large");
     }
     let wire: RuntimeWireSnapshot =
         serde_json::from_slice(bytes).map_err(|_| "helper_output_invalid")?;
-    if wire.schema != 1 || wire.client != "claude" {
+    if ![1, 2].contains(&expected_schema) || wire.schema != expected_schema || wire.client != "claude" {
         return Err("helper_output_invalid");
     }
     validate_rate(wire.live_output_tps)?;
@@ -2213,6 +2252,80 @@ mod tests {
     }
 
     #[test]
+    fn claude_auto_accounts_explicit_paths_aliases_and_enabled_clients_are_independent() {
+        let base = std::env::current_exe().unwrap().parent().unwrap().join("claude-root-selection-fixture");
+        let first = base.join("first").join("projects");
+        let second = base.join("second").join("projects");
+        let desktop = base.join("selected-desktop");
+        let automatic = vec![EnabledClaudePreference { client: "claudeCode".into(), path: String::new() },
+            EnabledClaudePreference { client: "claudeDesktop".into(), path: String::new() }];
+        let auto_roots = || vec![first.clone(), second.clone(), first.join(".")];
+        let (auto_key, auto) = runtime_configuration_with_claude_roots(&automatic, None, auto_roots).unwrap().unwrap();
+        assert!(auto.claude_root.is_none(), "multiple roots require v2");
+        assert_eq!(auto.claude_roots_by_client["claudeCode"].len(), 2);
+        assert_eq!(auto.claude_roots_by_client["claudeDesktop"].len(), 2);
+        assert_eq!(runtime_source_read_roots(&auto, &auto_key).len(), 2, "one allowlist entry per physical root");
+        let mixed = vec![automatic[0].clone(), EnabledClaudePreference { client: "claudeDesktop".into(), path: desktop.display().to_string() }];
+        let (mixed_key, selected) = runtime_configuration_with_claude_roots(&mixed, None, auto_roots).unwrap().unwrap();
+        assert_eq!(selected.claude_roots_by_client["claudeCode"], auto.claude_roots_by_client["claudeCode"]);
+        assert_eq!(selected.claude_roots_by_client["claudeDesktop"], vec![desktop.clone()]);
+        assert_eq!(mixed_key.claude_roots_by_client["claudeCode"], auto_key.claude_roots_by_client["claudeCode"]);
+        let explicit = vec![EnabledClaudePreference { client: "claudeCode".into(), path: first.display().to_string() }, mixed[1].clone()];
+        let (explicit_key, explicit_roots) = runtime_configuration_with_claude_roots(&explicit, None, || panic!("explicit selection must not read the account registry")).unwrap().unwrap();
+        assert_eq!(explicit_roots.claude_roots_by_client["claudeCode"], vec![first.clone()]);
+        assert!(explicit_roots.claude_root.is_none());
+        let mut swapped = explicit.clone();
+        swapped[0].path = desktop.display().to_string();
+        swapped[1].path = first.display().to_string();
+        let (swapped_key, swapped_roots) = runtime_configuration_with_claude_roots(&swapped, None, Vec::new).unwrap().unwrap();
+        let as_set = |roots: Vec<PathBuf>| roots.into_iter().collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(as_set(runtime_source_read_roots(&explicit_roots, &explicit_key)), as_set(runtime_source_read_roots(&swapped_roots, &swapped_key)));
+        assert_ne!(explicit_key, swapped_key, "same union with different ownership restarts the one worker");
+        let (disabled_key, disabled) = runtime_configuration_with_claude_roots(&explicit[..1], None, Vec::new).unwrap().unwrap();
+        assert_eq!(disabled_key.enabled_clients, vec!["claudeCode"]);
+        assert!(!disabled.claude_roots_by_client.contains_key("claudeDesktop"));
+        assert_eq!(disabled.claude_root, Some(first.clone()), "single-root old helper contract stays available");
+        let shared = vec![explicit[0].clone(), EnabledClaudePreference { client: "claudeDesktop".into(), path: first.join(".").display().to_string() }];
+        let (_, legacy) = runtime_configuration_with_claude_roots(&shared, None, Vec::new).unwrap().unwrap();
+        assert_eq!(legacy.claude_root, Some(first));
+    }
+
+    #[test]
+    fn automatic_claude_runtime_reuses_the_bounded_registered_projects_resolver() {
+        let directory = tempfile::tempdir().unwrap();
+        let home = directory.path();
+        let id = "a".repeat(32);
+        let accounts = home.join(".local/share/claude-adapter/accounts");
+        let projects = accounts.join(&id).join("code/projects");
+        std::fs::create_dir_all(&projects).unwrap();
+        std::fs::create_dir_all(accounts.join("b".repeat(32)).join("code/projects")).unwrap();
+        std::fs::create_dir_all(accounts.join(&id).join("desktop")).unwrap();
+        std::fs::write(accounts.join(&id).join("code/.credentials.json"), b"credential-canary").unwrap();
+        std::fs::write(accounts.join("registry.json"), serde_json::to_vec(&serde_json::json!({
+            "version": 1, "accounts": [{"id": "existing"}, {"id": id}]
+        })).unwrap()).unwrap();
+        let preferences = [EnabledClaudePreference { client: "claudeCode".into(), path: String::new() }];
+        let (_, roots) = runtime_configuration_with_claude_roots(&preferences, None,
+            || crate::core::multi_client_usage::claude_project_roots(home, None).0).unwrap().unwrap();
+        let expected = [home.join(".claude/projects"), home.join(".claude-official-guarded/projects"), projects]
+            .into_iter().map(|root| canonical_local_root(root).unwrap()).collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(roots.claude_roots_by_client["claudeCode"].iter().cloned().collect::<std::collections::BTreeSet<_>>(), expected);
+        assert!(!roots.claude_roots_by_client.contains_key("claudeDesktop"));
+    }
+
+    #[test]
+    fn helper_schema_v2_is_explicit_and_cannot_be_confused_with_legacy_schema_v1() {
+        let v1 = fresh_fixture();
+        let v2 = v1.replace("\"schema\":1", "\"schema\":2");
+        assert_ne!(v1, v2);
+        assert!(parse_runtime_snapshot_for_schema(v2.as_bytes(), &enabled(), 2).is_ok());
+        assert!(parse_runtime_snapshot(v2.as_bytes(), &enabled()).is_err());
+        assert!(parse_runtime_snapshot_for_schema(v1.as_bytes(), &enabled(), 2).is_err());
+        assert!(parse_runtime_snapshot(v1.as_bytes(), &enabled()).is_ok());
+        assert!(parse_runtime_snapshot_for_schema(v2.as_bytes(), &enabled(), 3).is_err());
+    }
+
+    #[test]
     fn rejects_network_or_relative_roots() {
         assert!(
             validate_local_absolute_path(std::path::Path::new("//server/share/claude")).is_err()
@@ -2252,6 +2365,7 @@ mod tests {
             state.failed_config = Some(RuntimeConfigKey {
                 default_antigravity_roots: false,
                 claude_root: Some("c:\\users\\example\\.claude\\projects".into()),
+                claude_roots_by_client: BTreeMap::new(),
                 codex_root: None,
                 other_roots: BTreeMap::new(),
                 enabled_clients: vec!["claudeCode".into()],
@@ -2273,6 +2387,7 @@ mod tests {
             state.failed_config = Some(RuntimeConfigKey {
                 default_antigravity_roots: false,
                 claude_root: Some("c:\\users\\example\\.claude\\projects".into()),
+                claude_roots_by_client: BTreeMap::new(),
                 codex_root: None,
                 other_roots: BTreeMap::new(),
                 enabled_clients: vec!["claudeCode".into()],
@@ -2326,7 +2441,10 @@ mod tests {
             .find(|preference| preference.client == "claudeCode")
             .unwrap();
         code.path = format!("{root}-changed");
-        assert!(runtime_configuration(&enabled_claude_preferences(&preferences), None).is_err());
+        let changed = runtime_configuration(&enabled_claude_preferences(&preferences), None).unwrap().unwrap().0;
+        assert_ne!(changed, first);
+        assert!(changed.claude_root.is_none());
+        assert_eq!(changed.claude_roots_by_client.len(), 2);
 
         for preference in &mut preferences {
             preference.enabled = false;
@@ -2399,6 +2517,12 @@ mod tests {
         );
         assert_ne!(combined_key.claude_root, combined_key.codex_root);
         assert_eq!(combined_roots.codex_root, Some(separate_codex_home));
+    }
+
+    #[test]
+    fn canonical_windows_root_keys_preserve_legacy_single_root_activity_identity() {
+        assert_eq!(normalized_path_key(Path::new(r"C:\Users\Example\.claude\projects")),
+            normalized_path_key(Path::new(r"\\?\C:\Users\Example\.claude\projects\")));
     }
 
     #[test]

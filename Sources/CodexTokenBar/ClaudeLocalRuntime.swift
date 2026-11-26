@@ -78,12 +78,16 @@ final class ClaudeLocalRuntime: ObservableObject {
     private var barSmoothers: [SourceKind: ActivityModelRateSmoother] = [:]
 
     private let store: SpeedStore
+    private let home: URL
+    private let environment: [String: String]
     private let monitor: any ClaudeLocalRuntimeMonitoring
     private var liveListener: UUID?
     private var eventListener: UUID?
     private var configuredSources: Set<SourceKind> = []
-    private var activitySourceIdentity: String?
-    var displaySourceIdentity: String { activitySourceIdentity ?? "unavailable" }
+    private var activitySourceIdentities: [SourceKind: String] = [:]
+    func displaySourceIdentity(client: String) -> String {
+        SourceKind(rawValue: client).flatMap { activitySourceIdentities[$0] } ?? "unavailable"
+    }
     private var monitoringEnabled = false
     private var configurationIssue: String?
     private var latestCoreSnapshot = SpeedSnapshot.empty
@@ -96,6 +100,8 @@ final class ClaudeLocalRuntime: ObservableObject {
     }
 
     init(
+        home: URL = FileManager.default.homeDirectoryForCurrentUser,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
         makeMonitor: @MainActor (SpeedStore, MonitorConfiguration) -> any ClaudeLocalRuntimeMonitoring = { store, configuration in
             LiveMonitor(store: store, configuration: configuration)
         }
@@ -103,6 +109,8 @@ final class ClaudeLocalRuntime: ObservableObject {
         let store = SpeedStore()
         let disabledConfiguration = MonitorConfiguration(enabledSources: [])
         self.store = store
+        self.home = home
+        self.environment = environment
         self.monitor = makeMonitor(store, disabledConfiguration)
         self.liveListener = store.addLiveListener { [weak self] snapshot in
             self?.receive(snapshot)
@@ -113,9 +121,9 @@ final class ClaudeLocalRuntime: ObservableObject {
     }
 
     /// Applies explicit Claude preferences. Monitoring is disabled until the caller enables it.
-    /// A single AgentSpeed monitor supports one Claude root, shared by Claude Code and Desktop.
+    /// One AgentSpeed monitor reads the selected local folders for both Claude clients.
     func configure(preferences: [MultiClientUsagePreference], monitoringEnabled: Bool = true) {
-        let plan = Self.configurationPlan(preferences: preferences)
+        let plan = Self.configurationPlan(preferences: preferences, home: home, environment: environment)
         self.monitoringEnabled = monitoringEnabled
         configuredSources = plan.enabledSources
         configurationIssue = plan.issue
@@ -134,11 +142,14 @@ final class ClaudeLocalRuntime: ObservableObject {
             latestCoreSnapshot = Self.startingSnapshot()
             responseRows.removeAll(keepingCapacity: true)
         }
-        if configurationChanged || activitySourceIdentity == nil {
-            activitySourceIdentity = ActivitySpeedSourceIdentity.root(plan.configuration.claudeRoot ?? LiveMonitor.defaultClaudeRoot)
-        }
-        for source in plan.enabledSources {
-            ActivitySpeedHistoryController.shared.selectSource(client: source.rawValue, identity: activitySourceIdentity)
+        activitySourceIdentities = Dictionary(uniqueKeysWithValues: plan.enabledSources.map { source in
+            let roots = plan.configuration.claudeRootsBySource[source] ?? []
+            let identities = roots.map(ActivitySpeedSourceIdentity.root).sorted()
+            let identity = identities.count == 1 ? identities[0] : "roots-" + SHA256.hash(data: Data(identities.joined(separator: "\n").utf8)).map { String(format: "%02x", $0) }.joined()
+            return (source, identity)
+        })
+        for source in [SourceKind.claudeCode, .claudeDesktop] {
+            ActivitySpeedHistoryController.shared.selectSource(client: source.rawValue, identity: activitySourceIdentities[source])
         }
         updateMonitorConfigurationIfNeeded(plan.configuration)
         if !monitor.isRunning {
@@ -280,7 +291,7 @@ final class ClaudeLocalRuntime: ObservableObject {
         )
     }
 
-    private static func configurationPlan(preferences: [MultiClientUsagePreference]) -> ConfigurationPlan {
+    private static func configurationPlan(preferences: [MultiClientUsagePreference], home: URL, environment: [String: String]) -> ConfigurationPlan {
         var preferenceBySource: [SourceKind: MultiClientUsagePreference] = [:]
         if let code = preferences.first(where: { $0.client == .claudeCode }) {
             preferenceBySource[.claudeCode] = code
@@ -292,24 +303,18 @@ final class ClaudeLocalRuntime: ObservableObject {
             preference.enabled ? source : nil
         })
 
-        let roots = enabledSources.compactMap { source -> URL? in
-            guard let preference = preferenceBySource[source] else { return nil }
-            let path = preference.path.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !path.isEmpty else { return LiveMonitor.defaultClaudeRoot.standardizedFileURL }
-            return URL(fileURLWithPath: (path as NSString).expandingTildeInPath).standardizedFileURL
-        }
-        let uniqueRoots = Set(roots.map(\.path))
-        let hasConflictingRoots = uniqueRoots.count > 1
-        let root = hasConflictingRoots ? nil : roots.first
-        let defaultRoot = LiveMonitor.defaultClaudeRoot.standardizedFileURL
-        let configuration = MonitorConfiguration(
-            enabledSources: hasConflictingRoots ? [] : enabledSources,
-            claudeRoot: root == defaultRoot ? nil : root
-        )
+        let needsAutomatic = enabledSources.contains { preferenceBySource[$0]?.path.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true }
+        let automatic = needsAutomatic ? MultiClientUsageDiscovery.claudeProjectRoots(home: home, environment: environment).paths : []
+        let rootsBySource = Dictionary(uniqueKeysWithValues: enabledSources.map { source in
+            let path = preferenceBySource[source]!.path.trimmingCharacters(in: .whitespacesAndNewlines)
+            let roots = path.isEmpty ? automatic : [URL(fileURLWithPath: (path as NSString).expandingTildeInPath)]
+            let paths = Set(roots.map { $0.standardizedFileURL.resolvingSymlinksInPath().path })
+            return (source, paths.sorted().map { URL(fileURLWithPath: $0, isDirectory: true) })
+        })
         return ConfigurationPlan(
-            configuration: configuration,
+            configuration: MonitorConfiguration(enabledSources: enabledSources, claudeRootsBySource: rootsBySource),
             enabledSources: enabledSources,
-            issue: hasConflictingRoots ? "Claude Code and Claude Desktop use different folders; one local monitor cannot read both." : nil
+            issue: nil
         )
     }
 
@@ -334,10 +339,10 @@ final class ClaudeLocalRuntime: ObservableObject {
             let rates = smoothed.keys.sorted().map { ModelRateContribution(model: $0, tokensPerSecond: smoothed[$0]!) }
             if barRates[source] != rates { barRates[source] = rates }
             ActivitySpeedHistoryController.shared.record(client: source.rawValue,
-                sourceIdentity: activitySourceIdentity ?? "legacy/unscoped",
+                sourceIdentity: activitySourceIdentities[source] ?? "legacy/unscoped",
                 rates: raw, at: snapshot.timestamp.timeIntervalSince1970, available: available, mode: .agentSpeed)
             ActivitySpeedHistoryController.shared.record(client: source.rawValue,
-                sourceIdentity: activitySourceIdentity ?? "legacy/unscoped", rates: rates,
+                sourceIdentity: activitySourceIdentities[source] ?? "legacy/unscoped", rates: rates,
                 at: snapshot.timestamp.timeIntervalSince1970, available: available, mode: .bar)
         }
         pruneRows(at: snapshot.timestamp)
@@ -379,6 +384,7 @@ final class ClaudeLocalRuntime: ObservableObject {
     }
 
     private func clearLiveState() {
+        activitySourceIdentities = [:]
         barSmoothers.removeAll()
         barRates = [:]
         ActivitySpeedHistoryController.shared.reset(client: "claudeCode")

@@ -2,6 +2,7 @@ import Foundation
 
 /// Local embedding API: read one conversation with the same parser used by the live monitor.
 /// No monitor, network client, history database, or source-file mutation is created.
+/// An empty conversation placeholder contributes no responses until the server initializes it.
 public enum AntigravityUsageRead {
     public struct Result: Sendable {
         public let responses: [ResponseRecord]

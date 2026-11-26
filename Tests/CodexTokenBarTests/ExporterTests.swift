@@ -144,6 +144,39 @@ final class ExporterTests: XCTestCase {
         XCTAssertNil(DashboardExportAlertPresentation(result: pngResult))
     }
 
+    func testSelectedClientProjectionIsThePayloadForCSVAndPNG() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let rows = UsageClient.allCases.enumerated().map { index, client in
+            ClientTrendBucket(client: client, startUnix: Int64(now.timeIntervalSince1970),
+                inputTokens: Int64((index + 1) * 100), outputTokens: 20,
+                cacheReadTokens: 10, cacheWriteTokens: 0, reasoningTokens: nil, requests: 1)
+        }
+        let all = Set(rows.map { $0.client.rawValue })
+        for scope in rows.map({ Set([$0.client.rawValue]) }) + [all, all.union(["codex"]), ["codex"]] {
+            let display = ClientDashboardProjection.snapshot(codex: .empty, rows: [],
+                trend: rows, daily: rows, allowed: scope, now: now)
+            var csv: String?
+            var imageTokens: Int?
+            let dependencies = ExporterDependencies(
+                selectDestination: { _ in .selected(URL(fileURLWithPath: "/unused/scoped-export")) },
+                writeCSV: { payload, _ in csv = payload },
+                renderPNG: { snapshot in
+                    imageTokens = snapshot.dailyUsage.reduce(0) { $0 + $1.tokens }
+                    return .success(Data([0x89]))
+                },
+                writePNG: { _, _ in }
+            )
+            assertSuccess(Exporter.exportCSV(snapshot: display, dependencies: dependencies))
+            assertSuccess(Exporter.exportPNG(snapshot: display, dependencies: dependencies))
+            let expected = display.dailyUsage.reduce(0) { $0 + $1.tokens }
+            let exported = csv?.split(separator: "\n").dropFirst().compactMap { line in
+                Int(line.split(separator: ",")[1])
+            }.reduce(0, +)
+            XCTAssertEqual(exported, expected, "\(scope)")
+            XCTAssertEqual(imageTokens, expected, "\(scope)")
+        }
+    }
+
     func testEveryFailureStageHasAConciseUserMessage() {
         let expectedMessages: [(DashboardExportFailureStage, String)] = [
             (.destination, "未能取得导出位置，请重新选择。"),

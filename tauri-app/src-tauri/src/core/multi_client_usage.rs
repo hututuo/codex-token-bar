@@ -69,6 +69,47 @@ fn effective_usage_query(select: &str) -> String {
     format!("{EFFECTIVE_USAGE_EVENTS_SQL}\n{select}")
 }
 
+/// Numeric aggregates share one response projection in their existing read
+/// snapshot. No persistent schema, payload, revision or checkpoint is changed.
+#[derive(Clone, Copy)]
+enum UsageProjection {
+    Canonical,
+    Staged,
+}
+
+impl UsageProjection {
+    fn query(self, select: &str) -> String {
+        match self {
+            Self::Canonical => effective_usage_query(select),
+            // Only internal, constant SQL is passed here. Qualify the TEMP
+            // table so neither a persistent namesake nor the CTE can shadow it.
+            Self::Staged => select.replace("effective_client_usage_events", "temp.ctb_aggregate_usage"),
+        }
+    }
+}
+
+fn with_staged_usage_projection<T>(
+    connection: &Connection,
+    read: impl FnOnce(UsageProjection) -> Result<T, String>,
+) -> Result<T, String> {
+    let create = format!(
+        "CREATE TEMP TABLE ctb_aggregate_usage AS {}",
+        effective_usage_query(
+            "SELECT client,model,timestamp,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens,cache_write_5m_tokens,cache_write_1h_tokens FROM effective_client_usage_events"
+        )
+    );
+    // A collision is an error, never permission to replace a caller's table.
+    connection.execute_batch(&create).map_err(|error| error.to_string())?;
+    let result = read(UsageProjection::Staged);
+    let cleanup = connection.execute_batch("DROP TABLE temp.ctb_aggregate_usage");
+    match (result, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(format!("Usage projection cleanup failed: {error}")),
+        (Err(error), Err(cleanup)) => Err(format!("{error}; usage projection cleanup failed: {cleanup}")),
+    }
+}
+
 #[derive(Default)]
 struct ClaudeLocalQuotaProbeCache {
     checked_at: Option<Instant>,
@@ -2015,7 +2056,7 @@ fn source_roots_with_status(client: &str, override_path: Option<&str>) -> (Vec<P
 }
 
 /// Read only the launcher's bounded ID registry, never account profiles or credentials.
-fn claude_project_roots(home: &Path, configured: Option<&Path>) -> (Vec<PathBuf>, bool) {
+pub(crate) fn claude_project_roots(home: &Path, configured: Option<&Path>) -> (Vec<PathBuf>, bool) {
     let mut roots = vec![configured.map(Path::to_path_buf).unwrap_or_else(|| home.join(".claude")).join("projects")];
     let accounts = home.join(".local/share/claude-adapter/accounts");
     let registry = accounts.join("registry.json");
@@ -3726,13 +3767,14 @@ fn event_payload_at(event: &UsageEvent, timestamp_ms: f64) -> rusqlite::Result<S
 
 fn upsert_event(transaction: &Transaction<'_>, event: &UsageEvent) -> rusqlite::Result<()> {
     let incoming_payload = event_payload(event)?;
-    let previous_payload: Option<String> = transaction
+    let previous_row: Option<(String, String, String)> = transaction
         .query_row(
-            "SELECT payload FROM client_usage_events WHERE client=?1 AND event_id=?2",
+            "SELECT payload,session_id,model FROM client_usage_events WHERE client=?1 AND event_id=?2",
             params![event.client, event.event_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?;
+    let previous_payload = previous_row.as_ref().map(|row| row.0.as_str());
     let mut projected = event.clone();
     let mut projected_timestamp_ms = projected.timestamp_ms as f64;
     let mut existing_ttl_pair = None;
@@ -3757,9 +3799,9 @@ fn upsert_event(transaction: &Transaction<'_>, event: &UsageEvent) -> rusqlite::
                 update_is_newer = event.timestamp_ms as f64 >= previous.timestamp;
                 projected.reasoning_tokens =
                     max_option(projected.reasoning_tokens, previous.reasoning_tokens);
-                if (previous.timestamp > projected_timestamp_ms
-                    || (previous.timestamp == projected_timestamp_ms && (event.client != "antigravity" || event.model == "unknown")))
-                    && previous.model != "unknown" {
+                // Same contract as Swift mergingUpdate: an unknown update cannot
+                // erase a known model, and timestamp ties accept known enrichment.
+                if !update_is_newer || event.model == "unknown" {
                     projected.model = previous.model;
                 }
                 projected_timestamp_ms = projected_timestamp_ms.max(previous.timestamp);
@@ -3780,9 +3822,14 @@ fn upsert_event(transaction: &Transaction<'_>, event: &UsageEvent) -> rusqlite::
         select_cache_write_ttl_pair(update_ttl_pair, update_is_newer, existing_ttl_pair),
     );
     let projected_payload = event_payload_at(&projected, projected_timestamp_ms)?;
-    if previous_payload.as_deref() == Some(projected_payload.as_str()) {
+    let payload_changed = previous_payload != Some(projected_payload.as_str());
+    if !payload_changed && previous_row.as_ref().is_some_and(|row| {
+        row.1 == projected.session_id && row.2 == projected.model
+    }) {
         return Ok(());
     }
+    // A legacy column-only repair also advances the revision. Readers in this
+    // and other processes use it to invalidate model/session and daily caches.
     transaction.execute(
         "INSERT INTO client_usage_revisions(client,event_id,captured_at,payload) VALUES(?1,?2,?3,?4)",
         params![
@@ -3802,8 +3849,8 @@ fn upsert_event(transaction: &Transaction<'_>, event: &UsageEvent) -> rusqlite::
         params![
             event.client,
             event.event_id,
-            event.session_id,
-            event.model,
+            projected.session_id,
+            projected.model,
             projected_timestamp_ms / 1_000.0,
             projected.input_tokens as i64,
             projected.output_tokens as i64,
@@ -4394,6 +4441,15 @@ fn read_summary_rows_range_with_prices(
     price_totals: Option<&HashMap<MultiClientPriceModelKey, MultiClientPriceTally>>,
     since_unix: Option<i64>, before_unix: Option<i64>,
 ) -> rusqlite::Result<Vec<MultiClientUsageSummary>> {
+    read_summary_rows_range_with_prices_in_projection(connection, price_totals, since_unix, before_unix, UsageProjection::Canonical)
+}
+
+fn read_summary_rows_range_with_prices_in_projection(
+    connection: &Connection,
+    price_totals: Option<&HashMap<MultiClientPriceModelKey, MultiClientPriceTally>>,
+    since_unix: Option<i64>, before_unix: Option<i64>,
+    projection: UsageProjection,
+) -> rusqlite::Result<Vec<MultiClientUsageSummary>> {
     let query = if since_unix.is_some() {
         "SELECT client, model, SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), \
          SUM(cache_write_tokens), SUM(reasoning_tokens), COUNT(*), MAX(timestamp), \
@@ -4407,7 +4463,7 @@ fn read_summary_rows_range_with_prices(
          SUM(cache_read_tokens IS NULL)=0 \
          FROM effective_client_usage_events GROUP BY client, model ORDER BY client, model"
     };
-    let mut statement = connection.prepare(&effective_usage_query(query))?;
+    let mut statement = connection.prepare(&projection.query(query))?;
     let read_row = |row: &rusqlite::Row<'_>| {
         let timestamp_seconds: Option<f64> = row.get(8)?;
         let client: String = row.get(0)?;
@@ -4462,10 +4518,17 @@ fn read_scoped_api_price_aggregates(
 fn read_range_api_price_aggregates(
     connection: &Connection, cutoff_unix: i64, before_unix: Option<i64>,
 ) -> Result<HashMap<MultiClientPriceModelKey, MultiClientPriceTally>, String> {
+    read_range_api_price_aggregates_in_projection(connection, cutoff_unix, before_unix, UsageProjection::Canonical)
+}
+
+fn read_range_api_price_aggregates_in_projection(
+    connection: &Connection, cutoff_unix: i64, before_unix: Option<i64>,
+    projection: UsageProjection,
+) -> Result<HashMap<MultiClientPriceModelKey, MultiClientPriceTally>, String> {
     let mut totals = HashMap::<MultiClientPriceModelKey, MultiClientPriceTally>::new();
     let mut statement = connection
         .prepare(
-            &effective_usage_query("SELECT client,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,timestamp,cache_write_5m_tokens,cache_write_1h_tokens \
+            &projection.query("SELECT client,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,timestamp,cache_write_5m_tokens,cache_write_1h_tokens \
              FROM effective_client_usage_events WHERE timestamp >= ?1 AND timestamp < ?2"),
         )
         .map_err(|error| error.to_string())?;
@@ -4520,6 +4583,7 @@ fn read_cached_scoped_summaries(
     revision: i64,
     cutoff_unix: i64,
     cache: &Mutex<MultiClientScopedSummaryCache>,
+    projection: UsageProjection,
 ) -> Result<
     (
         Vec<MultiClientUsageSummary>,
@@ -4539,9 +4603,9 @@ fn read_cached_scoped_summaries(
         return Ok((summaries, None));
     }
 
-    let price_totals = read_scoped_api_price_aggregates(connection, cutoff_unix)?;
+    let price_totals = read_range_api_price_aggregates_in_projection(connection, cutoff_unix, None, projection)?;
     let summaries =
-        read_summary_rows_since_with_prices(connection, Some(&price_totals), Some(cutoff_unix))
+        read_summary_rows_range_with_prices_in_projection(connection, Some(&price_totals), Some(cutoff_unix), None, projection)
             .map_err(|error| error.to_string())?;
     Ok((summaries.clone(), Some((key, summaries))))
 }
@@ -4550,6 +4614,24 @@ fn read_cached_api_price_aggregates(
     connection: &Connection,
     database_path: &Path,
     cache: &Mutex<MultiClientPriceCache>,
+) -> Result<
+    (
+        HashMap<MultiClientPriceModelKey, MultiClientPriceTally>,
+        Option<(
+            MultiClientPriceAggregateKey,
+            HashMap<MultiClientPriceModelKey, MultiClientPriceTally>,
+        )>,
+    ),
+    String,
+> {
+    read_cached_api_price_aggregates_in_projection(connection, database_path, cache, UsageProjection::Canonical)
+}
+
+fn read_cached_api_price_aggregates_in_projection(
+    connection: &Connection,
+    database_path: &Path,
+    cache: &Mutex<MultiClientPriceCache>,
+    projection: UsageProjection,
 ) -> Result<
     (
         HashMap<MultiClientPriceModelKey, MultiClientPriceTally>,
@@ -4578,7 +4660,7 @@ fn read_cached_api_price_aggregates(
     let mut totals = HashMap::<MultiClientPriceModelKey, MultiClientPriceTally>::new();
     let mut statement = connection
         .prepare(
-            &effective_usage_query("SELECT client,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,timestamp,cache_write_5m_tokens,cache_write_1h_tokens \
+            &projection.query("SELECT client,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,timestamp,cache_write_5m_tokens,cache_write_1h_tokens \
              FROM effective_client_usage_events"),
         )
         .map_err(|error| error.to_string())?;
@@ -4729,53 +4811,57 @@ fn read_cached_multi_client_aggregates_in_snapshot(
         ));
     }
 
-    let (price_totals, pending_price_cache) =
-        read_cached_api_price_aggregates(connection, database_path, price_cache)?;
-    let today_start =
-        crate::core::localtime::local_day_bounds(crate::core::localtime::local_date_at(now_unix))
-            .map_err(|error| error.to_string())?
-            .0;
-    let seven_day_start = now_unix
-        .div_euclid(300)
-        .saturating_mul(300)
-        .saturating_sub(7 * 24 * 60 * 60);
-    let scoped_cache = MULTI_CLIENT_SCOPED_SUMMARY_CACHE.get_or_init(Default::default);
-    let (today_summaries, today_cache) = read_cached_scoped_summaries(
-        connection,
-        database_path,
-        key.revision,
-        today_start,
-        scoped_cache,
-    )?;
-    let (seven_day_summaries, seven_day_cache) = read_cached_scoped_summaries(
-        connection,
-        database_path,
-        key.revision,
-        seven_day_start,
-        scoped_cache,
-    )?;
-    let mut pending_scoped_summary_caches = Vec::with_capacity(2);
-    pending_scoped_summary_caches.extend(today_cache);
-    pending_scoped_summary_caches.extend(seven_day_cache);
-    let arrays = MultiClientAggregateArrays {
-        summaries: read_summary_rows_with_prices(connection, Some(&price_totals))
-            .map_err(|error| error.to_string())?,
-        today_summaries,
-        seven_day_summaries,
-        trend_buckets: read_trend_buckets(connection, now_unix)
-            .map_err(|error| error.to_string())?,
-        daily_buckets: read_incremental_daily_buckets(connection, now_unix, &key, cache)?,
-    };
-    let updated_at = read_updated_at(connection).map_err(|error| error.to_string())?;
+    with_staged_usage_projection(connection, |projection| {
+        let (price_totals, pending_price_cache) =
+            read_cached_api_price_aggregates_in_projection(connection, database_path, price_cache, projection)?;
+        let today_start =
+            crate::core::localtime::local_day_bounds(crate::core::localtime::local_date_at(now_unix))
+                .map_err(|error| error.to_string())?
+                .0;
+        let seven_day_start = now_unix
+            .div_euclid(300)
+            .saturating_mul(300)
+            .saturating_sub(7 * 24 * 60 * 60);
+        let scoped_cache = MULTI_CLIENT_SCOPED_SUMMARY_CACHE.get_or_init(Default::default);
+        let (today_summaries, today_cache) = read_cached_scoped_summaries(
+            connection,
+            database_path,
+            key.revision,
+            today_start,
+            scoped_cache,
+            projection,
+        )?;
+        let (seven_day_summaries, seven_day_cache) = read_cached_scoped_summaries(
+            connection,
+            database_path,
+            key.revision,
+            seven_day_start,
+            scoped_cache,
+            projection,
+        )?;
+        let mut pending_scoped_summary_caches = Vec::with_capacity(2);
+        pending_scoped_summary_caches.extend(today_cache);
+        pending_scoped_summary_caches.extend(seven_day_cache);
+        let arrays = MultiClientAggregateArrays {
+            summaries: read_summary_rows_range_with_prices_in_projection(connection, Some(&price_totals), None, None, projection)
+                .map_err(|error| error.to_string())?,
+            today_summaries,
+            seven_day_summaries,
+            trend_buckets: read_trend_buckets_in_projection(connection, now_unix, projection)
+                .map_err(|error| error.to_string())?,
+            daily_buckets: read_incremental_daily_buckets(connection, now_unix, &key, cache, projection)?,
+        };
+        let updated_at = read_updated_at(connection).map_err(|error| error.to_string())?;
 
-    // The caller publishes these only after the read transaction commits.
-    let pending_aggregate_cache = Some((key, arrays.clone()));
-    Ok((
-        MultiClientAggregateRead { arrays, updated_at },
-        pending_price_cache,
-        pending_aggregate_cache,
-        pending_scoped_summary_caches,
-    ))
+        // The caller publishes these only after the read transaction commits.
+        let pending_aggregate_cache = Some((key, arrays.clone()));
+        Ok((
+            MultiClientAggregateRead { arrays, updated_at },
+            pending_price_cache,
+            pending_aggregate_cache,
+            pending_scoped_summary_caches,
+        ))
+    })
 }
 
 fn multi_client_aggregate_cache_key(
@@ -4802,13 +4888,21 @@ fn read_trend_buckets(
     connection: &Connection,
     now_unix: i64,
 ) -> rusqlite::Result<Vec<MultiClientUsageTrendBucket>> {
+    read_trend_buckets_in_projection(connection, now_unix, UsageProjection::Canonical)
+}
+
+fn read_trend_buckets_in_projection(
+    connection: &Connection,
+    now_unix: i64,
+    projection: UsageProjection,
+) -> rusqlite::Result<Vec<MultiClientUsageTrendBucket>> {
     const WINDOW_SECONDS: i64 = 30 * 24 * 60 * 60;
     let start_unix = now_unix.saturating_sub(WINDOW_SECONDS);
     // The production caller holds its existing aggregate read transaction.
     // Use the summary's per-request price engine, never price grouped tokens.
     let mut prices = HashMap::<(String, String, i64), MultiClientPriceTally>::new();
     let mut price_query = connection.prepare(
-        &effective_usage_query("SELECT client,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,timestamp,cache_write_5m_tokens,cache_write_1h_tokens \
+        &projection.query("SELECT client,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,timestamp,cache_write_5m_tokens,cache_write_1h_tokens \
          FROM effective_client_usage_events WHERE client <> 'codex' AND timestamp >= ?1 AND timestamp <= ?2"),
     )?;
     let mut priced_rows = price_query.query(params![start_unix, now_unix])?;
@@ -4822,7 +4916,7 @@ fn read_trend_buckets(
                 row.get::<_, Option<i64>>(7)?.zip(row.get::<_, Option<i64>>(8)?), Some(timestamp)));
     }
     let mut statement = connection.prepare(
-        &effective_usage_query("SELECT client, CAST(timestamp / 300 AS INTEGER) * 300 AS start_unix, \
+        &projection.query("SELECT client, CAST(timestamp / 300 AS INTEGER) * 300 AS start_unix, \
          SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), \
          SUM(cache_write_tokens), SUM(reasoning_tokens), COUNT(*), model, \
          COUNT(cache_read_tokens) = COUNT(*), COUNT(cache_write_tokens) = COUNT(*) \
@@ -4868,14 +4962,14 @@ fn read_trend_buckets(
 /// committed snapshot. A moved/enriched event invalidates its prior dates too.
 fn read_incremental_daily_buckets(
     connection: &Connection, now: i64, key: &MultiClientAggregateCacheKey,
-    cache: &Mutex<MultiClientAggregateCache>,
+    cache: &Mutex<MultiClientAggregateCache>, projection: UsageProjection,
 ) -> Result<Vec<MultiClientUsageTrendBucket>, String> {
     let previous = cache.lock().ok().and_then(|cache| cache.entry.clone());
     let Some((old, arrays)) = previous.filter(|(old, _)| old.database_path == key.database_path
         && old.revision <= key.revision && old.minute <= key.minute
         && old.local_offset_seconds == key.local_offset_seconds
         && old.timezone_identity == key.timezone_identity) else {
-        return read_daily_buckets(connection, now);
+        return read_daily_buckets_since_in_projection(connection, now, None, projection);
     };
     let first = crate::core::localtime::local_day_bounds(
         key.local_day.checked_sub(CalendarDuration::days(364)).ok_or("Invalid daily range")?)?.0;
@@ -4898,7 +4992,7 @@ fn read_incremental_daily_buckets(
     }
     let mut rows: Vec<_> = arrays.daily_buckets.into_iter()
         .filter(|row| row.start_unix >= first && row.start_unix < since).collect();
-    rows.extend(read_daily_buckets_since(connection, now, Some(since))?);
+    rows.extend(read_daily_buckets_since_in_projection(connection, now, Some(since), projection)?);
     Ok(rows)
 }
 
@@ -4913,6 +5007,13 @@ fn read_daily_buckets(
 fn read_daily_buckets_since(
     connection: &Connection, now_unix: i64, since: Option<i64>,
 ) -> Result<Vec<MultiClientUsageTrendBucket>, String> {
+    read_daily_buckets_since_in_projection(connection, now_unix, since, UsageProjection::Canonical)
+}
+
+fn read_daily_buckets_since_in_projection(
+    connection: &Connection, now_unix: i64, since: Option<i64>,
+    projection: UsageProjection,
+) -> Result<Vec<MultiClientUsageTrendBucket>, String> {
     let today = crate::core::localtime::local_date_at(now_unix);
     let first_day = today
         .checked_sub(CalendarDuration::days(364))
@@ -4920,7 +5021,7 @@ fn read_daily_buckets_since(
     let start_unix = crate::core::localtime::local_day_bounds(first_day)?.0.max(since.unwrap_or(i64::MIN));
     let mut statement = connection
         .prepare(
-            &effective_usage_query("SELECT client,timestamp,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens,model,cache_write_5m_tokens,cache_write_1h_tokens \
+            &projection.query("SELECT client,timestamp,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens,model,cache_write_5m_tokens,cache_write_1h_tokens \
              FROM effective_client_usage_events WHERE client <> 'codex' AND timestamp >= ?1 AND timestamp <= ?2"),
         )
         .map_err(|error| error.to_string())?;
@@ -5934,6 +6035,182 @@ mod tests {
             })
             .unwrap();
         assert_eq!(revisions, 0);
+    }
+
+    #[test]
+    fn merged_payload_columns_preserve_owner_model_and_original_revisions() {
+        let connection = Connection::open_in_memory().unwrap();
+        ensure_schema(&connection, Path::new(":memory:")).unwrap();
+        let mut original = normalized_event("antigravity", "owner-A", Some("response"), None,
+            Some("known-model"), Some(2000), 100, 10, Some(0), Some(0), None).unwrap();
+        // Antigravity identities can be observed under different conversation copies.
+        original.event_id = "response-K".into();
+        let transaction = connection.unchecked_transaction().unwrap();
+        upsert_event(&transaction, &original).unwrap();
+        let mut incoming = original.clone();
+        incoming.session_id = "copy-B".into();
+        incoming.model = "unknown".into();
+        incoming.timestamp_ms = 1000;
+        incoming.output_tokens = 20;
+        upsert_event(&transaction, &incoming).unwrap();
+        transaction.commit().unwrap();
+        let (session, model, payload): (String, String, String) = connection.query_row(
+            "SELECT session_id,model,payload FROM client_usage_events", [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+        let projected: ClientUsageEventPayload = serde_json::from_str(&payload).unwrap();
+        assert_eq!((&session, &model), (&projected.session_id, &projected.model));
+        assert_eq!(session, "owner-A");
+        assert_eq!(model, "known-model");
+        assert_eq!(projected.timestamp, 2000.0);
+        assert_eq!(projected.output_tokens, 20);
+        let incoming_revision: String = connection.query_row(
+            "SELECT payload FROM client_usage_revisions ORDER BY revision DESC LIMIT 1", [], |row| row.get(0)).unwrap();
+        assert_eq!(incoming_revision, event_payload(&incoming).unwrap());
+    }
+
+    #[test]
+    fn merged_model_matches_swift_unknown_and_equal_timestamp_contract() {
+        for (old_model, timestamp, new_model, expected) in [
+            ("known", 3000, "unknown", "known"),
+            ("known", 2000, "enriched", "enriched"),
+            ("unknown", 1000, "older-known", "unknown"),
+        ] {
+            let connection = Connection::open_in_memory().unwrap();
+            ensure_schema(&connection, Path::new(":memory:")).unwrap();
+            let original = normalized_event("claudeCode", "s", Some("r"), None,
+                Some(old_model), Some(2000), 100, 10, None, None, None).unwrap();
+            let mut incoming = original.clone();
+            incoming.timestamp_ms = timestamp;
+            incoming.model = new_model.into();
+            incoming.output_tokens = 20;
+            let transaction = connection.unchecked_transaction().unwrap();
+            upsert_event(&transaction, &original).unwrap();
+            upsert_event(&transaction, &incoming).unwrap();
+            transaction.commit().unwrap();
+            let (model, payload): (String, String) = connection.query_row(
+                "SELECT model,payload FROM client_usage_events", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+            let projected: ClientUsageEventPayload = serde_json::from_str(&payload).unwrap();
+            assert_eq!(model, expected);
+            assert_eq!(model, projected.model);
+        }
+    }
+
+    #[test]
+    fn column_only_legacy_repair_advances_cache_revision_once() {
+        let connection = Connection::open_in_memory().unwrap();
+        ensure_schema(&connection, Path::new(":memory:")).unwrap();
+        let event = normalized_event("antigravity", "owner-A", Some("r"), None,
+            Some("known-model"), Some(2000), 100, 20, Some(0), Some(0), None).unwrap();
+        let transaction = connection.unchecked_transaction().unwrap();
+        upsert_event(&transaction, &event).unwrap();
+        transaction.commit().unwrap();
+        connection.execute("UPDATE client_usage_events SET model='unknown',session_id='copy-B'", []).unwrap();
+        let before = multi_client_aggregate_cache_key(&connection, Path::new(":memory:"), 3).unwrap();
+        for expected_revision in [before.revision + 1, before.revision + 1] {
+            let transaction = connection.unchecked_transaction().unwrap();
+            upsert_event(&transaction, &event).unwrap();
+            transaction.commit().unwrap();
+            assert_eq!(multi_client_aggregate_cache_key(&connection, Path::new(":memory:"), 3).unwrap().revision, expected_revision);
+        }
+        let stored: (String, String) = connection.query_row(
+            "SELECT session_id,model FROM client_usage_events", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        assert_eq!(stored, ("owner-A".into(), "known-model".into()));
+    }
+
+    fn projection_bundle(connection: &Connection, now: i64, projection: UsageProjection) -> serde_json::Value {
+        let prices = Mutex::new(MultiClientPriceCache::default());
+        let (totals, _) = read_cached_api_price_aggregates_in_projection(connection, Path::new(":memory:"), &prices, projection).unwrap();
+        let scoped = read_range_api_price_aggregates_in_projection(connection, now - 300, Some(now + 1), projection).unwrap();
+        serde_json::json!({
+            "all": read_summary_rows_range_with_prices_in_projection(connection, Some(&totals), None, None, projection).unwrap(),
+            "scoped": read_summary_rows_range_with_prices_in_projection(connection, Some(&scoped), Some(now - 300), Some(now + 1), projection).unwrap(),
+            "trend": read_trend_buckets_in_projection(connection, now, projection).unwrap(),
+            "daily": read_daily_buckets_since_in_projection(connection, now, None, projection).unwrap(),
+        })
+    }
+
+    #[test]
+    fn staged_projection_matches_canonical_after_response_merge_and_before_time_filter() {
+        let connection = Connection::open_in_memory().unwrap();
+        ensure_schema(&connection, Path::new(":memory:")).unwrap();
+        let now = 1_800_000_600;
+        let transaction = connection.unchecked_transaction().unwrap();
+        for (client, session, model, delta, output, pair) in [
+            ("claudeCode", "a", "claude-opus-5", -600, 100, (20, 80)),
+            ("claudeCode", "b", "claude-opus-5", -60, 20, (80, 20)),
+            ("claudeCode", "c", "claude-sonnet-5", -60, 30, (40, 60)),
+            ("claudeDesktop", "a", "claude-opus-5", -30, 40, (60, 40)),
+            ("opencode", "a", "unknown", 1, 50, (10, 90)),
+        ] {
+            let mut event = normalized_event(client, session, Some("same-response"), None,
+                Some(model), Some((now + delta) * 1000), 1000, output, Some(100), Some(100), Some(0)).unwrap();
+            event.cache_write_5m_tokens = Some(pair.0);
+            event.cache_write_1h_tokens = Some(pair.1);
+            upsert_event(&transaction, &event).unwrap();
+        }
+        transaction.commit().unwrap();
+        let canonical = projection_bundle(&connection, now, UsageProjection::Canonical);
+        let staged = with_staged_usage_projection(&connection, |projection| Ok(projection_bundle(&connection, now, projection))).unwrap();
+        assert_eq!(canonical, staged);
+        assert_eq!(canonical["all"].as_array().unwrap().iter().map(|row| row["requests"].as_u64().unwrap()).sum::<u64>(), 4);
+        assert_eq!(connection.query_row("SELECT COUNT(*) FROM sqlite_temp_master WHERE name='ctb_aggregate_usage'", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    }
+
+    #[test]
+    fn staged_readonly_main_keeps_wal_snapshot_and_leaves_schema_unchanged() {
+        let temporary = TempDir::new("staged-readonly-wal");
+        let database = temporary.path().join("ledger.sqlite");
+        let writer = open_database(&database).unwrap();
+        ensure_schema(&writer, &database).unwrap();
+        writer.pragma_update(None, "journal_mode", "WAL").unwrap();
+        insert_model_summary_event(&writer, "opencode", "first", "unknown", 1_800_000_500);
+        let reader = open_read_only(&database).unwrap();
+        let version_before = read_schema_version(&reader).unwrap();
+        let schema_before: String = reader.query_row(
+            "SELECT group_concat(sql,';') FROM (SELECT sql FROM sqlite_master ORDER BY name)", [], |row| row.get(0)).unwrap();
+        let snapshot = reader.unchecked_transaction().unwrap();
+        let before = multi_client_aggregate_cache_key(&snapshot, &database, 1_800_000_600).unwrap();
+        with_staged_usage_projection(&snapshot, |projection| {
+            insert_model_summary_event(&writer, "opencode", "second", "unknown", 1_800_000_550);
+            let rows = read_summary_rows_range_with_prices_in_projection(&snapshot, None, None, None, projection).unwrap();
+            assert_eq!(rows.iter().map(|row| row.requests).sum::<u64>(), 1);
+            assert_eq!(multi_client_aggregate_cache_key(&snapshot, &database, 1_800_000_600).unwrap().revision, before.revision);
+            Ok(())
+        }).unwrap();
+        snapshot.commit().unwrap();
+        assert_eq!(read_summary_rows(&reader).unwrap().iter().map(|row| row.requests).sum::<u64>(), 2);
+        assert_eq!(read_schema_version(&reader).unwrap(), version_before);
+        assert_eq!(reader.query_row("SELECT group_concat(sql,';') FROM (SELECT sql FROM sqlite_master ORDER BY name)", [], |row| row.get::<_, String>(0)).unwrap(), schema_before);
+        assert!(reader.execute("DELETE FROM client_usage_events", []).is_err());
+        reader.pragma_update(None, "query_only", true).unwrap();
+        assert!(with_staged_usage_projection(&reader, |_| Ok(())).is_err());
+        assert_eq!(reader.query_row("SELECT COUNT(*) FROM sqlite_temp_master WHERE name='ctb_aggregate_usage'", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    }
+
+    #[test]
+    fn staged_projection_cleans_errors_and_preserves_caller_table_on_collision() {
+        let connection = Connection::open_in_memory().unwrap();
+        ensure_schema(&connection, Path::new(":memory:")).unwrap();
+        let failed: Result<(), String> = with_staged_usage_projection(&connection, |_| Err("injected read failure".into()));
+        assert_eq!(failed.unwrap_err(), "injected read failure");
+        connection.execute_batch("CREATE TEMP TABLE ctb_aggregate_usage(marker TEXT); INSERT INTO ctb_aggregate_usage VALUES('caller')").unwrap();
+        let collision = with_staged_usage_projection(&connection, |_| Ok(()));
+        assert!(collision.is_err());
+        assert_eq!(connection.query_row("SELECT marker FROM temp.ctb_aggregate_usage", [], |row| row.get::<_, String>(0)).unwrap(), "caller");
+    }
+
+    #[test]
+    fn aggregate_cache_hit_does_not_create_or_touch_projection() {
+        let connection = Connection::open_in_memory().unwrap();
+        ensure_schema(&connection, Path::new(":memory:")).unwrap();
+        let cache = Mutex::new(MultiClientAggregateCache::default());
+        let path = Path::new("aggregate-no-stage-on-hit");
+        let first = read_cached_multi_client_aggregates(&connection, path, 1_800_000_600, &cache).unwrap();
+        connection.execute_batch("CREATE TEMP TABLE ctb_aggregate_usage(marker TEXT); INSERT INTO ctb_aggregate_usage VALUES('caller')").unwrap();
+        let second = read_cached_multi_client_aggregates(&connection, path, 1_800_000_600, &cache).unwrap();
+        assert_eq!(first.arrays.summaries, second.arrays.summaries);
+        assert_eq!(cache.lock().unwrap().hits, 1);
+        assert_eq!(connection.query_row("SELECT marker FROM temp.ctb_aggregate_usage", [], |row| row.get::<_, String>(0)).unwrap(), "caller");
     }
 
     #[test]

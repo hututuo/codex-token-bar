@@ -123,22 +123,8 @@ final class MultiClientUsageLedger: @unchecked Sendable {
         // A newer client may own this file; refusing it must be read-only.
         let existing = FileManager.default.fileExists(atPath: url.path)
         let probe = SQLiteDatabaseDriver(url: url, readOnly: existing || readOnly, createsFileIfMissing: !existing && !readOnly)
-        let version = try probe.readRows("PRAGMA user_version") { $0.int(0) ?? 0 }.first ?? 0
-        guard version <= Self.schemaVersion else { throw LedgerError.newerSchema(version) }
-        guard version >= 0 else { throw LedgerError.incompatibleSchema }
-        if version == Self.schemaVersion {
-            let required: [String: Set<String>] = [
-                "client_usage_events": ["client", "event_id", "session_id", "model", "timestamp", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "payload"],
-                "client_usage_revisions": ["revision", "client", "event_id", "captured_at", "payload"],
-                "client_file_checkpoints": ["client", "source_key", "offset", "size", "modified", "identity"]
-            ]
-            for (table, fields) in required {
-                let actual = try probe.readRows("PRAGMA table_info(\(table))") { $0.text(1) ?? "" }
-                guard fields.isSubset(of: Set(actual)) else { throw LedgerError.incompatibleSchema }
-            }
-        }
+        let version = try Self.validateSchema(in: probe, requireCurrentVersion: readOnly)
         if readOnly {
-            guard version == Self.schemaVersion else { throw LedgerError.incompatibleSchema }
             database = probe
             return
         }
@@ -173,6 +159,27 @@ final class MultiClientUsageLedger: @unchecked Sendable {
             }
         }
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
+
+    private static func validateSchema(in database: SQLiteDatabaseDriver, requireCurrentVersion: Bool) throws -> Int {
+        let version = try database.readRows("PRAGMA user_version") { $0.int(0) ?? 0 }.first ?? 0
+        guard version <= schemaVersion else { throw LedgerError.newerSchema(version) }
+        guard version >= 0 else { throw LedgerError.incompatibleSchema }
+        if version == schemaVersion {
+            let required: [String: Set<String>] = [
+                "client_usage_events": ["client", "event_id", "session_id", "model", "timestamp", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "payload"],
+                "client_usage_revisions": ["revision", "client", "event_id", "captured_at", "payload"],
+                "client_file_checkpoints": ["client", "source_key", "offset", "size", "modified", "identity"]
+            ]
+            for (table, fields) in required {
+                let actual = try database.readRows("PRAGMA table_info(\(table))") { $0.text(1) ?? "" }
+                guard fields.isSubset(of: Set(actual)) else { throw LedgerError.incompatibleSchema }
+            }
+        }
+        if requireCurrentVersion {
+            guard version == schemaVersion else { throw LedgerError.incompatibleSchema }
+        }
+        return version
     }
 
     enum LedgerError: LocalizedError {
@@ -287,6 +294,7 @@ final class MultiClientUsageLedger: @unchecked Sendable {
     ) throws -> ClientCacheRankingProjection {
         guard FileManager.default.fileExists(atPath: url.path) else { return .empty }
         let database = SQLiteDatabaseDriver(url: url, readOnly: true, createsFileIfMissing: false, busyTimeoutMilliseconds: 500)
+        _ = try validateSchema(in: database, requireCurrentVersion: true)
         return try cacheRankingProjection(
             in: database,
             clients: clients,

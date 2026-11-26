@@ -57,12 +57,13 @@ internal static class Families
     };
 
     /// <param name="root">The root the file was found in (omp and WorkBuddy decide sub-agents by the path below it).</param>
-    public static TranscriptParser CreateParser(RootFamily family, string path, IDeduper deduper, string root = "") => family switch
+    public static TranscriptParser CreateParser(RootFamily family, string path, IDeduper deduper, string root = "",
+        IReadOnlySet<SourceKind>? selectedSources = null) => family switch
     {
         RootFamily.Codex => new CodexParser(path, deduper),
         RootFamily.DeepSeek => new DshParser(path, deduper),
         RootFamily.Gemini => new GeminiParser(path, deduper),
-        RootFamily.Claude => new ClaudeParser(path, deduper),
+        RootFamily.Claude => new ClaudeParser(path, deduper, selectedSources),
         RootFamily.Omp => new OmpParser(path, deduper, root),
         RootFamily.Antigravity => new AntigravityParser(path, deduper),
         RootFamily.WorkBuddy => new WorkBuddyParser(path, deduper, SourceKind.WorkBuddy, root),
@@ -134,6 +135,11 @@ internal sealed class SourceRoot(RootFamily family, string path, bool enabled)
 
     public bool Enabled { get; } = enabled;
 
+    /// <summary>Local selection ownership, independent of the transcript's parsed client.</summary>
+    public IReadOnlySet<SourceKind>? SelectedSources { get; init; }
+
+    public bool Selects(SourceKind source) => SelectedSources is null || SelectedSources.Contains(source);
+
     public bool Available { get; set; }
 
     public bool Seeded { get; set; }
@@ -142,12 +148,19 @@ internal sealed class SourceRoot(RootFamily family, string path, bool enabled)
 /// <summary>A discovered transcript: its tailer, its parser and what was last observed on disk.</summary>
 internal sealed class TrackedFile
 {
-    public TrackedFile(SourceRoot root, string path, IDeduper deduper, IPositionedReadBackend? readBackend = null)
+    public TrackedFile(SourceRoot root, string path, IDeduper deduper, IPositionedReadBackend? readBackend = null,
+        IReadOnlySet<SourceKind>? selectedSources = null)
     {
         Root = root;
+        SelectedSources = selectedSources;
         Tailer = Families.CreateTailer(root.Family, path, readBackend);
-        Parser = Families.CreateParser(root.Family, path, deduper, root.Path);
+        Parser = Families.CreateParser(root.Family, path, deduper, root.Path, selectedSources);
     }
+
+    /// <summary>All matching local selections, including overlapping folders.</summary>
+    public IReadOnlySet<SourceKind>? SelectedSources { get; }
+
+    public bool Selects(SourceKind source) => SelectedSources is null || SelectedSources.Contains(source);
 
     public SourceRoot Root { get; }
 

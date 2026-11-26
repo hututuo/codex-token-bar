@@ -252,7 +252,8 @@ public sealed record MonitorConfiguration(
     string? WorkBuddyAiRoot = null,
     string? ZCodeRoot = null,
     string? KimiRoot = null,
-    string? GrokBuildRoot = null)
+    string? GrokBuildRoot = null,
+    IReadOnlyDictionary<SourceKind, IReadOnlyList<string>>? ClaudeRootsBySource = null)
 {
     public static MonitorConfiguration Default { get; } =
         new(new HashSet<SourceKind>(Enum.GetValues<SourceKind>()));
@@ -262,6 +263,7 @@ public sealed record MonitorConfiguration(
         && EnabledSources.SetEquals(other.EnabledSources)
         && CodexRoot == other.CodexRoot
         && ClaudeRoot == other.ClaudeRoot
+        && ClaudeSelectionsEqual(ClaudeRootsBySource, other.ClaudeRootsBySource)
         && DshRoot == other.DshRoot
         && OpenCodeRoot == other.OpenCodeRoot
         && GeminiRoot == other.GeminiRoot
@@ -272,6 +274,12 @@ public sealed record MonitorConfiguration(
         && ZCodeRoot == other.ZCodeRoot
         && KimiRoot == other.KimiRoot
         && GrokBuildRoot == other.GrokBuildRoot;
+
+    private static bool ClaudeSelectionsEqual(
+        IReadOnlyDictionary<SourceKind, IReadOnlyList<string>>? left,
+        IReadOnlyDictionary<SourceKind, IReadOnlyList<string>>? right) =>
+        ReferenceEquals(left, right) || (left is not null && right is not null && left.Count == right.Count
+            && left.All(pair => right.TryGetValue(pair.Key, out var roots) && pair.Value.SequenceEqual(roots)));
 
     public override int GetHashCode() => HashCode.Combine(
         HashCode.Combine(EnabledSources.Count, CodexRoot, ClaudeRoot, DshRoot, OpenCodeRoot, GeminiRoot, OmpRoot, AntigravityRoot),

@@ -8,6 +8,7 @@ The project targets .NET 10 because the referenced AgentSpeed.Core project curre
 
 - `ClaudeLocalReader.exe` or `--once`: write one compact runtime JSON snapshot to stdout.
 - `--watch`: write the latest snapshot at most once per second. When stdin is redirected, EOF requests shutdown; Ctrl+C also stops it.
+- `--claude-roots-v2 <json>`: versioned local configuration `{ "version": 2, "roots": { "claudeCode": ["<projects-path>"], "claudeDesktop": ["<projects-path>"] } }`. Select exactly the enabled Claude clients, with 1–17 local projects folders per client. Each client reads only transcripts classified for that client in its selected folders. Shared folders are read once by one monitor. This cannot be combined with `--root`; source paths stay local.
 - `--root <local-path>`: use a local Claude projects directory. UNC paths and mapped network drives are rejected; reparse points and offline/cloud-recall files are not read.
 - `--codex-root <local-path>`: use a local Codex sessions directory. The app passes the selected Codex Home's `sessions` directory; UNC paths and mapped network drives are rejected.
 - `--source codex`, `--source claudeCode`, and/or `--source claudeDesktop`: monitor only the selected local client(s). Omitting all `--source` options keeps the standalone helper's default of both Claude sources. The app always passes explicit source selections.
@@ -17,6 +18,8 @@ The project targets .NET 10 because the referenced AgentSpeed.Core project curre
 - `--self-test`: validate cache filtering, normalization, bounds, and runtime redaction without opening Claude files or writing the cache.
 
 ## Runtime snapshot
+
+The original `--root`/default invocation emits schema version 1. The explicit `--claude-roots-v2` invocation emits schema version 2 with the same safe snapshot fields and the additional guarantee that per-client root ownership was enforced. A v2 caller must reject a schema-1 response; an older helper rejects the new argument rather than silently using a shared root.
 
 Schema version 1 uses camelCase and retains the existing top-level `client: "claude"` protocol ID. It contains per-source `sourceAvailable`, live totals scoped to selected sources, per-source `modelRates` (missing models are retained as `unknown`), `mainAgents`, `subagents`, and `latestResponse`. `responseEvents` contains at most 32 response-completion records with numeric usage and timing only. Agent and event IDs are per-process salted HMACs; transcript paths, project names, cwd, assistant text, and full prompts are not emitted. Optional per-agent `title` is a bounded local display label (explicit name/title metadata, or the first eligible user line, at most 120 Unicode characters). It travels only over this local IPC channel for task details; it never enters leaderboard/report payloads. `displayStopped` carries the local stop guard so Bar smoothing cannot retain a cancelled agent. Older helpers without these two additive fields remain accepted.
 

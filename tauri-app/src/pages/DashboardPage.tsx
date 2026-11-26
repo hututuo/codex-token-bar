@@ -341,9 +341,9 @@ export function DashboardPage({
           onCodexHomeReset={onCodexHomeReset}
           onCustomAccountDisplayNameChange={onCustomAccountDisplayNameChange}
           onCheckForUpdate={onCheckForUpdate}
-          onExportCsv={() => downloadDashboardCsv(dashboard)}
+          onExportCsv={() => downloadDashboardCsv(displayDashboard)}
           onExportPng={() => {
-            void downloadDashboardPng(dashboard);
+            void downloadDashboardPng(displayDashboard);
           }}
           onOpenProviderRepair={onProviderRepairOpen}
           onOpenSessionManagement={openSessionManagement}

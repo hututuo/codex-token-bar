@@ -173,6 +173,32 @@ final class BodySpeedHistoryTests: XCTestCase {
         XCTAssertEqual(point.sampleCount, 1)
         XCTAssertEqual(point.tokensPerSecond, 50, accuracy: 0.0001)
     }
+    func testWriterColdLoadAndExplicitReloadPreserveDatabaseOrderAndExternalUpdates() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("history.sqlite")
+        let now = sample().endedAt
+        var first = sample(), second = sample(), expired = sample()
+        first.id = "first"; first.startedAt -= 10; first.endedAt -= 10
+        second.id = "second"
+        expired.id = "expired"; expired.startedAt -= 20 * 86_400; expired.endedAt -= 20 * 86_400
+        let store = try BodySpeedTrendStore(url: url)
+        try store.ingest(samples: [second, expired, first], now: now, retentionDays: 30)
+        let writer = BodySpeedSampleWriter()
+        let cold = try await writer.load(from: url, now: now, retentionDays: 30)
+        XCTAssertEqual(cold.map(\.id), ["expired", "first", "second"])
+        var external = second
+        external.id = "external"; external.startedAt -= 5; external.endedAt -= 5
+        try store.ingest(samples: [external], now: now, retentionDays: 30)
+        let warm = try await writer.load(from: url, now: now, retentionDays: 15)
+        XCTAssertEqual(warm.map(\.id), ["first", "external", "second"])
+        let failure = await writer.persist(warm, to: url, ticket: 1, now: now, retentionDays: 15)
+        XCTAssertNil(failure)
+        XCTAssertEqual(try store.loadSamples(now: now, retentionDays: 30).map(\.id), warm.map(\.id))
+        XCTAssertEqual(try store.retentionDays(), 15)
+    }
+
     func testFutureBodyRemainsRetryableUntilItCanBePersisted() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

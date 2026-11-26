@@ -19,7 +19,8 @@ internal sealed record SourceLocations(
     string WorkBuddyAiRoot = "",
     string ZCodeRoot = "",
     string KimiRoot = "",
-    string GrokBuildRoot = "")
+    string GrokBuildRoot = "",
+    IReadOnlyDictionary<SourceKind, IReadOnlyList<string>>? ClaudeRootsBySource = null)
 {
     public static SourceLocations Resolve(MonitorConfiguration configuration) => new(
         Normalize(configuration.CodexRoot ?? LiveMonitor.DefaultCodexRoot),
@@ -34,7 +35,20 @@ internal sealed record SourceLocations(
         WorkBuddyAiRoot: WorkBuddyRootOf(configuration.WorkBuddyAiRoot ?? LiveMonitor.DefaultWorkBuddyAiFolder),
         ZCodeRoot: Normalize(configuration.ZCodeRoot ?? LiveMonitor.DefaultZCodeRoot),
         KimiRoot: Normalize(Harnesses.HarnessPaths.SessionsOf(configuration.KimiRoot ?? LiveMonitor.DefaultKimiRoot)),
-        GrokBuildRoot: Normalize(Harnesses.HarnessPaths.SessionsOf(configuration.GrokBuildRoot ?? LiveMonitor.DefaultGrokBuildRoot)));
+        GrokBuildRoot: Normalize(Harnesses.HarnessPaths.SessionsOf(configuration.GrokBuildRoot ?? LiveMonitor.DefaultGrokBuildRoot)),
+        ClaudeRootsBySource: ResolveClaudeRoots(configuration));
+
+    private static IReadOnlyDictionary<SourceKind, IReadOnlyList<string>> ResolveClaudeRoots(MonitorConfiguration configuration)
+    {
+        var selected = new Dictionary<SourceKind, IReadOnlyList<string>>();
+        foreach (var source in new[] { SourceKind.ClaudeCode, SourceKind.ClaudeDesktop })
+        {
+            if (!configuration.EnabledSources.Contains(source)) { continue; }
+            selected[source] = [.. Distinct(NormalizeAll(configuration.ClaudeRootsBySource?.GetValueOrDefault(source)
+                ?? [configuration.ClaudeRoot ?? LiveMonitor.DefaultClaudeRoot]))];
+        }
+        return selected;
+    }
 
     /// <summary>Codex <c>archived_sessions</c>, the sibling of the sessions root (METRICS 8).</summary>
     public string CodexArchiveRoot
@@ -54,7 +68,12 @@ internal sealed record SourceLocations(
     public IEnumerable<(RootFamily Family, string Path)> FileRoots()
     {
         yield return (RootFamily.Codex, CodexRoot);
-        yield return (RootFamily.Claude, ClaudeRoot);
+        var claudeRoots = Distinct(ClaudeRootsBySource?.Values.SelectMany(roots => roots) ?? [ClaudeRoot]).ToList();
+        if (claudeRoots.Count == 0) { claudeRoots.Add(ClaudeRoot); }
+        foreach (var root in claudeRoots)
+        {
+            yield return (RootFamily.Claude, root);
+        }
         yield return (RootFamily.DeepSeek, DshRoot);
         foreach (var root in GeminiRoots)
         {

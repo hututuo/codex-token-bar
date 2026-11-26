@@ -1,8 +1,8 @@
 {
   "additions": {
     "macos/Sources/AgentSpeedCore/Antigravity/AntigravityUsageRead.swift": {
-      "reason": "Token Bar local embedding API for a read-only single-conversation ledger import using the pinned Antigravity parser; no monitor, reporting, source mutation, or metric changes.",
-      "sha256": "ceba0b8d89d244683e0ba5eaa4e78ba39c4b0e44c512fdbf0321c96c2d05bca4"
+      "reason": "Token Bar local embedding API for a read-only single-conversation ledger import using the pinned Antigravity parser; no monitor, reporting, source mutation, or metric changes. Treat only zero-byte regular Antigravity main files without a WAL path as retryable empty placeholders; preserve actual WAL reads and retry after initialization. Align Windows explicit-parent expansion and ACP defaults with the native ledger.",
+      "sha256": "54a1209a083ebf69f31c7054ee3a79e85fc835bc735a7b215aa261f72475ca05"
     },
     "macos/Sources/AgentSpeedCore/Reporting/ReportWebSocketConfiguration.swift": {
       "reason": "Token Bar local strict Draft-1 WebSocket capability/limit parsing; upstream has no equivalent file, and HTTP remains the default.",
@@ -600,6 +600,14 @@
     "windows/src/AgentSpeed.Core/ZCode/ZCodeSource.cs": "535cd637d25882f97968b3bc37e3aa0794368d1b1ae8ac66dc916c1790fadde3"
   },
   "patches": {
+    "macos/Sources/AgentSpeedCore/Antigravity/AntigravityDatabase.swift": {
+      "reason": "Treat only zero-byte regular Antigravity main files without a WAL path as retryable empty placeholders; preserve actual WAL reads and retry after initialization. Align Windows explicit-parent expansion and ACP defaults with the native ledger.",
+      "sha256": "bdc31dde7c815d0e68266590ed3952317de512091638777381cce546a2dfda45"
+    },
+    "macos/Sources/AgentSpeedCore/Antigravity/AntigravityReader.swift": {
+      "reason": "Treat only zero-byte regular Antigravity main files without a WAL path as retryable empty placeholders; preserve actual WAL reads and retry after initialization. Align Windows explicit-parent expansion and ACP defaults with the native ledger.",
+      "sha256": "5788bc2a11deabc65db0306fdefbdc5b4e8b193528ecac65790c1873d2c03333"
+    },
     "macos/Sources/AgentSpeedCore/Engine/EngineTypes.swift": {
       "reason": "Carry source/model attribution and local displayTitle metadata through engine agents while preserving upstream numeric speed calculations and signed reporting semantics.",
       "sha256": "d38bbe9d50ac40ec67276fc19cf3e762e038cba2d8ea948e1c95ecdbaf7577de"
@@ -649,8 +657,8 @@
       "sha256": "dc6aba5393c8ee3609789246cdcb437c94ecf1e4ea723d360250e08ce0384a0a"
     },
     "macos/Sources/AgentSpeedCore/Models.swift": {
-      "reason": "Carry source/model attribution, local stopped-state metadata and optional local-only Claude displayTitle in public snapshots; existing rate accounting and signed report fields remain unchanged.",
-      "sha256": "e2d610890ac37ac236112ae7f9b990d6225a8eeceaf9d74bc4d1f4286a753198"
+      "reason": "Carry source/model attribution, local stopped-state metadata and optional local-only Claude displayTitle in public snapshots; existing rate accounting and signed report fields remain unchanged. Support per-client Claude root sets in one monitor, preserve legacy shared-root configuration, and keep root ownership, availability, parser resets and pre-dedupe filtering consistent.",
+      "sha256": "de15c2484aaeeb13fd45a2f6322aa991307b891a87c5eb5d3634aac3cf1b37dd"
     },
     "macos/Sources/AgentSpeedCore/Modes/ConfiguredModes.swift": {
       "reason": "Reuse literal Codex execution mode projection for byte-identical config content in periodic snapshots. Preserve file and mode admission rules.",
@@ -661,32 +669,32 @@
       "sha256": "0cc23ff3e2c62627d05e1804ca48fdb19c56ef10310ad08328817f1725e6e28c"
     },
     "macos/Sources/AgentSpeedCore/Monitor/SnapshotBuilder.swift": {
-      "reason": "Project source/model attribution, one-shot local read observations and local Claude displayTitle into Token Bar snapshots without changing upstream rate calculations.",
-      "sha256": "4485314ce83db6f6984abd37b441efbff06387dbb15332ac39612a937d91c723"
+      "reason": "Project source/model attribution, one-shot local read observations and local Claude displayTitle into Token Bar snapshots without changing upstream rate calculations. Support per-client Claude root sets in one monitor, preserve legacy shared-root configuration, and keep root ownership, availability, parser resets and pre-dedupe filtering consistent.",
+      "sha256": "519dec9ef93acf27034a52462ecbaf69902e3488c9863610d55a433b861ee567"
     },
     "macos/Sources/AgentSpeedCore/Monitor/SnapshotMailbox.swift": {
       "reason": "Carry and merge pending source-read observations into the next published snapshot so metadata is not lost during coalescing.",
       "sha256": "f38ef496a53582ef197cbf3f13b57aa89dd2458d72328f20fbcd303fc015f66e"
     },
     "macos/Sources/AgentSpeedCore/Monitor/TrackedFile.swift": {
-      "reason": "Retain read-trigger provenance across throttled database reads and deferred whole-file reads. Project AgentState through an inout borrow of the stored parser to avoid copying all parser payloads on the serial monitor queue. Retain small per-file facts for incremental session counts and warnings.",
-      "sha256": "57bf423150e67bcad79787455535dffc79cfa57e80961a8f37642f805357e6b3"
+      "reason": "Retain read-trigger provenance across throttled database reads and deferred whole-file reads. Project AgentState through an inout borrow of the stored parser to avoid copying all parser payloads on the serial monitor queue. Retain small per-file facts for incremental session counts and warnings. Support per-client Claude root sets in one monitor, preserve legacy shared-root configuration, and keep root ownership, availability, parser resets and pre-dedupe filtering consistent.",
+      "sha256": "0ebde90c7e8278ea42d8ca9e102bfb2563ce7106fd91905fceba98b2fb6a06f8"
     },
     "macos/Sources/AgentSpeedCore/Monitor/TranscriptLocations.swift": {
-      "reason": "Discover standalone ACP and macOS Orca Antigravity stores by default and expand explicitly selected parent directories; preserve direct store/conversations selection and backup exclusion without changing parsing or reporting consent.",
-      "sha256": "df1648c7c3ebed22ec6f6de10ce384ddabbf51851b78d7c51bdb075a667deaee"
+      "reason": "Discover standalone ACP and macOS Orca Antigravity stores by default and expand explicitly selected parent directories; preserve direct store/conversations selection and backup exclusion without changing parsing or reporting consent. Support per-client Claude root sets in one monitor, preserve legacy shared-root configuration, and keep root ownership, availability, parser resets and pre-dedupe filtering consistent.",
+      "sha256": "8a78c810a817df0f1caa6ea54990781ef9eb2e4d89f9516fcfdbaac2c193e49f"
     },
     "macos/Sources/AgentSpeedCore/Monitor/TranscriptSession.swift": {
-      "reason": "Capture and merge local log/poll read observations through transcript, database, and whole-file reads; keep provider event timing distinct. Preserve shared positioned IO and source-read provenance; backport c668286 bounded quiet-file rediscovery (24h hot set and one sixth older files each round). Use the fresh TrackedFile state projection without copying its full parser for snapshot counts and warnings. Maintain session count, malformed and unsupported totals alongside successful parser updates; rebuild date-sensitive counts on local day changes.",
-      "sha256": "1f74a25c34712cc8ea08a7964ecb3626105d239ab7d6f55e897c9a98c1bb5838"
+      "reason": "Capture and merge local log/poll read observations through transcript, database, and whole-file reads; keep provider event timing distinct. Preserve shared positioned IO and source-read provenance; backport c668286 bounded quiet-file rediscovery (24h hot set and one sixth older files each round). Use the fresh TrackedFile state projection without copying its full parser for snapshot counts and warnings. Maintain session count, malformed and unsupported totals alongside successful parser updates; rebuild date-sensitive counts on local day changes. Read per-client Claude root sets once with overlapping-root ownership, filter excluded copies before shared dedupe, and bound startup decode output to ordered 16-file/64-MiB windows while preserving read offsets and ownership order.",
+      "sha256": "62282fcada120613264bb6864ee574ca778dc36cb4de06209ff9055eb00c7677"
     },
     "macos/Sources/AgentSpeedCore/Parsing/ClaudeLine.swift": {
       "reason": "Recognize explicit Claude API/stream errors as local display-stop metadata and backport upstream b89d983 toolEndsTurn extraction. Extract bounded local-only Claude task labels from agentName, title/customTitle, summary or first direct user text; do not retain full text or change token accounting.",
       "sha256": "f8cc0aaea0cb3d83e8723954caa0cf6ae5ad9b79b1e742ee6d31d47e57528f40"
     },
     "macos/Sources/AgentSpeedCore/Parsing/ClaudeParser.swift": {
-      "reason": "Propagate Claude error/interrupt markers into local stopped-state metadata and consume/update local-only display titles, including metadata-only records; preserve upstream phase, timing, token and report semantics.",
-      "sha256": "5eb8ee0871b910050e33dee99c236c8359d7d920303ace055201a7cb25ff0d78"
+      "reason": "Propagate Claude error/interrupt markers into local stopped-state metadata and consume/update local-only display titles, including metadata-only records; preserve upstream phase, timing, token and report semantics. Support per-client Claude root sets in one monitor, preserve legacy shared-root configuration, and keep root ownership, availability, parser resets and pre-dedupe filtering consistent.",
+      "sha256": "b3b65e81f5900b7ecf1cc883796ee101f6e027d589bb82e24384c4274d1c1c1a"
     },
     "macos/Sources/AgentSpeedCore/Parsing/CodexLine.swift": {
       "reason": "Recognize explicit Codex request/stream failure and aborted-turn markers for local stopped-state display. Backport upstream 004bc9b paginated ordinal extraction while preserving Token Bar source stop and execution metadata.",
@@ -713,8 +721,8 @@
       "sha256": "337b87c0f66b46c618a8e24647e2cec3d59097ec67893ad26f58b606f3be9dd5"
     },
     "macos/Sources/AgentSpeedCore/Parsing/TranscriptParser.swift": {
-      "reason": "Select the one initialized parser directly when projecting AgentState; avoid nil-coalescing autoclosure copies of the aggregate in each live snapshot without changing value semantics or accounting. Store only the active parser payload in copy-on-write storage to avoid reserving all nine machines per tracked file, preserving independent parser values.",
-      "sha256": "42ff3934db796bc51cdc1fadf401973b2ed718c8012009d189448d89776e0143"
+      "reason": "Select the one initialized parser directly when projecting AgentState; avoid nil-coalescing autoclosure copies of the aggregate in each live snapshot without changing value semantics or accounting. Store only the active parser payload in copy-on-write storage to avoid reserving all nine machines per tracked file, preserving independent parser values. Support per-client Claude root sets in one monitor, preserve legacy shared-root configuration, and keep root ownership, availability, parser resets and pre-dedupe filtering consistent.",
+      "sha256": "5ecc836b1b2c4b0d2a21543cebe75352c840066a09592cddc7bf7d4c0e735acf"
     },
     "macos/Sources/AgentSpeedCore/Pricing/BundledPriceAssets.swift": {
       "reason": "Price assets only from reviewed upstream f32bc2945bce5dcfc94d6befb28dcb2e0abc9532: version 4 adds five Kimi/MiMo entries and documented Kimi aliases. Existing model prices, tiers and periods, including the GPT-6.1 Terra fix, are unchanged. SDK code remains pinned. Local v5 adds Fable 5.2 standard/fast rates and its documented alias from official Claude pricing evidence reviewed 2026-11-10; preserves all 199 prior entries, tiers and periods. SDK and upstream pin remain unchanged.",
@@ -729,8 +737,8 @@
       "sha256": "8ee6f284e5dd0a85445a782ec4b66b32c21964738c8c454ee93a416cfc422c03"
     },
     "macos/Tests/AgentSpeedCoreTests/AntigravityTests.swift": {
-      "reason": "Update the expected default store inventory for standalone ACP and macOS Orca; retain existing parser, deduplication, backup and live database regressions.",
-      "sha256": "a24c57ea3ef306f1ca75b4b8296dfbfc1bc189ef0a18c144770a0c829e9e0492"
+      "reason": "Update the expected default store inventory for standalone ACP and macOS Orca; retain existing parser, deduplication, backup and live database regressions. Treat only zero-byte regular Antigravity main files without a WAL path as retryable empty placeholders; preserve actual WAL reads and retry after initialization. Align Windows explicit-parent expansion and ACP defaults with the native ledger.",
+      "sha256": "ca8446eb7f2112e572771973e2448d9ec54648781b3efa0f2ec4c8741e61ecfa"
     },
     "macos/Tests/AgentSpeedCoreTests/EngineBehaviorTests.swift": {
       "reason": "Guard old-model response tails, current-model estimates, unknown models and per-source conservation",
@@ -757,8 +765,8 @@
       "sha256": "9f666dc4a4e1f7b724a01efd9ced3023bbe39fa3d50d30e7d5bd780888e8ba15"
     },
     "macos/Tests/AgentSpeedCoreTests/SessionTests.swift": {
-      "reason": "Use explicit isolated source roots; never read developer home during tests Backport c668286 deterministic quiet-file and midnight resumption regressions, retaining existing source-read context tests. Verify cached session counts across local day changes, appended lines, removal, and retained malformed diagnostics.",
-      "sha256": "da81a9c15ca7b3fb8e1099e911e540335169929ff6ec18bde3587ada9ec96f4c"
+      "reason": "Use explicit isolated source roots; never read developer home during tests Backport c668286 deterministic quiet-file and midnight resumption regressions, retaining existing source-read context tests. Verify cached session counts across local day changes, appended lines, removal, and retained malformed diagnostics. Read per-client Claude root sets once with overlapping-root ownership, filter excluded copies before shared dedupe, and bound startup decode output to ordered 16-file/64-MiB windows while preserving read offsets and ownership order.",
+      "sha256": "04569b814a0a7478ad6000f75242a11ef4a420161379fba27fb78b4abcf4d944"
     },
     "macos/Tests/AgentSpeedCoreTests/TrafficSamplerTests.swift": {
       "reason": "Break the process-argument fixture into typed byte-array appends for Swift 6 compiler compatibility; emitted fixture bytes and assertions are unchanged.",
@@ -771,6 +779,10 @@
     "windows/src/AgentSpeed.Core/AgentSpeed.Core.csproj": {
       "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
       "sha256": "ceed1a4952edf064115655daa5ec780079f7cdefcb2d114023826afc94c69120"
+    },
+    "windows/src/AgentSpeed.Core/Antigravity/AntigravityPaths.cs": {
+      "reason": "Treat only zero-byte regular Antigravity main files without a WAL path as retryable empty placeholders; preserve actual WAL reads and retry after initialization. Align Windows explicit-parent expansion and ACP defaults with the native ledger.",
+      "sha256": "3907f77bfd818f992cabd9ee4865c62fe3cd4f39f93a4800b6aa9f5e2ad67c46"
     },
     "windows/src/AgentSpeed.Core/Antigravity/AntigravityTailer.cs": {
       "reason": "Attach Token Bar local source-read timing/resolution observations to Antigravity database tail updates.",
@@ -829,20 +841,24 @@
       "sha256": "6d9699fd48bdb37a043a3f58d584b019a57f37013f6970d17a26f005aa15d934"
     },
     "windows/src/AgentSpeed.Core/Models.cs": {
-      "reason": "Carry optional local-only Claude displayTitle in public snapshots; no report schema or token accounting changes.",
-      "sha256": "c9fd71e7f0462fc6030fde7db20e223aab463b2ba0b5dbee97c0aaa02b696ab9"
+      "reason": "Carry optional local-only Claude displayTitle in public snapshots; no report schema or token accounting changes. Support per-client Claude root sets in one monitor, preserve legacy shared-root configuration, and keep root ownership, availability, parser resets and pre-dedupe filtering consistent.",
+      "sha256": "fd4542fddf19156acf8302f32c754ba37c302f315a7dded88e27ae662aacb2ea"
     },
     "windows/src/AgentSpeed.Core/Monitoring/MonitorCore+ZCode.cs": {
       "reason": "Propagate ZCode source-read observations to Token Bar local snapshots without changing upstream response accounting.",
       "sha256": "ed38b03c255ba4b40340c2ecddb27c1e61d8d38edba6a8910fad9e21f2d0d34b"
     },
     "windows/src/AgentSpeed.Core/Monitoring/MonitorCore.cs": {
-      "reason": "Propagate source-read observations, local display-stop metadata, local Claude displayTitle and realtime event cadence opt-in; preserve default monitor and rate behavior.",
-      "sha256": "45cdba3e5dbaeaf41f78fa3f6326fb4276ab2d275b1dd6b9fd2d282390ccb2ab"
+      "reason": "Propagate source-read observations, local display-stop metadata, local Claude displayTitle and realtime event cadence opt-in; preserve default monitor and rate behavior. Support per-client Claude root sets in one monitor, preserve legacy shared-root configuration, and keep root ownership, availability, parser resets and pre-dedupe filtering consistent.",
+      "sha256": "347491f50b440e926d6ec8f79f776edb72d2825d8de67b8b9a041d1821e1becd"
+    },
+    "windows/src/AgentSpeed.Core/Monitoring/SourceLocations.cs": {
+      "reason": "Support per-client Claude root sets in one monitor, preserve legacy shared-root configuration, and keep root ownership, availability, parser resets and pre-dedupe filtering consistent.",
+      "sha256": "a803177e223915ddd297985c0ef7e4a144e77bfad5560ef3155bcb915ae30516"
     },
     "windows/src/AgentSpeed.Core/Monitoring/TrackedFile.cs": {
-      "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
-      "sha256": "357afefc36038d4845de35990549ce2ffc6e13c19f943a42d2a48bf259755c4e"
+      "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources. Support per-client Claude root sets in one monitor, preserve legacy shared-root configuration, and keep root ownership, availability, parser resets and pre-dedupe filtering consistent.",
+      "sha256": "e6396b5bd3af631b8885745bbb82532175ff061f6a8ba863418d21624a4fd202"
     },
     "windows/src/AgentSpeed.Core/Omp/OmpPaths.cs": {
       "reason": "Token Bar shared physical transcript reads: preserves upstream parsers, counters and independent cursors; verification bypasses cache. Swift injects SharedSourceIO; Windows injects bounded anonymous-pipe reads with local-root and file-identity checks. SQLite keeps native read-only WAL queries; Windows denies remote/reparse/cloud-recall paths before opening sources.",
@@ -861,8 +877,8 @@
       "sha256": "789b15cd58c767fd71ca5b5d5051a59a7c70d80b7d6a94c506fb5a1d034725df"
     },
     "windows/src/AgentSpeed.Core/Parsing/ClaudeParser.cs": {
-      "reason": "Propagate explicit Claude error/interrupt markers, toolEndsTurn completion and bounded local-only Claude display titles; do not alter token accounting or report payloads.",
-      "sha256": "996b4b23d7833ee9e1b5b2601540e89541858799f166161b5088b55bd0bf03c0"
+      "reason": "Propagate explicit Claude error/interrupt markers, toolEndsTurn completion and bounded local-only Claude display titles; do not alter token accounting or report payloads. Support per-client Claude root sets in one monitor, preserve legacy shared-root configuration, and keep root ownership, availability, parser resets and pre-dedupe filtering consistent.",
+      "sha256": "d37639443daecdf49402f33b0f00f4ef673c34f697a46b6e172fb9e196e987cb"
     },
     "windows/src/AgentSpeed.Core/Parsing/CodexLine.cs": {
       "reason": "Recognize explicit Codex request/stream failure and aborted-turn markers for local stopped-state display. Backport upstream e44df87 paginated ordinal extraction while preserving local confirmed-stop parsing.",

@@ -56,7 +56,7 @@ internal static class Program
     private static async Task RunRuntimeAsync(Options options)
     {
         var enabled = options.Sources;
-        var claudeRoot = enabled.Any(IsClaudeSource)
+        var claudeRoot = options.ClaudeRootsBySource is null && enabled.Any(IsClaudeSource)
             ? Path.GetFullPath(options.Root ?? LiveMonitor.DefaultClaudeRoot)
             : null;
         var codexRoot = enabled.Contains(SourceKind.Codex)
@@ -71,12 +71,17 @@ internal static class Program
             EnsureLocalPath(codexRoot, "Codex");
         }
 
+        if (options.ClaudeRootsBySource is { } claudeRoots)
+        {
+            foreach (var path in claudeRoots.Values.SelectMany(roots => roots)) { EnsureLocalPath(path, "Claude"); }
+        }
         foreach (var path in options.OtherRoots.Values) { EnsureLocalPath(Path.GetFullPath(path), "Activity"); }
         var configuration = new MonitorConfiguration(enabled, CodexRoot: codexRoot, ClaudeRoot: claudeRoot,
             DshRoot: options.OtherRoots.GetValueOrDefault(SourceKind.DeepSeek),
             OpenCodeRoot: options.OtherRoots.GetValueOrDefault(SourceKind.OpenCode),
             GeminiRoot: options.OtherRoots.GetValueOrDefault(SourceKind.Gemini),
-            AntigravityRoot: options.OtherRoots.GetValueOrDefault(SourceKind.Antigravity));
+            AntigravityRoot: options.OtherRoots.GetValueOrDefault(SourceKind.Antigravity),
+            ClaudeRootsBySource: options.ClaudeRootsBySource);
         var hub = new SpeedHub(context: null);
         var processSalt = RandomNumberGenerator.GetBytes(32);
         var latest = new SnapshotCell();
@@ -120,7 +125,7 @@ internal static class Program
         {
             monitor.Start();
             var ready = await WaitForReadySnapshotAsync(firstReady.Task, lifetime.Token).ConfigureAwait(false);
-            WriteSnapshot(protocolOutput, RuntimeSnapshotMapper.Map(ready, processSalt, enabled, responseEvents.Read(), applyDisplayGuards: true));
+            WriteSnapshot(protocolOutput, RuntimeSnapshotMapper.Map(ready, processSalt, enabled, responseEvents.Read(), applyDisplayGuards: true), options.ClaudeRootsBySource is null ? 1 : 2);
             if (!options.Watch)
             {
                 return;
@@ -129,7 +134,7 @@ internal static class Program
             using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
             while (await timer.WaitForNextTickAsync(lifetime.Token).ConfigureAwait(false))
             {
-                WriteSnapshot(protocolOutput, RuntimeSnapshotMapper.Map(latest.Read(), processSalt, enabled, responseEvents.Read(), applyDisplayGuards: true));
+                WriteSnapshot(protocolOutput, RuntimeSnapshotMapper.Map(latest.Read(), processSalt, enabled, responseEvents.Read(), applyDisplayGuards: true), options.ClaudeRootsBySource is null ? 1 : 2);
             }
         }
         finally
@@ -175,9 +180,9 @@ internal static class Program
         }
     }
 
-    private static void WriteSnapshot(LocalSourceProtocolOutput output, RuntimeSnapshot snapshot)
+    private static void WriteSnapshot(LocalSourceProtocolOutput output, RuntimeSnapshot snapshot, int schema)
     {
-        output.WriteLine(JsonSerializer.SerializeToUtf8Bytes(snapshot, JsonOptions));
+        output.WriteLine(JsonSerializer.SerializeToUtf8Bytes(snapshot with { Schema = schema }, JsonOptions));
     }
 
     private static Options ParseArguments(string[] args)
@@ -190,6 +195,7 @@ internal static class Program
         var sources = new HashSet<SourceKind>();
         string? root = null;
         string? codexRoot = null;
+        IReadOnlyDictionary<SourceKind, IReadOnlyList<string>>? claudeRootsBySource = null;
         var otherRoots = new Dictionary<SourceKind, string>();
         for (var index = 0; index < args.Length; index++)
         {
@@ -219,6 +225,10 @@ internal static class Program
                         throw new ArgumentException("--root requires a local directory path.");
                     }
 
+                    break;
+                case "--claude-roots-v2" when index + 1 < args.Length:
+                    if (claudeRootsBySource is not null) { throw new ArgumentException("Claude roots may be provided only once."); }
+                    claudeRootsBySource = ParseClaudeRootsV2(args[++index]);
                     break;
                 case "--codex-root" when index + 1 < args.Length:
                     if (codexRoot is not null)
@@ -264,8 +274,8 @@ internal static class Program
         }
 
         if ((watch && once)
-            || (captureStatusline && (watch || once || root is not null || codexRoot is not null || otherRoots.Count > 0 || sourceWasSpecified))
-            || (selfTest && (watch || once || captureStatusline || root is not null || codexRoot is not null || otherRoots.Count > 0 || sourceWasSpecified)))
+            || (captureStatusline && (watch || once || root is not null || claudeRootsBySource is not null || codexRoot is not null || otherRoots.Count > 0 || sourceWasSpecified))
+            || (selfTest && (watch || once || captureStatusline || root is not null || claudeRootsBySource is not null || codexRoot is not null || otherRoots.Count > 0 || sourceWasSpecified)))
         {
             throw new ArgumentException("Helper modes cannot be combined.");
         }
@@ -278,6 +288,11 @@ internal static class Program
         {
             sources = [SourceKind.ClaudeCode, SourceKind.ClaudeDesktop];
         }
+        if (claudeRootsBySource is not null && (root is not null
+            || !sources.Where(IsClaudeSource).ToHashSet().SetEquals(claudeRootsBySource.Keys)))
+        {
+            throw new ArgumentException("Version 2 roots must select exactly the enabled Claude clients and cannot use --root.");
+        }
         if (root is not null && !sources.Any(IsClaudeSource))
         {
             throw new ArgumentException("--root requires a Claude source.");
@@ -289,7 +304,42 @@ internal static class Program
 
         if (otherRoots.Keys.Any(source => !sources.Contains(source)))
             throw new ArgumentException("A source root requires its corresponding --source.");
-        return new Options(watch, captureStatusline, selfTest, root, codexRoot, sources, otherRoots);
+        return new Options(watch, captureStatusline, selfTest, root, codexRoot, sources, otherRoots, claudeRootsBySource);
+    }
+
+    private static IReadOnlyDictionary<SourceKind, IReadOnlyList<string>> ParseClaudeRootsV2(string json)
+    {
+        if (json.Length > 65_536) { throw new ArgumentException("Claude root configuration is too large."); }
+        using var document = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = 5 });
+        var root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object || root.EnumerateObject().Count() != 2
+            || !root.TryGetProperty("version", out var version) || !version.TryGetInt32(out var number) || number != 2
+            || !root.TryGetProperty("roots", out var roots) || roots.ValueKind != JsonValueKind.Object)
+        { throw new ArgumentException("Unsupported Claude root configuration."); }
+        var selected = new Dictionary<SourceKind, IReadOnlyList<string>>();
+        foreach (var entry in roots.EnumerateObject())
+        {
+            var source = entry.Name switch {
+                "claudeCode" => SourceKind.ClaudeCode,
+                "claudeDesktop" => SourceKind.ClaudeDesktop,
+                _ => throw new ArgumentException("Only Claude roots are permitted."),
+            };
+            if (entry.Value.ValueKind != JsonValueKind.Array || entry.Value.GetArrayLength() is < 1 or > 17)
+            { throw new ArgumentException("Invalid Claude root count."); }
+            var paths = new List<string>();
+            foreach (var item in entry.Value.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.String || item.GetString() is not { } path
+                    || string.IsNullOrWhiteSpace(path) || path.Length > 1024 || path.Any(char.IsControl))
+                { throw new ArgumentException("Invalid Claude root path."); }
+                EnsureLocalPath(path, "Claude");
+                paths.Add(Path.TrimEndingDirectorySeparator(Path.GetFullPath(path)));
+            }
+            if (!selected.TryAdd(source, paths.Distinct(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal).Order().ToArray()))
+            { throw new ArgumentException("Duplicate Claude client."); }
+        }
+        if (selected.Count == 0) { throw new ArgumentException("At least one Claude root is required."); }
+        return selected;
     }
 
     private static bool IsClaudeSource(SourceKind source) =>
@@ -366,8 +416,125 @@ internal static class Program
         Require(active.Live == sample.Live && active.LiveModels == sample.LiveModels, "raw report metrics remain unchanged");
     }
 
+    private static async Task ClaudeRootSelectionSelfTestsAsync()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), "claude-local-roots-" + Guid.NewGuid().ToString("N"));
+        var code = Path.Combine(folder, "code");
+        var desktop = Path.Combine(folder, "desktop");
+        Directory.CreateDirectory(Path.Combine(code, "p"));
+        Directory.CreateDirectory(Path.Combine(desktop, "p"));
+        try
+        {
+            var now = DateTimeOffset.UtcNow.ToString("O");
+            foreach (var (root, entrypoint, id, output) in new[] {
+                (code, "cli", "code-allowed", 11), (code, "claude-desktop", "desktop-wrong", 101),
+                (desktop, "cli", "code-wrong", 103), (desktop, "claude-desktop", "desktop-allowed", 13) })
+            {
+                var user = JsonSerializer.Serialize(new { type = "user", entrypoint, timestamp = now,
+                    message = new { role = "user", content = "fixture" } });
+                var assistant = JsonSerializer.Serialize(new { type = "assistant", entrypoint, timestamp = now,
+                    message = new { id, model = "m", stop_reason = "end_turn", usage = new { input_tokens = 1, output_tokens = output } } });
+                await File.WriteAllTextAsync(Path.Combine(root, "p", id + ".jsonl"), user + "\n" + assistant + "\n").ConfigureAwait(false);
+            }
+            await File.WriteAllTextAsync(Path.Combine(folder, ".credentials.json"), "credential-canary").ConfigureAwait(false);
+            var json = JsonSerializer.Serialize(new { version = 2, roots = new Dictionary<string, string[]> {
+                ["claudeCode"] = [code, Path.Combine(code, ".")], ["claudeDesktop"] = [desktop] } });
+            var selected = ParseArguments(["--once", "--claude-roots-v2", json, "--source", "claudeCode", "--source", "claudeDesktop"]);
+            Require(selected.ClaudeRootsBySource?[SourceKind.ClaudeCode].Count == 1, "v2 aliases are deduplicated");
+            Require(ParseArguments(["--root", code]).ClaudeRootsBySource is null, "legacy root keeps schema one");
+            foreach (var arguments in new[] {
+                new[] { "--claude-roots-v2", json, "--root", code },
+                new[] { "--claude-roots-v2", json, "--source", "claudeCode" },
+                new[] { "--claude-roots-v2", json.Replace("\"version\":2", "\"version\":1") },
+                new[] { "--claude-roots-v2", json, "--capture-statusline" } })
+            {
+                var rejected = false;
+                try { _ = ParseArguments(arguments); } catch (ArgumentException) { rejected = true; }
+                Require(rejected, "v2 rejects legacy mixing, unselected client and unsupported version");
+            }
+            var sources = new HashSet<SourceKind> { SourceKind.ClaudeCode, SourceKind.ClaudeDesktop };
+            var configuration = new MonitorConfiguration(sources, ClaudeRootsBySource: selected.ClaudeRootsBySource);
+            var hub = new SpeedHub(context: null);
+            using var monitor = new LiveMonitor(hub, configuration);
+            async Task<SpeedSnapshot> ObserveAsync(Action action, long output)
+            {
+                var ready = new TaskCompletionSource<SpeedSnapshot>(TaskCreationOptions.RunContinuationsAsynchronously);
+                void Published(object? sender, SpeedSnapshot snapshot)
+                {
+                    if (snapshot.State.Kind == MonitorStateKind.Running && snapshot.Today.Output == output) { ready.TrySetResult(snapshot); }
+                }
+                hub.LivePublished += Published;
+                try
+                {
+                    action();
+                    var completed = await Task.WhenAny(ready.Task, Task.Delay(TimeSpan.FromSeconds(15))).ConfigureAwait(false);
+                    Require(completed == ready.Task, "one monitor applies per-client Claude root selection");
+                    return await ready.Task.ConfigureAwait(false);
+                }
+                finally { hub.LivePublished -= Published; }
+            }
+            var initial = await ObserveAsync(monitor.Start, 24).ConfigureAwait(false);
+            Require(initial.Sources.First(source => source.Kind == SourceKind.ClaudeCode).SessionCount == 1, "Code excludes Desktop-root transcripts");
+            Require(initial.Sources.First(source => source.Kind == SourceKind.ClaudeDesktop).SessionCount == 1, "Desktop excludes Code-root transcripts");
+            var swapped = configuration with { ClaudeRootsBySource = new Dictionary<SourceKind, IReadOnlyList<string>> {
+                [SourceKind.ClaudeCode] = [desktop], [SourceKind.ClaudeDesktop] = [code] } };
+            Require(configuration != swapped, "ownership changes invalidate the configuration");
+            _ = await ObserveAsync(() => monitor.Update(swapped), 204).ConfigureAwait(false);
+            var shared = configuration with { ClaudeRootsBySource = new Dictionary<SourceKind, IReadOnlyList<string>> {
+                [SourceKind.ClaudeCode] = [code, desktop], [SourceKind.ClaudeDesktop] = [code, desktop] } };
+            var multi = await ObserveAsync(() => monitor.Update(shared), 228).ConfigureAwait(false);
+            Require(multi.Sources.First(source => source.Kind == SourceKind.ClaudeCode).SessionCount == 2, "multi-account Code roots are combined once");
+            var missing = configuration with { ClaudeRootsBySource = new Dictionary<SourceKind, IReadOnlyList<string>> {
+                [SourceKind.ClaudeCode] = [Path.Combine(folder, "missing")], [SourceKind.ClaudeDesktop] = [desktop] } };
+            var available = await ObserveAsync(() => monitor.Update(missing), 13).ConfigureAwait(false);
+            Require(!available.Sources.First(source => source.Kind == SourceKind.ClaudeCode).Available, "missing Code root cannot borrow Desktop availability");
+            Require(available.Sources.First(source => source.Kind == SourceKind.ClaudeDesktop).Available, "Desktop keeps its own root availability");
+            var disabled = shared with { EnabledSources = new HashSet<SourceKind> { SourceKind.ClaudeCode } };
+            _ = await ObserveAsync(() => monitor.Update(disabled), 114).ConfigureAwait(false);
+            _ = await ObserveAsync(() => monitor.Update(configuration), 24).ConfigureAwait(false);
+            monitor.Stop();
+            var nested = Path.Combine(code, "nested");
+            Directory.CreateDirectory(Path.Combine(nested, "p"));
+            var nestedRecord = JsonSerializer.Serialize(new { type = "assistant", entrypoint = "claude-desktop", timestamp = now,
+                message = new { id = "nested-desktop", model = "m", stop_reason = "end_turn", usage = new { output_tokens = 7 } } });
+            await File.WriteAllTextAsync(Path.Combine(nested, "p", "nested.jsonl"), nestedRecord + "\n").ConfigureAwait(false);
+            monitor.Update(configuration with { ClaudeRootsBySource = new Dictionary<SourceKind, IReadOnlyList<string>> {
+                [SourceKind.ClaudeCode] = [code], [SourceKind.ClaudeDesktop] = [nested] } });
+            _ = await ObserveAsync(monitor.Start, 18).ConfigureAwait(false);
+            monitor.Stop();
+            var duplicateCode = Path.Combine(folder, "duplicate-code");
+            var duplicateDesktop = Path.Combine(folder, "duplicate-desktop");
+            Directory.CreateDirectory(Path.Combine(duplicateCode, "p"));
+            Directory.CreateDirectory(Path.Combine(duplicateDesktop, "p"));
+            var orderedCopies = new[] {
+                (duplicateDesktop, "cli", "same-code", "wrong-code", 101),
+                (duplicateCode, "claude-desktop", "same-desktop", "wrong-desktop", 103),
+                (duplicateCode, "cli", "same-code", "right-code", 11),
+                (duplicateDesktop, "claude-desktop", "same-desktop", "right-desktop", 13) };
+            for (var index = 0; index < orderedCopies.Length; index++)
+            {
+                var (root, entrypoint, id, name, output) = orderedCopies[index];
+                var record = JsonSerializer.Serialize(new { type = "assistant", entrypoint, timestamp = now,
+                    message = new { id, model = "m", stop_reason = "end_turn", usage = new { output_tokens = output } } });
+                var path = Path.Combine(root, "p", name + ".jsonl");
+                await File.WriteAllTextAsync(path, record + "\n").ConfigureAwait(false);
+                File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddSeconds(index - 8));
+            }
+            monitor.Update(configuration with { ClaudeRootsBySource = new Dictionary<SourceKind, IReadOnlyList<string>> {
+                [SourceKind.ClaudeCode] = [duplicateCode], [SourceKind.ClaudeDesktop] = [duplicateDesktop] } });
+            var duplicates = await ObserveAsync(monitor.Start, 24).ConfigureAwait(false);
+            Require(duplicates.Sources.First(source => source.Kind == SourceKind.ClaudeCode).SessionCount == 1,
+                "excluded Code copies cannot claim shared keys before selected copies");
+            Require(duplicates.Sources.First(source => source.Kind == SourceKind.ClaudeDesktop).SessionCount == 1,
+                "excluded Desktop copies cannot claim shared keys before selected copies");
+            monitor.Stop();
+        }
+        finally { Directory.Delete(folder, recursive: true); }
+    }
+
     private static async Task RunSelfTestsAsync()
     {
+        await ClaudeRootSelectionSelfTestsAsync().ConfigureAwait(false);
         DisplayStopsAreLocalOnly(CreateSampleSnapshot());
         const string input = """
             {
@@ -733,5 +900,6 @@ internal static class Program
         string? Root,
         string? CodexRoot,
         IReadOnlySet<SourceKind> Sources,
-        IReadOnlyDictionary<SourceKind, string> OtherRoots);
+        IReadOnlyDictionary<SourceKind, string> OtherRoots,
+        IReadOnlyDictionary<SourceKind, IReadOnlyList<string>>? ClaudeRootsBySource);
 }

@@ -416,6 +416,9 @@ public struct MonitorConfiguration: Equatable, Sendable {
     public var codexRoot: URL?
     /// Nil uses the default Claude projects folder (shared by Claude Code and Claude Desktop).
     public var claudeRoot: URL?
+    /// Per-client Claude projects folders. An entry replaces that client's legacy shared root.
+    /// Only Claude Code and Claude Desktop keys are used; an empty entry reads no folders.
+    public var claudeRootsBySource: [SourceKind: [URL]]
     /// Nil uses the default DeepSeek Harness sessions folder.
     public var dshRoot: URL?
     /// Nil uses the default OpenCode data folder (the one that contains `opencode.db`).
@@ -450,11 +453,13 @@ public struct MonitorConfiguration: Equatable, Sendable {
         workbuddyAiRoot: URL? = nil,
         zcodeRoot: URL? = nil,
         kimiRoot: URL? = nil,
-        grokBuildRoot: URL? = nil
+        grokBuildRoot: URL? = nil,
+        claudeRootsBySource: [SourceKind: [URL]] = [:]
     ) {
         self.enabledSources = enabledSources
         self.codexRoot = codexRoot
         self.claudeRoot = claudeRoot
+        self.claudeRootsBySource = claudeRootsBySource
         self.dshRoot = dshRoot
         self.opencodeRoot = opencodeRoot
         self.geminiRoot = geminiRoot

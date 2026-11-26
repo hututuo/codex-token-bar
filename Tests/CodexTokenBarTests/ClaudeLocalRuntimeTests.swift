@@ -321,6 +321,84 @@ final class ClaudeLocalRuntimeTests: XCTestCase {
         XCTAssertEqual(ClaudeLocalRuntime.project(from: idle, allowedSources: [.claudeCode]).estimatedShare, 0)
     }
 
+    func testAutomaticAccountsShareOneMonitorAndExplicitSelectionsStayExclusive() throws {
+        let fm = FileManager.default
+        let home = fm.temporaryDirectory.appendingPathComponent("claude-live-roots-\(UUID())")
+        defer { try? fm.removeItem(at: home) }
+        let accounts = home.appendingPathComponent(".local/share/claude-adapter/accounts")
+        let id = String(repeating: "a", count: 32)
+        let accountProjects = accounts.appendingPathComponent("\(id)/code/projects")
+        try fm.createDirectory(at: accountProjects, withIntermediateDirectories: true)
+        try JSONSerialization.data(withJSONObject: ["version": 1, "accounts": [["id": "existing"], ["id": id]]])
+            .write(to: accounts.appendingPathComponent("registry.json"))
+        // These files are deliberately not part of automatic transcript selection.
+        try Data("credential-canary".utf8).write(to: accounts.appendingPathComponent("\(id)/code/.credentials.json"))
+        let explicit = home.appendingPathComponent("desktop-projects")
+        var makeCount = 0
+        var monitor: FakeClaudeLocalMonitor?
+        let runtime = ClaudeLocalRuntime(home: home, environment: [:]) { _, configuration in
+            makeCount += 1
+            let fake = FakeClaudeLocalMonitor(configuration: configuration)
+            monitor = fake
+            return fake
+        }
+        var prefs = claudePreferences(codeEnabled: true, desktopEnabled: true, sharedPath: "")
+        runtime.configure(preferences: prefs)
+        let expected = Set([home.appendingPathComponent(".claude/projects"),
+                            home.appendingPathComponent(".claude-official-guarded/projects"), accountProjects]
+            .map { $0.standardizedFileURL.resolvingSymlinksInPath().path })
+        XCTAssertEqual(Set(monitor!.configuration.claudeRootsBySource[.claudeCode]!.map(\.path)), expected)
+        XCTAssertEqual(Set(monitor!.configuration.claudeRootsBySource[.claudeDesktop]!.map(\.path)), expected)
+        XCTAssertEqual(runtime.displaySourceIdentity(client: "claudeCode"), runtime.displaySourceIdentity(client: "claudeDesktop"))
+        let codeIdentity = runtime.displaySourceIdentity(client: "claudeCode")
+        prefs[prefs.firstIndex { $0.client == .claudeDesktop }!].path = explicit.path
+        runtime.configure(preferences: prefs)
+        XCTAssertEqual(Set(monitor!.configuration.claudeRootsBySource[.claudeCode]!.map(\.path)), expected)
+        XCTAssertEqual(monitor!.configuration.claudeRootsBySource[.claudeDesktop]!.map(\.path), [explicit.resolvingSymlinksInPath().path])
+        XCTAssertEqual(runtime.displaySourceIdentity(client: "claudeCode"), codeIdentity)
+        XCTAssertNotEqual(codeIdentity, runtime.displaySourceIdentity(client: "claudeDesktop"))
+        XCTAssertNil(runtime.snapshot.configurationIssue)
+        prefs[prefs.firstIndex { $0.client == .claudeCode }!].path = accountProjects.path
+        runtime.configure(preferences: prefs)
+        XCTAssertEqual(monitor!.configuration.claudeRootsBySource[.claudeCode]!.map(\.path), [accountProjects.resolvingSymlinksInPath().path])
+        prefs[prefs.firstIndex { $0.client == .claudeDesktop }!].enabled = false
+        runtime.configure(preferences: prefs)
+        XCTAssertEqual(monitor!.configuration.enabledSources, [.claudeCode])
+        XCTAssertNil(monitor!.configuration.claudeRootsBySource[.claudeDesktop])
+        let explicitCodeIdentity = runtime.displaySourceIdentity(client: "claudeCode")
+        XCTAssertEqual(runtime.displaySourceIdentity(client: "claudeDesktop"), "unavailable")
+        runtime.configure(preferences: prefs, monitoringEnabled: false)
+        XCTAssertFalse(monitor!.isRunning)
+        XCTAssertEqual(runtime.displaySourceIdentity(client: "claudeCode"), "unavailable")
+        runtime.configure(preferences: prefs)
+        XCTAssertTrue(monitor!.isRunning)
+        XCTAssertEqual(runtime.displaySourceIdentity(client: "claudeCode"), explicitCodeIdentity)
+        XCTAssertEqual(runtime.displaySourceIdentity(client: "claudeDesktop"), "unavailable")
+        XCTAssertEqual(makeCount, 1, "accounts and configuration updates reuse one monitor")
+    }
+
+    func testAutomaticAccountAliasesAreDeduplicatedAndDoNotChangeSingleRootIdentity() throws {
+        let fm = FileManager.default
+        let home = fm.temporaryDirectory.appendingPathComponent("claude-live-alias-\(UUID())")
+        defer { try? fm.removeItem(at: home) }
+        let projects = home.appendingPathComponent(".claude/projects")
+        try fm.createDirectory(at: projects, withIntermediateDirectories: true)
+        let alias = home.appendingPathComponent("selected")
+        try fm.createSymbolicLink(at: alias, withDestinationURL: home.appendingPathComponent(".claude"))
+        var monitor: FakeClaudeLocalMonitor?
+        let runtime = ClaudeLocalRuntime(home: home, environment: ["CLAUDE_CONFIG_DIR": alias.path]) { _, configuration in
+            let fake = FakeClaudeLocalMonitor(configuration: configuration); monitor = fake; return fake
+        }
+        var prefs = claudePreferences(codeEnabled: true, desktopEnabled: false, sharedPath: "")
+        runtime.configure(preferences: prefs)
+        XCTAssertEqual(monitor!.configuration.claudeRootsBySource[.claudeCode]!.map(\.path), [projects.resolvingSymlinksInPath().path])
+        let identity = runtime.displaySourceIdentity(client: "claudeCode")
+        prefs[prefs.firstIndex { $0.client == .claudeCode }!].path = projects.path + "/./"
+        runtime.configure(preferences: prefs)
+        XCTAssertEqual(runtime.displaySourceIdentity(client: "claudeCode"), identity)
+        XCTAssertEqual(monitor!.updates, 1)
+    }
+
     private func claudePreferences(codeEnabled: Bool, desktopEnabled: Bool, sharedPath: String) -> [MultiClientUsagePreference] {
         var values = MultiClientUsagePreference.defaults
         for index in values.indices {

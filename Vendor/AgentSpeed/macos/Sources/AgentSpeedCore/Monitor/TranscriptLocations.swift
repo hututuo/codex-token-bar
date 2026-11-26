@@ -215,8 +215,22 @@ extension MonitorConfiguration {
         }
     }
 
+    /// Claude ownership is resolved before roots are coalesced for one physical read.
+    func resolvedClaudeRoots(for source: SourceKind) -> [String] {
+        let urls = claudeRootsBySource[source] ?? automaticRoots[.claude] ?? [claudeRoot ?? TranscriptLocations.defaultClaudeRoot]
+        return Array(Set(urls.map {
+            TranscriptDiscovery.normalizedRoot($0.standardizedFileURL.resolvingSymlinksInPath().path)
+        })).sorted()
+    }
+
     /// Every root of a family: the configured one, else the defaults.
     func resolvedRoots(for family: TranscriptFamily) -> [String] {
+        if family == .claude {
+            let sources = family.sources.filter { enabledSources.contains($0) }
+            let roots = Set(sources.flatMap { resolvedClaudeRoots(for: $0) }).sorted()
+            // Retain a disabled placeholder for callers that request a family's first root.
+            return roots.isEmpty ? [TranscriptDiscovery.normalizedRoot((claudeRoot ?? TranscriptLocations.defaultClaudeRoot).path)] : roots
+        }
         let automatic = automaticRoots[family].map { urls in
             switch family {
             case .antigravity: urls.map(TranscriptLocations.antigravityConversations)
@@ -277,6 +291,7 @@ extension MonitorConfiguration {
     /// True when switching between the two configurations requires reading the transcripts again.
     func requiresRescan(comparedTo other: MonitorConfiguration) -> Bool {
         enabledSources != other.enabledSources
+            || [SourceKind.claudeCode, .claudeDesktop].contains { resolvedClaudeRoots(for: $0) != other.resolvedClaudeRoots(for: $0) }
             || TranscriptFamily.allCases.contains { resolvedRoots(for: $0) != other.resolvedRoots(for: $0) }
             || resolvedOpencodeRoot != other.resolvedOpencodeRoot
             || resolvedZcodeRoot != other.resolvedZcodeRoot

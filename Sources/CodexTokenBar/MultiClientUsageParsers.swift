@@ -8,16 +8,18 @@ enum MultiClientUsageParserError: Error, Equatable {
 
 /// Parses only locally stored usage records. Transcript text and prompt contents are ignored.
 enum MultiClientUsageParsers {
-    /// Re-read old Claude files once to enrich the same v1 events with TTL metadata.
-    /// This is a scanner checkpoint revision, not a database or event identity version.
-    static func checkpointIdentity(_ identity: String, client: UsageClient) -> String {
-        guard client == .claudeCode || client == .claudeDesktop else { return identity }
-        let prefix = "claude-cache-lifetimes-v1|"
+    /// Replay older scanner contracts once, retaining existing database schemas and event IDs.
+    /// OpenCode's expanded SQLite row limit does not revise JSON transcript checkpoints.
+    static func checkpointIdentity(_ identity: String, client: UsageClient, isDatabase: Bool = false) -> String {
+        let prefix: String
+        if client == .claudeCode || client == .claudeDesktop { prefix = "claude-cache-lifetimes-v1|" }
+        else if client == .opencode && isDatabase { prefix = "opencode-sqlite-1m-v1|" }
+        else { return identity }
         return identity.hasPrefix(prefix) ? identity : prefix + identity
     }
     static let maximumInputBytes = 16 * 1_024 * 1_024
     static let maximumOpenCodePageSize = 500
-    private static let maximumOpenCodeRowBytes = 64 * 1_024
+    private static let maximumOpenCodeRowBytes = 1_024 * 1_024
 
     private typealias Object = [String: Any]
 
@@ -110,54 +112,57 @@ enum MultiClientUsageParsers {
                 """
             bindings = []
         }
-        let rows: [OpenCodeRawRow] = try database.readRows(sql, bindings: bindings) { row in
-            OpenCodeRawRow(
-                id: row.text(0),
-                sessionID: row.text(1),
-                type: row.text(2),
-                createdMilliseconds: row.int64(3),
-                updatedMilliseconds: row.int64(4),
-                data: row.text(5),
-                dataByteCount: row.int64(6) ?? 0,
-                sessionCreatedMilliseconds: row.int64(7)
-            )
-        }
-
-        let isComplete = rows.count <= limit
-        let consumedRows = Array(rows.prefix(limit))
+        var consumedRows = 0
+        var isComplete = true
+        var nextCursor: OpenCodeDatabaseCursor?
         var events: [ClientUsageEvent] = []
         var malformed = 0
         var oversized = 0
-        for row in consumedRows {
-            if row.dataByteCount > Int64(maximumOpenCodeRowBytes) {
-                oversized += 1
-                continue
+        // Consume one raw JSON row at a time: 500 valid 1 MiB messages must not retain
+        // a second, page-sized array of transcript contents alongside normalized events.
+        try database.forEachRow(sql, bindings: bindings) { statement in
+            guard consumedRows < limit else { isComplete = false; return }
+            consumedRows += 1
+            autoreleasepool {
+                let row = OpenCodeRawRow(
+                    id: statement.text(0),
+                    sessionID: statement.text(1),
+                    type: statement.text(2),
+                    createdMilliseconds: statement.int64(3),
+                    updatedMilliseconds: statement.int64(4),
+                    data: statement.text(5),
+                    dataByteCount: statement.int64(6) ?? 0,
+                    sessionCreatedMilliseconds: statement.int64(7)
+                )
+                if let id = row.id, let updatedAt = row.updatedMilliseconds {
+                    nextCursor = OpenCodeDatabaseCursor(updatedAtMilliseconds: updatedAt, messageID: id)
+                } else { nextCursor = nil }
+                if row.dataByteCount > Int64(maximumOpenCodeRowBytes) {
+                    oversized += 1
+                    return
+                }
+                guard let id = row.id,
+                      let sessionID = row.sessionID,
+                      let type = row.type,
+                      let dataString = row.data,
+                      let dataBytes = dataString.data(using: .utf8),
+                      let object = try? JSONSerialization.jsonObject(with: dataBytes) as? Object
+                else {
+                    malformed += 1
+                    return
+                }
+                if let event = openCodeEvent(
+                    id: id,
+                    sessionID: sessionID,
+                    type: type,
+                    rowCreatedMs: row.createdMilliseconds,
+                    rowUpdatedMs: row.updatedMilliseconds,
+                    sessionCreatedMs: row.sessionCreatedMilliseconds,
+                    data: object
+                ) {
+                    events.append(event)
+                }
             }
-            guard let id = row.id,
-                  let sessionID = row.sessionID,
-                  let type = row.type,
-                  let dataString = row.data,
-                  let dataBytes = dataString.data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: dataBytes) as? Object
-            else {
-                malformed += 1
-                continue
-            }
-            if let event = openCodeEvent(
-                id: id,
-                sessionID: sessionID,
-                type: type,
-                rowCreatedMs: row.createdMilliseconds,
-                rowUpdatedMs: row.updatedMilliseconds,
-                sessionCreatedMs: row.sessionCreatedMilliseconds,
-                data: object
-            ) {
-                events.append(event)
-            }
-        }
-        let nextCursor: OpenCodeDatabaseCursor? = consumedRows.last.flatMap { row -> OpenCodeDatabaseCursor? in
-            guard let id = row.id, let updatedAt = row.updatedMilliseconds else { return nil }
-            return OpenCodeDatabaseCursor(updatedAtMilliseconds: updatedAt, messageID: id)
         }
         return OpenCodeDatabasePage(
             events: deduplicated(events).sorted(by: eventOrder),

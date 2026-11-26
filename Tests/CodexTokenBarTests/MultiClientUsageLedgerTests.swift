@@ -408,12 +408,71 @@ final class MultiClientUsageLedgerTests: XCTestCase {
         XCTAssertEqual(try original.readRows("SELECT id FROM future_proof") { $0.int(0) }.first!, 42)
     }
 
+    func testReadOnlyCacheRankingRejectsFutureSchemaWithoutChangingExistingLedger() throws {
+        let url = root.appendingPathComponent("future-rankings.sqlite")
+        let ledger = try MultiClientUsageLedger(url: url)
+        var rankedEvent = event()
+        rankedEvent.inputTokens = 2_000
+        _ = try ledger.ingest([rankedEvent], client: .claudeCode, sourceKey: "fixture",
+                              checkpoint: .init(offset: 100, size: 100, modified: 10, identity: "fixture"))
+        let original = SQLiteDatabaseDriver(url: url)
+        try original.execute("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE; PRAGMA user_version=99")
+        let before = try Data(contentsOf: url)
+        let filesBefore = try FileManager.default.contentsOfDirectory(atPath: root.path).sorted()
+
+        XCTAssertThrowsError(try MultiClientUsageLedger.readOnlyCacheRankingProjection(url: url, clients: [.claudeCode])) { error in
+            guard let ledgerError = error as? MultiClientUsageLedger.LedgerError,
+                  case .newerSchema(let version) = ledgerError else {
+                return XCTFail("Expected the future-schema admission error, got \(error)")
+            }
+            XCTAssertEqual(version, 99)
+        }
+
+        XCTAssertEqual(try Data(contentsOf: url), before)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path).sorted(), filesBefore)
+        for suffix in ["-wal", "-shm", "-journal"] {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: url.path + suffix))
+        }
+        XCTAssertEqual(try original.readRows("PRAGMA user_version") { $0.int(0) }.first!, 99)
+        XCTAssertEqual(try original.readRows("SELECT COUNT(*) FROM client_usage_revisions") { $0.int(0) }.first!, 1)
+        XCTAssertEqual(try original.readRows("SELECT offset FROM client_file_checkpoints") { $0.int64(0) }.first!, 100)
+    }
+
+    func testReadOnlyCacheRankingReadsCurrentSchemaWithoutChangingExistingLedger() throws {
+        let url = root.appendingPathComponent("current-rankings.sqlite")
+        let ledger = try MultiClientUsageLedger(url: url)
+        var rankedEvent = event()
+        rankedEvent.inputTokens = 2_000
+        _ = try ledger.ingest([rankedEvent])
+        let expected = try ledger.cacheRankingProjection(clients: [.claudeCode])
+        let original = SQLiteDatabaseDriver(url: url)
+        try original.execute("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE")
+        let before = try Data(contentsOf: url)
+        let filesBefore = try FileManager.default.contentsOfDirectory(atPath: root.path).sorted()
+
+        let actual = try MultiClientUsageLedger.readOnlyCacheRankingProjection(url: url, clients: [.claudeCode])
+
+        XCTAssertEqual(actual, expected)
+        XCTAssertEqual(actual.matchingRequestCount, 1)
+        XCTAssertEqual(actual.requests.first?.eventID, rankedEvent.eventID)
+        XCTAssertEqual(try Data(contentsOf: url), before)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path).sorted(), filesBefore)
+        XCTAssertEqual(try original.readRows("PRAGMA user_version") { $0.int(0) }.first!, MultiClientUsageLedger.schemaVersion)
+        XCTAssertEqual(try original.readRows("SELECT COUNT(*) FROM client_usage_revisions") { $0.int(0) }.first!, 1)
+    }
+
     func testCurrentVersionWithUnrelatedSchemaIsRejectedBeforeAnyWrite() throws {
         let url = root.appendingPathComponent("wrong-shape.sqlite")
         let original = SQLiteDatabaseDriver(url: url)
         try original.execute("CREATE TABLE unrelated(id INTEGER PRIMARY KEY); INSERT INTO unrelated VALUES(42); PRAGMA user_version=2")
         let before = try Data(contentsOf: url)
         XCTAssertThrowsError(try MultiClientUsageLedger(url: url))
+        XCTAssertThrowsError(try MultiClientUsageLedger.readOnlyCacheRankingProjection(url: url, clients: [.claudeCode])) { error in
+            guard let ledgerError = error as? MultiClientUsageLedger.LedgerError,
+                  case .incompatibleSchema = ledgerError else {
+                return XCTFail("Expected the schema admission error, got \(error)")
+            }
+        }
         XCTAssertEqual(try Data(contentsOf: url), before)
         XCTAssertFalse(FileManager.default.fileExists(atPath: url.path + "-wal"))
         XCTAssertEqual(try original.readRows("SELECT id FROM unrelated") { $0.int(0)! }, [42])

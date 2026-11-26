@@ -76,6 +76,9 @@ struct AntigravityReader: Sendable {
         if database == nil {
             do {
                 database = try AntigravityDatabase(path: path)
+            } catch .emptyPlaceholder {
+                // Keep no connection or unsupported state: the same file can be initialized in place later.
+                return .read(AntigravityBatch())
             } catch .unsupported {
                 return .unsupported
             } catch {

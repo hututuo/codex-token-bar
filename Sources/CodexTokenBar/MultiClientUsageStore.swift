@@ -92,6 +92,9 @@ actor MultiClientUsageScanner {
         var diagnostics: [String] = []
         scanNotices = []
         var entries: [(UsageClient, URL)] = []
+        let sharesClaudeDiscovery = enabled.contains { $0.client == .claudeCode && $0.path.isEmpty }
+            && enabled.contains { $0.client == .claudeDesktop && $0.path.isEmpty }
+        var claudeDiscovery: MultiClientUsageDiscovery.ClaudePairResult?
         for preference in enabled {
             let files: [URL]
             if preference.client == .antigravity {
@@ -99,7 +102,14 @@ actor MultiClientUsageScanner {
                 files = discovery.files
                 if discovery.truncated { diagnostics.append("Antigravity：发现达到读取上限，请缩小目录范围；当前不是完整历史") }
             } else if preference.path.isEmpty {
-                let discovery = MultiClientUsageDiscovery.discover(client: preference.client, home: home, environment: environment)
+                let discovery: MultiClientUsageDiscovery.Result
+                if sharesClaudeDiscovery, preference.client == .claudeCode || preference.client == .claudeDesktop {
+                    let paired = claudeDiscovery ?? MultiClientUsageDiscovery.discoverClaudePair(home: home, environment: environment)
+                    claudeDiscovery = paired
+                    discovery = preference.client == .claudeCode ? paired.code : paired.desktop
+                } else {
+                    discovery = MultiClientUsageDiscovery.discover(client: preference.client, home: home, environment: environment)
+                }
                 files = discovery.files
                 if discovery.truncated { diagnostics.append("\(preference.client.displayName)：自动发现未完整完成，部分目录或记录未读取；当前不是完整历史") }
             } else {
@@ -267,7 +277,7 @@ actor MultiClientUsageScanner {
             let digest = SHA256.hash(data: prefix).map { String(format: "%02x", $0) }.joined()
             identity += ":" + String(width) + ":" + digest
         }
-        identity = MultiClientUsageParsers.checkpointIdentity(identity, client: client)
+        identity = MultiClientUsageParsers.checkpointIdentity(identity, client: client, isDatabase: isDatabase)
         if let saved, saved.size == size, saved.modified == modified, saved.identity == identity, saved.offset >= size { return }
         let sessionHint = client == .deepseek ? try deepSeekSession(url, identity: identity) : url.deletingPathExtension().lastPathComponent
         let events: [ClientUsageEvent]
@@ -347,7 +357,7 @@ actor MultiClientUsageScanner {
         }
         _ = try ledger.ingest(events, client: client, sourceKey: key,
                               checkpoint: MultiClientFileCheckpoint(offset: offset, size: size, modified: checkpointModified,
-                                  identity: MultiClientUsageParsers.checkpointIdentity(checkpointIdentity, client: client)))
+                                  identity: MultiClientUsageParsers.checkpointIdentity(checkpointIdentity, client: client, isDatabase: isDatabase)))
     }
     enum ScanError: LocalizedError {
         case oversized
@@ -488,6 +498,9 @@ final class MultiClientUsageStore: ObservableObject {
     }
     func refresh() {
         guard !refreshing else { return }
+        // Reconcile newly registered local accounts on the existing refresh
+        // cadence; unchanged monitor configurations do not restart the core.
+        syncLocalRuntime()
         refreshing = true
         let preferences = preferences, generation = generation
         refreshTask = Task { [weak self, scanner] in

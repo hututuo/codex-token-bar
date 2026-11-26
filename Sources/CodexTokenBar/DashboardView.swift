@@ -637,13 +637,13 @@ struct DashboardView: View {
                 .disabled(store.isRefreshing)
 
                 Button {
-                    presentExportResult(Exporter.exportCSV(snapshot: store.snapshot))
+                    presentExportResult(Exporter.exportCSV(snapshot: displayedSnapshot))
                 } label: {
                     Label("导出 CSV", systemImage: "tablecells")
                 }
 
                 Button {
-                    presentExportResult(Exporter.exportPNG(snapshot: store.snapshot))
+                    presentExportResult(Exporter.exportPNG(snapshot: displayedSnapshot))
                 } label: {
                     Label("导出 PNG", systemImage: "photo")
                 }
@@ -1072,12 +1072,16 @@ struct DashboardView: View {
         exportAlert = presentation
     }
 
+    private var displayedSnapshot: DashboardSnapshot {
+        clientProjectionCache.value(codex: store.snapshot, clients: clients, allowed: allowedClients)
+    }
+
     @ViewBuilder
     private func dashboardContent(logicalWidth: CGFloat) -> some View {
         // Keep offscreen historical charts out of live-rate layout passes. The
         // sections retain their own state; ScrollViewReader still targets the
         // chart's stable ID when jumping from the radar card.
-        let display = clientProjectionCache.value(codex: store.snapshot, clients: clients, allowed: allowedClients)
+        let display = displayedSnapshot
         let costs = codexOnly ? nil : clientCostCache.value(codex: store.snapshot,
             todayCodex: store.todayModelBreakdowns, rows: clients.summaries, today: clients.todaySummaries,
             sevenDay: clients.sevenDaySummaries, clientsUpdatedAt: clients.updatedAt, allowed: allowedClients)

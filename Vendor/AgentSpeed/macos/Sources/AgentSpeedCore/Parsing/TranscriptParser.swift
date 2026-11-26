@@ -151,11 +151,11 @@ struct TranscriptParser: Sendable {
 
     /// `root` is the root folder the file was discovered under (omp and WorkBuddy derive `isSubagent` from it,
     /// METRICS 4.7, 4.9).
-    init(family: TranscriptFamily, agentId: String, fileID: FileID, root: String? = nil) {
+    init(family: TranscriptFamily, agentId: String, fileID: FileID, root: String? = nil, selectedSources: Set<SourceKind>? = nil) {
         self.family = family
         switch family {
         case .codex: codex = ParserStorage(CodexParser(agentId: agentId, fileID: fileID))
-        case .claude: claude = ParserStorage(ClaudeParser(agentId: agentId, fileID: fileID))
+        case .claude: claude = ParserStorage(ClaudeParser(agentId: agentId, fileID: fileID, selectedSources: selectedSources))
         case .dsh: dsh = ParserStorage(DshParser(agentId: agentId, fileID: fileID))
         case .gemini: gemini = ParserStorage(GeminiParser(agentId: agentId, fileID: fileID))
         case .omp: omp = ParserStorage(OmpParser(agentId: agentId, fileID: fileID, root: root))

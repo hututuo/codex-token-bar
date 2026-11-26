@@ -109,6 +109,43 @@ final class AntigravityIntegrationTests: XCTestCase {
         XCTAssertEqual(disabled.summaries, first.summaries)
     }
 
+    func testEmptyConversationPlaceholderDoesNotWarnAndIsRetriedAfterInitialization() async throws {
+        let root = try temporary(), store = root.appendingPathComponent(".gemini/antigravity-acp/conversations")
+        try FileManager.default.createDirectory(at: store, withIntermediateDirectories: true)
+        let valid = store.appendingPathComponent("11111111-2222-4333-8444-555555555555.db")
+        let placeholder = store.appendingPathComponent("22222222-3333-4444-8555-666666666666.db")
+        try Data().write(to: placeholder)
+        let metadata = Data([0x0a,0x06,0x08,0x80,0x9b,0xfb,0xd6,0x06, 0x3a,0x06,0x08,0x83,0x9b,0xfb,0xd6,0x06,
+                             0x4a,0x04,0x10,0x64,0x18,0x14])
+        let writer = SQLiteDatabaseDriver(url: valid)
+        try writer.execute("CREATE TABLE steps(idx INTEGER,step_type INTEGER,status INTEGER,metadata BLOB)")
+        try writer.execute("INSERT INTO steps VALUES(1,15,3,?)", bindings: [.blob(metadata)])
+        let scanner = MultiClientUsageScanner(databaseURL: root.appendingPathComponent("ledger.sqlite"), home: root, environment: [:])
+        var preference = try XCTUnwrap(MultiClientUsagePreference.defaults.first { $0.client == .antigravity })
+        preference.enabled = true
+        let before = try FileManager.default.contentsOfDirectory(atPath: store.path).sorted()
+        let first = try await scanner.scan([preference])
+        XCTAssertTrue(first.diagnostics.isEmpty)
+        XCTAssertEqual(first.summaries.reduce(0) { $0 + $1.requests }, 1)
+        XCTAssertEqual(try Data(contentsOf: placeholder), Data())
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: store.path).sorted(), before)
+        let repeatedEmpty = try await scanner.scan([preference])
+        XCTAssertEqual(repeatedEmpty.summaries, first.summaries)
+        XCTAssertTrue(repeatedEmpty.diagnostics.isEmpty)
+
+        let initialized = SQLiteDatabaseDriver(url: placeholder)
+        try initialized.execute("CREATE TABLE steps(idx INTEGER,step_type INTEGER,status INTEGER,metadata BLOB)")
+        try initialized.execute("INSERT INTO steps VALUES(1,15,3,?)", bindings: [.blob(metadata)])
+        let second = try await scanner.scan([preference])
+        let replay = try await scanner.scan([preference])
+        XCTAssertTrue(second.diagnostics.isEmpty)
+        XCTAssertEqual(second.summaries.reduce(0) { $0 + $1.requests }, 2)
+        XCTAssertEqual(second.summaries.reduce(Int64(0)) { $0 + $1.inputTokens }, 200)
+        XCTAssertEqual(second.summaries.reduce(Int64(0)) { $0 + $1.outputTokens }, 40)
+        XCTAssertEqual(replay.summaries, second.summaries)
+        XCTAssertTrue(replay.diagnostics.isEmpty)
+    }
+
     func testWALCompletionAndLateModelUpdateReachSameLedgerEvent() async throws {
         let root = try temporary(), store = root.appendingPathComponent("conversations")
         try FileManager.default.createDirectory(at: store, withIntermediateDirectories: true)

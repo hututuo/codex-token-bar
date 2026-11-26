@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using AgentSpeed.Core;
+using AgentSpeed.Core.Antigravity;
 using AgentSpeed.Core.Parsing;
 
 namespace CodexTokenBar.AgentSpeedReporter;
@@ -33,7 +34,48 @@ internal static class ParserCompatibilitySelfTests
 
         CodexResetClearsPaginatedOrdinal();
         ClaudeDisplayTitles();
-        Console.WriteLine($"PASS: upstream parser compatibility ({count} fixtures, Codex reset and Claude display titles)");
+        AntigravityStoreLocations();
+        Console.WriteLine($"PASS: upstream parser compatibility ({count} fixtures, Codex reset, Claude display titles and Antigravity stores)");
+    }
+
+    private static void AntigravityStoreLocations()
+    {
+        string[] names = ["antigravity-cli", "antigravity", "antigravity-ide", "antigravity-acp"];
+        var home = Path.Combine(Path.GetTempPath(), "tokenbar-antigravity-path-fixture");
+        var gemini = Path.Combine(home, ".gemini");
+        CheckPaths("default", names.Select(name => Path.Combine(gemini, name)), AntigravityPaths.Stores(gemini, null));
+        CheckPaths("empty-setting", AntigravityPaths.DefaultStores(gemini), AntigravityPaths.Stores(gemini, ""));
+        CheckPaths("public-default", names, LiveMonitor.DefaultAntigravityStores.Select(Path.GetFileName));
+        foreach (var parent in new[] { gemini, Path.Combine(home, "antigravity-chat"), Path.Combine(home, "custom-store") })
+        {
+            // Resolution is independent of existence: child stores created after monitor startup must join.
+            var expected = new[] { parent }.Concat(names.Select(name => Path.Combine(parent, name)));
+            CheckPaths("parent", expected, AntigravityPaths.Stores(gemini, parent + Path.DirectorySeparatorChar));
+            CheckPaths("public-parent", expected, LiveMonitor.AntigravityStores(parent));
+            foreach (var name in names)
+            {
+                var store = Path.Combine(parent, name);
+                CheckPaths("direct-store", [store], AntigravityPaths.Stores(gemini, store));
+                var conversations = Path.Combine(store, "conversations");
+                CheckPaths("direct-conversations", [conversations], AntigravityPaths.Stores(gemini, conversations));
+                CheckPaths("conversations-folder", [conversations], AntigravityPaths.Stores(gemini, store).Select(AntigravityPaths.ConversationsOf));
+            }
+        }
+
+        var upper = Path.Combine(home, "ANTIGRAVITY-ACP");
+        CheckPaths("case-insensitive-direct-store", [upper], AntigravityPaths.Stores(gemini, upper));
+        var upperConversations = Path.Combine(upper, "CONVERSATIONS");
+        CheckPaths("case-insensitive-conversations", [upperConversations], AntigravityPaths.Stores(gemini, upperConversations));
+        var backup = Path.Combine(home, "antigravity-backup");
+        CheckPaths("backup-store", [], AntigravityPaths.Stores(gemini, backup));
+        CheckPaths("backup-conversations", [], AntigravityPaths.Stores(gemini, Path.Combine(backup, "conversations")));
+        var copiedBackup = Path.Combine(home, "CUSTOM-BACKUP");
+        CheckPaths("case-insensitive-backup", [], AntigravityPaths.Stores(gemini, copiedBackup));
+
+        static void CheckPaths(string fixture, IEnumerable<string?> expected, IEnumerable<string?> actual)
+        {
+            Check("antigravity-" + fixture, "paths", string.Join("|", expected), string.Join("|", actual), "store root resolution");
+        }
     }
 
     private static void ClaudeDisplayTitles()

@@ -13,6 +13,8 @@ final class AntigravityDatabase: @unchecked Sendable {
     enum OpenError: Error, Equatable {
         case missing
         case unreadable
+        /// A conversation file reserved by the server but not initialized yet; retry on later reads.
+        case emptyPlaceholder
         /// No `steps` table with the columns of METRICS 4.8.
         case unsupported
     }
@@ -45,6 +47,9 @@ final class AntigravityDatabase: @unchecked Sendable {
         self.path = path
         openedStat = stat
         let hasWAL = FileStat.lstat(path + "-wal") != nil
+        // Do not open an uninitialized placeholder or create sidecars. A WAL may contain the schema and rows,
+        // so an empty main file is only a placeholder when there is no WAL path at all.
+        guard stat.size != 0 || hasWAL else { throw .emptyPlaceholder }
         var immutable = !hasWAL && Self.headerSaysWAL(path)
         var opened: SQLiteConnection
         do {

@@ -26,6 +26,21 @@ enum MultiClientUsageDiscovery {
         var truncated: Bool
     }
 
+    struct ClaudePairResult: Sendable {
+        var code: Result
+        var desktop: Result
+        /// Actual classifier calls and bytes read, excluding reuse by the other client.
+        var classificationCount: Int
+        var classificationBytesRead: Int
+    }
+
+    private struct ClaudeSelection {
+        var files: [URL] = []
+        var remainingClassificationBytes = MultiClientUsageDiscovery.maximumClaudeClassificationTotalBytes
+        var truncated: Bool
+        var finished = false
+    }
+
     /// Convenience wrapper for callers that do not need to surface a bounded-discovery notice.
     static func files(client: UsageClient, home: URL, environment: [String: String]) -> [URL] {
         discover(client: client, home: home, environment: environment).files
@@ -84,6 +99,24 @@ enum MultiClientUsageDiscovery {
         }
     }
 
+    /// Automatic Claude sources share one scan's traversal, ordering and classification reads.
+    /// Each client still consumes its own classification and file-selection budgets.
+    static func discoverClaudePair(home: URL, environment: [String: String]) -> ClaudePairResult {
+        let roots = claudeProjectRoots(home: home, environment: environment)
+        // Both Claude clients have identical directory and candidate-file predicates.
+        let walked = walkCandidates(roots: roots.paths, client: .claudeCode)
+        let selected = selectClaude(mostRecentFirst(walked.files), clients: [.claudeCode, .claudeDesktop])
+        var code = selected.results[0]
+        var desktop = selected.results[1]
+        code.truncated = code.truncated || walked.truncated || roots.incomplete
+        desktop.truncated = desktop.truncated || walked.truncated || roots.incomplete
+        return ClaudePairResult(
+            code: code, desktop: desktop,
+            classificationCount: selected.classificationCount,
+            classificationBytesRead: selected.classificationBytesRead
+        )
+    }
+
     /// The launcher's v1 registry contains IDs/labels only. Derive known transcript paths;
     /// never crawl account storage, Desktop profiles, settings or authentication files.
     static func claudeProjectRoots(home: URL, environment: [String: String]) -> (paths: [URL], incomplete: Bool) {
@@ -131,6 +164,12 @@ enum MultiClientUsageDiscovery {
     }
 
     private static func walk(roots: [URL], client: UsageClient) -> Result {
+        let walked = walkCandidates(roots: roots, client: client)
+        let selected = mostRecent(walked.files, client: client)
+        return Result(files: selected.files, truncated: walked.truncated || selected.truncated)
+    }
+
+    private static func walkCandidates(roots: [URL], client: UsageClient) -> (files: [Candidate], truncated: Bool) {
         var found: [Candidate] = []
         var seenRoots: Set<String> = []
         var seenFiles: Set<String> = []
@@ -150,8 +189,7 @@ enum MultiClientUsageDiscovery {
             if result.truncated { truncated = true }
         }
         if remainingEntries == 0 { truncated = true }
-        let selected = mostRecent(found, client: client)
-        return Result(files: selected.files, truncated: truncated || selected.truncated)
+        return (found, truncated)
     }
 
     private static func walk(root: URL, client: UsageClient) -> Result {
@@ -204,40 +242,67 @@ enum MultiClientUsageDiscovery {
         return (files, visitedEntries, truncated)
     }
 
-    private static func mostRecent(_ candidates: [Candidate], client: UsageClient) -> Result {
-        let sorted = candidates.sorted {
+    private static func mostRecentFirst(_ candidates: [Candidate]) -> [Candidate] {
+        candidates.sorted {
             if $0.modifiedNanoseconds != $1.modifiedNanoseconds {
                 return $0.modifiedNanoseconds > $1.modifiedNanoseconds
             }
             return $0.url.path < $1.url.path
         }
+    }
+
+    private static func mostRecent(_ candidates: [Candidate], client: UsageClient) -> Result {
+        let sorted = mostRecentFirst(candidates)
         guard client == .claudeCode || client == .claudeDesktop else {
             return Result(files: Array(sorted.prefix(maximumFiles).map(\.url)), truncated: sorted.count > maximumFiles)
         }
+        return selectClaude(sorted, clients: [client]).results[0]
+    }
 
-        var selected: [URL] = []
-        var remainingClassificationBytes = maximumClaudeClassificationTotalBytes
-        var truncated = sorted.count > maximumClaudeClassificationCandidates || sorted.count > maximumFiles
+    private static func selectClaude(
+        _ sorted: [Candidate], clients: [UsageClient]
+    ) -> (results: [Result], classificationCount: Int, classificationBytesRead: Int) {
+        var selections = clients.map { _ in
+            ClaudeSelection(truncated: sorted.count > maximumClaudeClassificationCandidates || sorted.count > maximumFiles)
+        }
+        var classificationCount = 0
+        var classificationBytesRead = 0
         for candidate in sorted.prefix(maximumClaudeClassificationCandidates) {
-            guard remainingClassificationBytes > 0 else {
-                truncated = true
-                break
-            }
-            let classification = claudeTranscriptClient(
-                candidate.url,
-                byteLimit: min(maximumClaudeClassificationBytes, remainingClassificationBytes)
-            )
-            remainingClassificationBytes -= classification.bytesRead
-            if classification.wasIncomplete { truncated = true }
-            if classification.client == client {
-                selected.append(candidate.url)
-                if selected.count == maximumFiles {
-                    truncated = truncated || sorted.count > selected.count
-                    break
+            if selections.allSatisfy(\.finished) { break }
+            // Reuse only this candidate and an identical requested read bound. No file state
+            // survives the scan; appends and rewrites are classified again on the next scan.
+            var cached: (byteLimit: Int, classification: ClaudeClassification)?
+            for index in selections.indices where !selections[index].finished {
+                guard selections[index].remainingClassificationBytes > 0 else {
+                    selections[index].truncated = true
+                    selections[index].finished = true
+                    continue
+                }
+                let byteLimit = min(maximumClaudeClassificationBytes, selections[index].remainingClassificationBytes)
+                let classification: ClaudeClassification
+                if let cached, cached.byteLimit == byteLimit {
+                    classification = cached.classification
+                } else {
+                    classification = claudeTranscriptClient(candidate.url, byteLimit: byteLimit)
+                    classificationCount += 1
+                    classificationBytesRead += classification.bytesRead
+                    cached = (byteLimit, classification)
+                }
+                selections[index].remainingClassificationBytes -= classification.bytesRead
+                if classification.wasIncomplete { selections[index].truncated = true }
+                if classification.client == clients[index] {
+                    selections[index].files.append(candidate.url)
+                    if selections[index].files.count == maximumFiles {
+                        selections[index].truncated = selections[index].truncated || sorted.count > selections[index].files.count
+                        selections[index].finished = true
+                    }
                 }
             }
         }
-        return Result(files: selected, truncated: truncated)
+        return (
+            selections.map { Result(files: $0.files, truncated: $0.truncated) },
+            classificationCount, classificationBytesRead
+        )
     }
 
     /// Claude Code and Claude Desktop share the same directory tree. Classify a file using its first

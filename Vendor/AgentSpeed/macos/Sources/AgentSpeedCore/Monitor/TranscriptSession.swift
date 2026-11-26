@@ -94,6 +94,7 @@ final class TranscriptSession {
 
     struct Root: Sendable {
         var family: TranscriptFamily
+        var selectedSources: Set<SourceKind> = []
         var path: String
         var canonicalPath: String
         var enabled: Bool
@@ -125,6 +126,7 @@ final class TranscriptSession {
     let limits: ReadingLimits
     private(set) var roots: [Root]
     private var files: [String: TrackedFile] = [:]
+    private var claudeFileSources: [String: Set<SourceKind>] = [:]
     /// Incremental directory walks, by root path.
     private var indexes: [String: DirectoryIndex] = [:]
     private var deduper = Deduper()
@@ -169,9 +171,15 @@ final class TranscriptSession {
         self.limits = limits
         self.clock = clock
         engine = SpeedEngine(pricing: pricing)
+        let claudeSelections = Dictionary(uniqueKeysWithValues: [SourceKind.claudeCode, .claudeDesktop].map {
+            ($0, Set(configuration.resolvedClaudeRoots(for: $0)))
+        })
         roots = TranscriptFamily.allCases.flatMap { family in
             configuration.resolvedRoots(for: family).map { path in
-                Root(family: family, path: path, canonicalPath: path, enabled: configuration.reads(family), available: false,
+                let ownershipPath = family == .claude ? URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path : path
+                let selected = Set(family.sources.filter { configuration.enabledSources.contains($0)
+                    && (family != .claude || claudeSelections[$0]?.contains(ownershipPath) == true) })
+                return Root(family: family, selectedSources: selected, path: path, canonicalPath: path, enabled: !selected.isEmpty, available: false,
                      readable: MonitorConfiguration.isReadable(root: path, family: family),
                      detectionPath: family.isWorkBuddy ? TranscriptLocations.workbuddyDataFolder(ofRoot: path) : nil)
             }
@@ -229,6 +237,24 @@ final class TranscriptSession {
         return changed
     }
 
+    /// A source can use a different set of folders than its sibling in the same family.
+    func root(for source: SourceKind) -> Root {
+        let family = TranscriptFamily(source)!
+        guard family == .claude else { return root(for: family) }
+        let selected = roots.filter { $0.family == family && $0.selectedSources.contains(source) }
+        if let root = selected.first(where: \.detected) ?? selected.first { return root }
+        var placeholder = root(for: family)
+        placeholder.selectedSources = []
+        placeholder.path = ""
+        placeholder.canonicalPath = ""
+        placeholder.enabled = false
+        placeholder.available = false
+        placeholder.readable = false
+        placeholder.detectionPath = nil
+        placeholder.detected = false
+        return placeholder
+    }
+
     /// The family's first detected root, else its first root (Gemini CLI, omp and Antigravity can have several).
     func root(for family: TranscriptFamily) -> Root {
         roots.first { $0.family == family && $0.detected } ?? roots.first { $0.family == family }!
@@ -284,23 +310,38 @@ final class TranscriptSession {
         backlog.sort { TranscriptDiscovery.startupOrder($0.file, $1.file) }
         let ordered = backlog.map(\.tracked)
 
-        let jobs = ordered.map { DecodeJob(family: $0.family, reader: $0.reader, size: $0.lastStat.size) }
-        let decoded = Self.decodeInParallel(jobs, progress: progress, isCancelled: isCancelled)
-        let seededAt = DispatchTime.now().uptimeNanoseconds
-        for (file, result) in zip(ordered, decoded) {
-            guard let result else { continue }
-            file.reader = result.reader
-            if file.family.isDatabase { file.lastReadNs = seededAt }
-            summary.filesRead += 1
-            summary.bytesRead += Int64(result.read.bytesRead)
-            if result.read.didReset { file.resetParser() }
-            var upserts: [ResponseUpsert] = []
-            file.parser.consume(result.lines, deduper: &deduper) { upserts.append($0) }
-            let project = projectName(of: file)
-            for upsert in upserts { deliver(upsert, project: project, live: false) }
-            finishRead(of: file, result: result.read)
+        let jobs = ordered.map { DecodeJob(path: $0.path, family: $0.family, reader: $0.reader, size: $0.lastStat.size) }
+        let totalBytes = max(1, jobs.reduce(0.0) { $0 + Double(max(0, $1.size)) })
+        var completedBytes = 0.0
+        // A worker limit alone does not bound the completed outputs awaiting consumption.
+        // Decode a small window, consume it in the unchanged ownership order, then release it.
+        for window in Self.startupDecodeWindows(weights: jobs.map(\.weight)) {
+            guard !isCancelled() else { break }
+            let priorBytes = completedBytes
+            let batchBytes = jobs[window].reduce(0.0) { $0 + Double(max(0, $1.size)) }
+            var decoded = Self.decodeInParallel(Array(jobs[window]), progress: {
+                progress(min(1, (priorBytes + $0 * batchBytes) / totalBytes))
+            }, isCancelled: isCancelled)
+            for (slot, index) in window.enumerated() {
+                autoreleasepool {
+                    guard let result = decoded[slot] else { return }
+                    decoded[slot] = nil
+                    let file = ordered[index]
+                    file.reader = result.reader
+                    if file.family.isDatabase { file.lastReadNs = DispatchTime.now().uptimeNanoseconds }
+                    summary.filesRead += 1
+                    summary.bytesRead += Int64(result.read.bytesRead)
+                    if result.read.didReset { file.resetParser() }
+                    var upserts: [ResponseUpsert] = []
+                    file.parser.consume(result.lines, deduper: &deduper) { upserts.append($0) }
+                    let project = projectName(of: file)
+                    for upsert in upserts { deliver(upsert, project: project, live: false, file: file) }
+                    finishRead(of: file, result: result.read)
+                }
+            }
+            completedBytes += batchBytes
         }
-        closeIdleDatabases(nowNs: seededAt)
+        closeIdleDatabases(nowNs: DispatchTime.now().uptimeNanoseconds)
         if let opencode, opencode.exists {
             summary.filesDiscovered += 1
             if opencode.isReady {
@@ -324,9 +365,39 @@ final class TranscriptSession {
     }
 
     private struct DecodeJob: Sendable {
+        var path: String
         var family: TranscriptFamily
         var reader: TranscriptReader
         var size: Int64
+
+        var weight: Int64 {
+            let bytes = max(0, size)
+            guard TranscriptReader.isCompressedStream(path) else { return bytes }
+            let expanded = bytes.multipliedReportingOverflow(by: 8)
+            return expanded.overflow ? .max : expanded.partialValue
+        }
+    }
+
+    /// Preserve startup ordering while bounding all in-flight and completed decode outputs.
+    /// One oversized file is admitted alone, matching the existing per-file reader limits.
+    static func startupDecodeWindows(weights: [Int64], maxFiles: Int = 16, maxBytes: Int64 = 64 << 20) -> [Range<Int>] {
+        let files = max(1, maxFiles), budget = max(1, maxBytes)
+        var windows: [Range<Int>] = []
+        var start = 0
+        while start < weights.count {
+            var end = start
+            var bytes: Int64 = 0
+            while end < weights.count, end - start < files {
+                let weight = max(0, weights[end])
+                if end > start, weight > budget - bytes { break }
+                end += 1
+                if weight >= budget { break }
+                bytes += weight
+            }
+            windows.append(start..<end)
+            start = end
+        }
+        return windows
     }
 
     private struct DecodedFile: Sendable {
@@ -499,7 +570,7 @@ final class TranscriptSession {
             let readBoundary = SourceReadBoundary.now()
             if file.parser.refreshMetadata(deduper: &deduper, emit: { upserts.append($0) }) {
                 let observation = readContext.observation(at: readBoundary)
-                for upsert in upserts { deliver(upsert, project: projectName(of: file), live: true, observation: observation) }
+                for upsert in upserts { deliver(upsert, project: projectName(of: file), live: true, observation: observation, file: file) }
                 syncAgent(file)
                 recordReadObservation(observation)
                 changed = true
@@ -582,7 +653,7 @@ final class TranscriptSession {
             readObservation = readContext.observation(at: metadataBoundary)
         }
         for upsert in upserts {
-            deliver(upsert, project: projectName(of: file), live: live, observation: readObservation)
+            deliver(upsert, project: projectName(of: file), live: live, observation: readObservation, file: file)
         }
         upserts.removeAll(keepingCapacity: true)
         let result = file.reader.read(
@@ -598,7 +669,7 @@ final class TranscriptSession {
             guard !upserts.isEmpty else { return }
             let project = projectName(of: file)
             for upsert in upserts {
-                deliver(upsert, project: project, live: live, observation: readObservation)
+                deliver(upsert, project: project, live: live, observation: readObservation, file: file)
             }
             upserts.removeAll(keepingCapacity: true)
         }
@@ -640,7 +711,7 @@ final class TranscriptSession {
         var upserts: [ResponseUpsert] = []
         file.parser.consume(.antigravity(batch), deduper: &deduper) { upserts.append($0) }
         let project = projectName(of: file)
-        for upsert in upserts { deliver(upsert, project: project, live: live, observation: readObservation) }
+        for upsert in upserts { deliver(upsert, project: project, live: live, observation: readObservation, file: file) }
         finishRead(of: file, result: result)
         if live, file.state != previousState { recordReadObservation(readObservation) }
         return result.bytesRead > 0 || result.didReset
@@ -664,7 +735,7 @@ final class TranscriptSession {
         var upserts: [ResponseUpsert] = []
         file.parser.consume(result.lines, deduper: &deduper) { upserts.append($0) }
         let project = projectName(of: file)
-        for upsert in upserts { deliver(upsert, project: project, live: true, observation: readObservation) }
+        for upsert in upserts { deliver(upsert, project: project, live: true, observation: readObservation, file: file) }
         finishRead(of: file, result: result.read)
         if file.state != previousState { recordReadObservation(readObservation) }
         if file.wholeReadAgain {
@@ -771,9 +842,11 @@ final class TranscriptSession {
         _ upsert: ResponseUpsert,
         project: String,
         live: Bool,
-        observation: SourceReadObservation? = nil
+        observation: SourceReadObservation? = nil,
+        file: TrackedFile? = nil
     ) {
-        guard enabledSources.contains(upsert.record.source) else { return }
+        guard enabledSources.contains(upsert.record.source),
+              file.map({ allows(upsert.record.source, in: $0) }) ?? true else { return }
         if live { recordReadObservation(observation) }
         let nowMs = live ? clock() : nil
         if let event = engine.upsert(upsert.record, project: project, isCompletion: upsert.isCompletion, emitsEvents: live, nowMs: nowMs) {
@@ -798,14 +871,18 @@ final class TranscriptSession {
         if let newSource { trackedSessionCounts[newSource, default: 0] += 1 }
     }
 
+    private func allows(_ source: SourceKind, in file: TrackedFile) -> Bool {
+        file.family != .claude || claudeFileSources[file.path]?.contains(source) == true
+    }
+
     private func syncAgent(_ file: TrackedFile) {
         let state = file.state
         let countsOnlyMain = file.family.isWorkBuddy || file.family == .kimi || file.family == .grokBuild
-        let countedSource: SourceKind? = enabledSources.contains(state.source) && !(countsOnlyMain && state.isSubagent)
+        let countedSource: SourceKind? = enabledSources.contains(state.source) && allows(state.source, in: file) && !(countsOnlyMain && state.isSubagent)
             ? state.source : nil
         updateSnapshotFacts(file, to: .init(source: countedSource, lastLineMs: state.lastLineMs,
             malformed: state.malformedLines, unsupportedDatabase: file.family.isDatabase && file.isUnsupported))
-        if state.lastLineMs != nil, enabledSources.contains(state.source) {
+        if state.lastLineMs != nil, enabledSources.contains(state.source), allows(state.source, in: file) {
             let member = AgentParents.Member(id: file.path, family: file.family, thread: state.thread)
             if parentMembers.updateValue(member, forKey: file.path) != member { parentLinksAreStale = true }
             engine.setAgent(EngineAgent(id: file.path, state: state, parentId: parentLinks[file.path]))
@@ -880,9 +957,18 @@ final class TranscriptSession {
     // MARK: - Tracking
 
     private func track(_ file: DiscoveredFile, family: TranscriptFamily, root: String, start: FileTailer.Start) -> TrackedFile {
+        var selectedSources: Set<SourceKind>? = nil
+        if family == .claude {
+            // A selected folder may be nested in the sibling client's folder. Ownership
+            // belongs to every matching selection, regardless of which walk found it first.
+            selectedSources = Set(roots.filter {
+                $0.family == .claude && file.path.hasPrefix($0.path == "/" ? "/" : $0.path + "/")
+            }.flatMap(\.selectedSources))
+            claudeFileSources[file.path] = selectedSources
+        }
         let tracked = TrackedFile(
             path: file.path, family: family, root: root, fileID: nextFileID, stat: file.stat, start: start,
-            maxLineBytes: limits.maxLineBytes
+            maxLineBytes: limits.maxLineBytes, selectedSources: selectedSources
         )
         nextFileID &+= 1
         files[file.path] = tracked
@@ -891,6 +977,7 @@ final class TranscriptSession {
 
     private func untrack(_ path: String) {
         guard let file = files.removeValue(forKey: path) else { return }
+        claudeFileSources.removeValue(forKey: path)
         removedMalformedLines += file.state.malformedLines
         updateSnapshotFacts(file, to: .init())
         unreadablePaths.remove(path)

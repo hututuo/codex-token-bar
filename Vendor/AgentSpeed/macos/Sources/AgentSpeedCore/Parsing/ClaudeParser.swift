@@ -8,6 +8,7 @@ struct ClaudeParser: Sendable {
 
     let agentId: String
     let fileID: FileID
+    private let selectedSources: Set<SourceKind>?
     private(set) var state: AgentState
 
     private var sourceDecided = false
@@ -16,9 +17,10 @@ struct ClaudeParser: Sendable {
     private var responses: [String: ResponseRecord] = [:]
     private var responseOrder: [String] = []
 
-    init(agentId: String, fileID: FileID) {
+    init(agentId: String, fileID: FileID, selectedSources: Set<SourceKind>? = nil) {
         self.agentId = agentId
         self.fileID = fileID
+        self.selectedSources = selectedSources
         let components = agentId.split(separator: "/", omittingEmptySubsequences: true)
         state = AgentState(source: .claudeCode, isSubagent: components.dropLast().contains("subagents"))
     }
@@ -94,6 +96,8 @@ struct ClaudeParser: Sendable {
         deduper: inout Deduper,
         emit: (ResponseUpsert) -> Void
     ) {
+        // Excluded copies must not claim a shared key before the selected client sees it.
+        guard selectedSources?.contains(state.source) ?? true else { return }
         guard line.model != Self.syntheticModel else { return }
         guard let key = line.messageId ?? line.requestId ?? line.uuid else { return }
         let claim = deduper.claim(key, for: fileID)

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import SQLite3
 import XCTest
@@ -29,6 +30,11 @@ final class MultiClientUsageParserTests: XCTestCase {
         XCTAssertFalse(cli.truncated); XCTAssertFalse(desktop.truncated)
         XCTAssertEqual(Set(cli.files), Set(paths.prefix(2)))
         XCTAssertEqual(desktop.files, [paths[2]])
+        let paired = MultiClientUsageDiscovery.discoverClaudePair(home: home, environment: [:])
+        XCTAssertEqual(paired.code.files, cli.files)
+        XCTAssertEqual(paired.desktop.files, desktop.files)
+        XCTAssertFalse(paired.code.truncated); XCTAssertFalse(paired.desktop.truncated)
+        XCTAssertEqual(paired.classificationCount, 3)
 
         // Selecting an account via the environment still produces one physical source,
         // with the selected logical path retained for existing checkpoints.
@@ -38,6 +44,179 @@ final class MultiClientUsageParserTests: XCTestCase {
             environment: ["CLAUDE_CONFIG_DIR": alias.path])
         XCTAssertEqual(selected.files, [alias.appendingPathComponent("projects/p/new.jsonl")])
         XCTAssertFalse(selected.truncated)
+        let selectedPair = MultiClientUsageDiscovery.discoverClaudePair(home: home,
+            environment: ["CLAUDE_CONFIG_DIR": alias.path])
+        XCTAssertEqual(selectedPair.desktop.files, selected.files)
+        XCTAssertEqual(selectedPair.code.files, [paths[1]])
+        XCTAssertEqual(selectedPair.classificationCount, 2)
+        XCTAssertFalse(selectedPair.code.truncated); XCTAssertFalse(selectedPair.desktop.truncated)
+    }
+
+    func testClaudePairedDiscoveryMatchesIndependentResultsAndReadsEachCandidateOnce() throws {
+        let fm = FileManager.default
+        let home = fm.temporaryDirectory.appendingPathComponent("claude-paired-\(UUID())")
+        defer { try? fm.removeItem(at: home) }
+        let project = home.appendingPathComponent(".claude/projects/p")
+        try fm.createDirectory(at: project, withIntermediateDirectories: true)
+        let fixtures: [(String, Data)] = [
+            ("01-cli.jsonl", Data("{\"entrypoint\":\"cli\"}\n{\"entrypoint\":\"claude-desktop-3p\"}\n".utf8)),
+            ("02-desktop.jsonl", Data("{\"type\":\"system\"}\n{\"entrypoint\":\"claude-desktop-3p\"}\n{\"entrypoint\":\"cli\"}\n".utf8)),
+            ("03-metadata.jsonl", Data("{\"type\":\"system\"}\n".utf8)),
+            ("04-partial.jsonl", Data("{\"entrypoint\":\"claude-desktop-3p\"}".utf8)),
+            ("05-empty.jsonl", Data()),
+            ("06-bom.jsonl", Data("\u{FEFF}{\"entrypoint\":\"claude-desktop\"}\r\n".utf8)),
+        ]
+        let modified = Date(timeIntervalSince1970: 1_793_000_000)
+        for (name, data) in fixtures {
+            let path = project.appendingPathComponent(name)
+            try data.write(to: path)
+            try fm.setAttributes([.modificationDate: modified], ofItemAtPath: path.path)
+        }
+
+        let code = MultiClientUsageDiscovery.discover(client: .claudeCode, home: home, environment: [:])
+        let desktop = MultiClientUsageDiscovery.discover(client: .claudeDesktop, home: home, environment: [:])
+        let paired = MultiClientUsageDiscovery.discoverClaudePair(home: home, environment: [:])
+        XCTAssertEqual(paired.code.files, code.files)
+        XCTAssertEqual(paired.desktop.files, desktop.files)
+        XCTAssertEqual(paired.code.truncated, code.truncated)
+        XCTAssertEqual(paired.desktop.truncated, desktop.truncated)
+        XCTAssertEqual(code.files.map(\.lastPathComponent), ["01-cli.jsonl", "03-metadata.jsonl", "04-partial.jsonl", "05-empty.jsonl"])
+        XCTAssertEqual(desktop.files.map(\.lastPathComponent), ["02-desktop.jsonl", "06-bom.jsonl"])
+        XCTAssertFalse(code.truncated); XCTAssertFalse(desktop.truncated)
+        // Every fixture fits one classification read and neither independent selection stops
+        // early, so the two independent calls open/read exactly twice the paired work.
+        XCTAssertEqual(paired.classificationCount, fixtures.count)
+        XCTAssertEqual(paired.classificationBytesRead, fixtures.reduce(0) { $0 + $1.1.count })
+    }
+
+    func testClaudePairedDiscoveryPreservesPerFileClassificationLimit() throws {
+        let fm = FileManager.default
+        let home = fm.temporaryDirectory.appendingPathComponent("claude-paired-limit-\(UUID())")
+        defer { try? fm.removeItem(at: home) }
+        let project = home.appendingPathComponent(".claude/projects/p")
+        try fm.createDirectory(at: project, withIntermediateDirectories: true)
+        let limited = project.appendingPathComponent("limited.jsonl")
+        let desktop = project.appendingPathComponent("desktop.jsonl")
+        let desktopRecord = Data("{\"entrypoint\":\"claude-desktop-3p\"}\n".utf8)
+        var longRecord = Data(repeating: 0x20, count: 64 * 1_024)
+        longRecord.append(desktopRecord)
+        try longRecord.write(to: limited)
+        try desktopRecord.write(to: desktop)
+
+        let paired = MultiClientUsageDiscovery.discoverClaudePair(home: home, environment: [:])
+        let independentCode = MultiClientUsageDiscovery.discover(client: .claudeCode, home: home, environment: [:])
+        let independentDesktop = MultiClientUsageDiscovery.discover(client: .claudeDesktop, home: home, environment: [:])
+        XCTAssertEqual(paired.code.files, [limited])
+        XCTAssertEqual(paired.desktop.files, [desktop])
+        XCTAssertEqual(paired.code.files, independentCode.files)
+        XCTAssertEqual(paired.desktop.files, independentDesktop.files)
+        XCTAssertTrue(paired.code.truncated); XCTAssertTrue(paired.desktop.truncated)
+        XCTAssertEqual(paired.code.truncated, independentCode.truncated)
+        XCTAssertEqual(paired.desktop.truncated, independentDesktop.truncated)
+        XCTAssertEqual(paired.classificationCount, 2)
+        XCTAssertEqual(paired.classificationBytesRead, 64 * 1_024 + desktopRecord.count)
+    }
+
+    func testClaudePairedDiscoveryKeepsIndependentTotalClassificationByteBudgets() throws {
+        let fm = FileManager.default
+        let home = fm.temporaryDirectory.appendingPathComponent("claude-paired-budget-\(UUID())")
+        defer { try? fm.removeItem(at: home) }
+        let project = home.appendingPathComponent(".claude/projects/p")
+        try fm.createDirectory(at: project, withIntermediateDirectories: true)
+        let modified = Date(timeIntervalSince1970: 1_793_000_000)
+        // Sparse, unclassified files reach the existing 64 MiB per-client read budget.
+        // The last, otherwise valid Desktop file must remain outside both selections.
+        for index in 0...1_024 {
+            let path = project.appendingPathComponent(String(format: "%04d.jsonl", index))
+            if index == 1_024 {
+                try Data("{\"entrypoint\":\"claude-desktop-3p\"}\n".utf8).write(to: path)
+            } else {
+                XCTAssertTrue(fm.createFile(atPath: path.path, contents: nil))
+                let handle = try FileHandle(forWritingTo: path)
+                try handle.truncate(atOffset: 64 * 1_024)
+                try handle.close()
+            }
+            try fm.setAttributes([.modificationDate: modified], ofItemAtPath: path.path)
+        }
+
+        let paired = MultiClientUsageDiscovery.discoverClaudePair(home: home, environment: [:])
+        let code = MultiClientUsageDiscovery.discover(client: .claudeCode, home: home, environment: [:])
+        let desktop = MultiClientUsageDiscovery.discover(client: .claudeDesktop, home: home, environment: [:])
+        XCTAssertEqual(paired.code.files, code.files)
+        XCTAssertEqual(paired.desktop.files, desktop.files)
+        XCTAssertEqual(paired.code.files.count, 1_024)
+        XCTAssertTrue(paired.desktop.files.isEmpty)
+        XCTAssertEqual(paired.classificationCount, 1_024)
+        XCTAssertEqual(paired.classificationBytesRead, 64 * 1_024 * 1_024)
+        XCTAssertTrue(code.truncated); XCTAssertTrue(desktop.truncated)
+        XCTAssertEqual(paired.code.truncated, code.truncated)
+        XCTAssertEqual(paired.desktop.truncated, desktop.truncated)
+    }
+
+    func testClaudePairedDiscoveryReclassifiesAppendedAndRewrittenFilesOnEveryCall() throws {
+        let fm = FileManager.default
+        let home = fm.temporaryDirectory.appendingPathComponent("claude-paired-reclassify-\(UUID())")
+        defer { try? fm.removeItem(at: home) }
+        let file = home.appendingPathComponent(".claude/projects/p/session.jsonl")
+        try fm.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let record = Data("{\"entrypoint\":\"claude-desktop-3p\"}".utf8)
+        let modified = Date(timeIntervalSince1970: 1_793_000_000)
+        try record.write(to: file)
+        let partial = MultiClientUsageDiscovery.discoverClaudePair(home: home, environment: [:])
+        XCTAssertEqual(partial.code.files, [file])
+        XCTAssertTrue(partial.desktop.files.isEmpty)
+
+        let handle = try FileHandle(forWritingTo: file)
+        try handle.seekToEnd(); try handle.write(contentsOf: Data([0x0A])); try handle.close()
+        try fm.setAttributes([.modificationDate: modified], ofItemAtPath: file.path)
+        let appended = MultiClientUsageDiscovery.discoverClaudePair(home: home, environment: [:])
+        XCTAssertTrue(appended.code.files.isEmpty)
+        XCTAssertEqual(appended.desktop.files, [file])
+
+        var rewritten = Data("{\"entrypoint\":\"cli\"}".utf8)
+        rewritten.append(Data(repeating: 0x20, count: record.count - rewritten.count))
+        rewritten.append(0x0A)
+        try rewritten.write(to: file)
+        try fm.setAttributes([.modificationDate: modified], ofItemAtPath: file.path)
+        let replaced = MultiClientUsageDiscovery.discoverClaudePair(home: home, environment: [:])
+        XCTAssertEqual(replaced.code.files, [file])
+        XCTAssertTrue(replaced.desktop.files.isEmpty)
+        XCTAssertEqual(replaced.classificationCount, 1)
+        XCTAssertEqual(replaced.classificationBytesRead, rewritten.count)
+    }
+
+    func testClaudeScannerKeepsExplicitPathsExclusiveWhenBothClientsAreEnabled() async throws {
+        let fm = FileManager.default
+        let home = fm.temporaryDirectory.appendingPathComponent("claude-paired-explicit-\(UUID())")
+        defer { try? fm.removeItem(at: home) }
+        let paths = [
+            home.appendingPathComponent(".claude/projects/p/automatic-code.jsonl"),
+            home.appendingPathComponent(".claude/projects/p/automatic-desktop.jsonl"),
+            home.appendingPathComponent("manual/desktop.jsonl"),
+            home.appendingPathComponent("manual/code.jsonl"),
+        ]
+        for (index, path) in paths.enumerated() {
+            try fm.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try jsonl([claudeLine(session: "s\(index)", entrypoint: [0, 3].contains(index) ? "cli" : "claude-desktop-3p",
+                id: "m\(index)", timestamp: "2026-11-26T10:00:00Z", usage: ["input_tokens": (index + 1) * 10])]).write(to: path)
+        }
+        let cases: [(String, String, Int64, Int64)] = [
+            ("", "", 10, 20),
+            ("", paths[2].path, 10, 30),
+            (paths[3].path, "", 40, 20),
+            (paths[3].path, paths[2].path, 40, 30),
+        ]
+        for (index, scenario) in cases.enumerated() {
+            var code = try XCTUnwrap(MultiClientUsagePreference.defaults.first { $0.client == .claudeCode })
+            var desktop = try XCTUnwrap(MultiClientUsagePreference.defaults.first { $0.client == .claudeDesktop })
+            code.enabled = true; code.path = scenario.0
+            desktop.enabled = true; desktop.path = scenario.1
+            let scanner = MultiClientUsageScanner(databaseURL: home.appendingPathComponent("case-\(index).sqlite"), home: home, environment: [:])
+            let scanned = try await scanner.scan([code, desktop], includesCharts: false)
+            XCTAssertEqual(scanned.summaries.first { $0.client == .claudeCode }?.inputTokens, scenario.2)
+            XCTAssertEqual(scanned.summaries.first { $0.client == .claudeDesktop }?.inputTokens, scenario.3)
+            XCTAssertEqual(scanned.summaries.reduce(0) { $0 + $1.requests }, 2)
+        }
     }
 
     func testClaudeAccountRegistryRejectsUnsafeIDsDuplicatesOversizeAndLinks() throws {
@@ -61,6 +240,8 @@ final class MultiClientUsageParserTests: XCTestCase {
         }
         try Data(repeating: 0x20, count: 32_769).write(to: registry)
         XCTAssertTrue(MultiClientUsageDiscovery.discover(client: .claudeCode, home: home, environment: [:]).truncated)
+        let paired = MultiClientUsageDiscovery.discoverClaudePair(home: home, environment: [:])
+        XCTAssertTrue(paired.code.truncated); XCTAssertTrue(paired.desktop.truncated)
         try fm.removeItem(at: registry)
         try fm.createSymbolicLink(at: registry, withDestinationURL: home.appendingPathComponent("missing.json"))
         XCTAssertTrue(MultiClientUsageDiscovery.claudeProjectRoots(home: home, environment: [:]).incomplete)
@@ -106,6 +287,11 @@ final class MultiClientUsageParserTests: XCTestCase {
         let found = MultiClientUsageDiscovery.discover(client: .claudeCode, home: home, environment: [:])
         XCTAssertFalse(found.truncated)
         XCTAssertEqual(found.files.map(\.path), [logical.appendingPathComponent("project/session.jsonl").path])
+        let paired = MultiClientUsageDiscovery.discoverClaudePair(home: home, environment: [:])
+        XCTAssertEqual(paired.code.files, found.files)
+        XCTAssertTrue(paired.desktop.files.isEmpty)
+        XCTAssertEqual(paired.classificationCount, 1)
+        XCTAssertFalse(paired.code.truncated); XCTAssertFalse(paired.desktop.truncated)
     }
 
     func testDeepSeekNativeSessionHeaderNamesLaterLines() throws {
@@ -295,6 +481,141 @@ final class MultiClientUsageParserTests: XCTestCase {
             first.events,
             try MultiClientUsageParsers.readOpenCodeDatabase(url: databaseURL, limit: 1).events
         )
+    }
+
+    func testOpenCodeSQLiteOneMiBRowBoundaryAndOversizedCursorPreserveLaterRows() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("opencode-row-limit-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let database = home.appendingPathComponent("opencode.db")
+        let rowBytes = 1_024 * 1_024
+        try createOpenCodeSizedFixture(at: database, rows: [
+            ("message-0-65k", 65 * 1_024),
+            ("message-1-boundary", rowBytes),
+            ("message-2-oversized", rowBytes + 1),
+            ("message-3-later", 512),
+        ])
+        let first = try MultiClientUsageParsers.readOpenCodeDatabase(url: database, limit: 1)
+        let boundary = try MultiClientUsageParsers.readOpenCodeDatabase(url: database,
+            after: XCTUnwrap(first.nextCursor), limit: 1)
+        let oversized = try MultiClientUsageParsers.readOpenCodeDatabase(url: database,
+            after: XCTUnwrap(boundary.nextCursor), limit: 1)
+        let later = try MultiClientUsageParsers.readOpenCodeDatabase(url: database,
+            after: XCTUnwrap(oversized.nextCursor), limit: 1)
+
+        XCTAssertEqual(first.events.count, 1)
+        XCTAssertEqual(boundary.events.count, 1)
+        XCTAssertTrue(oversized.events.isEmpty)
+        XCTAssertEqual(oversized.skippedOversizedRows, 1)
+        XCTAssertEqual(oversized.skippedMalformedRows, 0)
+        XCTAssertEqual(oversized.nextCursor?.messageID, "message-2-oversized")
+        XCTAssertEqual(later.events.count, 1)
+        XCTAssertFalse(first.isComplete); XCTAssertFalse(boundary.isComplete); XCTAssertFalse(oversized.isComplete)
+        XCTAssertTrue(later.isComplete)
+        let all = try MultiClientUsageParsers.readOpenCodeDatabase(url: database)
+        XCTAssertEqual(Set(all.events.map(\.eventID)), Set((first.events + boundary.events + later.events).map(\.eventID)))
+        XCTAssertEqual(all.skippedOversizedRows, 1)
+        XCTAssertEqual(all.skippedMalformedRows, 0)
+        XCTAssertTrue(all.isComplete)
+    }
+
+    func testOpenCodeCheckpointRevisionAppliesOnlyToSQLiteAndIsIdempotent() {
+        let raw = "inode:4096:hash"
+        let revised = MultiClientUsageParsers.checkpointIdentity(raw, client: .opencode, isDatabase: true)
+        XCTAssertEqual(revised, "opencode-sqlite-1m-v1|" + raw)
+        XCTAssertEqual(MultiClientUsageParsers.checkpointIdentity(revised, client: .opencode, isDatabase: true), revised)
+        XCTAssertEqual(MultiClientUsageParsers.checkpointIdentity(raw, client: .opencode), raw)
+        XCTAssertEqual(MultiClientUsageParsers.checkpointIdentity(raw, client: .gemini, isDatabase: true), raw)
+        XCTAssertEqual(MultiClientUsageParsers.checkpointIdentity(raw, client: .claudeCode), "claude-cache-lifetimes-v1|" + raw)
+    }
+
+    func testOpenCodeSQLiteLegacyCompletedCheckpointReplaysOnceWithoutDuplicatingCachedEvents() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("opencode-complete-replay-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let source = home.appendingPathComponent("opencode.db")
+        try createOpenCodeSizedFixture(at: source, rows: [("cached", 512), ("large", 65 * 1_024)])
+        let cached = try MultiClientUsageParsers.readOpenCodeDatabase(url: source, limit: 1).events
+        let expected = try MultiClientUsageParsers.readOpenCodeDatabase(url: source).events
+        XCTAssertEqual(cached.count, 1); XCTAssertEqual(expected.count, 2)
+        let stamp = try openCodeSourceCheckpoint(at: source)
+        let ledger = try MultiClientUsageLedger(url: home.appendingPathComponent("usage.sqlite"))
+        _ = try ledger.ingest(cached, client: .opencode, sourceKey: stamp.key, checkpoint: stamp.checkpoint)
+        try observeOpenCodeCheckpointWrites(in: ledger)
+        var preference = try XCTUnwrap(MultiClientUsagePreference.defaults.first { $0.client == .opencode })
+        preference.enabled = true; preference.path = source.path
+        let scanner = MultiClientUsageScanner(databaseURL: ledger.url, home: home, environment: [:])
+
+        let replayed = try await scanner.scan([preference], includesCharts: false)
+        XCTAssertEqual(replayed.summaries.first?.requests, 2)
+        let checkpoint = try XCTUnwrap(ledger.checkpoint(client: .opencode, sourceKey: stamp.key))
+        XCTAssertEqual(checkpoint.offset, stamp.checkpoint.size)
+        XCTAssertEqual(checkpoint.identity, "opencode-sqlite-1m-v1|" + stamp.checkpoint.identity)
+        let storedIDs = try ledger.database.readRows("SELECT event_id FROM client_usage_events") { $0.text(0) ?? "" }
+        XCTAssertEqual(Set(storedIDs), Set(expected.map(\.eventID)))
+        func count(_ table: String) throws -> Int64 {
+            try ledger.database.readRows("SELECT COUNT(*) FROM \(table)") { $0.int64(0) ?? 0 }.first ?? 0
+        }
+        XCTAssertEqual(try count("client_usage_revisions"), 2)
+        XCTAssertEqual(try count("test_opencode_checkpoint_writes"), 1)
+        let repeated = try await scanner.scan([preference], includesCharts: false)
+        XCTAssertEqual(repeated.summaries, replayed.summaries)
+        XCTAssertEqual(try count("client_usage_revisions"), 2)
+        // Even the checkpoint write is skipped once the revised source identity matches.
+        XCTAssertEqual(try count("test_opencode_checkpoint_writes"), 1)
+    }
+
+    func testOpenCodeSQLiteLegacyPagedCheckpointRestartsThenResumesAtFiveHundredRows() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("opencode-page-replay-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: home) }
+        let source = home.appendingPathComponent("opencode.db")
+        let rows = (0...500).map { (String(format: "message-%04d", $0), $0 == 0 ? 65 * 1_024 : 512) }
+        try createOpenCodeSizedFixture(at: source, rows: rows)
+        let stamp = try openCodeSourceCheckpoint(at: source)
+        let oldCursor = OpenCodeDatabaseCursor(updatedAtMilliseconds: 1_797_000_001_000, messageID: "message-0499")
+        let capped = try MultiClientUsageParsers.readOpenCodeDatabase(url: source, limit: .max)
+        XCTAssertEqual(capped.events.count, 500)
+        XCTAssertEqual(capped.nextCursor, oldCursor)
+        XCTAssertFalse(capped.isComplete)
+        let oldIdentity = stamp.checkpoint.identity + "|" + (try JSONEncoder().encode(oldCursor)).base64EncodedString()
+        let ledger = try MultiClientUsageLedger(url: home.appendingPathComponent("usage.sqlite"))
+        _ = try ledger.ingest([], client: .opencode, sourceKey: stamp.key,
+            checkpoint: .init(offset: -1, size: stamp.checkpoint.size, modified: stamp.checkpoint.modified, identity: oldIdentity))
+        try observeOpenCodeCheckpointWrites(in: ledger)
+        var preference = try XCTUnwrap(MultiClientUsagePreference.defaults.first { $0.client == .opencode })
+        preference.enabled = true; preference.path = source.path
+        let scanner = MultiClientUsageScanner(databaseURL: ledger.url, home: home, environment: [:])
+
+        let first = try await scanner.scan([preference], includesCharts: false)
+        XCTAssertEqual(first.summaries.first?.requests, 500)
+        let firstCheckpoint = try XCTUnwrap(ledger.checkpoint(client: .opencode, sourceKey: stamp.key))
+        let prefix = "opencode-sqlite-1m-v1|" + stamp.checkpoint.identity + "|"
+        XCTAssertEqual(firstCheckpoint.offset, -1)
+        XCTAssertTrue(firstCheckpoint.identity.hasPrefix(prefix))
+        let cursorBytes = try XCTUnwrap(Data(base64Encoded: String(firstCheckpoint.identity.dropFirst(prefix.count))))
+        XCTAssertEqual(try JSONDecoder().decode(OpenCodeDatabaseCursor.self, from: cursorBytes), oldCursor)
+        let second = try await scanner.scan([preference], includesCharts: false)
+        XCTAssertEqual(second.summaries.first?.requests, 501)
+        let completed = try XCTUnwrap(ledger.checkpoint(client: .opencode, sourceKey: stamp.key))
+        XCTAssertEqual(completed.offset, stamp.checkpoint.size)
+        XCTAssertEqual(completed.identity, "opencode-sqlite-1m-v1|" + stamp.checkpoint.identity)
+        let repeated = try await scanner.scan([preference], includesCharts: false)
+        XCTAssertEqual(repeated.summaries, second.summaries)
+        XCTAssertEqual(try ledger.database.readRows("SELECT COUNT(*) FROM client_usage_revisions") { $0.int64(0) ?? 0 }.first, 501)
+        XCTAssertEqual(try ledger.database.readRows("SELECT COUNT(*) FROM test_opencode_checkpoint_writes") { $0.int64(0) ?? 0 }.first, 2)
+    }
+
+    func testOpenCodeJSONRetainsSixteenMiBDocumentLimit() throws {
+        let record = openCodeMessage(id: "json-document", session: "session", streamed: 1_797_000_001_000,
+            input: 10, output: 20, reasoning: 0, cacheRead: 0, cacheWrite: 0)
+        let source = try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])
+        let expected = try MultiClientUsageParsers.parse(data: source, client: .opencode, sessionHint: "file")
+        XCTAssertEqual(expected.count, 1)
+        var boundary = source
+        boundary.append(Data(repeating: 0x20, count: 16 * 1_024 * 1_024 - source.count))
+        XCTAssertEqual(try MultiClientUsageParsers.parse(data: boundary, client: .opencode, sessionHint: "file"), expected)
+        boundary.append(0x20)
+        XCTAssertThrowsError(try MultiClientUsageParsers.parse(data: boundary, client: .opencode, sessionHint: "file")) {
+            XCTAssertEqual($0 as? MultiClientUsageParserError, .inputTooLarge)
+        }
     }
 
     func testOpenCodeLegacyStorageMessageJSONUsesCompletedUsage() throws {
@@ -570,5 +891,41 @@ final class MultiClientUsageParserTests: XCTestCase {
             );
             """
         XCTAssertEqual(sqlite3_exec(database, sql, nil, nil, nil), SQLITE_OK)
+    }
+
+    private func createOpenCodeSizedFixture(at url: URL, rows: [(String, Int)]) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let database = SQLiteDatabaseDriver(url: url)
+        let payload = #"{"time":{"created":1797000000000,"streamed":1797000001000},"model":{"id":"gpt-test"},"tokens":{"input":10,"output":20}}"#
+        try database.transaction { connection in
+            try connection.execute("CREATE TABLE session_v2 (id TEXT PRIMARY KEY, time_created INTEGER NOT NULL)")
+            try connection.execute("CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, type TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL)")
+            try connection.execute("INSERT INTO session_v2 VALUES ('session-a', 1796999999000)")
+            for (id, byteCount) in rows {
+                XCTAssertGreaterThanOrEqual(byteCount, payload.utf8.count)
+                let padded = payload + String(repeating: " ", count: max(0, byteCount - payload.utf8.count))
+                try connection.execute("INSERT INTO session_message VALUES (?, 'session-a', 'assistant', 1797000000000, 1797000001000, ?)",
+                    bindings: [.text(id), .text(padded)])
+            }
+        }
+    }
+
+    private func openCodeSourceCheckpoint(at url: URL) throws -> (key: String, checkpoint: MultiClientFileCheckpoint) {
+        let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
+        let size = try XCTUnwrap(attrs[.size] as? NSNumber).int64Value
+        let modified = try XCTUnwrap(attrs[.modificationDate] as? Date).timeIntervalSince1970
+        let key = SHA256.hash(data: Data(url.standardizedFileURL.path.utf8)).map { String(format: "%02x", $0) }.joined()
+        let identity = String(describing: attrs[.systemFileNumber] ?? "")
+        return (key, .init(offset: size, size: size, modified: modified, identity: identity))
+    }
+
+    private func observeOpenCodeCheckpointWrites(in ledger: MultiClientUsageLedger) throws {
+        try ledger.database.execute("CREATE TABLE test_opencode_checkpoint_writes (identity TEXT NOT NULL)")
+        try ledger.database.execute("""
+            CREATE TRIGGER test_opencode_checkpoint_update AFTER UPDATE ON client_file_checkpoints
+            WHEN NEW.client='opencode' BEGIN
+                INSERT INTO test_opencode_checkpoint_writes VALUES (NEW.identity);
+            END
+            """)
     }
 }

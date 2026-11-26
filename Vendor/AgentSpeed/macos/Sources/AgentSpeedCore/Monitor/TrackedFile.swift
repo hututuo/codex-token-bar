@@ -20,6 +20,7 @@ final class TrackedFile {
     /// The root the file was discovered under (omp derives sub-agents from it).
     let root: String
     let fileID: FileID
+    private let selectedSources: Set<SourceKind>?
     var reader: TranscriptReader
     var parser: TranscriptParser
     /// The monitor queue owns this object. Borrow the stored parser through
@@ -58,20 +59,22 @@ final class TrackedFile {
         fileID: FileID,
         stat: FileStat,
         start: FileTailer.Start,
-        maxLineBytes: Int = FileTailer.defaultMaxLineBytes
+        maxLineBytes: Int = FileTailer.defaultMaxLineBytes,
+        selectedSources: Set<SourceKind>? = nil
     ) {
         self.path = path
         self.family = family
         self.root = root
         self.fileID = fileID
+        self.selectedSources = selectedSources
         lastStat = stat
         reader = TranscriptReader(path: path, start: start, maxLineBytes: maxLineBytes, readsHeaderFirst: family == .omp)
-        parser = TranscriptParser(family: family, agentId: path, fileID: fileID, root: root)
+        parser = TranscriptParser(family: family, agentId: path, fileID: fileID, root: root, selectedSources: selectedSources)
     }
 
     /// Parser state restarts after truncation or replacement; the global dedupe set is kept.
     func resetParser() {
-        parser = TranscriptParser(family: family, agentId: path, fileID: fileID, root: root)
+        parser = TranscriptParser(family: family, agentId: path, fileID: fileID, root: root, selectedSources: selectedSources)
     }
 
     func hasChanged(comparedTo stat: FileStat) -> Bool {

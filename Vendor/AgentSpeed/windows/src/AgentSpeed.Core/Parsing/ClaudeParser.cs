@@ -6,14 +6,16 @@ internal sealed class ClaudeParser : TranscriptParser<ClaudeLine>
     private const int MergeCacheCapacity = 64;
 
     private readonly bool _pathIsSubagent;
+    private readonly IReadOnlySet<SourceKind>? _selectedSources;
     private readonly Dictionary<string, ParsedResponse> _recent = new(StringComparer.Ordinal);
     private readonly Queue<string> _recentOrder = new();
     private long? _pendingStartMs;
     private bool _preciseStart;
 
-    public ClaudeParser(string agentId, IDeduper deduper)
+    public ClaudeParser(string agentId, IDeduper deduper, IReadOnlySet<SourceKind>? selectedSources = null)
         : base(agentId, deduper, SourceKind.ClaudeCode)
     {
+        _selectedSources = selectedSources;
         _pathIsSubagent = PathText.HasDirectoryComponent(agentId, "subagents");
         SetSubagent(_pathIsSubagent);
     }
@@ -100,6 +102,8 @@ internal sealed class ClaudeParser : TranscriptParser<ClaudeLine>
 
     private void ApplyAssistant(in ClaudeLine line, long ts, IResponseSink sink)
     {
+        // Excluded copies must not claim a shared key before the selected client sees it.
+        if (_selectedSources is not null && !_selectedSources.Contains(Source)) { return; }
         if (string.Equals(line.Model, "<synthetic>", StringComparison.Ordinal) || line.Key is not { } key)
         {
             return;

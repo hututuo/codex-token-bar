@@ -32,7 +32,7 @@ enum ClientLocalRuntimePresentation {
             }
             if client == "claudeCode" || client == "claudeDesktop" {
                 let value = claude.projection(allowed: [client])
-                return .init(client: client, sourceKey: claude.displaySourceIdentity, observedAt: value.timestamp.timeIntervalSince1970,
+                return .init(client: client, sourceKey: claude.displaySourceIdentity(client: client), observedAt: value.timestamp.timeIntervalSince1970,
                     available: value.enabled && value.sourceAvailable && abs(now.timeIntervalSince(value.timestamp)) <= 3,
                     rates: claude.displayModelRates(allowed: [client], mode: mode))
             }
