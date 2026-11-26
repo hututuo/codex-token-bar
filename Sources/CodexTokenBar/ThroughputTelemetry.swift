@@ -474,7 +474,11 @@ struct BodySpeedPersistenceResult: Sendable {
 
 actor BodySpeedSampleWriter {
     private let sharedURL: URL?
-    init(sharedURL: URL? = nil) { self.sharedURL = sharedURL }
+    private let cacheLimit: Int
+    init(sharedURL: URL? = nil, cacheLimit: Int = 3) {
+        self.sharedURL = sharedURL
+        self.cacheLimit = max(1, cacheLimit)
+    }
     private struct StoreCache {
         let store: BodySpeedTrendStore
         var persistedByID: [String: ObservedSpeedSample]
@@ -482,6 +486,7 @@ actor BodySpeedSampleWriter {
     }
 
     private var caches: [URL: StoreCache] = [:]
+    private var cacheOrder: [URL] = []
     /// Tracks the last committed revision only. A failed write leaves the ticket retryable.
     private var tickets: [URL: Int] = [:]
     private var latestTickets: [URL: Int] = [:]
@@ -492,9 +497,10 @@ actor BodySpeedSampleWriter {
         // explicit load still reads SQLite so another process's updates are visible.
         let store = try caches[key]?.store ?? openStore(for: key, now: now, retentionDays: retentionDays)
         let samples = try store.loadSamples(now: now, retentionDays: retentionDays)
-        caches[key] = StoreCache(store: store,
+        let cache = StoreCache(store: store,
             persistedByID: Dictionary(samples.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last }),
             retentionDays: try caches[key]?.retentionDays ?? store.retentionDays())
+        remember(cache, for: key)
         return samples
     }
 
@@ -536,7 +542,7 @@ actor BodySpeedSampleWriter {
             for sample in changed where sample.endedAt >= cutoff && sample.endedAt <= now {
                 cache.persistedByID[sample.id] = sample
             }
-            caches[key] = cache
+            remember(cache, for: key)
             let pendingAt = incomingByID.values.filter { $0.endedAt > now }.map(\.endedAt).min()
             if pendingAt == nil { tickets[key] = ticket }
             return BodySpeedPersistenceResult(error: nil, retryAt: pendingAt)
@@ -548,7 +554,7 @@ actor BodySpeedSampleWriter {
     func sidebarMedian(from url: URL, now: Double) throws -> SidebarBodyMedian {
         let key = url.standardizedFileURL
         let cache = try storeCache(for: key, now: now, retentionDays: 30)
-        caches[key] = cache
+        remember(cache, for: key)
         // At most one day of compact numeric buckets; no raw-body history scan.
         return SidebarBodyMedian.project(try cache.store.read(now: now, days: 1), now: now)
     }
@@ -557,9 +563,24 @@ actor BodySpeedSampleWriter {
         let key = url.standardizedFileURL
         let cache = try storeCache(for: key, now: now, retentionDays: 30)
         let points = try cache.store.readDistribution(now: now, days: days)
-        caches[key] = cache
+        remember(cache, for: key)
         return points
     }
+
+    private func remember(_ cache: StoreCache, for key: URL) {
+        caches[key] = cache
+        cacheOrder.removeAll { $0 == key }
+        cacheOrder.append(key)
+        while cacheOrder.count > cacheLimit {
+            // Histories are rebuildable from SQLite. Keep write-ticket fences
+            // across eviction so returning to an old Home cannot accept stale work.
+            caches[cacheOrder.removeFirst()] = nil
+        }
+    }
+
+    #if DEBUG
+    var cachedSourcesForTesting: [URL] { cacheOrder }
+    #endif
 
     private func storeCache(for url: URL, now: Double, retentionDays: Int) throws -> StoreCache {
         if let cache = caches[url] { return cache }

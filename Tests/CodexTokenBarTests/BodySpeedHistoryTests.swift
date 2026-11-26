@@ -202,6 +202,71 @@ final class BodySpeedHistoryTests: XCTestCase {
         XCTAssertEqual(try store.retentionDays(), 15)
     }
 
+    #if DEBUG
+    func testWriterEvictsInactiveHomesWithoutLosingPendingOrCommittedTickets() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let a = directory.appendingPathComponent("a/history.sqlite").standardizedFileURL
+        let b = directory.appendingPathComponent("b/history.sqlite").standardizedFileURL
+        let writer = BodySpeedSampleWriter(cacheLimit: 1), body = sample()
+        let pending = await writer.persistBatch([body], to: a, ticket: 7, now: body.endedAt - 1)
+        XCTAssertNil(pending.error)
+        XCTAssertEqual(pending.retryAt, body.endedAt)
+        var other = body; other.id = "other-home"
+        let bError = await writer.persist([other], to: b, ticket: 1, now: body.endedAt)
+        XCTAssertNil(bError)
+        let afterB = await writer.cachedSourcesForTesting
+        XCTAssertEqual(afterB, [b])
+        var stale = body; stale.id = "stale"
+        let staleError = await writer.persist([stale], to: a, ticket: 6, now: body.endedAt)
+        XCTAssertNil(staleError)
+        let afterStale = await writer.cachedSourcesForTesting
+        XCTAssertEqual(afterStale, [b], "Rejected work cannot reopen an evicted source")
+        let committed = await writer.persistBatch([body], to: a, ticket: 7, now: body.endedAt)
+        XCTAssertNil(committed.error)
+        XCTAssertNil(committed.retryAt)
+        let afterA = await writer.cachedSourcesForTesting
+        XCTAssertEqual(afterA, [a])
+        var next = body; next.id = "next"; next.startedAt += 1; next.endedAt += 1
+        let nextError = await writer.persist([body, next], to: a, ticket: 8, now: next.endedAt)
+        XCTAssertNil(nextError)
+        _ = try await writer.load(from: b, now: next.endedAt)
+        let oldError = await writer.persist([stale], to: a, ticket: 7, now: next.endedAt)
+        XCTAssertNil(oldError)
+        let finalCache = await writer.cachedSourcesForTesting
+        XCTAssertEqual(finalCache, [b])
+        XCTAssertEqual(try BodySpeedTrendStore(url: a).loadSamples(now: next.endedAt), [body, next])
+        XCTAssertEqual(try BodySpeedTrendStore(url: b).loadSamples(now: next.endedAt), [other])
+    }
+
+    func testWriterPublishesOnlySuccessfulLoadsAndKeepsFailedTicketRetryableAfterEviction() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let a = directory.appendingPathComponent("a.sqlite").standardizedFileURL
+        let b = directory.appendingPathComponent("b.sqlite").standardizedFileURL
+        let writer = BodySpeedSampleWriter(cacheLimit: 1), body = sample()
+        let bError = await writer.persist([body], to: b, ticket: 1, now: body.endedAt)
+        XCTAssertNil(bError)
+        let corrupt = Data("preserve corrupt source".utf8)
+        try corrupt.write(to: a)
+        let failed = await writer.persist([body], to: a, ticket: 9, now: body.endedAt)
+        XCTAssertNotNil(failed)
+        XCTAssertEqual(try Data(contentsOf: a), corrupt)
+        let afterFailure = await writer.cachedSourcesForTesting
+        XCTAssertEqual(afterFailure, [b])
+        let staleError = await writer.persist([body], to: a, ticket: 8, now: body.endedAt)
+        XCTAssertNil(staleError)
+        XCTAssertEqual(try Data(contentsOf: a), corrupt)
+        try FileManager.default.removeItem(at: a)
+        let retried = await writer.persist([body], to: a, ticket: 9, now: body.endedAt)
+        XCTAssertNil(retried)
+        let afterRetry = await writer.cachedSourcesForTesting
+        XCTAssertEqual(afterRetry, [a])
+        XCTAssertEqual(try BodySpeedTrendStore(url: a).loadSamples(now: body.endedAt), [body])
+    }
+    #endif
+
     func testFutureBodyRemainsRetryableUntilItCanBePersisted() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
