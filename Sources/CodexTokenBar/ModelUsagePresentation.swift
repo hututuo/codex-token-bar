@@ -312,7 +312,9 @@ enum ModelUsagePresentation {
             value.periods.append(contentsOf: row.pricingRows)
             grouped[modelKey] = value
         }
-        return grouped.map { key, value in
+        // Stable model order also keeps snapshot equality and price summation
+        // independent of each Dictionary instance's randomized iteration order.
+        return grouped.sorted { $0.key < $1.key }.map { key, value in
             ModelTokenBreakdown(
                 model: key == "unknown" ? nil : value.model,
                 breakdown: value.breakdowns.combined,

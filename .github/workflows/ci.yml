@@ -197,6 +197,8 @@ jobs:
             --require testPreciseStartupAndWarmRefreshExposePreparationAndCompleteTheStream \
             --require testMissingStatePollPublishesRepeatedFailureOnlyOnce \
             --require testEmptyThreadPollingStillRetriesAndPublishesErrorChangesAndRecovery \
+            --require testCombinedRowsUseStableModelKeyOrderAndPreservePricePeriods \
+            --require testDefaultPreparationSharesClosedAttributionAndKeepsRetainedPriceAcrossRefresh \
               --require testSharedRPCFixturesKeepExplicitFractionsResetsAndPrivacy \
               --require testDiscoveryRequiresInstalledProcessOwnedLoopbackPortAndCSRF \
               --require testAutomaticVisibilityRequiresRecentQuotaAndRespectsManualChoices \

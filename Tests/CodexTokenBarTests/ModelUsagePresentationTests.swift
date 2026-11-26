@@ -55,6 +55,41 @@ final class ModelUsagePresentationTests: XCTestCase {
         XCTAssertEqual(slices.reduce(0) { $0 + $1.tokens }, 100)
     }
 
+    func testCombinedRowsUseStableModelKeyOrderAndPreservePricePeriods() {
+        let start = Date(timeIntervalSince1970: 1_786_051_200)
+        let sol = row("gpt-5.6-sol", tokens: 600, calls: 2)
+        let alias = row("gpt_5.6_sol", tokens: 100, calls: 1)
+        let solPeriod = ModelTokenPricePeriod(
+            model: sol.model, start: start.addingTimeInterval(300), breakdown: sol.breakdown)
+        let aliasPeriod = ModelTokenPricePeriod(
+            model: alias.model, start: start, breakdown: alias.breakdown)
+        let solRows = [
+            ModelTokenBreakdown(model: sol.model, breakdown: sol.breakdown, pricePeriods: [solPeriod]),
+            ModelTokenBreakdown(model: alias.model, breakdown: alias.breakdown, pricePeriods: [aliasPeriod]),
+        ]
+        let otherRows = [
+            row("z-custom", tokens: 90, calls: 1),
+            row(nil, tokens: 25, calls: 1),
+            row("gpt-5.6-luna", tokens: 300, calls: 1),
+            row("a-custom", tokens: 75, calls: 1),
+        ]
+        let keys = ["a-custom", "gpt-5.6-luna", "gpt-5.6-sol", "unknown", "z-custom"]
+        let expected = [otherRows[3], otherRows[2],
+            ModelTokenBreakdown(model: sol.model, breakdown: [sol.breakdown, alias.breakdown].combined,
+                pricePeriods: [solPeriod, aliasPeriod]), otherRows[1], otherRows[0]]
+            .map { ModelTokenBreakdown(model: $0.model, breakdown: $0.breakdown, pricePeriods: $0.pricingRows) }
+
+        for offset in otherRows.indices {
+            let rotated = Array(otherRows.dropFirst(offset)) + Array(otherRows.prefix(offset))
+            let input = rotated + solRows + [row("empty-model", tokens: 0, calls: 0)]
+            for _ in 0..<8 {
+                let combined = ModelUsagePresentation.combinedRows(input)
+                XCTAssertEqual(combined.map { ModelUsagePresentation.key(for: $0.model) }, keys)
+                XCTAssertEqual(combined, expected, "Raw pricing identities and period order must remain intact")
+            }
+        }
+    }
+
     func testBareGPT56AndFutureVariantsPreserveRawNames() {
         let slices = ModelUsagePresentation.slices(from: [row("gpt-5.6", tokens: 100, calls: 1)])
 
