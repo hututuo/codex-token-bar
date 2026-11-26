@@ -20,6 +20,44 @@ test("paired quota joins clip round caps without squaring the compact bar", asyn
   });
 });
 
+test("paired join mask reversals preserve browser CSS pixel widths and restore participants", async () => {
+  const w = new Window();
+  try {
+    await withSsrModules(async load => {
+      const { animateSidebarStrokes } = await load("/src/quota-sidebar/sidebarStrokeMorph.ts");
+      Object.defineProperty(w, "CSS", { configurable:true,value:{supports:()=>true} });
+      const root=w.document.createElement("div");w.document.body.append(root);
+      root.innerHTML='<svg data-sidebar-stroke-source></svg><span data-sidebar-stroke-target="paired"></span>';
+      const source=root.children[0],target=root.children[1];
+      source.dataset.strokeSpec=JSON.stringify([{id:"paired",half:-1,fraction:1,color:"#0f0"}]);
+      root.getBoundingClientRect=()=>({x:0,y:0});
+      source.getBoundingClientRect=()=>({x:21,y:110,width:46,height:46});
+      target.getBoundingClientRect=()=>({x:6,y:250,width:4,height:16});
+      const pending=[],frames=[];
+      w.SVGElement.prototype.animate=function(keyframes){
+        frames.push({mask:this.parentElement?.tagName.toLowerCase()==="mask",keyframes});
+        return {finished:new Promise(resolve=>pending.push(resolve)),cancel(){}};
+      };
+      const cancel=animateSidebarStrokes(root,false);
+      assert.equal(root.querySelectorAll(".qs-stroke-morph mask").length,2);
+      const snapshot=cancel();assert.equal(snapshot.size,2);
+      // getComputedStyle(...).strokeWidth returns a CSS length in a real WebView.
+      for(const style of snapshot.values())style.width="3.25px";
+      frames.length=0;
+      const finish=animateSidebarStrokes(root,true,snapshot);
+      const masks=frames.filter(frame=>frame.mask);assert.equal(masks.length,2);
+      for(const {keyframes} of masks){
+        assert.equal(keyframes[0].strokeWidth,"13");assert.equal(keyframes[1].strokeWidth,"12");
+      }
+      assert.ok([...root.querySelectorAll("mask>path")].every(path=>path.getAttribute("stroke-linecap")==="butt"));
+      assert.ok([...root.querySelectorAll("g>path")].every(path=>path.getAttribute("stroke-linecap")==="round"));
+      pending.forEach(resolve=>resolve());for(let i=0;i<5;i++)await Promise.resolve();
+      assert.equal(source.style.visibility,"");assert.equal(target.style.visibility,"");
+      assert.equal(root.querySelector(".qs-stroke-morph"),null);assert.equal(finish().size,0);
+    });
+  } finally {w.close();}
+});
+
 test("task end-cap masks survive SVG reversal without rounding internal separators", async () => {
   const w = new Window();
   try {
@@ -34,8 +72,11 @@ test("task end-cap masks survive SVG reversal without rounding internal separato
       root.getBoundingClientRect=()=>({x:0,y:0});
       source.getBoundingClientRect=()=>({x:20,y:20,width:46,height:46});
       target.getBoundingClientRect=()=>({x:6,y:100,width:4,height:46});
-      const pending=[];
-      w.SVGElement.prototype.animate=function(){return {finished:new Promise(resolve=>pending.push(resolve)),cancel(){}};};
+      const pending=[],frames=[];
+      w.SVGElement.prototype.animate=function(keyframes){
+        frames.push({mask:this.parentElement?.tagName.toLowerCase()==="mask",keyframes});
+        return {finished:new Promise(resolve=>pending.push(resolve)),cancel(){}};
+      };
       const cancel=animateSidebarStrokes(root,false);
       assert.equal(root.querySelectorAll(".qs-stroke-morph g>path").length,10);
       assert.equal(root.querySelectorAll(".qs-stroke-morph mask").length,2);
@@ -43,8 +84,12 @@ test("task end-cap masks survive SVG reversal without rounding internal separato
       assert.ok([...root.querySelectorAll(".qs-stroke-morph mask>path")].every(path=>path.getAttribute("stroke-linecap")==="round"));
       const snapshot=cancel();
       assert.equal([...snapshot.values()].filter(value=>value.clipD).length,2);
+      for(const style of snapshot.values())style.width="3.25px";
+      frames.length=0;
       const finish=animateSidebarStrokes(root,true,snapshot);
       assert.equal(root.querySelectorAll(".qs-stroke-morph mask").length,2);
+      const masks=frames.filter(frame=>frame.mask);assert.equal(masks.length,2);
+      assert.ok(masks.every(({keyframes})=>keyframes[0].strokeWidth==="3.25"));
       pending.forEach(resolve=>resolve());for(let i=0;i<5;i++)await Promise.resolve();
       assert.equal(source.style.visibility,"");assert.equal(target.style.visibility,"");
       assert.equal(root.querySelector(".qs-stroke-morph"),null);assert.equal(finish().size,0);

@@ -84,7 +84,7 @@ export function animateSidebarStrokes(root: HTMLElement, expanded: boolean, prev
             clip.setAttribute("fill", "none"); clip.setAttribute("stroke", "white"); clip.setAttribute("stroke-width", String(width * clipWidthScale)); clip.setAttribute("stroke-linecap", stroke.clipLineCap ?? "round");
             mask.append(clip); layer.append(mask); path.setAttribute("mask", `url(#${id})`);
             animations.push(clip.animate([
-              {d: previous.get(stroke.id)?.clipD ?? `path("${strokePath(fromClip)}")`, strokeWidth:String(Number(from.width) * clipWidthScale)},
+              {d: previous.get(stroke.id)?.clipD ?? `path("${strokePath(fromClip)}")`, strokeWidth:String(parseFloat(from.width) * clipWidthScale)},
               {d:`path("${strokePath(toClip)}")`, strokeWidth:String(width * clipWidthScale)},
             ], {duration:440, easing:expanded ? "cubic-bezier(.2,.8,.2,1)" : "cubic-bezier(.333333,1,.666667,1)", fill:"forwards"}));
           }
