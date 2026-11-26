@@ -1,5 +1,5 @@
 name: Resource and database compatibility
-run-name: Resource pair ${{ inputs.baseline_sha || 'f9e917917df07a24a800bf63d00700d0028bcb28' }} vs ${{ inputs.source_sha || github.sha }}
+run-name: Resource checks for ${{ inputs.source_sha || github.sha }}
 
 on:
   push:
@@ -17,9 +17,17 @@ on:
         type: string
         default: ''
       baseline_sha:
-        description: 'Exact baseline before resource optimizations'
+        description: 'Exact whole-app baseline before resource optimizations'
         type: string
         default: 'f9e917917df07a24a800bf63d00700d0028bcb28'
+      aggregate_baseline_sha:
+        description: 'Exact pre-staging Rust baseline with the existing test compile fix'
+        type: string
+        default: '3eadadc66168802643ef595712c739877083559e'
+      aggregate_only:
+        description: 'Run only the production aggregate pair'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -42,7 +50,7 @@ jobs:
     timeout-minutes: 100
     env:
       SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
-      BASELINE_SHA: ${{ inputs.baseline_sha || 'f9e917917df07a24a800bf63d00700d0028bcb28' }}
+      BASELINE_SHA: ${{ inputs.aggregate_baseline_sha || '3eadadc66168802643ef595712c739877083559e' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -51,7 +59,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ inputs.baseline_sha || 'f9e917917df07a24a800bf63d00700d0028bcb28' }}
+          ref: ${{ inputs.aggregate_baseline_sha || '3eadadc66168802643ef595712c739877083559e' }}
           path: baseline
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -89,6 +97,9 @@ jobs:
           retention-days: 30
 
   whole-app-pair:
+    # A branch push can repair only the aggregate harness while an exact-source
+    # whole-app pair is already sampling. Dispatches use the explicit input.
+    if: ${{ !inputs.aggregate_only && !contains(github.event.head_commit.message, '[aggregate-only]') }}
     runs-on: macos-26
     timeout-minutes: 100
     env:
