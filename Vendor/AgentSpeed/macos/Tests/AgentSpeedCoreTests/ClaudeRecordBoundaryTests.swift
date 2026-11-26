@@ -133,7 +133,7 @@ struct ClaudeRecordBoundaryTests {
     private static func expectSemantics(_ harness: Harness, keys: [String]) throws {
         #expect(harness.lines.count == keys.count)
         #expect(harness.upserts.map(\.record.key) == keys)
-        #expect(harness.upserts.allSatisfy(\.isCompletion))
+        #expect(harness.upserts.allSatisfy { $0.isCompletion })
         #expect(harness.parser.state.malformedLines == 0)
         #expect(harness.parser.state.source == .claudeCode)
         #expect(harness.parser.state.phase == .idle)

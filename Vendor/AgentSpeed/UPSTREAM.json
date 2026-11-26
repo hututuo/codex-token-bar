@@ -10,7 +10,7 @@
     },
     "macos/Tests/AgentSpeedCoreTests/ClaudeRecordBoundaryTests.swift": {
       "reason": "Token Bar anonymous large-record boundary regressions through FileTailer, ClaudeLineExtractor and ClaudeParser; verify cross-chunk and partial-append usage, successor records and replay without changing production limits.",
-      "sha256": "0becdf3d13af69cb8e2975c5afc6c5542009776dec797ec44864373e1614fa3a"
+      "sha256": "1a7f8c2cdf0ea60e5e3646fa1ea90d8e3eac20971e80f63e956dc8df22231481"
     },
     "macos/Tests/AgentSpeedCoreTests/LineSplitterMemoryTests.swift": {
       "reason": "Verify bounded retained buffer capacity after long lines, small trailing fragments, independent copies and oversized line handling.",
