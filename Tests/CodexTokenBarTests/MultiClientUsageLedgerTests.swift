@@ -3,6 +3,50 @@ import CryptoKit
 @testable import CodexTokenBar
 
 final class MultiClientUsageLedgerTests: XCTestCase {
+    func testRegisteredClaudeAccountBackfillsOnceDeduplicatesCopiesAndResumesPartialTail() async throws {
+        let fm = FileManager.default
+        let accounts = root.appendingPathComponent(".local/share/claude-adapter/accounts")
+        let old = root.appendingPathComponent(".claude/projects/p/original.jsonl")
+        let account = accounts.appendingPathComponent("\(String(repeating: "a", count: 32))/code/projects/p/copied.jsonl")
+        for path in [old, account] { try fm.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true) }
+        func line(_ session: String, _ id: String) -> String {
+            "{\"type\":\"assistant\",\"entrypoint\":\"claude-desktop-3p\",\"sessionId\":\"\(session)\",\"timestamp\":\"2026-11-26T10:00:00Z\",\"message\":{\"id\":\"\(id)\",\"model\":\"claude-opus-5-5\",\"usage\":{\"input_tokens\":3,\"cache_read_input_tokens\":20,\"cache_creation_input_tokens\":7,\"output_tokens\":5}}}\n"
+        }
+        try Data(line("original", "shared").utf8).write(to: old)
+        let database = root.appendingPathComponent("account-backfill.sqlite")
+        let scanner = MultiClientUsageScanner(databaseURL: database, home: root, environment: [:])
+        var preference = MultiClientUsagePreference.defaults.first { $0.client == .claudeDesktop }!
+        preference.enabled = true
+        let baseline = try await scanner.scan([preference])
+        XCTAssertEqual(baseline.summaries.first?.requests, 1)
+        let tail = line("isolated", "appended")
+        try Data((line("copied-session", "shared") + line("isolated", "new") + tail.dropLast(5)).utf8).write(to: account)
+        let registry: [String: Any] = ["version": 1, "accounts": [["id": "existing"], ["id": String(repeating: "a", count: 32)]]]
+        try JSONSerialization.data(withJSONObject: registry).write(to: accounts.appendingPathComponent("registry.json"))
+        let backfilled = try await scanner.scan([preference])
+        XCTAssertEqual(backfilled.summaries.first?.requests, 2)
+        XCTAssertEqual(backfilled.summaries.first?.inputTokens, 60)
+        XCTAssertEqual(backfilled.summaries.first?.cacheReadTokens, 40)
+        XCTAssertEqual(backfilled.summaries.first?.cacheWriteTokens, 14)
+        let repeated = try await scanner.scan([preference])
+        XCTAssertEqual(repeated.summaries, backfilled.summaries)
+        let file = try FileHandle(forWritingTo: account)
+        try file.seekToEnd(); try file.write(contentsOf: Data(tail.suffix(5).utf8)); try file.close()
+        let appended = try await scanner.scan([preference])
+        XCTAssertEqual(appended.summaries.first?.requests, 3)
+        XCTAssertEqual(appended.summaries.first?.inputTokens, 90)
+
+        // A user-selected path remains exclusive, even when accounts are registered.
+        preference.path = old.path
+        let explicitScanner = MultiClientUsageScanner(databaseURL: root.appendingPathComponent("explicit.sqlite"), home: root, environment: [:])
+        let explicit = try await explicitScanner.scan([preference])
+        XCTAssertEqual(explicit.summaries.first?.requests, 1)
+        try fm.removeItem(at: account)
+        preference.path = ""
+        let retained = try await scanner.scan([preference])
+        XCTAssertEqual(retained.summaries.first?.requests, 3)
+    }
+
     func testScanProjectionMatchesIndependentReadsAfterResponseMovesAcrossDays() throws {
         let url = root.appendingPathComponent("scan-projection.sqlite")
         let ledger = try MultiClientUsageLedger(url: url)

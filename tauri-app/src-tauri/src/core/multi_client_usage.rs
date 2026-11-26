@@ -1106,7 +1106,7 @@ fn refresh_multi_client_usage_at(
     let mut work = Vec::<(String, PathBuf)>::new();
     for preference in enabled {
         if preference.client == "opencode" {
-            let roots = source_roots("opencode", preference_path(preference));
+            let (roots, _) = source_roots("opencode", preference_path(preference));
             if roots.is_empty() {
                 diagnostics.push("opencode: 找不到默认用户目录".into());
                 continue;
@@ -1134,9 +1134,31 @@ fn refresh_multi_client_usage_at(
             }
             continue;
         }
-        let roots = source_roots(&preference.client, preference_path(preference));
+        let (roots, incomplete) = source_roots(&preference.client, preference_path(preference));
+        if incomplete {
+            diagnostics.push(format!("{}: 账号目录登记未完整读取；当前不是完整历史", preference.client));
+        }
         if roots.is_empty() {
             diagnostics.push(format!("{}: 找不到默认用户目录", preference.client));
+            continue;
+        }
+        if matches!(preference.client.as_str(), "claudeCode" | "claudeDesktop")
+            && preference_path(preference).is_none()
+        {
+            // One shared budget across accounts; keep logical checkpoint paths and skip
+            // repeated physical roots (for example a selected projects-root symlink).
+            match enumerate_claude_roots(&preference.client, &roots) {
+                Ok((files, truncated)) => {
+                    if truncated {
+                        diagnostics.push(format!("{}: 自动发现未完整完成，部分目录或记录未读取；当前不是完整历史", preference.client));
+                    }
+                    if files.is_empty() {
+                        diagnostics.push(format!("{}: 未发现本地用量日志", preference.client));
+                    }
+                    work.extend(files.into_iter().map(|path| (preference.client.clone(), path)));
+                }
+                Err(error) => diagnostics.push(format!("{}: 无法枚举账号日志: {error}", preference.client)),
+            }
             continue;
         }
         for root in roots {
@@ -1937,31 +1959,31 @@ fn load_preferences(path: &Path) -> (Vec<MultiClientUsagePreference>, Vec<String
     }
 }
 
-fn source_roots(client: &str, override_path: Option<&str>) -> Vec<PathBuf> {
+fn source_roots(client: &str, override_path: Option<&str>) -> (Vec<PathBuf>, bool) {
     if client == "antigravity" {
         let selected = override_path.map(str::trim).filter(|path| !path.is_empty()).map(expand_path);
-        return antigravity::resolve_roots(&app_paths::home_dir(), selected.as_deref());
+        return (antigravity::resolve_roots(&app_paths::home_dir(), selected.as_deref()), false);
     }
     if let Some(path) = override_path.map(str::trim).filter(|path| !path.is_empty()) {
-        return vec![expand_path(path)];
+        return (vec![expand_path(path)], false);
     }
     let home = app_paths::home_dir();
+    if matches!(client, "claudeCode" | "claudeDesktop") {
+        let configured = std::env::var_os("CLAUDE_CONFIG_DIR")
+            .filter(|value| !value.is_empty()).map(PathBuf::from);
+        return claude_project_roots(&home, configured.as_deref());
+    }
     if client == "gemini" {
         let base = std::env::var_os("GEMINI_CLI_HOME")
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
             .unwrap_or_else(|| home.clone());
-        return vec![
+        return (vec![
             base.join(".gemini").join("tmp"),
             base.join(".cache").join(".gemini").join("tmp"),
-        ];
+        ], false);
     }
     let path = match client {
-        "claudeCode" | "claudeDesktop" => std::env::var_os("CLAUDE_CONFIG_DIR")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(".claude"))
-            .join("projects"),
         "deepseek" => std::env::var_os("DSH_HOME")
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
@@ -1973,9 +1995,9 @@ fn source_roots(client: &str, override_path: Option<&str>) -> Vec<PathBuf> {
                 .map(PathBuf::from);
             if let Some(path) = configured {
                 if path.file_name().is_some_and(|name| name == "opencode.db") {
-                    return vec![path];
+                    return (vec![path], false);
                 }
-                return vec![path];
+                return (vec![path], false);
             }
             std::env::var_os("XDG_DATA_HOME")
                 .filter(|value| !value.is_empty())
@@ -1983,9 +2005,84 @@ fn source_roots(client: &str, override_path: Option<&str>) -> Vec<PathBuf> {
                 .unwrap_or_else(|| home.join(".local").join("share"))
                 .join("opencode")
         }
-        _ => return Vec::new(),
+        _ => return (Vec::new(), false),
     };
-    vec![path]
+    (vec![path], false)
+}
+
+/// Read only the launcher's bounded ID registry, never account profiles or credentials.
+fn claude_project_roots(home: &Path, configured: Option<&Path>) -> (Vec<PathBuf>, bool) {
+    let mut roots = vec![configured.map(Path::to_path_buf).unwrap_or_else(|| home.join(".claude")).join("projects")];
+    let accounts = home.join(".local/share/claude-adapter/accounts");
+    let registry = accounts.join("registry.json");
+    let metadata = match fs::symlink_metadata(&registry) {
+        Ok(metadata) => metadata,
+        Err(error) => return (roots, error.kind() != std::io::ErrorKind::NotFound),
+    };
+    if !plain_directory(&accounts) || !metadata.is_file() || metadata.len() > 32_768 {
+        return (roots, true);
+    }
+    let value = fs::File::open(&registry).ok().and_then(|file| {
+        let mut bytes = Vec::new();
+        file.take(32_769).read_to_end(&mut bytes).ok()?;
+        if bytes.len() > 32_768 { return None; }
+        serde_json::from_slice::<Value>(&bytes).ok()
+    });
+    let Some(value) = value else { return (roots, true); };
+    let Some(rows) = value.get("accounts").and_then(Value::as_array) else { return (roots, true); };
+    if value.get("version").and_then(Value::as_u64) != Some(1) || !(1..=16).contains(&rows.len()) {
+        return (roots, true);
+    }
+    let mut identifiers = std::collections::HashSet::new();
+    let mut registered = Vec::new();
+    let mut incomplete = false;
+    for row in rows {
+        let Some(id) = row.get("id").and_then(Value::as_str) else { return (roots, true); };
+        if (id != "existing" && !(id.len() == 32 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))))
+            || !identifiers.insert(id)
+        {
+            return (roots, true);
+        }
+        if id == "existing" {
+            registered.push(home.join(".claude-official-guarded/projects"));
+        } else {
+            let account = accounts.join(id);
+            let code = account.join("code");
+            if !plain_directory(&account) || !plain_directory(&code) {
+                if account.exists() { incomplete = true; }
+                continue;
+            }
+            registered.push(code.join("projects"));
+        }
+    }
+    if !identifiers.contains("existing") { return (roots, true); }
+    roots.extend(registered);
+    (roots, incomplete)
+}
+
+fn enumerate_claude_roots(client: &str, roots: &[PathBuf]) -> Result<(Vec<PathBuf>, bool), String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut files = Vec::new();
+    let mut entries = 0;
+    let mut truncated = false;
+    let mut incomplete = false;
+    for root in roots {
+        if !root.exists() { continue; }
+        let physical = match fs::canonicalize(root) {
+            Ok(path) => path,
+            Err(_) => { incomplete = true; continue; }
+        };
+        if !seen.insert(physical.clone()) || !plain_directory(&physical) { continue; }
+        if collect_transcripts(root, client, 0, &mut entries, &mut files, &mut truncated).is_err() {
+            incomplete = true;
+        }
+        if truncated { break; }
+    }
+    let mut seen_files = std::collections::HashSet::new();
+    files.retain(|path| seen_files.insert(fs::canonicalize(path).unwrap_or_else(|_| path.clone())));
+    files.sort();
+    files.dedup();
+    Ok((files, truncated || incomplete))
 }
 
 fn expand_path(path: &str) -> PathBuf {
@@ -7307,6 +7404,104 @@ mod tests {
         let (files, truncated) = enumerate_source_files("claudeCode", &logical).unwrap();
         assert!(!truncated);
         assert_eq!(files, vec![logical.join("project/session.jsonl")]);
+    }
+
+    #[test]
+    fn registered_claude_accounts_backfill_without_counting_copied_responses_twice() {
+        let root = TempDir::new("claude-registered-accounts");
+        let home = root.path();
+        let accounts = home.join(".local/share/claude-adapter/accounts");
+        let id = "a".repeat(32);
+        let old = home.join(".claude/projects/p/old.jsonl");
+        let account = accounts.join(&id).join("code/projects/p/new.jsonl");
+        let unrelated = accounts.join(&id).join("desktop/projects/p/outside.jsonl");
+        for path in [&old, &account, &unrelated] { fs::create_dir_all(path.parent().unwrap()).unwrap(); }
+        let line = |session: &str, response: &str| {
+            serde_json::json!({"type":"assistant", "entrypoint":"claude-desktop-3p",
+                "sessionId":session, "timestamp":"2026-11-26T10:00:00Z", "message":{
+                    "id":response,"model":"claude-opus-5-5","usage":{
+                        "input_tokens":3,"cache_read_input_tokens":20,"cache_creation_input_tokens":7,"output_tokens":5
+                    }}}).to_string() + "\n"
+        };
+        fs::write(&old, line("old", "shared")).unwrap();
+        fs::write(&unrelated, line("outside", "excluded")).unwrap();
+        let database = home.join("usage.sqlite");
+        let mut connection = open_database(&database).unwrap();
+        ensure_schema(&connection, &database).unwrap();
+        scan_transcript_file(&mut connection, "claudeDesktop", &old).unwrap();
+        let tail = line("isolated", "appended");
+        let prefix = line("copy", "shared") + &line("isolated", "new") + &tail[..tail.len()-5];
+        fs::write(&account, &prefix).unwrap();
+        fs::write(accounts.join("registry.json"), serde_json::json!({"version":1,
+            "accounts":[{"id":"existing"},{"id":id}]}).to_string()).unwrap();
+        let (roots, incomplete) = claude_project_roots(home, None);
+        assert!(!incomplete);
+        let (files, truncated) = enumerate_claude_roots("claudeDesktop", &roots).unwrap();
+        assert!(!truncated);
+        assert_eq!(files.len(), 2);
+        assert!(!files.contains(&unrelated));
+        for _ in 0..2 {
+            for path in &files { scan_transcript_file(&mut connection, "claudeDesktop", path).unwrap(); }
+            let summaries = read_summaries(&connection).unwrap().0;
+            assert_eq!(summaries[0].requests, 2);
+            assert_eq!(summaries[0].input_tokens, 60);
+            assert_eq!(summaries[0].cache_read_tokens, Some(40));
+            assert_eq!(summaries[0].cache_write_tokens, Some(14));
+        }
+        let mut file = fs::OpenOptions::new().append(true).open(&account).unwrap();
+        std::io::Write::write_all(&mut file, &tail.as_bytes()[tail.len()-5..]).unwrap();
+        drop(file);
+        scan_transcript_file(&mut connection, "claudeDesktop", &account).unwrap();
+        let summaries = read_summaries(&connection).unwrap().0;
+        assert_eq!(summaries[0].requests, 3);
+        assert_eq!(summaries[0].input_tokens, 90);
+        let explicit = old.to_str().unwrap();
+        assert_eq!(source_roots("claudeDesktop", Some(explicit)), (vec![old.clone()], false));
+        fs::remove_file(&account).unwrap();
+        assert_eq!(read_summaries(&connection).unwrap().0[0].requests, 3);
+    }
+
+    #[test]
+    fn claude_account_registry_rejects_unsafe_ids_duplicates_versions_and_size() {
+        let root = TempDir::new("claude-registry-bounds");
+        let accounts = root.path().join(".local/share/claude-adapter/accounts");
+        fs::create_dir_all(&accounts).unwrap();
+        let registry = accounts.join("registry.json");
+        let fallback = vec![root.path().join(".claude/projects")];
+        for value in [
+            serde_json::json!({"version":1,"accounts":[{"id":"existing"},{"id":"../../outside"}]}),
+            serde_json::json!({"version":1,"accounts":[{"id":"existing"},{"id":"existing"}]}),
+            serde_json::json!({"version":true,"accounts":[{"id":"existing"}]}),
+            serde_json::json!({"version":2,"accounts":[{"id":"existing"}]}),
+            serde_json::json!({"version":1,"accounts":vec![serde_json::json!({"id":"existing"});17]}),
+        ] {
+            fs::write(&registry, value.to_string()).unwrap();
+            assert_eq!(claude_project_roots(root.path(), None), (fallback.clone(), true));
+        }
+        fs::write(&registry, vec![b' ';32_769]).unwrap();
+        assert_eq!(claude_project_roots(root.path(), None), (fallback, true));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_account_roots_deduplicate_selected_alias_and_reject_registry_links() {
+        use std::os::unix::fs::symlink;
+        let root = TempDir::new("claude-account-alias");
+        let accounts = root.path().join(".local/share/claude-adapter/accounts");
+        let id = "a".repeat(32);
+        let code = accounts.join(&id).join("code");
+        fs::create_dir_all(code.join("projects/p")).unwrap();
+        fs::write(code.join("projects/p/one.jsonl"), "{}\n").unwrap();
+        let registry = accounts.join("registry.json");
+        fs::write(&registry, serde_json::json!({"version":1,"accounts":[{"id":"existing"},{"id":id}]}).to_string()).unwrap();
+        let selected = root.path().join("selected");
+        symlink(&code, &selected).unwrap();
+        let (roots, incomplete) = claude_project_roots(root.path(), Some(&selected));
+        assert!(!incomplete);
+        assert_eq!(enumerate_claude_roots("claudeCode", &roots).unwrap(), (vec![selected.join("projects/p/one.jsonl")], false));
+        fs::remove_file(&registry).unwrap();
+        symlink(root.path().join("missing.json"), &registry).unwrap();
+        assert!(claude_project_roots(root.path(), None).1);
     }
 
     #[test]

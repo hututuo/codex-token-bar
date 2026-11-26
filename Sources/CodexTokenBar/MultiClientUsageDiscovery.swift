@@ -37,10 +37,9 @@ enum MultiClientUsageDiscovery {
         case .antigravity:
             return AntigravityUsageSource.discover(home: home)
         case .claudeCode, .claudeDesktop:
-            let config = environment["CLAUDE_CONFIG_DIR"].flatMap(nonEmptyPath)
-                .map { URL(fileURLWithPath: $0, isDirectory: true) }
-                ?? home.appendingPathComponent(".claude", isDirectory: true)
-            return walk(root: config.appendingPathComponent("projects", isDirectory: true), client: client)
+            let roots = claudeProjectRoots(home: home, environment: environment)
+            let discovered = walk(roots: roots.paths, client: client)
+            return Result(files: discovered.files, truncated: discovered.truncated || roots.incomplete)
         case .deepseek:
             let root = environment["DSH_HOME"].flatMap(nonEmptyPath)
                 .map { URL(fileURLWithPath: $0, isDirectory: true).appendingPathComponent("sessions", isDirectory: true) }
@@ -85,9 +84,56 @@ enum MultiClientUsageDiscovery {
         }
     }
 
+    /// The launcher's v1 registry contains IDs/labels only. Derive known transcript paths;
+    /// never crawl account storage, Desktop profiles, settings or authentication files.
+    static func claudeProjectRoots(home: URL, environment: [String: String]) -> (paths: [URL], incomplete: Bool) {
+        let config = environment["CLAUDE_CONFIG_DIR"].flatMap(nonEmptyPath)
+            .map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? home.appendingPathComponent(".claude", isDirectory: true)
+        var paths = [config.appendingPathComponent("projects", isDirectory: true)]
+        let accounts = home.appendingPathComponent(".local/share/claude-adapter/accounts", isDirectory: true)
+        let registry = accounts.appendingPathComponent("registry.json")
+        var registryInfo = stat()
+        guard lstat(registry.path, &registryInfo) == 0 else { return (paths, errno != ENOENT) }
+        guard isDirectoryNonSymlink(accounts), isRegularNonSymlink(registry),
+              let handle = try? FileHandle(forReadingFrom: registry) else { return (paths, true) }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: 32_769), data.count <= 32_768,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let version = object["version"] as? NSNumber,
+              String(cString: version.objCType) != "c", version.stringValue == "1",
+              let rows = object["accounts"] as? [[String: Any]], (1...16).contains(rows.count)
+        else { return (paths, true) }
+        var identifiers: Set<String> = []
+        var registered: [URL] = []
+        var incomplete = false
+        for row in rows {
+            guard let id = row["id"] as? String,
+                  id == "existing" || (id.utf8.count == 32 && id.utf8.allSatisfy({
+                      ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66)
+                  })), identifiers.insert(id).inserted else { return (paths, true) }
+            if id == "existing" {
+                registered.append(home.appendingPathComponent(".claude-official-guarded/projects", isDirectory: true))
+            } else {
+                let account = accounts.appendingPathComponent(id, isDirectory: true)
+                let code = account.appendingPathComponent("code", isDirectory: true)
+                // Account ancestors are not user-selected roots: reject aliases into other storage.
+                guard isDirectoryNonSymlink(account), isDirectoryNonSymlink(code) else {
+                    if FileManager.default.fileExists(atPath: account.path) { incomplete = true }
+                    continue
+                }
+                registered.append(code.appendingPathComponent("projects", isDirectory: true))
+            }
+        }
+        guard identifiers.contains("existing") else { return (paths, true) }
+        paths.append(contentsOf: registered)
+        return (paths, incomplete)
+    }
+
     private static func walk(roots: [URL], client: UsageClient) -> Result {
         var found: [Candidate] = []
         var seenRoots: Set<String> = []
+        var seenFiles: Set<String> = []
         var remainingEntries = maximumVisitedEntries
         var truncated = false
         for root in roots {
@@ -97,7 +143,9 @@ enum MultiClientUsageDiscovery {
             else { continue }
             let entryBudget = remainingEntries
             let result = walk(root: root, client: client, entryBudget: entryBudget)
-            found.append(contentsOf: result.files)
+            for candidate in result.files where seenFiles.insert(candidate.url.resolvingSymlinksInPath().standardizedFileURL.path).inserted {
+                found.append(candidate)
+            }
             remainingEntries -= result.visitedEntries
             if result.truncated { truncated = true }
         }

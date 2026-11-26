@@ -101,7 +101,7 @@ actor MultiClientUsageScanner {
             } else if preference.path.isEmpty {
                 let discovery = MultiClientUsageDiscovery.discover(client: preference.client, home: home, environment: environment)
                 files = discovery.files
-                if discovery.truncated { diagnostics.append("\(preference.client.displayName)：自动发现达到安全上限，请分目录读取；当前不是完整历史") }
+                if discovery.truncated { diagnostics.append("\(preference.client.displayName)：自动发现未完整完成，部分目录或记录未读取；当前不是完整历史") }
             } else {
                 let discovery = Self.files(at: URL(fileURLWithPath: (preference.path as NSString).expandingTildeInPath))
                 files = discovery.files

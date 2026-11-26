@@ -4,6 +4,68 @@ import XCTest
 @testable import CodexTokenBar
 
 final class MultiClientUsageParserTests: XCTestCase {
+    func testClaudeDiscoveryIncludesOnlyRegisteredAccountProjectsAndKeepsClassification() throws {
+        let fm = FileManager.default
+        let home = fm.temporaryDirectory.appendingPathComponent("claude-accounts-\(UUID())")
+        defer { try? fm.removeItem(at: home) }
+        let accounts = home.appendingPathComponent(".local/share/claude-adapter/accounts")
+        let accountID = String(repeating: "a", count: 32)
+        let paths = [
+            home.appendingPathComponent(".claude/projects/p/old.jsonl"),
+            home.appendingPathComponent(".claude-official-guarded/projects/p/guarded.jsonl"),
+            accounts.appendingPathComponent("\(accountID)/code/projects/p/new.jsonl"),
+            accounts.appendingPathComponent("\(accountID)/desktop/projects/p/not-a-transcript-root.jsonl"),
+            accounts.appendingPathComponent("\(String(repeating: "b", count: 32))/code/projects/p/unregistered.jsonl"),
+        ]
+        for (index, path) in paths.enumerated() {
+            try fm.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try jsonl([claudeLine(session: "s\(index)", entrypoint: index == 2 ? "claude-desktop-3p" : "cli",
+                id: "m\(index)", timestamp: "2026-11-26T10:00:00Z", usage: ["input_tokens": 10])]).write(to: path)
+        }
+        let registry: [String: Any] = ["version": 1, "accounts": [["id": "existing"], ["id": accountID]]]
+        try JSONSerialization.data(withJSONObject: registry).write(to: accounts.appendingPathComponent("registry.json"))
+        let cli = MultiClientUsageDiscovery.discover(client: .claudeCode, home: home, environment: [:])
+        let desktop = MultiClientUsageDiscovery.discover(client: .claudeDesktop, home: home, environment: [:])
+        XCTAssertFalse(cli.truncated); XCTAssertFalse(desktop.truncated)
+        XCTAssertEqual(Set(cli.files), Set(paths.prefix(2)))
+        XCTAssertEqual(desktop.files, [paths[2]])
+
+        // Selecting an account via the environment still produces one physical source,
+        // with the selected logical path retained for existing checkpoints.
+        let alias = home.appendingPathComponent("selected")
+        try fm.createSymbolicLink(at: alias, withDestinationURL: paths[2].deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent())
+        let selected = MultiClientUsageDiscovery.discover(client: .claudeDesktop, home: home,
+            environment: ["CLAUDE_CONFIG_DIR": alias.path])
+        XCTAssertEqual(selected.files, [alias.appendingPathComponent("projects/p/new.jsonl")])
+        XCTAssertFalse(selected.truncated)
+    }
+
+    func testClaudeAccountRegistryRejectsUnsafeIDsDuplicatesOversizeAndLinks() throws {
+        let fm = FileManager.default
+        let home = fm.temporaryDirectory.appendingPathComponent("claude-registry-\(UUID())")
+        defer { try? fm.removeItem(at: home) }
+        let accounts = home.appendingPathComponent(".local/share/claude-adapter/accounts")
+        try fm.createDirectory(at: accounts, withIntermediateDirectories: true)
+        let registry = accounts.appendingPathComponent("registry.json")
+        let fallback = home.appendingPathComponent(".claude/projects")
+        for value: [String: Any] in [
+            ["version": 1, "accounts": [["id": "existing"], ["id": "../../outside"]]],
+            ["version": 1, "accounts": [["id": "existing"], ["id": "existing"]]],
+            ["version": true, "accounts": [["id": "existing"]]],
+            ["version": 2, "accounts": [["id": "existing"]]],
+            ["version": 1, "accounts": Array(repeating: ["id": "existing"], count: 17)],
+        ] {
+            try JSONSerialization.data(withJSONObject: value).write(to: registry)
+            let result = MultiClientUsageDiscovery.claudeProjectRoots(home: home, environment: [:])
+            XCTAssertEqual(result.paths, [fallback]); XCTAssertTrue(result.incomplete)
+        }
+        try Data(repeating: 0x20, count: 32_769).write(to: registry)
+        XCTAssertTrue(MultiClientUsageDiscovery.discover(client: .claudeCode, home: home, environment: [:]).truncated)
+        try fm.removeItem(at: registry)
+        try fm.createSymbolicLink(at: registry, withDestinationURL: home.appendingPathComponent("missing.json"))
+        XCTAssertTrue(MultiClientUsageDiscovery.claudeProjectRoots(home: home, environment: [:]).incomplete)
+    }
+
     func testClaudeCacheLifetimeFieldsKeepLegacyIdentityAndDoNotDoubleCountInput() throws {
         for withID in [false, true] {
             var message: [String: Any] = ["model": "claude-opus-5-5", "usage": ["input_tokens": 10, "output_tokens": 40, "cache_read_input_tokens": 20, "cache_creation_input_tokens": 30]]
