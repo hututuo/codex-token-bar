@@ -1,6 +1,25 @@
 import Combine
 import Foundation
 
+/// One immutable closed-bucket attribution basis shared by all ranges in a request.
+/// The unfiltered input remains available to live/today totals.
+struct RecentChartPreparedAttribution: Sendable {
+    let displayedEvents: [TokenCacheAttributionEvent]
+    let costEvents: [TokenCacheAttributionEvent]
+
+    init(input: RecentChartPreparationInput) {
+        func closedEvents(_ events: [TokenCacheAttributionEvent], through end: Date?) -> [TokenCacheAttributionEvent] {
+            guard let end else { return events }
+            return events.filter { $0.start < end }
+        }
+        let displayed = closedEvents(input.attributionEvents, through: input.settledThrough)
+        displayedEvents = displayed
+        costEvents = input.quotaCostSource.map {
+            closedEvents($0.attributionEvents, through: $0.settledThrough ?? input.settledThrough)
+        } ?? displayed
+    }
+}
+
 struct RecentChartPreparedSnapshot: Sendable {
     let data: RecentChartPreparedData
     let bucketCostsUSD: [Double]
@@ -27,17 +46,21 @@ struct RecentChartPreparedSnapshot: Sendable {
         input: RecentChartPreparationInput,
         priceModel: OfficialAPIPriceModel
     ) -> Self {
+        build(range: range, input: input, priceModel: priceModel,
+            attribution: RecentChartPreparedAttribution(input: input))
+    }
+
+    static func build(
+        range: RecentChartRange,
+        input: RecentChartPreparationInput,
+        priceModel: OfficialAPIPriceModel,
+        attribution: RecentChartPreparedAttribution
+    ) -> Self {
         // Attribution also serves today's/live totals and intentionally contains
         // the open bucket. Chart amounts must use the closed-bucket coverage
         // of this snapshot, including when the visible axis pads an empty tail.
-        func closedEvents(_ events: [TokenCacheAttributionEvent], through end: Date?) -> [TokenCacheAttributionEvent] {
-            guard let end else { return events }
-            return events.filter { $0.start < end }
-        }
-        let displayedEvents = closedEvents(input.attributionEvents, through: input.settledThrough)
-        let costEvents = input.quotaCostSource.map {
-            closedEvents($0.attributionEvents, through: $0.settledThrough ?? input.settledThrough)
-        } ?? displayedEvents
+        let displayedEvents = attribution.displayedEvents
+        let costEvents = attribution.costEvents
         let data = RecentUsageChart.prepare(
             range: range,
             recentBins: input.bins,
@@ -140,7 +163,7 @@ final class RecentChartPreparationStore: ObservableObject {
         input: RecentChartPreparationInput,
         priceModel: OfficialAPIPriceModel,
         preferredRange: RecentChartRange,
-        builder: @escaping Builder = RecentChartPreparedSnapshot.build
+        builder: Builder? = nil
     ) {
         guard input != self.input || priceModel != self.priceModel else { return }
         task?.cancel()
@@ -151,10 +174,28 @@ final class RecentChartPreparationStore: ObservableObject {
         self.requestID = requestID
         let ranges = [preferredRange] + RecentChartRange.allCases.filter { $0 != preferredRange }
         task = Task { [weak self] in
+            guard !Task.isCancelled else { return }
+            let sharedBuilder: Builder
+            if let builder {
+                sharedBuilder = builder
+            } else {
+                let worker = Task.detached(priority: .userInitiated) {
+                    RecentChartPreparedAttribution(input: input)
+                }
+                let attribution = await withTaskCancellationHandler {
+                    await worker.value
+                } onCancel: {
+                    worker.cancel()
+                }
+                guard !Task.isCancelled else { return }
+                sharedBuilder = { range, input, model in
+                    .build(range: range, input: input, priceModel: model, attribution: attribution)
+                }
+            }
             for range in ranges {
                 guard !Task.isCancelled else { return }
                 let worker = Task.detached(priority: .userInitiated) {
-                    builder(range, input, priceModel)
+                    sharedBuilder(range, input, priceModel)
                 }
                 let snapshot = await withTaskCancellationHandler {
                     await worker.value

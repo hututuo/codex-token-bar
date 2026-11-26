@@ -4,6 +4,44 @@ import XCTest
 
 @MainActor
 final class RecentChartPreparationStoreTests: XCTestCase {
+    func testSharedAttributionKeepsDisplayAndProviderClosureBoundariesIndependent() {
+        let base = makeInput(tokens: 10)
+        let start = base.bins[0].start
+        func events(_ prefix: String) -> [TokenCacheAttributionEvent] {
+            (0..<3).map { index in
+                .init(id: "\(prefix)-\(index)", start: start.addingTimeInterval(Double(index) * 300),
+                    breakdown: .init(inputTokens: 10, cachedInputTokens: 0, outputTokens: 0,
+                        reasoningOutputTokens: 0, totalTokens: 10, calls: 1))
+            }
+        }
+        let displayed = events("display"), provider = events("provider")
+        let cases: [(displayEnd: Double?, providerEnd: Double?, hasProvider: Bool, emptyProvider: Bool,
+            display: [Int], cost: [Int])] = [
+            (300, 600, true, false, [0], [0, 1]),
+            (600, 300, true, false, [0, 1], [0]),
+            (300, nil, true, false, [0], [0]),
+            (nil, nil, true, false, [0, 1, 2], [0, 1, 2]),
+            (nil, 300, true, false, [0, 1, 2], [0]),
+            (300, nil, false, false, [0], [0]),
+            (300, 600, true, true, [0], [])
+        ]
+        for (index, row) in cases.enumerated() {
+            let input = RecentChartPreparationInput(bins: base.bins, hourlyBins: base.hourlyBins,
+                cacheRecentBins: [], cacheHourlyBins: [], attributionEvents: displayed,
+                quotaRecentBins: [], quotaHourlyBins: [],
+                quotaCostSource: row.hasProvider ? .init(bins: base.bins, hourlyBins: base.hourlyBins,
+                    cacheRecentBins: [], cacheHourlyBins: [], attributionEvents: row.emptyProvider ? [] : provider,
+                    settledThrough: row.providerEnd.map { start.addingTimeInterval($0) }) : nil,
+                settledThrough: row.displayEnd.map { start.addingTimeInterval($0) })
+            let attribution = RecentChartPreparedAttribution(input: input)
+            XCTAssertEqual(attribution.displayedEvents.map(\.id), row.display.map { "display-\($0)" }, "case \(index)")
+            let prefix = row.hasProvider ? "provider" : "display"
+            XCTAssertEqual(attribution.costEvents.map(\.id), row.cost.map { "\(prefix)-\($0)" }, "case \(index)")
+            XCTAssertEqual(input.attributionEvents, displayed)
+            XCTAssertEqual(input.quotaCostSource?.attributionEvents, row.hasProvider ? (row.emptyProvider ? [] : provider) : nil)
+        }
+    }
+
     func testAggregateProviderBasisCannotPriceOtherClientUsageAsCodex() {
         func pricedInput(_ tokens: Int) -> RecentChartPreparationInput {
             let base = makeInput(tokens: tokens)
@@ -141,11 +179,18 @@ final class RecentChartPreparationStoreTests: XCTestCase {
     func testPreparationRunsOffMainAndTabChangesReuseAllThreeSnapshots() async throws {
         let store = RecentChartPreparationStore()
         defer { store.cancel() }
-        let input = makeInput(tokens: 10)
+        let base = makeInput(tokens: 10)
+        let open = TokenCacheAttributionEvent(id: "open-tail", start: base.bins.last!.start,
+            breakdown: .init(inputTokens: 10, cachedInputTokens: 0, outputTokens: 0,
+                reasoningOutputTokens: 0, totalTokens: 10, calls: 1))
+        let input = RecentChartPreparationInput(bins: base.bins, hourlyBins: base.hourlyBins,
+            cacheRecentBins: [], cacheHourlyBins: [], attributionEvents: [open],
+            quotaRecentBins: [], quotaHourlyBins: [], settledThrough: open.start)
         let calls = ChartPreparationCalls()
-        let builder: RecentChartPreparationStore.Builder = { range, input, model in
+        let builder: RecentChartPreparationStore.Builder = { range, receivedInput, model in
             calls.record()
-            return .build(range: range, input: input, priceModel: model)
+            XCTAssertEqual(receivedInput, input, "Custom builders retain the complete original input, including its open tail")
+            return .build(range: range, input: receivedInput, priceModel: model)
         }
         store.prepare(input: input, priceModel: .gpt56Sol, preferredRange: .sevenDays, builder: builder)
         try await waitForSnapshots(store)

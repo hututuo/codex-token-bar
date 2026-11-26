@@ -99,6 +99,57 @@ final class RecentChartLastBucketPricingTests: XCTestCase {
         XCTAssertEqual(input.attributionEvents, rawEvents, "Live/today attribution must retain the open bucket")
     }
 
+    @MainActor
+    func testDefaultPreparationSharesClosedAttributionAndKeepsRetainedPriceAcrossRefresh() async throws {
+        let store = RecentChartPreparationStore()
+        defer { store.cancel() }
+        let original = try input()
+        store.prepare(input: original, priceModel: .gpt56Sol, preferredRange: .sevenDays)
+        func snapshots() async throws -> [RecentChartPreparedSnapshot] {
+            let deadline = Date().addingTimeInterval(2)
+            while RecentChartRange.allCases.contains(where: { store.snapshot(for: $0) == nil }), Date() < deadline {
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            return try RecentChartRange.allCases.map { try XCTUnwrap(store.snapshot(for: $0)) }
+        }
+        let previous = try await snapshots()
+        let first = try XCTUnwrap(previous.first)
+        XCTAssertFalse(first.costAttributionEvents.isEmpty)
+        for snapshot in previous {
+            let independent = RecentChartPreparedSnapshot.build(range: snapshot.data.range, input: original, priceModel: .gpt56Sol)
+            XCTAssertEqual(snapshot.data, independent.data)
+            XCTAssertEqual(snapshot.bucketCostsUSD, independent.bucketCostsUSD)
+            XCTAssertEqual(snapshot.costAttributionEvents, independent.costAttributionEvents)
+            XCTAssertEqual(snapshot.bucketCostsUSD.reduce(0, +), 23.51656288, accuracy: 0.0000001)
+            first.costAttributionEvents.withUnsafeBufferPointer { shared in
+                snapshot.costAttributionEvents.withUnsafeBufferPointer { other in
+                    XCTAssertEqual(shared.baseAddress, other.baseAddress, "Ranges must share their immutable attribution storage")
+                }
+            }
+        }
+        let advanced = try input(closedThroughAdvance: 300)
+        // Supersede a default request before it can publish; only the newest
+        // closed-bucket generation may populate the three display snapshots.
+        store.prepare(input: original, priceModel: .gpt56Luna, preferredRange: .thirtyDays)
+        store.prepare(input: advanced, priceModel: .gpt56Sol, preferredRange: .twentyFourHours)
+        let refreshed = try await snapshots()
+        for snapshot in refreshed {
+            XCTAssertEqual(snapshot.priceModel, .gpt56Sol)
+            XCTAssertEqual(snapshot.bucketCostsUSD.reduce(0, +), 23.59885808, accuracy: 0.0000001)
+            XCTAssertEqual(snapshot.costAttributionEvents, advanced.attributionEvents.filter { $0.start < advanced.settledThrough! })
+        }
+        for snapshot in previous {
+            XCTAssertEqual(snapshot.bucketCostsUSD.reduce(0, +), 23.51656288, accuracy: 0.0000001)
+            XCTAssertEqual(snapshot.costAttributionEvents, original.attributionEvents.filter { $0.start < original.settledThrough! })
+        }
+        let published = store.revision
+        store.prepare(input: original, priceModel: .gpt56Sol, preferredRange: .sevenDays)
+        store.cancel()
+        try await Task.sleep(for: .milliseconds(10))
+        XCTAssertEqual(store.revision, published)
+        XCTAssertTrue(RecentChartRange.allCases.allSatisfy { store.snapshot(for: $0) == nil })
+    }
+
     func testClosingBucketAdvancesCountsAndPriceTogetherAndLeavesOldSnapshotStable() throws {
         var input = try input()
         let previous = RecentChartPreparedSnapshot.build(range: .twentyFourHours, input: input, priceModel: .gpt56Sol)
