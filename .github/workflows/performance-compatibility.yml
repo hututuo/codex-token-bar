@@ -123,6 +123,22 @@ jobs:
           EVIDENCE="$GITHUB_WORKSPACE/performance-compatibility-evidence"
           HARNESS="$GITHUB_WORKSPACE/benchmark-tools"
           FIXTURE_REL='Vendor/AgentSpeed/macos/Tests/AgentSpeedCoreTests/SpeedEngineBenchmarkTests.swift'
+          restore_inputs() {
+            local role root
+            for role in baseline candidate; do
+              root="$GITHUB_WORKSPACE/product-$role"
+              [[ -f "$EVIDENCE/$role-Package.swift.original" ]] || continue
+              if [[ -e "$root/$FIXTURE_REL" ]]; then
+                cmp "$root/$FIXTURE_REL" "$HARNESS/scripts/cloud/fixtures/SpeedEngineBenchmarkTests.swift" || return 1
+                rm -- "$root/$FIXTURE_REL"
+              fi
+              cp "$EVIDENCE/$role-Package.swift.original" "$root/Package.swift"
+              # SwiftPM removes this lockfile when the temporary package has no
+              # external dependencies. Preserve the original product lock too.
+              cp "$EVIDENCE/$role-Package.resolved.original" "$root/Package.resolved"
+            done
+          }
+          trap restore_inputs EXIT
           run_logged() {
             local label="$1"
             shift
@@ -149,8 +165,9 @@ jobs:
               run_logged "$role-provenance-before" python3 scripts/agent_speed_vendor.py check
               [[ ! -e "$FIXTURE_REL" ]] || { echo 'Refusing to overwrite a product-owned test'; exit 1; }
               cp Package.swift "$EVIDENCE/$role-Package.swift.original"
+              cp Package.resolved "$EVIDENCE/$role-Package.resolved.original"
               cp "$HARNESS/scripts/cloud/fixtures/SpeedEngineBenchmarkPackage.swift" Package.swift
-              shasum -a 256 Package.swift "$EVIDENCE/$role-Package.swift.original" > "$EVIDENCE/$role-package-hashes.txt"
+              shasum -a 256 Package.swift "$EVIDENCE/$role-Package.swift.original" "$EVIDENCE/$role-Package.resolved.original" > "$EVIDENCE/$role-package-hashes.txt"
               cp "$HARNESS/scripts/cloud/fixtures/SpeedEngineBenchmarkTests.swift" "$FIXTURE_REL"
               cmp "$FIXTURE_REL" "$HARNESS/scripts/cloud/fixtures/SpeedEngineBenchmarkTests.swift"
               run_logged "$role-prepare-lfs" bash scripts/prepare_tiktoken_lfs.sh
@@ -191,12 +208,11 @@ jobs:
               done
             done
           done
+          restore_inputs
+          trap - EXIT
           for role in baseline candidate; do
             (
               cd "$GITHUB_WORKSPACE/product-$role"
-              cmp "$FIXTURE_REL" "$HARNESS/scripts/cloud/fixtures/SpeedEngineBenchmarkTests.swift"
-              rm -- "$FIXTURE_REL"
-              cp "$EVIDENCE/$role-Package.swift.original" Package.swift
               git diff --exit-code
               run_logged "$role-provenance-after" python3 scripts/agent_speed_vendor.py check
             )

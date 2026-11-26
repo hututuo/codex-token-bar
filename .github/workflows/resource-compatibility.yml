@@ -1,0 +1,169 @@
+name: Resource and database compatibility
+run-name: Resource pair ${{ inputs.baseline_sha || 'f9e917917df07a24a800bf63d00700d0028bcb28' }} vs ${{ inputs.source_sha || github.sha }}
+
+on:
+  push:
+    branches: ['codex/**']
+    paths:
+      - '.github/workflows/resource-compatibility.yml'
+      - 'scripts/cloud/whole_app_benchmark.py'
+      - 'scripts/cloud/test_whole_app_benchmark.py'
+      - 'scripts/cloud/*multi_client_aggregate_benchmark.py'
+      - 'scripts/cloud/fixtures/MultiClientAggregateBenchmark.rs'
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: 'Exact candidate source; empty uses the workflow commit'
+        type: string
+        default: ''
+      baseline_sha:
+        description: 'Exact baseline before resource optimizations'
+        type: string
+        default: 'f9e917917df07a24a800bf63d00700d0028bcb28'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: resource-pair-${{ github.ref }}-${{ inputs.source_sha || github.sha }}
+  cancel-in-progress: false
+
+env:
+  GIT_LFS_SKIP_SMUDGE: '1'
+  DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+  RUSTUP_TOOLCHAIN: '1.93.1'
+  CARGO_BUILD_JOBS: '3'
+  CARGO_INCREMENTAL: '0'
+  CARGO_PROFILE_RELEASE_DEBUG: '0'
+
+jobs:
+  ledger-pair:
+    runs-on: macos-26
+    timeout-minutes: 100
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+      BASELINE_SHA: ${{ inputs.baseline_sha || 'f9e917917df07a24a800bf63d00700d0028bcb28' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: harness
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.baseline_sha || 'f9e917917df07a24a800bf63d00700d0028bcb28' }}
+          path: baseline
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.source_sha || github.sha }}
+          path: candidate
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: resource-rust-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('candidate/tauri-app/src-tauri/Cargo.lock') }}-v1
+      - name: Validate harness and exact input revisions
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ && "$BASELINE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          python3 -m unittest discover -s harness/scripts/tests -p 'test_multi_client_aggregate_benchmark.py'
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --no-self-update
+      - name: Measure real production aggregate path on identical schema2 inputs
+        run: |
+          set -euo pipefail
+          python3 harness/scripts/cloud/run_multi_client_aggregate_benchmark.py \
+            --baseline baseline --baseline-sha "$BASELINE_SHA" \
+            --candidate candidate --candidate-sha "$SOURCE_SHA" \
+            --evidence aggregate-evidence
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: aggregate-pair-${{ github.run_id }}-${{ github.run_attempt }}
+          path: aggregate-evidence/
+          if-no-files-found: error
+          retention-days: 30
+
+  whole-app-pair:
+    runs-on: macos-26
+    timeout-minutes: 100
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+      BASELINE_SHA: ${{ inputs.baseline_sha || 'f9e917917df07a24a800bf63d00700d0028bcb28' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: harness
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.baseline_sha || 'f9e917917df07a24a800bf63d00700d0028bcb28' }}
+          path: baseline
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.source_sha || github.sha }}
+          path: candidate
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            baseline/.build/artifacts
+            baseline/.build/checkouts
+            baseline/.build/repositories
+            candidate/.build/artifacts
+            candidate/.build/checkouts
+            candidate/.build/repositories
+          key: whole-app-swift-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('candidate/Package.resolved') }}-v1
+      - name: Check sampler and build both exact release applications
+        run: |
+          set -euo pipefail
+          mkdir whole-app-build-evidence
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ && "$BASELINE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          python3 -m unittest discover -s harness/scripts/cloud -p 'test_whole_app_benchmark.py'
+          command -v git-lfs >/dev/null || brew install git-lfs
+          sw_vers > whole-app-build-evidence/toolchain.txt
+          swift --version >> whole-app-build-evidence/toolchain.txt
+          xcodebuild -version >> whole-app-build-evidence/toolchain.txt
+          for role in baseline candidate; do
+            expected="$BASELINE_SHA"
+            [[ "$role" == baseline ]] || expected="$SOURCE_SHA"
+            (
+              cd "$role"
+              [[ "$(git rev-parse HEAD)" == "$expected" ]]
+              git diff --exit-code
+              python3 scripts/agent_speed_vendor.py check
+              CODE_SIGN_IDENTITY=- ENABLE_HARDENED_RUNTIME=0 ENABLE_APP_SANDBOX=0 \
+                APP_BUILD=1062 APP_OUTPUT_DIR="$GITHUB_WORKSPACE/$role-benchmark.app" \
+                bash scripts/package_app.sh release 2>&1 | tee "../whole-app-build-evidence/$role-build.log"
+              git diff --exit-code
+            )
+          done
+          python3 - <<'PY'
+          import hashlib,json,os
+          from pathlib import Path
+          record = {"baseline":os.environ["BASELINE_SHA"],"candidate":os.environ["SOURCE_SHA"],"harness":os.environ["GITHUB_SHA"]}
+          record["executables"] = {role:hashlib.sha256(Path(role+'-benchmark.app/Contents/MacOS/CodexTokenBar').read_bytes()).hexdigest() for role in ('baseline','candidate')}
+          Path('whole-app-build-evidence/provenance.json').write_text(json.dumps(record,indent=2)+'\n')
+          PY
+      - name: Run full production application with synthetic sources
+        run: |
+          set -euo pipefail
+          python3 harness/scripts/cloud/whole_app_benchmark.py \
+            --baseline-app "$GITHUB_WORKSPACE/baseline-benchmark.app" \
+            --candidate-app "$GITHUB_WORKSPACE/candidate-benchmark.app" \
+            --output-dir "$GITHUB_WORKSPACE/whole-app-evidence" \
+            --responses 2000 20000 --warmup 120 --duration 120
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: whole-app-pair-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            whole-app-build-evidence/
+            whole-app-evidence/
+          if-no-files-found: error
+          retention-days: 30
