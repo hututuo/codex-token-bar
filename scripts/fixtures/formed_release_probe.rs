@@ -66,13 +66,34 @@ fn assert_b() -> Result<(), String> {
     let row:(i64,f64,f64)=checked!(b.query_row("SELECT COUNT(*),SUM(covered_seconds),SUM(weighted_output) FROM activity_speed_samples WHERE id='formed-existing-b-row'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))));
     require!(row==(1,10.0,120.0), "old B activity history changed"); Ok(())
 }
+fn b_real(value: f64) -> Value {
+    // Preserve every binary64 bit. A decimal JSON roundtrip can change one ULP
+    // before candidate admission even when SQLite itself was never modified.
+    json!({"realBits": format!("{:016x}", value.to_bits())})
+}
+fn assert_b_real_codec() -> Result<(), String> {
+    // The actual failing mtime and its adjacent binary64 value must survive
+    // the same native evidence serialization without becoming equal.
+    let bits = 0x41dac229a4112628_u64;
+    let first = b_real(f64::from_bits(bits));
+    let adjacent = b_real(f64::from_bits(bits + 1));
+    require!(first == json!({"realBits":"41dac229a4112628"})
+        && adjacent == json!({"realBits":"41dac229a4112629"}) && first != adjacent,
+        "B REAL evidence collapsed adjacent binary64 values");
+    for proof in [first, adjacent] {
+        let encoded = checked!(serde_json::to_vec(&proof));
+        require!(checked!(serde_json::from_slice::<Value>(&encoded)) == proof,
+            "B REAL evidence changed during native JSON roundtrip");
+    }
+    Ok(())
+}
 fn b_rows(connection: &Connection, sql: &str, width: usize) -> Result<Value, String> {
     let mut statement=checked!(connection.prepare(sql));
     let rows=checked!(statement.query_map([], |row| {
         (0..width).map(|column| Ok(match row.get_ref(column)? {
             rusqlite::types::ValueRef::Null => Value::Null,
             rusqlite::types::ValueRef::Integer(value) => json!(value),
-            rusqlite::types::ValueRef::Real(value) => json!(value),
+            rusqlite::types::ValueRef::Real(value) => b_real(value),
             rusqlite::types::ValueRef::Text(value) => json!(String::from_utf8_lossy(value)),
             rusqlite::types::ValueRef::Blob(value) => json!({"blob":value}),
         })).collect::<rusqlite::Result<Vec<Value>>>()
@@ -185,6 +206,7 @@ fn quota_spec(path:&Path) -> Result<StoreSpec,String> {
 
 pub fn run(input: &Path, phase: &str) -> Result<Value,String> {
     let root=validate(input)?;
+    assert_b_real_codec()?;
     let a=route::container_path()?;
     let marker=PathBuf::from(format!("{}.initialized",a.display()));
     let quota=app_paths::quota_history_database_path().ok_or("missing quota path")?;
