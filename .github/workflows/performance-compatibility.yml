@@ -1,7 +1,13 @@
 name: Speed engine performance compatibility
-run-name: Speed engine pair ${{ inputs.baseline_sha }} vs ${{ inputs.source_sha }}
+run-name: Speed engine pair ${{ inputs.baseline_sha || 'f9e917917df07a24a800bf63d00700d0028bcb28' }} vs ${{ inputs.source_sha || github.sha }}
 
 on:
+  push:
+    branches: ['codex/**']
+    paths:
+      - '.github/workflows/performance-compatibility.yml'
+      - 'scripts/cloud/fixtures/SpeedEngineBenchmarkTests.swift'
+      - 'scripts/cloud/summarize_speed_engine_benchmark.py'
   workflow_dispatch:
     inputs:
       source_sha:
@@ -18,7 +24,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: speed-engine-performance-${{ github.ref }}-${{ inputs.source_sha }}
+  group: speed-engine-performance-${{ github.ref }}-${{ inputs.source_sha || github.sha }}
   cancel-in-progress: false
 
 env:
@@ -30,8 +36,8 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 120
     env:
-      SOURCE_SHA: ${{ inputs.source_sha }}
-      BASELINE_SHA: ${{ inputs.baseline_sha }}
+      SOURCE_SHA: ${{ inputs.source_sha || github.sha }}
+      BASELINE_SHA: ${{ inputs.baseline_sha || 'f9e917917df07a24a800bf63d00700d0028bcb28' }}
     steps:
       - name: Initialize evidence and validate exact SHAs
         run: |
@@ -54,13 +60,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ inputs.baseline_sha }}
+          ref: ${{ inputs.baseline_sha || 'f9e917917df07a24a800bf63d00700d0028bcb28' }}
           path: product-baseline
           lfs: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ inputs.source_sha }}
+          ref: ${{ inputs.source_sha || github.sha }}
           path: product-candidate
           lfs: false
       - name: Swift dependency cache
