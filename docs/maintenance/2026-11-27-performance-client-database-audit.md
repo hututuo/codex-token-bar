@@ -1,14 +1,14 @@
 # 性能、多客户端与数据库兼容性验收
 
-更新日期：2026-11-27（Asia/Shanghai）。当前候选：`665efddfc56a5444d5aa30fc6cf55818c0de3b24`，产品内存代码至 `9ae6a13b`，另含 `ff55ace1` 证据编解码修复、`d6c14da7` Gemini 测试及 `665efddf` 测量协议修复。最近完成完整 CI 和速度引擎配对的源码均为 `4410b16bbf182b90bb6cface265f698182a61039`。三个目标继续保持 active。
+更新日期：2026-11-27（Asia/Shanghai）。当前产品候选：`6f54a40173cf4ea5ce3f5a1856eabd445941153b`，在此前内存代码和 `665efddf` 测量协议之上，新增 `db16c1ee` 空源重复发布修复、`6f54a401` 模型聚合顺序修复。最近完成完整 CI 和速度引擎配对的源码均为 `4410b16bbf182b90bb6cface265f698182a61039`。`d6c14da7` 的公开0.9.7升级成功，但标准Swift回归有1个失败case，不能记为全量通过。三个目标继续保持 active。
 
 ## 验收状态
 
 | 目标 | 已完成的工作 | 尚未通过的门槛 |
 | --- | --- | --- |
-| CPU、内存降低一半 | 响应排序与 latest-end 缓存；启动分窗解码及 WAL reader 回收；共享不可变响应与紧凑 timed-response；逐行导入临时对象回收；有界 Home 历史缓存；跨图表 range 共享归属数据 | a416 整 App 整轮因窗口不一致失败；20k 三个等尺寸对的 CPU 仅下降约45%、footprint约7.54%，没有减半；后续内存改动及完整可见视口仍待原生验证与测量 |
+| CPU、内存降低一半 | 响应排序与 latest-end 缓存；启动分窗解码及 WAL reader 回收；共享不可变响应与紧凑 timed-response；逐行导入临时对象回收；有界 Home 历史缓存；跨图表 range 共享归属数据；空源重复发布抑制 | a416/a605整App均因窗口不同而整轮失败；20k三个等尺寸对诊断CPU下降45.61%/36.31%、footprint下降7.54%/12.72%，均未减半；v2视口及新候选仍待验证 |
 | 客户端及各组件兼容 | 检查 Codex、Claude CLI/Desktop、DSH、Gemini、OpenCode、Antigravity 的发现、解析、身份、quota、live、导出、展示与 reporting；修复已确认的路径/投影差异；旧候选真实 Windows helper IPC 已通过 | 最新产品 SHA 的完整双平台回归；真实客户端与安装运行验收 |
-| 数据库结构与后续兼容 | 聚合复用单次 TEMP canonical projection；缓存 revision 修复；两端 schema admission 和旧 payload 合并修复；Swift 显式列名写入；增强旧 producer B 账本重放；4410生产聚合已独立复算 | ff55四版本×双平台增强矩阵尚不完整；不是任意未来 schema 的无损写回承诺 |
+| 数据库结构与后续兼容 | 聚合复用单次TEMP canonical projection；缓存revision修复；两端schema admission和旧payload合并修复；Swift显式列名写入；ff55四版本×双平台增强矩阵8/8通过，64次候选进程及64次强制重扫保全事件/revision；生产聚合独立复算至ff55 | 当前产品SHA的完整回归尚待云端；不是任意未来schema的无损写回承诺 |
 
 所有编译、原生测试、前端构建和打包通过云端。本报告中的后续性能候选未合并 main、正式发布或替换当前安装。
 
@@ -86,7 +86,10 @@
 - 增强矩阵 `45896583064` 已核对6格通过、0.9.10 macOS失败；保留证据后取消仅余且尚未执行的0.9.11 macOS，以释放更正后的全矩阵。失败发生在候选实际 open/read 之前，冻结事件/schema 比较已通过，仅 checkpoint 与 JSON 保存值不等；不得记作8格通过，也不能直接归为产品迁移丢失。
 - 原始失败 JSON 的 SHA 与 producer manifest 一致。其 `modified=1795729040.2679539` 在锁定 serde_json 默认十进制 parser 算法的 binary64 模拟中变为相邻值，差1 ULP（约0.238微秒）；其余6格已通过 cell 的相应值未出现该差异。此调查没有在本机运行 Rust 或读取失败数据库。
 - probe 对所有 SQLite REAL 改为保留16位 `realBits`；原 frozen/checkpoint 比较仍严格相等，不引入 epsilon，不改生产 Cargo feature 或数据库。所有 consumer 已复核，无需对这些 REAL 字段做数值运算。
-- 旧 producer 和候选采用同一 probe。每次入口在任何 producer 写入前运行 native codec 自检：已知失败位值和相邻值必须保持不同，并经真实 serde_json 编解码后逐位不变。新全矩阵已重新调度，运行结果尚待回收。
+- 旧producer和候选采用同一probe。每次入口在任何producer写入前运行native codec自检：已知失败位值和相邻值必须保持不同，并经真实serde_json编解码后逐位不变。
+- 新矩阵`45900789028`最终success，0.9.8/0.9.9/0.9.10/0.9.11 × macOS/Windows共8格独立验证通过。64次candidate进程、32次committed-B进程、64次forced-B replay，事件/revision始终`2 / 2→2→2`，每scenario另有3次独立reopen保留检查。各格source/probe、旧payload、schema、逐位REAL、原始A/B WAL和archive manifest均核对。
+- 原始DB ZIP未下载或独立重算哈希，仅核对归档存在、大小及报告/manifest。8格proof保存在忽略目录`current-producer-a416/formed-45900789028/verified-json-evidence.json`，其`matrixProofComplete=true`。
+- 与6f54的源码对照：246个Rust manifest文件中245个blob相同；唯一不同`claude_local_runtime.rs`的`#[cfg(test)] mod tests`之前全部字节相同，仅新增测试。保留`ff55`为实际执行SHA，不把源码等价检查改记成6f54执行了矩阵。
 
 ### Gemini 实际发现合同：`d6c14da7`
 
@@ -101,6 +104,23 @@
 - 新协议 summary schema2、`fixed-native-frame-fully-visible-v2`：仅在 disposable Actions host/GUI guard 通过后选择已有的足够大 display mode，由 harness 持有并于 finally 恢复；每轮同样 seed1240×812原生 frame。首次 ready 即验证实际尺寸和完整 visibleFrame，之后每秒保留 x/y/width/height，异常样本先落盘再拒绝。不足模式返回 NOT_RUN，无额外 App 预跑。
 - 120秒 warmup、120秒 measurement、三次双角色配对全部保留。每轮最后一次资源采样和统计完成后才运行非提权 `vmmap -summary`、`heap -s --noContent`；原始输出/hash/时间边界单独保存，工具不可用记 UNAVAILABLE，不改变资源采样结果。
 - 24项 stdlib harness 测试、9项 workflow 检查和 vendor/diff 检查通过；独立源码审查发现的首个拒绝样本遗漏已修并加负控。没有在本机执行 display 切换、App 或原生编译。新协议原生成功与内存分类结果仍待云端。
+- 当前fixture只启用Claude采集，但没有seed `multiClient.displayScope.v1`，Dashboard默认仍为Codex页。因此会覆盖Claude importer/live monitor及空Codex轮询，不构成Claude/汇总图表、排名或跨range共享收益的测量。不可把“存在Claude数据且窗口可见”写成“Claude图表UI已测”。
+- 单独切换scope也不足以证明图表已render：主页为LazyVStack，图表在`onAppear`准备数据；需要云端AX/scroll及图表矩形/可访问内容的共同gate，目前没有已验证的免额外权限路径。原fixture每请求100–116输入、无cache-read，达不到非空排行榜门槛；仅20会话、单模型、2–3个非空五分钟桶，且Claude-only的Codex attribution为空。后续活跃图表或非空榜单必须单列workload，不能悄悄改旧fixture或复用旧结果。
+- display恢复目前记录API返回值，没有独立的恢复后几何读回；屏幕内窗口几何也不证明无遮挡截图内容。两项作为协议证据边界保留，不提升为已验收能力。
+
+### 空源状态发布：`db16c1ee`
+
+- 已确认Codex目录没有state DB或threads时，每秒正常重试会反复赋值相同的`@Published snapshot.status`，产生不必要观察者失效。
+- 仅在`resetToLatestThread`的缺失源、空threads及读取失败三条分支比较状态后发布。读取和重试频率、generation检查与恢复行为不变。
+- 两个新增测试分别覆盖真实缺失state DB的三次poll、以及`A,A,B,B,empty,empty,A`的七次loader调用；重复相同状态不发布，错误变化与恢复仍发布。fixture固定临时`sqlite_home`并关闭precise warmup，不读用户DB。
+- 独立源码审核无阻断；14项test-execution gate、9项workflow Python及vendor/diff检查通过。原生执行以对应SHA云端结果为准，尚不能据此给出CPU降幅。
+
+### 模型聚合确定性：`6f54a401`
+
+- `d6c14da7`全量Swift的`testDefaultPreparationSharesClosedAttributionAndKeepsRetainedPriceAcrossRefresh`失败。22个prepared-data字段中只有`modelBreakdowns`不同：5个bucket中的3个仅模型顺序颠倒，记录multiset完全相同；成本仅有约`1e-15`的求和尾差。
+- 根因是`combinedRows`直接输出字典遍历结果。生产侧现在按canonical model key排序外层行，组内首个raw model及pricing period原始身份、时间和顺序全部保留。
+- 新增32次分组重建/输入排列检查，覆盖alias合并、nil、零用量过滤和非时间排序的period保真。新测试及原失败case均加入CI必执行清单；原快照/成本严格相等断言没有放宽。
+- 独立源码审查无阻断，本机14+9项轻量检查及vendor/diff检查通过；新SHA原生回归待云端，旧失败run仍记失败。
 
 ## 云端证据索引
 
@@ -122,17 +142,22 @@
 | `45897009933` | `077d5dc3`；公开0.9.7实际升级 | 双平台成功；Swift8项升级+119项支持回归、Windows3项importer+19种manifest场景，均核对小日志 |
 | `45897628817` | `4410b16b` vs `f9e91791`；release speed engine 配对 | 已独立复验成功，见下表 |
 | `45897628497` | `4410b16b`；完整回归 | 最终success，exact checked-source/evidence gate PASS；Swift2562通过/38跳过、macOS1878/14忽略、Windows1820/15忽略；全部0失败，required76/78/78均实际通过 |
-| `45898313857` | `4410b16b`；正式App与Rust聚合配对 | 正式App采样中；聚合已success且独立复算，见下文；没有整App结果 |
+| `45898313857` | `4410b16b`；正式App与Rust聚合配对 | whole-App最终failure：12单轮通过，首个2k配对宽度不同；其余5对独立复算仅诊断，20k CPU下降34.71%、footprint下降12.01%；聚合success且独立复算 |
 | `45899772826` | `dbb2d5cb`；完整回归 | pending后已取消、没有job，不作为执行证据；未由本任务取消 |
-| `45899772743` | `dbb2d5cb`；公开0.9.7升级 | Windows成功且核对原始小日志；Swift正在实际升级步骤，尚无最终结论 |
+| `45899772743` | `dbb2d5cb`；公开0.9.7升级 | 双平台success；Swift8项实际升级+120项支持回归、fixture前后byte-identical和exit86恢复证明；Windows3项importer+19种manifest+27PASS均独立核对 |
 | `45900619404` | `ff55ace1`；完整回归 | 最终cancelled、jobs=[]，没有执行证据，后续由d6回归覆盖 |
 | `45900619154` | `ff55ace1`；公开0.9.7升级 | 最终cancelled、jobs=[]，没有执行证据 |
-| `45900789028` | `ff55ace1`；REAL codec自检及四版本×双平台增强矩阵 | `formed_only=true`专用调度；0.9.8双平台实际通过且独立核对realBits、自检和4×2重放；0.9.9双平台执行中，其余4格排队，非完整CI |
-| `45900792974` | `ff55ace1`；正式App与Rust聚合配对 | 正式App采样中；聚合success，小报告正在独立复核；基线和48分钟最小采样协议不变 |
-| `45902475385` | `d6c14da7`；完整回归 | frontend1501、cloud-scripts18及updater成功；Windows原生运行中，Swift及macOS待执行；新增内存/Gemini测试仍待逐名检查 |
-| `45902475222` | `d6c14da7`；公开0.9.7升级 | 已按exactSHA排队，未记作执行通过 |
-| `45903736199` | `665efddf`；v2完整视口与独立内存诊断 | exactSHA已核对；whole-App及ledger排队，原生 display/frame 成功仍待验证 |
-| `45903736269` | `665efddf`；完整回归 | pending、尚无jobs；不能用d6的执行结果标作665原生通过 |
+| `45900789028` | `ff55ace1`；REAL codec自检及四版本×双平台增强矩阵 | 最终success、8/8格独立核验PASS；64candidate/32committed-B进程及64forced-B replay，逐位REAL与事件/revision保全；`formed_only=true`，不是完整CI |
+| `45900792974` | `ff55ace1`；正式App与Rust聚合配对 | 正式App采样中；聚合24cases、336checksums、48oracle+48paired均独立复验，见下文 |
+| `45902475385` | `d6c14da7`；完整回归 | 最终failure；Swift2567通过/1失败/38跳过，Swift Testing698/80suites通过；新增6个内存case中5通过、共享图表case失败；Windows1822通过/15忽略、macOS1880通过/14忽略，均78required与新2个Gemini测试通过；16production checks、双负控及18个log hashes核实；Swift失败后的release-script contracts未执行，checked-source gate亦FAIL |
+| `45902475222` | `d6c14da7`；公开0.9.7升级 | 双平台success且独立验收闭合：Swift8实际升级+120支持、fixture字节保全/accounting/exit86恢复，Windows3importer+19去重manifest+27PASS |
+| `45903736199` | `665efddf`；v2完整视口与独立内存诊断 | whole-App已构建中、ledger测量中；原生display/frame和postmeasurement内存类别仍待验证 |
+| `45903736269` | `665efddf`；完整回归 | pending后被取代、cancelled且jobs=[]，没有执行证据；不能复用d6结果 |
+| `45905527470` | `db16c1ee`；完整回归 | 已开始执行，新增空源发布case的实际运行待核对 |
+| `45905527709` | `db16c1ee`；公开0.9.7升级 | Windows importer3/19manifest/27PASS已核实；Swift已进入实际migration，尚无整轮成功结论 |
+| `45906455848` | `6f54a401`；完整回归 | exactSHA已核对、pending；模型排序及两个新增require原生运行待执行 |
+| `45906455801` | `6f54a401`；公开0.9.7升级 | exactSHA已核对、pending，不转移旧候选的成功结论 |
+| `45906789715` | `6f54a401`；v2完整视口与空源发布修复后的整App配对 | 22:45:27Z显式调度、exactSHA已核对，whole-App及ledger排队；保留f9e基线和原采样时长，不转移665结果 |
 
 最新速度引擎局部数据（`45897628817`，每case三轮中位数；CPU为200-tick loop总量，RSS为endpoint resident memory；不是整App或physical footprint）：
 
@@ -149,9 +174,13 @@
 
 a605同样因首个2k配对1080×812与1240×812而整轮失败；12个单轮完成，其余5对仅作诊断。20k三对中位 measured CPU `0.192394384→0.122531335秒`（下降36.31%），按实际时间归一单核CPU% `0.160267→0.102050`（下降36.33%）；physical footprint `117.190430→102.284180 MiB`（下降12.72%），RSS `222.343750→207.531250 MiB`（下降6.66%）。20k三个CPU ratio均大于0.5；2k两个有效对CPU下降20.67%、footprint下降1.80%。已从29份小报告及原始JSONL约191KB独立复算，完整binary/SQLite/state bytes未下载。不同run的绝对idle CPU很低，不能将a416与a605百分比之差视作精确回归。
 
+4410整App也完成12单轮，因同一首2k窗口不一致而整轮失败。其余5对已逐JSONL独立复算：20k三对CPU `0.207942384→0.135767030秒`（下降34.71%，时间归一34.71%），physical footprint `116.706055→102.690430MiB`（下降12.01%），RSS `222.218750→207.078125MiB`（下降6.81%）；2k两对CPU下降7.33%（时间归一7.59%）、footprint下降1.58%。没有有效pair的CPU或内存ratio达到0.5。29份小报告共190,774B，实际binary/DB/state bytes未下载；不是完整协议或当前6f54验收。
+
 4410生产聚合也已独立复算：12k cold CPU `1349.558333→214.987333ms`（下降84.07%），peak RSS `50.250→49.563MiB`；小负载cache-hit `0.08528→0.09268ms`（增加8.68%），不能只报告有利case。24cases/336checksums/48独立算术oracle/48paired语义检查均通过，约981KB小报告被读取，945MB包及binary/seed bytes未下载。
 
-4410、ff55后续整 App run 保留原协议继续运行，不中断或缩短。每轮120秒warmup+120秒measurement，12轮最低48分钟加startup、归档和构建。665的新视口协议将单独验收，不混合新旧绝对值。
+ff55生产聚合已独立复算到24cases/336checksums/48oracle/48paired全部通过。1200 cold CPU `108.298667→16.808667ms`（下降84.48%）；12000 cold `1268.401→186.188ms`（下降85.32%）、peak RSS `50.313→49.406MiB`。1200 cache-hit `0.09716→0.10936ms`（增加12.56%），12000 cache-hit `0.10380→0.09008ms`（下降13.22%）。这是局部聚合测量，没有整App或physical footprint验收，也未从完整binary/SQLite原始字节复验其哈希。
+
+4410已按原协议完成，ff55整App run继续运行，不中断或缩短。每轮120秒warmup+120秒measurement，12轮最低48分钟加startup、归档和构建。665及6f54的新视口协议单独验收，不混合新旧绝对值。
 
 调度记录：`45896457825` 曾误填不存在的 candidate SHA，属于调度输入错误，已用 `git rev-parse HEAD` 的精确值重发为 `45896583064`。错误 run 不作为产品回归或性能验收证据。
 
@@ -159,7 +188,7 @@ DB baseline 单独采用 `3eadadc6`，因为 `f9e91791` 的现有 Rust 测试编
 
 本机轻量检查：vendor offline check；18 个 vendor Python 控制、12 个 speed Python 控制；Python AST、workflow YAML、bash 语法和 `git diff --check`。这些不代替 Swift/Rust 编译或整 App 验收。
 
-此前源码执行 formed probe17项、formed workflow7项Python测试；665最新whole-app harness24项、workflow9项全部通过，vendor check及diff检查通过。REAL codec已有新矩阵0.9.8双平台实际运行，8格完整结果和新增Swift内存回归仍待云端。
+此前源码执行formed probe17项、formed workflow7项Python测试；665 whole-app harness24项、workflow9项全部通过，vendor check及diff检查通过。REAL codec新矩阵8格均已实际通过；d6的6个新增Swift内存case有5通过、1失败，修复候选6f54等待原生回归。
 
 ## 已安装程序的只读观测
 
@@ -186,6 +215,6 @@ DB baseline 单独采用 `3eadadc6`，因为 `f9e91791` 的现有 Rust 测试编
 - quota 来自各客户端自己的本地观测与 freshness 规则，不因路径同属一个账号目录就获得当前登录账号绑定证明。
 - schema 2 接受必需字段集合的兼容扩展；显式列名解决 nullable 追加列写入。新增 NOT NULL/无默认值列、任意新约束及未知 JSON 键的重编码无损性不在此保证内。未来影响写入或用量语义的格式应增加 schema version，使旧程序拒绝，而不能仅追加字段后假设旧程序能无损写回。
 - Swift/Rust checkpoint key 和部分 continuation 表示不同，切换实现可能重扫；不能承诺直接沿用另一实现的 cursor。事件与 checkpoint 仍同事务提交，重扫依赖稳定事件身份去重。
-- 首版 whole-app harness 只测主进程、静态 Claude 单源及自然可见 dashboard，不覆盖 helper 总 CPU、hidden/sidebar、切图 retention、多 Home、live replay、带账号 quota 或 Windows 整 App。无 GUI 或完整 ready/ledger/window gate 不通过会记为 NOT_RUN，不降级成局部测试冒充通过。
+- whole-app harness只测主进程、静态Claude单源后台采集及默认Codex dashboard，不覆盖Claude/汇总图表UI、helper总CPU、hidden/sidebar、切图retention、多Home、live replay、带账号quota或Windows整App。v2另增加完整屏幕内视口gate；无GUI或ready/ledger/window gate不通过记为NOT_RUN，不降级成局部测试冒充通过。
 
 目标继续保持 active；没有可接纳的整 App 配对数据前，不宣称 CPU 或内存减半。
