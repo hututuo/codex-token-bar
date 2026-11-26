@@ -57,6 +57,11 @@ struct ClientQuotaItem: Identifiable, Equatable {
         default: window
         }
     }
+    var ringWindowLabel: String {
+        // The full pool/window name already appears beside the detail ring.
+        let period = window.components(separatedBy: " · ").last ?? window
+        return ["5h", "7d", "5小时", "7天"].contains(period) ? period : window
+    }
     var compactValue: String { remaining.map(ClientQuotaPresentation.percentNumber) ?? ClientQuotaPresentation.compact(state) }
     var value: String { remaining.map { ClientQuotaPresentation.percentNumber($0) + "%" } ?? "—" }
     var accessibleValue: String {

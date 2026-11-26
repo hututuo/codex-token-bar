@@ -22,6 +22,8 @@ struct MatchedStrokeMorphRoute {
     let color: NSColor
     var opacityGroup: String? = nil
     var lineCap: CAShapeLayerLineCap = .round
+    var clipLineCap: CAShapeLayerLineCap = .round
+    var clipWidthScale: CGFloat = 1
 }
 
 struct MatchedStrokeMorphTiming {
@@ -284,8 +286,8 @@ private struct MatchedStrokeMorphHost: NSViewRepresentable {
             group.duration = duration
             if let endClip = to.clipPoints, let startClip = snapshot.clipPoints ?? from.clipPoints {
                 let mask = CAShapeLayer()
-                mask.fillColor = nil; mask.strokeColor = NSColor.white.cgColor; mask.lineCap = .round
-                mask.path = MatchedStrokeMorphGeometry.path(endClip); mask.lineWidth = to.width
+                mask.fillColor = nil; mask.strokeColor = NSColor.white.cgColor; mask.lineCap = route.clipLineCap
+                mask.path = MatchedStrokeMorphGeometry.path(endClip); mask.lineWidth = to.width * route.clipWidthScale
                 shape.mask = mask
                 let clipPath = path.copy() as! CAPropertyAnimation
                 if let animation = clipPath as? CAKeyframeAnimation {
@@ -295,7 +297,7 @@ private struct MatchedStrokeMorphHost: NSViewRepresentable {
                     animation.toValue = MatchedStrokeMorphGeometry.path(endClip)
                 }
                 let clipGroup = CAAnimationGroup()
-                clipGroup.animations = [clipPath, values("lineWidth", style.2, to.width)]
+                clipGroup.animations = [clipPath, values("lineWidth", style.2 * route.clipWidthScale, to.width * route.clipWidthScale)]
                 clipGroup.duration = duration
                 mask.add(clipGroup, forKey: "matched-clip")
             }

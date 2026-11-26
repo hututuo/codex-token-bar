@@ -13,6 +13,8 @@ export type SidebarStroke = {
   sourcePath?: StrokePoint[]; targetPath?: StrokePoint[];
   sourceRange?: [number, number]; targetRange?: [number, number];
   lineCap?: "round" | "butt";
+  clipLineCap?: "round" | "butt";
+  clipWidthScale?: number;
   sourceClip?: StrokePoint[]; targetClip?: StrokePoint[];
 };
 const clamp = (value: number) => Math.min(1, Math.max(0, value));
@@ -85,6 +87,12 @@ export function sidebarStrokes(spec: SidebarStrokeSpec, source: StrokeRect, targ
       lineCap: "butt" as const,
       sourceClip: [{x:source.x+2,y:source.y+source.height/2},{x:source.x+source.width-2,y:source.y+source.height/2}],
       targetClip: [{x:target.x+target.width/2,y:target.y+2},{x:target.x+target.width/2,y:target.y+target.height-2}],
+    } : Math.abs(half) === 1 ? {
+      // Clip the fixed ring joins, but allow full round caps inside the bar.
+      sourceClip: a,
+      targetClip: b.map(point => ({x:point.x,y:target.y+target.height/2
+        +(point.y-target.y-target.height/2)*target.height/Math.max(1,target.height-4)})),
+      clipLineCap: "butt" as const, clipWidthScale: 4,
     } : {};
     const make = (id: string, color: string, range: [number, number], end: [number, number], opacity: number): SidebarStroke => ({
       id: `${spec.id}:${part}:${id}`, group: `${spec.id}:${id}`, source: trim(a, ...range), target: trim(b, ...end), color,

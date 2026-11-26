@@ -4,6 +4,37 @@ import XCTest
 @testable import CodexTokenBar
 
 final class IntegratedClientRenderingTests: XCTestCase {
+    @MainActor func testDetailQuotaDecimalsStayOnOneLineInsideTheRing() throws {
+        let scale = 4.0
+        for amount in [85.12, 90.53, 99.99, 100, 0, nil] as [Double?] {
+            let item = ClientQuotaItem(id: "antigravity:gemini-5h", client: "antigravity", window: "Gemini · 5h",
+                remaining: amount, resetsAt: nil, source: "fixture", status: "")
+            XCTAssertEqual(item.ringWindowLabel, "5h")
+            let renderer = ImageRenderer(content: ClientQuotaDetailRing(item: item, fill: "#00ff00")
+                .foregroundStyle(.white).environment(\.colorScheme, .dark))
+            renderer.scale = scale
+            let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(renderer.cgImage))
+            var whiteRows = Set<Int>(), greenPixels = 0, whitePixels = 0
+            for y in 0..<bitmap.pixelsHigh {
+                for x in 0..<bitmap.pixelsWide {
+                    let color = try XCTUnwrap(bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB))
+                    guard color.alphaComponent > 0.9 else { continue }
+                    if color.greenComponent > 0.5 && color.redComponent < 0.2 && color.blueComponent < 0.2 { greenPixels += 1 }
+                    if min(color.redComponent, color.greenComponent, color.blueComponent) > 0.9 {
+                        whiteRows.insert(y); whitePixels += 1
+                        let point = CGPoint(x: (Double(x) + 0.5) / scale, y: (Double(y) + 0.5) / scale)
+                        XCTAssertLessThan(hypot(point.x - 33, point.y - 33), 27,
+                            "Percentage text must stay clear of the ring: \(item.value), \(point)")
+                    }
+                }
+            }
+            XCTAssertGreaterThan(whitePixels, 10, "The real percentage/unknown text must render")
+            XCTAssertLessThanOrEqual(try XCTUnwrap(whiteRows.max()) - XCTUnwrap(whiteRows.min()), Int(20 * scale),
+                "The percentage must not wrap its percent sign onto a second line: \(item.value)")
+            if (amount ?? 0) == 0 { XCTAssertEqual(greenPixels, 0, "An empty detail ring must not paint a round-cap dot") }
+        }
+    }
+
     @MainActor func testDetailCardsFillTheRightHalfForOneTwoAndManyWindows() throws {
         struct Fixtures: Decodable {
             struct Case: Decodable {
@@ -19,7 +50,9 @@ final class IntegratedClientRenderingTests: XCTestCase {
         let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("SharedFixtures/quota-detail-cards.json")
         let fixtures = try JSONDecoder().decode(Fixtures.self, from: Data(contentsOf: url))
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: "QuotaDetailCards-" + UUID().uuidString))
+        let suite = "QuotaDetailCards-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
         for fixture in fixtures.cases {
             for width in fixtures.widths {
                 let root = ClientQuotaRings(items: fixture.items.map(\.quota))
@@ -41,6 +74,11 @@ final class IntegratedClientRenderingTests: XCTestCase {
                 if let output = ProcessInfo.processInfo.environment["TOKENBAR_POLISH_RENDER_OUTPUT"] {
                     try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
                         .write(to: URL(fileURLWithPath: output).appendingPathComponent("quota-\(fixture.name)-\(width).png"))
+                }
+                if fixture.name == "antigravity-decimal-windows", let output = ProcessInfo.processInfo.environment["TOKENBAR_DISCOVERY_RENDER_DIR"] {
+                    try FileManager.default.createDirectory(atPath: output, withIntermediateDirectories: true)
+                    try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                        .write(to: URL(fileURLWithPath: output).appendingPathComponent("quota-detail-antigravity-\(width).png"))
                 }
             }
         }

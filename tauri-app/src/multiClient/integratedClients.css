@@ -100,7 +100,7 @@
 }
 .integrated-full-ring > span {
   position: absolute;
-  inset: 0;
+  inset: 0 10px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -110,6 +110,20 @@
 .integrated-full-ring strong {
   font-size: 18px;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  line-height: 1.2;
+}
+.integrated-full-ring strong[data-digits="5"] {
+  font-size: 16px;
+}
+.integrated-full-ring strong[data-digits="6"] {
+  font-size: 13px;
+}
+.integrated-full-ring > span > small {
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .integrated-paired-ring {
   display: flex;

@@ -77,13 +77,19 @@ enum ClientQuotaMorphGeometry {
             return parts(half: route.half, fraction: route.fraction).flatMap { part -> [MatchedStrokeMorphRoute] in
                 let expandedPoints = points(ring: route.ring, track: route.track, half: part.half, progress: 0)
                 let collapsedPoints = points(ring: route.ring, track: route.track, half: part.half, progress: 1)
+                let paired = abs(route.half) == 1
+                let collapsedClip = paired ? collapsedPoints.map { point in
+                    CGPoint(x: point.x, y: route.track.midY + (point.y - route.track.midY)
+                        * route.track.height / max(1, route.track.height - 4))
+                } : nil
                 let prefix = route.id + ":" + String(part.half)
                 var strokes: [MatchedStrokeMorphRoute] = []
                 if route.expandedTrackOpacity > 0 || route.collapsedTrackOpacity > 0 {
                     strokes.append(MatchedStrokeMorphRoute(id: prefix + ":track", participantID: route.id,
-                        expanded: .init(points: expandedPoints, width: 3, opacity: route.expandedTrackOpacity),
-                        collapsed: .init(points: collapsedPoints, width: 4, opacity: route.collapsedTrackOpacity), color: .white,
-                        opacityGroup: route.half == 0 ? route.id + ":track" : nil))
+                        expanded: .init(points: expandedPoints, width: 3, opacity: route.expandedTrackOpacity, clipPoints: paired ? expandedPoints : nil),
+                        collapsed: .init(points: collapsedPoints, width: 4, opacity: route.collapsedTrackOpacity, clipPoints: collapsedClip), color: .white,
+                        opacityGroup: route.half == 0 ? route.id + ":track" : nil,
+                        clipLineCap: paired ? .butt : .round, clipWidthScale: paired ? 4 : 1))
                 }
                 let q = min(1, max(0, route.fraction ?? 0))
                 guard q > 0 else { return strokes }
@@ -95,9 +101,10 @@ enum ClientQuotaMorphGeometry {
                     let collapsed = interval(half: part.half, lower: start * barFraction, upper: end * barFraction, collapsed: true)
                     if !route.segments.isEmpty && expanded.0 == expanded.1 && collapsed.0 == collapsed.1 { continue }
                     strokes.append(MatchedStrokeMorphRoute(id: prefix + ":" + segment.id, participantID: route.id,
-                        expanded: .init(points: expandedPoints, start: expanded.0, end: expanded.1, width: 3, opacity: route.fillOpacity),
-                        collapsed: .init(points: collapsedPoints, start: collapsed.0, end: collapsed.1, width: 4, opacity: route.fillOpacity), color: segment.color,
-                        opacityGroup: route.half == 0 ? route.id + ":" + segment.id : nil))
+                        expanded: .init(points: expandedPoints, start: expanded.0, end: expanded.1, width: 3, opacity: route.fillOpacity, clipPoints: paired ? expandedPoints : nil),
+                        collapsed: .init(points: collapsedPoints, start: collapsed.0, end: collapsed.1, width: 4, opacity: route.fillOpacity, clipPoints: collapsedClip), color: segment.color,
+                        opacityGroup: route.half == 0 ? route.id + ":" + segment.id : nil,
+                        clipLineCap: paired ? .butt : .round, clipWidthScale: paired ? 4 : 1))
                 }
                 return strokes
             }

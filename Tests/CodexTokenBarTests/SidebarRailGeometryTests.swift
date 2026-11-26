@@ -6,6 +6,92 @@ import XCTest
 
 final class SidebarRailGeometryTests: XCTestCase {
     @MainActor
+    func testPairedQuotaRingSeamsClipCapsWithoutFlatteningProgressTips() throws {
+        let suite = "QuotaRingJoins-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var selection = ClientQuotaSelection()
+        selection.colors = ["codex:5h": "#00ff00", "codex:7d": "#00ff00"]
+        defaults.set(selection.encoded, forKey: ClientQuotaSelection.key)
+        let scale = 8.0, radius = ClientSidebarMetrics.ringSize / 2
+        let center = CGPoint(x: 41, y: 7 + radius)
+        func item(_ period: String, _ amount: Double) -> ClientQuotaItem {
+            .init(id: "codex:" + period, client: "codex", window: period,
+                remaining: amount, resetsAt: nil, source: "fixture", status: "")
+        }
+        for amount in [0.0, 50, 100] {
+            let image = try render(ClientPairedQuotaRing(left: item("5h", amount), right: item("7d", amount))
+                .frame(width: 74, height: 110, alignment: .top).padding(4)
+                .defaultAppStorage(defaults), scale: scale)
+            func green(_ x: Double, _ y: Double) throws -> Bool {
+                let pixel = try color(image, Int(x * scale), Int(y * scale))
+                return pixel.alphaComponent > 0.5 && pixel.greenComponent > 0.5
+                    && pixel.redComponent < 0.2 && pixel.blueComponent < 0.2
+            }
+            for pole in [center.y - radius, center.y + radius] {
+                for dy in -8...8 {
+                    for dx in -2...2 {
+                        XCTAssertFalse(try green(center.x + Double(dx) / scale, pole + Double(dy) / scale),
+                            "A fixed half-ring join must not grow a colored dot: amount=\(amount)")
+                    }
+                }
+            }
+            if amount == 50 {
+                XCTAssertTrue(try green(center.x - radius, center.y - 1), "The moving left tip must remain round")
+                XCTAssertTrue(try green(center.x + radius, center.y + 1), "The moving right tip must remain round")
+            } else if amount == 100 {
+                XCTAssertTrue(try green(center.x - radius, center.y))
+                XCTAssertTrue(try green(center.x + radius, center.y))
+            }
+            try save(image, "sidebar-quota-join-\(Int(amount))")
+        }
+        let zero = try render(ClientPairedQuotaRing(left: item("7d", 0), right: nil)
+            .frame(width: 74, height: 110, alignment: .top).padding(4).defaultAppStorage(defaults), scale: scale)
+        for y in Int((center.y - radius - 2) * scale)...Int((center.y + radius + 2) * scale) {
+            for x in Int((center.x - radius - 2) * scale)...Int((center.x + radius + 2) * scale) {
+                let pixel = try color(zero, x, y)
+                XCTAssertFalse(pixel.alphaComponent > 0.5 && pixel.greenComponent > 0.5
+                    && pixel.redComponent < 0.2 && pixel.blueComponent < 0.2,
+                    "A real zero remains visible as text, without a colored round-cap dot")
+            }
+        }
+    }
+
+    @MainActor
+    func testPairedQuotaMorphClipsJoinsButPreservesRoundedCompactCaps() throws {
+        let ring = CGRect(x: 21, y: 110, width: 46, height: 46)
+        let track = CGRect(x: 6, y: 250, width: 4, height: 16)
+        for half in [-1, 1] {
+            let strokes = ClientQuotaMorphGeometry.strokes([ClientQuotaMorphRoute(id: "paired", ring: ring,
+                track: track, half: half, fraction: 1, color: .green)])
+            XCTAssertEqual(strokes.count, 2)
+            for stroke in strokes {
+                XCTAssertEqual(stroke.lineCap, .round)
+                XCTAssertEqual(stroke.clipLineCap, .butt)
+                XCTAssertEqual(stroke.clipWidthScale, 4)
+                XCTAssertEqual(stroke.expanded.clipPoints, stroke.expanded.points)
+                let clip = try XCTUnwrap(stroke.collapsed.clipPoints)
+                XCTAssertEqual(try XCTUnwrap(clip.first).y, track.maxY, accuracy: 0.0001)
+                XCTAssertEqual(try XCTUnwrap(clip.last).y, track.minY, accuracy: 0.0001)
+            }
+            let view = MatchedStrokeMorphView()
+            for state in [false, true, false, true] {
+                view.update(expanded: state, enabled: true, participantCount: 1) { strokes }
+            }
+            let shapes = (view.layer?.sublayers ?? []).compactMap { $0 as? CAShapeLayer }
+            XCTAssertEqual(shapes.count, 2)
+            for shape in shapes {
+                let mask = try XCTUnwrap(shape.mask as? CAShapeLayer)
+                XCTAssertEqual(mask.lineCap, .butt)
+                XCTAssertEqual(mask.lineWidth, shape.lineWidth * 4)
+                XCTAssertNotNil(mask.animation(forKey: "matched-clip"))
+            }
+            view.clear()
+            XCTAssertEqual(view.morphLayerCount, 0)
+        }
+    }
+
+    @MainActor
     private func render<V: View>(_ view: V, scale: CGFloat = 8) throws -> NSBitmapImageRep {
         let renderer = ImageRenderer(content: view.environment(\.colorScheme, .dark))
         renderer.scale = scale

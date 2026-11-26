@@ -80,11 +80,12 @@ export function animateSidebarStrokes(root: HTMLElement, expanded: boolean, prev
             mask.setAttribute("width", String(Math.max(...xs)-Math.min(...xs)+8)); mask.setAttribute("height", String(Math.max(...ys)-Math.min(...ys)+8));
             const fromClip = expanded ? stroke.targetClip : stroke.sourceClip, toClip = expanded ? stroke.sourceClip : stroke.targetClip;
             clip = doc.createElementNS(namespace, "path"); clip.setAttribute("d", strokePath(toClip));
-            clip.setAttribute("fill", "none"); clip.setAttribute("stroke", "white"); clip.setAttribute("stroke-width", String(width)); clip.setAttribute("stroke-linecap", "round");
+            const clipWidthScale = stroke.clipWidthScale ?? 1;
+            clip.setAttribute("fill", "none"); clip.setAttribute("stroke", "white"); clip.setAttribute("stroke-width", String(width * clipWidthScale)); clip.setAttribute("stroke-linecap", stroke.clipLineCap ?? "round");
             mask.append(clip); layer.append(mask); path.setAttribute("mask", `url(#${id})`);
             animations.push(clip.animate([
-              {d: previous.get(stroke.id)?.clipD ?? `path("${strokePath(fromClip)}")`, strokeWidth:from.width},
-              {d:`path("${strokePath(toClip)}")`, strokeWidth:String(width)},
+              {d: previous.get(stroke.id)?.clipD ?? `path("${strokePath(fromClip)}")`, strokeWidth:String(Number(from.width) * clipWidthScale)},
+              {d:`path("${strokePath(toClip)}")`, strokeWidth:String(width * clipWidthScale)},
             ], {duration:440, easing:expanded ? "cubic-bezier(.2,.8,.2,1)" : "cubic-bezier(.333333,1,.666667,1)", fill:"forwards"}));
           }
           group.append(path); paths.push({ id: stroke.id, node: path, clip });

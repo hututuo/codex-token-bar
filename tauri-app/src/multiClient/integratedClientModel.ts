@@ -23,6 +23,10 @@ export function quotaWindowTitle(window: string): string {
     : window === "储备5h" || window === "Reserve 5h" ? "Luna 储备 · 5小时"
     : window === "储备7d" || window === "Reserve 7d" ? "Luna 储备 · 7天" : window;
 }
+export function quotaRingWindowLabel(window: string): string {
+  const period = window.split(" · ").at(-1) ?? window;
+  return ["5h", "7d", "5小时", "7天"].includes(period) ? period : window;
+}
 export function quotaTrackHeight(total: number): number {
   return Math.max(2, total);
 }

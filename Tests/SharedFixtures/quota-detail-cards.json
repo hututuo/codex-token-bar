@@ -5,6 +5,7 @@
     {"name":"pro-two-windows","items":[{"id":"codex:5h","client":"codex","window":"5h","remaining":42,"status":""},{"id":"codex:7d","client":"codex","window":"7d","remaining":68,"status":""}]},
     {"name":"four-windows","items":[{"id":"codex:5h","client":"codex","window":"5h","remaining":42,"status":""},{"id":"codex:7d","client":"codex","window":"7d","remaining":68,"status":""},{"id":"codex:reserve5h","client":"codex","window":"储备5h","remaining":100,"status":""},{"id":"codex:reserve7d","client":"codex","window":"储备7d","remaining":80,"status":""}]},
     {"name":"mixed-clients-unavailable","items":[{"id":"codex:7d","client":"codex","window":"7d","remaining":68,"status":""},{"id":"claudeCode:7d","client":"claudeCode","window":"7d","remaining":null,"status":"本地缓存尚未读取，额度未知"}]},
+    {"name":"antigravity-decimal-windows","items":[{"id":"antigravity:gemini-5h","client":"antigravity","window":"Gemini · 5h","remaining":85.12,"status":""},{"id":"antigravity:gemini-weekly","client":"antigravity","window":"Gemini · 7d","remaining":90.53,"status":""},{"id":"antigravity:3p-5h","client":"antigravity","window":"第三方模型 · 5h","remaining":100,"status":""},{"id":"antigravity:3p-weekly","client":"antigravity","window":"第三方模型 · 7d","remaining":0,"status":""}]},
     {"name":"api","items":[{"id":"codex:api","client":"codex","window":"API","remaining":null,"status":"订阅额度不适用"}]}
   ]
 }

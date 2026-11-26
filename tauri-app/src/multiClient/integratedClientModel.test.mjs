@@ -3,6 +3,29 @@ import test from "node:test";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { withSsrModules } from "../test/ssrHarness.mjs";
+test("paired quota caps are clipped at fixed joins and zero draws no colored dot", async () => {
+  await withSsrModules(async load => {
+    const {PairedQuotaRing}=await load("/src/multiClient/ClientQuotaViews.tsx");
+    const left={id:"codex:5h",client:"codex",window:"5h",remaining:100,status:"",source:"fixture"};
+    const right={...left,id:"codex:7d",window:"7d",remaining:100};
+    const html=renderToStaticMarkup(React.createElement(PairedQuotaRing,{left,right}));
+    const w=new (await import("happy-dom")).Window();
+    try {
+      w.document.body.innerHTML=html;
+      const masks=[...w.document.querySelectorAll("mask")];assert.equal(masks.length,2);
+      assert.notEqual(masks[0].id,masks[1].id);
+      for(const mask of masks)assert.equal(mask.querySelector("circle").getAttribute("stroke-linecap"),"butt");
+      const fills=[...w.document.querySelectorAll('circle[mask]')];assert.equal(fills.length,2);
+      assert.ok(fills.every(fill=>fill.getAttribute("stroke-linecap")==="round"));
+      for(const paired of [false,true]) {
+        w.document.body.innerHTML=renderToStaticMarkup(React.createElement(PairedQuotaRing,
+          {left:{...left,remaining:0},...(paired?{right:{...right,remaining:0}}:{})}));
+        const colored=[...w.document.querySelectorAll('circle[stroke-linecap="round"]')];
+        assert.equal(colored.length,paired?2:1);assert.ok(colored.every(fill=>fill.getAttribute("opacity")==="0"));
+      }
+    } finally {w.close();}
+  });
+});
 test("Desktop quota keeps separate client windows and never substitutes CLI in Desktop scope", async()=>
  withSsrModules(async load=>{
   const {quotaItems,orderedQuotaItems,defaultQuotaSelection}=await load("/src/multiClient/integratedClientModel.ts");

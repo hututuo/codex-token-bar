@@ -202,6 +202,9 @@ jobs:
               --require testQuotaTextPreservesTwoFractionalDigitsWithoutPaddingIntegers \
             --require testEveryDiscoveryUsesTheCardWidthAndWrapsAtNarrowWidths \
             --require testCompactQuotaDotPixelsStayInsideTrackAndMatchMorphEndpoint \
+            --require testPairedQuotaRingSeamsClipCapsWithoutFlatteningProgressTips \
+            --require testPairedQuotaMorphClipsJoinsButPreservesRoundedCompactCaps \
+            --require testDetailQuotaDecimalsStayOnOneLineInsideTheRing \
             --require testDiagnosticsBundleAllowlistRemovesSecretsAndPaths \
             --require testRetainedPhysicalHandleKeepsFreshRowsAndNamespaceWithoutRepeatedOpens \
             --require testRetainedHandleRechecksSealedOwnerAndRouteOnEveryOperation \

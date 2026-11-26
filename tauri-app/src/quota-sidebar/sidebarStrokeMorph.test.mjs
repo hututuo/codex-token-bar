@@ -3,6 +3,23 @@ import test from "node:test";
 import { Window } from "happy-dom";
 import { withSsrModules } from "../test/ssrHarness.mjs";
 
+test("paired quota joins clip round caps without squaring the compact bar", async () => {
+  await withSsrModules(async load => {
+    const { sidebarStrokes } = await load("/src/quota-sidebar/sidebarStrokeGeometry.ts");
+    const source = {x:21,y:110,width:46,height:46}, target = {x:6,y:250,width:4,height:16};
+    for (const half of [-1,1]) {
+      const strokes = sidebarStrokes({id:"paired",half,fraction:1,color:"#0f0"}, source, target);
+      assert.equal(strokes.length,2);
+      for (const stroke of strokes) {
+        assert.equal(stroke.clipLineCap,"butt");assert.equal(stroke.clipWidthScale,4);
+        assert.deepEqual(stroke.sourceClip,stroke.sourcePath);
+        assert.equal(stroke.targetClip[0].y,266);assert.equal(stroke.targetClip.at(-1).y,250);
+        assert.notEqual(stroke.lineCap,"butt","the visible moving and compact caps remain round");
+      }
+    }
+  });
+});
+
 test("task end-cap masks survive SVG reversal without rounding internal separators", async () => {
   const w = new Window();
   try {

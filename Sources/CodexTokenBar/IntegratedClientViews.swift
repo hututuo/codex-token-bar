@@ -130,19 +130,7 @@ struct ClientQuotaDetailCard: View {
     var body: some View {
         HStack(spacing: 14) {
             if !item.id.hasSuffix(":api") {
-                ZStack {
-                    Circle().stroke(.secondary.opacity(0.15), lineWidth: 5)
-                    Circle().trim(from: 0, to: (item.remaining ?? 0) / 100)
-                        .stroke(Color(nsColor: NSColor(clientHex: fill)), style: StrokeStyle(lineWidth: 5, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-                    if let expected = item.expected {
-                        Rectangle().fill(.primary).frame(width: 2, height: 8).offset(y: -29).rotationEffect(.degrees(expected * 360))
-                    }
-                    VStack(spacing: 2) {
-                        Text(item.value).font(.system(size: 18, weight: .semibold, design: .rounded)).monospacedDigit()
-                        Text(item.window).font(.system(size: 9)).foregroundStyle(.secondary)
-                    }
-                }.frame(width: 60, height: 60).padding(3).accessibilityHidden(true)
+                ClientQuotaDetailRing(item: item, fill: fill).accessibilityHidden(true)
             }
             VStack(alignment: .leading, spacing: 5) {
                 Text(item.id.hasSuffix(":api") ? "API 接入" : item.windowTitle + "额度")
@@ -159,6 +147,28 @@ struct ClientQuotaDetailCard: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(item.title + " 剩余 " + item.value)
         .accessibilityIdentifier("quota-detail-" + item.id)
+    }
+}
+
+struct ClientQuotaDetailRing: View {
+    let item: ClientQuotaItem
+    let fill: String
+    var body: some View {
+        ZStack {
+            Circle().stroke(.secondary.opacity(0.15), lineWidth: 5)
+            Circle().trim(from: 0, to: (item.remaining ?? 0) / 100)
+                .stroke(Color(nsColor: NSColor(clientHex: fill)), style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                .rotationEffect(.degrees(-90)).opacity((item.remaining ?? 0) > 0 ? 1 : 0)
+            if let expected = item.expected {
+                Rectangle().fill(.primary).frame(width: 2, height: 8).offset(y: -29).rotationEffect(.degrees(expected * 360))
+            }
+            VStack(spacing: 2) {
+                Text(item.value).font(.system(size: 18, weight: .semibold, design: .rounded)).monospacedDigit()
+                    .lineLimit(1).minimumScaleFactor(0.5)
+                Text(item.ringWindowLabel).font(.system(size: 9)).foregroundStyle(.secondary)
+                    .lineLimit(1).minimumScaleFactor(0.5)
+            }.frame(width: 46)
+        }.frame(width: 60, height: 60).padding(3)
     }
 }
 
@@ -181,7 +191,7 @@ struct ClientPairedQuotaRing: View {
                             Circle().stroke(.white.opacity(0.15), lineWidth: 3)
                             Circle().trim(from: 0, to: (left.remaining ?? 0) / 100)
                                 .stroke(Color(nsColor: NSColor(clientHex: ClientQuotaSelection.decode(selectionRaw).colors[left.id] ?? left.fill)), style: StrokeStyle(lineWidth: 3, lineCap: .round))
-                                .rotationEffect(.degrees(-90)).opacity(left.remaining == nil ? 0 : 1)
+                                .rotationEffect(.degrees(-90)).opacity((left.remaining ?? 0) > 0 ? 1 : 0)
                         }
                         if let expected = left.expected {
                             Rectangle().fill(.white).frame(width: 1.5, height: 7).offset(y: -ClientSidebarMetrics.ringSize / 2).rotationEffect(.degrees(right == nil ? expected * 360 : 180 + expected * 180))
@@ -231,7 +241,10 @@ struct ClientPairedQuotaRing: View {
     private func half(_ item: ClientQuotaItem, rotation: Double) -> some View {
         Circle().trim(from: 0.006, to: 0.006 + 0.488 * (item.remaining ?? 0) / 100)
             .stroke(Color(nsColor: NSColor(clientHex: ClientQuotaSelection.decode(selectionRaw).colors[item.id] ?? item.fill)), style: StrokeStyle(lineWidth: 3, lineCap: .round))
-            .rotationEffect(.degrees(rotation)).opacity(item.remaining == nil ? 0 : 1)
+            // Round only the moving progress tip. Fixed joins belong to the
+            // half track; overlapping round caps there look like extra dots.
+            .clipShape(ClientQuotaHalfJoinClip())
+            .rotationEffect(.degrees(rotation)).opacity((item.remaining ?? 0) > 0 ? 1 : 0)
     }
     private func pairedValue(_ item: ClientQuotaItem) -> some View {
         // Each candidate reports its complete glyph width. Automatic text
@@ -281,5 +294,14 @@ struct ClientPairedQuotaRing: View {
             Text(item.shortClientTitle).lineLimit(nil).multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
         }.font(.system(size: 10)).foregroundStyle(.white.opacity(0.8))
+    }
+}
+
+private struct ClientQuotaHalfJoinClip: Shape {
+    func path(in rect: CGRect) -> Path {
+        // A wide outline clips only the two butt-ended join planes, leaving
+        // the curved edges and the moving round tip untouched.
+        Circle().trim(from: 0.006, to: 0.494).path(in: rect)
+            .strokedPath(StrokeStyle(lineWidth: 12, lineCap: .butt))
     }
 }

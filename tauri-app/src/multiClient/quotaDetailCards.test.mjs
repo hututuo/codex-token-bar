@@ -33,3 +33,30 @@ test("quota detail cards preserve Pro windows, unknowns, resets, custom color an
   assert.match(css,/\.integrated-quota-card\s*\{[^}]*width:\s*100%/);
   assert.match(css,/\.integrated-quota-window-info\s*\{[^}]*flex:\s*1/);
 }));
+
+test("detail quota decimals and short pool labels fit the ring while zero draws no colored dot", async()=>withSsrModules(async load=>{
+  const {ClientQuotaDetailCard}=await load("/src/multiClient/ClientQuotaViews.tsx");
+  const {quotaRingWindowLabel}=await load("/src/multiClient/integratedClientModel.ts");
+  assert.equal(quotaRingWindowLabel("Gemini · 5h"),"5h");
+  assert.equal(quotaRingWindowLabel("第三方模型 · 7d"),"7d");
+  assert.equal(quotaRingWindowLabel("Other window"),"Other window");
+  const w=new Window();
+  try {
+    for(const remaining of [85.12,90.53,99.99,100,0,null]) {
+      const item={id:"antigravity:gemini-5h",client:"antigravity",window:"Gemini · 5h",remaining,resetsAt:null,source:"fixture",status:""};
+      w.document.body.innerHTML=renderToStaticMarkup(React.createElement(ClientQuotaDetailCard,{item,fill:"#00ff00"}));
+      const ring=w.document.querySelector(".integrated-full-ring");
+      const text=ring.querySelector("strong");
+      assert.equal(text.textContent,remaining===null?"—":`${remaining}%`);
+      assert.equal(Number(text.dataset.digits),text.textContent.length);
+      assert.equal(ring.querySelector("small").textContent,"5h");
+      assert.match(w.document.querySelector(".integrated-quota-window-info").textContent,/Gemini · 5h额度/);
+      assert.equal(ring.querySelector('circle[stroke="#00ff00"]').getAttribute("opacity"),(remaining??0)>0?"1":"0");
+    }
+    const css=await readFile(new URL("./integratedClients.css",import.meta.url),"utf8");
+    w.document.head.innerHTML=`<style>${css}</style>`;
+    assert.equal(w.getComputedStyle(w.document.querySelector(".integrated-full-ring strong")).whiteSpace,"nowrap");
+    w.document.querySelector(".integrated-full-ring strong").dataset.digits="6";
+    assert.equal(w.getComputedStyle(w.document.querySelector(".integrated-full-ring strong")).fontSize,"13px");
+  } finally {w.close();}
+}));

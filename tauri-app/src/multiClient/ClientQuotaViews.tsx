@@ -1,3 +1,4 @@
+import { useId } from "react";
 import {
   useClientQuotaItems,
   useClientQuotaSelection,
@@ -8,6 +9,7 @@ import {
   clientBrand,
   quotaFill,
   quotaWindowTitle,
+  quotaRingWindowLabel,
   clientSidebarMetrics,
   compactQuotaValue,
   type QuotaItem,
@@ -49,9 +51,14 @@ export function PairedQuotaRing({
   expected?: Record<string, number | null>;
   colors?: Record<string, string>;
 }) {
+  const joinClipID = `quota-join-${useId().replace(/:/g, "")}`;
   const half = (i: QuotaItem, rotate: number) => (
     <g transform={`rotate(${rotate} 30 30)`} data-sidebar-stroke-source="" data-stroke-inset={4 / 60}
       data-stroke-spec={JSON.stringify([{id:i.id,half:rotate > 0 ? -1 : 1,fraction:i.remaining === null ? null : i.remaining / 100,expected:expected[i.id],color:colors[i.id] ?? quotaFill(i),trackColor:"#343a35",trackOpacity:1,width:4.6 * clientSidebarMetrics.ringSize / 60}])}>
+      <defs><mask id={`${joinClipID}-${rotate}`} maskUnits="userSpaceOnUse" x="0" y="0" width="60" height="60">
+        <circle cx="30" cy="30" r="26" fill="none" stroke="white" strokeWidth="18.4"
+          strokeLinecap="butt" strokeDasharray="80 163.36" />
+      </mask></defs>
       <circle
         cx="30"
         cy="30"
@@ -70,7 +77,8 @@ export function PairedQuotaRing({
         strokeWidth="4.6"
         strokeLinecap="round"
         strokeDasharray={`${(80 * (i.remaining ?? 0)) / 100} 163.36`}
-        opacity={i.remaining === null ? 0 : 1}
+        opacity={(i.remaining ?? 0) > 0 ? 1 : 0}
+        mask={`url(#${joinClipID}-${rotate})`}
       />
       {expected[i.id] != null && (
         <line
@@ -137,7 +145,7 @@ export function PairedQuotaRing({
                 strokeDasharray="163.36"
                 strokeDashoffset={163.36 * (1 - (left.remaining ?? 0) / 100)}
                 transform="rotate(-90 30 30)"
-                opacity={left.remaining === null ? 0 : 1}
+                opacity={(left.remaining ?? 0) > 0 ? 1 : 0}
               />
               {expected[left.id] != null && (
                 <line
@@ -223,12 +231,12 @@ export function ClientQuotaDetailCard({item,fill,expected,id}: {
         <circle cx="50" cy="50" r="44" fill="none" stroke="currentColor" opacity=".12" strokeWidth="7.5"/>
         <circle cx="50" cy="50" r="44" fill="none" stroke={fill} strokeWidth="7.5" strokeLinecap="round"
           strokeDasharray="276.46" strokeDashoffset={276.46*(1-(item.remaining??0)/100)} transform="rotate(-90 50 50)"
-          opacity={item.remaining===null?0:1}/>
+          opacity={(item.remaining??0)>0?1:0}/>
         {expected!=null && <line className="integrated-full-pace" data-quota-id={item.id}
           x1="50" y1="2" x2="50" y2="14" stroke="currentColor" strokeWidth="2"
           transform={`rotate(${expected*360} 50 50)`}/>}
       </svg>
-      <span><strong>{value(item)}</strong><small>{item.window}</small></span>
+      <span><strong data-digits={value(item).length}>{value(item)}</strong><small>{quotaRingWindowLabel(item.window)}</small></span>
     </div>}
     <div className="integrated-quota-window-info">
       <strong>{api?"API 接入":`${quotaWindowTitle(item.window)}额度`}</strong>
