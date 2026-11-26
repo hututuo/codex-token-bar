@@ -6,8 +6,9 @@ other hosts. The CLI refuses a local/non-Actions host, an existing product data
 directory/defaults domain, or existing client source roots. It uses the real
 runner account's Foundation directories, never a HOME-based isolation trick.
 
-First version: cold bootstrap, naturally visible dashboard, then warmup and a
-120-second main-process sample. No UI scripting, hidden/retention workload,
+Protocol v2: cold bootstrap, fully visible dashboard, then warmup and a
+120-second main-process sample. A shared native frame preference and a fitting
+cloud display control the viewport; no UI actions, hidden/retention workload,
 credentialed service, clock injection, whole-family metric, or halving claim.
 """
 from __future__ import annotations
@@ -32,6 +33,8 @@ import time
 import uuid
 
 BUNDLE_ID = "local.codex.token-bar"
+VIEWPORT_PROTOCOL = "fixed-native-frame-fully-visible-v2"
+DASHBOARD_WINDOW = {"width": 1240, "height": 812}
 CLIENTS = ("claudeCode", "claudeDesktop", "deepseek", "gemini", "opencode", "antigravity")
 OWNED_PARENTS = (
     "Library/Application Support", "Library/Caches", "Library/HTTPStorages",
@@ -238,7 +241,7 @@ def generate_fixture(root, count, anchor_seconds):
                                "outputTokens": sum(r[6] for r in rows)}}
 
 
-def preference_seed(fixture):
+def preference_seed(fixture, dashboard_frame=None):
     preferences = [{"client": client, "enabled": client == "claudeCode",
                     "showQuota": client == "claudeCode", "showSidebar": client == "claudeCode",
                     "showMenuBar": client == "claudeCode", "color": "#B87542", "order": index,
@@ -246,7 +249,7 @@ def preference_seed(fixture):
                    for index, client in enumerate(CLIENTS)]
     home = fixture / "empty-codex"
     stat = home.stat()
-    return {"multiClientUsage.preferences.v1": canonical(preferences),
+    seed = {"multiClientUsage.preferences.v1": canonical(preferences),
             "CodexTokenBar.selectedCodexHome": str(home),
             "CodexTokenBar.selectedCodexHomeDeviceID": str(stat.st_dev),
             "CodexTokenBar.selectedCodexHomeFileID": str(stat.st_ino),
@@ -254,6 +257,9 @@ def preference_seed(fixture):
             "agentSpeedReporting.enabled.v1": False,
             "agentSpeedReporting.invitationShown.v1": True,
             "CodexTokenBar.autoResume.tasks.v2": canonical({"schemaVersion": 2, "tasks": []})}
+    if dashboard_frame is not None:
+        seed["NSWindow Frame dashboard"] = dashboard_frame
+    return seed
 
 
 def ledger_truth(path, fixture):
@@ -304,7 +310,7 @@ class ProcessSampler:
 
 
 class VisibleWindowProbe:
-    """Read WindowServer metadata only; no AX/AppleScript/screenshots or UI actions."""
+    """Read WindowServer metadata only; no AX, screenshots or UI actions."""
     def __init__(self):
         self.cg = ctypes.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
         self.cf = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
@@ -323,7 +329,7 @@ class VisibleWindowProbe:
         self.cf.CFStringCreateWithCString.restype = ctypes.c_void_p
         self.keys = {name: ctypes.c_void_p.in_dll(self.cg, name).value for name in
                      ("kCGWindowOwnerPID", "kCGWindowLayer", "kCGWindowBounds")}
-        for name in ("Width", "Height"):
+        for name in ("X", "Y", "Width", "Height"):
             self.keys[name] = self.cf.CFStringCreateWithCString(None, name.encode(), 0x08000100)
 
     def number(self, dictionary, key):
@@ -344,10 +350,119 @@ class VisibleWindowProbe:
                 if bounds:
                     width, height = self.number(bounds, "Width"), self.number(bounds, "Height")
                     if width and height and width >= 1000 and height >= 700:
-                        found.append({"width": width, "height": height})
+                        found.append({"width": width, "height": height,
+                                      "x": self.number(bounds, "X"), "y": self.number(bounds, "Y")})
         finally:
             self.cf.CFRelease(array)
         return sorted(found, key=lambda item: item["width"] * item["height"], reverse=True)
+
+
+def display_geometry(env):
+    # AppKit metadata only. This does not script an app or interact with UI.
+    script = '''ObjC.import("AppKit");
+    var screen = $.NSScreen.mainScreen;
+    var frame = screen.frame, visible = screen.visibleFrame;
+    JSON.stringify({frame: {x:frame.origin.x, y:frame.origin.y, width:frame.size.width, height:frame.size.height},
+                    visible: {x:visible.origin.x, y:visible.origin.y, width:visible.size.width, height:visible.size.height}});'''
+    response = command(["/usr/bin/osascript", "-l", "JavaScript", "-e", script], env=env)
+    value = json.loads(response.stdout)
+    for name in ("frame", "visible"):
+        require(set(value[name]) == {"x", "y", "width", "height"}
+                and all(isinstance(v, (int, float)) and math.isfinite(v) for v in value[name].values()),
+                "invalid main-screen geometry", "NOT_RUN")
+    return value
+
+
+def dashboard_frame_seed(geometry):
+    visible, screen = geometry["visible"], geometry["frame"]
+    width, height = DASHBOARD_WINDOW["width"], DASHBOARD_WINDOW["height"]
+    require(visible["width"] >= width + 32 and visible["height"] >= height + 32,
+            "cloud visible screen cannot contain the benchmark dashboard", "NOT_RUN")
+    x = round(visible["x"] + (visible["width"] - width) / 2)
+    y = round(visible["y"] + (visible["height"] - height) / 2)
+    return " ".join(str(round(v)) for v in
+                    (x, y, width, height, screen["x"], screen["y"], screen["width"], screen["height"])) + " "
+
+
+def dashboard_window_fits(window, geometry):
+    visible, screen = geometry["visible"], geometry["frame"]
+    # CGWindow bounds use a top-left origin; the main AppKit screen uses bottom-left.
+    if screen["x"] != 0 or screen["y"] != 0:
+        return False
+    top = screen["height"] - visible["y"] - visible["height"]
+    return (all(isinstance(window.get(k), (int, float)) and math.isfinite(window[k])
+                for k in ("x", "y", "width", "height"))
+            and window["x"] >= visible["x"] and window["y"] >= top
+            and window["x"] + window["width"] <= visible["x"] + visible["width"]
+            and window["y"] + window["height"] <= top + visible["height"])
+
+
+class BenchmarkDisplay:
+    """Hold a fitting existing display mode for this guarded cloud process."""
+    def __init__(self, probe, env):
+        self.cg, self.cf, self.env = probe.cg, probe.cf, env
+        self.original_mode = None
+        self.display_id = None
+        self.record = {}
+
+    def configure(self):
+        cg = self.cg
+        cg.CGMainDisplayID.restype = ctypes.c_uint32
+        cg.CGDisplayCopyDisplayMode.argtypes = [ctypes.c_uint32]
+        cg.CGDisplayCopyDisplayMode.restype = ctypes.c_void_p
+        cg.CGDisplayCopyAllDisplayModes.argtypes = [ctypes.c_uint32, ctypes.c_void_p]
+        cg.CGDisplayCopyAllDisplayModes.restype = ctypes.c_void_p
+        for name in ("CGDisplayModeGetWidth", "CGDisplayModeGetHeight"):
+            getattr(cg, name).argtypes = [ctypes.c_void_p]
+            getattr(cg, name).restype = ctypes.c_size_t  # Logical points, not backing pixels.
+        cg.CGDisplaySetDisplayMode.argtypes = [ctypes.c_uint32, ctypes.c_void_p, ctypes.c_void_p]
+        cg.CGDisplaySetDisplayMode.restype = ctypes.c_int32
+        cg.CGDisplayModeRelease.argtypes = [ctypes.c_void_p]
+        cg.CGDisplayModeRelease.restype = None
+        self.display_id = cg.CGMainDisplayID()
+        self.original_mode = cg.CGDisplayCopyDisplayMode(self.display_id)
+        require(self.original_mode, "main display mode unavailable", "NOT_RUN")
+        self.record.update(before=display_geometry(self.env), modeChanged=False)
+        try:
+            self.frame_seed = dashboard_frame_seed(self.record["before"])
+        except BenchError:
+            modes = cg.CGDisplayCopyAllDisplayModes(self.display_id, None)
+            require(modes, "main display modes unavailable", "NOT_RUN")
+            try:
+                candidates = []
+                available = set()
+                for index in range(self.cf.CFArrayGetCount(modes)):
+                    mode = self.cf.CFArrayGetValueAtIndex(modes, index)
+                    width, height = cg.CGDisplayModeGetWidth(mode), cg.CGDisplayModeGetHeight(mode)
+                    available.add((width, height))
+                    if width >= 1440 and height >= 1000:
+                        candidates.append((width * height, width, height, mode))
+                self.record["availableModePoints"] = [{"width": w, "height": h} for w, h in sorted(available)]
+                require(candidates, "no fitting existing cloud display mode", "NOT_RUN")
+                _, width, height, selected = min(candidates)
+                require(cg.CGDisplaySetDisplayMode(self.display_id, selected, None) == 0,
+                        "cloud display mode change refused", "NOT_RUN")
+                self.record.update(modeChanged=True, requestedMode={"width": width, "height": height})
+            finally:
+                self.cf.CFRelease(modes)
+            self.record["after"] = display_geometry(self.env)
+            self.frame_seed = dashboard_frame_seed(self.record["after"])
+        else:
+            self.record["after"] = self.record["before"]
+        self.record.update(dashboardWindow=DASHBOARD_WINDOW, framePreference=self.frame_seed,
+                           units="logical points", scope="disposable Actions GUI session only")
+        return self.record
+
+    def restore(self):
+        if self.original_mode:
+            try:
+                if self.record.get("modeChanged"):
+                    code = self.cg.CGDisplaySetDisplayMode(self.display_id, self.original_mode, None)
+                    self.record["restoreReturnCode"] = code
+                    require(code == 0, "could not restore cloud display mode")
+            finally:
+                self.cg.CGDisplayModeRelease(self.original_mode)
+                self.original_mode = None
 
 
 def startup_ready(journal, pid):
@@ -405,7 +520,38 @@ def archive_state(home, destination, env):
     return {"renamed": moves, "archive": str(destination)}
 
 
-def run_trial(role, trial, app, runtime_app, home, fixture_root, fixture, env, args, out, windows):
+def post_measurement_memory_diagnostics(pid, destination, env):
+    """Supplemental cloud-only evidence, after the last resource sample.
+
+    These tools may suspend the target briefly. Their CPU and allocations must
+    never enter the paired measurement, and their availability is not a reason
+    to turn an otherwise valid resource sample into a performance failure.
+    No object contents, addresses, stack logging or privileged access is used.
+    """
+    result = {"outsideMeasurement": True, "startedMonotonicNS": time.monotonic_ns(), "tools": []}
+    for name, argv in (("vmmap", ["/usr/bin/vmmap", "-summary", str(pid)]),
+                       ("heap", ["/usr/bin/heap", "-s", "--noContent", str(pid)])):
+        path = destination / f"post-measurement-{name}.txt"
+        entry = {"tool": name, "file": path.name}
+        try:
+            completed = command(argv, env=env, check=False)
+            payload = completed.stdout + completed.stderr
+            path.write_bytes(payload)
+            entry.update(status="PASS" if completed.returncode == 0 else "UNAVAILABLE",
+                         returnCode=completed.returncode, bytes=len(payload), sha256=digest(payload))
+        except (OSError, subprocess.SubprocessError) as error:
+            def bytes_(value):
+                return value if isinstance(value, bytes) else (value or "").encode()
+            payload = bytes_(getattr(error, "stdout", None)) + bytes_(getattr(error, "stderr", None))
+            payload += (str(error) + "\n").encode()
+            path.write_bytes(payload)
+            entry.update(status="UNAVAILABLE", bytes=len(payload), sha256=digest(payload))
+        result["tools"].append(entry)
+    result["finishedMonotonicNS"] = time.monotonic_ns()
+    return result
+
+
+def run_trial(role, trial, app, runtime_app, home, fixture_root, fixture, env, args, out, windows, display):
     run = out / f"{fixture['responses']}-{trial}-{role}"
     run.mkdir()
     require(not owned_paths(home) and export_defaults(env) is None,
@@ -414,7 +560,7 @@ def run_trial(role, trial, app, runtime_app, home, fixture_root, fixture, env, a
     if runtime_app.exists():
         shutil.rmtree(runtime_app)  # This is only our own disposable runtime copy.
     shutil.copytree(app, runtime_app, symlinks=True)
-    seed = preference_seed(fixture_root)
+    seed = preference_seed(fixture_root, dashboard_frame=display.frame_seed)
     seed_bytes = plistlib.dumps(seed, sort_keys=True)
     (run / "settings-seed.plist").write_bytes(seed_bytes)
     command(["/usr/bin/defaults", "import", BUNDLE_ID, run / "settings-seed.plist"], env=env)
@@ -425,7 +571,8 @@ def run_trial(role, trial, app, runtime_app, home, fixture_root, fixture, env, a
     result = {"role": role, "trial": trial, "responses": fixture["responses"], "status": "FAILED",
               "bundle": info, "sameRuntimeAppPath": str(runtime_app), "supportSeed": "absent/empty",
               "settingsSeedSha256": digest(seed_bytes), "sourceSha256": fixture["source"]["sha256"],
-              "scope": "cold bootstrap + naturally visible dashboard; main process only",
+              "viewportProtocol": VIEWPORT_PROTOCOL,
+              "scope": "cold bootstrap + fixed fully visible dashboard; main process only",
               "stopMethod": "SIGTERM to exact child PID after measurements; not a graceful-shutdown test"}
     process = None
     rows, measured = [], []
@@ -445,27 +592,37 @@ def run_trial(role, trial, app, runtime_app, home, fixture_root, fixture, env, a
                 sample = sampler.sample()
                 elapsed = time.monotonic() - started
                 visible = windows.windows(process.pid)
-                sample.update(elapsedSeconds=elapsed, visibleDashboard=bool(visible))
+                sample.update(elapsedSeconds=elapsed, visibleDashboard=bool(visible), dashboardWindows=visible)
+                sample["phase"] = ("bootstrap" if gate is None else
+                                   "measure" if time.monotonic() - gate >= args.warmup else "warmup")
+                # Preserve even the first rejected window before a gate can
+                # raise; a failure must retain its actual x/y/width/height.
+                rows.append(sample)
+                metrics.write(json.dumps(sample, sort_keys=True) + "\n")
+                metrics.flush()
                 if gate is None:
-                    sample["phase"] = "bootstrap"
                     ready = startup_ready(journal, process.pid)
                     truth = ledger_truth(ledger, fixture) if ready and visible else None
                     if ready and visible and truth and truth["complete"]:
+                        dimensions = {key: visible[0][key] for key in ("width", "height")}
+                        require(dimensions == DASHBOARD_WINDOW,
+                                "actual dashboard dimensions differ from the shared frame seed", "NOT_RUN")
+                        require(dashboard_window_fits(visible[0], display.record["after"]),
+                                "actual dashboard is clipped by the cloud visible screen", "NOT_RUN")
                         gate = time.monotonic()
                         result.update(startupReady=ready, initialLedger=truth,
                                       bootstrapElapsedSeconds=elapsed, bootstrapCPUSeconds=sample["cpuNS"] / 1e9,
-                                      dashboardWindow=visible[0])
+                                      dashboardWindow=dimensions)
                     require(elapsed <= args.startup_timeout,
                             "startup-ready + visible dashboard + exact fixture ledger gate timed out", "NOT_RUN")
                 else:
                     require(visible, "dashboard ceased to be naturally visible", "NOT_RUN")
-                    require(visible[0] == result["dashboardWindow"], "dashboard dimensions changed", "NOT_RUN")
-                    sample["phase"] = "measure" if time.monotonic() - gate >= args.warmup else "warmup"
+                    require({key: visible[0][key] for key in ("width", "height")} == result["dashboardWindow"],
+                            "dashboard dimensions changed", "NOT_RUN")
+                    require(dashboard_window_fits(visible[0], display.record["after"]),
+                            "dashboard moved outside the cloud visible screen", "NOT_RUN")
                     if sample["phase"] == "measure":
                         measured.append(sample)
-                rows.append(sample)
-                metrics.write(json.dumps(sample, sort_keys=True) + "\n")
-                metrics.flush()
                 if measured and (measured[-1]["monotonicNS"] - measured[0]["monotonicNS"]) / 1e9 >= args.duration:
                     break
                 slot += 1
@@ -475,6 +632,10 @@ def run_trial(role, trial, app, runtime_app, home, fixture_root, fixture, env, a
                 row["footprintBytes"] for row in rows if row["phase"] == "bootstrap")
             result["observedRunPeakFootprintBytes"] = max(row["footprintBytes"] for row in rows)
             result["lifetimePeakFootprintBytes"] = max(row["lifetimePeakFootprintBytes"] for row in rows)
+            # No sampler call or additional metrics row is allowed after this
+            # boundary: native heap inspection is deliberately out of band.
+            result["measurementEndedMonotonicNS"] = measured[-1]["monotonicNS"]
+            result["postMeasurementMemoryDiagnostics"] = post_measurement_memory_diagnostics(process.pid, run, env)
             result["status"] = "PASS"
     except (BenchError, OSError, ValueError, subprocess.SubprocessError) as error:
         result.update(status=getattr(error, "status", "FAILED"), reason=str(error))
@@ -559,14 +720,16 @@ def parse_arguments(argv=None):
 def main(argv=None):
     args = parse_arguments(argv)
     output = args.output_dir.absolute()
-    summary = {"schemaVersion": 1, "status": "NOT_RUN", "results": [],
+    summary = {"schemaVersion": 2, "viewportProtocol": VIEWPORT_PROTOCOL, "status": "NOT_RUN", "results": [],
                "limitations": ["main-process metrics only; helpers and shared-page family accounting are not covered",
-                               "natural visible dashboard only; no hidden/sidebar/retention or credentialed workload",
+                               "fixed native visible dashboard frame; no hidden/sidebar/retention or credentialed workload",
                                "startup-ready is separately gated on visible window and exact synthetic ledger",
                                "updater and other normal runtime owners are retained; external network timing is uncontrolled",
                                "sequential cold app-state runs share OS filesystem caches; this is not cold disk-cache measurement",
-                               "no App clock injection; fixture timestamps are fixed once and real wall-clock advances"]}
+                               "no App clock injection; fixture timestamps are fixed once and real wall-clock advances",
+                               "native memory diagnostics run only after the last resource sample"]}
     created_output = False
+    display = None
     try:
         home, runner_temp = guard_host(output)
         root = runner_temp / ("tokenbar-whole-app-" + uuid.uuid4().hex)
@@ -597,6 +760,9 @@ def main(argv=None):
             windows = VisibleWindowProbe()
         except (OSError, ValueError) as error:
             raise BenchError(f"CoreGraphics window observation unavailable: {error}", "NOT_RUN") from error
+        display = BenchmarkDisplay(windows, env)
+        summary["benchmarkDisplay"] = display.record
+        display.configure()
         # Older than recent-response and active-session windows before the first
         # run; no late pair silently measures 30-minute row expiry instead.
         anchor = int(time.time()) - 3600
@@ -613,13 +779,19 @@ def main(argv=None):
                 for role in order:
                     require(dt.date.today() == local_day, "local calendar day changed across paired runs", "NOT_RUN")
                     summary["results"].append(run_trial(role, trial, bundles[role], runtime_app, home,
-                                                         fixture_root, fixture, env, args, output, windows))
+                                                         fixture_root, fixture, env, args, output, windows, display))
                     require(dt.date.today() == local_day, "local calendar day changed during run", "NOT_RUN")
                     write_json(output / "summary.json", summary)
         summary["pairs"] = paired_summary(summary["results"])
         summary["status"] = "PASS"
     except (BenchError, OSError, ValueError, subprocess.SubprocessError) as error:
         summary.update(status=getattr(error, "status", "FAILED"), reason=str(error))
+    finally:
+        if display is not None:
+            try:
+                display.restore()
+            except (BenchError, OSError) as error:
+                summary.update(status="FAILED", reason=str(error))
     if created_output:
         write_json(output / "summary.json", summary)
     print(json.dumps({"status": summary["status"], "reason": summary.get("reason"), "evidence": str(output)}, sort_keys=True))

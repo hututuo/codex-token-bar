@@ -10,7 +10,7 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 import warnings
-from unittest.mock import patch
+from unittest.mock import Mock, call, patch
 
 SPEC = importlib.util.spec_from_file_location("whole_app_benchmark", Path(__file__).with_name("whole_app_benchmark.py"))
 bench = importlib.util.module_from_spec(SPEC)
@@ -135,6 +135,86 @@ class WholeAppHarnessTests(unittest.TestCase):
             self.assertEqual(fixture["completedResponses"], completed)
             self.assertEqual(fixture["fixtureSchemaVersion"], 2)
 
+    def test_frame_seed_centers_the_same_viewport_in_the_actual_screen(self):
+        geometry = {"frame": {"x": 0, "y": 0, "width": 1920, "height": 1080},
+                    "visible": {"x": 0, "y": 48, "width": 1920, "height": 1007}}
+        frame = bench.dashboard_frame_seed(geometry)
+        self.assertEqual(frame, "340 146 1240 812 0 0 1920 1080 ")
+        # Same target rectangle in CG's top-left coordinates.
+        window = {"x": 340, "y": 122, "width": 1240, "height": 812}
+        self.assertTrue(bench.dashboard_window_fits(window, geometry))
+        for key, value in (("x", -1), ("y", 0), ("width", 2000), ("height", 1100), ("x", None)):
+            with self.subTest(key=key, value=value):
+                self.assertFalse(bench.dashboard_window_fits({**window, key: value}, geometry))
+        with self.assertRaisesRegex(bench.BenchError, "cannot contain") as failure:
+            bench.dashboard_frame_seed({"frame": geometry["frame"],
+                                        "visible": {"x": 0, "y": 0, "width": 1024, "height": 737}})
+        self.assertEqual(failure.exception.status, "NOT_RUN")
+
+    def test_display_geometry_reads_only_metadata_and_rejects_invalid_geometry(self):
+        geometry = {"frame": {"x": 0, "y": 0, "width": 1920, "height": 1080},
+                    "visible": {"x": 0, "y": 48, "width": 1920, "height": 1007}}
+        env = {"HOME": "/synthetic-home"}
+        with patch.object(bench, "command", return_value=SimpleNamespace(stdout=bench.canonical(geometry))) as command:
+            self.assertEqual(bench.display_geometry(env), geometry)
+        self.assertEqual(command.call_args.args[0][:3], ["/usr/bin/osascript", "-l", "JavaScript"])
+        self.assertNotIn("System Events", command.call_args.args[0][-1])
+        self.assertNotIn("setFrame", command.call_args.args[0][-1])
+        self.assertEqual(command.call_args.kwargs, {"env": env})
+        geometry["visible"]["width"] = "not a number"
+        with patch.object(bench, "command", return_value=SimpleNamespace(stdout=bench.canonical(geometry))):
+            with self.assertRaisesRegex(bench.BenchError, "invalid main-screen"):
+                bench.display_geometry(env)
+
+    def test_native_frame_preference_is_identical_for_both_roles(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fixture = Path(tmp) / "fixture"
+            bench.generate_fixture(fixture, 20, 1800000000)
+            frame = "340 146 1240 812 0 0 1920 1080 "
+            seeded = bench.preference_seed(fixture, dashboard_frame=frame)
+            self.assertEqual(seeded["NSWindow Frame dashboard"], frame)
+            baseline = bench.preference_seed(fixture)
+            self.assertEqual({k: v for k, v in seeded.items() if k != "NSWindow Frame dashboard"}, baseline)
+            self.assertEqual(plistlib.loads(plistlib.dumps(seeded)), seeded)
+
+    def test_display_mode_stays_owned_until_restore_even_when_frame_validation_fails(self):
+        small = {"frame": {"x": 0, "y": 0, "width": 1024, "height": 768},
+                 "visible": {"x": 0, "y": 0, "width": 1024, "height": 737}}
+        large = {"frame": {"x": 0, "y": 0, "width": 1920, "height": 1080},
+                 "visible": {"x": 0, "y": 48, "width": 1920, "height": 1007}}
+        for actual in (large, small):
+            with self.subTest(frame_validation_succeeds=actual == large):
+                widths, heights = {20: 1024, 30: 1920}, {20: 768, 30: 1080}
+                cg = SimpleNamespace(
+                    CGMainDisplayID=Mock(return_value=1), CGDisplayCopyDisplayMode=Mock(return_value=10),
+                    CGDisplayCopyAllDisplayModes=Mock(return_value=100),
+                    CGDisplayModeGetWidth=Mock(side_effect=widths.__getitem__),
+                    CGDisplayModeGetHeight=Mock(side_effect=heights.__getitem__),
+                    CGDisplaySetDisplayMode=Mock(return_value=0), CGDisplayModeRelease=Mock())
+                cf = SimpleNamespace(CFArrayGetCount=Mock(return_value=2),
+                                     CFArrayGetValueAtIndex=Mock(side_effect=[20, 30]), CFRelease=Mock())
+                display = bench.BenchmarkDisplay(SimpleNamespace(cg=cg, cf=cf), {})
+                with patch.object(bench, "display_geometry", side_effect=[small, actual]):
+                    try:
+                        if actual == large:
+                            record = display.configure()
+                            self.assertTrue(record["modeChanged"])
+                            self.assertEqual(record["requestedMode"], {"width": 1920, "height": 1080})
+                        else:
+                            with self.assertRaises(bench.BenchError) as failure:
+                                display.configure()
+                            self.assertEqual(failure.exception.status, "NOT_RUN")
+                        cg.CGDisplayModeRelease.assert_not_called()
+                        cg.CGDisplaySetDisplayMode.assert_called_once_with(1, 30, None)
+                    finally:
+                        display.restore()
+                self.assertEqual(cg.CGDisplaySetDisplayMode.call_args_list,
+                                 [call(1, 30, None), call(1, 10, None)])
+                cg.CGDisplayModeRelease.assert_called_once_with(10)
+                cf.CFRelease.assert_called_once_with(100)
+                display.restore()  # A second cleanup cannot release the saved mode twice.
+                cg.CGDisplayModeRelease.assert_called_once_with(10)
+
     def test_ledger_digest_includes_all_stable_columns_and_rejects_wrong_totals(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -209,6 +289,76 @@ class WholeAppHarnessTests(unittest.TestCase):
         self.assertEqual(result["rssBytes"]["median"], 25)
         self.assertEqual(result["rssBytes"]["p95"], 40)
         self.assertEqual(result["maxGapSeconds"], 1)
+
+    def test_memory_diagnostics_are_unprivileged_and_preserve_raw_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            completed = SimpleNamespace(returncode=0, stdout=b"synthetic allocation summary\n", stderr=b"warning\n")
+            env = {"HOME": "/synthetic-home"}
+            with patch.object(bench, "command", return_value=completed) as command:
+                evidence = bench.post_measurement_memory_diagnostics(123, root, env)
+            self.assertTrue(evidence["outsideMeasurement"])
+            self.assertLessEqual(evidence["startedMonotonicNS"], evidence["finishedMonotonicNS"])
+            self.assertEqual([call.args[0] for call in command.call_args_list], [
+                ["/usr/bin/vmmap", "-summary", "123"], ["/usr/bin/heap", "-s", "--noContent", "123"]])
+            for call in command.call_args_list:
+                self.assertEqual(call.kwargs, {"env": env, "check": False})
+            for entry in evidence["tools"]:
+                payload = (root / entry["file"]).read_bytes()
+                self.assertEqual(payload, completed.stdout + completed.stderr)
+                self.assertEqual(entry["sha256"], bench.digest(payload))
+                self.assertEqual(entry["bytes"], len(payload))
+                self.assertEqual(entry["status"], "PASS")
+
+    def test_memory_diagnostic_failure_remains_supplemental_and_runs_next_tool(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(bench, "command", side_effect=[
+                    bench.subprocess.TimeoutExpired("vmmap", 30),
+                    SimpleNamespace(returncode=1, stdout=b"", stderr=b"permission denied")]) as command:
+                evidence = bench.post_measurement_memory_diagnostics(123, Path(tmp), {})
+            self.assertEqual(command.call_count, 2)
+            self.assertTrue(evidence["outsideMeasurement"])
+            self.assertEqual([entry["status"] for entry in evidence["tools"]], ["UNAVAILABLE", "UNAVAILABLE"])
+            self.assertEqual((Path(tmp) / "post-measurement-heap.txt").read_bytes(), b"permission denied")
+
+    def test_first_rejected_window_is_preserved_before_the_gate_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            app, home, output, fixture_root = [root / name for name in ("source.app", "home", "out", "fixture")]
+            app.mkdir()
+            home.mkdir()
+            output.mkdir()
+            fixture = bench.generate_fixture(fixture_root, 20, 1800000000)
+            geometry = {"frame": {"x": 0, "y": 0, "width": 1920, "height": 1080},
+                        "visible": {"x": 0, "y": 48, "width": 1920, "height": 1007}}
+            display = SimpleNamespace(frame_seed=bench.dashboard_frame_seed(geometry), record={"after": geometry})
+            seed = bench.preference_seed(fixture_root, dashboard_frame=display.frame_seed)
+            rejected = {"x": 0, "y": -75, "width": 1080, "height": 812}
+            process = Mock(pid=123, returncode=-15)
+            process.poll.return_value = None
+            process.wait.return_value = -15
+            args = SimpleNamespace(startup_timeout=300, warmup=120, duration=120)
+            with patch.object(bench, "product_processes", return_value=[]), \
+                    patch.object(bench, "export_defaults", side_effect=[None, seed]), \
+                    patch.object(bench, "command"), \
+                    patch.object(bench, "bundle_manifest", return_value={"executable": "CodexTokenBar"}), \
+                    patch.object(bench.subprocess, "Popen", return_value=process), \
+                    patch.object(bench, "ProcessSampler", return_value=SimpleNamespace(sample=lambda: {"cpuNS": 0})), \
+                    patch.object(bench, "startup_ready", return_value={"ready": True}), \
+                    patch.object(bench, "ledger_truth", return_value={"complete": True}), \
+                    patch.object(bench, "archive_state", return_value={"archived": True}), \
+                    patch.object(bench, "post_measurement_memory_diagnostics") as diagnostics:
+                with self.assertRaisesRegex(bench.BenchError, "dimensions differ") as failure:
+                    bench.run_trial("baseline", 1, app, root / "runtime.app", home, fixture_root,
+                                    fixture, {}, args, output, SimpleNamespace(windows=lambda _: [rejected]), display)
+            self.assertEqual(failure.exception.status, "NOT_RUN")
+            diagnostics.assert_not_called()
+            run = output / "20-1-baseline"
+            samples = [json.loads(line) for line in (run / "metrics.jsonl").read_text().splitlines()]
+            self.assertEqual(len(samples), 1)
+            self.assertEqual(samples[0]["dashboardWindows"], [rejected])
+            self.assertEqual(samples[0]["phase"], "bootstrap")
+            self.assertEqual(json.loads((run / "result.json").read_text())["status"], "NOT_RUN")
 
     def test_pair_requires_same_settings_sources_and_window(self):
         def row(role):
