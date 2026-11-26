@@ -201,4 +201,48 @@ struct EngineBehaviorTests {
         }
     }
 
+    @Test func recentViewDoesNotDuplicateOldTodayAndRebuildsAfterClockRollback() {
+        var engine = SpeedEngine()
+        let end = Self.base + 3_600_000
+        for index in 0..<1000 {
+            engine.upsert(Self.record("old-\(index)", start: end - 1000, end: end, output: 1),
+                          project: "p", isCompletion: true, emitsEvents: false)
+        }
+        let later = engine.advance(nowMs: end + 2 * SpeedEngine.retentionMs, todayStartMs: Self.base, emitsEvents: false)
+        #expect(later.today.requests == 1000)
+        #expect(later.today.output == 1000)
+        #expect(engine.storedResponses.count == 1000)
+        #expect(engine.cachedTimedResponseCount == 0)
+        #expect(later.live.output == 0)
+
+        let rolledBack = engine.advance(nowMs: end + 1000, todayStartMs: Self.base, emitsEvents: false)
+        #expect(engine.cachedTimedResponseCount == 1000)
+        #expect(rolledBack.today == later.today)
+        #expect(abs(rolledBack.live.output - 1000.0 / 3) < 1e-9)
+    }
+
+    @Test func responseReplacementMovesIntoAndOutOfTheRecentView() {
+        var engine = SpeedEngine()
+        let now = Self.base + 4 * 3_600_000
+        let oldEnd = now - SpeedEngine.retentionMs - 1
+        engine.upsert(Self.record("r", start: oldEnd - 1000, end: oldEnd, output: 10),
+                      project: "p", isCompletion: true, emitsEvents: false)
+        _ = engine.advance(nowMs: now, todayStartMs: Self.base, emitsEvents: false)
+        #expect(engine.cachedTimedResponseCount == 0)
+        engine.upsert(Self.record("r", start: now - 2000, end: now - 1000, output: 20),
+                      project: "p", isCompletion: false, emitsEvents: false)
+        let recent = engine.advance(nowMs: now, todayStartMs: Self.base, emitsEvents: false)
+        #expect(engine.cachedTimedResponseCount == 1)
+        #expect(recent.today.requests == 1)
+        #expect(recent.today.output == 20)
+        #expect(abs(recent.live.output - 20.0 / 3) < 1e-9)
+        engine.upsert(Self.record("r", start: oldEnd - 1000, end: oldEnd, output: 30),
+                      project: "p", isCompletion: false, emitsEvents: false)
+        let old = engine.advance(nowMs: now, todayStartMs: Self.base, emitsEvents: false)
+        #expect(engine.cachedTimedResponseCount == 0)
+        #expect(old.today.requests == 1)
+        #expect(old.today.output == 30)
+        #expect(old.live.output == 0)
+    }
+
 }

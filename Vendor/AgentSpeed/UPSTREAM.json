@@ -617,8 +617,8 @@
       "sha256": "397cb365076980a522ec392e993083bf4cba9488016b230679c6e86132d52914"
     },
     "macos/Sources/AgentSpeedCore/Engine/SpeedEngine.swift": {
-      "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged Reuse mutation-invalidated timed-response ordering and latest-agent ends across timer publishes, with an earliest-end retention guard; preserve clock-dependent arithmetic and source/model attribution.",
-      "sha256": "05819c03cc5b87dcb4187363de9c9629c4cf9a3ebd73acc04471c83a15abfa5a"
+      "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged Reuse mutation-invalidated timed-response ordering and latest-agent ends across timer publishes, with an earliest-end retention guard; preserve clock-dependent arithmetic and source/model attribution. Limit duplicate timed-response slots to the live/reference retention window and rebuild from retained authoritative records on a backwards clock cutoff.",
+      "sha256": "681d8fe41177e42db866caaa6c7e82b9f47afd3eefd2c0b8abbc17d4c335aae5"
     },
     "macos/Sources/AgentSpeedCore/History/HistoryAnalyzer.swift": {
       "reason": "Local analysis revision4 to5 for paginated prefix accounting semantics; does not change DB schema or start Token Bar HistoryService.",
@@ -741,8 +741,8 @@
       "sha256": "12ca4e75647b0e7a2a66e7d714d64761893316f894f982e11f7ed0362ff5b126"
     },
     "macos/Tests/AgentSpeedCoreTests/EngineBehaviorTests.swift": {
-      "reason": "Guard old-model response tails, current-model estimates, unknown models and per-source conservation",
-      "sha256": "106f8a5816dbc27eda7b0a0fb36942faae9ad713cfa647ff5bc4750c556b02b5"
+      "reason": "Guard old-model response tails, current-model estimates, unknown models and per-source conservation Cover bounded recent-view slots, old-today count preservation, clock rollback and response replacements entering/leaving the live window.",
+      "sha256": "03deed103e6999fbfef7a2b433cc33a224ffbd8ad653dbb3332a8a8b273c0e15"
     },
     "macos/Tests/AgentSpeedCoreTests/LiveMonitorTests.swift": {
       "reason": "Use explicit isolated source roots; never read developer home during tests",

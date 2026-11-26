@@ -24,6 +24,7 @@ struct SpeedEngine: Sendable {
     /// reference, history and in-flight computations still run on every tick.
     private var responseViewsDirty = true
     private var sortedTimedResponses: [TimedResponse] = []
+    private var responseViewCutoffMs: Int64?
     private var latestResponseEnds: [String: Int64] = [:]
     private var earliestResponseEndMs: Int64?
     private var projects: [String: String] = [:]
@@ -114,7 +115,7 @@ struct SpeedEngine: Sendable {
         rollOverIfNeeded(todayStartMs: todayStartMs)
         prune(nowMs: nowMs, todayStartMs: todayStartMs)
         repriceIfNeeded()
-        refreshResponseViewsIfNeeded()
+        refreshResponseViewsIfNeeded(nowMs: nowMs)
 
         let timed = recentTimedResponses(nowMs: nowMs)
         let measured = timed.filter(\.record.isFinal)
@@ -268,19 +269,26 @@ struct SpeedEngine: Sendable {
         agentProviders = agentProviders.filter { agents[$0.key] != nil }
     }
 
-    private mutating func refreshResponseViewsIfNeeded() {
-        guard responseViewsDirty else { return }
+    /// Number of duplicate timed-record slots retained for live/reference reads.
+    var cachedTimedResponseCount: Int { sortedTimedResponses.count }
+
+    private mutating func refreshResponseViewsIfNeeded(nowMs: Int64) {
+        let cutoff = nowMs - Self.retentionMs
+        if !responseViewsDirty, let responseViewCutoffMs, cutoff >= responseViewCutoffMs { return }
         var ends: [String: Int64] = [:]
         var timed: [TimedResponse] = []
         for record in responses.values {
             ends[record.agentId] = max(ends[record.agentId] ?? record.endMs, record.endMs)
-            if let response = TimedResponse(record) { timed.append(response) }
+            // Today's older records remain in the authoritative dictionary and
+            // day ledger; the live/reference view need not duplicate them.
+            if record.endMs >= cutoff, let response = TimedResponse(record) { timed.append(response) }
         }
         timed.sort { lhs, rhs in
             lhs.endMs != rhs.endMs ? lhs.endMs > rhs.endMs : lhs.record.key < rhs.record.key
         }
         latestResponseEnds = ends
         sortedTimedResponses = timed
+        responseViewCutoffMs = cutoff
         responseViewsDirty = false
     }
 
@@ -292,8 +300,8 @@ struct SpeedEngine: Sendable {
     /// Valid responses ending within the retention window, most recent first.
     private func recentTimedResponses(nowMs: Int64) -> ArraySlice<TimedResponse> {
         let cutoff = nowMs - Self.retentionMs
-        // Keep all retained valid responses in the view so a clock rollback
-        // can include old-today records again, exactly as the uncached path.
+        // A backwards cutoff rebuilds the view before this lookup, allowing
+        // old-today records to reenter without retaining their duplicate slots.
         var low = 0
         var high = sortedTimedResponses.count
         while low < high {
