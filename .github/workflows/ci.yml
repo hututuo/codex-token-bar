@@ -478,6 +478,21 @@ jobs:
               --require panic_guard_notifies_an_already_waiting_cold_reader -- \
               cargo test --locked --manifest-path tauri-app/src-tauri/Cargo.toml --lib -- --test-threads=1
           fi
+      - name: Exercise real Rust-spawned Claude helper IPC
+        if: ${{ runner.os == 'Windows' && !inputs.claude_usage_only }}
+        shell: pwsh
+        run: |
+          ./scripts/cloud/claude-runtime-ipc-smoke.ps1 `
+            -HelperPath tools/ClaudeLocalReader/bin/Release/net10.0/ClaudeLocalReader.exe `
+            -LogPath (Join-Path $env:RUNNER_TEMP 'claude-runtime-ipc-smoke.log')
+      - name: Preserve real Claude IPC acceptance evidence
+        if: ${{ always() && runner.os == 'Windows' && !inputs.claude_usage_only }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: claude-runtime-ipc-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/claude-runtime-ipc-smoke.log
+          if-no-files-found: warn
+          retention-days: 14
       - name: Prove the backup regression rejects disabled cleanup
         if: ${{ success() && !inputs.claude_usage_only }}
         shell: bash

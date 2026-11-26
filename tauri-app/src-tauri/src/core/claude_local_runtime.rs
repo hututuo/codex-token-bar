@@ -2539,4 +2539,195 @@ mod tests {
         }
         assert_eq!(codex_activity_root("/Users/example/.codex/other"), "/Users/example/.codex/other");
     }
+
+    // Explicit cloud acceptance only: ordinary library tests do not have a built
+    // helper, and a missing helper must fail rather than silently skip this gate.
+    #[cfg(windows)]
+    mod real_helper_ipc {
+        use super::*;
+        use std::os::windows::io::{AsHandle, AsRawHandle, OwnedHandle};
+        use windows_sys::Win32::{
+            Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT},
+            System::Threading::WaitForSingleObject,
+        };
+
+        const EXPECTED: [(&str, &str, u64, u64); 2] = [
+            ("claudeCode", "ipc-code-model", 11, 12),
+            ("claudeDesktop", "ipc-desktop-model", 13, 14),
+        ];
+
+        #[derive(Default)]
+        struct FixtureWorker(ClaudeLocalRuntimeRegistry);
+
+        impl Drop for FixtureWorker {
+            fn drop(&mut self) {
+                // RegistryState and this guard both use the production stop path;
+                // assertion failures cannot leave our helper running.
+                self.0.stop();
+            }
+        }
+
+        impl FixtureWorker {
+            fn start(&self, helper: &Path, key: RuntimeConfigKey, roots: RuntimeRoots) -> OwnedHandle {
+                let mut state = self.0.lock_state();
+                assert!(state.worker.is_none(), "the previous fixture worker must be stopped");
+                state.worker = Some(start_worker(helper.to_path_buf(), roots, key)
+                    .unwrap_or_else(|_| panic!("cloud-built fixture helper must start")));
+                // Retain a process handle across registry shutdown so the gate
+                // checks actual process exit, not just an empty registry slot.
+                state.worker.as_ref().unwrap().child.as_handle().try_clone_to_owned()
+                    .expect("retain fixture child process handle")
+            }
+
+            fn wait_for(
+                &self,
+                stage: &str,
+                matches: impl Fn(&ClaudeLocalRuntimeSnapshot) -> bool,
+            ) -> ClaudeLocalRuntimeSnapshot {
+                let deadline = Instant::now() + Duration::from_secs(35);
+                loop {
+                    let frame = {
+                        let mut state = self.0.lock_state();
+                        let worker = state.worker.as_mut().expect("fixture worker is registered");
+                        let status = worker.child.try_wait().expect("query fixture child");
+                        assert!(status.is_none(),
+                            "{stage}: helper exited before the expected IPC snapshot: {status:?}");
+                        let frame = worker.frame.lock().unwrap().clone();
+                        frame
+                    };
+                    assert!(frame.issue.is_none(), "{stage}: production reader rejected helper output: {:?}", frame.issue);
+                    if let Some(snapshot) = frame.snapshot.as_ref() {
+                        if matches(snapshot) { return snapshot.clone(); }
+                    }
+                    assert!(Instant::now() < deadline,
+                        "{stage}: timed out waiting for fixture IPC; last snapshot: {:?}", frame.snapshot);
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+        }
+
+        fn timestamp() -> String {
+            time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339).unwrap()
+        }
+
+        fn user(entrypoint: &str) -> String {
+            serde_json::json!({"type": "user", "entrypoint": entrypoint, "timestamp": timestamp(),
+                "message": {"role": "user", "content": "synthetic IPC fixture"}}).to_string() + "\n"
+        }
+
+        fn assistant(entrypoint: &str, id: &str, model: &str, output: u64) -> String {
+            serde_json::json!({"type": "assistant", "entrypoint": entrypoint, "timestamp": timestamp(),
+                "message": {"id": id, "model": model, "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 1, "output_tokens": output}}}).to_string() + "\n"
+        }
+
+        fn fixture_file(root: &Path, name: &str, text: &str) -> PathBuf {
+            let project = root.join("synthetic-project");
+            std::fs::create_dir_all(&project).unwrap();
+            let path = project.join(name);
+            std::fs::write(&path, text).unwrap();
+            path
+        }
+
+        fn configuration(code: &Path, desktop: &Path) -> (RuntimeConfigKey, RuntimeRoots) {
+            let preferences = [
+                EnabledClaudePreference { client: "claudeCode".into(), path: code.to_str().unwrap().into() },
+                EnabledClaudePreference { client: "claudeDesktop".into(), path: desktop.to_str().unwrap().into() },
+            ];
+            runtime_configuration_with_claude_roots(&preferences, None,
+                || panic!("explicit fixture selection must not inspect the account registry"))
+                .unwrap().unwrap()
+        }
+
+        fn available(snapshot: &ClaudeLocalRuntimeSnapshot) -> bool {
+            snapshot.source_available.get("claudeCode") == Some(&true)
+                && snapshot.source_available.get("claudeDesktop") == Some(&true)
+                && snapshot.main_agents.len() == 2 && snapshot.subagents.is_empty()
+        }
+
+        fn complete(worker: &FixtureWorker, code: &Path, desktop: &Path, stage: &str) -> Vec<(String, String, u64, u64)> {
+            let ready = worker.wait_for(stage, available);
+            assert!(ready.response_events.is_empty(), "seeded fixtures are not live completions");
+            // Excluded copies are already consumed before the selected copies
+            // arrive. They must not poison either shared response ID.
+            for (path, entrypoint, id, model, output) in [
+                (code, "cli", "shared-code-response", "ipc-code-model", 11),
+                (desktop, "claude-desktop", "shared-desktop-response", "ipc-desktop-model", 13),
+            ] {
+                let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+                file.write_all(assistant(entrypoint, id, model, output).as_bytes()).unwrap();
+                file.flush().unwrap();
+            }
+            let snapshot = worker.wait_for(stage, |snapshot| snapshot.response_events.len() >= 2
+                && snapshot.main_agents.iter().all(|agent| agent.model.is_some()));
+            assert!(available(&snapshot), "only the two selected fixture agents are exposed");
+            let agents = snapshot.main_agents.iter().map(|agent|
+                (agent.client.as_str(), agent.model.as_deref().unwrap_or("")))
+                .collect::<BTreeMap<_, _>>();
+            assert_eq!(agents, EXPECTED.iter().map(|(client, model, _, _)| (*client, *model)).collect::<BTreeMap<_, _>>());
+            let events = snapshot.response_events.iter().map(|event| {
+                assert_eq!(event.r#type, "responseCompleted");
+                (event.client.clone(), event.model.clone().unwrap_or_default(), event.output_tokens, event.total_tokens)
+            }).collect::<Vec<_>>();
+            let mut events = events;
+            events.sort();
+            assert_eq!(events, EXPECTED.iter().map(|(client, model, output, total)|
+                (client.to_string(), model.to_string(), *output, *total)).collect::<Vec<_>>());
+            events
+        }
+
+        fn assert_exited(handle: &OwnedHandle) {
+            assert_eq!(unsafe { WaitForSingleObject(handle.as_raw_handle(), 5_000) }, WAIT_OBJECT_0,
+                "the fixture helper process must exit before its files are removed");
+        }
+
+        #[test]
+        #[ignore = "requires a cloud-built helper; run scripts/cloud/claude-runtime-ipc-smoke.ps1"]
+        fn schema1_and_schema2_use_real_worker_pipe() {
+            for (name, expected) in [("GITHUB_ACTIONS", "true"), ("RUNNER_OS", "Windows"), ("RUNNER_ENVIRONMENT", "github-hosted")] {
+                assert_eq!(std::env::var(name).ok().as_deref(), Some(expected),
+                    "real helper IPC acceptance is restricted to a disposable GitHub-hosted Windows runner");
+            }
+            let helper = PathBuf::from(std::env::var_os("TOKENBAR_CLAUDE_IPC_HELPER")
+                .expect("TOKENBAR_CLAUDE_IPC_HELPER must name the cloud-built ClaudeLocalReader.exe"));
+            assert!(helper.is_absolute() && helper.is_file(), "the explicit helper must be an existing absolute file");
+            let fixture = tempfile::Builder::new().prefix("tokenbar IPC smoke ").tempdir().unwrap();
+            // Keep the guard newer than tempdir: unwind stops our child before
+            // tempfile cleanup. No preferences or activity capture APIs are used.
+            let worker = FixtureWorker::default();
+            let code_root = fixture.path().join("code root");
+            let desktop_root = fixture.path().join("desktop root");
+            let code = fixture_file(&code_root, "selected-code.jsonl", &user("cli"));
+            let desktop = fixture_file(&desktop_root, "selected-desktop.jsonl", &user("claude-desktop"));
+            fixture_file(&desktop_root, "excluded-code.jsonl",
+                &assistant("cli", "shared-code-response", "excluded-code-model", 101));
+            fixture_file(&code_root, "excluded-desktop.jsonl",
+                &assistant("claude-desktop", "shared-desktop-response", "excluded-desktop-model", 103));
+            let (v2_key, v2_roots) = configuration(&code_root, &desktop_root);
+            assert!(v2_roots.claude_root.is_none(), "split roots must negotiate schema two");
+            let v2_process = worker.start(&helper, v2_key.clone(), v2_roots);
+            assert_eq!(unsafe { WaitForSingleObject(v2_process.as_raw_handle(), 0) }, WAIT_TIMEOUT);
+            let v2_events = complete(&worker, &code, &desktop, "schema two");
+            worker.0.set_live_rate_enabled(false);
+            assert!(worker.0.lock_state().worker.is_none());
+            assert_exited(&v2_process);
+            println!("TOKENBAR_CLAUDE_IPC_SMOKE schema=2 clients=2 completions=2 stopped=disabled");
+
+            let shared = fixture.path().join("legacy shared root");
+            let code = fixture_file(&shared, "selected-code.jsonl", &user("cli"));
+            let desktop = fixture_file(&shared, "selected-desktop.jsonl", &user("claude-desktop"));
+            let (v1_key, v1_roots) = configuration(&shared, &shared);
+            assert_ne!(v2_key, v1_key, "the next worker uses a new explicit fixture configuration");
+            assert!(v1_roots.claude_root.is_some(), "one shared root must retain schema one");
+            worker.0.set_live_rate_enabled(true);
+            let v1_process = worker.start(&helper, v1_key, v1_roots);
+            let v1_events = complete(&worker, &code, &desktop, "schema one");
+            assert_eq!(v1_events, v2_events, "legacy and v2 preserve selected response ownership and counts");
+            worker.0.stop();
+            assert!(worker.0.lock_state().worker.is_none());
+            assert_exited(&v1_process);
+            println!("TOKENBAR_CLAUDE_IPC_SMOKE schema=1 clients=2 completions=2 stopped=registry");
+        }
+    }
 }
