@@ -199,6 +199,16 @@ jobs:
             --require testEmptyThreadPollingStillRetriesAndPublishesErrorChangesAndRecovery \
             --require testCombinedRowsUseStableModelKeyOrderAndPreservePricePeriods \
             --require testDefaultPreparationSharesClosedAttributionAndKeepsRetainedPriceAcrossRefresh \
+            --require testFrameCacheKeepsSharedFramesUntilLastConsumerLeaves \
+            --require testFrameCacheReleasesImageStorageAfterLastConsumerLeaves \
+            --require testFrameCacheDoesNotRefillAfterLastConsumerLeavesDuringRender \
+            --require testFrameCacheNewConsumerReusesPendingRenderAfterPriorDeparture \
+            --require testDefaultRippleSizeKeepsRetinaBackingScaleWithinBudget \
+            --require testHistoryScannerAccepts64KiBRecordAndShortSuccessor \
+            --require testHistoryScannerAccepts1MiBRecordAndShortSuccessor \
+            --require testHistoryScannerAcceptsExactly4MiBRecordAndShortSuccessorAcrossScans \
+            --require testHistoryScannerRejects4MiBPlusOneWithoutCheckpointOrSuccessorUsage \
+            --require testHistoryScannerPreservesCommittedPrefixAndResumesAfterSameFileRepair \
               --require testSharedRPCFixturesKeepExplicitFractionsResetsAndPrivacy \
               --require testDiscoveryRequiresInstalledProcessOwnedLoopbackPortAndCSRF \
               --require testAutomaticVisibilityRequiresRecentQuotaAndRespectsManualChoices \

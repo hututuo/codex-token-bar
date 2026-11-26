@@ -8,6 +8,10 @@
       "reason": "Token Bar local strict Draft-1 WebSocket capability/limit parsing; upstream has no equivalent file, and HTTP remains the default.",
       "sha256": "e70e1feab52fcfe92a7baccbf46c30d2ba643acbb6af1dd222544ec4af7d8f1a"
     },
+    "macos/Tests/AgentSpeedCoreTests/ClaudeRecordBoundaryTests.swift": {
+      "reason": "Token Bar anonymous large-record boundary regressions through FileTailer, ClaudeLineExtractor and ClaudeParser; verify cross-chunk and partial-append usage, successor records and replay without changing production limits.",
+      "sha256": "0becdf3d13af69cb8e2975c5afc6c5542009776dec797ec44864373e1614fa3a"
+    },
     "macos/Tests/AgentSpeedCoreTests/LineSplitterMemoryTests.swift": {
       "reason": "Verify bounded retained buffer capacity after long lines, small trailing fragments, independent copies and oversized line handling.",
       "sha256": "e7ef612704c66fa4adcdb533e0d6aeb1cb456514f287ceb47864254292353918"

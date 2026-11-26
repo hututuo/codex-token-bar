@@ -159,6 +159,20 @@ private final class FloatingUnreadFrameSequence {
     }
 }
 
+/// Keeps reusable frames alive while an effect view can use them. Dropping the
+/// last consumer also prevents a late background render from refilling an idle cache.
+final class FloatingUnreadFrameCacheConsumer: Sendable {
+    private let release: @Sendable () -> Void
+
+    fileprivate init(release: @escaping @Sendable () -> Void) {
+        self.release = release
+    }
+
+    deinit {
+        release()
+    }
+}
+
 protocol FloatingUnreadFrameRenderExecuting: Sendable {
     func execute(_ operation: @escaping @Sendable () -> Void)
 }
@@ -221,6 +235,7 @@ final class FloatingUnreadFrameCacheStorage: @unchecked Sendable {
     private let renderExecutor: any FloatingUnreadFrameRenderExecuting
     private let completionDispatcher: any FloatingUnreadFrameCompletionDispatching
     private var inFlight: [FloatingUnreadFrameCacheDescriptor: [Completion]] = [:]
+    private var consumers: Set<UUID> = []
 
     init(
         renderExecutor: any FloatingUnreadFrameRenderExecuting = FloatingUnreadSerialRenderExecutor(),
@@ -232,6 +247,23 @@ final class FloatingUnreadFrameCacheStorage: @unchecked Sendable {
         self.cache = cache
         self.renderExecutor = renderExecutor
         self.completionDispatcher = completionDispatcher
+    }
+
+    func registerConsumer() -> FloatingUnreadFrameCacheConsumer {
+        let id = UUID()
+        lock.lock()
+        consumers.insert(id)
+        lock.unlock()
+        return FloatingUnreadFrameCacheConsumer { [weak self] in
+            self?.releaseConsumer(id)
+        }
+    }
+
+    private func releaseConsumer(_ id: UUID) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard consumers.remove(id) != nil, consumers.isEmpty else { return }
+        cache.removeAllObjects()
     }
 
     func requestFrames(
@@ -262,7 +294,7 @@ final class FloatingUnreadFrameCacheStorage: @unchecked Sendable {
     private func finish(descriptor: FloatingUnreadFrameCacheDescriptor, frames: [CGImage]) {
         let key = FloatingUnreadFrameCacheKey(descriptor)
         lock.lock()
-        if !frames.isEmpty {
+        if !frames.isEmpty, !consumers.isEmpty {
             let byteCost = FloatingUnreadFrameBudget.estimatedBytes(
                 pixelWidth: descriptor.pixelWidth,
                 pixelHeight: descriptor.pixelHeight,
@@ -286,6 +318,10 @@ final class FloatingUnreadFrameCacheStorage: @unchecked Sendable {
 
 enum FloatingUnreadFrameCache {
     private static let storage = FloatingUnreadFrameCacheStorage()
+
+    static func registerConsumer() -> FloatingUnreadFrameCacheConsumer {
+        storage.registerConsumer()
+    }
 
     static func requestFrames(
         descriptor: FloatingUnreadFrameCacheDescriptor,

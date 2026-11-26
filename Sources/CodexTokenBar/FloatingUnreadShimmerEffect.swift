@@ -51,6 +51,7 @@ final class FloatingUnreadShimmerView: NSView {
     private let imageLayer = CALayer()
     private let renderCoordinator = FloatingUnreadRenderRequestCoordinator()
     private var cachedFrames: [CGImage] = []
+    private var frameCacheConsumer: FloatingUnreadFrameCacheConsumer?
     private var pendingRenderWorkItem: DispatchWorkItem?
     private var animationStartLayerTime: CFTimeInterval?
     private var currentColor = FloatingUnreadRenderColor(red: 0, green: 0.48, blue: 1, alpha: 1)
@@ -184,6 +185,9 @@ final class FloatingUnreadShimmerView: NSView {
             guard self.window != nil else {
                 self.renderCoordinator.invalidate()
                 return
+            }
+            if self.frameCacheConsumer == nil {
+                self.frameCacheConsumer = FloatingUnreadFrameCache.registerConsumer()
             }
             let cached = FloatingUnreadFrameCache.requestFrames(
                 descriptor: descriptor,
@@ -403,6 +407,7 @@ final class FloatingUnreadShimmerView: NSView {
     private func clearFrameCache() {
         cachedFrames.removeAll()
         imageLayer.contents = nil
+        frameCacheConsumer = nil
         lastBounds = .zero
         lastBackingScale = 0
     }
