@@ -36,8 +36,9 @@ internal static class ParserCompatibilitySelfTests
         CodexResetClearsPaginatedOrdinal();
         ClaudeDisplayTitles();
         ClaudeRootOwnership();
+        GeminiRootSelection();
         AntigravityStoreLocations();
-        Console.WriteLine($"PASS: upstream parser compatibility ({count} fixtures, Codex reset, Claude display titles, Claude root ownership and Antigravity stores)");
+        Console.WriteLine($"PASS: upstream parser compatibility ({count} fixtures, Codex reset, Claude display titles, Claude root ownership, Gemini roots and Antigravity stores)");
     }
 
     private static void ClaudeRootOwnership()
@@ -191,6 +192,85 @@ internal static class ParserCompatibilitySelfTests
             Check(fixture, "codePath", string.Empty, code.RootPath, "disabled source path remains hidden");
             Check(fixture, "codeAvailable", false, code.Available, "disabled source is unavailable");
             Check(fixture, "codeSessions", 0, code.SessionCount, "disabled source has no sessions in the view");
+        }
+    }
+
+    private static void GeminiRootSelection()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), "tokenbar-gemini-roots-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        var originalCliHome = Environment.GetEnvironmentVariable("GEMINI_CLI_HOME");
+        var cliHome = Path.Combine(folder, "cli-home");
+        var primary = Path.Combine(cliHome, ".gemini", "tmp");
+        var sandbox = Path.Combine(cliHome, ".cache", ".gemini", "tmp");
+        var day = new DateTimeOffset(2026, 10, 20, 0, 0, 0, TimeSpan.Zero);
+        var now = day.AddHours(10);
+        var nowMs = now.ToUnixTimeMilliseconds();
+        var todayStartMs = day.ToUnixTimeMilliseconds();
+        try
+        {
+            // These self-tests run synchronously before reporter startup; restore the process environment below.
+            Environment.SetEnvironmentVariable("GEMINI_CLI_HOME", cliHome);
+            Write(primary, "standalone", 11, document: false);
+            Write(sandbox, "sandbox", 17, document: true);
+            Check("gemini-default-cli-home", "primaryRoot", primary, LiveMonitor.DefaultGeminiRoot,
+                "GEMINI_CLI_HOME is the base containing .gemini/tmp, not the tmp root itself");
+            string[] defaults = OperatingSystem.IsMacOS() ? [primary, sandbox] : [primary];
+            Check("gemini-default-cli-home", "defaultRoots", string.Join("|", defaults),
+                string.Join("|", LiveMonitor.DefaultGeminiRoots), "only macOS adds its seatbelt sandbox root");
+            Verify("gemini-default-cli-home", selected: null, expectedRoots: defaults,
+                expectedFiles: defaults.Length, expectedOutput: OperatingSystem.IsMacOS() ? 28L : 11L);
+            Verify("gemini-explicit-sandbox", sandbox, [sandbox], expectedFiles: 1, expectedOutput: 17L);
+            Verify("gemini-explicit-parent-is-literal", Path.Combine(cliHome, ".gemini"),
+                [Path.Combine(cliHome, ".gemini")], expectedFiles: 0, expectedOutput: 0L);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEMINI_CLI_HOME", originalCliHome);
+            Directory.Delete(folder, recursive: true);
+        }
+
+        void Verify(string fixture, string? selected, IReadOnlyList<string> expectedRoots, int expectedFiles, long expectedOutput)
+        {
+            var absent = Path.Combine(folder, "absent");
+            var configuration = new MonitorConfiguration(new HashSet<SourceKind> { SourceKind.Gemini },
+                CodexRoot: absent, ClaudeRoot: absent, DshRoot: absent, OpenCodeRoot: absent, GeminiRoot: selected,
+                OmpRoot: absent, AntigravityRoot: absent, WorkBuddyRoot: absent, WorkBuddyAiRoot: absent,
+                ZCodeRoot: absent, KimiRoot: absent, GrokBuildRoot: absent);
+            var locations = SourceLocations.Resolve(configuration);
+            Check(fixture, "resolvedRoots", string.Join("|", expectedRoots), string.Join("|", locations.GeminiRoots),
+                "an explicit tmp folder replaces every default root");
+            using var core = new MonitorCore(configuration, locations, todayStartMs, zone: TimeZoneInfo.Utc);
+            core.Clock = () => nowMs;
+            Check(fixture, "monitorRoots", string.Join("|", expectedRoots),
+                string.Join("|", core.Roots.Where(root => root.Family == RootFamily.Gemini && root.Enabled).Select(root => root.Path)),
+                "the monitor receives the resolved root set");
+            var report = core.Seed(nowMs, todayStartMs, CancellationToken.None);
+            var snapshot = core.BuildSnapshot(nowMs, todayStartMs, MonitorState.Running, observeLive: false).Snapshot;
+            Check(fixture, "filesDiscovered", expectedFiles, report.FilesDiscovered, "only root/project/chats/session files are discovered");
+            Check(fixture, "filesRead", expectedFiles, report.FilesRead, "real JSONL and legacy JSON session reads");
+            Check(fixture, "trackedFiles", expectedFiles, core.TrackedFileCount, "unselected siblings remain untracked");
+            Check(fixture, "output", expectedOutput, snapshot.Today.Output, "only the selected transcript usage counts");
+            Check(fixture, "requests", (long)expectedFiles, snapshot.Today.Requests, "one response in each selected transcript");
+            Check(fixture, "geminiOutput", expectedOutput,
+                snapshot.Sources.Single(source => source.Kind == SourceKind.Gemini).Today.Output, "Gemini source total");
+        }
+
+        void Write(string root, string name, int output, bool document)
+        {
+            var chats = Path.Combine(root, "project", "chats");
+            Directory.CreateDirectory(chats);
+            var response = new {
+                id = name + "-response", type = "gemini", timestamp = now.AddSeconds(-5).ToString("O"),
+                model = "fixture", content = "complete", tokens = new { input = 3, output }
+            };
+            var header = new { sessionId = name, projectHash = "fixture", startTime = now.AddSeconds(-10).ToString("O") };
+            var contents = document
+                ? JsonSerializer.Serialize(new { header.sessionId, header.startTime, messages = new[] { response } })
+                : JsonSerializer.Serialize(header) + "\n" + JsonSerializer.Serialize(response) + "\n";
+            var path = Path.Combine(chats, name + (document ? ".json" : ".jsonl"));
+            File.WriteAllText(path, contents, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            File.SetLastWriteTimeUtc(path, now.AddSeconds(-1).UtcDateTime);
         }
     }
 

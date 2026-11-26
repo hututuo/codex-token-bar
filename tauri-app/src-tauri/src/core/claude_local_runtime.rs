@@ -2142,6 +2142,65 @@ mod tests {
     }
 
     #[test]
+    fn gemini_helper_and_reporter_use_cli_home_base_and_keep_sandbox_override_exclusive() {
+        let directory = tempfile::tempdir().unwrap();
+        let home = directory.path().join("profile");
+        let cli_home = directory.path().join("gemini-cli-home");
+        let _environment = crate::core::app_paths::app_path_test_env_guard(&[
+            ("HOME", home.clone()),
+            ("USERPROFILE", home),
+            ("GEMINI_CLI_HOME", cli_home.clone()),
+        ]);
+        let primary = cli_home.join(".gemini").join("tmp");
+        let sandbox = cli_home.join(".cache").join(".gemini").join("tmp");
+        let automatic = [EnabledClaudePreference { client: "gemini".into(), path: String::new() }];
+        let (automatic_key, automatic_roots) = runtime_configuration(&automatic, None).unwrap().unwrap();
+        assert_eq!(other_client_root("gemini", "").unwrap(), primary);
+        assert_eq!(automatic_key.enabled_clients, vec!["gemini"]);
+        assert_eq!(automatic_roots.other_roots.get("gemini"), Some(&primary));
+        assert_eq!(runtime_source_read_roots(&automatic_roots, &automatic_key), vec![primary.clone()],
+            "the Windows helper receives one concrete tmp root, not its base home or sandbox sibling");
+        let codex_home = directory.path().join("codex");
+        let reporter_automatic = reporting_source_read_roots(&codex_home, &BTreeMap::new());
+        assert!(reporter_automatic.contains(&primary));
+        assert!(!reporter_automatic.contains(&sandbox));
+
+        let explicit = [EnabledClaudePreference {
+            client: "gemini".into(), path: sandbox.to_string_lossy().into_owned(),
+        }];
+        let (explicit_key, explicit_roots) = runtime_configuration(&explicit, None).unwrap().unwrap();
+        assert_ne!(automatic_key, explicit_key);
+        assert_eq!(explicit_roots.other_roots.get("gemini"), Some(&sandbox));
+        assert_eq!(runtime_source_read_roots(&explicit_roots, &explicit_key), vec![sandbox.clone()],
+            "an explicit tmp folder replaces the environment-derived default without another suffix");
+        let reporter_explicit = reporting_source_read_roots(&codex_home, &BTreeMap::from([
+            ("gemini".into(), sandbox.to_string_lossy().into_owned()),
+        ]));
+        assert!(reporter_explicit.contains(&sandbox));
+        assert!(!reporter_explicit.contains(&primary));
+    }
+
+    #[test]
+    fn gemini_helper_empty_cli_home_falls_back_to_one_profile_tmp_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let home = directory.path().join("profile");
+        let _environment = crate::core::app_paths::app_path_test_env_guard(&[
+            ("HOME", home.clone()),
+            ("USERPROFILE", home.clone()),
+            ("GEMINI_CLI_HOME", PathBuf::new()),
+        ]);
+        let primary = home.join(".gemini").join("tmp");
+        let sandbox = home.join(".cache").join(".gemini").join("tmp");
+        let preferences = [EnabledClaudePreference { client: "gemini".into(), path: String::new() }];
+        let (key, roots) = runtime_configuration(&preferences, None).unwrap().unwrap();
+        assert_eq!(other_client_root("gemini", "").unwrap(), primary);
+        assert_eq!(runtime_source_read_roots(&roots, &key), vec![primary.clone()]);
+        let reporter = reporting_source_read_roots(&directory.path().join("codex"), &BTreeMap::new());
+        assert!(reporter.contains(&primary));
+        assert!(!reporter.contains(&sandbox));
+    }
+
+    #[test]
     fn parses_only_enabled_claude_sources_and_exposes_safe_projection() {
         let parsed = parse_runtime_snapshot(fresh_fixture().as_bytes(), &enabled()).unwrap();
         assert!(parsed.enabled);
