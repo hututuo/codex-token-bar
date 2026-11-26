@@ -14,7 +14,7 @@ struct ClaudeParser: Sendable {
     private var sourceDecided = false
     private var pendingStartMs: Int64?
     private var preciseStart = false
-    private var responses: [String: ResponseRecord] = [:]
+    private var responses: [String: ResponseStorage] = [:]
     private var responseOrder: [String] = []
 
     init(agentId: String, fileID: FileID, selectedSources: Set<SourceKind>? = nil) {
@@ -105,7 +105,7 @@ struct ClaudeParser: Sendable {
 
         let hasStopReason = line.stopReason != .none
         let record: ResponseRecord
-        if claim == .sameFile, var existing = responses[key] {
+        if claim == .sameFile, var existing = responses[key]?.record {
             existing.endMs = max(existing.endMs, timestamp)
             existing.usage = existing.usage.merged(with: line.usage)
             if let model = line.model { existing.model = model }
@@ -130,7 +130,8 @@ struct ClaudeParser: Sendable {
             preciseStart = false
             remember(key)
         }
-        responses[key] = record
+        let storage = ResponseStorage(record)
+        responses[key] = storage
         state.modes = record.modes
         if let model = line.model { state.model = model }
 
@@ -144,7 +145,7 @@ struct ClaudeParser: Sendable {
         case .other:
             state.setPhase(.idle, at: timestamp)
         }
-        emit(ResponseUpsert(record: record, isCompletion: claim == .new))
+        emit(ResponseUpsert(storage: storage, isCompletion: claim == .new))
     }
 
     private mutating func remember(_ key: String) {

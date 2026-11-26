@@ -54,6 +54,29 @@ struct EngineBehaviorTests {
         #expect(output.today.input == 10)
     }
 
+    @Test func immutableResponseRevisionIsRetainedAndEngineCopiesReplaceIndependently() {
+        var engine = SpeedEngine()
+        let original = Self.record("shared", start: Self.base, end: Self.base + 1000, input: 10, output: 5)
+        var revision: ResponseStorage? = ResponseStorage(original)
+        weak var retained = revision
+        engine.upsert(revision!, project: "p", isCompletion: true, emitsEvents: false)
+        revision = nil
+        #expect(retained != nil, "the engine retains the supplied revision instead of copying its payload")
+
+        var copy = engine
+        var replacement = original
+        replacement.usage.output = 40
+        replacement.endMs += 1000
+        engine.upsert(replacement, project: "p", isCompletion: false, emitsEvents: false)
+        #expect(engine.storedResponses == [replacement])
+        #expect(copy.storedResponses == [original])
+        #expect(retained != nil, "the independent engine copy still owns the earlier revision")
+        copy.upsert(replacement, project: "p", isCompletion: false, emitsEvents: false)
+        #expect(retained == nil, "replaced revisions do not accumulate in a second cache")
+        #expect(engine.advance(nowMs: replacement.endMs, todayStartMs: Self.base - 1000, emitsEvents: false).today.output == 40)
+        #expect(copy.advance(nowMs: replacement.endMs, todayStartMs: Self.base - 1000, emitsEvents: false).today.output == 40)
+    }
+
     @Test func newPeakNeedsMarginMinimumAndCooldown() {
         var engine = SpeedEngine()
         let today = Self.base - 3_600_000

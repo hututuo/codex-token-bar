@@ -56,10 +56,35 @@ public struct ResponseRecord: Equatable, Hashable, Sendable {
     }
 }
 
+/// One immutable revision shared by the parser, queued emissions and engine.
+/// Updates allocate a new revision so copies and deferred emissions stay independent.
+final class ResponseStorage: Equatable, Sendable {
+    let record: ResponseRecord
+
+    init(_ record: ResponseRecord) { self.record = record }
+
+    static func == (lhs: ResponseStorage, rhs: ResponseStorage) -> Bool {
+        lhs === rhs || lhs.record == rhs.record
+    }
+}
+
 /// A parser emission. The first emission of a key is a completion; later ones are updates (METRICS 4.3).
 struct ResponseUpsert: Equatable, Sendable {
-    var record: ResponseRecord
+    private(set) var storage: ResponseStorage
+    var record: ResponseRecord {
+        get { storage.record }
+        set { storage = ResponseStorage(newValue) }
+    }
     var isCompletion: Bool
+
+    init(record: ResponseRecord, isCompletion: Bool) {
+        self.init(storage: ResponseStorage(record), isCompletion: isCompletion)
+    }
+
+    init(storage: ResponseStorage, isCompletion: Bool) {
+        self.storage = storage
+        self.isCompletion = isCompletion
+    }
 }
 
 /// A Codex thread or a DeepSeek Harness session as named by the first `session_meta` or header of its file

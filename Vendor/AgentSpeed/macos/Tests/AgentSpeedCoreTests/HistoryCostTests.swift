@@ -153,10 +153,9 @@ struct HistoryCostTests {
         var engine = SpeedEngine(pricing: book)
         let end: Int64 = 1_792_490_405_000
         let usage = TokenUsage(input: 5000, output: 500)
-        engine.upsert(
-            ResponseRecord(key: "a", source: .codex, agentId: "x", model: "gpt-6.1-sol-mini", startMs: end - 4000, endMs: end, usage: usage),
-            project: "p", isCompletion: true, emitsEvents: false
-        )
+        let revision = ResponseStorage(ResponseRecord(key: "a", source: .codex, agentId: "x", model: "gpt-6.1-sol-mini",
+                                                     startMs: end - 4000, endMs: end, usage: usage))
+        engine.upsert(revision, project: "p", isCompletion: true, emitsEvents: false)
         let todayStart: Int64 = 1_792_454_400_000
         let before = engine.advance(nowMs: end + 1000, todayStartMs: todayStart, emitsEvents: false)
         #expect(before.todayCost == CostTally(costMicroUsd: 0, unpricedRequests: 1))
@@ -166,6 +165,21 @@ struct HistoryCostTests {
         #expect(after.todayCost == CostTally(costMicroUsd: 3600, unpricedRequests: 0))
         #expect(after.todayCostBySource[.codex] == CostTally(costMicroUsd: 3600, unpricedRequests: 0))
         #expect(after.liveCost.microUsdPerSecond > 0)
+        #expect(engine.storedResponses.first?.costMicroUsd == 3600)
+        #expect(revision.record.costMicroUsd == nil, "repricing detaches from the parser's immutable revision")
+    }
+
+    @Test func initialPricingDoesNotChangeTheSharedParserRevision() throws {
+        let (v1, _) = try Self.tables()
+        let revision = ResponseStorage(ResponseRecord(key: "priced", source: .claudeCode, agentId: "x", model: "claude-opus-5-5",
+            startMs: 1_792_490_401_000, endMs: 1_792_490_405_000, usage: TokenUsage(input: 1000, output: 100)))
+        var priced = SpeedEngine(pricing: PriceBook(tables: [v1]))
+        var unpriced = SpeedEngine()
+        priced.upsert(revision, project: "p", isCompletion: true, emitsEvents: false)
+        unpriced.upsert(revision, project: "p", isCompletion: true, emitsEvents: false)
+        #expect(priced.storedResponses.first?.costMicroUsd == 7500)
+        #expect(unpriced.storedResponses == [revision.record])
+        #expect(revision.record.costMicroUsd == nil)
     }
 
     @Test func theEnginePricesWithTheDaysBoundTable() throws {

@@ -866,7 +866,7 @@ final class TranscriptSession {
               file.map({ allows(upsert.record.source, in: $0) }) ?? true else { return }
         if live { recordReadObservation(observation) }
         let nowMs = live ? clock() : nil
-        if let event = engine.upsert(upsert.record, project: project, isCompletion: upsert.isCompletion, emitsEvents: live, nowMs: nowMs) {
+        if let event = engine.upsert(upsert.storage, project: project, isCompletion: upsert.isCompletion, emitsEvents: live, nowMs: nowMs) {
             pendingEvents.append(event)
         }
     }

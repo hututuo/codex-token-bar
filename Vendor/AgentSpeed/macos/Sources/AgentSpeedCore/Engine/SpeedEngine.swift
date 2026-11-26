@@ -19,7 +19,7 @@ struct SpeedEngine: Sendable {
     static let completionEventMaxAgeMs: Int64 = 120_000
 
     private(set) var agents: [String: EngineAgent] = [:]
-    private var responses: [String: ResponseRecord] = [:]
+    private var responses: [String: ResponseStorage] = [:]
     /// Response-only views survive timer publishes. Clock-dependent window,
     /// reference, history and in-flight computations still run on every tick.
     private var responseViewsDirty = true
@@ -76,12 +76,25 @@ struct SpeedEngine: Sendable {
         emitsEvents: Bool,
         nowMs: Int64? = nil
     ) -> SpeedEvent? {
-        var record = record
+        upsert(ResponseStorage(record), project: project, isCompletion: isCompletion, emitsEvents: emitsEvents, nowMs: nowMs)
+    }
+
+    /// Keep the parser's immutable revision when pricing leaves its value unchanged.
+    @discardableResult
+    mutating func upsert(
+        _ storage: ResponseStorage,
+        project: String,
+        isCompletion: Bool,
+        emitsEvents: Bool,
+        nowMs: Int64? = nil
+    ) -> SpeedEvent? {
+        var record = storage.record
         if let pricing {
             record.costMicroUsd = DayLabeler.hasDay(record.endMs)
                 ? pricing.cost(of: record, day: dayLabeler.label(forMs: record.endMs)) : nil
         }
-        let old = responses.updateValue(record, forKey: record.key)
+        let stored = record.costMicroUsd == storage.record.costMicroUsd ? storage : ResponseStorage(record)
+        let old = responses.updateValue(stored, forKey: record.key)?.record
         if old != record {
             responseViewsDirty = true
             earliestResponseEndMs = min(earliestResponseEndMs ?? record.endMs, record.endMs)
@@ -104,7 +117,7 @@ struct SpeedEngine: Sendable {
     }
 
     /// Responses currently held (today's and the retention window), unordered.
-    var storedResponses: [ResponseRecord] { Array(responses.values) }
+    var storedResponses: [ResponseRecord] { responses.values.map(\.record) }
 
     // MARK: - Computation
 
@@ -224,12 +237,13 @@ struct SpeedEngine: Sendable {
     private mutating func repriceIfNeeded() {
         guard let pricing, pricing.currentVersion != pricedVersion else { return }
         pricedVersion = pricing.currentVersion
-        for (key, record) in responses where record.costMicroUsd == nil {
+        for (key, storage) in responses where storage.record.costMicroUsd == nil {
+            let record = storage.record
             guard DayLabeler.hasDay(record.endMs),
                   let cost = pricing.cost(of: record, day: dayLabeler.label(forMs: record.endMs)) else { continue }
             var priced = record
             priced.costMicroUsd = cost
-            responses[key] = priced
+            responses[key] = ResponseStorage(priced)
             responseViewsDirty = true
             ledger?.replace(record, with: priced)
             if reportLedger.isCounted(key) { reportLedger.grow(priced, modelId: reportModelId(of: priced)) }
@@ -241,8 +255,8 @@ struct SpeedEngine: Sendable {
         dayLabeler = DayLabeler(timeZone: .current)
         let isNewDay = ledger != nil
         var fresh = DayLedger(dayStartMs: todayStartMs)
-        for record in responses.values where fresh.contains(record) {
-            fresh.replace(nil, with: record)
+        for storage in responses.values where fresh.contains(storage.record) {
+            fresh.replace(nil, with: storage.record)
         }
         ledger = fresh
         if isNewDay {
@@ -256,10 +270,10 @@ struct SpeedEngine: Sendable {
         let cutoff = min(todayStartMs, nowMs - Self.retentionMs)
         guard let earliestResponseEndMs, earliestResponseEndMs < cutoff else { return }
         let previousCount = responses.count
-        responses = responses.filter { $0.value.endMs >= cutoff }
+        responses = responses.filter { $0.value.record.endMs >= cutoff }
         // A replacement may have moved the old minimum forward. Recompute
         // even when no row expired so the conservative watermark stops scans.
-        self.earliestResponseEndMs = responses.values.map(\.endMs).min()
+        self.earliestResponseEndMs = responses.values.map(\.record.endMs).min()
         guard responses.count != previousCount else { return }
         responseViewsDirty = true
         reportLedger.prune(before: cutoff)
@@ -274,7 +288,8 @@ struct SpeedEngine: Sendable {
         if !responseViewsDirty, let responseViewCutoffMs, cutoff >= responseViewCutoffMs { return }
         var ends: [String: Int64] = [:]
         var timed: [TimedResponse] = []
-        for record in responses.values {
+        for storage in responses.values {
+            let record = storage.record
             ends[record.agentId] = max(ends[record.agentId] ?? record.endMs, record.endMs)
             // Today's older records remain in the authoritative dictionary and
             // day ledger; the live/reference view need not duplicate them.

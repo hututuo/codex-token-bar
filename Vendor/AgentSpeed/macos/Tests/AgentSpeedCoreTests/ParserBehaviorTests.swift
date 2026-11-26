@@ -206,6 +206,46 @@ struct ParserBehaviorTests {
         #expect(parser.state.phase == .tools)
     }
 
+    @Test func claudeQueuedRevisionsAndParserCopiesKeepIndependentUsageAndTiming() throws {
+        var deduper = Deduper()
+        let initial = Self.run(.claude, [
+            Self.claudeUser("2026-10-20T10:00:00Z", content: #""go""#),
+            Self.claudeAssistant("2026-10-20T10:00:02Z", id: "shared-revision", output: 10),
+        ], deduper: &deduper)
+        var parser = initial.0
+        var branch = parser
+        var branchDeduper = deduper
+        var queued = initial.1
+        var update = #"{"type":"assistant","timestamp":"2026-10-20T10:00:04Z","message":{"id":"shared-revision","stop_reason":"end_turn","usage":{"input_tokens":50,"output_tokens":3}}}"#
+        update.withUTF8 { bytes in
+            parser.consume(rawLine: UnsafeRawBufferPointer(bytes), deduper: &deduper) { queued.append($0) }
+        }
+        var branchLine = Self.claudeAssistant("2026-10-20T10:00:03Z", id: "shared-revision", output: 30)
+        var branched: [ResponseUpsert] = []
+        branchLine.withUTF8 { bytes in
+            branch.consume(rawLine: UnsafeRawBufferPointer(bytes), deduper: &branchDeduper) { branched.append($0) }
+        }
+        let first = try #require(queued.first)
+        let last = try #require(queued.last)
+        let alternate = try #require(branched.first)
+        #expect(queued.map(\.isCompletion) == [true, false])
+        #expect(first.record.usage == TokenUsage(input: 1, output: 10))
+        #expect(!first.record.isFinal && first.record.endMs == 1_792_490_402_000)
+        #expect(last.record.usage == TokenUsage(input: 50, output: 10))
+        #expect(last.record.isFinal && last.record.endMs == 1_792_490_404_000)
+        #expect(last.record.startMs == 1_792_490_400_000 && last.record.model == "m")
+        #expect(alternate.record.usage == TokenUsage(input: 1, output: 30))
+        #expect(!alternate.record.isFinal && alternate.record.endMs == 1_792_490_403_000)
+        #expect(alternate.record.startMs == first.record.startMs && !alternate.isCompletion)
+        #expect(first.storage !== last.storage && first.storage !== alternate.storage)
+
+        var edited = first
+        edited.record.usage.output = 99
+        #expect(first.record.usage.output == 10)
+        #expect(edited.record.usage.output == 99 && edited.storage !== first.storage)
+        #expect(ResponseUpsert(record: first.record, isCompletion: true) == first)
+    }
+
     @Test func claudeIgnoresKeysOwnedByAnotherFile() {
         var deduper = Deduper()
         _ = Self.run(.claude, [Self.claudeAssistant("2026-10-20T10:00:02Z", id: "shared", output: 10)], path: "/a.jsonl", deduper: &deduper, fileID: 1)
