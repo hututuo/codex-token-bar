@@ -300,6 +300,25 @@ final class MultiClientUsageParserTests: XCTestCase {
         XCTAssertEqual(events.first?.sessionID, "native-session")
     }
 
+    func testJSONLLinePoolsKeepHeaderContextAndValuesAcrossMalformedLines() throws {
+        let header = #"{"type":"session","id":"native-session","version":4}"#
+        let message = #"{"type":"assistant/message","seq":2,"time":1797000000000,"data":{"usage":{"inputTokens":10,"outputTokens":2}}}"#
+        let nextHeader = #"{"type":"session","id":"next-session","version":4}"#
+        let enriched = #"{"type":"assistant/message","seq":2,"time":1797000000000,"data":{"usage":{"inputTokens":12,"outputTokens":5}}}"#
+        let data = Data((["\u{FEFF}" + header, message, "{malformed", "", nextHeader, message, enriched]
+            .joined(separator: "\r\n") + "\r\n" + "{partial").utf8)
+        let events = try MultiClientUsageParsers.parse(data: data, client: .deepseek, sessionHint: "directory")
+        XCTAssertEqual(events.count, 2)
+        let first = try XCTUnwrap(events.first { $0.sessionID == "native-session" })
+        let next = try XCTUnwrap(events.first { $0.sessionID == "next-session" })
+        XCTAssertEqual(first.inputTokens, 10)
+        XCTAssertEqual(first.outputTokens, 2)
+        XCTAssertEqual(next.inputTokens, 12)
+        XCTAssertEqual(next.outputTokens, 5)
+        XCTAssertNotEqual(first.eventID, next.eventID)
+        XCTAssertEqual(try MultiClientUsageParsers.parse(data: data, client: .deepseek, sessionHint: "directory"), events)
+    }
+
     func testClaudeStreamingUpdatesMergeCountsAndKeepReasoningAsOutputSubset() throws {
         let first = claudeLine(
             session: "claude-session",

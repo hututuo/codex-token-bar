@@ -446,6 +446,49 @@ final class MultiClientUsageLedgerTests: XCTestCase {
         XCTAssertEqual(try ledger.checkpoint(client: .claudeCode, sourceKey: "file")?.offset, 100)
         XCTAssertEqual(try ledger.summaries().first?.outputTokens, 20)
     }
+
+    func testRowwiseEncodingRollsBackLateDatabaseFailureAndKeepsOriginalRevisions() throws {
+        let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("rowwise.sqlite"))
+        let initial = MultiClientFileCheckpoint(offset: 100, size: 100, modified: 10, identity: "inode")
+        let advanced = MultiClientFileCheckpoint(offset: 200, size: 200, modified: 11, identity: "inode")
+        XCTAssertEqual(try ledger.ingest([event()], client: .claudeCode, sourceKey: "file", checkpoint: initial), 1)
+        func rows(_ sql: String) throws -> [String] {
+            try ledger.database.readRows(sql) { $0.text(0) ?? "" }
+        }
+        let eventsSQL = "SELECT event_id || ':' || payload FROM client_usage_events ORDER BY client,event_id"
+        let revisionsSQL = "SELECT CAST(revision AS TEXT) || ':' || event_id || ':' || payload FROM client_usage_revisions ORDER BY revision"
+        let sequenceSQL = "SELECT name || ':' || CAST(seq AS TEXT) FROM sqlite_sequence ORDER BY name"
+        let beforeEvents = try rows(eventsSQL), beforeRevisions = try rows(revisionsSQL), beforeSequence = try rows(sequenceSQL)
+        var update = event(40)
+        update.inputTokens = 50 // Revision keeps the incoming observation; projection keeps the prior maximum.
+        var inserted = event(30); inserted.eventID = "s:new"
+        var failure = event(60); failure.eventID = "s:failure"
+        let batch = [update, inserted, failure]
+        try ledger.database.execute("""
+        CREATE TRIGGER fail_late_revision BEFORE INSERT ON client_usage_revisions
+        WHEN NEW.event_id='s:failure' BEGIN SELECT RAISE(ABORT, 'injected late revision failure'); END
+        """)
+        XCTAssertThrowsError(try ledger.ingest(batch, client: .claudeCode, sourceKey: "file", checkpoint: advanced))
+        XCTAssertEqual(try rows(eventsSQL), beforeEvents)
+        XCTAssertEqual(try rows(revisionsSQL), beforeRevisions)
+        XCTAssertEqual(try rows(sequenceSQL), beforeSequence)
+        XCTAssertEqual(try ledger.checkpoint(client: .claudeCode, sourceKey: "file")?.offset, initial.offset)
+
+        try ledger.database.execute("DROP TRIGGER fail_late_revision")
+        XCTAssertEqual(try ledger.ingest(batch, client: .claudeCode, sourceKey: "file", checkpoint: advanced), 3)
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]; encoder.dateEncodingStrategy = .millisecondsSince1970
+        let originalPayload = String(decoding: try encoder.encode(update), as: UTF8.self)
+        let revisions = try ledger.database.readRows(
+            "SELECT payload FROM client_usage_revisions WHERE event_id=? ORDER BY revision DESC",
+            bindings: [.text(update.eventID)]) { $0.text(0) ?? "" }
+        XCTAssertEqual(revisions.first, originalPayload)
+        XCTAssertEqual(try ledger.database.readRows("SELECT input_tokens FROM client_usage_events WHERE event_id=?",
+            bindings: [.text(update.eventID)]) { $0.int64(0) }.first!, 100)
+        XCTAssertEqual(try ledger.checkpoint(client: .claudeCode, sourceKey: "file")?.offset, advanced.offset)
+        XCTAssertEqual(try ledger.ingest(batch, client: .claudeCode, sourceKey: "file", checkpoint: advanced), 0)
+        XCTAssertEqual(try rows(revisionsSQL).count, 4)
+    }
+
     func testBackupIncludesCommittedWALAndFutureSchemaIsNotDowngraded() throws {
         let url = root.appendingPathComponent("usage.sqlite")
         let ledger = try MultiClientUsageLedger(url: url)

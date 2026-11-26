@@ -214,43 +214,47 @@ final class MultiClientUsageLedger: @unchecked Sendable {
     @discardableResult func ingest(_ events: [ClientUsageEvent], client: UsageClient? = nil,
                                   sourceKey: String? = nil, checkpoint: MultiClientFileCheckpoint? = nil) throws -> Int {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]; encoder.dateEncodingStrategy = .millisecondsSince1970
-        let encoded = try events.map { event -> (ClientUsageEvent, String) in
+        // Reject invalid input before opening a write transaction, without retaining
+        // a second file-sized array of events and encoded revision payloads.
+        for event in events {
             let counts = [event.inputTokens, event.outputTokens] + [event.cacheReadTokens, event.cacheWriteTokens, event.reasoningTokens].compactMap { $0 }
             guard !event.eventID.isEmpty, event.timestamp.timeIntervalSince1970.isFinite,
                   counts.allSatisfy({ $0 >= 0 && $0 <= 10_000_000_000_000 }) else { throw LedgerError.invalidEvent }
-            return (event, String(decoding: try encoder.encode(event), as: UTF8.self))
         }
         return try database.transaction { connection in
             var changed = 0
-            for (incoming, originalPayload) in encoded {
-                var event = incoming
-                var payload = originalPayload
-                let key: [SQLiteBinding] = [.text(event.client.rawValue), .text(event.eventID)]
-                let previous = try connection.readRows("SELECT payload,session_id,model FROM client_usage_events WHERE client=? AND event_id=?", bindings: key) {
-                    (payload: $0.text(0), sessionID: $0.text(1), model: $0.text(2))
-                }.first
-                if let previousPayload = previous?.payload, let old = try? Self.decode(previousPayload), old.sessionID == event.sessionID || event.client == .antigravity {
-                    // A response copied into another store/fork keeps its first ledger owner.
-                    if event.client == .antigravity { event.sessionID = old.sessionID }
-                    event = old.mergingUpdate(event)
-                    payload = String(decoding: try encoder.encode(event), as: UTF8.self)
+            for incoming in events {
+                changed += try autoreleasepool { () throws -> Int in
+                    var event = incoming
+                    let originalPayload = String(decoding: try encoder.encode(incoming), as: UTF8.self)
+                    var payload = originalPayload
+                    let key: [SQLiteBinding] = [.text(event.client.rawValue), .text(event.eventID)]
+                    let previous = try connection.readRows("SELECT payload,session_id,model FROM client_usage_events WHERE client=? AND event_id=?", bindings: key) {
+                        (payload: $0.text(0), sessionID: $0.text(1), model: $0.text(2))
+                    }.first
+                    if let previousPayload = previous?.payload, let old = try? Self.decode(previousPayload), old.sessionID == event.sessionID || event.client == .antigravity {
+                        // A response copied into another store/fork keeps its first ledger owner.
+                        if event.client == .antigravity { event.sessionID = old.sessionID }
+                        event = old.mergingUpdate(event)
+                        payload = String(decoding: try encoder.encode(event), as: UTF8.self)
+                    }
+                    // Column-only legacy repairs must invalidate readers' revision caches too.
+                    guard previous?.payload != payload || previous?.sessionID != event.sessionID || previous?.model != event.model else { return 0 }
+                    try connection.execute("INSERT INTO client_usage_revisions(client,event_id,captured_at,payload) VALUES(?,?,?,?)",
+                                           bindings: key + [.date(Date()), .text(originalPayload)])
+                    try connection.execute("""
+                    INSERT INTO client_usage_events(client,event_id,session_id,model,timestamp,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens,payload) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(client,event_id) DO UPDATE SET session_id=excluded.session_id,model=excluded.model,
+                    timestamp=excluded.timestamp,input_tokens=excluded.input_tokens,output_tokens=excluded.output_tokens,
+                    cache_read_tokens=excluded.cache_read_tokens,cache_write_tokens=excluded.cache_write_tokens,
+                    reasoning_tokens=excluded.reasoning_tokens,payload=excluded.payload
+                    """, bindings: key + [.text(event.sessionID), .text(event.model), .date(event.timestamp),
+                        .int64(event.inputTokens), .int64(event.outputTokens),
+                        event.cacheReadTokens.map(SQLiteBinding.int64) ?? .null,
+                        event.cacheWriteTokens.map(SQLiteBinding.int64) ?? .null,
+                        event.reasoningTokens.map(SQLiteBinding.int64) ?? .null, .text(payload)])
+                    return 1
                 }
-                // Column-only legacy repairs must invalidate readers' revision caches too.
-                guard previous?.payload != payload || previous?.sessionID != event.sessionID || previous?.model != event.model else { continue }
-                try connection.execute("INSERT INTO client_usage_revisions(client,event_id,captured_at,payload) VALUES(?,?,?,?)",
-                                       bindings: key + [.date(Date()), .text(originalPayload)])
-                try connection.execute("""
-                INSERT INTO client_usage_events(client,event_id,session_id,model,timestamp,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens,payload) VALUES(?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(client,event_id) DO UPDATE SET session_id=excluded.session_id,model=excluded.model,
-                timestamp=excluded.timestamp,input_tokens=excluded.input_tokens,output_tokens=excluded.output_tokens,
-                cache_read_tokens=excluded.cache_read_tokens,cache_write_tokens=excluded.cache_write_tokens,
-                reasoning_tokens=excluded.reasoning_tokens,payload=excluded.payload
-                """, bindings: key + [.text(event.sessionID), .text(event.model), .date(event.timestamp),
-                    .int64(event.inputTokens), .int64(event.outputTokens),
-                    event.cacheReadTokens.map(SQLiteBinding.int64) ?? .null,
-                    event.cacheWriteTokens.map(SQLiteBinding.int64) ?? .null,
-                    event.reasoningTokens.map(SQLiteBinding.int64) ?? .null, .text(payload)])
-                changed += 1
             }
             if let client, let sourceKey, let checkpoint {
                 try connection.execute("""

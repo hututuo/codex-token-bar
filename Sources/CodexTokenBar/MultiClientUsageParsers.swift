@@ -62,14 +62,18 @@ enum MultiClientUsageParsers {
         var parsed: [ClientUsageEvent] = []
         var currentSession = sessionHint
         for rawLine in completePrefix.split(separator: 0x0A, omittingEmptySubsequences: true) {
-            var line = Data(rawLine)
-            if line.last == 0x0D { line.removeLast() }
-            if line.starts(with: [0xEF, 0xBB, 0xBF]) { line.removeFirst(3) }
-            guard !line.isEmpty,
-                  let root = try? JSONSerialization.jsonObject(with: line, options: [.fragmentsAllowed])
-            else { continue }
-            if client == .deepseek, let header = deepSeekHeaderSession(root) { currentSession = header }
-            parsed.append(contentsOf: parseRoot(root, client: client, sessionHint: currentSession))
+            // Keep only normalized values across lines, rather than the temporary
+            // Foundation JSON graph for every record in this file-sized batch.
+            autoreleasepool {
+                var line = Data(rawLine)
+                if line.last == 0x0D { line.removeLast() }
+                if line.starts(with: [0xEF, 0xBB, 0xBF]) { line.removeFirst(3) }
+                guard !line.isEmpty,
+                      let root = try? JSONSerialization.jsonObject(with: line, options: [.fragmentsAllowed])
+                else { return }
+                if client == .deepseek, let header = deepSeekHeaderSession(root) { currentSession = header }
+                parsed.append(contentsOf: parseRoot(root, client: client, sessionHint: currentSession))
+            }
         }
         return deduplicated(parsed)
     }
