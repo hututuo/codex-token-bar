@@ -23,9 +23,11 @@ import whole_app_benchmark as bench
 PURPOSE = "allocation-diagnostic"
 HEAP_PATTERN = ".*[65536+]"
 MAX_ADDRESSES = 4
-HEAP_BYTES = 128 * 1024
+HEAP_BYTES = 8 * 1024 * 1024
 HISTORY_BYTES = 64 * 1024
-COLLECTION_SECONDS = 30
+HEAP_SECONDS = 60
+HISTORY_SECONDS = 10
+COLLECTION_SECONDS = 120
 
 
 def complete_lines(text):
@@ -160,7 +162,9 @@ def collect_allocations(process, destination, env):
               "selectionPattern": HEAP_PATTERN, "maxAddresses": MAX_ADDRESSES,
               "selectedLiveAddressesOnly": True,
               "limits": {"seconds": COLLECTION_SECONDS, "heapBytes": HEAP_BYTES,
-                         "historyBytesPerAddress": HISTORY_BYTES},
+                         "heapSeconds": HEAP_SECONDS,
+                         "historyBytesPerAddress": HISTORY_BYTES,
+                         "historySecondsPerAddress": HISTORY_SECONDS},
               "limitations": ["sampled allocation stacks are not retaining paths or complete heap coverage",
                               "a selected address can be released or reused before stack capture",
                               "requested stack logging is only confirmed where recorded frames are obtained"]}
@@ -170,7 +174,8 @@ def collect_allocations(process, destination, env):
     else:
         heap_path = destination / "allocation-heap-addresses.txt"
         heap = bounded_capture(["/usr/bin/heap", "-s", "--noContent", "--addresses=" + HEAP_PATTERN,
-                                str(process.pid)], env, heap_path, min(10, max(0.01, deadline - time.monotonic())), HEAP_BYTES)
+                                str(process.pid)], env, heap_path,
+                               min(HEAP_SECONDS, max(0.01, deadline - time.monotonic())), HEAP_BYTES)
         heap["tool"] = "heap"
         result["tools"].append(heap)
         bench.write_json(destination / "allocation-diagnostics.json", result)
@@ -189,7 +194,8 @@ def collect_allocations(process, destination, env):
                 continue
             path = destination / f"allocation-history-{row['address']}.txt"
             captured = bounded_capture(["/usr/bin/malloc_history", str(process.pid), "-allBySize", "-fullStacks",
-                                        row["address"]], env, path, min(5, max(0.01, deadline - time.monotonic())), HISTORY_BYTES)
+                                        row["address"]], env, path,
+                                       min(HISTORY_SECONDS, max(0.01, deadline - time.monotonic())), HISTORY_BYTES)
             captured.update(tool="malloc_history", address=row["address"])
             result["tools"].append(captured)
             bench.write_json(destination / "allocation-diagnostics.json", result)

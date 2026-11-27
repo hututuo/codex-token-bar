@@ -191,6 +191,33 @@ class BoundedCaptureTests(unittest.TestCase):
             self.assert_capture_record(entry, destination, b"x" * limit, status="COLLECTED")
         self.assertFalse(entry["truncated"])
 
+    def test_large_heap_summary_keeps_complete_late_address_records(self):
+        summary_line = b"     8192       524288      64.0  __NSCFString\n"
+        repetitions = (2 * 1024 * 1024) // len(summary_line) + 1
+        addresses = (
+            b"0x1: malloc (1048576 bytes)\n"
+            b"0x2: malloc (524288 bytes)\n"
+            b"0x3: malloc (262144 bytes)\n"
+            b"0x4: malloc (131072 bytes)\n"
+            b"0x80: malloc (81920 bytes)\n"
+            b"0x64: malloc (65536 bytes)\n"
+        )
+        payload = summary_line * repetitions + addresses
+        self.assertGreater(len(payload), 2 * 1024 * 1024)
+        self.assertLess(len(payload), alloc.HEAP_BYTES)
+        code = ("import sys; sys.stdout.buffer.write("
+                f"{summary_line!r} * {repetitions} + {addresses!r}); sys.stdout.buffer.flush()")
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp) / "large-heap.txt"
+            entry = alloc.bounded_capture([sys.executable, "-c", code], {}, destination,
+                                          timeout=3, max_bytes=alloc.HEAP_BYTES)
+            self.assert_capture_record(entry, destination, payload, status="COLLECTED")
+            selected = alloc.select_heap_addresses(destination.read_text())
+        self.assertEqual(entry["returnCode"], 0)
+        self.assertFalse(entry["timedOut"])
+        self.assertFalse(entry["truncated"])
+        self.assertEqual([row["address"] for row in selected], ["0x1", "0x2", "0x80", "0x64"])
+
     def test_overflow_preserves_only_the_allowed_raw_prefix(self):
         limit = 4096
         argv = [sys.executable, "-c", "import os; os.write(1,b'x'*2097152)"]
@@ -302,6 +329,12 @@ class AllocationCollectorTests(unittest.TestCase):
             self.assertEqual([entry["heapType"] for entry in evidence["allocations"]],
                              ["type-8", "type-7", "type-6", "type-5"])
             self.assertEqual([entry["heapAllocatedBytes"] for entry in evidence["allocations"]], [256, 224, 192, 160])
+            self.assertEqual(evidence["limits"], {
+                "seconds": 120, "heapBytes": 8 * 1024 * 1024, "heapSeconds": 60,
+                "historyBytesPerAddress": 64 * 1024, "historySecondsPerAddress": 10,
+            })
+            saved = json.loads((Path(tmp) / "allocation-diagnostics.json").read_text())
+            self.assertEqual(saved["limits"], evidence["limits"])
             for captured in captures:
                 self.assertIs(captured["env"], env)
                 self.assertEqual(captured["destination"].stat().st_size, captured["record"]["bytes"])
@@ -314,12 +347,14 @@ class AllocationCollectorTests(unittest.TestCase):
             self.assertEqual(captured["argv"], ["/usr/bin/malloc_history", str(process.pid),
                                                 "-allBySize", "-fullStacks", address])
             self.assertGreater(captured["timeout"], 0)
-            self.assertLessEqual(captured["timeout"], 5)
-            self.assertLessEqual(captured["max_bytes"], 64 * 1024)
+            self.assertLessEqual(captured["timeout"], alloc.HISTORY_SECONDS)
+            self.assertEqual(captured["max_bytes"], alloc.HISTORY_BYTES)
         self.assertGreater(captures[0]["timeout"], 0)
-        self.assertLessEqual(captures[0]["timeout"], 10)
-        self.assertLessEqual(captures[0]["max_bytes"], 128 * 1024)
-        self.assertLessEqual(sum(captured["timeout"] for captured in captures), 30)
+        self.assertLessEqual(captures[0]["timeout"], alloc.HEAP_SECONDS)
+        self.assertEqual(captures[0]["max_bytes"], alloc.HEAP_BYTES)
+        self.assertLessEqual(alloc.HEAP_SECONDS + alloc.MAX_ADDRESSES * alloc.HISTORY_SECONDS,
+                             alloc.COLLECTION_SECONDS)
+        self.assertLessEqual(sum(captured["timeout"] for captured in captures), alloc.COLLECTION_SECONDS)
         self.assertGreaterEqual(process.poll.call_count, len(captures))
 
     def test_heap_denial_never_qualifies_as_a_collected_stack(self):
@@ -417,6 +452,75 @@ class AllocationCollectorTests(unittest.TestCase):
         self.assertTrue(any(alloc.has_stack(group) for group in evidence["allocations"][0]["groups"]))
         self.assertTrue(evidence["tools"][0]["timedOut"])
         self.assertEqual(evidence["tools"][0]["returnCode"], -9)
+
+    def test_truncated_heap_with_zero_exit_queries_only_complete_addresses_and_stays_partial(self):
+        heap = b"0x1234: malloc (65536 bytes)\n0x5678: malloc (81920 bytes)"
+        history = ("1 call for 65536 bytes:\n" + self.FRAME).encode()
+        captures, capture = self.capture_plan([
+            {"payload": heap, "truncated": True, "returnCode": 0},
+            {"payload": history},
+        ])
+        process = SimpleNamespace(pid=4321, poll=Mock(return_value=None))
+        with tempfile.TemporaryDirectory() as tmp, patch.object(alloc, "bounded_capture", side_effect=capture):
+            evidence = alloc.collect_allocations(process, Path(tmp), {})
+            self.assertEqual(captures[0]["destination"].read_bytes(), heap)
+            self.assertEqual(captures[1]["destination"].read_bytes(), history)
+        self.assertEqual(evidence["status"], "PARTIAL")
+        self.assertTrue(evidence["incompleteCoverage"])
+        self.assertEqual(evidence["recordedStackAddresses"], 1)
+        self.assertEqual(len(captures), 2)
+        self.assertEqual(captures[1]["argv"][-1], "0x1234")
+        self.assertEqual([row["address"] for row in evidence["allocations"]], ["0x1234"])
+        self.assertEqual(evidence["allocations"][0]["status"], "COLLECTED")
+        self.assertTrue(any(alloc.has_stack(group) for group in evidence["allocations"][0]["groups"]))
+        self.assertEqual(evidence["tools"][0]["returnCode"], 0)
+        self.assertTrue(evidence["tools"][0]["truncated"])
+        self.assertEqual(evidence["tools"][0]["status"], "UNAVAILABLE")
+
+    def test_zero_byte_timed_out_heap_is_unavailable_without_history_queries(self):
+        captures, capture = self.capture_plan([{"payload": b"", "timedOut": True, "returnCode": -9}])
+        process = SimpleNamespace(pid=4321, poll=Mock(return_value=None))
+        with tempfile.TemporaryDirectory() as tmp, patch.object(alloc, "bounded_capture", side_effect=capture):
+            evidence = alloc.collect_allocations(process, Path(tmp), {})
+            self.assertEqual(captures[0]["destination"].read_bytes(), b"")
+        self.assertEqual(evidence["status"], "UNAVAILABLE")
+        self.assertTrue(evidence["incompleteCoverage"])
+        self.assertEqual(evidence["recordedStackAddresses"], 0)
+        self.assertEqual(evidence["allocations"], [])
+        self.assertEqual(len(captures), 1)
+        self.assertEqual(len(evidence["tools"]), 1)
+        heap = evidence["tools"][0]
+        self.assertEqual(heap["bytes"], 0)
+        self.assertEqual(heap["sha256"], hashlib.sha256(b"").hexdigest())
+        self.assertEqual(heap["returnCode"], -9)
+        self.assertTrue(heap["timedOut"])
+        self.assertFalse(heap["truncated"])
+        self.assertEqual(heap["status"], "UNAVAILABLE")
+
+    def test_collection_deadline_limits_history_timeout_and_skips_remaining_addresses(self):
+        heap = b"0x1: malloc (32 bytes)\n0x2: malloc (64 bytes)\n0x3: malloc (96 bytes)\n"
+        history = ("1 call for 96 bytes:\n" + self.FRAME).encode()
+        captures, capture = self.capture_plan([{"payload": heap}, {"payload": history}])
+        clock = SimpleNamespace(now=0.0)
+
+        def advance_capture(*args, **kwargs):
+            record = capture(*args, **kwargs)
+            clock.now = 60.0 if len(captures) == 1 else 65.0
+            return record
+
+        process = SimpleNamespace(pid=4321, poll=Mock(return_value=None))
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(alloc, "COLLECTION_SECONDS", 65), \
+                patch.object(alloc.time, "monotonic", side_effect=lambda: clock.now), \
+                patch.object(alloc, "bounded_capture", side_effect=advance_capture):
+            evidence = alloc.collect_allocations(process, Path(tmp), {})
+        self.assertEqual([captured["timeout"] for captured in captures], [alloc.HEAP_SECONDS, 5.0])
+        self.assertEqual(sum(captured["timeout"] for captured in captures), 65.0)
+        self.assertEqual(evidence["status"], "PARTIAL")
+        self.assertEqual(evidence["limits"]["seconds"], 65)
+        self.assertEqual([row["status"] for row in evidence["allocations"]],
+                         ["COLLECTED", "SKIPPED", "SKIPPED"])
+        self.assertEqual(captures[1]["argv"][-1], "0x3")
 
     def test_an_exited_exact_child_is_not_inspected(self):
         process = SimpleNamespace(pid=4321, poll=Mock(return_value=0))
