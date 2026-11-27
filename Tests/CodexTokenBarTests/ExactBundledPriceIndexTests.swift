@@ -53,7 +53,7 @@ final class ExactBundledPriceIndexTests: XCTestCase {
         XCTAssertEqual(entries["shared"], .ambiguous)
         XCTAssertEqual(entries["model-a"], .ambiguous)
         XCTAssertNil(entries[""])
-        XCTAssertEqual(entries["SHARED"], .ambiguous)
+        XCTAssertNil(entries["SHARED"])
         XCTAssertEqual(ExactBundledPriceEntry.makeIndex(for: []), [:])
     }
 }

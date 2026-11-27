@@ -1,13 +1,13 @@
 # 性能、多客户端与数据库兼容性验收
 
-更新日期：2026-11-27（Asia/Shanghai）。当前代码候选：`f59bc14f25c3d27c722abd4c12f2f987341a29fc`，在此前内存代码、`665efddf` 测量协议、`db16c1ee` 空源重复发布修复及 `6f54a401` 模型聚合顺序修复之上，新增未读动效离场及暂停时的帧回收、邀请视频资源延迟创建和双平台 Claude live 大记录测试，将 Claude 历史记录有界续读扩展至16MiB（含LF），并延迟分配空日账本的密集数组。最后一项生产修改为`683d0493`；`f59bc14f`只修正共享每日上限测试的午夜fixture并增加回归。最近完整CI全部通过并独立闭合的源码为 `267aa5e8ddaf1388c1a1e74d1cf2f4dc21d213e3`；最近完成速度引擎配对的源码仍为 `4410b16bbf182b90bb6cface265f698182a61039`。`d6c14da7`及`f2a48b8f`各有1个失败case，不能记为全量通过。三个目标继续保持 active。
+更新日期：2026-11-27（Asia/Shanghai）。当前生产候选包括 `03ee0bac` 的去重表首次使用再预留及精确定价索引存储压缩；文档提交 `d14aa7afac59a80d7320d868b971a44396438129` 的云端 Swift 出现一处新增测试断言错误，已修正字典大写 key 的预期，待新提交独立云端验证。最近完整 CI 全部通过并独立闭合的源码为 `f59bc14f25c3d27c722abd4c12f2f987341a29fc`；正在执行的整 App 配对也锁定此源码，harness 为 `fcddaf1bbba1e94576fd04c3531a99f3151c2f68`。最近完整接受的整 App 结果仍为 `665efddf`；最近完成速度引擎配对的源码为 `4410b16bbf182b90bb6cface265f698182a61039`。三个目标继续保持 active。
 
 ## 验收状态
 
 | 目标 | 已完成的工作 | 尚未通过的门槛 |
 | --- | --- | --- |
-| CPU、内存降低一半 | 响应排序与 latest-end 缓存；启动分窗解码及 WAL reader 回收；共享不可变响应与紧凑 timed-response；逐行导入临时对象回收；有界 Home 历史缓存；跨图表 range 共享归属数据；空源重复发布抑制；离场/暂停动效帧缓存回收；邀请视频资源延迟创建；空日账本密集数组延迟分配 | a416/a605/4410/ff55因首对窗口不同而整轮失败；665 v2首次完整通过12单轮/6配对，20k CPU下降39.53%、footprint下降6.77%，2k分别下降11.54%/2.27%；6f54因跨本地日整组NOT_RUN；均无减半结论，后续候选待测 |
-| 客户端及各组件兼容 | 检查 Codex、Claude CLI/Desktop、DSH、Gemini、OpenCode、Antigravity 的发现、解析、身份、quota、live、导出、展示与 reporting；修复已确认的路径/投影差异；267完整双平台原生回归及真实 Windows helper IPC 已通过 | 最新产品 SHA 的完整双平台回归；Desktop长首条分类与历史归属；真实客户端与安装运行验收 |
+| CPU、内存降低一半 | 响应排序与 latest-end 缓存；启动分窗解码及 WAL reader 回收；共享不可变响应与紧凑 timed-response；逐行导入临时对象回收；有界 Home 历史缓存；跨图表 range 共享归属数据；空源重复发布抑制；离场/暂停动效帧缓存回收；邀请视频资源延迟创建；空日账本密集数组延迟分配；去重表和精确定价索引压缩 | a416/a605/4410/ff55因首对窗口不同而整轮失败；665 v2首次完整通过12单轮/6配对，20k CPU下降39.53%、footprint下降6.77%，2k分别下降11.54%/2.27%；6f54因跨本地日整组NOT_RUN；均无减半结论，后续候选待测 |
+| 客户端及各组件兼容 | 检查 Codex、Claude CLI/Desktop、DSH、Gemini、OpenCode、Antigravity 的发现、解析、身份、quota、live、导出、展示与 reporting；修复已确认的路径/投影差异；f59完整双平台原生回归及真实 Windows helper IPC 已通过 | 最新产品 SHA 的完整双平台回归；Desktop长首条分类与历史归属；真实客户端与安装运行验收 |
 | 数据库结构与后续兼容 | 聚合复用单次TEMP canonical projection；缓存revision修复；两端schema admission和旧payload合并修复；Swift显式列名写入；ff55四版本×双平台增强矩阵8/8通过，64次候选进程及64次强制重扫保全事件/revision；生产聚合独立复算至ff55 | 当前产品SHA的完整回归尚待云端；不是任意未来schema的无损写回承诺 |
 
 所有编译、原生测试、前端构建和打包通过云端。本报告中的后续性能候选未合并 main、正式发布或替换当前安装。
@@ -214,8 +214,12 @@
 | `45912504640` | `f2a48b8f`；完整回归 | 最终FAIL独立闭合：Swift2584通过/1失败/38跳过，唯一失败为午夜daily-limit fixture的7条断言，95required均实际通过；vendor700tests/81suites及四次两shape大记录invocation通过；release scripts因Swift退出1未运行；macOS1880/0/14及Windows1822/0/15、两端78required/16production checks/双负控/hash闭合，Windows真实helper IPC1通过、C#两shape两边界marker已核，frontend1501/cloud18及updater通过 |
 | `45913791756` | `267aa5e8`；完整回归 | 最终success且独立闭合：Swift2591/0/38，101mandatory及11focused逐案通过；vendor700tests/81suites及四次两shape调用；macOS1886/0/14、Windows1828/0/15，两端84mandatory/6focused、16production checks、双负控及原始hash；Windows IPC1通过，frontend1501/cloud18、release112通过/1既有skip及updater均通过；checked-source/evidence gate PASS |
 | `45913791600` | `267aa5e8`；公开0.9.7升级 | 最终success且独立闭合：Swift8实际升级+120支持、fixture字节保全/accounting/exit86恢复；Windows3importer/19唯一manifest/27PASS；不外推为完整CI |
-| `45916052825` | `f59bc14f`；空日账本数组及午夜fixture后的完整回归 | 2026-11-27T00:39:25Z source实际启动，原生/前端/Swift在00:39:30–32Z启动，in_progress；正常Swift110required、Claude focused11、Rust84/6，结果须按此SHA独立验证 |
+| `45916052825` | `f59bc14f`；空日账本数组及午夜fixture后的完整回归 | 最终success且独立闭合：Swift2599/0/38，110mandatory及7个惰性日账本、原daily-limit和午夜回归实际通过；vendor700/81suites；macOS1886/0/14、Windows1828/0/15，各84mandatory、16production checks及双负控/hash；Windows真实helper IPC与C#边界marker、frontend1501/cloud18、release112通过/1既有skip及updater均核实；checked-source/evidence PASS |
 | `45916052402` | `f59bc14f`；公开0.9.7升级 | 最终success且按exact source独立闭合：Swift8实际升级+120支持、fixture字节保全/accounting/exit86恢复；Windows3importer/19唯一manifest/27PASS；不外推为完整CI |
+| `45918494163` | `fcddaf1b`；仅Rust生产聚合配对 | 24cases/336checksums/48oracle/48paired独立复算PASS；6/12配对有CPU或RSS不利项；whole-App明确跳过，不能用于整App验收 |
+| `45921100543` | harness `fcddaf1b`；candidate `f59bc14f` 的整App与Rust聚合 | whole-App于2026-11-27T01:35:49Z进入正式App步骤，仍在执行；不以dispatch时间推算采样完成。ledger已success并独立复算24cases/336checksums/48oracle/48paired；其baseline为3ead，whole-App baseline仍为f9 |
+| `45922884371` | `d14aa7af`；新增去重/定价测试后的完整回归 | Swift实际失败：2607通过/1失败/38跳过；唯一case为大写原始字典key应为nil却预期ambiguous的测试断言，另一价格索引case及7个Deduper case实际通过；其他lane分别闭合，不记整轮PASS |
+| `45922884234` | `d14aa7af`；公开0.9.7升级 | GitHub整体success；独立小证据收集中，待closed proof，不外推完整CI |
 
 最新速度引擎局部数据（`45897628817`，每case三轮中位数；CPU为200-tick loop总量，RSS为endpoint resident memory；不是整App或physical footprint）：
 
@@ -257,6 +261,10 @@ DB baseline 单独采用 `3eadadc6`，因为 `f9e91791` 的现有 Rust 测试编
 此前源码执行formed probe17项、formed workflow7项Python测试；665 whole-app harness24项、workflow9项全部通过，vendor check及diff检查通过。REAL codec新矩阵8格均已实际通过；d6的6个新增Swift内存case有5通过、1失败，6f54完整云端回归已通过且原失败case闭合。f2的新增生命周期及vendor边界case已实际通过，整套仍因另一午夜fixture失败；后续SHA继续独立验收。
 
 6f54的whole-App跨日拒绝保留，不以部分完成的20k双pair中位数替代整组结果。按当前fixture回溯70分钟的规则，下一次实际fixture步骤须在runner本地日01:10后开始；本次观察时区为UTC，即2026-11-27 01:10 UTC / 上海09:10后。日末另需至少48分钟纯采样及启动、诊断和清理。dispatch/build的开始时间不等于fixture开始时间；基线、workload和原采样时长保持。
+
+`45918494163`的独立聚合复算：1200 cold CPU下降79.382%、peak RSS增加0.202%；1200 cache-hit CPU增加15.353%、RSS下降0.947%；12000 cold CPU下降83.204%、RSS下降1.803%；12000 cache-hit CPU下降41.886%、RSS下降2.635%。共有24个role cases、12个paired trials，其中6/12至少一项不利。仅读取74份小报告，完整binary/SQLite seed字节未下载或独立hash。它是局部聚合结果，不能证明整App内存减半。
+
+`45921100543`的独立ledger复算：1200 cold/cache-hit CPU中位下降84.60%/12.79%，peak RSS分别增加1.77%/下降0.61%；12000 cold/cache-hit CPU下降86.72%/24.38%，RSS下降2.17%/2.20%。4/12配对至少一项不利。candidate为f59、ledger baseline为3ead，harness输入hash核对exact fcdd；尚未收到该run的whole-App最终结果或retained graph，不能将局部结果提升为整App验收。
 
 ## 已安装程序的只读观测
 
