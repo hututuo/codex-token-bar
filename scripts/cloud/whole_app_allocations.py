@@ -28,6 +28,10 @@ HISTORY_BYTES = 64 * 1024
 HEAP_SECONDS = 60
 HISTORY_SECONDS = 10
 COLLECTION_SECONDS = 120
+SELECTION_PROFILE = "data-string-float-v1"
+SELECTION_ROLES = ("data-largest", "data-exact-98304", "string-array-largest", "float-array-largest")
+SELECTION_STRATEGY = ("largest Data, another exact 98304-byte Data, largest String array, largest Float array; "
+                      "fill missing roles from remaining largest blocks")
 
 
 def complete_lines(text):
@@ -47,22 +51,32 @@ def parse_heap_addresses(text, limit=MAX_ADDRESSES):
 
 
 def select_heap_addresses(text):
-    """Two largest blocks plus 80/64 KiB samples, when visible in bounded output."""
+    """Sample unassigned Data and array families, without treating type names as owners."""
     # Reuse strict parsing, but collect each line so selection sees more than four.
     rows = {}
     for line in complete_lines(text):
         for row in parse_heap_addresses(line + "\n", limit=1):
             rows.setdefault(row["address"], row)
     ordered = sorted(rows.values(), key=lambda row: (-row["heapAllocatedBytes"], row["address"]))
-    selected = ordered[:2]
-    for target in (81920, 65536):
-        options = [row for row in ordered if row not in selected and (
-            row["heapAllocatedBytes"] == target if target == 65536 else
-            73728 <= row["heapAllocatedBytes"] <= 98304)]
-        if options:
-            selected.append(min(options, key=lambda row: (abs(row["heapAllocatedBytes"] - target), row["address"])))
-    selected.extend(row for row in ordered if row not in selected)
-    return selected[:MAX_ADDRESSES]
+    selected, seen = [], set()
+    targets = (("data-largest", "__DataStorage._bytes (malloc)", None),
+               ("data-exact-98304", "__DataStorage._bytes (malloc)", 98304),
+               ("string-array-largest", "Swift._ContiguousArrayStorage<Swift.String>", None),
+               ("float-array-largest", "Swift._ContiguousArrayStorage<Swift.Float>", None))
+    for role, heap_type, size in targets:
+        row = next((row for row in ordered if row["address"] not in seen
+                    and row["heapType"] == heap_type
+                    and (size is None or row["heapAllocatedBytes"] == size)), None)
+        if row is not None:
+            selected.append(dict(row, selectionRole=role))
+            seen.add(row["address"])
+    for row in ordered:
+        if len(selected) >= MAX_ADDRESSES:
+            break
+        if row["address"] not in seen:
+            selected.append(dict(row, selectionRole="fallback-largest"))
+            seen.add(row["address"])
+    return selected
 
 
 def parse_history_groups(text):
@@ -160,6 +174,7 @@ def collect_allocations(process, destination, env):
     result = {"purpose": PURPOSE, "outsideMeasurement": True, "startedMonotonicNS": started,
               "status": "UNAVAILABLE", "tools": [], "allocations": [],
               "selectionPattern": HEAP_PATTERN, "maxAddresses": MAX_ADDRESSES,
+              "selectionProfile": SELECTION_PROFILE, "selectionStrategy": SELECTION_STRATEGY,
               "selectedLiveAddressesOnly": True,
               "limits": {"seconds": COLLECTION_SECONDS, "heapBytes": HEAP_BYTES,
                          "heapSeconds": HEAP_SECONDS,
@@ -181,9 +196,8 @@ def collect_allocations(process, destination, env):
         bench.write_json(destination / "allocation-diagnostics.json", result)
         addresses = select_heap_addresses(heap_path.read_text(errors="replace")) if (
             heap["returnCode"] == 0 or heap["truncated"] or heap["timedOut"]) else []
-        result["selectionStrategy"] = "two largest, near 80KiB, exact 64KiB; fill from remaining largest"
-        result["bucketObserved"] = {"near80KiB": any(73728 <= row["heapAllocatedBytes"] <= 98304 for row in addresses),
-                                    "exact64KiB": any(row["heapAllocatedBytes"] == 65536 for row in addresses)}
+        result["missingSelectionRoles"] = [role for role in SELECTION_ROLES if not any(
+            row["selectionRole"] == role for row in addresses)]
         result["incompleteCoverage"] = heap["truncated"] or heap["timedOut"]
         selected_at = time.monotonic_ns()
         for row in addresses:

@@ -71,29 +71,64 @@ class AllocationParserTests(unittest.TestCase):
             "0x1234: malloc (16 bytes)"
         ), [])
 
-    def test_heap_selection_preserves_near_80k_and_exact_64k_beyond_the_largest_four(self):
-        rows = [("0x1", 1048576), ("0x2", 524288), ("0x3", 262144), ("0x4", 131072),
-                ("0x80a", 90112), ("0x80b", 81921), ("0x80c", 77824), ("0x64", 65536)]
-        text = "".join(f"{address}: malloc ({size} bytes)\n" for address, size in rows)
+    def test_heap_selection_prioritizes_exact_data_and_array_types_beyond_the_largest_four(self):
+        rows = [
+            ("0x1", "malloc", 1048576),
+            ("0x2", "__DataStorage._bytes (malloc) suffix", 786432),
+            ("0x3", "Swift._ContiguousArrayStorage<Swift.String> suffix", 524288),
+            ("0x4", "Swift._ContiguousArrayStorage<Swift.Float> suffix", 458752),
+            ("0xd1", "__DataStorage._bytes (malloc)", 131072),
+            ("0xd2", "__DataStorage._bytes (malloc)", 98304),
+            ("0xd3", "__DataStorage._bytes (malloc)", 98305),
+            ("0xd4", "__DataStorage._bytes (malloc)", 98304),
+            ("0xe1", "Swift._ContiguousArrayStorage<Swift.String>", 393216),
+            ("0xe2", "Swift._ContiguousArrayStorage<Swift.String>", 262144),
+            ("0xf1", "Swift._ContiguousArrayStorage<Swift.Float>", 360448),
+            ("0xf2", "Swift._ContiguousArrayStorage<Swift.Float>", 131072),
+        ]
+        text = "".join(f"{address}: {heap_type} ({size} bytes)\n" for address, heap_type, size in rows)
+        text += "0xd0: __DataStorage._bytes (malloc) (2097152 bytes)"
         self.assertEqual([row["address"] for row in alloc.parse_heap_addresses(text)],
                          ["0x1", "0x2", "0x3", "0x4"])
         selected = alloc.select_heap_addresses(text)
-        self.assertEqual([row["address"] for row in selected], ["0x1", "0x2", "0x80b", "0x64"])
-        self.assertEqual([row["heapAllocatedBytes"] for row in selected], [1048576, 524288, 81921, 65536])
+        self.assertEqual([row["address"] for row in selected], ["0xd1", "0xd2", "0xe1", "0xf1"])
+        self.assertEqual([row["heapAllocatedBytes"] for row in selected], [131072, 98304, 393216, 360448])
+        self.assertEqual([row["selectionRole"] for row in selected],
+                         ["data-largest", "data-exact-98304", "string-array-largest", "float-array-largest"])
 
-    def test_heap_selection_fills_missing_buckets_from_remaining_largest_blocks(self):
-        large = [("0x1", 524288), ("0x2", 393216), ("0x3", 262144), ("0x4", 131072)]
+    def test_heap_selection_deduplicates_roles_and_fills_from_remaining_largest_blocks(self):
+        data_type = "__DataStorage._bytes (malloc)"
+        string_type = "Swift._ContiguousArrayStorage<Swift.String>"
+        float_type = "Swift._ContiguousArrayStorage<Swift.Float>"
+        large = [("0x1", "malloc", 524288), ("0x2", "malloc", 393216),
+                 ("0x3", "malloc", 262144), ("0x4", "malloc", 131072)]
         cases = [
-            ("both buckets missing", large, ["0x1", "0x2", "0x3", "0x4"]),
-            ("80k missing", large + [("0x64", 65536)], ["0x1", "0x2", "0x64", "0x3"]),
-            ("64k missing", large + [("0x80", 86016)], ["0x1", "0x2", "0x80", "0x3"]),
-            ("fewer than four unique blocks", [("0x1", 524288), ("0x80", 81920), ("0x64", 65536)],
-             ["0x1", "0x80", "0x64"]),
+            ("all preferred roles missing", large, ["0x1", "0x2", "0x3", "0x4"],
+             ["fallback-largest"] * 4),
+            ("only largest Data available", large + [("0xd1", data_type, 131072)],
+             ["0xd1", "0x1", "0x2", "0x3"], ["data-largest"] + ["fallback-largest"] * 3),
+            ("one exact Data address cannot fill two roles",
+             large + [("0xd1", data_type, 98304), ("0xd1", data_type, 196608),
+                      ("0xe1", string_type, 65536), ("0xf1", float_type, 65536)],
+             ["0xd1", "0xe1", "0xf1", "0x1"],
+             ["data-largest", "string-array-largest", "float-array-largest", "fallback-largest"]),
+            ("second exact Data address fills its own role",
+             large + [("0xd1", data_type, 98304), ("0xd2", data_type, 98304),
+                      ("0xe1", string_type, 65536), ("0xf1", float_type, 65536)],
+             ["0xd1", "0xd2", "0xe1", "0xf1"],
+             ["data-largest", "data-exact-98304", "string-array-largest", "float-array-largest"]),
+            ("fewer than four unique blocks", [("0xd1", data_type, 98304), ("0xf1", float_type, 65536)],
+             ["0xd1", "0xf1"], ["data-largest", "float-array-largest"]),
         ]
-        for label, rows, expected in cases:
+        for label, rows, expected_addresses, expected_roles in cases:
             with self.subTest(case=label):
-                text = "".join(f"{address}: malloc ({size} bytes)\n" for address, size in rows)
-                self.assertEqual([row["address"] for row in alloc.select_heap_addresses(text)], expected)
+                text = "".join(f"{address}: {heap_type} ({size} bytes)\n" for address, heap_type, size in rows)
+                selected = alloc.select_heap_addresses(text)
+                self.assertEqual([row["address"] for row in selected], expected_addresses)
+                self.assertEqual([row["selectionRole"] for row in selected], expected_roles)
+                self.assertEqual(len({row["address"] for row in selected}), len(selected))
+                if label == "one exact Data address cannot fill two roles":
+                    self.assertEqual(selected[0]["heapAllocatedBytes"], 98304)
 
     def test_history_keeps_group_counts_bytes_and_original_frames(self):
         first_frame = "    0 libswiftCore.dylib 0x1234 swift_allocObject + 8"
@@ -197,10 +232,10 @@ class BoundedCaptureTests(unittest.TestCase):
         addresses = (
             b"0x1: malloc (1048576 bytes)\n"
             b"0x2: malloc (524288 bytes)\n"
-            b"0x3: malloc (262144 bytes)\n"
-            b"0x4: malloc (131072 bytes)\n"
-            b"0x80: malloc (81920 bytes)\n"
-            b"0x64: malloc (65536 bytes)\n"
+            b"0xd1: __DataStorage._bytes (malloc) (131072 bytes)\n"
+            b"0xd2: __DataStorage._bytes (malloc) (98304 bytes)\n"
+            b"0xe1: Swift._ContiguousArrayStorage<Swift.String> (393216 bytes)\n"
+            b"0xf1: Swift._ContiguousArrayStorage<Swift.Float> (360448 bytes)\n"
         )
         payload = summary_line * repetitions + addresses
         self.assertGreater(len(payload), 2 * 1024 * 1024)
@@ -216,7 +251,9 @@ class BoundedCaptureTests(unittest.TestCase):
         self.assertEqual(entry["returnCode"], 0)
         self.assertFalse(entry["timedOut"])
         self.assertFalse(entry["truncated"])
-        self.assertEqual([row["address"] for row in selected], ["0x1", "0x2", "0x80", "0x64"])
+        self.assertEqual([row["address"] for row in selected], ["0xd1", "0xd2", "0xe1", "0xf1"])
+        self.assertEqual([row["selectionRole"] for row in selected],
+                         ["data-largest", "data-exact-98304", "string-array-largest", "float-array-largest"])
 
     def test_overflow_preserves_only_the_allowed_raw_prefix(self):
         limit = 4096
@@ -287,6 +324,17 @@ class BoundedCaptureTests(unittest.TestCase):
 class AllocationCollectorTests(unittest.TestCase):
     FRAME = "    0 libswiftCore.dylib 0x1234 swift_allocObject + 8\n"
 
+    def assert_selection_metadata(self, evidence, missing_roles):
+        self.assertEqual(alloc.SELECTION_ROLES,
+                         ("data-largest", "data-exact-98304", "string-array-largest", "float-array-largest"))
+        self.assertEqual(evidence["selectionProfile"], "data-string-float-v1")
+        self.assertEqual(evidence["selectionStrategy"], alloc.SELECTION_STRATEGY)
+        for fragment in ("largest Data", "98304", "String array", "Float array", "remaining largest"):
+            self.assertIn(fragment, evidence["selectionStrategy"])
+        self.assertIsInstance(evidence["missingSelectionRoles"], list)
+        self.assertEqual(evidence["missingSelectionRoles"], missing_roles)
+        self.assertNotIn("bucketObserved", evidence)
+
     def capture_plan(self, specifications):
         captures = []
 
@@ -329,12 +377,15 @@ class AllocationCollectorTests(unittest.TestCase):
             self.assertEqual([entry["heapType"] for entry in evidence["allocations"]],
                              ["type-8", "type-7", "type-6", "type-5"])
             self.assertEqual([entry["heapAllocatedBytes"] for entry in evidence["allocations"]], [256, 224, 192, 160])
+            self.assertEqual([entry["selectionRole"] for entry in evidence["allocations"]], ["fallback-largest"] * 4)
+            self.assert_selection_metadata(evidence, list(alloc.SELECTION_ROLES))
             self.assertEqual(evidence["limits"], {
                 "seconds": 120, "heapBytes": 8 * 1024 * 1024, "heapSeconds": 60,
                 "historyBytesPerAddress": 64 * 1024, "historySecondsPerAddress": 10,
             })
             saved = json.loads((Path(tmp) / "allocation-diagnostics.json").read_text())
             self.assertEqual(saved["limits"], evidence["limits"])
+            self.assert_selection_metadata(saved, list(alloc.SELECTION_ROLES))
             for captured in captures:
                 self.assertIs(captured["env"], env)
                 self.assertEqual(captured["destination"].stat().st_size, captured["record"]["bytes"])
@@ -357,6 +408,36 @@ class AllocationCollectorTests(unittest.TestCase):
         self.assertLessEqual(sum(captured["timeout"] for captured in captures), alloc.COLLECTION_SECONDS)
         self.assertGreaterEqual(process.poll.call_count, len(captures))
 
+    def test_selection_metadata_reports_only_unfilled_profile_roles(self):
+        heap = (
+            b"0x1: malloc (1048576 bytes)\n"
+            b"0xd1: __DataStorage._bytes (malloc) (131072 bytes)\n"
+            b"0xe1: Swift._ContiguousArrayStorage<Swift.String> (393216 bytes)\n"
+            b"0xf1: Swift._ContiguousArrayStorage<Swift.Float> (360448 bytes)\n"
+        )
+        history = ("1 call for 32 bytes:\n" + self.FRAME).encode()
+        cases = [
+            ("complete profile", heap + b"0xd2: __DataStorage._bytes (malloc) (98304 bytes)\n",
+             ["0xd1", "0xd2", "0xe1", "0xf1"], list(alloc.SELECTION_ROLES), []),
+            ("missing exact Data", heap, ["0xd1", "0xe1", "0xf1", "0x1"],
+             ["data-largest", "string-array-largest", "float-array-largest", "fallback-largest"],
+             ["data-exact-98304"]),
+        ]
+        for label, payload, expected_addresses, expected_roles, missing_roles in cases:
+            with self.subTest(case=label):
+                captures, capture = self.capture_plan([{"payload": payload}] + [{"payload": history}] * 4)
+                process = SimpleNamespace(pid=4321, poll=Mock(return_value=None))
+                with tempfile.TemporaryDirectory() as tmp, patch.object(alloc, "bounded_capture", side_effect=capture):
+                    evidence = alloc.collect_allocations(process, Path(tmp), {})
+                    saved = json.loads((Path(tmp) / "allocation-diagnostics.json").read_text())
+                self.assertEqual(evidence["status"], "COLLECTED")
+                self.assertEqual([entry["address"] for entry in evidence["allocations"]], expected_addresses)
+                self.assertEqual([entry["selectionRole"] for entry in evidence["allocations"]], expected_roles)
+                self.assertEqual([capture["argv"][-1] for capture in captures[1:]], expected_addresses)
+                self.assert_selection_metadata(evidence, missing_roles)
+                self.assert_selection_metadata(saved, missing_roles)
+                self.assertEqual([entry["selectionRole"] for entry in saved["allocations"]], expected_roles)
+
     def test_heap_denial_never_qualifies_as_a_collected_stack(self):
         captures, capture = self.capture_plan([{"payload": b"permission denied\n", "returnCode": 1}])
         process = SimpleNamespace(pid=4321, poll=Mock(return_value=None))
@@ -375,6 +456,7 @@ class AllocationCollectorTests(unittest.TestCase):
             evidence = alloc.collect_allocations(process, Path(tmp), {})
         self.assertEqual(evidence["status"], "UNAVAILABLE")
         self.assertEqual(evidence["allocations"], [])
+        self.assert_selection_metadata(evidence, list(alloc.SELECTION_ROLES))
         self.assertEqual(len(captures), 1)
 
     def test_zero_exit_without_history_frames_remains_unavailable(self):
@@ -487,6 +569,7 @@ class AllocationCollectorTests(unittest.TestCase):
         self.assertTrue(evidence["incompleteCoverage"])
         self.assertEqual(evidence["recordedStackAddresses"], 0)
         self.assertEqual(evidence["allocations"], [])
+        self.assert_selection_metadata(evidence, list(alloc.SELECTION_ROLES))
         self.assertEqual(len(captures), 1)
         self.assertEqual(len(evidence["tools"]), 1)
         heap = evidence["tools"][0]

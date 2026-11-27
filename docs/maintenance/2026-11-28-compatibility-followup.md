@@ -24,7 +24,7 @@
 
 ## 已完成证据及边界
 
-本节保留历史时点记录；当前精确源码的完成状态以文末“精确 3256e3f0 云端结果”为准。
+本节保留历史时点记录；3256e3f0 的完成状态见“精确 3256e3f0 云端结果”，新候选的状态见下方完整 SHA 对应的运行记录。
 
 - 精确 `6add665b4efde0965a30c493d886041690c6ef4f` 的公开 v0.9.7 升级 `46046493653` 双平台成功：macOS 8 项升级和 126 项支持回归；Windows 3 项 importer、生产恢复 probe 与 19 类 manifest 情景。原始输入哈希、精确来源及保全证明已复核。
 - 同 SHA 的 SpeedEngine 配对 `46046493657` 成功，35 项语义比较通过；四种 workload 的 CPU 中位数下降约 80.0%–94.6%。这是合成子系统测量，不是整 App 资源验收。
@@ -54,6 +54,10 @@
 
 该候选保留原两项空源状态发布回归，并新增 11 项 fake-clock 回归，覆盖成功/失败 TTL、state/WAL 变化、主库出现或替换、手动强制刷新、日志恢复、异步期间 pending、暂停及换源、同 identity 路径重绑、请求完成顺序与重新启用。CI 必执行清单同时要求这 13 项实际执行。日志恢复用例覆盖自然选中线程后进入 active poll 的路径；pending 用例直接注入信号，没有验证真实 watcher 投递或墙钟调度。独立源码审查已完成；原生编译、测试结果与新的整 App 资源收益仍待精确候选 SHA 的云端验收。
 
+上述产品候选已推送为 `8b1549495d9ca2cd972a0573552d389c6c1e8ad2`。完整 CI `46070455053`、公开 0.9.7 升级 `46070454998`、形成版本双平台矩阵 `46070506166` 和整 App 资源配对 `46070874247` 均绑定该完整 SHA；最终结论分别等待当前运行产物的独立审计，不继承 3256e3f0 的通过或收益数字。
+
+其中公开 0.9.7 升级已双平台成功，10 类独立审计全部通过：macOS 8 项升级及 126 项支持回归无失败或跳过，Windows 3 项 importer、非 cfg(test) 四阶段恢复 probe、19 类 manifest / 23 条报告通过；两份原始 ZIP 的 SHA-256 与 GitHub digest 一致，32 条 immutableFiles 哈希、最终 A/B 数据与重复启动导出均逐项复核。审计前后 862 个原始文件的字节哈希不变。证据在 `/tmp/tokenbar-public097-run-46070454998/`，简明报告为 `AUDIT.md`。这些都是 synthetic fixtures 与隔离 production-code probe，不能替代安装或真实用户库验收；其余运行的最终结果仍待审计。
+
 ## 精确 3256e3f0 云端结果（2026-11-28）
 
 以下结果均绑定完整源 SHA `3256e3f051ba35a463de5945d9b4faf08e0f2cc6`，不继承旧 SHA 的结论：
@@ -74,7 +78,15 @@ artifact 原始 ZIP SHA-256 为 `344b2ba41abcf394a89c6b5e400b90019376ca4d9f919ed
 
 两份 stdlib harness 测试共 66 项通过，新增约 2 MiB 类别前缀后的地址采集、零字节超时、截断且返回 0 的 PARTIAL 负控及剩余 deadline 分配；未执行本地产品构建或 App 启动。
 
-更新的 harness `a5571562272a3fc05eaa98909b8bc3aced58d47c` 已推送，独立诊断 `46068336931` 于 2026-11-28 05:08:40 +0800 启动，产品源仍固定为 `3256e3f0`；尚待其真实采集结果。
+更新的 harness `a5571562272a3fc05eaa98909b8bc3aced58d47c` 已推送，独立诊断 `46068336931` 于 2026-11-28 05:08:40 +0800 启动，产品源仍固定为 `3256e3f0`；完成结果如下。
+
+该运行随后完成：App trial PASS，collector PARTIAL，103 项列明的独立一致性检查通过。heap 运行 17.731 秒，输出 10,668 bytes、106 条完整的至少 64 KiB 地址，未超时或截断；四份 malloc_history 都取得完整首组主要栈，随后在 Binary Images 清单内触及 64 KiB cap，返回 `-9`、`truncated=true`、`timedOut=false`。这解释了部分成功与 workflow failure，不能写成“无分配栈”或完整采集通过。原始 ZIP SHA-256 为 `e11f105200f49ff5cfdea752d789595f1a3148953c1e4673a802f175e46e84d2`，44 个成员与解包字节一致；保留的主 executable SHA-256 为 `06da46ca4ea6e58a5f18c1f23c68d15378eaeb301769225de6dd4d973a697b14`，Mach-O UUID 与四份 history 主 image 一致。完整 App、Sparkle 与所有资源并未逐文件归档，103 项审计不代表完整运行包已保留。原始数据和审计在 `/tmp/tokenbar-allocation-run-46068336931/`。
+
+四个分配站点为：802,816 B 的 ResponseStorage 字典经 `TranscriptSession.seed`，671,744 B 的 `Deduper.owners` 经 `Deduper.claim`，81,920 B 的 Sparkle XPath/XQuery，以及 65,536 B 的 pricing 初始化 resolution cache。前者的优化行号 338 是 autoreleasepool 调用点，尚不能唯一分辨 Claude parser 与 SpeedEngine 的同类型字典。源码证明两类状态都跨 seed 存活，分别用于同 key 合并和 ledger replace/重定价；Deduper 还必须保留跨文件 ownership 与后续 live 重访语义。直接在文件或 seed 结束时清空不安全。分配栈不是动态 retain path，也不证明泄漏或等量 footprint 可回收。
+
+上述四块只占约 1.55 MiB。完整 heap 还列出 62 个 `__DataStorage._bytes (malloc)`、合计 6,127,616 B，尚无其栈。因此下一轮仅更换诊断抽样为 `data-string-float-v1`：同类型最大 Data、另一个恰好 98,304 B 的 Data、最大 String array、最大 Float array；目标缺失则从其余最大块补足，仍最多四个地址，逐条记录 selectionRole 与 missingSelectionRoles。不硬编码本轮地址，不把类型名当 owner。原始输出、时间/字节预算、截断/失败语义和性能资格不变；抽样策略已改变，不能称整个诊断协议不变。
+
+两份 stdlib harness 测试现为 67 项，全部通过，包含精确类型、独立地址去重、缺失角色补位和持久化元数据。对已有原始 heap 的轻量复算命中四个新角色；这只是选择器复算，不是新产品的诊断结果。workflow 的并发组另按 allocation/pair 分开，允许两个独立 runner 同时测量与诊断，保留各自精确 source/harness 和 artifact 标识。
 
 只读源码复核另确认：`SharedSourceIO.shared.pages` 会长期保留最多 4,194,304 个逻辑字节的原始页，按 65,536 字节目标页读取，`Data` 实际 capacity 尚无直接证据；当前 fixture 的换行缓冲不需要跨块保存。Dashboard 已用 LazyVStack，侧栏详情与状态栏 popover 按需创建，默认 Codex 范围下外部 ranking projection 直接返回空，未发现适用于本份 fixture 的可安全删除大块状态。上述源码路径只提供待验证 owner，不能把 64×80 KiB 的全局 size 桶直接绑定到共享页缓存。
 
@@ -82,6 +94,6 @@ artifact 原始 ZIP SHA-256 为 `344b2ba41abcf394a89c6b5e400b90019376ca4d9f919ed
 
 12 份既有 vmmap 的独立分区复算进一步量化了这一区别：20k 的三轮中位 live heap 为 `68.105→55.211 MiB`，malloc-zone dirty 为 `79.2→72.2 MiB`，reported fragmentation 却从 `10.9→17.0 MiB`；候选 DefaultMallocZone 的 fragmentation 约 15.3 MiB。2k 的对应 live heap 为 `48.533→43.509 MiB`，fragmentation 为 `9.299→9.164 MiB`。候选 `snapshot footprint − malloc-zone dirty` 两档均约 28.1 MiB，是当前窗口协议的观测残差，不能称为不可降低的底线。即便乐观地把全部 reported fragmentation 清零，按合格 role medians 距离半基线 footprint 仍约差 29 MiB；这些脏页并非已证实可回收量。summary vmmap 的 resident 也不等于采样 RSS，不能把 clean framework mapping 总量当成 App 独占的可削减预算。
 
-新增独立 `allocation_diagnostic` 云端入口，只构建指定 candidate，保留原 GUI/fixture/ledger 门槛，以同一 20k 合成输入运行一次。仅 App 子进程出生时启用 `MallocStackLogging=1`，辅助命令保持清洁环境；测量结束后查询至少 64 KiB 的有限地址，最多四个 malloc_history，采用两大块及 80/64 KiB 桶的抽样。工具采用上述有界预算，保留完整预算内的原始输出、参数、时间、hash、截断和不可用状态。地址可能在选择后释放或复用，栈也不等于保留关系。新结果显式标记 `performanceComparable=false`、`performanceVerdict=NOT_EVALUATED`；配对汇总拒收插桩结果，所有资源观察均不能用于减半验收。构建 artifact 同时保存 executable 与 Info.plist 字节，便于独立重算 hash。取得有效栈前，不据静态容量猜测删除产品状态。
+独立 `allocation_diagnostic` 云端入口只构建指定 candidate，保留原 GUI/fixture/ledger 门槛，以同一 20k 合成输入运行一次。仅 App 子进程出生时启用 `MallocStackLogging=1`，辅助命令保持清洁环境；测量结束后查询至少 64 KiB 的有限地址，最多四个 malloc_history，最初采用两大块及 80/64 KiB 桶，下一轮采用上述 `data-string-float-v1`。工具采用上述有界预算，保留完整预算内的原始输出、参数、时间、hash、截断和不可用状态。地址可能在选择后释放或复用，栈也不等于保留关系。结果显式标记 `performanceComparable=false`、`performanceVerdict=NOT_EVALUATED`；配对汇总拒收插桩结果，所有资源观察均不能用于减半验收。构建 artifact 同时保存 executable 与 Info.plist 字节，便于独立重算 hash。取得有效栈前，不据静态容量猜测删除产品状态。
 
 新账号隔离根的实现边界也已复核：自动发现覆盖默认根、existing guarded 根及 registry 中合规的 `accounts/<32-hex>/code/projects` 根；显式路径偏好仍保持单根独占。Swift/Rust 均先 canonical 去重，再在各根之间公平分配 entry/file 预算；cursor 只在已枚举候选文件中轮转，目录遍历本身每轮从头开始，超份额固定尾部可能持续遗漏，未用预算只流向后根而不回访已截断前根。Claude 分类另有单轮 64 MiB 上限，因此不能承诺后续刷新必然完整；触界必须保留 incomplete。缺失账号目录目前不会单独产生 incomplete 标记。没有证据表明真实批次触及这些预算边界。真实的 2,008 请求、263,914,258 输入 token 仍只属于 build1061/`05e059ba…` 的安装验收；在当前 SHA 安装并读取同一真实 ledger 前，不把它宣称为 3256e3f0 的实测修复。

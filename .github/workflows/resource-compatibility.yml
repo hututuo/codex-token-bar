@@ -41,7 +41,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: resource-pair-${{ github.ref }}-${{ inputs.source_sha || github.sha }}
+  group: resource-${{ inputs.allocation_diagnostic && 'allocation' || 'pair' }}-${{ github.ref }}-${{ inputs.source_sha || github.sha }}
   cancel-in-progress: false
 
 env:
