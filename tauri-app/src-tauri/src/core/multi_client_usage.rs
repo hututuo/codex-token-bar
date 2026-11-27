@@ -2131,9 +2131,18 @@ pub(crate) fn claude_project_roots(home: &Path, configured: Option<&Path>) -> (V
 }
 
 fn enumerate_claude_roots(client: &str, roots: &[PathBuf]) -> Result<(Vec<PathBuf>, bool), String> {
+    enumerate_claude_roots_with_limits(client, roots, MAX_SCANNED_ENTRIES, MAX_FILES_PER_CLIENT)
+}
+
+fn enumerate_claude_roots_with_limits(
+    client: &str,
+    roots: &[PathBuf],
+    entry_limit: usize,
+    file_limit: usize,
+) -> Result<(Vec<PathBuf>, bool), String> {
     let mut seen = std::collections::HashSet::new();
+    let mut unique_roots = Vec::new();
     let mut files = Vec::new();
-    let mut entries = 0;
     let mut truncated = false;
     let mut incomplete = false;
     for root in roots {
@@ -2142,11 +2151,33 @@ fn enumerate_claude_roots(client: &str, roots: &[PathBuf]) -> Result<(Vec<PathBu
             Ok(path) => path,
             Err(_) => { incomplete = true; continue; }
         };
-        if !seen.insert(physical.clone()) || !plain_directory(&physical) { continue; }
-        if collect_transcripts(root, client, 0, &mut entries, &mut files, &mut truncated).is_err() {
+        if plain_directory(&physical) && seen.insert(physical) {
+            // Preserve the first logical root for source/checkpoint identity.
+            unique_roots.push(root);
+        }
+    }
+    let mut remaining_entries = entry_limit;
+    for (index, root) in unique_roots.iter().enumerate() {
+        let remaining_roots = unique_roots.len() - index;
+        let limits = TranscriptScanLimits {
+            entries: remaining_entries / remaining_roots,
+            files: file_limit.saturating_sub(files.len()) / remaining_roots,
+        };
+        if limits.entries == 0 || limits.files == 0 {
+            truncated = true;
+            continue;
+        }
+        let mut root_entries = 0;
+        let mut root_files = Vec::new();
+        let mut root_truncated = false;
+        if collect_transcripts_with_limits(
+            root, client, 0, &mut root_entries, &mut root_files, &mut root_truncated, limits,
+        ).is_err() {
             incomplete = true;
         }
-        if truncated { break; }
+        remaining_entries -= root_entries;
+        files.extend(root_files);
+        truncated |= root_truncated;
     }
     let mut seen_files = std::collections::HashSet::new();
     files.retain(|path| seen_files.insert(fs::canonicalize(path).unwrap_or_else(|_| path.clone())));
@@ -2262,21 +2293,46 @@ fn collect_transcripts(
     files: &mut Vec<PathBuf>,
     truncated: &mut bool,
 ) -> Result<(), String> {
+    collect_transcripts_with_limits(
+        directory, client, depth, entries, files, truncated,
+        TranscriptScanLimits { entries: MAX_SCANNED_ENTRIES, files: MAX_FILES_PER_CLIENT },
+    )
+}
+
+#[derive(Clone, Copy)]
+struct TranscriptScanLimits {
+    entries: usize,
+    files: usize,
+}
+
+fn collect_transcripts_with_limits(
+    directory: &Path,
+    client: &str,
+    depth: usize,
+    entries: &mut usize,
+    files: &mut Vec<PathBuf>,
+    truncated: &mut bool,
+    limits: TranscriptScanLimits,
+) -> Result<(), String> {
     if depth > MAX_SCAN_DEPTH {
         return Ok(());
     }
     for path in safe_read_dir(directory)? {
-        *entries += 1;
-        if *entries >= MAX_SCANNED_ENTRIES || files.len() >= MAX_FILES_PER_CLIENT {
+        if *entries >= limits.entries {
             *truncated = true;
             return Ok(());
         }
+        *entries += 1;
         if plain_directory(&path) {
-            collect_transcripts(&path, client, depth + 1, entries, files, truncated)?;
+            collect_transcripts_with_limits(&path, client, depth + 1, entries, files, truncated, limits)?;
             if *truncated {
                 return Ok(());
             }
         } else if plain_file(&path) && is_source_name(client, &path) {
+            if files.len() >= limits.files {
+                *truncated = true;
+                return Ok(());
+            }
             files.push(path);
         }
     }
@@ -8857,6 +8913,96 @@ mod tests {
         );
         assert!(cache.get(&keys[3]).is_none());
         assert_eq!(cache.entries.len(), MAX_SCOPED_SUMMARY_CACHE_ENTRIES);
+    }
+
+    #[test]
+    fn claude_root_traversal_includes_exact_entry_and_file_limits() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("projects");
+        fs::create_dir_all(&root).unwrap();
+        let expected = (0..3).map(|index| root.join(format!("{index}.jsonl"))).collect::<Vec<_>>();
+        for path in &expected { fs::write(path, "{}\n").unwrap(); }
+        for (entries, files) in [(3, 5), (5, 3)] {
+            assert_eq!(enumerate_claude_roots_with_limits("claudeCode", &[root.clone()], entries, files).unwrap(),
+                (expected.clone(), false));
+        }
+        fs::write(root.join("3.jsonl"), "{}\n").unwrap();
+        for (entries, files) in [(3, 5), (5, 3)] {
+            assert_eq!(enumerate_claude_roots_with_limits("claudeCode", &[root.clone()], entries, files).unwrap(),
+                (expected.clone(), true));
+        }
+    }
+
+    #[test]
+    fn claude_root_traversal_shares_entries_and_continues_after_truncated_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("first");
+        let later = directory.path().join("later");
+        fs::create_dir_all(&first).unwrap();
+        for index in 0..5 { fs::write(first.join(format!("{index}.txt")), "").unwrap(); }
+        let expected = vec![later.join("a/one.jsonl"), later.join("b/two.jsonl")];
+        for path in &expected {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "{}\n").unwrap();
+        }
+        assert_eq!(enumerate_claude_roots_with_limits("claudeCode", &[first, later], 8, 8).unwrap(),
+            (expected, true));
+    }
+
+    #[test]
+    fn claude_root_traversal_shares_files_and_returns_unused_budget() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("first");
+        let later = directory.path().join("later");
+        for root in [&first, &later] {
+            fs::create_dir_all(root).unwrap();
+            for index in 0..4 { fs::write(root.join(format!("{index}.jsonl")), "{}\n").unwrap(); }
+        }
+        assert_eq!(enumerate_claude_roots_with_limits("claudeDesktop", &[first.clone(), later.clone()], 16, 6).unwrap(),
+            (vec![first.join("0.jsonl"), first.join("1.jsonl"), first.join("2.jsonl"),
+                  later.join("0.jsonl"), later.join("1.jsonl"), later.join("2.jsonl")], true));
+
+        for index in 1..4 { fs::remove_file(first.join(format!("{index}.jsonl"))).unwrap(); }
+        let missing = directory.path().join("missing");
+        assert_eq!(enumerate_claude_roots_with_limits("claudeCode", &[first.clone(), missing, later.clone()], 5, 5).unwrap(),
+            (vec![first.join("0.jsonl"), later.join("0.jsonl"), later.join("1.jsonl"),
+                  later.join("2.jsonl"), later.join("3.jsonl")], false));
+    }
+
+    #[test]
+    fn claude_root_traversal_handles_empty_roots_and_zero_budgets() {
+        let directory = tempfile::tempdir().unwrap();
+        let roots = [directory.path().to_path_buf()];
+        assert_eq!(enumerate_claude_roots_with_limits("claudeCode", &[], 0, 0).unwrap(), (vec![], false));
+        assert_eq!(enumerate_claude_roots_with_limits("claudeCode", &roots, 1, 1).unwrap(), (vec![], false));
+        fs::write(directory.path().join("one.jsonl"), "{}\n").unwrap();
+        for (entries, files) in [(0, 1), (1, 0)] {
+            assert_eq!(enumerate_claude_roots_with_limits("claudeCode", &roots, entries, files).unwrap(),
+                (vec![], true));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_root_traversal_deduplicates_before_sharing_budget_and_keeps_first_alias() {
+        use std::os::unix::fs::symlink;
+        let directory = tempfile::tempdir().unwrap();
+        let physical = directory.path().join("physical");
+        let later = directory.path().join("later");
+        for root in [&physical, &later] {
+            fs::create_dir_all(root).unwrap();
+            for index in 0..2 { fs::write(root.join(format!("{index}.jsonl")), "{}\n").unwrap(); }
+        }
+        let selected = directory.path().join("selected");
+        symlink(&physical, &selected).unwrap();
+        let (files, truncated) = enumerate_claude_roots_with_limits(
+            "claudeCode", &[selected.clone(), physical, later.clone()], 4, 4,
+        ).unwrap();
+        let mut expected = vec![selected.join("0.jsonl"), selected.join("1.jsonl"),
+            later.join("0.jsonl"), later.join("1.jsonl")];
+        expected.sort();
+        assert_eq!(files, expected);
+        assert!(!truncated);
     }
 
     #[cfg(unix)]

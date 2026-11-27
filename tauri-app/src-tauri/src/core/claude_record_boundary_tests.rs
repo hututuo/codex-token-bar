@@ -310,15 +310,28 @@ fn claude_jsonl_incomplete_append_waits_through_reopen_until_line_feed() {
                 claude_record(FOUR_MIB + 4096, client, structured, "appended-message", true);
             let first_append = FOUR_MIB + 17;
             append_bytes(&transcript, &record[..first_append]);
+            let scan_partial = |connection: &mut Connection| {
+                let result = scan_transcript_file(connection, client, &transcript);
+                if header.is_empty() {
+                    // Without a complete first record, ownership is still unknown.
+                    // Preserve the explicit diagnostic as well as the untouched ledger.
+                    assert_eq!(result, Err(format!(
+                        "Claude 客户端分类未完成（Incomplete(PartialRecord)，读取 {} 字节），断点未前移",
+                        fs::metadata(&transcript).unwrap().len()
+                    )));
+                } else {
+                    result.unwrap();
+                }
+            };
             for _ in 0..2 {
-                scan_transcript_file(&mut connection, client, &transcript).unwrap();
+                scan_partial(&mut connection);
                 assert_eq!(ledger_state(&connection), before, "partial JSON must wait");
                 drop(connection);
                 connection = Connection::open(&database).unwrap();
             }
             append_bytes(&transcript, &record[first_append..record.len() - 1]);
             for _ in 0..2 {
-                scan_transcript_file(&mut connection, client, &transcript).unwrap();
+                scan_partial(&mut connection);
                 assert_eq!(
                     ledger_state(&connection),
                     before,

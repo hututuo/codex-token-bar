@@ -57,14 +57,15 @@ enum MultiClientUsageDiscovery {
         home: URL,
         environment: [String: String],
         claudeCheckpointOwners: [String: Set<UsageClient>] = [:],
-        resumeAfterClaudeSourceKey: String? = nil
+        resumeAfterClaudeSourceKey: String? = nil,
+        claudeEntryBudget: Int = MultiClientUsageDiscovery.maximumVisitedEntries
     ) -> Result {
         switch client {
         case .antigravity:
             return AntigravityUsageSource.discover(home: home)
         case .claudeCode, .claudeDesktop:
             let roots = claudeProjectRoots(home: home, environment: environment)
-            let walked = walkCandidates(roots: roots.paths, client: client)
+            let walked = walkCandidates(roots: roots.paths, client: client, entryBudget: claudeEntryBudget)
             let selected = mostRecent(
                 walked.files,
                 client: client,
@@ -133,11 +134,12 @@ enum MultiClientUsageDiscovery {
         home: URL,
         environment: [String: String],
         claudeCheckpointOwners: [String: Set<UsageClient>] = [:],
-        resumeAfterSourceKey: String? = nil
+        resumeAfterSourceKey: String? = nil,
+        claudeEntryBudget: Int = MultiClientUsageDiscovery.maximumVisitedEntries
     ) -> ClaudePairResult {
         let roots = claudeProjectRoots(home: home, environment: environment)
         // Both Claude clients have identical directory and candidate-file predicates.
-        let walked = walkCandidates(roots: roots.paths, client: .claudeCode)
+        let walked = walkCandidates(roots: roots.paths, client: .claudeCode, entryBudget: claudeEntryBudget)
         let selected = selectClaude(
             mostRecentFirst(walked.files),
             clients: [.claudeCode, .claudeDesktop],
@@ -208,26 +210,39 @@ enum MultiClientUsageDiscovery {
         return Result(files: selected.files, truncated: walked.truncated || selected.truncated)
     }
 
-    private static func walkCandidates(roots: [URL], client: UsageClient) -> (files: [Candidate], truncated: Bool) {
+    private static func walkCandidates(
+        roots: [URL],
+        client: UsageClient,
+        entryBudget: Int = MultiClientUsageDiscovery.maximumVisitedEntries
+    ) -> (files: [Candidate], truncated: Bool) {
         var found: [Candidate] = []
         var seenRoots: Set<String> = []
         var seenFiles: Set<String> = []
-        var remainingEntries = maximumVisitedEntries
+        // Deduplicate before sharing the budget. The first logical root keeps its
+        // checkpoint identity even when another registered path resolves to it.
+        let uniqueRoots = roots.filter { root in
+            let physical = root.resolvingSymlinksInPath().standardizedFileURL
+            return isDirectoryNonSymlink(physical) && seenRoots.insert(physical.path).inserted
+        }
+        let sharesClaudeBudget = client == .claudeCode || client == .claudeDesktop
+        var remainingEntries = max(0, entryBudget)
         var truncated = false
-        for root in roots {
-            guard remainingEntries > 0,
-                  seenRoots.insert(root.resolvingSymlinksInPath().standardizedFileURL.path).inserted,
-                  isDirectoryNonSymlink(root.resolvingSymlinksInPath())
-            else { continue }
-            let entryBudget = remainingEntries
-            let result = walk(root: root, client: client, entryBudget: entryBudget)
+        for (index, root) in uniqueRoots.enumerated() {
+            let rootBudget = sharesClaudeBudget
+                ? remainingEntries / (uniqueRoots.count - index)
+                : remainingEntries
+            guard rootBudget > 0 else {
+                truncated = true
+                continue
+            }
+            let result = walk(root: root, client: client, entryBudget: rootBudget)
             for candidate in result.files where seenFiles.insert(candidate.url.resolvingSymlinksInPath().standardizedFileURL.path).inserted {
                 found.append(candidate)
             }
             remainingEntries -= result.visitedEntries
             if result.truncated { truncated = true }
         }
-        if remainingEntries == 0 { truncated = true }
+        if !sharesClaudeBudget && remainingEntries == 0 { truncated = true }
         return (found, truncated)
     }
 

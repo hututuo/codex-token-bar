@@ -2656,27 +2656,35 @@ private actor SessionManagementOfficialDeleteMock: SessionManagementOfficialDele
 }
 
 private actor GatedSessionManagementService: SessionManagementServicing {
+    private struct LoadWaiter {
+        let expectedCount: Int
+        let expectation: XCTestExpectation
+    }
+
     private var catalogContinuations:
         [CheckedContinuation<SessionManagementCatalog, Error>?] = []
     private var contextContinuations:
         [CheckedContinuation<SessionManagementContextPage, Error>?] = []
+    private var catalogWaiters: [UUID: LoadWaiter] = [:]
+    private var contextWaiters: [UUID: LoadWaiter] = [:]
 
     func loadCatalog(
         dataSource _: CodexDataSource
     ) async throws -> SessionManagementCatalog {
         try await withCheckedThrowingContinuation { continuation in
             catalogContinuations.append(continuation)
+            Self.fulfillWaiters(&catalogWaiters, count: catalogContinuations.count)
         }
     }
 
     func waitForLoadCount(_ expectedCount: Int) async -> Bool {
-        for _ in 0..<1_000 {
-            if catalogContinuations.count >= expectedCount {
-                return true
-            }
-            await Task.yield()
-        }
-        return false
+        if catalogContinuations.count >= expectedCount { return true }
+        let id = UUID()
+        let expectation = XCTestExpectation(description: "Catalog load \(expectedCount) started")
+        catalogWaiters[id] = LoadWaiter(expectedCount: expectedCount, expectation: expectation)
+        let result = await XCTWaiter.fulfillment(of: [expectation], timeout: 10)
+        catalogWaiters.removeValue(forKey: id)
+        return result == .completed
     }
 
     func loadCount() -> Int {
@@ -2710,17 +2718,26 @@ private actor GatedSessionManagementService: SessionManagementServicing {
     ) async throws -> SessionManagementContextPage {
         try await withCheckedThrowingContinuation { continuation in
             contextContinuations.append(continuation)
+            Self.fulfillWaiters(&contextWaiters, count: contextContinuations.count)
         }
     }
 
     func waitForContextLoadCount(_ expectedCount: Int) async -> Bool {
-        for _ in 0..<1_000 {
-            if contextContinuations.count >= expectedCount {
-                return true
-            }
-            await Task.yield()
+        if contextContinuations.count >= expectedCount { return true }
+        let id = UUID()
+        let expectation = XCTestExpectation(description: "Context load \(expectedCount) started")
+        contextWaiters[id] = LoadWaiter(expectedCount: expectedCount, expectation: expectation)
+        let result = await XCTWaiter.fulfillment(of: [expectation], timeout: 10)
+        contextWaiters.removeValue(forKey: id)
+        return result == .completed
+    }
+
+    private static func fulfillWaiters(_ waiters: inout [UUID: LoadWaiter], count: Int) {
+        let ready = waiters.filter { $0.value.expectedCount <= count }
+        for (id, waiter) in ready {
+            waiters.removeValue(forKey: id)
+            waiter.expectation.fulfill()
         }
-        return false
     }
 
     func completeContextLoad(

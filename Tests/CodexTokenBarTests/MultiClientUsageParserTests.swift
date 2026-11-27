@@ -5,6 +5,116 @@ import XCTest
 @testable import CodexTokenBar
 
 final class MultiClientUsageParserTests: XCTestCase {
+    func testClaudeDiscoverySharesTraversalBudgetWithLaterAccountRoots() throws {
+        let fm = FileManager.default
+        let home = fm.temporaryDirectory.appendingPathComponent("claude-fair-roots-\(UUID())")
+        defer { try? fm.removeItem(at: home) }
+        let accounts = home.appendingPathComponent(".local/share/claude-adapter/accounts")
+        let accountID = String(repeating: "a", count: 32)
+        let first = home.appendingPathComponent(".claude/projects")
+        let cli = home.appendingPathComponent(".claude-official-guarded/projects/cli.jsonl")
+        let desktop = accounts.appendingPathComponent("\(accountID)/code/projects/desktop.jsonl")
+        for root in [first, cli.deletingLastPathComponent(), desktop.deletingLastPathComponent()] {
+            try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        }
+        for index in 0..<7 { try Data().write(to: first.appendingPathComponent("\(index).txt")) }
+        try Data("{\"entrypoint\":\"cli\"}\n".utf8).write(to: cli)
+        try Data("{\"entrypoint\":\"claude-desktop-3p\"}\n".utf8).write(to: desktop)
+        try JSONSerialization.data(withJSONObject: ["version": 1, "accounts": [
+            ["id": "existing"], ["id": accountID],
+        ]]).write(to: accounts.appendingPathComponent("registry.json"))
+
+        assertClaudeDiscovery(home: home, budget: 6, code: [cli], desktop: [desktop], truncated: true)
+    }
+
+    func testClaudeDiscoveryDeduplicatesRootsBeforeSharingBudgetAndKeepsSelectedAlias() throws {
+        let fm = FileManager.default
+        let home = fm.temporaryDirectory.appendingPathComponent("claude-fair-alias-\(UUID())")
+        defer { try? fm.removeItem(at: home) }
+        let accounts = home.appendingPathComponent(".local/share/claude-adapter/accounts")
+        let accountID = String(repeating: "a", count: 32)
+        let physical = accounts.appendingPathComponent("\(accountID)/code")
+        let cli = physical.appendingPathComponent("projects/cli.jsonl")
+        let desktop = home.appendingPathComponent(".claude-official-guarded/projects/desktop.jsonl")
+        for root in [cli.deletingLastPathComponent(), desktop.deletingLastPathComponent()] {
+            try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        }
+        try Data("{\"entrypoint\":\"cli\"}\n".utf8).write(to: cli)
+        try Data().write(to: physical.appendingPathComponent("projects/noise.txt"))
+        try Data("{\"entrypoint\":\"claude-desktop-3p\"}\n".utf8).write(to: desktop)
+        try JSONSerialization.data(withJSONObject: ["version": 1, "accounts": [
+            ["id": "existing"], ["id": accountID],
+        ]]).write(to: accounts.appendingPathComponent("registry.json"))
+        let selected = home.appendingPathComponent("selected")
+        try fm.createSymbolicLink(at: selected, withDestinationURL: physical)
+
+        assertClaudeDiscovery(
+            home: home, environment: ["CLAUDE_CONFIG_DIR": selected.path], budget: 4,
+            code: [selected.appendingPathComponent("projects/cli.jsonl")], desktop: [desktop], truncated: false
+        )
+    }
+
+    func testClaudeDiscoveryMissingRootsDoNotConsumeTraversalShares() throws {
+        let fm = FileManager.default
+        let home = fm.temporaryDirectory.appendingPathComponent("claude-fair-missing-\(UUID())")
+        defer { try? fm.removeItem(at: home) }
+        let accounts = home.appendingPathComponent(".local/share/claude-adapter/accounts")
+        let accountID = String(repeating: "a", count: 32)
+        let cli = home.appendingPathComponent(".claude/projects/cli.jsonl")
+        let desktop = accounts.appendingPathComponent("\(accountID)/code/projects/desktop.jsonl")
+        for path in [cli, desktop] {
+            try fm.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data().write(to: path.deletingLastPathComponent().appendingPathComponent("noise.txt"))
+        }
+        try Data("{\"entrypoint\":\"cli\"}\n".utf8).write(to: cli)
+        try Data("{\"entrypoint\":\"claude-desktop-3p\"}\n".utf8).write(to: desktop)
+        try JSONSerialization.data(withJSONObject: ["version": 1, "accounts": [
+            ["id": "existing"], ["id": accountID],
+        ]]).write(to: accounts.appendingPathComponent("registry.json"))
+
+        assertClaudeDiscovery(home: home, budget: 5, code: [cli], desktop: [desktop], truncated: false)
+    }
+
+    func testClaudeDiscoveryExactTraversalBudgetDoesNotReportTruncation() throws {
+        let fm = FileManager.default
+        let home = fm.temporaryDirectory.appendingPathComponent("claude-fair-exact-\(UUID())")
+        defer { try? fm.removeItem(at: home) }
+        let root = home.appendingPathComponent(".claude/projects")
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        for index in 0..<3 { try Data().write(to: root.appendingPathComponent("\(index).txt")) }
+        assertClaudeDiscovery(home: home, budget: 3, code: [], desktop: [], truncated: false)
+
+        try Data().write(to: root.appendingPathComponent("3.txt"))
+        assertClaudeDiscovery(home: home, budget: 3, code: [], desktop: [], truncated: true)
+    }
+
+    private func assertClaudeDiscovery(
+        home: URL,
+        environment: [String: String] = [:],
+        budget: Int,
+        code: [URL],
+        desktop: [URL],
+        truncated: Bool,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let paired = MultiClientUsageDiscovery.discoverClaudePair(
+            home: home, environment: environment, claudeEntryBudget: budget
+        )
+        XCTAssertEqual(paired.code.files, code, file: file, line: line)
+        XCTAssertEqual(paired.desktop.files, desktop, file: file, line: line)
+        XCTAssertEqual(paired.code.truncated, truncated, file: file, line: line)
+        XCTAssertEqual(paired.desktop.truncated, truncated, file: file, line: line)
+        XCTAssertEqual(paired.classificationCount, code.count + desktop.count, file: file, line: line)
+        for (client, expected) in [(UsageClient.claudeCode, code), (.claudeDesktop, desktop)] {
+            let independent = MultiClientUsageDiscovery.discover(
+                client: client, home: home, environment: environment, claudeEntryBudget: budget
+            )
+            XCTAssertEqual(independent.files, expected, file: file, line: line)
+            XCTAssertEqual(independent.truncated, truncated, file: file, line: line)
+        }
+    }
+
     func testClaudeDiscoveryIncludesOnlyRegisteredAccountProjectsAndKeepsClassification() throws {
         let fm = FileManager.default
         let home = fm.temporaryDirectory.appendingPathComponent("claude-accounts-\(UUID())")

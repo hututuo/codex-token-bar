@@ -241,6 +241,10 @@ jobs:
               --require testClaudeScannerPreservesLegacyCheckpointWhenTranscriptClassifiesAsOtherClient \
               --require testClaudeScannerReclassifiesLegacyCheckpointBeforeSkippingAndPreservesOnIncompleteEvidence \
               --require testCheckpointTransactionRejectsOppositeClaudeOwnerBeforeWriting \
+              --require testClaudeDiscoverySharesTraversalBudgetWithLaterAccountRoots \
+              --require testClaudeDiscoveryDeduplicatesRootsBeforeSharingBudgetAndKeepsSelectedAlias \
+              --require testClaudeDiscoveryMissingRootsDoNotConsumeTraversalShares \
+              --require testClaudeDiscoveryExactTraversalBudgetDoesNotReportTruncation \
               --require testLongLivedLedgerWriterRechecksSchemaInsideWriteTransaction \
               --require testExistingTablesMustKeepLedgerIdentityConstraints \
               --require testEquivalentUniqueIndexesRemainSupportedForLedgerKeys \
@@ -252,6 +256,11 @@ jobs:
           fi
           python3 scripts/check_test_execution.py --kind swift --log swift-tests.log --source-sha "$SOURCE_SHA" \
             --allow-untracked-output 'visual-previews/*.png' \
+            --require testRefreshReconcilesSelectionAgainstActiveInactivityFilter \
+            --require testClaudeDiscoverySharesTraversalBudgetWithLaterAccountRoots \
+            --require testClaudeDiscoveryDeduplicatesRootsBeforeSharingBudgetAndKeepsSelectedAlias \
+            --require testClaudeDiscoveryMissingRootsDoNotConsumeTraversalShares \
+            --require testClaudeDiscoveryExactTraversalBudgetDoesNotReportTruncation \
             --require testShortExplicitHeaderUsesOne4KiBRead \
             --require testPaddedValidJSONFindsEntrypointBeforeAndAfterContent \
             --require testExactly64KiBRecordIncludesLFAndIsExplicit \
@@ -569,6 +578,10 @@ jobs:
               --require schema_upgrade_backs_up_existing_data_and_future_schema_is_left_untouched \
               --require schema_v1_upgrade_backs_up_and_preserves_events_and_checkpoints \
               --require jsonl_scanner_resumes_after_its_four_mib_chunk \
+              --require claude_root_traversal_includes_exact_entry_and_file_limits \
+              --require claude_root_traversal_shares_entries_and_continues_after_truncated_root \
+              --require claude_root_traversal_shares_files_and_returns_unused_budget \
+              --require claude_root_traversal_handles_empty_roots_and_zero_budgets \
               --require stale_b_writer_refuses_checkpoint_and_event_dml_after_schema_changes \
               --require concurrent_b_initializers_serialize_schema_v2_initialization \
               --require current_swift_schema_without_optional_rust_metadata_remains_compatible \
@@ -624,6 +637,10 @@ jobs:
               --require schema_upgrade_backs_up_existing_data_and_future_schema_is_left_untouched \
               --require schema_v1_upgrade_backs_up_and_preserves_events_and_checkpoints \
               --require jsonl_scanner_resumes_after_its_four_mib_chunk \
+              --require claude_root_traversal_includes_exact_entry_and_file_limits \
+              --require claude_root_traversal_shares_entries_and_continues_after_truncated_root \
+              --require claude_root_traversal_shares_files_and_returns_unused_budget \
+              --require claude_root_traversal_handles_empty_roots_and_zero_budgets \
               --require trend_prices_reuse_request_pricing_and_keep_unknown_requests_explicit \
               --require running_task_titles_use_database_fallbacks_and_agent_metadata \
               --require orphan_start_needs_current_writer_while_terminal_always_wins \
