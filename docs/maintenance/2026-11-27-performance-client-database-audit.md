@@ -1,13 +1,13 @@
 # 性能、多客户端与数据库兼容性验收
 
-更新日期：2026-11-27（Asia/Shanghai）。当前代码候选：`f59bc14f25c3d27c722abd4c12f2f987341a29fc`，在此前内存代码、`665efddf` 测量协议、`db16c1ee` 空源重复发布修复及 `6f54a401` 模型聚合顺序修复之上，新增未读动效离场及暂停时的帧回收、邀请视频资源延迟创建和双平台 Claude live 大记录测试，将 Claude 历史记录有界续读扩展至16MiB（含LF），并延迟分配空日账本的密集数组。最后一项生产修改为`683d0493`；`f59bc14f`只修正共享每日上限测试的午夜fixture并增加回归。最近完整CI全部通过的源码仍为 `6f54a40173cf4ea5ce3f5a1856eabd445941153b`；最近完成速度引擎配对的源码仍为 `4410b16bbf182b90bb6cface265f698182a61039`。`d6c14da7`及`f2a48b8f`各有1个失败case，不能记为全量通过。三个目标继续保持 active。
+更新日期：2026-11-27（Asia/Shanghai）。当前代码候选：`f59bc14f25c3d27c722abd4c12f2f987341a29fc`，在此前内存代码、`665efddf` 测量协议、`db16c1ee` 空源重复发布修复及 `6f54a401` 模型聚合顺序修复之上，新增未读动效离场及暂停时的帧回收、邀请视频资源延迟创建和双平台 Claude live 大记录测试，将 Claude 历史记录有界续读扩展至16MiB（含LF），并延迟分配空日账本的密集数组。最后一项生产修改为`683d0493`；`f59bc14f`只修正共享每日上限测试的午夜fixture并增加回归。最近完整CI全部通过并独立闭合的源码为 `267aa5e8ddaf1388c1a1e74d1cf2f4dc21d213e3`；最近完成速度引擎配对的源码仍为 `4410b16bbf182b90bb6cface265f698182a61039`。`d6c14da7`及`f2a48b8f`各有1个失败case，不能记为全量通过。三个目标继续保持 active。
 
 ## 验收状态
 
 | 目标 | 已完成的工作 | 尚未通过的门槛 |
 | --- | --- | --- |
 | CPU、内存降低一半 | 响应排序与 latest-end 缓存；启动分窗解码及 WAL reader 回收；共享不可变响应与紧凑 timed-response；逐行导入临时对象回收；有界 Home 历史缓存；跨图表 range 共享归属数据；空源重复发布抑制；离场/暂停动效帧缓存回收；邀请视频资源延迟创建；空日账本密集数组延迟分配 | a416/a605/4410/ff55因首对窗口不同而整轮失败；665 v2首次完整通过12单轮/6配对，20k CPU下降39.53%、footprint下降6.77%，2k分别下降11.54%/2.27%；6f54因跨本地日整组NOT_RUN；均无减半结论，后续候选待测 |
-| 客户端及各组件兼容 | 检查 Codex、Claude CLI/Desktop、DSH、Gemini、OpenCode、Antigravity 的发现、解析、身份、quota、live、导出、展示与 reporting；修复已确认的路径/投影差异；旧候选真实 Windows helper IPC 已通过 | 最新产品 SHA 的完整双平台回归；真实客户端与安装运行验收 |
+| 客户端及各组件兼容 | 检查 Codex、Claude CLI/Desktop、DSH、Gemini、OpenCode、Antigravity 的发现、解析、身份、quota、live、导出、展示与 reporting；修复已确认的路径/投影差异；267完整双平台原生回归及真实 Windows helper IPC 已通过 | 最新产品 SHA 的完整双平台回归；Desktop长首条分类与历史归属；真实客户端与安装运行验收 |
 | 数据库结构与后续兼容 | 聚合复用单次TEMP canonical projection；缓存revision修复；两端schema admission和旧payload合并修复；Swift显式列名写入；ff55四版本×双平台增强矩阵8/8通过，64次候选进程及64次强制重扫保全事件/revision；生产聚合独立复算至ff55 | 当前产品SHA的完整回归尚待云端；不是任意未来schema的无损写回承诺 |
 
 所有编译、原生测试、前端构建和打包通过云端。本报告中的后续性能候选未合并 main、正式发布或替换当前安装。
@@ -160,6 +160,13 @@
 - 仅将该fixture的预置claim改为`now`，保留原七项失败涉及的全部断言。新增固定`dayStart=86400, now=86443`回归：前日86383的claim不占当日预算、当日首次允许、另一个owner再次请求被拒绝，且拒绝前后账本逐字节相同。
 - 旧失败case及新回归均加入正常CI强制实际通过清单，Swift共110项，Claude focused仍11项、Rust84/6不变。14项execution-gate、16项workflow Python、YAML/声明/vendor/diff检查与独立源码复核通过；未在本机运行Swift或原生测试。旧controller case仍依赖wall clock，setup与触发恰好跨日的极窄原有边界保留；固定coordinator回归独立于实时时钟和时区。
 
+### 测量结束后的可选引用树：`b858e2b9`
+
+- 新增默认关闭的 `retained_graph` dispatch input 与 `--retained-graph` 参数。启用时，在最后一条资源采样和统计完成之后、已有 vmmap/heap 之后运行 `leaks --noContent --nostacks --groupByType --referenceTree`；不改变 App 环境、fixture、配对顺序、120秒 warmup 或120秒 measurement。
+- 保留原始文本、字节数、SHA256、返回码和采集时间边界；工具退出0或1表示扫描完成，1另外记录工具发现leaks。超时/错误仅为补充证据UNAVAILABLE，不据此更改已完成的资源结果。
+- 引用树只为每个allocation猜测一个parent，不代表所有保留路径，也不把工具扫描完成当作“没有泄漏”或实测内存节省。尚未取得当前候选的云端引用树，不能据此选择新的架构改动。
+- 28项whole-App harness、14项execution-gate、9项backfill workflow、7项formed workflow及vendor/diff轻量检查通过；独立复核确认Bash 3.2关闭开关时始终非空的参数数组可用。没有在本机运行诊断附加、App、display操作或原生编译。
+
 ## 云端证据索引
 
 | Run | 精确代码与范围 | 本次记录时状态 |
@@ -199,10 +206,10 @@
 | `45910021172` | `460fbff4`；完整回归 | Swift编译失败：vendor `#expect(allSatisfy(keyPath))`宏展开报throw，XCTest/vendor均未执行；前端/cloud脚本及updater成功；macOS1880/0/14及Windows1822/0/15，两端78required、16production checks及双负控/hash已独立闭合；整体仍FAIL |
 | `45912095794` | `cac71d3b`；完整回归 | pending被后续修复push自动取代，最终cancelled、jobs=[]、artifacts=0；无执行证明 |
 | `45912504640` | `f2a48b8f`；完整回归 | 最终FAIL独立闭合：Swift2584通过/1失败/38跳过，唯一失败为午夜daily-limit fixture的7条断言，95required均实际通过；vendor700tests/81suites及四次两shape大记录invocation通过；release scripts因Swift退出1未运行；macOS1880/0/14及Windows1822/0/15、两端78required/16production checks/双负控/hash闭合，Windows真实helper IPC1通过、C#两shape两边界marker已核，frontend1501/cloud18及updater通过 |
-| `45913791756` | `267aa5e8`；完整回归 | exact-source清单101full/11focused Swift、84full/6focused Rust；2026-11-27T00:18:55Z已实际启动，后续lanes在00:19:02Z启动，等待独立结果 |
+| `45913791756` | `267aa5e8`；完整回归 | 最终success且独立闭合：Swift2591/0/38，101mandatory及11focused逐案通过；vendor700tests/81suites及四次两shape调用；macOS1886/0/14、Windows1828/0/15，两端84mandatory/6focused、16production checks、双负控及原始hash；Windows IPC1通过，frontend1501/cloud18、release112通过/1既有skip及updater均通过；checked-source/evidence gate PASS |
 | `45913791600` | `267aa5e8`；公开0.9.7升级 | 最终success且独立闭合：Swift8实际升级+120支持、fixture字节保全/accounting/exit86恢复；Windows3importer/19唯一manifest/27PASS；不外推为完整CI |
-| `45916052825` | `f59bc14f`；空日账本数组及午夜fixture后的完整回归 | 2026-11-27T00:19:31Z创建，pending；正常Swift110required、Claude focused11、Rust84/6，结果须按此SHA独立验证 |
-| `45916052402` | `f59bc14f`；公开0.9.7升级 | 2026-11-27T00:19:31Z创建，in_progress；不复用267证据 |
+| `45916052825` | `f59bc14f`；空日账本数组及午夜fixture后的完整回归 | 2026-11-27T00:39:25Z source实际启动，原生/前端/Swift在00:39:30–32Z启动，in_progress；正常Swift110required、Claude focused11、Rust84/6，结果须按此SHA独立验证 |
+| `45916052402` | `f59bc14f`；公开0.9.7升级 | 最终success且按exact source独立闭合：Swift8实际升级+120支持、fixture字节保全/accounting/exit86恢复；Windows3importer/19唯一manifest/27PASS；不外推为完整CI |
 
 最新速度引擎局部数据（`45897628817`，每case三轮中位数；CPU为200-tick loop总量，RSS为endpoint resident memory；不是整App或physical footprint）：
 
@@ -231,7 +238,7 @@ ff55整App同样完成12单轮，首个2k baseline1080×812、candidate1240×812
 
 首对2k诊断中heap已分配 `52,088,830→49,301,492 B`；20k首对候选保留20,000个`ResponseStorage`共4,480,000 B，response字典2,113,536 B，baseline完整record字典15,679,488 B。两角色各15个Double数组合计2,884,288 B；首对2k的IOSurface 6,400 KiB和SQLite pagecache 64 KiB均未减少。类别说明固定分配与响应副本仍值得检查，但单一诊断不是可加总的因果节省，也不把类别名推断为确切分配调用栈。
 
-4410/ff55已按原协议结束；665已按新视口协议完整结束，6f54继续，不中断或缩短。每轮120秒warmup+120秒measurement，12轮最低48分钟加startup、24次诊断、归档和构建，不混合新旧绝对值。
+4410/ff55已按原协议结束；665已按新视口协议完整结束，6f54已因跨本地日结束为NOT_RUN。每轮120秒warmup+120秒measurement，12轮最低48分钟加startup、诊断、归档和构建，不混合新旧绝对值。
 
 所有现有whole-App seed均仅设置旧`agentSpeedReporting.invitationShown.v1`，未设置邀请实际使用的`product.newFeatures.localClientsSpeed.v1`。源码允许邀请创建`SpeedLeaderboardMovie`/AVPlayer，但没有观察实际画面或播放状态，因此既不能保证仪表盘无遮挡，也不能断言视频实际播放。几何可见gate不等同于UI内容gate。若后续加入明确scope/邀请状态或实际图表验证，必须独立命名新workload，不能覆盖本轮结果或静默改协议。
 
@@ -267,7 +274,8 @@ DB baseline 单独采用 `3eadadc6`，因为 `f9e91791` 的现有 Rust 测试编
 
 - 多 root 是本地源覆盖，不是已验证的 provider account 身份。当前 ledger 没有 per-account 归属列，不能据此承诺逐账号费用归因。
 - Claude 仅支持实际落地的本地 Code/Agent transcript；普通 cloud-only 对话不可读。Claude 仍明确排除外部 speed reporting。
-- Claude 历史Swift/Rust的JSONL完整record含LF上限在267aa5e8源码扩展至16MiB，原4MiB normal batch保留；云端原生验证尚待完成。超过16MiB会保留断点并阻塞后继行，不能把它描述为与live的32MiB内容上限一致。macOS live读取块4MiB；Windows普通文件live读取块1MiB、注入backend的请求上限4MiB。历史文件最初64KiB内没有完整entrypoint-bearing行时，还存在Desktop分类不完整的独立边界。新源码及合成测试不代表解决16–32MiB或Desktop分类上限，原视频漏计的已确认根因仍为隔离账号目录未覆盖。
+- Claude 历史Swift/Rust的JSONL完整record含LF上限在267aa5e8源码扩展至16MiB，原4MiB normal batch保留；267完整CI的两端边界测试已实际通过。超过16MiB会保留断点并阻塞后继行，不能把它描述为与live的32MiB内容上限一致。macOS live读取块4MiB；Windows普通文件live读取块1MiB、注入backend的请求上限4MiB。历史文件最初64KiB内没有完整entrypoint-bearing行时，还存在Desktop分类不完整的独立边界。新源码及合成测试不代表解决16–32MiB或Desktop分类上限，原视频漏计的已确认根因仍为隔离账号目录未覆盖。
+- 已用源码和纯Python合成反例进一步分清Desktop分类缺口：无短header且首条含LF恰为65,537B时回退CLI；显式Desktop usage被拒绝而漏计，后继省略entrypoint的usage才可能误归CLI。现有Swift大记录fixture固定CLI显式path、Rust Desktop fixture先写短header，不能证明此反例已兼容。修复还需处理Swift总64MiB分类预算的公平进度、线性delimiter扫描、旧EOF checkpoint契约迁移，以及events无source provenance时旧CLI错账的保全；直接扩常量或replay可能造成漏扫/跨namespace双计。调查文件为忽略目录 `current-resource-review/claude-classifier-boundary-investigation.md`；没有读取真实transcript或声明受影响规模，尚未修改生产分类行为。
 - quota 来自各客户端自己的本地观测与 freshness 规则，不因路径同属一个账号目录就获得当前登录账号绑定证明。
 - schema 2 接受必需字段集合的兼容扩展；显式列名解决 nullable 追加列写入。新增 NOT NULL/无默认值列、任意新约束及未知 JSON 键的重编码无损性不在此保证内。未来影响写入或用量语义的格式应增加 schema version，使旧程序拒绝，而不能仅追加字段后假设旧程序能无损写回。
 - Swift/Rust checkpoint key 和部分 continuation 表示不同，切换实现可能重扫；不能承诺直接沿用另一实现的 cursor。事件与 checkpoint 仍同事务提交，重扫依赖稳定事件身份去重。
