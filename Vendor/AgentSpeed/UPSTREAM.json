@@ -761,8 +761,8 @@
       "sha256": "12ca4e75647b0e7a2a66e7d714d64761893316f894f982e11f7ed0362ff5b126"
     },
     "macos/Tests/AgentSpeedCoreTests/EngineBehaviorTests.swift": {
-      "reason": "Guard old-model response tails, current-model estimates, unknown models and per-source conservation Cover bounded recent-view slots, old-today count preservation, clock rollback and response replacements entering/leaving the live window. Verify response revision retention and release, independent copied engines, and unchanged replacement totals. Verify compact view layout, interval and bucket equivalence, warm-cache partial/final engine copies and release after cache refresh. Also assert live-window cache trimming preserves old-today totals and value snapshots. Append: Cover exclusive history/live cutoffs around the Unix epoch and repeated timestamps to guard ordered early termination.",
-      "sha256": "9d1b8c6310375d32a5fdae6b54e2548953ec2a891507c2c547b7724978b828b9"
+      "reason": "Guard old-model response tails, current-model estimates, unknown models and per-source conservation Cover bounded recent-view slots, old-today count preservation, clock rollback and response replacements entering/leaving the live window. Verify response revision retention and release, independent copied engines, and unchanged replacement totals. Verify compact view layout, interval and bucket equivalence, warm-cache partial/final engine copies and release after cache refresh. Also assert live-window cache trimming preserves old-today totals and value snapshots. Append: Cover exclusive history/live cutoffs around the Unix epoch and repeated timestamps to guard ordered early termination. Keep the epoch boundary regression tied to SpeedEngine.liveWindowMs and its measured-rate denominator so the fixture follows the production three-second live window.",
+      "sha256": "3b0f3fc624461d0ee33347c40b208dd7925727bf1660d489fdd14971d1fd97ac"
     },
     "macos/Tests/AgentSpeedCoreTests/HistoryCostTests.swift": {
       "reason": "Verify initial pricing and late repricing detach engine costs from immutable parser revisions and unpriced engines.",
