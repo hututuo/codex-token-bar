@@ -316,6 +316,51 @@ final class AutoResumeSharedCoordinatorTests: XCTestCase {
         ), .claimed)
     }
 
+    func testSharedDailyLimitAtMidnightExcludesYesterdayAndPreservesRejectedLedger() throws {
+        let home = try temporaryCodexHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let swift = AutoResumeSharedCoordinator(codexHome: home, ownerID: "swift")
+        let tauri = AutoResumeSharedCoordinator(codexHome: home, ownerID: "tauri")
+        let dayStart = Date(timeIntervalSince1970: 86_400)
+        let limit = AutoResumeSharedDailyLimit(dayStart: dayStart, maxRunsPerDay: 1)
+        let now = dayStart.addingTimeInterval(43)
+        let yesterdayKey = "interval:yesterday:last-minute"
+        let todayKey = "interval:today:first-minute"
+
+        XCTAssertEqual(try tauri.claimTrigger(
+            key: yesterdayKey,
+            threadID: "yesterday",
+            minimumInterval: 0,
+            dailyLimit: nil,
+            now: now.addingTimeInterval(-60)
+        ), .claimed)
+        XCTAssertEqual(try swift.claimTrigger(
+            key: todayKey,
+            threadID: "today",
+            minimumInterval: 0,
+            dailyLimit: limit,
+            now: now
+        ), .claimed, "yesterday's reservation must not consume today's budget")
+
+        let ledgerURL = swift.rootDirectory.appendingPathComponent("trigger-ledger.json")
+        let beforeRejection = try Data(contentsOf: ledgerURL)
+        XCTAssertEqual(try tauri.claimTrigger(
+            key: "interval:another-thread:today",
+            threadID: "another-thread",
+            minimumInterval: 0,
+            dailyLimit: limit,
+            now: now.addingTimeInterval(1)
+        ), .dailyLimit)
+        XCTAssertEqual(try Data(contentsOf: ledgerURL), beforeRejection)
+        let ledger = try JSONDecoder().decode(
+            AutoResumeTriggerLedgerFile.self,
+            from: beforeRejection
+        )
+        XCTAssertEqual(Set(ledger.entries.keys), Set([yesterdayKey, todayKey]))
+        XCTAssertEqual(ledger.entries[yesterdayKey]?.claimedAtUnix, 86_383)
+        XCTAssertEqual(ledger.entries[todayKey]?.claimedAtUnix, 86_443)
+    }
+
     func testLedgerJSONHasVersionedCrossRuntimeSchemaAndCompletionFields() throws {
         let home = try temporaryCodexHome()
         defer { try? FileManager.default.removeItem(at: home) }

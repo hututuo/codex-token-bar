@@ -213,6 +213,8 @@ jobs:
             --require testReplacementsAndRemovalsMatchFreshLedgerAndInvalidatePeakCaches \
             --require testCopiesKeepFirstAllocationAndReplacementIndependent \
             --require testDayBoundariesAndWidenedDurationsPreservePeakDistribution \
+            --require testSharedDailyLimitDoesNotClaimClearPendingOrIncreaseLocalRuns \
+            --require testSharedDailyLimitAtMidnightExcludesYesterdayAndPreservesRejectedLedger \
             --require testMissingStatePollPublishesRepeatedFailureOnlyOnce \
             --require testEmptyThreadPollingStillRetriesAndPublishesErrorChangesAndRecovery \
             --require testCombinedRowsUseStableModelKeyOrderAndPreservePricePeriods \

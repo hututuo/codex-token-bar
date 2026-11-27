@@ -237,7 +237,9 @@ final class AutoResumeControllerTests: XCTestCase {
                 dayStart: Calendar.current.startOfDay(for: now),
                 maxRunsPerDay: 1
             ),
-            now: now.addingTimeInterval(-60)
+            // This reservation must consume today's budget, including in the
+            // first minute after midnight when now - 60 belongs to yesterday.
+            now: now
         ), .claimed)
 
         let appServer = RecordingAutoResumeAppServer()
