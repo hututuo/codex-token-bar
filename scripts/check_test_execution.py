@@ -94,6 +94,10 @@ def validate_execution(text, kind, required=()):
                         or sum(outcome == "skipped" for _, outcome in records) != int(end[4] or 0)):
                     raise ValueError(f"XCTest bundle records do not match its summary: {end[1]}")
         successful = {name for name, outcome in matches if outcome == "passed"}
+        # Swift 6's Testing library emits a separate event format from XCTest.
+        # Include those pass records for required-test checks while keeping the
+        # XCTest bundle summaries as the authoritative aggregate count.
+        successful.update(re.findall(r"^[✔✓] Test (.+?) passed(?: after\b|$)", text, re.M))
         failed = any(v == "failed" for v in observed.values())
     else:
         raise ValueError(f"Unsupported test report: {kind}")
@@ -101,7 +105,7 @@ def validate_execution(text, kind, required=()):
         raise ValueError("No tests passed, or test failures were reported")
     for name in required:
         # Token boundaries avoid matching a different test with a longer name.
-        pattern = re.compile(r"(?:^|[.: /])" + re.escape(name) + r"(?:$|[\] /])")
+        pattern = re.compile(r"(?:^|[.: /])" + re.escape(name) + r"(?:$|[\] /()])")
         if not any(pattern.search(actual) for actual in successful):
             raise ValueError(f"Required test did not pass: {name}")
     return {"passed": passed, "skippedOrIgnored": skipped, "requiredTests": list(required)}

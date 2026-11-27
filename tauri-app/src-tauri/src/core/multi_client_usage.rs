@@ -4194,8 +4194,119 @@ fn has_compatible_existing_usage_tables(
         {
             return Ok(false);
         }
+
+        let has_required_key = match table {
+            "client_usage_events" => {
+                has_unique_key(connection, table, &["client", "event_id"])?
+            }
+            "client_file_checkpoints" => {
+                has_unique_key(connection, table, &["client", "source_key"])?
+            }
+            "multi_usage_metadata" => has_unique_key(connection, table, &["key"])?,
+            "client_usage_revisions" => has_integer_revision_primary_key(connection)?,
+            _ => true,
+        };
+        if !has_required_key {
+            return Ok(false);
+        }
     }
     Ok(true)
+}
+
+/// SQLite's UPSERT conflict target must match the exact key columns. SQLite
+/// accepts a permutation of those columns, but not partial, wider, or
+/// expression indexes that merely contain them.
+fn has_unique_key(
+    connection: &Connection,
+    table: &str,
+    expected_columns: &[&str],
+) -> rusqlite::Result<bool> {
+    let escaped_table = table.replace('\'', "''");
+    let mut indexes = connection.prepare(&format!("PRAGMA index_list('{escaped_table}')"))?;
+    let index_rows = indexes
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(4)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    for (index_name, is_unique, is_partial) in index_rows {
+        if is_unique == 0 || is_partial != 0 {
+            continue;
+        }
+        let escaped_index = index_name.replace('\'', "''");
+        let mut info = connection.prepare(&format!("PRAGMA index_xinfo('{escaped_index}')"))?;
+        // Keep key columns only (index_xinfo also reports rowid payload terms),
+        // and order by the pragma's explicit sequence number, not row order.
+        let mut columns = info
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, i64>(5)? != 0,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        columns.retain(|(_, _, _, is_key)| *is_key);
+        columns.sort_by_key(|(sequence, _, _, _)| *sequence);
+        if columns.len() == expected_columns.len()
+            && columns.iter().all(|(_, name, collation, _)| {
+                name.is_some()
+                    && collation
+                        .as_deref()
+                        .map(|value| value.eq_ignore_ascii_case("BINARY"))
+                        .unwrap_or(false)
+            })
+            && expected_columns.iter().all(|expected| {
+                columns
+                    .iter()
+                    .any(|(_, actual, _, _)| actual.as_deref() == Some(*expected))
+            })
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn has_integer_revision_primary_key(connection: &Connection) -> rusqlite::Result<bool> {
+    let mut statement = connection.prepare("PRAGMA table_info(client_usage_revisions)")?;
+    let columns = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(5)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let primary_key_columns = columns
+        .iter()
+        .filter(|(_, _, primary_key_order)| *primary_key_order > 0)
+        .collect::<Vec<_>>();
+    if primary_key_columns.len() != 1
+        || primary_key_columns[0].0 != "revision"
+        || !primary_key_columns[0]
+            .1
+            .trim()
+            .eq_ignore_ascii_case("INTEGER")
+    {
+        return Ok(false);
+    }
+
+    // A valid INTEGER PRIMARY KEY rowid alias has no backing PK index. This
+    // also rejects composite keys, WITHOUT ROWID tables, and SQLite's legacy
+    // inline `INTEGER PRIMARY KEY DESC` exception, all of which can leave an
+    // omitted revision NULL.
+    let mut indexes = connection.prepare("PRAGMA index_list(client_usage_revisions)")?;
+    let origins = indexes
+        .query_map([], |row| row.get::<_, String>(3))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(!origins.iter().any(|origin| origin == "pk"))
 }
 
 fn backup_before_upgrade(
@@ -7617,6 +7728,251 @@ mod tests {
                 assert_eq!(mode, "delete");
             }
         }
+    }
+
+    #[test]
+    fn schema_admission_rejects_complete_tables_with_incompatible_keys() {
+        let complete_schema = |event_key: &str,
+                               checkpoint_key: &str,
+                               metadata_key: &str,
+                               revision_table: &str| {
+            format!(
+                "CREATE TABLE client_usage_events (client TEXT NOT NULL,event_id TEXT NOT NULL,session_id TEXT NOT NULL,model TEXT NOT NULL,timestamp REAL NOT NULL,input_tokens INTEGER NOT NULL,output_tokens INTEGER NOT NULL,cache_read_tokens INTEGER,cache_write_tokens INTEGER,reasoning_tokens INTEGER,payload TEXT NOT NULL{event_key});\
+                 CREATE TABLE client_usage_revisions ({revision_table});\
+                 CREATE TABLE client_file_checkpoints (client TEXT NOT NULL,source_key TEXT NOT NULL,offset INTEGER NOT NULL,size INTEGER NOT NULL,modified REAL NOT NULL,identity TEXT NOT NULL{checkpoint_key});\
+                 CREATE TABLE multi_usage_metadata (key TEXT NOT NULL,value TEXT NOT NULL{metadata_key});"
+            )
+        };
+        let valid_event_key = ",PRIMARY KEY(client,event_id)";
+        let valid_checkpoint_key = ",PRIMARY KEY(client,source_key)";
+        let valid_metadata_key = ",PRIMARY KEY(key)";
+        let valid_revision_table = "revision INTEGER PRIMARY KEY AUTOINCREMENT,client TEXT NOT NULL,event_id TEXT NOT NULL,captured_at REAL NOT NULL,payload TEXT NOT NULL";
+        let malformed_schemas = [
+            (
+                "events missing composite key",
+                complete_schema(
+                    "",
+                    valid_checkpoint_key,
+                    valid_metadata_key,
+                    valid_revision_table,
+                ),
+            ),
+            (
+                "events globally unique by event_id",
+                complete_schema(
+                    ",UNIQUE(event_id)",
+                    valid_checkpoint_key,
+                    valid_metadata_key,
+                    valid_revision_table,
+                ),
+            ),
+            (
+                "checkpoints missing composite key",
+                complete_schema(
+                    valid_event_key,
+                    "",
+                    valid_metadata_key,
+                    valid_revision_table,
+                ),
+            ),
+            (
+                "checkpoints globally unique by source_key",
+                complete_schema(
+                    valid_event_key,
+                    ",UNIQUE(source_key)",
+                    valid_metadata_key,
+                    valid_revision_table,
+                ),
+            ),
+            (
+                "metadata key is not unique",
+                complete_schema(
+                    valid_event_key,
+                    valid_checkpoint_key,
+                    "",
+                    valid_revision_table,
+                ),
+            ),
+            (
+                "revision key has non-integer type",
+                complete_schema(
+                    valid_event_key,
+                    valid_checkpoint_key,
+                    valid_metadata_key,
+                    "revision TEXT PRIMARY KEY,client TEXT NOT NULL,event_id TEXT NOT NULL,captured_at REAL NOT NULL,payload TEXT NOT NULL",
+                ),
+            ),
+            (
+                "revision has no primary key",
+                complete_schema(
+                    valid_event_key,
+                    valid_checkpoint_key,
+                    valid_metadata_key,
+                    "revision INTEGER,client TEXT NOT NULL,event_id TEXT NOT NULL,captured_at REAL NOT NULL,payload TEXT NOT NULL",
+                ),
+            ),
+            (
+                "revision primary key is not ordinal one",
+                complete_schema(
+                    valid_event_key,
+                    valid_checkpoint_key,
+                    valid_metadata_key,
+                    "revision INTEGER,client TEXT NOT NULL,event_id TEXT NOT NULL,captured_at REAL NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(client,revision)",
+                ),
+            ),
+            (
+                "revision is first in a composite primary key",
+                complete_schema(
+                    valid_event_key,
+                    valid_checkpoint_key,
+                    valid_metadata_key,
+                    "revision INTEGER,client TEXT NOT NULL,event_id TEXT NOT NULL,captured_at REAL NOT NULL,payload TEXT NOT NULL,PRIMARY KEY(revision,client)",
+                ),
+            ),
+            (
+                "inline descending integer primary key is not a rowid alias",
+                complete_schema(
+                    valid_event_key,
+                    valid_checkpoint_key,
+                    valid_metadata_key,
+                    "revision INTEGER PRIMARY KEY DESC,client TEXT NOT NULL,event_id TEXT NOT NULL,captured_at REAL NOT NULL,payload TEXT NOT NULL",
+                ),
+            ),
+        ];
+
+        for version in [1_i64, SCHEMA_VERSION] {
+            for (label, schema) in &malformed_schemas {
+                for explicit_initialization in [false, true] {
+                    let temporary = TempDir::new("schema-key-admission-refusal");
+                    let path = temporary.path().join("ledger.sqlite");
+                    let connection = Connection::open(&path).unwrap();
+                    connection.execute_batch(schema).unwrap();
+                    connection.pragma_update(None, "user_version", version).unwrap();
+                    drop(connection);
+                    let before = fs::read(&path).unwrap();
+
+                    if explicit_initialization {
+                        assert!(
+                            initialize_usage_database_at(&path).is_err(),
+                            "{label}, version={version}"
+                        );
+                    } else {
+                        let connection = Connection::open(&path).unwrap();
+                        assert!(
+                            ensure_schema(&connection, &path).is_err(),
+                            "{label}, version={version}"
+                        );
+                    }
+
+                    assert_eq!(fs::read(&path).unwrap(), before, "{label}, version={version}");
+                    assert_eq!(
+                        fs::read_dir(temporary.path()).unwrap().count(),
+                        1,
+                        "{label}, version={version}"
+                    );
+                    let connection = Connection::open(&path).unwrap();
+                    assert_eq!(read_schema_version(&connection).unwrap(), version);
+                    let journal_mode: String = connection
+                        .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+                        .unwrap();
+                    assert_eq!(journal_mode, "delete", "{label}, version={version}");
+                }
+            }
+        }
+
+        for (label, event_key, checkpoint_key, extra_index) in [
+            (
+                "events partial unique index",
+                "",
+                valid_checkpoint_key,
+                "CREATE UNIQUE INDEX bad_events_key ON client_usage_events(client,event_id) WHERE client='claudeCode';",
+            ),
+            (
+                "events unique key changes binary identity semantics",
+                "",
+                valid_checkpoint_key,
+                "CREATE UNIQUE INDEX bad_events_key ON client_usage_events(client,event_id COLLATE NOCASE);",
+            ),
+            (
+                "checkpoints partial unique index",
+                valid_event_key,
+                "",
+                "CREATE UNIQUE INDEX bad_checkpoints_key ON client_file_checkpoints(client,source_key) WHERE client='claudeCode';",
+            ),
+        ] {
+            let base = complete_schema(
+                event_key,
+                checkpoint_key,
+                valid_metadata_key,
+                valid_revision_table,
+            );
+            for version in [1_i64, SCHEMA_VERSION] {
+                let temporary = TempDir::new("schema-partial-key-refusal");
+                let path = temporary.path().join("ledger.sqlite");
+                let connection = Connection::open(&path).unwrap();
+                connection
+                    .execute_batch(&format!("{base}{extra_index}"))
+                    .unwrap();
+                connection.pragma_update(None, "user_version", version).unwrap();
+                drop(connection);
+                let before = fs::read(&path).unwrap();
+                let connection = Connection::open(&path).unwrap();
+                assert!(ensure_schema(&connection, &path).is_err(), "{label}, version={version}");
+                assert_eq!(read_schema_version(&connection).unwrap(), version);
+                drop(connection);
+                assert_eq!(fs::read(&path).unwrap(), before, "{label}, version={version}");
+                assert_eq!(fs::read_dir(temporary.path()).unwrap().count(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn schema_admission_accepts_permuted_unique_indexes() {
+        let schema = "CREATE TABLE client_usage_events (client TEXT NOT NULL,event_id TEXT NOT NULL,session_id TEXT NOT NULL,model TEXT NOT NULL,timestamp REAL NOT NULL,input_tokens INTEGER NOT NULL,output_tokens INTEGER NOT NULL,cache_read_tokens INTEGER,cache_write_tokens INTEGER,reasoning_tokens INTEGER,payload TEXT NOT NULL);\
+                       CREATE UNIQUE INDEX events_by_identity ON client_usage_events(event_id,client);\
+                       CREATE TABLE client_usage_revisions (revision INTEGER PRIMARY KEY,client TEXT NOT NULL,event_id TEXT NOT NULL,captured_at REAL NOT NULL,payload TEXT NOT NULL);\
+                       CREATE TABLE client_file_checkpoints (client TEXT NOT NULL,source_key TEXT NOT NULL,offset INTEGER NOT NULL,size INTEGER NOT NULL,modified REAL NOT NULL,identity TEXT NOT NULL);\
+                       CREATE UNIQUE INDEX checkpoints_by_source ON client_file_checkpoints(source_key,client);\
+                       CREATE TABLE multi_usage_metadata (key TEXT NOT NULL,value TEXT NOT NULL);\
+                       CREATE UNIQUE INDEX metadata_by_key ON multi_usage_metadata(key);";
+        let temporary = TempDir::new("schema-unique-index-compatibility");
+        let path = temporary.path().join("ledger.sqlite");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch(schema).unwrap();
+        connection
+            .pragma_update(None, "user_version", SCHEMA_VERSION)
+            .unwrap();
+        ensure_schema(&connection, &path).unwrap();
+        assert!(has_expected_usage_tables(&connection).unwrap());
+
+        for client in ["claudeCode", "claudeDesktop"] {
+            connection
+                .execute(
+                    "INSERT INTO client_usage_events(client,event_id,session_id,model,timestamp,input_tokens,output_tokens,payload) VALUES(?1,'same-id','session','fixture',1,2,3,'{}')",
+                    [client],
+                )
+                .unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO client_usage_revisions(client,event_id,captured_at,payload) VALUES('claudeCode','same-id',1,'{}'),('claudeCode','same-id',2,'{}')",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM client_usage_events", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT COUNT(*) FROM client_usage_revisions", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
     }
 
     #[test]

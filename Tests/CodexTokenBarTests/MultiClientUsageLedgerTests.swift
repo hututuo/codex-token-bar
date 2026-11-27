@@ -692,6 +692,136 @@ final class MultiClientUsageLedgerTests: XCTestCase {
         }
     }
 
+    func testExistingTablesMustKeepLedgerIdentityConstraints() throws {
+        let malformed: [(table: String, ddl: String)] = [
+            ("client_usage_events", """
+             CREATE TABLE client_usage_events (
+                 client TEXT NOT NULL, event_id TEXT NOT NULL, session_id TEXT NOT NULL,
+                 model TEXT NOT NULL, timestamp REAL NOT NULL, input_tokens INTEGER NOT NULL,
+                 output_tokens INTEGER NOT NULL, cache_read_tokens INTEGER, cache_write_tokens INTEGER,
+                 reasoning_tokens INTEGER, payload TEXT NOT NULL)
+             ; CREATE UNIQUE INDEX event_identity_nocase
+                 ON client_usage_events(client,event_id COLLATE NOCASE)
+             """),
+            ("client_file_checkpoints", """
+             CREATE TABLE client_file_checkpoints (
+                 client TEXT NOT NULL, source_key TEXT NOT NULL, offset INTEGER NOT NULL,
+                 size INTEGER NOT NULL, modified REAL NOT NULL, identity TEXT NOT NULL)
+             """),
+            ("client_usage_revisions", """
+             CREATE TABLE client_usage_revisions (
+                 revision INTEGER, client TEXT NOT NULL, event_id TEXT NOT NULL,
+                 captured_at REAL NOT NULL, payload TEXT NOT NULL)
+             """),
+            ("client_usage_revisions", """
+             CREATE TABLE client_usage_revisions (
+                 revision INTEGER, client TEXT NOT NULL, event_id TEXT NOT NULL,
+                 captured_at REAL NOT NULL, payload TEXT NOT NULL,
+                 PRIMARY KEY(revision, client))
+             """),
+            ("client_usage_revisions", """
+             CREATE TABLE client_usage_revisions (
+                 revision INTEGER PRIMARY KEY DESC, client TEXT NOT NULL,
+                 event_id TEXT NOT NULL, captured_at REAL NOT NULL, payload TEXT NOT NULL)
+             """),
+            ("multi_usage_metadata", "CREATE TABLE multi_usage_metadata (key TEXT, value TEXT NOT NULL)")
+        ]
+
+        for version in [1, MultiClientUsageLedger.schemaVersion] {
+            for invalid in malformed {
+                let directory = root.appendingPathComponent(
+                    "missing-key-v\(version)-\(invalid.table)", isDirectory: true
+                )
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                let sourceURL = directory.appendingPathComponent("source.sqlite")
+                _ = try MultiClientUsageLedger(url: sourceURL)
+                let source = SQLiteDatabaseDriver(url: sourceURL)
+                try source.execute("DROP TABLE \(invalid.table); \(invalid.ddl); PRAGMA user_version=\(version)")
+                let targetURL = directory.appendingPathComponent("usage.sqlite")
+                _ = try prepareDeleteModeFixture(driver: source, url: targetURL)
+
+                try assertSchemaRefusalPreservesFiles(at: targetURL, version: version)
+            }
+        }
+    }
+
+    func testEquivalentUniqueIndexesRemainSupportedForLedgerKeys() throws {
+        let sourceURL = root.appendingPathComponent("unique-index-source.sqlite")
+        _ = try MultiClientUsageLedger(url: sourceURL)
+        let source = SQLiteDatabaseDriver(url: sourceURL)
+        try source.execute("""
+            DROP TABLE client_usage_events;
+            CREATE TABLE client_usage_events (
+                client TEXT NOT NULL, event_id TEXT NOT NULL, session_id TEXT NOT NULL,
+                model TEXT NOT NULL, timestamp REAL NOT NULL, input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL, cache_read_tokens INTEGER, cache_write_tokens INTEGER,
+                reasoning_tokens INTEGER, payload TEXT NOT NULL);
+            CREATE UNIQUE INDEX event_identity ON client_usage_events(event_id,client);
+            DROP TABLE client_file_checkpoints;
+            CREATE TABLE client_file_checkpoints (
+                client TEXT NOT NULL, source_key TEXT NOT NULL, offset INTEGER NOT NULL,
+                size INTEGER NOT NULL, modified REAL NOT NULL, identity TEXT NOT NULL);
+            CREATE UNIQUE INDEX checkpoint_identity ON client_file_checkpoints(source_key,client);
+            DROP TABLE multi_usage_metadata;
+            CREATE TABLE multi_usage_metadata (key TEXT NOT NULL, value TEXT NOT NULL);
+            CREATE UNIQUE INDEX metadata_identity ON multi_usage_metadata(key);
+            """)
+        let url = root.appendingPathComponent("unique-index.sqlite")
+        _ = try prepareDeleteModeFixture(driver: source, url: url)
+
+        let ledger = try MultiClientUsageLedger(url: url)
+        let checkpoint = MultiClientFileCheckpoint(offset: 100, size: 100, modified: 10, identity: "fixture")
+        XCTAssertEqual(try ledger.ingest([event()], client: .claudeCode, sourceKey: "fixture", checkpoint: checkpoint), 1)
+        let eventCount = try ledger.database.readRows(
+            "SELECT COUNT(*) FROM client_usage_events WHERE client=?",
+            bindings: [.text(UsageClient.claudeCode.rawValue)]
+        ) { $0.int(0) ?? 0 }.first ?? 0
+        XCTAssertEqual(eventCount, 1)
+        let saved = try XCTUnwrap(ledger.checkpoint(client: .claudeCode, sourceKey: "fixture"))
+        XCTAssertEqual(saved.offset, checkpoint.offset)
+        XCTAssertEqual(saved.size, checkpoint.size)
+        XCTAssertEqual(saved.modified, checkpoint.modified)
+        XCTAssertEqual(saved.identity, checkpoint.identity)
+    }
+
+    func testWALSchemaRefusalPreservesMainAndWALContents() throws {
+        let url = root.appendingPathComponent("wal-schema-refusal.sqlite")
+        _ = try MultiClientUsageLedger(url: url)
+        let writer = SQLiteDatabaseDriver(url: url, enableWAL: false)
+
+        try writer.withConnection { connection in
+            try connection.execute("""
+                DROP TABLE client_usage_events;
+                CREATE TABLE client_usage_events (
+                    client TEXT NOT NULL, event_id TEXT NOT NULL, session_id TEXT NOT NULL,
+                    model TEXT NOT NULL, timestamp REAL NOT NULL, input_tokens INTEGER NOT NULL,
+                    output_tokens INTEGER NOT NULL, cache_read_tokens INTEGER,
+                    cache_write_tokens INTEGER, reasoning_tokens INTEGER, payload TEXT NOT NULL);
+                PRAGMA user_version=\(MultiClientUsageLedger.schemaVersion);
+                """)
+            XCTAssertEqual(try connection.readRows("PRAGMA journal_mode") { $0.text(0) }.first!, "wal")
+
+            let walURL = URL(fileURLWithPath: url.path + "-wal")
+            XCTAssertTrue(FileManager.default.fileExists(atPath: walURL.path))
+            let databaseBytes = try Data(contentsOf: url)
+            let walBytes = try Data(contentsOf: walURL)
+            XCTAssertThrowsError(try MultiClientUsageLedger(url: url)) { error in
+                guard let ledgerError = error as? MultiClientUsageLedger.LedgerError,
+                      case .incompatibleSchema = ledgerError else {
+                    return XCTFail("Expected schema admission refusal, got \(error)")
+                }
+            }
+
+            XCTAssertEqual(try Data(contentsOf: url), databaseBytes)
+            XCTAssertEqual(try Data(contentsOf: walURL), walBytes)
+            XCTAssertEqual(try connection.readRows("PRAGMA user_version") { $0.int(0) }.first!,
+                           MultiClientUsageLedger.schemaVersion)
+            XCTAssertFalse(FileManager.default.fileExists(
+                atPath: url.deletingLastPathComponent().appendingPathComponent("backups", isDirectory: true).path
+            ))
+        }
+    }
+
     func testUnversionedUnrelatedDatabaseIsBackedUpBeforeUpgrade() throws {
         let url = root.appendingPathComponent("unversioned-unrelated.sqlite")
         let original = SQLiteDatabaseDriver(url: url)

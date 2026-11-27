@@ -110,6 +110,17 @@ class TestExecutionGateTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             gate.validate_execution(mixed.replace("1 test", "2 tests"), "swift")
 
+    def test_swift_testing_pass_records_can_satisfy_required_tests(self):
+        mixed = (SWIFT + "◇ Test recentViewDropsExpiredSuffixAndRestoresItAfterClockRollback() started.\n"
+                 + "✔ Test recentViewDropsExpiredSuffixAndRestoresItAfterClockRollback() passed after 0.1 seconds.\n")
+        result = gate.validate_execution(mixed, "swift", ["safety", "recentViewDropsExpiredSuffixAndRestoresItAfterClockRollback"])
+        self.assertEqual(result["passed"], 1)
+
+        longer = mixed.replace("recentViewDropsExpiredSuffixAndRestoresItAfterClockRollback() passed",
+                               "recentViewDropsExpiredSuffixAndRestoresItAfterClockRollbackExtra() passed")
+        with self.assertRaises(ValueError):
+            gate.validate_execution(longer, "swift", ["recentViewDropsExpiredSuffixAndRestoresItAfterClockRollback"])
+
     def test_exact_source_rejects_tracked_edits_before_or_during_execution(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "repo"

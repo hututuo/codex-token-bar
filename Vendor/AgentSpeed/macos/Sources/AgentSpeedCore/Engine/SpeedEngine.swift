@@ -354,7 +354,10 @@ struct SpeedEngine: Sendable {
         let firstSecond = lastSecond - Int64(historySeconds) + 1
         var measured = Array(repeating: Rate.zero, count: historySeconds)
         var estimated = Array(repeating: Rate.zero, count: historySeconds)
-        for response in timed where response.endMs > firstSecond * 1000 {
+        for response in timed {
+            // `timed` is ordered newest-first. The history's lower boundary is
+            // exclusive, so this and every older response can be skipped.
+            if response.endMs <= firstSecond * 1000 { break }
             response.distribute(firstSecond: firstSecond, lastSecond: lastSecond) { second, output, total in
                 let index = Int(second - firstSecond)
                 measured[index].output += output

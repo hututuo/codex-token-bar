@@ -160,6 +160,10 @@ struct LiveWindow: Sendable {
         var agentCost: [String: LiveCost] = [:]
 
         for response in measuredResponses {
+            // SpeedEngine supplies this array in descending end-time order.
+            // Once a response ends at the exclusive lower boundary, every
+            // remaining response is older and cannot overlap the live window.
+            if response.endMs <= windowStart { break }
             let overlap = ResponseTiming.overlap(windowStart, nowMs, response.startMs, response.endMs)
             guard overlap > 0 else { continue }
             let share = Double(overlap) / Double(response.durationMs)

@@ -625,16 +625,16 @@
       "sha256": "d38bbe9d50ac40ec67276fc19cf3e762e038cba2d8ea948e1c95ecdbaf7577de"
     },
     "macos/Sources/AgentSpeedCore/Engine/LiveRate.swift": {
-      "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged Consume compact immutable-revision timed views without changing measured, unfinalized, reference or attribution arithmetic.",
-      "sha256": "038921266469ea930e9ce4a652a450efefafcfaff3d0c657a50a570bbb14d4b9"
+      "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged Consume compact immutable-revision timed views without changing measured, unfinalized, reference or attribution arithmetic. Append: Stop the newest-first live-window scan at the exclusive lower boundary; preserve overlap and cost arithmetic.",
+      "sha256": "db39de48514943d962e501f8d566389904d8fe9bd2b502fab26b628efcb82fe2"
     },
     "macos/Sources/AgentSpeedCore/Engine/ResponseTiming.swift": {
       "reason": "Share existing engine-owned immutable response revisions in compact live timed views; keep value-only history timing allocation-free and use the same bucket arithmetic for both representations.",
       "sha256": "5027f4ab1152bbcb6a735632683206619e30df57bd95dfc09d6eaef2046cd528"
     },
     "macos/Sources/AgentSpeedCore/Engine/SpeedEngine.swift": {
-      "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged Reuse mutation-invalidated timed-response ordering and latest-agent ends across timer publishes, with an earliest-end retention guard; preserve clock-dependent arithmetic and source/model attribution. Limit duplicate timed-response slots to the live/reference retention window and rebuild from retained authoritative records on a backwards clock cutoff. Remove the unused per-response project dictionary; completion summaries still use the upsert project argument. Store immutable response revisions shared with parser emissions; detach only when pricing changes the stored cost and preserve independent engine value copies. Use compact immutable-revision views for live sorting, filtering and history without duplicating full ResponseRecord payloads; preserve ordering, rollback, retention and repricing invalidation. As the live cutoff advances, trim expired cached timed-response slots and release the backing buffer when empty while retaining authoritative responses and day-ledger totals; preserve cache ordering and backwards-clock rebuild behavior.",
-      "sha256": "d1634e6773db452d5c467aaf70525c620431c9edf78287c95e780f0a7942728a"
+      "reason": "Add source/event-model attribution metadata; existing numeric speed and signed reporting semantics unchanged Reuse mutation-invalidated timed-response ordering and latest-agent ends across timer publishes, with an earliest-end retention guard; preserve clock-dependent arithmetic and source/model attribution. Limit duplicate timed-response slots to the live/reference retention window and rebuild from retained authoritative records on a backwards clock cutoff. Remove the unused per-response project dictionary; completion summaries still use the upsert project argument. Store immutable response revisions shared with parser emissions; detach only when pricing changes the stored cost and preserve independent engine value copies. Use compact immutable-revision views for live sorting, filtering and history without duplicating full ResponseRecord payloads; preserve ordering, rollback, retention and repricing invalidation. As the live cutoff advances, trim expired cached timed-response slots and release the backing buffer when empty while retaining authoritative responses and day-ledger totals; preserve cache ordering and backwards-clock rebuild behavior. Append: Stop the newest-first history scan at the exclusive lower boundary; preserve bucket-distribution arithmetic.",
+      "sha256": "eb6a74950f2c93aa2589448f6ab28e238d27e816d5e02a734505daafd7c8ab24"
     },
     "macos/Sources/AgentSpeedCore/History/HistoryAnalyzer.swift": {
       "reason": "Local analysis revision4 to5 for paginated prefix accounting semantics; does not change DB schema or start Token Bar HistoryService.",
@@ -761,8 +761,8 @@
       "sha256": "12ca4e75647b0e7a2a66e7d714d64761893316f894f982e11f7ed0362ff5b126"
     },
     "macos/Tests/AgentSpeedCoreTests/EngineBehaviorTests.swift": {
-      "reason": "Guard old-model response tails, current-model estimates, unknown models and per-source conservation Cover bounded recent-view slots, old-today count preservation, clock rollback and response replacements entering/leaving the live window. Verify response revision retention and release, independent copied engines, and unchanged replacement totals. Verify compact view layout, interval and bucket equivalence, warm-cache partial/final engine copies and release after cache refresh. Also assert live-window cache trimming preserves old-today totals and value snapshots.",
-      "sha256": "797852400392c61ca83ccee7534caa3f13c4431586c118acd5b6d2642327f447"
+      "reason": "Guard old-model response tails, current-model estimates, unknown models and per-source conservation Cover bounded recent-view slots, old-today count preservation, clock rollback and response replacements entering/leaving the live window. Verify response revision retention and release, independent copied engines, and unchanged replacement totals. Verify compact view layout, interval and bucket equivalence, warm-cache partial/final engine copies and release after cache refresh. Also assert live-window cache trimming preserves old-today totals and value snapshots. Append: Cover exclusive history/live cutoffs around the Unix epoch and repeated timestamps to guard ordered early termination.",
+      "sha256": "9d1b8c6310375d32a5fdae6b54e2548953ec2a891507c2c547b7724978b828b9"
     },
     "macos/Tests/AgentSpeedCoreTests/HistoryCostTests.swift": {
       "reason": "Verify initial pricing and late repricing detach engine costs from immutable parser revisions and unpriced engines.",

@@ -234,6 +234,31 @@ struct EngineBehaviorTests {
         #expect(output.history.first?.time == Date(timeIntervalSince1970: TimeInterval(Self.base / 1000 - 298)))
     }
 
+    @Test func orderedWindowScansRespectExclusiveBoundariesBeforeAndAfterEpoch() {
+        var engine = SpeedEngine()
+        let now: Int64 = 0
+        let historyBoundary: Int64 = -299_000
+        let liveBoundary: Int64 = -60_000
+        let samples: [(String, Int64, Int)] = [
+            ("history-before", historyBoundary - 1, 10),
+            ("history-equal", historyBoundary, 20),
+            ("history-after", historyBoundary + 1, 30),
+            ("live-before", liveBoundary - 1, 40),
+            ("live-equal", liveBoundary, 50),
+            ("live-after-a", liveBoundary + 1, 60),
+            ("live-after-b", liveBoundary + 1, 70)
+        ]
+        for (key, end, output) in samples {
+            engine.upsert(Self.record(key, start: end - 1000, end: end, output: output),
+                          project: "p", isCompletion: true, emitsEvents: false)
+        }
+
+        let result = engine.advance(nowMs: now, todayStartMs: -1_000_000, emitsEvents: false)
+
+        #expect(abs((result.history.first?.measured.output ?? 0) - 0.03) < 1e-9)
+        #expect(abs(result.live.output - (130.0 * 0.001 / 60.0)) < 1e-9)
+    }
+
     @Test func historyEstimatesStartAfterTheAgentsLatestResponse() {
         var engine = SpeedEngine()
         let now = Self.base + 10_000

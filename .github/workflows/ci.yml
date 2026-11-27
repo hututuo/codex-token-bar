@@ -228,6 +228,7 @@ jobs:
               --require testHistoryScannerAccepts4MiBPlusOneRecordAndShortSuccessorAcrossScans \
               --require testHistoryScannerAcceptsExactly16MiBRecordAndShortSuccessorAcrossScans \
               --require testHistoryScannerRejectsIncomplete16MiBRecordAndPreservesCommittedPrefix \
+              --require testHistoryScannerDoesNotTreatTotalClassificationBudgetAsOversizedRecord \
               --require testHistoryScannerWaitsForLFWhenPartialAppendCrosses4MiBAndResumesAcrossScanners \
               --require testHistoryScannerCommitsUsageFreeRecordOver4MiBAndOnlyCountsShortSuccessor \
               --require testHistoryScannerKeepsOtherClientRecordLimitsAt4MiB \
@@ -241,6 +242,9 @@ jobs:
               --require testClaudeScannerReclassifiesLegacyCheckpointBeforeSkippingAndPreservesOnIncompleteEvidence \
               --require testCheckpointTransactionRejectsOppositeClaudeOwnerBeforeWriting \
               --require testLongLivedLedgerWriterRechecksSchemaInsideWriteTransaction \
+              --require testExistingTablesMustKeepLedgerIdentityConstraints \
+              --require testEquivalentUniqueIndexesRemainSupportedForLedgerKeys \
+              --require testWALSchemaRefusalPreservesMainAndWALContents \
               --require testLongLivedQuotaWriterRejectsFutureLedgerSchemaBeforeWriting \
               --require testLongLivedSharedBodyWriterRejectsFutureLedgerSchemaBeforeWriting -- \
               swift test --filter 'MultiClientUsage|ClientQuotaHistoryTests|BodySpeedTrendStoreTests|ClaudeTranscriptClassificationTests|ClaudeRecordBoundaryTests|ClaudeDesktopQuotaHistory|ClaudeLocalQuota|MultiClientQuotaAutodiscovery|MultiClientProduct|IntegratedClientPresentation'
@@ -291,6 +295,7 @@ jobs:
             --require testReplacementsAndRemovalsMatchFreshLedgerAndInvalidatePeakCaches \
             --require testCopiesKeepFirstAllocationAndReplacementIndependent \
             --require testDayBoundariesAndWidenedDurationsPreservePeakDistribution \
+            --require orderedWindowScansRespectExclusiveBoundariesBeforeAndAfterEpoch \
             --require testEmptyExactDedupersDoNotReserveForReadOnlyQueries \
             --require testFirstExactClaimMatchesOriginalReservation \
             --require testDefaultFIFOEvictsAt65536WithoutRefreshingRepeatedKeys \
@@ -325,6 +330,7 @@ jobs:
             --require testHistoryScannerAccepts4MiBPlusOneRecordAndShortSuccessorAcrossScans \
             --require testHistoryScannerAcceptsExactly16MiBRecordAndShortSuccessorAcrossScans \
             --require testHistoryScannerRejectsIncomplete16MiBRecordAndPreservesCommittedPrefix \
+            --require testHistoryScannerDoesNotTreatTotalClassificationBudgetAsOversizedRecord \
             --require testHistoryScannerWaitsForLFWhenPartialAppendCrosses4MiBAndResumesAcrossScanners \
             --require testHistoryScannerCommitsUsageFreeRecordOver4MiBAndOnlyCountsShortSuccessor \
             --require testHistoryScannerKeepsOtherClientRecordLimitsAt4MiB \
@@ -340,6 +346,9 @@ jobs:
             --require testLongLivedQuotaWriterRejectsFutureLedgerSchemaBeforeWriting \
             --require testLongLivedSharedBodyWriterRejectsFutureLedgerSchemaBeforeWriting \
             --require testLongLivedLedgerWriterRechecksSchemaInsideWriteTransaction \
+            --require testExistingTablesMustKeepLedgerIdentityConstraints \
+            --require testEquivalentUniqueIndexesRemainSupportedForLedgerKeys \
+            --require testWALSchemaRefusalPreservesMainAndWALContents \
               --require testSharedRPCFixturesKeepExplicitFractionsResetsAndPrivacy \
               --require testDiscoveryRequiresInstalledProcessOwnedLoopbackPortAndCSRF \
               --require testAutomaticVisibilityRequiresRecentQuotaAndRespectsManualChoices \
@@ -555,6 +564,8 @@ jobs:
               --require claude_jsonl_usage_free_large_record_advances_without_fabricating_usage \
               --require claude_jsonl_keeps_normal_batch_boundary_when_prefix_has_line_feed \
               --require non_claude_jsonl_keeps_its_four_mib_record_rejection \
+              --require schema_admission_rejects_complete_tables_with_incompatible_keys \
+              --require schema_admission_accepts_permuted_unique_indexes \
               --require stale_b_writer_refuses_checkpoint_and_event_dml_after_schema_changes \
               --require concurrent_b_initializers_serialize_schema_v2_initialization \
               --require current_swift_schema_without_optional_rust_metadata_remains_compatible \
@@ -599,6 +610,8 @@ jobs:
               --require claude_jsonl_usage_free_large_record_advances_without_fabricating_usage \
               --require claude_jsonl_keeps_normal_batch_boundary_when_prefix_has_line_feed \
               --require non_claude_jsonl_keeps_its_four_mib_record_rejection \
+              --require schema_admission_rejects_complete_tables_with_incompatible_keys \
+              --require schema_admission_accepts_permuted_unique_indexes \
               --require trend_prices_reuse_request_pricing_and_keep_unknown_requests_explicit \
               --require running_task_titles_use_database_fallbacks_and_agent_metadata \
               --require orphan_start_needs_current_writer_while_terminal_always_wins \

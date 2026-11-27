@@ -353,25 +353,24 @@ actor MultiClientUsageScanner {
                 byteLimit: claudeClassificationBytesRemaining
             )
             claudeClassificationBytesRemaining = max(0, claudeClassificationBytesRemaining - classification.bytesRead)
+            // The classifier has a total prefix budget, while the parser limit
+            // applies to one JSONL record. Only the measured unfinished tail
+            // can establish that a single record has reached its limit.
+            if let unfinishedRecordBytes = classification.unfinishedRecordBytes,
+               unfinishedRecordBytes >= MultiClientUsageParsers.maximumInputBytes {
+                guard observed.matches(try SourceFileObservation.read(at: url)) else {
+                    throw POSIXError(.ESTALE)
+                }
+                throw ScanError.oversized
+            }
             // A transcript tail is committed only by LF. Until that arrives,
             // classification is intentionally inconclusive and should behave
-            // like the JSONL reader below: wait without publishing a notice or
-            // advancing the checkpoint. A full classifier window with bytes
-            // still present beyond the parser limit, however, is an oversized
-            // record and must use the established read-limit diagnostic.
+            // like the JSONL reader below: wait without advancing the checkpoint.
             if case .incomplete(.partialRecord) = classification.evidence {
                 if saved != nil {
                     scanNotices.append("Claude：日志分类未完成，保留旧账且不推进断点")
                 }
                 return
-            }
-            if case .incomplete(.byteLimit) = classification.evidence,
-               classification.bytesRead >= MultiClientUsageParsers.maximumInputBytes,
-               size > Int64(classification.bytesRead) {
-                guard observed.matches(try SourceFileObservation.read(at: url)) else {
-                    throw POSIXError(.ESTALE)
-                }
-                throw ScanError.oversized
             }
             guard let classifiedClient = classification.client else {
                 scanNotices.append("Claude：日志分类未完成，保留旧账且不推进断点")

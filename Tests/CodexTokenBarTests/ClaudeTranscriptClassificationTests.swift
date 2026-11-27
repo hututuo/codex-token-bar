@@ -64,6 +64,7 @@ final class ClaudeTranscriptClassificationTests: XCTestCase {
                 XCTAssertEqual(result.bytesRead, Self.maximumBytes)
                 XCTAssertEqual(reader.offset, Self.maximumBytes)
                 XCTAssertEqual(result.delimiterBytesExamined, Self.maximumBytes)
+                XCTAssertEqual(result.unfinishedRecordBytes, Self.maximumBytes)
                 assertLinearInspection(result)
             }
         }
@@ -84,6 +85,7 @@ final class ClaudeTranscriptClassificationTests: XCTestCase {
         XCTAssertEqual(result.bytesRead, Self.maximumBytes)
         XCTAssertEqual(reader.offset, Self.maximumBytes)
         XCTAssertEqual(result.delimiterBytesExamined, Self.maximumBytes)
+        XCTAssertNil(result.unfinishedRecordBytes)
         XCTAssertEqual(Data(bytes.suffix(desktop.count)), desktop)
         assertLinearInspection(result)
     }

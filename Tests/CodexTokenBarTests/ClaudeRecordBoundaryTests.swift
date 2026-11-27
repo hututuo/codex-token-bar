@@ -55,6 +55,29 @@ final class ClaudeRecordBoundaryTests: XCTestCase {
         }
     }
 
+    func testHistoryScannerDoesNotTreatTotalClassificationBudgetAsOversizedRecord() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("session.jsonl")
+        let completeRecord = try nonEntrypointRecord(bytes: Self.readWindowBytes, includeLF: true)
+        var contents = Data()
+        for _ in 0..<3 { contents.append(completeRecord) }
+        contents.append(try nonEntrypointRecord(bytes: Self.readWindowBytes + 1, includeLF: false))
+        XCTAssertEqual(contents.count, Self.maximumRecordBytes + 1)
+        try contents.write(to: source)
+
+        let ledger = try MultiClientUsageLedger(url: root.appendingPathComponent("usage.sqlite"))
+        let scanner = MultiClientUsageScanner(databaseURL: ledger.url, home: root, environment: [:])
+        let result = try await scanner.scan([preference(for: source)], includesCharts: false)
+
+        XCTAssertTrue(result.diagnostics.contains { $0.contains("日志分类未完成") })
+        XCTAssertFalse(result.diagnostics.contains { $0.contains("单条或单文件超过读取上限") })
+        XCTAssertTrue(result.summaries.isEmpty)
+        XCTAssertTrue(try events(in: ledger).isEmpty)
+        XCTAssertEqual(try revisionCount(in: ledger), 0)
+        XCTAssertNil(try ledger.checkpoint(client: .claudeCode, sourceKey: sourceKey(source)))
+    }
+
     func testHistoryScannerKeepsOtherClientRecordLimitsAt4MiB() async throws {
         for client in [UsageClient.gemini, .deepseek] {
             let root = try temporaryRoot()
@@ -292,6 +315,19 @@ final class ClaudeRecordBoundaryTests: XCTestCase {
 
     /// Every size includes its LF. Padding lives inside anonymous JSON content,
     /// never trailing whitespace; usage comes after the large value in wire order.
+    private func nonEntrypointRecord(bytes: Int, includeLF: Bool) throws -> Data {
+        let prefix = Data(#"{"padding":""#.utf8)
+        let suffix = Data(includeLF ? "\"}\n".utf8 : "\"}".utf8)
+        XCTAssertGreaterThanOrEqual(bytes, prefix.count + suffix.count)
+        var result = prefix
+        result.append(Data(repeating: 0x20, count: bytes - prefix.count - suffix.count))
+        result.append(suffix)
+        XCTAssertEqual(result.count, bytes)
+        if includeLF { _ = try JSONSerialization.jsonObject(with: result) }
+        else { _ = try JSONSerialization.jsonObject(with: result) }
+        return result
+    }
+
     private func record(id: String, seed: Int, bytes: Int? = nil,
                         shape: ContentShape = .plainText, includesUsage: Bool = true) throws -> Data {
         let contentStart: String

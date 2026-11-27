@@ -27,6 +27,9 @@ enum ClaudeTranscriptClassification {
         let evidence: Evidence
         let bytesRead: Int
         let delimiterBytesExamined: Int
+        /// Bytes held for the current JSONL tail after the most recent LF.
+        /// This is per-record evidence; `bytesRead` is the total classifier prefix budget.
+        let unfinishedRecordBytes: Int?
 
         var client: UsageClient? {
             switch evidence {
@@ -78,7 +81,8 @@ enum ClaudeTranscriptClassification {
             guard chunk.count <= requested else { throw CocoaError(.fileReadUnknown) }
             if chunk.isEmpty {
                 return Result(evidence: line.isEmpty ? .legacyCLI : .incomplete(.partialRecord),
-                              bytesRead: bytesRead, delimiterBytesExamined: examined)
+                              bytesRead: bytesRead, delimiterBytesExamined: examined,
+                              unfinishedRecordBytes: line.isEmpty ? nil : line.count)
             }
             let offset = bytesRead
             bytesRead += chunk.count
@@ -97,7 +101,7 @@ enum ClaudeTranscriptClassification {
                         depth += 1
                         if depth > maximumNestingDepth {
                             return Result(evidence: .incomplete(.nestingLimit), bytesRead: bytesRead,
-                                          delimiterBytesExamined: examined)
+                                          delimiterBytesExamined: examined, unfinishedRecordBytes: nil)
                         }
                     } else if byte == 0x7D || byte == 0x5D {
                         depth = max(0, depth - 1)
@@ -108,7 +112,8 @@ enum ClaudeTranscriptClassification {
                 if let client = source(inCompleteLine: line) {
                     let end = offset + chunk.distance(from: chunk.startIndex, to: index) + 1
                     return Result(evidence: .explicit(client: client, recordEnd: end),
-                                  bytesRead: bytesRead, delimiterBytesExamined: examined)
+                                  bytesRead: bytesRead, delimiterBytesExamined: examined,
+                                  unfinishedRecordBytes: nil)
                 }
                 line.removeAll(keepingCapacity: true)
                 depth = 0
@@ -118,7 +123,9 @@ enum ClaudeTranscriptClassification {
             }
             line.append(chunk[segment..<chunk.endIndex])
         }
-        return Result(evidence: .incomplete(.byteLimit), bytesRead: bytesRead, delimiterBytesExamined: examined)
+        return Result(evidence: .incomplete(.byteLimit), bytesRead: bytesRead,
+                      delimiterBytesExamined: examined,
+                      unfinishedRecordBytes: line.isEmpty ? nil : line.count)
     }
 
     private static func source(inCompleteLine rawLine: Data) -> UsageClient? {

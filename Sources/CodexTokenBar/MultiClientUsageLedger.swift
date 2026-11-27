@@ -140,22 +140,23 @@ final class MultiClientUsageLedger: @unchecked Sendable {
             database = probe
             return
         }
-        database = SQLiteDatabaseDriver(url: url, enableWAL: true)
-        if version < Self.schemaVersion {
-            // A preexisting unversioned database is backed up too; VACUUM INTO includes committed WAL data.
-            let tables = try database.readRows("SELECT name FROM sqlite_master WHERE type='table'") { $0.text(0) ?? "" }
-            if !tables.isEmpty { _ = try backup() }
-            try database.transaction { connection in
-                // Another process may have initialized or upgraded the file
-                // after the read-only admission probe above. Recheck while
-                // holding SQLite's writer lock before any schema DDL.
-                let transactionVersion = try Self.readUserVersion(in: connection)
-                guard transactionVersion <= Self.schemaVersion else {
-                    throw LedgerError.newerSchema(transactionVersion)
-                }
-                guard transactionVersion >= 0 else { throw LedgerError.incompatibleSchema }
-                if transactionVersion == Self.schemaVersion { return }
-                guard transactionVersion == version else { throw LedgerError.incompatibleSchema }
+        // Avoid opening a WAL-capable connection until full schema admission
+        // has been repeated under the writer lock. A peer can update the file
+        // after the read-only probe above.
+        let writable = SQLiteDatabaseDriver(url: url, enableWAL: false)
+        try writable.transaction { connection in
+            let transactionVersion = try Self.validateSchema(in: connection, requireCurrentVersion: false)
+            guard transactionVersion <= Self.schemaVersion else {
+                throw LedgerError.newerSchema(transactionVersion)
+            }
+            guard transactionVersion >= 0 else { throw LedgerError.incompatibleSchema }
+            guard transactionVersion == version else { throw LedgerError.incompatibleSchema }
+            if transactionVersion < Self.schemaVersion {
+                // Another process cannot change the source while this writer
+                // lock is held. The separate backup connection can copy the
+                // committed snapshot before the migration DDL below.
+                let tables = try connection.readRows("SELECT name FROM sqlite_master WHERE type='table'") { $0.text(0) ?? "" }
+                if !tables.isEmpty { _ = try Self.backup(url: url, using: writable) }
                 try connection.execute("""
                 CREATE TABLE IF NOT EXISTS client_usage_events (
                     client TEXT NOT NULL, event_id TEXT NOT NULL, session_id TEXT NOT NULL,
@@ -180,10 +181,12 @@ final class MultiClientUsageLedger: @unchecked Sendable {
                 try connection.execute("PRAGMA user_version=2")
             }
         }
+        database = SQLiteDatabaseDriver(url: url, enableWAL: true)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 
-    private static func validateSchema(in database: SQLiteDatabaseDriver, requireCurrentVersion: Bool) throws -> Int {
+    private static func validateSchema<Database: DatabaseAccessing>(in database: Database,
+                                                                      requireCurrentVersion: Bool) throws -> Int {
         let version = try database.readRows("PRAGMA user_version") { $0.int(0) ?? 0 }.first ?? 0
         guard version <= schemaVersion else { throw LedgerError.newerSchema(version) }
         guard version >= 0 else { throw LedgerError.incompatibleSchema }
@@ -205,10 +208,73 @@ final class MultiClientUsageLedger: @unchecked Sendable {
             let actual = try database.readRows("PRAGMA table_info(\(table))") { $0.text(1) ?? "" }
             guard fields.isSubset(of: Set(actual)) else { throw LedgerError.incompatibleSchema }
         }
+        if try objectExists("client_usage_events", in: database) {
+            guard try hasUniqueKey(in: database, table: "client_usage_events", columns: ["client", "event_id"]) else {
+                throw LedgerError.incompatibleSchema
+            }
+        }
+        if try objectExists("client_file_checkpoints", in: database) {
+            guard try hasUniqueKey(in: database, table: "client_file_checkpoints", columns: ["client", "source_key"]) else {
+                throw LedgerError.incompatibleSchema
+            }
+        }
+        if try objectExists("multi_usage_metadata", in: database) {
+            guard try hasUniqueKey(in: database, table: "multi_usage_metadata", columns: ["key"]) else {
+                throw LedgerError.incompatibleSchema
+            }
+        }
+        if try objectExists("client_usage_revisions", in: database) {
+            let revisionColumns = try database.readRows("PRAGMA table_info(client_usage_revisions)") {
+                ($0.text(1) ?? "", ($0.text(2) ?? "").uppercased(), $0.int(5) ?? 0)
+            }
+            let primaryKeyColumns = revisionColumns.filter { $0.2 > 0 }
+            let primaryKeyIndexes = try database.readRows("PRAGMA index_list(client_usage_revisions)") {
+                $0.text(3) ?? ""
+            }
+            // `INTEGER PRIMARY KEY` aliases rowid only when it is the sole key.
+            // SQLite's legacy inline DESC form and WITHOUT ROWID tables instead
+            // create a PK index and allow omitted revisions to remain NULL.
+            guard primaryKeyColumns.count == 1,
+                  primaryKeyColumns[0].0 == "revision",
+                  primaryKeyColumns[0].1 == "INTEGER",
+                  !primaryKeyIndexes.contains("pk") else {
+                throw LedgerError.incompatibleSchema
+            }
+        }
         if requireCurrentVersion {
             guard version == schemaVersion else { throw LedgerError.incompatibleSchema }
         }
         return version
+    }
+
+    private static func objectExists<Database: DatabaseAccessing>(_ name: String, in database: Database) throws -> Bool {
+        try !database.readRows(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? COLLATE NOCASE",
+            bindings: [.text(name)]
+        ) { _ in true }.isEmpty
+    }
+
+    /// Validate the exact key columns used by the ledger's UPSERTs. SQLite
+    /// accepts a permutation of the columns in an UPSERT conflict target, but
+    /// a partial or wider unique index does not protect that key.
+    private static func hasUniqueKey<Database: DatabaseAccessing>(in database: Database, table: String,
+                                                                  columns: [String]) throws -> Bool {
+        let quotedTable = "\"" + table.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+        let indexes = try database.readRows("PRAGMA index_list(\(quotedTable))") {
+            (name: $0.text(1) ?? "", unique: $0.int(2) ?? 0, partial: $0.int(4) ?? 0)
+        }
+        for index in indexes where index.unique == 1 && index.partial == 0 {
+            let quotedIndex = "\"" + index.name.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+            let entries = try database.readRows("PRAGMA index_xinfo(\(quotedIndex))") {
+                (sequence: $0.int(0) ?? -1, name: $0.text(2), collation: $0.text(4), isKey: $0.int(5) == 1)
+            }.filter(\.isKey).sorted { $0.sequence < $1.sequence }
+            guard entries.count == columns.count,
+                  entries.allSatisfy({ $0.name != nil && ($0.collation ?? "").uppercased() == "BINARY" }) else {
+                continue
+            }
+            if Set(entries.compactMap(\.name)) == Set(columns) { return true }
+        }
+        return false
     }
 
     enum LedgerError: LocalizedError {
@@ -239,12 +305,28 @@ final class MultiClientUsageLedger: @unchecked Sendable {
     }
 
     @discardableResult func backup() throws -> URL {
+        try Self.backup(url: url, using: database)
+    }
+
+    private static func backup(url: URL, using database: SQLiteDatabaseDriver) throws -> URL {
         let folder = url.deletingLastPathComponent().appendingPathComponent("backups", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: folder.path)
         let target = folder.appendingPathComponent("multi-client-usage-\(UUID().uuidString).sqlite")
-        try database.execute("VACUUM INTO ?", bindings: [.text(target.path)])
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
-        return target
+        do {
+            // `backup()` can run while the source connection holds BEGIN IMMEDIATE
+            // during migration. VACUUM INTO needs a conflicting source lock;
+            // SQLite's online backup API can snapshot this stable, read-only view.
+            let destination = SQLiteDatabaseDriver(url: target, bypassBusinessRoutes: true)
+            try destination.withConnection { try $0.restorePhysicalDatabase(from: url) }
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
+            return target
+        } catch {
+            try? FileManager.default.removeItem(at: target)
+            try? FileManager.default.removeItem(atPath: target.path + "-wal")
+            try? FileManager.default.removeItem(atPath: target.path + "-shm")
+            throw error
+        }
     }
 
     /// The latest request record is the projection; every changed record remains in the revision ledger.
