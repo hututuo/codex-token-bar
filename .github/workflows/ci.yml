@@ -189,6 +189,39 @@ jobs:
           if [[ "$CLAUDE_USAGE_ONLY" == true ]]; then
             python3 scripts/check_test_execution.py --kind swift --log swift-tests.log --source-sha "$SOURCE_SHA" \
               --allow-untracked-output 'visual-previews/*.png' \
+              --require testShortExplicitHeaderUsesOne4KiBRead \
+              --require testPaddedValidJSONFindsEntrypointBeforeAndAfterContent \
+              --require testExactly64KiBRecordIncludesLFAndIsExplicit \
+              --require test64KiBPlusOneRecordIncludesLFAndIsExplicit \
+              --require test1MiBRecordIncludesLFAndIsExplicit \
+              --require testExactly4MiBRecordIncludesLFAndIsExplicit \
+              --require testExactly16MiBRecordIncludesLFAndIsExplicit \
+              --require test16MiBPlusOneRecordRemainsIncompleteAtTotalBudget \
+              --require testByteLimitAppliesToTotalPrefixAcrossCompleteLines \
+              --require testCompleteJSONWithoutLFRemainsPartialForEveryEntrypointShape \
+              --require testCleanEOFAfterInvalidNestedBlankAndMissingEntrypointRecordsUsesLegacyCLI \
+              --require testEmptyCleanEOFUsesLegacyCLI \
+              --require testFirstExplicitEntrypointWins \
+              --require testBOMAndCRLFAllowExplicitEntrypointsAcrossChunkBoundaries \
+              --require testDelimiterInspectionIsLinearAcrossManyCompleteLines \
+              --require testDelimiterInspectionDoesNotRevisitLongPartialRecords \
+              --require testInjectedReaderErrorPropagatesDuringFallback \
+              --require testOversizedInjectedReadIsRejected \
+              --require testConfiguredByteLimitStopsBeforeCommittedRecordEnd \
+              --require testCompleteRecordsAtByteLimitDoNotAssumeCleanEOF \
+              --require testConfiguredByteLimitCannotExceedMaximumBytes \
+              --require testNonpositiveByteLimitDoesNotReadOrDefaultToCLI \
+              --require testRealSyntheticFileFindsDesktopEntrypointInFallback \
+              --require testRealSyntheticFileKeepsCompleteJSONWithoutLFPartial \
+              --require testRealSyntheticFileUsesLegacyCLIAtCleanEOF \
+              --require testSourceReplacementDuringFallbackIsRejected \
+              --require testSourceAppendDuringFallbackIsRejected \
+              --require testMismatchedPinnedSourceIsRejectedBeforeReading \
+              --require testMaximumNestingDepth127RemainsExplicitForBothEntrypointOrders \
+              --require testNestingDepth128NeverFallsThroughToFollowingCLIRecord \
+              --require testNestingDepth128WithoutLFReturnsNestingLimit \
+              --require testQuotedBracketsAndEscapesAcrossChunksDoNotIncreaseNestingDepth \
+              --require testMalformedAndBlankLinesResetNestingAndStringState \
               --require testHistoryScannerAccepts64KiBRecordAndShortSuccessor \
               --require testHistoryScannerAccepts1MiBRecordAndShortSuccessor \
               --require testHistoryScannerAcceptsExactly4MiBRecordAndShortSuccessorAcrossScans \
@@ -200,11 +233,44 @@ jobs:
               --require testHistoryScannerKeepsOtherClientRecordLimitsAt4MiB \
               --require testHistoryScannerRejects16MiBPlusOneWithoutCheckpointOrSuccessorUsage \
               --require testHistoryScannerPreservesCommittedPrefixAndResumesAfterSameFileRepair -- \
-              swift test --filter 'MultiClientUsage|ClaudeRecordBoundaryTests|ClaudeDesktopQuotaHistory|ClaudeLocalQuota|MultiClientQuotaAutodiscovery|MultiClientProduct|IntegratedClientPresentation'
+              swift test --filter 'MultiClientUsage|ClaudeTranscriptClassificationTests|ClaudeRecordBoundaryTests|ClaudeDesktopQuotaHistory|ClaudeLocalQuota|MultiClientQuotaAutodiscovery|MultiClientProduct|IntegratedClientPresentation'
             exit 0
           fi
           python3 scripts/check_test_execution.py --kind swift --log swift-tests.log --source-sha "$SOURCE_SHA" \
             --allow-untracked-output 'visual-previews/*.png' \
+            --require testShortExplicitHeaderUsesOne4KiBRead \
+            --require testPaddedValidJSONFindsEntrypointBeforeAndAfterContent \
+            --require testExactly64KiBRecordIncludesLFAndIsExplicit \
+            --require test64KiBPlusOneRecordIncludesLFAndIsExplicit \
+            --require test1MiBRecordIncludesLFAndIsExplicit \
+            --require testExactly4MiBRecordIncludesLFAndIsExplicit \
+            --require testExactly16MiBRecordIncludesLFAndIsExplicit \
+            --require test16MiBPlusOneRecordRemainsIncompleteAtTotalBudget \
+            --require testByteLimitAppliesToTotalPrefixAcrossCompleteLines \
+            --require testCompleteJSONWithoutLFRemainsPartialForEveryEntrypointShape \
+            --require testCleanEOFAfterInvalidNestedBlankAndMissingEntrypointRecordsUsesLegacyCLI \
+            --require testEmptyCleanEOFUsesLegacyCLI \
+            --require testFirstExplicitEntrypointWins \
+            --require testBOMAndCRLFAllowExplicitEntrypointsAcrossChunkBoundaries \
+            --require testDelimiterInspectionIsLinearAcrossManyCompleteLines \
+            --require testDelimiterInspectionDoesNotRevisitLongPartialRecords \
+            --require testInjectedReaderErrorPropagatesDuringFallback \
+            --require testOversizedInjectedReadIsRejected \
+            --require testConfiguredByteLimitStopsBeforeCommittedRecordEnd \
+            --require testCompleteRecordsAtByteLimitDoNotAssumeCleanEOF \
+            --require testConfiguredByteLimitCannotExceedMaximumBytes \
+            --require testNonpositiveByteLimitDoesNotReadOrDefaultToCLI \
+            --require testRealSyntheticFileFindsDesktopEntrypointInFallback \
+            --require testRealSyntheticFileKeepsCompleteJSONWithoutLFPartial \
+            --require testRealSyntheticFileUsesLegacyCLIAtCleanEOF \
+            --require testSourceReplacementDuringFallbackIsRejected \
+            --require testSourceAppendDuringFallbackIsRejected \
+            --require testMismatchedPinnedSourceIsRejectedBeforeReading \
+            --require testMaximumNestingDepth127RemainsExplicitForBothEntrypointOrders \
+            --require testNestingDepth128NeverFallsThroughToFollowingCLIRecord \
+            --require testNestingDepth128WithoutLFReturnsNestingLimit \
+            --require testQuotedBracketsAndEscapesAcrossChunksDoNotIncreaseNestingDepth \
+            --require testMalformedAndBlankLinesResetNestingAndStringState \
             --require testPreciseStartupAndWarmRefreshExposePreparationAndCompleteTheStream \
             --require testEmptyLedgerPeakQueriesKeepMeasuredBucketsUnallocated \
             --require testUnmeasuredRecordsKeepBucketsUnallocatedAndTotalsIntact \
@@ -449,6 +515,18 @@ jobs:
           set -euo pipefail
           if [[ "$CLAUDE_USAGE_ONLY" == true ]]; then
             python scripts/check_test_execution.py --kind rust --log native-library.log --source-sha "$SOURCE_SHA" \
+              --require claude_classification_short_header_keeps_one_small_read_and_first_explicit_source \
+              --require claude_classification_long_first_records_are_explicit_at_exact_lf_boundaries \
+              --require claude_classification_total_prefix_limit_never_resets_or_accepts_late_lf \
+              --require claude_classification_only_clean_record_eof_uses_legacy_default \
+              --require claude_classification_bom_crlf_invalid_and_nested_values_keep_top_level_contract \
+              --require claude_classification_short_reads_remain_linear_and_reader_failures_propagate \
+              --require claude_classification_synthetic_file_and_pinned_handle_reject_named_replacement \
+              --require claude_classification_append_during_fallback_invalidates_its_observation \
+              --require claude_classification_nesting_depth127_keeps_both_entrypoint_orders_explicit \
+              --require claude_classification_depth128_never_falls_through_to_later_cli_or_eof \
+              --require claude_classification_quoted_brackets_and_escaped_quotes_survive_chunk_boundaries \
+              --require claude_classification_malformed_lines_reset_depth_string_and_escape_state \
               --require claude_jsonl_record_size_matrix_preserves_usage_and_exact_checkpoints \
               --require claude_jsonl_incomplete_append_waits_through_reopen_until_line_feed \
               --require claude_jsonl_sixteen_mib_limit_preserves_absent_and_committed_ledgers \
@@ -471,6 +549,18 @@ jobs:
               --require windows_quota_uses_only_summary_and_revalidates_identity \
               --require confirmed_antigravity_route_prices_match_canonical_models_and_legacy_opus_prices \
               --require claude_cache_write_lifetimes_prefer_valid_split_and_default_to_five_minutes \
+              --require claude_classification_short_header_keeps_one_small_read_and_first_explicit_source \
+              --require claude_classification_long_first_records_are_explicit_at_exact_lf_boundaries \
+              --require claude_classification_total_prefix_limit_never_resets_or_accepts_late_lf \
+              --require claude_classification_only_clean_record_eof_uses_legacy_default \
+              --require claude_classification_bom_crlf_invalid_and_nested_values_keep_top_level_contract \
+              --require claude_classification_short_reads_remain_linear_and_reader_failures_propagate \
+              --require claude_classification_synthetic_file_and_pinned_handle_reject_named_replacement \
+              --require claude_classification_append_during_fallback_invalidates_its_observation \
+              --require claude_classification_nesting_depth127_keeps_both_entrypoint_orders_explicit \
+              --require claude_classification_depth128_never_falls_through_to_later_cli_or_eof \
+              --require claude_classification_quoted_brackets_and_escaped_quotes_survive_chunk_boundaries \
+              --require claude_classification_malformed_lines_reset_depth_string_and_escape_state \
               --require claude_jsonl_record_size_matrix_preserves_usage_and_exact_checkpoints \
               --require claude_jsonl_incomplete_append_waits_through_reopen_until_line_feed \
               --require claude_jsonl_sixteen_mib_limit_preserves_absent_and_committed_ledgers \

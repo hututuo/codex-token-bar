@@ -22,6 +22,9 @@ use time::{Date, Duration as CalendarDuration, OffsetDateTime};
 #[path = "antigravity_usage.rs"]
 mod antigravity;
 
+#[path = "claude_transcript_classification.rs"]
+mod claude_transcript_classification;
+
 #[cfg(test)]
 #[path = "multi_client_response_tests.rs"]
 mod response_tests;
