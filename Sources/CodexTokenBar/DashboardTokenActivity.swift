@@ -9,7 +9,7 @@ struct DashboardTokenActivity: View {
     @Binding var selectedMode: ActivityMode
     @ObservedObject private var clients = MultiClientUsageStore.shared
     @State private var projection = ClientDashboardProjectionCache()
-    @AppStorage("heatmapClientScope.v1") private var selection = "dashboard"
+    @AppStorage(RecentChartClientScope.heatmapKey) private var selection = RecentChartClientScope.followDashboard
     @AppStorage("heatmapQuotaSource.v1") private var quotaSelection = "codex"
     @AppStorage("heatmapQuotaPeriod.v1") private var period = "7d"
     @AppStorage(SharedAccountUsageAttributionSettings.priceModelKey) private var priceRaw = OfficialAPIPriceModel.gpt56Sol.rawValue

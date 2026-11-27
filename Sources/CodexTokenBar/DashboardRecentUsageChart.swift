@@ -12,11 +12,20 @@ enum DashboardSelectionBinding {
 /// heatmap, or ranking. An unavailable saved choice follows the page again.
 enum RecentChartClientScope {
     static let key = "recentChartClientScope.v1"
+    static let heatmapKey = "heatmapClientScope.v1"
     static let followDashboard = "dashboard"
     static func resolved(_ selection: String, page: Set<String>, available: [String]) -> Set<String> {
         guard selection != followDashboard,
               selection == "all" || selection == "codex" || available.contains(selection) else { return page }
         return ClientDisplayScope.clients(selection, available: available)
+    }
+
+    static func needsExternalCharts(
+        page: Set<String>, heatmap: String, recent: String, available: [String]
+    ) -> Bool {
+        let scopes = [page, resolved(heatmap, page: page, available: available),
+                      resolved(recent, page: page, available: available)]
+        return scopes.contains { $0.contains { $0 != "codex" } }
     }
 }
 

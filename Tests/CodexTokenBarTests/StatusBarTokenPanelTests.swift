@@ -281,6 +281,35 @@ final class StatusBarTokenPanelTests: XCTestCase {
         XCTAssertTrue(lifecycle.close())
     }
 
+    func testIconOnlyStatusBarStopsAndRestartsMetricsTimerWithoutLosingOwners() {
+        let owners = (0..<6).map { _ in NSObject() }
+        let identity = StatusBarOwnerIdentity(
+            store: owners[0], monitor: owners[1], quota: owners[2], radar: owners[3],
+            taskCompletionMonitor: owners[4]
+        )
+        let replacement = StatusBarOwnerIdentity(
+            store: owners[5], monitor: owners[1], quota: owners[2], radar: owners[3],
+            taskCompletionMonitor: owners[4]
+        )
+        let lifecycle = StatusBarLifecycleState()
+        XCTAssertEqual(lifecycle.bind(identity, metricsEnabled: false), .init(assignRoot: true, startTimer: false))
+        XCTAssertEqual(lifecycle.bind(identity, metricsEnabled: false), .init(assignRoot: false, startTimer: false))
+        XCTAssertEqual(lifecycle.bind(replacement, metricsEnabled: false), .init(assignRoot: true, startTimer: false))
+        XCTAssertEqual(lifecycle.bind(replacement), .init(assignRoot: false, startTimer: true))
+        XCTAssertEqual(lifecycle.bind(replacement), .init(assignRoot: false, startTimer: false))
+        XCTAssertEqual(lifecycle.bind(replacement, metricsEnabled: false),
+                       .init(assignRoot: false, startTimer: false, stopTimer: true))
+        XCTAssertEqual(lifecycle.bind(replacement), .init(assignRoot: false, startTimer: true))
+        XCTAssertEqual(lifecycle.bind(identity, metricsEnabled: false),
+                       .init(assignRoot: true, startTimer: false, stopTimer: true))
+        XCTAssertEqual(lifecycle.bind(identity, metricsEnabled: false), .init(assignRoot: false, startTimer: false))
+        XCTAssertEqual(lifecycle.bind(identity), .init(assignRoot: false, startTimer: true))
+        XCTAssertTrue(lifecycle.close())
+        XCTAssertFalse(lifecycle.close())
+        XCTAssertEqual(lifecycle.bind(identity, metricsEnabled: false), .init(assignRoot: true, startTimer: false))
+        XCTAssertFalse(lifecycle.close(), "The icon remains usable without owning a periodic refresh")
+    }
+
     func testStatusBarTitleAlwaysUsesOneDecimalForSafeRates() {
         for rate in [10.1, 42.4, 80.0, 100.0, 123.4] {
             let snapshot = TokenDisplaySnapshot(

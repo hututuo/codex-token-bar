@@ -257,6 +257,10 @@ jobs:
           python3 scripts/check_test_execution.py --kind swift --log swift-tests.log --source-sha "$SOURCE_SHA" \
             --allow-untracked-output 'visual-previews/*.png' \
             --require testRefreshReconcilesSelectionAgainstActiveInactivityFilter \
+            --require testIconOnlyStatusBarStopsAndRestartsMetricsTimerWithoutLosingOwners \
+            --require testExternalChartDemandTracksPageAndBothIndependentSelections \
+            --require testExternalChartDemandReevaluatesUnavailableChoicesAndAllClients \
+            --require testUsageChartsReloadFromLedgerAfterLastDashboardCloses \
             --require testClaudeDiscoverySharesTraversalBudgetWithLaterAccountRoots \
             --require testClaudeDiscoveryDeduplicatesRootsBeforeSharingBudgetAndKeepsSelectedAlias \
             --require testClaudeDiscoveryMissingRootsDoNotConsumeTraversalShares \

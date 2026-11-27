@@ -3,6 +3,37 @@ import XCTest
 @testable import CodexTokenBar
 
 final class RecentChartClientScopeTests: XCTestCase {
+    func testExternalChartDemandTracksPageAndBothIndependentSelections() {
+        let available = ["claudeCode", "antigravity"]
+        for (page, heatmap, recent, expected) in [
+            (Set(["codex"]), "dashboard", "dashboard", false),
+            (Set(["codex", "claudeCode"]), "codex", "codex", true),
+            (Set(["codex"]), "antigravity", "dashboard", true),
+            (Set(["codex"]), "dashboard", "claudeCode", true),
+            (Set(["codex"]), "all", "codex", true),
+            (Set(["codex"]), "codex", "all", true),
+        ] {
+            XCTAssertEqual(RecentChartClientScope.needsExternalCharts(
+                page: page, heatmap: heatmap, recent: recent, available: available
+            ), expected, "page=\(page) heatmap=\(heatmap) recent=\(recent)")
+        }
+    }
+
+    func testExternalChartDemandReevaluatesUnavailableChoicesAndAllClients() {
+        XCTAssertFalse(RecentChartClientScope.needsExternalCharts(
+            page: ["codex"], heatmap: "removed", recent: "claudeCode", available: []
+        ))
+        XCTAssertTrue(RecentChartClientScope.needsExternalCharts(
+            page: ["claudeDesktop"], heatmap: "removed", recent: "removed", available: ["claudeDesktop"]
+        ))
+        XCTAssertFalse(RecentChartClientScope.needsExternalCharts(
+            page: ["codex"], heatmap: "all", recent: "all", available: []
+        ))
+        XCTAssertTrue(RecentChartClientScope.needsExternalCharts(
+            page: ["codex"], heatmap: "all", recent: "all", available: ["claudeDesktop"]
+        ))
+    }
+
     func testChartClientSelectionIsIndependentAndUnavailableChoiceFollowsPage() {
         let page: Set<String> = ["codex", "claudeCode"]
         let available = ["claudeCode", "antigravity"]

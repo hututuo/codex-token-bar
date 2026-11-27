@@ -46,6 +46,8 @@ enum DashboardPreciseCatchUpPolicy {
 struct DashboardView: View {
     @ObservedObject private var clients = MultiClientUsageStore.shared
     @AppStorage(ClientDisplayScope.key) private var clientScope = "codex"
+    @AppStorage(RecentChartClientScope.heatmapKey) private var heatmapClientScope = RecentChartClientScope.followDashboard
+    @AppStorage(RecentChartClientScope.key) private var recentChartClientScope = RecentChartClientScope.followDashboard
     private var allowedClients: Set<String> {
         ClientDisplayScope.clients(clientScope, available: clients.displayClientIDs)
     }
@@ -59,6 +61,13 @@ struct DashboardView: View {
     @ObservedObject var autoResumeController: AutoResumeTaskManager
     private let runtime: DashboardRuntime
     @State private var runtimeConsumerID = UUID()
+    @State private var usageChartConsumerActive = false
+    private var needsExternalUsageCharts: Bool {
+        RecentChartClientScope.needsExternalCharts(
+            page: allowedClients, heatmap: heatmapClientScope, recent: recentChartClientScope,
+            available: clients.displayClientIDs
+        )
+    }
     @ObservedObject private var store: CodexUsageStore
     @ObservedObject private var quotaStore: AccountQuotaStore
     @ObservedObject private var quotaHistoryStore: QuotaHistoryStore
@@ -422,7 +431,8 @@ struct DashboardView: View {
             )
             quotaHistoryStore.setProjectionDemand(.dashboard, consumer: runtimeConsumerID)
             clients.setQuotaHistoryDemand(.dashboard, consumer: runtimeConsumerID)
-            clients.setUsageChartDemand(true, consumer: runtimeConsumerID)
+            usageChartConsumerActive = true
+            clients.setUsageChartDemand(needsExternalUsageCharts, consumer: runtimeConsumerID)
             reportRuntimeConfiguration()
             consumePendingSettingsRequest()
             migrateSharedAccountPriceModelIfNeeded()
@@ -435,6 +445,10 @@ struct DashboardView: View {
         }
         .onChange(of: runtimeConfigurationSignature) {
             reportRuntimeConfiguration()
+        }
+        .onChange(of: needsExternalUsageCharts) { _, required in
+            guard usageChartConsumerActive else { return }
+            clients.setUsageChartDemand(required, consumer: runtimeConsumerID)
         }
         .onChange(of: filterQuotaHistoryAnomalies) {
             quotaHistoryStore.reload()
@@ -473,6 +487,7 @@ struct DashboardView: View {
             showingSharedAccountAttributionDetails = false
         }
         .onDisappear {
+            usageChartConsumerActive = false
             quotaHistoryStore.setProjectionDemand(nil, consumer: runtimeConsumerID)
             clients.setQuotaHistoryDemand(nil, consumer: runtimeConsumerID)
             clients.setUsageChartDemand(false, consumer: runtimeConsumerID)

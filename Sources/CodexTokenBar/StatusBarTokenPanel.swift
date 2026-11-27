@@ -20,6 +20,13 @@ struct StatusBarOwnerIdentity: Equatable {
 struct StatusBarLifecycleDecision: Equatable {
     let assignRoot: Bool
     let startTimer: Bool
+    let stopTimer: Bool
+
+    init(assignRoot: Bool, startTimer: Bool, stopTimer: Bool = false) {
+        self.assignRoot = assignRoot
+        self.startTimer = startTimer
+        self.stopTimer = stopTimer
+    }
 }
 
 enum StatusBarRefreshCadence {
@@ -41,14 +48,16 @@ final class StatusBarLifecycleState {
     private var timerActive = false
     private var lastPresentation: StatusBarTokenItemPresentation?
 
-    func bind(_ identity: StatusBarOwnerIdentity) -> StatusBarLifecycleDecision {
+    func bind(_ identity: StatusBarOwnerIdentity, metricsEnabled: Bool = true) -> StatusBarLifecycleDecision {
         let ownerChanged = ownerIdentity != identity
         ownerIdentity = identity
-        let shouldStartTimer = !timerActive
-        timerActive = true
+        let shouldStartTimer = metricsEnabled && !timerActive
+        let shouldStopTimer = !metricsEnabled && timerActive
+        timerActive = metricsEnabled
         return StatusBarLifecycleDecision(
             assignRoot: ownerChanged,
-            startTimer: shouldStartTimer
+            startTimer: shouldStartTimer,
+            stopTimer: shouldStopTimer
         )
     }
 
@@ -132,7 +141,7 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
             quota: quota,
             radar: radar,
             taskCompletionMonitor: taskCompletionMonitor
-        ))
+        ), metricsEnabled: metricsEnabled)
 
         if statusItem == nil {
             let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -163,6 +172,10 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
             )
         }
 
+        if lifecycleDecision.stopTimer {
+            timer?.invalidate()
+            timer = nil
+        }
         updateStatusItem()
         if lifecycleDecision.startTimer {
             timer = Timer.scheduledTimer(withTimeInterval: StatusBarRefreshCadence.statusItem, repeats: true) { [weak self] _ in
@@ -231,41 +244,38 @@ final class StatusBarTokenController: NSObject, ObservableObject, NSPopoverDeleg
     }
 
     private func updateStatusItem() {
-        guard let store, let monitor, let quota, let radar, let taskCompletionMonitor else { return }
-        let snapshot = TokenDisplaySnapshot.make(
-            store: store,
-            monitor: monitor,
-            quota: quota,
-            runningThreads: taskCompletionMonitor.runningThreadSummary
-        )
-        let radarPresentation = CodexRadarPresentationState(
-            snapshot: radar.snapshot,
-            status: radar.status,
-            diagnostics: radar.diagnostics,
-            staleDataDisplayed: radar.staleDataDisplayed,
-            feedStaleDataDisplayed: radar.feedStaleDataDisplayed,
-            crowdSnapshot: radar.crowdSnapshot
-        )
-        let presentationConfiguration = metricsEnabled
-            ? metricConfiguration
-            : StatusBarMetricConfiguration(
-                version: metricConfiguration.version,
-                orderedMetricIDs: metricConfiguration.orderedMetricIDs,
-                selectedMetricIDs: [],
-                showsIcon: true,
-                labelStyle: metricConfiguration.labelStyle
+        let metricsPresentation: StatusBarMetricsPresentation
+        if metricsEnabled {
+            guard let store, let monitor, let quota, let radar, let taskCompletionMonitor else { return }
+            let snapshot = TokenDisplaySnapshot.make(
+                store: store,
+                monitor: monitor,
+                quota: quota,
+                runningThreads: taskCompletionMonitor.runningThreadSummary
             )
-        let metricsPresentation = StatusBarMetricsPresentation.make(
-            values: StatusBarMetricValues(
-                snapshot: snapshot,
-                radar: radarPresentation,
-                rateAvailable: monitor.displayRateAvailable,
-                unreadThreadCount: taskCompletionMonitor.statusBarUnreadThreadCount
-            ),
-            configuration: presentationConfiguration
-        )
+            let radarPresentation = CodexRadarPresentationState(
+                snapshot: radar.snapshot,
+                status: radar.status,
+                diagnostics: radar.diagnostics,
+                staleDataDisplayed: radar.staleDataDisplayed,
+                feedStaleDataDisplayed: radar.feedStaleDataDisplayed,
+                crowdSnapshot: radar.crowdSnapshot
+            )
+            metricsPresentation = StatusBarMetricsPresentation.make(
+                values: StatusBarMetricValues(
+                    snapshot: snapshot,
+                    radar: radarPresentation,
+                    rateAvailable: monitor.displayRateAvailable,
+                    unreadThreadCount: taskCompletionMonitor.statusBarUnreadThreadCount
+                ),
+                configuration: metricConfiguration
+            )
+        } else {
+            // The recovery icon and its accessible description have no live values.
+            metricsPresentation = StatusBarMetricsPresentation(segments: [])
+        }
         guard let button = statusItem?.button else { return }
-        let showsRecoveryIcon = presentationConfiguration.showsIcon || metricsPresentation.text.isEmpty
+        let showsRecoveryIcon = !metricsEnabled || metricConfiguration.showsIcon || metricsPresentation.text.isEmpty
         let presentation = StatusBarTokenItemPresentation(
             title: metricsPresentation.text,
             accessibilityValue: metricsPresentation.accessibilityValue,
