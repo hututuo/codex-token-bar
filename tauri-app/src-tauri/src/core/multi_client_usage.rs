@@ -53,7 +53,7 @@ const DATABASE_BUSY_TIMEOUT: Duration = Duration::from_secs(3);
 type EventKey = (String, String, String);
 
 static MULTI_CLIENT_USAGE_GATE: OnceLock<Mutex<()>> = OnceLock::new();
-static MULTI_CLIENT_SCAN_CURSOR: OnceLock<Mutex<usize>> = OnceLock::new();
+static MULTI_CLIENT_SCAN_CURSORS: OnceLock<Mutex<HashMap<PathBuf, usize>>> = OnceLock::new();
 static MULTI_CLIENT_AGGREGATE_CACHE: OnceLock<Mutex<MultiClientAggregateCache>> = OnceLock::new();
 static MULTI_CLIENT_PRICE_CACHE: OnceLock<Mutex<MultiClientPriceCache>> = OnceLock::new();
 static MULTI_CLIENT_SCOPED_SUMMARY_CACHE: OnceLock<Mutex<MultiClientScopedSummaryCache>> =
@@ -1243,11 +1243,12 @@ fn refresh_multi_client_usage_at(
     if !work.is_empty() {
         let mut claude_classification_budget = CLAUDE_CLASSIFICATION_TOTAL_BYTES;
         let start = {
-            let cursor = MULTI_CLIENT_SCAN_CURSOR.get_or_init(|| Mutex::new(0));
-            let cursor = cursor.lock().map_err(|error| error.to_string())?;
-            *cursor % work.len()
+            let cursors = MULTI_CLIENT_SCAN_CURSORS.get_or_init(Default::default);
+            let mut cursors = cursors.lock().map_err(|error| error.to_string())?;
+            *cursors.entry(database_path.to_path_buf()).or_default() % work.len()
         };
         let count = work.len().min(200);
+        let mut next_cursor_after_budget = None;
         for step in 0..count {
             let (client, path) = &work[(start + step) % work.len()];
             let is_database = client == "opencode"
@@ -1278,12 +1279,18 @@ fn refresh_multi_client_usage_at(
             if let Err(error) = result {
                 diagnostics.push(format!("{client}: 无法读取 {}: {error}", path.display()));
             }
+            if claude_classification_budget == 0 && next_cursor_after_budget.is_none() {
+                next_cursor_after_budget = Some((start + step + 1) % work.len());
+            }
         }
-        if let Ok(mut cursor) = MULTI_CLIENT_SCAN_CURSOR
-            .get_or_init(|| Mutex::new(0))
+        if let Ok(mut cursors) = MULTI_CLIENT_SCAN_CURSORS
+            .get_or_init(Default::default)
             .lock()
         {
-            *cursor = (start + count) % work.len();
+            cursors.insert(
+                database_path.to_path_buf(),
+                next_cursor_after_budget.unwrap_or((start + count) % work.len()),
+            );
         }
         if count < work.len() {
             diagnostics.push(format!(
@@ -6141,6 +6148,78 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(checkpoint.offset, content.len() as u64);
+    }
+
+    #[test]
+    fn refresh_rotates_after_claude_classification_budget_exhaustion() {
+        let temporary = TempDir::new("claude-refresh-classification-fairness");
+        let database = temporary.path().join("multi-client-usage.sqlite");
+        let settings = temporary.path().join("settings.json");
+        let root = temporary.path().join("claude");
+        fs::create_dir_all(&root).unwrap();
+        for index in 0..4 {
+            let path = root.join(format!("blocker-{index}.jsonl"));
+            fs::File::create(&path)
+                .unwrap()
+                .set_len(16 * 1024 * 1024)
+                .unwrap();
+        }
+        let valid_desktop = root.join("zzzz-desktop.jsonl");
+        fs::write(
+            &valid_desktop,
+            br#"{"entrypoint":"claude-desktop-3p","sessionId":"desktop-session","type":"assistant","timestamp":"2026-11-26T10:02:04.000Z","message":{"id":"desktop-event","model":"claude-opus-5-5","usage":{"input_tokens":123,"output_tokens":17}}}
+"#,
+        )
+        .unwrap();
+        let preferences = preferences_for(&[("claudeDesktop", root.as_path())]);
+        let bytes = serde_json::to_vec(&PreferencesFile {
+            schema_version: 1,
+            preferences,
+        })
+        .unwrap();
+        fs::write(&settings, bytes).unwrap();
+        MULTI_CLIENT_SCAN_CURSORS
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap()
+            .remove(&database);
+
+        refresh_multi_client_usage_at(&settings, &database).unwrap();
+        let connection = open_database(&database).unwrap();
+        let first_desktop_rows: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM client_usage_events WHERE client='claudeDesktop'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(first_desktop_rows, 0, "the 64 MiB classification cap is respected");
+        drop(connection);
+
+        refresh_multi_client_usage_at(&settings, &database).unwrap();
+        let connection = open_database(&database).unwrap();
+        let desktop_rows: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM client_usage_events WHERE client='claudeDesktop'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let cli_rows: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM client_usage_events WHERE client='claudeCode'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(desktop_rows, 1, "a later Desktop source progresses on the next refresh");
+        assert_eq!(cli_rows, 0, "incomplete files must not be credited to Claude Code");
+        drop(connection);
+        MULTI_CLIENT_SCAN_CURSORS
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap()
+            .remove(&database);
     }
 
     #[test]

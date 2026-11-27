@@ -637,26 +637,26 @@ fn input_span_and_query_series_are_bounded() {
 }
 
 #[test]
-fn schema_initialization_preserves_user_version_and_usage_ledger() {
+fn standalone_schema_initialization_preserves_user_version_and_unrelated_rows() {
     let connection = Connection::open_in_memory().unwrap();
     connection
         .execute_batch(
             "PRAGMA user_version=17;
-             CREATE TABLE client_usage_events(event_id TEXT PRIMARY KEY);
-             INSERT INTO client_usage_events(event_id) VALUES('kept');",
+             CREATE TABLE unrelated_business_records(record_id TEXT PRIMARY KEY);
+             INSERT INTO unrelated_business_records(record_id) VALUES('kept');",
         )
         .unwrap();
     create_schema(&connection).unwrap();
     let user_version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    let ledger_rows: i64 = connection
-        .query_row("SELECT COUNT(*) FROM client_usage_events", [], |row| {
+    let retained_rows: i64 = connection
+        .query_row("SELECT COUNT(*) FROM unrelated_business_records", [], |row| {
             row.get(0)
         })
         .unwrap();
     assert_eq!(user_version, 17);
-    assert_eq!(ledger_rows, 1);
+    assert_eq!(retained_rows, 1);
 }
 
 #[test]
@@ -689,6 +689,38 @@ fn future_shared_usage_schema_refuses_activity_ddl_prune_and_sample_writes() {
         connection.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0)).unwrap(),
         3,
     );
+}
+
+#[test]
+fn either_shared_usage_marker_keeps_future_version_fenced() {
+    for marker in ["client_usage_events", "client_file_checkpoints"] {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(&format!(
+                "CREATE TABLE {marker}(marker TEXT); PRAGMA user_version=3;"
+            ))
+            .unwrap();
+
+        assert!(create_schema(&connection).is_err(), "{marker} alone must identify B");
+        assert!(add_sample(
+            &connection,
+            &sample("blocked", 1_010.0, 1_020.0, 7.0, 10.0),
+            2_000.0
+        )
+        .is_err());
+        assert!(query(&connection, 2_000.0, &ActivitySpeedFilter::default(), 8).is_err());
+        assert_eq!(
+            connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='activity_speed_meta'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0,
+            "unsupported B schemas must not receive activity tables"
+        );
+    }
 }
 
 #[test]

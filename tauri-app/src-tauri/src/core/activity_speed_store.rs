@@ -532,9 +532,9 @@ fn prune(transaction: &Transaction<'_>, now: f64) -> ActivitySpeedResult<()> {
     Ok(())
 }
 
-/// These tables are also embedded in the shared B ledger. If the core B
-/// schema is present, serialize against upgrades and verify its version before
-/// any activity DDL, migration, retention pruning, or sample write.
+/// These tables are also embedded in the shared B ledger. If either stable B
+/// marker is present, serialize against upgrades and verify its version before
+/// activity DDL, migration, retention pruning, or sample writes.
 pub(super) fn begin_activity_write_transaction(
     connection: &Connection,
 ) -> ActivitySpeedResult<Transaction<'_>> {
@@ -555,10 +555,10 @@ fn is_shared_usage_database(connection: &Connection) -> ActivitySpeedResult<bool
         [],
         |row| row.get(0),
     )?;
-    // Swift-created schema-2 ledgers need not have Rust's optional
-    // multi_usage_metadata table, so identify the shared store by its common
-    // event/checkpoint contract instead.
-    Ok(count == 2)
+    // Swift-created schema-2 ledgers need not have Rust's optional metadata
+    // table. Either core ledger table is enough to identify the shared store,
+    // including while a future schema changes the other table's name.
+    Ok(count > 0)
 }
 
 fn bucket_start(timestamp: f64) -> i64 {

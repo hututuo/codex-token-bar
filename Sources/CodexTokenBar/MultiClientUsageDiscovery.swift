@@ -1,4 +1,5 @@
 import Darwin
+import CryptoKit
 import Foundation
 
 /// Bounded, local-only discovery for the transcript and database formats read by `MultiClientUsageParsers`.
@@ -24,6 +25,8 @@ enum MultiClientUsageDiscovery {
     struct Result: Sendable {
         var files: [URL]
         var truncated: Bool
+        var nextClaudeSourceKey: String? = nil
+        var claudeOwnershipConflict = false
     }
 
     struct ClaudePairResult: Sendable {
@@ -32,12 +35,14 @@ enum MultiClientUsageDiscovery {
         /// Actual classifier calls and bytes read, excluding reuse by the other client.
         var classificationCount: Int
         var classificationBytesRead: Int
+        var nextClaudeSourceKey: String?
     }
 
     private struct ClaudeSelection {
         var files: [URL] = []
         var remainingClassificationBytes = MultiClientUsageDiscovery.maximumClaudeClassificationTotalBytes
         var truncated: Bool
+        var ownershipConflict = false
         var finished = false
     }
 
@@ -51,7 +56,8 @@ enum MultiClientUsageDiscovery {
         client: UsageClient,
         home: URL,
         environment: [String: String],
-        claudeCheckpointOwners: [String: Set<UsageClient>] = [:]
+        claudeCheckpointOwners: [String: Set<UsageClient>] = [:],
+        resumeAfterClaudeSourceKey: String? = nil
     ) -> Result {
         switch client {
         case .antigravity:
@@ -59,9 +65,24 @@ enum MultiClientUsageDiscovery {
         case .claudeCode, .claudeDesktop:
             let roots = claudeProjectRoots(home: home, environment: environment)
             let walked = walkCandidates(roots: roots.paths, client: client)
-            let selected = mostRecent(walked.files, client: client, claudeCheckpointOwners: claudeCheckpointOwners)
-            let discovered = Result(files: selected.files, truncated: walked.truncated || selected.truncated)
-            return Result(files: discovered.files, truncated: discovered.truncated || roots.incomplete)
+            let selected = mostRecent(
+                walked.files,
+                client: client,
+                claudeCheckpointOwners: claudeCheckpointOwners,
+                resumeAfterSourceKey: resumeAfterClaudeSourceKey
+            )
+            let discovered = Result(
+                files: selected.files,
+                truncated: walked.truncated || selected.truncated,
+                nextClaudeSourceKey: selected.nextClaudeSourceKey,
+                claudeOwnershipConflict: selected.claudeOwnershipConflict
+            )
+            return Result(
+                files: discovered.files,
+                truncated: discovered.truncated || roots.incomplete,
+                nextClaudeSourceKey: discovered.nextClaudeSourceKey,
+                claudeOwnershipConflict: discovered.claudeOwnershipConflict
+            )
         case .deepseek:
             let root = environment["DSH_HOME"].flatMap(nonEmptyPath)
                 .map { URL(fileURLWithPath: $0, isDirectory: true).appendingPathComponent("sessions", isDirectory: true) }
@@ -111,7 +132,8 @@ enum MultiClientUsageDiscovery {
     static func discoverClaudePair(
         home: URL,
         environment: [String: String],
-        claudeCheckpointOwners: [String: Set<UsageClient>] = [:]
+        claudeCheckpointOwners: [String: Set<UsageClient>] = [:],
+        resumeAfterSourceKey: String? = nil
     ) -> ClaudePairResult {
         let roots = claudeProjectRoots(home: home, environment: environment)
         // Both Claude clients have identical directory and candidate-file predicates.
@@ -119,7 +141,8 @@ enum MultiClientUsageDiscovery {
         let selected = selectClaude(
             mostRecentFirst(walked.files),
             clients: [.claudeCode, .claudeDesktop],
-            claudeCheckpointOwners: claudeCheckpointOwners
+            claudeCheckpointOwners: claudeCheckpointOwners,
+            resumeAfterSourceKey: resumeAfterSourceKey
         )
         var code = selected.results[0]
         var desktop = selected.results[1]
@@ -128,7 +151,8 @@ enum MultiClientUsageDiscovery {
         return ClaudePairResult(
             code: code, desktop: desktop,
             classificationCount: selected.classificationCount,
-            classificationBytesRead: selected.classificationBytesRead
+            classificationBytesRead: selected.classificationBytesRead,
+            nextClaudeSourceKey: selected.nextClaudeSourceKey
         )
     }
 
@@ -269,26 +293,52 @@ enum MultiClientUsageDiscovery {
     private static func mostRecent(
         _ candidates: [Candidate],
         client: UsageClient,
-        claudeCheckpointOwners: [String: Set<UsageClient>] = [:]
+        claudeCheckpointOwners: [String: Set<UsageClient>] = [:],
+        resumeAfterSourceKey: String? = nil
     ) -> Result {
         let sorted = mostRecentFirst(candidates)
         guard client == .claudeCode || client == .claudeDesktop else {
             return Result(files: Array(sorted.prefix(maximumFiles).map(\.url)), truncated: sorted.count > maximumFiles)
         }
-        return selectClaude(sorted, clients: [client], claudeCheckpointOwners: claudeCheckpointOwners).results[0]
+        let selected = selectClaude(
+            sorted,
+            clients: [client],
+            claudeCheckpointOwners: claudeCheckpointOwners,
+            resumeAfterSourceKey: resumeAfterSourceKey
+        )
+        var result = selected.results[0]
+        result.nextClaudeSourceKey = selected.nextClaudeSourceKey
+        return result
     }
 
     private static func selectClaude(
         _ sorted: [Candidate],
         clients: [UsageClient],
-        claudeCheckpointOwners: [String: Set<UsageClient>] = [:]
-    ) -> (results: [Result], classificationCount: Int, classificationBytesRead: Int) {
+        claudeCheckpointOwners: [String: Set<UsageClient>] = [:],
+        resumeAfterSourceKey: String? = nil
+    ) -> (
+        results: [Result], classificationCount: Int, classificationBytesRead: Int,
+        nextClaudeSourceKey: String?
+    ) {
         var selections = clients.map { _ in
             ClaudeSelection(truncated: sorted.count > maximumClaudeClassificationCandidates || sorted.count > maximumFiles)
         }
         var classificationCount = 0
         var classificationBytesRead = 0
-        for candidate in sorted.prefix(maximumClaudeClassificationCandidates) {
+        let startIndex = resumeAfterSourceKey.flatMap { sourceKey in
+            sorted.firstIndex { MultiClientUsageLedger.sourceKey(for: $0.url) == sourceKey }
+        }.map { ($0 + 1) % max(1, sorted.count) } ?? 0
+        let ordered: [Candidate]
+        if startIndex == 0 {
+            ordered = sorted
+        } else {
+            ordered = Array(sorted.dropFirst(startIndex)) + Array(sorted.prefix(startIndex))
+        }
+        let candidateLimit = min(maximumClaudeClassificationCandidates, ordered.count)
+        var processedCount = 0
+        var lastProcessedSourceKey: String?
+        var budgetExhausted = false
+        for candidate in ordered.prefix(candidateLimit) {
             if selections.allSatisfy(\.finished) { break }
             let owners = claudeCheckpointOwners[MultiClientUsageLedger.sourceKey(for: candidate.url)] ?? []
             if !owners.isEmpty {
@@ -304,17 +354,22 @@ enum MultiClientUsageDiscovery {
                         }
                     } else {
                         selections[index].truncated = true
+                        selections[index].ownershipConflict = true
                     }
                 }
+                processedCount += 1
+                lastProcessedSourceKey = MultiClientUsageLedger.sourceKey(for: candidate.url)
                 continue
             }
             // Reuse only this candidate and an identical requested read bound. No file state
             // survives the scan; appends and rewrites are classified again on the next scan.
             var cached: (byteLimit: Int, classification: ClaudeClassification)?
+            var classified = false
             for index in selections.indices where !selections[index].finished {
                 guard selections[index].remainingClassificationBytes > 0 else {
                     selections[index].truncated = true
                     selections[index].finished = true
+                    budgetExhausted = true
                     continue
                 }
                 let byteLimit = min(maximumClaudeClassificationBytes, selections[index].remainingClassificationBytes)
@@ -326,8 +381,10 @@ enum MultiClientUsageDiscovery {
                     classificationCount += 1
                     classificationBytesRead += classification.bytesRead
                     cached = (byteLimit, classification)
+                    classified = true
                 }
                 selections[index].remainingClassificationBytes -= classification.bytesRead
+                if selections[index].remainingClassificationBytes == 0 { budgetExhausted = true }
                 if classification.wasIncomplete { selections[index].truncated = true }
                 if classification.client == clients[index] {
                     selections[index].files.append(candidate.url)
@@ -337,10 +394,20 @@ enum MultiClientUsageDiscovery {
                     }
                 }
             }
+            if classified {
+                processedCount += 1
+                lastProcessedSourceKey = MultiClientUsageLedger.sourceKey(for: candidate.url)
+            }
         }
         return (
-            selections.map { Result(files: $0.files, truncated: $0.truncated) },
-            classificationCount, classificationBytesRead
+            selections.map {
+                Result(files: $0.files, truncated: $0.truncated, claudeOwnershipConflict: $0.ownershipConflict)
+            },
+            classificationCount,
+            classificationBytesRead,
+            budgetExhausted || candidateLimit < ordered.count || processedCount < sorted.count
+                ? lastProcessedSourceKey
+                : nil
         )
     }
 

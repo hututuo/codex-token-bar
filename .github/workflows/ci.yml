@@ -234,6 +234,8 @@ jobs:
               --require testHistoryScannerRejects16MiBPlusOneWithoutCheckpointOrSuccessorUsage \
               --require testHistoryScannerPreservesCommittedPrefixAndResumesAfterSameFileRepair \
               --require testClaudePairedDiscoveryClassifiesValidFirstRecordBeyond64KiB \
+              --require testClaudePairedDiscoveryKeepsIndependentTotalClassificationByteBudgets \
+              --require testClaudeScannerRotatesAfterClassificationBudgetExhaustion \
               --require testClaudeScannerReparsesSameSizeTailRewriteWithStablePrefixAndMtime \
               --require testClaudeScannerPreservesLegacyCheckpointWhenTranscriptClassifiesAsOtherClient \
               --require testClaudeScannerReclassifiesLegacyCheckpointBeforeSkippingAndPreservesOnIncompleteEvidence \
@@ -329,6 +331,8 @@ jobs:
             --require testHistoryScannerRejects16MiBPlusOneWithoutCheckpointOrSuccessorUsage \
             --require testHistoryScannerPreservesCommittedPrefixAndResumesAfterSameFileRepair \
             --require testClaudePairedDiscoveryClassifiesValidFirstRecordBeyond64KiB \
+            --require testClaudePairedDiscoveryKeepsIndependentTotalClassificationByteBudgets \
+            --require testClaudeScannerRotatesAfterClassificationBudgetExhaustion \
             --require testClaudeScannerReparsesSameSizeTailRewriteWithStablePrefixAndMtime \
             --require testClaudeScannerPreservesLegacyCheckpointWhenTranscriptClassifiesAsOtherClient \
             --require testClaudeScannerReclassifiesLegacyCheckpointBeforeSkippingAndPreservesOnIncompleteEvidence \
@@ -555,6 +559,7 @@ jobs:
               --require concurrent_b_initializers_serialize_schema_v2_initialization \
               --require current_swift_schema_without_optional_rust_metadata_remains_compatible \
               --require long_claude_first_record_classifies_desktop_for_production_scanner \
+              --require refresh_rotates_after_claude_classification_budget_exhaustion \
               --require opposite_claude_checkpoint_blocks_cross_namespace_reclassification \
               --require existing_claude_checkpoint_cannot_skip_reclassification \
               --require claude_physical_witness_reparses_same_size_tail_rewrite \
@@ -667,10 +672,12 @@ jobs:
               --require current_swift_schema_without_optional_rust_metadata_remains_compatible \
               --require future_b_schema_refuses_quota_history_before_optional_ddl_or_dml \
               --require future_shared_usage_schema_refuses_activity_ddl_prune_and_sample_writes \
+              --require either_shared_usage_marker_keeps_future_version_fenced \
               --require future_b_schema_refuses_body_speed_schema_and_sample_writes \
               --require future_b_schema_refuses_legacy_json_import_before_backup_or_rows \
               --require scoped_store_physical_user_version_reads_container_header \
               --require long_claude_first_record_classifies_desktop_for_production_scanner \
+              --require refresh_rotates_after_claude_classification_budget_exhaustion \
               --require opposite_claude_checkpoint_blocks_cross_namespace_reclassification \
               --require existing_claude_checkpoint_cannot_skip_reclassification \
               --require claude_physical_witness_reparses_same_size_tail_rewrite \

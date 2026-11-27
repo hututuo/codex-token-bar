@@ -65,6 +65,7 @@ actor MultiClientUsageScanner {
     private let environment: [String: String]
     private var ledger: MultiClientUsageLedger?
     private var cursor = 0
+    private var claudeDiscoveryCursor: String?
     private var aggregateCache: (
         minute: Int64, timezone: String, includesCharts: Bool, projection: MultiClientUsageLedger.ScanProjection
     )?
@@ -106,22 +107,39 @@ actor MultiClientUsageScanner {
             } else if preference.path.isEmpty {
                 let discovery: MultiClientUsageDiscovery.Result
                 if sharesClaudeDiscovery, preference.client == .claudeCode || preference.client == .claudeDesktop {
-                    let paired = claudeDiscovery ?? MultiClientUsageDiscovery.discoverClaudePair(
-                        home: home,
-                        environment: environment,
-                        claudeCheckpointOwners: claudeCheckpointOwners
-                    )
-                    claudeDiscovery = paired
+                    let paired: MultiClientUsageDiscovery.ClaudePairResult
+                    if let cached = claudeDiscovery {
+                        paired = cached
+                    } else {
+                        let discovered = MultiClientUsageDiscovery.discoverClaudePair(
+                            home: home,
+                            environment: environment,
+                            claudeCheckpointOwners: claudeCheckpointOwners,
+                            resumeAfterSourceKey: claudeDiscoveryCursor
+                        )
+                        claudeDiscovery = discovered
+                        claudeDiscoveryCursor = discovered.nextClaudeSourceKey
+                        paired = discovered
+                    }
                     discovery = preference.client == .claudeCode ? paired.code : paired.desktop
                 } else {
                     discovery = MultiClientUsageDiscovery.discover(
                         client: preference.client,
                         home: home,
                         environment: environment,
-                        claudeCheckpointOwners: claudeCheckpointOwners
+                        claudeCheckpointOwners: claudeCheckpointOwners,
+                        resumeAfterClaudeSourceKey: preference.client == .claudeCode || preference.client == .claudeDesktop
+                            ? claudeDiscoveryCursor
+                            : nil
                     )
+                    if preference.client == .claudeCode || preference.client == .claudeDesktop {
+                        claudeDiscoveryCursor = discovery.nextClaudeSourceKey
+                    }
                 }
                 files = discovery.files
+                if discovery.claudeOwnershipConflict {
+                    scanNotices.append("Claude：部分日志已有另一客户端账本归属，保留旧账并跳过自动重分类")
+                }
                 if discovery.truncated { diagnostics.append("\(preference.client.displayName)：自动发现未完整完成，部分目录或记录未读取；当前不是完整历史") }
             } else {
                 let discovery = Self.files(at: URL(fileURLWithPath: (preference.path as NSString).expandingTildeInPath))
@@ -397,15 +415,15 @@ actor MultiClientUsageScanner {
             checkpointIdentity = String(describing: attrs[.systemFileNumber] ?? "") + ":" + String(width) + ":" + SHA256.hash(data: prefix).map { String(format: "%02x", $0) }.joined()
         } else if url.pathExtension.lowercased() == "jsonl" {
             let handle = try FileHandle(forReadingFrom: url); defer { try? handle.close() }
-            let start = saved.flatMap {
-                guard MultiClientUsageParsers.checkpointBaseIdentity($0.identity)
+            let start: Int64 = saved.flatMap { checkpoint -> Int64? in
+                guard MultiClientUsageParsers.checkpointBaseIdentity(checkpoint.identity)
                     == MultiClientUsageParsers.checkpointBaseIdentity(identity),
-                    $0.offset <= size else { return nil }
-                if $0.size == size {
-                    guard $0.modified == modified else { return nil }
-                    return $0.identity == identity ? $0.offset : 0
+                    checkpoint.offset <= size else { return nil }
+                if checkpoint.size == size {
+                    guard checkpoint.modified == modified else { return nil }
+                    return checkpoint.identity == identity ? checkpoint.offset : 0
                 }
-                return $0.offset
+                return checkpoint.offset
             } ?? 0
             try handle.seek(toOffset: UInt64(start))
             let readWindow = 4 * 1024 * 1024

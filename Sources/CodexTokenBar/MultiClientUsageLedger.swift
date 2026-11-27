@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import AgentSpeedCore
 

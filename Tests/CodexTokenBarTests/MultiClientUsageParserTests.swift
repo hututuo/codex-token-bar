@@ -146,13 +146,66 @@ final class MultiClientUsageParserTests: XCTestCase {
         let desktop = MultiClientUsageDiscovery.discover(client: .claudeDesktop, home: home, environment: [:])
         XCTAssertEqual(paired.code.files, code.files)
         XCTAssertEqual(paired.desktop.files, desktop.files)
-        XCTAssertEqual(paired.code.files.count, 1_024)
+        XCTAssertTrue(paired.code.files.isEmpty)
         XCTAssertTrue(paired.desktop.files.isEmpty)
         XCTAssertEqual(paired.classificationCount, 1_024)
         XCTAssertEqual(paired.classificationBytesRead, 64 * 1_024 * 1_024)
         XCTAssertTrue(code.truncated); XCTAssertTrue(desktop.truncated)
         XCTAssertEqual(paired.code.truncated, code.truncated)
         XCTAssertEqual(paired.desktop.truncated, desktop.truncated)
+        let resumed = MultiClientUsageDiscovery.discoverClaudePair(
+            home: home,
+            environment: [:],
+            resumeAfterSourceKey: paired.nextClaudeSourceKey
+        )
+        XCTAssertEqual(resumed.desktop.files, [project.appendingPathComponent("1024.jsonl")])
+        XCTAssertLessThanOrEqual(resumed.classificationBytesRead, 64 * 1_024 * 1_024)
+        XCTAssertTrue(resumed.desktop.truncated)
+    }
+
+    func testClaudeScannerRotatesAfterClassificationBudgetExhaustion() async throws {
+        let fm = FileManager.default
+        let home = fm.temporaryDirectory.appendingPathComponent("claude-scan-fairness-\(UUID())")
+        defer { try? fm.removeItem(at: home) }
+        let project = home.appendingPathComponent(".claude/projects/p")
+        try fm.createDirectory(at: project, withIntermediateDirectories: true)
+        let modified = Date(timeIntervalSince1970: 1_793_000_000)
+        let blockerBytes = UInt64(16 * 1_024 * 1_024)
+        for index in 0..<4 {
+            let path = project.appendingPathComponent(String(format: "%04d-incomplete.jsonl", index))
+            XCTAssertTrue(fm.createFile(atPath: path.path, contents: Data()))
+            let handle = try FileHandle(forWritingTo: path)
+            try handle.truncate(atOffset: blockerBytes)
+            try handle.close()
+            try fm.setAttributes([.modificationDate: modified], ofItemAtPath: path.path)
+        }
+        let validDesktop = project.appendingPathComponent("9999-desktop.jsonl")
+        try jsonl([claudeLine(
+            session: "desktop-session",
+            entrypoint: "claude-desktop-3p",
+            id: "desktop-event",
+            timestamp: "2026-11-26T10:00:00Z",
+            usage: ["input_tokens": 123, "output_tokens": 17]
+        )]).write(to: validDesktop)
+        try fm.setAttributes([.modificationDate: modified], ofItemAtPath: validDesktop.path)
+
+        var code = try XCTUnwrap(MultiClientUsagePreference.defaults.first { $0.client == .claudeCode })
+        var desktop = try XCTUnwrap(MultiClientUsagePreference.defaults.first { $0.client == .claudeDesktop })
+        code.enabled = true
+        desktop.enabled = true
+        let scanner = MultiClientUsageScanner(
+            databaseURL: home.appendingPathComponent("usage.sqlite"),
+            home: home,
+            environment: [:]
+        )
+
+        let first = try await scanner.scan([code, desktop], includesCharts: false)
+        XCTAssertTrue(first.summaries.isEmpty)
+        XCTAssertTrue(first.diagnostics.contains { $0.contains("自动发现未完整完成") })
+
+        let second = try await scanner.scan([code, desktop], includesCharts: false)
+        XCTAssertEqual(second.summaries.first { $0.client == .claudeDesktop }?.inputTokens, 123)
+        XCTAssertNil(second.summaries.first { $0.client == .claudeCode })
     }
 
     func testClaudePairedDiscoveryReclassifiesAppendedAndRewrittenFilesOnEveryCall() throws {
@@ -368,7 +421,7 @@ final class MultiClientUsageParserTests: XCTestCase {
 
         XCTAssertEqual(result.summaries.first { $0.client == .claudeCode }?.inputTokens, 40)
         XCTAssertNil(result.summaries.first { $0.client == .claudeDesktop })
-        XCTAssertTrue(result.diagnostics.contains { $0.contains("未完整完成") || $0.contains("归属与当前客户端不符") })
+        XCTAssertTrue(result.diagnostics.contains { $0.contains("已有另一客户端账本归属") })
         let preserved = try XCTUnwrap(ledger.checkpoint(client: .claudeCode, sourceKey: sourceKey))
         XCTAssertEqual(preserved.offset, oldCheckpoint.offset)
         XCTAssertEqual(preserved.size, oldCheckpoint.size)
