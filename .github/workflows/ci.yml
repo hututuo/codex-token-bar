@@ -206,6 +206,13 @@ jobs:
           python3 scripts/check_test_execution.py --kind swift --log swift-tests.log --source-sha "$SOURCE_SHA" \
             --allow-untracked-output 'visual-previews/*.png' \
             --require testPreciseStartupAndWarmRefreshExposePreparationAndCompleteTheStream \
+            --require testEmptyLedgerPeakQueriesKeepMeasuredBucketsUnallocated \
+            --require testUnmeasuredRecordsKeepBucketsUnallocatedAndTotalsIntact \
+            --require testNonoverlappingMeasuredRecordsKeepBucketsUnallocatedAndAverage \
+            --require testFirstMeasuredRecordAllocatesDenseBucketsAndPreservesMetrics \
+            --require testReplacementsAndRemovalsMatchFreshLedgerAndInvalidatePeakCaches \
+            --require testCopiesKeepFirstAllocationAndReplacementIndependent \
+            --require testDayBoundariesAndWidenedDurationsPreservePeakDistribution \
             --require testMissingStatePollPublishesRepeatedFailureOnlyOnce \
             --require testEmptyThreadPollingStillRetriesAndPublishesErrorChangesAndRecovery \
             --require testCombinedRowsUseStableModelKeyOrderAndPreservePricePeriods \

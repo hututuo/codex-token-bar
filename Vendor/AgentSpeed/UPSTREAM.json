@@ -612,6 +612,10 @@
       "reason": "Treat only zero-byte regular Antigravity main files without a WAL path as retryable empty placeholders; preserve actual WAL reads and retry after initialization. Align Windows explicit-parent expansion and ACP defaults with the native ledger.",
       "sha256": "5788bc2a11deabc65db0306fdefbdc5b4e8b193528ecac65790c1873d2c03333"
     },
+    "macos/Sources/AgentSpeedCore/Engine/DayLedger.swift": {
+      "reason": "Token Bar allocates the unchanged dense all-source second buckets only after the first overlapping measured interval. Empty and unmeasured ledgers keep zero peak without 25-hour Double allocations; totals, duration, replacement math, source subsets and copy value semantics are preserved.",
+      "sha256": "1394f8218b629c6876bfa5b93300c03497a059e2f233c826bf970d4075b7f295"
+    },
     "macos/Sources/AgentSpeedCore/Engine/EngineTypes.swift": {
       "reason": "Carry source/model attribution and local displayTitle metadata through engine agents while preserving upstream numeric speed calculations and signed reporting semantics.",
       "sha256": "d38bbe9d50ac40ec67276fc19cf3e762e038cba2d8ea948e1c95ecdbaf7577de"

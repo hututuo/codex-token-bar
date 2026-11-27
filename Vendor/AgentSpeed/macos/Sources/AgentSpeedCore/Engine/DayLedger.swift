@@ -17,8 +17,11 @@ struct DayLedger: Sendable {
     private(set) var costByModel: [SourceKind: [String: CostTally]] = [:]
     private var validOutput = 0
     private var validDurationMs: Int64 = 0
-    private var outputBuckets: [Double]
-    private var totalBuckets: [Double]
+    // Empty and unmeasured sources do not need 25 hours of second buckets.
+    // Allocate on the first overlapping measured interval, then retain the
+    // original dense representation and arithmetic for the rest of the day.
+    private var outputBuckets: [Double] = []
+    private var totalBuckets: [Double] = []
     private var cachedPeak: MeasuredPeak?
     private var sourceSeconds: SourceSeconds
 
@@ -31,8 +34,6 @@ struct DayLedger: Sendable {
     init(dayStartMs: Int64) {
         self.dayStartMs = dayStartMs
         firstSecond = ResponseTiming.second(of: dayStartMs)
-        outputBuckets = Array(repeating: 0, count: Self.capacitySeconds)
-        totalBuckets = Array(repeating: 0, count: Self.capacitySeconds)
         sourceSeconds = SourceSeconds(firstSecond: firstSecond, capacity: Self.capacitySeconds)
     }
 
@@ -65,6 +66,12 @@ struct DayLedger: Sendable {
         let lastSecond = firstSecond + Int64(Self.capacitySeconds) - 1
         let factor = Double(sign)
         let base = firstSecond
+        if outputBuckets.isEmpty {
+            guard ResponseTiming.overlap(base * 1000, (lastSecond + 1) * 1000,
+                                         timed.startMs, timed.endMs) > 0 else { return }
+            outputBuckets = Array(repeating: 0, count: Self.capacitySeconds)
+            totalBuckets = Array(repeating: 0, count: Self.capacitySeconds)
+        }
         outputBuckets.withUnsafeMutableBufferPointer { outputs in
             totalBuckets.withUnsafeMutableBufferPointer { totals in
                 timed.distribute(firstSecond: base, lastSecond: lastSecond) { second, output, total in
@@ -82,6 +89,10 @@ struct DayLedger: Sendable {
     mutating func measuredPeak() -> MeasuredPeak {
         if let cachedPeak { return cachedPeak }
         var peak = MeasuredPeak()
+        guard !outputBuckets.isEmpty else {
+            cachedPeak = peak
+            return peak
+        }
         var outputs = (0.0, 0.0)
         var totals = (0.0, 0.0)
         for index in 0..<Self.capacitySeconds {
@@ -108,6 +119,9 @@ struct DayLedger: Sendable {
 
     /// Sources that have per-second buckets today.
     var sourcesWithBuckets: SourceSet { sourceSeconds.allocated }
+
+    /// Number of allocated all-source second buckets, excluding source subsets (tests).
+    var measuredBucketCount: Int { outputBuckets.count + totalBuckets.count }
 
     /// Subset peaks computed rather than answered from the cache, and the blocks they scanned (tests).
     var subsetPeakScans: Int { sourceSeconds.peakScans }
